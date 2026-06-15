@@ -15,16 +15,28 @@
  */
 package com.agentscopea2a.agent.dimension;
 
+import reactor.core.publisher.Mono;
+
 /**
- * 维度继承相关异常。
+ * LLM 服务接口，供 DimensionStateManager 调用。
+ *
+ * <p>使用者需根据实际 LLM 接入方式实现此接口。
  */
-public class DimensionException extends RuntimeException {
+public interface LlmDimensionService {
 
-    public DimensionException(String message) {
-        super(message);
-    }
+    /**
+     * 同步调用 LLM。
+     *
+     * @param prompt 完整的 prompt
+     * @return LLM 的文本响应
+     */
+    String call(String prompt);
 
-    public DimensionException(String message, Throwable cause) {
-        super(message, cause);
-    }
+    /**
+     * 异步调用 LLM。
+     *
+     * @param prompt 完整的 prompt
+     * @return LLM 文本响应的 Mono
+     */
+    Mono<String> callAsync(String prompt);
 }

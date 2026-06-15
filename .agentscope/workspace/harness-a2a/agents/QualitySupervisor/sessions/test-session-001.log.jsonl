@@ -1,0 +1,2 @@
+{"type":"message","id":"678b0466-686d-4aa2-a7be-4eb5ca74a0ca","timestamp":1781511244.254131000,"role":"USER","content":"你好,请用一句话介绍你自己"}
+{"type":"message","id":"08f97107-8fc6-4f0e-8444-b1e90ddad9c2","parentId":"678b0466-686d-4aa2-a7be-4eb5ca74a0ca","timestamp":1781511244.255582800,"role":"ASSISTANT","content":"你好！我是质量数据智能助手的主管，负责理解你的需求并协调专业子智能体（数据查询、分析、代码计算、技能保存等）来完成质量数据相关的任务。"}

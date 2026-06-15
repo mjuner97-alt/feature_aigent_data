@@ -15,7 +15,7 @@
  */
 package com.agentscopea2a.harness.cache;
 
-import com.agentscopea2a.harness.dimension.DimensionState;
+import com.agentscopea2a.agent.dimension.DimensionState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

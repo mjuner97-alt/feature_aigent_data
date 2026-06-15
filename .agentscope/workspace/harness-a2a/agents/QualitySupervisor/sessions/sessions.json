@@ -1,0 +1,9 @@
+{
+  "sessions" : {
+    "test-session-001" : {
+      "summary" : "conversation offloaded",
+      "updatedAt" : "2026-06-15T08:14:04.288700300Z"
+    }
+  },
+  "version" : 1
+}

@@ -9,12 +9,12 @@
  */
 package com.agentscopea2a.harness.config;
 
+import com.agentscopea2a.agent.model.ModelProperties;
+import com.agentscopea2a.agent.model.ModelRegistry;
 import com.agentscopea2a.harness.artifact.ArtifactStore;
 import com.agentscopea2a.harness.cache.ResponseCacheService;
-import com.agentscopea2a.harness.dimension.DimensionStateManager;
-import com.agentscopea2a.harness.session.MySQLSession;
-import com.zaxxer.hikari.HikariConfig;
-import com.zaxxer.hikari.HikariDataSource;
+import com.agentscopea2a.agent.dimension.DimensionStateManager;
+import com.agentscopea2a.agent.session.MySQLSession;
 import io.agentscope.core.model.Model;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -103,7 +103,20 @@ public class  InfraConfig {
     }
 
     @Bean
-    public Model model(ModelProperties props) {
-        return ModelFactory.createModel(props);
+    public ModelRegistry modelRegistry(ModelProperties props) {
+        return new ModelRegistry(props);
+    }
+
+    /**
+     * 默认 Model bean — 对应 {@code harness.a2a.model.default} 实例。{@code @Primary} 让没有
+     * 显式 {@code @Qualifier} 的 {@code Model} 注入点默认拿到它。
+     *
+     * <p>需要其它实例的组件请直接注入 {@link ModelRegistry},按名取用,例如:
+     * {@code modelRegistry.get("claude-coder")} / {@code modelRegistry.getForSubagent("code_interpreter")}。
+     */
+    @Bean
+    @Primary
+    public Model model(ModelRegistry registry) {
+        return registry.getSupervisor();
     }
 }

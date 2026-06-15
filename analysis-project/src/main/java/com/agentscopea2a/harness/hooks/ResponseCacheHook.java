@@ -16,9 +16,9 @@
 package com.agentscopea2a.harness.hooks;
 
 import com.agentscopea2a.harness.cache.ResponseCacheService;
-import com.agentscopea2a.harness.dimension.DimensionState;
-import com.agentscopea2a.harness.dimension.DimensionStateManager;
-import com.agentscopea2a.harness.dimension.QuestionAnalysis;
+import com.agentscopea2a.agent.dimension.DimensionState;
+import com.agentscopea2a.agent.dimension.DimensionStateManager;
+import com.agentscopea2a.agent.dimension.QuestionAnalysis;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.hook.Hook;
 import io.agentscope.core.hook.HookEvent;

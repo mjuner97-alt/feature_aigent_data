@@ -15,7 +15,7 @@
  */
 package com.agentscopea2a.harness.artifact;
 
-import com.agentscopea2a.harness.controller.ChatController;
+import com.agentscopea2a.controller.ChatController;
 import com.agentscopea2a.harness.runner.HarnessA2aRunner;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
