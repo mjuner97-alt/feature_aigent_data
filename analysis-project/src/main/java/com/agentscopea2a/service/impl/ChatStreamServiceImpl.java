@@ -87,18 +87,10 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     @Override
     public SseEmitter stream(ChatRequest req) {
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
-
-        if (req == null || req.message() == null || req.message().isBlank()) {
-            // Best-effort error frame; no agent has been built so no cleanup needed.
-            sendError(emitter, normalize(req), "Field 'message' is required");
-            emitter.complete();
-            return emitter;
-        }
-
         // Apply all defaulting/derivation rules in one place.
         Resolved resolved = normalize(req);
 
-        String sid = firstNonBlank(req.sessionId(), resolved.conversationId);
+        String sid = firstNonBlank(req.getSessionId(), resolved.conversationId);
         final RuntimeContext ctx =
                 RuntimeContext.builder()
                         .sessionId(sid)
@@ -112,7 +104,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         Msg userMsg =
                 Msg.builder()
                         .role(MsgRole.USER)
-                        .content(TextBlock.builder().text(req.message()).build())
+                        .content(TextBlock.builder().text(req.getMessage()).build())
                         .build();
 
         final String ansUUID = UUID.randomUUID().toString();
@@ -169,18 +161,18 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                     UUID.randomUUID().toString(),
                     true);
         }
-        boolean agentIdProvided = isNotBlank(req.agentId());
-        String agentId = agentIdProvided ? req.agentId() : DEFAULT_AGENT_ID;
-        String agentName = isNotBlank(req.agentName()) ? req.agentName() : DEFAULT_AGENT_NAME;
-        String formType = isNotBlank(req.formType()) ? req.formType() : DEFAULT_FROM_TYPE;
+        boolean agentIdProvided = isNotBlank(req.getAgentId());
+        String agentId = agentIdProvided ? req.getAgentId() : DEFAULT_AGENT_ID;
+        String agentName = isNotBlank(req.getAgentName()) ? req.getAgentName() : DEFAULT_AGENT_NAME;
+        String formType = isNotBlank(req.getFormType()) ? req.getFormType() : DEFAULT_FROM_TYPE;
 
         String conversationId;
-        if (isNotBlank(req.conversationId())) {
+        if (isNotBlank(req.getConversationId())) {
             // Forwarded as-is so the model sees a stable id.
-            conversationId = req.conversationId();
-        } else if (!agentIdProvided && isNotBlank(req.chatId())) {
+            conversationId = req.getConversationId();
+        } else if (!agentIdProvided && isNotBlank(req.getChatId())) {
             // No agentId, but a chatId is present → promote chatId.
-            conversationId = req.chatId();
+            conversationId = req.getChatId();
         } else {
             conversationId = UUID.randomUUID().toString();
         }

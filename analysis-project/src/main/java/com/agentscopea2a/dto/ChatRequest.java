@@ -11,6 +11,10 @@ package com.agentscopea2a.dto;
 
 import com.agentscopea2a.service.ChatStreamService;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 /**
  * Inbound payload for {@code POST /chatA2A}.
@@ -28,11 +32,30 @@ import com.fasterxml.jackson.annotation.JsonProperty;
  *       continuity).
  * </ul>
  */
-public record ChatRequest(
-        @JsonProperty("message") String message,
-        @JsonProperty("session_id") String sessionId,
-        @JsonProperty("agent_id") String agentId,
-        @JsonProperty("agent_name") String agentName,
-        @JsonProperty("from_type") String formType,
-        @JsonProperty("conversation_id") String conversationId,
-        @JsonProperty("chat_id") String chatId) {}
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class ChatRequest {
+
+    @JsonProperty("message")
+    private String message;
+
+    @JsonProperty("session_id")
+    private String sessionId;
+
+    @JsonProperty("agent_id")
+    private String agentId;
+
+    @JsonProperty("agent_name")
+    private String agentName;
+
+    @JsonProperty("form_type")
+    private String formType;
+
+    @JsonProperty("conversation_id")
+    private String conversationId;
+
+    @JsonProperty("chat_id")
+    private String chatId;
+}
