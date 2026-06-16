@@ -79,6 +79,7 @@ public class SupervisorService {
     private final ModelRegistry modelRegistry;
     private final PersistenceProperties persistence;
     private final ArtifactStore artifactStore;
+    private final ToolRoutersIndex toolRoutersIndex;
 
 
     private final Map<String, Supplier<Object>> toolRegistry;
@@ -105,7 +106,7 @@ public class SupervisorService {
             Model model,
             ModelRegistry modelRegistry,
             PersistenceProperties persistence,
-            ArtifactStore artifactStore) {
+            ArtifactStore artifactStore,ToolRoutersIndex toolRoutersIndex) {
         this.workspace = workspace;
         this.session = session;
         this.model = model;
@@ -113,6 +114,7 @@ public class SupervisorService {
         this.persistence = persistence;
         this.artifactStore = artifactStore;
         this.toolRegistry = buildToolRegistry(workspace);
+        this.toolRoutersIndex = toolRoutersIndex;
     }
 
     @PostConstruct
@@ -243,8 +245,8 @@ public class SupervisorService {
 
     private Map<String, Supplier<Object>> buildToolRegistry(Path workspace) {
         Map<String, Supplier<Object>> r = new HashMap<>();
-        r.put("tool_router", ToolRoutersIndex::new);
-//        r.put("skill_save", () -> new SkillSaveTool(workspace.resolve("skills")));
+        r.put("tool_router", ()->toolRoutersIndex);
+        r.put("skill_save", () -> new SkillSaveTool(workspace.resolve("skills")));
         return Map.copyOf(r);
     }
 

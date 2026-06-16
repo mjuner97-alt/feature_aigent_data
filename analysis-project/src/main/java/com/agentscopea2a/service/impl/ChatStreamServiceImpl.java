@@ -201,13 +201,21 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             StringBuilder accumulated) {
 
         EventType type = event.getType();
+        String text = extractText(event.getMessage());
+        // Log every event regardless of whether it will be sent to the frontend.
+        log.info(
+                "stream event: agentId={} type={} last={} textLen={} preview={}",
+                resolved.agentId,
+                type,
+                event.isLast(),
+                text.length(),
+                preview(text));
         if (type == EventType.AGENT_RESULT) {
             return;
         }
         if (event.isLast()) {
             return;
         }
-        String text = extractText(event.getMessage());
         if (text.isEmpty()) return;
         try {
             String name = type.name().toLowerCase();
@@ -373,6 +381,13 @@ public class ChatStreamServiceImpl implements ChatStreamService {
 
     private static boolean isNotBlank(String s) {
         return s != null && !s.isBlank();
+    }
+
+    /** Truncates and one-lines text for log output so a single event stays on one line. */
+    private static String preview(String text) {
+        if (text == null || text.isEmpty()) return "";
+        String oneLine = text.replace('\n', ' ').replace('\r', ' ');
+        return oneLine.length() <= 120 ? oneLine : oneLine.substring(0, 120) + "…";
     }
 
     private static String firstNonBlank(String... candidates) {
