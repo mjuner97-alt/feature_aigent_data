@@ -1,39 +1,50 @@
-# analysis-project
+# Workspace 目录结构
 
-#### 介绍
-{**以下是 Gitee 平台说明，您可以替换此简介**
-Gitee 是 OSCHINA 推出的基于 Git 的代码托管平台（同时支持 SVN）。专为开发者提供稳定、高效、安全的云端软件开发协作平台
-无论是个人、团队、或是企业，都能够用 Gitee 实现代码托管、项目管理、协作开发。企业项目请看 [https://gitee.com/enterprises](https://gitee.com/enterprises)}
+## 默认路径配置
 
-#### 软件架构
-软件架构说明
+- **框架常量**:`io.agentscope.harness.agent.workspace.WorkspaceConstants`
+- **应用配置**:`harness.a2a.workspace.path=.agentscope/workspace`
+- **入口解析**:`io.agentscope.harness.agent.HarnessAgent.Builder.resolveSkillBox`
 
+## 目录结构说明
 
-#### 安装教程
+```text
+.agentscope/workspace/          # 工作空间根目录
+├── AGENTS.md                   # 工牌 & 员工手册
+│                               # 定义 Agent 的身份、行为准则和工作流程
+├── MEMORY.md                   # 核心笔记本
+│                               # 存放压缩、整理后的长期记忆
+├── memory/                     # 每日工作日志
+│                               # 记录每天对话的原始流水账
+├── skills/                     # 工具箱
+│   ├── skill-name-1/
+│   │   ├── SKILL.md            # Required:入口文件,包含 YAML frontmatter
+│   │   ├── references/         # Optional:参考文档
+│   │   ├── examples/           # Optional:示例文件
+│   │   └── scripts/            # Optional:脚本文件
+│   └── skill-name-2/
+│       └── SKILL.md
+├── knowledge/                  # 书架 / 知识库
+│                               # 存放产品手册、FAQ 等参考资料
+└── sessions/                   # 工作记录本
+                                # 完整保存每次对话的详细记录
+```
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+## 各文件 / 文件夹作用速查表
 
-#### 使用说明
+| 文件 / 文件夹 | 作用类比 | 核心说明 |
+| --- | --- | --- |
+| `AGENTS.md` | 工牌 & 员工手册 | 定义 Agent 身份、行为准则和工作流程,作为系统提示注入 |
+| `MEMORY.md` | 核心笔记本 | 存放压缩整理的长期记忆 |
+| `memory/` | 每日工作日志 | 记录每天对话的原始流水账,定期整理到 `MEMORY.md` |
+| `skills/` | 工具箱 | 存放 Agent 可调用的专业技能,每个技能有独立的 `SKILL.md` |
+| `knowledge/` | 书架 / 知识库 | 存放产品手册、FAQ 等参考资料 |
+| `sessions/` | 工作记录本 | 完整保存每次对话记录,支持服务重启后连续对话 |
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+## 技能(Skill)目录规范
 
-#### 参与贡献
+每个技能文件夹必须包含 `SKILL.md` 入口文件,可选包含:
 
-1.  Fork 本仓库
-2.  新建 Feat_xxx 分支
-3.  提交代码
-4.  新建 Pull Request
-
-
-#### 特技
-
-1.  使用 Readme\_XXX.md 来支持不同的语言，例如 Readme\_en.md, Readme\_zh.md
-2.  Gitee 官方博客 [blog.gitee.com](https://blog.gitee.com)
-3.  你可以 [https://gitee.com/explore](https://gitee.com/explore) 这个地址来了解 Gitee 上的优秀开源项目
-4.  [GVP](https://gitee.com/gvp) 全称是 Gitee 最有价值开源项目，是综合评定出的优秀开源项目
-5.  Gitee 官方提供的使用手册 [https://gitee.com/help](https://gitee.com/help)
-6.  Gitee 封面人物是一档用来展示 Gitee 会员风采的栏目 [https://gitee.com/gitee-stars/](https://gitee.com/gitee-stars/)
+- `references/` — 参考文档
+- `examples/` — 示例文件
+- `scripts/` — 脚本文件

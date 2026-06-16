@@ -15,6 +15,7 @@
  */
 package com.agentscopea2a.service;
 
+import com.agentscopea2a.agent.tools.routers.ToolRoutersIndex;
 import com.agentscopea2a.harness.artifact.ArtifactContext;
 import com.agentscopea2a.harness.artifact.ArtifactStore;
 import com.agentscopea2a.harness.cache.ResponseCacheService;
@@ -242,8 +243,8 @@ public class SupervisorService {
 
     private Map<String, Supplier<Object>> buildToolRegistry(Path workspace) {
         Map<String, Supplier<Object>> r = new HashMap<>();
-        r.put("quality_tools", QualityTools::new);
-        r.put("skill_save", () -> new SkillSaveTool(workspace.resolve("skills")));
+        r.put("tool_router", ToolRoutersIndex::new);
+//        r.put("skill_save", () -> new SkillSaveTool(workspace.resolve("skills")));
         return Map.copyOf(r);
     }
 
