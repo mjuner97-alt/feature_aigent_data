@@ -19,9 +19,7 @@ import com.agentscopea2a.dto.ChatRequest;
 import com.agentscopea2a.service.ChatStreamService;
 import com.agentscopea2a.service.impl.ChatStreamServiceImpl;
 import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 /**
@@ -34,6 +32,8 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
  * request off.
  */
 @RestController
+@RequestMapping("/ai")
+@CrossOrigin(origins = "*",maxAge = 3600)
 public class ChatController {
 
     private final ChatStreamService chatStreamService;
@@ -42,7 +42,7 @@ public class ChatController {
         this.chatStreamService = chatStreamService;
     }
 
-    @PostMapping(value = "/chatA2A", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @PostMapping(value = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter chat(@RequestBody ChatRequest req) {
         return chatStreamService.stream(req);
     }

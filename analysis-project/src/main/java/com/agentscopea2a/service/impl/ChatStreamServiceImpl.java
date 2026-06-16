@@ -104,7 +104,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         Msg userMsg =
                 Msg.builder()
                         .role(MsgRole.USER)
-                        .content(TextBlock.builder().text(req.getMessage()).build())
+                        .content(TextBlock.builder().text(req.getInput()).build())
                         .build();
 
         final String ansUUID = UUID.randomUUID().toString();

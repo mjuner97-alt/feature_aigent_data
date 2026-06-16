@@ -38,8 +38,8 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class ChatRequest {
 
-    @JsonProperty("message")
-    private String message;
+    @JsonProperty("input")
+    private String input;
 
     @JsonProperty("session_id")
     private String sessionId;

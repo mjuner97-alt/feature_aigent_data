@@ -19,3 +19,6 @@ logs/
 
 # Dependencies
 node_modules/
+.agentscope
+.claude
+.idea
