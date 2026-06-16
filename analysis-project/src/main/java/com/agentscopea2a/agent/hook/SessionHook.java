@@ -36,7 +36,7 @@ public class SessionHook implements Hook {
                     .metadata(toolUse.getMetadata())
                     .input(newMap)
                     .build();
-
+            ((PreActingEvent) event).setToolUse(useBlock);
             System.out.println(newMap);
         }
         return Mono.just(event);

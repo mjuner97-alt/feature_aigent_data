@@ -1,0 +1,3 @@
+# Reserved — runtime-generated skills are written here by SkillSaveTool.
+# This file just guarantees the empty directory ships with the jar so
+# WorkspaceMaterializer can resolve `workspace/skills/` on first start.

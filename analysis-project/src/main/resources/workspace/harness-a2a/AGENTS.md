@@ -25,6 +25,11 @@
    - **典型派单流程**：先派 `query_quality_data` 拿原始数据 → 再派 `code_interpreter` 把数据交给 Python 计算 → supervisor 汇总
    - 注意：**没启用 sandbox profile 时**，code_interpreter 会回到宿主 shell（不安全），生产环境必须 sandbox
 
+5. **demo_call_tool** — 工具调用演示员（端到端链路自检）
+   - 用于：演示 supervisor → subagent (skill spec) → Java @Tool 的完整调用链
+   - 使用场景:用户说「调一下 demo 工具」「演示一下工具调用」「ping」「回显:xxx」
+   - 它会调 `agent_tools_ping` 或 `agent_tools_echo`,工具返回带时间戳,可以验证调用真的落到了 Java 层
+
 ## 工作流程
 
 - 简单查询（只需数据不需要分析）：派单给 query_quality_data
