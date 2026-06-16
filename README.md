@@ -2,9 +2,11 @@
 
 ## 默认路径配置
 
+- **自动加载**: `io.agentscope.harness.agent.hook.WorkspaceContextHook.injectWorkspaceContext`
 - **框架常量**:`io.agentscope.harness.agent.workspace.WorkspaceConstants`
 - **应用配置**:`harness.a2a.workspace.path=.agentscope/workspace`
-- **入口解析**:`io.agentscope.harness.agent.HarnessAgent.Builder.resolveSkillBox`
+- **文件路径** `在resource目录下创建workspace(.agentscope/后面的路径)`
+- **skill入口解析**:`io.agentscope.harness.agent.HarnessAgent.Builder.resolveSkillBox`
 
 ## 目录结构说明
 
