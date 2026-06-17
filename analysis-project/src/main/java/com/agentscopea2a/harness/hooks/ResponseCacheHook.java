@@ -140,7 +140,7 @@ public class ResponseCacheHook implements Hook {
             // Generate cache key — prefix with userId so two tenants asking the same dimensional
             // question land in separate cache rows.
             String intent = ResponseCacheService.classifyIntent(question);
-            Optional<String> dimKey = cacheService.generateCacheKey(intent, state);
+            Optional<String> dimKey = cacheService.generateCacheKey(intent, state, question);
             if (dimKey.isEmpty()) {
                 log.debug("No cacheable dimensions for question: {}", question);
                 return Mono.just(event);

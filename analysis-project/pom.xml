@@ -38,6 +38,16 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-lang3</artifactId>
+                <version>3.14.0</version>
+            </dependency>
+            <dependency>
+                <groupId>commons-io</groupId>
+                <artifactId>commons-io</artifactId>
+                <version>2.16.1</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
@@ -60,11 +70,8 @@
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
-        <!-- 注意: Spring Boot 3.2.3 使用 WebFlux 6.x,与 web 同版本 -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-webflux</artifactId>
-        </dependency>
+        <!-- 注:不引 spring-boot-starter-webflux —— 业务用 SseEmitter (servlet 栈) +
+             reactor-core (agentscope Hook API),不需要 WebFlux 路由,移除可减少启动 classpath 扫描。 -->
 
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -204,6 +211,15 @@
             <version>0.6.5</version>
         </dependency>
 
+        <!-- ========== Redis(分布式 / 多副本沙箱协调) ==========
+             仅在启用 harness.a2a.distributed.enabled=true 时由 FilesystemConfig 实例化;
+             默认配置不连接,无依赖即可启动。 -->
+        <dependency>
+            <groupId>redis.clients</groupId>
+            <artifactId>jedis</artifactId>
+            <version>5.0.2</version>
+        </dependency>
+
         <!-- ========== 工具类 ========== -->
         <!-- Hutool -->
         <dependency>
@@ -236,7 +252,6 @@
         <dependency>
             <groupId>commons-io</groupId>
             <artifactId>commons-io</artifactId>
-            <version>2.15.1</version>
         </dependency>
 
     </dependencies>

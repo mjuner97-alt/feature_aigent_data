@@ -13,29 +13,22 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
-import java.util.stream.Stream;
 
 /**
- * Per-tenant artifact storage backed by the local host filesystem.
+ * Per-tenant artifact storage. Delegates physical IO to an {@link ArtifactIo} backend so the same
+ * tenant/cleanup/path-mounting logic works against the local FS or a remote SSH host.
  *
  * <p>Tools like {@code QualityTools} can return tabular data 24+ rows wide. Inlining that into
  * {@code ToolResultBlock.text(...)} forces the LLM to copy it verbatim into the next
  * {@code agent_spawn(task=...)} prompt — burning tokens and risking transcription errors. Instead,
- * the tool writes the data to a CSV here, and returns a short handoff message containing the
+ * the tool writes the data via this store, and returns a short handoff message containing the
  * {@link ArtifactRef#agentPath()} that downstream subagents can read directly.
  *
  * <p><b>Tenant isolation.</b> Every artifact lives under
  * {@code <root>/<userBucket>/<taskBucket>/<tool>-<uuid>.csv}.
- *
- * <p><b>Atomic write.</b> Writes go to {@code .tmp + rename} so a reader can't observe a
- * half-written CSV.
  *
  * <p><b>GC.</b> {@link #cleanupTask} wipes the task bucket on request completion. Set
  * {@code keepArtifacts=true} to disable cleanup for debugging.
@@ -44,19 +37,32 @@ public class ArtifactStore {
 
     private static final Logger log = LoggerFactory.getLogger(ArtifactStore.class);
 
+    private final ArtifactIo io;
     private final Path artifactsRoot;
     private final String mountPrefix;
     private final boolean keepArtifacts;
 
+    /**
+     * Legacy ctor — wires a {@link LocalArtifactIo} internally so callers and tests that don't
+     * care about the backend abstraction continue to work unchanged.
+     */
     public ArtifactStore(Path artifactsRoot, String mountPrefix, boolean keepArtifacts) {
+        this(artifactsRoot, new LocalArtifactIo(artifactsRoot), mountPrefix, keepArtifacts);
+    }
+
+    /**
+     * Explicit-backend ctor. Use this when wiring an {@link SshArtifactIo} for remote-Docker
+     * deployments — pass the same {@code artifactsRoot} you'd use locally so {@code agentPath()}
+     * keeps the same shape; the io delegate decides where the bytes actually land.
+     */
+    public ArtifactStore(
+            Path artifactsRoot, ArtifactIo io, String mountPrefix, boolean keepArtifacts) {
         this.artifactsRoot = artifactsRoot;
+        this.io = io;
         this.mountPrefix = stripTrailingSlash(mountPrefix);
         this.keepArtifacts = keepArtifacts;
     }
 
-    /**
-     * Writes {@code csv} as a new artifact in the current tenant + task bucket.
-     */
     public ArtifactRef save(
             ArtifactContext ctx,
             String toolName,
@@ -67,7 +73,7 @@ public class ArtifactStore {
         String id = toolName + "-" + UUID.randomUUID();
         String filename = id + ".csv";
         try {
-            writeAtomic(ctx.userBucket(), ctx.taskBucket(), filename, csv);
+            io.writeAtomic(ctx.userBucket(), ctx.taskBucket(), filename, csv);
 
             String agentPath =
                     mountPrefix
@@ -77,7 +83,7 @@ public class ArtifactStore {
                             + ctx.taskBucket()
                             + "/"
                             + filename;
-            String backendPath = describePath(ctx.userBucket(), ctx.taskBucket(), filename);
+            String backendPath = io.describePath(ctx.userBucket(), ctx.taskBucket(), filename);
             log.debug("Saved artifact backend={} agentPath={} rows={}", backendPath, agentPath, rows);
             return new ArtifactRef(id, agentPath, backendPath, columns, rows, previewMarkdown);
         } catch (IOException e) {
@@ -113,57 +119,11 @@ public class ArtifactStore {
                     ctx.taskBucket());
             return;
         }
-        deleteBucket(ctx.userBucket(), ctx.taskBucket());
+        io.deleteBucket(ctx.userBucket(), ctx.taskBucket());
     }
 
     public Path artifactsRoot() {
         return artifactsRoot;
-    }
-
-    private void writeAtomic(String userBucket, String taskBucket, String filename, String content)
-            throws IOException {
-        Path dir = artifactsRoot.resolve(userBucket).resolve(taskBucket);
-        Files.createDirectories(dir);
-
-        Path target = dir.resolve(filename);
-        Path tmp = dir.resolve(filename + ".tmp");
-
-        Files.writeString(tmp, content, StandardCharsets.UTF_8);
-        try {
-            Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE);
-        } catch (IOException atomicFailed) {
-            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
-        }
-    }
-
-    private void deleteBucket(String userBucket, String taskBucket) {
-        Path dir = artifactsRoot.resolve(userBucket).resolve(taskBucket);
-        if (!Files.isDirectory(dir)) {
-            return;
-        }
-        try (Stream<Path> walk = Files.walk(dir)) {
-            walk.sorted(Comparator.reverseOrder())
-                    .forEach(
-                            p -> {
-                                try {
-                                    Files.deleteIfExists(p);
-                                } catch (IOException e) {
-                                    log.debug("delete failed (ignored): {} - {}", p, e.getMessage());
-                                }
-                            });
-            log.debug("Cleaned artifact bucket {}", dir);
-        } catch (IOException e) {
-            log.warn("Failed to clean artifact bucket {}: {}", dir, e.getMessage());
-        }
-    }
-
-    private String describePath(String userBucket, String taskBucket, String filename) {
-        return artifactsRoot
-                .resolve(userBucket)
-                .resolve(taskBucket)
-                .resolve(filename)
-                .toAbsolutePath()
-                .toString();
     }
 
     private static String stripTrailingSlash(String s) {

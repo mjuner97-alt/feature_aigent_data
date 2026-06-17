@@ -20,12 +20,17 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.sql.DataSource;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.*;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * MySQL-backed response cache service that enables query result reuse within the same day.
@@ -44,8 +49,16 @@ public class ResponseCacheService {
 
     // ==================== Intent Keywords ====================
 
-    private static final String[] ANALYZE_KEYWORDS = {"分析", "报告", "趋势", "对比", "归因", "建议"};
+    private static final String[] ANALYZE_KEYWORDS = {"分析", "报告", "趋势", "对比", "环比", "归因", "建议", "原因", "为什么"};
     private static final String[] SKILL_KEYWORDS = {"保存", "skill", "技能", "工作流"};
+
+    /**
+     * Intents whose answers depend on more than just the dimension set — comparisons, trend, and
+     * cause-style questions can carry the same dimensions yet ask very different things ("查 Q1
+     * 数据" vs "对比 Q1 与 Q4"). For these we mix a hash of the user question into the cache key so
+     * differently-worded analytical asks never collide.
+     */
+    private static final Set<String> QUESTION_HASHED_INTENTS = Set.of("analyze");
 
     private final DataSource dataSource;
     private volatile boolean tableEnsured = false;
@@ -148,19 +161,46 @@ public class ResponseCacheService {
      * <p>Returns empty if the state has no dimensions — non-dimensional questions (e.g., "数据服务表清单下载")
      * are not cacheable because different questions would collide on the same key.
      *
+     * <p>For analytical intents (compare / trend / cause), the same dimension set can map to many
+     * differently-worded asks ("查 Q1" vs "对比 Q1 与 Q4"). To prevent those from colliding, we mix
+     * an SHA-256 hash of the trimmed user question into the key.
+     *
      * @param intent classified intent (query/analyze/skill)
      * @param state dimension state extracted by DimensionStateManager
+     * @param question original user question — used to disambiguate analytical asks
      * @return a deterministic cache key if dimensions were found, empty otherwise
      */
-    public Optional<String> generateCacheKey(String intent, DimensionState state) {
+    public Optional<String> generateCacheKey(String intent, DimensionState state, String question) {
         if (state == null || !state.hasDimensions()) {
             log.debug("No dimensions in state, skipping cache");
             return Optional.empty();
         }
 
         String stateKey = state.toCacheKey();
-        String cacheKey = intent + "|" + stateKey;
-        return Optional.of(cacheKey);
+        StringBuilder cacheKey = new StringBuilder(intent).append("|").append(stateKey);
+        if (QUESTION_HASHED_INTENTS.contains(intent) && question != null && !question.isBlank()) {
+            cacheKey.append("|q=").append(shortHash(question));
+        }
+        return Optional.of(cacheKey.toString());
+    }
+
+    /** Backwards-compatible overload — analytical intents will not be question-hashed. */
+    public Optional<String> generateCacheKey(String intent, DimensionState state) {
+        return generateCacheKey(intent, state, null);
+    }
+
+    private static String shortHash(String s) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(s.trim().getBytes(StandardCharsets.UTF_8));
+            // 8 bytes = 16 hex chars — collision odds negligible at our cache scale.
+            byte[] head = new byte[8];
+            System.arraycopy(digest, 0, head, 0, 8);
+            return HexFormat.of().formatHex(head);
+        } catch (NoSuchAlgorithmException e) {
+            // SHA-256 is mandated by the JDK; this branch is unreachable on conformant runtimes.
+            return Integer.toHexString(s.hashCode());
+        }
     }
 
     /**

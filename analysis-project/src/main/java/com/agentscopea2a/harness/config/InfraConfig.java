@@ -11,7 +11,10 @@ package com.agentscopea2a.harness.config;
 
 import com.agentscopea2a.agent.model.ModelProperties;
 import com.agentscopea2a.agent.model.ModelRegistry;
+import com.agentscopea2a.harness.artifact.ArtifactIo;
 import com.agentscopea2a.harness.artifact.ArtifactStore;
+import com.agentscopea2a.harness.artifact.LocalArtifactIo;
+import com.agentscopea2a.harness.artifact.SshArtifactIo;
 import com.agentscopea2a.harness.cache.ResponseCacheService;
 import com.agentscopea2a.agent.dimension.DimensionStateManager;
 import com.agentscopea2a.agent.session.MySQLSession;
@@ -80,21 +83,44 @@ public class  InfraConfig {
     }
 
     /**
-     * Per-tenant CSV scratchpad for cross-subagent data handoff. The agent-visible path equals
-     * the host absolute path because subagents now run their {@code shell_execute} directly on
-     * the host (no Docker sandbox).
+     * Per-tenant CSV scratchpad for cross-subagent data handoff. When
+     * {@code harness.a2a.artifacts.remote.enabled=true}, writes go to a remote host over SSH so
+     * the bytes land where a remote Docker daemon can bind-mount them; otherwise local FS.
      */
     @Bean
-    public ArtifactStore artifactStore(Path workspace) throws IOException {
+    public ArtifactStore artifactStore(Path workspace, SandboxProperties sandboxProps)
+            throws IOException {
         Path artifactsRoot = workspace.resolve("artifacts");
         Files.createDirectories(artifactsRoot);
         String mountPrefix = artifactsRoot.toAbsolutePath().toString();
-        log.info(
-                "ArtifactStore ready: hostRoot={}, agentMountPrefix={}, keepArtifacts={}",
-                artifactsRoot,
-                mountPrefix,
-                keepArtifacts);
-        return new ArtifactStore(artifactsRoot, mountPrefix, keepArtifacts);
+        SandboxProperties.Artifacts.Remote remote = sandboxProps.getArtifacts().getRemote();
+        ArtifactIo io;
+        if (remote.isEnabled()
+                && remote.getSshTarget() != null
+                && !remote.getSshTarget().isBlank()
+                && remote.getRemoteRoot() != null
+                && !remote.getRemoteRoot().isBlank()) {
+            io =
+                    new SshArtifactIo(
+                            remote.getSshTarget(),
+                            remote.getRemoteRoot(),
+                            remote.getSshOptions(),
+                            remote.getTimeoutSeconds());
+            log.info(
+                    "ArtifactStore ready (REMOTE SSH): target={} remoteRoot={} agentMountPrefix={} keep={}",
+                    remote.getSshTarget(),
+                    remote.getRemoteRoot(),
+                    mountPrefix,
+                    keepArtifacts);
+        } else {
+            io = new LocalArtifactIo(artifactsRoot);
+            log.info(
+                    "ArtifactStore ready (LOCAL): hostRoot={}, agentMountPrefix={}, keepArtifacts={}",
+                    artifactsRoot,
+                    mountPrefix,
+                    keepArtifacts);
+        }
+        return new ArtifactStore(artifactsRoot, io, mountPrefix, keepArtifacts);
     }
 
     @Bean
