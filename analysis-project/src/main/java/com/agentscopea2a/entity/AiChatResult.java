@@ -16,9 +16,9 @@ public class AiChatResult {
     private String errorMsg;
     /** Per-conversation answer UUID. Stable across one request's chunks. */
     private String ansUUID;
-    /** The current chunk's text. */
+    /** The current chunk's text. Phase is conveyed via the SSE event name. */
     private String lineResult;
-    /** Cumulative response text up to and including {@code lineResult}. */
+    /** Cumulative answer text (TextBlock only) up to and including {@link #lineResult}. */
     private String resultAll;
     /** Source/channel tag from the request (default "HXY"). */
     private String formType;

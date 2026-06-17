@@ -15,6 +15,7 @@
  */
 package com.agentscopea2a.service;
 
+import com.agentscopea2a.agent.tools.AgentTools;
 import com.agentscopea2a.agent.tools.routers.ToolRoutersIndex;
 import com.agentscopea2a.harness.artifact.ArtifactContext;
 import com.agentscopea2a.harness.artifact.ArtifactStore;
@@ -36,6 +37,7 @@ import io.agentscope.core.memory.LongTermMemoryMode;
 import com.agentscopea2a.agent.memory.EpisodicMemoryConfig;
 import com.agentscopea2a.agent.memory.MySqlEpisodicMemory;
 import io.agentscope.core.model.Model;
+import io.agentscope.core.tool.AgentTool;
 import io.agentscope.core.tool.Toolkit;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.memory.compaction.CompactionConfig;
@@ -245,7 +247,8 @@ public class SupervisorService {
 
     private Map<String, Supplier<Object>> buildToolRegistry(Path workspace) {
         Map<String, Supplier<Object>> r = new HashMap<>();
-        r.put("tool_router", ()->toolRoutersIndex);
+        r.put("quality_tools", QualityTools::new);
+        r.put("agent_tools", AgentTools::new);
         r.put("skill_save", () -> new SkillSaveTool(workspace.resolve("skills")));
         return Map.copyOf(r);
     }
