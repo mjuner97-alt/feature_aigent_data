@@ -67,13 +67,14 @@ public class ToolRoutersIndex {
 
     @Tool(
             name = "router_tool",
-            description = "统一工具路由入口,根据 JSON 中的 toolId 调用对应工具。"
+            description = "统一工具路由入口,根据 JSON 中的 toolId 调用对应子工具。"
+                    + "调用前可先用 toolMetaInfo 查询可用 toolId、描述和参数。"
                     + "示例: {\"toolId\":\"agent_tools_ping\",\"echo\":\"hi\"}")
     public Object router_tool(
             @ToolParam(
                             name = "paramsJson",
                             description =
-                                    "JSON 格式参数,必须包含 toolId 字段。示例: "
+                                    "JSON 格式参数,必须包含 toolId 字段,其余字段按目标子工具参数传入。示例: "
                                             + "{\"toolId\":\"agent_tools_ping\",\"echo\":\"hi\"}")
                     String paramsJson) {
         String toolId = null;
@@ -83,12 +84,18 @@ public class ToolRoutersIndex {
             if (toolId == null) {
                 return "错误: JSON 中缺少 toolId 字段";
             }
-            return executeTool(toolId, params);
+            log.info("router_tool called: toolId={}, paramsJson={}", toolId, paramsJson);
+            long startNanos = System.nanoTime();
+            Object result = executeTool(toolId, params);
+            log.info(
+                    "router_tool finished: toolId={}, elapsedMs={}",
+                    toolId,
+                    (System.nanoTime() - startNanos) / 1_000_000);
+            return result;
         } catch (JsonProcessingException e) {
             log.error("工具执行失败(JSON 解析): toolId={}, paramsJson={}", toolId, paramsJson, e);
             throw new IllegalArgumentException("工具执行失败: " + e.getMessage(), e);
         } catch (InvocationTargetException e) {
-            // 反射目标方法抛出的真实异常,解包后再向上抛
             Throwable cause = e.getTargetException();
             log.error("工具执行失败: toolId={}, paramsJson={}", toolId, paramsJson, cause);
             throw new IllegalStateException("工具执行失败: " + cause.getMessage(), cause);
@@ -96,6 +103,26 @@ public class ToolRoutersIndex {
             log.error("工具执行失败: toolId={}, paramsJson={}", toolId, paramsJson, e);
             throw new IllegalArgumentException("工具执行失败: " + e.getMessage(), e);
         }
+    }
+
+    @Tool(
+            name = "toolMetaInfo",
+            description = "按 toolId 查询 router_tool 可调用的子工具元信息,包括工具描述、参数名、参数类型和是否必填。toolId 必填。")
+    public Object toolMetaInfo(
+            @ToolParam(
+                            name = "toolId",
+                            description = "必填。先通过工具索引技能确定目标工具 ID,再传入这里查询该子工具元信息。")
+                    String toolId) {
+        if (toolId == null || toolId.isBlank()) {
+            return Map.of("error", "toolId 必填。请先加载工具索引技能确定目标工具 ID,再调用 toolMetaInfo(toolId)。");
+        }
+        String normalizedToolId = toolId.trim();
+        log.info("toolMetaInfo called: toolId={}", normalizedToolId);
+        MethodInfo info = toolMethodMap.get(normalizedToolId);
+        if (info == null) {
+            return Map.of("error", "未知的 toolId='" + normalizedToolId + "'。请检查工具索引技能中的工具 ID 是否正确。");
+        }
+        return toToolMeta(normalizedToolId, info);
     }
 
     // ==================== 注册阶段 ====================
@@ -226,7 +253,53 @@ public class ToolRoutersIndex {
         }
         if (type == boolean.class) return false;
         if (type == char.class) return '\0';
-        return 0; // byte/short/int/long/float/double 都能装箱兜底
+        return 0;
+    }
+
+    private Map<String, Object> toToolMeta(String toolId, MethodInfo info) {
+        Tool tool = info.method.getAnnotation(Tool.class);
+        List<Map<String, Object>> params = new ArrayList<>();
+        for (ParamInfo param : info.paramInfos) {
+            if (param.autoInjected || param.name == null) {
+                continue;
+            }
+            params.add(
+                    Map.of(
+                            "name", param.name,
+                            "type", param.genericType.getTypeName(),
+                            "required", param.required));
+        }
+        return Map.of(
+                "toolId", toolId,
+                "description", tool != null ? tool.description() : "",
+                "params", params,
+                "routerExample", buildRouterExample(toolId, info.paramInfos));
+    }
+
+    private Map<String, Object> buildRouterExample(String toolId, List<ParamInfo> params) {
+        Map<String, Object> example = new java.util.LinkedHashMap<>();
+        example.put(TOOL_ID_FIELD, toolId);
+        for (ParamInfo param : params) {
+            if (!param.autoInjected && param.required && param.name != null) {
+                example.put(param.name, exampleValue(param.rawType));
+            }
+        }
+        return example;
+    }
+
+    private Object exampleValue(Class<?> type) {
+        if (type == String.class) return "示例值";
+        if (type == boolean.class || type == Boolean.class) return true;
+        if (Number.class.isAssignableFrom(type)
+                || type == byte.class
+                || type == short.class
+                || type == int.class
+                || type == long.class
+                || type == float.class
+                || type == double.class) {
+            return 1;
+        }
+        return Map.of();
     }
 
     // ==================== 反射元数据 ====================

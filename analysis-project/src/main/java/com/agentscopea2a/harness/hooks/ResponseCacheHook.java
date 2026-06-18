@@ -71,6 +71,7 @@ public class ResponseCacheHook implements Hook {
     private final RuntimeContext runtimeContext;
 
     private final MeterRegistry meterRegistry;
+    private final boolean enabled;
 
     // Set in PreCall on cache miss, read in PostCall for cache write.
     // Safe because each agent gets its own hook instance and handles one request at a time.
@@ -97,10 +98,20 @@ public class ResponseCacheHook implements Hook {
             DimensionStateManager dimManager,
             RuntimeContext runtimeContext,
             MeterRegistry meterRegistry) {
+        this(cacheService, dimManager, runtimeContext, meterRegistry, true);
+    }
+
+    public ResponseCacheHook(
+            ResponseCacheService cacheService,
+            DimensionStateManager dimManager,
+            RuntimeContext runtimeContext,
+            MeterRegistry meterRegistry,
+            boolean enabled) {
         this.cacheService = cacheService;
         this.dimManager = dimManager;
         this.runtimeContext = runtimeContext;
         this.meterRegistry = meterRegistry;
+        this.enabled = enabled;
     }
 
     @Override
@@ -113,6 +124,9 @@ public class ResponseCacheHook implements Hook {
     @Override
     @SuppressWarnings("unchecked")
     public <T extends HookEvent> Mono<T> onEvent(T event) {
+        if (!enabled) {
+            return Mono.just(event);
+        }
         Mono<? extends HookEvent> result;
         if (event instanceof PreCallEvent e) {
             result = handlePreCall(e);

@@ -30,11 +30,13 @@ import com.agentscopea2a.agent.memory.MemoryHydrator;
 import com.agentscopea2a.agent.session.MySQLSession;
 import com.agentscopea2a.harness.tools.QualityTools;
 import com.agentscopea2a.harness.tools.SkillSaveTool;
+import com.agentscopea2a.agent.tools.routers.ToolRoutersIndex;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.memory.LongTermMemory;
 import io.agentscope.core.memory.LongTermMemoryMode;
 import com.agentscopea2a.agent.memory.EpisodicMemoryConfig;
 import com.agentscopea2a.agent.memory.MySqlEpisodicMemory;
+import io.agentscope.core.model.ExecutionConfig;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.tool.Toolkit;
 import io.agentscope.harness.agent.HarnessAgent;
@@ -56,6 +58,7 @@ import org.springframework.stereotype.Service;
 import javax.sql.DataSource;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -89,6 +92,7 @@ public class SupervisorService {
     private final PersistenceProperties persistence;
     private final ArtifactStore artifactStore;
     private final DataSource dataSource;
+    private final ToolRoutersIndex toolRoutersIndex;
 
     /**
      * Optional DB→file hydrator for MEMORY.md; {@code null} when MySQL mirror is disabled.
@@ -155,6 +159,12 @@ public class SupervisorService {
             "${harness.a2a.tool-eviction.max-chars:80000}")
     private int toolEvictionMaxChars;
 
+    @Value("${harness.a2a.tool-execution.timeout-seconds:300}")
+    private long toolExecutionTimeoutSeconds;
+
+    @Value("${harness.a2a.response-cache.enabled:true}")
+    private boolean responseCacheEnabled;
+
     public SupervisorService(
             Path workspace,
             MySQLSession session,
@@ -166,6 +176,7 @@ public class SupervisorService {
             @Qualifier("mysqlDataSource") DataSource dataSource,
             ArtifactStore artifactStore,
             ObjectProvider<MemoryHydrator> memoryHydratorProvider,
+            ToolRoutersIndex toolRoutersIndex,
             ObjectProvider<SandboxFilesystemSpec> sandboxFilesystemProvider,
             @Qualifier("subagentSandboxFilesystem")
                     ObjectProvider<SandboxFilesystemSpec> subagentSandboxFilesystemProvider,
@@ -178,6 +189,7 @@ public class SupervisorService {
         this.persistence = persistence;
         this.dataSource = dataSource;
         this.artifactStore = artifactStore;
+        this.toolRoutersIndex = toolRoutersIndex;
         this.memoryHydrator = memoryHydratorProvider.getIfAvailable();
         this.sandboxFilesystem = sandboxFilesystemProvider.getIfAvailable();
         // The @Bean returns null when subagent scope == supervisor scope; ObjectProvider will
@@ -299,6 +311,7 @@ public class SupervisorService {
                                 ToolResultEvictionConfig.builder()
                                         .maxResultChars(toolEvictionMaxChars)
                                         .build())
+                        .toolExecutionConfig(toolExecutionConfig())
                         .enablePendingToolRecovery(true)
                         .maxIters(15);
 
@@ -338,7 +351,7 @@ public class SupervisorService {
             DimensionStateManager cacheDimManager,
             RuntimeContext ctx,
             io.micrometer.core.instrument.MeterRegistry meterRegistry) {
-        return new ResponseCacheHook(cacheService, cacheDimManager, ctx, meterRegistry);
+        return new ResponseCacheHook(cacheService, cacheDimManager, ctx, meterRegistry, responseCacheEnabled);
     }
 
     private void registerSubagentFromSpec(
@@ -372,6 +385,7 @@ public class SupervisorService {
                                     .workspace(workspace)
                                     .toolkit(tk)
                                     .sysPrompt(sysPrompt)
+                                    .toolExecutionConfig(toolExecutionConfig())
                                     .enablePendingToolRecovery(true)
                                     .maxIters(maxIters)
                                     // 子 agent 跳过 MemoryFlushHook + MemoryMaintenanceHook:
@@ -405,9 +419,15 @@ public class SupervisorService {
         Map<String, Supplier<Object>> r = new HashMap<>();
         r.put("quality_tools", QualityTools::new);
         r.put("skill_save", () -> new SkillSaveTool(workspace.resolve("skills")));
+        r.put("tool_router", () -> toolRoutersIndex);
         return Map.copyOf(r);
     }
 
+    private ExecutionConfig toolExecutionConfig() {
+        return ExecutionConfig.builder()
+                .timeout(Duration.ofSeconds(toolExecutionTimeoutSeconds))
+                .build();
+    }
 
     private static String ltmBucketFor(RuntimeContext ctx) {
         if (ctx == null) {
