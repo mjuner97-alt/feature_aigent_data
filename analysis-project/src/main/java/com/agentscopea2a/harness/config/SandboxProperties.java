@@ -106,6 +106,11 @@ public class SandboxProperties {
          */
         private String sharedContainerName = "";
 
+        private boolean remoteDockerEnabled = false;
+        private String remoteDockerSshTarget = "";
+        private java.util.List<String> remoteDockerSshOptions = java.util.List.of();
+        private long remoteDockerTimeoutSeconds = 60;
+
         public boolean isEnabled() {
             return enabled;
         }
@@ -176,6 +181,40 @@ public class SandboxProperties {
 
         public void setSharedContainerName(String sharedContainerName) {
             this.sharedContainerName = sharedContainerName == null ? "" : sharedContainerName.trim();
+        }
+
+        public boolean isRemoteDockerEnabled() {
+            return remoteDockerEnabled;
+        }
+
+        public void setRemoteDockerEnabled(boolean remoteDockerEnabled) {
+            this.remoteDockerEnabled = remoteDockerEnabled;
+        }
+
+        public String getRemoteDockerSshTarget() {
+            return remoteDockerSshTarget;
+        }
+
+        public void setRemoteDockerSshTarget(String remoteDockerSshTarget) {
+            this.remoteDockerSshTarget =
+                    remoteDockerSshTarget == null ? "" : remoteDockerSshTarget.trim();
+        }
+
+        public java.util.List<String> getRemoteDockerSshOptions() {
+            return remoteDockerSshOptions;
+        }
+
+        public void setRemoteDockerSshOptions(java.util.List<String> remoteDockerSshOptions) {
+            this.remoteDockerSshOptions =
+                    remoteDockerSshOptions == null ? java.util.List.of() : remoteDockerSshOptions;
+        }
+
+        public long getRemoteDockerTimeoutSeconds() {
+            return remoteDockerTimeoutSeconds;
+        }
+
+        public void setRemoteDockerTimeoutSeconds(long remoteDockerTimeoutSeconds) {
+            this.remoteDockerTimeoutSeconds = remoteDockerTimeoutSeconds;
         }
     }
 

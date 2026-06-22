@@ -14,9 +14,6 @@ import io.agentscope.harness.agent.sandbox.SandboxState;
 import io.agentscope.harness.agent.sandbox.WorkspaceSpec;
 import io.agentscope.harness.agent.sandbox.json.HarnessSandboxJacksonModule;
 import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshotSpec;
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -151,40 +148,21 @@ public class DockerSandboxClient implements SandboxClient<DockerSandboxClientOpt
         return new DockerSandbox(state);
     }
 
-    /**
-     * Run {@code docker inspect -f {{.Id}} <name>} and return the container id, or null if not
-     * found. Uses the local docker CLI like the rest of the sandbox stack — when
-     * {@code DOCKER_HOST=ssh://...}, the CLI dials the remote daemon transparently.
-     */
     private static String resolveContainerId(String name) {
         try {
-            ProcessBuilder pb =
-                    new ProcessBuilder("docker", "inspect", "-f", "{{.Id}}", name)
-                            .redirectErrorStream(false);
-            Process p = pb.start();
-            String out;
-            try (BufferedReader r =
-                    new BufferedReader(
-                            new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = r.readLine()) != null) {
-                    sb.append(line).append('\n');
-                }
-                out = sb.toString().trim();
-            }
-            boolean done = p.waitFor(15, java.util.concurrent.TimeUnit.SECONDS);
-            if (!done) {
-                p.destroyForcibly();
-                log.warn("[sandbox-docker] docker inspect '{}' timed out", name);
+            DockerCliRunner.CommandResult result =
+                    DockerCliRunner.run(15, "inspect", "-f", "{{.Id}}", name);
+            if (result.exitCode() != 0) {
                 return null;
             }
-            if (p.exitValue() != 0) {
-                return null;
-            }
+            String out = result.stdout().trim();
             return out.isBlank() ? null : out;
         } catch (Exception e) {
-            log.warn("[sandbox-docker] docker inspect '{}' failed: {}", name, e.getMessage());
+            log.warn(
+                    "[sandbox-docker] docker inspect '{}' failed via {}: {}",
+                    name,
+                    DockerCliRunner.describeMode(),
+                    e.getMessage());
             return null;
         }
     }

@@ -8,6 +8,6 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @EnableScheduling
 public class AgentscopeA2aApplication {
     public static void main(String[] args) {
-        SpringApplication.run(AgentscopeA2aApplication.class);
+        SpringApplication.run(AgentscopeA2aApplication.class, args);
     }
 }

@@ -13,6 +13,7 @@ import io.agentscope.harness.agent.sandbox.RedisSandboxExecutionGuard;
 import io.agentscope.harness.agent.sandbox.SandboxDistributedOptions;
 import io.agentscope.harness.agent.sandbox.SandboxExecutionGuard;
 import io.agentscope.harness.agent.sandbox.WorkspaceSpec;
+import io.agentscope.harness.agent.sandbox.impl.docker.DockerCliRunner;
 import io.agentscope.harness.agent.sandbox.layout.BindMountEntry;
 import io.agentscope.harness.agent.store.BaseStore;
 import java.io.IOException;
@@ -95,6 +96,17 @@ public class FilesystemConfig {
         // beforehand; this JVM never creates or destroys it).
         io.agentscope.harness.agent.sandbox.impl.docker.DockerSandboxClient.setSharedContainerName(
                 s.getSharedContainerName());
+        DockerCliRunner.configure(
+                s.isRemoteDockerEnabled(),
+                s.getRemoteDockerSshTarget(),
+                s.getRemoteDockerSshOptions(),
+                s.getRemoteDockerTimeoutSeconds());
+        if (s.isRemoteDockerEnabled()) {
+            log.info(
+                    "Remote Docker mode ON — executing docker CLI through ssh target={} timeout={}s",
+                    s.getRemoteDockerSshTarget(),
+                    s.getRemoteDockerTimeoutSeconds());
+        }
         if (s.getSharedContainerName() != null && !s.getSharedContainerName().isBlank()) {
             log.info(
                     "Shared sandbox container configured: name={} (this JVM will attach via"
