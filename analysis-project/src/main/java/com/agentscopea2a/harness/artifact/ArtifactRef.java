@@ -15,6 +15,7 @@
  */
 package com.agentscopea2a.harness.artifact;
 
+import com.agentscopea2a.harness.artifact.TabularExtractor.ColumnSchema;
 import java.util.List;
 
 /**
@@ -30,6 +31,10 @@ import java.util.List;
  * @param rows          total row count, used in the handoff message preview
  * @param previewMarkdown markdown table showing the first few rows, embedded in the tool result
  *                      so the supervisor can sanity-check the data without reading the file
+ * @param schema        per-column dtype / non-null / sample / range — populated when the artifact
+ *                      was produced from a {@code TabularData} parse, {@code null} otherwise.
+ *                      Used by {@code ArtifactHandoffHook} to inline an exec-ready schema block so
+ *                      downstream {@code code_interpreter} skips df.head/dtypes round-trips.
  */
 public record ArtifactRef(
         String id,
@@ -37,4 +42,17 @@ public record ArtifactRef(
         String hostPath,
         List<String> columns,
         int rows,
-        String previewMarkdown) {}
+        String previewMarkdown,
+        List<ColumnSchema> schema) {
+
+    /** Back-compat ctor for callers that don't yet pass a schema (e.g. fail-soft path). */
+    public ArtifactRef(
+            String id,
+            String agentPath,
+            String hostPath,
+            List<String> columns,
+            int rows,
+            String previewMarkdown) {
+        this(id, agentPath, hostPath, columns, rows, previewMarkdown, null);
+    }
+}

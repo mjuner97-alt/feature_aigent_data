@@ -118,7 +118,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                     try {
                         artifactStore.cleanupTask(ArtifactContext.from(ctx));
                     } catch (Exception ex) {
-                        log.warn("Artifact cleanup failed for /chatA2A: {}", ex.getMessage());
+                        log.warn("Artifact cleanup failed for /ai/chat: {}", ex.getMessage());
                     }
                 };
         emitter.onCompletion(cleanup);
@@ -281,7 +281,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             SseEmitter emitter, Resolved resolved, Throwable err, String ansUUID) {
         ResponseCacheHook.CacheHitException cacheHit = unwrapCacheHit(err);
         if (cacheHit != null) {
-            log.info("Cache HIT for /chatA2A");
+            log.info("Cache HIT for /ai/chat");
             String cached = cacheHit.getCachedResponse();
             try {
                 if (resolved.structured) {

@@ -17,7 +17,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * Inbound payload for {@code POST /chatA2A}.
+ * Inbound payload for {@code POST /ai/chat}.
  *
  * <p>All identity fields are optional on the wire; defaults are filled in
  * {@link ChatStreamService}.

@@ -36,16 +36,6 @@ public class AgentTools {
     }
 
     @Tool(
-            name = "agent_tools_ping",
-            description = "通用工具占位方法,用于验证工具注册链路是否就绪。返回 'pong'。")
-    public ToolResultBlock ping(
-            @ToolParam(name = "echo", description = "回显内容,可选", required = false) String echo) {
-        sleepForLongToolReturn();
-        String content = echo == null ? "pong" : "pong: " + echo;
-        return ToolResultBlock.text(content);
-    }
-
-    @Tool(
             name = "quality_query_by_version_department",
             description = "根据版本计划和部门查询质量数据。返回指定版本下各部门的质量指标（缺陷密度）。当用户问某个版本/月度下哪个部门质量最好/最差时使用。")
     public ToolResultBlock queryQualityByVersionDepartment(

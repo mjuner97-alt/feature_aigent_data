@@ -28,7 +28,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
  * <p>This controller is intentionally thin — it does no normalization, supervisor wiring, or
  * stream handling itself; all of that lives in
  * {@link ChatStreamServiceImpl}. The controller's only
- * job is to bind the HTTP shape ({@code POST /chatA2A}, {@code text/event-stream}) and hand the
+ * job is to bind the HTTP shape ({@code POST /ai/chat}, {@code text/event-stream}) and hand the
  * request off.
  */
 @RestController

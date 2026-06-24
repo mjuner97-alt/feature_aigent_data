@@ -28,6 +28,7 @@ import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.ToolUseBlock;
+import com.agentscopea2a.harness.artifact.TabularExtractor.ColumnSchema;
 import com.agentscopea2a.harness.artifact.TabularExtractor.TabularData;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -117,6 +118,10 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
     /** Preview rows embedded in the handoff message — keep small to stay token-cheap. */
     private static final int PREVIEW_ROWS = 5;
 
+    /** Schema-block sample cap. 3 distinct cell values per column is enough to convey shape
+     * without bloating the prompt. */
+    private static final int SCHEMA_SAMPLES_PER_COLUMN = 3;
+
     private final ArtifactStore artifactStore;
 
     /**
@@ -185,6 +190,7 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
         ArtifactContext ctx =
                 fixedContext != null ? fixedContext : ArtifactContext.from(runtimeContext);
         String preview = table.previewMarkdown(PREVIEW_ROWS);
+        List<ColumnSchema> schema = table.inferSchema(SCHEMA_SAMPLES_PER_COLUMN);
         ArtifactRef ref =
                 artifactStore.save(
                         ctx,
@@ -192,7 +198,8 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
                         table.toCsv(),
                         table.columns(),
                         table.rowCount(),
-                        preview);
+                        preview,
+                        schema);
 
         String handoff = buildHandoffMessage(toolName, table, ref, preview);
         ToolResultBlock rewritten =
@@ -224,13 +231,69 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
         sb.append("前 ").append(Math.min(PREVIEW_ROWS, table.rowCount())).append(" 行预览:\n");
         sb.append(preview).append("\n\n");
         sb.append("📦 完整数据已保存为 CSV artifact:\n");
-        sb.append("  路径: ").append(ref.agentPath()).append("\n\n");
+        sb.append("  路径: ").append(ref.agentPath()).append("\n");
+        sb.append("  shape: (").append(table.rowCount()).append(", ");
+        sb.append(table.columns().size()).append(")\n\n");
+        // ★ P0-A: 内联 schema 段,让 code_interpreter 跳过 df.head/dtypes 探查这一轮 LLM+shell。
+        if (ref.schema() != null && !ref.schema().isEmpty()) {
+            sb.append("▶ Schema(已用启发式推断 dtype,可直接用,无需再 df.dtypes 探查):\n");
+            sb.append(renderSchemaBlock(ref.schema())).append("\n\n");
+        }
         sb.append("▶ 后续派给 code_interpreter 时,在 Python 中读取:\n");
         sb.append("  import pandas as pd\n");
-        sb.append("  df = pd.read_csv(\"").append(ref.agentPath()).append("\")\n\n");
+        sb.append("  df = pd.read_csv(\"").append(ref.agentPath()).append("\")\n");
+        sb.append("  # 列名 / dtype 已在上方 Schema 段给出,不要再写 df.head() / df.dtypes\n\n");
         sb.append("🚨 严禁: 派单 code_interpreter 时不要把上面的预览表格复制进 task 字符串,\n");
         sb.append("   只传 csv 路径 + 计算需求即可 — 完整数据在 csv 里。\n");
         return sb.toString();
+    }
+
+    /**
+     * Render the per-column schema block. Format chosen for prompt clarity, not parsing:
+     * {@code   <col>    <dtype>    <nonNull>/<total> 非空    样本: [...]   range=[min, max]}
+     */
+    private static String renderSchemaBlock(List<ColumnSchema> schema) {
+        int colWidth = 0;
+        for (ColumnSchema c : schema) {
+            colWidth = Math.max(colWidth, c.name().length());
+        }
+        StringBuilder sb = new StringBuilder();
+        for (ColumnSchema c : schema) {
+            sb.append("  ");
+            sb.append(padRight(c.name(), colWidth)).append("  ");
+            sb.append(padRight(c.dtype(), 8)).append("  ");
+            sb.append(c.nonNullCount()).append("/").append(c.totalCount()).append(" 非空");
+            if (!c.samples().isEmpty()) {
+                sb.append("    样本: ").append(c.samples());
+            }
+            if (c.min() != null && c.max() != null) {
+                sb.append("    range=[")
+                        .append(formatNum(c.min()))
+                        .append(", ")
+                        .append(formatNum(c.max()))
+                        .append("]");
+            }
+            sb.append("\n");
+        }
+        // Trim the trailing newline so the outer builder controls spacing.
+        if (sb.length() > 0 && sb.charAt(sb.length() - 1) == '\n') {
+            sb.setLength(sb.length() - 1);
+        }
+        return sb.toString();
+    }
+
+    private static String padRight(String s, int width) {
+        if (s.length() >= width) return s;
+        StringBuilder b = new StringBuilder(s);
+        while (b.length() < width) b.append(' ');
+        return b.toString();
+    }
+
+    private static String formatNum(double d) {
+        if (d == Math.floor(d) && !Double.isInfinite(d)) {
+            return Long.toString((long) d);
+        }
+        return String.format("%.4f", d).replaceAll("0+$", "").replaceAll("\\.$", "");
     }
 
     private static String extractText(List<ContentBlock> blocks) {

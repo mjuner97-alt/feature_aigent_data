@@ -20,15 +20,19 @@ import com.agentscopea2a.harness.artifact.ArtifactStore;
 import com.agentscopea2a.harness.cache.ResponseCacheService;
 import com.agentscopea2a.agent.model.ModelRegistry;
 import com.agentscopea2a.harness.config.PersistenceProperties;
+import com.agentscopea2a.harness.config.PythonExecProperties;
+import com.agentscopea2a.harness.config.SandboxProperties;
 import com.agentscopea2a.agent.dimension.DimensionStateManager;
 import com.agentscopea2a.harness.hooks.ArtifactAccessHook;
 import com.agentscopea2a.harness.hooks.ArtifactHandoffHook;
 import com.agentscopea2a.harness.hooks.DataGroundingHook;
+import com.agentscopea2a.harness.hooks.PythonExecRetryHook;
 import com.agentscopea2a.harness.hooks.ResponseCacheHook;
 import com.agentscopea2a.agent.memory.EpisodicLongTermMemoryAdapter;
 import com.agentscopea2a.agent.memory.MemoryHydrator;
 import com.agentscopea2a.agent.session.MySQLSession;
-import com.agentscopea2a.harness.tools.QualityTools;
+import com.agentscopea2a.harness.skills.SkillIndexRepository;
+import com.agentscopea2a.harness.tools.PythonExecTool;
 import com.agentscopea2a.harness.tools.SkillSaveTool;
 import com.agentscopea2a.agent.tools.routers.ToolRoutersIndex;
 import io.agentscope.core.agent.RuntimeContext;
@@ -112,6 +116,9 @@ public class SupervisorService {
     private final SandboxFilesystemSpec subagentSandboxFilesystem;
     private final RemoteFilesystemSpec remoteFilesystem;
     private final SandboxDistributedOptions sandboxDistributed;
+    private final SandboxProperties sandboxProperties;
+    private final PythonExecProperties pythonExecProperties;
+    private final SkillIndexRepository skillIndexRepository;
 
     /**
      * Single-thread daemon executor used to run {@link MemoryHydrator#hydrate(String)}
@@ -181,7 +188,10 @@ public class SupervisorService {
             @Qualifier("subagentSandboxFilesystem")
                     ObjectProvider<SandboxFilesystemSpec> subagentSandboxFilesystemProvider,
             ObjectProvider<RemoteFilesystemSpec> remoteFilesystemProvider,
-            ObjectProvider<SandboxDistributedOptions> sandboxDistributedProvider) {
+            ObjectProvider<SandboxDistributedOptions> sandboxDistributedProvider,
+            SandboxProperties sandboxProperties,
+            PythonExecProperties pythonExecProperties,
+            SkillIndexRepository skillIndexRepository) {
         this.workspace = workspace;
         this.session = session;
         this.model = model;
@@ -197,6 +207,9 @@ public class SupervisorService {
         this.subagentSandboxFilesystem = subagentSandboxFilesystemProvider.getIfAvailable();
         this.remoteFilesystem = remoteFilesystemProvider.getIfAvailable();
         this.sandboxDistributed = sandboxDistributedProvider.getIfAvailable();
+        this.sandboxProperties = sandboxProperties;
+        this.pythonExecProperties = pythonExecProperties;
+        this.skillIndexRepository = skillIndexRepository;
         this.toolRegistry = buildToolRegistry(workspace);
     }
 
@@ -233,7 +246,7 @@ public class SupervisorService {
         log.info("SupervisorService ready: workspace={}", workspace);
 
         // Warm the episodic memory table off the request path. Without this, the first
-        // /chatA2A request pays ~13s for JDBC connect + CREATE TABLE IF NOT EXISTS the
+        // /ai/chat request pays ~13s for JDBC connect + CREATE TABLE IF NOT EXISTS the
         // moment build() instantiates MySqlEpisodicMemory. We fire on a daemon thread so
         // Spring's startup is not blocked either — failure here is non-fatal (a broken DB
         // would surface on first real call anyway, with the same error semantics).
@@ -411,15 +424,28 @@ public class SupervisorService {
 
                     sub.hook(new ArtifactHandoffHook(artifactStore, pinnedArtifactCtx));
                     sub.hook(new ArtifactAccessHook(artifactStore, pinnedArtifactCtx));
+                    // P0-D: enrich python_exec failures with line-number + recipe hints, only
+                    // for subagents that actually call python_exec (code_interpreter). No-op
+                    // for others because the hook checks toolUse.name == "python_exec".
+                    if (toolNames.contains("python_exec")) {
+                        sub.hook(new PythonExecRetryHook());
+                    }
                     return sub.build();
                 });
     }
 
     private Map<String, Supplier<Object>> buildToolRegistry(Path workspace) {
         Map<String, Supplier<Object>> r = new HashMap<>();
-        r.put("quality_tools", QualityTools::new);
-        r.put("skill_save", () -> new SkillSaveTool(workspace.resolve("skills")));
+        // 质量数据查询 / data_primitives 等业务工具一律通过 ToolRoutersIndex 的 router_tool 路由,
+        // 不再在这里直接注册 — subagent.md 中只声明 tool_router 即可。
+        r.put(
+                "skill_save",
+                () -> new SkillSaveTool(workspace.resolve("skills"), skillIndexRepository));
         r.put("tool_router", () -> toolRoutersIndex);
+        // python_exec — single-step write+exec replacement for code_interpreter.
+        // See docs/code-interpreter-optimization.md §P0-B. Tool is registered always; the
+        // subagent markdown is what gates who can call it (only code-interpreter.md opts in).
+        r.put("python_exec", () -> new PythonExecTool(sandboxProperties, pythonExecProperties));
         return Map.copyOf(r);
     }
 

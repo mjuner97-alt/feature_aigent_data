@@ -17,7 +17,9 @@ package com.agentscopea2a.harness.artifact;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.StringJoiner;
 import java.util.regex.Pattern;
 
@@ -350,6 +352,89 @@ public final class TabularExtractor {
             return sj.toString();
         }
 
+        /**
+         * Per-column type / non-null / sample-value inference for the handoff schema block.
+         *
+         * <p>Why this exists: when the handoff message only shows path + 5-row preview, the
+         * downstream {@code code_interpreter} burns one extra LLM iteration + one extra
+         * {@code shell_execute} round-trip on {@code df.head() / df.dtypes / df.columns} to
+         * re-discover what we already know. Inlining the schema here pays for itself many times
+         * over per request (each round-trip is ~1.5~3s on remote Docker).
+         *
+         * <p>Detection rules (intentionally simple — pandas re-parses on the other end, this is
+         * just a hint to the LLM):
+         * <ul>
+         *   <li>{@code int64} — all non-blank cells match {@code -?\d+}
+         *   <li>{@code float64} — all non-blank cells match {@code -?\d+(\.\d+)?} and at least one
+         *       has a decimal point
+         *   <li>{@code string} — otherwise
+         * </ul>
+         */
+        public List<ColumnSchema> inferSchema(int maxSamples) {
+            List<ColumnSchema> out = new ArrayList<>(columns.size());
+            int total = rows.size();
+            for (int c = 0; c < columns.size(); c++) {
+                String name = columns.get(c);
+                int nonNull = 0;
+                boolean allInt = true;
+                boolean allFloat = true;
+                boolean sawDecimal = false;
+                Double min = null;
+                Double max = null;
+                Set<String> samples = new LinkedHashSet<>();
+                for (List<String> row : rows) {
+                    String v = c < row.size() ? row.get(c) : "";
+                    if (v == null || v.isBlank()) {
+                        allInt = false;
+                        allFloat = false;
+                        continue;
+                    }
+                    nonNull++;
+                    if (samples.size() < maxSamples) {
+                        samples.add(v.trim());
+                    }
+                    if (allFloat || allInt) {
+                        String t = v.trim();
+                        boolean isInt = t.matches("-?\\d+");
+                        boolean isFloat = isInt || t.matches("-?\\d+\\.\\d+");
+                        if (!isInt) allInt = false;
+                        if (!isFloat) {
+                            allFloat = false;
+                        } else {
+                            if (!isInt) sawDecimal = true;
+                            try {
+                                double d = Double.parseDouble(t);
+                                if (min == null || d < min) min = d;
+                                if (max == null || d > max) max = d;
+                            } catch (NumberFormatException ignore) {
+                                allFloat = false;
+                            }
+                        }
+                    }
+                }
+                String dtype;
+                if (nonNull == 0) {
+                    dtype = "string";
+                } else if (allInt) {
+                    dtype = "int64";
+                } else if (allFloat && sawDecimal) {
+                    dtype = "float64";
+                } else {
+                    dtype = "string";
+                }
+                out.add(
+                        new ColumnSchema(
+                                name,
+                                dtype,
+                                nonNull,
+                                total,
+                                List.copyOf(samples),
+                                "string".equals(dtype) ? null : min,
+                                "string".equals(dtype) ? null : max));
+            }
+            return List.copyOf(out);
+        }
+
         /** Markdown preview of the first {@code maxRows} rows. */
         public String previewMarkdown(int maxRows) {
             StringJoiner sj = new StringJoiner("\n");
@@ -406,4 +491,17 @@ public final class TabularExtractor {
             return Arrays.hashCode(new Object[] {columns, rows});
         }
     }
+
+    /**
+     * Single-column inferred schema row for the handoff message. {@code min}/{@code max} are
+     * populated only for numeric dtypes; for {@code string} they are {@code null}.
+     */
+    public record ColumnSchema(
+            String name,
+            String dtype,
+            int nonNullCount,
+            int totalCount,
+            List<String> samples,
+            Double min,
+            Double max) {}
 }

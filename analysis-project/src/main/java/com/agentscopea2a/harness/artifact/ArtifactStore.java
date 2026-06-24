@@ -70,6 +70,17 @@ public class ArtifactStore {
             List<String> columns,
             int rows,
             String previewMarkdown) {
+        return save(ctx, toolName, csv, columns, rows, previewMarkdown, null);
+    }
+
+    public ArtifactRef save(
+            ArtifactContext ctx,
+            String toolName,
+            String csv,
+            List<String> columns,
+            int rows,
+            String previewMarkdown,
+            List<com.agentscopea2a.harness.artifact.TabularExtractor.ColumnSchema> schema) {
         String id = toolName + "-" + UUID.randomUUID();
         String filename = id + ".csv";
         try {
@@ -85,7 +96,8 @@ public class ArtifactStore {
                             + filename;
             String backendPath = io.describePath(ctx.userBucket(), ctx.taskBucket(), filename);
             log.debug("Saved artifact backend={} agentPath={} rows={}", backendPath, agentPath, rows);
-            return new ArtifactRef(id, agentPath, backendPath, columns, rows, previewMarkdown);
+            return new ArtifactRef(
+                    id, agentPath, backendPath, columns, rows, previewMarkdown, schema);
         } catch (IOException e) {
             log.warn(
                     "Artifact save failed for tool={} user={} task={}: {}",
@@ -99,7 +111,8 @@ public class ArtifactStore {
                     "(none)",
                     columns,
                     rows,
-                    previewMarkdown);
+                    previewMarkdown,
+                    schema);
         }
     }
 

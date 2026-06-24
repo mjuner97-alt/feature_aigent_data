@@ -63,7 +63,7 @@ analysis-project/
 │       │   └── SupervisorService.java               # ★ HarnessAgent 工厂 + 子智能体 Markdown 装配
 │       ├── runner/                                  # AgentRunner Bean — A2A 协议适配 + artifact GC
 │       ├── controller/
-│       │   ├── ChatController.java                  # POST /chatA2A — 直接 REST 入口
+│       │   ├── ChatController.java                  # POST /ai/chat — 直接 REST 入口（SSE 流）
 │       │   └── DebugController.java                 # GET /debug/* — 看 workspace / memory / sessions / skills
 │       ├── config/                                  # 数据源 / 多 DB(MySQL + ClickHouse + GaussDB)
 │       ├── agent/
@@ -126,8 +126,8 @@ analysis-project/
         ├── AGENTS.md                                # supervisor 人格(决策规则 + 硬规则 + 数据纪律)
         ├── knowledge/KNOWLEDGE.md                   # 领域知识 — 维度格式
         └── subagents/                               # YAML front matter 声明 name / tools / maxIters
-            ├── query-quality-data.md                # tools: quality_tools
-            ├── analyze-data.md                      # tools: quality_tools (派给 code_interpreter 算数)
+            ├── query-quality-data.md                # tools: tool_router
+            ├── analyze-data.md                      # tools: tool_router (派给 code_interpreter 算数)
             ├── generate-skill.md                    # tools: skill_save
             └── code-interpreter.md                  # 不声明 tools — harness 在 sandbox 模式自动注入
                                                     #   shell_execute / write_file / read_file
@@ -137,7 +137,7 @@ analysis-project/
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
-│  Client  ──POST /chatA2A or A2A JSON-RPC──>  Spring Boot (port 8889)      │
+│  Client  ──POST /ai/chat (SSE) or A2A JSON-RPC──>  Spring Boot (port 8081)│
 └───────────────────────────────────────────────────────────────────────────┘
                                   │
         ┌─────────────────────────┴─────────────────────────┐
@@ -346,20 +346,20 @@ java -jar target/analysis-project-0.0.1-SNAPSHOT.jar --spring.profiles.active=de
 `dev` profile 默认端口 **8081**(`prod` 8080,见 `application-*.properties`)。
 
 ```bash
-# 简单查询
-curl -X POST http://localhost:8081/chatA2A -H 'Content-Type: application/json' \
-  -d '{"message":"查询2026年1季度杭州开发一部的质量数据","session_id":"demo-001"}'
+# 简单查询（SSE 流式返回）
+curl -sS --max-time 300 http://localhost:8081/ai/chat -H 'Content-Type: application/json' \
+  --data-binary '{"input":"查询2026年1季度杭州开发一部的质量数据","session_id":"demo-001"}'
 
-# 数据分析(自动派 code_interpreter)
-curl -X POST http://localhost:8081/chatA2A -H 'Content-Type: application/json' \
-  -d '{"message":"对比2026年1季度和2026年2季度各部门的环比变化率","session_id":"demo-002"}'
+# 数据分析（自动派 code_interpreter）
+curl -sS --max-time 600 http://localhost:8081/ai/chat -H 'Content-Type: application/json' \
+  --data-binary '{"input":"对比2026年1季度和2026年2季度各部门的环比变化率","session_id":"demo-002"}'
 
 # 保存 skill
-curl -X POST http://localhost:8081/chatA2A -H 'Content-Type: application/json' \
-  -d '{"message":"把刚才的查询流程保存为 quarter_compare 这个 skill","session_id":"demo-002"}'
+curl -sS --max-time 300 http://localhost:8081/ai/chat -H 'Content-Type: application/json' \
+  --data-binary '{"input":"把刚才的查询流程保存为 quarter_compare 这个 skill","session_id":"demo-002"}'
 ```
 
-返回 `{"reply": "..."}`。多租户场景头加 `X-User-Id: alice`,artifact 桶 / 缓存 key / memory 都按这个 userId 分桶。
+返回 SSE 事件流（`text/event-stream`），每次推理片段为 `event:reasoning`，最终 `event:done`。Windows 中文必须用 `--data-binary` 而非 `-d`，否则 Git Bash 会把 UTF-8 转为 GBK。详见旧版 git log 的备注"`中文走 --data-binary`"。
 
 ### 3.8 调用方式 — A2A 协议
 
@@ -512,30 +512,30 @@ nohup java -jar target/analysis-project-0.0.1-SNAPSHOT.jar \
   --spring.profiles.active=dev,sandbox-linux > /tmp/app.log 2>&1 &
 
 # 1. 简单查询(实测 ~42s cold)
-curl -sS http://localhost:8081/chatA2A -H 'Content-Type: application/json' \
-  -d '{"message":"查询2026年1季度所有部门的质量数据","session_id":"v-1"}' | jq .reply
+curl -sS http://localhost:8081/ai/chat -H 'Content-Type: application/json' \
+  --data-binary '{"input":"查询2026年1季度所有部门的质量数据","session_id":"v-1"}'
 
 # 2. 同问题再发(实测 < 1s,cache hit)
-curl -sS http://localhost:8081/chatA2A -H 'Content-Type: application/json' \
-  -d '{"message":"查询2026年1季度所有部门的质量数据","session_id":"v-1"}' | jq .reply
+curl -sS http://localhost:8081/ai/chat -H 'Content-Type: application/json' \
+  --data-binary '{"input":"查询2026年1季度所有部门的质量数据","session_id":"v-1"}'
 
 # 3. cache 指标
 curl -sS http://localhost:8081/actuator/metrics/harness.a2a.cache
 curl -sS 'http://localhost:8081/actuator/metrics/harness.a2a.cache?tag=outcome:hit'
 
 # 4. 分析链路(实测 ~216s,触发 code_interpreter)
-curl -sS --max-time 600 http://localhost:8081/chatA2A -H 'Content-Type: application/json' \
-  -d '{"message":"对比2026年1季度和2026年2季度各部门的环比变化率","session_id":"v-2"}' | jq .reply
+curl -sS --max-time 600 http://localhost:8081/ai/chat -H 'Content-Type: application/json' \
+  --data-binary '{"input":"对比2026年1季度和2026年2季度各部门的环比变化率","session_id":"v-2"}'
 
 # 5. memory 镜像
 curl -sS http://localhost:8081/debug/memory | jq
 mysql -e "SELECT user_id, key_name, version, updated_at FROM <db>.agent_memory ORDER BY updated_at DESC LIMIT 5"
 
 # 6. 多租户隔离 — 两个 userId 互不串
-curl -sS http://localhost:8081/chatA2A -H 'X-User-Id: alice' -H 'Content-Type: application/json' \
-  -d '{"message":"查询2026年1季度所有部门的质量数据","session_id":"alice-1"}' | jq .reply
-curl -sS http://localhost:8081/chatA2A -H 'X-User-Id: bob'   -H 'Content-Type: application/json' \
-  -d '{"message":"查询2026年1季度所有部门的质量数据","session_id":"bob-1"}' | jq .reply
+curl -sS http://localhost:8081/ai/chat -H 'X-User-Id: alice' -H 'Content-Type: application/json' \
+  --data-binary '{"input":"查询2026年1季度所有部门的质量数据","session_id":"alice-1"}'
+curl -sS http://localhost:8081/ai/chat -H 'X-User-Id: bob'   -H 'Content-Type: application/json' \
+  --data-binary '{"input":"查询2026年1季度所有部门的质量数据","session_id":"bob-1"}'
 
 # 7. artifact 应被 GC(任务结束清空) — 远端 Docker 场景下要 ssh 到 docker host
 ssh root@<docker-host> 'find /opt/agentscope-workspace/harness-a2a/artifacts -type f' \

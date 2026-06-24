@@ -10,6 +10,7 @@
 package com.agentscopea2a.agent.tools.routers;
 
 import com.agentscopea2a.agent.tools.AgentTools;
+import com.agentscopea2a.harness.tools.DataPrimitivesTool;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -48,16 +49,19 @@ public class ToolRoutersIndex {
     private final Map<String, MethodInfo> toolMethodMap = new ConcurrentHashMap<>();
 
     private final AgentTools agentTools;
+    private final DataPrimitivesTool dataPrimitivesTool;
 
     @Autowired
-    public ToolRoutersIndex(AgentTools agentTools) {
+    public ToolRoutersIndex(AgentTools agentTools, DataPrimitivesTool dataPrimitivesTool) {
         this.agentTools = agentTools;
+        this.dataPrimitivesTool = dataPrimitivesTool;
     }
 
     /** 容器装配完成后,反射扫描各 Tool Bean,登记 @Tool 方法。 */
     @PostConstruct
     public void init() {
         registerTools(AgentTools.class, agentTools);
+        registerTools(DataPrimitivesTool.class, dataPrimitivesTool);
         log.info("ToolRoutersIndex 初始化完成,已注册工具: {}", toolMethodMap.keySet());
     }
 
