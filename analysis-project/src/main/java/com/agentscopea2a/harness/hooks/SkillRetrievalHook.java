@@ -1,0 +1,237 @@
+/*
+ * Copyright 2024-2026 the original author or authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ */
+package com.agentscopea2a.harness.hooks;
+
+import com.agentscopea2a.agent.dimension.DimensionState;
+import com.agentscopea2a.agent.dimension.DimensionStateManager;
+import com.agentscopea2a.agent.dimension.QuestionAnalysis;
+import com.agentscopea2a.harness.cache.ResponseCacheService;
+import com.agentscopea2a.harness.skills.EmbeddingClient;
+import com.agentscopea2a.harness.skills.SkillIndexRepository;
+import com.agentscopea2a.harness.skills.SkillVectorIndex;
+import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.hook.Hook;
+import io.agentscope.core.hook.HookEvent;
+import io.agentscope.core.hook.PreCallEvent;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import reactor.core.publisher.Mono;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+
+/**
+ * PR3 — focused skill retrieval. Replaces "WorkspaceContextHook always injects every SKILL.md"
+ * with a two-stage router:
+ *
+ * <ol>
+ *   <li><b>L1 fingerprint</b> — `tenant|intent|dimensionKey` exact match against
+ *       {@code skill_index.fingerprint} (populated by PR2's synthesis path). Sub-millisecond.
+ *   <li><b>L2 vector</b> — when L1 misses and an {@link EmbeddingClient} is configured, embed
+ *       the question and pick the top-K skills whose cosine is above the threshold.
+ * </ol>
+ *
+ * <p>Matched SKILL.md bodies are <i>appended</i> to the system message via
+ * {@link HookEvent#appendSystemContent(String)}. We do NOT remove the framework-internal
+ * WorkspaceContextHook's full-skill injection — that hook is JAR-internal with no disable API,
+ * so PR3 ships as a <b>net-add</b> path. The duplication is acceptable because:
+ * <ul>
+ *   <li>PR3 is disabled by default; rollout is opt-in
+ *   <li>Top-K hits act as a "spotlighted" block at the bottom of the system prompt, which most
+ *       LLMs anchor on
+ *   <li>Once production validates accuracy gains, the JAR-level switch can land in a follow-up
+ * </ul>
+ *
+ * <p>Recordkeeping: every hit also calls {@link SkillIndexRepository#recordUsage(String)} so
+ * PR4 (evolution) has a {@code last_used} timestamp + {@code usage_count} to drive its
+ * decisions. Misses are silent — never log spam on every user turn.
+ */
+public class SkillRetrievalHook implements Hook {
+
+    private static final Logger log = LoggerFactory.getLogger(SkillRetrievalHook.class);
+    private static final String INJECTED_HEADER = "\n\n<!-- skills.retrieved (PR3) -->\n";
+
+    private final SkillVectorIndex vectorIndex;
+    private final SkillIndexRepository indexRepo;
+    private final DimensionStateManager dimManager;
+    private final EmbeddingClient embeddingClient;
+    private final Path skillsDir;
+    private final RuntimeContext runtimeContext;
+    private final boolean enabled;
+    private final int topK;
+    private final float minCosine;
+
+    public SkillRetrievalHook(
+            SkillVectorIndex vectorIndex,
+            SkillIndexRepository indexRepo,
+            DimensionStateManager dimManager,
+            EmbeddingClient embeddingClient,
+            Path skillsDir,
+            RuntimeContext runtimeContext,
+            boolean enabled,
+            int topK,
+            float minCosine) {
+        this.vectorIndex = vectorIndex;
+        this.indexRepo = indexRepo;
+        this.dimManager = dimManager;
+        this.embeddingClient = embeddingClient;
+        this.skillsDir = skillsDir;
+        this.runtimeContext = runtimeContext;
+        this.enabled = enabled;
+        this.topK = topK;
+        this.minCosine = minCosine;
+    }
+
+    @Override
+    public int priority() {
+        // Run before WorkspaceContextHook (its priority is +0/+10 range) so our hit is at the
+        // top of additions; not strictly required because we append, but consistent ordering
+        // makes log diffs easier to read.
+        return -50;
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public <T extends HookEvent> Mono<T> onEvent(T event) {
+        if (!enabled) return Mono.just(event);
+        if (event instanceof PreCallEvent e) {
+            try {
+                inject(e);
+            } catch (Exception ex) {
+                // Retrieval must never block a request — log and let WorkspaceContextHook do
+                // the full-injection fallback.
+                log.warn("SkillRetrievalHook injection skipped: {}", ex.getMessage());
+            }
+            return Mono.just(event);
+        }
+        return Mono.just(event);
+    }
+
+    private void inject(PreCallEvent event) {
+        String question = ResponseCacheService.extractUserQuestion(event.getInputMessages());
+        if (question.isEmpty()) return;
+
+        Set<String> picked = new LinkedHashSet<>();
+
+        // L1 — exact fingerprint
+        String fingerprint = fingerprintOf(question);
+        if (fingerprint != null) {
+            Optional<String> l1 = vectorIndex.findByFingerprint(fingerprint);
+            l1.ifPresent(picked::add);
+        }
+        log.debug("L1 result for fp={}: picked={}", fingerprint, picked);
+
+        // L2 — vector top-K (only when L1 missed and embedding is configured)
+        if (picked.isEmpty() && embeddingClient != null) {
+            float[] vec = embeddingClient.embed(question);
+            if (vec != null) {
+                List<SkillVectorIndex.SkillHit> hits = vectorIndex.topK(vec, topK, minCosine);
+                log.debug("L2 topK (k={}, min={}) returned {} hit(s): {}",
+                        topK, minCosine, hits.size(), hits);
+                for (SkillVectorIndex.SkillHit h : hits) {
+                    picked.add(h.name());
+                }
+            } else {
+                log.debug("L2 embed returned null for question");
+            }
+        }
+
+        if (picked.isEmpty()) return;
+
+        List<String> loaded = new ArrayList<>();
+        StringBuilder block = new StringBuilder(INJECTED_HEADER);
+        for (String name : picked) {
+            String body = readSkillBody(name);
+            if (body == null) continue;
+            block.append("\n### Retrieved skill: ").append(name).append("\n\n").append(body).append("\n");
+            loaded.add(name);
+            indexRepo.recordUsage(name);
+        }
+        if (loaded.isEmpty()) return;
+
+        event.appendSystemContent(block.toString());
+
+        // PR4 plumbing — let SkillEvolutionHook attribute success/failure to these skills at
+        // PostCall. RuntimeContext is per-call so this attribute dies at end-of-turn; the
+        // cross-turn rejection lookback is handled separately by SkillEvolutionRunner's
+        // per-session cache. Safe to write even when PR4 is disabled — the attribute is just
+        // never read.
+        if (runtimeContext != null) {
+            try {
+                runtimeContext.put("skills.retrieved", List.copyOf(loaded));
+            } catch (Exception ex) {
+                log.debug("Failed to publish skills.retrieved attribute: {}", ex.getMessage());
+            }
+        }
+
+        log.info(
+                "SkillRetrievalHook injected {} skill(s) for tenant={} fp={}: {}",
+                loaded.size(),
+                tenantBucket(),
+                fingerprint,
+                loaded);
+    }
+
+    private String fingerprintOf(String question) {
+        try {
+            QuestionAnalysis analysis = dimManager.analyzeQuestionRuleBased(question);
+            DimensionState state = buildFromExplicit(analysis);
+            if (state == null || !state.hasDimensions()) return null;
+            String intent = ResponseCacheService.classifyIntent(question);
+            String dimKey = state.toCacheKey();
+            if (dimKey.isEmpty()) return null;
+            return tenantBucket() + "|" + intent + "|" + dimKey;
+        } catch (Exception ex) {
+            log.debug("fingerprintOf failed: {}", ex.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Reads the SKILL.md body (including frontmatter — the LLM benefits from version /
+     * usage hints anyway). Returns {@code null} on missing or unreadable file.
+     */
+    private String readSkillBody(String name) {
+        Path p = skillsDir.resolve(name).resolve("SKILL.md");
+        if (!Files.isRegularFile(p)) return null;
+        try {
+            return Files.readString(p, StandardCharsets.UTF_8);
+        } catch (IOException ex) {
+            log.debug("Failed to read {}: {}", p, ex.getMessage());
+            return null;
+        }
+    }
+
+    /** Same shape as ResponseCacheHook / SkillSynthesisHook for fingerprint consistency. */
+    private static DimensionState buildFromExplicit(QuestionAnalysis analysis) {
+        DimensionState state = new DimensionState();
+        if (analysis == null || analysis.getExplicitDimensions() == null) return state;
+        QuestionAnalysis.ExplicitDimensions e = analysis.getExplicitDimensions();
+        if (e.getTimeDimension() != null) state.setTimeDimension(e.getTimeDimension());
+        if (e.getDepartments() != null && !e.getDepartments().isEmpty()) {
+            state.setDepartments(e.getDepartments());
+        }
+        if (e.getPeerDimension() != null) state.setPeerDimension(e.getPeerDimension());
+        if (e.getPersons() != null && !e.getPersons().isEmpty()) state.setPersons(e.getPersons());
+        return state;
+    }
+
+    private String tenantBucket() {
+        if (runtimeContext == null) return "_global";
+        String uid = runtimeContext.getUserId();
+        if (uid != null && !uid.isBlank()) return "u:" + uid;
+        String sid = runtimeContext.getSessionId();
+        if (sid != null && !sid.isBlank()) return "s:" + sid;
+        return "_anon";
+    }
+}
