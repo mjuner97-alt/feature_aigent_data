@@ -9,52 +9,68 @@
  */
 package com.agentscopea2a.service.impl;
 
+import cn.hutool.core.util.ObjectUtil;
+import com.agentscopea2a.dto.QuestionAnswerDto;
+import com.agentscopea2a.dto.response.*;
 import com.agentscopea2a.harness.artifact.ArtifactContext;
 import com.agentscopea2a.harness.artifact.ArtifactStore;
 import com.agentscopea2a.harness.cache.ResponseCacheService;
 import com.agentscopea2a.agent.dimension.DimensionStateManager;
 import com.agentscopea2a.dto.ChatRequest;
-import com.agentscopea2a.entity.AiChatResult;
 import com.agentscopea2a.harness.hooks.ResponseCacheHook;
+import com.agentscopea2a.mapper.db1.MainAgentMapper;
 import com.agentscopea2a.service.ChatStreamService;
 import com.agentscopea2a.service.SupervisorService;
+import com.agentscopea2a.util.SseEmitterCacheUtil;
+import com.agentscopea2a.util.ThreadContextUtils;
+import com.alibaba.fastjson.JSON;
 import io.agentscope.core.agent.Event;
 import io.agentscope.core.agent.EventType;
 import io.agentscope.core.agent.RuntimeContext;
-import io.agentscope.core.message.Msg;
-import io.agentscope.core.message.MsgRole;
-import io.agentscope.core.message.TextBlock;
+import io.agentscope.core.agent.StreamOptions;
+import io.agentscope.core.message.*;
+import io.agentscope.core.model.ModelException;
 import io.agentscope.core.state.SimpleSessionKey;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.micrometer.core.instrument.MeterRegistry;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-/**
- * Default {@link ChatStreamService} implementation.
- *
- * <p>Two send strategies, picked per-request from the resolved {@code agentId}:
- *
- * <ul>
- *   <li><b>structured</b> (always now, since {@code agentId} defaults to {@code "7"}) — every
- *       chunk is wrapped in {@link AiChatResult} with {@code ansUUID}, agent identity, and
- *       cumulative text.
- *   <li><b>raw</b> — only used if some future caller forces {@code agentId} to blank explicitly;
- *       sends the chunk text as the SSE data verbatim. Kept as a fallback so the wire format is
- *       still trivially debuggable with curl.
- * </ul>
- */
+
 @Service
 public class ChatStreamServiceImpl implements ChatStreamService {
 
-    private static final Logger log = LoggerFactory.getLogger(ChatStreamServiceImpl.class);
+    /** Per-request streaming state, carried through processChunk / processChunkPublic / handle*. */
+    private static class StreamContext {
+        final SseEmitter emitter;
+        final ChatRequest req;
+        final AtomicBoolean startFlag = new AtomicBoolean(false);
+        final AtomicBoolean agentChange = new AtomicBoolean(false);
+        final AtomicBoolean secondStartFlag = new AtomicBoolean(true);
+        final StringBuilder fullResult = new StringBuilder();
+        final StringBuilder thinkContent = new StringBuilder();
+        final StringBuilder answerContent = new StringBuilder();
+        final String uuid;
+
+        StreamContext(SseEmitter emitter, ChatRequest req, String uuid) {
+            this.emitter = emitter;
+            this.req = req;
+            this.uuid = uuid;
+        }
+    }
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(ChatStreamServiceImpl.class);
 
     /** SseEmitter timeout. 0 = never time out (rely on agent completion / errors). */
     private static final long SSE_TIMEOUT_MS = 0L;
@@ -84,17 +100,27 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         this.artifactStore = artifactStore;
     }
 
+    @Autowired
+    private MainAgentMapper mainAgentMapper;
+
     @Override
     public SseEmitter stream(ChatRequest req) {
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
-        // Apply all defaulting/derivation rules in one place.
-        Resolved resolved = normalize(req);
 
-        String sid = firstNonBlank(req.getSessionId(), resolved.conversationId);
+        if (StringUtils.isEmpty(req.getConversationId())){
+            req.setConversationId(UUID.randomUUID().toString());
+        }
+
+        SseEmitterCacheUtil.put(req.getConversationId(), emitter);
+        String uuid = UUID.randomUUID().toString();
+
+        // 状态标记
+        StreamContext ctxState = new StreamContext(emitter, req, uuid);
+
         final RuntimeContext ctx =
                 RuntimeContext.builder()
-                        .sessionId(sid)
-                        .sessionKey(SimpleSessionKey.of(sid))
+                        .sessionId(req.getConversationId())
+                        .sessionKey(SimpleSessionKey.of(req.getConversationId()))
                         .build();
 
         ResponseCacheHook cacheHook =
@@ -107,8 +133,66 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                         .content(TextBlock.builder().text(req.getInput()).build())
                         .build();
 
-        final String ansUUID = UUID.randomUUID().toString();
-        final StringBuilder accumulated = new StringBuilder();
+        // Cleanup runs once on terminal signal. Mirrors HarnessA2aRunner's doFinally GC.
+        AtomicReference<Boolean> cleaned = new AtomicReference<>(false);
+        Runnable cleanup =
+                () -> {
+                    if (!cleaned.compareAndSet(false, true)) return;
+                    try {
+                        artifactStore.cleanupTask(ArtifactContext.from(ctx));
+                    } catch (Exception ex) {
+                        LOGGER.warn("Artifact cleanup failed for /ai/chat: {}", ex.getMessage());
+                    }
+                };
+        emitter.onCompletion(cleanup);
+        emitter.onTimeout(cleanup);
+        emitter.onError(t -> cleanup.run());
+
+        //配置StreamOptions
+        StreamOptions streamOptions =StreamOptions.builder()
+                        .eventTypes(EventType.ALL)
+                                .incremental(true)
+                                        .build();
+
+        agent.stream(List.of(userMsg), streamOptions, ctx)
+                .subscribe(
+                chunk -> processChunk(chunk, ctxState),
+                error -> handleStreamError(ctxState, error, ctxState.fullResult.toString()),
+                () -> handleStreamSuccess(ctxState)
+        );
+
+        return emitter;
+    }
+
+    @Override
+    public SseEmitter streamPublic(ChatRequest req) {
+        SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
+
+        if (StringUtils.isEmpty(req.getConversationId())){
+            req.setConversationId(UUID.randomUUID().toString());
+        }
+
+        SseEmitterCacheUtil.put(req.getConversationId(), emitter);
+        String uuid = UUID.randomUUID().toString();
+
+        // 状态标记
+        StreamContext ctxState = new StreamContext(emitter, req, uuid);
+
+        final RuntimeContext ctx =
+                RuntimeContext.builder()
+                        .sessionId(req.getConversationId())
+                        .sessionKey(SimpleSessionKey.of(req.getConversationId()))
+                        .build();
+
+        ResponseCacheHook cacheHook =
+                supervisorService.newCacheHook(cacheService, cacheDimManager, ctx, meterRegistry);
+        HarnessAgent agent = supervisorService.build(cacheHook, ctx);
+
+        Msg userMsg =
+                Msg.builder()
+                        .role(MsgRole.USER)
+                        .content(TextBlock.builder().text(req.getInput()).build())
+                        .build();
 
         // Cleanup runs once on terminal signal. Mirrors HarnessA2aRunner's doFinally GC.
         AtomicReference<Boolean> cleaned = new AtomicReference<>(false);
@@ -118,283 +202,366 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                     try {
                         artifactStore.cleanupTask(ArtifactContext.from(ctx));
                     } catch (Exception ex) {
-                        log.warn("Artifact cleanup failed for /ai/chat: {}", ex.getMessage());
+                        LOGGER.warn("Artifact cleanup failed for /ai/chat: {}", ex.getMessage());
                     }
                 };
         emitter.onCompletion(cleanup);
         emitter.onTimeout(cleanup);
         emitter.onError(t -> cleanup.run());
 
-        agent.stream(userMsg, ctx)
+        //配置StreamOptions
+        StreamOptions streamOptions =StreamOptions.builder()
+                .eventTypes(EventType.ALL)
+                .incremental(true)
+                .build();
+
+        agent.stream(List.of(userMsg), streamOptions, ctx)
                 .subscribe(
-                        event -> sendChunk(emitter, resolved, event, ansUUID, accumulated),
-                        err -> handleStreamError(emitter, resolved, err, ansUUID),
-                        () -> {
-                            sendDone(emitter, resolved, ansUUID, accumulated);
-                            emitter.complete();
-                        });
+                        chunk -> processChunkPublic(chunk, ctxState),
+                        error -> handleStreamErrorPublic(ctxState, error, ctxState.fullResult.toString()),
+                        () -> handleStreamSuccessPublic(ctxState)
+                );
 
         return emitter;
     }
 
-    // ---------- request normalization ------------------------------------------------------
+    /**
+     * 处理单个流式 Chunk — 通用版（使用 TextResponseDto / ThinkManagerResponseDto）
+     *
+     * <p>业务逻辑同 {@link #processChunk}，只是 SSE 响应 DTO 不同（无 code/ansUUID 等 Manager 专属字段）。
+     *
+     * <p>执行智能体后续 chunk：TextBlock → 结果（action="已执行"，用 &lt;text&gt; 标签包裹），
+     * 非 TextBlock → 思考（action="执行中"，用 思考 标签包裹）
+     */
+    private void processChunkPublic(Event chunk, StreamContext ctx) {
+        try {
+            System.out.println("主智能体回答: " + JSON.toJSONString(chunk));
+
+            // last 类型表示流结束，直接返回，不继续处理
+            if (chunk.isLast()) {
+                return;
+            }
+
+
+            String agentName = chunk.getMessage().getName();
+            ContentBlock contentBlock = chunk.getMessage().getContent().get(0);
+            String extractedContent = extractContentFromBlock(contentBlock);
+
+            // 获取完整结果
+            if (StringUtils.isNotBlank(extractedContent)) {
+                ctx.fullResult.append(extractedContent);
+            }
+
+            // 3. 分析智能体分支（非"执行智能体"）— 全部视为思考
+            if (!"执行智能体".equalsIgnoreCase(agentName)) {
+                    ctx.thinkContent.append(extractedContent);
+                    sendThinkResponsePublic(ctx.emitter, extractedContent, "执行中", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
+                return;
+            }
+
+            // 4. 执行智能体分支 — 区分思考块和结果块
+            if (!ctx.agentChange.getAndSet(true)) {
+                // 首次进入执行智能体 — 输出为思考
+                ctx.thinkContent.append(extractedContent);
+                sendThinkResponsePublic(ctx.emitter, " ", "已执行", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
+                sendThinkResponsePublic(ctx.emitter, extractedContent, "执行中", "执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
+                return;
+            }
+
+            // 后续执行智能体 chunk — 只区分 TextBlock（结果）和非 TextBlock（思考）
+            if (contentBlock instanceof TextBlock) {
+                if (ctx.secondStartFlag.getAndSet(false)) {
+                    // 首次输出文本结果：先发一个 think（action="已执行"），再发 text（topic/action 为空）
+                    ctx.answerContent.append(extractedContent);
+                    sendThinkResponsePublic(ctx.emitter, " ", "已执行", "执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
+                    sendTextResponsePublic(ctx.emitter, extractedContent, "", "", false, ctx.req.getConversationId(), ctx.uuid);
+                } else {
+                    // 后续文本结果
+                    ctx.answerContent.append(extractedContent);
+                    sendTextResponsePublic(ctx.emitter, extractedContent, "", "", chunk.isLast(), ctx.req.getConversationId(), ctx.uuid);
+                }
+            } else {
+                // 非 TextBlock（ThinkingBlock / ToolUseBlock / ToolResultBlock 等）均视为思考
+                ctx.thinkContent.append(extractedContent);
+                sendThinkResponsePublic(ctx.emitter, extractedContent, "执行中", "执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
+            }
+
+        } catch (Exception e) {
+            LOGGER.error("主智能体执行失败异常: ", e);
+        }
+    }
+
+    private void sendThinkResponsePublic(SseEmitter emitter, String content, String action, String topic, boolean finish, String conversationId, String uuid) {
+        ThinkResponseDto thinkResponseDto = new ThinkResponseDto();
+        ContentDto contentDto = new ContentDto();
+        contentDto.setContent(content);
+        contentDto.setAction(action);
+        contentDto.setTopic(topic);
+        thinkResponseDto.setData(contentDto);
+        thinkResponseDto.setFinish(finish);
+        safeSend(emitter, thinkResponseDto, MediaType.APPLICATION_JSON);
+    }
+
 
     /**
-     * Apply all the request-shape rules in one place:
+     * 处理单个流式 Chunk — Manager版（使用 ThinkManagerResponseDto / TextManagerResponseDto）
      *
+     * <p>业务逻辑：
      * <ul>
-     *   <li>{@code agentId} blank → "7"; {@code agentName} blank → "QA助手"; {@code formType}
-     *       blank → "HXY".
-     *   <li>{@code conversationId} blank → fresh UUID, UNLESS the request had no agentId AND a
-     *       non-blank {@code chatId}, in which case {@code chatId} is promoted to
-     *       {@code conversationId} (legacy chat-handle compatibility).
-     *   <li>{@code structured} = true whenever {@code agentId} resolves non-blank (which, with
-     *       the default above, is always).
+     *   <li>分析智能体（非"执行智能体"）：所有输出均视为"思考"，用 思考 标签包裹，action="执行中"
+     *   <li>执行智能体：TextBlock → 结果（action="已执行"，用 &lt;text&gt; 标签包裹），
+     *       非 TextBlock → 思考（action="执行中"）
      * </ul>
+     * thinkContent 拼接所有思考内容，answerContent 拼接所有结果内容，用于最终落库。
      */
-    static Resolved normalize(ChatRequest req) {
-        if (req == null) {
-            return new Resolved(
-                    DEFAULT_AGENT_ID,
-                    DEFAULT_AGENT_NAME,
-                    DEFAULT_FROM_TYPE,
-                    UUID.randomUUID().toString(),
-                    true);
-        }
-        boolean agentIdProvided = isNotBlank(req.getAgentId());
-        String agentId = agentIdProvided ? req.getAgentId() : DEFAULT_AGENT_ID;
-        String agentName = isNotBlank(req.getAgentName()) ? req.getAgentName() : DEFAULT_AGENT_NAME;
-        String formType = isNotBlank(req.getFormType()) ? req.getFormType() : DEFAULT_FROM_TYPE;
-
-        String conversationId;
-        if (isNotBlank(req.getConversationId())) {
-            // Forwarded as-is so the model sees a stable id.
-            conversationId = req.getConversationId();
-        } else if (!agentIdProvided && isNotBlank(req.getChatId())) {
-            // No agentId, but a chatId is present → promote chatId.
-            conversationId = req.getChatId();
-        } else {
-            conversationId = UUID.randomUUID().toString();
-        }
-
-        // structured iff agentId is non-blank; with the default it always is, but keep the
-        // branch for callers that explicitly clear it.
-        boolean structured = isNotBlank(agentId);
-        return new Resolved(agentId, agentName, formType, conversationId, structured);
-    }
-
-    /** Resolved per-request identity, computed once and reused for every chunk. */
-    record Resolved(
-            String agentId,
-            String agentName,
-            String formType,
-            String conversationId,
-            boolean structured) {}
-
-    // ---------- SSE write paths ------------------------------------------------------------
-
-    private static void sendChunk(
-            SseEmitter emitter,
-            Resolved resolved,
-            Event event,
-            String ansUUID,
-            StringBuilder accumulated) {
-
-        EventType type = event.getType();
-        String text = extractText(event.getMessage());
-        // Log every event regardless of whether it will be sent to the frontend.
-        log.info(
-                "stream event: agentId={} type={} last={} textLen={} preview={}",
-                resolved.agentId,
-                type,
-                event.isLast(),
-                text.length(),
-                preview(text));
-        if (type == EventType.AGENT_RESULT) {
-            return;
-        }
-        if (event.isLast()) {
-            return;
-        }
-        if (text.isEmpty()) return;
+    private void processChunk(Event chunk, StreamContext ctx) {
         try {
-            String name = type.name().toLowerCase();
-            if (resolved.structured) {
-                accumulated.append(text);
-                AiChatResult chunk =
-                        AiChatResult.builder()
-                                .code(0)
-                                .ansUUID(ansUUID)
-                                .lineResult(text)
-                                .resultAll(accumulated.toString())
-                                .formType(resolved.formType)
-                                .agentId(resolved.agentId)
-                                .agentName(resolved.agentName)
-                                .conversationId(resolved.conversationId)
-                                .build();
-                emitter.send(
-                        SseEmitter.event()
-                                .id(ansUUID)
-                                .name(name)
-                                .data(chunk, MediaType.APPLICATION_JSON));
-            } else {
-                emitter.send(SseEmitter.event().name(name).data(text));
-            }
-        } catch (IOException e) {
-            log.warn("SSE send failed for agentId={}: {}", resolved.agentId, e.getMessage());
-            emitter.completeWithError(e);
-        }
-    }
+            System.out.println("主智能体回答: " + JSON.toJSONString(chunk));
 
-    private static void sendDone(
-            SseEmitter emitter,
-            Resolved resolved,
-            String ansUUID,
-            StringBuilder accumulated) {
-        try {
-            if (resolved.structured) {
-                AiChatResult done =
-                        AiChatResult.builder()
-                                .code(0)
-                                .ansUUID(ansUUID)
-                                .lineResult("")
-                                .resultAll(accumulated.toString())
-                                .formType(resolved.formType)
-                                .agentId(resolved.agentId)
-                                .agentName(resolved.agentName)
-                                .conversationId(resolved.conversationId)
-                                .build();
-                emitter.send(
-                        SseEmitter.event()
-                                .id(ansUUID)
-                                .name("done")
-                                .data(done, MediaType.APPLICATION_JSON));
-            } else {
-                emitter.send(SseEmitter.event().name("done").data("[DONE]"));
+            // last 类型表示流结束，直接返回，不继续处理
+            if (chunk.isLast()) {
+                return;
             }
-        } catch (IOException e) {
-            log.warn("SSE done frame failed for agentId={}: {}", resolved.agentId, e.getMessage());
-        }
-    }
 
-    private void handleStreamError(
-            SseEmitter emitter, Resolved resolved, Throwable err, String ansUUID) {
-        ResponseCacheHook.CacheHitException cacheHit = unwrapCacheHit(err);
-        if (cacheHit != null) {
-            log.info("Cache HIT for /ai/chat");
-            String cached = cacheHit.getCachedResponse();
-            try {
-                if (resolved.structured) {
-                    AiChatResult chunk =
-                            AiChatResult.builder()
-                                    .code(0)
-                                    .ansUUID(ansUUID)
-                                    .lineResult(cached)
-                                    .resultAll(cached)
-                                    .formType(resolved.formType)
-                                    .agentId(resolved.agentId)
-                                    .agentName(resolved.agentName)
-                                    .conversationId(resolved.conversationId)
-                                    .build();
-                    emitter.send(
-                            SseEmitter.event()
-                                    .id(ansUUID)
-                                    .name("reasoning")
-                                    .data(chunk, MediaType.APPLICATION_JSON));
-                    AiChatResult done =
-                            AiChatResult.builder()
-                                    .code(0)
-                                    .ansUUID(ansUUID)
-                                    .lineResult("")
-                                    .resultAll(cached)
-                                    .formType(resolved.formType)
-                                    .agentId(resolved.agentId)
-                                    .agentName(resolved.agentName)
-                                    .conversationId(resolved.conversationId)
-                                    .build();
-                    emitter.send(
-                            SseEmitter.event()
-                                    .id(ansUUID)
-                                    .name("done")
-                                    .data(done, MediaType.APPLICATION_JSON));
+
+            String agentName = chunk.getMessage().getName();
+            ContentBlock contentBlock = chunk.getMessage().getContent().get(0);
+            String extractedContent = extractContentFromBlock(contentBlock);
+
+            // 获取完整结果
+            if (StringUtils.isNotBlank(extractedContent)) {
+                ctx.fullResult.append(extractedContent);
+            }
+
+            // 3. 分析智能体分支（非"执行智能体"）— 全部视为思考
+            if (!"执行智能体".equalsIgnoreCase(agentName)) {
+                ctx.thinkContent.append(extractedContent);
+                sendThinkResponse(ctx.emitter, extractedContent, "执行中", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
+                return;
+            }
+
+            // 4. 执行智能体分支 — 区分思考块和结果块
+            if (!ctx.agentChange.getAndSet(true)) {
+                // 首次进入执行智能体 — 输出为思考
+                ctx.thinkContent.append(extractedContent);
+                sendThinkResponse(ctx.emitter, " ", "已执行", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
+                sendThinkResponse(ctx.emitter, extractedContent, "执行中", "执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
+                return;
+            }
+
+            // 后续执行智能体 chunk — 只区分 TextBlock（结果）和非 TextBlock（思考）
+            if (contentBlock instanceof TextBlock) {
+                if (ctx.secondStartFlag.getAndSet(false)) {
+                    // 首次输出文本结果：先发一个 think（action="已执行"），再发 text（topic/action 为空）
+                    ctx.answerContent.append(extractedContent);
+                    sendThinkResponse(ctx.emitter, " ", "已执行", "执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
+                    sendTextResponse(ctx.emitter, extractedContent, "", "", false, ctx.req.getConversationId(), ctx.uuid);
                 } else {
-                    emitter.send(SseEmitter.event().name("reasoning").data(cached));
-                    emitter.send(SseEmitter.event().name("done").data("[DONE]"));
+                    // 后续文本结果
+                    ctx.answerContent.append(extractedContent);
+                    sendTextResponse(ctx.emitter, extractedContent, "", "", chunk.isLast(), ctx.req.getConversationId(), ctx.uuid);
                 }
-                emitter.complete();
-            } catch (IOException ioe) {
-                emitter.completeWithError(ioe);
+            } else {
+                // 非 TextBlock（ThinkingBlock / ToolUseBlock / ToolResultBlock 等）均视为思考
+                ctx.thinkContent.append(extractedContent);
+                sendThinkResponse(ctx.emitter, extractedContent, "执行中", "执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
             }
+
+        } catch (Exception e) {
+            LOGGER.error("主智能体执行失败异常: ", e);
+        }
+    }
+
+    private void sendThinkResponse(SseEmitter emitter, String content, String action, String topic, boolean finish, String conversationId, String uuid) {
+        ThinkManagerResponseDto thinkResponseDto = new ThinkManagerResponseDto();
+        ContentDto contentDto = new ContentDto();
+        contentDto.setContent(content);
+        contentDto.setAction(action);
+        contentDto.setTopic(topic);
+        thinkResponseDto.setData(contentDto);
+        thinkResponseDto.setFinish(finish);
+        thinkResponseDto.setCode(200);
+        // 思考阶段的 ansUUID 使用独立 uuid，不依赖前端传入的 conversationId
+        thinkResponseDto.setAnsUUID(uuid);
+        thinkResponseDto.setConversationId(conversationId);
+        safeSend(emitter, thinkResponseDto, MediaType.APPLICATION_JSON);
+    }
+
+
+    /**
+     * 发送 TextManagerResponseDto — 最终文本结果
+     */
+    private void sendTextResponse(SseEmitter emitter, String content, String action, String topic, boolean finish, String conversationId, String uuid) {
+        TextManagerResponseDto textResponseDto = new TextManagerResponseDto();
+        ContentDto contentDto = new ContentDto();
+        contentDto.setContent(content);
+        contentDto.setAction(action);
+        contentDto.setTopic(topic);
+        textResponseDto.setData(contentDto);
+        textResponseDto.setFinish(finish);
+        textResponseDto.setCode(200);
+        // 最终文本结果的 ansUUID 与 conversationId 一致，便于前端按对话追溯
+        textResponseDto.setAnsUUID(uuid);
+        textResponseDto.setConversationId(conversationId);
+        safeSend(emitter, textResponseDto, MediaType.APPLICATION_JSON);
+    }
+
+    /**
+     * 发送 TextResponseDto
+     */
+    private void sendTextResponsePublic(SseEmitter emitter, String content, String action, String topic, boolean finish, String conversationId, String uuid) {
+        TextResponseDto textResponseDto = new TextResponseDto();
+        ContentDto contentDto = new ContentDto();
+        contentDto.setContent(content);
+        contentDto.setAction(action);
+        contentDto.setTopic(topic);
+        textResponseDto.setData(contentDto);
+        textResponseDto.setFinish(finish);
+        safeSend(emitter, textResponseDto, MediaType.APPLICATION_JSON);
+    }
+
+    private String extractContentFromBlock(ContentBlock block) {
+        String content = "";
+        if (block instanceof ThinkingBlock) {
+            content = ((ThinkingBlock) block).getThinking();
+        } else if (block instanceof TextBlock) {
+            content = ((TextBlock) block).getText();
+        } else if (block instanceof ToolUseBlock) {
+//            content = ((ToolUseBlock) block).getContent();
+        } else if (block instanceof ToolResultBlock) {
+//            content = ((ToolResultBlock) block).getContent();
+        }
+        // Apply replacements if content is not null/empty
+        if (StringUtils.isNotBlank(content)) {
+            content = applyReplacements(content);
+        }
+        return content;
+    }
+
+    private String applyReplacements(String content) {
+        // Example replacements - customize as needed
+        String result = content;
+        // 1. 去除首尾空白
+        result = result.replaceAll("<think>", "").replaceAll("</think>", "");
+        return result;
+    }
+
+    /**
+     * 统一处理流式异常 — Manager版
+     */
+    private void handleStreamError(StreamContext ctx, Throwable error, String fullResult) {
+        LOGGER.error("处理流式异常: {}", error.getMessage(), error);
+        try {
+            TextManagerResponseDto errorDto = new TextManagerResponseDto();
+            ContentDto contentDto = new ContentDto();
+            contentDto.setContent(buildErrorMessage(error));
+            errorDto.setData(contentDto);
+            errorDto.setFinish(true);
+            safeSend(ctx.emitter, errorDto, MediaType.APPLICATION_JSON);
+        } catch (Exception e) {
+            LOGGER.warn("发送错误结果失败", e);
+        } finally {
+            ctx.emitter.complete();
+            ThreadContextUtils.clearContext();
+            saveAnswerIntoDB(ctx);
+        }
+    }
+
+    /**
+     * 统一处理流式异常 — 通用版
+     */
+    private void handleStreamErrorPublic(StreamContext ctx, Throwable error, String fullResult) {
+        LOGGER.error("处理流式异常: {}", error.getMessage(), error);
+        try {
+            TextResponseDto errorDto = new TextResponseDto();
+            ContentDto contentDto = new ContentDto();
+            contentDto.setContent("系统处理异常: " + error.getMessage());
+            errorDto.setData(contentDto);
+            errorDto.setFinish(true);
+            safeSend(ctx.emitter, errorDto, MediaType.APPLICATION_JSON);
+        } catch (Exception e) {
+            LOGGER.warn("发送错误结果失败", e);
+        } finally {
+            ctx.emitter.complete();
+            ThreadContextUtils.clearContext();
+            saveAnswerIntoDB(ctx);
+        }
+    }
+
+    private String buildErrorMessage(Throwable error) {
+        if (error.getMessage().contains("Retries exhausted") || error.getMessage().contains("Model request timeout after")) {
+            return "请求已达最大重试次数，当前千问模型资源不足，请稍后再试。";
+        } else if (error instanceof ModelException) {
+            return "模型请求出错: " + error.getMessage();
+        } else {
+            return error.getMessage();
+        }
+    }
+
+
+
+    public void safeSend(SseEmitter emitter,Object data,MediaType mediaType){
+        try {
+            emitter.send(data,mediaType);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * 统一处理流式成功 — Manager版
+     */
+    private void handleStreamSuccess(StreamContext ctx) {
+        LOGGER.info("处理流式成功: {}", ctx.req.getConversationId());
+        ctx.emitter.complete();
+        ThreadContextUtils.clearContext();
+        saveAnswerIntoDB(ctx);
+    }
+
+    /**
+     * 统一处理流式成功 — 通用版
+     */
+    private void handleStreamSuccessPublic(StreamContext ctx) {
+        LOGGER.info("处理流式成功(通用版): {}", ctx.req.getConversationId());
+        ctx.emitter.complete();
+        ThreadContextUtils.clearContext();
+        saveAnswerIntoDB(ctx);
+    }
+
+    /**
+     * 保存问答记录到数据库，包含 think（思考）和 answer（结果）两个独立字段
+     */
+    private void saveAnswerIntoDB(StreamContext ctx) {
+        if (ctx.req == null || StringUtils.isEmpty(ctx.req.getConversationId())) {
             return;
         }
-        log.error("Agent error", err);
-        sendError(emitter, resolved, "Agent error: " + err.getMessage());
-        emitter.complete();
+        QuestionAnswerDto dto = createAnswerInit(ctx.req, ctx.thinkContent.toString(), ctx.answerContent.toString());
+        saveAnswerIntoDB(dto);
     }
 
-    private static void sendError(SseEmitter emitter, Resolved resolved, String message) {
-        try {
-            if (resolved != null && resolved.structured) {
-                AiChatResult err =
-                        AiChatResult.builder()
-                                .code(500)
-                                .ansUUID(UUID.randomUUID().toString())
-                                .errorMsg(message)
-                                .formType(resolved.formType)
-                                .agentId(resolved.agentId)
-                                .agentName(resolved.agentName)
-                                .conversationId(resolved.conversationId)
-                                .build();
-                emitter.send(
-                        SseEmitter.event()
-                                .name("error")
-                                .data(err, MediaType.APPLICATION_JSON));
+    private QuestionAnswerDto createAnswerInit(ChatRequest chatReqDTO, String thinkContent, String answerContent) {
+        QuestionAnswerDto questionAnswerDTO = new QuestionAnswerDto();
+        questionAnswerDTO.setUserId(chatReqDTO.getUserId());
+        questionAnswerDTO.setQuestion(chatReqDTO.getInput());
+        questionAnswerDTO.setAnsUUID(chatReqDTO.getConversationId());
+        questionAnswerDTO.setConversationId(chatReqDTO.getConversationId());
+        questionAnswerDTO.setFromType(chatReqDTO.getFromType());
+        questionAnswerDTO.setThink(thinkContent);
+        questionAnswerDTO.setAnswer(answerContent);
+        return questionAnswerDTO;
+    }
+
+    private void saveAnswerIntoDB(QuestionAnswerDto questionAnswerDTO) {
+        if (ObjectUtil.isNotNull(questionAnswerDTO) && StringUtils.isNotEmpty(questionAnswerDTO.getConversationId())) {
+            // 根据id查询是否有记录
+            QuestionAnswerDto historyQuestionAnswer = mainAgentMapper.selectAnswerRecordByTaskId(questionAnswerDTO.getConversationId());
+            if (ObjectUtil.isEmpty(historyQuestionAnswer)) {
+                questionAnswerDTO.setAnsUUID(questionAnswerDTO.getConversationId());
+                mainAgentMapper.insertAnswerTable(questionAnswerDTO);
+                mainAgentMapper.insertToQualityAnalysisConversationAnswer(questionAnswerDTO);
             } else {
-                emitter.send(SseEmitter.event().name("error").data(message));
-            }
-        } catch (IOException ignore) {
-            // Connection already closed — nothing to do.
-        }
-    }
-
-    // ---------- helpers --------------------------------------------------------------------
-
-    private static ResponseCacheHook.CacheHitException unwrapCacheHit(Throwable t) {
-        Throwable cur = t;
-        for (int i = 0; i < 8 && cur != null; i++) {
-            if (cur instanceof ResponseCacheHook.CacheHitException ch) return ch;
-            cur = cur.getCause();
-        }
-        return null;
-    }
-
-    private static String extractText(Msg msg) {
-        if (msg == null || msg.getContent() == null) return "";
-        StringBuilder sb = new StringBuilder();
-        for (var block : msg.getContent()) {
-            if (block instanceof TextBlock tb) {
-                sb.append(tb.getText());
+                mainAgentMapper.insertToQualityAnalysisConversationAnswer(questionAnswerDTO);
             }
         }
-        return sb.toString();
-    }
-
-    private static boolean isNotBlank(String s) {
-        return s != null && !s.isBlank();
-    }
-
-    /** Truncates and one-lines text for log output so a single event stays on one line. */
-    private static String preview(String text) {
-        if (text == null || text.isEmpty()) return "";
-        String oneLine = text.replace('\n', ' ').replace('\r', ' ');
-        return oneLine.length() <= 120 ? oneLine : oneLine.substring(0, 120) + "…";
-    }
-
-    private static String firstNonBlank(String... candidates) {
-        if (candidates == null) return UUID.randomUUID().toString();
-        for (String c : candidates) {
-            if (isNotBlank(c)) return c;
-        }
-        return UUID.randomUUID().toString();
     }
 }

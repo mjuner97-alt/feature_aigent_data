@@ -66,8 +66,8 @@ public class GaussConfig {
     static final String DS_NAME = "gaussDataSource";
     static final String SSF_NAME = "gaussSqlSessionFactory";
     static final String TX_NAME = "gaussTransactionManager";
-    static final String MAPPER_PACKAGE = "com.agentscopea2a.mapper.gauss";
-    static final String MAPPER_XML = "classpath*:mybatis/mapper/gauss/*.xml";
+    static final String MAPPER_PACKAGE = "com.agentscopea2a.mapper.db1";
+    static final String MAPPER_XML = "classpath*:mybatis/mapper/db1/*.xml";
 
     @Bean(name = DS_NAME, destroyMethod = "close")
     @ConfigurationProperties(prefix = "spring.datasource.hikari.gauss")

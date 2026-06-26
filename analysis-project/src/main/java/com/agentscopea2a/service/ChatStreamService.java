@@ -26,4 +26,6 @@ public interface ChatStreamService {
      * on every terminal signal (complete / timeout / error).
      */
     SseEmitter stream(ChatRequest req);
+
+    SseEmitter streamPublic(ChatRequest req);
 }

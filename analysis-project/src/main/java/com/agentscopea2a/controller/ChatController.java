@@ -1,36 +1,13 @@
-/*
- * Copyright 2024-2026 the original author or authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+
 package com.agentscopea2a.controller;
 
 import com.agentscopea2a.dto.ChatRequest;
 import com.agentscopea2a.service.ChatStreamService;
-import com.agentscopea2a.service.impl.ChatStreamServiceImpl;
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
-/**
- * Direct REST endpoint mirroring the A2A runner's supervisor wiring.
- *
- * <p>This controller is intentionally thin — it does no normalization, supervisor wiring, or
- * stream handling itself; all of that lives in
- * {@link ChatStreamServiceImpl}. The controller's only
- * job is to bind the HTTP shape ({@code POST /ai/chat}, {@code text/event-stream}) and hand the
- * request off.
- */
 @RestController
 @RequestMapping("/ai")
 @CrossOrigin(origins = "*",maxAge = 3600)
@@ -44,6 +21,29 @@ public class ChatController {
 
     @PostMapping(value = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter chat(@RequestBody ChatRequest req) {
-        return chatStreamService.stream(req);
+        // 统一归一化：chatId（公开入口）和 conversationId（Manager入口）是同一字段
+        normalizeConversationId(req);
+        if (StringUtils.isNoneEmpty(req.getAgentName())){
+            return chatStreamService.stream(req);
+        }else {
+            req.setAgentId("7");
+            req.setAgentName("数字QA助手");
+            req.setFromType("HXY");
+            return chatStreamService.streamPublic(req);
+        }
+    }
+
+    /**
+     * 两个入口用不同字段传会话ID，统一归一化到 conversationId：
+     * <ul>
+     *   <li>Manager 入口 → conversation_id</li>
+     *   <li>公开入口 → chat_id</li>
+     * </ul>
+     * chatId 优先级低于 conversationId：当 conversationId 为空时，用 chatId 回填。
+     */
+    private void normalizeConversationId(ChatRequest req) {
+        if (StringUtils.isNoneEmpty(req.getChatId()) && StringUtils.isEmpty(req.getConversationId())) {
+            req.setConversationId(req.getChatId());
+        }
     }
 }

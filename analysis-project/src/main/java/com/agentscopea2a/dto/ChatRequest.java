@@ -38,11 +38,14 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class ChatRequest {
 
+    //用户id
+    private String userId;
+
     @JsonProperty("input")
     private String input;
 
-    @JsonProperty("session_id")
-    private String sessionId;
+    @JsonProperty("conversation_id")
+    private String conversationId;
 
     @JsonProperty("user_id")
     private String userId;
@@ -53,12 +56,10 @@ public class ChatRequest {
     @JsonProperty("agent_name")
     private String agentName;
 
-    @JsonProperty("form_type")
-    private String formType;
-
-    @JsonProperty("conversation_id")
-    private String conversationId;
+    private String fromType;
 
     @JsonProperty("chat_id")
     private String chatId;
+
+    private String question;
 }
