@@ -5,6 +5,7 @@
  */
 package com.agentscopea2a.harness.skills;
 
+import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -57,6 +58,16 @@ public class SkillIndexRepository {
 
     public SkillIndexRepository(@Qualifier("mysqlDataSource") DataSource dataSource) {
         this.dataSource = dataSource;
+    }
+
+    /**
+     * Eager DDL — runs once at boot so the first {@code save_skill} / PR3 retrieval / PR2
+     * synthesis call doesn't pay for the {@code CREATE TABLE IF NOT EXISTS} round-trip. A boot
+     * failure here is non-fatal: {@link #ensureTable()} still runs on every call and will retry.
+     */
+    @PostConstruct
+    void initSchema() {
+        ensureTable();
     }
 
     public Optional<SkillEntry> findByName(String name) {
@@ -121,6 +132,113 @@ public class SkillIndexRepository {
             ps.executeUpdate();
         } catch (SQLException e) {
             log.warn("recordUsage({}) failed: {}", name, e.getMessage());
+        }
+    }
+
+    /**
+     * PR4 — atomic +1 on {@code success_count}. Called by {@code SkillEvolutionHook} when a
+     * retrieved skill participates in a turn that has no failure signals. Returns false on SQL
+     * error so the caller can degrade gracefully (we never throw out of the hook path).
+     */
+    public boolean incrementSuccess(String name) {
+        return bumpCounter(name, "success_count");
+    }
+
+    /**
+     * PR4 — atomic +1 on {@code failure_count}. Called when retry≥2 / PostCall exception /
+     * cross-turn user rejection is detected against a retrieved skill.
+     */
+    public boolean incrementFailure(String name) {
+        return bumpCounter(name, "failure_count");
+    }
+
+    private boolean bumpCounter(String name, String column) {
+        ensureTable();
+        // Column name is hard-coded by the caller (not user input) — safe to interpolate.
+        String sql = "UPDATE skill_index SET " + column + " = " + column + " + 1 WHERE name = ?";
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, name);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            log.warn("{}({}) failed: {}", column, name, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * PR4 — soft-delete a misbehaving skill by setting {@code status='blacklist'}. The file
+     * stays on disk and the row keeps its accumulated counts so a future review can flip it back
+     * to {@code 'active'}. {@code SkillVectorIndex} already filters on {@code status='active'},
+     * so a blacklisted skill silently stops being retrieved.
+     */
+    public boolean markBlacklist(String name) {
+        ensureTable();
+        String sql = "UPDATE skill_index SET status = 'blacklist' WHERE name = ?";
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, name);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            log.warn("markBlacklist({}) failed: {}", name, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * PR4 — zero out the success/failure counters. Called after a successful evolve so the new
+     * SKILL.md version gets a clean evaluation window; the old body's failures don't follow the
+     * new body into another immediate evolve cycle.
+     */
+    public boolean resetCounts(String name) {
+        ensureTable();
+        String sql = "UPDATE skill_index SET success_count = 0, failure_count = 0 WHERE name = ?";
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, name);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            log.warn("resetCounts({}) failed: {}", name, e.getMessage());
+            return false;
+        }
+    }
+
+    /** PR4 — counts + version snapshot for the evolution-threshold check. */
+    public Optional<SkillStats> findStats(String name) {
+        ensureTable();
+        String sql =
+                "SELECT name, success_count, failure_count, version, status"
+                        + " FROM skill_index WHERE name = ?";
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, name);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return Optional.of(
+                            new SkillStats(
+                                    rs.getString("name"),
+                                    rs.getInt("success_count"),
+                                    rs.getInt("failure_count"),
+                                    rs.getInt("version"),
+                                    rs.getString("status")));
+                }
+            }
+        } catch (SQLException e) {
+            log.warn("findStats({}) failed: {}", name, e.getMessage());
+        }
+        return Optional.empty();
+    }
+
+    /** Snapshot of the PR4-relevant columns. */
+    public record SkillStats(
+            String name, int successCount, int failureCount, int version, String status) {
+        public int totalUses() {
+            return successCount + failureCount;
+        }
+
+        public double failureRate() {
+            int total = totalUses();
+            return total == 0 ? 0d : ((double) failureCount) / total;
         }
     }
 

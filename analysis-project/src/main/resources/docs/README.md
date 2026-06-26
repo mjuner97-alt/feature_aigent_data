@@ -18,7 +18,7 @@
 底层值得关注的能力(每一项后面括号里是"为什么这条对你重要"):
 
 - **workspace 文件驱动子智能体**(加 agent 不动 Java)——
-  人格 + 工具清单都在 [`src/main/resources/workspace/subagents/*.md`](../workspace/subagents/) 的 YAML front matter 里声明。加一个子智能体 = 新增一个 `.md`;前提是 `tools:` 里的名字已在 `SupervisorService.buildToolRegistry()` 里注册。
+  人格 + 工具清单都在 [`src/main/resources/workspace/agent-subagents/*.md`](../workspace/agent-subagents/) 的 YAML front matter 里声明。加一个子智能体 = 新增一个 `.md`;前提是 `tools:` 里的名字已在 `SupervisorService.buildToolRegistry()` 里注册。
 - **HarnessAgent 内置 hook 全开**(免费拿生产能力)——
   `WorkspaceContextHook` / `SessionPersistenceHook` / `CompactionHook`(40 触发,12 保留) / `ToolResultEvictionHook`(80000 字符以上落盘) / `MemoryFlushHook` / `SkillLearningHook` 等都是 builder 默认开。
 - **业务 hook 共 4 个**(业务层逻辑全部聚合在 hook,工具不污染)——
@@ -125,7 +125,7 @@ analysis-project/
     └── workspace/                                   # 启动时被 WorkspaceMaterializer 拷到 .agentscope/workspace/harness-a2a/
         ├── AGENTS.md                                # supervisor 人格(决策规则 + 硬规则 + 数据纪律)
         ├── knowledge/KNOWLEDGE.md                   # 领域知识 — 维度格式
-        └── subagents/                               # YAML front matter 声明 name / tools / maxIters
+        └── agent-subagents/                         # YAML front matter 声明 name / tools / maxIters
             ├── query-quality-data.md                # tools: tool_router
             ├── analyze-data.md                      # tools: tool_router (派给 code_interpreter 算数)
             ├── generate-skill.md                    # tools: skill_save
@@ -157,7 +157,7 @@ analysis-project/
    内置 hook                  业务 hook                    workspace
    (Workspace/Session/        ResponseCacheHook(0)         AGENTS.md → sysPrompt
     Memory/Compaction/        ArtifactAccessHook(8) ★      knowledge/  → 注入
-    SkillLearning/...)        ArtifactHandoffHook(12) ★    subagents/*.md → SubagentSpec
+    SkillLearning/...)        ArtifactHandoffHook(12) ★    agent-subagents/*.md → SubagentSpec
                               DataGroundingHook(15)         ↓
                                                             registerSubagentFromSpec
                                                             (artifact ctx 钉到外层 task)
@@ -195,7 +195,7 @@ analysis-project/
 ### 2.3 关键设计选择
 
 - **每请求一个 `HarnessAgent` 实例** — 重状态(对话历史、长期记忆、缓存)外置到 `MySQLSession` + `EpisodicMemory` + `ResponseCacheService`,builder 本身轻量,避免并发请求互踩。`HarnessA2aRunner.active` 用 `ConcurrentHashMap<taskId, HarnessAgent>` 临时托管,完成时 `doFinally` 移除。
-- **子智能体 Markdown 驱动** — `SupervisorService.@PostConstruct` 把 `workspace/subagents/*.md` 解析为 `SubagentSpec`,启动期 fail-fast 校验每个 `tools:` 声明的工具名;`disableWorkspaceSubagentAutoDiscovery()` 关掉框架的"只用 .md"二次注册避免重复。
+- **子智能体 Markdown 驱动** — `SupervisorService.@PostConstruct` 把 `workspace/agent-subagents/*.md` 解析为 `SubagentDeclaration`,启动期 fail-fast 校验每个 `tools:` 声明的工具名;`WorkspaceMaterializer.ALWAYS_OVERWRITE_PREFIXES` 列出的目录(`agent-subagents/` / `AGENTS.md` / `knowledge/`)每次启动都从 jar 覆盖磁盘,保证 spec 与代码同版本。
 - **共享单容器(GLOBAL scope)** — sandbox profile 默认 `isolationScope: GLOBAL` + `sharedContainerName: agentscope-shared-demo`。所有 user × session × subagent 复用同一个长寿命容器,**JVM 不 docker run 也不 docker stop**,只 `docker exec`。冷启动从 ~30s 降到 ~0,资源占用从 N×(M+1) 个容器降到 1。运维需要预先 `docker run -d --name agentscope-shared-demo ...` 一次。详见 §3.4。
 - **多租户在共享容器里靠两层防护** — (a) `agent_memory` / `agent_memory_ledger` 表按 user_id 分行,文件只是中转;(b) `ArtifactAccessHook` 拦截 `read_file` / `write_file` / `shell_execute` 跨桶引用。第三层 uid 隔离已评估但**暂未实施**。
 - **LTM 按 user 分桶** — `SupervisorService.ltmBucketFor(ctx)` 优先用 `userId`,退回 `sessionId`,最后 `"anonymous"`。
@@ -346,9 +346,9 @@ java -jar target/analysis-project-0.0.1-SNAPSHOT.jar --spring.profiles.active=de
 `dev` profile 默认端口 **8081**(`prod` 8080,见 `application-*.properties`)。
 
 ```bash
-# 简单查询（SSE 流式返回）
+# 简单查询（SSE 流式返回；user_id 可选，传了之后同一 user 跨 session 也能命中缓存）
 curl -sS --max-time 300 http://localhost:8081/ai/chat -H 'Content-Type: application/json' \
-  --data-binary '{"input":"查询2026年1季度杭州开发一部的质量数据","session_id":"demo-001"}'
+  --data-binary '{"input":"查询2026年1季度杭州开发一部的质量数据","session_id":"demo-001","user_id":"u-1024"}'
 
 # 数据分析（自动派 code_interpreter）
 curl -sS --max-time 600 http://localhost:8081/ai/chat -H 'Content-Type: application/json' \
@@ -476,7 +476,7 @@ LLM 看见 handoff 消息就把 path 抄给 `code_interpreter`,后者 `pd.read_c
 
 | 想做什么 | 改哪里 | 注意 |
 |---|---|---|
-| **加一个子智能体** | `src/main/resources/workspace/subagents/<name>.md`,YAML 头声明 `name` / `tools` / `maxIters` | `tools:` 里出现的名字必须在 `SupervisorService.buildToolRegistry()` 能查到,否则启动 fail-fast |
+| **加一个子智能体** | `src/main/resources/workspace/agent-subagents/<name>.md`,YAML 头声明 `name` / `tools` / `maxIters` | `tools:` 里出现的名字必须在 `SupervisorService.buildToolRegistry()` 能查到,否则启动 fail-fast |
 | **加一个新工具** | 写一个带 `@Tool` 的类,在 `buildToolRegistry()` 里 `r.put("tool_name", () -> new Xxx())` | 工具返回 markdown table 或 JSON 数组时,**ArtifactHandoffHook 自动接管**,工具方零额外代码 |
 | **改 supervisor 人格** | 编辑 `src/main/resources/workspace/AGENTS.md` | `WorkspaceMaterializer` 把它列在 `ALWAYS_OVERWRITE_PREFIXES`,每次启动都覆盖磁盘版本 |
 | **改维度抽取规则** | 编辑 `dimension/DimensionStateManager.java` 等 | 同名类也在 jar 里,classpath 上本地源码优先 |
@@ -518,6 +518,10 @@ curl -sS http://localhost:8081/ai/chat -H 'Content-Type: application/json' \
 # 2. 同问题再发(实测 < 1s,cache hit)
 curl -sS http://localhost:8081/ai/chat -H 'Content-Type: application/json' \
   --data-binary '{"input":"查询2026年1季度所有部门的质量数据","session_id":"v-1"}'
+
+# 2b. 跨 session 复用(传 user_id,session_id 换一个 — 仍然 cache hit)
+curl -sS http://localhost:8081/ai/chat -H 'Content-Type: application/json' \
+  --data-binary '{"input":"查询2026年1季度所有部门的质量数据","session_id":"v-9","user_id":"u-1024"}'
 
 # 3. cache 指标
 curl -sS http://localhost:8081/actuator/metrics/harness.a2a.cache

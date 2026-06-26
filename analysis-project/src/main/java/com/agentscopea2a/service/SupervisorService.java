@@ -25,16 +25,22 @@ import com.agentscopea2a.harness.config.SandboxProperties;
 import com.agentscopea2a.agent.dimension.DimensionStateManager;
 import com.agentscopea2a.harness.hooks.ArtifactAccessHook;
 import com.agentscopea2a.harness.hooks.ArtifactHandoffHook;
-import com.agentscopea2a.harness.hooks.DataGroundingHook;
 import com.agentscopea2a.harness.hooks.PythonExecRetryHook;
 import com.agentscopea2a.harness.hooks.ResponseCacheHook;
+import com.agentscopea2a.harness.hooks.SkillRetrievalHook;
+import com.agentscopea2a.harness.hooks.SkillSynthesisHook;
+import com.agentscopea2a.harness.hooks.SkillEvolutionHook;
 import com.agentscopea2a.agent.memory.EpisodicLongTermMemoryAdapter;
 import com.agentscopea2a.agent.memory.MemoryHydrator;
 import com.agentscopea2a.agent.session.MySQLSession;
+import com.agentscopea2a.harness.skills.EmbeddingClient;
 import com.agentscopea2a.harness.skills.SkillIndexRepository;
+import com.agentscopea2a.harness.skills.SkillSynthesisRunner;
+import com.agentscopea2a.harness.skills.SkillEvolutionRunner;
+import com.agentscopea2a.harness.skills.SkillVectorIndex;
 import com.agentscopea2a.harness.tools.PythonExecTool;
 import com.agentscopea2a.harness.tools.SkillSaveTool;
-import com.agentscopea2a.agent.tools.routers.ToolRoutersIndex;
+import com.agentscopea2a.harness.tools.ToolRoutersIndex;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.memory.LongTermMemory;
 import io.agentscope.core.memory.LongTermMemoryMode;
@@ -50,7 +56,7 @@ import io.agentscope.harness.agent.memory.compaction.CompactionConfig;
 import io.agentscope.harness.agent.memory.compaction.ToolResultEvictionConfig;
 import io.agentscope.harness.agent.sandbox.SandboxDistributedOptions;
 import io.agentscope.harness.agent.subagent.AgentSpecLoader;
-import io.agentscope.harness.agent.subagent.SubagentSpec;
+import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -119,6 +125,11 @@ public class SupervisorService {
     private final SandboxProperties sandboxProperties;
     private final PythonExecProperties pythonExecProperties;
     private final SkillIndexRepository skillIndexRepository;
+    private final SkillSynthesisRunner skillSynthesisRunner;
+    private final SkillVectorIndex skillVectorIndex;
+    private final SkillEvolutionRunner skillEvolutionRunner;
+    private final DimensionStateManager cacheDimManager;
+    private final EmbeddingClient embeddingClient;
 
     /**
      * Single-thread daemon executor used to run {@link MemoryHydrator#hydrate(String)}
@@ -139,12 +150,7 @@ public class SupervisorService {
     private final Map<String, Supplier<Object>> toolRegistry;
 
     /** Cached, parsed subagent specs from {@code workspace/subagents/}. Loaded once at startup. */
-    private final List<SubagentSpec> workspaceSubagents = new java.util.ArrayList<>();
-
-    // 数据校验 hook 开关 — 关闭后 supervisor 不再在 PostCall/PostActing 跑正则扫描小数。
-    // 默认 true 保持原有行为(防 LLM 编造数字)。压测或确认数据可信时可关。
-    @Value("${harness.a2a.data-grounding.enabled:true}")
-    private boolean dataGroundingEnabled;
+    private final List<SubagentDeclaration> workspaceSubagents = new java.util.ArrayList<>();
 
     /**
      * Process-wide episodic memory instance. Built once in {@link #init()} (warmup runs the DDL
@@ -172,6 +178,21 @@ public class SupervisorService {
     @Value("${harness.a2a.response-cache.enabled:true}")
     private boolean responseCacheEnabled;
 
+    @Value("${harness.skills.retrieval.enabled:false}")
+    private boolean skillRetrievalEnabled;
+
+    @Value("${harness.skills.retrieval.top-k:3}")
+    private int skillRetrievalTopK;
+
+    @Value("${harness.skills.retrieval.min-cosine:0.55}")
+    private float skillRetrievalMinCosine;
+
+    @Value("${harness.skills.evolution.enabled:false}")
+    private boolean skillEvolutionEnabled;
+
+    @Value("${harness.skills.evolution.rejection-keywords:不对,错了,重算,重新,不是这样,不正确}")
+    private String skillEvolutionRejectionKeywords;
+
     public SupervisorService(
             Path workspace,
             MySQLSession session,
@@ -191,7 +212,11 @@ public class SupervisorService {
             ObjectProvider<SandboxDistributedOptions> sandboxDistributedProvider,
             SandboxProperties sandboxProperties,
             PythonExecProperties pythonExecProperties,
-            SkillIndexRepository skillIndexRepository) {
+            SkillIndexRepository skillIndexRepository,
+            SkillSynthesisRunner skillSynthesisRunner,
+            SkillVectorIndex skillVectorIndex,
+            SkillEvolutionRunner skillEvolutionRunner,
+            ObjectProvider<EmbeddingClient> embeddingClientProvider) {
         this.workspace = workspace;
         this.session = session;
         this.model = model;
@@ -210,25 +235,30 @@ public class SupervisorService {
         this.sandboxProperties = sandboxProperties;
         this.pythonExecProperties = pythonExecProperties;
         this.skillIndexRepository = skillIndexRepository;
+        this.skillSynthesisRunner = skillSynthesisRunner;
+        this.skillVectorIndex = skillVectorIndex;
+        this.skillEvolutionRunner = skillEvolutionRunner;
+        this.cacheDimManager = cacheDimManager;
+        this.embeddingClient = embeddingClientProvider.getIfAvailable();
         this.toolRegistry = buildToolRegistry(workspace);
     }
 
     @PostConstruct
     void init() {
-        Path subagentsDir = workspace.resolve("subagents");
+        Path subagentsDir = workspace.resolve("agent-subagents");
         if (!Files.isDirectory(subagentsDir)) {
             log.warn(
                     "Subagents directory not found at {} — no Markdown subagents will be loaded",
                     subagentsDir);
         } else {
-            workspaceSubagents.addAll(AgentSpecLoader.loadFromDirectory(subagentsDir));
+            workspaceSubagents.addAll(AgentSpecLoader.loadFromDirectory(subagentsDir, workspace));
             log.info(
                     "Loaded {} Markdown subagent spec(s) from {}: {}",
                     workspaceSubagents.size(),
                     subagentsDir,
-                    workspaceSubagents.stream().map(SubagentSpec::getName).toList());
+                    workspaceSubagents.stream().map(SubagentDeclaration::getName).toList());
             // Verify every declared tool exists in the registry — fail fast at startup.
-            for (SubagentSpec spec : workspaceSubagents) {
+            for (SubagentDeclaration spec : workspaceSubagents) {
                 List<String> tools = spec.getTools() != null ? spec.getTools() : List.of();
                 for (String t : tools) {
                     if (!toolRegistry.containsKey(t)) {
@@ -341,7 +371,7 @@ public class SupervisorService {
             b.filesystem(remoteFilesystem);
         }
 
-        for (SubagentSpec spec : workspaceSubagents) {
+        for (SubagentDeclaration spec : workspaceSubagents) {
             registerSubagentFromSpec(b, spec, requestArtifactCtx);
         }
 
@@ -351,8 +381,39 @@ public class SupervisorService {
         }
 
         b.hook(new ArtifactHandoffHook(artifactStore, requestArtifactCtx));
-        if (dataGroundingEnabled) {
-            b.hook(new DataGroundingHook());
+
+        // PR2 — MISS path of skill synthesis. HIT path lives in ResponseCacheHook above
+        // (shares SkillSynthesisRunner). Hook itself short-circuits when runner.enabled() is
+        // false, so default-disabled config is safe.
+        if (skillSynthesisRunner != null) {
+            b.hook(new SkillSynthesisHook(skillSynthesisRunner, cacheDimManager, ctx));
+        }
+
+        // PR3 — focused skill retrieval. Net-add path on top of WorkspaceContextHook (which
+        // injects every SKILL.md). Hook self-short-circuits when enabled=false.
+        b.hook(
+                new SkillRetrievalHook(
+                        skillVectorIndex,
+                        skillIndexRepository,
+                        cacheDimManager,
+                        embeddingClient,
+                        workspace.resolve("skills"),
+                        ctx,
+                        skillRetrievalEnabled,
+                        skillRetrievalTopK,
+                        skillRetrievalMinCosine));
+
+        // PR4 — failure-feedback closed loop. Reads skills.retrieved (written by PR3 hook above)
+        // at PostCall and credits success/failure to skill_index counters; on the failure path
+        // triggers async evolve or blacklist via SkillEvolutionRunner. Self-short-circuits when
+        // runner.enabled() is false.
+        log.info(
+                "PR4 wiring decision: runnerPresent={} skillEvolutionEnabled={} runnerEnabled={}",
+                skillEvolutionRunner != null,
+                skillEvolutionEnabled,
+                skillEvolutionRunner != null && skillEvolutionRunner.enabled());
+        if (skillEvolutionRunner != null && skillEvolutionEnabled) {
+            b.hook(new SkillEvolutionHook(skillEvolutionRunner, ctx, skillEvolutionRejectionKeywords));
         }
 
         return b.build();
@@ -364,13 +425,19 @@ public class SupervisorService {
             DimensionStateManager cacheDimManager,
             RuntimeContext ctx,
             io.micrometer.core.instrument.MeterRegistry meterRegistry) {
-        return new ResponseCacheHook(cacheService, cacheDimManager, ctx, meterRegistry, responseCacheEnabled);
+        return new ResponseCacheHook(
+                cacheService,
+                cacheDimManager,
+                ctx,
+                meterRegistry,
+                responseCacheEnabled,
+                skillSynthesisRunner);
     }
 
     private void registerSubagentFromSpec(
-            HarnessAgent.Builder parent, SubagentSpec spec, ArtifactContext pinnedArtifactCtx) {
+            HarnessAgent.Builder parent, SubagentDeclaration spec, ArtifactContext pinnedArtifactCtx) {
         final String agentId = spec.getName();
-        final String sysPrompt = spec.getSysPrompt();
+        final String sysPrompt = spec.getInlineAgentsBody();
         final int maxIters = spec.getMaxIters() > 0 ? spec.getMaxIters() : 5;
         final List<String> toolNames = spec.getTools() != null ? spec.getTools() : List.of();
 
@@ -440,7 +507,12 @@ public class SupervisorService {
         // 不再在这里直接注册 — subagent.md 中只声明 tool_router 即可。
         r.put(
                 "skill_save",
-                () -> new SkillSaveTool(workspace.resolve("skills"), skillIndexRepository));
+                () ->
+                        new SkillSaveTool(
+                                workspace.resolve("skills"),
+                                skillIndexRepository,
+                                skillVectorIndex,
+                                embeddingClient));
         r.put("tool_router", () -> toolRoutersIndex);
         // python_exec — single-step write+exec replacement for code_interpreter.
         // See docs/code-interpreter-optimization.md §P0-B. Tool is registered always; the

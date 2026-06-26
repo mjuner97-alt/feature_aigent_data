@@ -10,6 +10,7 @@
 package com.agentscopea2a.agent.tools;
 
 import com.agentscopea2a.harness.tools.QualityTools;
+import com.agentscopea2a.harness.tools.ToolRoutersIndex;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
@@ -19,7 +20,7 @@ import org.springframework.stereotype.Component;
  * 通用 Agent 工具集 —— 提供其它 Tool 类未覆盖的杂项能力。
  *
  * <p>本类作为新工具入口,具体业务方法在此扩展。注册为 Spring Bean,以便统一通过
- * {@link com.agentscopea2a.agent.tools.routers.ToolRoutersIndex} 路由调用。
+ * {@link ToolRoutersIndex} 路由调用。
  */
 @Component
 public class AgentTools {

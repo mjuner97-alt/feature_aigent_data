@@ -36,7 +36,7 @@ import java.nio.file.StandardCopyOption;
  *
  * <ul>
  *   <li><b>Always overwritten</b> from classpath on every startup —
- *       {@code subagents/**}, top-level {@code AGENTS.md}, {@code knowledge/**}. These are
+ *       {@code agent-subagents/**}, top-level {@code AGENTS.md}, {@code knowledge/**}. These are
  *       code-shipped assets; they MUST stay in sync with the deployed jar.
  *   <li><b>Seeded once</b> (preserved if present) — everything else, including agent-produced
  *       state ({@code memory/}, {@code skills/}, {@code sessions/}, evicted tool results).
@@ -60,7 +60,7 @@ public final class WorkspaceMaterializer {
      * agent-produced state (memory/, skills/, sessions/, results/) which must be preserved.
      */
     private static final String[] ALWAYS_OVERWRITE_PREFIXES = {
-        "subagents/", "AGENTS.md", "knowledge/"
+        "agent-subagents/", "AGENTS.md", "knowledge/"
     };
 
     private WorkspaceMaterializer() {}

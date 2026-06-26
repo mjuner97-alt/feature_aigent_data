@@ -44,6 +44,9 @@ public class ChatRequest {
     @JsonProperty("session_id")
     private String sessionId;
 
+    @JsonProperty("user_id")
+    private String userId;
+
     @JsonProperty("agent_id")
     private String agentId;
 

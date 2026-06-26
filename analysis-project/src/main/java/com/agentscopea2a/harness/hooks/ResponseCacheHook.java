@@ -19,6 +19,7 @@ import com.agentscopea2a.harness.cache.ResponseCacheService;
 import com.agentscopea2a.agent.dimension.DimensionState;
 import com.agentscopea2a.agent.dimension.DimensionStateManager;
 import com.agentscopea2a.agent.dimension.QuestionAnalysis;
+import com.agentscopea2a.harness.skills.SkillSynthesisRunner;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.hook.Hook;
 import io.agentscope.core.hook.HookEvent;
@@ -73,6 +74,20 @@ public class ResponseCacheHook implements Hook {
     private final MeterRegistry meterRegistry;
     private final boolean enabled;
 
+    /**
+     * Optional skill-synthesis runner — when non-null, every cache HIT bumps the synthesis
+     * candidate fingerprint (tenantBucket|intent|dimensionKey, NO question hash) AND, if the
+     * bumped row crosses {@code threshold}, dispatches async distillation. Without this, the
+     * synthesis hook never runs on the HIT path (priority=0 short-circuits via {@link
+     * CacheHitException}) and the same dimensional question repeated through cache would never
+     * accumulate hits to trigger distillation.
+     *
+     * <p>Both this path and {@link com.agentscopea2a.harness.hooks.SkillSynthesisHook} delegate
+     * to the same {@link SkillSynthesisRunner}, whose {@code markSynthesized} CAS guarantees
+     * at-most-once distillation even when MISS and HIT paths race on the same fingerprint.
+     */
+    private final SkillSynthesisRunner synthesisRunner;
+
     // Set in PreCall on cache miss, read in PostCall for cache write.
     // Safe because each agent gets its own hook instance and handles one request at a time.
     private String pendingCacheKey;
@@ -98,7 +113,7 @@ public class ResponseCacheHook implements Hook {
             DimensionStateManager dimManager,
             RuntimeContext runtimeContext,
             MeterRegistry meterRegistry) {
-        this(cacheService, dimManager, runtimeContext, meterRegistry, true);
+        this(cacheService, dimManager, runtimeContext, meterRegistry, true, null);
     }
 
     public ResponseCacheHook(
@@ -107,17 +122,27 @@ public class ResponseCacheHook implements Hook {
             RuntimeContext runtimeContext,
             MeterRegistry meterRegistry,
             boolean enabled) {
+        this(cacheService, dimManager, runtimeContext, meterRegistry, enabled, null);
+    }
+
+    public ResponseCacheHook(
+            ResponseCacheService cacheService,
+            DimensionStateManager dimManager,
+            RuntimeContext runtimeContext,
+            MeterRegistry meterRegistry,
+            boolean enabled,
+            SkillSynthesisRunner synthesisRunner) {
         this.cacheService = cacheService;
         this.dimManager = dimManager;
         this.runtimeContext = runtimeContext;
         this.meterRegistry = meterRegistry;
         this.enabled = enabled;
+        this.synthesisRunner = synthesisRunner;
     }
 
     @Override
     public int priority() {
-        // Run before all other hooks (ProgressiveMemoryHook=5, LoggingHook=10,
-        // DataGroundingHook=15)
+        // Run before all other hooks (ProgressiveMemoryHook=5, LoggingHook=10)
         return 0;
     }
 
@@ -165,6 +190,12 @@ public class ResponseCacheHook implements Hook {
             if (cached.isPresent()) {
                 log.info("Cache HIT for key={}, short-circuiting agent execution", cacheKey);
                 count("hit");
+                // Bump the synthesis fingerprint on the HIT path too — and trigger distillation
+                // synchronously here (the synthesis hook never runs after the short-circuit).
+                // Fingerprint shape mirrors SkillSynthesisHook: tenantBucket|intent|stateKey
+                // (NO question hash, even for analytical intents — same dimensions should
+                // distill ONE shared skill regardless of phrasing).
+                bumpAndMaybeSynthesize(intent, state, question);
                 return Mono.error(new CacheHitException(cached.get()));
             }
 
@@ -262,6 +293,28 @@ public class ResponseCacheHook implements Hook {
             return;
         }
         Counter.builder(METRIC_NAME).tag("outcome", outcome).register(meterRegistry).increment();
+    }
+
+    /**
+     * Bumps the {@link SkillSynthesisRunner} fingerprint counter for the cache-HIT path and
+     * dispatches async distillation when threshold is crossed. Mirrors {@link
+     * com.agentscopea2a.harness.hooks.SkillSynthesisHook}'s fingerprint shape so MISS hits
+     * (counted by that hook) and HIT hits (counted here) target the same row.
+     *
+     * <p>Failures are swallowed — cache HIT must never block a request because synthesis
+     * machinery is unavailable.
+     */
+    private void bumpAndMaybeSynthesize(String intent, DimensionState state, String question) {
+        if (synthesisRunner == null) return;
+        try {
+            String dimKey = state.toCacheKey();
+            if (dimKey.isEmpty()) return;
+            String tenant = tenantBucket();
+            String fingerprint = tenant + "|" + intent + "|" + dimKey;
+            synthesisRunner.bumpAndMaybeSynthesize(fingerprint, tenant, question, null);
+        } catch (Exception ex) {
+            log.debug("HIT-path synthesis bump swallowed: {}", ex.getMessage());
+        }
     }
 
     // ==================== CacheHitException ====================

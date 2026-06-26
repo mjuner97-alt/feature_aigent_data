@@ -15,8 +15,6 @@
  */
 package com.agentscopea2a.harness.tools;
 
-import com.agentscopea2a.harness.hooks.DataGroundingHook;
-
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -25,10 +23,8 @@ import java.util.Map;
 /**
  * Single source of truth for known quality-data entities and per-department defect density.
  *
- * <p>{@link QualityTools} reads these constants for tool responses; {@link
- * DataGroundingHook} reads them to validate that the
- * Agent's final answer only mentions known entities/values. Previously each class kept its own
- * copy — see docs/enhancement-proposal.md P2-3.
+ * <p>{@link QualityTools} reads these constants for tool responses. Previously each class kept
+ * its own copy — see docs/enhancement-proposal.md P2-3.
  */
 public final class KnownEntities {
 

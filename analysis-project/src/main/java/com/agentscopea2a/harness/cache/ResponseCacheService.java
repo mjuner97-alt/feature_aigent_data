@@ -229,6 +229,11 @@ public class ResponseCacheService {
 
     /**
      * Extracts the user question text from a list of messages (takes the last user message).
+     *
+     * <p>Skips synthetic memory-recall messages that AgentScope's episodic memory injects as a
+     * USER-role message at the tail (recognized by the canonical "Below is content retrieved from
+     * the long-term memory" prefix). Without this skip, multi-turn calls would fingerprint /
+     * intent-extract on the memory recall blob instead of the user's actual input.
      */
     public static String extractUserQuestion(List<io.agentscope.core.message.Msg> messages) {
         if (messages == null) return "";
@@ -237,6 +242,9 @@ public class ResponseCacheService {
             if (msg.getRole() == io.agentscope.core.message.MsgRole.USER) {
                 String text = msg.getTextContent();
                 if (text != null && !text.isEmpty()) {
+                    if (text.startsWith("Below is content retrieved from the long-term memory")) {
+                        continue;
+                    }
                     return text;
                 }
             }

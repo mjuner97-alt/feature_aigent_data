@@ -22,7 +22,7 @@
         <file.encoding>UTF-8</file.encoding>
 
         <!-- 核心版本号 -->
-        <agentscope.version>1.1.0-RC1</agentscope.version>
+        <agentscope.version>1.1.0-RC2</agentscope.version>
         <lombok.version>1.18.30</lombok.version>
         <micrometer.version>1.12.3</micrometer.version>
         <mysql.version>8.2.0</mysql.version>

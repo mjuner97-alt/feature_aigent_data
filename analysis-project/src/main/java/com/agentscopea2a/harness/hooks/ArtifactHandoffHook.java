@@ -73,11 +73,8 @@ import java.util.Set;
  * within a single call.
  *
  * <p><b>Priority.</b> 12 — after {@code ResponseCacheHook(0)} (cache hits short-circuit before
- * tool dispatch, so we'd never run anyway), after harness's {@code ProgressiveMemoryHook(5)}
- * and {@code LoggingHook(10)} (those want to log the original tool output), before
- * {@code DataGroundingHook(15)} (grounding should compare against the ARTIFACT-replaced result
- * the LLM will actually see, otherwise it warns on numbers that the LLM never had a chance to
- * copy).
+ * tool dispatch, so we'd never run anyway) and after harness's {@code ProgressiveMemoryHook(5)}
+ * and {@code LoggingHook(10)} (those want to log the original tool output).
  */
 public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
 

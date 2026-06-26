@@ -52,10 +52,9 @@ import java.util.regex.Pattern;
  * Keeping it as a hook means the tool stays a thin shell-out and this file owns the
  * retry-prompt semantics in one place.
  *
- * <p><b>Priority.</b> 13 — between {@link ArtifactHandoffHook} (12, which doesn't touch
+ * <p><b>Priority.</b> 13 — after {@link ArtifactHandoffHook} (12, which doesn't touch
  * python_exec since it's not in EXCLUDED_TOOLS but won't match because python_exec output
- * isn't tabular) and {@link DataGroundingHook} (15, which captures numbers). Order doesn't
- * matter much for python_exec failures, but 13 keeps us deterministic right after handoff.
+ * isn't tabular). 13 keeps us deterministic right after handoff.
  */
 public class PythonExecRetryHook implements Hook {
 

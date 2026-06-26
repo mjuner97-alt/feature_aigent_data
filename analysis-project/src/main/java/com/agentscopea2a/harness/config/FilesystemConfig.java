@@ -193,7 +193,7 @@ public class FilesystemConfig {
                         .image(s.getImage())
                         .workspaceRoot(s.getWorkspaceRoot())
                         .workspaceSpec(workspaceSpec);
-        spec.workspaceProjectionRoots(List.of("AGENTS.md", "knowledge", "subagents"));
+        spec.workspaceProjectionRoots(List.of("AGENTS.md", "knowledge", "agent-subagents"));
         spec.isolationScope(scope);
         return spec;
     }

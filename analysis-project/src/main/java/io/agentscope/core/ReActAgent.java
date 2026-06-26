@@ -90,6 +90,53 @@ import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+/**
+ * ReAct (Reasoning and Acting) Agent implementation.
+ *
+ * <p>ReAct is an agent design pattern that combines reasoning (thinking and planning) with acting
+ * (tool execution) in an iterative loop. The agent alternates between these two phases until it
+ * either completes the task or reaches the maximum iteration limit.
+ *
+ * <p><b>Key Features:</b>
+ * <ul>
+ *   <li><b>Reactive Streaming:</b> Uses Project Reactor for non-blocking execution
+ *   <li><b>Hook System:</b> Extensible hooks for monitoring and intercepting agent execution
+ *   <li><b>HITL Support:</b> Human-in-the-loop via stopAgent() in PostReasoningEvent/PostActingEvent
+ *   <li><b>Structured Output:</b> StructuredOutputCapableAgent provides type-safe output generation
+ * </ul>
+ *
+ * <p><b>Usage Example:</b>
+ * <pre>{@code
+ * // Create a model
+ * DashScopeChatModel model = DashScopeChatModel.builder()
+ *     .apiKey(System.getenv("DASHSCOPE_API_KEY"))
+ *     .modelName("qwen-plus")
+ *     .build();
+ *
+ * // Create a toolkit with tools
+ * Toolkit toolkit = new Toolkit();
+ * toolkit.registerObject(new MyToolClass());
+ *
+ * // Build the agent
+ * ReActAgent agent = ReActAgent.builder()
+ *     .name("Assistant")
+ *     .sysPrompt("You are a helpful assistant.")
+ *     .model(model)
+ *     .toolkit(toolkit)
+ *     .memory(new InMemoryMemory())
+ *     .maxIters(10)
+ *     .build();
+ *
+ * // Use the agent
+ * Msg response = agent.call(Msg.builder()
+ *     .name("user")
+ *     .role(MsgRole.USER)
+ *     .content(TextBlock.builder().text("What's the weather?").build())
+ *     .build()).block();
+ * }</pre>
+ *
+ * @see StructuredOutputCapableAgent
+ */
 public class ReActAgent extends StructuredOutputCapableAgent {
 
     private static final Logger log = LoggerFactory.getLogger(ReActAgent.class);
@@ -110,7 +157,13 @@ public class ReActAgent extends StructuredOutputCapableAgent {
     private final StatePersistence statePersistence;
     private RuntimeContext pendingRuntimeContext;
 
-
+    /**
+     * Per-call system message, propagated across PreCallEvent → PreReasoningEvent /
+     * PreSummaryEvent. It is safe to use an {@link java.util.concurrent.atomic.AtomicReference}
+     * here because {@code AgentBase.acquireExecution()} guarantees that only one {@code call()}
+     * runs concurrently per agent instance, so this reference is effectively owned by a single
+     * logical execution at any time.
+     */
     private final java.util.concurrent.atomic.AtomicReference<Msg> currentSystemMsg =
             new java.util.concurrent.atomic.AtomicReference<>();
 
@@ -330,8 +383,10 @@ public class ReActAgent extends StructuredOutputCapableAgent {
 
         if (!providedResults.isEmpty()) {
             // User provided tool results -> validate and add
-
-//            validateAndAddToolResults(msgs, pendingIds);
+            // SHADOW PATCH: skip strict validation; allow caller-provided tool results to pass
+            // through without raising on duplicate/missing IDs (PendingToolRecoveryHook will
+            // patch up gaps during PreCallEvent).
+            // validateAndAddToolResults(msgs, pendingIds);
             return hasPendingToolUse() ? acting(0) : executeIteration(0);
         }
 
@@ -544,9 +599,9 @@ public class ReActAgent extends StructuredOutputCapableAgent {
                                 boolean discard =
                                         getInterruptSource() == InterruptSource.SYSTEM
                                                 && shutdownManager
-                                                .getConfig()
-                                                .partialReasoningPolicy()
-                                                == PartialReasoningPolicy.DISCARD;
+                                                                .getConfig()
+                                                                .partialReasoningPolicy()
+                                                        == PartialReasoningPolicy.DISCARD;
                                 // Manually interruption will save the msg, while system
                                 // interruption will discard on specific config
                                 if (!discard) {
@@ -835,8 +890,8 @@ public class ReActAgent extends StructuredOutputCapableAgent {
                                 TextBlock.builder()
                                         .text(
                                                 "You have failed to generate response within the"
-                                                        + " maximum iterations. Now respond directly by"
-                                                        + " summarizing the current situation.")
+                                                    + " maximum iterations. Now respond directly by"
+                                                    + " summarizing the current situation.")
                                         .build())
                         .build());
         return messageList;
@@ -1767,9 +1822,9 @@ public class ReActAgent extends StructuredOutputCapableAgent {
                                             doc -> doc,
                                             (doc1, doc2) ->
                                                     doc1.getScore() != null
-                                                            && doc2.getScore() != null
-                                                            && doc1.getScore()
-                                                            > doc2.getScore()
+                                                                    && doc2.getScore() != null
+                                                                    && doc1.getScore()
+                                                                            > doc2.getScore()
                                                             ? doc1
                                                             : doc2))
                             .values()

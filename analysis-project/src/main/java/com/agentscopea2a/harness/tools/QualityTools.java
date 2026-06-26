@@ -37,8 +37,8 @@ public class QualityTools {
 
     // ==================== 维度常量 ====================
     //
-    // Entity arrays + per-department defect density live in KnownEntities so DataGroundingHook
-    // can validate against the same source (see P2-3 in docs/enhancement-proposal.md).
+    // Entity arrays + per-department defect density live in KnownEntities so QualityTools and
+    // any future readers share one source (see P2-3 in docs/enhancement-proposal.md).
 
     private static final String[] DEPARTMENTS = KnownEntities.departmentsArray();
 

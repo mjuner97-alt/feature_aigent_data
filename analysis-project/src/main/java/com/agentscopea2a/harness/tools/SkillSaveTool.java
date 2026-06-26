@@ -15,7 +15,9 @@
  */
 package com.agentscopea2a.harness.tools;
 
+import com.agentscopea2a.harness.skills.EmbeddingClient;
 import com.agentscopea2a.harness.skills.SkillIndexRepository;
+import com.agentscopea2a.harness.skills.SkillVectorIndex;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.skill.AgentSkill;
 import io.agentscope.core.skill.util.SkillFileSystemHelper;
@@ -27,6 +29,8 @@ import org.slf4j.LoggerFactory;
 import java.nio.file.Path;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -53,11 +57,38 @@ public class SkillSaveTool {
 
     private final Path skillsDir;
     private final SkillIndexRepository indexRepository;
+    private final SkillVectorIndex vectorIndex;
+    private final EmbeddingClient embeddingClient;
+
+    /** Single-thread daemon so embedding upserts never delay the save_skill tool reply. */
+    private static final ScheduledExecutorService EMBED_EXEC =
+            Executors.newSingleThreadScheduledExecutor(
+                    r -> {
+                        Thread t = new Thread(r, "skill-embed");
+                        t.setDaemon(true);
+                        return t;
+                    });
 
     /** Repository may be {@code null} when wired in legacy single-arg paths (tests, etc.). */
     public SkillSaveTool(Path skillsDir, SkillIndexRepository indexRepository) {
+        this(skillsDir, indexRepository, null, null);
+    }
+
+    /**
+     * PR3 constructor — adds the optional {@link SkillVectorIndex} + {@link EmbeddingClient}
+     * pair. When both are non-null, every successful save kicks off an async embedding upsert
+     * so the new skill becomes retrievable on the next request. Either being null silently
+     * skips that step (PR3 retrieval is opt-in).
+     */
+    public SkillSaveTool(
+            Path skillsDir,
+            SkillIndexRepository indexRepository,
+            SkillVectorIndex vectorIndex,
+            EmbeddingClient embeddingClient) {
         this.skillsDir = skillsDir;
         this.indexRepository = indexRepository;
+        this.vectorIndex = vectorIndex;
+        this.embeddingClient = embeddingClient;
     }
 
     /**
@@ -111,6 +142,7 @@ public class SkillSaveTool {
                                 + " — "
                                 + skillsDir.resolve(safeName).resolve("SKILL.md");
                 log.info("Skill saved: {} v{}", safeName, version);
+                maybeEmbedAsync(safeName, desc);
                 return ToolResultBlock.text(msg);
             }
             return ToolResultBlock.error("技能保存失败，请重试");
@@ -126,6 +158,34 @@ public class SkillSaveTool {
         }
         int v = indexRepository.upsertOnSave(name, description);
         return v > 0 ? v : 1;
+    }
+
+    /**
+     * Fire-and-forget embedding upsert (PR3). Skipped when either dependency is unwired —
+     * preserves the manual save_skill path's behaviour when retrieval is disabled. We embed
+     * "{name} {description}" rather than the full SKILL.md body because (a) description is
+     * what discriminates skills semantically, and (b) full-body embeddings would change every
+     * version bump even when the skill's intent didn't.
+     */
+    private void maybeEmbedAsync(String name, String description) {
+        if (vectorIndex == null || embeddingClient == null) return;
+        final String text = (name + " " + description).trim();
+        if (text.isEmpty()) return;
+        EMBED_EXEC.submit(
+                () -> {
+                    try {
+                        float[] vec = embeddingClient.embed(text);
+                        if (vec == null) {
+                            log.debug("Embedding null for skill {}, vector upsert skipped", name);
+                            return;
+                        }
+                        // fingerprint is owned by PR2's synthesis path; manual saves leave it
+                        // null and rely on L2 for retrieval.
+                        vectorIndex.upsertVector(name, null, vec);
+                    } catch (Exception ex) {
+                        log.warn("Async embedding upsert for {} failed: {}", name, ex.getMessage());
+                    }
+                });
     }
 
     /** Drop any YAML frontmatter the LLM may have prepended — we own this block. */

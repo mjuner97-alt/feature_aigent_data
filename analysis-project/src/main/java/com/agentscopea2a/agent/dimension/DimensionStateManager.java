@@ -171,11 +171,24 @@ public class DimensionStateManager implements io.agentscope.core.state.StateModu
     private static final Pattern EXPLICIT_QUARTER = Pattern.compile("(\\d{4}年\\d{1,2}季度)");
     private static final Pattern EXPLICIT_MONTH = Pattern.compile("(\\d{1,2})月(?!份)");
     private static final Pattern EXPLICIT_SHORT_QUARTER = Pattern.compile("(\\d{1,2})季度");
-    private static final Pattern EXPLICIT_DEPT = Pattern.compile("(杭州开发[一二三四五]部)");
+    // Q1/Q2/Q3/Q4 / 一季度 / 二季度 alias — normalised to "{year}年{n}季度" for fingerprint stability
+    private static final Pattern EXPLICIT_QUARTER_ALIAS =
+            Pattern.compile("(?:Q|q)([1-4])|([一二三四])季度");
+    // KNOWLEDGE.md §部门 标准枚举 — 漏掉非"杭州开发X部"的会让用户连问 N 次也触发不了同指纹
+    private static final Pattern EXPLICIT_DEPT =
+            Pattern.compile(
+                    "(杭州开发[一二三四五]部|云计算实验室|杭州技术部|杭州服务支持部)");
+    // 应用 F-XXX / 群组 F-XXX-XXX — 同一正则吃下,后者只是更长
     private static final Pattern EXPLICIT_APP = Pattern.compile("(F-[A-Za-z][A-Za-z0-9-]*)");
-    private static final Pattern EXPLICIT_TEAM = Pattern.compile("([一-龥]{2}组)");
-    private static final Pattern EXPLICIT_PRODUCT_LINE = Pattern.compile("([一-龥]{2}产品线)");
-    private static final Pattern EXPLICIT_REQUIREMENT = Pattern.compile("([一-龥]{2}需求项)");
+    // 小组:KNOWLEDGE.md 举例都 5+ 字(如"金融市场自营测试组"),放宽到 {2,}
+    private static final Pattern EXPLICIT_TEAM = Pattern.compile("([一-龥A-Za-z0-9]{2,}组)");
+    // 产品线:同上放宽,并补常见非"...产品线"后缀的固定名(普惠金融 / 代理国库等)
+    private static final Pattern EXPLICIT_PRODUCT_LINE =
+            Pattern.compile(
+                    "([一-龥]{2,}产品线|普惠金融|代理国库|代理财政|代理同业|交行输出"
+                            + "|全球市场风险管理应用|金融市场共享数据服务)");
+    // 需求项:之前抽的是"XX需求项"前 2 字,真正的 itemNo 格式如 I20260208-0005 反而没匹配
+    private static final Pattern EXPLICIT_REQUIREMENT = Pattern.compile("(I\\d{8}-\\d{4})");
 
     public QuestionAnalysis analyzeQuestionRuleBased(String userQuestion) {
         QuestionAnalysis analysis = new QuestionAnalysis();
@@ -286,6 +299,33 @@ public class DimensionStateManager implements io.agentscope.core.state.StateModu
             }
         }
 
+        // Quarter aliases: "Q1" / "q1" / "一季度" — normalise so user shorthand maps to the same
+        // fingerprint as "2026年1季度". Without this, "Q1 杭一部" and "1季度 杭一部" are different
+        // candidates and the auto-synth counter never accumulates.
+        if (explicit.getTimeDimension() == null) {
+            Matcher aliasMatcher = EXPLICIT_QUARTER_ALIAS.matcher(q);
+            if (aliasMatcher.find()) {
+                String qNum;
+                if (aliasMatcher.group(1) != null) {
+                    qNum = aliasMatcher.group(1); // Q1-Q4
+                } else {
+                    qNum = switch (aliasMatcher.group(2)) {
+                        case "一" -> "1";
+                        case "二" -> "2";
+                        case "三" -> "3";
+                        case "四" -> "4";
+                        default -> null;
+                    };
+                }
+                if (qNum != null) {
+                    explicit.setTimeDimension(
+                            new DimensionState.TimeDimension(
+                                    DimensionState.TimeDimensionType.QUARTER,
+                                    List.of(year + "年" + qNum + "季度")));
+                }
+            }
+        }
+
         Matcher deptMatcher = EXPLICIT_DEPT.matcher(q);
         if (deptMatcher.find()) {
             explicit.setDepartments(List.of(deptMatcher.group()));
@@ -328,18 +368,14 @@ public class DimensionStateManager implements io.agentscope.core.state.StateModu
             }
         }
 
-        // 需求项（优先级最低）
+        // 需求项 — 真正的 itemNo 格式 I20260208-0005
         if (explicit.getPeerDimension() == null) {
             Matcher reqMatcher = EXPLICIT_REQUIREMENT.matcher(q);
             if (reqMatcher.find()) {
-                String matched = reqMatcher.group(1);
-                // Skip demonstrative references ("这个需求项", "那个需求项") — not explicit names
-                if (!matched.startsWith("这个") && !matched.startsWith("那个")) {
-                    explicit.setPeerDimension(
-                            new DimensionState.PeerDimension(
-                                    DimensionState.PeerDimensionType.REQUIREMENT,
-                                    List.of(reqMatcher.group())));
-                }
+                explicit.setPeerDimension(
+                        new DimensionState.PeerDimension(
+                                DimensionState.PeerDimensionType.REQUIREMENT,
+                                List.of(reqMatcher.group())));
             }
         }
 

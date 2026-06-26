@@ -7,10 +7,9 @@
  *
  *      http://www.apache.org/licenses/LICENSE-2.0
  */
-package com.agentscopea2a.agent.tools.routers;
+package com.agentscopea2a.harness.tools;
 
 import com.agentscopea2a.agent.tools.AgentTools;
-import com.agentscopea2a.harness.tools.DataPrimitivesTool;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
