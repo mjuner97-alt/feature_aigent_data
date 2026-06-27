@@ -45,7 +45,7 @@ maxIters: 5
 
 ## 🚨 调用 data_primitives 工具的流程
 
-子 agent 没有直接注册 `data_aggregate` 等工具,而是和 `query_quality_data` 一样走 `tool_router`:
+子 agent 没有直接注册 `data_aggregate` 等工具,而是和 `query_data` 一样走 `tool_router`:
 
 1. 参考 skill `data_primitives` 中的 `toolId` 列表
 2. 调用 `toolMetaInfo(toolId="data_aggregate")` 获取参数元信息
@@ -75,7 +75,7 @@ agent_spawn(
 - code_interpreter 在沙箱里 `pd.read_csv` 就拿到原始 DataFrame,机器读机器写,零误差
 - 跨用户隔离:csv 路径里带 `<userId>/<taskId>` 前缀,**绝对不要**手工编造或改写路径,只能复制工具结果里给的那一条
 
-如果同一次分析涉及多张数据(比如对比两个季度),分别派两次 query_quality_data 拿到两个 csv 路径,
+如果同一次分析涉及多张数据(比如对比两个季度),分别派两次 query_data 拿到两个 csv 路径,
 对比/同比这种需求就**直接用 `data_compare_ratio(csvPathA, csvPathB, ...)`**,不要派 code_interpreter。
 
 ## 注意事项

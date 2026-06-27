@@ -1,7 +1,7 @@
 # harness.a2a
 
-> AgentScope Java **harness 1.1.0-RC1** + Spring Boot 3.2.3 (Java 17) 上的多智能体 A2A 示例。
-> 一个 Markdown 驱动的"质量数据智能助手",涵盖 **缓存命中短路 / 多租户 artifact 协议 / 沙箱执行 / MySQL 镜像 memory / 共享单容器** 等生产级设计点。
+> AgentScope Java **harness 1.1.0-RC2** + Spring Boot 3.2.3 (Java 17) 上的多智能体 A2A 示例。
+> 一个 Markdown 驱动的"质量数据智能助手",涵盖 **两步式工具路由 / Skills 自演化 / 缓存命中短路 / 多租户 artifact 协议 / 沙箱执行 / MySQL 镜像 memory / 共享单容器** 等生产级设计点。
 
 ---
 
@@ -11,21 +11,28 @@
 
 | 用户意图 | 派单链路 | 数据/工具 |
 |---|---|---|
-| **简单查询**(`查询2026年1季度杭州开发一部的质量数据`) | supervisor → `query_quality_data` | `QualityTools`(4 个维度组合查询函数) |
-| **数据分析**(`对比 Q1 与 Q2 缺陷密度,算环比`) | supervisor → `analyze_data` → `query_quality_data`×N → `code_interpreter` | `QualityTools` + 沙箱 Python(pandas/numpy);**中间数据走 CSV artifact** |
+| **简单查询**(`查询2026年1季度杭州开发一部的质量数据`) | supervisor → `query_data` | `tool_index` skill 选 `toolId` → `toolMetaInfo` → `router_tool` 路由到 `AgentTools` 的 `quality_query_by_*` |
+| **数据分析**(`对比 Q1 与 Q2 缺陷密度,算环比`) | supervisor → `analyze_data` → `query_data`×N →(`data_primitives` 路由 / 或 `code_interpreter`) | `AgentTools` 取数 + `DataPrimitivesTool`(5 个 pandas 原语)或沙箱 `python_exec`;**中间数据走 CSV artifact** |
 | **保存技能**(`把刚才流程保存为 skill`) | supervisor → `generate_skill` → `save_skill` | `SkillSaveTool` 落盘 `workspace/skills/<name>/SKILL.md` |
 
 底层值得关注的能力(每一项后面括号里是"为什么这条对你重要"):
 
 - **workspace 文件驱动子智能体**(加 agent 不动 Java)——
-  人格 + 工具清单都在 [`src/main/resources/workspace/agent-subagents/*.md`](../workspace/agent-subagents/) 的 YAML front matter 里声明。加一个子智能体 = 新增一个 `.md`;前提是 `tools:` 里的名字已在 `SupervisorService.buildToolRegistry()` 里注册。
+  人格 + 工具清单都在 [`src/main/resources/workspace/agent-subagents/*.md`](../workspace/agent-subagents/) 的 YAML front matter 里声明。加一个子智能体 = 新增一个 `.md`;子代理只需要在 `tools:` 写 `tool_router`(或 `python_exec` / `skill_save` 等少数特殊工具),所有业务工具都通过元工具路由调用,**不再需要在 Java 端维护逐工具白名单**。
+- **★ 两步式元工具路由**(LLM 不直接看一整个工具菜单)——
+  子代理拿到的只有两个元工具:`toolMetaInfo(toolId)` 查参数定义、`router_tool(paramsJson)` 统一执行入口。业务工具(`AgentTools.quality_query_by_*`、`DataPrimitivesTool.data_aggregate/...`)被 `ToolRoutersIndex` 反射扫描 `@Tool` 方法登记到 `toolId` 映射表;子代理先查 `tool_index` / `data_primitives` 这两个 skill 拿到 `toolId`,再发起调用。**工具数量从 O(N) 个名字膨胀到 LLM 上下文 → 收敛到 2 个元工具 + 1 个索引 skill**。
+- **★ Skills 自演化(越用越聪明)**(`harness/skills/` 全套)——
+  - `SkillSynthesisHook` — `PostReply` 阶段把成功的工作流提炼成 `SkillCandidate` 入库(MySQL `skill_candidate` 表);累计 N 次同质轨迹 → `SkillDistiller` 用 LLM 蒸馏出 `SKILL.md` 草稿
+  - `SkillEvolutionHook` — 跑时基于反馈(用户拒绝 / 工具失败关键字)对现有 skill 打负分,触发再合成
+  - `SkillRetrievalHook` — `PreReply` 阶段按问题 embedding 在 `SkillVectorIndex`(`OpenAiCompatEmbeddingClient`)里 top-k 检索,只把命中的 SKILL.md 注进 prompt,**比 `WorkspaceContextHook` 全量加载省 token**
 - **HarnessAgent 内置 hook 全开**(免费拿生产能力)——
-  `WorkspaceContextHook` / `SessionPersistenceHook` / `CompactionHook`(40 触发,12 保留) / `ToolResultEvictionHook`(80000 字符以上落盘) / `MemoryFlushHook` / `SkillLearningHook` 等都是 builder 默认开。
-- **业务 hook 共 4 个**(业务层逻辑全部聚合在 hook,工具不污染)——
-  - `ResponseCacheHook` — 用 `DimensionStateManager` 抽问题维度,以 `tenantBucket | intent | dimensionKey` 为 key 在 MySQL 里命中复用,命中时**短路** LLM 直接把缓存 Event 流回客户端。**实测 cache hit 从 33s 降到 1s**。
-  - `DataGroundingHook` — 捕获每次工具结果里的实体名 + 小数,在 `PostCallEvent` 阶段对比 LLM 最终回复;缺失实体 / 编造数字 → 回复末尾打 `⚠️ 数据校验告警`。
-  - `ArtifactHandoffHook` ★ — **P3 协议**:`PostActingEvent` 阶段透明识别工具返回的 markdown 表格 / JSON 数组,自动落 CSV 到 `workspace/artifacts/<userId>/<taskId>/<tool>-<uuid>.csv`,把原结果替换成带 `pd.read_csv(...)` 的简短 handoff 消息。**工具方零改动**就能接入。
-  - `ArtifactAccessHook` ★ — `PreActingEvent` 阶段拦截 `read_file` / `write_file` / `shell_execute`,artifact 树内非本 task 桶的路径改写成必败 sentinel。详见 §5。
+  `WorkspaceContextHook` / `SessionPersistenceHook` / `CompactionHook`(40 触发,12 保留) / `ToolResultEvictionHook`(80000 字符以上落盘) / `MemoryFlushHook` 等都是 builder 默认开。
+- **业务 hook 共 7 个**(业务层逻辑全部聚合在 hook,工具不污染)——
+  - `ResponseCacheHook`(priority 0) — 用 `DimensionStateManager` 抽问题维度,以 `tenantBucket | intent | dimensionKey` 为 key 在 MySQL 里命中复用,命中时**短路** LLM 直接把缓存 Event 流回客户端。**实测 cache hit 从 33s 降到 1s**。
+  - `ArtifactHandoffHook`(priority 12)★ — **P3 协议**:`PostActingEvent` 阶段透明识别工具返回的 markdown 表格 / JSON 数组,自动落 CSV 到 `workspace/artifacts/<userId>/<taskId>/<tool>-<uuid>.csv`,把原结果替换成带 `pd.read_csv(...)` 的简短 handoff 消息。**工具方零改动**就能接入。
+  - `ArtifactAccessHook`(priority 8)★ — `PreActingEvent` 阶段拦截 `read_file` / `write_file` / `shell_execute` / `python_exec`,artifact 树内非本 task 桶的路径改写成必败 sentinel。详见 §5。
+  - `PythonExecRetryHook` — 沙箱内 `python_exec` 报 `ModuleNotFoundError` / `Timeout` 等可恢复异常时自动 `pip install` / 二次执行,把容器内的小坑挡掉,subagent 看到的就是干净的结果。
+  - `SkillRetrievalHook` / `SkillSynthesisHook` / `SkillEvolutionHook` — 见上节。
 - **Memory 三件套**(本地文件 + MySQL 镜像 + 容器内回灌)——
   - `MysqlMemoryStore` — `agent_memory` + `agent_memory_ledger` 两张表自动建表,以 `(user_id, kind, key_name)` 上锁,`upsert` / `appendLedgerLine` / `tailLedger`
   - `MemoryFileWatcher` — 5s 轮询 `<workspace>/memory/<userId>/`,把 `MEMORY.md` / `*.jsonl` 增量同步到 DB,容器内子智能体的写入也能进 DB
@@ -33,7 +40,7 @@
 - **持久层**(`Session` 接口 MySQL 直挂)——
   `MySQLSession` 实现框架 `Session` 接口(单表 `session_state_list`,list 状态增量 append);`EpisodicLongTermMemoryAdapter` 把 `MySqlEpisodicMemory` 适配到 `LongTermMemory`,按 `userId` 分桶。
 - **沙箱(可选 profile)+ 共享单容器**——
-  默认 profile 为 `dev`(无沙箱)。叠加 `sandbox-windows` / `sandbox-linux` / `sandbox-linux-remote` 之一(见 §3.3)即把 `FilesystemTool` / `ShellExecuteTool` / `code_interpreter` 全部丢进 Docker 容器;三个 profile 都默认 `isolationScope: GLOBAL` + `sharedContainerName: agentscope-shared-demo` —— **整个 fleet 复用一个长寿命容器**,JVM 不创建/销毁容器,只 `docker exec`。详见 §3.4。
+  默认 profile 为 `dev`(无沙箱)。叠加 `sandbox-windows` / `sandbox-linux` / `sandbox-linux-remote` 之一(见 §3.3)即把 `FilesystemTool` / `ShellExecuteTool` / `PythonExecTool` / `code_interpreter` 全部丢进 Docker 容器;三个 profile 都默认 `isolationScope: GLOBAL` + `sharedContainerName: agentscope-shared-demo` —— **整个 fleet 复用一个长寿命容器**,JVM 不创建/销毁容器,只 `docker exec`。详见 §3.4。
 - **distributed 路径**(可选,Redis BaseStore 已落地,profile 自行装配)——
   `JedisBaseStore` 已实现 — 业务侧若要两副本可自配 profile;**artifacts 不走 Redis**,需 LB 按 userId 粘性或共享存储。
 - **artifact 兜底 GC**(自愈)——
@@ -48,7 +55,7 @@
 ```
 analysis-project/
 ├── pom.xml                                          # Java 17 + Spring Boot 3.2.3
-│                                                    # 依赖 agentscope-harness 1.1.0-RC1
+│                                                    # 依赖 agentscope-harness 1.1.0-RC2
 │                                                    #     + agentscope-a2a-spring-boot-starter
 ├── .gitignore                                       # 已忽略 .env / .agentscope/ / .idea
 ├── src/main/java/
@@ -60,10 +67,11 @@ analysis-project/
 │   └── com/agentscopea2a/
 │       ├── AgentscopeA2aApplication.java            # Spring Boot bootstrap + @EnableScheduling
 │       ├── service/
-│       │   └── SupervisorService.java               # ★ HarnessAgent 工厂 + 子智能体 Markdown 装配
-│       ├── runner/                                  # AgentRunner Bean — A2A 协议适配 + artifact GC
+│       │   ├── SupervisorService.java               # ★ HarnessAgent 工厂 + 子智能体 Markdown 装配 + hook 链
+│       │   ├── ChatStreamService.java               # 聊天流式接口
+│       │   └── impl/ChatStreamServiceImpl.java
 │       ├── controller/
-│       │   ├── ChatController.java                  # POST /ai/chat — 直接 REST 入口（SSE 流）
+│       │   ├── ChatController.java                  # POST /ai/chat — 直接 REST 入口(SSE 流)
 │       │   └── DebugController.java                 # GET /debug/* — 看 workspace / memory / sessions / skills
 │       ├── config/                                  # 数据源 / 多 DB(MySQL + ClickHouse + GaussDB)
 │       ├── agent/
@@ -76,9 +84,13 @@ analysis-project/
 │       │   │   ├── EpisodicMemoryConfig.java
 │       │   │   └── EpisodicLongTermMemoryAdapter.java
 │       │   ├── dimension/                           # 维度抽取(supervisor / dimension / 子代理可异)
+│       │   ├── hook/SessionHook.java                # session 级 hook
 │       │   ├── model/                               # ModelRegistry / ModelProperties / 多实例工厂
 │       │   ├── session/MySQLSession.java            # Session 接口 MySQL 实现
-│       │   └── ...
+│       │   └── tools/
+│       │       ├── AgentTools.java                  # ★ 4 个 @Tool 业务查询方法(quality_query_by_*),
+│       │       │                                    #   由 ToolRoutersIndex 反射扫到登记 toolId
+│       │       └── routers/                         # HttpClient / MdTableParser(路由辅助类)
 │       ├── harness/
 │       │   ├── config/
 │       │   │   ├── InfraConfig.java                 # HikariCP + ArtifactStore + Model + workspace.path
@@ -89,28 +101,45 @@ analysis-project/
 │       │   │   ├── JedisBaseStore.java              # distributed profile 用的 Redis BaseStore
 │       │   │   └── WorkspaceMaterializer.java       # 启动时把 classpath:workspace/** 拷到磁盘
 │       │   ├── hooks/
-│       │   │   ├── ResponseCacheHook.java           # Pre-/PostCall 缓存命中短路(MySQL)
-│       │   │   ├── DataGroundingHook.java           # 验证回复数字 vs 工具结果
-│       │   │   ├── ArtifactHandoffHook.java         # ★ PostActing 识别表格 → 落 CSV + 替换 result
-│       │   │   └── ArtifactAccessHook.java          # ★ PreActing 拦截跨桶 read_file / write_file / shell_execute
+│       │   │   ├── ResponseCacheHook.java           # priority 0 — Pre-/PostCall 缓存命中短路(MySQL)
+│       │   │   ├── ArtifactAccessHook.java          # priority 8 ★ PreActing 拦截跨桶 read/write/shell/python_exec
+│       │   │   ├── ArtifactHandoffHook.java         # priority 12 ★ PostActing 识别表格 → 落 CSV + 替换 result
+│       │   │   ├── PythonExecRetryHook.java         # 沙箱内 python_exec 失败自动恢复(pip install / 重试)
+│       │   │   ├── SkillRetrievalHook.java          # ★ PreReply embedding top-k SKILL.md 注入
+│       │   │   ├── SkillSynthesisHook.java          # ★ PostReply 把成功流程蒸馏入 skill_candidate 表
+│       │   │   └── SkillEvolutionHook.java          # ★ 反馈驱动 skill 再合成 / 降权
+│       │   ├── skills/                              # ★ Skills 自演化整包
+│       │   │   ├── SkillVectorIndex.java            #   内存向量库
+│       │   │   ├── EmbeddingClient.java + OpenAiCompatEmbeddingClient.java
+│       │   │   ├── SkillDistiller.java              #   LLM 蒸馏 SkillCandidate → SKILL.md
+│       │   │   ├── SkillCandidate.java + SkillCandidateRepository.java
+│       │   │   ├── SkillEntry.java + SkillIndexRepository.java
+│       │   │   ├── SkillSynthesisRunner.java        #   被 SynthesisHook + ResponseCacheHook 共享
+│       │   │   └── SkillEvolutionRunner.java
 │       │   ├── artifact/
 │       │   │   ├── ArtifactStore.java               # ★ 委托给 ArtifactIo,(user, task) 双层分桶,cleanupTask GC
 │       │   │   ├── ArtifactIo.java                  # ★ 物理 IO 接口(writeAtomic / deleteBucket)
 │       │   │   ├── LocalArtifactIo.java             # 本地实现 — .tmp + ATOMIC_MOVE
 │       │   │   ├── SshArtifactIo.java               # ★ SSH 远端实现 — 远端 Docker host 场景用
-│       │   │   ├── ArtifactContext.java             # (userBucket, taskBucket) 值对象 + sanitize
+│       │   │   ├── ArtifactContext.java + ArtifactRef.java
 │       │   │   ├── ArtifactSweeper.java             # @Scheduled 每小时兜底清过期 bucket(本地)
 │       │   │   └── TabularExtractor.java            # markdown table / JSON array → TabularData
 │       │   ├── tools/
-│       │   │   ├── QualityTools.java                # 4 个 @Tool — 模拟质量数据查询(零 artifact 感知)
+│       │   │   ├── QualityTools.java                # 旧版 4 个直接查询 @Tool(保留向后兼容)
+│       │   │   ├── DataPrimitivesTool.java          # ★ 5 个 pandas 原语 @Tool(aggregate/top_n/pivot/...)
+│       │   │   ├── PythonExecTool.java              # ★ python_exec(code) — 一次远端往返,直接喂 python3 -
+│       │   │   ├── ToolRoutersIndex.java            # ★ @PostConstruct 反射扫所有 @Tool 方法
+│       │   │   │                                    #   暴露 router_tool + toolMetaInfo 元工具
+│       │   │   ├── KnownEntities.java               # 已知实体白名单(部门/季度等)
 │       │   │   └── SkillSaveTool.java               # @Tool save_skill — 落盘 SKILL.md
 │       │   ├── cache/
 │       │   │   └── ResponseCacheService.java        # MySQL response_cache 表的读写 + intent 分类
+│       │   ├── runner/HarnessA2aRunner.java         # A2A 协议适配 + artifact GC
 │       │   └── workspace/                           # 远程 Docker daemon 工作区双向同步(skills / memory.remote=true 时启用)
 │       │       ├── RemoteDirSyncer.java
 │       │       └── RemoteWorkspaceSyncService.java
 │       ├── mapper/                                  # MyBatis (多数据源)
-│       ├── entity/dto/                              # 业务模型
+│       ├── entity/ + dto/                           # 业务模型
 └── src/main/resources/
     ├── application.properties                       # 端口 / AgentCard 三个 skill / 模型实例 / 默认 profile=dev
     ├── application-dev.properties                   # 开发库:MySQL/ClickHouse/GaussDB,端口 8081
@@ -119,18 +148,21 @@ analysis-project/
     ├── application-sandbox-linux.properties         # ★ 沙箱 profile — Linux JVM + 同机本地 Docker
     ├── application-sandbox-linux-remote.properties  # ★ 沙箱 profile — Linux JVM + 远程 Linux Docker
     ├── log4j2.xml
+    ├── mybatis/                                     # MyBatis XML
     ├── docs/                                        # 文档目录
     │   ├── README.md                                # ← 本文件
     │   └── ssh.md                                   # 远端 Docker SSH 接通速查
     └── workspace/                                   # 启动时被 WorkspaceMaterializer 拷到 .agentscope/workspace/harness-a2a/
         ├── AGENTS.md                                # supervisor 人格(决策规则 + 硬规则 + 数据纪律)
         ├── knowledge/KNOWLEDGE.md                   # 领域知识 — 维度格式
+        ├── skills/                                  # ★ 基线 skill(随项目装箱)+ 自学新 skill 落盘位置
+        │   ├── tool_index/SKILL.md                  #   工具索引 — toolId ↔ 业务场景映射
+        │   └── data_primitives/SKILL.md             #   pandas 5 原语的调用指南
         └── agent-subagents/                         # YAML front matter 声明 name / tools / maxIters
-            ├── query-quality-data.md                # tools: tool_router
-            ├── analyze-data.md                      # tools: tool_router (派给 code_interpreter 算数)
-            ├── generate-skill.md                    # tools: skill_save
-            └── code-interpreter.md                  # 不声明 tools — harness 在 sandbox 模式自动注入
-                                                    #   shell_execute / write_file / read_file
+            ├── query_data.md                        # tools: tool_router
+            ├── analyze_data.md                      # tools: tool_router
+            ├── generate_skill.md                    # tools: skill_save
+            └── code_interpreter.md                  # tools: python_exec (sandbox 模式额外注入 shell/read/write)
 ```
 
 ### 2.2 一次请求的执行链路
@@ -142,14 +174,14 @@ analysis-project/
                                   │
         ┌─────────────────────────┴─────────────────────────┐
         ▼                                                   ▼
-  ChatController                                  HarnessA2aRunner (AgentRunner Bean)
-  (直接 REST,Mono.block)                          (a2a starter 调用,流式 Flux<Event>)
+  ChatController → ChatStreamService              HarnessA2aRunner (AgentRunner Bean)
+  (直接 REST,SSE)                                  (a2a starter 调用,流式 Flux<Event>)
         │                                                   │
         └─────────────────────────┬─────────────────────────┘
                                   ▼
               SupervisorService.build(cacheHook, ctx)        ← 每次请求都新建 HarnessAgent
               ├─ MemoryHydrator.hydrate(userId)               ← DB → MEMORY.md 文件回灌(若缺/空)
-              └─ 装载 hook 链 + 子智能体 spec
+              └─ 装载 hook 链 + 子智能体 spec(只暴露 tool_router / python_exec / skill_save 几把元工具)
                                   │
         ┌─────────────────────────┼──────────────────────────┐
         │                         │                          │
@@ -157,10 +189,11 @@ analysis-project/
    内置 hook                  业务 hook                    workspace
    (Workspace/Session/        ResponseCacheHook(0)         AGENTS.md → sysPrompt
     Memory/Compaction/        ArtifactAccessHook(8) ★      knowledge/  → 注入
-    SkillLearning/...)        ArtifactHandoffHook(12) ★    agent-subagents/*.md → SubagentSpec
-                              DataGroundingHook(15)         ↓
-                                                            registerSubagentFromSpec
-                                                            (artifact ctx 钉到外层 task)
+    ToolResultEviction        ArtifactHandoffHook(12) ★    skills/tool_index + data_primitives → 注入
+    /...)                     PythonExecRetryHook            agent-subagents/*.md → SubagentSpec
+                              SkillRetrievalHook ★            ↓
+                              SkillSynthesisHook ★           registerSubagentFromSpec
+                              SkillEvolutionHook ★            (artifact ctx 钉到外层 task)
                                   │
                                   ▼
               agent.stream(msgs, ctx)  /  agent.call(msg, ctx)
@@ -169,16 +202,20 @@ analysis-project/
         ▼ 缓存命中                                                    ▼ 缓存未命中
    CacheHitException 短路                                  ReAct 主循环:
    直接把 cached response 包成 Event                       reasoning → agent_spawn → 子智能体 ReAct
-                                                          ├─ subagent 调 query_quality_data
-                                                          │  → tool 返回 markdown
+                                                          ├─ subagent 走两步式路由:
+                                                          │  ① 查 tool_index / data_primitives skill 拿 toolId
+                                                          │  ② toolMetaInfo(toolId) 取参数定义
+                                                          │  ③ router_tool({"toolId":..., ...}) 执行
+                                                          │  → 业务工具 (AgentTools / DataPrimitivesTool) 返回 markdown
                                                           │  → ArtifactHandoffHook 落 CSV,改写 result
                                                           │     成 "📦 ... /workspace/artifacts/...csv"
-                                                          ├─ supervisor 派 code_interpreter
+                                                          ├─ supervisor 派 code_interpreter (沙箱模式)
                                                           │  → spawn 消息里只带 csv path,不带数据
-                                                          │  → 容器内 pd.read_csv → 算
-                                                          │     → ArtifactAccessHook 校验 read/write/shell 路径
+                                                          │  → python_exec(code) 一把,容器内 pandas 计算
+                                                          │  → PythonExecRetryHook 兜底 ModuleNotFoundError
+                                                          │  → ArtifactAccessHook 校验 read/write/shell/python_exec 路径
                                                           │       是否在当前 task 桶内
-                                                          └─ PostCall:写缓存 + grounding check
+                                                          └─ PostReply:写缓存 + skill synthesis(蒸馏候选 skill)
                                   │
         ┌─────────────────────────┴─────────────────────────┐
         ▼                                                   ▼
@@ -195,12 +232,14 @@ analysis-project/
 ### 2.3 关键设计选择
 
 - **每请求一个 `HarnessAgent` 实例** — 重状态(对话历史、长期记忆、缓存)外置到 `MySQLSession` + `EpisodicMemory` + `ResponseCacheService`,builder 本身轻量,避免并发请求互踩。`HarnessA2aRunner.active` 用 `ConcurrentHashMap<taskId, HarnessAgent>` 临时托管,完成时 `doFinally` 移除。
-- **子智能体 Markdown 驱动** — `SupervisorService.@PostConstruct` 把 `workspace/agent-subagents/*.md` 解析为 `SubagentDeclaration`,启动期 fail-fast 校验每个 `tools:` 声明的工具名;`WorkspaceMaterializer.ALWAYS_OVERWRITE_PREFIXES` 列出的目录(`agent-subagents/` / `AGENTS.md` / `knowledge/`)每次启动都从 jar 覆盖磁盘,保证 spec 与代码同版本。
+- **子智能体 Markdown 驱动** — `SupervisorService.@PostConstruct` 把 `workspace/agent-subagents/*.md` 解析为 `SubagentDeclaration`,启动期 fail-fast 校验每个 `tools:` 声明的工具名;`WorkspaceMaterializer.ALWAYS_OVERWRITE_PREFIXES` 列出的目录(`agent-subagents/` / `AGENTS.md` / `knowledge/` / 部分基线 `skills/`)每次启动都从 jar 覆盖磁盘,保证 spec 与代码同版本。
+- **★ 两步式元工具路由** — `ToolRoutersIndex.@PostConstruct` 反射扫所有标了 `@Tool` 的方法(`AgentTools` / `DataPrimitivesTool` / ...),建立 `toolId → (Bean, Method)` 表。子代理只持有 `router_tool` + `toolMetaInfo` 两把元工具,先查 `tool_index` / `data_primitives` 这两个 SKILL.md 找到 `toolId`,再走元工具调用。**新增业务工具完全不动子代理 prompt 也不改子代理 `tools:` 声明**。
 - **共享单容器(GLOBAL scope)** — sandbox profile 默认 `isolationScope: GLOBAL` + `sharedContainerName: agentscope-shared-demo`。所有 user × session × subagent 复用同一个长寿命容器,**JVM 不 docker run 也不 docker stop**,只 `docker exec`。冷启动从 ~30s 降到 ~0,资源占用从 N×(M+1) 个容器降到 1。运维需要预先 `docker run -d --name agentscope-shared-demo ...` 一次。详见 §3.4。
-- **多租户在共享容器里靠两层防护** — (a) `agent_memory` / `agent_memory_ledger` 表按 user_id 分行,文件只是中转;(b) `ArtifactAccessHook` 拦截 `read_file` / `write_file` / `shell_execute` 跨桶引用。第三层 uid 隔离已评估但**暂未实施**。
+- **多租户在共享容器里靠两层防护** — (a) `agent_memory` / `agent_memory_ledger` 表按 user_id 分行,文件只是中转;(b) `ArtifactAccessHook` 拦截 `read_file` / `write_file` / `shell_execute` / `python_exec` 跨桶引用。第三层 uid 隔离已评估但**暂未实施**。
 - **LTM 按 user 分桶** — `SupervisorService.ltmBucketFor(ctx)` 优先用 `userId`,退回 `sessionId`,最后 `"anonymous"`。
 - **缓存键加 tenant 前缀** — `ResponseCacheHook.scopedKey` = `tenantBucket | intent | dimensionKey`,两个用户问同一维度组合不会拿到彼此结果。
-- **★ Artifact 路径分桶** — `workspace/artifacts/<userId>/<taskId>/<tool>-<uuid>.csv`。`ArtifactHandoffHook` 钉到 build 时的 outer ctx,subagent 即使被 framework 给新 `sessionId="sub-uuid"`,artifact 还是写到 outer task 桶里(否则 `code_interpreter` 读不到 `query_quality_data` 写的 CSV)。
+- **★ Skills 自演化闭环** — 成功响应在 `SkillSynthesisHook` 阶段落 `skill_candidate`(签名=工具调用序列);累计阈值后 `SkillDistiller` 用 LLM 把候选合并为 `SKILL.md`,写入 `workspace/skills/<name>/`。`SkillRetrievalHook` 用 embedding(`OpenAiCompatEmbeddingClient`) top-k 注入,**不再全量 dump 所有 SKILL.md 进 prompt**。`SkillEvolutionHook` 监听否定反馈,触发再合成 / 降权。
+- **★ Artifact 路径分桶** — `workspace/artifacts/<userId>/<taskId>/<tool>-<uuid>.csv`。`ArtifactHandoffHook` 钉到 build 时的 outer ctx,subagent 即使被 framework 给新 `sessionId="sub-uuid"`,artifact 还是写到 outer task 桶里(否则 `code_interpreter` 读不到 `query_data` 写的 CSV)。
 - **★ ArtifactIo 可插拔** — `ArtifactStore` 委托给 `ArtifactIo` 接口;默认 `LocalArtifactIo`,开 `harness.a2a.artifacts.remote.enabled=true` 切到 `SshArtifactIo`,写到**远端 Docker daemon 的宿主机**上(JVM 在笔记本、Docker 在 GPU 机的场景)。
 - **★ MEMORY.md 双链路** — 容器内子智能体写文件 → `MemoryFileWatcher` 5s 轮询 mirror 进 `agent_memory`(`source='container'`);宿主 JVM 调 `MemoryHydrator.hydrate(userId)` 从 DB 反向回灌文件,让 harness 内置的 `WorkspaceContextHook` 不感知 DB。
 
@@ -412,7 +451,7 @@ LLM 看见 handoff 消息就把 path 抄给 `code_interpreter`,后者 `pd.read_c
 
 ### 4.4 排除的工具
 
-`read_file` / `write_file` / `shell_execute` / `agent_spawn` / `agent_send` / `task_*` / `memory_*` / `session_search` / `save_skill` 永远不被 artifact 化(避免循环 / 破坏语义)。完整列表见 `ArtifactHandoffHook.EXCLUDED_TOOLS`。
+`read_file` / `write_file` / `shell_execute` / `python_exec` / `agent_spawn` / `agent_send` / `task_*` / `memory_*` / `session_search` / `save_skill` / `toolMetaInfo` 永远不被 artifact 化(避免循环 / 破坏语义)。完整列表见 `ArtifactHandoffHook.EXCLUDED_TOOLS`。
 
 ### 4.5 远端写后端(`SshArtifactIo`)
 
@@ -448,15 +487,16 @@ LLM 看见 handoff 消息就把 path 抄给 `code_interpreter`,后者 `pd.read_c
 | **response cache** | key = `tenantBucket \| intent \| dimensionKey`,两个用户的同维度问题不互通 | `harness/cache/ResponseCacheService.java` |
 | **长期记忆 LTM** | `EpisodicMemory` 按 userId 分桶 | `agent/memory/EpisodicLongTermMemoryAdapter.java` |
 
-### 5.2 工具层 — `ArtifactAccessHook` 拦截三工具
+### 5.2 工具层 — `ArtifactAccessHook` 拦截四工具
 
-`PreActingEvent` 阶段拦截下面三个工具,在 artifact 树内但跨桶 → 改写参数让工具失败:
+`PreActingEvent` 阶段拦截下面四个工具,在 artifact 树内但跨桶 → 改写参数让工具失败:
 
 | 工具 | 检查 | 违规处理 |
 |---|---|---|
 | `read_file` | `path` 在 artifacts 树内但不在自己桶 | 改写 `path` 为 `/__forbidden__/<u>/<t>` |
 | `write_file` | 同上(防写穿) | 同上 |
 | `shell_execute` | `command` 字符串里出现 `<artifactsRoot>...` 但不是自己桶;或 `working_directory` 跨桶 | 改写 `command` 为 `echo '... denied ...' >&2; exit 77` |
+| `python_exec` | `code` 字符串里出现跨桶 artifact 路径(`pd.read_csv("...")` / `open("...")` 等) | 替换为抛出 `PermissionError` 的简短 Python |
 
 详见 `harness/hooks/ArtifactAccessHook.java`。
 
@@ -476,11 +516,15 @@ LLM 看见 handoff 消息就把 path 抄给 `code_interpreter`,后者 `pd.read_c
 
 | 想做什么 | 改哪里 | 注意 |
 |---|---|---|
-| **加一个子智能体** | `src/main/resources/workspace/agent-subagents/<name>.md`,YAML 头声明 `name` / `tools` / `maxIters` | `tools:` 里出现的名字必须在 `SupervisorService.buildToolRegistry()` 能查到,否则启动 fail-fast |
-| **加一个新工具** | 写一个带 `@Tool` 的类,在 `buildToolRegistry()` 里 `r.put("tool_name", () -> new Xxx())` | 工具返回 markdown table 或 JSON 数组时,**ArtifactHandoffHook 自动接管**,工具方零额外代码 |
+| **加一个子智能体** | `src/main/resources/workspace/agent-subagents/<name>.md`,YAML 头声明 `name` / `tools` / `maxIters` | `tools:` 推荐就写 `tool_router`(再加 `python_exec` / `skill_save` 等少数特殊工具),业务工具走元工具路由,不要在 Java 端逐个登记 |
+| **加一个新业务查询/计算工具** | 写一个 `@Tool` 方法,挂在已被扫描的 Bean 上(`AgentTools` / `DataPrimitivesTool` / 任何被 `ToolRoutersIndex` 收录的 Bean) | `ToolRoutersIndex.@PostConstruct` 反射扫到就自动暴露给 `router_tool`,**子代理无需任何改动**;再把 `toolId` 加到 `workspace/skills/tool_index/SKILL.md`(或 `data_primitives`)让 LLM 找得到 |
+| **加一个非路由工具**(如 `save_skill` 这种特殊语义) | 在 `SupervisorService.buildToolRegistry()` 里 `r.put("tool_name", () -> new Xxx())`,然后在子代理 `tools:` 显式声明 | 启动期 fail-fast 校验工具名 |
 | **改 supervisor 人格** | 编辑 `src/main/resources/workspace/AGENTS.md` | `WorkspaceMaterializer` 把它列在 `ALWAYS_OVERWRITE_PREFIXES`,每次启动都覆盖磁盘版本 |
+| **加/改基线 SKILL.md** | 写到 `src/main/resources/workspace/skills/<name>/SKILL.md`,加到 `ALWAYS_OVERWRITE_PREFIXES` 让启动覆盖 | LLM 通过 `SkillRetrievalHook` embedding 检索命中后注入;自学的 skill 不放 `ALWAYS_OVERWRITE_PREFIXES`,免得被覆盖 |
+| **关 / 调 Skills 自演化** | `harness.a2a.skills.synthesis.enabled=false` / `evolution.enabled=false` / `retrieval.enabled=false`(任选其一关闭一条链路) | 三条链路独立。关 retrieval 后回退到 `WorkspaceContextHook` 全量加载 SKILL.md |
 | **改维度抽取规则** | 编辑 `dimension/DimensionStateManager.java` 等 | 同名类也在 jar 里,classpath 上本地源码优先 |
 | **换 LLM provider** | 改 `InfraConfig.model()` Bean | 下游全部走 `Model` 接口 |
+| **换 embedding provider** | 实现 `EmbeddingClient` 接口(`harness/skills/`),在配置里指向新实现 | 默认 `OpenAiCompatEmbeddingClient` 走 `/v1/embeddings` 协议,GLM / ARK / OpenAI 都兼容 |
 | **换 artifact 后端** | 实现 `ArtifactIo`(`harness/artifact/ArtifactIo.java`),在 `InfraConfig.artifactStore()` 注入 | 接口只 3 个方法,新写 S3 / OSS / NFS 都简单 |
 | **关 / 调 artifact** | `harness.a2a.artifacts.keep=true` 关闭 GC + sweeper(debug 用);`harness.a2a.artifacts.sweeper.max-age-hours` 改兜底清理阈值 | keep=true 不要在生产开,会无限积累 |
 | **关共享容器** | `harness.a2a.sandbox.shared-container-name=`(空)+ `harness.a2a.sandbox.isolation-scope=USER` | 回退到每用户一容器,失去冷启动收益 |
@@ -490,9 +534,11 @@ LLM 看见 handoff 消息就把 path 抄给 `code_interpreter`,后者 `pd.read_c
 
 ## 7. 已知限制 / 注意点
 
-- **关 sandbox profile 后 `code_interpreter` 落宿主 shell**(无沙箱)— 仅本地演示用。
+- **关 sandbox profile 后 `python_exec` / `code_interpreter` 落宿主 shell**(无沙箱)— 仅本地演示用。
 - **MySQL fail-soft 静默副作用** — DB 不可达时服务不挂,但 `ResponseCacheService.put()` 报 WARN 却仍让 hook 看起来 "Response cached"(实际没写)。
-- **`DataGroundingHook` 只校验小数**(`\d+\.\d+`),不校验整数。
+- **`DataGroundingHook` 已下线** — 旧版的小数比对方案被替换成"LLM 不算数 → 由 `data_primitives` / `code_interpreter` 算"的硬规则(见 `AGENTS.md`「数据处理硬规则」)。如果业务仍想要末尾告警,可以挂回去,该类已删除请新写。
+- **`SkillRetrievalHook` 与全量加载并存** — `WorkspaceContextHook` 仍会扫 `workspace/skills/`,Retrieval 是 net-add;若想完全只用检索,需要把 SKILL.md 移出 `workspace/skills/` 默认根目录,或自行禁用 `WorkspaceContextHook` 的扫描。
+- **`SkillSynthesisRunner` 在 cache hit 路径也跑** — `ResponseCacheHook` 命中时不调 LLM 但仍传成功流程给 synthesis,以便缓存到的轨迹也能被沉淀。
 - **distributed profile + artifact 不自动跨副本** — 需 LB 按 userId 粘性 / 共享存储 / 同 SSH 远端。
 - **artifact 不加密** — 同主机不同租户 bind-mount 共享路径,假设是"主机内 trust"。
 - **`SshArtifactIo` 必须密钥免密** — `BatchMode=yes` 写死,密码登录立即报错。
@@ -500,6 +546,7 @@ LLM 看见 handoff 消息就把 path 抄给 `code_interpreter`,后者 `pd.read_c
 - **`MemoryFileWatcher` 用 5s 轮询**,而不是 `WatchService`。原因是 docker bind mount 上 inotify 不可靠跨平台行为差 — 每文件 30ms 内能 mirror,够用。
 - **共享单容器的 OOM 集中度**:所有用户共享内存上限,某用户 LLM 写 `[0]*10**9` 仍能 OOMkill 整个容器影响其他用户。容器层 cgroup 是单一 budget,要内存隔离需 per-user 容器或 cgroup-per-uid。
 - **uid 隔离暂未实施** — `ArtifactAccessHook` 是软层防御,容器内进程通过 shell 拼接 / `os.chdir` 等手段仍能绕过。
+- **A2A AgentCard skill id 仍叫 `query_quality_data`**(`application.properties` 里),与子代理改名 `query_data` 不同步;这是对外协议字段,改名要兼容老客户端,**当前保持 legacy id**。
 
 ---
 
@@ -550,7 +597,7 @@ ssh root@<docker-host> 'find /opt/agentscope-workspace/harness-a2a/artifacts -ty
 
 - 所有请求 200 OK,中文回复
 - 第 2 个请求秒回(cache hit 短路)
-- 第 4 个请求里的所有变化率**都来自 code_interpreter 的 Python stdout**,日志里 `Data grounding check passed`
+- 第 4 个请求里的所有变化率**都来自 `data_primitives` 路由(`data_compare_ratio` 等)或 `code_interpreter` 的 Python stdout**,日志里能看到 `router_tool called: toolId=...` 或 `python_exec` 输出
 - alice / bob 两请求 `agent_memory` 表里两行 user_id 各自分行,不串
 - artifact 目录任务完成后立即清空
 
@@ -569,8 +616,9 @@ mvn -B test
 | `ArtifactStoreTest` | UUID 防碰撞、并发多用户写、`cleanupTask` 只清目标桶、原子写无 `.tmp` 残留、路径 sanitize、IO 失败 fail-soft |
 | `TabularExtractorTest` | markdown table 识别 + 阈值 / 不规则放过、JSON array 识别 + 同构性校验 / 异构放过、CSV escape、preview 截断 |
 | `ArtifactHandoffHookTest` | 真 `QualityTools` 输出 → artifact 落盘 + handoff 消息正确、排除工具放行、small table 不 artifact 化、pinned ctx 覆盖 subagent ctx |
+| `SkillSaveToolTest` | `save_skill` 落盘命名 / SKILL.md 内容拼装 |
 
-`SshArtifactIo` 不在单测覆盖(需要可达 SSH 端点,放在集成 / smoke 层验证)。
+`SshArtifactIo`、`SkillVectorIndex`、`SkillDistiller`、`ToolRoutersIndex` 反射扫描等链路不在单测覆盖(需要可达 SSH 端点 / Embedding 服务 / Spring 上下文,放在集成 / smoke 层验证)。
 
 ---
 
@@ -580,3 +628,11 @@ mvn -B test
 |---|---|
 | `README.md` | 本文件 — 总览 + 架构 + 启动 + 验证 |
 | [`ssh.md`](ssh.md) | 远端 Docker 场景的 SSH 接通速查(免密 / ControlMaster / DOCKER_HOST) |
+| [`agentscope-rc1-to-rc2-migration.md`](agentscope-rc1-to-rc2-migration.md) | RC1 → RC2 升级要点 |
+| [`code-interpreter-optimization.md`](code-interpreter-optimization.md) | `python_exec` 直跑、Schema 注入、`PythonExecRetryHook` 设计 |
+| [`data-grounding-removal-changes.md`](data-grounding-removal-changes.md) | `DataGroundingHook` 下线背景 + 替代方案 |
+| `skill-evolution-pr1..pr4-changes.md` / `skill-self-evolution-detail.md` | Skills 自演化 4 期 PR 演化路径 + 总体设计 |
+| [`skill-evolution-pr4-design.md`](skill-evolution-pr4-design.md) | PR4(Evolution)详细设计文档 |
+| [`subagent-load-fix-changes.md`](subagent-load-fix-changes.md) | subagent Markdown 解析 / fail-fast 修正 |
+| [`stream-thinking-subagent-plan.md`](stream-thinking-subagent-plan.md) | 子代理 reasoning 流式透出方案 |
+| [`user-id-cache-scope-plan.md`](user-id-cache-scope-plan.md) | 缓存 tenant 分桶方案 |

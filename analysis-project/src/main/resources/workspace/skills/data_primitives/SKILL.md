@@ -24,7 +24,7 @@ description: 数据计算原语索引 — 5 个 pandas 套路工具,绕过 code_
 
 所有以「列名」为参数的字段(`groupByColumns` / `sortByColumn` / `joinKeyColumn` /
 `valueColumn` / `indexColumn` / `columnsColumn`)**接受任意 CSV 列名**,
-只要 `query_quality_data` 取数时把该维度查出来落到 CSV 里就行。
+只要 `query_data` 取数时把该维度查出来落到 CSV 里就行。
 
 实际可用维度举例:**部门、应用 (F-CMS/F-Loan/...)、组 (个贷组/...)、产品线 (信贷产品线/...)、人员、版本、季度、需求项**
 等,**单维或任意多维组合**均可。
@@ -115,4 +115,4 @@ router_tool(paramsJson="{\"toolId\":\"data_compare_ratio\",\"csvPathA\":\"/works
 
 - `toolId` 必须完全照抄本技能中的英文字符串,不要自行改名。
 - 列名要和 CSV 表头精确匹配(包括括号全/半角、空格)。
-- 一份 CSV 拿不到的维度组合,需要先用 `query_quality_data` 多取几份 CSV,再用 `data_compare_ratio` / `data_pivot` 合并。
+- 一份 CSV 拿不到的维度组合,需要先用 `query_data` 多取几份 CSV,再用 `data_compare_ratio` / `data_pivot` 合并。

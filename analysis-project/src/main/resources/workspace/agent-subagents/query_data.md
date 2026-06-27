@@ -1,5 +1,4 @@
 ---
-name: query_quality_data
 description: 质量数据查询专员 — 按版本/季度/部门/应用/人员等维度返回缺陷密度
 tools: tool_router
 maxIters: 8
