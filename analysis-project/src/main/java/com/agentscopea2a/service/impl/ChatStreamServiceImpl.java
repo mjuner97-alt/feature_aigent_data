@@ -100,8 +100,28 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         this.artifactStore = artifactStore;
     }
 
-    @Autowired
+    // mapper 可选：MainAgentMapper 的 XML 实际为空且 GaussConfig 默认 disabled，
+    // 真实环境下 bean 可能缺失；这里降级为 required=false，缺失时跳过 DB 落库。
+    @Autowired(required = false)
     private MainAgentMapper mainAgentMapper;
+
+    /**
+     * 构建 RuntimeContext。
+     *
+     * <p>sessionId 沿用 conversationId（与历史行为一致）；userId 仅在 ChatRequest 显式传入且
+     * 非空时透传，让 ResponseCacheHook.tenantBucket() 落到 {@code u:<userId>} 分桶，
+     * 跨 session 同 user 同问题可命中缓存。
+     */
+    private RuntimeContext buildRuntimeContext(ChatRequest req) {
+        RuntimeContext.Builder b =
+                RuntimeContext.builder()
+                        .sessionId(req.getConversationId())
+                        .sessionKey(SimpleSessionKey.of(req.getConversationId()));
+        if (StringUtils.isNotBlank(req.getUserId())) {
+            b.userId(req.getUserId());
+        }
+        return b.build();
+    }
 
     @Override
     public SseEmitter stream(ChatRequest req) {
@@ -117,11 +137,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         // 状态标记
         StreamContext ctxState = new StreamContext(emitter, req, uuid);
 
-        final RuntimeContext ctx =
-                RuntimeContext.builder()
-                        .sessionId(req.getConversationId())
-                        .sessionKey(SimpleSessionKey.of(req.getConversationId()))
-                        .build();
+        final RuntimeContext ctx = buildRuntimeContext(req);
 
         ResponseCacheHook cacheHook =
                 supervisorService.newCacheHook(cacheService, cacheDimManager, ctx, meterRegistry);
@@ -178,11 +194,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         // 状态标记
         StreamContext ctxState = new StreamContext(emitter, req, uuid);
 
-        final RuntimeContext ctx =
-                RuntimeContext.builder()
-                        .sessionId(req.getConversationId())
-                        .sessionKey(SimpleSessionKey.of(req.getConversationId()))
-                        .build();
+        final RuntimeContext ctx = buildRuntimeContext(req);
 
         ResponseCacheHook cacheHook =
                 supervisorService.newCacheHook(cacheService, cacheDimManager, ctx, meterRegistry);
@@ -552,6 +564,9 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     }
 
     private void saveAnswerIntoDB(QuestionAnswerDto questionAnswerDTO) {
+        if (mainAgentMapper == null) {
+            return;
+        }
         if (ObjectUtil.isNotNull(questionAnswerDTO) && StringUtils.isNotEmpty(questionAnswerDTO.getConversationId())) {
             // 根据id查询是否有记录
             QuestionAnswerDto historyQuestionAnswer = mainAgentMapper.selectAnswerRecordByTaskId(questionAnswerDTO.getConversationId());

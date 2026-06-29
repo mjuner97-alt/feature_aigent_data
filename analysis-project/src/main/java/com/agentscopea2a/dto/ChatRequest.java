@@ -38,9 +38,6 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class ChatRequest {
 
-    //用户id
-    private String userId;
-
     @JsonProperty("input")
     private String input;
 
