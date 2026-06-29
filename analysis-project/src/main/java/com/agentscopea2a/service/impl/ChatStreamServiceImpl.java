@@ -40,6 +40,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import reactor.core.publisher.Flux;
 
 import java.io.IOException;
 import java.util.List;
@@ -171,6 +172,12 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                                         .build();
 
         agent.stream(List.of(userMsg), streamOptions, ctx)
+                .onErrorResume(
+                        ResponseCacheHook.CacheHitException.class,
+                        e -> {
+                            emitCachedResponse(ctxState, e.getCachedResponse(), true);
+                            return Flux.empty();
+                        })
                 .subscribe(
                 chunk -> processChunk(chunk, ctxState),
                 error -> handleStreamError(ctxState, error, ctxState.fullResult.toString()),
@@ -228,6 +235,12 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                 .build();
 
         agent.stream(List.of(userMsg), streamOptions, ctx)
+                .onErrorResume(
+                        ResponseCacheHook.CacheHitException.class,
+                        e -> {
+                            emitCachedResponse(ctxState, e.getCachedResponse(), false);
+                            return Flux.empty();
+                        })
                 .subscribe(
                         chunk -> processChunkPublic(chunk, ctxState),
                         error -> handleStreamErrorPublic(ctxState, error, ctxState.fullResult.toString()),
@@ -456,6 +469,46 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         // 1. 去除首尾空白
         result = result.replaceAll("<think>", "").replaceAll("</think>", "");
         return result;
+    }
+
+    /**
+     * 缓存命中回放：直接把 cachedResponse 当作"已执行"产物注入 SSE 流。
+     *
+     * <p>{@link ResponseCacheHook#handlePreCall} 命中时抛 {@link
+     * ResponseCacheHook.CacheHitException} 短路 agent 执行。本方法承接它,绕开
+     * {@link #processChunk}/{@link #processChunkPublic}(它们的多 chunk 状态机不适合
+     * 一次性灌入完整回答),按"分析已执行 → 执行已执行 → 最终文本(finish=true)"的
+     * 顺序补齐三帧,前端 UX 与 MISS 走完整链路时基本一致。
+     *
+     * <p>同时往 {@link StreamContext#answerContent} 写入 cached 文本,后续
+     * {@link #handleStreamSuccess}/{@link #handleStreamSuccessPublic} 的 DB 落库才能拿到答案。
+     *
+     * @param ctx 当前请求流式上下文
+     * @param cached 缓存里的完整回答文本
+     * @param manager true → Manager 路径(/ai/chat 之外的旧入口,DTO 带 code/ansUUID);
+     *                false → 通用 /ai/chat 路径
+     */
+    private void emitCachedResponse(StreamContext ctx, String cached, boolean manager) {
+        if (StringUtils.isBlank(cached)) {
+            return;
+        }
+        LOGGER.info(
+                "Cache HIT replay for conv={} manager={} bytes={}",
+                ctx.req.getConversationId(),
+                manager,
+                cached.length());
+        ctx.fullResult.append(cached);
+        ctx.answerContent.append(cached);
+        String conv = ctx.req.getConversationId();
+        if (manager) {
+            sendThinkResponse(ctx.emitter, " ", "已执行", "分析智能体", false, conv, ctx.uuid);
+            sendThinkResponse(ctx.emitter, " ", "已执行", "执行智能体", false, conv, ctx.uuid);
+            sendTextResponse(ctx.emitter, cached, "", "", true, conv, ctx.uuid);
+        } else {
+            sendThinkResponsePublic(ctx.emitter, " ", "已执行", "分析智能体", false, conv, ctx.uuid);
+            sendThinkResponsePublic(ctx.emitter, " ", "已执行", "执行智能体", false, conv, ctx.uuid);
+            sendTextResponsePublic(ctx.emitter, cached, "", "", true, conv, ctx.uuid);
+        }
     }
 
     /**
