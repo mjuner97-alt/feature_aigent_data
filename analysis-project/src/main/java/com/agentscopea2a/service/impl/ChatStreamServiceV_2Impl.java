@@ -19,7 +19,6 @@ import com.agentscopea2a.harness.artifact.ArtifactStore;
 import com.agentscopea2a.harness.cache.ResponseCacheService;
 import com.agentscopea2a.harness.hooks.ResponseCacheHook;
 import com.agentscopea2a.mapper.db1.MainAgentMapper;
-import com.agentscopea2a.service.ChatStreamService;
 import com.agentscopea2a.service.ChatStreamServiceV_2;
 import com.agentscopea2a.service.SupervisorService;
 import com.agentscopea2a.util.SseEmitterCacheUtil;
@@ -558,7 +557,7 @@ public class ChatStreamServiceV_2Impl implements ChatStreamServiceV_2 {
         questionAnswerDTO.setQuestion(chatReqDTO.getInput());
         questionAnswerDTO.setAnsUUID(chatReqDTO.getConversationId());
         questionAnswerDTO.setConversationId(chatReqDTO.getConversationId());
-        questionAnswerDTO.setFromType(chatReqDTO.getFormType());
+        questionAnswerDTO.setFromType(chatReqDTO.getFromType());
         questionAnswerDTO.setThink(thinkContent);
         questionAnswerDTO.setAnswer(answerContent);
         return questionAnswerDTO;

@@ -10,6 +10,8 @@ import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.util.UUID;
+
 @RestController
 @RequestMapping("/ai")
 @CrossOrigin(origins = "*",maxAge = 3600)
@@ -30,7 +32,21 @@ public class ChatController {
         }else {
             req.setAgentId("7");
             req.setAgentName("数字QA助手");
-            req.setFormType("HXY");
+            req.setFromType("HXY");
+            return chatStreamServiceV2.streamPublic(req);
+        }
+    }
+
+    @PostMapping(value = "/chatA2A", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter chatA2A(@RequestBody ChatRequest req) {
+        // 统一归一化：chatId（公开入口）和 conversationId（Manager入口）是同一字段
+        normalizeConversationId(req);
+        if (StringUtils.isNoneEmpty(req.getAgentName())){
+            return chatStreamServiceV2.stream(req);
+        }else {
+            req.setAgentId("7");
+            req.setAgentName("数字QA助手");
+            req.setFromType("HXY");
             return chatStreamServiceV2.streamPublic(req);
         }
     }
@@ -46,6 +62,10 @@ public class ChatController {
     private void normalizeConversationId(ChatRequest req) {
         if (StringUtils.isNoneEmpty(req.getChatId()) && StringUtils.isEmpty(req.getConversationId())) {
             req.setConversationId(req.getChatId());
+        }
+
+        if (StringUtils.isEmpty(req.getConversationId())){
+            req.setConversationId(UUID.randomUUID().toString());
         }
     }
 }

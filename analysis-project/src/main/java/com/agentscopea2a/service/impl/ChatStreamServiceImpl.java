@@ -187,7 +187,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         boolean agentIdProvided = isNotBlank(req.getAgentId());
         String agentId = agentIdProvided ? req.getAgentId() : DEFAULT_AGENT_ID;
         String agentName = isNotBlank(req.getAgentName()) ? req.getAgentName() : DEFAULT_AGENT_NAME;
-        String formType = isNotBlank(req.getFormType()) ? req.getFormType() : DEFAULT_FROM_TYPE;
+        String formType = isNotBlank(req.getFromType()) ? req.getFromType() : DEFAULT_FROM_TYPE;
 
         String conversationId;
         if (isNotBlank(req.getConversationId())) {
@@ -477,7 +477,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         questionAnswerDTO.setQuestion(chatReqDTO.getInput());
         questionAnswerDTO.setAnsUUID(chatReqDTO.getConversationId());
         questionAnswerDTO.setConversationId(chatReqDTO.getConversationId());
-        questionAnswerDTO.setFromType(chatReqDTO.getFormType());
+        questionAnswerDTO.setFromType(chatReqDTO.getFromType());
         questionAnswerDTO.setThink(thinkContent);
         questionAnswerDTO.setAnswer(answerContent);
         return questionAnswerDTO;
