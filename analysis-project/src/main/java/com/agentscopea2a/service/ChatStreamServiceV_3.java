@@ -18,7 +18,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
  * <p>Implementations own request normalization (defaults for {@code agentId}, {@code agentName},
  * {@code formType}, {@code conversationId}), supervisor wiring, and the SSE wire format.
  */
-public interface ChatStreamServiceV_2 {
+public interface ChatStreamServiceV_3 {
 
     /**
      * Build the supervisor agent for {@code req} and stream its events back through a fresh

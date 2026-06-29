@@ -2,8 +2,8 @@
 package com.agentscopea2a.controller;
 
 import com.agentscopea2a.dto.ChatRequest;
+import com.agentscopea2a.service.ChatStreamServiceV_3;
 import com.agentscopea2a.service.ChatStreamService;
-import com.agentscopea2a.service.ChatStreamServiceV_2;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
@@ -18,22 +18,22 @@ import java.util.UUID;
 public class ChatController {
 
     @Autowired
-    private  ChatStreamService chatStreamService;
+    private ChatStreamServiceV_3 chatStreamServiceV3;
 
     @Autowired
-    private ChatStreamServiceV_2 chatStreamServiceV2;
+    private ChatStreamService chatStreamService;
 
     @PostMapping(value = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter chat(@RequestBody ChatRequest req) {
         // 统一归一化：chatId（公开入口）和 conversationId（Manager入口）是同一字段
         normalizeConversationId(req);
         if (StringUtils.isNoneEmpty(req.getAgentName())){
-            return chatStreamServiceV2.stream(req);
+            return chatStreamService.stream(req);
         }else {
             req.setAgentId("7");
             req.setAgentName("数字QA助手");
             req.setFromType("HXY");
-            return chatStreamServiceV2.streamPublic(req);
+            return chatStreamService.streamPublic(req);
         }
     }
 
@@ -42,12 +42,12 @@ public class ChatController {
         // 统一归一化：chatId（公开入口）和 conversationId（Manager入口）是同一字段
         normalizeConversationId(req);
         if (StringUtils.isNoneEmpty(req.getAgentName())){
-            return chatStreamServiceV2.stream(req);
+            return chatStreamService.stream(req);
         }else {
             req.setAgentId("7");
             req.setAgentName("数字QA助手");
             req.setFromType("HXY");
-            return chatStreamServiceV2.streamPublic(req);
+            return chatStreamService.streamPublic(req);
         }
     }
 

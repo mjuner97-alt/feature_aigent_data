@@ -9,8 +9,7 @@
  */
 package com.agentscopea2a.dto;
 
-import com.agentscopea2a.service.ChatStreamService;
-import com.fasterxml.jackson.annotation.JsonProperty;
+import com.agentscopea2a.service.ChatStreamServiceV_3;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -20,7 +19,7 @@ import lombok.NoArgsConstructor;
  * Inbound payload for {@code POST /ai/chat}.
  *
  * <p>All identity fields are optional on the wire; defaults are filled in
- * {@link ChatStreamService}.
+ * {@link ChatStreamServiceV_3}.
  *
  * <ul>
  *   <li>Missing {@code conversationId} → service generates a UUID. When provided it is forwarded
