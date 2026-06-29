@@ -9,22 +9,26 @@
  */
 package com.agentscopea2a.service.impl;
 
+import cn.hutool.core.util.ObjectUtil;
 import com.agentscopea2a.harness.artifact.ArtifactContext;
 import com.agentscopea2a.harness.artifact.ArtifactStore;
 import com.agentscopea2a.harness.cache.ResponseCacheService;
 import com.agentscopea2a.agent.dimension.DimensionStateManager;
 import com.agentscopea2a.dto.ChatRequest;
+import com.agentscopea2a.dto.QuestionAnswerDto;
 import com.agentscopea2a.entity.AiChatResult;
 import com.agentscopea2a.harness.hooks.ResponseCacheHook;
 import com.agentscopea2a.mapper.db1.MainAgentMapper;
 import com.agentscopea2a.service.ChatStreamService;
 import com.agentscopea2a.service.SupervisorService;
+import com.agentscopea2a.util.ThreadContextUtils;
 import io.agentscope.core.agent.Event;
 import io.agentscope.core.agent.EventType;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
+import io.agentscope.core.message.ThinkingBlock;
 import io.agentscope.core.state.SimpleSessionKey;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -131,6 +135,8 @@ public class ChatStreamServiceImpl implements ChatStreamService {
 
         final String ansUUID = UUID.randomUUID().toString();
         final StringBuilder accumulated = new StringBuilder();
+        // 思考块独立累积，与 answer 分开落库（对齐 ChatStreamServiceV_2Impl 的 think/answer 拆分）
+        final StringBuilder thinkAccumulated = new StringBuilder();
 
         // Cleanup runs once on terminal signal. Mirrors HarnessA2aRunner's doFinally GC.
         AtomicReference<Boolean> cleaned = new AtomicReference<>(false);
@@ -149,11 +155,15 @@ public class ChatStreamServiceImpl implements ChatStreamService {
 
         agent.stream(userMsg, ctx)
                 .subscribe(
-                        event -> sendChunk(emitter, resolved, event, ansUUID, accumulated),
-                        err -> handleStreamError(emitter, resolved, err, ansUUID),
+                        event -> sendChunk(emitter, resolved, event, ansUUID, accumulated, thinkAccumulated),
+                        err -> {
+                            handleStreamError(emitter, resolved, err, ansUUID, accumulated, thinkAccumulated, req);
+                        },
                         () -> {
                             sendDone(emitter, resolved, ansUUID, accumulated);
                             emitter.complete();
+                            ThreadContextUtils.clearContext();
+                            saveAnswerIntoDB(req, thinkAccumulated.toString(), accumulated.toString());
                         });
 
         return emitter;
@@ -211,10 +221,16 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             Resolved resolved,
             Event event,
             String ansUUID,
-            StringBuilder accumulated) {
+            StringBuilder accumulated,
+            StringBuilder thinkAccumulated) {
 
         EventType type = event.getType();
         String text = extractText(event.getMessage());
+        // 思考内容独立累积，不通过 SSE 下发（保持原行为），仅落库
+        String thinking = extractThinking(event.getMessage());
+        if (!thinking.isEmpty()) {
+            thinkAccumulated.append(thinking);
+        }
         // Log every event regardless of whether it will be sent to the frontend.
         log.info(
                 "stream event: agentId={} type={} last={} textLen={} preview={}",
@@ -291,11 +307,20 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     }
 
     private void handleStreamError(
-            SseEmitter emitter, Resolved resolved, Throwable err, String ansUUID) {
+            SseEmitter emitter,
+            Resolved resolved,
+            Throwable err,
+            String ansUUID,
+            StringBuilder accumulated,
+            StringBuilder thinkAccumulated,
+            ChatRequest req) {
         ResponseCacheHook.CacheHitException cacheHit = unwrapCacheHit(err);
         if (cacheHit != null) {
             log.info("Cache HIT for /ai/chat");
             String cached = cacheHit.getCachedResponse();
+            // 缓存命中视为正式回答，覆盖到 accumulated 用于落库
+            accumulated.setLength(0);
+            accumulated.append(cached);
             try {
                 if (resolved.structured) {
                     AiChatResult chunk =
@@ -337,12 +362,17 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                 emitter.complete();
             } catch (IOException ioe) {
                 emitter.completeWithError(ioe);
+            } finally {
+                ThreadContextUtils.clearContext();
+                saveAnswerIntoDB(req, thinkAccumulated.toString(), accumulated.toString());
             }
             return;
         }
         log.error("Agent error", err);
         sendError(emitter, resolved, "Agent error: " + err.getMessage());
         emitter.complete();
+        ThreadContextUtils.clearContext();
+        saveAnswerIntoDB(req, thinkAccumulated.toString(), accumulated.toString());
     }
 
     private static void sendError(SseEmitter emitter, Resolved resolved, String message) {
@@ -392,6 +422,21 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         return sb.toString();
     }
 
+    /** 提取 Msg 中所有 ThinkingBlock 的内容，用于落库时填充 think 字段。 */
+    private static String extractThinking(Msg msg) {
+        if (msg == null || msg.getContent() == null) return "";
+        StringBuilder sb = new StringBuilder();
+        for (var block : msg.getContent()) {
+            if (block instanceof ThinkingBlock tb) {
+                String thinking = tb.getThinking();
+                if (thinking != null) {
+                    sb.append(thinking);
+                }
+            }
+        }
+        return sb.toString();
+    }
+
     private static boolean isNotBlank(String s) {
         return s != null && !s.isBlank();
     }
@@ -409,5 +454,48 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             if (isNotBlank(c)) return c;
         }
         return UUID.randomUUID().toString();
+    }
+
+    // ---------- DB 落库（对齐 ChatStreamServiceV_2Impl#saveAnswerIntoDB） -----------------
+
+    /**
+     * 保存问答记录到数据库，包含 think（思考）和 answer（结果）两个独立字段。
+     *
+     * <p>mapper 在 GaussConfig 关闭时可能不存在（{@code required = false}），此时静默跳过。
+     */
+    private void saveAnswerIntoDB(ChatRequest req, String thinkContent, String answerContent) {
+        if (req == null || StringUtils.isEmpty(req.getConversationId())) {
+            return;
+        }
+        QuestionAnswerDto dto = createAnswerInit(req, thinkContent, answerContent);
+        saveAnswerIntoDB(dto);
+    }
+
+    private QuestionAnswerDto createAnswerInit(ChatRequest chatReqDTO, String thinkContent, String answerContent) {
+        QuestionAnswerDto questionAnswerDTO = new QuestionAnswerDto();
+        questionAnswerDTO.setUserId(chatReqDTO.getUserId());
+        questionAnswerDTO.setQuestion(chatReqDTO.getInput());
+        questionAnswerDTO.setAnsUUID(chatReqDTO.getConversationId());
+        questionAnswerDTO.setConversationId(chatReqDTO.getConversationId());
+        questionAnswerDTO.setFromType(chatReqDTO.getFormType());
+        questionAnswerDTO.setThink(thinkContent);
+        questionAnswerDTO.setAnswer(answerContent);
+        return questionAnswerDTO;
+    }
+
+    private void saveAnswerIntoDB(QuestionAnswerDto questionAnswerDTO) {
+        if (mainAgentMapper == null) {
+            return;
+        }
+        if (ObjectUtil.isNotNull(questionAnswerDTO) && StringUtils.isNotEmpty(questionAnswerDTO.getConversationId())) {
+            // 根据id查询是否有记录
+            QuestionAnswerDto historyQuestionAnswer = mainAgentMapper.selectAnswerRecordByTaskId(questionAnswerDTO.getConversationId());
+            if (ObjectUtil.isEmpty(historyQuestionAnswer)) {
+                questionAnswerDTO.setAnsUUID(questionAnswerDTO.getConversationId());
+                mainAgentMapper.insertAiUserTable(questionAnswerDTO);
+                mainAgentMapper.insertAnswerTable(questionAnswerDTO);
+            }
+            mainAgentMapper.insertToQualityAnalysisConversationAnswer(questionAnswerDTO);
+        }
     }
 }
