@@ -53,7 +53,7 @@ public class ChatRequest {
     @JsonProperty("agent_name")
     private String agentName;
 
-    private String fromType;
+    private String formType;
 
     @JsonProperty("chat_id")
     private String chatId;

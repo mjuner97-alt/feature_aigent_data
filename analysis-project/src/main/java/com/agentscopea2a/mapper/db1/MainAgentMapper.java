@@ -6,6 +6,8 @@ import org.apache.ibatis.annotations.Mapper;
 @Mapper
 public interface MainAgentMapper {
 
+    void insertAiUserTable(QuestionAnswerDto answerDto);
+
     void insertAnswerTable(QuestionAnswerDto questionAnswerDTO);
 
     void insertToQualityAnalysisConversationAnswer(QuestionAnswerDto questionAnswerDTO);

@@ -3,7 +3,9 @@ package com.agentscopea2a.controller;
 
 import com.agentscopea2a.dto.ChatRequest;
 import com.agentscopea2a.service.ChatStreamService;
+import com.agentscopea2a.service.ChatStreamServiceV_2;
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -13,23 +15,23 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 @CrossOrigin(origins = "*",maxAge = 3600)
 public class ChatController {
 
-    private final ChatStreamService chatStreamService;
+    @Autowired
+    private  ChatStreamService chatStreamService;
 
-    public ChatController(ChatStreamService chatStreamService) {
-        this.chatStreamService = chatStreamService;
-    }
+    @Autowired
+    private ChatStreamServiceV_2 chatStreamServiceV2;
 
     @PostMapping(value = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter chat(@RequestBody ChatRequest req) {
         // 统一归一化：chatId（公开入口）和 conversationId（Manager入口）是同一字段
         normalizeConversationId(req);
         if (StringUtils.isNoneEmpty(req.getAgentName())){
-            return chatStreamService.stream(req);
+            return chatStreamServiceV2.stream(req);
         }else {
             req.setAgentId("7");
             req.setAgentName("数字QA助手");
-            req.setFromType("HXY");
-            return chatStreamService.streamPublic(req);
+            req.setFormType("HXY");
+            return chatStreamServiceV2.streamPublic(req);
         }
     }
 
