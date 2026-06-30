@@ -28,12 +28,7 @@ public class AgentTools {
     private final QualityTools qualityTools = new QualityTools();
 
     private void sleepForLongToolReturn() {
-        try {
-            Thread.sleep(60_000);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("工具等待被中断", e);
-        }
+        // 模拟工具延迟，已关闭
     }
 
     @Tool(

@@ -6,18 +6,26 @@
 package com.agentscopea2a.harness.skills;
 
 import com.agentscopea2a.harness.tools.SkillSaveTool;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import javax.sql.DataSource;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -59,36 +67,45 @@ public class SkillEvolutionRunner {
 
     /** Pending-judgement cache cap. LRU eviction so a single hot session can't starve others. */
     private static final int PENDING_CACHE_MAX = 1024;
+    private static final com.fasterxml.jackson.databind.ObjectMapper MAPPER =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+
+    /** MySQL DDL for pending judgement table. */
+    private static final String PENDING_DDL =
+            "CREATE TABLE IF NOT EXISTS skill_pending_judgement ("
+                    + "  session_key VARCHAR(255) PRIMARY KEY,"
+                    + "  skills_json TEXT NOT NULL,"
+                    + "  exemplar_question VARCHAR(1024) DEFAULT NULL,"
+                    + "  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+
+    private volatile boolean pendingTableEnsured = false;
 
     private final SkillIndexRepository indexRepo;
     private final SkillVectorIndex vectorIndex;
     private final SkillDistiller distiller;
     private final EmbeddingClient embeddingClient;
+    private final DataSource dataSource;
     private final Path skillsDir;
     private final boolean enabled;
     private final double failRateEvolve;
     private final double failRateBlacklist;
     private final int minUsesEvolve;
     private final int minUsesBlacklist;
-
-    /** Per-skill "an evolution is in flight" guard. {@code putIfAbsent} returns null on win. */
-    private final ConcurrentHashMap<String, Boolean> evolving = new ConcurrentHashMap<>();
-
-    /** Per-session "turn N retrieved these skills; turn N+1's user message will judge them". */
-    private final Map<String, PendingJudgement> pending =
-            Collections.synchronizedMap(
-                    new LinkedHashMap<>(64, 0.75f, true) {
-                        @Override
-                        protected boolean removeEldestEntry(Map.Entry<String, PendingJudgement> e) {
-                            return size() > PENDING_CACHE_MAX;
-                        }
-                    });
+    private final Map<String, Boolean> evolving = new ConcurrentHashMap<>();
+    private final Map<String, PendingJudgement> pendingL1 = Collections.synchronizedMap(new LinkedHashMap<String, PendingJudgement>() {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, PendingJudgement> eldest) {
+            return size() > PENDING_CACHE_MAX;
+        }
+    });
 
     public SkillEvolutionRunner(
             SkillIndexRepository indexRepo,
             ObjectProvider<SkillVectorIndex> vectorIndexProvider,
             SkillDistiller distiller,
             ObjectProvider<EmbeddingClient> embeddingClientProvider,
+            @Qualifier("mysqlDataSource") DataSource dataSource,
             @Value("${harness.a2a.workspace.path}") String workspaceRoot,
             @Value("${harness.skills.evolution.enabled:false}") boolean enabled,
             @Value("${harness.skills.evolution.fail-rate-evolve:0.3}") double failRateEvolve,
@@ -99,7 +116,8 @@ public class SkillEvolutionRunner {
         this.vectorIndex = vectorIndexProvider.getIfAvailable();
         this.distiller = distiller;
         this.embeddingClient = embeddingClientProvider.getIfAvailable();
-        this.skillsDir = Path.of(workspaceRoot).resolve("skills");
+        this.dataSource = dataSource;
+        this.skillsDir = Path.of(workspaceRoot).resolve("skills-auto");
         this.enabled = enabled;
         this.failRateEvolve = failRateEvolve;
         this.failRateBlacklist = failRateBlacklist;
@@ -167,12 +185,21 @@ public class SkillEvolutionRunner {
 
     private void dispatchEvolve(String name, String exemplarQuestion, String failedTrace) {
         if (!markEvolving(name)) {
-            log.info("Skill '{}' already evolving in another thread; skipping", name);
+            log.info("Skill '{}' already evolving in another thread/JVM; skipping", name);
+            return;
+        }
+        // Cross-JVM CAS: MySQL-level lock. If this fails, another JVM already holds the lock.
+        if (!indexRepo.tryAcquireEvolveLock(name)) {
+            markEvolved(name);
+            log.info("Skill '{}' locked by another JVM; skipping", name);
             return;
         }
         Mono.fromRunnable(() -> doEvolve(name, exemplarQuestion, failedTrace))
                 .subscribeOn(Schedulers.boundedElastic())
-                .doFinally(sig -> markEvolved(name))
+                .doFinally(sig -> {
+                    indexRepo.releaseEvolveLock(name);
+                    markEvolved(name);
+                })
                 .subscribe(
                         v -> {},
                         ex -> log.warn("Async evolve crashed for '{}': {}", name, ex.getMessage()));
@@ -230,16 +257,108 @@ public class SkillEvolutionRunner {
      * Stash turn N's retrieved skills + the exemplar question, so turn N+1's PreCall can come
      * back and credit/debit them based on whether the user said "wrong" or moved on. Idempotent;
      * an existing entry under {@code key} is overwritten.
+     *
+     * <p>Writes to both L1 (in-memory LRU) and L2 (MySQL) for cross-JVM durability.
      */
     public void cachePendingJudgement(String key, List<String> skills, String exemplarQuestion) {
         if (key == null || key.isBlank() || skills == null || skills.isEmpty()) return;
-        pending.put(key, new PendingJudgement(List.copyOf(skills), exemplarQuestion, System.currentTimeMillis()));
+        PendingJudgement pj = new PendingJudgement(List.copyOf(skills), exemplarQuestion, System.currentTimeMillis());
+        // L1: in-memory
+        pendingL1.put(key, pj);
+        // L2: MySQL (best-effort)
+        storePendingToDb(key, pj);
     }
 
-    /** Pops the pending judgement for this session — returns null when no prior turn cached one. */
+    /**
+     * Pops the pending judgement for this session — checks L1 first, then L2 (MySQL) for
+     * cross-JVM durability. Returns null when no prior turn cached one.
+     */
     public PendingJudgement consumePendingJudgement(String key) {
         if (key == null) return null;
-        return pending.remove(key);
+        // L1: in-memory fast path
+        PendingJudgement pj = pendingL1.remove(key);
+        if (pj != null) {
+            // Clean up L2 asynchronously
+            removePendingFromDb(key);
+            return pj;
+        }
+        // L2: MySQL fallback (cross-JVM handoff)
+        pj = loadPendingFromDb(key);
+        if (pj != null) {
+            removePendingFromDb(key);
+        }
+        return pj;
+    }
+
+    // ==================== MySQL-backed pending judgement store ====================
+
+    private void ensurePendingTable() {
+        if (pendingTableEnsured) return;
+        synchronized (this) {
+            if (pendingTableEnsured) return;
+            try (Connection c = dataSource.getConnection();
+                    Statement s = c.createStatement()) {
+                s.execute(PENDING_DDL);
+                pendingTableEnsured = true;
+            } catch (SQLException e) {
+                log.warn("skill_pending_judgement DDL failed: {}", e.getMessage());
+            }
+        }
+    }
+
+    private void storePendingToDb(String key, PendingJudgement pj) {
+        try {
+            ensurePendingTable();
+            String skillsJson = MAPPER.writeValueAsString(pj.skills());
+            String sql = "REPLACE INTO skill_pending_judgement (session_key, skills_json, exemplar_question)"
+                    + " VALUES (?, ?, ?)";
+            try (Connection c = dataSource.getConnection();
+                    PreparedStatement ps = c.prepareStatement(sql)) {
+                ps.setString(1, key);
+                ps.setString(2, skillsJson);
+                ps.setString(3, pj.exemplarQuestion());
+                ps.executeUpdate();
+            }
+        } catch (Exception ex) {
+            log.debug("storePendingToDb failed: {}", ex.getMessage());
+        }
+    }
+
+    private PendingJudgement loadPendingFromDb(String key) {
+        try {
+            ensurePendingTable();
+            String sql = "SELECT skills_json, exemplar_question FROM skill_pending_judgement"
+                    + " WHERE session_key = ?";
+            try (Connection c = dataSource.getConnection();
+                    PreparedStatement ps = c.prepareStatement(sql)) {
+                ps.setString(1, key);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        String json = rs.getString("skills_json");
+                        String q = rs.getString("exemplar_question");
+                        List<String> skills = MAPPER.readValue(json, new com.fasterxml.jackson.core.type.TypeReference<List<String>>() {});
+                        return new PendingJudgement(skills, q, System.currentTimeMillis());
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            log.debug("loadPendingFromDb failed: {}", ex.getMessage());
+        }
+        return null;
+    }
+
+    private void removePendingFromDb(String key) {
+        try {
+            ensurePendingTable();
+            String sql = "DELETE FROM skill_pending_judgement WHERE session_key = ?";
+            try (Connection c = dataSource.getConnection();
+                    PreparedStatement ps = c.prepareStatement(sql)) {
+                ps.setString(1, key);
+                ps.executeUpdate();
+            }
+        } catch (Exception ex) {
+            log.debug("removePendingFromDb failed: {}", ex.getMessage());
+        }
     }
 
     public record PendingJudgement(

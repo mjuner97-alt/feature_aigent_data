@@ -28,12 +28,12 @@ public class ChatController {
         // 统一归一化：chatId（公开入口）和 conversationId（Manager入口）是同一字段
         normalizeConversationId(req);
         if (StringUtils.isNoneEmpty(req.getAgentName())){
-            return chatStreamService.stream(req);
+            return chatStreamServiceV3.stream(req);
         }else {
             req.setAgentId("7");
             req.setAgentName("数字QA助手");
             req.setFromType("HXY");
-            return chatStreamService.streamPublic(req);
+            return chatStreamServiceV3.streamPublic(req);
         }
     }
 
@@ -42,12 +42,12 @@ public class ChatController {
         // 统一归一化：chatId（公开入口）和 conversationId（Manager入口）是同一字段
         normalizeConversationId(req);
         if (StringUtils.isNoneEmpty(req.getAgentName())){
-            return chatStreamService.stream(req);
+            return chatStreamServiceV3.stream(req);
         }else {
             req.setAgentId("7");
             req.setAgentName("数字QA助手");
             req.setFromType("HXY");
-            return chatStreamService.streamPublic(req);
+            return chatStreamServiceV3.streamPublic(req);
         }
     }
 

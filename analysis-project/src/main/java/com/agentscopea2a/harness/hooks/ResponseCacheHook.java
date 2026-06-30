@@ -25,12 +25,14 @@ import io.agentscope.core.hook.Hook;
 import io.agentscope.core.hook.HookEvent;
 import io.agentscope.core.hook.PostCallEvent;
 import io.agentscope.core.hook.PreCallEvent;
+import io.agentscope.core.message.Msg;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Mono;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -154,6 +156,19 @@ public class ResponseCacheHook implements Hook {
         }
         Mono<? extends HookEvent> result;
         if (event instanceof PreCallEvent e) {
+            // Debug: dump raw message content to diagnose charset corruption
+            List<Msg> msgs = e.getInputMessages();
+            if (msgs != null && !msgs.isEmpty()) {
+                Msg last = msgs.get(msgs.size() - 1);
+                String txt = last.getTextContent();
+                if (txt != null) {
+                    byte[] utf8Bytes = txt.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                    StringBuilder hex = new StringBuilder(utf8Bytes.length * 2);
+                    for (byte b : utf8Bytes) hex.append(String.format("%02x", b & 0xff));
+                    log.debug("ENC_DEBUG: msgText='{}' textLen={} utf8BytesLen={} utf8Hex={}",
+                            txt, txt.length(), utf8Bytes.length, hex.toString());
+                }
+            }
             result = handlePreCall(e);
         } else if (event instanceof PostCallEvent e) {
             result = handlePostCall(e);
@@ -174,6 +189,15 @@ public class ResponseCacheHook implements Hook {
 
             // Rule-based dimension analysis (zero LLM overhead)
             QuestionAnalysis analysis = dimManager.analyzeQuestionRuleBased(question);
+            log.debug("DIM_DEBUG: question='{}' level={} refType={} explicitDims={}",
+                    question, analysis.getLevel(), analysis.getReferenceType(),
+                    analysis.getExplicitDimensions() != null
+                            ? String.format("time=%s dept=%s peer=%s persons=%s",
+                                    analysis.getExplicitDimensions().getTimeDimension(),
+                                    analysis.getExplicitDimensions().getDepartments(),
+                                    analysis.getExplicitDimensions().getPeerDimension(),
+                                    analysis.getExplicitDimensions().getPersons())
+                            : "null");
             DimensionState state = buildFromExplicit(analysis);
 
             // Generate cache key — prefix with userId so two tenants asking the same dimensional

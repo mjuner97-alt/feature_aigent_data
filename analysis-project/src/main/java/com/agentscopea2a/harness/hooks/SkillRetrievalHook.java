@@ -16,6 +16,8 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.hook.Hook;
 import io.agentscope.core.hook.HookEvent;
 import io.agentscope.core.hook.PreCallEvent;
+import io.agentscope.core.memory.EpisodicMemory;
+import io.agentscope.core.memory.EpisodicResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Mono;
@@ -24,6 +26,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -60,11 +63,13 @@ public class SkillRetrievalHook implements Hook {
 
     private static final Logger log = LoggerFactory.getLogger(SkillRetrievalHook.class);
     private static final String INJECTED_HEADER = "\n\n<!-- skills.retrieved (PR3) -->\n";
+    private static final int MAX_EPISODIC_SNIPPET_LEN = 300;
 
     private final SkillVectorIndex vectorIndex;
     private final SkillIndexRepository indexRepo;
     private final DimensionStateManager dimManager;
     private final EmbeddingClient embeddingClient;
+    private final EpisodicMemory episodicMemory;
     private final Path skillsDir;
     private final RuntimeContext runtimeContext;
     private final boolean enabled;
@@ -76,6 +81,7 @@ public class SkillRetrievalHook implements Hook {
             SkillIndexRepository indexRepo,
             DimensionStateManager dimManager,
             EmbeddingClient embeddingClient,
+            EpisodicMemory episodicMemory,
             Path skillsDir,
             RuntimeContext runtimeContext,
             boolean enabled,
@@ -85,6 +91,7 @@ public class SkillRetrievalHook implements Hook {
         this.indexRepo = indexRepo;
         this.dimManager = dimManager;
         this.embeddingClient = embeddingClient;
+        this.episodicMemory = episodicMemory;
         this.skillsDir = skillsDir;
         this.runtimeContext = runtimeContext;
         this.enabled = enabled;
@@ -150,14 +157,31 @@ public class SkillRetrievalHook implements Hook {
 
         List<String> loaded = new ArrayList<>();
         StringBuilder block = new StringBuilder(INJECTED_HEADER);
+        boolean hasEpisodicContext = false;
+        StringBuilder episodicBlock = new StringBuilder();
         for (String name : picked) {
             String body = readSkillBody(name);
             if (body == null) continue;
             block.append("\n### Retrieved skill: ").append(name).append("\n\n").append(body).append("\n");
             loaded.add(name);
             indexRepo.recordUsage(name);
+
+            // Fetch recent episodic memory context for this retrieved skill (P2-2).
+            // Uses the skill name + description excerpt as search query to find relevant
+            // past conversation snippets and append them as reference cases.
+            if (episodicMemory != null && !hasEpisodicContext) {
+                String refCases = queryEpisodicContext(name, body);
+                if (!refCases.isEmpty()) {
+                    episodicBlock.append(refCases);
+                    hasEpisodicContext = true;
+                }
+            }
         }
         if (loaded.isEmpty()) return;
+
+        if (hasEpisodicContext) {
+            block.append("\n").append(episodicBlock);
+        }
 
         event.appendSystemContent(block.toString());
 
@@ -180,6 +204,43 @@ public class SkillRetrievalHook implements Hook {
                 tenantBucket(),
                 fingerprint,
                 loaded);
+    }
+
+    /**
+     * Queries episodic memory for recent conversation snippets related to this skill.
+     * Returns a markdown-formatted "最近参考案例" block, or empty string if nothing found.
+     * Blocking but fast (memory search is ~5-15ms with vector index); only called once per
+     * retrieval, even when multiple skills are picked.
+     */
+    private String queryEpisodicContext(String skillName, String skillBody) {
+        try {
+            String searchQuery = skillName;
+            if (skillBody != null) {
+                // Extract first meaningful line of description for query context
+                String bodyPreview = skillBody.replaceAll("(?s)---.*?---", "").trim();
+                if (!bodyPreview.isEmpty()) {
+                    String firstLine = bodyPreview.lines().findFirst().orElse("").trim();
+                    if (firstLine.length() > 5) {
+                        searchQuery = skillName + " " + firstLine;
+                    }
+                }
+            }
+            List<EpisodicResult> results = episodicMemory.search(searchQuery, 2).block(Duration.ofSeconds(3));
+            if (results == null || results.isEmpty()) return "";
+            StringBuilder sb = new StringBuilder();
+            sb.append("## 最近参考案例\n");
+            for (EpisodicResult r : results) {
+                String snippet = r.snippet();
+                if (snippet != null && snippet.length() > MAX_EPISODIC_SNIPPET_LEN) {
+                    snippet = snippet.substring(0, MAX_EPISODIC_SNIPPET_LEN) + "...";
+                }
+                sb.append("- ").append(snippet).append("\n");
+            }
+            return sb.toString();
+        } catch (Exception ex) {
+            log.debug("Episodic context query failed for skill '{}': {}", skillName, ex.getMessage());
+            return "";
+        }
     }
 
     private String fingerprintOf(String question) {

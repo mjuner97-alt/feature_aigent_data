@@ -26,7 +26,9 @@ import io.agentscope.core.a2a.server.executor.runner.AgentRunner;
 import io.agentscope.core.agent.Event;
 import io.agentscope.core.agent.EventType;
 import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.memory.EpisodicMemory;
 import io.agentscope.core.message.Msg;
+import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.state.SimpleSessionKey;
 import io.agentscope.harness.agent.HarnessAgent;
@@ -34,6 +36,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
+import reactor.core.scheduler.Schedulers;
 
 import java.util.List;
 import java.util.Map;
@@ -99,6 +102,10 @@ public class HarnessA2aRunner implements AgentRunner {
                         ResponseCacheHook.CacheHitException.class,
                         e -> {
                             log.info("Cache HIT for taskId={}", options.getTaskId());
+                            // Record cache HIT to episodic memory so it leaves a trace (P2-3).
+                            // Without this, cache HITs are invisible to episodic memory and the
+                            // long-term memory becomes increasingly biased toward cache MISS interactions.
+                            recordCacheHitToEpisodic(options, e.getCachedResponse());
                             return Flux.just(buildCachedEvent(e.getCachedResponse()));
                         })
                 .doFinally(
@@ -144,5 +151,39 @@ public class HarnessA2aRunner implements AgentRunner {
                         .content(TextBlock.builder().text(cachedResponse).build())
                         .build();
         return new Event(EventType.REASONING, msg, true);
+    }
+
+    /**
+     * Records a cache-HIT interaction to episodic memory so the long-term memory isn't biased
+     * toward cache MISS-only conversations. Best-effort: failures are logged and swallowed.
+     */
+    private void recordCacheHitToEpisodic(AgentRequestOptions options, String cachedResponse) {
+        if (supervisorService.getEpisodicMemory() == null) return;
+        try {
+            // Use taskId + userId as a proxy for the user question. The full question text
+            // isn't available on AgentRequestOptions in 1.1.0-RC2 (no getDescription()),
+            // so we use the taskId which often encodes the question for traceability.
+            String userQuestion = "Cache HIT for task: " + options.getTaskId();
+            if (options.getUserId() != null && !options.getUserId().isBlank()) {
+                userQuestion = userQuestion + " user:" + options.getUserId();
+            }
+
+            Msg userMsg = Msg.builder()
+                    .role(MsgRole.USER)
+                    .content(TextBlock.builder().text(userQuestion).build())
+                    .build();
+            Msg assistantMsg = Msg.builder()
+                    .role(MsgRole.ASSISTANT)
+                    .content(TextBlock.builder().text(cachedResponse).build())
+                    .build();
+            String sessionId = "cache-hit:" + options.getTaskId() + ":" + System.currentTimeMillis();
+            supervisorService.getEpisodicMemory().recordSession(sessionId, List.of(userMsg, assistantMsg))
+                    .subscribeOn(Schedulers.boundedElastic())
+                    .subscribe(
+                            v -> log.debug("Cache HIT recorded to episodic memory: {}", sessionId),
+                            ex -> log.debug("Failed to record cache HIT to episodic memory: {}", ex.getMessage()));
+        } catch (Exception ex) {
+            log.debug("recordCacheHitToEpisodic failed: {}", ex.getMessage());
+        }
     }
 }

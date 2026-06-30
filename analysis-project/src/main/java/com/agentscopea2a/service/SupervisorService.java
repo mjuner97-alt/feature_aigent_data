@@ -31,7 +31,9 @@ import com.agentscopea2a.harness.hooks.SkillRetrievalHook;
 import com.agentscopea2a.harness.hooks.SkillSynthesisHook;
 import com.agentscopea2a.harness.hooks.SkillEvolutionHook;
 import com.agentscopea2a.agent.memory.EpisodicLongTermMemoryAdapter;
+import com.agentscopea2a.agent.memory.EpisodicMemoryConfig;
 import com.agentscopea2a.agent.memory.MemoryHydrator;
+import com.agentscopea2a.agent.memory.MySqlEpisodicMemory;
 import com.agentscopea2a.agent.session.MySQLSession;
 import com.agentscopea2a.harness.skills.EmbeddingClient;
 import com.agentscopea2a.harness.skills.SkillIndexRepository;
@@ -299,8 +301,10 @@ public class SupervisorService {
                             .password(persistence.password())
                             .tableName(AGENT_NAME + "_episodic_memory")
                             .searchLimit(5)
+                            .vectorSearchEnabled(embeddingClient != null)
+                            .vectorMinCosine(0.55f)
                             .build();
-            MySqlEpisodicMemory probe = new MySqlEpisodicMemory(dataSource, cfg);
+            MySqlEpisodicMemory probe = new MySqlEpisodicMemory(dataSource, cfg, embeddingClient);
             // Triggers ensureInitialized() via the search path. Result is discarded.
             probe.search("__warmup__", 1).block();
             this.sharedEpisodicMemory = probe;
@@ -389,15 +393,17 @@ public class SupervisorService {
             b.hook(new SkillSynthesisHook(skillSynthesisRunner, cacheDimManager, ctx));
         }
 
-        // PR3 — focused skill retrieval. Net-add path on top of WorkspaceContextHook (which
-        // injects every SKILL.md). Hook self-short-circuits when enabled=false.
+        // PR3 — focused skill retrieval. Only retrieves from skills-auto/ (auto-synthesized skills).
+        // Builtin meta-skills (tool_index, data_primitives) in skills-builtin/ are injected by the
+        // harness's FileSystemSkillRepository via the default workspace path.
         b.hook(
                 new SkillRetrievalHook(
                         skillVectorIndex,
                         skillIndexRepository,
                         cacheDimManager,
                         embeddingClient,
-                        workspace.resolve("skills"),
+                        sharedEpisodicMemory,
+                        workspace.resolve("skills-auto"),
                         ctx,
                         skillRetrievalEnabled,
                         skillRetrievalTopK,
@@ -419,7 +425,6 @@ public class SupervisorService {
         return b.build();
     }
 
-    /** Create a new per-request ResponseCacheHook, scoped by ctx + emitting Micrometer counters. */
     public ResponseCacheHook newCacheHook(
             ResponseCacheService cacheService,
             DimensionStateManager cacheDimManager,
@@ -509,7 +514,7 @@ public class SupervisorService {
                 "skill_save",
                 () ->
                         new SkillSaveTool(
-                                workspace.resolve("skills"),
+                                workspace.resolve("skills-auto"),
                                 skillIndexRepository,
                                 skillVectorIndex,
                                 embeddingClient));
@@ -561,9 +566,20 @@ public class SupervisorService {
                             .password(persistence.password())
                             .tableName(AGENT_NAME + "_episodic_memory")
                             .searchLimit(5)
+                            .vectorSearchEnabled(embeddingClient != null)
+                            .vectorMinCosine(0.55f)
                             .build();
-            episodic = new MySqlEpisodicMemory(dataSource, episodicConfig);
+            episodic = new MySqlEpisodicMemory(dataSource, episodicConfig, embeddingClient);
         }
         return new EpisodicLongTermMemoryAdapter(episodic, bucket);
+    }
+
+    /**
+     * Exposes the warmed-up shared episodic memory instance so other components (e.g.
+     * HarnessA2aRunner for cache-HIT recording) can write to episodic memory without
+     * managing their own lifecycle. Returns null during early startup before warmup completes.
+     */
+    public MySqlEpisodicMemory getEpisodicMemory() {
+        return sharedEpisodicMemory;
     }
 }

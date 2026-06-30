@@ -10,25 +10,28 @@
 package com.agentscopea2a.service.impl;
 
 import cn.hutool.core.util.ObjectUtil;
-import com.agentscopea2a.harness.artifact.ArtifactContext;
-import com.agentscopea2a.harness.artifact.ArtifactStore;
-import com.agentscopea2a.harness.cache.ResponseCacheService;
 import com.agentscopea2a.agent.dimension.DimensionStateManager;
 import com.agentscopea2a.dto.ChatRequest;
 import com.agentscopea2a.dto.QuestionAnswerDto;
 import com.agentscopea2a.entity.AiChatResult;
+import com.agentscopea2a.harness.artifact.ArtifactContext;
+import com.agentscopea2a.harness.artifact.ArtifactStore;
+import com.agentscopea2a.harness.cache.ResponseCacheService;
 import com.agentscopea2a.harness.hooks.ResponseCacheHook;
 import com.agentscopea2a.mapper.db1.MainAgentMapper;
 import com.agentscopea2a.service.ChatStreamServiceV_3;
 import com.agentscopea2a.service.SupervisorService;
+import com.agentscopea2a.util.SseEmitterCacheUtil;
 import com.agentscopea2a.util.ThreadContextUtils;
 import io.agentscope.core.agent.Event;
 import io.agentscope.core.agent.EventType;
 import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.agent.StreamOptions;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ThinkingBlock;
+import io.agentscope.core.model.ModelException;
 import io.agentscope.core.state.SimpleSessionKey;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -39,8 +42,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import reactor.core.publisher.Flux;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -120,6 +125,9 @@ public class ChatStreamServiceV_3Impl implements ChatStreamServiceV_3 {
         // Apply all defaulting/derivation rules in one place.
         Resolved resolved = normalize(req);
 
+        // 注册 emitter 到缓存，便于外部按 conversationId 查询/管理
+        SseEmitterCacheUtil.put(req.getConversationId(), emitter);
+
         final RuntimeContext ctx = buildRuntimeContext(req);
 
         ResponseCacheHook cacheHook =
@@ -153,12 +161,19 @@ public class ChatStreamServiceV_3Impl implements ChatStreamServiceV_3 {
         emitter.onTimeout(cleanup);
         emitter.onError(t -> cleanup.run());
 
-        agent.stream(userMsg, ctx)
+        // 配置 StreamOptions，开启增量事件模式
+        StreamOptions streamOptions = StreamOptions.builder()
+                .eventTypes(EventType.ALL)
+                .incremental(true)
+                .build();
+
+        agent.stream(List.of(userMsg), streamOptions, ctx)
+                .onErrorResume(
+                        ResponseCacheHook.CacheHitException.class,
+                        e -> emitCachedResponse(emitter, resolved, ansUUID, accumulated, req, thinkAccumulated, e.getCachedResponse()))
                 .subscribe(
                         event -> sendChunk(emitter, resolved, event, ansUUID, accumulated, thinkAccumulated),
-                        err -> {
-                            handleStreamError(emitter, resolved, err, ansUUID, accumulated, thinkAccumulated, req);
-                        },
+                        err -> handleStreamError(emitter, resolved, err, ansUUID, accumulated, thinkAccumulated, req),
                         () -> {
                             sendDone(emitter, resolved, ansUUID, accumulated);
                             emitter.complete();
@@ -171,7 +186,8 @@ public class ChatStreamServiceV_3Impl implements ChatStreamServiceV_3 {
 
     @Override
     public SseEmitter streamPublic(ChatRequest req) {
-        return null;
+        // streamPublic 使用与 stream() 相同的 AiChatResult 格式输出
+        return stream(req);
     }
 
 
@@ -306,6 +322,70 @@ public class ChatStreamServiceV_3Impl implements ChatStreamServiceV_3 {
         }
     }
 
+    /**
+     * 缓存命中回放：直接把 cachedResponse 当作完整结果通过 SSE 流回放。
+     *
+     * <p>{@link ResponseCacheHook#handlePreCall} 命中时抛 {@link
+     * ResponseCacheHook.CacheHitException} 短路 agent 执行。本方法承接它，按
+     * "text(cached) → done" 的顺序补齐帧，前端 UX 与 MISS 走完整链路时基本一致。
+     *
+     * <p>同时往 accumulated 写入 cached 文本，后续 complete 回调的 DB 落库能拿到答案。
+     */
+    private Flux<Event> emitCachedResponse(
+            SseEmitter emitter, Resolved resolved, String ansUUID,
+            StringBuilder accumulated, ChatRequest req,
+            StringBuilder thinkAccumulated, String cached) {
+        log.info("Cache HIT for /ai/chat");
+        accumulated.setLength(0);
+        accumulated.append(cached);
+        try {
+            if (resolved.structured) {
+                AiChatResult chunk =
+                        AiChatResult.builder()
+                                .code(0)
+                                .ansUUID(ansUUID)
+                                .lineResult(cached)
+                                .resultAll(cached)
+                                .formType(resolved.formType)
+                                .agentId(resolved.agentId)
+                                .agentName(resolved.agentName)
+                                .conversationId(resolved.conversationId)
+                                .build();
+                emitter.send(
+                        SseEmitter.event()
+                                .id(ansUUID)
+                                .name("text")
+                                .data(chunk, MediaType.APPLICATION_JSON));
+                AiChatResult done =
+                        AiChatResult.builder()
+                                .code(0)
+                                .ansUUID(ansUUID)
+                                .lineResult("")
+                                .resultAll(cached)
+                                .formType(resolved.formType)
+                                .agentId(resolved.agentId)
+                                .agentName(resolved.agentName)
+                                .conversationId(resolved.conversationId)
+                                .build();
+                emitter.send(
+                        SseEmitter.event()
+                                .id(ansUUID)
+                                .name("done")
+                                .data(done, MediaType.APPLICATION_JSON));
+            } else {
+                emitter.send(SseEmitter.event().name("text").data(cached));
+                emitter.send(SseEmitter.event().name("done").data("[DONE]"));
+            }
+            emitter.complete();
+        } catch (IOException ioe) {
+            emitter.completeWithError(ioe);
+        } finally {
+            ThreadContextUtils.clearContext();
+            saveAnswerIntoDB(req, thinkAccumulated.toString(), accumulated.toString());
+        }
+        return Flux.empty();
+    }
+
     private void handleStreamError(
             SseEmitter emitter,
             Resolved resolved,
@@ -337,7 +417,7 @@ public class ChatStreamServiceV_3Impl implements ChatStreamServiceV_3 {
                     emitter.send(
                             SseEmitter.event()
                                     .id(ansUUID)
-                                    .name("reasoning")
+                                    .name("text")
                                     .data(chunk, MediaType.APPLICATION_JSON));
                     AiChatResult done =
                             AiChatResult.builder()
@@ -356,7 +436,7 @@ public class ChatStreamServiceV_3Impl implements ChatStreamServiceV_3 {
                                     .name("done")
                                     .data(done, MediaType.APPLICATION_JSON));
                 } else {
-                    emitter.send(SseEmitter.event().name("reasoning").data(cached));
+                    emitter.send(SseEmitter.event().name("text").data(cached));
                     emitter.send(SseEmitter.event().name("done").data("[DONE]"));
                 }
                 emitter.complete();
@@ -369,7 +449,7 @@ public class ChatStreamServiceV_3Impl implements ChatStreamServiceV_3 {
             return;
         }
         log.error("Agent error", err);
-        sendError(emitter, resolved, "Agent error: " + err.getMessage());
+        sendError(emitter, resolved, buildErrorMessage(err));
         emitter.complete();
         ThreadContextUtils.clearContext();
         saveAnswerIntoDB(req, thinkAccumulated.toString(), accumulated.toString());
@@ -454,6 +534,21 @@ public class ChatStreamServiceV_3Impl implements ChatStreamServiceV_3 {
             if (isNotBlank(c)) return c;
         }
         return UUID.randomUUID().toString();
+    }
+
+    /**
+     * 构建分类友好的错误消息。
+     *
+     * <p>针对不同异常类型返回可读的中文提示，避免将原始异常栈泄露给前端。
+     */
+    private String buildErrorMessage(Throwable error) {
+        if (error.getMessage().contains("Retries exhausted") || error.getMessage().contains("Model request timeout after")) {
+            return "请求已达最大重试次数，当前千问模型资源不足，请稍后再试。";
+        } else if (error instanceof ModelException) {
+            return "模型请求出错: " + error.getMessage();
+        } else {
+            return error.getMessage();
+        }
     }
 
     // ---------- DB 落库（对齐 ChatStreamServiceV_2Impl#saveAnswerIntoDB） -----------------

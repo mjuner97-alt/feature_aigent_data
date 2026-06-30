@@ -13,6 +13,10 @@ import java.time.Duration;
  * memory is built without a {@link javax.sql.DataSource}. When a {@code DataSource} IS supplied
  * (the recommended Spring path), pass any non-blank string for {@code jdbcUrl} — the builder
  * requires it but {@code MySqlEpisodicMemory} will route through the pool and ignore the URL.
+ *
+ * <p>Digestion fields ({@code retentionDays}, {@code digestionBatchSize},
+ * {@code maxSummaryLength}) are used by the nightly memory-digestion pipeline to control
+ * how far back to archive raw sessions and how aggressively to summarise them.
  */
 public class EpisodicMemoryConfig {
 
@@ -23,6 +27,11 @@ public class EpisodicMemoryConfig {
     private final String database;
     private final int searchLimit;
     private final Duration connectTimeout;
+    private final boolean vectorSearchEnabled;
+    private final float vectorMinCosine;
+    private final int retentionDays;
+    private final int digestionBatchSize;
+    private final int maxSummaryLength;
 
     private EpisodicMemoryConfig(Builder builder) {
         this.jdbcUrl = builder.jdbcUrl;
@@ -32,6 +41,11 @@ public class EpisodicMemoryConfig {
         this.database = builder.database;
         this.searchLimit = builder.searchLimit;
         this.connectTimeout = builder.connectTimeout;
+        this.vectorSearchEnabled = builder.vectorSearchEnabled;
+        this.vectorMinCosine = builder.vectorMinCosine;
+        this.retentionDays = builder.retentionDays;
+        this.digestionBatchSize = builder.digestionBatchSize;
+        this.maxSummaryLength = builder.maxSummaryLength;
     }
 
     public String getJdbcUrl() {
@@ -62,6 +76,26 @@ public class EpisodicMemoryConfig {
         return this.connectTimeout;
     }
 
+    public boolean isVectorSearchEnabled() {
+        return this.vectorSearchEnabled;
+    }
+
+    public float getVectorMinCosine() {
+        return this.vectorMinCosine;
+    }
+
+    public int getRetentionDays() {
+        return this.retentionDays;
+    }
+
+    public int getDigestionBatchSize() {
+        return this.digestionBatchSize;
+    }
+
+    public int getMaxSummaryLength() {
+        return this.maxSummaryLength;
+    }
+
     public static Builder builder() {
         return new Builder();
     }
@@ -74,6 +108,11 @@ public class EpisodicMemoryConfig {
         private String database;
         private int searchLimit = 10;
         private Duration connectTimeout = Duration.ofSeconds(10L);
+        private boolean vectorSearchEnabled = false;
+        private float vectorMinCosine = 0.55f;
+        private int retentionDays = 30;
+        private int digestionBatchSize = 50;
+        private int maxSummaryLength = 200;
 
         public Builder() {}
 
@@ -112,6 +151,31 @@ public class EpisodicMemoryConfig {
 
         public Builder connectTimeout(Duration connectTimeout) {
             this.connectTimeout = connectTimeout;
+            return this;
+        }
+
+        public Builder vectorSearchEnabled(boolean enabled) {
+            this.vectorSearchEnabled = enabled;
+            return this;
+        }
+
+        public Builder vectorMinCosine(float minCosine) {
+            this.vectorMinCosine = minCosine;
+            return this;
+        }
+
+        public Builder retentionDays(int retentionDays) {
+            this.retentionDays = retentionDays;
+            return this;
+        }
+
+        public Builder digestionBatchSize(int batchSize) {
+            this.digestionBatchSize = batchSize;
+            return this;
+        }
+
+        public Builder maxSummaryLength(int maxSummaryLength) {
+            this.maxSummaryLength = maxSummaryLength;
             return this;
         }
 

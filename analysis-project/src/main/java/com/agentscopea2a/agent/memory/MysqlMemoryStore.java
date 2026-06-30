@@ -19,6 +19,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Timestamp;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -229,4 +230,82 @@ public class MysqlMemoryStore {
 
     public record LedgerRow(
             String userId, String dateKey, String source, String line, LocalDateTime createdAt) {}
+
+    /**
+     * Delete ledger rows for a user older than the given cutoff date. Used by the nightly
+     * memory-digestion Phase 1 to purge expired jsonl entries that the
+     * MemoryMaintenanceHook has already archived to disk.
+     *
+     * @return number of deleted rows
+     */
+    public int deleteLedgerBefore(String userId, LocalDate cutoff) {
+        String sql = "DELETE FROM agent_memory_ledger WHERE user_id=? AND date_key < ?";
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, userId);
+            ps.setString(2, cutoff.toString());
+            int deleted = ps.executeUpdate();
+            if (deleted > 0) {
+                log.debug("deleteLedgerBefore({}, {}): deleted {} rows", userId, cutoff, deleted);
+            }
+            return deleted;
+        } catch (SQLException e) {
+            log.warn("deleteLedgerBefore({}, {}) failed: {}", userId, cutoff, e.getMessage());
+            return 0;
+        }
+    }
+
+    /**
+     * Delete all rows matching a kind prefix (e.g. {@code ledger-jsonl}) for a user older than
+     * cutoff. Less granular than {@link #deleteLedgerBefore} — used by the digestion pipeline to
+     * clean up stale BYOK-encrypted ledger fragments.
+     *
+     * @return number of deleted rows
+     */
+    public int deleteByKindPrefix(String userId, LocalDate cutoff) {
+        String sql = "DELETE FROM agent_memory WHERE user_id=? AND kind LIKE ? AND updated_at < ?";
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, userId);
+            // Only target ledger-like kinds, never touch memory_md
+            ps.setString(2, "ledger%");
+            ps.setString(3, cutoff.atStartOfDay().toString());
+            int deleted = ps.executeUpdate();
+            if (deleted > 0) {
+                log.debug("deleteByKindPrefix({}, {}): deleted {} rows", userId, cutoff, deleted);
+            }
+            return deleted;
+        } catch (SQLException e) {
+            log.warn("deleteByKindPrefix({}, {}) failed: {}", userId, cutoff, e.getMessage());
+            return 0;
+        }
+    }
+
+    /**
+     * Query distinct user IDs that have activity in agent_memory_ledger within the past N days.
+     * Used by the nightly digestion to discover active users when episodic_memory lacks a
+     * dedicated user_id column.
+     *
+     * @param activeDays number of days to look back
+     * @return distinct user IDs
+     */
+    public List<String> findActiveUsers(int activeDays) {
+        String sql = "SELECT DISTINCT user_id FROM agent_memory_ledger"
+                + " WHERE created_at >= NOW() - INTERVAL ? DAY"
+                + " AND user_id IS NOT NULL AND user_id != ''"
+                + " ORDER BY user_id";
+        List<String> users = new ArrayList<>();
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, Math.max(1, activeDays));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    users.add(rs.getString("user_id"));
+                }
+            }
+        } catch (SQLException e) {
+            log.warn("findActiveUsers({}) failed: {}", activeDays, e.getMessage());
+        }
+        return users;
+    }
 }

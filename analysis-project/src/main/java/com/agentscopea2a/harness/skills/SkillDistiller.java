@@ -86,6 +86,15 @@ public class SkillDistiller {
     private static final Pattern SAMPLE_LINE =
             Pattern.compile("^[ \\t]*-\\s*(.+?)\\s*$", Pattern.MULTILINE);
 
+    /** Prompt for retrying a failed parse — asks LLM to re-emit only the structure. */
+    private static final String RETRY_PROMPT_SUFFIX =
+            "\n\n-----\n以上输出格式不符合要求。请只输出以下四段(不要多余内容):\n"
+                    + "1. `name: <英文小写下划线>`\n"
+                    + "2. `description: <一句话中文描述>`\n"
+                    + "3. `sample_questions:` 然后 3-5 行 `- <中文问法>`\n"
+                    + "4. ```markdown 包裹的 SKILL.md 正文\n"
+                    + "不要 YAML frontmatter。";
+
     public SkillDistiller(Model model, ObjectProvider<EpisodicMemory> episodicProvider) {
         this.model = model;
         this.episodicProvider = episodicProvider;
@@ -105,15 +114,27 @@ public class SkillDistiller {
      * Build a {@link DistilledSkill} from the exemplar question. Returns {@code null} on any
      * parse failure — the hook treats that as "reject this candidate" rather than producing
      * a malformed SKILL.md.
+     *
+     * <p>On first parse failure, retries once with a short corrective prompt asking the LLM to
+     * re-emit only the four required sections. If both attempts fail, returns null.
      */
     public Mono<DistilledSkill> distill(String exemplarQuestion, String fingerprintHint) {
         return collectTrace(exemplarQuestion)
                 .defaultIfEmpty("")
                 .flatMap(trace -> callModel(exemplarQuestion, fingerprintHint, trace))
-                .map(SkillDistiller::parse)
+                .map(SkillDistiller::parseLenient)
+                .flatMap(skill -> {
+                    if (skill != null) return Mono.just(skill);
+                    // Retry once with corrective prompt
+                    log.info("Distill parse failed for q='{}', retrying with corrective prompt", exemplarQuestion);
+                    return collectTrace(exemplarQuestion)
+                            .defaultIfEmpty("")
+                            .flatMap(trace -> callModel(exemplarQuestion, fingerprintHint, trace + RETRY_PROMPT_SUFFIX))
+                            .map(SkillDistiller::parseLenient);
+                })
                 .onErrorResume(
                         ex -> {
-                            log.warn("Distillation failed: {}", ex.getMessage());
+                            log.warn("Distillation failed after retry: {}", ex.getMessage());
                             return Mono.empty();
                         });
     }
@@ -260,6 +281,58 @@ public class SkillDistiller {
                 .map(StringBuilder::toString);
     }
 
+    /**
+     * Lenient parse: extracts name, description, body, and sample questions from LLM output.
+     * Unlike the strict {@link #parse}, this method:
+     * <ul>
+     *   <li>Falls back to fingerprint-hash-based name when name section is missing
+     *   <li>Falls back to name as description when description section is missing
+     *   <li>Only returns null when the body (core skill content) is missing
+     * </ul>
+     */
+    static DistilledSkill parseLenient(String llmOutput) {
+        if (llmOutput == null || llmOutput.isBlank()) return null;
+        DistilledSkill strict = parse(llmOutput);
+        if (strict != null) return strict;
+
+        // Lenient fallback: extract whatever sections we can
+        Matcher nm = NAME_LINE.matcher(llmOutput);
+        Matcher dm = DESC_LINE.matcher(llmOutput);
+        Matcher bm = BODY_FENCE.matcher(llmOutput);
+
+        String name = nm.find() ? nm.group(1).trim().toLowerCase() : null;
+        String desc = dm.find() ? dm.group(1).trim() : null;
+        String body = bm.find() ? bm.group(1).trim() : null;
+
+        // Strip surrounding quotes from description if any
+        if (desc != null && desc.length() >= 2
+                && ((desc.startsWith("\"") && desc.endsWith("\""))
+                        || (desc.startsWith("'") && desc.endsWith("'")))) {
+            desc = desc.substring(1, desc.length() - 1);
+        }
+
+        if (body == null || body.isEmpty()) {
+            log.warn("parseLenient: body missing for output=[{}]",
+                    llmOutput.length() > 500 ? llmOutput.substring(0, 500) + "..." : llmOutput);
+            return null;
+        }
+        if (name == null || name.isEmpty()) {
+            // Fallback: use a hash of the output as name
+            name = "skill_" + Integer.toHexString(llmOutput.hashCode()).substring(0, 8);
+            log.info("parseLenient: name missing, generated fallback '{}'", name);
+        }
+        if (desc == null || desc.isEmpty()) {
+            desc = name;
+            log.info("parseLenient: description missing, using name '{}' as fallback", name);
+        }
+        List<String> samples = parseSamples(llmOutput);
+        return new DistilledSkill(name, desc, body, samples);
+    }
+
+    /**
+     * Strict parse used by {@link #evolve} — requires all three sections.
+     * Returns null on any parse failure.
+     */
     static DistilledSkill parse(String llmOutput) {
         if (llmOutput == null || llmOutput.isBlank()) return null;
         Matcher nm = NAME_LINE.matcher(llmOutput);

@@ -15,11 +15,13 @@
  */
 package com.agentscopea2a.controller;
 
+import com.agentscopea2a.agent.memory.digestion.MemoryDigestionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -55,9 +57,11 @@ public class DebugController {
     private static final int PREVIEW_CHARS = 1200;
 
     private final Path workspace;
+    private final MemoryDigestionService digestionService;
 
-    public DebugController(Path workspace) {
+    public DebugController(Path workspace, MemoryDigestionService digestionService) {
         this.workspace = workspace;
+        this.digestionService = digestionService;
     }
 
     // ==================== Workspace overview ====================
@@ -93,25 +97,49 @@ public class DebugController {
 
     @GetMapping("/skills")
     public Map<String, Object> listSkills() {
-        Path skillsDir = workspace.resolve("skills");
         Map<String, Object> out = new HashMap<>();
+        out.put("skills-builtin", listDir("skills-builtin"));
+        out.put("skills-auto", listDir("skills-auto"));
+        return out;
+    }
+
+    private List<Map<String, Object>> listDir(String subdir) {
+        Path dir = workspace.resolve(subdir);
         List<Map<String, Object>> entries = new ArrayList<>();
-        for (String name : listDirEntries(skillsDir)) {
-            Path skillFile = skillsDir.resolve(name).resolve("SKILL.md");
+        for (String name : listDirEntries(dir)) {
+            Path skillFile = dir.resolve(name).resolve("SKILL.md");
             Map<String, Object> entry = new HashMap<>();
             entry.put("name", name);
             entry.put("path", skillFile.toString());
             entry.put("preview", readPreview(skillFile));
             entries.add(entry);
         }
-        out.put("skills", entries);
-        return out;
+        return entries;
     }
 
     @GetMapping("/skills/{name}")
     public ResponseEntity<String> getSkill(@PathVariable String name) {
         Path p = workspace.resolve("skills").resolve(name).resolve("SKILL.md");
         return readBody(p);
+    }
+
+    // ==================== Digestion ====================
+
+    @PostMapping("/digest")
+    public Map<String, Object> triggerDigest() {
+        Map<String, Object> out = new HashMap<>();
+        long start = System.currentTimeMillis();
+        try {
+            digestionService.digest();
+            out.put("status", "ok");
+            out.put("elapsedMs", System.currentTimeMillis() - start);
+        } catch (Exception e) {
+            out.put("status", "error");
+            out.put("message", e.getMessage());
+            log.error("Manual digest failed: {}", e.getMessage(), e);
+        }
+        out.put("timestamp", java.time.LocalDateTime.now().toString());
+        return out;
     }
 
     // ==================== Sessions ====================

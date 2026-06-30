@@ -47,6 +47,7 @@ public class SkillIndexRepository {
                     + "  success_count INT NOT NULL DEFAULT 0,"
                     + "  failure_count INT NOT NULL DEFAULT 0,"
                     + "  last_used TIMESTAMP NULL,"
+                    + "  evolving BOOLEAN NOT NULL DEFAULT FALSE COMMENT 'PR4 cross-JVM evolve lock',"
                     + "  status VARCHAR(16) NOT NULL DEFAULT 'active',"
                     + "  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP "
                     + "             ON UPDATE CURRENT_TIMESTAMP,"
@@ -162,6 +163,39 @@ public class SkillIndexRepository {
             return ps.executeUpdate() > 0;
         } catch (SQLException e) {
             log.warn("{}({}) failed: {}", column, name, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * PR4 — cross-JVM atomic evolve lock acquisition. Uses {@code UPDATE ... WHERE evolving = FALSE}
+     * so only one JVM (or thread) gets the lock. Affected rows > 0 means this caller won.
+     */
+    public boolean tryAcquireEvolveLock(String name) {
+        ensureTable();
+        String sql = "UPDATE skill_index SET evolving = TRUE WHERE name = ? AND evolving = FALSE";
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, name);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            log.warn("tryAcquireEvolveLock({}) failed: {}", name, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * PR4 — releases the cross-JVM evolve lock.
+     */
+    public boolean releaseEvolveLock(String name) {
+        ensureTable();
+        String sql = "UPDATE skill_index SET evolving = FALSE WHERE name = ?";
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, name);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            log.warn("releaseEvolveLock({}) failed: {}", name, e.getMessage());
             return false;
         }
     }

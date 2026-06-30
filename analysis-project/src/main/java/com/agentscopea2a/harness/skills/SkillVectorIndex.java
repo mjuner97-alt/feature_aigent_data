@@ -7,10 +7,13 @@ package com.agentscopea2a.harness.skills;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.DependsOn;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Repository;
 
 import javax.sql.DataSource;
@@ -23,6 +26,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * PR3 — vector / fingerprint lookup over the {@code skill_index} table laid out in PR1.
@@ -55,9 +59,64 @@ public class SkillVectorIndex {
     private static final TypeReference<float[]> FLOAT_ARRAY = new TypeReference<>() {};
 
     private final DataSource dataSource;
+    private final boolean cacheEnabled;
+    private final int cacheRefreshSeconds;
 
-    public SkillVectorIndex(@Qualifier("mysqlDataSource") DataSource dataSource) {
+    /** JVM-level cache of active skills for L2 vector search. Thread-safe CopyOnWriteArrayList. */
+    private volatile List<CachedSkill> skillCache = Collections.emptyList();
+
+    public SkillVectorIndex(
+            @Qualifier("mysqlDataSource") DataSource dataSource,
+            @Value("${harness.skills.retrieval.cache-enabled:true}") boolean cacheEnabled,
+            @Value("${harness.skills.retrieval.cache-refresh-seconds:60}") int cacheRefreshSeconds) {
         this.dataSource = dataSource;
+        this.cacheEnabled = cacheEnabled;
+        this.cacheRefreshSeconds = cacheRefreshSeconds;
+    }
+
+    /** Cached skill entry holding pre-parsed embedding + precomputed norm for fast cosine. */
+    private record CachedSkill(String name, String description, float[] embedding, float norm) {}
+
+    /**
+     * Periodic cache refresh. Runs at a fixed interval so L2 queries hit memory instead of SQL.
+     * Skips on failure — the stale cache is still better than falling back to SQL every request.
+     */
+    @PostConstruct
+    @Scheduled(fixedDelayString = "${harness.skills.retrieval.cache-refresh-seconds:60}000")
+    public void refreshCache() {
+        if (!cacheEnabled) return;
+        try {
+            this.skillCache = loadAllActiveSkills();
+            log.debug("SkillVectorIndex cache refreshed: {} skills loaded", skillCache.size());
+        } catch (Exception ex) {
+            log.warn("SkillVectorIndex cache refresh failed (stale cache intact): {}", ex.getMessage());
+        }
+    }
+
+    private List<CachedSkill> loadAllActiveSkills() {
+        String sql = "SELECT name, description, embedding FROM skill_index"
+                + " WHERE status = 'active' AND embedding IS NOT NULL";
+        List<CachedSkill> list = new ArrayList<>();
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql);
+                ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                String json = rs.getString("embedding");
+                if (json == null || json.isBlank()) continue;
+                float[] vec;
+                try {
+                    vec = MAPPER.readValue(json, FLOAT_ARRAY);
+                } catch (Exception ex) {
+                    continue;
+                }
+                float n = norm(vec);
+                if (n == 0f) continue;
+                list.add(new CachedSkill(rs.getString("name"), rs.getString("description"), vec, n));
+            }
+        } catch (SQLException e) {
+            log.warn("loadAllActiveSkills failed: {}", e.getMessage());
+        }
+        return List.copyOf(list);
     }
 
     /** Hit returned by L2 vector search. {@code cosine} ∈ [-1, 1]; higher = more similar. */
@@ -86,25 +145,47 @@ public class SkillVectorIndex {
 
     /**
      * L2 — application-layer cosine top-K over all {@code active} skills with non-null
-     * embeddings. Hits below {@code minCosine} are filtered out; the remainder are returned in
-     * descending cosine order.
+     * embeddings. Uses the JVM-level cache when enabled; falls back to full-table SQL scan when
+     * cache is disabled, empty, or a refresh is in progress.
      *
-     * <p>Why in-process: keeps the path dependency-free on a specific MySQL version, and
-     * cosine on a few hundred 1536-dim vectors is microseconds. The whole call is gated by
-     * {@code harness.skills.retrieval.enabled} so default-off deployments don't pay for the
-     * full-table scan.
+     * <p>Hits below {@code minCosine} are filtered out; the remainder are returned in
+     * descending cosine order.
      */
     public List<SkillHit> topK(float[] queryVec, int k, float minCosine) {
         if (queryVec == null || queryVec.length == 0 || k <= 0) return List.of();
-        String sql =
-                "SELECT name, description, embedding FROM skill_index"
-                        + " WHERE status = 'active' AND embedding IS NOT NULL";
+        float qNorm = norm(queryVec);
+        if (qNorm == 0f) return List.of();
+
+        List<CachedSkill> cache = this.skillCache;
+        List<SkillHit> hits;
+
+        if (cacheEnabled && !cache.isEmpty()) {
+            // Fast path: in-memory cosine over cached skills
+            hits = new ArrayList<>();
+            for (CachedSkill s : cache) {
+                if (s.embedding().length != queryVec.length) continue;
+                float cos = cosine(queryVec, s.embedding(), qNorm, s.norm());
+                if (cos >= minCosine) {
+                    hits.add(new SkillHit(s.name(), s.description(), cos));
+                }
+            }
+        } else {
+            // Fallback: full-table SQL scan
+            hits = dbTopK(queryVec, qNorm, minCosine);
+        }
+
+        hits.sort(Comparator.comparingDouble(SkillHit::cosine).reversed());
+        return hits.size() > k ? hits.subList(0, k) : hits;
+    }
+
+    /** Full-table SQL scan fallback when cache is unavailable. */
+    private List<SkillHit> dbTopK(float[] queryVec, float qNorm, float minCosine) {
+        String sql = "SELECT name, description, embedding FROM skill_index"
+                + " WHERE status = 'active' AND embedding IS NOT NULL";
         List<SkillHit> hits = new ArrayList<>();
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps = c.prepareStatement(sql);
                 ResultSet rs = ps.executeQuery()) {
-            float queryNorm = norm(queryVec);
-            if (queryNorm == 0f) return List.of();
             while (rs.next()) {
                 String embeddingJson = rs.getString("embedding");
                 if (embeddingJson == null || embeddingJson.isBlank()) continue;
@@ -112,25 +193,19 @@ public class SkillVectorIndex {
                 try {
                     vec = MAPPER.readValue(embeddingJson, FLOAT_ARRAY);
                 } catch (Exception ex) {
-                    // Skip malformed rows rather than aborting the whole retrieval — a single
-                    // bad row shouldn't make every request fall back to full injection.
-                    log.debug("Embedding parse failed for {}: {}", rs.getString("name"), ex.getMessage());
                     continue;
                 }
                 if (vec.length != queryVec.length) continue;
-                float cos = cosine(queryVec, vec, queryNorm);
+                float cos = cosine(queryVec, vec, qNorm, norm(vec));
                 if (cos >= minCosine) {
-                    hits.add(
-                            new SkillHit(
-                                    rs.getString("name"), rs.getString("description"), cos));
+                    hits.add(new SkillHit(rs.getString("name"), rs.getString("description"), cos));
                 }
             }
         } catch (SQLException e) {
-            log.warn("topK failed: {}", e.getMessage());
+            log.warn("dbTopK failed: {}", e.getMessage());
             return List.of();
         }
-        hits.sort(Comparator.comparingDouble(SkillHit::cosine).reversed());
-        return hits.size() > k ? hits.subList(0, k) : hits;
+        return hits;
     }
 
     /**
@@ -149,8 +224,6 @@ public class SkillVectorIndex {
             log.warn("Embedding serialise failed for {}: {}", name, ex.getMessage());
             return;
         }
-        // skill_index row already exists (PR1 SkillSaveTool inserts before we get here); plain
-        // UPDATE keeps the version / usage_count columns untouched.
         String sql = "UPDATE skill_index SET embedding = ?, fingerprint = ? WHERE name = ?";
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps = c.prepareStatement(sql)) {
@@ -161,6 +234,10 @@ public class SkillVectorIndex {
             if (rows == 0) {
                 log.warn("upsertVector found no skill_index row for {} — embedding skipped", name);
             }
+            // Write-through cache update
+            if (cacheEnabled && rows > 0) {
+                upsertCacheEntry(name, embedding, null);
+            }
         } catch (SQLException e) {
             log.warn("upsertVector({}) failed: {}", name, e.getMessage());
         }
@@ -168,8 +245,6 @@ public class SkillVectorIndex {
 
     /**
      * PR4 — refresh the embedding column for an existing skill without touching its fingerprint.
-     * Used by {@code SkillEvolutionRunner} after a successful evolve so the new SKILL.md body is
-     * retrievable via L2, while PR2-stamped fingerprints survive intact so L1 keeps working.
      */
     public void upsertEmbeddingOnly(String name, float[] embedding) {
         if (name == null || name.isBlank() || embedding == null || embedding.length == 0) return;
@@ -189,9 +264,24 @@ public class SkillVectorIndex {
             if (rows == 0) {
                 log.warn("upsertEmbeddingOnly found no skill_index row for {}", name);
             }
+            // Write-through cache update
+            if (cacheEnabled && rows > 0) {
+                upsertCacheEntry(name, embedding, null);
+            }
         } catch (SQLException e) {
             log.warn("upsertEmbeddingOnly({}) failed: {}", name, e.getMessage());
         }
+    }
+
+    /** Update or append a single entry in the JVM cache (write-through). */
+    private void upsertCacheEntry(String name, float[] embedding, String description) {
+        float n = norm(embedding);
+        if (n == 0f) return;
+        List<CachedSkill> current = new ArrayList<>(this.skillCache);
+        // Remove existing entry for this name
+        current.removeIf(s -> s.name().equals(name));
+        current.add(new CachedSkill(name, description, embedding, n));
+        this.skillCache = List.copyOf(current);
     }
 
     private static float norm(float[] v) {
@@ -200,15 +290,19 @@ public class SkillVectorIndex {
         return (float) Math.sqrt(s);
     }
 
-    private static float cosine(float[] a, float[] b, float aNorm) {
+    private static float cosine(float[] a, float[] b, float aNorm, float bNorm) {
         double dot = 0d;
-        double bNorm = 0d;
         for (int i = 0; i < a.length; i++) {
             dot += a[i] * b[i];
-            bNorm += b[i] * b[i];
         }
-        double denom = aNorm * Math.sqrt(bNorm);
+        double denom = aNorm * bNorm;
         return denom == 0d ? 0f : (float) (dot / denom);
+    }
+
+    /** @deprecated Use {@link #cosine(float[], float[], float, float)} with precomputed bNorm. */
+    @Deprecated
+    private static float cosine(float[] a, float[] b, float aNorm) {
+        return cosine(a, b, aNorm, norm(b));
     }
 
     /** Visible-for-test no-op when retrieval is wired but called with an empty workspace. */

@@ -55,7 +55,7 @@ public class SkillSynthesisRunner {
         this.distiller = distiller;
         this.vectorIndex = vectorIndexProvider.getIfAvailable();
         this.embeddingClient = embeddingClientProvider.getIfAvailable();
-        this.skillsDir = Path.of(workspaceRoot).resolve("skills");
+        this.skillsDir = Path.of(workspaceRoot).resolve("skills-auto");
         this.enabled = enabled;
         this.hitThreshold = hitThreshold;
     }

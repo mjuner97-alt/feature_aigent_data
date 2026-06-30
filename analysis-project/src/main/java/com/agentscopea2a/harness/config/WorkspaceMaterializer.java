@@ -57,11 +57,19 @@ public final class WorkspaceMaterializer {
      * Relative path prefixes that are <b>always</b> overwritten from the classpath, even when
      * a copy already exists on disk. These are code-shipped assets (subagent specs, top-level
      * AGENTS.md / KNOWLEDGE.md) that must stay in sync with the deployed jar — unlike
-     * agent-produced state (memory/, skills/, sessions/, results/) which must be preserved.
+     * agent-produced state (memory/, skills-auto/, sessions/, results/) which must be preserved.
+     *
+     * <p>Note: classpath {@code skills/} (builtin meta-skills like tool_index, data_primitives)
+     * are mapped to {@code skills-builtin/} on disk, separate from auto-synthesized skills in
+     * {@code skills-auto/}. This lets the HarnessAgent's internal FileSystemSkillRepository
+     * inject builtin skills while SkillRetrievalHook selectively retrieves auto-skills.
      */
     private static final String[] ALWAYS_OVERWRITE_PREFIXES = {
         "agent-subagents/", "AGENTS.md", "knowledge/"
     };
+
+    /** Classpath skills are mapped to this subdirectory (instead of plain "skills/"). */
+    private static final String SKILLS_BUILTIN_DIR = "skills-builtin";
 
     private WorkspaceMaterializer() {}
 
@@ -91,6 +99,10 @@ public final class WorkspaceMaterializer {
                 String relative = uri.substring(idx + "/workspace/".length());
                 if (relative.isEmpty() || relative.endsWith("/")) {
                     continue; // skip directories
+                }
+                // Remap classpath skills/ → skills-builtin/ on disk
+                if (relative.startsWith("skills/")) {
+                    relative = SKILLS_BUILTIN_DIR + relative.substring("skills".length());
                 }
                 Path dest = target.resolve(relative);
                 boolean alwaysOverwrite = isAlwaysOverwrite(relative);
