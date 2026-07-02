@@ -278,7 +278,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             }
 
             // 3. 分析智能体分支（非"执行智能体"）— 全部视为思考
-            if (!"执行智能体".equalsIgnoreCase(agentName)) {
+            if (!SupervisorService.AGENT_NAME.equalsIgnoreCase(agentName) || ! (contentBlock instanceof  TextBlock)) {
                     ctx.thinkContent.append(extractedContent);
                     sendThinkResponsePublic(ctx.emitter, extractedContent, "执行中", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
                 return;
@@ -473,8 +473,6 @@ public class ChatStreamServiceImpl implements ChatStreamService {
 
     /**
      * 缓存命中回放：直接把 cachedResponse 当作"已执行"产物注入 SSE 流。
-     *
-     * <p>{@link ResponseCacheHook#handlePreCall} 命中时抛 {@link
      * ResponseCacheHook.CacheHitException} 短路 agent 执行。本方法承接它,绕开
      * {@link #processChunk}/{@link #processChunkPublic}(它们的多 chunk 状态机不适合
      * 一次性灌入完整回答),按"分析已执行 → 执行已执行 → 最终文本(finish=true)"的
@@ -500,14 +498,23 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         ctx.fullResult.append(cached);
         ctx.answerContent.append(cached);
         String conv = ctx.req.getConversationId();
-        if (manager) {
-            sendThinkResponse(ctx.emitter, " ", "已执行", "分析智能体", false, conv, ctx.uuid);
-            sendThinkResponse(ctx.emitter, " ", "已执行", "执行智能体", false, conv, ctx.uuid);
-            sendTextResponse(ctx.emitter, cached, "", "", true, conv, ctx.uuid);
-        } else {
-            sendThinkResponsePublic(ctx.emitter, " ", "已执行", "分析智能体", false, conv, ctx.uuid);
-            sendThinkResponsePublic(ctx.emitter, " ", "已执行", "执行智能体", false, conv, ctx.uuid);
-            sendTextResponsePublic(ctx.emitter, cached, "", "", true, conv, ctx.uuid);
+        try {
+            if (manager) {
+                sendThinkResponse(ctx.emitter, " ", "已执行", "分析智能体", false, conv, ctx.uuid);
+                sendThinkResponse(ctx.emitter, " ", "已执行", "执行智能体", false, conv, ctx.uuid);
+                sendTextResponse(ctx.emitter, cached, "", "", true, conv, ctx.uuid);
+            } else {
+                sendThinkResponsePublic(ctx.emitter, " ", "已执行", "分析智能体", false, conv, ctx.uuid);
+                sendThinkResponsePublic(ctx.emitter, " ", "已执行", "执行智能体", false, conv, ctx.uuid);
+                sendTextResponsePublic(ctx.emitter, cached, "", "", true, conv, ctx.uuid);
+            }
+            ctx.emitter.complete();
+        } catch (Exception e) {
+            LOGGER.warn("Cache replay send failed for conv={}: {}", conv, e.getMessage());
+            ctx.emitter.completeWithError(e);
+        } finally {
+            ThreadContextUtils.clearContext();
+            saveAnswerIntoDB(ctx);
         }
     }
 
@@ -515,6 +522,13 @@ public class ChatStreamServiceImpl implements ChatStreamService {
      * 统一处理流式异常 — Manager版
      */
     private void handleStreamError(StreamContext ctx, Throwable error, String fullResult) {
+        // 先检查是否是 CacheHitException 被 reactor 包装后落入此路径
+        ResponseCacheHook.CacheHitException cacheHit = unwrapCacheHit(error);
+        if (cacheHit != null) {
+            emitCachedResponse(ctx, cacheHit.getCachedResponse(), true);
+            return;
+        }
+
         LOGGER.error("处理流式异常: {}", error.getMessage(), error);
         try {
             TextManagerResponseDto errorDto = new TextManagerResponseDto();
@@ -536,6 +550,13 @@ public class ChatStreamServiceImpl implements ChatStreamService {
      * 统一处理流式异常 — 通用版
      */
     private void handleStreamErrorPublic(StreamContext ctx, Throwable error, String fullResult) {
+        // 先检查是否是 CacheHitException 被 reactor 包装后落入此路径
+        ResponseCacheHook.CacheHitException cacheHit = unwrapCacheHit(error);
+        if (cacheHit != null) {
+            emitCachedResponse(ctx, cacheHit.getCachedResponse(), false);
+            return;
+        }
+
         LOGGER.error("处理流式异常: {}", error.getMessage(), error);
         try {
             TextResponseDto errorDto = new TextResponseDto();
@@ -561,6 +582,18 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         } else {
             return error.getMessage();
         }
+    }
+
+    /**
+     * 检查异常链中是否包含 CacheHitException（reactor 可能包装多层异常）。
+     */
+    private static ResponseCacheHook.CacheHitException unwrapCacheHit(Throwable t) {
+        Throwable cur = t;
+        for (int i = 0; i < 8 && cur != null; i++) {
+            if (cur instanceof ResponseCacheHook.CacheHitException ch) return ch;
+            cur = cur.getCause();
+        }
+        return null;
     }
 
 

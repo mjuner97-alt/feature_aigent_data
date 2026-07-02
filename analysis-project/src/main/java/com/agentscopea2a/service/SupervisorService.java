@@ -94,7 +94,7 @@ public class SupervisorService {
 
     private static final Logger log = LoggerFactory.getLogger(SupervisorService.class);
 
-    private static final String AGENT_NAME = "QualitySupervisor";
+    public static final String AGENT_NAME = "QualitySupervisor";
     private static final String LTM_BUCKET_FALLBACK = "anonymous";
 
     private final Path workspace;
