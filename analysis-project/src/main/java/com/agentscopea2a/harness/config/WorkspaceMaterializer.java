@@ -27,6 +27,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 
+import static java.nio.file.LinkOption.NOFOLLOW_LINKS;
+
 /**
  * Materializes the bundled {@code classpath:workspace/**} tree to a stable on-disk path so
  * {@link io.agentscope.harness.agent.HarnessAgent} can both read it (workspace context,
@@ -115,12 +117,76 @@ public final class WorkspaceMaterializer {
                 }
                 seeded++;
             }
+
+            // Create skills/ → skills-builtin/ symlink so that HarnessAgent's internal
+            // FileSystemSkillRepository (which hardcodes workspace/skills/) can find
+            // builtin meta-skills (tool_index, data_primitives).
+            ensureSkillsSymlink(target);
+
             Path absolute = target.toAbsolutePath().normalize();
             log.info(
                     "Workspace ready at {} ({} new files seeded from classpath)", absolute, seeded);
             return absolute;
         } catch (IOException e) {
             throw new UncheckedIOException("Failed to materialize workspace", e);
+        }
+    }
+
+    /**
+     * Creates or repairs the {@code skills/} → {@code skills-builtin/} symlink so the
+     * JAR-internal FileSystemSkillRepository (which hardcodes {@code workspace/skills/})
+     * can find builtin meta-skills.
+     *
+     * <p>On Windows the JVM may lack CREATE_SYMLINK privilege (needs Developer Mode or
+     * admin). When it fails we fall back to copying the builtin skill files into
+     * {@code skills/} so the system remains functional on constrained environments.</p>
+     */
+    private static void ensureSkillsSymlink(Path target) {
+        Path skillsLink = target.resolve("skills");
+        Path skillsBuiltin = target.resolve(SKILLS_BUILTIN_DIR);
+        if (!Files.isDirectory(skillsBuiltin)) {
+            return; // nothing to link to
+        }
+        try {
+            // Check existing skills/ — is it already a valid symlink?
+            if (Files.isSymbolicLink(skillsLink)
+                    && Files.isSameFile(skillsLink, skillsBuiltin)) {
+                return; // already correct
+            }
+            // If skills/ is a real directory that already has content (e.g. leftover from
+            // a pre-builtin era), leave it alone — don't break existing state.
+            if (Files.isDirectory(skillsLink, NOFOLLOW_LINKS)
+                    && !Files.isSymbolicLink(skillsLink)) {
+                Path firstFile = Files.list(skillsLink).findFirst().orElse(null);
+                if (firstFile != null) {
+                    log.info("skills/ is a real directory with content; symlink skipped");
+                    return;
+                }
+            }
+            // Remove whatever is at skills/ (broken symlink, empty dir, stale file)
+            Files.deleteIfExists(skillsLink);
+            try {
+                Files.createSymbolicLink(skillsLink, skillsBuiltin);
+                log.info("Created symlink skills/ -> skills-builtin/");
+            } catch (IOException e) {
+                // Fallback: copy files instead of symlink (Windows without Developer Mode)
+                log.warn("Cannot create symlink ({}), falling back to copy", e.getMessage());
+                try (var files = Files.walk(skillsBuiltin)) {
+                    files.filter(Files::isRegularFile).forEach(src -> {
+                        try {
+                            Path rel = skillsBuiltin.relativize(src);
+                            Path dest = skillsLink.resolve(rel);
+                            Files.createDirectories(dest.getParent());
+                            Files.copy(src, dest, StandardCopyOption.REPLACE_EXISTING);
+                        } catch (IOException ex) {
+                            throw new UncheckedIOException(ex);
+                        }
+                    });
+                }
+                log.info("Copied builtin skills to skills/ (symlink fallback)");
+            }
+        } catch (IOException e) {
+            log.warn("Failed to ensure skills/ -> skills-builtin/ link: {}", e.getMessage());
         }
     }
 

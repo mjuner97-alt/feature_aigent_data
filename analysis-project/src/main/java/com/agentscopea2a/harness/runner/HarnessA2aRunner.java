@@ -20,13 +20,14 @@ import com.agentscopea2a.harness.artifact.ArtifactStore;
 import com.agentscopea2a.harness.cache.ResponseCacheService;
 import com.agentscopea2a.agent.dimension.DimensionStateManager;
 import com.agentscopea2a.harness.hooks.ResponseCacheHook;
+import com.agentscopea2a.harness.hooks.ToolCallCollector;
+import com.agentscopea2a.agent.memory.MySqlEpisodicMemory;
 import com.agentscopea2a.service.SupervisorService;
 import io.agentscope.core.a2a.server.executor.runner.AgentRequestOptions;
 import io.agentscope.core.a2a.server.executor.runner.AgentRunner;
 import io.agentscope.core.agent.Event;
 import io.agentscope.core.agent.EventType;
 import io.agentscope.core.agent.RuntimeContext;
-import io.agentscope.core.memory.EpisodicMemory;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
@@ -61,6 +62,7 @@ public class HarnessA2aRunner implements AgentRunner {
     private final DimensionStateManager cacheDimManager;
     private final io.micrometer.core.instrument.MeterRegistry meterRegistry;
     private final ArtifactStore artifactStore;
+
     private final Map<String, HarnessAgent> active = new ConcurrentHashMap<>();
 
     public HarnessA2aRunner(
@@ -90,6 +92,13 @@ public class HarnessA2aRunner implements AgentRunner {
                         .sessionKey(SimpleSessionKey.of(options.getTaskId()))
                         .build();
 
+        // Extract user question for ToolCallCollector
+        String userQuestion = extractUserQuestion(requestMessages);
+
+        // Create and bind ToolCallCollector for this request
+        ToolCallCollector collector = new ToolCallCollector(userQuestion);
+        collector.bind();
+
         // ctx scopes the cache key by userId; meterRegistry records hit/miss/write counters.
         ResponseCacheHook cacheHook =
                 supervisorService.newCacheHook(cacheService, cacheDimManager, ctx, meterRegistry);
@@ -111,6 +120,10 @@ public class HarnessA2aRunner implements AgentRunner {
                 .doFinally(
                         signal -> {
                             active.remove(options.getTaskId());
+                            // Persist tool call context to episodic memory for future distillation
+                            persistToolCallContext(options, collector);
+                            // Unbind the ThreadLocal collector
+                            collector.unbind();
                             // GC the per-task artifact bucket. Done on EVERY terminal signal
                             // (complete / error / cancel) so a crashed task still cleans up.
                             // The bucket is tiny — a few CSVs — but with N concurrent users
@@ -151,6 +164,46 @@ public class HarnessA2aRunner implements AgentRunner {
                         .content(TextBlock.builder().text(cachedResponse).build())
                         .build();
         return new Event(EventType.REASONING, msg, true);
+    }
+
+    /**
+     * Extract the first USER message text from the request messages.
+     * Used to seed the ToolCallCollector with the user's query.
+     */
+    private static String extractUserQuestion(List<Msg> requestMessages) {
+        if (requestMessages == null) return "";
+        for (Msg m : requestMessages) {
+            if (m != null && m.getRole() == MsgRole.USER) {
+                String text = m.getTextContent();
+                if (text != null && !text.isBlank()) return text.trim();
+            }
+        }
+        return "";
+    }
+
+    /**
+     * Persist the ToolCallCollector's JSON to episodic memory for use by Path B
+     * (online auto-synthesis). Best-effort: failures are logged and swallowed.
+     */
+    private void persistToolCallContext(AgentRequestOptions options, ToolCallCollector collector) {
+        String json = collector.toJson();
+        if (json == null || json.isBlank()) return;
+        try {
+            String taskId = options.getTaskId();
+            String sessionId = (taskId != null ? taskId : "req_" + System.currentTimeMillis())
+                    + ":" + System.currentTimeMillis();
+            log.debug("Persisting tool call context to episodic memory ({} chars)", json.length());
+            MySqlEpisodicMemory mem = supervisorService.getEpisodicMemory();
+            if (mem != null) {
+                mem.recordSessionWithToolContext(sessionId, List.of(), json)
+                        .subscribeOn(Schedulers.boundedElastic())
+                        .subscribe(
+                                v -> {},
+                                ex -> log.debug("Failed to persist tool call context: {}", ex.getMessage()));
+            }
+        } catch (Exception ex) {
+            log.debug("persistToolCallContext failed: {}", ex.getMessage());
+        }
     }
 
     /**

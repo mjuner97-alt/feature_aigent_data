@@ -276,6 +276,23 @@ public class SkillIndexRepository {
         }
     }
 
+    /**
+     * Stamp (or update) the fingerprint for a given skill name. Used by offline digestion
+     * (SkillFlowEvolver) so subsequent findSkillForFingerprint() lookups find the existing skill.
+     */
+    public void upsertFingerprint(String name, String fingerprint) {
+        ensureTable();
+        String sql = "UPDATE skill_index SET fingerprint = ? WHERE name = ?";
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, fingerprint);
+            ps.setString(2, name);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            log.warn("upsertFingerprint({}) failed: {}", name, e.getMessage());
+        }
+    }
+
     private SkillEntry map(ResultSet rs) throws SQLException {
         Timestamp lastUsed = rs.getTimestamp("last_used");
         Timestamp updated = rs.getTimestamp("updated_at");

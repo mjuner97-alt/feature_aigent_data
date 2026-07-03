@@ -14,10 +14,12 @@ import com.agentscopea2a.agent.dimension.DimensionStateManager;
 import com.agentscopea2a.dto.ChatRequest;
 import com.agentscopea2a.dto.QuestionAnswerDto;
 import com.agentscopea2a.entity.AiChatResult;
+import com.agentscopea2a.agent.memory.MySqlEpisodicMemory;
 import com.agentscopea2a.harness.artifact.ArtifactContext;
 import com.agentscopea2a.harness.artifact.ArtifactStore;
 import com.agentscopea2a.harness.cache.ResponseCacheService;
 import com.agentscopea2a.harness.hooks.ResponseCacheHook;
+import com.agentscopea2a.harness.hooks.ToolCallCollector;
 import com.agentscopea2a.mapper.db1.MainAgentMapper;
 import com.agentscopea2a.service.ChatStreamServiceV_3;
 import com.agentscopea2a.service.SupervisorService;
@@ -130,10 +132,14 @@ public class ChatStreamServiceV_3Impl implements ChatStreamServiceV_3 {
 
         final RuntimeContext ctx = buildRuntimeContext(req);
 
+        // Create and bind ToolCallCollector for this request (Path B / Path C context injection)
+        String userInputText = req.getInput() != null ? req.getInput() : "";
+        ToolCallCollector collector = new ToolCallCollector(userInputText);
+        collector.bind();
+
         ResponseCacheHook cacheHook =
                 supervisorService.newCacheHook(cacheService, cacheDimManager, ctx, meterRegistry);
-        HarnessAgent agent = supervisorService.build(cacheHook, ctx);
-
+        HarnessAgent agent = supervisorService.build(cacheHook, ctx, collector);
 
         Msg userMsg =
                 Msg.builder()
@@ -151,11 +157,16 @@ public class ChatStreamServiceV_3Impl implements ChatStreamServiceV_3 {
         Runnable cleanup =
                 () -> {
                     if (!cleaned.compareAndSet(false, true)) return;
+                    // GC the per-task artifact bucket.
                     try {
                         artifactStore.cleanupTask(ArtifactContext.from(ctx));
                     } catch (Exception ex) {
                         log.warn("Artifact cleanup failed for /ai/chat: {}", ex.getMessage());
                     }
+                    // Persist tool call context to episodic memory for future distillation
+                    persistToolCallContext(req, collector);
+                    // Unbind the ThreadLocal collector
+                    collector.unbind();
                 };
         emitter.onCompletion(cleanup);
         emitter.onTimeout(cleanup);
@@ -229,6 +240,32 @@ public class ChatStreamServiceV_3Impl implements ChatStreamServiceV_3 {
             String formType,
             String conversationId,
             boolean structured) {}
+
+    /**
+     * Persist the ToolCallCollector's JSON to episodic memory for use by Path B
+     * (online auto-synthesis). Best-effort: failures are logged and swallowed.
+     */
+    private void persistToolCallContext(ChatRequest req, ToolCallCollector collector) {
+        String json = collector.toJson();
+        if (json == null || json.isBlank()) return;
+        try {
+            String sessionId = (req.getConversationId() != null ? req.getConversationId()
+                    : "req_" + System.currentTimeMillis())
+                    + ":" + System.currentTimeMillis();
+            log.debug("Persisting tool call context to episodic memory ({} chars)", json.length());
+            log.info("[PathC] persistToolCallContext: json={}", json.length() > 200 ? json.substring(0, 200) + "..." : json);
+            MySqlEpisodicMemory mem = supervisorService.getEpisodicMemory();
+            if (mem != null) {
+                mem.recordSessionWithToolContext(sessionId, List.of(), json)
+                        .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic())
+                        .subscribe(
+                                v -> {},
+                                ex -> log.debug("Failed to persist tool call context: {}", ex.getMessage()));
+            }
+        } catch (Exception ex) {
+            log.debug("persistToolCallContext failed: {}", ex.getMessage());
+        }
+    }
 
     // ---------- SSE write paths ------------------------------------------------------------
 

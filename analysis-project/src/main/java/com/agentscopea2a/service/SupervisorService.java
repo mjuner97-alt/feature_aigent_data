@@ -30,6 +30,8 @@ import com.agentscopea2a.harness.hooks.ResponseCacheHook;
 import com.agentscopea2a.harness.hooks.SkillRetrievalHook;
 import com.agentscopea2a.harness.hooks.SkillSynthesisHook;
 import com.agentscopea2a.harness.hooks.SkillEvolutionHook;
+import com.agentscopea2a.harness.hooks.ToolCallCollector;
+import com.agentscopea2a.harness.hooks.ToolCallTrackingHook;
 import com.agentscopea2a.agent.memory.EpisodicLongTermMemoryAdapter;
 import com.agentscopea2a.agent.memory.EpisodicMemoryConfig;
 import com.agentscopea2a.agent.memory.MemoryHydrator;
@@ -97,6 +99,9 @@ public class SupervisorService {
     public static final String AGENT_NAME = "QualitySupervisor";
     private static final String LTM_BUCKET_FALLBACK = "anonymous";
 
+    /** Sub-agent name for skill generation — matched against spec.getName(). */
+    private static final String GENERATE_SKILL_AGENT = "generate_skill";
+
     private final Path workspace;
     private final MySQLSession session;
     private final Model model;
@@ -153,6 +158,14 @@ public class SupervisorService {
 
     /** Cached, parsed subagent specs from {@code workspace/subagents/}. Loaded once at startup. */
     private final List<SubagentDeclaration> workspaceSubagents = new java.util.ArrayList<>();
+
+    /**
+     * Request-scoped ToolCallCollector, set during {@link #build(ResponseCacheHook, RuntimeContext, ToolCallCollector)}
+     * and used by the generate_skill subagent factory to inject tool call context into the system prompt.
+     * Stored as a field (not ThreadLocal) because the subagent factory lambda executes on a Reactor
+     * dispatch thread where ThreadLocal is empty.
+     */
+    private ToolCallCollector requestCollector;
 
     /**
      * Process-wide episodic memory instance. Built once in {@link #init()} (warmup runs the DDL
@@ -317,6 +330,10 @@ public class SupervisorService {
     }
 
     public HarnessAgent build(ResponseCacheHook cacheHook, RuntimeContext ctx) {
+        return build(cacheHook, ctx, null);
+    }
+
+    public HarnessAgent build(ResponseCacheHook cacheHook, RuntimeContext ctx, ToolCallCollector collector) {
         Toolkit toolkit = new Toolkit();
 
         ArtifactContext requestArtifactCtx = ArtifactContext.from(ctx);
@@ -422,6 +439,16 @@ public class SupervisorService {
             b.hook(new SkillEvolutionHook(skillEvolutionRunner, ctx, skillEvolutionRejectionKeywords));
         }
 
+        // ToolCallTrackingHook — captures every L1 tool invocation (name + input/output) into
+        // the request-scoped ToolCallCollector for downstream distillation/context injection.
+        // Priority 45 keeps it after SynthesisHook(50) and before EvolutionHook(60).
+        if (collector != null) {
+            b.hook(new ToolCallTrackingHook(collector));
+            this.requestCollector = collector;
+        } else {
+            this.requestCollector = null;
+        }
+
         return b.build();
     }
 
@@ -463,13 +490,35 @@ public class SupervisorService {
                         }
                         tk.registerTool(supplier.get());
                     }
+
+                    // Build sysPrompt with optional tool call context injection for generate_skill
+                    // Use the requestCollector field (captured at build() time) rather than
+                    // ToolCallCollector.getCurrentContext() (ThreadLocal), because this factory
+                    // lambda executes on a Reactor dispatch thread where ThreadLocal is empty.
+                    String effectiveSysPrompt = sysPrompt;
+                    if (GENERATE_SKILL_AGENT.equals(agentId)) {
+                        ToolCallCollector c = requestCollector;
+                        log.info("[PathC] generate_skill subagent factory: requestCollector={}",
+                                c != null ? "present" : "null");
+                        if (c != null) {
+                            String toolContext = c.toContextPrompt();
+                            log.info("[PathC] toContextPrompt() returned blank={} len={}",
+                                    toolContext.isBlank(), toolContext.length());
+                            if (!toolContext.isBlank()) {
+                                effectiveSysPrompt = sysPrompt + "\n\n" + toolContext;
+                                log.info("[PathC] Injected tool call context into generate_skill sub-agent ({} chars)",
+                                        toolContext.length());
+                            }
+                        }
+                    }
+
                     HarnessAgent.Builder sub =
                             HarnessAgent.builder()
                                     .name(id)
                                     .model(modelRegistry.getForSubagent(id))
                                     .workspace(workspace)
                                     .toolkit(tk)
-                                    .sysPrompt(sysPrompt)
+                                    .sysPrompt(effectiveSysPrompt)
                                     .toolExecutionConfig(toolExecutionConfig())
                                     .enablePendingToolRecovery(true)
                                     .maxIters(maxIters)

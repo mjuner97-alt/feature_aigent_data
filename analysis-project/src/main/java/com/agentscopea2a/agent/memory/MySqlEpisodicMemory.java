@@ -336,6 +336,104 @@ public class MySqlEpisodicMemory implements EpisodicMemory {
         return new EpisodicResult(sessionId, snippet, score, timestamp);
     }
 
+    /**
+     * Like {@link #recordSession}, but also stores a tool_call_details JSON blob alongside
+     * the session for later use by skill distillation (paths B and C).
+     */
+    public Mono<Void> recordSessionWithToolContext(String sessionId, List<Msg> messages,
+                                                    String toolCallDetailsJson) {
+        return Mono.<Void>fromRunnable(
+                        () -> {
+                            ensureInitialized();
+                            boolean hasToolContext = toolCallDetailsJson != null && !toolCallDetailsJson.isBlank();
+                            String sql;
+                            if (hasToolContext) {
+                                sql = "INSERT INTO " + this.config.getTableName()
+                                        + " (session_id, role, content, embedding, tool_call_details) VALUES (?, ?, ?, ?, ?)";
+                            } else {
+                                sql = "INSERT INTO " + this.config.getTableName()
+                                        + " (session_id, role, content, embedding) VALUES (?, ?, ?, ?)";
+                            }
+                            try (Connection conn = getConnection();
+                                    PreparedStatement stmt = conn.prepareStatement(sql)) {
+                                for (Msg msg : messages) {
+                                    if (msg == null) continue;
+                                    if (msg.getRole() != MsgRole.USER
+                                            && msg.getRole() != MsgRole.ASSISTANT
+                                            && msg.getRole() != MsgRole.TOOL) {
+                                        continue;
+                                    }
+                                    String content = msg.getTextContent();
+                                    if (content == null || content.isEmpty()) {
+                                        // For TOOL messages, try extracting ToolResultBlock text
+                                        if (msg.getRole() == MsgRole.TOOL) {
+                                            content = extractToolResultText(msg);
+                                        }
+                                        if (content == null || content.isEmpty()) continue;
+                                    }
+                                    stmt.setString(1, sessionId);
+                                    stmt.setString(2, msg.getRole().name());
+                                    stmt.setString(3, content);
+                                    // Embedding: best-effort, async-friendly
+                                    String embeddingJson = embedContent(content);
+                                    stmt.setString(4, embeddingJson);
+                                    // Write tool_call_details only on first row of the session
+                                    if (hasToolContext && msg.getRole() == MsgRole.USER) {
+                                        stmt.setString(5, toolCallDetailsJson);
+                                    } else if (hasToolContext) {
+                                        stmt.setString(5, null);
+                                    }
+                                    stmt.addBatch();
+                                }
+                                stmt.executeBatch();
+                                log.debug(
+                                        "Recorded session {} with {} messages",
+                                        sessionId,
+                                        messages.size());
+                            } catch (SQLException e) {
+                                log.error(
+                                        "Failed to record session {}: {}",
+                                        sessionId,
+                                        e.getMessage());
+                                throw new RuntimeException("Failed to record session", e);
+                            }
+                        })
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * Search for the most recent session whose content matches the given fingerprint text and
+     * has non-null tool_call_details. Returns the tool_call_details JSON, or empty string.
+     * Used by SkillSynthesisRunner (Path B) to provide context-aware distillation without
+     * needing a separate storage table.
+     */
+    public Mono<String> searchToolContextByFingerprint(String fingerprintText) {
+        if (fingerprintText == null || fingerprintText.isBlank()) return Mono.just("");
+        return Mono.fromCallable(
+                        () -> {
+                            ensureInitialized();
+                            String sql = "SELECT tool_call_details FROM " + this.config.getTableName()
+                                    + " WHERE content LIKE ?"
+                                    + " AND tool_call_details IS NOT NULL"
+                                    + " AND tool_call_details != ''"
+                                    + " ORDER BY id DESC LIMIT 1";
+                            try (Connection conn = getConnection();
+                                    PreparedStatement stmt = conn.prepareStatement(sql)) {
+                                stmt.setString(1, "%" + fingerprintText + "%");
+                                try (ResultSet rs = stmt.executeQuery()) {
+                                    if (rs.next()) {
+                                        String details = rs.getString("tool_call_details");
+                                        return details != null ? details : "";
+                                    }
+                                }
+                            } catch (SQLException e) {
+                                log.debug("searchToolContextByFingerprint failed: {}", e.getMessage());
+                            }
+                            return "";
+                        })
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
     @Override
     public Mono<List<Msg>> getSession(String sessionId) {
         return Mono.fromCallable(
@@ -406,19 +504,30 @@ public class MySqlEpisodicMemory implements EpisodicMemory {
         try (Connection conn = getConnection();
                 Statement stmt = conn.createStatement()) {
             stmt.execute(sql);
-            // Add status column if upgrading from an older schema that lacks it
-            try {
-                stmt.execute(
-                        "ALTER TABLE " + this.config.getTableName()
-                                + " ADD COLUMN IF NOT EXISTS status VARCHAR(16) DEFAULT 'active'"
-                                + " AFTER embedding");
-            } catch (SQLException ignored) {
-                // IF NOT EXISTS not supported in all MySQL 5.x; fallback: ignore "duplicate column"
-                String msg = ignored.getMessage();
-                if (msg != null && msg.contains("Duplicate column")) {
-                    // expected on upgrade — column already exists
-                } else {
+            // Add status column if upgrading from an older schema that lacks it.
+            // MySQL 8.0 does NOT support "IF NOT EXISTS" in ALTER TABLE ADD COLUMN
+            // (that syntax is MariaDB-specific). We probe INFORMATION_SCHEMA first
+            // and only run ALTER when the column is missing.
+            if (!columnExists(conn, "status")) {
+                try {
+                    stmt.execute(
+                            "ALTER TABLE " + this.config.getTableName()
+                                    + " ADD COLUMN status VARCHAR(16) DEFAULT 'active'"
+                                    + " AFTER embedding");
+                } catch (SQLException ignored) {
                     log.debug("ALTER TABLE ADD COLUMN status skipped: {}", ignored.getMessage());
+                }
+            }
+            // Add tool_call_details column for skill distillation context (paths B/C)
+            if (!columnExists(conn, "tool_call_details")) {
+                try {
+                    stmt.execute(
+                            "ALTER TABLE " + this.config.getTableName()
+                                    + " ADD COLUMN tool_call_details TEXT"
+                                    + " COMMENT '工具调用链路详情JSON,供skill蒸馏使用'"
+                                    + " AFTER content");
+                } catch (SQLException ignored) {
+                    log.debug("ALTER TABLE ADD COLUMN tool_call_details skipped: {}", ignored.getMessage());
                 }
             }
             log.info(
@@ -426,6 +535,27 @@ public class MySqlEpisodicMemory implements EpisodicMemory {
         } catch (SQLException e) {
             log.error("Failed to create episodic memory table: {}", e.getMessage());
             throw new RuntimeException("Failed to initialize episodic memory table", e);
+        }
+    }
+
+    /**
+     * Check whether a column exists in the given table by querying
+     * INFORMATION_SCHEMA.COLUMNS. This avoids MySQL 8.0's lack of support for
+     * "IF NOT EXISTS" in ALTER TABLE ADD COLUMN (MariaDB-only syntax).
+     */
+    private boolean columnExists(Connection conn, String columnName) {
+        String sql = "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+                + "WHERE TABLE_SCHEMA = (SELECT DATABASE()) "
+                + "AND TABLE_NAME = ? AND COLUMN_NAME = ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, this.config.getTableName());
+            ps.setString(2, columnName);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() && rs.getInt(1) > 0;
+            }
+        } catch (SQLException e) {
+            log.debug("columnExists check failed for {}: {}", columnName, e.getMessage());
+            return false; // fail-safe: assume it doesn't exist, ALTER will fail harmlessly
         }
     }
 

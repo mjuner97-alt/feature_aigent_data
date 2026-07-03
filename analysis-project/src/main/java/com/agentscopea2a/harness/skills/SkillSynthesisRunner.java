@@ -5,7 +5,10 @@
  */
 package com.agentscopea2a.harness.skills;
 
+import com.agentscopea2a.agent.memory.MySqlEpisodicMemory;
 import com.agentscopea2a.harness.tools.SkillSaveTool;
+import io.agentscope.core.memory.EpisodicMemory;
+import io.agentscope.core.memory.EpisodicMemory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -37,6 +40,7 @@ public class SkillSynthesisRunner {
     private final SkillDistiller distiller;
     private final SkillVectorIndex vectorIndex;
     private final EmbeddingClient embeddingClient;
+    private final EpisodicMemory episodicMemory;
     private final Path skillsDir;
     private final boolean enabled;
     private final int hitThreshold;
@@ -47,6 +51,7 @@ public class SkillSynthesisRunner {
             SkillDistiller distiller,
             ObjectProvider<SkillVectorIndex> vectorIndexProvider,
             ObjectProvider<EmbeddingClient> embeddingClientProvider,
+            ObjectProvider<EpisodicMemory> episodicMemoryProvider,
             @Value("${harness.a2a.workspace.path}") String workspaceRoot,
             @Value("${harness.skills.auto-synth.enabled:false}") boolean enabled,
             @Value("${harness.skills.auto-synth.threshold:3}") int hitThreshold) {
@@ -55,6 +60,7 @@ public class SkillSynthesisRunner {
         this.distiller = distiller;
         this.vectorIndex = vectorIndexProvider.getIfAvailable();
         this.embeddingClient = embeddingClientProvider.getIfAvailable();
+        this.episodicMemory = episodicMemoryProvider.getIfAvailable();
         this.skillsDir = Path.of(workspaceRoot).resolve("skills-auto");
         this.enabled = enabled;
         this.hitThreshold = hitThreshold;
@@ -115,7 +121,30 @@ public class SkillSynthesisRunner {
                 fingerprint,
                 candidate.hitCount(),
                 userId);
-        SkillDistiller.DistilledSkill distilled = distiller.distill(question, fingerprint).block();
+
+        // Try to fetch tool call context from episodic memory for context-aware distillation
+        String toolCallContext = "";
+        if (episodicMemory instanceof MySqlEpisodicMemory mem) {
+            try {
+                toolCallContext = mem.searchToolContextByFingerprint(fingerprint).block();
+                if (toolCallContext != null && !toolCallContext.isBlank()) {
+                    log.info("Found tool call context for fingerprint={} ({} chars)",
+                            fingerprint, toolCallContext.length());
+                }
+            } catch (Exception e) {
+                log.debug("Failed to fetch tool call context for {}: {}", fingerprint, e.getMessage());
+            }
+        }
+
+        SkillDistiller.DistilledSkill distilled;
+        if (toolCallContext != null && !toolCallContext.isBlank()) {
+            // Use context-aware distillation
+            String enrichedContext = buildEnrichedContext(question, toolCallContext);
+            distilled = distiller.distillWithContext(question, fingerprint, enrichedContext).block();
+        } else {
+            // Fall back to standard distillation
+            distilled = distiller.distill(question, fingerprint).block();
+        }
         if (distilled == null) {
             candidateRepo.markRejected(fingerprint, "distiller_returned_null");
             return;
@@ -167,5 +196,36 @@ public class SkillSynthesisRunner {
             sb.insert(0, (d.name() == null ? "" : d.name()) + " ");
         }
         return sb.toString().trim();
+    }
+
+    /**
+     * Build an LLM-friendly text block from the tool call details JSON.
+     * Renders as a numbered step list with tool name, level, input, and output.
+     */
+    static String buildEnrichedContext(String userQuery, String toolCallDetailsJson) {
+        if (toolCallDetailsJson == null || toolCallDetailsJson.isBlank()) return "";
+        try {
+            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            java.util.List<com.agentscopea2a.harness.hooks.ToolCallCollector.ToolCallDetail> details =
+                    mapper.readValue(toolCallDetailsJson,
+                            new com.fasterxml.jackson.core.type.TypeReference<java.util.List<com.agentscopea2a.harness.hooks.ToolCallCollector.ToolCallDetail>>() {});
+            if (details.isEmpty()) return "";
+            StringBuilder sb = new StringBuilder("\n\n**工具调用链路详情**:\n");
+            int step = 1;
+            for (var d : details) {
+                sb.append("\n").append(step).append(". [").append(d.level()).append("] ")
+                        .append(d.tool()).append("\n");
+                if (d.input() != null && !d.input().isBlank()) {
+                    sb.append("   - 输入: ").append(d.input()).append("\n");
+                }
+                if (d.output() != null && !d.output().isBlank()) {
+                    sb.append("   - 输出: ").append(d.output()).append("\n");
+                }
+                step++;
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return "";
+        }
     }
 }

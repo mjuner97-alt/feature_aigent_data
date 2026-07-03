@@ -183,6 +183,68 @@ public class SkillDistiller {
                         });
     }
 
+    // -------- Context-aware distillation --------
+
+    /**
+     * Like {@link #distill}, but the LLM prompt includes a rich tool-call trace
+     * (tool name, level L1/L2, input parameters, output summary) so the distilled
+     * skill captures not just <em>what</em> tools to use but <em>how</em> to call
+     * them with the right arguments.
+     *
+     * @param exemplarQuestion original user question
+     * @param fingerprintHint  L1 fingerprint hint
+     * @param toolCallContext  pre-formatted text block describing the tool chain details
+     */
+    public Mono<DistilledSkill> distillWithContext(
+            String exemplarQuestion,
+            String fingerprintHint,
+            String toolCallContext) {
+        return collectTrace(exemplarQuestion)
+                .defaultIfEmpty("")
+                .flatMap(trace -> callModelWithContext(exemplarQuestion, fingerprintHint, toolCallContext, trace))
+                .map(SkillDistiller::parseLenient)
+                .flatMap(skill -> {
+                    if (skill != null) return Mono.just(skill);
+                    log.info("Context-distill parse failed for q='{}', retrying", exemplarQuestion);
+                    return collectTrace(exemplarQuestion)
+                            .defaultIfEmpty("")
+                            .flatMap(trace -> callModelWithContext(
+                                    exemplarQuestion, fingerprintHint, toolCallContext, trace + RETRY_PROMPT_SUFFIX))
+                            .map(SkillDistiller::parseLenient);
+                })
+                .onErrorResume(
+                        ex -> {
+                            log.warn("Context-distillation failed after retry: {}", ex.getMessage());
+                            return Mono.empty();
+                        });
+    }
+
+    private Mono<String> callModelWithContext(
+            String question, String fingerprintHint, String toolCallContext, String traceBlock) {
+        String prompt =
+                "你正在为一个'质量数据智能助手'蒸馏可复用的 skill。下面是一个用户多次出现的同类问题:\n\n"
+                        + "**用户问题**: " + question + "\n"
+                        + "**Fingerprint**: " + fingerprintHint + "\n"
+                        + toolCallContext
+                        + traceBlock
+                        + "\n\n请输出四段:\n"
+                        + "1. 一行 `name: <英文小写下划线>` (例如 `quarterly_quality_compare`)\n"
+                        + "2. 一行 `description: <一句话中文描述>`\n"
+                        + "3. 一段 `sample_questions:`,紧跟 3-5 行 `- <同维度的中文问法>`(同一个 skill 的不同措辞,"
+                        + "应覆盖该 skill 适用的几种典型问法;不要复制 exemplar question 原句)\n"
+                        + "4. 一段 ```markdown 包裹的 SKILL.md 正文,描述本类问题的完整解决步骤:\n"
+                        + "   - 父智能体派单给哪个子智能体(如 query_data / analyze_data)\n"
+                        + "   - 子智能体内部的工具调用链路:先查阅哪个 skill/toolId → 再调哪些元工具\n"
+                        + "   - 每个工具的入参与出参:输入了什么参数、返回了什么结果\n"
+                        + "参考上面的**工具调用链路详情**来编写,工具名、参数格式、调用顺序必须与实际一致。\n"
+                        + "不要使用'query_quality_data'或'python_exec'等泛化工具名,要用 toolMetaInfo/router_tool 等真实链路。\n"
+                        + "不要输出 YAML frontmatter,系统会自动生成。";
+        Msg msg = Msg.builder().role(MsgRole.USER).content(TextBlock.builder().text(prompt).build()).build();
+        return model.stream(List.of(msg), List.of(), null)
+                .reduce(new StringBuilder(), SkillDistiller::appendChunk)
+                .map(StringBuilder::toString);
+    }
+
     // -------- internals --------
 
     private Mono<String> collectTrace(String question) {
@@ -245,7 +307,8 @@ public class SkillDistiller {
      *   <li>name must equal the original skill name (we check on parse and reject mismatches)
      *   <li>old body is given in full as the starting point — LLM is asked to surgically fix,
      *       not rewrite from scratch
-     *   <li>failed trace is truncated to ~500 chars by the caller; we just inline it
+     *   <li>failed trace should be a structured context from tool_call_details (input/output),
+     *       already truncated to ~500 chars by the caller
      * </ul>
      */
     private Mono<String> callEvolveModel(
@@ -259,13 +322,14 @@ public class SkillDistiller {
                         + "**Skill name**: "
                         + skillName
                         + " (保持不变!如果想换名字,请直接返回原名)\n"
-                        + "**Exemplar question (代表性问法)**: "
+                        + "**用户问题**: "
                         + (exemplarQuestion == null ? "(无)" : exemplarQuestion)
-                        + "\n\n**最近一次失败 trace (≤500字)**:\n```\n"
+                        + "\n\n**本次失败的工具调用详情(≤500字)**:\n```\n"
                         + trace
                         + "\n```\n\n**当前 SKILL.md 正文**:\n```markdown\n"
                         + oldBody
                         + "\n```\n\n请基于以上失败信号,修订正文,使其能够避免这类失败。"
+                        + "注意失败详情中标注了每个工具调用的输入和输出——请分析失败原因并补充对应约束。"
                         + "请按与蒸馏相同的格式输出四段:\n"
                         + "1. 一行 `name: "
                         + skillName
