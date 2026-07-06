@@ -1,0 +1,114 @@
+# 指标分类配置 — Metric classification config
+# 业务方可随时扩展新指标类别，无需改代码
+#
+# 每个类别包含：
+#   tag:          英文标签（唯一标识，写入 skill_candidate.metric_tag）
+#   chinese_hint:  中文提示（注入蒸馏 prompt，引导 LLM 聚焦该指标）
+#   keywords:     规则匹配关键词（中文+英文），按优先级排列，命中即返回
+#                 以 \b 开头的关键词视为正则表达式（如 \brt\b 匹配独立单词 rt）
+#   description:  LLM 分类 prompt 中的描述行
+#
+# 顺序即优先级：列表顶部的类别优先匹配。
+# stat_summary 放在最后，因为"均值"等泛词不应覆盖具体指标。
+
+categories:
+  - tag: defect_density
+    chinese_hint: "缺陷密度/Bug密度"
+    keywords:
+      - "缺陷密度"
+      - "bug密度"
+      - "缺陷率"
+      - "defect_density"
+      - "defect density"
+    description: "questions about 缺陷密度, Bug密度, 缺陷率, defect density, bug density"
+
+  - tag: response_time
+    chinese_hint: "响应时间/延迟/RT"
+    keywords:
+      - "\\brt\\b"    # regex: standalone "rt" word boundary
+      - "响应时间"
+      - "耗时"
+      - "延迟"
+      - "latency"
+    description: "questions about 响应时间, RT, 耗时, 延迟, response time, latency"
+
+  - tag: error_rate
+    chinese_hint: "错误率/失败率/异常率"
+    keywords:
+      - "错误率"
+      - "失败率"
+      - "异常率"
+      - "error_rate"
+      - "error rate"
+      - "failure rate"
+    description: "questions about 错误率, 失败率, 异常率, error rate, failure rate"
+
+  - tag: throughput
+    chinese_hint: "吞吐量/TPS/QPS/并发"
+    keywords:
+      - "吞吐量"
+      - "tps"
+      - "qps"
+      - "并发"
+      - "throughput"
+    description: "questions about 吞吐量, TPS, QPS, 并发, throughput"
+
+  - tag: availability
+    chinese_hint: "可用性/SLA/稳定性"
+    keywords:
+      - "可用性"
+      - "sla"
+      - "稳定性"
+      - "availability"
+    description: "questions about 可用性, SLA, 稳定性, availability"
+
+  - tag: code_quality
+    chinese_hint: "代码质量/圈复杂度/重复率"
+    keywords:
+      - "代码质量"
+      - "圈复杂度"
+      - "重复率"
+      - "code_quality"
+      - "code quality"
+    description: "questions about 代码质量, 圈复杂度, 重复率, code quality"
+
+  - tag: test_coverage
+    chinese_hint: "测试覆盖率/覆盖率"
+    keywords:
+      - "测试覆盖率"
+      - "覆盖率"
+      - "case覆盖率"
+      - "test_coverage"
+      - "test coverage"
+    description: "questions about 测试覆盖率, 覆盖率, test coverage"
+
+  - tag: range_analysis
+    chinese_hint: "极值范围分析(最大值/最小值/极差)"
+    keywords:
+      - "最大值"
+      - "最小值"
+      - "极差"
+      - "波动"
+      - "range_analysis"
+      - "max"
+      - "min"
+    description: "questions about 最大值, 最小值, 极差, 波动, max, min, range"
+
+  - tag: stat_summary
+    chinese_hint: "通用统计汇总(均值/求和/中位数)"
+    keywords:
+      - "均值"
+      - "平均值"
+      - "求和"
+      - "统计"
+      - "中位数"
+      - "标准差"
+      - "方差"
+      - "mean"
+      - "average"
+      - "sum"
+      - "median"
+    description: "questions about 均值, 平均值, 求和, 统计, mean, average, sum"
+
+fallback_tag: general
+fallback_description: "does not match any above category"
