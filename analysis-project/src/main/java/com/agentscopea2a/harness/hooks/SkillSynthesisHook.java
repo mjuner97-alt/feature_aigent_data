@@ -2,14 +2,22 @@
  * Copyright 2024-2026 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package com.agentscopea2a.harness.hooks;
 
-import com.agentscopea2a.agent.dimension.DimensionState;
-import com.agentscopea2a.agent.dimension.DimensionStateManager;
-import com.agentscopea2a.agent.dimension.QuestionAnalysis;
 import com.agentscopea2a.harness.cache.ResponseCacheService;
-import com.agentscopea2a.harness.skills.SkillCandidate;
+import com.agentscopea2a.harness.skills.FingerprintCalculator;
+import com.agentscopea2a.harness.skills.MetricClassificationService;
 import com.agentscopea2a.harness.skills.SkillSynthesisRunner;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.hook.Hook;
@@ -25,6 +33,10 @@ import reactor.core.publisher.Mono;
  * dispatches async distillation when threshold is crossed (the cache-HIT path is handled
  * symmetrically in {@link ResponseCacheHook} so HIT and MISS share the counter).
  *
+ * <p>Fingerprint format: {@code _global|intent|metricTag} (metric-level, see
+ * {@link FingerprintCalculator#computeMetric}). All users accumulate on the same
+ * fingerprint row, regardless of dimensional qualifiers (time range, department).
+ *
  * <p>Bumping at PreCall (not PostCall) lets us behave identically whether or not the framework
  * reaches PostCall — important because some short-circuit paths (CacheHitException, tool
  * timeouts) skip PostCall entirely. Distillation itself is async on {@code boundedElastic()},
@@ -38,15 +50,18 @@ public class SkillSynthesisHook implements Hook {
     private static final Logger log = LoggerFactory.getLogger(SkillSynthesisHook.class);
 
     private final SkillSynthesisRunner runner;
-    private final DimensionStateManager dimManager;
+    private final MetricClassificationService metricClassifier;
+    private final FingerprintCalculator fingerprintCalculator;
     private final RuntimeContext runtimeContext;
 
     public SkillSynthesisHook(
             SkillSynthesisRunner runner,
-            DimensionStateManager dimManager,
+            MetricClassificationService metricClassifier,
+            FingerprintCalculator fingerprintCalculator,
             RuntimeContext runtimeContext) {
         this.runner = runner;
-        this.dimManager = dimManager;
+        this.metricClassifier = metricClassifier;
+        this.fingerprintCalculator = fingerprintCalculator;
         this.runtimeContext = runtimeContext;
     }
 
@@ -63,8 +78,8 @@ public class SkillSynthesisHook implements Hook {
         if (event instanceof PreCallEvent e) {
             return (Mono<T>) handlePreCall(e);
         }
-        if (event instanceof PostCallEvent e) {
-            return (Mono<T>) Mono.just(e);
+        if (event instanceof PostCallEvent) {
+            return (Mono<T>) Mono.just(event);
         }
         return Mono.just(event);
     }
@@ -73,14 +88,15 @@ public class SkillSynthesisHook implements Hook {
         try {
             String question = ResponseCacheService.extractUserQuestion(event.getInputMessages());
             if (question.isEmpty()) return Mono.just(event);
-            QuestionAnalysis analysis = dimManager.analyzeQuestionRuleBased(question);
-            DimensionState state = buildFromExplicit(analysis);
-            if (state == null || !state.hasDimensions()) return Mono.just(event);
+
+            // Metric-level fingerprint: _global|intent|metricTag — groups questions by metric
+            // across all users, not by dimension or per-user. See fingerprint-metric-redesign.md.
             String intent = ResponseCacheService.classifyIntent(question);
-            String dimKey = state.toCacheKey();
-            if (dimKey.isEmpty()) return Mono.just(event);
-            String userId = userBucket();
-            String fingerprint = userId + "|" + intent + "|" + dimKey;
+            String fingerprint = fingerprintCalculator.computeMetric(intent, question);
+
+            // userId for bumpAndMaybeSynthesize is per-user (for DB tracking), but the
+            // fingerprint itself uses _global scope so all users accumulate on the same row.
+            String userId = FingerprintCalculator.tenantBucket(runtimeContext);
             runner.bumpAndMaybeSynthesize(fingerprint, userId, question, /* traceId */ null)
                     .ifPresent(
                             c ->
@@ -90,32 +106,20 @@ public class SkillSynthesisHook implements Hook {
                                             c.hitCount(),
                                             c.status(),
                                             runner.threshold()));
+
+            // Async metric classification (lightweight LLM) → writes skill_candidate.metric_tag.
+            // The ruleBasedTag used for fingerprint is fast and synchronous; this LLM call
+            // enriches the tag for distillation prompts and is best-effort.
+            if (metricClassifier != null && metricClassifier.enabled()) {
+                Mono.fromRunnable(() -> metricClassifier.classifyAndUpdateAsync(question, fingerprint))
+                        .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic())
+                        .subscribe(
+                                v -> {},
+                                ex -> log.debug("Metric classification async failed for {}: {}", fingerprint, ex.getMessage()));
+            }
         } catch (Exception ex) {
             log.debug("PreCall fingerprint extraction failed (skipping synthesis): {}", ex.getMessage());
         }
         return Mono.just(event);
-    }
-
-    /** Mirror of {@code ResponseCacheHook.buildFromExplicit} so the fingerprint shape matches. */
-    private static DimensionState buildFromExplicit(QuestionAnalysis analysis) {
-        DimensionState state = new DimensionState();
-        if (analysis == null || analysis.getExplicitDimensions() == null) return state;
-        QuestionAnalysis.ExplicitDimensions e = analysis.getExplicitDimensions();
-        if (e.getTimeDimension() != null) state.setTimeDimension(e.getTimeDimension());
-        if (e.getDepartments() != null && !e.getDepartments().isEmpty()) {
-            state.setDepartments(e.getDepartments());
-        }
-        if (e.getPeerDimension() != null) state.setPeerDimension(e.getPeerDimension());
-        if (e.getPersons() != null && !e.getPersons().isEmpty()) state.setPersons(e.getPersons());
-        return state;
-    }
-
-    private String userBucket() {
-        if (runtimeContext == null) return "_global";
-        String uid = runtimeContext.getUserId();
-        if (uid != null && !uid.isBlank()) return "u:" + uid;
-        String sid = runtimeContext.getSessionId();
-        if (sid != null && !sid.isBlank()) return "s:" + sid;
-        return "_anon";
     }
 }

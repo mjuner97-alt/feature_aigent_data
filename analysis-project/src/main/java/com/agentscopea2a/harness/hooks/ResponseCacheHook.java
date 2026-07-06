@@ -19,7 +19,10 @@ import com.agentscopea2a.harness.cache.ResponseCacheService;
 import com.agentscopea2a.agent.dimension.DimensionState;
 import com.agentscopea2a.agent.dimension.DimensionStateManager;
 import com.agentscopea2a.agent.dimension.QuestionAnalysis;
+import com.agentscopea2a.harness.skills.FingerprintCalculator;
+import com.agentscopea2a.harness.skills.SkillEvolutionRunner;
 import com.agentscopea2a.harness.skills.SkillSynthesisRunner;
+import com.agentscopea2a.harness.skills.SkillVectorIndex;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.hook.Hook;
 import io.agentscope.core.hook.HookEvent;
@@ -90,6 +93,16 @@ public class ResponseCacheHook implements Hook {
      */
     private final SkillSynthesisRunner synthesisRunner;
 
+    /**
+     * PR4.1 evolution support on cache-HIT path. When a cache HIT short-circuits agent execution,
+     * PostCall hooks (including SkillEvolutionHook at priority +60) never fire, so no pending
+     * judgement is cached for cross-turn rejection lookback. These optional dependencies let
+     * ResponseCacheHook cache a pending judgement directly on the HIT path so PR4 still works.
+     */
+    private final SkillEvolutionRunner evolutionRunner;
+    private final FingerprintCalculator fingerprintCalculator;
+    private final SkillVectorIndex vectorIndex;
+
     // Set in PreCall on cache miss, read in PostCall for cache write.
     // Safe because each agent gets its own hook instance and handles one request at a time.
     private String pendingCacheKey;
@@ -134,12 +147,36 @@ public class ResponseCacheHook implements Hook {
             MeterRegistry meterRegistry,
             boolean enabled,
             SkillSynthesisRunner synthesisRunner) {
+        this(cacheService, dimManager, runtimeContext, meterRegistry, enabled, synthesisRunner,
+                null, null, null);
+    }
+
+    /**
+     * Full ctor with PR4.1 evolution support on the cache-HIT path.
+     *
+     * @param evolutionRunner PR4 evolution runner for pending-judgement caching; nullable
+     * @param fingerprintCalculator computes tenant|intent|dimKey fingerprints; nullable
+     * @param vectorIndex L1 fingerprint lookup in skill_index; nullable
+     */
+    public ResponseCacheHook(
+            ResponseCacheService cacheService,
+            DimensionStateManager dimManager,
+            RuntimeContext runtimeContext,
+            MeterRegistry meterRegistry,
+            boolean enabled,
+            SkillSynthesisRunner synthesisRunner,
+            SkillEvolutionRunner evolutionRunner,
+            FingerprintCalculator fingerprintCalculator,
+            SkillVectorIndex vectorIndex) {
         this.cacheService = cacheService;
         this.dimManager = dimManager;
         this.runtimeContext = runtimeContext;
         this.meterRegistry = meterRegistry;
         this.enabled = enabled;
         this.synthesisRunner = synthesisRunner;
+        this.evolutionRunner = evolutionRunner;
+        this.fingerprintCalculator = fingerprintCalculator;
+        this.vectorIndex = vectorIndex;
     }
 
     @Override
@@ -219,7 +256,12 @@ public class ResponseCacheHook implements Hook {
                 // Fingerprint shape mirrors SkillSynthesisHook: tenantBucket|intent|stateKey
                 // (NO question hash, even for analytical intents — same dimensions should
                 // distill ONE shared skill regardless of phrasing).
-                bumpAndMaybeSynthesize(intent, state, question);
+                String fingerprint = bumpAndMaybeSynthesize(intent, state, question);
+                // PR4.1: Cache a pending judgement so the cross-turn rejection lookback still
+                // works even though PostCall hooks never fire on cache HIT. If the next
+                // user message contains a rejection keyword, PR4's PreCall will consume the
+                // pending judgement and record a failure.
+                cachePendingJudgementForEvolution(question, fingerprint);
                 return Mono.error(new CacheHitException(cached.get()));
             }
 
@@ -325,20 +367,85 @@ public class ResponseCacheHook implements Hook {
      * com.agentscopea2a.harness.hooks.SkillSynthesisHook}'s fingerprint shape so MISS hits
      * (counted by that hook) and HIT hits (counted here) target the same row.
      *
+     * <p>Uses metric-level fingerprint ({@code tenant|intent|metricTag}) via
+     * {@link FingerprintCalculator#computeMetric} so that questions about the same metric
+     * accumulate on the same row regardless of dimensional qualifiers.
+     *
+     * <p>Returns the computed fingerprint string so callers (e.g. PR4.1 evolution caching)
+     * can reuse it without recomputing.
+     *
      * <p>Failures are swallowed — cache HIT must never block a request because synthesis
      * machinery is unavailable.
      */
-    private void bumpAndMaybeSynthesize(String intent, DimensionState state, String question) {
-        if (synthesisRunner == null) return;
+    private String bumpAndMaybeSynthesize(String intent, DimensionState state, String question) {
+        if (synthesisRunner == null) return null;
         try {
-            String dimKey = state.toCacheKey();
-            if (dimKey.isEmpty()) return;
-            String tenant = tenantBucket();
-            String fingerprint = tenant + "|" + intent + "|" + dimKey;
-            synthesisRunner.bumpAndMaybeSynthesize(fingerprint, tenant, question, null);
+            // Skill fingerprint uses _global scope so all users accumulate on the same row.
+            // userId (per-user) is still passed for DB tracking.
+            String fingerprint = fingerprintCalculator.computeMetric(intent, question);
+            String userId = FingerprintCalculator.tenantBucket(runtimeContext);
+            synthesisRunner.bumpAndMaybeSynthesize(fingerprint, userId, question, null);
+            return fingerprint;
         } catch (Exception ex) {
             log.debug("HIT-path synthesis bump swallowed: {}", ex.getMessage());
+            return null;
         }
+    }
+
+    /**
+     * PR4.1: Cache a pending judgement for the evolution feedback loop on the cache-HIT path.
+     *
+     * <p>When a cache HIT short-circuits agent execution, PostCall hooks never fire, so
+     * {@link SkillEvolutionHook} never gets a chance to cache a pending judgement. This means
+     * cross-turn rejection lookback (B-进化-1) can't attribute the previous turn's skills — the
+     * pending judgement was never written.
+     *
+     * <p>This method fills that gap: on cache HIT, we compute the fingerprint, resolve it to a
+     * skill name via L1 lookup in {@code skill_index}, and cache a pending judgement so that
+     * the next turn's PreCall can attribute success or failure.
+     *
+     * <p>Best-effort — errors are logged at debug and swallowed because cache HIT must never
+     * block a request.
+     */
+    private void cachePendingJudgementForEvolution(String question, String fingerprint) {
+        if (evolutionRunner == null) return;
+        if (fingerprint == null || fingerprint.isEmpty()) return;
+        try {
+            // Resolve fingerprint → skill name via L1 lookup
+            String skillName = null;
+            if (vectorIndex != null) {
+                Optional<String> found = vectorIndex.findByFingerprint(fingerprint);
+                if (found.isPresent()) {
+                    skillName = found.get();
+                }
+            }
+            if (skillName == null) {
+                log.debug("HIT-path evolution: no active skill found for fingerprint={}", fingerprint);
+                return;
+            }
+
+            // Determine session key for pending-judgement cache (same logic as SkillEvolutionHook)
+            String sessionKey = sessionKeyForEvolution();
+            if (sessionKey == null) {
+                log.debug("HIT-path evolution: no session key available");
+                return;
+            }
+
+            log.info("HIT-path evolution: caching pending judgement for sessionKey={} skill={} fp={}",
+                    sessionKey, skillName, fingerprint);
+            evolutionRunner.cachePendingJudgement(sessionKey, List.of(skillName), question);
+        } catch (Exception ex) {
+            log.debug("HIT-path evolution caching swallowed: {}", ex.getMessage());
+        }
+    }
+
+    private String sessionKeyForEvolution() {
+        if (runtimeContext == null) return null;
+        String uid = runtimeContext.getUserId();
+        if (uid != null && !uid.isBlank()) return "u:" + uid;
+        String sid = runtimeContext.getSessionId();
+        if (sid != null && !sid.isBlank()) return "s:" + sid;
+        return null;
     }
 
     // ==================== CacheHitException ====================

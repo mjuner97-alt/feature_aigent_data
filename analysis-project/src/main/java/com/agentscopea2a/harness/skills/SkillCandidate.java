@@ -21,6 +21,7 @@ public record SkillCandidate(
         int hitCount,
         String lastQuery,
         String lastTraceId,
+        String metricTag,
         String status,
         String synthSkill,
         LocalDateTime updatedAt) {

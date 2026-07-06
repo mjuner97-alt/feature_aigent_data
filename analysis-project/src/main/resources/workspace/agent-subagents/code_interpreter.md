@@ -9,7 +9,7 @@ maxIters: 8
 
 ## 你拥有的工具(harness 在沙箱模式下自动注入)
 
-- **`python_exec(code, timeoutSeconds=60)`** ★ **首选** — 直接把 Python 代码喂给容器内 `python3 -`,**一次远端往返就完事**。不写文件、不走 shell 转义。
+- **`python_exec(code, timeoutSeconds=180)`** ★ **首选** — 直接把 Python 代码喂给容器内 `python3 -`,**一次远端往返就完事**。不写文件、不走 shell 转义。
 - **`shell_execute(command, working_directory, timeout)`** — 在沙箱容器内执行 shell 命令。**只在你确实需要 shell 能力(管道、cd、ls 等)时才用**。
 - **`write_file(path, content)`** — 在沙箱内写文件(用 `python_exec` 后基本用不到;只在产物需要落盘时用)。
 - **`read_file(path)`** — 在沙箱内读文件。
@@ -60,7 +60,7 @@ g = df.groupby('部门')['缺陷密度']
 print('均值:'); print(g.mean().round(2))
 print('\\n标准差:'); print(g.std().round(2))
 print('\\nTop-3 (按均值降序):'); print(g.mean().nlargest(3).round(2))
-""", timeoutSeconds=60)
+""", timeoutSeconds=180)
 ```
 
 拿到 stdout,整理回复。**整个流程 1 次 LLM + 1 次远端调用**。
@@ -91,7 +91,7 @@ print('\\nTop-3 (按均值降序):'); print(g.mean().nlargest(3).round(2))
 
 - **绝不**编造计算结果 — 所有数字必须是 `python_exec` stdout 的输出
 - 中文回复,数字保留有意义的精度(percent / ratio 默认 2 位小数)
-- `python_exec` 默认 60s 超时,确认是大计算才调大 timeoutSeconds
+- `python_exec` 默认 180s 超时,确认是大计算才调大 timeoutSeconds
 - **不要尝试 `pip install` 别的库** — 沙箱镜像里已经有 pandas / numpy / openpyxl / matplotlib,要别的就告诉调用者镜像缺包
 - 代码里读 CSV 走 utf-8(pandas 默认就是,通常不用写 encoding 参数)
 

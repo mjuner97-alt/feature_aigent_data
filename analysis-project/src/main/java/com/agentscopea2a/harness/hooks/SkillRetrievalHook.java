@@ -5,11 +5,9 @@
  */
 package com.agentscopea2a.harness.hooks;
 
-import com.agentscopea2a.agent.dimension.DimensionState;
-import com.agentscopea2a.agent.dimension.DimensionStateManager;
-import com.agentscopea2a.agent.dimension.QuestionAnalysis;
 import com.agentscopea2a.harness.cache.ResponseCacheService;
 import com.agentscopea2a.harness.skills.EmbeddingClient;
+import com.agentscopea2a.harness.skills.FingerprintCalculator;
 import com.agentscopea2a.harness.skills.SkillIndexRepository;
 import com.agentscopea2a.harness.skills.SkillVectorIndex;
 import io.agentscope.core.agent.RuntimeContext;
@@ -38,8 +36,10 @@ import java.util.Set;
  * with a two-stage router:
  *
  * <ol>
- *   <li><b>L1 fingerprint</b> — `tenant|intent|dimensionKey` exact match against
+ *   <li><b>L1 fingerprint</b> — {@code tenant|intent|metricTag} exact match against
  *       {@code skill_index.fingerprint} (populated by PR2's synthesis path). Sub-millisecond.
+ *       Uses metric-level fingerprint so that questions about the same metric (regardless of
+ *       dimensional qualifiers like time range or department) hit the same skill.
  *   <li><b>L2 vector</b> — when L1 misses and an {@link EmbeddingClient} is configured, embed
  *       the question and pick the top-K skills whose cosine is above the threshold.
  * </ol>
@@ -64,10 +64,11 @@ public class SkillRetrievalHook implements Hook {
     private static final Logger log = LoggerFactory.getLogger(SkillRetrievalHook.class);
     private static final String INJECTED_HEADER = "\n\n<!-- skills.retrieved (PR3) -->\n";
     private static final int MAX_EPISODIC_SNIPPET_LEN = 300;
+    private static final int MAX_SKILL_BODY_INJECT = 2000;
 
     private final SkillVectorIndex vectorIndex;
     private final SkillIndexRepository indexRepo;
-    private final DimensionStateManager dimManager;
+    private final FingerprintCalculator fingerprintCalculator;
     private final EmbeddingClient embeddingClient;
     private final EpisodicMemory episodicMemory;
     private final Path skillsDir;
@@ -79,7 +80,7 @@ public class SkillRetrievalHook implements Hook {
     public SkillRetrievalHook(
             SkillVectorIndex vectorIndex,
             SkillIndexRepository indexRepo,
-            DimensionStateManager dimManager,
+            FingerprintCalculator fingerprintCalculator,
             EmbeddingClient embeddingClient,
             EpisodicMemory episodicMemory,
             Path skillsDir,
@@ -89,7 +90,7 @@ public class SkillRetrievalHook implements Hook {
             float minCosine) {
         this.vectorIndex = vectorIndex;
         this.indexRepo = indexRepo;
-        this.dimManager = dimManager;
+        this.fingerprintCalculator = fingerprintCalculator;
         this.embeddingClient = embeddingClient;
         this.episodicMemory = episodicMemory;
         this.skillsDir = skillsDir;
@@ -130,7 +131,7 @@ public class SkillRetrievalHook implements Hook {
 
         Set<String> picked = new LinkedHashSet<>();
 
-        // L1 — exact fingerprint
+        // L1 — metric-level fingerprint exact match (never null — metricTag always present)
         String fingerprint = fingerprintOf(question);
         if (fingerprint != null) {
             Optional<String> l1 = vectorIndex.findByFingerprint(fingerprint);
@@ -162,6 +163,11 @@ public class SkillRetrievalHook implements Hook {
         for (String name : picked) {
             String body = readSkillBody(name);
             if (body == null) continue;
+            // Truncate skill body to prevent system prompt inflation (see review.md §6.3.3).
+            // Full body is available via the fetch_skill_detail tool when LLM needs it.
+            if (body.length() > MAX_SKILL_BODY_INJECT) {
+                body = body.substring(0, MAX_SKILL_BODY_INJECT) + "\n...[truncated]";
+            }
             block.append("\n### Retrieved skill: ").append(name).append("\n\n").append(body).append("\n");
             loaded.add(name);
             indexRepo.recordUsage(name);
@@ -209,8 +215,11 @@ public class SkillRetrievalHook implements Hook {
     /**
      * Queries episodic memory for recent conversation snippets related to this skill.
      * Returns a markdown-formatted "最近参考案例" block, or empty string if nothing found.
-     * Blocking but fast (memory search is ~5-15ms with vector index); only called once per
-     * retrieval, even when multiple skills are picked.
+     *
+     * <p>Blocks for at most 200ms — this runs on the PreCall hot path and must not add perceptible
+     * latency. Episodic search is normally 5-15ms; if it ever exceeds 200ms (e.g. cold cache,
+     * large index), we skip the episodic context rather than making the user wait. The previous
+     * 3-second block was a regression risk on reactive scheduler threads (see review.md §2.2).
      */
     private String queryEpisodicContext(String skillName, String skillBody) {
         try {
@@ -225,7 +234,8 @@ public class SkillRetrievalHook implements Hook {
                     }
                 }
             }
-            List<EpisodicResult> results = episodicMemory.search(searchQuery, 2).block(Duration.ofSeconds(3));
+            List<EpisodicResult> results = episodicMemory.search(searchQuery, 2)
+                    .block(Duration.ofMillis(200));
             if (results == null || results.isEmpty()) return "";
             StringBuilder sb = new StringBuilder();
             sb.append("## 最近参考案例\n");
@@ -243,15 +253,20 @@ public class SkillRetrievalHook implements Hook {
         }
     }
 
+    /**
+     * Compute metric-level fingerprint for L1 lookup. Uses
+     * {@link FingerprintCalculator#computeMetric} so that questions about the same metric
+     * (regardless of dimensional qualifiers) hit the same skill.
+     *
+     * <p>Never returns null — metric-level fingerprints always have a valid metricTag
+     * (falling back to "general" when no metric keyword matches).
+     */
     private String fingerprintOf(String question) {
         try {
-            QuestionAnalysis analysis = dimManager.analyzeQuestionRuleBased(question);
-            DimensionState state = buildFromExplicit(analysis);
-            if (state == null || !state.hasDimensions()) return null;
+            // Skill fingerprint uses _global scope — all users share the same skill.
             String intent = ResponseCacheService.classifyIntent(question);
-            String dimKey = state.toCacheKey();
-            if (dimKey.isEmpty()) return null;
-            return tenantBucket() + "|" + intent + "|" + dimKey;
+            if (intent == null || intent.isEmpty()) return null;
+            return fingerprintCalculator.computeMetric(intent, question);
         } catch (Exception ex) {
             log.debug("fingerprintOf failed: {}", ex.getMessage());
             return null;
@@ -273,26 +288,7 @@ public class SkillRetrievalHook implements Hook {
         }
     }
 
-    /** Same shape as ResponseCacheHook / SkillSynthesisHook for fingerprint consistency. */
-    private static DimensionState buildFromExplicit(QuestionAnalysis analysis) {
-        DimensionState state = new DimensionState();
-        if (analysis == null || analysis.getExplicitDimensions() == null) return state;
-        QuestionAnalysis.ExplicitDimensions e = analysis.getExplicitDimensions();
-        if (e.getTimeDimension() != null) state.setTimeDimension(e.getTimeDimension());
-        if (e.getDepartments() != null && !e.getDepartments().isEmpty()) {
-            state.setDepartments(e.getDepartments());
-        }
-        if (e.getPeerDimension() != null) state.setPeerDimension(e.getPeerDimension());
-        if (e.getPersons() != null && !e.getPersons().isEmpty()) state.setPersons(e.getPersons());
-        return state;
-    }
-
     private String tenantBucket() {
-        if (runtimeContext == null) return "_global";
-        String uid = runtimeContext.getUserId();
-        if (uid != null && !uid.isBlank()) return "u:" + uid;
-        String sid = runtimeContext.getSessionId();
-        if (sid != null && !sid.isBlank()) return "s:" + sid;
-        return "_anon";
+        return FingerprintCalculator.tenantBucket(runtimeContext);
     }
 }

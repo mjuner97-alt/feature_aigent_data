@@ -137,17 +137,24 @@ public class SkillSynthesisRunner {
         }
 
         SkillDistiller.DistilledSkill distilled;
+        String metricTag = candidate.metricTag();
         if (toolCallContext != null && !toolCallContext.isBlank()) {
-            // Use context-aware distillation
+            // Use context-aware distillation with metric tag hint
             String enrichedContext = buildEnrichedContext(question, toolCallContext);
-            distilled = distiller.distillWithContext(question, fingerprint, enrichedContext).block();
+            distilled = distiller.distillWithContext(question, fingerprint, enrichedContext, metricTag).block();
         } else {
-            // Fall back to standard distillation
-            distilled = distiller.distill(question, fingerprint).block();
+            // Fall back to standard distillation with metric tag hint
+            distilled = distiller.distill(question, fingerprint, metricTag).block();
         }
         if (distilled == null) {
             candidateRepo.markRejected(fingerprint, "distiller_returned_null");
             return;
+        }
+        // 方案 B: 如果 candidate 行已有 metric_tag,把它写入 SKILL.md body 的 frontmatter
+        // (metricTag already declared above at line ~140)
+        if (metricTag != null && !metricTag.isBlank()) {
+            distilled = withMetricTag(distilled, metricTag);
+            log.info("Distilled skill '{}' tagged with metric_tag={}", distilled.name(), metricTag);
         }
         // Atomic claim — only one path/JVM moves the row from pending → synthesized.
         if (!candidateRepo.markSynthesized(fingerprint, distilled.name())) {
@@ -160,7 +167,13 @@ public class SkillSynthesisRunner {
             // SkillSaveTool's async path also embed would race and overwrite the canonical
             // fingerprint with null.
             SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null);
-            saver.saveSkill(distilled.name(), distilled.description(), distilled.body());
+            // Use saveSkillWithMetricTag so the metric_tag field is stamped into the
+            // frontmatter rather than being stripped by saveSkill's stripFrontmatter.
+            boolean saved = saver.saveSkillWithMetricTag(
+                    distilled.name(), distilled.description(), distilled.body(), metricTag);
+            if (!saved) {
+                log.warn("SkillSaveTool.saveSkillWithMetricTag returned false for '{}'", distilled.name());
+            }
             // Stamp the canonical fingerprint synchronously — embedding text includes
             // sample_questions so bge-zh has enough lexical surface to spread cosine across
             // L2's min-cosine threshold (PR3.7).
@@ -173,6 +186,43 @@ public class SkillSynthesisRunner {
         } catch (Exception ex) {
             log.warn("SkillSaveTool failed for '{}': {}", distilled.name(), ex.getMessage());
         }
+    }
+
+    /**
+     * 方案 B: 把 metric_tag 注入 SKILL.md body 的 frontmatter,使生成的 skill 自带指标语义标签。
+     * 如果 body 已经有 frontmatter,在第一个 {@code ---} 块里追加 {@code metric_tag} 字段;
+     * 否则在 body 开头插入一个新的 frontmatter 块。
+     * <p>
+     * 安全措施:
+     * 1. 验证尾部有换行符再拼接
+     * 2. 检查是否已存在相同 key(防重复)
+     * 3. 确保 YAML 格式正确(key: value\n)
+     */
+    private static SkillDistiller.DistilledSkill withMetricTag(SkillDistiller.DistilledSkill skill, String metricTag) {
+        String body = skill.body() == null ? "" : skill.body();
+        String newBody;
+        String trimmed = body.stripLeading();
+        if (trimmed.startsWith("---")) {
+            // 已有 frontmatter,在结尾 --- 之前插入 metric_tag
+            int second = trimmed.indexOf("\n---", 3);
+            if (second > 0) {
+                String before = body.substring(0, second);
+                String after = body.substring(second);
+                // 检查是否已存在该字段(防重复)
+                if (before.contains("metric_tag:")) {
+                    log.warn("Skipping duplicate metric_tag injection for skill '{}'", skill.name());
+                    return skill;
+                }
+                newBody = before + "\nmetric_tag: " + metricTag + after;
+            } else {
+                newBody = body; // frontmatter 残缺,不动
+            }
+        } else {
+            // 没有 frontmatter,在开头插入一个
+            newBody = "---\nmetric_tag: " + metricTag + "\n---\n\n" + body;
+        }
+        return new SkillDistiller.DistilledSkill(
+                skill.name(), skill.description(), newBody, skill.sampleQuestions());
     }
 
     /**

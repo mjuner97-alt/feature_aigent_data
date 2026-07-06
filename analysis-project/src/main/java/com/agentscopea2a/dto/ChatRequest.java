@@ -10,6 +10,7 @@
 package com.agentscopea2a.dto;
 
 import com.agentscopea2a.service.ChatStreamServiceV_3;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -41,6 +42,7 @@ public class ChatRequest {
 
     private String conversationId;
 
+    @JsonProperty("user_id")
     private String userId;
 
     private String agentId;

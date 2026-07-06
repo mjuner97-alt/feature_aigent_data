@@ -13,6 +13,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import org.springframework.scheduling.annotation.Scheduled;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
@@ -152,6 +153,7 @@ public class SkillEvolutionRunner {
     public void recordFailure(
             List<String> skillNames, String exemplarQuestion, String failedTrace) {
         if (!enabled || skillNames == null) return;
+        log.info("recordFailure called: skills={} exemplar='{}'", skillNames, exemplarQuestion);
         String trace = truncate(failedTrace, FAILED_TRACE_CHARS);
         for (String name : skillNames) {
             if (name == null || name.isBlank()) continue;
@@ -262,6 +264,7 @@ public class SkillEvolutionRunner {
      */
     public void cachePendingJudgement(String key, List<String> skills, String exemplarQuestion) {
         if (key == null || key.isBlank() || skills == null || skills.isEmpty()) return;
+        log.info("cachePendingJudgement: key={} skills={}", key, skills);
         PendingJudgement pj = new PendingJudgement(List.copyOf(skills), exemplarQuestion, System.currentTimeMillis());
         // L1: in-memory
         pendingL1.put(key, pj);
@@ -278,6 +281,7 @@ public class SkillEvolutionRunner {
         // L1: in-memory fast path
         PendingJudgement pj = pendingL1.remove(key);
         if (pj != null) {
+            log.info("consumePendingJudgement L1 hit: key={} skills={}", key, pj.skills());
             // Clean up L2 asynchronously
             removePendingFromDb(key);
             return pj;
@@ -285,7 +289,10 @@ public class SkillEvolutionRunner {
         // L2: MySQL fallback (cross-JVM handoff)
         pj = loadPendingFromDb(key);
         if (pj != null) {
+            log.info("consumePendingJudgement L2 hit: key={} skills={}", key, pj.skills());
             removePendingFromDb(key);
+        } else {
+            log.info("consumePendingJudgement miss: key={}", key);
         }
         return pj;
     }
@@ -300,9 +307,30 @@ public class SkillEvolutionRunner {
                     Statement s = c.createStatement()) {
                 s.execute(PENDING_DDL);
                 pendingTableEnsured = true;
+                log.info("skill_pending_judgement table ensured");
             } catch (SQLException e) {
                 log.warn("skill_pending_judgement DDL failed: {}", e.getMessage());
             }
+        }
+    }
+
+    /**
+     * Cleanup - relieves pressure on {@code skill_pending_judgement} table by deleting rows older
+     * than 5 minutes. This prevents unbounded growth of the column in the unlikely case of the
+     * pending judgement cache failing to clean up or if a session key collision occurs.
+     */
+    @Scheduled(fixedDelayString = "${harness.skills.evolution.pending-cleanup-interval:300000}")
+    public void cleanupPendingJudgementTable() {
+        if (!pendingTableEnsured) return;
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(
+                        "DELETE FROM skill_pending_judgement WHERE created_at < NOW() - INTERVAL 5 MINUTE")) {
+            int deleted = ps.executeUpdate();
+            if (deleted > 0) {
+                log.debug("Cleaned up {} expired pending judgement rows", deleted);
+            }
+        } catch (SQLException e) {
+            log.warn("Pending judgement table cleanup failed: {}", e.getMessage());
         }
     }
 

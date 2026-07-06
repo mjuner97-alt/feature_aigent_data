@@ -39,7 +39,9 @@ import com.agentscopea2a.agent.memory.MySqlEpisodicMemory;
 import com.agentscopea2a.agent.session.MySQLSession;
 import com.agentscopea2a.harness.skills.EmbeddingClient;
 import com.agentscopea2a.harness.skills.SkillIndexRepository;
+import com.agentscopea2a.harness.skills.MetricClassificationService;
 import com.agentscopea2a.harness.skills.SkillSynthesisRunner;
+import com.agentscopea2a.harness.skills.FingerprintCalculator;
 import com.agentscopea2a.harness.skills.SkillEvolutionRunner;
 import com.agentscopea2a.harness.skills.SkillVectorIndex;
 import com.agentscopea2a.harness.tools.PythonExecTool;
@@ -133,8 +135,10 @@ public class SupervisorService {
     private final PythonExecProperties pythonExecProperties;
     private final SkillIndexRepository skillIndexRepository;
     private final SkillSynthesisRunner skillSynthesisRunner;
+    private final MetricClassificationService metricClassifier;
     private final SkillVectorIndex skillVectorIndex;
     private final SkillEvolutionRunner skillEvolutionRunner;
+    private final FingerprintCalculator fingerprintCalculator;
     private final DimensionStateManager cacheDimManager;
     private final EmbeddingClient embeddingClient;
 
@@ -229,8 +233,10 @@ public class SupervisorService {
             PythonExecProperties pythonExecProperties,
             SkillIndexRepository skillIndexRepository,
             SkillSynthesisRunner skillSynthesisRunner,
+            ObjectProvider<MetricClassificationService> metricClassifierProvider,
             SkillVectorIndex skillVectorIndex,
             SkillEvolutionRunner skillEvolutionRunner,
+            FingerprintCalculator fingerprintCalculator,
             ObjectProvider<EmbeddingClient> embeddingClientProvider) {
         this.workspace = workspace;
         this.session = session;
@@ -251,8 +257,10 @@ public class SupervisorService {
         this.pythonExecProperties = pythonExecProperties;
         this.skillIndexRepository = skillIndexRepository;
         this.skillSynthesisRunner = skillSynthesisRunner;
+        this.metricClassifier = metricClassifierProvider.getIfAvailable();
         this.skillVectorIndex = skillVectorIndex;
         this.skillEvolutionRunner = skillEvolutionRunner;
+        this.fingerprintCalculator = fingerprintCalculator;
         this.cacheDimManager = cacheDimManager;
         this.embeddingClient = embeddingClientProvider.getIfAvailable();
         this.toolRegistry = buildToolRegistry(workspace);
@@ -406,8 +414,10 @@ public class SupervisorService {
         // PR2 — MISS path of skill synthesis. HIT path lives in ResponseCacheHook above
         // (shares SkillSynthesisRunner). Hook itself short-circuits when runner.enabled() is
         // false, so default-disabled config is safe.
+        log.info("PR2 SkillSynthesisRunner: bean={}, enabled={}",
+                skillSynthesisRunner != null, skillSynthesisRunner != null && skillSynthesisRunner.enabled());
         if (skillSynthesisRunner != null) {
-            b.hook(new SkillSynthesisHook(skillSynthesisRunner, cacheDimManager, ctx));
+            b.hook(new SkillSynthesisHook(skillSynthesisRunner, metricClassifier, fingerprintCalculator, ctx));
         }
 
         // PR3 — focused skill retrieval. Only retrieves from skills-auto/ (auto-synthesized skills).
@@ -417,7 +427,7 @@ public class SupervisorService {
                 new SkillRetrievalHook(
                         skillVectorIndex,
                         skillIndexRepository,
-                        cacheDimManager,
+                        fingerprintCalculator,
                         embeddingClient,
                         sharedEpisodicMemory,
                         workspace.resolve("skills-auto"),
@@ -436,7 +446,8 @@ public class SupervisorService {
                 skillEvolutionEnabled,
                 skillEvolutionRunner != null && skillEvolutionRunner.enabled());
         if (skillEvolutionRunner != null && skillEvolutionEnabled) {
-            b.hook(new SkillEvolutionHook(skillEvolutionRunner, ctx, skillEvolutionRejectionKeywords));
+            b.hook(new SkillEvolutionHook(skillEvolutionRunner, ctx, skillEvolutionRejectionKeywords,
+                    fingerprintCalculator, skillVectorIndex));
         }
 
         // ToolCallTrackingHook — captures every L1 tool invocation (name + input/output) into
@@ -463,7 +474,10 @@ public class SupervisorService {
                 ctx,
                 meterRegistry,
                 responseCacheEnabled,
-                skillSynthesisRunner);
+                skillSynthesisRunner,
+                skillEvolutionRunner,
+                fingerprintCalculator,
+                skillVectorIndex);
     }
 
     private void registerSubagentFromSpec(

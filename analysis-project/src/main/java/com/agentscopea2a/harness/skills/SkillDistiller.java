@@ -10,6 +10,7 @@ import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.model.ChatResponse;
+import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.memory.EpisodicMemory;
 import io.agentscope.core.memory.EpisodicResult;
@@ -45,6 +46,8 @@ public class SkillDistiller {
     /** Lazy because EpisodicMemory may not exist yet at hook-injection time. */
     private final ObjectProvider<EpisodicMemory> episodicProvider;
 
+    private final MetricClassificationService metricClassifier;
+
     private final Model model;
 
     /** How many episodic snippets to mix into the distillation prompt. */
@@ -57,13 +60,14 @@ public class SkillDistiller {
             Pattern.compile("^description\\s*[:=]\\s*(.+)$",
                     Pattern.CASE_INSENSITIVE | Pattern.MULTILINE);
     /**
-     * Body fence; we accept either ```md, ```markdown, or plain triple-backtick. The closing
-     * fence is optional — bge-zh-style models often stream a long SKILL.md and forget to
-     * terminate the block. Falling back to "everything to end-of-string" is fine because the
-     * distiller's caller writes it as a SKILL.md body verbatim.
+     * Body fence; we accept either ```md, ```markdown, or plain triple-backtick.
+     * Match the entire content between the first opening fence and the LAST closing fence
+     * (or end-of-string). Greedy match is needed because LLM often nests ``` blocks
+     * inside the SKILL.md body (e.g. for JSON examples), and a non-greedy match would
+     * truncate at the first inner ```.
      */
     private static final Pattern BODY_FENCE =
-            Pattern.compile("```(?:md|markdown)?\\s*\\R(.*?)(?:\\R```|\\z)", Pattern.DOTALL);
+            Pattern.compile("```(?:md|markdown)?\\s*\\R(.*)`{0,2}\\s*$", Pattern.DOTALL);
     /**
      * `sample_questions:` block — one or more dash-prefixed lines following the label.
      * Used by PR3.7 to enrich the embedded text on bge-zh so cosine spreads out enough to
@@ -95,9 +99,11 @@ public class SkillDistiller {
                     + "4. ```markdown 包裹的 SKILL.md 正文\n"
                     + "不要 YAML frontmatter。";
 
-    public SkillDistiller(Model model, ObjectProvider<EpisodicMemory> episodicProvider) {
+    public SkillDistiller(Model model, ObjectProvider<EpisodicMemory> episodicProvider,
+                          MetricClassificationService metricClassifier) {
         this.model = model;
         this.episodicProvider = episodicProvider;
+        this.metricClassifier = metricClassifier;
     }
 
     public record DistilledSkill(
@@ -119,17 +125,27 @@ public class SkillDistiller {
      * re-emit only the four required sections. If both attempts fail, returns null.
      */
     public Mono<DistilledSkill> distill(String exemplarQuestion, String fingerprintHint) {
-        return collectTrace(exemplarQuestion)
+        return distill(exemplarQuestion, fingerprintHint, null);
+    }
+
+    /**
+     * Build a {@link DistilledSkill} with optional metric tag context. When {@code metricTag}
+     * is non-null and non-blank, the distillation prompt includes a metric hint so the LLM
+     * produces a metric-specific skill rather than a generic one.
+     */
+    public Mono<DistilledSkill> distill(String exemplarQuestion, String fingerprintHint, String metricTag) {
+        String metricContext = metricHint(metricTag);
+        return searchTraceSnippets(exemplarQuestion)
                 .defaultIfEmpty("")
-                .flatMap(trace -> callModel(exemplarQuestion, fingerprintHint, trace))
+                .flatMap(trace -> callModel(exemplarQuestion, fingerprintHint, trace, metricContext))
                 .map(SkillDistiller::parseLenient)
                 .flatMap(skill -> {
                     if (skill != null) return Mono.just(skill);
                     // Retry once with corrective prompt
                     log.info("Distill parse failed for q='{}', retrying with corrective prompt", exemplarQuestion);
-                    return collectTrace(exemplarQuestion)
+                    return searchTraceSnippets(exemplarQuestion)
                             .defaultIfEmpty("")
-                            .flatMap(trace -> callModel(exemplarQuestion, fingerprintHint, trace + RETRY_PROMPT_SUFFIX))
+                            .flatMap(trace -> callModel(exemplarQuestion, fingerprintHint, trace + RETRY_PROMPT_SUFFIX, metricContext))
                             .map(SkillDistiller::parseLenient);
                 })
                 .onErrorResume(
@@ -199,17 +215,31 @@ public class SkillDistiller {
             String exemplarQuestion,
             String fingerprintHint,
             String toolCallContext) {
-        return collectTrace(exemplarQuestion)
+        return distillWithContext(exemplarQuestion, fingerprintHint, toolCallContext, null);
+    }
+
+    /**
+     * Context-aware distillation with optional metric tag context.
+     * When {@code metricTag} is non-null, the distillation prompt includes a metric hint
+     * so the LLM generates a metric-specific skill.
+     */
+    public Mono<DistilledSkill> distillWithContext(
+            String exemplarQuestion,
+            String fingerprintHint,
+            String toolCallContext,
+            String metricTag) {
+        String metricContext = metricHint(metricTag);
+        return searchTraceSnippets(exemplarQuestion)
                 .defaultIfEmpty("")
-                .flatMap(trace -> callModelWithContext(exemplarQuestion, fingerprintHint, toolCallContext, trace))
+                .flatMap(trace -> callModelWithContext(exemplarQuestion, fingerprintHint, toolCallContext, trace, metricContext))
                 .map(SkillDistiller::parseLenient)
                 .flatMap(skill -> {
                     if (skill != null) return Mono.just(skill);
                     log.info("Context-distill parse failed for q='{}', retrying", exemplarQuestion);
-                    return collectTrace(exemplarQuestion)
+                    return searchTraceSnippets(exemplarQuestion)
                             .defaultIfEmpty("")
                             .flatMap(trace -> callModelWithContext(
-                                    exemplarQuestion, fingerprintHint, toolCallContext, trace + RETRY_PROMPT_SUFFIX))
+                                    exemplarQuestion, fingerprintHint, toolCallContext, trace + RETRY_PROMPT_SUFFIX, metricContext))
                             .map(SkillDistiller::parseLenient);
                 })
                 .onErrorResume(
@@ -220,11 +250,12 @@ public class SkillDistiller {
     }
 
     private Mono<String> callModelWithContext(
-            String question, String fingerprintHint, String toolCallContext, String traceBlock) {
+            String question, String fingerprintHint, String toolCallContext, String traceBlock, String metricContext) {
         String prompt =
                 "你正在为一个'质量数据智能助手'蒸馏可复用的 skill。下面是一个用户多次出现的同类问题:\n\n"
                         + "**用户问题**: " + question + "\n"
                         + "**Fingerprint**: " + fingerprintHint + "\n"
+                        + metricContext
                         + toolCallContext
                         + traceBlock
                         + "\n\n请输出四段:\n"
@@ -240,14 +271,34 @@ public class SkillDistiller {
                         + "不要使用'query_quality_data'或'python_exec'等泛化工具名,要用 toolMetaInfo/router_tool 等真实链路。\n"
                         + "不要输出 YAML frontmatter,系统会自动生成。";
         Msg msg = Msg.builder().role(MsgRole.USER).content(TextBlock.builder().text(prompt).build()).build();
-        return model.stream(List.of(msg), List.of(), null)
+        return model.stream(List.of(msg), List.of(),
+                GenerateOptions.builder()
+                        .maxTokens(2000)
+                        .temperature(0.1)
+                        .build())
                 .reduce(new StringBuilder(), SkillDistiller::appendChunk)
                 .map(StringBuilder::toString);
     }
 
     // -------- internals --------
 
-    private Mono<String> collectTrace(String question) {
+    /**
+     * Builds a metric context hint string for the distillation prompt. When the question has been
+     * classified under a specific metric tag (e.g. "defect_density"), this hint tells the LLM
+     * to focus on that metric — producing a more specific skill instead of a generic catch-all.
+     * Returns empty string when metricTag is null/blank.
+     *
+     * <p>Delegates to {@link MetricClassificationService#getMetricHint(String)} for the
+     * Chinese hint text, which is loaded from {@code workspace/knowledge/metric-categories.yaml}.
+     */
+    String metricHint(String metricTag) {
+        if (metricTag == null || metricTag.isBlank()) return "";
+        String chineseHint = metricClassifier.getMetricHint(metricTag);
+        return "\n**指标分类**: " + metricTag + " (" + chineseHint + ")"
+                + "\n请围绕[" + chineseHint + "]这一指标类别来编写 skill,确保生成的 skill 针对该指标而非泛化描述。\n";
+    }
+
+    private Mono<String> searchTraceSnippets(String question) {
         EpisodicMemory mem = episodicProvider.getIfAvailable();
         if (mem == null) return Mono.just("");
         return mem.search(question, TRACE_SNIPPETS)
@@ -278,25 +329,35 @@ public class SkillDistiller {
         return acc;
     }
 
-    private Mono<String> callModel(String question, String fingerprintHint, String traceBlock) {
+    private Mono<String> callModel(String question, String fingerprintHint, String traceBlock, String metricContext) {
         String prompt =
-                "你正在为一个'质量数据智能助手'蒸馏可复用的 skill。下面是一个用户多次出现的同类问题:\n\n"
-                        + "**Exemplar question**: "
+                "你是一位技术文档撰写者,正在为'质量数据智能助手'编写一份操作手册章节。下面是用户反复提出的同类问题:\n\n"
+                        + "**用户问题示例**: "
                         + question
-                        + "\n**Fingerprint**: "
+                        + "\n**问题指纹**: "
                         + fingerprintHint
                         + "\n"
-                        + traceBlock
-                        + "\n请输出四段:\n"
-                        + "1. 一行 `name: <英文小写下划线>` (例如 `quarterly_quality_compare`)\n"
-                        + "2. 一行 `description: <一句话中文描述>`\n"
-                        + "3. 一段 `sample_questions:`,紧跟 3-5 行 `- <同维度的中文问法>`(同一个 skill 的不同措辞,"
-                        + "应覆盖该 skill 适用的几种典型问法;不要复制 exemplar question 原句)\n"
-                        + "4. 一段 ```markdown 包裹的 SKILL.md 正文,描述本类问题的标准解决步骤、"
-                        + "用到的工具(如 query_quality_data / python_exec)、典型问法、关键约束。\n"
+                        + metricContext
+                        + "\n\n请撰写一份 markdown 文档,描述这类问题的标准处理流程。文档必须以纯文本形式输出,不要调用任何外部函数,不要使用 tool_calls。\n\n"
+                        + "输出格式为四段:\n"
+                        + "1. 第一行: `name: <英文小写下划线>` (例如 `quarterly_quality_compare`)\n"
+                        + "2. 第二行: `description: <一句话中文描述>`\n"
+                        + "3. 接着一段 `sample_questions:`,后面跟 3-5 行 `- <同维度的中文问法>`(同一类问题的不同措辞)\n"
+                        + "4. 最后用 ```markdown 包裹一段正文,描述完整的处理流程,必须包含以下章节:\n"
+                        + "   - 父智能体如何派单(指定 query_data / analyze_data 等子智能体名称)\n"
+                        + "   - 子智能体的处理步骤(查阅 tool_index 选择 toolId,调用 toolMetaInfo 获取参数定义,调用 router_tool 执行)\n"
+                        + "   - 每步的入参 JSON 示例与返回结果格式\n"
+                        + "   - 调用顺序图(用 ASCII 箭头 Supervisor -> query_data -> tool_index -> router_tool)\n"
+                        + "   - 关键约束与异常处理\n"
+                        + "工具名只能用真实名称(tool_index / toolMetaInfo / router_tool / agent_spawn),不要写 'query_quality_data' 或 'python_exec'。\n"
+                        + "正文长度至少 60 行,内容要详细完整,参考 .agentscope/workspace/harness-a2a/skills-auto/sample_range_analysis 的写法。\n"
                         + "不要输出 YAML frontmatter,系统会自动生成。";
         Msg msg = Msg.builder().role(MsgRole.USER).content(TextBlock.builder().text(prompt).build()).build();
-        return model.stream(List.of(msg), List.of(), null)
+        return model.stream(List.of(msg), List.of(),
+                GenerateOptions.builder()
+                        .maxTokens(4000)
+                        .temperature(0.1)
+                        .build())
                 .reduce(new StringBuilder(), SkillDistiller::appendChunk)
                 .map(StringBuilder::toString);
     }
@@ -340,7 +401,11 @@ public class SkillDistiller {
                         + "在改动处用注释或文字说明本次修订点与失败原因的对应关系。\n"
                         + "不要输出 YAML frontmatter,系统会自动生成。";
         Msg msg = Msg.builder().role(MsgRole.USER).content(TextBlock.builder().text(prompt).build()).build();
-        return model.stream(List.of(msg), List.of(), null)
+        return model.stream(List.of(msg), List.of(),
+                GenerateOptions.builder()
+                        .maxTokens(2000)
+                        .temperature(0.1)
+                        .build())
                 .reduce(new StringBuilder(), SkillDistiller::appendChunk)
                 .map(StringBuilder::toString);
     }

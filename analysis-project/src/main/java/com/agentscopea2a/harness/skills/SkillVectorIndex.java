@@ -26,7 +26,6 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * PR3 — vector / fingerprint lookup over the {@code skill_index} table laid out in PR1.
@@ -62,7 +61,7 @@ public class SkillVectorIndex {
     private final boolean cacheEnabled;
     private final int cacheRefreshSeconds;
 
-    /** JVM-level cache of active skills for L2 vector search. Thread-safe CopyOnWriteArrayList. */
+    /** JVM-level cache of active skills for L2 vector search. Thread-safe via synchronized writes. */
     private volatile List<CachedSkill> skillCache = Collections.emptyList();
 
     public SkillVectorIndex(
@@ -273,12 +272,21 @@ public class SkillVectorIndex {
         }
     }
 
-    /** Update or append a single entry in the JVM cache (write-through). */
-    private void upsertCacheEntry(String name, float[] embedding, String description) {
+    /**
+     * Update or append a single entry in the JVM cache (write-through).
+     *
+     * <p>Synchronized on the cache monitor so concurrent {@code upsertVector} / {@code
+     * upsertEmbeddingOnly} calls don't lose updates. The previous implementation did
+     * {@code new ArrayList<>(skillCache) → removeIf → add → List.copyOf} without any lock —
+     * two threads racing on the same snapshot could both remove the entry and both add,
+     * but the second {@code skillCache =} assignment would clobber the first, losing the
+     * first thread's update. Writes here are infrequent (one per skill save/evolve), so a
+     * coarse lock is fine.
+     */
+    private synchronized void upsertCacheEntry(String name, float[] embedding, String description) {
         float n = norm(embedding);
         if (n == 0f) return;
         List<CachedSkill> current = new ArrayList<>(this.skillCache);
-        // Remove existing entry for this name
         current.removeIf(s -> s.name().equals(name));
         current.add(new CachedSkill(name, description, embedding, n));
         this.skillCache = List.copyOf(current);
@@ -297,12 +305,6 @@ public class SkillVectorIndex {
         }
         double denom = aNorm * bNorm;
         return denom == 0d ? 0f : (float) (dot / denom);
-    }
-
-    /** @deprecated Use {@link #cosine(float[], float[], float, float)} with precomputed bNorm. */
-    @Deprecated
-    private static float cosine(float[] a, float[] b, float aNorm) {
-        return cosine(a, b, aNorm, norm(b));
     }
 
     /** Visible-for-test no-op when retrieval is wired but called with an empty workspace. */

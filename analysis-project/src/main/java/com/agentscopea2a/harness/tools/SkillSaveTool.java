@@ -161,6 +161,44 @@ public class SkillSaveTool {
     }
 
     /**
+     * Variant of {@link #saveSkill} for programmatic callers (e.g. SkillSynthesisRunner) that
+     * already have a complete skill body and want to stamp an extra {@code metric_tag} field
+     * into the frontmatter. Skips the tool-call wiring and the stripFrontmatter step so any
+     * metric_tag injected upstream by {@code withMetricTag} is preserved.
+     *
+     * @return true on success
+     */
+    public boolean saveSkillWithMetricTag(
+            String skillName, String description, String body, String metricTag) {
+        try {
+            if (skillName == null || skillName.isBlank()) return false;
+            String safeName = skillName.trim().toLowerCase().replaceAll("[^a-z0-9_]", "_");
+            String desc = description == null ? "" : description.trim();
+            String safeBody = stripFrontmatter(body == null ? "" : body.trim());
+
+            int version = upsertVersion(safeName, desc);
+            String frontmatter = renderFrontmatter(safeName, desc, version, metricTag);
+            String full = frontmatter + safeBody;
+
+            AgentSkill skill =
+                    AgentSkill.builder()
+                            .name(safeName)
+                            .description(desc)
+                            .skillContent(full)
+                            .source("auto_synthesized")
+                            .build();
+            boolean saved = SkillFileSystemHelper.saveSkills(skillsDir, List.of(skill), true);
+            if (saved) {
+                log.info("Skill saved (with metric_tag={}): {} v{}", metricTag, safeName, version);
+            }
+            return saved;
+        } catch (Exception e) {
+            log.error("Failed to save skill with metric_tag: {}", skillName, e);
+            return false;
+        }
+    }
+
+    /**
      * Fire-and-forget embedding upsert (PR3). Skipped when either dependency is unwired —
      * preserves the manual save_skill path's behaviour when retrieval is disabled. We embed
      * "{name} {description}" rather than the full SKILL.md body because (a) description is
@@ -196,22 +234,23 @@ public class SkillSaveTool {
     }
 
     static String renderFrontmatter(String name, String description, int version) {
+        return renderFrontmatter(name, description, version, null);
+    }
+
+    static String renderFrontmatter(String name, String description, int version, String metricTag) {
         // Escape only what YAML genuinely needs: double-quote the description and backslash
         // any literal " inside it. Names are already [a-z0-9_] from safeName().
         String safeDesc = description.replace("\\", "\\\\").replace("\"", "\\\"");
-        return "---\n"
-                + "name: "
-                + name
-                + "\n"
-                + "description: \""
-                + safeDesc
-                + "\"\n"
-                + "version: "
-                + version
-                + "\n"
-                + "last_evolved_at: "
-                + LocalDate.now()
-                + "\n"
-                + "---\n\n";
+        StringBuilder sb = new StringBuilder();
+        sb.append("---\n")
+                .append("name: ").append(name).append('\n')
+                .append("description: \"").append(safeDesc).append("\"\n")
+                .append("version: ").append(version).append('\n')
+                .append("last_evolved_at: ").append(LocalDate.now()).append('\n');
+        if (metricTag != null && !metricTag.isBlank()) {
+            sb.append("metric_tag: ").append(metricTag).append('\n');
+        }
+        sb.append("---\n\n");
+        return sb.toString();
     }
 }

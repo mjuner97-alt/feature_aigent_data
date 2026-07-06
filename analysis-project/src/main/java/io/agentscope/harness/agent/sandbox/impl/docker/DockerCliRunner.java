@@ -14,9 +14,12 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public final class DockerCliRunner {
 
+    private static final Logger log = LoggerFactory.getLogger(DockerCliRunner.class);
     private static volatile Config config = new Config(false, "", List.of(), 60);
 
     private DockerCliRunner() {}

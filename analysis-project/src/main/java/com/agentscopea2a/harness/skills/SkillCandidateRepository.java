@@ -48,12 +48,14 @@ public class SkillCandidateRepository {
                     + "  hit_count INT NOT NULL DEFAULT 0,"
                     + "  last_query TEXT,"
                     + "  last_trace_id VARCHAR(64) NULL,"
+                    + "  metric_tag VARCHAR(64) DEFAULT NULL,"
                     + "  status VARCHAR(16) NOT NULL DEFAULT 'pending',"
                     + "  synth_skill VARCHAR(128) NULL,"
                     + "  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP "
                     + "             ON UPDATE CURRENT_TIMESTAMP,"
                     + "  KEY idx_user_status (user_id, status),"
-                    + "  KEY idx_hit_count (hit_count DESC)"
+                    + "  KEY idx_hit_count (hit_count DESC),"
+                    + "  KEY idx_metric_tag (metric_tag)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
     private final DataSource dataSource;
@@ -104,14 +106,18 @@ public class SkillCandidateRepository {
             log.warn("incrementHit({}) failed: {}", fingerprint, e.getMessage());
             return Optional.empty();
         }
-        return findByFingerprint(fingerprint);
+        Optional<SkillCandidate> result = findByFingerprint(fingerprint);
+        result.ifPresent(c -> log.info(
+                "[BUMP] fingerprint={} userId={} hit_count={} status={}",
+                fingerprint, userId, c.hitCount(), c.status()));
+        return result;
     }
 
     public Optional<SkillCandidate> findByFingerprint(String fingerprint) {
         ensureTable();
         String sql =
-                "SELECT fingerprint, user_id, hit_count, last_query, last_trace_id, status,"
-                        + " synth_skill, updated_at FROM skill_candidate WHERE fingerprint = ?";
+                "SELECT fingerprint, user_id, hit_count, last_query, last_trace_id, metric_tag,"
+                        + " status, synth_skill, updated_at FROM skill_candidate WHERE fingerprint = ?";
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, fingerprint);
@@ -175,9 +181,30 @@ public class SkillCandidateRepository {
                 rs.getInt("hit_count"),
                 rs.getString("last_query"),
                 rs.getString("last_trace_id"),
+                rs.getString("metric_tag"),
                 rs.getString("status"),
                 rs.getString("synth_skill"),
                 updated == null ? LocalDateTime.now() : updated.toLocalDateTime());
+    }
+
+    /**
+     * Async callback from MetricClassificationService — writes the metric_tag column.
+     * Only writes when metric_tag IS NULL to avoid overwriting existing classification.
+     */
+    public void updateMetricTag(String fingerprint, String metricTag) {
+        ensureTable();
+        String sql = "UPDATE skill_candidate SET metric_tag = ? WHERE fingerprint = ? AND metric_tag IS NULL";
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, metricTag);
+            ps.setString(2, fingerprint);
+            int rows = ps.executeUpdate();
+            if (rows > 0) {
+                log.info("[METRIC_TAG] fingerprint={} tag={}", fingerprint, metricTag);
+            }
+        } catch (SQLException e) {
+            log.debug("updateMetricTag({}) failed: {}", fingerprint, e.getMessage());
+        }
     }
 
     private void ensureTable() {
