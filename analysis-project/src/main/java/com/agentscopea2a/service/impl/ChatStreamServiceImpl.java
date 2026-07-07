@@ -367,38 +367,53 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             }
 
             // 3. 分析智能体分支（非"执行智能体"）— 全部视为思考
-            if (!"执行智能体".equalsIgnoreCase(agentName)) {
+            if (!SupervisorService.AGENT_NAME.equalsIgnoreCase(agentName) || ! (contentBlock instanceof  TextBlock)) {
                 ctx.thinkContent.append(extractedContent);
                 sendThinkResponse(ctx.emitter, extractedContent, "执行中", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
                 return;
             }
 
-            // 4. 执行智能体分支 — 区分思考块和结果块
-            if (!ctx.agentChange.getAndSet(true)) {
-                // 首次进入执行智能体 — 输出为思考
-                ctx.thinkContent.append(extractedContent);
-                sendThinkResponse(ctx.emitter, " ", "已执行", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
-                sendThinkResponse(ctx.emitter, extractedContent, "执行中", "执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
-                return;
+            if (SupervisorService.AGENT_NAME.equalsIgnoreCase(agentName) && contentBlock instanceof TextBlock){
+                if (!ctx.agentChange.getAndSet(true)){
+                    sendThinkResponse(ctx.emitter, " ", "已执行", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
+                }
+                sendTextResponse(ctx.emitter, extractedContent, "", "", false, ctx.req.getConversationId(), ctx.uuid);
             }
 
-            // 后续执行智能体 chunk — 只区分 TextBlock（结果）和非 TextBlock（思考）
-            if (contentBlock instanceof TextBlock) {
-                if (ctx.secondStartFlag.getAndSet(false)) {
-                    // 首次输出文本结果：先发一个 think（action="已执行"），再发 text（topic/action 为空）
-                    ctx.answerContent.append(extractedContent);
-                    sendThinkResponse(ctx.emitter, " ", "已执行", "执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
-                    sendTextResponse(ctx.emitter, extractedContent, "", "", false, ctx.req.getConversationId(), ctx.uuid);
-                } else {
-                    // 后续文本结果
-                    ctx.answerContent.append(extractedContent);
-                    sendTextResponse(ctx.emitter, extractedContent, "", "", chunk.isLast(), ctx.req.getConversationId(), ctx.uuid);
-                }
-            } else {
-                // 非 TextBlock（ThinkingBlock / ToolUseBlock / ToolResultBlock 等）均视为思考
-                ctx.thinkContent.append(extractedContent);
-                sendThinkResponse(ctx.emitter, extractedContent, "执行中", "执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
-            }
+
+//            // 3. 分析智能体分支（非"执行智能体"）— 全部视为思考
+//            if (!"执行智能体".equalsIgnoreCase(agentName)) {
+//                ctx.thinkContent.append(extractedContent);
+//                sendThinkResponse(ctx.emitter, extractedContent, "执行中", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
+//                return;
+//            }
+//
+//            // 4. 执行智能体分支 — 区分思考块和结果块
+//            if (!ctx.agentChange.getAndSet(true)) {
+//                // 首次进入执行智能体 — 输出为思考
+//                ctx.thinkContent.append(extractedContent);
+//                sendThinkResponse(ctx.emitter, " ", "已执行", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
+//                sendThinkResponse(ctx.emitter, extractedContent, "执行中", "执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
+//                return;
+//            }
+//
+//            // 后续执行智能体 chunk — 只区分 TextBlock（结果）和非 TextBlock（思考）
+//            if (contentBlock instanceof TextBlock) {
+//                if (ctx.secondStartFlag.getAndSet(false)) {
+//                    // 首次输出文本结果：先发一个 think（action="已执行"），再发 text（topic/action 为空）
+//                    ctx.answerContent.append(extractedContent);
+//                    sendThinkResponse(ctx.emitter, " ", "已执行", "执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
+//                    sendTextResponse(ctx.emitter, extractedContent, "", "", false, ctx.req.getConversationId(), ctx.uuid);
+//                } else {
+//                    // 后续文本结果
+//                    ctx.answerContent.append(extractedContent);
+//                    sendTextResponse(ctx.emitter, extractedContent, "", "", chunk.isLast(), ctx.req.getConversationId(), ctx.uuid);
+//                }
+//            } else {
+//                // 非 TextBlock（ThinkingBlock / ToolUseBlock / ToolResultBlock 等）均视为思考
+//                ctx.thinkContent.append(extractedContent);
+//                sendThinkResponse(ctx.emitter, extractedContent, "执行中", "执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
+//            }
 
         } catch (Exception e) {
             LOGGER.error("主智能体执行失败异常: ", e);
