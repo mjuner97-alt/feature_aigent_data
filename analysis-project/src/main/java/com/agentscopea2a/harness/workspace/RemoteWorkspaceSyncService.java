@@ -50,8 +50,8 @@ public class RemoteWorkspaceSyncService {
             out.add(
                     new RemoteDirSyncer(
                             skills.getSshTarget(),
-                            workspace.resolve("skills-builtin"),
-                            skills.getRemoteRoot() + "-builtin",
+                            workspace.resolve("skills"),
+                            skills.getRemoteRoot(),
                             skills.getSshOptions(),
                             skills.getTimeoutSeconds()));
             out.add(

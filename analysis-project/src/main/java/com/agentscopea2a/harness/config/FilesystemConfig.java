@@ -163,15 +163,15 @@ public class FilesystemConfig {
                         .getEntries()
                         .put("skills", hostBindMount(workspace.resolve("skills")));
             }
-            // Mount skills-builtin/ (builtin meta-skills) so sandbox agents can read them
-            Path skillsBuiltin = workspace.resolve("skills-builtin");
-            if (Files.isDirectory(skillsBuiltin)) {
-                workspaceSpec.getEntries().put("skills-builtin", hostBindMount(skillsBuiltin));
-            }
             // Mount skills-auto/ (auto-synthesized business skills) for sandbox retrieval
             Path skillsAuto = workspace.resolve("skills-auto");
             if (Files.isDirectory(skillsAuto)) {
                 workspaceSpec.getEntries().put("skills-auto", hostBindMount(skillsAuto));
+            }
+            // Mount knowledge-dynamic/ (on-demand domain knowledge) for sandbox agents
+            Path knowledgeDynamic = workspace.resolve("knowledge-dynamic");
+            if (Files.isDirectory(knowledgeDynamic)) {
+                workspaceSpec.getEntries().put("knowledge-dynamic", hostBindMount(knowledgeDynamic));
             }
         }
         if (s.isMountMemory()) {
@@ -203,7 +203,7 @@ public class FilesystemConfig {
                         .image(s.getImage())
                         .workspaceRoot(s.getWorkspaceRoot())
                         .workspaceSpec(workspaceSpec);
-        spec.workspaceProjectionRoots(List.of("AGENTS.md", "knowledge", "agent-subagents"));
+        spec.workspaceProjectionRoots(List.of("AGENTS.md", "knowledge", "knowledge-dynamic", "agent-subagents"));
         spec.isolationScope(scope);
         return spec;
     }

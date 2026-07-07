@@ -98,7 +98,7 @@ public class DebugController {
     @GetMapping("/skills")
     public Map<String, Object> listSkills() {
         Map<String, Object> out = new HashMap<>();
-        out.put("skills-builtin", listDir("skills-builtin"));
+        out.put("skills", listDir("skills"));
         out.put("skills-auto", listDir("skills-auto"));
         return out;
     }
