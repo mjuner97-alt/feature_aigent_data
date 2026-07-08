@@ -41,8 +41,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>Owns three responsibilities the {@code SkillEvolutionHook} delegates here:
  *
  * <ol>
- *   <li><b>Counter book-keeping</b> — {@link #recordSuccess(java.util.List)} /
- *       {@link #recordFailure(java.util.List)} bump {@code skill_index.success_count} /
+ *   <li><b>Counter book-keeping</b> — {@link #recordSuccess(List)} /
+ *       {@link #recordFailure(List)} bump {@code skill_index.success_count} /
  *       {@code failure_count}. After each failure, evaluates the per-skill threshold and
  *       dispatches an async evolve or marks the skill blacklist.
  *   <li><b>Async evolve dispatch</b> — runs {@link SkillDistiller#evolve} on
@@ -68,8 +68,8 @@ public class SkillEvolutionRunner {
 
     /** Pending-judgement cache cap. LRU eviction so a single hot session can't starve others. */
     private static final int PENDING_CACHE_MAX = 1024;
-    private static final com.fasterxml.jackson.databind.ObjectMapper MAPPER =
-            new com.fasterxml.jackson.databind.ObjectMapper();
+    private static final ObjectMapper MAPPER =
+            new ObjectMapper();
 
     /** MySQL DDL for pending judgement table. */
     private static final String PENDING_DDL =

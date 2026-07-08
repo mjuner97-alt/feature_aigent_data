@@ -5,6 +5,8 @@
  */
 package com.agentscopea2a.harness.skills;
 
+import com.agentscopea2a.harness.tools.CaptureSkillSaveTool;
+import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
@@ -14,12 +16,15 @@ import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.memory.EpisodicMemory;
 import io.agentscope.core.memory.EpisodicResult;
+import io.agentscope.core.tool.Toolkit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -49,6 +54,9 @@ public class SkillDistiller {
     private final MetricClassificationService metricClassifier;
 
     private final Model model;
+
+    /** Workspace root path, used by {@link #buildDistillAgent} to load subagent specs. */
+    private final Path workspace;
 
     /** How many episodic snippets to mix into the distillation prompt. */
     private static final int TRACE_SNIPPETS = 3;
@@ -100,10 +108,12 @@ public class SkillDistiller {
                     + "不要 YAML frontmatter。";
 
     public SkillDistiller(Model model, ObjectProvider<EpisodicMemory> episodicProvider,
-                          MetricClassificationService metricClassifier) {
+                          MetricClassificationService metricClassifier,
+                          @org.springframework.beans.factory.annotation.Value("${harness.a2a.workspace.path}") String workspaceRoot) {
         this.model = model;
         this.episodicProvider = episodicProvider;
         this.metricClassifier = metricClassifier;
+        this.workspace = Path.of(workspaceRoot);
     }
 
     public record DistilledSkill(
@@ -199,6 +209,76 @@ public class SkillDistiller {
                         });
     }
 
+    // -------- Subagent-based distillation (Path A improvement) --------
+
+    /**
+     * Build a temporary {@link HarnessAgent} that runs the {@code generate_skill} subagent spec
+     * for auto-distillation. The agent uses a {@link CaptureSkillSaveTool} in place of the real
+     * {@link com.agentscopea2a.harness.tools.SkillSaveTool} so that the save_skill call is captured
+     * in memory rather than written to disk — the caller ({@link SkillSynthesisRunner}) handles
+     * CAS, disk write, and embedding after the subagent finishes.
+     *
+     * <p>The system prompt is assembled from:
+     * <ol>
+     *   <li>{@code workspace/agent-subagents/generate_skill.md} — the same spec used by Path B</li>
+     *   <li>Tool-call context (enriched by {@link SkillSynthesisRunner#buildEnrichedContext})</li>
+     *   <li>Metric-tag context (from {@link #metricHint})</li>
+     * </ol>
+     *
+     * @param question       the exemplar user question (included in the user message, not the system prompt)
+     * @param toolCallContext pre-formatted tool-call chain details (may be empty)
+     * @param metricTag      optional metric classification tag
+     * @param captureTool    the capture tool that will record the save_skill call
+     * @return a fully-built HarnessAgent ready to call
+     */
+    public HarnessAgent buildDistillAgent(
+            String question, String toolCallContext, String metricTag,
+            CaptureSkillSaveTool captureTool) {
+
+        // 1. Load generate_skill.md as system prompt base
+        Path specPath = workspace.resolve("agent-subagents").resolve("generate_skill.md");
+        String sysPrompt;
+        try {
+            sysPrompt = Files.readString(specPath);
+        } catch (Exception e) {
+            log.warn("Failed to load generate_skill.md from {}, using fallback prompt: {}",
+                    specPath, e.getMessage());
+            sysPrompt = "你是技能生成助手。请根据用户问题和工具调用链路，蒸馏为可复用的 SKILL.md，并调用 save_skill 保存。";
+        }
+
+        // 2. Inject tool-call context (same as Path B)
+        if (toolCallContext != null && !toolCallContext.isBlank()) {
+            sysPrompt += "\n\n" + toolCallContext;
+        }
+
+        // 3. Inject metric-tag context
+        String metricContext = metricHint(metricTag);
+        if (!metricContext.isEmpty()) {
+            sysPrompt += "\n" + metricContext;
+        }
+
+        // 4. Build toolkit (only save_skill)
+        Toolkit tk = new Toolkit();
+        tk.registerTool(captureTool);
+
+        // 5. Build subagent
+        // disableMemoryHooks: the distill subagent is ephemeral — it doesn't need
+        // MemoryFlushHook or MemoryMaintenanceHook. These hooks trigger extra LLM calls
+        // and filesystem writes per PostCall, which can crash on Windows when userId
+        // contains path-illegal chars (e.g. ':'). Consistent with how SupervisorService
+        // builds subagents (line 555: ".disableMemoryHooks()").
+        return HarnessAgent.builder()
+                .name("skill_distiller")
+                .model(model)
+                .workspace(workspace)
+                .toolkit(tk)
+                .sysPrompt(sysPrompt)
+                .maxIters(5)
+                .enablePendingToolRecovery(true)
+                .disableMemoryHooks()
+                .build();
+    }
+
     // -------- Context-aware distillation --------
 
     /**
@@ -291,7 +371,7 @@ public class SkillDistiller {
      * <p>Delegates to {@link MetricClassificationService#getMetricHint(String)} for the
      * Chinese hint text, which is loaded from {@code workspace/knowledge/metric-categories.yaml}.
      */
-    String metricHint(String metricTag) {
+    public String metricHint(String metricTag) {
         if (metricTag == null || metricTag.isBlank()) return "";
         String chineseHint = metricClassifier.getMetricHint(metricTag);
         return "\n**指标分类**: " + metricTag + " (" + chineseHint + ")"
@@ -421,6 +501,7 @@ public class SkillDistiller {
      */
     static DistilledSkill parseLenient(String llmOutput) {
         if (llmOutput == null || llmOutput.isBlank()) return null;
+        llmOutput = stripThinkingTags(llmOutput);
         DistilledSkill strict = parse(llmOutput);
         if (strict != null) return strict;
 
@@ -462,8 +543,39 @@ public class SkillDistiller {
      * Strict parse used by {@link #evolve} — requires all three sections.
      * Returns null on any parse failure.
      */
+    /**
+     * Strips LLM thinking/reasoning tags that some models (Qwen3, DeepSeek-R1, etc.) emit
+     * before the actual answer. These tags (e.g. {@code <think>...</think>},
+     * {@code <thinking>...</thinking>}) contaminate the distilled SKILL.md body and cause
+     * malformed output when saved to disk.
+     *
+     * <p>Also strips the standalone {@code </think>} closing tag that appears when the
+     * model emits the opening tag in a previous stream chunk but the closing tag lands in
+     * the same chunk as the real content.
+     */
+    static String stripThinkingTags(String llmOutput) {
+        if (llmOutput == null || llmOutput.isBlank()) return llmOutput;
+        // Remove <think>...</think> blocks (including multiline content)
+        String result = THINKING_BLOCK_PATTERN.matcher(llmOutput).replaceAll("");
+        // Remove <thinking>...</thinking> blocks
+        result = THINKING_BLOCK2_PATTERN.matcher(result).replaceAll("");
+        return result.trim();
+    }
+
+    /** Matches <think>...</think> blocks, including multiline content. */
+    private static final Pattern THINKING_BLOCK_PATTERN =
+            Pattern.compile("<think>.*?</think>\\s*", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    /** Matches <thinking>...</thinking> blocks, including multiline content. */
+    private static final Pattern THINKING_BLOCK2_PATTERN =
+            Pattern.compile("<thinking>.*?</thinking>\\s*", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+
+    /**
+     * Strict parse used by {@link #evolve} — requires all three sections.
+     * Returns null on any parse failure.
+     */
     static DistilledSkill parse(String llmOutput) {
         if (llmOutput == null || llmOutput.isBlank()) return null;
+        llmOutput = stripThinkingTags(llmOutput);
         Matcher nm = NAME_LINE.matcher(llmOutput);
         Matcher dm = DESC_LINE.matcher(llmOutput);
         Matcher bm = BODY_FENCE.matcher(llmOutput);
@@ -502,7 +614,7 @@ public class SkillDistiller {
      * will fall back to description-only text. Dedupes case-insensitively and trims, capped
      * at 8 entries so a runaway LLM can't bloat the embedded text.
      */
-    static List<String> parseSamples(String llmOutput) {
+    public static List<String> parseSamples(String llmOutput) {
         if (llmOutput == null || llmOutput.isBlank()) return List.of();
         String region = null;
         Matcher block = SAMPLES_BLOCK.matcher(llmOutput);

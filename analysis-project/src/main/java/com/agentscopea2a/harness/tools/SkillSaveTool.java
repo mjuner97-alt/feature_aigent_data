@@ -120,7 +120,13 @@ public class SkillSaveTool {
             }
             String safeName = skillName.trim().toLowerCase().replaceAll("[^a-z0-9_]", "_");
             String desc = description == null ? "" : description.trim();
-            String body = stripFrontmatter(content == null ? "" : content.trim());
+            String body = content == null ? "" : content.trim();
+            // Loop-strip all frontmatter blocks — LLM may generate multiple YAML blocks
+            while (body.startsWith("---")) {
+                String stripped = stripFrontmatter(body);
+                if (stripped.equals(body)) break;
+                body = stripped;
+            }
 
             int version = upsertVersion(safeName, desc);
             String frontmatter = renderFrontmatter(safeName, desc, version);
@@ -174,7 +180,16 @@ public class SkillSaveTool {
             if (skillName == null || skillName.isBlank()) return false;
             String safeName = skillName.trim().toLowerCase().replaceAll("[^a-z0-9_]", "_");
             String desc = description == null ? "" : description.trim();
-            String safeBody = stripFrontmatter(body == null ? "" : body.trim());
+            String safeBody = body == null ? "" : body.trim();
+            // Loop-strip all frontmatter blocks — LLM may generate multiple YAML blocks
+            // despite instructions saying "no frontmatter in content". A single stripFrontmatter
+            // only removes the first block, leaving subsequent ones to appear as duplicate
+            // frontmatter in the final file.
+            while (safeBody.startsWith("---")) {
+                String stripped = stripFrontmatter(safeBody);
+                if (stripped.equals(safeBody)) break;
+                safeBody = stripped;
+            }
 
             int version = upsertVersion(safeName, desc);
             String frontmatter = renderFrontmatter(safeName, desc, version, metricTag);
@@ -227,7 +242,7 @@ public class SkillSaveTool {
     }
 
     /** Drop any YAML frontmatter the LLM may have prepended — we own this block. */
-    static String stripFrontmatter(String content) {
+    public static String stripFrontmatter(String content) {
         if (content == null || content.isEmpty()) return "";
         Matcher m = FRONTMATTER.matcher(content);
         return m.find() && m.start() == 0 ? content.substring(m.end()) : content;

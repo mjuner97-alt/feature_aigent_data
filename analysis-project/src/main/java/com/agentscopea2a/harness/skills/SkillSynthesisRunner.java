@@ -6,9 +6,15 @@
 package com.agentscopea2a.harness.skills;
 
 import com.agentscopea2a.agent.memory.MySqlEpisodicMemory;
+import com.agentscopea2a.harness.tools.CaptureSkillSaveTool;
 import com.agentscopea2a.harness.tools.SkillSaveTool;
+import io.agentscope.harness.agent.HarnessAgent;
+import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.state.SimpleSessionKey;
 import io.agentscope.core.memory.EpisodicMemory;
-import io.agentscope.core.memory.EpisodicMemory;
+import io.agentscope.core.message.Msg;
+import io.agentscope.core.message.MsgRole;
+import io.agentscope.core.message.TextBlock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -17,6 +23,7 @@ import org.springframework.stereotype.Component;
 import reactor.core.scheduler.Schedulers;
 
 import java.nio.file.Path;
+import java.util.List;
 
 /**
  * Shared "count → maybe distill" pipeline for both the Cache MISS path
@@ -24,8 +31,13 @@ import java.nio.file.Path;
  *
  * <p>Centralising the distillation logic prevents drift between the two call sites — both
  * end up bumping {@code skill_candidate.hit_count} and, when threshold is crossed, dispatching
- * an async {@link SkillDistiller#distill}. {@link SkillCandidateRepository#markSynthesized} is
- * the atomic CAS that prevents the two paths (or two JVMs) from racing.
+ * an async distill+save. {@link SkillCandidateRepository#markSynthesized} is the atomic CAS
+ * that prevents the two paths (or two JVMs) from racing.
+ *
+ * <p>When {@code harness.skills.auto-synth.via-subagent} is {@code true} (default), the
+ * distillation runs through a {@code generate_skill} subagent rather than directly calling
+ * the LLM — this avoids thinking-tag pollution and produces higher-quality skills. When
+ * {@code false}, falls back to the legacy {@link SkillDistiller#distill} path.
  *
  * <p>Workspace path is captured at construction; everything else is shared injected beans.
  * Vector index + embedding client are optional (PR3 may be off).
@@ -44,6 +56,7 @@ public class SkillSynthesisRunner {
     private final Path skillsDir;
     private final boolean enabled;
     private final int hitThreshold;
+    private final boolean viaSubagent;
 
     public SkillSynthesisRunner(
             SkillCandidateRepository candidateRepo,
@@ -54,7 +67,8 @@ public class SkillSynthesisRunner {
             ObjectProvider<EpisodicMemory> episodicMemoryProvider,
             @Value("${harness.a2a.workspace.path}") String workspaceRoot,
             @Value("${harness.skills.auto-synth.enabled:false}") boolean enabled,
-            @Value("${harness.skills.auto-synth.threshold:3}") int hitThreshold) {
+            @Value("${harness.skills.auto-synth.threshold:3}") int hitThreshold,
+            @Value("${harness.skills.auto-synth.via-subagent:true}") boolean viaSubagent) {
         this.candidateRepo = candidateRepo;
         this.indexRepo = indexRepo;
         this.distiller = distiller;
@@ -64,6 +78,7 @@ public class SkillSynthesisRunner {
         this.skillsDir = Path.of(workspaceRoot).resolve("skills-auto");
         this.enabled = enabled;
         this.hitThreshold = hitThreshold;
+        this.viaSubagent = viaSubagent;
     }
 
     public boolean enabled() {
@@ -116,11 +131,8 @@ public class SkillSynthesisRunner {
 
     private void distillAndSave(
             String fingerprint, String userId, String question, SkillCandidate candidate) {
-        log.info(
-                "Skill synthesis triggered: fingerprint={} hit={} user={}",
-                fingerprint,
-                candidate.hitCount(),
-                userId);
+        log.info("Skill synthesis triggered: fingerprint={} hit={} user={}",
+                fingerprint, candidate.hitCount(), userId);
 
         // Try to fetch tool call context from episodic memory for context-aware distillation
         String toolCallContext = "";
@@ -136,8 +148,116 @@ public class SkillSynthesisRunner {
             }
         }
 
-        SkillDistiller.DistilledSkill distilled;
         String metricTag = candidate.metricTag();
+
+        if (viaSubagent) {
+            distillViaSubagent(fingerprint, userId, question, candidate, toolCallContext, metricTag);
+        } else {
+            distillViaDirectLlm(fingerprint, userId, question, candidate, toolCallContext, metricTag);
+        }
+    }
+
+    // -------- Subagent-based distillation (new Path A) --------
+
+    /**
+     * Distill via a {@code generate_skill} subagent that calls {@code save_skill} internally.
+     * The result is captured by {@link CaptureSkillSaveTool} rather than written to disk —
+     * the runner handles CAS, disk write, and embedding afterwards.
+     *
+     * <p>Runs synchronously on the current (boundedElastic) thread. The subagent uses
+     * {@code maxIters=3}, which gives the LLM enough turns to think and then call save_skill.
+     */
+    private void distillViaSubagent(
+            String fingerprint, String userId, String question,
+            SkillCandidate candidate, String toolCallContext, String metricTag) {
+
+        // [2] Build distill subagent
+        CaptureSkillSaveTool captureTool = new CaptureSkillSaveTool();
+        HarnessAgent distillAgent;
+        try {
+            String enrichedContext = buildEnrichedContext(question, toolCallContext);
+            distillAgent = distiller.buildDistillAgent(question, enrichedContext, metricTag, captureTool);
+        } catch (Exception e) {
+            log.warn("Failed to build distill agent: {}", e.getMessage());
+            candidateRepo.markRejected(fingerprint, "subagent_build_failed");
+            return;
+        }
+
+        // [3] Build user message (metricContext already injected into system prompt)
+        String task = buildDistillTask(question, fingerprint, toolCallContext);
+        Msg userMsg = Msg.builder()
+                .role(MsgRole.USER)
+                .content(TextBlock.builder().text(task).build())
+                .build();
+
+        // [4] Run subagent (synchronous — already on boundedElastic thread)
+        // Sanitize fingerprint for use in paths — characters like |, :, <, >, "
+        // are illegal in Windows file paths and cause InvalidPathException / IOError.
+        // Use a fixed userId "_distill" so the framework doesn't create a per-user
+        // directory tree (e.g. u_u-test2/agents/skill_distiller/) under workspace.
+        // MemoryFlushHooks are already disabled; the only filesystem side-effect
+        // would be SessionTree creating an empty agent directory + _sweep.marker.
+        String safeFingerprint = fingerprint.replaceAll("[|<>:\"?*\\\\/]", "_");
+        RuntimeContext ctx = RuntimeContext.builder()
+                .sessionId("distill-" + safeFingerprint)
+                .userId("_distill")
+                .sessionKey(SimpleSessionKey.of("distill-" + safeFingerprint))
+                .build();
+        try {
+            log.info("Starting distill subagent call for fingerprint={}", fingerprint);
+            distillAgent.call(List.of(userMsg), ctx).block();
+            log.info("Distill subagent completed for fingerprint={}", fingerprint);
+        } catch (Exception e) {
+            log.warn("Distill subagent failed: {}", e.getMessage());
+            candidateRepo.markRejected(fingerprint, "subagent_failed");
+            return;
+        }
+
+        // [5] Capture result
+        if (!captureTool.hasCaptured()) {
+            log.warn("Distill subagent did not call save_skill (fingerprint={})", fingerprint);
+            candidateRepo.markRejected(fingerprint, "subagent_no_save_skill");
+            return;
+        }
+
+        CaptureSkillSaveTool.CapturedSkill captured = captureTool.getCaptured();
+        String name = sanitizeName(captured.name());
+        String description = captured.description();
+        // Loop-strip all frontmatter blocks — LLM may generate multiple or
+        // malformed YAML blocks despite the tool description saying "no frontmatter".
+        String body = captured.content();
+        while (body.startsWith("---")) {
+            String stripped = SkillSaveTool.stripFrontmatter(body);
+            if (stripped.equals(body)) break;  // no more frontmatter to strip
+            body = stripped;
+        }
+        List<String> samples = SkillDistiller.parseSamples(body);
+
+        SkillDistiller.DistilledSkill distilled =
+                new SkillDistiller.DistilledSkill(name, description, body, samples);
+
+        // [6] metricTag stamp
+        if (metricTag != null && !metricTag.isBlank()) {
+            distilled = withMetricTag(distilled, metricTag);
+            log.info("Distilled skill '{}' tagged with metric_tag={}", distilled.name(), metricTag);
+        }
+
+        // [7] CAS + write to disk + embedding (same as direct LLM path)
+        saveDistilledSkill(distilled, fingerprint, metricTag);
+    }
+
+    // -------- Direct LLM distillation (fallback Path A) --------
+
+    /**
+     * Legacy distillation path — directly calls the LLM via {@link SkillDistiller}
+     * and parses the structured output with regex. Retained as a fallback when
+     * {@code via-subagent=false}.
+     */
+    private void distillViaDirectLlm(
+            String fingerprint, String userId, String question,
+            SkillCandidate candidate, String toolCallContext, String metricTag) {
+
+        SkillDistiller.DistilledSkill distilled;
         if (toolCallContext != null && !toolCallContext.isBlank()) {
             // Use context-aware distillation with metric tag hint
             String enrichedContext = buildEnrichedContext(question, toolCallContext);
@@ -150,12 +270,23 @@ public class SkillSynthesisRunner {
             candidateRepo.markRejected(fingerprint, "distiller_returned_null");
             return;
         }
-        // 方案 B: 如果 candidate 行已有 metric_tag,把它写入 SKILL.md body 的 frontmatter
-        // (metricTag already declared above at line ~140)
+        // Inject metric_tag into SKILL.md body frontmatter
         if (metricTag != null && !metricTag.isBlank()) {
             distilled = withMetricTag(distilled, metricTag);
             log.info("Distilled skill '{}' tagged with metric_tag={}", distilled.name(), metricTag);
         }
+
+        saveDistilledSkill(distilled, fingerprint, metricTag);
+    }
+
+    // -------- Shared save logic --------
+
+    /**
+     * Common save path: CAS claim → write SKILL.md → stamp embedding vector.
+     * Used by both subagent and direct-LLM distillation paths.
+     */
+    private void saveDistilledSkill(
+            SkillDistiller.DistilledSkill distilled, String fingerprint, String metricTag) {
         // Atomic claim — only one path/JVM moves the row from pending → synthesized.
         if (!candidateRepo.markSynthesized(fingerprint, distilled.name())) {
             log.info("Candidate {} already claimed by another writer; skipping save", fingerprint);
@@ -187,6 +318,80 @@ public class SkillSynthesisRunner {
             log.warn("SkillSaveTool failed for '{}': {}", distilled.name(), ex.getMessage());
         }
     }
+
+    // -------- Distill task builder --------
+
+    /**
+     * Build the user message for the distillation subagent.
+     * Metric context is already injected into the system prompt by
+     * {@link SkillDistiller#buildDistillAgent}, so we don't repeat it here.
+     */
+    private String buildDistillTask(String question, String fingerprint, String toolCallContext) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("请将以下用户问题的处理流程蒸馏为一个可复用的 skill：\n\n");
+        sb.append("**用户问题**: ").append(question).append("\n");
+        sb.append("**Fingerprint**: ").append(fingerprint).append("\n");
+        if (toolCallContext != null && !toolCallContext.isBlank()) {
+            sb.append(toolCallContext).append("\n");
+        }
+        sb.append("\n请按以下步骤操作：\n");
+        sb.append("1. 分析用户问题和工具调用链路，提取核心工作流程\n");
+        sb.append("2. 用英文小写+下划线给技能命名（如 quality_query_analysis）\n");
+        sb.append("3. 写一句话中文描述\n");
+        sb.append("4. 把工作流程整理为 SKILL.md 正文\n");
+        sb.append("5. 调用 save_skill 工具保存\n");
+        sb.append("\n**重要 — SKILL.md 正文必须包含以下章节，每个章节都要详细（总长度至少 60 行）：**\n\n");
+        sb.append("```markdown\n");
+        sb.append("# <技能中文名>\n");
+        sb.append("<一句话场景说明 — 什么类型的问题会触发此技能>\n\n");
+        sb.append("## 父智能体派单逻辑\n");
+        sb.append("1. 意图识别：识别出用户请求属于哪类指标查询\n");
+        sb.append("2. 参数提取：从用户问题中提取时间、部门、指标等参数\n");
+        sb.append("3. agent_spawn 入参示例（JSON）\n\n");
+        sb.append("## 子智能体处理步骤\n");
+        sb.append("### 步骤 1: 查阅 tool_index 选择 toolId\n");
+        sb.append("- 入参 JSON 示例\n");
+        sb.append("- 返回结果格式\n\n");
+        sb.append("### 步骤 2: 调用 toolMetaInfo 获取参数定义\n");
+        sb.append("- 入参 JSON 示例\n");
+        sb.append("- 返回结果格式\n\n");
+        sb.append("### 步骤 3: 调用 router_tool 执行查询\n");
+        sb.append("- 入参 JSON 示例\n");
+        sb.append("- 返回结果格式\n\n");
+        sb.append("## 调用顺序图\n");
+        sb.append("Supervisor → 子智能体 → tool_index → toolMetaInfo → router_tool\n\n");
+        sb.append("## 参数标准化约束\n");
+        sb.append("- 时间格式转换规则\n");
+        sb.append("- 区域名称匹配规则\n");
+        sb.append("- 数据类型校验规则\n\n");
+        sb.append("## 异常处理\n");
+        sb.append("- 工具未找到：如何处理\n");
+        sb.append("- 参数缺失：如何追问用户\n");
+        sb.append("- 查询超时或失败：重试策略\n");
+        sb.append("- 空结果集：如何告知用户\n\n");
+        sb.append("## 输出格式\n");
+        sb.append("- 返回字段说明\n");
+        sb.append("```\n\n");
+        sb.append("**注意**：\n");
+        sb.append("- 工具名只能用真实名称（tool_index / toolMetaInfo / router_tool），不要使用泛化名称\n");
+        sb.append("- 不要在 content 中包含 YAML frontmatter，系统会自动生成\n");
+        sb.append("- 参考上面的**工具调用链路详情**来编写，确保入参和出参与实际一致\n");
+        sb.append("- 正文必须达到 60 行以上，内容要详细完整");
+        return sb.toString();
+    }
+
+    /**
+     * Sanitize a skill name: lowercase, replace non-alphanumeric chars with underscores.
+     * Falls back to a hash-based name if input is null or blank.
+     */
+    private String sanitizeName(String name) {
+        if (name == null || name.isBlank()) {
+            return "skill_" + Integer.toHexString(name.hashCode()).substring(0, 8);
+        }
+        return name.trim().toLowerCase().replaceAll("[^a-z0-9_]", "_");
+    }
+
+    // -------- Metric tag injection --------
 
     /**
      * 方案 B: 把 metric_tag 注入 SKILL.md body 的 frontmatter,使生成的 skill 自带指标语义标签。
@@ -225,6 +430,8 @@ public class SkillSynthesisRunner {
                 skill.name(), skill.description(), newBody, skill.sampleQuestions());
     }
 
+    // -------- Embedding text builder --------
+
     /**
      * Embedding source text. Concatenates description with the distilled sample_questions so
      * short Chinese skills get enough lexical breadth for bge-zh-v1.5 to produce a
@@ -248,6 +455,8 @@ public class SkillSynthesisRunner {
         return sb.toString().trim();
     }
 
+    // -------- Enriched context builder --------
+
     /**
      * Build an LLM-friendly text block from the tool call details JSON.
      * Renders as a numbered step list with tool name, level, input, and output.
@@ -256,9 +465,9 @@ public class SkillSynthesisRunner {
         if (toolCallDetailsJson == null || toolCallDetailsJson.isBlank()) return "";
         try {
             com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-            java.util.List<com.agentscopea2a.harness.hooks.ToolCallCollector.ToolCallDetail> details =
+            List<com.agentscopea2a.harness.hooks.ToolCallCollector.ToolCallDetail> details =
                     mapper.readValue(toolCallDetailsJson,
-                            new com.fasterxml.jackson.core.type.TypeReference<java.util.List<com.agentscopea2a.harness.hooks.ToolCallCollector.ToolCallDetail>>() {});
+                            new com.fasterxml.jackson.core.type.TypeReference<List<com.agentscopea2a.harness.hooks.ToolCallCollector.ToolCallDetail>>() {});
             if (details.isEmpty()) return "";
             StringBuilder sb = new StringBuilder("\n\n**工具调用链路详情**:\n");
             int step = 1;
