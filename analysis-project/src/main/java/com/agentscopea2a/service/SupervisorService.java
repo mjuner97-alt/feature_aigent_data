@@ -25,7 +25,6 @@ import com.agentscopea2a.harness.config.SandboxProperties;
 import com.agentscopea2a.agent.dimension.DimensionStateManager;
 import com.agentscopea2a.harness.hooks.ArtifactAccessHook;
 import com.agentscopea2a.harness.hooks.ArtifactHandoffHook;
-import com.agentscopea2a.harness.hooks.KnowledgeRetrievalHook;
 import com.agentscopea2a.harness.hooks.PythonExecRetryHook;
 import com.agentscopea2a.harness.hooks.ResponseCacheHook;
 import com.agentscopea2a.harness.hooks.SkillRetrievalHook;
@@ -206,9 +205,6 @@ public class SupervisorService {
 
     @Value("${harness.skills.retrieval.min-cosine:0.55}")
     private float skillRetrievalMinCosine;
-
-    @Value("${harness.knowledge.retrieval.enabled:true}")
-    private boolean knowledgeRetrievalEnabled;
 
     @Value("${harness.skills.evolution.enabled:false}")
     private boolean skillEvolutionEnabled;
@@ -424,8 +420,8 @@ public class SupervisorService {
             b.hook(new SkillSynthesisHook(skillSynthesisRunner, metricClassifier, fingerprintCalculator, ctx));
         }
 
-        // PR3 — focused skill retrieval. Retrieves from skills/ (auto-synthesized skills).
-        // Builtin meta-skills (tool_index, data_primitives) in skills/ are injected by the
+        // PR3 — focused skill retrieval. Only retrieves from skills-auto/ (auto-synthesized skills).
+        // Builtin meta-skills (tool_index, data_primitives) in skills-builtin/ are injected by the
         // harness's FileSystemSkillRepository via the default workspace path.
         b.hook(
                 new SkillRetrievalHook(
@@ -439,14 +435,6 @@ public class SupervisorService {
                         skillRetrievalEnabled,
                         skillRetrievalTopK,
                         skillRetrievalMinCosine));
-
-        // Knowledge dynamic retrieval — keyword-matched domain knowledge injection.
-        // Files in knowledge/ are always loaded by WorkspaceContextHook; files in
-        // knowledge-dynamic/ are only injected when the user's question matches
-        // configured keywords (e.g. "QI卡口" triggers QI_KNOWLEDGE.md).
-        b.hook(new KnowledgeRetrievalHook(
-                workspace.resolve("knowledge-dynamic"),
-                knowledgeRetrievalEnabled));
 
         // PR4 — failure-feedback closed loop. Reads skills.retrieved (written by PR3 hook above)
         // at PostCall and credits success/failure to skill_index counters; on the failure path
