@@ -144,7 +144,11 @@ public class MemoryFlowConsolidator {
         sb.append("以下是该用户今天的成功查询流程(工具调用序列):\n\n");
 
         for (SkillFlowEvolver.TraceSummary t : traces) {
-            sb.append("- **模式**: ").append(t.fingerprint()).append('\n');
+            // Prefer runtimeFingerprint for human readability (metric-based, e.g. "defect_density")
+            // Falls back to tool-sequence fingerprint for legacy rows without runtimeFingerprint
+            String displayFp = (t.runtimeFingerprint() != null && !t.runtimeFingerprint().isBlank())
+                    ? t.runtimeFingerprint() : t.fingerprint();
+            sb.append("- **模式**: ").append(displayFp).append('\n');
             sb.append("  **工具链**: ").append(t.toolSequence()).append('\n');
             sb.append("  **成功次数**: ").append(t.successCount()).append('\n');
             if (t.userQuery() != null && !t.userQuery().isBlank()) {

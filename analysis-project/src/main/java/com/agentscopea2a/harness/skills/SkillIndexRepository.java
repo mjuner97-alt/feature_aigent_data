@@ -49,9 +49,11 @@ public class SkillIndexRepository {
                     + "  last_used TIMESTAMP NULL,"
                     + "  evolving BOOLEAN NOT NULL DEFAULT FALSE COMMENT 'PR4 cross-JVM evolve lock',"
                     + "  status VARCHAR(16) NOT NULL DEFAULT 'active',"
+                    + "  tool_sequence_fingerprint VARCHAR(255) DEFAULT NULL COMMENT 'Phase 3 offline lookup key (tool-id sequence)',"
                     + "  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP "
                     + "             ON UPDATE CURRENT_TIMESTAMP,"
-                    + "  KEY idx_status (status)"
+                    + "  KEY idx_status (status),"
+                    + "  KEY idx_tool_seq_fp (tool_sequence_fingerprint)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
     private final DataSource dataSource;
@@ -293,6 +295,76 @@ public class SkillIndexRepository {
         }
     }
 
+    /**
+     * Find a skill name by its runtime fingerprint (metric-based format like
+     * {@code _global|query|defect_density}). Used by Phase 3 (night-time digestion) to
+     * match failed traces to existing skills for evolution.
+     *
+     * @return skill name if found, empty otherwise
+     */
+    public Optional<String> findNameByFingerprint(String runtimeFingerprint) {
+        ensureTable();
+        String sql = "SELECT name FROM skill_index WHERE fingerprint = ? LIMIT 1";
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, runtimeFingerprint);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return Optional.of(rs.getString("name"));
+                }
+            }
+        } catch (SQLException e) {
+            log.warn("findNameByFingerprint({}) failed: {}", runtimeFingerprint, e.getMessage());
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Find a skill name by its tool-sequence fingerprint (format like
+     * {@code agent_spawn|tool_index|router_tool}). Used as a fallback when
+     * {@link #findNameByFingerprint(String)} misses — the tool-sequence key is stored
+     * in a dedicated column and does not pollute the primary fingerprint column.
+     *
+     * @return skill name if found, empty otherwise
+     */
+    public Optional<String> findNameByToolSequenceFingerprint(String toolSeqFingerprint) {
+        ensureTable();
+        String sql = "SELECT name FROM skill_index WHERE tool_sequence_fingerprint = ? LIMIT 1";
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, toolSeqFingerprint);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return Optional.of(rs.getString("name"));
+                }
+            }
+        } catch (SQLException e) {
+            log.warn("findNameByToolSequenceFingerprint({}) failed: {}", toolSeqFingerprint, e.getMessage());
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Stamp (or update) the tool-sequence fingerprint for a given skill name.
+     * This writes to the dedicated {@code tool_sequence_fingerprint} column — it does
+     * <em>not</em> pollute the primary {@code fingerprint} column used by L1 lookup.
+     * Used by Phase 3 (night-time digestion) so that subsequent
+     * {@link #findNameByToolSequenceFingerprint(String)} calls can find skills by their
+     * tool-call sequence.
+     */
+    public void upsertToolSequenceFingerprint(String name, String toolSeqFingerprint) {
+        ensureTable();
+        String sql = "UPDATE skill_index SET tool_sequence_fingerprint = ? WHERE name = ?";
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, toolSeqFingerprint);
+            ps.setString(2, name);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            log.warn("upsertToolSequenceFingerprint({}) failed: {}", name, e.getMessage());
+        }
+    }
+
     private SkillEntry map(ResultSet rs) throws SQLException {
         Timestamp lastUsed = rs.getTimestamp("last_used");
         Timestamp updated = rs.getTimestamp("updated_at");
@@ -313,6 +385,17 @@ public class SkillIndexRepository {
             try (Connection c = dataSource.getConnection();
                     Statement s = c.createStatement()) {
                 s.execute(DDL);
+                // Idempotent ALTER TABLE for existing tables that lack the new column
+                try {
+                    s.execute("ALTER TABLE skill_index ADD COLUMN tool_sequence_fingerprint VARCHAR(255) DEFAULT NULL COMMENT 'Phase 3 offline lookup key (tool-id sequence)'");
+                } catch (SQLException e) {
+                    // Column already exists — ignore
+                }
+                try {
+                    s.execute("CREATE INDEX idx_tool_seq_fp ON skill_index(tool_sequence_fingerprint)");
+                } catch (SQLException e) {
+                    // Index already exists — ignore
+                }
                 tableEnsured = true;
                 log.info("skill_index table ensured");
             } catch (SQLException e) {

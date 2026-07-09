@@ -16,6 +16,7 @@
 package com.agentscopea2a.agent.memory.digestion;
 
 import com.agentscopea2a.agent.memory.MySqlEpisodicMemory;
+import com.agentscopea2a.harness.skills.FingerprintCalculator;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.message.Msg;
@@ -138,6 +139,7 @@ public class TraceMiner {
     private final int batchSize;
     private final Path workspaceRoot;
     private final ObjectMapper objectMapper;
+    private final FingerprintCalculator fingerprintCalc;
 
     /**
      * @param dataSource the JDBC DataSource (same pool used by MySqlEpisodicMemory)
@@ -145,11 +147,11 @@ public class TraceMiner {
      * @param batchSize  max rows per batch query
      */
     public TraceMiner(DataSource dataSource, String tableName, int batchSize) {
-        this(dataSource, tableName, batchSize, null);
+        this(dataSource, tableName, batchSize, null, null);
     }
 
     /**
-     * Full constructor with workspace root for L2 subagent memory file reading.
+     * Backward-compatible constructor with workspace root but no FingerprintCalculator.
      *
      * @param dataSource     the JDBC DataSource
      * @param tableName      the episodic memory table name
@@ -158,11 +160,27 @@ public class TraceMiner {
      *                       or {@code null} to skip L2 file reading
      */
     public TraceMiner(DataSource dataSource, String tableName, int batchSize, Path workspaceRoot) {
+        this(dataSource, tableName, batchSize, workspaceRoot, null);
+    }
+
+    /**
+     * Full constructor with workspace root and FingerprintCalculator for runtime fingerprint computation.
+     *
+     * @param dataSource       the JDBC DataSource
+     * @param tableName        the episodic memory table name
+     * @param batchSize        max rows per batch query
+     * @param workspaceRoot    the harness workspace root, or {@code null} to skip L2 file reading
+     * @param fingerprintCalc  the fingerprint calculator for runtime metric fingerprints,
+     *                         or {@code null} to skip runtime fingerprint computation
+     */
+    public TraceMiner(DataSource dataSource, String tableName, int batchSize,
+                      Path workspaceRoot, FingerprintCalculator fingerprintCalc) {
         this.dataSource = dataSource;
         this.tableName = tableName;
         this.batchSize = Math.max(10, batchSize);
         this.workspaceRoot = workspaceRoot;
         this.objectMapper = new ObjectMapper();
+        this.fingerprintCalc = fingerprintCalc;
     }
 
     /**
@@ -191,7 +209,13 @@ public class TraceMiner {
             if (uid == null) continue;
             perUser.computeIfAbsent(uid, k -> new LinkedHashMap<>());
             String fp = fingerprint(s.toolIds);
-            perUser.get(uid).computeIfAbsent(fp, k -> new TraceGroup(fp, s.toolIds)).add(s);
+            TraceGroup group = perUser.get(uid).computeIfAbsent(fp, k -> new TraceGroup(fp, s.toolIds));
+            group.add(s);
+            // Compute runtime fingerprint from userQuery (only once per group)
+            if (group.runtimeFingerprint == null && s.userQuery != null && !s.userQuery.isBlank()
+                    && fingerprintCalc != null) {
+                group.runtimeFingerprint = fingerprintCalc.computeMetric("query", s.userQuery);
+            }
         }
         int upserted = 0;
         for (Map.Entry<String, Map<String, TraceGroup>> entry : perUser.entrySet()) {
@@ -436,17 +460,18 @@ public class TraceMiner {
 
     private int upsertGroups(Map<String, TraceGroup> groups, LocalDate date, String userId) {
         String sql = "INSERT INTO user_trace_summary"
-                + " (user_id, date_key, fingerprint, tool_sequence, success_count, failure_count,"
+                + " (user_id, date_key, fingerprint, runtime_fingerprint, tool_sequence, success_count, failure_count,"
                 + "  sample_query, user_query, tool_call_details, status)"
-                + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')"
+                + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')"
                 + " ON DUPLICATE KEY UPDATE"
-                + "   success_count = VALUES(success_count),"
-                + "   failure_count = VALUES(failure_count),"
-                + "   sample_query = VALUES(sample_query),"
-                + "   user_query = VALUES(user_query),"
-                + "   tool_call_details = VALUES(tool_call_details),"
-                + "   tool_sequence = VALUES(tool_sequence),"
-                + "   status = CASE WHEN status = 'pending' THEN 'pending' ELSE status END";
+                + "  success_count = VALUES(success_count),"
+                + "  failure_count = VALUES(failure_count),"
+                + "  sample_query = VALUES(sample_query),"
+                + "  user_query = VALUES(user_query),"
+                + "  tool_call_details = VALUES(tool_call_details),"
+                + "  tool_sequence = VALUES(tool_sequence),"
+                + "  runtime_fingerprint = COALESCE(runtime_fingerprint, VALUES(runtime_fingerprint)),"
+                + "  status = CASE WHEN status = 'pending' THEN 'pending' ELSE status END";
         int count = 0;
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps = c.prepareStatement(sql)) {
@@ -459,12 +484,13 @@ public class TraceMiner {
                 ps.setString(1, userId != null ? userId : "_batch");
                 ps.setString(2, date.toString());
                 ps.setString(3, g.fingerprint);
-                ps.setString(4, String.join(",", g.toolSequence));
-                ps.setInt(5, Math.max(0, totalSuccess));
-                ps.setInt(6, Math.max(1, totalFailure));
-                ps.setString(7, g.sampleQuery());
-                ps.setString(8, g.userQuery != null ? g.userQuery : "");
-                ps.setString(9, toToolCallDetailsJson(g.details));
+                ps.setString(4, g.runtimeFingerprint);  // may be null
+                ps.setString(5, String.join(",", g.toolSequence));
+                ps.setInt(6, Math.max(0, totalSuccess));
+                ps.setInt(7, Math.max(1, totalFailure));
+                ps.setString(8, g.sampleQuery());
+                ps.setString(9, g.userQuery != null ? g.userQuery : "");
+                ps.setString(10, toToolCallDetailsJson(g.details));
                 ps.addBatch();
                 count++;
             }
@@ -485,6 +511,7 @@ public class TraceMiner {
                 + "  user_id VARCHAR(128) NOT NULL,"
                 + "  date_key VARCHAR(16) NOT NULL,"
                 + "  fingerprint VARCHAR(255) NOT NULL,"
+                + "  runtime_fingerprint VARCHAR(255) DEFAULT NULL COMMENT 'metric fingerprint for L1 skill lookup',"
                 + "  tool_sequence TEXT NOT NULL,"
                 + "  success_count INT NOT NULL DEFAULT 0,"
                 + "  failure_count INT NOT NULL DEFAULT 0,"
@@ -517,7 +544,8 @@ public class TraceMiner {
             // Idempotent ALTER TABLE for legacy tables that lack the new columns
             String[] alterSqls = {
                 "ALTER TABLE user_trace_summary ADD COLUMN user_query TEXT AFTER sample_query",
-                "ALTER TABLE user_trace_summary ADD COLUMN tool_call_details LONGTEXT AFTER user_query"
+                "ALTER TABLE user_trace_summary ADD COLUMN tool_call_details LONGTEXT AFTER user_query",
+                "ALTER TABLE user_trace_summary ADD COLUMN runtime_fingerprint VARCHAR(255) DEFAULT NULL AFTER fingerprint"
             };
             for (String sql : alterSqls) {
                 try {
@@ -742,6 +770,7 @@ public class TraceMiner {
 
     static class TraceGroup {
         final String fingerprint;
+        String runtimeFingerprint; // computed from userQuery via FingerprintCalculator
         final List<String> toolSequence;
         final List<RawSession> sessions = new ArrayList<>();
         double totalFailureScore = 0.0;
