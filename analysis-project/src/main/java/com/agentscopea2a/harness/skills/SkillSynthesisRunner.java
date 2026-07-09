@@ -285,7 +285,7 @@ public class SkillSynthesisRunner {
      * Common save path: CAS claim → write SKILL.md → stamp embedding vector.
      * Used by both subagent and direct-LLM distillation paths.
      */
-    private void saveDistilledSkill(
+    public void saveDistilledSkill(
             SkillDistiller.DistilledSkill distilled, String fingerprint, String metricTag) {
         // Atomic claim — only one path/JVM moves the row from pending → synthesized.
         if (!candidateRepo.markSynthesized(fingerprint, distilled.name())) {
@@ -384,7 +384,7 @@ public class SkillSynthesisRunner {
      * Sanitize a skill name: lowercase, replace non-alphanumeric chars with underscores.
      * Falls back to a hash-based name if input is null or blank.
      */
-    private String sanitizeName(String name) {
+    public String sanitizeName(String name) {
         if (name == null || name.isBlank()) {
             return "skill_" + Integer.toHexString(name.hashCode()).substring(0, 8);
         }
@@ -403,7 +403,7 @@ public class SkillSynthesisRunner {
      * 2. 检查是否已存在相同 key(防重复)
      * 3. 确保 YAML 格式正确(key: value\n)
      */
-    private static SkillDistiller.DistilledSkill withMetricTag(SkillDistiller.DistilledSkill skill, String metricTag) {
+    public static SkillDistiller.DistilledSkill withMetricTag(SkillDistiller.DistilledSkill skill, String metricTag) {
         String body = skill.body() == null ? "" : skill.body();
         String newBody;
         String trimmed = body.stripLeading();
@@ -438,7 +438,7 @@ public class SkillSynthesisRunner {
      * discriminative vector. Falls back to {@code name + description} when samples are
      * missing (legacy distill output / parse failure).
      */
-    static String buildEmbedText(SkillDistiller.DistilledSkill d) {
+    public static String buildEmbedText(SkillDistiller.DistilledSkill d) {
         StringBuilder sb = new StringBuilder();
         sb.append(d.description() == null ? "" : d.description().trim());
         if (d.sampleQuestions() != null && !d.sampleQuestions().isEmpty()) {
@@ -457,11 +457,155 @@ public class SkillSynthesisRunner {
 
     // -------- Enriched context builder --------
 
+    // ==================== Night-time digestion entry point ====================
+
+    /**
+     * Night-time distillation entry point for Phase 3 (SkillFlowEvolver).
+     *
+     * <p>Unlike the online path ({@link #bumpAndMaybeSynthesize}), this method:
+     * <ul>
+     *   <li>Does NOT use the {@code skill_candidate} CAS ({@code markSynthesized}), because
+     *       night-time digestion reads from {@code user_trace_summary} — there are no candidate
+     *       rows to claim. Instead, it uses {@link SkillIndexRepository#findByName} as a
+     *       simple dedup guard (if the skill name already exists, skip).</li>
+     *   <li>Writes the skill directly to disk via {@link SkillSaveTool} and stamps the embedding
+     *       synchronously (same as the online path, but without the async fire-and-forget).</li>
+     *   <li>Stamps {@code tool_sequence_fingerprint} into the dedicated column rather than
+     *       polluting the primary {@code fingerprint} column used by L1 lookup.</li>
+     * </ul>
+     *
+     * @param toolSeqFp       the tool-sequence fingerprint from TraceMiner (e.g. "agent_spawn|tool_index|router_tool")
+     * @param runtimeFp       the runtime metric fingerprint for L1 lookup (e.g. "_global|query|defect_density")
+     * @param userQuery       the exemplar user question
+     * @param toolCallContext pre-formatted tool call details for the distillation prompt
+     * @param metricTag       optional metric classification tag
+     * @return the distilled skill name on success, null on failure or when the subagent didn't
+     *         call save_skill
+     */
+    public String distillForDigestion(String toolSeqFp, String runtimeFp,
+                                        String userQuery, String toolCallContext,
+                                        String metricTag) {
+        if (!enabled) {
+            log.debug("Skill synthesis disabled; skipping digestion distill for fp={}", toolSeqFp);
+            return null;
+        }
+
+        // Dedup: if a skill with this runtime fingerprint already exists, skip
+        if (runtimeFp != null && !runtimeFp.isBlank()) {
+            java.util.Optional<String> existing = indexRepo.findNameByFingerprint(runtimeFp);
+            if (existing.isPresent()) {
+                log.info("Skill already exists for runtime fingerprint {}; skipping distill", runtimeFp);
+                return null;
+            }
+        }
+
+        CaptureSkillSaveTool captureTool = new CaptureSkillSaveTool();
+        HarnessAgent distillAgent;
+        try {
+            String enrichedContext = buildEnrichedContext(userQuery, toolCallContext);
+            distillAgent = distiller.buildDistillAgent(userQuery, enrichedContext, metricTag, captureTool);
+        } catch (Exception e) {
+            log.warn("Failed to build distill agent for digestion: {}", e.getMessage());
+            return null;
+        }
+
+        // Build user message
+        String task = buildDistillTask(userQuery, toolSeqFp, toolCallContext);
+        Msg userMsg = Msg.builder()
+                .role(MsgRole.USER)
+                .content(TextBlock.builder().text(task).build())
+                .build();
+
+        // Run subagent (synchronous on the caller's thread — already off the request path)
+        String safeFingerprint = toolSeqFp.replaceAll("[|<>:\"?*\\\\/]", "_");
+        RuntimeContext ctx = RuntimeContext.builder()
+                .sessionId("digest-" + safeFingerprint)
+                .userId("_digest")
+                .sessionKey(SimpleSessionKey.of("digest-" + safeFingerprint))
+                .build();
+        try {
+            log.info("Starting digestion distill subagent for toolSeqFp={}", toolSeqFp);
+            distillAgent.call(List.of(userMsg), ctx).block();
+            log.info("Digestion distill subagent completed for toolSeqFp={}", toolSeqFp);
+        } catch (Exception e) {
+            log.warn("Digestion distill subagent failed for fp={}: {}", toolSeqFp, e.getMessage());
+            return null;
+        }
+
+        // Capture result
+        if (!captureTool.hasCaptured()) {
+            log.warn("Digestion distill subagent did not call save_skill (fp={})", toolSeqFp);
+            return null;
+        }
+
+        CaptureSkillSaveTool.CapturedSkill captured = captureTool.getCaptured();
+        String name = sanitizeName(captured.name());
+        String description = captured.description();
+        String body = captured.content();
+        // Loop-strip all frontmatter blocks
+        while (body.startsWith("---")) {
+            String stripped = SkillSaveTool.stripFrontmatter(body);
+            if (stripped.equals(body)) break;
+            body = stripped;
+        }
+        List<String> samples = SkillDistiller.parseSamples(body);
+
+        SkillDistiller.DistilledSkill distilled =
+                new SkillDistiller.DistilledSkill(name, description, body, samples);
+
+        // metricTag stamp
+        if (metricTag != null && !metricTag.isBlank()) {
+            distilled = withMetricTag(distilled, metricTag);
+            log.info("Digestion distilled skill '{}' tagged with metric_tag={}", distilled.name(), metricTag);
+        }
+
+        // Second dedup: check by skill name (another path may have created it)
+        java.util.Optional<SkillEntry> byName = indexRepo.findByName(distilled.name());
+        if (byName.isPresent()) {
+            log.info("Skill '{}' already exists in skill_index; skipping save", distilled.name());
+            return null;
+        }
+
+        // Save to disk + upsert index row (no candidate CAS — night-time path)
+        try {
+            // Pass null embeddingClient — we stamp the embedding ourselves below with richer text
+            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null);
+            boolean saved = saver.saveSkillWithMetricTag(
+                    distilled.name(), distilled.description(), distilled.body(), metricTag);
+            if (!saved) {
+                log.warn("SkillSaveTool.saveSkillWithMetricTag returned false for '{}' (digestion)", distilled.name());
+                return null;
+            }
+
+            // Stamp the canonical runtime fingerprint + embedding synchronously
+            if (vectorIndex != null && embeddingClient != null) {
+                String embedText = buildEmbedText(distilled);
+                float[] vec = embeddingClient.embed(embedText);
+                if (vec != null) {
+                    // Use runtimeFp as the canonical fingerprint for L1 retrieval
+                    vectorIndex.upsertVector(distilled.name(), runtimeFp, vec);
+                }
+            }
+
+            // Write tool_sequence_fingerprint to dedicated column (not the primary fingerprint column)
+            if (toolSeqFp != null && !toolSeqFp.isBlank()) {
+                indexRepo.upsertToolSequenceFingerprint(distilled.name(), toolSeqFp);
+            }
+
+            log.info("Digestion-synthesised skill '{}' from toolSeqFp={}, runtimeFp={}",
+                    distilled.name(), toolSeqFp, runtimeFp);
+            return distilled.name();
+        } catch (Exception ex) {
+            log.warn("Digestion save failed for '{}': {}", distilled.name(), ex.getMessage());
+            return null;
+        }
+    }
+
     /**
      * Build an LLM-friendly text block from the tool call details JSON.
      * Renders as a numbered step list with tool name, level, input, and output.
      */
-    static String buildEnrichedContext(String userQuery, String toolCallDetailsJson) {
+    public static String buildEnrichedContext(String userQuery, String toolCallDetailsJson) {
         if (toolCallDetailsJson == null || toolCallDetailsJson.isBlank()) return "";
         try {
             com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();

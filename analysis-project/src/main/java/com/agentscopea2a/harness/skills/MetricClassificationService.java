@@ -140,6 +140,17 @@ public class MetricClassificationService {
             log.warn("Failed to load metric categories, using built-in defaults: {}", e.getMessage());
             applyDefaults();
         }
+
+        // Post-initialization sanity check: if compiledKeywords is empty but categories
+        // exist, something went wrong during config loading — fall back to defaults.
+        if (compiledKeywords.isEmpty()) {
+            log.error("[METRIC_CLASSIFY] {} categories loaded but 0 keywords compiled — "
+                    + "falling back to built-in defaults", categories.size());
+            applyDefaults();
+        } else {
+            log.info("[METRIC_CLASSIFY] Initialized with {} keywords across {} categories",
+                    compiledKeywords.size(), categories.size());
+        }
     }
 
     private void loadConfig(Path configFile) throws Exception {
@@ -158,6 +169,17 @@ public class MetricClassificationService {
         this.categories = yaml.categories != null ? yaml.categories : List.of();
         this.fallbackTag = yaml.fallbackTag != null ? yaml.fallbackTag : "general";
         this.fallbackDescription = yaml.fallbackDescription != null ? yaml.fallbackDescription : "does not match any above category";
+
+        // Guard: if any category has null/empty keywords, the compiled list will be incomplete.
+        // Fall back to built-in defaults in that case.
+        boolean keywordsMissing = this.categories.stream()
+                .anyMatch(cat -> cat.keywords() == null || cat.keywords().isEmpty());
+        if (keywordsMissing) {
+            log.warn("[METRIC_CLASSIFY] Config has categories with null/empty keywords — "
+                    + "falling back to built-in defaults");
+            applyDefaults();
+            return;
+        }
 
         // Build derived structures
         this.metricHints = categories.stream()
@@ -241,10 +263,15 @@ public class MetricClassificationService {
             log.warn("[METRIC_CLASSIFY] compiledKeywords is EMPTY — categories not loaded, question='{}'", question);
             return null;
         }
+        // Diagnostic: check if the question contains expected Chinese characters
+        // (detects encoding corruption where Chinese chars become '?' or are stripped)
+        if (!q.equals(question.toLowerCase())) {
+            log.debug("[METRIC_CLASSIFY] toLowerCase changed the question, original='{}'", question);
+        }
         for (CompiledKeyword ck : compiledKeywords) {
             if (ck.regex) {
                 if (ck.pattern.matcher(q).find()) {
-                    log.debug("[METRIC_CLASSIFY] regex match: keyword='{}' tag='{}' question='{}'", ck.keyword, ck.tag, question);
+                    log.info("[METRIC_CLASSIFY] regex match: keyword='{}' tag='{}' question='{}'", ck.keyword, ck.tag, question);
                     return ck.tag;
                 }
             } else {
@@ -255,7 +282,9 @@ public class MetricClassificationService {
                 }
             }
         }
-        log.debug("[METRIC_CLASSIFY] no keyword match for question='{}'", question);
+        // No match found — log at INFO level for visibility (previously DEBUG was too easy to miss)
+        log.info("[METRIC_CLASSIFY] no keyword match for question (length={}, hasChinese={}): '{}'",
+                question.length(), question.chars().anyMatch(Character::isIdeographic), question);
         return null;
     }
 

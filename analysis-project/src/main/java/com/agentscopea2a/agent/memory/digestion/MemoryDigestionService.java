@@ -19,6 +19,7 @@ import com.agentscopea2a.agent.memory.MemoryHydrator;
 import com.agentscopea2a.agent.memory.MySqlEpisodicMemory;
 import com.agentscopea2a.agent.memory.MysqlMemoryStore;
 import com.agentscopea2a.harness.skills.EmbeddingClient;
+import com.agentscopea2a.harness.skills.FingerprintCalculator;
 import com.agentscopea2a.harness.skills.SkillDistiller;
 import com.agentscopea2a.harness.skills.SkillIndexRepository;
 import com.agentscopea2a.harness.skills.SkillVectorIndex;
@@ -27,6 +28,7 @@ import jakarta.annotation.PostConstruct;
 import java.nio.file.Path;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -88,6 +90,8 @@ public class MemoryDigestionService {
     private final SkillVectorIndex vectorIndex;
     private final SkillDistiller distiller;
     private final EmbeddingClient embeddingClient;
+    private final SkillFlowEvolver evolver;
+    private final FingerprintCalculator fingerprintCalc;
     private final String cronExpression;
     private final int batchSize;
     private final int episodicRetentionDays;
@@ -104,9 +108,11 @@ public class MemoryDigestionService {
             MemoryHydrator hydrator,
             Model model,
             SkillIndexRepository indexRepo,
-            SkillVectorIndex vectorIndex,
+            ObjectProvider<SkillVectorIndex> vectorIndexProvider,
             SkillDistiller distiller,
-            org.springframework.beans.factory.ObjectProvider<EmbeddingClient> embeddingClientProvider,
+            ObjectProvider<EmbeddingClient> embeddingClientProvider,
+            ObjectProvider<SkillFlowEvolver> evolverProvider,
+            FingerprintCalculator fingerprintCalc,
             @Value("${harness.a2a.memory.digestion.cron:0 9 21 * * *}") String cronExpression,
             @Value("${harness.a2a.memory.digestion.batch-size:50}") int batchSize,
             @Value("${harness.a2a.memory.digestion.episodic-retention-days:30}") int episodicRetentionDays,
@@ -121,9 +127,11 @@ public class MemoryDigestionService {
         this.hydrator = hydrator;
         this.model = model;
         this.indexRepo = indexRepo;
-        this.vectorIndex = vectorIndex;
+        this.vectorIndex = vectorIndexProvider.getIfAvailable();
         this.distiller = distiller;
         this.embeddingClient = embeddingClientProvider.getIfAvailable();
+        this.evolver = evolverProvider.getIfAvailable();
+        this.fingerprintCalc = fingerprintCalc;
         this.cronExpression = cronExpression;
         this.batchSize = batchSize;
         this.episodicRetentionDays = episodicRetentionDays;
@@ -196,7 +204,7 @@ public class MemoryDigestionService {
         }
 
         // Phase 2: Mine traces from episodic memory + L2 subagent files
-        TraceMiner miner = new TraceMiner(dataSource, episodicTableName, batchSize, workspaceRoot);
+        TraceMiner miner = new TraceMiner(dataSource, episodicTableName, batchSize, workspaceRoot, fingerprintCalc);
         int mined = 0;
         try {
             mined = miner.mineTraces(today, userId);
@@ -207,10 +215,13 @@ public class MemoryDigestionService {
         // Phase 3: Evaluate and evolve skills
         int evolved = 0;
         try {
-            List<SkillFlowEvolver.TraceSummary> pendingTraces = loadPendingTraces(userId, today);
-            if (!pendingTraces.isEmpty()) {
-                SkillFlowEvolver evolver = new SkillFlowEvolver(indexRepo, distiller, vectorIndex, embeddingClient, dataSource, workspaceRoot.toString());
-                evolved = evolver.evolve(pendingTraces);
+            if (evolver != null) {
+                List<SkillFlowEvolver.TraceSummary> pendingTraces = loadPendingTraces(userId, today);
+                if (!pendingTraces.isEmpty()) {
+                    evolved = evolver.evolve(pendingTraces);
+                }
+            } else {
+                log.warn("SkillFlowEvolver bean not available (digestion.enabled=false?); skipping Phase 3");
             }
         } catch (Exception e) {
             log.warn("MemoryDigestion: [{}] Phase 3 (EvolveSkills) failed: {}", userId, e.getMessage());
@@ -270,7 +281,7 @@ public class MemoryDigestionService {
      * These are traces that haven't been synthesized yet (status='pending').
      */
     private List<SkillFlowEvolver.TraceSummary> loadPendingTraces(String userId, LocalDate date) {
-        String sql = "SELECT fingerprint, tool_sequence, success_count, failure_count, sample_query,"
+        String sql = "SELECT fingerprint, runtime_fingerprint, tool_sequence, success_count, failure_count, sample_query,"
                 + " user_query, tool_call_details"
                 + " FROM user_trace_summary"
                 + " WHERE user_id = ? AND date_key = ? AND status = 'pending'";
@@ -283,6 +294,7 @@ public class MemoryDigestionService {
                 while (rs.next()) {
                     results.add(new SkillFlowEvolver.TraceSummary(
                             rs.getString("fingerprint"),
+                            rs.getString("runtime_fingerprint"),
                             rs.getString("tool_sequence"),
                             rs.getInt("success_count"),
                             rs.getInt("failure_count"),
@@ -301,7 +313,7 @@ public class MemoryDigestionService {
      * Load traces with non-zero success count for MEMORY.md consolidation.
      */
     private List<SkillFlowEvolver.TraceSummary> loadSuccessTraces(String userId, LocalDate date) {
-        String sql = "SELECT fingerprint, tool_sequence, success_count, failure_count, sample_query,"
+        String sql = "SELECT fingerprint, runtime_fingerprint, tool_sequence, success_count, failure_count, sample_query,"
                 + " user_query, tool_call_details"
                 + " FROM user_trace_summary"
                 + " WHERE user_id = ? AND date_key = ? AND success_count > 0";
@@ -314,6 +326,7 @@ public class MemoryDigestionService {
                 while (rs.next()) {
                     results.add(new SkillFlowEvolver.TraceSummary(
                             rs.getString("fingerprint"),
+                            rs.getString("runtime_fingerprint"),
                             rs.getString("tool_sequence"),
                             rs.getInt("success_count"),
                             rs.getInt("failure_count"),

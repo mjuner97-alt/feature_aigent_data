@@ -20,6 +20,8 @@ import com.agentscopea2a.agent.dimension.DimensionStateManager;
 import com.agentscopea2a.agent.dimension.QuestionAnalysis;
 import com.agentscopea2a.harness.cache.ResponseCacheService;
 import io.agentscope.core.agent.RuntimeContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.Objects;
@@ -49,6 +51,8 @@ import java.util.Objects;
  */
 @Component
 public class FingerprintCalculator {
+
+    private static final Logger log = LoggerFactory.getLogger(FingerprintCalculator.class);
 
     private final DimensionStateManager dimManager;
     private final MetricClassificationService metricClassifier;
@@ -112,9 +116,14 @@ public class FingerprintCalculator {
         Objects.requireNonNull(intent, "intent");
         String metricTag = metricClassifier.ruleBasedTag(question);
         if (metricTag == null || metricTag.isBlank()) {
+            log.debug("[FINGERPRINT] ruleBasedTag returned null/blank for question (length={}): '{}'",
+                    question != null ? question.length() : 0, question);
             metricTag = "general";
         }
-        return tenant + "|" + intent + "|" + metricTag;
+        String fingerprint = tenant + "|" + intent + "|" + metricTag;
+        log.debug("[FINGERPRINT] computeMetric: question='{}' → metricTag='{}' → fingerprint='{}'",
+                question, metricTag, fingerprint);
+        return fingerprint;
     }
 
     /**
