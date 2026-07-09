@@ -56,10 +56,6 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     private static class StreamContext {
         final SseEmitter emitter;
         final ChatRequest req;
-        final AtomicBoolean startFlag = new AtomicBoolean(false);
-        final AtomicBoolean agentChange = new AtomicBoolean(false);
-        final AtomicBoolean secondStartFlag = new AtomicBoolean(true);
-        final AtomicBoolean supervisorThinkPhase = new AtomicBoolean(true);
         final StringBuilder fullResult = new StringBuilder();
         final StringBuilder thinkContent = new StringBuilder();
         final StringBuilder answerContent = new StringBuilder();
@@ -252,22 +248,19 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     }
 
     /**
-     * 处理单个流式 Chunk — 通用版（使用 TextResponseDto / ThinkManagerResponseDto）
+     * 处理单个流式 Chunk — 通用版（使用 TextResponseDto / ThinkResponseDto）
      *
      * <p>业务逻辑同 {@link #processChunk}，只是 SSE 响应 DTO 不同（无 code/ansUUID 等 Manager 专属字段）。
      *
-     * <p>执行智能体后续 chunk：TextBlock → 结果（action="已执行"，用 &lt;text&gt; 标签包裹），
-     * 非 TextBlock → 思考（action="执行中"，用 思考 标签包裹）
+     * <ul>
+     *   <li>EventType.AGENT_RESULT 的内容作为最终结果，累积到 answerContent，不立即发送
+     *   <li>其他所有流式输出均视为"思考"，用 think 标签包裹，action="执行中"
+     *   <li>最终结果在 {@link #handleStreamSuccessPublic} 中一次性输出
+     * </ul>
      */
     private void processChunkPublic(Event chunk, StreamContext ctx) {
         try {
             System.out.println("主智能体回答: " + JSON.toJSONString(chunk));
-
-            // last 类型表示流结束，直接返回，不继续处理
-            if (chunk.isLast()) {
-                return;
-            }
-
 
             String agentName = chunk.getMessage().getName();
             ContentBlock contentBlock = chunk.getMessage().getContent().get(0);
@@ -278,64 +271,16 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                 ctx.fullResult.append(extractedContent);
             }
 
-            // 3. 分析智能体分支（非"执行智能体"）— 全部视为思考
-            if (!SupervisorService.AGENT_NAME.equalsIgnoreCase(agentName)) {
-                ctx.thinkContent.append(extractedContent);
-                sendThinkResponsePublic(ctx.emitter, extractedContent, "执行中", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
+            // AGENT_RESULT 类型的 event 是最终结果，覆盖到 answerContent（只保留最后一次），不立即发送
+            if (chunk.getType() == EventType.AGENT_RESULT) {
+                ctx.answerContent.setLength(0);
+                ctx.answerContent.append(extractedContent);
                 return;
             }
 
-            // 4. Supervisor执行智能体分支 — 区分思考阶段和结果阶段
-            if (SupervisorService.AGENT_NAME.equalsIgnoreCase(agentName)) {
-                if (contentBlock instanceof TextBlock) {
-                    // Supervisor的TextBlock：从思考阶段切换到结果阶段
-                    if (ctx.supervisorThinkPhase.getAndSet(false)) {
-                        // 首次从think切换到text：发送"分析智能体 已执行"
-                        sendThinkResponsePublic(ctx.emitter, " ", "已执行", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
-                    }
-                    ctx.answerContent.append(extractedContent);
-                    sendTextResponsePublic(ctx.emitter, extractedContent, "", "", false, ctx.req.getConversationId(), ctx.uuid);
-                } else {
-                    // Supervisor的非TextBlock（ThinkingBlock等）
-                    if (ctx.supervisorThinkPhase.get()) {
-                        // 仍在思考阶段
-                        ctx.thinkContent.append(extractedContent);
-                        sendThinkResponsePublic(ctx.emitter, extractedContent, "执行中", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
-                    } else {
-                        // 思考阶段已结束，后续think视为结果
-                        ctx.answerContent.append(extractedContent);
-                        sendTextResponsePublic(ctx.emitter, extractedContent, "", "", false, ctx.req.getConversationId(), ctx.uuid);
-                    }
-                }
-                return;
-            }
-
-//            // 4. 执行智能体分支 — 区分思考块和结果块
-//            if (!ctx.agentChange.getAndSet(true)) {
-//                // 首次进入执行智能体 — 输出为思考
-//                ctx.thinkContent.append(extractedContent);
-//                sendThinkResponsePublic(ctx.emitter, " ", "已执行", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
-//                sendThinkResponsePublic(ctx.emitter, extractedContent, "执行中", "执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
-//                return;
-//            }
-//
-//            // 后续执行智能体 chunk — 只区分 TextBlock（结果）和非 TextBlock（思考）
-//            if (contentBlock instanceof TextBlock) {
-//                if (ctx.secondStartFlag.getAndSet(false)) {
-//                    // 首次输出文本结果：先发一个 think（action="已执行"），再发 text（topic/action 为空）
-//                    ctx.answerContent.append(extractedContent);
-//                    sendThinkResponsePublic(ctx.emitter, " ", "已执行", "执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
-//                    sendTextResponsePublic(ctx.emitter, extractedContent, "", "", false, ctx.req.getConversationId(), ctx.uuid);
-//                } else {
-//                    // 后续文本结果
-//                    ctx.answerContent.append(extractedContent);
-//                    sendTextResponsePublic(ctx.emitter, extractedContent, "", "", chunk.isLast(), ctx.req.getConversationId(), ctx.uuid);
-//                }
-//            } else {
-//                // 非 TextBlock（ThinkingBlock / ToolUseBlock / ToolResultBlock 等）均视为思考
-//                ctx.thinkContent.append(extractedContent);
-//                sendThinkResponsePublic(ctx.emitter, extractedContent, "执行中", "执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
-//            }
+            // 其他所有输出都视为思考，不区分阶段
+            ctx.thinkContent.append(extractedContent);
+            sendThinkResponsePublic(ctx.emitter, extractedContent, "执行中", "分析执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
 
         } catch (Exception e) {
             LOGGER.error("主智能体执行失败异常: ", e);
@@ -359,21 +304,15 @@ public class ChatStreamServiceImpl implements ChatStreamService {
      *
      * <p>业务逻辑：
      * <ul>
-     *   <li>分析智能体（非"执行智能体"）：所有输出均视为"思考"，用 思考 标签包裹，action="执行中"
-     *   <li>执行智能体：TextBlock → 结果（action="已执行"，用 &lt;text&gt; 标签包裹），
-     *       非 TextBlock → 思考（action="执行中"）
+     *   <li>EventType.AGENT_RESULT 的内容作为最终结果，累积到 answerContent，不立即发送
+     *   <li>其他所有流式输出均视为"思考"，用 think 标签包裹，action="执行中"
+     *   <li>最终结果在 {@link #handleStreamSuccess} 中一次性输出
      * </ul>
-     * thinkContent 拼接所有思考内容，answerContent 拼接所有结果内容，用于最终落库。
+     * thinkContent 拼接所有思考内容，answerContent 拼接最终结果内容，用于最终落库。
      */
     private void processChunk(Event chunk, StreamContext ctx) {
         try {
             System.out.println("主智能体回答: " + JSON.toJSONString(chunk));
-
-            // last 类型表示流结束，直接返回，不继续处理
-            if (chunk.isLast()) {
-                return;
-            }
-
 
             String agentName = chunk.getMessage().getName();
             ContentBlock contentBlock = chunk.getMessage().getContent().get(0);
@@ -384,72 +323,16 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                 ctx.fullResult.append(extractedContent);
             }
 
-            // 3. 分析智能体分支（非"执行智能体"）— 全部视为思考
-            if (!SupervisorService.AGENT_NAME.equalsIgnoreCase(agentName)) {
-                ctx.thinkContent.append(extractedContent);
-                sendThinkResponse(ctx.emitter, extractedContent, "执行中", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
+            // AGENT_RESULT 类型的 event 是最终结果，覆盖到 answerContent（只保留最后一次），不立即发送
+            if (chunk.getType() == EventType.AGENT_RESULT) {
+                ctx.answerContent.setLength(0);
+                ctx.answerContent.append(extractedContent);
                 return;
             }
 
-            // 4. Supervisor执行智能体分支 — 区分思考阶段和结果阶段
-            if (SupervisorService.AGENT_NAME.equalsIgnoreCase(agentName)) {
-                if (contentBlock instanceof TextBlock) {
-                    // Supervisor的TextBlock：从思考阶段切换到结果阶段
-                    if (ctx.supervisorThinkPhase.getAndSet(false)) {
-                        // 首次从think切换到text：发送"分析智能体 已执行"
-                        sendThinkResponse(ctx.emitter, " ", "已执行", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
-                    }
-                    ctx.answerContent.append(extractedContent);
-                    sendTextResponse(ctx.emitter, extractedContent, "", "", false, ctx.req.getConversationId(), ctx.uuid);
-                } else {
-                    // Supervisor的非TextBlock（ThinkingBlock等）
-                    if (ctx.supervisorThinkPhase.get()) {
-                        // 仍在思考阶段
-                        ctx.thinkContent.append(extractedContent);
-                        sendThinkResponse(ctx.emitter, extractedContent, "执行中", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
-                    } else {
-                        // 思考阶段已结束，后续think视为结果
-                        ctx.answerContent.append(extractedContent);
-                        sendTextResponse(ctx.emitter, extractedContent, "", "", false, ctx.req.getConversationId(), ctx.uuid);
-                    }
-                }
-                return;
-            }
-
-
-//            // 3. 分析智能体分支（非"执行智能体"）— 全部视为思考
-//            if (!"执行智能体".equalsIgnoreCase(agentName)) {
-//                ctx.thinkContent.append(extractedContent);
-//                sendThinkResponse(ctx.emitter, extractedContent, "执行中", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
-//                return;
-//            }
-//
-//            // 4. 执行智能体分支 — 区分思考块和结果块
-//            if (!ctx.agentChange.getAndSet(true)) {
-//                // 首次进入执行智能体 — 输出为思考
-//                ctx.thinkContent.append(extractedContent);
-//                sendThinkResponse(ctx.emitter, " ", "已执行", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
-//                sendThinkResponse(ctx.emitter, extractedContent, "执行中", "执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
-//                return;
-//            }
-//
-//            // 后续执行智能体 chunk — 只区分 TextBlock（结果）和非 TextBlock（思考）
-//            if (contentBlock instanceof TextBlock) {
-//                if (ctx.secondStartFlag.getAndSet(false)) {
-//                    // 首次输出文本结果：先发一个 think（action="已执行"），再发 text（topic/action 为空）
-//                    ctx.answerContent.append(extractedContent);
-//                    sendThinkResponse(ctx.emitter, " ", "已执行", "执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
-//                    sendTextResponse(ctx.emitter, extractedContent, "", "", false, ctx.req.getConversationId(), ctx.uuid);
-//                } else {
-//                    // 后续文本结果
-//                    ctx.answerContent.append(extractedContent);
-//                    sendTextResponse(ctx.emitter, extractedContent, "", "", chunk.isLast(), ctx.req.getConversationId(), ctx.uuid);
-//                }
-//            } else {
-//                // 非 TextBlock（ThinkingBlock / ToolUseBlock / ToolResultBlock 等）均视为思考
-//                ctx.thinkContent.append(extractedContent);
-//                sendThinkResponse(ctx.emitter, extractedContent, "执行中", "执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
-//            }
+            // 其他所有输出都视为思考，不区分阶段
+            ctx.thinkContent.append(extractedContent);
+            sendThinkResponse(ctx.emitter, extractedContent, "执行中", "分析执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
 
         } catch (Exception e) {
             LOGGER.error("主智能体执行失败异常: ", e);
@@ -530,23 +413,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         return result;
     }
 
-    /**
-     * 缓存命中回放：直接把 cachedResponse 当作"已执行"产物注入 SSE 流。
-     *
-     * <p>{@link ResponseCacheHook#handlePreCall} 命中时抛 {@link
-     * ResponseCacheHook.CacheHitException} 短路 agent 执行。本方法承接它,绕开
-     * {@link #processChunk}/{@link #processChunkPublic}(它们的多 chunk 状态机不适合
-     * 一次性灌入完整回答),按"分析已执行 → 执行已执行 → 最终文本(finish=true)"的
-     * 顺序补齐三帧,前端 UX 与 MISS 走完整链路时基本一致。
-     *
-     * <p>同时往 {@link StreamContext#answerContent} 写入 cached 文本,后续
-     * {@link #handleStreamSuccess}/{@link #handleStreamSuccessPublic} 的 DB 落库才能拿到答案。
-     *
-     * @param ctx 当前请求流式上下文
-     * @param cached 缓存里的完整回答文本
-     * @param manager true → Manager 路径(/ai/chat 之外的旧入口,DTO 带 code/ansUUID);
-     *                false → 通用 /ai/chat 路径
-     */
+
     private void emitCachedResponse(StreamContext ctx, String cached, boolean manager) {
         if (StringUtils.isBlank(cached)) {
             return;
@@ -668,6 +535,12 @@ public class ChatStreamServiceImpl implements ChatStreamService {
      */
     private void handleStreamSuccess(StreamContext ctx) {
         LOGGER.info("处理流式成功: {}", ctx.req.getConversationId());
+        sendThinkResponse(ctx.emitter, " ", "已执行", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
+        // 一次性输出最终结果
+        String finalAnswer = ctx.answerContent.toString();
+        if (StringUtils.isNotBlank(finalAnswer)) {
+            sendTextResponse(ctx.emitter, finalAnswer, "", "", true, ctx.req.getConversationId(), ctx.uuid);
+        }
         ctx.emitter.complete();
         ThreadContextUtils.clearContext();
         saveAnswerIntoDB(ctx);
@@ -678,6 +551,12 @@ public class ChatStreamServiceImpl implements ChatStreamService {
      */
     private void handleStreamSuccessPublic(StreamContext ctx) {
         LOGGER.info("处理流式成功(通用版): {}", ctx.req.getConversationId());
+        sendThinkResponsePublic(ctx.emitter, " ", "已执行", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
+        // 一次性输出最终结果
+        String finalAnswer = ctx.answerContent.toString();
+        if (StringUtils.isNotBlank(finalAnswer)) {
+            sendTextResponsePublic(ctx.emitter, finalAnswer, "", "", true, ctx.req.getConversationId(), ctx.uuid);
+        }
         ctx.emitter.complete();
         ThreadContextUtils.clearContext();
         saveAnswerIntoDB(ctx);
