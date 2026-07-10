@@ -155,6 +155,11 @@ public class SkillFlowEvolver {
         for (TraceSummary t : traces) {
             try {
                 if (!evaluate(t)) continue;
+                // If a user skill already covers this trace, skip entirely - night-time
+                // digestion must not touch user skills (neither evolve nor distill a duplicate).
+                if (matchesUserSkill(t)) {
+                    continue;
+                }
                 String skillName = findSkillForTrace(t);
                 if (skillName != null) {
                     dispatchEvolve(skillName, t);
@@ -167,6 +172,32 @@ public class SkillFlowEvolver {
             }
         }
         return count;
+    }
+
+    /**
+     * Check whether a user-generated skill already matches this trace (by either fingerprint).
+     * If so, night-time digestion skips entirely - the user has already authored a skill for
+     * this scenario, so evolving or distilling an auto counterpart would be redundant (and
+     * evolving would risk overwriting the user's intent).
+     */
+    private boolean matchesUserSkill(TraceSummary t) {
+        if (t.runtimeFingerprint() != null && !t.runtimeFingerprint().isBlank()) {
+            Optional<String> userName = indexRepo.findNameByFingerprint(
+                    t.runtimeFingerprint(), SkillEntry.SOURCE_USER_GENERATED);
+            if (userName.isPresent()) {
+                log.info("trace matched user skill '{}'; skipping digestion", userName.get());
+                return true;
+            }
+        }
+        if (t.fingerprint() != null && !t.fingerprint().isBlank()) {
+            Optional<String> userName = indexRepo.findNameByToolSequenceFingerprint(
+                    t.fingerprint(), SkillEntry.SOURCE_USER_GENERATED);
+            if (userName.isPresent()) {
+                log.info("trace matched user skill '{}'; skipping digestion", userName.get());
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -186,18 +217,20 @@ public class SkillFlowEvolver {
     private String findSkillForTrace(TraceSummary t) {
         // Priority 1: runtime_fingerprint → skill_index.fingerprint (L1 lookup)
         if (t.runtimeFingerprint() != null && !t.runtimeFingerprint().isBlank()) {
-            Optional<String> name = indexRepo.findNameByFingerprint(t.runtimeFingerprint());
+            Optional<String> name = indexRepo.findNameByFingerprint(
+                    t.runtimeFingerprint(), SkillEntry.SOURCE_AUTO_SYNTHESIZED);
             if (name.isPresent()) {
-                log.debug("Matched trace to skill '{}' via runtime_fingerprint '{}'",
+                log.debug("Matched trace to auto skill '{}' via runtime_fingerprint '{}'",
                         name.get(), t.runtimeFingerprint());
                 return name.get();
             }
         }
         // Priority 2: tool_sequence_fingerprint → skill_index.tool_sequence_fingerprint
         if (t.fingerprint() != null && !t.fingerprint().isBlank()) {
-            Optional<String> name = indexRepo.findNameByToolSequenceFingerprint(t.fingerprint());
+            Optional<String> name = indexRepo.findNameByToolSequenceFingerprint(
+                    t.fingerprint(), SkillEntry.SOURCE_AUTO_SYNTHESIZED);
             if (name.isPresent()) {
-                log.debug("Matched trace to skill '{}' via tool_sequence_fingerprint '{}'",
+                log.debug("Matched trace to auto skill '{}' via tool_sequence_fingerprint '{}'",
                         name.get(), t.fingerprint());
                 return name.get();
             }
@@ -303,7 +336,7 @@ public class SkillFlowEvolver {
             // Pass null embeddingClient — we refresh the embedding synchronously below with richer text.
             // SkillSaveTool's async embed uses name+description which is less discriminative; the
             // synchronous embed here uses description + sample_questions for better bge-zh vectors.
-            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null);
+            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null, SkillEntry.SOURCE_AUTO_SYNTHESIZED);
             saver.saveSkill(evolved.name(), evolved.description(), evolved.body());
 
             if (vectorIndex != null && embeddingClient != null) {

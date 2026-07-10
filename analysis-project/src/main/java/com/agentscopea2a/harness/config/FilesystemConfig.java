@@ -163,15 +163,15 @@ public class FilesystemConfig {
                         .getEntries()
                         .put("skills", hostBindMount(workspace.resolve("skills")));
             }
-            // Mount skills-builtin/ (builtin meta-skills) so sandbox agents can read them
-            Path skillsBuiltin = workspace.resolve("skills-builtin");
-            if (Files.isDirectory(skillsBuiltin)) {
-                workspaceSpec.getEntries().put("skills-builtin", hostBindMount(skillsBuiltin));
-            }
             // Mount skills-auto/ (auto-synthesized business skills) for sandbox retrieval
             Path skillsAuto = workspace.resolve("skills-auto");
             if (Files.isDirectory(skillsAuto)) {
                 workspaceSpec.getEntries().put("skills-auto", hostBindMount(skillsAuto));
+            }
+            // Mount skills-user/ (user-authored skills) for sandbox retrieval
+            Path skillsUser = workspace.resolve("skills-user");
+            if (Files.isDirectory(skillsUser)) {
+                workspaceSpec.getEntries().put("skills-user", hostBindMount(skillsUser));
             }
         }
         if (s.isMountMemory()) {

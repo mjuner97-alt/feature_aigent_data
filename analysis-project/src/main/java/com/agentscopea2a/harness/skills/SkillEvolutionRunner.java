@@ -167,6 +167,17 @@ public class SkillEvolutionRunner {
         if (snap.isEmpty()) return;
         SkillIndexRepository.SkillStats s = snap.get();
         if (!"active".equals(s.status())) return;
+        // User skills are counted but never evolved/blacklisted. The user authored the body,
+        // so we must not rewrite it; blacklisting would silently hide user work. Counters
+        // still accumulate so operators can observe user-skill effectiveness in skill_index.
+        if (SkillEntry.SOURCE_USER_GENERATED.equals(s.source())) {
+            log.debug(
+                    "Skill '{}' is user-generated; skipping evolve/blacklist (counter only): success={} failure={}",
+                    name,
+                    s.successCount(),
+                    s.failureCount());
+            return;
+        }
         double rate = s.failureRate();
         if (rate > failRateBlacklist && s.totalUses() >= minUsesBlacklist) {
             boolean done = indexRepo.markBlacklist(name);
@@ -223,7 +234,7 @@ public class SkillEvolutionRunner {
         try {
             // Preserve the canonical fingerprint by passing null embeddingClient and stamping
             // ourselves below — same pattern as SkillSynthesisRunner.
-            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null);
+            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null, SkillEntry.SOURCE_AUTO_SYNTHESIZED);
             saver.saveSkill(evolved.name(), evolved.description(), evolved.body());
 
             if (vectorIndex != null && embeddingClient != null) {

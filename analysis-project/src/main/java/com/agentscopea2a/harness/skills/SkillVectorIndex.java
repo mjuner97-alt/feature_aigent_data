@@ -74,7 +74,7 @@ public class SkillVectorIndex {
     }
 
     /** Cached skill entry holding pre-parsed embedding + precomputed norm for fast cosine. */
-    private record CachedSkill(String name, String description, float[] embedding, float norm) {}
+    private record CachedSkill(String name, String description, float[] embedding, float norm, String source) {}
 
     /**
      * Periodic cache refresh. Runs at a fixed interval so L2 queries hit memory instead of SQL.
@@ -93,7 +93,7 @@ public class SkillVectorIndex {
     }
 
     private List<CachedSkill> loadAllActiveSkills() {
-        String sql = "SELECT name, description, embedding FROM skill_index"
+        String sql = "SELECT name, description, embedding, source FROM skill_index"
                 + " WHERE status = 'active' AND embedding IS NOT NULL";
         List<CachedSkill> list = new ArrayList<>();
         try (Connection c = dataSource.getConnection();
@@ -110,7 +110,12 @@ public class SkillVectorIndex {
                 }
                 float n = norm(vec);
                 if (n == 0f) continue;
-                list.add(new CachedSkill(rs.getString("name"), rs.getString("description"), vec, n));
+                list.add(new CachedSkill(
+                        rs.getString("name"),
+                        rs.getString("description"),
+                        vec,
+                        n,
+                        rs.getString("source")));
             }
         } catch (SQLException e) {
             log.warn("loadAllActiveSkills failed: {}", e.getMessage());
@@ -127,17 +132,31 @@ public class SkillVectorIndex {
      * NULL until they're re-saved.
      */
     public Optional<String> findByFingerprint(String fingerprint) {
+        return findByFingerprint(fingerprint, null);
+    }
+
+    /**
+     * Source-filtered L1 lookup. When {@code source} is non-null, restricts the match to that
+     * source (e.g. {@code "user_generated"} so the retrieval path can probe user skills first
+     * then fall back to auto). When {@code source} is null, matches any source.
+     */
+    public Optional<String> findByFingerprint(String fingerprint, String source) {
         if (fingerprint == null || fingerprint.isBlank()) return Optional.empty();
         String sql =
-                "SELECT name FROM skill_index WHERE fingerprint = ? AND status = 'active' LIMIT 1";
+                source == null
+                        ? "SELECT name FROM skill_index WHERE fingerprint = ? AND status = 'active' LIMIT 1"
+                        : "SELECT name FROM skill_index WHERE fingerprint = ? AND status = 'active' AND source = ? LIMIT 1";
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, fingerprint);
+            if (source != null) {
+                ps.setString(2, source);
+            }
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) return Optional.of(rs.getString("name"));
             }
         } catch (SQLException e) {
-            log.warn("findByFingerprint({}) failed: {}", fingerprint, e.getMessage());
+            log.warn("findByFingerprint({}, {}) failed: {}", fingerprint, source, e.getMessage());
         }
         return Optional.empty();
     }
@@ -151,6 +170,16 @@ public class SkillVectorIndex {
      * descending cosine order.
      */
     public List<SkillHit> topK(float[] queryVec, int k, float minCosine) {
+        return topK(queryVec, k, minCosine, null);
+    }
+
+    /**
+     * Source-filtered L2 top-K. When {@code source} is non-null, only skills whose
+     * {@code skill_index.source} matches are considered. This is what lets the retrieval path
+     * probe user skills first (L1 user -> L2 user) and only fall back to auto skills
+     * (L1 auto -> L2 auto) when the user pool misses.
+     */
+    public List<SkillHit> topK(float[] queryVec, int k, float minCosine, String source) {
         if (queryVec == null || queryVec.length == 0 || k <= 0) return List.of();
         float qNorm = norm(queryVec);
         if (qNorm == 0f) return List.of();
@@ -162,6 +191,7 @@ public class SkillVectorIndex {
             // Fast path: in-memory cosine over cached skills
             hits = new ArrayList<>();
             for (CachedSkill s : cache) {
+                if (source != null && !source.equals(s.source())) continue;
                 if (s.embedding().length != queryVec.length) continue;
                 float cos = cosine(queryVec, s.embedding(), qNorm, s.norm());
                 if (cos >= minCosine) {
@@ -170,7 +200,7 @@ public class SkillVectorIndex {
             }
         } else {
             // Fallback: full-table SQL scan
-            hits = dbTopK(queryVec, qNorm, minCosine);
+            hits = dbTopK(queryVec, qNorm, minCosine, source);
         }
 
         hits.sort(Comparator.comparingDouble(SkillHit::cosine).reversed());
@@ -178,31 +208,35 @@ public class SkillVectorIndex {
     }
 
     /** Full-table SQL scan fallback when cache is unavailable. */
-    private List<SkillHit> dbTopK(float[] queryVec, float qNorm, float minCosine) {
+    private List<SkillHit> dbTopK(float[] queryVec, float qNorm, float minCosine, String source) {
         String sql = "SELECT name, description, embedding FROM skill_index"
-                + " WHERE status = 'active' AND embedding IS NOT NULL";
+                + " WHERE status = 'active' AND embedding IS NOT NULL"
+                + (source == null ? "" : " AND source = ?");
         List<SkillHit> hits = new ArrayList<>();
         try (Connection c = dataSource.getConnection();
-                PreparedStatement ps = c.prepareStatement(sql);
-                ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                String embeddingJson = rs.getString("embedding");
-                if (embeddingJson == null || embeddingJson.isBlank()) continue;
-                float[] vec;
-                try {
-                    vec = MAPPER.readValue(embeddingJson, FLOAT_ARRAY);
-                } catch (Exception ex) {
-                    continue;
-                }
-                if (vec.length != queryVec.length) continue;
-                float cos = cosine(queryVec, vec, qNorm, norm(vec));
-                if (cos >= minCosine) {
-                    hits.add(new SkillHit(rs.getString("name"), rs.getString("description"), cos));
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            if (source != null) {
+                ps.setString(1, source);
+            }
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String embeddingJson = rs.getString("embedding");
+                    if (embeddingJson == null || embeddingJson.isBlank()) continue;
+                    float[] vec;
+                    try {
+                        vec = MAPPER.readValue(embeddingJson, FLOAT_ARRAY);
+                    } catch (Exception ex) {
+                        continue;
+                    }
+                    if (vec.length != queryVec.length) continue;
+                    float cos = cosine(queryVec, vec, qNorm, norm(vec));
+                    if (cos >= minCosine) {
+                        hits.add(new SkillHit(rs.getString("name"), rs.getString("description"), cos));
+                    }
                 }
             }
         } catch (SQLException e) {
             log.warn("dbTopK failed: {}", e.getMessage());
-            return List.of();
         }
         return hits;
     }
@@ -286,10 +320,34 @@ public class SkillVectorIndex {
     private synchronized void upsertCacheEntry(String name, float[] embedding, String description) {
         float n = norm(embedding);
         if (n == 0f) return;
+        String source = lookupSource(name);
         List<CachedSkill> current = new ArrayList<>(this.skillCache);
         current.removeIf(s -> s.name().equals(name));
-        current.add(new CachedSkill(name, description, embedding, n));
+        current.add(new CachedSkill(name, description, embedding, n, source));
         this.skillCache = List.copyOf(current);
+    }
+
+    /**
+     * Best-effort source lookup for write-through cache updates. Checks the in-memory cache
+     * first (free), then falls back to a one-row DB SELECT. Returns null when both miss - the
+     * entry still goes into the cache so cosine search works, but source-filtered queries will
+     * skip it until the next periodic refresh reloads it with the authoritative source.
+     */
+    private String lookupSource(String name) {
+        for (CachedSkill s : this.skillCache) {
+            if (s.name().equals(name)) return s.source();
+        }
+        String sql = "SELECT source FROM skill_index WHERE name = ?";
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, name);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return rs.getString("source");
+            }
+        } catch (SQLException e) {
+            log.debug("lookupSource({}) failed: {}", name, e.getMessage());
+        }
+        return null;
     }
 
     private static float norm(float[] v) {

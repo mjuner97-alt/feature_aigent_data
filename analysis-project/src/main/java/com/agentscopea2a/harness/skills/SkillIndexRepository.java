@@ -49,10 +49,13 @@ public class SkillIndexRepository {
                     + "  last_used TIMESTAMP NULL,"
                     + "  evolving BOOLEAN NOT NULL DEFAULT FALSE COMMENT 'PR4 cross-JVM evolve lock',"
                     + "  status VARCHAR(16) NOT NULL DEFAULT 'active',"
+                    + "  source VARCHAR(16) NOT NULL DEFAULT 'auto_synthesized'"
+                    + "      COMMENT 'skill origin: user_generated | auto_synthesized',"
                     + "  tool_sequence_fingerprint VARCHAR(255) DEFAULT NULL COMMENT 'Phase 3 offline lookup key (tool-id sequence)',"
                     + "  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP "
                     + "             ON UPDATE CURRENT_TIMESTAMP,"
                     + "  KEY idx_status (status),"
+                    + "  KEY idx_source (source),"
                     + "  KEY idx_tool_seq_fp (tool_sequence_fingerprint)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
@@ -76,7 +79,7 @@ public class SkillIndexRepository {
     public Optional<SkillEntry> findByName(String name) {
         ensureTable();
         String sql =
-                "SELECT name, description, version, usage_count, last_used, status, updated_at"
+                "SELECT name, description, version, usage_count, last_used, status, source, updated_at"
                         + " FROM skill_index WHERE name = ?";
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps = c.prepareStatement(sql)) {
@@ -99,11 +102,11 @@ public class SkillIndexRepository {
      * @return the final version after upsert, or -1 when the write failed (caller logs and
      *     continues — file persistence is the authoritative path; this row is observability)
      */
-    public int upsertOnSave(String name, String description) {
+    public int upsertOnSave(String name, String description, String source) {
         ensureTable();
         String sql =
-                "INSERT INTO skill_index (name, description, version, status)"
-                        + " VALUES (?, ?, 1, 'active')"
+                "INSERT INTO skill_index (name, description, version, status, source)"
+                        + " VALUES (?, ?, 1, 'active', ?)"
                         + " ON DUPLICATE KEY UPDATE"
                         + "   description = VALUES(description),"
                         + "   version = version + 1,"
@@ -112,12 +115,40 @@ public class SkillIndexRepository {
                 PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, name);
             ps.setString(2, description == null ? "" : description);
+            ps.setString(3, source == null ? SkillEntry.SOURCE_AUTO_SYNTHESIZED : source);
             ps.executeUpdate();
         } catch (SQLException e) {
             log.warn("upsertOnSave({}) failed: {}", name, e.getMessage());
             return -1;
         }
         return findByName(name).map(SkillEntry::version).orElse(-1);
+    }
+
+    /**
+     * Cross-source name collision guard. {@code skill_index.name} is PRIMARY KEY, so two skills
+     * with the same name cannot coexist. Source is immutable once written, so a name already
+     * owned by the other source must be rejected (caller surfaces an error to the user or skips).
+     *
+     * @return true if the name is free OR already owned by {@code expectedSource}; false if the
+     *     name exists with a different source (collision)
+     */
+    public boolean checkNameAvailable(String name, String expectedSource) {
+        ensureTable();
+        String sql = "SELECT source FROM skill_index WHERE name = ?";
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, name);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return true;
+                }
+                String existing = rs.getString("source");
+                return existing == null || existing.equals(expectedSource);
+            }
+        } catch (SQLException e) {
+            log.warn("checkNameAvailable({}, {}) failed: {}", name, expectedSource, e.getMessage());
+            return false;
+        }
     }
 
     /**
@@ -243,7 +274,7 @@ public class SkillIndexRepository {
     public Optional<SkillStats> findStats(String name) {
         ensureTable();
         String sql =
-                "SELECT name, success_count, failure_count, version, status"
+                "SELECT name, success_count, failure_count, version, status, source"
                         + " FROM skill_index WHERE name = ?";
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps = c.prepareStatement(sql)) {
@@ -256,7 +287,8 @@ public class SkillIndexRepository {
                                     rs.getInt("success_count"),
                                     rs.getInt("failure_count"),
                                     rs.getInt("version"),
-                                    rs.getString("status")));
+                                    rs.getString("status"),
+                                    rs.getString("source")));
                 }
             }
         } catch (SQLException e) {
@@ -267,7 +299,12 @@ public class SkillIndexRepository {
 
     /** Snapshot of the PR4-relevant columns. */
     public record SkillStats(
-            String name, int successCount, int failureCount, int version, String status) {
+            String name,
+            int successCount,
+            int failureCount,
+            int version,
+            String status,
+            String source) {
         public int totalUses() {
             return successCount + failureCount;
         }
@@ -303,18 +340,35 @@ public class SkillIndexRepository {
      * @return skill name if found, empty otherwise
      */
     public Optional<String> findNameByFingerprint(String runtimeFingerprint) {
+        return findNameByFingerprint(runtimeFingerprint, null);
+    }
+
+    /**
+     * Source-filtered variant. When {@code source} is non-null, restricts the match to that
+     * source (e.g. {@code "auto_synthesized"} for night-time digestion so user skills are
+     * never matched/evolved by Phase 3).
+     *
+     * @return skill name if found, empty otherwise
+     */
+    public Optional<String> findNameByFingerprint(String runtimeFingerprint, String source) {
         ensureTable();
-        String sql = "SELECT name FROM skill_index WHERE fingerprint = ? LIMIT 1";
+        String sql =
+                source == null
+                        ? "SELECT name FROM skill_index WHERE fingerprint = ? LIMIT 1"
+                        : "SELECT name FROM skill_index WHERE fingerprint = ? AND source = ? LIMIT 1";
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, runtimeFingerprint);
+            if (source != null) {
+                ps.setString(2, source);
+            }
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
                     return Optional.of(rs.getString("name"));
                 }
             }
         } catch (SQLException e) {
-            log.warn("findNameByFingerprint({}) failed: {}", runtimeFingerprint, e.getMessage());
+            log.warn("findNameByFingerprint({}, {}) failed: {}", runtimeFingerprint, source, e.getMessage());
         }
         return Optional.empty();
     }
@@ -328,18 +382,35 @@ public class SkillIndexRepository {
      * @return skill name if found, empty otherwise
      */
     public Optional<String> findNameByToolSequenceFingerprint(String toolSeqFingerprint) {
+        return findNameByToolSequenceFingerprint(toolSeqFingerprint, null);
+    }
+
+    /**
+     * Source-filtered variant. When {@code source} is non-null, restricts the match to that
+     * source. Night-time digestion passes {@code "auto_synthesized"} so it never matches
+     * user-saved skills.
+     *
+     * @return skill name if found, empty otherwise
+     */
+    public Optional<String> findNameByToolSequenceFingerprint(String toolSeqFingerprint, String source) {
         ensureTable();
-        String sql = "SELECT name FROM skill_index WHERE tool_sequence_fingerprint = ? LIMIT 1";
+        String sql =
+                source == null
+                        ? "SELECT name FROM skill_index WHERE tool_sequence_fingerprint = ? LIMIT 1"
+                        : "SELECT name FROM skill_index WHERE tool_sequence_fingerprint = ? AND source = ? LIMIT 1";
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, toolSeqFingerprint);
+            if (source != null) {
+                ps.setString(2, source);
+            }
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
                     return Optional.of(rs.getString("name"));
                 }
             }
         } catch (SQLException e) {
-            log.warn("findNameByToolSequenceFingerprint({}) failed: {}", toolSeqFingerprint, e.getMessage());
+            log.warn("findNameByToolSequenceFingerprint({}, {}) failed: {}", toolSeqFingerprint, source, e.getMessage());
         }
         return Optional.empty();
     }
@@ -375,6 +446,7 @@ public class SkillIndexRepository {
                 rs.getInt("usage_count"),
                 lastUsed == null ? null : lastUsed.toLocalDateTime(),
                 rs.getString("status"),
+                rs.getString("source"),
                 updated == null ? LocalDateTime.now() : updated.toLocalDateTime());
     }
 
@@ -395,6 +467,16 @@ public class SkillIndexRepository {
                     s.execute("CREATE INDEX idx_tool_seq_fp ON skill_index(tool_sequence_fingerprint)");
                 } catch (SQLException e) {
                     // Index already exists — ignore
+                }
+                try {
+                    s.execute("ALTER TABLE skill_index ADD COLUMN source VARCHAR(16) NOT NULL DEFAULT 'auto_synthesized' COMMENT 'skill origin: user_generated | auto_synthesized'");
+                } catch (SQLException e) {
+                    // Column already exists - ignore
+                }
+                try {
+                    s.execute("CREATE INDEX idx_source ON skill_index(source)");
+                } catch (SQLException e) {
+                    // Index already exists - ignore
                 }
                 tableEnsured = true;
                 log.info("skill_index table ensured");

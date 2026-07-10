@@ -43,6 +43,7 @@ import com.agentscopea2a.harness.skills.MetricClassificationService;
 import com.agentscopea2a.harness.skills.SkillSynthesisRunner;
 import com.agentscopea2a.harness.skills.FingerprintCalculator;
 import com.agentscopea2a.harness.skills.SkillEvolutionRunner;
+import com.agentscopea2a.harness.skills.SkillEntry;
 import com.agentscopea2a.harness.skills.SkillVectorIndex;
 import com.agentscopea2a.harness.tools.PythonExecTool;
 import com.agentscopea2a.harness.tools.SkillSaveTool;
@@ -420,8 +421,8 @@ public class SupervisorService {
             b.hook(new SkillSynthesisHook(skillSynthesisRunner, metricClassifier, fingerprintCalculator, ctx));
         }
 
-        // PR3 — focused skill retrieval. Only retrieves from skills-auto/ (auto-synthesized skills).
-        // Builtin meta-skills (tool_index, data_primitives) in skills-builtin/ are injected by the
+        // PR3 — focused skill retrieval. Only retrieves from skills-auto/ and skills-user/.
+        // Builtin meta-skills (tool_index, data_primitives) in skills/ are injected by the
         // harness's FileSystemSkillRepository via the default workspace path.
         b.hook(
                 new SkillRetrievalHook(
@@ -431,6 +432,7 @@ public class SupervisorService {
                         embeddingClient,
                         sharedEpisodicMemory,
                         workspace.resolve("skills-auto"),
+                        workspace.resolve("skills-user"),
                         ctx,
                         skillRetrievalEnabled,
                         skillRetrievalTopK,
@@ -577,10 +579,11 @@ public class SupervisorService {
                 "skill_save",
                 () ->
                         new SkillSaveTool(
-                                workspace.resolve("skills-auto"),
+                                workspace.resolve("skills-user"),
                                 skillIndexRepository,
                                 skillVectorIndex,
-                                embeddingClient));
+                                embeddingClient,
+                                SkillEntry.SOURCE_USER_GENERATED));
         r.put("tool_router", () -> toolRoutersIndex);
         // python_exec — single-step write+exec replacement for code_interpreter.
         // See docs/code-interpreter-optimization.md §P0-B. Tool is registered always; the

@@ -297,7 +297,7 @@ public class SkillSynthesisRunner {
             // synchronously below with the richer (desc + sample_questions) text. Letting
             // SkillSaveTool's async path also embed would race and overwrite the canonical
             // fingerprint with null.
-            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null);
+            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null, SkillEntry.SOURCE_AUTO_SYNTHESIZED);
             // Use saveSkillWithMetricTag so the metric_tag field is stamped into the
             // frontmatter rather than being stripped by saveSkill's stripFrontmatter.
             boolean saved = saver.saveSkillWithMetricTag(
@@ -490,9 +490,12 @@ public class SkillSynthesisRunner {
             return null;
         }
 
-        // Dedup: if a skill with this runtime fingerprint already exists, skip
+        // Dedup: if an auto-synthesized skill with this runtime fingerprint already exists, skip.
+        // Source-scoped so a user skill with a colliding fingerprint (theoretical - user saves
+        // don't compute one) doesn't block auto distillation.
         if (runtimeFp != null && !runtimeFp.isBlank()) {
-            java.util.Optional<String> existing = indexRepo.findNameByFingerprint(runtimeFp);
+            java.util.Optional<String> existing =
+                    indexRepo.findNameByFingerprint(runtimeFp, SkillEntry.SOURCE_AUTO_SYNTHESIZED);
             if (existing.isPresent()) {
                 log.info("Skill already exists for runtime fingerprint {}; skipping distill", runtimeFp);
                 return null;
@@ -569,7 +572,7 @@ public class SkillSynthesisRunner {
         // Save to disk + upsert index row (no candidate CAS — night-time path)
         try {
             // Pass null embeddingClient — we stamp the embedding ourselves below with richer text
-            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null);
+            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null, SkillEntry.SOURCE_AUTO_SYNTHESIZED);
             boolean saved = saver.saveSkillWithMetricTag(
                     distilled.name(), distilled.description(), distilled.body(), metricTag);
             if (!saved) {

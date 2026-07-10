@@ -98,8 +98,8 @@
 //    @GetMapping("/skills")
 //    public Map<String, Object> listSkills() {
 //        Map<String, Object> out = new HashMap<>();
-//        out.put("skills-builtin", listDir("skills-builtin"));
 //        out.put("skills-auto", listDir("skills-auto"));
+//        out.put("skills-user", listDir("skills-user"));
 //        return out;
 //    }
 //

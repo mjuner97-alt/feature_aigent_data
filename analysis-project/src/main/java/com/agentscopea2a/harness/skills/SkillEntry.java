@@ -21,9 +21,14 @@ public record SkillEntry(
         int usageCount,
         LocalDateTime lastUsed,
         String status,
+        String source,
         LocalDateTime updatedAt) {
 
     public static final String STATUS_ACTIVE = "active";
     public static final String STATUS_BLACKLIST = "blacklist";
     public static final String STATUS_PENDING = "pending";
+
+    /** skill origin constants - persisted in {@code skill_index.source}. */
+    public static final String SOURCE_USER_GENERATED = "user_generated";
+    public static final String SOURCE_AUTO_SYNTHESIZED = "auto_synthesized";
 }

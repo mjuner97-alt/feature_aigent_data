@@ -16,6 +16,7 @@
 package com.agentscopea2a.harness.tools;
 
 import com.agentscopea2a.harness.skills.EmbeddingClient;
+import com.agentscopea2a.harness.skills.SkillEntry;
 import com.agentscopea2a.harness.skills.SkillIndexRepository;
 import com.agentscopea2a.harness.skills.SkillVectorIndex;
 import io.agentscope.core.message.ToolResultBlock;
@@ -59,6 +60,13 @@ public class SkillSaveTool {
     private final SkillIndexRepository indexRepository;
     private final SkillVectorIndex vectorIndex;
     private final EmbeddingClient embeddingClient;
+    /**
+     * {@code user_generated} when wired for the {@code skill_save} tool (writes to
+     * {@code skills-user/}); {@code auto_synthesized} when wired for any of the auto paths
+     * (W2/W3/W4/W5, writes to {@code skills-auto/}). Persisted into {@code skill_index.source}
+     * on insert and never overwritten on update.
+     */
+    private final String source;
 
     /** Single-thread daemon so embedding upserts never delay the save_skill tool reply. */
     private static final ScheduledExecutorService EMBED_EXEC =
@@ -71,7 +79,7 @@ public class SkillSaveTool {
 
     /** Repository may be {@code null} when wired in legacy single-arg paths (tests, etc.). */
     public SkillSaveTool(Path skillsDir, SkillIndexRepository indexRepository) {
-        this(skillsDir, indexRepository, null, null);
+        this(skillsDir, indexRepository, null, null, SkillEntry.SOURCE_AUTO_SYNTHESIZED);
     }
 
     /**
@@ -85,10 +93,26 @@ public class SkillSaveTool {
             SkillIndexRepository indexRepository,
             SkillVectorIndex vectorIndex,
             EmbeddingClient embeddingClient) {
+        this(skillsDir, indexRepository, vectorIndex, embeddingClient, SkillEntry.SOURCE_AUTO_SYNTHESIZED);
+    }
+
+    /**
+     * Full constructor - lets the caller pin the {@code source} so the same tool class backs
+     * both the user-facing {@code skill_save} tool (writes to {@code skills-user/} with
+     * {@code source=user_generated}) and the auto-distill/evolve paths (write to
+     * {@code skills-auto/} with {@code source=auto_synthesized}).
+     */
+    public SkillSaveTool(
+            Path skillsDir,
+            SkillIndexRepository indexRepository,
+            SkillVectorIndex vectorIndex,
+            EmbeddingClient embeddingClient,
+            String source) {
         this.skillsDir = skillsDir;
         this.indexRepository = indexRepository;
         this.vectorIndex = vectorIndex;
         this.embeddingClient = embeddingClient;
+        this.source = source == null ? SkillEntry.SOURCE_AUTO_SYNTHESIZED : source;
     }
 
     /**
@@ -128,6 +152,11 @@ public class SkillSaveTool {
                 body = stripped;
             }
 
+            if (!checkNameAvailable(safeName)) {
+                return ToolResultBlock.error(
+                        "技能名 '" + safeName + "' 已被另一来源占用，请改名后重试");
+            }
+
             int version = upsertVersion(safeName, desc);
             String frontmatter = renderFrontmatter(safeName, desc, version);
             String full = frontmatter + body;
@@ -137,7 +166,7 @@ public class SkillSaveTool {
                             .name(safeName)
                             .description(desc)
                             .skillContent(full)
-                            .source("user_generated")
+                            .source(source)
                             .build();
 
             boolean saved = SkillFileSystemHelper.saveSkills(skillsDir, List.of(skill), true);
@@ -162,8 +191,18 @@ public class SkillSaveTool {
         if (indexRepository == null) {
             return 1;
         }
-        int v = indexRepository.upsertOnSave(name, description);
+        int v = indexRepository.upsertOnSave(name, description, source);
         return v > 0 ? v : 1;
+    }
+
+    /**
+     * Cross-source name collision guard. Returns true when the name is free or already owned
+     * by this tool's {@code source}; false when the name exists with a different source (in
+     * which case the save must be rejected to keep {@code skill_index.source} immutable).
+     */
+    private boolean checkNameAvailable(String name) {
+        if (indexRepository == null) return true;
+        return indexRepository.checkNameAvailable(name, source);
     }
 
     /**
@@ -191,6 +230,14 @@ public class SkillSaveTool {
                 safeBody = stripped;
             }
 
+            if (!checkNameAvailable(safeName)) {
+                log.warn(
+                        "Skill name '{}' already owned by another source; skipping save (metric_tag={})",
+                        safeName,
+                        metricTag);
+                return false;
+            }
+
             int version = upsertVersion(safeName, desc);
             String frontmatter = renderFrontmatter(safeName, desc, version, metricTag);
             String full = frontmatter + safeBody;
@@ -200,7 +247,7 @@ public class SkillSaveTool {
                             .name(safeName)
                             .description(desc)
                             .skillContent(full)
-                            .source("auto_synthesized")
+                            .source(source)
                             .build();
             boolean saved = SkillFileSystemHelper.saveSkills(skillsDir, List.of(skill), true);
             if (saved) {
