@@ -51,7 +51,7 @@ public class ChatRequest {
 
     private String fromType;
 
-    private String chatId;
+    private String sessionId;
 
     private String question;
 }

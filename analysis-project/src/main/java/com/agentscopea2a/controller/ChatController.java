@@ -28,12 +28,12 @@ public class ChatController {
         // 统一归一化：chatId（公开入口）和 conversationId（Manager入口）是同一字段
         normalizeConversationId(req);
         if (StringUtils.isNoneEmpty(req.getAgentName())){
-            return chatStreamServiceV3.stream(req);
+            return chatStreamService.stream(req);
         }else {
             req.setAgentId("7");
             req.setAgentName("数字QA助手");
             req.setFromType("HXY");
-            return chatStreamServiceV3.streamPublic(req);
+            return chatStreamService.streamPublic(req);
         }
     }
 
@@ -60,12 +60,23 @@ public class ChatController {
      * chatId 优先级低于 conversationId：当 conversationId 为空时，用 chatId 回填。
      */
     private void normalizeConversationId(ChatRequest req) {
-        if (StringUtils.isNoneEmpty(req.getChatId()) && StringUtils.isEmpty(req.getConversationId())) {
-            req.setConversationId(req.getChatId());
+
+        if (StringUtils.isEmpty(req.getConversationId())) {
+            req.setConversationId(UUID.randomUUID().toString());
+        }else{
+            req.setSessionId(req.getConversationId());
         }
 
-        if (StringUtils.isEmpty(req.getConversationId())){
-            req.setConversationId(UUID.randomUUID().toString());
+        if (StringUtils.isEmpty(req.getSessionId())) {
+            req.setConversationId(req.getSessionId());
+        }
+
+        if (StringUtils.isNotEmpty(req.getInput())){
+            req.setQuestion(req.getInput());
+        }
+
+        if (StringUtils.isNotEmpty(req.getQuestion())){
+            req.setInput(req.getQuestion());
         }
     }
 }

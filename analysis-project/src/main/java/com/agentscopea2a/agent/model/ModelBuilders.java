@@ -16,8 +16,11 @@
 package com.agentscopea2a.agent.model;
 
 import io.agentscope.core.model.AnthropicChatModel;
+import io.agentscope.core.model.ExecutionConfig;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.model.OpenAIChatModel;
+
+import java.time.Duration;
 
 
 public final class ModelBuilders {
@@ -43,6 +46,15 @@ public final class ModelBuilders {
     public static Model openAI(String apiKey, String baseUrl, String modelName) {
         requireNonBlank(apiKey, "apiKey");
         requireNonBlank(modelName, "modelName");
+
+        ExecutionConfig executionConfig = ExecutionConfig.builder()
+            .maxAttempts(3).timeout(Duration.ofSeconds(20))
+            .initialBackoff(Duration.ofSeconds(2))
+            .backoffMultiplier(20D)
+            .maxBackoff(Duration.ofSeconds(30))
+            .build();
+
+
         return OpenAIChatModel.builder()
                 .apiKey(apiKey)
                 .baseUrl(baseUrl)

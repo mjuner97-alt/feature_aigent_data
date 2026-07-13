@@ -159,8 +159,14 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                     }
                 };
         emitter.onCompletion(cleanup);
-        emitter.onTimeout(cleanup);
-        emitter.onError(t -> cleanup.run());
+        emitter.onTimeout(() -> {
+            handleStreamError(ctxState, new RuntimeException("Model request timeout after"), ctxState.fullResult.toString());
+            cleanup.run();
+        });
+        emitter.onError(e->{
+            handleStreamError(ctxState,e,"");
+            cleanup.run();
+        });
 
         //配置StreamOptions
         StreamOptions streamOptions =StreamOptions.builder()
@@ -222,8 +228,14 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                     }
                 };
         emitter.onCompletion(cleanup);
-        emitter.onTimeout(cleanup);
-        emitter.onError(t -> cleanup.run());
+        emitter.onTimeout(() -> {
+            handleStreamErrorPublic(ctxState, new RuntimeException("SseEmitter timeout"), ctxState.fullResult.toString());
+            cleanup.run();
+        });
+        emitter.onError(e->{
+            handleStreamErrorPublic(ctxState,e,"");
+            cleanup.run();
+        });
 
         //配置StreamOptions
         StreamOptions streamOptions =StreamOptions.builder()
@@ -271,19 +283,28 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                 ctx.fullResult.append(extractedContent);
             }
 
-            // AGENT_RESULT 类型的 event 是最终结果，覆盖到 answerContent（只保留最后一次），不立即发送
-            if (chunk.getType() == EventType.AGENT_RESULT) {
-                ctx.answerContent.setLength(0);
-                ctx.answerContent.append(extractedContent);
+            if (chunk.isLast() && !EventType.AGENT_RESULT.name().equalsIgnoreCase(chunk.getType().name())){
                 return;
             }
+
+            // AGENT_RESULT 类型的 event 是最终结果，覆盖到 answerContent（只保留最后一次），不立即发送
+           if (EventType.AGENT_RESULT.name().equalsIgnoreCase(chunk.getType().name())){
+               ctx.answerContent.setLength(0);
+               ContentBlock result = chunk.getMessage().getContent().get(1);
+               String resultContent = extractContentFromBlock(result);
+               ctx.answerContent.append(resultContent);
+               return;
+           }
 
             // 其他所有输出都视为思考，不区分阶段
             ctx.thinkContent.append(extractedContent);
             sendThinkResponsePublic(ctx.emitter, extractedContent, "执行中", "分析执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
 
         } catch (Exception e) {
+            sendThinkResponsePublic(ctx.emitter, "", "执行中", "分析执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
+            sendThinkResponsePublic(ctx.emitter, "", "已执行", "分析执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
             LOGGER.error("主智能体执行失败异常: ", e);
+            throw new RuntimeException(e.getMessage());
         }
     }
 
@@ -323,19 +344,28 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                 ctx.fullResult.append(extractedContent);
             }
 
-            // AGENT_RESULT 类型的 event 是最终结果，覆盖到 answerContent（只保留最后一次），不立即发送
-            if (chunk.getType() == EventType.AGENT_RESULT) {
-                ctx.answerContent.setLength(0);
-                ctx.answerContent.append(extractedContent);
+            if (chunk.isLast() && !EventType.AGENT_RESULT.name().equalsIgnoreCase(chunk.getType().name())){
                 return;
             }
+
+            // AGENT_RESULT 类型的 event 是最终结果，覆盖到 answerContent（只保留最后一次），不立即发送
+           if (EventType.AGENT_RESULT.name().equalsIgnoreCase(chunk.getType().name())){
+               ctx.answerContent.setLength(0);
+               ContentBlock result = chunk.getMessage().getContent().get(1);
+               String resultContent = extractContentFromBlock(result);
+               ctx.answerContent.append(resultContent);
+               return;
+           }
 
             // 其他所有输出都视为思考，不区分阶段
             ctx.thinkContent.append(extractedContent);
             sendThinkResponse(ctx.emitter, extractedContent, "执行中", "分析执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
 
         } catch (Exception e) {
+            sendThinkResponse(ctx.emitter, "", "执行中", "分析执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
+            sendThinkResponse(ctx.emitter, "", "已执行", "分析执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
             LOGGER.error("主智能体执行失败异常: ", e);
+            throw new RuntimeException(e.getMessage());
         }
     }
 
@@ -485,7 +515,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         try {
             TextResponseDto errorDto = new TextResponseDto();
             ContentDto contentDto = new ContentDto();
-            contentDto.setContent("系统处理异常: " + error.getMessage());
+            contentDto.setContent(buildErrorMessage(error));
             errorDto.setData(contentDto);
             errorDto.setFinish(true);
             safeSend(ctx.emitter, errorDto, MediaType.APPLICATION_JSON);
@@ -536,10 +566,18 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     private void handleStreamSuccess(StreamContext ctx) {
         LOGGER.info("处理流式成功: {}", ctx.req.getConversationId());
         sendThinkResponse(ctx.emitter, " ", "已执行", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
-        // 一次性输出最终结果
+        // 流式输出最终结果
         String finalAnswer = ctx.answerContent.toString();
         if (StringUtils.isNotBlank(finalAnswer)) {
-            sendTextResponse(ctx.emitter, finalAnswer, "", "", true, ctx.req.getConversationId(), ctx.uuid);
+            int len = finalAnswer.length();
+            int pos = 0;
+            while (pos < len) {
+                int end = Math.min(pos + 5, len);
+                String chunk = finalAnswer.substring(pos, end);
+                boolean isLast = (end == len);
+                sendTextResponse(ctx.emitter, chunk, "", "", isLast, ctx.req.getConversationId(), ctx.uuid);
+                pos = end;
+            }
         }
         ctx.emitter.complete();
         ThreadContextUtils.clearContext();
@@ -552,10 +590,18 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     private void handleStreamSuccessPublic(StreamContext ctx) {
         LOGGER.info("处理流式成功(通用版): {}", ctx.req.getConversationId());
         sendThinkResponsePublic(ctx.emitter, " ", "已执行", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
-        // 一次性输出最终结果
+        // 流式输出最终结果
         String finalAnswer = ctx.answerContent.toString();
         if (StringUtils.isNotBlank(finalAnswer)) {
-            sendTextResponsePublic(ctx.emitter, finalAnswer, "", "", true, ctx.req.getConversationId(), ctx.uuid);
+            int len = finalAnswer.length();
+            int pos = 0;
+            while (pos < len) {
+                int end = Math.min(pos + 5, len);
+                String chunk = finalAnswer.substring(pos, end);
+                boolean isLast = (end == len);
+                sendTextResponsePublic(ctx.emitter, chunk, "", "", isLast, ctx.req.getConversationId(), ctx.uuid);
+                pos = end;
+            }
         }
         ctx.emitter.complete();
         ThreadContextUtils.clearContext();

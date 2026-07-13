@@ -220,9 +220,9 @@ public class ChatStreamServiceV_3Impl implements ChatStreamServiceV_3 {
         if (isNotBlank(req.getConversationId())) {
             // Forwarded as-is so the model sees a stable id.
             conversationId = req.getConversationId();
-        } else if (!agentIdProvided && isNotBlank(req.getChatId())) {
+        } else if (!agentIdProvided && isNotBlank(req.getSessionId())) {
             // No agentId, but a chatId is present → promote chatId.
-            conversationId = req.getChatId();
+            conversationId = req.getSessionId();
         } else {
             conversationId = UUID.randomUUID().toString();
         }
@@ -361,8 +361,6 @@ public class ChatStreamServiceV_3Impl implements ChatStreamServiceV_3 {
 
     /**
      * 缓存命中回放：直接把 cachedResponse 当作完整结果通过 SSE 流回放。
-     *
-     * <p>{@link ResponseCacheHook#handlePreCall} 命中时抛 {@link
      * ResponseCacheHook.CacheHitException} 短路 agent 执行。本方法承接它，按
      * "text(cached) → done" 的顺序补齐帧，前端 UX 与 MISS 走完整链路时基本一致。
      *
