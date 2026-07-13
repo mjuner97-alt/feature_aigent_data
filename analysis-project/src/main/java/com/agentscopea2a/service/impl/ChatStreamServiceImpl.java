@@ -130,7 +130,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         }
 
         SseEmitterCacheUtil.put(req.getConversationId(), emitter);
-        String uuid = UUID.randomUUID().toString();
+   
 
         // 状态标记
         StreamContext ctxState = new StreamContext(emitter, req, uuid);
@@ -194,12 +194,8 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     public SseEmitter streamPublic(ChatRequest req) {
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
 
-        if (StringUtils.isEmpty(req.getConversationId())){
-            req.setConversationId(UUID.randomUUID().toString());
-        }
-
         SseEmitterCacheUtil.put(req.getConversationId(), emitter);
-        String uuid = UUID.randomUUID().toString();
+
 
         // 状态标记
         StreamContext ctxState = new StreamContext(emitter, req, uuid);
