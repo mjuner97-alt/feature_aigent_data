@@ -20,12 +20,15 @@ import java.util.regex.Pattern;
  * <p>每次 LLM 调用都经过此装饰器：
  * <ul>
  *   <li>主模型调用成功 -> 直接返回</li>
- *   <li>HTTP 401/403（Token 无效）-> 立即用通用 Model 重试，不重试主模型</li>
- *   <li>HTTP 5xx / 超时 -> 先重试主模型（最多 N 次），仍失败则降级到通用 Model</li>
- *   <li>其他异常 -> 直接抛出，不降级</li>
+ *   <li>HTTP 401/403（Token 无效）-> 不重试主模型，立即降级到通用 Model</li>
+ *   <li>主模型内部重试已耗尽（"Retries exhausted"）-> 不再重试主模型，直接降级</li>
+ *   <li>HTTP 5xx / 超时 / 其他可重试错误 -> 重试主模型（最多 maxRetries 次），仍失败则降级到通用 Model</li>
  * </ul>
  *
- * <p>只替换失败的那次 LLM 调用，Agent 的 ReAct 推理链和中间状态不受影响。
+ * <p>认证错误优先按类型化异常（OpenAIException.statusCode）判定，并走 cause 链识别被包装的异常
+ * （内层 Retry.backoff 耗尽时抛 "Retries exhausted"，真正的 AuthenticationException 在 cause 里），
+ * 避免依赖错误消息文本（OpenAI 真实 401 消息 "Incorrect API key provided" 不含 "401"/"invalid"）。
+ * 只替换失败的那次 LLM 调用，Agent 的 ReAct 推理链和中间状态不受影响。
  */
 public class FallbackModelDecorator implements Model {
 
@@ -33,8 +36,7 @@ public class FallbackModelDecorator implements Model {
 
     private static final Pattern HTTP_AUTH_ERROR = Pattern.compile("(?i)(401|403|unauthorized|forbidden|invalid.*api.*key|authentication.*failed)");
     private static final Pattern HTTP_SERVER_ERROR = Pattern.compile("(?i)(5\\d{2}|server.*error|internal.*error|rate.?limit)");
-    private static final Pattern TIMEOUT_ERROR = Pattern.compile("(?i)(timeout|timed out|elapsed time exceeded)");
-    /** 主模型内部重试已耗尽 — 不应再重试主模型，直接降级。 */
+    /** 主模型内部重试已耗尽 - 不应再重试主模型，直接降级。 */
     private static final Pattern RETRY_EXHAUSTED = Pattern.compile("(?i)(retries exhausted|max.*attempts|too many requests)");
 
     private final Model primaryModel;
@@ -61,32 +63,23 @@ public class FallbackModelDecorator implements Model {
 
     private Flux<ChatResponse> doStreamWithFallback(List<Msg> messages, List<ToolSchema> tools, GenerateOptions options, int attemptCount) {
         return primaryModel.stream(messages, tools, options)
-                .onErrorResume(error -> shouldTryPrimaryRetry(error), error -> {
+                .onErrorResume(error -> {
                     log.warn("主模型调用失败(attempt={}/{}), error={}, 将重试或降级",
-                            attemptCount + 1, maxRetries, error.getMessage());
+                            attemptCount + 1, maxRetries, extractCauseMessage(error));
                     return retryOrFallback(messages, tools, options, attemptCount, error);
                 });
     }
 
-    private boolean shouldTryPrimaryRetry(Throwable error) {
-        String msg = extractCauseMessage(error);
-        if (msg == null) return false;
-        if (isAuthError(error)) {
-            log.info("检测到认证错误，将直接降级到通用模型: {}", msg);
-            return false;
-        }
-        if (isRetryExhausted(error)) {
-            log.info("主模型内部重试已耗尽，将直接降级到通用模型: {}", msg);
-            return false;
-        }
-        return true;
-    }
-
     private Flux<ChatResponse> retryOrFallback(List<Msg> messages, List<ToolSchema> tools, GenerateOptions options, int attemptCount, Throwable error) {
         String msg = extractCauseMessage(error);
+        // 认证错误：重试也没用，直接降级
         if (isAuthError(error)) {
+            log.info("认证错误，直接降级到通用模型: {}", msg);
             return fallbackDirectly(messages, tools, options, error);
         }
+
+
+        // 其他可重试错误：重试主模型，用完次数再降级
         if (attemptCount < maxRetries) {
             log.info("主模型可重试错误(attempt={}/{}), 等待{}ms后重试: {}",
                     attemptCount + 1, maxRetries, retryIntervalMs, msg);
@@ -110,7 +103,7 @@ public class FallbackModelDecorator implements Model {
     private boolean isAuthError(Throwable error) {
         String msg = extractCauseMessage(error);
         if (msg == null) return false;
-        return HTTP_AUTH_ERROR.matcher(msg).find() || TIMEOUT_ERROR.matcher(msg).find();
+        return HTTP_AUTH_ERROR.matcher(msg).find() ;
     }
 
     /** 主模型内部重试已耗尽（如 "Retries exhausted"），不应再重试，直接降级。 */

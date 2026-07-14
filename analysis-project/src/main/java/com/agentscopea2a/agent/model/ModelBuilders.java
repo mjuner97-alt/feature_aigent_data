@@ -45,7 +45,7 @@ public final class ModelBuilders {
         requireNonBlank(modelName, "modelName");
 
         ExecutionConfig executionConfig = ExecutionConfig.builder()
-            .maxAttempts(3).timeout(Duration.ofSeconds(20))
+            .maxAttempts(1).timeout(Duration.ofSeconds(20))
             .initialBackoff(Duration.ofSeconds(2))
             .backoffMultiplier(20D)
             .maxBackoff(Duration.ofSeconds(30))
