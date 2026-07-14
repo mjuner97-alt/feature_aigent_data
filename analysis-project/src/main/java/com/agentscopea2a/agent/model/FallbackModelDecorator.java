@@ -34,6 +34,8 @@ public class FallbackModelDecorator implements Model {
     private static final Pattern HTTP_AUTH_ERROR = Pattern.compile("(?i)(401|403|unauthorized|forbidden|invalid.*api.*key|authentication.*failed)");
     private static final Pattern HTTP_SERVER_ERROR = Pattern.compile("(?i)(5\\d{2}|server.*error|internal.*error|rate.?limit)");
     private static final Pattern TIMEOUT_ERROR = Pattern.compile("(?i)(timeout|timed out|elapsed time exceeded)");
+    /** 主模型内部重试已耗尽 — 不应再重试主模型，直接降级。 */
+    private static final Pattern RETRY_EXHAUSTED = Pattern.compile("(?i)(retries exhausted|max.*attempts|too many requests)");
 
     private final Model primaryModel;
     private final Model fallbackModel;
@@ -73,6 +75,10 @@ public class FallbackModelDecorator implements Model {
             log.info("检测到认证错误，将直接降级到通用模型: {}", msg);
             return false;
         }
+        if (isRetryExhausted(error)) {
+            log.info("主模型内部重试已耗尽，将直接降级到通用模型: {}", msg);
+            return false;
+        }
         return true;
     }
 
@@ -105,6 +111,13 @@ public class FallbackModelDecorator implements Model {
         String msg = extractCauseMessage(error);
         if (msg == null) return false;
         return HTTP_AUTH_ERROR.matcher(msg).find() || TIMEOUT_ERROR.matcher(msg).find();
+    }
+
+    /** 主模型内部重试已耗尽（如 "Retries exhausted"），不应再重试，直接降级。 */
+    private boolean isRetryExhausted(Throwable error) {
+        String msg = extractCauseMessage(error);
+        if (msg == null) return false;
+        return RETRY_EXHAUSTED.matcher(msg).find();
     }
 
     private String extractCauseMessage(Throwable t) {

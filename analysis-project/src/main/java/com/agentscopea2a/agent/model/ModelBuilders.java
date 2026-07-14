@@ -15,10 +15,7 @@
  */
 package com.agentscopea2a.agent.model;
 
-import io.agentscope.core.model.AnthropicChatModel;
-import io.agentscope.core.model.ExecutionConfig;
-import io.agentscope.core.model.Model;
-import io.agentscope.core.model.OpenAIChatModel;
+import io.agentscope.core.model.*;
 
 import java.time.Duration;
 
@@ -59,6 +56,8 @@ public final class ModelBuilders {
                 .apiKey(apiKey)
                 .baseUrl(baseUrl)
                 .modelName(modelName)
+                .generateOptions(GenerateOptions.builder().executionConfig(executionConfig)
+                        .build())
                 .stream(true)
                 .build();
     }
