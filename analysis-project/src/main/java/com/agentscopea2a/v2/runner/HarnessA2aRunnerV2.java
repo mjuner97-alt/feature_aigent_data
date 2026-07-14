@@ -23,11 +23,13 @@ import com.agentscopea2a.v2.middleware.DimensionStateMiddleware;
 import com.agentscopea2a.v2.middleware.EpisodicRetrievalMiddleware;
 import com.agentscopea2a.v2.middleware.ResponseCacheMiddleware;
 import com.agentscopea2a.v2.middleware.SessionMiddleware;
+import com.agentscopea2a.v2.tools.V2ToolGroupAdapter;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.hook.Hook;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.middleware.MiddlewareBase;
+import io.agentscope.core.tool.Toolkit;
 import io.agentscope.extensions.mysql.state.MysqlAgentStateStore;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
 import io.agentscope.harness.agent.DistributedStore;
@@ -92,6 +94,7 @@ public class HarnessA2aRunnerV2 {
             ObjectProvider<ArtifactHandoffHook> artifactHandoffHookProvider,
             ObjectProvider<PythonExecRetryHook> pythonExecRetryHookProvider,
             ObjectProvider<ToolCallTrackingHook> toolCallTrackingHookProvider,
+            ObjectProvider<V2ToolGroupAdapter> toolGroupAdapterProvider,
             ObjectProvider<SandboxFilesystemSpec> sandboxFilesystemProvider,
             ObjectProvider<DistributedStore> distributedStoreProvider) {
         OpenAIChatModel model = OpenAIChatModel.builder()
@@ -174,6 +177,16 @@ public class HarnessA2aRunnerV2 {
         if (trackingHook != null) {
             builder.hook(trackingHook);
             log.info("HarnessA2aRunnerV2: ToolCallTrackingHook wired (priority=45)");
+        }
+
+        // v2 Toolkit — replaces ToolRoutersIndex's flat router_tool dispatch with native
+        // tool groups and the reset_equipped_tools meta-tool for LLM-driven group switching.
+        V2ToolGroupAdapter toolGroupAdapter = toolGroupAdapterProvider.getIfAvailable();
+        if (toolGroupAdapter != null) {
+            builder.toolkit(toolGroupAdapter.getToolkit());
+            log.info("HarnessA2aRunnerV2: Toolkit wired ({} tools, groups: {})",
+                    toolGroupAdapter.getToolkit().getToolNames().size(),
+                    toolGroupAdapter.getToolkit().getActiveGroups());
         }
 
         this.agent = builder.build();
