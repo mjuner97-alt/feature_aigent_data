@@ -15,7 +15,7 @@ import java.time.LocalDateTime;
 @NoArgsConstructor
 @AllArgsConstructor
 public class UserModelConfig {
-    private Long userId;
+    private String userId;
     private String provider;
     private String token;
     private String modelName;

@@ -19,6 +19,7 @@ import reactor.core.scheduler.Schedulers;
 
 import com.agentscopea2a.harness.skills.EmbeddingClient;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import javax.sql.DataSource;
@@ -30,6 +31,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -477,6 +479,91 @@ public class MySqlEpisodicMemory implements EpisodicMemory {
     @Override
     public List<Object> getToolObjects() {
         return List.of(new EpisodicMemoryTools());
+    }
+
+    /**
+     * 查询指定会话的消息时间线。
+     * session_id = "session:" + conversationId，仅命中不带 userId 的公开入口流量。
+     * 同步方法，由 controller 线程直接调用。
+     */
+    public List<EpisodicRecordVo> queryTimeline(EpisodicQueryCriteria c) {
+        ensureInitialized();
+        StringBuilder sql = new StringBuilder(
+                "SELECT id, session_id, role, content, tool_call_details, created_at FROM "
+                        + this.config.getTableName()
+                        + " WHERE session_id LIKE ?");
+        List<Object> args = new ArrayList<>();
+        // Match session_id that starts with the conversationId (covers "user:1", "user:1:timestamp", etc.)
+        args.add(c.getConversationId() + "%");
+
+        if (c.getFrom() != null && !c.getFrom().isBlank()) {
+            sql.append(" AND created_at >= ?");
+            args.add(Timestamp.valueOf(c.getFrom().replace("T", " ")));
+        }
+        if (c.getTo() != null && !c.getTo().isBlank()) {
+            sql.append(" AND created_at <= ?");
+            args.add(Timestamp.valueOf(c.getTo().replace("T", " ")));
+        }
+        if (c.getRole() != null && !c.getRole().isBlank()) {
+            sql.append(" AND role = ?");
+            args.add(c.getRole());
+        }
+        if (c.getQ() != null && !c.getQ().isBlank()) {
+            sql.append(" AND MATCH(content) AGAINST(? IN NATURAL LANGUAGE MODE)");
+            args.add(c.getQ());
+        }
+
+        int limit = Math.min(c.getLimit() != null ? c.getLimit() : 200, 1000);
+        int offset = c.getOffset() != null ? c.getOffset() : 0;
+        sql.append(" ORDER BY id ASC LIMIT ? OFFSET ?");
+        args.add(limit);
+        args.add(offset);
+
+        List<EpisodicRecordVo> records = new ArrayList<>();
+        try (Connection conn = getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql.toString())) {
+            for (int i = 0; i < args.size(); i++) {
+                stmt.setObject(i + 1, args.get(i));
+            }
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    records.add(mapRow(rs));
+                }
+            }
+        } catch (SQLException e) {
+            log.error("queryTimeline failed for conversationId {}: {}", c.getConversationId(), e.getMessage());
+            throw new RuntimeException("Failed to query episodic memory timeline", e);
+        }
+        return records;
+    }
+
+    private EpisodicRecordVo mapRow(ResultSet rs) throws SQLException {
+        Long id = rs.getLong("id");
+        String sessionId = rs.getString("session_id");
+        String role = rs.getString("role");
+        String content = rs.getString("content");
+        Timestamp ts = rs.getTimestamp("created_at");
+        String createdAt = ts != null ? ts.toLocalDateTime().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) : null;
+
+        // tool_call_details: NULL -> null, parseable -> JsonNode, else -> raw string
+        Object toolCallDetails = null;
+        String detailsStr = rs.getString("tool_call_details");
+        if (detailsStr != null && !detailsStr.isBlank()) {
+            try {
+                toolCallDetails = MAPPER.readTree(detailsStr);
+            } catch (Exception ex) {
+                toolCallDetails = detailsStr;
+            }
+        }
+
+        return EpisodicRecordVo.builder()
+                .id(id)
+                .sessionId(sessionId)
+                .role(role)
+                .content(content)
+                .toolCallDetails(toolCallDetails)
+                .createdAt(createdAt)
+                .build();
     }
 
     private synchronized void ensureInitialized() {
