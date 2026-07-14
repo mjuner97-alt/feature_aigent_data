@@ -85,7 +85,7 @@ public class MemoryDigestionService {
     private final DataSource dataSource;
     private final MysqlMemoryStore store;
     private final MemoryHydrator hydrator;
-    private final Model model;
+    private final ObjectProvider<Model> modelProvider;
     private final SkillIndexRepository indexRepo;
     private final SkillVectorIndex vectorIndex;
     private final SkillDistiller distiller;
@@ -106,7 +106,7 @@ public class MemoryDigestionService {
             @Qualifier("mysqlDataSource") DataSource dataSource,
             MysqlMemoryStore store,
             MemoryHydrator hydrator,
-            Model model,
+            ObjectProvider<Model> modelProvider,
             SkillIndexRepository indexRepo,
             ObjectProvider<SkillVectorIndex> vectorIndexProvider,
             SkillDistiller distiller,
@@ -125,7 +125,7 @@ public class MemoryDigestionService {
         this.dataSource = dataSource;
         this.store = store;
         this.hydrator = hydrator;
-        this.model = model;
+        this.modelProvider = modelProvider;
         this.indexRepo = indexRepo;
         this.vectorIndex = vectorIndexProvider.getIfAvailable();
         this.distiller = distiller;
@@ -233,7 +233,7 @@ public class MemoryDigestionService {
             List<SkillFlowEvolver.TraceSummary> successTraces = loadSuccessTraces(userId, today);
             if (!successTraces.isEmpty()) {
                 MemoryFlowConsolidator consolidator =
-                        new MemoryFlowConsolidator(store, hydrator, model, workspaceMemoryRoot);
+                        new MemoryFlowConsolidator(store, hydrator, modelProvider.getIfAvailable(), workspaceMemoryRoot);
                 digested = consolidator.consolidate(userId, successTraces);
             }
         } catch (Exception e) {

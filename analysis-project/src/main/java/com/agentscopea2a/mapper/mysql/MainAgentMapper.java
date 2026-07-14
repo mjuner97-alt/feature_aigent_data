@@ -1,4 +1,4 @@
-package com.agentscopea2a.mapper.db1;
+package com.agentscopea2a.mapper.mysql;
 
 import com.agentscopea2a.dto.QuestionAnswerDto;
 import org.apache.ibatis.annotations.Mapper;

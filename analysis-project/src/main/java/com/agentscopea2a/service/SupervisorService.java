@@ -18,7 +18,9 @@ package com.agentscopea2a.service;
 import com.agentscopea2a.harness.artifact.ArtifactContext;
 import com.agentscopea2a.harness.artifact.ArtifactStore;
 import com.agentscopea2a.harness.cache.ResponseCacheService;
+import com.agentscopea2a.agent.model.FallbackModelProperties;
 import com.agentscopea2a.agent.model.ModelRegistry;
+import com.agentscopea2a.mapper.mysql.UserModelConfigMapper;
 import com.agentscopea2a.harness.config.PersistenceProperties;
 import com.agentscopea2a.harness.config.PythonExecProperties;
 import com.agentscopea2a.harness.config.SandboxProperties;
@@ -51,8 +53,6 @@ import com.agentscopea2a.harness.tools.ToolRoutersIndex;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.memory.LongTermMemory;
 import io.agentscope.core.memory.LongTermMemoryMode;
-import com.agentscopea2a.agent.memory.EpisodicMemoryConfig;
-import com.agentscopea2a.agent.memory.MySqlEpisodicMemory;
 import io.agentscope.core.model.ExecutionConfig;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.tool.Toolkit;
@@ -109,6 +109,8 @@ public class SupervisorService {
     private final MySQLSession session;
     private final Model model;
     private final ModelRegistry modelRegistry;
+    private final UserModelConfigMapper userModelConfigMapper;
+    private final FallbackModelProperties fallbackModelProperties;
     private final PersistenceProperties persistence;
     private final ArtifactStore artifactStore;
     private final DataSource dataSource;
@@ -238,7 +240,9 @@ public class SupervisorService {
             SkillVectorIndex skillVectorIndex,
             SkillEvolutionRunner skillEvolutionRunner,
             FingerprintCalculator fingerprintCalculator,
-            ObjectProvider<EmbeddingClient> embeddingClientProvider) {
+            ObjectProvider<EmbeddingClient> embeddingClientProvider,
+            UserModelConfigMapper userModelConfigMapper,
+            FallbackModelProperties fallbackModelProperties) {
         this.workspace = workspace;
         this.session = session;
         this.model = model;
@@ -265,6 +269,8 @@ public class SupervisorService {
         this.cacheDimManager = cacheDimManager;
         this.embeddingClient = embeddingClientProvider.getIfAvailable();
         this.toolRegistry = buildToolRegistry(workspace);
+        this.userModelConfigMapper = userModelConfigMapper;
+        this.fallbackModelProperties = fallbackModelProperties;
     }
 
     @PostConstruct
@@ -368,7 +374,7 @@ public class SupervisorService {
         HarnessAgent.Builder b =
                 HarnessAgent.builder()
                         .name(AGENT_NAME)
-                        .model(model)
+                        .model(resolveModelForRequest(ctx))
                         .workspace(workspace)
                         .toolkit(toolkit)
                         .session(session)
@@ -402,7 +408,7 @@ public class SupervisorService {
         }
 
         for (SubagentDeclaration spec : workspaceSubagents) {
-            registerSubagentFromSpec(b, spec, requestArtifactCtx);
+            registerSubagentFromSpec(b, spec, requestArtifactCtx, ctx);
         }
 
         // -- Business hooks --
@@ -483,7 +489,7 @@ public class SupervisorService {
     }
 
     private void registerSubagentFromSpec(
-            HarnessAgent.Builder parent, SubagentDeclaration spec, ArtifactContext pinnedArtifactCtx) {
+            HarnessAgent.Builder parent, SubagentDeclaration spec, ArtifactContext pinnedArtifactCtx, RuntimeContext ctx) {
         final String agentId = spec.getName();
         final String sysPrompt = spec.getInlineAgentsBody();
         final int maxIters = spec.getMaxIters() > 0 ? spec.getMaxIters() : 5;
@@ -531,7 +537,7 @@ public class SupervisorService {
                     HarnessAgent.Builder sub =
                             HarnessAgent.builder()
                                     .name(id)
-                                    .model(modelRegistry.getForSubagent(id))
+                                    .model(resolveModelForRequest(ctx))
                                     .workspace(workspace)
                                     .toolkit(tk)
                                     .sysPrompt(effectiveSysPrompt)
@@ -647,5 +653,41 @@ public class SupervisorService {
      */
     public MySqlEpisodicMemory getEpisodicMemory() {
         return sharedEpisodicMemory;
+    }
+
+    /**
+     * 根据请求上下文中的 userId 解析对应的 Model 实例。
+     * <p>优先使用用户自定义配置（token/model/url），无配置时使用默认模型。
+     * 无论哪种情况，都会包装为 FallbackModelDecorator 以支持自动降级。
+     */
+    private Model resolveModelForRequest(RuntimeContext ctx) {
+        Long userId = parseUserId(ctx);
+        return modelRegistry.getModelForUser(
+                userId,
+                uid -> {
+                    try {
+                        return userModelConfigMapper.selectByUserId(uid);
+                    } catch (Exception e) {
+                        log.warn("查询用户模型配置失败 userId={}: {}", uid, e.getMessage());
+                        return null;
+                    }
+                },
+                fallbackModelProperties);
+    }
+
+    /**
+     * 从 RuntimeContext 中提取 userId。
+     * RuntimeContext.userId 可能是 String 类型，需转为 Long。
+     */
+    private Long parseUserId(RuntimeContext ctx) {
+        if (ctx == null) return null;
+        String uid = ctx.getUserId();
+        if (uid == null || uid.isBlank()) return null;
+        try {
+            return Long.parseLong(uid.trim());
+        } catch (NumberFormatException e) {
+            log.warn("无法解析 userId='{}': {}", uid, e.getMessage());
+            return null;
+        }
     }
 }

@@ -18,12 +18,11 @@ import com.agentscopea2a.harness.artifact.ArtifactContext;
 import com.agentscopea2a.harness.artifact.ArtifactStore;
 import com.agentscopea2a.harness.cache.ResponseCacheService;
 import com.agentscopea2a.harness.hooks.ResponseCacheHook;
-import com.agentscopea2a.mapper.db1.MainAgentMapper;
+import com.agentscopea2a.mapper.mysql.MainAgentMapper;
 import com.agentscopea2a.service.ChatStreamService;
 import com.agentscopea2a.service.SupervisorService;
 import com.agentscopea2a.util.SseEmitterCacheUtil;
 import com.agentscopea2a.util.ThreadContextUtils;
-import com.alibaba.fastjson.JSON;
 import io.agentscope.core.agent.Event;
 import io.agentscope.core.agent.EventType;
 import io.agentscope.core.agent.RuntimeContext;
@@ -45,7 +44,6 @@ import reactor.core.publisher.Flux;
 import java.io.IOException;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 
@@ -130,7 +128,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         }
 
         SseEmitterCacheUtil.put(req.getConversationId(), emitter);
-   
+        final String uuid = UUID.randomUUID().toString();
 
         // 状态标记
         StreamContext ctxState = new StreamContext(emitter, req, uuid);
@@ -155,7 +153,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                     try {
                         artifactStore.cleanupTask(ArtifactContext.from(ctx));
                     } catch (Exception ex) {
-                        LOGGER.warn("Artifact cleanup failed for /ai/chat: {}", ex.getMessage());
+                        LOGGER.warn("Artifact cleanup failed: conv={}, msg={}", req.getConversationId(), ex.getMessage());
                     }
                 };
         emitter.onCompletion(cleanup);
@@ -194,8 +192,12 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     public SseEmitter streamPublic(ChatRequest req) {
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
 
-        SseEmitterCacheUtil.put(req.getConversationId(), emitter);
+        if (StringUtils.isEmpty(req.getConversationId())){
+            req.setConversationId(UUID.randomUUID().toString());
+        }
 
+        SseEmitterCacheUtil.put(req.getConversationId(), emitter);
+        final String uuid = UUID.randomUUID().toString();
 
         // 状态标记
         StreamContext ctxState = new StreamContext(emitter, req, uuid);
@@ -220,7 +222,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                     try {
                         artifactStore.cleanupTask(ArtifactContext.from(ctx));
                     } catch (Exception ex) {
-                        LOGGER.warn("Artifact cleanup failed for /ai/chat: {}", ex.getMessage());
+                        LOGGER.warn("Artifact cleanup failed: conv={}, msg={}", req.getConversationId(), ex.getMessage());
                     }
                 };
         emitter.onCompletion(cleanup);
@@ -268,7 +270,10 @@ public class ChatStreamServiceImpl implements ChatStreamService {
      */
     private void processChunkPublic(Event chunk, StreamContext ctx) {
         try {
-            System.out.println("主智能体回答: " + JSON.toJSONString(chunk));
+            LOGGER.debug("Stream chunk: conv={}, uuid={}, type={}, last={}, agent={}",
+                    ctx.req.getConversationId(), ctx.uuid,
+                    chunk.getType(), chunk.isLast(),
+                    chunk.getMessage() != null ? chunk.getMessage().getName() : "null");
 
             String agentName = chunk.getMessage().getName();
             ContentBlock contentBlock = chunk.getMessage().getContent().get(0);
@@ -299,8 +304,11 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         } catch (Exception e) {
             sendThinkResponsePublic(ctx.emitter, "", "执行中", "分析执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
             sendThinkResponsePublic(ctx.emitter, "", "已执行", "分析执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
-            LOGGER.error("主智能体执行失败异常: ", e);
-            throw new RuntimeException(e.getMessage());
+            LOGGER.error("主智能体执行失败异常: conv={}, uuid={}, agent={}, chunkType={}, msg={}",
+                    ctx.req.getConversationId(), ctx.uuid,
+                    chunk.getMessage() != null ? chunk.getMessage().getName() : "unknown",
+                    chunk.getType(), e.getMessage(), e);
+            throw new RuntimeException("Chunk processing failed: conv=" + ctx.req.getConversationId(), e);
         }
     }
 
@@ -329,7 +337,10 @@ public class ChatStreamServiceImpl implements ChatStreamService {
      */
     private void processChunk(Event chunk, StreamContext ctx) {
         try {
-            System.out.println("主智能体回答: " + JSON.toJSONString(chunk));
+            LOGGER.debug("Stream chunk: conv={}, uuid={}, type={}, last={}, agent={}",
+                    ctx.req.getConversationId(), ctx.uuid,
+                    chunk.getType(), chunk.isLast(),
+                    chunk.getMessage() != null ? chunk.getMessage().getName() : "null");
 
             String agentName = chunk.getMessage().getName();
             ContentBlock contentBlock = chunk.getMessage().getContent().get(0);
@@ -360,8 +371,11 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         } catch (Exception e) {
             sendThinkResponse(ctx.emitter, "", "执行中", "分析执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
             sendThinkResponse(ctx.emitter, "", "已执行", "分析执行智能体", false, ctx.req.getConversationId(), ctx.uuid);
-            LOGGER.error("主智能体执行失败异常: ", e);
-            throw new RuntimeException(e.getMessage());
+            LOGGER.error("主智能体执行失败异常: conv={}, uuid={}, agent={}, chunkType={}, msg={}",
+                    ctx.req.getConversationId(), ctx.uuid,
+                    chunk.getMessage() != null ? chunk.getMessage().getName() : "unknown",
+                    chunk.getType(), e.getMessage(), e);
+            throw new RuntimeException("Chunk processing failed: conv=" + ctx.req.getConversationId(), e);
         }
     }
 
@@ -460,7 +474,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             }
             ctx.emitter.complete();
         } catch (Exception e) {
-            LOGGER.warn("Cache replay send failed for conv={}: {}", conv, e.getMessage());
+            LOGGER.warn("Cache replay send failed: conv={}, uuid={}, msg={}", conv, ctx.uuid, e.getMessage());
             ctx.emitter.completeWithError(e);
         } finally {
             ThreadContextUtils.clearContext();
@@ -475,11 +489,14 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         // 先检查是否是 CacheHitException 被 reactor 包装后落入此路径
         ResponseCacheHook.CacheHitException cacheHit = unwrapCacheHit(error);
         if (cacheHit != null) {
+            LOGGER.info("Cache hit recovered in error handler: conv={}", ctx.req.getConversationId());
             emitCachedResponse(ctx, cacheHit.getCachedResponse(), true);
             return;
         }
 
-        LOGGER.error("处理流式异常: {}", error.getMessage(), error);
+        LOGGER.error("处理流式异常: conv={}, uuid={}, errorType={}, msg={}",
+                ctx.req.getConversationId(), ctx.uuid,
+                error.getClass().getSimpleName(), error.getMessage(), error);
         try {
             TextManagerResponseDto errorDto = new TextManagerResponseDto();
             ContentDto contentDto = new ContentDto();
@@ -488,7 +505,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             errorDto.setFinish(true);
             safeSend(ctx.emitter, errorDto, MediaType.APPLICATION_JSON);
         } catch (Exception e) {
-            LOGGER.warn("发送错误结果失败", e);
+            LOGGER.warn("发送错误结果失败: conv={}, uuid={}", ctx.req.getConversationId(), ctx.uuid, e);
         } finally {
             ctx.emitter.complete();
             ThreadContextUtils.clearContext();
@@ -503,11 +520,14 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         // 先检查是否是 CacheHitException 被 reactor 包装后落入此路径
         ResponseCacheHook.CacheHitException cacheHit = unwrapCacheHit(error);
         if (cacheHit != null) {
+            LOGGER.info("Cache hit recovered in error handler: conv={}", ctx.req.getConversationId());
             emitCachedResponse(ctx, cacheHit.getCachedResponse(), false);
             return;
         }
 
-        LOGGER.error("处理流式异常: {}", error.getMessage(), error);
+        LOGGER.error("处理流式异常: conv={}, uuid={}, errorType={}, msg={}",
+                ctx.req.getConversationId(), ctx.uuid,
+                error.getClass().getSimpleName(), error.getMessage(), error);
         try {
             TextResponseDto errorDto = new TextResponseDto();
             ContentDto contentDto = new ContentDto();
@@ -516,7 +536,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             errorDto.setFinish(true);
             safeSend(ctx.emitter, errorDto, MediaType.APPLICATION_JSON);
         } catch (Exception e) {
-            LOGGER.warn("发送错误结果失败", e);
+            LOGGER.warn("发送错误结果失败: conv={}, uuid={}", ctx.req.getConversationId(), ctx.uuid, e);
         } finally {
             ctx.emitter.complete();
             ThreadContextUtils.clearContext();
@@ -552,7 +572,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         try {
             emitter.send(data,mediaType);
         } catch (IOException e) {
-            throw new RuntimeException(e);
+            throw new RuntimeException("SSE send failed", e);
         }
     }
 
@@ -560,19 +580,23 @@ public class ChatStreamServiceImpl implements ChatStreamService {
      * 统一处理流式成功 — Manager版
      */
     private void handleStreamSuccess(StreamContext ctx) {
-        LOGGER.info("处理流式成功: {}", ctx.req.getConversationId());
+        LOGGER.info("处理流式成功: conv={}, uuid={}", ctx.req.getConversationId(), ctx.uuid);
         sendThinkResponse(ctx.emitter, " ", "已执行", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
         // 流式输出最终结果
         String finalAnswer = ctx.answerContent.toString();
         if (StringUtils.isNotBlank(finalAnswer)) {
-            int len = finalAnswer.length();
-            int pos = 0;
-            while (pos < len) {
-                int end = Math.min(pos + 5, len);
-                String chunk = finalAnswer.substring(pos, end);
-                boolean isLast = (end == len);
-                sendTextResponse(ctx.emitter, chunk, "", "", isLast, ctx.req.getConversationId(), ctx.uuid);
-                pos = end;
+            try {
+                int len = finalAnswer.length();
+                int pos = 0;
+                while (pos < len) {
+                    int end = Math.min(pos + 5, len);
+                    String chunk = finalAnswer.substring(pos, end);
+                    boolean isLast = (end == len);
+                    sendTextResponse(ctx.emitter, chunk, "", "", isLast, ctx.req.getConversationId(), ctx.uuid);
+                    pos = end;
+                }
+            } catch (Exception e) {
+                LOGGER.error("发送最终结果失败: conv={}, uuid={}", ctx.req.getConversationId(), ctx.uuid, e);
             }
         }
         ctx.emitter.complete();
@@ -584,19 +608,23 @@ public class ChatStreamServiceImpl implements ChatStreamService {
      * 统一处理流式成功 — 通用版
      */
     private void handleStreamSuccessPublic(StreamContext ctx) {
-        LOGGER.info("处理流式成功(通用版): {}", ctx.req.getConversationId());
+        LOGGER.info("处理流式成功(通用版): conv={}, uuid={}", ctx.req.getConversationId(), ctx.uuid);
         sendThinkResponsePublic(ctx.emitter, " ", "已执行", "分析智能体", false, ctx.req.getConversationId(), ctx.uuid);
         // 流式输出最终结果
         String finalAnswer = ctx.answerContent.toString();
         if (StringUtils.isNotBlank(finalAnswer)) {
-            int len = finalAnswer.length();
-            int pos = 0;
-            while (pos < len) {
-                int end = Math.min(pos + 5, len);
-                String chunk = finalAnswer.substring(pos, end);
-                boolean isLast = (end == len);
-                sendTextResponsePublic(ctx.emitter, chunk, "", "", isLast, ctx.req.getConversationId(), ctx.uuid);
-                pos = end;
+            try {
+                int len = finalAnswer.length();
+                int pos = 0;
+                while (pos < len) {
+                    int end = Math.min(pos + 5, len);
+                    String chunk = finalAnswer.substring(pos, end);
+                    boolean isLast = (end == len);
+                    sendTextResponsePublic(ctx.emitter, chunk, "", "", isLast, ctx.req.getConversationId(), ctx.uuid);
+                    pos = end;
+                }
+            } catch (Exception e) {
+                LOGGER.error("发送最终结果失败: conv={}, uuid={}", ctx.req.getConversationId(), ctx.uuid, e);
             }
         }
         ctx.emitter.complete();

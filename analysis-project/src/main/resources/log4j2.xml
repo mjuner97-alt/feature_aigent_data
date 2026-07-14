@@ -15,27 +15,81 @@
   ~ limitations under the License.
 -->
 <!--
-  Log4j2 configuration for the harness-example Text-to-SQL demo.
+  Log4j2 configuration.
   Override io.agentscope log level at runtime: AGENTSCOPE_LOG_LEVEL=DEBUG
+
+  Log files:
+    logs/error.log      — ERROR only, every line has conv=xxx for grep
+    logs/app.log         — com.agentscopea2a DEBUG+, full request timeline
+    logs/agentscope.log  — io.agentscope INFO+, framework-level logs
 -->
-<Configuration status="INFO">
+<Configuration status="WARN">
     <Properties>
+        <Property name="LOG_PATH">${sys:app.log.path:-logs}</Property>
         <Property name="AGENTSCOPE_LEVEL">${env:AGENTSCOPE_LOG_LEVEL:-INFO}</Property>
+        <Property name="FILE_PATTERN">%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%t] %-40.40c{1.} : %m%n%throwable{full}</Property>
         <Property name="CONSOLE_PATTERN">%d{HH:mm:ss.SSS} %-5level %-36.36c{1.} : %m%n%throwable</Property>
     </Properties>
 
     <Appenders>
+        <!-- Console: kept for development convenience -->
         <Console name="Console" target="SYSTEM_OUT">
             <PatternLayout pattern="${CONSOLE_PATTERN}" charset="UTF-8"/>
         </Console>
+
+        <!-- ERROR only — first place to look when something breaks -->
+        <RollingFile name="ErrorFile"
+                     fileName="${LOG_PATH}/error.log"
+                     filePattern="${LOG_PATH}/error-%d{yyyy-MM-dd}-%i.log.gz">
+            <PatternLayout pattern="${FILE_PATTERN}" charset="UTF-8"/>
+            <ThresholdFilter level="ERROR" onMatch="ACCEPT" onMismatch="DENY"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+                <SizeBasedTriggeringPolicy size="10 MB"/>
+            </Policies>
+            <DefaultRolloverStrategy max="30"/>
+        </RollingFile>
+
+        <!-- Application log — full request timeline -->
+        <RollingFile name="AppFile"
+                     fileName="${LOG_PATH}/app.log"
+                     filePattern="${LOG_PATH}/app-%d{yyyy-MM-dd}-%i.log.gz">
+            <PatternLayout pattern="${FILE_PATTERN}" charset="UTF-8"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+                <SizeBasedTriggeringPolicy size="10 MB"/>
+            </Policies>
+            <DefaultRolloverStrategy max="7"/>
+        </RollingFile>
+
+        <!-- AgentScope framework log -->
+        <RollingFile name="AgentScopeFile"
+                     fileName="${LOG_PATH}/agentscope.log"
+                     filePattern="${LOG_PATH}/agentscope-%d{yyyy-MM-dd}-%i.log.gz">
+            <PatternLayout pattern="${FILE_PATTERN}" charset="UTF-8"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+                <SizeBasedTriggeringPolicy size="10 MB"/>
+            </Policies>
+            <DefaultRolloverStrategy max="7"/>
+        </RollingFile>
     </Appenders>
 
     <Loggers>
-        <!-- AgentScope libraries (core, harness, example) -->
-        <Logger name="io.agentscope" level="${AGENTSCOPE_LEVEL}" additivity="false">
+        <!-- Our application code — DEBUG+ to app.log, ERROR also to error.log -->
+        <Logger name="com.agentscopea2a" level="DEBUG" additivity="false">
             <AppenderRef ref="Console"/>
+            <AppenderRef ref="AppFile"/>
+            <AppenderRef ref="ErrorFile"/>
         </Logger>
 
+        <!-- AgentScope libraries (core, harness) -->
+        <Logger name="io.agentscope" level="${AGENTSCOPE_LEVEL}" additivity="false">
+            <AppenderRef ref="Console"/>
+            <AppenderRef ref="AgentScopeFile"/>
+        </Logger>
+
+        <!-- Quiet noisy framework libraries -->
         <Logger name="io.netty" level="WARN"/>
         <Logger name="reactor.netty" level="WARN"/>
         <Logger name="io.projectreactor" level="WARN"/>

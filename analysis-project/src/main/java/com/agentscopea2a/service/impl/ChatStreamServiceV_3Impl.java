@@ -20,7 +20,7 @@ import com.agentscopea2a.harness.artifact.ArtifactStore;
 import com.agentscopea2a.harness.cache.ResponseCacheService;
 import com.agentscopea2a.harness.hooks.ResponseCacheHook;
 import com.agentscopea2a.harness.hooks.ToolCallCollector;
-import com.agentscopea2a.mapper.db1.MainAgentMapper;
+import com.agentscopea2a.mapper.mysql.MainAgentMapper;
 import com.agentscopea2a.service.ChatStreamServiceV_3;
 import com.agentscopea2a.service.SupervisorService;
 import com.agentscopea2a.util.SseEmitterCacheUtil;

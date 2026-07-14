@@ -68,6 +68,29 @@ public final class ModelBuilders {
         return openAI(apiKey, baseUrl != null ? baseUrl : GLM_DEFAULT_URL, modelName);
     }
 
+    /**
+     * 根据任意参数构建 Model 实例 — 用于运行时动态构建用户自定义模型。
+     *
+     * @param provider 提供商: glm / openai / anthropic
+     * @param apiKey   API Key
+     * @param baseUrl  请求地址（null 或空时部分 provider 有默认值）
+     * @param modelName 模型名
+     * @return Model 实例
+     */
+    public static Model buildFromUserConfig(String provider, String apiKey, String baseUrl, String modelName) {
+        requireNonBlank(provider, "provider");
+        requireNonBlank(apiKey, "apiKey");
+        requireNonBlank(modelName, "modelName");
+        String url = (baseUrl == null || baseUrl.isBlank()) ? null : baseUrl;
+        return switch (provider.toLowerCase()) {
+            case "anthropic" -> anthropic(apiKey, url, modelName);
+            case "openai" -> openAI(apiKey, url, modelName);
+            case "glm" -> glm(apiKey, url, modelName);
+            default -> throw new IllegalArgumentException(
+                    "未知 provider='" + provider + "'。支持: anthropic / openai / glm");
+        };
+    }
+
     private static void requireNonBlank(String v, String field) {
         if (v == null || v.isEmpty()) {
             throw new IllegalArgumentException(field + " must not be null or empty");

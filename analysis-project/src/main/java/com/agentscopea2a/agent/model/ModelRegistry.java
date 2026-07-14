@@ -9,6 +9,7 @@
  */
 package com.agentscopea2a.agent.model;
 
+import com.agentscopea2a.entity.UserModelConfig;
 import io.agentscope.core.model.Model;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -116,6 +117,57 @@ public class ModelRegistry {
     public Model getForSubagent(String subagentName) {
         String mapped = props.getSubagents().get(subagentName);
         return (mapped == null || mapped.isBlank()) ? getDefault() : get(mapped);
+    }
+
+    /**
+     * 根据用户ID获取对应的 FallbackModelDecorator。
+     * <p>优先使用用户自定义配置（token/model/url），无配置时使用默认模型。
+     * 无论哪种情况，都会包装为 FallbackModelDecorator 以支持自动降级。
+     *
+     * @param userId          用户ID
+     * @param userConfigLookup 用户配置查找函数，返回 null 表示无用户配置
+     * @param fallbackProps   通用降级配置
+     * @return FallbackModelDecorator 实例（已包装降级逻辑）
+     */
+    public FallbackModelDecorator getModelForUser(
+            Long userId,
+            java.util.function.Function<Long, UserModelConfig> userConfigLookup,
+            FallbackModelProperties fallbackProps) {
+
+        // 尝试获取用户配置
+        UserModelConfig userConfig = null;
+        if (userId != null && userConfigLookup != null) {
+            try {
+                userConfig = userConfigLookup.apply(userId);
+            } catch (Exception e) {
+                log.warn("查询用户模型配置异常 userId={}: {}", userId, e.getMessage());
+            }
+        }
+
+        Model primaryModel;
+        boolean hasUserConfig = userConfig != null;
+
+        if (hasUserConfig) {
+            log.info("使用用户自定义模型配置 userId={} provider={} model={}",
+                    userId, userConfig.getProvider(), userConfig.getModelName());
+            primaryModel = ModelBuilders.buildFromUserConfig(
+                    userConfig.getProvider(),
+                    userConfig.getToken(),
+                    userConfig.getRequestUrl(),
+                    userConfig.getModelName());
+        } else {
+            log.info("用户无自定义配置，使用默认模型 userId={}", userId);
+            primaryModel = getDefault();
+        }
+
+        // 构建通用降级 Model
+        Model fallbackModel = ModelBuilders.buildFromUserConfig(
+                fallbackProps.getProvider(),
+                fallbackProps.getApiKey(),
+                fallbackProps.getBaseUrl(),
+                fallbackProps.getModelName());
+
+        return new FallbackModelDecorator(primaryModel, fallbackModel, fallbackProps);
     }
 
     private Model build(String instanceName, ModelProperties.Instance inst) {

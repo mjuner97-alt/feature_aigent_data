@@ -9,6 +9,7 @@
  */
 package com.agentscopea2a.harness.config;
 
+import com.agentscopea2a.agent.model.FallbackModelProperties;
 import com.agentscopea2a.agent.model.ModelProperties;
 import com.agentscopea2a.agent.model.ModelRegistry;
 import com.agentscopea2a.harness.artifact.ArtifactIo;
@@ -134,15 +135,22 @@ public class  InfraConfig {
     }
 
     /**
-     * 默认 Model bean — 对应 {@code harness.a2a.model.default} 实例。{@code @Primary} 让没有
-     * 显式 {@code @Qualifier} 的 {@code Model} 注入点默认拿到它。
-     *
-     * <p>需要其它实例的组件请直接注入 {@link ModelRegistry},按名取用,例如:
-     * {@code modelRegistry.get("claude-coder")} / {@code modelRegistry.getForSubagent("code_interpreter")}。
+     * Primary {@link Model} bean — resolved from the default instance in
+     * {@link ModelRegistry}. Used by components that need a single Model injection
+     * (e.g. {@code SkillDistiller}, {@code SupervisorService}).
      */
     @Bean
     @Primary
-    public Model model(ModelRegistry registry) {
-        return registry.getSupervisor();
+    public Model model(ModelRegistry modelRegistry) {
+        return modelRegistry.getDefault();
+    }
+
+    /**
+     * Fallback model properties bean — used by {@link com.agentscopea2a.agent.model.FallbackModelDecorator}
+     * to define fallback chains when a user's primary model fails.
+     */
+    @Bean
+    public FallbackModelProperties fallbackModelProperties() {
+        return new FallbackModelProperties();
     }
 }
