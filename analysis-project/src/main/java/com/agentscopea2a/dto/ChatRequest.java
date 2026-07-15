@@ -9,29 +9,13 @@
  */
 package com.agentscopea2a.dto;
 
-import com.agentscopea2a.service.ChatStreamServiceV_3;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-/**
- * Inbound payload for {@code POST /ai/chat}.
- *
- * <p>All identity fields are optional on the wire; defaults are filled in
- * {@link ChatStreamServiceV_3}.
- *
- * <ul>
- *   <li>Missing {@code conversationId} → service generates a UUID. When provided it is forwarded
- *       to the model so multi-turn context is preserved.
- *   <li>Missing {@code agentId} → defaults to {@code "7"}; {@code agentName} → {@code "QA助手"};
- *       {@code formType} → {@code "HXY"}.
- *   <li>Missing {@code agentId} but non-blank {@code chatId} → {@code conversationId} is set from
- *       {@code chatId} (so legacy clients that only know about a chat handle still get session
- *       continuity).
- * </ul>
- */
+
 @Data
 @Builder
 @NoArgsConstructor
@@ -42,7 +26,6 @@ public class ChatRequest {
 
     private String conversationId;
 
-    @JsonProperty("user_id")
     private String userId;
 
     private String agentId;

@@ -2,7 +2,6 @@
 package com.agentscopea2a.controller;
 
 import com.agentscopea2a.dto.ChatRequest;
-import com.agentscopea2a.service.ChatStreamServiceV_3;
 import com.agentscopea2a.service.ChatStreamService;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -16,9 +15,6 @@ import java.util.UUID;
 @RequestMapping("/ai")
 @CrossOrigin(origins = "*",maxAge = 3600)
 public class ChatController {
-
-    @Autowired
-    private ChatStreamServiceV_3 chatStreamServiceV3;
 
     @Autowired
     private ChatStreamService chatStreamService;
@@ -42,12 +38,12 @@ public class ChatController {
         // 统一归一化：chatId（公开入口）和 conversationId（Manager入口）是同一字段
         normalizeConversationId(req);
         if (StringUtils.isNoneEmpty(req.getAgentName())){
-            return chatStreamServiceV3.stream(req);
+            return chatStreamService.stream(req);
         }else {
             req.setAgentId("7");
             req.setAgentName("数字QA助手");
             req.setFromType("HXY");
-            return chatStreamServiceV3.streamPublic(req);
+            return chatStreamService.streamPublic(req);
         }
     }
 

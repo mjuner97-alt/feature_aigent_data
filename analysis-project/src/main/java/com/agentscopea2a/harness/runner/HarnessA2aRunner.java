@@ -195,7 +195,15 @@ public class HarnessA2aRunner implements AgentRunner {
             log.debug("Persisting tool call context to episodic memory ({} chars)", json.length());
             MySqlEpisodicMemory mem = supervisorService.getEpisodicMemory();
             if (mem != null) {
-                mem.recordSessionWithToolContext(sessionId, List.of(), json)
+                // Construct a USER message so tool_call_details is written on the USER row.
+                // collector.getUserQuery() was set from the original user question at construction time.
+                Msg userMsg = Msg.builder()
+                        .role(MsgRole.USER)
+                        .content(TextBlock.builder()
+                                .text(collector.getUserQuery())
+                                .build())
+                        .build();
+                mem.recordSessionWithToolContext(sessionId, List.of(userMsg), json)
                         .subscribeOn(Schedulers.boundedElastic())
                         .subscribe(
                                 v -> {},
