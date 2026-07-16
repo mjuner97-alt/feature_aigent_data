@@ -67,7 +67,7 @@ public class ChatController {
             req.setSessionId(req.getConversationId());
         }
 
-        if (StringUtils.isEmpty(req.getSessionId())) {
+        if (StringUtils.isNotEmpty(req.getSessionId())) {
             req.setConversationId(req.getSessionId());
         }
 
