@@ -1,84 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!--
-  ~ Copyright 2024-2026 the original author or authors.
-  ~
-  ~ Licensed under the Apache License, Version 2.0 (the "License");
-  ~ you may not use this file except in compliance with the License.
-  ~ You may obtain a copy of the License at
-  ~
-  ~     http://www.apache.org/licenses/LICENSE-2.0
-  ~
-  ~ Unless required by applicable law or agreed to in writing, software
-  ~ distributed under the License is distributed on an "AS IS" BASIS,
-  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-  ~ See the License for the specific language governing permissions and
-  ~ limitations under the License.
--->
-<!--
-  Log4j2 configuration.
-  Override io.agentscope log level at runtime: AGENTSCOPE_LOG_LEVEL=DEBUG
-
-  Log files:
-    logs/app.log      — All application logs (INFO+)
-    logs/error.log    — ERROR only
--->
 <Configuration status="WARN">
-    <Properties>
-        <Property name="LOG_PATH">${sys:app.log.path:-logs}</Property>
-        <Property name="AGENTSCOPE_LEVEL">${env:AGENTSCOPE_LOG_LEVEL:-INFO}</Property>
-        <Property name="FILE_PATTERN">%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%t] %-40.40c{1.} : %m%n%throwable{full}</Property>
-    </Properties>
-
     <Appenders>
-        <!-- Application log — all logs -->
-        <RollingFile name="AppFile"
-                     fileName="${LOG_PATH}/app.log"
-                     filePattern="${LOG_PATH}/app-%d{yyyy-MM-dd}-%i.log.gz">
-            <PatternLayout pattern="${FILE_PATTERN}" charset="UTF-8"/>
-            <Policies>
-                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
-                <SizeBasedTriggeringPolicy size="50 MB"/>
-            </Policies>
-            <DefaultRolloverStrategy max="7"/>
-        </RollingFile>
-
-        <!-- ERROR only — first place to look when something breaks -->
-        <RollingFile name="ErrorFile"
-                     fileName="${LOG_PATH}/error.log"
-                     filePattern="${LOG_PATH}/error-%d{yyyy-MM-dd}-%i.log.gz">
-            <PatternLayout pattern="${FILE_PATTERN}" charset="UTF-8"/>
-            <ThresholdFilter level="ERROR" onMatch="ACCEPT" onMismatch="DENY"/>
-            <Policies>
-                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
-                <SizeBasedTriggeringPolicy size="50 MB"/>
-            </Policies>
-            <DefaultRolloverStrategy max="30"/>
-        </RollingFile>
+        <!-- 控制台输出 -->
+        <Console name="Console" target="SYSTEM_OUT">
+            <PatternLayout pattern="%d{yyyy-MM-dd HH:mm:ss.SSS} [%t] %-5level %logger{36} - %msg%n"/>
+        </Console>
     </Appenders>
-
     <Loggers>
-        <!-- Our application code — INFO+ to app.log, ERROR also to error.log -->
-        <Logger name="com.agentscopea2a" level="INFO" additivity="false">
-            <AppenderRef ref="AppFile"/>
-            <AppenderRef ref="ErrorFile"/>
-        </Logger>
-
-        <!-- AgentScope libraries (core, harness) -->
-        <Logger name="io.agentscope" level="${AGENTSCOPE_LEVEL}" additivity="false">
-            <AppenderRef ref="AppFile"/>
-            <AppenderRef ref="ErrorFile"/>
-        </Logger>
-
-        <!-- Quiet noisy framework libraries -->
-        <Logger name="io.netty" level="WARN"/>
-        <Logger name="reactor.netty" level="WARN"/>
-        <Logger name="io.projectreactor" level="WARN"/>
-        <Logger name="okhttp3" level="WARN"/>
-        <Logger name="com.alibaba" level="WARN"/>
-
-        <Root level="INFO">
-            <AppenderRef ref="AppFile"/>
-            <AppenderRef ref="ErrorFile"/>
+        <!-- 根日志级别 -->
+        <Root level="info">
+            <AppenderRef ref="Console"/>
         </Root>
+        <!-- 项目日志级别 -->
+        <Logger name="com.agentscopea2a" level="debug"/>
+        <Logger name="io.agentscope" level="debug"/>
     </Loggers>
 </Configuration>
