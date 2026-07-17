@@ -9,7 +9,6 @@
  */
 package com.agentscopea2a.harness.config;
 
-import com.agentscopea2a.agent.model.FallbackModelProperties;
 import com.agentscopea2a.agent.model.ModelProperties;
 import com.agentscopea2a.agent.model.ModelRegistry;
 import com.agentscopea2a.harness.artifact.ArtifactIo;
@@ -145,12 +144,4 @@ public class  InfraConfig {
         return modelRegistry.getDefault();
     }
 
-    /**
-     * Fallback model properties bean — used by {@link com.agentscopea2a.agent.model.FallbackModelDecorator}
-     * to define fallback chains when a user's primary model fails.
-     */
-    @Bean
-    public FallbackModelProperties fallbackModelProperties() {
-        return new FallbackModelProperties();
-    }
 }

@@ -39,14 +39,12 @@ public class FallbackModelDecorator implements Model {
 
     private final Model primaryModel;
     private final Model fallbackModel;
-    private final int maxRetries;
-    private final long retryIntervalMs;
+    private  int maxRetries = 3;
+    private  long retryIntervalMs = 2000l;
 
-    public FallbackModelDecorator(Model primaryModel, Model fallbackModel, FallbackModelProperties props) {
+    public FallbackModelDecorator(Model primaryModel, Model fallbackModel) {
         this.primaryModel = primaryModel;
         this.fallbackModel = fallbackModel;
-        this.maxRetries = props.getMaxRetries();
-        this.retryIntervalMs = props.getRetryIntervalMs();
     }
 
     @Override

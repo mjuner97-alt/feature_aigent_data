@@ -126,13 +126,11 @@ public class ModelRegistry {
      *
      * @param userId          用户ID
      * @param userConfigLookup 用户配置查找函数，返回 null 表示无用户配置
-     * @param fallbackProps   通用降级配置
      * @return FallbackModelDecorator 实例（已包装降级逻辑）
      */
     public FallbackModelDecorator getModelForUser(
             Long userId,
-            java.util.function.Function<Long, UserModelConfig> userConfigLookup,
-            FallbackModelProperties fallbackProps) {
+            java.util.function.Function<Long, UserModelConfig> userConfigLookup) {
 
         // 尝试获取用户配置
         UserModelConfig userConfig = null;
@@ -160,14 +158,9 @@ public class ModelRegistry {
             primaryModel = getDefault();
         }
 
-        // 构建通用降级 Model
-        Model fallbackModel = ModelBuilders.buildFromUserConfig(
-                fallbackProps.getProvider(),
-                fallbackProps.getApiKey(),
-                fallbackProps.getBaseUrl(),
-                fallbackProps.getModelName());
+        Model fallbackModel = ModelUtil.getDefault();
 
-        return new FallbackModelDecorator(primaryModel, fallbackModel, fallbackProps);
+        return new FallbackModelDecorator(primaryModel, fallbackModel);
     }
 
     private Model build(String instanceName, ModelProperties.Instance inst) {
