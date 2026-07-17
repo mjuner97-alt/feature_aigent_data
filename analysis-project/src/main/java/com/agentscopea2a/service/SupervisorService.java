@@ -18,7 +18,6 @@ package com.agentscopea2a.service;
 import com.agentscopea2a.harness.artifact.ArtifactContext;
 import com.agentscopea2a.harness.artifact.ArtifactStore;
 import com.agentscopea2a.harness.cache.ResponseCacheService;
-import com.agentscopea2a.agent.model.FallbackModelProperties;
 import com.agentscopea2a.agent.model.ModelRegistry;
 import com.agentscopea2a.mapper.mysql.UserModelConfigMapper;
 import com.agentscopea2a.harness.config.PersistenceProperties;
@@ -110,7 +109,6 @@ public class SupervisorService {
     private final Model model;
     private final ModelRegistry modelRegistry;
     private final UserModelConfigMapper userModelConfigMapper;
-    private final FallbackModelProperties fallbackModelProperties;
     private final PersistenceProperties persistence;
     private final ArtifactStore artifactStore;
     private final DataSource dataSource;
@@ -241,8 +239,7 @@ public class SupervisorService {
             SkillEvolutionRunner skillEvolutionRunner,
             FingerprintCalculator fingerprintCalculator,
             ObjectProvider<EmbeddingClient> embeddingClientProvider,
-            UserModelConfigMapper userModelConfigMapper,
-            FallbackModelProperties fallbackModelProperties) {
+            UserModelConfigMapper userModelConfigMapper) {
         this.workspace = workspace;
         this.session = session;
         this.model = model;
@@ -270,7 +267,6 @@ public class SupervisorService {
         this.embeddingClient = embeddingClientProvider.getIfAvailable();
         this.toolRegistry = buildToolRegistry(workspace);
         this.userModelConfigMapper = userModelConfigMapper;
-        this.fallbackModelProperties = fallbackModelProperties;
     }
 
     @PostConstruct
@@ -671,8 +667,7 @@ public class SupervisorService {
                         log.warn("查询用户模型配置失败 userId={}: {}", uid, e.getMessage());
                         return null;
                     }
-                },
-                fallbackModelProperties);
+                });
     }
 
     /**
