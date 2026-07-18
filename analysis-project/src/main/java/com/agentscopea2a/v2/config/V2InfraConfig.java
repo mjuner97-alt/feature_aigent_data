@@ -211,6 +211,16 @@ public class V2InfraConfig {
         return new ToolCallTrackingHook();
     }
 
+    // ── Arith Mental Math Detector Hook (soft observability - logs warn when LLM does
+    //    arithmetic in its head instead of calling the arith tool). ──
+
+    @Bean
+    @SuppressWarnings("deprecation")
+    public com.agentscopea2a.v2.hooks.ArithMentalMathDetectorHook arithMentalMathDetectorHook() {
+        log.info("ArithMentalMathDetectorHook: wired (priority=70)");
+        return new com.agentscopea2a.v2.hooks.ArithMentalMathDetectorHook();
+    }
+
     // ── Session Middleware (sanitizes regex in tool call inputs) ──
 
     @Bean

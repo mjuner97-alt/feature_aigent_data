@@ -15,6 +15,7 @@
  */
 package com.agentscopea2a.v2.config;
 
+import com.agentscopea2a.v2.hooks.ArithMentalMathDetectorHook;
 import com.agentscopea2a.v2.hooks.ArtifactHandoffHook;
 import com.agentscopea2a.v2.hooks.KnowledgeRetrievalHook;
 import com.agentscopea2a.v2.hooks.PythonExecRetryHook;
@@ -103,8 +104,9 @@ public class HarnessAgentPartsConfig {
             ObjectProvider<SkillRetrievalHook> skillRetrievalHookProvider,
             ObjectProvider<SkillSynthesisHook> skillSynthesisHookProvider,
             ObjectProvider<SkillEvolutionHook> skillEvolutionHookProvider,
-            ObjectProvider<KnowledgeRetrievalHook> knowledgeRetrievalHookProvider) {
-        List<Hook> hooks = new ArrayList<>(7);
+            ObjectProvider<KnowledgeRetrievalHook> knowledgeRetrievalHookProvider,
+            ObjectProvider<ArithMentalMathDetectorHook> arithMentalMathDetectorProvider) {
+        List<Hook> hooks = new ArrayList<>(8);
         ArtifactHandoffHook handoff = artifactHandoffHookProvider.getIfAvailable();
         if (handoff != null) {
             hooks.add(handoff);
@@ -139,6 +141,11 @@ public class HarnessAgentPartsConfig {
         if (knowledge != null) {
             hooks.add(knowledge);
             log.info("HarnessAgentPartsConfig: KnowledgeRetrievalHook wired (priority=-40)");
+        }
+        ArithMentalMathDetectorHook arithDetector = arithMentalMathDetectorProvider.getIfAvailable();
+        if (arithDetector != null) {
+            hooks.add(arithDetector);
+            log.info("HarnessAgentPartsConfig: ArithMentalMathDetectorHook wired (priority=70)");
         }
         return hooks;
     }
