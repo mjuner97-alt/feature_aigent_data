@@ -17,6 +17,7 @@ import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import com.agentscopea2a.v2.exception.MemoryPersistenceException;
 import com.agentscopea2a.v2.skills.EmbeddingClient;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -185,7 +186,7 @@ public class MySqlEpisodicMemory implements EpisodicMemory {
                                         "Failed to record session {}: {}",
                                         sessionId,
                                         e.getMessage());
-                                throw new RuntimeException("Failed to record session", e);
+                                throw new MemoryPersistenceException("Failed to record session", e);
                             }
                         })
                 .subscribeOn(Schedulers.boundedElastic());
@@ -412,7 +413,7 @@ public class MySqlEpisodicMemory implements EpisodicMemory {
                                         "Failed to record session {}: {}",
                                         sessionId,
                                         e.getMessage());
-                                throw new RuntimeException("Failed to record session", e);
+                                throw new MemoryPersistenceException("Failed to record session", e);
                             }
                         })
                 .subscribeOn(Schedulers.boundedElastic());
