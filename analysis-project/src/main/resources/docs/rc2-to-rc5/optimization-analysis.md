@@ -360,7 +360,7 @@ try {
 
 **问题**：`MemoryDigestionService` cron `0 9 21 * * *`、`ArtifactSweeper` cron `0 17 * * * *`，失败只 log，无告警。
 
-**建议**：cron 失败时调 webhook（钉钉/飞书）或写 `agent_memory_ledger` 的 error 行。
+**建议**：cron 失败时调写 `agent_memory_ledger` 的 error 行。
 
 ---
 

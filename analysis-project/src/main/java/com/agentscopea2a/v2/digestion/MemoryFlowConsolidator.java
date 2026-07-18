@@ -17,7 +17,7 @@ package com.agentscopea2a.v2.digestion;
 
 import com.agentscopea2a.v2.memory.MemoryHydrator;
 import com.agentscopea2a.v2.memory.MysqlMemoryStore;
-import com.agentscopea2a.v2.digestion.TraceMiner.ToolCallDetail;
+import com.agentscopea2a.v2.digestion.TraceMinerTypes.ToolCallDetail;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.message.Msg;

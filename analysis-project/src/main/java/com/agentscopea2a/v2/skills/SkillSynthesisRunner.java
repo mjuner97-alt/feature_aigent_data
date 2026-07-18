@@ -230,7 +230,7 @@ public class SkillSynthesisRunner {
             if (stripped.equals(body)) break;  // no more frontmatter to strip
             body = stripped;
         }
-        List<String> samples = SkillDistiller.parseSamples(body);
+        List<String> samples = SkillDistillerParser.parseSamples(body);
 
         SkillDistiller.DistilledSkill distilled =
                 new SkillDistiller.DistilledSkill(name, description, body, samples);
@@ -549,7 +549,7 @@ public class SkillSynthesisRunner {
             if (stripped.equals(body)) break;
             body = stripped;
         }
-        List<String> samples = SkillDistiller.parseSamples(body);
+        List<String> samples = SkillDistillerParser.parseSamples(body);
 
         SkillDistiller.DistilledSkill distilled =
                 new SkillDistiller.DistilledSkill(name, description, body, samples);

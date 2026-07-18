@@ -24,18 +24,14 @@ import reactor.core.publisher.Mono;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * Distills an exemplar user question (+ optional recent trace) into the body of a SKILL.md.
  *
- * <p>PR2 — keeps the call tiny on purpose. We feed the LLM a single prompt asking for a name
+ * <p>PR2 - keeps the call tiny on purpose. We feed the LLM a single prompt asking for a name
  * + one-line description + the markdown body, and parse out three sections. No JSON schema, no
- * function-calling — this runs off the request hot path so latency doesn't matter; correctness
+ * function-calling - this runs off the request hot path so latency doesn't matter; correctness
  * and simplicity do.
  *
  * <p>EpisodicMemory is optional. When wired, we pull the last few snippets matching the
@@ -45,6 +41,10 @@ import java.util.regex.Pattern;
  * <p><b>Bean wiring:</b> Created by {@link com.agentscopea2a.v2.config.V2SkillConfig} -
  * not component-scanned. The {@code @Component} annotation has been removed in favor
  * of explicit construction in the config class.
+ *
+ * <p><b>P2-1 split:</b> Prompt templates and parsing logic have been extracted to
+ * {@link SkillDistillerPrompts} and {@link SkillDistillerParser}. This class keeps the
+ * distillation flow, model invocation, and subagent builder.
  */
 public class SkillDistiller {
 
@@ -62,52 +62,6 @@ public class SkillDistiller {
 
     /** How many episodic snippets to mix into the distillation prompt. */
     private static final int TRACE_SNIPPETS = 3;
-
-    private static final Pattern NAME_LINE =
-            Pattern.compile("^(?:name|skill_name)\\s*[:=]\\s*([a-z0-9_]+)\\s*$",
-                    Pattern.CASE_INSENSITIVE | Pattern.MULTILINE);
-    private static final Pattern DESC_LINE =
-            Pattern.compile("^description\\s*[:=]\\s*(.+)$",
-                    Pattern.CASE_INSENSITIVE | Pattern.MULTILINE);
-    /**
-     * Body fence; we accept either ```md, ```markdown, or plain triple-backtick.
-     * Match the entire content between the first opening fence and the LAST closing fence
-     * (or end-of-string). Greedy match is needed because LLM often nests ``` blocks
-     * inside the SKILL.md body (e.g. for JSON examples), and a non-greedy match would
-     * truncate at the first inner ```.
-     */
-    private static final Pattern BODY_FENCE =
-            Pattern.compile("```(?:md|markdown)?\\s*\\R(.*)`{0,2}\\s*$", Pattern.DOTALL);
-    /**
-     * `sample_questions:` block — one or more dash-prefixed lines following the label.
-     * Used by PR3.7 to enrich the embedded text on bge-zh so cosine spreads out enough to
-     * clear the L2 min-cosine threshold.
-     */
-    private static final Pattern SAMPLES_BLOCK =
-            Pattern.compile(
-                    "^sample_questions\\s*[:=]\\s*\\R((?:[ \\t]*-\\s*.+(?:\\R|$))+)",
-                    Pattern.CASE_INSENSITIVE | Pattern.MULTILINE);
-    /**
-     * Markdown body fallback for sample questions: an h2 like "## 典型问法" / "## 示例问法" /
-     * "## 样例问法" followed by dash-bulleted lines. LLMs strongly prefer this idiomatic form
-     * over a separate {@code sample_questions:} block, so we accept either.
-     */
-    private static final Pattern SAMPLES_H2_BLOCK =
-            Pattern.compile(
-                    "^#{2,3}\\s*(?:典型问法|示例问法|样例问法|样例提问|常见问法|问法示例)\\s*\\R+"
-                            + "((?:[ \\t]*-\\s*.+(?:\\R|$))+)",
-                    Pattern.MULTILINE);
-    private static final Pattern SAMPLE_LINE =
-            Pattern.compile("^[ \\t]*-\\s*(.+?)\\s*$", Pattern.MULTILINE);
-
-    /** Prompt for retrying a failed parse — asks LLM to re-emit only the structure. */
-    private static final String RETRY_PROMPT_SUFFIX =
-            "\n\n-----\n以上输出格式不符合要求。请只输出以下四段(不要多余内容):\n"
-                    + "1. `name: <英文小写下划线>`\n"
-                    + "2. `description: <一句话中文描述>`\n"
-                    + "3. `sample_questions:` 然后 3-5 行 `- <中文问法>`\n"
-                    + "4. ```markdown 包裹的 SKILL.md 正文\n"
-                    + "不要 YAML frontmatter。";
 
     public SkillDistiller(Model model, ObjectProvider<EpisodicMemory> episodicProvider,
                           MetricClassificationService metricClassifier,
@@ -130,7 +84,7 @@ public class SkillDistiller {
 
     /**
      * Build a {@link DistilledSkill} from the exemplar question. Returns {@code null} on any
-     * parse failure — the hook treats that as "reject this candidate" rather than producing
+     * parse failure - the hook treats that as "reject this candidate" rather than producing
      * a malformed SKILL.md.
      *
      * <p>On first parse failure, retries once with a short corrective prompt asking the LLM to
@@ -150,15 +104,15 @@ public class SkillDistiller {
         return searchTraceSnippets(exemplarQuestion)
                 .defaultIfEmpty("")
                 .flatMap(trace -> callModel(exemplarQuestion, fingerprintHint, trace, metricContext))
-                .map(SkillDistiller::parseLenient)
+                .map(SkillDistillerParser::parseLenient)
                 .flatMap(skill -> {
                     if (skill != null) return Mono.just(skill);
                     // Retry once with corrective prompt
                     log.info("Distill parse failed for q='{}', retrying with corrective prompt", exemplarQuestion);
                     return searchTraceSnippets(exemplarQuestion)
                             .defaultIfEmpty("")
-                            .flatMap(trace -> callModel(exemplarQuestion, fingerprintHint, trace + RETRY_PROMPT_SUFFIX, metricContext))
-                            .map(SkillDistiller::parseLenient);
+                            .flatMap(trace -> callModel(exemplarQuestion, fingerprintHint, trace + SkillDistillerPrompts.RETRY_PROMPT_SUFFIX, metricContext))
+                            .map(SkillDistillerParser::parseLenient);
                 })
                 .onErrorResume(
                         ex -> {
@@ -168,7 +122,7 @@ public class SkillDistiller {
     }
 
     /**
-     * PR4 — rewrites an existing SKILL.md body so it avoids the recent failure mode.
+     * PR4 - rewrites an existing SKILL.md body so it avoids the recent failure mode.
      * Returns {@code null} on parse failure or when the LLM emits a different {@code name}
      * (we won't rename a skill mid-evolution because L1 fingerprint binds to the file name).
      *
@@ -190,10 +144,10 @@ public class SkillDistiller {
             return Mono.empty();
         }
         return callEvolveModel(skillName, oldBody, exemplarQuestion, failedTraceSnippet)
-                .map(SkillDistiller::parse)
+                .map(SkillDistillerParser::parse)
                 .map(d -> {
                     if (d == null) return null;
-                    // Reject any LLM-initiated rename — fingerprint / file binding requires
+                    // Reject any LLM-initiated rename - fingerprint / file binding requires
                     // a stable name across versions.
                     if (!skillName.equalsIgnoreCase(d.name())) {
                         log.warn(
@@ -217,12 +171,12 @@ public class SkillDistiller {
      * Build a temporary {@link HarnessAgent} that runs the {@code generate_skill} subagent spec
      * for auto-distillation. The agent uses a {@link CaptureSkillSaveTool} in place of the real
      * {@link com.agentscopea2a.v2.tools.SkillSaveTool} so that the save_skill call is captured
-     * in memory rather than written to disk — the caller ({@link SkillSynthesisRunner}) handles
+     * in memory rather than written to disk - the caller ({@link SkillSynthesisRunner}) handles
      * CAS, disk write, and embedding after the subagent finishes.
      *
      * <p>The system prompt is assembled from:
      * <ol>
-     *   <li>{@code workspace/agent-subagents/generate_skill.md} — the same spec used by Path B</li>
+     *   <li>{@code workspace/agent-subagents/generate_skill.md} - the same spec used by Path B</li>
      *   <li>Tool-call context (enriched by {@link SkillSynthesisRunner#buildEnrichedContext})</li>
      *   <li>Metric-tag context (from {@link #metricHint})</li>
      * </ol>
@@ -264,7 +218,7 @@ public class SkillDistiller {
         tk.registerTool(captureTool);
 
         // 5. Build subagent
-        // disableMemoryHooks: the distill subagent is ephemeral — it doesn't need
+        // disableMemoryHooks: the distill subagent is ephemeral - it doesn't need
         // MemoryFlushHook or MemoryMaintenanceHook. These hooks trigger extra LLM calls
         // and filesystem writes per PostCall, which can crash on Windows when userId
         // contains path-illegal chars (e.g. ':'). Consistent with how SupervisorService
@@ -314,15 +268,15 @@ public class SkillDistiller {
         return searchTraceSnippets(exemplarQuestion)
                 .defaultIfEmpty("")
                 .flatMap(trace -> callModelWithContext(exemplarQuestion, fingerprintHint, toolCallContext, trace, metricContext))
-                .map(SkillDistiller::parseLenient)
+                .map(SkillDistillerParser::parseLenient)
                 .flatMap(skill -> {
                     if (skill != null) return Mono.just(skill);
                     log.info("Context-distill parse failed for q='{}', retrying", exemplarQuestion);
                     return searchTraceSnippets(exemplarQuestion)
                             .defaultIfEmpty("")
                             .flatMap(trace -> callModelWithContext(
-                                    exemplarQuestion, fingerprintHint, toolCallContext, trace + RETRY_PROMPT_SUFFIX, metricContext))
-                            .map(SkillDistiller::parseLenient);
+                                    exemplarQuestion, fingerprintHint, toolCallContext, trace + SkillDistillerPrompts.RETRY_PROMPT_SUFFIX, metricContext))
+                            .map(SkillDistillerParser::parseLenient);
                 })
                 .onErrorResume(
                         ex -> {
@@ -333,33 +287,9 @@ public class SkillDistiller {
 
     private Mono<String> callModelWithContext(
             String question, String fingerprintHint, String toolCallContext, String traceBlock, String metricContext) {
-        String prompt =
-                "你正在为一个'质量数据智能助手'蒸馏可复用的 skill。下面是一个用户多次出现的同类问题:\n\n"
-                        + "**用户问题**: " + question + "\n"
-                        + "**Fingerprint**: " + fingerprintHint + "\n"
-                        + metricContext
-                        + toolCallContext
-                        + traceBlock
-                        + "\n\n请输出四段:\n"
-                        + "1. 一行 `name: <英文小写下划线>` (例如 `quarterly_quality_compare`)\n"
-                        + "2. 一行 `description: <一句话中文描述>`\n"
-                        + "3. 一段 `sample_questions:`,紧跟 3-5 行 `- <同维度的中文问法>`(同一个 skill 的不同措辞,"
-                        + "应覆盖该 skill 适用的几种典型问法;不要复制 exemplar question 原句)\n"
-                        + "4. 一段 ```markdown 包裹的 SKILL.md 正文,描述本类问题的完整解决步骤:\n"
-                        + "   - 父智能体派单给哪个子智能体(如 query_data / analyze_data)\n"
-                        + "   - 子智能体内部的工具调用链路:先查阅哪个 skill/toolId → 再调哪些元工具\n"
-                        + "   - 每个工具的入参与出参:输入了什么参数、返回了什么结果\n"
-                        + "参考上面的**工具调用链路详情**来编写,工具名、参数格式、调用顺序必须与实际一致。\n"
-                        + "不要使用'query_quality_data'或'python_exec'等泛化工具名,要用 toolMetaInfo/router_tool 等真实链路。\n"
-                        + "不要输出 YAML frontmatter,系统会自动生成。";
-        Msg msg = Msg.builder().role(MsgRole.USER).content(TextBlock.builder().text(prompt).build()).build();
-        return model.stream(List.of(msg), List.of(),
-                GenerateOptions.builder()
-                        .maxTokens(2000)
-                        .temperature(0.1)
-                        .build())
-                .reduce(new StringBuilder(), SkillDistiller::appendChunk)
-                .map(StringBuilder::toString);
+        String prompt = SkillDistillerPrompts.distillWithContextPrompt(
+                question, fingerprintHint, toolCallContext, traceBlock, metricContext);
+        return streamPrompt(prompt, 2000);
     }
 
     // -------- internals --------
@@ -367,7 +297,7 @@ public class SkillDistiller {
     /**
      * Builds a metric context hint string for the distillation prompt. When the question has been
      * classified under a specific metric tag (e.g. "defect_density"), this hint tells the LLM
-     * to focus on that metric — producing a more specific skill instead of a generic catch-all.
+     * to focus on that metric - producing a more specific skill instead of a generic catch-all.
      * Returns empty string when metricTag is null/blank.
      *
      * <p>Delegates to {@link MetricClassificationService#getMetricHint(String)} for the
@@ -412,43 +342,15 @@ public class SkillDistiller {
     }
 
     private Mono<String> callModel(String question, String fingerprintHint, String traceBlock, String metricContext) {
-        String prompt =
-                "你是一位技术文档撰写者,正在为'质量数据智能助手'编写一份操作手册章节。下面是用户反复提出的同类问题:\n\n"
-                        + "**用户问题示例**: "
-                        + question
-                        + "\n**问题指纹**: "
-                        + fingerprintHint
-                        + "\n"
-                        + metricContext
-                        + "\n\n请撰写一份 markdown 文档,描述这类问题的标准处理流程。文档必须以纯文本形式输出,不要调用任何外部函数,不要使用 tool_calls。\n\n"
-                        + "输出格式为四段:\n"
-                        + "1. 第一行: `name: <英文小写下划线>` (例如 `quarterly_quality_compare`)\n"
-                        + "2. 第二行: `description: <一句话中文描述>`\n"
-                        + "3. 接着一段 `sample_questions:`,后面跟 3-5 行 `- <同维度的中文问法>`(同一类问题的不同措辞)\n"
-                        + "4. 最后用 ```markdown 包裹一段正文,描述完整的处理流程,必须包含以下章节:\n"
-                        + "   - 父智能体如何派单(指定 query_data / analyze_data 等子智能体名称)\n"
-                        + "   - 子智能体的处理步骤(查阅 tool_index 选择 toolId,调用 toolMetaInfo 获取参数定义,调用 router_tool 执行)\n"
-                        + "   - 每步的入参 JSON 示例与返回结果格式\n"
-                        + "   - 调用顺序图(用 ASCII 箭头 Supervisor -> query_data -> tool_index -> router_tool)\n"
-                        + "   - 关键约束与异常处理\n"
-                        + "工具名只能用真实名称(tool_index / toolMetaInfo / router_tool / agent_spawn),不要写 'query_quality_data' 或 'python_exec'。\n"
-                        + "正文长度至少 60 行,内容要详细完整,参考 .agentscope/workspace/harness-a2a/skills-auto/sample_range_analysis 的写法。\n"
-                        + "不要输出 YAML frontmatter,系统会自动生成。";
-        Msg msg = Msg.builder().role(MsgRole.USER).content(TextBlock.builder().text(prompt).build()).build();
-        return model.stream(List.of(msg), List.of(),
-                GenerateOptions.builder()
-                        .maxTokens(4000)
-                        .temperature(0.1)
-                        .build())
-                .reduce(new StringBuilder(), SkillDistiller::appendChunk)
-                .map(StringBuilder::toString);
+        String prompt = SkillDistillerPrompts.distillPrompt(question, fingerprintHint, metricContext, traceBlock);
+        return streamPrompt(prompt, 4000);
     }
 
     /**
-     * PR4 — single-shot evolve prompt. Keep the LLM tightly constrained:
+     * PR4 - single-shot evolve prompt. Keep the LLM tightly constrained:
      * <ul>
      *   <li>name must equal the original skill name (we check on parse and reject mismatches)
-     *   <li>old body is given in full as the starting point — LLM is asked to surgically fix,
+     *   <li>old body is given in full as the starting point - LLM is asked to surgically fix,
      *       not rewrite from scratch
      *   <li>failed trace should be a structured context from tool_call_details (input/output),
      *       already truncated to ~500 chars by the caller
@@ -456,195 +358,22 @@ public class SkillDistiller {
      */
     private Mono<String> callEvolveModel(
             String skillName, String oldBody, String exemplarQuestion, String failedTrace) {
-        String trace = failedTrace == null || failedTrace.isBlank()
-                ? "(本次演进无具体失败 trace,LLM 凭判断修订)"
-                : failedTrace.trim();
-        String prompt =
-                "你正在演进一个已经存在的 SKILL.md。下面是当前版本(它最近被多次使用但表现不佳,"
-                        + "需要修订):\n\n"
-                        + "**Skill name**: "
-                        + skillName
-                        + " (保持不变!如果想换名字,请直接返回原名)\n"
-                        + "**用户问题**: "
-                        + (exemplarQuestion == null ? "(无)" : exemplarQuestion)
-                        + "\n\n**本次失败的工具调用详情(≤500字)**:\n```\n"
-                        + trace
-                        + "\n```\n\n**当前 SKILL.md 正文**:\n```markdown\n"
-                        + oldBody
-                        + "\n```\n\n请基于以上失败信号,修订正文,使其能够避免这类失败。"
-                        + "注意失败详情中标注了每个工具调用的输入和输出——请分析失败原因并补充对应约束。"
-                        + "请按与蒸馏相同的格式输出四段:\n"
-                        + "1. 一行 `name: "
-                        + skillName
-                        + "` (必须与原 skill 名一致)\n"
-                        + "2. 一行 `description: <一句话中文描述,可微调>`\n"
-                        + "3. 一段 `sample_questions:`,紧跟 3-5 行 `- <同维度中文问法>`\n"
-                        + "4. 一段 ```markdown 包裹的修订后正文,**只改需要改的地方**,"
-                        + "在改动处用注释或文字说明本次修订点与失败原因的对应关系。\n"
-                        + "不要输出 YAML frontmatter,系统会自动生成。";
+        String prompt = SkillDistillerPrompts.evolvePrompt(skillName, oldBody, exemplarQuestion, failedTrace);
+        return streamPrompt(prompt, 2000);
+    }
+
+    /**
+     * Shared helper - wraps a prompt string into a USER Msg, streams it through the model
+     * with the given maxTokens, and reduces the response chunks into a single string.
+     */
+    private Mono<String> streamPrompt(String prompt, int maxTokens) {
         Msg msg = Msg.builder().role(MsgRole.USER).content(TextBlock.builder().text(prompt).build()).build();
         return model.stream(List.of(msg), List.of(),
                 GenerateOptions.builder()
-                        .maxTokens(2000)
+                        .maxTokens(maxTokens)
                         .temperature(0.1)
                         .build())
                 .reduce(new StringBuilder(), SkillDistiller::appendChunk)
                 .map(StringBuilder::toString);
-    }
-
-    /**
-     * Lenient parse: extracts name, description, body, and sample questions from LLM output.
-     * Unlike the strict {@link #parse}, this method:
-     * <ul>
-     *   <li>Falls back to fingerprint-hash-based name when name section is missing
-     *   <li>Falls back to name as description when description section is missing
-     *   <li>Only returns null when the body (core skill content) is missing
-     * </ul>
-     */
-    static DistilledSkill parseLenient(String llmOutput) {
-        if (llmOutput == null || llmOutput.isBlank()) return null;
-        llmOutput = stripThinkingTags(llmOutput);
-        DistilledSkill strict = parse(llmOutput);
-        if (strict != null) return strict;
-
-        // Lenient fallback: extract whatever sections we can
-        Matcher nm = NAME_LINE.matcher(llmOutput);
-        Matcher dm = DESC_LINE.matcher(llmOutput);
-        Matcher bm = BODY_FENCE.matcher(llmOutput);
-
-        String name = nm.find() ? nm.group(1).trim().toLowerCase() : null;
-        String desc = dm.find() ? dm.group(1).trim() : null;
-        String body = bm.find() ? bm.group(1).trim() : null;
-
-        // Strip surrounding quotes from description if any
-        if (desc != null && desc.length() >= 2
-                && ((desc.startsWith("\"") && desc.endsWith("\""))
-                        || (desc.startsWith("'") && desc.endsWith("'")))) {
-            desc = desc.substring(1, desc.length() - 1);
-        }
-
-        if (body == null || body.isEmpty()) {
-            log.warn("parseLenient: body missing for output=[{}]",
-                    llmOutput.length() > 500 ? llmOutput.substring(0, 500) + "..." : llmOutput);
-            return null;
-        }
-        if (name == null || name.isEmpty()) {
-            // Fallback: use a hash of the output as name
-            name = "skill_" + Integer.toHexString(llmOutput.hashCode()).substring(0, 8);
-            log.info("parseLenient: name missing, generated fallback '{}'", name);
-        }
-        if (desc == null || desc.isEmpty()) {
-            desc = name;
-            log.info("parseLenient: description missing, using name '{}' as fallback", name);
-        }
-        List<String> samples = parseSamples(llmOutput);
-        return new DistilledSkill(name, desc, body, samples);
-    }
-
-    /**
-     * Strict parse used by {@link #evolve} — requires all three sections.
-     * Returns null on any parse failure.
-     */
-    /**
-     * Strips LLM thinking/reasoning tags that some models (Qwen3, DeepSeek-R1, etc.) emit
-     * before the actual answer. These tags (e.g. {@code <think>...</think>},
-     * {@code <thinking>...</thinking>}) contaminate the distilled SKILL.md body and cause
-     * malformed output when saved to disk.
-     *
-     * <p>Also strips the standalone {@code </think>} closing tag that appears when the
-     * model emits the opening tag in a previous stream chunk but the closing tag lands in
-     * the same chunk as the real content.
-     */
-    static String stripThinkingTags(String llmOutput) {
-        if (llmOutput == null || llmOutput.isBlank()) return llmOutput;
-        // Remove <think>...</think> blocks (including multiline content)
-        String result = THINKING_BLOCK_PATTERN.matcher(llmOutput).replaceAll("");
-        // Remove <thinking>...</thinking> blocks
-        result = THINKING_BLOCK2_PATTERN.matcher(result).replaceAll("");
-        return result.trim();
-    }
-
-    /** Matches <think>...</think> blocks, including multiline content. */
-    private static final Pattern THINKING_BLOCK_PATTERN =
-            Pattern.compile("<think>.*?</think>\\s*", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
-    /** Matches <thinking>...</thinking> blocks, including multiline content. */
-    private static final Pattern THINKING_BLOCK2_PATTERN =
-            Pattern.compile("<thinking>.*?</thinking>\\s*", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
-
-    /**
-     * Strict parse used by {@link #evolve} — requires all three sections.
-     * Returns null on any parse failure.
-     */
-    static DistilledSkill parse(String llmOutput) {
-        if (llmOutput == null || llmOutput.isBlank()) return null;
-        llmOutput = stripThinkingTags(llmOutput);
-        Matcher nm = NAME_LINE.matcher(llmOutput);
-        Matcher dm = DESC_LINE.matcher(llmOutput);
-        Matcher bm = BODY_FENCE.matcher(llmOutput);
-        if (!nm.find() || !dm.find() || !bm.find()) {
-            log.warn(
-                    "Distiller output missing required sections; nameFound={} descFound={} bodyFound={} raw=[{}]",
-                    nm.reset().find(),
-                    dm.reset().find(),
-                    bm.reset().find(),
-                    llmOutput.length() > 1500 ? llmOutput.substring(0, 1500) + "..." : llmOutput);
-            return null;
-        }
-        String name = nm.group(1).trim().toLowerCase();
-        String desc = dm.group(1).trim();
-        // Strip surrounding quotes the LLM may have added around the description.
-        if (desc.length() >= 2
-                && ((desc.startsWith("\"") && desc.endsWith("\""))
-                        || (desc.startsWith("'") && desc.endsWith("'")))) {
-            desc = desc.substring(1, desc.length() - 1);
-        }
-        String body = bm.group(1).trim();
-        if (name.isEmpty() || desc.isEmpty() || body.isEmpty()) return null;
-        List<String> samples = parseSamples(llmOutput);
-        return new DistilledSkill(name, desc, body, samples);
-    }
-
-    /**
-     * Best-effort extraction of sample questions. Accepts two forms:
-     * <ul>
-     *   <li>A top-level {@code sample_questions:} block (the prompt's preferred form).
-     *   <li>A markdown {@code ## 典型问法} (or equivalent) h2 section inside the SKILL.md body.
-     *       This is the form LLMs idiomatically produce when asked for "典型问法" in the prompt,
-     *       so accepting both forms keeps the rich-embed path working in practice.
-     * </ul>
-     * Missing both returns an empty list rather than failing the whole distill — embedding
-     * will fall back to description-only text. Dedupes case-insensitively and trims, capped
-     * at 8 entries so a runaway LLM can't bloat the embedded text.
-     */
-    public static List<String> parseSamples(String llmOutput) {
-        if (llmOutput == null || llmOutput.isBlank()) return List.of();
-        String region = null;
-        Matcher block = SAMPLES_BLOCK.matcher(llmOutput);
-        if (block.find()) {
-            region = block.group(1);
-        } else {
-            Matcher h2 = SAMPLES_H2_BLOCK.matcher(llmOutput);
-            if (h2.find()) region = h2.group(1);
-        }
-        if (region == null) return List.of();
-        Matcher line = SAMPLE_LINE.matcher(region);
-        List<String> out = new ArrayList<>();
-        java.util.Set<String> seen = new java.util.HashSet<>();
-        while (line.find()) {
-            String q = line.group(1).trim();
-            // Strip surrounding quotes the LLM may have added.
-            if (q.length() >= 2
-                    && ((q.startsWith("\"") && q.endsWith("\""))
-                            || (q.startsWith("'") && q.endsWith("'")))) {
-                q = q.substring(1, q.length() - 1).trim();
-            }
-            if (q.isEmpty()) continue;
-            String key = q.toLowerCase();
-            if (seen.add(key)) {
-                out.add(q);
-                if (out.size() >= 8) break;
-            }
-        }
-        return Collections.unmodifiableList(out);
     }
 }
