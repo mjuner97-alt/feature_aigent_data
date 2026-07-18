@@ -1,6 +1,6 @@
 ---
 name: data_primitives
-description: 数据计算原语索引 - 5 个 pandas 套路工具,绕过 code_interpreter,直接调用
+description: 数据计算原语索引 - 5 个 pandas 套路工具,Java 模板拼代码,LLM 只传参数
 ---
 
 # 数据计算原语 (data_primitives)
@@ -97,7 +97,7 @@ description: 数据计算原语索引 - 5 个 pandas 套路工具,绕过 code_in
 - 「同比 / 环比 / 对比 / 变化率」字眼 -> `data_compare_ratio`(注意需要两份 CSV)。
 - 「行 × 列 二维」、「按 X 和 Y 双维度」字眼 -> `data_pivot`。
 - 「整体分布 / 分位 / p50 / 标准差描述」字眼 -> `data_distribution`。
-- 复杂多步骤 / 回归 / 相关系数 / 时序拟合 -> **不要用本技能**,派 `code_interpreter` 子 agent。
+- 复杂多步骤 / 回归 / 相关系数 / 时序拟合 -> **不要用本技能**,改用 `python_exec` 直接写 Python。
 
 ## 调用示例
 

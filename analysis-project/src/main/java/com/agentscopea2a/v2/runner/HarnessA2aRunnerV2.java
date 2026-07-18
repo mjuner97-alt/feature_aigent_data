@@ -28,12 +28,14 @@ import com.agentscopea2a.v2.middleware.EpisodicRetrievalMiddleware;
 import com.agentscopea2a.v2.middleware.MemoryLedgerMirrorMiddleware;
 import com.agentscopea2a.v2.middleware.ResponseCacheMiddleware;
 import com.agentscopea2a.v2.middleware.SessionMiddleware;
+import com.agentscopea2a.v2.model.FallbackModelDecorator;
 import com.agentscopea2a.v2.tools.V2ToolGroupAdapter;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.hook.Hook;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.middleware.MiddlewareBase;
+import io.agentscope.core.model.Model;
 import io.agentscope.core.tool.Toolkit;
 import io.agentscope.extensions.mysql.state.MysqlAgentStateStore;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
@@ -88,6 +90,9 @@ public class HarnessA2aRunnerV2 {
             @Value("${harness.a2a.model.instances.light-classifier.api-key}") String lightApiKey,
             @Value("${harness.a2a.model.instances.light-classifier.base-url}") String lightBaseUrl,
             @Value("${harness.a2a.model.instances.light-classifier.name}") String lightModelName,
+            @Value("${harness.a2a.model.instances.fallback.api-key:}") String fallbackApiKey,
+            @Value("${harness.a2a.model.instances.fallback.base-url:}") String fallbackBaseUrl,
+            @Value("${harness.a2a.model.instances.fallback.name:}") String fallbackModelName,
             DataSource dataSource,
             SkillManageConfig skillManageConfig,
             SkillCuratorConfig skillCuratorConfig,
@@ -125,6 +130,27 @@ public class HarnessA2aRunnerV2 {
                 .stream(true)
                 .build();
 
+        // Fallback model - wraps the primary model so that 401/403/5xx/timeout errors
+        // automatically retry against a secondary model. When fallback.* config is
+        // blank, no fallback is applied (primary model used directly).
+        Model wrappedModel;
+        if (fallbackApiKey != null && !fallbackApiKey.isBlank()
+                && fallbackBaseUrl != null && !fallbackBaseUrl.isBlank()
+                && fallbackModelName != null && !fallbackModelName.isBlank()) {
+            OpenAIChatModel fallbackModel = OpenAIChatModel.builder()
+                    .apiKey(fallbackApiKey)
+                    .baseUrl(fallbackBaseUrl)
+                    .modelName(fallbackModelName)
+                    .stream(true)
+                    .build();
+            wrappedModel = new FallbackModelDecorator(model, fallbackModel);
+            log.info("HarnessA2aRunnerV2: FallbackModelDecorator wired (primary={}, fallback={})",
+                    modelName, fallbackModelName);
+        } else {
+            wrappedModel = model;
+            log.info("HarnessA2aRunnerV2: no fallback model configured, using primary only ({})", modelName);
+        }
+
         Path workspace = Paths.get(workspacePath).toAbsolutePath();
 
         List<MiddlewareBase> middlewares = new ArrayList<MiddlewareBase>(List.of(
@@ -142,7 +168,7 @@ public class HarnessA2aRunnerV2 {
 
         HarnessAgent.Builder builder = HarnessAgent.builder()
                 .name("QualitySupervisorV2")
-                .model(model)
+                .model(wrappedModel)
                 .workspace(workspace)
                 .stateStore(new SanitizingAgentStateStore(new MysqlAgentStateStore(dataSource, true)))
                 .memory(MemoryConfig.builder()
