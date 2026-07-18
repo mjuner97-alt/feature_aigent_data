@@ -22,3 +22,12 @@ node_modules/
 .agentscope
 .claude
 .idea
+
+# AgentScope runtime artifacts (skills lock + local docker compose scratch)
+skills-lock.json
+tmp_new_api_docker_compose.yml
+.agents/
+
+# Local test scratch (logs / temp requests)
+tmp_test/
+tmp/
