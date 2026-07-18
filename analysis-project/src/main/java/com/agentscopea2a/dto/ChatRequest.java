@@ -9,6 +9,7 @@
  */
 package com.agentscopea2a.dto;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -39,17 +40,23 @@ public class ChatRequest {
 
     private String input;
 
+    @JsonAlias("conversation_id")
     private String conversationId;
 
     @JsonProperty("user_id")
+    @JsonAlias("userId")
     private String userId;
 
+    @JsonAlias("agent_id")
     private String agentId;
 
+    @JsonAlias("agent_name")
     private String agentName;
 
+    @JsonAlias("from_type")
     private String fromType;
 
+    @JsonAlias("chat_id")
     private String chatId;
 
     private String question;
