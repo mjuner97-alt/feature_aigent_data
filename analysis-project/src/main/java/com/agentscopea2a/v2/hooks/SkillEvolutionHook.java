@@ -19,6 +19,7 @@ import com.agentscopea2a.v2.cache.ResponseCacheService;
 import com.agentscopea2a.v2.skills.FingerprintCalculator;
 import com.agentscopea2a.v2.skills.SkillEvolutionRunner;
 import com.agentscopea2a.v2.skills.SkillVectorIndex;
+import com.agentscopea2a.v2.util.HookRuntimeContext;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.hook.Hook;
 import io.agentscope.core.hook.HookEvent;
@@ -72,6 +73,14 @@ public class SkillEvolutionHook implements Hook, RuntimeContextAware {
     /** RuntimeContext key written by {@link SkillRetrievalHook} on every successful retrieval. */
     public static final String ATTR_SKILLS_RETRIEVED = "skills.retrieved";
 
+    /**
+     * RuntimeContext key for the per-request snapshot of retrieved skills captured at PreCall.
+     * Stored on ctx (not instance field) to avoid multi-user cross-talk documented in
+     * optimization-analysis.md P1-2 - the singleton bean's instance field would be overwritten
+     * by concurrent requests.
+     */
+    public static final String ATTR_TURN_RETRIEVED_SNAPSHOT = "skills.retrieved.snapshot";
+
     /** Threshold for treating a turn as failed via python_exec retry signals. */
     private static final int PYTHON_EXEC_FAILURE_THRESHOLD = 2;
 
@@ -85,12 +94,10 @@ public class SkillEvolutionHook implements Hook, RuntimeContextAware {
     private final List<String> rejectionKeywords;
 
     /**
-     * Request-scoped cache of skills.retrieved captured in PreCall. The framework may clear
-     * RuntimeContext attributes between PreCall and PostCall, so we stash a copy here as a
-     * fallback. Reset on every PreCall to avoid leakage across turns.
+     * Fallback only - populated by {@link RuntimeContextAware#setRuntimeContext} for tests that
+     * drive the hook synchronously without Reactor context. Production code resolves ctx from
+     * Reactor's ContextView via {@link HookRuntimeContext#resolve()}.
      */
-    private List<String> currentTurnRetrieved = List.of();
-
     private volatile RuntimeContext currentCtx;
 
     public SkillEvolutionHook(
@@ -122,40 +129,54 @@ public class SkillEvolutionHook implements Hook, RuntimeContextAware {
     @SuppressWarnings("unchecked")
     public <T extends HookEvent> Mono<T> onEvent(T event) {
         if (!runner.enabled()) return Mono.just(event);
+        return HookRuntimeContext.resolve()
+                .doOnNext(ctx -> dispatch(event, ctx))
+                .switchIfEmpty(Mono.fromRunnable(() -> {
+                    if (currentCtx != null) {
+                        dispatch(event, currentCtx);
+                    }
+                }))
+                .then(Mono.just(event));
+    }
+
+    private void dispatch(HookEvent event, RuntimeContext ctx) {
         try {
             if (event instanceof PreCallEvent e) {
-                log.debug("SkillEvolutionHook PreCall fired for sessionKey={}", sessionKey());
-                handlePreCall(e);
+                log.debug("SkillEvolutionHook PreCall fired for sessionKey={}", sessionKey(ctx));
+                handlePreCall(e, ctx);
             } else if (event instanceof PostCallEvent e) {
-                List<String> retrieved = readRetrievedSkills();
+                List<String> retrieved = readRetrievedSkills(ctx);
                 log.debug(
                         "SkillEvolutionHook PostCall fired: sessionKey={} retrieved={}",
-                        sessionKey(),
+                        sessionKey(ctx),
                         retrieved);
-                handlePostCall(e);
+                handlePostCall(e, ctx);
             }
         } catch (Exception ex) {
             // PR4 must never break a request. Any error here just means a missed accounting tick.
             log.debug("SkillEvolutionHook swallowed error: {}", ex.getMessage());
         }
-        return Mono.just(event);
     }
 
     // -------- PreCall: cross-turn rejection lookback + cache retrieved skills --------
 
-    private void handlePreCall(PreCallEvent event) {
-        String sessionKey = sessionKey();
+    private void handlePreCall(PreCallEvent event, RuntimeContext ctx) {
+        String sessionKey = sessionKey(ctx);
         if (sessionKey == null) return;
 
         // Capture retrieved skills from RuntimeContext before it may be cleared
-        List<String> retrieved = readRetrievedSkills();
+        List<String> retrieved = readRetrievedSkills(ctx);
         if (retrieved == null || retrieved.isEmpty()) {
             // PR3 didn't inject skills - try fingerprint-based resolution so the PostCall
             // fallback snapshot and cross-turn rejection both work.
             retrieved = resolveSkillsByFingerprint(
                     event.getInputMessages() != null ? event.getInputMessages() : List.of());
         }
-        currentTurnRetrieved = List.copyOf(retrieved);
+        try {
+            ctx.put(ATTR_TURN_RETRIEVED_SNAPSHOT, List.copyOf(retrieved));
+        } catch (Exception ex) {
+            log.debug("Failed to stash turn snapshot: {}", ex.getMessage());
+        }
 
         SkillEvolutionRunner.PendingJudgement pending = runner.consumePendingJudgement(sessionKey);
         if (pending == null) {
@@ -203,12 +224,12 @@ public class SkillEvolutionHook implements Hook, RuntimeContextAware {
 
     // -------- PostCall: this-turn signal --------
 
-    private void handlePostCall(PostCallEvent event) {
-        List<String> retrieved = readRetrievedSkills();
+    private void handlePostCall(PostCallEvent event, RuntimeContext ctx) {
+        List<String> retrieved = readRetrievedSkills(ctx);
         if (retrieved == null || retrieved.isEmpty()) {
             // RuntimeContext was likely cleared between PreCall and PostCall - fall back to
             // the snapshot captured at PreCall.
-            retrieved = currentTurnRetrieved;
+            retrieved = readTurnSnapshot(ctx);
         }
         if (retrieved == null || retrieved.isEmpty()) {
             // PR3 didn't retrieve skills (disabled, L1 miss + L2 below threshold, etc.).
@@ -242,13 +263,12 @@ public class SkillEvolutionHook implements Hook, RuntimeContextAware {
         // No this-turn failure signal - defer the success/failure decision to the next turn's
         // user message via the pending-judgement cache. This is what lets users still vote
         // "wrong" on an answer that didn't trip retry>=2.
-        String sessionKey = sessionKey();
+        String sessionKey = sessionKey(ctx);
         if (sessionKey == null) return;
         runner.cachePendingJudgement(sessionKey, retrieved, extractLastUserMessage(memory));
     }
 
-    private List<String> readRetrievedSkills() {
-        RuntimeContext ctx = this.currentCtx;
+    private List<String> readRetrievedSkills(RuntimeContext ctx) {
         if (ctx == null) return List.of();
         try {
             Object raw = ctx.get(ATTR_SKILLS_RETRIEVED);
@@ -261,6 +281,24 @@ public class SkillEvolutionHook implements Hook, RuntimeContextAware {
             }
         } catch (Exception ex) {
             log.debug("readRetrievedSkills failed: {}", ex.getMessage());
+        }
+        return List.of();
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> readTurnSnapshot(RuntimeContext ctx) {
+        if (ctx == null) return List.of();
+        try {
+            Object raw = ctx.get(ATTR_TURN_RETRIEVED_SNAPSHOT);
+            if (raw instanceof List<?> list) {
+                java.util.List<String> out = new java.util.ArrayList<>(list.size());
+                for (Object o : list) {
+                    if (o instanceof String s && !s.isBlank()) out.add(s);
+                }
+                return out;
+            }
+        } catch (Exception ex) {
+            log.debug("readTurnSnapshot failed: {}", ex.getMessage());
         }
         return List.of();
     }
@@ -365,11 +403,10 @@ public class SkillEvolutionHook implements Hook, RuntimeContextAware {
         }
     }
 
-    private String sessionKey() {
+    private String sessionKey(RuntimeContext ctx) {
         // Prefer user_id over session_id because the framework generates a new UUID for each
         // request even when the client passes the same session_id. User_id is stable across
         // turns in the same conversation thread.
-        RuntimeContext ctx = this.currentCtx;
         if (ctx == null) return null;
         String uid = ctx.getUserId();
         if (uid != null && !uid.isBlank()) return "u:" + uid;

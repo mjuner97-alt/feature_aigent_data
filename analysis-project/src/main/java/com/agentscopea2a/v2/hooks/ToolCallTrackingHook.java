@@ -16,6 +16,7 @@
 package com.agentscopea2a.v2.hooks;
 
 import com.agentscopea2a.v2.tools.ToolCallCollector;
+import com.agentscopea2a.v2.util.HookRuntimeContext;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.hook.Hook;
 import io.agentscope.core.hook.HookEvent;
@@ -61,6 +62,12 @@ public class ToolCallTrackingHook implements Hook, RuntimeContextAware {
     /** Key under which the per-request ToolCallCollector is stored on RuntimeContext. */
     public static final String COLLECTOR_CTX_KEY = "toolCallCollector";
 
+    /**
+     * Fallback only - populated by {@link RuntimeContextAware#setRuntimeContext} for tests that
+     * drive the hook synchronously without Reactor context. Production code resolves ctx from
+     * Reactor's ContextView via {@link HookRuntimeContext#resolve()} to avoid the multi-user
+     * cross-talk documented in optimization-analysis.md P1-2.
+     */
     private volatile RuntimeContext currentCtx;
 
     /**
@@ -83,21 +90,26 @@ public class ToolCallTrackingHook implements Hook, RuntimeContextAware {
     @Override
     @SuppressWarnings("unchecked")
     public <T extends HookEvent> Mono<T> onEvent(T event) {
-        RuntimeContext ctx = this.currentCtx;
-        if (ctx == null) {
-            return Mono.just(event);
-        }
+        return HookRuntimeContext.resolve()
+                .doOnNext(ctx -> track(event, ctx))
+                .switchIfEmpty(Mono.fromRunnable(() -> {
+                    if (currentCtx != null) {
+                        track(event, currentCtx);
+                    }
+                }))
+                .then(Mono.just(event));
+    }
+
+    private void track(HookEvent event, RuntimeContext ctx) {
         ToolCallCollector collector = ctx.get(COLLECTOR_CTX_KEY);
         if (collector == null) {
-            return Mono.just(event);
+            return;
         }
-
         if (event instanceof PreActingEvent pre) {
             handlePreActing(pre, collector);
         } else if (event instanceof PostActingEvent post) {
             handlePostActing(post, collector);
         }
-        return Mono.just(event);
     }
 
     // -------- PreActing: record tool name + input --------

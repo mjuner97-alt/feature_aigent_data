@@ -19,6 +19,7 @@ import com.agentscopea2a.v2.cache.ResponseCacheService;
 import com.agentscopea2a.v2.skills.FingerprintCalculator;
 import com.agentscopea2a.v2.skills.MetricClassificationService;
 import com.agentscopea2a.v2.skills.SkillSynthesisRunner;
+import com.agentscopea2a.v2.util.HookRuntimeContext;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.hook.Hook;
 import io.agentscope.core.hook.HookEvent;
@@ -81,17 +82,30 @@ public class SkillSynthesisHook implements Hook, RuntimeContextAware {
     @SuppressWarnings("unchecked")
     public <T extends HookEvent> Mono<T> onEvent(T event) {
         if (!runner.enabled()) return Mono.just(event);
-        if (event instanceof PreCallEvent e) {
-            try {
-                handlePreCall(e);
-            } catch (Exception ex) {
-                log.debug("SkillSynthesisHook PreCall skipped: {}", ex.getMessage());
-            }
+        if (!(event instanceof PreCallEvent e)) {
+            return Mono.just(event);
         }
-        return Mono.just(event);
+        return HookRuntimeContext.resolve()
+                .doOnNext(ctx -> {
+                    try {
+                        handlePreCall(e, ctx);
+                    } catch (Exception ex) {
+                        log.debug("SkillSynthesisHook PreCall skipped: {}", ex.getMessage());
+                    }
+                })
+                .switchIfEmpty(Mono.fromRunnable(() -> {
+                    if (currentCtx != null) {
+                        try {
+                            handlePreCall(e, currentCtx);
+                        } catch (Exception ex) {
+                            log.debug("SkillSynthesisHook PreCall skipped: {}", ex.getMessage());
+                        }
+                    }
+                }))
+                .then(Mono.just(event));
     }
 
-    private void handlePreCall(PreCallEvent event) {
+    private void handlePreCall(PreCallEvent event, RuntimeContext ctx) {
         String question = ResponseCacheService.extractUserQuestion(event.getInputMessages());
         if (question == null || question.isEmpty()) return;
 
@@ -102,7 +116,6 @@ public class SkillSynthesisHook implements Hook, RuntimeContextAware {
 
         // userId for bumpAndMaybeSynthesize is per-user (for DB tracking), but the
         // fingerprint itself uses _global scope so all users accumulate on the same row.
-        RuntimeContext ctx = this.currentCtx;
         String userId = FingerprintCalculator.tenantBucket(ctx);
         runner.bumpAndMaybeSynthesize(fingerprint, userId, question, /* traceId */ null)
                 .ifPresent(c -> log.info(

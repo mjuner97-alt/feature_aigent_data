@@ -21,6 +21,7 @@ import com.agentscopea2a.v2.artifact.ArtifactStore;
 import com.agentscopea2a.v2.artifact.TabularExtractor;
 import com.agentscopea2a.v2.artifact.TabularExtractor.ColumnSchema;
 import com.agentscopea2a.v2.artifact.TabularExtractor.TabularData;
+import com.agentscopea2a.v2.util.HookRuntimeContext;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.hook.Hook;
@@ -70,6 +71,12 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
 
     private final ArtifactStore artifactStore;
     private final ArtifactContext fixedContext;
+    /**
+     * Fallback only - populated by {@link RuntimeContextAware#setRuntimeContext} for tests that
+     * drive the hook synchronously without Reactor context. Production code resolves ctx from
+     * Reactor's ContextView via {@link HookRuntimeContext#resolve()} to avoid the multi-user
+     * cross-talk documented in optimization-analysis.md P1-2.
+     */
     private volatile RuntimeContext runtimeContext;
 
     public ArtifactHandoffHook(ArtifactStore artifactStore) {
@@ -117,8 +124,28 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
             return Mono.just(event);
         }
 
-        ArtifactContext ctx =
-                fixedContext != null ? fixedContext : ArtifactContext.from(runtimeContext);
+        if (fixedContext != null) {
+            applyHandoff(post, toolName, table, fixedContext);
+            return Mono.just(event);
+        }
+
+        return HookRuntimeContext.resolve()
+                .map(ctx -> {
+                    applyHandoff(post, toolName, table, ArtifactContext.from(ctx));
+                    return event;
+                })
+                .switchIfEmpty(Mono.fromSupplier(() -> {
+                    if (runtimeContext != null) {
+                        applyHandoff(post, toolName, table, ArtifactContext.from(runtimeContext));
+                    } else {
+                        log.warn("ArtifactHandoffHook: no RuntimeContext bound, skipping artifactize for tool={}", toolName);
+                    }
+                    return event;
+                }));
+    }
+
+    private void applyHandoff(PostActingEvent post, String toolName, TabularData table, ArtifactContext ctx) {
+        ToolUseBlock toolUse = post.getToolUse();
         String preview = table.previewMarkdown(PREVIEW_ROWS);
         List<ColumnSchema> schema = table.inferSchema(SCHEMA_SAMPLES_PER_COLUMN);
         ArtifactRef ref =
@@ -131,11 +158,9 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
                         List.of(TextBlock.builder().text(handoff).build()));
         post.setToolResult(rewritten);
 
-        log.info("Artifactized {} result for user={}, task={}: rows={} cols={} → {}",
+        log.info("Artifactized {} result for user={}, task={}: rows={} cols={} -> {}",
                 toolName, ctx.userBucket(), ctx.taskBucket(),
                 table.rowCount(), table.columns().size(), ref.agentPath());
-
-        return Mono.just(event);
     }
 
     // ==================== Handoff message ====================

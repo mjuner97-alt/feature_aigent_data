@@ -86,6 +86,35 @@ public class DimensionStateManager {
         }
     }
 
+    /**
+     * 在 per-request 上下文里处理用户问题（P1-2 多用户串扰修复）。
+     *
+     * <p>从 {@link RuntimeContext} 加载上一轮状态，处理问题（用局部变量，不碰实例字段
+     * {@code currentState}），把新状态写回 ctx，返回组装后的问题和新状态。
+     *
+     * <p>这是替代 {@code loadFrom -> processQuestion -> getCurrentState -> saveTo} 序列的
+     * 多用户安全 API。单例 bean 的 {@code currentState} 实例字段会被并发请求覆盖（详见
+     * optimization-analysis.md P1-2），此方法用局部变量规避该问题。
+     *
+     * @param ctx          per-request 上下文
+     * @param userQuestion 用户原始问题
+     * @return 组装后的问题和新状态
+     */
+    public ProcessResult processQuestionInContext(RuntimeContext ctx, String userQuestion) {
+        DimensionState loaded = ctx != null ? ctx.get(STATE_KEY, DimensionState.class) : null;
+        QuestionAnalysis analysis = analyzeQuestionRuleBased(userQuestion);
+        DimensionState inherited = inheritDimensions(loaded, analysis);
+        String resolvedQuestion = resolveReference(inherited, analysis, userQuestion);
+        String enriched = assembleQuestion(inherited, resolvedQuestion);
+        if (inherited != null && ctx != null) {
+            ctx.put(STATE_KEY, DimensionState.class, inherited);
+        }
+        return new ProcessResult(enriched, inherited);
+    }
+
+    /** processQuestionInContext 的返回值。 */
+    public record ProcessResult(String enrichedQuestion, DimensionState newState) {}
+
     // ==================== 核心流程 ====================
 
     /**

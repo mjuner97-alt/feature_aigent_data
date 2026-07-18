@@ -23,6 +23,7 @@ import com.agentscopea2a.v2.skills.FingerprintCalculator;
 import com.agentscopea2a.v2.skills.SkillEntry;
 import com.agentscopea2a.v2.skills.SkillIndexRepository;
 import com.agentscopea2a.v2.skills.SkillVectorIndex;
+import com.agentscopea2a.v2.util.HookRuntimeContext;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.hook.Hook;
 import io.agentscope.core.hook.HookEvent;
@@ -119,18 +120,30 @@ public class SkillRetrievalHook implements Hook, RuntimeContextAware {
     @SuppressWarnings("unchecked")
     public <T extends HookEvent> Mono<T> onEvent(T event) {
         if (!enabled) return Mono.just(event);
-        if (event instanceof PreCallEvent e) {
-            try {
-                inject(e);
-            } catch (Exception ex) {
-                log.warn("SkillRetrievalHook injection skipped: {}", ex.getMessage());
-            }
+        if (!(event instanceof PreCallEvent e)) {
             return Mono.just(event);
         }
-        return Mono.just(event);
+        return HookRuntimeContext.resolve()
+                .doOnNext(ctx -> {
+                    try {
+                        inject(e, ctx);
+                    } catch (Exception ex) {
+                        log.warn("SkillRetrievalHook injection skipped: {}", ex.getMessage());
+                    }
+                })
+                .switchIfEmpty(Mono.fromRunnable(() -> {
+                    if (currentCtx != null) {
+                        try {
+                            inject(e, currentCtx);
+                        } catch (Exception ex) {
+                            log.warn("SkillRetrievalHook injection skipped: {}", ex.getMessage());
+                        }
+                    }
+                }))
+                .then(Mono.just(event));
     }
 
-    private void inject(PreCallEvent event) {
+    private void inject(PreCallEvent event, RuntimeContext ctx) {
         String question = ResponseCacheService.extractUserQuestion(event.getInputMessages());
         if (question.isEmpty()) return;
 
@@ -217,19 +230,16 @@ public class SkillRetrievalHook implements Hook, RuntimeContextAware {
 
         event.appendSystemContent(block.toString());
 
-        RuntimeContext ctx = this.currentCtx;
-        if (ctx != null) {
-            try {
-                ctx.put("skills.retrieved", List.copyOf(loaded));
-            } catch (Exception ex) {
-                log.debug("Failed to publish skills.retrieved attribute: {}", ex.getMessage());
-            }
+        try {
+            ctx.put("skills.retrieved", List.copyOf(loaded));
+        } catch (Exception ex) {
+            log.debug("Failed to publish skills.retrieved attribute: {}", ex.getMessage());
         }
 
         log.info(
                 "SkillRetrievalHook injected {} skill(s) for tenant={} fp={}: {}",
                 loaded.size(),
-                tenantBucket(),
+                FingerprintCalculator.tenantBucket(ctx),
                 fingerprint,
                 loaded);
     }
@@ -286,9 +296,5 @@ public class SkillRetrievalHook implements Hook, RuntimeContextAware {
             log.debug("Failed to read {}: {}", p, ex.getMessage());
             return null;
         }
-    }
-
-    private String tenantBucket() {
-        return FingerprintCalculator.tenantBucket(currentCtx);
     }
 }

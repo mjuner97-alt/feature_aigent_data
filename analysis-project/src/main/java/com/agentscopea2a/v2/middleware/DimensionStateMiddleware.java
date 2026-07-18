@@ -50,9 +50,6 @@ public class DimensionStateMiddleware implements MiddlewareBase {
     @Override
     public Mono<String> onSystemPrompt(Agent agent, RuntimeContext ctx, String systemPrompt) {
         return Mono.fromCallable(() -> {
-            // 从 RuntimeContext 加载上一轮维度状态
-            dimensionStateManager.loadFrom(ctx);
-
             // 提取用户问题：从 RuntimeContext 获取最后一条用户消息
             String userQuestion = extractUserQuestion(ctx);
 
@@ -61,11 +58,11 @@ public class DimensionStateMiddleware implements MiddlewareBase {
             }
 
             // 规则分析 + 继承 + 指代消解 + 组装（纯本地，零 LLM）
-            String enrichedQuestion = dimensionStateManager.processQuestion(userQuestion);
-            DimensionState state = dimensionStateManager.getCurrentState();
-
-            // 持久化维度状态到 RuntimeContext（跨轮继承）
-            dimensionStateManager.saveTo(ctx);
+            // 用 processQuestionInContext 而非 loadFrom + processQuestion + getCurrentState + saveTo
+            // 序列，避免单例 DimensionStateManager 的 currentState 实例字段被并发请求覆盖（P1-2）
+            DimensionStateManager.ProcessResult result =
+                    dimensionStateManager.processQuestionInContext(ctx, userQuestion);
+            DimensionState state = result.newState();
 
             if (state != null && state.hasDimensions()) {
                 String dimensionPrefix = formatDimensionContext(state);
