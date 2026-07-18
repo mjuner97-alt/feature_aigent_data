@@ -37,15 +37,16 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import reactor.core.Disposable;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * v2 streaming service implementation.
@@ -172,7 +173,10 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
         String agentName = req.getAgentName() != null ? req.getAgentName() : "QA助手";
         String formType = req.getFromType() != null ? req.getFromType() : "HXY";
 
-        Executors.newSingleThreadExecutor().submit(() -> {
+        // Run subscription off the HTTP request thread so stream() returns the SseEmitter
+        // immediately. Use shared boundedElastic scheduler instead of per-request
+        // Executors.newSingleThreadExecutor() (which leaked threads - no shutdown).
+        Mono.fromRunnable(() -> {
             // ToolCallCollector is now propagated via RuntimeContext (set above), not ThreadLocal.
             // The framework pushes the context to ToolCallTrackingHook via RuntimeContextAware
             // before the call starts, so no bind() is needed here.
@@ -223,7 +227,7 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
                 log.error("v2 stream failed for sessionId={}", conversationId, e);
                 emitter.completeWithError(e);
             }
-        });
+        }).subscribeOn(Schedulers.boundedElastic()).subscribe();
 
         return emitter;
     }
