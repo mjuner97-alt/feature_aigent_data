@@ -15,20 +15,7 @@
  */
 package com.agentscopea2a.v2.runner;
 
-import com.agentscopea2a.v2.hooks.ArtifactHandoffHook;
-import com.agentscopea2a.v2.hooks.KnowledgeRetrievalHook;
-import com.agentscopea2a.v2.hooks.PythonExecRetryHook;
-import com.agentscopea2a.v2.hooks.SkillEvolutionHook;
-import com.agentscopea2a.v2.hooks.SkillRetrievalHook;
-import com.agentscopea2a.v2.hooks.SkillSynthesisHook;
-import com.agentscopea2a.v2.hooks.ToolCallTrackingHook;
-import com.agentscopea2a.v2.middleware.ArtifactAccessMiddleware;
-import com.agentscopea2a.v2.middleware.DimensionStateMiddleware;
-import com.agentscopea2a.v2.middleware.EpisodicRetrievalMiddleware;
-import com.agentscopea2a.v2.middleware.MemoryLedgerMirrorMiddleware;
-import com.agentscopea2a.v2.middleware.PythonExecAccessMiddleware;
-import com.agentscopea2a.v2.middleware.ResponseCacheMiddleware;
-import com.agentscopea2a.v2.middleware.SessionMiddleware;
+import com.agentscopea2a.v2.config.HarnessRunnerProperties;
 import com.agentscopea2a.v2.model.FallbackModelDecorator;
 import com.agentscopea2a.v2.tools.V2ToolGroupAdapter;
 import io.agentscope.core.agent.RuntimeContext;
@@ -37,7 +24,6 @@ import io.agentscope.core.hook.Hook;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.middleware.MiddlewareBase;
 import io.agentscope.core.model.Model;
-import io.agentscope.core.tool.Toolkit;
 import io.agentscope.extensions.mysql.state.MysqlAgentStateStore;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
 import com.agentscopea2a.v2.state.SanitizingAgentStateStore;
@@ -56,14 +42,12 @@ import io.agentscope.harness.agent.tool.SkillManageConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
 import javax.sql.DataSource;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -75,6 +59,14 @@ import java.util.List;
  * <p>阶段 3：+ SkillCurator pipeline + 业务 middleware。
  *
  * <p>每次请求复用同一个 {@link HarnessAgent}（线程安全），通过 {@link RuntimeContext} 区分 session。
+ *
+ * <p>P1-1 重构：原 30+ 参数构造器拆为：
+ * <ul>
+ *   <li>{@link HarnessRunnerProperties} - 11 个 @Value 收口（model + workspace）</li>
+ *   <li>{@code List<MiddlewareBase>} - 由 {@code HarnessAgentPartsConfig} 装配</li>
+ *   <li>{@code List<Hook>} - 由 {@code HarnessAgentPartsConfig} 装配</li>
+ *   <li>5 个 ObjectProvider - 仅剩 filesystem/store/toolkit/subagent 这种真正可选依赖</li>
+ * </ul>
  */
 @Component
 public class HarnessA2aRunnerV2 {
@@ -84,51 +76,34 @@ public class HarnessA2aRunnerV2 {
     private final HarnessAgent agent;
 
     public HarnessA2aRunnerV2(
-            @Value("${harness.a2a.model.instances.glm-main.api-key}") String apiKey,
-            @Value("${harness.a2a.model.instances.glm-main.base-url}") String baseUrl,
-            @Value("${harness.a2a.model.instances.glm-main.name}") String modelName,
-            @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
-            @Value("${harness.a2a.model.instances.light-classifier.api-key}") String lightApiKey,
-            @Value("${harness.a2a.model.instances.light-classifier.base-url}") String lightBaseUrl,
-            @Value("${harness.a2a.model.instances.light-classifier.name}") String lightModelName,
-            @Value("${harness.a2a.model.instances.fallback.api-key:}") String fallbackApiKey,
-            @Value("${harness.a2a.model.instances.fallback.base-url:}") String fallbackBaseUrl,
-            @Value("${harness.a2a.model.instances.fallback.name:}") String fallbackModelName,
+            HarnessRunnerProperties runnerProperties,
             DataSource dataSource,
             SkillManageConfig skillManageConfig,
             SkillCuratorConfig skillCuratorConfig,
             LocalApprovalGate localApprovalGate,
             SkillVisibilityFilter skillVisibilityFilter,
-            DimensionStateMiddleware dimensionStateMiddleware,
-            EpisodicRetrievalMiddleware episodicRetrievalMiddleware,
-            ResponseCacheMiddleware responseCacheMiddleware,
-            ArtifactAccessMiddleware artifactAccessMiddleware,
-            SessionMiddleware sessionMiddleware,
-            ObjectProvider<PythonExecAccessMiddleware> pythonExecAccessMiddlewareProvider,
-            ObjectProvider<MemoryLedgerMirrorMiddleware> memoryLedgerMirrorProvider,
-            ObjectProvider<ArtifactHandoffHook> artifactHandoffHookProvider,
-            ObjectProvider<PythonExecRetryHook> pythonExecRetryHookProvider,
-            ObjectProvider<ToolCallTrackingHook> toolCallTrackingHookProvider,
-            ObjectProvider<SkillRetrievalHook> skillRetrievalHookProvider,
-            ObjectProvider<SkillSynthesisHook> skillSynthesisHookProvider,
-            ObjectProvider<SkillEvolutionHook> skillEvolutionHookProvider,
-            ObjectProvider<KnowledgeRetrievalHook> knowledgeRetrievalHookProvider,
+            List<MiddlewareBase> middlewares,
+            List<Hook> hooks,
             ObjectProvider<V2ToolGroupAdapter> toolGroupAdapterProvider,
             ObjectProvider<SandboxFilesystemSpec> sandboxFilesystemProvider,
             ObjectProvider<RemoteFilesystemSpec> remoteFilesystemProvider,
             ObjectProvider<DistributedStore> distributedStoreProvider,
             ObjectProvider<SubagentRegistrar> subagentRegistrarProvider) {
+        HarnessRunnerProperties.ModelInstance main = runnerProperties.getModel().getInstances().getGlmMain();
+        HarnessRunnerProperties.ModelInstance light = runnerProperties.getModel().getInstances().getLightClassifier();
+        HarnessRunnerProperties.ModelInstance fallback = runnerProperties.getModel().getInstances().getFallback();
+
         OpenAIChatModel model = OpenAIChatModel.builder()
-                .apiKey(apiKey)
-                .baseUrl(baseUrl)
-                .modelName(modelName)
+                .apiKey(main.getApiKey())
+                .baseUrl(main.getBaseUrl())
+                .modelName(main.getName())
                 .stream(true)
                 .build();
 
         OpenAIChatModel smallModel = OpenAIChatModel.builder()
-                .apiKey(lightApiKey)
-                .baseUrl(lightBaseUrl)
-                .modelName(lightModelName)
+                .apiKey(light.getApiKey())
+                .baseUrl(light.getBaseUrl())
+                .modelName(light.getName())
                 .stream(true)
                 .build();
 
@@ -136,42 +111,24 @@ public class HarnessA2aRunnerV2 {
         // automatically retry against a secondary model. When fallback.* config is
         // blank, no fallback is applied (primary model used directly).
         Model wrappedModel;
-        if (fallbackApiKey != null && !fallbackApiKey.isBlank()
-                && fallbackBaseUrl != null && !fallbackBaseUrl.isBlank()
-                && fallbackModelName != null && !fallbackModelName.isBlank()) {
+        if (fallback.getApiKey() != null && !fallback.getApiKey().isBlank()
+                && fallback.getBaseUrl() != null && !fallback.getBaseUrl().isBlank()
+                && fallback.getName() != null && !fallback.getName().isBlank()) {
             OpenAIChatModel fallbackModel = OpenAIChatModel.builder()
-                    .apiKey(fallbackApiKey)
-                    .baseUrl(fallbackBaseUrl)
-                    .modelName(fallbackModelName)
+                    .apiKey(fallback.getApiKey())
+                    .baseUrl(fallback.getBaseUrl())
+                    .modelName(fallback.getName())
                     .stream(true)
                     .build();
             wrappedModel = new FallbackModelDecorator(model, fallbackModel);
             log.info("HarnessA2aRunnerV2: FallbackModelDecorator wired (primary={}, fallback={})",
-                    modelName, fallbackModelName);
+                    main.getName(), fallback.getName());
         } else {
             wrappedModel = model;
-            log.info("HarnessA2aRunnerV2: no fallback model configured, using primary only ({})", modelName);
+            log.info("HarnessA2aRunnerV2: no fallback model configured, using primary only ({})", main.getName());
         }
 
-        Path workspace = Paths.get(workspacePath).toAbsolutePath();
-
-        List<MiddlewareBase> middlewares = new ArrayList<MiddlewareBase>(List.of(
-                responseCacheMiddleware,
-                dimensionStateMiddleware,
-                episodicRetrievalMiddleware,
-                artifactAccessMiddleware,
-                sessionMiddleware
-        ));
-        MemoryLedgerMirrorMiddleware ledgerMirror = memoryLedgerMirrorProvider.getIfAvailable();
-        if (ledgerMirror != null) {
-            middlewares.add(ledgerMirror);
-            log.info("HarnessA2aRunnerV2: MemoryLedgerMirrorMiddleware wired");
-        }
-        PythonExecAccessMiddleware pythonExecGuard = pythonExecAccessMiddlewareProvider.getIfAvailable();
-        if (pythonExecGuard != null) {
-            middlewares.add(pythonExecGuard);
-            log.info("HarnessA2aRunnerV2: PythonExecAccessMiddleware wired (P0-5 cross-tenant guard)");
-        }
+        Path workspace = Paths.get(runnerProperties.getWorkspace().getPath()).toAbsolutePath();
 
         HarnessAgent.Builder builder = HarnessAgent.builder()
                 .name("QualitySupervisorV2")
@@ -237,77 +194,11 @@ public class HarnessA2aRunnerV2 {
             log.info("HarnessA2aRunnerV2: distributed store wired");
         }
 
-        // Artifact handoff hook — uses v2 Hook API (PostActingEvent) for tool-result rewriting.
-        // The Hook API is deprecated but still the only way to intercept tool results after execution.
-        ArtifactHandoffHook handoffHook = artifactHandoffHookProvider.getIfAvailable();
-        if (handoffHook != null) {
-            builder.hook(handoffHook);
-            log.info("HarnessA2aRunnerV2: ArtifactHandoffHook wired (priority=12)");
+        for (Hook hook : hooks) {
+            builder.hook(hook);
         }
 
-        // Python exec retry hook — annotates failed python_exec results with retry hints.
-        // Uses deprecated Hook API (PostActingEvent) for tool-result rewriting.
-        PythonExecRetryHook retryHook = pythonExecRetryHookProvider.getIfAvailable();
-        if (retryHook != null) {
-            builder.hook(retryHook);
-            log.info("HarnessA2aRunnerV2: PythonExecRetryHook wired (priority=13)");
-        }
-
-        // Tool call tracking hook — records L1 tool call inputs and outputs via ThreadLocal.
-        // Uses deprecated Hook API (PreActingEvent + PostActingEvent) for symmetric interception.
-        ToolCallTrackingHook trackingHook = toolCallTrackingHookProvider.getIfAvailable();
-        if (trackingHook != null) {
-            builder.hook(trackingHook);
-            log.info("HarnessA2aRunnerV2: ToolCallTrackingHook wired (priority=45)");
-        }
-
-        // Skill retrieval hook (PR3) - retrieves matched skills from skills-auto/ and skills-user/
-        // into the system prompt at PreCall. This is the ONLY path that injects user/auto skills;
-        // SkillVectorIndexVisibilityFilter only filters JAR-builtin skills. Runs at priority -50
-        // (before WorkspaceContextHook) so retrieved skills appear first in the system prompt.
-        SkillRetrievalHook retrievalHook = skillRetrievalHookProvider.getIfAvailable();
-        if (retrievalHook != null) {
-            builder.hook(retrievalHook);
-            log.info("HarnessA2aRunnerV2: SkillRetrievalHook wired (priority=-50)");
-        }
-
-        // Skill synthesis hook (PR2, cache-MISS path) - bumps skill_candidate.hit_count on
-        // every PreCall and dispatches async distillation when threshold is crossed. Without
-        // this hook, online bump-to-distill never fires; only nightly digestion can. Runs at
-        // priority 50 (after SkillRetrievalHook -50 so the retrieval attribute is available
-        // for the synthesis hook to log, and after ToolCallTrackingHook 45).
-        SkillSynthesisHook synthesisHook = skillSynthesisHookProvider.getIfAvailable();
-        if (synthesisHook != null) {
-            builder.hook(synthesisHook);
-            log.info("HarnessA2aRunnerV2: SkillSynthesisHook wired (priority=50)");
-        }
-
-        // Skill evolution hook (PR4, failure-feedback closed loop) - credits success/failure
-        // counts to retrieved skills based on python_exec retry signals (PostCall) and
-        // cross-turn user rejection keywords (PreCall). Dispatches async evolve via
-        // SkillEvolutionRunner when failure_rate exceeds the threshold. Without this hook,
-        // skill_index.success/failure_count never increment on chat requests; only nightly
-        // digestion can trigger evolution. Runs at priority 60 (after synthesis bump at 50
-        // so the candidate row exists before evolution can fire).
-        SkillEvolutionHook evolutionHook = skillEvolutionHookProvider.getIfAvailable();
-        if (evolutionHook != null) {
-            builder.hook(evolutionHook);
-            log.info("HarnessA2aRunnerV2: SkillEvolutionHook wired (priority=60)");
-        }
-
-        // Knowledge dynamic retrieval hook - injects files from knowledge-dynamic/ into the
-        // system prompt when the user's question matches keywords in knowledge-index.yaml.
-        // knowledge/ is always loaded by the JAR's WorkspaceContextHook; knowledge-dynamic/
-        // is on-demand only. Runs at priority -40 (between SkillRetrievalHook -50 and
-        // WorkspaceContextHook ~0) so dynamic knowledge appears after skills but before
-        // static workspace context.
-        KnowledgeRetrievalHook knowledgeHook = knowledgeRetrievalHookProvider.getIfAvailable();
-        if (knowledgeHook != null) {
-            builder.hook(knowledgeHook);
-            log.info("HarnessA2aRunnerV2: KnowledgeRetrievalHook wired (priority=-40)");
-        }
-
-        // v2 Toolkit — replaces ToolRoutersIndex's flat router_tool dispatch with native
+        // v2 Toolkit - replaces ToolRoutersIndex's flat router_tool dispatch with native
         // tool groups and the reset_equipped_tools meta-tool for LLM-driven group switching.
         V2ToolGroupAdapter toolGroupAdapter = toolGroupAdapterProvider.getIfAvailable();
         if (toolGroupAdapter != null) {
@@ -330,7 +221,7 @@ public class HarnessA2aRunnerV2 {
 
         log.info("HarnessA2aRunnerV2 initialized: workspace={}, model={}, stateStore=SanitizingAgentStateStore(MysqlAgentStateStore), " +
                         "memoryModel={}, skillCurator=enabled",
-                workspace, modelName, lightModelName);
+                workspace, main.getName(), light.getName());
     }
 
     public Flux<AgentEvent> streamEvents(List<Msg> messages, RuntimeContext ctx) {
