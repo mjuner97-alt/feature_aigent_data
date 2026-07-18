@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.mapper.mysql.UrlShortenerMapper">
+
+    <resultMap id="BaseResultMap" type="com.agentscopea2a.entity.UrlShortenerRecord">
+        <id column="id" property="id"/>
+        <result column="short_code" property="shortCode"/>
+        <result column="original_url" property="originalUrl"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="expires_at" property="expiresAt"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.agentscopea2a.entity.UrlShortenerRecord" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO url_shortener (short_code, original_url, created_at, expires_at)
+        VALUES (#{shortCode}, #{originalUrl}, #{createdAt}, #{expiresAt})
+    </insert>
+
+    <select id="selectByShortCode" resultMap="BaseResultMap">
+        SELECT id, short_code, original_url, created_at, expires_at
+        FROM url_shortener
+        WHERE short_code = #{shortCode}
+    </select>
+
+    <delete id="deleteExpired">
+        DELETE FROM url_shortener WHERE expires_at IS NOT NULL AND expires_at &lt; NOW()
+    </delete>
+
+</mapper>

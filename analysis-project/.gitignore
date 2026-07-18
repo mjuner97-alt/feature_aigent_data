@@ -45,3 +45,17 @@ build/
 .agentscope/
 ../.idea
 
+### Local test artifacts (logs / temp requests / scratch) ###
+tmp/
+tmp_test/
+tmp_testboot_log_fingerprint.txt
+classpath.txt
+io/
+
+### AgentScope skills runtime (managed by skill-save tool, not source) ###
+../.agents/
+../skills-lock.json
+
+### Local docker compose scratch ###
+../tmp_new_api_docker_compose.yml
+

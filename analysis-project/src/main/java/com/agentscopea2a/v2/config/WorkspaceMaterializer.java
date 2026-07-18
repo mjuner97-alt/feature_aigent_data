@@ -1,0 +1,129 @@
+/*
+ * Copyright 2024-2026 the original author or authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.agentscopea2a.v2.config;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+
+/**
+ * Materializes the bundled {@code classpath:workspace/**} tree to a stable on-disk path so
+ * {@link io.agentscope.harness.agent.HarnessAgent} can both read it (workspace context,
+ * subagent specs, skills) and write to it (memory flush, tool result eviction).
+ *
+ * <p>Stage 9: migrated from {@code com.agentscopea2a.harness.config.WorkspaceMaterializer}
+ * (v1 package, Maven-excluded) to v2. Sole v1 class referenced by v2 code ({@link
+ * com.agentscopea2a.v2.runner.SubagentRegistrar}), so it survives the v1 deletion.
+ *
+ * <p>File policy:
+ *
+ * <ul>
+ *   <li><b>Always overwritten</b> from classpath on every startup -
+ *       {@code agent-subagents/**}, top-level {@code AGENTS.md}, {@code knowledge/**}, and
+ *       {@code skills/**} (builtin meta-skills). These are code-shipped assets; they MUST
+ *       stay in sync with the deployed jar.
+ *   <li><b>Seeded once</b> (preserved if present) - everything else, including agent-produced
+ *       state ({@code memory/}, {@code skills-auto/}, {@code skills-user/}, {@code sessions/},
+ *       evicted tool results).
+ * </ul>
+ *
+ * <p>Unlike the sandbox example which uses a temp dir, this writes to a stable application
+ * path (configured via {@code harness.a2a.workspace.path}) so that workspace memory survives
+ * restarts - that's the whole point of harness's memory consolidation.
+ */
+public final class WorkspaceMaterializer {
+
+    private static final Logger log = LoggerFactory.getLogger(WorkspaceMaterializer.class);
+
+    private static final String CLASSPATH_PREFIX = "classpath:workspace/";
+    private static final String SEARCH_PATTERN = "classpath:workspace/**/*";
+
+    private static final String[] ALWAYS_OVERWRITE_PREFIXES = {
+        "agent-subagents/", "AGENTS.md", "knowledge/", "skills/"
+    };
+
+    private WorkspaceMaterializer() {}
+
+    /**
+     * Ensures the workspace directory exists and is seeded with the classpath workspace
+     * resources on first run. Existing files are NOT overwritten.
+     *
+     * @param target host directory; created if missing
+     * @return absolute, normalized path to {@code target}
+     */
+    public static Path ensureMaterialized(Path target) {
+        try {
+            Files.createDirectories(target);
+            Path legacySkillsLink = target.resolve("skills");
+            if (Files.isSymbolicLink(legacySkillsLink)) {
+                log.info("Removing legacy skills/ symlink (skills-builtin/ remap removed)");
+                Files.delete(legacySkillsLink);
+            }
+            PathMatchingResourcePatternResolver resolver =
+                    new PathMatchingResourcePatternResolver();
+            Resource[] resources = resolver.getResources(SEARCH_PATTERN);
+            int seeded = 0;
+            for (Resource resource : resources) {
+                if (!resource.isReadable()) {
+                    continue;
+                }
+                String uri = resource.getURI().toString();
+                int idx = uri.indexOf("/workspace/");
+                if (idx < 0) {
+                    continue;
+                }
+                String relative = uri.substring(idx + "/workspace/".length());
+                if (relative.isEmpty() || relative.endsWith("/")) {
+                    continue;
+                }
+                Path dest = target.resolve(relative);
+                boolean alwaysOverwrite = isAlwaysOverwrite(relative);
+                if (Files.exists(dest) && !alwaysOverwrite) {
+                    continue;
+                }
+                Files.createDirectories(dest.getParent());
+                try (InputStream in = resource.getInputStream()) {
+                    Files.copy(in, dest, StandardCopyOption.REPLACE_EXISTING);
+                }
+                seeded++;
+            }
+
+            Path absolute = target.toAbsolutePath().normalize();
+            log.info(
+                    "Workspace ready at {} ({} new files seeded from classpath)", absolute, seeded);
+            return absolute;
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to materialize workspace", e);
+        }
+    }
+
+    private static boolean isAlwaysOverwrite(String relative) {
+        for (String prefix : ALWAYS_OVERWRITE_PREFIXES) {
+            if (relative.equals(prefix) || relative.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+}

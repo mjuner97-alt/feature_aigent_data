@@ -1,0 +1,17 @@
+# 知识动态检索配置
+# 将关键词映射到 knowledge-dynamic/ 下的文件
+# 关键词按配置顺序检查，首个匹配即命中
+# 以 \ 开头的关键词视为正则表达式；其他使用大小写不敏感的 contains() 匹配
+entries:
+  - file: QI_KNOWLEDGE.md
+    keywords:
+      - QI卡口
+      - Q1卡口
+      - Q2卡口
+      - Q3卡口
+      - Q4卡口
+      - 在途
+      - 在建
+      - 启动中
+      - 未投产
+    description: QI卡口相关术语和定义
