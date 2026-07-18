@@ -19,6 +19,7 @@ import com.agentscopea2a.dto.ChatRequest;
 import com.agentscopea2a.entity.AiChatResult;
 import com.agentscopea2a.v2.artifact.ArtifactContext;
 import com.agentscopea2a.v2.artifact.ArtifactStore;
+import com.agentscopea2a.v2.hooks.ToolCallTrackingHook;
 import com.agentscopea2a.v2.memory.EpisodicMemory;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.tools.ToolCallCollector;
@@ -41,6 +42,9 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+
+import reactor.core.Disposable;
 
 /**
  * v2 streaming service implementation.
@@ -92,14 +96,41 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
                 .build();
 
         RuntimeContext ctx = buildRuntimeContext(conversationId, userId, text);
+        // Store the per-request ToolCallCollector on RuntimeContext so ToolCallTrackingHook
+        // (which implements RuntimeContextAware) can access it across reactive thread boundaries.
+        // The previous ThreadLocal approach broke because the hook fires on reactor scheduler
+        // threads, not the executor thread where the ThreadLocal was bound.
+        ctx.put(ToolCallTrackingHook.COLLECTOR_CTX_KEY, collector);
+
+        // Episodic memory session_id must be "user:<userId>:<conversationId>" so that:
+        // 1) TraceMiner.loadSessions can group by session_id (each request = one session)
+        // 2) extractUserId can parse userId from the "user:userId:..." prefix
+        // 3) findActiveUsers fallback (session_id LIKE 'user:%') still discovers the rows
+        // Using a bare "user:userId" merges all of a user's requests into one session,
+        // which prevents per-request trace mining.
+        String episodicUserId = userId != null && !userId.isBlank() ? userId : "anonymous";
+        String episodicSessionId = "user:" + episodicUserId + ":" + conversationId;
 
         // Thread-safe accumulator for the full response text.
         StringBuilder accumulated = new StringBuilder();
 
-        // CAS-guarded cleanup: artifact GC, episodic persist, ThreadLocal unbind.
+        // Holds the reactive stream subscription so we can cancel it when the client disconnects.
+        // Without this, the agent keeps running (and burning LLM tokens) after the SSE emitter
+        // fires onCompletion/onTimeout/onError. The assignment happens on the executor thread
+        // inside subscribe(); cleanup reads it from the SSE callback thread.
+        AtomicReference<Disposable> subscription = new AtomicReference<>();
+
+        // CAS-guarded cleanup: cancel stream, artifact GC, episodic persist, ThreadLocal unbind.
         AtomicBoolean cleaned = new AtomicBoolean(false);
         Runnable cleanup = () -> {
             if (!cleaned.compareAndSet(false, true)) return;
+            // Cancel the reactive stream first so the agent stops processing immediately.
+            // dispose() is a no-op if the stream already completed or was never subscribed.
+            Disposable d = subscription.get();
+            if (d != null && !d.isDisposed()) {
+                d.dispose();
+                log.info("v2 stream cancelled for sessionId={} (client disconnect/timeout)", conversationId);
+            }
             try {
                 artifactStore.cleanupTask(ArtifactContext.from(ctx));
             } catch (Exception ex) {
@@ -118,17 +149,16 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
                                 .content(TextBlock.builder().text(accumulatedText).build())
                                 .build());
                     }
-                    episodicMemory.recordSessionWithToolContext(conversationId, sessionMessages, toolCallJson)
+                    episodicMemory.recordSessionWithToolContext(episodicSessionId, sessionMessages, toolCallJson)
                             .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic())
                             .subscribe(
                                     null,
-                                    ex -> log.warn("Episodic persist failed for sessionId={}: {}", conversationId, ex.getMessage()),
-                                    () -> log.debug("Episodic persist completed for sessionId={}", conversationId));
+                                    ex -> log.warn("Episodic persist failed for sessionId={}: {}", episodicSessionId, ex.getMessage()),
+                                    () -> log.debug("Episodic persist completed for sessionId={}", episodicSessionId));
                 }
             } catch (Exception ex) {
-                log.warn("Episodic persist setup failed for sessionId={}: {}", conversationId, ex.getMessage());
+                log.warn("Episodic persist setup failed for sessionId={}: {}", episodicSessionId, ex.getMessage());
             }
-            collector.unbind();
         };
 
         emitter.onCompletion(cleanup);
@@ -141,27 +171,52 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
         String formType = req.getFromType() != null ? req.getFromType() : "HXY";
 
         Executors.newSingleThreadExecutor().submit(() -> {
-            // Bind collector to the executor thread so ToolCallTrackingHook can access it.
-            collector.bind();
+            // ToolCallCollector is now propagated via RuntimeContext (set above), not ThreadLocal.
+            // The framework pushes the context to ToolCallTrackingHook via RuntimeContextAware
+            // before the call starts, so no bind() is needed here.
             try {
                 Flux<AgentEvent> eventFlux = runner.streamEvents(List.of(userMsg), ctx);
 
-                eventFlux.doOnNext(event -> {
-                    try {
-                        handleEvent(event, emitter, accumulated, ansUUID, agentId, agentName, formType, conversationId);
-                    } catch (Exception e) {
-                        log.warn("SSE send failed for sessionId={}: {}", conversationId, e.getMessage());
-                    }
-                }).doOnComplete(() -> {
-                    try {
-                        sendDone(emitter, accumulated, ansUUID, agentId, agentName, formType, conversationId);
-                    } catch (Exception e) {
-                        log.warn("SSE done send failed for sessionId={}: {}", conversationId, e.getMessage());
-                    }
-                }).doOnError(e -> {
-                    log.error("v2 stream error for sessionId={}: {}", conversationId, e.getMessage());
-                    emitter.completeWithError(e);
-                }).subscribe();
+                // Subscribe with explicit onNext/onError/onComplete consumers. subscribe() returns
+                // a Disposable which we capture so the cleanup Runnable can cancel the stream when
+                // the client disconnects (onCompletion/onTimeout/onError). Without this, the agent
+                // keeps running and burning LLM tokens after the SSE connection drops.
+                Disposable d = eventFlux.subscribe(
+                        event -> {
+                            try {
+                                handleEvent(event, emitter, accumulated, ansUUID, agentId, agentName, formType, conversationId);
+                            } catch (Exception e) {
+                                log.warn("SSE send failed for sessionId={}: {}", conversationId, e.getMessage());
+                            }
+                        },
+                        error -> {
+                            // Bug B fix: SandboxLifecycleMiddleware 释放 sandbox 后，WorkspaceMessageBus
+                            // 偶发访问 filesystem 抛 SandboxException。此时响应文本已通过 text_block_delta
+                            // 流给客户端，应发 done 正常收尾，而非 completeWithError 导致 HTTP 500。
+                            if (accumulated.length() > 0
+                                    && error instanceof io.agentscope.harness.agent.sandbox.SandboxException) {
+                                log.warn("v2 stream post-response sandbox error suppressed for sessionId={}: {}",
+                                        conversationId, error.getMessage());
+                                try {
+                                    sendDone(emitter, accumulated, ansUUID, agentId, agentName, formType, conversationId);
+                                } catch (Exception e) {
+                                    log.warn("SSE done send failed during error recovery for sessionId={}: {}",
+                                            conversationId, e.getMessage());
+                                    emitter.complete();
+                                }
+                            } else {
+                                log.error("v2 stream error for sessionId={}: {}", conversationId, error.getMessage());
+                                emitter.completeWithError(error);
+                            }
+                        },
+                        () -> {
+                            try {
+                                sendDone(emitter, accumulated, ansUUID, agentId, agentName, formType, conversationId);
+                            } catch (Exception e) {
+                                log.warn("SSE done send failed for sessionId={}: {}", conversationId, e.getMessage());
+                            }
+                        });
+                subscription.set(d);
             } catch (Exception e) {
                 log.error("v2 stream failed for sessionId={}", conversationId, e);
                 emitter.completeWithError(e);
@@ -207,6 +262,7 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
                 .formType(formType)
                 .agentId(agentId)
                 .agentName(agentName)
+                .source(event.getSource())
                 .conversationId(conversationId)
                 .build();
 

@@ -26,6 +26,13 @@ public class AiChatResult {
     private String agentId;
     /** Agent display name (default "QA助手"). */
     private String agentName;
-    /** Conversation id passed to the model — defaults to a fresh UUID. */
+    /**
+     * Source agent name for the event - null for main agent events, set to the
+     * subagent name (e.g. "analyze_data") for subagent events. Extracted from
+     * {@code AgentEvent.getSource()} so the frontend can render subagent activity
+     * distinctly from main agent text.
+     */
+    private String source;
+    /** Conversation id passed to the model. */
     private String conversationId;
 }

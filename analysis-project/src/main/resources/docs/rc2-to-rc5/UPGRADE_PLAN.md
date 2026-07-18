@@ -8,9 +8,87 @@
 
 ---
 
+## 〇·I、阶段 5 实施状态（2026/07/14 更新 - backfill）
+
+> 阶段 5 已实施完成。早期 Stage 5 完成了 ResponseCache / Artifact / SkillVectorIndex 迁移；Stages 6-8 完成后，回过头补齐分布式文件系统 + 远程 Artifact IO + backstop GC + 废弃文件清理。
+
+### 已完成（补齐部分）
+
+**RemoteFilesystemSpec 接入 HarnessA2aRunnerV2（主缺口）：**
+- `HarnessA2aRunnerV2` 新增 `ObjectProvider<RemoteFilesystemSpec>` 参数 + else-if 分发块
+- 镜像 v1 `SupervisorService` either-or 逻辑：sandbox 优先，否则用 remote
+- 当 `distributed.enabled=true` 且 `sandbox.enabled=false` 时，文件操作真正路由到 MySQL-backed BaseStore
+- 自动激活（RemoteFilesystemSpec 内部）：`CompositeFilesystem` + `OverlayFilesystem` + `NamespaceFactory` + `WorkspaceIndex`
+
+**SshArtifactIo 条件化装配：**
+- `V2InfraConfig.artifactStore()` 新增 `SandboxPropertiesV2` 参数
+- `artifacts.remote.enabled=true` 时用 `SshArtifactIo`（CSV 写到远端 Docker 主机）
+- 否则用 `LocalArtifactIo`（原行为）
+
+**ArtifactSweeper 迁移：**
+- `git mv harness/artifact/ArtifactSweeper.java -> v2/artifact/ArtifactSweeper.java`
+- 移除 `@Component`/`@Value`/`@Autowired`，构造函数注入 `(Path, long, boolean, boolean)`
+- V2InfraConfig 新增 `artifactSweeper()` bean
+- 保留 `@Scheduled(cron = "0 17 * * * *")` backstop GC
+
+**SshHealthCheck 迁移：**
+- `git mv harness/config/SshHealthCheck.java -> v2/sandbox/SshHealthCheck.java`
+- 构造函数参数 `SandboxProperties` -> `V2SandboxConfig.SandboxPropertiesV2`
+- 保留 `@Component` + `@ConditionalOnProperty` + `@PostConstruct`
+- 启动时验证 SSH ControlMaster socket，WARN-on-failure（不 fail-fast）
+
+**废弃 v1 文件删除（3 文件）：**
+- `harness/config/JedisBaseStore.java` - v2 用 `MysqlDistributedStore`，不引入 Redis
+- `harness/workspace/RemoteDirSyncer.java` - v2 `RemoteFilesystemSpec` + `BaseStore` 替代双向 SSH sync
+- `harness/workspace/RemoteWorkspaceSyncService.java` - 依赖 `RemoteDirSyncer`，同步废弃
+
+**编译验证**：`mvn clean compile` -> BUILD SUCCESS，v2 源文件 73 -> 75（+2：ArtifactSweeper + SshHealthCheck）
+
+### 已完成验证项（prior stages，无需代码变更）
+
+| 项 | 完成阶段 | 证据 |
+|----|----------|------|
+| 多数据源 config（MySQL @Primary / ClickHouse / GaussDB） | Stage 2 | `config/datasource/{MySQL,ClickHouse,Gauss}Config.java` 均编译并提供 bean |
+| `DistributedStore` 一行注入 | Stage 4 | `V2SandboxConfig.distributedStore()` -> `MysqlDistributedStore.create(dataSource)` |
+| `JdbcAgentStateStore` / `MysqlAgentStateStore` | Stage 2 | `HarnessA2aRunnerV2`: `.stateStore(new MysqlAgentStateStore(dataSource))` |
+| `TaskContextState` + `TodoTools` | Stage 1 | `HarnessA2aRunnerV2`: `.enableTaskList(true)` |
+| `AgentState` 4 子上下文 | builder 默认 | PermissionContextState/ToolContextState/TaskContextState/PlanModeContextState 默认启用 |
+| `InterruptControl` | builder 默认 | per-session 中断信号默认启用 |
+
+### 架构决策
+
+| 决策 | 原因 |
+|------|------|
+| either-or filesystem 分发镜像 v1 SupervisorService | sandbox 与 remote 互斥（config 控制），v1 已验证 |
+| SshArtifactIo 条件基于 `artifacts.remote.enabled` | artifact IO 专用配置，与 Docker CLI 的 `sandbox.remote-docker-*` 分离 |
+| ArtifactSweeper 保留 `@Scheduled` | `@EnableScheduling` 在 Stage 1 已激活，cron :17 避开拥堵 |
+| SshHealthCheck 保留 `@Component` + `@ConditionalOnProperty` | 条件注解本身就是 gating，比 config 复制更简洁 |
+| 删除 RemoteDirSyncer / RemoteWorkspaceSyncService | v2 BaseStore 架构"无同步"，v1 SSH sync 是 Redis 未引入时的权宜之计 |
+| 删除 JedisBaseStore | v2 不引入 Redis，保留死代码会造成误导 |
+
+### 阶段 5 验收缺口（需运行时验证）
+
+- `harness.a2a.distributed.enabled=true` + `sandbox.enabled=false`：日志显示 "remote filesystem wired (scope=USER)"
+- `WorkspaceIndex.open(workspace)` 触发：SQLite 文件出现在 workspace
+- 两副本收敛：副本 A 写 `skills/foo.md` -> 副本 B 通过 BaseStore 读到
+- `artifacts.remote.enabled=true`：日志显示 "SshArtifactIo wired"，CSV 落在远端主机
+- `ArtifactSweeper` cron :17 触发：过期 bucket（>6h）被清理
+- `sandbox.remote-docker-enabled=true`：启动日志显示 `SshHealthCheck` SUCCESS 或 WARN
+- 多数据源：`clickHouseDataSource` + `gaussDataSource` bean 在 `*.enabled=true` 时加载（当前无 v2 代码消费）
+
+### 延期项
+
+| 项 | 原因 | 目标阶段 |
+|----|------|----------|
+| 多数据源消费层（v2 tools 用真实 DB 查询替代 mock 数据） | 属于业务逻辑层，非基础设施；当前 v2 tools 用 mock 数据 | Stage 9+（按业务需求驱动） |
+| 两副本收敛运行时验证 | 需部署双副本 + 跨副本读写验证 | Stage 9（集成测试） |
+| `SshArtifactIo` / `ArtifactSweeper` / `SshHealthCheck` 运行时验证 | 需配置对应 flag + 真实环境 | Stage 9（集成测试） |
+
+---
+
 ## 〇·F、阶段 6 实施状态（2026/07/14 更新）
 
-> 阶段 6 已实施完成，详见 [`stage6-implementation-record.md`](stage6-implementation-record.md)。
+> 阶段 6 已实施完成。
 
 ### 已完成
 
@@ -65,9 +143,90 @@
 
 ---
 
+## 〇·H、阶段 8 实施状态（2026/07/14 更新）
+
+> 阶段 8 已实施完成。
+
+### 已完成
+
+**Memory Digestion Pipeline 全量迁移（4 文件 git mv）：**
+- `TraceMiner` -> `v2/digestion/`，移除 `MySqlEpisodicMemory` import，直接操作 raw JDBC，保留所有失败分类模式 + L1/L2 合并
+- `SkillFlowEvolver` -> `v2/digestion/`，移除 `@Component`/`@ConditionalOnProperty`/`@Value`，构造函数 11 参显式注入，保留 dual fingerprint 策略 + user-skill skip rule
+- `MemoryFlowConsolidator` -> `v2/digestion/`，import 更新到 v2.memory + v2.digestion
+- `MemoryDigestionService` -> `v2/digestion/`，移除 `@Component`/`@ConditionalOnProperty`/`@Qualifier`/`@Value`，`@PostConstruct announce()` 改为公开方法，保留 `@Scheduled` cron + MySQL GET_LOCK 互斥 + 4 阶段 pipeline
+
+**Skill PR2/PR3/PR4 闭环迁移（3 文件 git mv）：**
+- `SkillDistiller`（648 行）-> `v2/skills/`，构造函数改为 `(Model, ObjectProvider<EpisodicMemory>, MetricClassificationService, Path workspace)`，import 更新到 v2.tools / v2.memory
+- `SkillSynthesisRunner`（636 行）-> `v2/skills/`，移除 `SimpleSessionKey` import（v2 jar 不存在）+ 两处 `RuntimeContext.builder().sessionKey(...)` 调用（v2 RuntimeContext.Builder 无 `sessionKey()` 方法）
+- `SkillEvolutionRunner`（442 行）-> `v2/skills/`，保留 `@Scheduled` 在 `cleanupPendingJudgementTable()`，保留 in-process CAS + MySQL cross-JVM lock + pending-judgement cache（L1 LRU + L2 MySQL）
+
+**基础记忆存储迁移（2 文件 git mv）：**
+- `MysqlMemoryStore` -> `v2/memory/`，移除 `@Repository`/`@Qualifier`/`@ConditionalOnProperty`，`ensureSchema()` 改为公开方法
+- `MemoryHydrator` -> `v2/memory/`，移除 `@Component`/`@Autowired`，构造函数改为 `(Path workspaceMemoryRoot, MysqlMemoryStore store)`
+
+**新建/修改 config：**
+- `v2/config/V2DigestionConfig.java` 新建 - `@Configuration`，两个 `@Bean` 方法（`skillFlowEvolver` / `memoryDigestionService`），均带 `@ConditionalOnProperty(harness.a2a.memory.digestion.enabled)` 门禁；light-classifier Model 在 config 内通过 `OpenAIChatModel.builder()` 构建；调用 `svc.announce()` 替代 `@PostConstruct`
+- `v2/config/V2MemoryConfig.java` 扩展 - 新增 `MysqlMemoryStore` + `MemoryHydrator` beans，均带 `@ConditionalOnProperty(harness.a2a.memory.mysql-mirror.enabled)` 门禁
+- `v2/config/V2SkillConfig.java` 扩展 - 新增 `SkillDistiller` + `SkillSynthesisRunner` + `SkillEvolutionRunner` beans
+
+**V2ChatController 接入灰度路由守卫：**
+- 新增 `private final V2SessionRouter sessionRouter;` 字段
+- `chat()` 方法新增守卫：当 `conversationId != null && !sessionRouter.shouldUseV2(conversationId)` 时抛出 `V1RoutingNotAvailableException`（HTTP 503）
+- 真正的 v1 fallback 推迟到 Stage 9（v1 controller 重新启用后替换为 redirect）
+
+**ToolRoutersIndex 保留为 fallback：**
+- `ToolRoutersIndex` bean 仅在 `V2ToolConfig` 中定义，无运行时消费者（`HarnessA2aRunnerV2` 已通过 `V2ToolGroupAdapter` 提供 Toolkit）
+- 按计划允许保留：`reset_equipped_tools` meta-tool 运行时验证需启动应用并实际触发工具调用，编译验证无法覆盖
+- 移除推迟到 Stage 9 运行时验证后
+
+**编译验证**：`mvn clean compile` -> BUILD SUCCESS，73 个 v2 源文件（67 + 9 新增 - 0 删除 + 1 新 config = 73）
+
+### 架构决策
+
+| 决策 | 原因 | 影响 |
+|------|------|------|
+| 所有迁移类移除 Spring 注解 | v2 模式要求显式装配，由 `@Configuration @Bean` 方法 + `@ConditionalOnProperty` 控制生命周期 | 类本身为 POJO，可在测试中直接 `new`；条件化由 config 层统一管理 |
+| `@PostConstruct` -> 公开方法 + config 显式调用 | v2 不依赖 JSR-250 注解扫描，且 `@Bean` 方法可在构造后立即调用初始化 | `ensureSchema()` / `init()` / `announce()` 由对应 config 在 `return` 前调用 |
+| `@Value` -> 构造函数 primitive 参数 | config 类解析 `@Value` 并传 plain value，业务类不耦合 Spring | 类可独立测试，配置项变更不影响类签名 |
+| `SimpleSessionKey` 删除 | v2 jar 已删除 `io.agentscope.core.state.SimpleSessionKey`，且 `RuntimeContext.Builder` 无 `sessionKey()` 方法 | `SkillSynthesisRunner` 两处 builder 链移除 `.sessionKey(SimpleSessionKey.of(...))` 调用，sessionKey 改由其他方式传递 |
+| `MemoryDigestionService` 保留 `@Scheduled` | Spring 通过 component scan 自动拾取 `@Scheduled`，且 `@EnableScheduling` 已在 `AgentscopeA2aApplication` 启用 | cron 表达式 `${harness.a2a.memory.digestion.cron:0 9 21 * * *}` 默认 21:09 触发 |
+| `MySQL GET_LOCK` 保留 | cross-JVM 互斥必须依赖数据库锁，单 JVM 内锁不够 | lock name `memory_digestion_lock`，获取失败静默跳过（其他副本正在执行） |
+| `V2ChatController` 抛 503 而非路由 v1 | v1 controller 在 Stage 8 仍 Maven-excluded，无法实际路由 | 真正的 v1 fallback 推迟到 Stage 9（v1 controller 重新启用后替换为 redirect） |
+| `ToolRoutersIndex` 保留为 fallback | 运行时验证需启动应用并实际触发 `quality_tools` / `data_primitives` 工具调用，编译验证无法覆盖 | bean 已定义但未消费，移除推迟到 Stage 9 运行时验证后 |
+| `TraceMiner` 不做 Spring bean | 由 `MemoryDigestionService` 通过 `new TraceMiner(...)` 直接实例化，每次 digest 创建新实例 | 避免无状态 bean 的 Spring 容器开销；保留 plain class 形态 |
+| `EpisodicMemory` 使用 v2 业务接口 | v2 jar 无 `io.agentscope.core.memory.EpisodicMemory`，业务接口 `v2.memory.EpisodicMemory` 是 Stage 3 已建立的 shadow override 迁移产物 | `SkillDistiller` / `SkillSynthesisRunner` 通过 `ObjectProvider<EpisodicMemory>` 注入，可选依赖 |
+
+### 与原计划的偏差
+
+| 偏差 | 原计划 | 实际 | 影响 |
+|---|---|---|---|
+| 1. `ToolRoutersIndex` 未移除 | 阶段 8 完成运行时验证后移除 | 运行时验证需启动应用 + 实际触发 `reset_equipped_tools` meta-tool，编译验证无法覆盖，按计划允许保留为 fallback | 移除推迟到 Stage 9 运行时验证后 |
+| 2. 真正的 v1 fallback 未实现 | 阶段 8 接入 v1/v2 灰度路由（v1 controller redirect） | v1 controller 在 Stage 8 仍 Maven-excluded，`V2ChatController` 路由到 v1 桶时返回 503 而非 redirect | 真正 v1 fallback 推迟到 Stage 9（v1 controller 重新启用后替换） |
+| 3. 数据迁移脚本未执行 | 阶段 8 执行 episodic memory / skill_index / user_trace_summary schema 迁移 | 推迟到 Stage 9（v2 digestion pipeline 运行时验证通过后） | 数据迁移与灰度切换绑定，避免过早迁移 |
+| 4. 回滚演练未执行 | 阶段 8 完成回滚演练，RTO < 5 分钟 | 推迟到 Stage 9（v1 controller 重新启用后） | 回滚依赖 v1 controller 可用 |
+
+### 阶段 8 验收缺口（需运行时验证）
+
+- `MemoryDigestionService` nightly cron 在 21:09（可配置）触发
+- MySQL `GET_LOCK('memory_digestion_lock')` 首副本获取，其他副本静默跳过
+- Phase 1 (CleanLedger)：`agent_memory_ledger` 90 天以上记录被删除
+- Phase 2 (MineTraces)：`user_trace_summary` 从 `QualitySupervisor_episodic_memory` + L2 subagent 文件正确填充
+- Phase 3 (EvolveSkills)：skill 失败率 > 0.3 触发 `SkillDistiller.evolve()`，cross-JVM CAS lock 工作
+- Phase 3 (EvolveSkills)：未匹配 trace 触发 `SkillSynthesisRunner.distillForDigestion()` via subagent
+- Phase 4 (ConsolidateMemory)：per-user MEMORY.md 通过 LLM 与当日成功 trace 合并
+- `digestion_log` 表记录 per-user phase counts + 完成时间戳
+- `SkillEvolutionRunner.recordFailure()` bump `skill_index.failure_count` + 异步触发 evolve
+- `SkillEvolutionRunner.cachePendingJudgement()` 写入 L1 (LRU) + L2 (`skill_pending_judgement`)
+- `V2SessionRouter.shouldUseV2()` 对 100% v2 配置始终返回 true
+- `V2ToolGroupAdapter` `reset_equipped_tools` meta-tool 在 LLM 工具列表中（如 ToolRoutersIndex 移除条件成立）
+- `MysqlMemoryStore` + `MemoryHydrator` 在 mysql-mirror.enabled=true 时正确装配
+- `V2ChatController` 当 `harness.routing.v2-percentage < 100` 且 conversationId 命中 v1 桶时返回 HTTP 503
+
+---
+
 ## 〇·G、阶段 7 实施状态（2026/07/14 更新）
 
-> 阶段 7 已实施完成，详见 [`stage7-implementation-record.md`](stage7-implementation-record.md)。
+> 阶段 7 已实施完成。
 
 ### 已完成
 
@@ -130,7 +289,7 @@
 |---|---|---|---|
 | 1. 灰度切换推迟 | 阶段 7 完成 v1/v2 灰度路由（10% -> 30% -> 50% -> 100%） | V2SessionRouter 创建但默认 100% v2，v1 controller 未重新启用 | 灰度切换推迟到 Stage 8（v1 controller 重新启用后） |
 | 2. 数据迁移脚本未执行 | 阶段 7 执行会话状态 / 长期记忆 / 沙箱快照 / 技能库 schema 迁移 | 推迟到 Stage 8（v2 全链路运行时验证通过后） | 数据迁移与灰度切换绑定，避免过早迁移 |
-| 3. v2 全链路运行时验证未执行 | 阶段 7 完成 11 项功能运行时验证 | 编译验证通过，运行时验证推迟到 Stage 8 启动时 | 验收缺口记录在 stage7-implementation-record.md |
+| 3. v2 全链路运行时验证未执行 | 阶段 7 完成 11 项功能运行时验证 | 编译验证通过，运行时验证推迟到 Stage 8 启动时 | 验收缺口见 §〇·G |
 | 4. 回滚演练未执行 | 阶段 7 完成回滚演练，RTO < 5 分钟 | 推迟到 Stage 8（v1 controller 重新启用后） | 回滚依赖 v1 controller 可用 |
 
 ### 阶段 7 验收缺口（需运行时验证）
@@ -152,7 +311,7 @@
 
 ## 〇·D、阶段 4 实施状态（2026/07/13 更新）
 
-> 阶段 4 已实施完成，详见 [`stage4-implementation-record.md`](stage4-implementation-record.md)。
+> 阶段 4 已实施完成。
 
 ### 已完成
 
@@ -190,7 +349,7 @@
 
 ## 〇·C、阶段 3 实施状态（2026/07/13 更新）
 
-> 阶段 3 已实施完成，详见 [`stage3-implementation-record.md`](stage3-implementation-record.md)。
+> 阶段 3 已实施完成。
 
 ### 已完成
 
@@ -229,7 +388,7 @@
 
 ## 〇·A、阶段 1 实施状态（2026/07/13 更新）
 
-> 阶段 1 已实施完成，详见 [`stage1-implementation-record.md`](stage1-implementation-record.md)。本节为快速摘要，正文章节保留原计划文本作为后续阶段参考。
+> 阶段 1 已实施完成。本节为快速摘要，正文章节保留原计划文本作为后续阶段参考。
 
 ### 已完成
 
@@ -261,7 +420,7 @@
 
 ## 〇·B、阶段 2 实施状态（2026/07/13 更新）
 
-> 阶段 2 已实施完成（精简版），详见 [`stage2-implementation-record.md`](stage2-implementation-record.md)。原阶段 2 计划 5 项中 4 项有跨阶段依赖，实际完成 3 项无依赖项。
+> 阶段 2 已实施完成（精简版）。原阶段 2 计划 5 项中 4 项有跨阶段依赖，实际完成 3 项无依赖项。
 
 ### 已完成
 
@@ -749,7 +908,7 @@ session 灰度切换前，一次性跑数据迁移脚本：
 
 ### 阶段 1：v2 入口最小路径（1-2 周）
 
-> **实施状态**：✅ 已完成（2026/07/13）。详见 [`stage1-implementation-record.md`](stage1-implementation-record.md) 与本文 §〇·A。原计划下方文本保留作为后续阶段参考；实际实施有 3 大偏差（dual-track 假设不成立、5 个 shadow override 提前删除、v2 jar 构建需兼容层绕过）。
+> **实施状态**：✅ 已完成（2026/07/13）。详见本文 §〇·A。原计划下方文本保留作为后续阶段参考；实际实施有 3 大偏差（dual-track 假设不成立、5 个 shadow override 提前删除、v2 jar 构建需兼容层绕过）。
 
 **目标**：新建 `HarnessA2aRunnerV2`，跑通 v2 builder 最小路径（workspace + memory + 一个 middleware + 一个工具 + 一个沙箱）。v1 入口不动。
 
@@ -941,24 +1100,32 @@ session 灰度切换前，一次性跑数据迁移脚本：
 
 **验收证据**：(1) v2 入口全链路 11 项功能验证通过；(2) 数据迁移脚本执行成功，老 session 切到 v2 后状态恢复正确；(3) session 灰度切换生效（新 session 100% 走 v2）；(4) 错误率 / 延迟 / 资源消耗对比 v1 基线无退化；(5) 回滚演练 RTO < 5 分钟
 
-### 阶段 8：观察期（2-4 周）
+### 阶段 8：观察期 + Memory Digestion Pipeline 迁移（2-4 周）
 
-**目标**：v2 入口承接主要流量；v1 入口待删除，承接剩余老 session。
+> **实施说明**：阶段 8 实际实施不仅包含原计划的观察期，还完成了 Memory Digestion Pipeline + Skill PR2/PR3/PR4 闭环的全量迁移。详见 §〇·H 阶段 8 实施状态。
 
-1. **v2 入口监控**：
-   - `OtelTracingMiddleware` 接入内网 OTel collector
-   - 关键能力 metrics（压缩触发次数 / 记忆提炼次数 / 沙箱快照次数 / 技能审批次数）
-   - 错误率 / 延迟 / 资源消耗持续监控
-2. **v1 入口只读维护**：
-   - 不接新需求，只修严重 bug
-   - 老 session 自然衰减（用户主动结束或超时）
-3. **剩余老 session 切换**：
-   - 通知用户老 session 即将迁移
-   - 批量切到 v2 入口
-4. **v1 入口流量归零确认**：
-   - 监控 v1 入口请求量 = 0 持续 1 周
+**原计划目标**：v2 入口承接主要流量；v1 入口待删除，承接剩余老 session。
 
-**验收证据**：(1) v2 入口稳定运行 2-4 周，无严重故障；(2) v1 入口流量归零持续 1 周；(3) OTel tracing 正常（`invoke_agent` / `chat` / `execute_tool` span 可见）；(4) 关键能力 metrics 正常
+**实际实施**：
+1. **Memory Digestion Pipeline 全量迁移**（9 文件 git mv）：
+   - `MysqlMemoryStore` / `MemoryHydrator` -> `v2/memory/`
+   - `SkillDistiller` / `SkillSynthesisRunner` / `SkillEvolutionRunner` -> `v2/skills/`
+   - `TraceMiner` / `SkillFlowEvolver` / `MemoryFlowConsolidator` / `MemoryDigestionService` -> `v2/digestion/`
+   - `V2DigestionConfig` 新建（显式装配 digestion beans，带 `digestion.enabled` 门禁）
+   - `V2MemoryConfig` / `V2SkillConfig` 扩展（新增 5 个 bean）
+2. **V2ChatController 接入 V2SessionRouter 灰度守卫**：
+   - v1 桶命中时返回 HTTP 503（真正 v1 fallback 推迟到 Stage 9）
+3. **ToolRoutersIndex 保留为 fallback**：
+   - 运行时验证未执行，按计划允许保留
+4. **观察期任务**（推迟到 Stage 9 运行时验证后启动）：
+   - v2 入口监控（OTel / metrics / 错误率 / 延迟）
+   - v1 入口只读维护
+   - 剩余老 session 切换
+   - v1 入口流量归零确认
+
+**验收证据**（已满足）：(1) `mvn clean compile` -> BUILD SUCCESS，73 个 v2 源文件；(2) 9 文件迁移 + 1 新 config + 3 config 修改 + 1 controller 修改完成
+
+**验收证据**（推迟到 Stage 9 运行时验证）：(1) v2 入口稳定运行 2-4 周，无严重故障；(2) v1 入口流量归零持续 1 周；(3) OTel tracing 正常；(4) 关键能力 metrics 正常；(5) Memory Digestion nightly cron 触发；(6) `reset_equipped_tools` meta-tool 运行时验证（决定 ToolRoutersIndex 移除）
 
 ### 阶段 9：v1 入口整体删除 + 回归测试 + 内网部署（1 周）
 
@@ -1002,6 +1169,27 @@ session 灰度切换前，一次性跑数据迁移脚本：
    - 运维监控手册
 
 **验收证据**：(1) v1 入口 + 12 shadow override + ReActAgent 1906 行定制全部删除；(2) v2 jar 同名类生效（`ReActAgent` 等 v2 改进可见）；(3) 全功能回归通过；(4) 性能对比 v1 基线无退化；(5) 内网部署完成
+
+**执行进度（2026/07/16）**：阶段 9 删除部分完成（步骤 1-3 + 功能回归）：
+
+1. ✅ **v1 入口 + shadow override 删除**：
+   - `HarnessA2aRunner`（v1 入口）删除
+   - `io/agentscope/core/ReActAgent.java`（1906 行定制）删除
+   - 12 个 shadow override 全部删除（`io/agentscope/{core,harness,subagent}/**`）
+   - v1 业务包整体删除：`com/agentscopea2a/{agent,harness,service}/**` + `ChatController.java` + `DigestionController.java`
+   - `pom.xml` 的 `<excludes>` + `<testExcludes>` 移除（v1 源码已无）
+   - 唯一保留：`WorkspaceMaterializer` 工具类迁移到 `com.agentscopea2a.v2.config.WorkspaceMaterializer`（`SubagentRegistrar` 依赖）
+
+2. ✅ **构建验证**：`mvn clean compile -Dmaven.test.skip=true` -> BUILD SUCCESS（5.2s，仅 deprecation warning）；`mvn package` -> jar 生成成功
+
+3. ✅ **功能回归**（启动 + smoke test）：
+   - `HarnessA2aRunnerV2 initialized` + `V2SessionRouter: v2Percentage=100`
+   - 7 个 v2 hook 全部 wired（ArtifactHandoffHook/PythonExecRetryHook/ToolCallTrackingHook/SkillRetrievalHook/SkillSynthesisHook/SkillEvolutionHook/KnowledgeRetrievalHook）
+   - SSE 请求成功：`stage9-smoke-001` 返回正确质量分 3.1，`event:done` 正常收尾，无 500
+   - 技能合成 MISS path 触发：`[MISS path] candidate _global|query|general hit=3 status=synthesized thr=3`
+   - 无 ERROR/Exception
+
+4. ⏳ **剩余**：性能回归 + 内网部署（Maven 仓库 / Docker 镜像 / 配置内网化）推迟到内网环境验证
 
 ---
 
@@ -1333,7 +1521,7 @@ public class HumanInLoopMiddleware implements MiddlewareBase {
 | 阶段 5：维度状态 + Artifact + 多数据源挂载 | 2 周 | 9-11 周 |
 | 阶段 6：元工具 + SSE 流式挂载 | 1-2 周 | 10-13 周 |
 | 阶段 7：v2 全链路验证 + session 灰度切换 | 2 周 | 12-15 周 |
-| 阶段 8：观察期 | 2-4 周 | 14-19 周 |
+| 阶段 8：观察期 + Memory Digestion Pipeline 迁移 | 2-4 周 | 14-19 周 |
 | 阶段 9：v1 整体删除 + 回归 + 内网部署 | 1 周 | 15-20 周 |
 | **合计（不含观察期）** | **13-16 周** | |
 | **合计（含观察期）** | **15-20 周** | |

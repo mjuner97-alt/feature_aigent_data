@@ -16,11 +16,16 @@
 package com.agentscopea2a.v2.runner;
 
 import com.agentscopea2a.v2.hooks.ArtifactHandoffHook;
+import com.agentscopea2a.v2.hooks.KnowledgeRetrievalHook;
 import com.agentscopea2a.v2.hooks.PythonExecRetryHook;
+import com.agentscopea2a.v2.hooks.SkillEvolutionHook;
+import com.agentscopea2a.v2.hooks.SkillRetrievalHook;
+import com.agentscopea2a.v2.hooks.SkillSynthesisHook;
 import com.agentscopea2a.v2.hooks.ToolCallTrackingHook;
 import com.agentscopea2a.v2.middleware.ArtifactAccessMiddleware;
 import com.agentscopea2a.v2.middleware.DimensionStateMiddleware;
 import com.agentscopea2a.v2.middleware.EpisodicRetrievalMiddleware;
+import com.agentscopea2a.v2.middleware.MemoryLedgerMirrorMiddleware;
 import com.agentscopea2a.v2.middleware.ResponseCacheMiddleware;
 import com.agentscopea2a.v2.middleware.SessionMiddleware;
 import com.agentscopea2a.v2.tools.V2ToolGroupAdapter;
@@ -32,8 +37,10 @@ import io.agentscope.core.middleware.MiddlewareBase;
 import io.agentscope.core.tool.Toolkit;
 import io.agentscope.extensions.mysql.state.MysqlAgentStateStore;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
+import com.agentscopea2a.v2.state.SanitizingAgentStateStore;
 import io.agentscope.harness.agent.DistributedStore;
 import io.agentscope.harness.agent.HarnessAgent;
+import io.agentscope.harness.agent.filesystem.spec.RemoteFilesystemSpec;
 import io.agentscope.harness.agent.filesystem.spec.SandboxFilesystemSpec;
 import io.agentscope.harness.agent.memory.MemoryConfig;
 import io.agentscope.harness.agent.memory.compaction.CompactionConfig;
@@ -91,12 +98,19 @@ public class HarnessA2aRunnerV2 {
             ResponseCacheMiddleware responseCacheMiddleware,
             ArtifactAccessMiddleware artifactAccessMiddleware,
             SessionMiddleware sessionMiddleware,
+            ObjectProvider<MemoryLedgerMirrorMiddleware> memoryLedgerMirrorProvider,
             ObjectProvider<ArtifactHandoffHook> artifactHandoffHookProvider,
             ObjectProvider<PythonExecRetryHook> pythonExecRetryHookProvider,
             ObjectProvider<ToolCallTrackingHook> toolCallTrackingHookProvider,
+            ObjectProvider<SkillRetrievalHook> skillRetrievalHookProvider,
+            ObjectProvider<SkillSynthesisHook> skillSynthesisHookProvider,
+            ObjectProvider<SkillEvolutionHook> skillEvolutionHookProvider,
+            ObjectProvider<KnowledgeRetrievalHook> knowledgeRetrievalHookProvider,
             ObjectProvider<V2ToolGroupAdapter> toolGroupAdapterProvider,
             ObjectProvider<SandboxFilesystemSpec> sandboxFilesystemProvider,
-            ObjectProvider<DistributedStore> distributedStoreProvider) {
+            ObjectProvider<RemoteFilesystemSpec> remoteFilesystemProvider,
+            ObjectProvider<DistributedStore> distributedStoreProvider,
+            ObjectProvider<SubagentRegistrar> subagentRegistrarProvider) {
         OpenAIChatModel model = OpenAIChatModel.builder()
                 .apiKey(apiKey)
                 .baseUrl(baseUrl)
@@ -120,12 +134,17 @@ public class HarnessA2aRunnerV2 {
                 artifactAccessMiddleware,
                 sessionMiddleware
         ));
+        MemoryLedgerMirrorMiddleware ledgerMirror = memoryLedgerMirrorProvider.getIfAvailable();
+        if (ledgerMirror != null) {
+            middlewares.add(ledgerMirror);
+            log.info("HarnessA2aRunnerV2: MemoryLedgerMirrorMiddleware wired");
+        }
 
         HarnessAgent.Builder builder = HarnessAgent.builder()
                 .name("QualitySupervisorV2")
                 .model(model)
                 .workspace(workspace)
-                .stateStore(new MysqlAgentStateStore(dataSource))
+                .stateStore(new SanitizingAgentStateStore(new MysqlAgentStateStore(dataSource, true)))
                 .memory(MemoryConfig.builder()
                         .model(smallModel)
                         .build())
@@ -143,10 +162,40 @@ public class HarnessA2aRunnerV2 {
                 .enableSkillPromotionGate(localApprovalGate, new CompositeFilter(skillVisibilityFilter))
                 .middlewares(middlewares);
 
+        // Enable AsyncToolMiddleware so long-running tool calls (>30s) get offloaded to the
+        // background with a placeholder ToolResultBlock, then delivered to the LLM as a
+        // HintBlock via InboxMiddleware when complete. Required for HintBlock / async tool
+        // placeholder behavior tested in §3.4. Backed by local filesystem message bus.
+        Path busRoot = workspace.resolve(".bus");
+        try {
+            java.nio.file.Files.createDirectories(busRoot);
+            io.agentscope.harness.agent.filesystem.local.LocalFilesystem busFs =
+                    new io.agentscope.harness.agent.filesystem.local.LocalFilesystem(busRoot);
+            io.agentscope.harness.agent.bus.WorkspaceMessageBus messageBus =
+                    new io.agentscope.harness.agent.bus.WorkspaceMessageBus(busFs, "/bus");
+            io.agentscope.harness.agent.bus.WorkspaceAsyncToolRegistry asyncToolRegistry =
+                    new io.agentscope.harness.agent.bus.WorkspaceAsyncToolRegistry(busFs, "/async-tools");
+            builder.messageBus(messageBus);
+            builder.asyncToolRegistry(asyncToolRegistry);
+            builder.asyncToolTimeout(java.time.Duration.ofSeconds(30));
+            log.info("HarnessA2aRunnerV2: AsyncToolMiddleware wired (timeout=30s, bus={})",
+                    busRoot);
+        } catch (Exception e) {
+            log.warn("HarnessA2aRunnerV2: failed to wire AsyncToolMiddleware: {}", e.getMessage());
+        }
+
         SandboxFilesystemSpec sandboxFilesystem = sandboxFilesystemProvider.getIfAvailable();
+        RemoteFilesystemSpec remoteFilesystem = remoteFilesystemProvider.getIfAvailable();
         if (sandboxFilesystem != null) {
             builder.filesystem(sandboxFilesystem);
-            log.info("HarnessA2aRunnerV2: sandbox filesystem wired ({})", sandboxFilesystem.getClass().getSimpleName());
+            log.info("HarnessA2aRunnerV2: sandbox filesystem wired ({})",
+                    sandboxFilesystem.getClass().getSimpleName());
+        } else if (remoteFilesystem != null) {
+            // Distributed mode without sandbox container - RemoteFilesystemSpec routes
+            // skills/memory/sessions through the MySQL-backed BaseStore so replicas converge.
+            builder.filesystem(remoteFilesystem);
+            log.info("HarnessA2aRunnerV2: remote filesystem wired (scope={})",
+                    remoteFilesystem.getIsolationScope());
         }
 
         DistributedStore distributedStore = distributedStoreProvider.getIfAvailable();
@@ -179,6 +228,52 @@ public class HarnessA2aRunnerV2 {
             log.info("HarnessA2aRunnerV2: ToolCallTrackingHook wired (priority=45)");
         }
 
+        // Skill retrieval hook (PR3) - retrieves matched skills from skills-auto/ and skills-user/
+        // into the system prompt at PreCall. This is the ONLY path that injects user/auto skills;
+        // SkillVectorIndexVisibilityFilter only filters JAR-builtin skills. Runs at priority -50
+        // (before WorkspaceContextHook) so retrieved skills appear first in the system prompt.
+        SkillRetrievalHook retrievalHook = skillRetrievalHookProvider.getIfAvailable();
+        if (retrievalHook != null) {
+            builder.hook(retrievalHook);
+            log.info("HarnessA2aRunnerV2: SkillRetrievalHook wired (priority=-50)");
+        }
+
+        // Skill synthesis hook (PR2, cache-MISS path) - bumps skill_candidate.hit_count on
+        // every PreCall and dispatches async distillation when threshold is crossed. Without
+        // this hook, online bump-to-distill never fires; only nightly digestion can. Runs at
+        // priority 50 (after SkillRetrievalHook -50 so the retrieval attribute is available
+        // for the synthesis hook to log, and after ToolCallTrackingHook 45).
+        SkillSynthesisHook synthesisHook = skillSynthesisHookProvider.getIfAvailable();
+        if (synthesisHook != null) {
+            builder.hook(synthesisHook);
+            log.info("HarnessA2aRunnerV2: SkillSynthesisHook wired (priority=50)");
+        }
+
+        // Skill evolution hook (PR4, failure-feedback closed loop) - credits success/failure
+        // counts to retrieved skills based on python_exec retry signals (PostCall) and
+        // cross-turn user rejection keywords (PreCall). Dispatches async evolve via
+        // SkillEvolutionRunner when failure_rate exceeds the threshold. Without this hook,
+        // skill_index.success/failure_count never increment on chat requests; only nightly
+        // digestion can trigger evolution. Runs at priority 60 (after synthesis bump at 50
+        // so the candidate row exists before evolution can fire).
+        SkillEvolutionHook evolutionHook = skillEvolutionHookProvider.getIfAvailable();
+        if (evolutionHook != null) {
+            builder.hook(evolutionHook);
+            log.info("HarnessA2aRunnerV2: SkillEvolutionHook wired (priority=60)");
+        }
+
+        // Knowledge dynamic retrieval hook - injects files from knowledge-dynamic/ into the
+        // system prompt when the user's question matches keywords in knowledge-index.yaml.
+        // knowledge/ is always loaded by the JAR's WorkspaceContextHook; knowledge-dynamic/
+        // is on-demand only. Runs at priority -40 (between SkillRetrievalHook -50 and
+        // WorkspaceContextHook ~0) so dynamic knowledge appears after skills but before
+        // static workspace context.
+        KnowledgeRetrievalHook knowledgeHook = knowledgeRetrievalHookProvider.getIfAvailable();
+        if (knowledgeHook != null) {
+            builder.hook(knowledgeHook);
+            log.info("HarnessA2aRunnerV2: KnowledgeRetrievalHook wired (priority=-40)");
+        }
+
         // v2 Toolkit — replaces ToolRoutersIndex's flat router_tool dispatch with native
         // tool groups and the reset_equipped_tools meta-tool for LLM-driven group switching.
         V2ToolGroupAdapter toolGroupAdapter = toolGroupAdapterProvider.getIfAvailable();
@@ -189,9 +284,18 @@ public class HarnessA2aRunnerV2 {
                     toolGroupAdapter.getToolkit().getActiveGroups());
         }
 
+        // Subagent registration - manually loads agent-subagents/*.md and registers
+        // per-subagent factories with fail-fast tool-name validation. Replicates v1
+        // SupervisorService pattern; agent-subagents/ (not subagents/) avoids JAR auto-load.
+        SubagentRegistrar registrar = subagentRegistrarProvider.getIfAvailable();
+        if (registrar != null) {
+            registrar.registerAll(builder, model, workspace, sandboxFilesystemProvider);
+            log.info("HarnessA2aRunnerV2: subagents registered via manual factory");
+        }
+
         this.agent = builder.build();
 
-        log.info("HarnessA2aRunnerV2 initialized: workspace={}, model={}, stateStore=MysqlAgentStateStore, " +
+        log.info("HarnessA2aRunnerV2 initialized: workspace={}, model={}, stateStore=SanitizingAgentStateStore(MysqlAgentStateStore), " +
                         "memoryModel={}, skillCurator=enabled",
                 workspace, modelName, lightModelName);
     }

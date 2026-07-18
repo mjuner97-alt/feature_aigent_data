@@ -29,6 +29,7 @@ import com.agentscopea2a.v2.tools.ToolRoutersIndex;
 import com.agentscopea2a.v2.tools.V2ToolGroupAdapter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -120,15 +121,24 @@ public class V2ToolConfig {
     // until the Toolkit path is fully validated at runtime.
 
     @Bean
-    public V2ToolGroupAdapter v2ToolGroupAdapter(AgentTools agentTools, DataPrimitivesTool dataPrimitivesTool) {
-        V2ToolGroupAdapter adapter = V2ToolGroupAdapter.builder()
+    public V2ToolGroupAdapter v2ToolGroupAdapter(
+            AgentTools agentTools,
+            DataPrimitivesTool dataPrimitivesTool,
+            ObjectProvider<PythonExecTool> pythonExecToolProvider) {
+        V2ToolGroupAdapter.Builder b = V2ToolGroupAdapter.builder()
                 .createGroup("quality_tools", "Quality inspection and agent management tools", true)
                 .tool(agentTools, "quality_tools")
                 .createGroup("data_primitives", "Data querying and CSV analysis tools", true)
-                .tool(dataPrimitivesTool, "data_primitives")
-                .enableMetaTool()
-                .build();
-        log.info("V2ToolGroupAdapter: created toolkit with quality_tools + data_primitives groups + meta-tool");
+                .tool(dataPrimitivesTool, "data_primitives");
+        PythonExecTool py = pythonExecToolProvider.getIfAvailable();
+        if (py != null) {
+            b.createGroup("python_exec", "Python code execution in sandbox container", true)
+             .tool(py, "python_exec");
+            log.info("V2ToolGroupAdapter: registered PythonExecTool into 'python_exec' group");
+        }
+        V2ToolGroupAdapter adapter = b.enableMetaTool().build();
+        log.info("V2ToolGroupAdapter: created toolkit with quality_tools + data_primitives"
+                + (py != null ? " + python_exec" : "") + " groups + meta-tool");
         return adapter;
     }
 

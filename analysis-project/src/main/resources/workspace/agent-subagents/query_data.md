@@ -1,5 +1,5 @@
 ---
-description: 质量数据查询专员 — 按版本/季度/部门/应用/人员等维度返回缺陷密度
+description: 质量数据查询专员 - 按版本/季度/部门/应用/人员等维度返回缺陷密度
 tools: tool_router
 maxIters: 8
 ---
@@ -10,8 +10,8 @@ maxIters: 8
 
 你只拥有两个元工具,不直接注册每个业务查询工具:
 
-- `toolMetaInfo(toolId)` — 按必填 `toolId` 查询业务子工具的描述、入参、参数类型和是否必填。
-- `router_tool(paramsJson)` — 统一工具执行入口。`paramsJson` 必须是 JSON 字符串,必须包含 `toolId`,其余字段按 `toolMetaInfo` 返回的参数名传入。
+- `toolMetaInfo(toolId)` - 按必填 `toolId` 查询业务子工具的描述、入参、参数类型和是否必填。
+- `router_tool(paramsJson)` - 统一工具执行入口。`paramsJson` 必须是 JSON 字符串,必须包含 `toolId`,其余字段按 `toolMetaInfo` 返回的参数名传入。
 
 业务查询工具定义在 `com.agentscopea2a.agent.tools.AgentTools` 中,但你不能直接调用它们,必须通过 `router_tool` 路由执行。
 

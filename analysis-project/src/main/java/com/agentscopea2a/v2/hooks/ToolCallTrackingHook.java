@@ -16,10 +16,12 @@
 package com.agentscopea2a.v2.hooks;
 
 import com.agentscopea2a.v2.tools.ToolCallCollector;
+import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.hook.Hook;
 import io.agentscope.core.hook.HookEvent;
 import io.agentscope.core.hook.PostActingEvent;
 import io.agentscope.core.hook.PreActingEvent;
+import io.agentscope.core.hook.RuntimeContextAware;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolResultBlock;
@@ -35,12 +37,15 @@ import java.util.List;
  * {@link ToolCallCollector} via {@link PreActingEvent} (tool name + input) and
  * {@link PostActingEvent} (output/result).
  *
- * <p><b>Thread safety:</b> This hook is a singleton that retrieves the current request's
- * {@link ToolCallCollector} via {@link ToolCallCollector#getCurrent()} (ThreadLocal).
- * The streaming service binds/unbinds the collector per-request, so this hook doesn't
- * need constructor injection of the collector.
+ * <p><b>Context propagation:</b> The collector is stored on the per-call
+ * {@link RuntimeContext} under key {@link #COLLECTOR_CTX_KEY} by
+ * {@link com.agentscopea2a.v2.service.V2ChatStreamServiceImpl}. This hook implements
+ * {@link RuntimeContextAware} so the framework pushes the current call's context before
+ * the call starts and clears it after. This replaces the previous ThreadLocal approach,
+ * which broke because reactive streams cross thread boundaries (the hook fires on
+ * reactor scheduler threads, not the executor thread where the ThreadLocal was bound).
  *
- * <p>Priority 45 — after framework-internal acting hooks but before
+ * <p>Priority 45 - after framework-internal acting hooks but before
  * SkillEvolutionHook(60).
  *
  * <p><b>Note:</b> Uses deprecated Hook/PreActingEvent/PostActingEvent API because
@@ -49,13 +54,18 @@ import java.util.List;
  * <p>Bean created by {@link com.agentscopea2a.v2.config.V2InfraConfig}.
  */
 @SuppressWarnings("deprecation")
-public class ToolCallTrackingHook implements Hook {
+public class ToolCallTrackingHook implements Hook, RuntimeContextAware {
 
     private static final Logger log = LoggerFactory.getLogger(ToolCallTrackingHook.class);
 
+    /** Key under which the per-request ToolCallCollector is stored on RuntimeContext. */
+    public static final String COLLECTOR_CTX_KEY = "toolCallCollector";
+
+    private volatile RuntimeContext currentCtx;
+
     /**
-     * No-arg constructor — uses {@link ToolCallCollector#getCurrent()} ThreadLocal
-     * to retrieve the per-request collector at hook invocation time.
+     * No-arg constructor - the per-request collector is retrieved from the
+     * {@link RuntimeContext} pushed by the framework via {@link RuntimeContextAware}.
      */
     public ToolCallTrackingHook() {
     }
@@ -66,10 +76,18 @@ public class ToolCallTrackingHook implements Hook {
     }
 
     @Override
+    public void setRuntimeContext(RuntimeContext context) {
+        this.currentCtx = context;
+    }
+
+    @Override
     @SuppressWarnings("unchecked")
     public <T extends HookEvent> Mono<T> onEvent(T event) {
-        // Retrieve the per-request collector from ThreadLocal
-        ToolCallCollector collector = ToolCallCollector.getCurrent();
+        RuntimeContext ctx = this.currentCtx;
+        if (ctx == null) {
+            return Mono.just(event);
+        }
+        ToolCallCollector collector = ctx.get(COLLECTOR_CTX_KEY);
         if (collector == null) {
             return Mono.just(event);
         }

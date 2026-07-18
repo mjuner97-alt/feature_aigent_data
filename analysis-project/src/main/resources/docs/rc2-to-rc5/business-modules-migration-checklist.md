@@ -7,9 +7,32 @@
 
 ---
 
+## 阶段 8 实施摘要（2026/07/14 更新）
+
+> 阶段 8 已实施完成。下方各模块状态已根据实际实施情况更新。
+
+**已完成**：
+- Memory Digestion Pipeline 全量迁移到 `v2/digestion/`（TraceMiner + SkillFlowEvolver + MemoryFlowConsolidator + MemoryDigestionService，4 文件 git mv）
+- Skill PR2/PR3/PR4 闭环迁移到 `v2/skills/`（SkillDistiller + SkillSynthesisRunner + SkillEvolutionRunner，3 文件 git mv）
+- 基础记忆存储迁移到 `v2/memory/`（MysqlMemoryStore + MemoryHydrator，2 文件 git mv）
+- `V2DigestionConfig` 新建（@Configuration，显式装配 SkillFlowEvolver + MemoryDigestionService beans，带 digestion.enabled 条件门禁）
+- `V2MemoryConfig` 扩展（新增 MysqlMemoryStore + MemoryHydrator beans，带 mysql-mirror.enabled 条件门禁）
+- `V2SkillConfig` 扩展（新增 SkillDistiller + SkillSynthesisRunner + SkillEvolutionRunner beans）
+- `V2ChatController` 接入 `V2SessionRouter` 灰度路由守卫，v1 桶命中时返回 HTTP 503（真正 v1 fallback 推迟到 Stage 9）
+- `ToolRoutersIndex` 保留为 fallback（运行时验证未执行，按计划允许）
+- 9 个文件迁移 + 1 个新 config + 3 个 config 修改 + 1 个 controller 修改，v2 源文件从 67 增加到 73
+
+**与计划的偏差**：
+1. `ToolRoutersIndex` 未移除 -- 运行时验证需启动应用并实际触发 `reset_equipped_tools` meta-tool，编译验证无法覆盖，按计划允许保留为 fallback，移除推迟到 Stage 9
+2. 真正的 v1 fallback 未实现 -- v1 controller 在 Stage 8 仍 Maven-excluded，`V2ChatController` 路由到 v1 桶时返回 503 而非 redirect，Stage 9 重新启用 v1 controller 后替换
+
+**阶段 8 验收缺口（转入后续阶段）**：`MemoryDigestionService` nightly cron 触发 + MySQL GET_LOCK 互斥 + 4 阶段 pipeline + `SkillEvolutionRunner` 计数器 + `V2SessionRouter` 100% v2 路由 + `ToolRoutersIndex` 移除条件，均需运行时验证
+
+---
+
 ## 阶段 7 实施摘要（2026/07/14 更新）
 
-> 阶段 7 已实施完成，详见 [`stage7-implementation-record.md`](stage7-implementation-record.md)。下方各模块状态已根据实际实施情况更新。
+> 阶段 7 已实施完成。
 
 **已完成**：
 - MetricClassificationService + SkillCandidate + SkillCandidateRepository + FingerprintCalculator 迁移到 `v2/skills/`
@@ -32,7 +55,7 @@
 
 ## 阶段 1 实施摘要（2026/07/13 更新）
 
-> 阶段 1 已实施完成，详见 [`stage1-implementation-record.md`](stage1-implementation-record.md)。下方各模块状态已根据实际实施情况更新。
+> 阶段 1 已实施完成。下方各模块状态已根据实际实施情况更新。
 
 **已完成**：
 - pom.xml 升级到 v2.0.0-RC5（含 3 个新增依赖）
@@ -81,13 +104,13 @@
 | `harness/config/PersistenceProperties.java` | - | 保留为 `@ConfigurationProperties` | v2 入口注入 | 阶段 2 | ⬜ |
 | `harness/config/InfraConfig.java` | - | 重建为 `V2InfraConfig`（v1 在 excluded 包）| Spring `@Configuration` | 阶段 5 | ✅（`V2InfraConfig` 提供 ResponseCacheService/ArtifactStore/middleware/hook beans）|
 | `harness/config/SandboxProperties.java` | - | 重建为 `V2SandboxConfig.SandboxPropertiesV2`（v1 在 excluded 包）| `@ConfigurationProperties(prefix = "harness.a2a.sandbox")` | 阶段 4 | ✅ |
-| `harness/config/SshHealthCheck.java` | - | 保留 | v2 入口注入 | 阶段 5 | ⬜ |
+| `harness/config/SshHealthCheck.java` | - | 保留 | v2 入口注入 | 阶段 5 | ✅（git mv 到 `v2/sandbox/`，构造函数参数 `SandboxProperties` -> `V2SandboxConfig.SandboxPropertiesV2`，保留 `@Component` + `@ConditionalOnProperty` + `@PostConstruct`）|
 | `harness/config/PythonExecProperties.java` | - | 重建为 `V2ToolConfig.PythonExecPropertiesV2`（内部类）| `V2ToolConfig` bean | 阶段 6 | ✅（`PythonExecPropertiesV2` 内部类替代，`PythonExecTool` 使用构造函数注入）|
 | `harness/config/WorkspaceMaterializer.java` | - | 保留，对接 v2 `WorkspaceSpec` | v2 入口注入 | 阶段 4 | ⬜ |
 | `harness/config/FilesystemConfig.java` | - | 重建为 `V2SandboxConfig`（v1 在 excluded 包，`SandboxDistributedOptions` 已删除）| Spring `@Configuration` 注入 | 阶段 4 | ✅（`V2SandboxConfig` 提供 sandbox/distributed/remote filesystem beans）|
-| `harness/config/JedisBaseStore.java` | - | **评估删除**（v2 用 `JdbcDistributedStore`，不引入 Redis）| 删除 | 阶段 5 | ⬜ |
-| `harness/workspace/RemoteDirSyncer.java` | - | 对接 v2 `RemoteFilesystemSpec` | `.filesystem(...)` | 阶段 5 | ⬜ |
-| `harness/workspace/RemoteWorkspaceSyncService.java` | - | 对接 v2 `RemoteFilesystemSpec` | `.filesystem(...)` | 阶段 5 | ⬜ |
+| `harness/config/JedisBaseStore.java` | - | **评估删除**（v2 用 `JdbcDistributedStore`，不引入 Redis）| 删除 | 阶段 5 | 🗑️（已删除 - v2 用 `MysqlDistributedStore.create(dataSource)`，JDBC-backed，无 Redis）|
+| `harness/workspace/RemoteDirSyncer.java` | - | 对接 v2 `RemoteFilesystemSpec` | `.filesystem(...)` | 阶段 5 | 🗑️（已删除 - v2 `RemoteFilesystemSpec` + `BaseStore` 替代双向 SSH sync，文件存于共享 MySQL store，两副本直接读写）|
+| `harness/workspace/RemoteWorkspaceSyncService.java` | - | 对接 v2 `RemoteFilesystemSpec` | `.filesystem(...)` | 阶段 5 | 🗑️（已删除 - 依赖 `RemoteDirSyncer`，同步废弃）|
 
 **阶段 1 实际验收**：`HarnessA2aRunnerV2` 装配 7 能力（workspace / memory / compaction / toolResultEviction / planMode / taskList / pendingToolRecovery），SSE 冒烟测试通过；stateStore / distributedStore / filesystem / channel / skill 待阶段 2+ 挂载。AGENTS.md 变更验证待做。
 
@@ -95,21 +118,21 @@
 
 ## 二、记忆处理（§3.2.2）-- 阶段 2（精简版已完成）
 
-> 阶段 2 精简版已实施完成，详见 [`stage2-implementation-record.md`](stage2-implementation-record.md)。原计划 5 项因跨阶段依赖，实际完成 3 项（stateStore 挂载 / MemoryConfig 小模型 / KnownEntities 移位），4 项推迟到阶段 3+。
+> 阶段 2 精简版已实施完成。原计划 5 项因跨阶段依赖，实际完成 3 项（stateStore 挂载 / MemoryConfig 小模型 / KnownEntities 移位），4 项推迟到阶段 3+。
 
 | v1 二开文件 | v2 扩展形态 | 挂载方式 | 阶段 | 状态 |
 |---|---|---|---|---|
 | `agent/session/MySQLSession.java` | `MysqlAgentStateStore`（v2 内置）+ Spring `@Primary` DataSource 自动注入 | `.stateStore(new MysqlAgentStateStore(dataSource))` | 阶段 2 | ✅（阶段 2 已挂载）|
 | `agent/memory/EpisodicLongTermMemoryAdapter.java` | 重写为 `EpisodicRetrievalMiddleware`（onSystemPrompt）| `.middlewares(...)` | 阶段 3 | ✅（`EpisodicRetrievalMiddleware` 已创建，挂载到 `HarnessA2aRunnerV2.middlewares()`）|
 | `agent/memory/MySqlEpisodicMemory.java`（FTS5）| 已移到 `v2/memory/`，保留 FTS5 + 向量检索 | `V2MemoryConfig` Spring bean | 阶段 3 | ✅（git mv 到 `v2/memory/`，package 更新，`V2MemoryConfig` 提供 bean）|
-| `agent/memory/MysqlMemoryStore.java` | 保留，作为 v2 `MEMORY.md` 的 MySQL 镜像层（双写）| v2 `MemoryConfig` 配置 | 阶段 2 | ⬜（运行时配置，无代码改动）|
-| `agent/memory/MemoryHydrator.java` | 保留，双写同步 | v2 `MemoryConfig` 配置 | 阶段 2 | ⬜（运行时配置，无代码改动）|
+| `agent/memory/MysqlMemoryStore.java` | 已移到 `v2/memory/`，作为 v2 `MEMORY.md` 的 MySQL 镜像层（双写）| `V2MemoryConfig` bean（mysql-mirror.enabled 条件门禁）| 阶段 8 | ✅（git mv 到 `v2/memory/`，移除 `@Repository`/`@Qualifier`/`@ConditionalOnProperty`，构造函数改为 `(DataSource)`，`ensureSchema()` 由 config 调用）|
+| `agent/memory/MemoryHydrator.java` | 已移到 `v2/memory/`，双写同步 | `V2MemoryConfig` bean（mysql-mirror.enabled 条件门禁）| 阶段 8 | ✅（git mv 到 `v2/memory/`，移除 `@Component`/`@Autowired`/`@ConditionalOnProperty`，构造函数改为 `(Path workspaceMemoryRoot, MysqlMemoryStore)`）|
 | `agent/memory/MemoryFileWatcher.java` | 保留，双写同步 | v2 `MemoryConfig` 配置 | 阶段 2 | ⬜（运行时配置，无代码改动）|
 | `agent/memory/EpisodicMemoryConfig.java` | 已移到 `v2/memory/`，保留为业务配置 | `@ConfigurationProperties` via `V2MemoryConfig` | 阶段 3 | ✅（git mv 到 `v2/memory/`，package 更新）|
-| `agent/memory/digestion/MemoryDigestionService.java` | 保留，对接 v2 `MemoryMaintenanceMiddleware` 节流闸门 | 后台任务 | 阶段 3（原阶段 2，推迟：依赖 SkillDistiller）| ⬜ 🔄 |
-| `agent/memory/digestion/MemoryFlowConsolidator.java` | 保留 | 后台任务 | 阶段 3（原阶段 2，推迟：依赖 SkillDistiller）| ⬜ 🔄 |
-| `agent/memory/digestion/SkillFlowEvolver.java` | 保留 | 后台任务 | 阶段 3（原阶段 2，推迟：依赖 SkillDistiller）| ⬜ 🔄 |
-| `agent/memory/digestion/TraceMiner.java` | 保留 | 后台任务 | 阶段 3（原阶段 2，推迟：依赖 SkillDistiller）| ⬜ 🔄 |
+| `agent/memory/digestion/MemoryDigestionService.java` | 已移到 `v2/digestion/`，对接 v2 `MemoryMaintenanceMiddleware` 节流闸门 | `V2DigestionConfig` bean（digestion.enabled 条件门禁）| 阶段 8 | ✅（git mv 到 `v2/digestion/`，移除 `@Component`/`@ConditionalOnProperty`/`@Qualifier`/`@Value`，`@PostConstruct announce()` 改为公开方法，保留 `@Scheduled` cron + MySQL GET_LOCK）|
+| `agent/memory/digestion/MemoryFlowConsolidator.java` | 已移到 `v2/digestion/` | 由 `MemoryDigestionService` 实例化 | 阶段 8 | ✅（git mv 到 `v2/digestion/`，import 更新到 v2.memory + v2.digestion，构造函数保持 `(MysqlMemoryStore, MemoryHydrator, Model, Path)`）|
+| `agent/memory/digestion/SkillFlowEvolver.java` | 已移到 `v2/digestion/` | `V2DigestionConfig` bean（digestion.enabled 条件门禁）| 阶段 8 | ✅（git mv 到 `v2/digestion/`，移除 `@Component`/`@ConditionalOnProperty`/`@Value`，构造函数改为 11 参显式注入，保留 dual fingerprint 策略 + user-skill skip rule）|
+| `agent/memory/digestion/TraceMiner.java` | 已移到 `v2/digestion/` | 由 `MemoryDigestionService` 通过 `new` 实例化 | 阶段 8 | ✅（git mv 到 `v2/digestion/`，移除 `MySqlEpisodicMemory` import，直接操作 raw JDBC，保留所有失败分类模式 + L1/L2 合并）|
 | **shadow override** `io/agentscope/core/memory/EpisodicMemory.java` | 迁移到 `com.agentscopea2a.v2.memory.EpisodicMemory`（业务接口，v2 jar 无此类）| 业务包保留 | 阶段 3 | ✅（git mv 到 `v2/memory/`，脱离 shadow override 位置）|
 | **shadow override** `io/agentscope/core/memory/EpisodicResult.java` | 迁移到业务包 `com.agentscopea2a.v2.memory.EpisodicResult`（record，实现 v2 `State` 接口）| 业务包保留 | 阶段 3 | ✅（git mv 到 `v2/memory/`）|
 | **shadow override** `io/agentscope/core/memory/MemoryProvider.java` | 迁移到业务包 `com.agentscopea2a.v2.memory.MemoryProvider`（接口，v2 jar 无此类）| 业务包保留 | 阶段 3 | ✅（git mv 到 `v2/memory/`）|
@@ -164,13 +187,13 @@
 
 ## 三、Skills 自由化（§3.2.3）-- 阶段 3
 
-> 阶段 3 已实施完成（2026/07/13），详见 [`stage3-implementation-record.md`](stage3-implementation-record.md)。
+> 阶段 3 已实施完成（2026/07/13）。
 
 | v1 二开文件 | 行数 | v2 扩展形态 | 挂载方式 | 阶段 | 状态 |
 |---|---|---|---|---|---|
-| `harness/skills/SkillSynthesisRunner.java` | 636 | **评估替换**：v2 `ProposeSkillTool` + `SkillManageTool` 覆盖则删 v1，仅保留 v1 生成 prompt 模板 | `.enableSkillManageTool(...)` | 阶段 3 | ⬜ |
-| `harness/skills/SkillEvolutionRunner.java` | 442 | **评估替换**：v2 `SkillCurator` 后台整理 + LLM "伞合并"扫描覆盖则删 v1 | `.enableSkillCurator(...)` | 阶段 3 | ⬜ |
-| `harness/skills/SkillDistiller.java` | 648 | **保留 v1**（v2 无等价），输出通过 v2 `SkillManageTool` 写回 | 后台任务 | 阶段 3 | ⬜ |
+| `harness/skills/SkillSynthesisRunner.java` | 636 | 已移到 `v2/skills/SkillSynthesisRunner`，移除 `@Component`/`@Value`，构造函数注入 9 参；移除 `SimpleSessionKey` import（v2 jar 不存在）+ 两处 `RuntimeContext.builder().sessionKey(...)` 调用（v2 RuntimeContext.Builder 无 `sessionKey()` 方法）| `V2SkillConfig` bean | 阶段 8 | ✅（git mv 到 `v2/skills/`，保留 `bumpAndMaybeSynthesize()` / `maybeSynthesize()` / `distillForDigestion()` / `saveDistilledSkill()` / `buildEmbedText()` / `buildEnrichedContext()` / `withMetricTag()` + CAS-based `skill_candidate` claim）|
+| `harness/skills/SkillEvolutionRunner.java` | 442 | 已移到 `v2/skills/SkillEvolutionRunner`，移除 `@Component`/`@Qualifier`/`@Value`，构造函数注入 `Path skillsDir` + primitive config；保留 `@Scheduled` 在 `cleanupPendingJudgementTable()`（Spring component scan 自动拾取）| `V2SkillConfig` bean | 阶段 8 | ✅（git mv 到 `v2/skills/`，保留 `recordSuccess()` / `recordFailure()` / `evaluateThresholds()` / `dispatchEvolve()` / `doEvolve()`（in-process CAS + MySQL cross-JVM lock）+ pending-judgement cache（L1 LRU + L2 MySQL））|
+| `harness/skills/SkillDistiller.java` | 648 | 已移到 `v2/skills/SkillDistiller`，移除 `@Component`，构造函数注入 `(Model, ObjectProvider<EpisodicMemory>, MetricClassificationService, Path workspace)`；import 更新：`CaptureSkillSaveTool` -> `v2.tools.CaptureSkillSaveTool`，`EpisodicMemory` -> `v2.memory.EpisodicMemory`（v2 业务接口，非 io.agentscope.core.memory），`EpisodicResult` -> `v2.memory.EpisodicResult`| `V2SkillConfig` bean | 阶段 8 | ✅（git mv 到 `v2/skills/`，保留 `distill()` / `distillWithContext()` / `evolve()` / `parseLenient()` / `parse()` / `parseSamples()` / `buildDistillAgent()` / `metricHint()` + retry-on-parse-failure 逻辑 + subagent-based distillation）|
 | `harness/skills/SkillVectorIndex.java` | 372 | git mv 到 `v2/skills/SkillVectorIndex`，移除 `@Repository` 等注解，由 `V2SkillConfig` 管理 bean | `.enableSkillPromotionGate(..., filter)` | 阶段 5 | ✅（git mv 到 `v2/skills/`，`V2SkillConfig` 提供 bean，`SkillVectorIndexVisibilityFilter` 实现桥接）|
 | `harness/skills/FingerprintCalculator.java` | 246 | **保留 v1 语义指纹**（v2 只有 SHA-256 文件级），文件级去重用 v2 `MarketplaceStager` | 扩展 `SkillUsageStore` | 阶段 7 | ✅（git mv 到 `v2/skills/`，移除 `@Component`，import 更新到 v2 包，`V2SkillConfig` 提供 bean）|
 | `harness/skills/MetricClassificationService.java` | 413 | **保留 v1**（v2 只有使用计数），对接 v2 `SkillUsageRecord` | 扩展 `SkillUsageStore` | 阶段 7 | ✅（git mv 到 `v2/skills/`，移除 `@Service`/`@Value`/`@PostConstruct`，构造函数注入 `(SkillCandidateRepository, Model, boolean, Path)`，`init()` 由 V2SkillConfig 调用）|
@@ -227,9 +250,9 @@
 | `agent/dimension/OpenAILlmDimensionService.java` → `v2/dimension/OpenAILlmDimensionService.java` | 保留 | `V2DimensionConfig` Spring bean | 阶段 3（提前）| ✅ |
 | `agent/dimension/QuestionAnalysis.java` → `v2/dimension/QuestionAnalysis.java` | 保留 | middleware 调用 | 阶段 3（提前）| ✅ |
 | `agent/dimension/DimensionException.java` → `v2/dimension/DimensionException.java` | 保留 | 业务异常 | 阶段 3（提前）| ✅ |
-| **v2 builder 默认**：`AgentState` 4 子上下文 | PermissionContextState/ToolContextState/TaskContextState/PlanModeContextState | builder 默认 | 阶段 5 | ⬜ |
-| **v2 builder 默认**：`InterruptControl` | per-session 中断信号，runtime-only 不序列化 | builder 默认（Harness 使能）| 阶段 5 | ⬜ |
-| **v2 builder 默认**：`TaskContextState` + `TodoTools` | TaskList + `TaskReminderMiddleware` | `.enableTaskList(true)` | 阶段 5 | ⬜ |
+| **v2 builder 默认**：`AgentState` 4 子上下文 | PermissionContextState/ToolContextState/TaskContextState/PlanModeContextState | builder 默认 | 阶段 5 | ✅（`HarnessAgent.builder()` 默认启用，无需显式配置）|
+| **v2 builder 默认**：`InterruptControl` | per-session 中断信号，runtime-only 不序列化 | builder 默认（Harness 使能）| 阶段 5 | ✅（`HarnessAgent.builder()` 默认启用）|
+| **v2 builder 默认**：`TaskContextState` + `TodoTools` | TaskList + `TaskReminderMiddleware` | `.enableTaskList(true)` | 阶段 5 | ✅（`HarnessA2aRunnerV2` 已有 `.enableTaskList(true)`，Stage 1 接入）|
 
 **分工**：v1 维度状态保留为业务 middleware 自管（不写入 `AgentState.context`），通过 `onSystemPrompt` 注入；v2 子上下文（Task/Permission/PlanMode）用框架标准；两者通过 `RuntimeContext` 传递，不互相序列化。
 
@@ -239,11 +262,11 @@
 
 | v1 二开 | v2 扩展形态 | 挂载方式 | 阶段 | 状态 |
 |---|---|---|---|---|
-| `config/datasource/`（多数据源业务路由 MySQL/ClickHouse/GaussDB）| 全部保留，业务逻辑不变 | `@Configuration` 注入 | 阶段 5 | ⬜ |
-| `mapper/ck/` / `mapper/db1/` / `mapper/gauss/` / `mapper/mysql/` | 保留 | MyBatis 配置 | 阶段 5 | ⬜ |
-| **v2 新能力**：`DistributedStore` 一行注入 | 自动接 stateStore + baseStore + executionGuard + snapshotSpec | `.distributedStore(JdbcDistributedStore.from(dataSource))` | 阶段 1 配置 / 阶段 5 验证 | ⬜ |
-| **v2 新能力**：`JdbcStore` / `JdbcAgentStateStore` | MySQL 分布式状态 | `.stateStore(...)` | 阶段 1 配置 / 阶段 5 验证 | ⬜ |
-| **v2 新能力**：`BaseStore` + `NamespaceFactory` | 多租户隔离 | `.distributedStore(...)` 自动生效 | 阶段 5 | ⬜ |
+| `config/datasource/`（多数据源业务路由 MySQL/ClickHouse/GaussDB）| 全部保留，业务逻辑不变 | `@Configuration` 注入 | 阶段 5 | ✅（`config/datasource/MySQLConfig`（@Primary）+ `ClickHouseConfig` + `GaussConfig`（conditional）均编译并提供 bean，不在 Maven-excluded 包）|
+| `mapper/ck/` / `mapper/db1/` / `mapper/gauss/` / `mapper/mysql/` | 保留 | MyBatis 配置 | 阶段 5 | ✅（每个 datasource config 有 `@MapperScan(basePackages = "com.agentscopea2a.mapper.*")`，mapper 接口保留，v2 暂无消费但 bean 可用）|
+| **v2 新能力**：`DistributedStore` 一行注入 | 自动接 stateStore + baseStore + executionGuard + snapshotSpec | `.distributedStore(JdbcDistributedStore.from(dataSource))` | 阶段 1 配置 / 阶段 5 验证 | ✅（`V2SandboxConfig.distributedStore()` -> `MysqlDistributedStore.create(dataSource)`，Stage 4 接入；`HarnessA2aRunnerV2` 通过 `ObjectProvider<DistributedStore>` 接线）|
+| **v2 新能力**：`JdbcStore` / `JdbcAgentStateStore` | MySQL 分布式状态 | `.stateStore(...)` | 阶段 1 配置 / 阶段 5 验证 | ✅（`HarnessA2aRunnerV2`: `.stateStore(new MysqlAgentStateStore(dataSource))`，Stage 2 接入）|
+| **v2 新能力**：`BaseStore` + `NamespaceFactory` | 多租户隔离 | `.distributedStore(...)` 自动生效 | 阶段 5 | ✅（`RemoteFilesystemSpec` 接入 `HarnessA2aRunnerV2`（Stage 5 补齐），`RemoteFilesystemSpec.storeNamespace(agentId)` 内部按 `IsolationScope` 切换 namespace；`HarnessAgent.Builder` 自动 `injectStoreIfAbsent`）|
 
 **验收证据**：(1) 多数据源业务路由正常（MySQL/ClickHouse/GaussDB）；(2) `DistributedStore` 一行注入生效（stateStore + baseStore + executionGuard + snapshotSpec 自动接好）。
 
@@ -277,13 +300,13 @@
 | `harness/artifact/ArtifactRef.java` | git mv 到 `v2/artifact/ArtifactRef`（record，包更新）| middleware/hook 自管 | 阶段 5 | ✅ |
 | `harness/artifact/ArtifactIo.java` | git mv 到 `v2/artifact/ArtifactIo`（接口，包更新）| - | 阶段 5 | ✅ |
 | `harness/artifact/LocalArtifactIo.java` | git mv 到 `v2/artifact/LocalArtifactIo`，包更新 | `V2InfraConfig` ArtifactStore bean | 阶段 5 | ✅ |
-| `harness/artifact/SshArtifactIo.java` | git mv 到 `v2/artifact/SshArtifactIo`，包更新 | 远程 Docker 模式 | 阶段 5 | ✅ |
-| `harness/artifact/ArtifactSweeper.java` | 保留 | 后台任务 | 阶段 5 | ⬜ |
-| **v2 新能力**：`CompositeFilesystem` | 组合 Local + Remote 多后端 | `.filesystem(...)` | 阶段 5 | ⬜ |
-| **v2 新能力**：`RemoteFilesystem` + `JdbcStore` | 远端 KV，跨副本共享 | `.filesystem(...)` | 阶段 5 | ⬜ |
-| **v2 新能力**：`NamespaceFactory` | 多租户隔离 | 自动生效 | 阶段 5 | ⬜ |
-| **v2 可选**：`OverlayFilesystem` | 读写分离 | 可选 | 阶段 5 | ⬜ |
-| **v2 可选**：`WorkspaceIndex` | SQLite 加速远端 ls/glob/grep | 可选 | 阶段 5 | ⬜ |
+| `harness/artifact/SshArtifactIo.java` | git mv 到 `v2/artifact/SshArtifactIo`，包更新 | 远程 Docker 模式 | 阶段 5 | ✅（Stage 5 补齐：`V2InfraConfig.artifactStore()` 条件化装配 - `artifacts.remote.enabled=true` 时用 `SshArtifactIo`，否则 `LocalArtifactIo`）|
+| `harness/artifact/ArtifactSweeper.java` | 保留 | 后台任务 | 阶段 5 | ✅（git mv 到 `v2/artifact/`，移除 `@Component`/`@Value`/`@Autowired`，构造函数注入 `(Path, long, boolean, boolean)`，`V2InfraConfig` 提供 bean，保留 `@Scheduled(cron = "0 17 * * * *")` backstop GC）|
+| **v2 新能力**：`CompositeFilesystem` | 组合 Local + Remote 多后端 | `.filesystem(...)` | 阶段 5 | ✅（Stage 5 补齐：`RemoteFilesystemSpec.toFilesystem()` 内部创建 `CompositeFilesystem`（LocalFilesystem 默认后端 + 每路由 RemoteFilesystem），接入 `HarnessA2aRunnerV2` 后自动生效）|
+| **v2 新能力**：`RemoteFilesystem` + `JdbcStore` | 远端 KV，跨副本共享 | `.filesystem(...)` | 阶段 5 | ✅（Stage 5 补齐：`RemoteFilesystemSpec` 接入 `HarnessA2aRunnerV2`，`MysqlDistributedStore` 提供 `BaseStore`，`HarnessAgent.Builder` 自动 `injectStoreIfAbsent`）|
+| **v2 新能力**：`NamespaceFactory` | 多租户隔离 | 自动生效 | 阶段 5 | ✅（`RemoteFilesystemSpec.storeNamespace(agentId)` 内部按 `IsolationScope`（SESSION/USER/AGENT/GLOBAL）切换 namespace）|
+| **v2 可选**：`OverlayFilesystem` | 读写分离 | 可选 | 阶段 5 | ✅（`RemoteFilesystemSpec.overlayRoute()` 内部为每路由创建 `OverlayFilesystem`（upper=Remote, lower=Local-template），自动生效）|
+| **v2 可选**：`WorkspaceIndex` | SQLite 加速远端 ls/glob/grep | 可选 | 阶段 5 | ✅（`HarnessAgent.Builder` 检测到 `RemoteFilesystemSpec` 时自动 `WorkspaceIndex.open(workspace)`，Stage 5 补齐接入后自动生效）|
 
 **验收证据**：Artifact 跨副本共享（节点 A 写入 -> 节点 B 读取）。
 
@@ -403,10 +426,10 @@
 | 阶段 2 | 记忆模块挂载（精简版）| ~1.5 小时 | ✅（stateStore ✅ / MemoryConfig 小模型 ✅ / KnownEntities 移位 ✅；4 项推迟到阶段 3+）|
 | 阶段 3 | Skills 模块挂载 + 维度集群 + 记忆集群迁移 | ~3 小时 | ✅（SkillCurator pipeline ✅ / Dimension 集群 git mv ✅ / EmbeddingClient 迁移 ✅ / 3 shadow override 迁移 ✅ / MySqlEpisodicMemory 迁移 ✅ / EpisodicRetrievalMiddleware ✅ / V2DimensionConfig ✅ / V2MemoryConfig ✅ / V2SkillConfig ✅）|
 | 阶段 4 | 沙箱模块挂载 | ~3 小时 | ✅（SharedContainerDockerSandboxClient ✅ / DockerCliRunner 迁移 ✅ / V2SandboxConfig ✅ / Docker shadow override 删除 ✅ / AgentSpecLoader shadow 删除 ✅ / HarnessA2aRunnerV2 sandbox/distributed 接线 ✅ / MysqlDistributedStore 替代 SandboxDistributedOptions ✅）|
-| 阶段 5 | 维度状态 + Artifact + 多数据源挂载 | 2 周 | ⬜ |
+| 阶段 5 | 维度状态 + Artifact + 多数据源挂载 | 2 周 | ✅（早期：ResponseCacheService / ResponseCacheMiddleware / Artifact 7 文件 / ArtifactAccessMiddleware / ArtifactHandoffHook / V2InfraConfig / SkillVectorIndex 迁移 ✅；Stage 5 补齐：RemoteFilesystemSpec 接入 HarnessA2aRunnerV2（主缺口）+ SshArtifactIo 条件化装配 + ArtifactSweeper 迁移 + SshHealthCheck 迁移 + 3 废弃 v1 文件删除（JedisBaseStore / RemoteDirSyncer / RemoteWorkspaceSyncService）；多数据源 config + DistributedStore + JdbcAgentStateStore 验证 ✅；多数据源消费层 + 两副本收敛运行时验证推迟到 Stage 9）|
 | 阶段 6 | 元工具 + SSE 流式挂载 | 1-2 周 | ✅（8 工具类迁移 + 3 Hook 迁移 + V2ToolConfig + V2ChatStreamService + V2ChatController 更新 + PythonExecRetryHook 接线）|
 | 阶段 7 | v2 全链路验证 + session 灰度切换 | 2 周 | ✅（技能基础设施迁移 + ToolCallTrackingHook 重构 + SessionMiddleware 创建 + ToolCallCollector 持久化 + V2ToolGroupAdapter + V2SessionRouter + ADR-7.2；灰度切换推迟到 Stage 8）|
-| 阶段 8 | 观察期 | 2-4 周 | ⬜ |
+| 阶段 8 | 观察期 + Memory Digestion Pipeline 迁移 | ~4 小时 | ✅（9 文件迁移：MysqlMemoryStore / MemoryHydrator / SkillDistiller / SkillSynthesisRunner / SkillEvolutionRunner / TraceMiner / SkillFlowEvolver / MemoryFlowConsolidator / MemoryDigestionService；V2DigestionConfig 新建；V2MemoryConfig / V2SkillConfig 扩展；V2ChatController 接入 V2SessionRouter 灰度守卫；ToolRoutersIndex 保留为 fallback；灰度切换 + 数据迁移 + 回滚演练推迟到 Stage 9）|
 | 阶段 9 | v1 整体删除 + 回归 + 内网部署 | 1 周 | ⬜ |
 
 **合计**：13-16 周（不含观察期）/ 15-20 周（含观察期）

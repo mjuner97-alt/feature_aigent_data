@@ -1,27 +1,19 @@
 ---
 name: tool_index
-description: 工具索引 — 根据用户意图选择 AgentTools 子工具 ID,再配合 toolMetaInfo/router_tool 调用
+description: 工具索引 - 根据用户意图选择质量查询工具 ID
 ---
 
 # 工具索引
 
-用于在子 agent 只拥有 `toolMetaInfo` 和 `router_tool` 两个元工具时,先确定业务子工具 `toolId`。
+用于根据用户意图选择正确的 `quality_query_by_*` 工具。工具直接调用，无需路由。
 
 ## 固定调用流程
 
-1. 先根据用户意图在本技能中选择一个 `toolId`。
-2. 调用 `toolMetaInfo(toolId="...")` 获取该工具的描述、入参、参数类型、必填项和 `routerExample`。
-3. 按元信息组装 JSON 字符串,调用 `router_tool(paramsJson="...")`。
-4. 只使用 `router_tool` 的真实返回结果回答用户,不得编造工具输出。
+1. 先根据用户意图在本技能中选择一个工具。
+2. 直接调用该工具，传入参数。
+3. 只使用工具返回的真实结果回答用户，不得编造工具输出。
 
 ## 可用工具索引
-
-### agent_tools_ping
-
-- 场景:链路自检、健康检查、ping、打招呼回显。
-- 必填意图:无。
-- 常用参数:
-  - `echo`: 可选,需要回显给工具的文本。
 
 ### quality_query_by_version_department
 

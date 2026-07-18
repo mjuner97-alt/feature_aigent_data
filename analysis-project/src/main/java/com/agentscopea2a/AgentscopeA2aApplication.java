@@ -5,7 +5,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.FilterType;
-import com.agentscopea2a.agent.memory.MySqlEpisodicMemory;
+import com.agentscopea2a.v2.memory.MySqlEpisodicMemory;
 
 @SpringBootApplication
 @ComponentScan(excludeFilters = {

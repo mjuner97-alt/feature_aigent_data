@@ -16,8 +16,11 @@
 package com.agentscopea2a.v2.config;
 
 import com.agentscopea2a.v2.artifact.ArtifactContext;
+import com.agentscopea2a.v2.artifact.ArtifactIo;
+import com.agentscopea2a.v2.artifact.ArtifactSweeper;
 import com.agentscopea2a.v2.artifact.ArtifactStore;
 import com.agentscopea2a.v2.artifact.LocalArtifactIo;
+import com.agentscopea2a.v2.artifact.SshArtifactIo;
 import com.agentscopea2a.v2.cache.ResponseCacheService;
 import com.agentscopea2a.v2.dimension.DimensionStateManager;
 import com.agentscopea2a.v2.hooks.ArtifactHandoffHook;
@@ -28,6 +31,7 @@ import com.agentscopea2a.v2.middleware.ResponseCacheMiddleware;
 import com.agentscopea2a.v2.middleware.SessionMiddleware;
 import io.agentscope.core.agent.RuntimeContext;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -59,6 +63,11 @@ public class V2InfraConfig {
     // ── Response Cache ─────────────────────────────────────────────────────
 
     @Bean
+    public MeterRegistry meterRegistry() {
+        return new SimpleMeterRegistry();
+    }
+
+    @Bean
     public ResponseCacheService responseCacheService(DataSource dataSource) {
         return new ResponseCacheService(dataSource);
     }
@@ -68,7 +77,7 @@ public class V2InfraConfig {
             ResponseCacheService cacheService,
             DimensionStateManager dimManager,
             MeterRegistry meterRegistry,
-            @Value("${harness.a2a.cache.enabled:true}") boolean cacheEnabled) {
+            @Value("${harness.a2a.response-cache.enabled:false}") boolean cacheEnabled) {
         log.info("ResponseCacheMiddleware: enabled={}", cacheEnabled);
         return new ResponseCacheMiddleware(cacheService, dimManager, meterRegistry, cacheEnabled);
     }
@@ -79,11 +88,42 @@ public class V2InfraConfig {
     public ArtifactStore artifactStore(
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
             @Value("${harness.a2a.artifact.mount-prefix:/workspace/artifacts}") String mountPrefix,
-            @Value("${harness.a2a.artifact.keep-artifacts:false}") boolean keepArtifacts) {
+            @Value("${harness.a2a.artifact.keep-artifacts:false}") boolean keepArtifacts,
+            V2SandboxConfig.SandboxPropertiesV2 sandboxProps) {
         Path artifactsRoot = Paths.get(workspacePath).toAbsolutePath().resolve("artifacts");
-        log.info("ArtifactStore: artifactsRoot={}, mountPrefix={}, keepArtifacts={}",
-                artifactsRoot, mountPrefix, keepArtifacts);
-        return new ArtifactStore(artifactsRoot, new LocalArtifactIo(artifactsRoot), mountPrefix, keepArtifacts);
+        V2SandboxConfig.SandboxPropertiesV2.Artifacts.Remote remoteCfg =
+                sandboxProps.getArtifacts().getRemote();
+
+        ArtifactIo io;
+        if (remoteCfg.isEnabled()
+                && !remoteCfg.getSshTarget().isBlank()
+                && !remoteCfg.getRemoteRoot().isBlank()) {
+            io = new SshArtifactIo(
+                    remoteCfg.getSshTarget(),
+                    remoteCfg.getRemoteRoot(),
+                    remoteCfg.getSshOptions(),
+                    remoteCfg.getTimeoutSeconds());
+            log.info(
+                    "ArtifactStore: SshArtifactIo wired - sshTarget={} remoteRoot={}",
+                    remoteCfg.getSshTarget(),
+                    remoteCfg.getRemoteRoot());
+        } else {
+            io = new LocalArtifactIo(artifactsRoot);
+            log.info("ArtifactStore: LocalArtifactIo wired - artifactsRoot={}", artifactsRoot);
+        }
+        return new ArtifactStore(artifactsRoot, io, mountPrefix, keepArtifacts);
+    }
+
+    // ── Artifact Sweeper (backstop GC for crash/dropped-connection cases) ──
+
+    @Bean
+    public ArtifactSweeper artifactSweeper(
+            @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
+            @Value("${harness.a2a.artifacts.sweeper.max-age-hours:6}") long maxAgeHours,
+            @Value("${harness.a2a.artifacts.sweeper.enabled:true}") boolean enabled,
+            @Value("${harness.a2a.artifacts.keep:false}") boolean keepArtifacts) {
+        Path workspace = Paths.get(workspacePath).toAbsolutePath();
+        return new ArtifactSweeper(workspace, maxAgeHours, enabled, keepArtifacts);
     }
 
     // ── Artifact Access Middleware (v2 Middleware — intercepts tool calls) ──
@@ -120,14 +160,16 @@ public class V2InfraConfig {
         return new PythonExecRetryHook();
     }
 
-    // ── Tool Call Tracking Hook (v2 Hook — records L1 tool calls via ThreadLocal) ──
+    // ── Tool Call Tracking Hook (v2 Hook — records L1 tool calls via RuntimeContext) ──
     // Uses the Hook API because it needs both PreActing (input) and PostActing (output).
-    // Retrieves the per-request ToolCallCollector via ThreadLocal instead of constructor injection.
+    // Retrieves the per-request ToolCallCollector from RuntimeContext (pushed by the
+    // framework via RuntimeContextAware) instead of ThreadLocal, which broke across
+    // reactive thread boundaries.
 
     @Bean
     @SuppressWarnings("deprecation")
     public ToolCallTrackingHook toolCallTrackingHook() {
-        log.info("ToolCallTrackingHook: wired (priority=45, ThreadLocal-based)");
+        log.info("ToolCallTrackingHook: wired (priority=45, RuntimeContextAware-based)");
         return new ToolCallTrackingHook();
     }
 
