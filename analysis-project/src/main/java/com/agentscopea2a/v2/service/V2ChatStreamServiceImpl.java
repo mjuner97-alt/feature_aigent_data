@@ -31,6 +31,7 @@ import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
+import io.micrometer.core.annotation.Timed;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -79,6 +80,7 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
     }
 
     @Override
+    @Timed(value = "v2.chat.stream", description = "v2 /v2/ai/chat stream end-to-end duration", percentiles = {0.5, 0.9, 0.99})
     public SseEmitter stream(ChatRequest req) {
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT);
 

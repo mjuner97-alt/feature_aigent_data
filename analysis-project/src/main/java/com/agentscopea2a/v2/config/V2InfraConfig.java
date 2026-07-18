@@ -27,11 +27,14 @@ import com.agentscopea2a.v2.hooks.ArtifactHandoffHook;
 import com.agentscopea2a.v2.hooks.PythonExecRetryHook;
 import com.agentscopea2a.v2.hooks.ToolCallTrackingHook;
 import com.agentscopea2a.v2.middleware.ArtifactAccessMiddleware;
+import com.agentscopea2a.v2.middleware.PythonExecAccessMiddleware;
 import com.agentscopea2a.v2.middleware.ResponseCacheMiddleware;
 import com.agentscopea2a.v2.middleware.SessionMiddleware;
 import io.agentscope.core.agent.RuntimeContext;
 import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.micrometer.core.aop.TimedAspect;
+import io.micrometer.prometheus.PrometheusConfig;
+import io.micrometer.prometheus.PrometheusMeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -62,9 +65,30 @@ public class V2InfraConfig {
 
     // ── Response Cache ─────────────────────────────────────────────────────
 
+    /**
+     * P0-4: Prometheus-backed {@link MeterRegistry} so metrics are scraped via
+     * {@code /actuator/prometheus} instead of staying in-memory.
+     *
+     * <p>Replaces the previous {@code new SimpleMeterRegistry()} which was unreachable
+     * from Prometheus. The same bean is injected into {@link ResponseCacheMiddleware}
+     * and any other component that needs to record counters/timers.
+     */
     @Bean
     public MeterRegistry meterRegistry() {
-        return new SimpleMeterRegistry();
+        PrometheusMeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
+        log.info("PrometheusMeterRegistry: wired (scrape via /actuator/prometheus)");
+        return registry;
+    }
+
+    /**
+     * P0-4: Enables {@code @Timed} annotation on Spring bean methods. Without this bean,
+     * {@code @Timed} is a no-op. AspectJ weaving picks up methods on Spring-managed beans
+     * (V2ChatStreamServiceImpl / PythonExecTool / ToolRoutersIndex / FallbackModelDecorator).
+     */
+    @Bean
+    public TimedAspect timedAspect(MeterRegistry meterRegistry) {
+        log.info("TimedAspect: wired (enables @Timed on bean methods)");
+        return new TimedAspect(meterRegistry);
     }
 
     @Bean
@@ -135,6 +159,19 @@ public class V2InfraConfig {
         // the HarnessA2aRunnerV2 creates a per-request ArtifactAccessMiddleware with fixedContext.
         log.info("ArtifactAccessMiddleware: wired (context from RuntimeContext)");
         return new ArtifactAccessMiddleware(artifactStore);
+    }
+
+    /**
+     * P0-5: Cross-tenant path guard for {@code python_exec}. Sister middleware to
+     * {@link ArtifactAccessMiddleware} - scans the {@code code} parameter of
+     * {@code python_exec} calls for foreign artifact paths and rewrites them to a failing
+     * snippet if found. Wired on both main agent (via HarnessA2aRunnerV2) and subagents
+     * declaring python_exec (via SubagentRegistrar).
+     */
+    @Bean
+    public PythonExecAccessMiddleware pythonExecAccessMiddleware(ArtifactStore artifactStore) {
+        log.info("PythonExecAccessMiddleware: wired (context from RuntimeContext)");
+        return new PythonExecAccessMiddleware(artifactStore);
     }
 
     // ── Artifact Handoff Hook (v2 Hook — rewrites tool results) ────────────

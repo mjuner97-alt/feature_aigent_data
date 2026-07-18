@@ -26,6 +26,7 @@ import com.agentscopea2a.v2.middleware.ArtifactAccessMiddleware;
 import com.agentscopea2a.v2.middleware.DimensionStateMiddleware;
 import com.agentscopea2a.v2.middleware.EpisodicRetrievalMiddleware;
 import com.agentscopea2a.v2.middleware.MemoryLedgerMirrorMiddleware;
+import com.agentscopea2a.v2.middleware.PythonExecAccessMiddleware;
 import com.agentscopea2a.v2.middleware.ResponseCacheMiddleware;
 import com.agentscopea2a.v2.middleware.SessionMiddleware;
 import com.agentscopea2a.v2.model.FallbackModelDecorator;
@@ -103,6 +104,7 @@ public class HarnessA2aRunnerV2 {
             ResponseCacheMiddleware responseCacheMiddleware,
             ArtifactAccessMiddleware artifactAccessMiddleware,
             SessionMiddleware sessionMiddleware,
+            ObjectProvider<PythonExecAccessMiddleware> pythonExecAccessMiddlewareProvider,
             ObjectProvider<MemoryLedgerMirrorMiddleware> memoryLedgerMirrorProvider,
             ObjectProvider<ArtifactHandoffHook> artifactHandoffHookProvider,
             ObjectProvider<PythonExecRetryHook> pythonExecRetryHookProvider,
@@ -164,6 +166,11 @@ public class HarnessA2aRunnerV2 {
         if (ledgerMirror != null) {
             middlewares.add(ledgerMirror);
             log.info("HarnessA2aRunnerV2: MemoryLedgerMirrorMiddleware wired");
+        }
+        PythonExecAccessMiddleware pythonExecGuard = pythonExecAccessMiddlewareProvider.getIfAvailable();
+        if (pythonExecGuard != null) {
+            middlewares.add(pythonExecGuard);
+            log.info("HarnessA2aRunnerV2: PythonExecAccessMiddleware wired (P0-5 cross-tenant guard)");
         }
 
         HarnessAgent.Builder builder = HarnessAgent.builder()
