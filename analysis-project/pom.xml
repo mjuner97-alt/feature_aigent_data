@@ -332,6 +332,13 @@
                         </path>
                     </annotationProcessorPaths>
                     <!-- 阶段 9：v1 入口 + 12 shadow override 全部删除，不再需要 excludes -->
+                    <testExcludes>
+                        <!-- v1 测试引用已删除的 v1 类（harness/artifact、harness/skills、agent/memory/digestion 等），
+                             全部跳过编译；v2 测试在 com.agentscopea2a.v2.* 下不受影响。 -->
+                        <exclude>org/example/harness/a2a/**</exclude>
+                        <exclude>com/agentscopea2a/harness/**</exclude>
+                        <exclude>com/agentscopea2a/agent/**</exclude>
+                    </testExcludes>
                 </configuration>
             </plugin>
 
