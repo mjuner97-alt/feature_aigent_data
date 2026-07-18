@@ -140,36 +140,46 @@ public class MySqlEpisodicMemory implements EpisodicMemory {
                                     "INSERT INTO "
                                             + this.config.getTableName()
                                             + " (session_id, role, content, embedding) VALUES (?, ?, ?, ?)";
-                            try (Connection conn = getConnection();
-                                    PreparedStatement stmt = conn.prepareStatement(sql)) {
-                                for (Msg msg : messages) {
-                                    if (msg == null) continue;
-                                    if (msg.getRole() != MsgRole.USER
-                                            && msg.getRole() != MsgRole.ASSISTANT
-                                            && msg.getRole() != MsgRole.TOOL) {
-                                        continue;
-                                    }
-                                    String content = msg.getTextContent();
-                                    if (content == null || content.isEmpty()) {
-                                        // For TOOL messages, try extracting ToolResultBlock text
-                                        if (msg.getRole() == MsgRole.TOOL) {
-                                            content = extractToolResultText(msg);
+                            // Manual transaction so executeBatch() is atomic - partial-batch
+                            // failures (e.g. one row violates a constraint) roll back the
+                            // whole batch instead of leaving some rows committed. Connection.close
+                            // rolls back if we never call commit().
+                            try (Connection conn = getConnection()) {
+                                conn.setAutoCommit(false);
+                                try (PreparedStatement stmt = conn.prepareStatement(sql)) {
+                                    for (Msg msg : messages) {
+                                        if (msg == null) continue;
+                                        if (msg.getRole() != MsgRole.USER
+                                                && msg.getRole() != MsgRole.ASSISTANT
+                                                && msg.getRole() != MsgRole.TOOL) {
+                                            continue;
                                         }
-                                        if (content == null || content.isEmpty()) continue;
+                                        String content = msg.getTextContent();
+                                        if (content == null || content.isEmpty()) {
+                                            // For TOOL messages, try extracting ToolResultBlock text
+                                            if (msg.getRole() == MsgRole.TOOL) {
+                                                content = extractToolResultText(msg);
+                                            }
+                                            if (content == null || content.isEmpty()) continue;
+                                        }
+                                        stmt.setString(1, sessionId);
+                                        stmt.setString(2, msg.getRole().name());
+                                        stmt.setString(3, content);
+                                        // Embedding: best-effort, async-friendly
+                                        String embeddingJson = embedContent(content);
+                                        stmt.setString(4, embeddingJson);
+                                        stmt.addBatch();
                                     }
-                                    stmt.setString(1, sessionId);
-                                    stmt.setString(2, msg.getRole().name());
-                                    stmt.setString(3, content);
-                                    // Embedding: best-effort, async-friendly
-                                    String embeddingJson = embedContent(content);
-                                    stmt.setString(4, embeddingJson);
-                                    stmt.addBatch();
+                                    stmt.executeBatch();
+                                    conn.commit();
+                                    log.debug(
+                                            "Recorded session {} with {} messages",
+                                            sessionId,
+                                            messages.size());
+                                } catch (SQLException e) {
+                                    conn.rollback();
+                                    throw e;
                                 }
-                                stmt.executeBatch();
-                                log.debug(
-                                        "Recorded session {} with {} messages",
-                                        sessionId,
-                                        messages.size());
                             } catch (SQLException e) {
                                 log.error(
                                         "Failed to record session {}: {}",
@@ -354,42 +364,49 @@ public class MySqlEpisodicMemory implements EpisodicMemory {
                                 sql = "INSERT INTO " + this.config.getTableName()
                                         + " (session_id, role, content, embedding) VALUES (?, ?, ?, ?)";
                             }
-                            try (Connection conn = getConnection();
-                                    PreparedStatement stmt = conn.prepareStatement(sql)) {
-                                for (Msg msg : messages) {
-                                    if (msg == null) continue;
-                                    if (msg.getRole() != MsgRole.USER
-                                            && msg.getRole() != MsgRole.ASSISTANT
-                                            && msg.getRole() != MsgRole.TOOL) {
-                                        continue;
-                                    }
-                                    String content = msg.getTextContent();
-                                    if (content == null || content.isEmpty()) {
-                                        // For TOOL messages, try extracting ToolResultBlock text
-                                        if (msg.getRole() == MsgRole.TOOL) {
-                                            content = extractToolResultText(msg);
+                            // Manual transaction so executeBatch() is atomic - see recordSession.
+                            try (Connection conn = getConnection()) {
+                                conn.setAutoCommit(false);
+                                try (PreparedStatement stmt = conn.prepareStatement(sql)) {
+                                    for (Msg msg : messages) {
+                                        if (msg == null) continue;
+                                        if (msg.getRole() != MsgRole.USER
+                                                && msg.getRole() != MsgRole.ASSISTANT
+                                                && msg.getRole() != MsgRole.TOOL) {
+                                            continue;
                                         }
-                                        if (content == null || content.isEmpty()) continue;
+                                        String content = msg.getTextContent();
+                                        if (content == null || content.isEmpty()) {
+                                            // For TOOL messages, try extracting ToolResultBlock text
+                                            if (msg.getRole() == MsgRole.TOOL) {
+                                                content = extractToolResultText(msg);
+                                            }
+                                            if (content == null || content.isEmpty()) continue;
+                                        }
+                                        stmt.setString(1, sessionId);
+                                        stmt.setString(2, msg.getRole().name());
+                                        stmt.setString(3, content);
+                                        // Embedding: best-effort, async-friendly
+                                        String embeddingJson = embedContent(content);
+                                        stmt.setString(4, embeddingJson);
+                                        // Write tool_call_details only on first row of the session
+                                        if (hasToolContext && msg.getRole() == MsgRole.USER) {
+                                            stmt.setString(5, toolCallDetailsJson);
+                                        } else if (hasToolContext) {
+                                            stmt.setString(5, null);
+                                        }
+                                        stmt.addBatch();
                                     }
-                                    stmt.setString(1, sessionId);
-                                    stmt.setString(2, msg.getRole().name());
-                                    stmt.setString(3, content);
-                                    // Embedding: best-effort, async-friendly
-                                    String embeddingJson = embedContent(content);
-                                    stmt.setString(4, embeddingJson);
-                                    // Write tool_call_details only on first row of the session
-                                    if (hasToolContext && msg.getRole() == MsgRole.USER) {
-                                        stmt.setString(5, toolCallDetailsJson);
-                                    } else if (hasToolContext) {
-                                        stmt.setString(5, null);
-                                    }
-                                    stmt.addBatch();
+                                    stmt.executeBatch();
+                                    conn.commit();
+                                    log.debug(
+                                            "Recorded session {} with {} messages",
+                                            sessionId,
+                                            messages.size());
+                                } catch (SQLException e) {
+                                    conn.rollback();
+                                    throw e;
                                 }
-                                stmt.executeBatch();
-                                log.debug(
-                                        "Recorded session {} with {} messages",
-                                        sessionId,
-                                        messages.size());
                             } catch (SQLException e) {
                                 log.error(
                                         "Failed to record session {}: {}",

@@ -96,39 +96,56 @@ public class SkillCandidateRepository {
                         + "   hit_count = CASE WHEN status = 'pending' THEN hit_count + 1 ELSE hit_count END,"
                         + "   last_query = CASE WHEN status = 'pending' THEN VALUES(last_query) ELSE last_query END,"
                         + "   last_trace_id = CASE WHEN status = 'pending' THEN VALUES(last_trace_id) ELSE last_trace_id END";
-        try (Connection c = dataSource.getConnection();
-                PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setString(1, fingerprint);
-            ps.setString(2, userId == null ? "_anon" : userId);
-            ps.setString(3, query);
-            ps.setString(4, traceId);
-            ps.executeUpdate();
+        // Manual transaction so INSERT + subsequent SELECT use the same connection - guarantees
+        // read-your-writes within this call. Connection.close() rolls back if we never commit.
+        try (Connection c = dataSource.getConnection()) {
+            c.setAutoCommit(false);
+            try {
+                try (PreparedStatement ps = c.prepareStatement(sql)) {
+                    ps.setString(1, fingerprint);
+                    ps.setString(2, userId == null ? "_anon" : userId);
+                    ps.setString(3, query);
+                    ps.setString(4, traceId);
+                    ps.executeUpdate();
+                }
+                Optional<SkillCandidate> result = findByFingerprintInConnection(c, fingerprint);
+                c.commit();
+                result.ifPresent(row -> log.info(
+                        "[BUMP] fingerprint={} userId={} hit_count={} status={}",
+                        fingerprint, userId, row.hitCount(), row.status()));
+                return result;
+            } catch (SQLException e) {
+                c.rollback();
+                throw e;
+            }
         } catch (SQLException e) {
             log.warn("incrementHit({}) failed: {}", fingerprint, e.getMessage());
             return Optional.empty();
         }
-        Optional<SkillCandidate> result = findByFingerprint(fingerprint);
-        result.ifPresent(c -> log.info(
-                "[BUMP] fingerprint={} userId={} hit_count={} status={}",
-                fingerprint, userId, c.hitCount(), c.status()));
-        return result;
     }
 
     public Optional<SkillCandidate> findByFingerprint(String fingerprint) {
         ensureTable();
+        try (Connection c = dataSource.getConnection()) {
+            return findByFingerprintInConnection(c, fingerprint);
+        } catch (SQLException e) {
+            log.warn("findByFingerprint({}) failed: {}", fingerprint, e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    private Optional<SkillCandidate> findByFingerprintInConnection(Connection c, String fingerprint)
+            throws SQLException {
         String sql =
                 "SELECT fingerprint, user_id, hit_count, last_query, last_trace_id, metric_tag,"
                         + " status, synth_skill, updated_at FROM skill_candidate WHERE fingerprint = ?";
-        try (Connection c = dataSource.getConnection();
-                PreparedStatement ps = c.prepareStatement(sql)) {
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, fingerprint);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
                     return Optional.of(map(rs));
                 }
             }
-        } catch (SQLException e) {
-            log.warn("findByFingerprint({}) failed: {}", fingerprint, e.getMessage());
         }
         return Optional.empty();
     }
