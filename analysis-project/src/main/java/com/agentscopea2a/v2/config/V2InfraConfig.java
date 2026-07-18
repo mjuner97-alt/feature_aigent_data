@@ -145,9 +145,10 @@ public class V2InfraConfig {
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
             @Value("${harness.a2a.artifacts.sweeper.max-age-hours:6}") long maxAgeHours,
             @Value("${harness.a2a.artifacts.sweeper.enabled:true}") boolean enabled,
-            @Value("${harness.a2a.artifacts.keep:false}") boolean keepArtifacts) {
+            @Value("${harness.a2a.artifacts.keep:false}") boolean keepArtifacts,
+            com.agentscopea2a.v2.alarm.CronFailureAlerter alerter) {
         Path workspace = Paths.get(workspacePath).toAbsolutePath();
-        return new ArtifactSweeper(workspace, maxAgeHours, enabled, keepArtifacts);
+        return new ArtifactSweeper(workspace, maxAgeHours, enabled, keepArtifacts, alerter);
     }
 
     // ── Artifact Access Middleware (v2 Middleware — intercepts tool calls) ──

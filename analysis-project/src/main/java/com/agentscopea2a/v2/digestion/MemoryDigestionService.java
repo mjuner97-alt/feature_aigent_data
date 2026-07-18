@@ -15,6 +15,7 @@
  */
 package com.agentscopea2a.v2.digestion;
 
+import com.agentscopea2a.v2.alarm.CronFailureAlerter;
 import com.agentscopea2a.v2.memory.MemoryHydrator;
 import com.agentscopea2a.v2.memory.MysqlMemoryStore;
 import com.agentscopea2a.v2.skills.EmbeddingClient;
@@ -81,6 +82,7 @@ public class MemoryDigestionService {
     private final EmbeddingClient embeddingClient;
     private final SkillFlowEvolver evolver;
     private final FingerprintCalculator fingerprintCalc;
+    private final CronFailureAlerter alerter;
     private final String cronExpression;
     private final int batchSize;
     private final int episodicRetentionDays;
@@ -102,6 +104,7 @@ public class MemoryDigestionService {
             ObjectProvider<EmbeddingClient> embeddingClientProvider,
             ObjectProvider<SkillFlowEvolver> evolverProvider,
             FingerprintCalculator fingerprintCalc,
+            ObjectProvider<CronFailureAlerter> alerterProvider,
             String cronExpression,
             int batchSize,
             int episodicRetentionDays,
@@ -120,6 +123,7 @@ public class MemoryDigestionService {
         this.embeddingClient = embeddingClientProvider.getIfAvailable();
         this.evolver = evolverProvider.getIfAvailable();
         this.fingerprintCalc = fingerprintCalc;
+        this.alerter = alerterProvider.getIfAvailable();
         this.cronExpression = cronExpression;
         this.batchSize = batchSize;
         this.episodicRetentionDays = episodicRetentionDays;
@@ -156,6 +160,7 @@ public class MemoryDigestionService {
             doDigest();
         } catch (Exception e) {
             log.error("MemoryDigestionService: uncaught error: {}", e.getMessage(), e);
+            if (alerter != null) alerter.alert("MemoryDigestion", e);
         } finally {
             releaseLock();
         }
@@ -175,6 +180,7 @@ public class MemoryDigestionService {
             } catch (Exception e) {
                 log.error("MemoryDigestion: [{}] failed after {}ms: {}",
                         userId, System.currentTimeMillis() - start, e.getMessage());
+                if (alerter != null) alerter.alert("MemoryDigestion[" + userId + "]", e);
             }
         }
     }

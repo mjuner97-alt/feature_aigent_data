@@ -15,6 +15,7 @@
  */
 package com.agentscopea2a.v2.artifact;
 
+import com.agentscopea2a.v2.alarm.CronFailureAlerter;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,12 +67,15 @@ public class ArtifactSweeper {
     private final boolean enabled;
     private final boolean keepArtifacts;
     private final Path artifactsRoot;
+    private final CronFailureAlerter alerter;
 
-    public ArtifactSweeper(Path workspace, long maxAgeHours, boolean enabled, boolean keepArtifacts) {
+    public ArtifactSweeper(Path workspace, long maxAgeHours, boolean enabled, boolean keepArtifacts,
+                           CronFailureAlerter alerter) {
         this.artifactsRoot = workspace.resolve("artifacts");
         this.maxAgeHours = maxAgeHours;
         this.enabled = enabled;
         this.keepArtifacts = keepArtifacts;
+        this.alerter = alerter;
     }
 
     @PostConstruct
@@ -122,6 +126,7 @@ public class ArtifactSweeper {
             }
         } catch (IOException e) {
             log.warn("ArtifactSweeper IO error walking {}: {}", artifactsRoot, e.getMessage());
+            if (alerter != null) alerter.alert("ArtifactSweeper", e);
         }
         if (removed > 0) {
             log.info(
