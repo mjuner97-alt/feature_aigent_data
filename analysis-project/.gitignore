@@ -50,7 +50,7 @@ tmp/
 tmp_test/
 tmp_testboot_log_fingerprint.txt
 classpath.txt
-io/
+/io/
 
 ### AgentScope skills runtime (managed by skill-save tool, not source) ###
 ../.agents/
