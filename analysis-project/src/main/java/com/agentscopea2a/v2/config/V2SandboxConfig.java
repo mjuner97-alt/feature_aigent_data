@@ -100,6 +100,17 @@ public class V2SandboxConfig {
                 s.getRemoteDockerSshOptions(),
                 s.getRemoteDockerTimeoutSeconds());
 
+        // Shadow DockerCliRunner (JAR package io.agentscope.harness.agent.sandbox.impl.docker)
+        // is used by shadow DockerSandbox / DockerSandboxClient. It's a separate static config
+        // slot from the v2 DockerCliRunner above - without this call it stays at default
+        // Config(false, ...) and falls back to Runtime.exec("docker"), which fails on Windows
+        // hosts without docker.exe (CreateProcess error=2).
+        io.agentscope.harness.agent.sandbox.impl.docker.DockerCliRunner.configure(
+                s.isRemoteDockerEnabled(),
+                s.getRemoteDockerSshTarget(),
+                s.getRemoteDockerSshOptions(),
+                s.getRemoteDockerTimeoutSeconds());
+
         if (s.isRemoteDockerEnabled()) {
             log.info(
                     "Remote Docker mode ON — executing docker CLI through ssh target={} timeout={}s",

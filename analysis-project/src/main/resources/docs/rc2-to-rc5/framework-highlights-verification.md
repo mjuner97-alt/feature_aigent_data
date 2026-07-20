@@ -15,7 +15,7 @@
 | 类别 | 子项 | 状态 | 关键证据 |
 |---|---|---|---|
 | 自主且可控 | ReAct 范式 | ✅ 已具备 | `HarnessA2aRunnerV2.java:156-159` `enablePlanMode()` + `enableTaskList(true)` + `enablePendingToolRecovery(true)` |
-| 自主且可控 | 安全中断（pause/resume） | ⚠️ 部分具备 | 状态持久化到 MySQL，跨 JVM 重启可恢复；无显式 `/pause` `/resume` REST 端点 |
+| 自主且可控 | 安全中断（pause/resume） | ✅ 已具备 + E2E 验证通过（7/7） | `V2ChatInterruptController.java` `POST /v2/ai/chat/interrupt` 单端点 interrupt+supplement+auto-resume（Plan B, 2026-07-19 实施, 2026-07-20 E2E 验证通过）+ 状态持久化到 MySQL 跨 JVM 重启可恢复 |
 | 自主且可控 | 优雅取消 | ✅ 已具备 | `V2ChatStreamServiceImpl.java:121-132` `Disposable.dispose()` 取消 reactive 流 + AsyncToolMiddleware 工具级 cancel |
 | 自主且可控 | 人机协同（Hook） | ✅ 已具备 | 7 个 v2 hook 全部迁移 + `PermissionMode` 5 模式 + `/debug/permission/mode` GET/POST 端点 |
 | 内置工具 | PlanNotebook | ✅ 已具备 | `enablePlanMode()` + `planFileDirectory("plans")` + `enableTaskList(true)`；11.2 跨重启 PASS |
@@ -44,7 +44,7 @@
 
 **关联**：[[async_tool_middleware_wiring]]（ReAct loop 内的工具调用 >30s 由 AsyncToolMiddleware offload）
 
-### 2.2 安全中断（pause/resume）⚠️ 部分具备
+### 2.2 安全中断（pause/resume）✅ 已具备
 
 **定义**：运行中任务可被显式暂停（pause），后续可恢复（resume）继续执行，状态不丢失。
 
@@ -56,16 +56,11 @@
 | 跨 JVM 重启恢复 | 11.2 PASS（2026/07/17）：旧 JVM taskkill /F 强杀 → 新 JVM 启动 → 同 conversationId 发请求 → `plan_mode_context` 从 MySQL 恢复，LLM 第一句 "好的,我来退出计划模式并开始执行计划" |
 | 沙箱状态持久化 | 10.2 PASS：`_sandbox_state` 写入 `agentscope_sessions.__anon__:sandbox:session:<convId>`，第二轮 `Priority 3: resuming from persisted state` |
 | 并发执行保护 | `JdbcSandboxExecutionGuard` MySQL `GET_LOCK` 30min timeout，避免并发执行冲突 |
+| **运行中 interrupt + 续跑（Plan B, 2026-07-19 实施, 2026-07-20 E2E 验证通过 7/7）** | `V2ChatInterruptController` `POST /v2/ai/chat/interrupt` 单端点 interrupt + supplement + auto-resume；in-flight 追踪 + 180s 超时 fall-through 启动 resume stream（不返回 504）+ `X-Resume-Stream` 头提示前端切换流；E2E 验证：interrupt flag 设置 ✅ / handleInterrupt append recovery msg ✅ / saveStateToSession 落盘 MySQL ✅ / beforeAgentExecution reload state ✅ / LLM 基于 supplement 续跑 ✅ / 超时 dispose ✅ / X-Resume-Stream header ✅；详见 `interrupt-resume-single-endpoint-plan.md` |
 
-**未具备部分**：
+**实现路径**：用户中途打断时，server 通过 `HarnessAgent.getDelegate().interrupt()` 设置 `InterruptControl` flag -> 框架在下次 checkpoint 抛 `InterruptedException` -> `handleInterrupt()` append recovery msg + `saveStateToSession()` 落盘 -> 旧 SSE 流以 recovery msg + done 收尾 -> server 接着以 supplement 作为 user msg 启动新 SSE 流，框架 `beforeAgentExecution` reload state + `interruptControl.reset()` 清 flag -> LLM 在历史 + recovery msg + 新 supplement 上下文上继续。
 
-| 缺口 | 说明 |
-|---|---|
-| 无 `/pause` REST 端点 | `DebugController` 仅有 `/debug/permission/mode`、`/debug/digest`、`/debug/sweep` 等；无显式 pause |
-| 无 `/resume` REST 端点 | 同上 |
-| 取消即结束 | `V2ChatStreamServiceImpl` 客户端断开后 `Disposable.dispose()` 取消流，任务直接结束而非暂停（恢复靠下一轮同 conversationId 重新发起 + state store 回灌） |
-
-**当前路径**：依赖"取消 + 状态已落盘 + 重启续跑"组合实现，本质是"中断 + 重启续跑"而非"运行中真暂停"。若业务需要运维侧主动 pause（不杀进程），需补 `DebugController.pauseSession(userId, sessionId)` 端点 + agent 内部暂停信号机制。
+**子 agent 内部续跑限制**：当前架构下子 agent 是临时实例，interrupt 只能打断主 agent session，子 agent 的内部进度随实例销毁。基于 artifact 的"半续跑"可行（子 agent 把中间结果写盘，supervisor 在新流中复用），但完整子 agent state 持久化作为后续架构升级单独立项。详见 `interrupt-resume-single-endpoint-plan.md` 的"限制：子 agent 内部续跑不支持"章节。
 
 **关联**：[[plan_state_cross_restart_verified]]（11.2 跨重启验证细节 + 踩坑：stale MySQL GET_LOCK 阻塞 30min）
 
@@ -209,14 +204,14 @@
 
 | 缺口 | 影响 | 优先级 |
 |---|---|---|
-| 无 `/pause` `/resume` REST 端点 | 运维侧无法主动暂停运行中 agent，只能取消 + 重启续跑 | P2（当前"取消 + 状态恢复"路径已满足业务） |
+| ✅ 已补 + E2E 验证通过：`/v2/ai/chat/interrupt` 端点（Plan B, 2026-07-19 实施, 2026-07-20 E2E 验证 7/7 通过） | 用户中途打断 + 补充信息 + 自动续跑，状态不丢失；替代原"取消 + 重启续跑"路径 | ~~P2~~ 已闭环 |
 | 未集成框架级 `OutputParser` / `ResponseFormat` | LLM 输出仍是自由文本，结构化场景靠 prompt 引导（6.3 蒸馏因此出现参数缺失问题） | P2（视业务需求决定是否启用） |
 | 语义搜索 Java 端算余弦 | 大规模数据下性能瓶颈 | P3（当前数据量 < 1k 行，无影响） |
 
 ### 4.2 建议
 
 1. **不阻塞内网部署**：当前 7/9 项已具备 + 2 项部分具备均不影响主链路，可推进内网部署
-2. **补 pause/resume 端点**：若运维有"主动暂停"诉求，在 `DebugController` 加 `POST /debug/session/pause?userId=X&sessionId=Y` + `POST /debug/session/resume`，调用 agent 内部暂停信号（需 JAR 支持）
+2. ~~**补 pause/resume 端点**~~ ✅ 已闭环 + E2E 验证通过（2026-07-19 实施, 2026-07-20 验证）：Plan B 落地 `POST /v2/ai/chat/interrupt`（单端点 interrupt+supplement+auto-resume），优于原计划的 `/pause` + `/resume` 两步操作；E2E 7/7 全部通过（interrupt flag / handleInterrupt recovery msg / saveStateToSession 落盘 / beforeAgentExecution reload / LLM 基于 supplement 续跑 / 超时 dispose / X-Resume-Stream header）；实施中发现并修复 3 个 bug（doOnCancel 缺失 / SseEmitter 回调不可靠 / 504 改 fall-through）；详见 `interrupt-resume-single-endpoint-plan.md`
 3. **结构化输出视业务而定**：若新增"LLM 直接产出维度评分表"等用例，集成 `OutputParser` 并改 spec 强约束 schema；6.3 蒸馏场景的参数缺失问题已通过 spec 强化（"必填参数硬规则"段）缓解
 4. **向量索引升级**：trace 行数超过 10w 时评估迁移到 pgvector / Milvus / MySQL 9.0 vector type
 
@@ -244,9 +239,9 @@
 
 ## 六、验收结论
 
-**v2 升级到 agentscope-java 2.0.0-RC5 后，框架核心亮点 9 项中 7 项已具备、2 项部分具备**：
+**v2 升级到 agentscope-java 2.0.0-RC5 后，框架核心亮点 9 项中 8 项已具备、1 项未显式启用**：
 
-- ✅ **自主且可控** 4 项中 3 项具备（ReAct / 优雅取消 / 人机协同），1 项部分具备（安全中断缺显式 pause/resume 端点，但状态持久化 + 跨重启续跑路径已验证）
+- ✅ **自主且可控** 4 项全部具备（ReAct / 优雅取消 / 人机协同 / 安全中断 - Plan B `POST /v2/ai/chat/interrupt` 已闭环 pause/resume 缺口，2026-07-19 实施，2026-07-20 E2E 验证 7/7 通过）
 - ✅ **内置工具** 5 项中 4 项具备（PlanNotebook / 长期记忆 / 多租户 / 语义搜索），1 项未显式启用（结构化输出，视业务需求决定）
 
-**判定**：主链路能力齐备，可推进内网部署。剩余 2 项缺口均为边缘能力，不阻塞业务运行。
+**判定**：主链路能力齐备，可推进内网部署。剩余 1 项缺口为边缘能力，不阻塞业务运行。

@@ -1,6 +1,12 @@
 # 交互式 pause/resume 方案：让用户能中途打断 agent 并补充信息
 
-> 状态：**方案待评审**（未实现）
+> **状态：已被 Plan B（`interrupt-resume-single-endpoint-plan.md`）替代 - 2026-07-19**
+>
+> 本文档作为设计演进记录保留。Plan B 重新设计为单端点 `POST /v2/ai/chat/interrupt`
+> （interrupt + supplement + auto-resume 合一），用户体验从"两步操作"优化为"一步操作"。
+> 详见 `interrupt-resume-single-endpoint-plan.md`。
+>
+> 原始方案状态：**方案待评审**（未实现）
 > 提出日期：2026-07-18
 > 关联缺口：`framework-highlights-verification.md` §4.1 "无 `/pause` `/resume` REST 端点"
 

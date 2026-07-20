@@ -17,9 +17,8 @@ package com.agentscopea2a.controller;
 
 import com.agentscopea2a.v2.digestion.MemoryDigestionService;
 import com.agentscopea2a.v2.memory.MysqlMemoryStore;
-import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
+import com.agentscopea2a.v2.util.PermissionModeHelper;
 import io.agentscope.core.permission.PermissionMode;
-import io.agentscope.harness.agent.HarnessAgent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -33,6 +32,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -58,8 +58,11 @@ import java.util.stream.Stream;
  *   <li>{@code GET /debug/skills/{name}} - full SKILL.md body
  *   <li>{@code GET /debug/sessions} - list saved session transcripts under agents/&lt;name&gt;/
  *   <li>{@code POST /debug/digest} - manually trigger memory digestion
- *   <li>{@code GET /debug/permission/mode?userId=X&sessionId=Y} - get current permission mode
- *   <li>{@code POST /debug/permission/mode?userId=X&sessionId=Y&mode=bypass} - switch mode (dev/debug only; use bypass to auto-approve HITL)
+ *   <li>{@code GET /debug/permission/mode?userId=X&sessionId=Y} - <b>DEPRECATED</b> use
+ *       {@code GET /v2/ai/session/permission/mode} instead (RFC 7234 deprecation headers
+ *       emitted; Sunset 2027-01-01)
+ *   <li>{@code POST /debug/permission/mode?userId=X&sessionId=Y&mode=bypass} - <b>DEPRECATED</b>
+ *       use {@code POST /v2/ai/session/permission/mode} instead
  * </ul>
  */
 @RestController
@@ -73,19 +76,19 @@ public class DebugController {
     private final MemoryDigestionService digestionService;
     private final ObjectProvider<MysqlMemoryStore> storeProvider;
     private final ObjectProvider<com.agentscopea2a.v2.artifact.ArtifactSweeper> sweeperProvider;
-    private final ObjectProvider<HarnessA2aRunnerV2> runnerProvider;
+    private final PermissionModeHelper permissionModeHelper;
 
     public DebugController(
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
             MemoryDigestionService digestionService,
             ObjectProvider<MysqlMemoryStore> storeProvider,
             ObjectProvider<com.agentscopea2a.v2.artifact.ArtifactSweeper> sweeperProvider,
-            ObjectProvider<HarnessA2aRunnerV2> runnerProvider) {
+            PermissionModeHelper permissionModeHelper) {
         this.workspace = Paths.get(workspacePath).toAbsolutePath();
         this.digestionService = digestionService;
         this.storeProvider = storeProvider;
         this.sweeperProvider = sweeperProvider;
-        this.runnerProvider = runnerProvider;
+        this.permissionModeHelper = permissionModeHelper;
     }
 
     // ==================== Workspace overview ====================
@@ -240,98 +243,55 @@ public class DebugController {
     }
 
     // ==================== Permission mode (per-session) ====================
+    //
+    // DEPRECATED (Plan B): migrated to /v2/ai/session/permission/mode (V2SessionController).
+    // These endpoints remain functional during the migration window and emit RFC 7234
+    // Deprecation + RFC 8594 Sunset + RFC 8288 Link headers directing clients to the
+    // successor endpoint. The actual logic is shared via PermissionModeHelper so the
+    // two paths stay behaviorally identical.
 
     /**
      * Returns the current {@link PermissionMode} for the given {@code (userId, sessionId)} session.
      *
-     * <p>Use to verify E2E test 11.4 (5 permission modes). The mode is persisted in
-     * {@code agent_state.permission_context.mode} as part of the session state.
+     * @deprecated use {@code GET /v2/ai/session/permission/mode} instead - this debug
+     * path will be removed after the Sunset date below.
      */
+    @Deprecated
     @GetMapping("/permission/mode")
     public ResponseEntity<Map<String, Object>> getPermissionMode(
             @RequestParam("userId") String userId,
-            @RequestParam("sessionId") String sessionId) {
-        HarnessA2aRunnerV2 runner = runnerProvider.getIfAvailable();
-        if (runner == null) {
-            Map<String, Object> err = new HashMap<>();
-            err.put("status", "error");
-            err.put("message", "HarnessA2aRunnerV2 bean not available");
-            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(err);
-        }
-        try {
-            HarnessAgent agent = runner.getAgent();
-            PermissionMode mode = agent.getPermissionMode(userId, sessionId);
-            Map<String, Object> out = new HashMap<>();
-            out.put("userId", userId);
-            out.put("sessionId", sessionId);
-            out.put("mode", mode != null ? mode.getValue() : null);
-            out.put("availableModes", java.util.Arrays.stream(PermissionMode.values())
-                    .map(PermissionMode::getValue)
-                    .toList());
-            return ResponseEntity.ok(out);
-        } catch (Exception e) {
-            log.warn("getPermissionMode failed for userId={},sessionId={}: {}",
-                    userId, sessionId, e.getMessage());
-            Map<String, Object> err = new HashMap<>();
-            err.put("status", "error");
-            err.put("message", e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(err);
-        }
+            @RequestParam("sessionId") String sessionId,
+            HttpServletResponse response) {
+        addDeprecationHeaders(response);
+        return permissionModeHelper.getPermissionMode(userId, sessionId);
     }
 
     /**
      * Switches the {@link PermissionMode} for the given {@code (userId, sessionId)} session.
      *
-     * <p>Valid modes: {@code default}, {@code accept_edits}, {@code explore}, {@code bypass},
-     * {@code dont_ask}. Use {@code bypass} to auto-approve HITL prompts (e.g. {@code plan_exit}
-     * approval) for E2E tests that need execution to continue without manual approval.
-     *
-     * <p>This mutates session state; intended for dev/debug use only.
+     * @deprecated use {@code POST /v2/ai/session/permission/mode} instead - this debug
+     * path will be removed after the Sunset date below.
      */
+    @Deprecated
     @PostMapping("/permission/mode")
     public ResponseEntity<Map<String, Object>> setPermissionMode(
             @RequestParam("userId") String userId,
             @RequestParam("sessionId") String sessionId,
-            @RequestParam("mode") String modeStr) {
-        HarnessA2aRunnerV2 runner = runnerProvider.getIfAvailable();
-        if (runner == null) {
-            Map<String, Object> err = new HashMap<>();
-            err.put("status", "error");
-            err.put("message", "HarnessA2aRunnerV2 bean not available");
-            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(err);
-        }
-        PermissionMode mode;
-        try {
-            mode = PermissionMode.fromString(modeStr);
-        } catch (IllegalArgumentException e) {
-            Map<String, Object> err = new HashMap<>();
-            err.put("status", "error");
-            err.put("message", "Unknown mode: " + modeStr);
-            err.put("availableModes", java.util.Arrays.stream(PermissionMode.values())
-                    .map(PermissionMode::getValue)
-                    .toList());
-            return ResponseEntity.badRequest().body(err);
-        }
-        try {
-            HarnessAgent agent = runner.getAgent();
-            agent.setPermissionMode(userId, sessionId, mode);
-            log.info("Permission mode switched: userId={}, sessionId={}, mode={}",
-                    userId, sessionId, mode.getValue());
-            Map<String, Object> out = new HashMap<>();
-            out.put("status", "ok");
-            out.put("userId", userId);
-            out.put("sessionId", sessionId);
-            out.put("mode", mode.getValue());
-            out.put("timestamp", java.time.LocalDateTime.now().toString());
-            return ResponseEntity.ok(out);
-        } catch (Exception e) {
-            log.warn("setPermissionMode failed for userId={},sessionId={},mode={}: {}",
-                    userId, sessionId, modeStr, e.getMessage());
-            Map<String, Object> err = new HashMap<>();
-            err.put("status", "error");
-            err.put("message", e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(err);
-        }
+            @RequestParam("mode") String modeStr,
+            HttpServletResponse response) {
+        addDeprecationHeaders(response);
+        return permissionModeHelper.setPermissionMode(userId, sessionId, modeStr);
+    }
+
+    /**
+     * Adds RFC 7234 Deprecation + RFC 8594 Sunset + RFC 8288 Link headers pointing to the
+     * successor endpoint. Sunset is set to 2027-01-01 (6 months from the 2026-07-19
+     * migration); clients must migrate before then.
+     */
+    private static void addDeprecationHeaders(HttpServletResponse response) {
+        response.setHeader("Deprecation", "true");
+        response.setHeader("Sunset", "Fri, 01 Jan 2027 00:00:00 GMT");
+        response.setHeader("Link", "</v2/ai/session/permission/mode>; rel=\"successor-version\"");
     }
 
     // ==================== Internal helpers ====================
