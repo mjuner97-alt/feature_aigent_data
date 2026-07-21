@@ -166,22 +166,7 @@ public class V2ChatInterruptController {
                 inFlight.completion().get(INTERRUPT_WAIT_SECONDS, TimeUnit.SECONDS);
                 log.info("v2 /chat/interrupt: in-flight terminated for sessionId={}", sessionId);
             } catch (TimeoutException te) {
-                // Revision #4: force-dispose the stuck subscription to stop burning tokens.
-                // The dispose() call synchronously triggers doOnCancel -> sendDone ->
-                // emitter.complete() -> onCompletion -> cleanup -> removes the inFlight
-                // entry + completes the future. So after dispose() returns, we can
-                // safely start the resume stream (putIfAbsent will succeed).
-                //
-                // Why we DON'T return 504 here: the framework's checkInterrupted()
-                // only fires at ReAct iteration boundaries. If the in-flight call is
-                // stuck in pre-iteration middlewares (MemoryMaintenanceMiddleware
-                // doing SSH file ops, SkillEvolutionHook doing LLM-based metric
-                // classification), interrupt can't break through. Disposing the
-                // subscription is enough - the framework cancels the reactive chain,
-                // callSerializationKey is released, and the resume stream can start
-                // immediately. The resume stream will see the saved state (which may
-                // or may not include the recovery msg, depending on whether
-                // handleInterrupt had a chance to run - both are acceptable).
+
                 Disposable d = inFlight.subscription().get();
                 if (d != null && !d.isDisposed()) {
                     d.dispose();
@@ -202,7 +187,7 @@ public class V2ChatInterruptController {
 
         // ── Step 4: start the resume stream with supplement as input ────────
         ChatRequest resumeReq = ChatRequest.builder()
-                .input(supplement)
+                .question(supplement)
                 .conversationId(sessionId)
                 .userId(userId)
                 .build();
