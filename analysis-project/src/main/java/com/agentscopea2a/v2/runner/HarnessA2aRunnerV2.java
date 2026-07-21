@@ -48,6 +48,7 @@ import reactor.core.publisher.Flux;
 import javax.sql.DataSource;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.List;
 
 /**
@@ -137,6 +138,23 @@ public class HarnessA2aRunnerV2 {
                 .stateStore(new SanitizingAgentStateStore(new MysqlAgentStateStore(dataSource, true)))
                 .memory(MemoryConfig.builder()
                         .model(smallModel)
+                        // 临时测速:consolidationMinGap=365d 让 MemoryMaintenanceMiddleware
+                        // maybeRunMaintenance 节流命中直接 return,跳过 19s 的 LLM consolidation。
+                        // 连带 expireDailyFiles/pruneOldSessions 也跳 (纯文件操作,测速期无影响)。
+                        // 回滚:把下面这行删掉即恢复默认 30min。
+                        .consolidationMinGap(Duration.ofDays(365))
+                        // 跨租户隔离:关掉框架的 per-call flush。MemoryFlushMiddleware 默认
+                        // ALWAYS 模式会在每次 call 结束把 LLM 总结的 memory 写到
+                        // /workspace/MEMORY.md (根,共享) + /workspace/memory/<date>.md
+                        // (根,共享)。shared-container 模式下所有用户共享同一个容器 /workspace,
+                        // 这些根文件会跨用户串扰 - bob 调 memory_search 会看到 alice 的 daily
+                        // ledger 条目。PerUserMemoryContextMiddleware 已经从 DB 注入 per-user
+                        // MEMORY.md 到 system prompt,MemoryLedgerMirrorMiddleware 也已 per-user
+                        // 落盘 + mirror 到 agent_memory_ledger。框架的 flush 在这套架构下是
+                        // 冗余且有害的,关掉它。MemoryMaintenanceMiddleware 仍然注册(只是
+                        // consolidationMinGap=365d 让它跳过 consolidation),daily 文件保留/清理
+                        // 逻辑不受影响。
+                        .flushTrigger(MemoryConfig.FlushTrigger.never())
                         .build())
                 .compaction(CompactionConfig.builder()
                         .triggerMessages(40)
@@ -152,10 +170,23 @@ public class HarnessA2aRunnerV2 {
                 .enableSkillPromotionGate(localApprovalGate, new CompositeFilter(skillVisibilityFilter))
                 .middlewares(middlewares);
 
-        // Enable AsyncToolMiddleware so long-running tool calls (>30s) get offloaded to the
+        // Enable AsyncToolMiddleware so long-running tool calls get offloaded to the
         // background with a placeholder ToolResultBlock, then delivered to the LLM as a
         // HintBlock via InboxMiddleware when complete. Required for HintBlock / async tool
         // placeholder behavior tested in §3.4. Backed by local filesystem message bus.
+        //
+        // Timeout tuned to 600s (was 30s) so that agent_spawn calls dispatching subagents
+        // (analyze_data, query_data) are NOT offloaded mid-flight. When offloaded at 30s,
+        // subagent events (tool_call_start / text_block_delta / etc.) stop flowing through
+        // the parent's AgentEventEmitter into the SSE stream — the frontend ActivityFeed
+        // only sees the main agent's meta events (agent_spawn / wait_async_results) and
+        // the subagent's internal activity is invisible to the user. With 600s timeout,
+        // agent_spawn runs synchronously in the parent stream and the framework's
+        // `execLocalSync` path forwards all child events via `event.withSource(sourcePath)`,
+        // so the frontend can render subagent activity in real time. The AsyncToolMiddleware
+        // is still wired (and the bus still available) so that genuinely runaway tool calls
+        // (e.g. python_exec infinite loop) still trip the 600s offload as a safety net.
+        // See docs/Plan-Machie/process-event-streaming.md §"子 agent 内部活动透传".
         Path busRoot = workspace.resolve(".bus");
         try {
             java.nio.file.Files.createDirectories(busRoot);
@@ -167,8 +198,8 @@ public class HarnessA2aRunnerV2 {
                     new io.agentscope.harness.agent.bus.WorkspaceAsyncToolRegistry(busFs, "/async-tools");
             builder.messageBus(messageBus);
             builder.asyncToolRegistry(asyncToolRegistry);
-            builder.asyncToolTimeout(java.time.Duration.ofSeconds(30));
-            log.info("HarnessA2aRunnerV2: AsyncToolMiddleware wired (timeout=30s, bus={})",
+            builder.asyncToolTimeout(java.time.Duration.ofSeconds(600));
+            log.info("HarnessA2aRunnerV2: AsyncToolMiddleware wired (timeout=600s, bus={})",
                     busRoot);
         } catch (Exception e) {
             log.warn("HarnessA2aRunnerV2: failed to wire AsyncToolMiddleware: {}", e.getMessage());
@@ -219,6 +250,17 @@ public class HarnessA2aRunnerV2 {
 
         this.agent = builder.build();
 
+        // Replace the JAR's PlanExitTool with AutoApprovePlanExitTool so plan_exit no longer
+        // triggers the framework's HITL ASK pause. The JAR's PlanExitTool.checkPermissions
+        // returns PermissionDecision.ask(...), which emits a RequireUserConfirmEvent and stops
+        // the agent. Without a frontend HITL approval UI + /confirm endpoint, the user's
+        // follow-up message gets interpreted as a fresh user msg, the framework auto-generates
+        // an error result for the pending plan_exit call, and the agent never enters BUILD mode.
+        // AutoApprovePlanExitTool returns allow() instead, so plan_exit flows directly into
+        // BUILD mode and the agent continues executing the plan. See AutoApprovePlanExitTool
+        // class javadoc for the full rationale.
+        replacePlanExitWithAutoApprove(this.agent);
+
         log.info("HarnessA2aRunnerV2 initialized: workspace={}, model={}, stateStore=SanitizingAgentStateStore(MysqlAgentStateStore), " +
                         "memoryModel={}, skillCurator=enabled",
                 workspace, main.getName(), light.getName());
@@ -234,5 +276,45 @@ public class HarnessA2aRunnerV2 {
 
     public HarnessAgent getAgent() {
         return agent;
+    }
+
+    /**
+     * Reflectively read the private {@code planModeManager} field from the built
+     * {@link HarnessAgent} and swap the JAR's {@code plan_exit} tool with
+     * {@link com.agentscopea2a.v2.tool.AutoApprovePlanExitTool}. The replacement
+     * preserves tool name/schema/description (so model behavior is unchanged) but
+     * returns {@code allow} instead of {@code ask} from {@code checkPermissions},
+     * so the agent flows directly into BUILD mode without the HITL pause.
+     *
+     * <p>Reflection is required because {@code HarnessAgent.planModeManager} is a
+     * private final field with no public accessor, and {@code PlanModeManager} is
+     * constructed inside {@code HarnessAgent.build()} (not injectable via builder).
+     * We need the SAME {@code PlanModeManager} instance because it holds the
+     * per-session plan state that {@code PlanModeMiddleware} reads.
+     */
+    private static void replacePlanExitWithAutoApprove(HarnessAgent agent) {
+        try {
+            java.lang.reflect.Field f = HarnessAgent.class.getDeclaredField("planModeManager");
+            f.setAccessible(true);
+            io.agentscope.harness.agent.workspace.plan.PlanModeManager planModeManager =
+                    (io.agentscope.harness.agent.workspace.plan.PlanModeManager) f.get(agent);
+            if (planModeManager == null) {
+                log.warn("HarnessA2aRunnerV2: planModeManager is null (plan mode disabled?), skipping plan_exit replacement");
+                return;
+            }
+            io.agentscope.core.tool.Toolkit toolkit = agent.getToolkit();
+            toolkit.removeTool("plan_exit");
+            toolkit.registerTool(new com.agentscopea2a.v2.tool.AutoApprovePlanExitTool(planModeManager));
+            log.info("HarnessA2aRunnerV2: replaced JAR PlanExitTool with AutoApprovePlanExitTool (plan_exit no longer HITL-asks)");
+        } catch (NoSuchFieldException e) {
+            log.warn("HarnessA2aRunnerV2: HarnessAgent.planModeManager field not found — framework version changed? plan_exit replacement skipped: {}",
+                    e.getMessage());
+        } catch (IllegalAccessException e) {
+            log.warn("HarnessA2aRunnerV2: cannot access HarnessAgent.planModeManager (security manager?): plan_exit replacement skipped: {}",
+                    e.getMessage());
+        } catch (Throwable t) {
+            log.warn("HarnessA2aRunnerV2: plan_exit replacement failed (falling back to JAR PlanExitTool with HITL ASK): {}",
+                    t.getMessage());
+        }
     }
 }

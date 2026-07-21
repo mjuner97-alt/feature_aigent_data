@@ -229,13 +229,27 @@ public class V2SandboxConfig {
             } else {
                 workspaceSpec.getEntries().put("skills", hostBindMount(workspace.resolve("skills")));
             }
+            // skills-auto / skills-user: when skills.remote is enabled, the Windows
+            // local path (e.g. D:\...\skills-auto) cannot be passed to the remote
+            // Linux docker daemon — docker would reject it with
+            // "invalid volume specification: 'D:\...:/workspace/skills-auto:rw'".
+            // The RemoteDirSyncer syncs skills-auto/ → <remote-root>-auto and
+            // skills-user/ → <remote-root>-user (see application-sandbox-windows.properties
+            // comment), so we bind mount the remote sibling directory instead.
+            // Falls back to hostBindMount (local Windows path) only when remote
+            // sync is disabled — which is only safe on a Linux host where Windows
+            // path separators are not an issue.
             Path skillsAuto = workspace.resolve("skills-auto");
             if (Files.isDirectory(skillsAuto)) {
-                workspaceSpec.getEntries().put("skills-auto", hostBindMount(skillsAuto));
+                workspaceSpec.getEntries().put(
+                        "skills-auto",
+                        remoteAwareBindMount(skillsAuto, skillsRemote, "-auto"));
             }
             Path skillsUser = workspace.resolve("skills-user");
             if (Files.isDirectory(skillsUser)) {
-                workspaceSpec.getEntries().put("skills-user", hostBindMount(skillsUser));
+                workspaceSpec.getEntries().put(
+                        "skills-user",
+                        remoteAwareBindMount(skillsUser, skillsRemote, "-user"));
             }
         }
         if (s.isMountMemory()) {
@@ -306,6 +320,39 @@ public class V2SandboxConfig {
         entry.setHostPath(hostDir.toAbsolutePath().normalize().toString());
         entry.setReadOnly(false);
         return entry;
+    }
+
+    /**
+     * Build a {@link BindMountEntry} for skills-auto / skills-user that picks the
+     * correct host path depending on whether skills remote sync is enabled.
+     *
+     * <p>When {@code skillsRemote.isEnabled() && remoteRoot is non-blank}: use
+     * {@code <remoteRoot> + suffix} (e.g. {@code /opt/agentscope-workspace/harness-a2a/skills-auto}).
+     * The remote directory must already exist (RemoteDirSyncer creates it on sync;
+     * see application-sandbox-windows.properties §"Skills 双向同步" comment).
+     *
+     * <p>Otherwise: fall back to {@link #hostBindMount(Path)} using the local
+     * Windows path. This is only safe when the docker daemon runs on the same
+     * host as the JVM (e.g. Linux dev box); on a Windows JVM + remote Linux
+     * docker topology it would produce "invalid volume specification" errors.
+     *
+     * @param localDir      Local workspace dir (e.g. {@code workspace.resolve("skills-auto")}).
+     * @param skillsRemote  Skills remote-sync config (gated by harness.a2a.skills.remote.enabled).
+     * @param suffix        Suffix to append to remote root: {@code "-auto"} or {@code "-user"}.
+     */
+    private static BindMountEntry remoteAwareBindMount(
+            Path localDir,
+            SandboxPropertiesV2.Skills.Remote skillsRemote,
+            String suffix) throws IOException {
+        Files.createDirectories(localDir);
+        if (skillsRemote.isEnabled() && !skillsRemote.getRemoteRoot().isBlank()) {
+            String remoteHostPath = skillsRemote.getRemoteRoot() + suffix;
+            BindMountEntry entry = new BindMountEntry();
+            entry.setHostPath(remoteHostPath);
+            entry.setReadOnly(false);
+            return entry;
+        }
+        return hostBindMount(localDir);
     }
 
     private static IsolationScope parseScope(String name, IsolationScope fallback) {

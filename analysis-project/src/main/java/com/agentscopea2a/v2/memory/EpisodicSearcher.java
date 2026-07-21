@@ -54,43 +54,71 @@ final class EpisodicSearcher {
         this.embeddingClient = embeddingClient;
     }
 
-    List<EpisodicResult> ftsSearch(String query, int limit) {
+    /**
+     * Full-text search for past conversation snippets matching {@code query}.
+     *
+     * @param userId when non-null and non-blank, restricts results to rows whose
+     *     {@code user_id} column matches (tenant isolation). When null/blank, no
+     *     user_id filter is applied (global search — legacy behavior, used only
+     *     by {@code EpisodicMemoryTools.episodic_search} which has no per-user
+     *     context at the tool-call site).
+     */
+    List<EpisodicResult> ftsSearch(String userId, String query, int limit) {
+        boolean filterUser = userId != null && !userId.isBlank();
         String sql =
                 "SELECT session_id, content, "
                         + "MATCH(content) AGAINST(? IN NATURAL LANGUAGE MODE) AS score, "
                         + "created_at FROM "
                         + this.config.getTableName()
                         + " WHERE MATCH(content) AGAINST(? IN NATURAL LANGUAGE MODE) "
+                        + (filterUser ? " AND user_id = ? " : "")
                         + "ORDER BY score DESC LIMIT ?";
         List<EpisodicResult> results = new ArrayList<>();
         try (Connection conn = connectionSupplier.get();
                 PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setString(1, query);
             stmt.setString(2, query);
-            stmt.setInt(3, limit);
+            int nextIdx = 3;
+            if (filterUser) {
+                stmt.setString(nextIdx++, userId);
+            }
+            stmt.setInt(nextIdx, limit);
             try (ResultSet rs = stmt.executeQuery()) {
                 while (rs.next()) {
                     results.add(buildResult(rs));
                 }
             }
         } catch (SQLException e) {
-            log.error("FTS search failed: {}", e.getMessage());
+            log.error("FTS search failed (userId={}, queryLen={}): {}", userId, query.length(), e.getMessage());
             throw new RuntimeException("Failed to search episodic memory", e);
         }
         return results;
     }
 
-    List<EpisodicResult> vectorSearch(String query, int limit) {
+    /**
+     * Vector (cosine similarity) search for past conversation snippets matching {@code query}.
+     *
+     * @param userId same scoping contract as {@link #ftsSearch} — null/blank = global,
+     *     non-blank = restrict to that user's rows.
+     */
+    List<EpisodicResult> vectorSearch(String userId, String query, int limit) {
         float[] queryVec = embeddingClient.embed(query);
         if (queryVec == null || queryVec.length == 0) return List.of();
+        boolean filterUser = userId != null && !userId.isBlank();
         String sql =
                 "SELECT session_id, content, embedding, created_at FROM "
                         + this.config.getTableName()
-                        + " WHERE embedding IS NOT NULL ORDER BY id DESC LIMIT ?";
+                        + " WHERE embedding IS NOT NULL "
+                        + (filterUser ? " AND user_id = ? " : "")
+                        + "ORDER BY id DESC LIMIT ?";
         List<EpisodicResult> candidates = new ArrayList<>();
         try (Connection conn = connectionSupplier.get();
                 PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setInt(1, limit * 10); // sample a wider pool
+            int idx = 1;
+            if (filterUser) {
+                stmt.setString(idx++, userId);
+            }
+            stmt.setInt(idx, limit * 10); // sample a wider pool
             try (ResultSet rs = stmt.executeQuery()) {
                 float qNorm = norm(queryVec);
                 if (qNorm == 0f) return List.of();
@@ -118,7 +146,7 @@ final class EpisodicSearcher {
                 }
             }
         } catch (SQLException e) {
-            log.warn("Vector search failed, falling back to FTS: {}", e.getMessage());
+            log.warn("Vector search failed (userId={}), falling back to FTS: {}", userId, e.getMessage());
             return List.of();
         }
         candidates.sort(Comparator.comparingDouble(EpisodicResult::relevance).reversed());

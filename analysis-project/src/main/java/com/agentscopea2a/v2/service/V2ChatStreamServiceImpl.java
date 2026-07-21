@@ -28,7 +28,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.AgentResultEvent;
+import io.agentscope.core.event.AgentStartEvent;
+import io.agentscope.core.event.SubagentExposedEvent;
 import io.agentscope.core.event.TextBlockDeltaEvent;
+import io.agentscope.core.event.ToolCallStartEvent;
+import io.agentscope.core.event.ToolResultEndEvent;
+import io.agentscope.core.event.ToolResultStartEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
@@ -152,6 +157,17 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
         // threads, not the executor thread where the ThreadLocal was bound.
         ctx.put(ToolCallTrackingHook.COLLECTOR_CTX_KEY, collector);
 
+        // ParentEmitterCarrier: holds the parent agent's AgentEventEmitter so subagent
+        // middleware (SubagentEventForwardingMiddleware) can mirror subagent events to
+        // the parent's SSE stream. The emitter is populated mid-stream by the
+        // Flux.deferContextual wrapper below (which reads it from the Reactor context
+        // where ReActAgent.buildAgentStream wrote it). The carrier itself is put into
+        // RuntimeContext here so AgentSpawnTool.execLocalSync's
+        // RuntimeContext.builder(ctx).from(ctx) clones it into the subagent's context.
+        com.agentscopea2a.v2.middleware.ParentEmitterCarrier parentEmitterCarrier =
+                new com.agentscopea2a.v2.middleware.ParentEmitterCarrier();
+        ctx.put(com.agentscopea2a.v2.middleware.ParentEmitterCarrier.class, parentEmitterCarrier);
+
         // Episodic memory session_id must be "user:<userId>:<conversationId>" so that:
         // 1) TraceMiner.loadSessions can group by session_id (each request = one session)
         // 2) extractUserId can parse userId from the "user:userId:..." prefix
@@ -227,6 +243,18 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
         String agentName = req.getAgentName() != null ? req.getAgentName() : "QA助手";
         String formType = req.getFromType() != null ? req.getFromType() : "HXY";
 
+        // Store the SseEmitter on RuntimeContext so ToolCallTrackingHook can send a
+        // supplementary "tool_output" SSE event directly from PostActing. This is
+        // necessary because the framework's tool_result_end AgentEvent fires BEFORE
+        // PostActing (the hook chain runs after the agent's acting middleware returns),
+        // so when the SSE handler reads the collector at tool_result_end time, the
+        // output hasn't been captured yet. By having PostActing send the output as a
+        // separate SSE event (keyed by toolCallId), the frontend can match it to the
+        // existing ActivityFeed row and render the collapsible "出参" panel.
+        ctx.put(ToolCallTrackingHook.EMITTER_CTX_KEY, emitter);
+        ctx.put(ToolCallTrackingHook.SSE_META_CTX_KEY,
+                new ToolCallTrackingHook.SseMeta(ansUUID, agentId, agentName, formType, conversationId));
+
         // Run subscription off the HTTP request thread so stream() returns the SseEmitter
         // immediately. Use shared boundedElastic scheduler instead of per-request
         // Executors.newSingleThreadExecutor() (which leaked threads - no shutdown).
@@ -272,7 +300,7 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
                 Disposable d = eventFlux.subscribe(
                         event -> {
                             try {
-                                handleEvent(event, emitter, accumulated, ansUUID, agentId, agentName, formType, conversationId);
+                                handleEvent(event, emitter, accumulated, ansUUID, agentId, agentName, formType, conversationId, collector);
                             } catch (Exception e) {
                                 log.warn("SSE send failed for sessionId={}: {}", conversationId, e.getMessage());
                             }
@@ -338,14 +366,22 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
     private void handleEvent(AgentEvent event, SseEmitter emitter,
                              StringBuilder accumulated, String ansUUID,
                              String agentId, String agentName, String formType,
-                             String conversationId) throws Exception {
+                             String conversationId,
+                             com.agentscopea2a.v2.tools.ToolCallCollector collector) throws Exception {
 
-        // AgentResultEvent is the terminal event — handled in doOnComplete via sendDone
+        // AgentResultEvent is the terminal event — handled in doOnComplete via sendDone.
+        // The streaming text_block_delta events have already accumulated the full text
+        // into `accumulated` as it streamed in. Appending the AgentResultEvent's final
+        // text again would duplicate the entire output in the `done` event's resultAll
+        // field (the user-visible "重复输出" bug — full report appearing twice after
+        // the agent finishes). Only append if streaming didn't deliver any text (e.g.
+        // non-streaming model configurations, though the current setup uses stream=true).
         if (event instanceof AgentResultEvent) {
-            // Extract final text if present
-            String text = extractText(((AgentResultEvent) event).getResult());
-            if (text != null && !text.isEmpty()) {
-                accumulated.append(text);
+            if (accumulated.length() == 0) {
+                String text = extractText(((AgentResultEvent) event).getResult());
+                if (text != null && !text.isEmpty()) {
+                    accumulated.append(text);
+                }
             }
             return;
         }
@@ -357,25 +393,119 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
         }
         // TextBlockStartEvent is a marker — it carries no text content
 
-        if (chunk == null || chunk.isEmpty()) return;
+        if (chunk != null && !chunk.isEmpty()) {
+            accumulated.append(chunk);
 
-        accumulated.append(chunk);
+            AiChatResult result = AiChatResult.builder()
+                    .code(0)
+                    .ansUUID(ansUUID)
+                    .lineResult(chunk)
+                    .resultAll(accumulated.toString())
+                    .formType(formType)
+                    .agentId(agentId)
+                    .agentName(agentName)
+                    .source(event.getSource())
+                    .conversationId(conversationId)
+                    .build();
 
-        AiChatResult result = AiChatResult.builder()
+            String json = objectMapper.writeValueAsString(result);
+            String eventName = event.getType() != null ? event.getType().name().toLowerCase() : "text";
+            emitter.send(SseEmitter.event().name(eventName).data(json));
+            return;
+        }
+
+        // ── Process events (process-event-streaming.md) ─────────────────────
+        // Forward 6 event types that carry no text but tell the user what the
+        // agent is doing: agent_start, tool_call_start, tool_result_start,
+        // tool_result_end, subagent_exposed, agent_end. These are NOT accumulated
+        // into `accumulated` (which only holds the final markdown text); they
+        // go out as standalone SSE events with eventType + toolCall* fields so
+        // the frontend ActivityFeed can render a live progress timeline.
+        AiChatResult processPayload = buildProcessPayload(event, collector);
+        if (processPayload == null) return;
+
+        String processJson = objectMapper.writeValueAsString(processPayload);
+        String processEventName = event.getType() != null ? event.getType().name().toLowerCase() : "custom";
+        emitter.send(SseEmitter.event().name(processEventName).data(processJson));
+    }
+
+    /**
+     * Build an {@link AiChatResult} for process events (no text accumulation).
+     * Returns null for events we don't forward (thinking_block_*, model_call_*,
+     * data_block_*, tool_call_delta, tool_result_*_delta, text_block_start/end).
+     *
+     * <p>See {@code docs/Plan-Machie/process-event-streaming.md} for the event
+     * selection rationale.
+     */
+    private AiChatResult buildProcessPayload(AgentEvent event,
+                                             com.agentscopea2a.v2.tools.ToolCallCollector collector) {
+        String eventName = event.getType() != null ? event.getType().name().toLowerCase() : "custom";
+        String source = event.getSource();
+        AiChatResult.AiChatResultBuilder b = AiChatResult.builder()
                 .code(0)
-                .ansUUID(ansUUID)
-                .lineResult(chunk)
-                .resultAll(accumulated.toString())
-                .formType(formType)
-                .agentId(agentId)
-                .agentName(agentName)
-                .source(event.getSource())
-                .conversationId(conversationId)
-                .build();
+                .source(source)
+                .eventType(eventName);
 
-        String json = objectMapper.writeValueAsString(result);
-        String eventName = event.getType() != null ? event.getType().name().toLowerCase() : "text";
-        emitter.send(SseEmitter.event().name(eventName).data(json));
+        switch (eventName) {
+            case "agent_start": {
+                if (!(event instanceof AgentStartEvent e)) return null;
+                return b.lineResult("🤖 启动智能体：" + e.getName() + " (" + e.getRole() + ")")
+                        .agentNameRaw(e.getName())
+                        .agentRole(e.getRole())
+                        .build();
+            }
+            case "tool_call_start": {
+                if (!(event instanceof ToolCallStartEvent e)) return null;
+                // Attach tool input (captured by ToolCallTrackingHook on PreActing) so the
+                // frontend ActivityFeed can render a collapsible "入参" panel under the row.
+                com.agentscopea2a.v2.tools.ToolCallCollector.ToolCallDetail detail =
+                        collector != null ? collector.getByToolCallId(e.getToolCallId()) : null;
+                return b.lineResult("🔧 调用工具：" + e.getToolCallName())
+                        .toolCallId(e.getToolCallId())
+                        .toolCallName(e.getToolCallName())
+                        .toolInput(detail != null ? detail.input() : null)
+                        .build();
+            }
+            case "tool_result_start": {
+                if (!(event instanceof ToolResultStartEvent e)) return null;
+                return b.lineResult("📋 工具返回：" + e.getToolCallName())
+                        .toolCallId(e.getToolCallId())
+                        .toolCallName(e.getToolCallName())
+                        .build();
+            }
+            case "tool_result_end": {
+                if (!(event instanceof ToolResultEndEvent e)) return null;
+                String state = e.getState() != null ? e.getState().name() : "?";
+                // Attach both input and output (output captured by ToolCallTrackingHook on
+                // PostActing) so the frontend ActivityFeed can render collapsible "入参" +
+                // "出参" panels under the row. Input is included here too in case the
+                // frontend missed the tool_call_start event (e.g. late SSE connection).
+                com.agentscopea2a.v2.tools.ToolCallCollector.ToolCallDetail detail =
+                        collector != null ? collector.getByToolCallId(e.getToolCallId()) : null;
+                return b.lineResult("✅ 完成：" + e.getToolCallName() + " (" + state + ")")
+                        .toolCallId(e.getToolCallId())
+                        .toolCallName(e.getToolCallName())
+                        .toolCallState(state)
+                        .toolInput(detail != null ? detail.input() : null)
+                        .toolOutput(detail != null ? detail.output() : null)
+                        .build();
+            }
+            case "subagent_exposed": {
+                if (!(event instanceof SubagentExposedEvent e)) return null;
+                String label = e.getLabel() != null ? e.getLabel() : e.getSubagentId();
+                return b.lineResult("👥 派单子智能体：" + label)
+                        .subagentId(e.getSubagentId())
+                        .subagentLabel(e.getLabel())
+                        .build();
+            }
+            case "agent_end": {
+                return b.lineResult("✅ 智能体完成").build();
+            }
+            default:
+                // Other events (thinking_*, model_call_*, data_block_*, text_block_start/end,
+                // tool_call_delta, tool_result_*_delta, hint_block, etc.) are not forwarded.
+                return null;
+        }
     }
 
     private void sendDone(SseEmitter emitter, StringBuilder accumulated,

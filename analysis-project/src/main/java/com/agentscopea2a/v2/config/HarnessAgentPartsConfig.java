@@ -27,6 +27,7 @@ import com.agentscopea2a.v2.middleware.ArtifactAccessMiddleware;
 import com.agentscopea2a.v2.middleware.DimensionStateMiddleware;
 import com.agentscopea2a.v2.middleware.EpisodicRetrievalMiddleware;
 import com.agentscopea2a.v2.middleware.MemoryLedgerMirrorMiddleware;
+import com.agentscopea2a.v2.middleware.PerUserMemoryContextMiddleware;
 import com.agentscopea2a.v2.middleware.PythonExecAccessMiddleware;
 import com.agentscopea2a.v2.middleware.ResponseCacheMiddleware;
 import com.agentscopea2a.v2.middleware.SessionMiddleware;
@@ -54,7 +55,7 @@ import java.util.List;
  * <p>Order matters:
  * <ul>
  *   <li>Middlewares: responseCache -> dimension -> episodic -> artifact -> session ->
- *       ledgerMirror (optional) -> pythonExecGuard (optional)</li>
+ *       perUserMemory (optional) -> ledgerMirror (optional) -> pythonExecGuard (optional)</li>
  *   <li>Hooks: handoff(12) -> retry(13) -> tracking(45) -> retrieval(-50) ->
  *       knowledge(-40) -> synthesis(50) -> evolution(60). Each hook's {@code priority()}
  *       controls actual execution order; this list only controls wiring order so the
@@ -67,6 +68,25 @@ public class HarnessAgentPartsConfig {
 
     private static final Logger log = LoggerFactory.getLogger(HarnessAgentPartsConfig.class);
 
+    /**
+     * Registered as a top-level @Bean (not {@code new}'d inside {@link #harnessMiddlewares})
+     * because {@link HarnessA2aRunnerV2} constructor injects {@code List<MiddlewareBase>},
+     * which Spring resolves by collecting ALL {@code MiddlewareBase} beans — elements
+     * instantiated inside a {@code List<MiddlewareBase>} @Bean method are NOT visible to
+     * this auto-collection. Without this @Bean, the middleware is silently dropped from the
+     * runner's middleware chain and parent-emitter capture never fires.
+     *
+     * <p>Execution order among middlewares is preserved by Spring's
+     * {@code AnnotationAwareOrderComparator}, but {@link ParentEmitterCaptureMiddleware}
+     * is order-independent: it only captures the parent emitter once per call and doesn't
+     * interact with other middlewares' data.
+     */
+    @Bean
+    public com.agentscopea2a.v2.middleware.ParentEmitterCaptureMiddleware parentEmitterCaptureMiddleware() {
+        log.info("HarnessAgentPartsConfig: ParentEmitterCaptureMiddleware @Bean registered");
+        return new com.agentscopea2a.v2.middleware.ParentEmitterCaptureMiddleware();
+    }
+
     @Bean
     public List<MiddlewareBase> harnessMiddlewares(
             ResponseCacheMiddleware responseCacheMiddleware,
@@ -74,6 +94,7 @@ public class HarnessAgentPartsConfig {
             EpisodicRetrievalMiddleware episodicRetrievalMiddleware,
             ArtifactAccessMiddleware artifactAccessMiddleware,
             SessionMiddleware sessionMiddleware,
+            ObjectProvider<PerUserMemoryContextMiddleware> perUserMemoryContextMiddlewareProvider,
             ObjectProvider<MemoryLedgerMirrorMiddleware> memoryLedgerMirrorProvider,
             ObjectProvider<PythonExecAccessMiddleware> pythonExecAccessMiddlewareProvider) {
         List<MiddlewareBase> middlewares = new ArrayList<>(List.of(
@@ -83,6 +104,11 @@ public class HarnessAgentPartsConfig {
                 artifactAccessMiddleware,
                 sessionMiddleware
         ));
+        PerUserMemoryContextMiddleware perUserMemory = perUserMemoryContextMiddlewareProvider.getIfAvailable();
+        if (perUserMemory != null) {
+            middlewares.add(perUserMemory);
+            log.info("HarnessAgentPartsConfig: PerUserMemoryContextMiddleware wired (per-user MEMORY.md injection)");
+        }
         MemoryLedgerMirrorMiddleware ledgerMirror = memoryLedgerMirrorProvider.getIfAvailable();
         if (ledgerMirror != null) {
             middlewares.add(ledgerMirror);
@@ -93,6 +119,12 @@ public class HarnessAgentPartsConfig {
             middlewares.add(pythonExecGuard);
             log.info("HarnessAgentPartsConfig: PythonExecAccessMiddleware wired (P0-5 cross-tenant guard)");
         }
+        // ParentEmitterCaptureMiddleware is registered as a top-level @Bean above so
+        // Spring's List<MiddlewareBase> auto-collection in HarnessA2aRunnerV2 picks it
+        // up. It is NOT added here — adding it here would cause double registration
+        // (once as a bean, once inside this list bean), and since the runner injects
+        // the auto-collected list (not this list bean), the list-bean copy is dead
+        // weight anyway. See parentEmitterCaptureMiddleware() javadoc above.
         return middlewares;
     }
 

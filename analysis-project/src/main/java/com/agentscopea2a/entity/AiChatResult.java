@@ -35,4 +35,36 @@ public class AiChatResult {
     private String source;
     /** Conversation id passed to the model. */
     private String conversationId;
+
+    // ── Process-event fields (process-event-streaming.md) ───────────────────
+    /** Event type name (lowercased): "tool_call_start", "subagent_exposed", ... */
+    private String eventType;
+    /** Tool call id (tool_call_* / tool_result_* events). */
+    private String toolCallId;
+    /** Tool name (python_exec / agent_spawn / skill_router ...). */
+    private String toolCallName;
+    /** ToolResultState.name() (only for tool_result_end). */
+    private String toolCallState;
+    /**
+     * Tool input arguments (only for tool_call_start / tool_result_* events).
+     * Populated from {@link com.agentscopea2a.v2.tools.ToolCallCollector#getByToolCallId}
+     * via the {@link com.agentscopea2a.v2.hooks.ToolCallTrackingHook} PreActing capture.
+     * Rendered by the frontend ActivityFeed inside a collapsible panel.
+     */
+    private String toolInput;
+    /**
+     * Tool output result (only for tool_result_end events).
+     * Populated from {@link com.agentscopea2a.v2.tools.ToolCallCollector#getByToolCallId}
+     * via the {@link com.agentscopea2a.v2.hooks.ToolCallTrackingHook} PostActing capture.
+     * Rendered by the frontend ActivityFeed inside a collapsible panel.
+     */
+    private String toolOutput;
+    /** Subagent id (only for subagent_exposed). */
+    private String subagentId;
+    /** Subagent label (only for subagent_exposed). */
+    private String subagentLabel;
+    /** AgentStartEvent.name (only for agent_start). */
+    private String agentNameRaw;
+    /** AgentStartEvent.role (only for agent_start). */
+    private String agentRole;
 }

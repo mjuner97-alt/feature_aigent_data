@@ -22,6 +22,7 @@ import com.agentscopea2a.v2.memory.MysqlMemoryStore;
 import com.agentscopea2a.v2.memory.MySqlEpisodicMemory;
 import com.agentscopea2a.v2.middleware.EpisodicRetrievalMiddleware;
 import com.agentscopea2a.v2.middleware.MemoryLedgerMirrorMiddleware;
+import com.agentscopea2a.v2.middleware.PerUserMemoryContextMiddleware;
 import com.agentscopea2a.v2.skills.EmbeddingClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -80,6 +81,27 @@ public class V2MemoryConfig {
     @Bean
     public EpisodicRetrievalMiddleware episodicRetrievalMiddleware(EpisodicMemory episodicMemory) {
         return new EpisodicRetrievalMiddleware(episodicMemory);
+    }
+
+    /**
+     * Per-user MEMORY.md injector. Reads the current user's MEMORY.md body from
+     * {@link MysqlMemoryStore} and appends it as a {@code ## 用户记忆} section to the
+     * system prompt. Replaces the framework's shared-root {@code <memory_context>}
+     * block (which we neutralize by deleting the root MEMORY.md file).
+     *
+     * <p>Only wired when mysql-mirror is enabled - without the per-user store there's
+     * nothing tenant-scoped to inject, and the framework's root-file path is the only
+     * source of memory content.
+     */
+    @Bean
+    @ConditionalOnProperty(
+            prefix = "harness.a2a.memory.mysql-mirror",
+            name = "enabled",
+            havingValue = "true",
+            matchIfMissing = false)
+    public PerUserMemoryContextMiddleware perUserMemoryContextMiddleware(MysqlMemoryStore mysqlMemoryStore) {
+        log.info("PerUserMemoryContextMiddleware: wired (injects per-user MEMORY.md from agent_memory table)");
+        return new PerUserMemoryContextMiddleware(mysqlMemoryStore);
     }
 
     /**

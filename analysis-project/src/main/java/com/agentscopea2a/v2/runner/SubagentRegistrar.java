@@ -19,6 +19,7 @@ import com.agentscopea2a.v2.hooks.ArtifactHandoffHook;
 import com.agentscopea2a.v2.hooks.PythonExecRetryHook;
 import com.agentscopea2a.v2.middleware.ArtifactAccessMiddleware;
 import com.agentscopea2a.v2.middleware.PythonExecAccessMiddleware;
+import com.agentscopea2a.v2.middleware.SubagentEventForwardingMiddleware;
 import com.agentscopea2a.v2.tools.ArithTool;
 import com.agentscopea2a.v2.tools.PythonExecTool;
 import com.agentscopea2a.v2.tools.SkillSaveTool;
@@ -83,6 +84,19 @@ public class SubagentRegistrar {
     private final ArtifactAccessMiddleware artifactAccessMiddleware;
     private final PythonExecAccessMiddleware pythonExecAccessMiddleware;
     private final PythonExecRetryHook pythonExecRetryHook;
+    /**
+     * Bridges subagent AgentEvents to the parent's SSE emitter. Required because
+     * the framework's {@code AgentSpawnTool.execLocalSync} writes the parent
+     * emitter into the subagent's Reactor context, but the subagent's
+     * {@code publishEvent} only writes to its own filtered Flux, never to the
+     * parent emitter. This middleware taps {@code onReasoning/onModelCall/onActing}
+     * and mirrors each event to the parent emitter with the subagent name as
+     * {@code source}, so the parent's SSE stream sees subagent text_block_delta
+     * / tool_call_start / etc. in real time. See
+     * {@link com.agentscopea2a.v2.middleware.SubagentEventForwardingMiddleware}
+     * class javadoc for the framework limitation rationale.
+     */
+    private final SubagentEventForwardingMiddleware subagentEventForwardingMiddleware;
 
     public SubagentRegistrar(
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
@@ -117,7 +131,8 @@ public class SubagentRegistrar {
         this.artifactAccessMiddleware = artifactAccessMiddlewareProvider.getIfAvailable();
         this.pythonExecAccessMiddleware = pythonExecAccessMiddlewareProvider.getIfAvailable();
         this.pythonExecRetryHook = pythonExecRetryHookProvider.getIfAvailable();
-        log.info("SubagentRegistrar: toolRegistry built with {} entries: {}; hooks - handoff={} access={} pyGuard={} retry={}",
+        this.subagentEventForwardingMiddleware = new SubagentEventForwardingMiddleware();
+        log.info("SubagentRegistrar: toolRegistry built with {} entries: {}; hooks - handoff={} access={} pyGuard={} retry={} eventForwarding=true",
                 toolRegistry.size(), toolRegistry.keySet(),
                 artifactHandoffHook != null, artifactAccessMiddleware != null,
                 pythonExecAccessMiddleware != null, pythonExecRetryHook != null);
@@ -179,7 +194,23 @@ public class SubagentRegistrar {
             for (String name : toolNames) {
                 Object tool = toolRegistry.get(name);
                 if (tool != null) {
-                    tk.registerTool(tool);
+                    // Unwrap Spring CGLIB proxies before registration. Toolkit.registerTool()
+                    // scans clazz.getDeclaredMethods() for @Tool annotations; on a CGLIB proxy
+                    // (e.g. ToolRoutersIndex proxied by TimedAspect because router_tool has
+                    // @Timed), getDeclaredMethods() returns the proxy's synthetic bridge
+                    // methods which don't carry @Tool — so router_tool / toolMetaInfo would
+                    // silently fail to register on subagents. AopProxyUtils.getSingletonTarget
+                    // returns the real target instance behind a singleton proxy.
+                    Object target = org.springframework.aop.framework.AopProxyUtils
+                            .getSingletonTarget(tool);
+                    if (target == null) {
+                        target = tool;
+                    } else if (target.getClass() != tool.getClass()) {
+                        log.info(
+                                "SubagentRegistrar: unwrapped CGLIB proxy {} -> {} for tool '{}'",
+                                tool.getClass().getName(), target.getClass().getName(), name);
+                    }
+                    tk.registerTool(target);
                     registered.add(name);
                 } else {
                     log.warn("Subagent '{}' references unknown tool '{}'; skipping", id, name);
@@ -227,6 +258,13 @@ public class SubagentRegistrar {
             if (hasPythonExec && pythonExecAccessMiddleware != null) {
                 subMiddlewares.add(pythonExecAccessMiddleware);
             }
+            // SubagentEventForwardingMiddleware: taps onReasoning/onModelCall/onActing and
+            // mirrors each AgentEvent to the parent's emitter (retrieved from Reactor context
+            // written by AgentSpawnTool.execLocalSync) with the subagent's name as source.
+            // Without this, the parent SSE stream only sees SubagentExposedEvent — subagent
+            // text_block_delta / tool_call_start / etc. are dropped on the floor of the
+            // subagent's filtered Flux inside callInternal.
+            subMiddlewares.add(subagentEventForwardingMiddleware);
             if (!subMiddlewares.isEmpty()) {
                 sub.middlewares(subMiddlewares);
             }
@@ -234,7 +272,7 @@ public class SubagentRegistrar {
                 sub.hook(pythonExecRetryHook);
             }
 
-            log.debug("Built subagent '{}' with tools={} handoff={} access={} pyGuard={} retry={}",
+            log.debug("Built subagent '{}' with tools={} handoff={} access={} pyGuard={} retry={} eventForwarding=true",
                     id, registered,
                     artifactHandoffHook != null,
                     artifactAccessMiddleware != null,
