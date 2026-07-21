@@ -1,0 +1,148 @@
+/*
+ * Copyright 2024-2026 the original author or authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.agentscopea2a.v2.model;
+
+import com.agentscopea2a.entity.UserModelConfig;
+import com.agentscopea2a.mapper.mysql.UserModelConfigMapper;
+import com.agentscopea2a.v2.config.HarnessRunnerProperties;
+import io.agentscope.core.model.Model;
+import io.agentscope.extensions.model.anthropic.AnthropicChatModel;
+import io.agentscope.extensions.model.openai.OpenAIChatModel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+
+/**
+ * v2 模型提供者 - 根据用户 ID 动态选择模型并包装降级逻辑。
+ *
+ * <p>优先级：
+ * <ol>
+ *   <li>用户自定义模型（从数据库读取）</li>
+ *   <li>系统默认模型（配置文件中的 glm-main）</li>
+ * </ol>
+ *
+ * <p>无论哪种情况，都会包装为 {@link FallbackModelDecorator} 以支持自动降级。
+ */
+@Component
+public class ModelProvider {
+
+    private static final Logger log = LoggerFactory.getLogger(ModelProvider.class);
+
+    private final UserModelConfigMapper userModelConfigMapper;
+    private final Model defaultModel;
+
+    public ModelProvider(
+            UserModelConfigMapper userModelConfigMapper,
+            HarnessRunnerProperties harnessRunnerProperties) {
+        this.userModelConfigMapper = userModelConfigMapper;
+
+        // 构建默认模型（glm-main）
+        HarnessRunnerProperties.ModelInstance main = harnessRunnerProperties.getModel().getInstances().getGlmMain();
+        this.defaultModel = OpenAIChatModel.builder()
+                .apiKey(main.getApiKey())
+                .baseUrl(main.getBaseUrl())
+                .modelName(main.getName())
+                .stream(true)
+                .build();
+
+        log.info("V2ModelProvider initialized: defaultModel={}", main.getName());
+    }
+
+    /**
+     * 根据用户 ID 获取带降级逻辑的模型。
+     *
+     * @param userId 用户 ID，null 或无配置时使用默认模型
+     * @return FallbackModelDecorator 实例
+     */
+    public FallbackModelDecorator getModelForUser(Long userId) {
+        Model primaryModel = null;
+        boolean hasUserConfig = false;
+
+        if (userId != null) {
+            try {
+                UserModelConfig userConfig = userModelConfigMapper.selectByUserId(userId);
+                if (userConfig != null && userConfig.getToken() != null && !userConfig.getToken().isBlank()) {
+                    hasUserConfig = true;
+                    log.info("使用用户自定义模型配置 userId={} provider={} model={}",
+                            userId, userConfig.getProvider(), userConfig.getModelName());
+                    primaryModel = buildUserModel(userConfig);
+                }
+            } catch (Exception e) {
+                log.warn("查询用户模型配置异常 userId={}: {}", userId, e.getMessage());
+            }
+        }
+
+        if (!hasUserConfig) {
+            log.info("用户无自定义配置，使用默认模型 userId={}", userId);
+            primaryModel = defaultModel;
+        }
+
+        return new FallbackModelDecorator(primaryModel, defaultModel);
+    }
+
+    /**
+     * 根据用户配置构建模型实例。
+     */
+    private Model buildUserModel(UserModelConfig config) {
+        String provider = config.getProvider() != null ? config.getProvider().toLowerCase() : "openai";
+        String apiKey = config.getToken();
+        String baseUrl = config.getRequestUrl();
+        String modelName = config.getModelName();
+
+        log.debug("构建用户模型: provider={} model={} baseUrl={}", provider, modelName, baseUrl);
+
+        return switch (provider) {
+            case "anthropic" -> AnthropicChatModel.builder()
+                    .apiKey(apiKey)
+                    .baseUrl(baseUrl)
+                    .modelName(modelName)
+                    .stream(true)
+                    .build();
+            case "glm" -> {
+                // GLM 走 OpenAI 协议
+                String url = baseUrl != null && !baseUrl.isBlank() ? baseUrl : "https://open.bigmodel.cn/api/paas/v4/";
+                yield OpenAIChatModel.builder()
+                        .apiKey(apiKey)
+                        .baseUrl(url)
+                        .modelName(modelName)
+                        .stream(true)
+                        .build();
+            }
+            case "openai", "" -> OpenAIChatModel.builder()
+                    .apiKey(apiKey)
+                    .baseUrl(baseUrl)
+                    .modelName(modelName)
+                    .stream(true)
+                    .build();
+            default -> {
+                log.warn("未知 provider='{}', 回退到 OpenAI 协议", provider);
+                yield OpenAIChatModel.builder()
+                        .apiKey(apiKey)
+                        .baseUrl(baseUrl)
+                        .modelName(modelName)
+                        .stream(true)
+                        .build();
+            }
+        };
+    }
+
+    /**
+     * 获取默认模型（用于 memory 等场景）。
+     */
+    public Model getDefaultModel() {
+        return defaultModel;
+    }
+}

@@ -17,13 +17,13 @@ package com.agentscopea2a.v2.runner;
 
 import com.agentscopea2a.v2.config.HarnessRunnerProperties;
 import com.agentscopea2a.v2.model.FallbackModelDecorator;
+import com.agentscopea2a.v2.model.ModelProvider;
 import com.agentscopea2a.v2.tools.V2ToolGroupAdapter;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.hook.Hook;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.middleware.MiddlewareBase;
-import io.agentscope.core.model.Model;
 import io.agentscope.extensions.mysql.state.MysqlAgentStateStore;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
 import com.agentscopea2a.v2.state.SanitizingAgentStateStore;
@@ -48,32 +48,29 @@ import reactor.core.publisher.Flux;
 import javax.sql.DataSource;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.List;
 
-/**
- * v2 入口：基于 {@link HarnessAgent#builder()} 装配能力，替代 v1 {@code HarnessA2aRunner}。
- *
- * <p>阶段 1-2：workspace + memory + compaction + toolResultEviction + model +
- * enablePlanMode + enableTaskList + stateStore + MemoryConfig 小模型。
- *
- * <p>阶段 3：+ SkillCurator pipeline + 业务 middleware。
- *
- * <p>每次请求复用同一个 {@link HarnessAgent}（线程安全），通过 {@link RuntimeContext} 区分 session。
- *
- * <p>P1-1 重构：原 30+ 参数构造器拆为：
- * <ul>
- *   <li>{@link HarnessRunnerProperties} - 11 个 @Value 收口（model + workspace）</li>
- *   <li>{@code List<MiddlewareBase>} - 由 {@code HarnessAgentPartsConfig} 装配</li>
- *   <li>{@code List<Hook>} - 由 {@code HarnessAgentPartsConfig} 装配</li>
- *   <li>5 个 ObjectProvider - 仅剩 filesystem/store/toolkit/subagent 这种真正可选依赖</li>
- * </ul>
- */
+
 @Component
 public class HarnessA2aRunnerV2 {
 
     private static final Logger log = LoggerFactory.getLogger(HarnessA2aRunnerV2.class);
 
-    private final HarnessAgent agent;
+    private final HarnessRunnerProperties runnerProperties;
+    private final DataSource dataSource;
+    private final SkillManageConfig skillManageConfig;
+    private final SkillCuratorConfig skillCuratorConfig;
+    private final LocalApprovalGate localApprovalGate;
+    private final SkillVisibilityFilter skillVisibilityFilter;
+    private final List<MiddlewareBase> middlewares;
+    private final List<Hook> hooks;
+    private final ObjectProvider<V2ToolGroupAdapter> toolGroupAdapterProvider;
+    private final ObjectProvider<SandboxFilesystemSpec> sandboxFilesystemProvider;
+    private final ObjectProvider<RemoteFilesystemSpec> remoteFilesystemProvider;
+    private final ObjectProvider<DistributedStore> distributedStoreProvider;
+    private final ObjectProvider<SubagentRegistrar> subagentRegistrarProvider;
+    private final ModelProvider modelProvider;
 
     public HarnessA2aRunnerV2(
             HarnessRunnerProperties runnerProperties,
@@ -88,18 +85,68 @@ public class HarnessA2aRunnerV2 {
             ObjectProvider<SandboxFilesystemSpec> sandboxFilesystemProvider,
             ObjectProvider<RemoteFilesystemSpec> remoteFilesystemProvider,
             ObjectProvider<DistributedStore> distributedStoreProvider,
-            ObjectProvider<SubagentRegistrar> subagentRegistrarProvider) {
-        HarnessRunnerProperties.ModelInstance main = runnerProperties.getModel().getInstances().getGlmMain();
+            ObjectProvider<SubagentRegistrar> subagentRegistrarProvider,
+            ModelProvider modelProvider) {
+        this.runnerProperties = runnerProperties;
+        this.dataSource = dataSource;
+        this.skillManageConfig = skillManageConfig;
+        this.skillCuratorConfig = skillCuratorConfig;
+        this.localApprovalGate = localApprovalGate;
+        this.skillVisibilityFilter = skillVisibilityFilter;
+        this.middlewares = middlewares;
+        this.hooks = hooks;
+        this.toolGroupAdapterProvider = toolGroupAdapterProvider;
+        this.sandboxFilesystemProvider = sandboxFilesystemProvider;
+        this.remoteFilesystemProvider = remoteFilesystemProvider;
+        this.distributedStoreProvider = distributedStoreProvider;
+        this.subagentRegistrarProvider = subagentRegistrarProvider;
+        this.modelProvider = modelProvider;
+
+        log.info("HarnessA2aRunnerV2 initialized: ready to create agents per request");
+    }
+
+    /**
+     * 根据请求消息和上下文流式处理事件。
+     *
+     * @param messages 请求消息列表
+     * @param ctx 运行时上下文（包含 userId 等信息）
+     * @return Agent 事件流
+     */
+    public Flux<AgentEvent> streamEvents(List<Msg> messages, RuntimeContext ctx) {
+        HarnessAgent agent = buildAgent(ctx);
+        return agent.streamEvents(messages, ctx);
+    }
+
+    /**
+     * 根据文本和上下文流式处理事件。
+     *
+     * @param text 用户输入文本
+     * @param ctx 运行时上下文（包含 userId 等信息）
+     * @return Agent 事件流
+     */
+    public Flux<AgentEvent> streamEvents(String text, RuntimeContext ctx) {
+        HarnessAgent agent = buildAgent(ctx);
+        return agent.streamEvents(text, ctx);
+    }
+
+    /**
+     * 根据运行时上下文构建新的 HarnessAgent。
+     *
+     * <p>关键改动：
+     * <ul>
+     *   <li>从 V2ModelProvider 获取带降级逻辑的模型（用户模型或默认模型）</li>
+     *   <li>Memory 使用固定的 light-classifier（分类、蒸馏等场景不需要用户模型）</li>
+     *   <li>每次调用都创建新实例，避免并发状态污染</li>
+     * </ul>
+     */
+    private HarnessAgent buildAgent(RuntimeContext ctx) {
+        Long userId = extractUserId(ctx);
+
+        // 获取带降级逻辑的主模型
+        FallbackModelDecorator primaryModel = modelProvider.getModelForUser(userId);
+
+        // Memory 使用固定的 light-classifier
         HarnessRunnerProperties.ModelInstance light = runnerProperties.getModel().getInstances().getLightClassifier();
-        HarnessRunnerProperties.ModelInstance fallback = runnerProperties.getModel().getInstances().getFallback();
-
-        OpenAIChatModel model = OpenAIChatModel.builder()
-                .apiKey(main.getApiKey())
-                .baseUrl(main.getBaseUrl())
-                .modelName(main.getName())
-                .stream(true)
-                .build();
-
         OpenAIChatModel smallModel = OpenAIChatModel.builder()
                 .apiKey(light.getApiKey())
                 .baseUrl(light.getBaseUrl())
@@ -107,36 +154,20 @@ public class HarnessA2aRunnerV2 {
                 .stream(true)
                 .build();
 
-        // Fallback model - wraps the primary model so that 401/403/5xx/timeout errors
-        // automatically retry against a secondary model. When fallback.* config is
-        // blank, no fallback is applied (primary model used directly).
-        Model wrappedModel;
-        if (fallback.getApiKey() != null && !fallback.getApiKey().isBlank()
-                && fallback.getBaseUrl() != null && !fallback.getBaseUrl().isBlank()
-                && fallback.getName() != null && !fallback.getName().isBlank()) {
-            OpenAIChatModel fallbackModel = OpenAIChatModel.builder()
-                    .apiKey(fallback.getApiKey())
-                    .baseUrl(fallback.getBaseUrl())
-                    .modelName(fallback.getName())
-                    .stream(true)
-                    .build();
-            wrappedModel = new FallbackModelDecorator(model, fallbackModel);
-            log.info("HarnessA2aRunnerV2: FallbackModelDecorator wired (primary={}, fallback={})",
-                    main.getName(), fallback.getName());
-        } else {
-            wrappedModel = model;
-            log.info("HarnessA2aRunnerV2: no fallback model configured, using primary only ({})", main.getName());
-        }
-
         Path workspace = Paths.get(runnerProperties.getWorkspace().getPath()).toAbsolutePath();
 
         HarnessAgent.Builder builder = HarnessAgent.builder()
                 .name("QualitySupervisorV2")
-                .model(wrappedModel)
+                .model(primaryModel)
                 .workspace(workspace)
                 .stateStore(new SanitizingAgentStateStore(new MysqlAgentStateStore(dataSource, true)))
                 .memory(MemoryConfig.builder()
                         .model(smallModel)
+                        // 临时测速:consolidationMinGap=365d 让 MemoryMaintenanceMiddleware
+                        // maybeRunMaintenance 节流命中直接 return,跳过 19s 的 LLM consolidation。
+                        // 连带 expireDailyFiles/pruneOldSessions 也跳 (纯文件操作,测速期无影响)。
+                        // 回滚:把下面这行删掉即恢复默认 30min。
+                        .consolidationMinGap(Duration.ofDays(365))
                         .build())
                 .compaction(CompactionConfig.builder()
                         .triggerMessages(40)
@@ -152,10 +183,23 @@ public class HarnessA2aRunnerV2 {
                 .enableSkillPromotionGate(localApprovalGate, new CompositeFilter(skillVisibilityFilter))
                 .middlewares(middlewares);
 
-        // Enable AsyncToolMiddleware so long-running tool calls (>30s) get offloaded to the
+        // Enable AsyncToolMiddleware so long-running tool calls get offloaded to the
         // background with a placeholder ToolResultBlock, then delivered to the LLM as a
         // HintBlock via InboxMiddleware when complete. Required for HintBlock / async tool
         // placeholder behavior tested in §3.4. Backed by local filesystem message bus.
+        //
+        // Timeout tuned to 600s (was 30s) so that agent_spawn calls dispatching subagents
+        // (analyze_data, query_data) are NOT offloaded mid-flight. When offloaded at 30s,
+        // subagent events (tool_call_start / text_block_delta / etc.) stop flowing through
+        // the parent's AgentEventEmitter into the SSE stream — the frontend ActivityFeed
+        // only sees the main agent's meta events (agent_spawn / wait_async_results) and
+        // the subagent's internal activity is invisible to the user. With 600s timeout,
+        // agent_spawn runs synchronously in the parent stream and the framework's
+        // `execLocalSync` path forwards all child events via `event.withSource(sourcePath)`,
+        // so the frontend can render subagent activity in real time. The AsyncToolMiddleware
+        // is still wired (and the bus still available) so that genuinely runaway tool calls
+        // (e.g. python_exec infinite loop) still trip the 600s offload as a safety net.
+        // See docs/Plan-Machie/process-event-streaming.md §"子 agent 内部活动透传".
         Path busRoot = workspace.resolve(".bus");
         try {
             java.nio.file.Files.createDirectories(busRoot);
@@ -167,9 +211,8 @@ public class HarnessA2aRunnerV2 {
                     new io.agentscope.harness.agent.bus.WorkspaceAsyncToolRegistry(busFs, "/async-tools");
             builder.messageBus(messageBus);
             builder.asyncToolRegistry(asyncToolRegistry);
-            builder.asyncToolTimeout(java.time.Duration.ofSeconds(30));
-            log.info("HarnessA2aRunnerV2: AsyncToolMiddleware wired (timeout=30s, bus={})",
-                    busRoot);
+            builder.asyncToolTimeout(java.time.Duration.ofSeconds(600));
+            log.debug("HarnessA2aRunnerV2: AsyncToolMiddleware wired (timeout=600s, bus={})", busRoot);
         } catch (Exception e) {
             log.warn("HarnessA2aRunnerV2: failed to wire AsyncToolMiddleware: {}", e.getMessage());
         }
@@ -178,20 +221,20 @@ public class HarnessA2aRunnerV2 {
         RemoteFilesystemSpec remoteFilesystem = remoteFilesystemProvider.getIfAvailable();
         if (sandboxFilesystem != null) {
             builder.filesystem(sandboxFilesystem);
-            log.info("HarnessA2aRunnerV2: sandbox filesystem wired ({})",
+            log.debug("HarnessA2aRunnerV2: sandbox filesystem wired ({})",
                     sandboxFilesystem.getClass().getSimpleName());
         } else if (remoteFilesystem != null) {
             // Distributed mode without sandbox container - RemoteFilesystemSpec routes
             // skills/memory/sessions through the MySQL-backed BaseStore so replicas converge.
             builder.filesystem(remoteFilesystem);
-            log.info("HarnessA2aRunnerV2: remote filesystem wired (scope={})",
+            log.debug("HarnessA2aRunnerV2: remote filesystem wired (scope={})",
                     remoteFilesystem.getIsolationScope());
         }
 
         DistributedStore distributedStore = distributedStoreProvider.getIfAvailable();
         if (distributedStore != null) {
             builder.distributedStore(distributedStore);
-            log.info("HarnessA2aRunnerV2: distributed store wired");
+            log.debug("HarnessA2aRunnerV2: distributed store wired");
         }
 
         for (Hook hook : hooks) {
@@ -203,7 +246,7 @@ public class HarnessA2aRunnerV2 {
         V2ToolGroupAdapter toolGroupAdapter = toolGroupAdapterProvider.getIfAvailable();
         if (toolGroupAdapter != null) {
             builder.toolkit(toolGroupAdapter.getToolkit());
-            log.info("HarnessA2aRunnerV2: Toolkit wired ({} tools, groups: {})",
+            log.debug("HarnessA2aRunnerV2: Toolkit wired ({} tools, groups: {})",
                     toolGroupAdapter.getToolkit().getToolNames().size(),
                     toolGroupAdapter.getToolkit().getActiveGroups());
         }
@@ -213,26 +256,67 @@ public class HarnessA2aRunnerV2 {
         // SupervisorService pattern; agent-subagents/ (not subagents/) avoids JAR auto-load.
         SubagentRegistrar registrar = subagentRegistrarProvider.getIfAvailable();
         if (registrar != null) {
-            registrar.registerAll(builder, model, workspace, sandboxFilesystemProvider);
-            log.info("HarnessA2aRunnerV2: subagents registered via manual factory");
+            registrar.registerAll(builder, primaryModel, workspace, sandboxFilesystemProvider);
+            log.debug("HarnessA2aRunnerV2: subagents registered via manual factory");
         }
 
-        this.agent = builder.build();
+        HarnessAgent agent = builder.build();
 
-        log.info("HarnessA2aRunnerV2 initialized: workspace={}, model={}, stateStore=SanitizingAgentStateStore(MysqlAgentStateStore), " +
-                        "memoryModel={}, skillCurator=enabled",
-                workspace, main.getName(), light.getName());
-    }
+        // Replace the JAR's PlanExitTool with AutoApprovePlanExitTool so plan_exit no longer
+        // triggers the framework's HITL ASK pause. The JAR's PlanExitTool.checkPermissions
+        // returns PermissionDecision.ask(...), which emits a RequireUserConfirmEvent and stops
+        // the agent. Without a frontend HITL approval UI + /confirm endpoint, the user's
+        // follow-up message gets interpreted as a fresh user msg, the framework auto-generates
+        // an error result for the pending plan_exit call, and the agent never enters BUILD mode.
+        // AutoApprovePlanExitTool returns allow() instead, so plan_exit flows directly into
+        // BUILD mode and the agent continues executing the plan. See AutoApprovePlanExitTool
+        // class javadoc for the full rationale.
+        replacePlanExitWithAutoApprove(agent);
 
-    public Flux<AgentEvent> streamEvents(List<Msg> messages, RuntimeContext ctx) {
-        return agent.streamEvents(messages, ctx);
-    }
+        log.info("HarnessA2aRunnerV2: created agent for userId={}, model={}",
+                userId, primaryModel.getModelName());
 
-    public Flux<AgentEvent> streamEvents(String text, RuntimeContext ctx) {
-        return agent.streamEvents(text, ctx);
-    }
-
-    public HarnessAgent getAgent() {
         return agent;
+    }
+
+    /**
+     * 从 RuntimeContext 中提取用户 ID。
+     */
+    private Long extractUserId(RuntimeContext ctx) {
+        if (ctx == null || ctx.getUserId() == null) {
+            return null;
+        }
+        try {
+            return Long.parseLong(ctx.getUserId());
+        } catch (NumberFormatException e) {
+            log.warn("Invalid userId format: {}", ctx.getUserId());
+            return null;
+        }
+    }
+
+    private static void replacePlanExitWithAutoApprove(HarnessAgent agent) {
+        try {
+            java.lang.reflect.Field f = HarnessAgent.class.getDeclaredField("planModeManager");
+            f.setAccessible(true);
+            io.agentscope.harness.agent.workspace.plan.PlanModeManager planModeManager =
+                    (io.agentscope.harness.agent.workspace.plan.PlanModeManager) f.get(agent);
+            if (planModeManager == null) {
+                log.warn("HarnessA2aRunnerV2: planModeManager is null (plan mode disabled?), skipping plan_exit replacement");
+                return;
+            }
+            io.agentscope.core.tool.Toolkit toolkit = agent.getToolkit();
+            toolkit.removeTool("plan_exit");
+//            toolkit.registerTool(new AutoApprovePlanExitTool(planModeManager));
+            log.debug("HarnessA2aRunnerV2: replaced JAR PlanExitTool with AutoApprovePlanExitTool (plan_exit no longer HITL-asks)");
+        } catch (NoSuchFieldException e) {
+            log.warn("HarnessA2aRunnerV2: HarnessAgent.planModeManager field not found — framework version changed? plan_exit replacement skipped: {}",
+                    e.getMessage());
+        } catch (IllegalAccessException e) {
+            log.warn("HarnessA2aRunnerV2: cannot access HarnessAgent.planModeManager (security manager?): plan_exit replacement skipped: {}",
+                    e.getMessage());
+        } catch (Throwable t) {
+            log.warn("HarnessA2aRunnerV2: plan_exit replacement failed (falling back to JAR PlanExitTool with HITL ASK): {}",
+                    t.getMessage());
+        }
     }
 }
