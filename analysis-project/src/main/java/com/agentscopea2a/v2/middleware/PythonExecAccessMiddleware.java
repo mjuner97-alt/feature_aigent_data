@@ -119,7 +119,9 @@ public class PythonExecAccessMiddleware implements MiddlewareBase {
                             + "cross-tenant artifact path in code (user=" + artifactCtx.userBucket()
                             + " task=" + artifactCtx.taskBucket() + ") path=" + foreignPath + "\\n')\n"
                             + "sys.exit(77)\n");
-            ToolUseBlock replacement = new ToolUseBlock(toolUse.getId(), toolUse.getName(), newInput);
+            ToolUseBlock replacement = new ToolUseBlock(
+                    toolUse.getId(), toolUse.getName(), newInput,
+                    toolUse.getContent(), toolUse.getMetadata(), toolUse.getState());
             if (rewritten == null) {
                 rewritten = new ArrayList<>(toolCalls);
             }
