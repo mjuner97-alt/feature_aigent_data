@@ -18,6 +18,7 @@ import TaskDependencyGraph from '../components/TaskDependencyGraph';
 import StateMachineView from '../components/StateMachineView';
 import InterruptButton from '../components/InterruptButton';
 import { useSessionState } from '../api/sessionState';
+import type { SubagentPlanState } from '../types/sessionState';
 import { getOrCreateUserId, rememberSession } from '../components/SessionsSidebar';
 
 export default function ChatPage() {
@@ -40,6 +41,14 @@ export default function ChatPage() {
 
   // Interrupt handle (set by ChatPanel)
   const [chatHandle, setChatHandle] = useState<ChatPanelHandle | null>(null);
+
+  // Subagent plan/todo state inferred from SSE tool_call_start events.
+  // The main agent no longer has plan mode (it's a pure router), so
+  // /v2/ai/session/state always returns planActive=false and empty tasks.
+  // Instead, we infer plan mode from SSE events: plan_enter/plan_exit/todo_write
+  // with source=analyze_data etc.
+  const [subagentPlans, setSubagentPlans] = useState<Record<string, SubagentPlanState>>({});
+  const [subagentTodoCounts, setSubagentTodoCounts] = useState<Record<string, number>>({});
 
   function handleConversationId(id: string) {
     setConversationId(id);
@@ -76,6 +85,10 @@ export default function ChatPage() {
           onConversationId={handleConversationId}
           onUserMessage={handleUserMessage}
           registerInterruptHandle={setChatHandle}
+          onSubagentPlanChange={(plans, counts) => {
+            setSubagentPlans(plans);
+            setSubagentTodoCounts(counts);
+          }}
         />
       </div>
 
@@ -108,9 +121,9 @@ export default function ChatPage() {
 
         {state && (
           <>
-            <StateMachineView state={state} />
-            <PlanPanel planMode={state.planMode} />
-            <TodoListPanel tasks={state.tasks} />
+            <StateMachineView state={state} subagentPlans={subagentPlans} />
+            <PlanPanel subagentPlans={Object.values(subagentPlans)} />
+            <TodoListPanel tasks={state.tasks} subagentTodoWriteCounts={subagentTodoCounts} />
             <TaskDependencyGraph tasks={state.tasks} />
             <InterruptButton
               enabled={!!chatHandle?.busy}

@@ -1,18 +1,36 @@
 /**
  * StateMachineView - 4-card overview of AgentState sub-contexts.
  *
- * Shows PlanMode / Task / Permission / InterruptControl with state badges.
+ * Shows SubagentPlanMode / Task / Permission / InterruptControl with state badges.
+ * PlanMode now reflects subagent plan state (inferred from SSE events), since
+ * the main agent no longer has plan mode (it's a pure router).
  * Highlights the InterruptControl card red when flag=true.
  */
 
 import React from 'react';
-import type { SessionStateResponse } from '../types/sessionState';
+import type { SessionStateResponse, SubagentPlanState } from '../types/sessionState';
 
 interface Props {
   state: SessionStateResponse;
+  /** Subagent plan states inferred from SSE tool_call_start events. */
+  subagentPlans?: Record<string, SubagentPlanState>;
 }
 
-export default function StateMachineView({ state }: Props) {
+export default function StateMachineView({ state, subagentPlans }: Props) {
+  // Determine PlanMode card value from subagent plan states
+  const plans = subagentPlans ? Object.values(subagentPlans) : [];
+  const activePlan = plans.find(p => p.planActive);
+  const planModeValue = plans.length === 0
+    ? '无 Plan'
+    : activePlan
+      ? `${activePlan.agentName}: PLAN`
+      : plans.map(p => p.agentName).join(', ') + ': BUILD';
+  const planModeColor = plans.length === 0
+    ? '#94a3b8'
+    : activePlan
+      ? '#10b981'
+      : '#eab308';
+
   const cards: Array<{
     label: string;
     value: string;
@@ -21,8 +39,8 @@ export default function StateMachineView({ state }: Props) {
   }> = [
     {
       label: 'PlanMode',
-      value: state.planMode.planActive ? 'ACTIVE' : 'INACTIVE',
-      color: state.planMode.planActive ? '#10b981' : '#94a3b8',
+      value: planModeValue,
+      color: planModeColor,
     },
     {
       label: 'TaskList',

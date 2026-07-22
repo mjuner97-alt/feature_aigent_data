@@ -50,3 +50,26 @@ export interface SessionStateResponse {
   permission: PermissionState;
   interruptControl: InterruptState;
 }
+
+/**
+ * Subagent plan mode state inferred from SSE tool_call_start events.
+ *
+ * The main agent no longer has plan mode (it's a pure router). Plan mode now
+ * lives on subagents (e.g. analyze_data). Since subagent AgentState is not
+ * accessible via /v2/ai/session/state (sessionId is random, state not persisted),
+ * the frontend infers plan mode from SSE events:
+ *
+ *   tool_call_start + toolCallName="plan_enter" + source="analyze_data" → planActive=true
+ *   tool_call_start + toolCallName="plan_exit"  + source="analyze_data" → planActive=false
+ *
+ * planContent is always null for now — there's no endpoint to read the subagent's
+ * PLAN.md file. Future: add GET /v2/ai/session/plan?file=... or persistSession:true.
+ */
+export interface SubagentPlanState {
+  /** Subagent name, e.g. "analyze_data" */
+  agentName: string;
+  /** true after plan_enter, false after plan_exit */
+  planActive: boolean;
+  /** Always null for now (no way to read subagent's PLAN.md) */
+  planContent: string | null;
+}

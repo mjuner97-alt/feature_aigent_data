@@ -17,6 +17,7 @@ package com.agentscopea2a.v2.runner;
 
 import com.agentscopea2a.v2.hooks.ArtifactHandoffHook;
 import com.agentscopea2a.v2.hooks.PythonExecRetryHook;
+import com.agentscopea2a.v2.hooks.ToolCallTrackingHook;
 import com.agentscopea2a.v2.middleware.ArtifactAccessMiddleware;
 import com.agentscopea2a.v2.middleware.PythonExecAccessMiddleware;
 import com.agentscopea2a.v2.middleware.SubagentEventForwardingMiddleware;
@@ -97,6 +98,15 @@ public class SubagentRegistrar {
      * class javadoc for the framework limitation rationale.
      */
     private final SubagentEventForwardingMiddleware subagentEventForwardingMiddleware;
+    /**
+     * Records tool calls (name + input + output) into the per-request ToolCallCollector
+     * stored on RuntimeContext. Installed on subagents so that tool_call_start events
+     * mirrored by SubagentEventForwardingMiddleware carry toolInput (e.g. todo_write's
+     * task list JSON), enabling the frontend to display subagent task details in
+     * PlanPanel/TodoListPanel. Without this hook, subagent tool_call_start events have
+     * toolInput=null because the parent's ToolCallCollector doesn't record subagent calls.
+     */
+    private final ToolCallTrackingHook toolCallTrackingHook;
 
     public SubagentRegistrar(
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
@@ -107,7 +117,8 @@ public class SubagentRegistrar {
             ObjectProvider<ArtifactHandoffHook> artifactHandoffHookProvider,
             ObjectProvider<ArtifactAccessMiddleware> artifactAccessMiddlewareProvider,
             ObjectProvider<PythonExecAccessMiddleware> pythonExecAccessMiddlewareProvider,
-            ObjectProvider<PythonExecRetryHook> pythonExecRetryHookProvider) {
+            ObjectProvider<PythonExecRetryHook> pythonExecRetryHookProvider,
+            ObjectProvider<ToolCallTrackingHook> toolCallTrackingHookProvider) {
 
         // v1-style: subagents hold only meta-tool beans. Business tools (quality_query_* /
         // data_*) are encapsulated inside ToolRoutersIndex and dispatched via
@@ -132,6 +143,7 @@ public class SubagentRegistrar {
         this.pythonExecAccessMiddleware = pythonExecAccessMiddlewareProvider.getIfAvailable();
         this.pythonExecRetryHook = pythonExecRetryHookProvider.getIfAvailable();
         this.subagentEventForwardingMiddleware = new SubagentEventForwardingMiddleware();
+    this.toolCallTrackingHook = toolCallTrackingHookProvider.getIfAvailable();
         log.info("SubagentRegistrar: toolRegistry built with {} entries: {}; hooks - handoff={} access={} pyGuard={} retry={} eventForwarding=true",
                 toolRegistry.size(), toolRegistry.keySet(),
                 artifactHandoffHook != null, artifactAccessMiddleware != null,
@@ -227,6 +239,16 @@ public class SubagentRegistrar {
                     .disableSubagents()
                     .disableMemoryHooks();
 
+            // Plan mode: only analyze_data needs structured plan + task list tracking.
+            // query_data and generate_skill have simple linear workflows where plan mode
+            // is over-engineering. See docs/Plan-Machie/plan-mode-subagent-migration.md.
+            boolean enablePlan = "analyze_data".equals(id);
+            if (enablePlan) {
+                sub.enablePlanMode()
+                   .planFileDirectory("plans/subagents/" + id)
+                   .enableTaskList(true);
+            }
+
             SandboxFilesystemSpec fs = sandboxFsProvider != null ? sandboxFsProvider.getIfAvailable() : null;
             if (fs != null) {
                 sub.filesystem(fs);
@@ -271,14 +293,34 @@ public class SubagentRegistrar {
             if (hasPythonExec && pythonExecRetryHook != null) {
                 sub.hook(pythonExecRetryHook);
             }
+            // ToolCallTrackingHook: records tool calls (name + input) into the per-request
+            // ToolCallCollector on RuntimeContext. The parent's SSE handler (V2ChatStreamServiceImpl)
+            // looks up toolInput from this collector for tool_call_start events. Without this hook
+            // on subagents, subagent tool_call_start events carry toolInput=null, so the frontend
+            // ActivityFeed and PlanPanel/TodoListPanel can't display subagent task details (e.g.
+            // todo_write's task list JSON, plan_enter/plan_write parameters).
+            if (toolCallTrackingHook != null) {
+                sub.hook(toolCallTrackingHook);
+            }
 
-            log.debug("Built subagent '{}' with tools={} handoff={} access={} pyGuard={} retry={} eventForwarding=true",
-                    id, registered,
+            HarnessAgent built = sub.build();
+
+            // Replace the JAR's PlanExitTool with AutoApprovePlanExitTool so plan_exit
+            // no longer triggers the framework's HITL ASK pause. Without this, the
+            // subagent would block on plan_exit awaiting human approval (which has no
+            // frontend UI), causing agent_spawn to time out at 600s.
+            if (enablePlan) {
+                HarnessA2aRunnerV2.replacePlanExitWithAutoApprove(built);
+            }
+
+            log.debug("Built subagent '{}' with tools={} planMode={} handoff={} access={} pyGuard={} retry={} toolTracking={} eventForwarding=true",
+                    id, registered, enablePlan,
                     artifactHandoffHook != null,
                     artifactAccessMiddleware != null,
                     hasPythonExec && pythonExecAccessMiddleware != null,
-                    hasPythonExec && pythonExecRetryHook != null);
-            return sub.build();
+                    hasPythonExec && pythonExecRetryHook != null,
+                    toolCallTrackingHook != null);
+            return built;
         });
     }
 }

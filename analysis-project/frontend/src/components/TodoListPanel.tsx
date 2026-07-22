@@ -17,6 +17,11 @@ import type { TaskState } from '../types/sessionState';
 
 interface Props {
   tasks: TaskState[];
+  /** Subagent todo_write call counts inferred from SSE tool_call_start events.
+   *  Key is subagent name (e.g. "analyze_data"), value is number of todo_write calls.
+   *  Since subagent AgentState is not accessible via /v2/ai/session/state, we can't
+   *  get the full task list — only the call count. */
+  subagentTodoWriteCounts?: Record<string, number>;
 }
 
 const STATE_STYLES: Record<string, { icon: string; color: string; pulse?: boolean }> = {
@@ -30,7 +35,7 @@ function styleFor(state: string) {
   return STATE_STYLES[state.toUpperCase()] ?? { icon: '?', color: '#94a3b8' };
 }
 
-export default function TodoListPanel({ tasks }: Props) {
+export default function TodoListPanel({ tasks, subagentTodoWriteCounts }: Props) {
   const counts = tasks.reduce<Record<string, number>>((acc, t) => {
     const k = (t.state ?? 'UNKNOWN').toUpperCase();
     acc[k] = (acc[k] ?? 0) + 1;
@@ -86,6 +91,24 @@ export default function TodoListPanel({ tasks }: Props) {
             </div>
           );
         })}
+
+        {/* Subagent todo_write call counts (inferred from SSE events) */}
+        {subagentTodoWriteCounts && Object.keys(subagentTodoWriteCounts).length > 0 && (
+          <>
+            {Object.entries(subagentTodoWriteCounts).map(([agent, count]) => (
+              <div key={agent} style={{ ...S.item, background: '#eef2ff', borderColor: '#c7d2fe' }}>
+                <span style={{ ...S.icon, color: '#6366f1' }}>▸</span>
+                <div style={S.itemBody}>
+                  <div style={S.itemSubject}>
+                    <span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', color: '#4338ca' }}>{agent}</span>
+                    {' '}已跟踪 {count} 次任务更新
+                  </div>
+                  <div style={S.itemDesc}>子智能体任务详情暂不可读（workspace 隔离）</div>
+                </div>
+              </div>
+            ))}
+          </>
+        )}
       </div>
 
       <style>{`

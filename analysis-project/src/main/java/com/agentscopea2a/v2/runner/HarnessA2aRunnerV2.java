@@ -161,9 +161,6 @@ public class HarnessA2aRunnerV2 {
                         .keepMessages(12)
                         .build())
                 .toolResultEviction(ToolResultEvictionConfig.defaults())
-                .enablePlanMode()
-                .planFileDirectory("plans")
-                .enableTaskList(true)
                 .enablePendingToolRecovery(true)
                 .enableSkillManageTool(skillManageConfig)
                 .enableSkillCurator(skillCuratorConfig)
@@ -250,16 +247,9 @@ public class HarnessA2aRunnerV2 {
 
         this.agent = builder.build();
 
-        // Replace the JAR's PlanExitTool with AutoApprovePlanExitTool so plan_exit no longer
-        // triggers the framework's HITL ASK pause. The JAR's PlanExitTool.checkPermissions
-        // returns PermissionDecision.ask(...), which emits a RequireUserConfirmEvent and stops
-        // the agent. Without a frontend HITL approval UI + /confirm endpoint, the user's
-        // follow-up message gets interpreted as a fresh user msg, the framework auto-generates
-        // an error result for the pending plan_exit call, and the agent never enters BUILD mode.
-        // AutoApprovePlanExitTool returns allow() instead, so plan_exit flows directly into
-        // BUILD mode and the agent continues executing the plan. See AutoApprovePlanExitTool
-        // class javadoc for the full rationale.
-        replacePlanExitWithAutoApprove(this.agent);
+        // Plan mode removed from main agent (supervisor is a pure router, not a planner).
+        // Plan mode is now enabled on the analyze_data subagent instead — see SubagentRegistrar.
+        // replacePlanExitWithAutoApprove is called in SubagentRegistrar for analyze_data only.
 
         log.info("HarnessA2aRunnerV2 initialized: workspace={}, model={}, stateStore=SanitizingAgentStateStore(MysqlAgentStateStore), " +
                         "memoryModel={}, skillCurator=enabled",
@@ -279,12 +269,13 @@ public class HarnessA2aRunnerV2 {
     }
 
     /**
-     * Reflectively read the private {@code planModeManager} field from the built
-     * {@link HarnessAgent} and swap the JAR's {@code plan_exit} tool with
-     * {@link com.agentscopea2a.v2.tool.AutoApprovePlanExitTool}. The replacement
-     * preserves tool name/schema/description (so model behavior is unchanged) but
-     * returns {@code allow} instead of {@code ask} from {@code checkPermissions},
-     * so the agent flows directly into BUILD mode without the HITL pause.
+     * Reflectively swap the JAR's {@code plan_exit} tool with
+     * {@link com.agentscopea2a.v2.tool.AutoApprovePlanExitTool}. Called by
+     * {@link SubagentRegistrar} for subagents with plan mode enabled (e.g. analyze_data).
+     *
+     * <p>The replacement preserves tool name/schema/description but returns {@code allow}
+     * instead of {@code ask} from {@code checkPermissions}, so the agent flows directly
+     * into BUILD mode without the HITL pause.
      *
      * <p>Reflection is required because {@code HarnessAgent.planModeManager} is a
      * private final field with no public accessor, and {@code PlanModeManager} is
@@ -292,7 +283,7 @@ public class HarnessA2aRunnerV2 {
      * We need the SAME {@code PlanModeManager} instance because it holds the
      * per-session plan state that {@code PlanModeMiddleware} reads.
      */
-    private static void replacePlanExitWithAutoApprove(HarnessAgent agent) {
+    public static void replacePlanExitWithAutoApprove(HarnessAgent agent) {
         try {
             java.lang.reflect.Field f = HarnessAgent.class.getDeclaredField("planModeManager");
             f.setAccessible(true);

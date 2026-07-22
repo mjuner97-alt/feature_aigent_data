@@ -18,6 +18,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { streamChat, type ChatRequest, type ProcessEvent } from '../api/chat';
 import { interruptAndResume } from '../api/interrupt';
+import type { SubagentPlanState } from '../types/sessionState';
 import ToolCallBlock from './ToolCallBlock';
 import ActivityFeed from './ActivityFeed';
 import Markdown from './Markdown';
@@ -136,10 +137,13 @@ export interface ChatPanelProps {
   onUserMessage?: (text: string) => void;
   /** Receives a handle to trigger interrupt from outside (e.g. InterruptButton). */
   registerInterruptHandle?: (h: ChatPanelHandle | null) => void;
+  /** Called when subagent plan/todo state changes inferred from SSE events. */
+  onSubagentPlanChange?: (plans: Record<string, SubagentPlanState>, todoCounts: Record<string, number>) => void;
 }
 
 export default function ChatPanel({
   userId, conversationId, onConversationId, onUserMessage, registerInterruptHandle,
+  onSubagentPlanChange,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -148,6 +152,17 @@ export default function ChatPanel({
   const [activityEvents, setActivityEvents] = useState<ProcessEvent[]>([]);
   const threadRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Subagent plan/todo state inferred from SSE tool_call_start events.
+  // The main agent no longer has plan mode — it lives on subagents (e.g. analyze_data).
+  // Since subagent AgentState is not accessible via /v2/ai/session/state, we infer
+  // plan mode transitions from SSE events:
+  //   tool_call_start + toolCallName="plan_enter" + source="analyze_data" → PLAN mode
+  //   tool_call_start + toolCallName="plan_exit"  + source="analyze_data" → BUILD mode
+  //   tool_call_start + toolCallName="todo_write"  + source="analyze_data" → track count
+  // Reset on conversation done/error.
+  const subagentPlansRef = useRef<Record<string, SubagentPlanState>>({});
+  const subagentTodoCountsRef = useRef<Record<string, number>>({});
 
   // Track the current in-flight AbortController so interrupt can cancel cleanly.
   // We don't actually call .abort() on the fetch (the backend handles cancel via
@@ -207,8 +222,12 @@ export default function ChatPanel({
     // can't drop our id mapping mid-stream.
     const subagentMsgIds: Record<string, string> = {};
 
-    // Reset activity feed for this turn — each turn gets a fresh timeline
+    // Reset activity feed and subagent state for this turn — each turn starts fresh.
+    // The previous turn's subagent plan/todo state is cleared when a new message is sent.
     setActivityEvents([]);
+    subagentPlansRef.current = {};
+    subagentTodoCountsRef.current = {};
+    onSubagentPlanChange?.({}, {});
 
     const myEpoch = ++streamEpochRef.current;
     const req: ChatRequest = {
@@ -259,6 +278,46 @@ export default function ChatPanel({
           // Append to activity feed (do NOT touch replyMsg.text — process
           // events are progress markers, not final answer content).
           setActivityEvents(prev => [...prev, evt.process]);
+
+          // Infer subagent plan/todo state from tool_call_start events.
+          // Only tool_call_start carries the signal; tool_result_end for subagent
+          // internal tools (todo_write etc.) is NOT forwarded by
+          // SubagentEventForwardingMiddleware (only text_block_delta is mirrored).
+          // After ToolCallTrackingHook is installed on subagents, toolInput is available
+          // for plan_enter/plan_write/todo_write calls, enabling task detail display.
+          const p = evt.process;
+          if (p.eventType === 'tool_call_start' && p.source) {
+            if (p.toolCallName === 'plan_enter') {
+              subagentPlansRef.current = {
+                ...subagentPlansRef.current,
+                [p.source]: { agentName: p.source, planActive: true, planContent: null },
+              };
+              onSubagentPlanChange?.(subagentPlansRef.current, subagentTodoCountsRef.current);
+            } else if (p.toolCallName === 'plan_exit') {
+              subagentPlansRef.current = {
+                ...subagentPlansRef.current,
+                [p.source]: { agentName: p.source, planActive: false, planContent: null },
+              };
+              onSubagentPlanChange?.(subagentPlansRef.current, subagentTodoCountsRef.current);
+            } else if (p.toolCallName === 'plan_write') {
+              // plan_write carries the plan content in toolInput — extract it
+              const planContent = p.toolInput ?? null;
+              const existing = subagentPlansRef.current[p.source];
+              if (existing) {
+                subagentPlansRef.current = {
+                  ...subagentPlansRef.current,
+                  [p.source]: { ...existing, planContent },
+                };
+              }
+              onSubagentPlanChange?.(subagentPlansRef.current, subagentTodoCountsRef.current);
+            } else if (p.toolCallName === 'todo_write') {
+              subagentTodoCountsRef.current = {
+                ...subagentTodoCountsRef.current,
+                [p.source]: (subagentTodoCountsRef.current[p.source] ?? 0) + 1,
+              };
+              onSubagentPlanChange?.(subagentPlansRef.current, subagentTodoCountsRef.current);
+            }
+          }
         } else if (evt.type === 'toolOutputUpdate') {
           // Supplementary tool_output event from PostActing hook (see
           // ToolCallTrackingHook.sendToolOutputSseEvent). The framework's
@@ -277,6 +336,11 @@ export default function ChatPanel({
           setMessages(prev => prev.map(m => (m.id === replyMsg.id || subIds.includes(m.id))
             ? { ...m, pending: false }
             : m));
+          // NOTE: do NOT reset subagentPlans/subagentTodoCounts on done.
+          // The plan/todo state should persist in the UI until the next turn
+          // starts (where setActivityEvents([]) resets the activity feed).
+          // Resetting here would clear the state the moment the user sees the
+          // result, making PlanPanel/TodoListPanel flash empty.
           break;
         } else if (evt.type === 'error') {
           const subIds = Object.values(subagentMsgIds);
