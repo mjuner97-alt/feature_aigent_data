@@ -90,6 +90,11 @@ public class ToolRoutersIndex {
                     String paramsJson) {
         String toolId = null;
         try {
+            // Repair double-encoded UTF-8 in the JSON string before parsing.
+            // Some LLM API responses decode CJK characters as ISO-8859-1 instead
+            // of UTF-8, producing mojibake in paramsJson. This is a no-op for
+            // correctly-encoded strings.
+            paramsJson = repairUtf8(paramsJson);
             Map<String, Object> params = parseJsonParams(paramsJson);
             toolId = extractToolId(params);
             if (toolId == null) {
@@ -351,5 +356,31 @@ public class ToolRoutersIndex {
         public static ParamInfo autoInjected(Type genericType) {
             return new ParamInfo(genericType);
         }
+    }
+
+    /**
+     * Detect and repair double-encoded UTF-8: if the string looks like it was decoded
+     * as ISO-8859-1 when it should have been UTF-8, re-encode as ISO-8859-1 bytes and
+     * decode as UTF-8. This is a no-op for strings that are already correct.
+     *
+     * <p>Some LLM API responses decode CJK characters as ISO-8859-1 instead of UTF-8,
+     * producing mojibake like {@code éƒ¨é—¨} instead of {@code 部门}.
+     */
+    private static String repairUtf8(String s) {
+        try {
+            byte[] bytes = s.getBytes("ISO-8859-1");
+            String repaired = new String(bytes, "UTF-8");
+            if (!repaired.equals(s) && isValidUtf8Text(repaired)) {
+                return repaired;
+            }
+        } catch (Exception e) {
+            // Ignore - return original
+        }
+        return s;
+    }
+
+    private static boolean isValidUtf8Text(String s) {
+        if (s.contains("�")) return false;
+        return s.codePoints().anyMatch(cp -> Character.UnicodeScript.of(cp) == Character.UnicodeScript.HAN);
     }
 }

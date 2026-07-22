@@ -17,7 +17,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { streamChat, type ChatRequest, type ProcessEvent } from '../api/chat';
-import { interruptAndResume } from '../api/interrupt';
+import { triggerInterrupt as apiTriggerInterrupt } from '../api/interrupt';
 import type { SubagentPlanState } from '../types/sessionState';
 import ToolCallBlock from './ToolCallBlock';
 import ActivityFeed from './ActivityFeed';
@@ -120,12 +120,13 @@ const S: Record<string, React.CSSProperties> = {
 
 let counter = 0;
 const nextId = () => `m${Date.now().toString(36)}-${counter++}`;
+const logRetry = (ctx: string, msg: string) => console.log(`[ChatPanel] ${ctx}: retrying after error: ${msg}`);
 
 export interface ChatPanelHandle {
   /** Whether a streaming call is currently in-flight (interruptable). */
   busy: boolean;
-  /** Trigger interrupt + supplement + auto-resume. The new SSE stream replaces the current one. */
-  interrupt: (supplement: string) => Promise<void>;
+  /** Trigger interrupt on the in-flight call. No resume — the user sends a follow-up message normally. */
+  interrupt: () => Promise<void>;
 }
 
 export interface ChatPanelProps {
@@ -139,11 +140,13 @@ export interface ChatPanelProps {
   registerInterruptHandle?: (h: ChatPanelHandle | null) => void;
   /** Called when subagent plan/todo state changes inferred from SSE events. */
   onSubagentPlanChange?: (plans: Record<string, SubagentPlanState>, todoCounts: Record<string, number>) => void;
+  /** Called when a stream (normal or interrupt-resume) completes (done or error). */
+  onStreamDone?: () => void;
 }
 
 export default function ChatPanel({
   userId, conversationId, onConversationId, onUserMessage, registerInterruptHandle,
-  onSubagentPlanChange,
+  onSubagentPlanChange, onStreamDone,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -164,10 +167,10 @@ export default function ChatPanel({
   const subagentPlansRef = useRef<Record<string, SubagentPlanState>>({});
   const subagentTodoCountsRef = useRef<Record<string, number>>({});
 
-  // Track the current in-flight AbortController so interrupt can cancel cleanly.
-  // We don't actually call .abort() on the fetch (the backend handles cancel via
-  // the interrupt endpoint), but we use it as a "is this stream still relevant" flag
-  // to ignore late events from a stream that was superseded by interrupt.
+  // Track the current in-flight AbortController so interrupt can cancel the SSE stream.
+  // When the user clicks "中断", we abort the fetch connection to immediately stop
+  // reading events, then call the interrupt API to tell the backend to stop.
+  const streamAbortRef = useRef<AbortController | null>(null);
   const streamEpochRef = useRef(0);
 
   useEffect(() => {
@@ -181,7 +184,7 @@ export default function ChatPanel({
     if (!registerInterruptHandle) return;
     registerInterruptHandle({
       busy: hasInFlight,
-      interrupt: (supplement: string) => triggerInterrupt(supplement),
+      interrupt: () => triggerInterrupt(),
     });
     return () => registerInterruptHandle(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -191,10 +194,10 @@ export default function ChatPanel({
     if (!canSend) return;
     const text = input.trim();
     setInput('');
-    await sendMessage(text, null);
+    await sendMessage(text);
   }
 
-  async function sendMessage(text: string, supplementalForInterrupt: string | null) {
+  async function sendMessage(text: string) {
     // Resolve conversationId: use existing, or mint a fresh one for the first send
     let convId = conversationId;
     if (!convId) {
@@ -205,10 +208,8 @@ export default function ChatPanel({
     }
 
     setBusy(true);
-    if (!supplementalForInterrupt) {
-      setHasInFlight(true);
-      onUserMessage?.(text);
-    }
+    setHasInFlight(true);
+    onUserMessage?.(text);
 
     const userMsg: Message = { id: nextId(), role: 'user', text, tools: [] };
     const replyMsg: Message = { id: nextId(), role: 'assistant', text: '', tools: [], pending: true };
@@ -230,6 +231,11 @@ export default function ChatPanel({
     onSubagentPlanChange?.({}, {});
 
     const myEpoch = ++streamEpochRef.current;
+
+    // Create an AbortController for this stream so interrupt can abort it.
+    const abortCtrl = new AbortController();
+    streamAbortRef.current = abortCtrl;
+
     const req: ChatRequest = {
       input: text,
       conversationId: convId,
@@ -237,9 +243,7 @@ export default function ChatPanel({
     };
 
     try {
-      const evts = supplementalForInterrupt
-        ? interruptAndResume({ user_id: userId, conversationId: convId, supplement: supplementalForInterrupt })
-        : streamChat(req);
+      const evts = streamChat(req, abortCtrl.signal);
       for await (const evt of evts) {
         if (myEpoch !== streamEpochRef.current) return;  // superseded by a later interrupt
         if (evt.type === 'token') {
@@ -352,8 +356,89 @@ export default function ChatPanel({
         }
       }
     } catch (e: unknown) {
+      // AbortError means the user clicked interrupt — not an error, just return.
+      if (e instanceof DOMException && e.name === 'AbortError') {
+        // Stream was aborted by interrupt. The catch in streamChat already
+        // returned gracefully, but the for-await-of loop throws here.
+        // Just exit — triggerInterrupt() handles the UI state update.
+        return;
+      }
       if (myEpoch !== streamEpochRef.current) return;
       const msg = e instanceof Error ? e.message : 'stream failed';
+
+      // If the error is 429 (session busy) or 500, it might be because the
+      // previous in-flight call hasn't fully cleaned up yet after an interrupt.
+      // Retry once after a short delay.
+      const isRetryable = msg.includes('429') || msg.includes('500') || msg.includes('Too Many Requests');
+      if (isRetryable && myEpoch === streamEpochRef.current) {
+        logRetry('sendMessage', msg);
+        await new Promise(r => setTimeout(r, 2000));  // wait 2s for cleanup
+        if (myEpoch !== streamEpochRef.current) return;  // epoch changed during wait
+        try {
+          const retryEvts = streamChat(req);
+          for await (const evt of retryEvts) {
+            if (myEpoch !== streamEpochRef.current) return;
+            // Process the retry stream events the same way as the original
+            if (evt.type === 'token') {
+              const chunk = evt.chunk;
+              if (evt.source) {
+                let subId = subagentMsgIds[evt.source];
+                if (!subId) {
+                  subId = nextId();
+                  subagentMsgIds[evt.source] = subId;
+                  const newMsg: Message = { id: subId, role: 'assistant', text: chunk, tools: [], pending: true, source: evt.source };
+                  setMessages(prev => [...prev, newMsg]);
+                } else {
+                  setMessages(prev => prev.map(m => m.id === subId ? { ...m, text: m.text + chunk } : m));
+                }
+              } else {
+                setMessages(prev => prev.map(m => m.id === replyMsg.id ? { ...m, text: m.text + chunk } : m));
+              }
+            } else if (evt.type === 'process') {
+              setActivityEvents(prev => [...prev, evt.process]);
+              // Infer subagent plan/todo state from tool_call_start events
+              const p = evt.process;
+              if (p.eventType === 'tool_call_start' && p.source) {
+                if (p.toolCallName === 'plan_enter') {
+                  subagentPlansRef.current = { ...subagentPlansRef.current, [p.source]: { agentName: p.source, planActive: true, planContent: null } };
+                  onSubagentPlanChange?.(subagentPlansRef.current, subagentTodoCountsRef.current);
+                } else if (p.toolCallName === 'plan_exit') {
+                  subagentPlansRef.current = { ...subagentPlansRef.current, [p.source]: { agentName: p.source, planActive: false, planContent: null } };
+                  onSubagentPlanChange?.(subagentPlansRef.current, subagentTodoCountsRef.current);
+                } else if (p.toolCallName === 'plan_write') {
+                  const planContent = p.toolInput ?? null;
+                  const existing = subagentPlansRef.current[p.source];
+                  if (existing) {
+                    subagentPlansRef.current = { ...subagentPlansRef.current, [p.source]: { ...existing, planContent } };
+                    onSubagentPlanChange?.(subagentPlansRef.current, subagentTodoCountsRef.current);
+                  }
+                } else if (p.toolCallName === 'todo_write') {
+                  subagentTodoCountsRef.current = { ...subagentTodoCountsRef.current, [p.source]: (subagentTodoCountsRef.current[p.source] ?? 0) + 1 };
+                  onSubagentPlanChange?.(subagentPlansRef.current, subagentTodoCountsRef.current);
+                }
+              }
+            } else if (evt.type === 'toolOutputUpdate') {
+              const update = evt.process;
+              setActivityEvents(prev => prev.map(e => e.toolCallId === update.toolCallId ? { ...e, toolOutput: update.toolOutput } : e));
+            } else if (evt.type === 'done') {
+              const subIds = Object.values(subagentMsgIds);
+              setMessages(prev => prev.map(m => (m.id === replyMsg.id || subIds.includes(m.id)) ? { ...m, pending: false } : m));
+              break;
+            }
+          }
+          // Retry succeeded — skip the original error path
+          return;
+        } catch (retryErr: unknown) {
+          // Retry also failed — fall through to show the original error
+          const retryMsg = retryErr instanceof Error ? retryErr.message : 'retry failed';
+          const subIds = Object.values(subagentMsgIds);
+          setMessages(prev => prev.map(m => m.id === replyMsg.id
+            ? { ...m, pending: false, text: m.text + (m.text ? '\n' : '') + `[error] ${msg} (重试也失败: ${retryMsg})` }
+            : subIds.includes(m.id) ? { ...m, pending: false } : m));
+          return;
+        }
+      }
+
       const subIds = Object.values(subagentMsgIds);
       setMessages(prev => prev.map(m => m.id === replyMsg.id
         ? { ...m, pending: false, text: m.text + (m.text ? '\n' : '') + `[error] ${msg}` }
@@ -361,23 +446,57 @@ export default function ChatPanel({
           ? { ...m, pending: false }
           : m));
     } finally {
+      // Clear abort controller if it's still ours
+      if (streamAbortRef.current?.signal === abortCtrl.signal) {
+        streamAbortRef.current = null;
+      }
       if (myEpoch === streamEpochRef.current) {
         setBusy(false);
         setHasInFlight(false);
         inputRef.current?.focus();
+        onStreamDone?.();
       }
     }
   }
 
-  async function triggerInterrupt(supplement: string) {
-    if (!busy || !hasInFlight) {
-      // No in-flight call to interrupt; just send as a normal message
-      await sendMessage(supplement, null);
-      return;
+  async function triggerInterrupt() {
+    if (!busy || !hasInFlight) return;
+
+    // Step 1: Abort the current SSE stream immediately. This closes the fetch
+    // connection so we stop reading events. The backend's doOnCancel handler
+    // will send a "done" event and clean up the in-flight call tracker.
+    const currentAbort = streamAbortRef.current;
+    if (currentAbort) {
+      currentAbort.abort();
+      streamAbortRef.current = null;
     }
-    // Mark the current stream as superseded; the new interrupt stream increments epoch
+
+    // Step 2: Mark the current stream epoch as superseded — any late events
+    // from the dying stream (before abort takes effect) will be ignored.
     streamEpochRef.current++;
-    await sendMessage(supplement, supplement);
+
+    // Step 3: Call the interrupt API to tell the backend to set
+    // InterruptControl.flag = true and wait for the in-flight call to terminate.
+    // This is important because the abort only closes the client-side connection —
+    // the backend agent might still be running. The interrupt API ensures the
+    // agent checks its interrupt flag and stops processing.
+    try {
+      await apiTriggerInterrupt({
+        user_id: userId,
+        conversationId: conversationId!,
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'interrupt failed';
+      setMessages(prev => [...prev, {
+        id: nextId(), role: 'system', text: `[interrupt error] ${msg}`, tools: [],
+      }]);
+    }
+
+    // Step 4: Reset UI state — stream is done, user can type a follow-up.
+    setBusy(false);
+    setHasInFlight(false);
+    onStreamDone?.();
+    inputRef.current?.focus();
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {

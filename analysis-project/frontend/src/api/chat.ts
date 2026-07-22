@@ -89,12 +89,20 @@ export type ChatEvent =
  *
  * @throws Error if the fetch fails or response is not ok.
  */
-export async function* streamChat(req: ChatRequest): AsyncGenerator<ChatEvent> {
-  const res = await fetch('/v2/ai/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(req),
-  });
+export async function* streamChat(req: ChatRequest, signal?: AbortSignal): AsyncGenerator<ChatEvent> {
+  let res: Response;
+  try {
+    res = await fetch('/v2/ai/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+      signal,
+    });
+  } catch (e: unknown) {
+    // AbortError means the user clicked interrupt — return silently.
+    if (e instanceof DOMException && e.name === 'AbortError') return;
+    throw e;
+  }
   if (!res.ok || !res.body) {
     throw new Error(`Chat stream failed: ${res.status} ${res.statusText}`);
   }
@@ -103,7 +111,20 @@ export async function* streamChat(req: ChatRequest): AsyncGenerator<ChatEvent> {
   const dec = new TextDecoder();
   let buf = '';
   while (true) {
-    const { value, done } = await reader.read();
+    let value: Uint8Array | undefined;
+    let done: boolean;
+    try {
+      const chunk = await reader.read();
+      value = chunk.value;
+      done = chunk.done;
+    } catch (e: unknown) {
+      // AbortError means the user clicked interrupt — close reader and return.
+      if (e instanceof DOMException && e.name === 'AbortError') {
+        try { reader.cancel(); } catch { /* ignore */ }
+        return;
+      }
+      throw e;
+    }
     if (done) break;
     buf += dec.decode(value, { stream: true });
     let idx;

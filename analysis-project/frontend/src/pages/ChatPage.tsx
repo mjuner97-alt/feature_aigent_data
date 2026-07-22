@@ -36,8 +36,9 @@ export default function ChatPage() {
     searchParams.get('session'),
   );
 
-  // Poll state every 2s; null while loading or when no conversationId
-  const state = useSessionState(userId, conversationId);
+  // Poll state every 2s; null while loading or when no conversationId.
+  // refresh() is exposed for immediate state fetch after side-effects like interrupts.
+  const [state, refreshState] = useSessionState(userId, conversationId);
 
   // Interrupt handle (set by ChatPanel)
   const [chatHandle, setChatHandle] = useState<ChatPanelHandle | null>(null);
@@ -89,6 +90,12 @@ export default function ChatPage() {
             setSubagentPlans(plans);
             setSubagentTodoCounts(counts);
           }}
+          onStreamDone={() => {
+            // Refresh state immediately after stream ends (normal or interrupt-resume),
+            // so the state machine reflects final task/permission/flag values without
+            // waiting for the next 2s polling tick.
+            refreshState();
+          }}
         />
       </div>
 
@@ -127,7 +134,12 @@ export default function ChatPage() {
             <TaskDependencyGraph tasks={state.tasks} />
             <InterruptButton
               enabled={!!chatHandle?.busy}
-              onSubmit={(supplement) => chatHandle?.interrupt(supplement)}
+              onInterrupt={async () => {
+                await chatHandle?.interrupt();
+                // Immediately refresh state so interrupt flag appears without
+                // waiting for the next 2s polling tick
+                refreshState();
+              }}
               interruptFlag={state.interruptControl.flag}
             />
           </>
