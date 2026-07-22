@@ -140,6 +140,36 @@ public class VerificationAdminController {
                 "wAdversarial", calibrationState.getWAdversarial());
     }
 
+    /**
+     * Aggregated dashboard snapshot: bundles SLO report, calibration state, critic
+     * stats, and active experiments into one response so the frontend needs only
+     * one call per 15s refresh cycle.
+     */
+    @GetMapping("/dashboard")
+    public DashboardSnapshot dashboard(@RequestParam(defaultValue = "24") int windowHours) {
+        SloReport slo = sloMonitor.report(windowHours);
+        Map<String, Object> calibration = Map.of(
+                "passThreshold", calibrationState.getPassThreshold(),
+                "warnThreshold", calibrationState.getWarnThreshold(),
+                "directThreshold", calibrationState.getDirectThreshold(),
+                "hintThreshold", calibrationState.getHintThreshold(),
+                "wData", calibrationState.getWData(),
+                "wTool", calibrationState.getWTool(),
+                "wSemantic", calibrationState.getWSemantic(),
+                "wAdversarial", calibrationState.getWAdversarial());
+        List<RuleExperiment> runningExperiments = ruleExperimentService.listByStatus("running");
+        Map<String, Double> criticEffectiveness = criticChallengeStats.effectiveness();
+        return new DashboardSnapshot(slo, calibration, runningExperiments, criticEffectiveness);
+    }
+
+    /**
+     * Hourly time-series buckets for the quality trends chart.
+     */
+    @GetMapping("/trends")
+    public List<HourlyBucket> trends(@RequestParam(defaultValue = "24") int windowHours) {
+        return sloMonitor.hourlyBuckets(windowHours);
+    }
+
     @GetMapping("/slo")
     public SloReport slo(@RequestParam(defaultValue = "24") int windowHours) {
         return sloMonitor.report(windowHours);

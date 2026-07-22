@@ -23,6 +23,12 @@ node_modules/
 .claude
 .idea
 
+# Frontend build cache
+.vite/deps/
+
+# Temp test artifacts
+tmp-chat-req.json
+
 # AgentScope runtime artifacts (skills lock + local docker compose scratch)
 skills-lock.json
 tmp_new_api_docker_compose.yml

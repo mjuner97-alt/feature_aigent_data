@@ -129,4 +129,43 @@ public class SloMonitor {
         if (idx >= values.size()) idx = values.size() - 1;
         return values.get(idx);
     }
+
+    /**
+     * Returns hourly buckets for the quality trends time-series chart, aggregating
+     * {@code verification_record} over a sliding window. Each bucket contains
+     * total / pass / warn / fail counts for one hour.
+     */
+    public List<HourlyBucket> hourlyBuckets(int windowHours) {
+        Timestamp cutoff = Timestamp.from(Instant.now().minus(Duration.ofHours(Math.max(1, windowHours))));
+        List<HourlyBucket> buckets = new ArrayList<>();
+        Connection conn = DataSourceUtils.getConnection(dataSource);
+        try {
+            String sql = "SELECT DATE_FORMAT(created_at, '%Y-%m-%d %H:00') AS hour, "
+                    + "COUNT(*) AS total, "
+                    + "SUM(CASE WHEN verdict='pass' THEN 1 ELSE 0 END) AS pass, "
+                    + "SUM(CASE WHEN verdict='warn' THEN 1 ELSE 0 END) AS warn, "
+                    + "SUM(CASE WHEN verdict='fail' THEN 1 ELSE 0 END) AS fail "
+                    + "FROM verification_record WHERE created_at > ? "
+                    + "GROUP BY hour ORDER BY hour";
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setTimestamp(1, cutoff);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        buckets.add(new HourlyBucket(
+                                rs.getString("hour"),
+                                rs.getInt("total"),
+                                rs.getInt("pass"),
+                                rs.getInt("warn"),
+                                rs.getInt("fail")
+                        ));
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("SloMonitor hourlyBuckets failed: {}", e.getMessage());
+        } finally {
+            DataSourceUtils.releaseConnection(conn, dataSource);
+        }
+        return buckets;
+    }
 }

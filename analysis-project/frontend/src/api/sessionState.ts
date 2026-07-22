@@ -1,18 +1,15 @@
 /**
- * GET /v2/ai/session/state polling client + React hook.
+ * GET /v2/ai/session/state polling client + Vue composable.
  *
  * <p>The frontend polls this every 2s to render PlanNotebook + state machine
  * panels. Polling was chosen over SSE state_changed events to avoid touching
  * V2ChatStreamServiceImpl.handleEvent (regression risk).
  *
- * <p>The hook exposes a refresh() function for immediate state fetches after
+ * <p>The composable exposes a refresh() function for immediate state fetches after
  * side-effects like interrupts, so the UI doesn't have to wait up to 2s.
- *
- * <p>See docs/Plan-Machie/plan-notebook-frontend-design.md §五.3 for the
- * polling strategy and the StateCache tradeoff.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { ref, watch, onUnmounted, type Ref } from 'vue';
 import type { SessionStateResponse } from '../types/sessionState';
 
 const POLL_INTERVAL_MS = 2000;
@@ -32,48 +29,66 @@ export async function getSessionState(
 }
 
 /**
- * Hook: poll /v2/ai/session/state every 2s. Returns [state, refresh].
+ * Composable: poll /v2/ai/session/state every 2s. Returns { state, refresh }.
  *
- * - state: null while loading or if conversationId is null
+ * - state: ref(null) while loading or if conversationId is null
  * - refresh: call to immediately fetch state (e.g. after interrupt)
  *
  * Errors are swallowed (transient network blips shouldn't kill the panel);
  * the next tick will retry.
  *
- * @param userId          Stable user id ("" or null disables polling)
- * @param conversationId  Active session id (null disables polling)
+ * @param userIdRef          Ref containing the stable user id (null disables polling)
+ * @param conversationIdRef  Ref containing the active session id (null disables polling)
  */
 export function useSessionState(
-  userId: string | null | undefined,
-  conversationId: string | null | undefined,
-): [SessionStateResponse | null, () => void] {
-  const [state, setState] = useState<SessionStateResponse | null>(null);
-  const cancelledRef = useRef(false);
+  userIdRef: Ref<string | null | undefined>,
+  conversationIdRef: Ref<string | null | undefined>,
+) {
+  const state = ref<SessionStateResponse | null>(null);
+  let cancelled = false;
+  let timerId: ReturnType<typeof setInterval> | null = null;
 
-  const tick = useCallback(async () => {
-    if (!userId || !conversationId) return;
+  async function tick() {
+    const uid = userIdRef.value;
+    const cid = conversationIdRef.value;
+    if (!uid || !cid) return;
     try {
-      const s = await getSessionState(userId, conversationId);
-      if (!cancelledRef.current) setState(s);
+      const s = await getSessionState(uid, cid);
+      if (!cancelled) state.value = s;
     } catch {
-      // swallow - keep previous state, retry on next tick
+      // swallow — keep previous state, retry on next tick
     }
-  }, [userId, conversationId]);
+  }
 
-  useEffect(() => {
-    if (!userId || !conversationId) {
-      setState(null);
-      return;
+  function startPolling() {
+    stopPolling();
+    cancelled = false;
+    tick();
+    timerId = setInterval(tick, POLL_INTERVAL_MS);
+  }
+
+  function stopPolling() {
+    cancelled = true;
+    if (timerId !== null) {
+      clearInterval(timerId);
+      timerId = null;
     }
-    cancelledRef.current = false;
+  }
 
-    tick(); // initial fetch
-    const id = setInterval(tick, POLL_INTERVAL_MS);
-    return () => {
-      cancelledRef.current = true;
-      clearInterval(id);
-    };
-  }, [userId, conversationId, tick]);
+  watch(
+    [userIdRef, conversationIdRef],
+    ([uid, cid]) => {
+      if (uid && cid) {
+        startPolling();
+      } else {
+        state.value = null;
+        stopPolling();
+      }
+    },
+    { immediate: true },
+  );
 
-  return [state, tick];
+  onUnmounted(() => stopPolling());
+
+  return { state, refresh: tick };
 }
