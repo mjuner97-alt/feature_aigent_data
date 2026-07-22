@@ -20,6 +20,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Request-scoped collector of tool call details (L1 supervisor tools + L2 sub-agent tools).
@@ -29,6 +31,10 @@ import java.util.List;
  * <ul>
  *   <li>Path C: injecting tool context into {@code generate_skill} sub-agent system prompt</li>
  *   <li>Path B: writing to {@code episodic_memory.tool_call_details} for later online distillation</li>
+ *   <li>Live SSE: {@link #recordByToolCallId} + {@link #getByToolCallId} lets
+ *       {@code V2ChatStreamServiceImpl.buildProcessPayload} attach input/output to
+ *       tool_call_start / tool_result_end SSE events so the frontend ActivityFeed
+ *       can show collapsible tool input/output.</li>
  * </ul>
  *
  * <p>Thread-safe for concurrent L1 and L2 collection. Uses a {@link ThreadLocal} so that
@@ -41,12 +47,28 @@ public class ToolCallCollector {
 
     private static final int INPUT_MAX_LEN = 500;
     private static final int OUTPUT_MAX_LEN = 150;
+    /** Max length for the SSE-attached input/output (kept larger than L1 path's 500/150
+     * because these go to the frontend collapsible viewer, not to LLM context). */
+    private static final int SSE_INPUT_MAX_LEN = 4000;
+    private static final int SSE_OUTPUT_MAX_LEN = 4000;
 
     /** ThreadLocal holder so SupervisorService can access the current request's collector. */
     private static final ThreadLocal<ToolCallCollector> CURRENT = new ThreadLocal<>();
 
     private final String userQuery;
     private final List<ToolCallDetail> details = new ArrayList<>();
+
+    /**
+     * Live tool-call-id → detail map for SSE lookup. Populated by
+     * {@link com.agentscopea2a.v2.hooks.ToolCallTrackingHook} on PreActing (with input)
+     * and updated on PostActing (with output). Read by
+     * {@code V2ChatStreamServiceImpl.buildProcessPayload} when it needs to attach
+     * input/output to a tool_call_start or tool_result_end SSE event.
+     *
+     * <p>Uses a {@link ConcurrentHashMap} because PreActing/PostActing hooks fire on
+     * reactor scheduler threads, while the SSE handler reads from the executor thread.
+     */
+    private final Map<String, ToolCallDetail> byToolCallId = new ConcurrentHashMap<>();
 
     public ToolCallCollector(String userQuery) {
         this.userQuery = userQuery != null ? userQuery : "";
@@ -117,6 +139,42 @@ public class ToolCallCollector {
     public synchronized void recordL2(String subAgentId, String tool, String input, String output) {
         details.add(new ToolCallDetail(subAgentId + ":" + tool, "L2",
                 truncate(input, INPUT_MAX_LEN), truncate(output, OUTPUT_MAX_LEN)));
+    }
+
+    /**
+     * Record a tool call's input keyed by toolCallId for live SSE lookup.
+     * Called by {@link com.agentscopea2a.v2.hooks.ToolCallTrackingHook} on PreActing.
+     * The input is truncated to {@link #SSE_INPUT_MAX_LEN} (large enough for collapsible
+     * frontend display, but bounded to prevent runaway payloads from stalling SSE).
+     */
+    public void recordByToolCallId(String toolCallId, String toolName, String input) {
+        if (toolCallId == null) return;
+        byToolCallId.put(toolCallId, new ToolCallDetail(toolName, "L1",
+                truncate(input, SSE_INPUT_MAX_LEN), ""));
+    }
+
+    /**
+     * Update the output for a tool call previously recorded via
+     * {@link #recordByToolCallId}. Called by
+     * {@link com.agentscopea2a.v2.hooks.ToolCallTrackingHook} on PostActing.
+     */
+    public void updateOutputByToolCallId(String toolCallId, String output) {
+        if (toolCallId == null) return;
+        ToolCallDetail existing = byToolCallId.get(toolCallId);
+        if (existing == null) return;
+        byToolCallId.put(toolCallId, new ToolCallDetail(
+                existing.tool(), existing.level(), existing.input(),
+                truncate(output, SSE_OUTPUT_MAX_LEN)));
+    }
+
+    /**
+     * Get the input/output detail for a tool call by its toolCallId.
+     * Returns null if no detail was recorded (e.g. the call predates hook firing,
+     * or the toolCallId didn't match any recorded PreActing event).
+     */
+    public ToolCallDetail getByToolCallId(String toolCallId) {
+        if (toolCallId == null) return null;
+        return byToolCallId.get(toolCallId);
     }
 
     public String getUserQuery() {

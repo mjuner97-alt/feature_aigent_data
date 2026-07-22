@@ -179,6 +179,13 @@
             <version>${agentscope.version}</version>
         </dependency>
 
+        <!-- v2 新增：Anthropic 协议模型扩展（ModelProvider 降级路由用） -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-model-anthropic</artifactId>
+            <version>${agentscope.version}</version>
+        </dependency>
+
         <!-- ========== Micrometer / Metrics ========== -->
         <dependency>
             <groupId>io.micrometer</groupId>

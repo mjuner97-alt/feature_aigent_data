@@ -62,11 +62,32 @@ public interface EpisodicMemory extends MemoryProvider {
      * <p>Uses full-text search to find conversations matching the query,
      * returning the most relevant results across all sessions.
      *
+     * <p><b>Tenant isolation:</b> prefer {@link #search(String, String, int)} which scopes
+     * results to a single user. This overload is kept for the {@code episodic_search} tool
+     * (no per-user context at the tool-call site) and legacy callers — it searches globally,
+     * so different users' conversations can leak into each other's results. Only use it when
+     * you genuinely want a global search.
+     *
      * @param query The search query
      * @param limit Maximum number of results to return
      * @return Mono emitting a list of search results, ordered by relevance
      */
     Mono<List<EpisodicResult>> search(String query, int limit);
+
+    /**
+     * Tenant-scoped variant of {@link #search(String, int)}. When {@code userId} is non-null
+     * and non-blank, results are restricted to rows whose {@code user_id} column matches.
+     * When {@code userId} is null/blank, falls back to global search (same as
+     * {@link #search(String, int)}).
+     *
+     * @param userId The tenant/user id to scope results to (null/blank = global)
+     * @param query The search query
+     * @param limit Maximum number of results to return
+     * @return Mono emitting a list of search results, ordered by relevance
+     */
+    default Mono<List<EpisodicResult>> search(String userId, String query, int limit) {
+        return search(query, limit);
+    }
 
     /**
      * Gets all messages from a specific session.

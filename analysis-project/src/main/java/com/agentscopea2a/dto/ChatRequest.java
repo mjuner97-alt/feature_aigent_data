@@ -50,5 +50,6 @@ public class ChatRequest {
 
     private String sessionId;
 
+    @com.fasterxml.jackson.annotation.JsonAlias("input")
     private String question;
 }

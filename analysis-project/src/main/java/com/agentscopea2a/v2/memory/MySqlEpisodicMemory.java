@@ -134,10 +134,11 @@ public class MySqlEpisodicMemory implements EpisodicMemory {
         return Mono.<Void>fromRunnable(
                         () -> {
                             tableInitializer.ensureInitialized();
+                            String userId = EpisodicTableInitializer.parseUserIdFromSessionId(sessionId);
                             String sql =
                                     "INSERT INTO "
                                             + this.config.getTableName()
-                                            + " (session_id, role, content, embedding) VALUES (?, ?, ?, ?)";
+                                            + " (session_id, user_id, role, content, embedding) VALUES (?, ?, ?, ?, ?)";
                             // Manual transaction so executeBatch() is atomic - partial-batch
                             // failures (e.g. one row violates a constraint) roll back the
                             // whole batch instead of leaving some rows committed. Connection.close
@@ -161,19 +162,19 @@ public class MySqlEpisodicMemory implements EpisodicMemory {
                                             if (content == null || content.isEmpty()) continue;
                                         }
                                         stmt.setString(1, sessionId);
-                                        stmt.setString(2, msg.getRole().name());
-                                        stmt.setString(3, content);
+                                        stmt.setString(2, userId);
+                                        stmt.setString(3, msg.getRole().name());
+                                        stmt.setString(4, content);
                                         // Embedding: best-effort, async-friendly
                                         String embeddingJson = searcher.embedContent(content);
-                                        stmt.setString(4, embeddingJson);
+                                        stmt.setString(5, embeddingJson);
                                         stmt.addBatch();
                                     }
                                     stmt.executeBatch();
                                     conn.commit();
                                     log.debug(
-                                            "Recorded session {} with {} messages",
-                                            sessionId,
-                                            messages.size());
+                                            "Recorded session {} (user={}) with {} messages",
+                                            sessionId, userId, messages.size());
                                 } catch (SQLException e) {
                                     conn.rollback();
                                     throw e;
@@ -191,16 +192,21 @@ public class MySqlEpisodicMemory implements EpisodicMemory {
 
     @Override
     public Mono<List<EpisodicResult>> search(String query, int limit) {
+        return search(null, query, limit);
+    }
+
+    @Override
+    public Mono<List<EpisodicResult>> search(String userId, String query, int limit) {
         return Mono.fromCallable(
                         () -> {
                             tableInitializer.ensureInitialized();
                             // Try vector search first when enabled and embedding client is available
                             if (config.isVectorSearchEnabled() && embeddingClient != null) {
-                                List<EpisodicResult> vectorHits = searcher.vectorSearch(query, limit);
+                                List<EpisodicResult> vectorHits = searcher.vectorSearch(userId, query, limit);
                                 if (!vectorHits.isEmpty()) return vectorHits;
                             }
                             // Fallback to FTS
-                            return searcher.ftsSearch(query, limit);
+                            return searcher.ftsSearch(userId, query, limit);
                         })
                 .subscribeOn(Schedulers.boundedElastic());
     }
@@ -240,13 +246,14 @@ public class MySqlEpisodicMemory implements EpisodicMemory {
                         () -> {
                             tableInitializer.ensureInitialized();
                             boolean hasToolContext = toolCallDetailsJson != null && !toolCallDetailsJson.isBlank();
+                            String userId = EpisodicTableInitializer.parseUserIdFromSessionId(sessionId);
                             String sql;
                             if (hasToolContext) {
                                 sql = "INSERT INTO " + this.config.getTableName()
-                                        + " (session_id, role, content, embedding, tool_call_details) VALUES (?, ?, ?, ?, ?)";
+                                        + " (session_id, user_id, role, content, embedding, tool_call_details) VALUES (?, ?, ?, ?, ?, ?)";
                             } else {
                                 sql = "INSERT INTO " + this.config.getTableName()
-                                        + " (session_id, role, content, embedding) VALUES (?, ?, ?, ?)";
+                                        + " (session_id, user_id, role, content, embedding) VALUES (?, ?, ?, ?, ?)";
                             }
                             // Manual transaction so executeBatch() is atomic - see recordSession.
                             try (Connection conn = getConnection()) {
@@ -268,25 +275,25 @@ public class MySqlEpisodicMemory implements EpisodicMemory {
                                             if (content == null || content.isEmpty()) continue;
                                         }
                                         stmt.setString(1, sessionId);
-                                        stmt.setString(2, msg.getRole().name());
-                                        stmt.setString(3, content);
+                                        stmt.setString(2, userId);
+                                        stmt.setString(3, msg.getRole().name());
+                                        stmt.setString(4, content);
                                         // Embedding: best-effort, async-friendly
                                         String embeddingJson = searcher.embedContent(content);
-                                        stmt.setString(4, embeddingJson);
+                                        stmt.setString(5, embeddingJson);
                                         // Write tool_call_details only on first row of the session
                                         if (hasToolContext && msg.getRole() == MsgRole.USER) {
-                                            stmt.setString(5, toolCallDetailsJson);
+                                            stmt.setString(6, toolCallDetailsJson);
                                         } else if (hasToolContext) {
-                                            stmt.setString(5, null);
+                                            stmt.setString(6, null);
                                         }
                                         stmt.addBatch();
                                     }
                                     stmt.executeBatch();
                                     conn.commit();
                                     log.debug(
-                                            "Recorded session {} with {} messages",
-                                            sessionId,
-                                            messages.size());
+                                            "Recorded session {} (user={}) with {} messages",
+                                            sessionId, userId, messages.size());
                                 } catch (SQLException e) {
                                     conn.rollback();
                                     throw e;

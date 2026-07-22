@@ -127,6 +127,11 @@ public class PythonExecTool {
             return ToolResultBlock.text(
                     "python_exec 拒绝执行: code 参数为空。请把完整 Python 脚本作为字符串传入。");
         }
+
+        // Repair double-encoded UTF-8: some LLM API responses decode CJK characters as
+        // ISO-8859-1 instead of UTF-8, producing mojibake like éƒ¨é—¨ instead of 部门.
+        // This is a no-op for correctly-encoded strings.
+        code = repairUtf8(code);
         int timeout =
                 (timeoutSeconds == null || timeoutSeconds <= 0)
                         ? defaultTimeoutSeconds
@@ -339,5 +344,36 @@ public class PythonExecTool {
 
     private static boolean isBlank(String s) {
         return s == null || s.isBlank();
+    }
+
+    /**
+     * Detect and repair double-encoded UTF-8: if the string looks like it was decoded
+     * as ISO-8859-1 when it should have been UTF-8, re-encode as ISO-8859-1 bytes and
+     * decode as UTF-8. This is a no-op for strings that are already correct.
+     *
+     * <p>Some LLM API responses decode CJK characters as ISO-8859-1 instead of UTF-8,
+     * producing mojibake like {@code éƒ¨é—¨} instead of {@code 部门}. This method detects
+     * and repairs that pattern. Copied from {@code SkillEvolutionHook.repairUtf8()}.
+     */
+    private static String repairUtf8(String s) {
+        try {
+            byte[] bytes = s.getBytes("ISO-8859-1");
+            String repaired = new String(bytes, "UTF-8");
+            if (!repaired.equals(s) && isValidUtf8Text(repaired)) {
+                return repaired;
+            }
+        } catch (Exception e) {
+            // Ignore - return original
+        }
+        return s;
+    }
+
+    /**
+     * Quick heuristic: a "valid" repaired string should contain CJK characters
+     * (which were the ones that got mangled) and no replacement characters.
+     */
+    private static boolean isValidUtf8Text(String s) {
+        if (s.contains("�")) return false;
+        return s.codePoints().anyMatch(cp -> Character.UnicodeScript.of(cp) == Character.UnicodeScript.HAN);
     }
 }

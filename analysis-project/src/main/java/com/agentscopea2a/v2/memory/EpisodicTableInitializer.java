@@ -56,6 +56,7 @@ final class EpisodicTableInitializer {
                         + this.tableName
                         + " (  id BIGINT AUTO_INCREMENT PRIMARY KEY,"
                         + "  session_id VARCHAR(255) NOT NULL,"
+                        + "  user_id VARCHAR(128) NOT NULL DEFAULT '',"
                         + "  role VARCHAR(50) NOT NULL,"
                         + "  content TEXT NOT NULL,"
                         + "  embedding LONGTEXT DEFAULT NULL,"
@@ -63,7 +64,8 @@ final class EpisodicTableInitializer {
                         + "  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
                         + "  FULLTEXT INDEX ft_content (content),"
                         + "  INDEX idx_embedding (embedding(255)),"
-                        + "  INDEX idx_status (status)"
+                        + "  INDEX idx_status (status),"
+                        + "  INDEX idx_user_id (user_id)"
                         + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
         try (Connection conn = connectionSupplier.get();
                 Statement stmt = conn.createStatement()) {
@@ -94,11 +96,59 @@ final class EpisodicTableInitializer {
                     log.debug("ALTER TABLE ADD COLUMN tool_call_details skipped: {}", ignored.getMessage());
                 }
             }
+            // Add user_id column for tenant isolation (2026/07/21 fix). EpisodicRetrievalMiddleware
+            // previously called search() with no user_id filter — all users' conversations leaked
+            // into every other user's "## 历史参考案例" prefix. Now search() accepts a userId and
+            // filters with WHERE user_id = ?. For legacy rows written before this column existed,
+            // we backfill user_id by parsing the "user:<userId>:<conversationId>" prefix from
+            // session_id. Rows whose session_id doesn't match this format keep user_id='' (they'll
+            // only match searches that explicitly pass userId='' or skip the filter).
+            if (!columnExists(conn, "user_id")) {
+                try {
+                    stmt.execute(
+                            "ALTER TABLE " + this.tableName
+                                    + " ADD COLUMN user_id VARCHAR(128) NOT NULL DEFAULT ''"
+                                    + " AFTER session_id");
+                    stmt.execute(
+                            "ALTER TABLE " + this.tableName
+                                    + " ADD INDEX idx_user_id (user_id)");
+                    // Backfill: extract user_id from session_id format "user:<userId>:<rest>".
+                    // SUBSTRING_INDEX(session_id, ':', 2) returns "user:<userId>", then strip the
+                    // "user:" prefix (5 chars) to get <userId>. Rows without the "user:" prefix
+                    // get '' (which matches only explicit '' userId searches, effectively orphaned).
+                    int backfilled = stmt.executeUpdate(
+                            "UPDATE " + this.tableName
+                                    + " SET user_id = TRIM(LEADING 'user:' FROM"
+                                    + "   SUBSTRING_INDEX(session_id, ':', 2))"
+                                    + " WHERE user_id = ''"
+                                    + "   AND session_id LIKE 'user:%:%'");
+                    log.info("EpisodicTableInitializer: backfilled user_id for {} legacy rows in {}",
+                            backfilled, this.tableName);
+                } catch (SQLException ignored) {
+                    log.warn("ALTER TABLE ADD COLUMN user_id / backfill skipped: {}", ignored.getMessage());
+                }
+            }
             log.info("Ensured episodic memory table '{}' exists", this.tableName);
         } catch (SQLException e) {
             log.error("Failed to create episodic memory table: {}", e.getMessage());
             throw new RuntimeException("Failed to initialize episodic memory table", e);
         }
+    }
+
+    /**
+     * Parse {@code user_id} from the {@code session_id} format {@code "user:<userId>:<conversationId>"}.
+     * Returns {@code ""} when {@code session_id} is null/blank or doesn't follow this format
+     * (e.g. legacy sessions like {@code "pool-1-thread-1_1234567890"} from {@code syncTurn}).
+     * Used by {@code recordSession*} to populate the {@code user_id} column on insert.
+     */
+    static String parseUserIdFromSessionId(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) return "";
+        if (!sessionId.startsWith("user:")) return "";
+        // Strip "user:" prefix, then take everything up to the next ':' as userId.
+        String rest = sessionId.substring(5); // after "user:"
+        int idx = rest.indexOf(':');
+        if (idx <= 0) return "";
+        return rest.substring(0, idx);
     }
 
     /**

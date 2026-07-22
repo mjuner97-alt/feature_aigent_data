@@ -130,14 +130,27 @@ public class HarnessA2aRunnerV2 {
     }
 
     /**
-     * 获取一个针对指定 userId 的 HarnessAgent 实例。
-     * <p>用于 PermissionModeHelper / V2ChatInterruptController 等需要临时访问 agent state 的场景。</p>
+     * 构建并返回一个临时 {@link HarnessAgent}，供 out-of-band 控制端点使用。
+     *
+     * <p>per-request 重构（commit 7b5e9b2）后，{@link #streamEvents} 每次调用都新建
+     * agent 且不再保留共享实例。但 {@code /v2/ai/chat/interrupt}（中断当前会话）和
+     * permission-mode 读写端点仍需一个 agent 句柄来调用实例方法——这些方法按
+     * {@code (userId, sessionId)} 操作共享的 MySQL state store
+     * （{@code permission_context.mode} / {@code InterruptControl} flag），因此用一个
+     * 临时 agent 即可触达同一份 session state。
+     *
+     * <p><b>注意：</b>每次调用都会构建完整的模型 + memory + middleware + toolkit，
+     * 成本较高，仅用于上述低频控制端点，不要用在请求热路径上。
+     *
+     * <p><b>技术债：</b>{@code interrupt} 作用在另一个正在运行的 per-request agent 实例上，
+     * 跨实例是否生效取决于框架 InterruptControl 是否为 session 级共享；若不生效，
+     * interrupt 端点会由 {@code InFlightCall.subscription()} 的 dispose 兜底。
+     * 后续应按 per-request 架构彻底重构这三处调用，移除对本方法的依赖。
+     *
+     * @return 新构建的临时 agent（ctx 为 null，走默认模型）
      */
-    public HarnessAgent getAgent(Long userId) {
-        RuntimeContext ctx = RuntimeContext.builder()
-                .userId(userId != null ? String.valueOf(userId) : null)
-                .build();
-        return buildAgent(ctx);
+    public HarnessAgent getAgent() {
+        return buildAgent(null);
     }
 
     /**
@@ -179,15 +192,24 @@ public class HarnessA2aRunnerV2 {
                         // 连带 expireDailyFiles/pruneOldSessions 也跳 (纯文件操作,测速期无影响)。
                         // 回滚:把下面这行删掉即恢复默认 30min。
                         .consolidationMinGap(Duration.ofDays(365))
+                        // 跨租户隔离:关掉框架的 per-call flush。MemoryFlushMiddleware 默认
+                        // ALWAYS 模式会在每次 call 结束把 LLM 总结的 memory 写到
+                        // /workspace/MEMORY.md (根,共享) + /workspace/memory/<date>.md
+                        // (根,共享)。shared-container 模式下所有用户共享同一个容器 /workspace,
+                        // 这些根文件会跨用户串扰 - bob 调 memory_search 会看到 alice 的 daily
+                        // ledger 条目。PerUserMemoryContextMiddleware 已经从 DB 注入 per-user
+                        // MEMORY.md 到 system prompt,MemoryLedgerMirrorMiddleware 也已 per-user
+                        // 落盘 + mirror 到 agent_memory_ledger。框架的 flush 在这套架构下是
+                        // 冗余且有害的,关掉它。MemoryMaintenanceMiddleware 仍然注册(只是
+                        // consolidationMinGap=365d 让它跳过 consolidation),daily 文件保留/清理
+                        // 逻辑不受影响。
+                        .flushTrigger(MemoryConfig.FlushTrigger.never())
                         .build())
                 .compaction(CompactionConfig.builder()
                         .triggerMessages(40)
                         .keepMessages(12)
                         .build())
                 .toolResultEviction(ToolResultEvictionConfig.defaults())
-                .enablePlanMode()
-                .planFileDirectory("plans")
-                .enableTaskList(true)
                 .enablePendingToolRecovery(true)
                 .enableSkillManageTool(skillManageConfig)
                 .enableSkillCurator(skillCuratorConfig)
@@ -273,16 +295,9 @@ public class HarnessA2aRunnerV2 {
 
         HarnessAgent agent = builder.build();
 
-        // Replace the JAR's PlanExitTool with AutoApprovePlanExitTool so plan_exit no longer
-        // triggers the framework's HITL ASK pause. The JAR's PlanExitTool.checkPermissions
-        // returns PermissionDecision.ask(...), which emits a RequireUserConfirmEvent and stops
-        // the agent. Without a frontend HITL approval UI + /confirm endpoint, the user's
-        // follow-up message gets interpreted as a fresh user msg, the framework auto-generates
-        // an error result for the pending plan_exit call, and the agent never enters BUILD mode.
-        // AutoApprovePlanExitTool returns allow() instead, so plan_exit flows directly into
-        // BUILD mode and the agent continues executing the plan. See AutoApprovePlanExitTool
-        // class javadoc for the full rationale.
-        replacePlanExitWithAutoApprove(agent);
+        // Plan mode removed from main agent (supervisor is a pure router, not a planner).
+        // Plan mode is now enabled on the analyze_data subagent instead — see SubagentRegistrar.
+        // replacePlanExitWithAutoApprove is called in SubagentRegistrar for analyze_data only.
 
         log.info("HarnessA2aRunnerV2: created agent for userId={}, model={}",
                 userId, primaryModel.getModelName());
@@ -305,7 +320,22 @@ public class HarnessA2aRunnerV2 {
         }
     }
 
-    private static void replacePlanExitWithAutoApprove(HarnessAgent agent) {
+    /**
+     * Reflectively swap the JAR's {@code plan_exit} tool with
+     * {@link com.agentscopea2a.v2.tool.AutoApprovePlanExitTool}. Called by
+     * {@link SubagentRegistrar} for subagents with plan mode enabled (e.g. analyze_data).
+     *
+     * <p>The replacement preserves tool name/schema/description but returns {@code allow}
+     * instead of {@code ask} from {@code checkPermissions}, so the agent flows directly
+     * into BUILD mode without the HITL pause.
+     *
+     * <p>Reflection is required because {@code HarnessAgent.planModeManager} is a
+     * private final field with no public accessor, and {@code PlanModeManager} is
+     * constructed inside {@code HarnessAgent.build()} (not injectable via builder).
+     * We need the SAME {@code PlanModeManager} instance because it holds the
+     * per-session plan state that {@code PlanModeMiddleware} reads.
+     */
+    public static void replacePlanExitWithAutoApprove(HarnessAgent agent) {
         try {
             java.lang.reflect.Field f = HarnessAgent.class.getDeclaredField("planModeManager");
             f.setAccessible(true);
@@ -317,7 +347,7 @@ public class HarnessA2aRunnerV2 {
             }
             io.agentscope.core.tool.Toolkit toolkit = agent.getToolkit();
             toolkit.removeTool("plan_exit");
-//            toolkit.registerTool(new AutoApprovePlanExitTool(planModeManager));
+            toolkit.registerTool(new com.agentscopea2a.v2.tool.AutoApprovePlanExitTool(planModeManager));
             log.debug("HarnessA2aRunnerV2: replaced JAR PlanExitTool with AutoApprovePlanExitTool (plan_exit no longer HITL-asks)");
         } catch (NoSuchFieldException e) {
             log.warn("HarnessA2aRunnerV2: HarnessAgent.planModeManager field not found — framework version changed? plan_exit replacement skipped: {}",

@@ -66,8 +66,19 @@ public class EpisodicRetrievalMiddleware implements MiddlewareBase {
             }
 
             try {
+                // Scope search to the current user — without this filter, the FTS/vector query
+                // returns matches from ALL users' past conversations, leaking other users'
+                // dialogue into this user's "## 历史参考案例" prefix. V2ChatStreamServiceImpl
+                // builds RuntimeContext with userId set (buildRuntimeContext line 535-539),
+                // so ctx.getUserId() is the per-request tenant identity. When userId is
+                // null/blank (anonymous / legacy caller), we skip retrieval entirely rather
+                // than fall back to global search — better no recall than cross-tenant leak.
+                String userId = ctx != null ? ctx.getUserId() : null;
+                if (userId == null || userId.isBlank()) {
+                    return systemPrompt;
+                }
                 List<EpisodicResult> results =
-                        episodicMemory.search(userQuestion, searchLimit).block();
+                        episodicMemory.search(userId, userQuestion, searchLimit).block();
 
                 if (results == null || results.isEmpty()) {
                     return systemPrompt;

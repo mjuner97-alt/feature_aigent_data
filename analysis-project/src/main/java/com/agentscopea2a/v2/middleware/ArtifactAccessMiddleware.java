@@ -147,7 +147,7 @@ public class ArtifactAccessMiddleware implements MiddlewareBase {
 
         Map<String, Object> newInput = new java.util.HashMap<>(toolUse.getInput());
         newInput.put(paramName, "/__forbidden__/" + ctx.userBucket() + "/" + ctx.taskBucket());
-        return new ToolUseBlock(toolUse.getId(), toolUse.getName(), newInput);
+        return rebuildBlock(toolUse, newInput);
     }
 
     private ToolUseBlock enforceShellExecute(ToolUseBlock toolUse, ArtifactContext ctx,
@@ -159,27 +159,96 @@ public class ArtifactAccessMiddleware implements MiddlewareBase {
             return null;
         }
 
+        // Fix: LLM sometimes passes absolute paths like /workspace/xxx for working_directory.
+        // The framework's ShellExecuteTool rejects absolute paths. Strip the artifacts root
+        // prefix to convert /workspace/user-task/xxx → user-task/xxx (relative path).
+        // Also fix: strip leading / for any absolute path that isn't cross-tenant.
+        Map<String, Object> newInput = null;
+        if (workingDir != null && !workingDir.isBlank()) {
+            String fixedDir = fixWorkingDirectory(workingDir, artifactsRoot, allowedPrefix);
+            if (fixedDir != null && !fixedDir.equals(workingDir)) {
+                newInput = new java.util.HashMap<>(toolUse.getInput());
+                newInput.put(WORKING_DIR_PARAM, fixedDir);
+                log.info("Fixed working_directory: {} -> {} (tool=shell_execute)", workingDir, fixedDir);
+            }
+        }
+
+        // Cross-tenant violation check (after working_directory fix)
+        String effectiveDir = newInput != null
+                ? extractString(newInput, WORKING_DIR_PARAM)
+                : workingDir;
         String violation = null;
-        if (workingDir != null && workingDir.startsWith(artifactsRoot) && !workingDir.startsWith(allowedPrefix)) {
-            violation = "working_directory=" + workingDir;
+        if (effectiveDir != null && effectiveDir.startsWith(artifactsRoot) && !effectiveDir.startsWith(allowedPrefix)) {
+            violation = "working_directory=" + effectiveDir;
         } else if (command != null && containsForeignArtifactPath(command, artifactsRoot, allowedPrefix)) {
             violation = "command references " + artifactsRoot + " outside " + allowedPrefix;
         }
 
-        if (violation == null) {
-            return null;
+        if (violation != null) {
+            log.warn("Blocked cross-tenant shell_execute: {} (user={}, task={})",
+                    violation, ctx.userBucket(), ctx.taskBucket());
+            if (newInput == null) {
+                newInput = new java.util.HashMap<>(toolUse.getInput());
+            }
+            newInput.put(COMMAND_PARAM,
+                    "echo 'shell_execute denied by ArtifactAccessMiddleware: cross-tenant artifact path in"
+                            + " command (user=" + ctx.userBucket() + " task=" + ctx.taskBucket()
+                            + ")' >&2; exit 77");
+            newInput.remove(WORKING_DIR_PARAM);
+            return rebuildBlock(toolUse, newInput);
         }
 
-        log.warn("Blocked cross-tenant shell_execute: {} (user={}, task={})",
-                violation, ctx.userBucket(), ctx.taskBucket());
+        // No violation, but we may have fixed the working_directory
+        if (newInput != null) {
+            return rebuildBlock(toolUse, newInput);
+        }
+        return null;
+    }
 
-        Map<String, Object> newInput = new java.util.HashMap<>(toolUse.getInput());
-        newInput.put(COMMAND_PARAM,
-                "echo 'shell_execute denied by ArtifactAccessMiddleware: cross-tenant artifact path in"
-                        + " command (user=" + ctx.userBucket() + " task=" + ctx.taskBucket()
-                        + ")' >&2; exit 77");
-        newInput.remove(WORKING_DIR_PARAM);
-        return new ToolUseBlock(toolUse.getId(), toolUse.getName(), newInput);
+    /**
+     * Fix working_directory paths that the LLM provides as absolute paths.
+     * The framework's ShellExecuteTool rejects absolute paths, ~, and paths containing ..
+     * This method converts:
+     * <ul>
+     *   <li>{@code /workspace/user-task/subdir} → {@code user-task/subdir}</li>
+     *   <li>{@code /tmp/xxx} → {@code tmp/xxx}</li>
+     *   <li>{@code relative/path} → unchanged (already valid)</li>
+     * </ul>
+     *
+     * @return the fixed path, or null if the path cannot be made relative
+     */
+    private String fixWorkingDirectory(String workingDir, String artifactsRoot, String allowedPrefix) {
+        if (workingDir == null || workingDir.isBlank()) return null;
+        String dir = workingDir.strip();
+        // Already relative — no fix needed
+        if (!dir.startsWith("/")) return dir;
+        // Cross-tenant — will be blocked by enforceShellExecute
+        if (dir.startsWith(artifactsRoot) && !dir.startsWith(allowedPrefix)) return dir;
+        // Starts with allowed prefix — strip to make it relative
+        if (dir.startsWith(allowedPrefix)) {
+            String relative = dir.substring(allowedPrefix.length());
+            if (relative.startsWith("/")) relative = relative.substring(1);
+            return relative.isEmpty() ? "." : relative;
+        }
+        // Other absolute paths — strip leading /
+        String relative = dir.substring(1);
+        return relative.isEmpty() ? "." : relative;
+    }
+
+    /**
+     * Rebuild a ToolUseBlock preserving the original content and metadata fields.
+     * The 3-arg constructor {@code new ToolUseBlock(id, name, newInput)} sets content=null,
+     * which causes ToolValidator to reject the call with "argument content is null".
+     */
+    private static ToolUseBlock rebuildBlock(ToolUseBlock original, Map<String, Object> newInput) {
+        return ToolUseBlock.builder()
+                .id(original.getId())
+                .name(original.getName())
+                .input(newInput)
+                .content(original.getContent())
+                .metadata(original.getMetadata())
+                .state(original.getState())
+                .build();
     }
 
     // ==================== Helpers ====================
