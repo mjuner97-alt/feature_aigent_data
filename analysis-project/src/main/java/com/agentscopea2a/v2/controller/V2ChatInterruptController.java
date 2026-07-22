@@ -149,7 +149,7 @@ public class V2ChatInterruptController {
                 .content(TextBlock.builder().text(supplement).build())
                 .build();
         try {
-            HarnessAgent agent = runner.getAgent();
+            HarnessAgent agent = runner.getAgent(userId != null ? Long.parseLong(userId) : null);
             agent.getDelegate().interrupt(userId, sessionId, supplementMsg);
             log.info("v2 /chat/interrupt: interrupt triggered for sessionId={}, hasInFlight={}",
                     sessionId, inFlight != null);

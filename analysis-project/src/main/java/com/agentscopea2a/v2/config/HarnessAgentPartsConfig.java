@@ -23,6 +23,7 @@ import com.agentscopea2a.v2.hooks.SkillEvolutionHook;
 import com.agentscopea2a.v2.hooks.SkillRetrievalHook;
 import com.agentscopea2a.v2.hooks.SkillSynthesisHook;
 import com.agentscopea2a.v2.hooks.ToolCallTrackingHook;
+import com.agentscopea2a.v2.verify.VerificationHook;
 import com.agentscopea2a.v2.middleware.ArtifactAccessMiddleware;
 import com.agentscopea2a.v2.middleware.DimensionStateMiddleware;
 import com.agentscopea2a.v2.middleware.EpisodicRetrievalMiddleware;
@@ -105,8 +106,9 @@ public class HarnessAgentPartsConfig {
             ObjectProvider<SkillSynthesisHook> skillSynthesisHookProvider,
             ObjectProvider<SkillEvolutionHook> skillEvolutionHookProvider,
             ObjectProvider<KnowledgeRetrievalHook> knowledgeRetrievalHookProvider,
-            ObjectProvider<ArithMentalMathDetectorHook> arithMentalMathDetectorProvider) {
-        List<Hook> hooks = new ArrayList<>(8);
+            ObjectProvider<ArithMentalMathDetectorHook> arithMentalMathDetectorProvider,
+            ObjectProvider<VerificationHook> verificationHookProvider) {
+        List<Hook> hooks = new ArrayList<>(9);
         ArtifactHandoffHook handoff = artifactHandoffHookProvider.getIfAvailable();
         if (handoff != null) {
             hooks.add(handoff);
@@ -121,6 +123,11 @@ public class HarnessAgentPartsConfig {
         if (tracking != null) {
             hooks.add(tracking);
             log.info("HarnessAgentPartsConfig: ToolCallTrackingHook wired (priority=45)");
+        }
+        VerificationHook verification = verificationHookProvider.getIfAvailable();
+        if (verification != null) {
+            hooks.add(verification);
+            log.info("HarnessAgentPartsConfig: VerificationHook wired (priority=46)");
         }
         SkillRetrievalHook retrieval = skillRetrievalHookProvider.getIfAvailable();
         if (retrieval != null) {

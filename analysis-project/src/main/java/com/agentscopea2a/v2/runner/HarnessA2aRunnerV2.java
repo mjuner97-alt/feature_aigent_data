@@ -130,6 +130,17 @@ public class HarnessA2aRunnerV2 {
     }
 
     /**
+     * 获取一个针对指定 userId 的 HarnessAgent 实例。
+     * <p>用于 PermissionModeHelper / V2ChatInterruptController 等需要临时访问 agent state 的场景。</p>
+     */
+    public HarnessAgent getAgent(Long userId) {
+        RuntimeContext ctx = RuntimeContext.builder()
+                .userId(userId != null ? String.valueOf(userId) : null)
+                .build();
+        return buildAgent(ctx);
+    }
+
+    /**
      * 根据运行时上下文构建新的 HarnessAgent。
      *
      * <p>关键改动：
@@ -145,7 +156,7 @@ public class HarnessA2aRunnerV2 {
         // 获取带降级逻辑的主模型
         FallbackModelDecorator primaryModel = modelProvider.getModelForUser(userId);
 
-        // Memory 使用固定的 light-classifier
+        // Memory 使用固定的小模型(light-classifier), 不走 deepseek(分类/蒸馏用小模型更省)
         HarnessRunnerProperties.ModelInstance light = runnerProperties.getModel().getInstances().getLightClassifier();
         OpenAIChatModel smallModel = OpenAIChatModel.builder()
                 .apiKey(light.getApiKey())

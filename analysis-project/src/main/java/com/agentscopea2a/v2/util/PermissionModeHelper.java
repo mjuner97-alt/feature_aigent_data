@@ -65,7 +65,7 @@ public class PermissionModeHelper {
             return errorResponse(HttpStatus.SERVICE_UNAVAILABLE, "HarnessA2aRunnerV2 bean not available");
         }
         try {
-            HarnessAgent agent = runner.getAgent();
+            HarnessAgent agent = runner.getAgent(userId != null ? Long.parseLong(userId) : null);
             PermissionMode mode = agent.getPermissionMode(userId, sessionId);
             Map<String, Object> out = new HashMap<>();
             out.put("userId", userId);
@@ -106,7 +106,7 @@ public class PermissionModeHelper {
             return ResponseEntity.badRequest().body(err);
         }
         try {
-            HarnessAgent agent = runner.getAgent();
+            HarnessAgent agent = runner.getAgent(userId != null ? Long.parseLong(userId) : null);
             agent.setPermissionMode(userId, sessionId, mode);
             log.info("Permission mode switched: userId={}, sessionId={}, mode={}",
                     userId, sessionId, mode.getValue());

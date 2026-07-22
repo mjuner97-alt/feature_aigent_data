@@ -23,6 +23,7 @@ import io.agentscope.extensions.model.anthropic.AnthropicChatModel;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
@@ -42,23 +43,27 @@ public class ModelProvider {
     private static final Logger log = LoggerFactory.getLogger(ModelProvider.class);
 
     private final UserModelConfigMapper userModelConfigMapper;
+    private final HarnessRunnerProperties harnessRunnerProperties;
     private final Model defaultModel;
 
     public ModelProvider(
             UserModelConfigMapper userModelConfigMapper,
-            HarnessRunnerProperties harnessRunnerProperties) {
+            HarnessRunnerProperties harnessRunnerProperties,
+            @Value("${agentscope.llm.api-key:}") String llmApiKey,
+            @Value("${agentscope.llm.api-url:}") String llmApiUrl,
+            @Value("${agentscope.llm.model:}") String llmModel) {
         this.userModelConfigMapper = userModelConfigMapper;
+        this.harnessRunnerProperties = harnessRunnerProperties;
 
-        // 构建默认模型（glm-main）
-        HarnessRunnerProperties.ModelInstance main = harnessRunnerProperties.getModel().getInstances().getGlmMain();
+        // 统一从 agentscope.llm.* 构建默认模型 (deepseek)
         this.defaultModel = OpenAIChatModel.builder()
-                .apiKey(main.getApiKey())
-                .baseUrl(main.getBaseUrl())
-                .modelName(main.getName())
+                .apiKey(llmApiKey)
+                .baseUrl(llmApiUrl)
+                .modelName(llmModel)
                 .stream(true)
                 .build();
 
-        log.info("V2ModelProvider initialized: defaultModel={}", main.getName());
+        log.info("V2ModelProvider initialized: defaultModel={} baseUrl={}", llmModel, llmApiUrl);
     }
 
     /**
@@ -137,6 +142,38 @@ public class ModelProvider {
                         .build();
             }
         };
+    }
+
+    /**
+     * V3.0: resolve an independent model instance by config key (verify / critic) so the
+     * verification sub-agents are isolated from business-model downgrade and don't contend for the
+     * business model's quota. Falls back to the default model when the instance is not configured.
+     * Returns a {@link FallbackModelDecorator} wrapping the resolved primary with the default model
+     * as fallback, so verify/critic degrade gracefully instead of hard-failing.
+     */
+    public FallbackModelDecorator getModelByKey(String instanceKey) {
+        if (instanceKey == null || instanceKey.isBlank()) {
+            return new FallbackModelDecorator(defaultModel, defaultModel);
+        }
+        HarnessRunnerProperties.Instances inst = harnessRunnerProperties.getModel().getInstances();
+        HarnessRunnerProperties.ModelInstance mi = switch (instanceKey) {
+            case "verify" -> inst.getVerify();
+            case "critic" -> inst.getCritic();
+            case "fallback" -> inst.getFallback();
+            default -> null;
+        };
+        if (mi == null || !mi.isConfigured()) {
+            log.info("ModelProvider: instance '{}' not configured, using default model", instanceKey);
+            return new FallbackModelDecorator(defaultModel, defaultModel);
+        }
+        Model m = OpenAIChatModel.builder()
+                .apiKey(mi.getApiKey())
+                .baseUrl(mi.getBaseUrl())
+                .modelName(mi.getName())
+                .stream(true)
+                .build();
+        log.info("ModelProvider: resolved independent model instance '{}' name={}", instanceKey, mi.getName());
+        return new FallbackModelDecorator(m, defaultModel);
     }
 
     /**

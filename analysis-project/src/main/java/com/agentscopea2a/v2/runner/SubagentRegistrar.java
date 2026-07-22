@@ -23,6 +23,7 @@ import com.agentscopea2a.v2.tools.ArithTool;
 import com.agentscopea2a.v2.tools.PythonExecTool;
 import com.agentscopea2a.v2.tools.SkillSaveTool;
 import com.agentscopea2a.v2.tools.ToolRoutersIndex;
+import com.agentscopea2a.v2.verify.L2EventCollectorHook;
 import com.agentscopea2a.v2.config.WorkspaceMaterializer;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.tool.Toolkit;
@@ -83,6 +84,8 @@ public class SubagentRegistrar {
     private final ArtifactAccessMiddleware artifactAccessMiddleware;
     private final PythonExecAccessMiddleware pythonExecAccessMiddleware;
     private final PythonExecRetryHook pythonExecRetryHook;
+    /** V3.0: collects L2 (sub-agent) tool-call events into the shared VerificationContext. */
+    private final L2EventCollectorHook l2EventCollectorHook;
 
     public SubagentRegistrar(
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
@@ -93,7 +96,8 @@ public class SubagentRegistrar {
             ObjectProvider<ArtifactHandoffHook> artifactHandoffHookProvider,
             ObjectProvider<ArtifactAccessMiddleware> artifactAccessMiddlewareProvider,
             ObjectProvider<PythonExecAccessMiddleware> pythonExecAccessMiddlewareProvider,
-            ObjectProvider<PythonExecRetryHook> pythonExecRetryHookProvider) {
+            ObjectProvider<PythonExecRetryHook> pythonExecRetryHookProvider,
+            ObjectProvider<L2EventCollectorHook> l2EventCollectorHookProvider) {
 
         // v1-style: subagents hold only meta-tool beans. Business tools (quality_query_* /
         // data_*) are encapsulated inside ToolRoutersIndex and dispatched via
@@ -117,10 +121,11 @@ public class SubagentRegistrar {
         this.artifactAccessMiddleware = artifactAccessMiddlewareProvider.getIfAvailable();
         this.pythonExecAccessMiddleware = pythonExecAccessMiddlewareProvider.getIfAvailable();
         this.pythonExecRetryHook = pythonExecRetryHookProvider.getIfAvailable();
-        log.info("SubagentRegistrar: toolRegistry built with {} entries: {}; hooks - handoff={} access={} pyGuard={} retry={}",
+        this.l2EventCollectorHook = l2EventCollectorHookProvider.getIfAvailable();
+        log.info("SubagentRegistrar: toolRegistry built with {} entries: {}; hooks - handoff={} access={} pyGuard={} retry={} l2Collector={}",
                 toolRegistry.size(), toolRegistry.keySet(),
                 artifactHandoffHook != null, artifactAccessMiddleware != null,
-                pythonExecAccessMiddleware != null, pythonExecRetryHook != null);
+                pythonExecAccessMiddleware != null, pythonExecRetryHook != null, l2EventCollectorHook != null);
 
         Path workspace = Paths.get(workspacePath).toAbsolutePath();
         workspace = WorkspaceMaterializer.ensureMaterialized(workspace);
@@ -131,9 +136,11 @@ public class SubagentRegistrar {
             List<String> tools = spec.getTools() != null ? spec.getTools() : List.of();
             for (String t : tools) {
                 if (!toolRegistry.containsKey(t)) {
-                    throw new IllegalStateException(
-                            "Subagent '" + spec.getName() + "' declares unknown tool '" + t
-                                    + "'. Known tools: " + toolRegistry.keySet());
+                    // Graceful degradation: warn + skip (the factory lambda already skips missing
+                    // tools when building the toolkit). Lets the app start when an optional tool
+                    // (e.g. python_exec, gated by sandbox.enabled) is absent.
+                    log.warn("Subagent '{}' declares unavailable tool '{}' (skipping). Available: {}",
+                            spec.getName(), t, toolRegistry.keySet());
                 }
             }
         }
@@ -233,13 +240,18 @@ public class SubagentRegistrar {
             if (hasPythonExec && pythonExecRetryHook != null) {
                 sub.hook(pythonExecRetryHook);
             }
+            // V3.0: collect L2 (sub-agent) tool-call events into the shared VerificationContext.
+            if (l2EventCollectorHook != null) {
+                sub.hook(l2EventCollectorHook);
+            }
 
-            log.debug("Built subagent '{}' with tools={} handoff={} access={} pyGuard={} retry={}",
+            log.debug("Built subagent '{}' with tools={} handoff={} access={} pyGuard={} retry={} l2Collector={}",
                     id, registered,
                     artifactHandoffHook != null,
                     artifactAccessMiddleware != null,
                     hasPythonExec && pythonExecAccessMiddleware != null,
-                    hasPythonExec && pythonExecRetryHook != null);
+                    hasPythonExec && pythonExecRetryHook != null,
+                    l2EventCollectorHook != null);
             return sub.build();
         });
     }

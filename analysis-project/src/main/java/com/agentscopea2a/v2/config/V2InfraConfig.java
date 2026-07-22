@@ -26,6 +26,9 @@ import com.agentscopea2a.v2.dimension.DimensionStateManager;
 import com.agentscopea2a.v2.hooks.ArtifactHandoffHook;
 import com.agentscopea2a.v2.hooks.PythonExecRetryHook;
 import com.agentscopea2a.v2.hooks.ToolCallTrackingHook;
+import com.agentscopea2a.v2.verify.L2EventCollectorHook;
+import com.agentscopea2a.v2.verify.VerificationHook;
+import com.agentscopea2a.v2.verify.VerifyLoopOrchestrator;
 import com.agentscopea2a.v2.middleware.ArtifactAccessMiddleware;
 import com.agentscopea2a.v2.middleware.PythonExecAccessMiddleware;
 import com.agentscopea2a.v2.middleware.ResponseCacheMiddleware;
@@ -227,5 +230,22 @@ public class V2InfraConfig {
     public SessionMiddleware sessionMiddleware() {
         log.info("SessionMiddleware: wired (regex sanitization in tool call inputs)");
         return new SessionMiddleware();
+    }
+
+    // ── V3.0 Verification Agent hooks (supervisor-side VerificationHook + sub-agent L2 collector) ──
+
+    @Bean
+    @SuppressWarnings("deprecation")
+    public VerificationHook verificationHook(VerifyLoopOrchestrator orchestrator,
+                                             HarnessRunnerProperties properties) {
+        log.info("VerificationHook: wired (priority=46, supervisor-side verification)");
+        return new VerificationHook(orchestrator, properties);
+    }
+
+    @Bean
+    @SuppressWarnings("deprecation")
+    public L2EventCollectorHook l2EventCollectorHook() {
+        log.info("L2EventCollectorHook: wired (priority=44, sub-agent L2 event collection)");
+        return new L2EventCollectorHook();
     }
 }

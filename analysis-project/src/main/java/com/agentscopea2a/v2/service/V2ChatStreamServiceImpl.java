@@ -30,6 +30,9 @@ import com.agentscopea2a.v2.hooks.ToolCallTrackingHook;
 import com.agentscopea2a.v2.memory.EpisodicMemory;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.tools.ToolCallCollector;
+import com.agentscopea2a.v2.verify.TriggerLevelResolver;
+import com.agentscopea2a.v2.verify.VerificationContext;
+import com.agentscopea2a.v2.verify.VerificationRecorder;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.AgentResultEvent;
@@ -73,6 +76,8 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
     private final HarnessA2aRunnerV2 runner;
     private final ArtifactStore artifactStore;
     private final EpisodicMemory episodicMemory;
+    private final TriggerLevelResolver triggerLevelResolver;
+    private final VerificationRecorder verificationRecorder;
 
 
     /**
@@ -86,10 +91,14 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
     private final ConcurrentHashMap<String, InFlightCall> inFlightCalls = new ConcurrentHashMap<>();
 
     public V2ChatStreamServiceImpl(HarnessA2aRunnerV2 runner, ArtifactStore artifactStore,
-                                    EpisodicMemory episodicMemory) {
+                                    EpisodicMemory episodicMemory,
+                                    TriggerLevelResolver triggerLevelResolver,
+                                    VerificationRecorder verificationRecorder) {
         this.runner = runner;
         this.artifactStore = artifactStore;
         this.episodicMemory = episodicMemory;
+        this.triggerLevelResolver = triggerLevelResolver;
+        this.verificationRecorder = verificationRecorder;
     }
 
     /**
@@ -114,6 +123,8 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
         final RuntimeContext runtimeCtx;
         /** 工具调用采集器，供 cleanup 持久化 episodic 记忆 */
         final ToolCallCollector collector;
+        /** V3.0 验证上下文，供 cleanup 落盘事件流 */
+        final VerificationContext verificationCtx;
         /** 用户原始消息，供 cleanup 组装 episodic session messages */
         final Msg userMsg;
         /** episodic session 维度标识 */
@@ -126,13 +137,15 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
         final AtomicBoolean hasSentExecuting = new AtomicBoolean(false);
 
         StreamContext(SseEmitter emitter, ChatRequest req, RuntimeContext runtimeCtx,
-                      ToolCallCollector collector, Msg userMsg, String episodicSessionId) {
+                      ToolCallCollector collector, Msg userMsg, String episodicSessionId,
+                      VerificationContext verificationCtx) {
             this.emitter = emitter;
             this.req = req;
             this.runtimeCtx = runtimeCtx;
             this.collector = collector;
             this.userMsg = userMsg;
             this.episodicSessionId = episodicSessionId;
+            this.verificationCtx = verificationCtx;
             this.conversationId = req.getConversationId();
             this.userId = req.getUserId();
             this.ansUUID = req.getConversationId();
@@ -295,12 +308,16 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
 
         // 把工具调用采集器放进上下文，供 ToolCallTrackingHook 在工具调用时写入
         ctx.put(ToolCallTrackingHook.COLLECTOR_CTX_KEY, collector);
+        // V3.0: 创建请求级 VerificationContext 并放入 RuntimeContext，供 VerificationHook 读取
+        VerificationContext verificationCtx = new VerificationContext(conversationId, userId, text);
+        verificationCtx.setTriggerLevel(triggerLevelResolver.resolveLevel(text));
+        ctx.put(VerificationContext.VERIFY_CTX_KEY, verificationCtx);
         // episodic 记忆的 session 维度标识：user:<userId>:<conversationId>
         String episodicUserId = userId != null && !userId.isBlank() ? userId : "anonymous";
         String episodicSessionId = "user:" + episodicUserId + ":" + conversationId;
 
         // 把 per-request 状态收拢进 StreamContext（参考 v1 流处理模式）
-        StreamContext streamCtx = new StreamContext(emitter, req, ctx, collector, userMsg, episodicSessionId);
+        StreamContext streamCtx = new StreamContext(emitter, req, ctx, collector, userMsg, episodicSessionId, verificationCtx);
 
         // 清理逻辑：取消订阅、清理 artifact、持久化 episodic 记忆、移除进行中调用标记
         Runnable cleanup = buildCleanup(streamCtx, callKey, inFlight);
@@ -495,6 +512,12 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
                 artifactStore.cleanupTask(ArtifactContext.from(ctx.runtimeCtx));
             } catch (Exception ex) {
                 log.warn("Artifact cleanup failed for sessionId={}: {}", ctx.conversationId, ex.getMessage());
+            }
+            // V3.0: 落盘验证事件流（verification_event 表，供回放/离线评估）
+            try {
+                verificationRecorder.recordEvents(ctx.verificationCtx);
+            } catch (Exception ex) {
+                log.warn("Verification event flush failed for sessionId={}: {}", ctx.conversationId, ex.getMessage());
             }
             // 3. 持久化 episodic 记忆：仅在存在工具调用上下文时记录
             try {

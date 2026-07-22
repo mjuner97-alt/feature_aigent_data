@@ -1,0 +1,38 @@
+# V3.0 Repair Policy (V3.0 design §10.3 / 附录 E)
+# 修复动作策略表 - 由 RepairPolicyEngine 优先加载(TTL 热刷新); YAML 缺失/解析失败时回退 DB 表 repair_policy_rule。
+# 反 gaming: MODIFY_RESULT / CHANGE_CONCLUSION 不在 taxonomy 且在 forbidden 中, 永不被派发。
+global:
+  forbidden_default: [MODIFY_RESULT, CHANGE_CONCLUSION]
+  max_repair: 2
+
+policies:
+  - error_type: SEMANTIC_MISMATCH
+    severity: HIGH
+    allowed_actions: [SEMANTIC_FIX, CLARIFY_USER]
+    forbidden: [MODIFY_RESULT, CHANGE_CONCLUSION]
+    max_retry: 1
+  - error_type: DATA_MISSING
+    severity: HIGH
+    allowed_actions: [DATA_REQUERY, CLARIFY_USER]
+    forbidden: [MODIFY_RESULT]
+    max_retry: 2
+  - error_type: PARAMETER_ERROR
+    severity: MEDIUM
+    allowed_actions: [PARAMETER_FIX]
+    forbidden: [MODIFY_RESULT]
+    max_retry: 2
+  - error_type: ARITHMETIC_ERROR
+    severity: MEDIUM
+    allowed_actions: [SEMANTIC_FIX]
+    forbidden: [MODIFY_RESULT]
+    max_retry: 1
+  - error_type: FABRICATION
+    severity: CRITICAL
+    allowed_actions: [REFUSE]
+    forbidden: [MODIFY_RESULT, DATA_REQUERY]
+    max_retry: 0
+  - error_type: QUESTION_AMBIGUOUS
+    severity: MEDIUM
+    allowed_actions: [CLARIFY_USER]
+    forbidden: [MODIFY_RESULT]
+    max_retry: 1

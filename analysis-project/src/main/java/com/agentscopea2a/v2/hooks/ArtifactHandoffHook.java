@@ -38,6 +38,7 @@ import reactor.core.publisher.Mono;
 
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * v2 artifact handoff hook — replaces v1 {@code ArtifactHandoffHook}.
@@ -68,6 +69,9 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
 
     private static final int PREVIEW_ROWS = 5;
     private static final int SCHEMA_SAMPLES_PER_COLUMN = 3;
+
+    /** V3.0: RuntimeContext key under which produced ArtifactRefs are published for the verifier (B1 check). */
+    private static final String VERIFICATION_ARTIFACT_REFS_KEY = "verificationArtifactRefs";
 
     private final ArtifactStore artifactStore;
     private final ArtifactContext fixedContext;
@@ -131,12 +135,14 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
 
         return HookRuntimeContext.resolve()
                 .map(ctx -> {
-                    applyHandoff(post, toolName, table, ArtifactContext.from(ctx));
+                    ArtifactRef ref = applyHandoff(post, toolName, table, ArtifactContext.from(ctx));
+                    publishArtifactRef(ctx, ref);
                     return event;
                 })
                 .switchIfEmpty(Mono.fromSupplier(() -> {
                     if (runtimeContext != null) {
-                        applyHandoff(post, toolName, table, ArtifactContext.from(runtimeContext));
+                        ArtifactRef ref = applyHandoff(post, toolName, table, ArtifactContext.from(runtimeContext));
+                        publishArtifactRef(runtimeContext, ref);
                     } else {
                         log.warn("ArtifactHandoffHook: no RuntimeContext bound, skipping artifactize for tool={}", toolName);
                     }
@@ -144,7 +150,7 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
                 }));
     }
 
-    private void applyHandoff(PostActingEvent post, String toolName, TabularData table, ArtifactContext ctx) {
+    private ArtifactRef applyHandoff(PostActingEvent post, String toolName, TabularData table, ArtifactContext ctx) {
         ToolUseBlock toolUse = post.getToolUse();
         String preview = table.previewMarkdown(PREVIEW_ROWS);
         List<ColumnSchema> schema = table.inferSchema(SCHEMA_SAMPLES_PER_COLUMN);
@@ -161,6 +167,34 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
         log.info("Artifactized {} result for user={}, task={}: rows={} cols={} -> {}",
                 toolName, ctx.userBucket(), ctx.taskBucket(),
                 table.rowCount(), table.columns().size(), ref.agentPath());
+        return ref;
+    }
+
+    /**
+     * V3.0 additive: publish the produced {@link ArtifactRef} onto the per-request
+     * {@link RuntimeContext} so the verifier's B1 (artifact path terminal consistency) check can see
+     * which paths were actually produced - without introducing a hard dependency on the verify
+     * package (raw key string mirrors {@code VerificationContext.ARTIFACT_REFS_KEY}). Best-effort:
+     * no-op when no verification context is bound.
+     */
+    @SuppressWarnings("unchecked")
+    private static void publishArtifactRef(RuntimeContext ctx, ArtifactRef ref) {
+        if (ctx == null || ref == null) {
+            return;
+        }
+        try {
+            Object existing = ctx.get(VERIFICATION_ARTIFACT_REFS_KEY);
+            List<ArtifactRef> list;
+            if (existing instanceof List) {
+                list = (List<ArtifactRef>) existing;
+            } else {
+                list = new CopyOnWriteArrayList<>();
+                ctx.put(VERIFICATION_ARTIFACT_REFS_KEY, list);
+            }
+            list.add(ref);
+        } catch (Exception ignored) {
+            // best-effort; verification context may not be bound for this request
+        }
     }
 
     // ==================== Handoff message ====================

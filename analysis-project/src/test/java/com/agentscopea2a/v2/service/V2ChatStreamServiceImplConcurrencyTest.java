@@ -19,6 +19,8 @@ import com.agentscopea2a.dto.ChatRequest;
 import com.agentscopea2a.v2.artifact.ArtifactStore;
 import com.agentscopea2a.v2.memory.EpisodicMemory;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
+import com.agentscopea2a.v2.verify.TriggerLevelResolver;
+import com.agentscopea2a.v2.verify.VerificationRecorder;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import org.junit.jupiter.api.BeforeEach;
@@ -62,14 +64,19 @@ class V2ChatStreamServiceImplConcurrencyTest {
     private HarnessA2aRunnerV2 mockRunner;
     private ArtifactStore mockStore;
     private EpisodicMemory mockEpisodic;
+    private TriggerLevelResolver mockTriggerLevelResolver;
+    private VerificationRecorder mockVerificationRecorder;
 
     @BeforeEach
     void setUp() {
         mockRunner = mock(HarnessA2aRunnerV2.class);
         mockStore = mock(ArtifactStore.class);
         mockEpisodic = mock(EpisodicMemory.class);
+        mockTriggerLevelResolver = mock(TriggerLevelResolver.class);
+        mockVerificationRecorder = mock(VerificationRecorder.class);
         when(mockEpisodic.recordSessionWithToolContext(any(), any(), any()))
                 .thenReturn(Mono.empty());
+        when(mockTriggerLevelResolver.resolveLevel(any())).thenReturn("MEDIUM");
     }
 
     /** Helper: stub streamEvents(List<Msg>, RuntimeContext) - the overload used by stream(). */
@@ -90,12 +97,12 @@ class V2ChatStreamServiceImplConcurrencyTest {
         // an in-flight call that hangs (e.g. long-running LLM call or tool).
         stubStreamEvents(Flux.never());
 
-        V2ChatStreamServiceImpl service = new V2ChatStreamServiceImpl(mockRunner, mockStore, mockEpisodic);
+        V2ChatStreamServiceImpl service = new V2ChatStreamServiceImpl(mockRunner, mockStore, mockEpisodic, mockTriggerLevelResolver, mockVerificationRecorder);
 
         ChatRequest req1 = ChatRequest.builder()
-                .input("hello").conversationId("sess-1").userId("u1").build();
+                .question("hello").conversationId("sess-1").userId("u1").build();
         ChatRequest req2 = ChatRequest.builder()
-                .input("world").conversationId("sess-1").userId("u1").build();
+                .question("world").conversationId("sess-1").userId("u1").build();
 
         SseEmitter e1 = service.stream(req1);
         assertThat(e1).isNotNull();
@@ -136,12 +143,12 @@ class V2ChatStreamServiceImplConcurrencyTest {
     void concurrentDifferentSessions_bothSucceed() throws Exception {
         stubStreamEvents(Flux.never());
 
-        V2ChatStreamServiceImpl service = new V2ChatStreamServiceImpl(mockRunner, mockStore, mockEpisodic);
+        V2ChatStreamServiceImpl service = new V2ChatStreamServiceImpl(mockRunner, mockStore, mockEpisodic, mockTriggerLevelResolver, mockVerificationRecorder);
 
         ChatRequest reqA = ChatRequest.builder()
-                .input("call-A").conversationId("sess-A").userId("u3").build();
+                .question("call-A").conversationId("sess-A").userId("u3").build();
         ChatRequest reqB = ChatRequest.builder()
-                .input("call-B").conversationId("sess-B").userId("u3").build();
+                .question("call-B").conversationId("sess-B").userId("u3").build();
 
         SseEmitter eA = service.stream(reqA);
         SseEmitter eB = service.stream(reqB);
