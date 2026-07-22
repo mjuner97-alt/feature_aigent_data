@@ -130,6 +130,30 @@ public class HarnessA2aRunnerV2 {
     }
 
     /**
+     * 构建并返回一个临时 {@link HarnessAgent}，供 out-of-band 控制端点使用。
+     *
+     * <p>per-request 重构（commit 7b5e9b2）后，{@link #streamEvents} 每次调用都新建
+     * agent 且不再保留共享实例。但 {@code /v2/ai/chat/interrupt}（中断当前会话）和
+     * permission-mode 读写端点仍需一个 agent 句柄来调用实例方法——这些方法按
+     * {@code (userId, sessionId)} 操作共享的 MySQL state store
+     * （{@code permission_context.mode} / {@code InterruptControl} flag），因此用一个
+     * 临时 agent 即可触达同一份 session state。
+     *
+     * <p><b>注意：</b>每次调用都会构建完整的模型 + memory + middleware + toolkit，
+     * 成本较高，仅用于上述低频控制端点，不要用在请求热路径上。
+     *
+     * <p><b>技术债：</b>{@code interrupt} 作用在另一个正在运行的 per-request agent 实例上，
+     * 跨实例是否生效取决于框架 InterruptControl 是否为 session 级共享；若不生效，
+     * interrupt 端点会由 {@code InFlightCall.subscription()} 的 dispose 兜底。
+     * 后续应按 per-request 架构彻底重构这三处调用，移除对本方法的依赖。
+     *
+     * @return 新构建的临时 agent（ctx 为 null，走默认模型）
+     */
+    public HarnessAgent getAgent() {
+        return buildAgent(null);
+    }
+
+    /**
      * 根据运行时上下文构建新的 HarnessAgent。
      *
      * <p>关键改动：
