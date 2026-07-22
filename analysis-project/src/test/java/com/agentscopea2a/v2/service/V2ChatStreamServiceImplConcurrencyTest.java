@@ -93,9 +93,9 @@ class V2ChatStreamServiceImplConcurrencyTest {
         V2ChatStreamServiceImpl service = new V2ChatStreamServiceImpl(mockRunner, mockStore, mockEpisodic);
 
         ChatRequest req1 = ChatRequest.builder()
-                .input("hello").conversationId("sess-1").userId("u1").build();
+                .question("hello").conversationId("sess-1").userId("u1").build();
         ChatRequest req2 = ChatRequest.builder()
-                .input("world").conversationId("sess-1").userId("u1").build();
+                .question("world").conversationId("sess-1").userId("u1").build();
 
         SseEmitter e1 = service.stream(req1);
         assertThat(e1).isNotNull();
@@ -139,9 +139,9 @@ class V2ChatStreamServiceImplConcurrencyTest {
         V2ChatStreamServiceImpl service = new V2ChatStreamServiceImpl(mockRunner, mockStore, mockEpisodic);
 
         ChatRequest reqA = ChatRequest.builder()
-                .input("call-A").conversationId("sess-A").userId("u3").build();
+                .question("call-A").conversationId("sess-A").userId("u3").build();
         ChatRequest reqB = ChatRequest.builder()
-                .input("call-B").conversationId("sess-B").userId("u3").build();
+                .question("call-B").conversationId("sess-B").userId("u3").build();
 
         SseEmitter eA = service.stream(reqA);
         SseEmitter eB = service.stream(reqB);

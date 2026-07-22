@@ -335,11 +335,22 @@ export default function ChatPanel({
               ? { ...e, toolOutput: update.toolOutput }
               : e));
         } else if (evt.type === 'done') {
-          // Mark main reply + all subagent bubbles as not pending
+          // Replace the main reply bubble text with the final answer from the
+          // done event. The streaming "think" chunks are the LLM's reasoning
+          // process; the done event carries the authoritative final answer which
+          // should replace the accumulated text for clean rendering (especially
+          // for long reports where markdown rendering is needed).
+          const finalText = evt.fullText || '';
           const subIds = Object.values(subagentMsgIds);
-          setMessages(prev => prev.map(m => (m.id === replyMsg.id || subIds.includes(m.id))
-            ? { ...m, pending: false }
-            : m));
+          setMessages(prev => prev.map(m => {
+            if (m.id === replyMsg.id) {
+              return { ...m, pending: false, text: finalText || m.text };
+            }
+            if (subIds.includes(m.id)) {
+              return { ...m, pending: false };
+            }
+            return m;
+          }));
           // NOTE: do NOT reset subagentPlans/subagentTodoCounts on done.
           // The plan/todo state should persist in the UI until the next turn
           // starts (where setActivityEvents([]) resets the activity feed).
@@ -421,8 +432,17 @@ export default function ChatPanel({
               const update = evt.process;
               setActivityEvents(prev => prev.map(e => e.toolCallId === update.toolCallId ? { ...e, toolOutput: update.toolOutput } : e));
             } else if (evt.type === 'done') {
+              const finalText = evt.fullText || '';
               const subIds = Object.values(subagentMsgIds);
-              setMessages(prev => prev.map(m => (m.id === replyMsg.id || subIds.includes(m.id)) ? { ...m, pending: false } : m));
+              setMessages(prev => prev.map(m => {
+                if (m.id === replyMsg.id) {
+                  return { ...m, pending: false, text: finalText || m.text };
+                }
+                if (subIds.includes(m.id)) {
+                  return { ...m, pending: false };
+                }
+                return m;
+              }));
               break;
             }
           }

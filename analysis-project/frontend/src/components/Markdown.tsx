@@ -1,38 +1,133 @@
 /**
  * Markdown - minimal markdown renderer for chat bubbles.
  *
- * Supports the subset emitted by the agent:
- * <ul>
- *   <li>Headings: #, ##, ###
- *   <li>Lists: -, *, 1.
- *   <li>Tables: | a | b |\n|---|---|
- *   <li>Code blocks: ``` fenced and `inline`
- *   <li>Inline: **bold**, *italic*, `code`, [text](url)
- *   <li>Blockquotes: >
- *   <li>Horizontal rule: ---
- * </ul>
+ * Performance-critical: for long agent reports (which can be 5000+ chars with
+ * multiple tables), the React component tree approach (parseBlocks → renderBlock
+ * → renderInline with recursive regex) is O(n²) and freezes the main thread.
  *
- * No external dependencies — the project has no markdown library in
- * package.json, and adding one would balloon the bundle. This covers the
- * common shapes the agent produces in its reports.
+ * Strategy:
+ * - Short text (≤4000 chars): React component tree (interactive, correct styling)
+ * - Long text (>4000 chars): dangerouslySetInnerHTML with a fast string-replacement
+ *   renderer. No React reconciliation overhead, no recursive calls, pure O(n).
+ *   This trades some rendering fidelity for responsiveness.
  */
 
-import React from 'react';
+import React, { useMemo } from 'react';
 
 interface Props {
   text: string;
 }
 
+/** Below this threshold, render with React components. Above it, use innerHTML. */
+const INNERHTML_THRESHOLD = 4000;
+
 export default React.memo(function Markdown({ text }: Props) {
-  const blocks = parseBlocks(text);
-  return (
-    <div style={S.root}>
-      {blocks.map((b, i) => renderBlock(b, i))}
-    </div>
-  );
+  if (text.length <= INNERHTML_THRESHOLD) {
+    const blocks = parseBlocks(text);
+    return (
+      <div style={S.root}>
+        {blocks.map((b, i) => renderBlock(b, i))}
+      </div>
+    );
+  }
+
+  // Long text: fast string-based rendering via dangerouslySetInnerHTML.
+  const html = useMemo(() => markdownToHtml(text), [text]);
+  return <div style={S.root} dangerouslySetInnerHTML={{ __html: html }} />;
 }, (prev, next) => prev.text === next.text);
 
-// ── Block-level parser ────────────────────────────────────────────────────
+// ── Fast string-based renderer for long text ───────────────────────────────
+
+function markdownToHtml(md: string): string {
+  // Split into fenced code blocks first (they must not be processed further)
+  const parts: string[] = [];
+  const codeBlockRe = /```(\w*)\n([\s\S]*?)```/g;
+  let lastIdx = 0;
+  let m: RegExpExecArray | null;
+  while ((m = codeBlockRe.exec(md)) !== null) {
+    if (m.index > lastIdx) {
+      parts.push(renderInlineHtml(md.slice(lastIdx, m.index)));
+    }
+    const lang = m[1] || '';
+    const code = escHtml(m[2]);
+    parts.push(`<pre style="${s(S.codeBlock)}"><code>${code}</code></pre>`);
+    lastIdx = m.index + m[0].length;
+  }
+  if (lastIdx < md.length) {
+    parts.push(renderInlineHtml(md.slice(lastIdx)));
+  }
+  return parts.join('\n');
+}
+
+function renderInlineHtml(text: string): string {
+  let html = escHtml(text);
+  // Horizontal rule
+  html = html.replace(/^---+\s*$/gm, '<hr style="border:none;border-top:1px solid #e2e8f0;margin:12px 0">');
+  // Headings
+  html = html.replace(/^######\s+(.+)$/gm, '<div style="font-size:0.9rem;font-weight:700;margin:4px 0">$1</div>');
+  html = html.replace(/^#####\s+(.+)$/gm, '<div style="font-size:0.95rem;font-weight:700;margin:4px 0">$1</div>');
+  html = html.replace(/^####\s+(.+)$/gm, '<div style="font-size:1.05rem;font-weight:700;margin:6px 0">$1</div>');
+  html = html.replace(/^###\s+(.+)$/gm, '<div style="font-size:1.18rem;font-weight:700;margin:6px 0">$1</div>');
+  html = html.replace(/^##\s+(.+)$/gm, '<div style="font-size:1.35rem;font-weight:700;margin:8px 0">$1</div>');
+  html = html.replace(/^#\s+(.+)$/gm, '<div style="font-size:1.6rem;font-weight:700;margin:12px 0 6px">$1</div>');
+  // Tables
+  html = renderTableHtml(html);
+  // Blockquotes
+  html = html.replace(/^&gt;\s?(.+)$/gm, '<blockquote style="margin:8px 0;padding:6px 12px;border-left:3px solid #cbd5e1;background:#f8fafc;color:#475569;font-style:italic">$1</blockquote>');
+  // Unordered list
+  html = html.replace(/^[\s]*[-*]\s+(.+)$/gm, '<li style="margin:2px 0">$1</li>');
+  // Ordered list — wrap consecutive <li> in <ul>/<ol> is complex; keep simple
+  html = html.replace(/^[\s]*(\d+)\.\s+(.+)$/gm, '<li style="margin:2px 0">$2</li>');
+  // Wrap consecutive <li> in <ul>
+  html = html.replace(/((?:<li[^>]*>.*?<\/li>\s*)+)/g, '<ul style="margin:6px 0;padding-left:22px">$1</ul>');
+  // Bold & italic (after escaping, * is still * since it's not HTML special)
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  // Inline code (already escaped, backtick boundaries preserved)
+  // Re-handle backtick code since escHtml converted ` to &amp;#96; — no, ` is not HTML special
+  html = html.replace(/`([^`]+)`/g, '<code style="background:#f1f5f9;color:#be185d;padding:1px 5px;border-radius:4px;font-family:ui-monospace,monospace;font-size:0.88em">$1</code>');
+  // Links
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer" style="color:#6366f1;text-decoration:none">$1</a>');
+  // Paragraphs: wrap lines that aren't already in a block element
+  html = html.replace(/^(?!<[hou]|<li|<div|<pre|<blockquote|<table|<ul|<ol|<hr)(.+)$/gm, '<div style="margin:6px 0">$1</div>');
+  return html;
+}
+
+function renderTableHtml(html: string): string {
+  // Simple table: | ... | lines followed by | --- | separator
+  const lines = html.split('\n');
+  const result: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (/^\s*\|.*\|\s*$/.test(lines[i]) && i + 1 < lines.length && /^\s*\|[\s:;-]+\|.*$/.test(lines[i + 1])) {
+      const headerCells = lines[i].trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+      i += 2;
+      const rows: string[][] = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+        rows.push(lines[i].trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim()));
+        i++;
+      }
+      let table = '<div style="overflow-x:auto;margin:8px 0"><table style="border-collapse:collapse;width:100%;font-size:0.88rem">';
+      table += '<thead><tr>' + headerCells.map(h => `<th style="border:1px solid #e2e8f0;padding:6px 10px;background:#f8fafc;text-align:left;font-weight:600">${h}</th>`).join('') + '</tr></thead>';
+      table += '<tbody>' + rows.map(row => '<tr>' + row.map(c => `<td style="border:1px solid #e2e8f0;padding:6px 10px">${c}</td>`).join('') + '</tr>').join('') + '</tbody></table></div>';
+      result.push(table);
+    } else {
+      result.push(lines[i]);
+      i++;
+    }
+  }
+  return result.join('\n');
+}
+
+function escHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function s(style: React.CSSProperties): string {
+  return Object.entries(style).map(([k, v]) => `${k.replace(/[A-Z]/g, c => '-' + c.toLowerCase())}:${v}`).join(';');
+}
+
+// ── Block-level parser (for short text, React component rendering) ─────────
 
 type Block =
   | { kind: 'heading'; level: number; text: string }
@@ -91,7 +186,7 @@ function parseBlocks(text: string): Block[] {
       continue;
     }
 
-    // Table (a line of | cells | followed by a separator line of | --- |)
+    // Table
     if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|[\s:-]+\|.*$/.test(lines[i + 1])) {
       const header = splitRow(line);
       i += 2; // skip header + separator
@@ -104,7 +199,7 @@ function parseBlocks(text: string): Block[] {
       continue;
     }
 
-    // List (ordered or unordered) — group consecutive list items
+    // List (ordered or unordered)
     const ulMatch = line.match(/^\s*[-*]\s+(.*)$/);
     const olMatch = line.match(/^\s*\d+\.\s+(.*)$/);
     if (ulMatch || olMatch) {
@@ -133,7 +228,7 @@ function parseBlocks(text: string): Block[] {
       continue;
     }
 
-    // Paragraph — gather until blank or block-start
+    // Paragraph
     const para: string[] = [];
     while (i < lines.length
       && lines[i].trim() !== ''
@@ -158,7 +253,7 @@ function splitRow(line: string): string[] {
   return line.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
 }
 
-// ── Block renderer ────────────────────────────────────────────────────────
+// ── Block renderer (for short text) ────────────────────────────────────────
 
 function renderBlock(b: Block, key: number): React.ReactNode {
   switch (b.kind) {
@@ -225,15 +320,12 @@ function renderBlock(b: Block, key: number): React.ReactNode {
   }
 }
 
-// ── Inline parser ─────────────────────────────────────────────────────────
-// Handles: `code`, **bold**, *italic*, [text](url)
+// ── Inline parser (for short text) ─────────────────────────────────────────
 
 function renderInline(text: string): React.ReactNode {
   const nodes: React.ReactNode[] = [];
   let remaining = text;
   let key = 0;
-  // Pattern order matters: code first (so ** inside `..` isn't processed),
-  // then bold, then italic, then link.
   const patterns: { re: RegExp; render: (m: RegExpExecArray) => React.ReactNode }[] = [
     { re: /`([^`]+)`/, render: m => <code key={key++} style={S.inlineCode}>{m[1]}</code> },
     { re: /\*\*([^*]+)\*\*/, render: m => <strong key={key++}>{renderInline(m[1])}</strong> },
@@ -243,9 +335,9 @@ function renderInline(text: string): React.ReactNode {
   while (remaining.length > 0) {
     let earliest: { idx: number; match: RegExpExecArray; render: (m: RegExpExecArray) => React.ReactNode } | null = null;
     for (const p of patterns) {
-      const m = p.re.exec(remaining);
-      if (m && (earliest === null || m.index < earliest.idx)) {
-        earliest = { idx: m.index, match: m, render: p.render };
+      const match = p.re.exec(remaining);
+      if (match && (earliest === null || match.index < earliest.idx)) {
+        earliest = { idx: match.index, match, render: p.render };
       }
     }
     if (!earliest) {

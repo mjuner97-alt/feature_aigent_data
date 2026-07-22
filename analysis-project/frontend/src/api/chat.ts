@@ -1,5 +1,5 @@
 /**
- * v2 /v2/ai/chat SSE stream client.
+ * v2 /ai/chat SSE stream client.
  *
  * <p>Adapts the project's SSE protocol to an async generator of normalized events:
  * <ul>
@@ -10,16 +10,16 @@
  *       (live progress for ActivityFeed — see process-event-streaming.md)
  * </ul>
  *
- * <p>The backend {@code POST /v2/ai/chat} returns SseEmitter with events named
+ * <p>The backend {@code POST /ai/chat} returns SseEmitter with events named
  * after AgentEvent types (lowercased). See V2ChatStreamServiceImpl#handleEvent.
  */
 
 export interface ChatRequest {
   /** User's question/prompt. Backend reads input (preferred) or question. */
   input: string;
-  /** Session id; the same value must be passed to /v2/ai/chat/interrupt. */
+  /** Session id; the same value must be passed to /ai/chat/interrupt. */
   conversationId: string;
-  /** User id; must match across /v2/ai/chat and /v2/ai/chat/interrupt. */
+  /** User id; must match across /ai/chat and /ai/chat/interrupt. */
   user_id: string;
 }
 
@@ -92,7 +92,7 @@ export type ChatEvent =
 export async function* streamChat(req: ChatRequest, signal?: AbortSignal): AsyncGenerator<ChatEvent> {
   let res: Response;
   try {
-    res = await fetch('/v2/ai/chat', {
+    res = await fetch('/ai/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req),
@@ -144,13 +144,29 @@ export async function* streamChat(req: ChatRequest, signal?: AbortSignal): Async
 
       try {
         const json = JSON.parse(data);
+        // Support both old AiChatResult format (lineResult/resultAll) and new
+        // ThinkPayload/TextPayload DTO format (data.content/data.action/data.topic/finish).
+        // The backend sends SSE events with name "text_block_delta" for streaming tokens
+        // and "done" for final results, regardless of which DTO format is used.
         if (eventName === 'text_block_delta') {
-          const chunk = typeof json.lineResult === 'string' ? json.lineResult : '';
-          const fullText = typeof json.resultAll === 'string' ? json.resultAll : '';
+          // New DTO format: { type: "think", data: { content, action, topic }, finish, ... }
+          // Old format: { lineResult, resultAll, source, ... }
+          const isNewFormat = json.data && typeof json.data === 'object';
+          const chunk = isNewFormat
+            ? (typeof json.data.content === 'string' ? json.data.content : '')
+            : (typeof json.lineResult === 'string' ? json.lineResult : '');
+          const fullText = isNewFormat
+            ? ''  // new format doesn't carry cumulative text; frontend accumulates
+            : (typeof json.resultAll === 'string' ? json.resultAll : '');
           const source = json.source ?? null;
           yield { type: 'token', chunk, fullText, source };
         } else if (eventName === 'done') {
-          const fullText = typeof json.resultAll === 'string' ? json.resultAll : '';
+          // New DTO format: { type: "text", data: { content, action, topic }, finish, ... }
+          // Old format: { resultAll, conversationId, ... }
+          const isNewFormat = json.data && typeof json.data === 'object';
+          const fullText = isNewFormat
+            ? (typeof json.data.content === 'string' ? json.data.content : '')
+            : (typeof json.resultAll === 'string' ? json.resultAll : '');
           const conversationId = typeof json.conversationId === 'string' ? json.conversationId : '';
           yield { type: 'done', fullText, conversationId };
         } else if (eventName === 'tool_output') {
@@ -203,7 +219,7 @@ export async function* streamChat(req: ChatRequest, signal?: AbortSignal): Async
  * Returns the fetch Response so the caller can inspect X-Resume-Stream header.
  */
 export async function postChatStream(req: ChatRequest): Promise<Response> {
-  return fetch('/v2/ai/chat', {
+  return fetch('/ai/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),

@@ -23,22 +23,9 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import reactor.core.Disposable;
 
-/**
- * v2 streaming service: accepts a {@link ChatRequest}, runs the agent pipeline,
- * and returns an {@link SseEmitter} that pushes incremental response chunks to
- * the frontend.
- *
- * <p>Replaces v1 {@code ChatStreamServiceV_3Impl} with a simpler, shared-agent
- * architecture (one {@link HarnessAgent} instance, per-request {@link RuntimeContext}).
- */
 public interface V2ChatStreamService {
 
-    /**
-     * Stream the agent's response for the given request.
-     *
-     * @param req the chat request (input text, conversationId, userId, etc.)
-     * @return an {@link SseEmitter} that pushes events until the agent completes
-     */
+
     SseEmitter stream(ChatRequest req);
 
     /**

@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.mapper.mysql.UserModelConfigMapper">
+
+    <resultMap id="BaseResultMap" type="com.agentscopea2a.entity.UserModelConfig">
+        <id column="user_id" property="userId"/>
+        <result column="provider" property="provider"/>
+        <result column="token" property="token"/>
+        <result column="model_name" property="modelName"/>
+        <result column="request_url" property="requestUrl"/>
+        <result column="expire_at" property="expireAt"/>
+        <result column="last_notified_at" property="lastNotifiedAt"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        user_id, provider, token, model_name, request_url, expire_at, last_notified_at,
+        created_at, updated_at
+    </sql>
+
+    <select id="selectByUserId" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM user_model_config
+        WHERE user_id = #{userId}
+    </select>
+
+    <select id="selectAll" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM user_model_config
+    </select>
+
+    <update id="updateNotifiedAt">
+        UPDATE user_model_config
+        SET last_notified_at = #{time}
+        WHERE user_id = #{userId}
+    </update>
+
+</mapper>

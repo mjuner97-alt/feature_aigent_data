@@ -16,6 +16,13 @@
 package com.agentscopea2a.v2.service;
 
 import com.agentscopea2a.dto.ChatRequest;
+import com.agentscopea2a.dto.response.ContentDto;
+import com.agentscopea2a.dto.response.TextManagerResponseDto;
+import com.agentscopea2a.dto.response.TextPayload;
+import com.agentscopea2a.dto.response.TextResponseDto;
+import com.agentscopea2a.dto.response.ThinkManagerResponseDto;
+import com.agentscopea2a.dto.response.ThinkPayload;
+import com.agentscopea2a.dto.response.ThinkResponseDto;
 import com.agentscopea2a.entity.AiChatResult;
 import com.agentscopea2a.v2.artifact.ArtifactContext;
 import com.agentscopea2a.v2.artifact.ArtifactStore;
@@ -24,7 +31,6 @@ import com.agentscopea2a.v2.hooks.ToolCallTrackingHook;
 import com.agentscopea2a.v2.memory.EpisodicMemory;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.tools.ToolCallCollector;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.AgentResultEvent;
@@ -37,17 +43,19 @@ import io.agentscope.core.event.ToolResultStartEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
-import io.micrometer.core.annotation.Timed;
+import io.agentscope.harness.agent.sandbox.SandboxException;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -55,59 +63,31 @@ import java.util.concurrent.atomic.AtomicReference;
 import reactor.core.Disposable;
 import reactor.core.scheduler.Schedulers;
 
-/**
- * v2 streaming service implementation.
- *
- * <p>Uses the shared {@link HarnessA2aRunnerV2} instance (thread-safe) and creates a
- * per-request {@link RuntimeContext} with sessionId + userId. Binds/unbinds a
- * {@link ToolCallCollector} ThreadLocal for tool-call tracking hooks.
- *
- * <p>Maps {@link AgentEvent} types to frontend-compatible SSE events:
- * <ul>
- *   <li>{@code TextBlockStartEvent} / {@code TextBlockDeltaEvent} → incremental text chunks</li>
- *   <li>{@code AgentResultEvent} → final result, cache-hit short-circuit</li>
- *   <li>Terminal: emits a {@code "done"} event with the full accumulated text</li>
- * </ul>
- */
+
 @Service
 public class V2ChatStreamServiceImpl implements V2ChatStreamService {
 
     private static final Logger log = LoggerFactory.getLogger(V2ChatStreamServiceImpl.class);
+    /** SSE 连接超时时间：10 分钟（单位毫秒），覆盖长思考 / 工具调用场景 */
     private static final long SSE_TIMEOUT = 600_000L;
+
+    /** 默认 agent 身份字段（请求未带时回填），与 v1 保持一致 */
+    private static final String DEFAULT_AGENT_ID = "7";
+    private static final String DEFAULT_AGENT_NAME = "数字QA助手";
+    private static final String DEFAULT_FROM_TYPE = "HXY";
 
     private final HarnessA2aRunnerV2 runner;
     private final ArtifactStore artifactStore;
     private final EpisodicMemory episodicMemory;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+
 
     /**
-     * In-flight call tracker keyed by {@code "<userId>:<conversationId>"}.
-     *
-     * <p>Lets the {@code POST /v2/ai/chat/interrupt} endpoint:
+     * 按 {@code "<userId>:<conversationId>"} 维度记录进行中的调用。
+     * 用于：
      * <ul>
-     *   <li>Detect whether an in-flight call exists for the session
-     *   <li>Wait for the in-flight call to terminate (so {@code handleInterrupt +
-     *       saveStateToSession} has flushed to MySQL before the resume stream
-     *       reloads state via {@code activateSlotForContext})
-     *   <li>Force-cancel the in-flight subscription on timeout
+     *   <li>同会话并发请求拒绝（putIfAbsent 语义）</li>
+     *   <li>{@code /v2/ai/chat/interrupt} 端点查找当前订阅、等待其清理完成</li>
      * </ul>
-     *
-     * <p><b>Concurrency note (Plan B revision #1)</b>: registration uses
-     * {@link ConcurrentHashMap#putIfAbsent} so a second concurrent {@code /v2/ai/chat}
-     * for the same session is rejected with HTTP 429 instead of overwriting the
-     * first call's {@link InFlightCall} (which would leak it - the first call's
-     * completion future would never be completed by cleanup). The framework's
-     * {@code callSerializationKey} already serializes the ReAct lifecycle, but
-     * the {@code stream()} entry runs on the HTTP thread before subscribe(), so
-     * put-if-absent here is the actual guard against overlap.
-     *
-     * <p><b>Cleanup order note (Plan B revision #3)</b>: when the SseEmitter
-     * terminates, {@code cleanup} removes the entry BEFORE completing the future.
-     * If this order is swapped, a concurrent interrupt endpoint could see the
-     * future completed, call {@code stream()} which puts a NEW future, and then
-     * the stale cleanup's {@code remove(key)} wipes the new future. The order is
-     * load-bearing - do not change without updating the unit test in
-     * {@code V2ChatStreamServiceImplConcurrencyTest}.
      */
     private final ConcurrentHashMap<String, InFlightCall> inFlightCalls = new ConcurrentHashMap<>();
 
@@ -118,43 +98,214 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
         this.episodicMemory = episodicMemory;
     }
 
+    /**
+     * 单次流式请求的上下文状态，参考 v1 ChatStreamServiceImpl 的 StreamContext 模式。
+     * 把 per-request 的可变状态收拢成一个对象，便于 processChunk / handleStream* 统一访问。
+     */
+    private static class StreamContext {
+        final SseEmitter emitter;
+        final ChatRequest req;
+        /** 累积所有"思考"内容（TextBlockDeltaEvent 流式 token），用于最终落库 */
+        final StringBuilder thinkContent = new StringBuilder();
+        /** 累积最终结果内容（AgentResultEvent 终止事件），成功时分片发送给前端 */
+        final StringBuilder answerContent = new StringBuilder();
+        /** 本次回答的稳定 UUID，沿用 conversationId，便于前端按对话追溯 */
+        final String ansUUID;
+        final String conversationId;
+        final String userId;
+        final String agentId;
+        final String agentName;
+        final String formType;
+        /** RuntimeContext，供 cleanup 访问 artifactStore 等 */
+        final RuntimeContext runtimeCtx;
+        /** 工具调用采集器，供 cleanup 持久化 episodic 记忆 + 事件转发 processPayload */
+        final ToolCallCollector collector;
+        /** 用户原始消息，供 cleanup 组装 episodic session messages */
+        final Msg userMsg;
+        /** episodic session 维度标识 */
+        final String episodicSessionId;
+        /** 持有 Reactor Disposable，供 cleanup 取消订阅 */
+        final AtomicReference<Disposable> subscription = new AtomicReference<>();
+        /** 保证 cleanup 只执行一次（onCompletion / onTimeout / onError 可能多次触发） */
+        final AtomicBoolean cleaned = new AtomicBoolean(false);
+        /** 是否已发送过"执行中"，用于保证"执行中"和"已执行"成对出现 */
+        final AtomicBoolean hasSentExecuting = new AtomicBoolean(false);
+
+        StreamContext(SseEmitter emitter, ChatRequest req, RuntimeContext runtimeCtx,
+                      ToolCallCollector collector, Msg userMsg, String episodicSessionId) {
+            this.emitter = emitter;
+            this.req = req;
+            this.runtimeCtx = runtimeCtx;
+            this.collector = collector;
+            this.userMsg = userMsg;
+            this.episodicSessionId = episodicSessionId;
+            this.conversationId = req.getConversationId();
+            this.userId = req.getUserId();
+            this.ansUUID = req.getConversationId();
+            this.agentId = StringUtils.defaultIfBlank(req.getAgentId(), DEFAULT_AGENT_ID);
+            this.agentName = StringUtils.defaultIfBlank(req.getAgentName(), DEFAULT_AGENT_NAME);
+            this.formType = StringUtils.defaultIfBlank(req.getFromType(), DEFAULT_FROM_TYPE);
+        }
+    }
+
+    /**
+     * 响应策略：决定思考/文本/错误分别用哪套 DTO（参考 v1 ResponseStrategy 模式）。
+     * <ul>
+     *   <li>{@link #managerStrategy} - ThinkManagerResponseDto / TextManagerResponseDto，带 code/ansUUID/conversationId/fromType
+     *   <li>{@link #publicStrategy}  - ThinkResponseDto / TextResponseDto，无 Manager 专属字段
+     * </ul>
+     * 是否传入 agentName 决定返回 DTO 风格（与 v1 判断逻辑一致）。
+     */
+    private interface ResponseStrategy {
+        void sendThink(StreamContext ctx, ThinkPayload payload);
+        void sendText(StreamContext ctx, TextPayload payload);
+        void sendError(StreamContext ctx, Throwable error);
+    }
+
+    /** 复用 payload 的 content/action/topic 构造 ContentDto（参考 v1 contentOf）。 */
+    private static ContentDto contentOf(ThinkPayload payload) {
+        ContentDto contentDto = new ContentDto();
+        contentDto.setContent(payload.getContent());
+        contentDto.setAction(payload.getAction());
+        contentDto.setTopic(payload.getTopic());
+        return contentDto;
+    }
+
+    private final ResponseStrategy managerStrategy = new ResponseStrategy() {
+        @Override
+        public void sendThink(StreamContext ctx, ThinkPayload payload) {
+            ThinkManagerResponseDto dto = new ThinkManagerResponseDto();
+            dto.setData(contentOf(payload));
+            dto.setFinish(payload.isFinish());
+            dto.setCode(200);
+            // 思考阶段的 ansUUID 使用独立 uuid，不依赖前端传入的 conversationId
+            dto.setAnsUUID(ctx.ansUUID);
+            dto.setConversationId(ctx.conversationId);
+            dto.setFromType(ctx.formType);
+            // SSE event name = "text_block_delta" so frontend chat.ts can route it
+            // to the "token" branch (same event name as the old AiChatResult format).
+            // The JSON body uses the new ThinkPayload/TextPayload DTO structure
+            // (type="think", data.content, data.action, data.topic, finish).
+            safeSendEvent(ctx.emitter, "text_block_delta", dto);
+        }
+
+        @Override
+        public void sendText(StreamContext ctx, TextPayload payload) {
+            TextManagerResponseDto dto = new TextManagerResponseDto();
+            ContentDto contentDto = new ContentDto();
+            contentDto.setContent(payload.getContent());
+            contentDto.setAction("");
+            contentDto.setTopic("");
+            dto.setData(contentDto);
+            dto.setFinish(payload.isFinish());
+            dto.setCode(200);
+            // 最终文本结果的 ansUUID 与 conversationId 一致，便于前端按对话追溯
+            dto.setAnsUUID(ctx.ansUUID);
+            dto.setConversationId(ctx.conversationId);
+            dto.setFromType(ctx.formType);
+            // SSE event name = "done" so frontend chat.ts recognizes the terminal event.
+            // The JSON body uses the new TextPayload DTO (type="text", data.content, finish).
+            safeSendEvent(ctx.emitter, "done", dto);
+        }
+
+        @Override
+        public void sendError(StreamContext ctx, Throwable error) {
+            TextManagerResponseDto dto = new TextManagerResponseDto();
+            ContentDto contentDto = new ContentDto();
+            contentDto.setContent(buildErrorMessage(error));
+            dto.setData(contentDto);
+            dto.setFinish(true);
+            dto.setCode(500);
+            dto.setAnsUUID(ctx.ansUUID);
+            dto.setConversationId(ctx.conversationId);
+            dto.setFromType(ctx.formType);
+            safeSendEvent(ctx.emitter, "done", dto);
+        }
+    };
+
+    private final ResponseStrategy publicStrategy = new ResponseStrategy() {
+        @Override
+        public void sendThink(StreamContext ctx, ThinkPayload payload) {
+            ThinkResponseDto dto = new ThinkResponseDto();
+            dto.setData(contentOf(payload));
+            dto.setFinish(payload.isFinish());
+            safeSendEvent(ctx.emitter, "text_block_delta", dto);
+        }
+
+        @Override
+        public void sendText(StreamContext ctx, TextPayload payload) {
+            TextResponseDto dto = new TextResponseDto();
+            ContentDto contentDto = new ContentDto();
+            contentDto.setContent(payload.getContent());
+            contentDto.setAction("");
+            contentDto.setTopic("");
+            dto.setData(contentDto);
+            dto.setFinish(payload.isFinish());
+            safeSendEvent(ctx.emitter, "done", dto);
+        }
+
+        @Override
+        public void sendError(StreamContext ctx, Throwable error) {
+            TextResponseDto dto = new TextResponseDto();
+            ContentDto contentDto = new ContentDto();
+            contentDto.setContent(buildErrorMessage(error));
+            dto.setData(contentDto);
+            dto.setFinish(true);
+            safeSendEvent(ctx.emitter, "done", dto);
+        }
+    };
+
+    /**
+     * 统一流式入口（参考 v1 stream 模式）。
+     *
+     * <p>是否传入 agentName 决定返回 DTO 风格：
+     * <ul>
+     *   <li>有 agentName  -> Manager 风格（ThinkManagerResponseDto / TextManagerResponseDto）
+     *   <li>无 agentName  -> Public 风格（ThinkResponseDto / TextResponseDto），并回填默认 agentId/agentName/fromType
+     * </ul>
+     * 判断必须在回填默认值之前，否则会被默认值覆盖（与 v1 一致）。
+     */
     @Override
-    @Timed(value = "v2.chat.stream", description = "v2 /v2/ai/chat stream end-to-end duration", percentiles = {0.5, 0.9, 0.99})
     public SseEmitter stream(ChatRequest req) {
+        // 判断 managerMode 必须在回填默认值之前，否则会被默认值覆盖
+        boolean managerMode = StringUtils.isNoneEmpty(req.getAgentName());
+        if (!managerMode) {
+            req.setAgentId(DEFAULT_AGENT_ID);
+            req.setAgentName(DEFAULT_AGENT_NAME);
+            req.setFromType(DEFAULT_FROM_TYPE);
+        }
+        ResponseStrategy strategy = managerMode ? managerStrategy : publicStrategy;
+
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT);
 
-        String conversationId = resolveConversationId(req);
-        String text = resolveInput(req);
+        String text = req.getQuestion();
         String userId = req.getUserId();
+        String conversationId = req.getConversationId();
 
-        log.info("v2 stream: sessionId={}, userId={}, textLen={}", conversationId, userId, text.length());
-
-        // Register this call as in-flight BEFORE subscribing. putIfAbsent guards against
-        // a second concurrent /v2/ai/chat for the same session overwriting the first
-        // call's tracker (which would orphan the first's completion future).
+        // 构造调用键：同一 (userId, conversationId) 只允许一个进行中的流式调用
         String callKey = callKey(userId, conversationId);
         InFlightCall inFlight = new InFlightCall();
+        // putIfAbsent：若已存在同会话的进行中调用，直接拒绝，防止并发覆盖 / 重复消耗 LLM token
         InFlightCall existing = inFlightCalls.putIfAbsent(callKey, inFlight);
         if (existing != null) {
-            log.warn("v2 stream rejected - session busy: sessionId={}, userId={}", conversationId, userId);
             emitter.completeWithError(new TooManyRequestsException(
                     "Session " + conversationId + " already has an in-flight call; "
                             + "wait for it to finish or use POST /v2/ai/chat/interrupt to redirect"));
             return emitter;
         }
 
-        // Per-request ToolCallCollector — will be bound to the executor thread so hooks can access it.
+        // 工具调用采集器：记录本轮对话触发的工具调用上下文，供 episodic 记忆持久化使用
         ToolCallCollector collector = new ToolCallCollector(text);
 
+        // 构造用户消息（纯文本内容块）
         Msg userMsg = Msg.builder().role(MsgRole.USER)
                 .content(TextBlock.builder().text(text).build())
                 .build();
 
+        // 构造运行时上下文：携带 sessionId / userId / lastQuestion 供中间件 / hooks 访问
         RuntimeContext ctx = buildRuntimeContext(conversationId, userId, text);
-        // Store the per-request ToolCallCollector on RuntimeContext so ToolCallTrackingHook
-        // (which implements RuntimeContextAware) can access it across reactive thread boundaries.
-        // The previous ThreadLocal approach broke because the hook fires on reactor scheduler
-        // threads, not the executor thread where the ThreadLocal was bound.
+
+        // 把工具调用采集器放进上下文，供 ToolCallTrackingHook 在工具调用时写入
         ctx.put(ToolCallTrackingHook.COLLECTOR_CTX_KEY, collector);
 
         // ParentEmitterCarrier: holds the parent agent's AgentEventEmitter so subagent
@@ -168,81 +319,6 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
                 new com.agentscopea2a.v2.middleware.ParentEmitterCarrier();
         ctx.put(com.agentscopea2a.v2.middleware.ParentEmitterCarrier.class, parentEmitterCarrier);
 
-        // Episodic memory session_id must be "user:<userId>:<conversationId>" so that:
-        // 1) TraceMiner.loadSessions can group by session_id (each request = one session)
-        // 2) extractUserId can parse userId from the "user:userId:..." prefix
-        // 3) findActiveUsers fallback (session_id LIKE 'user:%') still discovers the rows
-        // Using a bare "user:userId" merges all of a user's requests into one session,
-        // which prevents per-request trace mining.
-        String episodicUserId = userId != null && !userId.isBlank() ? userId : "anonymous";
-        String episodicSessionId = "user:" + episodicUserId + ":" + conversationId;
-
-        // Thread-safe accumulator for the full response text.
-        StringBuilder accumulated = new StringBuilder();
-
-        // Holds the reactive stream subscription so we can cancel it when the client disconnects.
-        // Without this, the agent keeps running (and burning LLM tokens) after the SSE emitter
-        // fires onCompletion/onTimeout/onError. The assignment happens on the executor thread
-        // inside subscribe(); cleanup reads it from the SSE callback thread.
-        AtomicReference<Disposable> subscription = new AtomicReference<>();
-
-        // CAS-guarded cleanup: cancel stream, artifact GC, episodic persist, ThreadLocal unbind.
-        AtomicBoolean cleaned = new AtomicBoolean(false);
-        Runnable cleanup = () -> {
-            if (!cleaned.compareAndSet(false, true)) return;
-            // Cancel the reactive stream first so the agent stops processing immediately.
-            // dispose() is a no-op if the stream already completed or was never subscribed.
-            Disposable d = subscription.get();
-            if (d != null && !d.isDisposed()) {
-                d.dispose();
-                log.info("v2 stream cancelled for sessionId={} (client disconnect/timeout)", conversationId);
-            }
-            try {
-                artifactStore.cleanupTask(ArtifactContext.from(ctx));
-            } catch (Exception ex) {
-                log.warn("Artifact cleanup failed for sessionId={}: {}", conversationId, ex.getMessage());
-            }
-            // Persist tool call context to episodic memory for skill distillation (paths B/C).
-            // This must happen before unbind() so the collector data is still available.
-            try {
-                String toolCallJson = collector.toJson();
-                if (toolCallJson != null && !toolCallJson.isEmpty()) {
-                    List<Msg> sessionMessages = new ArrayList<>();
-                    sessionMessages.add(userMsg);
-                    String accumulatedText = accumulated.toString();
-                    if (accumulatedText != null && !accumulatedText.isEmpty()) {
-                        sessionMessages.add(Msg.builder().role(MsgRole.ASSISTANT)
-                                .content(TextBlock.builder().text(accumulatedText).build())
-                                .build());
-                    }
-                    episodicMemory.recordSessionWithToolContext(episodicSessionId, sessionMessages, toolCallJson)
-                            .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic())
-                            .subscribe(
-                                    null,
-                                    ex -> log.warn("Episodic persist failed for sessionId={}: {}", episodicSessionId, ex.getMessage()),
-                                    () -> log.debug("Episodic persist completed for sessionId={}", episodicSessionId));
-                }
-            } catch (Exception ex) {
-                log.warn("Episodic persist setup failed for sessionId={}: {}", episodicSessionId, ex.getMessage());
-            }
-            // In-flight tracker: remove BEFORE complete (Plan B revision #3).
-            // If this order is swapped, a concurrent interrupt endpoint that just saw
-            // future completed could call stream() which puts a NEW future, and then
-            // this stale cleanup's remove(key) would wipe the new future - leaving
-            // the new call's tracker orphaned. Order is load-bearing - do not swap.
-            inFlightCalls.remove(callKey, inFlight);
-            inFlight.completion().complete(null);
-        };
-
-        emitter.onCompletion(cleanup);
-        emitter.onTimeout(cleanup);
-        emitter.onError(e -> cleanup.run());
-
-        String ansUUID = UUID.randomUUID().toString();
-        String agentId = req.getAgentId() != null ? req.getAgentId() : "7";
-        String agentName = req.getAgentName() != null ? req.getAgentName() : "QA助手";
-        String formType = req.getFromType() != null ? req.getFromType() : "HXY";
-
         // Store the SseEmitter on RuntimeContext so ToolCallTrackingHook can send a
         // supplementary "tool_output" SSE event directly from PostActing. This is
         // necessary because the framework's tool_result_end AgentEvent fires BEFORE
@@ -253,108 +329,54 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
         // existing ActivityFeed row and render the collapsible "出参" panel.
         ctx.put(ToolCallTrackingHook.EMITTER_CTX_KEY, emitter);
         ctx.put(ToolCallTrackingHook.SSE_META_CTX_KEY,
-                new ToolCallTrackingHook.SseMeta(ansUUID, agentId, agentName, formType, conversationId));
+                new ToolCallTrackingHook.SseMeta(
+                        // ansUUID / agentId / agentName / formType are already resolved in StreamContext
+                        // after the managerMode check above; read from req directly for consistency.
+                        req.getConversationId(),
+                        StringUtils.defaultIfBlank(req.getAgentId(), DEFAULT_AGENT_ID),
+                        StringUtils.defaultIfBlank(req.getAgentName(), DEFAULT_AGENT_NAME),
+                        StringUtils.defaultIfBlank(req.getFromType(), DEFAULT_FROM_TYPE),
+                        conversationId));
 
-        // Run subscription off the HTTP request thread so stream() returns the SseEmitter
-        // immediately. Use shared boundedElastic scheduler instead of per-request
-        // Executors.newSingleThreadExecutor() (which leaked threads - no shutdown).
+        // Episodic memory session_id: "user:<userId>:<conversationId>" so that:
+        // 1) TraceMiner.loadSessions can group by session_id (each request = one session)
+        // 2) extractUserId can parse userId from the "user:userId:..." prefix
+        // 3) findActiveUsers fallback (session_id LIKE 'user:%') still discovers the rows
+        String episodicUserId = userId != null && !userId.isBlank() ? userId : "anonymous";
+        String episodicSessionId = "user:" + episodicUserId + ":" + conversationId;
+
+        // 把 per-request 状态收拢进 StreamContext（参考 v1 流处理模式）
+        StreamContext streamCtx = new StreamContext(emitter, req, ctx, collector, userMsg, episodicSessionId);
+
+        // 清理逻辑：取消订阅、清理 artifact、持久化 episodic 记忆、移除进行中调用标记
+        Runnable cleanup = buildCleanup(streamCtx, callKey, inFlight);
+
+        // 注册 SSE 生命周期回调：三种终止路径都走同一个幂等 cleanup（参考 v1 流处理模式）
+        emitter.onCompletion(cleanup);
+        emitter.onTimeout(cleanup);
+        emitter.onError(e -> cleanup.run());
+
+        // 在 boundedElastic 调度器上异步启动流式订阅，避免阻塞 Servlet 容器线程
         Mono.fromRunnable(() -> {
-            // ToolCallCollector is now propagated via RuntimeContext (set above), not ThreadLocal.
-            // The framework pushes the context to ToolCallTrackingHook via RuntimeContextAware
-            // before the call starts, so no bind() is needed here.
             try {
+                // 核心：触发 Agent 流式事件流（文本增量、工具调用、最终结果等事件）
+                // 事件类型基类为 io.agentscope.core.event.AgentEvent
                 Flux<AgentEvent> eventFlux = runner.streamEvents(List.of(userMsg), ctx);
 
-                // doOnCancel: framework's agent.interrupt() cancels the reactive stream
-                // (CANCELLED signal, not COMPLETED). Without this hook, the onComplete
-                // consumer below never fires -> sendDone not called -> emitter.complete()
-                // not called -> onCompletion callback not fired -> cleanup Runnable not
-                // run -> inFlight.completion never completes -> interrupt endpoint's 30s
-                // timeout fires -> 504 instead of resume stream.
-                // When cancel fires (typically because InterruptControl triggered
-                // InterruptedException inside the framework, and handleInterrupt appended
-                // the recovery msg to contextMutable before propagating cancel), we
-                // flush the accumulated text as the done event and complete the emitter,
-                // which kicks off the normal cleanup chain.
-                eventFlux = eventFlux.doOnCancel(() -> {
-                    log.info("v2 stream cancelled (likely interrupt) for sessionId={}, accumulatedLen={}",
-                            conversationId, accumulated.length());
-                    try {
-                        sendDone(emitter, accumulated, ansUUID, agentId, agentName, formType, conversationId);
-                    } catch (Exception e) {
-                        log.warn("SSE done send failed during cancel for sessionId={}: {}",
-                                conversationId, e.getMessage());
-                        try {
-                            emitter.complete();
-                        } catch (Exception ce) {
-                            log.warn("emitter.complete() failed during cancel for sessionId={}: {}",
-                                    conversationId, ce.getMessage());
-                        }
-                    }
-                });
-
-                // Subscribe with explicit onNext/onError/onComplete consumers. subscribe() returns
-                // a Disposable which we capture so the cleanup Runnable can cancel the stream when
-                // the client disconnects (onCompletion/onTimeout/onError). Without this, the agent
-                // keeps running and burning LLM tokens after the SSE connection drops.
+                // 订阅事件流：onNext 处理每个事件，onError 处理异常，onComplete 处理结束
+                // 参考 v1 流处理模式：processChunk 处理增量，handleStreamError/Success 处理终止
                 Disposable d = eventFlux.subscribe(
-                        event -> {
-                            try {
-                                handleEvent(event, emitter, accumulated, ansUUID, agentId, agentName, formType, conversationId, collector);
-                            } catch (Exception e) {
-                                log.warn("SSE send failed for sessionId={}: {}", conversationId, e.getMessage());
-                            }
-                        },
-                        error -> {
-                            // Bug B fix: SandboxLifecycleMiddleware 释放 sandbox 后，WorkspaceMessageBus
-                            // 偶发访问 filesystem 抛 SandboxException。此时响应文本已通过 text_block_delta
-                            // 流给客户端，应发 done 正常收尾，而非 completeWithError 导致 HTTP 500。
-                            if (accumulated.length() > 0
-                                    && error instanceof io.agentscope.harness.agent.sandbox.SandboxException) {
-                                log.warn("v2 stream post-response sandbox error suppressed for sessionId={}: {}",
-                                        conversationId, error.getMessage());
-                                try {
-                                    sendDone(emitter, accumulated, ansUUID, agentId, agentName, formType, conversationId);
-                                } catch (Exception e) {
-                                    log.warn("SSE done send failed during error recovery for sessionId={}: {}",
-                                            conversationId, e.getMessage());
-                                    emitter.complete();
-                                }
-                            } else {
-                                log.error("v2 stream error for sessionId={}: {}", conversationId, error.getMessage());
-                                emitter.completeWithError(error);
-                            }
-                            // Plan B revision #7: explicit cleanup invocation. SseEmitter's
-                            // onError callback (wired via emitter.onError(e -> cleanup.run()))
-                            // is fired by Spring's async dispatch, which can be delayed or
-                            // dropped entirely if the SSE response was never committed (e.g.
-                            // workspace start failure before any event was sent). When that
-                            // happens, the inFlight entry is never removed from inFlightCalls,
-                            // so the interrupt endpoint's resume stream gets rejected with
-                            // HTTP 429 "session busy" instead of starting. Call cleanup
-                            // explicitly here - it's CAS-guarded, so duplicate calls are no-ops
-                            // when the SseEmitter callback DID fire.
-                            cleanup.run();
-                        },
-                        () -> {
-                            try {
-                                sendDone(emitter, accumulated, ansUUID, agentId, agentName, formType, conversationId);
-                            } catch (Exception e) {
-                                log.warn("SSE done send failed for sessionId={}: {}", conversationId, e.getMessage());
-                            }
-                            // Same as error path: explicit cleanup in case onCompletion
-                            // doesn't fire (Spring 6.1.4 SseEmitter async dispatch issue).
-                            cleanup.run();
-                        });
-                subscription.set(d);
-                // Mirror the Disposable onto the in-flight tracker so the interrupt
-                // endpoint can force-cancel the subscription on 30s timeout (revision #4).
-                // Without this, a stuck in-flight call keeps burning LLM tokens until
-                // the SSE_TIMEOUT (600s) fires.
+                        event -> processChunk(event, streamCtx, strategy),
+                        error -> handleStreamError(streamCtx, error, strategy),
+                        () -> handleStreamSuccess(streamCtx, strategy));
+                // 保存订阅句柄，供 cleanup 取消和 interrupt 端点强制中断使用
+                streamCtx.subscription.set(d);
+
+                // 同步暴露给 interrupt 端点：超时可强制 dispose
                 inFlight.subscription().set(d);
             } catch (Exception e) {
                 log.error("v2 stream failed for sessionId={}", conversationId, e);
-                emitter.completeWithError(e);
+                handleStreamError(streamCtx, e, strategy);
             }
         }).subscribeOn(Schedulers.boundedElastic()).subscribe();
 
@@ -363,172 +385,313 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
 
     // ── Event handling ──────────────────────────────────────────────────────
 
-    private void handleEvent(AgentEvent event, SseEmitter emitter,
-                             StringBuilder accumulated, String ansUUID,
-                             String agentId, String agentName, String formType,
-                             String conversationId,
-                             com.agentscopea2a.v2.tools.ToolCallCollector collector) throws Exception {
-
-        // AgentResultEvent is the terminal event — handled in doOnComplete via sendDone.
-        // The streaming text_block_delta events have already accumulated the full text
-        // into `accumulated` as it streamed in. Appending the AgentResultEvent's final
-        // text again would duplicate the entire output in the `done` event's resultAll
-        // field (the user-visible "重复输出" bug — full report appearing twice after
-        // the agent finishes). Only append if streaming didn't deliver any text (e.g.
-        // non-streaming model configurations, though the current setup uses stream=true).
-        if (event instanceof AgentResultEvent) {
-            if (accumulated.length() == 0) {
-                String text = extractText(((AgentResultEvent) event).getResult());
-                if (text != null && !text.isEmpty()) {
-                    accumulated.append(text);
+    /**
+     * 处理单个流式事件（参考 v1 processChunk 模式）。
+     *
+     * <p>业务逻辑（与 v1 语义对齐，仅事件类型不同）：
+     * <ul>
+     *   <li>{@link AgentResultEvent} 是终止事件：提取最终文本，仅在 answerContent 为空时
+     *       替换（避免"重复输出"bug — 流式 text_block_delta 已累积完整文本，再追加会双倍）</li>
+     *   <li>{@link TextBlockDeltaEvent} 是流式 token：视为"思考"，累积到
+     *       {@link StreamContext#thinkContent} 并通过 {@code sendThink}（action="执行中"）即时发送</li>
+     *   <li>6 种 process 事件（agent_start, tool_call_start, tool_result_start, tool_result_end,
+     *       subagent_exposed, agent_end）转发到前端 ActivityFeed 做实时进度展示</li>
+     *   <li>其他事件（TextBlockStartEvent 等）直接跳过</li>
+     * </ul>
+     */
+    private void processChunk(AgentEvent event, StreamContext ctx, ResponseStrategy strategy) {
+        try {
+            // AgentResultEvent 是终止事件：最终结果累积到 answerContent，不立即发送
+            // The streaming text_block_delta events have already accumulated the full text
+            // into thinkContent as it streamed in. Replacing answerContent with the
+            // AgentResultEvent's final text would be fine, but we only do so if answerContent
+            // is empty (i.e. no streaming happened — e.g. non-streaming model configs).
+            // This avoids the "重复输出" bug where the full report appears twice.
+            if (event instanceof AgentResultEvent) {
+                if (ctx.answerContent.length() == 0) {
+                    String text = extractText(((AgentResultEvent) event).getResult());
+                    if (StringUtils.isNotBlank(text)) {
+                        ctx.answerContent.append(text);
+                    }
                 }
+                return;
             }
-            return;
+
+            // 从流式增量事件中提取文本 chunk
+            String chunk = null;
+            if (event instanceof TextBlockDeltaEvent delta) {
+                chunk = delta.getDelta();
+            }
+            // TextBlockStartEvent 是标记性事件 - 不携带文本内容，直接跳过
+
+            // 有 chunk 且非空 → 累积并发送"执行中"
+            if (StringUtils.isNotBlank(chunk)) {
+                ctx.thinkContent.append(chunk);
+                ctx.hasSentExecuting.set(true);
+                strategy.sendThink(ctx, ThinkPayload.progress(chunk));
+                return;
+            }
+
+            // ── Process events (process-event-streaming.md) ─────────────────────
+            // Forward 6 event types that carry no text but tell the user what the
+            // agent is doing: agent_start, tool_call_start, tool_result_start,
+            // tool_result_end, subagent_exposed, agent_end. These are NOT accumulated
+            // into thinkContent/answerContent; they go out as standalone SSE events
+            // with their own event name (matching AgentEvent.getType()) so the
+            // frontend ActivityFeed can render a live progress timeline.
+            // They use AiChatResult format (with eventType/toolCall* fields) so the
+            // frontend chat.ts PROCESS_EVENTS matcher picks them up.
+            String eventName = event.getType() != null ? event.getType().name().toLowerCase() : "custom";
+            switch (eventName) {
+                case "agent_start": {
+                    if (!(event instanceof AgentStartEvent e)) return;
+                    AiChatResult result = AiChatResult.builder()
+                            .code(0).eventType(eventName)
+                            .lineResult("🤖 启动智能体：" + e.getName() + " (" + e.getRole() + ")")
+                            .agentNameRaw(e.getName()).agentRole(e.getRole())
+                            .source(event.getSource())
+                            .build();
+                    safeSendEvent(ctx.emitter, eventName, result);
+                    return;
+                }
+                case "tool_call_start": {
+                    if (!(event instanceof ToolCallStartEvent e)) return;
+                    ToolCallCollector.ToolCallDetail detail =
+                            ctx.collector != null ? ctx.collector.getByToolCallId(e.getToolCallId()) : null;
+                    AiChatResult result = AiChatResult.builder()
+                            .code(0).eventType(eventName)
+                            .lineResult("🔧 调用工具：" + e.getToolCallName())
+                            .toolCallId(e.getToolCallId()).toolCallName(e.getToolCallName())
+                            .toolInput(detail != null ? detail.input() : null)
+                            .source(event.getSource())
+                            .build();
+                    safeSendEvent(ctx.emitter, eventName, result);
+                    return;
+                }
+                case "tool_result_start": {
+                    if (!(event instanceof ToolResultStartEvent e)) return;
+                    AiChatResult result = AiChatResult.builder()
+                            .code(0).eventType(eventName)
+                            .lineResult("📋 工具返回：" + e.getToolCallName())
+                            .toolCallId(e.getToolCallId()).toolCallName(e.getToolCallName())
+                            .source(event.getSource())
+                            .build();
+                    safeSendEvent(ctx.emitter, eventName, result);
+                    return;
+                }
+                case "tool_result_end": {
+                    if (!(event instanceof ToolResultEndEvent e)) return;
+                    String state = e.getState() != null ? e.getState().name() : "?";
+                    ToolCallCollector.ToolCallDetail detail =
+                            ctx.collector != null ? ctx.collector.getByToolCallId(e.getToolCallId()) : null;
+                    AiChatResult result = AiChatResult.builder()
+                            .code(0).eventType(eventName)
+                            .lineResult("✅ 完成：" + e.getToolCallName() + " (" + state + ")")
+                            .toolCallId(e.getToolCallId()).toolCallName(e.getToolCallName())
+                            .toolCallState(state)
+                            .toolInput(detail != null ? detail.input() : null)
+                            .toolOutput(detail != null ? detail.output() : null)
+                            .source(event.getSource())
+                            .build();
+                    safeSendEvent(ctx.emitter, eventName, result);
+                    return;
+                }
+                case "subagent_exposed": {
+                    if (!(event instanceof SubagentExposedEvent e)) return;
+                    String label = e.getLabel() != null ? e.getLabel() : e.getSubagentId();
+                    AiChatResult result = AiChatResult.builder()
+                            .code(0).eventType(eventName)
+                            .lineResult("👥 派单子智能体：" + label)
+                            .subagentId(e.getSubagentId()).subagentLabel(e.getLabel())
+                            .source(event.getSource())
+                            .build();
+                    safeSendEvent(ctx.emitter, eventName, result);
+                    return;
+                }
+                case "agent_end": {
+                    AiChatResult result = AiChatResult.builder()
+                            .code(0).eventType(eventName)
+                            .lineResult("✅ 智能体完成")
+                            .source(event.getSource())
+                            .build();
+                    safeSendEvent(ctx.emitter, eventName, result);
+                    return;
+                }
+                default:
+                    // Other events (thinking_*, model_call_*, data_block_*, text_block_start/end,
+                    // tool_call_delta, tool_result_*_delta, hint_block, etc.) are not forwarded.
+                    return;
+            }
+
+        } catch (Exception e) {
+            // 仅在确实发送过"执行中"时才补发"已执行"，保证成对
+            if (ctx.hasSentExecuting.get()) {
+                strategy.sendThink(ctx, ThinkPayload.done("分析执行智能体"));
+            }
+            log.error("处理流式事件失败: sessionId={}", ctx.conversationId, e);
+            throw new RuntimeException(e.getMessage(), e);
         }
-
-        // Extract incremental text from streaming events
-        String chunk = null;
-        if (event instanceof TextBlockDeltaEvent delta) {
-            chunk = delta.getDelta();
-        }
-        // TextBlockStartEvent is a marker — it carries no text content
-
-        if (chunk != null && !chunk.isEmpty()) {
-            accumulated.append(chunk);
-
-            AiChatResult result = AiChatResult.builder()
-                    .code(0)
-                    .ansUUID(ansUUID)
-                    .lineResult(chunk)
-                    .resultAll(accumulated.toString())
-                    .formType(formType)
-                    .agentId(agentId)
-                    .agentName(agentName)
-                    .source(event.getSource())
-                    .conversationId(conversationId)
-                    .build();
-
-            String json = objectMapper.writeValueAsString(result);
-            String eventName = event.getType() != null ? event.getType().name().toLowerCase() : "text";
-            emitter.send(SseEmitter.event().name(eventName).data(json));
-            return;
-        }
-
-        // ── Process events (process-event-streaming.md) ─────────────────────
-        // Forward 6 event types that carry no text but tell the user what the
-        // agent is doing: agent_start, tool_call_start, tool_result_start,
-        // tool_result_end, subagent_exposed, agent_end. These are NOT accumulated
-        // into `accumulated` (which only holds the final markdown text); they
-        // go out as standalone SSE events with eventType + toolCall* fields so
-        // the frontend ActivityFeed can render a live progress timeline.
-        AiChatResult processPayload = buildProcessPayload(event, collector);
-        if (processPayload == null) return;
-
-        String processJson = objectMapper.writeValueAsString(processPayload);
-        String processEventName = event.getType() != null ? event.getType().name().toLowerCase() : "custom";
-        emitter.send(SseEmitter.event().name(processEventName).data(processJson));
     }
 
     /**
-     * Build an {@link AiChatResult} for process events (no text accumulation).
-     * Returns null for events we don't forward (thinking_block_*, model_call_*,
-     * data_block_*, tool_call_delta, tool_result_*_delta, text_block_start/end).
+     * 统一处理流式异常（参考 v1 handleStreamError 模式）。
      *
-     * <p>See {@code docs/Plan-Machie/process-event-streaming.md} for the event
-     * selection rationale.
+     * <p>补发"已执行"（若发送过"执行中"）、发送 error 事件、完成 emitter。
+     * cleanup 由 SSE 生命周期回调触发。
+     *
+     * <p>Bug B 修复（cleanup 时序）：当响应文本已流给客户端（answerContent 非空）且异常是
+     * cleanup 阶段误抛的 {@link SandboxException} 时，改为发 done 事件并正常 complete，
+     * 避免 HTTP 500。其他错误（streaming 中途真异常、空响应）仍走 error 路径。
      */
-    private AiChatResult buildProcessPayload(AgentEvent event,
-                                             com.agentscopea2a.v2.tools.ToolCallCollector collector) {
-        String eventName = event.getType() != null ? event.getType().name().toLowerCase() : "custom";
-        String source = event.getSource();
-        AiChatResult.AiChatResultBuilder b = AiChatResult.builder()
-                .code(0)
-                .source(source)
-                .eventType(eventName);
-
-        switch (eventName) {
-            case "agent_start": {
-                if (!(event instanceof AgentStartEvent e)) return null;
-                return b.lineResult("🤖 启动智能体：" + e.getName() + " (" + e.getRole() + ")")
-                        .agentNameRaw(e.getName())
-                        .agentRole(e.getRole())
-                        .build();
+    private void handleStreamError(StreamContext ctx, Throwable error, ResponseStrategy strategy) {
+        log.error("处理流式异常: sessionId={}", ctx.conversationId, error);
+        // Bug B：cleanup 阶段误抛的 sandbox 异常，已有最终结果，按成功收尾
+        if (ctx.answerContent.length() > 0 && error instanceof SandboxException) {
+            log.warn("Cleanup-phase SandboxException suppressed for sessionId={}; sending done instead of error",
+                    ctx.conversationId);
+            handleStreamSuccess(ctx, strategy);
+            return;
+        }
+        try {
+            // 仅在确实发送过"执行中"时才补发"已执行"，保证成对
+            if (ctx.hasSentExecuting.get()) {
+                strategy.sendThink(ctx, ThinkPayload.done("分析执行智能体"));
             }
-            case "tool_call_start": {
-                if (!(event instanceof ToolCallStartEvent e)) return null;
-                // Attach tool input (captured by ToolCallTrackingHook on PreActing) so the
-                // frontend ActivityFeed can render a collapsible "入参" panel under the row.
-                com.agentscopea2a.v2.tools.ToolCallCollector.ToolCallDetail detail =
-                        collector != null ? collector.getByToolCallId(e.getToolCallId()) : null;
-                return b.lineResult("🔧 调用工具：" + e.getToolCallName())
-                        .toolCallId(e.getToolCallId())
-                        .toolCallName(e.getToolCallName())
-                        .toolInput(detail != null ? detail.input() : null)
-                        .build();
+            strategy.sendError(ctx, error);
+        } catch (Exception e) {
+            log.warn("发送错误结果失败: sessionId={}", ctx.conversationId, e);
+        } finally {
+            // Plan B revision #7: explicit cleanup invocation. SseEmitter's onError
+            // callback may not fire reliably (Spring 6.1.4 async dispatch issue).
+            // Call cleanup explicitly here - it's CAS-guarded, so duplicate calls are no-ops.
+            try {
+                ctx.emitter.complete();
+            } catch (Exception e) {
+                log.warn("emitter.complete() 失败: sessionId={}", ctx.conversationId, e);
             }
-            case "tool_result_start": {
-                if (!(event instanceof ToolResultStartEvent e)) return null;
-                return b.lineResult("📋 工具返回：" + e.getToolCallName())
-                        .toolCallId(e.getToolCallId())
-                        .toolCallName(e.getToolCallName())
-                        .build();
-            }
-            case "tool_result_end": {
-                if (!(event instanceof ToolResultEndEvent e)) return null;
-                String state = e.getState() != null ? e.getState().name() : "?";
-                // Attach both input and output (output captured by ToolCallTrackingHook on
-                // PostActing) so the frontend ActivityFeed can render collapsible "入参" +
-                // "出参" panels under the row. Input is included here too in case the
-                // frontend missed the tool_call_start event (e.g. late SSE connection).
-                com.agentscopea2a.v2.tools.ToolCallCollector.ToolCallDetail detail =
-                        collector != null ? collector.getByToolCallId(e.getToolCallId()) : null;
-                return b.lineResult("✅ 完成：" + e.getToolCallName() + " (" + state + ")")
-                        .toolCallId(e.getToolCallId())
-                        .toolCallName(e.getToolCallName())
-                        .toolCallState(state)
-                        .toolInput(detail != null ? detail.input() : null)
-                        .toolOutput(detail != null ? detail.output() : null)
-                        .build();
-            }
-            case "subagent_exposed": {
-                if (!(event instanceof SubagentExposedEvent e)) return null;
-                String label = e.getLabel() != null ? e.getLabel() : e.getSubagentId();
-                return b.lineResult("👥 派单子智能体：" + label)
-                        .subagentId(e.getSubagentId())
-                        .subagentLabel(e.getLabel())
-                        .build();
-            }
-            case "agent_end": {
-                return b.lineResult("✅ 智能体完成").build();
-            }
-            default:
-                // Other events (thinking_*, model_call_*, data_block_*, text_block_start/end,
-                // tool_call_delta, tool_result_*_delta, hint_block, etc.) are not forwarded.
-                return null;
         }
     }
 
-    private void sendDone(SseEmitter emitter, StringBuilder accumulated,
-                          String ansUUID, String agentId, String agentName,
-                          String formType, String conversationId) throws Exception {
-        AiChatResult done = AiChatResult.builder()
-                .code(0)
-                .ansUUID(ansUUID)
-                .lineResult("")
-                .resultAll(accumulated.toString())
-                .formType(formType)
-                .agentId(agentId)
-                .agentName(agentName)
-                .conversationId(conversationId)
-                .build();
+    /**
+     * 统一处理流式成功（参考 v1 handleStreamSuccess 模式）。
+     *
+     * <p>先发"已执行"（若发送过"执行中"），再把最终结果 answerContent 分片输出为 text 事件，
+     * 最后完成 emitter。cleanup 由 SSE 生命周期回调触发。
+     */
+    private void handleStreamSuccess(StreamContext ctx, ResponseStrategy strategy) {
+        log.info("[COMPLETE] Request finished: conversationId={} thinkLen={} answerLen={}",
+                ctx.conversationId, ctx.thinkContent.length(), ctx.answerContent.length());
+        try {
+            // 仅在确实发送过"执行中"时才发送"已执行"，保证成对
+            if (ctx.hasSentExecuting.get()) {
+                strategy.sendThink(ctx, ThinkPayload.done("分析智能体"));
+            }
+            // 发送最终结果：一次性发完整 answerContent（不分片）。
+            // 前端收到 done 事件后用完整文本替换流式累积内容，确保最终渲染正确。
+            // 之前分5字符片段发送会导致前端只取最后一个片段覆盖，丢失大部分内容。
+            String finalAnswer = ctx.answerContent.toString();
+            if (StringUtils.isNotBlank(finalAnswer)) {
+                strategy.sendText(ctx, TextPayload.chunk(finalAnswer, true));
+            }
+        } catch (Exception e) {
+            log.warn("发送最终结果失败: sessionId={}", ctx.conversationId, e);
+        } finally {
+            // Same as error path: explicit cleanup in case onCompletion
+            // doesn't fire (Spring 6.1.4 SseEmitter async dispatch issue).
+            try {
+                ctx.emitter.complete();
+            } catch (Exception e) {
+                log.warn("emitter.complete() 失败: sessionId={}", ctx.conversationId, e);
+            }
+        }
+    }
 
-        String json = objectMapper.writeValueAsString(done);
-        emitter.send(SseEmitter.event().name("done").data(json));
-        emitter.complete();
+    /**
+     * 发送带 event name 的 SSE 事件。
+     * Spring SseEmitter.event() 构造器会同时写入 {@code event:<name>} 和 {@code data:<json>}，
+     * 前端 EventSource / fetch reader 可以通过 event name 区分不同类型的事件。
+     */
+    private void safeSendEvent(SseEmitter emitter, String eventName, Object data) {
+        try {
+            emitter.send(SseEmitter.event().name(eventName).data(data, MediaType.APPLICATION_JSON));
+        } catch (IOException e) {
+            throw new RuntimeException(e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 构造 cleanup 逻辑：取消订阅、清理 artifact、持久化 episodic 记忆、移除进行中调用标记。
+     * 幂等执行（CAS 保证只执行一次）。
+     */
+    private Runnable buildCleanup(StreamContext ctx, String callKey, InFlightCall inFlight) {
+        return () -> {
+            // CAS 保证幂等：只执行一次
+            if (!ctx.cleaned.compareAndSet(false, true)) return;
+            // 1. 取消 Reactor 订阅，停止继续消耗 LLM token
+            Disposable d = ctx.subscription.get();
+            if (d != null && !d.isDisposed()) {
+                d.dispose();
+                log.info("v2 stream cancelled for sessionId={} (client disconnect/timeout)", ctx.conversationId);
+            }
+            // 2. 清理本次会话产生的临时 artifact（沙箱文件等）
+            try {
+                artifactStore.cleanupTask(ArtifactContext.from(ctx.runtimeCtx));
+            } catch (Exception ex) {
+                log.warn("Artifact cleanup failed for sessionId={}: {}", ctx.conversationId, ex.getMessage());
+            }
+            // 3. 持久化 episodic 记忆：仅在存在工具调用上下文时记录
+            try {
+                String toolCallJson = ctx.collector.toJson();
+                if (toolCallJson != null && !toolCallJson.isEmpty()) {
+                    // 组装本次会话的消息列表：用户提问 + 助手回答（优先用最终结果，回退到思考内容）
+                    List<Msg> sessionMessages = new ArrayList<>();
+                    sessionMessages.add(ctx.userMsg);
+                    String accumulatedText = ctx.answerContent.length() > 0
+                            ? ctx.answerContent.toString()
+                            : ctx.thinkContent.toString();
+                    if (accumulatedText != null && !accumulatedText.isEmpty()) {
+                        sessionMessages.add(Msg.builder().role(MsgRole.ASSISTANT)
+                                .content(TextBlock.builder().text(accumulatedText).build())
+                                .build());
+                    }
+                    // 异步持久化到 episodic 记忆系统，不阻塞 SSE 完成回调
+                    episodicMemory.recordSessionWithToolContext(ctx.episodicSessionId, sessionMessages, toolCallJson)
+                            .subscribeOn(Schedulers.boundedElastic())
+                            .subscribe(
+                                    null,
+                                    ex -> log.warn("Episodic persist failed for sessionId={}: {}", ctx.episodicSessionId, ex.getMessage()),
+                                    () -> log.debug("Episodic persist completed for sessionId={}", ctx.episodicSessionId));
+                }
+            } catch (Exception ex) {
+                log.warn("Episodic persist setup failed for sessionId={}: {}", ctx.episodicSessionId, ex.getMessage());
+            }
+            // 4. 从进行中调用表移除（必须用 (key, value) 两参 remove 防止误删被并发覆盖后的新条目）
+            inFlightCalls.remove(callKey, inFlight);
+            // 5. 完成 InFlightCall 的 future，唤醒等待的 interrupt 端点
+            inFlight.completion().complete(null);
+        };
+    }
+
+    /**
+     * 构造错误消息：对常见的模型重试超时等错误做友好提示，其他直接透传。
+     */
+    private String buildErrorMessage(Throwable error) {
+        String message = error.getMessage();
+        if (message == null) {
+            return "未知错误";
+        }
+        if (message.contains("Retries exhausted") || message.contains("Model request timeout after")) {
+            return "请求已达最大重试次数，当前模型资源不足，请稍后再试。";
+        }
+        return message;
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
+    /**
+     * 构造运行时上下文：填充 sessionId、userId（空则用 "anonymous"）、
+     * 并把用户原始问题以 "lastQuestion" 为键存入上下文，供中间件 / hooks 读取。
+     */
     private RuntimeContext buildRuntimeContext(String sessionId, String userId, String lastQuestion) {
         RuntimeContext.Builder builder = RuntimeContext.builder()
                 .sessionId(sessionId);
@@ -537,43 +700,37 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
         } else {
             builder.userId("anonymous");
         }
-        // Store the user's question so middleware/hooks can access it
+        // 把用户问题放进上下文，供中间件 / hooks 访问
         builder.put("lastQuestion", lastQuestion);
         return builder.build();
     }
 
-    private String resolveConversationId(ChatRequest req) {
-        if (req.getConversationId() != null && !req.getConversationId().isEmpty()) {
-            return req.getConversationId();
-        }
-        if (req.getChatId() != null && !req.getChatId().isEmpty()) {
-            return req.getChatId();
-        }
-        return UUID.randomUUID().toString();
-    }
 
-    private String resolveInput(ChatRequest req) {
-        if (req.getInput() != null) return req.getInput();
-        if (req.getQuestion() != null) return req.getQuestion();
-        return "";
-    }
-
+    /** 从 {@link Msg} 中提取纯文本内容，msg 为 null 时返回 null。 */
     private String extractText(Msg msg) {
         if (msg == null) return null;
         return msg.getTextContent();
     }
 
+
     /**
-     * Builds the in-flight tracker key. Uses the same normalisation as
-     * {@link io.agentscope.core.ReActAgent#slotKey}: null/blank userId -> "__anon__".
-     * The separator is ":" (not "/") to match the MySQL storage convention
-     * (SanitizingAgentStateStore replaces "/" with ":" anyway).
+     * 构造进行中调用表的键：{@code "<userId>:<sessionId>"}。
+     * userId 为空时统一使用 "__anon__"，保证匿名用户也能正确区分会话。
      */
     private static String callKey(String userId, String sessionId) {
         String uid = (userId == null || userId.isBlank()) ? "__anon__" : userId;
         return uid + ":" + sessionId;
     }
 
+    /**
+     * 查询指定会话当前是否在进行中的流式调用。
+     * <p>供 {@code POST /v2/ai/chat/interrupt} 端点使用：
+     * <ul>
+     *   <li>返回 null：无进行中调用，interrupt 端点可直接启动新的 resume 流</li>
+     *   <li>返回非 null：可等待 {@link InFlightCall#completion()} 完成（带超时），
+     *       超时后可强制 dispose {@link InFlightCall#subscription()} 停止 LLM token 消耗</li>
+     * </ul>
+     */
     @Override
     public InFlightCall getInFlightCall(String userId, String sessionId) {
         if (sessionId == null || sessionId.isBlank()) return null;
