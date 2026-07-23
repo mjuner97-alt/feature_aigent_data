@@ -13,22 +13,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.agentscopea2a.v2.controller;
+package com.agentscopea2a.controller;
 
 import com.agentscopea2a.dto.ChatRequest;
 import com.agentscopea2a.v2.routing.V2SessionRouter;
+import com.agentscopea2a.v2.service.ChatStreamService;
 import com.agentscopea2a.v2.service.V2ChatStreamService;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.CrossOrigin;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.ResponseStatus;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.UUID;
@@ -50,16 +46,16 @@ import java.util.UUID;
  * (v1 controller 重新启用后)。
  */
 @RestController
-@RequestMapping("V2/ai")
+@RequestMapping("/ai")
 @CrossOrigin(origins = "*", maxAge = 3600)
-public class V2ChatController {
+public class ChatController {
 
-    private static final Logger log = LoggerFactory.getLogger(V2ChatController.class);
+    private static final Logger log = LoggerFactory.getLogger(ChatController.class);
 
-    private final V2ChatStreamService chatStreamService;
+    private final ChatStreamService chatStreamService;
     private final V2SessionRouter sessionRouter;
 
-    public V2ChatController(V2ChatStreamService chatStreamService, V2SessionRouter sessionRouter) {
+    public ChatController(ChatStreamService chatStreamService, V2SessionRouter sessionRouter) {
         this.chatStreamService = chatStreamService;
         this.sessionRouter = sessionRouter;
     }

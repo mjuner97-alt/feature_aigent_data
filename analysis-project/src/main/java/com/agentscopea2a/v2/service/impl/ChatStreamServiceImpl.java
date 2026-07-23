@@ -1,45 +1,19 @@
-/*
- * Copyright 2024-2026 the original author or authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-package com.agentscopea2a.v2.service;
+
+package com.agentscopea2a.v2.service.impl;
 
 import com.agentscopea2a.dto.ChatRequest;
-import com.agentscopea2a.dto.response.ContentDto;
-import com.agentscopea2a.dto.response.TextManagerResponseDto;
-import com.agentscopea2a.dto.response.TextPayload;
-import com.agentscopea2a.dto.response.TextResponseDto;
-import com.agentscopea2a.dto.response.ThinkManagerResponseDto;
-import com.agentscopea2a.dto.response.ThinkPayload;
-import com.agentscopea2a.dto.response.ThinkResponseDto;
-import com.agentscopea2a.entity.AiChatResult;
+import com.agentscopea2a.dto.response.*;
 import com.agentscopea2a.v2.artifact.ArtifactContext;
 import com.agentscopea2a.v2.artifact.ArtifactStore;
 import com.agentscopea2a.v2.exception.TooManyRequestsException;
 import com.agentscopea2a.v2.hooks.ToolCallTrackingHook;
 import com.agentscopea2a.v2.memory.EpisodicMemory;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
+import com.agentscopea2a.v2.service.ChatStreamService;
+import com.agentscopea2a.v2.service.V2ChatStreamService;
 import com.agentscopea2a.v2.tools.ToolCallCollector;
 import io.agentscope.core.agent.RuntimeContext;
-import io.agentscope.core.event.AgentEvent;
-import io.agentscope.core.event.AgentResultEvent;
-import io.agentscope.core.event.AgentStartEvent;
-import io.agentscope.core.event.SubagentExposedEvent;
-import io.agentscope.core.event.TextBlockDeltaEvent;
-import io.agentscope.core.event.ToolCallStartEvent;
-import io.agentscope.core.event.ToolResultEndEvent;
-import io.agentscope.core.event.ToolResultStartEvent;
+import io.agentscope.core.event.*;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
@@ -50,8 +24,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -60,14 +36,11 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-import reactor.core.Disposable;
-import reactor.core.scheduler.Schedulers;
-
 
 @Service
-public class V2ChatStreamServiceImpl implements V2ChatStreamService {
+public class ChatStreamServiceImpl implements ChatStreamService {
 
-    private static final Logger log = LoggerFactory.getLogger(V2ChatStreamServiceImpl.class);
+    private static final Logger log = LoggerFactory.getLogger(ChatStreamServiceImpl.class);
     /** SSE 连接超时时间：10 分钟（单位毫秒），覆盖长思考 / 工具调用场景 */
     private static final long SSE_TIMEOUT = 600_000L;
 
@@ -91,8 +64,8 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
      */
     private final ConcurrentHashMap<String, InFlightCall> inFlightCalls = new ConcurrentHashMap<>();
 
-    public V2ChatStreamServiceImpl(HarnessA2aRunnerV2 runner, ArtifactStore artifactStore,
-                                    EpisodicMemory episodicMemory) {
+    public ChatStreamServiceImpl(HarnessA2aRunnerV2 runner, ArtifactStore artifactStore,
+                                 EpisodicMemory episodicMemory) {
         this.runner = runner;
         this.artifactStore = artifactStore;
         this.episodicMemory = episodicMemory;
@@ -182,11 +155,7 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
             dto.setAnsUUID(ctx.ansUUID);
             dto.setConversationId(ctx.conversationId);
             dto.setFromType(ctx.formType);
-            // SSE event name = "text_block_delta" so frontend chat.ts can route it
-            // to the "token" branch (same event name as the old AiChatResult format).
-            // The JSON body uses the new ThinkPayload/TextPayload DTO structure
-            // (type="think", data.content, data.action, data.topic, finish).
-            safeSendEvent(ctx.emitter, "text_block_delta", dto);
+            safeSend(ctx.emitter, dto, MediaType.APPLICATION_JSON);
         }
 
         @Override
@@ -203,9 +172,7 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
             dto.setAnsUUID(ctx.ansUUID);
             dto.setConversationId(ctx.conversationId);
             dto.setFromType(ctx.formType);
-            // SSE event name = "done" so frontend chat.ts recognizes the terminal event.
-            // The JSON body uses the new TextPayload DTO (type="text", data.content, finish).
-            safeSendEvent(ctx.emitter, "done", dto);
+            safeSend(ctx.emitter, dto, MediaType.APPLICATION_JSON);
         }
 
         @Override
@@ -219,7 +186,7 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
             dto.setAnsUUID(ctx.ansUUID);
             dto.setConversationId(ctx.conversationId);
             dto.setFromType(ctx.formType);
-            safeSendEvent(ctx.emitter, "done", dto);
+            safeSend(ctx.emitter, dto, MediaType.APPLICATION_JSON);
         }
     };
 
@@ -229,7 +196,7 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
             ThinkResponseDto dto = new ThinkResponseDto();
             dto.setData(contentOf(payload));
             dto.setFinish(payload.isFinish());
-            safeSendEvent(ctx.emitter, "text_block_delta", dto);
+            safeSend(ctx.emitter, dto, MediaType.APPLICATION_JSON);
         }
 
         @Override
@@ -241,7 +208,7 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
             contentDto.setTopic("");
             dto.setData(contentDto);
             dto.setFinish(payload.isFinish());
-            safeSendEvent(ctx.emitter, "done", dto);
+            safeSend(ctx.emitter, dto, MediaType.APPLICATION_JSON);
         }
 
         @Override
@@ -251,7 +218,7 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
             contentDto.setContent(buildErrorMessage(error));
             dto.setData(contentDto);
             dto.setFinish(true);
-            safeSendEvent(ctx.emitter, "done", dto);
+            safeSend(ctx.emitter, dto, MediaType.APPLICATION_JSON);
         }
     };
 
@@ -353,8 +320,14 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
 
         // 注册 SSE 生命周期回调：三种终止路径都走同一个幂等 cleanup（参考 v1 流处理模式）
         emitter.onCompletion(cleanup);
-        emitter.onTimeout(cleanup);
-        emitter.onError(e -> cleanup.run());
+        emitter.onTimeout(() -> {
+            handleStreamError(streamCtx, new RuntimeException("Model request timeout after"), strategy);
+            cleanup.run();
+        });
+        emitter.onError(e -> {
+            handleStreamError(streamCtx, e, strategy);
+            cleanup.run();
+        });
 
         // 在 boundedElastic 调度器上异步启动流式订阅，避免阻塞 Servlet 容器线程
         Mono.fromRunnable(() -> {
@@ -390,29 +363,24 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
      *
      * <p>业务逻辑（与 v1 语义对齐，仅事件类型不同）：
      * <ul>
-     *   <li>{@link AgentResultEvent} 是终止事件：提取最终文本，仅在 answerContent 为空时
-     *       替换（避免"重复输出"bug — 流式 text_block_delta 已累积完整文本，再追加会双倍）</li>
+     *   <li>{@link AgentResultEvent} 是终止事件：提取最终文本累积到 {@link StreamContext#answerContent}，
+     *       不立即发送，最终结果在 {@link #handleStreamSuccess} 中分片输出
      *   <li>{@link TextBlockDeltaEvent} 是流式 token：视为"思考"，累积到
-     *       {@link StreamContext#thinkContent} 并通过 {@code sendThink}（action="执行中"）即时发送</li>
-     *   <li>6 种 process 事件（agent_start, tool_call_start, tool_result_start, tool_result_end,
-     *       subagent_exposed, agent_end）转发到前端 ActivityFeed 做实时进度展示</li>
-     *   <li>其他事件（TextBlockStartEvent 等）直接跳过</li>
+     *       {@link StreamContext#thinkContent} 并通过 {@code sendThink}（action="执行中"）即时发送
+     *   <li>{@link TextBlockStartEvent} 标记文本块开始：发送"执行中"标记
+     *   <li>{@link TextBlockEndEvent} 标记文本块结束：发送"已执行"标记
      * </ul>
+     * thinkContent 拼接所有思考内容，answerContent 拼接最终结果内容，用于最终落库。
+     * 异常时调用 {@link #handleStreamError} 保证"执行中/已执行"成对和 emitter 正确关闭。
      */
     private void processChunk(AgentEvent event, StreamContext ctx, ResponseStrategy strategy) {
         try {
             // AgentResultEvent 是终止事件：最终结果累积到 answerContent，不立即发送
-            // The streaming text_block_delta events have already accumulated the full text
-            // into thinkContent as it streamed in. Replacing answerContent with the
-            // AgentResultEvent's final text would be fine, but we only do so if answerContent
-            // is empty (i.e. no streaming happened — e.g. non-streaming model configs).
-            // This avoids the "重复输出" bug where the full report appears twice.
             if (event instanceof AgentResultEvent) {
-                if (ctx.answerContent.length() == 0) {
-                    String text = extractText(((AgentResultEvent) event).getResult());
-                    if (StringUtils.isNotBlank(text)) {
-                        ctx.answerContent.append(text);
-                    }
+                String text = extractText(((AgentResultEvent) event).getResult());
+                if (StringUtils.isNotBlank(text)) {
+                    ctx.answerContent.setLength(0);
+                    ctx.answerContent.append(text);
                 }
                 return;
             }
@@ -421,107 +389,18 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
             String chunk = null;
             if (event instanceof TextBlockDeltaEvent delta) {
                 chunk = delta.getDelta();
+            }else if (event instanceof ThinkingBlockDeltaEvent delta){
+                chunk = delta.getDelta();
             }
             // TextBlockStartEvent 是标记性事件 - 不携带文本内容，直接跳过
 
-            // 有 chunk 且非空 → 累积并发送"执行中"
-            if (StringUtils.isNotBlank(chunk)) {
-                ctx.thinkContent.append(chunk);
-                ctx.hasSentExecuting.set(true);
-                strategy.sendThink(ctx, ThinkPayload.progress(chunk));
-                return;
-            }
+            // 没有 chunk 或 chunk 为空，直接返回（不发送 SSE）
+            if (StringUtils.isBlank(chunk)) return;
 
-            // ── Process events (process-event-streaming.md) ─────────────────────
-            // Forward 6 event types that carry no text but tell the user what the
-            // agent is doing: agent_start, tool_call_start, tool_result_start,
-            // tool_result_end, subagent_exposed, agent_end. These are NOT accumulated
-            // into thinkContent/answerContent; they go out as standalone SSE events
-            // with their own event name (matching AgentEvent.getType()) so the
-            // frontend ActivityFeed can render a live progress timeline.
-            // They use AiChatResult format (with eventType/toolCall* fields) so the
-            // frontend chat.ts PROCESS_EVENTS matcher picks them up.
-            String eventName = event.getType() != null ? event.getType().name().toLowerCase() : "custom";
-            switch (eventName) {
-                case "agent_start": {
-                    if (!(event instanceof AgentStartEvent e)) return;
-                    AiChatResult result = AiChatResult.builder()
-                            .code(0).eventType(eventName)
-                            .lineResult("🤖 启动智能体：" + e.getName() + " (" + e.getRole() + ")")
-                            .agentNameRaw(e.getName()).agentRole(e.getRole())
-                            .source(event.getSource())
-                            .build();
-                    safeSendEvent(ctx.emitter, eventName, result);
-                    return;
-                }
-                case "tool_call_start": {
-                    if (!(event instanceof ToolCallStartEvent e)) return;
-                    ToolCallCollector.ToolCallDetail detail =
-                            ctx.collector != null ? ctx.collector.getByToolCallId(e.getToolCallId()) : null;
-                    AiChatResult result = AiChatResult.builder()
-                            .code(0).eventType(eventName)
-                            .lineResult("🔧 调用工具：" + e.getToolCallName())
-                            .toolCallId(e.getToolCallId()).toolCallName(e.getToolCallName())
-                            .toolInput(detail != null ? detail.input() : null)
-                            .source(event.getSource())
-                            .build();
-                    safeSendEvent(ctx.emitter, eventName, result);
-                    return;
-                }
-                case "tool_result_start": {
-                    if (!(event instanceof ToolResultStartEvent e)) return;
-                    AiChatResult result = AiChatResult.builder()
-                            .code(0).eventType(eventName)
-                            .lineResult("📋 工具返回：" + e.getToolCallName())
-                            .toolCallId(e.getToolCallId()).toolCallName(e.getToolCallName())
-                            .source(event.getSource())
-                            .build();
-                    safeSendEvent(ctx.emitter, eventName, result);
-                    return;
-                }
-                case "tool_result_end": {
-                    if (!(event instanceof ToolResultEndEvent e)) return;
-                    String state = e.getState() != null ? e.getState().name() : "?";
-                    ToolCallCollector.ToolCallDetail detail =
-                            ctx.collector != null ? ctx.collector.getByToolCallId(e.getToolCallId()) : null;
-                    AiChatResult result = AiChatResult.builder()
-                            .code(0).eventType(eventName)
-                            .lineResult("✅ 完成：" + e.getToolCallName() + " (" + state + ")")
-                            .toolCallId(e.getToolCallId()).toolCallName(e.getToolCallName())
-                            .toolCallState(state)
-                            .toolInput(detail != null ? detail.input() : null)
-                            .toolOutput(detail != null ? detail.output() : null)
-                            .source(event.getSource())
-                            .build();
-                    safeSendEvent(ctx.emitter, eventName, result);
-                    return;
-                }
-                case "subagent_exposed": {
-                    if (!(event instanceof SubagentExposedEvent e)) return;
-                    String label = e.getLabel() != null ? e.getLabel() : e.getSubagentId();
-                    AiChatResult result = AiChatResult.builder()
-                            .code(0).eventType(eventName)
-                            .lineResult("👥 派单子智能体：" + label)
-                            .subagentId(e.getSubagentId()).subagentLabel(e.getLabel())
-                            .source(event.getSource())
-                            .build();
-                    safeSendEvent(ctx.emitter, eventName, result);
-                    return;
-                }
-                case "agent_end": {
-                    AiChatResult result = AiChatResult.builder()
-                            .code(0).eventType(eventName)
-                            .lineResult("✅ 智能体完成")
-                            .source(event.getSource())
-                            .build();
-                    safeSendEvent(ctx.emitter, eventName, result);
-                    return;
-                }
-                default:
-                    // Other events (thinking_*, model_call_*, data_block_*, text_block_start/end,
-                    // tool_call_delta, tool_result_*_delta, hint_block, etc.) are not forwarded.
-                    return;
-            }
+            // 其他所有输出都视为思考，累积并发送"执行中"
+            ctx.thinkContent.append(chunk);
+            ctx.hasSentExecuting.set(true);
+            strategy.sendThink(ctx, ThinkPayload.progress(chunk));
 
         } catch (Exception e) {
             // 仅在确实发送过"执行中"时才补发"已执行"，保证成对
@@ -532,6 +411,7 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
             throw new RuntimeException(e.getMessage(), e);
         }
     }
+
 
     /**
      * 统一处理流式异常（参考 v1 handleStreamError 模式）。
@@ -561,9 +441,6 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
         } catch (Exception e) {
             log.warn("发送错误结果失败: sessionId={}", ctx.conversationId, e);
         } finally {
-            // Plan B revision #7: explicit cleanup invocation. SseEmitter's onError
-            // callback may not fire reliably (Spring 6.1.4 async dispatch issue).
-            // Call cleanup explicitly here - it's CAS-guarded, so duplicate calls are no-ops.
             try {
                 ctx.emitter.complete();
             } catch (Exception e) {
@@ -586,18 +463,22 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
             if (ctx.hasSentExecuting.get()) {
                 strategy.sendThink(ctx, ThinkPayload.done("分析智能体"));
             }
-            // 发送最终结果：一次性发完整 answerContent（不分片）。
-            // 前端收到 done 事件后用完整文本替换流式累积内容，确保最终渲染正确。
-            // 之前分5字符片段发送会导致前端只取最后一个片段覆盖，丢失大部分内容。
+            // 流式输出最终结果：每 5 个字符一片
             String finalAnswer = ctx.answerContent.toString();
             if (StringUtils.isNotBlank(finalAnswer)) {
-                strategy.sendText(ctx, TextPayload.chunk(finalAnswer, true));
+                int len = finalAnswer.length();
+                int pos = 0;
+                while (pos < len) {
+                    int end = Math.min(pos + 5, len);
+                    String chunk = finalAnswer.substring(pos, end);
+                    boolean isLast = (end == len);
+                    strategy.sendText(ctx, TextPayload.chunk(chunk, isLast));
+                    pos = end;
+                }
             }
         } catch (Exception e) {
             log.warn("发送最终结果失败: sessionId={}", ctx.conversationId, e);
         } finally {
-            // Same as error path: explicit cleanup in case onCompletion
-            // doesn't fire (Spring 6.1.4 SseEmitter async dispatch issue).
             try {
                 ctx.emitter.complete();
             } catch (Exception e) {
@@ -607,13 +488,12 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
     }
 
     /**
-     * 发送带 event name 的 SSE 事件。
-     * Spring SseEmitter.event() 构造器会同时写入 {@code event:<name>} 和 {@code data:<json>}，
-     * 前端 EventSource / fetch reader 可以通过 event name 区分不同类型的事件。
+     * 发送 SSE 数据的包装方法（参考 v1 safeSend 模式）：
+     * 把 IOException 转为 RuntimeException，避免在每个发送点重复 try/catch。
      */
-    private void safeSendEvent(SseEmitter emitter, String eventName, Object data) {
+    private void safeSend(SseEmitter emitter, Object data, MediaType mediaType) {
         try {
-            emitter.send(SseEmitter.event().name(eventName).data(data, MediaType.APPLICATION_JSON));
+            emitter.send(data, mediaType);
         } catch (IOException e) {
             throw new RuntimeException(e.getMessage(), e);
         }
