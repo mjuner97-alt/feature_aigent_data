@@ -18,10 +18,12 @@ package com.agentscopea2a.v2.runner;
 import com.agentscopea2a.v2.hooks.ArtifactHandoffHook;
 import com.agentscopea2a.v2.hooks.PythonExecRetryHook;
 import com.agentscopea2a.v2.hooks.ToolCallTrackingHook;
+import com.agentscopea2a.v2.memory.MysqlMemoryStore;
 import com.agentscopea2a.v2.middleware.ArtifactAccessMiddleware;
 import com.agentscopea2a.v2.middleware.PythonExecAccessMiddleware;
 import com.agentscopea2a.v2.middleware.SubagentEventForwardingMiddleware;
 import com.agentscopea2a.v2.tools.ArithTool;
+import com.agentscopea2a.v2.tools.PerUserMemoryGetTool;
 import com.agentscopea2a.v2.tools.PythonExecTool;
 import com.agentscopea2a.v2.tools.SkillSaveTool;
 import com.agentscopea2a.v2.tools.ToolRoutersIndex;
@@ -107,6 +109,13 @@ public class SubagentRegistrar {
      * toolInput=null because the parent's ToolCallCollector doesn't record subagent calls.
      */
     private final ToolCallTrackingHook toolCallTrackingHook;
+    /**
+     * Per-user memory store for replacing the framework's {@code memory_get} tool on
+     * subagents. When non-null, each subagent's {@code memory_get} is replaced with
+     * {@link PerUserMemoryGetTool} to prevent cross-tenant memory leaks via the shared
+     * root MEMORY.md fallback in {@code WorkspaceManager.readWithOverride()}.
+     */
+    private final MysqlMemoryStore mysqlMemoryStore;
 
     public SubagentRegistrar(
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
@@ -118,7 +127,8 @@ public class SubagentRegistrar {
             ObjectProvider<ArtifactAccessMiddleware> artifactAccessMiddlewareProvider,
             ObjectProvider<PythonExecAccessMiddleware> pythonExecAccessMiddlewareProvider,
             ObjectProvider<PythonExecRetryHook> pythonExecRetryHookProvider,
-            ObjectProvider<ToolCallTrackingHook> toolCallTrackingHookProvider) {
+            ObjectProvider<ToolCallTrackingHook> toolCallTrackingHookProvider,
+            ObjectProvider<MysqlMemoryStore> mysqlMemoryStoreProvider) {
 
         // v1-style: subagents hold only meta-tool beans. Business tools (quality_query_* /
         // data_*) are encapsulated inside ToolRoutersIndex and dispatched via
@@ -144,6 +154,7 @@ public class SubagentRegistrar {
         this.pythonExecRetryHook = pythonExecRetryHookProvider.getIfAvailable();
         this.subagentEventForwardingMiddleware = new SubagentEventForwardingMiddleware();
     this.toolCallTrackingHook = toolCallTrackingHookProvider.getIfAvailable();
+        this.mysqlMemoryStore = mysqlMemoryStoreProvider.getIfAvailable();
         log.info("SubagentRegistrar: toolRegistry built with {} entries: {}; hooks - handoff={} access={} pyGuard={} retry={} eventForwarding=true",
                 toolRegistry.size(), toolRegistry.keySet(),
                 artifactHandoffHook != null, artifactAccessMiddleware != null,
@@ -304,6 +315,21 @@ public class SubagentRegistrar {
             }
 
             HarnessAgent built = sub.build();
+
+            // Replace the framework's memory_get with PerUserMemoryGetTool on subagents too.
+            // The framework auto-registers MemoryGetTool (HarnessAgent.java:2232) on all agents
+            // unless disableMemoryTools() is called. Subagents don't disable it, so they inherit
+            // the shared-root filesystem fallback that causes cross-tenant leaks. Same pattern
+            // as the main agent's replacement in HarnessA2aRunnerV2.
+            if (mysqlMemoryStore != null) {
+                try {
+                    Toolkit builtTk = built.getToolkit();
+                    builtTk.removeTool("memory_get");
+                    builtTk.registerTool(new PerUserMemoryGetTool(mysqlMemoryStore));
+                } catch (Exception e) {
+                    log.warn("Subagent '{}': failed to replace memory_get tool: {}", id, e.getMessage());
+                }
+            }
 
             // Replace the JAR's PlanExitTool with AutoApprovePlanExitTool so plan_exit
             // no longer triggers the framework's HITL ASK pause. Without this, the

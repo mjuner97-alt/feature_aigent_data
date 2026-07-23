@@ -104,26 +104,49 @@ public class PythonExecAccessMiddleware implements MiddlewareBase {
             if (code == null || code.isBlank()) {
                 continue;
             }
-            String foreignPath = findForeignArtifactPath(code, artifactsRoot, allowedPrefix);
-            if (foreignPath == null) {
+
+            // Step 1: Repair incomplete artifact paths — LLM sometimes writes
+            // /workspace/artifacts/somefile.csv instead of /workspace/artifacts/user/task/somefile.csv
+            String repairedCode = repairIncompleteArtifactPaths(code, artifactsRoot, allowedPrefix);
+
+            // Step 2: Check for cross-tenant paths (after repair, so incomplete paths
+            // that were repaired are no longer flagged as cross-tenant)
+            String codeToScan = repairedCode != null ? repairedCode : code;
+            String foreignPath = findForeignArtifactPath(codeToScan, artifactsRoot, allowedPrefix);
+            if (foreignPath != null) {
+                log.warn("Blocked cross-tenant python_exec: code references {} outside {} (user={}, task={})",
+                        foreignPath, allowedPrefix, artifactCtx.userBucket(), artifactCtx.taskBucket());
+
+                Map<String, Object> newInput = new HashMap<>(toolUse.getInput());
+                newInput.put(CODE_PARAM,
+                        "import sys\n"
+                                + "sys.stderr.write('python_exec denied by PythonExecAccessMiddleware: "
+                                + "cross-tenant artifact path in code (user=" + artifactCtx.userBucket()
+                                + " task=" + artifactCtx.taskBucket() + ") path=" + foreignPath + "\\n')\n"
+                                + "sys.exit(77)\n");
+                ToolUseBlock replacement = new ToolUseBlock(
+                        toolUse.getId(), toolUse.getName(), newInput,
+                        toolUse.getContent(), toolUse.getMetadata(), toolUse.getState());
+                if (rewritten == null) {
+                    rewritten = new ArrayList<>(toolCalls);
+                }
+                rewritten.set(i, replacement);
                 continue;
             }
 
-            log.warn("Blocked cross-tenant python_exec: code references {} outside {} (user={}, task={})",
-                    foreignPath, allowedPrefix, artifactCtx.userBucket(), artifactCtx.taskBucket());
-
-            Map<String, Object> newInput = new HashMap<>(toolUse.getInput());
-            newInput.put(CODE_PARAM,
-                    "import sys\n"
-                            + "sys.stderr.write('python_exec denied by PythonExecAccessMiddleware: "
-                            + "cross-tenant artifact path in code (user=" + artifactCtx.userBucket()
-                            + " task=" + artifactCtx.taskBucket() + ") path=" + foreignPath + "\\n')\n"
-                            + "sys.exit(77)\n");
-            ToolUseBlock replacement = new ToolUseBlock(toolUse.getId(), toolUse.getName(), newInput);
-            if (rewritten == null) {
-                rewritten = new ArrayList<>(toolCalls);
+            // Step 3: If we repaired incomplete paths but no cross-tenant violation,
+            // apply the repaired code
+            if (repairedCode != null) {
+                Map<String, Object> newInput = new HashMap<>(toolUse.getInput());
+                newInput.put(CODE_PARAM, repairedCode);
+                ToolUseBlock replacement = new ToolUseBlock(
+                        toolUse.getId(), toolUse.getName(), newInput,
+                        toolUse.getContent(), toolUse.getMetadata(), toolUse.getState());
+                if (rewritten == null) {
+                    rewritten = new ArrayList<>(toolCalls);
+                }
+                rewritten.set(i, replacement);
             }
-            rewritten.set(i, replacement);
         }
 
         if (rewritten != null) {
@@ -135,9 +158,78 @@ public class PythonExecAccessMiddleware implements MiddlewareBase {
 
     // ==================== Helpers ====================
 
+    /**
+     * Repair incomplete artifact paths in python_exec code.
+     * LLMs sometimes write paths like {@code /workspace/artifacts/somefile.csv}
+     * instead of the correct {@code /workspace/artifacts/userBucket/taskBucket/somefile.csv}.
+     * This method finds such incomplete paths and inserts the allowedPrefix.
+     *
+     * @return the repaired code, or null if no repair was needed
+     */
+    private static String repairIncompleteArtifactPaths(String code, String artifactsRoot, String allowedPrefix) {
+        if (artifactsRoot == null || artifactsRoot.isEmpty() || code == null) {
+            return null;
+        }
+        // Find all occurrences of artifactsRoot in the code
+        int from = 0;
+        StringBuilder sb = null;
+        while (true) {
+            int idx = code.indexOf(artifactsRoot, from);
+            if (idx < 0) break;
+            int end = findPathEnd(code, idx + artifactsRoot.length());
+            String candidate = code.substring(idx, end);
+
+            if (candidate.startsWith(allowedPrefix)) {
+                // Already correct — skip
+                from = end;
+                continue;
+            }
+            // Check if this is an incomplete path: starts with artifactsRoot but
+            // doesn't start with any user/task bucket pattern.
+            // An incomplete path looks like: /workspace/artifacts/somefile.csv
+            // (missing the userBucket/taskBucket/ segments)
+            // It could also be a cross-tenant path: /workspace/artifacts/otheruser/...
+            // We distinguish by checking if the path segment after artifactsRoot/ is NOT
+            // a user bucket (i.e., it's a filename without bucket structure).
+            String afterRoot = candidate.substring(artifactsRoot.length());
+            // If afterRoot starts with something that looks like a filename (no slash),
+            // it's an incomplete path — insert the allowedPrefix
+            if (!afterRoot.contains("/")) {
+                // Incomplete path: /workspace/artifacts/filename.csv
+                // → /workspace/artifacts/userBucket/taskBucket/filename.csv
+                if (sb == null) {
+                    sb = new StringBuilder(code.length() + 64);
+                }
+                sb.append(code, from, idx);
+                sb.append(allowedPrefix);
+                sb.append(afterRoot);
+                from = end;
+            } else {
+                // Has slashes — could be another user's bucket or a partial bucket path
+                // Don't repair; let cross-tenant check handle it
+                from = end;
+            }
+        }
+        if (sb != null) {
+            // Append remaining code after the last replacement
+            sb.append(code, from, code.length());
+            return sb.toString();
+        }
+        return null;
+    }
+
     private ArtifactContext resolveContext(RuntimeContext ctx) {
         if (fixedContext != null) {
             return fixedContext;
+        }
+        // Priority: pinned ArtifactContext from main agent's RuntimeContext.
+        // This ensures sub-agents (whose sessionId="sub-xxx") use the parent's
+        // artifact bucket instead of their own isolated bucket.
+        if (ctx != null) {
+            ArtifactContext pinned = ctx.get(ArtifactContext.class);
+            if (pinned != null) {
+                return pinned;
+            }
         }
         return ArtifactContext.from(ctx);
     }

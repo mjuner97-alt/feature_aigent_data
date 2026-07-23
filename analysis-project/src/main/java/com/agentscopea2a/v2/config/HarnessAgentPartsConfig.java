@@ -31,6 +31,7 @@ import com.agentscopea2a.v2.middleware.PerUserMemoryContextMiddleware;
 import com.agentscopea2a.v2.middleware.PythonExecAccessMiddleware;
 import com.agentscopea2a.v2.middleware.ResponseCacheMiddleware;
 import com.agentscopea2a.v2.middleware.SessionMiddleware;
+import com.agentscopea2a.v2.middleware.ToolCallContentRepairMiddleware;
 import io.agentscope.core.hook.Hook;
 import io.agentscope.core.middleware.MiddlewareBase;
 import org.slf4j.Logger;
@@ -68,6 +69,12 @@ public class HarnessAgentPartsConfig {
 
     private static final Logger log = LoggerFactory.getLogger(HarnessAgentPartsConfig.class);
 
+    @Bean
+    public ToolCallContentRepairMiddleware toolCallContentRepairMiddleware() {
+        log.info("HarnessAgentPartsConfig: ToolCallContentRepairMiddleware @Bean registered (priority=-100)");
+        return new ToolCallContentRepairMiddleware();
+    }
+
     /**
      * Registered as a top-level @Bean (not {@code new}'d inside {@link #harnessMiddlewares})
      * because {@link HarnessA2aRunnerV2} constructor injects {@code List<MiddlewareBase>},
@@ -96,8 +103,10 @@ public class HarnessAgentPartsConfig {
             SessionMiddleware sessionMiddleware,
             ObjectProvider<PerUserMemoryContextMiddleware> perUserMemoryContextMiddlewareProvider,
             ObjectProvider<MemoryLedgerMirrorMiddleware> memoryLedgerMirrorProvider,
-            ObjectProvider<PythonExecAccessMiddleware> pythonExecAccessMiddlewareProvider) {
+            ObjectProvider<PythonExecAccessMiddleware> pythonExecAccessMiddlewareProvider,
+            ToolCallContentRepairMiddleware toolCallContentRepairMiddleware) {
         List<MiddlewareBase> middlewares = new ArrayList<>(List.of(
+                toolCallContentRepairMiddleware,
                 responseCacheMiddleware,
                 dimensionStateMiddleware,
                 episodicRetrievalMiddleware,

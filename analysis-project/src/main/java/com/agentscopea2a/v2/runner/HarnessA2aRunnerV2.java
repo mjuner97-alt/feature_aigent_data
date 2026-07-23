@@ -16,7 +16,9 @@
 package com.agentscopea2a.v2.runner;
 
 import com.agentscopea2a.v2.config.HarnessRunnerProperties;
+import com.agentscopea2a.v2.memory.MysqlMemoryStore;
 import com.agentscopea2a.v2.model.FallbackModelDecorator;
+import com.agentscopea2a.v2.tools.PerUserMemoryGetTool;
 import com.agentscopea2a.v2.tools.V2ToolGroupAdapter;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
@@ -89,7 +91,8 @@ public class HarnessA2aRunnerV2 {
             ObjectProvider<SandboxFilesystemSpec> sandboxFilesystemProvider,
             ObjectProvider<RemoteFilesystemSpec> remoteFilesystemProvider,
             ObjectProvider<DistributedStore> distributedStoreProvider,
-            ObjectProvider<SubagentRegistrar> subagentRegistrarProvider) {
+            ObjectProvider<SubagentRegistrar> subagentRegistrarProvider,
+            ObjectProvider<MysqlMemoryStore> mysqlMemoryStoreProvider) {
         HarnessRunnerProperties.ModelInstance main = runnerProperties.getModel().getInstances().getGlmMain();
         HarnessRunnerProperties.ModelInstance light = runnerProperties.getModel().getInstances().getLightClassifier();
         HarnessRunnerProperties.ModelInstance fallback = runnerProperties.getModel().getInstances().getFallback();
@@ -246,6 +249,27 @@ public class HarnessA2aRunnerV2 {
         }
 
         this.agent = builder.build();
+
+        // Replace the framework's memory_get tool with a per-user DB-backed version.
+        // The framework's MemoryGetTool reads from workspaceManager.readManagedWorkspaceFileUtf8()
+        // which falls back to the shared root MEMORY.md (readWithOverride -> readFileQuietly).
+        // In shared-container mode this causes cross-tenant leaks: a new user calling
+        // memory_get("MEMORY.md") sees a previous user's curated memory. PerUserMemoryGetTool
+        // reads from MysqlMemoryStore (agent_memory table, keyed by user_id) instead.
+        // Only wired when mysql-mirror is enabled; otherwise falls back to framework behavior.
+        MysqlMemoryStore mysqlMemoryStore = mysqlMemoryStoreProvider.getIfAvailable();
+        if (mysqlMemoryStore != null) {
+            try {
+                io.agentscope.core.tool.Toolkit toolkit = this.agent.getToolkit();
+                toolkit.removeTool("memory_get");
+                toolkit.registerTool(new PerUserMemoryGetTool(mysqlMemoryStore));
+                log.info("HarnessA2aRunnerV2: replaced framework memory_get with PerUserMemoryGetTool (per-user DB-backed)");
+            } catch (Exception e) {
+                log.warn("HarnessA2aRunnerV2: failed to replace memory_get tool: {}", e.getMessage());
+            }
+        } else {
+            log.info("HarnessA2aRunnerV2: MysqlMemoryStore not available (mysql-mirror disabled), keeping framework memory_get");
+        }
 
         // Plan mode removed from main agent (supervisor is a pure router, not a planner).
         // Plan mode is now enabled on the analyze_data subagent instead — see SubagentRegistrar.

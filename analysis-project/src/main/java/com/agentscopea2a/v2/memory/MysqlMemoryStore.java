@@ -217,6 +217,40 @@ public class MysqlMemoryStore {
         return out;
     }
 
+    /**
+     * Read all ledger rows for a specific user + date, ordered by insertion id (ascending
+     * so the daily file reads chronologically). Used by {@code PerUserMemoryGetTool} when
+     * the LLM requests {@code memory/YYYY-MM-DD.md}.
+     */
+    public List<LedgerRow> readLedgerForDate(String userId, String dateKey) {
+        String sql =
+                "SELECT user_id, date_key, source, line, created_at "
+                        + "FROM agent_memory_ledger WHERE user_id=? AND date_key=? "
+                        + "ORDER BY id ASC";
+        List<LedgerRow> out = new ArrayList<>();
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, userId);
+            ps.setString(2, dateKey);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Timestamp ts = rs.getTimestamp("created_at");
+                    out.add(
+                            new LedgerRow(
+                                    rs.getString("user_id"),
+                                    rs.getString("date_key"),
+                                    rs.getString("source"),
+                                    rs.getString("line"),
+                                    ts == null ? null : ts.toLocalDateTime()));
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(
+                    "Failed to read ledger for user=" + userId + " date=" + dateKey, e);
+        }
+        return out;
+    }
+
     public record Entry(
             String userId,
             String kind,
