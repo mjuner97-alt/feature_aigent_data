@@ -24,7 +24,7 @@ node_modules/
 .idea
 
 # Frontend build cache
-.vite/deps/
+**/.vite/deps/
 
 # Temp test artifacts
 tmp-chat-req.json
