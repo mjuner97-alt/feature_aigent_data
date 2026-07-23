@@ -26,12 +26,15 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
 /**
  * v2 模型提供者 - 根据用户 ID 动态选择模型并包装降级逻辑。
  *
  * <p>优先级：
  * <ol>
- *   <li>用户自定义模型（从数据库读取）</li>
+ *   <li>用户自定义模型（从数据库读取，带缓存）</li>
  *   <li>系统默认模型（配置文件中的 glm-main）</li>
  * </ol>
  *
@@ -42,9 +45,15 @@ public class ModelProvider {
 
     private static final Logger log = LoggerFactory.getLogger(ModelProvider.class);
 
+    /** 用户模型配置缓存有效期：5 分钟 */
+    private static final long CACHE_TTL_MS = 5 * 60 * 1000L;
+
     private final UserModelConfigMapper userModelConfigMapper;
     private final HarnessRunnerProperties harnessRunnerProperties;
     private final Model defaultModel;
+
+    /** userId -> 缓存条目（含配置和过期时间戳） */
+    private final Map<Long, CacheEntry> userModelCache = new ConcurrentHashMap<>();
 
     public ModelProvider(
             UserModelConfigMapper userModelConfigMapper,
@@ -78,7 +87,7 @@ public class ModelProvider {
 
         if (userId != null) {
             try {
-                UserModelConfig userConfig = userModelConfigMapper.selectByUserId(userId);
+                UserModelConfig userConfig = getCachedUserConfig(userId);
                 if (userConfig != null && userConfig.getToken() != null && !userConfig.getToken().isBlank()) {
                     hasUserConfig = true;
                     log.info("使用用户自定义模型配置 userId={} provider={} model={}",
@@ -96,6 +105,42 @@ public class ModelProvider {
         }
 
         return new FallbackModelDecorator(primaryModel, defaultModel);
+    }
+
+    /**
+     * 获取缓存的用户模型配置，过期则回源数据库并刷新缓存。
+     */
+    private UserModelConfig getCachedUserConfig(Long userId) {
+        CacheEntry entry = userModelCache.get(userId);
+        if (entry != null && !entry.isExpired()) {
+            return entry.config;
+        }
+        // 缓存未命中或已过期，查库
+        UserModelConfig config = userModelConfigMapper.selectByUserId(userId);
+        if (config != null) {
+            userModelCache.put(userId, new CacheEntry(config));
+            log.debug("用户模型配置已缓存 userId={}", userId);
+        } else {
+            // 缓存空值防止缓存穿透（短 TTL）
+            userModelCache.put(userId, new CacheEntry(null, 30_000L));
+        }
+        return config;
+    }
+
+    /**
+     * 清除指定用户的模型缓存，供外部调用（如管理端修改配置后主动刷新）。
+     */
+    public void invalidateUserCache(Long userId) {
+        userModelCache.remove(userId);
+        log.info("用户模型缓存已清除 userId={}", userId);
+    }
+
+    /**
+     * 清除所有用户模型缓存。
+     */
+    public void invalidateAllCache() {
+        userModelCache.clear();
+        log.info("所有用户模型缓存已清除");
     }
 
     /**
@@ -181,5 +226,26 @@ public class ModelProvider {
      */
     public Model getDefaultModel() {
         return defaultModel;
+    }
+
+    /**
+     * 缓存条目：持有配置和过期时间戳。
+     */
+    private static class CacheEntry {
+        final UserModelConfig config;
+        final long expireAtMs;
+
+        CacheEntry(UserModelConfig config) {
+            this(config, CACHE_TTL_MS);
+        }
+
+        CacheEntry(UserModelConfig config, long ttlMs) {
+            this.config = config;
+            this.expireAtMs = System.currentTimeMillis() + ttlMs;
+        }
+
+        boolean isExpired() {
+            return System.currentTimeMillis() >= expireAtMs;
+        }
     }
 }

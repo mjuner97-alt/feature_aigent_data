@@ -15,6 +15,7 @@
  */
 package com.agentscopea2a.v2.runner;
 
+import com.agentscopea2a.v2.config.AgentExecutionConfig;
 import com.agentscopea2a.v2.hooks.ArtifactHandoffHook;
 import com.agentscopea2a.v2.hooks.PythonExecRetryHook;
 import com.agentscopea2a.v2.hooks.ToolCallTrackingHook;
@@ -241,6 +242,8 @@ public class SubagentRegistrar {
                     .model(model)
                     .workspace(workspace)
                     .toolkit(tk)
+                    .modelExecutionConfig(AgentExecutionConfig.MODEL_DEFAULTS)
+                    .toolExecutionConfig(AgentExecutionConfig.TOOL_DEFAULTS)
                     .sysPrompt(sysPrompt)
                     .maxIters(steps)
                     .disableSubagents()

@@ -15,6 +15,7 @@
  */
 package com.agentscopea2a.v2.runner;
 
+import com.agentscopea2a.v2.config.AgentExecutionConfig;
 import com.agentscopea2a.v2.config.HarnessRunnerProperties;
 import com.agentscopea2a.v2.model.FallbackModelDecorator;
 import com.agentscopea2a.v2.model.ModelProvider;
@@ -184,6 +185,8 @@ public class HarnessA2aRunnerV2 {
                 .name("QualitySupervisorV2")
                 .model(primaryModel)
                 .workspace(workspace)
+                .toolExecutionConfig(AgentExecutionConfig.TOOL_DEFAULTS)
+                .modelExecutionConfig(AgentExecutionConfig.MODEL_DEFAULTS)
                 .stateStore(new SanitizingAgentStateStore(new MysqlAgentStateStore(dataSource, true)))
                 .memory(MemoryConfig.builder()
                         .model(smallModel)

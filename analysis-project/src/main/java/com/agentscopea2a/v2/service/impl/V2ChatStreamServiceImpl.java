@@ -99,8 +99,7 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
     public V2ChatStreamServiceImpl(HarnessA2aRunnerV2 runner, ArtifactStore artifactStore,
                                     EpisodicMemory episodicMemory,
                                     TriggerLevelResolver triggerLevelResolver,
-                                    VerificationRecorder verificationRecorder) {
-        this.runner = runner;
+                                    VerificationRecorder verificationRecorder) {        this.runner = runner;
         this.artifactStore = artifactStore;
         this.episodicMemory = episodicMemory;
         this.triggerLevelResolver = triggerLevelResolver;
