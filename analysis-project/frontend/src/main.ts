@@ -8,7 +8,7 @@
  */
 
 import { createApp, defineComponent, h } from 'vue';
-import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router';
+import { createRouter, createWebHistory, RouterView, type RouteRecordRaw } from 'vue-router';
 import AppShell from './components/AppShell.vue';
 import ChatPage from './pages/ChatPage.vue';
 import DashboardPage from './pages/DashboardPage.vue';
@@ -32,7 +32,7 @@ const router = createRouter({
 });
 
 const Root = defineComponent({
-  render() { return h('router-view'); },
+  render() { return h(RouterView); },
 });
 
 const app = createApp(Root);
