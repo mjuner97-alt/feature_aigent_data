@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.mapper.mysql.SkillPublishMapper">
+
+    <resultMap id="BaseResultMap" type="com.agentscopea2a.entity.SkillPublish">
+        <id column="id" property="id"/>
+        <result column="skill_id" property="skillId"/>
+        <result column="target_type" property="targetType"/>
+        <result column="target_id" property="targetId"/>
+        <result column="target_name" property="targetName"/>
+        <result column="status" property="status"/>
+        <result column="submitter" property="submitter"/>
+        <result column="approver" property="approver"/>
+        <result column="approve_time" property="approveTime"/>
+        <result column="current_approver_user_id" property="currentApproverUserId"/>
+        <result column="last_approval_comment" property="lastApprovalComment"/>
+        <result column="last_approval_at" property="lastApprovalAt"/>
+        <result column="created_at" property="createdAt"/>
+    </resultMap>
+
+    <sql id="cols">id, skill_id, target_type, target_id, target_name, status, submitter, approver, approve_time,
+        current_approver_user_id, last_approval_comment, last_approval_at, created_at</sql>
+
+    <insert id="insert" parameterType="com.agentscopea2a.entity.SkillPublish"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_publish (skill_id, target_type, target_id, target_name, status, submitter, current_approver_user_id)
+        VALUES (#{skillId}, #{targetType}, #{targetId}, #{targetName}, #{status}, #{submitter}, #{currentApproverUserId})
+    </insert>
+
+    <select id="selectById" resultMap="BaseResultMap">
+        SELECT <include refid="cols"/> FROM skill_publish WHERE id = #{id}
+    </select>
+
+    <update id="updateStatus">
+        UPDATE skill_publish
+        SET status = #{status}, approver = #{approver}, approve_time = NOW(),
+            last_approval_comment = #{comment}, last_approval_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <select id="selectBySkillId" resultMap="BaseResultMap">
+        SELECT <include refid="cols"/> FROM skill_publish WHERE skill_id = #{skillId} ORDER BY created_at DESC
+    </select>
+
+    <select id="hasApprovedBySkillId" resultType="boolean">
+        SELECT COUNT(1) &gt; 0 FROM skill_publish WHERE skill_id = #{skillId} AND status = 'APPROVED'
+    </select>
+
+    <select id="selectApprovedBySkillId" resultMap="BaseResultMap">
+        SELECT <include refid="cols"/> FROM skill_publish WHERE skill_id = #{skillId} AND status = 'APPROVED'
+    </select>
+
+    <select id="selectPendingByApprover" resultMap="BaseResultMap">
+        SELECT <include refid="cols"/> FROM skill_publish
+        WHERE current_approver_user_id = #{approverUserId} AND status = 'PENDING'
+        ORDER BY created_at DESC
+    </select>
+
+    <select id="selectApprovedBySkillIds" resultMap="BaseResultMap">
+        SELECT <include refid="cols"/> FROM skill_publish
+        WHERE status = 'APPROVED' AND skill_id IN
+        <foreach collection="skillIds" item="skillId" open="(" separator="," close=")">
+            #{skillId}
+        </foreach>
+    </select>
+
+</mapper>
