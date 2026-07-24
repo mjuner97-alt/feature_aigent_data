@@ -37,3 +37,6 @@ tmp_new_api_docker_compose.yml
 # Local test scratch (logs / temp requests)
 tmp_test/
 tmp/
+
+# Visual companion brainstorm mockups
+.superpowers/

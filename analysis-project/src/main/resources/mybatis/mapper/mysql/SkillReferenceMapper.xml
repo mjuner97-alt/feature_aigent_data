@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.mapper.mysql.SkillReferenceMapper">
+
+    <insert id="insert" parameterType="com.agentscopea2a.entity.SkillReference"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_reference (source_skill_id, target_skill_id, creator, created_at)
+        VALUES (#{sourceSkillId}, #{targetSkillId}, #{creator}, #{createdAt})
+    </insert>
+
+    <delete id="deleteByCreatorTarget">
+        DELETE FROM skill_reference WHERE creator = #{creator} AND target_skill_id = #{skillId}
+    </delete>
+
+    <select id="existsByCreatorTarget" resultType="boolean">
+        SELECT COUNT(1) &gt; 0 FROM skill_reference WHERE creator = #{creator} AND target_skill_id = #{skillId}
+    </select>
+
+    <select id="selectSkillIdsByCreator" resultType="java.lang.Long">
+        SELECT target_skill_id FROM skill_reference WHERE creator = #{creator}
+    </select>
+
+    <select id="selectUsedSkillIds" resultType="java.lang.Long">
+        SELECT target_skill_id FROM skill_reference
+        WHERE creator = #{creator}
+        AND target_skill_id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </select>
+
+</mapper>

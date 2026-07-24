@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.mapper.mysql.SkillManageMapper">
+
+    <resultMap id="BaseResultMap" type="com.agentscopea2a.entity.Skill">
+        <id column="id" property="id"/>
+        <result column="name" property="name"/>
+        <result column="description" property="description"/>
+        <result column="content" property="content"/>
+        <result column="category" property="category"/>
+        <result column="tags" property="tags"/>
+        <result column="owner_user_id" property="ownerUserId"/>
+        <result column="status" property="status"/>
+        <result column="like_count" property="likeCount"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+        <result column="deleted_at" property="deletedAt"/>
+    </resultMap>
+
+    <sql id="cols">id, name, description, content, category, tags, owner_user_id, status, like_count, created_at, updated_at, deleted_at</sql>
+
+    <insert id="insert" parameterType="com.agentscopea2a.entity.Skill" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_manage (name, description, content, category, tags, owner_user_id, status, like_count)
+        VALUES (#{name}, #{description}, #{content}, #{category}, #{tags}, #{ownerUserId}, #{status}, 0)
+    </insert>
+
+    <select id="selectById" resultMap="BaseResultMap">
+        SELECT <include refid="cols"/> FROM skill_manage WHERE id = #{id}
+    </select>
+
+    <update id="update" parameterType="com.agentscopea2a.entity.Skill">
+        UPDATE skill_manage
+        SET name=#{name}, description=#{description}, content=#{content},
+            category=#{category}, tags=#{tags}, status=#{status}
+        WHERE id = #{id}
+    </update>
+
+    <update id="softDelete">
+        UPDATE skill_manage SET status='DELETED', deleted_at=NOW() WHERE id = #{id}
+    </update>
+
+    <select id="existsByName" resultType="boolean">
+        SELECT COUNT(1) &gt; 0 FROM skill_manage WHERE name = #{name} AND status &lt;&gt; 'DELETED'
+    </select>
+
+    <select id="selectLikeCount" resultType="java.lang.Long">
+        SELECT like_count FROM skill_manage WHERE id = #{id}
+    </select>
+
+    <update id="incrementLikeCount">
+        UPDATE skill_manage SET like_count = like_count + 1 WHERE id = #{id}
+    </update>
+
+    <update id="decrementLikeCount">
+        UPDATE skill_manage SET like_count = GREATEST(like_count - 1, 0) WHERE id = #{id}
+    </update>
+
+    <select id="selectByIds" resultMap="BaseResultMap">
+        SELECT <include refid="cols"/> FROM skill_manage
+        WHERE id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </select>
+
+    <select id="selectList" parameterType="com.agentscopea2a.dto.SkillListQuery" resultMap="BaseResultMap">
+        SELECT s.id, s.name, s.description, s.content, s.category, s.tags,
+               s.owner_user_id, s.status, s.like_count, s.created_at, s.updated_at, s.deleted_at
+        FROM skill_manage s
+        <choose>
+            <when test="view == 'used'">
+                INNER JOIN skill_reference r ON r.target_skill_id = s.id AND r.creator = #{userId}
+            </when>
+            <when test="view == 'liked'">
+                INNER JOIN skill_like l ON l.skill_id = s.id AND l.user_id = #{userId}
+            </when>
+        </choose>
+        <where>
+            <choose>
+                <when test="view == 'created'">
+                    s.owner_user_id = #{userId} AND s.status = 'ACTIVE'
+                </when>
+                <otherwise>
+                    s.status = 'ACTIVE'
+                </otherwise>
+            </choose>
+            <if test="category != null and category != ''">
+                AND s.category = #{category}
+            </if>
+            <if test="tag != null and tag != ''">
+                AND FIND_IN_SET(#{tag}, s.tags) &gt; 0
+            </if>
+            <if test="keyword != null and keyword != ''">
+                AND (s.name LIKE CONCAT('%', #{keyword}, '%')
+                  OR s.description LIKE CONCAT('%', #{keyword}, '%'))
+            </if>
+        </where>
+        <choose>
+            <when test="sort == 'updated'">
+                ORDER BY s.updated_at DESC
+            </when>
+            <when test="sort == 'name'">
+                ORDER BY s.name ASC
+            </when>
+            <otherwise>
+                ORDER BY s.like_count DESC, s.updated_at DESC
+            </otherwise>
+        </choose>
+        LIMIT #{effectiveLimit} OFFSET #{effectiveOffset}
+    </select>
+
+</mapper>

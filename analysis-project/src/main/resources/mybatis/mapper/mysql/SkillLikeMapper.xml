@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.mapper.mysql.SkillLikeMapper">
+
+    <resultMap id="BaseResultMap" type="com.agentscopea2a.entity.SkillLike">
+        <id column="id" property="id"/>
+        <result column="skill_id" property="skillId"/>
+        <result column="user_id" property="userId"/>
+        <result column="created_at" property="createdAt"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.agentscopea2a.entity.SkillLike"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_like (skill_id, user_id, created_at)
+        VALUES (#{skillId}, #{userId}, #{createdAt})
+    </insert>
+
+    <select id="selectByUserSkill" resultMap="BaseResultMap">
+        SELECT id, skill_id, user_id, created_at FROM skill_like
+        WHERE user_id = #{userId} AND skill_id = #{skillId}
+    </select>
+
+    <delete id="deleteByUserSkill">
+        DELETE FROM skill_like WHERE user_id = #{userId} AND skill_id = #{skillId}
+    </delete>
+
+    <select id="selectLikedSkillIds" resultType="java.lang.Long">
+        SELECT skill_id FROM skill_like
+        WHERE user_id = #{userId}
+        AND skill_id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </select>
+
+</mapper>
