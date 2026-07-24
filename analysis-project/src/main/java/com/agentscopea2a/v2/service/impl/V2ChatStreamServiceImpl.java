@@ -140,6 +140,14 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
         final AtomicBoolean cleaned = new AtomicBoolean(false);
         /** 是否已发送过"执行中"，用于保证"执行中"和"已执行"成对出现 */
         final AtomicBoolean hasSentExecuting = new AtomicBoolean(false);
+        /**
+         * Source agent name for the current event - null for main agent events,
+         * "analyze_data" etc for subagent events mirrored by SubagentEventForwardingMiddleware.
+         * Set per-event in processChunk; reset to null in handleStream* terminal calls.
+         * Read by the strategy to populate AiChatResult.source so the frontend can
+         * route subagent text_block_delta chunks to a dedicated subagent bubble.
+         */
+        String currentSource = null;
 
         StreamContext(SseEmitter emitter, ChatRequest req, RuntimeContext runtimeCtx,
                       ToolCallCollector collector, Msg userMsg, String episodicSessionId,
@@ -183,89 +191,73 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
         return contentDto;
     }
 
+    /**
+     * V2 端点 (/v2/ai/chat) 服务的 Plan-Machine React 前端 originally designed for the
+     * {@link AiChatResult} DTO (lineResult/resultAll/source). Emit AiChatResult so the
+     * frontend's dual-format chat.ts handler reads lineResult (chunk) and routes by
+     * source to the correct bubble (main reply vs subagent bubble).
+     *
+     * <p>The /ai/chat endpoint (upgrade Vue frontend) is served by
+     * {@link com.agentscopea2a.v2.service.impl.ChatStreamServiceImpl} which keeps the
+     * new ThinkManagerResponseDto/TextManagerResponseDto format - both DTOs coexist,
+     * each endpoint speaks the format its frontend was built for.
+     */
     private final ResponseStrategy managerStrategy = new ResponseStrategy() {
         @Override
         public void sendThink(StreamContext ctx, ThinkPayload payload) {
-            ThinkManagerResponseDto dto = new ThinkManagerResponseDto();
-            dto.setData(contentOf(payload));
-            dto.setFinish(payload.isFinish());
-            dto.setCode(200);
-            // 思考阶段的 ansUUID 使用独立 uuid，不依赖前端传入的 conversationId
-            dto.setAnsUUID(ctx.ansUUID);
-            dto.setConversationId(ctx.conversationId);
-            dto.setFromType(ctx.formType);
-            // SSE event name = "text_block_delta" so frontend chat.ts can route it
-            // to the "token" branch (same event name as the old AiChatResult format).
-            // The JSON body uses the new ThinkPayload/TextPayload DTO structure
-            // (type="think", data.content, data.action, data.topic, finish).
-            safeSendEvent(ctx.emitter, "text_block_delta", dto);
+            AiChatResult result = AiChatResult.builder()
+                    .code(200)
+                    .ansUUID(ctx.ansUUID)
+                    .conversationId(ctx.conversationId)
+                    .formType(ctx.formType)
+                    .agentId(ctx.agentId)
+                    .agentName(ctx.agentName)
+                    .lineResult(payload.getContent())
+                    .resultAll(ctx.thinkContent.toString())
+                    .source(ctx.currentSource)
+                    .build();
+            safeSendEvent(ctx.emitter, "text_block_delta", result);
         }
 
         @Override
         public void sendText(StreamContext ctx, TextPayload payload) {
-            TextManagerResponseDto dto = new TextManagerResponseDto();
-            ContentDto contentDto = new ContentDto();
-            contentDto.setContent(payload.getContent());
-            contentDto.setAction("");
-            contentDto.setTopic("");
-            dto.setData(contentDto);
-            dto.setFinish(payload.isFinish());
-            dto.setCode(200);
-            // 最终文本结果的 ansUUID 与 conversationId 一致，便于前端按对话追溯
-            dto.setAnsUUID(ctx.ansUUID);
-            dto.setConversationId(ctx.conversationId);
-            dto.setFromType(ctx.formType);
-            // SSE event name = "done" so frontend chat.ts recognizes the terminal event.
-            // The JSON body uses the new TextPayload DTO (type="text", data.content, finish).
-            safeSendEvent(ctx.emitter, "done", dto);
+            // Terminal "done" event - the full answer text goes in both lineResult
+            // and resultAll. The frontend's done handler reads resultAll to replace
+            // the streaming think text with the final answer.
+            AiChatResult result = AiChatResult.builder()
+                    .code(200)
+                    .ansUUID(ctx.ansUUID)
+                    .conversationId(ctx.conversationId)
+                    .formType(ctx.formType)
+                    .agentId(ctx.agentId)
+                    .agentName(ctx.agentName)
+                    .lineResult(payload.getContent())
+                    .resultAll(payload.getContent())
+                    .source(ctx.currentSource)
+                    .build();
+            safeSendEvent(ctx.emitter, "done", result);
         }
 
         @Override
         public void sendError(StreamContext ctx, Throwable error) {
-            TextManagerResponseDto dto = new TextManagerResponseDto();
-            ContentDto contentDto = new ContentDto();
-            contentDto.setContent(buildErrorMessage(error));
-            dto.setData(contentDto);
-            dto.setFinish(true);
-            dto.setCode(500);
-            dto.setAnsUUID(ctx.ansUUID);
-            dto.setConversationId(ctx.conversationId);
-            dto.setFromType(ctx.formType);
-            safeSendEvent(ctx.emitter, "done", dto);
+            String msg = buildErrorMessage(error);
+            AiChatResult result = AiChatResult.builder()
+                    .code(500)
+                    .errorMsg(error.getMessage())
+                    .ansUUID(ctx.ansUUID)
+                    .conversationId(ctx.conversationId)
+                    .formType(ctx.formType)
+                    .agentId(ctx.agentId)
+                    .agentName(ctx.agentName)
+                    .lineResult(msg)
+                    .resultAll(msg)
+                    .source(ctx.currentSource)
+                    .build();
+            safeSendEvent(ctx.emitter, "done", result);
         }
     };
 
-    private final ResponseStrategy publicStrategy = new ResponseStrategy() {
-        @Override
-        public void sendThink(StreamContext ctx, ThinkPayload payload) {
-            ThinkResponseDto dto = new ThinkResponseDto();
-            dto.setData(contentOf(payload));
-            dto.setFinish(payload.isFinish());
-            safeSendEvent(ctx.emitter, "text_block_delta", dto);
-        }
-
-        @Override
-        public void sendText(StreamContext ctx, TextPayload payload) {
-            TextResponseDto dto = new TextResponseDto();
-            ContentDto contentDto = new ContentDto();
-            contentDto.setContent(payload.getContent());
-            contentDto.setAction("");
-            contentDto.setTopic("");
-            dto.setData(contentDto);
-            dto.setFinish(payload.isFinish());
-            safeSendEvent(ctx.emitter, "done", dto);
-        }
-
-        @Override
-        public void sendError(StreamContext ctx, Throwable error) {
-            TextResponseDto dto = new TextResponseDto();
-            ContentDto contentDto = new ContentDto();
-            contentDto.setContent(buildErrorMessage(error));
-            dto.setData(contentDto);
-            dto.setFinish(true);
-            safeSendEvent(ctx.emitter, "done", dto);
-        }
-    };
+    private final ResponseStrategy publicStrategy = managerStrategy;
 
     /**
      * 统一流式入口（参考 v1 stream 模式）。
@@ -429,6 +421,11 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
      */
     private void processChunk(AgentEvent event, StreamContext ctx, ResponseStrategy strategy) {
         try {
+            // Tag the current event's source (null for main agent, subagent name for
+            // mirrored events) so the strategy can populate AiChatResult.source and
+            // the frontend can route chunks to a subagent bubble instead of dumping
+            // everything into the (empty) main reply bubble.
+            ctx.currentSource = event.getSource();
             // AgentResultEvent 是终止事件：最终结果累积到 answerContent，不立即发送
             // The streaming text_block_delta events have already accumulated the full text
             // into thinkContent as it streamed in. Replacing answerContent with the
@@ -573,6 +570,9 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
      */
     private void handleStreamError(StreamContext ctx, Throwable error, ResponseStrategy strategy) {
         log.error("处理流式异常: sessionId={}", ctx.conversationId, error);
+        // Terminal event from the main agent (or system) - reset source so the
+        // error event isn't tagged with the last subagent's name.
+        ctx.currentSource = null;
         // Bug B：cleanup 阶段误抛的 sandbox 异常，已有最终结果，按成功收尾
         if (ctx.answerContent.length() > 0 && error instanceof SandboxException) {
             log.warn("Cleanup-phase SandboxException suppressed for sessionId={}; sending done instead of error",
@@ -609,6 +609,10 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
     private void handleStreamSuccess(StreamContext ctx, ResponseStrategy strategy) {
         log.info("[COMPLETE] Request finished: conversationId={} thinkLen={} answerLen={}",
                 ctx.conversationId, ctx.thinkContent.length(), ctx.answerContent.length());
+        // Terminal event from the main agent - reset source so the final answer
+        // isn't tagged with the last subagent's name (the answer is synthesized
+        // by the main agent from subagent tool results, not the subagent itself).
+        ctx.currentSource = null;
         try {
             // 仅在确实发送过"执行中"时才发送"已执行"，保证成对
             if (ctx.hasSentExecuting.get()) {
