@@ -9,17 +9,16 @@
  *       (state is recovered server-side via agentscope_sessions.state_data)
  *   <li>No tool_call/tool_result SSE events - v2 doesn't currently expose them;
  *       ToolCallBlock is imported but receives no data (kept for future use)
- *   <li>Interrupt+resume via onInterrupt callback: the InterruptButton in
- *       the right sidebar calls interrupt(supplement) which POSTs
- *       /v2/ai/chat/interrupt with the supplement; the server swaps the
- *       in-flight call to a resume stream and the response SSE becomes the
- *       continuation. The original /v2/ai/chat reader is closed first.
+ *   <li>Two-step interrupt+resume: the InterruptButton in the right sidebar
+ *       calls interrupt() which POSTs /v2/ai/chat/interrupt (no supplement) to
+ *       stop the in-flight call. The user then types a follow-up message in
+ *       the normal input box and sends it via /v2/ai/chat to resume.
  * </ul>
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { streamChat, type ChatRequest, type ProcessEvent } from '../api/chat';
-import { interruptAndResume } from '../api/interrupt';
+import { triggerInterrupt as apiTriggerInterrupt } from '../api/interrupt';
 import type { SubagentPlanState } from '../types/sessionState';
 import ToolCallBlock from './ToolCallBlock';
 import ActivityFeed from './ActivityFeed';
@@ -126,8 +125,8 @@ const nextId = () => `m${Date.now().toString(36)}-${counter++}`;
 export interface ChatPanelHandle {
   /** Whether a streaming call is currently in-flight (interruptable). */
   busy: boolean;
-  /** Trigger interrupt on the in-flight call with a supplement; server swaps to resume stream. */
-  interrupt: (supplement: string) => Promise<void>;
+  /** Trigger interrupt on the in-flight call. No resume - the user sends a follow-up message normally. */
+  interrupt: () => Promise<void>;
 }
 
 export interface ChatPanelProps {
@@ -196,7 +195,7 @@ export default function ChatPanel({
     if (!registerInterruptHandle) return;
     registerInterruptHandle({
       busy: hasInFlight,
-      interrupt: (supplement: string) => triggerInterrupt(supplement),
+      interrupt: () => triggerInterrupt(),
     });
     return () => registerInterruptHandle(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -206,10 +205,10 @@ export default function ChatPanel({
     if (!canSend) return;
     const text = input.trim();
     setInput('');
-    await sendMessage(text, null);
+    await sendMessage(text);
   }
 
-  async function sendMessage(text: string, supplementalForInterrupt: string | null) {
+  async function sendMessage(text: string) {
     // Resolve conversationId: use existing, or mint a fresh one for the first send
     let convId = conversationId;
     if (!convId) {
@@ -219,13 +218,9 @@ export default function ChatPanel({
       onConversationId?.(convId);
     }
 
-    // Only fire onUserMessage for the original send (not for the resume stream
-    // started by interrupt - that's a supplement, not a fresh user message).
-    if (!supplementalForInterrupt) {
-      setHasInFlight(true);
-      onUserMessage?.(text);
-    }
     setBusy(true);
+    setHasInFlight(true);
+    onUserMessage?.(text);
 
     const userMsg: Message = { id: nextId(), role: 'user', text, tools: [] };
     const replyMsg: Message = { id: nextId(), role: 'assistant', text: '', tools: [], pending: true };
@@ -283,9 +278,7 @@ export default function ChatPanel({
     armStallTimer();
 
     try {
-      const evts = supplementalForInterrupt
-        ? interruptAndResume({ user_id: userId, conversationId: convId, supplement: supplementalForInterrupt })
-        : streamChat(req);
+      const evts = streamChat(req);
       for await (const evt of evts) {
         if (myEpoch !== streamEpochRef.current) return;  // superseded by a later interrupt
         armStallTimer();  // any event resets the stall countdown
@@ -428,26 +421,42 @@ export default function ChatPanel({
     }
   }
 
-  async function triggerInterrupt(supplement: string) {
-    // No in-flight call to interrupt - just send the supplement as a normal
-    // message. This lets the InterruptButton double as a "send anyway" path
-    // when the user hasn't started a stream yet.
-    if (!busy || !hasInFlight) {
-      await sendMessage(supplement, null);
-      return;
-    }
+  async function triggerInterrupt() {
+    if (!busy || !hasInFlight) return;
+    if (!conversationId) return;
 
-    // Mark the current stream as superseded so any late events from the dying
-    // stream are ignored. The for-await loop in sendMessage checks
-    // myEpoch === streamEpochRef.current on each iteration.
+    // Step 1: Mark the current stream as superseded so any late events
+    // from the dying stream are ignored. The for-await loop in sendMessage
+    // checks myEpoch === streamEpochRef.current on each iteration.
     streamEpochRef.current++;
 
-    // Kick off the resume stream - this POSTs /v2/ai/chat/interrupt with the
-    // supplement, the server swaps the in-flight call to a resume stream, and
-    // we consume the response SSE as a new turn. The original /v2/ai/chat
-    // reader will be closed by the browser when this fetch starts (or by the
-    // server when it disposes the in-flight subscription).
-    await sendMessage(supplement, supplement);
+    // Step 2: Disarm the stall watchdog - interrupt is a user action, not a
+    // stall. The user will send a follow-up message shortly.
+    // (stallTimer cleanup happens in sendMessage's finally block when the
+    // aborted stream unwinds.)
+
+    // Step 3: Call the interrupt API to tell the backend to set
+    // InterruptControl.flag = true and wait for the in-flight call to terminate.
+    // This is important because just closing the SSE connection only stops the
+    // client from reading events - the backend agent keeps running and burning
+    // tokens. The interrupt API ensures the agent checks its interrupt flag and
+    // stops processing.
+    try {
+      await apiTriggerInterrupt({
+        user_id: userId,
+        conversationId,
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'interrupt failed';
+      setMessages(prev => [...prev, {
+        id: nextId(), role: 'system', text: `[interrupt error] ${msg}`, tools: [],
+      }]);
+    }
+
+    // Step 4: Reset UI state - stream is done, user can type a follow-up.
+    setBusy(false);
+    setHasInFlight(false);
+    inputRef.current?.focus();
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {

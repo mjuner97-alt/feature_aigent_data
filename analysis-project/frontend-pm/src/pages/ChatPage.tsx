@@ -127,7 +127,7 @@ export default function ChatPage() {
             <TaskDependencyGraph tasks={state.tasks} />
             <InterruptButton
               enabled={!!chatHandle?.busy}
-              onSubmit={(supplement) => chatHandle?.interrupt(supplement)}
+              onInterrupt={() => chatHandle?.interrupt()}
               interruptFlag={state.interruptControl.flag}
             />
           </>
