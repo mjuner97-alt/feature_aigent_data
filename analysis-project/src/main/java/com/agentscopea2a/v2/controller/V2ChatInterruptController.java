@@ -15,13 +15,20 @@
  */
 package com.agentscopea2a.v2.controller;
 
+import com.agentscopea2a.dto.ChatRequest;
+import com.agentscopea2a.v2.dto.InterruptResumeRequest;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.service.V2ChatStreamService;
+import io.agentscope.core.message.Msg;
+import io.agentscope.core.message.MsgRole;
+import io.agentscope.core.message.TextBlock;
 import io.agentscope.harness.agent.HarnessAgent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -29,42 +36,47 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.Disposable;
 
-import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /**
- * Interrupt-only endpoint — triggers InterruptControl and waits for the
- * in-flight call to terminate, then returns a JSON confirmation.
+ * Single-request interrupt + supplement + auto-resume endpoint.
  *
- * <p>The frontend should:
- * <ol>
- *   <li>Call this endpoint to interrupt the current call</li>
- *   <li>Close the original /v2/ai/chat SSE stream</li>
- *   <li>Show the normal chat input for the user to type a supplement message</li>
- *   <li>Send the supplement as a regular /v2/ai/chat request to resume</li>
- * </ol>
- *
- * <p>This replaces the previous single-request interrupt+resume design. Splitting
- * interrupt and resume into separate operations is more natural because the user
- * doesn't know what to redirect to until they see the interruption happen.
+ * <p>{@code POST /v2/ai/chat/interrupt} lets a user mid-flight abort the current
+ * agent call for a session, supply redirect info, and resume via a single HTTP
+ * request - the server handles the interrupt -> wait-for-terminate -> start-resume-stream
+ * orchestration. The frontend does NOT need to send a follow-up {@code /v2/ai/chat};
+ * the response SSE stream IS the resume.
  *
  * <p>Flow:
  * <ol>
- *   <li>Resolve {@code (userId, conversationId)} from the request body</li>
- *   <li>Fetch the in-flight call descriptor from {@link V2ChatStreamService#getInFlightCall}</li>
- *   <li>Call {@code agent.getDelegate().interrupt(userId, sessionId, null)}
- *       - sets {@link InterruptControl} flag to true</li>
- *   <li>If an in-flight call exists, wait up to 180s for its completion future:
+ *   <li>Resolve {@code (userId, conversationId, supplement)} from the request body
+ *   <li>Fetch the in-flight call descriptor (if any) from {@link V2ChatStreamService#getInFlightCall}
+ *   <li>Call {@code agent.getDelegate().interrupt(userId, sessionId, supplementMsg)}
+ *       - sets {@link io.agentscope.core.interruption.InterruptControl} flag and stores
+ *       the supplement as {@code userMessage} for audit (NOT auto-injected into context)
+ *   <li>If an in-flight call exists, wait up to 30s for its completion future:
  *       <ul>
- *         <li>On complete: in-flight call has terminated — safe to return</li>
+ *         <li>On complete: in-flight call has terminated (handleInterrupt + saveStateToSession
+ *             flushed to MySQL) - safe to start the resume stream
  *         <li>On timeout: force-dispose the in-flight subscription to stop burning
- *             tokens, then return anyway</li>
+ *             tokens, return 504 Gateway Timeout
  *       </ul>
- *   <li>Return JSON {@code {"status": "interrupted"}}</li>
+ *   <li>Start a new {@link V2ChatStreamService#stream} call with {@code supplement} as
+ *       the user input - framework's {@code callSerializationKey} queues this behind
+ *       any still-terminating in-flight lifecycle, then {@code beforeAgentExecution}
+ *       reloads state (with the recovery msg appended), {@code interruptControl.reset()}
+ *       clears the flag, and the LLM continues with the supplement + saved history
+ *   <li>Return the new {@link SseEmitter}; response header {@code X-Resume-Stream: true}
+ *       tells the frontend this is a resume stream and the original /v2/ai/chat SSE
+ *       should be closed (revision #5)
  * </ol>
+ *
+ * <p>See {@code docs/rc2-to-rc5/interrupt-resume-single-endpoint-plan.md} for the full
+ * design including limitations (sub-agent internal resume is NOT supported).
  */
 @RestController
 @RequestMapping("/v2/ai/chat")
@@ -85,7 +97,7 @@ public class V2ChatInterruptController {
      *
      * <p>180s gives enough headroom for one full middleware cycle on slow
      * models. If the in-flight still hasn't terminated after 180s, we fall back
-     * to force-dispose.
+     * to force-dispose + 504.
      */
     private static final long INTERRUPT_WAIT_SECONDS = 180;
 
@@ -98,30 +110,26 @@ public class V2ChatInterruptController {
         this.chatStreamService = chatStreamService;
     }
 
-    /**
-     * Interrupt-only request body. No supplement — the user types the redirect
-     * message in the normal chat input after seeing the interruption.
-     */
-    public record InterruptRequest(
-            @com.fasterxml.jackson.annotation.JsonProperty("user_id")
-            @com.fasterxml.jackson.annotation.JsonAlias("userId")
-            String userId,
-            @com.fasterxml.jackson.annotation.JsonAlias("conversation_id")
-            String conversationId
-    ) {}
-
-    @PostMapping(value = "/interrupt", produces = "application/json")
-    public ResponseEntity<Map<String, String>> interrupt(@RequestBody InterruptRequest req) {
+    @PostMapping(value = "/interrupt", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public ResponseEntity<SseEmitter> interruptAndResume(@RequestBody InterruptResumeRequest req) {
         // ── Parameter validation ─────────────────────────────────────────────
         if (req == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "request body is required");
         }
-        String userId = req.userId();
-        String sessionId = req.conversationId();
+        String userId = req.getUserId();
+        String sessionId = req.getConversationId();
+        String supplement = req.getSupplement();
 
         if (sessionId == null || sessionId.isBlank()) {
+            // Revision #6: conversationId must be explicitly passed by the original /v2/ai/chat;
+            // server-generated UUID sessions cannot be interrupted because the client doesn't
+            // know the id.
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "conversationId is required; the original /v2/ai/chat must explicitly pass conversation_id to use interrupt");
+        }
+        if (supplement == null || supplement.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "supplement is required; for a no-supplement stop, just close the SSE connection");
         }
 
         HarnessA2aRunnerV2 runner = runnerProvider.getIfAvailable();
@@ -130,19 +138,21 @@ public class V2ChatInterruptController {
                     "HarnessA2aRunnerV2 bean not available");
         }
 
-        log.info("v2 /chat/interrupt: sessionId={}, userId={}", sessionId, userId);
+        log.info("v2 /chat/interrupt: sessionId={}, userId={}, supplementLen={}",
+                sessionId, userId, supplement.length());
 
         // ── Step 1: fetch in-flight descriptor (may be null) ─────────────────
         V2ChatStreamService.InFlightCall inFlight = chatStreamService.getInFlightCall(userId, sessionId);
 
-        // ── Step 2: trigger interrupt (InterruptControl flag = true) ──────────
+        // ── Step 2: trigger interrupt with supplement as userMessage (audit only) ─
+        Msg supplementMsg = Msg.builder().role(MsgRole.USER)
+                .content(TextBlock.builder().text(supplement).build())
+                .build();
         try {
             HarnessAgent agent = runner.getAgent();
-            // Use the specific userId + sessionId to target the correct session.
-            // The no-arg interrupt() uses defaultSessionId which may not match.
-            agent.getDelegate().interrupt(userId, sessionId);
-            log.info("v2 /chat/interrupt: interrupt triggered for sessionId={}, userId={}, hasInFlight={}",
-                    sessionId, userId, inFlight != null);
+            agent.getDelegate().interrupt(userId, sessionId, supplementMsg);
+            log.info("v2 /chat/interrupt: interrupt triggered for sessionId={}, hasInFlight={}",
+                    sessionId, inFlight != null);
         } catch (Exception e) {
             log.warn("v2 /chat/interrupt: interrupt() failed for sessionId={}: {}",
                     sessionId, e.getMessage());
@@ -156,20 +166,53 @@ public class V2ChatInterruptController {
                 inFlight.completion().get(INTERRUPT_WAIT_SECONDS, TimeUnit.SECONDS);
                 log.info("v2 /chat/interrupt: in-flight terminated for sessionId={}", sessionId);
             } catch (TimeoutException te) {
-                // Force-dispose the stuck subscription to stop burning tokens.
+                // Revision #4: force-dispose the stuck subscription to stop burning tokens.
+                // The dispose() call synchronously triggers doOnCancel -> sendDone ->
+                // emitter.complete() -> onCompletion -> cleanup -> removes the inFlight
+                // entry + completes the future. So after dispose() returns, we can
+                // safely start the resume stream (putIfAbsent will succeed).
+                //
+                // Why we DON'T return 504 here: the framework's checkInterrupted()
+                // only fires at ReAct iteration boundaries. If the in-flight call is
+                // stuck in pre-iteration middlewares (MemoryMaintenanceMiddleware
+                // doing SSH file ops, SkillEvolutionHook doing LLM-based metric
+                // classification), interrupt can't break through. Disposing the
+                // subscription is enough - the framework cancels the reactive chain,
+                // callSerializationKey is released, and the resume stream can start
+                // immediately. The resume stream will see the saved state (which may
+                // or may not include the recovery msg, depending on whether
+                // handleInterrupt had a chance to run - both are acceptable).
                 Disposable d = inFlight.subscription().get();
                 if (d != null && !d.isDisposed()) {
                     d.dispose();
                     log.warn("v2 /chat/interrupt: forcibly disposed in-flight subscription "
-                            + "for sessionId={} after {}s timeout", sessionId, INTERRUPT_WAIT_SECONDS);
+                            + "for sessionId={} after {}s timeout, proceeding to resume stream",
+                            sessionId, INTERRUPT_WAIT_SECONDS);
                 }
+                // Don't throw 504 - fall through to start the resume stream.
+                // The inFlight entry has been removed by cleanup (synchronously
+                // triggered by dispose above), so stream()'s putIfAbsent will succeed.
             } catch (Exception e) {
+                // completion future completed exceptionally - in-flight ended in error,
+                // but state may still be saved; proceed to start resume stream anyway
                 log.warn("v2 /chat/interrupt: in-flight completion returned error for sessionId={}: {}",
                         sessionId, e.getMessage());
             }
         }
 
-        log.info("v2 /chat/interrupt: completed for sessionId={}", sessionId);
-        return ResponseEntity.ok(Map.of("status", "interrupted", "conversationId", sessionId));
+        // ── Step 4: start the resume stream with supplement as input ────────
+        ChatRequest resumeReq = ChatRequest.builder()
+                .question(supplement)
+                .conversationId(sessionId)
+                .userId(userId)
+                .build();
+        SseEmitter emitter = chatStreamService.stream(resumeReq);
+
+        // Revision #5: header tells the frontend this is a resume stream so it
+        // knows to close the original /v2/ai/chat SSE connection.
+        HttpHeaders headers = new HttpHeaders();
+        headers.add("X-Resume-Stream", "true");
+        headers.add("X-Original-Conversation-Id", sessionId);
+        return ResponseEntity.ok().headers(headers).body(emitter);
     }
 }

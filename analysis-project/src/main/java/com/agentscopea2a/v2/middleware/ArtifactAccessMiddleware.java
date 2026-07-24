@@ -60,10 +60,13 @@ public class ArtifactAccessMiddleware implements MiddlewareBase {
     private static final String READ_FILE_TOOL = "read_file";
     private static final String WRITE_FILE_TOOL = "write_file";
     private static final String SHELL_EXECUTE_TOOL = "shell_execute";
+    private static final String LIST_FILES_TOOL = "list_files";
+    private static final String GLOB_TOOL = "glob";
 
     private static final String PATH_PARAM = "path";
     private static final String COMMAND_PARAM = "command";
     private static final String WORKING_DIR_PARAM = "working_directory";
+    private static final String PATTERN_PARAM = "pattern";
 
     private final ArtifactStore artifactStore;
 
@@ -108,6 +111,8 @@ public class ArtifactAccessMiddleware implements MiddlewareBase {
                 replacement = enforcePath(toolUse, PATH_PARAM, "write", artifactCtx, artifactsRoot, allowedPrefix);
             } else if (SHELL_EXECUTE_TOOL.equals(toolName)) {
                 replacement = enforceShellExecute(toolUse, artifactCtx, artifactsRoot, allowedPrefix);
+            } else if (LIST_FILES_TOOL.equals(toolName) || GLOB_TOOL.equals(toolName)) {
+                replacement = enforceListPath(toolUse, artifactCtx, artifactsRoot, allowedPrefix);
             }
 
             if (replacement != null) {
@@ -251,11 +256,51 @@ public class ArtifactAccessMiddleware implements MiddlewareBase {
                 .build();
     }
 
+    /**
+     * Enforce list_files/glob path scoping. If the LLM passes an artifact root path
+     * or a cross-tenant path, redirect to the user's own bucket so they only see their
+     * own files. If the path is already within the user's bucket, leave it alone.
+     */
+    private ToolUseBlock enforceListPath(ToolUseBlock toolUse, ArtifactContext ctx,
+                                          String artifactsRoot, String allowedPrefix) {
+        // list_files uses "path", glob uses "pattern"
+        String pathParam = LIST_FILES_TOOL.equals(toolUse.getName()) ? PATH_PARAM : PATTERN_PARAM;
+        String requested = extractString(toolUse.getInput(), pathParam);
+        if (requested == null || requested.isBlank()) {
+            // No path specified — redirect to user's bucket root
+            Map<String, Object> newInput = new java.util.HashMap<>(toolUse.getInput());
+            newInput.put(pathParam, allowedPrefix);
+            log.info("Redirected {} path to user bucket: {} -> {} (user={}, task={})",
+                    toolUse.getName(), requested, allowedPrefix, ctx.userBucket(), ctx.taskBucket());
+            return rebuildBlock(toolUse, newInput);
+        }
+
+        // Path is under artifacts tree but not the user's bucket — redirect to user bucket
+        if (requested.startsWith(artifactsRoot) && !requested.startsWith(allowedPrefix)) {
+            Map<String, Object> newInput = new java.util.HashMap<>(toolUse.getInput());
+            newInput.put(pathParam, allowedPrefix);
+            log.warn("Redirected cross-tenant {} path: {} -> {} (user={}, task={})",
+                    toolUse.getName(), requested, allowedPrefix, ctx.userBucket(), ctx.taskBucket());
+            return rebuildBlock(toolUse, newInput);
+        }
+
+        return null;
+    }
+
     // ==================== Helpers ====================
 
     private ArtifactContext resolveContext(RuntimeContext ctx) {
         if (fixedContext != null) {
             return fixedContext;
+        }
+        // Priority: pinned ArtifactContext from main agent's RuntimeContext.
+        // This ensures sub-agents (whose sessionId="sub-xxx") use the parent's
+        // artifact bucket instead of their own isolated bucket.
+        if (ctx != null) {
+            ArtifactContext pinned = ctx.get(ArtifactContext.class);
+            if (pinned != null) {
+                return pinned;
+            }
         }
         return ArtifactContext.from(ctx);
     }

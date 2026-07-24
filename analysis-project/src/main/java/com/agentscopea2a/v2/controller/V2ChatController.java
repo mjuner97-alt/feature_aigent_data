@@ -18,7 +18,6 @@ package com.agentscopea2a.v2.controller;
 import com.agentscopea2a.dto.ChatRequest;
 import com.agentscopea2a.v2.routing.V2SessionRouter;
 import com.agentscopea2a.v2.service.V2ChatStreamService;
-import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -30,8 +29,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
-
-import java.util.UUID;
 
 /**
  * v2 入口控制器：SSE 流式接口，委托给 {@link V2ChatStreamService}。
@@ -50,7 +47,7 @@ import java.util.UUID;
  * (v1 controller 重新启用后)。
  */
 @RestController
-@RequestMapping("V2/ai")
+@RequestMapping("/v2/ai")
 @CrossOrigin(origins = "*", maxAge = 3600)
 public class V2ChatController {
 
@@ -66,9 +63,21 @@ public class V2ChatController {
 
     @PostMapping(value = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter chat(@RequestBody ChatRequest req) {
-        // 统一归一化：chatId（公开入口）和 conversationId（Manager入口）是同一字段
-        normalizeConversationId(req);
-        // agentName 有无决定 Manager / Public 返回风格，由 service 内部判断
+        log.info("v2 /chat: conversationId={}, userId={}", req.getConversationId(), req.getUserId());
+        String input = req.getQuestion();
+        if (input == null || input.isBlank()) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "question must not be blank");
+        }
+        String conversationId = req.getConversationId();
+        if (conversationId != null && !sessionRouter.shouldUseV2(conversationId)) {
+            // Stage 8: v1 controller is Maven-excluded; gray-switch fallback is deferred.
+            // Stage 9: when v1 controller is re-enabled, redirect to v1 endpoint here.
+            log.warn("v2 /chat: conversationId={} routed to v1 bucket but v1 controller not available",
+                    conversationId);
+            throw new V1RoutingNotAvailableException(conversationId);
+        }
         return chatStreamService.stream(req);
     }
 
@@ -82,28 +91,5 @@ public class V2ChatController {
         public V1RoutingNotAvailableException(String conversationId) {
             super("v1 routing not available in Stage 8 (conversationId=" + conversationId + ")");
         }
-    }
-
-
-    /**
-     * 两个入口用不同字段传会话ID，统一归一化到 conversationId：
-     * <ul>
-     *   <li>Manager 入口 → conversation_id</li>
-     *   <li>公开入口 → chat_id</li>
-     * </ul>
-     * chatId 优先级低于 conversationId：当 conversationId 为空时，用 chatId 回填。
-     */
-    private void normalizeConversationId(ChatRequest req) {
-
-        if (StringUtils.isEmpty(req.getConversationId())) {
-            req.setConversationId(UUID.randomUUID().toString());
-        }else{
-            req.setSessionId(req.getConversationId());
-        }
-
-        if (StringUtils.isNotEmpty(req.getSessionId())) {
-            req.setConversationId(req.getSessionId());
-        }
-
     }
 }

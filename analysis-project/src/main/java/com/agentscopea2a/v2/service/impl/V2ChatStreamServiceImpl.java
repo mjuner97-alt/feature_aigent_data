@@ -355,6 +355,17 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
                         StringUtils.defaultIfBlank(req.getFromType(), DEFAULT_FROM_TYPE),
                         conversationId));
 
+        // Pin the main agent's ArtifactContext on RuntimeContext so sub-agents (which get a
+        // different sessionId="sub-xxx" from AgentSpawnTool) still use the parent's artifact
+        // bucket. Without this, ArtifactHandoffHook writes CSVs to the sub-agent's bucket,
+        // and ArtifactAccessMiddleware allows paths under /workspace/artifacts/<user>/<sub-xxx>/
+        // instead of the parent's /workspace/artifacts/<user>/<conversationId>/.
+        // RuntimeContext.builder(ctx).from(ctx) in AgentSpawnTool clones all keys, so
+        // the sub-agent inherits this pinned context automatically.
+        com.agentscopea2a.v2.artifact.ArtifactContext mainArtifactCtx =
+                com.agentscopea2a.v2.artifact.ArtifactContext.from(ctx);
+        ctx.put(com.agentscopea2a.v2.artifact.ArtifactContext.class, mainArtifactCtx);
+
         // Episodic memory session_id: "user:<userId>:<conversationId>" so that:
         // 1) TraceMiner.loadSessions can group by session_id (each request = one session)
         // 2) extractUserId can parse userId from the "user:userId:..." prefix
