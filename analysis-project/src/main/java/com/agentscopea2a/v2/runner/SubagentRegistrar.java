@@ -28,6 +28,7 @@ import com.agentscopea2a.v2.tools.PerUserMemoryGetTool;
 import com.agentscopea2a.v2.tools.PythonExecTool;
 import com.agentscopea2a.v2.tools.SkillSaveTool;
 import com.agentscopea2a.v2.tools.ToolRoutersIndex;
+import com.agentscopea2a.v2.tools.WideTableMetricsTool;
 import com.agentscopea2a.v2.verify.L2EventCollectorHook;
 import com.agentscopea2a.v2.config.WorkspaceMaterializer;
 import io.agentscope.core.model.Model;
@@ -127,6 +128,7 @@ public class SubagentRegistrar {
             ObjectProvider<PythonExecTool> pythonExecToolProvider,
             ObjectProvider<SkillSaveTool> skillSaveToolProvider,
             ObjectProvider<ArithTool> arithToolProvider,
+            ObjectProvider<WideTableMetricsTool> wideTableMetricsToolProvider,
             ObjectProvider<ArtifactHandoffHook> artifactHandoffHookProvider,
             ObjectProvider<ArtifactAccessMiddleware> artifactAccessMiddlewareProvider,
             ObjectProvider<PythonExecAccessMiddleware> pythonExecAccessMiddlewareProvider,
@@ -152,6 +154,14 @@ public class SubagentRegistrar {
         ArithTool at = arithToolProvider.getIfAvailable();
         if (at != null) {
             toolRegistry.put("arith", at);
+        }
+        // wide_table_query 直接注册给子 agent, 跳过 router_tool 元工具路由.
+        // 原因: trace 显示 LLM 调 router_tool({toolId:"wide_table_query",...}) 时多次拼参失败
+        // (JSON 反序列化错 / schema.table 格式 / schema 名错), 浪费 4 轮 LLM 往返.
+        // 直接暴露后, LLM 一次就能调通, 省 toolMetaInfo + router_tool 共 5 轮往返.
+        WideTableMetricsTool wt = wideTableMetricsToolProvider.getIfAvailable();
+        if (wt != null) {
+            toolRegistry.put("wide_table_query", wt);
         }
         this.artifactHandoffHook = artifactHandoffHookProvider.getIfAvailable();
         this.artifactAccessMiddleware = artifactAccessMiddlewareProvider.getIfAvailable();
@@ -258,12 +268,23 @@ public class SubagentRegistrar {
                     .sysPrompt(sysPrompt)
                     .maxIters(steps)
                     .disableSubagents()
-                    .disableMemoryHooks();
+                    .disableMemoryHooks()
+                    // 2026/07/25: 禁掉 JAR 自动注册的文件系统/shell/memory 工具。子 agent
+                    // 的业务工具 (python_exec / arith / router_tool) 由上方 toolRegistry 显式
+                    // 注册到 toolkit,不受影响。memory_get 在 build 后用 PerUserMemoryGetTool
+                    // 重新注册(per-user 隔离)。session_* 工具见下方 post-build removeTool。
+                    .disableFilesystemTools()
+                    .disableShellTool()
+                    .disableMemoryTools();
 
-            // Plan mode: only analyze_data needs structured plan + task list tracking.
-            // query_data and generate_skill have simple linear workflows where plan mode
-            // is over-engineering. See docs/Plan-Machie/plan-mode-subagent-migration.md.
-            boolean enablePlan = "analyze_data".equals(id);
+            // 2026/07/25: 关闭 analyze_data 子 agent 的 plan mode 并禁掉 plan_enter / plan_exit /
+            // plan_write 工具。原先启用 plan mode 是为了"查询+计算+报告"多步任务结构化跟踪,但实测
+            // LLM 经常卡在 plan_enter 循环 + HITL ASK 阻塞,反而拖慢 E2E。改为纯 ReAct 走 5 步固定
+            // workflow (load_skill -> router_tool -> python_exec -> arith -> 回复),用 todo_write
+            // (JAR TodoTools,不在禁用清单) 做轻量跟踪即可。
+            boolean enablePlan = false;
+            // 保留旧分支结构以便回滚 -- 把上面这行改回 `boolean enablePlan = "analyze_data".equals(id);`
+            // 即可恢复 plan mode + replacePlanExitWithAutoApprove 路径。
             if (enablePlan) {
                 sub.enablePlanMode()
                    .planFileDirectory("plans/subagents/" + id)
@@ -331,11 +352,29 @@ public class SubagentRegistrar {
 
             HarnessAgent built = sub.build();
 
+            // 2026/07/25: 显式移除 JAR 自动注册的 session / plan 工具(无 disable flag)。
+            // 防止子 agent 把 token 烧在 session_search / session_list / plan_enter 等探查上。
+            try {
+                Toolkit builtTk0 = built.getToolkit();
+                for (String tn : new String[]{
+                        "session_search", "session_list", "session_save",
+                        "plan_enter", "plan_exit", "plan_write"
+                }) {
+                    try {
+                        builtTk0.removeTool(tn);
+                    } catch (Exception ignored) {
+                        // tool not registered by JAR - fine
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("Subagent '{}': failed to strip session/plan tools: {}", id, e.getMessage());
+            }
+
             // Replace the framework's memory_get with PerUserMemoryGetTool on subagents too.
             // The framework auto-registers MemoryGetTool (HarnessAgent.java:2232) on all agents
-            // unless disableMemoryTools() is called. Subagents don't disable it, so they inherit
-            // the shared-root filesystem fallback that causes cross-tenant leaks. Same pattern
-            // as the main agent's replacement in HarnessA2aRunnerV2.
+            // unless disableMemoryTools() is called. disableMemoryTools() is now called above,
+            // so memory_get isn't auto-registered; removeTool() is a no-op safety net.
+            // PerUserMemoryGetTool is still registered for per-user isolation.
             if (mysqlMemoryStore != null) {
                 try {
                     Toolkit builtTk = built.getToolkit();

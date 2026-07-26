@@ -67,7 +67,10 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
             Set.of("read_file", "write_file", "shell_execute",
                     "agent_spawn", "agent_send", "task_output", "task_list", "task_cancel",
                     "memory_search", "memory_get", "session_search", "save_skill",
-                    "arith");
+                    "arith",
+                    // load_skill_through_path 返回 SKILL.md 全文, 内含字段映射 markdown 表,
+                    // 不是业务数据, 落 CSV 会误导后续 python_exec 去读根本不存在的"数据"
+                    "load_skill_through_path");
 
     private static final int PREVIEW_ROWS = 5;
     private static final int SCHEMA_SAMPLES_PER_COLUMN = 3;

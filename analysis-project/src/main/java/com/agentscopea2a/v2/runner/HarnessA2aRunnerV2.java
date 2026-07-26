@@ -222,6 +222,14 @@ public class HarnessA2aRunnerV2 {
                 .enableSkillManageTool(skillManageConfig)
                 .enableSkillCurator(skillCuratorConfig)
                 .enableSkillPromotionGate(localApprovalGate, new CompositeFilter(skillVisibilityFilter))
+                // 2026/07/25: 禁掉 JAR 自动注册的文件系统/shell/memory 工具,避免 LLM 浪费 token
+                // 探查文件系统。python_exec / arith / router_tool 是 v2 工具,由 SubagentRegistrar
+                // 显式注册到 toolkit,不受这些 flag 影响。memory_get 在 build 后用 PerUserMemoryGetTool
+                // 重新注册(per-user 隔离)。session_search / session_list / session_save 无 disable
+                // flag,见下方 post-build removeTool。
+                .disableFilesystemTools()
+                .disableShellTool()
+                .disableMemoryTools()
                 .middlewares(middlewares);
 
         // Enable AsyncToolMiddleware so long-running tool calls get offloaded to the
@@ -302,6 +310,21 @@ public class HarnessA2aRunnerV2 {
         }
 
         HarnessAgent agent = builder.build();
+
+        // 2026/07/25: 显式移除 JAR 自动注册的 session 工具(无 disable flag)。
+        // 防止 LLM 把 token 烧在 session_search / session_list 探查上。
+        try {
+            io.agentscope.core.tool.Toolkit postBuildToolkit = agent.getToolkit();
+            for (String tn : new String[]{"session_search", "session_list", "session_save"}) {
+                try {
+                    postBuildToolkit.removeTool(tn);
+                } catch (Exception ignored) {
+                    // tool not registered by JAR in this config - fine
+                }
+            }
+        } catch (Exception e) {
+            log.warn("HarnessA2aRunnerV2: failed to strip session tools: {}", e.getMessage());
+        }
 
         // Replace the framework's memory_get tool with a per-user DB-backed version.
         // The framework's MemoryGetTool reads from workspaceManager.readManagedWorkspaceFileUtf8()

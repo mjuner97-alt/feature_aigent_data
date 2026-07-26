@@ -21,6 +21,7 @@ import com.agentscopea2a.v2.hooks.SkillEvolutionHook;
 import com.agentscopea2a.v2.hooks.SkillRetrievalHook;
 import com.agentscopea2a.v2.hooks.SkillSynthesisHook;
 import com.agentscopea2a.v2.memory.EpisodicMemory;
+import com.agentscopea2a.v2.skills.BuiltinSkillRegistrar;
 import com.agentscopea2a.v2.skills.EmbeddingClient;
 import com.agentscopea2a.v2.skills.FingerprintCalculator;
 import com.agentscopea2a.v2.skills.MetricClassificationService;
@@ -88,6 +89,28 @@ public class V2SkillConfig {
             @Value("${harness.skills.retrieval.cache-refresh-seconds:60}") int cacheRefreshSeconds) {
         log.info("SkillVectorIndex: cacheEnabled={}, cacheRefreshSeconds={}", cacheEnabled, cacheRefreshSeconds);
         return new SkillVectorIndex(dataSource, cacheEnabled, cacheRefreshSeconds);
+    }
+
+    /**
+     * Boot-time registrar that scans {@code workspace/skills/} and inserts any builtin
+     * SKILL.md not yet in {@code skill_index}, computing its embedding so
+     * {@link SkillVectorIndexVisibilityFilter} includes it in topK results. Without this,
+     * a newly shipped builtin skill (e.g. {@code wide_table_q2_1_metrics}) is loaded by the
+     * JAR but filtered out before reaching the LLM because the visibility filter narrows
+     * the catalogue to topK hits and the new skill has no row (and no embedding) in the DB.
+     */
+    @Bean
+    public BuiltinSkillRegistrar builtinSkillRegistrar(
+            SkillIndexRepository indexRepo,
+            SkillVectorIndex vectorIndex,
+            ObjectProvider<EmbeddingClient> embeddingClientProvider,
+            @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
+            @Value("${harness.skills.builtin-registrar.enabled:true}") boolean enabled) {
+        EmbeddingClient embeddingClient = embeddingClientProvider.getIfAvailable();
+        log.info(
+                "BuiltinSkillRegistrar: enabled={}, workspacePath={}, embeddingClient={}",
+                enabled, workspacePath, embeddingClient != null ? "wired" : "null");
+        return new BuiltinSkillRegistrar(workspacePath, indexRepo, vectorIndex, embeddingClient, enabled);
     }
 
     @Bean

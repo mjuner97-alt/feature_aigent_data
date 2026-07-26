@@ -66,10 +66,15 @@ export default function ActivityFeed({ events, active }: Props) {
 
 const ActivityRow = React.memo(function ActivityRow({ evt }: { evt: ProcessEvent }) {
   const isSubagent = evt.source != null;
-  const isFailure = evt.eventType === 'tool_result_end'
-    && evt.toolCallState != null
+  // After 2026/07/26 merge: tool_call_start and tool_result_end are merged into
+  // one row (eventType stays tool_call_start, toolCallState is patched in when
+  // the result arrives). So failure must be detected from toolCallState, not
+  // eventType. Running state = has toolCallId but no toolCallState yet.
+  const hasState = evt.toolCallState != null && evt.toolCallState !== '';
+  const isFailure = hasState
     && evt.toolCallState !== 'SUCCESS'
     && evt.toolCallState !== 'OK';
+  const isRunning = !hasState && evt.toolCallId != null;
 
   const ts = new Date().toLocaleTimeString('zh-CN', {
     hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit',
@@ -93,6 +98,7 @@ const ActivityRow = React.memo(function ActivityRow({ evt }: { evt: ProcessEvent
     }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
         <span style={S.ts}>{ts}</span>
+        {isRunning && <span style={S.runningDot} />}
         <span style={{
           ...S.message,
           color: isFailure ? '#dc2626' : isSubagent ? '#0f172a' : '#1e293b',

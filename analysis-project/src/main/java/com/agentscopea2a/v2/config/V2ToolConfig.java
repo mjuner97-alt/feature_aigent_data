@@ -32,9 +32,11 @@ import com.agentscopea2a.v2.tools.QualityTools;
 import com.agentscopea2a.v2.tools.SkillSaveTool;
 import com.agentscopea2a.v2.tools.ToolRoutersIndex;
 import com.agentscopea2a.v2.tools.V2ToolGroupAdapter;
+import com.agentscopea2a.v2.tools.WideTableMetricsTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -121,13 +123,23 @@ public class V2ToolConfig {
         return new ArithTool();
     }
 
+    // ── Wide table metrics (GaussDB generic SELECT, no business logic) ─────
+
+    @Bean
+    public WideTableMetricsTool wideTableMetricsTool(
+            @Qualifier("gaussDataSource") DataSource gaussDataSource) {
+        log.info("WideTableMetricsTool: wired (gaussDataSource-backed generic SELECT)");
+        return new WideTableMetricsTool(gaussDataSource);
+    }
+
     // ── Tool router ────────────────────────────────────────────────────────
 
     @Bean
     public ToolRoutersIndex toolRoutersIndex(AgentTools agentTools,
                                              DataPrimitivesTool dataPrimitivesTool,
-                                             DownloadTool downloadTool) {
-        return new ToolRoutersIndex(agentTools, dataPrimitivesTool, downloadTool);
+                                             DownloadTool downloadTool,
+                                             WideTableMetricsTool wideTableMetricsTool) {
+        return new ToolRoutersIndex(agentTools, dataPrimitivesTool, downloadTool, wideTableMetricsTool);
     }
 
     // ── URL shortener + download tool ──────────────────────────────────────
@@ -155,32 +167,68 @@ public class V2ToolConfig {
             DataPrimitivesTool dataPrimitivesTool,
             DownloadTool downloadTool,
             ObjectProvider<PythonExecTool> pythonExecToolProvider,
-            ObjectProvider<ArithTool> arithToolProvider) {
-        // 主智能体只注册 python_exec + arith 工具组 + reset_equipped_tools 元工具。
-        // 业务工具（AgentTools / DataPrimitivesTool / DownloadTool）通过子智能体的
-        // ToolRoutersIndex.router_tool 暴露，主智能体用 agent_spawn 委派子智能体调用。
-        // arith 例外：所有 agent 都可能做末尾收尾算术（如总差/总均值），直接挂主 agent。
+            ObjectProvider<ArithTool> arithToolProvider,
+            ObjectProvider<WideTableMetricsTool> wideTableMetricsToolProvider,
+            ObjectProvider<ToolRoutersIndex> toolRoutersIndexProvider) {
+        // 主智能体注册 4 个 ungrouped 工具: tool_router + python_exec + arith + wide_table_query.
+        // 全部 ungrouped (始终可见给 LLM), 不分组不挂 meta-tool.
+        // 原因: 之前把 python_exec 放进 group + 挂 reset_equipped_tools 元工具, 实测 LLM
+        // 调 reset_equipped_tools 后 python_exec 仍报 "Tool not found", grouped tool 机制
+        // 在主 agent 上不工作 (见 trace 11:12:49-11:12:59). 改为 ungrouped 让 LLM 直接可见.
+        // 业务工具（AgentTools / DataPrimitivesTool / DownloadTool）通过 ToolRoutersIndex
+        // 暴露给主 agent (router_tool 元工具), 主 agent 自己也能调 quality_query_by_* / generateDownloadUrl,
+        // 不再需要 agent_spawn(query_data) (已删除, 见 docs/table-mertics/supervisor-direct-path-design.md).
         V2ToolGroupAdapter.Builder b = V2ToolGroupAdapter.builder();
         PythonExecTool py = pythonExecToolProvider.getIfAvailable();
         if (py != null) {
-            b.createGroup("python_exec", "Python code execution in sandbox container", true)
-             .tool(py, "python_exec");
-            log.info("V2ToolGroupAdapter: registered PythonExecTool into 'python_exec' group");
+            b.tool(unwrapCglib(py));
+            log.info("V2ToolGroupAdapter: registered PythonExecTool (ungrouped)");
         }
         ArithTool at = arithToolProvider.getIfAvailable();
         if (at != null) {
-            // arith 注册为 ungrouped (始终可见), 不进 tool group。
-            // 原因: V2ToolGroupAdapter 的 group 机制下, grouped tools 不会被发送给 LLM
-            // (只有 ungrouped + meta-tool 可见)。arith 必须始终可见才能杜绝心算。
-            b.tool(at);
-            log.info("V2ToolGroupAdapter: registered ArithTool (ungrouped, always available)");
+            b.tool(unwrapCglib(at));
+            log.info("V2ToolGroupAdapter: registered ArithTool (ungrouped)");
         }
-        V2ToolGroupAdapter adapter = b.enableMetaTool().build();
+        WideTableMetricsTool wt = wideTableMetricsToolProvider.getIfAvailable();
+        if (wt != null) {
+            b.tool(unwrapCglib(wt));
+            log.info("V2ToolGroupAdapter: registered WideTableMetricsTool (ungrouped)");
+        }
+        ToolRoutersIndex tri = toolRoutersIndexProvider.getIfAvailable();
+        if (tri != null) {
+            // ToolRoutersIndex.router_tool 上有 @Timed, 被 TimedAspect CGLIB 代理;
+            // Toolkit.registerTool 扫 getDeclaredMethods() 拿不到 @Tool 注解, 必须解包.
+            // 见 memory router_tool_cglib_proxy_fix.
+            b.tool(unwrapCglib(tri));
+            log.info("V2ToolGroupAdapter: registered ToolRoutersIndex (ungrouped, exposes router_tool + toolMetaInfo)");
+        }
+        V2ToolGroupAdapter adapter = b.build();
         log.info("V2ToolGroupAdapter: main-agent toolkit with"
                 + (py != null ? " python_exec" : "")
                 + (at != null ? " + arith" : "")
-                + " group(s) (business tools delegated to subagents via router_tool)");
+                + (wt != null ? " + wide_table_query" : "")
+                + (tri != null ? " + tool_router" : "")
+                + " (all ungrouped, no meta-tool)");
         return adapter;
+    }
+
+    /**
+     * 解 Spring CGLIB 代理, 拿到原始 target instance.
+     * 必要性: Toolkit.registerTool() 扫 clazz.getDeclaredMethods() 找 @Tool 注解;
+     * CGLIB 代理类(由 @Timed / @Async 等 aspect 触发)的 getDeclaredMethods() 返回
+     * synthetic bridge methods 不带 @Tool, 导致工具静默不注册. AopProxyUtils.getSingletonTarget
+     * 返回 proxy 背后的真实 bean. 非 proxy 输入返回原对象.
+     */
+    private static Object unwrapCglib(Object tool) {
+        Object target = org.springframework.aop.framework.AopProxyUtils.getSingletonTarget(tool);
+        if (target == null) {
+            return tool;
+        }
+        if (target.getClass() != tool.getClass()) {
+            log.info("V2ToolGroupAdapter: unwrapped CGLIB proxy {} -> {}",
+                    tool.getClass().getName(), target.getClass().getName());
+        }
+        return target;
     }
 
     // ── Skill save ─────────────────────────────────────────────────────────

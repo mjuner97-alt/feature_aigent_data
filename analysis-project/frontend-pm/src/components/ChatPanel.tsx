@@ -317,7 +317,28 @@ export default function ChatPanel({
         } else if (evt.type === 'process') {
           // Append to activity feed (do NOT touch replyMsg.text — process
           // events are progress markers, not final answer content).
-          setActivityEvents(prev => [...prev, evt.process]);
+          const p = evt.process;
+          setActivityEvents(prev => {
+            // Activity feed merge policy (2026/07/26):
+            // - tool_call_start: append a new row (running state, no toolCallState)
+            // - tool_result_end: patch the existing row keyed by toolCallId
+            //   (update message + toolCallState + toolOutput). Backend no longer
+            //   forwards tool_result_start - so 3 SSE events merge into 1 row.
+            // - other events (agent_start / subagent_exposed / agent_end): append.
+            if (p.eventType === 'tool_result_end' && p.toolCallId) {
+              const idx = prev.findIndex(e => e.toolCallId === p.toolCallId);
+              if (idx < 0) return [...prev, p];
+              const merged = { ...prev[idx] };
+              merged.message = p.message;
+              merged.toolCallState = p.toolCallState;
+              merged.toolInput = p.toolInput ?? merged.toolInput;
+              merged.toolOutput = p.toolOutput ?? merged.toolOutput;
+              const next = prev.slice();
+              next[idx] = merged;
+              return next;
+            }
+            return [...prev, p];
+          });
 
           // Infer subagent plan/todo state from tool_call_start events.
           // Only tool_call_start carries the signal; tool_result_end for subagent
@@ -325,7 +346,6 @@ export default function ChatPanel({
           // SubagentEventForwardingMiddleware (only text_block_delta is mirrored).
           // After ToolCallTrackingHook is installed on subagents, toolInput is available
           // for plan_enter/plan_write/todo_write calls, enabling task detail display.
-          const p = evt.process;
           if (p.eventType === 'tool_call_start' && p.source) {
             if (p.toolCallName === 'plan_enter') {
               subagentPlansRef.current = {

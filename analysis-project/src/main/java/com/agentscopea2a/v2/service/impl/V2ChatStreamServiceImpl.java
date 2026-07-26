@@ -40,9 +40,9 @@ import io.agentscope.core.event.AgentResultEvent;
 import io.agentscope.core.event.AgentStartEvent;
 import io.agentscope.core.event.SubagentExposedEvent;
 import io.agentscope.core.event.TextBlockDeltaEvent;
+import io.agentscope.core.event.TextBlockStartEvent;
 import io.agentscope.core.event.ToolCallStartEvent;
 import io.agentscope.core.event.ToolResultEndEvent;
-import io.agentscope.core.event.ToolResultStartEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
@@ -414,8 +414,10 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
      *       替换（避免"重复输出"bug — 流式 text_block_delta 已累积完整文本，再追加会双倍）</li>
      *   <li>{@link TextBlockDeltaEvent} 是流式 token：视为"思考"，累积到
      *       {@link StreamContext#thinkContent} 并通过 {@code sendThink}（action="执行中"）即时发送</li>
-     *   <li>6 种 process 事件（agent_start, tool_call_start, tool_result_start, tool_result_end,
-     *       subagent_exposed, agent_end）转发到前端 ActivityFeed 做实时进度展示</li>
+     *   <li>5 种 process 事件（agent_start, tool_call_start, tool_result_end,
+     *       subagent_exposed, agent_end）转发到前端 ActivityFeed 做实时进度展示.
+     *       tool_result_start 不转发 - 它无 payload, 与 tool_call_start/tool_result_end
+     *       合并到同一行后无独立价值 (2026/07/26)</li>
      *   <li>其他事件（TextBlockStartEvent 等）直接跳过</li>
      * </ul>
      */
@@ -446,8 +448,24 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
             String chunk = null;
             if (event instanceof TextBlockDeltaEvent delta) {
                 chunk = delta.getDelta();
+            } else if (event instanceof TextBlockStartEvent) {
+                // New text block starts. The subagent (or main agent) emits a fresh
+                // TextBlockStartEvent for each LLM generation - e.g. one per ReAct
+                // reasoning step. Without a separator here, the deltas from block N+1
+                // get appended directly to block N's tail in thinkContent, and the
+                // frontend concatenates them as "blockN...blockN+1..." on one line.
+                // That makes markdown syntax (### headings, | tables |, - lists)
+                // start mid-line, where the parser can't detect them - they render
+                // as literal text. Insert a "\n" separator so each block starts on
+                // a fresh line; the parser then sees ^### / ^| / ^- properly.
+                if (ctx.thinkContent.length() > 0) {
+                    String sep = "\n";
+                    ctx.thinkContent.append(sep);
+                    ctx.hasSentExecuting.set(true);
+                    strategy.sendThink(ctx, ThinkPayload.progress(sep));
+                }
+                return;
             }
-            // TextBlockStartEvent 是标记性事件 - 不携带文本内容，直接跳过
 
             // 有 chunk 且非空 → 累积并发送"执行中"
             if (StringUtils.isNotBlank(chunk)) {
@@ -458,14 +476,17 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
             }
 
             // ── Process events (process-event-streaming.md) ─────────────────────
-            // Forward 6 event types that carry no text but tell the user what the
-            // agent is doing: agent_start, tool_call_start, tool_result_start,
-            // tool_result_end, subagent_exposed, agent_end. These are NOT accumulated
-            // into thinkContent/answerContent; they go out as standalone SSE events
-            // with their own event name (matching AgentEvent.getType()) so the
-            // frontend ActivityFeed can render a live progress timeline.
-            // They use AiChatResult format (with eventType/toolCall* fields) so the
-            // frontend chat.ts PROCESS_EVENTS matcher picks them up.
+            // Forward 5 event types that carry no text but tell the user what the
+            // agent is doing: agent_start, tool_call_start, tool_result_end,
+            // subagent_exposed, agent_end. tool_result_start is intentionally NOT
+            // forwarded - it carries no payload beyond toolCallId/name, and the
+            // frontend now merges tool_call_start + tool_result_end into a single
+            // row keyed by toolCallId (2026/07/26).
+            // These are NOT accumulated into thinkContent/answerContent; they go out
+            // as standalone SSE events with their own event name (matching
+            // AgentEvent.getType()) so the frontend ActivityFeed can render a live
+            // progress timeline. They use AiChatResult format (with eventType/toolCall*
+            // fields) so the frontend chat.ts PROCESS_EVENTS matcher picks them up.
             String eventName = event.getType() != null ? event.getType().name().toLowerCase() : "custom";
             switch (eventName) {
                 case "agent_start": {
@@ -488,17 +509,6 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
                             .lineResult("🔧 调用工具：" + e.getToolCallName())
                             .toolCallId(e.getToolCallId()).toolCallName(e.getToolCallName())
                             .toolInput(detail != null ? detail.input() : null)
-                            .source(event.getSource())
-                            .build();
-                    safeSendEvent(ctx.emitter, eventName, result);
-                    return;
-                }
-                case "tool_result_start": {
-                    if (!(event instanceof ToolResultStartEvent e)) return;
-                    AiChatResult result = AiChatResult.builder()
-                            .code(0).eventType(eventName)
-                            .lineResult("📋 工具返回：" + e.getToolCallName())
-                            .toolCallId(e.getToolCallId()).toolCallName(e.getToolCallName())
                             .source(event.getSource())
                             .build();
                     safeSendEvent(ctx.emitter, eventName, result);

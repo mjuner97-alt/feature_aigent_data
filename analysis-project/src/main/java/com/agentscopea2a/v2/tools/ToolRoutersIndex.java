@@ -54,12 +54,16 @@ public class ToolRoutersIndex {
     private final AgentTools agentTools;
     private final DataPrimitivesTool dataPrimitivesTool;
     private final DownloadTool downloadTool;
+    private final WideTableMetricsTool wideTableMetricsTool;
 
-    public ToolRoutersIndex(AgentTools agentTools, DataPrimitivesTool dataPrimitivesTool,
-                            DownloadTool downloadTool) {
+    public ToolRoutersIndex(AgentTools agentTools,
+                            DataPrimitivesTool dataPrimitivesTool,
+                            DownloadTool downloadTool,
+                            WideTableMetricsTool wideTableMetricsTool) {
         this.agentTools = agentTools;
         this.dataPrimitivesTool = dataPrimitivesTool;
         this.downloadTool = downloadTool;
+        this.wideTableMetricsTool = wideTableMetricsTool;
     }
 
     /** 容器装配完成后,反射扫描各 Tool Bean,登记 @Tool 方法。 */
@@ -68,6 +72,7 @@ public class ToolRoutersIndex {
         registerTools(AgentTools.class, agentTools);
         registerTools(DataPrimitivesTool.class, dataPrimitivesTool);
         registerTools(DownloadTool.class, downloadTool);
+        registerTools(WideTableMetricsTool.class, wideTableMetricsTool);
         log.info("ToolRoutersIndex 初始化完成,已注册工具: {}", toolMethodMap.keySet());
     }
 

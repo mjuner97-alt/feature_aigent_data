@@ -5,7 +5,7 @@
  * <ul>
  *   <li>{@code text_block_delta} → token (chunk = lineResult, fullText = resultAll)
  *   <li>{@code done}            → done  (fullText = resultAll)
- *   <li>{@code agent_start / tool_call_start / tool_result_start /
+ *   <li>{@code agent_start / tool_call_start /
  *       tool_result_end / subagent_exposed / agent_end} → process
  *       (live progress for ActivityFeed — see process-event-streaming.md)
  * </ul>
@@ -27,7 +27,6 @@ export interface ChatRequest {
 export type ProcessEventType =
   | 'agent_start'
   | 'tool_call_start'
-  | 'tool_result_start'
   | 'tool_result_end'
   | 'tool_output'
   | 'subagent_exposed'
@@ -36,7 +35,6 @@ export type ProcessEventType =
 const PROCESS_EVENTS = new Set<string>([
   'agent_start',
   'tool_call_start',
-  'tool_result_start',
   'tool_result_end',
   'tool_output',
   'subagent_exposed',
