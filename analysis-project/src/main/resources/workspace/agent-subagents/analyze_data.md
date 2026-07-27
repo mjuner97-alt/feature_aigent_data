@@ -1,7 +1,7 @@
 ---
 name: analyze_data
 description: 质量数据分析师 - 制定分析思路、查询所需数据、生成结论
-tools: [tool_router, python_exec, arith, wide_table_query]
+tools: [tool_router, python_exec, arith, wide_table_query, clickhouse_query]
 maxIters: 30
 ---
 

@@ -24,6 +24,7 @@ import com.agentscopea2a.v2.middleware.ArtifactAccessMiddleware;
 import com.agentscopea2a.v2.middleware.PythonExecAccessMiddleware;
 import com.agentscopea2a.v2.middleware.SubagentEventForwardingMiddleware;
 import com.agentscopea2a.v2.tools.ArithTool;
+import com.agentscopea2a.v2.tools.ClickHouseWideTableMetricsTool;
 import com.agentscopea2a.v2.tools.PerUserMemoryGetTool;
 import com.agentscopea2a.v2.tools.PythonExecTool;
 import com.agentscopea2a.v2.tools.SkillSaveTool;
@@ -129,6 +130,7 @@ public class SubagentRegistrar {
             ObjectProvider<SkillSaveTool> skillSaveToolProvider,
             ObjectProvider<ArithTool> arithToolProvider,
             ObjectProvider<WideTableMetricsTool> wideTableMetricsToolProvider,
+            ObjectProvider<ClickHouseWideTableMetricsTool> clickHouseWideTableMetricsToolProvider,
             ObjectProvider<ArtifactHandoffHook> artifactHandoffHookProvider,
             ObjectProvider<ArtifactAccessMiddleware> artifactAccessMiddlewareProvider,
             ObjectProvider<PythonExecAccessMiddleware> pythonExecAccessMiddlewareProvider,
@@ -162,6 +164,12 @@ public class SubagentRegistrar {
         WideTableMetricsTool wt = wideTableMetricsToolProvider.getIfAvailable();
         if (wt != null) {
             toolRegistry.put("wide_table_query", wt);
+        }
+        // clickhouse_query 同样直接注册给子 agent, 跳过 router_tool. 与 wide_table_query 对齐,
+        // 让 analyze_data 子 agent 直接调 clickhouse_query 查 ClickHouse 宽表 (如 default.trace_recent).
+        ClickHouseWideTableMetricsTool ck = clickHouseWideTableMetricsToolProvider.getIfAvailable();
+        if (ck != null) {
+            toolRegistry.put("clickhouse_query", ck);
         }
         this.artifactHandoffHook = artifactHandoffHookProvider.getIfAvailable();
         this.artifactAccessMiddleware = artifactAccessMiddlewareProvider.getIfAvailable();

@@ -25,6 +25,7 @@ import com.agentscopea2a.v2.skills.SkillIndexRepository;
 import com.agentscopea2a.v2.skills.SkillVectorIndex;
 import com.agentscopea2a.v2.tools.AgentTools;
 import com.agentscopea2a.v2.tools.ArithTool;
+import com.agentscopea2a.v2.tools.ClickHouseWideTableMetricsTool;
 import com.agentscopea2a.v2.tools.DataPrimitivesTool;
 import com.agentscopea2a.v2.tools.DownloadTool;
 import com.agentscopea2a.v2.tools.PythonExecTool;
@@ -132,14 +133,25 @@ public class V2ToolConfig {
         return new WideTableMetricsTool(gaussDataSource);
     }
 
+    // ── ClickHouse wide table metrics (与 GaussDB 版对齐, 走 default 库) ────
+
+    @Bean
+    public ClickHouseWideTableMetricsTool clickHouseWideTableMetricsTool(
+            @Qualifier("clickHouseDataSource") DataSource clickHouseDataSource) {
+        log.info("ClickHouseWideTableMetricsTool: wired (clickHouseDataSource-backed generic SELECT, schema=default)");
+        return new ClickHouseWideTableMetricsTool(clickHouseDataSource);
+    }
+
     // ── Tool router ────────────────────────────────────────────────────────
 
     @Bean
     public ToolRoutersIndex toolRoutersIndex(AgentTools agentTools,
                                              DataPrimitivesTool dataPrimitivesTool,
                                              DownloadTool downloadTool,
-                                             WideTableMetricsTool wideTableMetricsTool) {
-        return new ToolRoutersIndex(agentTools, dataPrimitivesTool, downloadTool, wideTableMetricsTool);
+                                             WideTableMetricsTool wideTableMetricsTool,
+                                             ClickHouseWideTableMetricsTool clickHouseWideTableMetricsTool) {
+        return new ToolRoutersIndex(agentTools, dataPrimitivesTool, downloadTool,
+                wideTableMetricsTool, clickHouseWideTableMetricsTool);
     }
 
     // ── URL shortener + download tool ──────────────────────────────────────
@@ -169,6 +181,7 @@ public class V2ToolConfig {
             ObjectProvider<PythonExecTool> pythonExecToolProvider,
             ObjectProvider<ArithTool> arithToolProvider,
             ObjectProvider<WideTableMetricsTool> wideTableMetricsToolProvider,
+            ObjectProvider<ClickHouseWideTableMetricsTool> clickHouseWideTableMetricsToolProvider,
             ObjectProvider<ToolRoutersIndex> toolRoutersIndexProvider) {
         // 主智能体注册 4 个 ungrouped 工具: tool_router + python_exec + arith + wide_table_query.
         // 全部 ungrouped (始终可见给 LLM), 不分组不挂 meta-tool.
@@ -194,6 +207,11 @@ public class V2ToolConfig {
             b.tool(unwrapCglib(wt));
             log.info("V2ToolGroupAdapter: registered WideTableMetricsTool (ungrouped)");
         }
+        ClickHouseWideTableMetricsTool ck = clickHouseWideTableMetricsToolProvider.getIfAvailable();
+        if (ck != null) {
+            b.tool(unwrapCglib(ck));
+            log.info("V2ToolGroupAdapter: registered ClickHouseWideTableMetricsTool (ungrouped)");
+        }
         ToolRoutersIndex tri = toolRoutersIndexProvider.getIfAvailable();
         if (tri != null) {
             // ToolRoutersIndex.router_tool 上有 @Timed, 被 TimedAspect CGLIB 代理;
@@ -207,6 +225,7 @@ public class V2ToolConfig {
                 + (py != null ? " python_exec" : "")
                 + (at != null ? " + arith" : "")
                 + (wt != null ? " + wide_table_query" : "")
+                + (ck != null ? " + clickhouse_query" : "")
                 + (tri != null ? " + tool_router" : "")
                 + " (all ungrouped, no meta-tool)");
         return adapter;
