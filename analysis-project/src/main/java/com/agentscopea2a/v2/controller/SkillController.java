@@ -18,12 +18,15 @@ package com.agentscopea2a.v2.controller;
 import com.agentscopea2a.dto.SkillListItem;
 import com.agentscopea2a.dto.SkillListQuery;
 import com.agentscopea2a.entity.Skill;
+import com.agentscopea2a.entity.SkillVersionHistory;
 import com.agentscopea2a.v2.service.SkillService;
+import com.agentscopea2a.v2.service.SkillVersionHistoryService;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -43,9 +46,11 @@ import java.util.List;
 public class SkillController {
 
     private final SkillService skillService;
+    private final SkillVersionHistoryService versionHistoryService;
 
-    public SkillController(SkillService skillService) {
+    public SkillController(SkillService skillService, SkillVersionHistoryService versionHistoryService) {
         this.skillService = skillService;
+        this.versionHistoryService = versionHistoryService;
     }
 
     @GetMapping
@@ -57,8 +62,14 @@ public class SkillController {
             @RequestParam(name = "keyword", required = false) String keyword,
             @RequestParam(name = "limit", required = false) Integer limit,
             @RequestParam(name = "offset", required = false) Integer offset,
+            @RequestParam(name = "dimension", required = false) String dimension,
             @RequestHeader("X-User-Id") String userId) {
-        return skillService.list(new SkillListQuery(view, sort, category, tag, keyword, limit, offset, userId));
+        return skillService.list(new SkillListQuery(view, sort, category, tag, keyword, limit, offset, userId, dimension));
+    }
+
+    @GetMapping("/tags")
+    public List<String> tags() {
+        return skillService.getAllTags();
     }
 
     @PostMapping
@@ -81,5 +92,10 @@ public class SkillController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@RequestParam(name = "id") Long id, @RequestHeader("X-User-Id") String userId) {
         skillService.delete(id, userId);
+    }
+
+    @GetMapping("/{id}/versions")
+    public List<SkillVersionHistory> versions(@PathVariable Long id) {
+        return versionHistoryService.selectBySkillId(id);
     }
 }

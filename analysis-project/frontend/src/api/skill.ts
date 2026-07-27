@@ -1,4 +1,4 @@
-import type { SkillListItem, SkillDetail, LikeStatus, SkillInput } from '../types/skill';
+import type { SkillListItem, SkillDetail, LikeStatus, SkillInput, SkillPublishRecord, PublishTargetGroup } from '../types/skill';
 
 const BASE = '/api/skills';
 
@@ -41,6 +41,7 @@ export interface SkillListParams {
   category?: string;
   tag?: string;
   keyword?: string;
+  dimension?: string;
   limit?: number;
   offset?: number;
 }
@@ -107,4 +108,54 @@ export async function updateSkill(id: number, input: SkillInput): Promise<SkillD
 export async function deleteSkill(id: number): Promise<void> {
   const res = await fetch(`${BASE}?id=${id}`, { method: 'DELETE', headers: authHeaders() });
   if (!res.ok) throw await skillError(res, '删除失败');
+}
+
+/** 获取全部去重 tag 列表(GET /api/skills/tags)。 */
+export async function getTags(): Promise<string[]> {
+  const res = await fetch(`${BASE}/tags`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`getTags failed: ${res.status}`);
+  return res.json();
+}
+
+export interface OrgInfo { orgType: string; orgId: string; orgName: string; }
+export interface UserInfo { userId: string; orgs: OrgInfo[]; }
+
+/** 获取用户信息(含所属组织),GET /api/org/user-info?userId=。 */
+export async function getUserInfo(userId: string): Promise<UserInfo> {
+  const res = await fetch(`/api/org/user-info?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`getUserInfo failed: ${res.status}`);
+  return res.json();
+}
+
+/** 获取引用某 Skill 的用户列表(GET /api/skills/{id}/referencers)。 */
+export async function getReferencers(skillId: number): Promise<string[]> {
+  const res = await fetch(`${BASE}/${skillId}/referencers`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`getReferencers failed: ${res.status}`);
+  return res.json();
+}
+
+/** 查询 Skill 的发布记录列表(GET /api/skills/{id}/publishes),含 APPROVED 和 PENDING。 */
+export async function getSkillPublishes(id: number): Promise<SkillPublishRecord[]> {
+  const res = await fetch(`${BASE}/${id}/publishes`, { headers: authHeaders() });
+  if (!res.ok) throw await skillError(res, '获取发布记录失败');
+  return res.json();
+}
+
+/** 查询当前用户可选的发布目标(GET /api/skills/publish-targets),按维度类型分组。 */
+export async function getPublishTargets(): Promise<PublishTargetGroup[]> {
+  const res = await fetch(`${BASE}/publish-targets`, { headers: authHeaders() });
+  if (!res.ok) throw await skillError(res, '获取发布目标失败');
+  return res.json();
+}
+
+/** 申请发布 Skill(POST /api/skills/{id}/publish),提交后进入审批流。返回新建 publishId。 */
+export async function submitPublish(id: number, targetType: string, targetId: string, targetName: string): Promise<number> {
+  const res = await fetch(`${BASE}/${id}/publish`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ targetType, targetId, targetName }),
+  });
+  if (!res.ok) throw await skillError(res, '申请发布失败');
+  const data = await res.json();
+  return data.publishId;
 }

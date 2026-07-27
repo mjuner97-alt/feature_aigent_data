@@ -32,12 +32,11 @@ const routes: RouteRecordRaw[] = [
     path: '/skills',
     component: SkillShell,
     children: [
-      { path: '', component: SkillListPage, props: { view: 'all', allowCategory: true } },
+      { path: '', component: SkillListPage, props: { view: 'all' } },
       { path: 'used', component: SkillListPage, props: { view: 'used' } },
       { path: 'liked', component: SkillListPage, props: { view: 'liked' } },
       { path: 'created', component: SkillListPage, props: { view: 'created' } },
       { path: 'popular', component: SkillListPage, props: { view: 'popular' } },
-      { path: 'category', component: SkillListPage, props: { view: 'all', allowCategory: true } },
       { path: 'new', component: SkillFormPage },
       { path: ':id/edit', component: SkillFormPage },
       { path: ':id', component: SkillDetailPage },

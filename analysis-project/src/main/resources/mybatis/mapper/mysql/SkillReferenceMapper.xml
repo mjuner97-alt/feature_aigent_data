@@ -30,4 +30,8 @@
         </foreach>
     </select>
 
+    <select id="selectReferencersBySkillId" resultType="java.lang.String">
+        SELECT creator FROM skill_reference WHERE target_skill_id = #{skillId}
+    </select>
+
 </mapper>

@@ -20,19 +20,28 @@ import com.agentscopea2a.entity.Skill;
 import java.time.LocalDateTime;
 
 /**
- * Skill 列表行 DTO(含点赞数、liked/used/available 标记、热门榜排名)。
- * 本计划 {@code available} 恒为 true(可用性计算留后续计划)。
+ * Skill 列表行 DTO(含点赞数、liked/used/available/disabled 标记、热门榜排名、维度)。
+ * {@code available = used && !disabled};{@code dimension} 从发布记录派生,默认 PERSONAL。
  */
 public record SkillListItem(
         Long id, String name, String description, String category, String tags,
         String ownerUserId, long likeCount, boolean liked, boolean used,
-        boolean available, Integer rank, LocalDateTime updatedAt
+        boolean available, boolean disabled, Integer rank, LocalDateTime updatedAt,
+        String dimension
 ) {
     public static SkillListItem of(Skill s, boolean liked, boolean used, Integer rank) {
+        return of(s, liked, used, true, false, rank, "PERSONAL");
+    }
+
+    public static SkillListItem of(Skill s, boolean liked, boolean used, boolean available, boolean disabled, Integer rank) {
+        return of(s, liked, used, available, disabled, rank, "PERSONAL");
+    }
+
+    public static SkillListItem of(Skill s, boolean liked, boolean used, boolean available, boolean disabled, Integer rank, String dimension) {
         return new SkillListItem(
                 s.getId(), s.getName(), s.getDescription(), s.getCategory(), s.getTags(),
                 s.getOwnerUserId(),
                 s.getLikeCount() == null ? 0L : s.getLikeCount(),
-                liked, used, true, rank, s.getUpdatedAt());
+                liked, used, available, disabled, rank, s.getUpdatedAt(), dimension);
     }
 }

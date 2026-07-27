@@ -110,4 +110,9 @@
         LIMIT #{effectiveLimit} OFFSET #{effectiveOffset}
     </select>
 
+    <select id="selectAllTags" resultType="java.lang.String">
+        SELECT DISTINCT tags FROM skill_manage
+        WHERE status = 'ACTIVE' AND tags IS NOT NULL AND tags != ''
+    </select>
+
 </mapper>

@@ -18,9 +18,13 @@ package com.agentscopea2a.v2.service;
 import com.agentscopea2a.dto.SkillListItem;
 import com.agentscopea2a.dto.SkillListQuery;
 import com.agentscopea2a.entity.Skill;
+import com.agentscopea2a.entity.SkillPublish;
 import com.agentscopea2a.mapper.mysql.SkillLikeMapper;
 import com.agentscopea2a.mapper.mysql.SkillManageMapper;
+import com.agentscopea2a.mapper.mysql.SkillPublishMapper;
 import com.agentscopea2a.mapper.mysql.SkillReferenceMapper;
+import com.agentscopea2a.mapper.mysql.SkillUserDisableMapper;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,7 +35,7 @@ import java.util.Set;
 
 /**
  * Skill 管理 Service:CRUD + 列表查询。userId 经请求头 X-User-Id 传入(无 Spring Security)。
- * 列表行批量计算 liked/used 标记;可用性恒为 true(后续计划接入)。
+ * 列表行批量计算 liked/used/disabled 标记;available = used && !disabled。
  */
 @Service
 public class SkillService {
@@ -39,13 +43,22 @@ public class SkillService {
     private final SkillManageMapper skillManageMapper;
     private final SkillLikeMapper likeMapper;
     private final SkillReferenceMapper refMapper;
+    private final SkillUserDisableMapper userDisableMapper;
+    private final SkillPublishService publishService;
+    private final SkillPublishMapper publishMapper;
 
     public SkillService(SkillManageMapper skillManageMapper,
                         SkillLikeMapper likeMapper,
-                        SkillReferenceMapper refMapper) {
+                        SkillReferenceMapper refMapper,
+                        SkillUserDisableMapper userDisableMapper,
+                        @Lazy SkillPublishService publishService,
+                        SkillPublishMapper publishMapper) {
         this.skillManageMapper = skillManageMapper;
         this.likeMapper = likeMapper;
         this.refMapper = refMapper;
+        this.userDisableMapper = userDisableMapper;
+        this.publishService = publishService;
+        this.publishMapper = publishMapper;
     }
 
     public List<SkillListItem> list(SkillListQuery q) {
@@ -56,15 +69,36 @@ public class SkillService {
         List<Long> ids = skills.stream().map(Skill::getId).toList();
         Set<Long> likedIds = nullToEmpty(likeMapper.selectLikedSkillIds(q.getUserId(), ids));
         Set<Long> usedIds = nullToEmpty(refMapper.selectUsedSkillIds(q.getUserId(), ids));
+        Set<Long> disabledIds = nullToEmpty(userDisableMapper.selectDisabledSkillIds(q.getUserId(), ids));
+        List<SkillPublish> approved = publishMapper.selectApprovedBySkillIds(ids);
+        java.util.Map<Long, String> skillDimension = new java.util.HashMap<>();
+        if (approved != null) {
+            for (SkillPublish p : approved) {
+                skillDimension.putIfAbsent(p.getSkillId(), p.getTargetType());
+            }
+        }
         boolean rankVisible = "popular".equals(q.getEffectiveView());
         int rank = q.getEffectiveOffset() + 1;
         List<SkillListItem> items = new ArrayList<>(skills.size());
         for (Skill s : skills) {
+            boolean used = usedIds.contains(s.getId());
+            boolean disabled = disabledIds.contains(s.getId());
+            boolean available = used && !disabled;
+            String dim = skillDimension.getOrDefault(s.getId(), "PERSONAL");
             items.add(SkillListItem.of(s, likedIds.contains(s.getId()),
-                    usedIds.contains(s.getId()), rankVisible ? rank : null));
+                    used, available, disabled, rankVisible ? rank : null, dim));
             rank++;
         }
+        if (q.getDimension() != null && !q.getDimension().isEmpty()) {
+            String wantDim = q.getDimension();
+            items = items.stream().filter(it -> it.dimension().equals(wantDim)).toList();
+        }
         return items;
+    }
+
+    /** 查询全部 ACTIVE Skill 的去重 tag 列表。 */
+    public List<String> getAllTags() {
+        return skillManageMapper.selectAllTags();
     }
 
     private static Set<Long> nullToEmpty(Set<Long> set) {
@@ -98,6 +132,9 @@ public class SkillService {
         Skill s = get(id);
         if (!s.getOwnerUserId().equals(userId)) {
             throw new IllegalStateException("SkillAccessDenied: " + id);
+        }
+        if (publishService.hasApproved(id)) {
+            throw new IllegalStateException("SkillUpdateRequiresDraft: " + id);
         }
         if (patch.getName() != null && !patch.getName().equals(s.getName())
                 && skillManageMapper.existsByName(patch.getName())) {

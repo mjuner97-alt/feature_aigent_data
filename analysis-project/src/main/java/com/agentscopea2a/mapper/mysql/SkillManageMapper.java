@@ -49,4 +49,7 @@ public interface SkillManageMapper {
 
     /** 列表查询:按 view/sort/category/tag/keyword 过滤 + 分页。 */
     List<Skill> selectList(SkillListQuery q);
+
+    /** 查询全部 ACTIVE Skill 的去重 tag 列表。 */
+    List<String> selectAllTags();
 }

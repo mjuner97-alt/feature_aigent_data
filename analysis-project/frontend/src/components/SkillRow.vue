@@ -1,7 +1,28 @@
 <script setup lang="ts">
 import type { SkillListItem } from '../types/skill';
-defineProps<{ item: SkillListItem; rank: number | null }>();
+import { computed } from 'vue';
+
+const props = defineProps<{ item: SkillListItem; rank: number | null }>();
 defineEmits<{ (e: 'like'): void }>();
+
+const badgeClass = computed(() => {
+  if (props.item.disabled) return 'badge-disabled';
+  if (props.item.used) return 'badge-used';
+  return 'badge-unused';
+});
+const badgeIcon = computed(() => {
+  if (props.item.disabled) return '🚫';
+  if (props.item.used) return '🟢';
+  return '⚪';
+});
+const dimClass = computed(() => `dim-${(props.item.dimension || 'PERSONAL').toLowerCase()}`);
+const dimLabel = computed(() => {
+  const map: Record<string, string> = {
+    PERSONAL: '个人', GROUP: '小组', DEPARTMENT: '部门',
+    PRODUCT_LINE: '产品线', COMPANY: '公司级',
+  };
+  return map[props.item.dimension || 'PERSONAL'] || '个人';
+});
 </script>
 
 <template>
@@ -10,11 +31,11 @@ defineEmits<{ (e: 'like'): void }>();
     <div class="main">
       <div class="line1">
         <span class="name">{{ item.name }}</span>
-        <span v-if="item.used" class="used">已使用</span>
+        <span class="badge" :class="badgeClass">{{ badgeIcon }}</span>
+        <span class="dim-badge" :class="dimClass">{{ dimLabel }}</span>
       </div>
       <div class="line2">
-        {{ item.description }} · {{ item.ownerUserId }} · {{ item.category || '未分类' }}
-        · {{ (item.tags || '').split(',').filter(Boolean).map(t => '#' + t).join(' ') }}
+        {{ item.description }} · {{ item.ownerUserId }}
       </div>
     </div>
     <div class="right">
@@ -39,7 +60,16 @@ defineEmits<{ (e: 'like'): void }>();
   font-size: 17px;
   color: #0f172a;
 }
-.used { color: #0284c7; font-size: 11px; }
+.badge { font-size: 14px; line-height: 1; }
+.badge-used { color: #10b981; }
+.badge-disabled { color: #ef4444; }
+.badge-unused { color: #94a3b8; }
+.dim-badge { padding: 1px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+.dim-personal { background: #f1f5f9; color: #64748b; }
+.dim-group { background: #dbeafe; color: #2563eb; }
+.dim-department { background: #d1fae5; color: #047857; }
+.dim-product_line { background: #fef3c7; color: #b45309; }
+.dim-company { background: #ede9fe; color: #6d28d9; }
 .line2 { color: #94a3b8; font-size: 12px; margin-top: 2px; }
 .right { display: flex; align-items: center; gap: 8px; }
 .count { color: #db2777; font-weight: 600; }

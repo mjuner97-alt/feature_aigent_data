@@ -7,37 +7,50 @@ import type { SkillListItem } from '../../types/skill';
 const props = withDefaults(defineProps<{
   view: 'all' | 'used' | 'liked' | 'created' | 'popular';
   showRank?: boolean;
-  allowCategory?: boolean;
-}>(), { showRank: false, allowCategory: false });
+}>(), { showRank: false });
 
 const items = ref<SkillListItem[]>([]);
 const sort = ref<'likes' | 'updated' | 'name'>('likes');
-const category = ref('');
 const keyword = ref('');
-const categories = ['数据', '办公', '研发', '业务'];
+const dimension = ref('');
+const dimensions = [
+  { value: 'PERSONAL', label: '个人' },
+  { value: 'GROUP', label: '小组' },
+  { value: 'DEPARTMENT', label: '部门' },
+  { value: 'PRODUCT_LINE', label: '产品线' },
+  { value: 'COMPANY', label: '公司级' },
+];
 
 const title = computed(() => ({
   all: '全部 Skill', used: '我使用的 Skill', liked: '我点赞的 Skill',
   created: '我创建的 Skill', popular: '热门榜',
 }[props.view]));
 
+const emptyHint = computed(() => ({
+  all: '暂无 Skill',
+  used: '浏览全部 Skill,引用你需要的',
+  liked: '去全部 Skill 找找感兴趣的',
+  created: '创建你的第一个 Skill',
+  popular: '暂无热门 Skill',
+}[props.view]));
+
 async function load() {
   items.value = await listSkills({
     view: props.view, sort: sort.value,
-    category: category.value || undefined,
     keyword: keyword.value || undefined,
+    dimension: dimension.value || undefined,
   });
 }
-watch([sort, category, () => props.view], load, { immediate: true });
+watch([sort, dimension, () => props.view], load, { immediate: true });
 </script>
 
 <template>
   <h2>{{ title }}</h2>
   <div class="bar">
     <input v-model="keyword" placeholder="搜索 skill" @keyup.enter="load" />
-    <select v-if="allowCategory" v-model="category">
-      <option value="">全部分类</option>
-      <option v-for="c in categories" :key="c" :value="c">{{ c }}</option>
+    <select v-model="dimension">
+      <option value="">全部维度</option>
+      <option v-for="d in dimensions" :key="d.value" :value="d.value">{{ d.label }}</option>
     </select>
     <select v-model="sort">
       <option value="likes">点赞最多</option>
@@ -46,13 +59,17 @@ watch([sort, category, () => props.view], load, { immediate: true });
     </select>
     <RouterLink v-if="view === 'created'" class="create" to="/skills/new">＋ 创建 Skill</RouterLink>
   </div>
-  <SkillList :items="items" :show-rank="showRank" />
+  <SkillList :items="items" :show-rank="showRank" :hide-used="view === 'used'" />
+  <div v-if="items.length === 0" class="empty-hint">{{ emptyHint }}</div>
 </template>
 
 <style scoped>
-.bar { display: flex; gap: 8px; margin-bottom: 8px; }
-input, select { padding: 4px 8px; border: 1px solid #cbd5e1; border-radius: 6px; }
+.bar { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+input, select { padding: 4px 8px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; color: #1e293b; }
+select { font-weight: 500; cursor: pointer; }
+select:hover { border-color: #93c5fd; }
 .create { margin-left: auto; padding: 4px 12px; border-radius: 6px; background: #3b82f6; color: #fff; text-decoration: none; font-size: 13px; align-self: center; }
 .create:hover { background: #2563eb; }
 h2 { margin: 0 0 8px; }
+.empty-hint { color: #94a3b8; font-size: 14px; text-align: center; padding: 32px 0; }
 </style>

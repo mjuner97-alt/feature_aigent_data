@@ -67,4 +67,8 @@ public class SkillReferenceService {
     public List<Long> listMine(String userId) {
         return refMapper.selectSkillIdsByCreator(userId);
     }
+
+    public List<String> listReferencers(Long skillId) {
+        return refMapper.selectReferencersBySkillId(skillId);
+    }
 }

@@ -39,4 +39,7 @@ public interface SkillReferenceMapper {
 
     /** 当前用户在给定集合中已引用的 skillId(列表行 used 标记批量计算)。 */
     Set<Long> selectUsedSkillIds(@Param("creator") String creator, @Param("ids") List<Long> ids);
+
+    /** 引用某 Skill 的用户列表(被引用人数展示)。 */
+    List<String> selectReferencersBySkillId(@Param("skillId") Long skillId);
 }
