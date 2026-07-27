@@ -1,4 +1,4 @@
-import type { SkillListItem, SkillDetail, LikeStatus, SkillInput, SkillPublishRecord, PublishTargetGroup } from '../types/skill';
+import type { SkillListItem, SkillDetail, LikeStatus, SkillInput, SkillPublishRecord, PublishTargetGroup, PublishPendingItem } from '../types/skill';
 
 const BASE = '/api/skills';
 
@@ -32,6 +32,7 @@ async function skillError(res: Response, fallback: string): Promise<Error> {
   if (detail.startsWith('SkillAccessDenied')) return new Error('无权限:仅所有者可操作此 Skill');
   if (detail.startsWith('SkillNameConflict')) return new Error('名称已存在,请更换 Skill 名称');
   if (detail.startsWith('SkillNotFound')) return new Error('Skill 不存在或已被删除');
+  if (detail.startsWith('SkillPendingApproval')) return new Error('审批中的 Skill 不可编辑或删除,请等待审批完成');
   return new Error(detail ? `${fallback}:${detail}` : `${fallback}(HTTP ${res.status})`);
 }
 
@@ -158,4 +159,40 @@ export async function submitPublish(id: number, targetType: string, targetId: st
   if (!res.ok) throw await skillError(res, '申请发布失败');
   const data = await res.json();
   return data.publishId;
+}
+
+// ============ 审批流 API ============
+
+/** 待我审批的发布列表(GET /api/publish/pending),返回 SkillPublish 记录。 */
+export async function listPendingPublishes(): Promise<PublishPendingItem[]> {
+  const res = await fetch('/api/publish/pending', { headers: authHeaders() });
+  if (!res.ok) throw await skillError(res, '获取待审批发布列表失败');
+  return res.json();
+}
+
+/** 我已审批的发布列表(GET /api/publish/history),返回 APPROVED/REJECTED 记录。 */
+export async function listApprovedPublishes(): Promise<PublishPendingItem[]> {
+  const res = await fetch('/api/publish/history', { headers: authHeaders() });
+  if (!res.ok) throw await skillError(res, '获取已审批发布列表失败');
+  return res.json();
+}
+
+/** 通过发布审批(POST /api/publish/{id}/approve)。 */
+export async function approvePublish(id: number, comment: string): Promise<void> {
+  const res = await fetch(`/api/publish/${id}/approve`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ comment }),
+  });
+  if (!res.ok) throw await skillError(res, '审批通过失败');
+}
+
+/** 退回发布审批(POST /api/publish/{id}/reject)。 */
+export async function rejectPublish(id: number, comment: string): Promise<void> {
+  const res = await fetch(`/api/publish/${id}/reject`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ comment }),
+  });
+  if (!res.ok) throw await skillError(res, '审批退回失败');
 }

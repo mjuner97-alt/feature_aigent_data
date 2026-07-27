@@ -5,7 +5,8 @@
  *  /          -> AppShell layout (SessionsSidebar + <router-view />)
  *  /chat      -> ChatPage
  *  /dashboard -> DashboardPage
- *  /skills/*  -> SkillShell layout (Skill 广场:全部/我使用的/我点赞的/我创建的/热门榜/分类/详情/创建/编辑)
+ *  /skills/*  -> SkillShell layout (Skill 广场:全部/我使用的/我点赞的/我创建的/热门榜/详情)
+ *               创建/编辑走 SkillListPage 内联 Drawer;审批列表/详情走 SkillDetailPage 内联 tab。
  */
 
 import { createApp, defineComponent, h } from 'vue';
@@ -16,7 +17,7 @@ import DashboardPage from './pages/DashboardPage.vue';
 import SkillShell from './components/SkillShell.vue';
 import SkillListPage from './pages/skill/SkillListPage.vue';
 import SkillDetailPage from './pages/skill/SkillDetailPage.vue';
-import SkillFormPage from './pages/skill/SkillFormPage.vue';
+import SkillApprovalListPage from './pages/skill/SkillApprovalListPage.vue';
 
 const routes: RouteRecordRaw[] = [
   {
@@ -37,8 +38,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'liked', component: SkillListPage, props: { view: 'liked' } },
       { path: 'created', component: SkillListPage, props: { view: 'created' } },
       { path: 'popular', component: SkillListPage, props: { view: 'popular' } },
-      { path: 'new', component: SkillFormPage },
-      { path: ':id/edit', component: SkillFormPage },
+      { path: 'approvals', component: SkillApprovalListPage },
       { path: ':id', component: SkillDetailPage },
     ],
   },

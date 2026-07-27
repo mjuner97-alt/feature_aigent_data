@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<mapper namespace="com.agentscopea2a.mapper.mysql.SkillPublishMapper">
+<mapper namespace="com.agentscopea2a.v2.skillManager.mapper.SkillPublishMapper">
 
-    <resultMap id="BaseResultMap" type="com.agentscopea2a.entity.SkillPublish">
+    <resultMap id="BaseResultMap" type="com.agentscopea2a.v2.skillManager.entity.SkillPublish">
         <id column="id" property="id"/>
         <result column="skill_id" property="skillId"/>
         <result column="target_type" property="targetType"/>
@@ -17,12 +17,15 @@
         <result column="last_approval_comment" property="lastApprovalComment"/>
         <result column="last_approval_at" property="lastApprovalAt"/>
         <result column="created_at" property="createdAt"/>
+        <result column="skill_name" property="name"/>
+        <result column="skill_description" property="description"/>
+        <result column="skill_category" property="category"/>
     </resultMap>
 
     <sql id="cols">id, skill_id, target_type, target_id, target_name, status, submitter, approver, approve_time,
         current_approver_user_id, last_approval_comment, last_approval_at, created_at</sql>
 
-    <insert id="insert" parameterType="com.agentscopea2a.entity.SkillPublish"
+    <insert id="insert" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillPublish"
             useGeneratedKeys="true" keyProperty="id">
         INSERT INTO skill_publish (skill_id, target_type, target_id, target_name, status, submitter, current_approver_user_id)
         VALUES (#{skillId}, #{targetType}, #{targetId}, #{targetName}, #{status}, #{submitter}, #{currentApproverUserId})
@@ -47,14 +50,34 @@
         SELECT COUNT(1) &gt; 0 FROM skill_publish WHERE skill_id = #{skillId} AND status = 'APPROVED'
     </select>
 
+    <select id="hasPendingBySkillId" resultType="boolean">
+        SELECT COUNT(1) &gt; 0 FROM skill_publish WHERE skill_id = #{skillId} AND status = 'PENDING'
+    </select>
+
     <select id="selectApprovedBySkillId" resultMap="BaseResultMap">
         SELECT <include refid="cols"/> FROM skill_publish WHERE skill_id = #{skillId} AND status = 'APPROVED'
     </select>
 
     <select id="selectPendingByApprover" resultMap="BaseResultMap">
-        SELECT <include refid="cols"/> FROM skill_publish
-        WHERE current_approver_user_id = #{approverUserId} AND status = 'PENDING'
-        ORDER BY created_at DESC
+        SELECT p.id, p.skill_id, p.target_type, p.target_id, p.target_name, p.status,
+               p.submitter, p.approver, p.approve_time, p.current_approver_user_id,
+               p.last_approval_comment, p.last_approval_at, p.created_at,
+               s.name AS skill_name, s.description AS skill_description, s.category AS skill_category
+        FROM skill_publish p
+        LEFT JOIN skill_manage s ON s.id = p.skill_id
+        WHERE p.current_approver_user_id = #{approverUserId} AND p.status = 'PENDING'
+        ORDER BY p.created_at DESC
+    </select>
+
+    <select id="selectHistoryByApprover" resultMap="BaseResultMap">
+        SELECT p.id, p.skill_id, p.target_type, p.target_id, p.target_name, p.status,
+               p.submitter, p.approver, p.approve_time, p.current_approver_user_id,
+               p.last_approval_comment, p.last_approval_at, p.created_at,
+               s.name AS skill_name, s.description AS skill_description, s.category AS skill_category
+        FROM skill_publish p
+        LEFT JOIN skill_manage s ON s.id = p.skill_id
+        WHERE p.approver = #{approverUserId} AND p.status IN ('APPROVED', 'REJECTED')
+        ORDER BY p.approve_time DESC
     </select>
 
     <select id="selectApprovedBySkillIds" resultMap="BaseResultMap">

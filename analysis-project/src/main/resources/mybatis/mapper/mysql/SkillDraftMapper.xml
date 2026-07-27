@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<mapper namespace="com.agentscopea2a.mapper.mysql.SkillDraftMapper">
+<mapper namespace="com.agentscopea2a.v2.skillManager.mapper.SkillDraftMapper">
 
-    <resultMap id="BaseResultMap" type="com.agentscopea2a.entity.SkillDraft">
+    <resultMap id="BaseResultMap" type="com.agentscopea2a.v2.skillManager.entity.SkillDraft">
         <id column="id" property="id"/>
         <result column="skill_id" property="skillId"/>
         <result column="name" property="name"/>
@@ -22,7 +22,7 @@
     <sql id="cols">id, skill_id, name, description, content, category, tags, status, submitter, approver,
         approve_comment, submitted_at, approved_at</sql>
 
-    <insert id="insert" parameterType="com.agentscopea2a.entity.SkillDraft"
+    <insert id="insert" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillDraft"
             useGeneratedKeys="true" keyProperty="id">
         INSERT INTO skill_draft (skill_id, name, description, content, category, tags, status, submitter)
         VALUES (#{skillId}, #{name}, #{description}, #{content}, #{category}, #{tags}, #{status}, #{submitter})
@@ -42,7 +42,7 @@
         WHERE id = #{id}
     </update>
 
-    <update id="updateContent" parameterType="com.agentscopea2a.entity.SkillDraft">
+    <update id="updateContent" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillDraft">
         UPDATE skill_draft
         SET name = #{name}, description = #{description}, content = #{content},
             category = #{category}, tags = #{tags}, status = 'PENDING', submitted_at = NOW(),

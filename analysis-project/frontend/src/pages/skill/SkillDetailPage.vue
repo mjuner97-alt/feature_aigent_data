@@ -1,11 +1,35 @@
 <script setup lang="ts">
+/**
+ * Skill 详情页
+ *
+ * 职责:
+ *  - 展示 Skill 信息、点赞、引用、发布记录、描述/内容
+ *  - 内联展示"当前 Skill 的"发布审批详情(待审/已审记录 + 通过/退回操作)
+ *  - 审批列表已迁移至独立页面 /skills/approvals
+ */
 import { ref, watch, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { getSkill, getLikeStatus, likeSkill, unlikeSkill, referenceSkill, deleteSkill, getReferencers, currentUserId, getSkillPublishes } from '../../api/skill';
-import type { SkillDetail, LikeStatus, SkillPublishRecord } from '../../types/skill';
+import {
+  getSkill,
+  getLikeStatus,
+  likeSkill,
+  unlikeSkill,
+  referenceSkill,
+  deleteSkill,
+  getReferencers,
+  currentUserId,
+  getSkillPublishes,
+  listPendingPublishes,
+  listApprovedPublishes,
+  approvePublish,
+  rejectPublish,
+} from '../../api/skill';
+import type { SkillDetail, LikeStatus, SkillPublishRecord, PublishPendingItem } from '../../types/skill';
 
 const route = useRoute();
 const router = useRouter();
+
+// ============ Skill 详情状态 ============
 const skill = ref<SkillDetail | null>(null);
 const like = ref<LikeStatus>({ liked: false, likeCount: 0 });
 const referenced = ref(false);
@@ -18,8 +42,10 @@ const publishes = ref<SkillPublishRecord[]>([]);
 const publishLoading = ref(false);
 const publishError = ref('');
 
-// 仅所有者可编辑/删除(后端 update/delete 做 owner 校验,前端先门控)
-const canManage = computed(() => !!skill.value && skill.value.ownerUserId === currentUserId());
+// 仅所有者可编辑/删除,且审批中的 Skill 不可编辑/删除(后端做双重校验,前端先门控)
+const canManage = computed(() =>
+  !!skill.value && skill.value.ownerUserId === currentUserId() && !hasPendingPublish.value
+);
 
 // 维度类型 -> 前缀(COMPANY 特殊处理为空前缀,直接显示 targetName)
 const TYPE_LABEL: Record<string, string> = {
@@ -30,16 +56,25 @@ const TYPE_LABEL: Record<string, string> = {
 };
 
 // 拼接维度展示文本(如"小组:开发一组"、"杭研")
+// targetName 为组织显示名称(如"开发一组"),按维度类型拼接一次前缀
 function formatDimension(p: SkillPublishRecord): string {
   const label = TYPE_LABEL[p.targetType] ?? '';
   return label ? `${label}:${p.targetName}` : p.targetName;
 }
 
-// 派生:当前维度标签(取已审批通过的记录)
+// 派生:当前维度标签
+// 优先展示已审批通过的维度;若无 APPROVED 但有 PENDING,展示 PENDING 中的维度(审批中)
+// 完全无发布记录时才显示"个人"(个人维度无需审批)
 const dimensionLabel = computed(() => {
   const approved = publishes.value.filter(p => p.status === 'APPROVED');
-  if (approved.length === 0) return '个人';
-  return approved.map(formatDimension).join('、');
+  if (approved.length > 0) {
+    return approved.map(formatDimension).join('、');
+  }
+  const pending = publishes.value.filter(p => p.status === 'PENDING');
+  if (pending.length > 0) {
+    return pending.map(formatDimension).join('、');
+  }
+  return '个人';
 });
 
 // 派生:是否有审批中的申请
@@ -47,8 +82,20 @@ const hasPendingPublish = computed(() =>
   publishes.value.some(p => p.status === 'PENDING')
 );
 
+// ============ 审批详情(当前 Skill 的待审/已审记录) ============
+const publishPending = ref<PublishPendingItem | null>(null);
+const publishHistory = ref<PublishPendingItem | null>(null);
+const approvalActionLoading = ref(false);
+const approvalActionError = ref('');
+const approvalActionDone = ref('');
+const approvalComment = ref('');
+
+const isPending = computed(() => !!publishPending.value);
+
+// ============ 数据加载 ============
 async function load() {
   const id = Number(route.params.id);
+  if (!id) return;
   skill.value = await getSkill(id);
   like.value = await getLikeStatus(id);
   try {
@@ -58,6 +105,7 @@ async function load() {
     referencerCount.value = 0;
   }
   loadPublishes(id);
+  loadApprovalDetail(id);
 }
 
 async function loadPublishes(id: number) {
@@ -72,6 +120,20 @@ async function loadPublishes(id: number) {
   }
 }
 
+// 加载当前 Skill 的审批详情(待审 + 已审记录)
+async function loadApprovalDetail(id: number) {
+  publishPending.value = null;
+  publishHistory.value = null;
+  const results = await Promise.allSettled([listPendingPublishes(), listApprovedPublishes()]);
+  if (results[0].status === 'fulfilled') {
+    publishPending.value = results[0].value.find((p) => p.skillId === id) ?? null;
+  }
+  if (results[1].status === 'fulfilled') {
+    publishHistory.value = results[1].value.find((p) => p.skillId === id) ?? null;
+  }
+}
+
+// ============ 详情页操作 ============
 async function toggleLike() {
   if (!skill.value) return;
   like.value = like.value.liked
@@ -85,7 +147,19 @@ async function doReference() {
 }
 async function doDelete() {
   if (!skill.value || deleting.value) return;
-  if (!confirm(`确定删除 Skill "${skill.value.name}"?此操作不可撤销。`)) return;
+  // 删除前重新获取引用数(避免使用过期数据),被引用时提醒用户
+  let refCount = 0;
+  try {
+    const refs = await getReferencers(skill.value.id);
+    refCount = refs.length;
+  } catch {
+    refCount = referencerCount.value;
+  }
+  let msg = `确定删除 Skill "${skill.value.name}"?此操作不可撤销。`;
+  if (refCount > 0) {
+    msg = `该 Skill 正在被 ${refCount} 人引用,删除后这些用户将无法继续使用。\n${msg}`;
+  }
+  if (!confirm(msg)) return;
   deleting.value = true;
   deleteError.value = '';
   try {
@@ -97,7 +171,54 @@ async function doDelete() {
     deleting.value = false;
   }
 }
-watch(() => route.params.id, load, { immediate: true });
+
+// ============ 审批操作 ============
+async function doApprove() {
+  if (approvalActionLoading.value || !publishPending.value) return;
+  approvalActionLoading.value = true;
+  approvalActionError.value = '';
+  approvalActionDone.value = '';
+  try {
+    await approvePublish(publishPending.value.id, approvalComment.value || '通过');
+    approvalActionDone.value = '已通过该发布审批';
+    approvalComment.value = '';
+    const id = Number(route.params.id);
+    await loadApprovalDetail(id);
+    await loadPublishes(id);
+  } catch (e) {
+    approvalActionError.value = e instanceof Error ? e.message : '审批通过失败';
+  } finally {
+    approvalActionLoading.value = false;
+  }
+}
+
+async function doReject() {
+  if (approvalActionLoading.value || !publishPending.value) return;
+  if (!approvalComment.value.trim()) {
+    approvalActionError.value = '退回请填写原因';
+    return;
+  }
+  approvalActionLoading.value = true;
+  approvalActionError.value = '';
+  approvalActionDone.value = '';
+  try {
+    await rejectPublish(publishPending.value.id, approvalComment.value);
+    approvalActionDone.value = '已退回该发布审批';
+    approvalComment.value = '';
+    const id = Number(route.params.id);
+    await loadApprovalDetail(id);
+    await loadPublishes(id);
+  } catch (e) {
+    approvalActionError.value = e instanceof Error ? e.message : '审批退回失败';
+  } finally {
+    approvalActionLoading.value = false;
+  }
+}
+
+// 路由 id 变化 -> 重新加载详情
+watch(() => route.params.id, () => {
+  load();
+}, { immediate: true });
 </script>
 
 <template>
@@ -124,7 +245,7 @@ watch(() => route.params.id, load, { immediate: true });
       </ul>
     </details>
     <div v-if="canManage" class="manage">
-      <RouterLink class="edit" :to="`/skills/${skill.id}/edit`">✎ 编辑</RouterLink>
+      <RouterLink class="edit" :to="`/skills/${skill.id}`">✎ 编辑</RouterLink>
       <button class="del" :disabled="deleting" @click="doDelete">{{ deleting ? '删除中…' : '🗑 删除' }}</button>
     </div>
     <div v-if="deleteError" class="del-error">{{ deleteError }}</div>
@@ -147,6 +268,45 @@ watch(() => route.params.id, load, { immediate: true });
       <h3 class="block-title"><span class="bar"></span>内容</h3>
       <pre class="content">{{ skill.content }}</pre>
     </section>
+
+    <!-- ============ 审批详情(当前 Skill 的待审/已审记录 + 审批操作) ============ -->
+    <section class="block approval-section">
+      <h3 class="block-title">
+        <span class="bar"></span>发布审批
+        <span v-if="publishPending" class="type-badge pending">待审批</span>
+        <span v-else-if="publishHistory" class="type-badge" :class="publishHistory.status.toLowerCase()">
+          {{ publishHistory.status === 'APPROVED' ? '已通过' : '已退回' }}
+        </span>
+      </h3>
+
+      <!-- 待审发布详情 -->
+      <div v-if="publishPending" class="info">
+        <div class="info-row"><label>提交人</label><span>{{ publishPending.submitter }}</span></div>
+        <div class="info-row"><label>提交时间</label><span>{{ publishPending.createdAt }}</span></div>
+        <div class="info-row"><label>目标维度</label><span>{{ publishPending.targetName }}</span></div>
+        <div v-if="publishPending.description" class="info-row"><label>描述</label><span>{{ publishPending.description }}</span></div>
+      </div>
+      <!-- 已审记录详情 -->
+      <div v-else-if="publishHistory" class="info">
+        <div class="info-row"><label>提交人</label><span>{{ publishHistory.submitter }}</span></div>
+        <div class="info-row"><label>审批结果</label><span>{{ publishHistory.status === 'APPROVED' ? '通过' : '退回' }}</span></div>
+        <div v-if="publishHistory.approveTime" class="info-row"><label>审批时间</label><span>{{ publishHistory.approveTime }}</span></div>
+        <div class="info-row"><label>目标维度</label><span>{{ publishHistory.targetName }}</span></div>
+        <div v-if="publishHistory.lastApprovalComment" class="info-row"><label>审批意见</label><span>{{ publishHistory.lastApprovalComment }}</span></div>
+      </div>
+      <div v-else class="no-pending">该 Skill 当前无发布审批记录。</div>
+
+      <!-- 审批操作(仅待审状态可操作) -->
+      <div v-if="isPending" class="approval-actions">
+        <textarea v-model="approvalComment" class="comment-input" placeholder="审批意见(退回必填)" rows="3"></textarea>
+        <div class="btns">
+          <button class="approve" :disabled="approvalActionLoading" @click="doApprove">通过</button>
+          <button class="reject" :disabled="approvalActionLoading" @click="doReject">退回</button>
+        </div>
+        <div v-if="approvalActionError" class="action-error">{{ approvalActionError }}</div>
+        <div v-if="approvalActionDone" class="action-done">{{ approvalActionDone }}</div>
+      </div>
+    </section>
   </div>
   <div v-else>加载中…</div>
 </template>
@@ -164,20 +324,21 @@ watch(() => route.params.id, load, { immediate: true });
 }
 .cnt { -webkit-text-fill-color: initial; color: #db2777; font-size: 16px; }
 .meta { color: #94a3b8; margin-bottom: 8px; }
-.dimension-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; }
-.dim-label { color: #94a3b8; }
-.dim-value { font-weight: 600; color: #475569; }
-.dim-pending { background: #fef3c7; color: #b45309; padding: 0 6px; border-radius: 4px; font-size: 11px; }
+.dimension-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; font-size: 13px; }
+.dim-label { color: #475569; font-weight: 600; }
+.dim-value { font-weight: 600; color: #1e293b; }
+.dim-pending { background: #fef3c7; color: #b45309; padding: 1px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
 .dim-error { color: #dc2626; font-size: 13px; margin-bottom: 8px; }
-.publish-list { margin-bottom: 12px; font-size: 13px; }
-.publish-list summary { cursor: pointer; color: #64748b; }
-.publish-item { display: flex; gap: 8px; padding: 4px 0; align-items: center; list-style: none; }
-.p-target { font-weight: 500; }
-.p-status { padding: 0 6px; border-radius: 4px; font-size: 11px; }
+.publish-list { margin: 12px 0 16px; font-size: 13px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 14px; }
+.publish-list summary { cursor: pointer; color: #334155; font-weight: 600; }
+.publish-item { display: flex; gap: 10px; padding: 8px 0; align-items: center; list-style: none; border-bottom: 1px solid #f1f5f9; }
+.publish-item:last-child { border-bottom: none; }
+.p-target { font-weight: 600; color: #1e293b; font-size: 13px; }
+.p-status { padding: 1px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
 .p-status.approved { background: #d1fae5; color: #047857; }
 .p-status.pending { background: #fef3c7; color: #b45309; }
 .p-status.rejected { background: #fee2e2; color: #b91c1c; }
-.p-meta { color: #94a3b8; font-size: 12px; }
+.p-meta { color: #64748b; font-size: 12px; }
 .actions { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
 .referencer-count { font-size: 12px; color: #64748b; padding: 4px 8px; }
 
@@ -268,4 +429,69 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   border: 1px solid #1e293b;
 }
+
+/* ===== 审批详情区 ===== */
+.approval-section { margin-top: 20px; }
+.type-badge {
+  -webkit-text-fill-color: initial;
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.type-badge.pending { background: #dbeafe; color: #1d4ed8; }
+.type-badge.approved { background: #d1fae5; color: #047857; }
+.type-badge.rejected { background: #fee2e2; color: #b91c1c; }
+
+.info { display: flex; flex-direction: column; gap: 6px; }
+.info-row { display: flex; gap: 8px; font-size: 13px; }
+.info-row label { width: 80px; color: #475569; font-weight: 600; flex-shrink: 0; }
+.info-row span { color: #1e293b; }
+
+.no-pending {
+  margin-top: 8px;
+  padding: 12px 14px;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.approval-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.comment-input {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  font-size: 13px;
+  outline: none;
+  resize: vertical;
+  box-sizing: border-box;
+  font-family: inherit;
+}
+.comment-input:focus { border-color: #6366f1; }
+.btns { display: flex; gap: 10px; }
+.approve {
+  padding: 8px 24px;
+  border-radius: 6px;
+  border: 1px solid #16a34a;
+  background: #16a34a;
+  color: #fff;
+  cursor: pointer;
+  font-size: 13px;
+}
+.approve:hover:not(:disabled) { background: #15803d; }
+.reject {
+  padding: 8px 24px;
+  border-radius: 6px;
+  border: 1px solid #dc2626;
+  background: #fff;
+  color: #dc2626;
+  cursor: pointer;
+  font-size: 13px;
+}
+.reject:hover:not(:disabled) { background: #fef2f2; }
+.btns button:disabled { opacity: 0.6; cursor: not-allowed; }
+.action-error { color: #dc2626; font-size: 13px; margin-top: 8px; }
+.action-done { color: #16a34a; font-size: 13px; margin-top: 8px; }
 </style>

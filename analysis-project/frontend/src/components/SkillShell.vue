@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { RouterLink, RouterView, useRouter } from 'vue-router';
-import { currentUserId, getUserInfo } from '../api/skill';
+import { currentUserId, getUserInfo, listPendingPublishes } from '../api/skill';
 import type { UserInfo } from '../api/skill';
 
 const USERS = [
@@ -37,6 +37,17 @@ async function loadUserInfo() {
   }
 }
 
+// 待审批数量(侧边导航红色徽章)
+const pendingCount = ref(0);
+async function loadPendingCount() {
+  try {
+    const list = await listPendingPublishes();
+    pendingCount.value = list.length;
+  } catch {
+    pendingCount.value = 0;
+  }
+}
+
 function switchUser(id: string) {
   localStorage.setItem('skill-user-id', id);
   current.value = id;
@@ -48,7 +59,10 @@ function toggleDropdown() {
   showDropdown.value = !showDropdown.value;
 }
 
-onMounted(loadUserInfo);
+onMounted(() => {
+  loadUserInfo();
+  loadPendingCount();
+});
 
 const nav = [
   { to: '/skills', label: '全部 Skill' },
@@ -56,7 +70,7 @@ const nav = [
   { to: '/skills/liked', label: '我点赞的' },
   { to: '/skills/created', label: '我创建的' },
   { to: '/skills/popular', label: '热门榜' },
-  { to: '/skills/approvals', label: '待我审批' },
+  { to: '/skills/approvals', label: '审批', badge: true },
 ];
 </script>
 
@@ -64,7 +78,10 @@ const nav = [
   <div class="skill-shell">
     <aside class="nav">
       <div class="logo">Skill 广场</div>
-      <RouterLink v-for="n in nav" :key="n.to" :to="n.to" class="nav-item">{{ n.label }}</RouterLink>
+      <RouterLink v-for="n in nav" :key="n.to" :to="n.to" class="nav-item">
+        <span>{{ n.label }}</span>
+        <span v-if="n.badge && pendingCount > 0" class="nav-badge">{{ pendingCount }}</span>
+      </RouterLink>
     </aside>
     <main class="content">
       <div class="topbar">
@@ -93,8 +110,20 @@ const nav = [
 .skill-shell { display: flex; min-height: 100vh; }
 .nav { width: 200px; background: #0f172a; color: #cbd5e1; padding: 12px; display: flex; flex-direction: column; gap: 4px; }
 .logo { font-weight: bold; color: #fff; margin-bottom: 12px; }
-.nav-item { padding: 8px 10px; border-radius: 6px; text-decoration: none; color: #cbd5e1; }
-.nav-item.router-link-active { background: #3b82f6; color: #fff; }
+.nav-item { padding: 8px 10px; border-radius: 6px; text-decoration: none; color: #cbd5e1; display: flex; align-items: center; justify-content: space-between; }
+.nav-item.router-link-exact-active { background: #3b82f6; color: #fff; }
+.nav-badge {
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: #dc2626;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  line-height: 18px;
+}
+.nav-item.router-link-exact-active .nav-badge { background: #fff; color: #dc2626; }
 .content { flex: 1; padding: 16px; background: #f1f5f9; }
 .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding: 8px 12px; background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
 .test-tag { font-size: 11px; color: #f59e0b; background: #fef3c7; padding: 2px 8px; border-radius: 4px; font-weight: 600; }

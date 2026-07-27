@@ -74,3 +74,48 @@ export interface PublishTargetGroup {
   typeLabel: string;     // 维度类型前缀(如"小组"、"部门")
   targets: PublishTarget[];
 }
+
+/**
+ * 待我审批的发布记录项。对应后端 GET /api/publish/pending 返回的 SkillPublish 实体。
+ * 字段与 SkillPublishRecord 基本一致,但审批列表场景下 createdAt 即提交时间。
+ */
+export interface PublishPendingItem {
+  id: number;
+  skillId: number;
+  targetType: string;    // GROUP / DEPARTMENT / PRODUCT_LINE / COMPANY
+  targetId: string;
+  targetName: string;    // 组织显示名称(如"开发一组"、"杭研")
+  status: string;        // PENDING / APPROVED / REJECTED
+  submitter: string;
+  approver: string | null;
+  approveTime: string | null;
+  currentApproverUserId: string | null;
+  lastApprovalComment: string | null;
+  lastApprovalAt: string | null;
+  createdAt: string;
+  // 审批列表展示用冗余字段(后端可能附带,缺失时前端用 targetName 兜底)
+  name?: string;
+  description?: string;
+  category?: string;
+  createdBy?: string;
+}
+
+/** Skill 变更草稿。对应后端 SkillDraft 实体,用于草稿审批流。 */
+export interface SkillDraft {
+  id: number;
+  skillId: number;
+  name: string;
+  description: string;
+  content: string;
+  category: string;
+  tags: string;
+  status: string;        // PENDING / APPROVED / REJECTED
+  submitter: string;
+  approver: string | null;
+  approveComment: string | null;
+  submittedAt: string;
+  approvedAt: string | null;
+  // 审批列表展示用冗余字段
+  createdBy?: string;
+  createdAt?: string;
+}

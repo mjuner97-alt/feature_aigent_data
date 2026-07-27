@@ -16,7 +16,7 @@
 package com.agentscopea2a.v2.controller;
 
 import com.agentscopea2a.dto.UserInfo;
-import com.agentscopea2a.v2.service.MockOrgService;
+import com.agentscopea2a.v2.skillManager.service.MockOrgService;
 import org.springframework.web.bind.annotation.*;
 
 /**

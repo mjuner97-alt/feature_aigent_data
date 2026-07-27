@@ -78,6 +78,9 @@ public class SkillExceptionHandler {
         if (message.startsWith("SkillNameConflict")) {
             return HttpStatus.CONFLICT;
         }
+        if (message.startsWith("SkillPendingApproval")) {
+            return HttpStatus.CONFLICT;
+        }
         return HttpStatus.INTERNAL_SERVER_ERROR;
     }
 }

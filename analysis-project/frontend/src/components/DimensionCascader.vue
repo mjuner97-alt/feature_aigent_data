@@ -79,7 +79,7 @@ const selectedItems = computed<{ key: string; label: string }[]>(() => {
     for (const t of g.targets) {
       const key = `${t.orgType}:${t.orgId}`;
       if (props.modelValue.has(key)) {
-        items.push({ key, label: t.fullLabel });
+        items.push({ key, label: t.displayName });
       }
     }
   }
@@ -284,7 +284,6 @@ onBeforeUnmount(() => {
             />
             <div class="target-text">
               <div class="target-name">{{ t.displayName }}</div>
-              <div class="target-full">{{ t.fullLabel }}</div>
             </div>
           </label>
         </div>
