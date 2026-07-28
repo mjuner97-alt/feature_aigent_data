@@ -87,8 +87,9 @@ public class V2ToolConfig {
     // ── Skill index repository ────────────────────────────────────────────
 
     @Bean
-    public SkillIndexRepository skillIndexRepository(DataSource dataSource) {
-        log.info("SkillIndexRepository: wired (MySQL-backed)");
+    public SkillIndexRepository skillIndexRepository(
+            @org.springframework.beans.factory.annotation.Qualifier("gaussDataSource") DataSource dataSource) {
+        log.info("SkillIndexRepository: wired (GaussDB-backed)");
         return new SkillIndexRepository(dataSource);
     }
 
@@ -190,11 +191,12 @@ public class V2ToolConfig {
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
             SkillIndexRepository indexRepository,
             SkillVectorIndex vectorIndex,
-            EmbeddingClient embeddingClient) {
+            EmbeddingClient embeddingClient,
+            org.springframework.beans.factory.ObjectProvider<com.agentscopea2a.v2.skillManager.service.SkillManageService> skillManageServiceProvider) {
         Path skillsDir = Paths.get(workspacePath).toAbsolutePath().resolve("skills-user");
         log.info("SkillSaveTool: skillsDir={}", skillsDir);
         return new SkillSaveTool(skillsDir, indexRepository, vectorIndex, embeddingClient,
-                SkillEntry.SOURCE_USER_GENERATED);
+                SkillEntry.SOURCE_USER_GENERATED, skillManageServiceProvider);
     }
 
     // ── Python exec ────────────────────────────────────────────────────────

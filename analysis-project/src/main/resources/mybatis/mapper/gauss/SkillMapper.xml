@@ -1,0 +1,459 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.v2.skillManager.mapper.SkillMapper">
+
+    <!-- ==================== skill_manage ==================== -->
+
+    <resultMap id="SkillResultMap" type="com.agentscopea2a.v2.skillManager.entity.Skill">
+        <id column="id" property="id"/>
+        <result column="name" property="name"/>
+        <result column="description" property="description"/>
+        <result column="content" property="content"/>
+        <result column="category" property="category"/>
+        <result column="tags" property="tags"/>
+        <result column="owner_user_id" property="ownerUserId"/>
+        <result column="status" property="status"/>
+        <result column="like_count" property="likeCount"/>
+        <result column="retrieval_name" property="retrievalName"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+        <result column="deleted_at" property="deletedAt"/>
+    </resultMap>
+
+    <sql id="skillCols">id, name, description, content, category, tags, owner_user_id, status, like_count, retrieval_name, created_at, updated_at, deleted_at</sql>
+
+    <insert id="insertSkill" parameterType="com.agentscopea2a.v2.skillManager.entity.Skill" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_manage (name, description, content, category, tags, owner_user_id, status, like_count, retrieval_name)
+        VALUES (#{name}, #{description}, #{content}, #{category}, #{tags}, #{ownerUserId}, #{status}, 0, #{retrievalName})
+    </insert>
+
+    <select id="selectById" resultMap="SkillResultMap">
+        SELECT <include refid="skillCols"/> FROM skill_manage WHERE id = #{id}
+    </select>
+
+    <update id="updateSkill" parameterType="com.agentscopea2a.v2.skillManager.entity.Skill">
+        UPDATE skill_manage
+        SET name=#{name}, description=#{description}, content=#{content},
+            category=#{category}, tags=#{tags}, status=#{status}, retrieval_name=#{retrievalName}
+        WHERE id = #{id}
+    </update>
+
+    <update id="softDelete">
+        UPDATE skill_manage SET status='DELETED', deleted_at=NOW() WHERE id = #{id}
+    </update>
+
+    <select id="existsByName" resultType="boolean">
+        SELECT COUNT(1) &gt; 0 FROM skill_manage WHERE name = #{name} AND status &lt;&gt; 'DELETED'
+    </select>
+
+    <select id="selectLikeCount" resultType="java.lang.Long">
+        SELECT like_count FROM skill_manage WHERE id = #{id}
+    </select>
+
+    <update id="incrementLikeCount">
+        UPDATE skill_manage SET like_count = like_count + 1 WHERE id = #{id}
+    </update>
+
+    <update id="decrementLikeCount">
+        UPDATE skill_manage SET like_count = GREATEST(like_count - 1, 0) WHERE id = #{id}
+    </update>
+
+    <select id="selectByIds" resultMap="SkillResultMap">
+        SELECT <include refid="skillCols"/> FROM skill_manage
+        WHERE id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </select>
+
+    <select id="selectList" parameterType="com.agentscopea2a.v2.skillManager.dto.SkillListQuery" resultMap="SkillResultMap">
+        SELECT s.id, s.name, s.description, s.content, s.category, s.tags,
+               s.owner_user_id, s.status, s.like_count, s.retrieval_name, s.created_at, s.updated_at, s.deleted_at
+        FROM skill_manage s
+        <choose>
+            <when test="view == 'used'">
+                INNER JOIN skill_reference r ON r.target_skill_id = s.id AND r.creator = #{userId}
+                LEFT JOIN skill_user_disable d ON d.skill_id = s.id AND d.user_id = #{userId}
+            </when>
+            <when test="view == 'liked'">
+                INNER JOIN skill_like l ON l.skill_id = s.id AND l.user_id = #{userId}
+            </when>
+        </choose>
+        <where>
+            <choose>
+                <when test="view == 'created'">
+                    s.owner_user_id = #{userId} AND s.status = 'ACTIVE'
+                </when>
+                <when test="view == 'used'">
+                    s.status = 'ACTIVE' AND d.skill_id IS NULL
+                </when>
+                <otherwise>
+                    s.status = 'ACTIVE'
+                </otherwise>
+            </choose>
+            <if test="category != null and category != ''">
+                AND s.category = #{category}
+            </if>
+            <if test="tag != null and tag != ''">
+                AND (',' || s.tags || ',') LIKE ('%,' || #{tag} || ',%')
+            </if>
+            <if test="keyword != null and keyword != ''">
+                AND (s.name LIKE CONCAT('%', #{keyword}, '%')
+                  OR s.description LIKE CONCAT('%', #{keyword}, '%'))
+            </if>
+        </where>
+        <choose>
+            <when test="sort == 'updated'">
+                ORDER BY s.updated_at DESC
+            </when>
+            <when test="sort == 'name'">
+                ORDER BY s.name ASC
+            </when>
+            <otherwise>
+                ORDER BY s.like_count DESC, s.updated_at DESC
+            </otherwise>
+        </choose>
+        LIMIT #{effectiveLimit} OFFSET #{effectiveOffset}
+    </select>
+
+    <select id="selectAllTags" resultType="java.lang.String">
+        SELECT DISTINCT tags FROM skill_manage
+        WHERE status = 'ACTIVE' AND tags IS NOT NULL AND tags != ''
+    </select>
+
+    <!-- ==================== skill_like ==================== -->
+
+    <resultMap id="SkillLikeResultMap" type="com.agentscopea2a.v2.skillManager.entity.SkillLike">
+        <id column="id" property="id"/>
+        <result column="skill_id" property="skillId"/>
+        <result column="user_id" property="userId"/>
+        <result column="created_at" property="createdAt"/>
+    </resultMap>
+
+    <insert id="insertSkillLike" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillLike"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_like (skill_id, user_id, created_at)
+        VALUES (#{skillId}, #{userId}, #{createdAt})
+    </insert>
+
+    <select id="selectLikeByUserSkill" resultMap="SkillLikeResultMap">
+        SELECT id, skill_id, user_id, created_at FROM skill_like
+        WHERE user_id = #{userId} AND skill_id = #{skillId}
+    </select>
+
+    <delete id="deleteLikeByUserSkill">
+        DELETE FROM skill_like WHERE user_id = #{userId} AND skill_id = #{skillId}
+    </delete>
+
+    <select id="selectLikedSkillIds" resultType="java.lang.Long">
+        SELECT skill_id FROM skill_like
+        WHERE user_id = #{userId}
+        AND skill_id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </select>
+
+    <!-- ==================== skill_reference ==================== -->
+
+    <insert id="insertSkillReference" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillReference"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_reference (source_skill_id, target_skill_id, creator, created_at)
+        VALUES (#{sourceSkillId}, #{targetSkillId}, #{creator}, #{createdAt})
+    </insert>
+
+    <delete id="deleteReferenceByCreatorTarget">
+        DELETE FROM skill_reference WHERE creator = #{creator} AND target_skill_id = #{skillId}
+    </delete>
+
+    <select id="existsReferenceByCreatorTarget" resultType="boolean">
+        SELECT COUNT(1) &gt; 0 FROM skill_reference WHERE creator = #{creator} AND target_skill_id = #{skillId}
+    </select>
+
+    <select id="selectReferencedSkillIdsByCreator" resultType="java.lang.Long">
+        SELECT target_skill_id FROM skill_reference WHERE creator = #{creator}
+    </select>
+
+    <select id="selectUsedSkillIds" resultType="java.lang.Long">
+        SELECT target_skill_id FROM skill_reference
+        WHERE creator = #{creator}
+        AND target_skill_id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </select>
+
+    <select id="selectReferencersBySkillId" resultType="java.lang.String">
+        SELECT creator FROM skill_reference WHERE target_skill_id = #{skillId}
+    </select>
+
+    <!-- ==================== skill_publish ==================== -->
+
+    <resultMap id="SkillPublishResultMap" type="com.agentscopea2a.v2.skillManager.entity.SkillPublish">
+        <id column="id" property="id"/>
+        <result column="skill_id" property="skillId"/>
+        <result column="target_type" property="targetType"/>
+        <result column="target_id" property="targetId"/>
+        <result column="target_name" property="targetName"/>
+        <result column="status" property="status"/>
+        <result column="submitter" property="submitter"/>
+        <result column="approver" property="approver"/>
+        <result column="approve_time" property="approveTime"/>
+        <result column="current_approver_user_id" property="currentApproverUserId"/>
+        <result column="last_approval_comment" property="lastApprovalComment"/>
+        <result column="last_approval_at" property="lastApprovalAt"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="skill_name" property="name"/>
+        <result column="skill_description" property="description"/>
+        <result column="skill_category" property="category"/>
+    </resultMap>
+
+    <sql id="skillPublishCols">id, skill_id, target_type, target_id, target_name, status, submitter, approver, approve_time,
+        current_approver_user_id, last_approval_comment, last_approval_at, created_at</sql>
+
+    <insert id="insertSkillPublish" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillPublish"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_publish (skill_id, target_type, target_id, target_name, status, submitter, current_approver_user_id)
+        VALUES (#{skillId}, #{targetType}, #{targetId}, #{targetName}, #{status}, #{submitter}, #{currentApproverUserId})
+    </insert>
+
+    <select id="selectPublishById" resultMap="SkillPublishResultMap">
+        SELECT <include refid="skillPublishCols"/> FROM skill_publish WHERE id = #{id}
+    </select>
+
+    <update id="updatePublishStatus">
+        UPDATE skill_publish
+        SET status = #{status}, approver = #{approver}, approve_time = now(),
+            last_approval_comment = #{comment}, last_approval_at = now()
+        WHERE id = #{id}
+    </update>
+
+    <select id="selectPublishBySkillId" resultMap="SkillPublishResultMap">
+        SELECT <include refid="skillPublishCols"/> FROM skill_publish WHERE skill_id = #{skillId} ORDER BY created_at DESC
+    </select>
+
+    <select id="hasApprovedBySkillId" resultType="boolean">
+        SELECT COUNT(1) &gt; 0 FROM skill_publish WHERE skill_id = #{skillId} AND status = 'APPROVED'
+    </select>
+
+    <select id="hasPendingBySkillId" resultType="boolean">
+        SELECT COUNT(1) &gt; 0 FROM skill_publish WHERE skill_id = #{skillId} AND status = 'PENDING'
+    </select>
+
+    <select id="selectApprovedBySkillId" resultMap="SkillPublishResultMap">
+        SELECT <include refid="skillPublishCols"/> FROM skill_publish WHERE skill_id = #{skillId} AND status = 'APPROVED'
+    </select>
+
+    <select id="selectPendingPublishByApprover" resultMap="SkillPublishResultMap">
+        SELECT p.id, p.skill_id, p.target_type, p.target_id, p.target_name, p.status,
+               p.submitter, p.approver, p.approve_time, p.current_approver_user_id,
+               p.last_approval_comment, p.last_approval_at, p.created_at,
+               s.name AS skill_name, s.description AS skill_description, s.category AS skill_category
+        FROM skill_publish p
+        LEFT JOIN skill_manage s ON s.id = p.skill_id
+        WHERE p.current_approver_user_id = #{approverUserId} AND p.status = 'PENDING'
+        ORDER BY p.created_at DESC
+    </select>
+
+    <select id="selectHistoryByApprover" resultMap="SkillPublishResultMap">
+        SELECT p.id, p.skill_id, p.target_type, p.target_id, p.target_name, p.status,
+               p.submitter, p.approver, p.approve_time, p.current_approver_user_id,
+               p.last_approval_comment, p.last_approval_at, p.created_at,
+               s.name AS skill_name, s.description AS skill_description, s.category AS skill_category
+        FROM skill_publish p
+        LEFT JOIN skill_manage s ON s.id = p.skill_id
+        WHERE p.approver = #{approverUserId} AND p.status IN ('APPROVED', 'REJECTED')
+        ORDER BY p.approve_time DESC
+    </select>
+
+    <select id="selectApprovedBySkillIds" resultMap="SkillPublishResultMap">
+        SELECT <include refid="skillPublishCols"/> FROM skill_publish
+        WHERE status = 'APPROVED' AND skill_id IN
+        <foreach collection="skillIds" item="skillId" open="(" separator="," close=")">
+            #{skillId}
+        </foreach>
+    </select>
+
+    <!-- ==================== skill_approval ==================== -->
+
+    <resultMap id="SkillApprovalResultMap" type="com.agentscopea2a.v2.skillManager.entity.SkillApproval">
+        <id column="id" property="id"/>
+        <result column="publish_id" property="publishId"/>
+        <result column="draft_id" property="draftId"/>
+        <result column="action" property="action"/>
+        <result column="operator" property="operator"/>
+        <result column="comment" property="comment"/>
+        <result column="version_snapshot" property="versionSnapshot"/>
+        <result column="created_at" property="createdAt"/>
+    </resultMap>
+
+    <sql id="skillApprovalCols">id, publish_id, draft_id, action, operator, comment, version_snapshot, created_at</sql>
+
+    <insert id="insertSkillApproval" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillApproval"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_approval (publish_id, draft_id, action, operator, comment, version_snapshot)
+        VALUES (#{publishId}, #{draftId}, #{action}, #{operator}, #{comment}, #{versionSnapshot})
+    </insert>
+
+    <select id="selectApprovalByPublishId" resultMap="SkillApprovalResultMap">
+        SELECT <include refid="skillApprovalCols"/> FROM skill_approval WHERE publish_id = #{publishId} ORDER BY created_at ASC
+    </select>
+
+    <select id="selectApprovalByDraftId" resultMap="SkillApprovalResultMap">
+        SELECT <include refid="skillApprovalCols"/> FROM skill_approval WHERE draft_id = #{draftId} ORDER BY created_at ASC
+    </select>
+
+    <!-- ==================== skill_draft ==================== -->
+
+    <resultMap id="SkillDraftResultMap" type="com.agentscopea2a.v2.skillManager.entity.SkillDraft">
+        <id column="id" property="id"/>
+        <result column="skill_id" property="skillId"/>
+        <result column="name" property="name"/>
+        <result column="description" property="description"/>
+        <result column="content" property="content"/>
+        <result column="category" property="category"/>
+        <result column="tags" property="tags"/>
+        <result column="status" property="status"/>
+        <result column="submitter" property="submitter"/>
+        <result column="approver" property="approver"/>
+        <result column="approve_comment" property="approveComment"/>
+        <result column="submitted_at" property="submittedAt"/>
+        <result column="approved_at" property="approvedAt"/>
+    </resultMap>
+
+    <sql id="skillDraftCols">id, skill_id, name, description, content, category, tags, status, submitter, approver,
+        approve_comment, submitted_at, approved_at</sql>
+
+    <insert id="insertSkillDraft" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillDraft"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_draft (skill_id, name, description, content, category, tags, status, submitter)
+        VALUES (#{skillId}, #{name}, #{description}, #{content}, #{category}, #{tags}, #{status}, #{submitter})
+    </insert>
+
+    <select id="selectDraftById" resultMap="SkillDraftResultMap">
+        SELECT <include refid="skillDraftCols"/> FROM skill_draft WHERE id = #{id}
+    </select>
+
+    <select id="selectPendingDraftBySkillId" resultMap="SkillDraftResultMap">
+        SELECT <include refid="skillDraftCols"/> FROM skill_draft WHERE skill_id = #{skillId} AND status = 'PENDING'
+    </select>
+
+    <update id="updateDraftStatus">
+        UPDATE skill_draft
+        SET status = #{status}, approver = #{approver}, approve_comment = #{comment}, approved_at = now()
+        WHERE id = #{id}
+    </update>
+
+    <update id="updateDraftContent" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillDraft">
+        UPDATE skill_draft
+        SET name = #{name}, description = #{description}, content = #{content},
+            category = #{category}, tags = #{tags}, status = 'PENDING', submitted_at = now(),
+            approver = NULL, approve_comment = NULL, approved_at = NULL
+        WHERE id = #{id}
+    </update>
+
+    <select id="selectPendingDraftByApprover" resultMap="SkillDraftResultMap">
+        SELECT <include refid="skillDraftCols"/> FROM skill_draft
+        WHERE status = 'PENDING'
+        AND skill_id IN (SELECT DISTINCT skill_id FROM skill_publish WHERE status = 'APPROVED')
+        ORDER BY submitted_at DESC
+    </select>
+
+    <!-- ==================== skill_version_history ==================== -->
+
+    <resultMap id="SkillVersionHistoryResultMap" type="com.agentscopea2a.v2.skillManager.entity.SkillVersionHistory">
+        <id column="id" property="id"/>
+        <result column="skill_id" property="skillId"/>
+        <result column="version" property="version"/>
+        <result column="name" property="name"/>
+        <result column="description" property="description"/>
+        <result column="content" property="content"/>
+        <result column="category" property="category"/>
+        <result column="tags" property="tags"/>
+        <result column="edited_by" property="editedBy"/>
+        <result column="edit_reason" property="editReason"/>
+        <result column="created_at" property="createdAt"/>
+    </resultMap>
+
+    <sql id="skillVersionHistoryCols">id, skill_id, version, name, description, content, category, tags, edited_by, edit_reason, created_at</sql>
+
+    <insert id="insertSkillVersionHistory" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillVersionHistory"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_version_history (skill_id, version, name, description, content, category, tags, edited_by, edit_reason)
+        VALUES (#{skillId}, #{version}, #{name}, #{description}, #{content}, #{category}, #{tags}, #{editedBy}, #{editReason})
+    </insert>
+
+    <select id="selectVersionBySkillId" resultMap="SkillVersionHistoryResultMap">
+        SELECT <include refid="skillVersionHistoryCols"/> FROM skill_version_history WHERE skill_id = #{skillId} ORDER BY version DESC
+    </select>
+
+    <select id="selectMaxVersion" resultType="java.lang.Integer">
+        SELECT MAX(version) FROM skill_version_history WHERE skill_id = #{skillId}
+    </select>
+
+    <!-- ==================== skill_operation_history ==================== -->
+
+    <resultMap id="SkillOperationHistoryResultMap" type="com.agentscopea2a.v2.skillManager.entity.SkillOperationHistory">
+        <id column="id" property="id"/>
+        <result column="skill_id" property="skillId"/>
+        <result column="publish_id" property="publishId"/>
+        <result column="operator" property="operator"/>
+        <result column="operation" property="operation"/>
+        <result column="before_data" property="beforeData"/>
+        <result column="after_data" property="afterData"/>
+        <result column="created_at" property="createdAt"/>
+    </resultMap>
+
+    <sql id="skillOperationHistoryCols">id, skill_id, publish_id, operator, operation, before_data, after_data, created_at</sql>
+
+    <insert id="insertSkillOperationHistory" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillOperationHistory"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_operation_history (skill_id, publish_id, operator, operation, before_data, after_data)
+        VALUES (#{skillId}, #{publishId}, #{operator}, #{operation}, #{beforeData}, #{afterData})
+    </insert>
+
+    <select id="selectOperationBySkillId" resultMap="SkillOperationHistoryResultMap">
+        SELECT <include refid="skillOperationHistoryCols"/> FROM skill_operation_history WHERE skill_id = #{skillId} ORDER BY created_at DESC
+    </select>
+
+    <select id="selectByOperator" resultMap="SkillOperationHistoryResultMap">
+        SELECT <include refid="skillOperationHistoryCols"/> FROM skill_operation_history WHERE operator = #{operator} ORDER BY created_at DESC
+    </select>
+
+    <!-- ==================== skill_user_disable ==================== -->
+
+    <resultMap id="SkillUserDisableResultMap" type="com.agentscopea2a.v2.skillManager.entity.SkillUserDisable">
+        <id column="id" property="id"/>
+        <result column="skill_id" property="skillId"/>
+        <result column="user_id" property="userId"/>
+        <result column="created_at" property="createdAt"/>
+    </resultMap>
+
+    <sql id="skillUserDisableCols">id, skill_id, user_id, created_at</sql>
+
+    <insert id="insertSkillUserDisable" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillUserDisable"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_user_disable (skill_id, user_id)
+        VALUES (#{skillId}, #{userId})
+        ON CONFLICT (skill_id, user_id) DO NOTHING
+    </insert>
+
+    <delete id="deleteDisableByUserSkill">
+        DELETE FROM skill_user_disable WHERE user_id = #{userId} AND skill_id = #{skillId}
+    </delete>
+
+    <select id="existsDisableByUserSkill" resultType="boolean">
+        SELECT COUNT(1) &gt; 0 FROM skill_user_disable WHERE user_id = #{userId} AND skill_id = #{skillId}
+    </select>
+
+    <select id="selectDisabledSkillIds" resultType="java.lang.Long">
+        SELECT skill_id FROM skill_user_disable
+        WHERE user_id = #{userId}
+        AND skill_id IN
+        <foreach collection="skillIds" item="skillId" open="(" separator="," close=")">
+            #{skillId}
+        </foreach>
+    </select>
+
+</mapper>

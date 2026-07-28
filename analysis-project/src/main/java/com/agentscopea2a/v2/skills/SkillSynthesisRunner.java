@@ -296,7 +296,7 @@ public class SkillSynthesisRunner {
             // synchronously below with the richer (desc + sample_questions) text. Letting
             // SkillSaveTool's async path also embed would race and overwrite the canonical
             // fingerprint with null.
-            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null, SkillEntry.SOURCE_AUTO_SYNTHESIZED);
+            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null, SkillEntry.SOURCE_AUTO_SYNTHESIZED, null);
             // Use saveSkillWithMetricTag so the metric_tag field is stamped into the
             // frontmatter rather than being stripped by saveSkill's stripFrontmatter.
             boolean saved = saver.saveSkillWithMetricTag(
@@ -570,7 +570,7 @@ public class SkillSynthesisRunner {
         // Save to disk + upsert index row (no candidate CAS — night-time path)
         try {
             // Pass null embeddingClient — we stamp the embedding ourselves below with richer text
-            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null, SkillEntry.SOURCE_AUTO_SYNTHESIZED);
+            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null, SkillEntry.SOURCE_AUTO_SYNTHESIZED, null);
             boolean saved = saver.saveSkillWithMetricTag(
                     distilled.name(), distilled.description(), distilled.body(), metricTag);
             if (!saved) {

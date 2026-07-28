@@ -19,21 +19,19 @@ import java.time.LocalDateTime;
 import java.util.Optional;
 
 /**
- * MySQL-backed registry for skill <b>candidates</b> — the staging area where skill synthesis
- * counts how many times the same user-question fingerprint shows up before deciding to distill
- * a real skill.
+ * 基于 openGauss 的技能<b>候选</b>注册表 - 这是技能合成的暂存区,
+ * 用于统计同一个用户问题指纹出现的次数,再决定是否蒸馏出一个真正的技能。
  *
- * <p>Lazy schema initialisation mirrors {@link SkillIndexRepository}; the table is created on first
- * call so boot stays resilient when MySQL is briefly unreachable. Distinct from {@code
- * skill_index}:
+ * <p>延迟初始化 schema,与 {@link SkillIndexRepository} 一致;表在首次调用时创建,
+ * 保证 openGauss 短暂不可达时启动仍然健壮。与 {@code skill_index} 的区别:
  *
  * <ul>
- *   <li>{@code skill_index}     — single source of truth for <i>persisted</i> skills (file + DB).
- *   <li>{@code skill_candidate} — bookkeeping for "this fingerprint has hit N times, not yet
- *       synthesised". Rows move {@code pending → synthesized | rejected | blacklist} once.
+ *   <li>{@code skill_index}     - <i>已持久化</i>技能的唯一事实来源(文件 + DB)。
+ *   <li>{@code skill_candidate} - 记录"该指纹已命中 N 次,尚未合成"。行的状态只会一次性
+ *       转换为 {@code pending -> synthesized | rejected | blacklist}。
  * </ul>
  *
- * <p>Bean created by {@link com.agentscopea2a.v2.config.V2SkillConfig}.
+ * <p>Bean 由 {@link com.agentscopea2a.v2.config.V2SkillConfig} 创建。
  */
 public class SkillCandidateRepository {
 
@@ -49,12 +47,8 @@ public class SkillCandidateRepository {
                     + "  metric_tag VARCHAR(64) DEFAULT NULL,"
                     + "  status VARCHAR(16) NOT NULL DEFAULT 'pending',"
                     + "  synth_skill VARCHAR(128) NULL,"
-                    + "  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP "
-                    + "             ON UPDATE CURRENT_TIMESTAMP,"
-                    + "  KEY idx_user_status (user_id, status),"
-                    + "  KEY idx_hit_count (hit_count DESC),"
-                    + "  KEY idx_metric_tag (metric_tag)"
-                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+                    + "  updated_at TIMESTAMP NOT NULL DEFAULT now()"
+                    + ")";
 
     private final DataSource dataSource;
     private volatile boolean tableEnsured = false;
@@ -92,10 +86,10 @@ public class SkillCandidateRepository {
         String sql =
                 "INSERT INTO skill_candidate (fingerprint, user_id, hit_count, last_query, last_trace_id, status)"
                         + " VALUES (?, ?, 1, ?, ?, 'pending')"
-                        + " ON DUPLICATE KEY UPDATE"
-                        + "   hit_count = CASE WHEN status = 'pending' THEN hit_count + 1 ELSE hit_count END,"
-                        + "   last_query = CASE WHEN status = 'pending' THEN VALUES(last_query) ELSE last_query END,"
-                        + "   last_trace_id = CASE WHEN status = 'pending' THEN VALUES(last_trace_id) ELSE last_trace_id END";
+                        + " ON CONFLICT (fingerprint) DO UPDATE SET"
+                        + "   hit_count = CASE WHEN skill_candidate.status = 'pending' THEN skill_candidate.hit_count + 1 ELSE skill_candidate.hit_count END,"
+                        + "   last_query = CASE WHEN skill_candidate.status = 'pending' THEN EXCLUDED.last_query ELSE skill_candidate.last_query END,"
+                        + "   last_trace_id = CASE WHEN skill_candidate.status = 'pending' THEN EXCLUDED.last_trace_id ELSE skill_candidate.last_trace_id END";
         // Manual transaction so INSERT + subsequent SELECT use the same connection - guarantees
         // read-your-writes within this call. Connection.close() rolls back if we never commit.
         try (Connection c = dataSource.getConnection()) {

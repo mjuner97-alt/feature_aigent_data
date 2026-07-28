@@ -46,6 +46,8 @@ public class Skill {
     private String ownerUserId;
     private String status;
     private Long likeCount;
+    /** 映射到 skill_index.name 的检索名，格式 page_<id>，双写桥接时写入 */
+    private String retrievalName;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private LocalDateTime deletedAt;

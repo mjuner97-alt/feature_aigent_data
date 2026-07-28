@@ -59,15 +59,17 @@ import javax.sql.DataSource;
 @Configuration
 @ConditionalOnProperty(prefix = "spring.datasource.hikari.gauss", name = "enabled", havingValue = "true")
 @MapperScan(
-        basePackages = GaussConfig.MAPPER_PACKAGE,
+        basePackages = {GaussConfig.MAPPER_PACKAGE_1, GaussConfig.MAPPER_PACKAGE_2},
         sqlSessionFactoryRef = GaussConfig.SSF_NAME)
 public class GaussConfig {
 
     static final String DS_NAME = "gaussDataSource";
     static final String SSF_NAME = "gaussSqlSessionFactory";
     static final String TX_NAME = "gaussTransactionManager";
-    static final String MAPPER_PACKAGE = "com.agentscopea2a.mapper.db1";
-    static final String MAPPER_XML = "classpath*:mybatis/mapper/db1/*.xml";
+    static final String MAPPER_PACKAGE_1 = "com.agentscopea2a.mapper.db1";
+    static final String MAPPER_PACKAGE_2 = "com.agentscopea2a.v2.skillManager.mapper";
+    static final String MAPPER_XML_1 = "classpath*:mybatis/mapper/db1/*.xml";
+    static final String MAPPER_XML_2 = "classpath*:mybatis/mapper/gauss/*.xml";
 
     @Bean(name = DS_NAME, destroyMethod = "close")
     @ConfigurationProperties(prefix = "spring.datasource.hikari.gauss")
@@ -80,9 +82,16 @@ public class GaussConfig {
             @Qualifier(DS_NAME) DataSource dataSource) throws Exception {
         SqlSessionFactoryBean factory = new SqlSessionFactoryBean();
         factory.setDataSource(dataSource);
-        factory.setMapperLocations(
-                new PathMatchingResourcePatternResolver().getResources(MAPPER_XML));
-        factory.setTypeAliasesPackage("com.agentscopea2a.entity");
+        org.springframework.core.io.Resource[] res1 =
+                new PathMatchingResourcePatternResolver().getResources(MAPPER_XML_1);
+        org.springframework.core.io.Resource[] res2 =
+                new PathMatchingResourcePatternResolver().getResources(MAPPER_XML_2);
+        org.springframework.core.io.Resource[] all =
+                new org.springframework.core.io.Resource[res1.length + res2.length];
+        System.arraycopy(res1, 0, all, 0, res1.length);
+        System.arraycopy(res2, 0, all, res1.length, res2.length);
+        factory.setMapperLocations(all);
+        factory.setTypeAliasesPackage("com.agentscopea2a.entity,com.agentscopea2a.v2.skillManager.entity");
         return factory.getObject();
     }
 

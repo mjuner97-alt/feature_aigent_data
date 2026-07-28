@@ -19,6 +19,8 @@ import com.agentscopea2a.v2.skills.SkillEntry;
 import com.agentscopea2a.v2.skills.SkillIndexRepository;
 import com.agentscopea2a.v2.skills.EmbeddingClient;
 import com.agentscopea2a.v2.skills.SkillVectorIndex;
+import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.hook.RuntimeContextAware;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.skill.AgentSkill;
 import io.agentscope.core.skill.util.SkillFileSystemHelper;
@@ -48,7 +50,7 @@ import java.util.regex.Pattern;
  *
  * <p>Used by the SkillGeneratorAgent to persist generated skill definitions.
  */
-public class SkillSaveTool {
+public class SkillSaveTool implements io.agentscope.core.hook.RuntimeContextAware {
 
     private static final Logger log = LoggerFactory.getLogger(SkillSaveTool.class);
 
@@ -68,6 +70,12 @@ public class SkillSaveTool {
      */
     private final String source;
 
+    /** PR5: per-call runtime context for userId extraction */
+    private volatile RuntimeContext currentCtx;
+
+    /** PR5: ObjectProvider for SkillManageService to avoid circular dependency */
+    private final org.springframework.beans.factory.ObjectProvider<com.agentscopea2a.v2.skillManager.service.SkillManageService> skillManageServiceProvider;
+
     /** Single-thread daemon so embedding upserts never delay the save_skill tool reply. */
     private static final ScheduledExecutorService EMBED_EXEC =
             Executors.newSingleThreadScheduledExecutor(
@@ -77,9 +85,14 @@ public class SkillSaveTool {
                         return t;
                     });
 
+    @Override
+    public void setRuntimeContext(RuntimeContext context) {
+        this.currentCtx = context;
+    }
+
     /** Repository may be {@code null} when wired in legacy single-arg paths (tests, etc.). */
     public SkillSaveTool(Path skillsDir, SkillIndexRepository indexRepository) {
-        this(skillsDir, indexRepository, null, null, SkillEntry.SOURCE_AUTO_SYNTHESIZED);
+        this(skillsDir, indexRepository, null, null, SkillEntry.SOURCE_AUTO_SYNTHESIZED, null);
     }
 
     /**
@@ -93,7 +106,7 @@ public class SkillSaveTool {
             SkillIndexRepository indexRepository,
             SkillVectorIndex vectorIndex,
             EmbeddingClient embeddingClient) {
-        this(skillsDir, indexRepository, vectorIndex, embeddingClient, SkillEntry.SOURCE_AUTO_SYNTHESIZED);
+        this(skillsDir, indexRepository, vectorIndex, embeddingClient, SkillEntry.SOURCE_AUTO_SYNTHESIZED, null);
     }
 
     /**
@@ -107,12 +120,14 @@ public class SkillSaveTool {
             SkillIndexRepository indexRepository,
             SkillVectorIndex vectorIndex,
             EmbeddingClient embeddingClient,
-            String source) {
+            String source,
+            org.springframework.beans.factory.ObjectProvider<com.agentscopea2a.v2.skillManager.service.SkillManageService> skillManageServiceProvider) {
         this.skillsDir = skillsDir;
         this.indexRepository = indexRepository;
         this.vectorIndex = vectorIndex;
         this.embeddingClient = embeddingClient;
         this.source = source == null ? SkillEntry.SOURCE_AUTO_SYNTHESIZED : source;
+        this.skillManageServiceProvider = skillManageServiceProvider;
     }
 
     /**
@@ -142,7 +157,10 @@ public class SkillSaveTool {
             if (skillName == null || skillName.isBlank()) {
                 return ToolResultBlock.error("skill_name 不能为空");
             }
+            String userId = currentCtx != null ? currentCtx.getUserId() : null;
             String safeName = skillName.trim().toLowerCase().replaceAll("[^a-z0-9_]", "_");
+            // PR5: 加 userId 前缀避免不同用户同名冲突
+            String scopedName = buildUserScopedName(safeName, userId);
             String desc = description == null ? "" : description.trim();
             String body = content == null ? "" : content.trim();
             // Loop-strip all frontmatter blocks — LLM may generate multiple YAML blocks
@@ -152,18 +170,18 @@ public class SkillSaveTool {
                 body = stripped;
             }
 
-            if (!checkNameAvailable(safeName)) {
+            if (!checkNameAvailable(scopedName)) {
                 return ToolResultBlock.error(
-                        "技能名 '" + safeName + "' 已被另一来源占用，请改名后重试");
+                        "技能名 '" + scopedName + "' 已被另一来源占用，请改名后重试");
             }
 
-            int version = upsertVersion(safeName, desc);
-            String frontmatter = renderFrontmatter(safeName, desc, version);
+            int version = upsertVersion(scopedName, desc);
+            String frontmatter = renderFrontmatter(scopedName, desc, version);
             String full = frontmatter + body;
 
             AgentSkill skill =
                     AgentSkill.builder()
-                            .name(safeName)
+                            .name(scopedName)
                             .description(desc)
                             .skillContent(full)
                             .source(source)
@@ -175,9 +193,11 @@ public class SkillSaveTool {
                         "技能保存成功 v"
                                 + version
                                 + " — "
-                                + skillsDir.resolve(safeName).resolve("SKILL.md");
-                log.info("Skill saved: {} v{}", safeName, version);
-                maybeEmbedAsync(safeName, desc);
+                                + skillsDir.resolve(scopedName).resolve("SKILL.md");
+                log.info("Skill saved: {} v{}", scopedName, version);
+                maybeEmbedAsync(scopedName, desc);
+                // PR5: 同步写入 skill_manage 表,让管理页面可见
+                syncToSkillManage(scopedName, desc, body, userId);
                 return ToolResultBlock.text(msg);
             }
             return ToolResultBlock.error("技能保存失败，请重试");
@@ -261,6 +281,40 @@ public class SkillSaveTool {
     }
 
     /**
+     * PR5 - 构建 userId 前缀的检索名,避免不同用户同名冲突。
+     * 匿名用户(userId 为空)不加前缀,退化为原有行为。
+     */
+    private String buildUserScopedName(String safeName, String userId) {
+        if (userId == null || userId.isBlank()) return safeName;
+        return "usr_" + userId + "_" + safeName;
+    }
+
+    /**
+     * PR5 - 同步写入 skill_manage 表,让 Agent 创建的 skill 在管理页面可见。
+     * best-effort: 失败只 log warn,不影响 skill 保存结果。
+     */
+    private void syncToSkillManage(String retrievalName, String description, String content, String userId) {
+        if (userId == null || userId.isBlank()) return;  // 匿名不写
+        if (skillManageServiceProvider == null) return;
+        com.agentscopea2a.v2.skillManager.service.SkillManageService svc = skillManageServiceProvider.getIfAvailable();
+        if (svc == null) return;
+        try {
+            com.agentscopea2a.v2.skillManager.entity.Skill skill = new com.agentscopea2a.v2.skillManager.entity.Skill();
+            // skill_manage.name 是显示名;Agent 创建的没有中文标题,用 description 兜底
+            String displayName = (description != null && !description.isBlank()) ? description : retrievalName;
+            skill.setName(displayName);
+            skill.setDescription(description);
+            skill.setContent(content);
+            skill.setStatus("ACTIVE");
+            skill.setCreatedAt(java.time.LocalDateTime.now());
+            skill.setUpdatedAt(java.time.LocalDateTime.now());
+            svc.createForAgent(skill, userId, retrievalName);
+        } catch (Exception ex) {
+            log.warn("syncToSkillManage failed for '{}': {}", retrievalName, ex.getMessage());
+        }
+    }
+
+    /**
      * Fire-and-forget embedding upsert (PR3). Skipped when either dependency is unwired —
      * preserves the manual save_skill path's behaviour when retrieval is disabled. We embed
      * "{name} {description}" rather than the full SKILL.md body because (a) description is
@@ -295,11 +349,11 @@ public class SkillSaveTool {
         return m.find() && m.start() == 0 ? content.substring(m.end()) : content;
     }
 
-    static String renderFrontmatter(String name, String description, int version) {
+    public static String renderFrontmatter(String name, String description, int version) {
         return renderFrontmatter(name, description, version, null);
     }
 
-    static String renderFrontmatter(String name, String description, int version, String metricTag) {
+    public static String renderFrontmatter(String name, String description, int version, String metricTag) {
         // Escape only what YAML genuinely needs: double-quote the description and backslash
         // any literal " inside it. Names are already [a-z0-9_] from safeName().
         String safeDesc = description.replace("\\", "\\\\").replace("\"", "\\\"");

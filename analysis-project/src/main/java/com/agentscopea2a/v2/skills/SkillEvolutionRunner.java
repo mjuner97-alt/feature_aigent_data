@@ -236,7 +236,7 @@ public class SkillEvolutionRunner {
         try {
             // Preserve the canonical fingerprint by passing null embeddingClient and stamping
             // ourselves below — same pattern as SkillSynthesisRunner.
-            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null, SkillEntry.SOURCE_AUTO_SYNTHESIZED);
+            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null, SkillEntry.SOURCE_AUTO_SYNTHESIZED, null);
             saver.saveSkill(evolved.name(), evolved.description(), evolved.body());
 
             if (vectorIndex != null && embeddingClient != null) {

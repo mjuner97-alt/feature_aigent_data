@@ -24,24 +24,23 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * PR3 — vector / fingerprint lookup over the {@code skill_index} table laid out in PR1.
+ * PR3 - 在 PR1 建立的 {@code skill_index} 表之上做向量 / 指纹检索。
  *
- * <p>L1 (fingerprint) is a plain PK / unique-key lookup, sub-millisecond. L2 (vector) loads
- * every {@code active} skill's embedding into the JVM and computes cosine in-process — fine for
- * the dozens-of-skills scale we ship at; if the catalogue ever grows to thousands, swap the
- * {@code topK} implementation for MySQL 9.0+ {@code cos_distance(VECTOR(...))} without changing
- * the interface.
+ * <p>L1(指纹)是普通的 PK / 唯一键查询,亚毫秒级。L2(向量)会把每个 {@code active}
+ * 技能的 embedding 加载到 JVM 内并在进程内计算余弦相似度 - 对于我们当前几十个技能的
+ * 规模完全够用;如果将来目录增长到上千个,可以把 {@code topK} 实现换成 openGauss 的
+ * 向量类型而不改变接口。
  *
- * <p>Embeddings are stored as JSON {@code float[]} in the {@code embedding LONGTEXT} column PR1
- * already provisioned. Keeping the column type stable means PR3 is pure read/write code — no
- * ALTER TABLE — and an eventual MySQL-vector migration only needs a type swap.
+ * <p>Embedding 以 JSON {@code float[]} 形式存储在 PR1 已经预留的 {@code embedding TEXT}
+ * 列中。保持列类型稳定意味着 PR3 是纯读/写代码 - 无需 ALTER TABLE - 未来的向量迁移
+ * 也只需要做一个类型替换。
  *
- * <p>All write paths are best-effort: a SQL failure logs a warning and returns; retrieval falls
- * back to L1 or to the existing full-injection path.
+ * <p>所有写路径都是尽力而为:SQL 失败时记录告警并返回;检索会回退到 L1 或既有的
+ * 全量注入路径。
  *
- * <p><b>Bean wiring:</b> Created by {@link com.agentscopea2a.v2.config.V2SkillConfig} — not
- * component-scanned. The old {@code @Repository}/{@code @Qualifier}/{@code @DependsOn} annotations
- * have been removed since the bean is now explicitly constructed in the config class.
+ * <p><b>Bean 装配:</b> 由 {@link com.agentscopea2a.v2.config.V2SkillConfig} 创建 - 不走
+ * 组件扫描。旧的 {@code @Repository}/{@code @Qualifier}/{@code @DependsOn} 注解已移除,
+ * 因为该 bean 现在在配置类中显式构造。
  */
 public class SkillVectorIndex {
 
@@ -63,7 +62,7 @@ public class SkillVectorIndex {
     }
 
     /** Cached skill entry holding pre-parsed embedding + precomputed norm for fast cosine. */
-    private record CachedSkill(String name, String description, float[] embedding, float norm, String source) {}
+    private record CachedSkill(String name, String description, float[] embedding, float norm, String source, String ownerUserId) {}
 
     /**
      * Periodic cache refresh. Runs at a fixed interval so L2 queries hit memory instead of SQL.
@@ -82,7 +81,7 @@ public class SkillVectorIndex {
     }
 
     private List<CachedSkill> loadAllActiveSkills() {
-        String sql = "SELECT name, description, embedding, source FROM skill_index"
+        String sql = "SELECT name, description, embedding, source, owner_user_id FROM skill_index"
                 + " WHERE status = 'active' AND embedding IS NOT NULL";
         List<CachedSkill> list = new ArrayList<>();
         try (Connection c = dataSource.getConnection();
@@ -104,7 +103,8 @@ public class SkillVectorIndex {
                         rs.getString("description"),
                         vec,
                         n,
-                        rs.getString("source")));
+                        rs.getString("source"),
+                        rs.getString("owner_user_id")));
             }
         } catch (SQLException e) {
             log.warn("loadAllActiveSkills failed: {}", e.getMessage());
@@ -146,6 +146,40 @@ public class SkillVectorIndex {
             }
         } catch (SQLException e) {
             log.warn("findByFingerprint({}, {}) failed: {}", fingerprint, source, e.getMessage());
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * PR5 - user-scoped L1 lookup. When {@code userId} is non-null, matches skills where
+     * {@code (owner_user_id = userId OR owner_user_id IS NULL)}. When {@code userId} is null,
+     * matches only {@code owner_user_id IS NULL} (global skills) - this prevents anonymous
+     * users from retrieving other users' skills.
+     */
+    public Optional<String> findByFingerprint(String fingerprint, String source, String userId) {
+        if (fingerprint == null || fingerprint.isBlank()) return Optional.empty();
+        String sql;
+        if (userId != null && !userId.isBlank()) {
+            sql = "SELECT name FROM skill_index"
+                    + " WHERE fingerprint = ? AND status = 'active' AND source = ?"
+                    + " AND (owner_user_id = ? OR owner_user_id IS NULL) LIMIT 1";
+        } else {
+            sql = "SELECT name FROM skill_index"
+                    + " WHERE fingerprint = ? AND status = 'active' AND source = ?"
+                    + " AND owner_user_id IS NULL LIMIT 1";
+        }
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, fingerprint);
+            ps.setString(2, source);
+            if (userId != null && !userId.isBlank()) {
+                ps.setString(3, userId);
+            }
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return Optional.of(rs.getString("name"));
+            }
+        } catch (SQLException e) {
+            log.warn("findByFingerprint({}, {}, {}) failed: {}", fingerprint, source, userId, e.getMessage());
         }
         return Optional.empty();
     }
@@ -196,6 +230,41 @@ public class SkillVectorIndex {
         return hits.size() > k ? hits.subList(0, k) : hits;
     }
 
+    /**
+     * PR5 - user-scoped L2 top-K. When {@code userId} is non-null, considers only skills where
+     * {@code (owner_user_id = userId OR owner_user_id IS NULL)}. When {@code userId} is null,
+     * considers only {@code owner_user_id IS NULL} (global skills).
+     */
+    public List<SkillHit> topK(float[] queryVec, int k, float minCosine, String source, String userId) {
+        if (queryVec == null || queryVec.length == 0 || k <= 0) return List.of();
+        float qNorm = norm(queryVec);
+        if (qNorm == 0f) return List.of();
+
+        List<CachedSkill> cache = this.skillCache;
+        List<SkillHit> hits;
+
+        if (cacheEnabled && !cache.isEmpty()) {
+            hits = new ArrayList<>();
+            for (CachedSkill s : cache) {
+                if (source != null && !source.equals(s.source())) continue;
+                // PR5: user isolation filter
+                // userId 非 null: 可见 = ownerUserId==null(全局) OR ownerUserId==userId(自己的)
+                // userId 为 null: 可见 = ownerUserId==null(仅全局)
+                if (s.ownerUserId() != null && !s.ownerUserId().equals(userId)) continue;
+                if (s.embedding().length != queryVec.length) continue;
+                float cos = cosine(queryVec, s.embedding(), qNorm, s.norm());
+                if (cos >= minCosine) {
+                    hits.add(new SkillHit(s.name(), s.description(), cos));
+                }
+            }
+        } else {
+            hits = dbTopK(queryVec, qNorm, minCosine, source, userId);
+        }
+
+        hits.sort(Comparator.comparingDouble(SkillHit::cosine).reversed());
+        return hits.size() > k ? hits.subList(0, k) : hits;
+    }
+
     /** Full-table SQL scan fallback when cache is unavailable. */
     private List<SkillHit> dbTopK(float[] queryVec, float qNorm, float minCosine, String source) {
         String sql = "SELECT name, description, embedding FROM skill_index"
@@ -230,6 +299,45 @@ public class SkillVectorIndex {
         return hits;
     }
 
+    /** Full-table SQL scan fallback with user isolation. */
+    private List<SkillHit> dbTopK(float[] queryVec, float qNorm, float minCosine, String source, String userId) {
+        StringBuilder sql = new StringBuilder("SELECT name, description, embedding FROM skill_index")
+                .append(" WHERE status = 'active' AND embedding IS NOT NULL");
+        if (source != null) sql.append(" AND source = ?");
+        if (userId != null && !userId.isBlank()) {
+            sql.append(" AND (owner_user_id = ? OR owner_user_id IS NULL)");
+        } else {
+            sql.append(" AND owner_user_id IS NULL");
+        }
+        List<SkillHit> hits = new ArrayList<>();
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql.toString())) {
+            int idx = 1;
+            if (source != null) ps.setString(idx++, source);
+            if (userId != null && !userId.isBlank()) ps.setString(idx++, userId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String embeddingJson = rs.getString("embedding");
+                    if (embeddingJson == null || embeddingJson.isBlank()) continue;
+                    float[] vec;
+                    try {
+                        vec = MAPPER.readValue(embeddingJson, FLOAT_ARRAY);
+                    } catch (Exception ex) {
+                        continue;
+                    }
+                    if (vec.length != queryVec.length) continue;
+                    float cos = cosine(queryVec, vec, qNorm, norm(vec));
+                    if (cos >= minCosine) {
+                        hits.add(new SkillHit(rs.getString("name"), rs.getString("description"), cos));
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            log.warn("dbTopK(userId={}) failed: {}", userId, e.getMessage());
+        }
+        return hits;
+    }
+
     /**
      * Upserts the embedding + fingerprint for a skill. Called from {@link
      * com.agentscopea2a.v2.tools.SkillSaveTool} after a successful file write so newly
@@ -258,7 +366,7 @@ public class SkillVectorIndex {
             }
             // Write-through cache update
             if (cacheEnabled && rows > 0) {
-                upsertCacheEntry(name, embedding, null);
+                upsertCacheEntry(name, embedding, null, lookupOwnerUserId(name));
             }
         } catch (SQLException e) {
             log.warn("upsertVector({}) failed: {}", name, e.getMessage());
@@ -288,7 +396,7 @@ public class SkillVectorIndex {
             }
             // Write-through cache update
             if (cacheEnabled && rows > 0) {
-                upsertCacheEntry(name, embedding, null);
+                upsertCacheEntry(name, embedding, null, lookupOwnerUserId(name));
             }
         } catch (SQLException e) {
             log.warn("upsertEmbeddingOnly({}) failed: {}", name, e.getMessage());
@@ -306,13 +414,13 @@ public class SkillVectorIndex {
      * first thread's update. Writes here are infrequent (one per skill save/evolve), so a
      * coarse lock is fine.
      */
-    private synchronized void upsertCacheEntry(String name, float[] embedding, String description) {
+    private synchronized void upsertCacheEntry(String name, float[] embedding, String description, String ownerUserId) {
         float n = norm(embedding);
         if (n == 0f) return;
         String source = lookupSource(name);
         List<CachedSkill> current = new ArrayList<>(this.skillCache);
         current.removeIf(s -> s.name().equals(name));
-        current.add(new CachedSkill(name, description, embedding, n, source));
+        current.add(new CachedSkill(name, description, embedding, n, source, ownerUserId));
         this.skillCache = List.copyOf(current);
     }
 
@@ -335,6 +443,26 @@ public class SkillVectorIndex {
             }
         } catch (SQLException e) {
             log.debug("lookupSource({}) failed: {}", name, e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * Best-effort owner_user_id lookup for write-through cache updates.
+     */
+    private String lookupOwnerUserId(String name) {
+        for (CachedSkill s : this.skillCache) {
+            if (s.name().equals(name)) return s.ownerUserId();
+        }
+        String sql = "SELECT owner_user_id FROM skill_index WHERE name = ?";
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, name);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return rs.getString("owner_user_id");
+            }
+        } catch (SQLException e) {
+            log.debug("lookupOwnerUserId({}) failed: {}", name, e.getMessage());
         }
         return null;
     }

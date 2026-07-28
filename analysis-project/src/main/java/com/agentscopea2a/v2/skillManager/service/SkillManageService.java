@@ -31,17 +31,10 @@ import com.agentscopea2a.v2.skillManager.entity.SkillPublish;
 import com.agentscopea2a.v2.skillManager.entity.SkillReference;
 import com.agentscopea2a.v2.skillManager.entity.SkillUserDisable;
 import com.agentscopea2a.v2.skillManager.entity.SkillVersionHistory;
-import com.agentscopea2a.v2.skillManager.mapper.SkillApprovalMapper;
-import com.agentscopea2a.v2.skillManager.mapper.SkillDraftMapper;
-import com.agentscopea2a.v2.skillManager.mapper.SkillLikeMapper;
-import com.agentscopea2a.v2.skillManager.mapper.SkillManageMapper;
-import com.agentscopea2a.v2.skillManager.mapper.SkillOperationHistoryMapper;
-import com.agentscopea2a.v2.skillManager.mapper.SkillPublishMapper;
-import com.agentscopea2a.v2.skillManager.mapper.SkillReferenceMapper;
-import com.agentscopea2a.v2.skillManager.mapper.SkillUserDisableMapper;
-import com.agentscopea2a.v2.skillManager.mapper.SkillVersionHistoryMapper;
+import com.agentscopea2a.v2.skillManager.mapper.SkillMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -70,37 +63,17 @@ public class SkillManageService {
 
     private static final Logger log = LoggerFactory.getLogger(SkillManageService.class);
 
-    private final SkillManageMapper skillManageMapper;
-    private final SkillLikeMapper likeMapper;
-    private final SkillReferenceMapper refMapper;
-    private final SkillUserDisableMapper userDisableMapper;
-    private final SkillPublishMapper publishMapper;
-    private final SkillApprovalMapper approvalMapper;
-    private final SkillDraftMapper draftMapper;
-    private final SkillOperationHistoryMapper operationHistoryMapper;
-    private final SkillVersionHistoryMapper versionHistoryMapper;
+    private final SkillMapper skillMapper;
     private final MockOrgService mockOrgService;
+    /** 页面 Skill 双写桥接，用 ObjectProvider 避免启动顺序问题 */
+    private final ObjectProvider<SkillManageBridge> bridgeProvider;
 
-    public SkillManageService(SkillManageMapper skillManageMapper,
-                              SkillLikeMapper likeMapper,
-                              SkillReferenceMapper refMapper,
-                              SkillUserDisableMapper userDisableMapper,
-                              SkillPublishMapper publishMapper,
-                              SkillApprovalMapper approvalMapper,
-                              SkillDraftMapper draftMapper,
-                              SkillOperationHistoryMapper operationHistoryMapper,
-                              SkillVersionHistoryMapper versionHistoryMapper,
-                              MockOrgService mockOrgService) {
-        this.skillManageMapper = skillManageMapper;
-        this.likeMapper = likeMapper;
-        this.refMapper = refMapper;
-        this.userDisableMapper = userDisableMapper;
-        this.publishMapper = publishMapper;
-        this.approvalMapper = approvalMapper;
-        this.draftMapper = draftMapper;
-        this.operationHistoryMapper = operationHistoryMapper;
-        this.versionHistoryMapper = versionHistoryMapper;
+    public SkillManageService(SkillMapper skillMapper,
+                              MockOrgService mockOrgService,
+                              ObjectProvider<SkillManageBridge> bridgeProvider) {
+        this.skillMapper = skillMapper;
         this.mockOrgService = mockOrgService;
+        this.bridgeProvider = bridgeProvider;
     }
 
     // ==================== Skill CRUD + 列表 ====================
@@ -110,15 +83,15 @@ public class SkillManageService {
      * dimension 过滤已移至前端展示层,避免破坏 SQL 分页(LIMIT/OFFSET)。
      */
     public List<SkillListItem> list(SkillListQuery q) {
-        List<Skill> skills = skillManageMapper.selectList(q);
+        List<Skill> skills = skillMapper.selectList(q);
         if (skills.isEmpty()) {
             return List.of();
         }
         List<Long> ids = skills.stream().map(Skill::getId).toList();
-        Set<Long> likedIds = nullToEmpty(likeMapper.selectLikedSkillIds(q.getUserId(), ids));
-        Set<Long> usedIds = nullToEmpty(refMapper.selectUsedSkillIds(q.getUserId(), ids));
-        Set<Long> disabledIds = nullToEmpty(userDisableMapper.selectDisabledSkillIds(q.getUserId(), ids));
-        List<SkillPublish> approved = publishMapper.selectApprovedBySkillIds(ids);
+        Set<Long> likedIds = nullToEmpty(skillMapper.selectLikedSkillIds(q.getUserId(), ids));
+        Set<Long> usedIds = nullToEmpty(skillMapper.selectUsedSkillIds(q.getUserId(), ids));
+        Set<Long> disabledIds = nullToEmpty(skillMapper.selectDisabledSkillIds(q.getUserId(), ids));
+        List<SkillPublish> approved = skillMapper.selectApprovedBySkillIds(ids);
         Map<Long, String> skillDimension = new HashMap<>();
         if (approved != null) {
             for (SkillPublish p : approved) {
@@ -142,12 +115,12 @@ public class SkillManageService {
 
     /** 查询全部 ACTIVE Skill 的去重 tag 列表。 */
     public List<String> getAllTags() {
-        return skillManageMapper.selectAllTags();
+        return skillMapper.selectAllTags();
     }
 
-    @Transactional
+    @Transactional("gaussTransactionManager")
     public Skill create(Skill skill, String ownerUserId) {
-        if (skillManageMapper.existsByName(skill.getName())) {
+        if (skillMapper.existsByName(skill.getName())) {
             throw new IllegalStateException("SkillNameConflict: " + skill.getName());
         }
         skill.setOwnerUserId(ownerUserId);
@@ -155,19 +128,50 @@ public class SkillManageService {
         skill.setLikeCount(0L);
         skill.setCreatedAt(LocalDateTime.now());
         skill.setUpdatedAt(LocalDateTime.now());
-        skillManageMapper.insert(skill);
-        return skillManageMapper.selectById(skill.getId());
+        skillMapper.insertSkill(skill);
+        Skill saved = skillMapper.selectById(skill.getId());
+
+        // 双写桥接：同步到检索索引（skill_index + SKILL.md + embedding）
+        SkillManageBridge bridge = bridgeProvider.getIfAvailable();
+        if (bridge != null) {
+            String retrievalName = bridge.syncToRetrievalIndex(saved);
+            saved.setRetrievalName(retrievalName);
+            skillMapper.updateSkill(saved);
+        }
+        return saved;
+    }
+
+    /**
+     * PR5 - Agent 调用 save_skill 创建的 skill 写入 skill_manage 表。
+     * 与 {@link #create} 不同:
+     * - 跳过 existsByName 冲突检查(retrievalName 已含 userId 前缀)
+     * - 不调用 SkillManageBridge.syncToRetrievalIndex(SkillSaveTool 已写 skill_index + 文件)
+     * - 直接 insert skill_manage 表,retrieval_name = retrievalName
+     *
+     * @param skill         Skill 实体(name/description/content/status 已填)
+     * @param ownerUserId   所有者 userId
+     * @param retrievalName 检索名(如 usr_user_001_quality_query)
+     */
+    @Transactional("gaussTransactionManager")
+    public void createForAgent(Skill skill, String ownerUserId, String retrievalName) {
+        skill.setOwnerUserId(ownerUserId);
+        skill.setStatus("ACTIVE");
+        skill.setLikeCount(0L);
+        skill.setRetrievalName(retrievalName);
+        skill.setCreatedAt(LocalDateTime.now());
+        skill.setUpdatedAt(LocalDateTime.now());
+        skillMapper.insertSkill(skill);
     }
 
     public Skill get(Long id) {
-        Skill s = skillManageMapper.selectById(id);
+        Skill s = skillMapper.selectById(id);
         if (s == null || "DELETED".equals(s.getStatus())) {
             throw new IllegalStateException("SkillNotFound: " + id);
         }
         return s;
     }
 
-    @Transactional
+    @Transactional("gaussTransactionManager")
     public Skill update(Long id, Skill patch, String userId) {
         Skill s = get(id);
         if (!s.getOwnerUserId().equals(userId)) {
@@ -177,7 +181,7 @@ public class SkillManageService {
             throw new IllegalStateException("SkillPendingApproval: " + id);
         }
         if (patch.getName() != null && !patch.getName().equals(s.getName())
-                && skillManageMapper.existsByName(patch.getName())) {
+                && skillMapper.existsByName(patch.getName())) {
             throw new IllegalStateException("SkillNameConflict: " + patch.getName());
         }
         if (patch.getName() != null) s.setName(patch.getName());
@@ -186,11 +190,18 @@ public class SkillManageService {
         if (patch.getCategory() != null) s.setCategory(patch.getCategory());
         if (patch.getTags() != null) s.setTags(patch.getTags());
         s.setUpdatedAt(LocalDateTime.now());
-        skillManageMapper.update(s);
-        return skillManageMapper.selectById(id);
+        skillMapper.updateSkill(s);
+        Skill updated = skillMapper.selectById(id);
+
+        // 双写桥接：覆盖 SKILL.md + 更新 skill_index
+        SkillManageBridge bridge = bridgeProvider.getIfAvailable();
+        if (bridge != null) {
+            bridge.syncToRetrievalIndex(updated);
+        }
+        return updated;
     }
 
-    @Transactional
+    @Transactional("gaussTransactionManager")
     public void delete(Long id, String userId) {
         Skill s = get(id);
         if (!s.getOwnerUserId().equals(userId)) {
@@ -199,23 +210,29 @@ public class SkillManageService {
         if (hasPendingPublish(id)) {
             throw new IllegalStateException("SkillPendingApproval: " + id);
         }
-        skillManageMapper.softDelete(id);
+        skillMapper.softDelete(id);
+
+        // 双写桥接：从检索索引移除
+        SkillManageBridge bridge = bridgeProvider.getIfAvailable();
+        if (bridge != null) {
+            bridge.removeFromRetrievalIndex(s.getRetrievalName());
+        }
     }
 
     // ==================== 版本历史 ====================
 
     /** 指定 Skill 的版本历史。 */
     public List<SkillVersionHistory> selectVersionsBySkillId(Long skillId) {
-        return versionHistoryMapper.selectBySkillId(skillId);
+        return skillMapper.selectVersionBySkillId(skillId);
     }
 
     /**
      * 存旧版本快照到版本历史(供草稿审批通过时调用)。
      */
     private void saveVersion(Skill skill, String editedBy, String editReason) {
-        Integer maxVersion = versionHistoryMapper.selectMaxVersion(skill.getId());
+        Integer maxVersion = skillMapper.selectMaxVersion(skill.getId());
         int nextVersion = maxVersion == null ? 1 : maxVersion + 1;
-        versionHistoryMapper.insert(SkillVersionHistory.builder()
+        skillMapper.insertSkillVersionHistory(SkillVersionHistory.builder()
                 .skillId(skill.getId())
                 .version(nextVersion)
                 .name(skill.getName())
@@ -231,78 +248,126 @@ public class SkillManageService {
 
     // ==================== 点赞(幂等 toggle + like_count 原子增减) ====================
 
-    @Transactional
+    @Transactional("gaussTransactionManager")
     public LikeStatus like(Long skillId, String userId) {
         assertActive(skillId);
-        if (likeMapper.selectByUserSkill(userId, skillId) != null) {
+        if (skillMapper.selectLikeByUserSkill(userId, skillId) != null) {
             return new LikeStatus(true, currentLikeCount(skillId));
         }
         try {
-            likeMapper.insert(SkillLike.builder()
+            skillMapper.insertSkillLike(SkillLike.builder()
                     .skillId(skillId).userId(userId).createdAt(LocalDateTime.now()).build());
-            skillManageMapper.incrementLikeCount(skillId);
+            skillMapper.incrementLikeCount(skillId);
         } catch (DuplicateKeyException e) {
             log.debug("concurrent like race, treat as idempotent: skill={} user={}", skillId, userId);
         }
         return new LikeStatus(true, currentLikeCount(skillId));
     }
 
-    @Transactional
+    @Transactional("gaussTransactionManager")
     public LikeStatus unlike(Long skillId, String userId) {
         assertActive(skillId);
-        if (likeMapper.selectByUserSkill(userId, skillId) == null) {
+        if (skillMapper.selectLikeByUserSkill(userId, skillId) == null) {
             return new LikeStatus(false, currentLikeCount(skillId));
         }
-        likeMapper.deleteByUserSkill(userId, skillId);
-        skillManageMapper.decrementLikeCount(skillId);
+        skillMapper.deleteLikeByUserSkill(userId, skillId);
+        skillMapper.decrementLikeCount(skillId);
         return new LikeStatus(false, currentLikeCount(skillId));
     }
 
     public LikeStatus getLikeStatus(Long skillId, String userId) {
-        boolean liked = likeMapper.selectByUserSkill(userId, skillId) != null;
+        boolean liked = skillMapper.selectLikeByUserSkill(userId, skillId) != null;
         return new LikeStatus(liked, currentLikeCount(skillId));
     }
 
     // ==================== 引用(幂等) ====================
 
-    @Transactional
+    @Transactional("gaussTransactionManager")
     public void reference(Long skillId, String userId) {
-        get(skillId); // 校验 Skill 存在
-        if (refMapper.existsByCreatorTarget(userId, skillId)) {
+        Skill skill = get(skillId); // 校验 Skill 存在
+        if (skillMapper.existsReferenceByCreatorTarget(userId, skillId)) {
             return; // 幂等
         }
         try {
-            refMapper.insert(SkillReference.builder()
+            skillMapper.insertSkillReference(SkillReference.builder()
                     .sourceSkillId(skillId).targetSkillId(skillId).creator(userId)
                     .createdAt(LocalDateTime.now()).build());
         } catch (DuplicateKeyException e) {
             log.debug("concurrent reference race, idempotent: skill={} user={}", skillId, userId);
         }
+
+        // PR5: 引用即复制 - 把 skill 复制到引用者的检索空间
+        if (!userId.equals(skill.getOwnerUserId())) {
+            copyToUserRetrievalSpace(skill, userId);
+        }
     }
 
-    @Transactional
+    /**
+     * PR5 - 把被引用的 Skill 复制到引用者的检索空间。
+     * 通过 SkillManageBridge.forkToUserSpace 完成:写 skill_index + SKILL.md + embedding。
+     */
+    private void copyToUserRetrievalSpace(Skill source, String userId) {
+        SkillManageBridge bridge = bridgeProvider.getIfAvailable();
+        if (bridge == null) return;
+
+        String originalRetrievalName = source.getRetrievalName();
+        if (originalRetrievalName == null || originalRetrievalName.isBlank()) {
+            log.warn("copyToUserRetrievalSpace: source skill {} has no retrievalName, skip", source.getId());
+            return;
+        }
+        String refRetrievalName = "ref_" + originalRetrievalName + "__u_" + userId;
+
+        try {
+            bridge.forkToUserSpace(source, refRetrievalName, userId);
+        } catch (Exception ex) {
+            log.warn("copyToUserRetrievalSpace failed for skill {} user {}: {}",
+                    source.getId(), userId, ex.getMessage());
+        }
+    }
+
+    @Transactional("gaussTransactionManager")
     public void unreference(Long skillId, String userId) {
-        refMapper.deleteByCreatorTarget(userId, skillId);
+        Skill skill = get(skillId);
+        skillMapper.deleteReferenceByCreatorTarget(userId, skillId);
+
+        // PR5: 清理引用副本
+        if (!userId.equals(skill.getOwnerUserId())) {
+            removeFromUserRetrievalSpace(skill, userId);
+        }
+    }
+
+    /**
+     * PR5 - 清理引用者检索空间中的 skill 副本。
+     */
+    private void removeFromUserRetrievalSpace(Skill source, String userId) {
+        String originalRetrievalName = source.getRetrievalName();
+        if (originalRetrievalName == null || originalRetrievalName.isBlank()) return;
+
+        String refRetrievalName = "ref_" + originalRetrievalName + "__u_" + userId;
+        SkillManageBridge bridge = bridgeProvider.getIfAvailable();
+        if (bridge != null) {
+            bridge.removeFromRetrievalIndex(refRetrievalName);
+        }
     }
 
     public List<Long> listMyReferences(String userId) {
-        return refMapper.selectSkillIdsByCreator(userId);
+        return skillMapper.selectReferencedSkillIdsByCreator(userId);
     }
 
     public List<String> listReferencers(Long skillId) {
-        return refMapper.selectReferencersBySkillId(skillId);
+        return skillMapper.selectReferencersBySkillId(skillId);
     }
 
     // ==================== 用户禁用(幂等) ====================
 
-    @Transactional
+    @Transactional("gaussTransactionManager")
     public void disable(Long skillId, String userId) {
         get(skillId); // 校验 Skill 存在
-        if (userDisableMapper.existsByUserSkill(userId, skillId)) {
+        if (skillMapper.existsDisableByUserSkill(userId, skillId)) {
             return; // 幂等
         }
         try {
-            userDisableMapper.insert(SkillUserDisable.builder()
+            skillMapper.insertSkillUserDisable(SkillUserDisable.builder()
                     .skillId(skillId).userId(userId)
                     .createdAt(LocalDateTime.now()).build());
             recordOperation(skillId, null, userId, "DISABLE", null, null);
@@ -311,15 +376,15 @@ public class SkillManageService {
         }
     }
 
-    @Transactional
+    @Transactional("gaussTransactionManager")
     public void enable(Long skillId, String userId) {
         get(skillId); // 校验 Skill 存在
-        userDisableMapper.deleteByUserSkill(userId, skillId);
+        skillMapper.deleteDisableByUserSkill(userId, skillId);
         recordOperation(skillId, null, userId, "ENABLE", null, null);
     }
 
     public boolean isDisabled(Long skillId, String userId) {
-        return userDisableMapper.existsByUserSkill(userId, skillId);
+        return skillMapper.existsDisableByUserSkill(userId, skillId);
     }
 
     // ==================== 发布审批 ====================
@@ -329,7 +394,7 @@ public class SkillManageService {
      *
      * @return 新建的发布记录 id
      */
-    @Transactional
+    @Transactional("gaussTransactionManager")
     public Long submitPublish(Long skillId, String targetType, String targetId, String targetName, String userId) {
         Skill s = get(skillId); // 不存在抛 IllegalStateException
         if (!s.getOwnerUserId().equals(userId)) {
@@ -348,10 +413,10 @@ public class SkillManageService {
                 .submitter(userId)
                 .currentApproverUserId(approverId)
                 .build();
-        publishMapper.insert(publish);
+        skillMapper.insertSkillPublish(publish);
         Long publishId = publish.getId();
 
-        approvalMapper.insert(SkillApproval.builder()
+        skillMapper.insertSkillApproval(SkillApproval.builder()
                 .publishId(publishId)
                 .draftId(null)
                 .action("SUBMIT")
@@ -368,9 +433,9 @@ public class SkillManageService {
     /**
      * 审批通过。仅当前审批人可操作,且发布记录须处于 PENDING 状态。
      */
-    @Transactional
+    @Transactional("gaussTransactionManager")
     public void approvePublish(Long publishId, String approverId, String comment) {
-        SkillPublish p = publishMapper.selectById(publishId);
+        SkillPublish p = skillMapper.selectPublishById(publishId);
         if (p == null) {
             throw new IllegalStateException("PublishNotFound: " + publishId);
         }
@@ -380,8 +445,8 @@ public class SkillManageService {
         if (!approverId.equals(p.getCurrentApproverUserId())) {
             throw new NotApproverException("NotApprover: " + approverId);
         }
-        publishMapper.updateStatus(publishId, "APPROVED", approverId, comment);
-        approvalMapper.insert(SkillApproval.builder()
+        skillMapper.updatePublishStatus(publishId, "APPROVED", approverId, comment);
+        skillMapper.insertSkillApproval(SkillApproval.builder()
                 .publishId(publishId)
                 .draftId(null)
                 .action("APPROVE")
@@ -396,9 +461,9 @@ public class SkillManageService {
     /**
      * 审批退回。仅当前审批人可操作,且发布记录须处于 PENDING 状态。
      */
-    @Transactional
+    @Transactional("gaussTransactionManager")
     public void rejectPublish(Long publishId, String approverId, String comment) {
-        SkillPublish p = publishMapper.selectById(publishId);
+        SkillPublish p = skillMapper.selectPublishById(publishId);
         if (p == null) {
             throw new IllegalStateException("PublishNotFound: " + publishId);
         }
@@ -408,8 +473,8 @@ public class SkillManageService {
         if (!approverId.equals(p.getCurrentApproverUserId())) {
             throw new NotApproverException("NotApprover: " + approverId);
         }
-        publishMapper.updateStatus(publishId, "REJECTED", approverId, comment);
-        approvalMapper.insert(SkillApproval.builder()
+        skillMapper.updatePublishStatus(publishId, "REJECTED", approverId, comment);
+        skillMapper.insertSkillApproval(SkillApproval.builder()
                 .publishId(publishId)
                 .draftId(null)
                 .action("REJECT")
@@ -423,27 +488,27 @@ public class SkillManageService {
 
     /** 返回指定审批人名下的待审发布列表。 */
     public List<SkillPublish> pendingPublishesForApprover(String userId) {
-        return publishMapper.selectPendingByApprover(userId);
+        return skillMapper.selectPendingPublishByApprover(userId);
     }
 
     /** 返回指定审批人已处理过的发布列表(APPROVED/REJECTED)。 */
     public List<SkillPublish> historyPublishesForApprover(String userId) {
-        return publishMapper.selectHistoryByApprover(userId);
+        return skillMapper.selectHistoryByApprover(userId);
     }
 
     /** 返回指定发布记录的审批历史(按时间正序)。 */
     public List<SkillApproval> publishApprovalHistory(Long publishId) {
-        return approvalMapper.selectByPublishId(publishId);
+        return skillMapper.selectApprovalByPublishId(publishId);
     }
 
     /** 返回指定 Skill 的全部发布记录(含 APPROVED 和 PENDING),按创建时间倒序。 */
     public List<SkillPublish> listPublishesBySkillId(Long skillId) {
-        return publishMapper.selectBySkillId(skillId);
+        return skillMapper.selectPublishBySkillId(skillId);
     }
 
     /** 判断指定 Skill 是否存在审批中的发布记录(审批中不可编辑/删除)。 */
     private boolean hasPendingPublish(Long skillId) {
-        return publishMapper.hasPendingBySkillId(skillId);
+        return skillMapper.hasPendingBySkillId(skillId);
     }
 
     // ==================== 变更草稿 ====================
@@ -452,15 +517,15 @@ public class SkillManageService {
      * 查看指定 Skill 的当前 PENDING 草稿,无草稿返回 null。
      */
     public SkillDraft getCurrentDraft(Long skillId) {
-        return draftMapper.selectPendingBySkillId(skillId);
+        return skillMapper.selectPendingDraftBySkillId(skillId);
     }
 
     /**
      * 审批通过:校验审批人(或签)-> 存旧版本到版本历史 -> 应用草稿到主表 -> 标记草稿 APPROVED。
      */
-    @Transactional
+    @Transactional("gaussTransactionManager")
     public void approveDraft(Long draftId, String approverId, String comment) {
-        SkillDraft draft = draftMapper.selectById(draftId);
+        SkillDraft draft = skillMapper.selectDraftById(draftId);
         if (draft == null) {
             throw new DraftNotFoundException("DraftNotFound: " + draftId);
         }
@@ -469,7 +534,7 @@ public class SkillManageService {
         }
         validateDraftApprover(draft.getSkillId(), approverId);
 
-        Skill old = skillManageMapper.selectById(draft.getSkillId());
+        Skill old = skillMapper.selectById(draft.getSkillId());
         saveVersion(old, approverId, "变更审批通过");
 
         Skill updated = Skill.builder()
@@ -482,15 +547,16 @@ public class SkillManageService {
                 .ownerUserId(old.getOwnerUserId())
                 .status("ACTIVE")
                 .likeCount(old.getLikeCount())
+                .retrievalName(old.getRetrievalName())
                 .createdAt(old.getCreatedAt())
                 .updatedAt(old.getUpdatedAt())
                 .deletedAt(old.getDeletedAt())
                 .build();
-        skillManageMapper.update(updated);
+        skillMapper.updateSkill(updated);
 
-        draftMapper.updateStatus(draftId, "APPROVED", approverId, comment);
+        skillMapper.updateDraftStatus(draftId, "APPROVED", approverId, comment);
 
-        approvalMapper.insert(SkillApproval.builder()
+        skillMapper.insertSkillApproval(SkillApproval.builder()
                 .publishId(null)
                 .draftId(draftId)
                 .action("APPROVE")
@@ -501,14 +567,20 @@ public class SkillManageService {
                 .build());
 
         recordOperation(draft.getSkillId(), null, approverId, "DRAFT_APPROVE", null, null);
+
+        // 双写桥接：草稿审批通过后同步新内容到检索索引
+        SkillManageBridge bridge = bridgeProvider.getIfAvailable();
+        if (bridge != null) {
+            bridge.syncToRetrievalIndex(updated);
+        }
     }
 
     /**
      * 审批退回:校验审批人(或签)-> 标记草稿 REJECTED。
      */
-    @Transactional
+    @Transactional("gaussTransactionManager")
     public void rejectDraft(Long draftId, String approverId, String comment) {
-        SkillDraft draft = draftMapper.selectById(draftId);
+        SkillDraft draft = skillMapper.selectDraftById(draftId);
         if (draft == null) {
             throw new DraftNotFoundException("DraftNotFound: " + draftId);
         }
@@ -517,9 +589,9 @@ public class SkillManageService {
         }
         validateDraftApprover(draft.getSkillId(), approverId);
 
-        draftMapper.updateStatus(draftId, "REJECTED", approverId, comment);
+        skillMapper.updateDraftStatus(draftId, "REJECTED", approverId, comment);
 
-        approvalMapper.insert(SkillApproval.builder()
+        skillMapper.insertSkillApproval(SkillApproval.builder()
                 .publishId(null)
                 .draftId(draftId)
                 .action("REJECT")
@@ -535,18 +607,18 @@ public class SkillManageService {
     /**
      * 待我审批的草稿列表。
      *
-     * <p>{@code SkillDraftMapper.selectPendingByApprover} 的 XML 实现未使用
+     * <p>{@code selectPendingDraftByApprover} 的 XML 实现未使用
      * {@code approverUserId} 参数,返回的是所有"有已 APPROVED 发布"的 PENDING 草稿。
      * 因此这里先取候选集,再按或签审批人(已批准发布的 {@code currentApproverUserId})过滤。
      */
     public List<SkillDraft> pendingDraftsForApprover(String userId) {
-        List<SkillDraft> candidates = draftMapper.selectPendingByApprover(userId);
+        List<SkillDraft> candidates = skillMapper.selectPendingDraftByApprover(userId);
         if (candidates == null || candidates.isEmpty()) {
             return List.of();
         }
         List<SkillDraft> result = new ArrayList<>(candidates.size());
         for (SkillDraft draft : candidates) {
-            List<SkillPublish> approved = publishMapper.selectApprovedBySkillId(draft.getSkillId());
+            List<SkillPublish> approved = skillMapper.selectApprovedBySkillId(draft.getSkillId());
             if (approved == null || approved.isEmpty()) {
                 continue;
             }
@@ -570,7 +642,7 @@ public class SkillManageService {
     }
 
     private long currentLikeCount(Long skillId) {
-        Long c = skillManageMapper.selectLikeCount(skillId);
+        Long c = skillMapper.selectLikeCount(skillId);
         return c == null ? 0L : c;
     }
 
@@ -584,7 +656,7 @@ public class SkillManageService {
      */
     private void recordOperation(Long skillId, Long publishId, String operator,
                                  String operation, String beforeData, String afterData) {
-        operationHistoryMapper.insert(SkillOperationHistory.builder()
+        skillMapper.insertSkillOperationHistory(SkillOperationHistory.builder()
                 .skillId(skillId)
                 .publishId(publishId)
                 .operator(operator)
@@ -600,7 +672,7 @@ public class SkillManageService {
      * {@code currentApproverUserId} 等于当前用户即通过。
      */
     private void validateDraftApprover(Long skillId, String approverId) {
-        List<SkillPublish> approved = publishMapper.selectApprovedBySkillId(skillId);
+        List<SkillPublish> approved = skillMapper.selectApprovedBySkillId(skillId);
         if (approved == null || approved.isEmpty()) {
             throw new IllegalStateException("NoApprovedPublish: " + skillId);
         }

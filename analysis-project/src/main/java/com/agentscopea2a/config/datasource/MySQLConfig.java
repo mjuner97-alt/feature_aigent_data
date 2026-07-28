@@ -54,7 +54,7 @@ import javax.sql.DataSource;
  */
 @Configuration
 @MapperScan(
-        basePackages = {MySQLConfig.MAPPER_PACKAGE, MySQLConfig.SKILL_MAPPER_PACKAGE},
+        basePackages = MySQLConfig.MAPPER_PACKAGE,
         sqlSessionFactoryRef = MySQLConfig.SSF_NAME)
 public class MySQLConfig {
 
@@ -62,7 +62,6 @@ public class MySQLConfig {
     static final String SSF_NAME = "mysqlSqlSessionFactory";
     static final String TX_NAME = "mysqlTransactionManager";
     static final String MAPPER_PACKAGE = "com.agentscopea2a.mapper.mysql";
-    static final String SKILL_MAPPER_PACKAGE = "com.agentscopea2a.v2.skillManager.mapper";
     static final String MAPPER_XML = "classpath*:mybatis/mapper/mysql/*.xml";
 
     /** MySQL HikariDataSource。所有参数由 {@code spring.datasource.hikari.mysql.*} 绑定。 */
@@ -81,7 +80,7 @@ public class MySQLConfig {
         factory.setDataSource(dataSource);
         factory.setMapperLocations(
                 new PathMatchingResourcePatternResolver().getResources(MAPPER_XML));
-        factory.setTypeAliasesPackage("com.agentscopea2a.entity,com.agentscopea2a.v2.skillManager.entity");
+        factory.setTypeAliasesPackage("com.agentscopea2a.entity");
         return factory.getObject();
     }
 

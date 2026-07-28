@@ -147,12 +147,14 @@ public class SkillRetrievalHook implements Hook, RuntimeContextAware {
         String question = ResponseCacheService.extractUserQuestion(event.getInputMessages());
         if (question.isEmpty()) return;
 
+        String userId = ctx.getUserId();  // PR5: 用于用户隔离
+
         LinkedHashMap<String, String> picked = new LinkedHashMap<>();
 
         String fingerprint = fingerprintOf(question);
         if (fingerprint != null) {
             Optional<String> l1User =
-                    vectorIndex.findByFingerprint(fingerprint, SkillEntry.SOURCE_USER_GENERATED);
+                    vectorIndex.findByFingerprint(fingerprint, SkillEntry.SOURCE_USER_GENERATED, userId);
             l1User.ifPresent(n -> picked.put(n, SkillEntry.SOURCE_USER_GENERATED));
         }
         log.debug("L1 user result for fp={}: picked={}", fingerprint, picked.keySet());
@@ -164,7 +166,7 @@ public class SkillRetrievalHook implements Hook, RuntimeContextAware {
             embeddingComputed = true;
             if (vec != null) {
                 List<SkillVectorIndex.SkillHit> hits =
-                        vectorIndex.topK(vec, topK, minCosine, SkillEntry.SOURCE_USER_GENERATED);
+                        vectorIndex.topK(vec, topK, minCosine, SkillEntry.SOURCE_USER_GENERATED, userId);
                 log.debug("L2 user topK (k={}, min={}) returned {} hit(s): {}",
                         topK, minCosine, hits.size(), hits);
                 for (SkillVectorIndex.SkillHit h : hits) {
@@ -176,7 +178,7 @@ public class SkillRetrievalHook implements Hook, RuntimeContextAware {
         if (picked.isEmpty()) {
             if (fingerprint != null) {
                 Optional<String> l1Auto =
-                        vectorIndex.findByFingerprint(fingerprint, SkillEntry.SOURCE_AUTO_SYNTHESIZED);
+                        vectorIndex.findByFingerprint(fingerprint, SkillEntry.SOURCE_AUTO_SYNTHESIZED, null);
                 l1Auto.ifPresent(n -> picked.put(n, SkillEntry.SOURCE_AUTO_SYNTHESIZED));
             }
             log.debug("L1 auto result for fp={}: picked={}", fingerprint, picked.keySet());
@@ -187,7 +189,7 @@ public class SkillRetrievalHook implements Hook, RuntimeContextAware {
                 }
                 if (vec != null) {
                     List<SkillVectorIndex.SkillHit> hits =
-                            vectorIndex.topK(vec, topK, minCosine, SkillEntry.SOURCE_AUTO_SYNTHESIZED);
+                            vectorIndex.topK(vec, topK, minCosine, SkillEntry.SOURCE_AUTO_SYNTHESIZED, null);
                     log.debug("L2 auto topK returned {} hit(s): {}", hits.size(), hits);
                     for (SkillVectorIndex.SkillHit h : hits) {
                         picked.put(h.name(), SkillEntry.SOURCE_AUTO_SYNTHESIZED);

@@ -20,18 +20,15 @@ import java.time.LocalDateTime;
 import java.util.Optional;
 
 /**
- * MySQL-backed registry for skill metadata. Single source of truth for skill version /
- * usage / status; the SKILL.md YAML frontmatter is regenerated from these rows whenever
- * {@code SkillSaveTool} writes a file.
+ * 基于 openGauss 的技能元数据注册表。是技能版本 / 使用次数 / 状态的唯一事实来源;
+ * 每当 {@code SkillSaveTool} 写入文件时,SKILL.md 的 YAML frontmatter 都会从这些行重新生成。
  *
- * <p>Lazy schema initialisation (mirrors {@code ResponseCacheService}) keeps boot resilient
- * when MySQL is briefly unreachable. {@code embedding}, {@code success_count}, {@code
- * failure_count} columns are reserved for PR3/PR4 — PR1 only writes the observability
- * baseline (version + usage_count).
+ * <p>延迟初始化 schema(与 {@code ResponseCacheService} 一致),保证 openGauss 短暂不可达时
+ * 启动仍然健壮。{@code embedding}、{@code success_count}、{@code failure_count} 列预留给
+ * PR3/PR4 - PR1 只写入可观测性基线(version + usage_count)。
  *
- * <p><b>Bean wiring:</b> Created by {@link com.agentscopea2a.v2.config.V2ToolConfig} — not
- * component-scanned. The old {@code @Repository}/{@code @Qualifier} annotations have been
- * removed since the bean is now explicitly constructed in the config class.
+ * <p><b>Bean 装配:</b> 由 {@link com.agentscopea2a.v2.config.V2ToolConfig} 创建 - 不走组件扫描。
+ * 旧的 {@code @Repository}/{@code @Qualifier} 注解已移除,因为该 bean 现在在配置类中显式构造。
  */
 public class SkillIndexRepository {
 
@@ -40,25 +37,21 @@ public class SkillIndexRepository {
     private static final String DDL =
             "CREATE TABLE IF NOT EXISTS skill_index ("
                     + "  name VARCHAR(128) PRIMARY KEY,"
-                    + "  fingerprint VARCHAR(255) NULL COMMENT 'PR3 L1 lookup key, NULL until then',"
+                    + "  fingerprint VARCHAR(255) NULL,"
                     + "  description TEXT,"
-                    + "  embedding LONGTEXT NULL COMMENT 'PR3 reserved; JSON-encoded float[] for MySQL<8.4',"
+                    + "  embedding TEXT NULL,"
                     + "  version INT NOT NULL DEFAULT 1,"
                     + "  usage_count INT NOT NULL DEFAULT 0,"
                     + "  success_count INT NOT NULL DEFAULT 0,"
                     + "  failure_count INT NOT NULL DEFAULT 0,"
                     + "  last_used TIMESTAMP NULL,"
-                    + "  evolving BOOLEAN NOT NULL DEFAULT FALSE COMMENT 'PR4 cross-JVM evolve lock',"
+                    + "  evolving BOOLEAN NOT NULL DEFAULT FALSE,"
                     + "  status VARCHAR(16) NOT NULL DEFAULT 'active',"
-                    + "  source VARCHAR(16) NOT NULL DEFAULT 'auto_synthesized'"
-                    + "      COMMENT 'skill origin: user_generated | auto_synthesized',"
-                    + "  tool_sequence_fingerprint VARCHAR(255) DEFAULT NULL COMMENT 'Phase 3 offline lookup key (tool-id sequence)',"
-                    + "  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP "
-                    + "             ON UPDATE CURRENT_TIMESTAMP,"
-                    + "  KEY idx_status (status),"
-                    + "  KEY idx_source (source),"
-                    + "  KEY idx_tool_seq_fp (tool_sequence_fingerprint)"
-                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+                    + "  source VARCHAR(16) NOT NULL DEFAULT 'auto_synthesized',"
+                    + "  owner_user_id VARCHAR(64) DEFAULT NULL,"
+                    + "  tool_sequence_fingerprint VARCHAR(255) DEFAULT NULL,"
+                    + "  updated_at TIMESTAMP NOT NULL DEFAULT now()"
+                    + ")";
 
     private final DataSource dataSource;
     private volatile boolean tableEnsured = false;
@@ -104,22 +97,35 @@ public class SkillIndexRepository {
      *     continues — file persistence is the authoritative path; this row is observability)
      */
     public int upsertOnSave(String name, String description, String source) {
+        return upsertOnSave(name, description, source, null);
+    }
+
+    /**
+     * PR5 - upsert with owner_user_id for user isolation.
+     *
+     * @param ownerUserId nullable - NULL for global (auto_synthesized or legacy);
+     *     non-null for user-scoped skills
+     * @return the final version after upsert, or -1 when the write failed
+     */
+    public int upsertOnSave(String name, String description, String source, String ownerUserId) {
         ensureTable();
         String sql =
-                "INSERT INTO skill_index (name, description, version, status, source)"
-                        + " VALUES (?, ?, 1, 'active', ?)"
-                        + " ON DUPLICATE KEY UPDATE"
-                        + "   description = VALUES(description),"
-                        + "   version = version + 1,"
-                        + "   status = 'active'";
+                "INSERT INTO skill_index (name, description, version, status, source, owner_user_id)"
+                        + " VALUES (?, ?, 1, 'active', ?, ?)"
+                        + " ON CONFLICT (name) DO UPDATE SET"
+                        + "   description = EXCLUDED.description,"
+                        + "   version = skill_index.version + 1,"
+                        + "   status = 'active',"
+                        + "   owner_user_id = EXCLUDED.owner_user_id";
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, name);
             ps.setString(2, description == null ? "" : description);
             ps.setString(3, source == null ? SkillEntry.SOURCE_AUTO_SYNTHESIZED : source);
+            ps.setString(4, ownerUserId);
             ps.executeUpdate();
         } catch (SQLException e) {
-            log.warn("upsertOnSave({}) failed: {}", name, e.getMessage());
+            log.warn("upsertOnSave({}, {}, {}, {}) failed: {}", name, description, source, ownerUserId, e.getMessage());
             return -1;
         }
         return findByName(name).map(SkillEntry::version).orElse(-1);
@@ -159,7 +165,7 @@ public class SkillIndexRepository {
     public void recordUsage(String name) {
         ensureTable();
         String sql =
-                "UPDATE skill_index SET usage_count = usage_count + 1, last_used = NOW()"
+                "UPDATE skill_index SET usage_count = usage_count + 1, last_used = now()"
                         + " WHERE name = ?";
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps = c.prepareStatement(sql)) {
@@ -458,26 +464,36 @@ public class SkillIndexRepository {
             try (Connection c = dataSource.getConnection();
                     Statement s = c.createStatement()) {
                 s.execute(DDL);
-                // Idempotent ALTER TABLE for existing tables that lack the new column
+                // 幂等的 ALTER TABLE,用于给已存在的旧表补齐新列
                 try {
-                    s.execute("ALTER TABLE skill_index ADD COLUMN tool_sequence_fingerprint VARCHAR(255) DEFAULT NULL COMMENT 'Phase 3 offline lookup key (tool-id sequence)'");
+                    s.execute("ALTER TABLE skill_index ADD COLUMN IF NOT EXISTS tool_sequence_fingerprint VARCHAR(255) DEFAULT NULL");
                 } catch (SQLException e) {
-                    // Column already exists — ignore
+                    // 列已存在 - 忽略
                 }
                 try {
-                    s.execute("CREATE INDEX idx_tool_seq_fp ON skill_index(tool_sequence_fingerprint)");
+                    s.execute("CREATE INDEX IF NOT EXISTS idx_tool_seq_fp ON skill_index(tool_sequence_fingerprint)");
                 } catch (SQLException e) {
-                    // Index already exists — ignore
+                    // 索引已存在 - 忽略
                 }
                 try {
-                    s.execute("ALTER TABLE skill_index ADD COLUMN source VARCHAR(16) NOT NULL DEFAULT 'auto_synthesized' COMMENT 'skill origin: user_generated | auto_synthesized'");
+                    s.execute("ALTER TABLE skill_index ADD COLUMN IF NOT EXISTS source VARCHAR(16) NOT NULL DEFAULT 'auto_synthesized'");
                 } catch (SQLException e) {
-                    // Column already exists - ignore
+                    // 列已存在 - 忽略
                 }
                 try {
-                    s.execute("CREATE INDEX idx_source ON skill_index(source)");
+                    s.execute("CREATE INDEX IF NOT EXISTS idx_source ON skill_index(source)");
                 } catch (SQLException e) {
-                    // Index already exists - ignore
+                    // 索引已存在 - 忽略
+                }
+                try {
+                    s.execute("ALTER TABLE skill_index ADD COLUMN IF NOT EXISTS owner_user_id VARCHAR(64) DEFAULT NULL");
+                } catch (SQLException e) {
+                    // 列已存在 - 忽略
+                }
+                try {
+                    s.execute("CREATE INDEX IF NOT EXISTS idx_owner_user_id ON skill_index(owner_user_id)");
+                } catch (SQLException e) {
+                    // 索引已存在 - 忽略
                 }
                 tableEnsured = true;
                 log.info("skill_index table ensured");

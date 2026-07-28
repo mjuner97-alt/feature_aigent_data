@@ -31,6 +31,7 @@ import com.agentscopea2a.v2.skills.SkillIndexRepository;
 import com.agentscopea2a.v2.skills.SkillSynthesisRunner;
 import com.agentscopea2a.v2.skills.SkillVectorIndex;
 import com.agentscopea2a.v2.skills.SkillVectorIndexVisibilityFilter;
+import com.agentscopea2a.v2.skillManager.service.SkillManageBridge;
 import io.agentscope.core.model.Model;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
 import io.agentscope.harness.agent.skill.curator.LocalApprovalGate;
@@ -83,7 +84,7 @@ public class V2SkillConfig {
 
     @Bean
     public SkillVectorIndex skillVectorIndex(
-            DataSource dataSource,
+            @org.springframework.beans.factory.annotation.Qualifier("gaussDataSource") DataSource dataSource,
             @Value("${harness.skills.retrieval.cache-enabled:true}") boolean cacheEnabled,
             @Value("${harness.skills.retrieval.cache-refresh-seconds:60}") int cacheRefreshSeconds) {
         log.info("SkillVectorIndex: cacheEnabled={}, cacheRefreshSeconds={}", cacheEnabled, cacheRefreshSeconds);
@@ -218,7 +219,8 @@ public class V2SkillConfig {
     // ── Stage 7: Skill candidate + metric classification + fingerprint ─────────
 
     @Bean
-    public SkillCandidateRepository skillCandidateRepository(DataSource dataSource) {
+    public SkillCandidateRepository skillCandidateRepository(
+            @org.springframework.beans.factory.annotation.Qualifier("gaussDataSource") DataSource dataSource) {
         SkillCandidateRepository repo = new SkillCandidateRepository(dataSource);
         repo.initSchema();
         return repo;
@@ -328,7 +330,7 @@ public class V2SkillConfig {
             SkillDistiller skillDistiller,
             ObjectProvider<SkillVectorIndex> vectorIndexProvider,
             ObjectProvider<EmbeddingClient> embeddingClientProvider,
-            DataSource dataSource,
+            @org.springframework.beans.factory.annotation.Qualifier("gaussDataSource") DataSource dataSource,
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
             @Value("${harness.skills.evolution.enabled:false}") boolean enabled,
             @Value("${harness.skills.evolution.fail-rate-evolve:0.3}") double failRateEvolve,
@@ -348,5 +350,24 @@ public class V2SkillConfig {
                 failRateBlacklist,
                 minUsesEvolve,
                 minUsesBlacklist);
+    }
+
+    /**
+     * 页面 Skill 双写桥接 - 把 SkillManageService 的写操作同步到检索链路
+     *（skill_index 表 + SKILL.md + embedding），让页面创建的 Skill 能被对话加载。
+     *
+     * <p>用 ObjectProvider 注入到 SkillManageService，避免启动顺序问题。
+     * 可通过 {@code harness.skills.page-bridge.enabled=false} 关闭。
+     */
+    @Bean
+    public SkillManageBridge skillManageBridge(
+            SkillIndexRepository indexRepo,
+            SkillVectorIndex vectorIndex,
+            EmbeddingClient embeddingClient,
+            @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
+            @Value("${harness.skills.page-bridge.enabled:true}") boolean enabled) {
+        Path skillsUserDir = Paths.get(workspacePath).toAbsolutePath().resolve("skills-user");
+        log.info("SkillManageBridge: enabled={}, skillsUserDir={}", enabled, skillsUserDir);
+        return new SkillManageBridge(indexRepo, vectorIndex, embeddingClient, skillsUserDir, enabled);
     }
 }

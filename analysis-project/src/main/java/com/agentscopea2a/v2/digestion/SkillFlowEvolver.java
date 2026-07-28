@@ -327,7 +327,7 @@ public class SkillFlowEvolver {
             // Pass null embeddingClient — we refresh the embedding synchronously below with richer text.
             // SkillSaveTool's async embed uses name+description which is less discriminative; the
             // synchronous embed here uses description + sample_questions for better bge-zh vectors.
-            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null, SkillEntry.SOURCE_AUTO_SYNTHESIZED);
+            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null, SkillEntry.SOURCE_AUTO_SYNTHESIZED, null);
             saver.saveSkill(evolved.name(), evolved.description(), evolved.body());
 
             if (vectorIndex != null && embeddingClient != null) {
