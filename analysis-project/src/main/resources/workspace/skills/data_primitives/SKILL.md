@@ -5,15 +5,15 @@ description: 数据计算原语索引 - 5 个 pandas 套路工具,Java 模板拼
 
 # 数据计算原语 (data_primitives)
 
-`analyze_data` 等子 agent **直接拥有** `data_aggregate`、`data_pivot` 等工具，直接调用即可，无需路由。
-
-代码由 Java 端按模板拼接,LLM 只传结构化参数 -- 完全消除「LLM 写 Python 错」这条故障路径。
+`analyze_data` 等子 agent 通过 `router_tool(paramsJson={"toolId":"data_aggregate",...})` 元工具路由调用
+`data_aggregate` / `data_top_n` / `data_compare_ratio` / `data_pivot` / `data_distribution` 五个计算原语。
+代码由 Java 端按模板拼接, LLM 只传结构化参数 -- 完全消除「LLM 写 Python 错」这条故障路径。
 
 ## 固定调用流程
 
-1. 在本技能中根据计算需求选一个工具(`data_aggregate` / `data_top_n` / `data_compare_ratio` / `data_pivot` / `data_distribution`)。
-2. 直接调用对应工具,传入参数。
-3. 直接使用工具返回的 markdown 表回答,不得编造数据。
+1. 在本技能中根据计算需求选一个工具 (`data_aggregate` / `data_top_n` / `data_compare_ratio` / `data_pivot` / `data_distribution`)。
+2. 调 `router_tool(paramsJson='{"toolId":"<选中的>","<参数>":"<值>"}')`, 可选先调 `toolMetaInfo(toolId=...)` 查参数元信息。
+3. 直接使用工具返回的 markdown 表回答, 不得编造数据。
 
 > csvPath 必须来自工具调用结果中「📦 完整数据已保存为 CSV artifact」段落给的那条路径。
 > 不要手工编造或改写路径(里面带 `<userId>/<taskId>` 前缀,改写会导致权限拦截)。
@@ -22,7 +22,7 @@ description: 数据计算原语索引 - 5 个 pandas 套路工具,Java 模板拼
 
 所有以「列名」为参数的字段(`groupByColumns` / `sortByColumn` / `joinKeyColumn` /
 `valueColumn` / `indexColumn` / `columnsColumn`)**接受任意 CSV 列名**,
-只要 `query_data` 取数时把该维度查出来落到 CSV 里就行。
+只要取数时(`wide_table_query` / `router_tool(quality_query_by_*)`)把该维度查出来落到 CSV 里就行。
 
 实际可用维度举例:**部门、应用 (F-CMS/F-Loan/...)、组 (个贷组/...)、产品线 (信贷产品线/...)、人员、版本、季度、需求项**
 等,**单维或任意多维组合**均可。
@@ -102,15 +102,15 @@ description: 数据计算原语索引 - 5 个 pandas 套路工具,Java 模板拼
 ## 调用示例
 
 ```
-data_aggregate(csvPath="/workspace/artifacts/alice/task_3f1a/qdq-abc.csv", groupByColumns=["部门","季度"], valueColumn="缺陷密度", aggFn="mean")
+router_tool(paramsJson='{"toolId":"data_aggregate","csvPath":"/workspace/artifacts/alice/task_3f1a/qdq-abc.csv","groupByColumns":["部门","季度"],"valueColumn":"缺陷密度","aggFn":"mean"}')
 ```
 
 ```
-data_compare_ratio(csvPathA="/workspace/artifacts/alice/q1.csv", csvPathB="/workspace/artifacts/alice/q2.csv", joinKeyColumn="应用", valueColumn="缺陷密度", labelA="2026Q1", labelB="2026Q2")
+router_tool(paramsJson='{"toolId":"data_compare_ratio","csvPathA":"/workspace/artifacts/alice/q1.csv","csvPathB":"/workspace/artifacts/alice/q2.csv","joinKeyColumn":"应用","valueColumn":"缺陷密度","labelA":"2026Q1","labelB":"2026Q2"}')
 ```
 
 ## 注意事项
 
 - 工具名必须完全照抄本技能中的英文字符串,不要自行改名。
 - 列名要和 CSV 表头精确匹配(包括括号全/半角、空格)。
-- 一份 CSV 拿不到的维度组合,需要先用 `query_data` 多取几份 CSV,再用 `data_compare_ratio` / `data_pivot` 合并。
+- 一份 CSV 拿不到的维度组合,需要先用 `router_tool(quality_query_by_*)` 或 `wide_table_query` 多取几份 CSV,再用 `data_compare_ratio` / `data_pivot` 合并。

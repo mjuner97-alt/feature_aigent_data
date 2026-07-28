@@ -22,7 +22,7 @@ description: ClickHouse default.trace_recent 表的会话统计指标加工 - �
 | createdAt | 创建时间 | DateTime | (时间维度, 验证阶段不进 filters) |
 | finishedAt | 完成时间 | Nullable(DateTime) | (不查) |
 | totalDurationMs | 总时长(ms) | UInt64 | 指标-平均时长 |
-| status | 状态 | String | 维度-状态 / 成功率分子 (典型值: completed/error/...) |
+| status | 状态 | String | 维度-状态 / 成功率分子 (实际值大写: `COMPLETED` / `ERROR` / `RUNNING` 等, 算成功率时按大写匹配) |
 | agentName | Agent 名 | String | 维度-agent |
 | eventCount | 事件数 | UInt32 | 指标-平均事件数 |
 
@@ -31,7 +31,7 @@ description: ClickHouse default.trace_recent 表的会话统计指标加工 - �
 1. **会话总数** = `count(*)`
 2. **平均时长 (ms)** = `sum(totalDurationMs) / count`
 3. **平均事件数** = `sum(eventCount) / count`
-4. **成功率** = `status='completed'` 行数 / 总数
+4. **成功率** = `status='COMPLETED'` 行数 / 总数
 5. **按 agent 分布** = groupBy `agentName` + count + avg(totalDurationMs) (走 python_exec pandas)
 6. **按 user 分布** = groupBy `userId` + count + avg(totalDurationMs) (同上)
 
@@ -61,6 +61,14 @@ clickhouse_query(
 > schema 由工具硬编码为 `default`, 不需要传 `default.trace_recent`, 只传表名即可。
 > LIMIT 由工具硬编码为 10000, 不需要传 limit 参数。
 
+> 🚨 **filters vs subqueryFilters 的区别** (重要):
+> - `filters`: 普通等值条件, value 是字面量 (字符串/数字), 走参数化绑定防注入。
+>   例: `{"userId":"alice"}`
+> - `subqueryFilters`: value 是子查询字符串, 用于"最新时间/最大版本"这类语义, 形如 `"(SELECT MAX(createdAt) FROM trace_recent)"`。
+>   value 必须形如 `(SELECT ...)` (圆括号包裹 + SELECT 开头), 禁分号/注释符/DDL/DML 关键字, 否则工具拒执行。
+>   例: `{"createdAt":"(SELECT MAX(createdAt) FROM trace_recent)"}`
+> 不要把子查询写到 `filters` 里 -- `filters` 走参数化绑定, 子查询会被当成字符串字面量与列等值比较, 永远返回 0 行。
+
 工具返回 markdown 预览 + `📦 CSV 路径: <path>` 行 (由 ArtifactHandoffHook 自动落 CSV)。
 
 > 🚨 **硬规则**: CSV 路径只能从 clickhouse_query 返回的 `📦 CSV 路径:` 行复制, 不要手工编造, 里面带 `<userId>/<taskId>` 前缀, 改写会被 ArtifactAccessMiddleware 越权拦截。
@@ -74,7 +82,8 @@ total = len(df)
 sum_duration = df['totalDurationMs'].sum()
 avg_duration = df['totalDurationMs'].mean()
 avg_events = df['eventCount'].mean()
-completed = (df['status'] == 'completed').sum()
+# 注意: status 实际值是大写 'COMPLETED', 不是小写 'completed'
+completed = (df['status'] == 'COMPLETED').sum()
 print(f"总数={total}, 平均时长={avg_duration}ms, 平均事件数={avg_events}, 完成数={completed}")
 ```
 
@@ -140,7 +149,8 @@ filters: `{}` (空, 全表扫)
 import pandas as pd
 df = pd.read_csv("/workspace/artifacts/<user>/<task>/ckq-xxx.csv")
 total = len(df)
-completed = (df['status'] == 'completed').sum()
+# 注意: status 实际值是大写 'COMPLETED'
+completed = (df['status'] == 'COMPLETED').sum()
 print(f"总数={total}, 完成数={completed}")
 ```
 
@@ -149,6 +159,27 @@ print(f"总数={total}, 完成数={completed}")
 ```
 arith(op="pct", numbers=[<completed>, <total>])
 ```
+
+## 示例 4: 取最新 createdAt 的会话 (subqueryFilters)
+
+用户问: "最近一次会话的详情?" (按 createdAt 最新的一行)
+
+filters: `{}` (空, 不限维度)
+subqueryFilters: `{"createdAt":"(SELECT MAX(createdAt) FROM trace_recent)"}`
+
+### Step 2 调用
+
+```
+clickhouse_query(
+  table="trace_recent",
+  fields=["sessionId","userId","createdAt","totalDurationMs","status","agentName","eventCount"],
+  filters={},
+  subqueryFilters={"createdAt":"(SELECT MAX(createdAt) FROM trace_recent)"}
+)
+```
+
+> 子查询 value 必须形如 `(SELECT ...)` (圆括号包裹 + SELECT 开头), 工具会校验白名单。
+> 禁止写 `"...; DROP TABLE x"` / `"SELECT MAX(..."` (缺括号) -- 工具一律拒执行。
 
 ## 注意事项
 

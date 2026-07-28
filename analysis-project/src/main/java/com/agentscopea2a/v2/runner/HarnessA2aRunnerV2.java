@@ -217,7 +217,16 @@ public class HarnessA2aRunnerV2 {
                         .triggerMessages(40)
                         .keepMessages(12)
                         .build())
-                .toolResultEviction(ToolResultEvictionConfig.defaults())
+                // 2026/07/28: 禁用 JAR 内置 ToolResultEvictionMiddleware。
+                // wide_table_query 返回 >80K 字符 CSV 时, middleware 调
+                // SandboxBackedFilesystem.uploadFiles 把结果写到容器内
+                // /large_tool_results/..., 内部走 ssh.exe + base64 payload,
+                // 命令行超过 Windows CreateProcess 8KB 上限 -> error=206。
+                // 业务侧 ArtifactHandoffHook (priority 12, PostActingEvent)
+                // 已经把大表格 CSV 落到 ArtifactStore 并把 tool result 替换成
+                // 短 handoff 消息 (pd.read_csv(...)), eviction 在这套架构下冗余。
+                // Linux 部署无此问题, 可恢复。
+                // .toolResultEviction(ToolResultEvictionConfig.defaults())
                 .enablePendingToolRecovery(true)
                 .enableSkillManageTool(skillManageConfig)
                 .enableSkillCurator(skillCuratorConfig)

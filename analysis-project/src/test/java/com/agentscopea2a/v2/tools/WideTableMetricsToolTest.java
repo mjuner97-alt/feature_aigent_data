@@ -30,11 +30,11 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 /**
  * Tests for {@link WideTableMetricsTool}.
  *
- * <p>Two layers:
+ * <p>Three layers:
  * <ul>
  *   <li>{@link #rejectMalformedTableName()} etc. -- pure validation, no DB needed.</li>
- *   <li>{@link #realQueryQ2_1ByDepartment()} -- hits real GaussDB, gated by OG_HOST env var.
- *       Run from IDE or {@code mvn test -DOG_HOST=... -DOG_USER=... -DOG_PASS=...}.</li>
+ *   <li>{@link #rejectSubqueryMissingParens()} etc. -- subquery filter value whitelist, no DB needed.</li>
+ *   <li>{@link #realQueryQ2_1ByDepartment()} -- hits real GaussDB, gated by OG_HOST env var.</li>
  * </ul>
  */
 class WideTableMetricsToolTest {
@@ -64,7 +64,7 @@ class WideTableMetricsToolTest {
         ToolResultBlock r = tool.wideTableQuery(
                 "productsgaussdb; DROP TABLE foo",
                 List.of("projectzh_no"),
-                null);
+                null, null);
         String text = extractText(r);
         assertTrue(text.contains("不是合法表名"),
                 "expected table name format rejection, got: " + text);
@@ -76,7 +76,7 @@ class WideTableMetricsToolTest {
         ToolResultBlock r = tool.wideTableQuery(
                 TABLE_NAME,
                 List.of("projectzh_no; DROP TABLE foo"),
-                null);
+                null, null);
         String text = extractText(r);
         assertTrue(text.contains("字段名") && text.contains("不合法"),
                 "expected field name rejection, got: " + text);
@@ -88,7 +88,8 @@ class WideTableMetricsToolTest {
         ToolResultBlock r = tool.wideTableQuery(
                 TABLE_NAME,
                 List.of("projectzh_no"),
-                Map.of("dev_dept; DROP", "x"));
+                Map.of("dev_dept; DROP", "x"),
+                null);
         String text = extractText(r);
         assertTrue(text.contains("filter 列名") && text.contains("不合法"),
                 "expected filter column name rejection, got: " + text);
@@ -100,10 +101,81 @@ class WideTableMetricsToolTest {
         ToolResultBlock r = tool.wideTableQuery(
                 TABLE_NAME,
                 List.of("projectzh_no"),
-                null);
+                null, null);
         String text = extractText(r);
         assertTrue(text.contains("gaussDataSource 未注入"),
                 "expected missing datasource rejection, got: " + text);
+    }
+
+    // ----------------------------------------------------------------------
+    // subqueryFilters whitelist - no DB
+    // ----------------------------------------------------------------------
+
+    @Test
+    void rejectSubqueryMissingParens() {
+        WideTableMetricsTool tool = new WideTableMetricsTool(null);
+        ToolResultBlock r = tool.wideTableQuery(
+                TABLE_NAME,
+                List.of("projectzh_no"),
+                null,
+                Map.of("in_date", "SELECT MAX(in_date) FROM " + TABLE_NAME));
+        String text = extractText(r);
+        assertTrue(text.contains("subqueryFilters") && text.contains("必须形如 (SELECT ...)"),
+                "expected subquery format rejection, got: " + text);
+    }
+
+    @Test
+    void rejectSubqueryWithDrop() {
+        WideTableMetricsTool tool = new WideTableMetricsTool(null);
+        // value 形如 (SELECT ...; DROP TABLE x) -- 通过 SUBQUERY_PATTERN 但被 FORBIDDEN 拦
+        ToolResultBlock r = tool.wideTableQuery(
+                TABLE_NAME,
+                List.of("projectzh_no"),
+                null,
+                Map.of("in_date", "(SELECT MAX(in_date) FROM " + TABLE_NAME + "; DROP TABLE x)"));
+        String text = extractText(r);
+        assertTrue(text.contains("禁用关键字") && text.contains("DROP"),
+                "expected DROP keyword rejection, got: " + text);
+    }
+
+    @Test
+    void rejectSubqueryNonStringValue() {
+        WideTableMetricsTool tool = new WideTableMetricsTool(null);
+        ToolResultBlock r = tool.wideTableQuery(
+                TABLE_NAME,
+                List.of("projectzh_no"),
+                null,
+                Map.of("in_date", 123));
+        String text = extractText(r);
+        assertTrue(text.contains("必须是字符串") && text.contains("(SELECT ..."),
+                "expected non-string value rejection, got: " + text);
+    }
+
+    @Test
+    void rejectSubqueryColumnInjection() {
+        WideTableMetricsTool tool = new WideTableMetricsTool(null);
+        ToolResultBlock r = tool.wideTableQuery(
+                TABLE_NAME,
+                List.of("projectzh_no"),
+                null,
+                Map.of("in_date; DROP", "(SELECT '2026-07-01')"));
+        String text = extractText(r);
+        assertTrue(text.contains("subqueryFilters 列名") && text.contains("不合法"),
+                "expected subquery column name rejection, got: " + text);
+    }
+
+    @Test
+    void acceptWellFormedSubqueryInValidation() {
+        // 形如 (SELECT ...) 的合法 value 应通过 value 白名单校验阶段 (走到 DB 后才报 dataSource 未注入)
+        WideTableMetricsTool tool = new WideTableMetricsTool(null);
+        ToolResultBlock r = tool.wideTableQuery(
+                TABLE_NAME,
+                List.of("projectzh_no"),
+                null,
+                Map.of("in_date", "(SELECT MAX(in_date) FROM " + TABLE_NAME + ")"));
+        String text = extractText(r);
+        assertTrue(text.contains("gaussDataSource 未注入"),
+                "expected well-formed subquery to pass value validation and fail at DB-wiring stage, got: " + text);
     }
 
     // ----------------------------------------------------------------------
@@ -115,11 +187,11 @@ class WideTableMetricsToolTest {
     void realQueryQ2_1ByDepartment() {
         DataSource ds = buildRealDataSource();
         WideTableMetricsTool tool = new WideTableMetricsTool(ds);
-        // Actual data: 杭州开发二部 / 2026年7月份版本 -> 45 rows (verified via direct SQL)
         ToolResultBlock r = tool.wideTableQuery(
                 TABLE_NAME,
                 Q2_1_FIELDS,
-                Map.of("dev0dept", "杭州开发二部", "version0plan", "2026年7月份版本"));
+                Map.of("dev0dept", "杭州开发二部", "version0plan", "2026年7月份版本"),
+                null);
         String text = extractText(r);
         System.out.println("=== realQueryQ2_1ByDepartment output ===\n" + text);
         assertNotNull(text);
@@ -134,11 +206,11 @@ class WideTableMetricsToolTest {
     void realQueryQ2_1ByProductLine() {
         DataSource ds = buildRealDataSource();
         WideTableMetricsTool tool = new WideTableMetricsTool(ds);
-        // Actual data: 资产管理部 (the only product0line value present in dev data)
         ToolResultBlock r = tool.wideTableQuery(
                 TABLE_NAME,
                 Q2_1_FIELDS,
-                Map.of("product0line", "资产管理部"));
+                Map.of("product0line", "资产管理部"),
+                null);
         String text = extractText(r);
         System.out.println("=== realQueryQ2_1ByProductLine output ===\n" + text);
         assertTrue(text.contains("[wide_table_query]"));
@@ -151,11 +223,11 @@ class WideTableMetricsToolTest {
     void realQueryQ2_1ByStatGroup() {
         DataSource ds = buildRealDataSource();
         WideTableMetricsTool tool = new WideTableMetricsTool(ds);
-        // Actual data: 杭州二部金融市场组 -> subset of 45 rows in 杭州开发二部
         ToolResultBlock r = tool.wideTableQuery(
                 TABLE_NAME,
                 Q2_1_FIELDS,
-                Map.of("stat0group", "杭州二部金融市场组"));
+                Map.of("stat0group", "杭州二部金融市场组"),
+                null);
         String text = extractText(r);
         System.out.println("=== realQueryQ2_1ByStatGroup output ===\n" + text);
         assertTrue(text.contains("[wide_table_query]"));
@@ -166,11 +238,10 @@ class WideTableMetricsToolTest {
     void realQueryRejectsUnknownColumn() {
         DataSource ds = buildRealDataSource();
         WideTableMetricsTool tool = new WideTableMetricsTool(ds);
-        // Try the DDL column name (with underscore) - should be rejected since DB has '0' instead.
         ToolResultBlock r = tool.wideTableQuery(
                 TABLE_NAME,
                 List.of("dev_dept", "score_status_2_1"),
-                null);
+                null, null);
         String text = extractText(r);
         System.out.println("=== realQueryRejectsUnknownColumn output ===\n" + text);
         assertTrue(text.contains("不在表") && text.contains("实际列集合内"),

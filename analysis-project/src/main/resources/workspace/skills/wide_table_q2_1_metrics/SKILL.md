@@ -8,25 +8,26 @@ description: 宽表 dsqa_dwd_req_item_app_portrait_wide_inf 的 Q2-1 打分指�
 > 本 skill 是 `wide_table_*_metrics` 系列的一个实例。业务方新增 Q2-2 / Q3 / Q4 等指标时,
 > 复制本目录改: frontmatter description / 字段映射 / 公式 / python_exec 模板里的列名,
 > 即可生成新 skill (如 `wide_table_q3_metrics`), 不要改 Java 代码。
-> Agent 通过 SkillRetrievalHook 按用户问题语义自动检索对应 skill。
+> Agent 通过显式调 `load_skill_through_path(name="wide_table_q2_1_metrics")` 加载本 skill 全文到 context。
+> (SkillRetrievalHook 已在 2026/07/25 禁用, LLM 不会自动看到 skill, 必须显式加载。)
 
 业务表: `dsqa_dwd_req_item_app_portrait_wide_inf` (schema 由 `wide_table_query` 工具固定为 `remote_app`, 调用时只传表名)
 适用问题: 用户问 "X部门/X产品线/X统计组 + X月版本 + Q2-1 的完成率/达标率"
 
 ## 字段中英文映射 (8 个核心字段)
 
-| 表字段 | 中文 | 用途 |
-|---|---|---|
-| projectzh_no | 总行项目编号 | 项目唯一标识 |
-| projectzh_name | 总行项目名称 | 项目名 |
-| dev_dept | 开发部门 | 维度-部门 |
-| version_plan | 版本计划 | 时间筛选 (必填) |
-| app | 涉及应用 | 维度-应用 (SQL 保留字, 工具已自动双引号) |
-| product_line | 产品线 | 维度-产品线 |
-| stat_group | 统计组 | 维度-统计组 |
-| score_status_2_1 | Q2-1打分状态 | 完成数计算 (值: 已完成/未完成/进行中) |
-| standard_is_2_1 | Q2-1是否达标 | 达标数计算 (值: 已达标/未达标) |
-
+| 表字段              | 中文       | 用途                        |
+|------------------|----------|---------------------------|
+| projectzh_no     | 总行项目编号   | 项目唯一标识                    |
+| projectzh_name   | 总行项目名称   | 项目名                       |
+| dev_dept         | 开发部门     | 维度-部门                     |
+| version_plan     | 版本计划     | 时间筛选 (必填)                 |
+| app              | 涉及应用     | 维度-应用 (SQL 保留字, 工具已自动双引号) |
+| product_line     | 产品线      | 维度-产品线                    |
+| stat_group       | 统计组      | 维度-统计组                    |
+| score_status_2_1 | Q2-1打分状态 | 完成数计算 (值: 已完成/未完成/进行中)    |
+| standard_is_2_1  | Q2-1是否达标 | 达标数计算 (值: 已达标/未达标)        |
+| in_date          | 入库日期     | 数据更新日期                    |
 ## 4 个公共指标公式
 
 1. **Q2-1完成数** = `score_status_2_1 = '已完成'` 的行数
@@ -52,7 +53,8 @@ description: 宽表 dsqa_dwd_req_item_app_portrait_wide_inf 的 Q2-1 打分指�
 wide_table_query(
   table="dsqa_dwd_req_item_app_portrait_wide_inf",
   fields=["projectzh_no","projectzh_name","dev_dept","version_plan","app","product_line","stat_group","score_status_2_1","standard_is_2_1"],
-  filters={"dev_dept":"杭州开发二部","version_plan":"2026年7月份版本"}
+  filters={"dev_dept":"杭州开发二部","version_plan":"2026年7月份版本"},
+  subqueryFilters={"in_date":"(SELECT MAX(in_date) FROM dsqa_dwd_req_item_app_portrait_wide_inf)"}
 )
 ```
 
@@ -60,6 +62,14 @@ wide_table_query(
 
 > schema 由工具硬编码为 `remote_app`, 不需要传 `remote_app.dsqa_dwd_...`, 只传表名即可。
 > LIMIT 由工具硬编码为 10000, 不需要传 limit 参数, 工具自动取全量 (最多 10000 行)。
+
+> 🚨 **filters vs subqueryFilters 的区别** (重要):
+> - `filters`: 普通等值条件, value 是字面量 (字符串/数字), 走参数化绑定防注入。
+>   例: `{"dev_dept":"杭州开发二部"}`
+> - `subqueryFilters`: value 是子查询字符串, 用于"最新日期/最大版本"这类语义, 形如 `"(SELECT MAX(in_date) FROM ...)"`。
+>   value 必须形如 `(SELECT ...)` (圆括号包裹 + SELECT 开头), 禁分号/注释符/DDL/DML 关键字, 否则工具拒执行。
+>   例: `{"in_date":"(SELECT MAX(in_date) FROM dsqa_dwd_req_item_app_portrait_wide_inf)"}`
+> 不要把子查询写到 `filters` 里 -- `filters` 走参数化绑定, 子查询会被当成字符串字面量与列等值比较, 永远返回 0 行。
 
 工具返回 markdown 预览 + `📦 CSV 路径: <path>` 行 (由 ArtifactHandoffHook 自动落 CSV)。
 

@@ -30,11 +30,11 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 /**
  * Tests for {@link ClickHouseWideTableMetricsTool}.
  *
- * <p>Two layers (mirrors {@link WideTableMetricsToolTest}):
+ * <p>Three layers:
  * <ul>
  *   <li>{@link #rejectMalformedTableName()} etc. -- pure validation, no DB needed.</li>
- *   <li>{@link #realQueryTraceRecent()} -- hits real ClickHouse, gated by CK_HOST env var.
- *       Run from IDE or {@code mvn test -DCK_HOST=... -DCK_USER=... -DCK_PASS=...}.</li>
+ *   <li>{@link #rejectSubqueryMissingParens()} etc. -- subquery filter value whitelist, no DB needed.</li>
+ *   <li>{@link #realQueryTraceRecent()} -- hits real ClickHouse, gated by CK_HOST env var.</li>
  * </ul>
  */
 class ClickHouseWideTableMetricsToolTest {
@@ -54,7 +54,7 @@ class ClickHouseWideTableMetricsToolTest {
         ToolResultBlock r = tool.clickhouseQuery(
                 "trace_recent; DROP TABLE foo",
                 List.of("sessionId"),
-                null);
+                null, null);
         String text = extractText(r);
         assertTrue(text.contains("不是合法表名"),
                 "expected table name format rejection, got: " + text);
@@ -66,7 +66,7 @@ class ClickHouseWideTableMetricsToolTest {
         ToolResultBlock r = tool.clickhouseQuery(
                 TABLE_NAME,
                 List.of("sessionId; DROP TABLE foo"),
-                null);
+                null, null);
         String text = extractText(r);
         assertTrue(text.contains("字段名") && text.contains("不合法"),
                 "expected field name rejection, got: " + text);
@@ -78,7 +78,8 @@ class ClickHouseWideTableMetricsToolTest {
         ToolResultBlock r = tool.clickhouseQuery(
                 TABLE_NAME,
                 List.of("sessionId"),
-                Map.of("userId; DROP", "x"));
+                Map.of("userId; DROP", "x"),
+                null);
         String text = extractText(r);
         assertTrue(text.contains("filter 列名") && text.contains("不合法"),
                 "expected filter column name rejection, got: " + text);
@@ -90,10 +91,82 @@ class ClickHouseWideTableMetricsToolTest {
         ToolResultBlock r = tool.clickhouseQuery(
                 TABLE_NAME,
                 List.of("sessionId"),
-                null);
+                null, null);
         String text = extractText(r);
         assertTrue(text.contains("clickHouseDataSource 未注入"),
                 "expected missing datasource rejection, got: " + text);
+    }
+
+    // ----------------------------------------------------------------------
+    // subqueryFilters whitelist - no DB
+    // ----------------------------------------------------------------------
+
+    @Test
+    void rejectSubqueryMissingParens() {
+        ClickHouseWideTableMetricsTool tool = new ClickHouseWideTableMetricsTool(null);
+        // value 缺圆括号包裹 -> 不匹配 ^\(SELECT ... \)$
+        ToolResultBlock r = tool.clickhouseQuery(
+                TABLE_NAME,
+                List.of("sessionId"),
+                null,
+                Map.of("createdAt", "SELECT MAX(createdAt) FROM trace_recent"));
+        String text = extractText(r);
+        assertTrue(text.contains("subqueryFilters") && text.contains("必须形如 (SELECT ...)"),
+                "expected subquery format rejection, got: " + text);
+    }
+
+    @Test
+    void rejectSubqueryWithDrop() {
+        ClickHouseWideTableMetricsTool tool = new ClickHouseWideTableMetricsTool(null);
+        // value 形如 (SELECT ...; DROP TABLE x) -- 通过 SUBQUERY_PATTERN 但被 FORBIDDEN 拦
+        ToolResultBlock r = tool.clickhouseQuery(
+                TABLE_NAME,
+                List.of("sessionId"),
+                null,
+                Map.of("createdAt", "(SELECT MAX(createdAt) FROM trace_recent; DROP TABLE x)"));
+        String text = extractText(r);
+        assertTrue(text.contains("禁用关键字") && text.contains("DROP"),
+                "expected DROP keyword rejection, got: " + text);
+    }
+
+    @Test
+    void rejectSubqueryNonStringValue() {
+        ClickHouseWideTableMetricsTool tool = new ClickHouseWideTableMetricsTool(null);
+        ToolResultBlock r = tool.clickhouseQuery(
+                TABLE_NAME,
+                List.of("sessionId"),
+                null,
+                Map.of("createdAt", 123));
+        String text = extractText(r);
+        assertTrue(text.contains("必须是字符串") && text.contains("(SELECT ..."),
+                "expected non-string value rejection, got: " + text);
+    }
+
+    @Test
+    void rejectSubqueryColumnInjection() {
+        ClickHouseWideTableMetricsTool tool = new ClickHouseWideTableMetricsTool(null);
+        ToolResultBlock r = tool.clickhouseQuery(
+                TABLE_NAME,
+                List.of("sessionId"),
+                null,
+                Map.of("userId; DROP", "(SELECT 'alice')"));
+        String text = extractText(r);
+        assertTrue(text.contains("subqueryFilters 列名") && text.contains("不合法"),
+                "expected subquery column name rejection, got: " + text);
+    }
+
+    @Test
+    void acceptWellFormedSubqueryInValidation() {
+        // 形如 (SELECT ...) 的合法 value 应通过 value 白名单校验阶段 (走到 DB 后才报 dataSource 未注入)
+        ClickHouseWideTableMetricsTool tool = new ClickHouseWideTableMetricsTool(null);
+        ToolResultBlock r = tool.clickhouseQuery(
+                TABLE_NAME,
+                List.of("sessionId"),
+                null,
+                Map.of("createdAt", "(SELECT MAX(createdAt) FROM trace_recent)"));
+        String text = extractText(r);
+        assertTrue(text.contains("clickHouseDataSource 未注入"),
+                "expected well-formed subquery to pass value validation and fail at DB-wiring stage, got: " + text);
     }
 
     // ----------------------------------------------------------------------
@@ -108,7 +181,7 @@ class ClickHouseWideTableMetricsToolTest {
         ToolResultBlock r = tool.clickhouseQuery(
                 TABLE_NAME,
                 TRACE_FIELDS,
-                null);
+                null, null);
         String text = extractText(r);
         System.out.println("=== realQueryTraceRecent output ===\n" + text);
         assertNotNull(text);
@@ -120,14 +193,31 @@ class ClickHouseWideTableMetricsToolTest {
 
     @Test
     @EnabledIfEnvironmentVariable(named = "CK_HOST", matches = ".+")
+    void realQueryWithSubqueryFilter() {
+        DataSource ds = buildRealDataSource();
+        ClickHouseWideTableMetricsTool tool = new ClickHouseWideTableMetricsTool(ds);
+        ToolResultBlock r = tool.clickhouseQuery(
+                TABLE_NAME,
+                TRACE_FIELDS,
+                null,
+                Map.of("createdAt", "(SELECT MAX(createdAt) FROM trace_recent)"));
+        String text = extractText(r);
+        System.out.println("=== realQueryWithSubqueryFilter output ===\n" + text);
+        assertTrue(text.contains("[clickhouse_query]"),
+                "expected clickhouse_query marker, got: " + text);
+        assertTrue(text.contains("subqueryFilters="),
+                "expected subqueryFilters echoed in result, got: " + text);
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "CK_HOST", matches = ".+")
     void realQueryRejectsUnknownColumn() {
         DataSource ds = buildRealDataSource();
         ClickHouseWideTableMetricsTool tool = new ClickHouseWideTableMetricsTool(ds);
-        // sessionId_real 不在 trace_recent 实际列集合内 (实际列是 sessionId camelCase)
         ToolResultBlock r = tool.clickhouseQuery(
                 TABLE_NAME,
                 List.of("sessionId_real", "userId"),
-                null);
+                null, null);
         String text = extractText(r);
         System.out.println("=== realQueryRejectsUnknownColumn output ===\n" + text);
         assertTrue(text.contains("不在表") && text.contains("实际列集合内"),
@@ -142,7 +232,7 @@ class ClickHouseWideTableMetricsToolTest {
         ToolResultBlock r = tool.clickhouseQuery(
                 "trace_nonexistent_table",
                 List.of("sessionId"),
-                null);
+                null, null);
         String text = extractText(r);
         System.out.println("=== realQueryRejectsUnknownTable output ===\n" + text);
         assertTrue(text.contains("system.columns 查不到列"),

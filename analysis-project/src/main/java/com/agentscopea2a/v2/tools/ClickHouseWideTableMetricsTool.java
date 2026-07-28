@@ -77,6 +77,25 @@ public class ClickHouseWideTableMetricsTool {
     private static final Pattern COLUMN_NAME_PATTERN =
             Pattern.compile("^[a-zA-Z_][a-zA-Z0-9_]*$");
 
+    /**
+     * 子查询 filter value 严格白名单: 必须形如 {@code (SELECT ...)} (圆括号包裹 + SELECT 开头)。
+     * 用于支持 {@code {"in_date":"(SELECT MAX(in_date) FROM ...)"}} 这类语义,
+     * value 不走参数化绑定而是字符串拼到 WHERE, 所以必须严格限制形态防 SQL 注入。
+     */
+    private static final Pattern SUBQUERY_PATTERN =
+            Pattern.compile("^\\(\\s*SELECT\\s+[\\s\\S]+\\)$", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * 子查询内禁出现的 SQL 关键字 / 元字符: 分号、注释符、DDL/DML 关键字。
+     * 白名单已强制 {@code (SELECT ...)} 形式, 这些关键字本就不该出现在子查询里,
+     * 出现即视为注入企图, 一律拒执行。
+     */
+    private static final Pattern SUBQUERY_FORBIDDEN_PATTERN = Pattern.compile(
+            "(;|--|/\\*|\\*/|\\bDROP\\b|\\bDELETE\\b|\\bUPDATE\\b|\\bINSERT\\b|"
+                    + "\\bALTER\\b|\\bTRUNCATE\\b|\\bCREATE\\b|\\bGRANT\\b|\\bREVOKE\\b|"
+                    + "\\bMERGE\\b|\\bCALL\\b|\\bEXEC\\b|\\bEXECUTE\\b)",
+            Pattern.CASE_INSENSITIVE);
+
     /** LIMIT 固定 10000, 不在工具参数中暴露给 LLM。 */
     private static final int ROW_LIMIT = 10_000;
 
@@ -91,7 +110,9 @@ public class ClickHouseWideTableMetricsTool {
             description =
                     "通用 ClickHouse 宽表查询. SELECT 指定字段 + WHERE 等值筛选 -> markdown 表 (>=4 行时自动落 CSV artifact + 预览). "
                             + "不做聚合/计数, 聚合用 python_exec + pandas. "
-                            + "filters 是 JSON 列->值映射, 等值 AND 连接 (不支持 OR/IN/LIKE). "
+                            + "filters 是 JSON 列->值映射, 等值 AND 连接 (不支持 OR/IN/LIKE), 值走参数化绑定防注入. "
+                            + "subqueryFilters 是 JSON 列->子查询字符串映射, 用于等值比较子查询场景 (如 {\"in_date\":\"(SELECT MAX(in_date) FROM trace_recent)\"}), "
+                            + "value 必须形如 (SELECT ...) 且禁 DDL/DML 关键字. "
                             + "列名会在 system.columns 中校验, schema 固定为 default, 只需传表名.")
     public ToolResultBlock clickhouseQuery(
             @ToolParam(
@@ -110,7 +131,15 @@ public class ClickHouseWideTableMetricsTool {
                                     "WHERE 等值条件, JSON 对象, 如 {\"userId\":\"alice\",\"status\":\"completed\"}. "
                                             + "列名必须在表内存在, 值走参数化绑定防注入.",
                             required = false)
-                    Map<String, Object> filters) {
+                    Map<String, Object> filters,
+            @ToolParam(
+                            name = "subqueryFilters",
+                            description =
+                                    "WHERE 等值子查询条件, JSON 对象, 如 {\"in_date\":\"(SELECT MAX(in_date) FROM trace_recent)\"}. "
+                                    + "value 必须形如 (SELECT ...), 禁分号/注释符/DDL/DML 关键字 (DROP/INSERT/UPDATE 等). "
+                                    + "用于 '最新日期'/'最大版本' 这类语义, value 直接字符串拼到 WHERE 不走参数化绑定 (故白名单严格).",
+                            required = false)
+                    Map<String, Object> subqueryFilters) {
 
         if (table == null || table.isBlank()) {
             return ToolResultBlock.text("clickhouse_query 拒绝执行: table 为空,必须是宽表名 (schema 固定为 default)");
@@ -138,6 +167,31 @@ public class ClickHouseWideTableMetricsTool {
             if (!COLUMN_NAME_PATTERN.matcher(col).matches()) {
                 return ToolResultBlock.text(
                         "clickhouse_query 拒绝执行: filter 列名 '" + col + "' 不合法 (仅字母数字下划线)");
+            }
+        }
+
+        Map<String, Object> subqueryMap = subqueryFilters == null
+                ? Collections.emptyMap()
+                : new LinkedHashMap<>(subqueryFilters);
+        for (Map.Entry<String, Object> e : subqueryMap.entrySet()) {
+            String col = e.getKey();
+            if (!COLUMN_NAME_PATTERN.matcher(col).matches()) {
+                return ToolResultBlock.text(
+                        "clickhouse_query 拒绝执行: subqueryFilters 列名 '" + col + "' 不合法 (仅字母数字下划线)");
+            }
+            Object v = e.getValue();
+            if (!(v instanceof String sv)) {
+                return ToolResultBlock.text(
+                        "clickhouse_query 拒绝执行: subqueryFilters['" + col + "'] 的 value 必须是字符串, 形如 (SELECT ...), 实际类型: "
+                                + (v == null ? "null" : v.getClass().getSimpleName()));
+            }
+            if (!SUBQUERY_PATTERN.matcher(sv).matches()) {
+                return ToolResultBlock.text(
+                        "clickhouse_query 拒绝执行: subqueryFilters['" + col + "'] 的 value 必须形如 (SELECT ...), 实际: " + sv);
+            }
+            if (SUBQUERY_FORBIDDEN_PATTERN.matcher(sv).find()) {
+                return ToolResultBlock.text(
+                        "clickhouse_query 拒绝执行: subqueryFilters['" + col + "'] 含禁用关键字/元字符 (;/--/*/DROP/DELETE/UPDATE/INSERT/ALTER/TRUNCATE/CREATE/GRANT/REVOKE/MERGE/CALL/EXEC/EXECUTE), 实际: " + sv);
             }
         }
 
@@ -178,9 +232,20 @@ public class ClickHouseWideTableMetricsTool {
                         "clickhouse_query 拒绝执行: filter 列 " + invalidFilterCols + " 不在表 " + table
                                 + " 的实际列集合内.");
             }
+            List<String> invalidSubCols = new ArrayList<>();
+            for (String col : subqueryMap.keySet()) {
+                if (!actualColumns.contains(col)) {
+                    invalidSubCols.add(col);
+                }
+            }
+            if (!invalidSubCols.isEmpty()) {
+                return ToolResultBlock.text(
+                        "clickhouse_query 拒绝执行: subqueryFilters 列 " + invalidSubCols + " 不在表 " + table
+                                + " 的实际列集合内.");
+            }
 
-            String sql = buildSql(tableName, fields, filterMap);
-            log.info("clickhouse_query SQL: {} | filter values: {}", sql, filterMap.values());
+            String sql = buildSql(tableName, fields, filterMap, subqueryMap);
+            log.info("clickhouse_query SQL: {} | filter values: {} | subqueryFilters: {}", sql, filterMap.values(), subqueryMap);
 
             try (PreparedStatement ps = conn.prepareStatement(sql)) {
                 int idx = 1;
@@ -188,34 +253,48 @@ public class ClickHouseWideTableMetricsTool {
                     ps.setObject(idx++, v);
                 }
                 try (ResultSet rs = ps.executeQuery()) {
-                    return renderResult(table, fields, filterMap, rs, System.currentTimeMillis() - start);
+                    return renderResult(table, fields, filterMap, subqueryMap, rs, System.currentTimeMillis() - start);
                 }
             }
         } catch (SQLException e) {
-            log.error("clickhouse_query SQL 失败: table={} fields={} filters={}", table, fields, filterMap, e);
+            log.error("clickhouse_query SQL 失败: table={} fields={} filters={} subqueryFilters={}", table, fields, filterMap, subqueryMap, e);
             return ToolResultBlock.text(
                     "clickhouse_query SQL 失败: " + e.getClass().getSimpleName() + ": " + e.getMessage());
         }
     }
 
     // ======================================================================
-    // SQL 拼接 -- 列名一律双引号 (ClickHouse 0.6.x 接受 ANSI 双引号)
+    // SQL 拼接 -- 列名一律双引号; filters 走参数化绑定 (?), subqueryFilters 直接拼 (已白名单)
     // ======================================================================
 
     private static String buildSql(String tableName,
-                                   List<String> fields, Map<String, Object> filters) {
+                                   List<String> fields,
+                                   Map<String, Object> filters,
+                                   Map<String, Object> subqueryFilters) {
         StringBuilder sb = new StringBuilder("SELECT ");
         for (int i = 0; i < fields.size(); i++) {
             if (i > 0) sb.append(", ");
             sb.append(quoteIdent(fields.get(i)));
         }
         sb.append(" FROM ").append(quoteIdent(SCHEMA)).append(".").append(quoteIdent(tableName));
+        boolean hasWhere = false;
         if (!filters.isEmpty()) {
             sb.append(" WHERE ");
+            hasWhere = true;
             int i = 0;
             for (String col : filters.keySet()) {
                 if (i > 0) sb.append(" AND ");
                 sb.append(quoteIdent(col)).append(" = ?");
+                i++;
+            }
+        }
+        if (!subqueryFilters.isEmpty()) {
+            sb.append(hasWhere ? " AND " : " WHERE ");
+            int i = 0;
+            for (Map.Entry<String, Object> e : subqueryFilters.entrySet()) {
+                if (i > 0) sb.append(" AND ");
+                // value 已通过 SUBQUERY_PATTERN 白名单校验 (形如 (SELECT ...)), 直接字符串拼接
+                sb.append(quoteIdent(e.getKey())).append(" = ").append(e.getValue());
                 i++;
             }
         }
@@ -233,11 +312,15 @@ public class ClickHouseWideTableMetricsTool {
 
     private static ToolResultBlock renderResult(String table, List<String> fields,
                                                 Map<String, Object> filters,
+                                                Map<String, Object> subqueryFilters,
                                                 ResultSet rs, long elapsedMs) throws SQLException {
         StringBuilder md = new StringBuilder();
         md.append("[clickhouse_query] table=").append(table);
         if (!filters.isEmpty()) {
             md.append(" filters=").append(filters);
+        }
+        if (!subqueryFilters.isEmpty()) {
+            md.append(" subqueryFilters=").append(subqueryFilters);
         }
         md.append(" limit=").append(ROW_LIMIT).append("\n\n");
 
