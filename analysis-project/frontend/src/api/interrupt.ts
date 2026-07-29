@@ -1,5 +1,5 @@
 /**
- * POST /v2/ai/chat/interrupt client — interrupt-only, no resume.
+ * POST /ai/chat/interrupt client — interrupt-only, no resume.
  *
  * <p>Sends an interrupt request that:
  * <ol>
@@ -11,9 +11,9 @@
  * <p>The frontend should:
  * <ol>
  *   <li>Call this endpoint to interrupt the current call</li>
- *   <li>Close the original /v2/ai/chat SSE stream</li>
+ *   <li>Close the original /ai/chat SSE stream</li>
  *   <li>Show the normal chat input for the user to type a follow-up message</li>
- *   <li>Send the follow-up as a regular /v2/ai/chat request to resume</li>
+ *   <li>Send the follow-up as a regular /ai/chat request to resume</li>
  * </ol>
  */
 
@@ -30,7 +30,7 @@ export interface InterruptResponse {
 export async function triggerInterrupt(
   req: InterruptRequest,
 ): Promise<InterruptResponse> {
-  const res = await fetch('/v2/ai/chat/interrupt', {
+  const res = await fetch('/ai/chat/interrupt', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),

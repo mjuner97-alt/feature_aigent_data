@@ -21,29 +21,25 @@ import io.agentscope.harness.agent.skill.curator.SkillVisibilityFilter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayList;
 import java.util.List;
 
 /**
  * Bridges {@link SkillVectorIndex} into the v2 skill curator pipeline as a
  * {@link SkillVisibilityFilter}.
  *
- * <p>During agent execution, the curator asks all registered
- * {@link SkillVisibilityFilter}s to trim the full skill catalogue down to the
- * ones relevant for the current request. This filter:
+ * <p>2026/07/29: filter body trimmed to pass-through. Original logic narrowed
+ * the catalogue by question embedding top-K, but that blocked hot-loading: a
+ * newly-dropped {@code SKILL.md} had no {@code skill_index} row and was filtered
+ * out before the LLM ever saw it. With retrieval already disabled
+ * ({@code harness.skills.retrieval.enabled=false}) and the analyze_data workflow
+ * using explicit {@code load_skill_through_path}, the vector filter was dead
+ * weight. Pass-through lets the JAR {@code HarnessSkillMiddleware} surface all
+ * {@code skills/} entries in the catalogue; the LLM picks by name+description
+ * and loads body on demand.
  *
- * <ol>
- *   <li>Extracts the user question from the {@link RuntimeContext} (via the
- *       dimension state that the {@code DimensionStateMiddleware} stored).</li>
- *   <li>Generates an embedding for the question using the configured
- *       {@link com.agentscopea2a.v2.skills.EmbeddingClient}.</li>
- *   <li>Calls {@link SkillVectorIndex#topK(float[], int, float)} to find the
- *       most semantically similar skills.</li>
- *   <li>Returns only those skills whose names appear in the top-K results.</li>
- * </ol>
- *
- * <p>Fallback: if embedding generation fails or the index is empty, passes all
- * skills through unchanged (the existing full-injection path).
+ * <p>Fields/constructor kept intact so {@link com.agentscopea2a.v2.config.V2SkillConfig}
+ * bean wiring and {@code CompositeFilter} wrapping in {@code HarnessA2aRunnerV2}
+ * don't need to change. They're unused now and can be cleaned up in a follow-up.
  */
 public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
 
@@ -54,12 +50,6 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
     private final int topK;
     private final float minCosine;
 
-    /**
-     * @param index            the vector/fingerprint index for L1/L2 skill lookup
-     * @param embeddingClient   client for generating question embeddings
-     * @param topK              maximum number of skills to return from vector search
-     * @param minCosine         minimum cosine similarity threshold for L2 search
-     */
     public SkillVectorIndexVisibilityFilter(SkillVectorIndex index,
                                              EmbeddingClient embeddingClient,
                                              int topK,
@@ -75,72 +65,7 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
         if (all == null || all.isEmpty()) {
             return List.of();
         }
-
-        // Extract the user question from RuntimeContext (stored by DimensionStateMiddleware)
-        String question = extractQuestion(ctx);
-        if (question == null || question.isBlank()) {
-            log.debug("No question in RuntimeContext, passing all {} skills through", all.size());
-            return all;
-        }
-
-        // Generate embedding for the question
-        float[] queryVec;
-        try {
-            queryVec = embeddingClient.embed(question);
-        } catch (Exception e) {
-            log.warn("Embedding generation failed for question ({} chars), passing all skills: {}",
-                    question.length(), e.getMessage());
-            return all;
-        }
-
-        if (queryVec == null || queryVec.length == 0) {
-            log.debug("Empty embedding returned, passing all {} skills through", all.size());
-            return all;
-        }
-
-        // L2 vector search for top-K matching skills
-        List<SkillVectorIndex.SkillHit> hits = index.topK(queryVec, topK, minCosine);
-        if (hits.isEmpty()) {
-            log.debug("No skill hits from vector search for question ({} chars), passing all skills", question.length());
-            return all;
-        }
-
-        // Filter: keep only skills whose names appear in the hit list
-        java.util.Set<String> hitNames = new java.util.HashSet<>();
-        for (SkillVectorIndex.SkillHit hit : hits) {
-            hitNames.add(hit.name());
-        }
-
-        List<AgentSkill> filtered = new ArrayList<>();
-        for (AgentSkill skill : all) {
-            if (hitNames.contains(skill.getName())) {
-                filtered.add(skill);
-            }
-        }
-
-        log.debug("SkillVectorIndexVisibilityFilter: {} → {} skills (topK={} minCosine={})",
-                all.size(), filtered.size(), topK, minCosine);
-
-        // If filtering removed everything (unlikely but possible), fall back to all
-        return filtered.isEmpty() ? all : filtered;
-    }
-
-    private String extractQuestion(RuntimeContext ctx) {
-        // Try to get the question from RuntimeContext state (stored by DimensionStateMiddleware)
-        if (ctx == null) return null;
-
-        // The DimensionStateMiddleware stores the processed question as a typed attribute
-        String question = ctx.get("lastQuestion", String.class);
-        if (question != null && !question.isBlank()) {
-            return question;
-        }
-
-        // Fallback: try untyped attribute
-        Object questionObj = ctx.get("lastQuestion");
-        if (questionObj instanceof String q && !q.isBlank()) {
-            return q;
-        }
-
-        return null;
+        log.debug("SkillVectorIndexVisibilityFilter pass-through: {} skills (hot-load enabled)", all.size());
+        return all;
     }
 }

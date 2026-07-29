@@ -60,10 +60,13 @@ public class ArtifactAccessMiddleware implements MiddlewareBase {
     private static final String READ_FILE_TOOL = "read_file";
     private static final String WRITE_FILE_TOOL = "write_file";
     private static final String SHELL_EXECUTE_TOOL = "shell_execute";
+    private static final String LIST_FILES_TOOL = "list_files";
+    private static final String GLOB_TOOL = "glob";
 
     private static final String PATH_PARAM = "path";
     private static final String COMMAND_PARAM = "command";
     private static final String WORKING_DIR_PARAM = "working_directory";
+    private static final String PATTERN_PARAM = "pattern";
 
     private final ArtifactStore artifactStore;
 
@@ -108,6 +111,8 @@ public class ArtifactAccessMiddleware implements MiddlewareBase {
                 replacement = enforcePath(toolUse, PATH_PARAM, "write", artifactCtx, artifactsRoot, allowedPrefix);
             } else if (SHELL_EXECUTE_TOOL.equals(toolName)) {
                 replacement = enforceShellExecute(toolUse, artifactCtx, artifactsRoot, allowedPrefix);
+            } else if (LIST_FILES_TOOL.equals(toolName) || GLOB_TOOL.equals(toolName)) {
+                replacement = enforceListPath(toolUse, artifactCtx, artifactsRoot, allowedPrefix);
             }
 
             if (replacement != null) {
@@ -134,20 +139,42 @@ public class ArtifactAccessMiddleware implements MiddlewareBase {
             return null;
         }
 
-        // Only enforce inside the artifacts tree
+        // Relative path (e.g. "reports/foo.md") - rewrite to the user's artifact bucket
+        // so writes/reads are isolated per (userId, sessionId). Without this, the LLM's
+        // relative-path writes land in the shared workspace root (<workspace>/reports/foo.md)
+        // and bleed across users - a previous test's file shows up as "already exists" for
+        // the next user, and read_file can pick up another user's artifacts.
+        if (!requested.startsWith("/")) {
+            String rewritten = allowedPrefix + requested;
+            log.info("Rewrote relative {} path: {} -> {} (user={}, task={})",
+                    verb, requested, rewritten, ctx.userBucket(), ctx.taskBucket());
+            Map<String, Object> newInput = new java.util.HashMap<>(toolUse.getInput());
+            newInput.put(paramName, rewritten);
+            return rebuildBlock(toolUse, newInput);
+        }
+
+        // Absolute path outside the artifacts tree (e.g. /tmp/foo, /etc/passwd) - block.
+        // The workspace root itself is shared across users; only the artifacts subtree
+        // is bucketed per tenant.
         if (!requested.startsWith(artifactsRoot)) {
-            return null;
-        }
-        if (requested.startsWith(allowedPrefix)) {
-            return null;
+            log.warn("Blocked absolute {} outside artifacts tree: requested={} (user={}, task={})",
+                    verb, requested, ctx.userBucket(), ctx.taskBucket());
+            Map<String, Object> newInput = new java.util.HashMap<>(toolUse.getInput());
+            newInput.put(paramName, "/__forbidden__/" + ctx.userBucket() + "/" + ctx.taskBucket());
+            return rebuildBlock(toolUse, newInput);
         }
 
-        log.warn("Blocked cross-tenant artifact {}: requested={} allowed={} (user={}, task={})",
-                verb, requested, allowedPrefix, ctx.userBucket(), ctx.taskBucket());
+        // Inside artifacts tree but cross-tenant - block.
+        if (!requested.startsWith(allowedPrefix)) {
+            log.warn("Blocked cross-tenant artifact {}: requested={} allowed={} (user={}, task={})",
+                    verb, requested, allowedPrefix, ctx.userBucket(), ctx.taskBucket());
 
-        Map<String, Object> newInput = new java.util.HashMap<>(toolUse.getInput());
-        newInput.put(paramName, "/__forbidden__/" + ctx.userBucket() + "/" + ctx.taskBucket());
-        return rebuildBlock(toolUse, newInput);
+            Map<String, Object> newInput = new java.util.HashMap<>(toolUse.getInput());
+            newInput.put(paramName, "/__forbidden__/" + ctx.userBucket() + "/" + ctx.taskBucket());
+            return rebuildBlock(toolUse, newInput);
+        }
+
+        return null;
     }
 
     private ToolUseBlock enforceShellExecute(ToolUseBlock toolUse, ArtifactContext ctx,
@@ -251,11 +278,72 @@ public class ArtifactAccessMiddleware implements MiddlewareBase {
                 .build();
     }
 
+    /**
+     * Enforce list_files/glob path scoping. If the LLM passes an artifact root path
+     * or a cross-tenant path, redirect to the user's own bucket so they only see their
+     * own files. If the path is already within the user's bucket, leave it alone.
+     */
+    private ToolUseBlock enforceListPath(ToolUseBlock toolUse, ArtifactContext ctx,
+                                          String artifactsRoot, String allowedPrefix) {
+        // list_files uses "path", glob uses "pattern"
+        String pathParam = LIST_FILES_TOOL.equals(toolUse.getName()) ? PATH_PARAM : PATTERN_PARAM;
+        String requested = extractString(toolUse.getInput(), pathParam);
+        if (requested == null || requested.isBlank()) {
+            // No path specified — redirect to user's bucket root
+            Map<String, Object> newInput = new java.util.HashMap<>(toolUse.getInput());
+            newInput.put(pathParam, allowedPrefix);
+            log.info("Redirected {} path to user bucket: {} -> {} (user={}, task={})",
+                    toolUse.getName(), requested, allowedPrefix, ctx.userBucket(), ctx.taskBucket());
+            return rebuildBlock(toolUse, newInput);
+        }
+
+        // Relative path - rewrite to user's bucket (same rationale as enforcePath:
+        // without this, list_files/glob on "reports/" lists the shared workspace's
+        // reports dir, bleeding across users).
+        if (!requested.startsWith("/")) {
+            String rewritten = allowedPrefix + requested;
+            log.info("Rewrote relative {} path: {} -> {} (user={}, task={})",
+                    toolUse.getName(), requested, rewritten, ctx.userBucket(), ctx.taskBucket());
+            Map<String, Object> newInput = new java.util.HashMap<>(toolUse.getInput());
+            newInput.put(pathParam, rewritten);
+            return rebuildBlock(toolUse, newInput);
+        }
+
+        // Absolute path outside artifacts tree - redirect to user bucket
+        if (!requested.startsWith(artifactsRoot)) {
+            log.warn("Redirected absolute {} outside artifacts: {} -> {} (user={}, task={})",
+                    toolUse.getName(), requested, allowedPrefix, ctx.userBucket(), ctx.taskBucket());
+            Map<String, Object> newInput = new java.util.HashMap<>(toolUse.getInput());
+            newInput.put(pathParam, allowedPrefix);
+            return rebuildBlock(toolUse, newInput);
+        }
+
+        // Path is under artifacts tree but not the user's bucket - redirect to user bucket
+        if (!requested.startsWith(allowedPrefix)) {
+            Map<String, Object> newInput = new java.util.HashMap<>(toolUse.getInput());
+            newInput.put(pathParam, allowedPrefix);
+            log.warn("Redirected cross-tenant {} path: {} -> {} (user={}, task={})",
+                    toolUse.getName(), requested, allowedPrefix, ctx.userBucket(), ctx.taskBucket());
+            return rebuildBlock(toolUse, newInput);
+        }
+
+        return null;
+    }
+
     // ==================== Helpers ====================
 
     private ArtifactContext resolveContext(RuntimeContext ctx) {
         if (fixedContext != null) {
             return fixedContext;
+        }
+        // Priority: pinned ArtifactContext from main agent's RuntimeContext.
+        // This ensures sub-agents (whose sessionId="sub-xxx") use the parent's
+        // artifact bucket instead of their own isolated bucket.
+        if (ctx != null) {
+            ArtifactContext pinned = ctx.get(ArtifactContext.class);
+            if (pinned != null) {
+                return pinned;
+            }
         }
         return ArtifactContext.from(ctx);
     }

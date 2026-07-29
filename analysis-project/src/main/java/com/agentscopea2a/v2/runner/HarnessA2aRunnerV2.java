@@ -17,8 +17,10 @@ package com.agentscopea2a.v2.runner;
 
 import com.agentscopea2a.v2.config.AgentExecutionConfig;
 import com.agentscopea2a.v2.config.HarnessRunnerProperties;
+import com.agentscopea2a.v2.memory.MysqlMemoryStore;
 import com.agentscopea2a.v2.model.FallbackModelDecorator;
 import com.agentscopea2a.v2.model.ModelProvider;
+import com.agentscopea2a.v2.tools.PerUserMemoryGetTool;
 import com.agentscopea2a.v2.tools.V2ToolGroupAdapter;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
@@ -72,6 +74,7 @@ public class HarnessA2aRunnerV2 {
     private final ObjectProvider<DistributedStore> distributedStoreProvider;
     private final ObjectProvider<SubagentRegistrar> subagentRegistrarProvider;
     private final ModelProvider modelProvider;
+    private final ObjectProvider<MysqlMemoryStore> mysqlMemoryStoreProvider;
 
     public HarnessA2aRunnerV2(
             HarnessRunnerProperties runnerProperties,
@@ -87,7 +90,8 @@ public class HarnessA2aRunnerV2 {
             ObjectProvider<RemoteFilesystemSpec> remoteFilesystemProvider,
             ObjectProvider<DistributedStore> distributedStoreProvider,
             ObjectProvider<SubagentRegistrar> subagentRegistrarProvider,
-            ModelProvider modelProvider) {
+            ModelProvider modelProvider,
+            ObjectProvider<MysqlMemoryStore> mysqlMemoryStoreProvider) {
         this.runnerProperties = runnerProperties;
         this.dataSource = dataSource;
         this.skillManageConfig = skillManageConfig;
@@ -102,6 +106,7 @@ public class HarnessA2aRunnerV2 {
         this.distributedStoreProvider = distributedStoreProvider;
         this.subagentRegistrarProvider = subagentRegistrarProvider;
         this.modelProvider = modelProvider;
+        this.mysqlMemoryStoreProvider = mysqlMemoryStoreProvider;
 
         log.info("HarnessA2aRunnerV2 initialized: ready to create agents per request");
     }
@@ -212,11 +217,28 @@ public class HarnessA2aRunnerV2 {
                         .triggerMessages(40)
                         .keepMessages(12)
                         .build())
-                .toolResultEviction(ToolResultEvictionConfig.defaults())
+                // 2026/07/28: 禁用 JAR 内置 ToolResultEvictionMiddleware。
+                // wide_table_query 返回 >80K 字符 CSV 时, middleware 调
+                // SandboxBackedFilesystem.uploadFiles 把结果写到容器内
+                // /large_tool_results/..., 内部走 ssh.exe + base64 payload,
+                // 命令行超过 Windows CreateProcess 8KB 上限 -> error=206。
+                // 业务侧 ArtifactHandoffHook (priority 12, PostActingEvent)
+                // 已经把大表格 CSV 落到 ArtifactStore 并把 tool result 替换成
+                // 短 handoff 消息 (pd.read_csv(...)), eviction 在这套架构下冗余。
+                // Linux 部署无此问题, 可恢复。
+                // .toolResultEviction(ToolResultEvictionConfig.defaults())
                 .enablePendingToolRecovery(true)
                 .enableSkillManageTool(skillManageConfig)
                 .enableSkillCurator(skillCuratorConfig)
                 .enableSkillPromotionGate(localApprovalGate, new CompositeFilter(skillVisibilityFilter))
+                // 2026/07/25: 禁掉 JAR 自动注册的文件系统/shell/memory 工具,避免 LLM 浪费 token
+                // 探查文件系统。python_exec / arith / router_tool 是 v2 工具,由 SubagentRegistrar
+                // 显式注册到 toolkit,不受这些 flag 影响。memory_get 在 build 后用 PerUserMemoryGetTool
+                // 重新注册(per-user 隔离)。session_search / session_list / session_save 无 disable
+                // flag,见下方 post-build removeTool。
+                .disableFilesystemTools()
+                .disableShellTool()
+                .disableMemoryTools()
                 .middlewares(middlewares);
 
         // Enable AsyncToolMiddleware so long-running tool calls get offloaded to the
@@ -297,6 +319,42 @@ public class HarnessA2aRunnerV2 {
         }
 
         HarnessAgent agent = builder.build();
+
+        // 2026/07/25: 显式移除 JAR 自动注册的 session 工具(无 disable flag)。
+        // 防止 LLM 把 token 烧在 session_search / session_list 探查上。
+        try {
+            io.agentscope.core.tool.Toolkit postBuildToolkit = agent.getToolkit();
+            for (String tn : new String[]{"session_search", "session_list", "session_save"}) {
+                try {
+                    postBuildToolkit.removeTool(tn);
+                } catch (Exception ignored) {
+                    // tool not registered by JAR in this config - fine
+                }
+            }
+        } catch (Exception e) {
+            log.warn("HarnessA2aRunnerV2: failed to strip session tools: {}", e.getMessage());
+        }
+
+        // Replace the framework's memory_get tool with a per-user DB-backed version.
+        // The framework's MemoryGetTool reads from workspaceManager.readManagedWorkspaceFileUtf8()
+        // which falls back to the shared root MEMORY.md (readWithOverride -> readFileQuietly).
+        // In shared-container mode this causes cross-tenant leaks: a new user calling
+        // memory_get("MEMORY.md") sees a previous user's curated memory. PerUserMemoryGetTool
+        // reads from MysqlMemoryStore (agent_memory table, keyed by user_id) instead.
+        // Only wired when mysql-mirror is enabled; otherwise falls back to framework behavior.
+        MysqlMemoryStore mysqlMemoryStore = mysqlMemoryStoreProvider.getIfAvailable();
+        if (mysqlMemoryStore != null) {
+            try {
+                io.agentscope.core.tool.Toolkit toolkit = agent.getToolkit();
+                toolkit.removeTool("memory_get");
+                toolkit.registerTool(new PerUserMemoryGetTool(mysqlMemoryStore));
+                log.info("HarnessA2aRunnerV2: replaced framework memory_get with PerUserMemoryGetTool (per-user DB-backed)");
+            } catch (Exception e) {
+                log.warn("HarnessA2aRunnerV2: failed to replace memory_get tool: {}", e.getMessage());
+            }
+        } else {
+            log.info("HarnessA2aRunnerV2: MysqlMemoryStore not available (mysql-mirror disabled), keeping framework memory_get");
+        }
 
         // Plan mode removed from main agent (supervisor is a pure router, not a planner).
         // Plan mode is now enabled on the analyze_data subagent instead — see SubagentRegistrar.

@@ -53,7 +53,8 @@ public class DeterministicChecker {
             "router_tool", "data_aggregate", "data_top_n", "data_compare_ratio",
             "data_pivot", "data_distribution",
             "quality_query_by_version_department", "quality_query_by_department_quarter",
-            "quality_query_by_version_person", "quality_query_by_quarter_person");
+            "quality_query_by_version_person", "quality_query_by_quarter_person",
+            "wide_table_query");
 
     private static final Pattern CSV_PATH = Pattern.compile("[\\w/\\-]+\\.csv");
     private static final Pattern HAS_DIGIT = Pattern.compile("\\d");

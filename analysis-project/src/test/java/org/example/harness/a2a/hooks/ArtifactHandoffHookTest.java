@@ -170,6 +170,22 @@ class ArtifactHandoffHookTest {
     }
 
     @Test
+    void excludedLoadSkillThroughPathPassesThroughUntouched() {
+        // load_skill_through_path returns SKILL.md content which contains field-mapping
+        // markdown tables - those are documentation, not business data, and artifactizing
+        // them misleads downstream python_exec into reading non-existent "data".
+        ToolResultBlock raw =
+                new ToolResultBlock(
+                        "u-4",
+                        "load_skill_through_path",
+                        List.of(TextBlock.builder().text(largeMarkdownTable()).build()),
+                        null);
+        PostActingEvent event = postActing("load_skill_through_path", raw);
+        hook.onEvent(event).block();
+        assertEquals(raw, event.getToolResult());
+    }
+
+    @Test
     void smallTableBelowThresholdIsLeftInline() {
         // 3 rows is below the threshold — inline is cheaper than dereferencing a file.
         String small =

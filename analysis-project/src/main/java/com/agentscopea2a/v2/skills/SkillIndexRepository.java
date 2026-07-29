@@ -90,6 +90,28 @@ public class SkillIndexRepository {
     }
 
     /**
+     * Returns true when a row exists with non-null, non-blank {@code embedding}. Used by
+     * {@link BuiltinSkillRegistrar} to decide whether to (re)compute the embedding for a
+     * builtin skill on boot.
+     */
+    public boolean hasEmbedding(String name) {
+        ensureTable();
+        String sql = "SELECT embedding FROM skill_index WHERE name = ?";
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, name);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return false;
+                String json = rs.getString(1);
+                return json != null && !json.isBlank();
+            }
+        } catch (SQLException e) {
+            log.warn("hasEmbedding({}) failed: {}", name, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
      * Insert-or-bump-version. Returns the new version number that the caller should embed
      * into the SKILL.md frontmatter. Atomic via {@code ON DUPLICATE KEY UPDATE}.
      *

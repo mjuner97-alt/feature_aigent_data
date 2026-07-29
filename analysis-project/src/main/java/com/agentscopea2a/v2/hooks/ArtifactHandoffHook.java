@@ -29,6 +29,8 @@ import io.agentscope.core.hook.HookEvent;
 import io.agentscope.core.hook.PostActingEvent;
 import io.agentscope.core.hook.RuntimeContextAware;
 import io.agentscope.core.message.ContentBlock;
+import io.agentscope.core.message.Msg;
+import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.ToolUseBlock;
@@ -65,7 +67,10 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
             Set.of("read_file", "write_file", "shell_execute",
                     "agent_spawn", "agent_send", "task_output", "task_list", "task_cancel",
                     "memory_search", "memory_get", "session_search", "save_skill",
-                    "arith");
+                    "arith",
+                    // load_skill_through_path 返回 SKILL.md 全文, 内含字段映射 markdown 表,
+                    // 不是业务数据, 落 CSV 会误导后续 python_exec 去读根本不存在的"数据"
+                    "load_skill_through_path");
 
     private static final int PREVIEW_ROWS = 5;
     private static final int SCHEMA_SAMPLES_PER_COLUMN = 3;
@@ -135,13 +140,20 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
 
         return HookRuntimeContext.resolve()
                 .map(ctx -> {
-                    ArtifactRef ref = applyHandoff(post, toolName, table, ArtifactContext.from(ctx));
+                    // Priority: pinned ArtifactContext from main agent's RuntimeContext.
+                    // This ensures sub-agents (whose sessionId="sub-xxx") write CSVs to the
+                    // parent's artifact bucket, so code_interpreter can read them.
+                    ArtifactContext pinned = ctx.get(ArtifactContext.class);
+                    ArtifactContext artifactCtx = (pinned != null) ? pinned : ArtifactContext.from(ctx);
+                    ArtifactRef ref = applyHandoff(post, toolName, table, artifactCtx);
                     publishArtifactRef(ctx, ref);
                     return event;
                 })
                 .switchIfEmpty(Mono.fromSupplier(() -> {
                     if (runtimeContext != null) {
-                        ArtifactRef ref = applyHandoff(post, toolName, table, ArtifactContext.from(runtimeContext));
+                        ArtifactContext pinned = runtimeContext.get(ArtifactContext.class);
+                        ArtifactContext artifactCtx = (pinned != null) ? pinned : ArtifactContext.from(runtimeContext);
+                        ArtifactRef ref = applyHandoff(post, toolName, table, artifactCtx);
                         publishArtifactRef(runtimeContext, ref);
                     } else {
                         log.warn("ArtifactHandoffHook: no RuntimeContext bound, skipping artifactize for tool={}", toolName);
@@ -163,6 +175,16 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
                 ToolResultBlock.of(toolUse.getId(), toolUse.getName(),
                         List.of(TextBlock.builder().text(handoff).build()));
         post.setToolResult(rewritten);
+
+        // Framework's ReActAgent.notifyPostActingHook builds toolResultMsg from the ORIGINAL
+        // result BEFORE hooks run, then adds toolResultMsg (not toolResult) to memory. So
+        // setToolResult alone has no effect on what the LLM sees next iteration. We must also
+        // replace toolResultMsg with a new Msg built from the rewritten block.
+        Msg rewrittenMsg = Msg.builder()
+                .role(MsgRole.TOOL)
+                .content(rewritten)
+                .build();
+        post.setToolResultMsg(rewrittenMsg);
 
         log.info("Artifactized {} result for user={}, task={}: rows={} cols={} -> {}",
                 toolName, ctx.userBucket(), ctx.taskBucket(),

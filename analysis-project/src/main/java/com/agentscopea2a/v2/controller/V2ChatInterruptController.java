@@ -15,6 +15,7 @@
  */
 package com.agentscopea2a.v2.controller;
 
+import com.agentscopea2a.v2.dto.InterruptResumeRequest;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.service.V2ChatStreamService;
 import io.agentscope.harness.agent.HarnessAgent;
@@ -29,42 +30,36 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-import reactor.core.Disposable;
 
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 /**
- * Interrupt-only endpoint — triggers InterruptControl and waits for the
- * in-flight call to terminate, then returns a JSON confirmation.
+ * Two-step interrupt endpoint (step 1: interrupt only).
  *
- * <p>The frontend should:
- * <ol>
- *   <li>Call this endpoint to interrupt the current call</li>
- *   <li>Close the original /v2/ai/chat SSE stream</li>
- *   <li>Show the normal chat input for the user to type a supplement message</li>
- *   <li>Send the supplement as a regular /v2/ai/chat request to resume</li>
- * </ol>
+ * <p>{@code POST /v2/ai/chat/interrupt} accepts {@code {user_id, conversationId}}
+ * (NO supplement), calls the 2-arg {@code agent.getDelegate().interrupt(userId, sessionId)}
+ * to set {@link io.agentscope.core.interruption.InterruptControl} flag, and returns
+ * a small JSON response {@code {status, conversationId}}.
  *
- * <p>This replaces the previous single-request interrupt+resume design. Splitting
- * interrupt and resume into separate operations is more natural because the user
- * doesn't know what to redirect to until they see the interruption happen.
+ * <p>The frontend then types a follow-up message in the normal input box and
+ * sends it via {@code POST /v2/ai/chat} to resume - the framework's
+ * {@code beforeAgentExecution} reloads state (with the recovery msg appended
+ * from {@code handleInterrupt}), {@code interruptControl.reset()} clears the
+ * flag, and the LLM continues with the new user input + saved history.
  *
- * <p>Flow:
- * <ol>
- *   <li>Resolve {@code (userId, conversationId)} from the request body</li>
- *   <li>Fetch the in-flight call descriptor from {@link V2ChatStreamService#getInFlightCall}</li>
- *   <li>Call {@code agent.getDelegate().interrupt(userId, sessionId, null)}
- *       - sets {@link InterruptControl} flag to true</li>
- *   <li>If an in-flight call exists, wait up to 180s for its completion future:
- *       <ul>
- *         <li>On complete: in-flight call has terminated — safe to return</li>
- *         <li>On timeout: force-dispose the in-flight subscription to stop burning
- *             tokens, then return anyway</li>
- *       </ul>
- *   <li>Return JSON {@code {"status": "interrupted"}}</li>
- * </ol>
+ * <p>Why two-step instead of single-request interrupt+supplement+auto-resume:
+ * the single-request design couples the interrupt action with the supplement
+ * text - the user must type the supplement before seeing the interrupt take
+ * effect, which is unnatural. Two-step lets the user click "interrupt" first,
+ * see the in-flight call terminate (InterruptControl.flag = true in the state
+ * panel), then type the redirect info at their own pace.
+ *
+ * <p>The {@link InterruptResumeRequest} DTO still has a {@code supplement} field
+ * for backward compatibility (kept around for rollback safety) but the field is
+ * silently ignored by this endpoint.
+ *
+ * <p>See {@code docs/rc2-to-rc5/interrupt-resume-single-endpoint-plan.md} for
+ * the historical single-request design (now reverted to two-step).
  */
 @RestController
 @RequestMapping("/v2/ai/chat")
@@ -72,22 +67,6 @@ import java.util.concurrent.TimeoutException;
 public class V2ChatInterruptController {
 
     private static final Logger log = LoggerFactory.getLogger(V2ChatInterruptController.class);
-
-    /**
-     * Max wait for the in-flight call to terminate after interrupt.
-     *
-     * <p>The framework's {@code checkInterrupted()} fires at ReAct iteration
-     * boundaries, so an in-flight call stuck in pre-iteration middlewares
-     * (MemoryMaintenanceMiddleware doing SSH file ops, SkillEvolutionHook doing
-     * LLM-based metric classification, etc.) can't be interrupted until it
-     * reaches the next iteration. For slow models (qwen3:8b on CPU) + heavy
-     * middleware setup, this can take 60-90s.
-     *
-     * <p>180s gives enough headroom for one full middleware cycle on slow
-     * models. If the in-flight still hasn't terminated after 180s, we fall back
-     * to force-dispose.
-     */
-    private static final long INTERRUPT_WAIT_SECONDS = 180;
 
     private final ObjectProvider<HarnessA2aRunnerV2> runnerProvider;
     private final V2ChatStreamService chatStreamService;
@@ -98,28 +77,17 @@ public class V2ChatInterruptController {
         this.chatStreamService = chatStreamService;
     }
 
-    /**
-     * Interrupt-only request body. No supplement — the user types the redirect
-     * message in the normal chat input after seeing the interruption.
-     */
-    public record InterruptRequest(
-            @com.fasterxml.jackson.annotation.JsonProperty("user_id")
-            @com.fasterxml.jackson.annotation.JsonAlias("userId")
-            String userId,
-            @com.fasterxml.jackson.annotation.JsonAlias("conversation_id")
-            String conversationId
-    ) {}
-
-    @PostMapping(value = "/interrupt", produces = "application/json")
-    public ResponseEntity<Map<String, String>> interrupt(@RequestBody InterruptRequest req) {
-        // ── Parameter validation ─────────────────────────────────────────────
+    @PostMapping("/interrupt")
+    public ResponseEntity<Map<String, Object>> interrupt(@RequestBody InterruptResumeRequest req) {
         if (req == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "request body is required");
         }
-        String userId = req.userId();
-        String sessionId = req.conversationId();
-
+        String userId = req.getUserId();
+        String sessionId = req.getConversationId();
         if (sessionId == null || sessionId.isBlank()) {
+            // conversationId must be explicitly passed by the original /v2/ai/chat;
+            // server-generated UUID sessions cannot be interrupted because the client doesn't
+            // know the id.
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "conversationId is required; the original /v2/ai/chat must explicitly pass conversation_id to use interrupt");
         }
@@ -130,19 +98,16 @@ public class V2ChatInterruptController {
                     "HarnessA2aRunnerV2 bean not available");
         }
 
-        log.info("v2 /chat/interrupt: sessionId={}, userId={}", sessionId, userId);
+        log.info("v2 /chat/interrupt: sessionId={}, userId={}, hasInFlight={}",
+                sessionId, userId, chatStreamService.getInFlightCall(userId, sessionId) != null);
 
-        // ── Step 1: fetch in-flight descriptor (may be null) ─────────────────
-        V2ChatStreamService.InFlightCall inFlight = chatStreamService.getInFlightCall(userId, sessionId);
-
-        // ── Step 2: trigger interrupt (InterruptControl flag = true) ──────────
+        // 2-arg interrupt(userId, sessionId) - sets InterruptControl.flag = true and
+        // marks the in-flight call (if any) for termination at the next ReAct iteration
+        // boundary. The supplement is NOT injected here - the user will type it as a
+        // normal follow-up message via /v2/ai/chat to resume.
         try {
             HarnessAgent agent = runner.getAgent();
-            // Use the specific userId + sessionId to target the correct session.
-            // The no-arg interrupt() uses defaultSessionId which may not match.
             agent.getDelegate().interrupt(userId, sessionId);
-            log.info("v2 /chat/interrupt: interrupt triggered for sessionId={}, userId={}, hasInFlight={}",
-                    sessionId, userId, inFlight != null);
         } catch (Exception e) {
             log.warn("v2 /chat/interrupt: interrupt() failed for sessionId={}: {}",
                     sessionId, e.getMessage());
@@ -150,26 +115,8 @@ public class V2ChatInterruptController {
                     "interrupt failed: " + e.getMessage(), e);
         }
 
-        // ── Step 3: wait for in-flight to terminate (if any) ───────────────
-        if (inFlight != null) {
-            try {
-                inFlight.completion().get(INTERRUPT_WAIT_SECONDS, TimeUnit.SECONDS);
-                log.info("v2 /chat/interrupt: in-flight terminated for sessionId={}", sessionId);
-            } catch (TimeoutException te) {
-                // Force-dispose the stuck subscription to stop burning tokens.
-                Disposable d = inFlight.subscription().get();
-                if (d != null && !d.isDisposed()) {
-                    d.dispose();
-                    log.warn("v2 /chat/interrupt: forcibly disposed in-flight subscription "
-                            + "for sessionId={} after {}s timeout", sessionId, INTERRUPT_WAIT_SECONDS);
-                }
-            } catch (Exception e) {
-                log.warn("v2 /chat/interrupt: in-flight completion returned error for sessionId={}: {}",
-                        sessionId, e.getMessage());
-            }
-        }
-
-        log.info("v2 /chat/interrupt: completed for sessionId={}", sessionId);
-        return ResponseEntity.ok(Map.of("status", "interrupted", "conversationId", sessionId));
+        return ResponseEntity.ok(Map.of(
+                "status", "interrupted",
+                "conversationId", sessionId));
     }
 }
