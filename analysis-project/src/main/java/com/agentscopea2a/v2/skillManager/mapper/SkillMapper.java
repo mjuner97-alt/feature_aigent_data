@@ -60,6 +60,33 @@ public interface SkillMapper {
 
     List<Skill> selectByIds(@Param("ids") List<Long> ids);
 
+    /** 按 retrieval_name 查 skill_manage.content(检索 Hook 读 body 用);DELETED 的不返回。 */
+    String selectContentByRetrievalName(@Param("retrievalName") String retrievalName);
+
+    /** 按 retrieval_name + owner_user_id 查询单条 ACTIVE skill。 */
+    Skill selectByRetrievalNameAndOwner(
+            @Param("retrievalName") String retrievalName,
+            @Param("ownerUserId") String ownerUserId);
+
+    /** 查询某用户的所有 ACTIVE skill 的 retrieval_name(过滤 NULL)。 */
+    List<String> selectActiveRetrievalNamesByOwner(@Param("ownerUserId") String ownerUserId);
+
+    /** 查询某用户的所有 ACTIVE skill(完整行)。 */
+    List<Skill> selectActiveByOwner(@Param("ownerUserId") String ownerUserId);
+
+    /** 按 retrieval_name + owner_user_id 软删除。 */
+    int softDeleteByRetrievalNameAndOwner(
+            @Param("retrievalName") String retrievalName,
+            @Param("ownerUserId") String ownerUserId);
+
+    /** 按 retrieval_name + owner_user_id 更新(name/description/content/category/tags/updated_at)。 */
+    int updateByRetrievalNameAndOwner(Skill skill);
+
+    /** 按 retrieval_name + owner_user_id 判断 ACTIVE skill 是否存在。 */
+    boolean existsByRetrievalNameAndOwner(
+            @Param("retrievalName") String retrievalName,
+            @Param("ownerUserId") String ownerUserId);
+
     /** 列表查询:按 view/sort/category/tag/keyword 过滤 + 分页。 */
     List<Skill> selectList(SkillListQuery q);
 

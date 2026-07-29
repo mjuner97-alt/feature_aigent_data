@@ -67,6 +67,63 @@
         </foreach>
     </select>
 
+    <!-- 按 retrieval_name 查 content,供检索 Hook 读 skill body(不依赖 .agentscope 文件) -->
+    <select id="selectContentByRetrievalName" resultType="java.lang.String">
+        SELECT content FROM skill_manage
+        WHERE retrieval_name = #{retrievalName} AND status &lt;&gt; 'DELETED' LIMIT 1
+    </select>
+
+    <!-- ===== 按 retrieval_name + owner_user_id 操作(DatabaseSkillRepository 用) ===== -->
+
+    <select id="selectByRetrievalNameAndOwner" resultMap="SkillResultMap">
+        SELECT <include refid="skillCols"/> FROM skill_manage
+        WHERE retrieval_name = #{retrievalName}
+          AND owner_user_id = #{ownerUserId}
+          AND status = 'ACTIVE'
+          AND deleted_at IS NULL
+        LIMIT 1
+    </select>
+
+    <select id="selectActiveRetrievalNamesByOwner" resultType="java.lang.String">
+        SELECT retrieval_name FROM skill_manage
+        WHERE owner_user_id = #{ownerUserId}
+          AND status = 'ACTIVE'
+          AND deleted_at IS NULL
+          AND retrieval_name IS NOT NULL
+    </select>
+
+    <select id="selectActiveByOwner" resultMap="SkillResultMap">
+        SELECT <include refid="skillCols"/> FROM skill_manage
+        WHERE owner_user_id = #{ownerUserId}
+          AND status = 'ACTIVE'
+          AND deleted_at IS NULL
+    </select>
+
+    <update id="softDeleteByRetrievalNameAndOwner">
+        UPDATE skill_manage SET status='DELETED', deleted_at=NOW()
+        WHERE retrieval_name = #{retrievalName}
+          AND owner_user_id = #{ownerUserId}
+          AND status &lt;&gt; 'DELETED'
+    </update>
+
+    <update id="updateByRetrievalNameAndOwner" parameterType="com.agentscopea2a.v2.skillManager.entity.Skill">
+        UPDATE skill_manage
+        SET name=#{name}, description=#{description}, content=#{content},
+            category=#{category}, tags=#{tags}, updated_at=NOW()
+        WHERE retrieval_name = #{retrievalName}
+          AND owner_user_id = #{ownerUserId}
+          AND status = 'ACTIVE'
+          AND deleted_at IS NULL
+    </update>
+
+    <select id="existsByRetrievalNameAndOwner" resultType="boolean">
+        SELECT COUNT(1) &gt; 0 FROM skill_manage
+        WHERE retrieval_name = #{retrievalName}
+          AND owner_user_id = #{ownerUserId}
+          AND status = 'ACTIVE'
+          AND deleted_at IS NULL
+    </select>
+
     <select id="selectList" parameterType="com.agentscopea2a.v2.skillManager.dto.SkillListQuery" resultMap="SkillResultMap">
         SELECT s.id, s.name, s.description, s.content, s.category, s.tags,
                s.owner_user_id, s.status, s.like_count, s.retrieval_name, s.created_at, s.updated_at, s.deleted_at
@@ -90,6 +147,10 @@
                 </when>
                 <otherwise>
                     s.status = 'ACTIVE'
+                    AND (
+                        s.owner_user_id = #{userId}
+                        OR s.id IN (SELECT skill_id FROM skill_publish WHERE status = 'APPROVED')
+                    )
                 </otherwise>
             </choose>
             <if test="category != null and category != ''">
@@ -120,6 +181,7 @@
     <select id="selectAllTags" resultType="java.lang.String">
         SELECT DISTINCT tags FROM skill_manage
         WHERE status = 'ACTIVE' AND tags IS NOT NULL AND tags != ''
+        AND id IN (SELECT skill_id FROM skill_publish WHERE status = 'APPROVED')
     </select>
 
     <!-- ==================== skill_like ==================== -->
@@ -435,8 +497,10 @@
     <insert id="insertSkillUserDisable" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillUserDisable"
             useGeneratedKeys="true" keyProperty="id">
         INSERT INTO skill_user_disable (skill_id, user_id)
-        VALUES (#{skillId}, #{userId})
-        ON CONFLICT (skill_id, user_id) DO NOTHING
+        SELECT #{skillId}, #{userId}
+        WHERE NOT EXISTS (
+            SELECT 1 FROM skill_user_disable WHERE skill_id = #{skillId} AND user_id = #{userId}
+        )
     </insert>
 
     <delete id="deleteDisableByUserSkill">
