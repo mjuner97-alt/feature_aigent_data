@@ -28,6 +28,8 @@ import com.agentscopea2a.v2.tools.ClickHouseWideTableMetricsTool;
 import com.agentscopea2a.v2.tools.PerUserMemoryGetTool;
 import com.agentscopea2a.v2.tools.PythonExecTool;
 import com.agentscopea2a.v2.tools.SkillSaveTool;
+import com.agentscopea2a.v2.tools.SqlListTool;
+import com.agentscopea2a.v2.tools.SqlRegistryExecTool;
 import com.agentscopea2a.v2.tools.ToolRoutersIndex;
 import com.agentscopea2a.v2.tools.WideTableMetricsTool;
 import com.agentscopea2a.v2.verify.L2EventCollectorHook;
@@ -131,6 +133,8 @@ public class SubagentRegistrar {
             ObjectProvider<ArithTool> arithToolProvider,
             ObjectProvider<WideTableMetricsTool> wideTableMetricsToolProvider,
             ObjectProvider<ClickHouseWideTableMetricsTool> clickHouseWideTableMetricsToolProvider,
+            ObjectProvider<SqlListTool> sqlListToolProvider,
+            ObjectProvider<SqlRegistryExecTool> sqlRegistryExecToolProvider,
             ObjectProvider<ArtifactHandoffHook> artifactHandoffHookProvider,
             ObjectProvider<ArtifactAccessMiddleware> artifactAccessMiddlewareProvider,
             ObjectProvider<PythonExecAccessMiddleware> pythonExecAccessMiddlewareProvider,
@@ -170,6 +174,17 @@ public class SubagentRegistrar {
         ClickHouseWideTableMetricsTool ck = clickHouseWideTableMetricsToolProvider.getIfAvailable();
         if (ck != null) {
             toolRegistry.put("clickhouse_query", ck);
+        }
+        // sql_list + sql_registry_exec 直接注册给子 agent, 跳过 router_tool. 与 wide_table_query /
+        // clickhouse_query 对齐, 让 analyze_data 子 agent 调 sql_list 看可用 sql_id 后直接调
+        // sql_registry_exec(sqlId, params) 执行预注册复杂 SQL (GROUP BY / CASE WHEN / JOIN 等).
+        SqlListTool slt = sqlListToolProvider.getIfAvailable();
+        if (slt != null) {
+            toolRegistry.put("sql_list", slt);
+        }
+        SqlRegistryExecTool sre = sqlRegistryExecToolProvider.getIfAvailable();
+        if (sre != null) {
+            toolRegistry.put("sql_registry_exec", sre);
         }
         this.artifactHandoffHook = artifactHandoffHookProvider.getIfAvailable();
         this.artifactAccessMiddleware = artifactAccessMiddlewareProvider.getIfAvailable();

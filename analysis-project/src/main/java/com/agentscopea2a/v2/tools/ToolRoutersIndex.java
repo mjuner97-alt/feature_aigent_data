@@ -56,17 +56,23 @@ public class ToolRoutersIndex {
     private final DownloadTool downloadTool;
     private final WideTableMetricsTool wideTableMetricsTool;
     private final ClickHouseWideTableMetricsTool clickHouseWideTableMetricsTool;
+    private final SqlListTool sqlListTool;
+    private final SqlRegistryExecTool sqlRegistryExecTool;
 
     public ToolRoutersIndex(AgentTools agentTools,
                             DataPrimitivesTool dataPrimitivesTool,
                             DownloadTool downloadTool,
                             WideTableMetricsTool wideTableMetricsTool,
-                            ClickHouseWideTableMetricsTool clickHouseWideTableMetricsTool) {
+                            ClickHouseWideTableMetricsTool clickHouseWideTableMetricsTool,
+                            SqlListTool sqlListTool,
+                            SqlRegistryExecTool sqlRegistryExecTool) {
         this.agentTools = agentTools;
         this.dataPrimitivesTool = dataPrimitivesTool;
         this.downloadTool = downloadTool;
         this.wideTableMetricsTool = wideTableMetricsTool;
         this.clickHouseWideTableMetricsTool = clickHouseWideTableMetricsTool;
+        this.sqlListTool = sqlListTool;
+        this.sqlRegistryExecTool = sqlRegistryExecTool;
     }
 
     /** 容器装配完成后,反射扫描各 Tool Bean,登记 @Tool 方法。 */
@@ -77,6 +83,8 @@ public class ToolRoutersIndex {
         registerTools(DownloadTool.class, downloadTool);
         registerTools(WideTableMetricsTool.class, wideTableMetricsTool);
         registerTools(ClickHouseWideTableMetricsTool.class, clickHouseWideTableMetricsTool);
+        registerTools(SqlListTool.class, sqlListTool);
+        registerTools(SqlRegistryExecTool.class, sqlRegistryExecTool);
         log.info("ToolRoutersIndex 初始化完成,已注册工具: {}", toolMethodMap.keySet());
     }
 

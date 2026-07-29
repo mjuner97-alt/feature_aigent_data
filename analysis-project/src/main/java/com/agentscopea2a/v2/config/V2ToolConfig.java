@@ -16,6 +16,7 @@
 package com.agentscopea2a.v2.config;
 
 import com.agentscopea2a.entity.UrlShortenerRecord;
+import com.agentscopea2a.mapper.mysql.SqlRegistryMapper;
 import com.agentscopea2a.mapper.mysql.UrlShortenerMapper;
 import com.agentscopea2a.v2.config.V2SandboxConfig.SandboxPropertiesV2;
 import com.agentscopea2a.v2.service.UrlShortenerService;
@@ -31,6 +32,8 @@ import com.agentscopea2a.v2.tools.DownloadTool;
 import com.agentscopea2a.v2.tools.PythonExecTool;
 import com.agentscopea2a.v2.tools.QualityTools;
 import com.agentscopea2a.v2.tools.SkillSaveTool;
+import com.agentscopea2a.v2.tools.SqlListTool;
+import com.agentscopea2a.v2.tools.SqlRegistryExecTool;
 import com.agentscopea2a.v2.tools.ToolRoutersIndex;
 import com.agentscopea2a.v2.tools.V2ToolGroupAdapter;
 import com.agentscopea2a.v2.tools.WideTableMetricsTool;
@@ -142,6 +145,25 @@ public class V2ToolConfig {
         return new ClickHouseWideTableMetricsTool(clickHouseDataSource);
     }
 
+    // ── SQL Registry (DBA 预审 SQL 模板 + sql_id 调用执行) ──────────────────
+
+    @Bean
+    public SqlListTool sqlListTool(SqlRegistryMapper sqlRegistryMapper) {
+        log.info("SqlListTool: wired (lists sql_registry entries for LLM tool selection)");
+        return new SqlListTool(sqlRegistryMapper);
+    }
+
+    @Bean
+    public SqlRegistryExecTool sqlRegistryExecTool(
+            @Qualifier("mysqlDataSource") DataSource mysqlDataSource,
+            @Qualifier("gaussDataSource") DataSource gaussDataSource,
+            @Qualifier("clickHouseDataSource") DataSource clickHouseDataSource,
+            SqlRegistryMapper sqlRegistryMapper) {
+        log.info("SqlRegistryExecTool: wired (mysql/gauss/clickhouse routing + sql_registry lookup)");
+        return new SqlRegistryExecTool(mysqlDataSource, gaussDataSource, clickHouseDataSource,
+                sqlRegistryMapper);
+    }
+
     // ── Tool router ────────────────────────────────────────────────────────
 
     @Bean
@@ -149,9 +171,12 @@ public class V2ToolConfig {
                                              DataPrimitivesTool dataPrimitivesTool,
                                              DownloadTool downloadTool,
                                              WideTableMetricsTool wideTableMetricsTool,
-                                             ClickHouseWideTableMetricsTool clickHouseWideTableMetricsTool) {
+                                             ClickHouseWideTableMetricsTool clickHouseWideTableMetricsTool,
+                                             SqlListTool sqlListTool,
+                                             SqlRegistryExecTool sqlRegistryExecTool) {
         return new ToolRoutersIndex(agentTools, dataPrimitivesTool, downloadTool,
-                wideTableMetricsTool, clickHouseWideTableMetricsTool);
+                wideTableMetricsTool, clickHouseWideTableMetricsTool,
+                sqlListTool, sqlRegistryExecTool);
     }
 
     // ── URL shortener + download tool ──────────────────────────────────────
@@ -182,6 +207,8 @@ public class V2ToolConfig {
             ObjectProvider<ArithTool> arithToolProvider,
             ObjectProvider<WideTableMetricsTool> wideTableMetricsToolProvider,
             ObjectProvider<ClickHouseWideTableMetricsTool> clickHouseWideTableMetricsToolProvider,
+            ObjectProvider<SqlListTool> sqlListToolProvider,
+            ObjectProvider<SqlRegistryExecTool> sqlRegistryExecToolProvider,
             ObjectProvider<ToolRoutersIndex> toolRoutersIndexProvider) {
         // 主智能体注册 4 个 ungrouped 工具: tool_router + python_exec + arith + wide_table_query.
         // 全部 ungrouped (始终可见给 LLM), 不分组不挂 meta-tool.
@@ -212,6 +239,16 @@ public class V2ToolConfig {
             b.tool(unwrapCglib(ck));
             log.info("V2ToolGroupAdapter: registered ClickHouseWideTableMetricsTool (ungrouped)");
         }
+        SqlListTool slt = sqlListToolProvider.getIfAvailable();
+        if (slt != null) {
+            b.tool(unwrapCglib(slt));
+            log.info("V2ToolGroupAdapter: registered SqlListTool (ungrouped)");
+        }
+        SqlRegistryExecTool sre = sqlRegistryExecToolProvider.getIfAvailable();
+        if (sre != null) {
+            b.tool(unwrapCglib(sre));
+            log.info("V2ToolGroupAdapter: registered SqlRegistryExecTool (ungrouped)");
+        }
         ToolRoutersIndex tri = toolRoutersIndexProvider.getIfAvailable();
         if (tri != null) {
             // ToolRoutersIndex.router_tool 上有 @Timed, 被 TimedAspect CGLIB 代理;
@@ -226,6 +263,8 @@ public class V2ToolConfig {
                 + (at != null ? " + arith" : "")
                 + (wt != null ? " + wide_table_query" : "")
                 + (ck != null ? " + clickhouse_query" : "")
+                + (slt != null ? " + sql_list" : "")
+                + (sre != null ? " + sql_registry_exec" : "")
                 + (tri != null ? " + tool_router" : "")
                 + " (all ungrouped, no meta-tool)");
         return adapter;

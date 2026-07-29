@@ -9,6 +9,8 @@
 | `load_skill_through_path` | 加载宽表指标 skill / 工具索引 skill 全文 (字段映射 + 公式 + toolId 列表) |
 | `wide_table_query` | 通用 GaussDB 宽表 SELECT,自动落 CSV artifact + 预览 |
 | `clickhouse_query` | 通用 ClickHouse 宽表 SELECT (schema 固定 default),自动落 CSV artifact + 预览 |
+| `sql_list` | 列出 sql_registry 表中所有预注册 SQL 的 sql_id + 名称 + 参数 schema (不执行 SQL, 只读配置表) |
+| `sql_registry_exec` | 通过 sql_id 执行预注册复杂 SQL (GROUP BY/CASE WHEN/JOIN/窗口函数),自动落 CSV artifact + 预览 |
 | `python_exec` | 沙箱内 pandas 计算 |
 | `arith` | BigDecimal 精度算术 (加减乘除/百分比),**禁止心算** |
 | `router_tool` | 元工具,调 `quality_query_by_*` / `generateDownloadUrl` 等 (走 `toolMetaInfo` 查 toolId) |
