@@ -250,7 +250,6 @@
         SELECT r.creator FROM skill_reference r
         JOIN skill_manage s ON r.target_skill_id = s.id
         WHERE r.target_skill_id = #{skillId}
-          AND r.creator != s.owner_user_id
     </select>
 
     <!-- ==================== skill_publish ==================== -->

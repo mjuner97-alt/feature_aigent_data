@@ -19,7 +19,6 @@ import com.agentscopea2a.entity.UserModelConfig;
 import com.agentscopea2a.mapper.gauss.UserModelConfigMapper;
 import com.agentscopea2a.v2.config.HarnessRunnerProperties;
 import io.agentscope.core.model.Model;
-import io.agentscope.extensions.model.anthropic.AnthropicChatModel;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -155,12 +154,6 @@ public class ModelProvider {
         log.debug("构建用户模型: provider={} model={} baseUrl={}", provider, modelName, baseUrl);
 
         return switch (provider) {
-            case "anthropic" -> AnthropicChatModel.builder()
-                    .apiKey(apiKey)
-                    .baseUrl(baseUrl)
-                    .modelName(modelName)
-                    .stream(true)
-                    .build();
             case "glm" -> {
                 // GLM 走 OpenAI 协议
                 String url = baseUrl != null && !baseUrl.isBlank() ? baseUrl : "https://open.bigmodel.cn/api/paas/v4/";
