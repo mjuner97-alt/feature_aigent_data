@@ -175,43 +175,25 @@ public class SkillSaveTool implements io.agentscope.core.hook.RuntimeContextAwar
                         "技能名 '" + scopedName + "' 已被另一来源占用，请改名后重试");
             }
 
-            int version = upsertVersion(scopedName, desc);
-            String frontmatter = renderFrontmatter(scopedName, desc, version);
-            String full = frontmatter + body;
+            int version = upsertVersion(scopedName, desc, userId);
 
-            AgentSkill skill =
-                    AgentSkill.builder()
-                            .name(scopedName)
-                            .description(desc)
-                            .skillContent(full)
-                            .source(source)
-                            .build();
-
-            boolean saved = SkillFileSystemHelper.saveSkills(skillsDir, List.of(skill), true);
-            if (saved) {
-                String msg =
-                        "技能保存成功 v"
-                                + version
-                                + " — "
-                                + skillsDir.resolve(scopedName).resolve("SKILL.md");
-                log.info("Skill saved: {} v{}", scopedName, version);
-                maybeEmbedAsync(scopedName, desc);
-                // PR5: 同步写入 skill_manage 表,让管理页面可见
-                syncToSkillManage(scopedName, desc, body, userId);
-                return ToolResultBlock.text(msg);
-            }
-            return ToolResultBlock.error("技能保存失败，请重试");
+            String msg = "技能保存成功 v" + version + " - " + scopedName;
+            log.info("Skill saved: {} v{}", scopedName, version);
+            maybeEmbedAsync(scopedName, desc);
+            // PR5: 同步写入 skill_manage 表,让管理页面可见
+            syncToSkillManage(scopedName, desc, body, userId);
+            return ToolResultBlock.text(msg);
         } catch (Exception e) {
             log.error("Failed to save skill: {}", skillName, e);
             return ToolResultBlock.error("保存技能时出错: " + e.getMessage());
         }
     }
 
-    private int upsertVersion(String name, String description) {
+    private int upsertVersion(String name, String description, String ownerUserId) {
         if (indexRepository == null) {
             return 1;
         }
-        int v = indexRepository.upsertOnSave(name, description, source);
+        int v = indexRepository.upsertOnSave(name, description, source, ownerUserId);
         return v > 0 ? v : 1;
     }
 
@@ -258,7 +240,7 @@ public class SkillSaveTool implements io.agentscope.core.hook.RuntimeContextAwar
                 return false;
             }
 
-            int version = upsertVersion(safeName, desc);
+            int version = upsertVersion(safeName, desc, null);
             String frontmatter = renderFrontmatter(safeName, desc, version, metricTag);
             String full = frontmatter + safeBody;
 

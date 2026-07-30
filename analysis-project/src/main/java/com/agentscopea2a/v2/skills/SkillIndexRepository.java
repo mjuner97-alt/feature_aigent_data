@@ -131,14 +131,16 @@ public class SkillIndexRepository {
      */
     public int upsertOnSave(String name, String description, String source, String ownerUserId) {
         ensureTable();
+        // openGauss 不支持 PostgreSQL 的 ON CONFLICT 语法,使用 MySQL 兼容的
+        // ON DUPLICATE KEY UPDATE。引用插入值用 VALUES(col) 而非 EXCLUDED.col。
         String sql =
                 "INSERT INTO skill_index (name, description, version, status, source, owner_user_id)"
                         + " VALUES (?, ?, 1, 'active', ?, ?)"
-                        + " ON CONFLICT (name) DO UPDATE SET"
-                        + "   description = EXCLUDED.description,"
-                        + "   version = skill_index.version + 1,"
+                        + " ON DUPLICATE KEY UPDATE"
+                        + "   description = VALUES(description),"
+                        + "   version = version + 1,"
                         + "   status = 'active',"
-                        + "   owner_user_id = EXCLUDED.owner_user_id";
+                        + "   owner_user_id = VALUES(owner_user_id)";
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, name);

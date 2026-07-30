@@ -68,11 +68,11 @@ public interface SkillMapper {
             @Param("retrievalName") String retrievalName,
             @Param("ownerUserId") String ownerUserId);
 
-    /** 查询某用户的所有 ACTIVE skill 的 retrieval_name(过滤 NULL)。 */
-    List<String> selectActiveRetrievalNamesByOwner(@Param("ownerUserId") String ownerUserId);
+    /** 查询某用户自己创建或引用的 skill 的 retrieval_name(过滤 NULL)。 */
+    List<String> selectActiveRetrievalNamesByUser(@Param("userId") String userId);
 
-    /** 查询某用户的所有 ACTIVE skill(完整行)。 */
-    List<Skill> selectActiveByOwner(@Param("ownerUserId") String ownerUserId);
+    /** 查询某用户自己创建或引用的全部 ACTIVE skill(完整行)。 */
+    List<Skill> selectActiveByUser(@Param("userId") String userId);
 
     /** 按 retrieval_name + owner_user_id 软删除。 */
     int softDeleteByRetrievalNameAndOwner(

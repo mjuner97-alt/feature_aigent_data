@@ -16,36 +16,40 @@
 package com.agentscopea2a.v2.skillManager.service;
 
 import com.agentscopea2a.dto.UserInfo;
+import com.agentscopea2a.v2.auth.entity.DeveloperPlPersonInfo;
+import com.agentscopea2a.v2.auth.mapper.DeveloperPlPersonInfoMapper;
+import com.agentscopea2a.v2.skillManager.entity.SkillApprover;
+import com.agentscopea2a.v2.skillManager.mapper.SkillApproverMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 /**
- * Mock 组织服务:提供用户四维归属(GROUP/DEPARTMENT/PRODUCT_LINE/COMPANY)、
- * 组织显示名称、维度标签与审批人映射。数据硬编码,后续可迁移到数据库表。
+ * 组织信息服务 - 从 developer_pl_person_info 与 skill_approver 表动态查询用户四维归属
+ * (GROUP/DEPARTMENT/PRODUCT_LINE/COMPANY)、组织显示名称、维度标签与审批人映射。
+ *
+ * <p>历史:本类前身为 {@code MockOrgService}(硬编码静态 Map),现已改造为数据库驱动。
+ * 类名暂保留 {@code MockOrgService} 以减少调用方改动,后续可重命名为 {@code OrgService}。
+ *
+ * <p>orgId 约定:本实现中 orgId 即组织名称(如 "开发一组"/"研发部"/"数据产品线"),
+ * 不再使用 group_001 之类的硬编码代号。COMPANY 类型固定 orgId="杭研"。
  */
 @Service
 public class MockOrgService {
 
-    /** 组织注册表:key = "ORG_TYPE:orgId",value = 显示名称。 */
-    private static final Map<String, String> ORG_REGISTRY = Map.of(
-            // GROUP 小组
-            "GROUP:group_001",      "开发一组",
-            "GROUP:group_002",      "开发二组",
-            "GROUP:group_003",      "统计组",
-            // DEPARTMENT 部门
-            "DEPARTMENT:dept_001",  "研发部",
-            "DEPARTMENT:dept_002",  "数据部",
-            // PRODUCT_LINE 产品线
-            "PRODUCT_LINE:pl_001",  "数据产品线",
-            "PRODUCT_LINE:pl_002",  "办公产品线",
-            // COMPANY 公司级(杭研)
-            "COMPANY:hangyan",      "杭研"
-    );
+    private static final Logger log = LoggerFactory.getLogger(MockOrgService.class);
 
-    /** 组织级别(用于展示前缀)。 */
+    /** COMPANY 维度固定值。 */
+    private static final String COMPANY_ORG_ID = "杭研";
+    private static final String COMPANY_APPROVAL_SCOPE_NAME = "杭研";
+
+    /** 组织级别前缀标签。 */
     private static final Map<String, String> ORG_TYPE_LABEL = Map.of(
             "GROUP",        "小组",
             "DEPARTMENT",   "部门",
@@ -53,81 +57,87 @@ public class MockOrgService {
             "COMPANY",      "杭研"
     );
 
-    /** org -> approver 模拟映射。 */
-    private static final Map<String, String> ORG_APPROVER = Map.of(
-            "GROUP:group_001",          "approver_001",
-            "GROUP:group_002",          "approver_001",
-            "GROUP:group_003",          "approver_002",
-            "DEPARTMENT:dept_001",      "approver_003",
-            "DEPARTMENT:dept_002",      "approver_003",
-            "PRODUCT_LINE:pl_001",      "approver_003",
-            "PRODUCT_LINE:pl_002",      "approver_003",
-            "COMPANY:hangyan",          "approver_003"
-    );
+    private final DeveloperPlPersonInfoMapper personInfoMapper;
+    private final SkillApproverMapper skillApproverMapper;
 
-    /** 审批人用户 id 集合。 */
-    private static final Set<String> APPROVER_USER_IDS = Set.of("approver_001", "approver_002", "approver_003");
+    /** 审批人用户 id 集合缓存(短 TTL,避免每次发布都查全表)。 */
+    private volatile Set<String> approverIdsCache;
+    private volatile long approverIdsCacheAt;
+    private static final long APPROVER_IDS_TTL_MS = 60_000L;
 
-    /** 用户四维归属映射。 */
-    private static final Map<String, List<OrgRef>> USER_ORGS = Map.of(
-        "user_001",     List.of(
-            new OrgRef("GROUP","group_001"),
-            new OrgRef("DEPARTMENT","dept_001"),
-            new OrgRef("PRODUCT_LINE","pl_001"),
-            new OrgRef("COMPANY","hangyan")),
-        "user_002",     List.of(
-            new OrgRef("GROUP","group_001"),
-            new OrgRef("DEPARTMENT","dept_001"),
-            new OrgRef("PRODUCT_LINE","pl_001"),
-            new OrgRef("COMPANY","hangyan")),
-        "user_003",     List.of(
-            new OrgRef("GROUP","group_003"),
-            new OrgRef("DEPARTMENT","dept_002"),
-            new OrgRef("PRODUCT_LINE","pl_002"),
-            new OrgRef("COMPANY","hangyan")),
-        "approver_001", List.of(
-            new OrgRef("GROUP","group_001"),
-            new OrgRef("DEPARTMENT","dept_001"),
-            new OrgRef("PRODUCT_LINE","pl_001"),
-            new OrgRef("COMPANY","hangyan")),
-        "approver_002", List.of(
-            new OrgRef("GROUP","group_003"),
-            new OrgRef("DEPARTMENT","dept_002"),
-            new OrgRef("PRODUCT_LINE","pl_002"),
-            new OrgRef("COMPANY","hangyan")),
-        "approver_003", List.of(
-            new OrgRef("GROUP","group_001"),
-            new OrgRef("DEPARTMENT","dept_001"),
-            new OrgRef("PRODUCT_LINE","pl_001"),
-            new OrgRef("COMPANY","hangyan")),
-        "demo-user",    List.of(
-            new OrgRef("GROUP","group_001"),
-            new OrgRef("DEPARTMENT","dept_001"),
-            new OrgRef("PRODUCT_LINE","pl_001"),
-            new OrgRef("COMPANY","hangyan"))
-    );
+    public MockOrgService(DeveloperPlPersonInfoMapper personInfoMapper,
+                          SkillApproverMapper skillApproverMapper) {
+        this.personInfoMapper = personInfoMapper;
+        this.skillApproverMapper = skillApproverMapper;
+    }
 
     /** 组织引用记录。 */
     public record OrgRef(String orgType, String orgId) {}
 
-    /** 获取用户所属组织列表。 */
+    /**
+     * 获取用户所属组织列表。从 developer_pl_person_info 查询用户全部记录,
+     * 提取去重的 统计组/部门/产品线,并附加 COMPANY 维度。
+     */
     public List<OrgRef> getUserOrgs(String userId) {
-        return USER_ORGS.getOrDefault(userId, List.of());
+        if (userId == null || userId.isBlank()) {
+            return List.of();
+        }
+        List<DeveloperPlPersonInfo> records = personInfoMapper.selectByUserId(userId);
+        if (records == null || records.isEmpty()) {
+            return List.of();
+        }
+        // 用 LinkedHashMap 去重并保持插入顺序:统计组 -> 部门 -> 产品线 -> 公司
+        Map<String, OrgRef> orgMap = new LinkedHashMap<>();
+        for (DeveloperPlPersonInfo r : records) {
+            String g = r.getStatisticsGroup();
+            if (g != null && !g.isBlank()) {
+                orgMap.putIfAbsent("GROUP:" + g, new OrgRef("GROUP", g));
+            }
+        }
+        for (DeveloperPlPersonInfo r : records) {
+            String d = r.getDepartment();
+            if (d != null && !d.isBlank()) {
+                orgMap.putIfAbsent("DEPARTMENT:" + d, new OrgRef("DEPARTMENT", d));
+            }
+        }
+        for (DeveloperPlPersonInfo r : records) {
+            String p = r.getProductLine();
+            if (p != null && !p.isBlank()) {
+                orgMap.putIfAbsent("PRODUCT_LINE:" + p, new OrgRef("PRODUCT_LINE", p));
+            }
+        }
+        orgMap.putIfAbsent("COMPANY:" + COMPANY_ORG_ID, new OrgRef("COMPANY", COMPANY_ORG_ID));
+        return new ArrayList<>(orgMap.values());
     }
 
-    /** 获取组织审批人。 */
+    /**
+     * 获取组织审批人。从 skill_approver 表按 scope 查询,返回首个 ACTIVE 审批人(或签)。
+     * COMPANY 类型固定查 approval_scope_name='杭研'。
+     */
     public String getApprover(String orgType, String orgId) {
-        return ORG_APPROVER.get(orgType + ":" + orgId);
+        String scopeName = "COMPANY".equals(orgType) ? COMPANY_APPROVAL_SCOPE_NAME : orgId;
+        List<SkillApprover> approvers = skillApproverMapper.selectByScope(orgType, scopeName);
+        if (approvers == null || approvers.isEmpty()) {
+            log.warn("No active approver configured for {}:{} (scope={})", orgType, orgId, scopeName);
+            return null;
+        }
+        return approvers.get(0).getUserId();
     }
 
-    /** 判断用户是否为审批人。 */
+    /**
+     * 判断用户是否为审批人。使用短 TTL 缓存避免频繁查全表。
+     */
     public boolean isApprover(String userId) {
-        return APPROVER_USER_IDS.contains(userId);
+        if (userId == null || userId.isBlank()) {
+            return false;
+        }
+        Set<String> ids = getCachedApproverIds();
+        return ids.contains(userId);
     }
 
-    /** 获取组织显示名称(如"开发一组"、"杭研")。 */
+    /** 获取组织显示名称。orgId 即名称,直接返回。 */
     public String getDisplayName(String orgType, String orgId) {
-        return ORG_REGISTRY.getOrDefault(orgType + ":" + orgId, orgId);
+        return "COMPANY".equals(orgType) ? COMPANY_ORG_ID : orgId;
     }
 
     /** 获取维度类型前缀(如"小组"、"部门"、"产品线"、"杭研")。 */
@@ -139,7 +149,6 @@ public class MockOrgService {
     public String getFullDimensionLabel(String orgType, String orgId) {
         String name = getDisplayName(orgType, orgId);
         String label = getTypeLabel(orgType);
-        // COMPANY 类型直接展示"杭研",不加前缀
         if ("COMPANY".equals(orgType)) {
             return name;
         }
@@ -148,11 +157,25 @@ public class MockOrgService {
 
     /** 获取用户信息(含所属组织),供前端展示测试身份归属。 */
     public UserInfo getUserInfo(String userId) {
-        List<OrgRef> orgRefs = USER_ORGS.getOrDefault(userId, List.of());
+        List<OrgRef> orgRefs = getUserOrgs(userId);
         List<UserInfo.OrgInfo> orgs = orgRefs.stream()
                 .map(ref -> new UserInfo.OrgInfo(ref.orgType(), ref.orgId(),
                         getDisplayName(ref.orgType(), ref.orgId())))
                 .toList();
         return new UserInfo(userId, orgs);
+    }
+
+    // ==================== 内部工具 ====================
+
+    private Set<String> getCachedApproverIds() {
+        Set<String> cached = approverIdsCache;
+        if (cached != null && (System.currentTimeMillis() - approverIdsCacheAt) < APPROVER_IDS_TTL_MS) {
+            return cached;
+        }
+        List<String> ids = skillApproverMapper.selectAllApproverUserIds();
+        Set<String> result = ids == null ? Set.of() : Set.copyOf(ids);
+        approverIdsCache = result;
+        approverIdsCacheAt = System.currentTimeMillis();
+        return result;
     }
 }

@@ -40,6 +40,9 @@ public class ChatRequest {
 
     private String conversationId;
 
+    /** 前端 /ai/V2/chat 发送 snake_case 的 user_id;此处显式映射,避免落为 anonymous。 */
+    @JsonProperty("user_id")
+    @JsonAlias("userId")
     private String userId;
 
     private String agentId;

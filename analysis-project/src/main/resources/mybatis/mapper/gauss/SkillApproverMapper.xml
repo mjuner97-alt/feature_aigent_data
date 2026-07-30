@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.v2.skillManager.mapper.SkillApproverMapper">
+
+    <resultMap id="SkillApproverResultMap" type="com.agentscopea2a.v2.skillManager.entity.SkillApprover">
+        <id     column="id"                   property="id"/>
+        <result column="user_id"              property="userId"/>
+        <result column="approver_name"        property="approverName"/>
+        <result column="approval_scope_type"  property="approvalScopeType"/>
+        <result column="approval_scope_name"  property="approvalScopeName"/>
+        <result column="status"               property="status"/>
+        <result column="created_at"           property="createdAt"/>
+        <result column="updated_at"           property="updatedAt"/>
+    </resultMap>
+
+    <sql id="cols">id, user_id, approver_name, approval_scope_type, approval_scope_name, status, created_at, updated_at</sql>
+
+    <select id="selectByScope" resultMap="SkillApproverResultMap">
+        SELECT <include refid="cols"/> FROM skill_approver
+        WHERE approval_scope_type = #{approvalScopeType}
+          AND approval_scope_name = #{approvalScopeName}
+          AND status = 'ACTIVE'
+        ORDER BY id
+    </select>
+
+    <select id="selectByUserId" resultMap="SkillApproverResultMap">
+        SELECT <include refid="cols"/> FROM skill_approver
+        WHERE user_id = #{userId}
+          AND status = 'ACTIVE'
+        ORDER BY id
+    </select>
+
+    <select id="selectAllApproverUserIds" resultType="java.lang.String">
+        SELECT DISTINCT user_id FROM skill_approver
+        WHERE status = 'ACTIVE'
+    </select>
+
+</mapper>

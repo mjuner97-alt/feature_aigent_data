@@ -2,6 +2,7 @@
  * Entry point - Vue 3 + vue-router.
  *
  * Routes:
+ *  /login     -> LoginPage (无需登录)
  *  /          -> AppShell layout (SessionsSidebar + <router-view />)
  *  /chat      -> ChatPage
  *  /dashboard -> DashboardPage
@@ -14,17 +15,20 @@ import { createRouter, createWebHistory, RouterView, type RouteRecordRaw } from 
 import AppShell from './components/AppShell.vue';
 import ChatPage from './pages/ChatPage.vue';
 import DashboardPage from './pages/DashboardPage.vue';
+import LoginPage from './pages/LoginPage.vue';
 import SkillShell from './components/SkillShell.vue';
 import SkillListPage from './pages/skill/SkillListPage.vue';
 import SkillDetailPage from './pages/skill/SkillDetailPage.vue';
 import SkillApprovalListPage from './pages/skill/SkillApprovalListPage.vue';
+import { isLoggedIn } from './utils/auth';
 
 const routes: RouteRecordRaw[] = [
+  { path: '/login', component: LoginPage },
   {
     path: '/',
     component: AppShell,
     children: [
-      { path: '', redirect: '/chat' },
+      { path: '', redirect: '/skills' },
       { path: 'chat', component: ChatPage },
       { path: 'dashboard', component: DashboardPage },
     ],
@@ -42,12 +46,25 @@ const routes: RouteRecordRaw[] = [
       { path: ':id', component: SkillDetailPage },
     ],
   },
-  { path: '/:pathMatch(.*)*', redirect: '/chat' },
+  { path: '/:pathMatch(.*)*', redirect: '/skills' },
 ];
 
 const router = createRouter({
   history: createWebHistory(),
   routes,
+});
+
+// 路由守卫:未登录时跳转到 /login
+router.beforeEach((to, _from, next) => {
+  if (to.path === '/login') {
+    next();
+    return;
+  }
+  if (!isLoggedIn()) {
+    next('/login');
+    return;
+  }
+  next();
 });
 
 const Root = defineComponent({

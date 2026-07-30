@@ -45,6 +45,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Skill 管理 Service(合并版)。包含全部 Skill 相关业务逻辑:
@@ -68,6 +70,13 @@ public class SkillManageService {
     /** 页面 Skill 双写桥接，用 ObjectProvider 避免启动顺序问题 */
     private final ObjectProvider<SkillManageBridge> bridgeProvider;
 
+    /** 检索 body 缓存:retrieval_name -> content,60s TTL(与 SkillVectorIndex 缓存节奏一致)。 */
+    private static final long BODY_CACHE_TTL_NANOS = TimeUnit.SECONDS.toNanos(60);
+    private final ConcurrentHashMap<String, BodyCacheEntry> bodyCache = new ConcurrentHashMap<>();
+
+    /** skill body 缓存条目:content + 过期时间戳(纳秒)。 */
+    private record BodyCacheEntry(String content, long expireAtNanos) {}
+
     public SkillManageService(SkillMapper skillMapper,
                               MockOrgService mockOrgService,
                               ObjectProvider<SkillManageBridge> bridgeProvider) {
@@ -88,9 +97,10 @@ public class SkillManageService {
             return List.of();
         }
         List<Long> ids = skills.stream().map(Skill::getId).toList();
-        Set<Long> likedIds = nullToEmpty(skillMapper.selectLikedSkillIds(q.getUserId(), ids));
-        Set<Long> usedIds = nullToEmpty(skillMapper.selectUsedSkillIds(q.getUserId(), ids));
-        Set<Long> disabledIds = nullToEmpty(skillMapper.selectDisabledSkillIds(q.getUserId(), ids));
+        String userId = q.getUserId();
+        Set<Long> likedIds = nullToEmpty(skillMapper.selectLikedSkillIds(userId, ids));
+        Set<Long> usedIds = nullToEmpty(skillMapper.selectUsedSkillIds(userId, ids));
+        Set<Long> disabledIds = nullToEmpty(skillMapper.selectDisabledSkillIds(userId, ids));
         List<SkillPublish> approved = skillMapper.selectApprovedBySkillIds(ids);
         Map<Long, String> skillDimension = new HashMap<>();
         if (approved != null) {
@@ -102,7 +112,8 @@ public class SkillManageService {
         int rank = q.getEffectiveOffset() + 1;
         List<SkillListItem> items = new ArrayList<>(skills.size());
         for (Skill s : skills) {
-            boolean used = usedIds.contains(s.getId());
+            // 所有者对自己创建的 Skill 视为"已使用"(初次即 🟢 已使用,无需先点引用)
+            boolean used = usedIds.contains(s.getId()) || (userId != null && userId.equals(s.getOwnerUserId()));
             boolean disabled = disabledIds.contains(s.getId());
             boolean available = used && !disabled;
             String dim = skillDimension.getOrDefault(s.getId(), "PERSONAL");
@@ -130,6 +141,10 @@ public class SkillManageService {
         skill.setUpdatedAt(LocalDateTime.now());
         skillMapper.insertSkill(skill);
         Skill saved = skillMapper.selectById(skill.getId());
+
+        // 创建者默认引用自己的 Skill,使其出现在"我使用的"列表
+        // (幂等;自引用 owner==creator,reference 内部跳过检索空间复制)
+        reference(saved.getId(), ownerUserId);
 
         // 双写桥接：同步到检索索引（skill_index + SKILL.md + embedding）
         SkillManageBridge bridge = bridgeProvider.getIfAvailable();
@@ -161,6 +176,10 @@ public class SkillManageService {
         skill.setCreatedAt(LocalDateTime.now());
         skill.setUpdatedAt(LocalDateTime.now());
         skillMapper.insertSkill(skill);
+
+        // 创建者默认引用自己的 Skill,使其出现在"我使用的"列表
+        // (幂等;自引用 owner==creator,reference 内部跳过检索空间复制)
+        reference(skill.getId(), ownerUserId);
     }
 
     public Skill get(Long id) {
@@ -191,6 +210,7 @@ public class SkillManageService {
         if (patch.getTags() != null) s.setTags(patch.getTags());
         s.setUpdatedAt(LocalDateTime.now());
         skillMapper.updateSkill(s);
+        invalidateBodyCache(s.getRetrievalName()); // 失效检索 body 缓存
         Skill updated = skillMapper.selectById(id);
 
         // 双写桥接：覆盖 SKILL.md + 更新 skill_index
@@ -211,6 +231,7 @@ public class SkillManageService {
             throw new IllegalStateException("SkillPendingApproval: " + id);
         }
         skillMapper.softDelete(id);
+        invalidateBodyCache(s.getRetrievalName()); // 失效检索 body 缓存
 
         // 双写桥接：从检索索引移除
         SkillManageBridge bridge = bridgeProvider.getIfAvailable();
@@ -295,59 +316,65 @@ public class SkillManageService {
         } catch (DuplicateKeyException e) {
             log.debug("concurrent reference race, idempotent: skill={} user={}", skillId, userId);
         }
-
-        // PR5: 引用即复制 - 把 skill 复制到引用者的检索空间
-        if (!userId.equals(skill.getOwnerUserId())) {
-            copyToUserRetrievalSpace(skill, userId);
-        }
-    }
-
-    /**
-     * PR5 - 把被引用的 Skill 复制到引用者的检索空间。
-     * 通过 SkillManageBridge.forkToUserSpace 完成:写 skill_index + SKILL.md + embedding。
-     */
-    private void copyToUserRetrievalSpace(Skill source, String userId) {
-        SkillManageBridge bridge = bridgeProvider.getIfAvailable();
-        if (bridge == null) return;
-
-        String originalRetrievalName = source.getRetrievalName();
-        if (originalRetrievalName == null || originalRetrievalName.isBlank()) {
-            log.warn("copyToUserRetrievalSpace: source skill {} has no retrievalName, skip", source.getId());
-            return;
-        }
-        String refRetrievalName = "ref_" + originalRetrievalName + "__u_" + userId;
-
-        try {
-            bridge.forkToUserSpace(source, refRetrievalName, userId);
-        } catch (Exception ex) {
-            log.warn("copyToUserRetrievalSpace failed for skill {} user {}: {}",
-                    source.getId(), userId, ex.getMessage());
-        }
+        // 引用不复制文件:检索层通过 skill_reference 表感知引用关系
     }
 
     @Transactional("gaussTransactionManager")
     public void unreference(Long skillId, String userId) {
-        Skill skill = get(skillId);
+        get(skillId); // 校验 Skill 存在
         skillMapper.deleteReferenceByCreatorTarget(userId, skillId);
-
-        // PR5: 清理引用副本
-        if (!userId.equals(skill.getOwnerUserId())) {
-            removeFromUserRetrievalSpace(skill, userId);
-        }
+        // 引用不复制文件,取消引用也无需清理文件
     }
 
     /**
-     * PR5 - 清理引用者检索空间中的 skill 副本。
+     * 查询用户可见的全部 user skill 的 retrieval_name 列表,供检索层一次性过滤使用。
+     *
+     * <p>可见集合 = 用户在 {@code skill_reference} 表中引用过的 skill(含自己创建的自引用 +
+     * 引用别人的),只返回有 retrieval_name 且非 DELETED 的 skill。
+     *
+     * <p>{@code owner_user_id} 不再参与检索层过滤,仅用于删除权限校验。
      */
-    private void removeFromUserRetrievalSpace(Skill source, String userId) {
-        String originalRetrievalName = source.getRetrievalName();
-        if (originalRetrievalName == null || originalRetrievalName.isBlank()) return;
-
-        String refRetrievalName = "ref_" + originalRetrievalName + "__u_" + userId;
-        SkillManageBridge bridge = bridgeProvider.getIfAvailable();
-        if (bridge != null) {
-            bridge.removeFromRetrievalIndex(refRetrievalName);
+    public List<String> getVisibleRetrievalNames(String userId) {
+        List<Long> refSkillIds = skillMapper.selectReferencedSkillIdsByCreator(userId);
+        if (refSkillIds == null || refSkillIds.isEmpty()) {
+            return List.of();
         }
+        List<Skill> skills = skillMapper.selectByIds(refSkillIds);
+        if (skills == null || skills.isEmpty()) {
+            return List.of();
+        }
+        List<String> names = new ArrayList<>();
+        for (Skill s : skills) {
+            if ("DELETED".equals(s.getStatus())) continue;
+            String rn = s.getRetrievalName();
+            if (rn != null && !rn.isBlank()) {
+                names.add(rn);
+            }
+        }
+        return names;
+    }
+
+    /**
+     * 按 retrieval_name 取 skill body(content),供检索 Hook 读 user skill 用。
+     * 60s TTL 缓存,miss 查 DB;skill 不存在/已删除返回 null(不缓存 null,新建后立即可见)。
+     */
+    public String getSkillContentByRetrievalName(String retrievalName) {
+        if (retrievalName == null || retrievalName.isBlank()) return null;
+        long now = System.nanoTime();
+        BodyCacheEntry cached = bodyCache.get(retrievalName);
+        if (cached != null && cached.expireAtNanos() > now) {
+            return cached.content();
+        }
+        String content = skillMapper.selectContentByRetrievalName(retrievalName);
+        if (content != null) {
+            bodyCache.put(retrievalName, new BodyCacheEntry(content, now + BODY_CACHE_TTL_NANOS));
+        }
+        return content;
+    }
+
+    /** 失效 body 缓存(skill 内容变更/删除后调用)。 */
+    public void invalidateBodyCache(String retrievalName) {
+        if (retrievalName != null) bodyCache.remove(retrievalName);
     }
 
     public List<Long> listMyReferences(String userId) {

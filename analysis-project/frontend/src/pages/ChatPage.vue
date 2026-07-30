@@ -59,14 +59,16 @@ import StateMachineView from '../components/StateMachineView.vue';
 import InterruptButton from '../components/InterruptButton.vue';
 import { useSessionState } from '../api/sessionState';
 import { getOrCreateUserId, rememberSession } from '../utils/session';
+import { getLoggedInUserId } from '../utils/auth';
 import type { SubagentPlanState } from '../types/sessionState';
 
 const route = useRoute();
 const router = useRouter();
 
-// User ID resolution
+// User ID resolution: URL ?userId= > 登录态(skill-user-id) > 随机 id 兜底
+// 优先用登录 userId,使聊天检索与 skill 引用记录(creator=登录 userId)对齐
 const urlUserId = computed(() => (route.query.userId as string) ?? null);
-const userId = computed(() => urlUserId.value || getOrCreateUserId());
+const userId = computed(() => urlUserId.value || getLoggedInUserId() || getOrCreateUserId());
 
 // Conversation ID from URL
 const conversationId = ref<string | null>((route.query.session as string) ?? null);

@@ -18,10 +18,13 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * PR3 - 在 PR1 建立的 {@code skill_index} 表之上做向量 / 指纹检索。
@@ -62,7 +65,7 @@ public class SkillVectorIndex {
     }
 
     /** Cached skill entry holding pre-parsed embedding + precomputed norm for fast cosine. */
-    private record CachedSkill(String name, String description, float[] embedding, float norm, String source, String ownerUserId) {}
+    private record CachedSkill(String name, String description,  String source, String ownerUserId) {}
 
     /**
      * Periodic cache refresh. Runs at a fixed interval so L2 queries hit memory instead of SQL.
@@ -82,27 +85,16 @@ public class SkillVectorIndex {
 
     private List<CachedSkill> loadAllActiveSkills() {
         String sql = "SELECT name, description, embedding, source, owner_user_id FROM skill_index"
-                + " WHERE status = 'active' AND embedding IS NOT NULL";
+                + " WHERE status = 'active' ";
         List<CachedSkill> list = new ArrayList<>();
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps = c.prepareStatement(sql);
                 ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
-                String json = rs.getString("embedding");
-                if (json == null || json.isBlank()) continue;
-                float[] vec;
-                try {
-                    vec = MAPPER.readValue(json, FLOAT_ARRAY);
-                } catch (Exception ex) {
-                    continue;
-                }
-                float n = norm(vec);
-                if (n == 0f) continue;
+
                 list.add(new CachedSkill(
                         rs.getString("name"),
                         rs.getString("description"),
-                        vec,
-                        n,
                         rs.getString("source"),
                         rs.getString("owner_user_id")));
             }
@@ -150,31 +142,27 @@ public class SkillVectorIndex {
         return Optional.empty();
     }
 
-    /**
-     * PR5 - user-scoped L1 lookup. When {@code userId} is non-null, matches skills where
-     * {@code (owner_user_id = userId OR owner_user_id IS NULL)}. When {@code userId} is null,
-     * matches only {@code owner_user_id IS NULL} (global skills) - this prevents anonymous
-     * users from retrieving other users' skills.
-     */
+    /** 保留旧签名兼容:不带引用列表。 */
     public Optional<String> findByFingerprint(String fingerprint, String source, String userId) {
+        return findByFingerprint(fingerprint, source, userId, null);
+    }
+
+
+    public Optional<String> findByFingerprint(String fingerprint, String source, String userId,
+                                               Set<String> visibleNames) {
         if (fingerprint == null || fingerprint.isBlank()) return Optional.empty();
-        String sql;
-        if (userId != null && !userId.isBlank()) {
-            sql = "SELECT name FROM skill_index"
-                    + " WHERE fingerprint = ? AND status = 'active' AND source = ?"
-                    + " AND (owner_user_id = ? OR owner_user_id IS NULL) LIMIT 1";
-        } else {
-            sql = "SELECT name FROM skill_index"
-                    + " WHERE fingerprint = ? AND status = 'active' AND source = ?"
-                    + " AND owner_user_id IS NULL LIMIT 1";
+        // visibleNames 非空:一次性按 name IN 查询(已含自引用,无需 owner_user_id 过滤)
+        if (visibleNames != null && !visibleNames.isEmpty()) {
+            return findByFingerprintInNames(fingerprint, source, visibleNames);
         }
+        // visibleNames 为空:只查全局的(owner_user_id IS NULL),兼容匿名用户
+        String sql = "SELECT name FROM skill_index"
+                + " WHERE fingerprint = ? AND status = 'active' AND source = ?"
+                + " AND owner_user_id IS NULL LIMIT 1";
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, fingerprint);
             ps.setString(2, source);
-            if (userId != null && !userId.isBlank()) {
-                ps.setString(3, userId);
-            }
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) return Optional.of(rs.getString("name"));
             }
@@ -184,167 +172,30 @@ public class SkillVectorIndex {
         return Optional.empty();
     }
 
-    /**
-     * L2 — application-layer cosine top-K over all {@code active} skills with non-null
-     * embeddings. Uses the JVM-level cache when enabled; falls back to full-table SQL scan when
-     * cache is disabled, empty, or a refresh is in progress.
-     *
-     * <p>Hits below {@code minCosine} are filtered out; the remainder are returned in
-     * descending cosine order.
-     */
-    public List<SkillHit> topK(float[] queryVec, int k, float minCosine) {
-        return topK(queryVec, k, minCosine, null);
-    }
-
-    /**
-     * Source-filtered L2 top-K. When {@code source} is non-null, only skills whose
-     * {@code skill_index.source} matches are considered. This is what lets the retrieval path
-     * probe user skills first (L1 user -> L2 user) and only fall back to auto skills
-     * (L1 auto -> L2 auto) when the user pool misses.
-     */
-    public List<SkillHit> topK(float[] queryVec, int k, float minCosine, String source) {
-        if (queryVec == null || queryVec.length == 0 || k <= 0) return List.of();
-        float qNorm = norm(queryVec);
-        if (qNorm == 0f) return List.of();
-
-        List<CachedSkill> cache = this.skillCache;
-        List<SkillHit> hits;
-
-        if (cacheEnabled && !cache.isEmpty()) {
-            // Fast path: in-memory cosine over cached skills
-            hits = new ArrayList<>();
-            for (CachedSkill s : cache) {
-                if (source != null && !source.equals(s.source())) continue;
-                if (s.embedding().length != queryVec.length) continue;
-                float cos = cosine(queryVec, s.embedding(), qNorm, s.norm());
-                if (cos >= minCosine) {
-                    hits.add(new SkillHit(s.name(), s.description(), cos));
-                }
-            }
-        } else {
-            // Fallback: full-table SQL scan
-            hits = dbTopK(queryVec, qNorm, minCosine, source);
-        }
-
-        hits.sort(Comparator.comparingDouble(SkillHit::cosine).reversed());
-        return hits.size() > k ? hits.subList(0, k) : hits;
-    }
-
-    /**
-     * PR5 - user-scoped L2 top-K. When {@code userId} is non-null, considers only skills where
-     * {@code (owner_user_id = userId OR owner_user_id IS NULL)}. When {@code userId} is null,
-     * considers only {@code owner_user_id IS NULL} (global skills).
-     */
-    public List<SkillHit> topK(float[] queryVec, int k, float minCosine, String source, String userId) {
-        if (queryVec == null || queryVec.length == 0 || k <= 0) return List.of();
-        float qNorm = norm(queryVec);
-        if (qNorm == 0f) return List.of();
-
-        List<CachedSkill> cache = this.skillCache;
-        List<SkillHit> hits;
-
-        if (cacheEnabled && !cache.isEmpty()) {
-            hits = new ArrayList<>();
-            for (CachedSkill s : cache) {
-                if (source != null && !source.equals(s.source())) continue;
-                // PR5: user isolation filter
-                // userId 非 null: 可见 = ownerUserId==null(全局) OR ownerUserId==userId(自己的)
-                // userId 为 null: 可见 = ownerUserId==null(仅全局)
-                if (s.ownerUserId() != null && !s.ownerUserId().equals(userId)) continue;
-                if (s.embedding().length != queryVec.length) continue;
-                float cos = cosine(queryVec, s.embedding(), qNorm, s.norm());
-                if (cos >= minCosine) {
-                    hits.add(new SkillHit(s.name(), s.description(), cos));
-                }
-            }
-        } else {
-            hits = dbTopK(queryVec, qNorm, minCosine, source, userId);
-        }
-
-        hits.sort(Comparator.comparingDouble(SkillHit::cosine).reversed());
-        return hits.size() > k ? hits.subList(0, k) : hits;
-    }
-
-    /** Full-table SQL scan fallback when cache is unavailable. */
-    private List<SkillHit> dbTopK(float[] queryVec, float qNorm, float minCosine, String source) {
-        String sql = "SELECT name, description, embedding FROM skill_index"
-                + " WHERE status = 'active' AND embedding IS NOT NULL"
-                + (source == null ? "" : " AND source = ?");
-        List<SkillHit> hits = new ArrayList<>();
+    /** 在指定 name 集合中按指纹查找 active skill。 */
+    private Optional<String> findByFingerprintInNames(String fingerprint, String source, Set<String> names) {
+        if (names == null || names.isEmpty()) return Optional.empty();
+        String placeholders = names.stream().map(n -> "?").collect(java.util.stream.Collectors.joining(","));
+        String sql = "SELECT name FROM skill_index"
+                + " WHERE fingerprint = ? AND status = 'active' AND source = ?"
+                + " AND name IN (" + placeholders + ") LIMIT 1";
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps = c.prepareStatement(sql)) {
-            if (source != null) {
-                ps.setString(1, source);
+            ps.setString(1, fingerprint);
+            ps.setString(2, source);
+            int idx = 3;
+            for (String n : names) {
+                ps.setString(idx++, n);
             }
             try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    String embeddingJson = rs.getString("embedding");
-                    if (embeddingJson == null || embeddingJson.isBlank()) continue;
-                    float[] vec;
-                    try {
-                        vec = MAPPER.readValue(embeddingJson, FLOAT_ARRAY);
-                    } catch (Exception ex) {
-                        continue;
-                    }
-                    if (vec.length != queryVec.length) continue;
-                    float cos = cosine(queryVec, vec, qNorm, norm(vec));
-                    if (cos >= minCosine) {
-                        hits.add(new SkillHit(rs.getString("name"), rs.getString("description"), cos));
-                    }
-                }
+                if (rs.next()) return Optional.of(rs.getString("name"));
             }
         } catch (SQLException e) {
-            log.warn("dbTopK failed: {}", e.getMessage());
+            log.warn("findByFingerprintInNames failed: {}", e.getMessage());
         }
-        return hits;
+        return Optional.empty();
     }
 
-    /** Full-table SQL scan fallback with user isolation. */
-    private List<SkillHit> dbTopK(float[] queryVec, float qNorm, float minCosine, String source, String userId) {
-        StringBuilder sql = new StringBuilder("SELECT name, description, embedding FROM skill_index")
-                .append(" WHERE status = 'active' AND embedding IS NOT NULL");
-        if (source != null) sql.append(" AND source = ?");
-        if (userId != null && !userId.isBlank()) {
-            sql.append(" AND (owner_user_id = ? OR owner_user_id IS NULL)");
-        } else {
-            sql.append(" AND owner_user_id IS NULL");
-        }
-        List<SkillHit> hits = new ArrayList<>();
-        try (Connection c = dataSource.getConnection();
-                PreparedStatement ps = c.prepareStatement(sql.toString())) {
-            int idx = 1;
-            if (source != null) ps.setString(idx++, source);
-            if (userId != null && !userId.isBlank()) ps.setString(idx++, userId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    String embeddingJson = rs.getString("embedding");
-                    if (embeddingJson == null || embeddingJson.isBlank()) continue;
-                    float[] vec;
-                    try {
-                        vec = MAPPER.readValue(embeddingJson, FLOAT_ARRAY);
-                    } catch (Exception ex) {
-                        continue;
-                    }
-                    if (vec.length != queryVec.length) continue;
-                    float cos = cosine(queryVec, vec, qNorm, norm(vec));
-                    if (cos >= minCosine) {
-                        hits.add(new SkillHit(rs.getString("name"), rs.getString("description"), cos));
-                    }
-                }
-            }
-        } catch (SQLException e) {
-            log.warn("dbTopK(userId={}) failed: {}", userId, e.getMessage());
-        }
-        return hits;
-    }
-
-    /**
-     * Upserts the embedding + fingerprint for a skill. Called from {@link
-     * com.agentscopea2a.v2.tools.SkillSaveTool} after a successful file write so newly
-     * persisted skills become retrievable on the next request.
-     *
-     * @param fingerprint nullable — PR3 retrieval falls back to L2 when not provided
-     */
     public void upsertVector(String name, String fingerprint, float[] embedding) {
         if (name == null || name.isBlank() || embedding == null || embedding.length == 0) return;
         String json;
@@ -420,7 +271,7 @@ public class SkillVectorIndex {
         String source = lookupSource(name);
         List<CachedSkill> current = new ArrayList<>(this.skillCache);
         current.removeIf(s -> s.name().equals(name));
-        current.add(new CachedSkill(name, description, embedding, n, source, ownerUserId));
+        current.add(new CachedSkill(name, description,source, ownerUserId));
         this.skillCache = List.copyOf(current);
     }
 

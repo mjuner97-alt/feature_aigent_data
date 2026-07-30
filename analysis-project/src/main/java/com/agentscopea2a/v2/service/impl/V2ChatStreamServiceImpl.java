@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.agentscopea2a.v2.service;
+package com.agentscopea2a.v2.service.impl;
 
 import com.agentscopea2a.dto.ChatRequest;
 import com.agentscopea2a.dto.response.ContentDto;
@@ -30,6 +30,7 @@ import com.agentscopea2a.v2.exception.TooManyRequestsException;
 import com.agentscopea2a.v2.hooks.ToolCallTrackingHook;
 import com.agentscopea2a.v2.memory.EpisodicMemory;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
+import com.agentscopea2a.v2.service.V2ChatStreamService;
 import com.agentscopea2a.v2.tools.ToolCallCollector;
 import com.agentscopea2a.v2.verify.TriggerLevelResolver;
 import com.agentscopea2a.v2.verify.VerificationContext;

@@ -18,7 +18,6 @@ package com.agentscopea2a.v2.config;
 import com.agentscopea2a.v2.dimension.DimensionStateManager;
 import com.agentscopea2a.v2.hooks.KnowledgeRetrievalHook;
 import com.agentscopea2a.v2.hooks.SkillEvolutionHook;
-import com.agentscopea2a.v2.hooks.SkillRetrievalHook;
 import com.agentscopea2a.v2.hooks.SkillSynthesisHook;
 import com.agentscopea2a.v2.memory.EpisodicMemory;
 import com.agentscopea2a.v2.skills.BuiltinSkillRegistrar;
@@ -33,6 +32,7 @@ import com.agentscopea2a.v2.skills.SkillSynthesisRunner;
 import com.agentscopea2a.v2.skills.SkillVectorIndex;
 import com.agentscopea2a.v2.skills.SkillVectorIndexVisibilityFilter;
 import com.agentscopea2a.v2.skillManager.service.SkillManageBridge;
+import com.agentscopea2a.v2.skillManager.service.SkillManageService;
 import io.agentscope.core.model.Model;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
 import io.agentscope.harness.agent.skill.curator.LocalApprovalGate;
@@ -115,7 +115,7 @@ public class V2SkillConfig {
     }
 
     @Bean
-    public SkillVisibilityFilter skillVectorIndexVisibilityFilter(
+        public SkillVisibilityFilter skillVectorIndexVisibilityFilter(
             SkillVectorIndex skillVectorIndex,
             EmbeddingClient embeddingClient,
             @Value("${harness.skills.retrieval.top-k:5}") int topK,
@@ -124,45 +124,6 @@ public class V2SkillConfig {
         return new SkillVectorIndexVisibilityFilter(skillVectorIndex, embeddingClient, topK, minCosine);
     }
 
-    /**
-     * PR3 skill-retrieval hook - retrieves matched skills from {@code skills-auto/} and
-     * {@code skills-user/} into the system prompt at PreCall. v2 port of the v1 hook,
-     * using {@link RuntimeContextAware} for per-call context instead of constructor injection.
-     *
-     * <p>This is the ONLY path that injects skills-auto/ and skills-user/ skills into the
-     * prompt. The {@link SkillVectorIndexVisibilityFilter} above only filters JAR-builtin
-     * skills (data_primitives, tool_index from {@code skills/}), it does NOT retrieve from
-     * skills-auto/ or skills-user/.
-     */
-    @Bean
-    public SkillRetrievalHook skillRetrievalHook(
-            SkillVectorIndex skillVectorIndex,
-            SkillIndexRepository indexRepo,
-            FingerprintCalculator fingerprintCalculator,
-            EmbeddingClient embeddingClient,
-            ObjectProvider<EpisodicMemory> episodicMemoryProvider,
-            @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
-            @Value("${harness.skills.retrieval.enabled:true}") boolean enabled,
-            @Value("${harness.skills.retrieval.top-k:5}") int topK,
-            @Value("${harness.skills.retrieval.min-cosine:0.6}") float minCosine) {
-        Path workspace = Paths.get(workspacePath).toAbsolutePath();
-        Path skillsAutoDir = workspace.resolve("skills-auto");
-        Path skillsUserDir = workspace.resolve("skills-user");
-        EpisodicMemory episodicMemory = episodicMemoryProvider.getIfAvailable();
-        log.info("SkillRetrievalHook: enabled={}, topK={}, minCosine={}, episodicMemory={}",
-                enabled, topK, minCosine, episodicMemory != null ? "wired" : "null");
-        return new SkillRetrievalHook(
-                skillVectorIndex,
-                indexRepo,
-                fingerprintCalculator,
-                embeddingClient,
-                episodicMemory,
-                skillsAutoDir,
-                skillsUserDir,
-                enabled,
-                topK,
-                minCosine);
-    }
 
     /**
      * Knowledge dynamic retrieval hook - injects files from {@code knowledge-dynamic/} into the
@@ -385,12 +346,7 @@ public class V2SkillConfig {
     @Bean
     public SkillManageBridge skillManageBridge(
             SkillIndexRepository indexRepo,
-            SkillVectorIndex vectorIndex,
-            EmbeddingClient embeddingClient,
-            @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
-            @Value("${harness.skills.page-bridge.enabled:true}") boolean enabled) {
-        Path skillsUserDir = Paths.get(workspacePath).toAbsolutePath().resolve("skills-user");
-        log.info("SkillManageBridge: enabled={}, skillsUserDir={}", enabled, skillsUserDir);
-        return new SkillManageBridge(indexRepo, vectorIndex, embeddingClient, skillsUserDir, enabled);
+            SkillVectorIndex vectorIndex) {
+        return new SkillManageBridge(indexRepo, vectorIndex);
     }
 }

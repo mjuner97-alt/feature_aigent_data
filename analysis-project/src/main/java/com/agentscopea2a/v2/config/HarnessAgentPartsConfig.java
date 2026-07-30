@@ -20,7 +20,6 @@ import com.agentscopea2a.v2.hooks.ArtifactHandoffHook;
 import com.agentscopea2a.v2.hooks.KnowledgeRetrievalHook;
 import com.agentscopea2a.v2.hooks.PythonExecRetryHook;
 import com.agentscopea2a.v2.hooks.SkillEvolutionHook;
-import com.agentscopea2a.v2.hooks.SkillRetrievalHook;
 import com.agentscopea2a.v2.hooks.SkillSynthesisHook;
 import com.agentscopea2a.v2.hooks.ToolCallTrackingHook;
 import com.agentscopea2a.v2.verify.VerificationHook;
@@ -76,19 +75,7 @@ public class HarnessAgentPartsConfig {
         return new ToolCallContentRepairMiddleware();
     }
 
-    /**
-     * Registered as a top-level @Bean (not {@code new}'d inside {@link #harnessMiddlewares})
-     * because {@link HarnessA2aRunnerV2} constructor injects {@code List<MiddlewareBase>},
-     * which Spring resolves by collecting ALL {@code MiddlewareBase} beans — elements
-     * instantiated inside a {@code List<MiddlewareBase>} @Bean method are NOT visible to
-     * this auto-collection. Without this @Bean, the middleware is silently dropped from the
-     * runner's middleware chain and parent-emitter capture never fires.
-     *
-     * <p>Execution order among middlewares is preserved by Spring's
-     * {@code AnnotationAwareOrderComparator}, but {@link ParentEmitterCaptureMiddleware}
-     * is order-independent: it only captures the parent emitter once per call and doesn't
-     * interact with other middlewares' data.
-     */
+
     @Bean
     public com.agentscopea2a.v2.middleware.ParentEmitterCaptureMiddleware parentEmitterCaptureMiddleware() {
         log.info("HarnessAgentPartsConfig: ParentEmitterCaptureMiddleware @Bean registered");
@@ -143,7 +130,6 @@ public class HarnessAgentPartsConfig {
             ObjectProvider<ArtifactHandoffHook> artifactHandoffHookProvider,
             ObjectProvider<PythonExecRetryHook> pythonExecRetryHookProvider,
             ObjectProvider<ToolCallTrackingHook> toolCallTrackingHookProvider,
-            ObjectProvider<SkillRetrievalHook> skillRetrievalHookProvider,
             ObjectProvider<SkillSynthesisHook> skillSynthesisHookProvider,
             ObjectProvider<SkillEvolutionHook> skillEvolutionHookProvider,
             ObjectProvider<KnowledgeRetrievalHook> knowledgeRetrievalHookProvider,
@@ -170,11 +156,7 @@ public class HarnessAgentPartsConfig {
             hooks.add(verification);
             log.info("HarnessAgentPartsConfig: VerificationHook wired (priority=46)");
         }
-        SkillRetrievalHook retrieval = skillRetrievalHookProvider.getIfAvailable();
-        if (retrieval != null) {
-            hooks.add(retrieval);
-            log.info("HarnessAgentPartsConfig: SkillRetrievalHook wired (priority=-50)");
-        }
+
         SkillSynthesisHook synthesis = skillSynthesisHookProvider.getIfAvailable();
         if (synthesis != null) {
             hooks.add(synthesis);

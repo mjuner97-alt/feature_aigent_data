@@ -15,6 +15,7 @@ import {
   likeSkill,
   unlikeSkill,
   referenceSkill,
+  unreferenceSkill,
   deleteSkill,
   getReferencers,
   currentUserId,
@@ -25,6 +26,7 @@ import {
   rejectPublish,
 } from '../../api/skill';
 import type { SkillDetail, LikeStatus, SkillPublishRecord, PublishPendingItem } from '../../types/skill';
+import SkillFormDrawer from '../../components/SkillFormDrawer.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -46,6 +48,13 @@ const publishError = ref('');
 const canManage = computed(() =>
   !!skill.value && skill.value.ownerUserId === currentUserId() && !hasPendingPublish.value
 );
+
+// 编辑表单(共享 SkillFormDrawer):入口仅 canManage 时可见
+const drawerOpen = ref(false);
+function onSaved() {
+  // 编辑保存后重新加载详情(若提交了维度发布,重载后审批中状态会隐藏编辑/删除入口)
+  load();
+}
 
 // 维度类型 -> 前缀(COMPANY 特殊处理为空前缀,直接显示 targetName)
 const TYPE_LABEL: Record<string, string> = {
@@ -101,8 +110,11 @@ async function load() {
   try {
     const refs = await getReferencers(id);
     referencerCount.value = refs.length;
+    // 当前用户在引用者列表中即视为已引用(含创建时默认自引用),同步按钮初始状态
+    referenced.value = refs.includes(currentUserId());
   } catch {
     referencerCount.value = 0;
+    referenced.value = false;
   }
   loadPublishes(id);
   loadApprovalDetail(id);
@@ -140,10 +152,23 @@ async function toggleLike() {
     ? await unlikeSkill(skill.value.id)
     : await likeSkill(skill.value.id);
 }
-async function doReference() {
+async function toggleReference() {
   if (!skill.value) return;
-  await referenceSkill(skill.value.id);
-  referenced.value = true;
+  // 引用/取消引用 toggle:乐观更新引用状态与引用人数,失败回滚
+  // (后端 reference/unreference 均幂等,且 API 返回 void,故前端本地维护计数)
+  const before = { referenced: referenced.value, count: referencerCount.value };
+  referenced.value = !referenced.value;
+  referencerCount.value += referenced.value ? 1 : -1;
+  try {
+    if (referenced.value) {
+      await referenceSkill(skill.value.id);
+    } else {
+      await unreferenceSkill(skill.value.id);
+    }
+  } catch {
+    referenced.value = before.referenced; // 回滚
+    referencerCount.value = before.count;
+  }
 }
 async function doDelete() {
   if (!skill.value || deleting.value) return;
@@ -245,7 +270,7 @@ watch(() => route.params.id, () => {
       </ul>
     </details>
     <div v-if="canManage" class="manage">
-      <RouterLink class="edit" :to="`/skills/${skill.id}`">✎ 编辑</RouterLink>
+      <button class="edit" @click="drawerOpen = true">✎ 编辑</button>
       <button class="del" :disabled="deleting" @click="doDelete">{{ deleting ? '删除中…' : '🗑 删除' }}</button>
     </div>
     <div v-if="deleteError" class="del-error">{{ deleteError }}</div>
@@ -257,7 +282,7 @@ watch(() => route.params.id, () => {
         <span>{{ like.liked ? '已点赞' : '点赞' }}</span>
         <span class="ripple"></span>
       </button>
-      <button class="ref" :disabled="referenced" @click="doReference">{{ referenced ? '已引用' : '引用' }}</button>
+      <button class="ref" @click="toggleReference">{{ referenced ? '取消引用' : '引用' }}</button>
       <span class="referencer-count">被 {{ referencerCount }} 人引用</span>
     </div>
     <section class="block">
@@ -307,6 +332,9 @@ watch(() => route.params.id, () => {
         <div v-if="approvalActionDone" class="action-done">{{ approvalActionDone }}</div>
       </div>
     </section>
+
+    <!-- 编辑表单(共享 SkillFormDrawer,Teleport 到 body) -->
+    <SkillFormDrawer v-model:open="drawerOpen" :edit-id="skill.id" @saved="onSaved" />
   </div>
   <div v-else>加载中…</div>
 </template>
@@ -385,7 +413,7 @@ watch(() => route.params.id, () => {
 button:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .manage { display: flex; gap: 8px; margin-bottom: 12px; }
-.edit { padding: 6px 14px; border-radius: 16px; border: 1px solid #cbd5e1; background: #fff; font-size: 13px; color: #475569; text-decoration: none; transition: border-color 0.2s, color 0.2s; }
+.edit { padding: 6px 14px; border-radius: 16px; border: 1px solid #cbd5e1; background: #fff; font-size: 13px; color: #475569; text-decoration: none; cursor: pointer; transition: border-color 0.2s, color 0.2s; }
 .edit:hover { border-color: #93c5fd; color: #2563eb; }
 .del { padding: 6px 14px; border-radius: 16px; border: 1px solid #fecaca; background: #fff; cursor: pointer; font-size: 13px; color: #dc2626; transition: background-color 0.2s, border-color 0.2s; }
 .del:hover:not(:disabled) { background: #fef2f2; border-color: #f87171; }

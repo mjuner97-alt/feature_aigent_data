@@ -27,15 +27,9 @@ import java.util.List;
  * Bridges {@link SkillVectorIndex} into the v2 skill curator pipeline as a
  * {@link SkillVisibilityFilter}.
  *
- * <p>2026/07/29: filter body trimmed to pass-through. Original logic narrowed
- * the catalogue by question embedding top-K, but that blocked hot-loading: a
- * newly-dropped {@code SKILL.md} had no {@code skill_index} row and was filtered
- * out before the LLM ever saw it. With retrieval already disabled
- * ({@code harness.skills.retrieval.enabled=false}) and the analyze_data workflow
- * using explicit {@code load_skill_through_path}, the vector filter was dead
- * weight. Pass-through lets the JAR {@code HarnessSkillMiddleware} surface all
- * {@code skills/} entries in the catalogue; the LLM picks by name+description
- * and loads body on demand.
+ * <p>During agent execution, the curator asks all registered
+ * {@link SkillVisibilityFilter}s to trim the full skill catalogue down to the
+ * ones relevant for the current request. This filter:
  *
  * <p>Fields/constructor kept intact so {@link com.agentscopea2a.v2.config.V2SkillConfig}
  * bean wiring and {@code CompositeFilter} wrapping in {@code HarnessA2aRunnerV2}

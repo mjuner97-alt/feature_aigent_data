@@ -1,0 +1,47 @@
+-- ============================================================================
+-- 清空 skill 管理业务表(保留 developer_pl_person_info 和 skill_approver)
+-- ============================================================================
+
+TRUNCATE TABLE
+  skill_user_disable,
+  skill_operation_history,
+  skill_version_history,
+  skill_draft,
+  skill_approval,
+  skill_publish,
+  skill_reference,
+  skill_like,
+  skill_manage,
+  skill_candidate,
+  skill_index
+CASCADE;
+
+-- 重置 BIGSERIAL 序列(BIGSERIAL 对应的序列名为 <表>_<列>_seq)
+-- TRUNCATE 不会自动重置序列,需手动 ALTER SEQUENCE RESTART
+ALTER SEQUENCE skill_manage_id_seq RESTART WITH 1;
+ALTER SEQUENCE skill_like_id_seq RESTART WITH 1;
+ALTER SEQUENCE skill_reference_id_seq RESTART WITH 1;
+ALTER SEQUENCE skill_publish_id_seq RESTART WITH 1;
+ALTER SEQUENCE skill_approval_id_seq RESTART WITH 1;
+ALTER SEQUENCE skill_draft_id_seq RESTART WITH 1;
+ALTER SEQUENCE skill_version_history_id_seq RESTART WITH 1;
+ALTER SEQUENCE skill_operation_history_id_seq RESTART WITH 1;
+ALTER SEQUENCE skill_user_disable_id_seq RESTART WITH 1;
+-- skill_index / skill_candidate 主键非序列,无需处理
+
+-- 验证:清空后各表行数应为 0
+SELECT 'skill_index' AS t, COUNT(*) FROM skill_index
+UNION ALL SELECT 'skill_candidate', COUNT(*) FROM skill_candidate
+UNION ALL SELECT 'skill_manage', COUNT(*) FROM skill_manage
+UNION ALL SELECT 'skill_like', COUNT(*) FROM skill_like
+UNION ALL SELECT 'skill_reference', COUNT(*) FROM skill_reference
+UNION ALL SELECT 'skill_publish', COUNT(*) FROM skill_publish
+UNION ALL SELECT 'skill_approval', COUNT(*) FROM skill_approval
+UNION ALL SELECT 'skill_draft', COUNT(*) FROM skill_draft
+UNION ALL SELECT 'skill_version_history', COUNT(*) FROM skill_version_history
+UNION ALL SELECT 'skill_operation_history', COUNT(*) FROM skill_operation_history
+UNION ALL SELECT 'skill_user_disable', COUNT(*) FROM skill_user_disable;
+
+-- 验证:这两张表数据应保留
+SELECT 'developer_pl_person_info' AS t, COUNT(*) FROM developer_pl_person_info
+UNION ALL SELECT 'skill_approver', COUNT(*) FROM skill_approver;

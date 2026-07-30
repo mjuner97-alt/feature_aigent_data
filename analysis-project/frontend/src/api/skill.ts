@@ -2,7 +2,7 @@ import type { SkillListItem, SkillDetail, LikeStatus, SkillInput, SkillPublishRe
 
 const BASE = '/api/skills';
 
-/** 临时用户标识:本工程无鉴权,从 localStorage 取,默认 demo-user。 */
+/** 当前登录用户标识:从 localStorage 取(登录后写入),未登录时回退 demo-user。 */
 function authHeaders(): Record<string, string> {
   return { 'X-User-Id': localStorage.getItem('skill-user-id') || 'demo-user' };
 }

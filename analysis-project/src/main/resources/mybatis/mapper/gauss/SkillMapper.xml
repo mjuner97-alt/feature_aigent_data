@@ -84,17 +84,17 @@
         LIMIT 1
     </select>
 
-    <select id="selectActiveRetrievalNamesByOwner" resultType="java.lang.String">
+    <select id="selectActiveRetrievalNamesByUser" resultType="java.lang.String">
         SELECT retrieval_name FROM skill_manage
-        WHERE owner_user_id = #{ownerUserId}
+        WHERE (owner_user_id = #{userId} OR id IN (SELECT target_skill_id FROM skill_reference WHERE creator = #{userId}))
           AND status = 'ACTIVE'
           AND deleted_at IS NULL
           AND retrieval_name IS NOT NULL
     </select>
 
-    <select id="selectActiveByOwner" resultMap="SkillResultMap">
+    <select id="selectActiveByUser" resultMap="SkillResultMap">
         SELECT <include refid="skillCols"/> FROM skill_manage
-        WHERE owner_user_id = #{ownerUserId}
+        WHERE (owner_user_id = #{userId} OR id IN (SELECT target_skill_id FROM skill_reference WHERE creator = #{userId}))
           AND status = 'ACTIVE'
           AND deleted_at IS NULL
     </select>
@@ -149,7 +149,7 @@
                     s.status = 'ACTIVE'
                     AND (
                         s.owner_user_id = #{userId}
-                        OR s.id IN (SELECT skill_id FROM skill_publish WHERE status = 'APPROVED')
+                        OR s.id NOT IN (SELECT skill_id FROM skill_publish WHERE status IN ('PENDING', 'REJECTED'))
                     )
                 </otherwise>
             </choose>
@@ -247,7 +247,10 @@
     </select>
 
     <select id="selectReferencersBySkillId" resultType="java.lang.String">
-        SELECT creator FROM skill_reference WHERE target_skill_id = #{skillId}
+        SELECT r.creator FROM skill_reference r
+        JOIN skill_manage s ON r.target_skill_id = s.id
+        WHERE r.target_skill_id = #{skillId}
+          AND r.creator != s.owner_user_id
     </select>
 
     <!-- ==================== skill_publish ==================== -->

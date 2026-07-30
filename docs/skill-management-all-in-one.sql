@@ -3,7 +3,8 @@
 -- 用途: 本地测试时一键重建所有 skill 相关表 + 填充模拟数据
 -- 数据库: MySQL (agentscope)
 -- 执行顺序: 先 DROP -> 再 CREATE -> 最后 INSERT
--- 生成日期: 2026-07-28
+-- 生成日期: 2026-07-29
+-- 清理说明: 移除了 PR3/PR4 预留字段 (embedding, evolving, tool_sequence_fingerprint)
 -- ============================================================================
 
 -- ============================================================================
@@ -29,26 +30,21 @@ DROP TABLE IF EXISTS skill_index;
 -- 2.1 skill_index -- Skill 检索注册表
 CREATE TABLE IF NOT EXISTS skill_index (
   name VARCHAR(128) PRIMARY KEY,
-  fingerprint VARCHAR(255) NULL COMMENT 'PR3 L1 lookup key, NULL until then',
+  fingerprint VARCHAR(255) NULL COMMENT 'L1 lookup key',
   description TEXT,
-  embedding LONGTEXT NULL COMMENT 'PR3 reserved; JSON-encoded float[] for MySQL<8.4',
   version INT NOT NULL DEFAULT 1,
   usage_count INT NOT NULL DEFAULT 0,
   success_count INT NOT NULL DEFAULT 0,
   failure_count INT NOT NULL DEFAULT 0,
   last_used TIMESTAMP NULL,
-  evolving BOOLEAN NOT NULL DEFAULT FALSE COMMENT 'PR4 cross-JVM evolve lock',
   status VARCHAR(16) NOT NULL DEFAULT 'active',
   source VARCHAR(16) NOT NULL DEFAULT 'auto_synthesized'
     COMMENT 'skill origin: user_generated | auto_synthesized',
   owner_user_id VARCHAR(64) DEFAULT NULL
-    COMMENT 'PR5: skill owner for isolation; NULL = global (auto_synthesized or legacy)',
-  tool_sequence_fingerprint VARCHAR(255) DEFAULT NULL
-    COMMENT 'Phase 3 offline lookup key (tool-id sequence)',
+    COMMENT 'skill owner for isolation; NULL = global (auto_synthesized or legacy)',
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   KEY idx_status (status),
   KEY idx_source (source),
-  KEY idx_tool_seq_fp (tool_sequence_fingerprint),
   KEY idx_owner_user_id (owner_user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -216,10 +212,10 @@ CREATE TABLE IF NOT EXISTS skill_user_disable (
 
 -- 3.1 skill_index -- 检索注册表
 -- auto_synthesized skill(全局共享, owner_user_id=NULL)
-INSERT INTO skill_index (name, fingerprint, description, version, usage_count, success_count, failure_count, status, source, owner_user_id, tool_sequence_fingerprint) VALUES
-('defect_density_analysis', 'fp_defect_density_v1', '分析缺陷密度趋势并给出优化建议', 3, 15, 13, 2, 'active', 'auto_synthesized', NULL, 'ts_fp_defect_001'),
-('response_time_analysis', 'fp_response_time_v1', '分析接口响应时间分布与瓶颈', 2, 10, 8, 2, 'active', 'auto_synthesized', NULL, 'ts_fp_response_001'),
-('error_rate_diagnosis', 'fp_error_rate_v1', '诊断错误率异常根因', 1, 5, 4, 1, 'active', 'auto_synthesized', NULL, 'ts_fp_error_001');
+INSERT INTO skill_index (name, fingerprint, description, version, usage_count, success_count, failure_count, status, source, owner_user_id) VALUES
+('defect_density_analysis', 'fp_defect_density_v1', '分析缺陷密度趋势并给出优化建议', 3, 15, 13, 2, 'active', 'auto_synthesized', NULL),
+('response_time_analysis', 'fp_response_time_v1', '分析接口响应时间分布与瓶颈', 2, 10, 8, 2, 'active', 'auto_synthesized', NULL),
+('error_rate_diagnosis', 'fp_error_rate_v1', '诊断错误率异常根因', 1, 5, 4, 1, 'active', 'auto_synthesized', NULL);
 
 -- user_generated skill(用户隔离, owner_user_id 非 NULL)
 -- 用户 A (user_001) 的 skill

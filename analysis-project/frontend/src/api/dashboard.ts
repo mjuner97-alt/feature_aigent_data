@@ -57,7 +57,7 @@ export interface PrometheusMetrics {
  * Fetch the aggregated dashboard snapshot.
  */
 export async function fetchDashboard(windowHours = 24): Promise<DashboardSnapshot> {
-  const res = await fetch(`/v2/ai/verification/dashboard?windowHours=${windowHours}`);
+  const res = await fetch(`/2/ai/verification/dashboard?windowHours=${windowHours}`);
   if (!res.ok) throw new Error(`Dashboard fetch failed: ${res.status}`);
   return res.json();
 }

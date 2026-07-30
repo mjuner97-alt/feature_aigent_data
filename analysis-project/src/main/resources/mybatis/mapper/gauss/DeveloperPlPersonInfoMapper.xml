@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.v2.auth.mapper.DeveloperPlPersonInfoMapper">
+
+    <resultMap id="personInfoMap" type="com.agentscopea2a.v2.auth.entity.DeveloperPlPersonInfo">
+        <id     property="id"                          column="id"/>
+        <result property="userId"                      column="user_id"/>
+        <result property="type"                        column="类型"/>
+        <result property="statisticalMonth"            column="统计月份"/>
+        <result property="department"                  column="部门"/>
+        <result property="name"                        column="姓名"/>
+        <result property="group"                       column="所属组"/>
+        <result property="assessmentCount"             column="考核人数"/>
+        <result property="adlmGroup"                   column="adlm组"/>
+        <result property="dept3Group"                  column="三部处理组"/>
+        <result property="dept4Group"                  column="四部处理组"/>
+        <result property="statisticsGroup"             column="统计组"/>
+        <result property="quarter"                     column="季度"/>
+        <result property="versionMonth"                column="版本月份"/>
+        <result property="isStatistics"                column="是否统计"/>
+        <result property="testCorrespondingDevDept"    column="产品部测试人员对应开发部门"/>
+        <result property="testCorrespondingDevGroup"   column="产品部测试人员对应开发统计组"/>
+        <result property="positionRole"                column="岗位角色"/>
+        <result property="updateTime"                  column="更新时间"/>
+        <result property="headOfficeApprovedDept"      column="总行批复部门"/>
+        <result property="subTeam"                     column="所属小团队"/>
+        <result property="testCorrespondingStatGroup"  column="产品部测试人员对应统计组"/>
+        <result property="personnelCategory"           column="人员分类"/>
+        <result property="remark"                      column="备注"/>
+        <result property="actualAdminGroup"            column="实际行政组"/>
+        <result property="testGroup"                   column="测试大组"/>
+        <result property="updater"                     column="更新人"/>
+        <result property="remarkRms"                   column="备注_rms"/>
+        <result property="linkedId"                    column="linked_id"/>
+        <result property="isDesignBackbone"            column="是否设计骨干"/>
+        <result property="productLine"                 column="产品线"/>
+    </resultMap>
+
+    <select id="selectByUserId" resultMap="personInfoMap">
+        SELECT * FROM developer_pl_person_info
+        WHERE user_id = #{userId}
+        ORDER BY id
+    </select>
+
+    <select id="countByUserId" resultType="int">
+        SELECT COUNT(*) FROM developer_pl_person_info
+        WHERE user_id = #{userId}
+    </select>
+
+    <!-- 全部去重的"统计组",过滤空串。用于组织维度选择器。 -->
+    <select id="selectAllStatisticsGroups" resultType="java.lang.String">
+        SELECT DISTINCT "统计组" FROM developer_pl_person_info
+        WHERE "统计组" IS NOT NULL AND "统计组" &lt;&gt; ''
+        ORDER BY "统计组"
+    </select>
+
+    <!-- 全部去重的"部门",过滤空串。用于组织维度选择器。 -->
+    <select id="selectAllDepartments" resultType="java.lang.String">
+        SELECT DISTINCT "部门" FROM developer_pl_person_info
+        WHERE "部门" IS NOT NULL AND "部门" &lt;&gt; ''
+        ORDER BY "部门"
+    </select>
+
+    <!-- 全部去重的"产品线",过滤空串。用于组织维度选择器。 -->
+    <select id="selectAllProductLines" resultType="java.lang.String">
+        SELECT DISTINCT "产品线" FROM developer_pl_person_info
+        WHERE "产品线" IS NOT NULL AND "产品线" &lt;&gt; ''
+        ORDER BY "产品线"
+    </select>
+
+</mapper>

@@ -59,7 +59,7 @@ import javax.sql.DataSource;
 @Configuration
 @ConditionalOnProperty(prefix = "spring.datasource.hikari.gauss", name = "enabled", havingValue = "true")
 @MapperScan(
-        basePackages = {GaussConfig.MAPPER_PACKAGE_1, GaussConfig.MAPPER_PACKAGE_2},
+        basePackages = {GaussConfig.MAPPER_PACKAGE_1, GaussConfig.MAPPER_PACKAGE_2, GaussConfig.MAPPER_PACKAGE_3},
         sqlSessionFactoryRef = GaussConfig.SSF_NAME)
 public class GaussConfig {
 
@@ -68,6 +68,7 @@ public class GaussConfig {
     static final String TX_NAME = "gaussTransactionManager";
     static final String MAPPER_PACKAGE_1 = "com.agentscopea2a.mapper.db1";
     static final String MAPPER_PACKAGE_2 = "com.agentscopea2a.v2.skillManager.mapper";
+    static final String MAPPER_PACKAGE_3 = "com.agentscopea2a.v2.auth.mapper";
     static final String MAPPER_XML_1 = "classpath*:mybatis/mapper/db1/*.xml";
     static final String MAPPER_XML_2 = "classpath*:mybatis/mapper/gauss/*.xml";
 
@@ -91,7 +92,7 @@ public class GaussConfig {
         System.arraycopy(res1, 0, all, 0, res1.length);
         System.arraycopy(res2, 0, all, res1.length, res2.length);
         factory.setMapperLocations(all);
-        factory.setTypeAliasesPackage("com.agentscopea2a.entity,com.agentscopea2a.v2.skillManager.entity");
+        factory.setTypeAliasesPackage("com.agentscopea2a.entity,com.agentscopea2a.v2.skillManager.entity,com.agentscopea2a.v2.auth.entity");
         return factory.getObject();
     }
 

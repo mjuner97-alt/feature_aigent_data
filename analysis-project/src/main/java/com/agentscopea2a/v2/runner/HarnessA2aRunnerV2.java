@@ -20,8 +20,13 @@ import com.agentscopea2a.v2.config.HarnessRunnerProperties;
 import com.agentscopea2a.v2.memory.MysqlMemoryStore;
 import com.agentscopea2a.v2.model.FallbackModelDecorator;
 import com.agentscopea2a.v2.model.ModelProvider;
+import com.agentscopea2a.v2.skillManager.mapper.SkillMapper;
+import com.agentscopea2a.v2.skills.DatabaseSkillRepository;
 import com.agentscopea2a.v2.tools.PerUserMemoryGetTool;
 import com.agentscopea2a.v2.tools.V2ToolGroupAdapter;
+import io.agentscope.core.a2a.server.executor.runner.AgentRequestOptions;
+import io.agentscope.core.a2a.server.executor.runner.AgentRunner;
+import io.agentscope.core.agent.Event;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.hook.Hook;
@@ -56,7 +61,7 @@ import java.util.List;
 
 
 @Component
-public class HarnessA2aRunnerV2 {
+public class HarnessA2aRunnerV2 implements AgentRunner {
 
     private static final Logger log = LoggerFactory.getLogger(HarnessA2aRunnerV2.class);
 
@@ -75,6 +80,7 @@ public class HarnessA2aRunnerV2 {
     private final ObjectProvider<SubagentRegistrar> subagentRegistrarProvider;
     private final ModelProvider modelProvider;
     private final ObjectProvider<MysqlMemoryStore> mysqlMemoryStoreProvider;
+    private final SkillMapper skillMapper;
 
     public HarnessA2aRunnerV2(
             HarnessRunnerProperties runnerProperties,
@@ -91,7 +97,8 @@ public class HarnessA2aRunnerV2 {
             ObjectProvider<DistributedStore> distributedStoreProvider,
             ObjectProvider<SubagentRegistrar> subagentRegistrarProvider,
             ModelProvider modelProvider,
-            ObjectProvider<MysqlMemoryStore> mysqlMemoryStoreProvider) {
+            ObjectProvider<MysqlMemoryStore> mysqlMemoryStoreProvider,
+            SkillMapper skillMapper) {
         this.runnerProperties = runnerProperties;
         this.dataSource = dataSource;
         this.skillManageConfig = skillManageConfig;
@@ -107,6 +114,7 @@ public class HarnessA2aRunnerV2 {
         this.subagentRegistrarProvider = subagentRegistrarProvider;
         this.modelProvider = modelProvider;
         this.mysqlMemoryStoreProvider = mysqlMemoryStoreProvider;
+        this.skillMapper = skillMapper;
 
         log.info("HarnessA2aRunnerV2 initialized: ready to create agents per request");
     }
@@ -133,6 +141,38 @@ public class HarnessA2aRunnerV2 {
     public Flux<AgentEvent> streamEvents(String text, RuntimeContext ctx) {
         HarnessAgent agent = buildAgent(ctx);
         return agent.streamEvents(text, ctx);
+    }
+
+    // ==================== AgentRunner 接口实现 ====================
+    // 供 agentscope-a2a-spring-boot-starter 的 AgentscopeA2aAutoConfiguration
+    // 注入。把 AgentRequestOptions 适配成 RuntimeContext，复用 buildAgent 构建
+    // per-request agent，再调 agent.stream(...) 返回 Flux<Event>（旧 API，与
+    // AgentRunner.stream 签名一致）。streamEvents 返回的是 Flux<AgentEvent>（新
+    // API），类型不兼容，故走 stream 路径。
+
+    @Override
+    public Flux<Event> stream(List<Msg> requestMessages, AgentRequestOptions options) {
+        RuntimeContext ctx = RuntimeContext.builder()
+                .sessionId(options.getTaskId())
+                .userId(options.getUserId())
+                .build();
+        HarnessAgent agent = buildAgent(ctx);
+        return agent.stream(requestMessages, ctx);
+    }
+
+    @Override
+    public void stop(String taskId) {
+        // V2 是 per-request 架构，无 active agent 缓存，空实现即可
+    }
+
+    @Override
+    public String getAgentName() {
+        return "QualitySupervisorV2";
+    }
+
+    @Override
+    public String getAgentDescription() {
+        return "Harness-native quality data supervisor V2 with multi-agent coordination";
     }
 
     /**
@@ -170,7 +210,7 @@ public class HarnessA2aRunnerV2 {
      * </ul>
      */
     private HarnessAgent buildAgent(RuntimeContext ctx) {
-        Long userId = extractUserId(ctx);
+        String userId = extractUserId(ctx);
 
         // 获取带降级逻辑的主模型
         FallbackModelDecorator primaryModel = modelProvider.getModelForUser(userId);
@@ -190,6 +230,7 @@ public class HarnessA2aRunnerV2 {
                 .name("QualitySupervisorV2")
                 .model(primaryModel)
                 .workspace(workspace)
+                .skillRepository(new DatabaseSkillRepository(skillMapper, userId != null ? String.valueOf(userId) : null))
                 .toolExecutionConfig(AgentExecutionConfig.TOOL_DEFAULTS)
                 .modelExecutionConfig(AgentExecutionConfig.MODEL_DEFAULTS)
                 .stateStore(new SanitizingAgentStateStore(new MysqlAgentStateStore(dataSource, true)))
@@ -241,39 +282,7 @@ public class HarnessA2aRunnerV2 {
                 .disableMemoryTools()
                 .middlewares(middlewares);
 
-        // Enable AsyncToolMiddleware so long-running tool calls get offloaded to the
-        // background with a placeholder ToolResultBlock, then delivered to the LLM as a
-        // HintBlock via InboxMiddleware when complete. Required for HintBlock / async tool
-        // placeholder behavior tested in §3.4. Backed by local filesystem message bus.
-        //
-        // Timeout tuned to 600s (was 30s) so that agent_spawn calls dispatching subagents
-        // (analyze_data, query_data) are NOT offloaded mid-flight. When offloaded at 30s,
-        // subagent events (tool_call_start / text_block_delta / etc.) stop flowing through
-        // the parent's AgentEventEmitter into the SSE stream — the frontend ActivityFeed
-        // only sees the main agent's meta events (agent_spawn / wait_async_results) and
-        // the subagent's internal activity is invisible to the user. With 600s timeout,
-        // agent_spawn runs synchronously in the parent stream and the framework's
-        // `execLocalSync` path forwards all child events via `event.withSource(sourcePath)`,
-        // so the frontend can render subagent activity in real time. The AsyncToolMiddleware
-        // is still wired (and the bus still available) so that genuinely runaway tool calls
-        // (e.g. python_exec infinite loop) still trip the 600s offload as a safety net.
-        // See docs/Plan-Machie/process-event-streaming.md §"子 agent 内部活动透传".
-        Path busRoot = workspace.resolve(".bus");
-        try {
-            java.nio.file.Files.createDirectories(busRoot);
-            io.agentscope.harness.agent.filesystem.local.LocalFilesystem busFs =
-                    new io.agentscope.harness.agent.filesystem.local.LocalFilesystem(busRoot);
-            io.agentscope.harness.agent.bus.WorkspaceMessageBus messageBus =
-                    new io.agentscope.harness.agent.bus.WorkspaceMessageBus(busFs, "/bus");
-            io.agentscope.harness.agent.bus.WorkspaceAsyncToolRegistry asyncToolRegistry =
-                    new io.agentscope.harness.agent.bus.WorkspaceAsyncToolRegistry(busFs, "/async-tools");
-            builder.messageBus(messageBus);
-            builder.asyncToolRegistry(asyncToolRegistry);
-            builder.asyncToolTimeout(java.time.Duration.ofSeconds(600));
-            log.debug("HarnessA2aRunnerV2: AsyncToolMiddleware wired (timeout=600s, bus={})", busRoot);
-        } catch (Exception e) {
-            log.warn("HarnessA2aRunnerV2: failed to wire AsyncToolMiddleware: {}", e.getMessage());
-        }
+
 
         SandboxFilesystemSpec sandboxFilesystem = sandboxFilesystemProvider.getIfAvailable();
         RemoteFilesystemSpec remoteFilesystem = remoteFilesystemProvider.getIfAvailable();
@@ -369,12 +378,12 @@ public class HarnessA2aRunnerV2 {
     /**
      * 从 RuntimeContext 中提取用户 ID。
      */
-    private Long extractUserId(RuntimeContext ctx) {
+    private String extractUserId(RuntimeContext ctx) {
         if (ctx == null || ctx.getUserId() == null) {
             return null;
         }
         try {
-            return Long.parseLong(ctx.getUserId());
+            return String.valueOf(ctx.getUserId());
         } catch (NumberFormatException e) {
             log.warn("Invalid userId format: {}", ctx.getUserId());
             return null;

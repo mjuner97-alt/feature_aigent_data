@@ -18,6 +18,7 @@ package com.agentscopea2a.v2.controller;
 import com.agentscopea2a.dto.ChatRequest;
 import com.agentscopea2a.v2.routing.V2SessionRouter;
 import com.agentscopea2a.v2.service.V2ChatStreamService;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -29,6 +30,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import java.util.UUID;
 
 /**
  * v2 入口控制器：SSE 流式接口，委托给 {@link V2ChatStreamService}。
@@ -47,7 +50,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
  * (v1 controller 重新启用后)。
  */
 @RestController
-@RequestMapping("/v2/ai")
+@RequestMapping("v2/ai")
 @CrossOrigin(origins = "*", maxAge = 3600)
 public class V2ChatController {
 
@@ -91,5 +94,28 @@ public class V2ChatController {
         public V1RoutingNotAvailableException(String conversationId) {
             super("v1 routing not available in Stage 8 (conversationId=" + conversationId + ")");
         }
+    }
+
+
+    /**
+     * 两个入口用不同字段传会话ID，统一归一化到 conversationId：
+     * <ul>
+     *   <li>Manager 入口 → conversation_id</li>
+     *   <li>公开入口 → chat_id</li>
+     * </ul>
+     * chatId 优先级低于 conversationId：当 conversationId 为空时，用 chatId 回填。
+     */
+    private void normalizeConversationId(ChatRequest req) {
+
+        if (StringUtils.isEmpty(req.getConversationId())) {
+            req.setConversationId(UUID.randomUUID().toString());
+        }else{
+            req.setSessionId(req.getConversationId());
+        }
+
+        if (StringUtils.isNotEmpty(req.getSessionId())) {
+            req.setConversationId(req.getSessionId());
+        }
+
     }
 }

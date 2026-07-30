@@ -53,7 +53,7 @@ public class ModelProvider {
     private final Model defaultModel;
 
     /** userId -> 缓存条目（含配置和过期时间戳） */
-    private final Map<Long, CacheEntry> userModelCache = new ConcurrentHashMap<>();
+    private final Map<String, CacheEntry> userModelCache = new ConcurrentHashMap<>();
 
     public ModelProvider(
             UserModelConfigMapper userModelConfigMapper,
@@ -81,7 +81,7 @@ public class ModelProvider {
      * @param userId 用户 ID，null 或无配置时使用默认模型
      * @return FallbackModelDecorator 实例
      */
-    public FallbackModelDecorator getModelForUser(Long userId) {
+    public FallbackModelDecorator getModelForUser(String userId) {
         Model primaryModel = null;
         boolean hasUserConfig = false;
 
@@ -110,7 +110,7 @@ public class ModelProvider {
     /**
      * 获取缓存的用户模型配置，过期则回源数据库并刷新缓存。
      */
-    private UserModelConfig getCachedUserConfig(Long userId) {
+    private UserModelConfig getCachedUserConfig(String userId) {
         CacheEntry entry = userModelCache.get(userId);
         if (entry != null && !entry.isExpired()) {
             return entry.config;

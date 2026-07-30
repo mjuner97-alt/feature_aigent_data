@@ -15,7 +15,7 @@ import java.util.List;
 @Mapper
 public interface UserModelConfigMapper {
 
-    UserModelConfig selectByUserId(Long userId);
+    UserModelConfig selectByUserId(String userId);
 
     /** 加载全部用户模型配置（用于过期定时检测）。 */
     List<UserModelConfig> selectAll();

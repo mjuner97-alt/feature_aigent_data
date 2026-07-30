@@ -83,13 +83,15 @@ public class SkillCandidateRepository {
         // ON DUPLICATE KEY UPDATE is atomic at the row level so concurrent JVM instances each
         // counting the same fingerprint don't race. We only bump when still 'pending'; the
         // CASE clause keeps the row untouched once it's been promoted (or rejected).
+        // openGauss 不支持 ON CONFLICT,使用 MySQL 兼容的 ON DUPLICATE KEY UPDATE,
+        // 引用插入值用 VALUES(col) 而非 EXCLUDED.col。
         String sql =
                 "INSERT INTO skill_candidate (fingerprint, user_id, hit_count, last_query, last_trace_id, status)"
                         + " VALUES (?, ?, 1, ?, ?, 'pending')"
-                        + " ON CONFLICT (fingerprint) DO UPDATE SET"
+                        + " ON DUPLICATE KEY UPDATE"
                         + "   hit_count = CASE WHEN skill_candidate.status = 'pending' THEN skill_candidate.hit_count + 1 ELSE skill_candidate.hit_count END,"
-                        + "   last_query = CASE WHEN skill_candidate.status = 'pending' THEN EXCLUDED.last_query ELSE skill_candidate.last_query END,"
-                        + "   last_trace_id = CASE WHEN skill_candidate.status = 'pending' THEN EXCLUDED.last_trace_id ELSE skill_candidate.last_trace_id END";
+                        + "   last_query = CASE WHEN skill_candidate.status = 'pending' THEN VALUES(last_query) ELSE skill_candidate.last_query END,"
+                        + "   last_trace_id = CASE WHEN skill_candidate.status = 'pending' THEN VALUES(last_trace_id) ELSE skill_candidate.last_trace_id END";
         // Manual transaction so INSERT + subsequent SELECT use the same connection - guarantees
         // read-your-writes within this call. Connection.close() rolls back if we never commit.
         try (Connection c = dataSource.getConnection()) {
