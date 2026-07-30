@@ -14,6 +14,10 @@ description: 宽表 dsqa_dwd_req_item_app_portrait_wide_inf 的 Q2-1 打分指�
 业务表: `dsqa_dwd_req_item_app_portrait_wide_inf` (schema 由 `wide_table_query` 工具固定为 `remote_app`, 调用时只传表名)
 适用问题: 用户问 "X部门/X产品线/X统计组 + X月版本 + Q2-1 的完成率/达标率"
 
+用户问: "杭州二部7月版Q2-1的完成率、达标率是多少?"
+
+filters: `{"dev_dept":"杭州开发二部","version_plan":"2026年7月份版本"}`
+
 ## 字段中英文映射 (8 个核心字段)
 
 | 表字段              | 中文       | 用途                        |

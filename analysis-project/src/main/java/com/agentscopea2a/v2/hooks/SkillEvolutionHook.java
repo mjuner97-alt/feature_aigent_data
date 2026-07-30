@@ -18,7 +18,7 @@ package com.agentscopea2a.v2.hooks;
 import com.agentscopea2a.v2.cache.ResponseCacheService;
 import com.agentscopea2a.v2.skills.FingerprintCalculator;
 import com.agentscopea2a.v2.skills.SkillEvolutionRunner;
-import com.agentscopea2a.v2.skills.SkillVectorIndex;
+import com.agentscopea2a.v2.skills.SkillIndexRepository;
 import com.agentscopea2a.v2.util.HookRuntimeContext;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.hook.Hook;
@@ -90,7 +90,7 @@ public class SkillEvolutionHook implements Hook, RuntimeContextAware {
 
     private final SkillEvolutionRunner runner;
     private final FingerprintCalculator fingerprintCalculator;
-    private final SkillVectorIndex vectorIndex;
+    private final SkillIndexRepository indexRepo;
     private final List<String> rejectionKeywords;
 
     /**
@@ -104,10 +104,10 @@ public class SkillEvolutionHook implements Hook, RuntimeContextAware {
             SkillEvolutionRunner runner,
             String rejectionKeywordsCsv,
             FingerprintCalculator fingerprintCalculator,
-            SkillVectorIndex vectorIndex) {
+            SkillIndexRepository indexRepo) {
         this.runner = runner;
         this.fingerprintCalculator = fingerprintCalculator;
-        this.vectorIndex = vectorIndex;
+        this.indexRepo = indexRepo;
         this.rejectionKeywords = parseRejectionKeywords(rejectionKeywordsCsv);
         log.info(
                 "SkillEvolutionHook initialized with {} rejection keywords: {}",
@@ -381,7 +381,7 @@ public class SkillEvolutionHook implements Hook, RuntimeContextAware {
      * All errors are swallowed: this is best-effort.
      */
     private List<String> resolveSkillsByFingerprint(List<Msg> messages) {
-        if (fingerprintCalculator == null || vectorIndex == null) return List.of();
+        if (fingerprintCalculator == null || indexRepo == null) return List.of();
         try {
             String question = ResponseCacheService.extractUserQuestion(messages);
             if (question == null || question.isBlank()) return List.of();
@@ -390,7 +390,7 @@ public class SkillEvolutionHook implements Hook, RuntimeContextAware {
             if (intent == null || intent.isEmpty()) return List.of();
             String fingerprint = fingerprintCalculator.computeMetric(intent, question);
 
-            Optional<String> skillName = vectorIndex.findByFingerprint(fingerprint);
+            Optional<String> skillName = indexRepo.findActiveNameByFingerprint(fingerprint);
             if (skillName.isPresent()) {
                 log.info("Fingerprint fallback resolved skill '{}' for fp={}", skillName.get(), fingerprint);
                 return List.of(skillName.get());

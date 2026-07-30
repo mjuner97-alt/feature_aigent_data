@@ -9,7 +9,6 @@ import com.agentscopea2a.v2.tools.SkillSaveTool;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.scheduling.annotation.Scheduled;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -85,9 +84,7 @@ public class SkillEvolutionRunner {
     private volatile boolean pendingTableEnsured = false;
 
     private final SkillIndexRepository indexRepo;
-    private final SkillVectorIndex vectorIndex;
     private final SkillDistiller distiller;
-    private final EmbeddingClient embeddingClient;
     private final DataSource dataSource;
     private final Path skillsDir;
     private final boolean enabled;
@@ -105,9 +102,7 @@ public class SkillEvolutionRunner {
 
     public SkillEvolutionRunner(
             SkillIndexRepository indexRepo,
-            ObjectProvider<SkillVectorIndex> vectorIndexProvider,
             SkillDistiller distiller,
-            ObjectProvider<EmbeddingClient> embeddingClientProvider,
             DataSource dataSource,
             Path skillsDir,
             boolean enabled,
@@ -116,9 +111,7 @@ public class SkillEvolutionRunner {
             int minUsesEvolve,
             int minUsesBlacklist) {
         this.indexRepo = indexRepo;
-        this.vectorIndex = vectorIndexProvider.getIfAvailable();
         this.distiller = distiller;
-        this.embeddingClient = embeddingClientProvider.getIfAvailable();
         this.dataSource = dataSource;
         this.skillsDir = skillsDir;
         this.enabled = enabled;
@@ -234,21 +227,9 @@ public class SkillEvolutionRunner {
             return;
         }
         try {
-            // Preserve the canonical fingerprint by passing null embeddingClient and stamping
-            // ourselves below — same pattern as SkillSynthesisRunner.
-            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null, SkillEntry.SOURCE_AUTO_SYNTHESIZED, null);
+            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, SkillEntry.SOURCE_AUTO_SYNTHESIZED);
             saver.saveSkill(evolved.name(), evolved.description(), evolved.body());
 
-            if (vectorIndex != null && embeddingClient != null) {
-                String embedText = SkillSynthesisRunner.buildEmbedText(evolved);
-                float[] vec = embeddingClient.embed(embedText);
-                if (vec != null) {
-                    // PR4 — refresh embedding only; keep the PR2-stamped fingerprint intact so
-                    // L1 keeps routing the same fingerprint to this (now evolved) skill.
-                    vectorIndex.upsertEmbeddingOnly(name, vec);
-                    log.debug("Refreshed embedding for evolved skill {}", name);
-                }
-            }
             // Give the new version a clean evaluation window.
             indexRepo.resetCounts(name);
             log.info("Skill '{}' evolved to next version (counters reset)", name);

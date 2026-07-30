@@ -18,11 +18,9 @@ package com.agentscopea2a.v2.digestion;
 import com.agentscopea2a.v2.alarm.CronFailureAlerter;
 import com.agentscopea2a.v2.memory.MemoryHydrator;
 import com.agentscopea2a.v2.memory.MysqlMemoryStore;
-import com.agentscopea2a.v2.skills.EmbeddingClient;
 import com.agentscopea2a.v2.skills.FingerprintCalculator;
 import com.agentscopea2a.v2.skills.SkillDistiller;
 import com.agentscopea2a.v2.skills.SkillIndexRepository;
-import com.agentscopea2a.v2.skills.SkillVectorIndex;
 import io.agentscope.core.model.Model;
 import java.nio.file.Path;
 import org.slf4j.Logger;
@@ -77,9 +75,7 @@ public class MemoryDigestionService {
     private final MemoryHydrator hydrator;
     private final Model model;
     private final SkillIndexRepository indexRepo;
-    private final SkillVectorIndex vectorIndex;
     private final SkillDistiller distiller;
-    private final EmbeddingClient embeddingClient;
     private final SkillFlowEvolver evolver;
     private final FingerprintCalculator fingerprintCalc;
     private final CronFailureAlerter alerter;
@@ -99,9 +95,7 @@ public class MemoryDigestionService {
             MemoryHydrator hydrator,
             Model model,
             SkillIndexRepository indexRepo,
-            ObjectProvider<SkillVectorIndex> vectorIndexProvider,
             SkillDistiller distiller,
-            ObjectProvider<EmbeddingClient> embeddingClientProvider,
             ObjectProvider<SkillFlowEvolver> evolverProvider,
             FingerprintCalculator fingerprintCalc,
             ObjectProvider<CronFailureAlerter> alerterProvider,
@@ -118,9 +112,7 @@ public class MemoryDigestionService {
         this.hydrator = hydrator;
         this.model = model;
         this.indexRepo = indexRepo;
-        this.vectorIndex = vectorIndexProvider.getIfAvailable();
         this.distiller = distiller;
-        this.embeddingClient = embeddingClientProvider.getIfAvailable();
         this.evolver = evolverProvider.getIfAvailable();
         this.fingerprintCalc = fingerprintCalc;
         this.alerter = alerterProvider.getIfAvailable();

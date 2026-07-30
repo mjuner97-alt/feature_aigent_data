@@ -23,6 +23,7 @@ import com.agentscopea2a.v2.memory.MysqlMemoryStore;
 import com.agentscopea2a.v2.middleware.ArtifactAccessMiddleware;
 import com.agentscopea2a.v2.middleware.PythonExecAccessMiddleware;
 import com.agentscopea2a.v2.middleware.SubagentEventForwardingMiddleware;
+import com.agentscopea2a.v2.middleware.ToolResultTruncationMiddleware;
 import com.agentscopea2a.v2.tools.ArithTool;
 import com.agentscopea2a.v2.tools.ClickHouseWideTableMetricsTool;
 import com.agentscopea2a.v2.tools.PerUserMemoryGetTool;
@@ -118,6 +119,12 @@ public class SubagentRegistrar {
      */
     private final ToolCallTrackingHook toolCallTrackingHook;
     /**
+     * Truncates previously-consumed tool results (e.g. {@code load_skill_through_path}
+     * SKILL.md full text) to reduce LLM context bloat. Singleton bean shared with the
+     * main agent; per-call state is derived from RuntimeContext inside the middleware.
+     */
+    private final ToolResultTruncationMiddleware toolResultTruncationMiddleware;
+    /**
      * Per-user memory store for replacing the framework's {@code memory_get} tool on
      * subagents. When non-null, each subagent's {@code memory_get} is replaced with
      * {@link PerUserMemoryGetTool} to prevent cross-tenant memory leaks via the shared
@@ -141,7 +148,8 @@ public class SubagentRegistrar {
             ObjectProvider<PythonExecRetryHook> pythonExecRetryHookProvider,
             ObjectProvider<L2EventCollectorHook> l2EventCollectorHookProvider,
             ObjectProvider<ToolCallTrackingHook> toolCallTrackingHookProvider,
-            ObjectProvider<MysqlMemoryStore> mysqlMemoryStoreProvider) {
+            ObjectProvider<MysqlMemoryStore> mysqlMemoryStoreProvider,
+            ObjectProvider<ToolResultTruncationMiddleware> toolResultTruncationMiddlewareProvider) {
 
         // v1-style: subagents hold only meta-tool beans. Business tools (quality_query_* /
         // data_*) are encapsulated inside ToolRoutersIndex and dispatched via
@@ -194,10 +202,11 @@ public class SubagentRegistrar {
         this.subagentEventForwardingMiddleware = new SubagentEventForwardingMiddleware();
         this.toolCallTrackingHook = toolCallTrackingHookProvider.getIfAvailable();
         this.mysqlMemoryStore = mysqlMemoryStoreProvider.getIfAvailable();
-        log.info("SubagentRegistrar: toolRegistry built with {} entries: {}; hooks - handoff={} access={} pyGuard={} retry={} l2Collector={} eventForwarding=true toolTracking={}",
+        this.toolResultTruncationMiddleware = toolResultTruncationMiddlewareProvider.getIfAvailable();
+        log.info("SubagentRegistrar: toolRegistry built with {} entries: {}; hooks - handoff={} access={} pyGuard={} retry={} l2Collector={} eventForwarding=true toolTracking={} truncation={}",
                 toolRegistry.size(), toolRegistry.keySet(),
                 artifactHandoffHook != null, artifactAccessMiddleware != null,
-                pythonExecAccessMiddleware != null, pythonExecRetryHook != null, l2EventCollectorHook != null, toolCallTrackingHook != null);
+                pythonExecAccessMiddleware != null, pythonExecRetryHook != null, l2EventCollectorHook != null, toolCallTrackingHook != null, toolResultTruncationMiddleware != null);
 
         Path workspace = Paths.get(workspacePath).toAbsolutePath();
         workspace = WorkspaceMaterializer.ensureMaterialized(workspace);
@@ -352,6 +361,13 @@ public class SubagentRegistrar {
             // text_block_delta / tool_call_start / etc. are dropped on the floor of the
             // subagent's filtered Flux inside callInternal.
             subMiddlewares.add(subagentEventForwardingMiddleware);
+            // ToolResultTruncationMiddleware: shortens previously-consumed tool results
+            // (e.g. load_skill_through_path SKILL.md) to reduce LLM context bloat on
+            // subagent multi-round ReAct loops. The last ToolResultBlock is always left
+            // intact (the LLM is about to consume it); only older ones are shortened.
+            if (toolResultTruncationMiddleware != null) {
+                subMiddlewares.add(toolResultTruncationMiddleware);
+            }
             if (!subMiddlewares.isEmpty()) {
                 sub.middlewares(subMiddlewares);
             }
@@ -416,14 +432,15 @@ public class SubagentRegistrar {
                 HarnessA2aRunnerV2.replacePlanExitWithAutoApprove(built);
             }
 
-            log.debug("Built subagent '{}' with tools={} planMode={} handoff={} access={} pyGuard={} retry={} l2Collector={} toolTracking={} eventForwarding=true",
+            log.debug("Built subagent '{}' with tools={} planMode={} handoff={} access={} pyGuard={} retry={} l2Collector={} toolTracking={} truncation={} eventForwarding=true",
                     id, registered, enablePlan,
                     artifactHandoffHook != null,
                     artifactAccessMiddleware != null,
                     hasPythonExec && pythonExecAccessMiddleware != null,
                     hasPythonExec && pythonExecRetryHook != null,
                     l2EventCollectorHook != null,
-                    toolCallTrackingHook != null);
+                    toolCallTrackingHook != null,
+                    toolResultTruncationMiddleware != null);
             return built;
         });
     }

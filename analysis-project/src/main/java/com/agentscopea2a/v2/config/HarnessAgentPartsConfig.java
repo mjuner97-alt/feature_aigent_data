@@ -57,7 +57,7 @@ import java.util.List;
  * <ul>
  *   <li>Middlewares: responseCache -> dimension -> episodic -> artifact -> session ->
  *       perUserMemory (optional) -> ledgerMirror (optional) -> pythonExecGuard (optional)</li>
- *   <li>Hooks: handoff(12) -> retry(13) -> tracking(45) -> retrieval(-50) ->
+ *   <li>Hooks: handoff(12) -> retry(13) -> tracking(45) ->
  *       knowledge(-40) -> synthesis(50) -> evolution(60). Each hook's {@code priority()}
  *       controls actual execution order; this list only controls wiring order so the
  *       log lines are deterministic.</li>

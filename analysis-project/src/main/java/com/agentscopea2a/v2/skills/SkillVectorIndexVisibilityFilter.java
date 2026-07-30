@@ -24,34 +24,30 @@ import org.slf4j.LoggerFactory;
 import java.util.List;
 
 /**
- * Bridges {@link SkillVectorIndex} into the v2 skill curator pipeline as a
- * {@link SkillVisibilityFilter}.
+ * Pass-through {@link SkillVisibilityFilter} that lets the JAR
+ * {@code HarnessSkillMiddleware} surface all {@code skills/} entries in the
+ * catalogue; the LLM picks by name+description and loads body on demand.
  *
+ * <p>2026/07/29: filter body trimmed to pass-through. Original logic narrowed
+ * the catalogue by question embedding top-K, but that blocked hot-loading: a
+ * newly-dropped {@code SKILL.md} had no {@code skill_index} row and was filtered
+ * out before the LLM ever saw it. With retrieval already disabled
+ * ({@code harness.skills.retrieval.enabled=false}) and the analyze_data workflow
+ * using explicit {@code load_skill_through_path}, the vector filter was dead
+ * weight.
  * <p>During agent execution, the curator asks all registered
  * {@link SkillVisibilityFilter}s to trim the full skill catalogue down to the
  * ones relevant for the current request. This filter:
  *
- * <p>Fields/constructor kept intact so {@link com.agentscopea2a.v2.config.V2SkillConfig}
- * bean wiring and {@code CompositeFilter} wrapping in {@code HarnessA2aRunnerV2}
- * don't need to change. They're unused now and can be cleaned up in a follow-up.
+ * <p>2026/07/30: embedding/vector dependencies removed entirely. The class is
+ * kept as a no-arg bean because {@code HarnessA2aRunnerV2} wraps it in a
+ * {@code CompositeFilter} via the {@code SkillVisibilityFilter} type.
  */
 public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
 
     private static final Logger log = LoggerFactory.getLogger(SkillVectorIndexVisibilityFilter.class);
 
-    private final SkillVectorIndex index;
-    private final EmbeddingClient embeddingClient;
-    private final int topK;
-    private final float minCosine;
-
-    public SkillVectorIndexVisibilityFilter(SkillVectorIndex index,
-                                             EmbeddingClient embeddingClient,
-                                             int topK,
-                                             float minCosine) {
-        this.index = index;
-        this.embeddingClient = embeddingClient;
-        this.topK = topK;
-        this.minCosine = minCosine;
+    public SkillVectorIndexVisibilityFilter() {
     }
 
     @Override

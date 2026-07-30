@@ -31,30 +31,23 @@ import org.springframework.core.annotation.Order;
 
 /**
  * On boot, scans {@code workspace/skills/} for builtin SKILL.md files and registers any
- * missing entry into MySQL {@code skill_index} (with embedding) so {@link SkillVectorIndex}
- * can retrieve them.
+ * missing entry into MySQL {@code skill_index} so they can be looked up by fingerprint.
  *
  * <p>Background: builtin skills under {@code skills/} are loaded by the JAR's
- * WorkspaceContextHook. But the v2 {@link SkillVectorIndexVisibilityFilter} (the JAR
- * builtin skill filter) narrows the catalogue to only those whose names appear in
- * {@link SkillVectorIndex#topK} results -- and topK queries MySQL {@code skill_index}.
- * A builtin skill with no row in {@code skill_index} (or a row with NULL embedding) is
- * therefore filtered out and never reaches the LLM.
+ * WorkspaceContextHook. The v2 pipeline uses {@code skill_index.fingerprint} for L1 lookup,
+ * so a builtin skill with no row in {@code skill_index} cannot be resolved by fingerprint
+ * fallback in {@link com.agentscopea2a.v2.hooks.SkillEvolutionHook}.
  *
  * <p>This runner makes the registration idempotent and self-healing:
  * <ul>
  *   <li>If a skill name is missing from {@code skill_index}, INSERT it with
- *       {@code source='auto_synthesized'} and compute embedding.</li>
- *   <li>If a skill exists but {@code embedding IS NULL}, compute and UPDATE embedding.</li>
- *   <li>If a skill exists with non-null embedding, skip.</li>
+ *       {@code source='auto_synthesized'}.</li>
+ *   <li>If a skill exists, skip.</li>
  * </ul>
  *
  * <p>Source: builtin skills are stamped {@code source='auto_synthesized'} so the retrieval
  * pipeline's "L1 auto / L2 auto" fallback path picks them up. They are NOT
  * {@code 'user_generated'} (those live under {@code skills-user/}).
- *
- * <p>Embedding text convention mirrors {@code SkillSaveTool.maybeEmbedAsync}:
- * {@code "<name> <description>"} -- the description discriminates skills semantically.
  *
  * <p>Failure mode: any per-skill error logs a warning and continues; the runner never
  * aborts boot.
@@ -83,20 +76,14 @@ public class BuiltinSkillRegistrar implements CommandLineRunner {
 
     private final Path skillsDir;
     private final SkillIndexRepository indexRepo;
-    private final SkillVectorIndex vectorIndex;
-    private final EmbeddingClient embeddingClient;
     private final boolean enabled;
 
     public BuiltinSkillRegistrar(
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
             SkillIndexRepository indexRepo,
-            SkillVectorIndex vectorIndex,
-            EmbeddingClient embeddingClient,
             @Value("${harness.skills.builtin-registrar.enabled:true}") boolean enabled) {
         this.skillsDir = Path.of(workspacePath).toAbsolutePath().resolve("skills");
         this.indexRepo = indexRepo;
-        this.vectorIndex = vectorIndex;
-        this.embeddingClient = embeddingClient;
         this.enabled = enabled;
     }
 
@@ -119,7 +106,6 @@ public class BuiltinSkillRegistrar implements CommandLineRunner {
         }
 
         int inserted = 0;
-        int embeddingUpdated = 0;
         int skipped = 0;
         int failed = 0;
         for (Path skillFile : skillFiles) {
@@ -133,16 +119,11 @@ public class BuiltinSkillRegistrar implements CommandLineRunner {
                 Optional<SkillEntry> existing = indexRepo.findByName(pf.name);
                 if (existing.isEmpty()) {
                     indexRepo.upsertOnSave(pf.name, pf.description, SkillEntry.SOURCE_AUTO_SYNTHESIZED);
-                    upsertEmbedding(pf.name, pf.description);
                     inserted++;
                     log.info("Registered builtin skill '{}' from {}", pf.name, skillFile);
-                } else if (!indexRepo.hasEmbedding(pf.name)) {
-                    upsertEmbedding(pf.name, pf.description);
-                    embeddingUpdated++;
-                    log.info("Updated embedding for builtin skill '{}' (was NULL)", pf.name);
                 } else {
                     skipped++;
-                    log.debug("Skill '{}' already registered with embedding, skipping", pf.name);
+                    log.debug("Skill '{}' already registered, skipping", pf.name);
                 }
             } catch (Exception ex) {
                 log.warn("Failed to process {}: {}", skillFile, ex.getMessage());
@@ -150,27 +131,8 @@ public class BuiltinSkillRegistrar implements CommandLineRunner {
             }
         }
         log.info(
-                "BuiltinSkillRegistrar done: inserted={}, embeddingUpdated={}, skipped={}, failed={}, total={}",
-                inserted, embeddingUpdated, skipped, failed, skillFiles.size());
-    }
-
-    private void upsertEmbedding(String name, String description) {
-        if (embeddingClient == null || vectorIndex == null) {
-            log.warn("EmbeddingClient/SkillVectorIndex not wired; embedding upsert skipped for {}", name);
-            return;
-        }
-        String text = (name + " " + (description == null ? "" : description)).trim();
-        if (text.isEmpty()) return;
-        try {
-            float[] vec = embeddingClient.embed(text);
-            if (vec == null || vec.length == 0) {
-                log.warn("Embedding null for builtin skill '{}'", name);
-                return;
-            }
-            vectorIndex.upsertEmbeddingOnly(name, vec);
-        } catch (Exception ex) {
-            log.warn("Embedding upsert failed for builtin skill '{}': {}", name, ex.getMessage());
-        }
+                "BuiltinSkillRegistrar done: inserted={}, skipped={}, failed={}, total={}",
+                inserted, skipped, failed, skillFiles.size());
     }
 
     private List<Path> scanSkillFiles() {

@@ -15,7 +15,6 @@
  */
 package com.agentscopea2a.v2.digestion;
 
-import com.agentscopea2a.v2.skills.EmbeddingClient;
 import com.agentscopea2a.v2.skills.FingerprintCalculator;
 import com.agentscopea2a.v2.skills.MetricClassificationService;
 import com.agentscopea2a.v2.skills.SkillDistiller;
@@ -23,11 +22,9 @@ import com.agentscopea2a.v2.skills.SkillDistiller.DistilledSkill;
 import com.agentscopea2a.v2.skills.SkillEntry;
 import com.agentscopea2a.v2.skills.SkillIndexRepository;
 import com.agentscopea2a.v2.skills.SkillSynthesisRunner;
-import com.agentscopea2a.v2.skills.SkillVectorIndex;
 import com.agentscopea2a.v2.tools.SkillSaveTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.ObjectProvider;
 
 import javax.sql.DataSource;
 import java.nio.charset.StandardCharsets;
@@ -72,8 +69,6 @@ public class SkillFlowEvolver {
 
     private final SkillIndexRepository indexRepo;
     private final SkillDistiller distiller;
-    private final SkillVectorIndex vectorIndex;
-    private final EmbeddingClient embeddingClient;
     private final DataSource dataSource;
     private final Path skillsDir;
     private final SkillSynthesisRunner synthesisRunner;
@@ -112,8 +107,6 @@ public class SkillFlowEvolver {
     public SkillFlowEvolver(
             SkillIndexRepository indexRepo,
             SkillDistiller distiller,
-            ObjectProvider<SkillVectorIndex> vectorIndexProvider,
-            ObjectProvider<EmbeddingClient> embeddingClientProvider,
             DataSource dataSource,
             Path skillsDir,
             SkillSynthesisRunner synthesisRunner,
@@ -123,8 +116,6 @@ public class SkillFlowEvolver {
             int minTraces) {
         this.indexRepo = indexRepo;
         this.distiller = distiller;
-        this.vectorIndex = vectorIndexProvider.getIfAvailable();
-        this.embeddingClient = embeddingClientProvider.getIfAvailable();
         this.dataSource = dataSource;
         this.skillsDir = skillsDir;
         this.synthesisRunner = synthesisRunner;
@@ -324,21 +315,9 @@ public class SkillFlowEvolver {
      */
     private void saveEvolved(String name, DistilledSkill evolved) {
         try {
-            // Pass null embeddingClient — we refresh the embedding synchronously below with richer text.
-            // SkillSaveTool's async embed uses name+description which is less discriminative; the
-            // synchronous embed here uses description + sample_questions for better bge-zh vectors.
-            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null, SkillEntry.SOURCE_AUTO_SYNTHESIZED, null);
+            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, SkillEntry.SOURCE_AUTO_SYNTHESIZED);
             saver.saveSkill(evolved.name(), evolved.description(), evolved.body());
 
-            if (vectorIndex != null && embeddingClient != null) {
-                String embedText = SkillSynthesisRunner.buildEmbedText(evolved);
-                float[] vec = embeddingClient.embed(embedText);
-                if (vec != null) {
-                    // Refresh embedding only; keep the PR2-stamped fingerprint intact so L1
-                    // keeps routing the same fingerprint to this (now evolved) skill.
-                    vectorIndex.upsertEmbeddingOnly(name, vec);
-                }
-            }
             // Give the new version a clean evaluation window
             indexRepo.resetCounts(name);
         } catch (Exception ex) {

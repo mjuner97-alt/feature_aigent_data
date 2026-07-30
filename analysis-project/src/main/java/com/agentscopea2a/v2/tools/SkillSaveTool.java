@@ -17,8 +17,6 @@ package com.agentscopea2a.v2.tools;
 
 import com.agentscopea2a.v2.skills.SkillEntry;
 import com.agentscopea2a.v2.skills.SkillIndexRepository;
-import com.agentscopea2a.v2.skills.EmbeddingClient;
-import com.agentscopea2a.v2.skills.SkillVectorIndex;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.hook.RuntimeContextAware;
 import io.agentscope.core.message.ToolResultBlock;
@@ -28,19 +26,18 @@ import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 
 import java.nio.file.Path;
 import java.time.LocalDate;
 import java.util.List;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
  * Tool for saving generated skills as SKILL.md files to the local file system.
  *
- * <p>PR1 — Skill metadata baseline. On every save we:
+ * <p>PR1 - Skill metadata baseline. On every save we:
  * <ol>
  *   <li>Upsert {@code skill_index} (atomic version bump via {@code ON DUPLICATE KEY UPDATE})
  *   <li>Render a managed YAML frontmatter (name / description / version / last_evolved_at)
@@ -48,9 +45,12 @@ import java.util.regex.Pattern;
  *   <li>Overwrite SKILL.md with frontmatter + body
  * </ol>
  *
+ * <p>PR5 - per-user isolation: agent-saved skills are scoped with a {@code usr_<userId>_}
+ * prefix and synced to the {@code skill_manage} table so the management UI can see them.
+ *
  * <p>Used by the SkillGeneratorAgent to persist generated skill definitions.
  */
-public class SkillSaveTool implements io.agentscope.core.hook.RuntimeContextAware {
+public class SkillSaveTool implements RuntimeContextAware {
 
     private static final Logger log = LoggerFactory.getLogger(SkillSaveTool.class);
 
@@ -60,8 +60,6 @@ public class SkillSaveTool implements io.agentscope.core.hook.RuntimeContextAwar
 
     private final Path skillsDir;
     private final SkillIndexRepository indexRepository;
-    private final SkillVectorIndex vectorIndex;
-    private final EmbeddingClient embeddingClient;
     /**
      * {@code user_generated} when wired for the {@code skill_save} tool (writes to
      * {@code skills-user/}); {@code auto_synthesized} when wired for any of the auto paths
@@ -70,62 +68,32 @@ public class SkillSaveTool implements io.agentscope.core.hook.RuntimeContextAwar
      */
     private final String source;
 
-    /** PR5: per-call runtime context for userId extraction */
+    /** ObjectProvider for SkillManageService to avoid circular dependency. */
+    private final ObjectProvider<com.agentscopea2a.v2.skillManager.service.SkillManageService> skillManageServiceProvider;
+
+    /** Per-call runtime context for userId extraction. */
     private volatile RuntimeContext currentCtx;
-
-    /** PR5: ObjectProvider for SkillManageService to avoid circular dependency */
-    private final org.springframework.beans.factory.ObjectProvider<com.agentscopea2a.v2.skillManager.service.SkillManageService> skillManageServiceProvider;
-
-    /** Single-thread daemon so embedding upserts never delay the save_skill tool reply. */
-    private static final ScheduledExecutorService EMBED_EXEC =
-            Executors.newSingleThreadScheduledExecutor(
-                    r -> {
-                        Thread t = new Thread(r, "skill-embed");
-                        t.setDaemon(true);
-                        return t;
-                    });
 
     @Override
     public void setRuntimeContext(RuntimeContext context) {
         this.currentCtx = context;
     }
 
-    /** Repository may be {@code null} when wired in legacy single-arg paths (tests, etc.). */
     public SkillSaveTool(Path skillsDir, SkillIndexRepository indexRepository) {
-        this(skillsDir, indexRepository, null, null, SkillEntry.SOURCE_AUTO_SYNTHESIZED, null);
+        this(skillsDir, indexRepository, SkillEntry.SOURCE_AUTO_SYNTHESIZED, null);
     }
 
-    /**
-     * PR3 constructor — adds the optional {@link SkillVectorIndex} + {@link EmbeddingClient}
-     * pair. When both are non-null, every successful save kicks off an async embedding upsert
-     * so the new skill becomes retrievable on the next request. Either being null silently
-     * skips that step (PR3 retrieval is opt-in).
-     */
+    public SkillSaveTool(Path skillsDir, SkillIndexRepository indexRepository, String source) {
+        this(skillsDir, indexRepository, source, null);
+    }
+
     public SkillSaveTool(
             Path skillsDir,
             SkillIndexRepository indexRepository,
-            SkillVectorIndex vectorIndex,
-            EmbeddingClient embeddingClient) {
-        this(skillsDir, indexRepository, vectorIndex, embeddingClient, SkillEntry.SOURCE_AUTO_SYNTHESIZED, null);
-    }
-
-    /**
-     * Full constructor - lets the caller pin the {@code source} so the same tool class backs
-     * both the user-facing {@code skill_save} tool (writes to {@code skills-user/} with
-     * {@code source=user_generated}) and the auto-distill/evolve paths (write to
-     * {@code skills-auto/} with {@code source=auto_synthesized}).
-     */
-    public SkillSaveTool(
-            Path skillsDir,
-            SkillIndexRepository indexRepository,
-            SkillVectorIndex vectorIndex,
-            EmbeddingClient embeddingClient,
             String source,
-            org.springframework.beans.factory.ObjectProvider<com.agentscopea2a.v2.skillManager.service.SkillManageService> skillManageServiceProvider) {
+            ObjectProvider<com.agentscopea2a.v2.skillManager.service.SkillManageService> skillManageServiceProvider) {
         this.skillsDir = skillsDir;
         this.indexRepository = indexRepository;
-        this.vectorIndex = vectorIndex;
-        this.embeddingClient = embeddingClient;
         this.source = source == null ? SkillEntry.SOURCE_AUTO_SYNTHESIZED : source;
         this.skillManageServiceProvider = skillManageServiceProvider;
     }
@@ -163,7 +131,6 @@ public class SkillSaveTool implements io.agentscope.core.hook.RuntimeContextAwar
             String scopedName = buildUserScopedName(safeName, userId);
             String desc = description == null ? "" : description.trim();
             String body = content == null ? "" : content.trim();
-            // Loop-strip all frontmatter blocks — LLM may generate multiple YAML blocks
             while (body.startsWith("---")) {
                 String stripped = stripFrontmatter(body);
                 if (stripped.equals(body)) break;
@@ -176,12 +143,27 @@ public class SkillSaveTool implements io.agentscope.core.hook.RuntimeContextAwar
             }
 
             int version = upsertVersion(scopedName, desc, userId);
+            String frontmatter = renderFrontmatter(scopedName, desc, version);
+            String full = frontmatter + body;
 
-            String msg = "技能保存成功 v" + version + " - " + scopedName;
-            log.info("Skill saved: {} v{}", scopedName, version);
-            maybeEmbedAsync(scopedName, desc);
+            AgentSkill skill =
+                    AgentSkill.builder()
+                            .name(scopedName)
+                            .description(desc)
+                            .skillContent(full)
+                            .source(source)
+                            .build();
+
+            boolean saved = SkillFileSystemHelper.saveSkills(skillsDir, List.of(skill), true);
+            if (!saved) {
+                return ToolResultBlock.error("技能保存失败，请重试");
+            }
+
             // PR5: 同步写入 skill_manage 表,让管理页面可见
             syncToSkillManage(scopedName, desc, body, userId);
+
+            String msg = "技能保存成功 v" + version + " - " + skillsDir.resolve(scopedName).resolve("SKILL.md");
+            log.info("Skill saved: {} v{}", scopedName, version);
             return ToolResultBlock.text(msg);
         } catch (Exception e) {
             log.error("Failed to save skill: {}", skillName, e);
@@ -222,10 +204,6 @@ public class SkillSaveTool implements io.agentscope.core.hook.RuntimeContextAwar
             String safeName = skillName.trim().toLowerCase().replaceAll("[^a-z0-9_]", "_");
             String desc = description == null ? "" : description.trim();
             String safeBody = body == null ? "" : body.trim();
-            // Loop-strip all frontmatter blocks — LLM may generate multiple YAML blocks
-            // despite instructions saying "no frontmatter in content". A single stripFrontmatter
-            // only removes the first block, leaving subsequent ones to appear as duplicate
-            // frontmatter in the final file.
             while (safeBody.startsWith("---")) {
                 String stripped = stripFrontmatter(safeBody);
                 if (stripped.equals(safeBody)) break;
@@ -296,35 +274,7 @@ public class SkillSaveTool implements io.agentscope.core.hook.RuntimeContextAwar
         }
     }
 
-    /**
-     * Fire-and-forget embedding upsert (PR3). Skipped when either dependency is unwired —
-     * preserves the manual save_skill path's behaviour when retrieval is disabled. We embed
-     * "{name} {description}" rather than the full SKILL.md body because (a) description is
-     * what discriminates skills semantically, and (b) full-body embeddings would change every
-     * version bump even when the skill's intent didn't.
-     */
-    private void maybeEmbedAsync(String name, String description) {
-        if (vectorIndex == null || embeddingClient == null) return;
-        final String text = (name + " " + description).trim();
-        if (text.isEmpty()) return;
-        EMBED_EXEC.submit(
-                () -> {
-                    try {
-                        float[] vec = embeddingClient.embed(text);
-                        if (vec == null) {
-                            log.debug("Embedding null for skill {}, vector upsert skipped", name);
-                            return;
-                        }
-                        // fingerprint is owned by PR2's synthesis path; manual saves leave it
-                        // null and rely on L2 for retrieval.
-                        vectorIndex.upsertVector(name, null, vec);
-                    } catch (Exception ex) {
-                        log.warn("Async embedding upsert for {} failed: {}", name, ex.getMessage());
-                    }
-                });
-    }
-
-    /** Drop any YAML frontmatter the LLM may have prepended — we own this block. */
+    /** Drop any YAML frontmatter the LLM may have prepended - we own this block. */
     public static String stripFrontmatter(String content) {
         if (content == null || content.isEmpty()) return "";
         Matcher m = FRONTMATTER.matcher(content);

@@ -209,7 +209,8 @@ public class SkillIndexRepository {
     /**
      * PR4 — soft-delete a misbehaving skill by setting {@code status='blacklist'}. The file
      * stays on disk and the row keeps its accumulated counts so a future review can flip it back
-     * to {@code 'active'}. {@code SkillVectorIndex} already filters on {@code status='active'},
+     * to {@code 'active'}. Active skill lookups (e.g.
+     * {@link #findActiveNameByFingerprint(String)}) filter on {@code status='active'},
      * so a blacklisted skill silently stops being retrieved.
      */
     public boolean markBlacklist(String name) {
@@ -350,6 +351,29 @@ public class SkillIndexRepository {
             }
         } catch (SQLException e) {
             log.warn("findNameByFingerprint({}, {}) failed: {}", runtimeFingerprint, source, e.getMessage());
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Find an active skill name by its runtime fingerprint. Like {@link #findNameByFingerprint(String)}
+     * but restricted to {@code status='active'} so blacklisted skills are never matched. Used by
+     * {@link com.agentscopea2a.v2.hooks.SkillEvolutionHook} for the fingerprint fallback path.
+     */
+    public Optional<String> findActiveNameByFingerprint(String runtimeFingerprint) {
+        if (runtimeFingerprint == null || runtimeFingerprint.isBlank()) return Optional.empty();
+        ensureTable();
+        String sql = "SELECT name FROM skill_index WHERE fingerprint = ? AND status = 'active' LIMIT 1";
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, runtimeFingerprint);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return Optional.of(rs.getString("name"));
+                }
+            }
+        } catch (SQLException e) {
+            log.warn("findActiveNameByFingerprint({}) failed: {}", runtimeFingerprint, e.getMessage());
         }
         return Optional.empty();
     }

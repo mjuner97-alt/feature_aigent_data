@@ -21,7 +21,6 @@ import com.agentscopea2a.v2.hooks.SkillEvolutionHook;
 import com.agentscopea2a.v2.hooks.SkillSynthesisHook;
 import com.agentscopea2a.v2.memory.EpisodicMemory;
 import com.agentscopea2a.v2.skills.BuiltinSkillRegistrar;
-import com.agentscopea2a.v2.skills.EmbeddingClient;
 import com.agentscopea2a.v2.skills.FingerprintCalculator;
 import com.agentscopea2a.v2.skills.MetricClassificationService;
 import com.agentscopea2a.v2.skills.SkillCandidateRepository;
@@ -29,7 +28,6 @@ import com.agentscopea2a.v2.skills.SkillDistiller;
 import com.agentscopea2a.v2.skills.SkillEvolutionRunner;
 import com.agentscopea2a.v2.skills.SkillIndexRepository;
 import com.agentscopea2a.v2.skills.SkillSynthesisRunner;
-import com.agentscopea2a.v2.skills.SkillVectorIndex;
 import com.agentscopea2a.v2.skills.SkillVectorIndexVisibilityFilter;
 import com.agentscopea2a.v2.skillManager.service.SkillManageBridge;
 import com.agentscopea2a.v2.skillManager.service.SkillManageService;
@@ -54,11 +52,12 @@ import java.nio.file.Paths;
  * v2 SkillCurator pipeline configuration.
  *
  * <p>Enables the v2 skill management lifecycle:
- * propose → promote → usage → audit → security → curator.
+ * propose -> promote -> usage -> audit -> security -> curator.
  * Uses {@link LocalApprovalGate} for HITL (human-in-the-loop) skill promotion.
  *
- * <p>Also wires the {@link SkillVectorIndex} (PR3 vector/fingerprint lookup) and
- * {@link SkillVectorIndexVisibilityFilter} (bridges the index into the curator pipeline).
+ * <p>Also wires the {@link SkillVectorIndexVisibilityFilter} as a pass-through
+ * {@link SkillVisibilityFilter} so the JAR's {@code HarnessSkillMiddleware}
+ * surfaces all builtin skills to the LLM.
  */
 @Configuration
 public class V2SkillConfig {
@@ -83,45 +82,26 @@ public class V2SkillConfig {
         return new LocalApprovalGate();
     }
 
-    @Bean
-    public SkillVectorIndex skillVectorIndex(
-            @org.springframework.beans.factory.annotation.Qualifier("gaussDataSource") DataSource dataSource,
-            @Value("${harness.skills.retrieval.cache-enabled:true}") boolean cacheEnabled,
-            @Value("${harness.skills.retrieval.cache-refresh-seconds:60}") int cacheRefreshSeconds) {
-        log.info("SkillVectorIndex: cacheEnabled={}, cacheRefreshSeconds={}", cacheEnabled, cacheRefreshSeconds);
-        return new SkillVectorIndex(dataSource, cacheEnabled, cacheRefreshSeconds);
-    }
 
     /**
      * Boot-time registrar that scans {@code workspace/skills/} and inserts any builtin
-     * SKILL.md not yet in {@code skill_index}, computing its embedding so
-     * {@link SkillVectorIndexVisibilityFilter} includes it in topK results. Without this,
-     * a newly shipped builtin skill (e.g. {@code wide_table_q2_1_metrics}) is loaded by the
-     * JAR but filtered out before reaching the LLM because the visibility filter narrows
-     * the catalogue to topK hits and the new skill has no row (and no embedding) in the DB.
+     * SKILL.md not yet in {@code skill_index}. Without this, a newly shipped builtin
+     * skill (e.g. {@code wide_table_q2_1_metrics}) cannot be resolved by fingerprint
+     * fallback in {@link SkillEvolutionHook}.
      */
     @Bean
     public BuiltinSkillRegistrar builtinSkillRegistrar(
             SkillIndexRepository indexRepo,
-            SkillVectorIndex vectorIndex,
-            ObjectProvider<EmbeddingClient> embeddingClientProvider,
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
             @Value("${harness.skills.builtin-registrar.enabled:true}") boolean enabled) {
-        EmbeddingClient embeddingClient = embeddingClientProvider.getIfAvailable();
-        log.info(
-                "BuiltinSkillRegistrar: enabled={}, workspacePath={}, embeddingClient={}",
-                enabled, workspacePath, embeddingClient != null ? "wired" : "null");
-        return new BuiltinSkillRegistrar(workspacePath, indexRepo, vectorIndex, embeddingClient, enabled);
+        log.info("BuiltinSkillRegistrar: enabled={}, workspacePath={}", enabled, workspacePath);
+        return new BuiltinSkillRegistrar(workspacePath, indexRepo, enabled);
     }
 
     @Bean
-        public SkillVisibilityFilter skillVectorIndexVisibilityFilter(
-            SkillVectorIndex skillVectorIndex,
-            EmbeddingClient embeddingClient,
-            @Value("${harness.skills.retrieval.top-k:5}") int topK,
-            @Value("${harness.skills.retrieval.min-cosine:0.6}") float minCosine) {
-        log.info("SkillVectorIndexVisibilityFilter: topK={}, minCosine={}", topK, minCosine);
-        return new SkillVectorIndexVisibilityFilter(skillVectorIndex, embeddingClient, topK, minCosine);
+    public SkillVisibilityFilter skillVectorIndexVisibilityFilter() {
+        log.info("SkillVectorIndexVisibilityFilter: pass-through (hot-load enabled)");
+        return new SkillVectorIndexVisibilityFilter();
     }
 
 
@@ -182,7 +162,7 @@ public class V2SkillConfig {
     public SkillEvolutionHook skillEvolutionHook(
             SkillEvolutionRunner skillEvolutionRunner,
             FingerprintCalculator fingerprintCalculator,
-            SkillVectorIndex skillVectorIndex,
+            SkillIndexRepository indexRepo,
             @Value("${harness.skills.evolution.enabled:false}") boolean evolutionEnabled,
             @Value("${harness.skills.evolution.fail-rate-evolve:0.3}") double failRateEvolve,
             @Value("${harness.skills.evolution.min-uses-evolve:5}") int minUsesEvolve,
@@ -197,7 +177,7 @@ public class V2SkillConfig {
                 skillEvolutionRunner,
                 rejectionKeywords,
                 fingerprintCalculator,
-                skillVectorIndex);
+                indexRepo);
     }
 
     // ── Stage 7: Skill candidate + metric classification + fingerprint ─────────
@@ -283,8 +263,6 @@ public class V2SkillConfig {
             SkillCandidateRepository candidateRepo,
             SkillIndexRepository indexRepo,
             SkillDistiller skillDistiller,
-            ObjectProvider<SkillVectorIndex> vectorIndexProvider,
-            ObjectProvider<EmbeddingClient> embeddingClientProvider,
             ObjectProvider<EpisodicMemory> episodicMemoryProvider,
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
             @Value("${harness.skills.auto-synth.enabled:false}") boolean enabled,
@@ -295,8 +273,6 @@ public class V2SkillConfig {
                 candidateRepo,
                 indexRepo,
                 skillDistiller,
-                vectorIndexProvider,
-                embeddingClientProvider,
                 episodicMemoryProvider,
                 skillsDir,
                 enabled,
@@ -312,9 +288,7 @@ public class V2SkillConfig {
     public SkillEvolutionRunner skillEvolutionRunner(
             SkillIndexRepository indexRepo,
             SkillDistiller skillDistiller,
-            ObjectProvider<SkillVectorIndex> vectorIndexProvider,
-            ObjectProvider<EmbeddingClient> embeddingClientProvider,
-            @org.springframework.beans.factory.annotation.Qualifier("gaussDataSource") DataSource dataSource,
+            DataSource dataSource,
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
             @Value("${harness.skills.evolution.enabled:false}") boolean enabled,
             @Value("${harness.skills.evolution.fail-rate-evolve:0.3}") double failRateEvolve,
@@ -324,9 +298,7 @@ public class V2SkillConfig {
         Path skillsDir = Paths.get(workspacePath).toAbsolutePath().resolve("skills-auto");
         return new SkillEvolutionRunner(
                 indexRepo,
-                vectorIndexProvider,
                 skillDistiller,
-                embeddingClientProvider,
                 dataSource,
                 skillsDir,
                 enabled,
@@ -344,9 +316,7 @@ public class V2SkillConfig {
      * 可通过 {@code harness.skills.page-bridge.enabled=false} 关闭。
      */
     @Bean
-    public SkillManageBridge skillManageBridge(
-            SkillIndexRepository indexRepo,
-            SkillVectorIndex vectorIndex) {
-        return new SkillManageBridge(indexRepo, vectorIndex);
+    public SkillManageBridge skillManageBridge(SkillIndexRepository indexRepo) {
+        return new SkillManageBridge(indexRepo);
     }
 }

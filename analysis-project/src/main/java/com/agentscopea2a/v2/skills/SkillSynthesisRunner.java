@@ -50,8 +50,6 @@ public class SkillSynthesisRunner {
     private final SkillCandidateRepository candidateRepo;
     private final SkillIndexRepository indexRepo;
     private final SkillDistiller distiller;
-    private final SkillVectorIndex vectorIndex;
-    private final EmbeddingClient embeddingClient;
     private final EpisodicMemory episodicMemory;
     private final Path skillsDir;
     private final boolean enabled;
@@ -62,8 +60,6 @@ public class SkillSynthesisRunner {
             SkillCandidateRepository candidateRepo,
             SkillIndexRepository indexRepo,
             SkillDistiller distiller,
-            ObjectProvider<SkillVectorIndex> vectorIndexProvider,
-            ObjectProvider<EmbeddingClient> embeddingClientProvider,
             ObjectProvider<EpisodicMemory> episodicMemoryProvider,
             Path skillsDir,
             boolean enabled,
@@ -72,8 +68,6 @@ public class SkillSynthesisRunner {
         this.candidateRepo = candidateRepo;
         this.indexRepo = indexRepo;
         this.distiller = distiller;
-        this.vectorIndex = vectorIndexProvider.getIfAvailable();
-        this.embeddingClient = embeddingClientProvider.getIfAvailable();
         this.episodicMemory = episodicMemoryProvider.getIfAvailable();
         this.skillsDir = skillsDir;
         this.enabled = enabled;
@@ -292,11 +286,7 @@ public class SkillSynthesisRunner {
             return;
         }
         try {
-            // Pass null embeddingClient — the runner stamps the embedding+fingerprint
-            // synchronously below with the richer (desc + sample_questions) text. Letting
-            // SkillSaveTool's async path also embed would race and overwrite the canonical
-            // fingerprint with null.
-            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null, SkillEntry.SOURCE_AUTO_SYNTHESIZED, null);
+            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, SkillEntry.SOURCE_AUTO_SYNTHESIZED);
             // Use saveSkillWithMetricTag so the metric_tag field is stamped into the
             // frontmatter rather than being stripped by saveSkill's stripFrontmatter.
             boolean saved = saver.saveSkillWithMetricTag(
@@ -304,14 +294,8 @@ public class SkillSynthesisRunner {
             if (!saved) {
                 log.warn("SkillSaveTool.saveSkillWithMetricTag returned false for '{}'", distilled.name());
             }
-            // Stamp the canonical fingerprint synchronously — embedding text includes
-            // sample_questions so bge-zh has enough lexical surface to spread cosine across
-            // L2's min-cosine threshold (PR3.7).
-            if (vectorIndex != null && embeddingClient != null) {
-                String embedText = buildEmbedText(distilled);
-                float[] vec = embeddingClient.embed(embedText);
-                if (vec != null) vectorIndex.upsertVector(distilled.name(), fingerprint, vec);
-            }
+            // Stamp the canonical fingerprint so L1 lookup routes this fingerprint to the skill.
+            indexRepo.upsertFingerprint(distilled.name(), fingerprint);
             log.info("Auto-synthesised skill '{}' from fingerprint {}", distilled.name(), fingerprint);
         } catch (Exception ex) {
             log.warn("SkillSaveTool failed for '{}': {}", distilled.name(), ex.getMessage());
@@ -569,8 +553,7 @@ public class SkillSynthesisRunner {
 
         // Save to disk + upsert index row (no candidate CAS — night-time path)
         try {
-            // Pass null embeddingClient — we stamp the embedding ourselves below with richer text
-            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, vectorIndex, null, SkillEntry.SOURCE_AUTO_SYNTHESIZED, null);
+            SkillSaveTool saver = new SkillSaveTool(skillsDir, indexRepo, SkillEntry.SOURCE_AUTO_SYNTHESIZED);
             boolean saved = saver.saveSkillWithMetricTag(
                     distilled.name(), distilled.description(), distilled.body(), metricTag);
             if (!saved) {
@@ -578,15 +561,8 @@ public class SkillSynthesisRunner {
                 return null;
             }
 
-            // Stamp the canonical runtime fingerprint + embedding synchronously
-            if (vectorIndex != null && embeddingClient != null) {
-                String embedText = buildEmbedText(distilled);
-                float[] vec = embeddingClient.embed(embedText);
-                if (vec != null) {
-                    // Use runtimeFp as the canonical fingerprint for L1 retrieval
-                    vectorIndex.upsertVector(distilled.name(), runtimeFp, vec);
-                }
-            }
+            // Stamp the canonical runtime fingerprint so L1 lookup routes runtimeFp to the skill.
+            indexRepo.upsertFingerprint(distilled.name(), runtimeFp);
 
             // Write tool_sequence_fingerprint to dedicated column (not the primary fingerprint column)
             if (toolSeqFp != null && !toolSeqFp.isBlank()) {
@@ -632,4 +608,4 @@ public class SkillSynthesisRunner {
             return "";
         }
     }
-}
+}

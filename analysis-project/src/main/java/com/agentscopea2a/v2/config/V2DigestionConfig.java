@@ -19,13 +19,11 @@ import com.agentscopea2a.v2.digestion.MemoryDigestionService;
 import com.agentscopea2a.v2.digestion.SkillFlowEvolver;
 import com.agentscopea2a.v2.memory.MemoryHydrator;
 import com.agentscopea2a.v2.memory.MysqlMemoryStore;
-import com.agentscopea2a.v2.skills.EmbeddingClient;
 import com.agentscopea2a.v2.skills.FingerprintCalculator;
 import com.agentscopea2a.v2.skills.MetricClassificationService;
 import com.agentscopea2a.v2.skills.SkillDistiller;
 import com.agentscopea2a.v2.skills.SkillIndexRepository;
 import com.agentscopea2a.v2.skills.SkillSynthesisRunner;
-import com.agentscopea2a.v2.skills.SkillVectorIndex;
 import io.agentscope.core.model.Model;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
 import org.slf4j.Logger;
@@ -81,8 +79,6 @@ public class V2DigestionConfig {
     public SkillFlowEvolver skillFlowEvolver(
             SkillIndexRepository indexRepo,
             SkillDistiller distiller,
-            ObjectProvider<SkillVectorIndex> vectorIndexProvider,
-            ObjectProvider<EmbeddingClient> embeddingClientProvider,
             DataSource dataSource,
             SkillSynthesisRunner synthesisRunner,
             FingerprintCalculator fingerprintCalc,
@@ -94,8 +90,6 @@ public class V2DigestionConfig {
         return new SkillFlowEvolver(
                 indexRepo,
                 distiller,
-                vectorIndexProvider,
-                embeddingClientProvider,
                 dataSource,
                 skillsDir,
                 synthesisRunner,
@@ -125,8 +119,6 @@ public class V2DigestionConfig {
             MemoryHydrator hydrator,
             SkillIndexRepository indexRepo,
             SkillDistiller distiller,
-            ObjectProvider<SkillVectorIndex> vectorIndexProvider,
-            ObjectProvider<EmbeddingClient> embeddingClientProvider,
             ObjectProvider<SkillFlowEvolver> evolverProvider,
             FingerprintCalculator fingerprintCalc,
             ObjectProvider<com.agentscopea2a.v2.alarm.CronFailureAlerter> alerterProvider,
@@ -155,9 +147,7 @@ public class V2DigestionConfig {
                 hydrator,
                 lightModel,
                 indexRepo,
-                vectorIndexProvider,
                 distiller,
-                embeddingClientProvider,
                 evolverProvider,
                 fingerprintCalc,
                 alerterProvider,
