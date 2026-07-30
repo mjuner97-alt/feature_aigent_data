@@ -4,13 +4,12 @@
  *
  * 职责:
  *  - 按 view(all/used/liked/created/popular)展示 Skill 列表,含搜索/筛选/排序/分页
- *  - 创建 Skill 走共享组件 SkillFormDrawer(内联 Drawer),保存后跳转详情
- *  - 编辑入口在详情页 SkillDetailPage(同样使用 SkillFormDrawer)
+ *  - 创建 Skill 走 /skills/new 全页面表单
+ *  - 编辑入口在详情页 /skills/:id/edit
  */
 import { ref, watch, computed } from 'vue';
 import { useRouter } from 'vue-router';
 import SkillManage from '../../components/SkillManage.vue';
-import SkillFormDrawer from '../../components/SkillFormDrawer.vue';
 import { listSkills } from '../../api/skill';
 import type { SkillListItem } from '../../types/skill';
 
@@ -96,19 +95,9 @@ async function load(reset = false) {
 // 筛选/排序/视图变更 -> 重置分页并重新加载
 watch([sort, dimension, () => props.view], () => load(true), { immediate: true });
 
-// ============ 创建表单(共享 SkillFormDrawer) ============
-const drawerOpen = ref(false);
-// 列表页仅用于创建,editId 恒为 null(编辑入口在详情页)
-const editId = ref<number | null>(null);
-
+// 创建 Skill -> 跳转全页面表单
 function openCreate() {
-  editId.value = null;
-  drawerOpen.value = true;
-}
-
-// 创建成功后跳转详情
-function onSaved(skillId: number) {
-  router.push(`/skills/${skillId}`);
+  router.push('/skills/new');
 }
 </script>
 
@@ -134,9 +123,6 @@ function onSaved(skillId: number) {
       {{ loading ? '加载中…' : '加载更多' }}
     </button>
   </div>
-
-  <!-- 创建表单(共享 SkillFormDrawer) -->
-  <SkillFormDrawer v-model:open="drawerOpen" :edit-id="editId" @saved="onSaved" />
 </template>
 
 <style scoped>

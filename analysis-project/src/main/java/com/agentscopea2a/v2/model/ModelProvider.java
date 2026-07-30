@@ -16,7 +16,7 @@
 package com.agentscopea2a.v2.model;
 
 import com.agentscopea2a.entity.UserModelConfig;
-import com.agentscopea2a.mapper.mysql.UserModelConfigMapper;
+import com.agentscopea2a.mapper.db1.UserModelConfigMapper;
 import com.agentscopea2a.v2.config.HarnessRunnerProperties;
 import io.agentscope.core.model.Model;
 import io.agentscope.extensions.model.anthropic.AnthropicChatModel;

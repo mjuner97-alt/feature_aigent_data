@@ -13,14 +13,14 @@
 --   3. CURRENT_TIMESTAMP                 -> now()
 --   4. ON UPDATE CURRENT_TIMESTAMP       -> 触发器函数 set_updated_at() + 每表 BEFORE UPDATE 触发器
 --      (复刻 MySQL 语义: UPDATE 时未显式赋值则自动刷新 updated_at; 显式赋值则保留)
---      覆盖 skill_index / skill_candidate / skill_manage 三张含 updated_at 的表
+--      覆盖 skill_index / skill_candidate / skill_manage / user_model_config 四张含 updated_at 的表
 --   5. 行内 KEY/UNIQUE KEY 索引          -> 独立 CREATE [UNIQUE] INDEX
 --   6. 行内 COMMENT '...'                -> COMMENT ON COLUMN / COMMENT ON TABLE
 --   7. 模拟数据中 content 的 '\n'        -> 改用 E'...' 转义字符串, 使其成为真实换行
 --      (openGauss 默认 standard_conforming_strings=on, 普通 '...\n...' 是字面量 "反斜杠+n",
 --       与 MySQL 行为不同; E'...' 才会把 \n 解释为换行)
 --
--- 统计: 11 张表, 100 个字段, 1 个触发器函数(set_updated_at) + 3 个 BEFORE UPDATE 触发器
+-- 统计: 12 张表, 109 个字段, 1 个触发器函数(set_updated_at) + 4 个 BEFORE UPDATE 触发器
 -- ============================================================================
 
 -- ============================================================================
@@ -38,6 +38,7 @@ DROP TABLE IF EXISTS skill_like;
 DROP TABLE IF EXISTS skill_manage;
 DROP TABLE IF EXISTS skill_candidate;
 DROP TABLE IF EXISTS skill_index;
+DROP TABLE IF EXISTS user_model_config;
 
 -- ============================================================================
 -- 2. CREATE TABLE
@@ -288,8 +289,29 @@ COMMENT ON TABLE skill_user_disable IS '用户禁用 Skill 表';
 DROP INDEX IF EXISTS uk_user_skill ON skill_user_disable;
 CREATE UNIQUE INDEX uk_user_skill ON skill_user_disable(user_id, skill_id);
 
+-- 2.12 user_model_config -- 用户模型配置表 (9 字段)
+CREATE TABLE IF NOT EXISTS user_model_config (
+  user_id VARCHAR(64) PRIMARY KEY,
+  provider VARCHAR(32) NOT NULL DEFAULT 'openai',
+  token TEXT NOT NULL,
+  model_name VARCHAR(128) NOT NULL,
+  request_url VARCHAR(512) NULL,
+  expire_at TIMESTAMP NULL,
+  last_notified_at TIMESTAMP NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT now(),
+  updated_at TIMESTAMP NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE user_model_config IS '用户模型配置表 - 存储用户自定义的 LLM API 配置';
+COMMENT ON COLUMN user_model_config.provider IS 'API 提供商: openai | anthropic | glm';
+COMMENT ON COLUMN user_model_config.token IS 'API Key';
+COMMENT ON COLUMN user_model_config.model_name IS '模型名称';
+COMMENT ON COLUMN user_model_config.request_url IS 'API 请求地址';
+COMMENT ON COLUMN user_model_config.expire_at IS '密钥到期时间，NULL 表示无已知到期';
+COMMENT ON COLUMN user_model_config.last_notified_at IS '最近一次过期通知时间，用于去重';
+
 -- ============================================================================
--- 2.12 updated_at 自动刷新触发器(复刻 MySQL 的 ON UPDATE CURRENT_TIMESTAMP)
+-- 2.13 updated_at 自动刷新触发器(复刻 MySQL 的 ON UPDATE CURRENT_TIMESTAMP)
 --     MySQL 语义: UPDATE 时若未显式给 updated_at 赋值则自动刷新为当前时间;
 --     显式赋值则保留显式值。下方条件判断实现同等语义。
 --     仅 skill_index / skill_candidate / skill_manage 三张表含 updated_at。
@@ -319,6 +341,12 @@ CREATE TRIGGER trg_skill_candidate_updated_at
 DROP TRIGGER IF EXISTS trg_skill_manage_updated_at ON skill_manage;
 CREATE TRIGGER trg_skill_manage_updated_at
   BEFORE UPDATE ON skill_manage
+  FOR EACH ROW
+  EXECUTE PROCEDURE set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_user_model_config_updated_at ON user_model_config;
+CREATE TRIGGER trg_user_model_config_updated_at
+  BEFORE UPDATE ON user_model_config
   FOR EACH ROW
   EXECUTE PROCEDURE set_updated_at();
 
@@ -425,6 +453,12 @@ INSERT INTO skill_operation_history (skill_id, publish_id, operator, operation, 
 -- 3.11 skill_user_disable -- 用户禁用
 INSERT INTO skill_user_disable (skill_id, user_id) VALUES
 (4, 'user_001');
+
+-- 3.12 user_model_config -- 用户模型配置
+INSERT INTO user_model_config (user_id, provider, token, model_name, request_url, expire_at, created_at, updated_at) VALUES
+('user_001', 'openai', 'sk-xxxxxxxxxxxxxxxxxxxxxxxx', 'gpt-4o', 'https://api.openai.com/v1', NULL, now(), now()),
+('user_002', 'anthropic', 'sk-ant-xxxxxxxxxxxxxxxxxxxxxxxx', 'claude-sonnet-4-20250514', 'https://api.anthropic.com/v1', '2026-08-30 00:00:00', now(), now()),
+('user_003', 'glm', 'xxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxx', 'glm-4', 'https://open.bigmodel.cn/api/paas/v4/', NULL, now(), now());
 
 -- ============================================================================
 -- 4. 验证查询(执行完上面后运行这些验证数据)

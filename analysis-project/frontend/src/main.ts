@@ -7,7 +7,8 @@
  *  /chat      -> ChatPage
  *  /dashboard -> DashboardPage
  *  /skills/*  -> SkillShell layout (Skill 广场:全部/我使用的/我点赞的/我创建的/热门榜/详情)
- *               创建/编辑走 SkillListPage 内联 Drawer;审批列表/详情走 SkillDetailPage 内联 tab。
+ *               创建走 /skills/new,编辑走 /skills/:id/edit (全页面表单);
+ *               审批列表/详情走独立路由。
  */
 
 import { createApp, defineComponent, h } from 'vue';
@@ -19,6 +20,7 @@ import LoginPage from './pages/LoginPage.vue';
 import SkillShell from './components/SkillShell.vue';
 import SkillListPage from './pages/skill/SkillListPage.vue';
 import SkillDetailPage from './pages/skill/SkillDetailPage.vue';
+import SkillFormPage from './pages/skill/SkillFormPage.vue';
 import SkillApprovalListPage from './pages/skill/SkillApprovalListPage.vue';
 import { isLoggedIn } from './utils/auth';
 
@@ -43,6 +45,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'created', component: SkillListPage, props: { view: 'created' } },
       { path: 'popular', component: SkillListPage, props: { view: 'popular' } },
       { path: 'approvals', component: SkillApprovalListPage },
+      { path: 'new', component: SkillFormPage },
+      { path: ':id/edit', component: SkillFormPage },
       { path: ':id', component: SkillDetailPage },
     ],
   },

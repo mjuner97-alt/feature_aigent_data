@@ -5,8 +5,6 @@
  */
 package com.agentscopea2a.v2.skills;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,25 +16,15 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Collections;
-import java.util.Comparator;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
 /**
- * PR3 - 在 PR1 建立的 {@code skill_index} 表之上做向量 / 指纹检索。
+ * PR3 - 在 PR1 建立的 {@code skill_index} 表之上做指纹检索。
  *
- * <p>L1(指纹)是普通的 PK / 唯一键查询,亚毫秒级。L2(向量)会把每个 {@code active}
- * 技能的 embedding 加载到 JVM 内并在进程内计算余弦相似度 - 对于我们当前几十个技能的
- * 规模完全够用;如果将来目录增长到上千个,可以把 {@code topK} 实现换成 openGauss 的
- * 向量类型而不改变接口。
- *
- * <p>Embedding 以 JSON {@code float[]} 形式存储在 PR1 已经预留的 {@code embedding TEXT}
- * 列中。保持列类型稳定意味着 PR3 是纯读/写代码 - 无需 ALTER TABLE - 未来的向量迁移
- * 也只需要做一个类型替换。
+ * <p>L1(指纹)是普通的 PK / 唯一键查询,亚毫秒级。
  *
  * <p>所有写路径都是尽力而为:SQL 失败时记录告警并返回;检索会回退到 L1 或既有的
  * 全量注入路径。
@@ -48,14 +36,12 @@ import java.util.Set;
 public class SkillVectorIndex {
 
     private static final Logger log = LoggerFactory.getLogger(SkillVectorIndex.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final TypeReference<float[]> FLOAT_ARRAY = new TypeReference<>() {};
 
     private final DataSource dataSource;
     private final boolean cacheEnabled;
     private final int cacheRefreshSeconds;
 
-    /** JVM-level cache of active skills for L2 vector search. Thread-safe via synchronized writes. */
+    /** JVM-level cache of active skills for user isolation filtering. Thread-safe via synchronized writes. */
     private volatile List<CachedSkill> skillCache = Collections.emptyList();
 
     public SkillVectorIndex(DataSource dataSource, boolean cacheEnabled, int cacheRefreshSeconds) {
@@ -64,8 +50,8 @@ public class SkillVectorIndex {
         this.cacheRefreshSeconds = cacheRefreshSeconds;
     }
 
-    /** Cached skill entry holding pre-parsed embedding + precomputed norm for fast cosine. */
-    private record CachedSkill(String name, String description,  String source, String ownerUserId) {}
+    /** Cached skill entry holding source and owner_user_id for user isolation. */
+    private record CachedSkill(String name, String description, String source, String ownerUserId) {}
 
     /**
      * Periodic cache refresh. Runs at a fixed interval so L2 queries hit memory instead of SQL.
@@ -103,9 +89,6 @@ public class SkillVectorIndex {
         }
         return List.copyOf(list);
     }
-
-    /** Hit returned by L2 vector search. {@code cosine} ∈ [-1, 1]; higher = more similar. */
-    public record SkillHit(String name, String description, float cosine) {}
 
     /**
      * L1 — exact fingerprint match against {@code skill_index.fingerprint}. PR2 (synthesis)
@@ -196,83 +179,32 @@ public class SkillVectorIndex {
         return Optional.empty();
     }
 
-    public void upsertVector(String name, String fingerprint, float[] embedding) {
-        if (name == null || name.isBlank() || embedding == null || embedding.length == 0) return;
-        String json;
-        try {
-            json = MAPPER.writeValueAsString(embedding);
-        } catch (Exception ex) {
-            log.warn("Embedding serialise failed for {}: {}", name, ex.getMessage());
-            return;
-        }
-        String sql = "UPDATE skill_index SET embedding = ?, fingerprint = ? WHERE name = ?";
-        try (Connection c = dataSource.getConnection();
-                PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setString(1, json);
-            ps.setString(2, fingerprint);
-            ps.setString(3, name);
-            int rows = ps.executeUpdate();
-            if (rows == 0) {
-                log.warn("upsertVector found no skill_index row for {} — embedding skipped", name);
-            }
-            // Write-through cache update
-            if (cacheEnabled && rows > 0) {
-                upsertCacheEntry(name, embedding, null, lookupOwnerUserId(name));
-            }
-        } catch (SQLException e) {
-            log.warn("upsertVector({}) failed: {}", name, e.getMessage());
-        }
-    }
-
-    /**
-     * PR4 — refresh the embedding column for an existing skill without touching its fingerprint.
-     */
-    public void upsertEmbeddingOnly(String name, float[] embedding) {
-        if (name == null || name.isBlank() || embedding == null || embedding.length == 0) return;
-        String json;
-        try {
-            json = MAPPER.writeValueAsString(embedding);
-        } catch (Exception ex) {
-            log.warn("Embedding serialise failed for {}: {}", name, ex.getMessage());
-            return;
-        }
-        String sql = "UPDATE skill_index SET embedding = ? WHERE name = ?";
-        try (Connection c = dataSource.getConnection();
-                PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setString(1, json);
-            ps.setString(2, name);
-            int rows = ps.executeUpdate();
-            if (rows == 0) {
-                log.warn("upsertEmbeddingOnly found no skill_index row for {}", name);
-            }
-            // Write-through cache update
-            if (cacheEnabled && rows > 0) {
-                upsertCacheEntry(name, embedding, null, lookupOwnerUserId(name));
-            }
-        } catch (SQLException e) {
-            log.warn("upsertEmbeddingOnly({}) failed: {}", name, e.getMessage());
-        }
-    }
-
     /**
      * Update or append a single entry in the JVM cache (write-through).
      *
-     * <p>Synchronized on the cache monitor so concurrent {@code upsertVector} / {@code
-     * upsertEmbeddingOnly} calls don't lose updates. The previous implementation did
-     * {@code new ArrayList<>(skillCache) → removeIf → add → List.copyOf} without any lock —
-     * two threads racing on the same snapshot could both remove the entry and both add,
-     * but the second {@code skillCache =} assignment would clobber the first, losing the
-     * first thread's update. Writes here are infrequent (one per skill save/evolve), so a
-     * coarse lock is fine.
+     * <p>Synchronized on the cache monitor so concurrent calls don't lose updates.
      */
-    private synchronized void upsertCacheEntry(String name, float[] embedding, String description, String ownerUserId) {
-        float n = norm(embedding);
-        if (n == 0f) return;
-        String source = lookupSource(name);
+    private synchronized void upsertCacheEntry(String name, String description, String ownerUserId) {
         List<CachedSkill> current = new ArrayList<>(this.skillCache);
         current.removeIf(s -> s.name().equals(name));
-        current.add(new CachedSkill(name, description,source, ownerUserId));
+        current.add(new CachedSkill(name, description, lookupSource(name), ownerUserId));
         this.skillCache = List.copyOf(current);
+    }
+
+    /**
+     * No-op: embedding column removed from skill_index table.
+     * Kept for backward compatibility with callers.
+     */
+    public void upsertVector(String name, String fingerprint, float[] embedding) {
+        log.debug("upsertVector no-op for {} (embedding column removed)", name);
+    }
+
+    /**
+     * No-op: embedding column removed from skill_index table.
+     * Kept for backward compatibility with callers.
+     */
+    public void upsertEmbeddingOnly(String name, float[] embedding) {
+        log.debug("upsertEmbeddingOnly no-op for {} (embedding column removed)", name);
     }
 
     /**
@@ -318,23 +250,5 @@ public class SkillVectorIndex {
         return null;
     }
 
-    private static float norm(float[] v) {
-        double s = 0d;
-        for (float x : v) s += x * x;
-        return (float) Math.sqrt(s);
-    }
 
-    private static float cosine(float[] a, float[] b, float aNorm, float bNorm) {
-        double dot = 0d;
-        for (int i = 0; i < a.length; i++) {
-            dot += a[i] * b[i];
-        }
-        double denom = aNorm * bNorm;
-        return denom == 0d ? 0f : (float) (dot / denom);
-    }
-
-    /** Visible-for-test no-op when retrieval is wired but called with an empty workspace. */
-    static List<SkillHit> empty() {
-        return Collections.emptyList();
-    }
 }

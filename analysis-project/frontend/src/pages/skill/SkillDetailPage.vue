@@ -6,6 +6,7 @@
  *  - 展示 Skill 信息、点赞、引用、发布记录、描述/内容
  *  - 内联展示"当前 Skill 的"发布审批详情(待审/已审记录 + 通过/退回操作)
  *  - 审批列表已迁移至独立页面 /skills/approvals
+ *  - 编辑走 /skills/:id/edit 全页面表单
  */
 import { ref, watch, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
@@ -26,7 +27,6 @@ import {
   rejectPublish,
 } from '../../api/skill';
 import type { SkillDetail, LikeStatus, SkillPublishRecord, PublishPendingItem } from '../../types/skill';
-import SkillFormDrawer from '../../components/SkillFormDrawer.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -49,11 +49,10 @@ const canManage = computed(() =>
   !!skill.value && skill.value.ownerUserId === currentUserId() && !hasPendingPublish.value
 );
 
-// 编辑表单(共享 SkillFormDrawer):入口仅 canManage 时可见
-const drawerOpen = ref(false);
-function onSaved() {
-  // 编辑保存后重新加载详情(若提交了维度发布,重载后审批中状态会隐藏编辑/删除入口)
-  load();
+// 编辑:跳转全页面表单
+function goEdit() {
+  if (!skill.value) return;
+  router.push(`/skills/${skill.value.id}/edit`);
 }
 
 // 维度类型 -> 前缀(COMPANY 特殊处理为空前缀,直接显示 targetName)
@@ -270,7 +269,7 @@ watch(() => route.params.id, () => {
       </ul>
     </details>
     <div v-if="canManage" class="manage">
-      <button class="edit" @click="drawerOpen = true">✎ 编辑</button>
+      <button class="edit" @click="goEdit">✎ 编辑</button>
       <button class="del" :disabled="deleting" @click="doDelete">{{ deleting ? '删除中…' : '🗑 删除' }}</button>
     </div>
     <div v-if="deleteError" class="del-error">{{ deleteError }}</div>
@@ -332,9 +331,6 @@ watch(() => route.params.id, () => {
         <div v-if="approvalActionDone" class="action-done">{{ approvalActionDone }}</div>
       </div>
     </section>
-
-    <!-- 编辑表单(共享 SkillFormDrawer,Teleport 到 body) -->
-    <SkillFormDrawer v-model:open="drawerOpen" :edit-id="skill.id" @saved="onSaved" />
   </div>
   <div v-else>加载中…</div>
 </template>
