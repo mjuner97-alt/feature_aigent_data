@@ -16,7 +16,7 @@
 package com.agentscopea2a.v2.service;
 
 import com.agentscopea2a.entity.UrlShortenerRecord;
-import com.agentscopea2a.mapper.mysql.UrlShortenerMapper;
+import com.agentscopea2a.mapper.gauss.UrlShortenerMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

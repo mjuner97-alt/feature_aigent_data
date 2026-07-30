@@ -26,9 +26,9 @@ import java.time.LocalDateTime;
  * URL 短链记录 - 存储原始URL与对应短码的映射关系。
  *
  * <p>由 {@code com.agentscopea2a.v2.service.UrlShortenerService} 管理；表 {@code url_shortener}
- * 通过 {@code src/main/resources/mybatis/mapper/mysql/UrlShortenerMapper.xml} 映射。
+ * 通过 {@code src/main/resources/mybatis/mapper/gauss/UrlShortenerMapper.xml} 映射。
  *
- * <p>包路径受 {@code MySQLConfig.setTypeAliasesPackage("com.agentscopea2a.entity")} 约束，
+ * <p>包路径受 {@code GaussConfig.setTypeAliasesPackage("com.agentscopea2a.entity")} 约束，
  * 必须放在此包以便 MyBatis 解析 XML 中的类型别名。
  */
 @Data

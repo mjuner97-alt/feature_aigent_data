@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.agentscopea2a.mapper.db1;
+package com.agentscopea2a.mapper.gauss;
 
 import com.agentscopea2a.entity.UserModelConfig;
 import org.apache.ibatis.annotations.Mapper;

@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.agentscopea2a.mapper.mysql;
+package com.agentscopea2a.mapper.gauss;
 
 import com.agentscopea2a.entity.UrlShortenerRecord;
 import org.apache.ibatis.annotations.Mapper;
@@ -22,8 +22,8 @@ import org.apache.ibatis.annotations.Param;
 /**
  * URL 短链 Mapper - 管理URL与短码的持久化映射。
  *
- * <p>包路径受 {@code MySQLConfig.@MapperScan(basePackages = "com.agentscopea2a.mapper.mysql")}
- * 约束，必须放在此包以便 MyBatis SqlSessionFactory 扫描到。
+ * <p>包路径受 {@code GaussConfig.@MapperScan(basePackages = "com.agentscopea2a.mapper.gauss")}
+ * 约束，必须放在此包以便 MyBatis gaussSqlSessionFactory 扫描到。
  */
 @Mapper
 public interface UrlShortenerMapper {
