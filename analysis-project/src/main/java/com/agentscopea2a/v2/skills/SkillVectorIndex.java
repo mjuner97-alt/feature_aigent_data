@@ -84,7 +84,7 @@ public class SkillVectorIndex {
     }
 
     private List<CachedSkill> loadAllActiveSkills() {
-        String sql = "SELECT name, description, embedding, source, owner_user_id FROM skill_index"
+        String sql = "SELECT name, description, source, owner_user_id FROM skill_index"
                 + " WHERE status = 'active' ";
         List<CachedSkill> list = new ArrayList<>();
         try (Connection c = dataSource.getConnection();
