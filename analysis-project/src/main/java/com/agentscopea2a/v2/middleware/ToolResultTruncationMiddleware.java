@@ -31,25 +31,32 @@ import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 
 /**
- * Truncates previously-consumed tool results in the LLM input to reduce context bloat.
+ * Compacts previously-consumed tool results in the LLM input to reduce context bloat
+ * without losing execution-critical information.
  *
  * <p>Problem: tools like {@code load_skill_through_path} return multi-K-char payloads
  * (e.g. full SKILL.md). The first LLM call needs the full text to plan the next step,
- * but every subsequent ReAct iteration re-injects the same old ToolResultBlock into the
- * prompt - pure token waste for a small internal-LLM.
+ * but every subsequent ReAct iteration re-injects the same old ToolResultBlock - pure
+ * token waste for a small internal-LLM. Naive truncation (keep first N chars) breaks
+ * the LLM's ability to execute later steps because field-mapping tables, formulas and
+ * python_exec templates are scattered through the middle of the document.
  *
  * <p>Strategy: on every {@code onReasoning}, find the <em>last</em> {@link ToolResultBlock}
  * in the message list (the one the LLM is about to consume this round) and leave it intact.
- * Any earlier {@code ToolResultBlock} whose tool name is in {@link #toolKeepChars} gets its
- * text output truncated to the configured number of chars + a {@code ...(truncated)} marker.
+ * Any earlier {@code ToolResultBlock} whose tool name is in {@link #compactTools} gets
+ * its text output compacted by {@link #compactMarkdown(String)} - which keeps all
+ * structured markdown elements (frontmatter / code blocks / tables / section headers /
+ * bullet & numbered lists / {@code filters:} lines) and drops only descriptive paragraphs
+ * and quote blocks. SKILL.md authors are expected to express hard rules as bullet lists,
+ * not as {@code >} quote blocks, so dropping quote blocks is safe.
  *
  * <p>Memory is untouched - the original ToolResultBlock stays in agent state. Each new
- * reasoning round rebuilds the input from memory, so the truncation is reapplied fresh
- * every iteration. This naturally gives "first round full, subsequent rounds truncated"
+ * reasoning round rebuilds the input from memory, so the compaction is reapplied fresh
+ * every iteration. This naturally gives "first round full, subsequent rounds compacted"
  * semantics without any per-round bookkeeping.
  *
  * <p>Bean created by {@link com.agentscopea2a.v2.config.V2InfraConfig}. Wired on both the
@@ -60,14 +67,15 @@ public class ToolResultTruncationMiddleware implements MiddlewareBase {
 
     private static final Logger log = LoggerFactory.getLogger(ToolResultTruncationMiddleware.class);
 
-    /** Suffix appended to truncated tool results so the LLM can tell it was shortened. */
-    private static final String TRUNCATION_MARKER = "\n...(truncated, kept first ";
+    /** Suffix appended to compacted tool results so the LLM can tell the content was shortened. */
+    private static final String COMPACTION_MARKER =
+            "\n\n...(compacted: dropped descriptive paragraphs; structured elements preserved)";
 
-    private final Map<String, Integer> toolKeepChars;
+    private final Set<String> compactTools;
     private final boolean enabled;
 
-    public ToolResultTruncationMiddleware(Map<String, Integer> toolKeepChars, boolean enabled) {
-        this.toolKeepChars = toolKeepChars != null ? Map.copyOf(toolKeepChars) : Map.of();
+    public ToolResultTruncationMiddleware(Set<String> compactTools, boolean enabled) {
+        this.compactTools = compactTools != null ? Set.copyOf(compactTools) : Set.of();
         this.enabled = enabled;
     }
 
@@ -77,7 +85,7 @@ public class ToolResultTruncationMiddleware implements MiddlewareBase {
             RuntimeContext ctx,
             ReasoningInput input,
             Function<ReasoningInput, Flux<AgentEvent>> next) {
-        if (!enabled || toolKeepChars.isEmpty() || input.messages() == null || input.messages().isEmpty()) {
+        if (!enabled || compactTools.isEmpty() || input.messages() == null || input.messages().isEmpty()) {
             return next.apply(input);
         }
 
@@ -90,7 +98,7 @@ public class ToolResultTruncationMiddleware implements MiddlewareBase {
         List<Msg> rewritten = null;
         for (int i = 0; i < lastTrIdx; i++) {
             Msg msg = messages.get(i);
-            Msg replaced = truncateIfMatched(msg);
+            Msg replaced = compactIfMatched(msg);
             if (replaced != null) {
                 if (rewritten == null) {
                     rewritten = new ArrayList<>(messages);
@@ -126,11 +134,11 @@ public class ToolResultTruncationMiddleware implements MiddlewareBase {
     }
 
     /**
-     * If {@code msg} contains a {@link ToolResultBlock} for a tool in {@link #toolKeepChars},
-     * return a copy with that block's text output truncated to the configured length.
+     * If {@code msg} contains a {@link ToolResultBlock} for a tool in {@link #compactTools},
+     * return a copy with that block's text output compacted via {@link #compactMarkdown(String)}.
      * Returns {@code null} if no rewrite is needed (msg left untouched).
      */
-    private Msg truncateIfMatched(Msg msg) {
+    private Msg compactIfMatched(Msg msg) {
         if (msg == null || msg.getContent() == null) {
             return null;
         }
@@ -142,30 +150,29 @@ public class ToolResultTruncationMiddleware implements MiddlewareBase {
                 continue;
             }
             String toolName = trb.getName();
-            if (toolName == null) {
-                continue;
-            }
-            Integer keep = toolKeepChars.get(toolName);
-            if (keep == null || keep <= 0) {
+            if (toolName == null || !compactTools.contains(toolName)) {
                 continue;
             }
             String origText = extractText(trb.getOutput());
-            if (origText.length() <= keep) {
+            String compacted = compactMarkdown(origText);
+            if (compacted.length() >= origText.length()) {
+                // No reduction (e.g. content was already all structured). Skip rewrite.
                 continue;
             }
-            String truncated = origText.substring(0, keep) + TRUNCATION_MARKER + keep + " chars)";
+            String finalText = compacted + COMPACTION_MARKER;
             ToolResultBlock replacement = new ToolResultBlock(
                     trb.getId(),
                     trb.getName(),
-                    List.of(TextBlock.builder().text(truncated).build()),
+                    List.of(TextBlock.builder().text(finalText).build()),
                     trb.getMetadata(),
                     trb.getState() != null ? trb.getState() : ToolResultState.RUNNING);
             if (newContent == null) {
                 newContent = new ArrayList<>(origContent);
             }
             newContent.set(i, replacement);
-            log.debug("Truncated tool result: tool={} id={} origLen={} newLen={}",
-                    toolName, trb.getId(), origText.length(), truncated.length());
+            log.debug("Compacted tool result: tool={} id={} origLen={} newLen={} saved={}",
+                    toolName, trb.getId(), origText.length(), finalText.length(),
+                    origText.length() - finalText.length());
         }
         if (newContent == null) {
             return null;
@@ -184,5 +191,127 @@ public class ToolResultTruncationMiddleware implements MiddlewareBase {
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * Compact a markdown document by keeping structured elements and dropping descriptive
+     * paragraphs and quote blocks.
+     *
+     * <p>Kept elements:
+     * <ul>
+     *   <li>Frontmatter ({@code ---...---})</li>
+     *   <li>Code blocks ({@code ```...```})</li>
+     *   <li>Table rows ({@code | ... |})</li>
+     *   <li>Section headers ({@code #}, {@code ##}, {@code ###} ...)</li>
+     *   <li>Bullet list items ({@code -} or {@code *})</li>
+     *   <li>Numbered list items ({@code 1.} etc.)</li>
+     *   <li>{@code filters:} lines (key-value parameter examples)</li>
+     * </ul>
+     *
+     * <p>Dropped: plain paragraphs, quote blocks ({@code >}), and the descriptive prose
+     * between structured elements. SKILL.md authors must express hard rules as bullet lists,
+     * not quote blocks, to survive compaction.
+     */
+    static String compactMarkdown(String content) {
+        if (content == null || content.isEmpty()) {
+            return content;
+        }
+        String[] lines = content.split("\n", -1);
+        StringBuilder out = new StringBuilder(content.length());
+        boolean inFrontmatter = false;
+        boolean inCodeBlock = false;
+        boolean prevWasBlank = false;
+
+        for (String line : lines) {
+            String trimmed = line.trim();
+
+            // Frontmatter delimiters: --- on its own line toggles state.
+            if (trimmed.equals("---")) {
+                inFrontmatter = !inFrontmatter;
+                appendLine(out, line, false);
+                prevWasBlank = false;
+                continue;
+            }
+            if (inFrontmatter) {
+                appendLine(out, line, false);
+                prevWasBlank = false;
+                continue;
+            }
+
+            // Code block fences toggle state - everything inside is kept verbatim.
+            if (trimmed.startsWith("```")) {
+                inCodeBlock = !inCodeBlock;
+                appendLine(out, line, false);
+                prevWasBlank = false;
+                continue;
+            }
+            if (inCodeBlock) {
+                appendLine(out, line, false);
+                prevWasBlank = false;
+                continue;
+            }
+
+            // Blank line: collapse consecutive blanks into one, keep as separator.
+            if (trimmed.isEmpty()) {
+                if (!prevWasBlank) {
+                    out.append("\n");
+                    prevWasBlank = true;
+                }
+                continue;
+            }
+
+            // Section header.
+            if (trimmed.startsWith("#")) {
+                appendLine(out, line, prevWasBlank);
+                prevWasBlank = false;
+                continue;
+            }
+
+            // Table row (must start and end with |, including the |---| separator row).
+            if (trimmed.startsWith("|") && trimmed.endsWith("|") && trimmed.length() > 1) {
+                appendLine(out, line, prevWasBlank);
+                prevWasBlank = false;
+                continue;
+            }
+
+            // Bullet list item.
+            if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+                appendLine(out, line, prevWasBlank);
+                prevWasBlank = false;
+                continue;
+            }
+
+            // Numbered list item: "1." through "999." prefix.
+            if (trimmed.length() >= 3 && Character.isDigit(trimmed.charAt(0))) {
+                int i = 1;
+                while (i < trimmed.length() && Character.isDigit(trimmed.charAt(i))) {
+                    i++;
+                }
+                if (i + 1 <= trimmed.length()
+                        && trimmed.charAt(i) == '.'
+                        && (i + 1 == trimmed.length() || Character.isWhitespace(trimmed.charAt(i + 1)))) {
+                    appendLine(out, line, prevWasBlank);
+                    prevWasBlank = false;
+                    continue;
+                }
+            }
+
+            // filters: line (key-value parameter example, common in skill files).
+            if (trimmed.startsWith("filters:") || trimmed.startsWith("filters：")) {
+                appendLine(out, line, prevWasBlank);
+                prevWasBlank = false;
+                continue;
+            }
+
+            // Otherwise: descriptive paragraph or quote block - drop.
+        }
+        return out.toString().trim();
+    }
+
+    private static void appendLine(StringBuilder out, String line, boolean prependBlank) {
+        if (prependBlank && out.length() > 0 && out.charAt(out.length() - 1) != '\n') {
+            out.append("\n");
+        }
+        out.append(line).append("\n");
     }
 }

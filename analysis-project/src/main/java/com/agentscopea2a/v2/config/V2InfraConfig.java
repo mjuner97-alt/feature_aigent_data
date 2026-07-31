@@ -49,8 +49,9 @@ import org.springframework.context.annotation.Configuration;
 import javax.sql.DataSource;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.Arrays;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * v2 infrastructure wiring: response cache, artifact store, and their middlewares/hooks.
@@ -238,23 +239,31 @@ public class V2InfraConfig {
     // ── Tool Result Truncation Middleware (reduce LLM context bloat) ──
 
     /**
-     * Truncates previously-consumed tool results before each LLM call so the prompt
+     * Compacts previously-consumed tool results before each LLM call so the prompt
      * doesn't keep re-injecting multi-K-char payloads (e.g. {@code load_skill_through_path}
      * returns the full SKILL.md). The last ToolResultBlock is always left intact (the LLM
-     * is about to consume it); earlier ones for configured tools are shortened to the
-     * first N chars + a {@code ...(truncated)} marker.
+     * is about to consume it); earlier ones for configured tools are compacted by
+     * {@link ToolResultTruncationMiddleware#compactMarkdown(String)} - which keeps all
+     * structured markdown elements (frontmatter / code blocks / tables / section headers /
+     * bullet & numbered lists / {@code filters:} lines) and drops only descriptive paragraphs
+     * and quote blocks.
      *
-     * <p>Default config truncates {@code load_skill_through_path} to 200 chars. Add more
-     * tools by extending the map here and the corresponding {@code @Value} property.
+     * <p>SKILL.md authors must express hard rules as bullet lists, not as {@code >} quote
+     * blocks, so the rules survive compaction.
+     *
+     * <p>Default config compacts {@code load_skill_through_path}. Add more tools via the
+     * {@code harness.a2a.tool-truncation.tools} property (comma-separated).
      */
     @Bean
     public ToolResultTruncationMiddleware toolResultTruncationMiddleware(
             @Value("${harness.a2a.tool-truncation.enabled:true}") boolean enabled,
-            @Value("${harness.a2a.tool-truncation.load_skill_through_path.keep-chars:200}") int loadSkillKeepChars) {
-        Map<String, Integer> map = new HashMap<>();
-        map.put("load_skill_through_path", loadSkillKeepChars);
-        log.info("ToolResultTruncationMiddleware: enabled={}, tools={}", enabled, map);
-        return new ToolResultTruncationMiddleware(map, enabled);
+            @Value("${harness.a2a.tool-truncation.tools:load_skill_through_path}") String toolsCsv) {
+        Set<String> tools = Arrays.stream(toolsCsv.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.toUnmodifiableSet());
+        log.info("ToolResultTruncationMiddleware: enabled={}, tools={}", enabled, tools);
+        return new ToolResultTruncationMiddleware(tools, enabled);
     }
 
     // ── V3.0 Verification Agent hooks (supervisor-side VerificationHook + sub-agent L2 collector) ──

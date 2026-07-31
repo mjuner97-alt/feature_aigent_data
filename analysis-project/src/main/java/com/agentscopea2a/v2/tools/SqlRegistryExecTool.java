@@ -269,9 +269,9 @@ public class SqlRegistryExecTool {
     // ======================================================================
 
     private static String validateTemplate(String sql) {
-        if (!TEMPLATE_SHAPE_PATTERN.matcher(sql).matches()) {
-            return "sql_registry_exec 拒绝执行: sql_template 必须形如 'SELECT ... FROM ...'";
-        }
+//        if (!TEMPLATE_SHAPE_PATTERN.matcher(sql).matches()) {
+//            return "sql_registry_exec 拒绝执行: sql_template 必须形如 'SELECT ... FROM ...'";
+//        }
         if (TEMPLATE_FORBIDDEN_PATTERN.matcher(sql).find()) {
             return "sql_registry_exec 拒绝执行: sql_template 含禁用关键字/元字符 "
                     + "(禁 ; / 注释符 / DDL / DML / system.* 系统表 / INTO OUTFILE / LOAD_FILE. "

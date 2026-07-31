@@ -62,22 +62,15 @@ wide_table_query(
 )
 ```
 
-> ⚠️ **直接调用, 不要走 router_tool**: `wide_table_query` 已直接注册在 analyze_data 子 agent 的 Toolkit 上, 跳过 `router_tool({toolId:...})` 元工具路由能省 5 轮 LLM 往返 (toolMetaInfo + 拼参失败重试)。
+- ⚠️ **直接调用, 不要走 router_tool**: `wide_table_query` 已直接注册在 analyze_data 子 agent 的 Toolkit 上, 跳过 `router_tool({toolId:...})` 元工具路由能省 5 轮 LLM 往返 (toolMetaInfo + 拼参失败重试)。
 
-> schema 由工具硬编码为 `remote_app`, 不需要传 `remote_app.dsqa_dwd_...`, 只传表名即可。
-> LIMIT 由工具硬编码为 10000, 不需要传 limit 参数, 工具自动取全量 (最多 10000 行)。
-
-> 🚨 **filters vs subqueryFilters 的区别** (重要):
-> - `filters`: 普通等值条件, value 是字面量 (字符串/数字), 走参数化绑定防注入。
->   例: `{"dev_dept":"杭州开发二部"}`
-> - `subqueryFilters`: value 是子查询字符串, 用于"最新日期/最大版本"这类语义, 形如 `"(SELECT MAX(in_date) FROM ...)"`。
->   value 必须形如 `(SELECT ...)` (圆括号包裹 + SELECT 开头), 禁分号/注释符/DDL/DML 关键字, 否则工具拒执行。
->   例: `{"in_date":"(SELECT MAX(in_date) FROM dsqa_dwd_req_item_app_portrait_wide_inf)"}`
-> 不要把子查询写到 `filters` 里 -- `filters` 走参数化绑定, 子查询会被当成字符串字面量与列等值比较, 永远返回 0 行。
-
-工具返回 markdown 预览 + `📦 CSV 路径: <path>` 行 (由 ArtifactHandoffHook 自动落 CSV)。
-
-> 🚨 **硬规则**: CSV 路径只能从 wide_table_query 返回的 `📦 CSV 路径:` 行复制, 不要手工编造, 里面带 `<userId>/<taskId>` 前缀, 改写会被 ArtifactAccessMiddleware 越权拦截。
+- schema 由工具硬编码为 `remote_app`, 不需要传 `remote_app.dsqa_dwd_...`, 只传表名即可。
+- LIMIT 由工具硬编码为 10000, 不需要传 limit 参数, 工具自动取全量 (最多 10000 行)。
+- 🚨 **filters vs subqueryFilters 的区别** (重要):
+  - `filters`: 普通等值条件, value 是字面量 (字符串/数字), 走参数化绑定防注入。例: `{"dev_dept":"杭州开发二部"}`
+  - `subqueryFilters`: value 是子查询字符串, 用于"最新日期/最大版本"这类语义, 形如 `"(SELECT MAX(in_date) FROM ...)"`。value 必须形如 `(SELECT ...)` (圆括号包裹 + SELECT 开头), 禁分号/注释符/DDL/DML 关键字, 否则工具拒执行。例: `{"in_date":"(SELECT MAX(in_date) FROM dsqa_dwd_req_item_app_portrait_wide_inf)"}`
+  - 不要把子查询写到 `filters` 里 -- `filters` 走参数化绑定, 子查询会被当成字符串字面量与列等值比较, 永远返回 0 行。
+- 🚨 **CSV 路径硬规则**: CSV 路径只能从 wide_table_query 返回的 `📦 CSV 路径:` 行复制, 不要手工编造, 里面带 `<userId>/<taskId>` 前缀, 改写会被 ArtifactAccessMiddleware 越权拦截。
 
 ### Step 3: 用 python_exec + pandas 算 4 个指标
 
@@ -90,8 +83,8 @@ standard_count = (df['standard_is_2_1'] == '已达标').sum()
 print(f"全量={total}, 完成数={completion_count}, 达标数={standard_count}")
 ```
 
-如果 total=0, 直接回复 "无数据", 不要调 arith。
-如果 completion_count=0, 不要算达标率, 直接回复 "完成数为 0, 无法算达标率"。
+- 如果 total=0, 直接回复 "无数据", 不要调 arith。
+- 如果 completion_count=0, 不要算达标率, 直接回复 "完成数为 0, 无法算达标率"。
 
 ### Step 4: 用 arith 复算百分比 (BigDecimal, 双重保险)
 
@@ -100,7 +93,7 @@ arith(op="pct", numbers=[<completion_count>, <total>])       # 完成率
 arith(op="pct", numbers=[<standard_count>, <completion_count>])  # 达标率
 ```
 
-arith 返回 BigDecimal 精度结果, 以此为准回复用户。
+- arith 返回 BigDecimal 精度结果, 以此为准回复用户。
 
 ### Step 5: 回复用户
 
