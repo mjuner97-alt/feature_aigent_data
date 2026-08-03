@@ -25,9 +25,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -163,6 +166,39 @@ public class MockOrgService {
                         getDisplayName(ref.orgType(), ref.orgId())))
                 .toList();
         return new UserInfo(userId, orgs);
+    }
+
+    /**
+     * 批量解析 userId -> 姓名(取每个 user_id 首条非空姓名,ORDER BY id)。
+     * 用于列表场景一次性填充 ownerName,避免逐条查询。
+     * 无记录或姓名为空的 userId 不放入返回 Map,调用方按缺失回退到 userId 展示。
+     */
+    public Map<String, String> getUserNameMap(Collection<String> userIds) {
+        if (userIds == null || userIds.isEmpty()) {
+            return Map.of();
+        }
+        List<String> distinct = userIds.stream()
+                .filter(Objects::nonNull)
+                .filter(id -> !id.isBlank())
+                .distinct()
+                .toList();
+        if (distinct.isEmpty()) {
+            return Map.of();
+        }
+        List<DeveloperPlPersonInfo> records = personInfoMapper.selectByUserIds(distinct);
+        if (records == null || records.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, String> result = new HashMap<>();
+        for (DeveloperPlPersonInfo r : records) {
+            String uid = r.getUserId();
+            String name = r.getName();
+            if (uid == null || uid.isBlank() || name == null || name.isBlank()) {
+                continue;
+            }
+            result.putIfAbsent(uid, name); // ORDER BY id,首条非空姓名
+        }
+        return result;
     }
 
     // ==================== 内部工具 ====================

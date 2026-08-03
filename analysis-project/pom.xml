@@ -252,16 +252,6 @@
             <version>3.0.3</version>
         </dependency>
 
-        <!-- P0-1: Flyway schema migration - baseline 现有 schema, 后续 DDL 走 V<date>__<desc>.sql -->
-        <dependency>
-            <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-core</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-mysql</artifactId>
-        </dependency>
-
         <!-- GaussDB JDBC 驱动 (openGauss) -->
         <dependency>
             <groupId>org.opengauss</groupId>

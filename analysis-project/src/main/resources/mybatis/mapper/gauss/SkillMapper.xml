@@ -250,7 +250,6 @@
         SELECT r.creator FROM skill_reference r
         JOIN skill_manage s ON r.target_skill_id = s.id
         WHERE r.target_skill_id = #{skillId}
-          AND r.creator != s.owner_user_id
     </select>
 
     <!-- ==================== skill_publish ==================== -->
@@ -521,6 +520,95 @@
         <foreach collection="skillIds" item="skillId" open="(" separator="," close=")">
             #{skillId}
         </foreach>
+    </select>
+
+    <!-- ==================== skill_file ==================== -->
+
+    <resultMap id="SkillFileResultMap" type="com.agentscopea2a.v2.skillManager.entity.SkillFile">
+        <id column="id" property="id"/>
+        <result column="user_id" property="userId"/>
+        <result column="filename" property="filename"/>
+        <result column="storage_path" property="storagePath"/>
+        <result column="file_type" property="fileType"/>
+        <result column="file_size" property="fileSize"/>
+        <result column="description" property="description"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <sql id="skillFileCols">id, user_id, filename, storage_path, file_type, file_size, description, created_at, updated_at</sql>
+
+    <insert id="insertSkillFile" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillFile"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_file (user_id, filename, storage_path, file_type, file_size, description, created_at)
+        VALUES (#{userId}, #{filename}, #{storagePath}, #{fileType}, #{fileSize}, #{description}, #{createdAt})
+    </insert>
+
+    <select id="selectFileById" resultMap="SkillFileResultMap">
+        SELECT <include refid="skillFileCols"/> FROM skill_file WHERE id = #{id}
+    </select>
+
+    <select id="selectFileByUserIdAndFilename" resultMap="SkillFileResultMap">
+        SELECT <include refid="skillFileCols"/> FROM skill_file WHERE user_id = #{userId} AND filename = #{filename}
+    </select>
+
+    <select id="selectFilesByUserId" resultMap="SkillFileResultMap">
+        SELECT <include refid="skillFileCols"/> FROM skill_file
+        WHERE user_id = #{userId}
+        <if test="fileType != null and fileType != ''">
+            AND file_type = #{fileType}
+        </if>
+        ORDER BY created_at DESC
+    </select>
+
+    <update id="updateSkillFile" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillFile">
+        UPDATE skill_file
+        SET filename = #{filename}, storage_path = #{storagePath}, file_type = #{fileType},
+            file_size = #{fileSize}, description = #{description}, updated_at = #{updatedAt}
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteSkillFile">
+        DELETE FROM skill_file WHERE id = #{id}
+    </delete>
+
+    <!-- ==================== skill_file_reference ==================== -->
+
+    <resultMap id="SkillFileReferenceResultMap" type="com.agentscopea2a.v2.skillManager.entity.SkillFileReference">
+        <id column="id" property="id"/>
+        <result column="skill_id" property="skillId"/>
+        <result column="file_id" property="fileId"/>
+        <result column="reference_type" property="referenceType"/>
+        <result column="created_at" property="createdAt"/>
+    </resultMap>
+
+    <insert id="insertSkillFileReference" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillFileReference"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_file_reference (skill_id, file_id, reference_type, created_at)
+        VALUES (#{skillId}, #{fileId}, #{referenceType}, #{createdAt})
+    </insert>
+
+    <select id="existsSkillFileReference" resultType="boolean">
+        SELECT COUNT(1) &gt; 0 FROM skill_file_reference WHERE skill_id = #{skillId} AND file_id = #{fileId}
+    </select>
+
+    <delete id="deleteSkillFileReference">
+        DELETE FROM skill_file_reference WHERE skill_id = #{skillId} AND file_id = #{fileId}
+    </delete>
+
+    <delete id="deleteFileReferencesByFileId">
+        DELETE FROM skill_file_reference WHERE file_id = #{fileId}
+    </delete>
+
+    <!-- Skill 附件列表: JOIN skill_file + skill_file_reference -->
+    <select id="selectSkillFileReferences" resultType="com.agentscopea2a.v2.skillManager.dto.SkillFileReferenceItem">
+        SELECT f.id, f.filename, f.file_type AS fileType, f.file_size AS fileSize,
+               f.description, r.reference_type AS referenceType,
+               r.created_at AS referencedAt
+        FROM skill_file_reference r
+        INNER JOIN skill_file f ON f.id = r.file_id
+        WHERE r.skill_id = #{skillId}
+        ORDER BY r.created_at DESC
     </select>
 
 </mapper>

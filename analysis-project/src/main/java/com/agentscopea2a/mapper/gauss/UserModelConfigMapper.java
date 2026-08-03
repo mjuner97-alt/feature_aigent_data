@@ -22,11 +22,7 @@ import org.apache.ibatis.annotations.Param;
 import java.time.LocalDateTime;
 import java.util.List;
 
-/**
- * 用户模型配置 Mapper (GaussDB)。
- *
- * <p>selectByUserId 未找到记录时返回 null。
- */
+/** 用户模型配置 Mapper (GaussDB) */
 @Mapper
 public interface UserModelConfigMapper {
 

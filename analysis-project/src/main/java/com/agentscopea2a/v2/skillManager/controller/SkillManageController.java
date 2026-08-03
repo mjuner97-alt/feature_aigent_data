@@ -18,6 +18,8 @@ package com.agentscopea2a.v2.skillManager.controller;
 import com.agentscopea2a.v2.skillManager.dto.LikeStatus;
 import com.agentscopea2a.v2.skillManager.dto.SkillListItem;
 import com.agentscopea2a.v2.skillManager.dto.SkillListQuery;
+import com.agentscopea2a.v2.skillManager.dto.SkillFileReferenceItem;
+import com.agentscopea2a.v2.skillManager.dto.SkillFileReferenceRequest;
 import com.agentscopea2a.v2.skillManager.entity.Skill;
 import com.agentscopea2a.v2.skillManager.entity.SkillApproval;
 import com.agentscopea2a.v2.skillManager.entity.SkillDraft;
@@ -355,6 +357,37 @@ public class SkillManageController {
     @GetMapping("/draft/pending")
     public List<SkillDraft> pendingDrafts(@RequestHeader("X-User-Id") String userId) {
         return skillService.pendingDraftsForApprover(userId);
+    }
+
+    // ==================== Skill 文件附件引用 ====================
+
+    /**
+     * 获取 Skill 引用的文件列表。
+     */
+    @GetMapping("/skills/{id}/files")
+    public List<SkillFileReferenceItem> skillFiles(@PathVariable Long id) {
+        return skillService.listSkillFiles(id);
+    }
+
+    /**
+     * Skill 引用一个文件。
+     */
+    @PostMapping("/skills/{id}/files")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void addFileReference(@PathVariable Long id,
+                                 @RequestBody SkillFileReferenceRequest req,
+                                 @RequestHeader("X-User-Id") String userId) {
+        skillService.addFileReference(id, req.fileId(), req.referenceType());
+    }
+
+    /**
+     * Skill 取消引用一个文件。
+     */
+    @DeleteMapping("/skills/{id}/files/{fileId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void removeFileReference(@PathVariable Long id, @PathVariable Long fileId,
+                                    @RequestHeader("X-User-Id") String userId) {
+        skillService.removeFileReference(id, fileId);
     }
 
     // ==================== 内嵌请求/响应体 ====================

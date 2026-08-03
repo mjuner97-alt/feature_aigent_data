@@ -3,6 +3,8 @@ package com.agentscopea2a.mapper.gauss;
 import com.agentscopea2a.dto.QuestionAnswerDto;
 import org.apache.ibatis.annotations.Mapper;
 
+/** GaussDB 主Agent问答记录 Mapper */
+
 @Mapper
 public interface MainAgentMapper {
 

@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.mapper.ck.TraceCkMapper">
+
+    <resultMap id="ConversationMap" type="com.agentscopea2a.v2.trace.model.TraceConversation">
+        <result column="conversation_id" property="conversationId"/>
+        <result column="trace_id" property="traceId"/>
+        <result column="user_id" property="userId"/>
+        <result column="source" property="source"/>
+        <result column="agent_id" property="agentId"/>
+        <result column="agent_name" property="agentName"/>
+        <result column="start_ts" property="startTs"/>
+        <result column="end_ts" property="endTs"/>
+        <result column="duration_ms" property="durationMs"/>
+        <result column="status" property="status"/>
+        <result column="error_message" property="errorMessage"/>
+        <result column="event_count" property="eventCount"/>
+        <result column="token_input" property="tokenInput"/>
+        <result column="token_output" property="tokenOutput"/>
+        <result column="model" property="model"/>
+    </resultMap>
+
+    <!-- ==================== 批量写入 ==================== -->
+
+    <insert id="insertConversation" parameterType="java.util.List">
+        INSERT INTO trace_conversation
+            (conversation_id, trace_id, user_id, source, agent_id, agent_name,
+             start_ts, end_ts, duration_ms, status, error_message,
+             event_count, token_input, token_output, model)
+        VALUES
+        <foreach collection="list" item="item" separator=",">
+            (#{item.conversationId}, #{item.traceId}, #{item.userId}, #{item.source},
+             #{item.agentId}, #{item.agentName},
+             #{item.startTs}, #{item.endTs}, #{item.durationMs},
+             #{item.status}, #{item.errorMessage},
+             #{item.eventCount}, #{item.tokenInput}, #{item.tokenOutput},
+             #{item.model})
+        </foreach>
+    </insert>
+
+    <insert id="insertEvents" parameterType="java.util.List">
+        INSERT INTO trace_event
+            (event_id, conversation_id, trace_id, event_type, event_name, source,
+             timestamp, duration_ms, event_json)
+        VALUES
+        <foreach collection="list" item="item" separator=",">
+            (#{item.event_id}, #{item.conversation_id}, #{item.trace_id},
+             #{item.event_type}, #{item.event_name}, #{item.source},
+             #{item.timestamp}, #{item.duration_ms}, #{item.event_json})
+        </foreach>
+    </insert>
+
+    <!-- ==================== 查询 ==================== -->
+
+    <select id="listConversations" resultMap="ConversationMap">
+        SELECT conversation_id, trace_id, user_id, source, agent_id, agent_name,
+               start_ts, end_ts, duration_ms, status, error_message,
+               event_count, token_input, token_output, model
+        FROM trace_conversation
+        <where>
+            <if test="source != null and source != ''">
+                AND source = #{source}
+            </if>
+        </where>
+        ORDER BY start_ts DESC
+        LIMIT #{offset}, #{limit}
+    </select>
+
+    <select id="getConversation" resultMap="ConversationMap">
+        SELECT conversation_id, trace_id, user_id, source, agent_id, agent_name,
+               start_ts, end_ts, duration_ms, status, error_message,
+               event_count, token_input, token_output, model
+        FROM trace_conversation
+        WHERE conversation_id = #{conversationId}
+        LIMIT 1
+    </select>
+
+    <select id="listEventJsons" resultType="java.lang.String">
+        SELECT event_json
+        FROM trace_event
+        WHERE conversation_id = #{conversationId}
+        ORDER BY timestamp ASC
+    </select>
+
+</mapper>

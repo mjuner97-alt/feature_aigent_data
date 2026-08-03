@@ -15,13 +15,8 @@
  */
 package com.agentscopea2a.v2.config;
 
-import com.agentscopea2a.v2.hooks.ArithMentalMathDetectorHook;
-import com.agentscopea2a.v2.hooks.ArtifactHandoffHook;
-import com.agentscopea2a.v2.hooks.KnowledgeRetrievalHook;
-import com.agentscopea2a.v2.hooks.PythonExecRetryHook;
-import com.agentscopea2a.v2.hooks.SkillEvolutionHook;
-import com.agentscopea2a.v2.hooks.SkillSynthesisHook;
-import com.agentscopea2a.v2.hooks.ToolCallTrackingHook;
+import com.agentscopea2a.v2.hooks.*;
+import com.agentscopea2a.v2.trace.collector.AiChatRestToolCallTrackingToDbHook;
 import com.agentscopea2a.v2.verify.VerificationHook;
 import com.agentscopea2a.v2.middleware.ArtifactAccessMiddleware;
 import com.agentscopea2a.v2.middleware.DimensionStateMiddleware;
@@ -44,25 +39,7 @@ import org.springframework.context.annotation.Configuration;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Assembles the ordered {@link MiddlewareBase} and {@link Hook} lists consumed by
- * {@link com.agentscopea2a.v2.runner.HarnessA2aRunnerV2}.
- *
- * <p>Replaces the inline {@code List<MiddlewareBase> middlewares = new ArrayList<>(...)}
- * and the seven conditional {@code builder.hook(...)} blocks that used to live in the
- * runner's constructor. The runner now just injects {@code List<MiddlewareBase>} and
- * {@code List<Hook>} and forwards them to {@code builder.middlewares(...)}/{@code .hook(...)}.
- *
- * <p>Order matters:
- * <ul>
- *   <li>Middlewares: responseCache -> dimension -> episodic -> artifact -> session ->
- *       perUserMemory (optional) -> ledgerMirror (optional) -> pythonExecGuard (optional)</li>
- *   <li>Hooks: handoff(12) -> retry(13) -> tracking(45) ->
- *       knowledge(-40) -> synthesis(50) -> evolution(60). Each hook's {@code priority()}
- *       controls actual execution order; this list only controls wiring order so the
- *       log lines are deterministic.</li>
- * </ul>
- */
+/** 组装 Runner 所需的 Middleware 和 Hook 有序列表 */
 @Configuration
 @EnableConfigurationProperties(HarnessRunnerProperties.class)
 public class HarnessAgentPartsConfig {
@@ -80,6 +57,12 @@ public class HarnessAgentPartsConfig {
     public com.agentscopea2a.v2.middleware.ParentEmitterCaptureMiddleware parentEmitterCaptureMiddleware() {
         log.info("HarnessAgentPartsConfig: ParentEmitterCaptureMiddleware @Bean registered");
         return new com.agentscopea2a.v2.middleware.ParentEmitterCaptureMiddleware();
+    }
+
+    @Bean
+    public AiChatRestToolCallTrackingToDbHook traceCollectorHook() {
+        log.info("HarnessAgentPartsConfig: AiChatRestToolCallTrackingToDbHook @Bean registered (priority=47)");
+        return new AiChatRestToolCallTrackingToDbHook();
     }
 
     @Bean
@@ -134,8 +117,9 @@ public class HarnessAgentPartsConfig {
             ObjectProvider<SkillEvolutionHook> skillEvolutionHookProvider,
             ObjectProvider<KnowledgeRetrievalHook> knowledgeRetrievalHookProvider,
             ObjectProvider<ArithMentalMathDetectorHook> arithMentalMathDetectorProvider,
-            ObjectProvider<VerificationHook> verificationHookProvider) {
-        List<Hook> hooks = new ArrayList<>(9);
+            ObjectProvider<VerificationHook> verificationHookProvider,
+            ObjectProvider<AiChatRestToolCallTrackingToDbHook> traceCollectorHookProvider) {
+        List<Hook> hooks = new ArrayList<>(10);
         ArtifactHandoffHook handoff = artifactHandoffHookProvider.getIfAvailable();
         if (handoff != null) {
             hooks.add(handoff);
@@ -146,6 +130,7 @@ public class HarnessAgentPartsConfig {
             hooks.add(retry);
             log.info("HarnessAgentPartsConfig: PythonExecRetryHook wired (priority=13)");
         }
+
         ToolCallTrackingHook tracking = toolCallTrackingHookProvider.getIfAvailable();
         if (tracking != null) {
             hooks.add(tracking);
@@ -155,6 +140,15 @@ public class HarnessAgentPartsConfig {
         if (verification != null) {
             hooks.add(verification);
             log.info("HarnessAgentPartsConfig: VerificationHook wired (priority=46)");
+        }
+
+        // Trace 落库 Hook：捕获 Hook 事件完整 payload（LLM 输入/思考/输出、工具入参/返回）到 ClickHouse。
+        // priority=47，紧跟 VerificationHook(46)，确保 PostActing 的 toolResult 为最终值。
+        // 单例 bean，主 agent 与子 agent（SubagentRegistrar）共用；仅 v1 /ai/chat 创建 TraceSession，v2 no-op。
+        AiChatRestToolCallTrackingToDbHook traceCollector = traceCollectorHookProvider.getIfAvailable();
+        if (traceCollector != null) {
+            hooks.add(traceCollector);
+            log.info("HarnessAgentPartsConfig: AiChatRestToolCallTrackingToDbHook wired (priority=47)");
         }
 
         SkillSynthesisHook synthesis = skillSynthesisHookProvider.getIfAvailable();

@@ -19,12 +19,7 @@ import com.agentscopea2a.entity.UrlShortenerRecord;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
-/**
- * URL 短链 Mapper - 管理URL与短码的持久化映射。
- *
- * <p>包路径受 {@code GaussConfig.@MapperScan(basePackages = "com.agentscopea2a.mapper.gauss")}
- * 约束，必须放在此包以便 MyBatis gaussSqlSessionFactory 扫描到。
- */
+/** URL短链持久化映射 Mapper (GaussDB) */
 @Mapper
 public interface UrlShortenerMapper {
 

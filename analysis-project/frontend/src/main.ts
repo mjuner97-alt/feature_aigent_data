@@ -3,9 +3,9 @@
  *
  * Routes:
  *  /login     -> LoginPage (无需登录)
- *  /          -> AppShell layout (SessionsSidebar + <router-view />)
- *  /chat      -> ChatPage
- *  /dashboard -> DashboardPage
+ *  /          -> AppShell layout
+ *  /chat      -> SessionHistoryPage (会话历史列表)
+ *  /chat/:id  -> SessionDetailPage (会话详情: 时间轴 + 事件)
  *  /skills/*  -> SkillShell layout (Skill 广场:全部/我使用的/我点赞的/我创建的/热门榜/详情)
  *               创建走 /skills/new,编辑走 /skills/:id/edit (全页面表单);
  *               审批列表/详情走独立路由。
@@ -13,9 +13,9 @@
 
 import { createApp, defineComponent, h } from 'vue';
 import { createRouter, createWebHistory, RouterView, type RouteRecordRaw } from 'vue-router';
+import ElementPlus from 'element-plus';
+import 'element-plus/dist/index.css';
 import AppShell from './components/AppShell.vue';
-import ChatPage from './pages/ChatPage.vue';
-import DashboardPage from './pages/DashboardPage.vue';
 import LoginPage from './pages/LoginPage.vue';
 import SkillShell from './components/SkillShell.vue';
 import SkillListPage from './pages/skill/SkillListPage.vue';
@@ -31,8 +31,19 @@ const routes: RouteRecordRaw[] = [
     component: AppShell,
     children: [
       { path: '', redirect: '/skills' },
-      { path: 'chat', component: ChatPage },
-      { path: 'dashboard', component: DashboardPage },
+      {
+        path: 'chat',
+        name: 'SessionHistory',
+        component: () => import('./pages/SessionHistoryPage.vue'),
+        meta: { requiresAuth: true, title: '会话历史' },
+      },
+      {
+        path: 'chat/:id',
+        name: 'SessionDetail',
+        component: () => import('./pages/SessionDetailPage.vue'),
+        meta: { requiresAuth: true, title: '会话详情' },
+      },
+      { path: 'trace', redirect: '/chat' },
     ],
   },
   {
@@ -77,4 +88,5 @@ const Root = defineComponent({
 
 const app = createApp(Root);
 app.use(router);
+app.use(ElementPlus);
 app.mount('#root');

@@ -11,6 +11,7 @@
  */
 import { ref, watch, computed } from 'vue';
 import DimensionCascader from './DimensionCascader.vue';
+import SkillFileAttachment from './SkillFileAttachment.vue';
 import {
   getSkill,
   createSkill,
@@ -35,6 +36,7 @@ const formLoading = ref(false);
 const saving = ref(false);
 const formError = ref('');
 const notOwner = ref(false);
+const attachmentRef = ref<InstanceType<typeof SkillFileAttachment> | null>(null);
 
 // 维度多选(创建/编辑时选择目标维度,保存后提交发布申请走审批流)
 const publishTargetGroups = ref<PublishTargetGroup[]>([]);
@@ -128,6 +130,10 @@ async function submit() {
     } else {
       const created = await createSkill(form.value);
       skillId = created.id;
+      // 创建模式: 将暂存的附件关联到新创建的 skill
+      if (attachmentRef.value) {
+        await attachmentRef.value.attachPendingFiles(skillId);
+      }
     }
     // 保存成功后,提交维度发布申请(如有选择)
     if (selectedTargets.value.size > 0) {
@@ -194,6 +200,11 @@ function close() {
                   <span class="label">内容</span>
                   <textarea v-model="form.content" :disabled="notOwner" rows="12" class="content" placeholder="SKILL.md 正文(Markdown)" />
                 </label>
+                <SkillFileAttachment
+                  ref="attachmentRef"
+                  :skill-id="editId"
+                  :disabled="notOwner"
+                />
                 <!-- 维度级联选择器 -->
                 <div class="field">
                   <span class="label">维度标签</span>

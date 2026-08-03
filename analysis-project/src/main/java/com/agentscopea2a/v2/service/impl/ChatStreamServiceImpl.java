@@ -6,12 +6,13 @@ import com.agentscopea2a.dto.response.*;
 import com.agentscopea2a.v2.artifact.ArtifactContext;
 import com.agentscopea2a.v2.artifact.ArtifactStore;
 import com.agentscopea2a.v2.exception.TooManyRequestsException;
-import com.agentscopea2a.v2.hooks.ToolCallTrackingHook;
 import com.agentscopea2a.v2.memory.EpisodicMemory;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.service.ChatStreamService;
-import com.agentscopea2a.v2.service.V2ChatStreamService;
-import com.agentscopea2a.v2.tools.ToolCallCollector;
+import com.agentscopea2a.v2.trace.collector.TraceSession;
+import com.agentscopea2a.v2.trace.assembler.TraceAssembler;
+import com.agentscopea2a.v2.trace.model.AssembledTrace;
+import com.agentscopea2a.v2.trace.writer.TraceQueue;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.*;
 import io.agentscope.core.message.Msg;
@@ -32,11 +33,14 @@ import reactor.core.scheduler.Schedulers;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-
+/**
+ * 流式聊天服务实现，基于 SSE 推送 Agent 事件流
+ */
 @Service
 public class ChatStreamServiceImpl implements ChatStreamService {
 
@@ -52,6 +56,8 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     private final HarnessA2aRunnerV2 runner;
     private final ArtifactStore artifactStore;
     private final EpisodicMemory episodicMemory;
+    private final TraceAssembler traceAssembler;
+    private final TraceQueue traceQueue;
 
 
     /**
@@ -65,10 +71,14 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     private final ConcurrentHashMap<String, InFlightCall> inFlightCalls = new ConcurrentHashMap<>();
 
     public ChatStreamServiceImpl(HarnessA2aRunnerV2 runner, ArtifactStore artifactStore,
-                                 EpisodicMemory episodicMemory) {
+                                 EpisodicMemory episodicMemory,
+                                 TraceAssembler traceAssembler,
+                                 TraceQueue traceQueue) {
         this.runner = runner;
         this.artifactStore = artifactStore;
         this.episodicMemory = episodicMemory;
+        this.traceAssembler = traceAssembler;
+        this.traceQueue = traceQueue;
     }
 
     /**
@@ -91,8 +101,6 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         final String formType;
         /** RuntimeContext，供 cleanup 访问 artifactStore 等 */
         final RuntimeContext runtimeCtx;
-        /** 工具调用采集器，供 cleanup 持久化 episodic 记忆 + 事件转发 processPayload */
-        final ToolCallCollector collector;
         /** 用户原始消息，供 cleanup 组装 episodic session messages */
         final Msg userMsg;
         /** episodic session 维度标识 */
@@ -103,13 +111,14 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         final AtomicBoolean cleaned = new AtomicBoolean(false);
         /** 是否已发送过"执行中"，用于保证"执行中"和"已执行"成对出现 */
         final AtomicBoolean hasSentExecuting = new AtomicBoolean(false);
+        /** 请求级 Trace 会话，直接存储框架 AgentEvent，供 cleanup 组装 */
+        final TraceSession traceCtx;
 
-        StreamContext(SseEmitter emitter, ChatRequest req, RuntimeContext runtimeCtx,
-                      ToolCallCollector collector, Msg userMsg, String episodicSessionId) {
+        StreamContext(SseEmitter emitter, ChatRequest req, RuntimeContext runtimeCtx, Msg userMsg, String episodicSessionId,
+                      TraceSession traceCtx) {
             this.emitter = emitter;
             this.req = req;
             this.runtimeCtx = runtimeCtx;
-            this.collector = collector;
             this.userMsg = userMsg;
             this.episodicSessionId = episodicSessionId;
             this.conversationId = req.getConversationId();
@@ -118,6 +127,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             this.agentId = StringUtils.defaultIfBlank(req.getAgentId(), DEFAULT_AGENT_ID);
             this.agentName = StringUtils.defaultIfBlank(req.getAgentName(), DEFAULT_AGENT_NAME);
             this.formType = StringUtils.defaultIfBlank(req.getFromType(), DEFAULT_FROM_TYPE);
+            this.traceCtx = traceCtx;
         }
     }
 
@@ -261,9 +271,6 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             return emitter;
         }
 
-        // 工具调用采集器：记录本轮对话触发的工具调用上下文，供 episodic 记忆持久化使用
-        ToolCallCollector collector = new ToolCallCollector(text);
-
         // 构造用户消息（纯文本内容块）
         Msg userMsg = Msg.builder().role(MsgRole.USER)
                 .content(TextBlock.builder().text(text).build())
@@ -272,55 +279,40 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         // 构造运行时上下文：携带 sessionId / userId / lastQuestion 供中间件 / hooks 访问
         RuntimeContext ctx = buildRuntimeContext(conversationId, userId, text);
 
-        // 把工具调用采集器放进上下文，供 ToolCallTrackingHook 在工具调用时写入
-        ctx.put(ToolCallTrackingHook.COLLECTOR_CTX_KEY, collector);
+        // Trace 监控：创建请求级 TraceSession 并放入 RuntimeContext。
+        TraceSession traceCtx = new TraceSession(conversationId, UUID.randomUUID().toString(), userId, "v1_chat", text);
+        ctx.put(TraceSession.KEY, traceCtx);
 
-        // ParentEmitterCarrier: holds the parent agent's AgentEventEmitter so subagent
-        // middleware (SubagentEventForwardingMiddleware) can mirror subagent events to
-        // the parent's SSE stream. The emitter is populated mid-stream by the
-        // Flux.deferContextual wrapper below (which reads it from the Reactor context
-        // where ReActAgent.buildAgentStream wrote it). The carrier itself is put into
-        // RuntimeContext here so AgentSpawnTool.execLocalSync's
-        // RuntimeContext.builder(ctx).from(ctx) clones it into the subagent's context.
         com.agentscopea2a.v2.middleware.ParentEmitterCarrier parentEmitterCarrier =
                 new com.agentscopea2a.v2.middleware.ParentEmitterCarrier();
         ctx.put(com.agentscopea2a.v2.middleware.ParentEmitterCarrier.class, parentEmitterCarrier);
 
-        // Store the SseEmitter on RuntimeContext so ToolCallTrackingHook can send a
-        // supplementary "tool_output" SSE event directly from PostActing. This is
-        // necessary because the framework's tool_result_end AgentEvent fires BEFORE
-        // PostActing (the hook chain runs after the agent's acting middleware returns),
-        // so when the SSE handler reads the collector at tool_result_end time, the
-        // output hasn't been captured yet. By having PostActing send the output as a
-        // separate SSE event (keyed by toolCallId), the frontend can match it to the
-        // existing ActivityFeed row and render the collapsible "出参" panel.
-        ctx.put(ToolCallTrackingHook.EMITTER_CTX_KEY, emitter);
-        ctx.put(ToolCallTrackingHook.SSE_META_CTX_KEY,
-                new ToolCallTrackingHook.SseMeta(
-                        // ansUUID / agentId / agentName / formType are already resolved in StreamContext
-                        // after the managerMode check above; read from req directly for consistency.
-                        req.getConversationId(),
-                        StringUtils.defaultIfBlank(req.getAgentId(), DEFAULT_AGENT_ID),
-                        StringUtils.defaultIfBlank(req.getAgentName(), DEFAULT_AGENT_NAME),
-                        StringUtils.defaultIfBlank(req.getFromType(), DEFAULT_FROM_TYPE),
-                        conversationId));
 
-        // Episodic memory session_id: "user:<userId>:<conversationId>" so that:
-        // 1) TraceMiner.loadSessions can group by session_id (each request = one session)
-        // 2) extractUserId can parse userId from the "user:userId:..." prefix
-        // 3) findActiveUsers fallback (session_id LIKE 'user:%') still discovers the rows
         String episodicUserId = userId != null && !userId.isBlank() ? userId : "anonymous";
         String episodicSessionId = "user:" + episodicUserId + ":" + conversationId;
 
         // 把 per-request 状态收拢进 StreamContext（参考 v1 流处理模式）
-        StreamContext streamCtx = new StreamContext(emitter, req, ctx, collector, userMsg, episodicSessionId);
+        StreamContext streamCtx = new StreamContext(emitter, req, ctx, userMsg, episodicSessionId, traceCtx);
 
         // 清理逻辑：取消订阅、清理 artifact、持久化 episodic 记忆、移除进行中调用标记
         Runnable cleanup = buildCleanup(streamCtx, callKey, inFlight);
 
         // 注册 SSE 生命周期回调：三种终止路径都走同一个幂等 cleanup（参考 v1 流处理模式）
-        emitter.onCompletion(cleanup);
+        emitter.onCompletion(()->{
+            handleStreamSuccess(streamCtx,strategy);
+            cleanup.run();
+        });
         emitter.onTimeout(() -> {
+            // Trace 状态标记：标记 TIMEOUT（设计 5.2）。先于 handleStreamError 标记，
+            // 随后 handleStreamError 的 markError 会覆盖为 ERROR；若需保留 TIMEOUT 语义
+            // 需调整 TraceContext.markError 不覆盖终态——此处按 brief 要求调用 markTimeout。
+            try {
+                if (streamCtx.traceCtx != null) {
+                    streamCtx.traceCtx.markTimeout();
+                }
+            } catch (Exception te) {
+                log.warn("Trace markTimeout failed for sessionId={}: {}", streamCtx.conversationId, te.getMessage());
+            }
             handleStreamError(streamCtx, new RuntimeException("Model request timeout after"), strategy);
             cleanup.run();
         });
@@ -375,6 +367,16 @@ public class ChatStreamServiceImpl implements ChatStreamService {
      */
     private void processChunk(AgentEvent event, StreamContext ctx, ResponseStrategy strategy) {
         try {
+            // Trace 监控：仅采集 ModelCallEndEvent 的 token 用量。
+            // 内容（LLM 输入/思考/输出、工具入参/返回）由 AiChatRestToolCallTrackingToDbHook 采集 Hook 事件承载，
+            // 此处不再无差别收集 AgentEvent delta 流。try-catch + log.warn 保证 trace 失败不影响主链路。
+            try {
+                if (ctx.traceCtx != null && event instanceof ModelCallEndEvent mce) {
+                    ctx.traceCtx.recordUsage(mce);
+                }
+            } catch (Exception te) {
+                log.warn("TraceSession recordUsage failed for sessionId={}: {}", ctx.conversationId, te.getMessage());
+            }
             // AgentResultEvent 是终止事件：最终结果累积到 answerContent，不立即发送
             if (event instanceof AgentResultEvent) {
                 String text = extractText(((AgentResultEvent) event).getResult());
@@ -425,6 +427,14 @@ public class ChatStreamServiceImpl implements ChatStreamService {
      */
     private void handleStreamError(StreamContext ctx, Throwable error, ResponseStrategy strategy) {
         log.error("处理流式异常: sessionId={}", ctx.conversationId, error);
+        // Trace 状态标记：标记 ERROR（在 cleanup 的 assemble 之前调用，设计 5.2）。
+        try {
+            if (ctx.traceCtx != null) {
+                ctx.traceCtx.markError(error == null ? "unknown error" : error.getMessage());
+            }
+        } catch (Exception te) {
+            log.warn("Trace markError failed for sessionId={}: {}", ctx.conversationId, te.getMessage());
+        }
         // Bug B：cleanup 阶段误抛的 sandbox 异常，已有最终结果，按成功收尾
         if (ctx.answerContent.length() > 0 && error instanceof SandboxException) {
             log.warn("Cleanup-phase SandboxException suppressed for sessionId={}; sending done instead of error",
@@ -479,6 +489,15 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         } catch (Exception e) {
             log.warn("发送最终结果失败: sessionId={}", ctx.conversationId, e);
         } finally {
+            // Trace 状态标记：标记 SUCCESS（在 cleanup 的 assemble 之前调用，设计 5.2）。
+            // markSuccess 仅在 RUNNING 时生效，已为终态（ERROR/TIMEOUT）时不覆盖。
+            try {
+                if (ctx.traceCtx != null) {
+                    ctx.traceCtx.markSuccess();
+                }
+            } catch (Exception te) {
+                log.warn("Trace markSuccess failed for sessionId={}: {}", ctx.conversationId, te.getMessage());
+            }
             try {
                 ctx.emitter.complete();
             } catch (Exception e) {
@@ -513,37 +532,21 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                 d.dispose();
                 log.info("v2 stream cancelled for sessionId={} (client disconnect/timeout)", ctx.conversationId);
             }
+            // 1b. Trace 组装与投队列（在订阅取消后、artifact 清理前，确保采集完整）。
+            // 状态标记已在 handleStreamSuccess/handleStreamError/onTimeout 中完成。
+            try {
+                if (ctx.traceCtx != null) {
+                    AssembledTrace trace = traceAssembler.assemble(ctx.traceCtx);
+                    traceQueue.offer(trace);
+                }
+            } catch (Exception ex) {
+                log.warn("Trace assemble failed for sessionId={}: {}", ctx.conversationId, ex.getMessage());
+            }
             // 2. 清理本次会话产生的临时 artifact（沙箱文件等）
             try {
                 artifactStore.cleanupTask(ArtifactContext.from(ctx.runtimeCtx));
             } catch (Exception ex) {
                 log.warn("Artifact cleanup failed for sessionId={}: {}", ctx.conversationId, ex.getMessage());
-            }
-            // 3. 持久化 episodic 记忆：仅在存在工具调用上下文时记录
-            try {
-                String toolCallJson = ctx.collector.toJson();
-                if (toolCallJson != null && !toolCallJson.isEmpty()) {
-                    // 组装本次会话的消息列表：用户提问 + 助手回答（优先用最终结果，回退到思考内容）
-                    List<Msg> sessionMessages = new ArrayList<>();
-                    sessionMessages.add(ctx.userMsg);
-                    String accumulatedText = ctx.answerContent.length() > 0
-                            ? ctx.answerContent.toString()
-                            : ctx.thinkContent.toString();
-                    if (accumulatedText != null && !accumulatedText.isEmpty()) {
-                        sessionMessages.add(Msg.builder().role(MsgRole.ASSISTANT)
-                                .content(TextBlock.builder().text(accumulatedText).build())
-                                .build());
-                    }
-                    // 异步持久化到 episodic 记忆系统，不阻塞 SSE 完成回调
-                    episodicMemory.recordSessionWithToolContext(ctx.episodicSessionId, sessionMessages, toolCallJson)
-                            .subscribeOn(Schedulers.boundedElastic())
-                            .subscribe(
-                                    null,
-                                    ex -> log.warn("Episodic persist failed for sessionId={}: {}", ctx.episodicSessionId, ex.getMessage()),
-                                    () -> log.debug("Episodic persist completed for sessionId={}", ctx.episodicSessionId));
-                }
-            } catch (Exception ex) {
-                log.warn("Episodic persist setup failed for sessionId={}: {}", ctx.episodicSessionId, ex.getMessage());
             }
             // 4. 从进行中调用表移除（必须用 (key, value) 两参 remove 防止误删被并发覆盖后的新条目）
             inFlightCalls.remove(callKey, inFlight);

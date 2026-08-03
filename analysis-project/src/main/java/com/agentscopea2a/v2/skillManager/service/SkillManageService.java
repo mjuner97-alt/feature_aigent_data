@@ -20,11 +20,13 @@ import com.agentscopea2a.v2.exception.DraftNotFoundException;
 import com.agentscopea2a.v2.exception.NotApproverException;
 import com.agentscopea2a.v2.exception.PublishAlreadyApprovedException;
 import com.agentscopea2a.v2.skillManager.dto.LikeStatus;
+import com.agentscopea2a.v2.skillManager.dto.SkillFileReferenceItem;
 import com.agentscopea2a.v2.skillManager.dto.SkillListItem;
 import com.agentscopea2a.v2.skillManager.dto.SkillListQuery;
 import com.agentscopea2a.v2.skillManager.entity.Skill;
 import com.agentscopea2a.v2.skillManager.entity.SkillApproval;
 import com.agentscopea2a.v2.skillManager.entity.SkillDraft;
+import com.agentscopea2a.v2.skillManager.entity.SkillFileReference;
 import com.agentscopea2a.v2.skillManager.entity.SkillLike;
 import com.agentscopea2a.v2.skillManager.entity.SkillOperationHistory;
 import com.agentscopea2a.v2.skillManager.entity.SkillPublish;
@@ -44,9 +46,11 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 /**
  * Skill 管理 Service(合并版)。包含全部 Skill 相关业务逻辑:
@@ -108,6 +112,12 @@ public class SkillManageService {
                 skillDimension.putIfAbsent(p.getSkillId(), p.getTargetType());
             }
         }
+        // 批量解析 owner 姓名(列表行展示"姓名 (统一认证号)"),一次性查询避免 N+1
+        Set<String> ownerIds = skills.stream()
+                .map(Skill::getOwnerUserId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<String, String> ownerNames = mockOrgService.getUserNameMap(ownerIds);
         boolean rankVisible = "popular".equals(q.getEffectiveView());
         int rank = q.getEffectiveOffset() + 1;
         List<SkillListItem> items = new ArrayList<>(skills.size());
@@ -117,8 +127,9 @@ public class SkillManageService {
             boolean disabled = disabledIds.contains(s.getId());
             boolean available = used && !disabled;
             String dim = skillDimension.getOrDefault(s.getId(), "PERSONAL");
+            String ownerName = ownerNames.get(s.getOwnerUserId());
             items.add(SkillListItem.of(s, likedIds.contains(s.getId()),
-                    used, available, disabled, rankVisible ? rank : null, dim));
+                    used, available, disabled, rankVisible ? rank : null, dim, ownerName));
             rank++;
         }
         return items;
@@ -709,5 +720,48 @@ public class SkillManageService {
         if (!isApprover) {
             throw new NotApproverException("NotApprover: " + approverId);
         }
+    }
+
+    // ==================== Skill 文件附件引用 ====================
+
+    /**
+     * 获取 Skill 引用的文件列表。
+     */
+    public List<SkillFileReferenceItem> listSkillFiles(Long skillId) {
+        get(skillId); // 校验 Skill 存在
+        return skillMapper.selectSkillFileReferences(skillId);
+    }
+
+    /**
+     * Skill 引用一个文件(幂等)。
+     */
+    @Transactional("gaussTransactionManager")
+    public void addFileReference(Long skillId, Long fileId, String referenceType) {
+        get(skillId); // 校验 Skill 存在
+        if (skillMapper.selectFileById(fileId) == null) {
+            throw new IllegalStateException("FileNotFound: " + fileId);
+        }
+        if (skillMapper.existsSkillFileReference(skillId, fileId)) {
+            return; // 幂等
+        }
+        try {
+            skillMapper.insertSkillFileReference(SkillFileReference.builder()
+                    .skillId(skillId)
+                    .fileId(fileId)
+                    .referenceType(referenceType == null ? "ATTACHMENT" : referenceType)
+                    .createdAt(LocalDateTime.now())
+                    .build());
+        } catch (DuplicateKeyException e) {
+            log.debug("concurrent file reference race, idempotent: skill={} file={}", skillId, fileId);
+        }
+    }
+
+    /**
+     * Skill 取消引用一个文件。
+     */
+    @Transactional("gaussTransactionManager")
+    public void removeFileReference(Long skillId, Long fileId) {
+        get(skillId); // 校验 Skill 存在
+        skillMapper.deleteSkillFileReference(skillId, fileId);
     }
 }

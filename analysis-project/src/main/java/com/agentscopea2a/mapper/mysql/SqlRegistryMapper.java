@@ -6,11 +6,7 @@ import org.apache.ibatis.annotations.Param;
 
 import java.util.List;
 
-/**
- * SQL 注册表 Mapper - 操作 MySQL 业务库 {@code sql_registry} 表.
- *
- * <p>所有查询用 MyBatis {@code #{...}} 参数化绑定, 防止 sql_id 注入.
- */
+/** SQL注册表 Mapper，操作 sql_registry 表 */
 @Mapper
 public interface SqlRegistryMapper {
 

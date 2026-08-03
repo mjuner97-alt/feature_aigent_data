@@ -66,10 +66,15 @@ const DIM_LABEL_MAP: Record<string, string> = {
   GROUP: '小组',
   DEPARTMENT: '部门',
   PRODUCT_LINE: '产品线',
-  COMPANY: '公司级',
+  COMPANY: '杭研',
 };
 function dimLabel(it: SkillListItem): string {
   return DIM_LABEL_MAP[it.dimension || 'PERSONAL'] || '个人';
+}
+
+// 所有者展示:有姓名时显示"姓名 (统一认证号)",否则仅统一认证号
+function ownerLabel(it: SkillListItem): string {
+  return it.ownerName ? `${it.ownerName} (${it.ownerUserId})` : it.ownerUserId;
 }
 </script>
 
@@ -95,7 +100,7 @@ function dimLabel(it: SkillListItem): string {
       <div class="name">{{ it.name }}</div>
       <div class="desc">{{ it.description }}</div>
       <div class="meta">
-        {{ it.ownerUserId }}
+        {{ ownerLabel(it) }}
         <span class="dim-badge" :class="dimClass(it)">{{ dimLabel(it) }}</span>
       </div>
       <div v-if="it.used && !it.disabled && !hideUsed" class="tags">
@@ -128,7 +133,7 @@ function dimLabel(it: SkillListItem): string {
           <span class="dim-badge" :class="dimClass(it)">{{ dimLabel(it) }}</span>
         </div>
         <div class="line2">
-          {{ it.description }} · {{ it.ownerUserId }}
+          {{ it.description }} · {{ ownerLabel(it) }}
         </div>
       </div>
       <div class="right">

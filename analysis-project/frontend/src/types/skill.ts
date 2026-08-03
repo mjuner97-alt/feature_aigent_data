@@ -5,6 +5,7 @@ export interface SkillListItem {
   category: string;
   tags: string;
   ownerUserId: string;
+  ownerName?: string;
   likeCount: number;
   liked: boolean;
   used: boolean;
@@ -118,4 +119,42 @@ export interface SkillDraft {
   // 审批列表展示用冗余字段
   createdBy?: string;
   createdAt?: string;
+}
+
+/** Skill 文件上传响应 */
+export interface SkillFileUploadResponse {
+  id: number;
+  filename: string;
+  fileType: string;
+  fileSize: number;
+  description: string | null;
+  createdAt: string;
+}
+
+/** Skill 文件列表项 */
+export interface SkillFileItem {
+  id: number;
+  filename: string;
+  fileType: string;
+  fileSize: number;
+  description: string | null;
+  createdAt: string;
+  updatedAt: string | null;
+}
+
+/** Skill 附件引用项(含引用信息) */
+export interface SkillFileReferenceItem {
+  id: number;
+  filename: string;
+  fileType: string;
+  fileSize: number;
+  description: string | null;
+  referenceType: string;
+  referencedAt: string;
+}
+
+/** Skill 文件引用请求 */
+export interface SkillFileReferenceRequest {
+  fileId: number;
+  referenceType?: string;
 }
