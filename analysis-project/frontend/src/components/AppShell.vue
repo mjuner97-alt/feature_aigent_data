@@ -1,10 +1,9 @@
 <template>
   <div :style="S.root">
-    <SessionsSidebar />
     <div :style="S.main">
       <div :style="S.nav">
-        <router-link to="/chat" :style="navStyle('/chat')">💬 对话</router-link>
-        <router-link to="/dashboard" :style="navStyle('/dashboard')">📊 质量看板</router-link>
+        <router-link to="/chat" :style="navStyle('/chat')">📋 会话历史</router-link>
+        <router-link to="/skills" :style="navStyle('/skills')">🧩 Skill 广场</router-link>
         <div :style="S.navRight">
           <span v-if="user" :style="S.userName">{{ user.name }} ({{ user.userId }})</span>
           <button :style="S.logoutBtn" @click="handleLogout">退出</button>
@@ -20,7 +19,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import SessionsSidebar from './SessionsSidebar.vue';
 import { getLoggedInUser, logout } from '../utils/auth';
 
 const route = useRoute();
@@ -28,8 +26,10 @@ const router = useRouter();
 const user = ref(getLoggedInUser());
 
 function navStyle(p: string) {
-  const a = route.path === p;
-  return { ...S.navItem, color: a ? '#6366f1' : '#64748b', borderBottomColor: a ? '#6366f1' : 'transparent' };
+  const active = p === '/chat'
+    ? route.path === '/chat' || route.path.startsWith('/chat/')
+    : route.path === p || route.path.startsWith(p + '/');
+  return { ...S.navItem, color: active ? '#6366f1' : '#64748b', borderBottomColor: active ? '#6366f1' : 'transparent' };
 }
 
 function handleLogout() {

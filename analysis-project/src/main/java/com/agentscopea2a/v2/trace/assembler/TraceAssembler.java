@@ -13,19 +13,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.agentscopea2a.mapper.gauss;
+package com.agentscopea2a.v2.trace.assembler;
 
-import com.agentscopea2a.entity.UrlShortenerRecord;
-import org.apache.ibatis.annotations.Mapper;
-import org.apache.ibatis.annotations.Param;
+import com.agentscopea2a.v2.trace.collector.TraceSession;
+import com.agentscopea2a.v2.trace.model.AssembledTrace;
+import com.agentscopea2a.v2.trace.model.TraceConversation;
+import org.springframework.stereotype.Component;
 
-/** URL短链持久化映射 Mapper (GaussDB) */
-@Mapper
-public interface UrlShortenerMapper {
+/** 将 TraceSession 打包为 AssembledTrace */
+@Component
+public class TraceAssembler {
 
-    int insert(UrlShortenerRecord record);
-
-    UrlShortenerRecord selectByShortCode(@Param("shortCode") String shortCode);
-
-    int deleteExpired();
+    public AssembledTrace assemble(TraceSession session) {
+        return new AssembledTrace(
+                TraceConversation.from(session),
+                session.serializeEventsJson());
+    }
 }

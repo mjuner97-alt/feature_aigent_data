@@ -13,19 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.agentscopea2a.mapper.gauss;
+package com.agentscopea2a.v2.trace.model;
 
-import com.agentscopea2a.entity.UrlShortenerRecord;
-import org.apache.ibatis.annotations.Mapper;
-import org.apache.ibatis.annotations.Param;
-
-/** URL短链持久化映射 Mapper (GaussDB) */
-@Mapper
-public interface UrlShortenerMapper {
-
-    int insert(UrlShortenerRecord record);
-
-    UrlShortenerRecord selectByShortCode(@Param("shortCode") String shortCode);
-
-    int deleteExpired();
+/**
+ * Trace 事件记录：承载一条已序列化的 Hook 事件 JSON 及其创建时间。
+ *
+ * <p>createdAt 为 ISO-8601 字符串（{@code Instant.now().toString()}），可直接按字典序排序，
+ * 与框架 AgentEvent 的 createdAt 格式一致。json 为完整事件 JSON（含 type/createdAt/source/id
+ * 及 payload 字段），落库时原样写入 trace_event.event_json。
+ *
+ * @param createdAt 事件创建时间（ISO-8601），用于排序
+ * @param json      完整事件 JSON 字符串
+ */
+public record TraceEventRecord(String createdAt, String json) {
 }

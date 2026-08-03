@@ -6,6 +6,15 @@ export default defineConfig({
   build: {
     outDir: '../src/main/resources/static',
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        // 拆分大型第三方依赖为独立 vendor chunk，减小主包体积
+        manualChunks: {
+          echarts: ['echarts'],
+          vue: ['vue', 'vue-router'],
+        },
+      },
+    },
   },
   server: {
     port: 5173,

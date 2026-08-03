@@ -7,6 +7,7 @@
 
 -- ============================================================================
 -- 1. 删除已存在的表(保证幂等)
+-- 1. 删除已存在的表(保证幂等)
 -- ============================================================================
 
 DROP TABLE IF EXISTS skill_user_disable;
@@ -126,7 +127,11 @@ COMMENT ON COLUMN skill_manage.created_at IS '创建时间';
 COMMENT ON COLUMN skill_manage.updated_at IS '更新时间';
 COMMENT ON COLUMN skill_manage.deleted_at IS '删除时间(软删除)';
 
-CREATE UNIQUE INDEX uk_name ON skill_manage(name);
+-- uk_name 唯一约束已移除:软删除后 name 仍占位,导致无法创建同名 skill。
+-- 名称冲突改由应用层 existsByName(SQL 已排除 DELETED) + SkillExceptionHandler(409) 处理。
+-- 替换为普通索引:existsByName 等值查询仍走索引,但不强制唯一。
+-- CREATE UNIQUE INDEX uk_name ON skill_manage(name);
+CREATE INDEX idx_name ON skill_manage(name);
 CREATE INDEX idx_owner ON skill_manage(owner_user_id);
 CREATE INDEX idx_status ON skill_manage(status);
 CREATE INDEX idx_like_rank ON skill_manage(like_count DESC, updated_at DESC);

@@ -52,18 +52,7 @@ import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
 
-/**
- * v2 infrastructure wiring: response cache, artifact store, and their middlewares/hooks.
- *
- * <p>Replaces v1's Spring configuration for:
- * <ul>
- *   <li>{@code ResponseCacheService} (MySQL-backed response cache)
- *   <li>{@code ArtifactStore} (per-tenant CSV artifact storage)
- *   <li>{@code ArtifactAccessMiddleware} (cross-tenant path guard — v2 middleware)
- *   <li>{@code ArtifactHandoffHook} (tabular tool result rewrite — v2 hook, pending migration
- *       to middleware once the framework exposes tool-result interception in the middleware chain)
- * </ul>
- */
+/** V2 基础设施配置：响应缓存、Artifact 存储及相关中间件和 Hook 的 Bean 注册 */
 @Configuration
 public class V2InfraConfig {
 

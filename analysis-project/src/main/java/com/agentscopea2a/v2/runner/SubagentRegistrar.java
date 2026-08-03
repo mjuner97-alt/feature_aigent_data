@@ -33,6 +33,7 @@ import com.agentscopea2a.v2.tools.SqlListTool;
 import com.agentscopea2a.v2.tools.SqlRegistryExecTool;
 import com.agentscopea2a.v2.tools.ToolRoutersIndex;
 import com.agentscopea2a.v2.tools.WideTableMetricsTool;
+import com.agentscopea2a.v2.trace.collector.AiChatRestToolCallTrackingToDbHook;
 import com.agentscopea2a.v2.verify.L2EventCollectorHook;
 import com.agentscopea2a.v2.config.WorkspaceMaterializer;
 import io.agentscope.core.model.Model;
@@ -119,6 +120,12 @@ public class SubagentRegistrar {
      */
     private final ToolCallTrackingHook toolCallTrackingHook;
     /**
+     * Trace 采集 Hook（与主 agent 共用单例）。子 agent 共享请求级 RuntimeContext，故能拿到
+     * 同一个 TraceSession，捕获子 agent 的 LLM 输入/思考/输出、工具入参/返回（source 字段为
+     * 子 agent 名以区分）。priority=47，在 L2EventCollectorHook(44)/ToolCallTrackingHook(45) 之后。
+     */
+    private final AiChatRestToolCallTrackingToDbHook traceCollectorHook;
+    /**
      * Truncates previously-consumed tool results (e.g. {@code load_skill_through_path}
      * SKILL.md full text) to reduce LLM context bloat. Singleton bean shared with the
      * main agent; per-call state is derived from RuntimeContext inside the middleware.
@@ -148,6 +155,7 @@ public class SubagentRegistrar {
             ObjectProvider<PythonExecRetryHook> pythonExecRetryHookProvider,
             ObjectProvider<L2EventCollectorHook> l2EventCollectorHookProvider,
             ObjectProvider<ToolCallTrackingHook> toolCallTrackingHookProvider,
+            ObjectProvider<AiChatRestToolCallTrackingToDbHook> traceCollectorHookProvider,
             ObjectProvider<MysqlMemoryStore> mysqlMemoryStoreProvider,
             ObjectProvider<ToolResultTruncationMiddleware> toolResultTruncationMiddlewareProvider) {
 
@@ -201,12 +209,13 @@ public class SubagentRegistrar {
         this.l2EventCollectorHook = l2EventCollectorHookProvider.getIfAvailable();
         this.subagentEventForwardingMiddleware = new SubagentEventForwardingMiddleware();
         this.toolCallTrackingHook = toolCallTrackingHookProvider.getIfAvailable();
+        this.traceCollectorHook = traceCollectorHookProvider.getIfAvailable();
         this.mysqlMemoryStore = mysqlMemoryStoreProvider.getIfAvailable();
         this.toolResultTruncationMiddleware = toolResultTruncationMiddlewareProvider.getIfAvailable();
-        log.info("SubagentRegistrar: toolRegistry built with {} entries: {}; hooks - handoff={} access={} pyGuard={} retry={} l2Collector={} eventForwarding=true toolTracking={} truncation={}",
+        log.info("SubagentRegistrar: toolRegistry built with {} entries: {}; hooks - handoff={} access={} pyGuard={} retry={} l2Collector={} eventForwarding=true toolTracking={} trace={} truncation={}",
                 toolRegistry.size(), toolRegistry.keySet(),
                 artifactHandoffHook != null, artifactAccessMiddleware != null,
-                pythonExecAccessMiddleware != null, pythonExecRetryHook != null, l2EventCollectorHook != null, toolCallTrackingHook != null, toolResultTruncationMiddleware != null);
+                pythonExecAccessMiddleware != null, pythonExecRetryHook != null, l2EventCollectorHook != null, toolCallTrackingHook != null, traceCollectorHook != null, toolResultTruncationMiddleware != null);
 
         Path workspace = Paths.get(workspacePath).toAbsolutePath();
         workspace = WorkspaceMaterializer.ensureMaterialized(workspace);
@@ -387,6 +396,13 @@ public class SubagentRegistrar {
             // todo_write's task list JSON, plan_enter/plan_write parameters).
             if (toolCallTrackingHook != null) {
                 sub.hook(toolCallTrackingHook);
+            }
+
+            // AiChatRestToolCallTrackingToDbHook: 捕获子 agent 的 Hook 事件完整 payload 到共享 TraceSession。
+            // 子 agent 共享请求级 RuntimeContext（见 L2EventCollectorHook 注释），故能拿到主 agent
+            // 创建的 TraceSession；source 字段为子 agent 名，前端据此区分来源。
+            if (traceCollectorHook != null) {
+                sub.hook(traceCollectorHook);
             }
 
             HarnessAgent built = sub.build();

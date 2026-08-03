@@ -27,6 +27,7 @@ import {
   rejectPublish,
 } from '../../api/skill';
 import type { SkillDetail, LikeStatus, SkillPublishRecord, PublishPendingItem } from '../../types/skill';
+import Markdown from '../../components/Markdown.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -290,7 +291,9 @@ watch(() => route.params.id, () => {
     </section>
     <section class="block">
       <h3 class="block-title"><span class="bar"></span>内容</h3>
-      <pre class="content">{{ skill.content }}</pre>
+      <div class="content-wrap">
+        <Markdown :text="skill.content" />
+      </div>
     </section>
 
     <!-- ============ 审批详情(当前 Skill 的待审/已审记录 + 审批操作) ============ -->
@@ -442,16 +445,14 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   font-size: 14px;
   line-height: 1.7;
 }
-.content {
-  background: #0f172a;
-  color: #e2e8f0;
-  padding: 14px 16px;
-  border-radius: 8px;
-  white-space: pre-wrap;
-  font-size: 13px;
-  line-height: 1.6;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  border: 1px solid #1e293b;
+.content-wrap {
+  background: #f8fafc;
+  border-left: 3px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 12px 14px;
+  color: #334155;
+  font-size: 14px;
+  line-height: 1.7;
 }
 
 /* ===== 审批详情区 ===== */

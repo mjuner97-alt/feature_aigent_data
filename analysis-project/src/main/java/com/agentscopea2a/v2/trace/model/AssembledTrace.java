@@ -13,19 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.agentscopea2a.mapper.gauss;
+package com.agentscopea2a.v2.trace.model;
 
-import com.agentscopea2a.entity.UrlShortenerRecord;
-import org.apache.ibatis.annotations.Mapper;
-import org.apache.ibatis.annotations.Param;
+import java.util.List;
 
-/** URL短链持久化映射 Mapper (GaussDB) */
-@Mapper
-public interface UrlShortenerMapper {
-
-    int insert(UrlShortenerRecord record);
-
-    UrlShortenerRecord selectByShortCode(@Param("shortCode") String shortCode);
-
-    int deleteExpired();
+/** Trace 落库载体，包含会话汇总和事件 JSON 列表 */
+public record AssembledTrace(
+        TraceConversation conversation,
+        List<String> eventJsons) {
 }
