@@ -46,9 +46,11 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 /**
  * Skill 管理 Service(合并版)。包含全部 Skill 相关业务逻辑:
@@ -110,6 +112,12 @@ public class SkillManageService {
                 skillDimension.putIfAbsent(p.getSkillId(), p.getTargetType());
             }
         }
+        // 批量解析 owner 姓名(列表行展示"姓名 (统一认证号)"),一次性查询避免 N+1
+        Set<String> ownerIds = skills.stream()
+                .map(Skill::getOwnerUserId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<String, String> ownerNames = mockOrgService.getUserNameMap(ownerIds);
         boolean rankVisible = "popular".equals(q.getEffectiveView());
         int rank = q.getEffectiveOffset() + 1;
         List<SkillListItem> items = new ArrayList<>(skills.size());
@@ -119,8 +127,9 @@ public class SkillManageService {
             boolean disabled = disabledIds.contains(s.getId());
             boolean available = used && !disabled;
             String dim = skillDimension.getOrDefault(s.getId(), "PERSONAL");
+            String ownerName = ownerNames.get(s.getOwnerUserId());
             items.add(SkillListItem.of(s, likedIds.contains(s.getId()),
-                    used, available, disabled, rankVisible ? rank : null, dim));
+                    used, available, disabled, rankVisible ? rank : null, dim, ownerName));
             rank++;
         }
         return items;

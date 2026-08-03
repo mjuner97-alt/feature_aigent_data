@@ -5,6 +5,7 @@ export interface SkillListItem {
   category: string;
   tags: string;
   ownerUserId: string;
+  ownerName?: string;
   likeCount: number;
   liked: boolean;
   used: boolean;

@@ -20,27 +20,32 @@ import com.agentscopea2a.v2.skillManager.entity.Skill;
 import java.time.LocalDateTime;
 
 /**
- * Skill 列表行 DTO(含点赞数、liked/used/available/disabled 标记、热门榜排名、维度)。
- * {@code available = used && !disabled};{@code dimension} 从发布记录派生,默认 PERSONAL。
+ * Skill 列表行 DTO(含点赞数、liked/used/available/disabled 标记、热门榜排名、维度、所有者姓名)。
+ * {@code available = used && !disabled};{@code dimension} 从发布记录派生,默认 PERSONAL;
+ * {@code ownerName} 为所有者姓名(从 developer_pl_person_info 解析),缺失时为 null,前端回退到 ownerUserId。
  */
 public record SkillListItem(
         Long id, String name, String description, String category, String tags,
-        String ownerUserId, long likeCount, boolean liked, boolean used,
+        String ownerUserId, String ownerName, long likeCount, boolean liked, boolean used,
         boolean available, boolean disabled, Integer rank, LocalDateTime updatedAt,
         String dimension
 ) {
     public static SkillListItem of(Skill s, boolean liked, boolean used, Integer rank) {
-        return of(s, liked, used, true, false, rank, "PERSONAL");
+        return of(s, liked, used, true, false, rank, "PERSONAL", null);
     }
 
     public static SkillListItem of(Skill s, boolean liked, boolean used, boolean available, boolean disabled, Integer rank) {
-        return of(s, liked, used, available, disabled, rank, "PERSONAL");
+        return of(s, liked, used, available, disabled, rank, "PERSONAL", null);
     }
 
     public static SkillListItem of(Skill s, boolean liked, boolean used, boolean available, boolean disabled, Integer rank, String dimension) {
+        return of(s, liked, used, available, disabled, rank, dimension, null);
+    }
+
+    public static SkillListItem of(Skill s, boolean liked, boolean used, boolean available, boolean disabled, Integer rank, String dimension, String ownerName) {
         return new SkillListItem(
                 s.getId(), s.getName(), s.getDescription(), s.getCategory(), s.getTags(),
-                s.getOwnerUserId(),
+                s.getOwnerUserId(), ownerName,
                 s.getLikeCount() == null ? 0L : s.getLikeCount(),
                 liked, used, available, disabled, rank, s.getUpdatedAt(), dimension);
     }
