@@ -11,6 +11,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import DimensionCascader from '../../components/DimensionCascader.vue';
+import SkillFileAttachment from '../../components/SkillFileAttachment.vue';
 import {
   getSkill,
   createSkill,
@@ -36,6 +37,7 @@ const formLoading = ref(false);
 const saving = ref(false);
 const formError = ref('');
 const notOwner = ref(false);
+const attachmentRef = ref<InstanceType<typeof SkillFileAttachment> | null>(null);
 
 // 维度多选(创建/编辑时选择目标维度,保存后提交发布申请走审批流)
 const publishTargetGroups = ref<PublishTargetGroup[]>([]);
@@ -119,6 +121,10 @@ async function submit() {
     } else {
       const created = await createSkill(form.value);
       skillId = created.id;
+      // 创建模式: 将暂存的附件关联到新创建的 skill
+      if (attachmentRef.value) {
+        await attachmentRef.value.attachPendingFiles(skillId);
+      }
     }
     if (selectedTargets.value.size > 0) {
       const allTargets = publishTargetGroups.value.flatMap(g => g.targets);
@@ -183,6 +189,11 @@ function goBack() {
             <span class="label">内容</span>
             <textarea v-model="form.content" :disabled="notOwner" rows="16" class="content" placeholder="SKILL.md 正文(Markdown)" />
           </label>
+          <SkillFileAttachment
+            ref="attachmentRef"
+            :skill-id="editId"
+            :disabled="notOwner"
+          />
           <div class="field">
             <span class="label">维度标签</span>
             <div v-if="isEdit && existingDimensionLabel !== '个人'" class="dim-current">

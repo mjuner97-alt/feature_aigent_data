@@ -3,13 +3,20 @@ package com.agentscopea2a.v2.skills;
 import io.agentscope.core.skill.AgentSkill;
 import io.agentscope.core.skill.repository.AgentSkillRepository;
 import io.agentscope.core.skill.repository.AgentSkillRepositoryInfo;
+import com.agentscopea2a.v2.skillManager.dto.SkillFileReferenceItem;
 import com.agentscopea2a.v2.skillManager.entity.Skill;
+import com.agentscopea2a.v2.skillManager.entity.SkillFile;
 import com.agentscopea2a.v2.skillManager.mapper.SkillMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -52,6 +59,7 @@ public class DatabaseSkillRepository implements AgentSkillRepository {
                     .description(skill.getDescription())
                     .skillContent(skill.getContent())
                     .source("user_generated")
+                    .resources(loadFileResources(skill.getId()))
                     .build();
         } catch (Exception e) {
             log.warn("DatabaseSkillRepository: failed to get skill '{}': {}", name, e.getMessage());
@@ -200,7 +208,7 @@ public class DatabaseSkillRepository implements AgentSkillRepository {
     }
 
     /**
-     * 将 Skill 实体转换为 AgentSkill 对象。
+     * 将 Skill 实体转换为 AgentSkill 对象(含附件文件资源)。
      */
     private AgentSkill toAgentSkill(Skill skill) {
         return AgentSkill.builder()
@@ -208,6 +216,47 @@ public class DatabaseSkillRepository implements AgentSkillRepository {
                 .description(skill.getDescription())
                 .skillContent(skill.getContent())
                 .source("user_generated")
+                .resources(loadFileResources(skill.getId()))
                 .build();
+    }
+
+    /**
+     * 加载 Skill 引用的附件文件,装入 AgentSkill.resources,使 LLM 可通过
+     * {@code load_skill_through_path(skillId, path=<filename>)} 读取脚本内容。
+     *
+     * <p>从 skill_file_reference 取引用列表,再按 (userId, filename) 查 skill_file 拿
+     * storage_path,从磁盘读文本内容。.py / .sql 均为文本;读失败跳过该文件不影响 skill 加载。
+     */
+    private Map<String, String> loadFileResources(Long skillId) {
+        if (skillId == null || userId == null) {
+            return Map.of();
+        }
+        try {
+            List<SkillFileReferenceItem> refs = skillMapper.selectSkillFileReferences(skillId);
+            if (refs == null || refs.isEmpty()) {
+                return Map.of();
+            }
+            Map<String, String> resources = new HashMap<>();
+            for (SkillFileReferenceItem ref : refs) {
+                String filename = ref.filename();
+                if (filename == null) {
+                    continue;
+                }
+                SkillFile file = skillMapper.selectFileByUserIdAndFilename(userId, filename);
+                if (file == null || file.getStoragePath() == null) {
+                    continue;
+                }
+                try {
+                    resources.put(filename, Files.readString(Path.of(file.getStoragePath())));
+                } catch (IOException e) {
+                    log.warn("DatabaseSkillRepository: 读取文件 '{}' 失败 (skill={}): {}",
+                            filename, skillId, e.getMessage());
+                }
+            }
+            return resources;
+        } catch (Exception e) {
+            log.warn("DatabaseSkillRepository: 加载 skill={} 文件资源失败: {}", skillId, e.getMessage());
+            return Map.of();
+        }
     }
 }

@@ -1,4 +1,4 @@
-import type { SkillListItem, SkillDetail, LikeStatus, SkillInput, SkillPublishRecord, PublishTargetGroup, PublishPendingItem } from '../types/skill';
+import type { SkillListItem, SkillDetail, LikeStatus, SkillInput, SkillPublishRecord, PublishTargetGroup, PublishPendingItem, SkillFileUploadResponse, SkillFileItem, SkillFileReferenceItem, SkillFileReferenceRequest } from '../types/skill';
 
 const BASE = '/api/skills';
 
@@ -195,4 +195,96 @@ export async function rejectPublish(id: number, comment: string): Promise<void> 
     body: JSON.stringify({ comment }),
   });
   if (!res.ok) throw await skillError(res, '审批退回失败');
+}
+
+// ============ 文件附件 API ============
+
+const FILE_BASE = '/api/files';
+
+/** 上传文件(POST /api/files/upload, multipart/form-data) */
+export async function uploadFile(file: File, description?: string): Promise<SkillFileUploadResponse> {
+  const formData = new FormData();
+  formData.append('file', file);
+  if (description) formData.append('description', description);
+  const res = await fetch(`${FILE_BASE}/upload`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: formData,
+  });
+  if (!res.ok) {
+    let detail = '';
+    try { const body = await res.json(); detail = body.error || ''; } catch { /* ignore */ }
+    if (detail.startsWith('FileSizeExceeded')) throw new Error('文件大小超过 1MB 限制');
+    if (detail.startsWith('FileExtensionNotAllowed')) throw new Error('不支持的文件类型,仅允许 .py 和 .sql');
+    throw new Error(`上传失败(HTTP ${res.status})`);
+  }
+  return res.json();
+}
+
+/** 列出当前用户文件(GET /api/files,支持 fileType 筛选) */
+export async function listFiles(fileType?: string): Promise<SkillFileItem[]> {
+  const qs = new URLSearchParams();
+  if (fileType) qs.set('fileType', fileType);
+  const res = await fetch(`${FILE_BASE}?${qs.toString()}`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`获取文件列表失败: ${res.status}`);
+  return res.json();
+}
+
+/**
+ * 下载文件为 Blob(GET /api/files/{id}/download)。
+ * window.open 无法携带 X-User-Id 自定义头,后端 @RequestHeader 会 400,故改用 fetch。
+ * 返回 blob 与文件名(优先取 Content-Disposition)。
+ */
+export async function fetchFileBlob(id: number): Promise<{ blob: Blob; filename: string }> {
+  const res = await fetch(`${FILE_BASE}/${id}/download`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`下载失败(HTTP ${res.status})`);
+  const blob = await res.blob();
+  let filename = `file-${id}`;
+  const cd = res.headers.get('Content-Disposition') || '';
+  const m = cd.match(/filename="([^"]+)"/);
+  if (m) filename = m[1];
+  return { blob, filename };
+}
+
+/** 删除文件(DELETE /api/files/{id}) */
+export async function deleteFile(id: number): Promise<void> {
+  const res = await fetch(`${FILE_BASE}/${id}`, { method: 'DELETE', headers: authHeaders() });
+  if (!res.ok) throw new Error(`删除文件失败: ${res.status}`);
+}
+
+/** 更新文件描述(PUT /api/files/{id}) */
+export async function updateFileDescription(id: number, description: string): Promise<SkillFileItem> {
+  const res = await fetch(`${FILE_BASE}/${id}`, {
+    method: 'PUT',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ description }),
+  });
+  if (!res.ok) throw new Error(`更新描述失败: ${res.status}`);
+  return res.json();
+}
+
+/** 获取 Skill 引用的文件列表(GET /api/skills/{id}/files) */
+export async function getSkillFiles(skillId: number): Promise<SkillFileReferenceItem[]> {
+  const res = await fetch(`${BASE}/${skillId}/files`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`获取附件列表失败: ${res.status}`);
+  return res.json();
+}
+
+/** Skill 引用一个文件(POST /api/skills/{id}/files) */
+export async function addSkillFile(skillId: number, fileId: number, referenceType?: string): Promise<void> {
+  const res = await fetch(`${BASE}/${skillId}/files`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ fileId, referenceType } as SkillFileReferenceRequest),
+  });
+  if (!res.ok) throw new Error(`引用文件失败: ${res.status}`);
+}
+
+/** Skill 取消引用文件(DELETE /api/skills/{id}/files/{fileId}) */
+export async function removeSkillFile(skillId: number, fileId: number): Promise<void> {
+  const res = await fetch(`${BASE}/${skillId}/files/${fileId}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error(`取消引用失败: ${res.status}`);
 }

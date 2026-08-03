@@ -20,11 +20,13 @@ import com.agentscopea2a.v2.exception.DraftNotFoundException;
 import com.agentscopea2a.v2.exception.NotApproverException;
 import com.agentscopea2a.v2.exception.PublishAlreadyApprovedException;
 import com.agentscopea2a.v2.skillManager.dto.LikeStatus;
+import com.agentscopea2a.v2.skillManager.dto.SkillFileReferenceItem;
 import com.agentscopea2a.v2.skillManager.dto.SkillListItem;
 import com.agentscopea2a.v2.skillManager.dto.SkillListQuery;
 import com.agentscopea2a.v2.skillManager.entity.Skill;
 import com.agentscopea2a.v2.skillManager.entity.SkillApproval;
 import com.agentscopea2a.v2.skillManager.entity.SkillDraft;
+import com.agentscopea2a.v2.skillManager.entity.SkillFileReference;
 import com.agentscopea2a.v2.skillManager.entity.SkillLike;
 import com.agentscopea2a.v2.skillManager.entity.SkillOperationHistory;
 import com.agentscopea2a.v2.skillManager.entity.SkillPublish;
@@ -709,5 +711,48 @@ public class SkillManageService {
         if (!isApprover) {
             throw new NotApproverException("NotApprover: " + approverId);
         }
+    }
+
+    // ==================== Skill 文件附件引用 ====================
+
+    /**
+     * 获取 Skill 引用的文件列表。
+     */
+    public List<SkillFileReferenceItem> listSkillFiles(Long skillId) {
+        get(skillId); // 校验 Skill 存在
+        return skillMapper.selectSkillFileReferences(skillId);
+    }
+
+    /**
+     * Skill 引用一个文件(幂等)。
+     */
+    @Transactional("gaussTransactionManager")
+    public void addFileReference(Long skillId, Long fileId, String referenceType) {
+        get(skillId); // 校验 Skill 存在
+        if (skillMapper.selectFileById(fileId) == null) {
+            throw new IllegalStateException("FileNotFound: " + fileId);
+        }
+        if (skillMapper.existsSkillFileReference(skillId, fileId)) {
+            return; // 幂等
+        }
+        try {
+            skillMapper.insertSkillFileReference(SkillFileReference.builder()
+                    .skillId(skillId)
+                    .fileId(fileId)
+                    .referenceType(referenceType == null ? "ATTACHMENT" : referenceType)
+                    .createdAt(LocalDateTime.now())
+                    .build());
+        } catch (DuplicateKeyException e) {
+            log.debug("concurrent file reference race, idempotent: skill={} file={}", skillId, fileId);
+        }
+    }
+
+    /**
+     * Skill 取消引用一个文件。
+     */
+    @Transactional("gaussTransactionManager")
+    public void removeFileReference(Long skillId, Long fileId) {
+        get(skillId); // 校验 Skill 存在
+        skillMapper.deleteSkillFileReference(skillId, fileId);
     }
 }

@@ -15,10 +15,13 @@
  */
 package com.agentscopea2a.v2.skillManager.mapper;
 
+import com.agentscopea2a.v2.skillManager.dto.SkillFileReferenceItem;
 import com.agentscopea2a.v2.skillManager.dto.SkillListQuery;
 import com.agentscopea2a.v2.skillManager.entity.Skill;
 import com.agentscopea2a.v2.skillManager.entity.SkillApproval;
 import com.agentscopea2a.v2.skillManager.entity.SkillDraft;
+import com.agentscopea2a.v2.skillManager.entity.SkillFile;
+import com.agentscopea2a.v2.skillManager.entity.SkillFileReference;
 import com.agentscopea2a.v2.skillManager.entity.SkillLike;
 import com.agentscopea2a.v2.skillManager.entity.SkillOperationHistory;
 import com.agentscopea2a.v2.skillManager.entity.SkillPublish;
@@ -194,4 +197,30 @@ public interface SkillMapper {
     boolean existsDisableByUserSkill(@Param("userId") String userId, @Param("skillId") Long skillId);
 
     Set<Long> selectDisabledSkillIds(@Param("userId") String userId, @Param("skillIds") List<Long> skillIds);
+
+    // ==================== skill_file ====================
+
+    int insertSkillFile(SkillFile skillFile);
+
+    SkillFile selectFileById(@Param("id") Long id);
+
+    SkillFile selectFileByUserIdAndFilename(@Param("userId") String userId, @Param("filename") String filename);
+
+    List<SkillFile> selectFilesByUserId(@Param("userId") String userId, @Param("fileType") String fileType);
+
+    int updateSkillFile(SkillFile skillFile);
+
+    int deleteSkillFile(@Param("id") Long id);
+
+    // ==================== skill_file_reference ====================
+
+    int insertSkillFileReference(SkillFileReference ref);
+
+    boolean existsSkillFileReference(@Param("skillId") Long skillId, @Param("fileId") Long fileId);
+
+    int deleteSkillFileReference(@Param("skillId") Long skillId, @Param("fileId") Long fileId);
+
+    int deleteFileReferencesByFileId(@Param("fileId") Long fileId);
+
+    List<SkillFileReferenceItem> selectSkillFileReferences(@Param("skillId") Long skillId);
 }
