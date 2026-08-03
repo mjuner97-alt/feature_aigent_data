@@ -216,6 +216,13 @@ export async function uploadFile(file: File, description?: string): Promise<Skil
     try { const body = await res.json(); detail = body.error || ''; } catch { /* ignore */ }
     if (detail.startsWith('FileSizeExceeded')) throw new Error('文件大小超过 1MB 限制');
     if (detail.startsWith('FileExtensionNotAllowed')) throw new Error('不支持的文件类型,仅允许 .py 和 .sql');
+    if (detail.startsWith('FileNameEmpty')) throw new Error('文件名不能为空');
+    if (detail.startsWith('FileNameTooLong')) throw new Error('文件名过长(超过 255 字符)');
+    if (detail.startsWith('FileNameInvalid')) throw new Error('文件名非法:不能含路径分隔符或 . ..');
+    if (detail.startsWith('FileNameInvalidControlChar')) throw new Error('文件名含非法控制字符');
+    if (detail.startsWith('FileBinaryNotAllowed')) throw new Error('文件内容为二进制,仅支持文本类 .py/.sql');
+    if (detail.startsWith('FileConcurrentUpload')) throw new Error('该文件正被并发上传,请重试');
+    if (detail.startsWith('FileReadFailed')) throw new Error('读取文件失败');
     throw new Error(`上传失败(HTTP ${res.status})`);
   }
   return res.json();
@@ -233,7 +240,7 @@ export async function listFiles(fileType?: string): Promise<SkillFileItem[]> {
 /**
  * 下载文件为 Blob(GET /api/files/{id}/download)。
  * window.open 无法携带 X-User-Id 自定义头,后端 @RequestHeader 会 400,故改用 fetch。
- * 返回 blob 与文件名(优先取 Content-Disposition)。
+ * 返回 blob 与文件名(优先取 RFC 5987 的 filename*=UTF-8'',兼容旧 filename="")。
  */
 export async function fetchFileBlob(id: number): Promise<{ blob: Blob; filename: string }> {
   const res = await fetch(`${FILE_BASE}/${id}/download`, { headers: authHeaders() });
@@ -241,8 +248,13 @@ export async function fetchFileBlob(id: number): Promise<{ blob: Blob; filename:
   const blob = await res.blob();
   let filename = `file-${id}`;
   const cd = res.headers.get('Content-Disposition') || '';
-  const m = cd.match(/filename="([^"]+)"/);
-  if (m) filename = m[1];
+  const star = cd.match(/filename\*=UTF-8''([^;]+)/i);
+  if (star) {
+    filename = decodeURIComponent(star[1]);
+  } else {
+    const m = cd.match(/filename="([^"]+)"/);
+    if (m) filename = m[1];
+  }
   return { blob, filename };
 }
 

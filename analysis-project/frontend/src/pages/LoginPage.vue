@@ -36,12 +36,12 @@ function handleEnter(e: KeyboardEvent) {
 <template>
   <div class="login-page">
     <div class="login-card">
-      <div class="login-title">分析平台</div>
-      <div class="login-subtitle">请输入工号登录</div>
+      <div class="login-title">数字QA</div>
+      <div class="login-subtitle">请输入统一认证号登录</div>
       <input
         v-model="userId"
         type="text"
-        placeholder="工号 / 统一认证号"
+        placeholder="统一认证号"
         class="login-input"
         :disabled="loading"
         @keydown="handleEnter"

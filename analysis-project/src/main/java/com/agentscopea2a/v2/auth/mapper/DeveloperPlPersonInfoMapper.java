@@ -28,6 +28,13 @@ public interface DeveloperPlPersonInfoMapper {
     List<DeveloperPlPersonInfo> selectByUserId(@Param("userId") String userId);
 
     /**
+     * 根据多个 user_id 批量查询人员信息(列表场景一次性解析姓名,避免 N+1)。
+     * 一个 userId 可能返回多条记录(多部门/多统计组),姓名以首条(ORDER BY id)为准。
+     * 调用方需保证 userIds 非空。
+     */
+    List<DeveloperPlPersonInfo> selectByUserIds(@Param("userIds") List<String> userIds);
+
+    /**
      * 根据 user_id 查询是否存在记录(登录校验)。
      */
     int countByUserId(@Param("userId") String userId);

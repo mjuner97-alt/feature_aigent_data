@@ -29,7 +29,7 @@ const dimensions = [
   { value: 'GROUP', label: '小组' },
   { value: 'DEPARTMENT', label: '部门' },
   { value: 'PRODUCT_LINE', label: '产品线' },
-  { value: 'COMPANY', label: '公司级' },
+  { value: 'COMPANY', label: '杭研' },
 ];
 
 // 分页:采用"加载更多"模式,每次追加一页,后端默认每页 20 条

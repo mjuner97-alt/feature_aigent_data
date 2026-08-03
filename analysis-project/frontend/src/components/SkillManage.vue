@@ -66,7 +66,7 @@ const DIM_LABEL_MAP: Record<string, string> = {
   GROUP: '小组',
   DEPARTMENT: '部门',
   PRODUCT_LINE: '产品线',
-  COMPANY: '公司级',
+  COMPANY: '杭研',
 };
 function dimLabel(it: SkillListItem): string {
   return DIM_LABEL_MAP[it.dimension || 'PERSONAL'] || '个人';

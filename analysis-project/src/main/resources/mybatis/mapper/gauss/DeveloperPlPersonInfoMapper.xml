@@ -43,6 +43,16 @@
         ORDER BY id
     </select>
 
+    <!-- 批量按 user_id 查询(列表场景解析姓名,避免 N+1)。空列表由调用方拦截,不进入本查询。 -->
+    <select id="selectByUserIds" resultMap="personInfoMap">
+        SELECT * FROM developer_pl_person_info
+        WHERE user_id IN
+        <foreach collection="userIds" item="uid" open="(" separator="," close=")">
+            #{uid}
+        </foreach>
+        ORDER BY id
+    </select>
+
     <select id="countByUserId" resultType="int">
         SELECT COUNT(*) FROM developer_pl_person_info
         WHERE user_id = #{userId}

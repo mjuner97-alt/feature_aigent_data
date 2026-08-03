@@ -24,10 +24,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -36,16 +38,23 @@ import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.stream.Stream;
 
 /**
  * Skill 文件附件 Service。处理文件上传/下载/删除/备份，
  * 支持同名文件覆盖时自动备份旧版本。
  *
- * <p>文件存储路径: {@code {baseDir}/{userId}/{filename}}
- * <p>备份路径: {@code {baseDir}/{userId}/{backupDir}/{filename}_{timestamp}}
+ * <p>存储: DB 仅存相对路径 {@code {userId}/{filename}},运行时拼 {@code baseDir} 解析,
+ * 避免换机器/换配置后路径失效。每个用户独立子目录,同名文件按 userId 隔离。
+ * <p>备份: {@code {baseDir}/{userId}/{backupDir}/{filename}_{timestamp}},按文件保留最近 N 份。
  *
- * <p>DB 操作使用 {@code gaussTransactionManager} 事务管理器；
- * 磁盘操作在事务外执行，避免长事务持有文件锁。
+ * <p>一致性策略:
+ * <ul>
+ *   <li>上传(新文件): 先写盘后 insert;insert 失败(含并发同名竞态)清理磁盘,避免孤儿。</li>
+ *   <li>上传(覆盖): 备份旧文件 -> 写新文件 -> 更新 DB;DB 失败则用备份回滚磁盘。</li>
+ *   <li>删除: 先删 DB(事务内)再删磁盘;磁盘失败仅记日志不回滚(DB 已删,至多遗留孤儿)。</li>
+ * </ul>
+ * DB 操作使用 {@code gaussTransactionManager} 事务管理器。
  */
 @Service
 public class SkillFileService {
@@ -67,6 +76,10 @@ public class SkillFileService {
     @Value("${skill.file.backup-dir:.backup}")
     private String backupDir;
 
+    /** 每个文件保留的备份份数,超出按时间倒序删除旧备份;<=0 表示不清理。 */
+    @Value("${skill.file.backup-max-keep:5}")
+    private int backupMaxKeep;
+
     public SkillFileService(SkillMapper skillMapper) {
         this.skillMapper = skillMapper;
     }
@@ -74,12 +87,16 @@ public class SkillFileService {
     // ==================== 上传 ====================
 
     /**
-     * 上传文件。校验大小与扩展名，同名文件自动备份旧版本后覆盖。
+     * 上传文件。校验文件名/大小/扩展名/内容,同名文件自动备份旧版本后覆盖。
+     * DB 仅存相对路径 {@code {userId}/{filename}}。
      */
     @Transactional("gaussTransactionManager")
     public SkillFileUploadResponse upload(MultipartFile file, String description, String userId) {
         String filename = file.getOriginalFilename();
         long fileSize = file.getSize();
+
+        // 校验文件名(防路径穿越: 禁止路径分隔符 / .. / 控制字符)
+        validateFilename(filename);
 
         // 校验文件大小
         if (fileSize > maxSizeBytes) {
@@ -92,44 +109,32 @@ public class SkillFileService {
             throw new IllegalStateException("FileExtensionNotAllowed: " + extension + ", allowed=" + allowedExtensions);
         }
 
-        String fileType = extensionToFileType(extension);
-        Path storagePath = Paths.get(baseDir, userId, filename);
+        // 读取内容(一次性),供内容校验与写盘共用,避免重复读流
+        byte[] content;
+        try {
+            content = file.getBytes();
+        } catch (IOException e) {
+            throw new IllegalStateException("FileReadFailed: " + filename, e);
+        }
+        // 内容校验: .py/.sql 应为文本,出现 NUL 字节视为二进制(防伪装可执行)
+        if (isBinary(content)) {
+            throw new IllegalStateException("FileBinaryNotAllowed: " + filename);
+        }
 
-        // 查询是否已存在同名文件
+        String fileType = extensionToFileType(extension);
+        String relativePath = Paths.get(userId, filename).toString(); // 相对路径
+        Path storagePath = resolveStoragePath(relativePath);
+
         SkillFile existing = skillMapper.selectFileByUserIdAndFilename(userId, filename);
 
         if (existing != null) {
-            // 备份旧文件
-            Path oldFilePath = Paths.get(existing.getStoragePath());
-            if (Files.exists(oldFilePath)) {
-                backupFile(oldFilePath, Paths.get(baseDir, userId), backupDir, filename);
-            }
-
-            // 覆盖磁盘文件
-            try {
-                Files.createDirectories(storagePath.getParent());
-                Files.copy(file.getInputStream(), storagePath, StandardCopyOption.REPLACE_EXISTING);
-            } catch (IOException e) {
-                throw new IllegalStateException("FileWriteFailed: " + storagePath, e);
-            }
-
-            // 更新 DB 记录
-            existing.setStoragePath(storagePath.toString());
-            existing.setFileSize(fileSize);
-            existing.setFileType(fileType);
-            if (description != null) existing.setDescription(description);
-            existing.setUpdatedAt(LocalDateTime.now());
-            skillMapper.updateSkillFile(existing);
-
-            return new SkillFileUploadResponse(
-                    existing.getId(), filename, fileType, fileSize,
-                    existing.getDescription(), existing.getCreatedAt().toString());
+            return overwriteExisting(existing, content, fileSize, fileType, description, filename);
         }
 
-        // 新文件: 创建目录 + 写入磁盘 + 插入 DB
+        // 新文件: 先写盘,再 insert;insert 失败(含并发同名 DuplicateKey)清理磁盘
         try {
             Files.createDirectories(storagePath.getParent());
-            Files.copy(file.getInputStream(), storagePath);
+            Files.copy(new ByteArrayInputStream(content), storagePath, StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {
             throw new IllegalStateException("FileWriteFailed: " + storagePath, e);
         }
@@ -137,17 +142,74 @@ public class SkillFileService {
         SkillFile skillFile = new SkillFile();
         skillFile.setUserId(userId);
         skillFile.setFilename(filename);
-        skillFile.setStoragePath(storagePath.toString());
+        skillFile.setStoragePath(relativePath);
         skillFile.setFileSize(fileSize);
         skillFile.setFileType(fileType);
         skillFile.setDescription(description);
         skillFile.setCreatedAt(LocalDateTime.now());
         skillFile.setUpdatedAt(LocalDateTime.now());
-        skillMapper.insertSkillFile(skillFile);
+        try {
+            skillMapper.insertSkillFile(skillFile);
+        } catch (RuntimeException e) {
+            // insert 失败: 清理本次写入的磁盘文件,避免孤儿
+            safeDelete(storagePath);
+            if (e instanceof DuplicateKeyException) {
+                // 并发上传同名: 另一请求已建记录
+                throw new IllegalStateException("FileConcurrentUpload: " + filename, e);
+            }
+            throw e;
+        }
 
         return new SkillFileUploadResponse(
                 skillFile.getId(), filename, fileType, fileSize,
                 description, skillFile.getCreatedAt().toString());
+    }
+
+    /**
+     * 覆盖已存在文件: 备份旧 -> 写新 -> 更新 DB;DB 失败用备份回滚磁盘。
+     */
+    private SkillFileUploadResponse overwriteExisting(SkillFile existing, byte[] content, long fileSize,
+                                                      String fileType, String description, String filename) {
+        String userId = existing.getUserId();
+        Path oldFilePath = resolveStoragePath(existing.getStoragePath());
+        Path storagePath = resolveStoragePath(Paths.get(userId, filename).toString());
+
+        // 备份旧文件(最佳努力,失败不阻断)
+        Path backupPath = Files.exists(oldFilePath)
+                ? backupFile(oldFilePath, Paths.get(baseDir, userId), backupDir, filename)
+                : null;
+
+        // 覆盖磁盘文件
+        try {
+            Files.createDirectories(storagePath.getParent());
+            Files.copy(new ByteArrayInputStream(content), storagePath, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            throw new IllegalStateException("FileWriteFailed: " + storagePath, e);
+        }
+
+        // 更新 DB 记录;失败则回滚磁盘到旧版本
+        existing.setStoragePath(Paths.get(userId, filename).toString());
+        existing.setFileSize(fileSize);
+        existing.setFileType(fileType);
+        if (description != null) existing.setDescription(description);
+        existing.setUpdatedAt(LocalDateTime.now());
+        try {
+            skillMapper.updateSkillFile(existing);
+        } catch (RuntimeException e) {
+            if (backupPath != null) {
+                try {
+                    Files.copy(backupPath, oldFilePath, StandardCopyOption.REPLACE_EXISTING);
+                    log.info("file restored after DB update failure: {} -> {}", backupPath, oldFilePath);
+                } catch (IOException restoreEx) {
+                    log.error("FileRestoreFailed: {} -> {}", backupPath, oldFilePath, restoreEx);
+                }
+            }
+            throw e;
+        }
+
+        return new SkillFileUploadResponse(
+                existing.getId(), filename, fileType, fileSize,
+                existing.getDescription(), existing.getCreatedAt().toString());
     }
 
     // ==================== 列表查询 ====================
@@ -176,7 +238,7 @@ public class SkillFileService {
             throw new IllegalStateException("FileNotFoundOrAccessDenied: " + fileId);
         }
 
-        Path path = Paths.get(skillFile.getStoragePath());
+        Path path = resolveStoragePath(skillFile.getStoragePath());
         if (!Files.exists(path)) {
             throw new IllegalStateException("FileNotOnDisk: " + skillFile.getStoragePath());
         }
@@ -198,7 +260,8 @@ public class SkillFileService {
     // ==================== 删除 ====================
 
     /**
-     * 删除文件。先备份再删磁盘文件，事务内级联删除 DB 引用记录与文件记录。
+     * 删除文件。先删 DB(事务内: 级联引用 + 文件记录),再清理磁盘(失败仅记日志不回滚)。
+     * 这样 DB 失败时磁盘未动(一致);磁盘失败时 DB 已删(至多遗留孤儿文件,无害)。
      */
     @Transactional("gaussTransactionManager")
     public void delete(Long fileId, String userId) {
@@ -207,21 +270,20 @@ public class SkillFileService {
             throw new IllegalStateException("FileNotFoundOrAccessDenied: " + fileId);
         }
 
-        // 磁盘操作: 备份 + 删除
-        Path filePath = Paths.get(skillFile.getStoragePath());
+        // DB: 级联删除引用记录 + 文件记录(事务内)
+        skillMapper.deleteFileReferencesByFileId(fileId);
+        skillMapper.deleteSkillFile(fileId);
+
+        // 磁盘: 备份 + 删除(最佳努力,失败不回滚 DB)
+        Path filePath = resolveStoragePath(skillFile.getStoragePath());
         if (Files.exists(filePath)) {
             backupFile(filePath, Paths.get(baseDir, userId), backupDir, skillFile.getFilename());
             try {
                 Files.delete(filePath);
             } catch (IOException e) {
-                log.error("FileDeleteFailed: {}", filePath, e);
-                throw new IllegalStateException("FileDeleteFailed: " + filePath, e);
+                log.warn("FileDeleteFailed (orphaned on disk, DB record removed): {}", filePath, e);
             }
         }
-
-        // DB 操作: 级联删除引用记录 + 文件记录
-        skillMapper.deleteFileReferencesByFileId(fileId);
-        skillMapper.deleteSkillFile(fileId);
     }
 
     // ==================== 更新描述 ====================
@@ -263,17 +325,99 @@ public class SkillFileService {
 
     // ==================== 私有工具方法 ====================
 
-    private void backupFile(Path source, Path baseDir, String backupDir, String filename) {
+    /**
+     * 解析存储路径为绝对路径。DB 存相对路径 {@code {userId}/{filename}},
+     * 历史绝对路径记录也可正常解析(Paths.get 在第二参数为绝对路径时忽略 baseDir)。
+     */
+    private Path resolveStoragePath(String storagePath) {
+        return Paths.get(baseDir, storagePath);
+    }
+
+    /**
+     * 文件名校验: 防路径穿越(禁止 / \ 及 . ..)、控制字符、空名、超长。
+     */
+    private void validateFilename(String filename) {
+        if (filename == null || filename.isBlank()) {
+            throw new IllegalStateException("FileNameEmpty");
+        }
+        if (filename.length() > 255) {
+            throw new IllegalStateException("FileNameTooLong: " + filename.length());
+        }
+        if (filename.contains("/") || filename.contains("\\") || filename.equals(".") || filename.equals("..")) {
+            throw new IllegalStateException("FileNameInvalid: " + filename);
+        }
+        for (int i = 0; i < filename.length(); i++) {
+            char c = filename.charAt(i);
+            if (c < 0x20 || c == 0x7F) {
+                throw new IllegalStateException("FileNameInvalidControlChar: " + filename);
+            }
+        }
+    }
+
+    /**
+     * 简易二进制检测: 出现 NUL 字节视为二进制。.py/.sql 应为纯文本。
+     */
+    private boolean isBinary(byte[] content) {
+        for (byte b : content) {
+            if (b == 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 删除文件(忽略不存在与失败,仅记日志)。 */
+    private void safeDelete(Path path) {
         try {
-            Path backupDirPath = baseDir.resolve(backupDir);
+            Files.deleteIfExists(path);
+        } catch (IOException e) {
+            log.warn("safeDelete failed: {}", path, e);
+        }
+    }
+
+    /**
+     * 备份文件(最佳努力)。返回备份路径,失败返回 null(仅记日志,不抛)。
+     * 同时按 filename 前缀清理超出保留数量的旧备份。
+     */
+    private Path backupFile(Path source, Path userBaseDir, String backupDirName, String filename) {
+        try {
+            Path backupDirPath = userBaseDir.resolve(backupDirName);
             Files.createDirectories(backupDirPath);
             String timestamp = LocalDateTime.now().format(BACKUP_TIMESTAMP);
             Path backupPath = backupDirPath.resolve(filename + "_" + timestamp);
             Files.copy(source, backupPath, StandardCopyOption.REPLACE_EXISTING);
             log.info("file backed up: {} -> {}", source, backupPath);
+            pruneBackups(backupDirPath, filename, backupMaxKeep);
+            return backupPath;
         } catch (IOException e) {
             log.error("FileBackupFailed: source={}", source, e);
-            throw new IllegalStateException("FileBackupFailed: " + source, e);
+            return null;
+        }
+    }
+
+    /**
+     * 保留每个文件最近 maxKeep 份备份,其余按时间倒序删除。
+     * 备份命名约定 {@code {filename}_{timestamp}},字典序倒序即时间倒序。
+     */
+    private void pruneBackups(Path backupDirPath, String filename, int maxKeep) {
+        if (maxKeep <= 0) {
+            return;
+        }
+        String prefix = filename + "_";
+        try (Stream<Path> stream = Files.list(backupDirPath)) {
+            List<Path> matches = stream
+                    .filter(p -> p.getFileName().toString().startsWith(prefix))
+                    .sorted((a, b) -> b.getFileName().toString().compareTo(a.getFileName().toString()))
+                    .toList();
+            for (int i = maxKeep; i < matches.size(); i++) {
+                try {
+                    Files.delete(matches.get(i));
+                } catch (IOException ignore) {
+                    // 单个旧备份删除失败不影响主流程
+                }
+            }
+        } catch (IOException e) {
+            log.debug("pruneBackups list failed: {}", backupDirPath, e);
         }
     }
 

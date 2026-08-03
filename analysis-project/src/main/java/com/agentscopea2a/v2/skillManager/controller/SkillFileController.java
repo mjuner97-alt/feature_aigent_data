@@ -37,6 +37,8 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
@@ -93,10 +95,12 @@ public class SkillFileController {
         try {
             Resource resource = skillFileService.download(id, userId);
             String filename = skillFileService.getFilename(id, userId);
+            // RFC 5987: 中文文件名用 filename*=UTF-8'' 编码,避免明文乱码
+            String encoded = URLEncoder.encode(filename, StandardCharsets.UTF_8).replace("+", "%20");
             return ResponseEntity.ok()
                     .contentType(MediaType.APPLICATION_OCTET_STREAM)
                     .header(HttpHeaders.CONTENT_DISPOSITION,
-                            "attachment; filename=\"" + filename + "\"")
+                            "attachment; filename*=UTF-8''" + encoded)
                     .body(resource);
         } catch (IllegalStateException e) {
             return ResponseEntity.notFound().build();

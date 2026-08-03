@@ -3,14 +3,15 @@
  * Skill 脚本附件管理组件(共享)
  *
  * 设计: 表单内只展示"已引用"文件(紧凑列表)+ 一个"文件库"按钮;
- *       点击按钮弹出可滚动小窗,在小窗内管理文件库(上传/筛选/引用/下载),
+ *       点击按钮弹出可滚动小窗,在小窗内管理文件库(上传/筛选/引用/下载/删除),
  *       避免文件过多时把表单撑得过长。
  *  - 编辑模式(skillId!=null): 引用立即落库;创建模式(skillId==null): 暂存,skill 创建后批量引用
  *  - notOwner(disabled): 只读展示该 Skill 已引用文件,不开放文件库
+ *  - 弹窗交互: Esc 关闭、打开自动聚焦、Tab 焦点陷阱;删除用自定义确认弹窗(非原生 confirm)
  *
  * 由 SkillFormPage 和 SkillFormDrawer 共用。
  */
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import {
   uploadFile,
   listFiles,
@@ -44,6 +45,11 @@ const error = ref('');
 
 // 文件库弹窗
 const modalOpen = ref(false);
+const modalEl = ref<HTMLElement | null>(null);
+
+// 删除确认弹窗
+const confirmState = ref<{ fileId: number; filename: string } | null>(null);
+const confirmEl = ref<HTMLElement | null>(null);
 
 // 拖拽状态
 const dragOver = ref(false);
@@ -70,7 +76,9 @@ async function loadLibrary() {
   libraryLoading.value = true;
   try {
     libraryFiles.value = await listFiles(fileTypeFilter.value || undefined);
-  } catch {
+  } catch (e) {
+    // 区分错误与空:接口报错时保留旧列表,提示见 error
+    error.value = e instanceof Error ? e.message : '加载文件库失败';
     libraryFiles.value = [];
   } finally {
     libraryLoading.value = false;
@@ -110,7 +118,10 @@ async function toggleReference(file: SkillFileItem) {
       referencedFiles.value = referencedFiles.value.filter(f => f.id !== file.id);
     } else {
       if (props.skillId != null) await addSkillFile(props.skillId, file.id, 'ATTACHMENT');
-      referencedFiles.value = [...referencedFiles.value, toReferenceItem(file)];
+      // 幂等:避免并发双击重复 push
+      if (!referencedFileIds.value.has(file.id)) {
+        referencedFiles.value = [...referencedFiles.value, toReferenceItem(file)];
+      }
     }
   } catch (e) {
     error.value = e instanceof Error ? e.message : '引用操作失败';
@@ -125,27 +136,6 @@ async function unreferenceFile(fileId: number) {
     referencedFiles.value = referencedFiles.value.filter(f => f.id !== fileId);
   } catch (e) {
     error.value = e instanceof Error ? e.message : '取消引用失败';
-  }
-}
-
-/**
- * 从文件库删除文件(磁盘 + DB 级联,影响所有引用它的 Skill)。
- * 不可撤销,需二次确认。
- */
-async function deleteFileFromLibrary(file: SkillFileItem) {
-  if (props.disabled) return;
-  const msg = `确定从文件库删除 "${file.filename}"?\n该文件将从文件库及所有引用它的 Skill 中移除,此操作不可撤销。`;
-  if (!confirm(msg)) return;
-  error.value = '';
-  try {
-    await deleteFile(file.id);
-    // 若该文件已被当前 Skill 引用(含创建模式暂存),同步移除
-    if (referencedFileIds.value.has(file.id)) {
-      referencedFiles.value = referencedFiles.value.filter(f => f.id !== file.id);
-    }
-    await loadLibrary();
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : '删除文件失败';
   }
 }
 
@@ -181,15 +171,17 @@ async function handleFiles(files: FileList | File[]) {
       if (props.skillId != null) {
         await addSkillFile(props.skillId, result.id, 'ATTACHMENT');
       }
-      referencedFiles.value = [...referencedFiles.value, {
-        id: result.id,
-        filename: result.filename,
-        fileType: result.fileType,
-        fileSize: result.fileSize,
-        description: result.description,
-        referenceType: 'ATTACHMENT',
-        referencedAt: result.createdAt,
-      }];
+      if (!referencedFileIds.value.has(result.id)) {
+        referencedFiles.value = [...referencedFiles.value, {
+          id: result.id,
+          filename: result.filename,
+          fileType: result.fileType,
+          fileSize: result.fileSize,
+          description: result.description,
+          referenceType: 'ATTACHMENT',
+          referencedAt: result.createdAt,
+        }];
+      }
       await loadLibrary(); // 刷新文件库(同名覆盖等场景以服务端为准)
     } catch (e) {
       error.value = e instanceof Error ? e.message : '上传失败';
@@ -248,16 +240,100 @@ async function downloadFile(fileId: number) {
 
 // ============ 文件库弹窗 ============
 
-function openModal() {
+async function openModal() {
   if (props.disabled) return;
   error.value = '';
   modalOpen.value = true;
   loadLibrary();
+  await nextTick();
+  focusFirst(modalEl.value);
 }
 
 function closeModal() {
   modalOpen.value = false;
 }
+
+// ============ 删除确认(自定义弹窗) ============
+
+function deleteFileFromLibrary(file: SkillFileItem) {
+  if (props.disabled) return;
+  confirmState.value = { fileId: file.id, filename: file.filename };
+}
+
+async function confirmDelete() {
+  const c = confirmState.value;
+  if (!c) return;
+  confirmState.value = null;
+  error.value = '';
+  try {
+    await deleteFile(c.fileId);
+    // 若该文件已被当前 Skill 引用(含创建模式暂存),同步移除
+    if (referencedFileIds.value.has(c.fileId)) {
+      referencedFiles.value = referencedFiles.value.filter(f => f.id !== c.fileId);
+    }
+    await loadLibrary();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : '删除文件失败';
+  }
+}
+
+function cancelDelete() {
+  confirmState.value = null;
+}
+
+// ============ 焦点管理: Esc 关闭 + Tab 焦点陷阱 ============
+
+function focusFirst(container: HTMLElement | null) {
+  if (!container) return;
+  const sel = 'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+  const first = container.querySelector<HTMLElement>(sel);
+  (first ?? container).focus();
+}
+
+function trapTab(e: KeyboardEvent, container: HTMLElement) {
+  const sel = 'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+  const focusable = Array.from(container.querySelectorAll<HTMLElement>(sel))
+    .filter(el => el.offsetParent !== null);
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement as HTMLElement | null;
+  if (e.shiftKey) {
+    if (active === first || !container.contains(active)) {
+      e.preventDefault();
+      last.focus();
+    }
+  } else {
+    if (active === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+}
+
+function onKeydown(e: KeyboardEvent) {
+  // 删除确认弹窗优先处理
+  if (confirmState.value) {
+    if (e.key === 'Escape') cancelDelete();
+    else if (e.key === 'Tab' && confirmEl.value) trapTab(e, confirmEl.value);
+    else if (e.key === 'Enter') confirmDelete();
+    return;
+  }
+  if (!modalOpen.value) return;
+  if (e.key === 'Escape') closeModal();
+  else if (e.key === 'Tab' && modalEl.value) trapTab(e, modalEl.value);
+}
+
+onMounted(() => window.addEventListener('keydown', onKeydown));
+onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
+
+// 删除确认弹窗打开时自动聚焦
+watch(confirmState, async (c) => {
+  if (c) {
+    await nextTick();
+    focusFirst(confirmEl.value);
+  }
+});
 
 // ============ 格式化 / 图标 ============
 
@@ -323,7 +399,7 @@ defineExpose({ getPendingFileIds, attachPendingFiles });
     <Teleport to="body">
       <transition name="modal-fade">
         <div v-if="modalOpen" class="modal-mask" @click.self="closeModal">
-          <div class="modal">
+          <div ref="modalEl" class="modal" tabindex="-1" role="dialog" aria-modal="true" aria-label="我的文件库">
             <div class="modal-header">
               <h3>我的文件库</h3>
               <button type="button" class="modal-close" @click="closeModal" aria-label="关闭">×</button>
@@ -402,6 +478,23 @@ defineExpose({ getPendingFileIds, attachPendingFiles });
           </div>
         </div>
       </transition>
+
+      <!-- 删除确认弹窗(覆盖在文件库弹窗之上) -->
+      <transition name="modal-fade">
+        <div v-if="confirmState" class="confirm-mask" @click.self="cancelDelete">
+          <div ref="confirmEl" class="confirm-modal" tabindex="-1" role="alertdialog" aria-modal="true" aria-label="确认删除文件">
+            <div class="confirm-title">删除文件</div>
+            <div class="confirm-body">
+              确定从文件库删除 "<strong>{{ confirmState.filename }}</strong>"?
+              <p class="confirm-warn">该文件将从文件库及所有引用它的 Skill 中移除,此操作不可撤销。</p>
+            </div>
+            <div class="confirm-footer">
+              <button type="button" class="btn ghost" @click="cancelDelete">取消</button>
+              <button type="button" class="btn danger" @click="confirmDelete">删除</button>
+            </div>
+          </div>
+        </div>
+      </transition>
     </Teleport>
   </div>
 </template>
@@ -442,6 +535,7 @@ defineExpose({ getPendingFileIds, attachPendingFiles });
   color: #2563eb;
   background: #eff6ff;
 }
+
 .upload-error {
   color: #dc2626;
   font-size: 13px;
@@ -533,6 +627,7 @@ defineExpose({ getPendingFileIds, attachPendingFiles });
   display: flex;
   flex-direction: column;
   box-shadow: 0 8px 32px rgba(15, 23, 42, 0.18);
+  outline: none;
 }
 .modal-header {
   display: flex;
@@ -757,6 +852,67 @@ defineExpose({ getPendingFileIds, attachPendingFiles });
 }
 .btn.primary:hover {
   background: #2563eb;
+}
+.btn.ghost {
+  background: #fff;
+  color: #475569;
+}
+.btn.ghost:hover {
+  border-color: #93c5fd;
+  color: #2563eb;
+}
+.btn.danger {
+  background: #dc2626;
+  color: #fff;
+  border-color: #dc2626;
+}
+.btn.danger:hover {
+  background: #b91c1c;
+}
+
+/* 删除确认弹窗 */
+.confirm-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2100;
+}
+.confirm-modal {
+  width: 380px;
+  max-width: 90vw;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(15, 23, 42, 0.24);
+  outline: none;
+  overflow: hidden;
+}
+.confirm-title {
+  padding: 14px 20px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+  border-bottom: 1px solid #e2e8f0;
+}
+.confirm-body {
+  padding: 16px 20px;
+  font-size: 14px;
+  color: #334155;
+  line-height: 1.6;
+}
+.confirm-warn {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #b45309;
+}
+.confirm-footer {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  padding: 12px 20px;
+  border-top: 1px solid #e2e8f0;
 }
 
 /* 弹窗动画 */
