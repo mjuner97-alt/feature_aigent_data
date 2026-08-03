@@ -135,6 +135,25 @@ public class ArtifactStore {
         io.deleteBucket(ctx.userBucket(), ctx.taskBucket());
     }
 
+    /**
+     * 通过 io delegate 读取 artifact 原始字节. agentPath 必须以 mountPrefix 开头, 形如
+     * {@code /workspace/artifacts/<user>/<task>/<file>.csv}. 返回 null 表示文件不存在.
+     *
+     * <p>用于 CSV 下载短链场景 - dev profile io 走 SshArtifactIo, 文件在远端 docker-host,
+     * 不能直接 Files.readAllBytes 本地路径. 此方法把 agentPath 拆成 bucket 三元组委托给 io.
+     */
+    public byte[] read(String agentPath) throws IOException {
+        if (agentPath == null || !agentPath.startsWith(mountPrefix + "/")) {
+            return null;
+        }
+        String relative = agentPath.substring(mountPrefix.length() + 1);
+        String[] parts = relative.split("/", 3);
+        if (parts.length != 3) {
+            return null;
+        }
+        return io.read(parts[0], parts[1], parts[2]);
+    }
+
     public Path artifactsRoot() {
         return artifactsRoot;
     }

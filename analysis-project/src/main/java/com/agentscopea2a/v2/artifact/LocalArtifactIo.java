@@ -81,6 +81,15 @@ public final class LocalArtifactIo implements ArtifactIo {
                 .toString();
     }
 
+    @Override
+    public byte[] read(String userBucket, String taskBucket, String filename) throws IOException {
+        Path target = artifactsRoot.resolve(userBucket).resolve(taskBucket).resolve(filename);
+        if (!Files.exists(target) || !Files.isRegularFile(target)) {
+            return null;
+        }
+        return Files.readAllBytes(target);
+    }
+
     Path artifactsRoot() {
         return artifactsRoot;
     }

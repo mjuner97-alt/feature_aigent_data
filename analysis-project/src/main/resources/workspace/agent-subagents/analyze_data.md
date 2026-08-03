@@ -147,6 +147,20 @@ maxIters: 30
 - 任务结束后 artifact 目录会被清理, 只在当前作用域有效。
 - `pip install` 别的库会失败 -- 沙箱镜像里只有 pandas / numpy / openpyxl / matplotlib, 要别的就告诉用户镜像缺包。
 
+## 给用户提供 CSV 下载链接
+
+当用户希望下载某次查询结果 CSV 时:
+
+1. 找到上一轮工具结果中 `📦 路径:` 行后的 `/workspace/artifacts/<user>/<session>/<file>.csv` 完整路径
+2. 调用 `router_tool(paramsJson='{"toolId":"generate_csv_download_url","agentPath":"<复制的路径>"}')`
+3. 把返回的 `/redirect/download?shortCode=xxx` 链接放在回复里给用户点击下载
+
+注意:
+- agentPath 必须从工具结果复制, 不要手工编造
+- 链接长期有效 (短链 16 位密钥, 不可枚举)
+- 任务结束后 artifact 目录若被清理, 链接会 404 -- 建议在用户表态要下载后再生成
+- 完整端到端 demo 参考 `load_skill_through_path(name="q2_1_metrics_download_demo")`
+
 ## python_exec 失败重试纪律 ★
 
 `python_exec` 执行失败时:

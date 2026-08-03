@@ -15,67 +15,124 @@
  */
 package com.agentscopea2a.v2.controller;
 
+import com.agentscopea2a.v2.artifact.ArtifactStore;
 import com.agentscopea2a.v2.service.UrlShortenerService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.servlet.view.RedirectView;
+
+import java.io.IOException;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 
 /**
- * URL短链重定向控制器 - 根据短码查询原始URL并302重定向。
+ * CSV 短链下载控制器 - 解 shortCode 后从 {@link ArtifactStore} 流式吐 CSV 文件.
  *
- * <p>两个端点：
+ * <p>链路: {@link com.agentscopea2a.v2.tools.CsvDownloadTool#generateCsvDownloadUrl}
+ * 把 agentPath 编码进 {@code /download?path=...} URL, 用 {@link UrlShortenerService#shorten}
+ * 生成 16 位 BASE62 shortCode. 用户点 {@code /redirect/download?shortCode=xxx} 时,
+ * 本控制器解 shortCode 拿原始 URL, 提取 path 参数, 校验后从磁盘读 CSV 回吐.
+ *
+ * <p><b>安全</b>:
  * <ul>
- *   <li>{@code GET /redirect/download?shortCode=xxx} - 短链重定向，从 {@code url_shortener} 表
- *       查询原始URL后302跳转；短码不存在或已过期则跳到 {@code /error/404}</li>
- *   <li>{@code GET /download?uuid=xxx} - 模拟下载接口，返回包含 uuid 的示例文本文件</li>
+ *   <li>shortCode 是 95-bit 密钥, 不可枚举 (16 位 BASE62)</li>
+ *   <li>agentPath 必须以 {@code /workspace/artifacts/} 开头, 拒绝 {@code ..} 穿越</li>
+ *   <li>拼出的磁盘路径 normalize 后必须仍在 {@link ArtifactStore#artifactsRoot()} 下 (双保险)</li>
  * </ul>
  *
- * <p>{@code @RestController} 由 Spring 组件扫描自动装配；{@link UrlShortenerService} 通过
- * {@code @Autowired} 注入（service bean 在 {@code V2ToolConfig} 中声明）。
+ * <p>旧 {@code /download?uuid=xxx} 模拟端点已删除 (没人调).
+ * 旧 {@code DownloadTool.generateDownloadUrl()} 测试桩保留不动.
  */
 @RestController
 public class RedirectController {
 
     private static final Logger log = LoggerFactory.getLogger(RedirectController.class);
 
+    /** 必须与 {@link com.agentscopea2a.v2.tools.CsvDownloadTool#MOUNT_PREFIX} 对齐. */
+    private static final String MOUNT_PREFIX = "/workspace/artifacts";
+
     @Autowired
     private UrlShortenerService urlShortenerService;
 
+    @Autowired
+    private ArtifactStore artifactStore;
+
     /**
-     * 短链重定向接口 - 根据 shortCode 查询原始URL并302重定向
+     * 短链下载 - 解 shortCode -> 解 path -> 校验 -> 通过 ArtifactStore.io 读 CSV 字节回吐.
+     *
+     * <p>不再 302 重定向到 {@code /download?uuid=xxx}, 直接在本端点吐文件流.
+     *
+     * <p><b>必须走 {@link ArtifactStore#read(String)} 而不是 Files.readAllBytes</b>: dev profile
+     * CSV 走 SshArtifactIo 落在远端 docker-host, 本地 FS 看不到. io delegate 决定字节实际从哪读.
      */
     @GetMapping("/redirect/download")
-    public RedirectView redirect(@RequestParam("shortCode") String shortCode) {
-        String originalUrl = urlShortenerService.resolve(shortCode);
-        if (originalUrl != null) {
-            log.info("Redirecting short_code={} to {}", shortCode, originalUrl);
-            return new RedirectView(originalUrl);
-        } else {
+    public ResponseEntity<byte[]> redirect(@RequestParam("shortCode") String shortCode) throws IOException {
+        String downloadUrl = urlShortenerService.resolve(shortCode);
+        if (downloadUrl == null) {
             log.warn("Short code not found or expired: {}", shortCode);
-            return new RedirectView("/error/404");
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
         }
+
+        String agentPath = extractAgentPath(downloadUrl);
+        if (agentPath == null) {
+            log.warn("Short code {} resolved to URL without path param: {}", shortCode, downloadUrl);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
+        }
+
+        // 服务端二次校验 (防 shortCode 表被注入或绕过 CsvDownloadTool 直接调 shorten)
+        if (agentPath.contains("..") || !agentPath.startsWith(MOUNT_PREFIX)) {
+            log.warn("Blocked agentPath outside mount prefix or contains ..: {}", agentPath);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
+        }
+
+        byte[] bytes = artifactStore.read(agentPath);
+        if (bytes == null || bytes.length == 0) {
+            log.warn("CSV not found for shortCode={}: agentPath={}", shortCode, agentPath);
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        }
+
+        String filename = extractFilename(agentPath);
+        String encoded = URLEncoder.encode(filename, StandardCharsets.UTF_8);
+
+        log.info("CSV download: shortCode={} -> {} ({} bytes)", shortCode, agentPath, bytes.length);
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("text/csv; charset=UTF-8"))
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=\"" + filename + "\"; filename*=UTF-8''" + encoded)
+                .body(bytes);
+    }
+
+    /** 从 agentPath 末段取 filename, 形如 {@code /workspace/artifacts/.../<file>.csv}. */
+    private static String extractFilename(String agentPath) {
+        int slash = agentPath.lastIndexOf('/');
+        return slash >= 0 ? agentPath.substring(slash + 1) : agentPath;
     }
 
     /**
-     * 模拟下载接口 - 根据 uuid 返回示例文件
+     * 从 {@code /download?path=xxx} 形式的 URL 中提取 path 参数 (URL-decoded).
+     *
+     * @return agentPath, 或 null 如果 URL 不含 path 参数
      */
-    @GetMapping("/download")
-    public ResponseEntity<byte[]> download(@RequestParam("uuid") String uuid) {
-        log.info("Download request: uuid={}", uuid);
-
-        String content = "这是一个模拟下载文件\nUUID: " + uuid + "\n生成时间: " + java.time.LocalDateTime.now();
-        byte[] bytes = content.getBytes();
-
-        return ResponseEntity.ok()
-                .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"download-" + uuid + ".txt\"")
-                .body(bytes);
+    private static String extractAgentPath(String downloadUrl) {
+        URI uri = URI.create(downloadUrl);
+        String query = uri.getRawQuery();
+        if (query == null || !query.startsWith("path=")) {
+            return null;
+        }
+        String encoded = query.substring("path=".length());
+        // 容忍 path 后还有其他参数 (虽然 CsvDownloadTool 不会加)
+        int amp = encoded.indexOf('&');
+        if (amp >= 0) {
+            encoded = encoded.substring(0, amp);
+        }
+        return java.net.URLDecoder.decode(encoded, StandardCharsets.UTF_8);
     }
 }

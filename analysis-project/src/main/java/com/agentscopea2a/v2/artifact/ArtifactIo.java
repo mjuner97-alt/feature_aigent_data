@@ -31,4 +31,10 @@ public interface ArtifactIo {
     void deleteBucket(String userBucket, String taskBucket);
 
     String describePath(String userBucket, String taskBucket, String filename);
+
+    /**
+     * 读取 artifact 原始字节. 用于下载短链场景 - RedirectController 需要从远端 SSH host 拉取 CSV
+     * (dev profile 走 SshArtifactIo, CSV 不在本地磁盘). 返回 null 表示文件不存在.
+     */
+    byte[] read(String userBucket, String taskBucket, String filename) throws IOException;
 }

@@ -22,6 +22,10 @@ export default defineConfig({
         target: 'http://localhost:8081',
         changeOrigin: true,
       },
+      '/redirect': {
+        target: 'http://localhost:8081',
+        changeOrigin: true,
+      },
     },
   },
 });

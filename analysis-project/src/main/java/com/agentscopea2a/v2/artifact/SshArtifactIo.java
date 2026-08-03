@@ -104,6 +104,59 @@ public final class SshArtifactIo implements ArtifactIo {
         return sshTarget + ":" + remoteRoot + "/" + userBucket + "/" + taskBucket + "/" + filename;
     }
 
+    /**
+     * 通过 SSH cat 拉取远端 CSV 原始字节. 用于 CSV 下载短链场景 - dev profile CSV 写在远端
+     * docker-host, RedirectController 必须走这条路径才能读到. 用 base64 wrap 保证字节流过
+     * Windows ssh.exe stdin/stdout 时不被 code-page 转换污染 (与 writeAtomic 同样套路).
+     * 返回 null 表示远端文件不存在.
+     *
+     * <p><b>Windows 管道死锁规避</b>: 不能用 {@code p.getInputStream().readAllBytes()} 在
+     * {@code waitFor} 之后读 - Windows pipe buffer ~4KB, base64 编码后 CSV 普遍 >4KB,
+     * SSH 进程写满 pipe 后阻塞等读端 drain, 但 Java 端在 {@code waitFor} 阻塞没读 stdout,
+     * 死锁 -> 30s timeout. 改用 {@code redirectOutput(tempFile)} 让 OS 直接把 stdout 落盘,
+     * 进程退出后再读文件.
+     */
+    @Override
+    public byte[] read(String userBucket, String taskBucket, String filename) throws IOException {
+        String remoteTarget = remoteRoot + "/" + userBucket + "/" + taskBucket + "/" + filename;
+        // test -f 避免对不存在 / 目录 cat 报错, 退出码非 0 时 waitOrKill 会抛 IOException
+        String cmd = "test -f " + sh(remoteTarget) + " && base64 " + sh(remoteTarget);
+
+        // 自己构造 ProcessBuilder 而非复用 startSsh, 因为要 redirectOutput 到临时文件.
+        // writeAtomic 不需要 redirect (它写 stdin 不读 stdout), 走 startSsh 即可.
+        java.util.List<String> argv = new java.util.ArrayList<>();
+        argv.add("ssh");
+        argv.add("-o");
+        argv.add("BatchMode=yes");
+        argv.addAll(sshOptions);
+        argv.add(sshTarget);
+        argv.add(cmd);
+
+        ProcessBuilder pb = new ProcessBuilder(argv);
+        pb.redirectErrorStream(true);
+        java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ssh-read-", ".b64");
+        pb.redirectOutput(tmp.toFile());
+
+        Process p = pb.start();
+        p.getOutputStream().close();
+        try {
+            waitOrKill(p, "read " + remoteTarget);
+            byte[] raw = java.nio.file.Files.readAllBytes(tmp);
+            if (raw.length == 0) {
+                return null;
+            }
+            String b64 = new String(raw, StandardCharsets.UTF_8).strip();
+            if (b64.isEmpty()) {
+                return null;
+            }
+            // base64(1) 默认每 76 字符换行, getDecoder() 不接受换行符会抛
+            // "Illegal base64 character a" (0x0a). 用 getMimeDecoder() 兼容 \r\n / \n.
+            return Base64.getMimeDecoder().decode(b64);
+        } finally {
+            java.nio.file.Files.deleteIfExists(tmp);
+        }
+    }
+
     private Process startSsh(String remoteCmd) throws IOException {
         java.util.List<String> argv = new java.util.ArrayList<>();
         argv.add("ssh");

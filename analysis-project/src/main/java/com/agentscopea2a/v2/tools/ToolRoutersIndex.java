@@ -54,6 +54,7 @@ public class ToolRoutersIndex {
     private final AgentTools agentTools;
     private final DataPrimitivesTool dataPrimitivesTool;
     private final DownloadTool downloadTool;
+    private final CsvDownloadTool csvDownloadTool;
     private final WideTableMetricsTool wideTableMetricsTool;
     private final ClickHouseWideTableMetricsTool clickHouseWideTableMetricsTool;
     private final SqlListTool sqlListTool;
@@ -62,6 +63,7 @@ public class ToolRoutersIndex {
     public ToolRoutersIndex(AgentTools agentTools,
                             DataPrimitivesTool dataPrimitivesTool,
                             DownloadTool downloadTool,
+                            CsvDownloadTool csvDownloadTool,
                             WideTableMetricsTool wideTableMetricsTool,
                             ClickHouseWideTableMetricsTool clickHouseWideTableMetricsTool,
                             SqlListTool sqlListTool,
@@ -69,6 +71,7 @@ public class ToolRoutersIndex {
         this.agentTools = agentTools;
         this.dataPrimitivesTool = dataPrimitivesTool;
         this.downloadTool = downloadTool;
+        this.csvDownloadTool = csvDownloadTool;
         this.wideTableMetricsTool = wideTableMetricsTool;
         this.clickHouseWideTableMetricsTool = clickHouseWideTableMetricsTool;
         this.sqlListTool = sqlListTool;
@@ -81,6 +84,7 @@ public class ToolRoutersIndex {
         registerTools(AgentTools.class, agentTools);
         registerTools(DataPrimitivesTool.class, dataPrimitivesTool);
         registerTools(DownloadTool.class, downloadTool);
+        registerTools(CsvDownloadTool.class, csvDownloadTool);
         registerTools(WideTableMetricsTool.class, wideTableMetricsTool);
         registerTools(ClickHouseWideTableMetricsTool.class, clickHouseWideTableMetricsTool);
         registerTools(SqlListTool.class, sqlListTool);
