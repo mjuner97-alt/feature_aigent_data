@@ -20,12 +20,14 @@ import com.agentscopea2a.mapper.mysql.SqlRegistryMapper;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
+import java.sql.Array;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -243,9 +245,16 @@ public class SqlRegistryExecTool {
             String preparedSql = NamedParameterUtils.substituteNamedParameters(parsed, paramSource);
             Object[] paramArray = NamedParameterUtils.buildValueArray(parsed, paramSource, null);
 
+            // Spring 6.1.4 substituteNamedParameters 会把 IN (:name) 展开为 IN (?, ?, ?)
+            // (当值是 Collection 时), 但 buildValueArray 不展开 Collection, 直接把 ArrayList
+            // 放进 args[i]. 结果 preparedSql 有 N 个 ? 但 args 只有 1 个 ArrayList 元素,
+            // setObject(1, ArrayList) 触发 PostgreSQL "Can't infer SQL type for ArrayList".
+            // 这里手动展开 Collection / 数组, 让 args 数量匹配 preparedSql 的 ? 数量.
+            Object[] finalArgs = expandCollections(paramArray);
+
             try (PreparedStatement ps = conn.prepareStatement(preparedSql)) {
-                for (int i = 0; i < paramArray.length; i++) {
-                    ps.setObject(i + 1, paramArray[i]);
+                for (int i = 0; i < finalArgs.length; i++) {
+                    ps.setObject(i + 1, finalArgs[i]);
                 }
                 try (ResultSet rs = ps.executeQuery()) {
                     return renderResult(sqlId, paramMap, rs, System.currentTimeMillis() - start);
@@ -368,6 +377,40 @@ public class SqlRegistryExecTool {
     // ======================================================================
     // 结果渲染 -- markdown 表, 与 ArtifactHandoffHook 期望格式一致
     // ======================================================================
+
+    /**
+     * 展开 args 数组中的 Collection / java.sql.Array / 反射数组, 让每个元素对应一个 ?.
+     *
+     * <p>背景: {@link NamedParameterUtils#substituteNamedParameters} 在值是 Iterable 时
+     * 会把 {@code IN (:name)} 替换为 {@code IN (?, ?, ?)} (按 collection 大小), 但
+     * {@link NamedParameterUtils#buildValueArray} 不展开 Collection, 直接把 Iterable 放进 args[i].
+     * 这导致 preparedSql 有 N 个 ? 但 args 只有 1 个 ArrayList 元素, setObject 报
+     * "Can't infer SQL type for ArrayList". 这里手动展开对齐.
+     */
+    private static Object[] expandCollections(Object[] args) {
+        List<Object> out = new ArrayList<>(args.length);
+        for (Object val : args) {
+            if (val == null) {
+                out.add(null);
+            } else if (val instanceof Collection) {
+                for (Object e : (Collection<?>) val) {
+                    out.add(e);
+                }
+            } else if (val.getClass().isArray()) {
+                // java.sql.Array 不会到这 (它不是普通数组), 这里处理 java 普通数组 + sql 数组包装
+                if (val instanceof Array) {
+                    out.add(val);
+                } else {
+                    for (int i = 0; i < java.lang.reflect.Array.getLength(val); i++) {
+                        out.add(java.lang.reflect.Array.get(val, i));
+                    }
+                }
+            } else {
+                out.add(val);
+            }
+        }
+        return out.toArray();
+    }
 
     private static ToolResultBlock renderResult(String sqlId,
                                                 Map<String, Object> params,
