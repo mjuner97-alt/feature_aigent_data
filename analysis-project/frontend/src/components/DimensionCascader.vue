@@ -55,6 +55,22 @@ const activeGroup = computed<PublishTargetGroup | undefined>(() =>
   props.groups.find(g => g.orgType === activeOrgType.value)
 );
 
+// 右列筛选关键字:部门/小组/产品线过多时,按名称快速过滤当前维度下的组织列表(不影响已选项与其他维度)
+const searchKeyword = ref('');
+const hasSearch = computed(() => searchKeyword.value.trim().length > 0);
+const filteredTargets = computed<PublishTarget[]>(() => {
+  const g = activeGroup.value;
+  if (!g) return [];
+  const kw = searchKeyword.value.trim().toLowerCase();
+  if (!kw) return g.targets;
+  return g.targets.filter(t =>
+    t.displayName.toLowerCase().includes(kw) ||
+    t.fullLabel.toLowerCase().includes(kw)
+  );
+});
+// 切换维度类型时清空筛选关键字
+watch(activeOrgType, () => { searchKeyword.value = ''; });
+
 // 当前激活维度下已选数量
 const activeSelectedCount = computed<number>(() => {
   const g = activeGroup.value;
@@ -255,7 +271,7 @@ onBeforeUnmount(() => {
       <!-- 右列:该类型下的具体组织 -->
       <div class="col-targets">
         <div v-if="activeGroup" class="targets-header">
-          <label class="select-all" :class="{ disabled }">
+          <label v-if="!hasSearch" class="select-all" :class="{ disabled }">
             <input
               type="checkbox"
               :disabled="disabled"
@@ -265,13 +281,24 @@ onBeforeUnmount(() => {
             />
             <span>全选 {{ activeGroup.typeLabel }}</span>
           </label>
+          <span v-else class="filter-hint">
+            筛选结果 {{ filteredTargets.length }}/{{ activeGroup.targets.length }}
+          </span>
           <span class="count-badge" :class="{ reached: activeReachedMax }">
             {{ activeSelectedCount }}/{{ max }}
           </span>
         </div>
+        <div v-if="activeGroup && activeGroup.orgType !== 'COMPANY'" class="search-box">
+          <input
+            v-model="searchKeyword"
+            type="text"
+            class="search-input"
+            :placeholder="`筛选${activeGroup.typeLabel}…`"
+          />
+        </div>
         <div class="targets-list">
           <label
-            v-for="t in activeGroup?.targets ?? []"
+            v-for="t in filteredTargets"
             :key="t.orgId"
             class="target-item"
             :class="{ checked: isSelected(t), disabled: isTargetLocked(t) }"
@@ -286,6 +313,7 @@ onBeforeUnmount(() => {
               <div class="target-name">{{ t.displayName }}</div>
             </div>
           </label>
+          <div v-if="activeGroup && filteredTargets.length === 0" class="empty">无匹配组织</div>
         </div>
         <div v-if="maxLimitTip" class="max-tip">{{ maxLimitTip }}</div>
       </div>
@@ -373,6 +401,14 @@ onBeforeUnmount(() => {
 .select-all input { margin: 0; }
 .count-badge { font-size: 11px; color: #64748b; background: #f1f5f9; padding: 1px 6px; border-radius: 8px; }
 .count-badge.reached { color: #b45309; background: #fef3c7; }
+.filter-hint { font-size: 12px; color: #64748b; }
+.search-box { padding: 6px 10px; border-bottom: 1px solid #f1f5f9; }
+.search-input {
+  width: 100%; box-sizing: border-box;
+  padding: 4px 8px; border: 1px solid #cbd5e1; border-radius: 4px;
+  font-size: 13px; outline: none; color: #1e293b;
+}
+.search-input:focus { border-color: #3b82f6; }
 .max-tip { font-size: 12px; color: #92400e; background: #fef3c7; border-top: 1px solid #fde68a; padding: 6px 10px; line-height: 1.4; }
 
 .targets-list { flex: 1; overflow-y: auto; padding: 4px 0; }

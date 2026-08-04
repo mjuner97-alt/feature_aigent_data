@@ -26,6 +26,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -127,7 +128,8 @@ public class TraceBatchWriter {
         row.put("event_type", "");
         row.put("event_name", "");
         row.put("source", "");
-        row.put("timestamp", System.currentTimeMillis());
+        // DateTime64(3) 列：用 Timestamp 写入，驱动按日期处理；直接写 long 会被当作秒解析
+        row.put("timestamp", new Timestamp(System.currentTimeMillis()));
         row.put("duration_ms", 0);
         row.put("event_json", json);
         try {
@@ -139,7 +141,7 @@ public class TraceBatchWriter {
             String createdAt = textOrEmpty(n, "createdAt");
             if (!createdAt.isEmpty()) {
                 try {
-                    row.put("timestamp", java.time.Instant.parse(createdAt).toEpochMilli());
+                    row.put("timestamp", new Timestamp(java.time.Instant.parse(createdAt).toEpochMilli()));
                 } catch (Exception ignored) {
                     // 保留 currentTimeMillis 兜底
                 }

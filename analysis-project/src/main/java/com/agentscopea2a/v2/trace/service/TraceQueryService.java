@@ -19,7 +19,7 @@ import com.agentscopea2a.mapper.ck.TraceCkMapper;
 import com.agentscopea2a.v2.trace.model.TraceConversation;
 import org.springframework.stereotype.Service;
 
-import java.time.Instant;
+import java.sql.Timestamp;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -85,8 +85,8 @@ public class TraceQueryService {
 
     private static String nv(String s) { return s == null ? "" : s; }
 
-    private static String toIso(long epochMillis) {
-        if (epochMillis <= 0) return "";
-        return Instant.ofEpochMilli(epochMillis).toString();
+    private static String toIso(Timestamp ts) {
+        if (ts == null) return "";
+        return ts.toInstant().toString();
     }
 }

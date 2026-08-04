@@ -118,6 +118,19 @@ const hasPendingPublish = computed(() =>
   publishes.value.some(p => p.status === 'PENDING')
 );
 
+// 派生:是否已发布到非个人维度(APPROVED)。
+// 维度共享后,skill_reference 中的显式引用数不再代表真实使用量(同维度用户默认可用,
+// 但不写入引用表),故对非个人维度的 Skill 隐藏"被 N 人引用",避免显示"几千人引用"之类的噪声。
+// publishLoading 期间一并隐藏,避免发布记录未就绪时闪现。
+const isDimensionShared = computed(() =>
+  publishes.value.some(p => p.status === 'APPROVED')
+);
+
+// 已审批通过的维度展示文本(如"部门:研发部、杭研"),用于删除提示等。
+const approvedDimensionLabel = computed(() =>
+  publishes.value.filter(p => p.status === 'APPROVED').map(formatDimension).join('、')
+);
+
 // ============ 审批详情(当前 Skill 的待审/已审记录) ============
 const publishPending = ref<PublishPendingItem | null>(null);
 const publishHistory = ref<PublishPendingItem | null>(null);
@@ -253,17 +266,22 @@ async function toggleReference() {
 }
 async function doDelete() {
   if (!skill.value || deleting.value) return;
-  // 删除前重新获取引用数(避免使用过期数据),被引用时提醒用户
-  let refCount = 0;
-  try {
-    const refs = await getReferencers(skill.value.id);
-    refCount = refs.length;
-  } catch {
-    refCount = referencerCount.value;
-  }
   let msg = `确定删除 Skill "${skill.value.name}"?此操作不可撤销。`;
-  if (refCount > 0) {
-    msg = `该 Skill 正在被 ${refCount} 人引用,删除后这些用户将无法继续使用。\n${msg}`;
+  if (isDimensionShared.value) {
+    // 维度共享:按维度提示(显式引用数不代表真实使用量,不再取 referencerCount)
+    msg = `该 Skill 已发布到 ${approvedDimensionLabel.value} 维度,删除后同维度用户将无法使用。\n${msg}`;
+  } else {
+    // 个人维度:删除前重新获取引用数(避免使用过期数据),被引用时提醒用户
+    let refCount = 0;
+    try {
+      const refs = await getReferencers(skill.value.id);
+      refCount = refs.length;
+    } catch {
+      refCount = referencerCount.value;
+    }
+    if (refCount > 0) {
+      msg = `该 Skill 正在被 ${refCount} 人引用,删除后这些用户将无法继续使用。\n${msg}`;
+    }
   }
   if (!confirm(msg)) return;
   deleting.value = true;
@@ -364,7 +382,7 @@ watch(() => route.params.id, () => {
         <span class="ripple"></span>
       </button>
       <button class="ref" @click="toggleReference">{{ referenced ? '取消引用' : '引用' }}</button>
-      <span class="referencer-count">被 {{ referencerCount }} 人引用</span>
+      <span v-if="!publishLoading && !isDimensionShared" class="referencer-count">被 {{ referencerCount }} 人引用</span>
     </div>
     <section class="block">
       <h3 class="block-title"><span class="bar"></span>描述</h3>

@@ -131,7 +131,7 @@ public class SkillManageController {
      * 指定 Skill 的版本历史。
      */
     @GetMapping("/skills/{id}/versions")
-    public List<SkillVersionHistory> versions(@PathVariable Long id) {
+    public List<SkillVersionHistory> versions(@PathVariable(name = "id") Long id) {
         return skillService.selectVersionsBySkillId(id);
     }
 
@@ -141,7 +141,7 @@ public class SkillManageController {
      * 点赞(幂等 toggle)。
      */
     @PostMapping("/skills/{id}/like")
-    public LikeStatus like(@PathVariable Long id, @RequestHeader("X-User-Id") String userId) {
+    public LikeStatus like(@PathVariable(name = "id") Long id, @RequestHeader("X-User-Id") String userId) {
         return skillService.like(id, userId);
     }
 
@@ -149,7 +149,7 @@ public class SkillManageController {
      * 取消点赞(幂等 toggle)。
      */
     @DeleteMapping("/skills/{id}/like")
-    public LikeStatus unlike(@PathVariable Long id, @RequestHeader("X-User-Id") String userId) {
+    public LikeStatus unlike(@PathVariable(name = "id") Long id, @RequestHeader("X-User-Id") String userId) {
         return skillService.unlike(id, userId);
     }
 
@@ -157,7 +157,7 @@ public class SkillManageController {
      * 点赞状态。
      */
     @GetMapping("/skills/{id}/like")
-    public LikeStatus likeStatus(@PathVariable Long id, @RequestHeader("X-User-Id") String userId) {
+    public LikeStatus likeStatus(@PathVariable(name = "id") Long id, @RequestHeader("X-User-Id") String userId) {
         return skillService.getLikeStatus(id, userId);
     }
 
@@ -168,7 +168,7 @@ public class SkillManageController {
      */
     @PostMapping("/skills/{id}/reference")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void reference(@PathVariable Long id, @RequestHeader("X-User-Id") String userId) {
+    public void reference(@PathVariable(name = "id") Long id, @RequestHeader("X-User-Id") String userId) {
         skillService.reference(id, userId);
     }
 
@@ -177,7 +177,7 @@ public class SkillManageController {
      */
     @DeleteMapping("/skills/{id}/reference")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void unreference(@PathVariable Long id, @RequestHeader("X-User-Id") String userId) {
+    public void unreference(@PathVariable(name = "id") Long id, @RequestHeader("X-User-Id") String userId) {
         skillService.unreference(id, userId);
     }
 
@@ -193,7 +193,7 @@ public class SkillManageController {
      * 指定 Skill 的引用者列表。
      */
     @GetMapping("/skills/{id}/referencers")
-    public List<String> referencers(@PathVariable Long id) {
+    public List<String> referencers(@PathVariable(name = "id") Long id) {
         return skillService.listReferencers(id);
     }
 
@@ -204,7 +204,7 @@ public class SkillManageController {
      */
     @PostMapping("/skills/{id}/disable")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void disable(@PathVariable Long id, @RequestHeader("X-User-Id") String userId) {
+    public void disable(@PathVariable(name = "id") Long id, @RequestHeader("X-User-Id") String userId) {
         skillService.disable(id, userId);
     }
 
@@ -213,7 +213,7 @@ public class SkillManageController {
      */
     @DeleteMapping("/skills/{id}/disable")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void enable(@PathVariable Long id, @RequestHeader("X-User-Id") String userId) {
+    public void enable(@PathVariable(name = "id") Long id, @RequestHeader("X-User-Id") String userId) {
         skillService.enable(id, userId);
     }
 
@@ -221,7 +221,7 @@ public class SkillManageController {
      * 禁用状态。
      */
     @GetMapping("/skills/{id}/disable")
-    public DisableStatus disableStatus(@PathVariable Long id, @RequestHeader("X-User-Id") String userId) {
+    public DisableStatus disableStatus(@PathVariable(name = "id") Long id, @RequestHeader("X-User-Id") String userId) {
         return new DisableStatus(skillService.isDisabled(id, userId));
     }
 
@@ -231,7 +231,7 @@ public class SkillManageController {
      * 申请发布:仅 Skill 所有者可提交,请求体指定发布目标。
      */
     @PostMapping("/skills/{id}/publish")
-    public Map<String, Long> submitPublish(@PathVariable Long id,
+    public Map<String, Long> submitPublish(@PathVariable(name = "id") Long id,
                                            @RequestBody PublishRequest req,
                                            @RequestHeader("X-User-Id") String userId) {
         Long publishId = skillService.submitPublish(id, req.targetType(), req.targetId(), req.targetName(), userId);
@@ -242,16 +242,17 @@ public class SkillManageController {
      * 查询指定 Skill 的全部发布记录(含 APPROVED 和 PENDING)。
      */
     @GetMapping("/skills/{id}/publishes")
-    public List<SkillPublish> publishes(@PathVariable Long id) {
+    public List<SkillPublish> publishes(@PathVariable(name = "id") Long id) {
         return skillService.listPublishesBySkillId(id);
     }
 
     /**
-     * 查询当前用户可选的发布目标(按维度类型分组,支持级联选择)。
+     * 查询可选的发布目标(按维度类型分组,支持级联选择)。
+     * 返回全部已存在的组织,不限于当前用户自身归属。
      */
     @GetMapping("/skills/publish-targets")
     public List<PublishTargetGroup> publishTargets(@RequestHeader("X-User-Id") String userId) {
-        return mockOrgService.getUserOrgs(userId).stream()
+        return mockOrgService.getAllOrgs().stream()
                 .collect(java.util.stream.Collectors.groupingBy(MockOrgService.OrgRef::orgType))
                 .entrySet().stream()
                 .map(e -> new PublishTargetGroup(
@@ -270,7 +271,7 @@ public class SkillManageController {
      */
     @PostMapping("/publish/{id}/approve")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void approvePublish(@PathVariable Long id,
+    public void approvePublish(@PathVariable(name = "id") Long id,
                                @RequestBody ApproveRequest req,
                                @RequestHeader("X-User-Id") String userId) {
         skillService.approvePublish(id, userId, req.comment());
@@ -281,7 +282,7 @@ public class SkillManageController {
      */
     @PostMapping("/publish/{id}/reject")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void rejectPublish(@PathVariable Long id,
+    public void rejectPublish(@PathVariable(name = "id") Long id,
                               @RequestBody ApproveRequest req,
                               @RequestHeader("X-User-Id") String userId) {
         skillService.rejectPublish(id, userId, req.comment());
@@ -307,7 +308,7 @@ public class SkillManageController {
      * 指定发布记录的审批历史。
      */
     @GetMapping("/publish/{id}/approvals")
-    public List<SkillApproval> publishApprovals(@PathVariable Long id) {
+    public List<SkillApproval> publishApprovals(@PathVariable(name = "id") Long id) {
         return skillService.publishApprovalHistory(id);
     }
 
@@ -317,7 +318,7 @@ public class SkillManageController {
      * 查看指定 Skill 的当前草稿;无 PENDING 草稿时 body 为 null(200)。
      */
     @GetMapping("/skills/{id}/draft")
-    public ResponseEntity<SkillDraft> currentDraft(@PathVariable Long id) {
+    public ResponseEntity<SkillDraft> currentDraft(@PathVariable(name = "id") Long id) {
         return ResponseEntity.ok(skillService.getCurrentDraft(id));
     }
 
@@ -326,7 +327,7 @@ public class SkillManageController {
      */
     @PostMapping("/skills/{id}/draft/approve")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void approveDraft(@PathVariable Long id,
+    public void approveDraft(@PathVariable(name = "id") Long id,
                              @RequestBody ApproveRequest req,
                              @RequestHeader("X-User-Id") String userId) {
         SkillDraft draft = skillService.getCurrentDraft(id);
@@ -341,7 +342,7 @@ public class SkillManageController {
      */
     @PostMapping("/skills/{id}/draft/reject")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void rejectDraft(@PathVariable Long id,
+    public void rejectDraft(@PathVariable(name = "id") Long id,
                             @RequestBody ApproveRequest req,
                             @RequestHeader("X-User-Id") String userId) {
         SkillDraft draft = skillService.getCurrentDraft(id);
@@ -365,7 +366,7 @@ public class SkillManageController {
      * 获取 Skill 引用的文件列表。
      */
     @GetMapping("/skills/{id}/files")
-    public List<SkillFileReferenceItem> skillFiles(@PathVariable Long id) {
+    public List<SkillFileReferenceItem> skillFiles(@PathVariable(name = "id") Long id) {
         return skillService.listSkillFiles(id);
     }
 
@@ -374,7 +375,7 @@ public class SkillManageController {
      */
     @PostMapping("/skills/{id}/files")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void addFileReference(@PathVariable Long id,
+    public void addFileReference(@PathVariable(name = "id") Long id,
                                  @RequestBody SkillFileReferenceRequest req,
                                  @RequestHeader("X-User-Id") String userId) {
         skillService.addFileReference(id, req.fileId(), req.referenceType());
@@ -385,7 +386,7 @@ public class SkillManageController {
      */
     @DeleteMapping("/skills/{id}/files/{fileId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void removeFileReference(@PathVariable Long id, @PathVariable Long fileId,
+    public void removeFileReference(@PathVariable(name = "id") Long id, @PathVariable Long fileId,
                                     @RequestHeader("X-User-Id") String userId) {
         skillService.removeFileReference(id, fileId);
     }

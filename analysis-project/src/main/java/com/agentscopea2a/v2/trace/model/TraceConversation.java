@@ -20,6 +20,8 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.sql.Timestamp;
+
 /** 会话汇总 POJO，对应 ClickHouse trace_conversation 表 */
 @Data
 @NoArgsConstructor
@@ -32,8 +34,9 @@ public class TraceConversation {
     private String source;
     private String agentId;
     private String agentName;
-    private long startTs;
-    private long endTs;
+    /** ClickHouse DateTime64(3)：用 Timestamp 映射，避免 long 在驱动侧被当作秒解析（读时也无法 parse 成 long）。 */
+    private Timestamp startTs;
+    private Timestamp endTs;
     private long durationMs;
     private String status;
     private String errorMessage;
@@ -44,6 +47,7 @@ public class TraceConversation {
 
     /** 从 {@link TraceSession} 构造汇总（endTs 用 currentTimeMillis 是 cleanup 时点）。 */
     public static TraceConversation from(TraceSession s) {
+        long start = s.getRequestStartTs();
         long end = s.getRequestEndTs();
         return new TraceConversation(
                 nz(s.getConversationId()),
@@ -52,9 +56,9 @@ public class TraceConversation {
                 nz(s.getSource()),
                 "",    // agentId 暂未采集
                 "",    // agentName 暂未采集
-                s.getRequestStartTs(),
-                end,
-                end - s.getRequestStartTs(),
+                new Timestamp(start),
+                new Timestamp(end),
+                end - start,
                 nz(s.getStatus()),
                 nz(s.getErrorMessage()),
                 s.eventCount(),

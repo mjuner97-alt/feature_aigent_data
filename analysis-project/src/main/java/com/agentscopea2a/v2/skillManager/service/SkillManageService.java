@@ -44,6 +44,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -107,9 +108,24 @@ public class SkillManageService {
         Set<Long> disabledIds = nullToEmpty(skillMapper.selectDisabledSkillIds(userId, ids));
         List<SkillPublish> approved = skillMapper.selectApprovedBySkillIds(ids);
         Map<Long, String> skillDimension = new HashMap<>();
+        Set<Long> dimensionUsedIds = new HashSet<>();
         if (approved != null) {
             for (SkillPublish p : approved) {
                 skillDimension.putIfAbsent(p.getSkillId(), p.getTargetType());
+            }
+            // 已 APPROVED 发布到用户所属维度(GROUP/DEPARTMENT/PRODUCT_LINE/COMPANY)的 skill
+            // 视为"已使用":同维度的人默认可用,无需手动引用。COMPANY(杭研)全员命中。
+            if (userId != null && !approved.isEmpty()) {
+                Set<String> userOrgKeys = new HashSet<>();
+                for (MockOrgService.OrgRef ref : mockOrgService.getUserOrgs(userId)) {
+                    userOrgKeys.add(ref.orgType() + ":" + ref.orgId());
+                }
+                for (SkillPublish p : approved) {
+                    if ("COMPANY".equals(p.getTargetType())
+                            || userOrgKeys.contains(p.getTargetType() + ":" + p.getTargetId())) {
+                        dimensionUsedIds.add(p.getSkillId());
+                    }
+                }
             }
         }
         // 批量解析 owner 姓名(列表行展示"姓名 (统一认证号)"),一次性查询避免 N+1
@@ -122,8 +138,10 @@ public class SkillManageService {
         int rank = q.getEffectiveOffset() + 1;
         List<SkillListItem> items = new ArrayList<>(skills.size());
         for (Skill s : skills) {
-            // 所有者对自己创建的 Skill 视为"已使用"(初次即 🟢 已使用,无需先点引用)
-            boolean used = usedIds.contains(s.getId()) || (userId != null && userId.equals(s.getOwnerUserId()));
+            // "已使用" = 显式引用 ∪ 自己创建 ∪ 所属维度已发布
+            boolean used = usedIds.contains(s.getId())
+                    || (userId != null && userId.equals(s.getOwnerUserId()))
+                    || dimensionUsedIds.contains(s.getId());
             boolean disabled = disabledIds.contains(s.getId());
             boolean available = used && !disabled;
             String dim = skillDimension.getOrDefault(s.getId(), "PERSONAL");

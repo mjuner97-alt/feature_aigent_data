@@ -61,21 +61,21 @@
     <!-- 全部去重的"统计组",过滤空串。用于组织维度选择器。 -->
     <select id="selectAllStatisticsGroups" resultType="java.lang.String">
         SELECT DISTINCT "统计组" FROM developer_pl_person_info
-        WHERE "统计组" IS NOT NULL AND "统计组" &lt;&gt; ''
+        WHERE "统计组" IS NOT NULL
         ORDER BY "统计组"
     </select>
 
     <!-- 全部去重的"部门",过滤空串。用于组织维度选择器。 -->
     <select id="selectAllDepartments" resultType="java.lang.String">
         SELECT DISTINCT "部门" FROM developer_pl_person_info
-        WHERE "部门" IS NOT NULL AND "部门" &lt;&gt; ''
+        WHERE "部门" IS NOT NULL
         ORDER BY "部门"
     </select>
 
     <!-- 全部去重的"产品线",过滤空串。用于组织维度选择器。 -->
     <select id="selectAllProductLines" resultType="java.lang.String">
         SELECT DISTINCT "产品线" FROM developer_pl_person_info
-        WHERE "产品线" IS NOT NULL AND "产品线" &lt;&gt; ''
+        WHERE "产品线" IS NOT NULL
         ORDER BY "产品线"
     </select>
 
