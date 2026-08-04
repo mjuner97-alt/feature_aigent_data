@@ -237,15 +237,22 @@ public class SkillManageService {
         if (patch.getContent() != null) s.setContent(patch.getContent());
         if (patch.getCategory() != null) s.setCategory(patch.getCategory());
         if (patch.getTags() != null) s.setTags(patch.getTags());
+        String oldRetrievalName = s.getRetrievalName();
         s.setUpdatedAt(LocalDateTime.now());
         skillMapper.updateSkill(s);
-        invalidateBodyCache(s.getRetrievalName()); // 失效检索 body 缓存
+        invalidateBodyCache(oldRetrievalName); // 失效检索 body 缓存
         Skill updated = skillMapper.selectById(id);
 
-        // 双写桥接：覆盖 SKILL.md + 更新 skill_index
+        // 双写桥接：更新 skill_index；改名时返回新检索名,需回写 skill_manage.retrieval_name,
+        // 否则两表指向不同行(检索名看起来没变,像改动没生效)
         SkillManageBridge bridge = bridgeProvider.getIfAvailable();
         if (bridge != null) {
-            bridge.syncToRetrievalIndex(updated);
+            String syncedRn = bridge.syncToRetrievalIndex(updated);
+            if (syncedRn != null && !syncedRn.equals(oldRetrievalName)) {
+                updated.setRetrievalName(syncedRn);
+                skillMapper.updateSkill(updated);
+                invalidateBodyCache(syncedRn);
+            }
         }
         return updated;
     }
@@ -624,10 +631,17 @@ public class SkillManageService {
 
         recordOperation(draft.getSkillId(), null, approverId, "DRAFT_APPROVE", null, null);
 
-        // 双写桥接：草稿审批通过后同步新内容到检索索引
+        // 双写桥接：草稿审批通过后同步新内容到检索索引；改名时回写新检索名
+        String previousRn = old.getRetrievalName();
+        invalidateBodyCache(previousRn);
         SkillManageBridge bridge = bridgeProvider.getIfAvailable();
         if (bridge != null) {
-            bridge.syncToRetrievalIndex(updated);
+            String syncedRn = bridge.syncToRetrievalIndex(updated);
+            if (syncedRn != null && !syncedRn.equals(previousRn)) {
+                updated.setRetrievalName(syncedRn);
+                skillMapper.updateSkill(updated);
+                invalidateBodyCache(syncedRn);
+            }
         }
     }
 

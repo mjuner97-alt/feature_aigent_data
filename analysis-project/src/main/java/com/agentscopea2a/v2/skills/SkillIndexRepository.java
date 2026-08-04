@@ -131,6 +131,37 @@ public class SkillIndexRepository {
     }
 
     /**
+     * 改名同步:将 skill_index 行主键 name 从 {@code oldName} 改为 {@code newName},并刷新
+     * description。原地更新,保留 version / usage_count / success_count / failure_count /
+     * fingerprint / source / owner_user_id 等全部列,仅动 name、description、version、updated_at。
+     *
+     * <p>用于页面 Skill 改名时让检索索引跟随同步,避免出现"旧行残留(仍 active) + 新行新建"
+     * 的分裂状态——那种状态会让 {@code skill_manage.retrieval_name} 与 {@code skill_index.name}
+     * 指向不同的行,看起来像改动没生效。
+     *
+     * <p>调用方须先确认 {@code newName} 在 skill_index 中不存在(否则触发 PK 唯一约束,
+     * 本次更新抛 SQLException,方法返回 0)。
+     *
+     * @return 实际更新行数;0 表示 {@code oldName} 不存在或 {@code newName} 已存在(冲突)
+     */
+    public int renameRow(String oldName, String newName, String description) {
+        ensureTable();
+        String sql =
+                "UPDATE skill_index SET name = ?, description = ?, version = version + 1, updated_at = now()"
+                        + " WHERE name = ?";
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, newName);
+            ps.setString(2, description == null ? "" : description);
+            ps.setString(3, oldName);
+            return ps.executeUpdate();
+        } catch (SQLException e) {
+            log.warn("renameRow({} -> {}) failed: {}", oldName, newName, e.getMessage());
+            return 0;
+        }
+    }
+
+    /**
      * Cross-source name collision guard. {@code skill_index.name} is PRIMARY KEY, so two skills
      * with the same name cannot coexist. Source is immutable once written, so a name already
      * owned by the other source must be rejected (caller surfaces an error to the user or skips).
