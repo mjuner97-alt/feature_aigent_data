@@ -1,0 +1,39 @@
+# 日志和大文件
+*.log
+app.log
+backend.log
+boot.log
+build.log
+frontend.log
+restart.log
+
+# 构建产物(容器内重新构建,不挂宿主机产物)
+target/
+frontend/node_modules/
+frontend-pm/node_modules/
+frontend/dist/
+frontend-pm/dist/
+frontend/.vite/
+
+# 临时文件
+tmp/
+tmp_test/
+.classpath.txt
+.claude-smoke-query.json
+tmp_testboot_log_fingerprint.txt
+
+# IDE / 版本控制
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# 文档(不打进镜像)
+docs/
+
+# agentscope workspace(运行时生成,不需要打进镜像)
+.agentscope/
+
+# 已有的 frontend-pm Docker 构建产物(如果有)
+frontend-pm/Dockerfile
+frontend-pm/.dockerignore
