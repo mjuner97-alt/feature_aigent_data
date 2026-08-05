@@ -31,6 +31,11 @@
         VALUES
         <foreach collection="list" item="item" separator=",">
             (#{item.conversationId}, #{item.traceId}, #{item.userId}, #{item.source},
+            #{item.agentId}, #{item.agentName},
+            #{item.startTs}, #{item.endTs}, #{item.durationMs},
+            #{item.status}, #{item.errorMessage},
+            #{item.eventCount}, #{item.tokenInput}, #{item.tokenOutput},
+            #{item.model})
         </foreach>
     </insert>
 

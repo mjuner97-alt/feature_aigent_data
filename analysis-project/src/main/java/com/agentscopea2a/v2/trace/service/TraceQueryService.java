@@ -44,7 +44,7 @@ public class TraceQueryService {
                 : rows.stream().map(TraceQueryService::toSummary).toList();
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("conversations", items);
-        resp.put("total", items.size());
+        resp.put("total", traceCkMapper.countConversations(source));
         resp.put("page", page);
         resp.put("size", size);
         return resp;
