@@ -32,11 +32,15 @@ import java.util.Map;
 
 /**
  * Trace 写入器：在请求结束（cleanup）时把组装后的 {@link AssembledTrace} 直接写入 ClickHouse，
- * 失败时降级到本地文件。
+ * 失败时重试一次，重试仍失败则丢弃。
  *
  * <p>不再使用定时调度攒批：中间事件由 {@code TraceSession} 在请求期间缓存（records 列表），
  * 请求结束时 {@code TraceAssembler.assemble} 后调用 {@link #write} 一次性落库，成功/失败/超时
- * 均执行（cleanup 在所有终止路径触发）。ClickHouse 两表独立插入，任一失败抛异常后降级写文件。
+ * 均执行（cleanup 在所有终止路径触发）。
+ *
+ * <p>写入顺序：先插 trace_event（数据量大，更容易失败），再插 trace_conversation。
+ * ClickHouse 无事务，先写 event 可避免"有 conversation 无 event"的数据不一致——
+ * 若 event 写入失败则 conversation 也不会写入，保证查到 conversation 时一定有对应的 event。
  */
 @Component
 public class TraceBatchWriter {
@@ -44,16 +48,17 @@ public class TraceBatchWriter {
     private static final Logger log = LoggerFactory.getLogger(TraceBatchWriter.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    private final TraceCkMapper ckMapper;
-    private final TraceFallbackWriter fallbackWriter;
+    /** 写入失败后重试次数（不含首次尝试） */
+    private static final int MAX_RETRIES = 1;
 
-    public TraceBatchWriter(TraceCkMapper ckMapper, TraceFallbackWriter fallbackWriter) {
+    private final TraceCkMapper ckMapper;
+
+    public TraceBatchWriter(TraceCkMapper ckMapper) {
         this.ckMapper = ckMapper;
-        this.fallbackWriter = fallbackWriter;
     }
 
     /**
-     * 写入单条组装后的 trace：先插入 ClickHouse（两表），失败则降级到本地文件。
+     * 写入单条组装后的 trace：先插入 ClickHouse（两表），失败则重试一次，仍失败则丢弃。
      *
      * <p>由请求结束（cleanup）时调用，不再依赖定时调度。无论本次请求成功还是报错都会执行
      * （cleanup 在 onCompletion/onTimeout/onError 三条终止路径都会触发）。
@@ -62,23 +67,26 @@ public class TraceBatchWriter {
      */
     public void write(AssembledTrace trace) {
         if (trace == null) return;
-        try {
-            batchInsert(List.of(trace));
-        } catch (Exception e) {
-            log.error("TraceBatchWriter insert failed, falling back: conversationId={}: {}",
-                    trace.conversation().getConversationId(), e.getMessage(), e);
+        for (int attempt = 0; attempt <= MAX_RETRIES; attempt++) {
             try {
-                fallbackWriter.write(trace);
-            } catch (Exception fe) {
-                log.error("TraceFallbackWriter also failed for conversationId={}: {}",
-                        trace.conversation().getConversationId(), fe.getMessage(), fe);
+                batchInsert(List.of(trace));
+                return; // 成功则直接返回
+            } catch (Exception e) {
+                if (attempt < MAX_RETRIES) {
+                    log.warn("TraceBatchWriter insert failed (attempt {}/{}), retrying: conversationId={}: {}",
+                            attempt + 1, MAX_RETRIES + 1,
+                            trace.conversation().getConversationId(), e.getMessage());
+                } else {
+                    log.error("TraceBatchWriter insert failed after {} attempts, discarding: conversationId={}: {}",
+                            MAX_RETRIES + 1, trace.conversation().getConversationId(), e.getMessage(), e);
+                }
             }
         }
     }
 
     /**
      * 把每个 AssembledTrace 的 eventJsons 拆解为 trace_event 行。
-     * ClickHouse 无事务，两表独立插入，任一失败抛异常由调用方降级。
+     * ClickHouse 无事务，先写 event 再写 conversation，避免"有 conversation 无 event"的不一致。
      */
     private void batchInsert(List<AssembledTrace> batch) {
         List<TraceConversation> conversations = new ArrayList<>(batch.size());
@@ -90,11 +98,13 @@ public class TraceBatchWriter {
                         t.conversation().getTraceId(), json));
             }
         }
-        if (!conversations.isEmpty()) {
-            ckMapper.insertConversation(conversations);
-        }
+        // 先写 event（数据量大，更容易失败），再写 conversation
+        // 这样如果 event 写入失败，conversation 也不会写入，避免"有 conversation 无 event"
         if (!eventRows.isEmpty()) {
             ckMapper.insertEvents(eventRows);
+        }
+        if (!conversations.isEmpty()) {
+            ckMapper.insertConversation(conversations);
         }
     }
 

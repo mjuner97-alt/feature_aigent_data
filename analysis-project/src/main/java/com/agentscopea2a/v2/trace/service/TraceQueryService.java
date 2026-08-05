@@ -50,11 +50,11 @@ public class TraceQueryService {
         return resp;
     }
 
-    /** 单会话详情（含事件 JSON 列表，按 timestamp ASC）。 */
+    /** 单会话详情（含事件 JSON 列表，按 timestamp ASC）。按 trace_id 过滤，只取当前轮事件。 */
     public Map<String, Object> getDetail(String conversationId) {
         TraceConversation c = traceCkMapper.getConversation(conversationId);
         if (c == null) return null;
-        List<String> events = traceCkMapper.listEventJsons(conversationId);
+        List<String> events = traceCkMapper.listEventJsons(conversationId, c.getTraceId());
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("conversation", toSummary(c));
         resp.put("events", events == null ? Collections.emptyList() : events);

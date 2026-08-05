@@ -47,8 +47,9 @@ public interface TraceCkMapper {
     TraceConversation getConversation(@Param("conversationId") String conversationId);
 
     /**
-     * 查询指定会话的事件 JSON 列表（按 timestamp ASC）。每行一个 JSON 字符串。
-     * 字段名 event_json 与表 DDL 对应。
+     * 查询指定会话指定轮次的事件 JSON 列表（按 timestamp ASC）。每行一个 JSON 字符串。
+     * 字段名 event_json 与表 DDL 对应。按 trace_id 过滤，多轮对话时只取当前轮的事件。
      */
-    List<String> listEventJsons(@Param("conversationId") String conversationId);
+    List<String> listEventJsons(@Param("conversationId") String conversationId,
+                                @Param("traceId") String traceId);
 }

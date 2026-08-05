@@ -308,11 +308,12 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         // 清理逻辑：取消订阅、清理 artifact、持久化 episodic 记忆、移除进行中调用标记
         Runnable cleanup = buildCleanup(streamCtx, callKey, inFlight);
 
-        // 注册 SSE 生命周期回调：三种终止路径都走同一个幂等 cleanup（参考 v1 流处理模式）
-        emitter.onCompletion(()->{
-            handleStreamSuccess(streamCtx,strategy);
-            cleanup.run();
-        });
+        // 注册 SSE 生命周期回调：三种终止路径都走同一个幂等 cleanup。
+        // 注意：onCompletion 不调用 handleStreamSuccess/handleStreamError，
+        // 因为 Reactor 的 onComplete/onError 已经分别调用了它们。
+        // 如果 onCompletion 再调一次，handleStreamSuccess 会被执行两次，
+        // 导致 done 事件重复发送（前端收到"你好你好"的重复输出 bug）。
+        emitter.onCompletion(cleanup);
         emitter.onTimeout(() -> {
             // Trace 状态标记：标记 TIMEOUT（设计 5.2）。先于 handleStreamError 标记，
             // 随后 handleStreamError 的 markError 会覆盖为 ERROR；若需保留 TIMEOUT 语义
