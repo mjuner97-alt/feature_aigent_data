@@ -10,8 +10,7 @@
  */
 import { ref, watch, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { marked } from 'marked';
-import hljs from 'highlight.js';
+import Markdown from '../../components/Markdown.vue';
 import {
   getSkill,
   getLikeStatus,
@@ -31,30 +30,6 @@ import {
   fetchFileBlob,
 } from '../../api/skill';
 import type { SkillDetail, LikeStatus, SkillPublishRecord, PublishPendingItem, SkillFileReferenceItem } from '../../types/skill';
-
-// 配置 marked: 使用自定义 renderer 实现代码高亮
-const renderer = new marked.Renderer();
-renderer.code = function ({ text, lang }: { text: string; lang?: string }): string {
-  const language = lang && hljs.getLanguage(lang) ? lang : '';
-  let highlighted: string;
-  if (language) {
-    try {
-      highlighted = hljs.highlight(text, { language }).value;
-    } catch {
-      highlighted = escHtml(text);
-    }
-  } else {
-    highlighted = hljs.highlightAuto(text).value;
-  }
-  const langLabel = language ? ` class="hljs language-${language}"` : ' class="hljs"';
-  return `<pre style="background:#0f172a;border:1px solid #334155;border-radius:6px;padding:12px 14px;overflow-x:auto;margin:10px 0"><code${langLabel}>${highlighted}</code></pre>`;
-};
-
-function escHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-marked.use({ renderer, breaks: true, gfm: true });
 
 const route = useRoute();
 const router = useRouter();
@@ -142,11 +117,7 @@ const approvalComment = ref('');
 const isPending = computed(() => !!publishPending.value);
 
 // ============ Markdown 渲染 ============
-
-const renderedContent = computed(() => {
-  if (!skill.value?.content) return '';
-  return marked.parse(skill.value.content);
-});
+// 使用零依赖 Markdown 组件，兼容所有浏览器
 
 // ============ 附件列表 ============
 
@@ -390,7 +361,7 @@ watch(() => route.params.id, () => {
     </section>
     <section class="block">
       <h3 class="block-title"><span class="bar"></span>内容</h3>
-      <div class="markdown-body" v-html="renderedContent"></div>
+      <Markdown v-if="skill.content" :text="skill.content" theme="dark" />
     </section>
 
     <!-- 附件列表 -->
@@ -556,60 +527,6 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   font-size: 14px;
   line-height: 1.7;
 }
-/* ===== Markdown 渲染样式 ===== */
-.markdown-body {
-  background: #0f172a;
-  color: #e2e8f0;
-  padding: 14px 16px;
-  border-radius: 8px;
-  font-size: 14px;
-  line-height: 1.7;
-  border: 1px solid #1e293b;
-  overflow-x: auto;
-}
-.markdown-body :deep(h1) { font-size: 1.6rem; font-weight: 700; margin: 16px 0 8px; color: #f1f5f9; border-bottom: 1px solid #334155; padding-bottom: 6px; }
-.markdown-body :deep(h2) { font-size: 1.35rem; font-weight: 700; margin: 14px 0 6px; color: #f1f5f9; border-bottom: 1px solid #334155; padding-bottom: 4px; }
-.markdown-body :deep(h3) { font-size: 1.18rem; font-weight: 700; margin: 12px 0 4px; color: #f1f5f9; }
-.markdown-body :deep(h4) { font-size: 1.05rem; font-weight: 700; margin: 10px 0 4px; color: #e2e8f0; }
-.markdown-body :deep(h5) { font-size: 0.95rem; font-weight: 700; margin: 8px 0 4px; color: #e2e8f0; }
-.markdown-body :deep(h6) { font-size: 0.9rem; font-weight: 700; margin: 6px 0 4px; color: #cbd5e1; }
-.markdown-body :deep(p) { margin: 8px 0; }
-.markdown-body :deep(ul), .markdown-body :deep(ol) { margin: 8px 0; padding-left: 24px; }
-.markdown-body :deep(li) { margin: 4px 0; }
-.markdown-body :deep(blockquote) { margin: 8px 0; padding: 6px 12px; border-left: 3px solid #6366f1; background: #1e293b; color: #94a3b8; }
-.markdown-body :deep(code) {
-  background: #1e293b;
-  color: #f472b6;
-  padding: 1px 5px;
-  border-radius: 4px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.88em;
-}
-.markdown-body :deep(pre) {
-  background: #0f172a;
-  border: 1px solid #334155;
-  border-radius: 6px;
-  padding: 12px 14px;
-  overflow-x: auto;
-  margin: 10px 0;
-}
-.markdown-body :deep(pre code) {
-  background: transparent;
-  color: inherit;
-  padding: 0;
-  border-radius: 0;
-  font-size: 0.85rem;
-  line-height: 1.5;
-}
-.markdown-body :deep(table) { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 0.88rem; }
-.markdown-body :deep(th) { border: 1px solid #334155; padding: 6px 10px; background: #1e293b; text-align: left; font-weight: 600; color: #e2e8f0; }
-.markdown-body :deep(td) { border: 1px solid #334155; padding: 6px 10px; color: #cbd5e1; }
-.markdown-body :deep(hr) { border: none; border-top: 1px solid #334155; margin: 16px 0; }
-.markdown-body :deep(a) { color: #60a5fa; text-decoration: none; }
-.markdown-body :deep(a:hover) { text-decoration: underline; }
-.markdown-body :deep(strong) { color: #f1f5f9; }
-.markdown-body :deep(em) { color: #a5b4fc; }
-
 /* ===== 附件列表样式 ===== */
 .attachment-list {
   display: flex;
