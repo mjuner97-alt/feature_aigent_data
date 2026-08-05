@@ -37,10 +37,13 @@ public interface TraceCkMapper {
 
     /** 分页查询会话列表（按 start_ts DESC）。 */
     List<TraceConversation> listConversations(@Param("source") String source,
-                                               @Param("offset") int offset,
-                                               @Param("limit") int limit);
+                                              @Param("offset") int offset,
+                                              @Param("limit") int limit);
 
-    /** 根据 conversationId 查询单个会话。 */
+    /** 符合条件的会话总数（按 conversation_id 去重），供分页 total 使用。 */
+    long countConversations(@Param("source") String source);
+
+    /** 根据 conversationId 查询单个会话（取最新一轮）。 */
     TraceConversation getConversation(@Param("conversationId") String conversationId);
 
     /**

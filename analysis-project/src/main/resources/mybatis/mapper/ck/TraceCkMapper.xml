@@ -25,54 +25,83 @@
 
     <insert id="insertConversation" parameterType="java.util.List">
         INSERT INTO trace_conversation
-            (conversation_id, trace_id, user_id, source, agent_id, agent_name,
-             start_ts, end_ts, duration_ms, status, error_message,
-             event_count, token_input, token_output, model)
+        (conversation_id, trace_id, user_id, source, agent_id, agent_name,
+        start_ts, end_ts, duration_ms, status, error_message,
+        event_count, token_input, token_output, model)
         VALUES
         <foreach collection="list" item="item" separator=",">
             (#{item.conversationId}, #{item.traceId}, #{item.userId}, #{item.source},
-             #{item.agentId}, #{item.agentName},
-             #{item.startTs}, #{item.endTs}, #{item.durationMs},
-             #{item.status}, #{item.errorMessage},
-             #{item.eventCount}, #{item.tokenInput}, #{item.tokenOutput},
-             #{item.model})
         </foreach>
     </insert>
 
     <insert id="insertEvents" parameterType="java.util.List">
         INSERT INTO trace_event
-            (event_id, conversation_id, trace_id, event_type, event_name, source,
-             timestamp, duration_ms, event_json)
+        (event_id, conversation_id, trace_id, event_type, event_name, source,
+        timestamp, duration_ms, event_json)
         VALUES
         <foreach collection="list" item="item" separator=",">
             (#{item.event_id}, #{item.conversation_id}, #{item.trace_id},
-             #{item.event_type}, #{item.event_name}, #{item.source},
-             #{item.timestamp}, #{item.duration_ms}, #{item.event_json})
+            #{item.event_type}, #{item.event_name}, #{item.source},
+            #{item.timestamp}, #{item.duration_ms}, #{item.event_json})
         </foreach>
     </insert>
 
     <!-- ==================== 查询 ==================== -->
 
+    <!--
+        会话列表（分页）。conversationId 跨多轮复用，每轮写一行，故按 conversation_id
+        去重：argMax(col, end_ts) 取最新一轮字段，max(end_ts) 取最后活跃时间。
+        别名与 ConversationMap 列名一致，resultMap 无需调整。
+    -->
     <select id="listConversations" resultMap="ConversationMap">
-        SELECT conversation_id, trace_id, user_id, source, agent_id, agent_name,
-               start_ts, end_ts, duration_ms, status, error_message,
-               event_count, token_input, token_output, model
+        SELECT conversation_id,
+        argMax(trace_id, end_ts)      AS trace_id,
+        argMax(user_id, end_ts)       AS user_id,
+        argMax(source, end_ts)        AS source,
+        argMax(agent_id, end_ts)      AS agent_id,
+        argMax(agent_name, end_ts)    AS agent_name,
+        argMax(start_ts, end_ts)      AS start_ts,
+        max(end_ts)                   AS end_ts,
+        argMax(duration_ms, end_ts)   AS duration_ms,
+        argMax(status, end_ts)        AS status,
+        argMax(error_message, end_ts) AS error_message,
+        argMax(event_count, end_ts)   AS event_count,
+        argMax(token_input, end_ts)   AS token_input,
+        argMax(token_output, end_ts)  AS token_output,
+        argMax(model, end_ts)         AS model
         FROM trace_conversation
         <where>
             <if test="source != null and source != ''">
                 AND source = #{source}
             </if>
         </where>
-        ORDER BY start_ts DESC
+        GROUP BY conversation_id
+        ORDER BY max(end_ts) DESC
         LIMIT #{offset}, #{limit}
     </select>
 
+    <!-- 总会话数（按 conversation_id 去重），供分页 total 使用 -->
+    <select id="countConversations" resultType="long">
+        SELECT count(DISTINCT conversation_id)
+        FROM trace_conversation
+        <where>
+            <if test="source != null and source != ''">
+                AND source = #{source}
+            </if>
+        </where>
+    </select>
+
+    <!--
+        单会话汇总：conversationId 跨多轮复用会有多行，按 end_ts DESC 取最新一轮，
+        保证多次查询结果确定一致。
+    -->
     <select id="getConversation" resultMap="ConversationMap">
         SELECT conversation_id, trace_id, user_id, source, agent_id, agent_name,
-               start_ts, end_ts, duration_ms, status, error_message,
-               event_count, token_input, token_output, model
+        start_ts, end_ts, duration_ms, status, error_message,
+        event_count, token_input, token_output, model
         FROM trace_conversation
         WHERE conversation_id = #{conversationId}
+        ORDER BY end_ts DESC
         LIMIT 1
     </select>
 

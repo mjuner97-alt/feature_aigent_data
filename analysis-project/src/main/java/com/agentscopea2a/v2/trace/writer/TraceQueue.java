@@ -19,15 +19,18 @@ import com.agentscopea2a.v2.trace.config.TraceProperties;
 import com.agentscopea2a.v2.trace.model.AssembledTrace;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Component;
 
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
-/** 组装后 Trace 的有界阻塞队列缓冲区，解耦采集与批量写入线程 */
-@Component
+/**
+ * 组装后 Trace 的有界阻塞队列缓冲区。
+ *
+ * <p>已弃用：trace 落库改为请求结束（cleanup）时由 {@link TraceBatchWriter#write} 直接写入，
+ * 不再走定时攒批队列。此类保留仅供回退，不再是 Spring bean（无 {@code @Component}）。
+ */
 public class TraceQueue {
 
     private static final Logger log = LoggerFactory.getLogger(TraceQueue.class);

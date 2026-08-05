@@ -79,4 +79,29 @@
         ORDER BY "产品线"
     </select>
 
+    <!-- 全部去重的 user_id(COMPANY 发布 / ALL 用户范围)。 -->
+    <select id="selectAllUserIds" resultType="java.lang.String">
+        SELECT DISTINCT user_id FROM developer_pl_person_info
+        WHERE user_id IS NOT NULL AND user_id != ''
+        ORDER BY user_id
+    </select>
+
+    <!-- 按组织维度查 user_id:DEPARTMENT->"部门" / GROUP->"统计组" / PRODUCT_LINE->"产品线" -->
+    <select id="selectUserIdsByOrg" resultType="java.lang.String">
+        SELECT DISTINCT user_id FROM developer_pl_person_info
+        WHERE user_id IS NOT NULL AND user_id != ''
+        <choose>
+            <when test="orgType == 'DEPARTMENT'">
+                AND "部门" = #{orgId}
+            </when>
+            <when test="orgType == 'GROUP'">
+                AND "统计组" = #{orgId}
+            </when>
+            <when test="orgType == 'PRODUCT_LINE'">
+                AND "产品线" = #{orgId}
+            </when>
+        </choose>
+        ORDER BY user_id
+    </select>
+
 </mapper>

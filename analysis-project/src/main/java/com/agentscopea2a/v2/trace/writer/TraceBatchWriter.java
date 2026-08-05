@@ -16,14 +16,12 @@
 package com.agentscopea2a.v2.trace.writer;
 
 import com.agentscopea2a.mapper.ck.TraceCkMapper;
-import com.agentscopea2a.v2.trace.config.TraceProperties;
 import com.agentscopea2a.v2.trace.model.AssembledTrace;
 import com.agentscopea2a.v2.trace.model.TraceConversation;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.sql.Timestamp;
@@ -31,67 +29,51 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
-/** 定时批量写入器，从队列攒批写入 ClickHouse，失败时降级到本地文件 */
+/**
+ * Trace 写入器：在请求结束（cleanup）时把组装后的 {@link AssembledTrace} 直接写入 ClickHouse，
+ * 失败时降级到本地文件。
+ *
+ * <p>不再使用定时调度攒批：中间事件由 {@code TraceSession} 在请求期间缓存（records 列表），
+ * 请求结束时 {@code TraceAssembler.assemble} 后调用 {@link #write} 一次性落库，成功/失败/超时
+ * 均执行（cleanup 在所有终止路径触发）。ClickHouse 两表独立插入，任一失败抛异常后降级写文件。
+ */
 @Component
 public class TraceBatchWriter {
 
     private static final Logger log = LoggerFactory.getLogger(TraceBatchWriter.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    private final TraceQueue queue;
     private final TraceCkMapper ckMapper;
     private final TraceFallbackWriter fallbackWriter;
-    private final TraceProperties properties;
 
-    public TraceBatchWriter(TraceQueue queue,
-                            TraceCkMapper ckMapper,
-                            TraceFallbackWriter fallbackWriter,
-                            TraceProperties properties) {
-        this.queue = queue;
+    public TraceBatchWriter(TraceCkMapper ckMapper, TraceFallbackWriter fallbackWriter) {
         this.ckMapper = ckMapper;
         this.fallbackWriter = fallbackWriter;
-        this.properties = properties;
     }
 
-    // 调度间隔硬编码 2s（与 TraceProperties.batch.intervalSeconds 默认值一致），不再读 application.properties
-    @Scheduled(fixedDelay = 2000L)
-    public void drainAndWrite() throws InterruptedException {
-        List<AssembledTrace> batch = drainBatch();
-        if (batch.isEmpty()) return;
-        log.debug("TraceBatchWriter draining {} traces", batch.size());
+    /**
+     * 写入单条组装后的 trace：先插入 ClickHouse（两表），失败则降级到本地文件。
+     *
+     * <p>由请求结束（cleanup）时调用，不再依赖定时调度。无论本次请求成功还是报错都会执行
+     * （cleanup 在 onCompletion/onTimeout/onError 三条终止路径都会触发）。
+     *
+     * @param trace 组装后的 trace，null 时直接返回
+     */
+    public void write(AssembledTrace trace) {
+        if (trace == null) return;
         try {
-            batchInsert(batch);
+            batchInsert(List.of(trace));
         } catch (Exception e) {
-            log.error("TraceBatchWriter batch insert failed, falling back {} traces: {}",
-                    batch.size(), e.getMessage(), e);
-            for (AssembledTrace t : batch) {
-                try {
-                    fallbackWriter.write(t);
-                } catch (Exception fe) {
-                    log.error("TraceFallbackWriter also failed for conversationId={}: {}",
-                            t.conversation().getConversationId(), fe.getMessage(), fe);
-                }
+            log.error("TraceBatchWriter insert failed, falling back: conversationId={}: {}",
+                    trace.conversation().getConversationId(), e.getMessage(), e);
+            try {
+                fallbackWriter.write(trace);
+            } catch (Exception fe) {
+                log.error("TraceFallbackWriter also failed for conversationId={}: {}",
+                        trace.conversation().getConversationId(), fe.getMessage(), fe);
             }
         }
-    }
-
-    private List<AssembledTrace> drainBatch() throws InterruptedException {
-        int batchSize = properties.getBatch().getSize();
-        int intervalSeconds = properties.getBatch().getIntervalSeconds();
-        List<AssembledTrace> batch = new ArrayList<>(Math.min(batchSize, 16));
-
-        AssembledTrace first = queue.poll(intervalSeconds, TimeUnit.SECONDS);
-        if (first == null) return batch;
-        batch.add(first);
-
-        while (batch.size() < batchSize) {
-            AssembledTrace t = queue.poll(0, TimeUnit.MILLISECONDS);
-            if (t == null) break;
-            batch.add(t);
-        }
-        return batch;
     }
 
     /**
