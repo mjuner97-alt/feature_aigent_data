@@ -20,7 +20,7 @@ async function handleLogin() {
   try {
     const user = await login({ userId: id });
     saveLoggedInUser(user);
-    router.push('/skills');
+    router.push('/');
   } catch (e: any) {
     errorMsg.value = e.message || '登录失败';
   } finally {

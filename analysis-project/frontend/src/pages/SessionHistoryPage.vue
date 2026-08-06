@@ -8,6 +8,19 @@
       </div>
       <div :style="headerRight">
         <el-input
+          v-model="selectedUserId"
+          placeholder="提问人"
+          :style="{ width: '140px' }"
+          clearable
+          @keyup.enter="handleUserFilter"
+          @clear="handleUserFilter"
+        >
+          <template #prefix>
+            <span style="font-size: 14px">👤</span>
+          </template>
+        </el-input>
+        <el-button size="small" @click="handleUserFilter">查询</el-button>
+        <el-input
           v-model="searchKeyword"
           placeholder="搜索会话ID / Agent名称"
           :style="{ width: '260px' }"
@@ -128,6 +141,7 @@ const total = ref(0);
 const currentPage = ref(1);
 const pageSize = 20;
 const searchKeyword = ref('');
+const selectedUserId = ref<string>('');
 
 function statusTagType(status: TraceStatus) {
   return STATUS_TAG_TYPE[status] ?? 'info';
@@ -158,7 +172,12 @@ async function refreshConversations() {
   loading.value = true;
   error.value = null;
   try {
-    const data = await listConversations(undefined, currentPage.value - 1, pageSize);
+    const data = await listConversations(
+      undefined,
+      selectedUserId.value || undefined,
+      currentPage.value - 1,
+      pageSize,
+    );
     conversations.value = data.conversations ?? [];
     total.value = data.total ?? 0;
     lastUpdated.value = new Date().toLocaleTimeString('zh-CN', { hour12: false });
@@ -177,9 +196,22 @@ async function handleSearch() {
   loading.value = true;
   error.value = null;
   try {
-    const data = await search(searchKeyword.value.trim(), currentPage.value - 1, pageSize);
-    conversations.value = data.conversations ?? [];
-    total.value = data.total ?? 0;
+    // 搜索时先拉列表（带 userId 筛选），再客户端按关键字过滤
+    const data = await listConversations(
+      undefined,
+      selectedUserId.value || undefined,
+      currentPage.value - 1,
+      pageSize,
+    );
+    const kw = searchKeyword.value.trim().toLowerCase();
+    const filtered = (data.conversations ?? []).filter(
+      (c) =>
+        c.conversationId.toLowerCase().includes(kw) ||
+        (c.userId || '').toLowerCase().includes(kw) ||
+        (c.agentName || '').toLowerCase().includes(kw),
+    );
+    conversations.value = filtered;
+    total.value = filtered.length;
     lastUpdated.value = new Date().toLocaleTimeString('zh-CN', { hour12: false });
   } catch {
     error.value = '搜索失败';
@@ -190,6 +222,11 @@ async function handleSearch() {
 
 function handleClearSearch() {
   searchKeyword.value = '';
+  currentPage.value = 1;
+  refreshConversations();
+}
+
+function handleUserFilter() {
   currentPage.value = 1;
   refreshConversations();
 }

@@ -35,13 +35,15 @@ public interface TraceCkMapper {
      */
     void insertEvents(@Param("list") List<java.util.Map<String, Object>> list);
 
-    /** 分页查询会话列表（按 start_ts DESC）。 */
+    /** 分页查询会话列表（按 start_ts DESC）。支持 source 和 userId 可选过滤。 */
     List<TraceConversation> listConversations(@Param("source") String source,
+                                              @Param("userId") String userId,
                                               @Param("offset") int offset,
                                               @Param("limit") int limit);
 
     /** 符合条件的会话总数（按 conversation_id 去重），供分页 total 使用。 */
-    long countConversations(@Param("source") String source);
+    long countConversations(@Param("source") String source,
+                            @Param("userId") String userId);
 
     /** 根据 conversationId 查询单个会话（取最新一轮）。 */
     TraceConversation getConversation(@Param("conversationId") String conversationId);

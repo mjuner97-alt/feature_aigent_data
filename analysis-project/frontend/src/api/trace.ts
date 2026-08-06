@@ -31,11 +31,12 @@ function toQuery(params: Record<string, unknown>): string {
 /** 会话列表。 */
 export function listConversations(
   source?: string,
+  userId?: string,
   page = 0,
   size = 20,
 ): Promise<ConversationListResponse> {
   return http<ConversationListResponse>(
-    `${BASE}/conversations${toQuery({ source, page, size })}`,
+    `${BASE}/conversations${toQuery({ source, userId, page, size })}`,
   );
 }
 
