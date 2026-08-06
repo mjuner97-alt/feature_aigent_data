@@ -55,33 +55,32 @@
 
     <!--
         会话列表（分页）。conversationId 跨多轮复用，每轮写一行，故按 conversation_id
-        去重：argMax(col, end_ts) 取最新一轮字段，max(end_ts) 取最后活跃时间。
+        去重：先用子查询取每个 conversation_id 的最新一轮（max end_ts），再 JOIN 回主表取对应行，
+        避免使用 argMax 函数（低版本 ClickHouse / GaussDB 可能不支持）。
+        按 start_ts DESC 排序，最近发起的会话排最前。
         别名与 ConversationMap 列名一致，resultMap 无需调整。
     -->
     <select id="listConversations" resultMap="ConversationMap">
-        SELECT conversation_id,
-        argMax(trace_id, end_ts)      AS trace_id,
-        argMax(user_id, end_ts)       AS user_id,
-        argMax(source, end_ts)        AS source,
-        argMax(agent_id, end_ts)      AS agent_id,
-        argMax(agent_name, end_ts)    AS agent_name,
-        argMax(start_ts, end_ts)      AS start_ts,
-        max(end_ts)                   AS end_ts,
-        argMax(duration_ms, end_ts)   AS duration_ms,
-        argMax(status, end_ts)        AS status,
-        argMax(error_message, end_ts) AS error_message,
-        argMax(event_count, end_ts)   AS event_count,
-        argMax(token_input, end_ts)   AS token_input,
-        argMax(token_output, end_ts)  AS token_output,
-        argMax(model, end_ts)         AS model
-        FROM trace_conversation
-        <where>
-            <if test="source != null and source != ''">
-                AND source = #{source}
-            </if>
-        </where>
-        GROUP BY conversation_id
-        ORDER BY max(end_ts) DESC
+        SELECT t.conversation_id, t.trace_id, t.user_id, t.source,
+               t.agent_id, t.agent_name, t.start_ts, t.end_ts,
+               t.duration_ms, t.status, t.error_message,
+               t.event_count, t.token_input, t.token_output, t.model
+        FROM trace_conversation t
+        INNER JOIN (
+            SELECT conversation_id, max(end_ts) AS max_end_ts
+            FROM trace_conversation
+            <where>
+                <if test="source != null and source != ''">
+                    AND source = #{source}
+                </if>
+                <if test="userId != null and userId != ''">
+                    AND user_id = #{userId}
+                </if>
+            </where>
+            GROUP BY conversation_id
+        ) latest ON t.conversation_id = latest.conversation_id
+                AND t.end_ts = latest.max_end_ts
+        ORDER BY t.start_ts DESC
         LIMIT #{offset}, #{limit}
     </select>
 
@@ -92,6 +91,9 @@
         <where>
             <if test="source != null and source != ''">
                 AND source = #{source}
+            </if>
+            <if test="userId != null and userId != ''">
+                AND user_id = #{userId}
             </if>
         </where>
     </select>

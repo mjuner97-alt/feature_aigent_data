@@ -36,15 +36,15 @@ public class TraceQueryService {
     }
 
     /** 会话列表（分页）。 */
-    public Map<String, Object> listConversations(String source, int page, int size) {
+    public Map<String, Object> listConversations(String source, String userId, int page, int size) {
         int offset = page * size;
-        List<TraceConversation> rows = traceCkMapper.listConversations(source, offset, size);
+        List<TraceConversation> rows = traceCkMapper.listConversations(source, userId, offset, size);
         List<Map<String, Object>> items = rows == null || rows.isEmpty()
                 ? Collections.emptyList()
                 : rows.stream().map(TraceQueryService::toSummary).toList();
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("conversations", items);
-        resp.put("total", traceCkMapper.countConversations(source));
+        resp.put("total", traceCkMapper.countConversations(source, userId));
         resp.put("page", page);
         resp.put("size", size);
         return resp;

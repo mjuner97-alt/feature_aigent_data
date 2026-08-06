@@ -16,7 +16,7 @@
 package com.agentscopea2a.v2.tools;
 
 import com.agentscopea2a.entity.SqlRegistryEntry;
-import com.agentscopea2a.mapper.mysql.SqlRegistryMapper;
+import com.agentscopea2a.mapper.gauss.SqlRegistryMapper;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.tool.Tool;
 import java.util.List;

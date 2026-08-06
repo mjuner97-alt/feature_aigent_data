@@ -43,9 +43,10 @@ public class TraceController {
     @GetMapping("/conversations")
     public Map<String, Object> listConversations(
             @RequestParam(value = "source", required = false) String source,
+            @RequestParam(value = "userId", required = false) String userId,
             @RequestParam(value = "page", required = false, defaultValue = "0") int page,
             @RequestParam(value = "size", required = false, defaultValue = "20") int size) {
-        return traceQueryService.listConversations(source, page, size);
+        return traceQueryService.listConversations(source, userId, page, size);
     }
 
     @GetMapping("/{conversationId}")

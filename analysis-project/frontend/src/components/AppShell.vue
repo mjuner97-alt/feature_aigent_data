@@ -2,8 +2,8 @@
   <div :style="S.root">
     <div :style="S.main">
       <div :style="S.nav">
-        <router-link to="/chat" :style="navStyle('/chat')">📋 会话历史</router-link>
         <router-link to="/skills" :style="navStyle('/skills')">🧩 Skill 广场</router-link>
+        <router-link to="/sql-registry" :style="navStyle('/sql-registry')">🗃️ SQL 注册表</router-link>
         <div :style="S.navRight">
           <span v-if="user" :style="S.userName">{{ user.name }} ({{ user.userId }})</span>
           <button :style="S.logoutBtn" @click="handleLogout">退出</button>
@@ -26,9 +26,7 @@ const router = useRouter();
 const user = ref(getLoggedInUser());
 
 function navStyle(p: string) {
-  const active = p === '/chat'
-    ? route.path === '/chat' || route.path.startsWith('/chat/')
-    : route.path === p || route.path.startsWith(p + '/');
+  const active = route.path === p || route.path.startsWith(p + '/');
   return { ...S.navItem, color: active ? '#6366f1' : '#64748b', borderBottomColor: active ? '#6366f1' : 'transparent' };
 }
 
