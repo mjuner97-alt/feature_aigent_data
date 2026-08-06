@@ -101,13 +101,13 @@ description: 数据计算原语索引 - 5 个 pandas 套路工具,Java 模板拼
 
 ## 调用示例
 
-```
-router_tool(paramsJson='{"toolId":"data_aggregate","csvPath":"/workspace/artifacts/alice/task_3f1a/qdq-abc.csv","groupByColumns":["部门","季度"],"valueColumn":"缺陷密度","aggFn":"mean"}')
-```
-
-```
-router_tool(paramsJson='{"toolId":"data_compare_ratio","csvPathA":"/workspace/artifacts/alice/q1.csv","csvPathB":"/workspace/artifacts/alice/q2.csv","joinKeyColumn":"应用","valueColumn":"缺陷密度","labelA":"2026Q1","labelB":"2026Q2"}')
-```
+> ```
+> router_tool(paramsJson='{"toolId":"data_aggregate","csvPath":"/workspace/artifacts/alice/task_3f1a/qdq-abc.csv","groupByColumns":["部门","季度"],"valueColumn":"缺陷密度","aggFn":"mean"}')
+> ```
+> 
+> ```
+> router_tool(paramsJson='{"toolId":"data_compare_ratio","csvPathA":"/workspace/artifacts/alice/q1.csv","csvPathB":"/workspace/artifacts/alice/q2.csv","joinKeyColumn":"应用","valueColumn":"缺陷密度","labelA":"2026Q1","labelB":"2026Q2"}')
+> ```
 
 ## 注意事项
 

@@ -5,10 +5,11 @@ description: 通过 sql_registry_exec 调预注册 SQL "q2_1_metrics_by_dept_ver
 
 # Q2-1 指标查询 (按部门 + 版本, 走 sql_registry_exec)
 
+> 共享硬规则 (CSV 路径 / arith 复算 / 空结果 / 直接调用 / python_exec 重试) 已在主 agent AGENTS.md
+> 和子 agent sysPrompt (SubagentRegistrar 自动注入 `skills/_common/SKILL.md`) 中, 本 skill 不重复。
+
 > 本 skill 是 `sql_registry_exec` 工具的 GaussDB 验证实例。预注册 SQL 已由 DBA 录入
 > MySQL `sql_registry` 表, sql_id = `q2_1_metrics_by_dept_version`, datasource = `gauss`。
-> 后续业务方新增其他预注册 SQL 时, 复制本目录改: frontmatter description / sql_id / 参数说明 /
-> python_exec 后处理模板, 即可生成新 skill, 不要改 Java 代码。
 
 业务表: `dsqa_dwd_req_item_app_portrait_wide_inf` (GaussDB schema `remote_app`)
 预注册 SQL: `q2_1_metrics_by_dept_version` (在 `sql_registry` 表中)
@@ -20,8 +21,6 @@ description: 通过 sql_registry_exec 调预注册 SQL "q2_1_metrics_by_dept_ver
 |---|---|---|---|
 | `q2_1_metrics_by_dept_version` | gauss | `dept` (string, 必填) | 开发部门, 如 "杭州开发二部" |
 | | | `version` (string, 必填) | 版本计划, 如 "2026年7月份版本" |
-
-> LIMIT 由工具内部固定 10000, 不在参数中暴露给 LLM (避免 LLM 传错触发重复 LIMIT 语法错)。
 
 预注册 SQL (DBA 录入, LLM 不能改):
 
@@ -42,7 +41,8 @@ WHERE dev_dept = :dept
   AND in_date = (SELECT MAX(in_date) FROM dsqa_dwd_req_item_app_portrait_wide_inf)
 ```
 
-> 中文别名必须用双引号包裹 (GaussDB/openGauss 要求, 否则报 syntax error). LIMIT 由工具内部固定 10000, 不要写 `LIMIT :limit` 占位符.
+> 中文别名必须用双引号包裹 (GaussDB/openGauss 要求, 否则报 syntax error)。
+> LIMIT 由工具内部固定 10000, 不要写 `LIMIT :limit` 占位符。
 
 ## 工作流 (analyze_data 必读, 严格按顺序)
 
@@ -62,13 +62,7 @@ sql_registry_exec(
 )
 ```
 
-> ⚠️ **直接调用, 不要走 router_tool**: `sql_registry_exec` 已直接注册在 analyze_data 子 agent 的 Toolkit 上, 跳过 `router_tool({toolId:...})` 元工具路由能省 5 轮 LLM 往返。
->
-> ⚠️ **参数名必须在 params_schema 内** -- 多余参数会被工具拒执行 (防注入)。本例只能传 `dept` / `version` (不要传 `limit` / `tableName` / `schema` 等额外参数)。
-
-工具返回 markdown 预览 + `📦 CSV 路径: <path>` 行 (由 ArtifactHandoffHook 自动落 CSV)。
-
-> 🚨 **硬规则**: CSV 路径只能从 sql_registry_exec 返回的 `📦 CSV 路径:` 行复制, 不要手工编造, 里面带 `<userId>/<taskId>` 前缀, 改写会被 ArtifactAccessMiddleware 越权拦截。
+- ⚠️ **参数名必须在 params_schema 内** -- 多余参数会被工具拒执行 (防注入)。本例只能传 `dept` / `version` (不要传 `limit` / `tableName` / `schema` 等额外参数)。
 
 ### Step 3: 用 python_exec + pandas 算指标 (如需)
 
@@ -88,62 +82,51 @@ else:
     print(f"总数={total}, 已打分={scored}, 达标={passed}")
 ```
 
-如果 total=0, 直接回复 "无数据", 不要调 arith。
-
-### Step 4: 用 arith 复算百分比 (BigDecimal, 双重保险)
+### Step 4: 用 arith 复算百分比
 
 ```
 arith(op="pct", numbers=[<scored>, <total>])    # Q2-1 打分率
 arith(op="pct", numbers=[<passed>, <total>])    # Q2-1 达标率
 ```
 
-arith 返回 BigDecimal 精度结果, 以此为准回复用户。
-
 ### Step 5: 回复用户
 
-中文, 包含:
-- 部门 + 版本 + 数据日期 (从 SQL 子查询自动取最新 in_date)
-- 指标数字 (总数 / 打分率 / 达标率)
-- 业务解读 (例: "杭州开发二部 7月版 Q2-1 达标率 85%, 较上月...")
-- 数据来源标注 (基于 N 行数据)
+中文, 包含部门 + 版本 + 数据日期 (从 SQL 子查询自动取最新 in_date) + 指标数字 (总数 / 打分率 / 达标率) + 业务解读 + 数据来源标注。
 
-## 示例 1: 单部门单版本
-
-用户问: "杭州开发二部 7月版 Q2-1 达标率多少?"
-
-params: `{"dept":"杭州开发二部", "version":"2026年7月份版本"}`
-
-### Step 2 调用
-
-```
-sql_registry_exec(
-  sqlId="q2_1_metrics_by_dept_version",
-  params={"dept":"杭州开发二部", "version":"2026年7月份版本"}
-)
-```
-
-### Step 3 模板
-
-```python
-import pandas as pd
-df = pd.read_csv("/workspace/artifacts/<user>/<task>/sql-xxx.csv")
-total = len(df)
-passed = (df['Q2_1是否达标'] == '达标').sum()
-print(f"总数={total}, 达标={passed}")
-```
-
-### Step 4 复算
-
-```
-arith(op="pct", numbers=[<passed>, <total>])
-```
+> ## 示例 1: 单部门单版本
+> 
+> 用户问: "杭州开发二部 7月版 Q2-1 达标率多少?"
+> 
+> params: `{"dept":"杭州开发二部", "version":"2026年7月份版本"}`
+> 
+> ### Step 2 调用
+> 
+> ```
+> sql_registry_exec(
+>   sqlId="q2_1_metrics_by_dept_version",
+>   params={"dept":"杭州开发二部", "version":"2026年7月份版本"}
+> )
+> ```
+> 
+> ### Step 3 模板
+> 
+> ```python
+> import pandas as pd
+> df = pd.read_csv("/workspace/artifacts/<user>/<task>/sql-xxx.csv")
+> total = len(df)
+> passed = (df['Q2_1是否达标'] == '达标').sum()
+> print(f"总数={total}, 达标={passed}")
+> ```
+> 
+> ### Step 4 复算
+> 
+> ```
+> arith(op="pct", numbers=[<passed>, <total>])
+> ```
 
 ## 注意事项
 
 - **必填参数 dept + version**, 用户没指定就追问, 不要默认查全部。
-- **不要走 router_tool** -- sql_registry_exec 已直接注册, 一次调通。
 - **多余参数会被拒执行** -- 只能传 dept / version, 传其他参数名 (如 limit / tableName / schema) 会被工具拒。
 - **LIMIT 由工具内部固定 10000** -- 不要在 params 里传 limit, 也不要在 SQL 模板里写 `LIMIT :limit` (会触发重复 LIMIT 语法错)。
 - **SQL 模板不可改** -- 业务方要改 SQL 需找 DBA 在 sql_registry 表里改 sql_template, LLM 只能传 sql_id + params。
-- **空结果 (total=0) 时返回 "无数据"**, 不要算 0/0。
-- **禁止 LLM 心算百分比** -- 走 arith 工具 (BigDecimal 精度)。

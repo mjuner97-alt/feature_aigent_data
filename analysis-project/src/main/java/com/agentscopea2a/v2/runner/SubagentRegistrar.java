@@ -42,6 +42,7 @@ import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.filesystem.spec.SandboxFilesystemSpec;
 import io.agentscope.harness.agent.subagent.AgentSpecLoader;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -79,6 +80,14 @@ public class SubagentRegistrar {
     private static final Logger log = LoggerFactory.getLogger(SubagentRegistrar.class);
 
     private final Map<String, Object> toolRegistry = new HashMap<>();
+
+    /**
+     * Shared hard rules loaded from {@code skills/_common/SKILL.md} at startup.
+     * Prepended to every subagent's sysPrompt so CSV path / arith / empty result /
+     * direct-call rules don't need to be repeated in each *_metrics SKILL.md.
+     * Empty string if file missing (graceful degradation).
+     */
+    private final String commonRules;
     private final List<SubagentDeclaration> specs;
 
     /**
@@ -221,6 +230,7 @@ public class SubagentRegistrar {
         workspace = WorkspaceMaterializer.ensureMaterialized(workspace);
         Path dir = workspace.resolve("agent-subagents");
         this.specs = AgentSpecLoader.loadFromDirectory(dir, workspace);
+        this.commonRules = loadCommonRules(workspace);
 
         for (SubagentDeclaration spec : specs) {
             List<String> tools = spec.getTools() != null ? spec.getTools() : List.of();
@@ -266,7 +276,12 @@ public class SubagentRegistrar {
             Path workspace,
             ObjectProvider<SandboxFilesystemSpec> sandboxFsProvider) {
         String agentId = spec.getName();
-        String sysPrompt = spec.getInlineAgentsBody();
+        String basePrompt = spec.getInlineAgentsBody();
+        // Prepend shared hard rules (_common/SKILL.md) so each *_metrics skill
+        // doesn't need to repeat CSV path / arith / empty result / direct-call rules.
+        String sysPrompt = (commonRules != null && !commonRules.isEmpty())
+                ? commonRules + "\n\n---\n\n" + basePrompt
+                : basePrompt;
         int steps = spec.getSteps() > 0 ? spec.getSteps() : 5;
         List<String> toolNames = spec.getTools() != null ? spec.getTools() : List.of();
 
@@ -459,5 +474,38 @@ public class SubagentRegistrar {
                     toolResultTruncationMiddleware != null);
             return built;
         });
+    }
+
+    /**
+     * Load {@code skills/_common/SKILL.md} body (stripped of YAML frontmatter) at startup.
+     * The content is prepended to every subagent's sysPrompt so each *_metrics skill
+     * doesn't need to repeat CSV path / arith / empty-result / direct-call rules.
+     * Returns empty string if file missing (graceful degradation - subagents just
+     * lose the shared rules, still functional via per-skill rules).
+     */
+    private static String loadCommonRules(Path workspace) {
+        if (workspace == null) return "";
+        Path commonPath = workspace.resolve("skills").resolve("_common").resolve("SKILL.md");
+        if (!Files.exists(commonPath)) {
+            log.warn("SubagentRegistrar: _common/SKILL.md not found at {}, subagent sysPrompt will not include shared rules",
+                    commonPath);
+            return "";
+        }
+        try {
+            String content = Files.readString(commonPath);
+            // Strip YAML frontmatter (--- ... ---) if present
+            if (content.startsWith("---")) {
+                int end = content.indexOf("\n---", 3);
+                if (end > 0) {
+                    content = content.substring(end + 4).stripLeading();
+                }
+            }
+            log.info("SubagentRegistrar: loaded _common/SKILL.md ({} chars) from {}",
+                    content.length(), commonPath);
+            return content;
+        } catch (Exception e) {
+            log.warn("SubagentRegistrar: failed to read _common/SKILL.md: {}", e.getMessage());
+            return "";
+        }
     }
 }

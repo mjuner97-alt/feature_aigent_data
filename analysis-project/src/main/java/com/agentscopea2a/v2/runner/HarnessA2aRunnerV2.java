@@ -255,8 +255,12 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
                         .flushTrigger(MemoryConfig.FlushTrigger.never())
                         .build())
                 .compaction(CompactionConfig.builder()
-                        .triggerMessages(40)
-                        .keepMessages(12)
+                        // 2026/08/05: 40/12 对 32K 窗口的 glm-5.2 偏大 (前 12 条历史
+                        // 已 20K+), 调到 20/8 让 CompactionMiddleware 更早触发摘要压缩。
+                        // 风险: 摘要可能丢早期 tool result 字段名, 但 ToolResultTruncationMiddleware
+                        // 已先压缩过 tool result, 摘要压力小。
+                        .triggerMessages(20)
+                        .keepMessages(8)
                         .build())
                 // 2026/07/28: 禁用 JAR 内置 ToolResultEvictionMiddleware。
                 // wide_table_query 返回 >80K 字符 CSV 时, middleware 调

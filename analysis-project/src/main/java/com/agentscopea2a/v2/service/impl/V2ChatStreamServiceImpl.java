@@ -32,6 +32,10 @@ import com.agentscopea2a.v2.memory.EpisodicMemory;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.service.V2ChatStreamService;
 import com.agentscopea2a.v2.tools.ToolCallCollector;
+import com.agentscopea2a.v2.trace.assembler.TraceAssembler;
+import com.agentscopea2a.v2.trace.collector.TraceSession;
+import com.agentscopea2a.v2.trace.model.AssembledTrace;
+import com.agentscopea2a.v2.trace.writer.TraceQueue;
 import com.agentscopea2a.v2.verify.TriggerLevelResolver;
 import com.agentscopea2a.v2.verify.VerificationContext;
 import com.agentscopea2a.v2.verify.VerificationRecorder;
@@ -39,6 +43,7 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.AgentResultEvent;
 import io.agentscope.core.event.AgentStartEvent;
+import io.agentscope.core.event.ModelCallEndEvent;
 import io.agentscope.core.event.SubagentExposedEvent;
 import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.event.TextBlockStartEvent;
@@ -60,6 +65,7 @@ import reactor.core.publisher.Mono;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -85,6 +91,8 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
     private final EpisodicMemory episodicMemory;
     private final TriggerLevelResolver triggerLevelResolver;
     private final VerificationRecorder verificationRecorder;
+    private final TraceAssembler traceAssembler;
+    private final TraceQueue traceQueue;
 
 
     /**
@@ -100,11 +108,16 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
     public V2ChatStreamServiceImpl(HarnessA2aRunnerV2 runner, ArtifactStore artifactStore,
                                     EpisodicMemory episodicMemory,
                                     TriggerLevelResolver triggerLevelResolver,
-                                    VerificationRecorder verificationRecorder) {        this.runner = runner;
+                                    VerificationRecorder verificationRecorder,
+                                    TraceAssembler traceAssembler,
+                                    TraceQueue traceQueue) {
+        this.runner = runner;
         this.artifactStore = artifactStore;
         this.episodicMemory = episodicMemory;
         this.triggerLevelResolver = triggerLevelResolver;
         this.verificationRecorder = verificationRecorder;
+        this.traceAssembler = traceAssembler;
+        this.traceQueue = traceQueue;
     }
 
     /**
@@ -131,6 +144,8 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
         final ToolCallCollector collector;
         /** V3.0 验证上下文，供 cleanup 落盘事件流 */
         final VerificationContext verificationCtx;
+        /** 请求级 Trace 会话，供 cleanup 调用 traceAssembler 落库到 ClickHouse */
+        final TraceSession traceCtx;
         /** 用户原始消息，供 cleanup 组装 episodic session messages */
         final Msg userMsg;
         /** episodic session 维度标识 */
@@ -152,7 +167,7 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
 
         StreamContext(SseEmitter emitter, ChatRequest req, RuntimeContext runtimeCtx,
                       ToolCallCollector collector, Msg userMsg, String episodicSessionId,
-                      VerificationContext verificationCtx) {
+                      VerificationContext verificationCtx, TraceSession traceCtx) {
             this.emitter = emitter;
             this.req = req;
             this.runtimeCtx = runtimeCtx;
@@ -160,6 +175,7 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
             this.userMsg = userMsg;
             this.episodicSessionId = episodicSessionId;
             this.verificationCtx = verificationCtx;
+            this.traceCtx = traceCtx;
             this.conversationId = req.getConversationId();
             this.userId = req.getUserId();
             this.ansUUID = req.getConversationId();
@@ -310,6 +326,12 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
         // 构造运行时上下文：携带 sessionId / userId / lastQuestion 供中间件 / hooks 访问
         RuntimeContext ctx = buildRuntimeContext(conversationId, userId, text);
 
+        // Trace 监控：创建请求级 TraceSession 并放入 RuntimeContext，让 AiChatRestToolCallTrackingToDbHook
+        // 不再 no-op，能 capture 每轮 LLM 输入 (system_message + input_messages) 和工具入参/返回。
+        // cleanup 时由 traceAssembler 组装后 traceQueue.offer 落库到 ClickHouse。
+        TraceSession traceCtx = new TraceSession(conversationId, UUID.randomUUID().toString(), userId, "v2_chat", text);
+        ctx.put(TraceSession.KEY, traceCtx);
+
         // 把工具调用采集器放进上下文，供 ToolCallTrackingHook 在工具调用时写入
         ctx.put(ToolCallTrackingHook.COLLECTOR_CTX_KEY, collector);
 
@@ -367,14 +389,25 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
         String episodicSessionId = "user:" + episodicUserId + ":" + conversationId;
 
         // 把 per-request 状态收拢进 StreamContext（参考 v1 流处理模式）
-        StreamContext streamCtx = new StreamContext(emitter, req, ctx, collector, userMsg, episodicSessionId, verificationCtx);
+        StreamContext streamCtx = new StreamContext(emitter, req, ctx, collector, userMsg, episodicSessionId, verificationCtx, traceCtx);
 
         // 清理逻辑：取消订阅、清理 artifact、持久化 episodic 记忆、移除进行中调用标记
         Runnable cleanup = buildCleanup(streamCtx, callKey, inFlight);
 
         // 注册 SSE 生命周期回调：三种终止路径都走同一个幂等 cleanup（参考 v1 流处理模式）
         emitter.onCompletion(cleanup);
-        emitter.onTimeout(cleanup);
+        emitter.onTimeout(() -> {
+            // Trace 状态标记：标记 TIMEOUT（RUNNING -> TIMEOUT）。先于 cleanup 调用，
+            // 随后 cleanup 的 assemble 看到的就是 TIMEOUT 终态。
+            try {
+                if (streamCtx.traceCtx != null) {
+                    streamCtx.traceCtx.markTimeout();
+                }
+            } catch (Exception te) {
+                log.warn("Trace markTimeout failed for sessionId={}: {}", streamCtx.conversationId, te.getMessage());
+            }
+            cleanup.run();
+        });
         emitter.onError(e -> cleanup.run());
 
         // 在 boundedElastic 调度器上异步启动流式订阅，避免阻塞 Servlet 容器线程
@@ -424,6 +457,16 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
      */
     private void processChunk(AgentEvent event, StreamContext ctx, ResponseStrategy strategy) {
         try {
+            // Trace 监控：仅采集 ModelCallEndEvent 的 token 用量。
+            // 内容（LLM 输入/思考/输出、工具入参/返回）由 AiChatRestToolCallTrackingToDbHook 采集 Hook 事件承载，
+            // 此处不再无差别收集 AgentEvent delta 流。try-catch + log.warn 保证 trace 失败不影响主链路。
+            try {
+                if (ctx.traceCtx != null && event instanceof ModelCallEndEvent mce) {
+                    ctx.traceCtx.recordUsage(mce);
+                }
+            } catch (Exception te) {
+                log.warn("TraceSession recordUsage failed for sessionId={}: {}", ctx.conversationId, te.getMessage());
+            }
             // Tag the current event's source (null for main agent, subagent name for
             // mirrored events) so the strategy can populate AiChatResult.source and
             // the frontend can route chunks to a subagent bubble instead of dumping
@@ -581,6 +624,14 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
      */
     private void handleStreamError(StreamContext ctx, Throwable error, ResponseStrategy strategy) {
         log.error("处理流式异常: sessionId={}", ctx.conversationId, error);
+        // Trace 状态标记：标记 ERROR（RUNNING -> ERROR），在 cleanup 的 assemble 之前调用。
+        try {
+            if (ctx.traceCtx != null) {
+                ctx.traceCtx.markError(error == null ? "unknown error" : error.getMessage());
+            }
+        } catch (Exception te) {
+            log.warn("Trace markError failed for sessionId={}: {}", ctx.conversationId, te.getMessage());
+        }
         // Terminal event from the main agent (or system) - reset source so the
         // error event isn't tagged with the last subagent's name.
         ctx.currentSource = null;
@@ -639,6 +690,15 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
         } catch (Exception e) {
             log.warn("发送最终结果失败: sessionId={}", ctx.conversationId, e);
         } finally {
+            // Trace 状态标记：标记 SUCCESS（RUNNING -> SUCCESS）。markSuccess 仅在 RUNNING 时生效，
+            // 已为终态（ERROR/TIMEOUT）时不覆盖。在 cleanup 的 assemble 之前调用。
+            try {
+                if (ctx.traceCtx != null) {
+                    ctx.traceCtx.markSuccess();
+                }
+            } catch (Exception te) {
+                log.warn("Trace markSuccess failed for sessionId={}: {}", ctx.conversationId, te.getMessage());
+            }
             // Same as error path: explicit cleanup in case onCompletion
             // doesn't fire (Spring 6.1.4 SseEmitter async dispatch issue).
             try {
@@ -675,6 +735,16 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
             if (d != null && !d.isDisposed()) {
                 d.dispose();
                 log.info("v2 stream cancelled for sessionId={} (client disconnect/timeout)", ctx.conversationId);
+            }
+            // 1b. Trace 组装与投队列（在订阅取消后、artifact 清理前，确保采集完整）。
+            // 状态标记已在 handleStreamSuccess/handleStreamError/onTimeout 中完成。
+            try {
+                if (ctx.traceCtx != null) {
+                    AssembledTrace trace = traceAssembler.assemble(ctx.traceCtx);
+                    traceQueue.offer(trace);
+                }
+            } catch (Exception ex) {
+                log.warn("Trace assemble failed for sessionId={}: {}", ctx.conversationId, ex.getMessage());
             }
             // 2. 清理本次会话产生的临时 artifact（沙箱文件等）
             try {
