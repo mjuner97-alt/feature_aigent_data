@@ -103,15 +103,31 @@ public class SkillManageService {
         }
         List<Long> ids = skills.stream().map(Skill::getId).toList();
         String userId = q.getUserId();
-        Set<Long> likedIds = nullToEmpty(skillMapper.selectLikedSkillIds(userId, ids));
-        Set<Long> usedIds = nullToEmpty(skillMapper.selectUsedSkillIds(userId, ids));
-        Set<Long> disabledIds = nullToEmpty(skillMapper.selectDisabledSkillIds(userId, ids));
-        List<SkillPublish> approved = skillMapper.selectApprovedBySkillIds(ids);
+        // 为当前页每个 skill 批量计算行级标记,一次性按 ids 集合查询,避免逐行 N+1。
+        // nullToEmpty 把"无记录时 Mapper 返回 null"规整为空 Set,后续 .contains() 直接可用。
+        Set<Long> likedIds = nullToEmpty(skillMapper.selectLikedSkillIds(userId, ids));      // 当前用户在本页中已点赞的 skillId(行 liked 标记)
+        Set<Long> usedIds = nullToEmpty(skillMapper.selectUsedSkillIds(userId, ids));        // 当前用户在本页中已显式引用的 skillId(行 used 标记,即"我使用的")
+        Set<Long> disabledIds = nullToEmpty(skillMapper.selectDisabledSkillIds(userId, ids)); // 当前用户在本页中已主动禁用的 skillId(行 disabled 标记,available = used && !disabled)
+        List<SkillPublish> approved = skillMapper.selectApprovedBySkillIds(ids);              // 本页 skill 的全部已审批(APPROVED)发布记录:用于算每行的 dimension 标签 + dimensionUsedIds(维度默认可用)
         Map<Long, String> skillDimension = new HashMap<>();
         Set<Long> dimensionUsedIds = new HashSet<>();
         if (approved != null) {
+            // 按 skillId 分组,取最高维度类型用于列表筛选(GROUP < DEPARTMENT < PRODUCT_LINE < COMPANY)
+            // 同一 skill 可能多次发布到同一维度(如先退回再通过),按 targetType 去重后取最高级
+            Map<Long, Set<String>> dimTypeMap = new HashMap<>();
             for (SkillPublish p : approved) {
-                skillDimension.putIfAbsent(p.getSkillId(), p.getTargetType());
+                dimTypeMap.computeIfAbsent(p.getSkillId(), k -> new HashSet<>()).add(p.getTargetType());
+            }
+            for (var entry : dimTypeMap.entrySet()) {
+                // 多维度时取最高级:COMPANY > PRODUCT_LINE > DEPARTMENT > GROUP
+                String highest = entry.getValue().stream()
+                        .min((a, b) -> {
+                            int ra = dimRank(a);
+                            int rb = dimRank(b);
+                            return Integer.compare(rb, ra); // 降序,取最大
+                        })
+                        .orElse("PERSONAL");
+                skillDimension.put(entry.getKey(), highest);
             }
             // 已 APPROVED 发布到用户所属维度(GROUP/DEPARTMENT/PRODUCT_LINE/COMPANY)的 skill
             // 视为"已使用":同维度的人默认可用,无需手动引用。COMPANY(杭研)全员命中。
@@ -366,28 +382,22 @@ public class SkillManageService {
      * 查询用户可见的全部 user skill 的 retrieval_name 列表,供检索层一次性过滤使用。
      *
      * <p>可见集合 = 用户在 {@code skill_reference} 表中引用过的 skill(含自己创建的自引用 +
-     * 引用别人的),只返回有 retrieval_name 且非 DELETED 的 skill。
+     * 引用别人的) + 所属维度(GROUP/DEPARTMENT/PRODUCT_LINE/COMPANY)已 APPROVED 发布的 skill,
+     * 只返回有 retrieval_name 且非 DELETED 的 skill。
      *
-     * <p>{@code owner_user_id} 不再参与检索层过滤,仅用于删除权限校验。
+     * <p>与 {@link #list} 的 used 标记计算、{@code dimensionUsedSkillIds} SQL 片段保持一致。
      */
     public List<String> getVisibleRetrievalNames(String userId) {
-        List<Long> refSkillIds = skillMapper.selectReferencedSkillIdsByCreator(userId);
-        if (refSkillIds == null || refSkillIds.isEmpty()) {
+        if (userId == null || userId.isBlank()) {
             return List.of();
         }
-        List<Skill> skills = skillMapper.selectByIds(refSkillIds);
-        if (skills == null || skills.isEmpty()) {
+        List<String> names = skillMapper.selectActiveRetrievalNamesByUser(userId);
+        if (names == null) {
             return List.of();
         }
-        List<String> names = new ArrayList<>();
-        for (Skill s : skills) {
-            if ("DELETED".equals(s.getStatus())) continue;
-            String rn = s.getRetrievalName();
-            if (rn != null && !rn.isBlank()) {
-                names.add(rn);
-            }
-        }
-        return names;
+        return names.stream()
+                .filter(n -> n != null && !n.isBlank())
+                .toList();
     }
 
     /**
@@ -718,6 +728,17 @@ public class SkillManageService {
 
     private static Set<Long> nullToEmpty(Set<Long> set) {
         return set == null ? Set.of() : set;
+    }
+
+    /** 维度类型排序权重:GROUP(1) < DEPARTMENT(2) < PRODUCT_LINE(3) < COMPANY(4)。 */
+    private static int dimRank(String targetType) {
+        return switch (targetType) {
+            case "GROUP" -> 1;
+            case "DEPARTMENT" -> 2;
+            case "PRODUCT_LINE" -> 3;
+            case "COMPANY" -> 4;
+            default -> 0;
+        };
     }
 
     /**
