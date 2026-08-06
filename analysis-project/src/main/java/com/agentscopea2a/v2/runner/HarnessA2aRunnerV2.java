@@ -50,6 +50,7 @@ import io.agentscope.harness.agent.tool.SkillManageConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
@@ -81,6 +82,8 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
     private final ModelProvider modelProvider;
     private final ObjectProvider<MysqlMemoryStore> mysqlMemoryStoreProvider;
     private final SkillMapper skillMapper;
+    /** skill 附件文件磁盘根目录(${skill.file.base-dir}),传给 DatabaseSkillRepository 用于把 DB 中的相对 storage_path 解析成绝对路径。 */
+    private final String skillFileBaseDir;
 
     public HarnessA2aRunnerV2(
             HarnessRunnerProperties runnerProperties,
@@ -98,7 +101,8 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
             ObjectProvider<SubagentRegistrar> subagentRegistrarProvider,
             ModelProvider modelProvider,
             ObjectProvider<MysqlMemoryStore> mysqlMemoryStoreProvider,
-            SkillMapper skillMapper) {
+            SkillMapper skillMapper,
+            @Value("${skill.file.base-dir:/data/skill-files}") String skillFileBaseDir) {
         this.runnerProperties = runnerProperties;
         this.dataSource = dataSource;
         this.skillManageConfig = skillManageConfig;
@@ -115,6 +119,7 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
         this.modelProvider = modelProvider;
         this.mysqlMemoryStoreProvider = mysqlMemoryStoreProvider;
         this.skillMapper = skillMapper;
+        this.skillFileBaseDir = skillFileBaseDir;
 
         log.info("HarnessA2aRunnerV2 initialized: ready to create agents per request");
     }
@@ -230,7 +235,7 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
                 .name("QualitySupervisorV2")
                 .model(primaryModel)
                 .workspace(workspace)
-                .skillRepository(new DatabaseSkillRepository(skillMapper, userId != null ? String.valueOf(userId) : null))
+                .skillRepository(new DatabaseSkillRepository(skillMapper, userId != null ? String.valueOf(userId) : null, skillFileBaseDir))
                 .toolExecutionConfig(AgentExecutionConfig.TOOL_DEFAULTS)
                 .modelExecutionConfig(AgentExecutionConfig.MODEL_DEFAULTS)
                 .stateStore(new SanitizingAgentStateStore(new MysqlAgentStateStore(dataSource, true)))

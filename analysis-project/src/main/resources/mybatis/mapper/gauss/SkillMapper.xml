@@ -84,9 +84,30 @@
         LIMIT 1
     </select>
 
+    <!-- 按 retrieval_name 查询当前用户可访问的 skill(含维度发布)。
+         与 selectByRetrievalNameAndOwner 不同,本查询不仅匹配 owner,
+         还匹配 skill_reference 显式引用 + dimensionUsedSkillIds 维度发布,
+         使同部门/同产品线审批通过的 skill 可按名加载。 -->
+    <select id="selectByRetrievalNameAccessibleByUser" resultMap="SkillResultMap">
+        SELECT <include refid="skillCols"/> FROM skill_manage
+        WHERE retrieval_name = #{retrievalName}
+          AND status = 'ACTIVE'
+          AND deleted_at IS NULL
+          AND (
+              owner_user_id = #{userId}
+              OR id IN (SELECT target_skill_id FROM skill_reference WHERE creator = #{userId})
+              OR id IN (<include refid="dimensionUsedSkillIds"/>)
+          )
+        LIMIT 1
+    </select>
+
     <select id="selectActiveRetrievalNamesByUser" resultType="java.lang.String">
         SELECT retrieval_name FROM skill_manage
-        WHERE (owner_user_id = #{userId} OR id IN (SELECT target_skill_id FROM skill_reference WHERE creator = #{userId}))
+        WHERE (
+            owner_user_id = #{userId}
+            OR id IN (SELECT target_skill_id FROM skill_reference WHERE creator = #{userId})
+            OR id IN (<include refid="dimensionUsedSkillIds"/>)
+        )
           AND status = 'ACTIVE'
           AND deleted_at IS NULL
           AND retrieval_name IS NOT NULL
@@ -94,7 +115,11 @@
 
     <select id="selectActiveByUser" resultMap="SkillResultMap">
         SELECT <include refid="skillCols"/> FROM skill_manage
-        WHERE (owner_user_id = #{userId} OR id IN (SELECT target_skill_id FROM skill_reference WHERE creator = #{userId}))
+        WHERE (
+            owner_user_id = #{userId}
+            OR id IN (SELECT target_skill_id FROM skill_reference WHERE creator = #{userId})
+            OR id IN (<include refid="dimensionUsedSkillIds"/>)
+        )
           AND status = 'ACTIVE'
           AND deleted_at IS NULL
     </select>
@@ -124,13 +149,39 @@
           AND deleted_at IS NULL
     </select>
 
+    <!--
+      用户所属维度(统计组/部门/产品线/杭研)已 APPROVED 发布的 skill_id 集合。
+      - GROUP/DEPARTMENT/PRODUCT_LINE: target_id 命中 developer_pl_person_info 中
+        该用户对应的 统计组/部门/产品线。
+      - 用户身份列固定用 "统一认证号"(与 DeveloperPlPersonInfoMapper.selectByUserId 一致);
+        勿用 user_id 列(两者不同,user_id 常为空/历史值,会导致维度成员被误剔除)。
+      - COMPANY: 全员归属(杭研),直接命中。
+      供"我使用的"视图与检索层判断"维度默认可用",与 SkillManageService.list()
+      的 used 标记计算保持一致。
+    -->
+    <sql id="dimensionUsedSkillIds">
+        SELECT p.skill_id FROM skill_publish p
+        WHERE p.status = 'APPROVED'
+        AND (
+            (p.target_type = 'GROUP' AND p.target_id IN (
+                SELECT "统计组" FROM developer_pl_person_info
+                WHERE "统一认证号" = #{userId} AND "统计组" IS NOT NULL AND "统计组" != ''))
+            OR (p.target_type = 'DEPARTMENT' AND p.target_id IN (
+                SELECT "部门" FROM developer_pl_person_info
+                WHERE "统一认证号" = #{userId} AND "部门" IS NOT NULL AND "部门" != ''))
+<!--            OR (p.target_type = 'PRODUCT_LINE' AND p.target_id IN (-->
+<!--                SELECT "产品线" FROM developer_pl_person_info-->
+<!--                WHERE user_id = #{userId} AND "产品线" IS NOT NULL AND "产品线" != ''))-->
+            OR p.target_type = 'COMPANY'
+        )
+    </sql>
+
     <select id="selectList" parameterType="com.agentscopea2a.v2.skillManager.dto.SkillListQuery" resultMap="SkillResultMap">
         SELECT s.id, s.name, s.description, s.content, s.category, s.tags,
                s.owner_user_id, s.status, s.like_count, s.retrieval_name, s.created_at, s.updated_at, s.deleted_at
         FROM skill_manage s
         <choose>
             <when test="view == 'used'">
-                INNER JOIN skill_reference r ON r.target_skill_id = s.id AND r.creator = #{userId}
                 LEFT JOIN skill_user_disable d ON d.skill_id = s.id AND d.user_id = #{userId}
             </when>
             <when test="view == 'liked'">
@@ -144,6 +195,10 @@
                 </when>
                 <when test="view == 'used'">
                     s.status = 'ACTIVE' AND d.skill_id IS NULL
+                    AND (
+                        s.id IN (SELECT target_skill_id FROM skill_reference WHERE creator = #{userId})
+                        OR s.id IN (<include refid="dimensionUsedSkillIds"/>)
+                    )
                 </when>
                 <otherwise>
                     s.status = 'ACTIVE'

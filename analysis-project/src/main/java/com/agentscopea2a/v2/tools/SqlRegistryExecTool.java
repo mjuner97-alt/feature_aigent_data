@@ -16,7 +16,7 @@
 package com.agentscopea2a.v2.tools;
 
 import com.agentscopea2a.entity.SqlRegistryEntry;
-import com.agentscopea2a.mapper.mysql.SqlRegistryMapper;
+import com.agentscopea2a.mapper.gauss.SqlRegistryMapper;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
@@ -235,6 +235,21 @@ public class SqlRegistryExecTool {
         long start = System.currentTimeMillis();
         try (Connection conn = ds.getConnection()) {
             conn.setReadOnly(true);
+
+            // 按 datasource 设置 search_path, 让 SQL 模板中的裸表名能找到对应 schema
+            if ("gauss".equalsIgnoreCase(dsKey)) {
+                try (var stmt = conn.createStatement()) {
+                    stmt.execute("SET search_path = dataservice, remote_app, public");
+                }
+            } else if ("mysql".equalsIgnoreCase(dsKey)) {
+                try (var stmt = conn.createStatement()) {
+                    stmt.execute("USE agentscope");
+                }
+            } else if ("clickhouse".equalsIgnoreCase(dsKey)) {
+                try (var stmt = conn.createStatement()) {
+                    stmt.execute("USE default");
+                }
+            }
 
             MapSqlParameterSource paramSource = new MapSqlParameterSource();
             for (Map.Entry<String, Object> e : paramMap.entrySet()) {

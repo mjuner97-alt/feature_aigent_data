@@ -35,17 +35,23 @@ public interface TraceCkMapper {
      */
     void insertEvents(@Param("list") List<java.util.Map<String, Object>> list);
 
-    /** 分页查询会话列表（按 start_ts DESC）。 */
+    /** 分页查询会话列表（按 start_ts DESC）。支持 source 和 userId 可选过滤。 */
     List<TraceConversation> listConversations(@Param("source") String source,
-                                               @Param("offset") int offset,
-                                               @Param("limit") int limit);
+                                              @Param("userId") String userId,
+                                              @Param("offset") int offset,
+                                              @Param("limit") int limit);
 
-    /** 根据 conversationId 查询单个会话。 */
+    /** 符合条件的会话总数（按 conversation_id 去重），供分页 total 使用。 */
+    long countConversations(@Param("source") String source,
+                            @Param("userId") String userId);
+
+    /** 根据 conversationId 查询单个会话（取最新一轮）。 */
     TraceConversation getConversation(@Param("conversationId") String conversationId);
 
     /**
-     * 查询指定会话的事件 JSON 列表（按 timestamp ASC）。每行一个 JSON 字符串。
-     * 字段名 event_json 与表 DDL 对应。
+     * 查询指定会话指定轮次的事件 JSON 列表（按 timestamp ASC）。每行一个 JSON 字符串。
+     * 字段名 event_json 与表 DDL 对应。按 trace_id 过滤，多轮对话时只取当前轮的事件。
      */
-    List<String> listEventJsons(@Param("conversationId") String conversationId);
+    List<String> listEventJsons(@Param("conversationId") String conversationId,
+                                @Param("traceId") String traceId);
 }

@@ -22,6 +22,7 @@ import SkillListPage from './pages/skill/SkillListPage.vue';
 import SkillDetailPage from './pages/skill/SkillDetailPage.vue';
 import SkillFormPage from './pages/skill/SkillFormPage.vue';
 import SkillApprovalListPage from './pages/skill/SkillApprovalListPage.vue';
+import SqlRegistryPage from './pages/SqlRegistryPage.vue';
 import { isLoggedIn } from './utils/auth';
 
 const routes: RouteRecordRaw[] = [
@@ -31,6 +32,21 @@ const routes: RouteRecordRaw[] = [
     component: AppShell,
     children: [
       { path: '', redirect: '/skills' },
+      {
+        path: 'skills',
+        component: SkillShell,
+        children: [
+          { path: '', component: SkillListPage, props: { view: 'all' } },
+          { path: 'used', component: SkillListPage, props: { view: 'used' } },
+          { path: 'liked', component: SkillListPage, props: { view: 'liked' } },
+          { path: 'created', component: SkillListPage, props: { view: 'created' } },
+          { path: 'popular', component: SkillListPage, props: { view: 'popular' } },
+          { path: 'approvals', component: SkillApprovalListPage },
+          { path: 'new', component: SkillFormPage },
+          { path: ':id/edit', component: SkillFormPage },
+          { path: ':id', component: SkillDetailPage },
+        ],
+      },
       {
         path: 'chat',
         name: 'SessionHistory',
@@ -43,25 +59,16 @@ const routes: RouteRecordRaw[] = [
         component: () => import('./pages/SessionDetailPage.vue'),
         meta: { requiresAuth: true, title: '会话详情' },
       },
+      {
+        path: 'sql-registry',
+        name: 'SqlRegistry',
+        component: SqlRegistryPage,
+        meta: { requiresAuth: true, title: 'SQL 注册表' },
+      },
       { path: 'trace', redirect: '/chat' },
     ],
   },
-  {
-    path: '/skills',
-    component: SkillShell,
-    children: [
-      { path: '', component: SkillListPage, props: { view: 'all' } },
-      { path: 'used', component: SkillListPage, props: { view: 'used' } },
-      { path: 'liked', component: SkillListPage, props: { view: 'liked' } },
-      { path: 'created', component: SkillListPage, props: { view: 'created' } },
-      { path: 'popular', component: SkillListPage, props: { view: 'popular' } },
-      { path: 'approvals', component: SkillApprovalListPage },
-      { path: 'new', component: SkillFormPage },
-      { path: ':id/edit', component: SkillFormPage },
-      { path: ':id', component: SkillDetailPage },
-    ],
-  },
-  { path: '/:pathMatch(.*)*', redirect: '/skills' },
+  { path: '/:pathMatch(.*)*', redirect: '/' },
 ];
 
 const router = createRouter({

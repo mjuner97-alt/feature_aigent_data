@@ -25,61 +25,102 @@
 
     <insert id="insertConversation" parameterType="java.util.List">
         INSERT INTO trace_conversation
-            (conversation_id, trace_id, user_id, source, agent_id, agent_name,
-             start_ts, end_ts, duration_ms, status, error_message,
-             event_count, token_input, token_output, model)
+        (conversation_id, trace_id, user_id, source, agent_id, agent_name,
+        start_ts, end_ts, duration_ms, status, error_message,
+        event_count, token_input, token_output, model)
         VALUES
         <foreach collection="list" item="item" separator=",">
             (#{item.conversationId}, #{item.traceId}, #{item.userId}, #{item.source},
-             #{item.agentId}, #{item.agentName},
-             #{item.startTs}, #{item.endTs}, #{item.durationMs},
-             #{item.status}, #{item.errorMessage},
-             #{item.eventCount}, #{item.tokenInput}, #{item.tokenOutput},
-             #{item.model})
+            #{item.agentId}, #{item.agentName},
+            #{item.startTs}, #{item.endTs}, #{item.durationMs},
+            #{item.status}, #{item.errorMessage},
+            #{item.eventCount}, #{item.tokenInput}, #{item.tokenOutput},
+            #{item.model})
         </foreach>
     </insert>
 
     <insert id="insertEvents" parameterType="java.util.List">
         INSERT INTO trace_event
-            (event_id, conversation_id, trace_id, event_type, event_name, source,
-             timestamp, duration_ms, event_json)
+        (event_id, conversation_id, trace_id, event_type, event_name, source,
+        timestamp, duration_ms, event_json)
         VALUES
         <foreach collection="list" item="item" separator=",">
             (#{item.event_id}, #{item.conversation_id}, #{item.trace_id},
-             #{item.event_type}, #{item.event_name}, #{item.source},
-             #{item.timestamp}, #{item.duration_ms}, #{item.event_json})
+            #{item.event_type}, #{item.event_name}, #{item.source},
+            #{item.timestamp}, #{item.duration_ms}, #{item.event_json})
         </foreach>
     </insert>
 
     <!-- ==================== 查询 ==================== -->
 
+    <!--
+        会话列表（分页）。conversationId 跨多轮复用，每轮写一行，故按 conversation_id
+        去重：先用子查询取每个 conversation_id 的最新一轮（max end_ts），再 JOIN 回主表取对应行，
+        避免使用 argMax 函数（低版本 ClickHouse / GaussDB 可能不支持）。
+        按 start_ts DESC 排序，最近发起的会话排最前。
+        别名与 ConversationMap 列名一致，resultMap 无需调整。
+    -->
     <select id="listConversations" resultMap="ConversationMap">
-        SELECT conversation_id, trace_id, user_id, source, agent_id, agent_name,
-               start_ts, end_ts, duration_ms, status, error_message,
-               event_count, token_input, token_output, model
+        SELECT t.conversation_id, t.trace_id, t.user_id, t.source,
+               t.agent_id, t.agent_name, t.start_ts, t.end_ts,
+               t.duration_ms, t.status, t.error_message,
+               t.event_count, t.token_input, t.token_output, t.model
+        FROM trace_conversation t
+        INNER JOIN (
+            SELECT conversation_id, max(end_ts) AS max_end_ts
+            FROM trace_conversation
+            <where>
+                <if test="source != null and source != ''">
+                    AND source = #{source}
+                </if>
+                <if test="userId != null and userId != ''">
+                    AND user_id = #{userId}
+                </if>
+            </where>
+            GROUP BY conversation_id
+        ) latest ON t.conversation_id = latest.conversation_id
+                AND t.end_ts = latest.max_end_ts
+        ORDER BY t.start_ts DESC
+        LIMIT #{offset}, #{limit}
+    </select>
+
+    <!-- 总会话数（按 conversation_id 去重），供分页 total 使用 -->
+    <select id="countConversations" resultType="long">
+        SELECT count(DISTINCT conversation_id)
         FROM trace_conversation
         <where>
             <if test="source != null and source != ''">
                 AND source = #{source}
             </if>
+            <if test="userId != null and userId != ''">
+                AND user_id = #{userId}
+            </if>
         </where>
-        ORDER BY start_ts DESC
-        LIMIT #{offset}, #{limit}
     </select>
 
+    <!--
+        单会话汇总：conversationId 跨多轮复用会有多行，按 end_ts DESC 取最新一轮，
+        保证多次查询结果确定一致。
+    -->
     <select id="getConversation" resultMap="ConversationMap">
         SELECT conversation_id, trace_id, user_id, source, agent_id, agent_name,
-               start_ts, end_ts, duration_ms, status, error_message,
-               event_count, token_input, token_output, model
+        start_ts, end_ts, duration_ms, status, error_message,
+        event_count, token_input, token_output, model
         FROM trace_conversation
         WHERE conversation_id = #{conversationId}
+        ORDER BY end_ts DESC
         LIMIT 1
     </select>
 
+    <!--
+        查询指定会话指定轮次的事件 JSON 列表（按 timestamp ASC）。
+        按 trace_id 过滤，多轮对话时只取当前轮的事件，避免跨轮事件混淆。
+    -->
     <select id="listEventJsons" resultType="java.lang.String">
         SELECT event_json
         FROM trace_event
         WHERE conversation_id = #{conversationId}
+          AND trace_id = #{traceId}
         ORDER BY timestamp ASC
     </select>
 

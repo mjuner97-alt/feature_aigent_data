@@ -53,4 +53,16 @@ public interface DeveloperPlPersonInfoMapper {
      * 查询全部去重的"产品线"值,过滤空串。用于组织维度选择器。
      */
     List<String> selectAllProductLines();
+
+    /**
+     * 全部去重的 user_id(过滤空串)。用于 COMPANY 发布场景 / ALL 用户范围。
+     */
+    List<String> selectAllUserIds();
+
+    /**
+     * 按组织维度查 user_id。orgType 取 DEPARTMENT / GROUP / PRODUCT_LINE,
+     * 分别匹配 developer_pl_person_info 的 "部门" / "统计组" / "产品线" 列 = orgId。
+     * 用于 ORG 用户范围与维度发布命中反查。
+     */
+    List<String> selectUserIdsByOrg(@Param("orgType") String orgType, @Param("orgId") String orgId);
 }

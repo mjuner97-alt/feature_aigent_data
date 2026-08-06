@@ -75,26 +75,26 @@ public class VerificationAdminController {
 
     @PostMapping("/golden-eval")
     public Map<String, String> startGoldenEval(
-            @RequestParam(required = false) String versionLabel,
-            @RequestParam(required = false) String agentVersion,
-            @RequestParam(required = false) String promptVersion,
-            @RequestParam(required = false) String skillVersion,
-            @RequestParam(required = false) String semanticVersion,
-            @RequestParam(required = false) String releasedBy) {
+            @RequestParam(name = "versionLabel", required = false) String versionLabel,
+            @RequestParam(name = "agentVersion", required = false) String agentVersion,
+            @RequestParam(name = "promptVersion", required = false) String promptVersion,
+            @RequestParam(name = "skillVersion", required = false) String skillVersion,
+            @RequestParam(name = "semanticVersion", required = false) String semanticVersion,
+            @RequestParam(name = "releasedBy", required = false) String releasedBy) {
         String evalId = goldenRunner.startEvaluation(
                 versionLabel, agentVersion, promptVersion, skillVersion, semanticVersion, releasedBy);
         return Map.of("evalId", evalId, "status", "started");
     }
 
     @GetMapping("/golden-eval/{evalId}")
-    public GoldenEvaluationReport getGoldenReport(@PathVariable String evalId) {
+    public GoldenEvaluationReport getGoldenReport(@PathVariable("evalId") String evalId) {
         return goldenRunner.getReport(evalId);
     }
 
     @GetMapping("/replay")
-    public ReplayResult replay(@RequestParam String sessionId,
-                               @RequestParam(defaultValue = "TRACE") String mode,
-                               @RequestParam(required = false) String modelKey) {
+    public ReplayResult replay(@RequestParam("sessionId") String sessionId,
+                               @RequestParam(name = "mode", defaultValue = "TRACE") String mode,
+                               @RequestParam(name = "modelKey", required = false) String modelKey) {
         return replayService.replay(sessionId, mode, modelKey);
     }
 
@@ -104,19 +104,19 @@ public class VerificationAdminController {
     }
 
     @GetMapping("/versions")
-    public List<VersionRecord> versions(@RequestParam String component,
-                                        @RequestParam(defaultValue = "20") int limit) {
+    public List<VersionRecord> versions(@RequestParam("component") String component,
+                                        @RequestParam(name = "limit", defaultValue = "20") int limit) {
         return versionRegistry.listByComponent(component, limit);
     }
 
     // ===== V4.0: online calibration + SLO + auto-apply/rollback =====
 
     @PostMapping("/feedback")
-    public Map<String, String> feedback(@RequestParam String sessionId,
-                                        @RequestParam String verdict,
-                                        @RequestParam String humanLabel,
-                                        @RequestParam(required = false) String note,
-                                        @RequestParam(required = false) String createdBy) {
+    public Map<String, String> feedback(@RequestParam("sessionId") String sessionId,
+                                        @RequestParam("verdict") String verdict,
+                                        @RequestParam("humanLabel") String humanLabel,
+                                        @RequestParam(name = "note", required = false) String note,
+                                        @RequestParam(name = "createdBy", required = false) String createdBy) {
         trustCalibration.recordFeedback(
                 new VerificationFeedback(sessionId, verdict, humanLabel, note, createdBy));
         return Map.of("status", "recorded");
@@ -146,7 +146,7 @@ public class VerificationAdminController {
      * one call per 15s refresh cycle.
      */
     @GetMapping("/dashboard")
-    public DashboardSnapshot dashboard(@RequestParam(defaultValue = "24") int windowHours) {
+    public DashboardSnapshot dashboard(@RequestParam(name = "windowHours", defaultValue = "24") int windowHours) {
         SloReport slo = sloMonitor.report(windowHours);
         Map<String, Object> calibration = Map.of(
                 "passThreshold", calibrationState.getPassThreshold(),
@@ -166,22 +166,22 @@ public class VerificationAdminController {
      * Hourly time-series buckets for the quality trends chart.
      */
     @GetMapping("/trends")
-    public List<HourlyBucket> trends(@RequestParam(defaultValue = "24") int windowHours) {
+    public List<HourlyBucket> trends(@RequestParam(name = "windowHours", defaultValue = "24") int windowHours) {
         return sloMonitor.hourlyBuckets(windowHours);
     }
 
     @GetMapping("/slo")
-    public SloReport slo(@RequestParam(defaultValue = "24") int windowHours) {
+    public SloReport slo(@RequestParam(name = "windowHours", defaultValue = "24") int windowHours) {
         return sloMonitor.report(windowHours);
     }
 
     @PostMapping("/optimize/apply")
-    public OptimizationApplyResult applyTweaks(@RequestParam(required = false) String releasedBy) {
+    public OptimizationApplyResult applyTweaks(@RequestParam(name = "releasedBy", required = false) String releasedBy) {
         return optimizationLoop.applyThresholdTweaks(releasedBy);
     }
 
     @PostMapping("/optimize/rollback")
-    public Map<String, Object> rollback(@RequestParam(required = false) String evalId) {
+    public Map<String, Object> rollback(@RequestParam(name = "evalId", required = false) String evalId) {
         if (evalId != null && !evalId.isBlank()) {
             boolean rolledBack = optimizationLoop.checkAutoRollback(evalId);
             return Map.of("rolledBack", String.valueOf(rolledBack), "evalId", evalId);
@@ -193,34 +193,34 @@ public class VerificationAdminController {
     // ===== V4.0: A/B rule experiments + Critic self-learning stats =====
 
     @PostMapping("/experiment/start")
-    public Map<String, String> startExperiment(@RequestParam String name,
-                                                @RequestParam String metricId,
-                                                @RequestParam String direction,
-                                                @RequestParam(required = false) String denyAggregation,
-                                                @RequestParam(defaultValue = "10") int trafficPct) {
+    public Map<String, String> startExperiment(@RequestParam("name") String name,
+                                                @RequestParam("metricId") String metricId,
+                                                @RequestParam("direction") String direction,
+                                                @RequestParam(name = "denyAggregation", required = false) String denyAggregation,
+                                                @RequestParam(name = "trafficPct", defaultValue = "10") int trafficPct) {
         String id = ruleExperimentService.start(name, metricId, direction, denyAggregation, trafficPct);
         return Map.of("experimentId", id, "status", "running");
     }
 
     @GetMapping("/experiment/{id}/measure")
-    public ExperimentMetrics measureExperiment(@PathVariable String id) {
+    public ExperimentMetrics measureExperiment(@PathVariable("id") String id) {
         return ruleExperimentService.measure(id);
     }
 
     @PostMapping("/experiment/{id}/promote")
-    public Map<String, String> promoteExperiment(@PathVariable String id) {
+    public Map<String, String> promoteExperiment(@PathVariable("id") String id) {
         ruleExperimentService.promote(id);
         return Map.of("experimentId", id, "status", "promoted");
     }
 
     @PostMapping("/experiment/{id}/rollback")
-    public Map<String, String> rollbackExperiment(@PathVariable String id) {
+    public Map<String, String> rollbackExperiment(@PathVariable("id") String id) {
         ruleExperimentService.rollback(id);
         return Map.of("experimentId", id, "status", "rolled_back");
     }
 
     @GetMapping("/experiment")
-    public List<RuleExperiment> listExperiments(@RequestParam(defaultValue = "running") String status) {
+    public List<RuleExperiment> listExperiments(@RequestParam(name = "status", defaultValue = "running") String status) {
         return ruleExperimentService.listByStatus(status);
     }
 

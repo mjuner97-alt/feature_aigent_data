@@ -1,8 +1,11 @@
 
 package com.agentscopea2a.v2.service.impl;
 
+import cn.hutool.core.util.ObjectUtil;
 import com.agentscopea2a.dto.ChatRequest;
+import com.agentscopea2a.dto.QuestionAnswerDto;
 import com.agentscopea2a.dto.response.*;
+import com.agentscopea2a.mapper.gauss.MainAgentMapper;
 import com.agentscopea2a.v2.artifact.ArtifactContext;
 import com.agentscopea2a.v2.artifact.ArtifactStore;
 import com.agentscopea2a.v2.exception.TooManyRequestsException;
@@ -12,7 +15,7 @@ import com.agentscopea2a.v2.service.ChatStreamService;
 import com.agentscopea2a.v2.trace.collector.TraceSession;
 import com.agentscopea2a.v2.trace.assembler.TraceAssembler;
 import com.agentscopea2a.v2.trace.model.AssembledTrace;
-import com.agentscopea2a.v2.trace.writer.TraceQueue;
+import com.agentscopea2a.v2.trace.writer.TraceBatchWriter;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.*;
 import io.agentscope.core.message.Msg;
@@ -22,6 +25,7 @@ import io.agentscope.harness.agent.sandbox.SandboxException;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -57,7 +61,14 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     private final ArtifactStore artifactStore;
     private final EpisodicMemory episodicMemory;
     private final TraceAssembler traceAssembler;
-    private final TraceQueue traceQueue;
+    private final TraceBatchWriter traceBatchWriter;
+
+    @Autowired
+    private MainAgentMapper mainAgentMapper;
+
+
+    private final String AGENT_RETURN_NAME = "分析执行智能体";
+
 
 
     /**
@@ -73,12 +84,12 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     public ChatStreamServiceImpl(HarnessA2aRunnerV2 runner, ArtifactStore artifactStore,
                                  EpisodicMemory episodicMemory,
                                  TraceAssembler traceAssembler,
-                                 TraceQueue traceQueue) {
+                                 TraceBatchWriter traceBatchWriter) {
         this.runner = runner;
         this.artifactStore = artifactStore;
         this.episodicMemory = episodicMemory;
         this.traceAssembler = traceAssembler;
-        this.traceQueue = traceQueue;
+        this.traceBatchWriter = traceBatchWriter;
     }
 
     /**
@@ -297,11 +308,12 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         // 清理逻辑：取消订阅、清理 artifact、持久化 episodic 记忆、移除进行中调用标记
         Runnable cleanup = buildCleanup(streamCtx, callKey, inFlight);
 
-        // 注册 SSE 生命周期回调：三种终止路径都走同一个幂等 cleanup（参考 v1 流处理模式）
-        emitter.onCompletion(()->{
-            handleStreamSuccess(streamCtx,strategy);
-            cleanup.run();
-        });
+        // 注册 SSE 生命周期回调：三种终止路径都走同一个幂等 cleanup。
+        // 注意：onCompletion 不调用 handleStreamSuccess/handleStreamError，
+        // 因为 Reactor 的 onComplete/onError 已经分别调用了它们。
+        // 如果 onCompletion 再调一次，handleStreamSuccess 会被执行两次，
+        // 导致 done 事件重复发送（前端收到"你好你好"的重复输出 bug）。
+        emitter.onCompletion(cleanup);
         emitter.onTimeout(() -> {
             // Trace 状态标记：标记 TIMEOUT（设计 5.2）。先于 handleStreamError 标记，
             // 随后 handleStreamError 的 markError 会覆盖为 ERROR；若需保留 TIMEOUT 语义
@@ -532,12 +544,20 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                 d.dispose();
                 log.info("v2 stream cancelled for sessionId={} (client disconnect/timeout)", ctx.conversationId);
             }
-            // 1b. Trace 组装与投队列（在订阅取消后、artifact 清理前，确保采集完整）。
-            // 状态标记已在 handleStreamSuccess/handleStreamError/onTimeout 中完成。
+            // 1b. Trace 组装并直接落库（不再走定时队列）。中间事件由 TraceSession 在请求期间
+            //     缓存（records），assemble 后一次性写入；成功/失败/超时均执行（cleanup 在所有
+            //     终止路径触发）。状态标记已在 handleStreamSuccess/handleStreamError/onTimeout 完成。
+            //     异步执行，不阻塞 SSE 完成回调（与 answer 落库一致）。
             try {
                 if (ctx.traceCtx != null) {
                     AssembledTrace trace = traceAssembler.assemble(ctx.traceCtx);
-                    traceQueue.offer(trace);
+                    Mono.fromRunnable(() -> {
+                        try {
+                            traceBatchWriter.write(trace);
+                        } catch (Exception ex) {
+                            log.warn("Trace write failed for sessionId={}: {}", ctx.conversationId, ex.getMessage());
+                        }
+                    }).subscribeOn(Schedulers.boundedElastic()).subscribe();
                 }
             } catch (Exception ex) {
                 log.warn("Trace assemble failed for sessionId={}: {}", ctx.conversationId, ex.getMessage());
@@ -548,6 +568,16 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             } catch (Exception ex) {
                 log.warn("Artifact cleanup failed for sessionId={}: {}", ctx.conversationId, ex.getMessage());
             }
+            // 3. 持久化问答记录（think/answer）到 DB。内容由 processChunk 在 reactor 线程累积，
+            //    此处经 SSE 完成回调的 happens-before 可见；answerContent 为空时回退 thinkContent。
+            //    异步执行，不阻塞 SSE 完成回调（与 episodic 持久化一致）。
+            Mono.fromRunnable(() -> {
+                try {
+                    saveAnswerIntoDB(ctx);
+                } catch (Exception ex) {
+                    log.warn("Answer persist failed for sessionId={}: {}", ctx.conversationId, ex.getMessage());
+                }
+            }).subscribeOn(Schedulers.boundedElastic()).subscribe();
             // 4. 从进行中调用表移除（必须用 (key, value) 两参 remove 防止误删被并发覆盖后的新条目）
             inFlightCalls.remove(callKey, inFlight);
             // 5. 完成 InFlightCall 的 future，唤醒等待的 interrupt 端点
@@ -618,5 +648,63 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     public InFlightCall getInFlightCall(String userId, String sessionId) {
         if (sessionId == null || sessionId.isBlank()) return null;
         return inFlightCalls.get(callKey(userId, sessionId));
+    }
+
+
+    /**
+     * 保存问答记录到数据库，包含 think（思考）和 answer（结果）两个独立字段。
+     *
+     * <p>内容由 {@link #processChunk} 在 reactor 线程累积：{@code thinkContent} 收集所有流式
+     * 增量（TextBlockDeltaEvent + ThinkingBlockDeltaEvent），{@code answerContent} 仅由
+     * {@link AgentResultEvent} 的最终结果文本填充。当最终结果 Msg 不含 TextBlock（以 tool_use
+     * 收尾、或 supervisor 返回非文本结果）时 {@code answerContent} 为空，此时回退到
+     * {@code thinkContent}（流式增量已累积完整答案，与 V2ChatStreamServiceImpl 一致），保证
+     * 最终答案不丢。两者皆空（流式未产出文本，如早期异常）时跳过入库，避免写空行。
+     */
+    private void saveAnswerIntoDB(StreamContext ctx) {
+        if (ctx.req == null || StringUtils.isEmpty(ctx.req.getConversationId())) {
+            return;
+        }
+        String think = ctx.thinkContent.toString();
+        String answer = ctx.answerContent.toString();
+        log.info("saveAnswerIntoDB: sessionId={} thinkLen={} answerLen={}",
+                ctx.conversationId, think.length(), answer.length());
+        if (StringUtils.isBlank(answer)) {
+            answer = think;
+        }
+        if (StringUtils.isBlank(think) && StringUtils.isBlank(answer)) {
+            log.warn("saveAnswerIntoDB skipped: think/answer both blank for sessionId={}", ctx.conversationId);
+            return;
+        }
+        QuestionAnswerDto dto = createAnswerInit(ctx.req, think, answer);
+        saveAnswerIntoDB(dto);
+    }
+
+    private QuestionAnswerDto createAnswerInit(ChatRequest chatReqDTO, String thinkContent, String answerContent) {
+        QuestionAnswerDto questionAnswerDTO = new QuestionAnswerDto();
+        questionAnswerDTO.setUserId(chatReqDTO.getUserId());
+        questionAnswerDTO.setQuestion(chatReqDTO.getQuestion());
+        questionAnswerDTO.setAnsUUID(chatReqDTO.getConversationId());
+        questionAnswerDTO.setConversationId(chatReqDTO.getConversationId());
+        questionAnswerDTO.setFromType(chatReqDTO.getFromType());
+        questionAnswerDTO.setThink(thinkContent);
+        questionAnswerDTO.setAnswer(answerContent);
+        return questionAnswerDTO;
+    }
+
+    private void saveAnswerIntoDB(QuestionAnswerDto questionAnswerDTO) {
+        if (mainAgentMapper == null) {
+            return;
+        }
+        if (ObjectUtil.isNotNull(questionAnswerDTO) && StringUtils.isNotEmpty(questionAnswerDTO.getConversationId())) {
+            // 根据id查询是否有记录
+            QuestionAnswerDto historyQuestionAnswer = mainAgentMapper.selectAnswerRecordByTaskId(questionAnswerDTO.getConversationId());
+            if (ObjectUtil.isEmpty(historyQuestionAnswer)) {
+                questionAnswerDTO.setAnsUUID(questionAnswerDTO.getConversationId());
+                mainAgentMapper.insertAiUserTable(questionAnswerDTO);
+                mainAgentMapper.insertAnswerTable(questionAnswerDTO);
+            }
+            mainAgentMapper.insertToQualityAnalysisConversationAnswer(questionAnswerDTO);
+        }
     }
 }

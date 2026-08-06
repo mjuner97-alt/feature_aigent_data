@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.mapper.gauss.SqlRegistryMapper">
+
+    <resultMap id="BaseResultMap" type="com.agentscopea2a.entity.SqlRegistryEntry">
+        <id     column="id"             property="id"/>
+        <result column="sql_id"         property="sqlId"/>
+        <result column="name"           property="name"/>
+        <result column="description"    property="description"/>
+        <result column="datasource"     property="datasource"/>
+        <result column="sql_template"   property="sqlTemplate"/>
+        <result column="params_schema"  property="paramsSchema"/>
+        <result column="enabled"        property="enabled"/>
+        <result column="created_at"     property="createdAt"/>
+        <result column="updated_at"     property="updatedAt"/>
+        <result column="created_by"     property="createdBy"/>
+    </resultMap>
+
+    <!-- 列表视图列 (排除 sql_template, 体积大) -->
+    <resultMap id="ListResultMap" type="com.agentscopea2a.entity.SqlRegistryEntry">
+        <id     column="id"             property="id"/>
+        <result column="sql_id"         property="sqlId"/>
+        <result column="name"           property="name"/>
+        <result column="description"    property="description"/>
+        <result column="datasource"     property="datasource"/>
+        <result column="params_schema"  property="paramsSchema"/>
+        <result column="enabled"        property="enabled"/>
+        <result column="created_at"     property="createdAt"/>
+        <result column="updated_at"     property="updatedAt"/>
+        <result column="created_by"     property="createdBy"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, sql_id, name, description, datasource, sql_template, params_schema,
+        enabled, created_at, updated_at, created_by
+    </sql>
+
+    <sql id="List_Column_List">
+        id, sql_id, name, description, datasource, params_schema,
+        enabled, created_at, updated_at, created_by
+    </sql>
+
+    <!-- 兼容 SqlRegistryExecTool: 按 sql_id 查询 (仅启用) -->
+    <select id="selectBySqlId" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM sql_registry
+        WHERE sql_id = #{sqlId}
+          AND enabled = 1
+    </select>
+
+    <!-- 兼容 SqlListTool: 列出所有启用记录 (排除 sql_template) -->
+    <select id="listAllEnabled" resultMap="ListResultMap">
+        SELECT <include refid="List_Column_List"/>
+        FROM sql_registry
+        WHERE enabled = 1
+        ORDER BY sql_id
+    </select>
+
+    <!-- 管理页面: 列出所有记录 (含禁用, 排除 sql_template) -->
+    <select id="selectAll" resultMap="ListResultMap">
+        SELECT <include refid="List_Column_List"/>
+        FROM sql_registry
+        ORDER BY sql_id
+    </select>
+
+    <!-- 管理页面: 按 id 查询详情 (含 sql_template) -->
+    <select id="selectById" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM sql_registry
+        WHERE id = #{id}
+    </select>
+
+    <!-- 新增: id 由 BIGSERIAL 自动生成, created_at/updated_at 有默认值 -->
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO sql_registry (sql_id, name, description, datasource, sql_template, params_schema, enabled, created_by)
+        VALUES (#{sqlId}, #{name}, #{description}, #{datasource}, #{sqlTemplate}, #{paramsSchema}, #{enabled}, #{createdBy})
+    </insert>
+
+    <!-- 更新: updated_at 由触发器自动维护, 不显式设置 -->
+    <update id="update">
+        UPDATE sql_registry
+        SET sql_id       = #{sqlId},
+            name         = #{name},
+            description  = #{description},
+            datasource   = #{datasource},
+            sql_template = #{sqlTemplate},
+            params_schema = #{paramsSchema},
+            enabled      = #{enabled}
+        WHERE id = #{id}
+    </update>
+
+    <!-- 删除 -->
+    <delete id="deleteById">
+        DELETE FROM sql_registry WHERE id = #{id}
+    </delete>
+
+</mapper>

@@ -103,12 +103,25 @@ public class MockOrgService {
                 orgMap.putIfAbsent("DEPARTMENT:" + d, new OrgRef("DEPARTMENT", d));
             }
         }
-        for (DeveloperPlPersonInfo r : records) {
-            String p = r.getProductLine();
-            if (p != null && !p.isBlank()) {
-                orgMap.putIfAbsent("PRODUCT_LINE:" + p, new OrgRef("PRODUCT_LINE", p));
-            }
-        }
+//        for (DeveloperPlPersonInfo r : records) {
+//            String p = r.getProductLine();
+//            if (p != null && !p.isBlank()) {
+//                orgMap.putIfAbsent("PRODUCT_LINE:" + p, new OrgRef("PRODUCT_LINE", p));
+//            }
+//        }
+        orgMap.putIfAbsent("COMPANY:" + COMPANY_ORG_ID, new OrgRef("COMPANY", COMPANY_ORG_ID));
+        return new ArrayList<>(orgMap.values());
+    }
+
+    /**
+     * 获取全部组织列表(不按用户过滤)。发布目标可为任意已存在的组织,不限于用户自身归属:
+     * 从 developer_pl_person_info 查询全部去重的 统计组/部门/产品线,并附加 COMPANY 维度。
+     */
+    public List<OrgRef> getAllOrgs() {
+        Map<String, OrgRef> orgMap = new LinkedHashMap<>();
+        collectOrgs(orgMap, "GROUP", personInfoMapper.selectAllStatisticsGroups());
+        collectOrgs(orgMap, "DEPARTMENT", personInfoMapper.selectAllDepartments());
+//        collectOrgs(orgMap, "PRODUCT_LINE", personInfoMapper.selectAllProductLines());
         orgMap.putIfAbsent("COMPANY:" + COMPANY_ORG_ID, new OrgRef("COMPANY", COMPANY_ORG_ID));
         return new ArrayList<>(orgMap.values());
     }
@@ -202,6 +215,18 @@ public class MockOrgService {
     }
 
     // ==================== 内部工具 ====================
+
+    /** 将一组去重的组织 id 收集进 orgMap(跳过空串),键为 "orgType:orgId" 以保证去重。 */
+    private void collectOrgs(Map<String, OrgRef> orgMap, String orgType, List<String> orgIds) {
+        if (orgIds == null) {
+            return;
+        }
+        for (String id : orgIds) {
+            if (id != null && !id.isBlank()) {
+                orgMap.putIfAbsent(orgType + ":" + id, new OrgRef(orgType, id));
+            }
+        }
+    }
 
     private Set<String> getCachedApproverIds() {
         Set<String> cached = approverIdsCache;

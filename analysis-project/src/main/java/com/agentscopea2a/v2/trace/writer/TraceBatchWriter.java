@@ -16,86 +16,77 @@
 package com.agentscopea2a.v2.trace.writer;
 
 import com.agentscopea2a.mapper.ck.TraceCkMapper;
-import com.agentscopea2a.v2.trace.config.TraceProperties;
 import com.agentscopea2a.v2.trace.model.AssembledTrace;
 import com.agentscopea2a.v2.trace.model.TraceConversation;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
-/** 定时批量写入器，从队列攒批写入 ClickHouse，失败时降级到本地文件 */
+/**
+ * Trace 写入器：在请求结束（cleanup）时把组装后的 {@link AssembledTrace} 直接写入 ClickHouse，
+ * 失败时重试一次，重试仍失败则丢弃。
+ *
+ * <p>不再使用定时调度攒批：中间事件由 {@code TraceSession} 在请求期间缓存（records 列表），
+ * 请求结束时 {@code TraceAssembler.assemble} 后调用 {@link #write} 一次性落库，成功/失败/超时
+ * 均执行（cleanup 在所有终止路径触发）。
+ *
+ * <p>写入顺序：先插 trace_event（数据量大，更容易失败），再插 trace_conversation。
+ * ClickHouse 无事务，先写 event 可避免"有 conversation 无 event"的数据不一致——
+ * 若 event 写入失败则 conversation 也不会写入，保证查到 conversation 时一定有对应的 event。
+ */
 @Component
 public class TraceBatchWriter {
 
     private static final Logger log = LoggerFactory.getLogger(TraceBatchWriter.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    private final TraceQueue queue;
-    private final TraceCkMapper ckMapper;
-    private final TraceFallbackWriter fallbackWriter;
-    private final TraceProperties properties;
+    /** 写入失败后重试次数（不含首次尝试） */
+    private static final int MAX_RETRIES = 1;
 
-    public TraceBatchWriter(TraceQueue queue,
-                            TraceCkMapper ckMapper,
-                            TraceFallbackWriter fallbackWriter,
-                            TraceProperties properties) {
-        this.queue = queue;
+    private final TraceCkMapper ckMapper;
+
+    public TraceBatchWriter(TraceCkMapper ckMapper) {
         this.ckMapper = ckMapper;
-        this.fallbackWriter = fallbackWriter;
-        this.properties = properties;
     }
 
-    // 调度间隔硬编码 2s（与 TraceProperties.batch.intervalSeconds 默认值一致），不再读 application.properties
-    @Scheduled(fixedDelay = 2000L)
-    public void drainAndWrite() throws InterruptedException {
-        List<AssembledTrace> batch = drainBatch();
-        if (batch.isEmpty()) return;
-        log.debug("TraceBatchWriter draining {} traces", batch.size());
-        try {
-            batchInsert(batch);
-        } catch (Exception e) {
-            log.error("TraceBatchWriter batch insert failed, falling back {} traces: {}",
-                    batch.size(), e.getMessage(), e);
-            for (AssembledTrace t : batch) {
-                try {
-                    fallbackWriter.write(t);
-                } catch (Exception fe) {
-                    log.error("TraceFallbackWriter also failed for conversationId={}: {}",
-                            t.conversation().getConversationId(), fe.getMessage(), fe);
+    /**
+     * 写入单条组装后的 trace：先插入 ClickHouse（两表），失败则重试一次，仍失败则丢弃。
+     *
+     * <p>由请求结束（cleanup）时调用，不再依赖定时调度。无论本次请求成功还是报错都会执行
+     * （cleanup 在 onCompletion/onTimeout/onError 三条终止路径都会触发）。
+     *
+     * @param trace 组装后的 trace，null 时直接返回
+     */
+    public void write(AssembledTrace trace) {
+        if (trace == null) return;
+        for (int attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+            try {
+                batchInsert(List.of(trace));
+                return; // 成功则直接返回
+            } catch (Exception e) {
+                if (attempt < MAX_RETRIES) {
+                    log.warn("TraceBatchWriter insert failed (attempt {}/{}), retrying: conversationId={}: {}",
+                            attempt + 1, MAX_RETRIES + 1,
+                            trace.conversation().getConversationId(), e.getMessage());
+                } else {
+                    log.error("TraceBatchWriter insert failed after {} attempts, discarding: conversationId={}: {}",
+                            MAX_RETRIES + 1, trace.conversation().getConversationId(), e.getMessage(), e);
                 }
             }
         }
     }
 
-    private List<AssembledTrace> drainBatch() throws InterruptedException {
-        int batchSize = properties.getBatch().getSize();
-        int intervalSeconds = properties.getBatch().getIntervalSeconds();
-        List<AssembledTrace> batch = new ArrayList<>(Math.min(batchSize, 16));
-
-        AssembledTrace first = queue.poll(intervalSeconds, TimeUnit.SECONDS);
-        if (first == null) return batch;
-        batch.add(first);
-
-        while (batch.size() < batchSize) {
-            AssembledTrace t = queue.poll(0, TimeUnit.MILLISECONDS);
-            if (t == null) break;
-            batch.add(t);
-        }
-        return batch;
-    }
-
     /**
      * 把每个 AssembledTrace 的 eventJsons 拆解为 trace_event 行。
-     * ClickHouse 无事务，两表独立插入，任一失败抛异常由调用方降级。
+     * ClickHouse 无事务，先写 event 再写 conversation，避免"有 conversation 无 event"的不一致。
      */
     private void batchInsert(List<AssembledTrace> batch) {
         List<TraceConversation> conversations = new ArrayList<>(batch.size());
@@ -107,11 +98,13 @@ public class TraceBatchWriter {
                         t.conversation().getTraceId(), json));
             }
         }
-        if (!conversations.isEmpty()) {
-            ckMapper.insertConversation(conversations);
-        }
+        // 先写 event（数据量大，更容易失败），再写 conversation
+        // 这样如果 event 写入失败，conversation 也不会写入，避免"有 conversation 无 event"
         if (!eventRows.isEmpty()) {
             ckMapper.insertEvents(eventRows);
+        }
+        if (!conversations.isEmpty()) {
+            ckMapper.insertConversation(conversations);
         }
     }
 
@@ -127,7 +120,8 @@ public class TraceBatchWriter {
         row.put("event_type", "");
         row.put("event_name", "");
         row.put("source", "");
-        row.put("timestamp", System.currentTimeMillis());
+        // DateTime64(3) 列：用 Timestamp 写入，驱动按日期处理；直接写 long 会被当作秒解析
+        row.put("timestamp", new Timestamp(System.currentTimeMillis()));
         row.put("duration_ms", 0);
         row.put("event_json", json);
         try {
@@ -139,7 +133,7 @@ public class TraceBatchWriter {
             String createdAt = textOrEmpty(n, "createdAt");
             if (!createdAt.isEmpty()) {
                 try {
-                    row.put("timestamp", java.time.Instant.parse(createdAt).toEpochMilli());
+                    row.put("timestamp", new Timestamp(java.time.Instant.parse(createdAt).toEpochMilli()));
                 } catch (Exception ignored) {
                     // 保留 currentTimeMillis 兜底
                 }

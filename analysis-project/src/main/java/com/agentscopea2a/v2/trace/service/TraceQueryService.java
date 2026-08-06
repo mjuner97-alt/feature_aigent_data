@@ -19,7 +19,7 @@ import com.agentscopea2a.mapper.ck.TraceCkMapper;
 import com.agentscopea2a.v2.trace.model.TraceConversation;
 import org.springframework.stereotype.Service;
 
-import java.time.Instant;
+import java.sql.Timestamp;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -36,25 +36,25 @@ public class TraceQueryService {
     }
 
     /** 会话列表（分页）。 */
-    public Map<String, Object> listConversations(String source, int page, int size) {
+    public Map<String, Object> listConversations(String source, String userId, int page, int size) {
         int offset = page * size;
-        List<TraceConversation> rows = traceCkMapper.listConversations(source, offset, size);
+        List<TraceConversation> rows = traceCkMapper.listConversations(source, userId, offset, size);
         List<Map<String, Object>> items = rows == null || rows.isEmpty()
                 ? Collections.emptyList()
                 : rows.stream().map(TraceQueryService::toSummary).toList();
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("conversations", items);
-        resp.put("total", items.size());
+        resp.put("total", traceCkMapper.countConversations(source, userId));
         resp.put("page", page);
         resp.put("size", size);
         return resp;
     }
 
-    /** 单会话详情（含事件 JSON 列表，按 timestamp ASC）。 */
+    /** 单会话详情（含事件 JSON 列表，按 timestamp ASC）。按 trace_id 过滤，只取当前轮事件。 */
     public Map<String, Object> getDetail(String conversationId) {
         TraceConversation c = traceCkMapper.getConversation(conversationId);
         if (c == null) return null;
-        List<String> events = traceCkMapper.listEventJsons(conversationId);
+        List<String> events = traceCkMapper.listEventJsons(conversationId, c.getTraceId());
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("conversation", toSummary(c));
         resp.put("events", events == null ? Collections.emptyList() : events);
@@ -85,8 +85,8 @@ public class TraceQueryService {
 
     private static String nv(String s) { return s == null ? "" : s; }
 
-    private static String toIso(long epochMillis) {
-        if (epochMillis <= 0) return "";
-        return Instant.ofEpochMilli(epochMillis).toString();
+    private static String toIso(Timestamp ts) {
+        if (ts == null) return "";
+        return ts.toInstant().toString();
     }
 }

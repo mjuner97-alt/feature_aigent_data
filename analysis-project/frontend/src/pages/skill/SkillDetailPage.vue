@@ -10,8 +10,7 @@
  */
 import { ref, watch, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { marked } from 'marked';
-import hljs from 'highlight.js';
+import Markdown from '../../components/Markdown.vue';
 import {
   getSkill,
   getLikeStatus,
@@ -31,30 +30,6 @@ import {
   fetchFileBlob,
 } from '../../api/skill';
 import type { SkillDetail, LikeStatus, SkillPublishRecord, PublishPendingItem, SkillFileReferenceItem } from '../../types/skill';
-
-// 配置 marked: 使用自定义 renderer 实现代码高亮
-const renderer = new marked.Renderer();
-renderer.code = function ({ text, lang }: { text: string; lang?: string }): string {
-  const language = lang && hljs.getLanguage(lang) ? lang : '';
-  let highlighted: string;
-  if (language) {
-    try {
-      highlighted = hljs.highlight(text, { language }).value;
-    } catch {
-      highlighted = escHtml(text);
-    }
-  } else {
-    highlighted = hljs.highlightAuto(text).value;
-  }
-  const langLabel = language ? ` class="hljs language-${language}"` : ' class="hljs"';
-  return `<pre style="background:#0f172a;border:1px solid #334155;border-radius:6px;padding:12px 14px;overflow-x:auto;margin:10px 0"><code${langLabel}>${highlighted}</code></pre>`;
-};
-
-function escHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-marked.use({ renderer, breaks: true, gfm: true });
 
 const route = useRoute();
 const router = useRouter();
@@ -98,15 +73,27 @@ function formatDimension(p: SkillPublishRecord): string {
   return label ? `${label}:${p.targetName}` : p.targetName;
 }
 
+// 按 targetType+targetId 去重(同一维度可能有多条 APPROVED 记录,只保留一条用于展示)
+function dedupByDimension<T extends { targetType: string; targetId: string }>(list: T[]): T[] {
+  const seen = new Set<string>();
+  return list.filter(item => {
+    const key = `${item.targetType}:${item.targetId}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 // 派生:当前维度标签
 // 优先展示已审批通过的维度;若无 APPROVED 但有 PENDING,展示 PENDING 中的维度(审批中)
 // 完全无发布记录时才显示"个人"(个人维度无需审批)
+// 同一维度可能有多条 APPROVED/PENDING 记录(如先退回再通过),按维度去重避免重复显示
 const dimensionLabel = computed(() => {
-  const approved = publishes.value.filter(p => p.status === 'APPROVED');
+  const approved = dedupByDimension(publishes.value.filter(p => p.status === 'APPROVED'));
   if (approved.length > 0) {
     return approved.map(formatDimension).join('、');
   }
-  const pending = publishes.value.filter(p => p.status === 'PENDING');
+  const pending = dedupByDimension(publishes.value.filter(p => p.status === 'PENDING'));
   if (pending.length > 0) {
     return pending.map(formatDimension).join('、');
   }
@@ -116,6 +103,20 @@ const dimensionLabel = computed(() => {
 // 派生:是否有审批中的申请
 const hasPendingPublish = computed(() =>
   publishes.value.some(p => p.status === 'PENDING')
+);
+
+// 派生:是否已发布到非个人维度(APPROVED)。
+// 维度共享后,skill_reference 中的显式引用数不再代表真实使用量(同维度用户默认可用,
+// 但不写入引用表),故对非个人维度的 Skill 隐藏"被 N 人引用",避免显示"几千人引用"之类的噪声。
+// publishLoading 期间一并隐藏,避免发布记录未就绪时闪现。
+const isDimensionShared = computed(() =>
+  publishes.value.some(p => p.status === 'APPROVED')
+);
+
+// 已审批通过的维度展示文本(如"部门:研发部、杭研"),用于删除提示等。
+// 按维度去重,避免同一维度多条 APPROVED 记录导致重复显示
+const approvedDimensionLabel = computed(() =>
+  dedupByDimension(publishes.value.filter(p => p.status === 'APPROVED')).map(formatDimension).join('、')
 );
 
 // ============ 审批详情(当前 Skill 的待审/已审记录) ============
@@ -129,11 +130,7 @@ const approvalComment = ref('');
 const isPending = computed(() => !!publishPending.value);
 
 // ============ Markdown 渲染 ============
-
-const renderedContent = computed(() => {
-  if (!skill.value?.content) return '';
-  return marked.parse(skill.value.content);
-});
+// 使用零依赖 Markdown 组件，兼容所有浏览器
 
 // ============ 附件列表 ============
 
@@ -253,17 +250,22 @@ async function toggleReference() {
 }
 async function doDelete() {
   if (!skill.value || deleting.value) return;
-  // 删除前重新获取引用数(避免使用过期数据),被引用时提醒用户
-  let refCount = 0;
-  try {
-    const refs = await getReferencers(skill.value.id);
-    refCount = refs.length;
-  } catch {
-    refCount = referencerCount.value;
-  }
   let msg = `确定删除 Skill "${skill.value.name}"?此操作不可撤销。`;
-  if (refCount > 0) {
-    msg = `该 Skill 正在被 ${refCount} 人引用,删除后这些用户将无法继续使用。\n${msg}`;
+  if (isDimensionShared.value) {
+    // 维度共享:按维度提示(显式引用数不代表真实使用量,不再取 referencerCount)
+    msg = `该 Skill 已发布到 ${approvedDimensionLabel.value} 维度,删除后同维度用户将无法使用。\n${msg}`;
+  } else {
+    // 个人维度:删除前重新获取引用数(避免使用过期数据),被引用时提醒用户
+    let refCount = 0;
+    try {
+      const refs = await getReferencers(skill.value.id);
+      refCount = refs.length;
+    } catch {
+      refCount = referencerCount.value;
+    }
+    if (refCount > 0) {
+      msg = `该 Skill 正在被 ${refCount} 人引用,删除后这些用户将无法继续使用。\n${msg}`;
+    }
   }
   if (!confirm(msg)) return;
   deleting.value = true;
@@ -364,7 +366,7 @@ watch(() => route.params.id, () => {
         <span class="ripple"></span>
       </button>
       <button class="ref" @click="toggleReference">{{ referenced ? '取消引用' : '引用' }}</button>
-      <span class="referencer-count">被 {{ referencerCount }} 人引用</span>
+      <span v-if="!publishLoading && !isDimensionShared" class="referencer-count">被 {{ referencerCount }} 人引用</span>
     </div>
     <section class="block">
       <h3 class="block-title"><span class="bar"></span>描述</h3>
@@ -372,7 +374,7 @@ watch(() => route.params.id, () => {
     </section>
     <section class="block">
       <h3 class="block-title"><span class="bar"></span>内容</h3>
-      <div class="markdown-body" v-html="renderedContent"></div>
+      <Markdown v-if="skill.content" :text="skill.content" theme="dark" />
     </section>
 
     <!-- 附件列表 -->
@@ -538,60 +540,6 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   font-size: 14px;
   line-height: 1.7;
 }
-/* ===== Markdown 渲染样式 ===== */
-.markdown-body {
-  background: #0f172a;
-  color: #e2e8f0;
-  padding: 14px 16px;
-  border-radius: 8px;
-  font-size: 14px;
-  line-height: 1.7;
-  border: 1px solid #1e293b;
-  overflow-x: auto;
-}
-.markdown-body :deep(h1) { font-size: 1.6rem; font-weight: 700; margin: 16px 0 8px; color: #f1f5f9; border-bottom: 1px solid #334155; padding-bottom: 6px; }
-.markdown-body :deep(h2) { font-size: 1.35rem; font-weight: 700; margin: 14px 0 6px; color: #f1f5f9; border-bottom: 1px solid #334155; padding-bottom: 4px; }
-.markdown-body :deep(h3) { font-size: 1.18rem; font-weight: 700; margin: 12px 0 4px; color: #f1f5f9; }
-.markdown-body :deep(h4) { font-size: 1.05rem; font-weight: 700; margin: 10px 0 4px; color: #e2e8f0; }
-.markdown-body :deep(h5) { font-size: 0.95rem; font-weight: 700; margin: 8px 0 4px; color: #e2e8f0; }
-.markdown-body :deep(h6) { font-size: 0.9rem; font-weight: 700; margin: 6px 0 4px; color: #cbd5e1; }
-.markdown-body :deep(p) { margin: 8px 0; }
-.markdown-body :deep(ul), .markdown-body :deep(ol) { margin: 8px 0; padding-left: 24px; }
-.markdown-body :deep(li) { margin: 4px 0; }
-.markdown-body :deep(blockquote) { margin: 8px 0; padding: 6px 12px; border-left: 3px solid #6366f1; background: #1e293b; color: #94a3b8; }
-.markdown-body :deep(code) {
-  background: #1e293b;
-  color: #f472b6;
-  padding: 1px 5px;
-  border-radius: 4px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.88em;
-}
-.markdown-body :deep(pre) {
-  background: #0f172a;
-  border: 1px solid #334155;
-  border-radius: 6px;
-  padding: 12px 14px;
-  overflow-x: auto;
-  margin: 10px 0;
-}
-.markdown-body :deep(pre code) {
-  background: transparent;
-  color: inherit;
-  padding: 0;
-  border-radius: 0;
-  font-size: 0.85rem;
-  line-height: 1.5;
-}
-.markdown-body :deep(table) { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 0.88rem; }
-.markdown-body :deep(th) { border: 1px solid #334155; padding: 6px 10px; background: #1e293b; text-align: left; font-weight: 600; color: #e2e8f0; }
-.markdown-body :deep(td) { border: 1px solid #334155; padding: 6px 10px; color: #cbd5e1; }
-.markdown-body :deep(hr) { border: none; border-top: 1px solid #334155; margin: 16px 0; }
-.markdown-body :deep(a) { color: #60a5fa; text-decoration: none; }
-.markdown-body :deep(a:hover) { text-decoration: underline; }
-.markdown-body :deep(strong) { color: #f1f5f9; }
-.markdown-body :deep(em) { color: #a5b4fc; }
-
 /* ===== 附件列表样式 ===== */
 .attachment-list {
   display: flex;

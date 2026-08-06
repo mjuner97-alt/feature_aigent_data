@@ -1,10 +1,7 @@
 <template>
-  <div :style="S.root">
+  <div :style="theme.root">
     <!-- Short text: render as v-html (fast string replacement) -->
     <template v-if="text.length <= 4000">
-      <!-- Keep the React component tree approach? In Vue, use v-html for both modes since
-           the performance bottleneck (O(n²) re-renders) is React-specific. Vue's fine-grained
-           reactivity doesn't suffer from this, so v-html is fine for both modes. -->
       <div v-html="shortHtml"></div>
     </template>
     <!-- Long text: v-html with fast string replacement -->
@@ -17,11 +14,60 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   text: string;
-}>();
+  theme?: 'light' | 'dark';
+}>(), {
+  theme: 'light',
+});
 
 const INNERHTML_THRESHOLD = 4000;
+
+// ── Theme presets ──────────────────────────────────────────────────────────
+
+const LIGHT = {
+  root: { fontSize: '0.95rem', lineHeight: 1.6, color: 'inherit' },
+  heading: { color: '#0f172a' },
+  hr: '1px solid #e2e8f0',
+  quoteBorder: '#cbd5e1',
+  quoteBg: '#f8fafc',
+  quoteColor: '#475569',
+  codeBlockBg: '#0f172a',
+  codeBlockColor: '#e2e8f0',
+  codeBlockBorder: '1px solid #334155',
+  inlineCodeBg: '#f1f5f9',
+  inlineCodeColor: '#be185d',
+  tableBorder: '#e2e8f0',
+  thBg: '#f8fafc',
+  thColor: '#1e293b',
+  tdColor: 'inherit',
+  linkColor: '#6366f1',
+  strongColor: 'inherit',
+  emColor: 'inherit',
+};
+
+const DARK = {
+  root: { fontSize: '0.95rem', lineHeight: 1.6, color: '#e2e8f0', background: '#0f172a', padding: '14px 16px', borderRadius: 8, border: '1px solid #1e293b', overflowX: 'auto' },
+  heading: { color: '#f1f5f9' },
+  hr: '1px solid #334155',
+  quoteBorder: '#6366f1',
+  quoteBg: '#1e293b',
+  quoteColor: '#94a3b8',
+  codeBlockBg: '#0f172a',
+  codeBlockColor: '#e2e8f0',
+  codeBlockBorder: '1px solid #334155',
+  inlineCodeBg: '#1e293b',
+  inlineCodeColor: '#f472b6',
+  tableBorder: '#334155',
+  thBg: '#1e293b',
+  thColor: '#e2e8f0',
+  tdColor: '#cbd5e1',
+  linkColor: '#60a5fa',
+  strongColor: '#f1f5f9',
+  emColor: '#a5b4fc',
+};
+
+const theme = computed(() => props.theme === 'dark' ? DARK : LIGHT);
 
 // For short text: full markdown to HTML including block-level parsing
 const shortHtml = computed(() => markdownToHtml(props.text));
@@ -32,6 +78,7 @@ const longHtml = computed(() => markdownToHtml(props.text));
 // ── Markdown to HTML converter ────────────────────────────────────────────
 
 function markdownToHtml(md: string): string {
+  const t = theme.value;
   const parts: string[] = [];
   const codeBlockRe = /```(\w*)\n([\s\S]*?)```/g;
   let lastIdx = 0;
@@ -42,7 +89,8 @@ function markdownToHtml(md: string): string {
     }
     const lang = m[1] || '';
     const code = escHtml(m[2]);
-    parts.push(`<pre style="${s(S.codeBlock)}"><code>${code}</code></pre>`);
+    const langLabel = lang ? ` class="language-${lang}"` : '';
+    parts.push(`<pre style="background:${t.codeBlockBg};color:${t.codeBlockColor};border:${t.codeBlockBorder};padding:10px 14px;border-radius:6px;overflow-x:auto;margin:8px 0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.85rem;line-height:1.5"><code${langLabel}>${code}</code></pre>`);
     lastIdx = m.index + m[0].length;
   }
   if (lastIdx < md.length) {
@@ -52,20 +100,22 @@ function markdownToHtml(md: string): string {
 }
 
 function renderInlineHtml(text: string): string {
+  const t = theme.value;
   let html = escHtml(text);
   // Horizontal rule
-  html = html.replace(/^---+\s*$/gm, '<hr style="border:none;border-top:1px solid #e2e8f0;margin:12px 0">');
+  html = html.replace(/^---+\s*$/gm, `<hr style="border:none;border-top:${t.hr};margin:12px 0">`);
   // Headings
-  html = html.replace(/^######\s+(.+)$/gm, '<div style="font-size:0.9rem;font-weight:700;margin:4px 0">$1</div>');
-  html = html.replace(/^#####\s+(.+)$/gm, '<div style="font-size:0.95rem;font-weight:700;margin:4px 0">$1</div>');
-  html = html.replace(/^####\s+(.+)$/gm, '<div style="font-size:1.05rem;font-weight:700;margin:6px 0">$1</div>');
-  html = html.replace(/^###\s+(.+)$/gm, '<div style="font-size:1.18rem;font-weight:700;margin:6px 0">$1</div>');
-  html = html.replace(/^##\s+(.+)$/gm, '<div style="font-size:1.35rem;font-weight:700;margin:8px 0">$1</div>');
-  html = html.replace(/^#\s+(.+)$/gm, '<div style="font-size:1.6rem;font-weight:700;margin:12px 0 6px">$1</div>');
+  const hc = t.heading.color;
+  html = html.replace(/^######\s+(.+)$/gm, `<div style="font-size:0.9rem;font-weight:700;margin:4px 0;color:${hc}">$1</div>`);
+  html = html.replace(/^#####\s+(.+)$/gm, `<div style="font-size:0.95rem;font-weight:700;margin:4px 0;color:${hc}">$1</div>`);
+  html = html.replace(/^####\s+(.+)$/gm, `<div style="font-size:1.05rem;font-weight:700;margin:6px 0;color:${hc}">$1</div>`);
+  html = html.replace(/^###\s+(.+)$/gm, `<div style="font-size:1.18rem;font-weight:700;margin:6px 0;color:${hc}">$1</div>`);
+  html = html.replace(/^##\s+(.+)$/gm, `<div style="font-size:1.35rem;font-weight:700;margin:8px 0;color:${hc};border-bottom:${t.hr};padding-bottom:4px">$1</div>`);
+  html = html.replace(/^#\s+(.+)$/gm, `<div style="font-size:1.6rem;font-weight:700;margin:12px 0 6px;color:${hc};border-bottom:${t.hr};padding-bottom:6px">$1</div>`);
   // Tables
   html = renderTableHtml(html);
   // Blockquotes
-  html = html.replace(/^&gt;\s?(.+)$/gm, '<blockquote style="margin:8px 0;padding:6px 12px;border-left:3px solid #cbd5e1;background:#f8fafc;color:#475569;font-style:italic">$1</blockquote>');
+  html = html.replace(/^&gt;\s?(.+)$/gm, `<blockquote style="margin:8px 0;padding:6px 12px;border-left:3px solid ${t.quoteBorder};background:${t.quoteBg};color:${t.quoteColor};font-style:italic">$1</blockquote>`);
   // Unordered list
   html = html.replace(/^[\s]*[-*]\s+(.+)$/gm, '<li style="margin:2px 0">$1</li>');
   // Ordered list
@@ -73,18 +123,19 @@ function renderInlineHtml(text: string): string {
   // Wrap consecutive <li> in <ul>
   html = html.replace(/((?:<li[^>]*>.*?<\/li>\s*)+)/g, '<ul style="margin:6px 0;padding-left:22px">$1</ul>');
   // Bold & italic
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  html = html.replace(/\*\*([^*]+)\*\*/g, `<strong style="color:${t.strongColor}">$1</strong>`);
+  html = html.replace(/\*([^*]+)\*/g, `<em style="color:${t.emColor}">$1</em>`);
   // Inline code
-  html = html.replace(/`([^`]+)`/g, '<code style="background:#f1f5f9;color:#be185d;padding:1px 5px;border-radius:4px;font-family:ui-monospace,monospace;font-size:0.88em">$1</code>');
+  html = html.replace(/`([^`]+)`/g, `<code style="background:${t.inlineCodeBg};color:${t.inlineCodeColor};padding:1px 5px;border-radius:4px;font-family:ui-monospace,monospace;font-size:0.88em">$1</code>`);
   // Links
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer" style="color:#6366f1;text-decoration:none">$1</a>');
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, `<a href="$2" target="_blank" rel="noreferrer" style="color:${t.linkColor};text-decoration:none">$1</a>`);
   // Paragraphs
   html = html.replace(/^(?!<[hou]|<li|<div|<pre|<blockquote|<table|<ul|<ol|<hr)(.+)$/gm, '<div style="margin:6px 0">$1</div>');
   return html;
 }
 
 function renderTableHtml(html: string): string {
+  const t = theme.value;
   const lines = html.split('\n');
   const result: string[] = [];
   let i = 0;
@@ -97,9 +148,9 @@ function renderTableHtml(html: string): string {
         rows.push(lines[i].trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim()));
         i++;
       }
-      let table = '<div style="overflow-x:auto;margin:8px 0"><table style="border-collapse:collapse;width:100%;font-size:0.88rem">';
-      table += '<thead><tr>' + headerCells.map(h => `<th style="border:1px solid #e2e8f0;padding:6px 10px;background:#f8fafc;text-align:left;font-weight:600">${h}</th>`).join('') + '</tr></thead>';
-      table += '<tbody>' + rows.map(row => '<tr>' + row.map(c => `<td style="border:1px solid #e2e8f0;padding:6px 10px">${c}</td>`).join('') + '</tr>').join('') + '</tbody></table></div>';
+      let table = `<div style="overflow-x:auto;margin:8px 0"><table style="border-collapse:collapse;width:100%;font-size:0.88rem">`;
+      table += '<thead><tr>' + headerCells.map(h => `<th style="border:1px solid ${t.tableBorder};padding:6px 10px;background:${t.thBg};text-align:left;font-weight:600;color:${t.thColor}">${h}</th>`).join('') + '</tr></thead>';
+      table += '<tbody>' + rows.map(row => '<tr>' + row.map(c => `<td style="border:1px solid ${t.tableBorder};padding:6px 10px;color:${t.tdColor}">${c}</td>`).join('') + '</tr>').join('') + '</tbody></table></div>';
       result.push(table);
     } else {
       result.push(lines[i]);
@@ -112,25 +163,4 @@ function renderTableHtml(html: string): string {
 function escHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
-
-function s(style: Record<string, string | number>): string {
-  return Object.entries(style).map(([k, v]) => `${k.replace(/[A-Z]/g, c => '-' + c.toLowerCase())}:${v}`).join(';');
-}
-
-const S = {
-  root: { fontSize: '0.95rem', lineHeight: 1.6, color: 'inherit' },
-  heading: { color: '#0f172a' },
-  p: { margin: '6px 0' },
-  ul: { margin: '6px 0', paddingLeft: 22 },
-  ol: { margin: '6px 0', paddingLeft: 22 },
-  quote: { margin: '8px 0', padding: '6px 12px', borderLeft: '3px solid #cbd5e1', background: '#f8fafc', color: '#475569', fontStyle: 'italic' },
-  hr: { border: 'none', borderTop: '1px solid #e2e8f0', margin: '12px 0' },
-  codeBlock: { background: '#0f172a', color: '#e2e8f0', padding: '10px 14px', borderRadius: 8, overflowX: 'auto', margin: '8px 0', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '0.85rem', lineHeight: 1.5 },
-  inlineCode: { background: '#f1f5f9', color: '#be185d', padding: '1px 5px', borderRadius: 4, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '0.88em' },
-  tableWrap: { overflowX: 'auto', margin: '8px 0' },
-  table: { borderCollapse: 'collapse', width: '100%', fontSize: '0.88rem' },
-  th: { border: '1px solid #e2e8f0', padding: '6px 10px', background: '#f8fafc', textAlign: 'left', fontWeight: 600 },
-  td: { border: '1px solid #e2e8f0', padding: '6px 10px' },
-  link: { color: '#6366f1', textDecoration: 'none' },
-};
 </script>
