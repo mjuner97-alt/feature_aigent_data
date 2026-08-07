@@ -44,6 +44,9 @@ public class HarnessRunnerProperties {
     @NestedConfigurationProperty
     private Verification verification = new Verification();
 
+    @NestedConfigurationProperty
+    private SkillJobConfig skillJob = new SkillJobConfig();
+
     public Workspace getWorkspace() {
         return workspace;
     }
@@ -66,6 +69,14 @@ public class HarnessRunnerProperties {
 
     public void setVerification(Verification verification) {
         this.verification = verification;
+    }
+
+    public SkillJobConfig getSkillJob() {
+        return skillJob;
+    }
+
+    public void setSkillJob(SkillJobConfig skillJob) {
+        this.skillJob = skillJob;
     }
 
     public static class Workspace {
@@ -417,5 +428,20 @@ public class HarnessRunnerProperties {
             public String getCron() { return cron; }
             public void setCron(String v) { this.cron = v; }
         }
+    }
+
+    // ===== SkillJob configuration =====
+    // Bind target: harness.a2a.skill-job.*
+
+    public static class SkillJobConfig {
+        // 默认 true，与 @ConditionalOnProperty(matchIfMissing=true) 语义一致：
+        // 未配置时 SkillJob 功能启用，config.isEnabled() 也返回 true。
+        private boolean enabled = true;
+        private long executionTimeoutSeconds = 300;
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean v) { this.enabled = v; }
+        public long getExecutionTimeoutSeconds() { return executionTimeoutSeconds; }
+        public void setExecutionTimeoutSeconds(long v) { this.executionTimeoutSeconds = v; }
     }
 }

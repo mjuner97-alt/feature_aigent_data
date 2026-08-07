@@ -20,6 +20,7 @@ import com.agentscopea2a.v2.hooks.KnowledgeRetrievalHook;
 import com.agentscopea2a.v2.hooks.SkillEvolutionHook;
 import com.agentscopea2a.v2.hooks.SkillSynthesisHook;
 import com.agentscopea2a.v2.memory.EpisodicMemory;
+import com.agentscopea2a.v2.skillManager.scheduler.WriteCallback;
 import com.agentscopea2a.v2.skills.BuiltinSkillRegistrar;
 import com.agentscopea2a.v2.skills.FingerprintCalculator;
 import com.agentscopea2a.v2.skills.MetricClassificationService;
@@ -31,6 +32,7 @@ import com.agentscopea2a.v2.skills.SkillSynthesisRunner;
 import com.agentscopea2a.v2.skills.SkillVectorIndexVisibilityFilter;
 import com.agentscopea2a.v2.skillManager.service.SkillManageBridge;
 import com.agentscopea2a.v2.skillManager.service.SkillManageService;
+import com.agentscopea2a.v2.tools.WriteMarkdownTool;
 import io.agentscope.core.model.Model;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
 import io.agentscope.harness.agent.skill.curator.LocalApprovalGate;
@@ -318,5 +320,21 @@ public class V2SkillConfig {
     @Bean
     public SkillManageBridge skillManageBridge(SkillIndexRepository indexRepo) {
         return new SkillManageBridge(indexRepo);
+    }
+
+    /**
+     * WriteMarkdownTool Bean - 将内容写入workspace下的MD文件。
+     *
+     * <p>仅由 SkillJobScheduler 在 Agent 执行完成后直接 Java 调用，不注册到 toolkit，
+     * 不通过 tool_call 机制暴露给 AI。
+     * 使用 Supplier 延迟解析 WriteCallback（即 SkillJobScheduler），
+     * 避免 WriteMarkdownTool ↔ SkillJobScheduler 循环依赖：
+     * ObjectProvider.getIfAvailable() 在 bean 创建时即调用，无法真正延迟；
+     * Supplier.get() 推迟到 writeMarkdown() 运行时调用，此时 Scheduler 已完成初始化。
+     */
+    @Bean
+    public WriteMarkdownTool writeMarkdownTool(
+            ObjectProvider<WriteCallback> writeCallbackProvider) {
+        return new WriteMarkdownTool(writeCallbackProvider::getIfAvailable);
     }
 }

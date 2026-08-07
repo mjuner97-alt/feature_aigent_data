@@ -81,6 +81,22 @@ public class SkillExceptionHandler {
         if (message.startsWith("SkillPendingApproval")) {
             return HttpStatus.CONFLICT;
         }
+        // SkillJob 相关异常前缀
+        if (message.startsWith("JobNotFound")) {
+            return HttpStatus.NOT_FOUND;
+        }
+        if (message.startsWith("JobAccessDenied")) {
+            return HttpStatus.FORBIDDEN;
+        }
+        if (message.startsWith("JobNameConflict") || message.startsWith("JobAlreadyRunning")) {
+            return HttpStatus.CONFLICT;
+        }
+        if (message.startsWith("JobQueueFull")) {
+            return HttpStatus.SERVICE_UNAVAILABLE;
+        }
+        if (message.startsWith("WebhookAuthFailed")) {
+            return HttpStatus.UNAUTHORIZED;
+        }
         return HttpStatus.INTERNAL_SERVER_ERROR;
     }
 }
