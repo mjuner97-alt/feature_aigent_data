@@ -22,6 +22,7 @@ import SkillListPage from './pages/skill/SkillListPage.vue';
 import SkillDetailPage from './pages/skill/SkillDetailPage.vue';
 import SkillFormPage from './pages/skill/SkillFormPage.vue';
 import SkillApprovalListPage from './pages/skill/SkillApprovalListPage.vue';
+import SkillJobListPage from './pages/skill/SkillJobListPage.vue';
 import SqlRegistryPage from './pages/SqlRegistryPage.vue';
 import { isLoggedIn } from './utils/auth';
 
@@ -42,6 +43,7 @@ const routes: RouteRecordRaw[] = [
           { path: 'created', component: SkillListPage, props: { view: 'created' } },
           { path: 'popular', component: SkillListPage, props: { view: 'popular' } },
           { path: 'approvals', component: SkillApprovalListPage },
+          { path: 'jobs', component: SkillJobListPage },
           { path: 'new', component: SkillFormPage },
           { path: ':id/edit', component: SkillFormPage },
           { path: ':id', component: SkillDetailPage },
