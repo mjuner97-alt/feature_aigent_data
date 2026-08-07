@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.mapper.ck.ClickHousePingMapper">
+
+    <resultMap id="PingResultMap" type="com.agentscopea2a.entity.PingResult">
+        <result column="result" property="result"/>
+        <result column="source" property="source"/>
+    </resultMap>
+
+    <!-- ClickHouse 不支持单行 SELECT 别名时省略 FROM,但 SELECT 1 依旧合法 -->
+    <select id="ping" resultMap="PingResultMap">
+        SELECT toInt32(1) AS result, 'clickhouse' AS source
+    </select>
+
+</mapper>

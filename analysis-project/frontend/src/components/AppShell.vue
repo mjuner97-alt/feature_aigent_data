@@ -2,8 +2,10 @@
   <div :style="S.root">
     <div :style="S.main">
       <div :style="S.nav">
+        <!-- 导航入口暂不放开, 首页 / 默认重定向到 /skills
         <router-link to="/skills" :style="navStyle('/skills')">🧩 Skill 广场</router-link>
         <router-link to="/sql-registry" :style="navStyle('/sql-registry')">🗃️ SQL 注册表</router-link>
+        -->
         <div :style="S.navRight">
           <span v-if="user" :style="S.userName">{{ user.name }} ({{ user.userId }})</span>
           <button :style="S.logoutBtn" @click="handleLogout">退出</button>

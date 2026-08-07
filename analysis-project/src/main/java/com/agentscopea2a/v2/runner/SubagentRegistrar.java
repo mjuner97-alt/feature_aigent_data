@@ -25,14 +25,14 @@ import com.agentscopea2a.v2.middleware.PythonExecAccessMiddleware;
 import com.agentscopea2a.v2.middleware.SubagentEventForwardingMiddleware;
 import com.agentscopea2a.v2.middleware.ToolResultTruncationMiddleware;
 import com.agentscopea2a.v2.tools.ArithTool;
-import com.agentscopea2a.v2.tools.ClickHouseWideTableMetricsTool;
 import com.agentscopea2a.v2.tools.PerUserMemoryGetTool;
 import com.agentscopea2a.v2.tools.PythonExecTool;
+import com.agentscopea2a.v2.tools.ScriptExecTool;
+import com.agentscopea2a.v2.tools.ScriptListTool;
 import com.agentscopea2a.v2.tools.SkillSaveTool;
 import com.agentscopea2a.v2.tools.SqlListTool;
 import com.agentscopea2a.v2.tools.SqlRegistryExecTool;
 import com.agentscopea2a.v2.tools.ToolRoutersIndex;
-import com.agentscopea2a.v2.tools.WideTableMetricsTool;
 import com.agentscopea2a.v2.trace.collector.AiChatRestToolCallTrackingToDbHook;
 import com.agentscopea2a.v2.verify.L2EventCollectorHook;
 import com.agentscopea2a.v2.config.WorkspaceMaterializer;
@@ -42,6 +42,7 @@ import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.filesystem.spec.SandboxFilesystemSpec;
 import io.agentscope.harness.agent.subagent.AgentSpecLoader;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -79,6 +80,14 @@ public class SubagentRegistrar {
     private static final Logger log = LoggerFactory.getLogger(SubagentRegistrar.class);
 
     private final Map<String, Object> toolRegistry = new HashMap<>();
+
+    /**
+     * Shared hard rules loaded from {@code skills/_common/SKILL.md} at startup.
+     * Prepended to every subagent's sysPrompt so CSV path / arith / empty result /
+     * direct-call rules don't need to be repeated in each *_metrics SKILL.md.
+     * Empty string if file missing (graceful degradation).
+     */
+    private final String commonRules;
     private final List<SubagentDeclaration> specs;
 
     /**
@@ -145,10 +154,10 @@ public class SubagentRegistrar {
             ObjectProvider<PythonExecTool> pythonExecToolProvider,
             ObjectProvider<SkillSaveTool> skillSaveToolProvider,
             ObjectProvider<ArithTool> arithToolProvider,
-            ObjectProvider<WideTableMetricsTool> wideTableMetricsToolProvider,
-            ObjectProvider<ClickHouseWideTableMetricsTool> clickHouseWideTableMetricsToolProvider,
             ObjectProvider<SqlListTool> sqlListToolProvider,
             ObjectProvider<SqlRegistryExecTool> sqlRegistryExecToolProvider,
+            ObjectProvider<ScriptListTool> scriptListToolProvider,
+            ObjectProvider<ScriptExecTool> scriptExecToolProvider,
             ObjectProvider<ArtifactHandoffHook> artifactHandoffHookProvider,
             ObjectProvider<ArtifactAccessMiddleware> artifactAccessMiddlewareProvider,
             ObjectProvider<PythonExecAccessMiddleware> pythonExecAccessMiddlewareProvider,
@@ -177,23 +186,9 @@ public class SubagentRegistrar {
         if (at != null) {
             toolRegistry.put("arith", at);
         }
-        // wide_table_query 直接注册给子 agent, 跳过 router_tool 元工具路由.
-        // 原因: trace 显示 LLM 调 router_tool({toolId:"wide_table_query",...}) 时多次拼参失败
-        // (JSON 反序列化错 / schema.table 格式 / schema 名错), 浪费 4 轮 LLM 往返.
-        // 直接暴露后, LLM 一次就能调通, 省 toolMetaInfo + router_tool 共 5 轮往返.
-        WideTableMetricsTool wt = wideTableMetricsToolProvider.getIfAvailable();
-        if (wt != null) {
-            toolRegistry.put("wide_table_query", wt);
-        }
-        // clickhouse_query 同样直接注册给子 agent, 跳过 router_tool. 与 wide_table_query 对齐,
-        // 让 analyze_data 子 agent 直接调 clickhouse_query 查 ClickHouse 宽表 (如 default.trace_recent).
-        ClickHouseWideTableMetricsTool ck = clickHouseWideTableMetricsToolProvider.getIfAvailable();
-        if (ck != null) {
-            toolRegistry.put("clickhouse_query", ck);
-        }
-        // sql_list + sql_registry_exec 直接注册给子 agent, 跳过 router_tool. 与 wide_table_query /
-        // clickhouse_query 对齐, 让 analyze_data 子 agent 调 sql_list 看可用 sql_id 后直接调
-        // sql_registry_exec(sqlId, params) 执行预注册复杂 SQL (GROUP BY / CASE WHEN / JOIN 等).
+        // sql_list + sql_registry_exec 直接注册给子 agent, 跳过 router_tool. 让 analyze_data 子 agent
+        // 调 sql_list 看可用 sql_id 后直接调 sql_registry_exec(sqlId, params) 执行预注册复杂 SQL
+        // (GROUP BY / CASE WHEN / JOIN 等).
         SqlListTool slt = sqlListToolProvider.getIfAvailable();
         if (slt != null) {
             toolRegistry.put("sql_list", slt);
@@ -201,6 +196,18 @@ public class SubagentRegistrar {
         SqlRegistryExecTool sre = sqlRegistryExecToolProvider.getIfAvailable();
         if (sre != null) {
             toolRegistry.put("sql_registry_exec", sre);
+        }
+        // script_list + script_exec 直接注册给子 agent, 跳过 router_tool. 与 sql_list / sql_registry_exec
+        // 对齐, 让 analyze_data 子 agent 调 script_list 看可用 script_id 后直接调
+        // script_exec(scriptId, params) 执行预注册 Python 脚本 (SQL 取数 + pandas 算指标一次完成),
+        // 替代 sql_registry_exec + python_exec 两步走, 避免 LLM 写 pandas 代码卡死.
+        ScriptListTool sl = scriptListToolProvider.getIfAvailable();
+        if (sl != null) {
+            toolRegistry.put("script_list", sl);
+        }
+        ScriptExecTool se = scriptExecToolProvider.getIfAvailable();
+        if (se != null) {
+            toolRegistry.put("script_exec", se);
         }
         this.artifactHandoffHook = artifactHandoffHookProvider.getIfAvailable();
         this.artifactAccessMiddleware = artifactAccessMiddlewareProvider.getIfAvailable();
@@ -221,6 +228,7 @@ public class SubagentRegistrar {
         workspace = WorkspaceMaterializer.ensureMaterialized(workspace);
         Path dir = workspace.resolve("agent-subagents");
         this.specs = AgentSpecLoader.loadFromDirectory(dir, workspace);
+        this.commonRules = loadCommonRules(workspace);
 
         for (SubagentDeclaration spec : specs) {
             List<String> tools = spec.getTools() != null ? spec.getTools() : List.of();
@@ -266,7 +274,12 @@ public class SubagentRegistrar {
             Path workspace,
             ObjectProvider<SandboxFilesystemSpec> sandboxFsProvider) {
         String agentId = spec.getName();
-        String sysPrompt = spec.getInlineAgentsBody();
+        String basePrompt = spec.getInlineAgentsBody();
+        // Prepend shared hard rules (_common/SKILL.md) so each *_metrics skill
+        // doesn't need to repeat CSV path / arith / empty result / direct-call rules.
+        String sysPrompt = (commonRules != null && !commonRules.isEmpty())
+                ? commonRules + "\n\n---\n\n" + basePrompt
+                : basePrompt;
         int steps = spec.getSteps() > 0 ? spec.getSteps() : 5;
         List<String> toolNames = spec.getTools() != null ? spec.getTools() : List.of();
 
@@ -459,5 +472,38 @@ public class SubagentRegistrar {
                     toolResultTruncationMiddleware != null);
             return built;
         });
+    }
+
+    /**
+     * Load {@code skills/_common/SKILL.md} body (stripped of YAML frontmatter) at startup.
+     * The content is prepended to every subagent's sysPrompt so each *_metrics skill
+     * doesn't need to repeat CSV path / arith / empty-result / direct-call rules.
+     * Returns empty string if file missing (graceful degradation - subagents just
+     * lose the shared rules, still functional via per-skill rules).
+     */
+    private static String loadCommonRules(Path workspace) {
+        if (workspace == null) return "";
+        Path commonPath = workspace.resolve("skills").resolve("_common").resolve("SKILL.md");
+        if (!Files.exists(commonPath)) {
+            log.warn("SubagentRegistrar: _common/SKILL.md not found at {}, subagent sysPrompt will not include shared rules",
+                    commonPath);
+            return "";
+        }
+        try {
+            String content = Files.readString(commonPath);
+            // Strip YAML frontmatter (--- ... ---) if present
+            if (content.startsWith("---")) {
+                int end = content.indexOf("\n---", 3);
+                if (end > 0) {
+                    content = content.substring(end + 4).stripLeading();
+                }
+            }
+            log.info("SubagentRegistrar: loaded _common/SKILL.md ({} chars) from {}",
+                    content.length(), commonPath);
+            return content;
+        } catch (Exception e) {
+            log.warn("SubagentRegistrar: failed to read _common/SKILL.md: {}", e.getMessage());
+            return "";
+        }
     }
 }

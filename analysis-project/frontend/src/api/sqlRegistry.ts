@@ -10,10 +10,11 @@ function jsonHeaders(): Record<string, string> {
   return { ...authHeaders(), 'Content-Type': 'application/json' };
 }
 
-/** 列表 (可选按 datasource 筛选) */
-export async function listEntries(datasource?: string): Promise<SqlRegistryListItem[]> {
+/** 列表 (可选按 datasource / createdBy 筛选) */
+export async function listEntries(datasource?: string, createdBy?: string): Promise<SqlRegistryListItem[]> {
   const qs = new URLSearchParams();
   if (datasource) qs.set('datasource', datasource);
+  if (createdBy) qs.set('createdBy', createdBy);
   const res = await fetch(`${BASE}?${qs.toString()}`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`获取列表失败: ${res.status}`);
   return res.json();

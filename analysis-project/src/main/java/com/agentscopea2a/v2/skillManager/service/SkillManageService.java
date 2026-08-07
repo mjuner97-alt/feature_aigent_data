@@ -131,6 +131,16 @@ public class SkillManageService {
             }
             // 已 APPROVED 发布到用户所属维度(GROUP/DEPARTMENT/PRODUCT_LINE/COMPANY)的 skill
             // 视为"已使用":同维度的人默认可用,无需手动引用。COMPANY(杭研)全员命中。
+            //
+            // 这一段是"维度默认可用"的核心:它让维度内的 skill 在列表上 used=true 且出现在
+            // "我使用的"视图里,但【不会】往 skill_reference 表写记录。所以维度内的 skill 在详情页
+            // 的"引用/取消引用"按钮可能显示"引用"(无显式引用记录),与列表的"已使用"徽章不一致。
+            // 见下方 used 的三来源注释,以及 unreference() 的说明。
+            //
+            // 维度匹配来源:mockOrgService.getUserOrgs(userId) 查 developer_pl_person_info
+            // 取该用户的 统计组/部门(产品线分支已注释)+ 固定 COMPANY=杭研。
+            // 若 userId 查不到人员记录(如未登录的 demo-user),userOrgKeys 仅含 COMPANY,
+            // 此时只有发布到 COMPANY 的 skill 能进入 dimensionUsedIds。
             if (userId != null && !approved.isEmpty()) {
                 Set<String> userOrgKeys = new HashSet<>();
                 for (MockOrgService.OrgRef ref : mockOrgService.getUserOrgs(userId)) {
@@ -155,11 +165,18 @@ public class SkillManageService {
         List<SkillListItem> items = new ArrayList<>(skills.size());
         for (Skill s : skills) {
             // "已使用" = 显式引用 ∪ 自己创建 ∪ 所属维度已发布
+            // ① usedIds:当前用户在 skill_reference 表里有 creator=userId 记录(手动点过"引用",或创建时自引用)
+            // ② owner:当前用户就是所有者(创建者默认自引用,但即便取消自引用,owner 身份仍使其 used=true)
+            // ③ dimensionUsedIds:skill 已 APPROVED 发布到当前用户所属维度(默认可用,无引用记录)
+            //
+            // 与详情页"引用/取消引用"按钮的差别:按钮只看 ①(显式引用记录),不包含 ②③。
+            // 因此维度内的 skill 列表显示"已使用",但详情页按钮可能显示"引用"(无显式引用)。
+            // 点"取消引用"只会删 ① 的记录:若 ② 或 ③ 仍成立,列表仍为"已使用";否则变"未使用"。
             boolean used = usedIds.contains(s.getId())
                     || (userId != null && userId.equals(s.getOwnerUserId()))
                     || dimensionUsedIds.contains(s.getId());
             boolean disabled = disabledIds.contains(s.getId());
-            boolean available = used && !disabled;
+            boolean available = used && !disabled; // 被禁用后即使 used 也不可用
             String dim = skillDimension.getOrDefault(s.getId(), "PERSONAL");
             String ownerName = ownerNames.get(s.getOwnerUserId());
             items.add(SkillListItem.of(s, likedIds.contains(s.getId()),
@@ -354,14 +371,20 @@ public class SkillManageService {
     }
 
     // ==================== 引用(幂等) ====================
+    // 引用/取消引用只维护 skill_reference 表的"显式引用"记录,是 used 三来源中的 ①。
+    // 它【不影响】②所有者身份 与 ③维度默认可用:维度内的 skill 即便不显式引用也 used=true。
+    // 详情页"引用/取消引用"按钮(referenced)即对应这里的操作。
 
     @Transactional("gaussTransactionManager")
     public void reference(Long skillId, String userId) {
         Skill skill = get(skillId); // 校验 Skill 存在
         if (skillMapper.existsReferenceByCreatorTarget(userId, skillId)) {
-            return; // 幂等
+            return; // 幂等:已有显式引用记录,直接返回
         }
         try {
+            // 写入 skill_reference(creator=userId, target_skill_id=skillId)
+            // sourceSkillId/targetSkillId 都填 skillId:本系统里"引用"即"把别人/维度的 skill 纳入我使用的",
+            // 不存在 skill 之间互相引用的语义,故 source 与 target 同值。
             skillMapper.insertSkillReference(SkillReference.builder()
                     .sourceSkillId(skillId).targetSkillId(skillId).creator(userId)
                     .createdAt(LocalDateTime.now()).build());
@@ -374,6 +397,10 @@ public class SkillManageService {
     @Transactional("gaussTransactionManager")
     public void unreference(Long skillId, String userId) {
         get(skillId); // 校验 Skill 存在
+        // 只删除当前用户对该 skill 的显式引用记录(skill_reference 表)。
+        // 注意:删除后该 skill 在列表上的 used 标记不一定变 false--
+        //  若用户是该 skill 的所有者(②) 或 skill 已发布到其所属维度(③),used 仍为 true,列表仍显示"已使用"。
+        //  只有 ②③ 都不成立时(如非 owner 且维度未匹配/未发布),used 才会变为 false,列表显示"未使用"。
         skillMapper.deleteReferenceByCreatorTarget(userId, skillId);
         // 引用不复制文件,取消引用也无需清理文件
     }

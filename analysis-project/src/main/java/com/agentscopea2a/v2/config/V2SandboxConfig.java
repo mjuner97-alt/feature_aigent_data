@@ -405,6 +405,7 @@ public class V2SandboxConfig {
             private String remoteDockerSshTarget = "";
             private java.util.List<String> remoteDockerSshOptions = java.util.List.of();
             private long remoteDockerTimeoutSeconds = 60;
+            private boolean localPythonEnabled = false;
 
             public boolean isEnabled() { return enabled; }
             public void setEnabled(boolean enabled) { this.enabled = enabled; }
@@ -432,6 +433,8 @@ public class V2SandboxConfig {
             public void setRemoteDockerSshOptions(java.util.List<String> remoteDockerSshOptions) { this.remoteDockerSshOptions = remoteDockerSshOptions == null ? java.util.List.of() : remoteDockerSshOptions; }
             public long getRemoteDockerTimeoutSeconds() { return remoteDockerTimeoutSeconds; }
             public void setRemoteDockerTimeoutSeconds(long remoteDockerTimeoutSeconds) { this.remoteDockerTimeoutSeconds = remoteDockerTimeoutSeconds; }
+            public boolean isLocalPythonEnabled() { return localPythonEnabled; }
+            public void setLocalPythonEnabled(boolean localPythonEnabled) { this.localPythonEnabled = localPythonEnabled; }
         }
 
         public static class Distributed {

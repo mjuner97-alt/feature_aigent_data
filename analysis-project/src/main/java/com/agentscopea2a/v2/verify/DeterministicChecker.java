@@ -54,7 +54,7 @@ public class DeterministicChecker {
             "data_pivot", "data_distribution",
             "quality_query_by_version_department", "quality_query_by_department_quarter",
             "quality_query_by_version_person", "quality_query_by_quarter_person",
-            "wide_table_query");
+            "sql_registry_exec", "script_exec");
 
     private static final Pattern CSV_PATH = Pattern.compile("[\\w/\\-]+\\.csv");
     private static final Pattern HAS_DIGIT = Pattern.compile("\\d");

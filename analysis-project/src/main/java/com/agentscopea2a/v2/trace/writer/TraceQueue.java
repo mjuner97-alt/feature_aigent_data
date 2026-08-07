@@ -19,6 +19,7 @@ import com.agentscopea2a.v2.trace.config.TraceProperties;
 import com.agentscopea2a.v2.trace.model.AssembledTrace;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
 
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
@@ -28,9 +29,13 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * 组装后 Trace 的有界阻塞队列缓冲区。
  *
- * <p>已弃用：trace 落库改为请求结束（cleanup）时由 {@link TraceBatchWriter#write} 直接写入，
- * 不再走定时攒批队列。此类保留仅供回退，不再是 Spring bean（无 {@code @Component}）。
+ * <p>注：原本计划弃用 (trace 落库改由 TraceBatchWriter#write 在 cleanup 时直接写入),
+ * 但 V2ChatStreamServiceImpl.cleanup 仍调 {@link #offer} 入队, 同事的
+ * "trace list修改" (7213c0e) 移除 {@code @Component} 后导致启动失败.
+ * 暂时恢复 {@code @Component}, 待 V2ChatStreamServiceImpl 切到 TraceBatchWriter
+ * 直接调用后再去掉.
  */
+@Component
 public class TraceQueue {
 
     private static final Logger log = LoggerFactory.getLogger(TraceQueue.class);

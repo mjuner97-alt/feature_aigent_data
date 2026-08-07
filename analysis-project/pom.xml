@@ -126,6 +126,16 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- ========== Flyway (双数据源迁移, FlywayConfig.java 手动配置) ========== -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-mysql</artifactId>
+        </dependency>
+
         <!-- ========== 日志:Log4j2 + SLF4J ========== -->
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>

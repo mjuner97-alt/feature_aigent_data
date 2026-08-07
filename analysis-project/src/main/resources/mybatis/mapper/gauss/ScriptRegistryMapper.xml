@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.mapper.gauss.ScriptRegistryMapper">
+
+    <resultMap id="BaseResultMap" type="com.agentscopea2a.entity.ScriptRegistryEntry">
+        <id     column="id"              property="id"/>
+        <result column="script_id"       property="scriptId"/>
+        <result column="name"            property="name"/>
+        <result column="description"     property="description"/>
+        <result column="script_path"     property="scriptPath"/>
+        <result column="datasources"     property="datasources"/>
+        <result column="params_schema"   property="paramsSchema"/>
+        <result column="timeout_seconds" property="timeoutSeconds"/>
+        <result column="enabled"         property="enabled"/>
+        <result column="created_at"      property="createdAt"/>
+        <result column="updated_at"      property="updatedAt"/>
+        <result column="created_by"      property="createdBy"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, script_id, name, description, script_path, datasources, params_schema,
+        timeout_seconds, enabled, created_at, updated_at, created_by
+    </sql>
+
+    <!-- 兼容 ScriptExecTool: 按 script_id 查询 (仅启用) -->
+    <select id="selectByScriptId" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM script_registry
+        WHERE script_id = #{scriptId}
+          AND enabled = 1
+    </select>
+
+    <!-- 兼容 ScriptListTool: 列出所有启用记录 (排除 description 全文) -->
+    <select id="listAllEnabled" resultMap="BaseResultMap">
+        SELECT id, script_id, name, description, script_path, datasources,
+               params_schema, timeout_seconds, enabled, created_at, updated_at
+        FROM script_registry
+        WHERE enabled = 1
+        ORDER BY script_id
+    </select>
+
+</mapper>

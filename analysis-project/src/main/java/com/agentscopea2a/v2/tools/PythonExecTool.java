@@ -49,9 +49,12 @@ import org.slf4j.LoggerFactory;
  * twice per calculation; this tool does it once, piping the code into {@code python3 -} via stdin
  * so we never touch the filesystem at all.
  *
- * <p><b>Two transports.</b>
+ * <p><b>Transports.</b>
  *
  * <ul>
+ *   <li><b>Local Python</b> ({@code localPythonEnabled=true}): {@code python3 -} forked directly
+ *       from the JVM process. Used when JVM runs inside the Python-equipped container (e.g.
+ *       {@code analysis-project-test}) - same link as {@link ScriptExecTool} (~50ms, no SSH).
  *   <li><b>Remote Docker</b> (sandbox profile + {@code remoteDockerEnabled=true}): we shell out to
  *       {@code ssh <target> docker exec -i <container> python3 -} and feed code to stdin. Same
  *       command we'd run if we'd done it manually.
@@ -168,12 +171,18 @@ public class PythonExecTool {
      * Picks the right transport based on sandbox config:
      *
      * <ul>
+     *   <li>{@code localPythonEnabled=true}: {@code python3 -} on the host (same-container fork,
+     *       ~50ms). Used when JVM runs inside the Python-equipped container (e.g. analysis-project-test)
+     *       and we don't want to SSH out to a separate sandbox container. Mirrors {@link ScriptExecTool}.
      *   <li>sandbox + remote SSH + shared container: {@code ssh <target> docker exec -i <name> python3 -}
      *   <li>sandbox + local + shared container: {@code docker exec -i <name> python3 -}
      *   <li>otherwise: {@code python3 -} on host (only fine when no sandbox profile is active)
      * </ul>
      */
     private List<String> buildCommand() {
+        if (sandbox != null && sandbox.isLocalPythonEnabled()) {
+            return List.of("python3", "-");
+        }
         if (sandbox != null && sandbox.isEnabled() && !isBlank(sandbox.getSharedContainerName())) {
             String container = sandbox.getSharedContainerName();
             if (sandbox.isRemoteDockerEnabled()

@@ -44,9 +44,11 @@ public class CsvDownloadTool {
     static final String MOUNT_PREFIX = "/workspace/artifacts";
 
     private final UrlShortenerService urlShortenerService;
+    private final String baseUrl;
 
-    public CsvDownloadTool(UrlShortenerService urlShortenerService) {
+    public CsvDownloadTool(UrlShortenerService urlShortenerService, String baseUrl) {
         this.urlShortenerService = urlShortenerService;
+        this.baseUrl = baseUrl == null ? "" : stripTrailingSlash(baseUrl.strip());
     }
 
     @Tool(
@@ -77,10 +79,15 @@ public class CsvDownloadTool {
         if (shortCode == null) {
             return ToolResultBlock.text("generate_csv_download_url 失败: 短链服务不可用");
         }
-        String shortUrl = "/redirect/download?shortCode=" + shortCode;
+        // baseUrl 空 -> 相对路径 (前端走 vite proxy); 设了 -> 拼完整 URL (跨域 / 独立域名 / 直连后端 8081 时用)
+        String shortUrl = baseUrl + "/redirect/download?shortCode=" + shortCode;
         String content = "CSV 下载链接已生成:\n" + shortUrl
                 + "\n请直接点击下载 (链接长期有效).";
         return new ToolResultBlock(null, "generate_csv_download_url",
                 List.of(TextBlock.builder().text(content).build()), null);
+    }
+
+    private static String stripTrailingSlash(String s) {
+        return s.endsWith("/") ? s.substring(0, s.length() - 1) : s;
     }
 }

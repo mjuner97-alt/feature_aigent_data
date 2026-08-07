@@ -38,7 +38,7 @@ public class SqlRegistryController {
     // ==================== CRUD ====================
 
     /**
-     * 列表 (含禁用记录, 可选按 datasource 筛选).
+     * 列表 (含禁用记录, 可选按 datasource / createdBy 筛选).
      */
     @GetMapping
     public List<SqlRegistryEntry> list(
