@@ -55,8 +55,6 @@ public class ToolRoutersIndex {
     private final DataPrimitivesTool dataPrimitivesTool;
     private final DownloadTool downloadTool;
     private final CsvDownloadTool csvDownloadTool;
-    private final WideTableMetricsTool wideTableMetricsTool;
-    private final ClickHouseWideTableMetricsTool clickHouseWideTableMetricsTool;
     private final SqlListTool sqlListTool;
     private final SqlRegistryExecTool sqlRegistryExecTool;
 
@@ -64,16 +62,12 @@ public class ToolRoutersIndex {
                             DataPrimitivesTool dataPrimitivesTool,
                             DownloadTool downloadTool,
                             CsvDownloadTool csvDownloadTool,
-                            WideTableMetricsTool wideTableMetricsTool,
-                            ClickHouseWideTableMetricsTool clickHouseWideTableMetricsTool,
                             SqlListTool sqlListTool,
                             SqlRegistryExecTool sqlRegistryExecTool) {
         this.agentTools = agentTools;
         this.dataPrimitivesTool = dataPrimitivesTool;
         this.downloadTool = downloadTool;
         this.csvDownloadTool = csvDownloadTool;
-        this.wideTableMetricsTool = wideTableMetricsTool;
-        this.clickHouseWideTableMetricsTool = clickHouseWideTableMetricsTool;
         this.sqlListTool = sqlListTool;
         this.sqlRegistryExecTool = sqlRegistryExecTool;
     }
@@ -85,8 +79,6 @@ public class ToolRoutersIndex {
         registerTools(DataPrimitivesTool.class, dataPrimitivesTool);
         registerTools(DownloadTool.class, downloadTool);
         registerTools(CsvDownloadTool.class, csvDownloadTool);
-        registerTools(WideTableMetricsTool.class, wideTableMetricsTool);
-        registerTools(ClickHouseWideTableMetricsTool.class, clickHouseWideTableMetricsTool);
         registerTools(SqlListTool.class, sqlListTool);
         registerTools(SqlRegistryExecTool.class, sqlRegistryExecTool);
         log.info("ToolRoutersIndex 初始化完成,已注册工具: {}", toolMethodMap.keySet());

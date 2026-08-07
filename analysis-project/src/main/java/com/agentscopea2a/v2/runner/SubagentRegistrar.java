@@ -25,14 +25,14 @@ import com.agentscopea2a.v2.middleware.PythonExecAccessMiddleware;
 import com.agentscopea2a.v2.middleware.SubagentEventForwardingMiddleware;
 import com.agentscopea2a.v2.middleware.ToolResultTruncationMiddleware;
 import com.agentscopea2a.v2.tools.ArithTool;
-import com.agentscopea2a.v2.tools.ClickHouseWideTableMetricsTool;
 import com.agentscopea2a.v2.tools.PerUserMemoryGetTool;
 import com.agentscopea2a.v2.tools.PythonExecTool;
+import com.agentscopea2a.v2.tools.ScriptExecTool;
+import com.agentscopea2a.v2.tools.ScriptListTool;
 import com.agentscopea2a.v2.tools.SkillSaveTool;
 import com.agentscopea2a.v2.tools.SqlListTool;
 import com.agentscopea2a.v2.tools.SqlRegistryExecTool;
 import com.agentscopea2a.v2.tools.ToolRoutersIndex;
-import com.agentscopea2a.v2.tools.WideTableMetricsTool;
 import com.agentscopea2a.v2.trace.collector.AiChatRestToolCallTrackingToDbHook;
 import com.agentscopea2a.v2.verify.L2EventCollectorHook;
 import com.agentscopea2a.v2.config.WorkspaceMaterializer;
@@ -154,10 +154,10 @@ public class SubagentRegistrar {
             ObjectProvider<PythonExecTool> pythonExecToolProvider,
             ObjectProvider<SkillSaveTool> skillSaveToolProvider,
             ObjectProvider<ArithTool> arithToolProvider,
-            ObjectProvider<WideTableMetricsTool> wideTableMetricsToolProvider,
-            ObjectProvider<ClickHouseWideTableMetricsTool> clickHouseWideTableMetricsToolProvider,
             ObjectProvider<SqlListTool> sqlListToolProvider,
             ObjectProvider<SqlRegistryExecTool> sqlRegistryExecToolProvider,
+            ObjectProvider<ScriptListTool> scriptListToolProvider,
+            ObjectProvider<ScriptExecTool> scriptExecToolProvider,
             ObjectProvider<ArtifactHandoffHook> artifactHandoffHookProvider,
             ObjectProvider<ArtifactAccessMiddleware> artifactAccessMiddlewareProvider,
             ObjectProvider<PythonExecAccessMiddleware> pythonExecAccessMiddlewareProvider,
@@ -186,23 +186,9 @@ public class SubagentRegistrar {
         if (at != null) {
             toolRegistry.put("arith", at);
         }
-        // wide_table_query 直接注册给子 agent, 跳过 router_tool 元工具路由.
-        // 原因: trace 显示 LLM 调 router_tool({toolId:"wide_table_query",...}) 时多次拼参失败
-        // (JSON 反序列化错 / schema.table 格式 / schema 名错), 浪费 4 轮 LLM 往返.
-        // 直接暴露后, LLM 一次就能调通, 省 toolMetaInfo + router_tool 共 5 轮往返.
-        WideTableMetricsTool wt = wideTableMetricsToolProvider.getIfAvailable();
-        if (wt != null) {
-            toolRegistry.put("wide_table_query", wt);
-        }
-        // clickhouse_query 同样直接注册给子 agent, 跳过 router_tool. 与 wide_table_query 对齐,
-        // 让 analyze_data 子 agent 直接调 clickhouse_query 查 ClickHouse 宽表 (如 default.trace_recent).
-        ClickHouseWideTableMetricsTool ck = clickHouseWideTableMetricsToolProvider.getIfAvailable();
-        if (ck != null) {
-            toolRegistry.put("clickhouse_query", ck);
-        }
-        // sql_list + sql_registry_exec 直接注册给子 agent, 跳过 router_tool. 与 wide_table_query /
-        // clickhouse_query 对齐, 让 analyze_data 子 agent 调 sql_list 看可用 sql_id 后直接调
-        // sql_registry_exec(sqlId, params) 执行预注册复杂 SQL (GROUP BY / CASE WHEN / JOIN 等).
+        // sql_list + sql_registry_exec 直接注册给子 agent, 跳过 router_tool. 让 analyze_data 子 agent
+        // 调 sql_list 看可用 sql_id 后直接调 sql_registry_exec(sqlId, params) 执行预注册复杂 SQL
+        // (GROUP BY / CASE WHEN / JOIN 等).
         SqlListTool slt = sqlListToolProvider.getIfAvailable();
         if (slt != null) {
             toolRegistry.put("sql_list", slt);
@@ -210,6 +196,18 @@ public class SubagentRegistrar {
         SqlRegistryExecTool sre = sqlRegistryExecToolProvider.getIfAvailable();
         if (sre != null) {
             toolRegistry.put("sql_registry_exec", sre);
+        }
+        // script_list + script_exec 直接注册给子 agent, 跳过 router_tool. 与 sql_list / sql_registry_exec
+        // 对齐, 让 analyze_data 子 agent 调 script_list 看可用 script_id 后直接调
+        // script_exec(scriptId, params) 执行预注册 Python 脚本 (SQL 取数 + pandas 算指标一次完成),
+        // 替代 sql_registry_exec + python_exec 两步走, 避免 LLM 写 pandas 代码卡死.
+        ScriptListTool sl = scriptListToolProvider.getIfAvailable();
+        if (sl != null) {
+            toolRegistry.put("script_list", sl);
+        }
+        ScriptExecTool se = scriptExecToolProvider.getIfAvailable();
+        if (se != null) {
+            toolRegistry.put("script_exec", se);
         }
         this.artifactHandoffHook = artifactHandoffHookProvider.getIfAvailable();
         this.artifactAccessMiddleware = artifactAccessMiddlewareProvider.getIfAvailable();

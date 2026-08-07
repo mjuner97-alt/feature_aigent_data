@@ -45,12 +45,14 @@ COPY pip.conf /etc/pip.conf
 COPY npmrc /root/.npmrc
 
 # pip 安装 agent python_exec 用到的库
+# jpype1: script_exec 调 openGauss 用 JPype+opengauss-jdbc (psycopg2 不支持 SHA256 SASL 认证)
 RUN pip3 install --no-cache-dir --break-system-packages \
         pandas \
         sqlalchemy \
         pymysql \
         psycopg2-binary \
-        clickhouse-sqlalchemy
+        clickhouse-sqlalchemy \
+        jpype1
 
 # ----------------------------------------------------------------------------
 # 预填 maven .m2 缓存: 用当前源码跑一次 mvn package
@@ -75,7 +77,7 @@ RUN cd /tmp-build-frontend \
 # 拷贝 nginx 配置 (覆盖默认 default.conf)
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-# 拷贝 entrypoint
+# 拷贝 entrypoint (作为 fallback, 优先用 /app/entrypoint.sh 即宿主机 mount 的版本)
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
@@ -89,4 +91,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
 
 EXPOSE 80
 
-ENTRYPOINT ["/entrypoint.sh"]
+# 用 /app/entrypoint.sh (宿主机 mount 的版本), 这样改 entrypoint.sh 不需要 rebuild 镜像
+# fallback /entrypoint.sh 在镜像里 (COPY 的旧版本), 仅在没 mount 时用
+ENTRYPOINT ["/app/entrypoint.sh"]

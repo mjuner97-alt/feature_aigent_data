@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "[entrypoint] starting analysis-project (方案 B: 容器内构建)..."
+echo "[entrypoint] starting analysis-project (方案 B: jar 直跑模式, 优先用 prebuilt jar)..."
 
 cd /app
 
@@ -19,17 +19,24 @@ if [ ! -L "$FE_NM" ]; then
 fi
 
 # ============================================================================
-# 2. 构建后端 (mvn package)
-#    -o 离线模式: 只用 .m2 缓存, 不查远程仓库
-#    内网无外网时避免每个依赖超时 30s; 缓存里缺依赖时 fail fast
+# 2. 后端 jar (优先用宿主机 mount 的 prebuilt jar, 找不到才 fallback mvn package)
+#    bind mount -v /java/analysis-project/analysis-project:/app 把宿主机 target/ 映射进来
+#    开发者在 Windows 或 docker-host 上 mvn package 打好 jar 后, 容器直接用, 不再每次启动重打包
+#    fallback mvn package 兜底: 宿主机没 jar 时容器内离线构建 (依赖 Dockerfile 预填的 .m2 缓存)
 # ============================================================================
-echo "[entrypoint] mvn package (offline)..."
-mvn -B -o package -DskipTests 2>&1 | tail -30
-
 JAR=/app/target/analysis-project-0.0.1-SNAPSHOT.jar
 if [ ! -f "$JAR" ]; then
-    echo "[entrypoint] ERROR: jar build failed, $JAR not found"
-    exit 1
+    echo "[entrypoint] $JAR not found, fallback to mvn package (offline)..."
+    mvn -B -o package -DskipTests 2>&1 | tail -30
+    if [ ! -f "$JAR" ]; then
+        echo "[entrypoint] ERROR: jar build failed, $JAR not found"
+        exit 1
+    fi
+    echo "[entrypoint] jar built via mvn package fallback"
+else
+    JAR_SIZE=$(stat -c %s "$JAR")
+    JAR_MTIME=$(stat -c %y "$JAR")
+    echo "[entrypoint] using prebuilt jar: $JAR (${JAR_SIZE} bytes, mtime=${JAR_MTIME})"
 fi
 
 # ============================================================================

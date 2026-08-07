@@ -1,6 +1,6 @@
 # 内网部署 - 导出与部署指南
 
-**日期**：2026-08-04
+**日期**：2026-08-06（更新：workspace 持久化 bind mount）
 **目标**：把 dev 机器上构建好的 `analysis-project:plan-b` 镜像 + 源码打包，传到内网宿主机部署。内网宿主机无需 maven/node/java 环境，只要有 Docker。
 
 ---
@@ -11,7 +11,7 @@
 
 | 包 | 内容 | 大小 | 说明 |
 |---|------|------|------|
-| `analysis-project-plan-b.tar.gz` | Docker 镜像 | ~800MB-1GB | 含 JDK 17 + maven + node 22 + nginx + python3 + 预填的 .m2 (161MB) + node_modules (73MB) |
+| `analysis-project-plan-b.tar.gz` | Docker 镜像 | ~800MB-1GB | 含 JDK 17 + maven + node 22 + nginx + python3 + jpype1 + 预填的 .m2 (161MB) + node_modules (73MB) |
 | `analysis-project-src.tar.gz` | 源码 | ~8MB | Java 源码 + React 源码 + pom.xml + vite 配置 + 部署脚本 |
 
 **不需要单独导出的**：
@@ -25,7 +25,21 @@
 - Docker 已安装（17.06+，支持 `docker load`）
 - 能访问内网的 MySQL / ClickHouse / openGauss / LLM API（`application-dev.properties` 配的远程地址）
 - **不需要**外网（mvn 用 `-o` 离线模式，npm 用镜像内缓存的 node_modules）
-- 磁盘空间：镜像解压后 ~1.64GB + 源码 ~50MB + build 产物 ~200MB ≈ 2GB
+- 磁盘空间：镜像解压后 ~1.64GB + 源码 ~50MB + build 产物 ~200MB + workspace 持久化 ~50MB ≈ 2GB
+
+### 1.3 workspace 持久化
+
+容器 `/workspace/harness-a2a` 通过 bind mount 持久化到宿主机 `$WORKSPACE_DIR`（默认 `源码目录/../analysis-workspace`），跨容器 recreate 保留：
+
+| 目录 | 持久化 | 说明 |
+|---|---|---|
+| `memory/` | ✅ | per-user MEMORY.md |
+| `artifacts/` | ✅ | CSV 下载等 |
+| `sessions/`, `user-*/` | ✅ | 运行时状态 |
+| `scripts/` | ✅ | Python 脚本 (script_exec 用) |
+| `agent-subagents/`, `AGENTS.md`, `knowledge/`, `skills/` | 每次 startup 从 jar overwrite | 代码产物,不需持久化 |
+
+**从老版本升级**（无 bind mount）：脚本自动检测旧容器的 workspace 数据,`docker cp` 迁移到宿主机目录。
 
 ---
 
@@ -135,25 +149,35 @@ cd /opt/analysis-project
   镜像包  = analysis-project-plan-b.tar.gz
   容器名  = analysis-project-test
   端口    = 18080
+
+可选环境变量:
+  WORKSPACE_DIR - workspace 持久化目录 (默认: $SRC_DIR/../analysis-workspace)
+  LLM_API_KEY   - LLM API key
+  LLM_API_URL   - LLM API base URL
+  LLM_MODEL     - LLM 模型名
 ```
 
-脚本做三件事：
+脚本做四件事：
 1. `gunzip -c 镜像包 | docker load`（加载镜像，~1-2min）
-2. `docker run -d -v 源码目录:/app analysis-project:plan-b`（启动容器）
-3. 等 `curl /actuator/health` 返回 UP（~70-80s，容器内 mvn + vite + spring boot）
+2. 准备 workspace 持久化目录（`mkdir -p $WORKSPACE_DIR`，从旧容器迁移数据）
+3. `docker run -d -v 源码目录:/app -v $WORKSPACE_DIR:/workspace/harness-a2a analysis-project:plan-b`（启动容器，两个 bind mount）
+4. 等 `curl /actuator/health` 返回 UP（jar 直跑模式 ~35-40s，fallback mvn ~70-80s）
 
-### 4.3 自定义 LLM（可选）
+### 4.3 自定义 LLM 和 workspace 路径（可选）
 
-如果内网用不同的 LLM 端点，设环境变量再跑部署脚本：
+如果内网用不同的 LLM 端点或想改 workspace 存放位置，设环境变量再跑部署脚本：
 
 ```bash
+# 自定义 workspace 路径 (默认在 源码目录/../analysis-workspace)
+export WORKSPACE_DIR="/data/my-workspace"
+
+# 自定义 LLM (不设则用 application.properties 里的默认值)
 export LLM_API_KEY="sk-your-internal-key"
 export LLM_API_URL="http://internal-llm:8080/v1"
 export LLM_MODEL="your-model-name"
+
 ./intranet-deploy.sh "$(pwd)" /path/to/analysis-project-plan-b.tar.gz
 ```
-
-不设则用 `application.properties` 里的默认值（DeepSeek API）。
 
 ### 4.4 验证
 
@@ -183,7 +207,8 @@ vim frontend-pm/src/App.tsx                  # 改前端
 
 ```bash
 docker restart analysis-project-test
-# 等 ~70s (mvn -o 43s + vite 5.6s + spring boot 32s)
+# jar 直跑模式 ~35-40s (npm build 7s + spring boot 32s)
+# fallback mvn 模式 ~70-80s (mvn -o 43s + vite 5.6s + spring boot 32s)
 ```
 
 ### 5.3 等就绪
@@ -198,7 +223,25 @@ for i in $(seq 1 120); do
 done
 ```
 
-### 5.4 改 pom.xml 加新依赖（需要外网）
+### 5.4 改 Python 脚本 (`workspace/scripts/`)
+
+⚠️ `scripts/` 是 "seeded once" — WorkspaceMaterializer **不会**覆盖已有文件。改源码后需手动同步到持久化目录：
+
+```bash
+# 改源码
+vim src/main/resources/workspace/scripts/_gauss_jdbc.py
+
+# 手动 cp 到 workspace 持久化目录
+cp src/main/resources/workspace/scripts/_gauss_jdbc.py \
+   $WORKSPACE_DIR/scripts/
+
+# 不需重启容器 (script_exec 每次读文件, 立即生效)
+# 或重启容器也可以
+```
+
+`AGENTS.md` / `agent-subagents/` / `skills/` / `knowledge/` 是 "always overwrite"，改源码后 `docker restart` 即可生效，无需手动 cp。
+
+### 5.5 改 pom.xml 加新依赖（需要外网）
 
 `mvn -o` 离线模式，如果新依赖不在 .m2 缓存里，直接报错。解决：
 
@@ -208,6 +251,8 @@ done
 4. 把新的 `analysis-project-plan-b.tar.gz` 传到内网
 5. 内网宿主机：`docker rmi analysis-project:plan-b`（删旧镜像）
 6. `./intranet-deploy.sh "$(pwd)" /path/to/new-analysis-project-plan-b.tar.gz`
+
+workspace 持久化目录不受影响（bind mount 独立于镜像）。
 
 ---
 
@@ -262,6 +307,47 @@ docker rm -f analysis-project-test
 ./intranet-deploy.sh "$(pwd)" analysis-project-plan-b.tar.gz analysis-project-test 19090
 ```
 
+### 6.6 script_exec 报 "GAUSS_JAR 环境变量未设置"
+
+ScriptExecTool 没注入 gauss 环境变量。检查：
+
+```bash
+# 1. application-dev.properties 里 gauss 数据源 enabled
+grep gauss.enabled src/main/resources/application-dev.properties
+# 应为: spring.datasource.hikari.gauss.enabled=true
+
+# 2. 后端日志看 ScriptExecTool 是否注册
+docker exec analysis-project-test grep -i "scriptExec\|gauss" /var/log/backend.log | tail -10
+```
+
+### 6.7 JPype 报 "ModuleNotFoundError: No module named 'java'"
+
+`_gauss_jdbc.py` 缺 `import jpype.imports`。检查持久化目录里的脚本：
+
+```bash
+grep 'jpype.imports' $WORKSPACE_DIR/scripts/_gauss_jdbc.py
+# 应输出: import jpype.imports  # 启用 from java... import ... 语法
+```
+
+如果缺失，从源码 cp 过去：
+
+```bash
+cp src/main/resources/workspace/scripts/_gauss_jdbc.py $WORKSPACE_DIR/scripts/
+```
+
+### 6.8 workspace 数据丢失
+
+检查 bind mount 是否生效：
+
+```bash
+docker inspect analysis-project-test --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}'
+# 应看到两行:
+# /opt/analysis-project -> /app
+# /data/analysis-workspace -> /workspace/harness-a2a
+```
+
+如果只有 `/app` 一行，说明 `WORKSPACE_DIR` 没生效，重新跑部署脚本。
+
 ---
 
 ## 7. 完整流程速查
@@ -281,16 +367,36 @@ docker build -t analysis-project:plan-b .
 mkdir -p /opt/analysis-project && cd /opt/analysis-project
 tar xzf /path/to/analysis-project-src.tar.gz
 ./intranet-deploy.sh "$(pwd)" /path/to/analysis-project-plan-b.tar.gz
+# 自动: 加载镜像 + mkdir workspace + 启动容器 (两个 bind mount) + 等健康检查
 # 访问 http://localhost:18080
 ```
 
-### 内网宿主机（改代码后更新）
+### 内网宿主机（改 Java/前端代码后更新）
 
 ```bash
 cd /opt/analysis-project
 vim src/...  # 改代码
 docker restart analysis-project-test
-# 等 ~70s
+# 等 ~35-40s (jar 直跑模式)
+```
+
+### 内网宿主机（改 Python 脚本后更新）
+
+```bash
+cd /opt/analysis-project
+vim src/main/resources/workspace/scripts/foo.py
+# 手动 cp 到 workspace 持久化目录 (scripts/ 是 seeded once, 不覆盖)
+cp src/main/resources/workspace/scripts/foo.py ../analysis-workspace/scripts/
+# 不需重启 (script_exec 每次读文件)
+```
+
+### 内网宿主机（改 AGENTS.md / skills / agent-subagents 后更新）
+
+```bash
+cd /opt/analysis-project
+vim src/main/resources/workspace/AGENTS.md
+docker restart analysis-project-test
+# 这些是 always overwrite, 重启自动同步
 ```
 
 ### 内网宿主机（pom.xml 变更后更新）
@@ -300,4 +406,5 @@ docker restart analysis-project-test
 # 内网宿主机上:
 docker rmi analysis-project:plan-b
 ./intranet-deploy.sh "$(pwd)" /path/to/new-analysis-project-plan-b.tar.gz
+# workspace 持久化目录不受影响 (bind mount 独立于镜像)
 ```

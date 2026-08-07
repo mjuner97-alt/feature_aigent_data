@@ -17,6 +17,7 @@ description: 所有 *_metrics skill 共享的硬规则 (CSV 路径 / arith / 空
 
 - 任何加减乘除 / 百分比一律走 `arith` 工具, 哪怕只是 "23.1 - 13.1"
 - 禁止 LLM 心算百分比 (小参数模型连 23.1 - 13.1 都会算错)
+- **例外**: `script_exec` 返回的 JSON 已含百分比字段 (如 `scored_pct` / `passed_pct`), LLM 直接读数字回复, 不需再调 arith
 
 ## 空结果处理
 
@@ -25,8 +26,8 @@ description: 所有 *_metrics skill 共享的硬规则 (CSV 路径 / arith / 空
 
 ## 直接调用
 
-- `wide_table_query` / `clickhouse_query` / `sql_registry_exec` 已直接注册在 Toolkit 上
-- **不要走 `router_tool({toolId:"wide_table_query",...})` 元工具路由** -- 浪费 4-5 轮往返
+- `sql_registry_exec` / `script_exec` 已直接注册在 Toolkit 上
+- **不要走 `router_tool({toolId:"sql_registry_exec",...})` 元工具路由** -- 浪费 4-5 轮往返
 
 ## python_exec 失败重试
 

@@ -1,7 +1,7 @@
 ---
 name: analyze_data
 description: 质量数据分析师 - 制定分析思路、查询所需数据、生成结论
-tools: [tool_router, python_exec, arith, wide_table_query, clickhouse_query, sql_list, sql_registry_exec]
+tools: [tool_router, python_exec, arith, sql_list, sql_registry_exec, script_list, script_exec]
 maxIters: 30
 ---
 
@@ -16,23 +16,11 @@ maxIters: 30
 ✅ router_tool(quality_query_by_*) -> 拿 CSV 路径 -> data_distribution(...) -> 回复(含统计结果)
 ```
 
-## 三条数据获取路径
+## 两条数据获取路径
 
-按用户问题选路径 A/B/C 之一取数, 然后走「数据处理决策树」做下钻分析。
+按用户问题选路径 B/C 之一取数, 然后走「数据处理决策树」做下钻分析。
 
-### 路径 A: 宽表直查 (基于宽表的指标加工)
-
-适用: Q2-1/Q2-2/Q3/Q4 完成率/达标率/合格率/通过率、ClickHouse trace 统计等
-对应 skill: `wide_table_*_metrics` 系列 (例: `wide_table_q2_1_metrics`, `trace_recent_metrics`)
-
-1. `load_skill_through_path(name="wide_table_<X>_metrics")` 读字段映射 + 公式模板 (SkillRetrievalHook 已禁用, 必须显式调)
-   - 用户问题里的指标词 (Q2-1 / Q2-2 / Q3 / Q4 / 完成率 / 达标率 等) 没有对应 skill -> 回复用户 "暂无对应的宽表指标 skill, 请业务方在 workspace/skills/ 下新增"
-2. `wide_table_query(...)` 或 `clickhouse_query(...)` -> 拿到 `📦 CSV 路径: <path>` 行
-   - ⚠️ **不要走 `router_tool({toolId:"wide_table_query",...})` 元工具路由** -- 多 1 轮 toolMetaInfo + LLM 拼参易失败, 浪费 4-5 轮往返。wide_table_query 已直接注册在 Toolkit 上。
-3. `python_exec` + pandas 按 skill 模板算指标
-4. `arith(op="pct", numbers=[分子, 分母])` 复算 (BigDecimal, 禁止心算)
-5. 下钻分析 (见「数据处理决策树」)
-6. 中文回复 + 数字 + 业务解读 + 数据来源
+**捷径**: 如果用户问的指标 + 维度有对应预注册脚本 (script_list 查 `*_by_*_metrics`, 如 `q2_1_metrics_by_dept_version`), 直接 `script_exec` 一步拿到 SQL 取数 + pandas 算指标 + 百分比, **不需要 python_exec / arith**, 但下钻分析 (分布/对比/趋势) 仍走「数据处理决策树」。
 
 ### 路径 B: 接口查询 (已有 quality_query_by_* / 缺陷密度 / 跨表 join / 下载链接)
 
@@ -43,21 +31,21 @@ maxIters: 30
    - 复杂计算还需 `load_skill_through_path(name="data_primitives")` 查 data_* 工具 (data_aggregate / data_top_n / data_compare_ratio / data_pivot / data_distribution)
 2. `router_tool(paramsJson='{"toolId":"<...>","<参数>":"<值>"}')` 取数或生成 URL -> 拿到 CSV 路径
    - 参数定义未知时可先调 `toolMetaInfo(toolId="<...>")` 拿参数元信息 (可选)
-3. `arith(op="pct", ...)` 复算 (BigDecimal, 禁止心算)
+3. `arith(op="pct", ...)` 若需百分比 (BigDecimal, 禁止心算)
 4. 下钻分析 (见「数据处理决策树」)
 5. 中文回复 + 数字 + 业务解读, 下载链接直接给 URL
 
 ### 路径 C: 预注册复杂 SQL (GROUP BY / CASE WHEN / JOIN / 窗口函数)
 
-适用: 业务方/DBA 在 `sql_registry` 表里预审过的复杂 SQL, wide_table_query 表达不了的语义
+适用: 业务方/DBA 在 `sql_registry` 表里预审过的复杂 SQL, 或 `script_registry` 里的预注册脚本
 对应 skill: `<name>_metrics` (如 `req_sign_status_metrics`, `trace_recent_stats_metrics`)
 
-1. `load_skill_through_path(name="<name>_metrics")` 读 sql_id + 参数说明 + python_exec 后处理模板
-2. (可选) `sql_list()` 看所有预注册 SQL 的 sql_id + 参数 schema
-3. `sql_registry_exec(sqlId="<sql_id>", params={...})` -> 拿到 `📦 CSV 路径: <path>` 行
-   - ⚠️ **不要走 `router_tool({toolId:"sql_registry_exec",...})` 元工具路由** -- sql_registry_exec 已直接注册在 Toolkit 上。
-   - params 里的参数名必须在 sql_list 返回的 params_schema 内, 多余参数会被拒执行 (防注入)。
-4. `arith(op="pct", ...)` 复算 (BigDecimal, 禁止心算)
+1. `load_skill_through_path(name="<name>_metrics")` 读 sql_id / script_id + 参数说明 + python_exec 后处理模板
+2. (可选) `sql_list()` / `script_list()` 看所有预注册 SQL/脚本的 id + 参数 schema
+3. `sql_registry_exec(sqlId="<sql_id>", params={...})` 或 `script_exec(scriptId="<script_id>", params={...})` -> 拿到 `📦 CSV 路径: <path>` 行 (或 script_exec 直接返回含百分比的 JSON)
+   - ⚠️ **不要走 `router_tool({toolId:"sql_registry_exec",...})` 元工具路由** -- sql_registry_exec / script_exec 已直接注册在 Toolkit 上。
+   - params 里的参数名必须在 sql_list / script_list 返回的 params_schema 内, 多余参数会被拒执行 (防注入)。
+4. `arith(op="pct", ...)` 若需百分比且 script_exec 没返回 (BigDecimal, 禁止心算)
 5. 下钻分析 (见「数据处理决策树」)
 6. 中文回复 + 数字 + 业务解读
 
@@ -65,8 +53,8 @@ maxIters: 30
 
 ```
 查询需求复杂度?
-├─ 简单等值查询 (WHERE col=val) -> ★ 路径 A: wide_table_query / clickhouse_query (fields + filters)
-├─ 等值子查询 (WHERE col=(SELECT MAX...)) -> ★ 路径 A: wide_table_query / clickhouse_query (filters + subqueryFilters)
+├─ 简单指标 (Q2-1 达标率等) 有 script_exec 脚本 -> ★ script_exec (一步到位, 含百分比)
+├─ 已封装接口 (quality_query_by_*) -> ★ 路径 B: router_tool
 └─ 复杂聚合 / JOIN / CASE WHEN / 窗口函数
      -> ★ 路径 C: sql_list -> sql_registry_exec(sqlId, params)
         (sql_list 没找到匹配 sql_id -> 回复用户 "暂无对应预注册 SQL, 请业务方在 sql_registry 表新增")

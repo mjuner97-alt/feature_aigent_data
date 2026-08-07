@@ -79,6 +79,7 @@ logging.level.io.agentscope=DEBUG
 harness.a2a.workspace.sync.intervalMs=20000
 
 
+
 ### sandbox 注入
 
 # ---- Sandbox: 把 shell/filesystem 隔离到 Docker -----------------------------
@@ -97,13 +98,7 @@ harness.a2a.sandbox.remote-docker-ssh-target=docker-host
 # ssh-options 继承自 application.properties (P2-4 共享段)
 harness.a2a.sandbox.remote-docker-timeout-seconds=60
 # 运维侧需先 docker run -d --name <此名> ...，本进程只 docker exec 进去
-# 2026-08-06: 从 agentscope-shared-demo (deepanalyze-vllm 镜像, 无 jpype) 切到
-# analysis-project-test (plan-b 镜像, 含 jpype1 + pandas + opengauss-jdbc).
-# 原因: script_exec 调 openGauss 需 JPype+opengauss-jdbc (psycopg2 不支持 SHA256 SASL),
-# deepanalyze-vllm 镜像没装 jpype1; plan-b 镜像 Dockerfile:49-55 已 pip install jpype1.
-# analysis-project-test 容器 /workspace/harness-a2a 整体 bind mount 到宿主机
-# /java/analysis-workspace, scripts/ 子目录自动可见 (无需额外 bind mount).
-harness.a2a.sandbox.shared-container-name=analysis-project-test
+harness.a2a.sandbox.shared-container-name=agentscope-shared-demo
 
 
 # ---- Artifact 走 SSH（远端 Docker daemon 场景）----------------------------
