@@ -73,15 +73,27 @@ function formatDimension(p: SkillPublishRecord): string {
   return label ? `${label}:${p.targetName}` : p.targetName;
 }
 
+// 按 targetType+targetId 去重(同一维度可能有多条 APPROVED 记录,只保留一条用于展示)
+function dedupByDimension<T extends { targetType: string; targetId: string }>(list: T[]): T[] {
+  const seen = new Set<string>();
+  return list.filter(item => {
+    const key = `${item.targetType}:${item.targetId}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 // 派生:当前维度标签
 // 优先展示已审批通过的维度;若无 APPROVED 但有 PENDING,展示 PENDING 中的维度(审批中)
 // 完全无发布记录时才显示"个人"(个人维度无需审批)
+// 同一维度可能有多条 APPROVED/PENDING 记录(如先退回再通过),按维度去重避免重复显示
 const dimensionLabel = computed(() => {
-  const approved = publishes.value.filter(p => p.status === 'APPROVED');
+  const approved = dedupByDimension(publishes.value.filter(p => p.status === 'APPROVED'));
   if (approved.length > 0) {
     return approved.map(formatDimension).join('、');
   }
-  const pending = publishes.value.filter(p => p.status === 'PENDING');
+  const pending = dedupByDimension(publishes.value.filter(p => p.status === 'PENDING'));
   if (pending.length > 0) {
     return pending.map(formatDimension).join('、');
   }
@@ -102,8 +114,9 @@ const isDimensionShared = computed(() =>
 );
 
 // 已审批通过的维度展示文本(如"部门:研发部、杭研"),用于删除提示等。
+// 按维度去重,避免同一维度多条 APPROVED 记录导致重复显示
 const approvedDimensionLabel = computed(() =>
-  publishes.value.filter(p => p.status === 'APPROVED').map(formatDimension).join('、')
+  dedupByDimension(publishes.value.filter(p => p.status === 'APPROVED')).map(formatDimension).join('、')
 );
 
 // ============ 审批详情(当前 Skill 的待审/已审记录) ============

@@ -57,7 +57,11 @@ public class DatabaseSkillRepository implements AgentSkillRepository {
             if (userId == null) {
                 return null;
             }
+            // 优先按 owner 查(快速路径),未命中再按可访问范围查(含维度发布)
             Skill skill = skillMapper.selectByRetrievalNameAndOwner(name, userId);
+            if (skill == null) {
+                skill = skillMapper.selectByRetrievalNameAccessibleByUser(name, userId);
+            }
             if (skill == null) {
                 return null;
             }

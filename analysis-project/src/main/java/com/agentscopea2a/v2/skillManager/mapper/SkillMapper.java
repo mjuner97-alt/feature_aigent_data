@@ -71,6 +71,11 @@ public interface SkillMapper {
             @Param("retrievalName") String retrievalName,
             @Param("ownerUserId") String ownerUserId);
 
+    /** 按 retrieval_name 查询当前用户可访问的 skill(含显式引用 + 维度发布)。 */
+    Skill selectByRetrievalNameAccessibleByUser(
+            @Param("retrievalName") String retrievalName,
+            @Param("userId") String userId);
+
     /** 查询某用户自己创建或引用的 skill 的 retrieval_name(过滤 NULL)。 */
     List<String> selectActiveRetrievalNamesByUser(@Param("userId") String userId);
 

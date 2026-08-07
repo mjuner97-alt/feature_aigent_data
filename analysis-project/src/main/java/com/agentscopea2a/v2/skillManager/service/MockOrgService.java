@@ -103,12 +103,12 @@ public class MockOrgService {
                 orgMap.putIfAbsent("DEPARTMENT:" + d, new OrgRef("DEPARTMENT", d));
             }
         }
-        for (DeveloperPlPersonInfo r : records) {
-            String p = r.getProductLine();
-            if (p != null && !p.isBlank()) {
-                orgMap.putIfAbsent("PRODUCT_LINE:" + p, new OrgRef("PRODUCT_LINE", p));
-            }
-        }
+//        for (DeveloperPlPersonInfo r : records) {
+//            String p = r.getProductLine();
+//            if (p != null && !p.isBlank()) {
+//                orgMap.putIfAbsent("PRODUCT_LINE:" + p, new OrgRef("PRODUCT_LINE", p));
+//            }
+//        }
         orgMap.putIfAbsent("COMPANY:" + COMPANY_ORG_ID, new OrgRef("COMPANY", COMPANY_ORG_ID));
         return new ArrayList<>(orgMap.values());
     }
@@ -121,7 +121,7 @@ public class MockOrgService {
         Map<String, OrgRef> orgMap = new LinkedHashMap<>();
         collectOrgs(orgMap, "GROUP", personInfoMapper.selectAllStatisticsGroups());
         collectOrgs(orgMap, "DEPARTMENT", personInfoMapper.selectAllDepartments());
-        collectOrgs(orgMap, "PRODUCT_LINE", personInfoMapper.selectAllProductLines());
+//        collectOrgs(orgMap, "PRODUCT_LINE", personInfoMapper.selectAllProductLines());
         orgMap.putIfAbsent("COMPANY:" + COMPANY_ORG_ID, new OrgRef("COMPANY", COMPANY_ORG_ID));
         return new ArrayList<>(orgMap.values());
     }

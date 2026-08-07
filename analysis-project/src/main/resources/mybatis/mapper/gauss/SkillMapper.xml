@@ -84,6 +84,23 @@
         LIMIT 1
     </select>
 
+    <!-- 按 retrieval_name 查询当前用户可访问的 skill(含维度发布)。
+         与 selectByRetrievalNameAndOwner 不同,本查询不仅匹配 owner,
+         还匹配 skill_reference 显式引用 + dimensionUsedSkillIds 维度发布,
+         使同部门/同产品线审批通过的 skill 可按名加载。 -->
+    <select id="selectByRetrievalNameAccessibleByUser" resultMap="SkillResultMap">
+        SELECT <include refid="skillCols"/> FROM skill_manage
+        WHERE retrieval_name = #{retrievalName}
+          AND status = 'ACTIVE'
+          AND deleted_at IS NULL
+          AND (
+              owner_user_id = #{userId}
+              OR id IN (SELECT target_skill_id FROM skill_reference WHERE creator = #{userId})
+              OR id IN (<include refid="dimensionUsedSkillIds"/>)
+          )
+        LIMIT 1
+    </select>
+
     <select id="selectActiveRetrievalNamesByUser" resultType="java.lang.String">
         SELECT retrieval_name FROM skill_manage
         WHERE (
