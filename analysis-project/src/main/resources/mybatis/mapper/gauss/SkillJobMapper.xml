@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.v2.skillManager.mapper.SkillJobMapper">
+
+    <!-- ==================== skill_job ==================== -->
+
+    <resultMap id="SkillJobResultMap" type="com.agentscopea2a.v2.skillManager.entity.SkillJob">
+        <id column="id" property="id"/>
+        <result column="name" property="name"/>
+        <result column="skill_id" property="skillId"/>
+        <result column="question_template" property="questionTemplate"/>
+        <result column="output_path" property="outputPath"/>
+        <result column="enabled" property="enabled"/>
+        <result column="created_by" property="createdBy"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <sql id="skillJobCols">id, name, skill_id, question_template, output_path, enabled, created_by, created_at, updated_at</sql>
+
+    <insert id="insertSkillJob" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillJob" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_job (name, skill_id, question_template, output_path, enabled, created_by)
+        VALUES (#{name}, #{skillId}, #{questionTemplate}, #{outputPath}, #{enabled}, #{createdBy})
+    </insert>
+
+    <select id="selectJobById" resultMap="SkillJobResultMap">
+        SELECT <include refid="skillJobCols"/> FROM skill_job WHERE id = #{id}
+    </select>
+
+    <select id="selectJobByName" resultMap="SkillJobResultMap">
+        SELECT <include refid="skillJobCols"/> FROM skill_job WHERE name = #{name}
+    </select>
+
+    <select id="selectJobList" resultMap="SkillJobResultMap">
+        SELECT <include refid="skillJobCols"/> FROM skill_job
+        <where>
+            <if test="enabled != null">AND enabled = #{enabled}</if>
+            <if test="keyword != null and keyword != ''">AND name LIKE CONCAT('%', #{keyword}, '%')</if>
+            <if test="createdBy != null and createdBy != ''">AND created_by = #{createdBy}</if>
+        </where>
+        ORDER BY created_at DESC
+    </select>
+
+    <update id="updateJobById" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillJob">
+        UPDATE skill_job
+        SET name=#{name}, skill_id=#{skillId}, question_template=#{questionTemplate},
+            output_path=#{outputPath}, enabled=#{enabled}, updated_at=NOW()
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteJobById">
+        DELETE FROM skill_job WHERE id = #{id}
+    </delete>
+
+    <!-- ==================== skill_job_execution ==================== -->
+
+    <resultMap id="SkillJobExecutionResultMap" type="com.agentscopea2a.v2.skillManager.entity.SkillJobExecution">
+        <id column="id" property="id"/>
+        <result column="job_id" property="jobId"/>
+        <result column="trigger_type" property="triggerType"/>
+        <result column="status" property="status"/>
+        <result column="conversation_id" property="conversationId"/>
+        <result column="resolved_output_path" property="resolvedOutputPath"/>
+        <result column="md_file_written" property="mdFileWritten"/>
+        <result column="md_file_exists" property="mdFileExists"/>
+        <result column="error_msg" property="errorMsg"/>
+        <result column="started_at" property="startedAt"/>
+        <result column="completed_at" property="completedAt"/>
+        <result column="created_at" property="createdAt"/>
+    </resultMap>
+
+    <sql id="skillJobExecutionCols">id, job_id, trigger_type, status, conversation_id, resolved_output_path, md_file_written, md_file_exists, error_msg, started_at, completed_at, created_at</sql>
+
+    <insert id="insertExecution" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillJobExecution" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_job_execution (job_id, trigger_type, status, conversation_id, resolved_output_path, md_file_written, md_file_exists, error_msg, started_at, completed_at)
+        VALUES (#{jobId}, #{triggerType}, #{status}, #{conversationId}, #{resolvedOutputPath}, #{mdFileWritten}, #{mdFileExists}, #{errorMsg}, #{startedAt}, #{completedAt})
+    </insert>
+
+    <select id="selectExecutionById" resultMap="SkillJobExecutionResultMap">
+        SELECT <include refid="skillJobExecutionCols"/> FROM skill_job_execution WHERE id = #{id}
+    </select>
+
+    <select id="selectExecutionsByJobId" resultMap="SkillJobExecutionResultMap">
+        SELECT <include refid="skillJobExecutionCols"/> FROM skill_job_execution
+        WHERE job_id = #{jobId}
+        <if test="status != null and status != ''">AND status = #{status}</if>
+        ORDER BY created_at DESC
+    </select>
+
+    <update id="updateExecutionStatus" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillJobExecution">
+        UPDATE skill_job_execution
+        SET status=#{status},
+            conversation_id=#{conversationId},
+            resolved_output_path=#{resolvedOutputPath},
+            md_file_written=#{mdFileWritten}, md_file_exists=#{mdFileExists},
+            error_msg=#{errorMsg}, started_at=#{startedAt}, completed_at=#{completedAt}
+        WHERE id = #{id}
+    </update>
+
+    <!-- 应用重启时恢复僵尸执行记录：把残留的 RUNNING/PENDING 标记为 FAILED -->
+    <update id="markStaleRunningAsFailed">
+        UPDATE skill_job_execution
+        SET status = 'FAILED',
+            error_msg = '应用重启中断：进程退出时仍在运行',
+            started_at = COALESCE(started_at, NOW()),
+            completed_at = NOW()
+        WHERE status IN ('RUNNING', 'PENDING')
+    </update>
+
+</mapper>

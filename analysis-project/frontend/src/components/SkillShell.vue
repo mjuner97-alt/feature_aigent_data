@@ -25,6 +25,7 @@ const nav = [
   { to: '/skills/created', label: '我创建的' },
   { to: '/skills/popular', label: '热门榜' },
   { to: '/skills/approvals', label: '审批', badge: true },
+  { to: '/skills/jobs', label: '定时任务' },
 ];
 </script>
 
