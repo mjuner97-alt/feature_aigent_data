@@ -62,7 +62,7 @@ export interface SqlTestResult {
 /** params_schema 中的单条参数定义 */
 export interface ParamSchemaItem {
   name: string;
-  type: string; // string | int | date | boolean
+  type: string; // string | int | date | boolean | int[] | string[] | date[]
   required: boolean;
   description: string;
 }

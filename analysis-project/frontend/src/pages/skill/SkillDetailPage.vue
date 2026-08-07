@@ -187,7 +187,12 @@ async function load() {
   try {
     const refs = await getReferencers(id);
     referencerCount.value = refs.length;
-    // 当前用户在引用者列表中即视为已引用(含创建时默认自引用),同步按钮初始状态
+    // 当前用户在引用者列表中即视为已引用(含创建时默认自引用),同步按钮初始状态。
+    //
+    // 注意:referenced 只代表 skill_reference 表里"显式引用"记录,与列表页的 used 徽章含义不同--
+    // used 还包含"自己创建"和"所属维度已发布(默认可用)"。所以一个维度内的 skill 可能:
+    //   列表显示"已使用"(维度默认可用),但这里按钮显示"引用"(无显式引用记录)。
+    // 点"引用"会写入显式引用记录;点"取消引用"只删该记录,若维度/owner 仍成立,列表仍显示"已使用"。
     referenced.value = refs.includes(currentUserId());
   } catch {
     referencerCount.value = 0;
@@ -234,6 +239,11 @@ async function toggleReference() {
   if (!skill.value) return;
   // 引用/取消引用 toggle:乐观更新引用状态与引用人数,失败回滚
   // (后端 reference/unreference 均幂等,且 API 返回 void,故前端本地维护计数)
+  //
+  // 这里操作的是"显式引用"(skill_reference 表),不是列表 used 徽章。
+  // 取消引用后,若该 skill 仍属于当前用户所属维度或当前用户是 owner,
+  // 列表页 used 仍为 true(显示"已使用");只有都不是时才会变"未使用"。
+  // 因此前端这里的 referenced 状态与列表 used 不一定同步。
   const before = { referenced: referenced.value, count: referencerCount.value };
   referenced.value = !referenced.value;
   referencerCount.value += referenced.value ? 1 : -1;

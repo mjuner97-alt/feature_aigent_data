@@ -15,6 +15,7 @@ import type { SqlRegistryEntry, SqlRegistryListItem, SqlRegistryInput, SqlTestRe
 const items = ref<SqlRegistryListItem[]>([]);
 const loading = ref(false);
 const datasourceFilter = ref('');
+const createdByFilter = ref('');
 const keyword = ref('');
 
 const filteredItems = computed(() => {
@@ -33,7 +34,7 @@ const filteredItems = computed(() => {
 async function loadList() {
   loading.value = true;
   try {
-    items.value = await listEntries(datasourceFilter.value || undefined);
+    items.value = await listEntries(datasourceFilter.value || undefined, createdByFilter.value || undefined);
   } catch (e: any) {
     ElMessage.error(e.message || '加载失败');
   } finally {
@@ -42,6 +43,14 @@ async function loadList() {
 }
 
 watch(datasourceFilter, () => loadList());
+
+// 创建人筛选为输入框, 防抖 800ms 避免逐字触发请求
+let createdByTimer: ReturnType<typeof setTimeout> | undefined;
+watch(createdByFilter, () => {
+  clearTimeout(createdByTimer);
+  createdByTimer = setTimeout(() => loadList(), 800);
+});
+
 loadList();
 
 // ==================== 新增/编辑弹窗 ====================
@@ -59,7 +68,9 @@ const paramRows = ref<ParamSchemaItem[]>([]);
 
 function parseParamsSchema(json: string): ParamSchemaItem[] {
   try {
-    return JSON.parse(json || '[]');
+    const arr = JSON.parse(json || '[]');
+    // 参数只要添加即为必填, 不再支持可选
+    return (arr as ParamSchemaItem[]).map(p => ({ ...p, required: true }));
   } catch {
     return [];
   }
@@ -188,7 +199,17 @@ async function runFormTest() {
     // 尝试从已有 testParamsMap 取用户填过的值, 没有就填示例
     for (const p of schema) {
       const val = formTestParams.value[p.name];
-      if (val !== undefined && val !== '') {
+      if (val === undefined || val === '') continue;
+      // 数组类型 (int[] / string[] / date[]): 按逗号拆分并转成对应元素类型
+      if (p.type.endsWith('[]')) {
+        const elemType = p.type.slice(0, -2);
+        const arr = String(val)
+          .split(',')
+          .map(s => s.trim())
+          .filter(s => s !== '')
+          .map(s => castArrayElem(s, elemType));
+        if (arr.length > 0) params[p.name] = arr;
+      } else {
         params[p.name] = val;
       }
     }
@@ -214,6 +235,23 @@ const formTestParams = ref<Record<string, any>>({});
 const formTestParamSchema = computed<ParamSchemaItem[]>(() => {
   return parseParamsSchema(form.value.paramsSchema);
 });
+
+/** 数组类型参数的输入提示 */
+function arrayPlaceholder(type: string): string {
+  const elem = type.endsWith('[]') ? type.slice(0, -2) : type;
+  if (elem === 'int') return '逗号分隔, 如 1,2,3';
+  if (elem === 'date') return '逗号分隔, 如 2024-01-01,2024-02-01';
+  return '逗号分隔, 如 a,b,c';
+}
+
+/** 将数组元素的字符串原值转成对应类型 (int 转数字, 其余保持字符串) */
+function castArrayElem(raw: string, elemType: string): any {
+  if (elemType === 'int') {
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : raw;
+  }
+  return raw;
+}
 
 // 监听 params_schema 变化, 初始化参数表单
 watch(() => form.value.paramsSchema, (newVal) => {
@@ -254,6 +292,7 @@ const S = {
         <el-option label="GaussDB" value="gauss" />
         <el-option label="ClickHouse" value="clickhouse" />
       </el-select>
+      <el-input v-model="createdByFilter" placeholder="创建人" style="width: 140px" size="small" clearable />
       <el-button type="primary" size="small" @click="openCreate">＋ 新增 SQL</el-button>
     </div>
 
@@ -311,13 +350,15 @@ const S = {
           <div style="width: 100%">
             <div v-for="(p, idx) in paramRows" :key="idx" :style="S.paramRow">
               <el-input v-model="p.name" placeholder="参数名" style="width: 120px" @input="onParamRowChange" />
-              <el-select v-model="p.type" style="width: 100px" @change="onParamRowChange">
+              <el-select v-model="p.type" style="width: 110px" @change="onParamRowChange">
                 <el-option label="string" value="string" />
                 <el-option label="int" value="int" />
                 <el-option label="date" value="date" />
                 <el-option label="boolean" value="boolean" />
+                <el-option label="int[]" value="int[]" />
+                <el-option label="string[]" value="string[]" />
+                <el-option label="date[]" value="date[]" />
               </el-select>
-              <el-switch v-model="p.required" active-text="必填" inactive-text="可选" @change="onParamRowChange" />
               <el-input v-model="p.description" placeholder="说明" style="flex: 1" @input="onParamRowChange" />
               <el-button type="danger" size="small" circle @click="removeParamRow(idx)">×</el-button>
             </div>
@@ -338,6 +379,8 @@ const S = {
                   value-format="YYYY-MM-DD" placeholder="选择日期" size="small" style="flex: 1" />
                 <el-input-number v-else-if="p.type === 'int'" v-model="formTestParams[p.name]" :controls="false"
                   placeholder="整数" size="small" style="flex: 1" />
+                <el-input v-else-if="p.type.endsWith('[]')" v-model="formTestParams[p.name]"
+                  :placeholder="arrayPlaceholder(p.type)" size="small" style="flex: 1" />
                 <el-input v-else v-model="formTestParams[p.name]" :placeholder="p.description || p.name"
                   size="small" style="flex: 1" />
               </div>

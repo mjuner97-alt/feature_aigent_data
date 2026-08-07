@@ -49,15 +49,13 @@ public class SqlRegistryController {
     // ==================== CRUD ====================
 
     /**
-     * 列表 (含禁用记录, 可选按 datasource 筛选).
+     * 列表 (含禁用记录, 可选按 datasource / createdBy 筛选).
      */
     @GetMapping
     public List<SqlRegistryEntry> list(
-            @RequestParam(name = "datasource", required = false) String datasource) {
-        if (datasource != null && !datasource.isBlank()) {
-            return service.listByDatasource(datasource);
-        }
-        return service.listAll();
+            @RequestParam(name = "datasource", required = false) String datasource,
+            @RequestParam(name = "createdBy", required = false) String createdBy) {
+        return service.list(datasource, createdBy);
     }
 
     /**

@@ -41,6 +41,12 @@ function rankOf(it: SkillListItem, i: number): number | null {
 }
 
 // 卡片徽章(使用/禁用状态)
+// 三态由后端 SkillListItem 的 used/disabled 决定,优先级:disabled > used > 未使用。
+// - used=true:🟢已使用。注意 used 不只是"手动点过引用",还含"自己创建"和"所属维度已发布(默认可用)";
+//   所以维度内的 skill 即便没点过引用,也会显示"已使用"。
+// - disabled=true:🚫已禁用(用户主动禁用,available=false)。
+// - 否则:⚪未使用(非 owner、非维度内、也未显式引用)。
+// 与详情页"引用/取消引用"按钮不同:按钮只代表"显式引用记录",而这里的 used 范围更大。
 function badgeClass(it: SkillListItem): string {
   if (it.disabled) return 'badge-disabled';
   if (it.used) return 'badge-used';

@@ -94,13 +94,17 @@ public class SqlRegistryManageService {
     // CRUD
     // ======================================================================
 
-    public List<SqlRegistryEntry> listAll() {
-        return mapper.selectAll();
-    }
-
-    public List<SqlRegistryEntry> listByDatasource(String datasource) {
+    /**
+     * 列表 (含禁用记录), 可选按 datasource / createdBy 筛选.
+     * datasource 精确匹配 (忽略大小写); createdBy 模糊匹配 (忽略大小写, 适合输入框).
+     */
+    public List<SqlRegistryEntry> list(String datasource, String createdBy) {
         return mapper.selectAll().stream()
-                .filter(e -> datasource.equalsIgnoreCase(e.getDatasource()))
+                .filter(e -> datasource == null || datasource.isBlank()
+                        || datasource.equalsIgnoreCase(e.getDatasource()))
+                .filter(e -> createdBy == null || createdBy.isBlank()
+                        || (e.getCreatedBy() != null
+                                && e.getCreatedBy().toLowerCase().contains(createdBy.toLowerCase())))
                 .collect(Collectors.toList());
     }
 
