@@ -133,27 +133,57 @@
     </select>
 
     <!--
-      用户所属维度(统计组/部门/产品线/杭研)已 APPROVED 发布的 skill_id 集合。
-      - GROUP/DEPARTMENT/PRODUCT_LINE: target_id 命中 developer_pl_person_info 中
-        该用户对应的 统计组/部门/产品线。
-      - COMPANY: 全员归属(杭研),直接命中。
-      供"我使用的"视图与检索层判断"维度默认可用",与 SkillManageService.list()
-      的 used 标记计算保持一致。
+      判断指定用户当前是否仍"可用"某 Skill（available），与 SkillManageService.list() 的
+      available 标记保持一致：ACTIVE 未软删 && (本人创建 || 已引用 || 所属维度已发布) && 未被禁用。
+      供 SkillJob 执行前校验 createdBy 是否仍拥有该 Skill 权限。
     -->
+    <select id="selectSkillAvailableForUser" resultType="boolean">
+        SELECT COUNT(1) &gt; 0 FROM skill_manage s
+        WHERE s.id = #{skillId}
+          AND s.status = 'ACTIVE'
+          AND s.deleted_at IS NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM skill_user_disable d
+              WHERE d.skill_id = s.id AND d.user_id = #{userId}
+          )
+          AND (
+              s.owner_user_id = #{userId}
+              OR EXISTS (
+                  SELECT 1 FROM skill_reference r
+                  WHERE r.target_skill_id = s.id AND r.creator = #{userId}
+              )
+              OR s.id IN (<include refid="dimensionUsedSkillIds"/>)
+          )
+    </select>
+
+    <!--
+       用户所属维度(统计组/部门/产品线/杭研)已 APPROVED 发布的 skill_id 集合。
+       - GROUP/DEPARTMENT/PRODUCT_LINE: target_id 命中 developer_pl_person_info 中
+         该用户对应的 统计组/部门/产品线。
+       - 用户身份列固定用 "统一认证号"(与 DeveloperPlPersonInfoMapper.selectByUserId 一致);
+         勿用 user_id 列(两者不同,user_id 常为空/历史值,会导致维度成员被误剔除)。
+       - 版本计划: 只取当前(最大)"版本月份"的行(与 DeveloperPlPersonInfoMapper 一致),
+         避免按历史版本的组织归属错算维度成员。
+       - COMPANY: 全员归属(杭研),直接命中。
+       供"我使用的"视图与检索层判断"维度默认可用",与 SkillManageService.list()
+       的 used 标记计算保持一致。
+     -->
     <sql id="dimensionUsedSkillIds">
         SELECT p.skill_id FROM skill_publish p
         WHERE p.status = 'APPROVED'
         AND (
-            (p.target_type = 'GROUP' AND p.target_id IN (
-                SELECT "统计组" FROM developer_pl_person_info
-                WHERE user_id = #{userId} AND "统计组" IS NOT NULL AND "统计组" != ''))
-            OR (p.target_type = 'DEPARTMENT' AND p.target_id IN (
-                SELECT "部门" FROM developer_pl_person_info
-                WHERE user_id = #{userId} AND "部门" IS NOT NULL AND "部门" != ''))
-            OR (p.target_type = 'PRODUCT_LINE' AND p.target_id IN (
-                SELECT "产品线" FROM developer_pl_person_info
-                WHERE user_id = #{userId} AND "产品线" IS NOT NULL AND "产品线" != ''))
-            OR p.target_type = 'COMPANY'
+        (p.target_type = 'GROUP' AND p.target_id IN (
+        SELECT "统计组" FROM developer_pl_person_info
+        WHERE "统一认证号" = #{userId} AND "统计组" IS NOT NULL
+        AND "版本月份" = (SELECT MAX("版本月份") FROM developer_pl_person_info) ))
+        OR (p.target_type = 'DEPARTMENT' AND p.target_id IN (
+        SELECT "部门" FROM developer_pl_person_info
+        WHERE "统一认证号" = #{userId} AND "部门" IS NOT NULL
+        AND "版本月份" = (SELECT MAX("版本月份") FROM developer_pl_person_info) ))
+        <!--            OR (p.target_type = 'PRODUCT_LINE' AND p.target_id IN (-->
+        <!--                SELECT "产品线" FROM developer_pl_person_info-->
+        <!--                WHERE user_id = #{userId} AND "产品线" IS NOT NULL AND "产品线" != ''))-->
+        OR p.target_type = 'COMPANY'
         )
     </sql>
 

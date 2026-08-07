@@ -15,6 +15,7 @@ import type { SqlRegistryEntry, SqlRegistryListItem, SqlRegistryInput, SqlTestRe
 const items = ref<SqlRegistryListItem[]>([]);
 const loading = ref(false);
 const datasourceFilter = ref('');
+const createdByFilter = ref('');
 const keyword = ref('');
 
 const filteredItems = computed(() => {
@@ -33,7 +34,7 @@ const filteredItems = computed(() => {
 async function loadList() {
   loading.value = true;
   try {
-    items.value = await listEntries(datasourceFilter.value || undefined);
+    items.value = await listEntries(datasourceFilter.value || undefined, createdByFilter.value || undefined);
   } catch (e: any) {
     ElMessage.error(e.message || '加载失败');
   } finally {
@@ -42,6 +43,12 @@ async function loadList() {
 }
 
 watch(datasourceFilter, () => loadList());
+// 创建人 input 防抖, 避免每输一个字符就请求
+let createdFilterTimer: ReturnType<typeof setTimeout> | null = null;
+watch(createdByFilter, () => {
+  if (createdFilterTimer) clearTimeout(createdFilterTimer);
+  createdFilterTimer = setTimeout(() => loadList(), 300);
+});
 loadList();
 
 // ==================== 新增/编辑弹窗 ====================
@@ -182,13 +189,15 @@ async function runFormTest() {
   testResultData.value = null;
 
   try {
-    // 用 params_schema 里的参数构造测试参数 (用空值占位)
+    // 用 params_schema 里的参数构造测试参数
     const schema = parseParamsSchema(form.value.paramsSchema);
     const params: Record<string, any> = {};
-    // 尝试从已有 testParamsMap 取用户填过的值, 没有就填示例
     for (const p of schema) {
       const val = formTestParams.value[p.name];
-      if (val !== undefined && val !== '') {
+      if (Array.isArray(val)) {
+        // 多值: 空数组不传, 避免后端展开成 IN () 语法错误
+        if (val.length > 0) params[p.name] = val;
+      } else if (val !== undefined && val !== '') {
         params[p.name] = val;
       }
     }
@@ -215,16 +224,42 @@ const formTestParamSchema = computed<ParamSchemaItem[]>(() => {
   return parseParamsSchema(form.value.paramsSchema);
 });
 
-// 监听 params_schema 变化, 初始化参数表单
-watch(() => form.value.paramsSchema, (newVal) => {
-  const schema = parseParamsSchema(newVal);
+// 识别 SQL 模板里出现在 IN (:name) 中的参数, 视为多值参数
+// (与后端 NAMED_PARAM_PATTERN = :(\w+) 命名规则一致, 不区分大小写)
+const multiParamNames = computed<Set<string>>(() => {
+  const sql = form.value.sqlTemplate || '';
+  const set = new Set<string>();
+  const re = /\bin\b\s*\(\s*:(\w+)\s*\)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(sql)) !== null) {
+    set.add(m[1]);
+  }
+  return set;
+});
+
+// 根据 schema + 多值识别同步测试参数表单 (保留已填值并做单值/多值类型校正)
+function syncTestParams() {
+  const schema = parseParamsSchema(form.value.paramsSchema);
+  const multi = multiParamNames.value;
   const params: Record<string, any> = {};
   schema.forEach(p => {
-    // 保留已有值
-    params[p.name] = formTestParams.value[p.name] ?? '';
+    const prev = formTestParams.value[p.name];
+    if (multi.has(p.name)) {
+      // 多值: 保证为数组
+      if (Array.isArray(prev)) params[p.name] = prev;
+      else if (prev !== undefined && prev !== null && prev !== '') params[p.name] = [prev];
+      else params[p.name] = [];
+    } else {
+      // 单值: 若旧值是数组则取首项, 否则保留原值
+      params[p.name] = Array.isArray(prev) ? (prev[0] ?? '') : (prev ?? '');
+    }
   });
   formTestParams.value = params;
-}, { immediate: true });
+}
+
+// params_schema 或 sql_template 变化都要重新同步 (后者会影响多值识别)
+watch(() => form.value.paramsSchema, syncTestParams, { immediate: true });
+watch(() => form.value.sqlTemplate, syncTestParams);
 
 // 展开/收起测试结果详情
 const showTestDetail = ref(false);
@@ -254,6 +289,7 @@ const S = {
         <el-option label="GaussDB" value="gauss" />
         <el-option label="ClickHouse" value="clickhouse" />
       </el-select>
+      <el-input v-model="createdByFilter" placeholder="创建人 user_id" style="width: 160px" clearable size="small" />
       <el-button type="primary" size="small" @click="openCreate">＋ 新增 SQL</el-button>
     </div>
 
@@ -333,8 +369,14 @@ const S = {
           <div style="width: 100%; padding: 10px 12px; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 6px">
             <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px">
               <div v-for="p in formTestParamSchema" :key="p.name" style="display: flex; align-items: center; gap: 6px">
-                <span style="font-size: 0.82rem; color: #0369a1; min-width: 70px; font-weight: 500">{{ p.name }}{{ p.required ? '*' : '' }}</span>
-                <el-date-picker v-if="p.type === 'date'" v-model="formTestParams[p.name]" type="date"
+                <span style="font-size: 0.82rem; color: #0369a1; min-width: 70px; font-weight: 500">
+                  {{ p.name }}{{ p.required ? '*' : '' }}<span v-if="multiParamNames.has(p.name)" style="color: #0ea5e9; font-weight: 400">·多值</span>
+                </span>
+                <!-- 多值参数 (出现在 IN (:name)): 输入后回车添加多个值, 后端展开为 IN (?, ?, ?) -->
+                <el-select v-if="multiParamNames.has(p.name)" v-model="formTestParams[p.name]" multiple filterable
+                  allow-create default-first-option :placeholder="p.description || '输入后回车添加'"
+                  size="small" style="flex: 1" />
+                <el-date-picker v-else-if="p.type === 'date'" v-model="formTestParams[p.name]" type="date"
                   value-format="YYYY-MM-DD" placeholder="选择日期" size="small" style="flex: 1" />
                 <el-input-number v-else-if="p.type === 'int'" v-model="formTestParams[p.name]" :controls="false"
                   placeholder="整数" size="small" style="flex: 1" />

@@ -6,7 +6,6 @@ import com.agentscopea2a.v2.sqlRegistry.dto.SqlTestResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterUtils;
 import org.springframework.jdbc.core.namedparam.ParsedSql;
@@ -14,19 +13,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import javax.sql.DataSource;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.ResultSetMetaData;
-import java.sql.SQLException;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.sql.*;
+import java.util.*;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -79,9 +67,9 @@ public class SqlRegistryManageService {
 
     public SqlRegistryManageService(
             SqlRegistryMapper mapper,
-            @org.springframework.beans.factory.annotation.Qualifier("mysqlDataSource") javax.sql.DataSource mysqlDataSource,
-            @org.springframework.beans.factory.annotation.Qualifier("gaussDataSource") javax.sql.DataSource gaussDataSource,
-            @org.springframework.beans.factory.annotation.Qualifier("clickHouseDataSource") javax.sql.DataSource clickHouseDataSource) {
+            @org.springframework.beans.factory.annotation.Qualifier("mysqlDataSource") DataSource mysqlDataSource,
+            @org.springframework.beans.factory.annotation.Qualifier("gaussDataSource") DataSource gaussDataSource,
+            @org.springframework.beans.factory.annotation.Qualifier("clickHouseDataSource") DataSource clickHouseDataSource) {
         this.mapper = mapper;
         Map<String, DataSource> m = new LinkedHashMap<>();
         m.put("mysql", mysqlDataSource);
@@ -101,6 +89,18 @@ public class SqlRegistryManageService {
     public List<SqlRegistryEntry> listByDatasource(String datasource) {
         return mapper.selectAll().stream()
                 .filter(e -> datasource.equalsIgnoreCase(e.getDatasource()))
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * 管理页面列表: 可选按 datasource / created_by 筛选 (内存过滤, 配置表数据量小).
+     */
+    public List<SqlRegistryEntry> list(String datasource, String createdBy) {
+        return mapper.selectAll().stream()
+                .filter(e -> datasource == null || datasource.isBlank()
+                        || datasource.equalsIgnoreCase(e.getDatasource()))
+                .filter(e -> createdBy == null || createdBy.isBlank()
+                        || createdBy.equals(e.getCreatedBy()))
                 .collect(Collectors.toList());
     }
 

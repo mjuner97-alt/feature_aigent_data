@@ -5,7 +5,7 @@
 
     <resultMap id="personInfoMap" type="com.agentscopea2a.v2.auth.entity.DeveloperPlPersonInfo">
         <id     property="id"                          column="id"/>
-        <result property="userId"                      column="user_id"/>
+        <result property="userId"                      column="统一认证号"/>
         <result property="type"                        column="类型"/>
         <result property="statisticalMonth"            column="统计月份"/>
         <result property="department"                  column="部门"/>
@@ -27,8 +27,8 @@
         <result property="subTeam"                     column="所属小团队"/>
         <result property="testCorrespondingStatGroup"  column="产品部测试人员对应统计组"/>
         <result property="personnelCategory"           column="人员分类"/>
-        <result property="remark"                      column="备注"/>
-        <result property="actualAdminGroup"            column="实际行政组"/>
+        <result property="remark"                     column="备注"/>
+        <result property="actualAdminGroup"           column="实际行政组"/>
         <result property="testGroup"                   column="测试大组"/>
         <result property="updater"                     column="更新人"/>
         <result property="remarkRms"                   column="备注_rms"/>
@@ -37,31 +37,41 @@
         <result property="productLine"                 column="产品线"/>
     </resultMap>
 
+    <!-- 版本计划: 本表按"版本月份"分版本快照存储,所有查询只取当前(最大)版本月份的行,避免历史版本脏数据。 -->
+    <sql id="currentVersionFilter">
+        AND "版本月份" = (SELECT MAX("版本月份") FROM developer_pl_person_info)
+    </sql>
+
     <select id="selectByUserId" resultMap="personInfoMap">
         SELECT * FROM developer_pl_person_info
-        WHERE user_id = #{userId}
+        WHERE "统一认证号" = #{userId}
+        <include refid="currentVersionFilter"/>
         ORDER BY id
     </select>
 
     <!-- 批量按 user_id 查询(列表场景解析姓名,避免 N+1)。空列表由调用方拦截,不进入本查询。 -->
     <select id="selectByUserIds" resultMap="personInfoMap">
         SELECT * FROM developer_pl_person_info
-        WHERE user_id IN
+        WHERE "统一认证号" IN
         <foreach collection="userIds" item="uid" open="(" separator="," close=")">
             #{uid}
         </foreach>
+        <include refid="currentVersionFilter"/>
         ORDER BY id
     </select>
 
     <select id="countByUserId" resultType="int">
         SELECT COUNT(*) FROM developer_pl_person_info
-        WHERE user_id = #{userId}
+
+        WHERE "统一认证号" = #{userId}
+        <include refid="currentVersionFilter"/>
     </select>
 
     <!-- 全部去重的"统计组",过滤空串。用于组织维度选择器。 -->
     <select id="selectAllStatisticsGroups" resultType="java.lang.String">
         SELECT DISTINCT "统计组" FROM developer_pl_person_info
         WHERE "统计组" IS NOT NULL
+        <include refid="currentVersionFilter"/>
         ORDER BY "统计组"
     </select>
 
@@ -69,6 +79,7 @@
     <select id="selectAllDepartments" resultType="java.lang.String">
         SELECT DISTINCT "部门" FROM developer_pl_person_info
         WHERE "部门" IS NOT NULL
+        <include refid="currentVersionFilter"/>
         ORDER BY "部门"
     </select>
 
@@ -76,20 +87,23 @@
     <select id="selectAllProductLines" resultType="java.lang.String">
         SELECT DISTINCT "产品线" FROM developer_pl_person_info
         WHERE "产品线" IS NOT NULL
+        <include refid="currentVersionFilter"/>
         ORDER BY "产品线"
     </select>
 
     <!-- 全部去重的 user_id(COMPANY 发布 / ALL 用户范围)。 -->
     <select id="selectAllUserIds" resultType="java.lang.String">
         SELECT DISTINCT user_id FROM developer_pl_person_info
-        WHERE user_id IS NOT NULL AND user_id != ''
-        ORDER BY user_id
+        WHERE "统一认证号" IS NOT NULL
+        <include refid="currentVersionFilter"/>
+        ORDER BY "统一认证号"
     </select>
 
     <!-- 按组织维度查 user_id:DEPARTMENT->"部门" / GROUP->"统计组" / PRODUCT_LINE->"产品线" -->
     <select id="selectUserIdsByOrg" resultType="java.lang.String">
-        SELECT DISTINCT user_id FROM developer_pl_person_info
-        WHERE user_id IS NOT NULL AND user_id != ''
+        SELECT DISTINCT "统一认证号" FROM developer_pl_person_info
+        WHERE "统一认证号" IS NOT NULL
+        <include refid="currentVersionFilter"/>
         <choose>
             <when test="orgType == 'DEPARTMENT'">
                 AND "部门" = #{orgId}
@@ -101,7 +115,7 @@
                 AND "产品线" = #{orgId}
             </when>
         </choose>
-        ORDER BY user_id
+        ORDER BY "统一认证号"
     </select>
 
 </mapper>

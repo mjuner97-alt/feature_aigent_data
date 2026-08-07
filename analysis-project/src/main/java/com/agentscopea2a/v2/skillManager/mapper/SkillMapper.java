@@ -90,6 +90,16 @@ public interface SkillMapper {
             @Param("retrievalName") String retrievalName,
             @Param("ownerUserId") String ownerUserId);
 
+    /**
+     * 判断指定用户当前是否仍"可用"某个 Skill（available）。
+     * 与 {@code SkillManageService.list()} 的 available 标记一致：
+     * ACTIVE 且未软删 && (本人创建 || 已引用 || 所属维度已发布) && 未被该用户禁用。
+     * 用于 SkillJob 执行前校验 createdBy 仍拥有该 Skill 权限。
+     */
+    boolean selectSkillAvailableForUser(
+            @Param("skillId") Long skillId,
+            @Param("userId") String userId);
+
     /** 列表查询:按 view/sort/category/tag/keyword 过滤 + 分页。 */
     List<Skill> selectList(SkillListQuery q);
 
