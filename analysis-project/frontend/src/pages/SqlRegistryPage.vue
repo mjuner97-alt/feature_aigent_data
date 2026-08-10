@@ -2,14 +2,20 @@
 /**
  * SQL 注册表管理页面
  *
- * 功能: 列表 / 新增 / 编辑 / 删除
- * 表单内嵌"测试连接"按钮, 只显示通过✅/失败❌状态
- * SQL 测试只允许 SELECT, 禁止 DDL/DML
+ * 功能: 列表 / 新增 / 编辑 / 删除 + 表单内 SQL 测试
+ *
+ * params_schema 与测试参数均用原始 JSON 文本框编辑, 前端解析后发送:
+ *   - params_schema: JSON 数组字符串 (后端按 String 接收, 与 SqlRegistryEntry 字段一致)
+ *   - 测试参数 params: 前端 JSON.parse 为对象后发送, 后端按 Map<String,Object> 接收
+ *     (与 SqlRegistryExecTool#sqlRegistryExec 的 params 入参一致, 后端按 params_schema
+ *      校验白名单 + 必填, 多余参数拒执行防注入)
+ *
+ * SQL 测试只允许 SELECT, 禁止 DDL/DML.
  */
 import { ref, computed, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { listEntries, getEntry, createEntry, updateEntry, deleteEntry, testSql } from '../api/sqlRegistry';
-import type { SqlRegistryEntry, SqlRegistryListItem, SqlRegistryInput, SqlTestResult, ParamSchemaItem } from '../types/sqlRegistry';
+import { listEntries, getEntry, createEntry, updateEntry, deleteEntry, testSql, setEntryEnabled } from '../api/sqlRegistry';
+import type { SqlRegistryListItem, SqlRegistryInput, SqlTestResult, ParamSchemaItem } from '../types/sqlRegistry';
 
 // ==================== 列表 ====================
 const items = ref<SqlRegistryListItem[]>([]);
@@ -63,43 +69,18 @@ const form = ref<SqlRegistryInput>({
 });
 const editId = ref<number>(0);
 
-// params_schema 结构化编辑
-const paramRows = ref<ParamSchemaItem[]>([]);
-
-function parseParamsSchema(json: string): ParamSchemaItem[] {
-  try {
-    const arr = JSON.parse(json || '[]');
-    // 参数只要添加即为必填, 不再支持可选
-    return (arr as ParamSchemaItem[]).map(p => ({ ...p, required: true }));
-  } catch {
-    return [];
-  }
-}
-
-function syncParamsToJson() {
-  form.value.paramsSchema = JSON.stringify(paramRows.value);
-}
-
-function addParamRow() {
-  paramRows.value.push({ name: '', type: 'string', required: true, description: '' });
-  syncParamsToJson();
-}
-
-function removeParamRow(index: number) {
-  paramRows.value.splice(index, 1);
-  syncParamsToJson();
-}
-
-function onParamRowChange() {
-  syncParamsToJson();
-}
+// 测试参数: 原始 JSON 文本, 前端解析为对象后发送 (后端 params: Map<String,Object>, 与 SqlRegistryExecTool 一致)
+const formTestParamsJson = ref('{}');
 
 function openCreate() {
   formMode.value = 'create';
   editId.value = 0;
   form.value = { sqlId: '', name: '', description: '', datasource: 'gauss', sqlTemplate: '', paramsSchema: '[]', enabled: 1 };
-  paramRows.value = [];
-  testStatus.value = 'idle'; // 重置测试状态
+  formTestParamsJson.value = '{}';
+  testStatus.value = 'idle';
+  testResultData.value = null;
+  showTestDetail.value = false;
+  showSchemaExample.value = false;
   formVisible.value = true;
 }
 
@@ -108,6 +89,9 @@ async function openEdit(row: SqlRegistryListItem) {
   editId.value = row.id;
   formLoading.value = true;
   testStatus.value = 'idle';
+  testResultData.value = null;
+  showTestDetail.value = false;
+  showSchemaExample.value = false;
   formVisible.value = true;
   try {
     const detail = await getEntry(row.id);
@@ -116,7 +100,7 @@ async function openEdit(row: SqlRegistryListItem) {
       datasource: detail.datasource, sqlTemplate: detail.sqlTemplate,
       paramsSchema: detail.paramsSchema || '[]', enabled: detail.enabled,
     };
-    paramRows.value = parseParamsSchema(detail.paramsSchema);
+    formTestParamsJson.value = '{}';
   } catch (e: any) {
     ElMessage.error(e.message || '加载详情失败');
   } finally {
@@ -124,9 +108,28 @@ async function openEdit(row: SqlRegistryListItem) {
   }
 }
 
+/** 安全 JSON.parse: 失败返回 null (不抛) */
+function tryParseJson(text: string): any {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 async function saveForm() {
   if (!form.value.sqlId || !form.value.name || !form.value.datasource || !form.value.sqlTemplate) {
     ElMessage.warning('请填写 sql_id / name / datasource / sql_template');
+    return;
+  }
+  // params_schema 现为原始 JSON 文本框, 保存前校验合法 JSON 数组
+  const schema = tryParseJson(form.value.paramsSchema);
+  if (schema === null) {
+    ElMessage.error('参数定义不是合法 JSON');
+    return;
+  }
+  if (!Array.isArray(schema)) {
+    ElMessage.error('参数定义必须是 JSON 数组');
     return;
   }
   formLoading.value = true;
@@ -165,11 +168,8 @@ async function handleDelete(row: SqlRegistryListItem) {
 async function toggleEnabled(row: SqlRegistryListItem) {
   const newEnabled = row.enabled === 1 ? 0 : 1;
   try {
-    await updateEntry(row.id, {
-      sqlId: row.sqlId, name: row.name, description: row.description || '',
-      datasource: row.datasource, sqlTemplate: '',
-      paramsSchema: row.paramsSchema || '[]', enabled: newEnabled,
-    });
+    // 只传 enabled, 复用后端选择性更新; 不重发 sql_template, 否则空串会被当作"模板改为空"触发校验
+    await setEntryEnabled(row.id, newEnabled);
     row.enabled = newEnabled;
     ElMessage.success(newEnabled === 1 ? '已启用' : '已禁用');
   } catch (e: any) {
@@ -182,9 +182,63 @@ const testStatus = ref<'idle' | 'loading' | 'success' | 'fail'>('idle');
 const testErrorMsg = ref('');
 const testResultData = ref<SqlTestResult | null>(null);
 
+/**
+ * 从参数定义 (params_schema) 生成测试参数模板, 按 type 给默认值, 减少手写.
+ * 生成的 JSON 对象前端原样发送, 后端按 Map<String,Object> 接收.
+ */
+function fillTestParamsSkeleton() {
+  const schema = tryParseJson(form.value.paramsSchema);
+  if (schema === null) {
+    ElMessage.error('参数定义不是合法 JSON, 无法生成模板');
+    return;
+  }
+  if (!Array.isArray(schema)) {
+    ElMessage.error('参数定义必须是 JSON 数组');
+    return;
+  }
+  const skeleton: Record<string, any> = {};
+  for (const p of schema as ParamSchemaItem[]) {
+    if (!p || !p.name) continue;
+    switch (p.type) {
+      case 'int': skeleton[p.name] = 0; break;
+      case 'boolean': skeleton[p.name] = false; break;
+      case 'array':
+      case 'int[]':
+      case 'string[]':
+      case 'date[]': skeleton[p.name] = []; break;
+      default: skeleton[p.name] = ''; // string / date / 未知类型当字符串
+    }
+  }
+  formTestParamsJson.value = JSON.stringify(skeleton, null, 2);
+}
+
+/** 格式化 JSON 文本框内容 (pretty-print), 非法 JSON 时提示. */
+function formatJson(field: 'schema' | 'params') {
+  const text = field === 'schema' ? form.value.paramsSchema : formTestParamsJson.value;
+  const parsed = tryParseJson(text);
+  if (parsed === null) {
+    ElMessage.error('不是合法 JSON, 无法格式化');
+    return;
+  }
+  const formatted = JSON.stringify(parsed, null, 2);
+  if (field === 'schema') form.value.paramsSchema = formatted;
+  else formTestParamsJson.value = formatted;
+}
+
 async function runFormTest() {
   if (!form.value.sqlTemplate || !form.value.datasource) {
     ElMessage.warning('请先填写 SQL 模板和数据源');
+    return;
+  }
+
+  // 测试参数: 前端解析为对象后发送, 与 SqlRegistryExecTool 的 params: Map<String,Object> 一致
+  const params = tryParseJson(formTestParamsJson.value);
+  if (params === null) {
+    ElMessage.error('测试参数不是合法 JSON');
+    return;
+  }
+  if (typeof params !== 'object' || Array.isArray(params)) {
+    ElMessage.error('测试参数必须是 JSON 对象, 如 {"userId":"alice"}');
     return;
   }
 
@@ -193,27 +247,6 @@ async function runFormTest() {
   testResultData.value = null;
 
   try {
-    // 用 params_schema 里的参数构造测试参数 (用空值占位)
-    const schema = parseParamsSchema(form.value.paramsSchema);
-    const params: Record<string, any> = {};
-    // 尝试从已有 testParamsMap 取用户填过的值, 没有就填示例
-    for (const p of schema) {
-      const val = formTestParams.value[p.name];
-      if (val === undefined || val === '') continue;
-      // 数组类型 (int[] / string[] / date[]): 按逗号拆分并转成对应元素类型
-      if (p.type.endsWith('[]')) {
-        const elemType = p.type.slice(0, -2);
-        const arr = String(val)
-          .split(',')
-          .map(s => s.trim())
-          .filter(s => s !== '')
-          .map(s => castArrayElem(s, elemType));
-        if (arr.length > 0) params[p.name] = arr;
-      } else {
-        params[p.name] = val;
-      }
-    }
-
     testResultData.value = await testSql({
       sqlTemplate: form.value.sqlTemplate,
       datasource: form.value.datasource,
@@ -230,61 +263,18 @@ async function runFormTest() {
   }
 }
 
-// 测试参数输入 (表单内的参数填写区)
-const formTestParams = ref<Record<string, any>>({});
-const formTestParamSchema = computed<ParamSchemaItem[]>(() => {
-  return parseParamsSchema(form.value.paramsSchema);
-});
-
-/** 数组类型参数的输入提示 */
-function arrayPlaceholder(type: string): string {
-  const elem = type.endsWith('[]') ? type.slice(0, -2) : type;
-  if (elem === 'int') return '逗号分隔, 如 1,2,3';
-  if (elem === 'date') return '逗号分隔, 如 2024-01-01,2024-02-01';
-  return '逗号分隔, 如 a,b,c';
-}
-
-/** 将数组元素的字符串原值转成对应类型 (int 转数字, 其余保持字符串) */
-function castArrayElem(raw: string, elemType: string): any {
-  if (elemType === 'int') {
-    const n = Number(raw);
-    return Number.isFinite(n) ? n : raw;
-  }
-  return raw;
-}
-
-// 监听 params_schema 变化, 初始化参数表单
-watch(() => form.value.paramsSchema, (newVal) => {
-  const schema = parseParamsSchema(newVal);
-  const params: Record<string, any> = {};
-  schema.forEach(p => {
-    const prev = formTestParams.value[p.name];
-    if (multi.has(p.name)) {
-      // 多值: 保证为数组
-      if (Array.isArray(prev)) params[p.name] = prev;
-      else if (prev !== undefined && prev !== null && prev !== '') params[p.name] = [prev];
-      else params[p.name] = [];
-    } else {
-      // 单值: 若旧值是数组则取首项, 否则保留原值
-      params[p.name] = Array.isArray(prev) ? (prev[0] ?? '') : (prev ?? '');
-    }
-  });
-  formTestParams.value = params;
-}, { immediate: true });
-
-// 展开/收起测试结果详情
+// 展开/收起: 测试结果详情 / 参数定义示例
 const showTestDetail = ref(false);
+const showSchemaExample = ref(false);
 
 // ==================== 样式 ====================
 const S = {
   page: { padding: '20px', height: '100%', overflow: 'auto' } as any,
   header: { display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px', flexWrap: 'wrap' as const } as any,
   title: { margin: 0, fontSize: '1.2rem', fontWeight: 700 } as any,
-  sqlEditor: { fontFamily: 'monospace', fontSize: '13px' } as any,
-  paramRow: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' } as any,
-  testResultInfo: { marginBottom: '12px', color: '#475569', fontSize: '0.85rem' } as any,
+  jsonEditor: { fontFamily: 'monospace', fontSize: '13px' } as any,
+  exampleCode: { fontSize: '0.72rem', color: '#475569', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '4px', padding: '8px', margin: '6px 0 0', whiteSpace: 'pre', overflowX: 'auto', fontFamily: 'monospace' } as any,
   testError: { padding: '12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '6px', color: '#dc2626', fontSize: '0.85rem' } as any,
-  testArea: { marginTop: '8px', padding: '12px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '6px' } as any,
 };
 </script>
 
@@ -351,46 +341,43 @@ const S = {
           </el-select>
         </el-form-item>
         <el-form-item label="SQL 模板" required>
-          <el-input v-model="form.sqlTemplate" type="textarea" :rows="8" :style="S.sqlEditor"
-            placeholder="SELECT ... FROM ... WHERE col = :param ..." />
+          <el-input v-model="form.sqlTemplate" type="textarea" :rows="8" :style="S.jsonEditor"
+            placeholder="SELECT ... FROM ... WHERE dept = :dept  and version in (:version)..." />
         </el-form-item>
         <el-form-item label="参数定义">
           <div style="width: 100%">
-            <div v-for="(p, idx) in paramRows" :key="idx" :style="S.paramRow">
-              <el-input v-model="p.name" placeholder="参数名" style="width: 120px" @input="onParamRowChange" />
-              <el-select v-model="p.type" style="width: 110px" @change="onParamRowChange">
-                <el-option label="string" value="string" />
-                <el-option label="int" value="int" />
-                <el-option label="date" value="date" />
-                <el-option label="boolean" value="boolean" />
-                <el-option label="int[]" value="int[]" />
-                <el-option label="string[]" value="string[]" />
-                <el-option label="date[]" value="date[]" />
-              </el-select>
-              <el-input v-model="p.description" placeholder="说明" style="flex: 1" @input="onParamRowChange" />
-              <el-button type="danger" size="small" circle @click="removeParamRow(idx)">×</el-button>
+            <el-input v-model="form.paramsSchema" type="textarea" :rows="6" :style="S.jsonEditor"
+              placeholder='JSON 数组' />
+            <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px">
+              <el-button size="small" text @click="formatJson('schema')">格式化</el-button>
+              <el-button size="small" text @click="showSchemaExample = !showSchemaExample">
+                {{ showSchemaExample ? '收起示例' : '查看示例' }}
+              </el-button>
             </div>
-            <el-button size="small" @click="addParamRow">＋ 添加参数</el-button>
+            <pre v-if="showSchemaExample" :style="S.exampleCode">
+参数示例:
+            [
+                单值: {"name":"版本","type":"string","required":true,"description":"版本计划,如 \"2026年8月份版本\"},
+                多值: {"name":"版本","type":"array","required":true,"description":"版本计划列表,如 [\"2026年8月份版本\",\"2026年9月份版本\"]},
+            ]</pre>
           </div>
         </el-form-item>
         <el-form-item label="启用" v-if="formMode === 'edit'">
           <el-switch v-model="form.enabled" :active-value="1" :inactive-value="0" />
         </el-form-item>
 
-        <!-- 测试参数填写 (放在测试连接上方, 更醒目) -->
-        <el-form-item v-if="formTestParamSchema.length > 0" label="测试参数">
-          <div style="width: 100%; padding: 10px 12px; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 6px">
-            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px">
-              <div v-for="p in formTestParamSchema" :key="p.name" style="display: flex; align-items: center; gap: 6px">
-                <span style="font-size: 0.82rem; color: #0369a1; min-width: 70px; font-weight: 500">{{ p.name }}{{ p.required ? '*' : '' }}</span>
-                <el-date-picker v-if="p.type === 'date'" v-model="formTestParams[p.name]" type="date"
-                  value-format="YYYY-MM-DD" placeholder="选择日期" size="small" style="flex: 1" />
-                <el-input-number v-else-if="p.type === 'int'" v-model="formTestParams[p.name]" :controls="false"
-                  placeholder="整数" size="small" style="flex: 1" />
-                <el-input v-else-if="p.type.endsWith('[]')" v-model="formTestParams[p.name]"
-                  :placeholder="arrayPlaceholder(p.type)" size="small" style="flex: 1" />
-                <el-input v-else v-model="formTestParams[p.name]" :placeholder="p.description || p.name"
-                  size="small" style="flex: 1" />
+        <!-- 测试参数 (原始 JSON 文本框, 前端解析为对象后发送, 后端按 Map 接收) -->
+        <el-form-item label="测试参数">
+          <div style="width: 100%">
+            <el-input v-model="formTestParamsJson" type="textarea" :rows="6" :style="S.jsonEditor"
+              placeholder='JSON 对象, 如 {"userId":"alice","limit":100}' />
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px">
+              <span style="font-size: 0.75rem; color: #94a3b8">
+                JSON 对象, 参数名必须在参数定义内 (多余参数后端拒执行防注入)
+              </span>
+              <div style="display: flex; gap: 8px">
+                <el-button size="small" text @click="formatJson('params')">格式化</el-button>
+                <el-button size="small" text @click="fillTestParamsSkeleton">从参数定义生成模板</el-button>
               </div>
             </div>
           </div>
