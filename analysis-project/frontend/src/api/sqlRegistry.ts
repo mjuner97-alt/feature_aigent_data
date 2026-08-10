@@ -52,6 +52,19 @@ export async function updateEntry(id: number, input: SqlRegistryInput): Promise<
   return res.json();
 }
 
+/**
+ * 切换启用状态: 只传 enabled, 复用后端选择性更新 (非 null 字段才覆盖, null 保留原值).
+ * 故意不重发 sql_template -- 列表项不含它, 传空串会被后端当作"模板改为空"触发校验失败.
+ */
+export async function setEntryEnabled(id: number, enabled: number): Promise<void> {
+  const res = await fetch(`${BASE}?id=${id}`, { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify({ enabled }) });
+  if (!res.ok) {
+    let detail = '';
+    try { const body = await res.json(); detail = body.message || body.error || ''; } catch { /* ignore */ }
+    throw new Error(detail || `切换失败 (HTTP ${res.status})`);
+  }
+}
+
 /** 删除 */
 export async function deleteEntry(id: number): Promise<void> {
   const res = await fetch(`${BASE}?id=${id}`, { method: 'DELETE', headers: authHeaders() });
