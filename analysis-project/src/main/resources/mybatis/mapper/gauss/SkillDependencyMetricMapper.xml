@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper">
+
+    <resultMap id="MetricResultMap" type="com.agentscopea2a.v2.skillManager.entity.SkillDependencyMetric">
+        <id column="id" property="id"/>
+        <result column="code" property="code"/>
+        <result column="name" property="name"/>
+        <result column="description" property="description"/>
+        <result column="enabled" property="enabled"/>
+        <result column="notify_enabled" property="notifyEnabled"/>
+        <result column="notify_content_type" property="notifyContentType"/>
+        <result column="notify_content_template" property="notifyContentTemplate"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <sql id="metricCols">id, code, name, description, enabled, notify_enabled, notify_content_type, notify_content_template, created_at, updated_at</sql>
+
+    <select id="selectAllEnabled" resultMap="MetricResultMap">
+        SELECT <include refid="metricCols"/> FROM skill_dependency_metric
+        WHERE enabled = TRUE
+        ORDER BY id ASC
+    </select>
+
+    <select id="selectByCode" resultMap="MetricResultMap">
+        SELECT <include refid="metricCols"/> FROM skill_dependency_metric WHERE code = #{code}
+    </select>
+
+    <select id="selectById" resultMap="MetricResultMap">
+        SELECT <include refid="metricCols"/> FROM skill_dependency_metric WHERE id = #{id}
+    </select>
+
+</mapper>

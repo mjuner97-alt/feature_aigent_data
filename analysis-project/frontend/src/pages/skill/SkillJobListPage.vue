@@ -142,6 +142,7 @@ function fmtTime(t: string) {
         <tr>
           <th>任务名称</th>
           <th>关联 Skill</th>
+          <th>依赖指标</th>
           <th>提问内容</th>
           <th>输出路径</th>
           <th>状态</th>
@@ -156,6 +157,12 @@ function fmtTime(t: string) {
             <span class="col-name selectable" :title="job.name">{{ job.name }}</span>
           </td>
           <td>{{ job.skillId ? (skillNames[job.skillId] || `#${job.skillId}`) : '未配置' }}</td>
+          <td class="col-metric">
+            <span v-if="job.metricName || job.metricCode" :title="`code: ${job.metricCode}`">
+              {{ job.metricName || job.metricCode }}
+            </span>
+            <span v-else class="muted-cell">未配置</span>
+          </td>
           <td class="col-template selectable" :title="job.questionTemplate">{{ job.questionTemplate || '未配置' }}</td>
           <td class="col-path selectable" :title="job.outputPath">{{ job.outputPath || '未配置' }}</td>
           <td>
@@ -212,6 +219,8 @@ function fmtTime(t: string) {
 .col-name { font-weight: 600; }
 .col-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: #64748b; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .col-template { font-size: 12px; color: #475569; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.col-metric { font-size: 12px; color: #475569; white-space: nowrap; }
+.muted-cell { color: #cbd5e1; }
 .selectable { user-select: text; cursor: text; }
 .col-time { color: #94a3b8; font-size: 12px; white-space: nowrap; }
 .col-owner { font-size: 12px; color: #64748b; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

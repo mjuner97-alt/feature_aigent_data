@@ -8,9 +8,11 @@
  */
 import { ref, watch, computed } from 'vue';
 import { getJob, createJob, updateJob } from '../api/skillJob';
+import { listMetrics } from '../api/skillDependencyMetric';
 import { listSkills, currentUserId } from '../api/skill';
 import type { SkillJobInput, SkillJobUpdateInput } from '../types/skillJob';
 import type { SkillListItem } from '../types/skill';
+import type { SkillDependencyMetric } from '../types/skillJob';
 
 const props = defineProps<{ open: boolean; editId: number | null }>();
 const emit = defineEmits<{
@@ -20,12 +22,13 @@ const emit = defineEmits<{
 
 const isEdit = computed(() => props.editId != null);
 
-const form = ref<SkillJobInput>({ name: '', skillId: 0, questionTemplate: '' });
+const form = ref<SkillJobInput>({ name: '', skillId: 0, questionTemplate: '', metricId: null });
 const outputPath = ref('');
 const formLoading = ref(false);
 const saving = ref(false);
 const formError = ref('');
 const skills = ref<SkillListItem[]>([]);
+const metrics = ref<SkillDependencyMetric[]>([]);
 
 /** 默认输出路径：/data/skill-files/{实际userId}/ */
 const defaultOutputPath = computed(() => `/data/skill-files/${currentUserId()}/`);
@@ -39,8 +42,17 @@ async function loadSkills() {
   }
 }
 
+/** 加载启用的依赖指标(admin 预置只读)供选择 */
+async function loadMetrics() {
+  try {
+    metrics.value = await listMetrics();
+  } catch {
+    metrics.value = [];
+  }
+}
+
 function resetForm() {
-  form.value = { name: '', skillId: 0, questionTemplate: '' };
+  form.value = { name: '', skillId: 0, questionTemplate: '', metricId: null };
   outputPath.value = '';
   formError.value = '';
 }
@@ -49,6 +61,7 @@ watch(() => props.open, (open) => {
   if (!open) return;
   resetForm();
   loadSkills();
+  loadMetrics();
   if (props.editId != null) {
     loadForEdit(props.editId);
   }
@@ -63,6 +76,7 @@ async function loadForEdit(id: number) {
       skillId: job.skillId ?? 0,
       questionTemplate: job.questionTemplate ?? '',
       enabled: job.enabled,
+      metricId: job.metricId ?? null,
     };
     outputPath.value = job.outputPath ?? '';
   } catch (e) {
@@ -81,7 +95,7 @@ async function submit() {
   saving.value = true;
   try {
     if (props.editId != null) {
-      // 编辑：skillId / createdBy 不可变，不提交 skillId
+      // 编辑：skillId / metricId / createdBy 不可变，不提交 skillId / metricId
       const payload: SkillJobUpdateInput = {
         name: form.value.name,
         questionTemplate: form.value.questionTemplate,
@@ -131,6 +145,15 @@ function close() { emit('update:open', false); }
                     <option v-for="s in skills" :key="s.id" :value="s.id">{{ s.name }}</option>
                   </select>
                   <span v-if="isEdit" class="tip">Skill 不可修改，如需更换请删除后重建</span>
+                </label>
+                <label class="field">
+                  <span class="label">依赖指标</span>
+                  <select v-model.number="form.metricId" :disabled="isEdit">
+                    <option :value="null">不关联（可选）</option>
+                    <option v-for="m in metrics" :key="m.id" :value="m.id">{{ m.name }}（{{ m.code }}）</option>
+                  </select>
+                  <span v-if="isEdit" class="tip">依赖指标不可修改，如需更换请删除后重建</span>
+                  <span v-else class="tip">可选；关联后随指标就绪自动触发该任务</span>
                 </label>
                 <label class="field">
                   <span class="label">提问内容 *</span>

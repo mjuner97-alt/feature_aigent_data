@@ -15,33 +15,30 @@
  */
 package com.agentscopea2a.v2.skillManager.dto;
 
-import com.agentscopea2a.v2.skillManager.entity.SkillJob;
+import com.agentscopea2a.v2.skillManager.entity.SkillDependencyMetric;
 
 import java.time.LocalDateTime;
 
 /**
- * SkillJob 详情响应 DTO。
+ * 依赖指标详情响应 DTO（只读）。
  */
-public record SkillJobDto(
+public record SkillDependencyMetricDto(
         Long id,
+        String code,
         String name,
-        Long skillId,
-        String questionTemplate,
-        String outputPath,
+        String description,
         Boolean enabled,
-        Long metricId,
-        String metricCode,
-        String metricName,
-        String createdBy,
+        Boolean notifyEnabled,
+        String notifyContentType,
+        String notifyContentTemplate,
         LocalDateTime createdAt,
         LocalDateTime updatedAt
 ) {
-    public static SkillJobDto of(SkillJob job) {
-        return new SkillJobDto(
-                job.getId(), job.getName(), job.getSkillId(),
-                job.getQuestionTemplate(), job.getOutputPath(),
-                job.getEnabled(),
-                job.getMetricId(), job.getMetricCode(), job.getMetricName(),
-                job.getCreatedBy(), job.getCreatedAt(), job.getUpdatedAt());
+    public static SkillDependencyMetricDto of(SkillDependencyMetric m) {
+        return new SkillDependencyMetricDto(
+                m.getId(), m.getCode(), m.getName(),
+                m.getDescription(), m.getEnabled(),
+                m.getNotifyEnabled(), m.getNotifyContentType(), m.getNotifyContentTemplate(),
+                m.getCreatedAt(), m.getUpdatedAt());
     }
 }

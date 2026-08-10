@@ -17,10 +17,12 @@ package com.agentscopea2a.v2.skillManager.dto;
 
 /**
  * 创建 SkillJob 的请求体。
- * name/skillId/questionTemplate 为必填，outputPath 由系统自动生成。
+ * name/skillId/questionTemplate 为必填，metricId 可选（关联后随指标就绪触发），outputPath 由系统自动生成。
+ * 若传 metricId，须为已启用（enabled=true）的预置依赖指标。
  */
 public record SkillJobCreateRequest(
         String name,
         Long skillId,
-        String questionTemplate
+        String questionTemplate,
+        Long metricId
 ) {}

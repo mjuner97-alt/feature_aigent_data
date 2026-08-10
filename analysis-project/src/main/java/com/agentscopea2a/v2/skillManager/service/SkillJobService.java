@@ -16,8 +16,10 @@
 package com.agentscopea2a.v2.skillManager.service;
 
 import com.agentscopea2a.v2.skillManager.dto.*;
+import com.agentscopea2a.v2.skillManager.entity.SkillDependencyMetric;
 import com.agentscopea2a.v2.skillManager.entity.SkillJob;
 import com.agentscopea2a.v2.skillManager.entity.SkillJobExecution;
+import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillJobMapper;
 import com.agentscopea2a.v2.skillManager.scheduler.SkillJobScheduler;
 import org.slf4j.Logger;
@@ -31,6 +33,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -47,10 +50,13 @@ public class SkillJobService {
 
     private final SkillJobMapper mapper;
     private final SkillJobScheduler scheduler;
+    private final SkillDependencyMetricMapper metricMapper;
 
-    public SkillJobService(SkillJobMapper mapper, SkillJobScheduler scheduler) {
+    public SkillJobService(SkillJobMapper mapper, SkillJobScheduler scheduler,
+                           SkillDependencyMetricMapper metricMapper) {
         this.mapper = mapper;
         this.scheduler = scheduler;
+        this.metricMapper = metricMapper;
     }
 
     // ==================== CRUD ====================
@@ -65,6 +71,17 @@ public class SkillJobService {
             throw new IllegalStateException("JobNameConflict: 任务名称 '" + req.name() + "' 已存在");
         }
 
+        // 校验依赖指标：可选；若传了则须存在且启用（admin 预置，用户只读）
+        if (req.metricId() != null) {
+            SkillDependencyMetric metric = metricMapper.selectById(req.metricId());
+            if (metric == null) {
+                throw new IllegalStateException("MetricNotFound: 依赖指标不存在 (id=" + req.metricId() + ")");
+            }
+            if (!Boolean.TRUE.equals(metric.getEnabled())) {
+                throw new IllegalStateException("MetricDisabled: 依赖指标已停用，不可选用 (id=" + req.metricId() + ")");
+            }
+        }
+
         // 自动生成输出路径: /data/skill-files/{userId}/
         String outputPath = "/data/skill-files/" + userId + "/";
 
@@ -75,6 +92,7 @@ public class SkillJobService {
                 .outputPath(outputPath)
                 .enabled(true)
                 .createdBy(userId)
+                .metricId(req.metricId())
                 .build();
         mapper.insertSkillJob(job);
 
@@ -153,6 +171,8 @@ public class SkillJobService {
                 .jobId(jobId).triggerType("MANUAL").status("PENDING").build();
         mapper.insertExecution(exec);
         if (!scheduler.submit(jobId, exec.getId())) {
+            // 已在跑：清掉刚插入的 PENDING，避免孤儿记录（此前会残留 PENDING 直到重启才被清成 FAILED）
+            mapper.deleteExecutionById(exec.getId());
             throw new IllegalStateException("JobAlreadyRunning: 任务正在执行中，请稍后再试 (id=" + jobId + ")");
         }
         log.info("[SkillJob] trigger: jobId={}, name={}, executionId={}, userId={}",
@@ -163,10 +183,12 @@ public class SkillJobService {
     /**
      * 按任务名触发 Job 执行（外部系统调用入口）。
      * 任务名在表中唯一，外部系统用任务名而非 ID 来调起。
+     * 不接收 userId 入参：执行身份统一取自 Job 的 createdBy（关联该 Skill 的创建人），
+     * 调度器 {@code doExecuteJob} 亦以 createdBy 身份执行并校验其 Skill 权限，外部系统无需传 userId。
      *
      * <p>先落一条 PENDING 执行记录拿到真实 id 返回前端，再异步提交；同一 Job 已有实例在跑则拒绝。
      */
-    public SkillJobExecutionDto triggerByName(String name, String userId) {
+    public SkillJobExecutionDto triggerByName(String name) {
         SkillJob job = mapper.selectJobByName(name);
         if (job == null) {
             throw new IllegalStateException("JobNotFound: 任务不存在 (name=" + name + ")");
@@ -175,11 +197,57 @@ public class SkillJobService {
                 .jobId(job.getId()).triggerType("EXTERNAL").status("PENDING").build();
         mapper.insertExecution(exec);
         if (!scheduler.submit(job.getId(), exec.getId())) {
+            mapper.deleteExecutionById(exec.getId());
             throw new IllegalStateException("JobAlreadyRunning: 任务正在执行中，请稍后再试 (id=" + job.getId() + ")");
         }
-        log.info("[SkillJob] triggerByName: name={}, jobId={}, executionId={}, userId={}",
-                name, job.getId(), exec.getId(), userId);
+        // 执行身份取自 Job 的 createdBy，调度器 doExecuteJob 同样以 createdBy 跑
+        log.info("[SkillJob] triggerByName: name={}, jobId={}, executionId={}, createdBy={}",
+                name, job.getId(), exec.getId(), job.getCreatedBy());
         return SkillJobExecutionDto.of(exec);
+    }
+
+    /** 列出启用的依赖指标（供前端下拉，admin 预置只读） */
+    public List<SkillDependencyMetricDto> listMetrics() {
+        return metricMapper.selectAllEnabled().stream().map(SkillDependencyMetricDto::of).toList();
+    }
+
+    /**
+     * 按依赖指标触发（外部系统调用入口）：指标就绪后一把触发所有"启用且关联该指标"的 job。
+     * 跨用户触发是预期行为：每个 job 仍以各自 createdBy 身份执行，执行时 skillAvailableToUser 各自校验权限。
+     * triggerType=METRIC；未关联指标的 job 不参与（可手动单发）。
+     */
+    public MetricTriggerBatchDto triggerByMetric(String code, String userId) {
+        SkillDependencyMetric metric = metricMapper.selectByCode(code);
+        if (metric == null) {
+            throw new IllegalStateException("MetricNotFound: 依赖指标不存在 (code=" + code + ")");
+        }
+        if (!Boolean.TRUE.equals(metric.getEnabled())) {
+            throw new IllegalStateException("MetricDisabled: 依赖指标已停用，不可触发 (code=" + code + ")");
+        }
+        // 外部系统调用可不传 X-User-Id；此处仅用于日志追溯，实际执行身份取自每个 job 的 createdBy
+        String caller = (userId == null || userId.isBlank()) ? "MANAGER" : userId;
+        List<SkillJob> jobs = mapper.selectEnabledJobsByMetricId(metric.getId());
+        List<MetricTriggerItemDto> results = new ArrayList<>();
+        for (SkillJob job : jobs) {
+            results.add(triggerOneForMetric(job, caller));
+        }
+        log.info("[SkillJob] triggerByMetric: code={}, metricId={}, total={}, caller={}",
+                code, metric.getId(), results.size(), caller);
+        return new MetricTriggerBatchDto(code, results.size(), results);
+    }
+
+    /** 单个 job 在批量触发中的处理：落 PENDING -> submit；已在跑则清孤儿记录并标记 REJECTED */
+    private MetricTriggerItemDto triggerOneForMetric(SkillJob job, String userId) {
+        SkillJobExecution exec = SkillJobExecution.builder()
+                .jobId(job.getId()).triggerType("METRIC").status("PENDING").build();
+        mapper.insertExecution(exec);
+        if (!scheduler.submit(job.getId(), exec.getId())) {
+            mapper.deleteExecutionById(exec.getId());
+            return new MetricTriggerItemDto(job.getId(), job.getName(), null, "REJECTED", "JobAlreadyRunning");
+        }
+        log.info("[SkillJob] triggerByMetric member: jobId={}, name={}, executionId={}, userId={}",
+                job.getId(), job.getName(), exec.getId(), userId);
+        return new MetricTriggerItemDto(job.getId(), job.getName(), exec.getId(), "QUEUED", null);
     }
 
     /** 查询执行记录列表 */

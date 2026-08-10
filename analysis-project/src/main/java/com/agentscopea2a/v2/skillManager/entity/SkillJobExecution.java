@@ -34,7 +34,7 @@ public class SkillJobExecution {
     private Long id;
     /** 关联的 SkillJob ID */
     private Long jobId;
-    /** 触发类型: WEBHOOK / MANUAL */
+    /** 触发类型: MANUAL(手动) / EXTERNAL(按名外部触发) / METRIC(按指标批量触发) */
     private String triggerType;
     /** 状态: RUNNING / SUCCESS / FAILED */
     private String status;

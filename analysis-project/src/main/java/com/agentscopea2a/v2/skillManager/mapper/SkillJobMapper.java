@@ -44,6 +44,9 @@ public interface SkillJobMapper {
 
     void deleteJobById(@Param("id") Long id);
 
+    /** 查询某依赖指标下启用的 job（供 triggerByMetric） */
+    List<SkillJob> selectEnabledJobsByMetricId(@Param("metricId") Long metricId);
+
     // ---- skill_job_execution ----
 
     void insertExecution(SkillJobExecution exec);
@@ -55,6 +58,9 @@ public interface SkillJobMapper {
             @Param("status") String status);
 
     void updateExecutionStatus(SkillJobExecution exec);
+
+    /** 删除执行记录（触发被拒时清理刚插入的 PENDING，避免孤儿记录） */
+    void deleteExecutionById(@Param("id") Long id);
 
     /** 将残留的 RUNNING/PENDING 执行记录标记为 FAILED（应用重启时恢复僵尸记录） */
     int markStaleRunningAsFailed();

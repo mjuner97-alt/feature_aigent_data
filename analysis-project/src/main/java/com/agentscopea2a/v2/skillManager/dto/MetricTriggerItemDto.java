@@ -16,13 +16,15 @@
 package com.agentscopea2a.v2.skillManager.dto;
 
 /**
- * 更新 SkillJob 的请求体，所有字段可选，仅更新非 null 字段。
- * skillId / metricId 不可修改（想换 Skill 或指标只能删除后重建），故不在此暴露；
- * createdBy 亦不可变。
+ * 批量触发中单个 Job 的结果。
  */
-public record SkillJobUpdateRequest(
+public record MetricTriggerItemDto(
+        Long jobId,
         String name,
-        String questionTemplate,
-        String outputPath,
-        Boolean enabled
+        /** 排队后拿到的执行记录 id；REJECTED 时为 null */
+        Long executionId,
+        /** QUEUED | REJECTED */
+        String status,
+        /** REJECTED 时填，如 JobAlreadyRunning */
+        String reason
 ) {}

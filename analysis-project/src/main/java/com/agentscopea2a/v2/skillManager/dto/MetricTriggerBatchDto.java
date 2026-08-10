@@ -15,14 +15,13 @@
  */
 package com.agentscopea2a.v2.skillManager.dto;
 
+import java.util.List;
+
 /**
- * 更新 SkillJob 的请求体，所有字段可选，仅更新非 null 字段。
- * skillId / metricId 不可修改（想换 Skill 或指标只能删除后重建），故不在此暴露；
- * createdBy 亦不可变。
+ * 按依赖指标批量触发的聚合结果。
  */
-public record SkillJobUpdateRequest(
-        String name,
-        String questionTemplate,
-        String outputPath,
-        Boolean enabled
+public record MetricTriggerBatchDto(
+        String metricCode,
+        int total,
+        List<MetricTriggerItemDto> results
 ) {}

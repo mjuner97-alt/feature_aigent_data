@@ -21,6 +21,8 @@ async function jobError(res: Response, fallback: string): Promise<Error> {
   if (detail.startsWith('JobAccessDenied')) return new Error('无权限：仅创建人可操作此任务');
   if (detail.startsWith('JobAlreadyRunning')) return new Error('任务正在执行中，请稍后再试');
   if (detail.startsWith('JobQueueFull')) return new Error('执行队列已满，请稍后重试');
+  if (detail.startsWith('MetricNotFound')) return new Error('依赖指标不存在或已删除');
+  if (detail.startsWith('MetricDisabled')) return new Error('依赖指标已停用，不可选用');
   return new Error(detail ? `${fallback}: ${detail}` : `${fallback} (HTTP ${res.status})`);
 }
 
@@ -69,9 +71,9 @@ export async function triggerJob(id: number): Promise<SkillJobExecution> {
   return res.json();
 }
 
-/** 触发执行（按任务名，外部系统调用入口） */
+/** 触发执行（按任务名，外部系统调用入口；不携带用户信息，执行身份由后端取 Job.createdBy） */
 export async function triggerJobByName(name: string): Promise<SkillJobExecution> {
-  const res = await fetch(`${BASE}/trigger/${encodeURIComponent(name)}`, { method: 'POST', headers: authHeaders() });
+  const res = await fetch(`${BASE}/trigger/${encodeURIComponent(name)}`, { method: 'POST' });
   if (!res.ok) throw await jobError(res, '触发失败');
   return res.json();
 }
