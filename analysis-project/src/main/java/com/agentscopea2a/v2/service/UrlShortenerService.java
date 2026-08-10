@@ -29,7 +29,7 @@ import java.util.Random;
  * <p>短码格式：BASE62 16位字符（{@code 0-9A-Za-z}），碰撞时重试最多 5 次。
  *
  * <p>由 {@code V2ToolConfig} 装配为 {@code @Bean}（非 {@code @Service} 自动扫描），
- * 注入到 {@link com.agentscopea2a.v2.tools.DownloadTool} 与
+ * 注入到 {@link com.agentscopea2a.v2.tools.CsvDownloadTool} 与
  * {@link com.agentscopea2a.v2.controller.RedirectController}。
  */
 public class UrlShortenerService {

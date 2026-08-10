@@ -72,7 +72,8 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
                     // 不是业务数据, 落 CSV 会误导后续 python_exec 去读根本不存在的"数据"
                     "load_skill_through_path");
 
-    private static final int PREVIEW_ROWS = 5;
+    private static final int PREVIEW_ROWS = 20;
+    private static final int PREVIEW_MAX_CHARS = 1500;
     private static final int SCHEMA_SAMPLES_PER_COLUMN = 3;
 
     /** V3.0: RuntimeContext key under which produced ArtifactRefs are published for the verifier (B1 check). */
@@ -164,7 +165,7 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
 
     private ArtifactRef applyHandoff(PostActingEvent post, String toolName, TabularData table, ArtifactContext ctx) {
         ToolUseBlock toolUse = post.getToolUse();
-        String preview = table.previewMarkdown(PREVIEW_ROWS);
+        String preview = table.previewMarkdown(PREVIEW_ROWS, PREVIEW_MAX_CHARS);
         List<ColumnSchema> schema = table.inferSchema(SCHEMA_SAMPLES_PER_COLUMN);
         ArtifactRef ref =
                 artifactStore.save(ctx, sanitizeToolKey(toolName), table.toCsv(),
@@ -226,7 +227,7 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
         StringBuilder sb = new StringBuilder();
         sb.append(toolName).append(" 查询完成 — 共 ").append(table.rowCount());
         sb.append(" 行,列: ").append(String.join("、", table.columns())).append("\n\n");
-        sb.append("前 ").append(Math.min(PREVIEW_ROWS, table.rowCount())).append(" 行预览:\n");
+        sb.append("前 ").append(Math.min(PREVIEW_ROWS, table.rowCount())).append(" 行预览(超 ").append(PREVIEW_MAX_CHARS).append(" 字符自动截断):\n");
         sb.append(preview).append("\n\n");
         sb.append("📦 完整数据已保存为 CSV artifact:\n");
         sb.append("  路径: ").append(ref.agentPath()).append("\n");

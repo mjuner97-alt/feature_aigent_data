@@ -49,7 +49,7 @@ import java.nio.charset.StandardCharsets;
  * </ul>
  *
  * <p>旧 {@code /download?uuid=xxx} 模拟端点已删除 (没人调).
- * 旧 {@code DownloadTool.generateDownloadUrl()} 测试桩保留不动.
+ * 旧 {@code DownloadTool.generateDownloadUrl()} 测试桩也已删除.
  */
 @RestController
 public class RedirectController {

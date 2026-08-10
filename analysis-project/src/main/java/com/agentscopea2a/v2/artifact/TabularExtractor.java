@@ -437,17 +437,41 @@ public final class TabularExtractor {
 
         /** Markdown preview of the first {@code maxRows} rows. */
         public String previewMarkdown(int maxRows) {
-            StringJoiner sj = new StringJoiner("\n");
-            sj.add("| " + String.join(" | ", columns) + " |");
-            sj.add("|" + "--|".repeat(columns.size()));
+            return previewMarkdown(maxRows, Integer.MAX_VALUE);
+        }
+
+        /**
+         * Markdown preview of the first {@code maxRows} rows, truncated once total output
+         * exceeds {@code maxChars} (header + separator + rows). Stops on row boundary so the
+         * markdown table never breaks mid-row; appends a tail note explaining the omission
+         * so the LLM doesn't try to parse a half-rendered table.
+         */
+        public String previewMarkdown(int maxRows, int maxChars) {
+            String header = "| " + String.join(" | ", columns) + " |";
+            String separator = "|" + "--|".repeat(columns.size());
+            StringBuilder sb = new StringBuilder();
+            sb.append(header).append('\n').append(separator);
+
             int n = Math.min(maxRows, rows.size());
+            int included = 0;
+            boolean truncatedByChars = false;
             for (int i = 0; i < n; i++) {
-                sj.add("| " + String.join(" | ", rows.get(i)) + " |");
+                String row = "| " + String.join(" | ", rows.get(i)) + " |";
+                if (sb.length() + 1 + row.length() > maxChars) {
+                    truncatedByChars = true;
+                    break;
+                }
+                sb.append('\n').append(row);
+                included++;
             }
-            if (n < rows.size()) {
-                sj.add("| ... | (省略 " + (rows.size() - n) + " 行,完整数据见 CSV artifact) |");
+            if (included < rows.size()) {
+                int omitted = rows.size() - included;
+                String note = truncatedByChars
+                        ? "预览超 " + maxChars + " 字符截断, 完整数据见 CSV artifact"
+                        : "完整数据见 CSV artifact";
+                sb.append('\n').append("| ... | (省略 ").append(omitted).append(" 行, ").append(note).append(") |");
             }
-            return sj.toString();
+            return sb.toString();
         }
 
         private static String joinCsv(List<String> values) {

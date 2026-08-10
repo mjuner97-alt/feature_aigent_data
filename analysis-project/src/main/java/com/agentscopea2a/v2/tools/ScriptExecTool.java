@@ -22,9 +22,7 @@ import com.zaxxer.hikari.HikariDataSource;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -383,15 +381,29 @@ public class ScriptExecTool {
                                        String scriptId,
                                        int timeoutSeconds) {
         long start = System.currentTimeMillis();
+        // stdout/stderr 落盘到临时文件, 规避 Windows SSH 管道缓冲 ~4KB 死锁:
+        // python3 写满 pipe 后阻塞等读端 drain, 但 Java 端在 waitFor 阻塞不读 pipe, 死锁 -> 超时。
+        // 同模式见 SshArtifactIo.read() (memory ssh_artifactio_windows_gotchas)
+        Path tmpOut;
+        Path tmpErr;
+        try {
+            tmpOut = Files.createTempFile("scriptexec-out-", ".log");
+            tmpErr = Files.createTempFile("scriptexec-err-", ".log");
+        } catch (IOException e) {
+            return ToolResultBlock.text("script_exec 创建临时文件失败: " + e.getMessage());
+        }
+
         Process p;
         try {
             ProcessBuilder pb = new ProcessBuilder(command);
-            pb.redirectErrorStream(false);
+            pb.redirectOutput(tmpOut.toFile());
+            pb.redirectError(tmpErr.toFile());
             if (env != null) {
                 pb.environment().putAll(env);
             }
             p = pb.start();
         } catch (IOException e) {
+            cleanup(tmpOut, tmpErr);
             return ToolResultBlock.text(
                     "script_exec 启动失败: " + e.getMessage()
                             + "\n命令: " + String.join(" ", command)
@@ -418,7 +430,13 @@ public class ScriptExecTool {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             p.destroyForcibly();
-            return ToolResultBlock.text("script_exec 被中断: " + e.getMessage());
+            String stdout = readTemp(tmpOut);
+            String stderr = readTemp(tmpErr);
+            long elapsed = System.currentTimeMillis() - start;
+            cleanup(tmpOut, tmpErr);
+            return ToolResultBlock.text(
+                    formatResult(scriptId, -1, elapsed, stdout, stderr,
+                            "script_exec 被中断: " + e.getMessage()));
         }
         if (!finished) {
             p.destroyForcibly();
@@ -427,9 +445,10 @@ public class ScriptExecTool {
             } catch (InterruptedException ignore) {
                 Thread.currentThread().interrupt();
             }
-            String stdoutBest = bestEffortRead(p.getInputStream());
-            String stderrBest = bestEffortRead(p.getErrorStream());
+            String stdoutBest = readTemp(tmpOut);
+            String stderrBest = readTemp(tmpErr);
             long elapsed = System.currentTimeMillis() - start;
+            cleanup(tmpOut, tmpErr);
             return ToolResultBlock.text(
                     formatResult(scriptId, -1, elapsed, stdoutBest, stderrBest,
                             "❌ 超时(" + timeoutSeconds + "s),进程已强制终止. "
@@ -437,33 +456,38 @@ public class ScriptExecTool {
                                     + "如怀疑脚本死循环, 让开发人员修脚本."));
         }
 
-        String stdout = bestEffortRead(p.getInputStream());
-        String stderr = bestEffortRead(p.getErrorStream());
+        String stdout = readTemp(tmpOut);
+        String stderr = readTemp(tmpErr);
         int exit = p.exitValue();
         long elapsed = System.currentTimeMillis() - start;
+        cleanup(tmpOut, tmpErr);
         log.info("script_exec done: scriptId={} exit={} elapsed={}ms stdoutBytes={} stderrBytes={}",
                 scriptId, exit, elapsed, stdout.length(), stderr.length());
         return ToolResultBlock.text(formatResult(scriptId, exit, elapsed, stdout, stderr, null));
     }
 
-    private static String bestEffortRead(java.io.InputStream is) {
-        if (is == null) return "";
-        StringBuilder sb = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
-            char[] buf = new char[4096];
-            int n;
-            while ((n = reader.read(buf)) > 0) {
-                if (sb.length() + n > MAX_OUTPUT_BYTES) {
-                    sb.append(buf, 0, MAX_OUTPUT_BYTES - sb.length());
-                    sb.append("\n... (输出超过 ").append(MAX_OUTPUT_BYTES).append(" 字节,已截断)");
-                    break;
-                }
-                sb.append(buf, 0, n);
+    private static String readTemp(Path p) {
+        try {
+            byte[] bytes = Files.readAllBytes(p);
+            String s = new String(bytes, StandardCharsets.UTF_8);
+            if (s.length() > MAX_OUTPUT_BYTES) {
+                return s.substring(0, MAX_OUTPUT_BYTES)
+                        + "\n... (输出超过 " + MAX_OUTPUT_BYTES + " 字节,已截断)";
             }
-        } catch (IOException ignore) {
-            // Pipes closed underneath us - return what we have, never throw.
+            return s;
+        } catch (IOException e) {
+            return "(读临时文件失败: " + e.getMessage() + ")";
         }
-        return sb.toString();
+    }
+
+    private static void cleanup(Path... paths) {
+        for (Path p : paths) {
+            try {
+                Files.deleteIfExists(p);
+            } catch (IOException ignore) {
+                // 删除失败不抛
+            }
+        }
     }
 
     private static String formatResult(String scriptId, int exit, long elapsedMs,

@@ -6,12 +6,13 @@
 -- 现将注册表迁到 GaussDB, ScriptRegistryMapper 改走 gauss 数据源
 -- (mapper/gauss/ScriptRegistryMapper.xml), 需要在 GaussDB 上补建表 DDL + 示例数据.
 --
--- 目标数据库: openGauss (PostgreSQL 兼容)
--- 与 V20260806.1 (MySQL 版) 字段对齐, 语法切 PostgreSQL:
+-- 目标数据库: openGauss 5.0 (PostgreSQL 兼容, 但有差异)
+-- 与 V20260806.1 (MySQL 版) 字段对齐, 语法切 openGauss:
 --   - BIGSERIAL 替代 BIGINT AUTO_INCREMENT
 --   - TIMESTAMP DEFAULT CURRENT_TIMESTAMP 替代 DATETIME
 --   - updated_at 用触发器维护 (PG 无 ON UPDATE CURRENT_TIMESTAMP)
---   - INSERT ... ON CONFLICT 替代 ON DUPLICATE KEY UPDATE
+--   - CREATE TRIGGER ... EXECUTE PROCEDURE (openGauss 5.0 不支持 EXECUTE FUNCTION)
+--   - INSERT ... ON DUPLICATE KEY UPDATE (openGauss 5.0 不支持 ON CONFLICT)
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS script_registry (
@@ -49,7 +50,7 @@ DROP TRIGGER IF EXISTS trg_script_registry_updated_at ON script_registry;
 CREATE TRIGGER trg_script_registry_updated_at
     BEFORE UPDATE ON script_registry
     FOR EACH ROW
-    EXECUTE FUNCTION fn_script_registry_updated_at();
+    EXECUTE PROCEDURE fn_script_registry_updated_at();
 
 -- ----------------------------------------------------------------------------
 -- 示例数据: Q2-1 指标计算 (GaussDB 单数据源)
@@ -69,10 +70,10 @@ INSERT INTO script_registry (script_id, name, description, script_path, datasour
   60,
   'flyway'
 )
-ON CONFLICT (script_id) DO UPDATE SET
-    name            = EXCLUDED.name,
-    description     = EXCLUDED.description,
-    script_path     = EXCLUDED.script_path,
-    datasources     = EXCLUDED.datasources,
-    params_schema   = EXCLUDED.params_schema,
-    timeout_seconds = EXCLUDED.timeout_seconds;
+ON DUPLICATE KEY UPDATE
+    name            = VALUES(name),
+    description     = VALUES(description),
+    script_path     = VALUES(script_path),
+    datasources     = VALUES(datasources),
+    params_schema   = VALUES(params_schema),
+    timeout_seconds = VALUES(timeout_seconds);
