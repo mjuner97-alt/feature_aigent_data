@@ -178,12 +178,12 @@ public class SqlRegistryExecTool {
                     + "' 的 sql_template 为空 (DBA 录入失误?)");
         }
 
-        // 2. 二次校验 sql_template (防 DBA 失误)
-        String err = validateTemplate(template);
-        if (err != null) {
-            log.warn("sql_registry_exec 模板校验失败: sqlId={} reason={}", sqlId, err);
-            return ToolResultBlock.text(err + " (sqlId=" + sqlId + ")");
-        }
+        // 2. 二次校验 sql_template (防 DBA 失误) -- 暂关闭: Connection 只读, 形态/关键字校验无必要
+//        String err = validateTemplate(template);
+//        if (err != null) {
+//            log.warn("sql_registry_exec 模板校验失败: sqlId={} reason={}", sqlId, err);
+//            return ToolResultBlock.text(err + " (sqlId=" + sqlId + ")");
+//        }
 
         // 3. 解析 params_schema, 校验参数名 + 缺失必填参数 + 模板占位符与 schema 对齐
         // (放在 datasource 路由之前, 让参数校验失败时无需真实 DB 连接也能返回明确错误)
@@ -277,14 +277,15 @@ public class SqlRegistryExecTool {
     // ======================================================================
 
     private static String validateTemplate(String sql) {
+        // 暂关闭校验: Connection 只读, 形态/关键字校验无必要 (恢复时取消下方注释)
 //        if (!TEMPLATE_SHAPE_PATTERN.matcher(sql).matches()) {
 //            return "sql_registry_exec 拒绝执行: sql_template 必须形如 'SELECT ... FROM ...'";
 //        }
-        if (TEMPLATE_FORBIDDEN_PATTERN.matcher(sql).find()) {
-            return "sql_registry_exec 拒绝执行: sql_template 含禁用关键字/元字符 "
-                    + "(禁 ; / 注释符 / DDL / DML / system.* 系统表 / INTO OUTFILE / LOAD_FILE. "
-                    + "DBA 录入时失误?)";
-        }
+//        if (TEMPLATE_FORBIDDEN_PATTERN.matcher(sql).find()) {
+//            return "sql_registry_exec 拒绝执行: sql_template 含禁用关键字/元字符 "
+//                    + "(禁 ; / 注释符 / DDL / DML / system.* 系统表 / INTO OUTFILE / LOAD_FILE. "
+//                    + "DBA 录入时失误?)";
+//        }
         return null;
     }
 

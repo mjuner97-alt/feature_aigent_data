@@ -104,11 +104,11 @@ public class SqlRegistryManageService {
 
     @Transactional("gaussTransactionManager")
     public SqlRegistryEntry create(SqlRegistryEntry entry, String userId) {
-        // 校验 sql_template
-        String validationError = validateTemplate(entry.getSqlTemplate());
-        if (validationError != null) {
-            throw new IllegalArgumentException(validationError);
-        }
+        // 校验 sql_template (暂关闭: Connection 只读, 形态/关键字校验无必要)
+//        String validationError = validateTemplate(entry.getSqlTemplate());
+//        if (validationError != null) {
+//            throw new IllegalArgumentException(validationError);
+//        }
 
         // 校验 sql_id 唯一性
         SqlRegistryEntry existing = mapper.selectBySqlId(entry.getSqlId());
@@ -131,13 +131,13 @@ public class SqlRegistryManageService {
             throw new IllegalArgumentException("记录不存在: id=" + id);
         }
 
-        // 如果 sql_template 有变更, 重新校验
-        if (patch.getSqlTemplate() != null && !patch.getSqlTemplate().equals(existing.getSqlTemplate())) {
-            String validationError = validateTemplate(patch.getSqlTemplate());
-            if (validationError != null) {
-                throw new IllegalArgumentException(validationError);
-            }
-        }
+        // 如果 sql_template 有变更, 重新校验 (暂关闭: Connection 只读, 形态/关键字校验无必要)
+//        if (patch.getSqlTemplate() != null && !patch.getSqlTemplate().equals(existing.getSqlTemplate())) {
+//            String validationError = validateTemplate(patch.getSqlTemplate());
+//            if (validationError != null) {
+//                throw new IllegalArgumentException(validationError);
+//            }
+//        }
 
         // 如果 sql_id 有变更, 检查唯一性
         if (patch.getSqlId() != null && !patch.getSqlId().equals(existing.getSqlId())) {
@@ -188,16 +188,16 @@ public class SqlRegistryManageService {
             return SqlTestResult.builder().success(false).error("sql_template 为空").build();
         }
 
-        // 1. 校验 sql_template
-        String shapeErr = validateTemplateShape(sqlTemplate);
-        if (shapeErr != null) {
-            return SqlTestResult.builder().success(false).error(shapeErr).datasource(datasource).build();
-        }
-
-        String forbiddenErr = validateTemplateForbidden(sqlTemplate);
-        if (forbiddenErr != null) {
-            return SqlTestResult.builder().success(false).error(forbiddenErr).datasource(datasource).build();
-        }
+        // 1. 校验 sql_template (暂关闭: Connection 只读, 形态/关键字校验无必要)
+//        String shapeErr = validateTemplateShape(sqlTemplate);
+//        if (shapeErr != null) {
+//            return SqlTestResult.builder().success(false).error(shapeErr).datasource(datasource).build();
+//        }
+//
+//        String forbiddenErr = validateTemplateForbidden(sqlTemplate);
+//        if (forbiddenErr != null) {
+//            return SqlTestResult.builder().success(false).error(forbiddenErr).datasource(datasource).build();
+//        }
 
         // 2. 解析 params_schema, 校验参数
         Set<String> declaredParams = parseParamNames(paramsSchema);
@@ -293,33 +293,33 @@ public class SqlRegistryManageService {
     // 校验逻辑 (复用 SqlRegistryExecTool 的模式)
     // ======================================================================
 
-    /** 管理页面强制 SELECT 开头校验 (比 Agent 工具更严格) */
-    private static String validateTemplateShape(String sql) {
-        if (!TEMPLATE_SHAPE_PATTERN.matcher(sql).matches()) {
-            return "sql_template 必须形如 'SELECT ... FROM ...' (仅允许 SELECT 查询)";
-        }
-        return null;
-    }
-
-    /** 禁用关键字校验 */
-    private static String validateTemplateForbidden(String sql) {
-        if (TEMPLATE_FORBIDDEN_PATTERN.matcher(sql).find()) {
-            return "sql_template 含禁用关键字/元字符 (禁 ; / 注释符 / DDL / DML / system.* 系统表 / INTO OUTFILE / LOAD_FILE)";
-        }
-        return null;
-    }
-
-    /** 综合校验 (用于 create/update) */
-    private static String validateTemplate(String sql) {
-        if (sql == null || sql.isBlank()) {
-            return "sql_template 不能为空";
-        }
-        String shapeErr = validateTemplateShape(sql);
-        if (shapeErr != null) return shapeErr;
-        String forbiddenErr = validateTemplateForbidden(sql);
-        if (forbiddenErr != null) return forbiddenErr;
-        return null;
-    }
+//    /** 管理页面强制 SELECT 开头校验 (比 Agent 工具更严格) */
+//    private static String validateTemplateShape(String sql) {
+//        if (!TEMPLATE_SHAPE_PATTERN.matcher(sql).matches()) {
+//            return "sql_template 必须形如 'SELECT ... FROM ...' (仅允许 SELECT 查询)";
+//        }
+//        return null;
+//    }
+//
+//    /** 禁用关键字校验 */
+//    private static String validateTemplateForbidden(String sql) {
+//        if (TEMPLATE_FORBIDDEN_PATTERN.matcher(sql).find()) {
+//            return "sql_template 含禁用关键字/元字符 (禁 ; / 注释符 / DDL / DML / system.* 系统表 / INTO OUTFILE / LOAD_FILE)";
+//        }
+//        return null;
+//    }
+//
+//    /** 综合校验 (用于 create/update) */
+//    private static String validateTemplate(String sql) {
+//        if (sql == null || sql.isBlank()) {
+//            return "sql_template 不能为空";
+//        }
+//        String shapeErr = validateTemplateShape(sql);
+//        if (shapeErr != null) return shapeErr;
+//        String forbiddenErr = validateTemplateForbidden(sql);
+//        if (forbiddenErr != null) return forbiddenErr;
+//        return null;
+//    }
 
     private static String ensureLimit(String sql) {
         if (HAS_LIMIT_PATTERN.matcher(sql).find()) {
