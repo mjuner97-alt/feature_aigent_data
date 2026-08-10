@@ -96,18 +96,6 @@ public class SqlRegistryManageService {
                 .collect(Collectors.toList());
     }
 
-    /**
-     * 管理页面列表: 可选按 datasource / created_by 筛选 (内存过滤, 配置表数据量小).
-     */
-    public List<SqlRegistryEntry> list(String datasource, String createdBy) {
-        return mapper.selectAll().stream()
-                .filter(e -> datasource == null || datasource.isBlank()
-                        || datasource.equalsIgnoreCase(e.getDatasource()))
-                .filter(e -> createdBy == null || createdBy.isBlank()
-                        || createdBy.equals(e.getCreatedBy()))
-                .collect(Collectors.toList());
-    }
-
     public SqlRegistryEntry getById(Long id) {
         return mapper.selectById(id);
     }

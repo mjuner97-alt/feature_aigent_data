@@ -26,7 +26,6 @@ import com.agentscopea2a.v2.skills.SkillIndexRepository;
 import com.agentscopea2a.v2.tools.AgentTools;
 import com.agentscopea2a.v2.tools.ArithTool;
 import com.agentscopea2a.v2.tools.DataPrimitivesTool;
-import com.agentscopea2a.v2.tools.DownloadTool;
 import com.agentscopea2a.v2.tools.CsvDownloadTool;
 import com.agentscopea2a.v2.tools.PythonExecTool;
 import com.agentscopea2a.v2.tools.QualityTools;
@@ -165,26 +164,19 @@ public class V2ToolConfig {
     @Bean
     public ToolRoutersIndex toolRoutersIndex(AgentTools agentTools,
                                              DataPrimitivesTool dataPrimitivesTool,
-                                             DownloadTool downloadTool,
                                              CsvDownloadTool csvDownloadTool,
                                              SqlListTool sqlListTool,
                                              SqlRegistryExecTool sqlRegistryExecTool) {
-        return new ToolRoutersIndex(agentTools, dataPrimitivesTool, downloadTool,
+        return new ToolRoutersIndex(agentTools, dataPrimitivesTool,
                 csvDownloadTool,
                 sqlListTool, sqlRegistryExecTool);
     }
 
-    // ── URL shortener + download tool ──────────────────────────────────────
+    // ── URL shortener + CSV download tool ──────────────────────────────────
     @Bean
     public UrlShortenerService urlShortenerService(UrlShortenerMapper urlShortenerMapper) {
         log.info("UrlShortenerService: wired (MySQL-backed url_shortener table)");
         return new UrlShortenerService(urlShortenerMapper);
-    }
-
-    @Bean
-    public DownloadTool downloadTool(UrlShortenerService urlShortenerService) {
-        log.info("DownloadTool: wired (generateDownloadUrl + get_file_info)");
-        return new DownloadTool(urlShortenerService);
     }
 
     @Bean
@@ -203,7 +195,6 @@ public class V2ToolConfig {
     public V2ToolGroupAdapter v2ToolGroupAdapter(
             AgentTools agentTools,
             DataPrimitivesTool dataPrimitivesTool,
-            DownloadTool downloadTool,
             ObjectProvider<PythonExecTool> pythonExecToolProvider,
             ObjectProvider<ArithTool> arithToolProvider,
             ObjectProvider<SqlListTool> sqlListToolProvider,
@@ -216,8 +207,8 @@ public class V2ToolConfig {
         // 原因: 之前把 python_exec 放进 group + 挂 reset_equipped_tools 元工具, 实测 LLM
         // 调 reset_equipped_tools 后 python_exec 仍报 "Tool not found", grouped tool 机制
         // 在主 agent 上不工作 (见 trace 11:12:49-11:12:59). 改为 ungrouped 让 LLM 直接可见.
-        // 业务工具（AgentTools / DataPrimitivesTool / DownloadTool）通过 ToolRoutersIndex
-        // 暴露给主 agent (router_tool 元工具), 主 agent 自己也能调 quality_query_by_* / generateDownloadUrl,
+        // 业务工具（AgentTools / DataPrimitivesTool）通过 ToolRoutersIndex
+        // 暴露给主 agent (router_tool 元工具), 主 agent 自己也能调 quality_query_by_* / generate_csv_download_url,
         // 不再需要 agent_spawn(query_data) (已删除, 见 docs/table-mertics/supervisor-direct-path-design.md).
         V2ToolGroupAdapter.Builder b = V2ToolGroupAdapter.builder();
         PythonExecTool py = pythonExecToolProvider.getIfAvailable();
