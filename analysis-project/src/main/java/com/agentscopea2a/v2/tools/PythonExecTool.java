@@ -21,11 +21,11 @@ import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
 import io.micrometer.core.annotation.Timed;
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -235,12 +235,26 @@ public class PythonExecTool {
 
     private ToolResultBlock runProcess(List<String> command, String code, int timeoutSeconds) {
         long start = System.currentTimeMillis();
+        // stdout/stderr 落盘到临时文件, 规避 Windows SSH 管道缓冲 ~4KB 死锁:
+        // python3 写满 pipe 后阻塞等读端 drain, 但 Java 端在 waitFor 阻塞不读 pipe, 死锁 -> 超时。
+        // 同模式见 SshArtifactIo.read() (memory ssh_artifactio_windows_gotchas)
+        Path tmpOut;
+        Path tmpErr;
+        try {
+            tmpOut = Files.createTempFile("pyexec-out-", ".log");
+            tmpErr = Files.createTempFile("pyexec-err-", ".log");
+        } catch (IOException e) {
+            return ToolResultBlock.text("python_exec 创建临时文件失败: " + e.getMessage());
+        }
+
         Process p;
         try {
             ProcessBuilder pb = new ProcessBuilder(command);
-            pb.redirectErrorStream(false);
+            pb.redirectOutput(tmpOut.toFile());
+            pb.redirectError(tmpErr.toFile());
             p = pb.start();
         } catch (IOException e) {
+            cleanup(tmpOut, tmpErr);
             return ToolResultBlock.text(
                     "python_exec 启动失败: " + e.getMessage()
                             + "\n命令: " + String.join(" ", command)
@@ -260,7 +274,12 @@ public class PythonExecTool {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             p.destroyForcibly();
-            return ToolResultBlock.text("python_exec 被中断: " + e.getMessage());
+            String stdout = readTemp(tmpOut);
+            String stderr = readTemp(tmpErr);
+            long elapsed = System.currentTimeMillis() - start;
+            cleanup(tmpOut, tmpErr);
+            return ToolResultBlock.text(
+                    formatResult(-1, elapsed, stdout, stderr, "python_exec 被中断: " + e.getMessage()));
         }
         if (!finished) {
             p.destroyForcibly();
@@ -269,9 +288,10 @@ public class PythonExecTool {
             } catch (InterruptedException ignore) {
                 Thread.currentThread().interrupt();
             }
-            String stdoutBest = bestEffortRead(p.getInputStream());
-            String stderrBest = bestEffortRead(p.getErrorStream());
+            String stdoutBest = readTemp(tmpOut);
+            String stderrBest = readTemp(tmpErr);
             long elapsed = System.currentTimeMillis() - start;
+            cleanup(tmpOut, tmpErr);
             return ToolResultBlock.text(
                     formatResult(
                             -1,
@@ -283,10 +303,11 @@ public class PythonExecTool {
                                     + "如怀疑代码死循环,先简化算法再试。"));
         }
 
-        String stdout = bestEffortRead(p.getInputStream());
-        String stderr = bestEffortRead(p.getErrorStream());
+        String stdout = readTemp(tmpOut);
+        String stderr = readTemp(tmpErr);
         int exit = p.exitValue();
         long elapsed = System.currentTimeMillis() - start;
+        cleanup(tmpOut, tmpErr);
         log.info(
                 "python_exec done: exit={} elapsed={}ms stdoutBytes={} stderrBytes={}",
                 exit,
@@ -296,24 +317,28 @@ public class PythonExecTool {
         return ToolResultBlock.text(formatResult(exit, elapsed, stdout, stderr, null));
     }
 
-    private static String bestEffortRead(java.io.InputStream is) {
-        if (is == null) return "";
-        StringBuilder sb = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
-            char[] buf = new char[4096];
-            int n;
-            while ((n = reader.read(buf)) > 0) {
-                if (sb.length() + n > MAX_OUTPUT_BYTES) {
-                    sb.append(buf, 0, MAX_OUTPUT_BYTES - sb.length());
-                    sb.append("\n... (输出超过 ").append(MAX_OUTPUT_BYTES).append(" 字节,已截断)");
-                    break;
-                }
-                sb.append(buf, 0, n);
+    private static String readTemp(Path p) {
+        try {
+            byte[] bytes = Files.readAllBytes(p);
+            String s = new String(bytes, StandardCharsets.UTF_8);
+            if (s.length() > MAX_OUTPUT_BYTES) {
+                return s.substring(0, MAX_OUTPUT_BYTES)
+                        + "\n... (输出超过 " + MAX_OUTPUT_BYTES + " 字节,已截断)";
             }
-        } catch (IOException ignore) {
-            // Pipes closed underneath us — return what we have, never throw.
+            return s;
+        } catch (IOException e) {
+            return "(读临时文件失败: " + e.getMessage() + ")";
         }
-        return sb.toString();
+    }
+
+    private static void cleanup(Path... paths) {
+        for (Path p : paths) {
+            try {
+                Files.deleteIfExists(p);
+            } catch (IOException ignore) {
+                // 删除失败不抛
+            }
+        }
     }
 
     private static String formatResult(
