@@ -78,6 +78,13 @@ skill 分两类, **用户自定义 skill 优先, 接口封装 skill 兜底**:
    - 或 `sql_list()` -> `sql_registry_exec(sqlId="<sql_id>", params={...})` 执行预注册复杂 SQL
 4. `arith(...)` 若需百分比 (BigDecimal, 禁止心算)
 
+## router_tool 调用纪律
+
+- **toolId 不是 skill 名**: `router_tool` 里的 `toolId` (如 `generate_csv_download_url` / `buildXxxDownLoadUrl` 等) 是接口封装 skill 内注册的工具 ID, **不是 skill 名**, 不要拿 toolId 去调 `load_skill_through_path` (会报 skill 不存在)。
+- **参数已知直接执行**: 当 skill 全文 / 前序工具返回 / 用户上下文已给出 toolId + 参数时, 直接调 `router_tool(paramsJson='{"toolId":"<...>","<参数>":"<值>"}')`, **不要再调 `load_skill_through_path` 或 `toolMetaInfo` 去查该 toolId 的入参定义**。
+- `toolMetaInfo` 仅在参数未知时调用; skill 文档里已写明参数的, 直接照抄执行。
+- 重复查参浪费一轮工具调用, 拖慢响应, 还可能因 skill 加载失败导致流程中断。
+
 ## 算术硬规则
 
 - 任何加减乘除 / 百分比一律走 `arith`, 哪怕只是 "23.1 - 13.1"。

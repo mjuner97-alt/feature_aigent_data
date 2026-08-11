@@ -111,6 +111,13 @@ public class V2SandboxConfig {
                 s.getRemoteDockerSshOptions(),
                 s.getRemoteDockerTimeoutSeconds());
 
+        // Master kill-switch for workspace tar hydration. When false, DockerSandbox
+        // .doHydrateWorkspace() short-circuits and never runs `docker exec -i tar -xf`.
+        // Use when the container already has all workspace files (bind mount / scp /
+        // baked into image) and you want to skip ALL tar upload paths.
+        io.agentscope.harness.agent.sandbox.impl.docker.DockerSandbox.configureHydrate(
+                s.isHydrateEnabled());
+
         if (s.isRemoteDockerEnabled()) {
             log.info(
                     "Remote Docker mode ON — executing docker CLI through ssh target={} timeout={}s",
@@ -406,6 +413,7 @@ public class V2SandboxConfig {
             private java.util.List<String> remoteDockerSshOptions = java.util.List.of();
             private long remoteDockerTimeoutSeconds = 60;
             private boolean localPythonEnabled = false;
+            private boolean hydrateEnabled = true;
 
             public boolean isEnabled() { return enabled; }
             public void setEnabled(boolean enabled) { this.enabled = enabled; }
@@ -435,6 +443,8 @@ public class V2SandboxConfig {
             public void setRemoteDockerTimeoutSeconds(long remoteDockerTimeoutSeconds) { this.remoteDockerTimeoutSeconds = remoteDockerTimeoutSeconds; }
             public boolean isLocalPythonEnabled() { return localPythonEnabled; }
             public void setLocalPythonEnabled(boolean localPythonEnabled) { this.localPythonEnabled = localPythonEnabled; }
+            public boolean isHydrateEnabled() { return hydrateEnabled; }
+            public void setHydrateEnabled(boolean hydrateEnabled) { this.hydrateEnabled = hydrateEnabled; }
         }
 
         public static class Distributed {

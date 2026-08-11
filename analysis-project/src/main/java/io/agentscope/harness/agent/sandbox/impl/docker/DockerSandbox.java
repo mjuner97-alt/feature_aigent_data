@@ -34,6 +34,18 @@ public class DockerSandbox extends AbstractBaseSandbox {
     private static final int CONTAINER_STOP_TIMEOUT_SECONDS = 60;
     private static final int TAR_TIMEOUT_SECONDS = 120;
 
+    // Master kill-switch for workspace tar hydration. When false, doHydrateWorkspace()
+    // returns immediately without running `docker exec -i tar -xf - -C /workspace`.
+    // Use when the container already has all workspace files (via bind mount / scp /
+    // baked into image) and you want to skip ALL tar upload paths (projection +
+    // snapshot restore). Configured via harness.a2a.sandbox.hydrate-enabled=false.
+    private static volatile boolean hydrateEnabled = true;
+
+    public static void configureHydrate(boolean enabled) {
+        hydrateEnabled = enabled;
+        log.info("[sandbox-docker] hydrateEnabled={}", enabled);
+    }
+
     private final DockerSandboxState dockerState;
 
     public DockerSandbox(DockerSandboxState dockerState) {
@@ -144,6 +156,17 @@ public class DockerSandbox extends AbstractBaseSandbox {
 
     @Override
     protected void doHydrateWorkspace(InputStream inputStream) throws Exception {
+        if (!hydrateEnabled) {
+            log.warn("[sandbox-docker] hydrate disabled (harness.a2a.sandbox.hydrate-enabled=false), "
+                    + "skipping tar extract. Container /workspace must already have all files.");
+            // Drain the input stream to release resources / unblock the producer thread.
+            try {
+                inputStream.transferTo(java.io.OutputStream.nullOutputStream());
+            } catch (IOException ignored) {
+                // best-effort drain
+            }
+            return;
+        }
         runDockerCliBlocking(30, "exec", dockerState.getContainerId(), "mkdir", "-p", dockerState.getWorkspaceRoot());
         List<String> args =
                 List.of(

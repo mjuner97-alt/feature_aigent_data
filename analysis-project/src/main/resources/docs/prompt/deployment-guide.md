@@ -109,7 +109,7 @@ docker run -d \
   --name analysis-project-test \
   -p 18080:80 \
   -v /java/analysis-project/analysis-project:/app \
-  -v /java/analysis-workspace:/workspace/harness-a2a \
+  -v /java/analysis-project/analysis-project/workspace:/workspace \
   -e SPRING_PROFILES_ACTIVE=dev,docker \
   analysis-project:plan-b
 ```
