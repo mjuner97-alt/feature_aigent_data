@@ -99,13 +99,13 @@ public class SkillJobController {
 
     /** 单条执行记录 */
     @GetMapping("/executions/{execId}")
-    public SkillJobExecutionDto getExecution(@PathVariable Long execId) {
+    public SkillJobExecutionDto getExecution(@PathVariable(name = "execId") Long execId) {
         return service.getExecution(execId);
     }
 
     /** 下载执行记录对应的 MD 文件 */
     @GetMapping("/executions/{execId}/download")
-    public ResponseEntity<Resource> downloadExecutionFile(@PathVariable Long execId,
+    public ResponseEntity<Resource> downloadExecutionFile(@PathVariable(name = "execId") Long execId,
                                                            @RequestHeader("X-User-Id") String userId) {
         try {
             SkillJobExecutionDto exec = service.getExecution(execId);
