@@ -382,7 +382,7 @@ public class SubagentRegistrar {
             // Without this, the parent SSE stream only sees SubagentExposedEvent — subagent
             // text_block_delta / tool_call_start / etc. are dropped on the floor of the
             // subagent's filtered Flux inside callInternal.
-            subMiddlewares.add(subagentEventForwardingMiddleware);
+//            subMiddlewares.add(subagentEventForwardingMiddleware);
             // ToolResultTruncationMiddleware: shortens previously-consumed tool results
             // (e.g. load_skill_through_path SKILL.md) to reduce LLM context bloat on
             // subagent multi-round ReAct loops. The last ToolResultBlock is always left

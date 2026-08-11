@@ -168,6 +168,8 @@ public class SkillJobService {
             throw new IllegalStateException("JobAccessDenied: 仅创建人可手动触发此任务 (id=" + jobId + ")");
         }
         SkillJobExecution exec = SkillJobExecution.builder()
+                .mdFileExists(false)
+                .mdFileExists(false)
                 .jobId(jobId).triggerType("MANUAL").status("PENDING").build();
         mapper.insertExecution(exec);
         if (!scheduler.submit(jobId, exec.getId())) {
@@ -239,6 +241,8 @@ public class SkillJobService {
     /** 单个 job 在批量触发中的处理：落 PENDING -> submit；已在跑则清孤儿记录并标记 REJECTED */
     private MetricTriggerItemDto triggerOneForMetric(SkillJob job, String userId) {
         SkillJobExecution exec = SkillJobExecution.builder()
+                .mdFileExists(false)
+                .mdFileExists(false)
                 .jobId(job.getId()).triggerType("METRIC").status("PENDING").build();
         mapper.insertExecution(exec);
         if (!scheduler.submit(job.getId(), exec.getId())) {

@@ -47,9 +47,9 @@ public class SkillJobController {
     }
 
     @GetMapping
-    public List<SkillJobDto> list(@RequestParam(required = false) Boolean enabled,
-                                  @RequestParam(required = false) String keyword,
-                                  @RequestParam(required = false) String createdBy) {
+    public List<SkillJobDto> list(@RequestParam(name = "enabled", required = false) Boolean enabled,
+                                  @RequestParam(name = "keyword", required = false) String keyword,
+                                  @RequestParam(name="createdBy",required = false) String createdBy) {
         return service.list(enabled, keyword, createdBy);
     }
 
@@ -93,20 +93,20 @@ public class SkillJobController {
     /** 执行记录列表 */
     @GetMapping("/{id}/executions")
     public List<SkillJobExecutionDto> listExecutions(@PathVariable(name = "id" ) Long id,
-                                                      @RequestParam(required = false) String status) {
+                                                     @RequestParam(name = "status", required = false) String status) {
         return service.listExecutions(id, status);
     }
 
     /** 单条执行记录 */
     @GetMapping("/executions/{execId}")
-    public SkillJobExecutionDto getExecution(@PathVariable Long execId) {
+    public SkillJobExecutionDto getExecution(@PathVariable(name = "execId") Long execId) {
         return service.getExecution(execId);
     }
 
     /** 下载执行记录对应的 MD 文件 */
     @GetMapping("/executions/{execId}/download")
-    public ResponseEntity<Resource> downloadExecutionFile(@PathVariable Long execId,
-                                                           @RequestHeader("X-User-Id") String userId) {
+    public ResponseEntity<Resource> downloadExecutionFile(@PathVariable(name = "execId") Long execId,
+                                                          @RequestHeader("X-User-Id") String userId) {
         try {
             SkillJobExecutionDto exec = service.getExecution(execId);
             if (exec.resolvedOutputPath() == null || exec.resolvedOutputPath().isBlank()) {

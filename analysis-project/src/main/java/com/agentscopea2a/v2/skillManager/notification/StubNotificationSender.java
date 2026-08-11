@@ -11,9 +11,9 @@ import org.springframework.stereotype.Component;
  * <p>接入内部系统时，提供自己的 {@code @Component} 实现 {@link NotificationSender}，
  * 本 stub 因 {@code @ConditionalOnMissingBean} 自动退让。
  */
-// 暂未引入 NotificationSender：以下注解先注释，避免启动时注册 stub bean；重新引入时取消注释即可。
-// @Component
-// @ConditionalOnMissingBean(NotificationSender.class)
+// 接入内部通知系统前先用本 stub：发送仅打日志；提供自定义 @Component 后本 bean 自动退让。
+@Component
+@ConditionalOnMissingBean(NotificationSender.class)
 public class StubNotificationSender implements NotificationSender {
     private static final Logger log = LoggerFactory.getLogger(StubNotificationSender.class);
 

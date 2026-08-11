@@ -27,9 +27,8 @@ import java.util.concurrent.Executors;
  *
  * <p>发送在独立单线程异步执行，不阻塞 job worker；best-effort：失败仅告警，不影响 job 结果。
  */
-// 暂未引入 NotificationSender：以下注解先注释，避免启动时注册 bean；重新引入时取消注释即可。
-// @Service
-// @ConditionalOnProperty(prefix = "harness.a2a.skill-job", name = "enabled", havingValue = "true", matchIfMissing = true)
+// 发送委托 NotificationSender（默认 StubNotificationSender 仅打日志）；接入内部系统时提供自定义 @Component 实现自动替换。
+@Service
 public class NotificationService {
     private static final Logger log = LoggerFactory.getLogger(NotificationService.class);
 
