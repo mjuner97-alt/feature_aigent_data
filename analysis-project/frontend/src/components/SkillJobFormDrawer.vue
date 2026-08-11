@@ -150,7 +150,7 @@ function close() { emit('update:open', false); }
                   <span class="label">依赖指标</span>
                   <select v-model.number="form.metricId" :disabled="isEdit">
                     <option :value="null">不关联（可选）</option>
-                    <option v-for="m in metrics" :key="m.id" :value="m.id">{{ m.name }}（{{ m.code }}）</option>
+                    <option v-for="m in metrics" :key="m.id" :value="m.id">{{ m.name }}</option>
                   </select>
                   <span v-if="isEdit" class="tip">依赖指标不可修改，如需更换请删除后重建</span>
                   <span v-else class="tip">可选；关联后随指标就绪自动触发该任务</span>

@@ -67,6 +67,13 @@ const routes: RouteRecordRaw[] = [
         component: SqlRegistryPage,
         meta: { requiresAuth: true, title: 'SQL 注册表' },
       },
+      {
+        // 内部管理页: 不在导航中展示, 仅直接输入 /model-config 访问
+        path: 'model-config',
+        name: 'ModelConfig',
+        component: () => import('./pages/UserModelConfigPage.vue'),
+        meta: { requiresAuth: true, title: '用户模型配置' },
+      },
       { path: 'trace', redirect: '/chat' },
     ],
   },

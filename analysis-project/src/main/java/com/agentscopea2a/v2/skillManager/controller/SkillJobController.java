@@ -1,6 +1,7 @@
 
 package com.agentscopea2a.v2.skillManager.controller;
 
+import com.agentscopea2a.v2.service.UrlShortenerService;
 import com.agentscopea2a.v2.skillManager.dto.MetricTriggerBatchDto;
 import com.agentscopea2a.v2.skillManager.dto.SkillDependencyMetricDto;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobCreateRequest;
@@ -33,9 +34,11 @@ import java.util.List;
 public class SkillJobController {
 
     private final SkillJobService service;
+    private final UrlShortenerService urlShortenerService;
 
-    public SkillJobController(SkillJobService service) {
+    public SkillJobController(SkillJobService service, UrlShortenerService urlShortenerService) {
         this.service = service;
+        this.urlShortenerService = urlShortenerService;
     }
 
     // ---- CRUD ----
@@ -103,7 +106,9 @@ public class SkillJobController {
         return service.getExecution(execId);
     }
 
-    /** 下载执行记录对应的 MD 文件 */
+    /**
+     * 下载执行记录对应的 MD 文件（前端入口：X-User-Id 请求头 + 归属校验，仅创建人可下载）。
+     */
     @GetMapping("/executions/{execId}/download")
     public ResponseEntity<Resource> downloadExecutionFile(@PathVariable(name = "execId") Long execId,
                                                           @RequestHeader("X-User-Id") String userId) {
@@ -113,18 +118,64 @@ public class SkillJobController {
                 return ResponseEntity.notFound().build();
             }
             Resource resource = service.downloadExecutionFile(exec, userId);
-            // 从路径中提取文件名
-            String filename = exec.resolvedOutputPath();
-            int lastSlash = filename.lastIndexOf('/');
-            if (lastSlash >= 0) filename = filename.substring(lastSlash + 1);
-            String encoded = URLEncoder.encode(filename, StandardCharsets.UTF_8).replace("+", "%20");
-            return ResponseEntity.ok()
-                    .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                    .header(HttpHeaders.CONTENT_DISPOSITION,
-                            "attachment; filename*=UTF-8''" + encoded)
-                    .body(resource);
+            return fileResponse(resource, exec.resolvedOutputPath());
         } catch (IllegalStateException e) {
             return ResponseEntity.notFound().build();
+        }
+    }
+
+    /**
+     * 下载执行记录对应的 MD 文件（通知邮件入口：短链 shortCode 即访问凭据，无登录）。
+     * shortCode 由 UrlShortenerService 生成、映射到 "skilljob-exec:{execId}"，不可枚举。
+     */
+    @GetMapping("/download")
+    public ResponseEntity<Resource> downloadByShortCode(@RequestParam(name = "shortCode") String shortCode) {
+        String resolved = urlShortenerService.resolve(shortCode);
+        if (resolved == null) {
+            return ResponseEntity.notFound().build();
+        }
+        Long execId = parseExecId(resolved);
+        if (execId == null) {
+            return ResponseEntity.badRequest().build();
+        }
+        try {
+            SkillJobExecutionDto exec = service.getExecution(execId);
+            if (exec.resolvedOutputPath() == null || exec.resolvedOutputPath().isBlank()) {
+                return ResponseEntity.notFound().build();
+            }
+            Resource resource = service.downloadExecutionFile(exec);
+            return fileResponse(resource, exec.resolvedOutputPath());
+        } catch (IllegalStateException e) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    /** 组装文件流响应：octet-stream + Content-Disposition（中文文件名 RFC 5987 编码）。 */
+    private ResponseEntity<Resource> fileResponse(Resource resource, String resolvedOutputPath) {
+        String filename = extractFilename(resolvedOutputPath);
+        String encoded = URLEncoder.encode(filename, StandardCharsets.UTF_8).replace("+", "%20");
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename*=UTF-8''" + encoded)
+                .body(resource);
+    }
+
+    /** 从 resolvedOutputPath 末段提取文件名。 */
+    private static String extractFilename(String resolvedOutputPath) {
+        if (resolvedOutputPath == null) return "report.md";
+        int lastSlash = resolvedOutputPath.lastIndexOf('/');
+        return lastSlash >= 0 ? resolvedOutputPath.substring(lastSlash + 1) : resolvedOutputPath;
+    }
+
+    /** 从 shortCode 解析出的 "skilljob-exec:{execId}" 提取 execId；不匹配返回 null。 */
+    private static Long parseExecId(String resolved) {
+        String prefix = "skilljob-exec:";
+        if (!resolved.startsWith(prefix)) return null;
+        try {
+            return Long.parseLong(resolved.substring(prefix.length()));
+        } catch (NumberFormatException e) {
+            return null;
         }
     }
 

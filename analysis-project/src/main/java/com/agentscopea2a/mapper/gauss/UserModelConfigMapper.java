@@ -32,6 +32,30 @@ public interface UserModelConfigMapper {
     List<UserModelConfig> selectAll();
 
     /**
+     * 新增用户模型配置（管理端）。
+     *
+     * @param config 配置
+     * @return 受影响行数
+     */
+    int insert(UserModelConfig config);
+
+    /**
+     * 更新用户模型配置（管理端，按主键全量覆盖非空字段）。
+     *
+     * @param config 配置
+     * @return 受影响行数
+     */
+    int update(UserModelConfig config);
+
+    /**
+     * 删除用户模型配置（管理端）。
+     *
+     * @param userId 用户 ID
+     * @return 受影响行数
+     */
+    int deleteByUserId(String userId);
+
+    /**
      * 更新某用户「最近一次过期通知时间」（用于去重）。
      *
      * @param userId 用户 ID

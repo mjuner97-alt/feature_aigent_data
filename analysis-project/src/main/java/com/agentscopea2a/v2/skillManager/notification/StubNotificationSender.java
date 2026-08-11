@@ -13,7 +13,6 @@ import org.springframework.stereotype.Component;
  */
 // 接入内部通知系统前先用本 stub：发送仅打日志；提供自定义 @Component 后本 bean 自动退让。
 @Component
-@ConditionalOnMissingBean(NotificationSender.class)
 public class StubNotificationSender implements NotificationSender {
     private static final Logger log = LoggerFactory.getLogger(StubNotificationSender.class);
 
@@ -21,9 +20,10 @@ public class StubNotificationSender implements NotificationSender {
     public void send(NotificationPayload p) {
         // TODO: 接入内部通知系统（HTTP / 邮件 / IM 等）。
         //   按 p.contentType() 选择纯文本(TEXT)或 HTML 渲染；
-        //   报告文件见 p.filePath() / p.fileName()，需读取后随通知发出（附件/链接）。
-        log.info("[Notification STUB] -> metric={}, job={}, exec={}, status={}, file={}, type={}",
-                p.metricCode(), p.jobName(), p.executionId(), p.status(), p.filePath(), p.contentType());
+        //   报告文件见 p.filePath() / p.fileName()，需读取后随通知发出（附件/链接）；
+        //   下载链接见 p.fileUrl()（HTML 里直接渲染 <a href="...">）。
+        log.info("[Notification STUB] -> metric={}, job={}, exec={}, status={}, file={}, url={}, type={}",
+                p.metricCode(), p.jobName(), p.executionId(), p.status(), p.filePath(), p.fileUrl(), p.contentType());
         log.info("[Notification STUB] content:\n{}", p.content());
     }
 }

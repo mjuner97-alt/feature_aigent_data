@@ -14,7 +14,7 @@ public interface NotificationSender {
     /**
      * 发送通知。
      *
-     * @param payload 已渲染内容 + 文件信息（filePath/fileName 指向本次生成的 MD 报告）
+     * @param payload 已渲染内容 + 文件信息（filePath/fileName 指向本次生成的 MD 报告，fileUrl 为其下载链接）
      */
     void send(NotificationPayload payload);
 }

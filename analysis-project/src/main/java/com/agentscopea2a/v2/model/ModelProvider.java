@@ -128,6 +128,16 @@ public class ModelProvider {
 
     /**
      * 清除指定用户的模型缓存，供外部调用（如管理端修改配置后主动刷新）。
+     * <p>缓存 key 为 String userId，管理端以字符串主键操作，故提供 String 重载；
+     * 原 Long 重载保留兼容（注意其与 String key 不匹配，管理端请用本方法）。
+     */
+    public void invalidateUserCache(String userId) {
+        userModelCache.remove(userId);
+        log.info("用户模型缓存已清除 userId={}", userId);
+    }
+
+    /**
+     * 清除指定用户的模型缓存，供外部调用（如管理端修改配置后主动刷新）。
      */
     public void invalidateUserCache(Long userId) {
         userModelCache.remove(userId);
