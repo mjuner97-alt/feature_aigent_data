@@ -31,6 +31,29 @@
         FROM user_model_config
     </select>
 
+    <insert id="insert" parameterType="com.agentscopea2a.entity.UserModelConfig">
+        INSERT INTO user_model_config
+        (user_id, provider, token, model_name, request_url, expire_at, last_notified_at, created_at, updated_at)
+        VALUES
+        (#{userId}, #{provider}, #{token}, #{modelName}, #{requestUrl}, #{expireAt}, #{lastNotifiedAt}, #{createdAt}, #{updatedAt})
+    </insert>
+
+    <update id="update" parameterType="com.agentscopea2a.entity.UserModelConfig">
+        UPDATE user_model_config
+        SET provider = #{provider},
+            token = #{token},
+            model_name = #{modelName},
+            request_url = #{requestUrl},
+            expire_at = #{expireAt},
+            updated_at = #{updatedAt}
+        WHERE user_id = #{userId}
+    </update>
+
+    <delete id="deleteByUserId">
+        DELETE FROM user_model_config
+        WHERE user_id = #{userId}
+    </delete>
+
     <update id="updateNotifiedAt">
         UPDATE user_model_config
         SET last_notified_at = #{time}

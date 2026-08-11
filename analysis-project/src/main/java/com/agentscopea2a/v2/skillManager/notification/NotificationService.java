@@ -1,16 +1,20 @@
 package com.agentscopea2a.v2.skillManager.notification;
 
+import com.agentscopea2a.v2.service.UrlShortenerService;
 import com.agentscopea2a.v2.skillManager.entity.SkillDependencyMetric;
 import com.agentscopea2a.v2.skillManager.entity.SkillJob;
 import com.agentscopea2a.v2.skillManager.entity.SkillJobExecution;
 import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
-import java.time.LocalDate;
+import java.lang.reflect.Array;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -27,9 +31,8 @@ import java.util.concurrent.Executors;
  *
  * <p>发送在独立单线程异步执行，不阻塞 job worker；best-effort：失败仅告警，不影响 job 结果。
  */
-// 暂未引入 NotificationSender：以下注解先注释，避免启动时注册 bean；重新引入时取消注释即可。
-// @Service
-// @ConditionalOnProperty(prefix = "harness.a2a.skill-job", name = "enabled", havingValue = "true", matchIfMissing = true)
+// 发送委托 NotificationSender（默认 StubNotificationSender 仅打日志）；接入内部系统时提供自定义 @Component 实现自动替换。
+@Service
 public class NotificationService {
     private static final Logger log = LoggerFactory.getLogger(NotificationService.class);
 
@@ -40,10 +43,8 @@ public class NotificationService {
               <table>
                 <tr><td>依赖指标</td><td>{metric_name}（{metric_code}）</td></tr>
                 <tr><td>任务名称</td><td>{job_name}</td></tr>
-                <tr><td>执行记录</td><td>#{execution_id}（{status}）</td></tr>
                 <tr><td>生成时间</td><td>{date}</td></tr>
-                <tr><td>报告文件</td><td>{file_name}</td></tr>
-                <tr><td>文件路径</td><td>{file_path}</td></tr>
+                <tr><td>报告下载</td><td>{file_link}</td></tr>
               </table>
             </div>""";
 
@@ -52,13 +53,19 @@ public class NotificationService {
             【指标分析报告已生成】
             依赖指标：{metric_name}（{metric_code}）
             任务名称：{job_name}
-            执行记录：#{execution_id}（{status}）
             生成时间：{date}
-            报告文件：{file_name}
-            文件路径：{file_path}""";
+            报告下载：{file_link}""";
 
     private final SkillDependencyMetricMapper metricMapper;
     private final NotificationSender sender;
+    private final UrlShortenerService urlShortenerService;
+
+    /**
+     * 报告下载链接的 base URL（对应 {@code harness.a2a.skill-job.download-base-url}）。
+     * 空=输出相对路径（前端 vite proxy / 同域）；设置=拼完整域名（独立域名 / 邮件外链时用）。
+     */
+    @Value("${harness.a2a.skill-job.download-base-url:}")
+    private String downloadBaseUrl;
 
     /** 通知专用单线程：避免外部系统调用阻塞 job 执行线程 */
     private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
@@ -67,9 +74,11 @@ public class NotificationService {
         return t;
     });
 
-    public NotificationService(SkillDependencyMetricMapper metricMapper, NotificationSender sender) {
+    public NotificationService(SkillDependencyMetricMapper metricMapper, NotificationSender sender,
+                               UrlShortenerService urlShortenerService) {
         this.metricMapper = metricMapper;
         this.sender = sender;
+        this.urlShortenerService = urlShortenerService;
     }
 
     /**
@@ -93,12 +102,13 @@ public class NotificationService {
             String template = (metric.getNotifyContentTemplate() != null && !metric.getNotifyContentTemplate().isBlank())
                     ? metric.getNotifyContentTemplate()
                     : defaultTemplate(contentType);
-            String content = render(template, job, metric, execution, filePath);
+            String fileUrl = buildFileUrl(execution.getId());
+            String content = render(template, contentType, fileUrl, job, metric, execution, filePath);
             String fileName = fileNameOf(filePath);
             NotificationPayload payload = new NotificationPayload(
-                    contentType, content, filePath, fileName,
+                    contentType, content, filePath, fileName, fileUrl,
                     job.getId(), job.getName(), metric.getCode(), metric.getName(),
-                    execution.getId(), execution.getStatus(), LocalDateTime.now());
+                    execution.getId(), execution.getStatus(), LocalDateTime.now(), Arrays.asList(job.getCreatedBy()));
             sender.send(payload);
             log.info("[Notification] sent: metric={}, job={}, exec={}, file={}",
                     metric.getCode(), job.getName(), execution.getId(), fileName);
@@ -111,17 +121,50 @@ public class NotificationService {
         return "TEXT".equals(contentType) ? DEFAULT_TEXT_TEMPLATE : DEFAULT_HTML_TEMPLATE;
     }
 
-    private String render(String template, SkillJob job, SkillDependencyMetric metric,
+    private String render(String template, String contentType, String fileUrl, SkillJob job, SkillDependencyMetric metric,
                           SkillJobExecution execution, String filePath) {
+        String fileName = fileNameOf(filePath);
+        String fileLink = "HTML".equals(contentType)
+                ? "<a href=\"" + fileUrl + "\">" + fileName + "</a>"
+                : fileUrl;
         return template
                 .replace("{metric_name}", nullSafe(metric.getName()))
                 .replace("{metric_code}", nullSafe(metric.getCode()))
                 .replace("{job_name}", nullSafe(job.getName()))
-                .replace("{execution_id}", String.valueOf(execution.getId()))
                 .replace("{status}", nullSafe(execution.getStatus()))
-                .replace("{date}", LocalDate.now().toString())
-                .replace("{file_name}", fileNameOf(filePath))
-                .replace("{file_path}", filePath);
+                .replace("{date}", LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")))
+                .replace("{file_name}", fileName)
+                .replace("{file_path}", filePath)
+                .replace("{file_url}", fileUrl)
+                .replace("{file_link}", fileLink);
+    }
+
+    /**
+     * 构建报告下载链接：用 {@link UrlShortenerService} 给本次执行生成 16 位 BASE62 短码
+     * （shortCode 即访问凭据，不可枚举），链接形如 {baseUrl}/api/skill-jobs/download?shortCode=xxx。
+     * shortCode -> "skilljob-exec:{execId}" 存入 url_shortener 表，
+     * 由 {@code SkillJobController.downloadByShortCode} 解析后定位文件。
+     * downloadBaseUrl 为空则输出相对路径，由接入方/前端补主机。
+     */
+    private String buildFileUrl(Long executionId) {
+        if (executionId == null) {
+            return "";
+        }
+        String shortCode = urlShortenerService.shorten("skilljob-exec:" + executionId);
+        if (shortCode == null) {
+            // 短链入库失败：退回 execId 相对路径兜底（该端点需 X-User-Id 头，邮件外链场景不可用，仅保字段非空）
+            log.warn("shorten failed for execution {}, fallback to relative execId path", executionId);
+            return "/api/skill-jobs/executions/" + executionId + "/download";
+        }
+        String path = "/api/skill-jobs/download?shortCode=" + shortCode;
+        if (downloadBaseUrl == null || downloadBaseUrl.isBlank()) {
+            return path;
+        }
+        return stripTrailingSlash(downloadBaseUrl) + path;
+    }
+
+    private static String stripTrailingSlash(String s) {
+        return s.endsWith("/") ? s.substring(0, s.length() - 1) : s;
     }
 
     private static String fileNameOf(String filePath) {

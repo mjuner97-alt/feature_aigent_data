@@ -168,6 +168,8 @@ public class SkillJobService {
             throw new IllegalStateException("JobAccessDenied: 仅创建人可手动触发此任务 (id=" + jobId + ")");
         }
         SkillJobExecution exec = SkillJobExecution.builder()
+                .mdFileExists(false)
+                .mdFileExists(false)
                 .jobId(jobId).triggerType("MANUAL").status("PENDING").build();
         mapper.insertExecution(exec);
         if (!scheduler.submit(jobId, exec.getId())) {
@@ -239,6 +241,8 @@ public class SkillJobService {
     /** 单个 job 在批量触发中的处理：落 PENDING -> submit；已在跑则清孤儿记录并标记 REJECTED */
     private MetricTriggerItemDto triggerOneForMetric(SkillJob job, String userId) {
         SkillJobExecution exec = SkillJobExecution.builder()
+                .mdFileExists(false)
+                .mdFileExists(false)
                 .jobId(job.getId()).triggerType("METRIC").status("PENDING").build();
         mapper.insertExecution(exec);
         if (!scheduler.submit(job.getId(), exec.getId())) {
@@ -265,28 +269,25 @@ public class SkillJobService {
     }
 
     /**
-     * 下载执行记录对应的 MD 文件。
-     * 校验 userId 归属（通过 Job 的 createdBy）后返回磁盘文件 Resource。
-     * resolvedOutputPath 为绝对路径（/data/skill-files/{userId}/xxx.md）。
+     * 下载执行记录对应的 MD 文件（内部纯文件服务：路径解析 + 路径穿越防护，无归属校验）。
+     * 供短链端点 {@code downloadByShortCode} 调用（shortCode 即访问凭据，无需 userId）。
+     * resolvedOutputPath 为绝对路径（/data/skill-files/{userId}/xxx.md），
+     * 路径穿越 base 由 Job.createdBy 推导。
      */
-    public Resource downloadExecutionFile(SkillJobExecutionDto exec, String userId) {
+    public Resource downloadExecutionFile(SkillJobExecutionDto exec) {
         if (exec.resolvedOutputPath() == null || exec.resolvedOutputPath().isBlank()) {
             throw new IllegalStateException("FileNotFound: 执行记录无输出路径 (execId=" + exec.id() + ")");
         }
 
-        // 校验 userId 归属：仅 createdBy 本人可下载其生成的 MD 文件（执行结果属创建人私有）
         SkillJob job = mapper.selectJobById(exec.jobId());
-        if (job == null ) {
+        if (job == null) {
             throw new IllegalStateException("FileNotFoundOrAccessDenied: " + exec.id());
-        }
-        if (!userId.equals(job.getCreatedBy())) {
-            throw new IllegalStateException("JobAccessDenied: 仅创建人可下载此执行结果 (execId=" + exec.id() + ")");
         }
 
         // resolvedOutputPath 是绝对路径，直接解析
         Path mdFile = Paths.get(exec.resolvedOutputPath()).normalize().toAbsolutePath();
-        // 路径穿越防护：必须在 /data/skill-files/{userId}/ 下
-        Path expectedBase = Paths.get("/data/skill-files/" + userId).normalize().toAbsolutePath();
+        // 路径穿越防护：必须在 /data/skill-files/{userId}/ 下（base 由 Job.createdBy 推导）
+        Path expectedBase = Paths.get("/data/skill-files/" + job.getCreatedBy()).normalize().toAbsolutePath();
         if (!mdFile.startsWith(expectedBase)) {
             throw new IllegalStateException("PathTraversal: " + exec.resolvedOutputPath());
         }
@@ -295,5 +296,20 @@ public class SkillJobService {
         }
 
         return new FileSystemResource(mdFile);
+    }
+
+    /**
+     * 下载执行记录对应的 MD 文件（前端入口：校验 userId 归属后委托给无校验版本）。
+     * 仅 createdBy 本人可下载其生成的 MD 文件。
+     */
+    public Resource downloadExecutionFile(SkillJobExecutionDto exec, String userId) {
+        SkillJob job = mapper.selectJobById(exec.jobId());
+        if (job == null) {
+            throw new IllegalStateException("FileNotFoundOrAccessDenied: " + exec.id());
+        }
+        if (!userId.equals(job.getCreatedBy())) {
+            throw new IllegalStateException("JobAccessDenied: 仅创建人可下载此执行结果 (execId=" + exec.id() + ")");
+        }
+        return downloadExecutionFile(exec);
     }
 }

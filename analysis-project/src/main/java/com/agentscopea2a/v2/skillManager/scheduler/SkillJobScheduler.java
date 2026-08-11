@@ -21,6 +21,8 @@ import com.agentscopea2a.v2.skillManager.entity.SkillJob;
 import com.agentscopea2a.v2.skillManager.entity.SkillJobExecution;
 import com.agentscopea2a.v2.skillManager.mapper.SkillJobMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillMapper;
+import com.agentscopea2a.v2.skillManager.notification.NotificationSender;
+import com.agentscopea2a.v2.skillManager.notification.NotificationService;
 import com.agentscopea2a.v2.tools.WriteMarkdownTool;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
@@ -32,6 +34,7 @@ import io.agentscope.core.message.TextBlock;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
@@ -90,6 +93,9 @@ public class SkillJobScheduler implements WriteCallback {
     private final HarnessRunnerProperties.SkillJobConfig config;
     private final Path workspace;
     private final WriteMarkdownTool writeMarkdownTool;
+
+    @Autowired
+    private NotificationService notificationService;
 
     /** 固定大小线程池 + 有界队列：控制并行度，队列满时拒绝新提交 */
     private final ExecutorService executor = new ThreadPoolExecutor(
@@ -430,6 +436,12 @@ public class SkillJobScheduler implements WriteCallback {
             execution.setCompletedAt(LocalDateTime.now());
             mapper.updateExecutionStatus(execution);
 
+            // 任务执行成功：触发完成通知（异步 best-effort，不阻塞 worker、不影响 job 结果）
+            // 是否发送由所属依赖指标的 notify_* 配置决定，NotificationService 内部自行判断
+            if (verified) {
+                notificationService.notifyJobCompleted(job, execution, actualFilePath);
+            }
+
             log.info("Job {} attempt {} done, status={}, file={}", jobId, attempt, execution.getStatus(), actualFilePath);
         } catch (Exception e) {
             log.error("Job {} attempt {} execution error", jobId, attempt, e);
@@ -511,7 +523,7 @@ public class SkillJobScheduler implements WriteCallback {
         if (skillId == null) return "unknown";
         try {
             var skill = skillMapper.selectById(skillId);
-            return skill != null ? skill.getName() : "unknown";
+            return skill != null ? skill.getRetrievalName() : "unknown";
         } catch (Exception e) {
             return "unknown";
         }
