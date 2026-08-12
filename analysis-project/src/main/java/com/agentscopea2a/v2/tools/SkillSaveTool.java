@@ -45,8 +45,8 @@ import java.util.regex.Pattern;
  *   <li>Overwrite SKILL.md with frontmatter + body
  * </ol>
  *
- * <p>PR5 - per-user isolation: agent-saved skills are scoped with a {@code usr_<userId>_}
- * prefix and synced to the {@code skill_manage} table so the management UI can see them.
+ * <p>agent-saved skills are synced to the {@code skill_manage} table so the management UI can see
+ * them. 检索名直接用 sanitized skill 名字(不再加 usr_<userId>_ 前缀);同名 skill 一律拒绝。
  *
  * <p>Used by the SkillGeneratorAgent to persist generated skill definitions.
  */
@@ -127,8 +127,13 @@ public class SkillSaveTool implements RuntimeContextAware {
             }
             String userId = currentCtx != null ? currentCtx.getUserId() : null;
             String safeName = skillName.trim().toLowerCase().replaceAll("[^a-z0-9_]", "_");
-            // PR5: 加 userId 前缀避免不同用户同名冲突
-            String scopedName = buildUserScopedName(safeName, userId);
+            if (safeName.isBlank()) {
+                return ToolResultBlock.error("skill_name 必须包含至少一个英文字母或数字");
+            }
+            // 检索名直接用 sanitized 名字,不再加 usr_<userId>_ 前缀;同名(任意来源/所有者)一律拒绝
+            if (existsActiveInIndex(safeName)) {
+                return ToolResultBlock.error("技能名 '" + safeName + "' 已存在，请改名后重试");
+            }
             String desc = description == null ? "" : description.trim();
             String body = content == null ? "" : content.trim();
             while (body.startsWith("---")) {
@@ -137,18 +142,13 @@ public class SkillSaveTool implements RuntimeContextAware {
                 body = stripped;
             }
 
-            if (!checkNameAvailable(scopedName)) {
-                return ToolResultBlock.error(
-                        "技能名 '" + scopedName + "' 已被另一来源占用，请改名后重试");
-            }
-
-            int version = upsertVersion(scopedName, desc, userId);
-            String frontmatter = renderFrontmatter(scopedName, desc, version);
+            int version = upsertVersion(safeName, desc, userId);
+            String frontmatter = renderFrontmatter(safeName, desc, version);
             String full = frontmatter + body;
 
             AgentSkill skill =
                     AgentSkill.builder()
-                            .name(scopedName)
+                            .name(safeName)
                             .description(desc)
                             .skillContent(full)
                             .source(source)
@@ -159,11 +159,11 @@ public class SkillSaveTool implements RuntimeContextAware {
                 return ToolResultBlock.error("技能保存失败，请重试");
             }
 
-            // PR5: 同步写入 skill_manage 表,让管理页面可见
-            syncToSkillManage(scopedName, desc, body, userId);
+            // 同步写入 skill_manage 表,让管理页面可见
+            syncToSkillManage(safeName, desc, body, userId);
 
-            String msg = "技能保存成功 v" + version + " - " + skillsDir.resolve(scopedName).resolve("SKILL.md");
-            log.info("Skill saved: {} v{}", scopedName, version);
+            String msg = "技能保存成功 v" + version + " - " + skillsDir.resolve(safeName).resolve("SKILL.md");
+            log.info("Skill saved: {} v{}", safeName, version);
             return ToolResultBlock.text(msg);
         } catch (Exception e) {
             log.error("Failed to save skill: {}", skillName, e);
@@ -241,12 +241,14 @@ public class SkillSaveTool implements RuntimeContextAware {
     }
 
     /**
-     * PR5 - 构建 userId 前缀的检索名,避免不同用户同名冲突。
-     * 匿名用户(userId 为空)不加前缀,退化为原有行为。
+     * 检索名是否已被占用(仅 active 行算占用;blacklisted=已删除,名字可复用)。
+     * 去掉 usr_<userId>_ 前缀后检索名全局唯一,故需在保存前显式判重。
      */
-    private String buildUserScopedName(String safeName, String userId) {
-        if (userId == null || userId.isBlank()) return safeName;
-        return "usr_" + userId + "_" + safeName;
+    private boolean existsActiveInIndex(String name) {
+        if (indexRepository == null) return false;
+        return indexRepository.findByName(name)
+                .map(e -> SkillEntry.STATUS_ACTIVE.equals(e.status()))
+                .orElse(false);
     }
 
     /**

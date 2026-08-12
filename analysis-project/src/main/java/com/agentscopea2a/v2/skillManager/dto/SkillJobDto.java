@@ -20,14 +20,13 @@ import com.agentscopea2a.v2.skillManager.entity.SkillJob;
 import java.time.LocalDateTime;
 
 /**
- * SkillJob 详情响应 DTO。
+ * SkillJob 详情响应 DTO。outputPath 不暴露给前端（磁盘路径由后端按 userId + baseDir 拼）。
  */
 public record SkillJobDto(
         Long id,
         String name,
         Long skillId,
         String questionTemplate,
-        String outputPath,
         Boolean enabled,
         Long metricId,
         String metricCode,
@@ -39,7 +38,7 @@ public record SkillJobDto(
     public static SkillJobDto of(SkillJob job) {
         return new SkillJobDto(
                 job.getId(), job.getName(), job.getSkillId(),
-                job.getQuestionTemplate(), job.getOutputPath(),
+                job.getQuestionTemplate(),
                 job.getEnabled(),
                 job.getMetricId(), job.getMetricCode(), job.getMetricName(),
                 job.getCreatedBy(), job.getCreatedAt(), job.getUpdatedAt());

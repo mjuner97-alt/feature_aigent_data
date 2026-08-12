@@ -334,7 +334,8 @@ public class V2SkillConfig {
      */
     @Bean
     public WriteMarkdownTool writeMarkdownTool(
-            ObjectProvider<WriteCallback> writeCallbackProvider) {
-        return new WriteMarkdownTool(writeCallbackProvider::getIfAvailable);
+            ObjectProvider<WriteCallback> writeCallbackProvider,
+            @Value("${skill.file.base-dir:/data/skill-files}") String skillFileBaseDir) {
+        return new WriteMarkdownTool(writeCallbackProvider::getIfAvailable, skillFileBaseDir);
     }
 }

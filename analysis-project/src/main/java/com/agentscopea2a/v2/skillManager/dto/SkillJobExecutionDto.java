@@ -16,11 +16,14 @@
 package com.agentscopea2a.v2.skillManager.dto;
 
 import com.agentscopea2a.v2.skillManager.entity.SkillJobExecution;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 
 import java.time.LocalDateTime;
 
 /**
  * SkillJob 执行记录响应 DTO。
+ * resolvedOutputPath 加 @JsonIgnore 不序列化给前端（磁盘路径，仅后端下载时按 baseDir + createdBy 拼解析）；
+ * 前端判"有没有文件"用 mdFileExists。
  */
 public record SkillJobExecutionDto(
         Long id,
@@ -28,7 +31,7 @@ public record SkillJobExecutionDto(
         String triggerType,
         String status,
         String conversationId,
-        String resolvedOutputPath,
+        @JsonIgnore String resolvedOutputPath,
         Boolean mdFileWritten,
         Boolean mdFileExists,
         String errorMsg,

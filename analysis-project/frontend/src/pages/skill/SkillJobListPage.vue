@@ -144,7 +144,6 @@ function fmtTime(t: string) {
           <th>关联 Skill</th>
           <th>依赖指标</th>
           <th>提问内容</th>
-          <th>输出路径</th>
           <th>状态</th>
           <th>创建人</th>
           <th>创建时间</th>
@@ -164,7 +163,6 @@ function fmtTime(t: string) {
             <span v-else class="muted-cell">未配置</span>
           </td>
           <td class="col-template selectable" :title="job.questionTemplate">{{ job.questionTemplate || '未配置' }}</td>
-          <td class="col-path selectable" :title="job.outputPath">{{ job.outputPath || '未配置' }}</td>
           <td>
             <span class="status-badge" :class="job.enabled ? 'st-on' : 'st-off'">
               {{ job.enabled ? '启用' : '禁用' }}
@@ -217,7 +215,6 @@ function fmtTime(t: string) {
 .job-table td { padding: 10px 12px; font-size: 13px; color: #1e293b; border-bottom: 1px solid #f1f5f9; }
 .job-table tr:hover td { background: #f8fafc; }
 .col-name { font-weight: 600; }
-.col-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: #64748b; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .col-template { font-size: 12px; color: #475569; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .col-metric { font-size: 12px; color: #475569; white-space: nowrap; }
 .muted-cell { color: #cbd5e1; }

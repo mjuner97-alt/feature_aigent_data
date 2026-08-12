@@ -1,10 +1,9 @@
-/** SkillJob 配置 */
+/** SkillJob 配置。outputPath 不暴露给前端（磁盘路径由后端按 userId + baseDir 拼） */
 export interface SkillJob {
   id: number;
   name: string;
   skillId: number;
   questionTemplate: string;
-  outputPath: string;
   enabled: boolean;
   /** 依赖指标 ID（可选，关联后随指标就绪触发） */
   metricId?: number | null;
@@ -24,7 +23,6 @@ export interface SkillJobInput {
   questionTemplate: string;
   /** 依赖指标 ID，可选 */
   metricId?: number | null;
-  outputPath?: string;
   enabled?: boolean;
 }
 
@@ -36,18 +34,16 @@ export interface SkillJobInput {
 export interface SkillJobUpdateInput {
   name?: string;
   questionTemplate?: string;
-  outputPath?: string;
   enabled?: boolean;
 }
 
-/** 执行记录 */
+/** 执行记录。resolvedOutputPath 不暴露给前端，判"有没有文件"用 mdFileExists */
 export interface SkillJobExecution {
   id: number;
   jobId: number;
   triggerType: string;
   status: string;
   conversationId: string;
-  resolvedOutputPath: string;
   mdFileWritten: boolean;
   mdFileExists: boolean;
   errorMsg: string;

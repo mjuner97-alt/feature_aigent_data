@@ -34,14 +34,15 @@ public class SkillManageBridge {
     /**
      * 同步页面 Skill 到检索索引（skill_index 表）。
      *
-     * <p>检索名由 skill 名字派生({@code usr_<userId>_<safeName>} / 回退 {@code usr_<userId>_<id>} /
-     * userId 为空时 {@code page_<id>})。本方法以 {@code skill.getRetrievalName()} 作为"上次持久化
-     * 的检索名"与按当前名字新算出的检索名对比:
+     * <p>检索名直接由 skill 名字 sanitize 派生({@code <safeName>} / 回退 {@code skill_<id>}),
+     * 不再加 {@code usr_<userId>_} 前缀,检索名全局唯一。本方法以 {@code skill.getRetrievalName()}
+     * 作为"上次持久化的检索名"与按当前名字新算出的检索名对比:
      * <ul>
-     *   <li>上次为空(首次创建):直接 upsert 新检索名。</li>
+     *   <li>上次为空(首次创建):若新名未被占用则 upsert;已被其它 active skill 占用则抛
+     *       {@link IllegalStateException}("SkillNameConflict"),不让添加(回滚外层 create 事务)。</li>
      *   <li>新名 == 上次名(未改名,或 sanitize 后相同):原地 upsert 更新 description/version。</li>
-     *   <li>新名 != 上次名(改名):若新名未被其它 skill 占用,则 {@link SkillIndexRepository#renameRow}
-     *       原地改主键,保留 version/usage/统计;否则放弃改名、保留旧检索名(避免 PK 冲突串号)。</li>
+     *   <li>新名 != 上次名(改名):若新名未被占用,则 {@link SkillIndexRepository#renameRow}
+     *       原地改主键,保留 version/usage/统计;否则抛 "SkillNameConflict"(回滚 update)。</li>
      * </ul>
      *
      * <p><b>调用方须将返回值回写 {@code skill_manage.retrieval_name}</b>(见 SkillManageService
@@ -52,16 +53,15 @@ public class SkillManageBridge {
      * @return 当前应使用的检索名（调用方据此回写 skill_manage.retrieval_name）
      */
     public String syncToRetrievalIndex(Skill skill) {
-        String newRn = buildRetrievalName(skill.getName(), skill.getId(), skill.getOwnerUserId());
+        String newRn = buildRetrievalName(skill.getName(), skill.getId());
         String desc = skill.getDescription() == null ? "" : skill.getDescription();
         String previousRn = skill.getRetrievalName();
 
         try {
-            // 1. 首次创建:previousRn 为空,直接 upsert
+            // 1. 首次创建:previousRn 为空,直接 upsert;同名(任意来源)已存在则拒绝,不让添加
             if (previousRn == null || previousRn.isBlank()) {
-                if (!indexRepo.checkNameAvailable(newRn, SkillEntry.SOURCE_USER_GENERATED)) {
-                    log.warn("Skill retrieval name '{}' collision in skill_index, skip sync", newRn);
-                    return newRn;
+                if (retrievalNameTaken(newRn)) {
+                    throw new IllegalStateException("SkillNameConflict: " + skill.getName());
                 }
                 indexRepo.upsertOnSave(newRn, desc, SkillEntry.SOURCE_USER_GENERATED, skill.getOwnerUserId());
                 log.info("Page skill synced to retrieval index: {} -> {}", skill.getName(), newRn);
@@ -75,11 +75,9 @@ public class SkillManageBridge {
                 return previousRn;
             }
 
-            // 3. 改名:新名已被其它 skill 占用则保留旧检索名,避免 PK 冲突 / 串号
-            if (indexRepo.findByName(newRn).isPresent()) {
-                log.warn("Rename target '{}' already exists in skill_index, keep old '{}'", newRn, previousRn);
-                indexRepo.upsertOnSave(previousRn, desc, SkillEntry.SOURCE_USER_GENERATED, skill.getOwnerUserId());
-                return previousRn;
+            // 3. 改名:新名已被其它 active skill 占用则拒绝(回滚整个 update),避免 PK 冲突 / 串号
+            if (retrievalNameTaken(newRn)) {
+                throw new IllegalStateException("SkillNameConflict: " + skill.getName());
             }
 
             // 4. 改名:原地重命名 skill_index 行主键,保留 version/usage/统计
@@ -92,6 +90,9 @@ public class SkillManageBridge {
             log.warn("renameRow({} -> {}) updated 0 rows, fallback to upsert new", previousRn, newRn);
             indexRepo.upsertOnSave(newRn, desc, SkillEntry.SOURCE_USER_GENERATED, skill.getOwnerUserId());
             return newRn;
+        } catch (IllegalStateException ex) {
+            // SkillNameConflict 等业务异常:向上传播,回滚外层 create/update 事务并提示用户
+            throw ex;
         } catch (Exception ex) {
             log.warn("syncToRetrievalIndex failed for page skill '{}' (previousRn={}, newRn={}): {}",
                     skill.getName(), previousRn, newRn, ex.getMessage());
@@ -103,7 +104,7 @@ public class SkillManageBridge {
     /**
      * 从检索索引移除页面 Skill（软删 skill_index 行）。
      *
-     * @param retrievalName 检索名（{@code usr_<userId>_<safeName>} 或回退的 {@code usr_<userId>_<id>}），为 null 时跳过
+     * @param retrievalName 检索名（{@code <safeName>} 或回退的 {@code skill_<id>}），为 null 时跳过
      */
     public void removeFromRetrievalIndex(String retrievalName) {
         try {
@@ -117,12 +118,18 @@ public class SkillManageBridge {
     }
 
 
-    private String buildRetrievalName(String skillName, Long skillId, String userId) {
-        if (userId == null || userId.isBlank()) return "page_" + skillId;
-        String prefix = "usr_" + userId + "_";
+    private String buildRetrievalName(String skillName, Long skillId) {
         String safeName = sanitize(skillName);
-        if (safeName == null) return prefix + skillId;
-        return prefix + safeName;
+        if (safeName != null) return safeName;
+        // 名字 sanitize 后为空(纯中文/符号),回退到 id 保证唯一
+        return "skill_" + skillId;
+    }
+
+    /** 检索名是否已被其它 active skill 占用(blacklisted=已删除,名字可复用)。 */
+    private boolean retrievalNameTaken(String name) {
+        return indexRepo.findByName(name)
+                .map(e -> SkillEntry.STATUS_ACTIVE.equals(e.status()))
+                .orElse(false);
     }
 
 

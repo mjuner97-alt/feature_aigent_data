@@ -64,7 +64,7 @@ public class NotificationService {
      * 报告下载链接的 base URL（对应 {@code harness.a2a.skill-job.download-base-url}）。
      * 空=输出相对路径（前端 vite proxy / 同域）；设置=拼完整域名（独立域名 / 邮件外链时用）。
      */
-    @Value("${harness.a2a.skill-job.download-base-url:}")
+    @Value("${harness.a2a.csv-download.base-url:}")
     private String downloadBaseUrl;
 
     /** 通知专用单线程：避免外部系统调用阻塞 job 执行线程 */

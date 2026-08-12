@@ -24,6 +24,7 @@ import com.agentscopea2a.v2.skillManager.mapper.SkillJobMapper;
 import com.agentscopea2a.v2.skillManager.scheduler.SkillJobScheduler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
@@ -51,6 +52,10 @@ public class SkillJobService {
     private final SkillJobMapper mapper;
     private final SkillJobScheduler scheduler;
     private final SkillDependencyMetricMapper metricMapper;
+
+    /** skill 文件磁盘根目录(${skill.file.base-dir})，与 SkillFileService/WriteMarkdownTool 一致，不写死。 */
+    @Value("${skill.file.base-dir:/data/skill-files}")
+    private String baseDir;
 
     public SkillJobService(SkillJobMapper mapper, SkillJobScheduler scheduler,
                            SkillDependencyMetricMapper metricMapper) {
@@ -82,8 +87,8 @@ public class SkillJobService {
             }
         }
 
-        // 自动生成输出路径: /data/skill-files/{userId}/
-        String outputPath = "/data/skill-files/" + userId + "/";
+        // 自动生成输出路径(相对 baseDir): {userId}/。绝对路径由 baseDir 拼,不写死 /data/skill-files/
+        String outputPath = userId + "/";
 
         SkillJob job = SkillJob.builder()
                 .name(req.name())
@@ -129,9 +134,6 @@ public class SkillJobService {
         if (req.name() != null) job.setName(req.name());
         // skillId 不可修改：想换 Skill 只能删除后重建
         if (req.questionTemplate() != null) job.setQuestionTemplate(req.questionTemplate());
-        if (req.outputPath() != null && !req.outputPath().isBlank()) {
-            job.setOutputPath(req.outputPath());
-        }
         if (req.enabled() != null) job.setEnabled(req.enabled());
         mapper.updateJobById(job);
         return SkillJobDto.of(job);
@@ -271,8 +273,9 @@ public class SkillJobService {
     /**
      * 下载执行记录对应的 MD 文件（内部纯文件服务：路径解析 + 路径穿越防护，无归属校验）。
      * 供短链端点 {@code downloadByShortCode} 调用（shortCode 即访问凭据，无需 userId）。
-     * resolvedOutputPath 为绝对路径（/data/skill-files/{userId}/xxx.md），
-     * 路径穿越 base 由 Job.createdBy 推导。
+     * resolvedOutputPath 存相对路径({userId}/{mdFileName})，拼 baseDir 解析绝对路径；
+     * 历史绝对路径记录也可解析(Paths.get 第二参数为绝对路径时忽略 baseDir)，自动兼容老数据。
+     * 路径穿越 base = baseDir/{createdBy}。
      */
     public Resource downloadExecutionFile(SkillJobExecutionDto exec) {
         if (exec.resolvedOutputPath() == null || exec.resolvedOutputPath().isBlank()) {
@@ -284,10 +287,11 @@ public class SkillJobService {
             throw new IllegalStateException("FileNotFoundOrAccessDenied: " + exec.id());
         }
 
-        // resolvedOutputPath 是绝对路径，直接解析
-        Path mdFile = Paths.get(exec.resolvedOutputPath()).normalize().toAbsolutePath();
-        // 路径穿越防护：必须在 /data/skill-files/{userId}/ 下（base 由 Job.createdBy 推导）
-        Path expectedBase = Paths.get("/data/skill-files/" + job.getCreatedBy()).normalize().toAbsolutePath();
+        // resolvedOutputPath 相对路径({userId}/{mdFileName})，拼 baseDir 解析；
+        // 历史绝对路径(老数据)Paths.get 会忽略 baseDir 直接照旧解析，自动兼容。
+        Path mdFile = Paths.get(baseDir, exec.resolvedOutputPath()).normalize().toAbsolutePath();
+        // 路径穿越防护：必须在 baseDir/{userId}/ 下
+        Path expectedBase = Paths.get(baseDir, job.getCreatedBy()).normalize().toAbsolutePath();
         if (!mdFile.startsWith(expectedBase)) {
             throw new IllegalStateException("PathTraversal: " + exec.resolvedOutputPath());
         }
