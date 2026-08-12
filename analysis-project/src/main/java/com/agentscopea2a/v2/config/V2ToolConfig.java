@@ -25,6 +25,7 @@ import com.agentscopea2a.v2.skills.SkillEntry;
 import com.agentscopea2a.v2.skills.SkillIndexRepository;
 import com.agentscopea2a.v2.tools.AgentTools;
 import com.agentscopea2a.v2.tools.ArithTool;
+import com.agentscopea2a.v2.tools.ClickHouseWideTableMetricsTool;
 import com.agentscopea2a.v2.tools.DataPrimitivesTool;
 import com.agentscopea2a.v2.tools.CsvDownloadTool;
 import com.agentscopea2a.v2.tools.PythonExecTool;
@@ -36,6 +37,7 @@ import com.agentscopea2a.v2.tools.SqlListTool;
 import com.agentscopea2a.v2.tools.SqlRegistryExecTool;
 import com.agentscopea2a.v2.tools.ToolRoutersIndex;
 import com.agentscopea2a.v2.tools.V2ToolGroupAdapter;
+import com.agentscopea2a.v2.tools.WideTableMetricsTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -121,6 +123,24 @@ public class V2ToolConfig {
         return new ArithTool();
     }
 
+    // ── Wide table metrics (legacy skill tool, not in AGENTS.md) ───────────
+    // 仅供存量 skills (wide_table_q2_1_metrics / trace_recent_metrics 等) 调用,
+    // 不在 workspace/AGENTS.md 工具列表 advertised, 也不注册到主 agent V2ToolGroupAdapter,
+    // 防止 LLM 跳过 skill 直接调用. 仅通过 SubagentRegistrar 注册给 analyze_data 子 agent.
+    @Bean
+    public WideTableMetricsTool wideTableMetricsTool(
+            @Qualifier("gaussDataSource") DataSource gaussDataSource) {
+        log.info("WideTableMetricsTool: wired (gaussDataSource-backed, legacy-skill-only)");
+        return new WideTableMetricsTool(gaussDataSource);
+    }
+
+    @Bean
+    public ClickHouseWideTableMetricsTool clickHouseWideTableMetricsTool(
+            @Qualifier("clickHouseDataSource") DataSource clickHouseDataSource) {
+        log.info("ClickHouseWideTableMetricsTool: wired (clickHouseDataSource-backed, legacy-skill-only)");
+        return new ClickHouseWideTableMetricsTool(clickHouseDataSource);
+    }
+
     // ── SQL Registry (DBA 预审 SQL 模板 + sql_id 调用执行) ──────────────────
     @Bean
     public SqlListTool sqlListTool(SqlRegistryMapper sqlRegistryMapper) {
@@ -197,12 +217,15 @@ public class V2ToolConfig {
             DataPrimitivesTool dataPrimitivesTool,
             ObjectProvider<PythonExecTool> pythonExecToolProvider,
             ObjectProvider<ArithTool> arithToolProvider,
+            ObjectProvider<WideTableMetricsTool> wideTableMetricsToolProvider,
+            ObjectProvider<ClickHouseWideTableMetricsTool> clickHouseWideTableMetricsToolProvider,
             ObjectProvider<SqlListTool> sqlListToolProvider,
             ObjectProvider<SqlRegistryExecTool> sqlRegistryExecToolProvider,
             ObjectProvider<ScriptListTool> scriptListToolProvider,
             ObjectProvider<ScriptExecTool> scriptExecToolProvider,
             ObjectProvider<ToolRoutersIndex> toolRoutersIndexProvider) {
-        // 主智能体注册 ungrouped 工具: tool_router + python_exec + arith + sql_list + sql_registry_exec + script_list + script_exec.
+        // 主智能体注册 ungrouped 工具: tool_router + python_exec + arith + wide_table_query
+        // + clickhouse_query + sql_list + sql_registry_exec + script_list + script_exec.
         // 全部 ungrouped (始终可见给 LLM), 不分组不挂 meta-tool.
         // 原因: 之前把 python_exec 放进 group + 挂 reset_equipped_tools 元工具, 实测 LLM
         // 调 reset_equipped_tools 后 python_exec 仍报 "Tool not found", grouped tool 机制
@@ -210,6 +233,10 @@ public class V2ToolConfig {
         // 业务工具（AgentTools / DataPrimitivesTool）通过 ToolRoutersIndex
         // 暴露给主 agent (router_tool 元工具), 主 agent 自己也能调 quality_query_by_* / generate_csv_download_url,
         // 不再需要 agent_spawn(query_data) (已删除, 见 docs/table-mertics/supervisor-direct-path-design.md).
+        //
+        // wide_table_query / clickhouse_query: 仅供存量 skills (wide_table_q2_1_metrics /
+        // trace_recent_metrics 等) 调用. workspace/AGENTS.md 工具列表不 advertised, 由
+        // load_skill_through_path 加载存量 skill 后, skill 工作流指示 LLM 调用.
         V2ToolGroupAdapter.Builder b = V2ToolGroupAdapter.builder();
         PythonExecTool py = pythonExecToolProvider.getIfAvailable();
         if (py != null) {
@@ -220,6 +247,16 @@ public class V2ToolConfig {
         if (at != null) {
             b.tool(unwrapCglib(at));
             log.info("V2ToolGroupAdapter: registered ArithTool (ungrouped)");
+        }
+        WideTableMetricsTool wt = wideTableMetricsToolProvider.getIfAvailable();
+        if (wt != null) {
+            b.tool(unwrapCglib(wt));
+            log.info("V2ToolGroupAdapter: registered WideTableMetricsTool (ungrouped, legacy-skill-only)");
+        }
+        ClickHouseWideTableMetricsTool ck = clickHouseWideTableMetricsToolProvider.getIfAvailable();
+        if (ck != null) {
+            b.tool(unwrapCglib(ck));
+            log.info("V2ToolGroupAdapter: registered ClickHouseWideTableMetricsTool (ungrouped, legacy-skill-only)");
         }
         SqlListTool slt = sqlListToolProvider.getIfAvailable();
         if (slt != null) {
@@ -253,6 +290,8 @@ public class V2ToolConfig {
         log.info("V2ToolGroupAdapter: main-agent toolkit with"
                 + (py != null ? " python_exec" : "")
                 + (at != null ? " + arith" : "")
+                + (wt != null ? " + wide_table_query" : "")
+                + (ck != null ? " + clickhouse_query" : "")
                 + (slt != null ? " + sql_list" : "")
                 + (sre != null ? " + sql_registry_exec" : "")
                 + (scL != null ? " + script_list" : "")

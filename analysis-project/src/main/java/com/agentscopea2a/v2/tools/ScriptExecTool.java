@@ -273,6 +273,14 @@ public class ScriptExecTool {
             }
         }
 
+        // PYTHONPATH: 让子目录脚本 (如 <userId>/q2_1_metrics_by_dept_version.py) 能 import
+        // 父目录 scripts/ 下的共享模块 (_gauss_jdbc.py 等). host-python 模式用宿主机路径,
+        // ssh+docker / local-docker 模式用容器内路径 (子进程跑在容器内, 看不到宿主机路径).
+        String pythonPath = (sandbox != null && sandbox.isEnabled() && !isBlank(sandbox.getSharedContainerName()))
+                ? containerWorkspacePath + "/scripts"
+                : scriptsDir.toString();
+        env.put("PYTHONPATH", pythonPath);
+
         // 6. 启动子进程
         int timeout = entry.getTimeoutSeconds() == null || entry.getTimeoutSeconds() <= 0
                 ? 60 : Math.min(entry.getTimeoutSeconds(), MAX_TIMEOUT_SECONDS);
