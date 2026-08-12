@@ -18,15 +18,22 @@ package com.agentscopea2a.v2.exception;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import java.util.Map;
 
 /**
  * Global exception handler for the Skill management API.
  *
  * <p>Translates the dedicated v2 exceptions (see §12.6) and the legacy
  * {@code IllegalStateException} message conventions into the appropriate HTTP status codes.
+ *
+ * <p>所有错误响应体统一为 JSON {@code {"message": "..."}} - 前端 api/skill.ts / skillJob.ts /
+ * modelConfig.ts 的 error helper 都按 {@code body.message || body.error} 解析,纯文本会让
+ * {@code res.json()} 抛错、走 fallback,导致 SkillNameConflict -> "名称已存在" 这类映射失效。
  */
 @RestControllerAdvice
 public class SkillExceptionHandler {
@@ -34,35 +41,41 @@ public class SkillExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(SkillExceptionHandler.class);
 
     @ExceptionHandler(DraftAlreadyPendingException.class)
-    public ResponseEntity<String> handleDraftAlreadyPending(DraftAlreadyPendingException ex) {
+    public ResponseEntity<Map<String, String>> handleDraftAlreadyPending(DraftAlreadyPendingException ex) {
         log.warn("DraftAlreadyPending: {}", ex.getMessage());
-        return ResponseEntity.status(HttpStatus.CONFLICT).body(ex.getMessage());
+        return jsonBody(HttpStatus.CONFLICT, ex.getMessage());
     }
 
     @ExceptionHandler(DraftNotFoundException.class)
-    public ResponseEntity<String> handleDraftNotFound(DraftNotFoundException ex) {
+    public ResponseEntity<Map<String, String>> handleDraftNotFound(DraftNotFoundException ex) {
         log.warn("DraftNotFound: {}", ex.getMessage());
-        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ex.getMessage());
+        return jsonBody(HttpStatus.NOT_FOUND, ex.getMessage());
     }
 
     @ExceptionHandler(NotApproverException.class)
-    public ResponseEntity<String> handleNotApprover(NotApproverException ex) {
+    public ResponseEntity<Map<String, String>> handleNotApprover(NotApproverException ex) {
         log.warn("NotApprover: {}", ex.getMessage());
-        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ex.getMessage());
+        return jsonBody(HttpStatus.FORBIDDEN, ex.getMessage());
     }
 
     @ExceptionHandler(PublishAlreadyApprovedException.class)
-    public ResponseEntity<String> handlePublishAlreadyApproved(PublishAlreadyApprovedException ex) {
+    public ResponseEntity<Map<String, String>> handlePublishAlreadyApproved(PublishAlreadyApprovedException ex) {
         log.warn("PublishAlreadyApproved: {}", ex.getMessage());
-        return ResponseEntity.status(HttpStatus.CONFLICT).body(ex.getMessage());
+        return jsonBody(HttpStatus.CONFLICT, ex.getMessage());
     }
 
     @ExceptionHandler(IllegalStateException.class)
-    public ResponseEntity<String> handleIllegalState(IllegalStateException ex) {
+    public ResponseEntity<Map<String, String>> handleIllegalState(IllegalStateException ex) {
         String message = ex.getMessage();
         HttpStatus status = resolveIllegalStateStatus(message);
         log.warn("IllegalState mapped to {}: {}", status, message);
-        return ResponseEntity.status(status).body(message);
+        return jsonBody(status, message);
+    }
+
+    private ResponseEntity<Map<String, String>> jsonBody(HttpStatus status, String message) {
+        return ResponseEntity.status(status)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("message", message == null ? "" : message));
     }
 
     private HttpStatus resolveIllegalStateStatus(String message) {

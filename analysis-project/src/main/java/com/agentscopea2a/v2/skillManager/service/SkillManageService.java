@@ -219,15 +219,15 @@ public class SkillManageService {
     }
 
     /**
-     * PR5 - Agent 调用 save_skill 创建的 skill 写入 skill_manage 表。
+     * Agent 调用 save_skill 创建的 skill 写入 skill_manage 表。
      * 与 {@link #create} 不同:
-     * - 跳过 existsByName 冲突检查(retrievalName 已含 userId 前缀)
+     * - 跳过 existsByName 冲突检查(SkillSaveTool 已用 existsActiveInIndex 做过同名判重)
      * - 不调用 SkillManageBridge.syncToRetrievalIndex(SkillSaveTool 已写 skill_index + 文件)
      * - 直接 insert skill_manage 表,retrieval_name = retrievalName
      *
      * @param skill         Skill 实体(name/description/content/status 已填)
      * @param ownerUserId   所有者 userId
-     * @param retrievalName 检索名(如 usr_user_001_quality_query)
+     * @param retrievalName 检索名(如 quality_query)
      */
     @Transactional("gaussTransactionManager")
     public void createForAgent(Skill skill, String ownerUserId, String retrievalName) {

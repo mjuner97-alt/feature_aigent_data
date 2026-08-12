@@ -183,13 +183,13 @@ async function downloadFile(execId: number) {
                     <span class="dl">错误信息</span>
                     <span class="dv err">{{ exec.errorMsg }}</span>
                   </div>
-                  <div v-if="exec.mdFileExists && exec.resolvedOutputPath && canDownload" class="detail-row">
+                  <div v-if="exec.mdFileExists && canDownload" class="detail-row">
                     <span class="dl">生成文件</span>
                     <button class="download-link" :disabled="downloading.has(exec.id)" @click.stop="downloadFile(exec.id)">
                       {{ downloading.has(exec.id) ? '下载中…' : '下载 MD 文件' }}
                     </button>
                   </div>
-                  <div v-else-if="exec.mdFileExists && exec.resolvedOutputPath" class="detail-row">
+                  <div v-else-if="exec.mdFileExists" class="detail-row">
                     <span class="dl">生成文件</span>
                     <span class="dv muted">仅创建人可下载</span>
                   </div>

@@ -35,6 +35,7 @@ import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
@@ -93,6 +94,10 @@ public class SkillJobScheduler implements WriteCallback {
     private final HarnessRunnerProperties.SkillJobConfig config;
     private final Path workspace;
     private final WriteMarkdownTool writeMarkdownTool;
+
+    /** skill 文件磁盘根目录(${skill.file.base-dir})，MD 报告写入/校验/通知路径解析均基于此，不写死。 */
+    @Value("${skill.file.base-dir:/data/skill-files}")
+    private String baseDir;
 
     @Autowired
     private NotificationService notificationService;
@@ -438,8 +443,10 @@ public class SkillJobScheduler implements WriteCallback {
 
             // 任务执行成功：触发完成通知（异步 best-effort，不阻塞 worker、不影响 job 结果）
             // 是否发送由所属依赖指标的 notify_* 配置决定，NotificationService 内部自行判断
+            // actualFilePath 为相对路径({userId}/{mdFileName})，通知 payload.filePath 需绝对路径供发送方读文件，拼 baseDir
             if (verified) {
-                notificationService.notifyJobCompleted(job, execution, actualFilePath);
+                String absFilePath = Paths.get(baseDir, actualFilePath).normalize().toAbsolutePath().toString();
+                notificationService.notifyJobCompleted(job, execution, absFilePath);
             }
 
             log.info("Job {} attempt {} done, status={}, file={}", jobId, attempt, execution.getStatus(), actualFilePath);
@@ -473,17 +480,18 @@ public class SkillJobScheduler implements WriteCallback {
 
     /**
      * 校验 MD 文件是否存在且非空。
-     * filePath 为 WriteMarkdownTool 回调返回的绝对路径。
+     * filePath 为 WriteMarkdownTool 回调返回的相对路径({userId}/{mdFileName})，拼 baseDir 解析绝对路径。
      */
     private boolean verifyResult(String filePath) {
         if (filePath == null || filePath.isBlank()) {
             return false;
         }
         try {
-            Path mdFile = Paths.get(filePath).normalize().toAbsolutePath();
-            // 基本安全：路径必须在 /data/skill-files/ 下
-            Path baseDir = Paths.get("/data/skill-files/").normalize().toAbsolutePath();
-            if (!mdFile.startsWith(baseDir)) {
+            // filePath 相对路径，拼 baseDir 解析绝对路径
+            Path mdFile = Paths.get(baseDir, filePath).normalize().toAbsolutePath();
+            Path baseDirPath = Paths.get(baseDir).normalize().toAbsolutePath();
+            // 基本安全：路径必须在 baseDir 下
+            if (!mdFile.startsWith(baseDirPath)) {
                 log.warn("Path traversal detected: {}", filePath);
                 return false;
             }
@@ -511,7 +519,7 @@ public class SkillJobScheduler implements WriteCallback {
     }
 
     /**
-     * 构建 MD 文件名（相对 /data/skill-files/{userId}/ 的子路径）。
+     * 构建 MD 文件名（相对 {skill.file.base-dir}/{userId}/ 的子路径）。
      * 规则：{jobName}_{date}_{timestamp}.md，确保每次执行生成独立文件。
      */
     private String buildMdFileName(SkillJob job) {

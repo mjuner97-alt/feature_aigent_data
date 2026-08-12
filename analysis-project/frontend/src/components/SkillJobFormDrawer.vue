@@ -3,13 +3,13 @@
  * SkillJob 创建/编辑表单 Drawer
  *
  * editId == null -> 创建模式;editId != null -> 编辑模式
- * outputPath 前端传入，默认 /data/skill-files/{userId}/
+ * outputPath 由后端按 userId + baseDir 拼，不暴露给前端
  * questionTemplate 只需填核心问题，{skill_name} 和 MD写入指令由后端自动拼接
  */
 import { ref, watch, computed } from 'vue';
 import { getJob, createJob, updateJob } from '../api/skillJob';
 import { listMetrics } from '../api/skillDependencyMetric';
-import { listSkills, currentUserId } from '../api/skill';
+import { listSkills } from '../api/skill';
 import type { SkillJobInput, SkillJobUpdateInput } from '../types/skillJob';
 import type { SkillListItem } from '../types/skill';
 import type { SkillDependencyMetric } from '../types/skillJob';
@@ -23,15 +23,11 @@ const emit = defineEmits<{
 const isEdit = computed(() => props.editId != null);
 
 const form = ref<SkillJobInput>({ name: '', skillId: 0, questionTemplate: '', metricId: null });
-const outputPath = ref('');
 const formLoading = ref(false);
 const saving = ref(false);
 const formError = ref('');
 const skills = ref<SkillListItem[]>([]);
 const metrics = ref<SkillDependencyMetric[]>([]);
-
-/** 默认输出路径：/data/skill-files/{实际userId}/ */
-const defaultOutputPath = computed(() => `/data/skill-files/${currentUserId()}/`);
 
 /** 加载"我使用的" Skill 列表供选择 */
 async function loadSkills() {
@@ -53,7 +49,6 @@ async function loadMetrics() {
 
 function resetForm() {
   form.value = { name: '', skillId: 0, questionTemplate: '', metricId: null };
-  outputPath.value = '';
   formError.value = '';
 }
 
@@ -78,7 +73,6 @@ async function loadForEdit(id: number) {
       enabled: job.enabled,
       metricId: job.metricId ?? null,
     };
-    outputPath.value = job.outputPath ?? '';
   } catch (e) {
     formError.value = e instanceof Error ? e.message : '加载失败';
   } finally {
@@ -99,14 +93,12 @@ async function submit() {
       const payload: SkillJobUpdateInput = {
         name: form.value.name,
         questionTemplate: form.value.questionTemplate,
-        outputPath: outputPath.value || defaultOutputPath.value,
         enabled: form.value.enabled,
       };
       await updateJob(props.editId, payload);
     } else {
       const payload: SkillJobInput = {
         ...form.value,
-        outputPath: outputPath.value || defaultOutputPath.value,
       };
       await createJob(payload);
     }
@@ -160,11 +152,6 @@ function close() { emit('update:open', false); }
                   <textarea v-model="form.questionTemplate" rows="4" placeholder="分析今日数据质量" />
                   <span class="tip">只需填写核心问题，系统会自动拼接"调用{Skill名称}"前缀和"将结果以Markdown格式写入{输出路径}"后缀</span>
                 </label>
-                <label class="field">
-                  <span class="label">输出路径</span>
-                  <input :value="outputPath || defaultOutputPath" readonly class="readonly-path" />
-                  <span class="tip">路径由系统自动生成，不可修改</span>
-                </label>
                 <div v-if="formError" class="error">{{ formError }}</div>
               </form>
             </div>
@@ -196,7 +183,6 @@ function close() { emit('update:open', false); }
 .label { font-size: 13px; font-weight: 600; color: #475569; }
 .form input, .form select, .form textarea { padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; font-family: inherit; background: #fff; }
 .form textarea { resize: vertical; }
-.readonly-path { background: #f1f5f9; color: #64748b; cursor: default; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; user-select: all; }
 .tip { font-size: 12px; color: #94a3b8; }
 .error { color: #dc2626; font-size: 13px; }
 .btn { padding: 8px 18px; border-radius: 6px; border: 1px solid #cbd5e1; cursor: pointer; font-size: 14px; }

@@ -84,11 +84,11 @@ public class HarnessAgentPartsConfig {
                 artifactAccessMiddleware,
                 sessionMiddleware
         ));
-        PerUserMemoryContextMiddleware perUserMemory = perUserMemoryContextMiddlewareProvider.getIfAvailable();
-        if (perUserMemory != null) {
-            middlewares.add(perUserMemory);
-            log.info("HarnessAgentPartsConfig: PerUserMemoryContextMiddleware wired (per-user MEMORY.md injection)");
-        }
+//        PerUserMemoryContextMiddleware perUserMemory = perUserMemoryContextMiddlewareProvider.getIfAvailable();
+//        if (perUserMemory != null) {
+//            middlewares.add(perUserMemory);
+//            log.info("HarnessAgentPartsConfig: PerUserMemoryContextMiddleware wired (per-user MEMORY.md injection)");
+//        }
         MemoryLedgerMirrorMiddleware ledgerMirror = memoryLedgerMirrorProvider.getIfAvailable();
         if (ledgerMirror != null) {
             middlewares.add(ledgerMirror);
