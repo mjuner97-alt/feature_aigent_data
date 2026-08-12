@@ -23,6 +23,7 @@ import com.agentscopea2a.v2.skillManager.mapper.SkillJobMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillMapper;
 import com.agentscopea2a.v2.skillManager.notification.NotificationSender;
 import com.agentscopea2a.v2.skillManager.notification.NotificationService;
+import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
 import com.agentscopea2a.v2.tools.WriteMarkdownTool;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
@@ -94,6 +95,8 @@ public class SkillJobScheduler implements WriteCallback {
     private final HarnessRunnerProperties.SkillJobConfig config;
     private final Path workspace;
     private final WriteMarkdownTool writeMarkdownTool;
+    /** Markdown -> 自包含 HTML 渲染器（含表格样式 + 内联 echarts）。 */
+    private final HtmlReportRenderer htmlReportRenderer;
 
     /** skill 文件磁盘根目录(${skill.file.base-dir})，MD 报告写入/校验/通知路径解析均基于此，不写死。 */
     @Value("${skill.file.base-dir:/data/skill-files}")
@@ -138,13 +141,15 @@ public class SkillJobScheduler implements WriteCallback {
             SkillJobMapper mapper,
             SkillMapper skillMapper,
             HarnessRunnerProperties properties,
-            WriteMarkdownTool writeMarkdownTool) {
+            WriteMarkdownTool writeMarkdownTool,
+            HtmlReportRenderer htmlReportRenderer) {
         this.runner = runner;
         this.mapper = mapper;
         this.skillMapper = skillMapper;
         this.config = properties.getSkillJob();
         this.workspace = Paths.get(properties.getWorkspace().getPath()).toAbsolutePath();
         this.writeMarkdownTool = writeMarkdownTool;
+        this.htmlReportRenderer = htmlReportRenderer;
         log.info("SkillJobScheduler: workspace={}, timeout={}s, maxParallel={}, queueCap={}, maxRetry={}, backoff={}ms*x{}",
                 workspace, config.getExecutionTimeoutSeconds(),
                 MAX_PARALLEL, QUEUE_CAPACITY, MAX_RETRY_ATTEMPTS, RETRY_INITIAL_BACKOFF_MS, RETRY_BACKOFF_MULTIPLIER);
@@ -324,7 +329,7 @@ public class SkillJobScheduler implements WriteCallback {
 
     /**
      * 执行一次 Job（复用调用方预先落库的 PENDING execution 记录，全程 update 同一条）：
-     * 1. 查配置 -> 2. 模板替换 -> 3. 标记 RUNNING -> 4. 调用 AI Runner -> 5. 校验 MD 文件 -> 6. 更新终态
+     * 1. 查配置 -> 2. 模板替换 -> 3. 标记 RUNNING -> 4. 调用 AI Runner -> 5. 校验报告文件 -> 6. 更新终态
      *
      * <p>永久性错误（任务不存在/已禁用/未配置/创建人无 Skill 权限）标记为 SKIPPED 并返回，
      * 不抛异常、不重试、不返回 null。
@@ -403,14 +408,16 @@ public class SkillJobScheduler implements WriteCallback {
                 // 提取AI最终文本结果
                 String agentResult = extractFinalText(events);
 
-                // 直接用Java代码调用WriteMarkdownTool写入，不走模型tool_call
+                // 渲染为自包含 HTML（表格样式 + echarts 内联）后写入，不走模型tool_call
                 if (agentResult != null && !agentResult.isBlank() && resolvedOutputPath != null && !resolvedOutputPath.isBlank()) {
-                    String mdFileName = buildMdFileName(job);
-                    boolean writeOk = writeMarkdownTool.writeMarkdown(mdFileName, agentResult, execution.getId(), userId);
+                    String reportFileName = buildReportFileName(job);
+                    String htmlContent = htmlReportRenderer.render(agentResult, job.getName());
+                    boolean writeOk = writeMarkdownTool.writeMarkdown(reportFileName, htmlContent, execution.getId(), userId);
                     if (!writeOk) {
-                        log.warn("Job {} direct write markdown failed: userId={}, fileName={}", jobId, userId, mdFileName);
+                        log.warn("Job {} write report failed: userId={}, fileName={}", jobId, userId, reportFileName);
                     } else {
-                        log.info("Job {} direct write markdown success: userId={}, fileName={}", jobId, userId, mdFileName);
+                        log.info("Job {} write report success: userId={}, fileName={}, htmlBytes={}",
+                                jobId, userId, reportFileName, htmlContent.length());
                     }
                 } else {
                     log.warn("Job {} agent returned empty result or no output path, skip write", jobId);
@@ -424,7 +431,7 @@ public class SkillJobScheduler implements WriteCallback {
                 return execution;
             }
 
-            // 5. 校验 MD 文件是否生成（优先使用回调返回的实际写入路径）
+            // 5. 校验报告文件是否生成（优先使用回调返回的实际写入路径）
             String actualFilePath = mdWrittenPaths.get(execution.getId());
             boolean verified = verifyResult(actualFilePath);
             execution.setMdFileWritten(mdWrittenFlags.getOrDefault(execution.getId(), false));
@@ -436,7 +443,7 @@ public class SkillJobScheduler implements WriteCallback {
             if (verified) {
                 execution.setErrorMsg(attempt > 1 ? "重试第" + attempt + "次后成功" : null);
             } else {
-                execution.setErrorMsg("MD文件未生成" + (attempt <= MAX_RETRY_ATTEMPTS ? "，将重试" : ""));
+                execution.setErrorMsg("报告文件未生成" + (attempt <= MAX_RETRY_ATTEMPTS ? "，将重试" : ""));
             }
             execution.setCompletedAt(LocalDateTime.now());
             mapper.updateExecutionStatus(execution);
@@ -479,7 +486,7 @@ public class SkillJobScheduler implements WriteCallback {
     }
 
     /**
-     * 校验 MD 文件是否存在且非空。
+     * 校验报告文件是否存在且非空。
      * filePath 为 WriteMarkdownTool 回调返回的相对路径({userId}/{mdFileName})，拼 baseDir 解析绝对路径。
      */
     private boolean verifyResult(String filePath) {
@@ -503,13 +510,15 @@ public class SkillJobScheduler implements WriteCallback {
     }
 
     /**
-     * 拼接完整提问内容：
-     * "调用{skillName}，{用户问题}。"
-     * MD写入由Java代码直接调用WriteMarkdownTool完成，不再依赖AI调用tool。
+     * 拼接完整提问内容："调用{skillName}，{用户问题}。" + 输出格式约定。
+     * 末尾追加 echarts 代码块约定，让 AI 产出的图表能被 HtmlReportRenderer 渲染。
+     * 报告写入由Java代码直接调用WriteMarkdownTool完成，不走AI tool_call。
      */
     private String buildQuestion(String userQuestion, String skillName) {
         String q = (userQuestion == null || userQuestion.isBlank()) ? "进行分析" : userQuestion.trim();
-        return "调用" + skillName + "，" + q + "。";
+        return "调用" + skillName + "，" + q + "。"
+                + "【输出约定】分析正文用 Markdown（GFM 管道表格）；如需图表，用 ```echarts 代码块"
+                + "输出合法 echarts option JSON（不要输出图片链接、base64 或前端代码），每个代码块对应一张图。";
     }
 
     /** 解析输出路径，替换 {date} 变量 */
@@ -519,12 +528,13 @@ public class SkillJobScheduler implements WriteCallback {
     }
 
     /**
-     * 构建 MD 文件名（相对 {skill.file.base-dir}/{userId}/ 的子路径）。
-     * 规则：{jobName}_{date}_{timestamp}.md，确保每次执行生成独立文件。
+     * 构建报告文件名（相对 {skill.file.base-dir}/{userId}/ 的子路径）。
+     * 规则：{jobName}_{date}_{timestamp}.html，每次执行生成独立文件。
+     * 扩展名 .html：内容由 HtmlReportRenderer 渲染为自包含 HTML（表格样式 + echarts 内联）。
      */
-    private String buildMdFileName(SkillJob job) {
+    private String buildReportFileName(SkillJob job) {
         String safeName = job.getName() != null ? job.getName().replaceAll("[^a-zA-Z0-9_\\-]", "_") : "job";
-        return safeName + "_" + LocalDate.now() + "_" + System.currentTimeMillis() + ".md";
+        return safeName + "_" + LocalDate.now() + "_" + System.currentTimeMillis() + ".html";
     }
 
     private String resolveSkillName(Long skillId) {

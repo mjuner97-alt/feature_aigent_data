@@ -357,8 +357,8 @@ const S = {
             <pre v-if="showSchemaExample" :style="S.exampleCode">
 参数示例:
             [
-                单值: {"name":"版本","type":"string","required":true,"description":"版本计划,如 "2026年8月份版本""},
-                多值: {"name":"版本","type":"array","required":true,"description":"版本计划列表,如 ["2026年8月份版本","2026年9月份版本"]"}
+                 单值: {"name":"版本","type":"string","required":true,"description":"版本计划,如 \"2026年8月份版本\""},
+                                多值: {"name":"版本","type":"array","required":true,"description":"版本计划列表,如 [\"2026年8月份版本\",\"2026年9月份版本\"]"}
             ]</pre>
           </div>
         </el-form-item>

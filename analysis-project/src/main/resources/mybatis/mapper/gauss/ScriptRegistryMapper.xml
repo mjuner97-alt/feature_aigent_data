@@ -23,6 +23,26 @@
         timeout_seconds, enabled, created_at, updated_at, created_by
     </sql>
 
+    <!-- 列表视图列 (排除 params_schema, 体积大) -->
+    <resultMap id="ListResultMap" type="com.agentscopea2a.entity.ScriptRegistryEntry">
+        <id     column="id"              property="id"/>
+        <result column="script_id"       property="scriptId"/>
+        <result column="name"            property="name"/>
+        <result column="description"     property="description"/>
+        <result column="script_path"     property="scriptPath"/>
+        <result column="datasources"     property="datasources"/>
+        <result column="timeout_seconds" property="timeoutSeconds"/>
+        <result column="enabled"         property="enabled"/>
+        <result column="created_at"      property="createdAt"/>
+        <result column="updated_at"      property="updatedAt"/>
+        <result column="created_by"      property="createdBy"/>
+    </resultMap>
+
+    <sql id="List_Column_List">
+        id, script_id, name, description, script_path, datasources,
+        timeout_seconds, enabled, created_at, updated_at, created_by
+    </sql>
+
     <!-- 兼容 ScriptExecTool: 按 script_id 查询 (仅启用) -->
     <select id="selectByScriptId" resultMap="BaseResultMap">
         SELECT <include refid="Base_Column_List"/>
@@ -39,5 +59,46 @@
         WHERE enabled = 1
         ORDER BY script_id
     </select>
+
+    <!-- 管理页面: 列出所有记录 (含禁用, 排除 params_schema) -->
+    <select id="selectAll" resultMap="ListResultMap">
+        SELECT <include refid="List_Column_List"/>
+        FROM script_registry
+        ORDER BY script_id
+    </select>
+
+    <!-- 管理页面: 按 id 查询详情 (含 params_schema) -->
+    <select id="selectById" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM script_registry
+        WHERE id = #{id}
+    </select>
+
+    <!-- 新增: id 由 BIGSERIAL 自动生成, created_at/updated_at 有默认值 -->
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO script_registry (script_id, name, description, script_path, datasources,
+            params_schema, timeout_seconds, enabled, created_by)
+        VALUES (#{scriptId}, #{name}, #{description}, #{scriptPath}, #{datasources},
+            #{paramsSchema}, #{timeoutSeconds}, #{enabled}, #{createdBy})
+    </insert>
+
+    <!-- 更新: updated_at 由触发器自动维护, 不显式设置 -->
+    <update id="update">
+        UPDATE script_registry
+        SET script_id      = #{scriptId},
+            name           = #{name},
+            description    = #{description},
+            script_path    = #{scriptPath},
+            datasources    = #{datasources},
+            params_schema  = #{paramsSchema},
+            timeout_seconds = #{timeoutSeconds},
+            enabled        = #{enabled}
+        WHERE id = #{id}
+    </update>
+
+    <!-- 删除 -->
+    <delete id="deleteById">
+        DELETE FROM script_registry WHERE id = #{id}
+    </delete>
 
 </mapper>

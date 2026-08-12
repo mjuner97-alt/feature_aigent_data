@@ -2,10 +2,10 @@
 /**
  * SkillJob 执行记录抽屉
  *
- * 展示某个 Job 的执行记录列表，含状态、MD 校验、文件下载。
+ * 展示某个 Job 的执行记录列表，含状态、报告校验、查看报告。
  */
 import { ref, watch, computed, onUnmounted } from 'vue';
-import { listExecutions, downloadExecutionFile } from '../api/skillJob';
+import { listExecutions, viewExecutionFile } from '../api/skillJob';
 import type { SkillJobExecution } from '../types/skillJob';
 
 const props = defineProps<{ open: boolean; jobId: number | null; canDownload?: boolean }>();
@@ -111,16 +111,16 @@ function duration(startedAt: string, completedAt: string): string {
 
 function close() { emit('update:open', false); }
 
-const downloading = ref<Set<number>>(new Set());
+const viewing = ref<Set<number>>(new Set());
 
-async function downloadFile(execId: number) {
-  downloading.value.add(execId);
+async function viewFile(execId: number) {
+  viewing.value.add(execId);
   try {
-    await downloadExecutionFile(execId);
+    await viewExecutionFile(execId);
   } catch (e) {
-    alert(e instanceof Error ? e.message : '下载失败');
+    alert(e instanceof Error ? e.message : '打开失败');
   } finally {
-    downloading.value.delete(execId);
+    viewing.value.delete(execId);
   }
 }
 </script>
@@ -164,11 +164,11 @@ async function downloadFile(execId: number) {
                     <span class="dv">{{ exec.conversationId || '-' }}</span>
                   </div>
                   <div class="detail-row">
-                    <span class="dl">MD写入</span>
+                    <span class="dl">报告写入</span>
                     <span class="dv" :class="exec.mdFileWritten ? 'ok' : 'no'">{{ exec.mdFileWritten ? '是' : '否' }}</span>
                   </div>
                   <div class="detail-row">
-                    <span class="dl">MD存在</span>
+                    <span class="dl">报告存在</span>
                     <span class="dv" :class="exec.mdFileExists ? 'ok' : 'no'">{{ exec.mdFileExists ? '是' : '否' }}</span>
                   </div>
                   <div class="detail-row">
@@ -185,8 +185,8 @@ async function downloadFile(execId: number) {
                   </div>
                   <div v-if="exec.mdFileExists && canDownload" class="detail-row">
                     <span class="dl">生成文件</span>
-                    <button class="download-link" :disabled="downloading.has(exec.id)" @click.stop="downloadFile(exec.id)">
-                      {{ downloading.has(exec.id) ? '下载中…' : '下载 MD 文件' }}
+                    <button class="download-link" :disabled="viewing.has(exec.id)" @click.stop="viewFile(exec.id)">
+                      {{ viewing.has(exec.id) ? '打开中…' : '查看报告' }}
                     </button>
                   </div>
                   <div v-else-if="exec.mdFileExists" class="detail-row">

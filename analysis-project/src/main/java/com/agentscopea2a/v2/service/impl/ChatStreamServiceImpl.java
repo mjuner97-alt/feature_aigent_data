@@ -26,6 +26,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -65,6 +66,10 @@ public class ChatStreamServiceImpl implements ChatStreamService {
 
     @Autowired
     private MainAgentMapper mainAgentMapper;
+
+    /** /ai/chat 回答末尾追加的管理后台地址(md),留空则不追加。见 application.properties harness.chat.management-url */
+    @Value("${harness.chat.management-url:}")
+    private String managementUrl;
 
 
     private final String AGENT_RETURN_NAME = "分析执行智能体";
@@ -487,6 +492,12 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             }
             // 流式输出最终结果：每 5 个字符一片
             String finalAnswer = ctx.answerContent.toString();
+            // 回答末尾追加管理后台地址(md)。配置留空则不追加。
+            // 仅作用于 SSE 下发的 finalAnswer,不修改 ctx.answerContent,故不入问答库。
+            if (StringUtils.isNotBlank(managementUrl)) {
+                String notice = "\n\n---\n管理后台页面：[点击进入](" + managementUrl + ")";
+                finalAnswer = StringUtils.isBlank(finalAnswer) ? notice : finalAnswer + notice;
+            }
             if (StringUtils.isNotBlank(finalAnswer)) {
                 int len = finalAnswer.length();
                 int pos = 0;

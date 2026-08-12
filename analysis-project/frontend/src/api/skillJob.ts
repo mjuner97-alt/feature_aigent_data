@@ -94,7 +94,7 @@ export async function getExecution(execId: number): Promise<SkillJobExecution> {
   return res.json();
 }
 
-/** 下载执行记录生成的 MD 文件 */
+/** 下载执行记录生成的报告文件（.html；查看渲染用 viewExecutionFile） */
 export async function downloadExecutionFile(execId: number): Promise<void> {
   const res = await fetch(`${BASE}/executions/${execId}/download`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`下载失败(HTTP ${res.status})`);
@@ -116,4 +116,18 @@ export async function downloadExecutionFile(execId: number): Promise<void> {
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+/**
+ * 在新标签页内渲染执行记录生成的 HTML 报告（表格样式 + echarts 图表）。
+ * 带 X-User-Id 鉴权头取 html blob，转 object URL 后 window.open：
+ * 浏览器直接渲染，不触发下载。3 分钟后释放 object URL，留够阅读时间。
+ */
+export async function viewExecutionFile(execId: number): Promise<void> {
+  const res = await fetch(`${BASE}/executions/${execId}/download`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`打开失败(HTTP ${res.status})`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank');
+  setTimeout(() => URL.revokeObjectURL(url), 3 * 60 * 1000);
 }

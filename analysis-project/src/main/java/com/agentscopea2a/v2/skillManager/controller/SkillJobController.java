@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.*;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * SkillJob REST API，路径前缀 /api/skill-jobs。
@@ -107,7 +108,7 @@ public class SkillJobController {
     }
 
     /**
-     * 下载执行记录对应的 MD 文件（前端入口：X-User-Id 请求头 + 归属校验，仅创建人可下载）。
+     * 下载/查看执行记录对应的报告文件（前端入口：X-User-Id 请求头 + 归属校验，仅创建人可访问）。
      */
     @GetMapping("/executions/{execId}/download")
     public ResponseEntity<Resource> downloadExecutionFile(@PathVariable(name = "execId") Long execId,
@@ -125,7 +126,7 @@ public class SkillJobController {
     }
 
     /**
-     * 下载执行记录对应的 MD 文件（通知邮件入口：短链 shortCode 即访问凭据，无登录）。
+     * 下载/查看执行记录对应的报告文件（通知邮件入口：短链 shortCode 即访问凭据，无登录；.html 走 inline 浏览器渲染）。
      * shortCode 由 UrlShortenerService 生成、映射到 "skilljob-exec:{execId}"，不可枚举。
      */
     @GetMapping("/download")
@@ -150,20 +151,28 @@ public class SkillJobController {
         }
     }
 
-    /** 组装文件流响应：octet-stream + Content-Disposition（中文文件名 RFC 5987 编码）。 */
+    /**
+     * 组装文件流响应（中文文件名 RFC 5987 编码）：
+     * - .html 报告：text/html + inline，浏览器直接渲染表格与 echarts 图表。
+     * - 历史非 html（.md 等）：octet-stream + attachment，保持下载行为兼容老数据。
+     */
     private ResponseEntity<Resource> fileResponse(Resource resource, String resolvedOutputPath) {
         String filename = extractFilename(resolvedOutputPath);
         String encoded = URLEncoder.encode(filename, StandardCharsets.UTF_8).replace("+", "%20");
+        boolean isHtml = filename.toLowerCase(Locale.ROOT).endsWith(".html");
+        MediaType contentType = isHtml
+                ? new MediaType(MediaType.TEXT_HTML, StandardCharsets.UTF_8)
+                : MediaType.APPLICATION_OCTET_STREAM;
+        String disposition = (isHtml ? "inline" : "attachment") + "; filename*=UTF-8''" + encoded;
         return ResponseEntity.ok()
-                .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                .header(HttpHeaders.CONTENT_DISPOSITION,
-                        "attachment; filename*=UTF-8''" + encoded)
+                .contentType(contentType)
+                .header(HttpHeaders.CONTENT_DISPOSITION, disposition)
                 .body(resource);
     }
 
     /** 从 resolvedOutputPath 末段提取文件名。 */
     private static String extractFilename(String resolvedOutputPath) {
-        if (resolvedOutputPath == null) return "report.md";
+        if (resolvedOutputPath == null) return "report.html";
         int lastSlash = resolvedOutputPath.lastIndexOf('/');
         return lastSlash >= 0 ? resolvedOutputPath.substring(lastSlash + 1) : resolvedOutputPath;
     }

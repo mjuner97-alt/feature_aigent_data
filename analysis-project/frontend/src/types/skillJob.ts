@@ -3,6 +3,8 @@ export interface SkillJob {
   id: number;
   name: string;
   skillId: number;
+  /** 关联 Skill 名称（后端 join skill_manage 返回，跨用户查看也可显示） */
+  skillName?: string;
   questionTemplate: string;
   enabled: boolean;
   /** 依赖指标 ID（可选，关联后随指标就绪触发） */
@@ -28,11 +30,14 @@ export interface SkillJobInput {
 
 /**
  * 更新请求体（字段全部可选，后端按非 null 增量更新）。
- * skillId 不可修改（想换 Skill 只能删除后重建），createdBy 不可变（后端忽略）。
- * metricId 亦不可修改（想换指标只能删除后重建）。
+ * createdBy 不可变（后端忽略）。
+ * skillId 可修改（正值才更新）。
+ * metricId 可修改：0 = 清除关联（不关联），正值 = 关联该指标，不传 = 保留原值。
  */
 export interface SkillJobUpdateInput {
   name?: string;
+  skillId?: number;
+  metricId?: number;
   questionTemplate?: string;
   enabled?: boolean;
 }

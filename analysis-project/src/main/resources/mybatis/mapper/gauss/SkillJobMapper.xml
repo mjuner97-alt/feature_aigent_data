@@ -18,12 +18,14 @@
         <result column="metric_id" property="metricId"/>
         <result column="metric_code" property="metricCode"/>
         <result column="metric_name" property="metricName"/>
+        <result column="skill_name" property="skillName"/>
     </resultMap>
 
     <sql id="skillJobCols">
         j.id, j.name, j.skill_id, j.question_template, j.output_path, j.enabled,
         j.created_by, j.created_at, j.updated_at, j.metric_id,
-        m.code AS metric_code, m.name AS metric_name
+        m.code AS metric_code, m.name AS metric_name,
+        s.name AS skill_name
     </sql>
 
     <insert id="insertSkillJob" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillJob" useGeneratedKeys="true" keyProperty="id">
@@ -35,6 +37,7 @@
         SELECT <include refid="skillJobCols"/>
         FROM skill_job j
         LEFT JOIN skill_dependency_metric m ON m.id = j.metric_id
+        LEFT JOIN skill_manage s ON s.id = j.skill_id
         WHERE j.id = #{id}
     </select>
 
@@ -42,6 +45,7 @@
         SELECT <include refid="skillJobCols"/>
         FROM skill_job j
         LEFT JOIN skill_dependency_metric m ON m.id = j.metric_id
+        LEFT JOIN skill_manage s ON s.id = j.skill_id
         WHERE j.name = #{name}
     </select>
 
@@ -49,6 +53,7 @@
         SELECT <include refid="skillJobCols"/>
         FROM skill_job j
         LEFT JOIN skill_dependency_metric m ON m.id = j.metric_id
+        LEFT JOIN skill_manage s ON s.id = j.skill_id
         <where>
             <if test="enabled != null">AND j.enabled = #{enabled}</if>
             <if test="keyword != null and keyword != ''">AND j.name LIKE CONCAT('%', #{keyword}, '%')</if>
@@ -60,7 +65,7 @@
     <update id="updateJobById" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillJob">
         UPDATE skill_job
         SET name=#{name}, skill_id=#{skillId}, question_template=#{questionTemplate},
-            output_path=#{outputPath}, enabled=#{enabled}, updated_at=NOW()
+            output_path=#{outputPath}, enabled=#{enabled}, metric_id=#{metricId}, updated_at=NOW()
         WHERE id = #{id}
     </update>
 
@@ -73,6 +78,7 @@
         SELECT <include refid="skillJobCols"/>
         FROM skill_job j
         LEFT JOIN skill_dependency_metric m ON m.id = j.metric_id
+        LEFT JOIN skill_manage s ON s.id = j.skill_id
         WHERE j.metric_id = #{metricId}
           AND j.enabled = TRUE
         ORDER BY j.created_at DESC

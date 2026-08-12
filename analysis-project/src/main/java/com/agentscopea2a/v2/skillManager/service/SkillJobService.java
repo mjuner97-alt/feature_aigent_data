@@ -119,7 +119,9 @@ public class SkillJobService {
         return SkillJobDto.of(job);
     }
 
-    /** 更新 Job，仅更新非 null 字段；createdBy 与 skillId 不可变，仅创建人本人可改 */
+    /** 更新 Job，仅更新非 null 字段；createdBy 不可变，仅创建人本人可改。
+     *  skillId / metricId 可改：metricId=0 表示清除关联（不关联），null 表示保留原值。
+     *  更换 skillId 不影响 outputPath（outputPath 按 userId 生成，与 skill 无关）。 */
     @Transactional("gaussTransactionManager")
     public SkillJobDto update(Long id, SkillJobUpdateRequest req, String userId) {
         SkillJob job = mapper.selectJobById(id);
@@ -132,7 +134,22 @@ public class SkillJobService {
         }
         // createdBy 不可变：不再覆盖（此前 update 会把 createdBy 改成当前操作人，属越权改写）
         if (req.name() != null) job.setName(req.name());
-        // skillId 不可修改：想换 Skill 只能删除后重建
+        // skillId 可修改：正值才更新（0/负数忽略，避免占位符误写）
+        if (req.skillId() != null && req.skillId() > 0) job.setSkillId(req.skillId());
+        // metricId 可修改：0 = 清除关联（不关联）；正值 = 关联该指标（须存在且启用）；null = 保留原值
+        if (req.metricId() != null) {
+            Long mid = req.metricId() == 0L ? null : req.metricId();
+            if (mid != null) {
+                SkillDependencyMetric metric = metricMapper.selectById(mid);
+                if (metric == null) {
+                    throw new IllegalStateException("MetricNotFound: 依赖指标不存在 (id=" + mid + ")");
+                }
+                if (!Boolean.TRUE.equals(metric.getEnabled())) {
+                    throw new IllegalStateException("MetricDisabled: 依赖指标已停用，不可选用 (id=" + mid + ")");
+                }
+            }
+            job.setMetricId(mid);
+        }
         if (req.questionTemplate() != null) job.setQuestionTemplate(req.questionTemplate());
         if (req.enabled() != null) job.setEnabled(req.enabled());
         mapper.updateJobById(job);
@@ -170,7 +187,7 @@ public class SkillJobService {
             throw new IllegalStateException("JobAccessDenied: 仅创建人可手动触发此任务 (id=" + jobId + ")");
         }
         SkillJobExecution exec = SkillJobExecution.builder()
-                .mdFileExists(false)
+                .mdFileWritten(false)
                 .mdFileExists(false)
                 .jobId(jobId).triggerType("MANUAL").status("PENDING").build();
         mapper.insertExecution(exec);
@@ -198,6 +215,8 @@ public class SkillJobService {
             throw new IllegalStateException("JobNotFound: 任务不存在 (name=" + name + ")");
         }
         SkillJobExecution exec = SkillJobExecution.builder()
+                .mdFileWritten(false)
+                .mdFileExists(false)
                 .jobId(job.getId()).triggerType("EXTERNAL").status("PENDING").build();
         mapper.insertExecution(exec);
         if (!scheduler.submit(job.getId(), exec.getId())) {
@@ -243,7 +262,7 @@ public class SkillJobService {
     /** 单个 job 在批量触发中的处理：落 PENDING -> submit；已在跑则清孤儿记录并标记 REJECTED */
     private MetricTriggerItemDto triggerOneForMetric(SkillJob job, String userId) {
         SkillJobExecution exec = SkillJobExecution.builder()
-                .mdFileExists(false)
+                .mdFileWritten(false)
                 .mdFileExists(false)
                 .jobId(job.getId()).triggerType("METRIC").status("PENDING").build();
         mapper.insertExecution(exec);
@@ -271,7 +290,7 @@ public class SkillJobService {
     }
 
     /**
-     * 下载执行记录对应的 MD 文件（内部纯文件服务：路径解析 + 路径穿越防护，无归属校验）。
+     * 下载/查看执行记录对应的报告文件（内部纯文件服务：路径解析 + 路径穿越防护，无归属校验）。
      * 供短链端点 {@code downloadByShortCode} 调用（shortCode 即访问凭据，无需 userId）。
      * resolvedOutputPath 存相对路径({userId}/{mdFileName})，拼 baseDir 解析绝对路径；
      * 历史绝对路径记录也可解析(Paths.get 第二参数为绝对路径时忽略 baseDir)，自动兼容老数据。
@@ -303,8 +322,8 @@ public class SkillJobService {
     }
 
     /**
-     * 下载执行记录对应的 MD 文件（前端入口：校验 userId 归属后委托给无校验版本）。
-     * 仅 createdBy 本人可下载其生成的 MD 文件。
+     * 下载/查看执行记录对应的报告文件（前端入口：校验 userId 归属后委托给无校验版本）。
+     * 仅 createdBy 本人可访问其生成的报告文件。
      */
     public Resource downloadExecutionFile(SkillJobExecutionDto exec, String userId) {
         SkillJob job = mapper.selectJobById(exec.jobId());
