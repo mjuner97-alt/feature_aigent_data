@@ -37,6 +37,8 @@ public class SkillJob {
     private String name;
     /** 关联的 Skill ID */
     private Long skillId;
+    /** 关联 Skill 名称（join 展示，非持久化）；跨用户查看 job 列表时用，避免前端按当前用户 skill 列表解析不到 */
+    private String skillName;
     /** 提问模板，支持 {date}/{skill_name} 变量替换 */
     private String questionTemplate;
     /** MD 输出路径（相对 workspace），如 reports/daily/{date}.md */

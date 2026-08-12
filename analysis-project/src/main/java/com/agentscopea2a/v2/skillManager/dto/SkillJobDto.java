@@ -26,6 +26,7 @@ public record SkillJobDto(
         Long id,
         String name,
         Long skillId,
+        String skillName,
         String questionTemplate,
         Boolean enabled,
         Long metricId,
@@ -37,7 +38,7 @@ public record SkillJobDto(
 ) {
     public static SkillJobDto of(SkillJob job) {
         return new SkillJobDto(
-                job.getId(), job.getName(), job.getSkillId(),
+                job.getId(), job.getName(), job.getSkillId(), job.getSkillName(),
                 job.getQuestionTemplate(),
                 job.getEnabled(),
                 job.getMetricId(), job.getMetricCode(), job.getMetricName(),

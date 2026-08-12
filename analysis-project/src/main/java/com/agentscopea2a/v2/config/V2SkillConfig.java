@@ -323,7 +323,7 @@ public class V2SkillConfig {
     }
 
     /**
-     * WriteMarkdownTool Bean - 将内容写入workspace下的MD文件。
+     * WriteMarkdownTool Bean - 将 HtmlReportRenderer 渲染后的 HTML 报告内容写入 workspace 下文件（类名历史保留）。
      *
      * <p>仅由 SkillJobScheduler 在 Agent 执行完成后直接 Java 调用，不注册到 toolkit，
      * 不通过 tool_call 机制暴露给 AI。

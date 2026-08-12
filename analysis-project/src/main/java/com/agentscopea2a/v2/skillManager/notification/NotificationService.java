@@ -82,7 +82,7 @@ public class NotificationService {
     }
 
     /**
-     * 跑批 job 执行成功后调用：查所属指标的 notify 配置，启用则异步组装并发送通知（携带 MD 文件）。
+     * 跑批 job 执行成功后调用：查所属指标的 notify 配置，启用则异步组装并发送通知（携带报告文件 .html）。
      */
     public void notifyJobCompleted(SkillJob job, SkillJobExecution execution, String filePath) {
         if (job == null || job.getMetricId() == null || execution == null || filePath == null) {

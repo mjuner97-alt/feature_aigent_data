@@ -11,7 +11,8 @@ import java.nio.file.StandardOpenOption;
 import java.util.function.Supplier;
 
 /**
- * 将内容写入指定MD文件路径，由SkillJobScheduler在Agent执行完成后直接Java调用。
+ * 将内容写入指定报告文件路径，由SkillJobScheduler在Agent执行完成后直接Java调用。
+ * 类名保留 WriteMarkdownTool（历史命名），实际写入的是 HtmlReportRenderer 渲染后的自包含 HTML。
  *
  * <p>不通过tool_call机制暴露给AI，executionId由调用方直接传入，
  * 写入成功后通过{@link WriteCallback}通知Scheduler标记md_file_written。
@@ -39,15 +40,15 @@ public class WriteMarkdownTool {
     }
 
     /**
-     * 写入MD文件。流程：参数校验->路径穿越防护->自动创建父目录->写入文件->验证写入->通知WriteCallback回调。
+     * 写入报告文件。流程：参数校验->路径穿越防护->自动创建父目录->写入文件->验证写入->通知WriteCallback回调。
      *
      * <p>最终写入路径为 {@code {skill.file.base-dir}/{userId}/{filePath}}，
      * filePath 相对于该 userId 根目录，禁止 {@code ..} 穿越。
      * 回调传回相对路径 {@code {userId}/{filePath}}，供 execution.resolved_output_path 存储；
      * 下载时由 baseDir + createdBy 拼绝对路径，baseDir 可配置不写死。
      *
-     * @param filePath    相对 userId 目录的MD文件子路径（如 reports/daily/2026-08-05.md）
-     * @param content     Markdown内容
+     * @param filePath    相对 userId 目录的报告文件子路径（如 reports/daily/2026-08-05.html）
+     * @param content     报告内容（HtmlReportRenderer 渲染后的自包含 HTML）
      * @param executionId 当前SkillJob执行的executionId，用于回调时定位
      * @param userId      用户ID，用于隔离不同用户的写入目录
      * @return true=写入成功，false=写入失败

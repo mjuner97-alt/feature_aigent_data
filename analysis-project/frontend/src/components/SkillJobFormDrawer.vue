@@ -29,6 +29,14 @@ const formError = ref('');
 const skills = ref<SkillListItem[]>([]);
 const metrics = ref<SkillDependencyMetric[]>([]);
 
+/** 当前选中的依赖指标 (用于在 select 下方展示描述) */
+const selectedMetric = computed(() =>
+  metrics.value.find(m => m.id === form.value.metricId) ?? null
+);
+
+/** 是否展开依赖指标描述 (点击「查看指标描述」切换) */
+const showMetricDesc = ref(false);
+
 /** 加载"我使用的" Skill 列表供选择 */
 async function loadSkills() {
   try {
@@ -89,9 +97,11 @@ async function submit() {
   saving.value = true;
   try {
     if (props.editId != null) {
-      // 编辑：skillId / metricId / createdBy 不可变，不提交 skillId / metricId
+      // 编辑：skillId / metricId 可改。metricId: null -> 0 (清除关联哨兵)，正值 = 关联该指标
       const payload: SkillJobUpdateInput = {
         name: form.value.name,
+        skillId: form.value.skillId,
+        metricId: form.value.metricId ?? 0,
         questionTemplate: form.value.questionTemplate,
         enabled: form.value.enabled,
       };
@@ -132,20 +142,25 @@ function close() { emit('update:open', false); }
                 </label>
                 <label class="field">
                   <span class="label">关联 Skill *</span>
-                  <select v-model.number="form.skillId" :disabled="isEdit">
+                  <select v-model.number="form.skillId">
                     <option :value="0" disabled>请选择 Skill</option>
                     <option v-for="s in skills" :key="s.id" :value="s.id">{{ s.name }}</option>
                   </select>
-                  <span v-if="isEdit" class="tip">Skill 不可修改，如需更换请删除后重建</span>
+                  <span v-if="isEdit" class="tip">更换后影响后续执行；历史执行记录按当前 Skill 口径展示</span>
                 </label>
                 <label class="field">
                   <span class="label">依赖指标</span>
-                  <select v-model.number="form.metricId" :disabled="isEdit">
+                  <select v-model.number="form.metricId">
                     <option :value="null">不关联（可选）</option>
-                    <option v-for="m in metrics" :key="m.id" :value="m.id">{{ m.name }}</option>
+                    <option v-for="m in metrics" :key="m.id" :value="m.id" :title="m.description">{{ m.name }}</option>
                   </select>
-                  <span v-if="isEdit" class="tip">依赖指标不可修改，如需更换请删除后重建</span>
-                  <span v-else class="tip">可选；关联后随指标就绪自动触发该任务</span>
+                  <span class="tip">
+                    可选；关联后随指标就绪自动触发该任务
+                    <span v-if="selectedMetric?.description" class="desc-toggle" @click="showMetricDesc = !showMetricDesc">
+                      {{ showMetricDesc ? '收起指标描述' : '查看指标描述' }}
+                    </span>
+                  </span>
+                  <div v-if="showMetricDesc && selectedMetric?.description" class="metric-desc">{{ selectedMetric.description }}</div>
                 </label>
                 <label class="field">
                   <span class="label">提问内容 *</span>
@@ -184,6 +199,9 @@ function close() { emit('update:open', false); }
 .form input, .form select, .form textarea { padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; font-family: inherit; background: #fff; }
 .form textarea { resize: vertical; }
 .tip { font-size: 12px; color: #94a3b8; }
+.desc-toggle { margin-left: 6px; color: #2563eb; cursor: pointer; }
+.desc-toggle:hover { text-decoration: underline; }
+.metric-desc { font-size: 12px; color: #475569; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px; padding: 6px 8px; white-space: pre-wrap; line-height: 1.5; }
 .error { color: #dc2626; font-size: 13px; }
 .btn { padding: 8px 18px; border-radius: 6px; border: 1px solid #cbd5e1; cursor: pointer; font-size: 14px; }
 .btn.primary { background: #3b82f6; color: #fff; border-color: #3b82f6; }

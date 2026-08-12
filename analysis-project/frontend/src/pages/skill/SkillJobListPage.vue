@@ -6,9 +6,9 @@
  */
 import { ref, onMounted } from 'vue';
 import { listJobs, deleteJob, triggerJob, updateJob } from '../../api/skillJob';
-import { listSkills, currentUserId } from '../../api/skill';
+import { currentUserId } from '../../api/skill';
+import { listMetrics } from '../../api/skillDependencyMetric';
 import type { SkillJob } from '../../types/skillJob';
-import type { SkillListItem } from '../../types/skill';
 import SkillJobFormDrawer from '../../components/SkillJobFormDrawer.vue';
 import SkillJobExecutionDrawer from '../../components/SkillJobExecutionDrawer.vue';
 
@@ -32,8 +32,8 @@ const execOpen = ref(false);
 const execJobId = ref<number | null>(null);
 const execCanDownload = ref(false);
 
-// Skill 名称缓存
-const skillNames = ref<Record<number, string>>({});
+// 依赖指标描述缓存 (id -> description), 列表 hover 查看描述
+const metricDescMap = ref<Record<number, string>>({});
 
 // 触发中的 Job
 const triggering = ref<Set<number>>(new Set());
@@ -45,12 +45,14 @@ async function load() {
   loading.value = true;
   try {
     jobs.value = await listJobs(enabledFilter.value ?? undefined, keyword.value || undefined, createdBy.value || undefined);
-    // 加载 Skill 名称
-    if (jobs.value.length > 0) {
-      const skills = await listSkills({ limit: 200 });
-      const map: Record<number, string> = {};
-      skills.forEach(s => { map[s.id] = s.name; });
-      skillNames.value = map;
+    // 加载依赖指标描述 (admin 预置只读, 列表 hover 查看描述)
+    try {
+      const metrics = await listMetrics();
+      const descMap: Record<number, string> = {};
+      metrics.forEach(m => { if (m.description) descMap[m.id] = m.description; });
+      metricDescMap.value = descMap;
+    } catch {
+      metricDescMap.value = {};
     }
   } catch (e) {
     console.error('加载失败', e);
@@ -112,6 +114,15 @@ function fmtTime(t: string) {
   if (!t) return '-';
   return t.replace('T', ' ').substring(0, 19);
 }
+
+/** 依赖指标单元格 hover title: code + 描述 (若后端已返回/已缓存) */
+function metricTitle(job: SkillJob): string {
+  const parts: string[] = [];
+  if (job.metricCode) parts.push(`code: ${job.metricCode}`);
+  const desc = job.metricId ? metricDescMap.value[job.metricId] : '';
+  if (desc) parts.push(desc);
+  return parts.join('\n');
+}
 </script>
 
 <template>
@@ -155,9 +166,9 @@ function fmtTime(t: string) {
           <td>
             <span class="col-name selectable" :title="job.name">{{ job.name }}</span>
           </td>
-          <td>{{ job.skillId ? (skillNames[job.skillId] || `#${job.skillId}`) : '未配置' }}</td>
+          <td>{{ job.skillId ? (job.skillName || `#${job.skillId}`) : '未配置' }}</td>
           <td class="col-metric">
-            <span v-if="job.metricName || job.metricCode" :title="`code: ${job.metricCode}`">
+            <span v-if="job.metricName || job.metricCode" :title="metricTitle(job)">
               {{ job.metricName || job.metricCode }}
             </span>
             <span v-else class="muted-cell">未配置</span>

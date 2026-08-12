@@ -30,4 +30,29 @@ public interface ScriptRegistryMapper {
      * 不返回 description 全文 (体积大, 列表展示用 name 即可).
      */
     List<ScriptRegistryEntry> listAllEnabled();
+
+    /**
+     * 管理页面: 列出所有记录 (含禁用, 排除 params_schema 体积大的字段).
+     */
+    List<ScriptRegistryEntry> selectAll();
+
+    /**
+     * 管理页面: 按 id 查询详情 (含 params_schema).
+     */
+    ScriptRegistryEntry selectById(@Param("id") Long id);
+
+    /**
+     * 新增一条记录. id / created_at / updated_at 由数据库自动生成.
+     */
+    int insert(ScriptRegistryEntry entry);
+
+    /**
+     * 按 id 更新记录. updated_at 由触发器自动维护.
+     */
+    int update(ScriptRegistryEntry entry);
+
+    /**
+     * 按 id 删除记录.
+     */
+    int deleteById(@Param("id") Long id);
 }

@@ -44,7 +44,7 @@ public class SkillJobExecution {
     private String resolvedOutputPath;
     /** WriteMarkdownTool 是否已成功写入（由 SkillJobScheduler 直接 Java 调用） */
     private Boolean mdFileWritten;
-    /** MD 文件是否存在且非空 */
+    /** 报告文件是否存在且非空（.html，字段名保留兼容 DB 列 md_file_exists） */
     private Boolean mdFileExists;
     /** 错误信息 */
     private String errorMsg;

@@ -24,6 +24,8 @@ import SkillFormPage from './pages/skill/SkillFormPage.vue';
 import SkillApprovalListPage from './pages/skill/SkillApprovalListPage.vue';
 import SkillJobListPage from './pages/skill/SkillJobListPage.vue';
 import SqlRegistryPage from './pages/SqlRegistryPage.vue';
+import ScriptRegistryShell from './components/ScriptRegistryShell.vue';
+import ScriptRegistryPage from './pages/ScriptRegistryPage.vue';
 import { isLoggedIn } from './utils/auth';
 
 const routes: RouteRecordRaw[] = [
@@ -62,11 +64,16 @@ const routes: RouteRecordRaw[] = [
         meta: { requiresAuth: true, title: '会话详情' },
       },
       {
-        path: 'sql-registry',
-        name: 'SqlRegistry',
-        component: SqlRegistryPage,
-        meta: { requiresAuth: true, title: 'SQL 注册表' },
+        // SCRIPT 注册表: 侧边栏 shell + 子列表 (SQL注册 / python脚本注册, 后续可扩展)
+        path: 'script-registry',
+        component: ScriptRegistryShell,
+        children: [
+          { path: '', component: SqlRegistryPage, meta: { requiresAuth: true, title: 'SQL 注册' } },
+          { path: 'python', component: ScriptRegistryPage, meta: { requiresAuth: true, title: 'python 脚本注册' } },
+        ],
       },
+      // 兼容旧书签: /sql-registry -> /script-registry
+      { path: 'sql-registry', redirect: '/script-registry' },
       {
         // 内部管理页: 不在导航中展示, 仅直接输入 /model-config 访问
         path: 'model-config',
