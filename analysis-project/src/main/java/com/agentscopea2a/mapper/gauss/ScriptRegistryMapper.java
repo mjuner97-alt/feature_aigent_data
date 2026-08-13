@@ -26,6 +26,16 @@ public interface ScriptRegistryMapper {
     ScriptRegistryEntry selectByScriptId(@Param("scriptId") String scriptId);
 
     /**
+     * 统计指定 script_id 的记录数 (含禁用记录, 用于唯一性校验).
+     * 与 {@link #selectByScriptId} 的区别: 后者带 enabled=1 过滤 (Agent 工具执行用),
+     * 唯一性校验必须覆盖禁用记录, 否则把某条改成已禁用记录的同名 script_id 会漏检.
+     *
+     * @param scriptId 业务可读 ID
+     * @return 命中记录数 (0 表示不冲突)
+     */
+    int countByScriptId(@Param("scriptId") String scriptId);
+
+    /**
      * 列出所有启用的脚本 (script_id / 名称 / 描述 / 数据源 / 参数 schema / 超时).
      * 不返回 description 全文 (体积大, 列表展示用 name 即可).
      */
