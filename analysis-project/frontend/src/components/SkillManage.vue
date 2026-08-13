@@ -101,7 +101,7 @@ function ownerLabel(it: SkillListItem): string {
     >
       <div class="top">
         <span class="badge" :class="badgeClass(it)" :title="badgeTitle(it)">{{ badgeIcon(it) }}</span>
-        <span class="count">👍 {{ it.likeCount }}</span>
+        <span class="count"><svg class="thumb-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="currentColor" style="vertical-align:-2px"><path d="M2 21h4V9H2v12zm20-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L13.17 1 7.59 6.59C7.22 6.95 7 7.45 7 8v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z"/></svg> {{ it.likeCount }}</span>
       </div>
       <div class="name">{{ it.name }}</div>
       <div class="desc">{{ it.description }}</div>
@@ -117,7 +117,7 @@ function ownerLabel(it: SkillListItem): string {
       </div>
       <div class="actions">
         <button class="like" :class="{ on: it.liked }" @click="toggleLike(it)">
-          <svg class="thumb-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <svg class="thumb-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="currentColor">
             <path d="M2 21h4V9H2v12zm20-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L13.17 1 7.59 6.59C7.22 6.95 7 7.45 7 8v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z"/>
           </svg>
           <span>{{ it.liked ? '已点赞' : '点赞' }}</span>
@@ -143,14 +143,14 @@ function ownerLabel(it: SkillListItem): string {
         </div>
       </div>
       <div class="right">
-        <span class="count">👍 {{ it.likeCount }}</span>
+        <span class="count"><svg class="thumb-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="currentColor" style="vertical-align:-2px"><path d="M2 21h4V9H2v12zm20-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L13.17 1 7.59 6.59C7.22 6.95 7 7.45 7 8v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z"/></svg> {{ it.likeCount }}</span>
         <button
           class="like"
           :class="{ on: it.liked }"
           @click="toggleLike(it)"
           :aria-label="it.liked ? '取消点赞' : '点赞'"
         >
-          <svg class="thumb-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <svg class="thumb-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="currentColor">
             <path d="M2 21h4V9H2v12zm20-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L13.17 1 7.59 6.59C7.22 6.95 7 7.45 7 8v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z"/>
           </svg>
           <span class="ripple"></span>
