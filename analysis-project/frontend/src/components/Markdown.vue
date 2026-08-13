@@ -1,13 +1,15 @@
 <template>
   <div :style="theme.root">
-    <!-- Short text: render as v-html (fast string replacement) -->
-    <template v-if="text.length <= 4000">
-      <div v-html="shortHtml"></div>
-    </template>
-    <!-- Long text: v-html with fast string replacement -->
-    <template v-else>
-      <div v-html="longHtml"></div>
-    </template>
+    <!-- 完整 HTML 文档(<!doctype>/<html>):iframe srcdoc 隔离渲染,自带样式与脚本不污染外层 -->
+    <iframe
+      v-if="isFullHtmlDoc"
+      :srcdoc="text"
+      class="html-doc-frame"
+      sandbox="allow-scripts allow-same-origin"
+      @load="onFrameLoad"
+    ></iframe>
+    <!-- Markdown 或 HTML 片段:v-html 渲染,HTML 标签透传不转义 -->
+    <div v-else v-html="renderedHtml"></div>
   </div>
 </template>
 
@@ -20,8 +22,6 @@ const props = withDefaults(defineProps<{
 }>(), {
   theme: 'light',
 });
-
-const INNERHTML_THRESHOLD = 4000;
 
 // ── Theme presets ──────────────────────────────────────────────────────────
 
@@ -69,11 +69,32 @@ const DARK = {
 
 const theme = computed(() => props.theme === 'dark' ? DARK : LIGHT);
 
-// For short text: full markdown to HTML including block-level parsing
-const shortHtml = computed(() => markdownToHtml(props.text));
+// 完整 HTML 文档检测:以 <!doctype html> 或 <html> 开头视为自包含文档,走 iframe 隔离渲染
+const isFullHtmlDoc = computed(() => {
+  const head = props.text.trimStart().slice(0, 100).toLowerCase();
+  return head.startsWith('<!doctype html') || head.startsWith('<html');
+});
 
-// For long text: fast string-based rendering
-const longHtml = computed(() => markdownToHtml(props.text));
+// Markdown / HTML 片段 -> HTML(保留 HTML 标签,仅转义纯文本)
+const renderedHtml = computed(() => markdownToHtml(props.text));
+
+// iframe 加载后按内容高度自适应(srcdoc 同源,可读 contentDocument)
+function onFrameLoad(e: Event) {
+  const frame = e.target as HTMLIFrameElement;
+  const adjust = () => {
+    try {
+      const doc = frame.contentDocument;
+      if (!doc) return;
+      const h = Math.max(
+        doc.documentElement.scrollHeight,
+        doc.body ? doc.body.scrollHeight : 0,
+      );
+      frame.style.height = (h + 24) + 'px';
+    } catch { /* 跨域忽略 */ }
+  };
+  adjust();
+  setTimeout(adjust, 300);
+}
 
 // ── Markdown to HTML converter ────────────────────────────────────────────
 
@@ -101,7 +122,7 @@ function markdownToHtml(md: string): string {
 
 function renderInlineHtml(text: string): string {
   const t = theme.value;
-  let html = escHtml(text);
+  let html = escapePreservingHtml(text);
   // Horizontal rule
   html = html.replace(/^---+\s*$/gm, `<hr style="border:none;border-top:${t.hr};margin:12px 0">`);
   // Headings
@@ -129,8 +150,9 @@ function renderInlineHtml(text: string): string {
   html = html.replace(/`([^`]+)`/g, `<code style="background:${t.inlineCodeBg};color:${t.inlineCodeColor};padding:1px 5px;border-radius:4px;font-family:ui-monospace,monospace;font-size:0.88em">$1</code>`);
   // Links
   html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, `<a href="$2" target="_blank" rel="noreferrer" style="color:${t.linkColor};text-decoration:none">$1</a>`);
-  // Paragraphs
-  html = html.replace(/^(?!<[hou]|<li|<div|<pre|<blockquote|<table|<ul|<ol|<hr)(.+)$/gm, '<div style="margin:6px 0">$1</div>');
+  // Paragraphs:行首(忽略缩进)以 HTML 标签开头的行不包 <div>,避免破坏嵌入的 HTML 结构
+  // (escapePreservingHtml 后,真标签是字面 <tag>,纯文本的 < 已转义为 &lt;,故此处只命中真标签)
+  html = html.replace(/^(?!\s*<[a-zA-Z!\/])(.+)$/gm, '<div style="margin:6px 0">$1</div>');
   return html;
 }
 
@@ -163,4 +185,30 @@ function renderTableHtml(html: string): string {
 function escHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+
+// 转义纯文本,但保留 HTML 标签/注释/doctype/CDATA 原样透传,
+// 使 skill 内容里嵌入的 HTML 能正常渲染而不是显示成文字
+function escapePreservingHtml(text: string): string {
+  const tagRe = /(<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<!DOCTYPE[^>]*>|<\/?[a-zA-Z][^>]*>)/g;
+  let out = '';
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = tagRe.exec(text)) !== null) {
+    if (m.index > last) out += escHtml(text.slice(last, m.index));
+    out += m[0];
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out += escHtml(text.slice(last));
+  return out;
+}
 </script>
+
+<style scoped>
+.html-doc-frame {
+  width: 100%;
+  min-height: 240px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+}
+</style>

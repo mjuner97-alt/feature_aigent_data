@@ -1,6 +1,7 @@
 package com.agentscopea2a.v2.tools;
 
 import com.agentscopea2a.v2.skillManager.scheduler.WriteCallback;
+import com.agentscopea2a.v2.util.SkillFileMirror;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,12 +32,16 @@ public class WriteMarkdownTool {
     /** skill 文件磁盘根目录(${skill.file.base-dir})，与 SkillFileService 一致。 */
     private final String baseDir;
 
+    /** skill 文件镜像根目录(${skill.file.mirror-dir})，报告写成功后复制一份作为防删除副本；可为空则跳过。 */
+    private final String mirrorDir;
+
     /** 延迟获取的回调，SkillJobScheduler实现，用于标记md_file_written=true */
     private final Supplier<WriteCallback> writeCallbackSupplier;
 
-    public WriteMarkdownTool(Supplier<WriteCallback> writeCallbackSupplier, String baseDir) {
+    public WriteMarkdownTool(Supplier<WriteCallback> writeCallbackSupplier, String baseDir, String mirrorDir) {
         this.writeCallbackSupplier = writeCallbackSupplier;
         this.baseDir = baseDir;
+        this.mirrorDir = mirrorDir;
     }
 
     /**
@@ -94,6 +99,9 @@ public class WriteMarkdownTool {
                 log.warn("WriteMarkdownTool: write verification failed: {}", resolved);
                 return false;
             }
+
+            // 镜像: 报告写成功后复制一份到独立镜像目录 (最佳努力, 防删除, 失败不影响本方法返回值)
+            SkillFileMirror.mirror(baseDir, mirrorDir, userId + "/" + filePath);
 
             // 通知回调：传回相对路径 {userId}/{filePath}，存入 execution.resolved_output_path；
             // 下载时由 baseDir + createdBy 拼绝对路径，baseDir 可配置不写死。

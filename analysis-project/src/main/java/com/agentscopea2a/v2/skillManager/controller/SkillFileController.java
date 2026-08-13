@@ -18,6 +18,10 @@ package com.agentscopea2a.v2.skillManager.controller;
 import com.agentscopea2a.v2.skillManager.dto.SkillFileListItem;
 import com.agentscopea2a.v2.skillManager.dto.SkillFileUploadResponse;
 import com.agentscopea2a.v2.skillManager.service.SkillFileService;
+import com.agentscopea2a.v2.util.DownloadErrorPage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -52,6 +56,8 @@ import java.util.Map;
 @RequestMapping("/api")
 @CrossOrigin(origins = "*", maxAge = 3600)
 public class SkillFileController {
+
+    private static final Logger log = LoggerFactory.getLogger(SkillFileController.class);
 
     private final SkillFileService skillFileService;
 
@@ -103,8 +109,22 @@ public class SkillFileController {
                             "attachment; filename*=UTF-8''" + encoded)
                     .body(resource);
         } catch (IllegalStateException e) {
-            return ResponseEntity.notFound().build();
+            // FileNotFoundOrAccessDenied / FileNotOnDisk - 统一回 "文件不存在" 友好页; 真实原因 (含路径) 只进日志
+            log.warn("Skill file download id={} userId={} failed: {}", id, userId, e.getMessage());
+            return htmlResponse(HttpStatus.NOT_FOUND, DownloadErrorPage.fileNotFound());
         }
+    }
+
+    /**
+     * 下载失败时回吐友好 HTML 提示页 (而非空 body 的 404, 浏览器只能显示 "无法访问").
+     * 文案由 {@link DownloadErrorPage} 统一生成, 这里按 {@code ResponseEntity<Resource>} 包成
+     * {@code ByteArrayResource} 以匹配本类下载方法的返回类型.
+     */
+    private static ResponseEntity<Resource> htmlResponse(HttpStatus status, String html) {
+        Resource body = new ByteArrayResource(html.getBytes(StandardCharsets.UTF_8));
+        return ResponseEntity.status(status)
+                .contentType(MediaType.TEXT_HTML)
+                .body(body);
     }
 
     /**

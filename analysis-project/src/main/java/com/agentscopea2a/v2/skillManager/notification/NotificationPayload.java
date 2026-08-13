@@ -10,6 +10,9 @@ import java.util.List;
  * {@code filePath}/{@code fileName} 为本次生成的 MD 报告文件（通知入参的文件），
  * 发送方按需读取上传/做附件；{@code fileUrl} 为该文件的下载链接（HTML 模板里
  * {@code <a href>} 直接点击用）。
+ *
+ * <p>{@code triggerType} 标识本次执行的触发来源（MANUAL 手动 / EXTERNAL 按名外部触发 /
+ * METRIC 按指标自动触发），发送方可据此区分通知渠道/内容/收件人。
  */
 public record NotificationPayload(
         String contentType,   // TEXT | HTML
@@ -24,6 +27,7 @@ public record NotificationPayload(
         Long executionId,
         String status,
         LocalDateTime completedAt,
-        List<String> userIdList
+        List<String> userIdList,
+        String triggerType    // MANUAL | EXTERNAL | METRIC
 ) {
 }

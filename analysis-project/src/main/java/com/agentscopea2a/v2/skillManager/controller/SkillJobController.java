@@ -9,7 +9,11 @@ import com.agentscopea2a.v2.skillManager.dto.SkillJobDto;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobExecutionDto;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobUpdateRequest;
 import com.agentscopea2a.v2.skillManager.service.SkillJobService;
+import com.agentscopea2a.v2.util.DownloadErrorPage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -33,6 +37,8 @@ import java.util.Locale;
 @CrossOrigin(origins = "*", maxAge = 3600)
 @ConditionalOnProperty(prefix = "harness.a2a.skill-job", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class SkillJobController {
+
+    private static final Logger log = LoggerFactory.getLogger(SkillJobController.class);
 
     private final SkillJobService service;
     private final UrlShortenerService urlShortenerService;
@@ -116,12 +122,16 @@ public class SkillJobController {
         try {
             SkillJobExecutionDto exec = service.getExecution(execId);
             if (exec.resolvedOutputPath() == null || exec.resolvedOutputPath().isBlank()) {
-                return ResponseEntity.notFound().build();
+                log.warn("SkillJob download execId={} has no output path", execId);
+                return htmlResponse(HttpStatus.NOT_FOUND, DownloadErrorPage.reportNotGenerated());
             }
             Resource resource = service.downloadExecutionFile(exec, userId);
             return fileResponse(resource, exec.resolvedOutputPath());
         } catch (IllegalStateException e) {
-            return ResponseEntity.notFound().build();
+            // FileNotFound / FileNotOnDisk / FileNotFoundOrAccessDenied / JobAccessDenied / JobNotFound 等
+            // 统一回 "文件不存在" 友好页; 真实原因 (含路径) 只进日志, 不回浏览器
+            log.warn("SkillJob download execId={} failed: {}", execId, e.getMessage());
+            return htmlResponse(HttpStatus.NOT_FOUND, DownloadErrorPage.fileNotFound());
         }
     }
 
@@ -133,21 +143,25 @@ public class SkillJobController {
     public ResponseEntity<Resource> downloadByShortCode(@RequestParam(name = "shortCode") String shortCode) {
         String resolved = urlShortenerService.resolve(shortCode);
         if (resolved == null) {
-            return ResponseEntity.notFound().build();
+            log.warn("SkillJob download shortCode not found or expired: {}", shortCode);
+            return htmlResponse(HttpStatus.NOT_FOUND, DownloadErrorPage.linkInvalidOrExpired());
         }
         Long execId = parseExecId(resolved);
         if (execId == null) {
-            return ResponseEntity.badRequest().build();
+            log.warn("SkillJob download shortCode resolved to non-exec payload: {}", resolved);
+            return htmlResponse(HttpStatus.BAD_REQUEST, DownloadErrorPage.linkInvalid());
         }
         try {
             SkillJobExecutionDto exec = service.getExecution(execId);
             if (exec.resolvedOutputPath() == null || exec.resolvedOutputPath().isBlank()) {
-                return ResponseEntity.notFound().build();
+                log.warn("SkillJob download shortCode={} execId={} has no output path", shortCode, execId);
+                return htmlResponse(HttpStatus.NOT_FOUND, DownloadErrorPage.reportNotGenerated());
             }
             Resource resource = service.downloadExecutionFile(exec);
             return fileResponse(resource, exec.resolvedOutputPath());
         } catch (IllegalStateException e) {
-            return ResponseEntity.notFound().build();
+            log.warn("SkillJob download shortCode={} execId={} failed: {}", shortCode, execId, e.getMessage());
+            return htmlResponse(HttpStatus.NOT_FOUND, DownloadErrorPage.fileNotFound());
         }
     }
 
@@ -168,6 +182,18 @@ public class SkillJobController {
                 .contentType(contentType)
                 .header(HttpHeaders.CONTENT_DISPOSITION, disposition)
                 .body(resource);
+    }
+
+    /**
+     * 下载失败时回吐友好 HTML 提示页 (而非空 body 的 404/400, 浏览器只能显示 "无法访问").
+     * 文案由 {@link DownloadErrorPage} 统一生成, 这里按 {@code ResponseEntity<Resource>} 包成
+     * {@code ByteArrayResource} 以匹配本类下载方法的返回类型.
+     */
+    private static ResponseEntity<Resource> htmlResponse(HttpStatus status, String html) {
+        Resource body = new ByteArrayResource(html.getBytes(StandardCharsets.UTF_8));
+        return ResponseEntity.status(status)
+                .contentType(MediaType.TEXT_HTML)
+                .body(body);
     }
 
     /** 从 resolvedOutputPath 末段提取文件名。 */

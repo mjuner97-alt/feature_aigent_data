@@ -89,9 +89,9 @@ public class ScriptExecTool {
 
     private static final Logger log = LoggerFactory.getLogger(ScriptExecTool.class);
 
-    /** script_path 合法格式: 仅字母数字下划线斜线, 必须以 .py 结尾, 禁 .. 逃逸. */
+    /** script_path 合法格式: 仅字母数字下划线斜线连字符, 必须以 .py 结尾, 禁 .. 逃逸. */
     private static final Pattern SCRIPT_PATH_PATTERN =
-            Pattern.compile("^[a-zA-Z0-9_/]+\\.py$");
+            Pattern.compile("^[a-zA-Z0-9_/-]+\\.py$");
 
     /** 解析 datasources JSON 数组用的 ObjectMapper. */
     private static final com.fasterxml.jackson.databind.ObjectMapper JSON_MAPPER =
@@ -185,7 +185,7 @@ public class ScriptExecTool {
         }
         if (!SCRIPT_PATH_PATTERN.matcher(scriptPath).matches() || scriptPath.contains("..")) {
             return ToolResultBlock.text("script_exec 拒绝执行: script_path '" + scriptPath
-                    + "' 不合法 (仅字母数字下划线斜线, 必须 .py 结尾, 禁 .. 逃逸)");
+                    + "' 不合法 (仅字母数字下划线斜线连字符, 必须 .py 结尾, 禁 .. 逃逸)");
         }
 
         // 2. 校验 params (白名单 + 必填)

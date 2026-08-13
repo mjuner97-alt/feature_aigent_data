@@ -16,6 +16,7 @@
 package com.agentscopea2a.v2.skillManager.scheduler;
 
 import com.agentscopea2a.v2.config.HarnessRunnerProperties;
+import com.agentscopea2a.v2.config.TimeoutProfile;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.skillManager.entity.SkillJob;
 import com.agentscopea2a.v2.skillManager.entity.SkillJobExecution;
@@ -47,6 +48,8 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.*;
 
 /**
@@ -86,6 +89,18 @@ public class SkillJobScheduler implements WriteCallback {
 
     /** 退避时间倍数（指数退避） */
     private static final double RETRY_BACKOFF_MULTIPLIER = 2.0;
+
+    // ---- 各触发档案的超时数值配置（秒），集中在本类，不落在 HarnessRunnerProperties ----
+    /**
+     * 各触发类型(动作)的超时档案：block / 模型 / 工具（秒）。
+     * 未配置的档案（null / DEFAULT / MANUAL / EXTERNAL）→ block 用 execution-timeout-seconds、模型/工具用框架默认（0）。
+     * 要加新动作：往枚举加值 + 在此加一行。
+     */
+    private static final Map<TimeoutProfile, TimeoutValues> TIMEOUT_PROFILES =
+            Map.of(TimeoutProfile.METRIC, new TimeoutValues(600, 300, 600));
+
+    /** 单个档案的超时数值（block / 模型 / 工具，秒；0 = 用框架默认）。 */
+    private record TimeoutValues(long blockSeconds, long modelSeconds, long toolSeconds) {}
 
     // ==================== ====================
 
@@ -127,8 +142,14 @@ public class SkillJobScheduler implements WriteCallback {
         return t;
     });
 
-    /** 正在执行或排队中的 jobId 集合，用于去重，避免同一 Job 重复触发并行执行 */
-    private final ConcurrentHashMap<Long, Boolean> runningFlags = new ConcurrentHashMap<>();
+    /**
+     * 手动触发（MANUAL）lane：正在执行或排队中的 jobId，用于同 lane 去重。
+     * 与批量 lane 相互独立：批量运行中不阻塞手动触发；手动与手动之间保持串行（一次执行完成前不可再触发第二次）。
+     */
+    private final ConcurrentHashMap<Long, Boolean> directFlags = new ConcurrentHashMap<>();
+
+    /** 批量/外部触发（METRIC/EXTERNAL）lane：与手动 lane 独立，同 lane（批量-批量）之间互斥去重。 */
+    private final ConcurrentHashMap<Long, Boolean> batchFlags = new ConcurrentHashMap<>();
 
     /** per-Execution 的 MD 写入标记，WriteMarkdownTool 回调时置 true */
     private final ConcurrentHashMap<Long, Boolean> mdWrittenFlags = new ConcurrentHashMap<>();
@@ -150,8 +171,10 @@ public class SkillJobScheduler implements WriteCallback {
         this.workspace = Paths.get(properties.getWorkspace().getPath()).toAbsolutePath();
         this.writeMarkdownTool = writeMarkdownTool;
         this.htmlReportRenderer = htmlReportRenderer;
-        log.info("SkillJobScheduler: workspace={}, timeout={}s, maxParallel={}, queueCap={}, maxRetry={}, backoff={}ms*x{}",
+        TimeoutValues metric = TIMEOUT_PROFILES.get(TimeoutProfile.METRIC);
+        log.info("SkillJobScheduler: workspace={}, timeout={}s, metricBlockTimeout={}s, maxParallel={}, queueCap={}, maxRetry={}, backoff={}ms*x{}",
                 workspace, config.getExecutionTimeoutSeconds(),
+                metric != null ? metric.blockSeconds() : config.getExecutionTimeoutSeconds(),
                 MAX_PARALLEL, QUEUE_CAPACITY, MAX_RETRY_ATTEMPTS, RETRY_INITIAL_BACKOFF_MS, RETRY_BACKOFF_MULTIPLIER);
     }
 
@@ -174,25 +197,33 @@ public class SkillJobScheduler implements WriteCallback {
     /**
      * 提交 Job 到队列排队执行。调用后立即返回。
      *
-     * <p>同一 Job 若已有实例在排队或运行中，直接拒绝（返回 false），避免重复执行。
+     * <p>同 lane 内若已有该 Job 实例在排队或运行中，直接拒绝（返回 false），避免重复执行；
+     * 手动（MANUAL）与批量（METRIC/EXTERNAL）分属不同 lane，互不阻塞。
      * 队列满时抛 {@code JobQueueFull}。
      *
      * @param executionId 调用方预先落库的 PENDING 执行记录 id
-     * @return true=已入队；false=已有实例在跑，拒绝重复触发
+     * @param triggerType 触发类型：MANUAL / EXTERNAL / METRIC，决定互斥 lane
+     * @return true=已入队；false=同 lane 已有实例在跑，拒绝重复触发
      */
-    public boolean submit(Long jobId, Long executionId) {
-        if (runningFlags.putIfAbsent(jobId, Boolean.TRUE) != null) {
-            log.warn("Job {} already running/queued, skip duplicate submit", jobId);
+    public boolean submit(Long jobId, Long executionId, String triggerType) {
+        ConcurrentHashMap<Long, Boolean> lane = laneFlags(triggerType);
+        if (lane.putIfAbsent(jobId, Boolean.TRUE) != null) {
+            log.warn("Job {} already running/queued in {} lane, skip duplicate submit", jobId, triggerType);
             return false;
         }
         try {
-            executor.submit(() -> executeJobAttempt(jobId, executionId, 1, null));
+            executor.submit(() -> executeJobAttempt(jobId, executionId, 1, null, triggerType));
             return true;
         } catch (RejectedExecutionException e) {
-            runningFlags.remove(jobId);
+            lane.remove(jobId);
             log.error("Job {} submit rejected, queue full (cap={})", jobId, QUEUE_CAPACITY, e);
             throw new IllegalStateException("JobQueueFull: 执行队列已满，请稍后重试 (jobId=" + jobId + ")");
         }
+    }
+
+    /** 根据触发类型选择互斥 lane：MANUAL 独立；METRIC/EXTERNAL 归入批量 lane。 */
+    private ConcurrentHashMap<Long, Boolean> laneFlags(String triggerType) {
+        return "MANUAL".equals(triggerType) ? directFlags : batchFlags;
     }
 
     /**
@@ -204,14 +235,15 @@ public class SkillJobScheduler implements WriteCallback {
      * <p>首次失败原因通过 {@code firstError} 透传：放弃重试时若首因与末次错误不同，写回 execution，
      * 避免被末次错误覆盖导致根因丢失。
      *
-     * <p>无论终态如何（成功/跳过/放弃），只要本次未调度重试，{@code finally} 即清理
-     * {@code runningFlags}，确保 Job 可被再次触发——此前终态从不清理导致 Job 首次执行后永久卡死。
-     * 调度了重试则保留标记，等重试的终态尝试清理。
+     * <p>无论终态如何（成功/跳过/放弃），只要本次未调度重试，{@code finally} 即清理对应 lane 的
+     * 标志，确保该 lane 可被再次触发；调度了重试则保留标志（串行：同 lane 的第二次触发要等本次含
+     * 重试整体结束）。手动 lane 与批量 lane 相互独立，批量运行中不阻塞手动触发。
      *
      * @param attempt     当前尝试序号，从 1 开始
      * @param firstError  首次失败的 errorMsg（重试透传用），首次为 null
+     * @param triggerType 触发类型（MANUAL/EXTERNAL/METRIC），决定互斥 lane 与标志释放
      */
-    private void executeJobAttempt(Long jobId, Long executionId, int attempt, String firstError) {
+    private void executeJobAttempt(Long jobId, Long executionId, int attempt, String firstError, String triggerType) {
         boolean retryScheduled = false;
         try {
             SkillJobExecution execution = doExecuteJob(jobId, executionId, attempt);
@@ -228,7 +260,7 @@ public class SkillJobScheduler implements WriteCallback {
                 log.info("Job {} skipped ({})", jobId, execution.getErrorMsg());
                 return;
             }
-            // FAILED：捕获首次失败原因，判断是否重试
+            // FAILED：捕获首次失败原因，判断是否重试（手动/批量都保留重试）
             if (firstError == null && execution.getErrorMsg() != null) {
                 firstError = execution.getErrorMsg();
             }
@@ -236,7 +268,7 @@ public class SkillJobScheduler implements WriteCallback {
                 long backoffMs = calculateBackoff(attempt);
                 log.warn("Job {} attempt {}/{} failed, retry in {}ms (off worker thread)",
                         jobId, attempt, MAX_RETRY_ATTEMPTS, backoffMs);
-                scheduleRetry(jobId, executionId, attempt + 1, firstError, backoffMs);
+                scheduleRetry(jobId, executionId, attempt + 1, firstError, backoffMs, triggerType);
                 retryScheduled = true;
             } else {
                 log.error("Job {} failed after {} attempts, giving up", jobId, attempt);
@@ -248,41 +280,44 @@ public class SkillJobScheduler implements WriteCallback {
             if (attempt <= MAX_RETRY_ATTEMPTS) {
                 long backoffMs = calculateBackoff(attempt);
                 log.warn("Job {} retrying in {}ms (off worker thread)", jobId, backoffMs);
-                scheduleRetry(jobId, executionId, attempt + 1, firstError, backoffMs);
+                scheduleRetry(jobId, executionId, attempt + 1, firstError, backoffMs, triggerType);
                 retryScheduled = true;
             } else {
                 log.error("Job {} failed after {} attempts, giving up", jobId, attempt);
             }
         } finally {
-            // 仅在本次未调度重试时清理 runningFlags；调度了重试则保留至重试终态清理
+            // 仅在本次未调度重试时释放对应 lane 的标志；调度了重试则保留至重试终态释放。
+            // 手动与批量各占独立 lane：批量运行/重试中不阻塞手动触发；同 lane（如手动-手动）保持串行。
             if (!retryScheduled) {
-                runningFlags.remove(jobId);
+                laneFlags(triggerType).remove(jobId);
             }
         }
     }
 
     /**
      * 延迟后将重试尝试重新入队到 {@link #executor}。退避等待在 {@link #retryScheduler} 上完成，
-     * 不占用 worker 线程。调度器不可用时直接放弃并清理 runningFlags。
+     * 不占用 worker 线程。调度器不可用时放弃并释放对应 lane 标志。
      */
-    private void scheduleRetry(Long jobId, Long executionId, int nextAttempt, String firstError, long backoffMs) {
+    private void scheduleRetry(Long jobId, Long executionId, int nextAttempt, String firstError, long backoffMs, String triggerType) {
         try {
-            retryScheduler.schedule(() -> resubmitRetry(jobId, executionId, nextAttempt, firstError),
+            retryScheduler.schedule(() -> resubmitRetry(jobId, executionId, nextAttempt, firstError, triggerType),
                     backoffMs, TimeUnit.MILLISECONDS);
         } catch (RejectedExecutionException e) {
+            // 重试调度失败：执行记录维持 FAILED，释放对应 lane 标志以便该 lane 后续可重新触发
             log.error("Job {} retry scheduler unavailable, giving up", jobId, e);
-            runningFlags.remove(jobId);
+            laneFlags(triggerType).remove(jobId);
             markExecutionFailed(executionId, "重试调度失败（调度器已关闭）", firstError);
         }
     }
 
-    /** 把重试尝试提交回主线程池（受 MAX_PARALLEL 并发约束）；队列满则放弃并清理。 */
-    private void resubmitRetry(Long jobId, Long executionId, int attempt, String firstError) {
+    /** 把重试尝试提交回主线程池（受 MAX_PARALLEL 并发约束）；队列满则放弃并释放对应 lane 标志。 */
+    private void resubmitRetry(Long jobId, Long executionId, int attempt, String firstError, String triggerType) {
         try {
-            executor.submit(() -> executeJobAttempt(jobId, executionId, attempt, firstError));
+            executor.submit(() -> executeJobAttempt(jobId, executionId, attempt, firstError, triggerType));
         } catch (RejectedExecutionException e) {
+            // 重试入队失败：本次重试放弃（执行记录维持 FAILED），释放对应 lane 标志
             log.error("Job {} retry resubmit rejected (queue full), giving up", jobId, e);
-            runningFlags.remove(jobId);
+            laneFlags(triggerType).remove(jobId);
             markExecutionFailed(executionId, "重试重新入队失败（执行队列已满）", firstError);
         }
     }
@@ -363,8 +398,13 @@ public class SkillJobScheduler implements WriteCallback {
                 return markSkipped(execution, "JobNotConfigured: 任务尚未配置完整 (skillId/提问模板缺失)");
             }
 
-            // 会话 ID 提前生成
-            String conversationId = "job-" + jobId + "-" + System.currentTimeMillis();
+            // 会话 ID：首次 attempt 生成并随 RUNNING 落库，重试从 execution 记录读回同一会话，
+            // 让模型带着已恢复的历史继续，避免每次重试都重新查数
+            String conversationId = execution.getConversationId();
+            if (conversationId == null || conversationId.isBlank()) {
+                conversationId = "job-" + jobId + "-" + UUID.randomUUID();
+                execution.setConversationId(conversationId);
+            }
 
             // 执行前校验 createdBy 仍拥有该 Skill 的使用权限：Skill 可能已被删除/取消引用/禁用/撤回发布
             if (!skillAvailableToUser(job.getSkillId(), userId)) {
@@ -377,6 +417,12 @@ public class SkillJobScheduler implements WriteCallback {
             String skillName = resolveSkillName(job.getSkillId());
             String resolvedOutputPath = resolveOutputPath(job.getOutputPath());
             String question = buildQuestion(job.getQuestionTemplate(), skillName);
+            // 重试：复用同一会话续接。若上次历史已恢复则直接续做，不重复查数；
+            // 若历史丢失（如超时中断未落库）则消息里带上原提问兜底，避免模型在空上下文上瞎续。
+            String prompt = attempt > 1
+                    ? "你上次执行的任务被中断。任务要求：" + question
+                            + " 请基于已有上下文直接继续完成，不要重复已完成的数据查询，继续完成并输出最终分析报告；如果上文没有执行历史，则按任务要求重新开始。"
+                    : question;
 
             // 3. 标记为 RUNNING（复用同一条 execution 记录，重试不新建记录）
             execution.setStatus("RUNNING");
@@ -398,15 +444,31 @@ public class SkillJobScheduler implements WriteCallback {
             try {
                 Msg userMsg = Msg.builder()
                         .role(MsgRole.USER)
-                        .content(TextBlock.builder().text(question).build())
+                        .content(TextBlock.builder().text(prompt).build())
                         .build();
-                // 收集所有事件，用于提取AI最终文本结果
+//                // 按触发类型解析超时档案：批量(METRIC)默认放大，手动/外部保持默认
+//                TimeoutProfile profile = TimeoutProfile.fromTriggerType(execution.getTriggerType());
+//                TimeoutValues tv = profile == null ? null : TIMEOUT_PROFILES.get(profile);
+//                long blockSeconds = tv != null ? tv.blockSeconds() : config.getExecutionTimeoutSeconds();
+//                long modelSeconds = tv != null ? tv.modelSeconds() : 0;
+//                long toolSeconds = tv != null ? tv.toolSeconds() : 0;
+                // 收集所有事件，用于提取AI最终文本结果；批量触发同时放大模型/工具调用超时
                 List<AgentEvent> events = runner.streamEvents(List.of(userMsg), ctx)
                         .collectList()
-                        .block(Duration.ofSeconds(config.getExecutionTimeoutSeconds()));
+                        .block(Duration.ofSeconds(60 * 10));
 
                 // 提取AI最终文本结果
                 String agentResult = extractFinalText(events);
+
+                // 校验模型输出：误产出 tool_call 或以 think 结尾（思考未转正文）判失败，不写入半成品报告
+                if (agentResult != null && !agentResult.isBlank() && !isValidReportContent(agentResult)) {
+                    log.warn("Job {} agent output invalid (tool_call/think ending), mark FAILED", jobId);
+                    execution.setStatus("FAILED");
+                    execution.setErrorMsg("模型输出异常：内容为 tool_call 或以 think 结尾，未产出有效报告正文");
+                    execution.setCompletedAt(LocalDateTime.now());
+                    mapper.updateExecutionStatus(execution);
+                    return execution;
+                }
 
                 // 渲染为自包含 HTML（表格样式 + echarts 内联）后写入，不走模型tool_call
                 if (agentResult != null && !agentResult.isBlank() && resolvedOutputPath != null && !resolvedOutputPath.isBlank()) {
@@ -449,7 +511,7 @@ public class SkillJobScheduler implements WriteCallback {
             mapper.updateExecutionStatus(execution);
 
             // 任务执行成功：触发完成通知（异步 best-effort，不阻塞 worker、不影响 job 结果）
-            // 是否发送由所属依赖指标的 notify_* 配置决定，NotificationService 内部自行判断
+            // 门控由 NotificationService 内部按触发类型判断：MANUAL 总是通知；METRIC/EXTERNAL 须指标 notify_enabled=TRUE
             // actualFilePath 为相对路径({userId}/{mdFileName})，通知 payload.filePath 需绝对路径供发送方读文件，拼 baseDir
             if (verified) {
                 String absFilePath = Paths.get(baseDir, actualFilePath).normalize().toAbsolutePath().toString();
@@ -606,5 +668,33 @@ public class SkillJobScheduler implements WriteCallback {
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * 校验 AI 输出是否为有效报告正文。
+     * 模型若误产出 tool_call（仍在尝试调用工具而非写报告）或以 think 结尾
+     * （思考块未转化为正文，常见于推理模型只输出思考就停止），视为输出异常。
+     * 调用方据此判 FAILED，避免把无效内容当成功报告落盘。
+     *
+     * <p>仅检测 tool_call 标记和 think 结尾两类明确异常；空白结果由调用方原有逻辑处理。
+     */
+    private boolean isValidReportContent(String agentResult) {
+        if (agentResult == null) return false;
+        String lower = agentResult.trim().toLowerCase();
+        // tool_call：模型仍在尝试调用工具（<tool_call> 标签或 JSON tool_calls 字段）
+        if (lower.contains("<tool_call") || lower.contains("</tool_call")
+                || lower.contains("\"tool_calls\"") || lower.contains("\"tool_call\"")) {
+            return false;
+        }
+        // think 异常：以 </think> 结尾（思考后无正文）或 <think> 未闭合（思考中途截断未转正文）
+        int lastOpen = lower.lastIndexOf("<think>");
+        int lastClose = lower.lastIndexOf("</think>");
+        if (lastClose >= 0 && lastClose == lower.length() - "</think>".length()) {
+            return false;
+        }
+        if (lastOpen >= 0 && lastOpen > lastClose) {
+            return false;
+        }
+        return true;
     }
 }

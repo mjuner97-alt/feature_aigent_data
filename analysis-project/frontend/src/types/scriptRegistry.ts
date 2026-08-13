@@ -5,8 +5,8 @@ export interface ScriptRegistryEntry {
   scriptId: string;
   name: string;
   description: string;
-  /** 脚本相对路径, 相对 /app/workspace/scripts/ */
-  scriptPath: string;
+  /** 脚本相对路径 (后端按 userId+scriptId+.py 拼接, 前端不展示) */
+  scriptPath?: string;
   /** JSON 数组字符串, 如 ["gauss"] 或 ["gauss","mysql"] */
   datasources: string;
   /** 参数定义 JSON 字符串 */
@@ -25,7 +25,7 @@ export interface ScriptRegistryListItem {
   scriptId: string;
   name: string;
   description: string;
-  scriptPath: string;
+  scriptPath?: string;
   datasources: string;
   timeoutSeconds: number;
   enabled: number;
@@ -39,7 +39,6 @@ export interface ScriptRegistryInput {
   scriptId: string;
   name: string;
   description: string;
-  scriptPath: string;
   datasources: string;
   paramsSchema: string;
   timeoutSeconds: number;
