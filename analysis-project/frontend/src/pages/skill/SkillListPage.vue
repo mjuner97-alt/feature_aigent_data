@@ -23,6 +23,7 @@ const props = withDefaults(defineProps<{
 const items = ref<SkillListItem[]>([]);
 const sort = ref<'likes' | 'updated' | 'name'>('likes');
 const keyword = ref('');
+const owner = ref('');
 const dimension = ref('');
 const dimensions = [
   { value: 'PERSONAL', label: '个人' },
@@ -76,6 +77,7 @@ async function load(reset = false) {
       view: props.view, sort: sort.value,
       keyword: keyword.value || undefined,
       dimension: dimension.value || undefined,
+      owner: owner.value || undefined,
       limit: size,
       offset,
     });
@@ -105,6 +107,7 @@ function openCreate() {
   <h2>{{ title }}</h2>
   <div class="bar">
     <input v-model="keyword" placeholder="搜索 skill" @keyup.enter="load(true)" />
+    <input v-if="view === 'all'" v-model="owner" placeholder="按创建人(userId)筛选" @keyup.enter="load(true)" />
     <select v-model="dimension">
       <option value="">全部维度</option>
       <option v-for="d in dimensions" :key="d.value" :value="d.value">{{ d.label }}</option>

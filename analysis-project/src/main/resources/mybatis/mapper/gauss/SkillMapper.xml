@@ -246,6 +246,9 @@
                 AND (s.name LIKE CONCAT('%', #{keyword}, '%')
                   OR s.description LIKE CONCAT('%', #{keyword}, '%'))
             </if>
+            <if test="owner != null and owner != ''">
+                AND s.owner_user_id = #{owner}
+            </if>
         </where>
         <choose>
             <when test="sort == 'updated'">

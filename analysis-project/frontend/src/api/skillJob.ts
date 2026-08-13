@@ -94,10 +94,32 @@ export async function getExecution(execId: number): Promise<SkillJobExecution> {
   return res.json();
 }
 
+/**
+ * 从后端 DownloadErrorPage 生成的 HTML 错误页提取友好提示（.title/.desc）。
+ * 前端 fetch 下载失败时后端回的是整张 HTML 错误页（供通知邮件里的浏览器直开用），
+ * 这里解析出来作为弹框文案；拿不到就回退 null，由调用方用 HTTP 状态兜底。
+ */
+async function downloadErrorText(res: Response): Promise<string | null> {
+  try {
+    const html = await res.text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const title = doc.querySelector('.title')?.textContent?.trim();
+    const desc = doc.querySelector('.desc')?.textContent?.trim();
+    if (title || desc) return [title, desc].filter(Boolean).join('：');
+  } catch { /* ignore */ }
+  return null;
+}
+
+/** 组装下载/打开失败的错误对象：优先用 DownloadErrorPage 的友好提示，否则回退 HTTP 状态 */
+async function downloadError(res: Response, fallback: string): Promise<Error> {
+  const friendly = await downloadErrorText(res);
+  return new Error(friendly ? `${fallback}：${friendly}` : `${fallback}(HTTP ${res.status})`);
+}
+
 /** 下载执行记录生成的报告文件（.html；查看渲染用 viewExecutionFile） */
 export async function downloadExecutionFile(execId: number): Promise<void> {
   const res = await fetch(`${BASE}/executions/${execId}/download`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(`下载失败(HTTP ${res.status})`);
+  if (!res.ok) throw await downloadError(res, '下载失败');
   const blob = await res.blob();
   let filename = `execution-${execId}.md`;
   const cd = res.headers.get('Content-Disposition') || '';
@@ -125,7 +147,7 @@ export async function downloadExecutionFile(execId: number): Promise<void> {
  */
 export async function viewExecutionFile(execId: number): Promise<void> {
   const res = await fetch(`${BASE}/executions/${execId}/download`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(`打开失败(HTTP ${res.status})`);
+  if (!res.ok) throw await downloadError(res, '打开失败');
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   window.open(url, '_blank');
