@@ -107,7 +107,7 @@ function openCreate() {
   <h2>{{ title }}</h2>
   <div class="bar">
     <input v-model="keyword" placeholder="搜索 skill" @keyup.enter="load(true)" />
-    <input v-if="view === 'all'" v-model="owner" placeholder="按创建人(userId)筛选" @keyup.enter="load(true)" />
+    <input v-if="view === 'all'" v-model="owner" placeholder="按创建人筛选..." @keyup.enter="load(true)" />
     <select v-model="dimension">
       <option value="">全部维度</option>
       <option v-for="d in dimensions" :key="d.value" :value="d.value">{{ d.label }}</option>

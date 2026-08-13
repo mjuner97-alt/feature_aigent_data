@@ -112,9 +112,8 @@ public class SqlRegistryManageService {
 //            throw new IllegalArgumentException(validationError);
 //        }
 
-        // 校验 sql_id 唯一性
-        SqlRegistryEntry existing = mapper.selectBySqlId(entry.getSqlId());
-        if (existing != null) {
+        // 校验 sql_id 唯一性 (含禁用记录, 防止注册乱象下重复)
+        if (mapper.countBySqlId(entry.getSqlId()) > 0) {
             throw new IllegalArgumentException("sql_id '" + entry.getSqlId() + "' 已存在");
         }
 
@@ -141,10 +140,9 @@ public class SqlRegistryManageService {
 //            }
 //        }
 
-        // 如果 sql_id 有变更, 检查唯一性
+        // 如果 sql_id 有变更, 检查唯一性 (含禁用记录)
         if (patch.getSqlId() != null && !patch.getSqlId().equals(existing.getSqlId())) {
-            SqlRegistryEntry bySqlId = mapper.selectBySqlId(patch.getSqlId());
-            if (bySqlId != null && !bySqlId.getId().equals(id)) {
+            if (mapper.countBySqlId(patch.getSqlId()) > 0) {
                 throw new IllegalArgumentException("sql_id '" + patch.getSqlId() + "' 已存在");
             }
         }
@@ -157,6 +155,8 @@ public class SqlRegistryManageService {
         if (patch.getSqlTemplate() != null) existing.setSqlTemplate(patch.getSqlTemplate());
         if (patch.getParamsSchema() != null) existing.setParamsSchema(patch.getParamsSchema());
         if (patch.getEnabled() != null) existing.setEnabled(patch.getEnabled());
+        // 创建人: 管理端统一修正用(临时放开, 后续可再关闭)。空串视为不改。
+        if (patch.getCreatedBy() != null && !patch.getCreatedBy().isBlank()) existing.setCreatedBy(patch.getCreatedBy());
 
         mapper.update(existing);
         return existing;
