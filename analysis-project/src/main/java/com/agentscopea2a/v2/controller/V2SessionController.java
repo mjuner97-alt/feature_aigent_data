@@ -19,15 +19,14 @@ import com.agentscopea2a.v2.config.HarnessRunnerProperties;
 import com.agentscopea2a.v2.dto.SessionStateResponse;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.util.PermissionModeHelper;
-import io.agentscope.core.ReActAgent;
 import io.agentscope.core.interruption.InterruptControl;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.permission.PermissionContextState;
 import io.agentscope.core.state.AgentState;
+import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.core.state.PlanModeContextState;
 import io.agentscope.core.state.Task;
 import io.agentscope.core.state.TaskContextState;
-import io.agentscope.harness.agent.HarnessAgent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -109,9 +108,10 @@ public class V2SessionController {
      * the frontend's Plan/Todo/State panels. Polled every 2s by the React UI;
      * see {@code docs/Plan-Machie/plan-notebook-frontend-design.md}.
      *
-     * <p>Read-only - {@link ReActAgent#getAgentState(String, String)} loads from
-     * the stateCache (in-memory) or {@code stateStore.get(...)} (MySQL), creating
-     * a fresh empty state in memory only if neither exists (no persistence side-effect).
+     * <p>Read-only - 直接走共享 {@link AgentStateStore} (MySQL),不调 {@code runner.getAgent()}
+     * 避免 per-poll buildAgent() 全套装配 (~240ms + DDL 检查)。stateStore.get 返回
+     * Optional.empty 时返回 exists=false (旧路径 getAgentState 永不返回 null,旧 exists=true
+     * 对不存在 session 是不准确的)。
      */
     @GetMapping("/state")
     public ResponseEntity<SessionStateResponse> getState(
@@ -124,8 +124,9 @@ public class V2SessionController {
                     "HarnessA2aRunnerV2 bean not available");
         }
 
-        HarnessAgent agent = runner.getAgent();
-        AgentState state = agent.getDelegate().getAgentState(userId, conversationId);
+        AgentStateStore stateStore = runner.getStateStore();
+        AgentState state = stateStore.get(userId, conversationId, "agent_state", AgentState.class)
+                .orElse(null);
 
         if (state == null) {
             return ResponseEntity.ok(SessionStateResponse.builder()

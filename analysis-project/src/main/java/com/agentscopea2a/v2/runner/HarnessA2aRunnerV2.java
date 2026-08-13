@@ -32,6 +32,7 @@ import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.hook.Hook;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.middleware.MiddlewareBase;
+import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.extensions.mysql.state.MysqlAgentStateStore;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
 import com.agentscopea2a.v2.state.SanitizingAgentStateStore;
@@ -84,6 +85,12 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
     private final SkillMapper skillMapper;
     /** skill 附件文件磁盘根目录(${skill.file.base-dir}),传给 DatabaseSkillRepository 用于把 DB 中的相对 storage_path 解析成绝对路径。 */
     private final String skillFileBaseDir;
+    /**
+     * 共享 stateStore,供 read-only 状态查询端点使用 (如 V2SessionController.getState)。
+     * 避免每次轮询都走 buildAgent() 的全套装配 (~240ms + DDL 检查)。
+     * MysqlAgentStateStore 全 final 字段 + DataSource(HikariCP 线程安全),可安全共享。
+     */
+    private final AgentStateStore sharedStateStore;
 
     public HarnessA2aRunnerV2(
             HarnessRunnerProperties runnerProperties,
@@ -120,6 +127,7 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
         this.mysqlMemoryStoreProvider = mysqlMemoryStoreProvider;
         this.skillMapper = skillMapper;
         this.skillFileBaseDir = skillFileBaseDir;
+        this.sharedStateStore = new SanitizingAgentStateStore(new MysqlAgentStateStore(dataSource, true));
 
         log.info("HarnessA2aRunnerV2 initialized: ready to create agents per request");
     }
@@ -205,6 +213,24 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
     }
 
     /**
+     * 返回共享的 {@link AgentStateStore},供 read-only 状态查询端点使用。
+     *
+     * <p>对于只需读取 AgentState 的端点 (如 V2SessionController.getState 每 2s 轮询),
+     * 用此方法而非 {@link #getAgent()}。避免每次轮询触发 buildAgent() 的全套装配
+     * (toolkit wiring + subagent 注册 + skill repo init,~240ms/次 + DDL 检查)。
+     *
+     * <p>调用方直接 {@code stateStore.get(userId, sessionId, "agent_state", AgentState.class)}
+     * 即可,语义等同 {@code ReActAgent.getAgentState(userId, sessionId)} 但跳过 agent 装配
+     * 和 in-memory stateCache (stateCache 对一次性 agent 无意义,因 agent 用完即丢)。
+     *
+     * <p>差异:对不存在的 session,getAgentState 返回 fresh empty state (非 null),
+     * stateStore.get 返回 Optional.empty。调用方需自行处理 null (返回 exists=false)。
+     */
+    public AgentStateStore getStateStore() {
+        return sharedStateStore;
+    }
+
+    /**
      * 根据运行时上下文构建新的 HarnessAgent。
      *
      * <p>关键改动：
@@ -238,7 +264,7 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
                 .skillRepository(new DatabaseSkillRepository(skillMapper, userId != null ? String.valueOf(userId) : null, skillFileBaseDir))
                 .toolExecutionConfig(AgentExecutionConfig.TOOL_DEFAULTS)
                 .modelExecutionConfig(AgentExecutionConfig.MODEL_DEFAULTS)
-                .stateStore(new SanitizingAgentStateStore(new MysqlAgentStateStore(dataSource, true)))
+                .stateStore(sharedStateStore)
                 .memory(MemoryConfig.builder()
                         .model(smallModel)
                         // 临时测速:consolidationMinGap=365d 让 MemoryMaintenanceMiddleware
