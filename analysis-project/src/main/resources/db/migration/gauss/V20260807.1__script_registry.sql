@@ -77,3 +77,63 @@ ON DUPLICATE KEY UPDATE
     datasources     = VALUES(datasources),
     params_schema   = VALUES(params_schema),
     timeout_seconds = VALUES(timeout_seconds);
+
+
+
+-- ----------------------------------------------------------------------------
+-- 示例数据: ClickHouse 单库查询 (datasources=["clickhouse"])
+-- 按 event_type 分组统计 trace_event 事件数/去重会话/平均最大耗时
+-- ----------------------------------------------------------------------------
+INSERT INTO script_registry (script_id, name, description, script_path, datasources, params_schema, timeout_seconds, created_by) VALUES
+(
+  'q_clickhouse_demo_trace_events',
+  'ClickHouse trace_event 事件流分析',
+  '按 event_type 分组统计事件数/去重会话/去重 trace/平均最大耗时, 支持可选 source 过滤. 时间窗口走 event_date 分区裁剪. datasources=["clickhouse"], ScriptExecTool 注入 CLICKHOUSE_DB_URL.',
+  '555153205/q_clickhouse_demo_trace_events.py',
+  '["clickhouse"]',
+  '[
+    {"name":"start_date","type":"string","required":true,"description":"开始日期, 如 2026-07-01"},
+    {"name":"end_date","type":"string","required":true,"description":"结束日期, 如 2026-07-31"},
+    {"name":"source","type":"string","required":false,"description":"可选, 按 source 字段过滤"}
+  ]',
+  60,
+  'flyway'
+)
+ON DUPLICATE KEY UPDATE
+    name            = VALUES(name),
+    description     = VALUES(description),
+    script_path     = VALUES(script_path),
+    datasources     = VALUES(datasources),
+    params_schema   = VALUES(params_schema),
+    timeout_seconds = VALUES(timeout_seconds);
+
+
+
+-- ----------------------------------------------------------------------------
+-- 示例数据: GaussDB + ClickHouse 跨库同期对账 (datasources=["gauss","clickhouse"])
+-- trace_event 表无 dept/project_no 业务外键, 改同期对账: GaussDB 按 dept+version
+-- 查项目打分情况, ClickHouse 按 event_date 时间窗口查 trace 事件统计, pandas 并排输出
+-- ----------------------------------------------------------------------------
+INSERT INTO script_registry (script_id, name, description, script_path, datasources, params_schema, timeout_seconds, created_by) VALUES
+(
+  'q_join_gauss_clickhouse_demo',
+  'GaussDB 项目画像 + ClickHouse trace_event 同期对账',
+  'trace_event 表无 dept/project_no 业务外键, 改同期对账: GaussDB 按 dept+version 查项目打分情况, ClickHouse 按 event_date 时间窗口查 trace 事件统计, pandas 并排输出. datasources=["gauss","clickhouse"].',
+  '555153205/q_join_gauss_clickhouse_demo.py',
+  '["gauss","clickhouse"]',
+  '[
+    {"name":"dept","type":"string","required":true,"description":"开发部门, 如 杭州开发二部"},
+    {"name":"version","type":"string","required":true,"description":"版本计划, 如 2026年7月份版本"},
+    {"name":"start_date","type":"string","required":true,"description":"trace_event 查询开始日期, 与 version 月份对齐"},
+    {"name":"end_date","type":"string","required":true,"description":"trace_event 查询结束日期, 与 version 月份对齐"}
+  ]',
+  60,
+  'flyway'
+)
+ON DUPLICATE KEY UPDATE
+    name            = VALUES(name),
+    description     = VALUES(description),
+    script_path     = VALUES(script_path),
+    datasources     = VALUES(datasources),
+    params_schema   = VALUES(params_schema),
+    timeout_seconds = VALUES(timeout_seconds);
