@@ -69,10 +69,15 @@ const DARK = {
 
 const theme = computed(() => props.theme === 'dark' ? DARK : LIGHT);
 
-// 完整 HTML 文档检测:以 <!doctype html> 或 <html> 开头视为自包含文档,走 iframe 隔离渲染
+// 完整 HTML 文档检测:先剥掉 BOM / 前导空白 / 注释 / <?xml?> 声明,再判断起点。
+// 兼容"生成工具在 <!DOCTYPE html> 前塞了注释或 xml 声明"这类内容,避免漏检掉进 v-html 被拆碎。
 const isFullHtmlDoc = computed(() => {
-  const head = props.text.trimStart().slice(0, 100).toLowerCase();
-  return head.startsWith('<!doctype html') || head.startsWith('<html');
+  const stripped = props.text
+    .replace(/^(?:\s|<!--[\s\S]*?-->|<\?[\s\S]*?\?>)*/, '')
+    .trimStart()
+    .slice(0, 200)
+    .toLowerCase();
+  return stripped.startsWith('<!doctype') || stripped.startsWith('<html');
 });
 
 // Markdown / HTML 片段 -> HTML(保留 HTML 标签,仅转义纯文本)
@@ -188,8 +193,9 @@ function escHtml(s: string): string {
 
 // 转义纯文本,但保留 HTML 标签/注释/doctype/CDATA 原样透传,
 // 使 skill 内容里嵌入的 HTML 能正常渲染而不是显示成文字
+// (i 标志让 <!doctype> 大小写都保留,兼容 <!DOCTYPE html> 与 <!doctype html>)
 function escapePreservingHtml(text: string): string {
-  const tagRe = /(<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<!DOCTYPE[^>]*>|<\/?[a-zA-Z][^>]*>)/g;
+  const tagRe = /(<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<!doctype[^>]*>|<\/?[a-zA-Z][^>]*>)/gi;
   let out = '';
   let last = 0;
   let m: RegExpExecArray | null;

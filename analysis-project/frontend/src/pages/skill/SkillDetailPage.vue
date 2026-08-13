@@ -341,7 +341,7 @@ watch(() => route.params.id, () => {
 
 <template>
   <div v-if="skill">
-    <h2 class="skill-title">{{ skill.name }} <span class="cnt">👍 {{ like.likeCount }}</span></h2>
+    <h2 class="skill-title">{{ skill.name }} <span class="cnt"><svg class="thumb-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="currentColor" style="vertical-align:-2px"><path d="M2 21h4V9H2v12zm20-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L13.17 1 7.59 6.59C7.22 6.95 7 7.45 7 8v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z"/></svg> {{ like.likeCount }}</span></h2>
     <div class="meta">{{ skill.ownerUserId }} · 状态 {{ skill.status }}</div>
     <!-- 维度展示区(只读,维度切换请走编辑表单) -->
     <div class="dimension-bar">
@@ -369,7 +369,7 @@ watch(() => route.params.id, () => {
     <div v-if="deleteError" class="del-error">{{ deleteError }}</div>
     <div class="actions">
       <button class="like" :class="{ on: like.liked }" @click="toggleLike">
-        <svg class="thumb-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+        <svg class="thumb-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="currentColor">
           <path d="M2 21h4V9H2v12zm20-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L13.17 1 7.59 6.59C7.22 6.95 7 7.45 7 8v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z"/>
         </svg>
         <span>{{ like.liked ? '已点赞' : '点赞' }}</span>
