@@ -56,13 +56,18 @@ public class ScriptRegistryManageService {
 
     @Transactional("gaussTransactionManager")
     public ScriptRegistryEntry create(ScriptRegistryEntry entry, String userId) {
-        // 校验 script_id 唯一性
+        // 校验 script_id 非空 (拼路径依赖) + 唯一性
+        if (entry.getScriptId() == null || entry.getScriptId().isBlank()) {
+            throw new IllegalArgumentException("script_id 不能为空");
+        }
         ScriptRegistryEntry existing = mapper.selectByScriptId(entry.getScriptId());
         if (existing != null) {
             throw new IllegalArgumentException("script_id '" + entry.getScriptId() + "' 已存在");
         }
 
         entry.setCreatedBy(userId);
+        // 脚本路径由后端按 userId + scriptId + ".py" 拼接, 不接受前端传入
+        entry.setScriptPath(buildScriptPath(userId, entry.getScriptId()));
         if (entry.getEnabled() == null) {
             entry.setEnabled(1);
         }
@@ -94,11 +99,13 @@ public class ScriptRegistryManageService {
             }
         }
 
-        // 选择性更新: 非 null 字段覆盖
-        if (patch.getScriptId() != null) existing.setScriptId(patch.getScriptId());
+        // 选择性更新: 非 null 字段覆盖 (script_path 不接受前端传入, 由 createdBy + scriptId 派生)
+        if (patch.getScriptId() != null) {
+            existing.setScriptId(patch.getScriptId());
+            existing.setScriptPath(buildScriptPath(existing.getCreatedBy(), existing.getScriptId()));
+        }
         if (patch.getName() != null) existing.setName(patch.getName());
         if (patch.getDescription() != null) existing.setDescription(patch.getDescription());
-        if (patch.getScriptPath() != null) existing.setScriptPath(patch.getScriptPath());
         if (patch.getDatasources() != null) existing.setDatasources(patch.getDatasources());
         if (patch.getParamsSchema() != null) existing.setParamsSchema(patch.getParamsSchema());
         if (patch.getTimeoutSeconds() != null) existing.setTimeoutSeconds(patch.getTimeoutSeconds());
@@ -115,5 +122,10 @@ public class ScriptRegistryManageService {
             throw new IllegalArgumentException("记录不存在: id=" + id);
         }
         mapper.deleteById(id);
+    }
+
+    /** 脚本相对路径 = userId + scriptId + ".py" (相对 workspace/scripts/, 由后端拼接, 前端不参与). */
+    private String buildScriptPath(String userId, String scriptId) {
+        return userId + scriptId + ".py";
     }
 }

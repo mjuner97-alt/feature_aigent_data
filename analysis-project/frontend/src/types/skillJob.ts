@@ -14,6 +14,8 @@ export interface SkillJob {
   /** 依赖指标名称（join 展示） */
   metricName?: string;
   createdBy: string;
+  /** 创建人姓名(后端从 developer_pl_person_info 解析,缺失为 undefined,前端回退 userId) */
+  createdByName?: string;
   createdAt: string;
   updatedAt: string;
 }

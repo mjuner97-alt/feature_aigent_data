@@ -33,15 +33,21 @@ public record SkillJobDto(
         String metricCode,
         String metricName,
         String createdBy,
+        String createdByName,
         LocalDateTime createdAt,
         LocalDateTime updatedAt
 ) {
     public static SkillJobDto of(SkillJob job) {
+        return of(job, null);
+    }
+
+    /** 列表场景批量补全创建人姓名(从 developer_pl_person_info 解析,缺失为 null,前端回退 userId)。 */
+    public static SkillJobDto of(SkillJob job, String createdByName) {
         return new SkillJobDto(
                 job.getId(), job.getName(), job.getSkillId(), job.getSkillName(),
                 job.getQuestionTemplate(),
                 job.getEnabled(),
                 job.getMetricId(), job.getMetricCode(), job.getMetricName(),
-                job.getCreatedBy(), job.getCreatedAt(), job.getUpdatedAt());
+                job.getCreatedBy(), createdByName, job.getCreatedAt(), job.getUpdatedAt());
     }
 }

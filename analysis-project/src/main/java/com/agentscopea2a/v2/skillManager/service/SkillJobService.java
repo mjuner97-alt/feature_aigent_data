@@ -36,6 +36,10 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * SkillJob 业务逻辑层。
@@ -52,16 +56,22 @@ public class SkillJobService {
     private final SkillJobMapper mapper;
     private final SkillJobScheduler scheduler;
     private final SkillDependencyMetricMapper metricMapper;
+    private final MockOrgService mockOrgService;
 
     /** skill 文件磁盘根目录(${skill.file.base-dir})，与 SkillFileService/WriteMarkdownTool 一致，不写死。 */
     @Value("${skill.file.base-dir:/data/skill-files}")
     private String baseDir;
 
+    /** skill 文件镜像根目录(${skill.file.mirror-dir})，报告主文件被删后下载回退读镜像；可为空则跳过。 */
+    @Value("${skill.file.mirror-dir:/data/skill-files-mirror}")
+    private String mirrorDir;
+
     public SkillJobService(SkillJobMapper mapper, SkillJobScheduler scheduler,
-                           SkillDependencyMetricMapper metricMapper) {
+                           SkillDependencyMetricMapper metricMapper, MockOrgService mockOrgService) {
         this.mapper = mapper;
         this.scheduler = scheduler;
         this.metricMapper = metricMapper;
+        this.mockOrgService = mockOrgService;
     }
 
     // ==================== CRUD ====================
@@ -107,7 +117,16 @@ public class SkillJobService {
 
     /** 列表查询 */
     public List<SkillJobDto> list(Boolean enabled, String keyword, String createdBy) {
-        return mapper.selectJobList(enabled, keyword, createdBy).stream().map(SkillJobDto::of).toList();
+        List<SkillJob> jobs = mapper.selectJobList(enabled, keyword, createdBy);
+        // 批量解析创建人姓名(列表行展示"姓名 (userId)"),一次性查询避免 N+1
+        Set<String> creatorIds = jobs.stream()
+                .map(SkillJob::getCreatedBy)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<String, String> creatorNames = mockOrgService.getUserNameMap(creatorIds);
+        return jobs.stream()
+                .map(j -> SkillJobDto.of(j, creatorNames.get(j.getCreatedBy())))
+                .toList();
     }
 
     /** 查询详情 */
@@ -191,10 +210,9 @@ public class SkillJobService {
                 .mdFileExists(false)
                 .jobId(jobId).triggerType("MANUAL").status("PENDING").build();
         mapper.insertExecution(exec);
-        if (!scheduler.submit(jobId, exec.getId())) {
-            // 已在跑：清掉刚插入的 PENDING，避免孤儿记录（此前会残留 PENDING 直到重启才被清成 FAILED）
-            mapper.deleteExecutionById(exec.getId());
-            throw new IllegalStateException("JobAlreadyRunning: 任务正在执行中，请稍后再试 (id=" + jobId + ")");
+        // 入队失败（队列满）也会清掉 PENDING，避免残留孤儿记录卡住后续触发
+        if (!trySubmitOrCleanup(jobId, exec.getId(), "MANUAL")) {
+            throw new IllegalStateException("JobAlreadyRunning: 该任务已有手动执行在进行中，请等其完成后再触发 (id=" + jobId + ")");
         }
         log.info("[SkillJob] trigger: jobId={}, name={}, executionId={}, userId={}",
                 jobId, job.getName(), exec.getId(), userId);
@@ -219,8 +237,7 @@ public class SkillJobService {
                 .mdFileExists(false)
                 .jobId(job.getId()).triggerType("EXTERNAL").status("PENDING").build();
         mapper.insertExecution(exec);
-        if (!scheduler.submit(job.getId(), exec.getId())) {
-            mapper.deleteExecutionById(exec.getId());
+        if (!trySubmitOrCleanup(job.getId(), exec.getId(), "EXTERNAL")) {
             throw new IllegalStateException("JobAlreadyRunning: 任务正在执行中，请稍后再试 (id=" + job.getId() + ")");
         }
         // 执行身份取自 Job 的 createdBy，调度器 doExecuteJob 同样以 createdBy 跑
@@ -266,13 +283,38 @@ public class SkillJobService {
                 .mdFileExists(false)
                 .jobId(job.getId()).triggerType("METRIC").status("PENDING").build();
         mapper.insertExecution(exec);
-        if (!scheduler.submit(job.getId(), exec.getId())) {
+        try {
+            if (!scheduler.submit(job.getId(), exec.getId(), "METRIC")) {
+                mapper.deleteExecutionById(exec.getId());
+                return new MetricTriggerItemDto(job.getId(), job.getName(), null, "REJECTED", "JobAlreadyRunning");
+            }
+        } catch (RuntimeException e) {
+            // 队列满等入队失败：清掉 PENDING 避免孤儿记录，单 job 记 REJECTED，不中断整批触发
             mapper.deleteExecutionById(exec.getId());
-            return new MetricTriggerItemDto(job.getId(), job.getName(), null, "REJECTED", "JobAlreadyRunning");
+            log.warn("Job {} metric-trigger enqueue failed: {}", job.getId(), e.getMessage());
+            return new MetricTriggerItemDto(job.getId(), job.getName(), null, "REJECTED", "JobQueueFull");
         }
         log.info("[SkillJob] triggerByMetric member: jobId={}, name={}, executionId={}, userId={}",
                 job.getId(), job.getName(), exec.getId(), userId);
         return new MetricTriggerItemDto(job.getId(), job.getName(), exec.getId(), "QUEUED", null);
+    }
+
+    /**
+     * 提交执行队列并保证不残留 PENDING 孤儿记录。
+     * 入队成功返回 true；同 lane 已在跑返回 false（PENDING 已清理）；入队失败（队列满）清理 PENDING 后重抛，
+     * 避免僵尸记录在重启前一直卡住该 Job / 批量。
+     */
+    private boolean trySubmitOrCleanup(Long jobId, Long execId, String triggerType) {
+        try {
+            boolean submitted = scheduler.submit(jobId, execId, triggerType);
+            if (!submitted) {
+                mapper.deleteExecutionById(execId);
+            }
+            return submitted;
+        } catch (RuntimeException e) {
+            mapper.deleteExecutionById(execId);
+            throw e;
+        }
     }
 
     /** 查询执行记录列表 */
@@ -315,6 +357,13 @@ public class SkillJobService {
             throw new IllegalStateException("PathTraversal: " + exec.resolvedOutputPath());
         }
         if (!Files.exists(mdFile) || !Files.isRegularFile(mdFile)) {
+            // 兜底: 主文件被删, 从镜像副本读 (保留镜像策略下副本仍在);
+            // 新版 resolvedOutputPath 是相对路径 {userId}/{file}, 镜像同名可回退; 老绝对路径记录 Paths.get 忽略 mirrorDir 自然无效
+            Path mirror = Paths.get(mirrorDir, exec.resolvedOutputPath()).normalize().toAbsolutePath();
+            if (Files.exists(mirror) && Files.isRegularFile(mirror)) {
+                log.warn("SkillJob report primary missing, serving from mirror: {} -> {}", mdFile, mirror);
+                return new FileSystemResource(mirror);
+            }
             throw new IllegalStateException("FileNotOnDisk: " + exec.resolvedOutputPath());
         }
 

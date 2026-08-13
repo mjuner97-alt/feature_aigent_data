@@ -17,6 +17,11 @@ function isOwner(job: SkillJob) {
   return job.createdBy === me;
 }
 
+// 创建人展示:有姓名时显示"姓名 (userId)",否则仅 userId
+function creatorLabel(job: SkillJob): string {
+  return job.createdByName ? `${job.createdByName} (${job.createdBy})` : (job.createdBy || '-');
+}
+
 const jobs = ref<SkillJob[]>([]);
 const loading = ref(false);
 const keyword = ref('');
@@ -148,7 +153,8 @@ function metricTitle(job: SkillJob): string {
     <div v-else-if="jobs.length === 0" class="empty">
       <p>暂无任务，点击「创建任务」新增</p>
     </div>
-    <table v-else class="job-table">
+    <div v-else class="job-table-wrap">
+    <table class="job-table">
       <thead>
         <tr>
           <th>任务名称</th>
@@ -174,13 +180,13 @@ function metricTitle(job: SkillJob): string {
             <span v-else class="muted-cell">未配置</span>
           </td>
           <td class="col-template selectable" :title="job.questionTemplate">{{ job.questionTemplate || '未配置' }}</td>
-          <td>
+          <td class="col-status">
             <span class="status-badge" :class="job.enabled ? 'st-on' : 'st-off'">
               {{ job.enabled ? '启用' : '禁用' }}
             </span>
           </td>
           <td class="col-owner">
-            <span :class="isOwner(job) ? 'owner-me' : ''" :title="job.createdBy">{{ job.createdBy || '-' }}</span>
+            <span :class="isOwner(job) ? 'owner-me' : ''" :title="creatorLabel(job)">{{ creatorLabel(job) }}</span>
           </td>
           <td class="col-time">{{ fmtTime(job.createdAt) }}</td>
           <td class="col-actions">
@@ -198,6 +204,7 @@ function metricTitle(job: SkillJob): string {
         </tr>
       </tbody>
     </table>
+    </div>
 
     <SkillJobFormDrawer v-model:open="formOpen" :edit-id="editId" @saved="load" />
     <SkillJobExecutionDrawer v-model:open="execOpen" :job-id="execJobId" :can-download="execCanDownload" />
@@ -221,7 +228,8 @@ function metricTitle(job: SkillJob): string {
 
 .loading, .empty { color: #94a3b8; font-size: 14px; padding: 40px 0; text-align: center; background: #fff; border-radius: 8px; }
 
-.job-table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+.job-table-wrap { overflow-x: auto; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+.job-table { width: 100%; min-width: 1080px; border-collapse: collapse; background: #fff; }
 .job-table th { background: #f8fafc; padding: 10px 12px; text-align: left; font-size: 13px; font-weight: 600; color: #475569; border-bottom: 1px solid #e2e8f0; white-space: nowrap; }
 .job-table td { padding: 10px 12px; font-size: 13px; color: #1e293b; border-bottom: 1px solid #f1f5f9; }
 .job-table tr:hover td { background: #f8fafc; }
@@ -234,6 +242,7 @@ function metricTitle(job: SkillJob): string {
 .col-owner { font-size: 12px; color: #64748b; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .owner-me { color: #1d4ed8; font-weight: 600; }
 .readonly-tag { font-size: 11px; color: #94a3b8; padding: 2px 6px; border: 1px dashed #cbd5e1; border-radius: 4px; }
+.col-status { white-space: nowrap; }
 .col-actions { display: flex; gap: 4px; white-space: nowrap; align-items: center; }
 
 .status-badge { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 4px; }

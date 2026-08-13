@@ -17,6 +17,7 @@ package com.agentscopea2a.v2.controller;
 
 import com.agentscopea2a.v2.artifact.ArtifactStore;
 import com.agentscopea2a.v2.service.UrlShortenerService;
+import com.agentscopea2a.v2.util.DownloadErrorPage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -78,25 +79,25 @@ public class RedirectController {
         String downloadUrl = urlShortenerService.resolve(shortCode);
         if (downloadUrl == null) {
             log.warn("Short code not found or expired: {}", shortCode);
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+            return htmlResponse(HttpStatus.NOT_FOUND, DownloadErrorPage.linkInvalidOrExpired());
         }
 
         String agentPath = extractAgentPath(downloadUrl);
         if (agentPath == null) {
             log.warn("Short code {} resolved to URL without path param: {}", shortCode, downloadUrl);
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
+            return htmlResponse(HttpStatus.BAD_REQUEST, DownloadErrorPage.linkInvalid());
         }
 
         // 服务端二次校验 (防 shortCode 表被注入或绕过 CsvDownloadTool 直接调 shorten)
         if (agentPath.contains("..") || !agentPath.startsWith(MOUNT_PREFIX)) {
             log.warn("Blocked agentPath outside mount prefix or contains ..: {}", agentPath);
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
+            return htmlResponse(HttpStatus.BAD_REQUEST, DownloadErrorPage.linkInvalid());
         }
 
         byte[] bytes = artifactStore.read(agentPath);
         if (bytes == null || bytes.length == 0) {
             log.warn("CSV not found for shortCode={}: agentPath={}", shortCode, agentPath);
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+            return htmlResponse(HttpStatus.NOT_FOUND, DownloadErrorPage.fileNotFound());
         }
 
         String filename = extractFilename(agentPath);
@@ -114,6 +115,18 @@ public class RedirectController {
     private static String extractFilename(String agentPath) {
         int slash = agentPath.lastIndexOf('/');
         return slash >= 0 ? agentPath.substring(slash + 1) : agentPath;
+    }
+
+    /**
+     * 短链下载失败时回吐一个友好的 HTML 提示页, 而不是空 body.
+     *
+     * <p>空 body 的 404/400 浏览器只能显示 "无法访问" 之类的通用错误, 用户不知道是链接失效还是文件没了.
+     * HTML 文案由 {@link DownloadErrorPage} 统一生成, 这里只负责按 {@code ResponseEntity<byte[]>} 包装.
+     */
+    private static ResponseEntity<byte[]> htmlResponse(HttpStatus status, String html) {
+        return ResponseEntity.status(status)
+                .contentType(MediaType.TEXT_HTML)
+                .body(html.getBytes(StandardCharsets.UTF_8));
     }
 
     /**

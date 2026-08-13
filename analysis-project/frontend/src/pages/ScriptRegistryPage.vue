@@ -74,7 +74,7 @@ const formVisible = ref(false);
 const formMode = ref<'create' | 'edit'>('create');
 const formLoading = ref(false);
 const form = ref<ScriptRegistryInput>({
-  scriptId: '', name: '', description: '', scriptPath: '',
+  scriptId: '', name: '', description: '',
   datasources: '["gauss"]', paramsSchema: '[]', timeoutSeconds: 60,
 });
 const editId = ref<number>(0);
@@ -86,7 +86,7 @@ function openCreate() {
   formMode.value = 'create';
   editId.value = 0;
   form.value = {
-    scriptId: '', name: '', description: '', scriptPath: '',
+    scriptId: '', name: '', description: '',
     datasources: '["gauss"]', paramsSchema: '[]', timeoutSeconds: 60,
   };
   dsArr.value = ['gauss'];
@@ -104,7 +104,7 @@ async function openEdit(row: ScriptRegistryListItem) {
     const detail = await getEntry(row.id);
     form.value = {
       scriptId: detail.scriptId, name: detail.name, description: detail.description || '',
-      scriptPath: detail.scriptPath, datasources: detail.datasources || '["gauss"]',
+      datasources: detail.datasources || '["gauss"]',
       paramsSchema: detail.paramsSchema || '[]', timeoutSeconds: detail.timeoutSeconds ?? 60,
       enabled: detail.enabled,
     };
@@ -127,8 +127,8 @@ function tryParseJson(text: string): any {
 }
 
 async function saveForm() {
-  if (!form.value.scriptId || !form.value.name || !form.value.scriptPath) {
-    ElMessage.warning('请填写 script_id / name / script_path');
+  if (!form.value.scriptId || !form.value.name) {
+    ElMessage.warning('请填写 script_id / name');
     return;
   }
   if (dsArr.value.length === 0) {
@@ -243,7 +243,6 @@ const S = {
       <el-table-column prop="scriptId" label="script_id" width="220" />
       <el-table-column prop="name" label="名称" width="160" />
       <el-table-column prop="description" label="描述" show-overflow-tooltip />
-      <el-table-column prop="scriptPath" label="脚本路径" width="220" show-overflow-tooltip />
       <el-table-column label="数据源" width="180">
         <template #default="{ row }">
           <el-tag v-for="ds in parseDatasources(row.datasources)" :key="ds" size="small"
@@ -280,9 +279,6 @@ const S = {
         </el-form-item>
         <el-form-item label="描述">
           <el-input v-model="form.description" type="textarea" :rows="2" placeholder="用途说明" />
-        </el-form-item>
-        <el-form-item label="脚本路径" required>
-          <el-input v-model="form.scriptPath" placeholder="相对 /app/workspace/scripts/ 的路径, 如 q2_1_metrics_by_dept_version.py" />
         </el-form-item>
         <el-form-item label="数据源" required>
           <el-select v-model="dsArr" multiple style="width: 100%" placeholder="选择脚本需要访问的数据源">

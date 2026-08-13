@@ -19,6 +19,7 @@ import com.agentscopea2a.v2.skillManager.dto.SkillFileListItem;
 import com.agentscopea2a.v2.skillManager.dto.SkillFileUploadResponse;
 import com.agentscopea2a.v2.skillManager.entity.SkillFile;
 import com.agentscopea2a.v2.skillManager.mapper.SkillMapper;
+import com.agentscopea2a.v2.util.SkillFileMirror;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -66,6 +67,9 @@ public class SkillFileService {
 
     @Value("${skill.file.base-dir:/data/skill-files}")
     private String baseDir;
+
+    @Value("${skill.file.mirror-dir:/data/skill-files-mirror}")
+    private String mirrorDir;
 
     @Value("${skill.file.max-size-bytes:1048576}")
     private long maxSizeBytes;
@@ -160,6 +164,9 @@ public class SkillFileService {
             throw e;
         }
 
+        // 镜像: 主文件写入 + DB 入库都成功后, 复制一份到独立镜像目录 (最佳努力, 防删除)
+        SkillFileMirror.mirror(baseDir, mirrorDir, relativePath);
+
         return new SkillFileUploadResponse(
                 skillFile.getId(), filename, fileType, fileSize,
                 description, skillFile.getCreatedAt().toString());
@@ -207,6 +214,9 @@ public class SkillFileService {
             throw e;
         }
 
+        // 镜像: DB 更新成功后, 复制新内容到镜像目录覆盖旧副本 (最佳努力, 防删除)
+        SkillFileMirror.mirror(baseDir, mirrorDir, Paths.get(userId, filename).toString());
+
         return new SkillFileUploadResponse(
                 existing.getId(), filename, fileType, fileSize,
                 existing.getDescription(), existing.getCreatedAt().toString());
@@ -239,11 +249,18 @@ public class SkillFileService {
         }
 
         Path path = resolveStoragePath(skillFile.getStoragePath());
-        if (!Files.exists(path)) {
-            throw new IllegalStateException("FileNotOnDisk: " + skillFile.getStoragePath());
+        if (Files.exists(path)) {
+            return new FileSystemResource(path);
         }
 
-        return new FileSystemResource(path);
+        // 兜底: 主文件被删, 从镜像副本读 (保留镜像策略下副本仍在)
+        Path mirror = Paths.get(mirrorDir, skillFile.getStoragePath()).normalize();
+        if (Files.exists(mirror)) {
+            log.warn("SkillFile primary missing, serving from mirror: {} -> {}", path, mirror);
+            return new FileSystemResource(mirror);
+        }
+
+        throw new IllegalStateException("FileNotOnDisk: " + skillFile.getStoragePath());
     }
 
     /**

@@ -82,24 +82,36 @@ public class NotificationService {
     }
 
     /**
-     * 跑批 job 执行成功后调用：查所属指标的 notify 配置，启用则异步组装并发送通知（携带报告文件 .html）。
+     * 跑批 job 执行成功后调用：按触发类型决定是否通知，启用则异步组装并发送通知（携带报告文件 .html）。
+     *
+     * <p>门控规则：
+     * <ul>
+     *   <li>MANUAL（手动触发）：总是通知，不看指标、不看 notify 开关；由 sender 按 triggerType 自行决定是否真正发出。</li>
+     *   <li>METRIC/EXTERNAL：必须有指标且 {@code notify_enabled=TRUE} 才发（原逻辑）。</li>
+     * </ul>
+     * 无指标 job 仅 MANUAL 会进入通知，渲染走默认模板。
      */
     public void notifyJobCompleted(SkillJob job, SkillJobExecution execution, String filePath) {
-        if (job == null || job.getMetricId() == null || execution == null || filePath == null) {
+        if (job == null || execution == null || filePath == null) {
             return;
         }
-        SkillDependencyMetric metric = metricMapper.selectById(job.getMetricId());
-        if (metric == null || !Boolean.TRUE.equals(metric.getNotifyEnabled())) {
+        String triggerType = execution.getTriggerType();
+        boolean manual = "MANUAL".equals(triggerType);
+        SkillDependencyMetric metric = job.getMetricId() != null
+                ? metricMapper.selectById(job.getMetricId()) : null;
+        boolean notifyEnabled = metric != null && Boolean.TRUE.equals(metric.getNotifyEnabled());
+        if (!manual && !notifyEnabled) {
             return;
         }
-        executor.submit(() -> doSend(job, metric, execution, filePath));
+        executor.submit(() -> doSend(job, metric, execution, filePath, triggerType));
     }
 
-    private void doSend(SkillJob job, SkillDependencyMetric metric, SkillJobExecution execution, String filePath) {
+    private void doSend(SkillJob job, SkillDependencyMetric metric, SkillJobExecution execution,
+                        String filePath, String triggerType) {
         try {
-            String contentType = (metric.getNotifyContentType() != null && !metric.getNotifyContentType().isBlank())
+            String contentType = (metric != null && metric.getNotifyContentType() != null && !metric.getNotifyContentType().isBlank())
                     ? metric.getNotifyContentType().toUpperCase() : "HTML";
-            String template = (metric.getNotifyContentTemplate() != null && !metric.getNotifyContentTemplate().isBlank())
+            String template = (metric != null && metric.getNotifyContentTemplate() != null && !metric.getNotifyContentTemplate().isBlank())
                     ? metric.getNotifyContentTemplate()
                     : defaultTemplate(contentType);
             String fileUrl = buildFileUrl(execution.getId());
@@ -107,11 +119,14 @@ public class NotificationService {
             String fileName = fileNameOf(filePath);
             NotificationPayload payload = new NotificationPayload(
                     contentType, content, filePath, fileName, fileUrl,
-                    job.getId(), job.getName(), metric.getCode(), metric.getName(),
-                    execution.getId(), execution.getStatus(), LocalDateTime.now(), Arrays.asList(job.getCreatedBy()));
+                    job.getId(), job.getName(),
+                    metric != null ? metric.getCode() : null,
+                    metric != null ? metric.getName() : null,
+                    execution.getId(), execution.getStatus(), LocalDateTime.now(), Arrays.asList(job.getCreatedBy()),
+                    triggerType);
             sender.send(payload);
-            log.info("[Notification] sent: metric={}, job={}, exec={}, file={}",
-                    metric.getCode(), job.getName(), execution.getId(), fileName);
+            log.info("[Notification] sent: metric={}, job={}, exec={}, trigger={}, file={}",
+                    metric != null ? metric.getCode() : "-", job.getName(), execution.getId(), triggerType, fileName);
         } catch (Exception e) {
             log.warn("[Notification] send failed for job {} (ignored): {}", job.getId(), e.getMessage(), e);
         }
@@ -128,8 +143,8 @@ public class NotificationService {
                 ? "<a href=\"" + fileUrl + "\">" + fileName + "</a>"
                 : fileUrl;
         return template
-                .replace("{metric_name}", nullSafe(metric.getName()))
-                .replace("{metric_code}", nullSafe(metric.getCode()))
+                .replace("{metric_name}", metric != null ? nullSafe(metric.getName()) : "")
+                .replace("{metric_code}", metric != null ? nullSafe(metric.getCode()) : "")
                 .replace("{job_name}", nullSafe(job.getName()))
                 .replace("{status}", nullSafe(execution.getStatus()))
                 .replace("{date}", LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")))
