@@ -81,8 +81,9 @@ public class SkillManageController {
             @RequestParam(name = "limit", required = false) Integer limit,
             @RequestParam(name = "offset", required = false) Integer offset,
             @RequestParam(name = "dimension", required = false) String dimension,
+            @RequestParam(name = "owner", required = false) String owner,
             @RequestHeader("X-User-Id") String userId) {
-        return skillService.list(new SkillListQuery(view, sort, category, tag, keyword, limit, offset, userId, dimension));
+        return skillService.list(new SkillListQuery(view, sort, category, tag, keyword, limit, offset, userId, dimension, owner));
     }
 
     /**

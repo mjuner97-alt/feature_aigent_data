@@ -38,6 +38,7 @@ public class SkillListQuery {
     private Integer offset;
     private String userId;    // 用于 used/liked/created 视图与 liked/used 批量标记
     private String dimension; // 维度筛选:GROUP/DEPARTMENT/PRODUCT_LINE/COMPANY/PERSONAL
+    private String owner;     // 按创建人(ownerUserId)精确筛选,如"全部 Skill"页按 userid 过滤
 
     public String getEffectiveView() { return view == null ? "all" : view; }
     public String getEffectiveSort() { return sort == null ? "likes" : sort; }

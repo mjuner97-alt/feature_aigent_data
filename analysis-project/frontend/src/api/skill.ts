@@ -43,6 +43,7 @@ export interface SkillListParams {
   tag?: string;
   keyword?: string;
   dimension?: string;
+  owner?: string; // 按创建人(userId)精确筛选,如"全部 Skill"页
   limit?: number;
   offset?: number;
 }
