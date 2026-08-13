@@ -56,12 +56,11 @@ public class ScriptRegistryManageService {
 
     @Transactional("gaussTransactionManager")
     public ScriptRegistryEntry create(ScriptRegistryEntry entry, String userId) {
-        // 校验 script_id 非空 (拼路径依赖) + 唯一性
+        // 校验 script_id 非空 (拼路径依赖) + 唯一性 (含禁用记录, 防止注册乱象下重复)
         if (entry.getScriptId() == null || entry.getScriptId().isBlank()) {
             throw new IllegalArgumentException("script_id 不能为空");
         }
-        ScriptRegistryEntry existing = mapper.selectByScriptId(entry.getScriptId());
-        if (existing != null) {
+        if (mapper.countByScriptId(entry.getScriptId()) > 0) {
             throw new IllegalArgumentException("script_id '" + entry.getScriptId() + "' 已存在");
         }
 
@@ -91,10 +90,9 @@ public class ScriptRegistryManageService {
             throw new IllegalArgumentException("记录不存在: id=" + id);
         }
 
-        // 如果 script_id 有变更, 检查唯一性
+        // 如果 script_id 有变更, 检查唯一性 (含禁用记录)
         if (patch.getScriptId() != null && !patch.getScriptId().equals(existing.getScriptId())) {
-            ScriptRegistryEntry byScriptId = mapper.selectByScriptId(patch.getScriptId());
-            if (byScriptId != null && !byScriptId.getId().equals(id)) {
+            if (mapper.countByScriptId(patch.getScriptId()) > 0) {
                 throw new IllegalArgumentException("script_id '" + patch.getScriptId() + "' 已存在");
             }
         }

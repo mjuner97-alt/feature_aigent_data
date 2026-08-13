@@ -99,6 +99,7 @@ async function openEdit(row: SqlRegistryListItem) {
       sqlId: detail.sqlId, name: detail.name, description: detail.description || '',
       datasource: detail.datasource, sqlTemplate: detail.sqlTemplate,
       paramsSchema: detail.paramsSchema || '[]', enabled: detail.enabled,
+      createdBy: detail.createdBy,
     };
     formTestParamsJson.value = '{}';
   } catch (e: any) {
@@ -325,7 +326,10 @@ const S = {
     <el-dialog v-model="formVisible" :title="formMode === 'create' ? '新增 SQL' : '编辑 SQL'" width="760px" destroy-on-close>
       <el-form v-loading="formLoading" label-width="100px" size="small">
         <el-form-item label="sql_id" required>
-          <el-input v-model="form.sqlId" :disabled="formMode === 'edit'" placeholder="snake_case, 如 trace_stats_by_user" />
+          <el-input v-model="form.sqlId" placeholder="snake_case, 如 trace_stats_by_user" />
+        </el-form-item>
+        <el-form-item label="创建人" v-if="formMode === 'edit'">
+          <el-input v-model="form.createdBy" placeholder="统一认证号, 如 alice; 临时放开修正, 后续会关闭" />
         </el-form-item>
         <el-form-item label="名称" required>
           <el-input v-model="form.name" placeholder="中文名称" />

@@ -51,6 +51,11 @@
           AND enabled = 1
     </select>
 
+    <!-- 唯一性校验: 按 script_id 计数 (含禁用记录), 不区分 enabled -->
+    <select id="countByScriptId" resultType="int">
+        SELECT COUNT(*) FROM script_registry WHERE script_id = #{scriptId}
+    </select>
+
     <!-- 兼容 ScriptListTool: 列出所有启用记录 (排除 description 全文) -->
     <select id="listAllEnabled" resultMap="BaseResultMap">
         SELECT id, script_id, name, description, script_path, datasources,

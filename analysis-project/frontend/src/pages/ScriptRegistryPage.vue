@@ -272,7 +272,7 @@ const S = {
     <el-dialog v-model="formVisible" :title="formMode === 'create' ? '新增脚本' : '编辑脚本'" width="760px" destroy-on-close>
       <el-form v-loading="formLoading" label-width="100px" size="small">
         <el-form-item label="script_id" required>
-          <el-input v-model="form.scriptId" :disabled="formMode === 'edit'" placeholder="snake_case, 如 q2_1_metrics_by_dept_version" />
+          <el-input v-model="form.scriptId" placeholder="snake_case, 如 q2_1_metrics_by_dept_version" />
         </el-form-item>
         <el-form-item label="名称" required>
           <el-input v-model="form.name" placeholder="中文名称" />
