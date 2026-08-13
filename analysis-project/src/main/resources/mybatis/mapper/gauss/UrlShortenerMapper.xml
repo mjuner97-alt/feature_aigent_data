@@ -7,17 +7,20 @@
         <id column="id" property="id"/>
         <result column="short_code" property="shortCode"/>
         <result column="original_url" property="originalUrl"/>
+        <result column="content" property="content"/>
+        <result column="filename" property="filename"/>
+        <result column="mime_type" property="mimeType"/>
         <result column="created_at" property="createdAt"/>
         <result column="expires_at" property="expiresAt"/>
     </resultMap>
 
     <insert id="insert" parameterType="com.agentscopea2a.entity.UrlShortenerRecord" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO url_shortener (short_code, original_url, created_at, expires_at)
-        VALUES (#{shortCode}, #{originalUrl}, #{createdAt}, #{expiresAt})
+        INSERT INTO url_shortener (short_code, original_url, content, filename, mime_type, created_at, expires_at)
+        VALUES (#{shortCode}, #{originalUrl}, #{content}, #{filename}, #{mimeType}, #{createdAt}, #{expiresAt})
     </insert>
 
     <select id="selectByShortCode" resultMap="BaseResultMap">
-        SELECT id, short_code, original_url, created_at, expires_at
+        SELECT id, short_code, original_url, content, filename, mime_type, created_at, expires_at
         FROM url_shortener
         WHERE short_code = #{shortCode}
     </select>

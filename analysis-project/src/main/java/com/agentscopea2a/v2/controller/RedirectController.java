@@ -15,6 +15,7 @@
  */
 package com.agentscopea2a.v2.controller;
 
+import com.agentscopea2a.entity.UrlShortenerRecord;
 import com.agentscopea2a.v2.artifact.ArtifactStore;
 import com.agentscopea2a.v2.service.UrlShortenerService;
 import com.agentscopea2a.v2.util.DownloadErrorPage;
@@ -76,38 +77,56 @@ public class RedirectController {
      */
     @GetMapping("/redirect/download")
     public ResponseEntity<byte[]> redirect(@RequestParam("shortCode") String shortCode) throws IOException {
-        String downloadUrl = urlShortenerService.resolve(shortCode);
-        if (downloadUrl == null) {
+        UrlShortenerRecord record = urlShortenerService.findRecord(shortCode);
+        if (record == null) {
             log.warn("Short code not found or expired: {}", shortCode);
             return htmlResponse(HttpStatus.NOT_FOUND, DownloadErrorPage.linkInvalidOrExpired());
         }
 
-        String agentPath = extractAgentPath(downloadUrl);
-        if (agentPath == null) {
-            log.warn("Short code {} resolved to URL without path param: {}", shortCode, downloadUrl);
-            return htmlResponse(HttpStatus.BAD_REQUEST, DownloadErrorPage.linkInvalid());
+        byte[] bytes;
+        String filename;
+        String mimeType;
+
+        if (record.getContent() != null) {
+            // 新路径: content 直接落库 (DownloadContentService), 不碰磁盘. 跨会话清理安全.
+            bytes = record.getContent().getBytes(StandardCharsets.UTF_8);
+            filename = record.getFilename();
+            mimeType = record.getMimeType();
+            log.info("Content download: shortCode={} -> {} ({} bytes)", shortCode, filename, bytes.length);
+        } else {
+            // 老路径: 从磁盘 artifact 读 (向后兼容 generate_csv_download_url)
+            String agentPath = extractAgentPath(record.getOriginalUrl());
+            if (agentPath == null) {
+                log.warn("Short code {} resolved to URL without path param: {}", shortCode, record.getOriginalUrl());
+                return htmlResponse(HttpStatus.BAD_REQUEST, DownloadErrorPage.linkInvalid());
+            }
+            // 服务端二次校验 (防 shortCode 表被注入或绕过 CsvDownloadTool 直接调 shorten)
+            if (agentPath.contains("..") || !agentPath.startsWith(MOUNT_PREFIX)) {
+                log.warn("Blocked agentPath outside mount prefix or contains ..: {}", agentPath);
+                return htmlResponse(HttpStatus.BAD_REQUEST, DownloadErrorPage.linkInvalid());
+            }
+            bytes = artifactStore.read(agentPath);
+            if (bytes == null || bytes.length == 0) {
+                log.warn("CSV not found for shortCode={}: agentPath={}", shortCode, agentPath);
+                return htmlResponse(HttpStatus.NOT_FOUND, DownloadErrorPage.fileNotFound());
+            }
+            filename = extractFilename(agentPath);
+            mimeType = "text/csv";
+            log.info("CSV download: shortCode={} -> {} ({} bytes)", shortCode, agentPath, bytes.length);
         }
 
-        // 服务端二次校验 (防 shortCode 表被注入或绕过 CsvDownloadTool 直接调 shorten)
-        if (agentPath.contains("..") || !agentPath.startsWith(MOUNT_PREFIX)) {
-            log.warn("Blocked agentPath outside mount prefix or contains ..: {}", agentPath);
-            return htmlResponse(HttpStatus.BAD_REQUEST, DownloadErrorPage.linkInvalid());
-        }
-
-        byte[] bytes = artifactStore.read(agentPath);
-        if (bytes == null || bytes.length == 0) {
-            log.warn("CSV not found for shortCode={}: agentPath={}", shortCode, agentPath);
-            return htmlResponse(HttpStatus.NOT_FOUND, DownloadErrorPage.fileNotFound());
-        }
-
-        String filename = extractFilename(agentPath);
-        String encoded = URLEncoder.encode(filename, StandardCharsets.UTF_8);
-
-        log.info("CSV download: shortCode={} -> {} ({} bytes)", shortCode, agentPath, bytes.length);
+        // ContentDisposition 用 Spring builder: 自动生成 RFC 5987 filename*=UTF-8''<pct-encoded>
+        // + RFC 2047 encoded-word fallback, 全 ASCII, 避免 Tomcat 用 ISO-8859-1 写中文 filename 抛
+        // IllegalArgumentException (code point 26477 = 杭 无法编码). mimeType null 兜底防
+        // "null; charset=UTF-8" 非法 MediaType.
+        String contentType = (mimeType == null || mimeType.isBlank()) ? "text/csv" : mimeType;
+        org.springframework.http.ContentDisposition disposition =
+                org.springframework.http.ContentDisposition.attachment()
+                        .filename(filename, StandardCharsets.UTF_8)
+                        .build();
         return ResponseEntity.ok()
-                .contentType(MediaType.parseMediaType("text/csv; charset=UTF-8"))
-                .header(HttpHeaders.CONTENT_DISPOSITION,
-                        "attachment; filename=\"" + filename + "\"; filename*=UTF-8''" + encoded)
+                .contentType(MediaType.parseMediaType(contentType + "; charset=UTF-8"))
+                .header(HttpHeaders.CONTENT_DISPOSITION, disposition.toString())
                 .body(bytes);
     }
 

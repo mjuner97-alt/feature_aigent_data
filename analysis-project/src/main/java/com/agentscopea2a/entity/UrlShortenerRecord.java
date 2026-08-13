@@ -43,6 +43,15 @@ public class UrlShortenerRecord {
 
     private String originalUrl;
 
+    /** 直接落库的内容 (content 模式). 非空时 RedirectController 直接吐字节, 不读磁盘. */
+    private String content;
+
+    /** 下载文件名, 如 "q2_1.csv". */
+    private String filename;
+
+    /** MIME 类型, 默认 "text/csv". */
+    private String mimeType;
+
     private LocalDateTime createdAt;
 
     private LocalDateTime expiresAt;

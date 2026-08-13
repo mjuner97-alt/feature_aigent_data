@@ -99,6 +99,29 @@ public class UrlShortenerService {
     }
 
     /**
+     * 根据短码查询完整记录 (含 content/filename/mimeType). 如果不存在或已过期返回 null.
+     *
+     * <p>RedirectController 用本方法判断走 content 路径 (record.content 非空)
+     * 还是老 agentPath 路径 (record.originalUrl 非空).
+     *
+     * @param shortCode 短码
+     * @return 完整记录, 或 null
+     */
+    public UrlShortenerRecord findRecord(String shortCode) {
+        if (shortCode == null || shortCode.isBlank()) return null;
+
+        UrlShortenerRecord record = urlShortenerMapper.selectByShortCode(shortCode);
+        if (record == null) return null;
+
+        if (record.getExpiresAt() != null && record.getExpiresAt().isBefore(LocalDateTime.now())) {
+            log.debug("Short code expired: {}", shortCode);
+            return null;
+        }
+
+        return record;
+    }
+
+    /**
      * 清理过期记录。
      */
     public void cleanExpired() {

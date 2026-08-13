@@ -135,7 +135,7 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
         }
 
         if (fixedContext != null) {
-            applyHandoff(post, toolName, table, fixedContext);
+            applyHandoff(post, toolName, table, fixedContext, text);
             return Mono.just(event);
         }
 
@@ -146,7 +146,7 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
                     // parent's artifact bucket, so code_interpreter can read them.
                     ArtifactContext pinned = ctx.get(ArtifactContext.class);
                     ArtifactContext artifactCtx = (pinned != null) ? pinned : ArtifactContext.from(ctx);
-                    ArtifactRef ref = applyHandoff(post, toolName, table, artifactCtx);
+                    ArtifactRef ref = applyHandoff(post, toolName, table, artifactCtx, text);
                     publishArtifactRef(ctx, ref);
                     return event;
                 })
@@ -154,7 +154,7 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
                     if (runtimeContext != null) {
                         ArtifactContext pinned = runtimeContext.get(ArtifactContext.class);
                         ArtifactContext artifactCtx = (pinned != null) ? pinned : ArtifactContext.from(runtimeContext);
-                        ArtifactRef ref = applyHandoff(post, toolName, table, artifactCtx);
+                        ArtifactRef ref = applyHandoff(post, toolName, table, artifactCtx, text);
                         publishArtifactRef(runtimeContext, ref);
                     } else {
                         log.warn("ArtifactHandoffHook: no RuntimeContext bound, skipping artifactize for tool={}", toolName);
@@ -163,7 +163,7 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
                 }));
     }
 
-    private ArtifactRef applyHandoff(PostActingEvent post, String toolName, TabularData table, ArtifactContext ctx) {
+    private ArtifactRef applyHandoff(PostActingEvent post, String toolName, TabularData table, ArtifactContext ctx, String originalText) {
         ToolUseBlock toolUse = post.getToolUse();
         String preview = table.previewMarkdown(PREVIEW_ROWS, PREVIEW_MAX_CHARS);
         List<ColumnSchema> schema = table.inferSchema(SCHEMA_SAMPLES_PER_COLUMN);
@@ -171,7 +171,7 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
                 artifactStore.save(ctx, sanitizeToolKey(toolName), table.toCsv(),
                         table.columns(), table.rowCount(), preview, schema);
 
-        String handoff = buildHandoffMessage(toolName, table, ref, preview);
+        String handoff = buildHandoffMessage(toolName, table, ref, preview, originalText);
         ToolResultBlock rewritten =
                 ToolResultBlock.of(toolUse.getId(), toolUse.getName(),
                         List.of(TextBlock.builder().text(handoff).build()));
@@ -223,7 +223,7 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
     // ==================== Handoff message ====================
 
     private static String buildHandoffMessage(
-            String toolName, TabularData table, ArtifactRef ref, String preview) {
+            String toolName, TabularData table, ArtifactRef ref, String preview, String originalText) {
         StringBuilder sb = new StringBuilder();
         sb.append(toolName).append(" 查询完成 — 共 ").append(table.rowCount());
         sb.append(" 行,列: ").append(String.join("、", table.columns())).append("\n\n");
@@ -243,7 +243,19 @@ public class ArtifactHandoffHook implements Hook, RuntimeContextAware {
         sb.append("  # 列名 / dtype 已在上方 Schema 段给出,不要再写 df.head() / df.dtypes\n\n");
         sb.append("🚨 严禁: Python 计算时不要把上面的预览表格手工解析进代码,\n");
         sb.append("   直接 pd.read_csv(路径) 即可 — 完整数据在 csv 里。\n");
+
+        String downloadSegment = extractDownloadSegment(originalText);
+        if (downloadSegment != null) {
+            sb.append("\n").append(downloadSegment);
+        }
         return sb.toString();
+    }
+
+    private static String extractDownloadSegment(String text) {
+        if (text == null) return null;
+        int idx = text.indexOf("📥 下载链接:");
+        if (idx < 0) return null;
+        return text.substring(idx).trim();
     }
 
     private static String renderSchemaBlock(List<ColumnSchema> schema) {

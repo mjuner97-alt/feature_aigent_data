@@ -17,6 +17,7 @@ package com.agentscopea2a.v2.tools;
 
 import com.agentscopea2a.entity.SqlRegistryEntry;
 import com.agentscopea2a.mapper.gauss.SqlRegistryMapper;
+import com.agentscopea2a.v2.service.DownloadContentService;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
@@ -118,17 +119,20 @@ public class SqlRegistryExecTool {
 
     private final Map<String, DataSource> dataSourceMap;
     private final SqlRegistryMapper registryMapper;
+    private final DownloadContentService downloadContentService;
 
     public SqlRegistryExecTool(DataSource mysqlDs,
                                DataSource gaussDs,
                                DataSource clickHouseDs,
-                               SqlRegistryMapper registryMapper) {
+                               SqlRegistryMapper registryMapper,
+                               DownloadContentService downloadContentService) {
         Map<String, DataSource> m = new LinkedHashMap<>();
         m.put("mysql", mysqlDs);
         m.put("gauss", gaussDs);
         m.put("clickhouse", clickHouseDs);
         this.dataSourceMap = Collections.unmodifiableMap(m);
         this.registryMapper = registryMapper;
+        this.downloadContentService = downloadContentService;
     }
 
     @Tool(
@@ -136,6 +140,7 @@ public class SqlRegistryExecTool {
             description = "通过 sql_id 执行预注册 SQL (业务方/DBA 预审的复杂 SQL: GROUP BY/CASE WHEN/JOIN/窗口函数). "
                     + "先用 sql_list 查可用 sql_id 再传参. "
                     + "返回 markdown 表 (>=4 行时自动落 CSV artifact + 预览). "
+                    + "传 downloadFilename 则额外返回 CSV 下载短链 (内容落库, 跨会话清理安全). "
                     + "简单等值查询走 wide_table_query / clickhouse_query, 复杂聚合走本工具.")
     public ToolResultBlock sqlRegistryExec(
             @ToolParam(
@@ -149,7 +154,14 @@ public class SqlRegistryExecTool {
                             + "参数名必须在 params_schema 内 (多余参数会被拒执行防注入). "
                             + "参数名 + 类型见 sql_list 返回",
                     required = false)
-                    Map<String, Object> params) {
+                    Map<String, Object> params,
+            @ToolParam(
+                    name = "downloadFilename",
+                    description = "可选. 传了则在结果末尾附 CSV 下载短链 (内容落 url_shortener 表, 跨会话清理安全). "
+                            + "如 q2_1_杭州开发二部.csv. 不传则不生成 (默认行为不变). "
+                            + "用户明确要导出/下载时才传, 只问数据不传",
+                    required = false)
+                    String downloadFilename) {
 
         if (sqlId == null || sqlId.isBlank()) {
             return ToolResultBlock.text("sql_registry_exec 拒绝执行: sqlId 为空. 先调 sql_list 查可用 sql_id");
@@ -256,7 +268,7 @@ public class SqlRegistryExecTool {
                     ps.setObject(i + 1, finalArgs[i]);
                 }
                 try (ResultSet rs = ps.executeQuery()) {
-                    return renderResult(sqlId, paramMap, rs, System.currentTimeMillis() - start);
+                    return renderResult(sqlId, paramMap, rs, System.currentTimeMillis() - start, downloadFilename);
                 }
             }
         } catch (SQLException e) {
@@ -412,10 +424,11 @@ public class SqlRegistryExecTool {
         return out.toArray();
     }
 
-    private static ToolResultBlock renderResult(String sqlId,
-                                                Map<String, Object> params,
-                                                ResultSet rs,
-                                                long elapsedMs) throws SQLException {
+    private ToolResultBlock renderResult(String sqlId,
+                                         Map<String, Object> params,
+                                         ResultSet rs,
+                                         long elapsedMs,
+                                         String downloadFilename) throws SQLException {
         StringBuilder md = new StringBuilder();
         md.append("[sql_registry_exec] sqlId=").append(sqlId);
         if (!params.isEmpty()) {
@@ -453,6 +466,19 @@ public class SqlRegistryExecTool {
         }
         md.append("\n[sql_registry_exec] 共 ").append(totalRows).append(" 行");
         md.append(", 耗时 ").append(elapsedMs).append(" ms");
+
+        // downloadFilename 非空 -> 调 DownloadContentService 生成短链附结果末尾.
+        // content 传 md 完整文本, service 检测 markdown 表自动转 CSV (剥离头尾说明).
+        // LLM 不碰 content (不复制不转义), 一步拿到数据 + 下载链接.
+        if (downloadFilename != null && !downloadFilename.isBlank()) {
+            try {
+                String shortCode = downloadContentService.create(md.toString(), downloadFilename, "text/csv");
+                md.append("\n\n📥 下载链接: /redirect/download?shortCode=").append(shortCode)
+                  .append("\n(内容已落库, 跨会话清理安全; 把此链接放在回复里给用户点击下载)");
+            } catch (IllegalArgumentException e) {
+                md.append("\n\n⚠️ 下载链接生成失败: ").append(e.getMessage());
+            }
+        }
         return ToolResultBlock.text(md.toString());
     }
 

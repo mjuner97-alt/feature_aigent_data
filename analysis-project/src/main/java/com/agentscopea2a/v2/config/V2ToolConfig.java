@@ -20,6 +20,7 @@ import com.agentscopea2a.mapper.gauss.ScriptRegistryMapper;
 import com.agentscopea2a.mapper.gauss.SqlRegistryMapper;
 import com.agentscopea2a.mapper.gauss.UrlShortenerMapper;
 import com.agentscopea2a.v2.config.V2SandboxConfig.SandboxPropertiesV2;
+import com.agentscopea2a.v2.service.DownloadContentService;
 import com.agentscopea2a.v2.service.UrlShortenerService;
 import com.agentscopea2a.v2.skills.SkillEntry;
 import com.agentscopea2a.v2.skills.SkillIndexRepository;
@@ -153,10 +154,11 @@ public class V2ToolConfig {
             @Qualifier("mysqlDataSource") DataSource mysqlDataSource,
             @Qualifier("gaussDataSource") DataSource gaussDataSource,
             @Qualifier("clickHouseDataSource") DataSource clickHouseDataSource,
-            SqlRegistryMapper sqlRegistryMapper) {
-        log.info("SqlRegistryExecTool: wired (mysql/gauss/clickhouse routing + sql_registry lookup)");
+            SqlRegistryMapper sqlRegistryMapper,
+            DownloadContentService downloadContentService) {
+        log.info("SqlRegistryExecTool: wired (mysql/gauss/clickhouse routing + sql_registry lookup + downloadFilename)");
         return new SqlRegistryExecTool(mysqlDataSource, gaussDataSource, clickHouseDataSource,
-                sqlRegistryMapper);
+                sqlRegistryMapper, downloadContentService);
     }
 
     // ── Script Registry (Python 指标脚本: SQL 取数 + pandas 算指标一次完成) ──
@@ -195,8 +197,14 @@ public class V2ToolConfig {
     // ── URL shortener + CSV download tool ──────────────────────────────────
     @Bean
     public UrlShortenerService urlShortenerService(UrlShortenerMapper urlShortenerMapper) {
-        log.info("UrlShortenerService: wired (MySQL-backed url_shortener table)");
+        log.info("UrlShortenerService: wired (GaussDB-backed url_shortener table)");
         return new UrlShortenerService(urlShortenerMapper);
+    }
+
+    @Bean
+    public DownloadContentService downloadContentService(UrlShortenerMapper urlShortenerMapper) {
+        log.info("DownloadContentService: wired (content -> url_shortener table, markdown->CSV)");
+        return new DownloadContentService(urlShortenerMapper);
     }
 
     @Bean
