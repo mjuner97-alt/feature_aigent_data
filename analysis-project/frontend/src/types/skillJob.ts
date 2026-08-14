@@ -57,6 +57,8 @@ export interface SkillJobExecution {
   startedAt: string;
   completedAt: string;
   createdAt: string;
+  /** 排队位置"前面还有N个"，仅 PENDING 状态有值，其余为 null */
+  queueAhead?: number | null;
 }
 
 /** 依赖指标（admin 预置只读，对应后端 SkillDependencyMetricDto） */

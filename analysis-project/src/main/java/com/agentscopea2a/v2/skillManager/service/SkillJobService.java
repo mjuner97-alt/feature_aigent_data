@@ -35,6 +35,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -216,7 +217,7 @@ public class SkillJobService {
         }
         log.info("[SkillJob] trigger: jobId={}, name={}, executionId={}, userId={}",
                 jobId, job.getName(), exec.getId(), userId);
-        return SkillJobExecutionDto.of(exec);
+        return SkillJobExecutionDto.of(exec, queueAheadOf(exec));
     }
 
     /**
@@ -243,7 +244,7 @@ public class SkillJobService {
         // 执行身份取自 Job 的 createdBy，调度器 doExecuteJob 同样以 createdBy 跑
         log.info("[SkillJob] triggerByName: name={}, jobId={}, executionId={}, createdBy={}",
                 name, job.getId(), exec.getId(), job.getCreatedBy());
-        return SkillJobExecutionDto.of(exec);
+        return SkillJobExecutionDto.of(exec, queueAheadOf(exec));
     }
 
     /** 列出启用的依赖指标（供前端下拉，admin 预置只读） */
@@ -317,18 +318,68 @@ public class SkillJobService {
         }
     }
 
-    /** 查询执行记录列表 */
+    /** 查询执行记录列表（PENDING 行附带排队位置"前面还有N个"） */
     public List<SkillJobExecutionDto> listExecutions(Long jobId, String status) {
-        return mapper.selectExecutionsByJobId(jobId, status).stream().map(SkillJobExecutionDto::of).toList();
+        return enrichQueueAhead(mapper.selectExecutionsByJobId(jobId, status));
     }
 
-    /** 查询单条执行记录 */
+    /** 查询单条执行记录（PENDING 附带排队位置） */
     public SkillJobExecutionDto getExecution(Long execId) {
         SkillJobExecution exec = mapper.selectExecutionById(execId);
         if (exec == null) {
             throw new IllegalStateException("JobNotFound: 执行记录不存在 (id=" + execId + ")");
         }
-        return SkillJobExecutionDto.of(exec);
+        return SkillJobExecutionDto.of(exec, queueAheadOf(exec));
+    }
+
+    // ==================== 排队位置 ====================
+
+    /**
+     * 计算当前所有 PENDING 执行记录的排队位置（"前面还有几个在跑/排队"）。
+     * 池分组与调度器一致：MANUAL 独立一组，METRIC/EXTERNAL 同属批量一组。
+     * ahead = 同池 status=RUNNING 的数量 + 同池 status=PENDING 且 id 更小的数量。
+     * 一次查 inflight + 内存分组计数，避免 N+1。
+     */
+    private Map<Long, Integer> buildQueueAheadMap() {
+        List<SkillJobExecution> inflight = mapper.selectInflightExecutions();
+        if (inflight.isEmpty()) {
+            return Map.of();
+        }
+        // 按池分组：MANUAL -> true，其余(METRIC/EXTERNAL) -> false
+        Map<Boolean, List<SkillJobExecution>> byPool = inflight.stream()
+                .collect(Collectors.groupingBy(e -> "MANUAL".equals(e.getTriggerType())));
+        Map<Long, Integer> result = new HashMap<>();
+        for (Map.Entry<Boolean, List<SkillJobExecution>> entry : byPool.entrySet()) {
+            List<SkillJobExecution> pool = entry.getValue();
+            long running = pool.stream().filter(e -> "RUNNING".equals(e.getStatus())).count();
+            for (SkillJobExecution e : pool) {
+                if (!"PENDING".equals(e.getStatus())) continue;
+                long pendingBefore = pool.stream()
+                        .filter(x -> "PENDING".equals(x.getStatus()) && x.getId() < e.getId())
+                        .count();
+                result.put(e.getId(), (int) (running + pendingBefore));
+            }
+        }
+        return result;
+    }
+
+    /** 给一批执行记录构造 DTO：仅当存在 PENDING 时查一次 inflight 填排队位置，其余行 queueAhead=null。 */
+    private List<SkillJobExecutionDto> enrichQueueAhead(List<SkillJobExecution> execs) {
+        boolean hasPending = execs.stream().anyMatch(e -> "PENDING".equals(e.getStatus()));
+        if (!hasPending) {
+            return execs.stream().map(SkillJobExecutionDto::of).toList();
+        }
+        Map<Long, Integer> aheadMap = buildQueueAheadMap();
+        return execs.stream()
+                .map(e -> SkillJobExecutionDto.of(e,
+                        "PENDING".equals(e.getStatus()) ? aheadMap.get(e.getId()) : null))
+                .toList();
+    }
+
+    /** 单条执行记录的排队位置：仅 PENDING 计算，其余返回 null。 */
+    private Integer queueAheadOf(SkillJobExecution exec) {
+        if (!"PENDING".equals(exec.getStatus())) return null;
+        return buildQueueAheadMap().getOrDefault(exec.getId(), 0);
     }
 
     /**

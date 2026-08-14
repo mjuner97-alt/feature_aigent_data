@@ -89,6 +89,11 @@ function triggerText(t: string) {
 function statusClass(s: string) {
   return { RUNNING: 'st-running', SUCCESS: 'st-success', FAILED: 'st-failed', PENDING: 'st-pending', SKIPPED: 'st-skipped' }[s] || '';
 }
+/** 排队位置文案：仅 PENDING 且后端返回了 queueAhead 时展示；0 显示"即将执行"。 */
+function queueAheadText(exec: SkillJobExecution): string {
+  if (exec.status !== 'PENDING' || exec.queueAhead == null) return '';
+  return exec.queueAhead === 0 ? '即将执行' : `前面还有 ${exec.queueAhead} 个`;
+}
 function fmtTime(t: string) {
   if (!t) return '-';
   return t.replace('T', ' ').substring(0, 19);
@@ -154,6 +159,7 @@ async function viewFile(execId: number) {
                 <div class="exec-row" @click="toggle(exec.id)">
                   <span class="exec-id">#{{ exec.id }}</span>
                   <span class="exec-status" :class="statusClass(exec.status)">{{ statusText(exec.status) }}</span>
+                  <span v-if="queueAheadText(exec)" class="exec-queue-ahead">{{ queueAheadText(exec) }}</span>
                   <span class="exec-trigger">{{ triggerText(exec.triggerType) }}</span>
                   <span class="exec-time">{{ fmtTime(exec.startedAt) }}</span>
                   <span class="exec-toggle">{{ expandedId === exec.id ? '▾' : '▸' }}</span>
@@ -235,6 +241,7 @@ async function viewFile(execId: number) {
 .st-pending { background: #fef3c7; color: #92400e; }
 .st-skipped { background: #f1f5f9; color: #64748b; }
 .exec-trigger { font-size: 12px; color: #64748b; }
+.exec-queue-ahead { font-size: 12px; color: #92400e; background: #fffbeb; padding: 2px 8px; border-radius: 4px; border: 1px solid #fde68a; white-space: nowrap; }
 .exec-time { font-size: 12px; color: #94a3b8; margin-left: auto; }
 .exec-toggle { color: #94a3b8; font-size: 14px; }
 

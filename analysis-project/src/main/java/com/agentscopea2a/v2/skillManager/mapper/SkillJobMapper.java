@@ -57,6 +57,9 @@ public interface SkillJobMapper {
             @Param("jobId") Long jobId,
             @Param("status") String status);
 
+    /** 查询所有进行中的执行记录(PENDING/RUNNING)，按 id 升序，供排队位置"前面还有N个"计算 */
+    List<SkillJobExecution> selectInflightExecutions();
+
     void updateExecutionStatus(SkillJobExecution exec);
 
     /** 删除执行记录（触发被拒时清理刚插入的 PENDING，避免孤儿记录） */

@@ -439,9 +439,22 @@ public class HarnessRunnerProperties {
         private boolean enabled = true;
         private long executionTimeoutSeconds = 300;
 
+        /** 手动触发(MANUAL)专用线程池大小；与批量池隔离，自动触发堆积不阻塞手动触发 */
+        private int manualPoolSize = 2;
+        /** 批量/外部触发(METRIC/EXTERNAL)专用线程池大小 */
+        private int batchPoolSize = 2;
+        /** 执行队列容量上限：两个池各自独立的有界队列容量，超出拒绝新提交 */
+        private int queueCapacity = 100;
+
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean v) { this.enabled = v; }
         public long getExecutionTimeoutSeconds() { return executionTimeoutSeconds; }
         public void setExecutionTimeoutSeconds(long v) { this.executionTimeoutSeconds = v; }
+        public int getManualPoolSize() { return manualPoolSize; }
+        public void setManualPoolSize(int v) { this.manualPoolSize = v; }
+        public int getBatchPoolSize() { return batchPoolSize; }
+        public void setBatchPoolSize(int v) { this.batchPoolSize = v; }
+        public int getQueueCapacity() { return queueCapacity; }
+        public void setQueueCapacity(int v) { this.queueCapacity = v; }
     }
 }
