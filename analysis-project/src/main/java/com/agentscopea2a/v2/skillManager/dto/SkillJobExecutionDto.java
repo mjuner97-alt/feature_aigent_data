@@ -24,6 +24,9 @@ import java.time.LocalDateTime;
  * SkillJob 执行记录响应 DTO。
  * resolvedOutputPath 加 @JsonIgnore 不序列化给前端（磁盘路径，仅后端下载时按 baseDir + createdBy 拼解析）；
  * 前端判"有没有文件"用 mdFileExists。
+ *
+ * queueAhead 为排队位置："前面还有几个在跑/排队"，仅 PENDING 状态有值，其余状态为 null。
+ * 由 Service 根据 skill_job_execution 表 PENDING/RUNNING 记录按所属池(trigger_type 分组)实时计算。
  */
 public record SkillJobExecutionDto(
         Long id,
@@ -37,15 +40,21 @@ public record SkillJobExecutionDto(
         String errorMsg,
         LocalDateTime startedAt,
         LocalDateTime completedAt,
-        LocalDateTime createdAt
+        LocalDateTime createdAt,
+        Integer queueAhead
 ) {
     public static SkillJobExecutionDto of(SkillJobExecution exec) {
+        return of(exec, null);
+    }
+
+    /** 带 queueAhead 的构造：queueAhead 为排队位置，仅 PENDING 传入有意义，其余传 null。 */
+    public static SkillJobExecutionDto of(SkillJobExecution exec, Integer queueAhead) {
         return new SkillJobExecutionDto(
                 exec.getId(), exec.getJobId(), exec.getTriggerType(),
                 exec.getStatus(), exec.getConversationId(),
                 exec.getResolvedOutputPath(),
                 exec.getMdFileWritten(), exec.getMdFileExists(),
                 exec.getErrorMsg(), exec.getStartedAt(),
-                exec.getCompletedAt(), exec.getCreatedAt());
+                exec.getCompletedAt(), exec.getCreatedAt(), queueAhead);
     }
 }

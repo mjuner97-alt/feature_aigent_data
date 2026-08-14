@@ -19,8 +19,8 @@ import java.util.regex.Pattern;
  *
  * <p>渲染流程：
  * <ol>
- *   <li>抽取 {@code ```echarts {option JSON}```} 代码块，每个块对应一张 echarts 图表；
- *       块之间的 Markdown 片段分别转 HTML。</li>
+ *   <li>抽取 {@code ```echarts {option JSON}```} 代码块与 {@code <echart>...</echart>} 标签块，
+ *       每块对应一张 echarts 图表；块之间的 Markdown 片段分别转 HTML。</li>
  *   <li>Markdown -> HTML：移植自前端 {@code Markdown.vue} 的手写渲染逻辑
  *       （标题/GFM 管道表格/列表/代码块/行内代码/粗斜体/引用/hr/链接/段落），无需引入第三方依赖。</li>
  *   <li>组装完整 HTML 文档：内联 CSS（表格斑马纹/边框/表头底色）+ 内联 echarts.min.js
@@ -38,9 +38,19 @@ public class HtmlReportRenderer {
     /** classpath 下的 echarts.min.js 资源路径。 */
     private static final String ECHARTS_RESOURCE = "report-assets/echarts.min.js";
 
-    /** 匹配 ```echarts ... ``` 代码块，捕获块内 JSON（大小写不敏感，兼容 ```ECHARTS）。 */
-    private static final Pattern ECHARTS_BLOCK =
-            Pattern.compile("```echarts\\s*([\\s\\S]*?)```", Pattern.CASE_INSENSITIVE);
+    /**
+     * 匹配图表块，两种形式（按文档顺序）：
+     * <ol>
+     *   <li>{@code ```echarts ... ```} 围栏块（大小写不敏感，兼容 ```ECHARTS）；</li>
+     *   <li>{@code <echart>...</echart>} / {@code <echarts>...</echarts>} 标签包裹的 option JSON
+     *       （不以围栏开头，AI 有时用该形式输出图表）。</li>
+     * </ol>
+     * 捕获组：1=围栏块内 JSON；2=标签名；3=标签内内容。
+     */
+    private static final Pattern CHART_BLOCK = Pattern.compile(
+            "(?:```echarts\\s*([\\s\\S]*?)```)"
+                    + "|(?:<(echart|echarts)\\b[^>]*>([\\s\\S]*?)</\\2\\s*>)",
+            Pattern.CASE_INSENSITIVE);
 
     /** 普通代码块（非 echarts）：```lang\n code ```。 */
     private static final Pattern CODE_BLOCK =
@@ -62,9 +72,14 @@ public class HtmlReportRenderer {
     private static final Pattern ITALIC = Pattern.compile("\\*([^*]+)\\*");
     private static final Pattern INLINE_CODE = Pattern.compile("`([^`]+)`");
     private static final Pattern LINK = Pattern.compile("\\[([^\\]]+)\\]\\(([^)]+)\\)");
-    /** 段落：不以块级标签开头的行包 &lt;div&gt;。 */
+    /**
+     * 段落：不以块级标签开头的行包 &lt;p&gt;。除块级标签字面外，还排除「转义后待还原的安全标签」行
+     * （行首为 &amp;lt; 后跟字母 / 斜杠 / 感叹号，如 AI 直出的 &lt;table&gt;/&lt;tr&gt;/&lt;td&gt;）。
+     * 否则这些行先被包 &lt;p&gt;、unescape 还原标签后变成 &lt;p&gt;&lt;table&gt;&lt;/p&gt; 之类结构，
+     * 浏览器 foster parenting 会把表格拆成阶梯状，无法正常显示为表格。
+     */
     private static final Pattern PARAGRAPH =
-            Pattern.compile("^(?!<[hou]|<li|<div|<pre|<blockquote|<table|<ul|<ol|<hr)(.+)$", Pattern.MULTILINE);
+            Pattern.compile("^(?!<[hou]|<li|<div|<pre|<blockquote|<table|<ul|<ol|<hr|&lt;[a-zA-Z!/])(.+)$", Pattern.MULTILINE);
 
     // ── 表格行识别 ──────────────────────────────────────────────────────────
     private static final Pattern TABLE_HEADER = Pattern.compile("^\\s*\\|.*\\|\\s*$");
@@ -172,7 +187,7 @@ public class HtmlReportRenderer {
     /**
      * 渲染 Markdown 为自包含 HTML 文档。
      *
-     * @param markdown AI 输出的 Markdown（含可能的 {@code ```echarts} 图表块）
+     * @param markdown AI 输出的 Markdown（含可能的 {@code ```echarts} 或 {@code <echart>} 图表块）
      * @param title    报告标题（HTML &lt;title&gt;，会 HTML 转义）
      * @return 完整 HTML 文档字符串
      */
@@ -189,26 +204,10 @@ public class HtmlReportRenderer {
             return renderCompleteHtml(md, safeTitle);
         }
 
-        // 1. 按 echarts 块切分：块间片段转 HTML，块位置插入图表占位 div
+        // 1. 按图表块切分（```echarts 围栏 + <echart>/<echarts> 标签两种形式）：
+        //    块间片段转 HTML，块位置插入图表占位 div
         StringBuilder body = new StringBuilder();
-        List<ChartBlock> charts = new ArrayList<>();
-        Matcher m = ECHARTS_BLOCK.matcher(md);
-        int last = 0;
-        int idx = 0;
-        while (m.find()) {
-            if (m.start() > last) {
-                body.append(markdownToHtml(md.substring(last, m.start())));
-            }
-            String json = m.group(1).trim();
-            String chartId = "echarts-" + idx;
-            body.append("<div class=\"echarts-chart\" id=\"").append(chartId).append("\"></div>\n");
-            charts.add(new ChartBlock(chartId, json));
-            idx++;
-            last = m.end();
-        }
-        if (last < md.length()) {
-            body.append(markdownToHtml(md.substring(last)));
-        }
+        List<ChartBlock> charts = splitCharts(md, body, true);
 
         return assembleHtml(safeTitle, body.toString(), charts, "");
     }
@@ -237,26 +236,9 @@ public class HtmlReportRenderer {
         // <style> 已收集到 extraStyles 注入 head，从 body 移除避免重复
         bodyContent = STYLE_BLOCK.matcher(bodyContent).replaceAll("");
 
-        // 仍扫描 echarts 代码块（body 内若有 ```echarts 也渲染成图），其余原样为 HTML
+        // 仍扫描图表块（body 内若有 ```echarts 或 <echart> 也渲染成图），其余原样为 HTML
         StringBuilder body = new StringBuilder();
-        List<ChartBlock> charts = new ArrayList<>();
-        Matcher m = ECHARTS_BLOCK.matcher(bodyContent);
-        int last = 0;
-        int idx = 0;
-        while (m.find()) {
-            if (m.start() > last) {
-                body.append(bodyContent.substring(last, m.start()));  // raw HTML，不走 markdown
-            }
-            String json = m.group(1).trim();
-            String chartId = "echarts-" + idx;
-            body.append("<div class=\"echarts-chart\" id=\"").append(chartId).append("\"></div>\n");
-            charts.add(new ChartBlock(chartId, json));
-            idx++;
-            last = m.end();
-        }
-        if (last < bodyContent.length()) {
-            body.append(bodyContent.substring(last));
-        }
+        List<ChartBlock> charts = splitCharts(bodyContent, body, false);
 
         return assembleHtml(safeTitle, body.toString(), charts, extraStyles.toString());
     }
@@ -269,6 +251,49 @@ public class HtmlReportRenderer {
         Matcher close = BODY_CLOSE.matcher(html);
         int end = close.find(start) ? close.start() : html.length();
         return html.substring(start, end);
+    }
+
+    /**
+     * 按图表块（```echarts 围栏 + <echart>/<echarts> 标签）切分文本：
+     * 块间片段追加到 {@code body}（renderMdLeftovers=true 走 markdown 转换，false 原样为 HTML），
+     * 块位置插入图表占位 div，返回各图表块（DOM id + option JSON）。
+     */
+    private List<ChartBlock> splitCharts(String text, StringBuilder body, boolean renderMdLeftovers) {
+        List<ChartBlock> charts = new ArrayList<>();
+        Matcher m = CHART_BLOCK.matcher(text);
+        int last = 0;
+        int idx = 0;
+        while (m.find()) {
+            if (m.start() > last) {
+                body.append(renderMdLeftovers
+                        ? markdownToHtml(text.substring(last, m.start()))
+                        : text.substring(last, m.start()));  // raw HTML，不走 markdown
+            }
+            // 围栏块取 g1；标签块取 g3 并去掉标签内容里可能残留的 ``` 围栏
+            String json = (m.group(1) != null ? m.group(1) : stripFences(m.group(3))).trim();
+            String chartId = "echarts-" + idx;
+            body.append("<div class=\"echarts-chart\" id=\"").append(chartId).append("\"></div>\n");
+            charts.add(new ChartBlock(chartId, json));
+            idx++;
+            last = m.end();
+        }
+        if (last < text.length()) {
+            body.append(renderMdLeftovers ? markdownToHtml(text.substring(last)) : text.substring(last));
+        }
+        return charts;
+    }
+
+    /** 去掉标签内容首尾残留的 ``` 围栏（兼容 <echart> 内又套 ```echarts 的双重包裹）。 */
+    private static String stripFences(String s) {
+        if (s == null) return "";
+        String t = s.trim();
+        if (t.startsWith("```")) {
+            int nl = t.indexOf('\n');
+            t = nl >= 0 ? t.substring(nl + 1) : t.substring(3);
+            if (t.endsWith("```")) t = t.substring(0, t.length() - 3);
+            t = t.trim();
+        }
+        return t;
     }
 
     // ── 组装完整 HTML 文档 ────────────────────────────────────────────────────

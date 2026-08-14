@@ -34,6 +34,7 @@ import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -58,6 +59,10 @@ import java.util.concurrent.*;
  * <p>使用固定大小线程池 + 有界队列排队执行，支持并行度和失败重试配置。
  * 外部任务完成后通过 HTTP 接口触发，多个触发请求会自动排队。
  *
+ * <p>手动触发(MANUAL)与批量/外部触发(METRIC/EXTERNAL)分别使用独立线程池(directExecutor /
+ * batchExecutor)，互不阻塞：自动触发堆积不会卡住手动触发。池大小与队列容量配置驱动
+ * (harness.a2a.skill-job.manual-pool-size / batch-pool-size / queue-capacity)。
+ *
  * <p>同一 Job 同时只允许一个执行实例（排队或运行中），重复触发直接拒绝，
  * 避免重复调 AI / 重复生成 MD。
  *
@@ -65,7 +70,7 @@ import java.util.concurrent.*;
  * 调度执行时复用该记录更新为 RUNNING -> SUCCESS/FAILED/SKIPPED，
  * 重试不新建记录，只在同一条上更新状态。
  *
- * <p>并行度、重试次数、退避时间等参数以常量定义在本类中，便于集中维护。
+ * <p>重试次数、退避时间等参数以常量定义在本类中，便于集中维护。
  */
 @Component
 @ConditionalOnProperty(prefix = "harness.a2a.skill-job", name = "enabled", havingValue = "true", matchIfMissing = true)
@@ -74,12 +79,8 @@ public class SkillJobScheduler implements WriteCallback {
     private static final Logger log = LoggerFactory.getLogger(SkillJobScheduler.class);
 
     // ==================== 可调常量 ====================
-
-    /** 并行执行线程数：同时最多几个 Job 并行执行 */
-    private static final int MAX_PARALLEL = 2;
-
-    /** 执行队列容量：超出后拒绝新提交（防止触发暴增时无限堆积） */
-    private static final int QUEUE_CAPACITY = 100;
+    // 注：线程池大小与队列容量已改为配置驱动(harness.a2a.skill-job.manual-pool-size /
+    // batch-pool-size / queue-capacity)，见 HarnessRunnerProperties.SkillJobConfig。
 
     /** 失败后最大重试次数（不含首次执行） */
     private static final int MAX_RETRY_ATTEMPTS = 3;
@@ -120,20 +121,20 @@ public class SkillJobScheduler implements WriteCallback {
     @Autowired
     private NotificationService notificationService;
 
-    /** 固定大小线程池 + 有界队列：控制并行度，队列满时拒绝新提交 */
-    private final ExecutorService executor = new ThreadPoolExecutor(
-            MAX_PARALLEL, MAX_PARALLEL,
-            0L, TimeUnit.MILLISECONDS,
-            new LinkedBlockingQueue<>(QUEUE_CAPACITY),
-            r -> {
-                Thread t = new Thread(r, "skill-job-executor");
-                t.setDaemon(true);
-                return t;
-            },
-            new ThreadPoolExecutor.AbortPolicy());
+    /**
+     * 手动触发(MANUAL)专用线程池：与批量池完全隔离，批量/自动触发堆积时不阻塞手动触发。
+     * 在构造器中按 config 初始化（需读取配置值）。
+     */
+    private final ExecutorService directExecutor;
 
     /**
-     * 重试退避调度器：单线程 daemon，仅用于延迟后把重试重新入队到 {@link #executor}。
+     * 批量/外部触发(METRIC/EXTERNAL)专用线程池：与手动池隔离，自动触发暴增只影响本池。
+     * 在构造器中按 config 初始化。
+     */
+    private final ExecutorService batchExecutor;
+
+    /**
+     * 重试退避调度器：单线程 daemon，仅用于延迟后把重试重新入队到 {@link #executorFor(String) 对应触发类型的执行池}。
      * 退避等待期间不占用 worker 线程，避免重试 sleep 拖垮实际并行度。
      */
     private final ScheduledExecutorService retryScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -171,11 +172,46 @@ public class SkillJobScheduler implements WriteCallback {
         this.workspace = Paths.get(properties.getWorkspace().getPath()).toAbsolutePath();
         this.writeMarkdownTool = writeMarkdownTool;
         this.htmlReportRenderer = htmlReportRenderer;
+        // 手动/批量各自独立线程池：互不阻塞，大小与队列容量均配置驱动
+        this.directExecutor = newThreadPool(config.getManualPoolSize(), config.getQueueCapacity(), "skill-job-manual-executor");
+        this.batchExecutor = newThreadPool(config.getBatchPoolSize(), config.getQueueCapacity(), "skill-job-batch-executor");
         TimeoutValues metric = TIMEOUT_PROFILES.get(TimeoutProfile.METRIC);
-        log.info("SkillJobScheduler: workspace={}, timeout={}s, metricBlockTimeout={}s, maxParallel={}, queueCap={}, maxRetry={}, backoff={}ms*x{}",
+        log.info("SkillJobScheduler: workspace={}, timeout={}s, metricBlockTimeout={}s, manualPool={}*queue{}, batchPool={}*queue{}, maxRetry={}, backoff={}ms*x{}",
                 workspace, config.getExecutionTimeoutSeconds(),
                 metric != null ? metric.blockSeconds() : config.getExecutionTimeoutSeconds(),
-                MAX_PARALLEL, QUEUE_CAPACITY, MAX_RETRY_ATTEMPTS, RETRY_INITIAL_BACKOFF_MS, RETRY_BACKOFF_MULTIPLIER);
+                config.getManualPoolSize(), config.getQueueCapacity(),
+                config.getBatchPoolSize(), config.getQueueCapacity(),
+                MAX_RETRY_ATTEMPTS, RETRY_INITIAL_BACKOFF_MS, RETRY_BACKOFF_MULTIPLIER);
+    }
+
+    /** 构建固定大小 + 有界队列的线程池（daemon 线程，队列满时 AbortPolicy 拒绝新提交）。 */
+    private static ExecutorService newThreadPool(int poolSize, int queueCapacity, String threadName) {
+        int n = Math.max(1, poolSize);
+        int cap = Math.max(1, queueCapacity);
+        return new ThreadPoolExecutor(
+                n, n,
+                0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(cap),
+                r -> {
+                    Thread t = new Thread(r, threadName);
+                    t.setDaemon(true);
+                    return t;
+                },
+                new ThreadPoolExecutor.AbortPolicy());
+    }
+
+    /** 按触发类型选执行池：MANUAL -> directExecutor；METRIC/EXTERNAL -> batchExecutor（与 laneFlags 同判）。 */
+    private ExecutorService executorFor(String triggerType) {
+        return "MANUAL".equals(triggerType) ? directExecutor : batchExecutor;
+    }
+
+    /** 应用关闭时优雅停机：排空两个执行池与重试调度器（线程为 daemon，不调也不影响 JVM 退出，这里做清理）。 */
+    @PreDestroy
+    public void shutdown() {
+        retryScheduler.shutdown();
+        directExecutor.shutdown();
+        batchExecutor.shutdown();
+        log.info("SkillJobScheduler executors shut down");
     }
 
     /**
@@ -212,12 +248,12 @@ public class SkillJobScheduler implements WriteCallback {
             return false;
         }
         try {
-            executor.submit(() -> executeJobAttempt(jobId, executionId, 1, null, triggerType));
+            executorFor(triggerType).submit(() -> executeJobAttempt(jobId, executionId, 1, null, triggerType));
             return true;
         } catch (RejectedExecutionException e) {
             lane.remove(jobId);
-            log.error("Job {} submit rejected, queue full (cap={})", jobId, QUEUE_CAPACITY, e);
-            throw new IllegalStateException("JobQueueFull: 执行队列已满，请稍后重试 (jobId=" + jobId + ")");
+            log.error("Job {} submit rejected, {} queue full (cap={})", jobId, triggerType, config.getQueueCapacity(), e);
+            throw new IllegalStateException("JobQueueFull: 执行队列已满，请稍后重试 (jobId=" + jobId + ", lane=" + triggerType + ")");
         }
     }
 
@@ -227,7 +263,7 @@ public class SkillJobScheduler implements WriteCallback {
     }
 
     /**
-     * 执行一次 Job 尝试（可重入：重试由 {@link #retryScheduler} 延迟后重新入队到 {@link #executor}）。
+     * 执行一次 Job 尝试（可重入：重试由 {@link #retryScheduler} 延迟后重新入队到 {@link #executorFor(String) 对应触发类型的执行池}）。
      *
      * <p>重试退避等待不再用 {@code Thread.sleep} 阻塞 worker 线程，而是 schedule 延迟任务把
      * 下一次尝试重新提交到主线程池，等待期间 worker 可服务其它 Job。
@@ -295,7 +331,7 @@ public class SkillJobScheduler implements WriteCallback {
     }
 
     /**
-     * 延迟后将重试尝试重新入队到 {@link #executor}。退避等待在 {@link #retryScheduler} 上完成，
+     * 延迟后将重试尝试重新入队到 {@link #executorFor(String) 对应触发类型的执行池}。退避等待在 {@link #retryScheduler} 上完成，
      * 不占用 worker 线程。调度器不可用时放弃并释放对应 lane 标志。
      */
     private void scheduleRetry(Long jobId, Long executionId, int nextAttempt, String firstError, long backoffMs, String triggerType) {
@@ -310,13 +346,13 @@ public class SkillJobScheduler implements WriteCallback {
         }
     }
 
-    /** 把重试尝试提交回主线程池（受 MAX_PARALLEL 并发约束）；队列满则放弃并释放对应 lane 标志。 */
+    /** 把重试尝试提交回对应触发类型的执行池（受该池并发约束）；队列满则放弃并释放对应 lane 标志。 */
     private void resubmitRetry(Long jobId, Long executionId, int attempt, String firstError, String triggerType) {
         try {
-            executor.submit(() -> executeJobAttempt(jobId, executionId, attempt, firstError, triggerType));
+            executorFor(triggerType).submit(() -> executeJobAttempt(jobId, executionId, attempt, firstError, triggerType));
         } catch (RejectedExecutionException e) {
             // 重试入队失败：本次重试放弃（执行记录维持 FAILED），释放对应 lane 标志
-            log.error("Job {} retry resubmit rejected (queue full), giving up", jobId, e);
+            log.error("Job {} retry resubmit rejected ({} queue full), giving up", jobId, triggerType, e);
             laneFlags(triggerType).remove(jobId);
             markExecutionFailed(executionId, "重试重新入队失败（执行队列已满）", firstError);
         }
