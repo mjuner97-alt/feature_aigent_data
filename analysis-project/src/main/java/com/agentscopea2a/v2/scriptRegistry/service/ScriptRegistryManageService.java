@@ -2,10 +2,13 @@ package com.agentscopea2a.v2.scriptRegistry.service;
 
 import com.agentscopea2a.entity.ScriptRegistryEntry;
 import com.agentscopea2a.mapper.gauss.ScriptRegistryMapper;
+import com.agentscopea2a.v2.skillManager.service.MockOrgService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
@@ -21,9 +24,11 @@ import java.util.stream.Collectors;
 public class ScriptRegistryManageService {
 
     private final ScriptRegistryMapper mapper;
+    private final MockOrgService mockOrgService;
 
-    public ScriptRegistryManageService(ScriptRegistryMapper mapper) {
+    public ScriptRegistryManageService(ScriptRegistryMapper mapper, MockOrgService mockOrgService) {
         this.mapper = mapper;
+        this.mockOrgService = mockOrgService;
     }
 
     // ======================================================================
@@ -36,7 +41,7 @@ public class ScriptRegistryManageService {
      * createdBy 模糊匹配 (忽略大小写, 适合输入框).
      */
     public List<ScriptRegistryEntry> list(String datasource, String createdBy) {
-        return mapper.selectAll().stream()
+        List<ScriptRegistryEntry> entries = mapper.selectAll().stream()
                 .filter(e -> datasource == null || datasource.isBlank()
                         || (e.getDatasources() != null
                                 && e.getDatasources().toLowerCase().contains(datasource.toLowerCase())))
@@ -44,6 +49,31 @@ public class ScriptRegistryManageService {
                         || (e.getCreatedBy() != null
                                 && e.getCreatedBy().toLowerCase().contains(createdBy.toLowerCase())))
                 .collect(Collectors.toList());
+        fillCreatedByName(entries);
+        return entries;
+    }
+
+    /**
+     * 按 createdBy 批量查 developer_pl_person_info 姓名, 回填 createdByName (展示用)。
+     * 查不到的 userId 不在 Map 中, createdByName 留空, 前端回退到仅显示 userId。
+     */
+    private void fillCreatedByName(List<ScriptRegistryEntry> entries) {
+        if (entries == null || entries.isEmpty()) {
+            return;
+        }
+        List<String> userIds = entries.stream()
+                .map(ScriptRegistryEntry::getCreatedBy)
+                .filter(Objects::nonNull)
+                .filter(id -> !id.isBlank())
+                .distinct()
+                .toList();
+        if (userIds.isEmpty()) {
+            return;
+        }
+        Map<String, String> nameMap = mockOrgService.getUserNameMap(userIds);
+        for (ScriptRegistryEntry e : entries) {
+            e.setCreatedByName(nameMap.get(e.getCreatedBy()));
+        }
     }
 
     public ScriptRegistryEntry getById(Long id) {
