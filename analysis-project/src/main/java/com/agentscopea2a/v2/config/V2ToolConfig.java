@@ -202,9 +202,12 @@ public class V2ToolConfig {
     }
 
     @Bean
-    public DownloadContentService downloadContentService(UrlShortenerMapper urlShortenerMapper) {
-        log.info("DownloadContentService: wired (content -> url_shortener table, markdown->CSV)");
-        return new DownloadContentService(urlShortenerMapper);
+    public DownloadContentService downloadContentService(
+            UrlShortenerMapper urlShortenerMapper,
+            @Value("${harness.a2a.csv-download.base-url:}") String baseUrl) {
+        log.info("DownloadContentService: wired (content -> url_shortener table, markdown->CSV, baseUrl={})",
+                baseUrl == null || baseUrl.isBlank() ? "(relative)" : baseUrl);
+        return new DownloadContentService(urlShortenerMapper, baseUrl);
     }
 
     @Bean

@@ -61,10 +61,28 @@ public class DownloadContentService {
     private static final int MAX_COLLISION_RETRIES = 5;
 
     private final UrlShortenerMapper urlShortenerMapper;
+    private final String baseUrl;
     private final Random random = new Random();
 
-    public DownloadContentService(UrlShortenerMapper urlShortenerMapper) {
+    public DownloadContentService(UrlShortenerMapper urlShortenerMapper, String baseUrl) {
         this.urlShortenerMapper = urlShortenerMapper;
+        this.baseUrl = baseUrl == null ? "" : stripTrailingSlash(baseUrl.strip());
+    }
+
+    /**
+     * 拼下载短链 URL. baseUrl 空 -> 相对路径 {@code /redirect/download?shortCode=xxx}
+     * (前端 vite proxy 转发); baseUrl 设了 -> 拼完整 URL {@code <baseUrl>/redirect/download?shortCode=xxx}
+     * (内网前后端不同 IP / 跨域 / 直连后端 8081 时用).
+     *
+     * <p>行为与 {@link com.agentscopea2a.v2.tools.CsvDownloadTool#generateCsvDownloadUrl} 对齐,
+     * 保证两条下载路径 (content 落库 / 磁盘 artifact) 生成的链接格式一致.
+     */
+    public String buildDownloadUrl(String shortCode) {
+        return baseUrl + "/redirect/download?shortCode=" + shortCode;
+    }
+
+    private static String stripTrailingSlash(String s) {
+        return s.endsWith("/") ? s.substring(0, s.length() - 1) : s;
     }
 
     /**

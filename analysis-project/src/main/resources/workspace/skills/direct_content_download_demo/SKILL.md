@@ -66,9 +66,8 @@ sql_registry_exec(
 - 提示链接长期有效, 内容落库不受会话清理影响
 
 - ⚠️ **下载链接必须用 markdown 链接语法** `[文本](url)`, 前端只渲染 markdown 链接为可点击 `<a>`, 裸 URL 是纯文本无法点击.
-- ⚠️ **链接 URL 用相对路径** `/redirect/download?shortCode=xxx`, 不要带 host (前端会按当前 origin 拼绝对 URL, 经 vite proxy 转发到后端).
+- ⚠️ **shortUrl 从工具结果原样复制**, 不要手拼, 不要截断 shortCode. URL 形态由后端 `harness.a2a.csv-download.base-url` 配置决定: 配了会拼完整 URL (含 host, 适用于前后端不同 IP 的内网), 没配走相对路径 `/redirect/download?shortCode=xxx` (前端按当前 origin 经 vite proxy 转发). 两种形态前端都能正确渲染, LLM 不用关心.
 - ⚠️ **链接文本用动词短语**, 如 "点击下载 CSV" / "下载完整数据 (45 行)", 不要用 shortCode 当文本.
-- ⚠️ **shortUrl 从工具结果原样复制**, 不要手拼, 不要截断 shortCode.
 
 
 > ## 示例: 完整 E2E (主路径)

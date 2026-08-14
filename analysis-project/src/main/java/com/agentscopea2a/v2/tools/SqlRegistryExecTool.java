@@ -473,7 +473,8 @@ public class SqlRegistryExecTool {
         if (downloadFilename != null && !downloadFilename.isBlank()) {
             try {
                 String shortCode = downloadContentService.create(md.toString(), downloadFilename, "text/csv");
-                md.append("\n\n📥 下载链接: /redirect/download?shortCode=").append(shortCode)
+                String downloadUrl = downloadContentService.buildDownloadUrl(shortCode);
+                md.append("\n\n📥 下载链接: ").append(downloadUrl)
                   .append("\n(内容已落库, 跨会话清理安全; 把此链接放在回复里给用户点击下载)");
             } catch (IllegalArgumentException e) {
                 md.append("\n\n⚠️ 下载链接生成失败: ").append(e.getMessage());
