@@ -118,4 +118,15 @@
         ORDER BY "统一认证号"
     </select>
 
+    <!-- 按姓名 / 统一认证号模糊匹配人员(授权选人用)。只取当前版本月份,最多 50 条。 -->
+    <select id="selectByKeyword" resultMap="personInfoMap">
+        SELECT * FROM developer_pl_person_info
+        WHERE ("姓名" LIKE '%' || #{keyword} || '%'
+            OR "统一认证号" LIKE '%' || #{keyword} || '%')
+          AND "统一认证号" IS NOT NULL
+        <include refid="currentVersionFilter"/>
+        ORDER BY id
+        LIMIT 50
+    </select>
+
 </mapper>

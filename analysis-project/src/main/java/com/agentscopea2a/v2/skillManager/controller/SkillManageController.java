@@ -25,6 +25,7 @@ import com.agentscopea2a.v2.skillManager.entity.SkillApproval;
 import com.agentscopea2a.v2.skillManager.entity.SkillDraft;
 import com.agentscopea2a.v2.skillManager.entity.SkillPublish;
 import com.agentscopea2a.v2.skillManager.entity.SkillVersionHistory;
+import com.agentscopea2a.v2.skillManager.entity.SkillVisibleGrant;
 import com.agentscopea2a.v2.skillManager.service.MockOrgService;
 import com.agentscopea2a.v2.skillManager.service.SkillManageService;
 import org.springframework.http.HttpStatus;
@@ -44,6 +45,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Skill 管理 REST 接口(合并版)。userId 经 X-User-Id 请求头传入。
@@ -87,11 +90,11 @@ public class SkillManageController {
     }
 
     /**
-     * 查询全部 ACTIVE Skill 的去重 tag 列表。
+     * 查询全部 ACTIVE Skill 的去重 tag 列表(按当前用户可见范围过滤)。
      */
     @GetMapping("/skills/tags")
-    public List<String> tags() {
-        return skillService.getAllTags();
+    public List<String> tags(@RequestHeader("X-User-Id") String userId) {
+        return skillService.getAllTags(userId);
     }
 
     /**
@@ -103,11 +106,11 @@ public class SkillManageController {
     }
 
     /**
-     * 查询 Skill 详情。
+     * 查询 Skill 详情(带可见性校验:私有未授权返回 SkillNotFound)。
      */
     @GetMapping("/skills/get")
-    public Skill get(@RequestParam(name = "id") Long id) {
-        return skillService.get(id);
+    public Skill get(@RequestParam(name = "id") Long id, @RequestHeader("X-User-Id") String userId) {
+        return skillService.getVisible(id, userId);
     }
 
     /**
@@ -196,6 +199,59 @@ public class SkillManageController {
     @GetMapping("/skills/{id}/referencers")
     public List<String> referencers(@PathVariable(name = "id") Long id) {
         return skillService.listReferencers(id);
+    }
+
+    // ==================== 私有可见性授权 ====================
+
+    /**
+     * 授权列表(带可见性校验)。仅 owner 可增删;可见用户可查看"可见范围"。
+     * USER 授权显示人员姓名,DEPARTMENT/GROUP 直接显示组织名。
+     */
+    @GetMapping("/skills/{id}/grants")
+    public List<GrantItem> grants(@PathVariable(name = "id") Long id,
+                                  @RequestHeader("X-User-Id") String userId) {
+        List<SkillVisibleGrant> grants = skillService.listGrants(id, userId);
+        Set<String> userTargets = grants.stream()
+                .filter(g -> "USER".equals(g.getGrantType()))
+                .map(SkillVisibleGrant::getTargetId)
+                .collect(Collectors.toSet());
+        Map<String, String> nameMap = mockOrgService.getUserNameMap(userTargets);
+        return grants.stream().map(g -> new GrantItem(
+                g.getGrantType(), g.getTargetId(),
+                "USER".equals(g.getGrantType())
+                        ? nameMap.getOrDefault(g.getTargetId(), g.getTargetId())
+                        : g.getTargetId())).toList();
+    }
+
+    /**
+     * 新增授权(仅 owner;首个授权自动把 skill 切为 PRIVATE)。
+     */
+    @PostMapping("/skills/{id}/grants")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void addGrant(@PathVariable(name = "id") Long id,
+                         @RequestBody GrantRequest req,
+                         @RequestHeader("X-User-Id") String userId) {
+        skillService.addGrant(id, req.grantType(), req.targetId(), userId);
+    }
+
+    /**
+     * 删除授权(仅 owner)。
+     */
+    @DeleteMapping("/skills/{id}/grants")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void removeGrant(@PathVariable(name = "id") Long id,
+                            @RequestBody GrantRequest req,
+                            @RequestHeader("X-User-Id") String userId) {
+        skillService.removeGrant(id, req.grantType(), req.targetId(), userId);
+    }
+
+    /**
+     * 按姓名/统一认证号搜人(私有 Skill 授权选人用)。
+     */
+    @GetMapping("/skills/users")
+    public List<MockOrgService.UserSearchItem> searchUsers(
+            @RequestParam(name = "keyword", required = false) String keyword) {
+        return mockOrgService.searchUsers(keyword);
     }
 
     // ==================== 用户禁用 (§12.4.2) ====================
@@ -364,11 +420,12 @@ public class SkillManageController {
     // ==================== Skill 文件附件引用 ====================
 
     /**
-     * 获取 Skill 引用的文件列表。
+     * 获取 Skill 引用的文件列表(带可见性校验)。
      */
     @GetMapping("/skills/{id}/files")
-    public List<SkillFileReferenceItem> skillFiles(@PathVariable(name = "id") Long id) {
-        return skillService.listSkillFiles(id);
+    public List<SkillFileReferenceItem> skillFiles(@PathVariable(name = "id") Long id,
+                                                   @RequestHeader("X-User-Id") String userId) {
+        return skillService.listSkillFiles(id, userId);
     }
 
     /**
@@ -379,7 +436,7 @@ public class SkillManageController {
     public void addFileReference(@PathVariable(name = "id") Long id,
                                  @RequestBody SkillFileReferenceRequest req,
                                  @RequestHeader("X-User-Id") String userId) {
-        skillService.addFileReference(id, req.fileId(), req.referenceType());
+        skillService.addFileReference(id, req.fileId(), req.referenceType(), userId);
     }
 
     /**
@@ -389,7 +446,7 @@ public class SkillManageController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void removeFileReference(@PathVariable(name = "id") Long id, @PathVariable Long fileId,
                                     @RequestHeader("X-User-Id") String userId) {
-        skillService.removeFileReference(id, fileId);
+        skillService.removeFileReference(id, fileId, userId);
     }
 
     // ==================== 内嵌请求/响应体 ====================
@@ -408,4 +465,10 @@ public class SkillManageController {
 
     /** 发布目标分组(按维度类型)。 */
     public record PublishTargetGroup(String orgType, String typeLabel, List<OrgTarget> targets) {}
+
+    /** 授权操作请求体(grantType: USER/DEPARTMENT/GROUP)。 */
+    public record GrantRequest(String grantType, String targetId) {}
+
+    /** 授权项(含展示名:USER 为人员姓名,GROUP/DEPARTMENT 为组织名)。 */
+    public record GrantItem(String grantType, String targetId, String displayName) {}
 }

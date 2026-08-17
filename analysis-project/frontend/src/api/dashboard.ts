@@ -7,6 +7,8 @@
  *  GET /actuator/prometheus                           → text/plain prometheus metrics
  */
 
+import { apiError } from '../utils/apiError';
+
 export interface SloReport {
   windowHours: number;
   total: number;
@@ -57,8 +59,8 @@ export interface PrometheusMetrics {
  * Fetch the aggregated dashboard snapshot.
  */
 export async function fetchDashboard(windowHours = 24): Promise<DashboardSnapshot> {
-  const res = await fetch(`/2/ai/verification/dashboard?windowHours=${windowHours}`);
-  if (!res.ok) throw new Error(`Dashboard fetch failed: ${res.status}`);
+  const res = await fetch(`/v2/ai/verification/dashboard?windowHours=${windowHours}`);
+  if (!res.ok) throw await apiError(res, `Dashboard fetch failed: ${res.status}`);
   return res.json();
 }
 
@@ -67,7 +69,7 @@ export async function fetchDashboard(windowHours = 24): Promise<DashboardSnapsho
  */
 export async function fetchTrends(windowHours = 24): Promise<HourlyBucket[]> {
   const res = await fetch(`/v2/ai/verification/trends?windowHours=${windowHours}`);
-  if (!res.ok) throw new Error(`Trends fetch failed: ${res.status}`);
+  if (!res.ok) throw await apiError(res, `Trends fetch failed: ${res.status}`);
   return res.json();
 }
 
@@ -77,7 +79,7 @@ export async function fetchTrends(windowHours = 24): Promise<HourlyBucket[]> {
  */
 export async function fetchPrometheusMetrics(): Promise<PrometheusMetrics> {
   const res = await fetch('/actuator/prometheus');
-  if (!res.ok) throw new Error(`Prometheus fetch failed: ${res.status}`);
+  if (!res.ok) throw await apiError(res, `Prometheus fetch failed: ${res.status}`);
   const text = await res.text();
   return parsePrometheusText(text);
 }

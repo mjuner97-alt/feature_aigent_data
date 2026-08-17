@@ -14,6 +14,8 @@
  * after AgentEvent types (lowercased). See V2ChatStreamServiceImpl#handleEvent.
  */
 
+import { apiError } from '../utils/apiError';
+
 export interface ChatRequest {
   /** User's question/prompt. Backend reads input (preferred) or question. */
   input: string;
@@ -103,7 +105,11 @@ export async function* streamChat(req: ChatRequest, signal?: AbortSignal): Async
     if (e instanceof DOMException && e.name === 'AbortError') return;
     throw e;
   }
-  if (!res.ok || !res.body) {
+  if (!res.ok) {
+    // 读取并带上后端返回的真实错误消息,否则只显示 "500 Internal Server Error"
+    throw await apiError(res, `Chat stream failed: ${res.status} ${res.statusText}`);
+  }
+  if (!res.body) {
     throw new Error(`Chat stream failed: ${res.status} ${res.statusText}`);
   }
 

@@ -17,6 +17,8 @@
  * </ol>
  */
 
+import { apiError } from '../utils/apiError';
+
 export interface InterruptRequest {
   user_id: string;
   conversationId: string;
@@ -36,8 +38,7 @@ export async function triggerInterrupt(
     body: JSON.stringify(req),
   });
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`Interrupt failed: ${res.status} ${res.statusText}${text ? ' — ' + text : ''}`);
+    throw await apiError(res, `Interrupt failed: ${res.status} ${res.statusText}`);
   }
   return res.json() as Promise<InterruptResponse>;
 }

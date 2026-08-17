@@ -43,7 +43,7 @@
         </div>
         <div class="step-card">
           <div class="step-head">
-            <span class="step-icon">{{ step.icon }}</span>
+            <el-icon class="step-icon"><component :is="step.icon" /></el-icon>
             <span class="step-title">{{ step.title }}</span>
             <span class="step-time">{{ formatTime(step.createdAt) }}</span>
             <el-tag v-if="step.subtitle" size="small" type="info" effect="plain">{{ step.subtitle }}</el-tag>
@@ -72,9 +72,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, reactive } from 'vue';
+import { computed, onMounted, ref, reactive, type Component } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ArrowLeft } from '@element-plus/icons-vue';
+import { ArrowLeft, ChatDotRound, ChatLineRound, Document, Operation, Tools, User, Warning } from '@element-plus/icons-vue';
 import dayjs from 'dayjs';
 import { getTraceDetail } from '../api/trace';
 import type { AgentEvent, ConversationSummary, TraceDetailResponse } from '../types/trace';
@@ -120,7 +120,7 @@ function expandAll(value: boolean) {
 interface Step {
   id: string;
   kind: 'user' | 'thinking' | 'answer' | 'tool' | 'tool-result' | 'agent' | 'error' | 'other';
-  icon: string;
+  icon: Component;
   title: string;
   subtitle?: string;
   body?: string;
@@ -131,15 +131,15 @@ interface Step {
   raw?: AgentEvent;
 }
 
-const KIND_META: Record<Step['kind'], { icon: string; color: string }> = {
-  user:          { icon: '👤', color: '#3B82F6' },
-  agent:         { icon: '🤖', color: '#6366F1' },
-  thinking:      { icon: '💭', color: '#A855F7' },
-  answer:        { icon: '💬', color: '#10B981' },
-  tool:          { icon: '🔧', color: '#F59E0B' },
-  'tool-result': { icon: '📤', color: '#0EA5E9' },
-  error:         { icon: '❌', color: '#EF4444' },
-  other:         { icon: '📄', color: '#94A3B8' },
+const KIND_META: Record<Step['kind'], { icon: Component; color: string }> = {
+  user:          { icon: User, color: '#3B82F6' },
+  agent:         { icon: Operation, color: '#6366F1' },
+  thinking:      { icon: ChatDotRound, color: '#A855F7' },
+  answer:        { icon: ChatLineRound, color: '#10B981' },
+  tool:          { icon: Tools, color: '#F59E0B' },
+  'tool-result': { icon: Document, color: '#0EA5E9' },
+  error:         { icon: Warning, color: '#EF4444' },
+  other:         { icon: Document, color: '#94A3B8' },
 };
 
 /**

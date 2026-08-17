@@ -45,6 +45,8 @@ public class Skill {
     private String tags;
     private String ownerUserId;
     private String status;
+    /** 可见性: PUBLIC=公开(所有可见,默认) / PRIVATE=私有(owner+skill_visible_grant 授权可见)。 */
+    private String visibility;
     private Long likeCount;
     /** 映射到 skill_index.name 的检索名，格式 page_<id>，双写桥接时写入 */
     private String retrievalName;

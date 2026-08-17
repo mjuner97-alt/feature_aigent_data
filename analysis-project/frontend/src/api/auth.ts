@@ -1,4 +1,5 @@
 import type { AuthUser } from '../utils/auth';
+import { apiError } from '../utils/apiError';
 
 const BASE = '/api/auth';
 
@@ -13,12 +14,7 @@ export async function login(req: LoginRequest): Promise<AuthUser> {
     body: JSON.stringify(req),
   });
   if (!res.ok) {
-    let msg = `登录失败 (HTTP ${res.status})`;
-    try {
-      const body = await res.json();
-      if (body && body.message) msg = body.message;
-    } catch { /* ignore */ }
-    throw new Error(msg);
+    throw await apiError(res, '登录失败');
   }
   const data = await res.json();
   return {

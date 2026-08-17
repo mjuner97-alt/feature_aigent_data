@@ -1,4 +1,5 @@
 import type { UserModelConfig, ModelTestResult } from '../types/modelConfig';
+import { apiErrorDetail } from '../utils/apiError';
 
 const BASE = '/api/model-config';
 
@@ -11,11 +12,7 @@ function jsonHeaders(): Record<string, string> {
 }
 
 async function extractError(res: Response, fallback: string): Promise<string> {
-  let detail = '';
-  try {
-    const body = await res.json();
-    detail = body.message || body.error || '';
-  } catch { /* ignore */ }
+  const detail = await apiErrorDetail(res);
   return detail || `${fallback} (HTTP ${res.status})`;
 }
 

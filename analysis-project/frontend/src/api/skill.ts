@@ -1,4 +1,5 @@
-import type { SkillListItem, SkillDetail, LikeStatus, SkillInput, SkillPublishRecord, PublishTargetGroup, PublishPendingItem, SkillFileUploadResponse, SkillFileItem, SkillFileReferenceItem, SkillFileReferenceRequest } from '../types/skill';
+import type { SkillListItem, SkillDetail, LikeStatus, SkillInput, SkillPublishRecord, PublishTargetGroup, PublishPendingItem, SkillFileUploadResponse, SkillFileItem, SkillFileReferenceItem, SkillFileReferenceRequest, SkillGrant } from '../types/skill';
+import { apiErrorDetail } from '../utils/apiError';
 
 const BASE = '/api/skills';
 
@@ -22,13 +23,7 @@ export function currentUserId(): string {
  * 否则 SkillAccessDenied/SkillNameConflict 都会以 500 空消息返回。
  */
 async function skillError(res: Response, fallback: string): Promise<Error> {
-  let detail = '';
-  try {
-    const body = await res.json();
-    detail = (body && (body.message || body.error)) || '';
-  } catch {
-    /* 非 JSON 响应体,忽略 */
-  }
+  const detail = await apiErrorDetail(res);
   if (detail.startsWith('SkillAccessDenied')) return new Error('无权限:仅所有者可操作此 Skill');
   if (detail.startsWith('SkillNameConflict')) return new Error('名称已存在,请更换 Skill 名称');
   if (detail.startsWith('SkillNotFound')) return new Error('Skill 不存在或已被删除');
@@ -119,8 +114,51 @@ export async function getTags(): Promise<string[]> {
   return res.json();
 }
 
+// ============ 私有可见性授权 API ============
+
+/** 按姓名/统一认证号搜人(GET /api/skills/users?keyword=,授权选人用)。 */
+export async function searchSkillUsers(keyword: string): Promise<SkillUserSearchItem[]> {
+  const res = await fetch(`${BASE}/users?keyword=${encodeURIComponent(keyword)}`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`searchSkills failed: ${res.status}`);
+  return res.json();
+}
+
+/** 授权列表(GET /api/skills/{id}/grants)。 */
+export async function getGrants(skillId: number): Promise<SkillGrant[]> {
+  const res = await fetch(`${BASE}/${skillId}/grants`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`getGrants failed: ${res.status}`);
+  return res.json();
+}
+
+/** 新增授权(POST /api/skills/{id}/grants)。仅 owner;首个授权自动把 skill 切为 PRIVATE。 */
+export async function addGrant(skillId: number, grantType: string, targetId: string): Promise<void> {
+  const res = await fetch(`${BASE}/${skillId}/grants`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ grantType, targetId }),
+  });
+  if (!res.ok) throw await skillError(res, '授权失败');
+}
+
+/** 删除授权(DELETE /api/skills/{id}/grants)。仅 owner。 */
+export async function removeGrant(skillId: number, grantType: string, targetId: string): Promise<void> {
+  const res = await fetch(`${BASE}/${skillId}/grants`, {
+    method: 'DELETE',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ grantType, targetId }),
+  });
+  if (!res.ok) throw await skillError(res, '取消授权失败');
+}
+
 export interface OrgInfo { orgType: string; orgId: string; orgName: string; }
 export interface UserInfo { userId: string; orgs: OrgInfo[]; }
+
+/** 私有 Skill 授权选人结果项。对应 GET /api/skills/users?keyword=。 */
+export interface SkillUserSearchItem {
+  userId: string;
+  name: string;
+  department: string | null;
+}
 
 /** 获取用户信息(含所属组织),GET /api/org/user-info?userId=。 */
 export async function getUserInfo(userId: string): Promise<UserInfo> {
@@ -213,8 +251,7 @@ export async function uploadFile(file: File, description?: string): Promise<Skil
     body: formData,
   });
   if (!res.ok) {
-    let detail = '';
-    try { const body = await res.json(); detail = body.error || ''; } catch { /* ignore */ }
+    const detail = await apiErrorDetail(res);
     if (detail.startsWith('FileSizeExceeded')) throw new Error('文件大小超过 1MB 限制');
     if (detail.startsWith('FileExtensionNotAllowed')) throw new Error('不支持的文件类型,仅允许 .py 和 .sql');
     if (detail.startsWith('FileNameEmpty')) throw new Error('文件名不能为空');

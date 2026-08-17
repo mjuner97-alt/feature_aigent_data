@@ -30,6 +30,7 @@ import {
   fetchFileBlob,
 } from '../../api/skill';
 import type { SkillDetail, LikeStatus, SkillPublishRecord, PublishPendingItem, SkillFileReferenceItem } from '../../types/skill';
+import SkillGrantEditor from '../../components/SkillGrantEditor.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -41,6 +42,9 @@ const referenced = ref(false);
 const referencerCount = ref(0);
 const deleting = ref(false);
 const deleteError = ref('');
+
+// —— 可见性 + 私有授权(owner 面板) ——
+const isPrivate = computed(() => !!skill.value && skill.value.visibility === 'PRIVATE');
 
 // 维度/发布相关状态(只读展示,维度切换走编辑表单)
 const publishes = ref<SkillPublishRecord[]>([]);
@@ -342,7 +346,15 @@ watch(() => route.params.id, () => {
 <template>
   <div v-if="skill">
     <h2 class="skill-title">{{ skill.name }} <span class="cnt"><svg class="thumb-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="currentColor" style="vertical-align:-2px"><path d="M2 21h4V9H2v12zm20-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L13.17 1 7.59 6.59C7.22 6.95 7 7.45 7 8v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z"/></svg> {{ like.likeCount }}</span></h2>
-    <div class="meta">{{ skill.ownerUserId }} · 状态 {{ skill.status }}</div>
+    <div class="meta">{{ skill.ownerUserId }} · 状态 {{ skill.status }}
+      <span v-if="isPrivate" class="vis-badge private">私有</span>
+      <span v-else class="vis-badge public">公开</span>
+    </div>
+
+    <!-- 私有可见范围(详情页只读展示;增删授权走"编辑"表单页) -->
+    <div v-if="isPrivate" class="grant-panel">
+      <SkillGrantEditor :skill-id="skill.id" :editable="false" />
+    </div>
     <!-- 维度展示区(只读,维度切换请走编辑表单) -->
     <div class="dimension-bar">
       <span class="dim-label">维度:</span>
@@ -455,7 +467,14 @@ watch(() => route.params.id, () => {
   margin: 0 0 8px;
 }
 .cnt { -webkit-text-fill-color: initial; color: #db2777; font-size: 16px; }
-.meta { color: #94a3b8; margin-bottom: 8px; }
+.meta { color: #94a3b8; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+.vis-badge { padding: 1px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+.vis-badge.private { background: #fef3c7; color: #b45309; }
+.vis-badge.public { background: #f1f5f9; color: #64748b; }
+.grant-panel {
+  background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;
+  padding: 10px 14px; margin-bottom: 14px;
+}
 .dimension-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; font-size: 13px; }
 .dim-label { color: #475569; font-weight: 600; }
 .dim-value { font-weight: 600; color: #1e293b; }

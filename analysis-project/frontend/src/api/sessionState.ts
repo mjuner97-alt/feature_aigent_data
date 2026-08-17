@@ -11,6 +11,7 @@
 
 import { ref, watch, onUnmounted, type Ref } from 'vue';
 import type { SessionStateResponse } from '../types/sessionState';
+import { apiError } from '../utils/apiError';
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -23,7 +24,7 @@ export async function getSessionState(
     `&conversationId=${encodeURIComponent(conversationId)}`;
   const res = await fetch(url);
   if (!res.ok) {
-    throw new Error(`Get state failed: ${res.status} ${res.statusText}`);
+    throw await apiError(res, `Get state failed: ${res.status} ${res.statusText}`);
   }
   return res.json() as Promise<SessionStateResponse>;
 }
