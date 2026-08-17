@@ -65,4 +65,10 @@ public interface DeveloperPlPersonInfoMapper {
      * 用于 ORG 用户范围与维度发布命中反查。
      */
     List<String> selectUserIdsByOrg(@Param("orgType") String orgType, @Param("orgId") String orgId);
+
+    /**
+     * 按姓名 / 统一认证号 模糊匹配人员(私有 Skill 授权选人用)。
+     * 只取当前(最大)"版本月份";一个 userId 可能多条记录(多部门/多统计组),调用方按 userId 去重。
+     */
+    List<DeveloperPlPersonInfo> selectByKeyword(@Param("keyword") String keyword);
 }

@@ -28,6 +28,7 @@ import com.agentscopea2a.v2.skillManager.entity.SkillPublish;
 import com.agentscopea2a.v2.skillManager.entity.SkillReference;
 import com.agentscopea2a.v2.skillManager.entity.SkillUserDisable;
 import com.agentscopea2a.v2.skillManager.entity.SkillVersionHistory;
+import com.agentscopea2a.v2.skillManager.entity.SkillVisibleGrant;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
@@ -108,8 +109,48 @@ public interface SkillMapper {
     /** 列表查询:按 view/sort/category/tag/keyword 过滤 + 分页。 */
     List<Skill> selectList(SkillListQuery q);
 
-    /** 查询全部 ACTIVE Skill 的去重 tag 列表。 */
-    List<String> selectAllTags();
+    /** 查询全部 ACTIVE Skill 的去重 tag 列表(按用户可见范围过滤)。 */
+    List<String> selectAllTags(@Param("userId") String userId);
+
+    // ==================== skill_visible_grant(私有可见性授权) ====================
+
+    /** 指定 Skill 的授权列表(供 owner 查看/管理授权)。 */
+    List<SkillVisibleGrant> selectGrantsBySkill(@Param("skillId") Long skillId);
+
+    /** 新增一条授权(幂等由唯一键保证)。 */
+    int insertSkillVisibleGrant(SkillVisibleGrant grant);
+
+    /** 删除一条授权。 */
+    int deleteSkillVisibleGrant(@Param("skillId") Long skillId,
+                                @Param("grantType") String grantType,
+                                @Param("targetId") String targetId);
+
+    /** 判断某条授权是否已存在。 */
+    boolean existsSkillVisibleGrant(@Param("skillId") Long skillId,
+                                    @Param("grantType") String grantType,
+                                    @Param("targetId") String targetId);
+
+    /** 指定 Skill 的授权条数(用于"加首个授权自动切 PRIVATE"判断)。 */
+    long countGrantsBySkill(@Param("skillId") Long skillId);
+
+    /**
+     * 从给定 skillId 集合中,取当前用户(含其所属 统计组/部门)被授权命中的 skillId。
+     * 供 {@code SkillManageService.list()} 计算 used 第四来源(授权即自动可用)。
+     */
+    Set<Long> selectGrantedSkillIds(@Param("userId") String userId, @Param("ids") List<Long> ids);
+
+    /**
+     * 判断当前用户对指定 Skill 是否命中任一授权(USER 点名 / 所属 GROUP / 所属 DEPARTMENT)。
+     * 供 {@code SkillManageService.isVisible} 的单条可见性校验;PUBLIC 与 owner 由调用方先判。
+     */
+    boolean existsGrantForUser(@Param("skillId") Long skillId, @Param("userId") String userId);
+
+    /**
+     * 判断指定 Skill 是否已 APPROVED 发布到当前用户所属维度(legacy 兼容分支)。
+     * 与 SkillMapper.xml 的 {@code visibleSkillIds} 里 UNION 的 {@code dimensionUsedSkillIds} 同口径,
+     * 供 {@code SkillManageService.isVisible} 单条校验使用,保证 列表(SQL) 与 详情(Java) 判定一致。
+     */
+    boolean existsDimensionUsedForUser(@Param("skillId") Long skillId, @Param("userId") String userId);
 
     // ==================== skill_like ====================
 

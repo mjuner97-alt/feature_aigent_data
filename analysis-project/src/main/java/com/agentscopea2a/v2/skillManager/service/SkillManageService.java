@@ -33,6 +33,7 @@ import com.agentscopea2a.v2.skillManager.entity.SkillPublish;
 import com.agentscopea2a.v2.skillManager.entity.SkillReference;
 import com.agentscopea2a.v2.skillManager.entity.SkillUserDisable;
 import com.agentscopea2a.v2.skillManager.entity.SkillVersionHistory;
+import com.agentscopea2a.v2.skillManager.entity.SkillVisibleGrant;
 import com.agentscopea2a.v2.skillManager.mapper.SkillMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -108,6 +109,7 @@ public class SkillManageService {
         Set<Long> likedIds = nullToEmpty(skillMapper.selectLikedSkillIds(userId, ids));      // 当前用户在本页中已点赞的 skillId(行 liked 标记)
         Set<Long> usedIds = nullToEmpty(skillMapper.selectUsedSkillIds(userId, ids));        // 当前用户在本页中已显式引用的 skillId(行 used 标记,即"我使用的")
         Set<Long> disabledIds = nullToEmpty(skillMapper.selectDisabledSkillIds(userId, ids)); // 当前用户在本页中已主动禁用的 skillId(行 disabled 标记,available = used && !disabled)
+        Set<Long> grantedIds = nullToEmpty(skillMapper.selectGrantedSkillIds(userId, ids));   // 当前用户在本页中命中私有授权的 skillId(used来源④:授权即自动可用)
         List<SkillPublish> approved = skillMapper.selectApprovedBySkillIds(ids);              // 本页 skill 的全部已审批(APPROVED)发布记录:用于算每行的 dimension 标签 + dimensionUsedIds(维度默认可用)
         Map<Long, String> skillDimension = new HashMap<>();
         Set<Long> dimensionUsedIds = new HashSet<>();
@@ -164,17 +166,18 @@ public class SkillManageService {
         int rank = q.getEffectiveOffset() + 1;
         List<SkillListItem> items = new ArrayList<>(skills.size());
         for (Skill s : skills) {
-            // "已使用" = 显式引用 ∪ 自己创建 ∪ 所属维度已发布
+            // "已使用" = 显式引用 ∪ 自己创建 ∪ 所属维度已发布 ∪ 私有授权命中
             // ① usedIds:当前用户在 skill_reference 表里有 creator=userId 记录(手动点过"引用",或创建时自引用)
             // ② owner:当前用户就是所有者(创建者默认自引用,但即便取消自引用,owner 身份仍使其 used=true)
             // ③ dimensionUsedIds:skill 已 APPROVED 发布到当前用户所属维度(默认可用,无引用记录)
+            // ④ grantedIds:skill 是 PRIVATE 且当前用户被授权(USER/所属统计组/所属部门)——授权即自动可用,等同无审批的轻量发布
             //
-            // 与详情页"引用/取消引用"按钮的差别:按钮只看 ①(显式引用记录),不包含 ②③。
-            // 因此维度内的 skill 列表显示"已使用",但详情页按钮可能显示"引用"(无显式引用)。
-            // 点"取消引用"只会删 ① 的记录:若 ② 或 ③ 仍成立,列表仍为"已使用";否则变"未使用"。
+            // 与详情页"引用/取消引用"按钮的差别:按钮只看 ①(显式引用记录),不包含 ②③④。
+            // 因此维度内/被授权的 skill 列表显示"已使用",但详情页按钮可能显示"引用"(无显式引用)。
             boolean used = usedIds.contains(s.getId())
                     || (userId != null && userId.equals(s.getOwnerUserId()))
-                    || dimensionUsedIds.contains(s.getId());
+                    || dimensionUsedIds.contains(s.getId())
+                    || grantedIds.contains(s.getId());
             boolean disabled = disabledIds.contains(s.getId());
             boolean available = used && !disabled; // 被禁用后即使 used 也不可用
             String dim = skillDimension.getOrDefault(s.getId(), "PERSONAL");
@@ -186,9 +189,9 @@ public class SkillManageService {
         return items;
     }
 
-    /** 查询全部 ACTIVE Skill 的去重 tag 列表。 */
-    public List<String> getAllTags() {
-        return skillMapper.selectAllTags();
+    /** 查询全部 ACTIVE Skill 的去重 tag 列表(按当前用户可见范围过滤)。 */
+    public List<String> getAllTags(String userId) {
+        return skillMapper.selectAllTags(userId);
     }
 
     @Transactional("gaussTransactionManager")
@@ -198,6 +201,10 @@ public class SkillManageService {
         }
         skill.setOwnerUserId(ownerUserId);
         skill.setStatus("ACTIVE");
+        // 默认公开:显式选择私有才设置 PRIVATE(存量/新建缺省均公开)
+        if (skill.getVisibility() == null || skill.getVisibility().isBlank()) {
+            skill.setVisibility("PUBLIC");
+        }
         skill.setLikeCount(0L);
         skill.setCreatedAt(LocalDateTime.now());
         skill.setUpdatedAt(LocalDateTime.now());
@@ -233,6 +240,10 @@ public class SkillManageService {
     public void createForAgent(Skill skill, String ownerUserId, String retrievalName) {
         skill.setOwnerUserId(ownerUserId);
         skill.setStatus("ACTIVE");
+        // Agent 创建的 skill 默认公开(与页面创建一致)
+        if (skill.getVisibility() == null || skill.getVisibility().isBlank()) {
+            skill.setVisibility("PUBLIC");
+        }
         skill.setLikeCount(0L);
         skill.setRetrievalName(retrievalName);
         skill.setCreatedAt(LocalDateTime.now());
@@ -250,6 +261,109 @@ public class SkillManageService {
             throw new IllegalStateException("SkillNotFound: " + id);
         }
         return s;
+    }
+
+    // ==================== 可见性(公开/私有 + 授权) ====================
+    // 可见性优先于一切操作:不可见 => 列表不出现、详情/点赞/引用/禁用/附件都抛 SkillNotFound。
+    // 可见规则 = PUBLIC(公开) || owner(自己创建) || 私有且命中授权(USER/所属统计组/所属部门)。
+
+    /** 详情读取(带可见性校验)。 */
+    public Skill getVisible(Long id, String userId) {
+        return assertVisible(get(id), userId);
+    }
+
+    /** 单条可见性判定。 */
+    public boolean isVisible(Skill s, String userId) {
+        if (s == null) {
+            return false;
+        }
+        if ("PUBLIC".equals(s.getVisibility())) {
+            return true;
+        }
+        if (userId == null || userId.isBlank()) {
+            return false;
+        }
+        if (userId.equals(s.getOwnerUserId())) {
+            return true;
+        }
+        if (skillMapper.existsGrantForUser(s.getId(), userId)) {
+            return true;
+        }
+        // legacy:旧维度审批发布(APPROVED)命中,与 SQL visibleSkillIds 的同分支保持一致,
+        // 否则旧发布 skill 被切 PRIVATE 后,同维度用户列表可见但详情 SkillNotFound。
+        return skillMapper.existsDimensionUsedForUser(s.getId(), userId);
+    }
+
+    /** 校验可见性,不可见抛 SkillNotFound(不泄露存在性)。 */
+    private Skill assertVisible(Skill s, String userId) {
+        if (!isVisible(s, userId)) {
+            throw new IllegalStateException("SkillNotFound: " + s.getId());
+        }
+        return s;
+    }
+
+    private void assertVisible(Long skillId, String userId) {
+        assertVisible(get(skillId), userId);
+    }
+
+    // ==================== 私有授权 CRUD(仅 owner) ====================
+
+    /** 授权列表(可见用户可查看"可见范围",仅 owner 能增删)。 */
+    public List<SkillVisibleGrant> listGrants(Long skillId, String userId) {
+        assertVisible(skillId, userId);
+        return skillMapper.selectGrantsBySkill(skillId);
+    }
+
+    /**
+     * 新增授权。首个授权自动把 skill 切为 PRIVATE("要定向分享"即表达不想公开,帮用户省一步)。
+     * 仅 owner 可操作;重复授权幂等。
+     */
+    @Transactional("gaussTransactionManager")
+    public void addGrant(Long skillId, String grantType, String targetId, String userId) {
+        Skill s = get(skillId);
+        if (!s.getOwnerUserId().equals(userId)) {
+            throw new IllegalStateException("SkillAccessDenied: " + skillId);
+        }
+        validateGrantTarget(grantType, targetId);
+        if (skillMapper.existsSkillVisibleGrant(skillId, grantType, targetId)) {
+            return; // 幂等
+        }
+        skillMapper.insertSkillVisibleGrant(SkillVisibleGrant.builder()
+                .skillId(skillId).grantType(grantType).targetId(targetId).grantedBy(userId)
+                .createdAt(LocalDateTime.now()).build());
+        if (!"PRIVATE".equals(s.getVisibility()) && skillMapper.countGrantsBySkill(skillId) >= 1) {
+            s.setVisibility("PRIVATE");
+            skillMapper.updateSkill(s);
+        }
+        recordOperation(skillId, null, userId, "GRANT", null,
+                "{\"grantType\":\"" + grantType + "\",\"targetId\":\"" + targetId + "\"}");
+    }
+
+    /** 删除授权。仅 owner 可操作;删除最后一条授权后 skill 保持 PRIVATE(owner 仍可见)。 */
+    @Transactional("gaussTransactionManager")
+    public void removeGrant(Long skillId, String grantType, String targetId, String userId) {
+        Skill s = get(skillId);
+        if (!s.getOwnerUserId().equals(userId)) {
+            throw new IllegalStateException("SkillAccessDenied: " + skillId);
+        }
+        skillMapper.deleteSkillVisibleGrant(skillId, grantType, targetId);
+        recordOperation(skillId, null, userId, "REVOKE", null,
+                "{\"grantType\":\"" + grantType + "\",\"targetId\":\"" + targetId + "\"}");
+    }
+
+    /** 校验授权对象存在:USER 需命中人员表;GROUP/DEPARTMENT 需命中现有组织。 */
+    private void validateGrantTarget(String grantType, String targetId) {
+        if (targetId == null || targetId.isBlank()) {
+            throw new IllegalStateException("SkillAccessDenied: empty grant target");
+        }
+        boolean ok = switch (grantType) {
+            case "USER" -> mockOrgService.userExists(targetId);
+            case "GROUP", "DEPARTMENT" -> mockOrgService.orgExists(grantType, targetId);
+            default -> false;
+        };
+        if (!ok) {
+            throw new IllegalStateException("SkillAccessDenied: invalid grant target " + grantType + ":" + targetId);
+        }
     }
 
     @Transactional("gaussTransactionManager")
@@ -270,6 +384,7 @@ public class SkillManageService {
         if (patch.getContent() != null) s.setContent(patch.getContent());
         if (patch.getCategory() != null) s.setCategory(patch.getCategory());
         if (patch.getTags() != null) s.setTags(patch.getTags());
+        if (patch.getVisibility() != null) s.setVisibility(patch.getVisibility());
         String oldRetrievalName = s.getRetrievalName();
         s.setUpdatedAt(LocalDateTime.now());
         skillMapper.updateSkill(s);
@@ -340,6 +455,7 @@ public class SkillManageService {
 
     @Transactional("gaussTransactionManager")
     public LikeStatus like(Long skillId, String userId) {
+        assertVisible(skillId, userId);
         assertActive(skillId);
         if (skillMapper.selectLikeByUserSkill(userId, skillId) != null) {
             return new LikeStatus(true, currentLikeCount(skillId));
@@ -356,6 +472,7 @@ public class SkillManageService {
 
     @Transactional("gaussTransactionManager")
     public LikeStatus unlike(Long skillId, String userId) {
+        assertVisible(skillId, userId);
         assertActive(skillId);
         if (skillMapper.selectLikeByUserSkill(userId, skillId) == null) {
             return new LikeStatus(false, currentLikeCount(skillId));
@@ -366,6 +483,7 @@ public class SkillManageService {
     }
 
     public LikeStatus getLikeStatus(Long skillId, String userId) {
+        assertVisible(skillId, userId);
         boolean liked = skillMapper.selectLikeByUserSkill(userId, skillId) != null;
         return new LikeStatus(liked, currentLikeCount(skillId));
     }
@@ -377,6 +495,7 @@ public class SkillManageService {
 
     @Transactional("gaussTransactionManager")
     public void reference(Long skillId, String userId) {
+        assertVisible(skillId, userId); // 不可见不可引用(私有未授权返回 SkillNotFound)
         Skill skill = get(skillId); // 校验 Skill 存在
         if (skillMapper.existsReferenceByCreatorTarget(userId, skillId)) {
             return; // 幂等:已有显式引用记录,直接返回
@@ -396,6 +515,7 @@ public class SkillManageService {
 
     @Transactional("gaussTransactionManager")
     public void unreference(Long skillId, String userId) {
+        assertVisible(skillId, userId);
         get(skillId); // 校验 Skill 存在
         // 只删除当前用户对该 skill 的显式引用记录(skill_reference 表)。
         // 注意:删除后该 skill 在列表上的 used 标记不一定变 false--
@@ -462,6 +582,7 @@ public class SkillManageService {
 
     @Transactional("gaussTransactionManager")
     public void disable(Long skillId, String userId) {
+        assertVisible(skillId, userId);
         get(skillId); // 校验 Skill 存在
         if (skillMapper.existsDisableByUserSkill(userId, skillId)) {
             return; // 幂等
@@ -478,12 +599,14 @@ public class SkillManageService {
 
     @Transactional("gaussTransactionManager")
     public void enable(Long skillId, String userId) {
+        assertVisible(skillId, userId);
         get(skillId); // 校验 Skill 存在
         skillMapper.deleteDisableByUserSkill(userId, skillId);
         recordOperation(skillId, null, userId, "ENABLE", null, null);
     }
 
     public boolean isDisabled(Long skillId, String userId) {
+        assertVisible(skillId, userId);
         return skillMapper.existsDisableByUserSkill(userId, skillId);
     }
 
@@ -646,6 +769,7 @@ public class SkillManageService {
                 .tags(draft.getTags())
                 .ownerUserId(old.getOwnerUserId())
                 .status("ACTIVE")
+                .visibility(old.getVisibility()) // 草稿审批不改可见性,保留原值
                 .likeCount(old.getLikeCount())
                 .retrievalName(old.getRetrievalName())
                 .createdAt(old.getCreatedAt())
@@ -807,7 +931,8 @@ public class SkillManageService {
     /**
      * 获取 Skill 引用的文件列表。
      */
-    public List<SkillFileReferenceItem> listSkillFiles(Long skillId) {
+    public List<SkillFileReferenceItem> listSkillFiles(Long skillId, String userId) {
+        assertVisible(skillId, userId);
         get(skillId); // 校验 Skill 存在
         return skillMapper.selectSkillFileReferences(skillId);
     }
@@ -816,8 +941,8 @@ public class SkillManageService {
      * Skill 引用一个文件(幂等)。
      */
     @Transactional("gaussTransactionManager")
-    public void addFileReference(Long skillId, Long fileId, String referenceType) {
-        get(skillId); // 校验 Skill 存在
+    public void addFileReference(Long skillId, Long fileId, String referenceType, String userId) {
+        assertOwner(skillId, userId);
         if (skillMapper.selectFileById(fileId) == null) {
             throw new IllegalStateException("FileNotFound: " + fileId);
         }
@@ -840,8 +965,17 @@ public class SkillManageService {
      * Skill 取消引用一个文件。
      */
     @Transactional("gaussTransactionManager")
-    public void removeFileReference(Long skillId, Long fileId) {
-        get(skillId); // 校验 Skill 存在
+    public void removeFileReference(Long skillId, Long fileId, String userId) {
+        assertOwner(skillId, userId);
         skillMapper.deleteSkillFileReference(skillId, fileId);
+    }
+
+    /** 附件关联属于 Skill 内容维护，仅创建者可增删。 */
+    private Skill assertOwner(Long skillId, String userId) {
+        Skill skill = get(skillId);
+        if (!skill.getOwnerUserId().equals(userId)) {
+            throw new IllegalStateException("SkillAccessDenied: " + skillId);
+        }
+        return skill;
     }
 }

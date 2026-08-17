@@ -45,6 +45,7 @@ public record SkillListItem(
         String tags,              // 标签(逗号分隔,保留字段)
         String ownerUserId,       // 所有者统一认证号
         String ownerName,         // 所有者姓名(从 developer_pl_person_info 解析,缺失为 null,前端回退 ownerUserId)
+        String visibility,        // 可见性:PUBLIC(公开) / PRIVATE(私有),前端展示私有徽章
         long likeCount,           // 点赞数(skill_manage.like_count)
         boolean liked,            // 当前用户是否已点赞(行标记,按本页 skillId 集合批量计算)
         boolean used,             // 当前用户是否"已使用"= 显式引用 ∪ 自己创建 ∪ 所属维度已发布(默认可用,无引用记录)
@@ -69,7 +70,7 @@ public record SkillListItem(
     public static SkillListItem of(Skill s, boolean liked, boolean used, boolean available, boolean disabled, Integer rank, String dimension, String ownerName) {
         return new SkillListItem(
                 s.getId(), s.getName(), s.getDescription(), s.getCategory(), s.getTags(),
-                s.getOwnerUserId(), ownerName,
+                s.getOwnerUserId(), ownerName, s.getVisibility(),
                 s.getLikeCount() == null ? 0L : s.getLikeCount(),
                 liked, used, available, disabled, rank, s.getUpdatedAt(), dimension);
     }

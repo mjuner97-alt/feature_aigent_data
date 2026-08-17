@@ -1,4 +1,5 @@
 import type { SkillJob, SkillJobInput, SkillJobUpdateInput, SkillJobExecution } from '../types/skillJob';
+import { apiErrorDetail } from '../utils/apiError';
 
 const BASE = '/api/skill-jobs';
 
@@ -11,11 +12,7 @@ function jsonHeaders(): Record<string, string> {
 }
 
 async function jobError(res: Response, fallback: string): Promise<Error> {
-  let detail = '';
-  try {
-    const body = await res.json();
-    detail = (body && (body.message || body.error)) || '';
-  } catch { /* ignore */ }
+  const detail = await apiErrorDetail(res);
   if (detail.startsWith('JobNameConflict')) return new Error('任务名称已存在');
   if (detail.startsWith('JobNotFound')) return new Error('任务不存在或已删除');
   if (detail.startsWith('JobAccessDenied')) return new Error('无权限：仅创建人可操作此任务');

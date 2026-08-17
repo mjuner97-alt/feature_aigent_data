@@ -14,6 +14,7 @@
         <result column="tags" property="tags"/>
         <result column="owner_user_id" property="ownerUserId"/>
         <result column="status" property="status"/>
+        <result column="visibility" property="visibility"/>
         <result column="like_count" property="likeCount"/>
         <result column="retrieval_name" property="retrievalName"/>
         <result column="created_at" property="createdAt"/>
@@ -21,11 +22,11 @@
         <result column="deleted_at" property="deletedAt"/>
     </resultMap>
 
-    <sql id="skillCols">id, name, description, content, category, tags, owner_user_id, status, like_count, retrieval_name, created_at, updated_at, deleted_at</sql>
+    <sql id="skillCols">id, name, description, content, category, tags, owner_user_id, status, visibility, like_count, retrieval_name, created_at, updated_at, deleted_at</sql>
 
     <insert id="insertSkill" parameterType="com.agentscopea2a.v2.skillManager.entity.Skill" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO skill_manage (name, description, content, category, tags, owner_user_id, status, like_count, retrieval_name)
-        VALUES (#{name}, #{description}, #{content}, #{category}, #{tags}, #{ownerUserId}, #{status}, 0, #{retrievalName})
+        INSERT INTO skill_manage (name, description, content, category, tags, owner_user_id, status, visibility, like_count, retrieval_name)
+        VALUES (#{name}, #{description}, #{content}, #{category}, #{tags}, #{ownerUserId}, #{status}, #{visibility}, 0, #{retrievalName})
     </insert>
 
     <select id="selectById" resultMap="SkillResultMap">
@@ -35,7 +36,9 @@
     <update id="updateSkill" parameterType="com.agentscopea2a.v2.skillManager.entity.Skill">
         UPDATE skill_manage
         SET name=#{name}, description=#{description}, content=#{content},
-            category=#{category}, tags=#{tags}, status=#{status}, retrieval_name=#{retrievalName}
+            category=#{category}, tags=#{tags}, status=#{status},
+            <if test="visibility != null">visibility=#{visibility},</if>
+            retrieval_name=#{retrievalName}
         WHERE id = #{id}
     </update>
 
@@ -93,10 +96,12 @@
         WHERE retrieval_name = #{retrievalName}
           AND status = 'ACTIVE'
           AND deleted_at IS NULL
+          AND id IN (<include refid="visibleSkillIds"/>)
           AND (
               owner_user_id = #{userId}
               OR id IN (SELECT target_skill_id FROM skill_reference WHERE creator = #{userId})
               OR id IN (<include refid="dimensionUsedSkillIds"/>)
+              OR id IN (SELECT g.skill_id FROM skill_visible_grant g WHERE <include refid="grantMatchCondition"/>)
           )
         LIMIT 1
     </select>
@@ -107,7 +112,9 @@
             owner_user_id = #{userId}
             OR id IN (SELECT target_skill_id FROM skill_reference WHERE creator = #{userId})
             OR id IN (<include refid="dimensionUsedSkillIds"/>)
+            OR id IN (SELECT g.skill_id FROM skill_visible_grant g WHERE <include refid="grantMatchCondition"/>)
         )
+          AND id IN (<include refid="visibleSkillIds"/>)
           AND status = 'ACTIVE'
           AND deleted_at IS NULL
           AND retrieval_name IS NOT NULL
@@ -119,7 +126,9 @@
             owner_user_id = #{userId}
             OR id IN (SELECT target_skill_id FROM skill_reference WHERE creator = #{userId})
             OR id IN (<include refid="dimensionUsedSkillIds"/>)
+            OR id IN (SELECT g.skill_id FROM skill_visible_grant g WHERE <include refid="grantMatchCondition"/>)
         )
+          AND id IN (<include refid="visibleSkillIds"/>)
           AND status = 'ACTIVE'
           AND deleted_at IS NULL
     </select>
@@ -163,6 +172,7 @@
               SELECT 1 FROM skill_user_disable d
               WHERE d.skill_id = s.id AND d.user_id = #{userId}
           )
+          AND s.id IN (<include refid="visibleSkillIds"/>)
           AND (
               s.owner_user_id = #{userId}
               OR EXISTS (
@@ -170,6 +180,10 @@
                   WHERE r.target_skill_id = s.id AND r.creator = #{userId}
               )
               OR s.id IN (<include refid="dimensionUsedSkillIds"/>)
+              OR EXISTS (
+                  SELECT 1 FROM skill_visible_grant g
+                  WHERE g.skill_id = s.id AND <include refid="grantMatchCondition"/>
+              )
           )
     </select>
 
@@ -204,9 +218,54 @@
         )
     </sql>
 
+    <!--
+       用户当前所属统计组(GROUP 匹配目标)。与 dimensionUsedSkillIds 的 GROUP 分支同一写法:
+       统一认证号 + 只取当前(最大)"版本月份"。
+    -->
+    <sql id="userStatisticsGroupIds">
+        SELECT "统计组" FROM developer_pl_person_info
+        WHERE "统一认证号" = #{userId} AND "统计组" IS NOT NULL
+        AND "版本月份" = (SELECT MAX("版本月份") FROM developer_pl_person_info)
+    </sql>
+
+    <!-- 用户当前所属部门(DEPARTMENT 匹配目标)。写法同 userStatisticsGroupIds。 -->
+    <sql id="userDepartmentIds">
+        SELECT "部门" FROM developer_pl_person_info
+        WHERE "统一认证号" = #{userId} AND "部门" IS NOT NULL
+        AND "版本月份" = (SELECT MAX("版本月份") FROM developer_pl_person_info)
+    </sql>
+
+    <!--
+       授权命中条件:g 为 skill_visible_grant 的别名。命中 = 被点名(USER)
+       或所属统计组(GROUP)或所属部门(DEPARTMENT)被授权。
+    -->
+    <sql id="grantMatchCondition">
+        (g.grant_type = 'USER' AND g.target_id = #{userId})
+        OR (g.grant_type = 'GROUP' AND g.target_id IN (<include refid="userStatisticsGroupIds"/>))
+        OR (g.grant_type = 'DEPARTMENT' AND g.target_id IN (<include refid="userDepartmentIds"/>))
+    </sql>
+
+    <!--
+       当前用户可见的 skill_id 集合(可见性硬门槛):
+       PUBLIC(公开) ∪ owner(自己创建) ∪ 私有授权(USER/GROUP/DEPARTMENT) ∪ legacy 维度审批发布。
+       列表/检索/详情/可用性判断共用这套规则,保证各层一致。
+       注:owner 分支不限定 status——外层查询自带 ACTIVE/未删过滤。
+     -->
+    <sql id="visibleSkillIds">
+        SELECT v.id FROM skill_manage v
+        WHERE v.visibility = 'PUBLIC' AND v.status = 'ACTIVE' AND v.deleted_at IS NULL
+        UNION
+        SELECT v.id FROM skill_manage v WHERE v.owner_user_id = #{userId}
+        UNION
+        SELECT g.skill_id FROM skill_visible_grant g
+        WHERE <include refid="grantMatchCondition"/>
+        UNION
+        <include refid="dimensionUsedSkillIds"/>
+    </sql>
+
     <select id="selectList" parameterType="com.agentscopea2a.v2.skillManager.dto.SkillListQuery" resultMap="SkillResultMap">
         SELECT s.id, s.name, s.description, s.content, s.category, s.tags,
-               s.owner_user_id, s.status, s.like_count, s.retrieval_name, s.created_at, s.updated_at, s.deleted_at
+               s.owner_user_id, s.status, s.visibility, s.like_count, s.retrieval_name, s.created_at, s.updated_at, s.deleted_at
         FROM skill_manage s
         <choose>
             <when test="view == 'used'">
@@ -226,6 +285,7 @@
                     AND (
                         s.id IN (SELECT target_skill_id FROM skill_reference WHERE creator = #{userId})
                         OR s.id IN (<include refid="dimensionUsedSkillIds"/>)
+                        OR s.id IN (SELECT g.skill_id FROM skill_visible_grant g WHERE <include refid="grantMatchCondition"/>)
                     )
                 </when>
                 <otherwise>
@@ -249,6 +309,8 @@
             <if test="owner != null and owner != ''">
                 AND s.owner_user_id = #{owner}
             </if>
+            <!-- 可见性硬门槛:公开 ∪ owner ∪ 私有授权 ∪ legacy 维度发布(所有视图通用) -->
+            AND s.id IN (<include refid="visibleSkillIds"/>)
         </where>
         <choose>
             <when test="sort == 'updated'">
@@ -267,7 +329,7 @@
     <select id="selectAllTags" resultType="java.lang.String">
         SELECT DISTINCT tags FROM skill_manage
         WHERE status = 'ACTIVE' AND tags IS NOT NULL AND tags != ''
-        AND id IN (SELECT skill_id FROM skill_publish WHERE status = 'APPROVED')
+        AND id IN (<include refid="visibleSkillIds"/>)
     </select>
 
     <!-- ==================== skill_like ==================== -->
@@ -336,6 +398,83 @@
         SELECT r.creator FROM skill_reference r
         JOIN skill_manage s ON r.target_skill_id = s.id
         WHERE r.target_skill_id = #{skillId}
+    </select>
+
+    <!-- ==================== skill_visible_grant(私有可见性授权) ==================== -->
+
+    <resultMap id="SkillVisibleGrantResultMap" type="com.agentscopea2a.v2.skillManager.entity.SkillVisibleGrant">
+        <id column="id" property="id"/>
+        <result column="skill_id" property="skillId"/>
+        <result column="grant_type" property="grantType"/>
+        <result column="target_id" property="targetId"/>
+        <result column="granted_by" property="grantedBy"/>
+        <result column="created_at" property="createdAt"/>
+    </resultMap>
+
+    <!-- 幂等插入:存在相同 (skill_id, grant_type, target_id) 则不插入 -->
+    <insert id="insertSkillVisibleGrant" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillVisibleGrant"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_visible_grant (skill_id, grant_type, target_id, granted_by, created_at)
+        SELECT #{skillId}, #{grantType}, #{targetId}, #{grantedBy}, #{createdAt}
+        WHERE NOT EXISTS (
+            SELECT 1 FROM skill_visible_grant
+            WHERE skill_id = #{skillId} AND grant_type = #{grantType} AND target_id = #{targetId}
+        )
+    </insert>
+
+    <delete id="deleteSkillVisibleGrant">
+        DELETE FROM skill_visible_grant
+        WHERE skill_id = #{skillId} AND grant_type = #{grantType} AND target_id = #{targetId}
+    </delete>
+
+    <select id="existsSkillVisibleGrant" resultType="boolean">
+        SELECT COUNT(1) &gt; 0 FROM skill_visible_grant
+        WHERE skill_id = #{skillId} AND grant_type = #{grantType} AND target_id = #{targetId}
+    </select>
+
+    <select id="countGrantsBySkill" resultType="java.lang.Long">
+        SELECT COUNT(1) FROM skill_visible_grant WHERE skill_id = #{skillId}
+    </select>
+
+    <select id="selectGrantsBySkill" resultMap="SkillVisibleGrantResultMap">
+        SELECT id, skill_id, grant_type, target_id, granted_by, created_at
+        FROM skill_visible_grant
+        WHERE skill_id = #{skillId}
+        ORDER BY grant_type, target_id
+    </select>
+
+    <!-- 从给定 skillId 集合中取当前用户命中授权的 skillId(授权即自动可用来源④) -->
+    <select id="selectGrantedSkillIds" resultType="java.lang.Long">
+        SELECT g.skill_id FROM skill_visible_grant g
+        WHERE g.skill_id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+          AND (<include refid="grantMatchCondition"/>)
+    </select>
+
+    <!-- 判断当前用户对指定 Skill 是否命中任一授权(单条可见性校验用) -->
+    <select id="existsGrantForUser" resultType="boolean">
+        SELECT COUNT(1) &gt; 0 FROM skill_visible_grant g
+        WHERE g.skill_id = #{skillId}
+          AND (<include refid="grantMatchCondition"/>)
+    </select>
+
+    <!--
+      判断指定 Skill 是否已 APPROVED 发布到当前用户所属维度(legacy 分支,单条可见性校验用)。
+      与 visibleSkillIds 中 UNION 的 dimensionUsedSkillIds 同口径:
+      GROUP/DEPARTMENT 按 统计组/部门 匹配(统一认证号+当前版本月份),COMPANY 全员命中。
+      保证旧维度发布的 skill 被切为 PRIVATE 后,同维度用户 列表(SQL) 与 详情(Java isVisible) 判定一致。
+    -->
+    <select id="existsDimensionUsedForUser" resultType="boolean">
+        SELECT COUNT(1) &gt; 0 FROM skill_publish p
+        WHERE p.skill_id = #{skillId}
+          AND p.status = 'APPROVED'
+          AND (
+              (p.target_type = 'GROUP' AND p.target_id IN (<include refid="userStatisticsGroupIds"/>))
+              OR (p.target_type = 'DEPARTMENT' AND p.target_id IN (<include refid="userDepartmentIds"/>))
+              OR p.target_type = 'COMPANY'
+          )
     </select>
 
     <!-- ==================== skill_publish ==================== -->

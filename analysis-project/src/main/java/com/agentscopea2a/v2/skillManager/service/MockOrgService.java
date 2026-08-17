@@ -77,6 +77,9 @@ public class MockOrgService {
     /** 组织引用记录。 */
     public record OrgRef(String orgType, String orgId) {}
 
+    /** 私有 Skill 授权选人结果项(按 userId 去重,取首条姓名/部门)。 */
+    public record UserSearchItem(String userId, String name, String department) {}
+
     /**
      * 获取用户所属组织列表。从 developer_pl_person_info 查询用户全部记录,
      * 提取去重的 统计组/部门/产品线,并附加 COMPANY 维度。
@@ -212,6 +215,52 @@ public class MockOrgService {
             result.putIfAbsent(uid, name); // ORDER BY id,首条非空姓名
         }
         return result;
+    }
+
+    // ==================== 私有 Skill 授权辅助 ====================
+
+    /**
+     * 判断人员是否存在(按统一认证号)。用于授权选人校验。
+     */
+    public boolean userExists(String userId) {
+        if (userId == null || userId.isBlank()) {
+            return false;
+        }
+        return personInfoMapper.countByUserId(userId) > 0;
+    }
+
+    /**
+     * 判断组织是否存在(DEPARTMENT/GROUP)。用于授权校验目标组织是否真实存在。
+     * orgId 即组织名称,与 getAllOrgs() 对齐。
+     */
+    public boolean orgExists(String orgType, String orgId) {
+        if (orgId == null || orgId.isBlank()) {
+            return false;
+        }
+        return getAllOrgs().stream()
+                .anyMatch(o -> o.orgType().equals(orgType) && o.orgId().equals(orgId));
+    }
+
+    /**
+     * 按姓名/统一认证号模糊搜人(授权选人用)。按 userId 去重,取首条姓名与部门。
+     */
+    public List<UserSearchItem> searchUsers(String keyword) {
+        if (keyword == null || keyword.isBlank()) {
+            return List.of();
+        }
+        List<DeveloperPlPersonInfo> rows = personInfoMapper.selectByKeyword(keyword.trim());
+        if (rows == null || rows.isEmpty()) {
+            return List.of();
+        }
+        Map<String, UserSearchItem> dedup = new LinkedHashMap<>();
+        for (DeveloperPlPersonInfo r : rows) {
+            String uid = r.getUserId();
+            if (uid == null || uid.isBlank()) {
+                continue;
+            }
+            dedup.putIfAbsent(uid, new UserSearchItem(uid, r.getName(), r.getDepartment()));
+        }
+        return new ArrayList<>(dedup.values());
     }
 
     // ==================== 内部工具 ====================

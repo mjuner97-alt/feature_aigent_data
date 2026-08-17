@@ -10,12 +10,13 @@ import type {
   ConversationListResponse,
   TraceDetailResponse,
 } from '../types/trace';
+import { apiError } from '../utils/apiError';
 
 const BASE = '/api/trace';
 
 async function http<T>(url: string): Promise<T> {
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`Trace API ${url} failed: ${res.status}`);
+  if (!res.ok) throw await apiError(res, `Trace API ${url} failed: ${res.status}`);
   return res.json() as Promise<T>;
 }
 
@@ -54,7 +55,7 @@ export async function search(
   page = 0,
   size = 20,
 ): Promise<ConversationListResponse> {
-  const data = await listConversations(undefined, page, size);
+  const data = await listConversations(undefined, undefined, page, size);
   if (!keyword.trim()) return data;
   const kw = keyword.toLowerCase();
   const filtered = data.conversations.filter(

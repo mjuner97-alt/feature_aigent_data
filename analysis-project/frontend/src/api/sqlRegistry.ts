@@ -1,4 +1,5 @@
 import type { SqlRegistryEntry, SqlRegistryInput, SqlRegistryListItem, SqlTestRequest, SqlTestResult } from '../types/sqlRegistry';
+import { apiErrorDetail } from '../utils/apiError';
 
 const BASE = '/api/sql-registry';
 
@@ -34,9 +35,7 @@ export async function getEntry(id: number): Promise<SqlRegistryEntry> {
 export async function createEntry(input: SqlRegistryInput): Promise<SqlRegistryEntry> {
   const res = await fetch(BASE, { method: 'POST', headers: jsonHeaders(), body: JSON.stringify(input) });
   if (!res.ok) {
-    let detail = '';
-    try { const body = await res.json(); detail = body.message || body.error || ''; } catch { /* ignore */ }
-    throw new Error(detail || `新增失败 (HTTP ${res.status})`);
+    throw new Error((await apiErrorDetail(res)) || `新增失败 (HTTP ${res.status})`);
   }
   return res.json();
 }
@@ -45,9 +44,7 @@ export async function createEntry(input: SqlRegistryInput): Promise<SqlRegistryE
 export async function updateEntry(id: number, input: SqlRegistryInput): Promise<SqlRegistryEntry> {
   const res = await fetch(`${BASE}?id=${id}`, { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(input) });
   if (!res.ok) {
-    let detail = '';
-    try { const body = await res.json(); detail = body.message || body.error || ''; } catch { /* ignore */ }
-    throw new Error(detail || `修改失败 (HTTP ${res.status})`);
+    throw new Error((await apiErrorDetail(res)) || `修改失败 (HTTP ${res.status})`);
   }
   return res.json();
 }
@@ -59,9 +56,7 @@ export async function updateEntry(id: number, input: SqlRegistryInput): Promise<
 export async function setEntryEnabled(id: number, enabled: number): Promise<void> {
   const res = await fetch(`${BASE}?id=${id}`, { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify({ enabled }) });
   if (!res.ok) {
-    let detail = '';
-    try { const body = await res.json(); detail = body.message || body.error || ''; } catch { /* ignore */ }
-    throw new Error(detail || `切换失败 (HTTP ${res.status})`);
+    throw new Error((await apiErrorDetail(res)) || `切换失败 (HTTP ${res.status})`);
   }
 }
 
