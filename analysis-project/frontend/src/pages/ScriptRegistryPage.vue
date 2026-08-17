@@ -258,11 +258,7 @@ const S = {
           <el-switch :model-value="row.enabled === 1" size="small" @change="toggleEnabled(row)" />
         </template>
       </el-table-column>
-      <el-table-column label="创建人" width="160">
-        <template #default="{ row }">
-          {{ row.createdByName ? `${row.createdByName} (${row.createdBy})` : row.createdBy }}
-        </template>
-      </el-table-column>
+      <el-table-column prop="createdBy" label="创建人" width="90" />
       <el-table-column prop="updatedAt" label="更新时间" width="160" />
       <el-table-column label="操作" width="140" fixed="right">
         <template #default="{ row }">

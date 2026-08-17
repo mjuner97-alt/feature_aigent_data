@@ -26,8 +26,6 @@ export interface SqlRegistryListItem {
   createdAt: string;
   updatedAt: string;
   createdBy: string;
-  /** 创建人姓名(后端按 createdBy 查 developer_pl_person_info 回填, 查不到为空, 前端回退到 userId) */
-  createdByName?: string;
 }
 
 /** 新增/编辑输入 */
