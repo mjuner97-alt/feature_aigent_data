@@ -10,18 +10,17 @@
  */
 import { ref, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import DimensionCascader from '../../components/DimensionCascader.vue';
 import SkillFileAttachment from '../../components/SkillFileAttachment.vue';
 import {
   getSkill,
   createSkill,
   updateSkill,
   currentUserId,
-  getPublishTargets,
-  submitPublish,
   getSkillPublishes,
+  getGrants,
 } from '../../api/skill';
-import type { SkillInput, PublishTargetGroup } from '../../types/skill';
+import type { SkillInput, SkillGrant } from '../../types/skill';
+import SkillGrantEditor from '../../components/SkillGrantEditor.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -32,48 +31,56 @@ const editId = computed(() => {
 });
 const isEdit = computed(() => editId.value != null);
 
-const form = ref<SkillInput>({ name: '', description: '', content: '' });
+const form = ref<SkillInput>({ name: '', description: '', content: '', visibility: 'PUBLIC' });
 const formLoading = ref(false);
 const saving = ref(false);
 const formError = ref('');
 const notOwner = ref(false);
 const attachmentRef = ref<InstanceType<typeof SkillFileAttachment> | null>(null);
 
-// 维度多选(创建/编辑时选择目标维度,保存后提交发布申请走审批流)
-const publishTargetGroups = ref<PublishTargetGroup[]>([]);
-const selectedTargets = ref<Set<string>>(new Set());
+// 可见性 + 私有授权
+const visibility = ref<'PUBLIC' | 'PRIVATE'>('PUBLIC');
+const existingGrants = ref<SkillGrant[]>([]);
+const grantEditorRef = ref<InstanceType<typeof SkillGrantEditor> | null>(null);
+
+// 历史维度发布(仅编辑"已是非个人维度"的旧 skill 时残留展示;新建不展示)
 const existingDimensionLabel = ref('个人');
 const publishResult = ref('');
 
-const targetsLoaded = ref(false);
-async function ensurePublishTargets() {
-  if (targetsLoaded.value) return;
+// 编辑模式:skill 是否已属于非个人维度(仅残留旧维度信息展示,不再新增维度审批)
+const isLegacyDimensionShared = computed(() => existingDimensionLabel.value !== '个人');
+
+// 获取已存在授权(编辑模式回显)
+async function ensureExistingGrants(id: number) {
   try {
-    publishTargetGroups.value = await getPublishTargets();
+    existingGrants.value = await getGrants(id);
   } catch {
-    // 获取失败不阻塞表单
+    existingGrants.value = [];
   }
-  targetsLoaded.value = true;
 }
 
 function resetForm() {
-  form.value = { name: '', description: '', content: '' };
+  form.value = { name: '', description: '', content: '', visibility: 'PUBLIC' };
+  visibility.value = 'PUBLIC';
   formError.value = '';
   publishResult.value = '';
   notOwner.value = false;
   existingDimensionLabel.value = '个人';
-  selectedTargets.value = new Set();
+  existingGrants.value = [];
 }
 
 async function loadForEdit(id: number) {
   formLoading.value = true;
   try {
     const s = await getSkill(id);
+    const vis = s.visibility === 'PRIVATE' ? 'PRIVATE' : 'PUBLIC';
     form.value = {
       name: s.name ?? '',
       description: s.description ?? '',
       content: s.content ?? '',
+      visibility: vis,
     };
+    visibility.value = vis;
     if (s.ownerUserId !== currentUserId()) notOwner.value = true;
     try {
       const publishes = await getSkillPublishes(id);
@@ -90,6 +97,7 @@ async function loadForEdit(id: number) {
     } catch {
       // 维度信息加载失败不阻塞
     }
+    await ensureExistingGrants(id);
   } catch (e) {
     formError.value = e instanceof Error ? e.message : '加载失败';
   } finally {
@@ -99,9 +107,8 @@ async function loadForEdit(id: number) {
 
 onMounted(async () => {
   resetForm();
-  await ensurePublishTargets();
   if (editId.value != null) {
-    loadForEdit(editId.value);
+    await loadForEdit(editId.value);
   }
 });
 
@@ -114,35 +121,23 @@ async function submit() {
   }
   saving.value = true;
   try {
+    // visibility 作为 SkillInput 传给后端(PUBLIC/PRIVATE)
+    const payload: SkillInput = { ...form.value, visibility: visibility.value };
     let skillId: number;
     if (editId.value != null) {
-      await updateSkill(editId.value, form.value);
+      await updateSkill(editId.value, payload);
       skillId = editId.value;
+      // 编辑模式:授权编辑器已即时生效(加/删都直接调后端,首个授权自动切 PRIVATE),
+      // 无需在此二次同步;仅兜底保证 visibility 已按开关更新。
     } else {
-      const created = await createSkill(form.value);
+      const created = await createSkill(payload);
       skillId = created.id;
       // 创建模式: 将暂存的附件关联到新创建的 skill
       if (attachmentRef.value) {
         await attachmentRef.value.attachPendingFiles(skillId);
       }
-    }
-    if (selectedTargets.value.size > 0) {
-      const allTargets = publishTargetGroups.value.flatMap(g => g.targets);
-      const targets = allTargets.filter(t => selectedTargets.value.has(`${t.orgType}:${t.orgId}`));
-      const failed: string[] = [];
-      for (const t of targets) {
-        try {
-          await submitPublish(skillId, t.orgType, t.orgId, t.displayName);
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : '失败';
-          failed.push(`${t.displayName}:${msg}`);
-        }
-      }
-      if (failed.length > 0) {
-        publishResult.value = `Skill 已保存,但部分维度申请提交失败:${failed.join('; ')}`;
-      } else {
-        publishResult.value = `Skill 已保存,${targets.length} 条维度发布申请已提交(待审批)。`;
-      }
+      // 创建模式: 把表单里加好的授权同步到新 skill(编辑器无 skillId 时只是暂存)
+      await syncGrantsToServer(skillId);
     }
     if (!publishResult.value || !publishResult.value.includes('失败')) {
       setTimeout(() => {
@@ -153,6 +148,13 @@ async function submit() {
     formError.value = e instanceof Error ? e.message : '保存失败';
   } finally {
     saving.value = false;
+  }
+}
+
+// 创建模式专用:把编辑器暂存的授权提交到新 skill(创建时拿到 skillId 后调用)。首个授权自动切 PRIVATE。
+async function syncGrantsToServer(skillId: number) {
+  if (grantEditorRef.value) {
+    await grantEditorRef.value.commitPending(skillId);
   }
 }
 
@@ -194,18 +196,38 @@ function goBack() {
             :skill-id="editId"
             :disabled="notOwner"
           />
+
+          <!-- 可见性:公开/私有 -->
           <div class="field">
-            <span class="label">维度标签</span>
-            <div v-if="isEdit && existingDimensionLabel !== '个人'" class="dim-current">
-              当前维度:{{ existingDimensionLabel }}(下方新选维度将追加提交审批)
+            <span class="label">可见性</span>
+            <div class="visibility-row">
+              <label class="vis-opt">
+                <input type="radio" v-model="visibility" value="PUBLIC" :disabled="notOwner" />
+                <span>公开</span>
+              </label>
+              <label class="vis-opt">
+                <input type="radio" v-model="visibility" value="PRIVATE" :disabled="notOwner" />
+                <span>私有</span>
+              </label>
             </div>
-            <DimensionCascader
-              v-model="selectedTargets"
-              :groups="publishTargetGroups"
-              :disabled="notOwner"
-            />
-            <div class="dim-tip">不选 = 个人维度(仅自己可见)。维度间互斥,只能选一种维度类型(如选了"小组"就不能再选"部门"),同维度内可多选。提交后各维度独立走审批。</div>
+            <div class="dim-tip">公开 Skill 需"引用"才会出现在你的使用列表;私有 Skill 被授权后自动进入被授权人的使用列表。</div>
           </div>
+
+          <!-- 私有时:授权编辑器(编辑模式即时生效;创建模式暂存,保存后再提交) -->
+          <div v-if="visibility === 'PRIVATE' && !notOwner" class="field">
+            <SkillGrantEditor
+              ref="grantEditorRef"
+              :skill-id="editId"
+              :editable="true"
+            />
+          </div>
+
+          <!-- 旧维度残留展示(仅历史已发布到非个人维度的 skill 只读提示,不再新增维度审批) -->
+          <div v-if="isLegacyDimensionShared" class="field">
+            <span class="label">历史维度发布</span>
+            <div class="dim-current">当前已发布到:{{ existingDimensionLabel }}(旧审批维度,保留兼容;同维度用户仍可使用)。如需新授权请用上方"谁可以看"。</div>
+          </div>
+
           <div v-if="formError" class="error">{{ formError }}</div>
           <div v-if="publishResult" class="publish-result">{{ publishResult }}</div>
         </form>
@@ -275,6 +297,9 @@ function goBack() {
 .publish-result { color: #047857; font-size: 13px; background: #d1fae5; padding: 8px 12px; border-radius: 6px; }
 .dim-current { font-size: 12px; color: #64748b; background: #f1f5f9; padding: 6px 10px; border-radius: 6px; margin-bottom: 6px; }
 .dim-tip { font-size: 12px; color: #94a3b8; margin-top: 4px; }
+.visibility-row { display: flex; flex-direction: column; gap: 6px; }
+.vis-opt { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #1e293b; cursor: pointer; }
+.vis-opt input { width: auto; }
 
 .form-footer {
   display: flex;

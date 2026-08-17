@@ -108,6 +108,7 @@ function ownerLabel(it: SkillListItem): string {
       <div class="meta">
         {{ ownerLabel(it) }}
         <span class="dim-badge" :class="dimClass(it)">{{ dimLabel(it) }}</span>
+        <span v-if="it.visibility === 'PRIVATE'" class="dim-badge private-badge" title="私有:仅创建人和被授权的人/部门/小组可见">私有</span>
       </div>
       <div v-if="it.used && !it.disabled && !hideUsed" class="tags">
         <span class="used">已使用</span>
@@ -137,6 +138,7 @@ function ownerLabel(it: SkillListItem): string {
           <span class="name">{{ it.name }}</span>
           <span class="badge" :class="badgeClass(it)">{{ badgeIcon(it) }}</span>
           <span class="dim-badge" :class="dimClass(it)">{{ dimLabel(it) }}</span>
+          <span v-if="it.visibility === 'PRIVATE'" class="dim-badge private-badge" title="私有:仅创建人和被授权的人/部门/小组可见">私有</span>
         </div>
         <div class="line2">
           {{ it.description }} · {{ ownerLabel(it) }}
@@ -192,6 +194,7 @@ button.on { background: #3b82f6; color: #fff; border-color: #3b82f6; }
 .desc { color: #64748b; font-size: 13px; min-height: 18px; }
 .meta { color: #475569; font-size: 12px; }
 .dim-badge { margin-left: 4px; padding: 1px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+.private-badge { background: #fef3c7; color: #b45309; }
 .dim-personal { background: #f1f5f9; color: #64748b; }
 .dim-group { background: #dbeafe; color: #2563eb; }
 .dim-department { background: #d1fae5; color: #047857; }
