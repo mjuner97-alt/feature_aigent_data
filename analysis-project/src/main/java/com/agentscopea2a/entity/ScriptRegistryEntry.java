@@ -46,6 +46,4 @@ public class ScriptRegistryEntry {
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private String createdBy;
-    /** 创建人姓名(展示用, 非数据库列; 由 service 按 createdBy 查 developer_pl_person_info 填充, 查不到留空) */
-    private String createdByName;
 }

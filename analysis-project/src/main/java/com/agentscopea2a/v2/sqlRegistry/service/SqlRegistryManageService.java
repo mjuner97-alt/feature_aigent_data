@@ -2,7 +2,6 @@ package com.agentscopea2a.v2.sqlRegistry.service;
 
 import com.agentscopea2a.entity.SqlRegistryEntry;
 import com.agentscopea2a.mapper.gauss.SqlRegistryMapper;
-import com.agentscopea2a.v2.skillManager.service.MockOrgService;
 import com.agentscopea2a.v2.sqlRegistry.dto.SqlTestResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -65,21 +64,18 @@ public class SqlRegistryManageService {
 
     private final SqlRegistryMapper mapper;
     private final Map<String, DataSource> dataSourceMap;
-    private final MockOrgService mockOrgService;
 
     public SqlRegistryManageService(
             SqlRegistryMapper mapper,
             @org.springframework.beans.factory.annotation.Qualifier("mysqlDataSource") DataSource mysqlDataSource,
             @org.springframework.beans.factory.annotation.Qualifier("gaussDataSource") DataSource gaussDataSource,
-            @org.springframework.beans.factory.annotation.Qualifier("clickHouseDataSource") DataSource clickHouseDataSource,
-            MockOrgService mockOrgService) {
+            @org.springframework.beans.factory.annotation.Qualifier("clickHouseDataSource") DataSource clickHouseDataSource) {
         this.mapper = mapper;
         Map<String, DataSource> m = new LinkedHashMap<>();
         m.put("mysql", mysqlDataSource);
         m.put("gauss", gaussDataSource);
         m.put("clickhouse", clickHouseDataSource);
         this.dataSourceMap = Collections.unmodifiableMap(m);
-        this.mockOrgService = mockOrgService;
     }
 
     // ======================================================================
@@ -91,38 +87,13 @@ public class SqlRegistryManageService {
      * datasource 精确匹配 (忽略大小写); createdBy 模糊匹配 (忽略大小写, 适合输入框).
      */
     public List<SqlRegistryEntry> list(String datasource, String createdBy) {
-        List<SqlRegistryEntry> entries = mapper.selectAll().stream()
+        return mapper.selectAll().stream()
                 .filter(e -> datasource == null || datasource.isBlank()
                         || datasource.equalsIgnoreCase(e.getDatasource()))
                 .filter(e -> createdBy == null || createdBy.isBlank()
                         || (e.getCreatedBy() != null
                                 && e.getCreatedBy().toLowerCase().contains(createdBy.toLowerCase())))
                 .collect(Collectors.toList());
-        fillCreatedByName(entries);
-        return entries;
-    }
-
-    /**
-     * 按 createdBy 批量查 developer_pl_person_info 姓名, 回填 createdByName (展示用)。
-     * 查不到的 userId 不在 Map 中, createdByName 留空, 前端回退到仅显示 userId。
-     */
-    private void fillCreatedByName(List<SqlRegistryEntry> entries) {
-        if (entries == null || entries.isEmpty()) {
-            return;
-        }
-        List<String> userIds = entries.stream()
-                .map(SqlRegistryEntry::getCreatedBy)
-                .filter(Objects::nonNull)
-                .filter(id -> !id.isBlank())
-                .distinct()
-                .toList();
-        if (userIds.isEmpty()) {
-            return;
-        }
-        Map<String, String> nameMap = mockOrgService.getUserNameMap(userIds);
-        for (SqlRegistryEntry e : entries) {
-            e.setCreatedByName(nameMap.get(e.getCreatedBy()));
-        }
     }
 
     public SqlRegistryEntry getById(Long id) {

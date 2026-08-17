@@ -85,10 +85,6 @@ public class HtmlReportRenderer {
     private static final Pattern TABLE_HEADER = Pattern.compile("^\\s*\\|.*\\|\\s*$");
     private static final Pattern TABLE_SEPARATOR = Pattern.compile("^\\s*\\|[\\s:;-]+\\|.*$");
 
-    /** 匹配 {@code <table>...</table>}（含属性、可跨行），统一包一层横向滚动容器；不支持嵌套表格。 */
-    private static final Pattern TABLE_TAG =
-            Pattern.compile("<table\\b[^>]*>[\\s\\S]*?</table>", Pattern.CASE_INSENSITIVE);
-
     /** 安全 HTML 标签白名单：AI 输出中这些标签会被还原渲染；script/iframe/未知标签保持转义防注入。 */
     private static final Set<String> SAFE_HTML_TAGS = Set.of(
             "b", "i", "em", "strong", "u", "s", "del", "ins", "mark", "small", "sub", "sup",
@@ -106,13 +102,13 @@ public class HtmlReportRenderer {
     private static final Pattern INLINE_CODE_SPAN =
             Pattern.compile("<code>.*?</code>", Pattern.DOTALL);
 
-    // ── 完整 HTML 文档检测/抽取（AI 直出或嵌入 markdown 的 <html>...<body>...</body></html>）────
-    /** 完整 HTML 文档判定标志之一：含 {@code <body>} 开标签（render()/renderMdFragment 检测用）。 */
+    // ── 完整 HTML 文档检测/抽取（AI 偶尔直出 <html>...<body>...</body></html>）──────────
     private static final Pattern BODY_OPEN_FULL = Pattern.compile("<body\\b[^>]*>", Pattern.CASE_INSENSITIVE);
-
-    /** 完整 HTML 文档块：可选 {@code <!DOCTYPE>} + {@code <html>...</html>}（可跨行），嵌入 markdown 时整块抽进 iframe。 */
-    private static final Pattern FULL_HTML_DOC =
-            Pattern.compile("(?:<!DOCTYPE[^>]*>\\s*)?<html\\b[^>]*>[\\s\\S]*?</html>", Pattern.CASE_INSENSITIVE);
+    private static final Pattern BODY_CLOSE = Pattern.compile("</body\\s*>", Pattern.CASE_INSENSITIVE);
+    private static final Pattern STYLE_BLOCK = Pattern.compile("<style\\b[^>]*>[\\s\\S]*?</style>", Pattern.CASE_INSENSITIVE);
+    private static final Pattern SCRIPT_BLOCK = Pattern.compile("<script\\b[^>]*>[\\s\\S]*?</script>", Pattern.CASE_INSENSITIVE);
+    private static final Pattern SCRIPT_OPEN = Pattern.compile("<script\\b[^>]*>", Pattern.CASE_INSENSITIVE);
+    private static final Pattern SCRIPT_CLOSE = Pattern.compile("</script\\s*>", Pattern.CASE_INSENSITIVE);
 
     /** 内联 CSS：复用前端 Markdown.vue LIGHT 主题，表格斑马纹/边框/表头底色。 */
     private static final String CSS = """
@@ -132,8 +128,7 @@ public class HtmlReportRenderer {
             code{background:#f1f5f9;color:#be185d;padding:1px 5px;border-radius:4px;font-family:ui-monospace,"SFMono-Regular",Menlo,monospace;font-size:0.88em}
             pre{background:#0f172a;color:#e2e8f0;border:1px solid #334155;padding:10px 14px;border-radius:6px;overflow-x:auto;margin:8px 0}
             pre code{background:transparent;color:inherit;padding:0;font-size:0.85rem}
-            table{border-collapse:collapse;width:100%;min-width:max-content;font-size:0.88rem}
-            .table-wrap{overflow-x:auto;margin:8px 0}
+            table{border-collapse:collapse;width:100%;font-size:0.88rem;margin:8px 0}
             th,td{border:1px solid #e2e8f0;padding:6px 10px;text-align:left;vertical-align:top}
             th{background:#f8fafc;font-weight:600;color:#1e293b}
             tbody tr:nth-child(even){background:#f8fafc}
@@ -142,7 +137,6 @@ public class HtmlReportRenderer {
             a{color:#6366f1;text-decoration:none}
             a:hover{text-decoration:underline}
             .echarts-chart{width:100%;height:400px;margin:12px 0}
-            .html-doc-frame{width:100%;min-height:240px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;display:block}
             """;
 
     /**
@@ -174,26 +168,6 @@ public class HtmlReportRenderer {
             }
             """;
 
-    /**
-     * iframe 高度自适应脚本：srcdoc 同源可读 contentDocument，按内容 scrollHeight 撑高 iframe，
-     * 避免嵌入的完整 HTML 页面被裁剪或留大片空白。load 后立即量一次 + 300ms 再量一次兜底晚渲染的图表。
-     */
-    private static final String IFRAME_RESIZE_JS = """
-            (function(){
-              function resize(f){
-                try{
-                  var d=f.contentDocument; if(!d) return;
-                  var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0);
-                  f.style.height=(h+24)+'px';
-                }catch(e){}
-              }
-              document.querySelectorAll('iframe.html-doc-frame').forEach(function(f){
-                f.addEventListener('load',function(){resize(f);setTimeout(function(){resize(f);},300);});
-                resize(f);
-              });
-            })();
-            """;
-
     /** 启动时加载一次的 echarts.min.js 全文，内联进每个含图表的报告。 */
     private String echartsJs;
 
@@ -221,9 +195,8 @@ public class HtmlReportRenderer {
         String md = markdown == null ? "" : markdown;
         String safeTitle = escapeHtml(title == null ? "报告" : title);
 
-        // AI 偶尔直出完整 HTML 文档（以 <!DOCTYPE/<html 开头且含 <body>）：整页塞进 <iframe srcdoc>
-        // 隔离渲染，保留 AI 原样式/脚本/布局，不走 markdown 转换、不抽 body 不删 script。
-        // （嵌入在 markdown 中间位置的完整 HTML 文档，由 markdownToHtml -> renderMdFragment 同样按 iframe 处理）
+        // AI 偶尔直出完整 HTML 文档（以 <!DOCTYPE/<html 开头且含 <body>）：抽取 body 内嵌 HTML
+        // 原样渲染，不走 markdown 转换；<head> 的 <style> 保留注入，<script> 移除防注入
         String leading = md.stripLeading();
         if ((leading.regionMatches(true, 0, "<!DOCTYPE", 0, 9)
                 || leading.regionMatches(true, 0, "<html", 0, 5))
@@ -236,23 +209,48 @@ public class HtmlReportRenderer {
         StringBuilder body = new StringBuilder();
         List<ChartBlock> charts = splitCharts(md, body, true);
 
-        return assembleHtml(safeTitle, body.toString(), charts);
+        return assembleHtml(safeTitle, body.toString(), charts, "");
     }
 
     /**
-     * 渲染 AI 直出的完整 HTML 文档：整页经 {@code escapeHtml} 转义后塞进 {@code <iframe srcdoc>}
-     * 隔离渲染，原样保留 AI 的样式/脚本/布局，不再抽取 body 内嵌、移除 {@code <script>} --
-     * 否则依赖脚本（echarts 图表 / 动态内容 / 交互）的页面会丢内容、呈现为「没渲染」。
+     * 渲染 AI 直出的完整 HTML 文档：抽取 {@code <body>} 内嵌 HTML 原样嵌入报告（不走 markdown 转换），
+     * 保留 {@code <head>} 中的 {@code <style>} 注入以维持 AI 原样式，移除 {@code <script>} 防注入。
      *
-     * <p>iframe 同源（srcdoc），父页面可读 {@code contentDocument} 做高度自适应。
-     * AI 若用 CDN {@code <script src>} 仍需联网（这条路径不做 echarts 内联）。
+     * <p>body 内若含 {@code ```echarts} 代码块仍渲染成图表；其余原样作为 HTML 嵌入。
      */
     private String renderCompleteHtml(String html, String safeTitle) {
-        // escapeHtml 把 & < > " 转成实体，浏览器解码 srcdoc 属性后按完整文档渲染 iframe；
-        // AI 原有 <style>/<script>/<head> 全部保留在 iframe 内，父页面只承载 iframe + 高度自适应
-        String body = "<iframe class=\"html-doc-frame\" srcdoc=\"" + escapeHtml(html) + "\"></iframe>"
-                + "<script>" + IFRAME_RESIZE_JS + "</script>";
-        return assembleHtml(safeTitle, body, List.of());
+        // 收集 <style>...</style>（通常在 head），注入报告保留 AI 样式
+        StringBuilder extraStyles = new StringBuilder();
+        Matcher sm = STYLE_BLOCK.matcher(html);
+        while (sm.find()) {
+            extraStyles.append(sm.group());
+        }
+
+        // 抽取 <body...>...</body> 内嵌内容；无 <body> 兜底用全文
+        String bodyContent = extractBodyInner(html);
+
+        // 移除 <script>（一般没有，兜底防注入）
+        bodyContent = SCRIPT_BLOCK.matcher(bodyContent).replaceAll("");
+        bodyContent = SCRIPT_OPEN.matcher(bodyContent).replaceAll("");
+        bodyContent = SCRIPT_CLOSE.matcher(bodyContent).replaceAll("");
+        // <style> 已收集到 extraStyles 注入 head，从 body 移除避免重复
+        bodyContent = STYLE_BLOCK.matcher(bodyContent).replaceAll("");
+
+        // 仍扫描图表块（body 内若有 ```echarts 或 <echart> 也渲染成图），其余原样为 HTML
+        StringBuilder body = new StringBuilder();
+        List<ChartBlock> charts = splitCharts(bodyContent, body, false);
+
+        return assembleHtml(safeTitle, body.toString(), charts, extraStyles.toString());
+    }
+
+    /** 抽取 {@code <body...>...</body>} 之间的内嵌 HTML；无 {@code <body>} 时返回原文。 */
+    private String extractBodyInner(String html) {
+        Matcher open = BODY_OPEN_FULL.matcher(html);
+        if (!open.find()) return html;
+        int start = open.end();
+        Matcher close = BODY_CLOSE.matcher(html);
+        int end = close.find(start) ? close.start() : html.length();
+        return html.substring(start, end);
     }
 
     /**
@@ -300,16 +298,15 @@ public class HtmlReportRenderer {
 
     // ── 组装完整 HTML 文档 ────────────────────────────────────────────────────
 
-    private String assembleHtml(String title, String body, List<ChartBlock> charts) {
-        // 每个表格包一层横向滚动容器：宽表保持自然列宽横拉（min-width:max-content），不再被 width:100% 挤窄
-        // 导致文字大量换行把表格撑得很高（挤下去）。markdown 路径的 GFM 表格与嵌入 HTML 表格走这里
-        // （完整 HTML 文档路径的表格在 iframe srcdoc 内，由 AI 自带样式渲染，不经此处）
-        body = wrapTables(body);
+    private String assembleHtml(String title, String body, List<ChartBlock> charts, String extraStyles) {
         StringBuilder sb = new StringBuilder(1024 + body.length());
         sb.append("<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">");
         sb.append("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
         sb.append("<title>").append(title).append("</title>");
         sb.append("<style>").append(CSS).append("</style>");
+        if (extraStyles != null && !extraStyles.isEmpty()) {
+            sb.append(extraStyles);  // AI 完整 HTML 中的 <style> 块，保留原样式
+        }
         sb.append("</head><body><div class=\"report\">");
         sb.append(body);
         sb.append("</div>");
@@ -340,7 +337,7 @@ public class HtmlReportRenderer {
         int last = 0;
         while (code.find()) {
             if (code.start() > last) {
-                out.append(renderMdFragment(md.substring(last, code.start())));
+                out.append(renderInline(md.substring(last, code.start())));
             }
             String lang = code.group(1);
             String content = escapeHtml(code.group(2));
@@ -349,44 +346,7 @@ public class HtmlReportRenderer {
             last = code.end();
         }
         if (last < md.length()) {
-            out.append(renderMdFragment(md.substring(last)));
-        }
-        return out.toString();
-    }
-
-    /**
-     * 片段级转换：先把片段内「完整 HTML 文档」（{@code <html>...</html>} 且含 {@code <body>}）整块抽进
-     * {@code <iframe srcdoc>} 隔离渲染（保留 AI 原样式/脚本，iframe 内执行），其余文本继续走
-     * {@link #renderInline} 行级渲染。抽到过完整文档时，末尾补一段 iframe 高度自适应脚本。
-     *
-     * <p>在 {@link #markdownToHtml} 的代码块切分之后调用：先保护 fenced code（代码样例里展示的
-     * {@code <html>} 不能被误当活页），再识别真正的完整 HTML 文档块。
-     */
-    private String renderMdFragment(String frag) {
-        if (frag == null || frag.isEmpty()) return "";
-        StringBuilder out = new StringBuilder();
-        Matcher doc = FULL_HTML_DOC.matcher(frag);
-        int last = 0;
-        boolean hasDoc = false;
-        while (doc.find()) {
-            if (doc.start() > last) {
-                out.append(renderInline(frag.substring(last, doc.start())));
-            }
-            String block = doc.group();
-            if (BODY_OPEN_FULL.matcher(block).find()) {
-                out.append("<iframe class=\"html-doc-frame\" srcdoc=\"")
-                        .append(escapeHtml(block)).append("\"></iframe>\n");
-                hasDoc = true;
-            } else {
-                out.append(renderInline(block));  // <html> 包裹但无 <body>，按普通文本渲染
-            }
-            last = doc.end();
-        }
-        if (last < frag.length()) {
-            out.append(renderInline(frag.substring(last)));
-        }
-        if (hasDoc) {
-            out.append("<script>").append(IFRAME_RESIZE_JS).append("</script>");
+            out.append(renderInline(md.substring(last)));
         }
         return out.toString();
     }
@@ -432,7 +392,7 @@ public class HtmlReportRenderer {
                     rows.add(splitRow(lines[i]));
                     i++;
                 }
-                out.append("<table><thead><tr>");
+                out.append("<div style=\"overflow-x:auto\"><table><thead><tr>");
                 for (String h : header) {
                     out.append("<th>").append(h).append("</th>");
                 }
@@ -444,7 +404,7 @@ public class HtmlReportRenderer {
                     }
                     out.append("</tr>");
                 }
-                out.append("</tbody></table>\n");
+                out.append("</tbody></table></div>\n");
             } else {
                 out.append(lines[i]).append('\n');
                 i++;
@@ -461,24 +421,6 @@ public class HtmlReportRenderer {
         String[] cells = t.split("\\|", -1);
         for (int j = 0; j < cells.length; j++) cells[j] = cells[j].trim();
         return cells;
-    }
-
-    /**
-     * 把每个 {@code <table>...</table>} 包进 {@code <div class="table-wrap">}（CSS overflow-x:auto）。
-     * 配合 {@code table{min-width:max-content}}：宽表保持自然列宽横拉滚动，不再被 {@code width:100%}
-     * 挤窄导致文字大量换行把表格撑得很高（挤下去）。markdown 路径的 GFM 表格与嵌入 HTML 表格走这里
-     * （完整 HTML 文档路径的表格在 iframe srcdoc 内，由 AI 自带样式渲染，不经此处）。
-     */
-    private static String wrapTables(String html) {
-        if (html == null || html.isEmpty()) return html;
-        Matcher m = TABLE_TAG.matcher(html);
-        StringBuilder sb = new StringBuilder(html.length() + 64);
-        while (m.find()) {
-            // quoteReplacement：表格内容可能含 $ / \，避免被当作替换引用
-            m.appendReplacement(sb, Matcher.quoteReplacement("<div class=\"table-wrap\">" + m.group() + "</div>"));
-        }
-        m.appendTail(sb);
-        return sb.toString();
     }
 
     // ── 安全工具 ──────────────────────────────────────────────────────────
