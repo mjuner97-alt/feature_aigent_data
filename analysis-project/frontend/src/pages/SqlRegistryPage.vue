@@ -24,6 +24,12 @@ const datasourceFilter = ref('');
 const createdByFilter = ref('');
 const keyword = ref('');
 
+function formatCreator(row: SqlRegistryListItem): string {
+  return row.createdByName
+    ? `${row.createdByName} (${row.createdBy})`
+    : (row.createdBy || '-');
+}
+
 const filteredItems = computed(() => {
   let list = items.value;
   if (keyword.value) {
@@ -312,7 +318,9 @@ const S = {
           <el-switch :model-value="row.enabled === 1" size="small" @change="toggleEnabled(row)" />
         </template>
       </el-table-column>
-      <el-table-column prop="createdBy" label="创建人" width="90" />
+      <el-table-column label="创建人" min-width="160" show-overflow-tooltip>
+        <template #default="{ row }">{{ formatCreator(row) }}</template>
+      </el-table-column>
       <el-table-column prop="updatedAt" label="更新时间" width="160" />
       <el-table-column label="操作" width="140" fixed="right">
         <template #default="{ row }">

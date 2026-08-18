@@ -1,4 +1,4 @@
-package com.agentscopea2a.v2.sqlRegistry.dto;
+package com.agentscopea2a.v2.registry.dto;
 
 import lombok.AllArgsConstructor;
 import lombok.Builder;

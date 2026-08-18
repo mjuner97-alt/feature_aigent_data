@@ -1,7 +1,7 @@
-package com.agentscopea2a.v2.scriptRegistry.controller;
+package com.agentscopea2a.v2.registry.controller;
 
 import com.agentscopea2a.entity.ScriptRegistryEntry;
-import com.agentscopea2a.v2.scriptRegistry.service.ScriptRegistryManageService;
+import com.agentscopea2a.v2.registry.service.ScriptRegistryManageService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -13,7 +13,7 @@ import java.util.Map;
  * Python 脚本注册表管理 REST 接口.
  *
  * <p>提供 CRUD (不含试运行, 脚本执行留给 agent 工具 {@code script_exec}).
- * 与 {@link com.agentscopea2a.v2.sqlRegistry.controller.SqlRegistryController} 同构.
+ * 与 {@link SqlRegistryController} 同构.
  */
 @RestController
 @RequestMapping("/api/script-registry")

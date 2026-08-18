@@ -84,6 +84,13 @@ export async function listExecutions(jobId: number, status?: string): Promise<Sk
   return res.json();
 }
 
+/** 全部正在排队或运行中的执行记录。 */
+export async function listInflightExecutions(): Promise<SkillJobExecution[]> {
+  const res = await fetch(`${BASE}/executions/inflight`, { headers: authHeaders() });
+  if (!res.ok) throw await jobError(res, '查询运行任务失败');
+  return res.json();
+}
+
 /** 单条执行记录 */
 export async function getExecution(execId: number): Promise<SkillJobExecution> {
   const res = await fetch(`${BASE}/executions/${execId}`, { headers: authHeaders() });
