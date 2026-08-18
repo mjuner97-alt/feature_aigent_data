@@ -1,8 +1,10 @@
-package com.agentscopea2a.v2.sqlRegistry.service;
+package com.agentscopea2a.v2.registry.service;
 
 import com.agentscopea2a.entity.SqlRegistryEntry;
 import com.agentscopea2a.mapper.gauss.SqlRegistryMapper;
-import com.agentscopea2a.v2.sqlRegistry.dto.SqlTestResult;
+import com.agentscopea2a.v2.auth.entity.DeveloperPlPersonInfo;
+import com.agentscopea2a.v2.auth.mapper.DeveloperPlPersonInfoMapper;
+import com.agentscopea2a.v2.registry.dto.SqlTestResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,14 +65,17 @@ public class SqlRegistryManageService {
             "\\bLIMIT\\s+(\\d+|:\\w+)", Pattern.CASE_INSENSITIVE);
 
     private final SqlRegistryMapper mapper;
+    private final DeveloperPlPersonInfoMapper personInfoMapper;
     private final Map<String, DataSource> dataSourceMap;
 
     public SqlRegistryManageService(
             SqlRegistryMapper mapper,
+            DeveloperPlPersonInfoMapper personInfoMapper,
             @org.springframework.beans.factory.annotation.Qualifier("mysqlDataSource") DataSource mysqlDataSource,
             @org.springframework.beans.factory.annotation.Qualifier("gaussDataSource") DataSource gaussDataSource,
             @org.springframework.beans.factory.annotation.Qualifier("clickHouseDataSource") DataSource clickHouseDataSource) {
         this.mapper = mapper;
+        this.personInfoMapper = personInfoMapper;
         Map<String, DataSource> m = new LinkedHashMap<>();
         m.put("mysql", mysqlDataSource);
         m.put("gauss", gaussDataSource);
@@ -87,13 +92,39 @@ public class SqlRegistryManageService {
      * datasource 精确匹配 (忽略大小写); createdBy 模糊匹配 (忽略大小写, 适合输入框).
      */
     public List<SqlRegistryEntry> list(String datasource, String createdBy) {
-        return mapper.selectAll().stream()
+        List<SqlRegistryEntry> entries = mapper.selectAll().stream()
                 .filter(e -> datasource == null || datasource.isBlank()
                         || datasource.equalsIgnoreCase(e.getDatasource()))
                 .filter(e -> createdBy == null || createdBy.isBlank()
                         || (e.getCreatedBy() != null
                                 && e.getCreatedBy().toLowerCase().contains(createdBy.toLowerCase())))
                 .collect(Collectors.toList());
+        populateCreatedByNames(entries);
+        return entries;
+    }
+
+    private void populateCreatedByNames(List<SqlRegistryEntry> entries) {
+        List<String> userIds = entries.stream()
+                .map(SqlRegistryEntry::getCreatedBy)
+                .filter(Objects::nonNull)
+                .filter(id -> !id.isBlank())
+                .distinct()
+                .toList();
+        if (userIds.isEmpty()) return;
+
+        List<DeveloperPlPersonInfo> people = personInfoMapper.selectByUserIds(userIds);
+        Map<String, String> namesByUserId = new HashMap<>();
+        if (people != null) {
+            for (DeveloperPlPersonInfo person : people) {
+                if (person.getUserId() != null && !person.getUserId().isBlank()
+                        && person.getName() != null && !person.getName().isBlank()) {
+                    namesByUserId.putIfAbsent(person.getUserId(), person.getName());
+                }
+            }
+        }
+        for (SqlRegistryEntry entry : entries) {
+            entry.setCreatedByName(namesByUserId.get(entry.getCreatedBy()));
+        }
     }
 
     public SqlRegistryEntry getById(Long id) {

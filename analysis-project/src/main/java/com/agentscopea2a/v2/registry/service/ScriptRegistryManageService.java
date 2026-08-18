@@ -1,17 +1,22 @@
-package com.agentscopea2a.v2.scriptRegistry.service;
+package com.agentscopea2a.v2.registry.service;
 
 import com.agentscopea2a.entity.ScriptRegistryEntry;
 import com.agentscopea2a.mapper.gauss.ScriptRegistryMapper;
+import com.agentscopea2a.v2.auth.entity.DeveloperPlPersonInfo;
+import com.agentscopea2a.v2.auth.mapper.DeveloperPlPersonInfoMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
  * Python 脚本注册表管理服务.
  *
- * <p>提供 CRUD, 与 {@link com.agentscopea2a.v2.sqlRegistry.service.SqlRegistryManageService}
+ * <p>提供 CRUD, 与 {@link SqlRegistryManageService}
  * 同构 (不含试运行, 脚本执行留给 agent 工具 {@code script_exec}).
  *
  * <p>{@code datasources} 是 JSON 数组字符串 (如 {@code ["gauss","mysql"]}),
@@ -21,9 +26,12 @@ import java.util.stream.Collectors;
 public class ScriptRegistryManageService {
 
     private final ScriptRegistryMapper mapper;
+    private final DeveloperPlPersonInfoMapper personInfoMapper;
 
-    public ScriptRegistryManageService(ScriptRegistryMapper mapper) {
+    public ScriptRegistryManageService(ScriptRegistryMapper mapper,
+                                       DeveloperPlPersonInfoMapper personInfoMapper) {
         this.mapper = mapper;
+        this.personInfoMapper = personInfoMapper;
     }
 
     // ======================================================================
@@ -36,7 +44,7 @@ public class ScriptRegistryManageService {
      * createdBy 模糊匹配 (忽略大小写, 适合输入框).
      */
     public List<ScriptRegistryEntry> list(String datasource, String createdBy) {
-        return mapper.selectAll().stream()
+        List<ScriptRegistryEntry> entries = mapper.selectAll().stream()
                 .filter(e -> datasource == null || datasource.isBlank()
                         || (e.getDatasources() != null
                                 && e.getDatasources().toLowerCase().contains(datasource.toLowerCase())))
@@ -44,6 +52,36 @@ public class ScriptRegistryManageService {
                         || (e.getCreatedBy() != null
                                 && e.getCreatedBy().toLowerCase().contains(createdBy.toLowerCase())))
                 .collect(Collectors.toList());
+        populateCreatedByNames(entries);
+        return entries;
+    }
+
+    private void populateCreatedByNames(List<ScriptRegistryEntry> entries) {
+        List<String> userIds = entries.stream()
+                .map(ScriptRegistryEntry::getCreatedBy)
+                .filter(Objects::nonNull)
+                .filter(id -> !id.isBlank())
+                .distinct()
+                .toList();
+        if (userIds.isEmpty()) return;
+
+        List<DeveloperPlPersonInfo> people = personInfoMapper.selectByUserIds(userIds);
+        Map<String, String> namesByUserId = new HashMap<>();
+        if (people != null) {
+            for (DeveloperPlPersonInfo person : people) {
+                if (person.getName() != null && !person.getName().isBlank()) {
+                    if (person.getUserId() != null && !person.getUserId().isBlank()) {
+                        namesByUserId.putIfAbsent(person.getUserId(), person.getName());
+                    }
+                    if (person.getLoginUserId() != null && !person.getLoginUserId().isBlank()) {
+                        namesByUserId.putIfAbsent(person.getLoginUserId(), person.getName());
+                    }
+                }
+            }
+        }
+        for (ScriptRegistryEntry entry : entries) {
+            entry.setCreatedByName(namesByUserId.get(entry.getCreatedBy()));
+        }
     }
 
     public ScriptRegistryEntry getById(Long id) {

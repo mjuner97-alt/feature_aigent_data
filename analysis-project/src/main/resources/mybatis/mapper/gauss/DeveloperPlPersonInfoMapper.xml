@@ -6,6 +6,7 @@
     <resultMap id="personInfoMap" type="com.agentscopea2a.v2.auth.entity.DeveloperPlPersonInfo">
         <id     property="id"                          column="id"/>
         <result property="userId"                      column="统一认证号"/>
+        <result property="loginUserId"                 column="user_id"/>
         <result property="type"                        column="类型"/>
         <result property="statisticalMonth"            column="统计月份"/>
         <result property="department"                  column="部门"/>

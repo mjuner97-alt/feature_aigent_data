@@ -19,6 +19,8 @@ import lombok.Data;
 public class DeveloperPlPersonInfo {
     private Long id;
     private String userId;
+    /** 数据表兼容字段;部分历史记录使用 user_id 作为创建人标识. */
+    private String loginUserId;
     private String type;
     private String statisticalMonth;
     private String department;

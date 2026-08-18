@@ -46,4 +46,6 @@ public class ScriptRegistryEntry {
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private String createdBy;
+    /** 创建人姓名, 仅用于管理接口响应, 不映射 script_registry 表字段. */
+    private String createdByName;
 }

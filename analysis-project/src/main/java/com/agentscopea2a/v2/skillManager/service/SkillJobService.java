@@ -323,6 +323,11 @@ public class SkillJobService {
         return enrichQueueAhead(mapper.selectExecutionsByJobId(jobId, status));
     }
 
+    /** 查询所有正在排队或运行中的执行记录，供任务中心展示。 */
+    public List<SkillJobExecutionDto> listInflightExecutions() {
+        return enrichQueueAhead(mapper.selectInflightExecutions());
+    }
+
     /** 查询单条执行记录（PENDING 附带排队位置） */
     public SkillJobExecutionDto getExecution(Long execId) {
         SkillJobExecution exec = mapper.selectExecutionById(execId);

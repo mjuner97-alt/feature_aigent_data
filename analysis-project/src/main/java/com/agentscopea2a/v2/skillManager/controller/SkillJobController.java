@@ -107,6 +107,12 @@ public class SkillJobController {
         return service.listExecutions(id, status);
     }
 
+    /** 全部正在排队或运行中的执行记录。 */
+    @GetMapping("/executions/inflight")
+    public List<SkillJobExecutionDto> listInflightExecutions() {
+        return service.listInflightExecutions();
+    }
+
     /** 单条执行记录 */
     @GetMapping("/executions/{execId}")
     public SkillJobExecutionDto getExecution(@PathVariable(name = "execId") Long execId) {

@@ -1,9 +1,9 @@
-package com.agentscopea2a.v2.sqlRegistry.controller;
+package com.agentscopea2a.v2.registry.controller;
 
 import com.agentscopea2a.entity.SqlRegistryEntry;
-import com.agentscopea2a.v2.sqlRegistry.dto.SqlTestRequest;
-import com.agentscopea2a.v2.sqlRegistry.dto.SqlTestResult;
-import com.agentscopea2a.v2.sqlRegistry.service.SqlRegistryManageService;
+import com.agentscopea2a.v2.registry.dto.SqlTestRequest;
+import com.agentscopea2a.v2.registry.dto.SqlTestResult;
+import com.agentscopea2a.v2.registry.service.SqlRegistryManageService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;

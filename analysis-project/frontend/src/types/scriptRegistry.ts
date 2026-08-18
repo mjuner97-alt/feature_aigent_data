@@ -17,6 +17,8 @@ export interface ScriptRegistryEntry {
   createdAt: string;
   updatedAt: string;
   createdBy: string;
+  /** 创建人姓名; 人员信息中查不到时为空 */
+  createdByName?: string;
 }
 
 /** 列表视图项 (不含 paramsSchema) */
@@ -32,6 +34,8 @@ export interface ScriptRegistryListItem {
   createdAt: string;
   updatedAt: string;
   createdBy: string;
+  /** 创建人姓名; 人员信息中查不到时为空 */
+  createdByName?: string;
 }
 
 /** 新增/编辑输入 */

@@ -32,4 +32,6 @@ public class SqlRegistryEntry {
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private String createdBy;
+    /** 创建人姓名, 仅用于管理接口响应, 不映射 sql_registry 表字段. */
+    private String createdByName;
 }

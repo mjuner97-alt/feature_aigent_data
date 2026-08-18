@@ -4,11 +4,11 @@
  *
  * 功能：列表查看、搜索筛选、创建/编辑/删除、触发执行、查看执行记录
  */
-import { ref, onMounted } from 'vue';
-import { listJobs, deleteJob, triggerJob, updateJob } from '../../api/skillJob';
+import { ref, onMounted, onUnmounted } from 'vue';
+import { listJobs, listInflightExecutions, deleteJob, triggerJob, updateJob } from '../../api/skillJob';
 import { currentUserId } from '../../api/skill';
 import { listMetrics } from '../../api/skillDependencyMetric';
-import type { SkillJob } from '../../types/skillJob';
+import type { SkillJob, SkillJobExecution } from '../../types/skillJob';
 import SkillJobFormDrawer from '../../components/SkillJobFormDrawer.vue';
 import SkillJobExecutionDrawer from '../../components/SkillJobExecutionDrawer.vue';
 
@@ -27,6 +27,10 @@ const loading = ref(false);
 const keyword = ref('');
 const enabledFilter = ref<boolean | null>(null);
 const createdBy = ref('');
+const activeTab = ref<'manage' | 'running'>('manage');
+const running = ref<SkillJobExecution[]>([]);
+const runningLoading = ref(false);
+let runningTimer: ReturnType<typeof setInterval> | undefined;
 
 // 表单弹窗
 const formOpen = ref(false);
@@ -44,7 +48,38 @@ const metricDescMap = ref<Record<number, string>>({});
 const triggering = ref<Set<number>>(new Set());
 const triggerMsg = ref('');
 
-onMounted(() => load());
+onMounted(() => {
+  load();
+  loadRunning();
+  runningTimer = setInterval(loadRunning, 5000);
+});
+
+onUnmounted(() => {
+  if (runningTimer) clearInterval(runningTimer);
+});
+
+async function loadRunning() {
+  runningLoading.value = true;
+  try {
+    running.value = await listInflightExecutions();
+  } catch (e) {
+    console.error('加载运行任务失败', e);
+  } finally {
+    runningLoading.value = false;
+  }
+}
+
+function jobForExecution(exec: SkillJobExecution): SkillJob | undefined {
+  return jobs.value.find(job => job.id === exec.jobId);
+}
+
+function executionStatus(status: string): string {
+  return status === 'RUNNING' ? '运行中' : status === 'PENDING' ? '排队中' : status;
+}
+
+function triggerLabel(triggerType: string): string {
+  return triggerType === 'SCHEDULE' ? '定时触发' : triggerType === 'MANUAL' ? '手动触发' : triggerType;
+}
 
 async function load() {
   loading.value = true;
@@ -133,8 +168,9 @@ function metricTitle(job: SkillJob): string {
 <template>
   <div class="job-page">
     <div class="page-header">
-      <h2>定时任务管理</h2>
+      <h2>{{ activeTab === 'manage' ? '定时任务管理' : '正在运行任务' }}</h2>
       <div class="header-actions">
+        <template v-if="activeTab === 'manage'">
         <input v-model="keyword" placeholder="搜索任务名称…" class="search-input" @keyup.enter="load" />
         <input v-model="createdBy" placeholder="按创建人筛选…" class="search-input" @keyup.enter="load" />
         <select v-model="enabledFilter" @change="load" class="filter-select">
@@ -142,11 +178,39 @@ function metricTitle(job: SkillJob): string {
           <option :value="true">已启用</option>
           <option :value="false">已禁用</option>
         </select>
-        <button class="btn ghost" @click="load">刷新</button>
         <button class="btn primary" @click="openCreate">+ 创建任务</button>
+        </template>
+        <button class="btn ghost" @click="activeTab === 'manage' ? load() : loadRunning()">刷新</button>
       </div>
     </div>
 
+    <div class="job-tabs" role="tablist">
+      <button class="job-tab" :class="{ active: activeTab === 'manage' }" @click="activeTab = 'manage'">定时任务管理</button>
+      <button class="job-tab" :class="{ active: activeTab === 'running' }" @click="activeTab = 'running'; loadRunning()">正在运行任务<span v-if="running.length" class="tab-count">{{ running.length }}</span></button>
+    </div>
+
+    <template v-if="activeTab === 'running'">
+      <div v-if="runningLoading" class="loading">加载中…</div>
+      <div v-else-if="running.length === 0" class="empty"><p>当前没有正在运行或排队的任务</p></div>
+      <div v-else class="job-table-wrap running-table-wrap">
+        <table class="job-table running-table">
+          <thead><tr><th>任务名称</th><th>Skill</th><th>触发方式</th><th>状态</th><th>排队位置</th><th>提交时间</th><th>执行 ID</th></tr></thead>
+          <tbody>
+            <tr v-for="exec in running" :key="exec.id">
+              <td>{{ jobForExecution(exec)?.name || `任务 #${exec.jobId}` }}</td>
+              <td>{{ jobForExecution(exec)?.skillName || (jobForExecution(exec)?.skillId ? `#${jobForExecution(exec)?.skillId}` : '-') }}</td>
+              <td>{{ triggerLabel(exec.triggerType) }}</td>
+              <td><span class="status-badge" :class="exec.status === 'RUNNING' ? 'st-running' : 'st-pending'">{{ executionStatus(exec.status) }}</span></td>
+              <td>{{ exec.status === 'PENDING' && exec.queueAhead != null ? `前面还有 ${exec.queueAhead} 个` : '-' }}</td>
+              <td class="col-time">{{ fmtTime(exec.createdAt) }}</td>
+              <td>#{{ exec.id }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </template>
+
+    <template v-else>
     <div v-if="triggerMsg" class="toast">{{ triggerMsg }}</div>
 
     <div v-if="loading" class="loading">加载中…</div>
@@ -208,6 +272,7 @@ function metricTitle(job: SkillJob): string {
 
     <SkillJobFormDrawer v-model:open="formOpen" :edit-id="editId" @saved="load" />
     <SkillJobExecutionDrawer v-model:open="execOpen" :job-id="execJobId" :can-download="execCanDownload" />
+    </template>
   </div>
 </template>
 
@@ -223,6 +288,12 @@ function metricTitle(job: SkillJob): string {
 .btn.primary:hover { background: #2563eb; }
 .btn.ghost { background: #fff; color: #475569; }
 .btn.ghost:hover { background: #f1f5f9; }
+.job-tabs { display: flex; gap: 24px; border-bottom: 1px solid #e2e8f0; margin-bottom: 16px; }
+.job-tab { border: 0; border-bottom: 2px solid transparent; background: transparent; color: #64748b; padding: 8px 2px 10px; font-size: 14px; cursor: pointer; }
+.job-tab.active { color: #2563eb; border-bottom-color: #2563eb; font-weight: 600; }
+.tab-count { display: inline-flex; min-width: 18px; height: 18px; align-items: center; justify-content: center; margin-left: 6px; padding: 0 4px; border-radius: 9px; background: #2563eb; color: #fff; font-size: 11px; }
+.st-running { background: #dcfce7; color: #15803d; }
+.st-pending { background: #fef3c7; color: #a16207; }
 
 .toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #16a34a; color: #fff; padding: 8px 20px; border-radius: 8px; font-size: 14px; z-index: 2000; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
 
