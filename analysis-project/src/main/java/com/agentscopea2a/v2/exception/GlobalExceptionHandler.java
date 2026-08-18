@@ -15,8 +15,11 @@
  */
 package com.agentscopea2a.v2.exception;
 
+import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -24,6 +27,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Global exception handler for the Skill management API.
@@ -36,9 +40,10 @@ import java.util.Map;
  * {@code res.json()} 抛错、走 fallback,导致 SkillNameConflict -> "名称已存在" 这类映射失效。
  */
 @RestControllerAdvice
-public class SkillExceptionHandler {
+@Order(Ordered.HIGHEST_PRECEDENCE)
+public class GlobalExceptionHandler {
 
-    private static final Logger log = LoggerFactory.getLogger(SkillExceptionHandler.class);
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
     @ExceptionHandler(DraftAlreadyPendingException.class)
     public ResponseEntity<Map<String, String>> handleDraftAlreadyPending(DraftAlreadyPendingException ex) {
@@ -64,12 +69,41 @@ public class SkillExceptionHandler {
         return jsonBody(HttpStatus.CONFLICT, ex.getMessage());
     }
 
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, String>> handleIllegalArgument(IllegalArgumentException ex) {
+        log.warn("Invalid request argument: {}", ex.getMessage());
+        return jsonBody(HttpStatus.BAD_REQUEST, ex.getMessage());
+    }
+
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<Map<String, String>> handleIllegalState(IllegalStateException ex) {
         String message = ex.getMessage();
         HttpStatus status = resolveIllegalStateStatus(message);
-        log.warn("IllegalState mapped to {}: {}", status, message);
+        if (status.is5xxServerError()) {
+            log.error("Unexpected IllegalStateException", ex);
+        } else {
+            log.warn("IllegalState mapped to {}: {}", status, message);
+        }
         return jsonBody(status, message);
+    }
+
+    @ExceptionHandler(TooManyRequestsException.class)
+    public ResponseEntity<Map<String, String>> handleTooManyRequests(TooManyRequestsException ex) {
+        log.warn("Too many requests: {}", ex.getMessage());
+        return jsonBody(HttpStatus.TOO_MANY_REQUESTS, ex.getMessage());
+    }
+
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<Map<String, String>> handleUnexpected(
+            Exception ex, HttpServletRequest request) {
+        String errorId = UUID.randomUUID().toString();
+        log.error("Unhandled exception: errorId={}, method={}, uri={}",
+                errorId, request.getMethod(), request.getRequestURI(), ex);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of(
+                        "message", ex.getMessage(),
+                        "errorId", errorId));
     }
 
     private ResponseEntity<Map<String, String>> jsonBody(HttpStatus status, String message) {

@@ -9,7 +9,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
-import java.util.Map;
 
 /**
  * SQL 注册表管理 REST 接口.
@@ -26,13 +25,6 @@ public class SqlRegistryController {
 
     public SqlRegistryController(SqlRegistryManageService service) {
         this.service = service;
-    }
-
-    // ==================== 全局异常处理 ====================
-
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<Map<String, String>> handleIllegalArgument(IllegalArgumentException e) {
-        return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
     }
 
     // ==================== CRUD ====================
