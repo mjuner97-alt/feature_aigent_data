@@ -15,6 +15,7 @@ import { createApp, defineComponent, h } from 'vue';
 import { createRouter, createWebHistory, RouterView, type RouteRecordRaw } from 'vue-router';
 import ElementPlus from 'element-plus';
 import 'element-plus/dist/index.css';
+import zhCn from 'element-plus/dist/locale/zh-cn.mjs';
 import AppShell from './components/AppShell.vue';
 import LoginPage from './pages/LoginPage.vue';
 import SkillShell from './components/SkillShell.vue';
@@ -111,5 +112,5 @@ const Root = defineComponent({
 
 const app = createApp(Root);
 app.use(router);
-app.use(ElementPlus);
+app.use(ElementPlus, { locale: zhCn });
 app.mount('#root');

@@ -17,6 +17,7 @@ package com.agentscopea2a.v2.skillManager.mapper;
 
 import com.agentscopea2a.v2.skillManager.entity.SkillJob;
 import com.agentscopea2a.v2.skillManager.entity.SkillJobExecution;
+import com.agentscopea2a.v2.skillManager.entity.SkillJobNotification;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
@@ -60,6 +61,9 @@ public interface SkillJobMapper {
     /** 查询所有进行中的执行记录(PENDING/RUNNING)，按 id 升序，供排队位置"前面还有N个"计算 */
     List<SkillJobExecution> selectInflightExecutions();
 
+    List<SkillJobExecution> selectExecutionCenter(@Param("status") String status,
+                                                   @Param("createdBy") String createdBy);
+
     void updateExecutionStatus(SkillJobExecution exec);
 
     /** 删除执行记录（触发被拒时清理刚插入的 PENDING，避免孤儿记录） */
@@ -67,4 +71,18 @@ public interface SkillJobMapper {
 
     /** 将残留的 RUNNING/PENDING 执行记录标记为 FAILED（应用重启时恢复僵尸记录） */
     int markStaleRunningAsFailed();
+
+    // ---- skill_job_notification ----
+
+    void insertNotification(SkillJobNotification notification);
+
+    List<SkillJobNotification> selectNotificationsByExecutionId(@Param("executionId") Long executionId);
+
+    List<SkillJobNotification> selectNotificationSummaries(@Param("executionIds") List<Long> executionIds);
+
+    void markNotificationSending(@Param("id") Long id, @Param("startedAt") java.time.LocalDateTime startedAt);
+
+    void completeNotification(@Param("id") Long id, @Param("status") String status,
+                              @Param("errorMsg") String errorMsg,
+                              @Param("completedAt") java.time.LocalDateTime completedAt);
 }

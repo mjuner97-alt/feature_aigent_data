@@ -4,14 +4,15 @@ import com.agentscopea2a.v2.service.UrlShortenerService;
 import com.agentscopea2a.v2.skillManager.entity.SkillDependencyMetric;
 import com.agentscopea2a.v2.skillManager.entity.SkillJob;
 import com.agentscopea2a.v2.skillManager.entity.SkillJobExecution;
+import com.agentscopea2a.v2.skillManager.entity.SkillJobNotification;
 import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
+import com.agentscopea2a.v2.skillManager.mapper.SkillJobMapper;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
-import java.lang.reflect.Array;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
@@ -57,6 +58,7 @@ public class NotificationService {
             报告下载：{file_link}""";
 
     private final SkillDependencyMetricMapper metricMapper;
+    private final SkillJobMapper jobMapper;
     private final NotificationSender sender;
     private final UrlShortenerService urlShortenerService;
 
@@ -74,9 +76,11 @@ public class NotificationService {
         return t;
     });
 
-    public NotificationService(SkillDependencyMetricMapper metricMapper, NotificationSender sender,
+    public NotificationService(SkillDependencyMetricMapper metricMapper, SkillJobMapper jobMapper,
+                               NotificationSender sender,
                                UrlShortenerService urlShortenerService) {
         this.metricMapper = metricMapper;
+        this.jobMapper = jobMapper;
         this.sender = sender;
         this.urlShortenerService = urlShortenerService;
     }
@@ -101,35 +105,134 @@ public class NotificationService {
                 ? metricMapper.selectById(job.getMetricId()) : null;
         boolean notifyEnabled = metric != null && Boolean.TRUE.equals(metric.getNotifyEnabled());
         if (!manual && !notifyEnabled) {
+            recordSkipped(job, execution, filePath, triggerType,
+                    metric == null ? "未关联通知指标" : "指标通知开关未开启");
             return;
         }
-        executor.submit(() -> doSend(job, metric, execution, filePath, triggerType));
+        try {
+            enqueue(job, metric, execution, filePath, triggerType, "INITIAL");
+        } catch (Exception e) {
+            // Notification persistence/delivery remains best-effort and must never change job success.
+            log.warn("[Notification] enqueue failed for job {} (ignored): {}", job.getId(), e.getMessage(), e);
+        }
     }
 
-    private void doSend(SkillJob job, SkillDependencyMetric metric, SkillJobExecution execution,
-                        String filePath, String triggerType) {
-        try {
-            String contentType = (metric != null && metric.getNotifyContentType() != null && !metric.getNotifyContentType().isBlank())
-                    ? metric.getNotifyContentType().toUpperCase() : "HTML";
-            String template = (metric != null && metric.getNotifyContentTemplate() != null && !metric.getNotifyContentTemplate().isBlank())
-                    ? metric.getNotifyContentTemplate()
-                    : defaultTemplate(contentType);
-            String fileUrl = buildFileUrl(execution.getId());
-            String content = render(template, contentType, fileUrl, job, metric, execution, filePath);
-            String fileName = fileNameOf(filePath);
-            NotificationPayload payload = new NotificationPayload(
-                    contentType, content, filePath, fileName, fileUrl,
-                    job.getId(), job.getName(),
-                    metric != null ? metric.getCode() : null,
-                    metric != null ? metric.getName() : null,
-                    execution.getId(), execution.getStatus(), LocalDateTime.now(), Arrays.asList(job.getCreatedBy()),
-                    triggerType);
-            sender.send(payload);
-            log.info("[Notification] sent: metric={}, job={}, exec={}, trigger={}, file={}",
-                    metric != null ? metric.getCode() : "-", job.getName(), execution.getId(), triggerType, fileName);
-        } catch (Exception e) {
-            log.warn("[Notification] send failed for job {} (ignored): {}", job.getId(), e.getMessage(), e);
+    /** Force a new delivery attempt for an existing successful execution. */
+    public SkillJobNotification resend(SkillJob job, SkillJobExecution execution, String filePath) {
+        if (job == null || execution == null || filePath == null || filePath.isBlank()) {
+            throw new IllegalArgumentException("NotificationResendInvalid: 缺少任务、执行记录或报告文件");
         }
+        SkillDependencyMetric metric = job.getMetricId() != null
+                ? metricMapper.selectById(job.getMetricId()) : null;
+        return enqueue(job, metric, execution, filePath, execution.getTriggerType(), "RESEND");
+    }
+
+    private SkillJobNotification enqueue(SkillJob job, SkillDependencyMetric metric,
+                                         SkillJobExecution execution, String filePath,
+                                         String triggerType, String requestType) {
+        String contentType = (metric != null && metric.getNotifyContentType() != null && !metric.getNotifyContentType().isBlank())
+                ? metric.getNotifyContentType().toUpperCase() : "HTML";
+        String template = (metric != null && metric.getNotifyContentTemplate() != null && !metric.getNotifyContentTemplate().isBlank())
+                ? metric.getNotifyContentTemplate() : defaultTemplate(contentType);
+        String fileUrl = buildFileUrl(execution.getId());
+        String content = render(template, contentType, fileUrl, job, metric, execution, filePath);
+        String fileName = fileNameOf(filePath);
+        NotificationPayload payload = new NotificationPayload(
+                contentType, content, filePath, fileName, fileUrl,
+                job.getId(), job.getName(),
+                metric != null ? metric.getCode() : null,
+                metric != null ? metric.getName() : null,
+                execution.getId(), execution.getStatus(), LocalDateTime.now(), Arrays.asList(job.getCreatedBy()),
+                triggerType);
+        SkillJobNotification notification = SkillJobNotification.builder()
+                .jobId(job.getId())
+                .executionId(execution.getId())
+                .requestType(requestType)
+                .status("PENDING")
+                .triggerType(triggerType)
+                .senderName(sender.getClass().getSimpleName())
+                .recipientSummary(String.join(",", payload.userIdList()))
+                .contentType(contentType)
+                .content(content)
+                .fileName(fileName)
+                .fileUrl(fileUrl)
+                .requestedAt(LocalDateTime.now())
+                .build();
+        jobMapper.insertNotification(notification);
+        executor.submit(() -> doSend(notification, payload));
+        return notification;
+    }
+
+    private void recordSkipped(SkillJob job, SkillJobExecution execution, String filePath,
+                               String triggerType, String reason) {
+        try {
+            LocalDateTime now = LocalDateTime.now();
+            SkillJobNotification notification = SkillJobNotification.builder()
+                    .jobId(job.getId())
+                    .executionId(execution.getId())
+                    .requestType("INITIAL")
+                    .status("SKIPPED")
+                    .triggerType(triggerType)
+                    .senderName(sender.getClass().getSimpleName())
+                    .recipientSummary(job.getCreatedBy())
+                    .fileName(fileNameOf(filePath))
+                    .errorMsg(reason)
+                    .requestedAt(now)
+                    .completedAt(now)
+                    .build();
+            jobMapper.insertNotification(notification);
+            log.info("[Notification] skipped: job={}, exec={}, reason={}",
+                    job.getId(), execution.getId(), reason);
+        } catch (Exception e) {
+            log.warn("[Notification] could not persist skipped delivery for job {}: {}",
+                    job.getId(), e.getMessage(), e);
+        }
+    }
+
+    private void doSend(SkillJobNotification notification, NotificationPayload payload) {
+        LocalDateTime startedAt = LocalDateTime.now();
+        try {
+            jobMapper.markNotificationSending(notification.getId(), startedAt);
+        } catch (Exception e) {
+            log.error("[Notification] aborting untracked send because notification {} could not enter SENDING",
+                    notification.getId(), e);
+            return;
+        }
+        try {
+            sender.send(payload);
+        } catch (Exception e) {
+            LocalDateTime completedAt = LocalDateTime.now();
+            try {
+                jobMapper.completeNotification(notification.getId(), "FAILED", errorMessage(e), completedAt);
+            } catch (Exception recordError) {
+                log.error("[Notification] could not persist failure for notification {}", notification.getId(), recordError);
+            }
+            log.warn("[Notification] send failed: notificationId={}, job={}, exec={}, error={}",
+                    notification.getId(), payload.jobId(), payload.executionId(), e.getMessage(), e);
+            return;
+        }
+        LocalDateTime completedAt = LocalDateTime.now();
+        try {
+            jobMapper.completeNotification(notification.getId(), "SUCCESS", null, completedAt);
+        } catch (Exception e) {
+            // The HTTP call already succeeded. Keep SENDING rather than writing a false FAILED result.
+            log.error("[Notification] sent but could not persist SUCCESS for notification {}",
+                    notification.getId(), e);
+        }
+        log.info("[Notification] sent: notificationId={}, job={}, exec={}, requestType={}, file={}",
+                notification.getId(), payload.jobName(), payload.executionId(),
+                notification.getRequestType(), payload.fileName());
+    }
+
+    private static String errorMessage(Exception e) {
+        String message = e.getMessage();
+        return message == null || message.isBlank() ? e.getClass().getSimpleName()
+                : e.getClass().getSimpleName() + ": " + message;
+    }
+
+    @PreDestroy
+    void shutdown() {
+        executor.shutdown();
     }
 
     private String defaultTemplate(String contentType) {

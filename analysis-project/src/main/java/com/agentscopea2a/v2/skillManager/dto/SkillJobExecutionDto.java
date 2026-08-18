@@ -41,7 +41,13 @@ public record SkillJobExecutionDto(
         LocalDateTime startedAt,
         LocalDateTime completedAt,
         LocalDateTime createdAt,
-        Integer queueAhead
+        Integer queueAhead,
+        String jobName,
+        String skillName,
+        String createdBy,
+        String createdByName,
+        String latestNotificationStatus,
+        Integer notificationAttemptCount
 ) {
     public static SkillJobExecutionDto of(SkillJobExecution exec) {
         return of(exec, null);
@@ -55,6 +61,19 @@ public record SkillJobExecutionDto(
                 exec.getResolvedOutputPath(),
                 exec.getMdFileWritten(), exec.getMdFileExists(),
                 exec.getErrorMsg(), exec.getStartedAt(),
-                exec.getCompletedAt(), exec.getCreatedAt(), queueAhead);
+                exec.getCompletedAt(), exec.getCreatedAt(), queueAhead,
+                exec.getJobName(), exec.getSkillName(), exec.getCreatedBy(), null,
+                exec.getLatestNotificationStatus(), exec.getNotificationAttemptCount());
+    }
+
+    public static SkillJobExecutionDto ofCenterItem(SkillJobExecution exec, Integer queueAhead,
+                                                     String createdByName) {
+        SkillJobExecutionDto base = of(exec, queueAhead);
+        return new SkillJobExecutionDto(
+                base.id(), base.jobId(), base.triggerType(), base.status(), base.conversationId(),
+                base.resolvedOutputPath(), base.mdFileWritten(), base.mdFileExists(), base.errorMsg(),
+                base.startedAt(), base.completedAt(), base.createdAt(), base.queueAhead(),
+                base.jobName(), base.skillName(), base.createdBy(), createdByName,
+                base.latestNotificationStatus(), base.notificationAttemptCount());
     }
 }
