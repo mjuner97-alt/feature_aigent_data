@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.v2.skillManager.mapper.SkillVirtualGroupMapper">
+
+    <resultMap id="SkillVirtualGroupDefResultMap" type="com.agentscopea2a.v2.skillManager.entity.SkillVirtualGroupDef">
+        <id column="group_name" property="groupName"/>
+        <result column="created_by" property="createdBy"/>
+        <result column="created_at" property="createdAt"/>
+    </resultMap>
+
+    <resultMap id="SkillVirtualGroupResultMap" type="com.agentscopea2a.v2.skillManager.entity.SkillVirtualGroup">
+        <id column="id" property="id"/>
+        <result column="group_name" property="groupName"/>
+        <result column="user_id" property="userId"/>
+        <result column="created_by" property="createdBy"/>
+        <result column="created_at" property="createdAt"/>
+    </resultMap>
+
+    <!-- 组头:组名主键,重名抛唯一约束异常 -->
+    <insert id="insertGroupDef" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillVirtualGroupDef">
+        INSERT INTO skill_virtual_group_def (group_name, created_by, created_at)
+        VALUES (#{groupName}, #{createdBy}, #{createdAt})
+    </insert>
+
+    <delete id="deleteGroupDef">
+        DELETE FROM skill_virtual_group_def WHERE group_name = #{groupName}
+    </delete>
+
+    <select id="selectAllGroupDefs" resultMap="SkillVirtualGroupDefResultMap">
+        SELECT group_name, created_by, created_at
+        FROM skill_virtual_group_def
+        ORDER BY group_name
+    </select>
+
+    <!-- 幂等插入:已存在相同 (group_name, user_id) 则不插入 -->
+    <insert id="insertMember" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillVirtualGroup"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_virtual_group (group_name, user_id, created_by, created_at)
+        SELECT #{groupName}, #{userId}, #{createdBy}, #{createdAt}
+        WHERE NOT EXISTS (
+            SELECT 1 FROM skill_virtual_group
+            WHERE group_name = #{groupName} AND user_id = #{userId}
+        )
+    </insert>
+
+    <delete id="deleteMember">
+        DELETE FROM skill_virtual_group
+        WHERE group_name = #{groupName} AND user_id = #{userId}
+    </delete>
+
+    <delete id="deleteGroup">
+        DELETE FROM skill_virtual_group WHERE group_name = #{groupName}
+    </delete>
+
+    <select id="selectMembers" resultMap="SkillVirtualGroupResultMap">
+        SELECT id, group_name, user_id, created_by, created_at
+        FROM skill_virtual_group
+        WHERE group_name = #{groupName}
+        ORDER BY id
+    </select>
+
+    <select id="selectAll" resultMap="SkillVirtualGroupResultMap">
+        SELECT id, group_name, user_id, created_by, created_at
+        FROM skill_virtual_group
+        ORDER BY group_name, id
+    </select>
+
+    <select id="existsGroup" resultType="boolean">
+        SELECT COUNT(1) &gt; 0 FROM skill_virtual_group_def WHERE group_name = #{groupName}
+    </select>
+
+    <select id="existsMember" resultType="boolean">
+        SELECT COUNT(1) &gt; 0 FROM skill_virtual_group
+        WHERE group_name = #{groupName} AND user_id = #{userId}
+    </select>
+
+    <select id="countGrantsReferencingGroup" resultType="java.lang.Long">
+        SELECT COUNT(1) FROM skill_visible_grant
+        WHERE grant_type = 'VIRTUAL_GROUP' AND target_id = #{groupName}
+    </select>
+</mapper>
