@@ -19,8 +19,10 @@ import com.agentscopea2a.v2.skillManager.dto.*;
 import com.agentscopea2a.v2.skillManager.entity.SkillDependencyMetric;
 import com.agentscopea2a.v2.skillManager.entity.SkillJob;
 import com.agentscopea2a.v2.skillManager.entity.SkillJobExecution;
+import com.agentscopea2a.v2.skillManager.entity.SkillJobNotification;
 import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillJobMapper;
+import com.agentscopea2a.v2.skillManager.notification.NotificationService;
 import com.agentscopea2a.v2.skillManager.scheduler.SkillJobScheduler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -58,6 +60,7 @@ public class SkillJobService {
     private final SkillJobScheduler scheduler;
     private final SkillDependencyMetricMapper metricMapper;
     private final MockOrgService mockOrgService;
+    private final NotificationService notificationService;
 
     /** skill 文件磁盘根目录(${skill.file.base-dir})，与 SkillFileService/WriteMarkdownTool 一致，不写死。 */
     @Value("${skill.file.base-dir:/data/skill-files}")
@@ -68,11 +71,13 @@ public class SkillJobService {
     private String mirrorDir;
 
     public SkillJobService(SkillJobMapper mapper, SkillJobScheduler scheduler,
-                           SkillDependencyMetricMapper metricMapper, MockOrgService mockOrgService) {
+                           SkillDependencyMetricMapper metricMapper, MockOrgService mockOrgService,
+                           NotificationService notificationService) {
         this.mapper = mapper;
         this.scheduler = scheduler;
         this.metricMapper = metricMapper;
         this.mockOrgService = mockOrgService;
+        this.notificationService = notificationService;
     }
 
     // ==================== CRUD ====================
@@ -328,6 +333,41 @@ public class SkillJobService {
         return enrichQueueAhead(mapper.selectInflightExecutions());
     }
 
+    /** 执行中心列表：创建人只按 userId 精确筛选，姓名仅用于结果展示。 */
+    public List<SkillJobExecutionDto> listExecutionCenter(String status, String createdBy) {
+        List<SkillJobExecution> executions = mapper.selectExecutionCenter(status, createdBy);
+        if (!executions.isEmpty()) {
+            try {
+                Map<Long, SkillJobNotification> summaries = mapper.selectNotificationSummaries(
+                                executions.stream().map(SkillJobExecution::getId).toList()).stream()
+                        .collect(Collectors.toMap(SkillJobNotification::getExecutionId, n -> n));
+                executions.forEach(execution -> {
+                    SkillJobNotification summary = summaries.get(execution.getId());
+                    if (summary != null) {
+                        execution.setLatestNotificationStatus(summary.getStatus());
+                        execution.setNotificationAttemptCount(summary.getAttemptCount());
+                    }
+                });
+            } catch (RuntimeException e) {
+                // 执行记录是主视图；通知表未部署/临时不可用时也不能让执行中心整页为空。
+                log.warn("[SkillJob] notification summary unavailable, execution center continues without it: {}",
+                        e.getMessage());
+            }
+        }
+        Map<String, String> creatorNames = mockOrgService.getUserNameMap(executions.stream()
+                .map(SkillJobExecution::getCreatedBy)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet()));
+        Map<Long, Integer> queueAhead = executions.stream().anyMatch(e -> "PENDING".equals(e.getStatus()))
+                ? buildQueueAheadMap() : Map.of();
+        return executions.stream()
+                .map(e -> SkillJobExecutionDto.ofCenterItem(
+                        e,
+                        "PENDING".equals(e.getStatus()) ? queueAhead.getOrDefault(e.getId(), 0) : null,
+                        creatorNames.get(e.getCreatedBy())))
+                .toList();
+    }
+
     /** 查询单条执行记录（PENDING 附带排队位置） */
     public SkillJobExecutionDto getExecution(Long execId) {
         SkillJobExecution exec = mapper.selectExecutionById(execId);
@@ -335,6 +375,49 @@ public class SkillJobService {
             throw new IllegalStateException("JobNotFound: 执行记录不存在 (id=" + execId + ")");
         }
         return SkillJobExecutionDto.of(exec, queueAheadOf(exec));
+    }
+
+    /** List delivery attempts for an execution. Recipient information is visible only to the job owner. */
+    public List<SkillJobNotificationDto> listNotifications(Long execId, String userId) {
+        SkillJobExecution execution = requireOwnedExecution(execId, userId);
+        return mapper.selectNotificationsByExecutionId(execution.getId()).stream()
+                .map(SkillJobNotificationDto::of)
+                .toList();
+    }
+
+    /** Queue a new notification attempt without re-running the skill job. */
+    public SkillJobNotificationDto resendNotification(Long execId, String userId) {
+        SkillJobExecution execution = requireOwnedExecution(execId, userId);
+        if (!"SUCCESS".equals(execution.getStatus()) || !Boolean.TRUE.equals(execution.getMdFileExists())) {
+            throw new IllegalStateException("NotificationResendUnavailable: 仅可补发已成功且报告文件存在的执行 (execId="
+                    + execId + ")");
+        }
+        SkillJob job = mapper.selectJobById(execution.getJobId());
+        Resource report = downloadExecutionFile(SkillJobExecutionDto.of(execution), userId);
+        try {
+            SkillJobNotification notification = notificationService.resend(
+                    job, execution, report.getFile().getAbsolutePath());
+            log.info("[SkillJob] notification resend queued: execId={}, notificationId={}, userId={}",
+                    execId, notification.getId(), userId);
+            return SkillJobNotificationDto.of(notification);
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("NotificationResendUnavailable: 无法读取报告文件 (execId=" + execId + ")", e);
+        }
+    }
+
+    private SkillJobExecution requireOwnedExecution(Long execId, String userId) {
+        SkillJobExecution execution = mapper.selectExecutionById(execId);
+        if (execution == null) {
+            throw new IllegalStateException("JobNotFound: 执行记录不存在 (id=" + execId + ")");
+        }
+        SkillJob job = mapper.selectJobById(execution.getJobId());
+        if (job == null) {
+            throw new IllegalStateException("JobNotFound: 任务不存在 (id=" + execution.getJobId() + ")");
+        }
+        if (userId == null || !userId.equals(job.getCreatedBy())) {
+            throw new IllegalStateException("JobAccessDenied: 仅创建人可查看或补发通知 (execId=" + execId + ")");
+        }
+        return execution;
     }
 
     // ==================== 排队位置 ====================

@@ -7,7 +7,8 @@ package com.agentscopea2a.v2.skillManager.notification;
  * 由于 stub 标注了 {@code @ConditionalOnMissingBean}，自定义实现会自动替换 stub。
  *
  * <p>本接口在通知专用线程被调用；若发送耗时较长，建议实现内部自行异步/超时控制，
- * 避免堆积。发送失败应内部捕获并记录，不影响 job 执行结果。
+ * 避免堆积。实现必须在 HTTP 非 2xx、超时或业务拒绝时抛出异常；正常返回会被记录为 SUCCESS。
+ * 异常由通知服务捕获并记录，不影响 job 执行结果。
  *
  * <p>payload 携带 {@code triggerType}（MANUAL 手动 / EXTERNAL 按名外部触发 / METRIC 按指标自动触发），
  * 实现方可据此区分通知渠道、内容或收件人——例如 MANUAL 走触发人私聊、METRIC 走指标订阅群。

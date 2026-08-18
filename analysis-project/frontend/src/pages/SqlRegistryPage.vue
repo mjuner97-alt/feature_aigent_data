@@ -23,6 +23,8 @@ const loading = ref(false);
 const datasourceFilter = ref('');
 const createdByFilter = ref('');
 const keyword = ref('');
+const currentPage = ref(1);
+const pageSize = ref(20);
 
 function formatCreator(row: SqlRegistryListItem): string {
   return row.createdByName
@@ -43,6 +45,20 @@ const filteredItems = computed(() => {
   return list;
 });
 
+const pagedItems = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value;
+  return filteredItems.value.slice(start, start + pageSize.value);
+});
+
+function resetPage() {
+  currentPage.value = 1;
+}
+
+function handlePageSizeChange(size: number) {
+  pageSize.value = size;
+  resetPage();
+}
+
 async function loadList() {
   loading.value = true;
   try {
@@ -54,13 +70,23 @@ async function loadList() {
   }
 }
 
-watch(datasourceFilter, () => loadList());
+watch(keyword, resetPage);
+watch(datasourceFilter, () => {
+  resetPage();
+  loadList();
+});
 
 // 创建人筛选为输入框, 防抖 800ms 避免逐字触发请求
 let createdByTimer: ReturnType<typeof setTimeout> | undefined;
 watch(createdByFilter, () => {
+  resetPage();
   clearTimeout(createdByTimer);
   createdByTimer = setTimeout(() => loadList(), 800);
+});
+
+watch(() => filteredItems.value.length, (total) => {
+  const lastPage = Math.max(1, Math.ceil(total / pageSize.value));
+  if (currentPage.value > lastPage) currentPage.value = lastPage;
 });
 
 loadList();
@@ -302,7 +328,7 @@ const S = {
     </div>
 
     <!-- 列表 -->
-    <el-table :data="filteredItems" v-loading="loading" stripe border size="small" style="width: 100%">
+    <el-table :data="pagedItems" v-loading="loading" stripe border size="small" style="width: 100%">
       <el-table-column prop="sqlId" label="sql_id" width="220" />
       <el-table-column prop="name" label="名称" width="160" />
       <el-table-column prop="description" label="描述" show-overflow-tooltip />
@@ -329,6 +355,17 @@ const S = {
         </template>
       </el-table-column>
     </el-table>
+
+    <div class="pagination-bar">
+      <el-pagination
+        v-model:current-page="currentPage"
+        :page-size="pageSize"
+        :page-sizes="[10, 20, 50]"
+        :total="filteredItems.length"
+        layout="total, sizes, prev, pager, next, jumper"
+        @size-change="handlePageSizeChange"
+      />
+    </div>
 
     <!-- 新增/编辑弹窗 -->
     <el-dialog v-model="formVisible" :title="formMode === 'create' ? '新增 SQL' : '编辑 SQL'" width="760px" destroy-on-close>
@@ -445,6 +482,12 @@ const S = {
 </template>
 
 <style scoped>
+.pagination-bar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 14px 0 2px;
+}
+
 :deep(.el-textarea__inner) {
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
 }
