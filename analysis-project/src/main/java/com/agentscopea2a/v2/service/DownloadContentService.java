@@ -53,7 +53,7 @@ public class DownloadContentService {
 
     /** MIME 白名单, 防 XSS (拒 text/html 等). */
     private static final Set<String> ALLOWED_MIME = Set.of(
-            "text/csv", "application/json", "text/plain", "text/markdown");
+            "text/csv", "application/json", "text/plain", "text/markdown", "text/html");
 
     /** 短码字符集 + 长度, 与 {@link UrlShortenerService} 一致. */
     private static final String BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -95,6 +95,11 @@ public class DownloadContentService {
      * @throws IllegalArgumentException content 空 / 超 5MB / mimeType 不在白名单
      */
     public String create(String content, String filename, String mimeType) {
+        return create(content, filename, mimeType, null);
+    }
+
+    /** Persist content with an optional expiry, used by presentation reports. */
+    public String create(String content, String filename, String mimeType, LocalDateTime expiresAt) {
         if (content == null || content.isBlank()) {
             throw new IllegalArgumentException("content 为空");
         }
@@ -126,6 +131,7 @@ public class DownloadContentService {
                 .filename((filename == null || filename.isBlank()) ? "download.csv" : filename)
                 .mimeType(mime)
                 .createdAt(LocalDateTime.now())
+                .expiresAt(expiresAt)
                 .build();
         urlShortenerMapper.insert(record);
         log.info("DownloadContentService: created shortCode={} filename={} ({} bytes)",

@@ -1,7 +1,7 @@
 ---
 name: analyze_data
 description: 质量数据分析师 - 制定分析思路、查询所需数据、生成结论
-tools: [tool_router, python_exec, arith, sql_list, sql_registry_exec, script_list, script_exec]
+tools: [tool_router, python_exec, arith, sql_list, sql_registry_exec, script_list, script_exec, presentation_render]
 maxIters: 30
 ---
 

@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.mapper.gauss.PresentationTemplateMapper">
+
+    <resultMap id="BaseResultMap" type="com.agentscopea2a.entity.PresentationTemplateEntry">
+        <id column="id" property="id"/>
+        <result column="template_id" property="templateId"/>
+        <result column="name" property="name"/>
+        <result column="description" property="description"/>
+        <result column="echarts_template" property="echartsTemplate"/>
+        <result column="html_template" property="htmlTemplate"/>
+        <result column="variable_schema" property="variableSchema"/>
+        <result column="data_provider_type" property="dataProviderType"/>
+        <result column="data_provider_id" property="dataProviderId"/>
+        <result column="data_adapter" property="dataAdapter"/>
+        <result column="parameter_mapping" property="parameterMapping"/>
+        <result column="enabled" property="enabled"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+        <result column="created_by" property="createdBy"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, template_id, name, description, echarts_template, html_template,
+        variable_schema, data_provider_type, data_provider_id, data_adapter,
+        parameter_mapping, enabled, created_at, updated_at, created_by
+    </sql>
+
+    <select id="selectByTemplateId" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM presentation_template_registry
+        WHERE template_id = #{templateId} AND enabled = 1
+    </select>
+
+    <select id="countByTemplateId" resultType="int">
+        SELECT COUNT(*) FROM presentation_template_registry WHERE template_id = #{templateId}
+    </select>
+
+    <select id="selectAll" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM presentation_template_registry
+        ORDER BY template_id
+    </select>
+
+    <select id="selectById" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM presentation_template_registry
+        WHERE id = #{id}
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO presentation_template_registry
+            (template_id, name, description, echarts_template, html_template,
+             variable_schema, data_provider_type, data_provider_id, data_adapter,
+             parameter_mapping, enabled, created_by)
+        VALUES
+            (#{templateId}, #{name}, #{description}, #{echartsTemplate}, #{htmlTemplate},
+             #{variableSchema}, #{dataProviderType}, #{dataProviderId}, #{dataAdapter},
+             #{parameterMapping}, #{enabled}, #{createdBy})
+    </insert>
+
+    <update id="update">
+        UPDATE presentation_template_registry
+        SET template_id = #{templateId},
+            name = #{name},
+            description = #{description},
+            echarts_template = #{echartsTemplate},
+            html_template = #{htmlTemplate},
+            variable_schema = #{variableSchema},
+            data_provider_type = #{dataProviderType},
+            data_provider_id = #{dataProviderId},
+            data_adapter = #{dataAdapter},
+            parameter_mapping = #{parameterMapping},
+            enabled = #{enabled}
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM presentation_template_registry WHERE id = #{id}
+    </delete>
+</mapper>

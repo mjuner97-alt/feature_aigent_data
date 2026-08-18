@@ -30,6 +30,7 @@ import com.agentscopea2a.v2.tools.ClickHouseWideTableMetricsTool;
 import com.agentscopea2a.v2.tools.DataPrimitivesTool;
 import com.agentscopea2a.v2.tools.CsvDownloadTool;
 import com.agentscopea2a.v2.tools.PythonExecTool;
+import com.agentscopea2a.v2.tools.PresentationRenderTool;
 import com.agentscopea2a.v2.tools.QualityTools;
 import com.agentscopea2a.v2.tools.ScriptExecTool;
 import com.agentscopea2a.v2.tools.ScriptListTool;
@@ -155,10 +156,11 @@ public class V2ToolConfig {
             @Qualifier("gaussDataSource") DataSource gaussDataSource,
             @Qualifier("clickHouseDataSource") DataSource clickHouseDataSource,
             SqlRegistryMapper sqlRegistryMapper,
-            DownloadContentService downloadContentService) {
+            DownloadContentService downloadContentService,
+            com.agentscopea2a.v2.presentation.PresentationDataReferenceStore dataReferenceStore) {
         log.info("SqlRegistryExecTool: wired (mysql/gauss/clickhouse routing + sql_registry lookup + downloadFilename)");
         return new SqlRegistryExecTool(mysqlDataSource, gaussDataSource, clickHouseDataSource,
-                sqlRegistryMapper, downloadContentService);
+                sqlRegistryMapper, downloadContentService, dataReferenceStore);
     }
 
     // ── Script Registry (Python 指标脚本: SQL 取数 + pandas 算指标一次完成) ──
@@ -218,6 +220,13 @@ public class V2ToolConfig {
         return new CsvDownloadTool(urlShortenerService, baseUrl);
     }
 
+    @Bean
+    public PresentationRenderTool presentationRenderTool(
+            com.agentscopea2a.v2.presentation.PresentationRenderService presentationRenderService) {
+        log.info("PresentationRenderTool: wired (GaussDB presentation_template_registry)");
+        return new PresentationRenderTool(presentationRenderService);
+    }
+
     // ── v2 ToolGroup adapter ──────────────────────────────────────────────
     // Creates a Toolkit with tool groups + meta-tool, replacing ToolRoutersIndex's
     // flat router_tool dispatch. The ToolRoutersIndex bean remains available as fallback
@@ -234,6 +243,7 @@ public class V2ToolConfig {
             ObjectProvider<SqlRegistryExecTool> sqlRegistryExecToolProvider,
             ObjectProvider<ScriptListTool> scriptListToolProvider,
             ObjectProvider<ScriptExecTool> scriptExecToolProvider,
+            ObjectProvider<PresentationRenderTool> presentationRenderToolProvider,
             ObjectProvider<ToolRoutersIndex> toolRoutersIndexProvider) {
         // 主智能体注册 ungrouped 工具: tool_router + python_exec + arith + wide_table_query
         // + clickhouse_query + sql_list + sql_registry_exec + script_list + script_exec.
@@ -289,6 +299,11 @@ public class V2ToolConfig {
             b.tool(unwrapCglib(scE));
             log.info("V2ToolGroupAdapter: registered ScriptExecTool (ungrouped)");
         }
+        PresentationRenderTool presentation = presentationRenderToolProvider.getIfAvailable();
+        if (presentation != null) {
+            b.tool(unwrapCglib(presentation));
+            log.info("V2ToolGroupAdapter: registered PresentationRenderTool (ungrouped)");
+        }
         ToolRoutersIndex tri = toolRoutersIndexProvider.getIfAvailable();
         if (tri != null) {
             // ToolRoutersIndex.router_tool 上有 @Timed, 被 TimedAspect CGLIB 代理;
@@ -307,6 +322,7 @@ public class V2ToolConfig {
                 + (sre != null ? " + sql_registry_exec" : "")
                 + (scL != null ? " + script_list" : "")
                 + (scE != null ? " + script_exec" : "")
+                + (presentation != null ? " + presentation_render" : "")
                 + (tri != null ? " + tool_router" : "")
                 + " (all ungrouped, no meta-tool)");
         return adapter;

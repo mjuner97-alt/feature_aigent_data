@@ -17,6 +17,8 @@ package com.agentscopea2a.v2.tools;
 
 import com.agentscopea2a.entity.SqlRegistryEntry;
 import com.agentscopea2a.mapper.gauss.SqlRegistryMapper;
+import com.agentscopea2a.v2.presentation.PresentationDataReferenceStore;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.agentscopea2a.v2.service.DownloadContentService;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.tool.Tool;
@@ -85,6 +87,7 @@ import org.springframework.jdbc.core.namedparam.NamedParameterUtils;
 public class SqlRegistryExecTool {
 
     private static final Logger log = LoggerFactory.getLogger(SqlRegistryExecTool.class);
+    private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
 
     /** 兜底 LIMIT, 模板没显式 LIMIT 时自动追加. */
     private static final int ROW_LIMIT = 10_000;
@@ -120,12 +123,14 @@ public class SqlRegistryExecTool {
     private final Map<String, DataSource> dataSourceMap;
     private final SqlRegistryMapper registryMapper;
     private final DownloadContentService downloadContentService;
+    private final PresentationDataReferenceStore dataReferenceStore;
 
     public SqlRegistryExecTool(DataSource mysqlDs,
                                DataSource gaussDs,
                                DataSource clickHouseDs,
                                SqlRegistryMapper registryMapper,
-                               DownloadContentService downloadContentService) {
+                               DownloadContentService downloadContentService,
+                               PresentationDataReferenceStore dataReferenceStore) {
         Map<String, DataSource> m = new LinkedHashMap<>();
         m.put("mysql", mysqlDs);
         m.put("gauss", gaussDs);
@@ -133,6 +138,7 @@ public class SqlRegistryExecTool {
         this.dataSourceMap = Collections.unmodifiableMap(m);
         this.registryMapper = registryMapper;
         this.downloadContentService = downloadContentService;
+        this.dataReferenceStore = dataReferenceStore;
     }
 
     @Tool(
@@ -140,7 +146,7 @@ public class SqlRegistryExecTool {
             description = "通过 sql_id 执行预注册 SQL (业务方/DBA 预审的复杂 SQL: GROUP BY/CASE WHEN/JOIN/窗口函数). "
                     + "先用 sql_list 查可用 sql_id 再传参. "
                     + "返回 markdown 表 (>=4 行时自动落 CSV artifact + 预览). "
-                    + "传 downloadFilename 则额外返回 CSV 下载短链 (内容落库, 跨会话清理安全). "
+                    + "传 downloadFilename 则额外返回 CSV 下载短链；referenceOnly=true 时只返回 resultRef，不把明细送入模型. "
                     + "简单等值查询走 wide_table_query / clickhouse_query, 复杂聚合走本工具.")
     public ToolResultBlock sqlRegistryExec(
             @ToolParam(
@@ -161,13 +167,35 @@ public class SqlRegistryExecTool {
                             + "如 q2_1_杭州开发二部.csv. 不传则不生成 (默认行为不变). "
                             + "用户明确要导出/下载时才传, 只问数据不传",
                     required = false)
-                    String downloadFilename) {
+                    String downloadFilename,
+            @ToolParam(
+                    name = "referenceOnly",
+                    description = "可选。大结果需交给 presentation_render 时传 true，只返回 resultRef、列名和行数，不返回 Markdown 明细",
+                    required = false)
+                    Boolean referenceOnly) {
+
+        try {
+            QueryResult result = executeStructured(sqlId, params);
+            if (Boolean.TRUE.equals(referenceOnly)) return renderReference(result);
+            return renderResult(result, downloadFilename);
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return ToolResultBlock.text(e.getMessage());
+        } catch (Exception e) {
+            log.error("sql_registry_exec 失败: sqlId={} params={}", sqlId, params, e);
+            return ToolResultBlock.text("sql_registry_exec 失败: "
+                    + e.getClass().getSimpleName() + ": " + e.getMessage()
+                    + " (sqlId=" + sqlId + ")");
+        }
+    }
+
+    /** Executes a registered SQL and preserves JDBC value types for server-side consumers. */
+    public QueryResult executeStructured(String sqlId, Map<String, Object> params) {
 
         if (sqlId == null || sqlId.isBlank()) {
-            return ToolResultBlock.text("sql_registry_exec 拒绝执行: sqlId 为空. 先调 sql_list 查可用 sql_id");
+            throw new IllegalArgumentException("sql_registry_exec 拒绝执行: sqlId 为空. 先调 sql_list 查可用 sql_id");
         }
         if (registryMapper == null) {
-            return ToolResultBlock.text("sql_registry_exec 不可用: registryMapper 未注入 (检查 SqlRegistryMapper bean)");
+            throw new IllegalStateException("sql_registry_exec 不可用: registryMapper 未注入 (检查 SqlRegistryMapper bean)");
         }
 
         // 1. 查 sql_registry 表
@@ -176,17 +204,17 @@ public class SqlRegistryExecTool {
             entry = registryMapper.selectBySqlId(sqlId);
         } catch (Exception e) {
             log.error("sql_registry_exec 查询 sql_registry 失败: sqlId={}", sqlId, e);
-            return ToolResultBlock.text("sql_registry_exec 查询 sql_registry 失败: "
-                    + e.getClass().getSimpleName() + ": " + e.getMessage());
+            throw new IllegalStateException("sql_registry_exec 查询 sql_registry 失败: "
+                    + e.getClass().getSimpleName() + ": " + e.getMessage(), e);
         }
         if (entry == null) {
-            return ToolResultBlock.text("sql_registry_exec 拒绝执行: sql_id='" + sqlId
+            throw new IllegalArgumentException("sql_registry_exec 拒绝执行: sql_id='" + sqlId
                     + "' 不存在或已禁用 (enabled=0). 先调 sql_list 查可用 sql_id");
         }
 
         String template = entry.getSqlTemplate();
         if (template == null || template.isBlank()) {
-            return ToolResultBlock.text("sql_registry_exec 拒绝执行: sql_id='" + sqlId
+            throw new IllegalArgumentException("sql_registry_exec 拒绝执行: sql_id='" + sqlId
                     + "' 的 sql_template 为空 (DBA 录入失误?)");
         }
 
@@ -204,14 +232,14 @@ public class SqlRegistryExecTool {
 
         for (Map.Entry<String, Object> e : paramMap.entrySet()) {
             if (!declaredParams.contains(e.getKey())) {
-                return ToolResultBlock.text("sql_registry_exec 拒绝执行: 参数 '" + e.getKey()
+                throw new IllegalArgumentException("sql_registry_exec 拒绝执行: 参数 '" + e.getKey()
                         + "' 不在 sql_id=" + sqlId + " 的 params_schema 内. 已声明参数: " + declaredParams
                         + " (多余参数一律拒执行, 防注入)");
             }
         }
         String missingRequired = checkRequiredParams(entry.getParamsSchema(), paramMap);
         if (missingRequired != null) {
-            return ToolResultBlock.text("sql_registry_exec 拒绝执行: 缺少必填参数: " + missingRequired
+            throw new IllegalArgumentException("sql_registry_exec 拒绝执行: 缺少必填参数: " + missingRequired
                     + " (sqlId=" + sqlId + ")");
         }
 
@@ -219,7 +247,7 @@ public class SqlRegistryExecTool {
         List<String> templateParams = extractTemplateParams(template);
         for (String p : templateParams) {
             if (!declaredParams.contains(p)) {
-                return ToolResultBlock.text("sql_registry_exec 拒绝执行: sql_id='" + sqlId
+                throw new IllegalArgumentException("sql_registry_exec 拒绝执行: sql_id='" + sqlId
                         + "' 的 sql_template 含占位符 :" + p + " 但 params_schema 未声明 (DBA 录入失误, 让 DBA 修正)");
             }
         }
@@ -231,12 +259,12 @@ public class SqlRegistryExecTool {
         if (ds == null) {
             if (dsKey != null && dataSourceMap.containsKey(dsKey)) {
                 // datasource 名对 (mysql/gauss/clickhouse) 但 DataSource bean 未注入 -- 配置/wiring 问题
-                return ToolResultBlock.text("sql_registry_exec 不可用: sql_id='" + sqlId
+                throw new IllegalStateException("sql_registry_exec 不可用: sql_id='" + sqlId
                         + "' 的 datasource='" + datasource + "' 对应 DataSource bean 未注入"
                         + " (检查 application-*.properties 数据源开关 + V2ToolConfig @Bean)");
             }
             // datasource 名不在 mysql/gauss/clickhouse 列表 -- DBA 录入失误
-            return ToolResultBlock.text("sql_registry_exec 拒绝执行: sql_id='" + sqlId
+            throw new IllegalArgumentException("sql_registry_exec 拒绝执行: sql_id='" + sqlId
                     + "' 的 datasource='" + datasource + "' 不在支持列表 (mysql/gauss/clickhouse)");
         }
 
@@ -268,19 +296,19 @@ public class SqlRegistryExecTool {
                     ps.setObject(i + 1, finalArgs[i]);
                 }
                 try (ResultSet rs = ps.executeQuery()) {
-                    return renderResult(sqlId, paramMap, rs, System.currentTimeMillis() - start, downloadFilename);
+                    return readResult(sqlId, paramMap, rs, System.currentTimeMillis() - start);
                 }
             }
         } catch (SQLException e) {
             log.error("sql_registry_exec SQL 失败: sqlId={} params={}", sqlId, paramMap, e);
-            return ToolResultBlock.text("sql_registry_exec SQL 失败: "
+            throw new IllegalStateException("sql_registry_exec SQL 失败: "
                     + e.getClass().getSimpleName() + ": " + e.getMessage()
-                    + " (sqlId=" + sqlId + ")");
+                    + " (sqlId=" + sqlId + ")", e);
         } catch (Exception e) {
             log.error("sql_registry_exec 失败: sqlId={} params={}", sqlId, paramMap, e);
-            return ToolResultBlock.text("sql_registry_exec 失败: "
+            throw new IllegalStateException("sql_registry_exec 失败: "
                     + e.getClass().getSimpleName() + ": " + e.getMessage()
-                    + " (sqlId=" + sqlId + ")");
+                    + " (sqlId=" + sqlId + ")", e);
         }
     }
 
@@ -424,48 +452,58 @@ public class SqlRegistryExecTool {
         return out.toArray();
     }
 
-    private ToolResultBlock renderResult(String sqlId,
-                                         Map<String, Object> params,
-                                         ResultSet rs,
-                                         long elapsedMs,
-                                         String downloadFilename) throws SQLException {
+    private QueryResult readResult(String sqlId, Map<String, Object> params,
+                                   ResultSet rs, long elapsedMs) throws SQLException {
+        ResultSetMetaData meta = rs.getMetaData();
+        int colCount = meta.getColumnCount();
+        List<String> columns = new ArrayList<>(colCount);
+        for (int i = 1; i <= colCount; i++) columns.add(meta.getColumnLabel(i));
+        List<Map<String, Object>> rows = new ArrayList<>();
+        while (rs.next()) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            for (int i = 1; i <= colCount; i++) row.put(columns.get(i - 1), rs.getObject(i));
+            rows.add(row);
+        }
+        return new QueryResult(sqlId, Map.copyOf(params), List.copyOf(columns), List.copyOf(rows), elapsedMs);
+    }
+
+    private ToolResultBlock renderResult(QueryResult result, String downloadFilename) {
         StringBuilder md = new StringBuilder();
-        md.append("[sql_registry_exec] sqlId=").append(sqlId);
-        if (!params.isEmpty()) {
-            md.append(" params=").append(params);
+        md.append("[sql_registry_exec] sqlId=").append(result.sqlId());
+        if (!result.params().isEmpty()) {
+            md.append(" params=").append(result.params());
         }
         md.append("\n\n");
 
-        ResultSetMetaData meta = rs.getMetaData();
-        int colCount = meta.getColumnCount();
-
         // header
         md.append("| ");
-        for (int i = 1; i <= colCount; i++) {
-            if (i > 1) md.append(" | ");
-            md.append(escapeCell(meta.getColumnLabel(i)));
+        for (int i = 0; i < result.columns().size(); i++) {
+            if (i > 0) md.append(" | ");
+            md.append(escapeCell(result.columns().get(i)));
         }
         md.append(" |\n");
 
         // separator
         md.append("|");
-        for (int i = 1; i <= colCount; i++) {
+        for (int i = 0; i < result.columns().size(); i++) {
             md.append("---|");
         }
         md.append("\n");
 
-        int totalRows = 0;
-        while (rs.next()) {
-            totalRows++;
+        for (Map<String, Object> row : result.rows()) {
             md.append("| ");
-            for (int i = 1; i <= colCount; i++) {
-                if (i > 1) md.append(" | ");
-                md.append(escapeCell(rs.getString(i)));
+            for (int i = 0; i < result.columns().size(); i++) {
+                if (i > 0) md.append(" | ");
+                Object value = row.get(result.columns().get(i));
+                md.append(escapeCell(value == null ? null : String.valueOf(value)));
             }
             md.append(" |\n");
         }
-        md.append("\n[sql_registry_exec] 共 ").append(totalRows).append(" 行");
-        md.append(", 耗时 ").append(elapsedMs).append(" ms");
+        String resultRef = dataReferenceStore.put("sql", result.sqlId(), result.rows());
+        md.append("\n[sql_registry_exec] 共 ").append(result.rows().size()).append(" 行");
+        md.append(", 耗时 ").append(result.elapsedMs()).append(" ms");
+        md.append("\n[sql_registry_exec] resultRef=").append(resultRef)
+                .append("（可直接交给 presentation_render，勿复制明细数据）");
 
         // downloadFilename 非空 -> 调 DownloadContentService 生成短链附结果末尾.
         // content 传 md 完整文本, service 检测 markdown 表自动转 CSV (剥离头尾说明).
@@ -482,6 +520,21 @@ public class SqlRegistryExecTool {
         }
         return ToolResultBlock.text(md.toString());
     }
+
+    private ToolResultBlock renderReference(QueryResult result) {
+        String ref = dataReferenceStore.put("sql", result.sqlId(), result.rows());
+        var output = JSON_MAPPER.createObjectNode();
+        output.put("sqlId", result.sqlId());
+        output.put("resultRef", ref);
+        output.put("rowCount", result.rows().size());
+        output.put("elapsedMs", result.elapsedMs());
+        output.set("columns", JSON_MAPPER.valueToTree(result.columns()));
+        output.put("instruction", "将 resultRef 直接传给 presentation_render，勿复制明细数据");
+        return ToolResultBlock.text(output.toString());
+    }
+
+    public record QueryResult(String sqlId, Map<String, Object> params, List<String> columns,
+                              List<Map<String, Object>> rows, long elapsedMs) {}
 
     private static String escapeCell(String s) {
         if (s == null) return "";

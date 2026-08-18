@@ -27,6 +27,7 @@ import com.agentscopea2a.v2.middleware.ToolResultTruncationMiddleware;
 import com.agentscopea2a.v2.tools.ArithTool;
 import com.agentscopea2a.v2.tools.PerUserMemoryGetTool;
 import com.agentscopea2a.v2.tools.PythonExecTool;
+import com.agentscopea2a.v2.tools.PresentationRenderTool;
 import com.agentscopea2a.v2.tools.ScriptExecTool;
 import com.agentscopea2a.v2.tools.ScriptListTool;
 import com.agentscopea2a.v2.tools.SkillSaveTool;
@@ -158,6 +159,7 @@ public class SubagentRegistrar {
             ObjectProvider<SqlRegistryExecTool> sqlRegistryExecToolProvider,
             ObjectProvider<ScriptListTool> scriptListToolProvider,
             ObjectProvider<ScriptExecTool> scriptExecToolProvider,
+            ObjectProvider<PresentationRenderTool> presentationRenderToolProvider,
             ObjectProvider<ArtifactHandoffHook> artifactHandoffHookProvider,
             ObjectProvider<ArtifactAccessMiddleware> artifactAccessMiddlewareProvider,
             ObjectProvider<PythonExecAccessMiddleware> pythonExecAccessMiddlewareProvider,
@@ -208,6 +210,10 @@ public class SubagentRegistrar {
         ScriptExecTool se = scriptExecToolProvider.getIfAvailable();
         if (se != null) {
             toolRegistry.put("script_exec", se);
+        }
+        PresentationRenderTool presentation = presentationRenderToolProvider.getIfAvailable();
+        if (presentation != null) {
+            toolRegistry.put("presentation_render", presentation);
         }
         this.artifactHandoffHook = artifactHandoffHookProvider.getIfAvailable();
         this.artifactAccessMiddleware = artifactAccessMiddlewareProvider.getIfAvailable();
