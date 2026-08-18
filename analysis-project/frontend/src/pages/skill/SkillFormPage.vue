@@ -11,6 +11,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import SkillFileAttachment from '../../components/SkillFileAttachment.vue';
+import DimensionCascader from '../../components/DimensionCascader.vue';
 import {
   getSkill,
   createSkill,
@@ -18,8 +19,10 @@ import {
   currentUserId,
   getSkillPublishes,
   getGrants,
+  getPublishTargets,
+  submitPublish,
 } from '../../api/skill';
-import type { SkillInput, SkillGrant } from '../../types/skill';
+import type { SkillInput, SkillGrant, PublishTargetGroup } from '../../types/skill';
 import SkillGrantEditor from '../../components/SkillGrantEditor.vue';
 
 const route = useRoute();
@@ -31,17 +34,31 @@ const editId = computed(() => {
 });
 const isEdit = computed(() => editId.value != null);
 
-const form = ref<SkillInput>({ name: '', description: '', content: '', visibility: 'PUBLIC' });
+const form = ref<SkillInput>({ name: '', description: '', content: '', visibility: 'PERSONAL' });
 const formLoading = ref(false);
 const saving = ref(false);
 const formError = ref('');
 const notOwner = ref(false);
 const attachmentRef = ref<InstanceType<typeof SkillFileAttachment> | null>(null);
 
-// 可见性 + 私有授权
-const visibility = ref<'PUBLIC' | 'PRIVATE'>('PUBLIC');
+// 可见性三态:个人(PERSONAL,默认,仅自己) / 私有(PRIVATE,授权即时生效) / 公开(PUBLIC,选维度发布走审批)
+const visibility = ref<'PUBLIC' | 'PRIVATE' | 'PERSONAL'>('PERSONAL');
 const existingGrants = ref<SkillGrant[]>([]);
 const grantEditorRef = ref<InstanceType<typeof SkillGrantEditor> | null>(null);
+
+// 公开:维度多选(保存后提交发布申请走审批流),key 格式 "orgType:orgId"
+const publishTargetGroups = ref<PublishTargetGroup[]>([]);
+const selectedTargets = ref<Set<string>>(new Set());
+const targetsLoaded = ref(false);
+async function ensurePublishTargets() {
+  if (targetsLoaded.value) return;
+  try {
+    publishTargetGroups.value = await getPublishTargets();
+  } catch {
+    // 获取失败不阻塞表单,维度选择区为空
+  }
+  targetsLoaded.value = true;
+}
 
 // 历史维度发布(仅编辑"已是非个人维度"的旧 skill 时残留展示;新建不展示)
 const existingDimensionLabel = ref('个人');
@@ -60,20 +77,21 @@ async function ensureExistingGrants(id: number) {
 }
 
 function resetForm() {
-  form.value = { name: '', description: '', content: '', visibility: 'PUBLIC' };
-  visibility.value = 'PUBLIC';
+  form.value = { name: '', description: '', content: '', visibility: 'PERSONAL' };
+  visibility.value = 'PERSONAL';
   formError.value = '';
   publishResult.value = '';
   notOwner.value = false;
   existingDimensionLabel.value = '个人';
   existingGrants.value = [];
+  selectedTargets.value = new Set();
 }
 
 async function loadForEdit(id: number) {
   formLoading.value = true;
   try {
     const s = await getSkill(id);
-    const vis = s.visibility === 'PRIVATE' ? 'PRIVATE' : 'PUBLIC';
+    const vis = s.visibility === 'PUBLIC' || s.visibility === 'PRIVATE' ? s.visibility : 'PERSONAL';
     form.value = {
       name: s.name ?? '',
       description: s.description ?? '',
@@ -107,6 +125,7 @@ async function loadForEdit(id: number) {
 
 onMounted(async () => {
   resetForm();
+  ensurePublishTargets();
   if (editId.value != null) {
     await loadForEdit(editId.value);
   }
@@ -121,7 +140,7 @@ async function submit() {
   }
   saving.value = true;
   try {
-    // visibility 作为 SkillInput 传给后端(PUBLIC/PRIVATE)
+    // visibility 作为 SkillInput 传给后端(PERSONAL/PRIVATE/PUBLIC)
     const payload: SkillInput = { ...form.value, visibility: visibility.value };
     let skillId: number;
     if (editId.value != null) {
@@ -138,6 +157,25 @@ async function submit() {
       }
       // 创建模式: 把表单里加好的授权同步到新 skill(编辑器无 skillId 时只是暂存)
       await syncGrantsToServer(skillId);
+    }
+    // 公开:保存后提交所选维度的发布申请(走审批,通过后维度内可见)
+    if (visibility.value === 'PUBLIC' && selectedTargets.value.size > 0) {
+      const allTargets = publishTargetGroups.value.flatMap(g => g.targets);
+      const targets = allTargets.filter(t => selectedTargets.value.has(`${t.orgType}:${t.orgId}`));
+      const failed: string[] = [];
+      for (const t of targets) {
+        try {
+          await submitPublish(skillId, t.orgType, t.orgId, t.displayName);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : '失败';
+          failed.push(`${t.displayName}:${msg}`);
+        }
+      }
+      if (failed.length > 0) {
+        publishResult.value = `Skill 已保存,但部分维度申请提交失败:${failed.join('; ')}`;
+      } else {
+        publishResult.value = `Skill 已保存,${targets.length} 条维度发布申请已提交(待审批)。`;
+      }
     }
     if (!publishResult.value || !publishResult.value.includes('失败')) {
       setTimeout(() => {
@@ -197,20 +235,41 @@ function goBack() {
             :disabled="notOwner"
           />
 
-          <!-- 可见性:公开/私有 -->
+          <!-- 可见性三态:公开(选维度发布走审批) / 私有(授权即时生效) / 个人(默认,仅自己) -->
           <div class="field">
             <span class="label">可见性</span>
             <div class="visibility-row">
               <label class="vis-opt">
+                <input type="radio" v-model="visibility" value="PERSONAL" :disabled="notOwner" />
+                <span>个人</span>
+                <span class="vis-desc">不选发布维度,不审批,仅创建者使用</span>
+              </label>
+              <label class="vis-opt">
                 <input type="radio" v-model="visibility" value="PUBLIC" :disabled="notOwner" />
                 <span>公开</span>
+                <span class="vis-desc">选择小组、部门、公司等发布维度,需要审批</span>
               </label>
               <label class="vis-opt">
                 <input type="radio" v-model="visibility" value="PRIVATE" :disabled="notOwner" />
                 <span>私有</span>
+                <span class="vis-desc">指定用户、部门、小组或虚拟组,不走发布审批,授权即时生效</span>
               </label>
             </div>
-            <div class="dim-tip">公开 Skill 需"引用"才会出现在你的使用列表;私有 Skill 被授权后自动进入被授权人的使用列表。</div>
+          </div>
+
+          <!-- 公开:选维度(保存后提交发布申请走审批,审批通过后维度内可见) -->
+          <div v-if="visibility === 'PUBLIC'" class="field">
+            <span class="label">发布维度</span>
+            <div v-if="isEdit && existingDimensionLabel !== '个人'" class="dim-current">
+              当前已发布到:{{ existingDimensionLabel }}(下方新选维度将追加提交审批)
+            </div>
+            <DimensionCascader
+              v-model="selectedTargets"
+              :groups="publishTargetGroups"
+              :disabled="notOwner"
+              placeholder="请选择发布维度(不选=仅审批通过的原有维度)"
+            />
+            <div class="dim-tip">公开需要审批:保存后按所选维度提交发布申请,各维度独立审批,通过后维度内用户可见。</div>
           </div>
 
           <!-- 私有时:授权编辑器(编辑模式即时生效;创建模式暂存,保存后再提交) -->
@@ -300,6 +359,7 @@ function goBack() {
 .visibility-row { display: flex; flex-direction: column; gap: 6px; }
 .vis-opt { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #1e293b; cursor: pointer; }
 .vis-opt input { width: auto; }
+.vis-desc { font-size: 12px; color: #94a3b8; }
 
 .form-footer {
   display: flex;

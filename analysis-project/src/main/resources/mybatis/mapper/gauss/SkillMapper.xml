@@ -237,24 +237,26 @@
 
     <!--
        授权命中条件:g 为 skill_visible_grant 的别名。命中 = 被点名(USER)
-       或所属统计组(GROUP)或所属部门(DEPARTMENT)被授权。
+       或所属统计组(GROUP)或所属部门(DEPARTMENT)或所在虚拟组(VIRTUAL_GROUP)被授权。
+       虚拟组按 skill_virtual_group(组名+userid)命中:用户是组内成员即命中该组名的授权。
     -->
     <sql id="grantMatchCondition">
         (g.grant_type = 'USER' AND g.target_id = #{userId})
         OR (g.grant_type = 'GROUP' AND g.target_id IN (<include refid="userStatisticsGroupIds"/>))
         OR (g.grant_type = 'DEPARTMENT' AND g.target_id IN (<include refid="userDepartmentIds"/>))
+        OR (g.grant_type = 'VIRTUAL_GROUP' AND g.target_id IN (
+            SELECT v.group_name FROM skill_virtual_group v WHERE v.user_id = #{userId}))
     </sql>
 
     <!--
        当前用户可见的 skill_id 集合(可见性硬门槛):
-       PUBLIC(公开) ∪ owner(自己创建) ∪ 私有授权(USER/GROUP/DEPARTMENT) ∪ legacy 维度审批发布。
+       三态规则:个人(PERSONAL)仅 owner;私有(PRIVATE)= owner ∪ 授权(USER/GROUP/DEPARTMENT/VIRTUAL_GROUP)
+       ∪ legacy 维度审批发布;公开(PUBLIC)= owner ∪ 已 APPROVED 维度发布  公开需审批,审批通过前
+       仅 owner 可见,故没有"visibility='PUBLIC' 即全员可见"分支,公开可见统一由 dimensionUsedSkillIds 承担。
        列表/检索/详情/可用性判断共用这套规则,保证各层一致。
        注:owner 分支不限定 status——外层查询自带 ACTIVE/未删过滤。
      -->
     <sql id="visibleSkillIds">
-        SELECT v.id FROM skill_manage v
-        WHERE v.visibility = 'PUBLIC' AND v.status = 'ACTIVE' AND v.deleted_at IS NULL
-        UNION
         SELECT v.id FROM skill_manage v WHERE v.owner_user_id = #{userId}
         UNION
         SELECT g.skill_id FROM skill_visible_grant g

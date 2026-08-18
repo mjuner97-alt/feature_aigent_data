@@ -12,7 +12,9 @@
  */
 import { ref, watch, onMounted } from 'vue';
 import { getGrants, addGrant, removeGrant, getPublishTargets, searchSkillUsers } from '../api/skill';
+import { listVirtualGroups } from '../api/virtualGroup';
 import type { SkillGrant, PublishTargetGroup } from '../types/skill';
+import type { VirtualGroup } from '../api/virtualGroup';
 
 const props = withDefaults(defineProps<{
   /** skillId;为 null 时进入"暂存"模式(创建表单还没拿到 id,先记录授权待保存后提交) */
@@ -26,7 +28,7 @@ const emit = defineEmits<{
 }>();
 
 const TYPE_LABEL: Record<string, string> = {
-  USER: '人', DEPARTMENT: '部门', GROUP: '小组',
+  USER: '人', DEPARTMENT: '部门', GROUP: '小组', VIRTUAL_GROUP: '虚拟组',
 };
 
 /** skillId 有值时,从 server 加载的已有授权 */
@@ -44,9 +46,10 @@ const userSearchError = ref('');
 
 // —— 部门/小组选择(复用发布目标) ——
 const orgGroups = ref<PublishTargetGroup[]>([]);
-const activeType = ref<'DEPARTMENT' | 'GROUP'>('DEPARTMENT');
+const activeType = ref<'DEPARTMENT' | 'GROUP' | 'VIRTUAL_GROUP'>('DEPARTMENT');
 const selectedOrgKey = ref<string>('');
 const orgsLoaded = ref(false);
+const virtualGroups = ref<VirtualGroup[]>([]);
 
 interface SkillUserOption { userId: string; name: string; label: string; }
 
@@ -77,6 +80,11 @@ async function ensureOrgs() {
     orgGroups.value = await getPublishTargets();
   } catch {
     // 组织加载失败不阻塞
+  }
+  try {
+    virtualGroups.value = await listVirtualGroups();
+  } catch {
+    // 虚拟组加载失败不阻塞(下拉为空,提示去管理页建组)
   }
   orgsLoaded.value = true;
 }
@@ -233,13 +241,23 @@ defineExpose({ load, currentGrants, commitPending, hasGrants: () => currentGrant
       </div>
 
       <div class="add-block">
-        <div class="add-title">按部门/小组授权</div>
+        <div class="add-title">按部门/小组/虚拟组授权</div>
         <div class="org-row">
           <select v-model="activeType">
             <option value="DEPARTMENT">部门</option>
             <option value="GROUP">小组</option>
+            <option value="VIRTUAL_GROUP">虚拟组</option>
           </select>
-          <select v-model="selectedOrgKey">
+          <!-- 虚拟组走独立接口,选中项 key 仍为 "orgType:orgId" 形态(orgId=组名) -->
+          <select v-if="activeType === 'VIRTUAL_GROUP'" v-model="selectedOrgKey">
+            <option value="">请选择虚拟组</option>
+            <option
+              v-for="g in virtualGroups"
+              :key="g.groupName"
+              :value="`VIRTUAL_GROUP:${g.groupName}`"
+            >{{ g.groupName }}({{ g.memberCount }}人)</option>
+          </select>
+          <select v-else v-model="selectedOrgKey">
             <option value="">请选择{{ activeType === 'DEPARTMENT' ? '部门' : '小组' }}</option>
             <option
               v-for="t in (orgGroups.find(g => g.orgType === activeType)?.targets ?? [])"
@@ -248,6 +266,9 @@ defineExpose({ load, currentGrants, commitPending, hasGrants: () => currentGrant
             >{{ t.displayName }}</option>
           </select>
           <button class="search-btn" :disabled="!selectedOrgKey" @click="addOrg">授权</button>
+        </div>
+        <div v-if="activeType === 'VIRTUAL_GROUP' && virtualGroups.length === 0" class="mini-error">
+          暂无虚拟组,请先到"虚拟组管理"页建组
         </div>
       </div>
     </div>

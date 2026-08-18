@@ -6,7 +6,7 @@ export interface SkillListItem {
   tags: string;
   ownerUserId: string;
   ownerName?: string;
-  visibility: string;       // PUBLIC / PRIVATE(前端展示私有徽章)
+  visibility: string;       // PUBLIC(公开) / PRIVATE(私有) / PERSONAL(个人,默认)
   likeCount: number;
   liked: boolean;
   used: boolean;
@@ -26,7 +26,7 @@ export interface SkillDetail {
   tags: string;
   ownerUserId: string;
   status: string;
-  visibility?: string;      // PUBLIC / PRIVATE(缺失视为 PUBLIC)
+  visibility?: string;      // PUBLIC(公开) / PRIVATE(私有) / PERSONAL(个人;缺失视为 PERSONAL)
   likeCount: number;
   createdAt: string;
   updatedAt: string;
@@ -44,14 +44,14 @@ export interface SkillInput {
   content: string;
   category?: string;   // 后端保留字段,前端不再使用,可选
   tags?: string;       // 后端保留字段,前端不再使用,可选
-  visibility?: string; // 可选:PUBLIC(默认) / PRIVATE
+  visibility?: string; // 可选:PERSONAL(默认,仅创建者) / PUBLIC(公开,需发布审批) / PRIVATE(私有)
 }
 
 /** Skill 私有可见性授权项。对应后端 GET /api/skills/{id}/grants 的单条。 */
 export interface SkillGrant {
-  grantType: string;    // USER / DEPARTMENT / GROUP
-  targetId: string;     // USER=统一认证号 / DEPARTMENT=部门名 / GROUP=统计组名
-  displayName: string;  // 展示名(USER 为姓名,GROUP/DEPARTMENT 为组织名)
+  grantType: string;    // USER / DEPARTMENT / GROUP / VIRTUAL_GROUP
+  targetId: string;     // USER=统一认证号 / DEPARTMENT=部门名 / GROUP=统计组名 / VIRTUAL_GROUP=虚拟组名
+  displayName: string;  // 展示名(USER 为姓名,其余为组织/组名)
 }
 
 /** Skill 发布记录。对应 GET /api/skills/{id}/publishes 的单条(对齐后端 SkillPublish 实体)。 */

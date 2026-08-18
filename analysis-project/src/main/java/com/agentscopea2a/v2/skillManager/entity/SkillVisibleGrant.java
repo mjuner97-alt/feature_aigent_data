@@ -26,7 +26,8 @@ import java.time.LocalDateTime;
  * Skill 私有可见性授权实体 - 对应表 {@code skill_visible_grant}。
  *
  * <p>无审批:owner 直接指定谁能看到/可用一个 {@code PRIVATE} skill。
- * 授权对象三种: {@code USER}(统一认证号) / {@code DEPARTMENT}(部门名) / {@code GROUP}(统计组名)。
+ * 授权对象四种: {@code USER}(统一认证号) / {@code DEPARTMENT}(部门名) / {@code GROUP}(统计组名)
+ * / {@code VIRTUAL_GROUP}(虚拟组名,组定义见 skill_virtual_group 表)。
  * 命中授权的用户对私有 skill 自动可用(used),无需手动引用。
  */
 @Data
@@ -36,9 +37,9 @@ import java.time.LocalDateTime;
 public class SkillVisibleGrant {
     private Long id;
     private Long skillId;
-    /** USER | DEPARTMENT | GROUP */
+    /** USER | DEPARTMENT | GROUP | VIRTUAL_GROUP */
     private String grantType;
-    /** USER=统一认证号 / DEPARTMENT=部门名 / GROUP=统计组名 */
+    /** USER=统一认证号 / DEPARTMENT=部门名 / GROUP=统计组名 / VIRTUAL_GROUP=虚拟组名 */
     private String targetId;
     /** 授权人(owner) */
     private String grantedBy;
