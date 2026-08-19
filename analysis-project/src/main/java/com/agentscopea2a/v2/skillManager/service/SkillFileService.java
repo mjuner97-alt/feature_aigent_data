@@ -15,14 +15,13 @@
  */
 package com.agentscopea2a.v2.skillManager.service;
 
+import com.agentscopea2a.v2.config.SkillStorageProperties;
 import com.agentscopea2a.v2.skillManager.dto.SkillFileListItem;
 import com.agentscopea2a.v2.skillManager.dto.SkillFileUploadResponse;
 import com.agentscopea2a.v2.skillManager.entity.SkillFile;
 import com.agentscopea2a.v2.skillManager.mapper.SkillMapper;
-import com.agentscopea2a.v2.util.SkillFileMirror;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.dao.DuplicateKeyException;
@@ -37,22 +36,17 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.List;
-import java.util.stream.Stream;
 
 /**
- * Skill 文件附件 Service。处理文件上传/下载/删除/备份，
- * 支持同名文件覆盖时自动备份旧版本。
+ * Skill 文件附件 Service。处理文件上传、下载、覆盖和删除。
  *
- * <p>存储: DB 仅存相对路径 {@code {userId}/{filename}},运行时拼 {@code baseDir} 解析,
+ * <p>存储: DB 仅存相对路径 {@code {userId}/{filename}},运行时拼 {@code /workspace/script} 解析,
  * 避免换机器/换配置后路径失效。每个用户独立子目录,同名文件按 userId 隔离。
- * <p>备份: {@code {baseDir}/{userId}/{backupDir}/{filename}_{timestamp}},按文件保留最近 N 份。
- *
  * <p>一致性策略:
  * <ul>
  *   <li>上传(新文件): 先写盘后 insert;insert 失败(含并发同名竞态)清理磁盘,避免孤儿。</li>
- *   <li>上传(覆盖): 备份旧文件 -> 写新文件 -> 更新 DB;DB 失败则用备份回滚磁盘。</li>
+ *   <li>上传(覆盖): 写新文件 -> 更新 DB。</li>
  *   <li>删除: 先删 DB(事务内)再删磁盘;磁盘失败仅记日志不回滚(DB 已删,至多遗留孤儿)。</li>
  * </ul>
  * DB 操作使用 {@code gaussTransactionManager} 事务管理器。
@@ -61,37 +55,22 @@ import java.util.stream.Stream;
 public class SkillFileService {
 
     private static final Logger log = LoggerFactory.getLogger(SkillFileService.class);
-    private static final DateTimeFormatter BACKUP_TIMESTAMP = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
-
     private final SkillMapper skillMapper;
+    private final String baseDir;
+    private final long maxSizeBytes;
+    private final String allowedExtensions;
 
-    @Value("${skill.file.base-dir:/data/skill-files}")
-    private String baseDir;
-
-    @Value("${skill.file.mirror-dir:/data/skill-files-mirror}")
-    private String mirrorDir;
-
-    @Value("${skill.file.max-size-bytes:1048576}")
-    private long maxSizeBytes;
-
-    @Value("${skill.file.allowed-extensions:.py,.sql}")
-    private String allowedExtensions;
-
-    @Value("${skill.file.backup-dir:.backup}")
-    private String backupDir;
-
-    /** 每个文件保留的备份份数,超出按时间倒序删除旧备份;<=0 表示不清理。 */
-    @Value("${skill.file.backup-max-keep:5}")
-    private int backupMaxKeep;
-
-    public SkillFileService(SkillMapper skillMapper) {
+    public SkillFileService(SkillMapper skillMapper, SkillStorageProperties storageProperties) {
         this.skillMapper = skillMapper;
+        this.baseDir = storageProperties.getScriptDir();
+        this.maxSizeBytes = storageProperties.getMaxSizeBytes();
+        this.allowedExtensions = storageProperties.getAllowedExtensions();
     }
 
     // ==================== 上传 ====================
 
     /**
-     * 上传文件。校验文件名/大小/扩展名/内容,同名文件自动备份旧版本后覆盖。
+     * 上传文件。校验文件名/大小/扩展名/内容，同名文件直接覆盖。
      * DB 仅存相对路径 {@code {userId}/{filename}}。
      */
     @Transactional("gaussTransactionManager")
@@ -164,27 +143,16 @@ public class SkillFileService {
             throw e;
         }
 
-        // 镜像: 主文件写入 + DB 入库都成功后, 复制一份到独立镜像目录 (最佳努力, 防删除)
-        SkillFileMirror.mirror(baseDir, mirrorDir, relativePath);
-
         return new SkillFileUploadResponse(
                 skillFile.getId(), filename, fileType, fileSize,
                 description, skillFile.getCreatedAt().toString());
     }
 
-    /**
-     * 覆盖已存在文件: 备份旧 -> 写新 -> 更新 DB;DB 失败用备份回滚磁盘。
-     */
+    /** 覆盖已存在文件并更新 DB 元数据。 */
     private SkillFileUploadResponse overwriteExisting(SkillFile existing, byte[] content, long fileSize,
                                                       String fileType, String description, String filename) {
         String userId = existing.getUserId();
-        Path oldFilePath = resolveStoragePath(existing.getStoragePath());
         Path storagePath = resolveStoragePath(Paths.get(userId, filename).toString());
-
-        // 备份旧文件(最佳努力,失败不阻断)
-        Path backupPath = Files.exists(oldFilePath)
-                ? backupFile(oldFilePath, Paths.get(baseDir, userId), backupDir, filename)
-                : null;
 
         // 覆盖磁盘文件
         try {
@@ -194,28 +162,13 @@ public class SkillFileService {
             throw new IllegalStateException("FileWriteFailed: " + storagePath, e);
         }
 
-        // 更新 DB 记录;失败则回滚磁盘到旧版本
+        // 更新 DB 记录
         existing.setStoragePath(Paths.get(userId, filename).toString());
         existing.setFileSize(fileSize);
         existing.setFileType(fileType);
         if (description != null) existing.setDescription(description);
         existing.setUpdatedAt(LocalDateTime.now());
-        try {
-            skillMapper.updateSkillFile(existing);
-        } catch (RuntimeException e) {
-            if (backupPath != null) {
-                try {
-                    Files.copy(backupPath, oldFilePath, StandardCopyOption.REPLACE_EXISTING);
-                    log.info("file restored after DB update failure: {} -> {}", backupPath, oldFilePath);
-                } catch (IOException restoreEx) {
-                    log.error("FileRestoreFailed: {} -> {}", backupPath, oldFilePath, restoreEx);
-                }
-            }
-            throw e;
-        }
-
-        // 镜像: DB 更新成功后, 复制新内容到镜像目录覆盖旧副本 (最佳努力, 防删除)
-        SkillFileMirror.mirror(baseDir, mirrorDir, Paths.get(userId, filename).toString());
+        skillMapper.updateSkillFile(existing);
 
         return new SkillFileUploadResponse(
                 existing.getId(), filename, fileType, fileSize,
@@ -253,13 +206,6 @@ public class SkillFileService {
             return new FileSystemResource(path);
         }
 
-        // 兜底: 主文件被删, 从镜像副本读 (保留镜像策略下副本仍在)
-        Path mirror = Paths.get(mirrorDir, skillFile.getStoragePath()).normalize();
-        if (Files.exists(mirror)) {
-            log.warn("SkillFile primary missing, serving from mirror: {} -> {}", path, mirror);
-            return new FileSystemResource(mirror);
-        }
-
         throw new IllegalStateException("FileNotOnDisk: " + skillFile.getStoragePath());
     }
 
@@ -291,10 +237,9 @@ public class SkillFileService {
         skillMapper.deleteFileReferencesByFileId(fileId);
         skillMapper.deleteSkillFile(fileId);
 
-        // 磁盘: 备份 + 删除(最佳努力,失败不回滚 DB)
+        // 磁盘: 直接删除（失败仅记日志，不回滚 DB）
         Path filePath = resolveStoragePath(skillFile.getStoragePath());
         if (Files.exists(filePath)) {
-            backupFile(filePath, Paths.get(baseDir, userId), backupDir, skillFile.getFilename());
             try {
                 Files.delete(filePath);
             } catch (IOException e) {
@@ -389,52 +334,6 @@ public class SkillFileService {
             Files.deleteIfExists(path);
         } catch (IOException e) {
             log.warn("safeDelete failed: {}", path, e);
-        }
-    }
-
-    /**
-     * 备份文件(最佳努力)。返回备份路径,失败返回 null(仅记日志,不抛)。
-     * 同时按 filename 前缀清理超出保留数量的旧备份。
-     */
-    private Path backupFile(Path source, Path userBaseDir, String backupDirName, String filename) {
-        try {
-            Path backupDirPath = userBaseDir.resolve(backupDirName);
-            Files.createDirectories(backupDirPath);
-            String timestamp = LocalDateTime.now().format(BACKUP_TIMESTAMP);
-            Path backupPath = backupDirPath.resolve(filename + "_" + timestamp);
-            Files.copy(source, backupPath, StandardCopyOption.REPLACE_EXISTING);
-            log.info("file backed up: {} -> {}", source, backupPath);
-            pruneBackups(backupDirPath, filename, backupMaxKeep);
-            return backupPath;
-        } catch (IOException e) {
-            log.error("FileBackupFailed: source={}", source, e);
-            return null;
-        }
-    }
-
-    /**
-     * 保留每个文件最近 maxKeep 份备份,其余按时间倒序删除。
-     * 备份命名约定 {@code {filename}_{timestamp}},字典序倒序即时间倒序。
-     */
-    private void pruneBackups(Path backupDirPath, String filename, int maxKeep) {
-        if (maxKeep <= 0) {
-            return;
-        }
-        String prefix = filename + "_";
-        try (Stream<Path> stream = Files.list(backupDirPath)) {
-            List<Path> matches = stream
-                    .filter(p -> p.getFileName().toString().startsWith(prefix))
-                    .sorted((a, b) -> b.getFileName().toString().compareTo(a.getFileName().toString()))
-                    .toList();
-            for (int i = maxKeep; i < matches.size(); i++) {
-                try {
-                    Files.delete(matches.get(i));
-                } catch (IOException ignore) {
-                    // 单个旧备份删除失败不影响主流程
-                }
-            }
-        } catch (IOException e) {
-            log.debug("pruneBackups list failed: {}", backupDirPath, e);
         }
     }
 

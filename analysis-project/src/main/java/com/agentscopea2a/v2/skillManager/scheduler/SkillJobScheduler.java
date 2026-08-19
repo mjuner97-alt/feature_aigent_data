@@ -16,6 +16,7 @@
 package com.agentscopea2a.v2.skillManager.scheduler;
 
 import com.agentscopea2a.v2.config.HarnessRunnerProperties;
+import com.agentscopea2a.v2.config.SkillStorageProperties;
 import com.agentscopea2a.v2.config.TimeoutProfile;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.skillManager.entity.SkillJob;
@@ -38,7 +39,6 @@ import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
@@ -114,9 +114,8 @@ public class SkillJobScheduler implements WriteCallback {
     /** Markdown -> 自包含 HTML 渲染器（含表格样式 + 内联 echarts）。 */
     private final HtmlReportRenderer htmlReportRenderer;
 
-    /** skill 文件磁盘根目录(${skill.file.base-dir})，MD 报告写入/校验/通知路径解析均基于此，不写死。 */
-    @Value("${skill.file.base-dir:/data/skill-files}")
-    private String baseDir;
+    /** Skill Job 报告根目录(${skill.job.base-dir})。 */
+    private final String baseDir;
 
     @Autowired
     private NotificationService notificationService;
@@ -163,6 +162,7 @@ public class SkillJobScheduler implements WriteCallback {
             SkillJobMapper mapper,
             SkillMapper skillMapper,
             HarnessRunnerProperties properties,
+            SkillStorageProperties storageProperties,
             WriteMarkdownTool writeMarkdownTool,
             HtmlReportRenderer htmlReportRenderer) {
         this.runner = runner;
@@ -170,6 +170,7 @@ public class SkillJobScheduler implements WriteCallback {
         this.skillMapper = skillMapper;
         this.config = properties.getSkillJob();
         this.workspace = Paths.get(properties.getWorkspace().getPath()).toAbsolutePath();
+        this.baseDir = storageProperties.getJobReportDir();
         this.writeMarkdownTool = writeMarkdownTool;
         this.htmlReportRenderer = htmlReportRenderer;
         // 手动/批量各自独立线程池：互不阻塞，大小与队列容量均配置驱动
@@ -626,7 +627,7 @@ public class SkillJobScheduler implements WriteCallback {
     }
 
     /**
-     * 构建报告文件名（相对 {skill.file.base-dir}/{userId}/ 的子路径）。
+     * 构建报告文件名（相对 {skill.job.base-dir}/{userId}/ 的子路径）。
      * 规则：{jobName}_{date}_{timestamp}.html，每次执行生成独立文件。
      * 扩展名 .html：内容由 HtmlReportRenderer 渲染为自包含 HTML（表格样式 + echarts 内联）。
      */

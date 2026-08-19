@@ -25,11 +25,11 @@ import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 
 /**
- * Skill 文件 / Skill Job 报告的镜像备份工具.
+ * Skill Job 报告的备份复制工具.
  *
- * <p>把主目录 {@code {skill.file.base-dir}/{relative}} 的已写入文件复制一份到独立镜像目录
- * {@code {skill.file.mirror-dir}/{relative}}（目录结构一致, 只换根）, 作为防删除的安全副本.
- * 主文件被删后, 下载端点可从镜像回退.
+ * <p>把主目录 {@code {skill.job.base-dir}/{relative}} 的已写入报告复制到
+ * {@code {skill.job.backup-dir}/{relative}}（目录结构一致，只换根）。
+ * 主文件不存在时，下载端点从备份目录回退。
  *
  * <p><b>最佳努力</b>: 镜像失败只记日志, 绝不抛出/阻断上传、报告生成、下载等主流程
  * （与 {@code SkillFileService.backupFile} 同风格）。
@@ -43,10 +43,10 @@ public final class SkillFileMirror {
     private SkillFileMirror() {}
 
     /**
-     * 把 {@code {baseDir}/{relative}} 拷贝到 {@code {mirrorDir}/{relative}}.
+     * 把 {@code {baseDir}/{relative}} 拷贝到 {@code {mirrorDir}/{relative}}。
      *
-     * @param baseDir      主目录根 ({@code skill.file.base-dir})
-     * @param mirrorDir    镜像目录根 ({@code skill.file.mirror-dir}); 为空/非法时跳过
+     * @param baseDir      报告主目录根 ({@code skill.job.base-dir})
+     * @param mirrorDir    报告备份目录根 ({@code skill.job.backup-dir}); 为空/非法时跳过
      * @param relativePath 相对路径, 形如 {@code {userId}/{filename}} 或 {@code {userId}/reports/xxx.html}
      */
     public static void mirror(String baseDir, String mirrorDir, String relativePath) {
