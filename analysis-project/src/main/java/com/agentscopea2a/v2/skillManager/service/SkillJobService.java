@@ -15,6 +15,7 @@
  */
 package com.agentscopea2a.v2.skillManager.service;
 
+import com.agentscopea2a.v2.config.SkillStorageProperties;
 import com.agentscopea2a.v2.skillManager.dto.*;
 import com.agentscopea2a.v2.skillManager.entity.SkillDependencyMetric;
 import com.agentscopea2a.v2.skillManager.entity.SkillJob;
@@ -26,7 +27,6 @@ import com.agentscopea2a.v2.skillManager.notification.NotificationService;
 import com.agentscopea2a.v2.skillManager.scheduler.SkillJobScheduler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
@@ -62,22 +62,23 @@ public class SkillJobService {
     private final MockOrgService mockOrgService;
     private final NotificationService notificationService;
 
-    /** skill 文件磁盘根目录(${skill.file.base-dir})，与 SkillFileService/WriteMarkdownTool 一致，不写死。 */
-    @Value("${skill.file.base-dir:/data/skill-files}")
-    private String baseDir;
+    /** Skill Job 报告主目录(${skill.job.base-dir})。 */
+    private final String baseDir;
 
-    /** skill 文件镜像根目录(${skill.file.mirror-dir})，报告主文件被删后下载回退读镜像；可为空则跳过。 */
-    @Value("${skill.file.mirror-dir:/data/skill-files-mirror}")
-    private String mirrorDir;
+    /** Skill Job 报告备份目录(${skill.job.backup-dir})，主文件不存在时从此目录读取。 */
+    private final String backupDir;
 
     public SkillJobService(SkillJobMapper mapper, SkillJobScheduler scheduler,
                            SkillDependencyMetricMapper metricMapper, MockOrgService mockOrgService,
-                           NotificationService notificationService) {
+                           NotificationService notificationService,
+                           SkillStorageProperties storageProperties) {
         this.mapper = mapper;
         this.scheduler = scheduler;
         this.metricMapper = metricMapper;
         this.mockOrgService = mockOrgService;
         this.notificationService = notificationService;
+        this.baseDir = storageProperties.getJobReportDir();
+        this.backupDir = storageProperties.getJobBackupDir();
     }
 
     // ==================== CRUD ====================
@@ -103,7 +104,7 @@ public class SkillJobService {
             }
         }
 
-        // 自动生成输出路径(相对 baseDir): {userId}/。绝对路径由 baseDir 拼,不写死 /data/skill-files/
+        // 自动生成输出路径(相对 skill.job.base-dir): {userId}/。
         String outputPath = userId + "/";
 
         SkillJob job = SkillJob.builder()
@@ -473,8 +474,8 @@ public class SkillJobService {
     /**
      * 下载/查看执行记录对应的报告文件（内部纯文件服务：路径解析 + 路径穿越防护，无归属校验）。
      * 供短链端点 {@code downloadByShortCode} 调用（shortCode 即访问凭据，无需 userId）。
-     * resolvedOutputPath 存相对路径({userId}/{mdFileName})，拼 baseDir 解析绝对路径；
-     * 历史绝对路径记录也可解析(Paths.get 第二参数为绝对路径时忽略 baseDir)，自动兼容老数据。
+     * resolvedOutputPath 存相对路径({userId}/{mdFileName})，先从报告主目录读取，
+     * 主文件不存在时再从报告备份目录读取。
      * 路径穿越 base = baseDir/{createdBy}。
      */
     public Resource downloadExecutionFile(SkillJobExecutionDto exec) {
@@ -482,26 +483,33 @@ public class SkillJobService {
             throw new IllegalStateException("FileNotFound: 执行记录无输出路径 (execId=" + exec.id() + ")");
         }
 
+        Path relativeOutputPath = Paths.get(exec.resolvedOutputPath());
+        if (relativeOutputPath.isAbsolute()) {
+            throw new IllegalStateException("FileNotOnDisk: 不再支持旧的绝对报告路径: "
+                    + exec.resolvedOutputPath());
+        }
+
         SkillJob job = mapper.selectJobById(exec.jobId());
         if (job == null) {
             throw new IllegalStateException("FileNotFoundOrAccessDenied: " + exec.id());
         }
 
-        // resolvedOutputPath 相对路径({userId}/{mdFileName})，拼 baseDir 解析；
-        // 历史绝对路径(老数据)Paths.get 会忽略 baseDir 直接照旧解析，自动兼容。
-        Path mdFile = Paths.get(baseDir, exec.resolvedOutputPath()).normalize().toAbsolutePath();
+        // resolvedOutputPath 相对路径({userId}/{mdFileName})，拼报告主目录解析。
+        Path mdFile = Paths.get(baseDir).resolve(relativeOutputPath).normalize().toAbsolutePath();
         // 路径穿越防护：必须在 baseDir/{userId}/ 下
         Path expectedBase = Paths.get(baseDir, job.getCreatedBy()).normalize().toAbsolutePath();
         if (!mdFile.startsWith(expectedBase)) {
             throw new IllegalStateException("PathTraversal: " + exec.resolvedOutputPath());
         }
         if (!Files.exists(mdFile) || !Files.isRegularFile(mdFile)) {
-            // 兜底: 主文件被删, 从镜像副本读 (保留镜像策略下副本仍在);
-            // 新版 resolvedOutputPath 是相对路径 {userId}/{file}, 镜像同名可回退; 老绝对路径记录 Paths.get 忽略 mirrorDir 自然无效
-            Path mirror = Paths.get(mirrorDir, exec.resolvedOutputPath()).normalize().toAbsolutePath();
-            if (Files.exists(mirror) && Files.isRegularFile(mirror)) {
-                log.warn("SkillJob report primary missing, serving from mirror: {} -> {}", mdFile, mirror);
-                return new FileSystemResource(mirror);
+            Path backupFile = Paths.get(backupDir).resolve(relativeOutputPath).normalize().toAbsolutePath();
+            Path expectedBackupBase = Paths.get(backupDir, job.getCreatedBy()).normalize().toAbsolutePath();
+            if (!backupFile.startsWith(expectedBackupBase)) {
+                throw new IllegalStateException("PathTraversal: " + exec.resolvedOutputPath());
+            }
+            if (Files.exists(backupFile) && Files.isRegularFile(backupFile)) {
+                log.warn("SkillJob report primary missing, serving from backup: {} -> {}", mdFile, backupFile);
+                return new FileSystemResource(backupFile);
             }
             throw new IllegalStateException("FileNotOnDisk: " + exec.resolvedOutputPath());
         }

@@ -17,6 +17,7 @@ package com.agentscopea2a.v2.runner;
 
 import com.agentscopea2a.v2.config.AgentExecutionConfig;
 import com.agentscopea2a.v2.config.HarnessRunnerProperties;
+import com.agentscopea2a.v2.config.SkillStorageProperties;
 import com.agentscopea2a.v2.memory.MysqlMemoryStore;
 import com.agentscopea2a.v2.model.FallbackModelDecorator;
 import com.agentscopea2a.v2.model.ModelProvider;
@@ -51,7 +52,6 @@ import io.agentscope.harness.agent.tool.SkillManageConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
@@ -83,7 +83,7 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
     private final ModelProvider modelProvider;
     private final ObjectProvider<MysqlMemoryStore> mysqlMemoryStoreProvider;
     private final SkillMapper skillMapper;
-    /** skill 附件文件磁盘根目录(${skill.file.base-dir}),传给 DatabaseSkillRepository 用于把 DB 中的相对 storage_path 解析成绝对路径。 */
+    /** skill 附件文件磁盘根目录(${skill.file.scritp}),传给 DatabaseSkillRepository 用于把 DB 中的相对 storage_path 解析成绝对路径。 */
     private final String skillFileBaseDir;
     /**
      * 共享 stateStore,供 read-only 状态查询端点使用 (如 V2SessionController.getState)。
@@ -109,7 +109,7 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
             ModelProvider modelProvider,
             ObjectProvider<MysqlMemoryStore> mysqlMemoryStoreProvider,
             SkillMapper skillMapper,
-            @Value("${skill.file.base-dir:/data/skill-files}") String skillFileBaseDir) {
+            SkillStorageProperties storageProperties) {
         this.runnerProperties = runnerProperties;
         this.dataSource = dataSource;
         this.skillManageConfig = skillManageConfig;
@@ -126,7 +126,7 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
         this.modelProvider = modelProvider;
         this.mysqlMemoryStoreProvider = mysqlMemoryStoreProvider;
         this.skillMapper = skillMapper;
-        this.skillFileBaseDir = skillFileBaseDir;
+        this.skillFileBaseDir = storageProperties.getScriptDir();
         this.sharedStateStore = new SanitizingAgentStateStore(new MysqlAgentStateStore(dataSource, true));
 
         log.info("HarnessA2aRunnerV2 initialized: ready to create agents per request");

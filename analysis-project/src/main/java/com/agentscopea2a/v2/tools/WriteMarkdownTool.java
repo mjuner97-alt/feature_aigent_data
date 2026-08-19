@@ -18,7 +18,7 @@ import java.util.function.Supplier;
  * <p>不通过tool_call机制暴露给AI，executionId由调用方直接传入，
  * 写入成功后通过{@link WriteCallback}通知Scheduler标记md_file_written。
  *
- * <p>写入根目录为 {@code {skill.file.base-dir}/{userId}/}（可配置，与 SkillFileService 一致），
+ * <p>写入根目录为 {@code {skill.job.base-dir}/{userId}/}，
  * filePath 参数作为相对子路径，规范化后必须仍在该根目录内，防止路径穿越。
  *
  * <p>使用 {@link Supplier} 延迟获取 {@link WriteCallback}，避免与 SkillJobScheduler 的循环依赖：
@@ -29,25 +29,25 @@ public class WriteMarkdownTool {
 
     private static final Logger log = LoggerFactory.getLogger(WriteMarkdownTool.class);
 
-    /** skill 文件磁盘根目录(${skill.file.base-dir})，与 SkillFileService 一致。 */
+    /** Skill Job 报告根目录(${skill.job.base-dir})。 */
     private final String baseDir;
 
-    /** skill 文件镜像根目录(${skill.file.mirror-dir})，报告写成功后复制一份作为防删除副本；可为空则跳过。 */
-    private final String mirrorDir;
+    /** Skill Job 报告备份根目录(${skill.job.backup-dir})；可为空则跳过。 */
+    private final String backupDir;
 
     /** 延迟获取的回调，SkillJobScheduler实现，用于标记md_file_written=true */
     private final Supplier<WriteCallback> writeCallbackSupplier;
 
-    public WriteMarkdownTool(Supplier<WriteCallback> writeCallbackSupplier, String baseDir, String mirrorDir) {
+    public WriteMarkdownTool(Supplier<WriteCallback> writeCallbackSupplier, String baseDir, String backupDir) {
         this.writeCallbackSupplier = writeCallbackSupplier;
         this.baseDir = baseDir;
-        this.mirrorDir = mirrorDir;
+        this.backupDir = backupDir;
     }
 
     /**
      * 写入报告文件。流程：参数校验->路径穿越防护->自动创建父目录->写入文件->验证写入->通知WriteCallback回调。
      *
-     * <p>最终写入路径为 {@code {skill.file.base-dir}/{userId}/{filePath}}，
+     * <p>最终写入路径为 {@code {skill.job.base-dir}/{userId}/{filePath}}，
      * filePath 相对于该 userId 根目录，禁止 {@code ..} 穿越。
      * 回调传回相对路径 {@code {userId}/{filePath}}，供 execution.resolved_output_path 存储；
      * 下载时由 baseDir + createdBy 拼绝对路径，baseDir 可配置不写死。
@@ -73,7 +73,7 @@ public class WriteMarkdownTool {
                 return false;
             }
 
-            // 解析根目录: {baseDir}/{userId}/ (baseDir 来自 skill.file.base-dir 配置)
+            // 解析根目录: {baseDir}/{userId}/ (baseDir 来自 skill.job.base-dir 配置)
             Path userBaseDir = Paths.get(baseDir, userId).normalize().toAbsolutePath();
             // 解析目标文件: userBaseDir + filePath
             Path resolved = userBaseDir.resolve(filePath).normalize().toAbsolutePath();
@@ -100,8 +100,8 @@ public class WriteMarkdownTool {
                 return false;
             }
 
-            // 镜像: 报告写成功后复制一份到独立镜像目录 (最佳努力, 防删除, 失败不影响本方法返回值)
-            SkillFileMirror.mirror(baseDir, mirrorDir, userId + "/" + filePath);
+            // 备份: 报告写成功后复制到独立备份目录（最佳努力，失败不影响主报告写入）
+            SkillFileMirror.mirror(baseDir, backupDir, userId + "/" + filePath);
 
             // 通知回调：传回相对路径 {userId}/{filePath}，存入 execution.resolved_output_path；
             // 下载时由 baseDir + createdBy 拼绝对路径，baseDir 可配置不写死。
