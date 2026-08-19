@@ -249,20 +249,27 @@
     </sql>
 
     <!--
-       当前用户可见的 skill_id 集合(可见性硬门槛):
-       三态规则:个人(PERSONAL)仅 owner;私有(PRIVATE)= owner ∪ 授权(USER/GROUP/DEPARTMENT/VIRTUAL_GROUP)
-       ∪ legacy 维度审批发布;公开(PUBLIC)= owner ∪ 已 APPROVED 维度发布  公开需审批,审批通过前
-       仅 owner 可见,故没有"visibility='PUBLIC' 即全员可见"分支,公开可见统一由 dimensionUsedSkillIds 承担。
-       列表/检索/详情/可用性判断共用这套规则,保证各层一致。
-       注:owner 分支不限定 status——外层查询自带 ACTIVE/未删过滤。
+       当前用户可见的 skill_id 集合(可见性硬门槛,列表/检索/详情/可用性判断共用):
+       三态规则:私有(PRIVATE) = owner ∪ 授权(USER/GROUP/DEPARTMENT/VIRTUAL_GROUP) ∪ legacy 维度审批发布;
+       个人(PERSONAL)与公开(PUBLIC) = 全员可见(只有私有不可见)。
+       "个人:默认仅创建者使用,他人需引用;公开:同维度默认使用,非同维度需引用"
+       是 used 语义,由 used 视图与 available 判定承担,不影响这里。
+       注:owner 分支不限定 status——外层查询自带 ACTIVE/未删过滤;
+       COALESCE 兜底:visibility 为手工加列,存量行可能为 NULL,按 PERSONAL 处理(即可见)。
      -->
     <sql id="visibleSkillIds">
         SELECT v.id FROM skill_manage v WHERE v.owner_user_id = #{userId}
         UNION
+        SELECT v.id FROM skill_manage v WHERE COALESCE(v.visibility, 'PERSONAL') != 'PRIVATE'
+        UNION
         SELECT g.skill_id FROM skill_visible_grant g
+        JOIN skill_manage vg ON vg.id = g.skill_id AND vg.visibility = 'PRIVATE'
         WHERE <include refid="grantMatchCondition"/>
         UNION
-        <include refid="dimensionUsedSkillIds"/>
+        SELECT d.skill_id FROM (
+            <include refid="dimensionUsedSkillIds"/>
+        ) d
+        JOIN skill_manage vp ON vp.id = d.skill_id AND vp.visibility = 'PRIVATE'
     </sql>
 
     <select id="selectList" parameterType="com.agentscopea2a.v2.skillManager.dto.SkillListQuery" resultMap="SkillResultMap">
@@ -292,10 +299,6 @@
                 </when>
                 <otherwise>
                     s.status = 'ACTIVE'
-                    AND (
-                        s.owner_user_id = #{userId}
-                        OR s.id NOT IN (SELECT skill_id FROM skill_publish WHERE status IN ('PENDING', 'REJECTED'))
-                    )
                 </otherwise>
             </choose>
             <if test="category != null and category != ''">
@@ -311,7 +314,7 @@
             <if test="owner != null and owner != ''">
                 AND s.owner_user_id = #{owner}
             </if>
-            <!-- 可见性硬门槛:公开 ∪ owner ∪ 私有授权 ∪ legacy 维度发布(所有视图通用) -->
+            <!-- 可见性硬门槛:owner ∪ 非私有(个人+公开)全员可见 ∪ 私有授权 ∪ legacy 维度发布(所有视图通用) -->
             AND s.id IN (<include refid="visibleSkillIds"/>)
         </where>
         <choose>

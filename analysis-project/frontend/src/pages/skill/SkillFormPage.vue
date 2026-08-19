@@ -235,19 +235,19 @@ function goBack() {
             :disabled="notOwner"
           />
 
-          <!-- 可见性三态:公开(选维度发布走审批) / 私有(授权即时生效) / 个人(默认,仅自己) -->
+          <!-- 可见性三态:个人(默认,全员可见,默认仅自己使用) / 公开(全员可见+维度发布走审批,同维度默认使用) / 私有(授权即时生效,仅授权范围可见) -->
           <div class="field">
             <span class="label">可见性</span>
             <div class="visibility-row">
               <label class="vis-opt">
                 <input type="radio" v-model="visibility" value="PERSONAL" :disabled="notOwner" />
                 <span>个人</span>
-                <span class="vis-desc">不选发布维度,不审批,仅创建者使用</span>
+                <span class="vis-desc">全员可见,不审批,默认仅自己使用,他人需引用</span>
               </label>
               <label class="vis-opt">
                 <input type="radio" v-model="visibility" value="PUBLIC" :disabled="notOwner" />
                 <span>公开</span>
-                <span class="vis-desc">选择小组、部门、公司等发布维度,需要审批</span>
+                <span class="vis-desc">全员可见,选择小组、部门、公司等发布维度,需要审批,审批通过后同维度默认使用</span>
               </label>
               <label class="vis-opt">
                 <input type="radio" v-model="visibility" value="PRIVATE" :disabled="notOwner" />
@@ -269,7 +269,7 @@ function goBack() {
               :disabled="notOwner"
               placeholder="请选择发布维度(不选=仅审批通过的原有维度)"
             />
-            <div class="dim-tip">公开需要审批:保存后按所选维度提交发布申请,各维度独立审批,通过后维度内用户可见。</div>
+            <div class="dim-tip">公开需要审批:保存后按所选维度提交发布申请,各维度独立审批,通过后同维度用户默认使用(不引用也计入"我使用的");其他用户可见但需手动引用。</div>
           </div>
 
           <!-- 私有时:授权编辑器(编辑模式即时生效;创建模式暂存,保存后再提交) -->

@@ -75,10 +75,15 @@ public class SkillVirtualGroupService {
     /**
      * 建组:写组头表(组名主键,重名报"VirtualGroupNameExists"),空组合法;
      * 若带首个成员则一并写入。组的存在性与成员行解耦。
+     * 组名不得与真实统计组(GROUP)重名:授权下拉里"小组"与"虚拟组"同名会混淆授权对象。
      */
     @Transactional("gaussTransactionManager")
     public void createGroup(String groupName, String firstUserId, String operator) {
         validateGroupName(groupName);
+        if (mockOrgService.orgExists("GROUP", groupName)) {
+            throw new IllegalStateException("VirtualGroupNameConflictWithOrg: " + groupName
+                    + " 与真实统计组重名,请换一个组名");
+        }
         try {
             virtualGroupMapper.insertGroupDef(SkillVirtualGroupDef.builder()
                     .groupName(groupName).createdBy(operator)
