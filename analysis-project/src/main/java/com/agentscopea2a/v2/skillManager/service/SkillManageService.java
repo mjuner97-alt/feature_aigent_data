@@ -205,9 +205,9 @@ public class SkillManageService {
         skill.setOwnerUserId(ownerUserId);
         skill.setStatus("ACTIVE");
         // 可见性三态规则:
-        //   公开(PUBLIC)  = 选小组/部门/公司维度发布,审批通过后维度内可见
-        //   私有(PRIVATE) = 指定用户/部门/小组/虚拟组授权,即时生效
-        //   个人(PERSONAL)= 不选发布维度,仅创建者使用(新建默认)
+        //   个人(PERSONAL)与公开(PUBLIC) = 全员可见(只有私有不可见),个人默认仅创建者使用
+        //   私有(PRIVATE) = 指定用户/部门/小组/虚拟组授权,即时生效,仅授权范围可见
+        //   新建默认个人
         if (skill.getVisibility() == null || skill.getVisibility().isBlank()) {
             skill.setVisibility("PERSONAL");
         }
@@ -272,9 +272,10 @@ public class SkillManageService {
     // ==================== 可见性(公开/私有/个人 + 授权) ====================
     // 可见性优先于一切操作:不可见 => 列表不出现、详情/点赞/引用/禁用/附件都抛 SkillNotFound。
     // 可见规则(三态):
-    //   个人(PERSONAL):仅 owner。
+    //   个人(PERSONAL)与公开(PUBLIC):全员可见(只有私有不可见)。
     //   私有(PRIVATE):owner || 命中授权(USER/所属统计组/所属部门/所在虚拟组) || legacy 维度发布。
-    //   公开(PUBLIC):owner || 命中已审批(APPROVED)维度发布 -- 公开需要审批,未审批通过前等同仅 owner 可见。
+    // 可见 != 使用:"个人默认仅创建者使用、公开同维度默认使用、其余需引用"是 used 语义,
+    // 见 list() 的 used 标记计算(显式引用 ∪ owner ∪ 维度发布 ∪ 授权)。
     // 与 SQL visibleSkillIds 片段保持同口径。
 
     /** 详情读取(带可见性校验)。 */
@@ -294,7 +295,7 @@ public class SkillManageService {
             return false;
         }
         if ("PRIVATE".equals(s.getVisibility())) {
-            // 命中授权(USER/所属统计组/所属部门/所在虚拟组)即时可见
+            // 私有:命中授权(USER/所属统计组/所属部门/所在虚拟组)即时可见
             if (skillMapper.existsGrantForUser(s.getId(), userId)) {
                 return true;
             }
@@ -302,12 +303,8 @@ public class SkillManageService {
             // 否则旧发布 skill 被切 PRIVATE 后,同维度用户列表可见但详情 SkillNotFound。
             return skillMapper.existsDimensionUsedForUser(s.getId(), userId);
         }
-        if ("PUBLIC".equals(s.getVisibility())) {
-            // 公开需审批:仅命中已 APPROVED 维度发布(GROUP/DEPARTMENT/COMPANY)的用户可见
-            return skillMapper.existsDimensionUsedForUser(s.getId(), userId);
-        }
-        // PERSONAL(个人):不选发布维度,仅创建者使用
-        return false;
+        // 公开(PUBLIC)/个人(PERSONAL):全员可见;默认是否"使用"由 used 语义决定(见 list())。
+        return true;
     }
 
     /** 校验可见性,不可见抛 SkillNotFound(不泄露存在性)。 */
@@ -686,7 +683,7 @@ public class SkillManageService {
             throw new NotApproverException("NotApprover: " + approverId);
         }
         skillMapper.updatePublishStatus(publishId, "APPROVED", approverId, comment);
-        // 公开=审批通过:发布审批通过即进入"公开"态(维度内用户可见)。
+        // 公开=审批通过:发布审批通过即进入"公开"态(全员可见,且维度内用户默认使用)。
         // 个人/私有 skill 被发布审批通过后同样切为公开;原 PRIVATE 授权仍保留(授权命中依旧可见)。
         Skill published = skillMapper.selectById(p.getSkillId());
         if (published != null && !"PUBLIC".equals(published.getVisibility())) {

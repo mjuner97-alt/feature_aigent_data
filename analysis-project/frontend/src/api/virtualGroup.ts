@@ -20,6 +20,7 @@ async function vgError(res: Response, fallback: string): Promise<Error> {
   if (detail.startsWith('VirtualGroupInvalidMember')) return new Error('成员不存在(请确认统一认证号)');
   if (detail.startsWith('VirtualGroupInvalidName')) return new Error('虚拟组名不能为空');
   if (detail.startsWith('VirtualGroupNameExists')) return new Error('该虚拟组名已存在');
+  if (detail.startsWith('VirtualGroupNameConflictWithOrg')) return new Error('组名与真实统计组重名,请换一个组名');
   if (detail.startsWith('VirtualGroupNotFound')) return new Error('虚拟组不存在(可能已被删除),请刷新列表');
   return new Error(detail ? `${fallback}:${detail}` : `${fallback}(HTTP ${res.status})`);
 }

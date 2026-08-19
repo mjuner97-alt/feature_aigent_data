@@ -2,7 +2,8 @@
 /**
  * Skill 私有可见性授权编辑器(可复用:创建/编辑表单 + 详情页 owner 面板)。
  *
- * 三块授权对象:人(USER,按姓名/统一认证号搜索)、部门(DEPARTMENT)、小组(GROUP=统计组)。
+ * 授权对象统一一个选择器:个人(USER,按姓名/统一认证号搜索)、部门(DEPARTMENT)、
+ * 小组(GROUP=统计组)、虚拟组(VIRTUAL_GROUP)。
  * 添加后显示为可删除的 chips。仅 owner 可增删;非 owner 传入 editable=false 只读展示。
  * 首个授权由后端自动把 skill 切为 PRIVATE("要定向分享"即表达不想公开)。
  *
@@ -28,7 +29,7 @@ const emit = defineEmits<{
 }>();
 
 const TYPE_LABEL: Record<string, string> = {
-  USER: '人', DEPARTMENT: '部门', GROUP: '小组', VIRTUAL_GROUP: '虚拟组',
+  USER: '个人', DEPARTMENT: '部门', GROUP: '小组', VIRTUAL_GROUP: '虚拟组',
 };
 
 /** skillId 有值时,从 server 加载的已有授权 */
@@ -46,10 +47,17 @@ const userSearchError = ref('');
 
 // —— 部门/小组选择(复用发布目标) ——
 const orgGroups = ref<PublishTargetGroup[]>([]);
-const activeType = ref<'DEPARTMENT' | 'GROUP' | 'VIRTUAL_GROUP'>('DEPARTMENT');
+const activeType = ref<'USER' | 'DEPARTMENT' | 'GROUP' | 'VIRTUAL_GROUP'>('USER');
 const selectedOrgKey = ref<string>('');
 const orgsLoaded = ref(false);
 const virtualGroups = ref<VirtualGroup[]>([]);
+
+// 切换授权类型时清掉上一类的半选状态(下拉 key / 搜索结果),避免误授权
+watch(activeType, () => {
+  selectedOrgKey.value = '';
+  userResults.value = [];
+  userSearchError.value = '';
+});
 
 interface SkillUserOption { userId: string; name: string; label: string; }
 
@@ -222,50 +230,50 @@ defineExpose({ load, currentGrants, commitPending, hasGrants: () => currentGrant
     <!-- 增删操作(仅 owner 可编辑) -->
     <div v-if="editable" class="add-area">
       <div class="add-block">
-        <div class="add-title">按人授权</div>
-        <div class="user-row">
-          <input v-model="userKeyword" placeholder="输入姓名或统一认证号" @keyup.enter="searchUsers" />
-          <button class="search-btn" :disabled="searchingUsers" @click="searchUsers">
-            {{ searchingUsers ? '搜…' : '搜索' }}
-          </button>
+        <div class="add-title">添加授权(个人 / 部门 / 小组 / 虚拟组)</div>
+        <div class="org-row">
+          <select v-model="activeType">
+            <option value="USER">个人</option>
+            <option value="DEPARTMENT">部门</option>
+            <option value="GROUP">小组</option>
+            <option value="VIRTUAL_GROUP">虚拟组</option>
+          </select>
+          <!-- 个人:按姓名/统一认证号搜索 -->
+          <template v-if="activeType === 'USER'">
+            <input v-model="userKeyword" placeholder="输入姓名或统一认证号" @keyup.enter="searchUsers" />
+            <button class="search-btn" :disabled="searchingUsers" @click="searchUsers">
+              {{ searchingUsers ? '搜…' : '搜索' }}
+            </button>
+          </template>
+          <!-- 组织:下拉选择;虚拟组走独立接口,选中项 key 仍为 "orgType:orgId" 形态(orgId=组名) -->
+          <template v-else>
+            <select v-if="activeType === 'VIRTUAL_GROUP'" v-model="selectedOrgKey">
+              <option value="">请选择虚拟组</option>
+              <option
+                v-for="g in virtualGroups"
+                :key="g.groupName"
+                :value="`VIRTUAL_GROUP:${g.groupName}`"
+              >{{ g.groupName }}({{ g.memberCount }}人)</option>
+            </select>
+            <select v-else v-model="selectedOrgKey">
+              <option value="">请选择{{ activeType === 'DEPARTMENT' ? '部门' : '小组' }}</option>
+              <option
+                v-for="t in (orgGroups.find(g => g.orgType === activeType)?.targets ?? [])"
+                :key="t.orgId"
+                :value="`${t.orgType}:${t.orgId}`"
+              >{{ t.displayName }}</option>
+            </select>
+            <button class="search-btn" :disabled="!selectedOrgKey" @click="addOrg">授权</button>
+          </template>
         </div>
         <div v-if="userSearchError" class="mini-error">{{ userSearchError }}</div>
-        <div v-if="userResults.length > 0" class="user-results">
+        <div v-if="activeType === 'USER' && userResults.length > 0" class="user-results">
           <button
             v-for="u in userResults"
             :key="u.userId"
             class="user-opt"
             @click="addUser(u)"
           >＋ {{ u.label }}</button>
-        </div>
-      </div>
-
-      <div class="add-block">
-        <div class="add-title">按部门/小组/虚拟组授权</div>
-        <div class="org-row">
-          <select v-model="activeType">
-            <option value="DEPARTMENT">部门</option>
-            <option value="GROUP">小组</option>
-            <option value="VIRTUAL_GROUP">虚拟组</option>
-          </select>
-          <!-- 虚拟组走独立接口,选中项 key 仍为 "orgType:orgId" 形态(orgId=组名) -->
-          <select v-if="activeType === 'VIRTUAL_GROUP'" v-model="selectedOrgKey">
-            <option value="">请选择虚拟组</option>
-            <option
-              v-for="g in virtualGroups"
-              :key="g.groupName"
-              :value="`VIRTUAL_GROUP:${g.groupName}`"
-            >{{ g.groupName }}({{ g.memberCount }}人)</option>
-          </select>
-          <select v-else v-model="selectedOrgKey">
-            <option value="">请选择{{ activeType === 'DEPARTMENT' ? '部门' : '小组' }}</option>
-            <option
-              v-for="t in (orgGroups.find(g => g.orgType === activeType)?.targets ?? [])"
-              :key="t.orgId"
-              :value="`${t.orgType}:${t.orgId}`"
-            >{{ t.displayName }}</option>
-          </select>
-          <button class="search-btn" :disabled="!selectedOrgKey" @click="addOrg">授权</button>
         </div>
         <div v-if="activeType === 'VIRTUAL_GROUP' && virtualGroups.length === 0" class="mini-error">
           暂无虚拟组,请先到"虚拟组管理"页建组
@@ -298,8 +306,8 @@ defineExpose({ load, currentGrants, commitPending, hasGrants: () => currentGrant
 .add-area { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed #e2e8f0; }
 .add-block { display: flex; flex-direction: column; gap: 6px; }
 .add-title { font-size: 12px; font-weight: 600; color: #64748b; }
-.user-row, .org-row { display: flex; gap: 6px; align-items: center; }
-.user-row input { flex: 1; padding: 4px 8px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 13px; }
+.org-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.org-row input { flex: 1; min-width: 160px; padding: 4px 8px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 13px; }
 .org-row select { padding: 4px 8px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 13px; }
 .search-btn {
   padding: 4px 12px; border: 1px solid #3b82f6; background: #3b82f6; color: #fff;
