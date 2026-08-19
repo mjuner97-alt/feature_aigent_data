@@ -9,7 +9,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class SkillStorageProperties {
 
-    @Value("${skill.file.scritp}")
+    @Value("${skill.file.script}")
     private String scriptDir;
 
     @Value("${skill.file.max-size-bytes:1048576}")

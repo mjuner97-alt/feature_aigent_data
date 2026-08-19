@@ -32,7 +32,7 @@ public class DatabaseSkillRepository implements AgentSkillRepository {
 
     private final SkillMapper skillMapper;
     private final String userId;
-    /** skill 文件磁盘根目录(${skill.file.scritp}),与 SkillFileService 一致。
+    /** skill 文件磁盘根目录(${skill.file.script}),与 SkillFileService 一致。
      *  DB 中 storage_path 存的是相对路径 {userId}/{filename},读盘时须拼本字段解析成绝对路径。 */
     private final String baseDir;
     private boolean writeable = true;
@@ -42,7 +42,7 @@ public class DatabaseSkillRepository implements AgentSkillRepository {
      *
      * @param skillMapper MyBatis Mapper，操作 skill_manage 表
      * @param userId      当前请求的用户 ID（对应 skill_manage.owner_user_id）
-     * @param baseDir     skill 文件磁盘根目录(${skill.file.scritp})，与 SkillFileService 一致；
+     * @param baseDir     skill 文件磁盘根目录(${skill.file.script})，与 SkillFileService 一致；
      *                    用于把 DB 中的相对 storage_path 解析成绝对路径
      */
     public DatabaseSkillRepository(SkillMapper skillMapper, String userId, String baseDir) {

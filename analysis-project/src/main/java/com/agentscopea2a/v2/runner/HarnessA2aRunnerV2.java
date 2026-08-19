@@ -83,7 +83,7 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
     private final ModelProvider modelProvider;
     private final ObjectProvider<MysqlMemoryStore> mysqlMemoryStoreProvider;
     private final SkillMapper skillMapper;
-    /** skill 附件文件磁盘根目录(${skill.file.scritp}),传给 DatabaseSkillRepository 用于把 DB 中的相对 storage_path 解析成绝对路径。 */
+    /** skill 附件文件磁盘根目录(${skill.file.script}),传给 DatabaseSkillRepository 用于把 DB 中的相对 storage_path 解析成绝对路径。 */
     private final String skillFileBaseDir;
     /**
      * 共享 stateStore,供 read-only 状态查询端点使用 (如 V2SessionController.getState)。
