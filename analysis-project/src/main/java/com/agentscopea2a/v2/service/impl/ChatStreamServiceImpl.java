@@ -16,6 +16,8 @@ import com.agentscopea2a.v2.trace.collector.TraceSession;
 import com.agentscopea2a.v2.trace.assembler.TraceAssembler;
 import com.agentscopea2a.v2.trace.model.AssembledTrace;
 import com.agentscopea2a.v2.trace.writer.TraceBatchWriter;
+import com.agentscopea2a.v2.hooks.ToolCallTrackingHook;
+import com.agentscopea2a.v2.tools.ToolCallCollector;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.*;
 import io.agentscope.core.message.Msg;
@@ -95,6 +97,21 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         this.episodicMemory = episodicMemory;
         this.traceAssembler = traceAssembler;
         this.traceBatchWriter = traceBatchWriter;
+    }
+
+    static void configureScriptOutputContext(RuntimeContext context, SseEmitter emitter,
+                                             ChatRequest request, String conversationId,
+                                             String userQuery) {
+        context.put(ToolCallTrackingHook.COLLECTOR_CTX_KEY, new ToolCallCollector(userQuery));
+        context.put(ToolCallTrackingHook.EMITTER_CTX_KEY, emitter);
+        context.put(ToolCallTrackingHook.SSE_META_CTX_KEY,
+                new ToolCallTrackingHook.SseMeta(
+                        request.getConversationId(),
+                        StringUtils.defaultIfBlank(request.getAgentId(), DEFAULT_AGENT_ID),
+                        StringUtils.defaultIfBlank(request.getAgentName(), DEFAULT_AGENT_NAME),
+                        StringUtils.defaultIfBlank(request.getFromType(), DEFAULT_FROM_TYPE),
+                        conversationId));
+        context.put(ToolCallTrackingHook.SCRIPT_OUTPUT_ONLY_CTX_KEY, Boolean.TRUE);
     }
 
     /**
@@ -298,6 +315,8 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         // Trace 监控：创建请求级 TraceSession 并放入 RuntimeContext。
         TraceSession traceCtx = new TraceSession(conversationId, UUID.randomUUID().toString(), userId, "v1_chat", text);
         ctx.put(TraceSession.KEY, traceCtx);
+
+        configureScriptOutputContext(ctx, emitter, req, conversationId, text);
 
         com.agentscopea2a.v2.middleware.ParentEmitterCarrier parentEmitterCarrier =
                 new com.agentscopea2a.v2.middleware.ParentEmitterCarrier();

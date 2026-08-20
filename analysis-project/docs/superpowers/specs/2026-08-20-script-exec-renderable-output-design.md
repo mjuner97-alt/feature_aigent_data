@@ -2,7 +2,7 @@
 
 ## Goal
 
-Restrict `/v2/ai/chat` handling of `script_exec` results. Its frontend receives only fenced ECharts and HTML blocks produced by the script, while the model response remains untouched. `/ai/chat` remains unchanged.
+Unify `/ai/chat` and `/v2/ai/chat` handling of `script_exec` results. Both frontends receive only fenced ECharts and HTML blocks produced by the script, while the model response remains untouched.
 
 ## Approaches Considered
 
@@ -17,16 +17,16 @@ Restrict `/v2/ai/chat` handling of `script_exec` results. Its frontend receives 
 - Do not send a `tool_output` event for `script_exec`.
 - If no supported block exists, send neither `script_output` nor `tool_output` for `script_exec`.
 - Keep existing `tool_output` behavior for every other `/v2/ai/chat` tool.
+- Suppress regular tool output on `/ai/chat`; it receives only renderable `script_output` events.
 - Do not inspect, remove, deduplicate, replace, or suppress any LLM token or final answer.
-- Do not add tool-output events or answer processing to `/ai/chat`.
 
 ## Scope
 
-The implementation changes only backend hook behavior used by `/v2/ai/chat` and backend tests. No frontend, Skill, or `/ai/chat` service files are changed.
+The implementation changes backend request context and shared hook behavior. No frontend or Skill files are changed.
 
 ## Tests
 
 - A mixed script result exposes only its ECharts and HTML blocks.
 - A script result without supported blocks produces no renderable output.
-- The hook routes `script_exec` through renderable-block extraction on `/v2/ai/chat`.
+- The hook routes `script_exec` through renderable-block extraction on both chat endpoints.
 - Non-script `/v2/ai/chat` tools retain their existing output-event behavior.

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make `/v2/ai/chat` expose only fenced ECharts/HTML blocks from `script_exec`, without changing model output or `/ai/chat`.
+**Goal:** Make both chat endpoints expose only fenced ECharts/HTML blocks from `script_exec`, without changing model output.
 
 **Architecture:** Keep parsing in `ScriptExecOutputExtractor` and route the completed tool result in the shared `ToolCallTrackingHook`. Treat `script_exec` separately from ordinary tools: it emits only `script_output` when renderable blocks exist and never emits its full `tool_output`.
 
@@ -50,7 +50,7 @@ if ("script_exec".equals(toolName)) {
 }
 ```
 
-This removes full `tool_output` and raw stdout `script_output` for `script_exec` on `/v2/ai/chat`. It leaves `/ai/chat`, non-script tools, and all model events unchanged.
+This removes full `tool_output` and raw stdout `script_output` for `script_exec` on both endpoints. It leaves all model events unchanged.
 
 - [ ] **Step 4: Run the routing tests and verify GREEN**
 

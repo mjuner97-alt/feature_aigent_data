@@ -83,6 +83,9 @@ public class ToolCallTrackingHook implements Hook, RuntimeContextAware {
      */
     public static final String SSE_META_CTX_KEY = "sseMeta";
 
+    /** Suppress regular tool_output events while retaining renderable script_output. */
+    public static final String SCRIPT_OUTPUT_ONLY_CTX_KEY = "scriptOutputOnly";
+
     /** SSE metadata carrier — populated by V2ChatStreamServiceImpl at request start. */
     public record SseMeta(String ansUUID, String agentId, String agentName,
                           String formType, String conversationId) {}
@@ -188,7 +191,7 @@ public class ToolCallTrackingHook implements Hook, RuntimeContextAware {
             if (!renderableOutput.isBlank()) {
                 sendScriptOutputSseEvent(ctx, toolUse.getId(), toolName, renderableOutput);
             }
-        } else {
+        } else if (!Boolean.TRUE.equals(ctx.get(SCRIPT_OUTPUT_ONLY_CTX_KEY))) {
             sendToolOutputSseEvent(ctx, toolUse.getId(), toolName, output);
         }
     }
