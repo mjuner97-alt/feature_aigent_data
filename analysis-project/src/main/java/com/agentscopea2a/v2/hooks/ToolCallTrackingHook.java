@@ -183,12 +183,13 @@ public class ToolCallTrackingHook implements Hook, RuntimeContextAware {
         // output. By emitting a separate tool_output event here (keyed by toolCallId),
         // the frontend can match it to the existing ActivityFeed row and populate
         // the "出参" panel. See EMITTER_CTX_KEY javadoc for the full rationale.
-        sendToolOutputSseEvent(ctx, toolUse.getId(), toolName, output);
         if ("script_exec".equals(toolName)) {
-            String stdout = ScriptExecOutputExtractor.extractStdout(output);
-            if (!stdout.isBlank()) {
-                sendScriptOutputSseEvent(ctx, toolUse.getId(), toolName, stdout);
+            String renderableOutput = ScriptExecOutputExtractor.extractRenderableBlocks(output);
+            if (!renderableOutput.isBlank()) {
+                sendScriptOutputSseEvent(ctx, toolUse.getId(), toolName, renderableOutput);
             }
+        } else {
+            sendToolOutputSseEvent(ctx, toolUse.getId(), toolName, output);
         }
     }
 

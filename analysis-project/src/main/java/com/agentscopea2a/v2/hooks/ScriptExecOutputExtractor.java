@@ -31,4 +31,19 @@ final class ScriptExecOutputExtractor {
                 : toolOutput.substring(stdoutStart)).trim();
         return "(空)".equals(stdout) ? "" : stdout;
     }
+
+    /** Return only fenced ECharts/HTML blocks from a script result. */
+    static String extractRenderableBlocks(String toolOutput) {
+        String stdout = extractStdout(toolOutput);
+        if (stdout.isBlank()) return "";
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(
+                "```\\s*(echarts?|html?|htm)\\s*\\n[\\s\\S]*?```",
+                java.util.regex.Pattern.CASE_INSENSITIVE).matcher(stdout);
+        StringBuilder result = new StringBuilder();
+        while (matcher.find()) {
+            if (result.length() > 0) result.append("\n\n");
+            result.append(matcher.group().trim());
+        }
+        return result.toString();
+    }
 }

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make both chat SSE endpoints expose only fenced ECharts/HTML blocks from `script_exec`, without changing model output.
+**Goal:** Make `/v2/ai/chat` expose only fenced ECharts/HTML blocks from `script_exec`, without changing model output or `/ai/chat`.
 
 **Architecture:** Keep parsing in `ScriptExecOutputExtractor` and route the completed tool result in the shared `ToolCallTrackingHook`. Treat `script_exec` separately from ordinary tools: it emits only `script_output` when renderable blocks exist and never emits its full `tool_output`.
 
@@ -14,15 +14,15 @@
 
 **Files:**
 - Modify: `src/main/java/com/agentscopea2a/v2/hooks/ToolCallTrackingHook.java`
-- Create: `src/test/java/com/agentscopea2a/v2/hooks/ToolCallTrackingHookRoutingTest.java`
+- Test: `src/test/java/com/agentscopea2a/v2/hooks/ScriptExecOutputExtractorTest.java`
 
-- [ ] **Step 1: Write the failing routing tests**
+- [ ] **Step 1: Write the failing extraction tests**
 
-Add tests for a package-visible routing method with these assertions:
+Add tests that retain only fenced ECharts/HTML blocks and return empty for ordinary output:
 
 ```java
-assertEquals(SCRIPT_OUTPUT, ToolCallTrackingHook.outputEventFor("script_exec"));
-assertEquals(TOOL_OUTPUT, ToolCallTrackingHook.outputEventFor("sql_exec"));
+assertEquals("```echarts\n{}\n```", extractRenderableBlocks(scriptOutput));
+assertEquals("", extractRenderableBlocks(scriptOutputWithoutRenderableBlocks));
 ```
 
 - [ ] **Step 2: Run the tests and verify RED**
@@ -30,14 +30,14 @@ assertEquals(TOOL_OUTPUT, ToolCallTrackingHook.outputEventFor("sql_exec"));
 Run:
 
 ```powershell
-mvn "-Dtest=ToolCallTrackingHookRoutingTest" test
+mvn "-Dtest=ScriptExecOutputExtractorTest" test
 ```
 
-Expected: compilation failure because `outputEventFor` and its event-kind constants do not exist.
+Expected: compilation failure because `extractRenderableBlocks` does not exist.
 
 - [ ] **Step 3: Implement minimal routing**
 
-Introduce a small package-visible event-kind method and make `handlePostActing` branch on it:
+Make `handlePostActing` branch directly on `script_exec`:
 
 ```java
 if ("script_exec".equals(toolName)) {
@@ -50,19 +50,17 @@ if ("script_exec".equals(toolName)) {
 }
 ```
 
-This removes full `tool_output` and raw stdout `script_output` for `script_exec` on both endpoints. It leaves non-script tools and all model events unchanged.
+This removes full `tool_output` and raw stdout `script_output` for `script_exec` on `/v2/ai/chat`. It leaves `/ai/chat`, non-script tools, and all model events unchanged.
 
 - [ ] **Step 4: Run the routing tests and verify GREEN**
 
-Run the same Maven command. Expected: 2 tests pass.
+Run the same Maven command. Expected: all extractor tests pass.
 
 ### Task 2: Cover extraction and request context
 
 **Files:**
 - Modify: `src/test/java/com/agentscopea2a/v2/hooks/ScriptExecOutputExtractorTest.java`
 - Verify: `src/main/java/com/agentscopea2a/v2/hooks/ScriptExecOutputExtractor.java`
-- Verify: `src/main/java/com/agentscopea2a/v2/service/impl/ChatStreamServiceImpl.java`
-- Verify: `src/test/java/com/agentscopea2a/v2/service/impl/ChatStreamServiceImplTest.java`
 
 - [ ] **Step 1: Add the no-renderable-block regression test**
 
@@ -76,7 +74,7 @@ assertEquals("", ScriptExecOutputExtractor.extractRenderableBlocks(
 Run:
 
 ```powershell
-mvn "-Dtest=ToolCallTrackingHookRoutingTest,ScriptExecOutputExtractorTest,ChatStreamServiceImplTest" test
+mvn "-Dtest=ScriptExecOutputExtractorTest" test
 mvn -DskipTests compile
 ```
 
@@ -98,9 +96,6 @@ Expected: no whitespace errors and no frontend or Skill changes caused by this t
 ```powershell
 git add src/main/java/com/agentscopea2a/v2/hooks/ScriptExecOutputExtractor.java `
         src/main/java/com/agentscopea2a/v2/hooks/ToolCallTrackingHook.java `
-        src/main/java/com/agentscopea2a/v2/service/impl/ChatStreamServiceImpl.java `
-        src/test/java/com/agentscopea2a/v2/hooks/ScriptExecOutputExtractorTest.java `
-        src/test/java/com/agentscopea2a/v2/hooks/ToolCallTrackingHookRoutingTest.java `
-        src/test/java/com/agentscopea2a/v2/service/impl/ChatStreamServiceImplTest.java
+        src/test/java/com/agentscopea2a/v2/hooks/ScriptExecOutputExtractorTest.java
 git commit -m "fix: restrict script output SSE to renderable blocks"
 ```

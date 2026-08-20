@@ -41,4 +41,43 @@ class ScriptExecOutputExtractorTest {
 
         assertEquals("", ScriptExecOutputExtractor.extractStdout(output));
     }
+
+    @Test
+    void extractsOnlyEchartsAndHtmlBlocks() {
+        String output = """
+                [script_exec] scriptId=test exit=0 elapsed=1ms
+                ─── stdout ─────────────────────────
+                结论：达标率为 100%。
+                ```echarts
+                {"series":[]}
+                ```
+                ```html
+                <table><tr><td>100%</td></tr></table>
+                ```
+                ─── stderr ─────────────────────────
+                INFO: connection
+                """;
+
+        assertEquals("""
+                ```echarts
+                {"series":[]}
+                ```
+
+                ```html
+                <table><tr><td>100%</td></tr></table>
+                ```""", ScriptExecOutputExtractor.extractRenderableBlocks(output));
+    }
+
+    @Test
+    void returnsEmptyWhenStdoutHasNoRenderableBlocks() {
+        String output = """
+                [script_exec] scriptId=test exit=0 elapsed=1ms
+                ─── stdout ─────────────────────────
+                普通摘要和 Markdown 表格
+                ─── stderr ─────────────────────────
+                INFO: connection
+                """;
+
+        assertEquals("", ScriptExecOutputExtractor.extractRenderableBlocks(output));
+    }
 }
