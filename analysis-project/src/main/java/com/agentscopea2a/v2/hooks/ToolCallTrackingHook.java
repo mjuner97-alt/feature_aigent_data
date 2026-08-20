@@ -67,7 +67,7 @@ public class ToolCallTrackingHook implements Hook, RuntimeContextAware {
 
     /**
      * Key under which the per-request SseEmitter is stored on RuntimeContext, so this
-     * hook can send a supplementary "tool_output" SSE event directly from PostActing.
+     * hook can send supplementary tool output SSE events directly from PostActing.
      * The framework's tool_result_end AgentEvent fires BEFORE PostActing, so the SSE
      * handler's collector lookup at tool_result_end time returns an empty output. By
      * emitting a separate tool_output event here (keyed by toolCallId), the frontend
@@ -184,6 +184,12 @@ public class ToolCallTrackingHook implements Hook, RuntimeContextAware {
         // the frontend can match it to the existing ActivityFeed row and populate
         // the "出参" panel. See EMITTER_CTX_KEY javadoc for the full rationale.
         sendToolOutputSseEvent(ctx, toolUse.getId(), toolName, output);
+        if ("script_exec".equals(toolName)) {
+            String stdout = ScriptExecOutputExtractor.extractStdout(output);
+            if (!stdout.isBlank()) {
+                sendScriptOutputSseEvent(ctx, toolUse.getId(), toolName, stdout);
+            }
+        }
     }
 
     /**
@@ -217,6 +223,39 @@ public class ToolCallTrackingHook implements Hook, RuntimeContextAware {
             emitter.send(SseEmitter.event().name("tool_output").data(json));
         } catch (Exception e) {
             log.warn("[ToolCallTracking] tool_output SSE send failed for toolCallId={}: {}",
+                    toolCallId, e.getMessage());
+        }
+    }
+
+    /**
+     * Send the complete script result as a first-class SSE event. Script output is
+     * often the actual report (Markdown/HTML/ECharts), so the chat client must see
+     * it without waiting for the model to quote it in its final answer. Unlike the
+     * activity-panel event above, this payload is intentionally not truncated.
+     */
+    private void sendScriptOutputSseEvent(RuntimeContext ctx, String toolCallId,
+                                          String toolName, String output) {
+        SseEmitter emitter = ctx.get(EMITTER_CTX_KEY);
+        SseMeta meta = ctx.get(SSE_META_CTX_KEY);
+        if (emitter == null || meta == null) return;
+        try {
+            AiChatResult payload = AiChatResult.builder()
+                    .code(0)
+                    .ansUUID(meta.ansUUID())
+                    .lineResult("script_exec 输出")
+                    .formType(meta.formType())
+                    .agentId(meta.agentId())
+                    .agentName(meta.agentName())
+                    .eventType("script_output")
+                    .toolCallId(toolCallId)
+                    .toolCallName(toolName)
+                    .toolOutput(output)
+                    .conversationId(meta.conversationId())
+                    .build();
+            String json = SSE_MAPPER.writeValueAsString(payload);
+            emitter.send(SseEmitter.event().name("script_output").data(json));
+        } catch (Exception e) {
+            log.warn("[ToolCallTracking] script_output SSE send failed for toolCallId={}: {}",
                     toolCallId, e.getMessage());
         }
     }

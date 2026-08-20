@@ -29,6 +29,7 @@ export type ProcessEventType =
   | 'tool_call_start'
   | 'tool_result_end'
   | 'tool_output'
+  | 'script_output'
   | 'subagent_exposed'
   | 'agent_end';
 
@@ -37,6 +38,7 @@ const PROCESS_EVENTS = new Set<string>([
   'tool_call_start',
   'tool_result_end',
   'tool_output',
+  'script_output',
   'subagent_exposed',
   'agent_end',
 ]);
@@ -79,6 +81,7 @@ export type ChatEvent =
   | { type: 'token'; chunk: string; fullText: string; source: string | null }
   | { type: 'process'; process: ProcessEvent }
   | { type: 'toolOutputUpdate'; process: ProcessEvent }
+  | { type: 'scriptOutput'; output: string; toolCallId?: string }
   | { type: 'done'; fullText: string; conversationId: string }
   | { type: 'error'; error: string };
 
@@ -161,6 +164,14 @@ export async function* streamChat(req: ChatRequest): AsyncGenerator<ChatEvent> {
               toolCallName: json.toolCallName ?? undefined,
               toolOutput: json.toolOutput ?? undefined,
             },
+          };
+        } else if (eventName === 'script_output') {
+          yield {
+            type: 'scriptOutput',
+            output: typeof json.toolOutput === 'string'
+              ? json.toolOutput
+              : (typeof json.lineResult === 'string' ? json.lineResult : ''),
+            toolCallId: json.toolCallId ?? undefined,
           };
         } else if (PROCESS_EVENTS.has(eventName)) {
           yield {

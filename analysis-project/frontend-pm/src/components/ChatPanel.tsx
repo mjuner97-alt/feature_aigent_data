@@ -170,6 +170,7 @@ export default function ChatPanel({
   // the interrupt endpoint), but we use it as a "is this stream still relevant" flag
   // to ignore late events from a stream that was superseded by interrupt.
   const streamEpochRef = useRef(0);
+  const scriptOutputRef = useRef('');
 
   // Throttle scrollTo with rAF - firing on every token causes layout thrashing
   // for long streamed responses (each scrollTo forces a synchronous reflow).
@@ -242,6 +243,7 @@ export default function ChatPanel({
     onSubagentPlanChange?.({}, {});
 
     const myEpoch = ++streamEpochRef.current;
+    scriptOutputRef.current = '';
     const req: ChatRequest = {
       input: text,
       conversationId: convId,
@@ -378,6 +380,15 @@ export default function ChatPanel({
               onSubagentPlanChange?.(subagentPlansRef.current, subagentTodoCountsRef.current);
             }
           }
+        } else if (evt.type === 'scriptOutput') {
+          if (!evt.output) continue;
+          scriptOutputRef.current = scriptOutputRef.current
+            ? `${scriptOutputRef.current}\n\n${evt.output}`
+            : evt.output;
+          const scriptText = scriptOutputRef.current;
+          setMessages(prev => prev.map(m => m.id === replyMsg.id
+            ? { ...m, text: scriptText }
+            : m));
         } else if (evt.type === 'toolOutputUpdate') {
           // Supplementary tool_output event from PostActing hook (see
           // ToolCallTrackingHook.sendToolOutputSseEvent). The framework's
@@ -399,9 +410,14 @@ export default function ChatPanel({
           // think text (which can be long + complex) and markdown rendering freezes.
           disarmStallTimer();
           const finalText = evt.fullText || '';
+          const scriptOutput = scriptOutputRef.current;
+          // Keep the model's summary as the answer. Only carry over renderable
+          // ECharts/HTML blocks from script_exec when the model did not repeat them;
+          // prose, tables and explanations from the model must remain visible.
+          const mergedFinalText = mergeRenderableBlocks(finalText, scriptOutput);
           const subIds = Object.values(subagentMsgIds);
           setMessages(prev => prev.map(m => {
-            if (m.id === replyMsg.id) return { ...m, pending: false, text: finalText || m.text };
+            if (m.id === replyMsg.id) return { ...m, pending: false, text: mergedFinalText || m.text };
             if (subIds.includes(m.id)) return { ...m, pending: false };
             return m;
           }));
@@ -573,4 +589,30 @@ export default function ChatPanel({
       </div>
     </div>
   );
+}
+
+/**
+ * Prevent duplicate visual blocks without discarding the model's explanation.
+ * Script output may contain a prose summary followed by one or more fenced
+ * ECharts/HTML blocks. Only those blocks participate in de-duplication.
+ */
+function mergeRenderableBlocks(finalText: string, scriptOutput: string): string {
+  if (!scriptOutput) return finalText;
+  const blocks = extractRenderableBlocks(scriptOutput);
+  if (blocks.length === 0) return finalText;
+  let merged = finalText;
+  for (const block of blocks) {
+    if (!merged.includes(block)) {
+      merged = merged ? `${merged}\n\n${block}` : block;
+    }
+  }
+  return merged;
+}
+
+function extractRenderableBlocks(text: string): string[] {
+  const blocks: string[] = [];
+  const fence = /```\s*(echarts?|html?|htm)\s*\n[\s\S]*?```/gi;
+  let match: RegExpExecArray | null;
+  while ((match = fence.exec(text)) !== null) blocks.push(match[0].trim());
+  return blocks;
 }

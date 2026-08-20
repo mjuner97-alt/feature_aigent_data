@@ -1,5 +1,5 @@
 ---
-name:  
+name: q2_1_by_dept_version_metrics_report
 description: 通过绑定预注册 SQL 的 presentation_render 查询部门和版本 Q2-1 指标，并输出 Markdown 摘要及 ECharts/HTML 报告
 ---
 
