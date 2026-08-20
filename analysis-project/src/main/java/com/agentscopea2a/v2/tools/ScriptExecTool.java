@@ -59,7 +59,7 @@ import org.slf4j.LoggerFactory;
  *     └── subprocess.run(["python3", scriptAbsPath])
  *           ├── stdin 写入 JSON params
  *           ├── python 脚本读环境变量连 DB, pandas.read_sql + 算指标
- *           └── stdout 输出 markdown + JSON
+ *           └── stdout 输出由注册脚本定义的完整结果
  * </pre>
  *
  * <p><b>为什么同容器 fork 而非 ssh+docker exec:</b>
@@ -79,7 +79,7 @@ import org.slf4j.LoggerFactory;
  *       {@code <workspace>/scripts/} 下</li>
  *   <li>DB 账号只读: 由 application-*.properties 配置的账号权限决定, 脚本内 DDL 也执行不了</li>
  *   <li>超时硬上限 300s: 防死循环占满容器资源</li>
- *   <li>stdout 64KB 截断: 保护 LLM 上下文 (与 PythonExecTool 一致)</li>
+ *   <li>stdout/stderr 完整返回；注册脚本必须自行控制输出规模</li>
  * </ul>
  *
  * <p><b>Bean wiring:</b> 由 {@link com.agentscopea2a.v2.config.V2ToolConfig} 创建 bean,
@@ -96,9 +96,6 @@ public class ScriptExecTool {
     /** 解析 datasources JSON 数组用的 ObjectMapper. */
     private static final com.fasterxml.jackson.databind.ObjectMapper JSON_MAPPER =
             new com.fasterxml.jackson.databind.ObjectMapper();
-
-    /** stdout/stderr 单流最大字节, 保护 LLM 上下文. 与 PythonExecTool 一致. */
-    private static final int MAX_OUTPUT_BYTES = 64_000;
 
     /** 超时硬上限, 防 LLM 通过 entry.timeoutSeconds 传 99999. */
     private static final int MAX_TIMEOUT_SECONDS = 300;
@@ -478,10 +475,6 @@ public class ScriptExecTool {
         try {
             byte[] bytes = Files.readAllBytes(p);
             String s = new String(bytes, StandardCharsets.UTF_8);
-            if (s.length() > MAX_OUTPUT_BYTES) {
-                return s.substring(0, MAX_OUTPUT_BYTES)
-                        + "\n... (输出超过 " + MAX_OUTPUT_BYTES + " 字节,已截断)";
-            }
             return s;
         } catch (IOException e) {
             return "(读临时文件失败: " + e.getMessage() + ")";

@@ -1,6 +1,6 @@
 # 内网部署 - 导出与部署指南
 
-**日期**：2026-08-06（更新：workspace 持久化 bind mount）
+**日期**：2026-08-06（2026-08-19 更新：基于旧镜像离线补充前端依赖并导入内网）
 **目标**：把 dev 机器上构建好的 `analysis-project:plan-b` 镜像 + 源码打包，传到内网宿主机部署。内网宿主机无需 maven/node/java 环境，只要有 Docker。
 
 ---
@@ -408,3 +408,233 @@ docker rmi analysis-project:plan-b
 ./intranet-deploy.sh "$(pwd)" /path/to/new-analysis-project-plan-b.tar.gz
 # workspace 持久化目录不受影响 (bind mount 独立于镜像)
 ```
+
+
+
+
+## 8. 基于旧 `plan-b` 离线补充前端依赖
+
+本节用于以下场景：源码中的 `frontend-pm/package.json` 已增加前端依赖，但现有
+`analysis-project:plan-b` 镜像内的 `/opt/node_modules` 仍是旧版本。只执行
+`docker restart` 不会更新镜像依赖。
+
+下面的命令不会重新安装 JDK、Maven、Node 或 Python，而是以现有
+`analysis-project:plan-b` 为基础，只加入 `echarts@6.1.0` 及其依赖
+`zrender@6.1.0`、`tslib`。
+
+### 8.1 检查旧镜像和 npm 离线缓存
+
+```bash
+cd /java/analysis-project/analysis-project
+
+# 旧镜像中应显示 echarts-missing
+docker run --rm --entrypoint sh analysis-project:plan-b -lc \
+  'test -f /opt/node_modules/echarts/package.json \
+    && echo echarts-present || echo echarts-missing'
+
+# 内网离线构建前，缓存中必须存在这两个包
+npm cache ls echarts@6.1.0
+npm cache ls zrender@6.1.0
+```
+
+如果缓存中没有对应 `.tgz`，必须先在能够访问 npm registry 的机器执行一次：
+
+```bash
+npm cache add echarts@6.1.0
+npm cache add zrender@6.1.0
+```
+
+然后把 npm 缓存或已经构建好的镜像带入无网络环境。不要在无缓存的内网机器直接
+执行 `npm install --offline`。
+
+### 8.2 基于旧镜像构建派生镜像
+
+以下是本次实际使用并验证通过的完整命令：
+
+```bash
+set -eu
+
+BUILD_DIR=$(mktemp -d /tmp/plan-b-echarts.XXXXXX)
+trap 'rm -rf "$BUILD_DIR"' EXIT
+
+# 只使用本机 npm 缓存，不访问网络。npm 会同时安装 zrender 和 tslib。
+npm install \
+  --prefix "$BUILD_DIR" \
+  --offline \
+  --ignore-scripts \
+  --no-audit \
+  --no-fund \
+  --package-lock=false \
+  echarts@6.1.0
+
+test -f "$BUILD_DIR/node_modules/echarts/package.json"
+test -f "$BUILD_DIR/node_modules/zrender/package.json"
+
+cat > "$BUILD_DIR/Dockerfile" <<'EOF'
+FROM analysis-project:plan-b
+COPY node_modules/ /opt/node_modules/
+EOF
+
+docker build \
+  -t analysis-project:plan-b-echarts \
+  "$BUILD_DIR"
+```
+
+### 8.3 验证依赖和真实前端构建
+
+```bash
+# 验证派生镜像中的依赖版本
+docker run --rm --entrypoint sh \
+  analysis-project:plan-b-echarts -lc \
+  'grep -m1 version /opt/node_modules/echarts/package.json && \
+   grep -m1 version /opt/node_modules/zrender/package.json'
+
+# 挂载当前源码，执行真实 TypeScript + Vite 构建
+docker run --rm --entrypoint sh \
+  -v /java/analysis-project/analysis-project:/app \
+  analysis-project:plan-b-echarts -lc \
+  'cd /app/frontend-pm && \
+   VITE_OUT_DIR=/tmp/frontend-dist npm run build'
+```
+
+只有看到 `npm run build` 成功完成后，才执行标签切换：
+
+```bash
+# 先给旧镜像保留回滚标签
+docker tag \
+  analysis-project:plan-b \
+  analysis-project:plan-b-before-echarts-20260819
+
+# 再让正式标签指向验证通过的派生镜像
+docker tag \
+  analysis-project:plan-b-echarts \
+  analysis-project:plan-b
+
+docker images --format '{{.Repository}}:{{.Tag}} {{.ID}} {{.Size}}' \
+  | grep '^analysis-project:plan-b'
+```
+
+此时预期：
+
+```text
+analysis-project:plan-b                            <新镜像 ID> ...
+analysis-project:plan-b-echarts                    <同一个新镜像 ID> ...
+analysis-project:plan-b-before-echarts-20260819    <旧镜像 ID> ...
+```
+
+### 8.4 导出本次镜像
+
+镜像 TAR 已生成：
+
+```text
+/data/images/analysis-project-plan-b-echarts-20260819.tar
+```
+
+信息：
+
+```text
+大小：1,762,149,888 bytes，约 1.7GB
+权限：644
+SHA-256：
+9c2608da592b1e30a4c693714a09015466dc16db17e2fcd888e11ed6107ea278
+```
+
+归档内标签已确认：
+
+```text
+analysis-project:plan-b
+```
+
+### 8.5 内网导入步骤
+
+先把 TAR 传到内网服务器，例如：
+
+```bash
+scp /data/images/analysis-project-plan-b-echarts-20260819.tar \
+  root@内网服务器:/data/images/
+```
+
+进入内网服务器后，先校验文件：
+
+```bash
+sha256sum /data/images/analysis-project-plan-b-echarts-20260819.tar
+```
+
+必须与上述 SHA-256 一致。
+
+1. 保留内网原来的旧镜像：
+
+```bash
+docker tag \
+  analysis-project:plan-b \
+  analysis-project:plan-b-before-echarts-20260819
+```
+
+确认旧标签：
+
+```bash
+docker images | grep analysis-project
+```
+
+2. 导入新镜像并替换 `plan-b` 标签：
+
+```bash
+docker load \
+  -i /data/images/analysis-project-plan-b-echarts-20260819.tar
+```
+
+因为 TAR 内已经包含 `analysis-project:plan-b`，导入后该标签会指向新镜像；旧镜像仍由备份标签保留。
+
+确认两个标签：
+
+```bash
+docker images --format '{{.Repository}}:{{.Tag}} {{.ID}} {{.Size}}' \
+  | grep '^analysis-project:plan-b'
+```
+
+预期两个不同镜像 ID：
+
+```text
+analysis-project:plan-b                            9c846284fb07 ...
+analysis-project:plan-b-before-echarts-20260819    <旧镜像ID> ...
+```
+
+### 8.6 重建容器
+
+仅执行 `docker restart` 不会切换到新镜像，必须删除并重新创建容器：
+
+```bash
+docker rm -f analysis-project-test
+
+docker run -d \
+  --name analysis-project-test \
+  -p 18080:80 \
+  -e SPRING_PROFILES_ACTIVE=dev,docker \
+  -v /java/analysis-project/analysis-project:/app \
+  analysis-project:plan-b
+```
+
+验证 ECharts：
+
+```bash
+docker exec analysis-project-test sh -lc \
+  'grep -m1 version /opt/node_modules/echarts/package.json'
+```
+
+查看启动日志：
+
+```bash
+docker logs -f analysis-project-test
+```
+
+### 8.7 回滚
+
+需要回滚时：
+
+```bash
+docker tag \
+  analysis-project:plan-b-before-echarts-20260819 \
+  analysis-project:plan-b
+```
+
+然后再次删除并重建容器。
