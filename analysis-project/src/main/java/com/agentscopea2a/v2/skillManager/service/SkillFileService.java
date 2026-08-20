@@ -105,7 +105,9 @@ public class SkillFileService {
         }
 
         String fileType = extensionToFileType(extension);
-        String relativePath = Paths.get(userId, filename).toString(); // 相对路径
+        // 相对路径: 显式用 "/" 拼接,保证跨平台 DB 里存的是 {userId}/{filename}
+        // (Paths.get(...).toString() 在 Windows 下产出反斜杠,入库后 Linux 端解析/JSON 展示会丢分隔符)
+        String relativePath = userId + "/" + filename;
         Path storagePath = resolveStoragePath(relativePath);
 
         SkillFile existing = skillMapper.selectFileByUserIdAndFilename(userId, filename);
@@ -152,7 +154,7 @@ public class SkillFileService {
     private SkillFileUploadResponse overwriteExisting(SkillFile existing, byte[] content, long fileSize,
                                                       String fileType, String description, String filename) {
         String userId = existing.getUserId();
-        Path storagePath = resolveStoragePath(Paths.get(userId, filename).toString());
+        Path storagePath = resolveStoragePath(userId + "/" + filename);
 
         // 覆盖磁盘文件
         try {
@@ -163,7 +165,7 @@ public class SkillFileService {
         }
 
         // 更新 DB 记录
-        existing.setStoragePath(Paths.get(userId, filename).toString());
+        existing.setStoragePath(userId + "/" + filename);
         existing.setFileSize(fileSize);
         existing.setFileType(fileType);
         if (description != null) existing.setDescription(description);
@@ -290,9 +292,10 @@ public class SkillFileService {
     /**
      * 解析存储路径为绝对路径。DB 存相对路径 {@code {userId}/{filename}},
      * 历史绝对路径记录也可正常解析(Paths.get 在第二参数为绝对路径时忽略 baseDir)。
+     * 历史上 Windows 端写入的反斜杠分隔记录,这里归一化成 "/" 再解析,保证 Linux 端也能读到。
      */
     private Path resolveStoragePath(String storagePath) {
-        return Paths.get(baseDir, storagePath);
+        return Paths.get(baseDir, storagePath.replace('\\', '/'));
     }
 
     /**

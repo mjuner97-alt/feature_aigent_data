@@ -5,8 +5,10 @@
  * 展示某个 Job 的执行记录列表，含状态、报告校验、查看报告。
  */
 import { ref, watch, computed, onUnmounted } from 'vue';
-import { listExecutions, viewExecutionFile } from '../api/skillJob';
+import { Download, EditPen, View } from '@element-plus/icons-vue';
+import { downloadExecutionFile, listExecutions, viewExecutionFile } from '../api/skillJob';
 import type { SkillJobExecution } from '../types/skillJob';
+import SkillJobReportEditorDrawer from './SkillJobReportEditorDrawer.vue';
 
 const props = defineProps<{ open: boolean; jobId: number | null; canDownload?: boolean }>();
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>();
@@ -105,7 +107,7 @@ function toggle(id: number) {
 }
 
 function statusText(s: string) {
-  return { RUNNING: '执行中', SUCCESS: '成功', FAILED: '失败', PENDING: '排队中', SKIPPED: '已跳过' }[s] || s;
+  return { RUNNING: '执行中', SUCCESS: '成功', FAILED: '失败', PENDING: '排队中', SKIPPED: '未执行' }[s] || s;
 }
 function triggerText(t: string) {
   return { MANUAL: '手动', EXTERNAL: '外部触发', METRIC: '指标触发' }[t] || t;
@@ -141,6 +143,9 @@ function duration(startedAt: string, completedAt: string): string {
 function close() { emit('update:open', false); }
 
 const viewing = ref<Set<number>>(new Set());
+const downloading = ref<Set<number>>(new Set());
+const editorOpen = ref(false);
+const editorExecutionId = ref<number | null>(null);
 
 async function viewFile(execId: number) {
   viewing.value.add(execId);
@@ -151,6 +156,31 @@ async function viewFile(execId: number) {
   } finally {
     viewing.value.delete(execId);
   }
+}
+
+async function downloadFile(execId: number) {
+  downloading.value.add(execId);
+  try {
+    await downloadExecutionFile(execId);
+  } catch (e) {
+    alert(e instanceof Error ? e.message : '下载失败');
+  } finally {
+    downloading.value.delete(execId);
+  }
+}
+
+function editFile(execId: number) {
+  editorExecutionId.value = execId;
+  editorOpen.value = true;
+}
+
+function executionReason(message?: string): string {
+  if (!message) return '-';
+  if (message.startsWith('JobNotFound')) return '任务不存在';
+  if (message.startsWith('JobDisabled')) return '任务已禁用';
+  if (message.startsWith('JobNotConfigured')) return '任务配置不完整';
+  if (message.startsWith('SkillPermissionDenied')) return 'Skill 权限失效';
+  return message;
 }
 </script>
 
@@ -171,7 +201,7 @@ async function viewFile(execId: number) {
                 <option value="SUCCESS">成功</option>
                 <option value="FAILED">失败</option>
                 <option value="PENDING">排队中</option>
-                <option value="SKIPPED">已跳过</option>
+                <option value="SKIPPED">未执行</option>
               </select>
               <button class="btn ghost sm" @click="load">刷新</button>
             </div>
@@ -210,14 +240,22 @@ async function viewFile(execId: number) {
                     <span class="dv">{{ duration(exec.startedAt, exec.completedAt) }}</span>
                   </div>
                   <div v-if="exec.errorMsg" class="detail-row">
-                    <span class="dl">错误信息</span>
-                    <span class="dv err">{{ exec.errorMsg }}</span>
+                    <span class="dl">{{ exec.status === 'SKIPPED' ? '未执行原因' : '错误信息' }}</span>
+                    <span class="dv" :class="{ err: exec.status === 'FAILED' }" :title="exec.errorMsg">{{ executionReason(exec.errorMsg) }}</span>
                   </div>
                   <div v-if="exec.mdFileExists && canDownload" class="detail-row">
                     <span class="dl">生成文件</span>
-                    <button class="download-link" :disabled="viewing.has(exec.id)" @click.stop="viewFile(exec.id)">
-                      {{ viewing.has(exec.id) ? '打开中…' : '查看报告' }}
-                    </button>
+                    <div class="report-actions">
+                      <button class="report-action" :disabled="viewing.has(exec.id)" title="预览报告" @click.stop="viewFile(exec.id)">
+                        <el-icon><View /></el-icon><span>{{ viewing.has(exec.id) ? '打开中…' : '预览' }}</span>
+                      </button>
+                      <button class="report-action" title="编辑 HTML" @click.stop="editFile(exec.id)">
+                        <el-icon><EditPen /></el-icon><span>编辑</span>
+                      </button>
+                      <button class="report-action" :disabled="downloading.has(exec.id)" title="下载 HTML" @click.stop="downloadFile(exec.id)">
+                        <el-icon><Download /></el-icon><span>{{ downloading.has(exec.id) ? '下载中…' : '下载' }}</span>
+                      </button>
+                    </div>
                   </div>
                   <div v-else-if="exec.mdFileExists" class="detail-row">
                     <span class="dl">生成文件</span>
@@ -244,6 +282,11 @@ async function viewFile(execId: number) {
         </div>
       </div>
     </transition>
+    <SkillJobReportEditorDrawer
+      v-model:open="editorOpen"
+      :execution-id="editorExecutionId"
+      @saved="refresh"
+    />
   </Teleport>
 </template>
 
@@ -289,9 +332,10 @@ async function viewFile(execId: number) {
 .dv.no { color: #dc2626; }
 .dv.err { color: #dc2626; }
 .dv.muted { color: #94a3b8; font-size: 12px; }
-.download-link { color: #3b82f6; font-size: 13px; text-decoration: none; font-weight: 600; background: none; border: none; cursor: pointer; padding: 0; }
-.download-link:hover { text-decoration: underline; color: #2563eb; }
-.download-link:disabled { opacity: 0.5; cursor: not-allowed; }
+.report-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.report-action { display: inline-flex; height: 28px; align-items: center; gap: 4px; padding: 0 9px; border: 1px solid #cbd5e1; border-radius: 5px; background: #fff; color: #2563eb; cursor: pointer; font-size: 12px; }
+.report-action:hover { border-color: #93c5fd; background: #eff6ff; }
+.report-action:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .drawer-fade-enter-active, .drawer-fade-leave-active { transition: opacity 0.2s; }
 .drawer-fade-enter-active .drawer, .drawer-fade-leave-active .drawer { transition: transform 0.25s ease; }

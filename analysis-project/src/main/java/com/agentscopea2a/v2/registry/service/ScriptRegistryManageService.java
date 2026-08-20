@@ -103,7 +103,7 @@ public class ScriptRegistryManageService {
         }
 
         entry.setCreatedBy(userId);
-        // 脚本路径由后端按 userId + scriptId + ".py" 拼接, 不接受前端传入
+        // 脚本路径由后端按 {userId}/{scriptId}.py 拼接, 不接受前端传入
         entry.setScriptPath(buildScriptPath(userId, entry.getScriptId()));
         if (entry.getEnabled() == null) {
             entry.setEnabled(1);
@@ -160,8 +160,10 @@ public class ScriptRegistryManageService {
         mapper.deleteById(id);
     }
 
-    /** 脚本相对路径 = userId + scriptId + ".py" (相对 workspace/scripts/, 由后端拼接, 前端不参与). */
+    /** 脚本相对路径 = {userId}/{scriptId}.py (相对 workspace/scripts/, 由后端拼接, 前端不参与)。
+     *  分隔符必须显式写 "/",漏掉会把 userId 和 scriptId 连成一串,ScriptExecTool 按
+     *  workspace/scripts/{userId}/{scriptId}.py 找不到文件。 */
     private String buildScriptPath(String userId, String scriptId) {
-        return userId + scriptId + ".py";
+        return userId + "/" + scriptId + ".py";
     }
 }

@@ -26,6 +26,7 @@ import com.agentscopea2a.v2.skillManager.mapper.SkillMapper;
 import com.agentscopea2a.v2.skillManager.notification.NotificationSender;
 import com.agentscopea2a.v2.skillManager.notification.NotificationService;
 import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
+import com.agentscopea2a.v2.skillManager.report.ReportFilenamePolicy;
 import com.agentscopea2a.v2.tools.WriteMarkdownTool;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
@@ -509,7 +510,7 @@ public class SkillJobScheduler implements WriteCallback {
 
                 // 渲染为自包含 HTML（表格样式 + echarts 内联）后写入，不走模型tool_call
                 if (agentResult != null && !agentResult.isBlank() && resolvedOutputPath != null && !resolvedOutputPath.isBlank()) {
-                    String reportFileName = buildReportFileName(job);
+                    String reportFileName = buildReportFileName(job, execution.getId());
                     String htmlContent = htmlReportRenderer.render(agentResult, job.getName());
                     boolean writeOk = writeMarkdownTool.writeMarkdown(reportFileName, htmlContent, execution.getId(), userId);
                     if (!writeOk) {
@@ -631,9 +632,8 @@ public class SkillJobScheduler implements WriteCallback {
      * 规则：{jobName}_{date}_{timestamp}.html，每次执行生成独立文件。
      * 扩展名 .html：内容由 HtmlReportRenderer 渲染为自包含 HTML（表格样式 + echarts 内联）。
      */
-    private String buildReportFileName(SkillJob job) {
-        String safeName = job.getName() != null ? job.getName().replaceAll("[^a-zA-Z0-9_\\-]", "_") : "job";
-        return safeName + "_" + LocalDate.now() + "_" + System.currentTimeMillis() + ".html";
+    private String buildReportFileName(SkillJob job, Long executionId) {
+        return ReportFilenamePolicy.build(job.getName(), LocalDate.now(), executionId);
     }
 
     private String resolveSkillName(Long skillId) {

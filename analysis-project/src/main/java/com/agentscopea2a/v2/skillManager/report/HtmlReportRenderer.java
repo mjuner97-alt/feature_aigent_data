@@ -136,7 +136,12 @@ public class HtmlReportRenderer {
             li{margin:2px 0}
             a{color:#6366f1;text-decoration:none}
             a:hover{text-decoration:underline}
-            .echarts-chart{width:100%;height:400px;margin:12px 0}
+            .echarts-shell{position:relative;width:100%;margin:12px 0;background:#fff}
+            .echarts-chart{width:100%;height:400px}
+            .echarts-fullscreen{position:absolute;z-index:2;top:8px;right:8px;width:32px;height:32px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;color:#334155;cursor:pointer;font-size:18px;line-height:28px}
+            .echarts-fullscreen:hover{background:#f8fafc;color:#0f172a}
+            .echarts-shell:fullscreen{padding:48px 16px 16px;background:#fff}
+            .echarts-shell:fullscreen .echarts-chart{height:calc(100vh - 64px)}
             """;
 
     /**
@@ -162,6 +167,17 @@ public class HtmlReportRenderer {
                   var d=opt.legend.data[j]; if(typeof d!=='object'||d===null) continue;
                   var sc=colorByName[d.name];
                   if(sc&&d.itemStyle&&d.itemStyle.color&&d.itemStyle.color!==sc){ d.itemStyle.color=sc; }
+                }
+              }
+              var zoomable=false;
+              for(var k=0;k<opt.series.length;k++){
+                var series=opt.series[k];
+                if(series&&(series.type==='line'||series.type==='bar')){ zoomable=true; break; }
+              }
+              if(!opt.dataZoom){
+                if(zoomable&&opt.xAxis&&opt.yAxis){
+                  opt.dataZoom=[{type:'inside',xAxisIndex:0,filterMode:'filter'},
+                                {type:'slider',xAxisIndex:0,height:22,bottom:8}];
                 }
               }
               return opt;
@@ -272,7 +288,11 @@ public class HtmlReportRenderer {
             // 围栏块取 g1；标签块取 g3 并去掉标签内容里可能残留的 ``` 围栏
             String json = (m.group(1) != null ? m.group(1) : stripFences(m.group(3))).trim();
             String chartId = "echarts-" + idx;
-            body.append("<div class=\"echarts-chart\" id=\"").append(chartId).append("\"></div>\n");
+            body.append("<div class=\"echarts-shell\" id=\"").append(chartId).append("-shell\">")
+                    .append("<button class=\"echarts-fullscreen\" type=\"button\" title=\"全屏查看\" ")
+                    .append("aria-label=\"全屏查看\" data-chart-fullscreen=\"").append(chartId).append("-shell\">")
+                    .append("&#x26F6;</button><div class=\"echarts-chart\" id=\"")
+                    .append(chartId).append("\"></div></div>\n");
             charts.add(new ChartBlock(chartId, json));
             idx++;
             last = m.end();
@@ -321,8 +341,18 @@ public class HtmlReportRenderer {
                 sb.append("{id:").append(jsString(c.id)).append(",option:normalizeChartOption(")
                   .append(safeOptionJson(c.json)).append(")}");
             }
-            sb.append("];for(var i=0;i<charts.length;i++){var el=document.getElementById(charts[i].id);");
-            sb.append("if(el){echarts.init(el).setOption(charts[i].option);}}});</script>");
+            sb.append("];var chartInstances=[];for(var i=0;i<charts.length;i++){var el=document.getElementById(charts[i].id);");
+            sb.append("if(el){var chart=echarts.init(el);chart.setOption(charts[i].option);chartInstances.push(chart);}}")
+                    .append("function resizeCharts(){for(var j=0;j<chartInstances.length;j++){var chart=chartInstances[j];")
+                    .append("if(chart&&!chart.isDisposed()){chart.resize();}}}")
+                    .append("var buttons=document.querySelectorAll('[data-chart-fullscreen]');")
+                    .append("for(var b=0;b<buttons.length;b++){buttons[b].addEventListener('click',function(){")
+                    .append("var shell=document.getElementById(this.getAttribute('data-chart-fullscreen'));")
+                    .append("if(document.fullscreenElement===shell){document.exitFullscreen();}")
+                    .append("else if(shell&&shell.requestFullscreen){shell.requestFullscreen();}});}")
+                    .append("window.addEventListener('resize',resizeCharts);")
+                    .append("document.addEventListener('fullscreenchange',function(){setTimeout(resizeCharts,0);});")
+                    .append("});</script>");
         }
         sb.append("</body></html>");
         return sb.toString();

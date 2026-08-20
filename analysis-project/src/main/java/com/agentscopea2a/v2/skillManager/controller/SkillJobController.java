@@ -8,6 +8,7 @@ import com.agentscopea2a.v2.skillManager.dto.SkillJobCreateRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobDto;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobExecutionDto;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobNotificationDto;
+import com.agentscopea2a.v2.skillManager.dto.SkillJobReportUpdateRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobUpdateRequest;
 import com.agentscopea2a.v2.skillManager.service.SkillJobService;
 import com.agentscopea2a.v2.util.DownloadErrorPage;
@@ -165,6 +166,30 @@ public class SkillJobController {
             log.warn("SkillJob download execId={} failed: {}", execId, e.getMessage());
             return htmlResponse(HttpStatus.NOT_FOUND, DownloadErrorPage.fileNotFound());
         }
+    }
+
+    /** Return the editable UTF-8 HTML source for an owned execution report. */
+    @GetMapping(value = "/executions/{execId}/source", produces = "text/html;charset=UTF-8")
+    public ResponseEntity<String> getExecutionReportSource(
+            @PathVariable(name = "execId") Long execId,
+            @RequestHeader("X-User-Id") String userId) {
+        return ResponseEntity.ok()
+                .contentType(new MediaType(MediaType.TEXT_HTML, StandardCharsets.UTF_8))
+                .body(service.readExecutionReportSource(execId, userId));
+    }
+
+    /** Replace the current HTML report source. Uploading a separate file is intentionally unsupported. */
+    @PutMapping(value = "/executions/{execId}/source",
+            consumes = MediaType.APPLICATION_JSON_VALUE,
+            produces = "text/html;charset=UTF-8")
+    public ResponseEntity<String> updateExecutionReportSource(
+            @PathVariable(name = "execId") Long execId,
+            @RequestHeader("X-User-Id") String userId,
+            @RequestBody SkillJobReportUpdateRequest request) {
+        return ResponseEntity.ok()
+                .contentType(new MediaType(MediaType.TEXT_HTML, StandardCharsets.UTF_8))
+                .body(service.updateExecutionReportSource(execId, userId,
+                        request == null ? null : request.html()));
     }
 
     /**
