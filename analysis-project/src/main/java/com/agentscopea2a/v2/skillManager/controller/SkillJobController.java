@@ -7,6 +7,7 @@ import com.agentscopea2a.v2.skillManager.dto.SkillDependencyMetricDto;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobCreateRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobDto;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobExecutionDto;
+import com.agentscopea2a.v2.skillManager.dto.SkillJobNotificationDto;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobUpdateRequest;
 import com.agentscopea2a.v2.skillManager.service.SkillJobService;
 import com.agentscopea2a.v2.util.DownloadErrorPage;
@@ -113,10 +114,35 @@ public class SkillJobController {
         return service.listInflightExecutions();
     }
 
+    /** 全部任务的执行中心；createdBy 仅匹配 userId。 */
+    @GetMapping("/executions")
+    public List<SkillJobExecutionDto> listExecutionCenter(
+            @RequestParam(name = "status", required = false) String status,
+            @RequestParam(name = "createdBy", required = false) String createdBy) {
+        return service.listExecutionCenter(status, createdBy);
+    }
+
     /** 单条执行记录 */
     @GetMapping("/executions/{execId}")
     public SkillJobExecutionDto getExecution(@PathVariable(name = "execId") Long execId) {
         return service.getExecution(execId);
+    }
+
+    /** Notification delivery history for one execution, newest attempt first. */
+    @GetMapping("/executions/{execId}/notifications")
+    public List<SkillJobNotificationDto> listNotifications(
+            @PathVariable(name = "execId") Long execId,
+            @RequestHeader("X-User-Id") String userId) {
+        return service.listNotifications(execId, userId);
+    }
+
+    /** Queue a resend only; the skill job itself is not executed again. No request body is required. */
+    @PostMapping("/executions/{execId}/notifications/resend")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public SkillJobNotificationDto resendNotification(
+            @PathVariable(name = "execId") Long execId,
+            @RequestHeader("X-User-Id") String userId) {
+        return service.resendNotification(execId, userId);
     }
 
     /**

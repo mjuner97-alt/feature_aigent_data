@@ -45,7 +45,6 @@ const deleteError = ref('');
 
 // —— 可见性 + 私有授权(owner 面板) ——
 const isPrivate = computed(() => !!skill.value && skill.value.visibility === 'PRIVATE');
-
 // 维度/发布相关状态(只读展示,维度切换走编辑表单)
 const publishes = ref<SkillPublishRecord[]>([]);
 const publishLoading = ref(false);
@@ -348,7 +347,8 @@ watch(() => route.params.id, () => {
     <h2 class="skill-title">{{ skill.name }} <span class="cnt"><svg class="thumb-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="currentColor" style="vertical-align:-2px"><path d="M2 21h4V9H2v12zm20-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L13.17 1 7.59 6.59C7.22 6.95 7 7.45 7 8v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z"/></svg> {{ like.likeCount }}</span></h2>
     <div class="meta">{{ skill.ownerUserId }} · 状态 {{ skill.status }}
       <span v-if="isPrivate" class="vis-badge private">私有</span>
-      <span v-else class="vis-badge public">公开</span>
+      <span v-else-if="skill.visibility === 'PUBLIC'" class="vis-badge public">公开</span>
+      <span v-else class="vis-badge personal">个人</span>
     </div>
 
     <!-- 私有可见范围(详情页只读展示;增删授权走"编辑"表单页) -->
@@ -471,6 +471,7 @@ watch(() => route.params.id, () => {
 .vis-badge { padding: 1px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
 .vis-badge.private { background: #fef3c7; color: #b45309; }
 .vis-badge.public { background: #f1f5f9; color: #64748b; }
+.vis-badge.personal { background: #f5f3ff; color: #6d28d9; }
 .grant-panel {
   background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;
   padding: 10px 14px; margin-bottom: 14px;

@@ -23,25 +23,24 @@ import lombok.NoArgsConstructor;
 import java.time.LocalDateTime;
 
 /**
- * Skill 私有可见性授权实体 - 对应表 {@code skill_visible_grant}。
+ * 虚拟组成员实体 - 对应表 {@code skill_virtual_group}。
  *
- * <p>无审批:owner 直接指定谁能看到/可用一个 {@code PRIVATE} skill。
- * 授权对象四种: {@code USER}(统一认证号) / {@code DEPARTMENT}(部门名) / {@code GROUP}(统计组名)
- * / {@code VIRTUAL_GROUP}(虚拟组名,组定义见 skill_virtual_group 表)。
- * 命中授权的用户对私有 skill 自动可用(used),无需手动引用。
+ * <p>一行 = 一个虚拟组的一个成员(组名+userid);组的定义在
+ * {@code skill_virtual_group_def}(组头表),空组(无成员)合法存在。
+ * 私有 Skill 授权({@code skill_visible_grant})的 {@code VIRTUAL_GROUP} 类型
+ * 按 {@code group_name} 命中:用户是组内成员即对被授权的私有 skill 可见。
  */
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class SkillVisibleGrant {
+public class SkillVirtualGroup {
     private Long id;
-    private Long skillId;
-    /** USER | DEPARTMENT | GROUP | VIRTUAL_GROUP */
-    private String grantType;
-    /** USER=统一认证号 / DEPARTMENT=部门名 / GROUP=统计组名 / VIRTUAL_GROUP=虚拟组名 */
-    private String targetId;
-    /** 授权人(owner) */
-    private String grantedBy;
+    /** 虚拟组名(组的唯一标识) */
+    private String groupName;
+    /** 成员统一认证号 */
+    private String userId;
+    /** 建组/加成员操作人 */
+    private String createdBy;
     private LocalDateTime createdAt;
 }

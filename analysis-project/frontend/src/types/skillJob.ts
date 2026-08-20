@@ -59,6 +59,33 @@ export interface SkillJobExecution {
   createdAt: string;
   /** 排队位置"前面还有N个"，仅 PENDING 状态有值，其余为 null */
   queueAhead?: number | null;
+  /** 执行中心关联信息。 */
+  jobName?: string;
+  skillName?: string;
+  createdBy?: string;
+  createdByName?: string;
+  latestNotificationStatus?: string | null;
+  notificationAttemptCount?: number;
+}
+
+export interface SkillJobNotification {
+  id: number;
+  jobId: number;
+  executionId: number;
+  requestType: 'INITIAL' | 'RESEND';
+  status: 'PENDING' | 'SENDING' | 'SUCCESS' | 'FAILED' | 'SKIPPED';
+  triggerType?: string;
+  senderName?: string;
+  recipientSummary?: string;
+  contentType?: string;
+  content?: string;
+  fileName?: string;
+  fileUrl?: string;
+  errorMsg?: string;
+  requestedAt?: string;
+  startedAt?: string;
+  completedAt?: string;
+  createdAt?: string;
 }
 
 /** 依赖指标（admin 预置只读，对应后端 SkillDependencyMetricDto） */

@@ -15,6 +15,7 @@ import { createApp, defineComponent, h } from 'vue';
 import { createRouter, createWebHistory, RouterView, type RouteRecordRaw } from 'vue-router';
 import ElementPlus from 'element-plus';
 import 'element-plus/dist/index.css';
+import zhCn from 'element-plus/dist/locale/zh-cn.mjs';
 import AppShell from './components/AppShell.vue';
 import LoginPage from './pages/LoginPage.vue';
 import SkillShell from './components/SkillShell.vue';
@@ -23,6 +24,7 @@ import SkillDetailPage from './pages/skill/SkillDetailPage.vue';
 import SkillFormPage from './pages/skill/SkillFormPage.vue';
 import SkillApprovalListPage from './pages/skill/SkillApprovalListPage.vue';
 import SkillJobListPage from './pages/skill/SkillJobListPage.vue';
+import SkillVirtualGroupPage from './pages/skill/SkillVirtualGroupPage.vue';
 import SqlRegistryPage from './pages/SqlRegistryPage.vue';
 import ScriptRegistryShell from './components/ScriptRegistryShell.vue';
 import ScriptRegistryPage from './pages/ScriptRegistryPage.vue';
@@ -47,6 +49,7 @@ const routes: RouteRecordRaw[] = [
           { path: 'popular', component: SkillListPage, props: { view: 'popular' } },
           { path: 'approvals', component: SkillApprovalListPage },
           { path: 'jobs', component: SkillJobListPage },
+          { path: 'virtual-groups', component: SkillVirtualGroupPage },
           { path: 'new', component: SkillFormPage },
           { path: ':id/edit', component: SkillFormPage },
           { path: ':id', component: SkillDetailPage },
@@ -112,5 +115,5 @@ const Root = defineComponent({
 
 const app = createApp(Root);
 app.use(router);
-app.use(ElementPlus);
+app.use(ElementPlus, { locale: zhCn });
 app.mount('#root');

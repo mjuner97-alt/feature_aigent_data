@@ -1,4 +1,4 @@
-import type { SkillJob, SkillJobInput, SkillJobUpdateInput, SkillJobExecution } from '../types/skillJob';
+import type { SkillJob, SkillJobInput, SkillJobUpdateInput, SkillJobExecution, SkillJobNotification } from '../types/skillJob';
 import { apiErrorDetail } from '../utils/apiError';
 
 const BASE = '/api/skill-jobs';
@@ -20,6 +20,7 @@ async function jobError(res: Response, fallback: string): Promise<Error> {
   if (detail.startsWith('JobQueueFull')) return new Error('执行队列已满，请稍后重试');
   if (detail.startsWith('MetricNotFound')) return new Error('依赖指标不存在或已删除');
   if (detail.startsWith('MetricDisabled')) return new Error('依赖指标已停用，不可选用');
+  if (detail.startsWith('NotificationResendUnavailable')) return new Error('当前执行没有可补发的报告');
   return new Error(detail ? `${fallback}: ${detail}` : `${fallback} (HTTP ${res.status})`);
 }
 
@@ -88,6 +89,30 @@ export async function listExecutions(jobId: number, status?: string): Promise<Sk
 export async function listInflightExecutions(): Promise<SkillJobExecution[]> {
   const res = await fetch(`${BASE}/executions/inflight`, { headers: authHeaders() });
   if (!res.ok) throw await jobError(res, '查询运行任务失败');
+  return res.json();
+}
+
+/** 执行中心列表；createdBy 只按 userId 精确筛选。 */
+export async function listExecutionCenter(status?: string, createdBy?: string): Promise<SkillJobExecution[]> {
+  const qs = new URLSearchParams();
+  if (status) qs.set('status', status);
+  if (createdBy) qs.set('createdBy', createdBy);
+  const res = await fetch(`${BASE}/executions?${qs.toString()}`, { headers: authHeaders() });
+  if (!res.ok) throw await jobError(res, '查询执行中心失败');
+  return res.json();
+}
+
+export async function listExecutionNotifications(execId: number): Promise<SkillJobNotification[]> {
+  const res = await fetch(`${BASE}/executions/${execId}/notifications`, { headers: authHeaders() });
+  if (!res.ok) throw await jobError(res, '查询通知记录失败');
+  return res.json();
+}
+
+export async function resendExecutionNotification(execId: number): Promise<SkillJobNotification> {
+  const res = await fetch(`${BASE}/executions/${execId}/notifications/resend`, {
+    method: 'POST', headers: authHeaders(),
+  });
+  if (!res.ok) throw await jobError(res, '补发失败');
   return res.json();
 }
 

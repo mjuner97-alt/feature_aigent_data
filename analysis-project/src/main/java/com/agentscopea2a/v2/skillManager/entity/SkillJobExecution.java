@@ -54,4 +54,10 @@ public class SkillJobExecution {
     private LocalDateTime completedAt;
     /** 创建时间 */
     private LocalDateTime createdAt;
+    /** 执行中心关联字段（不参与执行记录写入）。 */
+    private String jobName;
+    private String skillName;
+    private String createdBy;
+    private String latestNotificationStatus;
+    private Integer notificationAttemptCount;
 }

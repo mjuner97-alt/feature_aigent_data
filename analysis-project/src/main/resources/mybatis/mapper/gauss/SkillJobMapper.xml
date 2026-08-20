@@ -99,6 +99,11 @@
         <result column="started_at" property="startedAt"/>
         <result column="completed_at" property="completedAt"/>
         <result column="created_at" property="createdAt"/>
+        <result column="job_name" property="jobName"/>
+        <result column="skill_name" property="skillName"/>
+        <result column="created_by" property="createdBy"/>
+        <result column="latest_notification_status" property="latestNotificationStatus"/>
+        <result column="notification_attempt_count" property="notificationAttemptCount"/>
     </resultMap>
 
     <sql id="skillJobExecutionCols">id, job_id, trigger_type, status, conversation_id, resolved_output_path, md_file_written, md_file_exists, error_msg, started_at, completed_at, created_at</sql>
@@ -127,6 +132,23 @@
         ORDER BY id
     </select>
 
+    <!-- 执行中心：创建人按 userId 精确筛选，限制最近 500 条避免无界查询。 -->
+    <select id="selectExecutionCenter" resultMap="SkillJobExecutionResultMap">
+        SELECT e.id, e.job_id, e.trigger_type, e.status, e.conversation_id,
+               e.resolved_output_path, e.md_file_written, e.md_file_exists, e.error_msg,
+               e.started_at, e.completed_at, e.created_at,
+               j.name AS job_name, s.name AS skill_name, j.created_by
+        FROM skill_job_execution e
+        JOIN skill_job j ON j.id = e.job_id
+        LEFT JOIN skill_manage s ON s.id = j.skill_id
+        <where>
+            <if test="status != null and status != ''">AND e.status = #{status}</if>
+            <if test="createdBy != null and createdBy != ''">AND j.created_by = #{createdBy}</if>
+        </where>
+        ORDER BY e.created_at DESC
+        LIMIT 500
+    </select>
+
     <!-- 触发被拒(已在跑)时清理刚插入的 PENDING，避免孤儿记录 -->
     <delete id="deleteExecutionById">
         DELETE FROM skill_job_execution WHERE id = #{id}
@@ -150,6 +172,64 @@
             started_at = COALESCE(started_at, NOW()),
             completed_at = NOW()
         WHERE status IN ('RUNNING', 'PENDING')
+    </update>
+
+    <!-- ==================== skill_job_notification ==================== -->
+
+    <resultMap id="SkillJobNotificationResultMap" type="com.agentscopea2a.v2.skillManager.entity.SkillJobNotification">
+        <id column="id" property="id"/>
+        <result column="job_id" property="jobId"/>
+        <result column="execution_id" property="executionId"/>
+        <result column="request_type" property="requestType"/>
+        <result column="status" property="status"/>
+        <result column="trigger_type" property="triggerType"/>
+        <result column="sender_name" property="senderName"/>
+        <result column="recipient_summary" property="recipientSummary"/>
+        <result column="content_type" property="contentType"/>
+        <result column="content" property="content"/>
+        <result column="file_name" property="fileName"/>
+        <result column="file_url" property="fileUrl"/>
+        <result column="error_msg" property="errorMsg"/>
+        <result column="requested_at" property="requestedAt"/>
+        <result column="started_at" property="startedAt"/>
+        <result column="completed_at" property="completedAt"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="attempt_count" property="attemptCount"/>
+    </resultMap>
+
+    <sql id="skillJobNotificationCols">id, job_id, execution_id, request_type, status, trigger_type, sender_name, recipient_summary, content_type, content, file_name, file_url, error_msg, requested_at, started_at, completed_at, created_at</sql>
+
+    <insert id="insertNotification" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillJobNotification" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_job_notification (job_id, execution_id, request_type, status, trigger_type, sender_name, recipient_summary, content_type, content, file_name, file_url, error_msg, requested_at, started_at, completed_at)
+        VALUES (#{jobId}, #{executionId}, #{requestType}, #{status}, #{triggerType}, #{senderName}, #{recipientSummary}, #{contentType}, #{content}, #{fileName}, #{fileUrl}, #{errorMsg}, #{requestedAt}, #{startedAt}, #{completedAt})
+    </insert>
+
+    <select id="selectNotificationsByExecutionId" resultMap="SkillJobNotificationResultMap">
+        SELECT <include refid="skillJobNotificationCols"/> FROM skill_job_notification
+        WHERE execution_id = #{executionId}
+        ORDER BY id DESC
+    </select>
+
+    <select id="selectNotificationSummaries" resultMap="SkillJobNotificationResultMap">
+        SELECT n.execution_id, n.status, summary.attempt_count
+        FROM skill_job_notification n
+        JOIN (
+            SELECT execution_id, MAX(id) AS latest_id, COUNT(*) AS attempt_count
+            FROM skill_job_notification
+            WHERE execution_id IN
+            <foreach collection="executionIds" item="execId" open="(" separator="," close=")">
+                #{execId}
+            </foreach>
+            GROUP BY execution_id
+        ) summary ON summary.latest_id = n.id
+    </select>
+
+    <update id="markNotificationSending">
+        UPDATE skill_job_notification SET status = 'SENDING', started_at = #{startedAt} WHERE id = #{id}
+    </update>
+
+    <update id="completeNotification">
+        UPDATE skill_job_notification SET status = #{status}, error_msg = #{errorMsg}, completed_at = #{completedAt} WHERE id = #{id}
     </update>
 
 </mapper>

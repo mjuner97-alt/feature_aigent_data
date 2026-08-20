@@ -77,6 +77,10 @@ const DIM_LABEL_MAP: Record<string, string> = {
 function dimLabel(it: SkillListItem): string {
   return DIM_LABEL_MAP[it.dimension || 'PERSONAL'] || '个人';
 }
+// 个人 skill 无发布维度时,维度徽章与可见性徽章都会显示"个人",去重:只保留可见性徽章
+function showDimBadge(it: SkillListItem): boolean {
+  return !(dimLabel(it) === '个人' && it.visibility === 'PERSONAL');
+}
 
 // 所有者展示:有姓名时显示"姓名 (统一认证号)",否则仅统一认证号
 function ownerLabel(it: SkillListItem): string {
@@ -107,8 +111,9 @@ function ownerLabel(it: SkillListItem): string {
       <div class="desc">{{ it.description }}</div>
       <div class="meta">
         {{ ownerLabel(it) }}
-        <span class="dim-badge" :class="dimClass(it)">{{ dimLabel(it) }}</span>
-        <span v-if="it.visibility === 'PRIVATE'" class="dim-badge private-badge" title="私有:仅创建人和被授权的人/部门/小组可见">私有</span>
+        <span v-if="showDimBadge(it)" class="dim-badge" :class="dimClass(it)">{{ dimLabel(it) }}</span>
+        <span v-if="it.visibility === 'PRIVATE'" class="dim-badge private-badge" title="私有:仅创建人和被授权的人/部门/小组/虚拟组可见">私有</span>
+        <span v-else-if="it.visibility === 'PERSONAL'" class="dim-badge personal-badge" title="个人:全员可见,默认仅创建者使用,他人需引用">个人</span>
       </div>
       <div v-if="it.used && !it.disabled && !hideUsed" class="tags">
         <span class="used">已使用</span>
@@ -137,8 +142,9 @@ function ownerLabel(it: SkillListItem): string {
         <div class="line1">
           <span class="name">{{ it.name }}</span>
           <span class="badge" :class="badgeClass(it)">{{ badgeIcon(it) }}</span>
-          <span class="dim-badge" :class="dimClass(it)">{{ dimLabel(it) }}</span>
-          <span v-if="it.visibility === 'PRIVATE'" class="dim-badge private-badge" title="私有:仅创建人和被授权的人/部门/小组可见">私有</span>
+          <span v-if="showDimBadge(it)" class="dim-badge" :class="dimClass(it)">{{ dimLabel(it) }}</span>
+          <span v-if="it.visibility === 'PRIVATE'" class="dim-badge private-badge" title="私有:仅创建人和被授权的人/部门/小组/虚拟组可见">私有</span>
+          <span v-else-if="it.visibility === 'PERSONAL'" class="dim-badge personal-badge" title="个人:全员可见,默认仅创建者使用,他人需引用">个人</span>
         </div>
         <div class="line2">
           {{ it.description }} · {{ ownerLabel(it) }}
@@ -195,6 +201,7 @@ button.on { background: #3b82f6; color: #fff; border-color: #3b82f6; }
 .meta { color: #475569; font-size: 12px; }
 .dim-badge { margin-left: 4px; padding: 1px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
 .private-badge { background: #fef3c7; color: #b45309; }
+.personal-badge { background: #f5f3ff; color: #6d28d9; }
 .dim-personal { background: #f1f5f9; color: #64748b; }
 .dim-group { background: #dbeafe; color: #2563eb; }
 .dim-department { background: #d1fae5; color: #047857; }

@@ -15,6 +15,13 @@ const executions = ref<SkillJobExecution[]>([]);
 const loading = ref(false);
 const statusFilter = ref('');
 const expandedId = ref<number | null>(null);
+const currentPage = ref(1);
+const pageSize = ref(20);
+
+const pagedExecutions = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value;
+  return executions.value.slice(start, start + pageSize.value);
+});
 
 /** 是否有执行中/排队中的记录，决定是否开启轮询 */
 const hasInFlight = computed(() =>
@@ -29,8 +36,25 @@ watch(() => props.open, (open) => {
     return;
   }
   statusFilter.value = '';
+  currentPage.value = 1;
   load();
 });
+
+watch(() => executions.value.length, (total) => {
+  const lastPage = Math.max(1, Math.ceil(total / pageSize.value));
+  if (currentPage.value > lastPage) currentPage.value = lastPage;
+});
+
+function filterExecutions() {
+  currentPage.value = 1;
+  expandedId.value = null;
+  load();
+}
+
+function changePageSize(size: number) {
+  pageSize.value = size;
+  currentPage.value = 1;
+}
 
 async function load() {
   if (!props.jobId) return;
@@ -141,7 +165,7 @@ async function viewFile(execId: number) {
           </div>
           <div class="drawer-body">
             <div class="filter-bar">
-              <select v-model="statusFilter" @change="load" class="status-select">
+              <select v-model="statusFilter" @change="filterExecutions" class="status-select">
                 <option value="">全部状态</option>
                 <option value="RUNNING">执行中</option>
                 <option value="SUCCESS">成功</option>
@@ -155,7 +179,7 @@ async function viewFile(execId: number) {
             <div v-if="loading" class="loading">加载中…</div>
             <div v-else-if="executions.length === 0" class="empty">暂无执行记录</div>
             <div v-else class="exec-list">
-              <div v-for="exec in executions" :key="exec.id" class="exec-item">
+              <div v-for="exec in pagedExecutions" :key="exec.id" class="exec-item">
                 <div class="exec-row" @click="toggle(exec.id)">
                   <span class="exec-id">#{{ exec.id }}</span>
                   <span class="exec-status" :class="statusClass(exec.status)">{{ statusText(exec.status) }}</span>
@@ -202,6 +226,17 @@ async function viewFile(execId: number) {
                 </div>
               </div>
             </div>
+            <div v-if="!loading && executions.length > 0" class="pagination-bar">
+              <el-pagination
+                v-model:current-page="currentPage"
+                :page-size="pageSize"
+                :page-sizes="[10, 20, 50]"
+                :total="executions.length"
+                layout="total, sizes, prev, pager, next"
+                small
+                @size-change="changePageSize"
+              />
+            </div>
           </div>
           <div class="drawer-footer">
             <button type="button" class="btn ghost" @click="close">关闭</button>
@@ -224,6 +259,7 @@ async function viewFile(execId: number) {
 .loading, .empty { color: #94a3b8; font-size: 14px; padding: 24px 0; text-align: center; }
 
 .filter-bar { display: flex; gap: 8px; margin-bottom: 12px; }
+.pagination-bar { display: flex; justify-content: flex-end; padding-top: 14px; }
 .status-select { padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; background: #fff; }
 .btn { padding: 8px 18px; border-radius: 6px; border: 1px solid #cbd5e1; cursor: pointer; font-size: 14px; }
 .btn.ghost { background: #fff; color: #475569; }
