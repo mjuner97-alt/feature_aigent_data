@@ -96,7 +96,7 @@ public class SkillFileController {
      */
     @GetMapping("/files/{id}/download")
     public ResponseEntity<Resource> download(
-            @PathVariable Long id,
+            @PathVariable(name = "id") Long id,
             @RequestHeader("X-User-Id") String userId) {
         try {
             Resource resource = skillFileService.download(id, userId);
@@ -133,7 +133,7 @@ public class SkillFileController {
     @DeleteMapping("/files/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(
-            @PathVariable Long id,
+            @PathVariable(name = "id") Long id,
             @RequestHeader("X-User-Id") String userId) {
         skillFileService.delete(id, userId);
     }
@@ -143,7 +143,7 @@ public class SkillFileController {
      */
     @PutMapping("/files/{id}")
     public SkillFileListItem update(
-            @PathVariable Long id,
+            @PathVariable(name = "id") Long id,
             @RequestBody Map<String, String> body,
             @RequestHeader("X-User-Id") String userId) {
         return skillFileService.updateDescription(id, body.get("description"), userId);
