@@ -1,7 +1,7 @@
 <template>
   <div :style="S.root">
-    <div :style="S.bodyRow">
-      <div ref="threadRef" :style="S.thread">
+    <div class="chat-body-row" :style="S.bodyRow">
+      <div ref="threadRef" class="message-thread" :style="S.thread">
         <div v-if="messages.length === 0" :style="S.empty">
           发送消息开始对话。<br />
           尝试：
@@ -12,6 +12,7 @@
         <div
           v-for="m in messages"
           :key="m.id"
+          class="message-bubble"
           :style="{ ...S.bubble, ...bubbleStyle(m) }"
         >
           <!-- Subagent label -->
@@ -29,23 +30,36 @@
               :result="t.result"
             />
           </div>
-          <!-- User messages: plain text -->
+          <!-- User input remains plain; every backend response uses Markdown. -->
           <template v-if="m.role === 'user'">
             {{ m.text || (m.pending ? '…' : '') }}
           </template>
           <!-- Assistant messages -->
-          <template v-else-if="m.text">
-            <div v-if="m.pending" :style="{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }">{{ m.text }}</div>
-            <Markdown v-else :text="m.text" />
+          <template v-else>
+            <details
+              v-if="m.thinking"
+              class="thinking-panel"
+              :open="m.pending && !m.text"
+            >
+              <summary class="thinking-summary">
+                <span class="thinking-indicator" :class="{ active: m.pending && !m.text }"></span>
+                <span>思考过程</span>
+                <span class="thinking-state">{{ m.pending && !m.text ? '思考中' : '已完成' }}</span>
+              </summary>
+              <div class="thinking-content">
+                <Markdown :text="m.thinking" />
+              </div>
+            </details>
+            <Markdown v-if="m.text" :text="m.text" />
+            <span v-else-if="m.pending && !m.thinking" :style="{ color: '#94a3b8' }">…</span>
           </template>
-          <span v-else-if="m.pending" :style="{ color: '#94a3b8' }">…</span>
         </div>
       </div>
-      <div :style="S.activityCol">
+      <div class="activity-column" :style="S.activityCol">
         <ActivityFeed :events="activityEvents" :active="busy" />
       </div>
     </div>
-    <div :style="S.composer">
+    <div class="chat-composer" :style="S.composer">
       <textarea
         ref="inputRef"
         :style="S.textarea"
@@ -90,6 +104,7 @@ interface Message {
   id: string;
   role: Role;
   text: string;
+  thinking?: string;
   tools: ToolEntry[];
   pending?: boolean;
   source?: string | null;
@@ -130,7 +145,7 @@ let streamEpoch = 0;
 
 // Auto-scroll on new messages
 watch(
-  () => messages.value.length,
+  () => messages.value.map(m => `${m.text.length}:${m.thinking?.length ?? 0}`).join('|'),
   async () => {
     await nextTick();
     threadRef.value?.scrollTo({ top: threadRef.value.scrollHeight, behavior: 'smooth' });
@@ -184,7 +199,9 @@ async function sendMessage(text: string) {
   props.onUserMessage?.(text);
 
   const userMsg: Message = { id: nextId(), role: 'user' as Role, text, tools: [] };
-  const replyMsg: Message = { id: nextId(), role: 'assistant' as Role, text: '', tools: [], pending: true };
+  const replyMsg: Message = {
+    id: nextId(), role: 'assistant' as Role, text: '', thinking: '', tools: [], pending: true,
+  };
   messages.value = [...messages.value, userMsg, replyMsg];
 
   const subagentMsgIds: Record<string, string> = {};
@@ -201,7 +218,7 @@ async function sendMessage(text: string) {
   streamAbortCtrl = abortCtrl;
 
   const req: ChatRequest = {
-    input: text,
+    question: text,
     conversationId: convId,
     user_id: props.userId,
   };
@@ -211,23 +228,17 @@ async function sendMessage(text: string) {
     for await (const evt of evts) {
       if (myEpoch !== streamEpoch) return; // superseded
 
-      if (evt.type === 'token') {
-        const chunk = evt.chunk;
-        if (evt.source) {
-          // Subagent text
-          let subId = subagentMsgIds[evt.source];
-          if (!subId) {
-            subId = nextId();
-            subagentMsgIds[evt.source] = subId;
-            messages.value = [...messages.value, {
-              id: subId, role: 'assistant', text: chunk, tools: [], pending: true, source: evt.source,
-            }];
-          } else {
-            messages.value = messages.value.map(m => m.id === subId ? { ...m, text: m.text + chunk } : m);
-          }
-        } else {
-          messages.value = messages.value.map(m => m.id === replyMsg.id ? { ...m, text: m.text + chunk } : m);
+      if (evt.type === 'think') {
+        if (evt.action !== '已执行' && evt.chunk.length > 0) {
+          messages.value = messages.value.map(m => m.id === replyMsg.id
+            ? { ...m, thinking: (m.thinking ?? '') + evt.chunk }
+            : m);
         }
+      } else if (evt.type === 'text') {
+        messages.value = messages.value.map(m => m.id === replyMsg.id
+          ? { ...m, text: m.text + evt.chunk, pending: !evt.finish }
+          : m);
+        if (evt.finish) break;
       } else if (evt.type === 'process') {
         activityEvents.value = [...activityEvents.value, evt.process];
 
@@ -255,15 +266,6 @@ async function sendMessage(text: string) {
         activityEvents.value = activityEvents.value.map(e =>
           e.toolCallId === update.toolCallId ? { ...e, toolOutput: update.toolOutput } : e,
         );
-      } else if (evt.type === 'done') {
-        const finalText = evt.fullText || '';
-        const subIds = Object.values(subagentMsgIds);
-        messages.value = messages.value.map(m => {
-          if (m.id === replyMsg.id) return { ...m, pending: false, text: finalText || m.text };
-          if (subIds.includes(m.id)) return { ...m, pending: false };
-          return m;
-        });
-        break;
       } else if (evt.type === 'error') {
         const subIds = Object.values(subagentMsgIds);
         messages.value = messages.value.map(m =>
@@ -287,19 +289,17 @@ async function sendMessage(text: string) {
         for await (const evt of retryEvts) {
           if (myEpoch !== streamEpoch) return;
           // Process retry events (simplified — same logic as above)
-          if (evt.type === 'token') {
-            if (evt.source) {
-              let subId = subagentMsgIds[evt.source];
-              if (!subId) {
-                subId = nextId();
-                subagentMsgIds[evt.source] = subId;
-                messages.value = [...messages.value, { id: subId, role: 'assistant', text: evt.chunk, tools: [], pending: true, source: evt.source }];
-              } else {
-                messages.value = messages.value.map(m => m.id === subId ? { ...m, text: m.text + evt.chunk } : m);
-              }
-            } else {
-              messages.value = messages.value.map(m => m.id === replyMsg.id ? { ...m, text: m.text + evt.chunk } : m);
+          if (evt.type === 'think') {
+            if (evt.action !== '已执行' && evt.chunk.length > 0) {
+              messages.value = messages.value.map(m => m.id === replyMsg.id
+                ? { ...m, thinking: (m.thinking ?? '') + evt.chunk }
+                : m);
             }
+          } else if (evt.type === 'text') {
+            messages.value = messages.value.map(m => m.id === replyMsg.id
+              ? { ...m, text: m.text + evt.chunk, pending: !evt.finish }
+              : m);
+            if (evt.finish) return;
           } else if (evt.type === 'process') {
             activityEvents.value = [...activityEvents.value, evt.process];
             const p = evt.process;
@@ -324,15 +324,6 @@ async function sendMessage(text: string) {
           } else if (evt.type === 'toolOutputUpdate') {
             const update = evt.process;
             activityEvents.value = activityEvents.value.map(e => e.toolCallId === update.toolCallId ? { ...e, toolOutput: update.toolOutput } : e);
-          } else if (evt.type === 'done') {
-            const finalText = evt.fullText || '';
-            const subIds = Object.values(subagentMsgIds);
-            messages.value = messages.value.map(m => {
-              if (m.id === replyMsg.id) return { ...m, pending: false, text: finalText || m.text };
-              if (subIds.includes(m.id)) return { ...m, pending: false };
-              return m;
-            });
-            return; // retry succeeded
           }
         }
         return;
@@ -359,6 +350,7 @@ async function sendMessage(text: string) {
       streamAbortCtrl = null;
     }
     if (myEpoch === streamEpoch) {
+      messages.value = messages.value.map(m => m.id === replyMsg.id ? { ...m, pending: false } : m);
       busy.value = false;
       hasInFlight.value = false;
       inputRef.value?.focus();
@@ -415,3 +407,70 @@ const S = {
   sendDisabled: { background: '#e2e8f0', color: '#94a3b8', cursor: 'not-allowed', boxShadow: 'none' },
 };
 </script>
+
+<style scoped>
+.thinking-panel {
+  margin: 0 0 12px;
+  overflow: hidden;
+  border: 1px solid #dbe3ee;
+  border-radius: 7px;
+  background: #f8fafc;
+}
+
+.thinking-summary {
+  min-height: 38px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+
+.thinking-indicator {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.thinking-indicator.active {
+  background: #2563eb;
+  animation: thinking-pulse 1.2s ease-in-out infinite;
+}
+
+.thinking-state {
+  margin-left: auto;
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.thinking-content {
+  max-height: 360px;
+  padding: 10px 14px 14px;
+  overflow: auto;
+  border-top: 1px solid #e2e8f0;
+  color: #475569;
+}
+
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+@media (max-width: 1100px) {
+  .activity-column { display: none !important; }
+}
+
+@media (max-width: 720px) {
+  .chat-body-row :deep(*) { min-width: 0; }
+  .message-thread { padding: 20px 14px !important; gap: 14px !important; }
+  .message-bubble { max-width: 92% !important; padding: 12px 14px !important; }
+  .chat-composer { padding: 12px !important; gap: 8px !important; }
+}
+</style>

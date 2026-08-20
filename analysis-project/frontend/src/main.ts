@@ -4,7 +4,7 @@
  * Routes:
  *  /login     -> LoginPage (无需登录)
  *  /          -> AppShell layout
- *  /chat      -> SessionHistoryPage (会话历史列表)
+ *  /chat      -> ChatWorkspacePage (AI 对话 + 对话记录)
  *  /chat/:id  -> SessionDetailPage (会话详情: 时间轴 + 事件)
  *  /skills/*  -> SkillShell layout (Skill 广场:全部/我使用的/我点赞的/我创建的/热门榜/详情)
  *               创建走 /skills/new,编辑走 /skills/:id/edit (全页面表单);
@@ -26,6 +26,7 @@ import SkillJobListPage from './pages/skill/SkillJobListPage.vue';
 import SqlRegistryPage from './pages/SqlRegistryPage.vue';
 import ScriptRegistryShell from './components/ScriptRegistryShell.vue';
 import ScriptRegistryPage from './pages/ScriptRegistryPage.vue';
+import ChatWorkspacePage from './pages/ChatWorkspacePage.vue';
 import { isLoggedIn } from './utils/auth';
 
 const routes: RouteRecordRaw[] = [
@@ -53,9 +54,9 @@ const routes: RouteRecordRaw[] = [
       },
       {
         path: 'chat',
-        name: 'SessionHistory',
-        component: () => import('./pages/SessionHistoryPage.vue'),
-        meta: { requiresAuth: true, title: '会话历史' },
+        name: 'ChatWorkspace',
+        component: ChatWorkspacePage,
+        meta: { requiresAuth: true, title: 'AI 对话' },
       },
       {
         path: 'chat/:id',
