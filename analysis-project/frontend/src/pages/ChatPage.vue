@@ -1,12 +1,12 @@
 <template>
-  <div :style="{ display: 'flex', flex: 1, minHeight: 0 }">
+  <div class="chat-page" :style="{ display: 'flex', flex: 1, minHeight: 0 }">
     <!-- Center: chat -->
     <div :style="{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }">
       <ChatPanel
         ref="chatPanelRef"
         :user-id="userId"
         :conversation-id="conversationId"
-        @on-conversation-id="handleConversationId"
+        @conversation-id="handleConversationId"
         @on-user-message="handleUserMessage"
         @on-subagent-plan-change="handleSubagentPlanChange"
         @on-stream-done="handleStreamDone"
@@ -14,7 +14,7 @@
     </div>
 
     <!-- Right: state panels -->
-    <div :style="stateColStyle">
+    <div class="state-column" :style="stateColStyle">
       <div :style="stateHeaderStyle">
         <span>PlanNotebook + 状态机</span>
         <span v-if="conversationId" :style="{ fontSize: '0.72rem', color: '#94a3b8', fontFamily: 'ui-monospace, monospace' }">
@@ -165,3 +165,13 @@ function userIdChipStyle(fromUrl: boolean) {
   };
 }
 </script>
+
+<style scoped>
+@media (max-width: 1280px) {
+  .state-column { display: none !important; }
+}
+
+@media (max-width: 720px) {
+  .chat-page { width: 100%; }
+}
+</style>

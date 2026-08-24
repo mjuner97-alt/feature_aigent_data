@@ -61,7 +61,7 @@ async function resend() {
 function close() { emit('update:open', false); }
 function fmtTime(value?: string) { return value ? value.replace('T', ' ').substring(0, 19) : '-'; }
 function statusText(status: string) {
-  return { PENDING: '等待发送', SENDING: '发送中', SUCCESS: '已提交通知平台', FAILED: '发送失败', SKIPPED: '未发送' }[status] || status;
+  return { PENDING: '等待发送', SENDING: '发送中', SUCCESS: '已提交通知平台', FAILED: '发送失败', SKIPPED: '通知未启用' }[status] || status;
 }
 function requestText(type: string) { return type === 'RESEND' ? '人工补发' : '首次发送'; }
 
@@ -107,7 +107,10 @@ onUnmounted(stopPolling);
                   <div><dt>收件人</dt><dd>{{ record.recipientSummary || '-' }}</dd></div>
                   <div><dt>发送器</dt><dd>{{ record.senderName || '-' }}</dd></div>
                   <div v-if="record.fileName"><dt>报告</dt><dd>{{ record.fileName }}</dd></div>
-                  <div v-if="record.errorMsg"><dt>结果说明</dt><dd class="error-text">{{ record.errorMsg }}</dd></div>
+                  <div v-if="record.errorMsg">
+                    <dt>{{ record.status === 'SKIPPED' ? '未启用原因' : '结果说明' }}</dt>
+                    <dd :class="record.status === 'FAILED' ? 'error-text' : 'reason-text'">{{ record.errorMsg }}</dd>
+                  </div>
                 </dl>
                 <details v-if="record.content">
                   <summary>通知内容</summary>
@@ -147,6 +150,7 @@ dl > div { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 8px; 
 dt { color: #64748b; font-weight: 600; }
 dd { min-width: 0; margin: 0; color: #1e293b; overflow-wrap: anywhere; }
 .error-text { color: #b91c1c; }
+.reason-text { color: #475569; }
 details { border-top: 1px solid #f1f5f9; padding: 8px 12px 10px; }
 summary { color: #2563eb; font-size: 12px; cursor: pointer; }
 pre { max-height: 240px; overflow: auto; margin: 8px 0 0; padding: 10px; background: #f8fafc; color: #334155; font: 12px/1.55 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }

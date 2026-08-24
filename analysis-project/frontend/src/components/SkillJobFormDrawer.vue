@@ -28,6 +28,10 @@ const saving = ref(false);
 const formError = ref('');
 const skills = ref<SkillListItem[]>([]);
 const metrics = ref<SkillDependencyMetric[]>([]);
+const skillLoading = ref(false);
+const metricLoading = ref(false);
+let skillSearchSeq = 0;
+let metricSearchSeq = 0;
 
 /** 当前选中的依赖指标 (用于在 select 下方展示描述) */
 const selectedMetric = computed(() =>
@@ -39,19 +43,37 @@ const showMetricDesc = ref(false);
 
 /** 加载"我使用的" Skill 列表供选择 */
 async function loadSkills() {
-  try {
-    skills.value = await listSkills({ view: 'used', limit: 200 });
-  } catch {
-    skills.value = [];
-  }
+  await searchSkills('');
 }
 
 /** 加载启用的依赖指标(admin 预置只读)供选择 */
 async function loadMetrics() {
+  await searchMetrics('');
+}
+
+async function searchSkills(query: string) {
+  const seq = ++skillSearchSeq;
+  skillLoading.value = true;
   try {
-    metrics.value = await listMetrics();
+    const result = await listSkills({ view: 'used', keyword: query.trim(), limit: 50 });
+    if (seq === skillSearchSeq) skills.value = result;
   } catch {
-    metrics.value = [];
+    if (seq === skillSearchSeq) skills.value = [];
+  } finally {
+    if (seq === skillSearchSeq) skillLoading.value = false;
+  }
+}
+
+async function searchMetrics(query: string) {
+  const seq = ++metricSearchSeq;
+  metricLoading.value = true;
+  try {
+    const result = await listMetrics(query);
+    if (seq === metricSearchSeq) metrics.value = result;
+  } catch {
+    if (seq === metricSearchSeq) metrics.value = [];
+  } finally {
+    if (seq === metricSearchSeq) metricLoading.value = false;
   }
 }
 
@@ -142,18 +164,17 @@ function close() { emit('update:open', false); }
                 </label>
                 <label class="field">
                   <span class="label">关联 Skill *</span>
-                  <select v-model.number="form.skillId">
-                    <option :value="0" disabled>请选择 Skill</option>
-                    <option v-for="s in skills" :key="s.id" :value="s.id">{{ s.name }}</option>
-                  </select>
+                  <el-select v-model="form.skillId" filterable remote reserve-keyword :remote-method="searchSkills" :loading="skillLoading" placeholder="请选择 Skill" style="width: 100%">
+                    <el-option :value="0" label="请选择 Skill" disabled />
+                    <el-option v-for="s in skills" :key="s.id" :value="s.id" :label="s.name" />
+                  </el-select>
                   <span v-if="isEdit" class="tip">更换后影响后续执行；历史执行记录按当前 Skill 口径展示</span>
                 </label>
                 <label class="field">
                   <span class="label">依赖指标</span>
-                  <select v-model.number="form.metricId">
-                    <option :value="null">不关联（可选）</option>
-                    <option v-for="m in metrics" :key="m.id" :value="m.id" :title="m.description">{{ m.name }}</option>
-                  </select>
+                  <el-select v-model="form.metricId" filterable remote reserve-keyword :remote-method="searchMetrics" :loading="metricLoading" placeholder="不关联（可选）" clearable style="width: 100%">
+                    <el-option v-for="m in metrics" :key="m.id" :value="m.id" :label="m.name" :title="m.description" />
+                  </el-select>
                   <span class="tip">
                     可选；关联后随指标就绪自动触发该任务
                     <span v-if="selectedMetric?.description" class="desc-toggle" @click="showMetricDesc = !showMetricDesc">

@@ -16,6 +16,7 @@
 package com.agentscopea2a.v2.skillManager.service;
 
 import com.agentscopea2a.v2.config.SkillStorageProperties;
+import com.agentscopea2a.v2.skillManager.entity.SkillMetricReadiness;
 import com.agentscopea2a.v2.skillManager.dto.*;
 import com.agentscopea2a.v2.skillManager.entity.SkillDependencyMetric;
 import com.agentscopea2a.v2.skillManager.entity.SkillJob;
@@ -25,6 +26,7 @@ import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillJobMapper;
 import com.agentscopea2a.v2.skillManager.notification.NotificationService;
 import com.agentscopea2a.v2.skillManager.scheduler.SkillJobScheduler;
+import com.agentscopea2a.v2.util.SkillFileMirror;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -32,17 +34,24 @@ import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.beans.factory.annotation.Autowired;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * SkillJob 业务逻辑层。
@@ -55,12 +64,21 @@ import java.util.stream.Collectors;
 public class SkillJobService {
 
     private static final Logger log = LoggerFactory.getLogger(SkillJobService.class);
+    private static final int MAX_EDITABLE_REPORT_BYTES = 2 * 1024 * 1024;
 
     private final SkillJobMapper mapper;
     private final SkillJobScheduler scheduler;
     private final SkillDependencyMetricMapper metricMapper;
     private final MockOrgService mockOrgService;
     private final NotificationService notificationService;
+
+    /** 指标就绪登记服务:外部指标到达时记录 READY 状态,Skill Flow 的指标门控以此解锁。 */
+    @Autowired(required = false)
+    private MetricReadinessService metricReadinessService;
+
+    /** Skill Flow 执行服务:指标就绪后异步重算等待中执行的门控(与 Job 主流程解耦,失败不影响 Job)。 */
+    @Autowired(required = false)
+    private FlowExecutionService flowExecutionService;
 
     /** Skill Job 报告主目录(${skill.job.base-dir})。 */
     private final String baseDir;
@@ -254,8 +272,9 @@ public class SkillJobService {
     }
 
     /** 列出启用的依赖指标（供前端下拉，admin 预置只读） */
-    public List<SkillDependencyMetricDto> listMetrics() {
-        return metricMapper.selectAllEnabled().stream().map(SkillDependencyMetricDto::of).toList();
+    public List<SkillDependencyMetricDto> listMetrics(String keyword) {
+        String trimmed = keyword == null ? null : keyword.trim();
+        return metricMapper.selectAllEnabled(trimmed).stream().map(SkillDependencyMetricDto::of).toList();
     }
 
     /**
@@ -273,6 +292,9 @@ public class SkillJobService {
         }
         // 外部系统调用可不传 X-User-Id；此处仅用于日志追溯，实际执行身份取自每个 job 的 createdBy
         String caller = (userId == null || userId.isBlank()) ? "MANAGER" : userId;
+        //给长任务登记指标 READY。
+        recordFlowReadinessBestEffort(metric);
+        //触发旧的独立
         List<SkillJob> jobs = mapper.selectEnabledJobsByMetricId(metric.getId());
         List<MetricTriggerItemDto> results = new ArrayList<>();
         for (SkillJob job : jobs) {
@@ -281,6 +303,43 @@ public class SkillJobService {
         log.info("[SkillJob] triggerByMetric: code={}, metricId={}, total={}, caller={}",
                 code, metric.getId(), results.size(), caller);
         return new MetricTriggerBatchDto(code, results.size(), results);
+    }
+
+    /**
+     * 指标到达时为 SkillFlow 长任务登记 READY，并驱动依赖该指标的流程（尽力而为，不影响旧的独立 Job 触发）：
+     * <ol>
+     *   <li>调用 {@code MetricReadinessService#recordReady} 按「指标 + 数据日期」upsert 一条 READY 记录；</li>
+     *   <li>异步执行两步：{@code metricBecameReady} 重算所有等待中执行的就绪门控（全部就绪则放行入队），
+     *       {@code triggerReadyFlows} 为依赖该指标且当日全部指标就绪的流程创建每日自动执行。</li>
+     * </ol>
+     * 任何失败只记日志不上抛——本方法在 {@link #triggerByMetric} 里位于独立 Job 批量触发之前，
+     * READY 登记或门控重算失败都不能阻断旧链路（独立 Job 继续触发）。
+     * 两个依赖均为 @Autowired(required=false) 可选注入，未启用 SkillFlow 时直接跳过。
+     */
+    private void recordFlowReadinessBestEffort(SkillDependencyMetric metric) {
+        // SkillFlow 功能未启用（未注入就绪登记服务）则整体跳过
+        if (metricReadinessService == null) return;
+        try {
+            // 同步落 READY 记录：流程创建/放行判断都依赖这条记录存在，失败则无需再走后续两步
+            SkillMetricReadiness readiness = metricReadinessService.recordReady(metric);
+            if (flowExecutionService != null) {
+                // 门控重算与流程触发放到异步线程，不占用本次外部触发请求的响应时间
+                CompletableFuture.runAsync(() -> {
+                    try {
+                        // 先放行已等待中的执行，再创建今日新自动执行，顺序不可颠倒
+                        flowExecutionService.metricBecameReady(metric.getId(), readiness.getDataDate());
+                        flowExecutionService.triggerReadyFlows(metric.getId(), readiness.getDataDate());
+                    } catch (RuntimeException e) {
+                        log.error("[SkillFlow] gate recalculation failed: metric={}, date={}",
+                                metric.getCode(), readiness.getDataDate(), e);
+                    }
+                });
+            }
+        } catch (RuntimeException e) {
+            // READY 落库失败仅记录，独立 Job 的批量触发继续执行
+            log.error("[SkillFlow] READY persistence failed; independent jobs continue: metric={}",
+                    metric.getCode(), e);
+        }
     }
 
     /** 单个 job 在批量触发中的处理：落 PENDING -> submit；已在跑则清孤儿记录并标记 REJECTED */
@@ -531,4 +590,93 @@ public class SkillJobService {
         }
         return downloadExecutionFile(exec);
     }
+
+    /** Read the current HTML source for an execution owned by the requesting user. */
+    public String readExecutionReportSource(Long execId, String userId) {
+        OwnedReport report = resolveOwnedHtmlReport(execId, userId);
+        Path readable = Files.isRegularFile(report.primary()) ? report.primary() : report.backup();
+        try {
+            return Files.readString(readable, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new IllegalStateException("ReportReadFailed: 无法读取报告内容 (execId=" + execId + ")", e);
+        }
+    }
+
+    /** Atomically replace an owned execution report and mirror the saved file to backup storage. */
+    public String updateExecutionReportSource(Long execId, String userId, String html) {
+        OwnedReport report = resolveOwnedHtmlReport(execId, userId);
+        validateEditableHtml(html);
+        Path temporary = null;
+        try {
+            Files.createDirectories(report.primary().getParent());
+            temporary = Files.createTempFile(report.primary().getParent(),
+                    report.primary().getFileName().toString() + ".", ".edit.tmp");
+            Files.writeString(temporary, html, StandardCharsets.UTF_8);
+            try {
+                Files.move(temporary, report.primary(), StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(temporary, report.primary(), StandardCopyOption.REPLACE_EXISTING);
+            }
+            SkillFileMirror.mirror(baseDir, backupDir, report.relativePath());
+            return Files.readString(report.primary(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new IllegalStateException("ReportWriteFailed: 无法保存报告 (execId=" + execId + ")", e);
+        } finally {
+            if (temporary != null) {
+                try {
+                    Files.deleteIfExists(temporary);
+                } catch (IOException e) {
+                    log.warn("Could not delete Skill Job edit temp file for execId={}: {}", execId, e.getMessage());
+                }
+            }
+        }
+    }
+
+    private OwnedReport resolveOwnedHtmlReport(Long execId, String userId) {
+        SkillJobExecution execution = mapper.selectExecutionById(execId);
+        if (execution == null) {
+            throw new IllegalStateException("JobNotFound: 执行记录不存在 (id=" + execId + ")");
+        }
+        SkillJob job = mapper.selectJobById(execution.getJobId());
+        if (job == null || userId == null || !userId.equals(job.getCreatedBy())) {
+            throw new IllegalStateException("JobAccessDenied: 仅创建人可访问报告 (execId=" + execId + ")");
+        }
+        String relativePath = execution.getResolvedOutputPath();
+        if (relativePath == null || relativePath.isBlank()) {
+            throw new IllegalStateException("ReportNotFound: 报告尚未生成 (execId=" + execId + ")");
+        }
+        Path relative = Paths.get(relativePath).normalize();
+        if (relative.isAbsolute() || relative.getFileName() == null
+                || !relative.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".html")) {
+            throw new IllegalStateException("ReportInvalid: 报告路径无效 (execId=" + execId + ")");
+        }
+        Path primary = Paths.get(baseDir).resolve(relative).normalize().toAbsolutePath();
+        Path primaryUserRoot = Paths.get(baseDir, job.getCreatedBy()).normalize().toAbsolutePath();
+        Path backup = Paths.get(backupDir).resolve(relative).normalize().toAbsolutePath();
+        Path backupUserRoot = Paths.get(backupDir, job.getCreatedBy()).normalize().toAbsolutePath();
+        if (!primary.startsWith(primaryUserRoot) || !backup.startsWith(backupUserRoot)) {
+            throw new IllegalStateException("ReportInvalid: 报告路径无效 (execId=" + execId + ")");
+        }
+        if (!Files.isRegularFile(primary) && !Files.isRegularFile(backup)) {
+            throw new IllegalStateException("ReportNotFound: 报告文件不存在 (execId=" + execId + ")");
+        }
+        return new OwnedReport(primary, backup, relative.toString());
+    }
+
+    private static void validateEditableHtml(String html) {
+        if (html == null || html.isBlank()) {
+            throw new IllegalStateException("ReportContentInvalid: HTML 内容不能为空");
+        }
+        int byteLength = html.getBytes(StandardCharsets.UTF_8).length;
+        if (byteLength > MAX_EDITABLE_REPORT_BYTES) {
+            throw new IllegalStateException("ReportContentTooLarge: HTML 内容不能超过 2 MB");
+        }
+        String normalized = html.toLowerCase(Locale.ROOT);
+        if (!normalized.contains("<html") && !normalized.contains("<!doctype html")) {
+            throw new IllegalStateException("ReportContentInvalid: 内容必须是完整 HTML 文档");
+        }
+    }
+
+    private record OwnedReport(Path primary, Path backup, String relativePath) {}
 }

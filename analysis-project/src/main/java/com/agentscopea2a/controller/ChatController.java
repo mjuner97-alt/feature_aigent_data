@@ -17,8 +17,7 @@ package com.agentscopea2a.controller;
 
 import com.agentscopea2a.dto.ChatRequest;
 import com.agentscopea2a.v2.routing.V2SessionRouter;
-import com.agentscopea2a.v2.service.ChatStreamService;
-import com.agentscopea2a.v2.service.V2ChatStreamService;
+import com.agentscopea2a.v2.skillManager.service.SkillFlowChatRouter;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,7 +29,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import java.util.UUID;
 
 /**
- * v2 入口控制器：SSE 流式接口，委托给 {@link V2ChatStreamService}。
+ * 公开 Chat 入口控制器：SSE 流式接口，委托给 {@link SkillFlowChatRouter}。
  *
  * <p>阶段 1-2 提供了最小冒烟测试端点。阶段 6 升级为完整的流式处理：
  * <ul>
@@ -52,12 +51,12 @@ public class ChatController {
 
     private static final Logger log = LoggerFactory.getLogger(ChatController.class);
 
-    private final ChatStreamService chatStreamService;
     private final V2SessionRouter sessionRouter;
+    private final SkillFlowChatRouter skillFlowChatRouter;
 
-    public ChatController(ChatStreamService chatStreamService, V2SessionRouter sessionRouter) {
-        this.chatStreamService = chatStreamService;
+    public ChatController(V2SessionRouter sessionRouter, SkillFlowChatRouter skillFlowChatRouter) {
         this.sessionRouter = sessionRouter;
+        this.skillFlowChatRouter = skillFlowChatRouter;
     }
 
     @PostMapping(value = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -65,7 +64,7 @@ public class ChatController {
         // 统一归一化：chatId（公开入口）和 conversationId（Manager入口）是同一字段
         normalizeConversationId(req);
         // agentName 有无决定 Manager / Public 返回风格，由 service 内部判断
-        return chatStreamService.stream(req);
+        return skillFlowChatRouter.route(req);
     }
 
     /**

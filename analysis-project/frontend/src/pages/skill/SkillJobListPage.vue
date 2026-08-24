@@ -5,13 +5,17 @@
  * 功能：列表查看、搜索筛选、创建/编辑/删除、触发执行、查看执行记录
  */
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue';
-import { listJobs, listExecutionCenter, deleteJob, triggerJob, updateJob, viewExecutionFile } from '../../api/skillJob';
+import { Download, EditPen, View } from '@element-plus/icons-vue';
+import { downloadExecutionFile, listJobs, listExecutionCenter, deleteJob, triggerJob, updateJob, viewExecutionFile } from '../../api/skillJob';
 import { currentUserId } from '../../api/skill';
 import { listMetrics } from '../../api/skillDependencyMetric';
 import type { SkillJob, SkillJobExecution } from '../../types/skillJob';
 import SkillJobFormDrawer from '../../components/SkillJobFormDrawer.vue';
 import SkillJobExecutionDrawer from '../../components/SkillJobExecutionDrawer.vue';
 import SkillJobNotificationDrawer from '../../components/SkillJobNotificationDrawer.vue';
+import SkillJobReportEditorDrawer from '../../components/SkillJobReportEditorDrawer.vue';
+import SkillFlowList from '../../components/SkillFlowList.vue';
+import SkillFlowExecutionList from '../../components/SkillFlowExecutionList.vue';
 
 const me = currentUserId();
 function isOwner(job: SkillJob) {
@@ -28,7 +32,14 @@ const loading = ref(false);
 const keyword = ref('');
 const enabledFilter = ref<boolean | null>(null);
 const createdBy = ref('');
-const activeTab = ref<'manage' | 'execution'>('manage');
+// 长任务流程（多 Skill 并行流）：入口已放开
+const showSkillFlow = true;
+const activeTab = ref<'manage' | 'flows' | 'execution' | 'flow-execution'>('manage');
+const flowKeyword = ref('');
+const flowCreatedBy = ref('');
+const flowEnabledFilter = ref<boolean | null>(null);
+const flowListRef = ref<InstanceType<typeof SkillFlowList> | null>(null);
+const flowExecutionListRef = ref<InstanceType<typeof SkillFlowExecutionList> | null>(null);
 const centerExecutions = ref<SkillJobExecution[]>([]);
 const executionLoading = ref(false);
 const executionError = ref('');
@@ -84,6 +95,9 @@ const notifyOpen = ref(false);
 const notifyExecId = ref<number | null>(null);
 const notifyCanResend = ref(false);
 const viewing = ref<Set<number>>(new Set());
+const downloading = ref<Set<number>>(new Set());
+const reportEditorOpen = ref(false);
+const reportEditorExecutionId = ref<number | null>(null);
 
 // 依赖指标描述缓存 (id -> description), 列表 hover 查看描述
 const metricDescMap = ref<Record<number, string>>({});
@@ -128,13 +142,35 @@ function openExecutionCenter() {
   loadExecutionCenter();
 }
 
+function filterFlows() {
+  flowListRef.value?.load(flowKeyword.value, flowCreatedBy.value, flowEnabledFilter.value ?? undefined);
+}
+
+function createFlow() {
+  flowListRef.value?.create();
+}
+
+function openFlowExecutions() {
+  activeTab.value = 'flow-execution';
+}
+
+function refreshCurrentTab() {
+  if (activeTab.value === 'manage') load();
+  else if (activeTab.value === 'flows') filterFlows();
+  else if (activeTab.value === 'execution') loadExecutionCenter();
+}
+
 function filterExecutionCenter() {
-  executionPage.value = 1;
-  loadExecutionCenter();
+  if (activeTab.value === 'flow-execution') {
+    flowExecutionListRef.value?.load(executionStatusFilter.value, executionCreatedBy.value);
+  } else {
+    executionPage.value = 1;
+    loadExecutionCenter();
+  }
 }
 
 function executionStatus(status: string): string {
-  return { RUNNING: '运行中', PENDING: '排队中', SUCCESS: '成功', FAILED: '失败', SKIPPED: '已跳过' }[status] || status;
+  return { RUNNING: '运行中', PENDING: '排队中', SUCCESS: '成功', FAILED: '失败', SKIPPED: '未执行' }[status] || status;
 }
 
 function triggerLabel(triggerType: string): string {
@@ -147,7 +183,7 @@ function executionStatusClass(status: string): string {
 
 function notificationStatus(status?: string | null): string {
   if (!status) return '暂无记录';
-  return { PENDING: '等待发送', SENDING: '发送中', SUCCESS: '已提交通知平台', FAILED: '发送失败', SKIPPED: '未发送' }[status] || status;
+  return { PENDING: '等待发送', SENDING: '发送中', SUCCESS: '已提交通知平台', FAILED: '发送失败', SKIPPED: '通知未启用' }[status] || status;
 }
 
 function notificationStatusClass(status?: string | null): string {
@@ -175,6 +211,32 @@ async function viewCenterReport(exec: SkillJobExecution) {
   } finally {
     viewing.value.delete(exec.id);
   }
+}
+
+async function downloadCenterReport(exec: SkillJobExecution) {
+  if (downloading.value.has(exec.id)) return;
+  downloading.value.add(exec.id);
+  try {
+    await downloadExecutionFile(exec.id);
+  } catch (e) {
+    alert(e instanceof Error ? e.message : '下载失败');
+  } finally {
+    downloading.value.delete(exec.id);
+  }
+}
+
+function editCenterReport(exec: SkillJobExecution) {
+  reportEditorExecutionId.value = exec.id;
+  reportEditorOpen.value = true;
+}
+
+function executionReason(message?: string): string {
+  if (!message) return '';
+  if (message.startsWith('JobNotFound')) return '任务不存在';
+  if (message.startsWith('JobDisabled')) return '任务已禁用';
+  if (message.startsWith('JobNotConfigured')) return '任务配置不完整';
+  if (message.startsWith('SkillPermissionDenied')) return 'Skill 权限失效';
+  return message;
 }
 
 async function load() {
@@ -270,7 +332,7 @@ function metricTitle(job: SkillJob): string {
 <template>
   <div class="job-page">
     <div class="page-header">
-      <h2>{{ activeTab === 'manage' ? '定时任务管理' : '执行中心' }}</h2>
+      <h2>定时任务</h2>
       <div class="header-actions">
         <template v-if="activeTab === 'manage'">
           <input v-model="keyword" placeholder="搜索任务名称…" class="search-input" @keyup.enter="filterJobs" />
@@ -282,7 +344,17 @@ function metricTitle(job: SkillJob): string {
           </select>
           <button class="btn primary" @click="openCreate">+ 创建任务</button>
         </template>
-        <template v-else>
+        <template v-else-if="activeTab === 'flows'">
+          <input v-model="flowKeyword" placeholder="搜索流程名称…" class="search-input" @keyup.enter="filterFlows" />
+          <input v-model="flowCreatedBy" placeholder="创建人 userId" class="search-input creator-input" @keyup.enter="filterFlows" />
+          <select v-model="flowEnabledFilter" class="filter-select" @change="filterFlows">
+            <option :value="null">全部状态</option>
+            <option :value="true">已启用</option>
+            <option :value="false">已禁用</option>
+          </select>
+          <button class="btn primary" @click="createFlow">+ 创建流程</button>
+        </template>
+        <template v-else-if="activeTab === 'execution' || activeTab === 'flow-execution'">
           <input v-model="executionCreatedBy" placeholder="创建人 userId" class="search-input creator-input" @keyup.enter="filterExecutionCenter" />
           <select v-model="executionStatusFilter" class="filter-select" @change="filterExecutionCenter">
             <option value="">全部状态</option>
@@ -290,19 +362,25 @@ function metricTitle(job: SkillJob): string {
             <option value="PENDING">排队中</option>
             <option value="SUCCESS">成功</option>
             <option value="FAILED">失败</option>
-            <option value="SKIPPED">已跳过</option>
+            <option value="SKIPPED">未执行</option>
           </select>
         </template>
-        <button class="btn ghost" @click="activeTab === 'manage' ? load() : loadExecutionCenter()">刷新</button>
+        <button v-if="activeTab === 'manage' || activeTab === 'flows'" class="btn ghost" @click="refreshCurrentTab">刷新</button>
+        <button v-else-if="activeTab === 'execution' || activeTab === 'flow-execution'" class="btn ghost" @click="filterExecutionCenter">刷新</button>
       </div>
     </div>
 
     <div class="job-tabs" role="tablist">
-      <button class="job-tab" :class="{ active: activeTab === 'manage' }" @click="activeTab = 'manage'">定时任务管理</button>
-      <button class="job-tab" :class="{ active: activeTab === 'execution' }" @click="openExecutionCenter">执行中心</button>
+      <button class="job-tab" :class="{ active: activeTab === 'manage' }" @click="activeTab = 'manage'">独立任务</button>
+      <button v-if="showSkillFlow" class="job-tab" :class="{ active: activeTab === 'flows' }" @click="activeTab = 'flows'">长任务流程</button>
+      <button class="job-tab" :class="{ active: activeTab === 'execution' }" @click="openExecutionCenter">执行记录</button>
+      <button v-if="showSkillFlow" class="job-tab" :class="{ active: activeTab === 'flow-execution' }" @click="activeTab = 'flow-execution'">长任务执行记录</button>
     </div>
 
-    <template v-if="activeTab === 'execution'">
+    <SkillFlowList v-if="activeTab === 'flows'" ref="flowListRef" @view-records="openFlowExecutions" />
+    <SkillFlowExecutionList v-else-if="activeTab === 'flow-execution'" ref="flowExecutionListRef" />
+
+    <template v-else-if="activeTab === 'execution'">
       <div v-if="executionError" class="center-error">{{ executionError }}</div>
       <div v-if="executionLoading" class="loading">加载中…</div>
       <div v-else-if="centerExecutions.length === 0" class="empty"><p>暂无符合条件的执行记录</p></div>
@@ -318,14 +396,23 @@ function metricTitle(job: SkillJob): string {
               <td>
                 <span class="status-badge" :class="executionStatusClass(exec.status)">{{ executionStatus(exec.status) }}</span>
                 <span v-if="exec.status === 'PENDING' && exec.queueAhead != null" class="queue-hint">{{ exec.queueAhead === 0 ? '即将执行' : `前面 ${exec.queueAhead} 个` }}</span>
+                <span v-if="(exec.status === 'SKIPPED' || exec.status === 'FAILED') && exec.errorMsg" class="execution-reason" :class="{ failed: exec.status === 'FAILED' }" :title="exec.errorMsg">{{ executionReason(exec.errorMsg) }}</span>
               </td>
               <td><span class="notify-badge" :class="notificationStatusClass(exec.latestNotificationStatus)">{{ notificationStatus(exec.latestNotificationStatus) }}</span></td>
               <td class="col-time">{{ fmtTime(exec.createdAt) }}</td>
               <td>#{{ exec.id }}</td>
               <td class="col-actions">
-                <button v-if="exec.mdFileExists && exec.createdBy === me" class="btn-action" :disabled="viewing.has(exec.id)" @click="viewCenterReport(exec)">
-                  {{ viewing.has(exec.id) ? '打开中…' : '查看报告' }}
-                </button>
+                <template v-if="exec.mdFileExists && exec.createdBy === me">
+                  <button class="btn-action with-icon" :disabled="viewing.has(exec.id)" title="预览报告" @click="viewCenterReport(exec)">
+                    <el-icon><View /></el-icon><span>{{ viewing.has(exec.id) ? '打开中…' : '预览' }}</span>
+                  </button>
+                  <button class="btn-action with-icon" title="编辑 HTML" @click="editCenterReport(exec)">
+                    <el-icon><EditPen /></el-icon><span>编辑</span>
+                  </button>
+                  <button class="btn-action with-icon" :disabled="downloading.has(exec.id)" title="下载 HTML" @click="downloadCenterReport(exec)">
+                    <el-icon><Download /></el-icon><span>{{ downloading.has(exec.id) ? '下载中…' : '下载' }}</span>
+                  </button>
+                </template>
                 <button class="btn-action" :disabled="exec.createdBy !== me" :title="exec.createdBy === me ? '' : '仅任务创建人可查看通知'" @click="openNotifications(exec)">通知记录</button>
               </td>
             </tr>
@@ -418,6 +505,11 @@ function metricTitle(job: SkillJob): string {
     <SkillJobExecutionDrawer v-model:open="execOpen" :job-id="execJobId" :can-download="execCanDownload" />
     </template>
     <SkillJobNotificationDrawer v-model:open="notifyOpen" :exec-id="notifyExecId" :can-resend="notifyCanResend" @changed="loadExecutionCenter(true)" />
+    <SkillJobReportEditorDrawer
+      v-model:open="reportEditorOpen"
+      :execution-id="reportEditorExecutionId"
+      @saved="loadExecutionCenter(true)"
+    />
   </div>
 </template>
 
@@ -443,6 +535,9 @@ function metricTitle(job: SkillJob): string {
 .st-pending { background: #fef3c7; color: #a16207; }
 .st-success { background: #dcfce7; color: #166534; }
 .st-failed { background: #fee2e2; color: #991b1b; }
+.execution-reason { display: block; max-width: 180px; margin-top: 4px; color: #64748b; font-size: 11px; white-space: normal; }
+.execution-reason.failed { color: #b91c1c; }
+.btn-action.with-icon { display: inline-flex; align-items: center; gap: 3px; }
 
 .toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #16a34a; color: #fff; padding: 8px 20px; border-radius: 8px; font-size: 14px; z-index: 2000; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
 .center-error { margin-bottom: 12px; padding: 9px 12px; border: 1px solid #fecaca; border-radius: 5px; background: #fef2f2; color: #b91c1c; font-size: 13px; }

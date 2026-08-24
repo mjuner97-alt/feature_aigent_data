@@ -261,9 +261,9 @@ public class DatabaseSkillRepository implements AgentSkillRepository {
                 }
                 try {
                     // DB 存的是相对路径 {userId}/{filename},须拼 baseDir 解析成绝对路径
-                    // (与 SkillFileService.resolveStoragePath 一致);Paths.get 在第二参为绝对路径时
-                    // 忽略 baseDir,故历史绝对路径记录同样兼容。
-                    Path path = Paths.get(baseDir, file.getStoragePath());
+                    // (与 SkillFileService.resolveStoragePath 一致,历史反斜杠记录归一化成 "/")
+                    // Paths.get 在第二参为绝对路径时忽略 baseDir,故历史绝对路径记录同样兼容。
+                    Path path = Paths.get(baseDir, file.getStoragePath().replace('\\', '/'));
                     // key 用绝对路径(统一成正斜杠,避免 Windows 反斜杠在 JSON 工具参数里转义出错)。
                     // SkillLoadTool.loadOne 按 key 精确匹配(无 sanitize/normalize),故 LLM 须经
                     // load_skill_through_path(path=<此绝对路径>) 读取;找不到时工具会回显 Available resources 列表。

@@ -1,5 +1,7 @@
 package com.agentscopea2a.v2.skillManager.report;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,6 +36,7 @@ import java.util.regex.Pattern;
 public class HtmlReportRenderer {
 
     private static final Logger log = LoggerFactory.getLogger(HtmlReportRenderer.class);
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     /** classpath 下的 echarts.min.js 资源路径。 */
     private static final String ECHARTS_RESOURCE = "report-assets/echarts.min.js";
@@ -109,6 +112,11 @@ public class HtmlReportRenderer {
     private static final Pattern SCRIPT_BLOCK = Pattern.compile("<script\\b[^>]*>[\\s\\S]*?</script>", Pattern.CASE_INSENSITIVE);
     private static final Pattern SCRIPT_OPEN = Pattern.compile("<script\\b[^>]*>", Pattern.CASE_INSENSITIVE);
     private static final Pattern SCRIPT_CLOSE = Pattern.compile("</script\\s*>", Pattern.CASE_INSENSITIVE);
+    private static final Pattern COMPLETE_HTML_START =
+            Pattern.compile("<!doctype\\b[^>]*>|<html\\b[^>]*>", Pattern.CASE_INSENSITIVE);
+    private static final Pattern HTML_CLOSE = Pattern.compile("</html\\s*>", Pattern.CASE_INSENSITIVE);
+    private static final Pattern WHOLE_MARKDOWN_FENCE = Pattern.compile(
+            "^\\s*```[^\\r\\n]*\\R([\\s\\S]*?)\\R?```\\s*$", Pattern.CASE_INSENSITIVE);
 
     /** 内联 CSS：复用前端 Markdown.vue LIGHT 主题，表格斑马纹/边框/表头底色。 */
     private static final String CSS = """
@@ -136,7 +144,12 @@ public class HtmlReportRenderer {
             li{margin:2px 0}
             a{color:#6366f1;text-decoration:none}
             a:hover{text-decoration:underline}
-            .echarts-chart{width:100%;height:400px;margin:12px 0}
+            .echarts-shell{position:relative;width:100%;margin:12px 0;background:#fff}
+            .echarts-chart{width:100%;height:400px}
+            .echarts-fullscreen{position:absolute;z-index:2;top:8px;right:8px;width:32px;height:32px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;color:#334155;cursor:pointer;font-size:18px;line-height:28px}
+            .echarts-fullscreen:hover{background:#f8fafc;color:#0f172a}
+            .echarts-shell:fullscreen{padding:48px 16px 16px;background:#fff}
+            .echarts-shell:fullscreen .echarts-chart{height:calc(100vh - 64px)}
             """;
 
     /**
@@ -145,7 +158,7 @@ public class HtmlReportRenderer {
      * AI 产出的 echarts option 常出现 lineStyle/itemStyle 颜色不一致导致图例与圆圈撞色，此处兜底修正。
      */
     private static final String CHART_NORMALIZE_JS = """
-            function normalizeChartOption(opt){
+            function normalizeChartOption(opt,chartWidth){
               if(!opt||typeof opt!=='object'||!opt.series||!opt.series.length) return opt;
               var colorByName={};
               for(var i=0;i<opt.series.length;i++){
@@ -162,6 +175,46 @@ public class HtmlReportRenderer {
                   var d=opt.legend.data[j]; if(typeof d!=='object'||d===null) continue;
                   var sc=colorByName[d.name];
                   if(sc&&d.itemStyle&&d.itemStyle.color&&d.itemStyle.color!==sc){ d.itemStyle.color=sc; }
+                }
+              }
+              var zoomable=false,hasBar=false;
+              for(var k=0;k<opt.series.length;k++){
+                var series=opt.series[k];
+                if(series&&(series.type==='line'||series.type==='bar')){ zoomable=true; }
+                if(series&&series.type==='bar'){ hasBar=true; }
+              }
+              if(!opt.dataZoom){
+                if(zoomable&&opt.xAxis&&opt.yAxis){
+                  opt.dataZoom=[{type:'inside',xAxisIndex:0,filterMode:'filter'},
+                                {type:'slider',xAxisIndex:0,height:22,bottom:8}];
+                }
+              }
+              if(hasBar&&opt.xAxis&&opt.yAxis){
+                if(!opt.grid){ opt.grid={}; }
+                var grids=Array.isArray(opt.grid)?opt.grid:[opt.grid];
+                for(var g=0;g<grids.length;g++){
+                  var grid=grids[g]; if(!grid) continue;
+                  if(grid.containLabel===undefined){ grid.containLabel=true; }
+                  if(grid.bottom===undefined){ grid.bottom=72; }
+                }
+                var xAxes=Array.isArray(opt.xAxis)?opt.xAxis:[opt.xAxis];
+                for(var a=0;a<xAxes.length;a++){
+                  var axis=xAxes[a]; if(!axis||axis.type!=='category') continue;
+                  if(!axis.axisLabel){ axis.axisLabel={}; }
+                  var axisLabel=axis.axisLabel;
+                  if(axisLabel.interval===undefined){ axisLabel.interval=0; }
+                  var categories=Array.isArray(axis.data)?axis.data:[];
+                  var maxCategoryLength=0;
+                  for(var c=0;c<categories.length;c++){
+                    maxCategoryLength=Math.max(maxCategoryLength,String(categories[c]??'').length);
+                  }
+                  if(axisLabel.rotate===undefined||axisLabel.__reportAutoRotate){
+                    var narrow=chartWidth&&chartWidth<640;
+                    axisLabel.rotate=(narrow||maxCategoryLength>8)?45:0;
+                    if(!axisLabel.__reportAutoRotate){
+                      Object.defineProperty(axisLabel,'__reportAutoRotate',{value:true,writable:true,enumerable:false});
+                    }
+                  }
                 }
               }
               return opt;
@@ -195,13 +248,11 @@ public class HtmlReportRenderer {
         String md = markdown == null ? "" : markdown;
         String safeTitle = escapeHtml(title == null ? "报告" : title);
 
-        // AI 偶尔直出完整 HTML 文档（以 <!DOCTYPE/<html 开头且含 <body>）：抽取 body 内嵌 HTML
+        // AI 偶尔把完整 HTML 包在 Markdown 围栏、JSON 字符串或生成器说明文字中。
         // 原样渲染，不走 markdown 转换；<head> 的 <style> 保留注入，<script> 移除防注入
-        String leading = md.stripLeading();
-        if ((leading.regionMatches(true, 0, "<!DOCTYPE", 0, 9)
-                || leading.regionMatches(true, 0, "<html", 0, 5))
-                && BODY_OPEN_FULL.matcher(md).find()) {
-            return renderCompleteHtml(md, safeTitle);
+        String completeHtml = extractCompleteHtml(md);
+        if (completeHtml != null) {
+            return renderCompleteHtml(completeHtml, safeTitle);
         }
 
         // 1. 按图表块切分（```echarts 围栏 + <echart>/<echarts> 标签两种形式）：
@@ -210,6 +261,50 @@ public class HtmlReportRenderer {
         List<ChartBlock> charts = splitCharts(md, body, true);
 
         return assembleHtml(safeTitle, body.toString(), charts, "");
+    }
+
+    /** 从围栏、JSON 文本值或带前置说明的输入中提取一份结构完整的 HTML 文档。 */
+    private String extractCompleteHtml(String input) {
+        if (input == null || input.isBlank()) return null;
+        String candidate = input.charAt(0) == '\ufeff' ? input.substring(1) : input;
+        Matcher fence = WHOLE_MARKDOWN_FENCE.matcher(candidate);
+        if (fence.matches()) candidate = fence.group(1).trim();
+
+        String trimmed = candidate.stripLeading();
+        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+            try {
+                String fromJson = findCompleteHtmlInJson(JSON.readTree(trimmed));
+                if (fromJson != null) return fromJson;
+            } catch (Exception ignored) {
+                // 不是合法 JSON 时继续按普通文本检查，最终仍可回退 Markdown 渲染。
+            }
+        }
+        return findCompleteHtmlDocument(candidate);
+    }
+
+    private String findCompleteHtmlInJson(JsonNode node) {
+        if (node == null) return null;
+        if (node.isTextual()) return findCompleteHtmlDocument(node.textValue());
+        if (node.isContainerNode()) {
+            for (JsonNode child : node) {
+                String found = findCompleteHtmlInJson(child);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    private String findCompleteHtmlDocument(String text) {
+        if (text == null) return null;
+        Matcher start = COMPLETE_HTML_START.matcher(text);
+        while (start.find()) {
+            Matcher body = BODY_OPEN_FULL.matcher(text);
+            if (!body.find(start.start())) continue;
+            Matcher close = HTML_CLOSE.matcher(text);
+            int end = close.find(body.end()) ? close.end() : text.length();
+            return text.substring(start.start(), end).trim();
+        }
+        return null;
     }
 
     /**
@@ -272,7 +367,11 @@ public class HtmlReportRenderer {
             // 围栏块取 g1；标签块取 g3 并去掉标签内容里可能残留的 ``` 围栏
             String json = (m.group(1) != null ? m.group(1) : stripFences(m.group(3))).trim();
             String chartId = "echarts-" + idx;
-            body.append("<div class=\"echarts-chart\" id=\"").append(chartId).append("\"></div>\n");
+            body.append("<div class=\"echarts-shell\" id=\"").append(chartId).append("-shell\">")
+                    .append("<button class=\"echarts-fullscreen\" type=\"button\" title=\"全屏查看\" ")
+                    .append("aria-label=\"全屏查看\" data-chart-fullscreen=\"").append(chartId).append("-shell\">")
+                    .append("&#x26F6;</button><div class=\"echarts-chart\" id=\"")
+                    .append(chartId).append("\"></div></div>\n");
             charts.add(new ChartBlock(chartId, json));
             idx++;
             last = m.end();
@@ -318,11 +417,24 @@ public class HtmlReportRenderer {
             for (int i = 0; i < charts.size(); i++) {
                 if (i > 0) sb.append(',');
                 ChartBlock c = charts.get(i);
-                sb.append("{id:").append(jsString(c.id)).append(",option:normalizeChartOption(")
-                  .append(safeOptionJson(c.json)).append(")}");
+                sb.append("{id:").append(jsString(c.id)).append(",option:")
+                  .append(safeOptionJson(c.json)).append("}");
             }
-            sb.append("];for(var i=0;i<charts.length;i++){var el=document.getElementById(charts[i].id);");
-            sb.append("if(el){echarts.init(el).setOption(charts[i].option);}}});</script>");
+            sb.append("];var chartInstances=[];for(var i=0;i<charts.length;i++){var el=document.getElementById(charts[i].id);");
+            sb.append("if(el){var chart=echarts.init(el);var option=normalizeChartOption(charts[i].option,el.clientWidth);")
+                    .append("chart.setOption(option);chartInstances.push({chart:chart,option:option,el:el});}}")
+                    .append("function applyResponsiveChartLayout(entry){var chart=entry.chart;")
+                    .append("if(chart&&!chart.isDisposed()){var option=normalizeChartOption(entry.option,entry.el.clientWidth);")
+                    .append("chart.setOption(option);chart.resize();}}")
+                    .append("function resizeCharts(){for(var j=0;j<chartInstances.length;j++){applyResponsiveChartLayout(chartInstances[j]);}}")
+                    .append("var buttons=document.querySelectorAll('[data-chart-fullscreen]');")
+                    .append("for(var b=0;b<buttons.length;b++){buttons[b].addEventListener('click',function(){")
+                    .append("var shell=document.getElementById(this.getAttribute('data-chart-fullscreen'));")
+                    .append("if(document.fullscreenElement===shell){document.exitFullscreen();}")
+                    .append("else if(shell&&shell.requestFullscreen){shell.requestFullscreen();}});}")
+                    .append("window.addEventListener('resize',resizeCharts);")
+                    .append("document.addEventListener('fullscreenchange',function(){setTimeout(resizeCharts,0);});")
+                    .append("});</script>");
         }
         sb.append("</body></html>");
         return sb.toString();

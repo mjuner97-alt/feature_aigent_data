@@ -444,7 +444,7 @@ public class SkillManageController {
      */
     @DeleteMapping("/skills/{id}/files/{fileId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void removeFileReference(@PathVariable(name = "id") Long id, @PathVariable Long fileId,
+    public void removeFileReference(@PathVariable(name = "id") Long id, @PathVariable(name = "fileId") Long fileId,
                                     @RequestHeader("X-User-Id") String userId) {
         skillService.removeFileReference(id, fileId, userId);
     }

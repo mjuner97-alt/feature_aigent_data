@@ -8,6 +8,7 @@ import com.agentscopea2a.v2.skillManager.dto.SkillJobCreateRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobDto;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobExecutionDto;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobNotificationDto;
+import com.agentscopea2a.v2.skillManager.dto.SkillJobReportUpdateRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobUpdateRequest;
 import com.agentscopea2a.v2.skillManager.service.SkillJobService;
 import com.agentscopea2a.v2.util.DownloadErrorPage;
@@ -167,6 +168,30 @@ public class SkillJobController {
         }
     }
 
+    /** Return the editable UTF-8 HTML source for an owned execution report. */
+    @GetMapping(value = "/executions/{execId}/source", produces = "text/html;charset=UTF-8")
+    public ResponseEntity<String> getExecutionReportSource(
+            @PathVariable(name = "execId") Long execId,
+            @RequestHeader("X-User-Id") String userId) {
+        return ResponseEntity.ok()
+                .contentType(new MediaType(MediaType.TEXT_HTML, StandardCharsets.UTF_8))
+                .body(service.readExecutionReportSource(execId, userId));
+    }
+
+    /** Replace the current HTML report source. Uploading a separate file is intentionally unsupported. */
+    @PutMapping(value = "/executions/{execId}/source",
+            consumes = MediaType.APPLICATION_JSON_VALUE,
+            produces = "text/html;charset=UTF-8")
+    public ResponseEntity<String> updateExecutionReportSource(
+            @PathVariable(name = "execId") Long execId,
+            @RequestHeader("X-User-Id") String userId,
+            @RequestBody SkillJobReportUpdateRequest request) {
+        return ResponseEntity.ok()
+                .contentType(new MediaType(MediaType.TEXT_HTML, StandardCharsets.UTF_8))
+                .body(service.updateExecutionReportSource(execId, userId,
+                        request == null ? null : request.html()));
+    }
+
     /**
      * 下载/查看执行记录对应的报告文件（通知邮件入口：短链 shortCode 即访问凭据，无登录；.html 走 inline 浏览器渲染）。
      * shortCode 由 UrlShortenerService 生成、映射到 "skilljob-exec:{execId}"，不可枚举。
@@ -250,8 +275,9 @@ public class SkillJobController {
 
     /** 列出启用的依赖指标（前端下拉用，admin 预置只读） */
     @GetMapping("/metrics")
-    public List<SkillDependencyMetricDto> listMetrics() {
-        return service.listMetrics();
+    public List<SkillDependencyMetricDto> listMetrics(
+            @RequestParam(name = "keyword", required = false) String keyword) {
+        return service.listMetrics(keyword);
     }
 
     /**

@@ -8,8 +8,11 @@ function authHeaders(): Record<string, string> {
 }
 
 /** 列出启用的依赖指标（下拉用，admin 预置只读） */
-export async function listMetrics(): Promise<SkillDependencyMetric[]> {
-  const res = await fetch(BASE, { headers: authHeaders() });
+export async function listMetrics(keyword?: string): Promise<SkillDependencyMetric[]> {
+  const qs = new URLSearchParams();
+  if (keyword?.trim()) qs.set('keyword', keyword.trim());
+  const suffix = qs.toString() ? `?${qs.toString()}` : '';
+  const res = await fetch(`${BASE}${suffix}`, { headers: authHeaders() });
   if (!res.ok) throw await apiError(res, `查询依赖指标失败 (HTTP ${res.status})`);
   return res.json();
 }

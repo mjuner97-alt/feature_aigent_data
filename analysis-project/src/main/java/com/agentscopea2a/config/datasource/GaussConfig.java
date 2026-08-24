@@ -59,7 +59,7 @@ import javax.sql.DataSource;
 @Configuration
 @ConditionalOnProperty(prefix = "spring.datasource.hikari.gauss", name = "enabled", havingValue = "true")
 @MapperScan(
-        basePackages = {GaussConfig.MAPPER_PACKAGE_1, GaussConfig.MAPPER_PACKAGE_2, GaussConfig.MAPPER_PACKAGE_3, GaussConfig.MAPPER_PACKAGE_4},
+        basePackages = {GaussConfig.MAPPER_PACKAGE_1, GaussConfig.MAPPER_PACKAGE_2, GaussConfig.MAPPER_PACKAGE_3, GaussConfig.MAPPER_PACKAGE_4, GaussConfig.MAPPER_PACKAGE_5},
         sqlSessionFactoryRef = GaussConfig.SSF_NAME)
 public class GaussConfig {
 
@@ -70,6 +70,7 @@ public class GaussConfig {
     static final String MAPPER_PACKAGE_2 = "com.agentscopea2a.v2.skillManager.mapper";
     static final String MAPPER_PACKAGE_3 = "com.agentscopea2a.v2.auth.mapper";
     static final String MAPPER_PACKAGE_4 = "com.agentscopea2a.mapper.gauss";
+    static final String MAPPER_PACKAGE_5 = "com.agentscopea2a.v2.skillManager.mapper";
     static final String MAPPER_XML_1 = "classpath*:mybatis/mapper/db1/*.xml";
     static final String MAPPER_XML_2 = "classpath*:mybatis/mapper/gauss/*.xml";
 

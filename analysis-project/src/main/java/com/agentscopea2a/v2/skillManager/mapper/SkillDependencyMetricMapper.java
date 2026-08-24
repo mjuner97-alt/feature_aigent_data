@@ -28,7 +28,7 @@ import java.util.List;
 public interface SkillDependencyMetricMapper {
 
     /** 列出启用的指标（前端下拉用） */
-    List<SkillDependencyMetric> selectAllEnabled();
+    List<SkillDependencyMetric> selectAllEnabled(@Param("keyword") String keyword);
 
     /** 按业务编码查询（triggerByMetric 入口用） */
     SkillDependencyMetric selectByCode(@Param("code") String code);

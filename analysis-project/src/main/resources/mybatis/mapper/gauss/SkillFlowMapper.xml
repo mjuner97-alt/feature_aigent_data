@@ -1,0 +1,300 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper">
+
+    <resultMap id="FlowMap" type="com.agentscopea2a.v2.skillManager.entity.SkillFlow">
+        <id column="id" property="id"/>
+        <result column="code" property="code"/>
+        <result column="name" property="name"/>
+        <result column="description" property="description"/>
+        <result column="task_question" property="taskQuestion"/>
+        <result column="summary_question_template" property="summaryQuestionTemplate"/>
+        <result column="enabled" property="enabled"/>
+        <result column="max_parallelism" property="maxParallelism"/>
+        <result column="notify_enabled" property="notifyEnabled"/>
+        <result column="created_by" property="createdBy"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+        <result column="deleted_at" property="deletedAt"/>
+    </resultMap>
+
+    <resultMap id="NodeMap" type="com.agentscopea2a.v2.skillManager.entity.SkillFlowNode">
+        <id column="id" property="id"/>
+        <result column="flow_id" property="flowId"/>
+        <result column="node_key" property="nodeKey"/>
+        <result column="skill_id" property="skillId"/>
+        <result column="question_template" property="questionTemplate"/>
+        <result column="depends_on_json" property="dependsOnJson"/>
+        <result column="required" property="required"/>
+        <result column="max_attempts" property="maxAttempts"/>
+        <result column="sort_order" property="sortOrder"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <resultMap id="TriggerMap" type="com.agentscopea2a.v2.skillManager.entity.SkillFlowTrigger">
+        <id column="id" property="id"/>
+        <result column="flow_id" property="flowId"/>
+        <result column="keyword" property="keyword"/>
+        <result column="normalized_keyword" property="normalizedKeyword"/>
+        <result column="priority" property="priority"/>
+        <result column="enabled" property="enabled"/>
+        <result column="created_by" property="createdBy"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <resultMap id="ReadinessMap" type="com.agentscopea2a.v2.skillManager.entity.SkillMetricReadiness">
+        <id column="id" property="id"/>
+        <result column="metric_id" property="metricId"/>
+        <result column="metric_code" property="metricCode"/>
+        <result column="data_date" property="dataDate"/>
+        <result column="status" property="status" javaType="com.agentscopea2a.v2.skillManager.entity.MetricReadinessStatus"/>
+        <result column="ready_at" property="readyAt"/>
+        <result column="expires_at" property="expiresAt"/>
+        <result column="metadata_json" property="metadataJson"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <resultMap id="ExecutionMap" type="com.agentscopea2a.v2.skillManager.entity.SkillFlowExecution">
+        <id column="id" property="id"/>
+        <result column="flow_id" property="flowId"/>
+        <result column="flow_code" property="flowCode"/>
+        <result column="flow_name" property="flowName"/>
+        <result column="summary_question_template_snapshot" property="summaryQuestionTemplateSnapshot"/>
+        <result column="max_parallelism_snapshot" property="maxParallelismSnapshot"/>
+        <result column="notify_enabled_snapshot" property="notifyEnabledSnapshot"/>
+        <result column="trigger_type" property="triggerType" javaType="com.agentscopea2a.v2.skillManager.entity.FlowTriggerType"/>
+        <result column="trigger_user_id" property="triggerUserId"/>
+        <result column="conversation_id" property="conversationId"/>
+        <result column="original_question" property="originalQuestion"/>
+        <result column="data_date" property="dataDate"/>
+        <result column="status" property="status" javaType="com.agentscopea2a.v2.skillManager.entity.FlowExecutionStatus"/>
+        <result column="active_guard_key" property="activeGuardKey"/>
+        <result column="required_metric_count" property="requiredMetricCount"/>
+        <result column="ready_metric_count" property="readyMetricCount"/>
+        <result column="missing_metrics_json" property="missingMetricsJson"/>
+        <result column="summary_json" property="summaryJson"/>
+        <result column="report_path" property="reportPath"/>
+        <result column="cancel_requested_at" property="cancelRequestedAt"/>
+        <result column="started_at" property="startedAt"/>
+        <result column="completed_at" property="completedAt"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <resultMap id="NodeExecutionMap" type="com.agentscopea2a.v2.skillManager.entity.SkillFlowNodeExecution">
+        <id column="id" property="id"/>
+        <result column="flow_execution_id" property="flowExecutionId"/>
+        <result column="node_key" property="nodeKey"/>
+        <result column="skill_id" property="skillId"/>
+        <result column="skill_name" property="skillName"/>
+        <result column="skill_retrieval_name" property="skillRetrievalName"/>
+        <result column="question_template_snapshot" property="questionTemplateSnapshot"/>
+        <result column="rendered_question" property="renderedQuestion"/>
+        <result column="depends_on_json" property="dependsOnJson"/>
+        <result column="required" property="required"/>
+        <result column="status" property="status" javaType="com.agentscopea2a.v2.skillManager.entity.FlowNodeExecutionStatus"/>
+        <result column="attempt_count" property="attemptCount"/>
+        <result column="max_attempts" property="maxAttempts"/>
+        <result column="next_run_at" property="nextRunAt"/>
+        <result column="lease_owner" property="leaseOwner"/>
+        <result column="lease_expires_at" property="leaseExpiresAt"/>
+        <result column="result_json" property="resultJson"/>
+        <result column="artifact_path" property="artifactPath"/>
+        <result column="error_code" property="errorCode"/>
+        <result column="error_message" property="errorMessage"/>
+        <result column="started_at" property="startedAt"/>
+        <result column="completed_at" property="completedAt"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <sql id="flowColumns">id, code, name, description, task_question, summary_question_template, enabled, max_parallelism,
+        notify_enabled, created_by, created_at, updated_at, deleted_at</sql>
+    <sql id="nodeColumns">id, flow_id, node_key, skill_id, question_template, depends_on_json, required,
+        max_attempts, sort_order, created_at, updated_at</sql>
+    <sql id="triggerColumns">id, flow_id, keyword, normalized_keyword, priority, enabled, created_by,
+        created_at, updated_at</sql>
+    <sql id="readinessColumns">id, metric_id, metric_code, data_date, status, ready_at, expires_at,
+        metadata_json, created_at, updated_at</sql>
+
+    <insert id="insertFlow" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_flow (code, name, description, task_question, summary_question_template, enabled, max_parallelism,
+                                notify_enabled, created_by)
+        VALUES (#{code}, #{name}, #{description}, #{taskQuestion}, #{summaryQuestionTemplate}, #{enabled}, #{maxParallelism},
+                #{notifyEnabled}, #{createdBy})
+    </insert>
+
+    <select id="selectFlowById" resultMap="FlowMap">
+        SELECT <include refid="flowColumns"/> FROM skill_flow WHERE id = #{id} AND deleted_at IS NULL
+    </select>
+
+    <select id="selectFlowByCode" resultMap="FlowMap">
+        SELECT <include refid="flowColumns"/> FROM skill_flow WHERE code = #{code} AND deleted_at IS NULL
+    </select>
+
+    <select id="selectFlowByName" resultMap="FlowMap">
+        SELECT <include refid="flowColumns"/> FROM skill_flow WHERE name = #{name} AND deleted_at IS NULL
+    </select>
+
+    <select id="selectEnabledFlowsByMetricId" resultMap="FlowMap">
+        SELECT DISTINCT f.*
+        FROM skill_flow f
+        JOIN skill_flow_node n ON n.flow_id = f.id
+        JOIN skill_flow_node_metric nm ON nm.flow_node_id = n.id
+        WHERE nm.metric_id = #{metricId} AND f.enabled = TRUE AND f.deleted_at IS NULL
+    </select>
+
+    <select id="selectFlows" resultMap="FlowMap">
+        SELECT <include refid="flowColumns"/> FROM skill_flow
+        WHERE deleted_at IS NULL AND created_by = #{ownerUserId}
+        <if test="enabled != null">AND enabled = #{enabled}</if>
+        <if test="keyword != null and keyword != ''">
+            AND (LOWER(name) LIKE CONCAT('%', LOWER(#{keyword}), '%')
+                 OR LOWER(code) LIKE CONCAT('%', LOWER(#{keyword}), '%'))
+        </if>
+        <if test="createdBy != null and createdBy != ''">AND created_by = #{createdBy}</if>
+        ORDER BY updated_at DESC, id DESC
+    </select>
+
+    <update id="updateFlow">
+        UPDATE skill_flow SET code=#{code}, name=#{name}, description=#{description},
+            task_question=#{taskQuestion}, summary_question_template=#{summaryQuestionTemplate}, enabled=#{enabled},
+            max_parallelism=#{maxParallelism}, notify_enabled=#{notifyEnabled}, updated_at=NOW()
+        WHERE id=#{id} AND deleted_at IS NULL
+    </update>
+
+    <update id="updateFlowEnabled">
+        UPDATE skill_flow SET enabled=#{enabled}, updated_at=NOW() WHERE id=#{id} AND deleted_at IS NULL
+    </update>
+
+    <update id="softDeleteFlow">
+        UPDATE skill_flow SET enabled=FALSE, deleted_at=NOW(), updated_at=NOW()
+        WHERE id=#{id} AND deleted_at IS NULL
+    </update>
+
+    <insert id="insertNode" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_flow_node (flow_id, node_key, skill_id, question_template, depends_on_json,
+                                     required, max_attempts, sort_order)
+        VALUES (#{flowId}, #{nodeKey}, #{skillId}, #{questionTemplate}, #{dependsOnJson},
+                #{required}, #{maxAttempts}, #{sortOrder})
+    </insert>
+
+    <select id="selectNodesByFlowId" resultMap="NodeMap">
+        SELECT <include refid="nodeColumns"/> FROM skill_flow_node WHERE flow_id=#{flowId}
+        ORDER BY sort_order, id
+    </select>
+
+    <delete id="deleteNodeMetricsByFlowId">
+        DELETE FROM skill_flow_node_metric WHERE flow_node_id IN
+        (SELECT id FROM skill_flow_node WHERE flow_id=#{flowId})
+    </delete>
+
+    <delete id="deleteNodesByFlowId">DELETE FROM skill_flow_node WHERE flow_id=#{flowId}</delete>
+
+    <insert id="insertNodeMetric" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_flow_node_metric (flow_node_id, metric_id) VALUES (#{flowNodeId}, #{metricId})
+    </insert>
+
+    <select id="selectMetricIdsByNodeId" resultType="java.lang.Long">
+        SELECT metric_id FROM skill_flow_node_metric WHERE flow_node_id=#{nodeId} ORDER BY metric_id
+    </select>
+
+    <insert id="insertTrigger" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_flow_trigger (flow_id, keyword, normalized_keyword, priority, enabled, created_by)
+        VALUES (#{flowId}, #{keyword}, #{normalizedKeyword}, #{priority}, #{enabled}, #{createdBy})
+    </insert>
+
+    <select id="selectTriggersByFlowId" resultMap="TriggerMap">
+        SELECT <include refid="triggerColumns"/> FROM skill_flow_trigger WHERE flow_id=#{flowId}
+        ORDER BY priority DESC, id
+    </select>
+
+    <select id="selectTriggerByNormalizedKeyword" resultMap="TriggerMap">
+        SELECT <include refid="triggerColumns"/> FROM skill_flow_trigger
+        WHERE normalized_keyword=#{normalizedKeyword}
+    </select>
+
+    <delete id="deleteTriggersByFlowId">DELETE FROM skill_flow_trigger WHERE flow_id=#{flowId}</delete>
+
+    <insert id="upsertMetricReadiness">
+        INSERT INTO skill_metric_readiness
+            (metric_id, metric_code, data_date, status, ready_at, expires_at, metadata_json)
+        VALUES (#{metricId}, #{metricCode}, #{dataDate}, #{status}, #{readyAt}, #{expiresAt}, #{metadataJson})
+        ON DUPLICATE KEY UPDATE
+            metric_code=VALUES(metric_code), status='READY',
+            ready_at=LEAST(skill_metric_readiness.ready_at, VALUES(ready_at)),
+            expires_at=VALUES(expires_at), metadata_json=VALUES(metadata_json), updated_at=NOW()
+    </insert>
+
+    <select id="selectMetricReadiness" resultMap="ReadinessMap">
+        SELECT <include refid="readinessColumns"/> FROM skill_metric_readiness
+        WHERE metric_id=#{metricId} AND data_date=#{dataDate}
+    </select>
+
+    <select id="selectReadyMetrics" resultMap="ReadinessMap">
+        SELECT <include refid="readinessColumns"/> FROM skill_metric_readiness
+        WHERE data_date=#{dataDate} AND status='READY' AND metric_id IN
+        <foreach collection="metricIds" item="metricId" open="(" separator="," close=")">#{metricId}</foreach>
+    </select>
+
+    <insert id="insertFlowExecution" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_flow_execution
+            (flow_id, flow_code, flow_name, summary_question_template_snapshot, max_parallelism_snapshot, notify_enabled_snapshot, trigger_type,
+             trigger_user_id, conversation_id, original_question, data_date, status, active_guard_key,
+             required_metric_count, ready_metric_count, missing_metrics_json)
+        VALUES (#{flowId}, #{flowCode}, #{flowName}, #{summaryQuestionTemplateSnapshot}, #{maxParallelismSnapshot}, #{notifyEnabledSnapshot}, #{triggerType},
+                #{triggerUserId}, #{conversationId}, #{originalQuestion}, #{dataDate}, #{status},
+                #{activeGuardKey}, #{requiredMetricCount}, #{readyMetricCount}, #{missingMetricsJson})
+    </insert>
+    <!-- 注意:此处不能加 ON DUPLICATE KEY UPDATE —— openGauss 不支持 RETURNING 与其并用,
+         而 useGeneratedKeys 会让 JDBC 驱动追加 RETURNING。并发冲突改由服务层捕获
+         DuplicateKeyException 处理。 -->
+
+    <select id="selectFlowExecutionById" resultMap="ExecutionMap">
+        SELECT * FROM skill_flow_execution WHERE id=#{id}
+    </select>
+
+    <select id="selectFlowExecutionForUpdate" resultMap="ExecutionMap">
+        SELECT * FROM skill_flow_execution WHERE id=#{id} FOR UPDATE
+    </select>
+
+    <insert id="insertNodeExecution" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO skill_flow_node_execution
+            (flow_execution_id, node_key, skill_id, skill_name, skill_retrieval_name, question_template_snapshot,
+             rendered_question, depends_on_json, required, status, attempt_count, max_attempts, next_run_at)
+        VALUES (#{flowExecutionId}, #{nodeKey}, #{skillId}, #{skillName}, #{skillRetrievalName}, #{questionTemplateSnapshot},
+                #{renderedQuestion}, #{dependsOnJson}, #{required}, #{status}, #{attemptCount},
+                #{maxAttempts}, #{nextRunAt})
+    </insert>
+
+    <select id="selectNodeExecutions" resultMap="NodeExecutionMap">
+        SELECT * FROM skill_flow_node_execution WHERE flow_execution_id=#{flowExecutionId}
+        ORDER BY id
+    </select>
+
+    <select id="selectEnabledTriggers" resultMap="TriggerMap">SELECT t.* FROM skill_flow_trigger t JOIN skill_flow f ON f.id=t.flow_id WHERE t.enabled=TRUE AND f.enabled=TRUE AND f.deleted_at IS NULL ORDER BY t.priority DESC,t.id</select>
+    <select id="selectActiveExecution" resultMap="ExecutionMap">SELECT * FROM skill_flow_execution WHERE active_guard_key=#{guardKey} LIMIT 1</select>
+    <select id="selectLatestConversationExecution" resultMap="ExecutionMap">SELECT * FROM skill_flow_execution WHERE trigger_user_id=#{userId} AND conversation_id=#{conversationId} ORDER BY CASE WHEN active_guard_key IS NOT NULL THEN 0 ELSE 1 END,created_at DESC LIMIT 1</select>
+    <select id="selectExecutions" resultMap="ExecutionMap">SELECT * FROM skill_flow_execution WHERE trigger_user_id=#{userId}<if test="status != null and status != ''"> AND status=#{status}</if><if test="createdBy != null and createdBy != ''"> AND trigger_user_id=#{createdBy}</if> ORDER BY created_at DESC LIMIT 500</select>
+    <select id="selectWaitingExecutions" resultMap="ExecutionMap">SELECT * FROM skill_flow_execution WHERE status='WAITING_METRICS' ORDER BY id LIMIT 2000</select>
+    <update id="updateExecution">UPDATE skill_flow_execution SET status=#{status},active_guard_key=#{activeGuardKey},ready_metric_count=#{readyMetricCount},missing_metrics_json=#{missingMetricsJson},summary_json=#{summaryJson},report_path=#{reportPath},cancel_requested_at=#{cancelRequestedAt},started_at=#{startedAt},completed_at=#{completedAt},updated_at=NOW() WHERE id=#{id}</update>
+    <select id="selectNodeExecution" resultMap="NodeExecutionMap">SELECT * FROM skill_flow_node_execution WHERE id=#{id}</select>
+    <select id="selectRunnableNodes" resultMap="NodeExecutionMap">SELECT n.* FROM skill_flow_node_execution n JOIN skill_flow_execution e ON e.id=n.flow_execution_id WHERE (n.status IN ('QUEUED','RETRY_WAIT') OR (n.status='RUNNING' AND n.lease_expires_at &lt;#{now})) AND (n.next_run_at IS NULL OR n.next_run_at &lt;=#{now}) AND (n.lease_expires_at IS NULL OR n.lease_expires_at &lt;#{now}) AND (SELECT COUNT(*) FROM skill_flow_node_execution r WHERE r.flow_execution_id=n.flow_execution_id AND r.status='RUNNING' AND r.lease_expires_at&gt;=#{now}) &lt; e.max_parallelism_snapshot ORDER BY n.id LIMIT 100</select>
+    <update id="claimNode">UPDATE skill_flow_node_execution SET status='RUNNING',attempt_count=attempt_count+1,lease_owner=#{owner},lease_expires_at=#{expiresAt},started_at=COALESCE(started_at,#{now}),updated_at=NOW() WHERE id=#{id} AND (status IN ('QUEUED','RETRY_WAIT') OR (status='RUNNING' AND lease_expires_at &lt;#{now})) AND (lease_expires_at IS NULL OR lease_expires_at &lt;#{now})</update>
+    <select id="countActiveRunningNodes" resultType="int">SELECT COUNT(*) FROM skill_flow_node_execution WHERE flow_execution_id=#{flowExecutionId} AND status='RUNNING' AND lease_expires_at&gt;=#{now}</select>
+    <update id="claimExecutionForSummary">UPDATE skill_flow_execution SET status='SUMMARIZING',updated_at=NOW() WHERE id=#{id} AND status IN ('QUEUED','RUNNING')</update>
+    <update id="updateNodeExecution">UPDATE skill_flow_node_execution SET skill_retrieval_name=#{skillRetrievalName},rendered_question=#{renderedQuestion},status=#{status},attempt_count=#{attemptCount},next_run_at=#{nextRunAt},lease_owner=#{leaseOwner},lease_expires_at=#{leaseExpiresAt},result_json=#{resultJson},artifact_path=#{artifactPath},error_code=#{errorCode},error_message=#{errorMessage},started_at=#{startedAt},completed_at=#{completedAt},updated_at=NOW() WHERE id=#{id}</update>
+    <resultMap id="AttemptMap" type="com.agentscopea2a.v2.skillManager.entity.SkillFlowNodeAttempt"><id column="id" property="id"/><result column="node_execution_id" property="nodeExecutionId"/><result column="attempt_no" property="attemptNo"/><result column="status" property="status" javaType="com.agentscopea2a.v2.skillManager.entity.FlowNodeAttemptStatus"/><result column="retryable" property="retryable"/><result column="error_code" property="errorCode"/><result column="error_message" property="errorMessage"/><result column="started_at" property="startedAt"/><result column="completed_at" property="completedAt"/><result column="duration_ms" property="durationMs"/><result column="created_at" property="createdAt"/></resultMap>
+    <insert id="insertAttempt" useGeneratedKeys="true" keyProperty="id">INSERT INTO skill_flow_node_attempt(node_execution_id,attempt_no,status,retryable,error_code,error_message,started_at,completed_at,duration_ms) VALUES(#{nodeExecutionId},#{attemptNo},#{status},#{retryable},#{errorCode},#{errorMessage},#{startedAt},#{completedAt},#{durationMs})</insert>
+    <update id="updateAttempt">UPDATE skill_flow_node_attempt SET status=#{status},retryable=#{retryable},error_code=#{errorCode},error_message=#{errorMessage},completed_at=#{completedAt},duration_ms=#{durationMs} WHERE id=#{id}</update>
+    <update id="failRunningAttemptsForNode">UPDATE skill_flow_node_attempt SET status='FAILED',retryable=TRUE,error_code='LEASE_EXPIRED',error_message='Worker lease expired before completion',completed_at=#{now} WHERE node_execution_id=#{nodeId} AND status='RUNNING'</update>
+    <select id="selectAttempts" resultMap="AttemptMap">SELECT * FROM skill_flow_node_attempt WHERE node_execution_id=#{nodeId} ORDER BY attempt_no</select>
+    <resultMap id="NotificationMap" type="com.agentscopea2a.v2.skillManager.entity.SkillFlowNotification"><id column="id" property="id"/><result column="flow_execution_id" property="flowExecutionId"/><result column="delivery_key" property="deliveryKey"/><result column="status" property="status" javaType="com.agentscopea2a.v2.skillManager.entity.FlowNotificationStatus"/><result column="recipient" property="recipient"/><result column="channel" property="channel"/><result column="request_json" property="requestJson"/><result column="response_json" property="responseJson"/><result column="error_message" property="errorMessage"/><result column="sent_at" property="sentAt"/><result column="created_at" property="createdAt"/><result column="updated_at" property="updatedAt"/></resultMap>
+    <select id="selectNotifications" resultMap="NotificationMap">SELECT * FROM skill_flow_notification WHERE flow_execution_id=#{executionId} ORDER BY id DESC</select>
+    <insert id="insertNotification" useGeneratedKeys="true" keyProperty="id">INSERT INTO skill_flow_notification(flow_execution_id,delivery_key,status,recipient,channel,request_json) VALUES(#{flowExecutionId},#{deliveryKey},#{status},#{recipient},#{channel},#{requestJson})</insert>
+    <update id="updateNotification">UPDATE skill_flow_notification SET status=#{status},response_json=#{responseJson},error_message=#{errorMessage},sent_at=#{sentAt},updated_at=NOW() WHERE id=#{id}</update>
+</mapper>

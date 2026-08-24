@@ -123,6 +123,24 @@ export async function getExecution(execId: number): Promise<SkillJobExecution> {
   return res.json();
 }
 
+/** Read the editable UTF-8 source of an owned HTML report. */
+export async function getExecutionReportSource(execId: number): Promise<string> {
+  const res = await fetch(`${BASE}/executions/${execId}/source`, { headers: authHeaders() });
+  if (!res.ok) throw await jobError(res, '读取报告源码失败');
+  return res.text();
+}
+
+/** Replace the current report source. Uploading a separate file is not supported. */
+export async function saveExecutionReportSource(execId: number, html: string): Promise<string> {
+  const res = await fetch(`${BASE}/executions/${execId}/source`, {
+    method: 'PUT',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ html }),
+  });
+  if (!res.ok) throw await jobError(res, '保存报告失败');
+  return res.text();
+}
+
 /**
  * 从后端 DownloadErrorPage 生成的 HTML 错误页提取友好提示（.title/.desc）。
  * 前端 fetch 下载失败时后端回的是整张 HTML 错误页（供通知邮件里的浏览器直开用），
@@ -150,7 +168,7 @@ export async function downloadExecutionFile(execId: number): Promise<void> {
   const res = await fetch(`${BASE}/executions/${execId}/download`, { headers: authHeaders() });
   if (!res.ok) throw await downloadError(res, '下载失败');
   const blob = await res.blob();
-  let filename = `execution-${execId}.md`;
+  let filename = `execution-${execId}.html`;
   const cd = res.headers.get('Content-Disposition') || '';
   const star = cd.match(/filename\*=UTF-8''([^;]+)/i);
   if (star) {

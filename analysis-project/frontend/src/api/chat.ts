@@ -1,27 +1,27 @@
 /**
- * v2 /ai/V2/chat SSE stream client.
+ * /ai/chat SSE stream client.
  *
- * <p>Adapts the project's SSE protocol to an async generator of normalized events:
+ * Adapts the endpoint's default SSE messages to normalized events. The backend
+ * differentiates payloads with JSON field `type`, not with named SSE events:
  * <ul>
- *   <li>{@code text_block_delta} → token (chunk = lineResult, fullText = resultAll)
- *   <li>{@code done}            → done  (fullText = resultAll)
+ *   <li>{@code type=think} -> collapsible reasoning content</li>
+ *   <li>{@code type=text}  -> final answer content</li>
  *   <li>{@code agent_start / tool_call_start / tool_result_start /
  *       tool_result_end / subagent_exposed / agent_end} → process
  *       (live progress for ActivityFeed — see process-event-streaming.md)
  * </ul>
  *
- * <p>The backend {@code POST /ai/V2/chat} returns SseEmitter with events named
- * after AgentEvent types (lowercased). See V2ChatStreamServiceImpl#handleEvent.
+ * The backend sends text in small chunks; the frontend accumulates both streams.
  */
 
 import { apiError } from '../utils/apiError';
 
 export interface ChatRequest {
-  /** User's question/prompt. Backend reads input (preferred) or question. */
-  input: string;
-  /** Session id; the same value must be passed to /v2/ai/chat/interrupt. */
+  /** User's question/prompt. */
+  question: string;
+  /** Session id; the same value must be passed to /ai/chat/interrupt. */
   conversationId: string;
-  /** User id; must match across /ai/V2/chat and /v2/ai/chat/interrupt. */
+  /** User id; must match across /ai/chat and /ai/chat/interrupt. */
   user_id: string;
 }
 
@@ -80,10 +80,10 @@ export interface ProcessEvent {
 }
 
 export type ChatEvent =
-  | { type: 'token'; chunk: string; fullText: string; source: string | null }
+  | { type: 'think'; chunk: string; action: string; topic: string; finish: boolean }
+  | { type: 'text'; chunk: string; finish: boolean; conversationId: string }
   | { type: 'process'; process: ProcessEvent }
   | { type: 'toolOutputUpdate'; process: ProcessEvent }
-  | { type: 'done'; fullText: string; conversationId: string }
   | { type: 'error'; error: string };
 
 /**
@@ -94,7 +94,7 @@ export type ChatEvent =
 export async function* streamChat(req: ChatRequest, signal?: AbortSignal): AsyncGenerator<ChatEvent> {
   let res: Response;
   try {
-    res = await fetch('/v2/ai/chat', {
+    res = await fetch('/ai/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req),
@@ -133,6 +133,7 @@ export async function* streamChat(req: ChatRequest, signal?: AbortSignal): Async
     }
     if (done) break;
     buf += dec.decode(value, { stream: true });
+    buf = buf.replace(/\r\n/g, '\n');
     let idx;
     while ((idx = buf.indexOf('\n\n')) >= 0) {
       const rawEvt = buf.slice(0, idx);
@@ -150,31 +151,21 @@ export async function* streamChat(req: ChatRequest, signal?: AbortSignal): Async
 
       try {
         const json = JSON.parse(data);
-        // Support both old AiChatResult format (lineResult/resultAll) and new
-        // ThinkPayload/TextPayload DTO format (data.content/data.action/data.topic/finish).
-        // The backend sends SSE events with name "text_block_delta" for streaming tokens
-        // and "done" for final results, regardless of which DTO format is used.
-        if (eventName === 'text_block_delta') {
-          // New DTO format: { type: "think", data: { content, action, topic }, finish, ... }
-          // Old format: { lineResult, resultAll, source, ... }
-          const isNewFormat = json.data && typeof json.data === 'object';
-          const chunk = isNewFormat
-            ? (typeof json.data.content === 'string' ? json.data.content : '')
-            : (typeof json.lineResult === 'string' ? json.lineResult : '');
-          const fullText = isNewFormat
-            ? ''  // new format doesn't carry cumulative text; frontend accumulates
-            : (typeof json.resultAll === 'string' ? json.resultAll : '');
-          const source = json.source ?? null;
-          yield { type: 'token', chunk, fullText, source };
-        } else if (eventName === 'done') {
-          // New DTO format: { type: "text", data: { content, action, topic }, finish, ... }
-          // Old format: { resultAll, conversationId, ... }
-          const isNewFormat = json.data && typeof json.data === 'object';
-          const fullText = isNewFormat
-            ? (typeof json.data.content === 'string' ? json.data.content : '')
-            : (typeof json.resultAll === 'string' ? json.resultAll : '');
-          const conversationId = typeof json.conversationId === 'string' ? json.conversationId : '';
-          yield { type: 'done', fullText, conversationId };
+        if (json.type === 'think') {
+          yield {
+            type: 'think',
+            chunk: typeof json.data?.content === 'string' ? json.data.content : '',
+            action: typeof json.data?.action === 'string' ? json.data.action : '',
+            topic: typeof json.data?.topic === 'string' ? json.data.topic : '',
+            finish: json.finish === true,
+          };
+        } else if (json.type === 'text') {
+          yield {
+            type: 'text',
+            chunk: typeof json.data?.content === 'string' ? json.data.content : '',
+            finish: json.finish === true,
+            conversationId: typeof json.conversationId === 'string' ? json.conversationId : '',
+          };
         } else if (eventName === 'tool_output') {
           // Supplementary event from PostActing hook — carries the tool output
           // that wasn't available when tool_result_end was emitted (PostActing
@@ -225,7 +216,7 @@ export async function* streamChat(req: ChatRequest, signal?: AbortSignal): Async
  * Returns the fetch Response so the caller can inspect X-Resume-Stream header.
  */
 export async function postChatStream(req: ChatRequest): Promise<Response> {
-  return fetch('/v2/ai/chat', {
+  return fetch('/ai/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),
