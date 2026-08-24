@@ -34,8 +34,8 @@ public class SkillManageBridge {
     /**
      * 同步页面 Skill 到检索索引（skill_index 表）。
      *
-     * <p>检索名直接由 skill 名字 sanitize 派生({@code <safeName>} / 回退 {@code skill_<id>}),
-     * 不再加 {@code usr_<userId>_} 前缀,检索名全局唯一。本方法以 {@code skill.getRetrievalName()}
+     * <p>检索名直接使用去除首尾空格后的 skill 名字,支持中文并保留原始大小写。
+     * 检索名全局唯一。本方法以 {@code skill.getRetrievalName()}
      * 作为"上次持久化的检索名"与按当前名字新算出的检索名对比:
      * <ul>
      *   <li>上次为空(首次创建):若新名未被占用则 upsert;已被其它 active skill 占用则抛
@@ -53,7 +53,7 @@ public class SkillManageBridge {
      * @return 当前应使用的检索名（调用方据此回写 skill_manage.retrieval_name）
      */
     public String syncToRetrievalIndex(Skill skill) {
-        String newRn = buildRetrievalName(skill.getName(), skill.getId());
+        String newRn = buildRetrievalName(skill.getName());
         String desc = skill.getDescription() == null ? "" : skill.getDescription();
         String previousRn = skill.getRetrievalName();
 
@@ -104,7 +104,7 @@ public class SkillManageBridge {
     /**
      * 从检索索引移除页面 Skill（软删 skill_index 行）。
      *
-     * @param retrievalName 检索名（{@code <safeName>} 或回退的 {@code skill_<id>}），为 null 时跳过
+     * @param retrievalName 检索名（与 Skill 展示名称一致），为 null 时跳过
      */
     public void removeFromRetrievalIndex(String retrievalName) {
         try {
@@ -118,11 +118,11 @@ public class SkillManageBridge {
     }
 
 
-    private String buildRetrievalName(String skillName, Long skillId) {
-        String safeName = sanitize(skillName);
-        if (safeName != null) return safeName;
-        // 名字 sanitize 后为空(纯中文/符号),回退到 id 保证唯一
-        return "skill_" + skillId;
+    private String buildRetrievalName(String skillName) {
+        if (skillName == null || skillName.isBlank()) {
+            throw new IllegalArgumentException("SkillNameMissing");
+        }
+        return skillName.trim();
     }
 
     /** 检索名是否已被其它 active skill 占用(blacklisted=已删除,名字可复用)。 */
@@ -132,12 +132,4 @@ public class SkillManageBridge {
                 .orElse(false);
     }
 
-
-    private static String sanitize(String skillName) {
-        if (skillName == null || skillName.isBlank()) return null;
-        String safe = skillName.trim().toLowerCase().replaceAll("[^a-z0-9_]", "_");
-        // 折叠连续 _ 并去首尾
-        safe = safe.replaceAll("_+", "_").replaceAll("^_+|_$", "");
-        return safe.isEmpty() ? null : safe;
-    }
 }

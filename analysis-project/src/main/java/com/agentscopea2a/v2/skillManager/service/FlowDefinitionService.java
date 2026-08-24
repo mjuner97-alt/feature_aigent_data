@@ -140,6 +140,7 @@ public class FlowDefinitionService {
     @Transactional("gaussTransactionManager")
     public void delete(Long id, String userId) {
         requireOwner(id, userId);
+        flowMapper.deleteTriggersByFlowId(id);
         flowMapper.softDeleteFlow(id);
     }
 

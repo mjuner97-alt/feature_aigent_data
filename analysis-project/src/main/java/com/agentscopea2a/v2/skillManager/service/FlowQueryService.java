@@ -32,14 +32,18 @@ public class FlowQueryService {
     private final SkillFlowMapper mapper;
     private final SkillDependencyMetricMapper metrics;
     private final ObjectMapper json;
+    private final FlowSummaryPromptRenderer promptRenderer;
+    private final FlowTemplateEngine templates = new FlowTemplateEngine();
     /** 报告根目录(${skill.job.base-dir}),用于报告文件定位与越权防护。 */
     private final Path reportRoot;
 
     public FlowQueryService(SkillFlowMapper mapper, SkillDependencyMetricMapper metrics,
-                            ObjectMapper json, SkillStorageProperties storage) {
+                            ObjectMapper json, SkillStorageProperties storage,
+                            FlowSummaryPromptRenderer promptRenderer) {
         this.mapper = mapper;
         this.metrics = metrics;
         this.json = json;
+        this.promptRenderer = promptRenderer;
         this.reportRoot = Paths.get(storage.getJobReportDir()).normalize().toAbsolutePath();
     }
 
@@ -55,10 +59,10 @@ public class FlowQueryService {
 
     /** 节点执行明细(含每次尝试的 audit 记录)。 */
     public List<NodeDto> nodes(Long id, String userId) {
-        owned(id, userId);
+        SkillFlowExecution execution = owned(id, userId);
         return mapper.selectNodeExecutions(id).stream()
                 .map(n -> new NodeDto(n.getId(), n.getNodeKey(), n.getSkillName(), n.getQuestionTemplateSnapshot(),
-                        n.getRenderedQuestion(), Boolean.TRUE.equals(n.getRequired()),
+                        renderedQuestion(execution, n), Boolean.TRUE.equals(n.getRequired()),
                         n.getStatus().name(), n.getAttemptCount(), n.getMaxAttempts(), n.getErrorCode(),
                         n.getErrorMessage(), n.getStartedAt(), n.getCompletedAt(), mapper.selectAttempts(n.getId())))
                 .toList();
@@ -117,8 +121,42 @@ public class FlowQueryService {
         return new ExecutionDto(e.getId(), e.getFlowId(), e.getFlowName(), e.getFlowCode(), e.getStatus().name(),
                 e.getTriggerUserId(), e.getOriginalQuestion(), e.getDataDate(), e.getRequiredMetricCount(),
                 e.getReadyMetricCount(), nodes.size(), (int) nodes.stream().filter(n -> n.getStatus().terminal()).count(),
-                e.getSummaryQuestionTemplateSnapshot(), readJson(e.getSummaryJson()), e.getReportPath(),
+                e.getSummaryQuestionTemplateSnapshot(), renderedSummaryQuestion(e, nodes),
+                readJson(e.getSummaryJson()), e.getReportPath(),
                 e.getCreatedAt(), e.getStartedAt(), e.getCompletedAt());
+    }
+
+    /**
+     * 实际汇总提问:优先取落库值(汇总阶段渲染持久化);
+     * 老数据没有落库值时,终态执行按节点结果现场重渲染一次,变量缺失等渲染失败返回 null。
+     */
+    private String renderedSummaryQuestion(SkillFlowExecution execution, List<SkillFlowNodeExecution> nodes) {
+        if (execution.getRenderedSummaryQuestion() != null) return execution.getRenderedSummaryQuestion();
+        if (!execution.getStatus().terminal()) return null; // 未到汇总阶段,尚无实际提问
+        try {
+            return promptRenderer.render(execution, nodes);
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /**
+     * 节点实际提问:优先取落库值(尝试完成时持久化);
+     * 历史数据/尚未执行的节点没有落库值时,按快照模板现场渲染(与执行时格式一致),渲染失败返回 null。
+     */
+    private String renderedQuestion(SkillFlowExecution execution, SkillFlowNodeExecution node) {
+        if (node.getRenderedQuestion() != null) return node.getRenderedQuestion();
+        try {
+            String rendered = templates.render(node.getQuestionTemplateSnapshot(),
+                    new FlowTemplateEngine.Context(Map.of(
+                            "server_date", execution.getDataDate().toString(),
+                            "original_question", Objects.toString(execution.getOriginalQuestion(), ""),
+                            "flow_name", execution.getFlowName(),
+                            "skill_name", Objects.toString(node.getSkillName(), ""))));
+            return FlowCoordinator.buildPrompt(node, rendered);
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     private Object readJson(String value) {
@@ -135,7 +173,8 @@ public class FlowQueryService {
                                String triggerUserId, String originalQuestion, LocalDate dataDate,
                                Integer requiredMetricCount, Integer readyMetricCount,
                                Integer totalNodeCount, Integer completedNodeCount,
-                               String summaryQuestionTemplateSnapshot, Object summaryJson, String reportPath,
+                               String summaryQuestionTemplateSnapshot, String renderedSummaryQuestion,
+                               Object summaryJson, String reportPath,
                                LocalDateTime createdAt, LocalDateTime startedAt, LocalDateTime completedAt) {}
 
     /** 节点执行明细返回体(attempts 为每次尝试的审计记录;节点全并行,无依赖)。 */

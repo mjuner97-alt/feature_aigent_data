@@ -2,6 +2,7 @@ package com.agentscopea2a.v2.modelConfig.controller;
 
 import com.agentscopea2a.entity.UserModelConfig;
 import com.agentscopea2a.v2.modelConfig.dto.ModelTestResult;
+import com.agentscopea2a.v2.modelConfig.dto.UserModelConfigListItem;
 import com.agentscopea2a.v2.modelConfig.service.UserModelConfigManageService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -40,7 +41,7 @@ public class UserModelConfigManageController {
      * 列表 (token 脱敏).
      */
     @GetMapping
-    public List<UserModelConfig> list() {
+    public List<UserModelConfigListItem> list() {
         return service.list();
     }
 

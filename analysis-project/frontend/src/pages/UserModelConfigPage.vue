@@ -15,16 +15,21 @@ import type { UserModelConfig } from '../types/modelConfig';
 // ==================== 列表 ====================
 const items = ref<UserModelConfig[]>([]);
 const loading = ref(false);
+const creatorKeyword = ref('');
 const keyword = ref('');
 
 const filteredItems = computed(() => {
+  const creator = creatorKeyword.value.trim().toLowerCase();
   const kw = keyword.value.toLowerCase();
-  if (!kw) return items.value;
+  if (!creator && !kw) return items.value;
   return items.value.filter(it =>
-    it.userId.toLowerCase().includes(kw) ||
+    (!creator || it.userId.toLowerCase().includes(creator) ||
+      (it.userName || '').toLowerCase().includes(creator)) &&
+    (!kw || it.userId.toLowerCase().includes(kw) ||
+    (it.userName || '').toLowerCase().includes(kw) ||
     (it.modelName || '').toLowerCase().includes(kw) ||
     (it.requestUrl || '').toLowerCase().includes(kw) ||
-    (it.provider || '').toLowerCase().includes(kw)
+    (it.provider || '').toLowerCase().includes(kw))
   );
 });
 
@@ -170,14 +175,17 @@ const S = {
   <div :style="S.page">
     <!-- 顶部栏 -->
     <div :style="S.header">
-      <h2 :style="S.title">用户模型配置 (内部)</h2>
-      <el-input v-model="keyword" placeholder="搜索 user_id / 模型 / 地址" style="width: 240px" clearable size="small" />
+      <el-input v-model="creatorKeyword" placeholder="搜索创建人" style="width: 180px" clearable size="small" />
       <el-button type="primary" size="small" @click="openCreate">＋ 新增配置</el-button>
     </div>
 
     <!-- 列表 -->
     <el-table :data="filteredItems" v-loading="loading" stripe border size="small" style="width: 100%">
-      <el-table-column prop="userId" label="用户 ID" width="140" />
+      <el-table-column label="用户名 (userID)" min-width="190">
+        <template #default="{ row }">
+          {{ row.userName ? `${row.userName} (${row.userId})` : row.userId }}
+        </template>
+      </el-table-column>
       <el-table-column prop="provider" label="Provider" width="100">
         <template #default="{ row }">
           <el-tag size="small" :type="row.provider === 'glm' ? 'warning' : 'success'">

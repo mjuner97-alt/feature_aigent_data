@@ -15,6 +15,8 @@ import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -41,26 +43,32 @@ import java.util.UUID;
 @Service
 public class FlowCompletionService {
 
+    private static final Logger log = LoggerFactory.getLogger(FlowCompletionService.class);
+
+    /** 汇总 AI 调用最大尝试次数(首次 + 2 次重试),可重试错误(超时/429/5xx 等)按 2s/4s 退避。 */
+    private static final int SUMMARY_MAX_ATTEMPTS = 3;
+
     private final HarnessA2aRunnerV2 runner;
     private final ObjectMapper json;
     private final HtmlReportRenderer renderer;
     private final SkillFlowMapper mapper;
     private final NotificationSender sender;
     private final Clock clock;
+    private final FlowSummaryPromptRenderer promptRenderer;
     /** 报告根目录(${skill.job.base-dir}),报告以 用户目录/flow-{id}-report.html 存放。 */
     private final Path reportRoot;
-    private final FlowTemplateEngine templates = new FlowTemplateEngine();
 
     public FlowCompletionService(HarnessA2aRunnerV2 runner, ObjectMapper json, HtmlReportRenderer renderer,
                                  SkillFlowMapper mapper, NotificationSender sender,
                                  @Qualifier("skillFlowClock") Clock skillFlowClock,
-                                 SkillStorageProperties storage) {
+                                 SkillStorageProperties storage, FlowSummaryPromptRenderer promptRenderer) {
         this.runner = runner;
         this.json = json;
         this.renderer = renderer;
         this.mapper = mapper;
         this.sender = sender;
         this.clock = skillFlowClock;
+        this.promptRenderer = promptRenderer;
         this.reportRoot = Paths.get(storage.getJobReportDir()).normalize().toAbsolutePath();
     }
 
@@ -73,23 +81,34 @@ public class FlowCompletionService {
      */
     public Summary summarize(SkillFlowExecution flow, List<SkillFlowNodeExecution> nodes) {
         try {
-            String all = json.writeValueAsString(nodes.stream().map(n -> Map.of(
-                    "nodeKey", n.getNodeKey(), "skill", n.getSkillName(),
-                    "status", n.getStatus().name(), "result", Objects.toString(n.getResultJson(), ""),
-                    "error", Objects.toString(n.getErrorMessage(), ""))).toList());
-            String prompt = templates.render(flow.getSummaryQuestionTemplateSnapshot(),
-                    new FlowTemplateEngine.Context(Map.of(
-                            "server_date", flow.getDataDate().toString(),
-                            "original_question", flow.getOriginalQuestion(),
-                            "flow_name", flow.getFlowName(),
-                            "all_results", all)));
+            String prompt = promptRenderer.render(flow, nodes);
+            flow.setRenderedSummaryQuestion(prompt);
+            mapper.updateExecution(flow);
             RuntimeContext context = RuntimeContext.builder()
                     .sessionId("flow-" + flow.getId() + "-summary").userId(flow.getTriggerUserId()).build();
-            List<AgentEvent> events = runner.streamEvents(List.of(Msg.builder()
-                            .role(MsgRole.USER).content(TextBlock.builder().text(prompt).build()).build()),
-                    context).collectList().block(Duration.ofMinutes(10));
-            String text = extract(events);
-            if (text == null || text.isBlank()) text = all;
+            // 汇总调用与节点同分类重试:超时/429/5xx 等可重试错误退避后重试,避免一次瞬时失败把整个流程判 FAILED
+            String text = null;
+            for (int attempt = 1; attempt <= SUMMARY_MAX_ATTEMPTS; attempt++) {
+                try {
+                    List<AgentEvent> events = runner.streamEvents(List.of(Msg.builder()
+                                    .role(MsgRole.USER).content(TextBlock.builder().text(prompt).build()).build()),
+                            context).collectList().block(Duration.ofMinutes(10));
+                    text = extract(events);
+                    break;
+                } catch (Exception e) {
+                    if (attempt == SUMMARY_MAX_ATTEMPTS || !FlowCoordinator.retryable(e)) throw e;
+                    long backoffSeconds = 1L << attempt;
+                    log.warn("Flow {} summary attempt {}/{} failed, retrying in {}s: {}",
+                            flow.getId(), attempt, SUMMARY_MAX_ATTEMPTS, backoffSeconds, e.getMessage());
+                    try {
+                        Thread.sleep(backoffSeconds * 1000);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("FlowSummaryInterrupted", ie);
+                    }
+                }
+            }
+            if (text == null || text.isBlank()) text = prompt;
             // 报告落在触发用户的目录下,防止越权读取其它用户文件
             Path relative = Paths.get(flow.getTriggerUserId(), "flow-" + flow.getId() + "-report.html");
             Path target = reportRoot.resolve(relative).normalize();

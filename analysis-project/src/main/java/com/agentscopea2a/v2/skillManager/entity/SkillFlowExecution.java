@@ -22,6 +22,7 @@ public class SkillFlowExecution {
     private String flowCode;
     private String flowName;
     private String summaryQuestionTemplateSnapshot;
+    private String renderedSummaryQuestion;
     private Integer maxParallelismSnapshot;
     private Boolean notifyEnabledSnapshot;
     private FlowTriggerType triggerType;

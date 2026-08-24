@@ -62,19 +62,29 @@ public class FlowCoordinator {
     private final String workerId = UUID.randomUUID().toString();
     /** 固定大小工作线程池:同一时刻最多 workerCount 个节点在执行。 */
     private final ExecutorService workers;
+    /**
+     * 执行超时后的恢复线程池。
+     *
+     * <p>租约是单次节点执行的超时保护，不是续租机制：模型调用超过租约后，
+     * 原尝试视为失效，恢复尝试必须能绕过仍被旧调用占用的普通 worker 立即启动。
+     */
+    private final ExecutorService recoveryWorkers;
     /** 工作容量信号量:池子满时 scan 不再认领新节点,避免认领后无处执行。 */
     private final Semaphore workerPermits;
     private final FlowCompletionService completionService;
     private final FlowNodeClaimService claimService;
+    private final NodeAttemptCompletionService attemptCompletionService;
 
     public FlowCoordinator(SkillFlowMapper mapper, HarnessA2aRunnerV2 runner, ObjectMapper json, Clock skillFlowClock,
-                           FlowCompletionService completionService, FlowNodeClaimService claimService) {
+                           FlowCompletionService completionService, FlowNodeClaimService claimService,
+                           NodeAttemptCompletionService attemptCompletionService) {
         this.mapper = mapper;
         this.runner = runner;
         this.json = json;
         this.clock = skillFlowClock;
         this.completionService = completionService;
         this.claimService = claimService;
+        this.attemptCompletionService = attemptCompletionService;
         int workerCount = Math.max(1, SkillFlowProperties.WORKER_COUNT);
         this.workerPermits = new Semaphore(workerCount);
         this.workers = Executors.newFixedThreadPool(workerCount, r -> {
@@ -82,14 +92,51 @@ public class FlowCoordinator {
             t.setDaemon(true);
             return t;
         });
+        this.recoveryWorkers = Executors.newCachedThreadPool(r -> {
+            Thread t = new Thread(r, "skill-flow-recovery-worker");
+            t.setDaemon(true);
+            return t;
+        });
+    }
+
+    /**
+     * 新进程启动时立即回收旧进程遗留的 RUNNING 节点。
+     * 租约仍用于运行期间的故障保护,但重启场景不再被迫等待完整租约周期。
+     */
+    @jakarta.annotation.PostConstruct
+    void recoverNodesAfterRestart() {
+        int recovered = mapper.recoverAbandonedRunningNodes(workerId, LocalDateTime.now(clock));
+        if (recovered > 0) {
+            log.warn("Recovered {} abandoned long-task nodes after worker restart", recovered);
+        }
     }
 
     /** 定时扫描并调度可运行节点;总开关/工作开关任一关闭则直接空转。 */
     @Scheduled(fixedDelay = SkillFlowProperties.SCAN_INTERVAL_MS)
     public void scan() {
         if (!SkillFlowProperties.ENABLED || !SkillFlowProperties.WORKER_ENABLED) return;
+        LocalDateTime now = LocalDateTime.now(clock);
         expirePreviousDays();
+        expireExhaustedNodes(now);
         dispatchRunnableNodes();
+    }
+
+    /**
+     * 最终超时兜底：节点已经达到最大尝试次数，且最后一次执行租约也已到期，
+     * 说明工作者死亡或模型调用长期无响应。此时不再重试，直接标记节点失败并推进流程，
+     * 避免节点和流程永久显示“执行中”。尚未达到最大次数的过期节点由普通扫描逻辑重新认领重试。
+     */
+    private void expireExhaustedNodes(LocalDateTime now) {
+        for (SkillFlowNodeExecution node : mapper.selectExpiredExhaustedNodes(now)) {
+            mapper.failRunningAttemptsForNode(node.getId(), now);
+            node.setStatus(FlowNodeExecutionStatus.FAILED);
+            node.setErrorCode("LEASE_EXPIRED");
+            node.setErrorMessage("Worker lease expired before completion");
+            node.setCompletedAt(now);
+            clearLease(node);
+            mapper.updateNodeExecution(node);
+            advance(node.getFlowExecutionId());
+        }
     }
 
     /** 正常路径：流程事务提交后立即派发；定时 scan 仅作为恢复兜底。 */
@@ -102,22 +149,28 @@ public class FlowCoordinator {
     private void dispatchRunnableNodes() {
         LocalDateTime now = LocalDateTime.now(clock);
         for (SkillFlowNodeExecution node : mapper.selectRunnableNodes(now)) {
-            if (!workerPermits.tryAcquire()) break; // 池子已满,本轮不再认领
+            // RUNNING 且租约已过期 = 原执行超时/失联；不再等待旧线程结束，直接走重试恢复池。
+            boolean expiredAttempt = node.getStatus() == FlowNodeExecutionStatus.RUNNING
+                    && node.getLeaseExpiresAt() != null
+                    && node.getLeaseExpiresAt().isBefore(now);
+            if (!expiredAttempt && !workerPermits.tryAcquire()) break; // 普通池已满,本轮不再认领
             if (claimService.claim(node.getId(), workerId, now.plusSeconds(SkillFlowProperties.LEASE_SECONDS), now)) {
                 try {
-                    workers.submit(() -> {
+                    ExecutorService executor = expiredAttempt ? recoveryWorkers : workers;
+                    executor.submit(() -> {
                         try {
                             executeNode(node.getId());
                         } finally {
-                            workerPermits.release();
+                            // 恢复任务没有占用普通池许可，因此这里不能释放普通许可。
+                            if (!expiredAttempt) workerPermits.release();
                         }
                     });
                 } catch (RejectedExecutionException e) {
-                    workerPermits.release();
+                    if (!expiredAttempt) workerPermits.release();
                     throw e;
                 }
             } else {
-                workerPermits.release(); // 认领失败(被别人抢走/并发超限),让出许可
+                if (!expiredAttempt) workerPermits.release(); // 认领失败(被别人抢走/并发超限),让出许可
             }
         }
     }
@@ -135,23 +188,25 @@ public class FlowCoordinator {
         }
         LocalDateTime started = LocalDateTime.now(clock);
         int attempt = node.getAttemptCount();
+        String attemptLeaseOwner = node.getLeaseOwner();
         // 认领成功但可能有上次遗留的 RUNNING 尝试记录,先作废再开新尝试
         mapper.failRunningAttemptsForNode(nodeId, started);
         SkillFlowNodeAttempt audit = SkillFlowNodeAttempt.builder()
                 .nodeExecutionId(nodeId).attemptNo(attempt)
                 .status(FlowNodeAttemptStatus.RUNNING).retryable(false).startedAt(started).build();
         mapper.insertAttempt(audit);
-        flow.setStatus(FlowExecutionStatus.RUNNING);
-        if (flow.getStartedAt() == null) flow.setStartedAt(started);
-        mapper.updateExecution(flow);
         try {
+            // 状态流转放 try 内:流转失败(如缺列)时走失败路径留下错误信息,而不是静默把节点卡成僵尸 RUNNING
+            flow.setStatus(FlowExecutionStatus.RUNNING);
+            if (flow.getStartedAt() == null) flow.setStartedAt(started);
+            mapper.updateExecution(flow);
             String rendered = templates.render(node.getQuestionTemplateSnapshot(),
                     new FlowTemplateEngine.Context(Map.of(
                             "server_date", flow.getDataDate().toString(),
                             "original_question", flow.getOriginalQuestion(),
                             "flow_name", flow.getFlowName(),
                             "skill_name", node.getSkillName())));
-            String question = buildPrompt(node.getSkillRetrievalName(), rendered);
+            String question = buildPrompt(node, rendered);
             node.setRenderedQuestion(question);
             RuntimeContext context = RuntimeContext.builder()
                     .sessionId("flow-" + flow.getId() + "-" + node.getNodeKey())
@@ -161,29 +216,30 @@ public class FlowCoordinator {
                     context).collectList().block(Duration.ofMinutes(10));
             String result = extract(events);
             if (result == null || result.isBlank()) throw new IllegalStateException("Skill returned empty result");
-            node.setResultJson(json(Map.of("text", result)));
-            node.setStatus(FlowNodeExecutionStatus.SUCCESS);
-            node.setCompletedAt(LocalDateTime.now(clock));
-            clearLease(node);
+            String resultJson = json(Map.of("text", result));
             completeAudit(audit, FlowNodeAttemptStatus.SUCCESS, false, null, null, started);
-            mapper.updateNodeExecution(node);
-            advance(flow.getId());
+            if (attemptCompletionService.completeSuccess(node, attempt, attemptLeaseOwner,
+                    resultJson, LocalDateTime.now(clock))) {
+                advance(flow.getId());
+            } else {
+                log.info("Ignoring stale success for node {} attempt {}", nodeId, attempt);
+            }
         } catch (Exception error) {
             // 可重试错误(超时/429/5xx 等)且未到最大尝试次数 -> RETRY_WAIT,指数退避(1s/2s/4s/8s)
             boolean retryable = retryable(error) && attempt < node.getMaxAttempts();
-            node.setErrorCode(retryable ? "RETRYABLE_ERROR" : "EXECUTION_FAILED");
-            node.setErrorMessage(errorMessage(error));
-            clearLease(node);
+            String errorCode = retryable ? "RETRYABLE_ERROR" : "EXECUTION_FAILED";
+            String errorMessage = errorMessage(error);
             if (retryable) {
-                node.setStatus(FlowNodeExecutionStatus.RETRY_WAIT);
                 node.setNextRunAt(LocalDateTime.now(clock).plusSeconds(1L << Math.min(attempt, 3)));
-            } else {
-                node.setStatus(FlowNodeExecutionStatus.FAILED);
-                node.setCompletedAt(LocalDateTime.now(clock));
             }
-            completeAudit(audit, FlowNodeAttemptStatus.FAILED, retryable, node.getErrorCode(), node.getErrorMessage(), started);
-            mapper.updateNodeExecution(node);
-            if (!retryable) advance(flow.getId());
+            completeAudit(audit, FlowNodeAttemptStatus.FAILED, retryable, errorCode, errorMessage, started);
+            boolean completed = attemptCompletionService.completeFailure(node, attempt, attemptLeaseOwner,
+                    retryable, errorCode, errorMessage, LocalDateTime.now(clock));
+            if (completed && !retryable) {
+                advance(flow.getId());
+            } else if (!completed) {
+                log.info("Ignoring stale failure for node {} attempt {}", nodeId, attempt);
+            }
         }
     }
 
@@ -209,12 +265,16 @@ public class FlowCoordinator {
             mapper.updateExecution(flow);
             return;
         }
-        // 节点全并行:PENDING(等指标期间遗留,含旧依赖快照)直接放行进入队列
-        for (SkillFlowNodeExecution node : nodes) {
-            if (node.getStatus() == FlowNodeExecutionStatus.PENDING) {
-                node.setStatus(FlowNodeExecutionStatus.QUEUED);
-                mapper.updateNodeExecution(node);
-            }
+        // 严格按配置顺序串行:当前节点未终态(执行中/等待重试/排队)时,后续节点保持 PENDING。
+        boolean activeNode = nodes.stream().anyMatch(n -> n.getStatus() == FlowNodeExecutionStatus.RUNNING
+                || n.getStatus() == FlowNodeExecutionStatus.RETRY_WAIT
+                || n.getStatus() == FlowNodeExecutionStatus.QUEUED);
+        if (!activeNode) {
+            nodes.stream().filter(n -> n.getStatus() == FlowNodeExecutionStatus.PENDING).findFirst()
+                    .ifPresent(node -> {
+                        node.setStatus(FlowNodeExecutionStatus.QUEUED);
+                        mapper.updateNodeExecution(node);
+                    });
         }
         // 全部节点终态:抢占汇总权(claimExecutionForSummary 保证只汇总一次)后收尾
         nodes = mapper.selectNodeExecutions(flow.getId());
@@ -281,26 +341,28 @@ public class FlowCoordinator {
         if (flow != null) advance(flow.getId());
     }
 
-    /** 组装发给 AI 的最终问题:点名要调用的 skill(检索名)+ 渲染后的用户问题。 */
-    private static String buildPrompt(String skillRetrievalName, String renderedQuestion) {
-        if (skillRetrievalName == null || skillRetrievalName.isBlank()) {
-            throw new IllegalStateException("SkillRetrievalNameMissing");
+    /** 组装发给 AI 的最终问题:使用 Skill 展示名称 + 渲染后的用户问题;查询侧兜底渲染共用同一格式。 */
+    static String buildPrompt(SkillFlowNodeExecution node, String renderedQuestion) {
+        String skillName = node.getSkillName();
+        if (skillName == null || skillName.isBlank()) {
+            throw new IllegalStateException("SkillNameMissing");
         }
-        return "调用" + skillRetrievalName.trim() + "，" + renderedQuestion;
+        return "调用" + skillName.trim() + "，" + renderedQuestion;
     }
 
     /**
      * 错误可重试分类:网络超时/连接失败/429/5xx/明确标注 temporary 的错误算可重试,
-     * 沿 cause 链逐层检查。
+     * 沿 cause 链逐层检查;汇总收尾重试共用同一分类。
      */
-    private static boolean retryable(Throwable error) {
+    static boolean retryable(Throwable error) {
         Throwable current = error;
         while (current != null) {
             if (current instanceof SocketTimeoutException || current instanceof ConnectException
                     || current instanceof TimeoutException) return true;
             String message = current.getMessage() == null ? "" : current.getMessage().toLowerCase();
             if (message.contains("429") || message.contains("rate limit")
-                    || message.matches(".*\\b5\\d\\d\\b.*") || message.contains("temporar")) return true;
+                    || message.contains("timeout") || message.contains("temporar")
+                    || message.matches(".*\\b5\\d\\d\\b.*")) return true;
             current = current.getCause();
         }
         return false;
@@ -359,5 +421,6 @@ public class FlowCoordinator {
     @PreDestroy
     void shutdown() {
         workers.shutdown();
+        recoveryWorkers.shutdown();
     }
 }

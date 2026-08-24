@@ -127,13 +127,16 @@ public class FlowExecutionService {
             // 唯一索引冲突:并发下别人先插入了,复用对方记录
             return new TriggerResult(mapper.selectActiveExecution(guard), false);
         }
+        boolean firstRunnableNode = true;
         for (SkillFlowNode node : nodes) {
             Skill skill = skillMapper.selectById(node.getSkillId());
             String skillName = skill == null ? "Skill #" + node.getSkillId() : skill.getName();
             String retrievalName = skill == null || skill.getRetrievalName() == null || skill.getRetrievalName().isBlank()
                     ? skillName : skill.getRetrievalName();
             FlowNodeExecutionStatus status = !requireAllMetrics || missing.isEmpty()
-                    ? FlowNodeExecutionStatus.QUEUED : FlowNodeExecutionStatus.PENDING;
+                    ? (firstRunnableNode ? FlowNodeExecutionStatus.QUEUED : FlowNodeExecutionStatus.PENDING)
+                    : FlowNodeExecutionStatus.PENDING;
+            if (status == FlowNodeExecutionStatus.QUEUED) firstRunnableNode = false;
             mapper.insertNodeExecution(SkillFlowNodeExecution.builder().flowExecutionId(execution.getId())
                     .nodeKey(node.getNodeKey()).skillId(node.getSkillId()).skillName(skillName).skillRetrievalName(retrievalName)
                     .questionTemplateSnapshot(node.getQuestionTemplate()).dependsOnJson(node.getDependsOnJson())
@@ -157,7 +160,7 @@ public class FlowExecutionService {
         }
     }
 
-    /** 重算就绪门控:全部指标就绪时,流程置 QUEUED 并把节点全部置 QUEUED(节点无依赖,全并行)。 */
+    /** 重算就绪门控:全部指标就绪时,流程置 QUEUED,仅放行第一个节点。 */
     @Transactional("gaussTransactionManager")
     public void recomputeGate(SkillFlowExecution execution) {
         List<Long> missing = readLongList(execution.getMissingMetricsJson()).stream()
@@ -169,9 +172,10 @@ public class FlowExecutionService {
         execution.setMissingMetricsJson(json(missing));
         if (missing.isEmpty() && execution.getStatus() == FlowExecutionStatus.WAITING_METRICS) {
             execution.setStatus(FlowExecutionStatus.QUEUED);
-            for (SkillFlowNodeExecution node : mapper.selectNodeExecutions(execution.getId())) {
-                node.setStatus(FlowNodeExecutionStatus.QUEUED);
-                mapper.updateNodeExecution(node);
+            List<SkillFlowNodeExecution> nodes = mapper.selectNodeExecutions(execution.getId());
+            if (!nodes.isEmpty()) {
+                nodes.get(0).setStatus(FlowNodeExecutionStatus.QUEUED);
+                mapper.updateNodeExecution(nodes.get(0));
             }
             events.publishEvent(new FlowQueuedEvent(execution.getId()));
         }
