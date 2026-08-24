@@ -81,6 +81,7 @@ export interface SkillFlowNodeExecution {
   maxAttempts: number;
   errorCode?: string | null;
   errorMessage?: string | null;
+  hasResult?: boolean;
   startedAt?: string | null;
   completedAt?: string | null;
   attempts?: SkillFlowNodeAttempt[];

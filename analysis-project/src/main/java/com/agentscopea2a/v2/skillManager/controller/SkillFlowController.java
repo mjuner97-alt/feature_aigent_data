@@ -170,6 +170,16 @@ public class SkillFlowController {
                 .body(report);
     }
 
+    /** 按需渲染单个成功 Skill 节点的 HTML 内容，不落盘。 */
+    @GetMapping(value = "/api/skill-flow-executions/{id}/nodes/{nodeId}/report", produces = MediaType.TEXT_HTML_VALUE)
+    public ResponseEntity<String> nodeReport(@PathVariable(name = "id") Long id,
+                                             @PathVariable(name = "nodeId") Long nodeId,
+                                             @RequestHeader(name = "X-User-Id") String userId) {
+        return ResponseEntity.ok().contentType(MediaType.TEXT_HTML)
+                .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"skill-report.html\"")
+                .body(queryService.nodeReport(id, nodeId, userId));
+    }
+
     /** 手动重发该次执行完成通知(仅终态执行可用)。 */
     @PostMapping("/api/skill-flow-executions/{id}/notifications/resend")
     public void resend(@PathVariable(name = "id") Long id,

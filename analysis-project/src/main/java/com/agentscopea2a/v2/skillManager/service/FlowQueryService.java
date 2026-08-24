@@ -4,6 +4,7 @@ import com.agentscopea2a.v2.config.SkillStorageProperties;
 import com.agentscopea2a.v2.skillManager.entity.*;
 import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
+import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.core.io.FileSystemResource;
@@ -33,17 +34,19 @@ public class FlowQueryService {
     private final SkillDependencyMetricMapper metrics;
     private final ObjectMapper json;
     private final FlowSummaryPromptRenderer promptRenderer;
+    private final HtmlReportRenderer reportRenderer;
     private final FlowTemplateEngine templates = new FlowTemplateEngine();
     /** 报告根目录(${skill.job.base-dir}),用于报告文件定位与越权防护。 */
     private final Path reportRoot;
 
     public FlowQueryService(SkillFlowMapper mapper, SkillDependencyMetricMapper metrics,
                             ObjectMapper json, SkillStorageProperties storage,
-                            FlowSummaryPromptRenderer promptRenderer) {
+                            FlowSummaryPromptRenderer promptRenderer, HtmlReportRenderer reportRenderer) {
         this.mapper = mapper;
         this.metrics = metrics;
         this.json = json;
         this.promptRenderer = promptRenderer;
+        this.reportRenderer = reportRenderer;
         this.reportRoot = Paths.get(storage.getJobReportDir()).normalize().toAbsolutePath();
     }
 
@@ -64,8 +67,23 @@ public class FlowQueryService {
                 .map(n -> new NodeDto(n.getId(), n.getNodeKey(), n.getSkillName(), n.getQuestionTemplateSnapshot(),
                         renderedQuestion(execution, n), Boolean.TRUE.equals(n.getRequired()),
                         n.getStatus().name(), n.getAttemptCount(), n.getMaxAttempts(), n.getErrorCode(),
-                        n.getErrorMessage(), n.getStartedAt(), n.getCompletedAt(), mapper.selectAttempts(n.getId())))
+                        n.getErrorMessage(), hasResult(n), n.getStartedAt(), n.getCompletedAt(), mapper.selectAttempts(n.getId())))
                 .toList();
+    }
+
+    /** 按需将单个成功节点的结果渲染为 HTML，不生成或保存节点报告文件。 */
+    public String nodeReport(Long executionId, Long nodeId, String userId) {
+        SkillFlowExecution execution = owned(executionId, userId);
+        SkillFlowNodeExecution node = mapper.selectNodeExecution(nodeId);
+        if (node == null || !Objects.equals(node.getFlowExecutionId(), executionId)) {
+            throw new IllegalStateException("FlowNodeReportNotFound: " + nodeId);
+        }
+        String content = resultText(node);
+        if (node.getStatus() != FlowNodeExecutionStatus.SUCCESS || content == null) {
+            throw new IllegalStateException("FlowNodeReportNotFound: " + nodeId);
+        }
+        String title = execution.getFlowName() + " - " + Objects.toString(node.getSkillName(), node.getNodeKey());
+        return reportRenderer.render(content, title);
     }
 
     /** 该次执行依赖的指标就绪情况:哪些指标就绪/未就绪、分别影响哪些节点。 */
@@ -168,6 +186,20 @@ public class FlowQueryService {
         }
     }
 
+    private boolean hasResult(SkillFlowNodeExecution node) {
+        return node.getStatus() == FlowNodeExecutionStatus.SUCCESS && resultText(node) != null;
+    }
+
+    private String resultText(SkillFlowNodeExecution node) {
+        if (node.getResultJson() == null || node.getResultJson().isBlank()) return null;
+        try {
+            var text = json.readTree(node.getResultJson()).get("text");
+            return text != null && text.isTextual() && !text.textValue().isBlank() ? text.textValue() : null;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
     /** 执行记录列表/详情返回体。 */
     public record ExecutionDto(Long id, Long flowId, String flowName, String flowCode, String status,
                                String triggerUserId, String originalQuestion, LocalDate dataDate,
@@ -181,7 +213,8 @@ public class FlowQueryService {
     public record NodeDto(Long id, String nodeKey, String skillName, String questionTemplateSnapshot,
                           String renderedQuestion, boolean required, String status,
                           Integer attemptCount, Integer maxAttempts, String errorCode, String errorMessage,
-                          LocalDateTime startedAt, LocalDateTime completedAt, List<SkillFlowNodeAttempt> attempts) {}
+                          boolean hasResult, LocalDateTime startedAt, LocalDateTime completedAt,
+                          List<SkillFlowNodeAttempt> attempts) {}
 
     /** 指标就绪返回体:affectedSkills 为依赖该指标的节点 key 列表。 */
     public record MetricDto(Long metricId, String metricCode, String metricName, String status,
