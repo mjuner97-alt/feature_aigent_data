@@ -291,6 +291,7 @@ public class SkillJobScheduler implements WriteCallback {
                 return;
             }
             if ("SUCCESS".equals(execution.getStatus())) {
+                notifyTerminal(jobId, execution);
                 return;
             }
             // SKIPPED：永久性跳过，重试无意义
@@ -311,6 +312,7 @@ public class SkillJobScheduler implements WriteCallback {
             } else {
                 log.error("Job {} failed after {} attempts, giving up", jobId, attempt);
                 preserveFirstError(execution, firstError);
+                notifyTerminal(jobId, execution);
             }
         } catch (Exception e) {
             log.error("Job {} attempt {}/{} unexpected error", jobId, attempt, MAX_RETRY_ATTEMPTS, e);
@@ -322,6 +324,7 @@ public class SkillJobScheduler implements WriteCallback {
                 retryScheduled = true;
             } else {
                 log.error("Job {} failed after {} attempts, giving up", jobId, attempt);
+                notifyTerminal(jobId, mapper.selectExecutionById(executionId));
             }
         } finally {
             // 仅在本次未调度重试时释放对应 lane 的标志；调度了重试则保留至重试终态释放。
@@ -548,14 +551,6 @@ public class SkillJobScheduler implements WriteCallback {
             execution.setCompletedAt(LocalDateTime.now());
             mapper.updateExecutionStatus(execution);
 
-            // 任务执行成功：触发完成通知（异步 best-effort，不阻塞 worker、不影响 job 结果）
-            // 门控由 NotificationService 内部按触发类型判断：MANUAL 总是通知；METRIC/EXTERNAL 须指标 notify_enabled=TRUE
-            // actualFilePath 为相对路径({userId}/{mdFileName})，通知 payload.filePath 需绝对路径供发送方读文件，拼 baseDir
-            if (verified) {
-                String absFilePath = Paths.get(baseDir, actualFilePath).normalize().toAbsolutePath().toString();
-                notificationService.notifyJobCompleted(job, execution, absFilePath);
-            }
-
             log.info("Job {} attempt {} done, status={}, file={}", jobId, attempt, execution.getStatus(), actualFilePath);
         } catch (Exception e) {
             log.error("Job {} attempt {} execution error", jobId, attempt, e);
@@ -572,6 +567,23 @@ public class SkillJobScheduler implements WriteCallback {
             mdWrittenPaths.remove(execution.getId());
         }
         return execution;
+    }
+
+    /** Sends exactly once after the final SUCCESS/FAILED attempt; sender chooses channel-specific content. */
+    private void notifyTerminal(Long jobId, SkillJobExecution execution) {
+        if (execution == null || !("SUCCESS".equals(execution.getStatus()) || "FAILED".equals(execution.getStatus()))) {
+            return;
+        }
+        try {
+            SkillJob job = mapper.selectJobById(jobId);
+            if (job == null) return;
+            String path = execution.getResolvedOutputPath();
+            String absolute = path == null || path.isBlank() ? null
+                    : Paths.get(baseDir, path).normalize().toAbsolutePath().toString();
+            notificationService.notifyJobCompleted(job, execution, absolute);
+        } catch (Exception e) {
+            log.warn("Unable to queue terminal notification for execution {}: {}", execution.getId(), e.getMessage(), e);
+        }
     }
 
     /** 将 execution 标记为 SKIPPED（永久性跳过，不重试）并落库 */

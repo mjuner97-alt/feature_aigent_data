@@ -82,13 +82,19 @@ public interface SkillFlowMapper {
     void updateExecution(SkillFlowExecution execution);
     SkillFlowNodeExecution selectNodeExecution(@Param("id") Long id);
     List<SkillFlowNodeExecution> selectRunnableNodes(@Param("now") LocalDateTime now);
+    List<SkillFlowNodeExecution> selectExpiredExhaustedNodes(@Param("now") LocalDateTime now);
+    /** 服务重启后回收旧 worker 遗留的 RUNNING 节点,立即进入重试队列。 */
+    int recoverAbandonedRunningNodes(@Param("owner") String owner, @Param("now") LocalDateTime now);
     int claimNode(@Param("id") Long id, @Param("owner") String owner, @Param("expiresAt") LocalDateTime expiresAt, @Param("now") LocalDateTime now);
     int countActiveRunningNodes(@Param("flowExecutionId") Long flowExecutionId, @Param("now") LocalDateTime now);
     int claimExecutionForSummary(@Param("id") Long id);
     int failRunningAttemptsForNode(@Param("nodeId") Long nodeId, @Param("now") LocalDateTime now);
     void updateNodeExecution(SkillFlowNodeExecution node);
+    int completeNodeAttempt(@Param("node") SkillFlowNodeExecution node,
+                            @Param("expectedAttempt") int expectedAttempt,
+                            @Param("expectedLeaseOwner") String expectedLeaseOwner);
     void insertAttempt(com.agentscopea2a.v2.skillManager.entity.SkillFlowNodeAttempt attempt);
-    void updateAttempt(com.agentscopea2a.v2.skillManager.entity.SkillFlowNodeAttempt attempt);
+    int updateAttempt(com.agentscopea2a.v2.skillManager.entity.SkillFlowNodeAttempt attempt);
     List<com.agentscopea2a.v2.skillManager.entity.SkillFlowNodeAttempt> selectAttempts(@Param("nodeId") Long nodeId);
     List<com.agentscopea2a.v2.skillManager.entity.SkillFlowNotification> selectNotifications(@Param("executionId") Long executionId);
     void insertNotification(com.agentscopea2a.v2.skillManager.entity.SkillFlowNotification notification);

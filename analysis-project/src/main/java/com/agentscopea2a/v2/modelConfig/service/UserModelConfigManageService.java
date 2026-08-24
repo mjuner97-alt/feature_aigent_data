@@ -4,6 +4,8 @@ import com.agentscopea2a.entity.UserModelConfig;
 import com.agentscopea2a.mapper.gauss.UserModelConfigMapper;
 import com.agentscopea2a.v2.model.ModelProvider;
 import com.agentscopea2a.v2.modelConfig.dto.ModelTestResult;
+import com.agentscopea2a.v2.modelConfig.dto.UserModelConfigListItem;
+import com.agentscopea2a.v2.skillManager.service.MockOrgService;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
@@ -18,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 用户模型配置管理服务.
@@ -38,10 +41,13 @@ public class UserModelConfigManageService {
 
     private final UserModelConfigMapper mapper;
     private final ModelProvider modelProvider;
+    private final MockOrgService orgService;
 
-    public UserModelConfigManageService(UserModelConfigMapper mapper, ModelProvider modelProvider) {
+    public UserModelConfigManageService(UserModelConfigMapper mapper, ModelProvider modelProvider,
+                                        MockOrgService orgService) {
         this.mapper = mapper;
         this.modelProvider = modelProvider;
+        this.orgService = orgService;
     }
 
     // ======================================================================
@@ -51,9 +57,13 @@ public class UserModelConfigManageService {
     /**
      * 列表 (token 脱敏, 供管理页展示).
      */
-    public List<UserModelConfig> list() {
-        return mapper.selectAll().stream()
+    public List<UserModelConfigListItem> list() {
+        List<UserModelConfig> configs = mapper.selectAll();
+        Map<String, String> userNames = orgService.getUserNameMap(
+                configs.stream().map(UserModelConfig::getUserId).toList());
+        return configs.stream()
                 .map(this::maskToken)
+                .map(config -> UserModelConfigListItem.of(config, userNames.get(config.getUserId())))
                 .toList();
     }
 

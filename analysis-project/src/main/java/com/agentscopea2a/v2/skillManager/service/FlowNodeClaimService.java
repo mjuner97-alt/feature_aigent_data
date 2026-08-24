@@ -56,11 +56,13 @@ public class FlowNodeClaimService {
         return mapper.claimNode(nodeId, owner, expiresAt, now) == 1;
     }
 
-    /** 节点是否可被认领:状态允许 + 租约已释放/过期 + 重试退避时间已到。 */
+    /** 节点是否可被认领:状态允许 + 租约已释放/过期 + 重试退避时间已到;租约过期的 RUNNING 重认领还受尝试次数上限约束。 */
     private boolean runnable(SkillFlowNodeExecution node, LocalDateTime now) {
         boolean eligibleStatus = node.getStatus() == FlowNodeExecutionStatus.QUEUED
                 || node.getStatus() == FlowNodeExecutionStatus.RETRY_WAIT
-                || node.getStatus() == FlowNodeExecutionStatus.RUNNING;
+                || (node.getStatus() == FlowNodeExecutionStatus.RUNNING
+                    && node.getAttemptCount() != null && node.getMaxAttempts() != null
+                    && node.getAttemptCount() < node.getMaxAttempts());
         boolean leaseExpired = node.getLeaseExpiresAt() == null || node.getLeaseExpiresAt().isBefore(now);
         boolean retryDue = node.getNextRunAt() == null || !node.getNextRunAt().isAfter(now);
         return eligibleStatus && leaseExpired && retryDue;

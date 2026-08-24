@@ -96,7 +96,7 @@ public class NotificationService {
      * 无指标 job 仅 MANUAL 会进入通知，渲染走默认模板。
      */
     public void notifyJobCompleted(SkillJob job, SkillJobExecution execution, String filePath) {
-        if (job == null || execution == null || filePath == null) {
+        if (job == null || execution == null) {
             return;
         }
         String triggerType = execution.getTriggerType();
@@ -104,6 +104,8 @@ public class NotificationService {
         SkillDependencyMetric metric = job.getMetricId() != null
                 ? metricMapper.selectById(job.getMetricId()) : null;
         boolean notifyEnabled = metric != null && Boolean.TRUE.equals(metric.getNotifyEnabled());
+        // Automatic/external notifications always follow the metric notification switch,
+        // regardless of whether execution succeeded or failed.
         if (!manual && !notifyEnabled) {
             recordSkipped(job, execution, filePath, triggerType,
                     metric == null ? "未关联通知指标" : "指标通知开关未开启");
@@ -132,8 +134,8 @@ public class NotificationService {
                                          String triggerType, String requestType) {
         String contentType = (metric != null && metric.getNotifyContentType() != null && !metric.getNotifyContentType().isBlank())
                 ? metric.getNotifyContentType().toUpperCase() : "HTML";
-        String template = (metric != null && metric.getNotifyContentTemplate() != null && !metric.getNotifyContentTemplate().isBlank())
-                ? metric.getNotifyContentTemplate() : defaultTemplate(contentType);
+        // An empty template is intentional: the concrete sender owns channel-specific formatting.
+        String template = metric != null ? metric.getNotifyContentTemplate() : null;
         String fileUrl = buildFileUrl(execution.getId());
         String content = render(template, contentType, fileUrl, job, metric, execution, filePath);
         String fileName = fileNameOf(filePath);
@@ -235,16 +237,15 @@ public class NotificationService {
         executor.shutdown();
     }
 
-    private String defaultTemplate(String contentType) {
-        return "TEXT".equals(contentType) ? DEFAULT_TEXT_TEMPLATE : DEFAULT_HTML_TEMPLATE;
-    }
-
     private String render(String template, String contentType, String fileUrl, SkillJob job, SkillDependencyMetric metric,
                           SkillJobExecution execution, String filePath) {
         String fileName = fileNameOf(filePath);
         String fileLink = "HTML".equals(contentType)
                 ? "<a href=\"" + fileUrl + "\">" + fileName + "</a>"
                 : fileUrl;
+        if (template == null || template.isBlank()) {
+            return "";
+        }
         return template
                 .replace("{metric_name}", metric != null ? nullSafe(metric.getName()) : "")
                 .replace("{metric_code}", metric != null ? nullSafe(metric.getCode()) : "")

@@ -111,6 +111,7 @@ export interface SkillFlowExecution {
   totalNodeCount?: number;
   completedNodeCount?: number;
   summaryQuestionTemplateSnapshot?: string;
+  renderedSummaryQuestion?: string;
   summaryJson?: unknown;
   reportPath?: string | null;
   reportUrl?: string | null;

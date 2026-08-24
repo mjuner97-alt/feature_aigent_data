@@ -2,6 +2,8 @@
 
 export interface UserModelConfig {
   userId: string;
+  /** 人员姓名，仅列表接口返回；缺失时展示 userId。 */
+  userName?: string | null;
   provider: string;
   token: string;
   modelName: string;
