@@ -1,5 +1,6 @@
 package com.agentscopea2a.v2.skillManager.controller;
 
+import com.agentscopea2a.v2.skillManager.dto.FlowMetricReadinessDto;
 import com.agentscopea2a.v2.skillManager.dto.FlowValidationDto;
 import com.agentscopea2a.v2.skillManager.dto.SkillFlowDefinitionRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillFlowDto;
@@ -7,6 +8,7 @@ import com.agentscopea2a.v2.skillManager.entity.SkillFlowNotification;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.skillManager.service.FlowCompletionService;
 import com.agentscopea2a.v2.skillManager.service.FlowDefinitionService;
+import com.agentscopea2a.v2.skillManager.service.FlowExecutionService;
 import com.agentscopea2a.v2.skillManager.service.FlowQueryService;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
@@ -31,23 +33,35 @@ public class SkillFlowController {
     private final FlowDefinitionService definitionService;
     private final FlowQueryService queryService;
     private final FlowCompletionService completionService;
+    private final FlowExecutionService executionService;
     private final SkillFlowMapper mapper;
 
     public SkillFlowController(FlowDefinitionService definitionService, FlowQueryService queryService,
-                               FlowCompletionService completionService, SkillFlowMapper mapper) {
+                               FlowCompletionService completionService, FlowExecutionService executionService,
+                               SkillFlowMapper mapper) {
         this.definitionService = definitionService;
         this.queryService = queryService;
         this.completionService = completionService;
+        this.executionService = executionService;
         this.mapper = mapper;
     }
 
     // ==================== 流程定义:/api/skill-flows ====================
 
-    /** 流程列表(仅本人创建),keyword 模糊匹配名称。 */
+    /** 流程列表;筛选方式与独立任务一致。 */
     @GetMapping("/api/skill-flows")
     public List<SkillFlowDto> list(@RequestHeader(name = "X-User-Id") String userId,
-                                    @RequestParam(name = "keyword", required = false) String keyword) {
-        return definitionService.list(userId, keyword);
+                                   @RequestParam(name = "enabled", required = false) Boolean enabled,
+                                   @RequestParam(name = "keyword", required = false) String keyword,
+                                   @RequestParam(name = "createdBy", required = false) String createdBy) {
+        return definitionService.list(userId, enabled, keyword, createdBy);
+    }
+
+    /** 流程详情;仅创建人可查看和编辑。 */
+    @GetMapping("/api/skill-flows/{id}")
+    public SkillFlowDto getFlow(@PathVariable(name = "id") Long id,
+                                @RequestHeader(name = "X-User-Id") String userId) {
+        return definitionService.get(id, userId);
     }
 
     /** 创建流程;enabled=true 时要求编排完整可执行。 */
@@ -87,23 +101,41 @@ public class SkillFlowController {
         return definitionService.validate(id, userId);
     }
 
+    /** 手动执行预检:流程全部依赖指标今日的就绪状态,前端弹"数据未就绪是否执行"确认用。 */
+    @GetMapping("/api/skill-flows/{id}/metrics")
+    public List<FlowMetricReadinessDto> flowMetrics(@PathVariable(name = "id") Long id,
+                                                    @RequestHeader(name = "X-User-Id") String userId) {
+        return definitionService.metricReadiness(id, userId);
+    }
+
+    /** 手动触发一次执行;确认后不等待指标就绪,直接进入执行队列。 */
+    @PostMapping("/api/skill-flows/{id}/run")
+    public RunResultDto run(@PathVariable(name = "id") Long id,
+                            @RequestHeader(name = "X-User-Id") String userId) {
+        FlowExecutionService.TriggerResult result = executionService.triggerManual(id, userId);
+        return new RunResultDto(result.execution().getId(), result.created(), result.execution().getStatus().name());
+    }
+
     /** 启停请求体。 */
     public record EnabledRequest(boolean enabled) {}
+
+    /** 手动触发返回体:created=false 表示当日已有活跃执行,直接复用。 */
+    public record RunResultDto(Long executionId, boolean created, String status) {}
 
     // ==================== 执行记录:/api/skill-flow-executions ====================
 
     /** 本人触发的执行记录列表,status/keyword 可选过滤。 */
     @GetMapping("/api/skill-flow-executions")
     public List<FlowQueryService.ExecutionDto> list(@RequestParam(name = "status", required = false) String status,
-                                                    @RequestParam(name = "keyword", required = false) String keyword,
+                                                    @RequestParam(name = "createdBy", required = false) String createdBy,
                                                     @RequestHeader(name = "X-User-Id") String userId) {
-        return queryService.list(status, keyword, userId);
+        return queryService.list(status, createdBy, userId);
     }
 
     /** 执行详情(含汇总结果与报告路径)。 */
     @GetMapping("/api/skill-flow-executions/{id}")
-    public FlowQueryService.ExecutionDto get(@PathVariable(name = "id") Long id,
-                                             @RequestHeader(name = "X-User-Id") String userId) {
+    public FlowQueryService.ExecutionDto getExecution(@PathVariable(name = "id") Long id,
+                                                      @RequestHeader(name = "X-User-Id") String userId) {
         return queryService.get(id, userId);
     }
 

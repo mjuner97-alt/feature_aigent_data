@@ -199,6 +199,8 @@ public class SkillManageService {
 
     @Transactional("gaussTransactionManager")
     public Skill create(Skill skill, String ownerUserId) {
+        requireSkillText(skill.getName(), "名称");
+        requireSkillText(skill.getDescription(), "描述");
         if (skillMapper.existsByName(skill.getName())) {
             throw new IllegalStateException("SkillNameConflict: " + skill.getName());
         }
@@ -389,6 +391,8 @@ public class SkillManageService {
         if (hasPendingPublish(id)) {
             throw new IllegalStateException("SkillPendingApproval: " + id);
         }
+        if (patch.getName() != null) requireSkillText(patch.getName(), "名称");
+        if (patch.getDescription() != null) requireSkillText(patch.getDescription(), "描述");
         if (patch.getName() != null && !patch.getName().equals(s.getName())
                 && skillMapper.existsByName(patch.getName())) {
             throw new IllegalStateException("SkillNameConflict: " + patch.getName());
@@ -417,6 +421,12 @@ public class SkillManageService {
             }
         }
         return updated;
+    }
+
+    private static void requireSkillText(String value, String fieldName) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("Skill " + fieldName + "不能为空");
+        }
     }
 
     @Transactional("gaussTransactionManager")

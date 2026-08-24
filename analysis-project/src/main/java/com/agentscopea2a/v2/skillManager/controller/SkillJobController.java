@@ -275,8 +275,9 @@ public class SkillJobController {
 
     /** 列出启用的依赖指标（前端下拉用，admin 预置只读） */
     @GetMapping("/metrics")
-    public List<SkillDependencyMetricDto> listMetrics() {
-        return service.listMetrics();
+    public List<SkillDependencyMetricDto> listMetrics(
+            @RequestParam(name = "keyword", required = false) String keyword) {
+        return service.listMetrics(keyword);
     }
 
     /**

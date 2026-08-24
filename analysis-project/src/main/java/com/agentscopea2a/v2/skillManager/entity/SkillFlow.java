@@ -20,6 +20,7 @@ public class SkillFlow {
     private String code;
     private String name;
     private String description;
+    private String taskQuestion;
     private String summaryQuestionTemplate;
     private Boolean enabled;
     private Integer maxParallelism;

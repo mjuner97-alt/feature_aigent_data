@@ -12,8 +12,8 @@ import java.util.regex.Pattern;
  * Skill Flow 模板引擎:校验并渲染节点问题模板 / 汇总问题模板。
  *
  * <p>模板语言:用 {@code {变量名}} 占位,渲染时缺失变量会直接抛错(避免把占位符发给 AI)。
- * 节点模板可用变量:server_date、original_question、flow_name、skill_name、upstream_results;
- * 汇总模板可用变量:server_date、original_question、flow_name、all_results。</p>
+ * 节点模板可用变量:server_date、original_question、flow_name、skill_name;
+ * 汇总模板可用变量:server_date、original_question、flow_name、all_results(按卡片顺序拼接)。</p>
  */
 public class FlowTemplateEngine {
 
@@ -21,7 +21,7 @@ public class FlowTemplateEngine {
     private static final Pattern VARIABLE = Pattern.compile("\\{([^{}]+)}");
     /** 节点模板允许的变量集合。 */
     private static final Set<String> NODE_VARIABLES = Set.of(
-            "server_date", "original_question", "flow_name", "skill_name", "upstream_results");
+            "server_date", "original_question", "flow_name", "skill_name");
     /** 汇总模板允许的变量集合。 */
     private static final Set<String> SUMMARY_VARIABLES = Set.of(
             "server_date", "original_question", "flow_name", "all_results");

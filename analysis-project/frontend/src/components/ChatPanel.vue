@@ -113,13 +113,13 @@ interface Message {
 const props = defineProps<{
   userId: string;
   conversationId: string | null;
-  onConversationId?: (id: string) => void;
   onUserMessage?: (text: string) => void;
   onSubagentPlanChange?: (plans: Record<string, SubagentPlanState>, todoCounts: Record<string, number>) => void;
   onStreamDone?: () => void;
 }>();
 
 const emit = defineEmits<{
+  (e: 'conversation-id', id: string): void;
   (e: 'registerInterrupt', handle: { busy: boolean; interrupt: () => Promise<void> } | null): void;
 }>();
 
@@ -191,7 +191,7 @@ async function sendMessage(text: string) {
     convId = (typeof crypto !== 'undefined' && crypto.randomUUID)
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    props.onConversationId?.(convId);
+    emit('conversation-id', convId);
   }
 
   busy.value = true;

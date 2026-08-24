@@ -23,7 +23,12 @@ public interface SkillFlowMapper {
 
     SkillFlow selectFlowByCode(@Param("code") String code);
 
-    List<SkillFlow> selectFlows(@Param("createdBy") String createdBy, @Param("keyword") String keyword);
+    SkillFlow selectFlowByName(@Param("name") String name);
+
+    List<SkillFlow> selectFlows(@Param("ownerUserId") String ownerUserId, @Param("enabled") Boolean enabled,
+                                @Param("keyword") String keyword, @Param("createdBy") String createdBy);
+
+    List<SkillFlow> selectEnabledFlowsByMetricId(@Param("metricId") Long metricId);
 
     void updateFlow(SkillFlow flow);
 
@@ -72,7 +77,7 @@ public interface SkillFlowMapper {
     List<SkillFlowTrigger> selectEnabledTriggers();
     SkillFlowExecution selectActiveExecution(@Param("guardKey") String guardKey);
     SkillFlowExecution selectLatestConversationExecution(@Param("userId") String userId, @Param("conversationId") String conversationId);
-    List<SkillFlowExecution> selectExecutions(@Param("status") String status, @Param("keyword") String keyword, @Param("userId") String userId);
+    List<SkillFlowExecution> selectExecutions(@Param("status") String status, @Param("createdBy") String createdBy, @Param("userId") String userId);
     List<SkillFlowExecution> selectWaitingExecutions();
     void updateExecution(SkillFlowExecution execution);
     SkillFlowNodeExecution selectNodeExecution(@Param("id") Long id);

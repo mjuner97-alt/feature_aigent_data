@@ -5,7 +5,6 @@ import com.agentscopea2a.v2.skillManager.config.SkillFlowProperties;
 import com.agentscopea2a.v2.skillManager.entity.*;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
@@ -19,6 +18,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
 
 import java.net.ConnectException;
 import java.net.SocketTimeoutException;
@@ -26,12 +27,9 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -44,8 +42,8 @@ import java.util.concurrent.TimeoutException;
  * <ol>
  *   <li>{@link #scan} 定时扫描可运行节点(QUEUED/RETRY_WAIT/租约过期),经
  *       {@link FlowNodeClaimService} 抢占认领后提交到工作线程池;</li>
- *   <li>{@link #executeNode} 渲染节点问题模板 -> 调 AI 执行该节点 skill,成功后推进依赖图;</li>
- *   <li>{@link #advance} 推进:根据前置节点状态解锁下游节点、处理取消、全部终态后触发汇总与通知;</li>
+ *   <li>{@link #executeNode} 渲染节点问题模板 -> 调 AI 执行该节点 skill,成功后推进;</li>
+ *   <li>{@link #advance} 推进:放行等待节点、处理取消、全部终态后触发汇总与通知;</li>
  *   <li>{@link #expirePreviousDays} 跨天兜底:仍在等指标(WAITING_METRICS)的执行直接判失败。</li>
  * </ol>
  * 节点级并发用许可信号量(workerPermits)限流,流程级并发上限由执行快照 maxParallelismSnapshot 控制。
@@ -91,6 +89,17 @@ public class FlowCoordinator {
     public void scan() {
         if (!SkillFlowProperties.ENABLED || !SkillFlowProperties.WORKER_ENABLED) return;
         expirePreviousDays();
+        dispatchRunnableNodes();
+    }
+
+    /** 正常路径：流程事务提交后立即派发；定时 scan 仅作为恢复兜底。 */
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
+    public void onFlowQueued(FlowQueuedEvent event) {
+        if (!SkillFlowProperties.ENABLED || !SkillFlowProperties.WORKER_ENABLED) return;
+        dispatchRunnableNodes();
+    }
+
+    private void dispatchRunnableNodes() {
         LocalDateTime now = LocalDateTime.now(clock);
         for (SkillFlowNodeExecution node : mapper.selectRunnableNodes(now)) {
             if (!workerPermits.tryAcquire()) break; // 池子已满,本轮不再认领
@@ -136,14 +145,12 @@ public class FlowCoordinator {
         if (flow.getStartedAt() == null) flow.setStartedAt(started);
         mapper.updateExecution(flow);
         try {
-            String upstream = upstreamResults(node, mapper.selectNodeExecutions(flow.getId()));
             String rendered = templates.render(node.getQuestionTemplateSnapshot(),
                     new FlowTemplateEngine.Context(Map.of(
                             "server_date", flow.getDataDate().toString(),
                             "original_question", flow.getOriginalQuestion(),
                             "flow_name", flow.getFlowName(),
-                            "skill_name", node.getSkillName(),
-                            "upstream_results", upstream.isBlank() ? "无前置结果" : upstream)));
+                            "skill_name", node.getSkillName())));
             String question = buildPrompt(node.getSkillRetrievalName(), rendered);
             node.setRenderedQuestion(question);
             RuntimeContext context = RuntimeContext.builder()
@@ -180,13 +187,11 @@ public class FlowCoordinator {
         }
     }
 
-    /** 推进流程状态:取消善后、解锁下游节点、全部终态后汇总收尾。 */
+    /** 推进流程状态:取消善后、放行等待节点、全部终态后汇总收尾。 */
     private void advance(Long flowId) {
         SkillFlowExecution flow = mapper.selectFlowExecutionById(flowId);
         if (flow == null) return;
         List<SkillFlowNodeExecution> nodes = mapper.selectNodeExecutions(flow.getId());
-        Map<String, SkillFlowNodeExecution> byKey = new HashMap<>();
-        nodes.forEach(n -> byKey.put(n.getNodeKey(), n));
         // 取消中:所有未终态节点置 CANCELLED,流程落终态 CANCELLED
         if (flow.getStatus() == FlowExecutionStatus.CANCEL_REQUESTED || flow.getStatus() == FlowExecutionStatus.CANCELLED) {
             for (SkillFlowNodeExecution node : nodes) {
@@ -199,23 +204,14 @@ public class FlowCoordinator {
             }
             flow.setStatus(FlowExecutionStatus.CANCELLED);
             flow.setSummaryJson(json(Map.of("cancelled", true)));
-            flow.setActiveGuardKey(null);
+            releaseRepeatableGuard(flow);
             flow.setCompletedAt(LocalDateTime.now(clock));
             mapper.updateExecution(flow);
             return;
         }
-        // PENDING 节点按前置状态推进:前置失败 -> BLOCKED;前置全部成功 -> QUEUED
+        // 节点全并行:PENDING(等指标期间遗留,含旧依赖快照)直接放行进入队列
         for (SkillFlowNodeExecution node : nodes) {
-            if (node.getStatus() != FlowNodeExecutionStatus.PENDING) continue;
-            List<SkillFlowNodeExecution> deps = readList(node.getDependsOnJson()).stream()
-                    .map(byKey::get).filter(Objects::nonNull).toList();
-            if (deps.stream().anyMatch(d -> d.getStatus() == FlowNodeExecutionStatus.FAILED
-                    || d.getStatus() == FlowNodeExecutionStatus.BLOCKED)) {
-                node.setStatus(FlowNodeExecutionStatus.BLOCKED);
-                node.setErrorCode("UPSTREAM_FAILED");
-                node.setCompletedAt(LocalDateTime.now(clock));
-                mapper.updateNodeExecution(node);
-            } else if (!deps.isEmpty() && deps.stream().allMatch(d -> d.getStatus() == FlowNodeExecutionStatus.SUCCESS)) {
+            if (node.getStatus() == FlowNodeExecutionStatus.PENDING) {
                 node.setStatus(FlowNodeExecutionStatus.QUEUED);
                 mapper.updateNodeExecution(node);
             }
@@ -250,7 +246,7 @@ public class FlowCoordinator {
             if (flow.getStatus() == FlowExecutionStatus.SUCCESS) flow.setStatus(FlowExecutionStatus.FAILED);
         }
         flow.setCompletedAt(LocalDateTime.now(clock));
-        flow.setActiveGuardKey(null);
+        releaseRepeatableGuard(flow);
         mapper.updateExecution(flow);
         completionService.sendInitial(flow);
     }
@@ -270,7 +266,7 @@ public class FlowCoordinator {
             }
             flow.setStatus(FlowExecutionStatus.FAILED);
             flow.setSummaryJson(json(Map.of("errorCode", "METRIC_TIMEOUT", "missingMetrics", flow.getMissingMetricsJson())));
-            flow.setActiveGuardKey(null);
+            releaseRepeatableGuard(flow);
             flow.setCompletedAt(LocalDateTime.now(clock));
             mapper.updateExecution(flow);
             completionService.sendInitial(flow);
@@ -283,14 +279,6 @@ public class FlowCoordinator {
         clearLease(node);
         mapper.updateNodeExecution(node);
         if (flow != null) advance(flow.getId());
-    }
-
-    /** 拼接指定节点的全部前置结果,作为 upstream_results 变量传给模板。 */
-    private String upstreamResults(SkillFlowNodeExecution node, List<SkillFlowNodeExecution> all) {
-        Set<String> keys = new HashSet<>(readList(node.getDependsOnJson()));
-        return all.stream().filter(n -> keys.contains(n.getNodeKey()))
-                .map(n -> n.getNodeKey() + ": " + n.getResultJson())
-                .reduce((a, b) -> a + "\n" + b).orElse("");
     }
 
     /** 组装发给 AI 的最终问题:点名要调用的 skill(检索名)+ 渲染后的用户问题。 */
@@ -316,14 +304,6 @@ public class FlowCoordinator {
             current = current.getCause();
         }
         return false;
-    }
-
-    private List<String> readList(String value) {
-        try {
-            return json.readValue(value == null ? "[]" : value, new TypeReference<>() {});
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException(e);
-        }
     }
 
     private String json(Object value) {
@@ -353,6 +333,10 @@ public class FlowCoordinator {
     private void clearLease(SkillFlowNodeExecution node) {
         node.setLeaseOwner(null);
         node.setLeaseExpiresAt(null);
+    }
+
+    private void releaseRepeatableGuard(SkillFlowExecution flow) {
+        if (flow.getTriggerType() != FlowTriggerType.AUTO_METRIC) flow.setActiveGuardKey(null);
     }
 
     /** 回写尝试(audit)记录的最终结果。 */

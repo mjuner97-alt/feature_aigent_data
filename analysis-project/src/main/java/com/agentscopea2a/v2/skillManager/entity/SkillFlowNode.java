@@ -9,7 +9,8 @@ import java.time.LocalDateTime;
 
 /**
  * Skill Flow 编排节点表实体:一个节点绑定一个 skill。
- * dependsOnJson 为前置节点 nodeKey 列表(构成 DAG);questionTemplate 支持 {变量} 占位。
+ * 节点全并行执行;sortOrder 决定结果拼接顺序;questionTemplate 支持 {变量} 占位。
+ * dependsOnJson 列保留但恒为 [](历史字段,不再支持节点间依赖)。
  */
 @Data
 @Builder

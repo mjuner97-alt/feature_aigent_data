@@ -32,9 +32,14 @@ const loading = ref(false);
 const keyword = ref('');
 const enabledFilter = ref<boolean | null>(null);
 const createdBy = ref('');
-// 长任务流程（多 Skill 协作流）暂未上线，先隐藏入口；上线时改回 true 即可
-const showSkillFlow = false;
+// 长任务流程（多 Skill 并行流）：入口已放开
+const showSkillFlow = true;
 const activeTab = ref<'manage' | 'flows' | 'execution' | 'flow-execution'>('manage');
+const flowKeyword = ref('');
+const flowCreatedBy = ref('');
+const flowEnabledFilter = ref<boolean | null>(null);
+const flowListRef = ref<InstanceType<typeof SkillFlowList> | null>(null);
+const flowExecutionListRef = ref<InstanceType<typeof SkillFlowExecutionList> | null>(null);
 const centerExecutions = ref<SkillJobExecution[]>([]);
 const executionLoading = ref(false);
 const executionError = ref('');
@@ -137,9 +142,31 @@ function openExecutionCenter() {
   loadExecutionCenter();
 }
 
+function filterFlows() {
+  flowListRef.value?.load(flowKeyword.value, flowCreatedBy.value, flowEnabledFilter.value ?? undefined);
+}
+
+function createFlow() {
+  flowListRef.value?.create();
+}
+
+function openFlowExecutions() {
+  activeTab.value = 'flow-execution';
+}
+
+function refreshCurrentTab() {
+  if (activeTab.value === 'manage') load();
+  else if (activeTab.value === 'flows') filterFlows();
+  else if (activeTab.value === 'execution') loadExecutionCenter();
+}
+
 function filterExecutionCenter() {
-  executionPage.value = 1;
-  loadExecutionCenter();
+  if (activeTab.value === 'flow-execution') {
+    flowExecutionListRef.value?.load(executionStatusFilter.value, executionCreatedBy.value);
+  } else {
+    executionPage.value = 1;
+    loadExecutionCenter();
+  }
 }
 
 function executionStatus(status: string): string {
@@ -317,7 +344,17 @@ function metricTitle(job: SkillJob): string {
           </select>
           <button class="btn primary" @click="openCreate">+ 创建任务</button>
         </template>
-        <template v-else-if="activeTab === 'execution'">
+        <template v-else-if="activeTab === 'flows'">
+          <input v-model="flowKeyword" placeholder="搜索流程名称…" class="search-input" @keyup.enter="filterFlows" />
+          <input v-model="flowCreatedBy" placeholder="创建人 userId" class="search-input creator-input" @keyup.enter="filterFlows" />
+          <select v-model="flowEnabledFilter" class="filter-select" @change="filterFlows">
+            <option :value="null">全部状态</option>
+            <option :value="true">已启用</option>
+            <option :value="false">已禁用</option>
+          </select>
+          <button class="btn primary" @click="createFlow">+ 创建流程</button>
+        </template>
+        <template v-else-if="activeTab === 'execution' || activeTab === 'flow-execution'">
           <input v-model="executionCreatedBy" placeholder="创建人 userId" class="search-input creator-input" @keyup.enter="filterExecutionCenter" />
           <select v-model="executionStatusFilter" class="filter-select" @change="filterExecutionCenter">
             <option value="">全部状态</option>
@@ -328,7 +365,8 @@ function metricTitle(job: SkillJob): string {
             <option value="SKIPPED">未执行</option>
           </select>
         </template>
-        <button v-if="activeTab === 'manage' || activeTab === 'execution'" class="btn ghost" @click="activeTab === 'manage' ? load() : loadExecutionCenter()">刷新</button>
+        <button v-if="activeTab === 'manage' || activeTab === 'flows'" class="btn ghost" @click="refreshCurrentTab">刷新</button>
+        <button v-else-if="activeTab === 'execution' || activeTab === 'flow-execution'" class="btn ghost" @click="filterExecutionCenter">刷新</button>
       </div>
     </div>
 
@@ -339,8 +377,8 @@ function metricTitle(job: SkillJob): string {
       <button v-if="showSkillFlow" class="job-tab" :class="{ active: activeTab === 'flow-execution' }" @click="activeTab = 'flow-execution'">长任务执行记录</button>
     </div>
 
-    <SkillFlowList v-if="activeTab === 'flows'" />
-    <SkillFlowExecutionList v-else-if="activeTab === 'flow-execution'" />
+    <SkillFlowList v-if="activeTab === 'flows'" ref="flowListRef" @view-records="openFlowExecutions" />
+    <SkillFlowExecutionList v-else-if="activeTab === 'flow-execution'" ref="flowExecutionListRef" />
 
     <template v-else-if="activeTab === 'execution'">
       <div v-if="executionError" class="center-error">{{ executionError }}</div>

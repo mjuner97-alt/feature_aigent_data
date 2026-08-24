@@ -43,9 +43,9 @@ public class FlowQueryService {
         this.reportRoot = Paths.get(storage.getJobReportDir()).normalize().toAbsolutePath();
     }
 
-    /** 执行列表(仅本人触发),status/keyword 可选过滤。 */
-    public List<ExecutionDto> list(String status, String keyword, String userId) {
-        return mapper.selectExecutions(status, keyword, userId).stream().map(this::dto).toList();
+    /** 执行列表(仅本人触发),status/createdBy 可选过滤。 */
+    public List<ExecutionDto> list(String status, String createdBy, String userId) {
+        return mapper.selectExecutions(status, createdBy, userId).stream().map(this::dto).toList();
     }
 
     /** 执行详情。 */
@@ -58,7 +58,7 @@ public class FlowQueryService {
         owned(id, userId);
         return mapper.selectNodeExecutions(id).stream()
                 .map(n -> new NodeDto(n.getId(), n.getNodeKey(), n.getSkillName(), n.getQuestionTemplateSnapshot(),
-                        n.getRenderedQuestion(), readStrings(n.getDependsOnJson()), Boolean.TRUE.equals(n.getRequired()),
+                        n.getRenderedQuestion(), Boolean.TRUE.equals(n.getRequired()),
                         n.getStatus().name(), n.getAttemptCount(), n.getMaxAttempts(), n.getErrorCode(),
                         n.getErrorMessage(), n.getStartedAt(), n.getCompletedAt(), mapper.selectAttempts(n.getId())))
                 .toList();
@@ -130,15 +130,6 @@ public class FlowQueryService {
         }
     }
 
-    private List<String> readStrings(String value) {
-        if (value == null) return List.of();
-        try {
-            return json.readValue(value, new TypeReference<>() {});
-        } catch (Exception ignored) {
-            return List.of();
-        }
-    }
-
     /** 执行记录列表/详情返回体。 */
     public record ExecutionDto(Long id, Long flowId, String flowName, String flowCode, String status,
                                String triggerUserId, String originalQuestion, LocalDate dataDate,
@@ -147,9 +138,9 @@ public class FlowQueryService {
                                String summaryQuestionTemplateSnapshot, Object summaryJson, String reportPath,
                                LocalDateTime createdAt, LocalDateTime startedAt, LocalDateTime completedAt) {}
 
-    /** 节点执行明细返回体(attempts 为每次尝试的审计记录)。 */
+    /** 节点执行明细返回体(attempts 为每次尝试的审计记录;节点全并行,无依赖)。 */
     public record NodeDto(Long id, String nodeKey, String skillName, String questionTemplateSnapshot,
-                          String renderedQuestion, List<String> dependsOn, boolean required, String status,
+                          String renderedQuestion, boolean required, String status,
                           Integer attemptCount, Integer maxAttempts, String errorCode, String errorMessage,
                           LocalDateTime startedAt, LocalDateTime completedAt, List<SkillFlowNodeAttempt> attempts) {}
 

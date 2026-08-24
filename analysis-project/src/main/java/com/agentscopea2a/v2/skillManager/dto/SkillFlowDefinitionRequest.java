@@ -4,12 +4,14 @@ import java.util.List;
 
 /**
  * 创建 / 更新 Skill Flow 的请求体。
- * <p>启用(enabled=true)前会做完整性校验:DAG 无环、模板变量合法、skill/指标可用、触发词不冲突。</p>
+ * <p>启用(enabled=true)前会做完整性校验:模板变量合法、skill/指标可用、触发词不冲突。
+ * 节点全并行执行,无依赖关系;sortOrder 决定结果拼接顺序。</p>
  */
 public record SkillFlowDefinitionRequest(
         String code,
         String name,
         String description,
+        String taskQuestion,
         String summaryQuestionTemplate,
         Boolean enabled,
         Integer maxParallelism,
@@ -27,21 +29,19 @@ public record SkillFlowDefinitionRequest(
 
     /**
      * 节点配置:questionTemplate 支持变量占位,
-     * dependsOn 为前置节点 nodeKey 列表(构成 DAG),metricIds 为就绪门槛指标。
+     * metricIds 为就绪门槛指标,sortOrder 决定结果拼接顺序。
      */
     public record Node(
             String nodeKey,
             Long skillId,
             String questionTemplate,
             List<Long> metricIds,
-            List<String> dependsOn,
             Boolean required,
             Integer maxAttempts,
             Integer sortOrder) {
 
         public Node {
             metricIds = metricIds == null ? List.of() : List.copyOf(metricIds);
-            dependsOn = dependsOn == null ? List.of() : List.copyOf(dependsOn);
         }
     }
 }

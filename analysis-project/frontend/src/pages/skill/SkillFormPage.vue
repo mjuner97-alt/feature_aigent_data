@@ -138,6 +138,10 @@ async function submit() {
     formError.value = '请填写 Skill 名称';
     return;
   }
+  if (!form.value.description.trim()) {
+    formError.value = '请填写 Skill 描述';
+    return;
+  }
   saving.value = true;
   try {
     // visibility 作为 SkillInput 传给后端(PERSONAL/PRIVATE/PUBLIC)
@@ -222,7 +226,7 @@ function goBack() {
             <input v-model="form.name" :disabled="notOwner" placeholder="如 query_q1_quality" />
           </label>
           <label class="field">
-            <span class="label">描述</span>
+            <span class="label">描述 *</span>
             <textarea v-model="form.description" :disabled="notOwner" rows="2" placeholder="一句话说明这个 Skill 做什么" />
           </label>
           <label class="field">

@@ -21,6 +21,11 @@
     <select id="selectAllEnabled" resultMap="MetricResultMap">
         SELECT <include refid="metricCols"/> FROM skill_dependency_metric
         WHERE enabled = TRUE
+        <if test="keyword != null and keyword != ''">
+            AND (LOWER(name) LIKE CONCAT('%', LOWER(#{keyword}), '%')
+              OR LOWER(code) LIKE CONCAT('%', LOWER(#{keyword}), '%')
+              OR LOWER(description) LIKE CONCAT('%', LOWER(#{keyword}), '%'))
+        </if>
         ORDER BY id ASC
     </select>
 

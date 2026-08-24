@@ -13,7 +13,6 @@ export interface SkillFlowNode {
   questionTemplate: string;
   metricIds: number[];
   metricNames?: string[];
-  dependsOn: string[];
   required: boolean;
   maxAttempts: number;
   sortOrder: number;
@@ -24,6 +23,7 @@ export interface SkillFlow {
   code?: string;
   name: string;
   description?: string;
+  taskQuestion: string;
   summaryQuestionTemplate: string;
   enabled: boolean;
   maxParallelism: number;
@@ -40,6 +40,7 @@ export interface SkillFlowInput {
   code?: string;
   name: string;
   description?: string;
+  taskQuestion: string;
   summaryQuestionTemplate: string;
   enabled: boolean;
   maxParallelism: number;
@@ -74,7 +75,6 @@ export interface SkillFlowNodeExecution {
   skillName?: string;
   questionTemplateSnapshot?: string;
   renderedQuestion?: string;
-  dependsOn?: string[];
   required: boolean;
   status: string;
   attemptCount: number;
@@ -121,4 +121,20 @@ export interface SkillFlowExecution {
   metrics?: FlowMetricReadiness[];
   nodes?: SkillFlowNodeExecution[];
   notifications?: SkillFlowNotification[];
+}
+
+/** 流程定义级指标就绪预检(手动执行前查,同 FlowMetricReadiness 但含受影响节点)。 */
+export interface FlowMetricPrecheck {
+  metricId: number;
+  metricCode?: string;
+  metricName?: string;
+  status: string;
+  affectedNodeKeys?: string[];
+}
+
+/** 手动触发返回:created=false 表示当日已有活跃执行,直接复用。 */
+export interface SkillFlowRunResult {
+  executionId: number;
+  created: boolean;
+  status: string;
 }

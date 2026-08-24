@@ -1,4 +1,4 @@
-import type { SkillFlow, SkillFlowExecution, SkillFlowInput, SkillFlowNodeExecution, FlowMetricReadiness, SkillFlowNotification } from '../types/skillFlow';
+import type { SkillFlow, SkillFlowExecution, SkillFlowInput, SkillFlowNodeExecution, FlowMetricReadiness, FlowMetricPrecheck, SkillFlowRunResult, SkillFlowNotification } from '../types/skillFlow';
 import { apiErrorDetail } from '../utils/apiError';
 
 const FLOW_BASE = '/api/skill-flows';
@@ -30,9 +30,11 @@ function listBody<T>(body: unknown): T[] {
   return [];
 }
 
-export async function listSkillFlows(keyword?: string): Promise<SkillFlow[]> {
+export async function listSkillFlows(enabled?: boolean, keyword?: string, createdBy?: string): Promise<SkillFlow[]> {
   const qs = new URLSearchParams();
+  if (enabled != null) qs.set('enabled', String(enabled));
   if (keyword) qs.set('keyword', keyword);
+  if (createdBy) qs.set('createdBy', createdBy);
   const res = await fetch(`${FLOW_BASE}?${qs}`, { headers: authHeaders() });
   if (!res.ok) throw await requestError(res, '查询长任务流程失败');
   return listBody<SkillFlow>(await res.json());
@@ -72,10 +74,24 @@ export async function validateSkillFlow(id: number): Promise<void> {
   if (!res.ok) throw await requestError(res, '流程校验失败');
 }
 
-export async function listSkillFlowExecutions(status?: string, keyword?: string): Promise<SkillFlowExecution[]> {
+/** 手动执行预检:流程依赖指标今日就绪状态,未就绪时先弹确认再真正触发。 */
+export async function getSkillFlowMetricPrecheck(id: number): Promise<FlowMetricPrecheck[]> {
+  const res = await fetch(`${FLOW_BASE}/${id}/metrics`, { headers: authHeaders() });
+  if (!res.ok) throw await requestError(res, '查询指标就绪状态失败');
+  return listBody<FlowMetricPrecheck>(await res.json());
+}
+
+/** 手动触发一次执行;指标未就绪时后端挂 WAITING_METRICS,数据到达后自动开跑。 */
+export async function runSkillFlow(id: number): Promise<SkillFlowRunResult> {
+  const res = await fetch(`${FLOW_BASE}/${id}/run`, { method: 'POST', headers: jsonHeaders() });
+  if (!res.ok) throw await requestError(res, '触发执行失败');
+  return res.json();
+}
+
+export async function listSkillFlowExecutions(status?: string, createdBy?: string): Promise<SkillFlowExecution[]> {
   const qs = new URLSearchParams();
   if (status) qs.set('status', status);
-  if (keyword) qs.set('keyword', keyword);
+  if (createdBy) qs.set('createdBy', createdBy);
   const res = await fetch(`${EXECUTION_BASE}?${qs}`, { headers: authHeaders() });
   if (!res.ok) throw await requestError(res, '查询长任务执行记录失败');
   return listBody<SkillFlowExecution>(await res.json());

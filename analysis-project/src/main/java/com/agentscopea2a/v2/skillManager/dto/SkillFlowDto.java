@@ -12,6 +12,7 @@ public record SkillFlowDto(
         String code,
         String name,
         String description,
+        String taskQuestion,
         String summaryQuestionTemplate,
         Boolean enabled,
         Integer maxParallelism,
@@ -27,8 +28,8 @@ public record SkillFlowDto(
     public record Trigger(Long id, String keyword, Integer priority, Boolean enabled) {}
 
     /**
-     * 编排节点:一个节点绑定一个 skill,声明依赖的前置节点(dependsOn)
-     * 与就绪门槛指标(metricIds)。
+     * 编排节点:一个节点绑定一个 skill,声明就绪门槛指标(metricIds);
+     * 节点全并行执行,sortOrder 决定结果拼接顺序。
      */
     public record Node(
             Long id,
@@ -38,7 +39,6 @@ public record SkillFlowDto(
             String questionTemplate,
             List<Long> metricIds,
             List<String> metricNames,
-            List<String> dependsOn,
             Boolean required,
             Integer maxAttempts,
             Integer sortOrder) {}

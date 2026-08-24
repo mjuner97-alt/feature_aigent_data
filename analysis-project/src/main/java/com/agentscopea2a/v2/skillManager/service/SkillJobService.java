@@ -272,8 +272,9 @@ public class SkillJobService {
     }
 
     /** 列出启用的依赖指标（供前端下拉，admin 预置只读） */
-    public List<SkillDependencyMetricDto> listMetrics() {
-        return metricMapper.selectAllEnabled().stream().map(SkillDependencyMetricDto::of).toList();
+    public List<SkillDependencyMetricDto> listMetrics(String keyword) {
+        String trimmed = keyword == null ? null : keyword.trim();
+        return metricMapper.selectAllEnabled(trimmed).stream().map(SkillDependencyMetricDto::of).toList();
     }
 
     /**
@@ -291,7 +292,9 @@ public class SkillJobService {
         }
         // 外部系统调用可不传 X-User-Id；此处仅用于日志追溯，实际执行身份取自每个 job 的 createdBy
         String caller = (userId == null || userId.isBlank()) ? "MANAGER" : userId;
+        //给长任务登记指标 READY。
         recordFlowReadinessBestEffort(metric);
+        //触发旧的独立
         List<SkillJob> jobs = mapper.selectEnabledJobsByMetricId(metric.getId());
         List<MetricTriggerItemDto> results = new ArrayList<>();
         for (SkillJob job : jobs) {
@@ -302,14 +305,30 @@ public class SkillJobService {
         return new MetricTriggerBatchDto(code, results.size(), results);
     }
 
+    /**
+     * 指标到达时为 SkillFlow 长任务登记 READY，并驱动依赖该指标的流程（尽力而为，不影响旧的独立 Job 触发）：
+     * <ol>
+     *   <li>调用 {@code MetricReadinessService#recordReady} 按「指标 + 数据日期」upsert 一条 READY 记录；</li>
+     *   <li>异步执行两步：{@code metricBecameReady} 重算所有等待中执行的就绪门控（全部就绪则放行入队），
+     *       {@code triggerReadyFlows} 为依赖该指标且当日全部指标就绪的流程创建每日自动执行。</li>
+     * </ol>
+     * 任何失败只记日志不上抛——本方法在 {@link #triggerByMetric} 里位于独立 Job 批量触发之前，
+     * READY 登记或门控重算失败都不能阻断旧链路（独立 Job 继续触发）。
+     * 两个依赖均为 @Autowired(required=false) 可选注入，未启用 SkillFlow 时直接跳过。
+     */
     private void recordFlowReadinessBestEffort(SkillDependencyMetric metric) {
+        // SkillFlow 功能未启用（未注入就绪登记服务）则整体跳过
         if (metricReadinessService == null) return;
         try {
+            // 同步落 READY 记录：流程创建/放行判断都依赖这条记录存在，失败则无需再走后续两步
             SkillMetricReadiness readiness = metricReadinessService.recordReady(metric);
             if (flowExecutionService != null) {
+                // 门控重算与流程触发放到异步线程，不占用本次外部触发请求的响应时间
                 CompletableFuture.runAsync(() -> {
                     try {
+                        // 先放行已等待中的执行，再创建今日新自动执行，顺序不可颠倒
                         flowExecutionService.metricBecameReady(metric.getId(), readiness.getDataDate());
+                        flowExecutionService.triggerReadyFlows(metric.getId(), readiness.getDataDate());
                     } catch (RuntimeException e) {
                         log.error("[SkillFlow] gate recalculation failed: metric={}, date={}",
                                 metric.getCode(), readiness.getDataDate(), e);
@@ -317,6 +336,7 @@ public class SkillJobService {
                 });
             }
         } catch (RuntimeException e) {
+            // READY 落库失败仅记录，独立 Job 的批量触发继续执行
             log.error("[SkillFlow] READY persistence failed; independent jobs continue: metric={}",
                     metric.getCode(), e);
         }

@@ -6,7 +6,7 @@
         ref="chatPanelRef"
         :user-id="userId"
         :conversation-id="conversationId"
-        @on-conversation-id="handleConversationId"
+        @conversation-id="handleConversationId"
         @on-user-message="handleUserMessage"
         @on-subagent-plan-change="handleSubagentPlanChange"
         @on-stream-done="handleStreamDone"
