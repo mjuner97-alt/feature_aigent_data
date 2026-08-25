@@ -42,7 +42,6 @@ const isEdit = computed(() => props.editId != null);
 const validationErrors = computed(() => {
   const errors: string[] = [];
   if (!form.value.name.trim()) errors.push('请填写流程名称');
-  if (!form.value.taskQuestion.trim()) errors.push('请填写任务问题');
   const sameName = props.knownFlows.find(flow => flow.id !== props.editId && flow.name.trim() === form.value.name.trim());
   if (sameName) errors.push(`流程名称「${form.value.name.trim()}」已存在`);
   if (!form.value.nodes.length) errors.push('至少配置一个 Skill 节点');
@@ -224,7 +223,6 @@ watch(() => props.open, open => { if (open) load(); });
             <section class="form-section">
               <div class="section-heading"><h4>基本信息</h4></div>
               <label><span>流程名称 *</span><input v-model="form.name" placeholder="如 每日质量综合分析" /></label>
-              <label><span>任务问题 *</span><textarea v-model="form.taskQuestion" rows="3" placeholder="如 分析今日质量指标并生成综合报告" /></label>
               <label><span>说明(非必填)</span><textarea v-model="form.description" rows="2" placeholder="说明该流程处理的业务问题" /></label>
               <div class="basic-row">
                 <label class="toggle-row"><input v-model="form.enabled" type="checkbox" /><span>保存后启用流程</span></label>
@@ -252,6 +250,7 @@ watch(() => props.open, open => { if (open) load(); });
                 </div>
                 <div class="node-grid">
                   <label><span>Skill *</span><el-select v-model="node.skillId" filterable remote reserve-keyword :remote-method="searchSkills" :loading="skillLoading" placeholder="请选择 Skill" clearable style="width: 100%" @change="syncNodeSkillName(node)"><el-option v-for="skill in skills" :key="skill.id" :value="skill.id" :label="skill.name" /></el-select></label>
+                  <label><span>本流程问题 *</span><textarea v-model="node.questionTemplate" rows="3" placeholder="填写该 Skill 在本流程中要执行的问题" /></label>
                   <label><span>依赖指标</span><el-select :model-value="node.metricIds[0] ?? null" filterable remote reserve-keyword :remote-method="searchMetrics" :loading="metricLoading" placeholder="无需依赖指标" clearable style="width: 100%" @change="setNodeMetric(node, $event)"><el-option v-for="metric in metrics" :key="metric.id" :value="metric.id" :label="`${metric.name} (${metric.code})`" /></el-select></label>
                 </div>
               </div>

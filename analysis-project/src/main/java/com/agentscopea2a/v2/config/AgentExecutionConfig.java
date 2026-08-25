@@ -49,7 +49,7 @@ public final class AgentExecutionConfig {
      */
     public static final ExecutionConfig MODEL_DEFAULTS =
             ExecutionConfig.builder()
-                    .timeout(Duration.ofSeconds(20))
+                    .timeout(Duration.ofSeconds(3*60))
                     .maxAttempts(1)
                     .initialBackoff(Duration.ofSeconds(2))
                     .maxBackoff(Duration.ofSeconds(30))

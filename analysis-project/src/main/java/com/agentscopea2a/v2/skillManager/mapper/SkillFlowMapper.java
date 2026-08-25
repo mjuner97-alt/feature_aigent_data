@@ -29,6 +29,7 @@ import java.util.List;
 @Mapper
 public interface SkillFlowMapper {
 
+    /** Reads an enabled built-in prompt by its stable business key. */
     // ==================== 流程定义 ====================
 
     // 创建、查询和修改流程本身；软删除会同时禁用流程，但不会物理删除历史定义。

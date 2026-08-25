@@ -83,7 +83,7 @@ onMounted(() => load());
         <thead>
           <tr>
             <th>流程名称</th>
-            <th>Skill</th>
+            <th>Skill 数量</th>
             <th>依赖指标</th>
             <th>状态</th>
             <th>创建人</th>
@@ -97,7 +97,7 @@ onMounted(() => load());
               <span class="col-name selectable" :title="flow.name">{{ flow.name }}</span>
               <span v-if="flow.description" class="col-description" :title="flow.description">{{ flow.description }}</span>
             </td>
-            <td>{{ flow.nodes.map(node => node.skillName || `#${node.skillId}`).join('、') || '未配置' }}</td>
+            <td>{{ flow.nodes.length }}</td>
             <td>{{ metricCount(flow) }}</td>
             <td>
               <span class="status-badge" :class="enabledStatusClass(flow)">{{ flow.enabled ? '启用' : '禁用' }}</span>
