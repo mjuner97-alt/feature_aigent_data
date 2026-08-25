@@ -75,49 +75,49 @@ public class FlowCompletionService {
     /** 汇总结果:summaryJson 入库,reportPath 为报告文件相对路径。 */
     public record Summary(String summaryJson, String reportPath) {}
 
-    /**
-     * 生成流程汇总:用汇总模板渲染问题 -> 调 AI 汇总 -> 渲染 HTML 报告写入报告目录。
-     * AI 汇总失败时抛出 IllegalStateException,由调用方决定降级策略。
-     */
+    /** 按节点配置顺序拼接结果并生成 HTML 报告，不调用汇总模型。 */
     public Summary summarize(SkillFlowExecution flow, List<SkillFlowNodeExecution> nodes) {
         try {
-            String prompt = promptRenderer.render(flow, nodes);
-            flow.setRenderedSummaryQuestion(prompt);
+            String text = orderedReportText(nodes);
+            flow.setRenderedSummaryQuestion(null);
             mapper.updateExecution(flow);
-            RuntimeContext context = RuntimeContext.builder()
-                    .sessionId("flow-" + flow.getId() + "-summary").userId(flow.getTriggerUserId()).build();
-            // 汇总调用与节点同分类重试:超时/429/5xx 等可重试错误退避后重试,避免一次瞬时失败把整个流程判 FAILED
-            String text = null;
-            for (int attempt = 1; attempt <= SUMMARY_MAX_ATTEMPTS; attempt++) {
-                try {
-                    List<AgentEvent> events = runner.streamEvents(List.of(Msg.builder()
-                                    .role(MsgRole.USER).content(TextBlock.builder().text(prompt).build()).build()),
-                            context).collectList().block(Duration.ofMinutes(10));
-                    text = extract(events);
-                    break;
-                } catch (Exception e) {
-                    if (attempt == SUMMARY_MAX_ATTEMPTS || !FlowCoordinator.retryable(e)) throw e;
-                    long backoffSeconds = 1L << attempt;
-                    log.warn("Flow {} summary attempt {}/{} failed, retrying in {}s: {}",
-                            flow.getId(), attempt, SUMMARY_MAX_ATTEMPTS, backoffSeconds, e.getMessage());
-                    try {
-                        Thread.sleep(backoffSeconds * 1000);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        throw new IllegalStateException("FlowSummaryInterrupted", ie);
-                    }
-                }
-            }
-            if (text == null || text.isBlank()) text = prompt;
-            // 报告落在触发用户的目录下,防止越权读取其它用户文件
             Path relative = Paths.get(flow.getTriggerUserId(), "flow-" + flow.getId() + "-report.html");
             Path target = reportRoot.resolve(relative).normalize();
             if (!target.startsWith(reportRoot)) throw new IllegalStateException("invalid report path");
             Files.createDirectories(target.getParent());
             Files.writeString(target, renderer.render(text, flow.getFlowName()), StandardCharsets.UTF_8);
-            return new Summary(json.writeValueAsString(Map.of("text", text)), relative.toString().replace('\\', '/'));
+            return new Summary(json.writeValueAsString(Map.of("results", nodes.stream()
+                    .map(n -> Map.of("nodeKey", Objects.toString(n.getNodeKey(), ""),
+                            "skillName", Objects.toString(n.getSkillName(), ""),
+                            "status", n.getStatus().name(),
+                            "result", Objects.toString(n.getResultJson(), ""))).toList())),
+                    relative.toString().replace('\\', '/'));
         } catch (Exception e) {
             throw new IllegalStateException("FlowSummaryFailed: " + e.getMessage(), e);
+        }
+    }
+
+    private String orderedReportText(List<SkillFlowNodeExecution> nodes) {
+        StringBuilder report = new StringBuilder();
+        for (int index = 0; index < nodes.size(); index++) {
+            SkillFlowNodeExecution node = nodes.get(index);
+            report.append("## ").append(index + 1).append(". ")
+                    .append(Objects.toString(node.getSkillName(), node.getNodeKey())).append('\n');
+            report.append("状态：").append(node.getStatus().name()).append("\n\n");
+            report.append(extractResultText(node.getResultJson())).append("\n\n");
+        }
+        return report.toString();
+    }
+
+    /** 节点结果以 {"text": "..."} 保存，报告只渲染 text，避免把内部 JSON 暴露给用户。 */
+    private String extractResultText(String resultJson) {
+        if (resultJson == null || resultJson.isBlank()) return "无结果";
+        try {
+            var root = json.readTree(resultJson);
+            var text = root == null ? null : root.get("text");
+            return text == null || text.isNull() ? resultJson : text.asText();
+        } catch (Exception ignored) {
+            return resultJson;
         }
     }
 
