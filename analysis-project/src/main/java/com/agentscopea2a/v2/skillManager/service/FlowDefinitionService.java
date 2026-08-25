@@ -40,45 +40,10 @@ import java.util.UUID;
 public class FlowDefinitionService {
 
     static final int DEFAULT_MAX_PARALLELISM = 2;
-    static final String DEFAULT_NODE_QUESTION_TEMPLATE = """
-            你正在执行长任务流程「{flow_name}」中的一个独立 Skill 分析节点。
-
-            本次必须调用并只调用 Skill「{skill_name}」完成分析。
-            用户原始问题只作为业务背景，不代表本 Skill 需要回答全部问题。
-
-            请按以下规则执行：
-            1. 只分析 Skill「{skill_name}」职责范围内、与原始问题相关的内容。
-            2. 原始问题中不属于本 Skill 能力范围的部分，请直接忽略，不要扩展分析。
-            3. 不要替其他 Skill 下结论，不要做最终综合报告。
-            4. 如果原始问题与本 Skill 基本无关，请返回“本 Skill 未发现需要处理的相关内容”，并简要说明原因。
-            5. 输出本 Skill 的结构化分析结果，供后续汇总使用。
-
-            用户原始问题：
-            {original_question}
-            """;
-    static final String DEFAULT_SUMMARY_QUESTION_TEMPLATE = """
-            你是长任务流程「{flow_name}」的最终汇总节点。
-
-            请基于以下各 Skill 节点结果，回答用户原始问题。
-            要求：
-            1. 只使用各 Skill 已产出的结果进行汇总，不要编造缺失数据。
-            2. 如果某个 Skill 返回“无相关内容”或执行失败，请在结论中自然说明影响。
-            3. 按用户问题组织最终报告，而不是按 Skill 机械堆叠。
-            4. 优先给出结论、关键指标、异常点、原因判断和建议动作。
-            5. 保留必要的数据口径说明。
-
-            用户原始问题：
-            {original_question}
-
-            各 Skill 节点结果：
-            {all_results}
-            """;
-
     private final SkillFlowMapper flowMapper;
     private final SkillMapper skillMapper;
     private final SkillDependencyMetricMapper metricMapper;
     private final Clock clock;
-    private final FlowTemplateEngine templateEngine = new FlowTemplateEngine();
 
     public FlowDefinitionService(SkillFlowMapper flowMapper, SkillMapper skillMapper,
                                  SkillDependencyMetricMapper metricMapper,
@@ -212,11 +177,6 @@ public class FlowDefinitionService {
     /** 收集全部完整性错误:汇总模板、触发词(skill 可用性/唯一性)、节点(skill/模板/重试次数/指标/nodeKey)。 */
     private List<String> validationErrors(SkillFlowDefinitionRequest request, String userId, Long currentFlowId) {
         List<String> errors = new ArrayList<>();
-        if (trim(request.taskQuestion()).isEmpty()) errors.add("task question must not be blank");
-        FlowTemplateEngine.Validation summaryValidation = templateEngine.validateSummaryTemplate(request.summaryQuestionTemplate());
-        if (!summaryValidation.valid()) {
-            errors.addAll(summaryValidation.errors());
-        }
         if (request.nodes().isEmpty()) errors.add("flow must define at least one node");
         if (request.triggers().isEmpty()) errors.add("flow must define at least one trigger");
 
@@ -236,13 +196,11 @@ public class FlowDefinitionService {
             String nodeKey = trim(node.nodeKey());
             if (nodeKey.isEmpty()) errors.add("node key must not be blank");
             else if (!nodeKeys.add(nodeKey)) errors.add("duplicate node key: " + nodeKey);
+            Skill skill = node.skillId() == null ? null : skillMapper.selectById(node.skillId());
             if (node.skillId() == null || !skillMapper.selectSkillAvailableForUser(node.skillId(), userId)) {
                 errors.add("SkillUnavailable: skill is not available to user: " + node.skillId());
             }
-            FlowTemplateEngine.Validation nodeValidation = templateEngine.validateNodeTemplate(node.questionTemplate());
-            if (!nodeValidation.valid()) {
-                errors.addAll(nodeValidation.errors());
-            }
+            if (trim(node.questionTemplate()).isEmpty()) errors.add("node question must not be blank: " + nodeKey);
             if (node.maxAttempts() == null || node.maxAttempts() < 1) errors.add("maxAttempts must be positive");
             if (node.metricIds().size() > 1) errors.add("a skill node can depend on at most one metric");
             for (Long metricId : node.metricIds()) {
@@ -285,7 +243,7 @@ public class FlowDefinitionService {
         flowMapper.deleteTriggersByFlowId(flowId);
         for (SkillFlowDefinitionRequest.Node item : request.nodes()) {
             SkillFlowNode node = SkillFlowNode.builder().flowId(flowId).nodeKey(trim(item.nodeKey()))
-                    .skillId(item.skillId()).questionTemplate(DEFAULT_NODE_QUESTION_TEMPLATE)
+                    .skillId(item.skillId()).questionTemplate(trim(item.questionTemplate()))
                     .dependsOnJson("[]")
                     .required(item.required() == null || item.required())
                     .maxAttempts(item.maxAttempts() == null ? 4 : item.maxAttempts())
@@ -342,21 +300,13 @@ public class FlowDefinitionService {
         String code = trim(existingCode).isEmpty() ? "flow-" + UUID.randomUUID() : existingCode;
         return SkillFlow.builder().code(code).name(trim(request.name())).description(request.description())
                 .taskQuestion(trim(request.taskQuestion()))
-                .summaryQuestionTemplate(DEFAULT_SUMMARY_QUESTION_TEMPLATE)
+                .summaryQuestionTemplate(request.summaryQuestionTemplate())
                 .enabled(Boolean.TRUE.equals(request.enabled())).maxParallelism(DEFAULT_MAX_PARALLELISM)
                 .notifyEnabled(request.notifyEnabled() == null || request.notifyEnabled()).createdBy(createdBy).build();
     }
 
     private SkillFlowDefinitionRequest withBackendDefaults(SkillFlowDefinitionRequest request) {
-        if (request == null) return null;
-        List<SkillFlowDefinitionRequest.Node> nodes = request.nodes().stream()
-                .map(node -> new SkillFlowDefinitionRequest.Node(node.nodeKey(), node.skillId(),
-                        DEFAULT_NODE_QUESTION_TEMPLATE, node.metricIds(), node.required(),
-                        node.maxAttempts(), node.sortOrder()))
-                .toList();
-        return new SkillFlowDefinitionRequest(null, request.name(), request.description(), request.taskQuestion(),
-                DEFAULT_SUMMARY_QUESTION_TEMPLATE, request.enabled(), DEFAULT_MAX_PARALLELISM,
-                request.notifyEnabled(), request.triggers(), nodes);
+        return request;
     }
 
     /** 取流程并校验 owner:流程仅创建人可读改。 */

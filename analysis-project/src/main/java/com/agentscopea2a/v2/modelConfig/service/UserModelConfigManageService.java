@@ -17,6 +17,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.net.URI;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -148,6 +149,10 @@ public class UserModelConfigManageService {
         if (requestUrl == null || requestUrl.isBlank()) {
             return ModelTestResult.builder().success(false).message("请求地址不能为空").build();
         }
+        if (!isHttpUrl(requestUrl)) {
+            return ModelTestResult.builder().success(false)
+                    .message("请求地址必须以 http:// 或 https:// 开头").build();
+        }
         if (token == null || token.isBlank()) {
             return ModelTestResult.builder().success(false).message("请求 key 不能为空").build();
         }
@@ -201,6 +206,9 @@ public class UserModelConfigManageService {
         if (config.getRequestUrl() == null || config.getRequestUrl().isBlank()) {
             throw new IllegalArgumentException("请求地址不能为空");
         }
+        if (!isHttpUrl(config.getRequestUrl())) {
+            throw new IllegalArgumentException("请求地址必须以 http:// 或 https:// 开头");
+        }
         if (config.getModelName() == null || config.getModelName().isBlank()) {
             throw new IllegalArgumentException("模型名称不能为空");
         }
@@ -215,6 +223,16 @@ public class UserModelConfigManageService {
             return "openai";
         }
         return provider.trim().toLowerCase();
+    }
+
+    private static boolean isHttpUrl(String value) {
+        try {
+            URI uri = URI.create(value.trim());
+            return uri.isAbsolute() && uri.getHost() != null
+                    && ("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme()));
+        } catch (IllegalArgumentException ignored) {
+            return false;
+        }
     }
 
     /** token 脱敏: 保留前 3 位与后 4 位, 中间打星. */

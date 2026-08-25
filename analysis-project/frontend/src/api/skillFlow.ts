@@ -131,3 +131,9 @@ export async function getSkillFlowExecutionReportUrl(id: number): Promise<string
   if (!res.ok) throw await requestError(res, '打开汇总报告失败');
   return URL.createObjectURL(await res.blob());
 }
+
+export async function getSkillFlowNodeReportUrl(executionId: number, nodeId: number): Promise<string> {
+  const res = await fetch(`${EXECUTION_BASE}/${executionId}/nodes/${nodeId}/report`, { headers: authHeaders() });
+  if (!res.ok) throw await requestError(res, '打开 Skill 内容失败');
+  return URL.createObjectURL(await res.blob());
+}
