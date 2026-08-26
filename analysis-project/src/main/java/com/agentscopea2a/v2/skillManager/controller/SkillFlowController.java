@@ -10,6 +10,7 @@ import com.agentscopea2a.v2.skillManager.service.FlowCompletionService;
 import com.agentscopea2a.v2.skillManager.service.FlowDefinitionService;
 import com.agentscopea2a.v2.skillManager.service.FlowExecutionService;
 import com.agentscopea2a.v2.skillManager.service.FlowQueryService;
+import com.agentscopea2a.v2.skillManager.service.FlowCoordinator;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -35,15 +36,17 @@ public class SkillFlowController {
     private final FlowCompletionService completionService;
     private final FlowExecutionService executionService;
     private final SkillFlowMapper mapper;
+    private final FlowCoordinator coordinator;
 
     public SkillFlowController(FlowDefinitionService definitionService, FlowQueryService queryService,
                                FlowCompletionService completionService, FlowExecutionService executionService,
-                               SkillFlowMapper mapper) {
+                               SkillFlowMapper mapper, FlowCoordinator coordinator) {
         this.definitionService = definitionService;
         this.queryService = queryService;
         this.completionService = completionService;
         this.executionService = executionService;
         this.mapper = mapper;
+        this.coordinator = coordinator;
     }
 
     // ==================== 流程定义:/api/skill-flows ====================
@@ -186,5 +189,15 @@ public class SkillFlowController {
                        @RequestHeader(name = "X-User-Id") String userId) {
         queryService.get(id, userId);
         completionService.resend(mapper.selectFlowExecutionById(id));
+    }
+
+    @PostMapping("/api/skill-flow-executions/{id}/summary/retry")
+    public void retrySummary(@PathVariable Long id, @RequestHeader(name = "X-User-Id") String userId) {
+        queryService.get(id, userId); coordinator.retrySummary(id);
+    }
+
+    @PostMapping("/api/skill-flow-executions/{id}/nodes/{nodeId}/retry")
+    public void retryNode(@PathVariable Long id, @PathVariable Long nodeId, @RequestHeader(name = "X-User-Id") String userId) {
+        queryService.get(id, userId); coordinator.retryNode(id, nodeId);
     }
 }
