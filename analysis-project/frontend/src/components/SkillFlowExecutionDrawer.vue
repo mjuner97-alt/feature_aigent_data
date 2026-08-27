@@ -64,16 +64,24 @@ async function load() {
     ]);
     if (execution.value?.reportUrl?.startsWith('blob:')) URL.revokeObjectURL(execution.value.reportUrl);
     execution.value = { ...detail, metrics, nodes, notifications, reportUrl: null };
-    if (detail.reportPath) {
-      try {
-        const url = await getSkillFlowExecutionReportUrl(props.executionId);
-        if (execution.value) execution.value.reportUrl = url;
-      } catch (e) {
-        reportError.value = e instanceof Error ? e.message : '汇总文件不存在或无法读取';
-      }
-    }
+    loadReport();
   } catch (e) { error.value = e instanceof Error ? e.message : '加载执行详情失败'; execution.value = null; }
   finally { loading.value = false; }
+}
+/**
+ * 报告单独加载,不阻塞详情打开:文件缺失或后端慢都不能影响查看执行记录。
+ * 缺失时显示 reportError 并保留"重新生成汇总"入口,由用户自行重新生成。
+ */
+async function loadReport() {
+  const id = props.executionId;
+  const target = execution.value;
+  if (!id || !target?.reportPath) return;
+  try {
+    const url = await getSkillFlowExecutionReportUrl(id);
+    if (execution.value === target) target.reportUrl = url;
+  } catch (e) {
+    if (execution.value === target) reportError.value = e instanceof Error ? e.message : '汇总文件不存在或无法读取';
+  }
 }
 async function resend() { if (!props.executionId) return; resending.value = true; try { await resendSkillFlowExecutionNotification(props.executionId); await load(); emit('changed'); } catch (e) { error.value = e instanceof Error ? e.message : '补发通知失败'; } finally { resending.value = false; } }
 async function retrySummary() { if (!props.executionId) return; retrying.value = 'summary'; summaryActionError.value = ''; try { await retrySkillFlowSummary(props.executionId); await load(); emit('changed'); } catch (e) { summaryActionError.value = e instanceof Error ? e.message : '重新生成汇总失败'; } finally { retrying.value = null; } }

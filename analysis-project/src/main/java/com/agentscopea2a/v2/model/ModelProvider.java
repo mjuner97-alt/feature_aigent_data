@@ -18,6 +18,7 @@ package com.agentscopea2a.v2.model;
 import com.agentscopea2a.entity.UserModelConfig;
 import com.agentscopea2a.mapper.gauss.UserModelConfigMapper;
 import com.agentscopea2a.v2.config.HarnessRunnerProperties;
+import com.agentscopea2a.v2.config.WebClientHttpTransport;
 import io.agentscope.core.model.Model;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
 import org.slf4j.Logger;
@@ -50,6 +51,9 @@ public class ModelProvider {
     private final UserModelConfigMapper userModelConfigMapper;
     private final HarnessRunnerProperties harnessRunnerProperties;
     private final Model defaultModel;
+    private final WebClientHttpTransport webClientTransport;
+    /** fallback 模型：同一默认 deepseek 端点，但走 WebClient(HTTP/1.1) 传输，主模型超时/失败时降级。 */
+    private final Model fallbackModel;
 
     /** userId -> 缓存条目（含配置和过期时间戳） */
     private final Map<String, CacheEntry> userModelCache = new ConcurrentHashMap<>();
@@ -57,11 +61,13 @@ public class ModelProvider {
     public ModelProvider(
             UserModelConfigMapper userModelConfigMapper,
             HarnessRunnerProperties harnessRunnerProperties,
+            WebClientHttpTransport webClientTransport,
             @Value("${agentscope.llm.api-key:}") String llmApiKey,
             @Value("${agentscope.llm.api-url:}") String llmApiUrl,
             @Value("${agentscope.llm.model:}") String llmModel) {
         this.userModelConfigMapper = userModelConfigMapper;
         this.harnessRunnerProperties = harnessRunnerProperties;
+        this.webClientTransport = webClientTransport;
 
         // 统一从 agentscope.llm.* 构建默认模型 (deepseek)
         this.defaultModel = OpenAIChatModel.builder()
@@ -71,7 +77,19 @@ public class ModelProvider {
                 .stream(true)
                 .build();
 
-        log.info("V2ModelProvider initialized: defaultModel={} baseUrl={}", llmModel, llmApiUrl);
+        // fallback 模型：同一默认 deepseek 端点，但走 WebClient(HTTP/1.1) 传输。
+        // 主模型(JdkHttpTransport/HTTP2) 超时/失败时降级到它，规避 JDK HTTP2+SSE 卡死
+        //（与用户实测 WebClient 每次都能连通一致）。
+        this.fallbackModel = OpenAIChatModel.builder()
+                .httpTransport(webClientTransport)
+                .apiKey(llmApiKey)
+                .baseUrl(llmApiUrl)
+                .modelName(llmModel)
+                .stream(true)
+                .build();
+
+        log.info("V2ModelProvider initialized: defaultModel={} baseUrl={} fallbackTransport={}",
+                llmModel, llmApiUrl, webClientTransport.getClass().getSimpleName());
     }
 
     /**
@@ -103,7 +121,7 @@ public class ModelProvider {
             primaryModel = defaultModel;
         }
 
-        return new FallbackModelDecorator(primaryModel, defaultModel);
+        return new FallbackModelDecorator(primaryModel, fallbackModel);
     }
 
     /**
@@ -201,7 +219,7 @@ public class ModelProvider {
      */
     public FallbackModelDecorator getModelByKey(String instanceKey) {
         if (instanceKey == null || instanceKey.isBlank()) {
-            return new FallbackModelDecorator(defaultModel, defaultModel);
+            return new FallbackModelDecorator(defaultModel, fallbackModel);
         }
         HarnessRunnerProperties.Instances inst = harnessRunnerProperties.getModel().getInstances();
         HarnessRunnerProperties.ModelInstance mi = switch (instanceKey) {
@@ -212,7 +230,7 @@ public class ModelProvider {
         };
         if (mi == null || !mi.isConfigured()) {
             log.info("ModelProvider: instance '{}' not configured, using default model", instanceKey);
-            return new FallbackModelDecorator(defaultModel, defaultModel);
+            return new FallbackModelDecorator(defaultModel, fallbackModel);
         }
         Model m = OpenAIChatModel.builder()
                 .apiKey(mi.getApiKey())
@@ -221,7 +239,7 @@ public class ModelProvider {
                 .stream(true)
                 .build();
         log.info("ModelProvider: resolved independent model instance '{}' name={}", instanceKey, mi.getName());
-        return new FallbackModelDecorator(m, defaultModel);
+        return new FallbackModelDecorator(m, fallbackModel);
     }
 
     /**

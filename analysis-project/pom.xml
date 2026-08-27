@@ -77,8 +77,14 @@
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
-        <!-- 注:不引 spring-boot-starter-webflux —— 业务用 SseEmitter (servlet 栈) +
-             reactor-core (agentscope Hook API),不需要 WebFlux 路由,移除可减少启动 classpath 扫描。 -->
+        <!-- WebClient (spring-webflux) 只做 HTTP 客户端，用于 WebClientHttpTransport：
+             作为 FallbackModelDecorator 的 fallback 传输，主模型(JdkHttpTransport/HTTP2)超时/失败时
+             用 WebClient(HTTP/1.1) 重试同一模型端点，规避 JDK HTTP2+SSE 卡死。业务仍是 servlet 栈
+             (SseEmitter)，Boot 检测到 spring-web 会继续用 Spring MVC，WebFlux 不参与路由。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>org.springframework.boot</groupId>

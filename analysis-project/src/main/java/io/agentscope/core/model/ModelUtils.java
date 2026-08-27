@@ -21,6 +21,7 @@ import java.util.function.Predicate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 import reactor.util.retry.Retry;
 
 /**
@@ -85,16 +86,29 @@ public final class ModelUtils {
             // Apply timeout if configured
             Duration timeout = execConfig.getTimeout();
             if (timeout != null) {
-                LlmFileTrace.write(traceId, "ModelUtils", "应用超时", "timeout=" + timeout);
+                // 首包(prefill)超时与 chunk 间隔超时分离：
+                // - timeout：首包超时。大上下文冷 prefill 可能耗时几十秒，必须给足
+                //   （由 AgentExecutionConfig.MODEL_DEFAULTS 提供，默认 180s），
+                //   否则大上下文冷请求在出第一个 chunk 前就被误杀（重试才命中缓存出字）。
+                // - chunkGap：两个 chunk 之间的间隔超时，用于抓真正的中途卡死
+                //   （连接半死/断流时 JDK HttpClient 的 BufferedReader 会永久阻塞，
+                //   没有它前端只会收到部分 think 后永远没下文）。
+                //   默认 40s，可用 -Dagentscope.llm.chunk-gap-timeout-seconds 覆盖。
+                Duration chunkGap = Duration.ofSeconds(
+                        Integer.getInteger("agentscope.llm.chunk-gap-timeout-seconds", 40));
+                LlmFileTrace.write(traceId, "ModelUtils", "应用超时", "timeout=" + timeout + " chunkGap=" + chunkGap);
+                // reactor 3.6 无 timeout(Duration, Duration, fallback) 重载，用 Publisher 形式：
+                // Mono.delay(timeout) 约束首包（prefill），Mono.delay(chunkGap) 约束 chunk 间隔。
                 responseFlux =
                         responseFlux.timeout(
-                                timeout,
+                                Mono.delay(timeout),
+                                ignored -> Mono.delay(chunkGap),
                                 Flux.error(
                                         new ModelException(
                                                 "Model request timeout after " + timeout,
                                                 modelName,
                                                 provider)));
-                LOG.debug("Applied timeout: {} for model: {}", timeout, modelName);
+                LOG.debug("Applied timeout: {} for model: {}, chunkGap={}", timeout, modelName, chunkGap);
                 responseFlux = responseFlux.doOnError(error -> LlmFileTrace.write(traceId, "ModelUtils", "模型流异常",
                         "type=" + error.getClass().getName() + " message=" + LlmFileTrace.shortText(error.getMessage())));
             }
