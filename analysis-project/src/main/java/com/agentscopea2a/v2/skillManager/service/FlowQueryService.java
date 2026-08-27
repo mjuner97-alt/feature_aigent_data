@@ -51,18 +51,18 @@ public class FlowQueryService {
     }
 
     /** 执行列表(仅本人触发),status/createdBy 可选过滤。 */
-    public List<ExecutionDto> list(String status, String createdBy, String userId) {
-        return mapper.selectExecutions(status, createdBy, userId).stream().map(this::dto).toList();
+    public List<ExecutionDto> list(String status, String createdBy, String userId, boolean all) {
+        return mapper.selectExecutions(status, createdBy, all ? null : userId).stream().map(this::dto).toList();
     }
 
     /** 执行详情。 */
     public ExecutionDto get(Long id, String userId) {
-        return dto(owned(id, userId));
+        return dto(readable(id));
     }
 
     /** 节点执行明细(含每次尝试的 audit 记录)。 */
     public List<NodeDto> nodes(Long id, String userId) {
-        SkillFlowExecution execution = owned(id, userId);
+        SkillFlowExecution execution = readable(id);
         return mapper.selectNodeExecutions(id).stream()
                 .map(n -> new NodeDto(n.getId(), n.getNodeKey(), n.getSkillName(), n.getQuestionTemplateSnapshot(),
                         renderedQuestion(execution, n), Boolean.TRUE.equals(n.getRequired()),
@@ -73,7 +73,7 @@ public class FlowQueryService {
 
     /** 按需将单个成功节点的结果渲染为 HTML，不生成或保存节点报告文件。 */
     public String nodeReport(Long executionId, Long nodeId, String userId) {
-        SkillFlowExecution execution = owned(executionId, userId);
+        SkillFlowExecution execution = readable(executionId);
         SkillFlowNodeExecution node = mapper.selectNodeExecution(nodeId);
         if (node == null || !Objects.equals(node.getFlowExecutionId(), executionId)) {
             throw new IllegalStateException("FlowNodeReportNotFound: " + nodeId);
@@ -88,7 +88,7 @@ public class FlowQueryService {
 
     /** 该次执行依赖的指标就绪情况:哪些指标就绪/未就绪、分别影响哪些节点。 */
     public List<MetricDto> readiness(Long id, String userId) {
-        SkillFlowExecution e = owned(id, userId);
+        SkillFlowExecution e = readable(id);
         // 指标 -> 受影响节点列表
         Map<Long, List<String>> affected = new LinkedHashMap<>();
         for (SkillFlowNode node : mapper.selectNodesByFlowId(e.getFlowId())) {
@@ -108,17 +108,17 @@ public class FlowQueryService {
 
     /** 该次执行的通知发送记录。 */
     public List<SkillFlowNotification> notifications(Long id, String userId) {
-        owned(id, userId);
+        readable(id);
         return mapper.selectNotifications(id);
     }
 
     /** 读取 HTML 报告文件:解析后强制限制在 本人目录 内,防路径穿越读他人文件。 */
     public Resource report(Long id, String userId) {
-        SkillFlowExecution e = owned(id, userId);
+        SkillFlowExecution e = readable(id);
         if (e.getReportPath() == null || e.getReportPath().isBlank()) {
             throw new IllegalStateException("FlowReportNotFound: " + id);
         }
-        Path expectedUserRoot = reportRoot.resolve(userId).normalize();
+        Path expectedUserRoot = reportRoot.resolve(e.getTriggerUserId()).normalize();
         Path report = reportRoot.resolve(e.getReportPath()).normalize().toAbsolutePath();
         if (!report.startsWith(expectedUserRoot) || !Files.isRegularFile(report)) {
             throw new IllegalStateException("FlowReportNotFound: " + id);
@@ -127,9 +127,15 @@ public class FlowQueryService {
     }
 
     /** 取执行记录并校验:仅触发用户本人可读。 */
-    private SkillFlowExecution owned(Long id, String userId) {
+    private SkillFlowExecution readable(Long id) {
         SkillFlowExecution e = mapper.selectFlowExecutionById(id);
         if (e == null) throw new IllegalStateException("FlowExecutionNotFound: " + id);
+        return e;
+    }
+
+    /** Mutating actions remain restricted to the user who triggered the execution. */
+    public SkillFlowExecution requireOwner(Long id, String userId) {
+        SkillFlowExecution e = readable(id);
         if (!Objects.equals(userId, e.getTriggerUserId())) throw new IllegalStateException("FlowAccessDenied: " + id);
         return e;
     }

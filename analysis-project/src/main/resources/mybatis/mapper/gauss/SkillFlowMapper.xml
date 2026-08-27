@@ -151,7 +151,8 @@
 
     <select id="selectFlows" resultMap="FlowMap">
         SELECT <include refid="flowColumns"/> FROM skill_flow
-        WHERE deleted_at IS NULL AND created_by = #{ownerUserId}
+        WHERE deleted_at IS NULL
+        <if test="ownerUserId != null and ownerUserId != ''">AND created_by = #{ownerUserId}</if>
         <if test="enabled != null">AND enabled = #{enabled}</if>
         <if test="keyword != null and keyword != ''">
             AND (LOWER(name) LIKE CONCAT('%', LOWER(#{keyword}), '%')
@@ -281,7 +282,7 @@
     <select id="selectEnabledTriggers" resultMap="TriggerMap">SELECT t.* FROM skill_flow_trigger t JOIN skill_flow f ON f.id=t.flow_id WHERE t.enabled=TRUE AND f.enabled=TRUE AND f.deleted_at IS NULL ORDER BY t.priority DESC,t.id</select>
     <select id="selectActiveExecution" resultMap="ExecutionMap">SELECT * FROM skill_flow_execution WHERE active_guard_key=#{guardKey} LIMIT 1</select>
     <select id="selectLatestConversationExecution" resultMap="ExecutionMap">SELECT * FROM skill_flow_execution WHERE trigger_user_id=#{userId} AND conversation_id=#{conversationId} ORDER BY CASE WHEN active_guard_key IS NOT NULL THEN 0 ELSE 1 END,created_at DESC LIMIT 1</select>
-    <select id="selectExecutions" resultMap="ExecutionMap">SELECT * FROM skill_flow_execution WHERE trigger_user_id=#{userId}<if test="status != null and status != ''"> AND status=#{status}</if><if test="createdBy != null and createdBy != ''"> AND trigger_user_id=#{createdBy}</if> ORDER BY created_at DESC LIMIT 500</select>
+    <select id="selectExecutions" resultMap="ExecutionMap">SELECT * FROM skill_flow_execution WHERE 1=1<if test="userId != null and userId != ''"> AND trigger_user_id=#{userId}</if><if test="status != null and status != ''"> AND status=#{status}</if><if test="createdBy != null and createdBy != ''"> AND trigger_user_id=#{createdBy}</if> ORDER BY created_at DESC LIMIT 500</select>
     <select id="selectWaitingExecutions" resultMap="ExecutionMap">SELECT * FROM skill_flow_execution WHERE status='WAITING_METRICS' ORDER BY id LIMIT 2000</select>
     <update id="updateExecution">UPDATE skill_flow_execution SET status=#{status},active_guard_key=#{activeGuardKey},ready_metric_count=#{readyMetricCount},missing_metrics_json=#{missingMetricsJson},rendered_summary_question=#{renderedSummaryQuestion},summary_json=#{summaryJson},report_path=#{reportPath},cancel_requested_at=#{cancelRequestedAt},started_at=#{startedAt},completed_at=#{completedAt},updated_at=NOW() WHERE id=#{id}</update>
     <select id="selectNodeExecution" resultMap="NodeExecutionMap">SELECT * FROM skill_flow_node_execution WHERE id=#{id}</select>

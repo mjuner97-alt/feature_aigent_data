@@ -1,20 +1,20 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import { deleteSkillFlow, getSkillFlowMetricPrecheck, listSkillFlows, runSkillFlow, setSkillFlowEnabled } from '../api/skillFlow';
 import { currentUserId } from '../api/skill';
 import type { SkillFlow } from '../types/skillFlow';
-import SkillFlowEditorDrawer from './SkillFlowEditorDrawer.vue';
 
 const emit = defineEmits<{ 'view-records': [flowName: string] }>();
+const props = withDefaults(defineProps<{ scope?: 'mine' | 'all'; createdBy?: string }>(), { scope: 'mine', createdBy: '' });
 const me = currentUserId();
+const router = useRouter();
 const flows = ref<SkillFlow[]>([]);
 const currentKeyword = ref('');
 const currentCreatedBy = ref('');
 const currentEnabled = ref<boolean | undefined>();
 const loading = ref(false);
 const error = ref('');
-const editorOpen = ref(false);
-const editId = ref<number | null>(null);
 const page = ref(1);
 const pageSize = ref(20);
 const pagedFlows = computed(() => flows.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value));
@@ -25,19 +25,19 @@ function enabledStatusClass(flow: SkillFlow) { return flow.enabled ? 'st-on' : '
 function isOwner(flow: SkillFlow) { return flow.createdBy === me; }
 function changePageSize(size: number) { pageSize.value = size; page.value = 1; }
 
-async function load(searchKeyword?: string, createdBy?: string, enabled?: boolean) {
+async function load(searchKeyword?: string, createdBy?: string, enabled?: boolean, scope: 'mine' | 'all' = props.scope) {
   if (typeof searchKeyword === 'string') currentKeyword.value = searchKeyword;
   if (typeof createdBy === 'string') currentCreatedBy.value = createdBy;
   currentEnabled.value = enabled;
   loading.value = true;
   error.value = '';
-  try { flows.value = await listSkillFlows(currentEnabled.value, currentKeyword.value.trim() || undefined, currentCreatedBy.value.trim() || undefined); page.value = 1; }
+  try { flows.value = await listSkillFlows(currentEnabled.value, currentKeyword.value.trim() || undefined, currentCreatedBy.value.trim() || undefined, scope); page.value = 1; }
   catch (e) { error.value = e instanceof Error ? e.message : '加载长任务流程失败'; flows.value = []; }
   finally { loading.value = false; }
 }
 
-function create() { editId.value = null; editorOpen.value = true; }
-function edit(id: number) { editId.value = id; editorOpen.value = true; }
+function create() { router.push('/skills/jobs/flows/new'); }
+function edit(id: number) { router.push(`/skills/jobs/flows/${id}/edit`); }
 function viewRecords(flow: SkillFlow) { emit('view-records', flow.name); }
 async function toggle(flow: SkillFlow) {
   try { await setSkillFlowEnabled(flow.id, !flow.enabled); flow.enabled = !flow.enabled; }
@@ -69,6 +69,7 @@ async function run(flow: SkillFlow) {
 
 defineExpose({ load, create });
 onMounted(() => load());
+watch(() => [props.scope, props.createdBy] as const, () => load('', props.createdBy, undefined, props.scope));
 </script>
 
 <template>
@@ -126,7 +127,6 @@ onMounted(() => load());
         @size-change="changePageSize"
       />
     </div>
-    <SkillFlowEditorDrawer v-model:open="editorOpen" :edit-id="editId" :known-flows="flows" @saved="load" />
   </section>
 </template>
 

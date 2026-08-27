@@ -129,6 +129,14 @@ public class SkillJobController {
         return service.getExecution(execId);
     }
 
+    /** Retry a failed historical execution as a new manual execution. */
+    @PostMapping("/executions/{execId}/retry")
+    public SkillJobExecutionDto retryExecution(
+            @PathVariable(name = "execId") Long execId,
+            @RequestHeader("X-User-Id") String userId) {
+        return service.retryExecution(execId, userId);
+    }
+
     /** Notification delivery history for one execution, newest attempt first. */
     @GetMapping("/executions/{execId}/notifications")
     public List<SkillJobNotificationDto> listNotifications(
