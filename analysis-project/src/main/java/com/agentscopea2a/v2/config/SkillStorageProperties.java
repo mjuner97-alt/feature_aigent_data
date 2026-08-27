@@ -23,4 +23,12 @@ public class SkillStorageProperties {
 
     @Value("${skill.job.backup-dir}")
     private String jobBackupDir;
+
+    public String getJobReportDir() {
+        return ReportStoragePathResolver.resolve(jobReportDir).toString();
+    }
+
+    public String getJobBackupDir() {
+        return ReportStoragePathResolver.resolve(jobBackupDir).toString();
+    }
 }

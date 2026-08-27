@@ -132,6 +132,10 @@ public class GlobalExceptionHandler {
         if (message.startsWith("JobNotFound")) {
             return HttpStatus.NOT_FOUND;
         }
+        if (message.startsWith("FlowReportNotFound") || message.startsWith("FlowNodeReportNotFound")
+                || message.startsWith("FlowExecutionNotFound")) {
+            return HttpStatus.NOT_FOUND;
+        }
         if (message.startsWith("JobAccessDenied")) {
             return HttpStatus.FORBIDDEN;
         }

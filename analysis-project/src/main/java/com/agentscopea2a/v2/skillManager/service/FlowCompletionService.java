@@ -84,7 +84,10 @@ public class FlowCompletionService {
             Path relative = Paths.get(flow.getTriggerUserId(), "flow-" + flow.getId() + "-report.html");
             Path target = reportRoot.resolve(relative).normalize();
             if (!target.startsWith(reportRoot)) throw new IllegalStateException("invalid report path");
-            Files.createDirectories(target.getParent());
+            Path parent = target.getParent();
+            if (parent != null && Files.notExists(parent)) {
+                Files.createDirectories(parent);
+            }
             Files.writeString(target, renderer.render(text, flow.getFlowName()), StandardCharsets.UTF_8);
             return new Summary(json.writeValueAsString(Map.of("results", nodes.stream()
                     .map(n -> Map.of("nodeKey", Objects.toString(n.getNodeKey(), ""),

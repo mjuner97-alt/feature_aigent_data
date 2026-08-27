@@ -617,7 +617,10 @@ public class SkillJobService {
         validateEditableHtml(html);
         Path temporary = null;
         try {
-            Files.createDirectories(report.primary().getParent());
+            Path parent = report.primary().getParent();
+            if (parent != null && Files.notExists(parent)) {
+                Files.createDirectories(parent);
+            }
             temporary = Files.createTempFile(report.primary().getParent(),
                     report.primary().getFileName().toString() + ".", ".edit.tmp");
             Files.writeString(temporary, html, StandardCharsets.UTF_8);

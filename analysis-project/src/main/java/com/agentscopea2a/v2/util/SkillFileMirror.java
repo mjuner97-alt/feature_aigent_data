@@ -68,7 +68,10 @@ public final class SkillFileMirror {
                 return;
             }
             Path target = Paths.get(mirrorDir, relativePath).normalize();
-            Files.createDirectories(target.getParent());
+            Path parent = target.getParent();
+            if (parent != null && Files.notExists(parent)) {
+                Files.createDirectories(parent);
+            }
             Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING);
             log.info("SkillFileMirror: {} -> {}", source, target);
         } catch (IOException e) {
