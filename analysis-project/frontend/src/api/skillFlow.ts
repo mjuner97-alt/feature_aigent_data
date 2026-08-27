@@ -125,9 +125,6 @@ export async function resendSkillFlowExecutionNotification(id: number): Promise<
   const res = await fetch(`${EXECUTION_BASE}/${id}/notifications/resend`, { method: 'POST', headers: authHeaders() });
   if (!res.ok) throw await requestError(res, '补发通知失败');
 }
-export async function retrySkillFlowSummary(id: number): Promise<void> { const res = await fetch(`${EXECUTION_BASE}/${id}/summary/retry`, { method: 'POST', headers: authHeaders() }); if (!res.ok) throw await requestError(res, '重新生成汇总失败'); }
-export async function retrySkillFlowNode(executionId: number, nodeId: number): Promise<void> { const res = await fetch(`${EXECUTION_BASE}/${executionId}/nodes/${nodeId}/retry`, { method: 'POST', headers: authHeaders() }); if (!res.ok) throw await requestError(res, '重跑任务失败'); }
-
 export async function getSkillFlowExecutionReportUrl(id: number): Promise<string> {
   const res = await fetch(`${EXECUTION_BASE}/${id}/report`, { headers: authHeaders() });
   if (!res.ok) throw await requestError(res, '打开汇总报告失败');

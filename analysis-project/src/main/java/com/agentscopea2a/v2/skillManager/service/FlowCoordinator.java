@@ -351,31 +351,6 @@ public class FlowCoordinator {
 
     public void retrySummary(Long flowId) {
         SkillFlowExecution flow = mapper.selectFlowExecutionForUpdate(flowId);
-        if (flow == null || !(flow.getStatus() == FlowExecutionStatus.FAILED || flow.getStatus() == FlowExecutionStatus.PARTIAL_SUCCESS))
-            throw new IllegalStateException("执行当前不可重新生成汇总");
-        List<SkillFlowNodeExecution> nodes = mapper.selectNodeExecutions(flowId);
-        if (nodes.stream().anyMatch(n -> !n.getStatus().terminal())) throw new IllegalStateException("节点尚未全部结束");
-        flow.setStatus(FlowExecutionStatus.SUMMARIZING);
-        flow.setSummaryJson(null); flow.setReportPath(null); flow.setCompletedAt(null);
-        mapper.updateExecution(flow);
-        finalizeFlow(flow, nodes);
-    }
-
-    public void retryNode(Long flowId, Long nodeId) {
-        SkillFlowExecution flow = mapper.selectFlowExecutionForUpdate(flowId);
-        SkillFlowNodeExecution node = mapper.selectNodeExecution(nodeId);
-        if (flow == null || node == null || !Objects.equals(flowId, node.getFlowExecutionId())) throw new IllegalArgumentException("节点不存在");
-        if (!flow.getStatus().terminal() || !node.getStatus().terminal() || node.getStatus() == FlowNodeExecutionStatus.SUCCESS)
-            throw new IllegalStateException("节点当前不可重跑");
-        node.setStatus(FlowNodeExecutionStatus.QUEUED); node.setNextRunAt(null); node.setCompletedAt(null);
-        node.setStartedAt(null); node.setErrorCode(null); node.setErrorMessage(null); node.setResultJson(null);
-        clearLease(node); mapper.updateNodeExecution(node);
-        flow.setStatus(FlowExecutionStatus.RUNNING); flow.setSummaryJson(null); flow.setReportPath(null); flow.setCompletedAt(null);
-        mapper.updateExecution(flow); dispatchRunnableNodes();
-    }
-
-    public void retrySummary(Long flowId) {
-        SkillFlowExecution flow = mapper.selectFlowExecutionForUpdate(flowId);
         if (flow == null || !(flow.getStatus() == FlowExecutionStatus.SUCCESS
                 || flow.getStatus() == FlowExecutionStatus.FAILED
                 || flow.getStatus() == FlowExecutionStatus.PARTIAL_SUCCESS))
