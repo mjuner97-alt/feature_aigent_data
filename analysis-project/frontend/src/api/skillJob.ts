@@ -18,6 +18,7 @@ async function jobError(res: Response, fallback: string): Promise<Error> {
   if (detail.startsWith('JobAccessDenied')) return new Error('无权限：仅创建人可操作此任务');
   if (detail.startsWith('JobAlreadyRunning')) return new Error('任务正在执行中，请稍后再试');
   if (detail.startsWith('JobQueueFull')) return new Error('执行队列已满，请稍后重试');
+  if (detail.startsWith('ExecutionNotRetryable')) return new Error('只有失败的执行记录可以重试');
   if (detail.startsWith('MetricNotFound')) return new Error('依赖指标不存在或已删除');
   if (detail.startsWith('MetricDisabled')) return new Error('依赖指标已停用，不可选用');
   if (detail.startsWith('NotificationResendUnavailable')) return new Error('当前执行没有可补发的报告');
@@ -120,6 +121,13 @@ export async function resendExecutionNotification(execId: number): Promise<Skill
 export async function getExecution(execId: number): Promise<SkillJobExecution> {
   const res = await fetch(`${BASE}/executions/${execId}`, { headers: authHeaders() });
   if (!res.ok) throw await jobError(res, '查询执行记录失败');
+  return res.json();
+}
+
+/** Retry a failed historical execution. A new execution record is returned. */
+export async function retryExecution(execId: number): Promise<SkillJobExecution> {
+  const res = await fetch(`${BASE}/executions/${execId}/retry`, { method: 'POST', headers: authHeaders() });
+  if (!res.ok) throw await jobError(res, '重试失败');
   return res.json();
 }
 

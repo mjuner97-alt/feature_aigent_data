@@ -8,7 +8,7 @@ import type { SkillListItem } from '../types/skill';
 import type { SkillDependencyMetric } from '../types/skillJob';
 import type { SkillFlow, SkillFlowInput, SkillFlowNode } from '../types/skillFlow';
 
-const props = defineProps<{ open: boolean; editId: number | null; knownFlows: SkillFlow[] }>();
+const props = withDefaults(defineProps<{ open: boolean; editId: number | null; knownFlows: SkillFlow[]; page?: boolean }>(), { page: false });
 const emit = defineEmits<{ (e: 'update:open', open: boolean): void; (e: 'saved'): void }>();
 
 const loading = ref(false);
@@ -21,6 +21,8 @@ const metricLoading = ref(false);
 let skillSearchSeq = 0;
 let metricSearchSeq = 0;
 const form = ref<SkillFlowInput>(emptyForm());
+const baseline = ref('');
+const isDirty = computed(() => JSON.stringify(form.value) !== baseline.value);
 /** 拖拽排序:正在拖拽的卡片下标;dragover 时实时换位,drop/dragend 收尾。 */
 const dragIndex = ref<number | null>(null);
 function nextNodeKey(): string {
@@ -183,6 +185,7 @@ async function load() {
       error.value = e instanceof Error ? e.message : '加载流程失败';
     }
   }
+  baseline.value = JSON.stringify(form.value);
   loading.value = false;
 }
 
@@ -198,6 +201,7 @@ async function save() {
     renumber();
     const saved = props.editId == null ? await createSkillFlow(form.value) : await updateSkillFlow(props.editId, form.value);
     await validateSkillFlow(saved.id);
+    baseline.value = JSON.stringify(form.value);
     emit('saved');
     emit('update:open', false);
   } catch (e) {
@@ -209,12 +213,13 @@ async function save() {
   }
 }
 
-watch(() => props.open, open => { if (open) load(); });
+watch(() => props.open, open => { if (open) load(); }, { immediate: true });
+defineExpose({ isDirty });
 </script>
 
 <template>
-  <Teleport to="body">
-    <div v-if="open" class="mask" @click.self="emit('update:open', false)">
+  <Teleport to="body" :disabled="page">
+    <div v-if="open" class="mask" :class="{ 'page-mode': page }" @click.self="!page && emit('update:open', false)">
       <section class="drawer" aria-label="长任务流程编辑器">
         <header class="drawer-header"><h3>{{ isEdit ? '编辑长任务流程' : '创建长任务流程' }}</h3><button class="icon-button" title="关闭" aria-label="关闭" @click="emit('update:open', false)">×</button></header>
         <main class="drawer-body">
@@ -270,6 +275,9 @@ watch(() => props.open, open => { if (open) load(); });
 <style scoped>
 .mask { position: fixed; inset: 0; z-index: 1000; display: flex; justify-content: flex-end; background: rgb(15 23 42 / 45%); }
 .drawer { width: min(880px, 96vw); height: 100%; display: flex; flex-direction: column; background: #fff; box-shadow: -8px 0 24px rgb(15 23 42 / 12%); }
+.mask.page-mode { position: static; min-height: 100%; justify-content: stretch; background: #f8fafc; }
+.page-mode .drawer { width: 100%; min-height: 100%; box-shadow: none; }
+.page-mode .drawer-body { width: min(1100px, 100%); margin: 0 auto; box-sizing: border-box; }
 .drawer-header, .drawer-footer, .section-heading, .node-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .drawer-header { padding: 14px 20px; border-bottom: 1px solid #e2e8f0; }.drawer-header h3 { margin: 0; color: #0f172a; font-size: 18px; }
 .drawer-body { flex: 1; overflow: auto; padding: 20px; }.drawer-footer { justify-content: flex-end; padding: 12px 20px; border-top: 1px solid #e2e8f0; }

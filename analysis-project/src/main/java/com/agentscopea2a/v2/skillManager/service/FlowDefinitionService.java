@@ -110,9 +110,9 @@ public class FlowDefinitionService {
     }
 
     /** 流程列表;筛选语义与独立任务一致,写操作仍由 owner 校验保护。 */
-    public List<SkillFlowDto> list(String userId, Boolean enabled, String keyword, String createdBy) {
+    public List<SkillFlowDto> list(String userId, Boolean enabled, String keyword, String createdBy, boolean all) {
         requireUser(userId);
-        return flowMapper.selectFlows(userId, enabled, trim(keyword), trim(createdBy)).stream().map(this::toDto).toList();
+        return flowMapper.selectFlows(all ? null : userId, enabled, trim(keyword), trim(createdBy)).stream().map(this::toDto).toList();
     }
 
     /** 流程详情。 */

@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { listSkillFlowExecutions } from '../api/skillFlow';
 import type { SkillFlowExecution } from '../types/skillFlow';
 import SkillFlowExecutionDrawer from './SkillFlowExecutionDrawer.vue';
+
+const props = withDefaults(defineProps<{ scope?: 'mine' | 'all'; createdBy?: string }>(), { scope: 'mine', createdBy: '' });
 
 const executions = ref<SkillFlowExecution[]>([]);
 const loading = ref(false); const error = ref(''); const currentStatus = ref(''); const currentCreatedBy = ref(''); const page = ref(1); const pageSize = ref(20); const detailId = ref<number | null>(null); const detailOpen = ref(false);
@@ -13,10 +15,11 @@ function statusText(value: string) { return ({ WAITING_METRICS: '等待指标', 
 function statusClass(value: string) { return ({ WAITING_METRICS: 'st-pending', QUEUED: 'st-pending', RUNNING: 'st-running', SUMMARIZING: 'st-pending', SUCCESS: 'st-success', PARTIAL_SUCCESS: 'st-success', FAILED: 'st-failed', CANCELLED: 'st-off', CANCEL_REQUESTED: 'st-pending' } as Record<string, string>)[value] || ''; }
 function notificationClass(value?: string | null) { return value ? `nt-${value.toLowerCase()}` : 'nt-none'; }
 function duration(start?: string | null, end?: string | null) { if (!start || !end) return '-'; const seconds = Math.round((new Date(end).getTime() - new Date(start).getTime()) / 1000); return Number.isFinite(seconds) && seconds >= 0 ? (seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m${seconds % 60}s`) : '-'; }
-async function load(status = currentStatus.value, createdBy = currentCreatedBy.value, silent = false) { currentStatus.value = status; currentCreatedBy.value = createdBy; if (!silent) loading.value = true; error.value = ''; try { executions.value = await listSkillFlowExecutions(status || undefined, createdBy.trim() || undefined); page.value = 1; } catch (e) { error.value = e instanceof Error ? e.message : '加载长任务执行记录失败'; if (!silent) executions.value = []; } finally { loading.value = false; } }
+async function load(status = currentStatus.value, createdBy = currentCreatedBy.value, silent = false, scope: 'mine' | 'all' = props.scope) { currentStatus.value = status; currentCreatedBy.value = createdBy; if (!silent) loading.value = true; error.value = ''; try { executions.value = await listSkillFlowExecutions(status || undefined, createdBy.trim() || undefined, scope); page.value = 1; } catch (e) { error.value = e instanceof Error ? e.message : '加载长任务执行记录失败'; if (!silent) executions.value = []; } finally { loading.value = false; } }
 function showDetail(id: number) { detailId.value = id; detailOpen.value = true; }
 defineExpose({ load });
 onMounted(() => { load(); timer = setInterval(() => { if (executions.value.some(item => ['WAITING_METRICS', 'QUEUED', 'RUNNING', 'SUMMARIZING', 'CANCEL_REQUESTED'].includes(item.status))) load(currentStatus.value, currentCreatedBy.value, true); }, 5000); }); onUnmounted(() => { if (timer) clearInterval(timer); });
+watch(() => [props.scope, props.createdBy] as const, () => load('', props.createdBy, false, props.scope));
 </script>
 
 <template>

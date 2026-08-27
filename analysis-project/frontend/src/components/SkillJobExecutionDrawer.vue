@@ -6,11 +6,12 @@
  */
 import { ref, watch, computed, onUnmounted } from 'vue';
 import { Download, EditPen, View } from '@element-plus/icons-vue';
-import { downloadExecutionFile, listExecutions, viewExecutionFile } from '../api/skillJob';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import { downloadExecutionFile, listExecutions, retryExecution, viewExecutionFile } from '../api/skillJob';
 import type { SkillJobExecution } from '../types/skillJob';
 import SkillJobReportEditorDrawer from './SkillJobReportEditorDrawer.vue';
 
-const props = defineProps<{ open: boolean; jobId: number | null; canDownload?: boolean }>();
+const props = defineProps<{ open: boolean; jobId: number | null; canDownload?: boolean; canEdit?: boolean }>();
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>();
 
 const executions = ref<SkillJobExecution[]>([]);
@@ -19,6 +20,7 @@ const statusFilter = ref('');
 const expandedId = ref<number | null>(null);
 const currentPage = ref(1);
 const pageSize = ref(20);
+const retrying = ref<Set<number>>(new Set());
 
 const pagedExecutions = computed(() => {
   const start = (currentPage.value - 1) * pageSize.value;
@@ -180,7 +182,30 @@ function executionReason(message?: string): string {
   if (message.startsWith('JobDisabled')) return '任务已禁用';
   if (message.startsWith('JobNotConfigured')) return '任务配置不完整';
   if (message.startsWith('SkillPermissionDenied')) return 'Skill 权限失效';
-  return message;
+  if (/timeout|timed out|超时/i.test(message)) return '执行超时';
+  if (/model|llm|模型/i.test(message)) return '模型调用失败';
+  if (/report|artifact|文件|报告/i.test(message)) return '报告生成失败';
+  return '';
+}
+
+function showError(exec: SkillJobExecution) {
+  ElMessageBox.alert(exec.errorMsg || '暂无错误详情', `执行 #${exec.id} 错误详情`, {
+    confirmButtonText: '关闭', customClass: 'execution-error-dialog',
+  });
+}
+
+async function retry(exec: SkillJobExecution) {
+  if (retrying.value.has(exec.id)) return;
+  retrying.value.add(exec.id);
+  try {
+    const created = await retryExecution(exec.id);
+    ElMessage.success(`已重新排队，执行 ID #${created.id}`);
+    await refresh();
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '重试失败');
+  } finally {
+    retrying.value.delete(exec.id);
+  }
 }
 </script>
 
@@ -241,7 +266,11 @@ function executionReason(message?: string): string {
                   </div>
                   <div v-if="exec.errorMsg" class="detail-row">
                     <span class="dl">{{ exec.status === 'SKIPPED' ? '未执行原因' : '错误信息' }}</span>
-                    <span class="dv" :class="{ err: exec.status === 'FAILED' }" :title="exec.errorMsg">{{ executionReason(exec.errorMsg) }}</span>
+                    <div class="error-summary">
+                      <span v-if="executionReason(exec.errorMsg)" class="dv" :class="{ err: exec.status === 'FAILED' }">{{ executionReason(exec.errorMsg) }}</span>
+                      <button class="report-action" @click.stop="showError(exec)">错误详情</button>
+                      <button v-if="exec.status === 'FAILED' && canDownload" class="report-action" :disabled="retrying.has(exec.id)" @click.stop="retry(exec)">{{ retrying.has(exec.id) ? '排队中…' : '重试' }}</button>
+                    </div>
                   </div>
                   <div v-if="exec.mdFileExists && canDownload" class="detail-row">
                     <span class="dl">生成文件</span>
@@ -249,7 +278,7 @@ function executionReason(message?: string): string {
                       <button class="report-action" :disabled="viewing.has(exec.id)" title="预览报告" @click.stop="viewFile(exec.id)">
                         <el-icon><View /></el-icon><span>{{ viewing.has(exec.id) ? '打开中…' : '预览' }}</span>
                       </button>
-                      <button class="report-action" title="编辑 HTML" @click.stop="editFile(exec.id)">
+                      <button v-if="canEdit" class="report-action" title="编辑 HTML" @click.stop="editFile(exec.id)">
                         <el-icon><EditPen /></el-icon><span>编辑</span>
                       </button>
                       <button class="report-action" :disabled="downloading.has(exec.id)" title="下载 HTML" @click.stop="downloadFile(exec.id)">
@@ -332,6 +361,7 @@ function executionReason(message?: string): string {
 .dv.no { color: #dc2626; }
 .dv.err { color: #dc2626; }
 .dv.muted { color: #94a3b8; font-size: 12px; }
+.error-summary { display: flex; min-width: 0; align-items: center; gap: 8px; flex-wrap: wrap; }
 .report-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .report-action { display: inline-flex; height: 28px; align-items: center; gap: 4px; padding: 0 9px; border: 1px solid #cbd5e1; border-radius: 5px; background: #fff; color: #2563eb; cursor: pointer; font-size: 12px; }
 .report-action:hover { border-color: #93c5fd; background: #eff6ff; }

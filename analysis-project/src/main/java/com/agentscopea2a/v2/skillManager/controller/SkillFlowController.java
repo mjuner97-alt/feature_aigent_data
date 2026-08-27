@@ -56,8 +56,9 @@ public class SkillFlowController {
     public List<SkillFlowDto> list(@RequestHeader(name = "X-User-Id") String userId,
                                    @RequestParam(name = "enabled", required = false) Boolean enabled,
                                    @RequestParam(name = "keyword", required = false) String keyword,
-                                   @RequestParam(name = "createdBy", required = false) String createdBy) {
-        return definitionService.list(userId, enabled, keyword, createdBy);
+                                   @RequestParam(name = "createdBy", required = false) String createdBy,
+                                   @RequestParam(name = "scope", defaultValue = "mine") String scope) {
+        return definitionService.list(userId, enabled, keyword, createdBy, "all".equalsIgnoreCase(scope));
     }
 
     /** 流程详情;仅创建人可查看和编辑。 */
@@ -131,8 +132,9 @@ public class SkillFlowController {
     @GetMapping("/api/skill-flow-executions")
     public List<FlowQueryService.ExecutionDto> list(@RequestParam(name = "status", required = false) String status,
                                                     @RequestParam(name = "createdBy", required = false) String createdBy,
+                                                    @RequestParam(name = "scope", defaultValue = "mine") String scope,
                                                     @RequestHeader(name = "X-User-Id") String userId) {
-        return queryService.list(status, createdBy, userId);
+        return queryService.list(status, createdBy, userId, "all".equalsIgnoreCase(scope));
     }
 
     /** 执行详情(含汇总结果与报告路径)。 */
@@ -187,17 +189,17 @@ public class SkillFlowController {
     @PostMapping("/api/skill-flow-executions/{id}/notifications/resend")
     public void resend(@PathVariable(name = "id") Long id,
                        @RequestHeader(name = "X-User-Id") String userId) {
-        queryService.get(id, userId);
+        queryService.requireOwner(id, userId);
         completionService.resend(mapper.selectFlowExecutionById(id));
     }
 
     @PostMapping("/api/skill-flow-executions/{id}/summary/retry")
     public void retrySummary(@PathVariable Long id, @RequestHeader(name = "X-User-Id") String userId) {
-        queryService.get(id, userId); coordinator.retrySummary(id);
+        queryService.requireOwner(id, userId); coordinator.retrySummary(id);
     }
 
     @PostMapping("/api/skill-flow-executions/{id}/nodes/{nodeId}/retry")
     public void retryNode(@PathVariable Long id, @PathVariable Long nodeId, @RequestHeader(name = "X-User-Id") String userId) {
-        queryService.get(id, userId); coordinator.retryNode(id, nodeId);
+        queryService.requireOwner(id, userId); coordinator.retryNode(id, nodeId);
     }
 }

@@ -30,11 +30,12 @@ function listBody<T>(body: unknown): T[] {
   return [];
 }
 
-export async function listSkillFlows(enabled?: boolean, keyword?: string, createdBy?: string): Promise<SkillFlow[]> {
+export async function listSkillFlows(enabled?: boolean, keyword?: string, createdBy?: string, scope: 'mine' | 'all' = 'mine'): Promise<SkillFlow[]> {
   const qs = new URLSearchParams();
   if (enabled != null) qs.set('enabled', String(enabled));
   if (keyword) qs.set('keyword', keyword);
   if (createdBy) qs.set('createdBy', createdBy);
+  qs.set('scope', scope);
   const res = await fetch(`${FLOW_BASE}?${qs}`, { headers: authHeaders() });
   if (!res.ok) throw await requestError(res, '查询长任务流程失败');
   return listBody<SkillFlow>(await res.json());
@@ -88,10 +89,11 @@ export async function runSkillFlow(id: number): Promise<SkillFlowRunResult> {
   return res.json();
 }
 
-export async function listSkillFlowExecutions(status?: string, createdBy?: string): Promise<SkillFlowExecution[]> {
+export async function listSkillFlowExecutions(status?: string, createdBy?: string, scope: 'mine' | 'all' = 'mine'): Promise<SkillFlowExecution[]> {
   const qs = new URLSearchParams();
   if (status) qs.set('status', status);
   if (createdBy) qs.set('createdBy', createdBy);
+  qs.set('scope', scope);
   const res = await fetch(`${EXECUTION_BASE}?${qs}`, { headers: authHeaders() });
   if (!res.ok) throw await requestError(res, '查询长任务执行记录失败');
   return listBody<SkillFlowExecution>(await res.json());

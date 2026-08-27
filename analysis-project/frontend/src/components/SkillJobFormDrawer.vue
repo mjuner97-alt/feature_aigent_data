@@ -14,7 +14,7 @@ import type { SkillJobInput, SkillJobUpdateInput } from '../types/skillJob';
 import type { SkillListItem } from '../types/skill';
 import type { SkillDependencyMetric } from '../types/skillJob';
 
-const props = defineProps<{ open: boolean; editId: number | null }>();
+const props = withDefaults(defineProps<{ open: boolean; editId: number | null; page?: boolean }>(), { page: false });
 const emit = defineEmits<{
   (e: 'update:open', v: boolean): void;
   (e: 'saved'): void;
@@ -23,6 +23,8 @@ const emit = defineEmits<{
 const isEdit = computed(() => props.editId != null);
 
 const form = ref<SkillJobInput>({ name: '', skillId: 0, questionTemplate: '', metricId: null });
+const baseline = ref('');
+const isDirty = computed(() => JSON.stringify(form.value) !== baseline.value);
 const formLoading = ref(false);
 const saving = ref(false);
 const formError = ref('');
@@ -79,6 +81,7 @@ async function searchMetrics(query: string) {
 
 function resetForm() {
   form.value = { name: '', skillId: 0, questionTemplate: '', metricId: null };
+  baseline.value = JSON.stringify(form.value);
   formError.value = '';
 }
 
@@ -90,7 +93,7 @@ watch(() => props.open, (open) => {
   if (props.editId != null) {
     loadForEdit(props.editId);
   }
-});
+}, { immediate: true });
 
 async function loadForEdit(id: number) {
   formLoading.value = true;
@@ -103,6 +106,7 @@ async function loadForEdit(id: number) {
       enabled: job.enabled,
       metricId: job.metricId ?? null,
     };
+    baseline.value = JSON.stringify(form.value);
   } catch (e) {
     formError.value = e instanceof Error ? e.message : '加载失败';
   } finally {
@@ -134,6 +138,7 @@ async function submit() {
       };
       await createJob(payload);
     }
+    baseline.value = JSON.stringify(form.value);
     setTimeout(() => { close(); emit('saved'); }, 600);
   } catch (e) {
     formError.value = e instanceof Error ? e.message : '保存失败';
@@ -143,12 +148,13 @@ async function submit() {
 }
 
 function close() { emit('update:open', false); }
+defineExpose({ isDirty });
 </script>
 
 <template>
-  <Teleport to="body">
+  <Teleport to="body" :disabled="page">
     <transition name="drawer-fade">
-      <div v-if="open" class="drawer-mask" @click.self="close">
+      <div v-if="open" class="drawer-mask" :class="{ 'page-mode': page }" @click.self="!page && close()">
         <div class="drawer">
           <div class="drawer-header">
             <h3>{{ isEdit ? '编辑定时任务' : '创建定时任务' }}</h3>
@@ -207,6 +213,9 @@ function close() { emit('update:open', false); }
 <style scoped>
 .drawer-mask { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45); display: flex; justify-content: flex-end; z-index: 1000; }
 .drawer { width: 520px; max-width: 90vw; height: 100%; background: #fff; display: flex; flex-direction: column; box-shadow: -8px 0 24px rgba(15, 23, 42, 0.12); }
+.drawer-mask.page-mode { position: static; min-height: 100%; justify-content: stretch; background: #f8fafc; }
+.page-mode .drawer { width: 100%; max-width: none; min-height: 100%; box-shadow: none; }
+.page-mode .drawer-body { width: min(760px, 100%); margin: 0 auto; box-sizing: border-box; }
 .drawer-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid #e2e8f0; }
 .drawer-header h3 { margin: 0; font-size: 18px; font-weight: 700; color: #0f172a; }
 .drawer-close { border: none; background: transparent; font-size: 24px; line-height: 1; color: #64748b; cursor: pointer; padding: 0 4px; border-radius: 4px; }

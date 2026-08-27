@@ -5,12 +5,13 @@
  * 功能：列表查看、搜索筛选、创建/编辑/删除、触发执行、查看执行记录
  */
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { Download, EditPen, View } from '@element-plus/icons-vue';
-import { downloadExecutionFile, listJobs, listExecutionCenter, deleteJob, triggerJob, updateJob, viewExecutionFile } from '../../api/skillJob';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import { downloadExecutionFile, listJobs, listExecutionCenter, deleteJob, retryExecution, triggerJob, updateJob, viewExecutionFile } from '../../api/skillJob';
 import { currentUserId } from '../../api/skill';
 import { listMetrics } from '../../api/skillDependencyMetric';
 import type { SkillJob, SkillJobExecution } from '../../types/skillJob';
-import SkillJobFormDrawer from '../../components/SkillJobFormDrawer.vue';
 import SkillJobExecutionDrawer from '../../components/SkillJobExecutionDrawer.vue';
 import SkillJobNotificationDrawer from '../../components/SkillJobNotificationDrawer.vue';
 import SkillJobReportEditorDrawer from '../../components/SkillJobReportEditorDrawer.vue';
@@ -18,6 +19,8 @@ import SkillFlowList from '../../components/SkillFlowList.vue';
 import SkillFlowExecutionList from '../../components/SkillFlowExecutionList.vue';
 
 const me = currentUserId();
+const route = useRoute();
+const router = useRouter();
 function isOwner(job: SkillJob) {
   return job.createdBy === me;
 }
@@ -35,6 +38,8 @@ const createdBy = ref('');
 // 长任务流程（多 Skill 并行流）：入口已放开
 const showSkillFlow = true;
 const activeTab = ref<'manage' | 'flows' | 'execution' | 'flow-execution'>('manage');
+const visibilityScope = ref<'mine' | 'all'>('mine');
+const scopeCreatedBy = ref('');
 const flowKeyword = ref('');
 const flowCreatedBy = ref('');
 const flowEnabledFilter = ref<boolean | null>(null);
@@ -49,7 +54,9 @@ const managePage = ref(1);
 const managePageSize = ref(20);
 const executionPage = ref(1);
 const executionPageSize = ref(20);
+const retryingExecutions = ref<Set<number>>(new Set());
 let executionTimer: ReturnType<typeof setInterval> | undefined;
+const effectiveCreatedBy = computed(() => visibilityScope.value === 'mine' ? me : (scopeCreatedBy.value.trim() || undefined));
 
 const pagedJobs = computed(() => {
   const start = (managePage.value - 1) * managePageSize.value;
@@ -82,8 +89,6 @@ watch(() => centerExecutions.value.length, (total) => {
 });
 
 // 表单弹窗
-const formOpen = ref(false);
-const editId = ref<number | null>(null);
 
 // 执行记录抽屉
 const execOpen = ref(false);
@@ -107,6 +112,10 @@ const triggering = ref<Set<number>>(new Set());
 const triggerMsg = ref('');
 
 onMounted(() => {
+  const requestedTab = route.query.tab;
+  if (requestedTab === 'manage' || requestedTab === 'flows' || requestedTab === 'execution' || requestedTab === 'flow-execution') {
+    activeTab.value = requestedTab;
+  }
   load();
   loadExecutionCenter();
   executionTimer = setInterval(() => {
@@ -125,8 +134,8 @@ async function loadExecutionCenter(silent = false) {
   executionError.value = '';
   try {
     centerExecutions.value = await listExecutionCenter(
-      executionStatusFilter.value || undefined,
-      executionCreatedBy.value.trim() || undefined,
+      undefined,
+      effectiveCreatedBy.value,
     );
   } catch (e) {
     console.error('加载执行中心失败', e);
@@ -143,11 +152,11 @@ function openExecutionCenter() {
 }
 
 function filterFlows() {
-  flowListRef.value?.load(flowKeyword.value, flowCreatedBy.value, flowEnabledFilter.value ?? undefined);
+  flowListRef.value?.load('', effectiveCreatedBy.value || '', undefined, visibilityScope.value);
 }
 
 function createFlow() {
-  flowListRef.value?.create();
+  router.push('/skills/jobs/flows/new');
 }
 
 function openFlowExecutions() {
@@ -158,11 +167,12 @@ function refreshCurrentTab() {
   if (activeTab.value === 'manage') load();
   else if (activeTab.value === 'flows') filterFlows();
   else if (activeTab.value === 'execution') loadExecutionCenter();
+  else if (activeTab.value === 'flow-execution') flowExecutionListRef.value?.load('', effectiveCreatedBy.value || '', false, visibilityScope.value);
 }
 
 function filterExecutionCenter() {
   if (activeTab.value === 'flow-execution') {
-    flowExecutionListRef.value?.load(executionStatusFilter.value, executionCreatedBy.value);
+    flowExecutionListRef.value?.load('', effectiveCreatedBy.value || '', false, visibilityScope.value);
   } else {
     executionPage.value = 1;
     loadExecutionCenter();
@@ -236,13 +246,36 @@ function executionReason(message?: string): string {
   if (message.startsWith('JobDisabled')) return '任务已禁用';
   if (message.startsWith('JobNotConfigured')) return '任务配置不完整';
   if (message.startsWith('SkillPermissionDenied')) return 'Skill 权限失效';
-  return message;
+  if (/timeout|timed out|超时/i.test(message)) return '执行超时';
+  if (/model|llm|模型/i.test(message)) return '模型调用失败';
+  if (/report|artifact|文件|报告/i.test(message)) return '报告生成失败';
+  return '';
+}
+
+function showExecutionError(exec: SkillJobExecution) {
+  ElMessageBox.alert(exec.errorMsg || '暂无错误详情', `执行 #${exec.id} 错误详情`, {
+    confirmButtonText: '关闭', customClass: 'execution-error-dialog',
+  });
+}
+
+async function retryCenterExecution(exec: SkillJobExecution) {
+  if (retryingExecutions.value.has(exec.id)) return;
+  retryingExecutions.value.add(exec.id);
+  try {
+    const created = await retryExecution(exec.id);
+    ElMessage.success(`已重新排队，执行 ID #${created.id}`);
+    await loadExecutionCenter(true);
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '重试失败');
+  } finally {
+    retryingExecutions.value.delete(exec.id);
+  }
 }
 
 async function load() {
   loading.value = true;
   try {
-    jobs.value = await listJobs(enabledFilter.value ?? undefined, keyword.value || undefined, createdBy.value || undefined);
+    jobs.value = await listJobs(undefined, undefined, effectiveCreatedBy.value);
     // 加载依赖指标描述 (admin 预置只读, 列表 hover 查看描述)
     try {
       const metrics = await listMetrics();
@@ -265,13 +298,11 @@ function filterJobs() {
 }
 
 function openCreate() {
-  editId.value = null;
-  formOpen.value = true;
+  router.push('/skills/jobs/new');
 }
 
 function openEdit(id: number) {
-  editId.value = id;
-  formOpen.value = true;
+  router.push(`/skills/jobs/${id}/edit`);
 }
 
 function openExecutions(job: SkillJob) {
@@ -334,36 +365,16 @@ function metricTitle(job: SkillJob): string {
     <div class="page-header">
       <h2>定时任务</h2>
       <div class="header-actions">
+        <div class="scope-switch" role="group" aria-label="可见范围">
+          <button :class="{ active: visibilityScope === 'mine' }" @click="visibilityScope = 'mine'; scopeCreatedBy = ''; refreshCurrentTab()">我的</button>
+          <button :class="{ active: visibilityScope === 'all' }" @click="visibilityScope = 'all'; refreshCurrentTab()">全部</button>
+        </div>
+        <input v-if="visibilityScope === 'all'" v-model="scopeCreatedBy" placeholder="创建人 userId" class="search-input creator-input" @keyup.enter="refreshCurrentTab" />
         <template v-if="activeTab === 'manage'">
-          <input v-model="keyword" placeholder="搜索任务名称…" class="search-input" @keyup.enter="filterJobs" />
-          <input v-model="createdBy" placeholder="创建人 userId" class="search-input creator-input" @keyup.enter="filterJobs" />
-          <select v-model="enabledFilter" @change="filterJobs" class="filter-select">
-            <option :value="null">全部状态</option>
-            <option :value="true">已启用</option>
-            <option :value="false">已禁用</option>
-          </select>
           <button class="btn primary" @click="openCreate">+ 创建任务</button>
         </template>
         <template v-else-if="activeTab === 'flows'">
-          <input v-model="flowKeyword" placeholder="搜索流程名称…" class="search-input" @keyup.enter="filterFlows" />
-          <input v-model="flowCreatedBy" placeholder="创建人 userId" class="search-input creator-input" @keyup.enter="filterFlows" />
-          <select v-model="flowEnabledFilter" class="filter-select" @change="filterFlows">
-            <option :value="null">全部状态</option>
-            <option :value="true">已启用</option>
-            <option :value="false">已禁用</option>
-          </select>
           <button class="btn primary" @click="createFlow">+ 创建流程</button>
-        </template>
-        <template v-else-if="activeTab === 'execution' || activeTab === 'flow-execution'">
-          <input v-model="executionCreatedBy" placeholder="创建人 userId" class="search-input creator-input" @keyup.enter="filterExecutionCenter" />
-          <select v-model="executionStatusFilter" class="filter-select" @change="filterExecutionCenter">
-            <option value="">全部状态</option>
-            <option value="RUNNING">运行中</option>
-            <option value="PENDING">排队中</option>
-            <option value="SUCCESS">成功</option>
-            <option value="FAILED">失败</option>
-            <option value="SKIPPED">未执行</option>
-          </select>
         </template>
         <button v-if="activeTab === 'manage' || activeTab === 'flows'" class="btn ghost" @click="refreshCurrentTab">刷新</button>
         <button v-else-if="activeTab === 'execution' || activeTab === 'flow-execution'" class="btn ghost" @click="filterExecutionCenter">刷新</button>
@@ -377,8 +388,8 @@ function metricTitle(job: SkillJob): string {
       <button v-if="showSkillFlow" class="job-tab" :class="{ active: activeTab === 'flow-execution' }" @click="activeTab = 'flow-execution'">长任务执行记录</button>
     </div>
 
-    <SkillFlowList v-if="activeTab === 'flows'" ref="flowListRef" @view-records="openFlowExecutions" />
-    <SkillFlowExecutionList v-else-if="activeTab === 'flow-execution'" ref="flowExecutionListRef" />
+    <SkillFlowList v-if="activeTab === 'flows'" ref="flowListRef" :scope="visibilityScope" :created-by="effectiveCreatedBy || ''" @view-records="openFlowExecutions" />
+    <SkillFlowExecutionList v-else-if="activeTab === 'flow-execution'" ref="flowExecutionListRef" :scope="visibilityScope" :created-by="effectiveCreatedBy || ''" />
 
     <template v-else-if="activeTab === 'execution'">
       <div v-if="executionError" class="center-error">{{ executionError }}</div>
@@ -396,17 +407,21 @@ function metricTitle(job: SkillJob): string {
               <td>
                 <span class="status-badge" :class="executionStatusClass(exec.status)">{{ executionStatus(exec.status) }}</span>
                 <span v-if="exec.status === 'PENDING' && exec.queueAhead != null" class="queue-hint">{{ exec.queueAhead === 0 ? '即将执行' : `前面 ${exec.queueAhead} 个` }}</span>
-                <span v-if="(exec.status === 'SKIPPED' || exec.status === 'FAILED') && exec.errorMsg" class="execution-reason" :class="{ failed: exec.status === 'FAILED' }" :title="exec.errorMsg">{{ executionReason(exec.errorMsg) }}</span>
+                <span v-if="(exec.status === 'SKIPPED' || exec.status === 'FAILED') && executionReason(exec.errorMsg)" class="execution-reason" :class="{ failed: exec.status === 'FAILED' }">{{ executionReason(exec.errorMsg) }}</span>
               </td>
               <td><span class="notify-badge" :class="notificationStatusClass(exec.latestNotificationStatus)">{{ notificationStatus(exec.latestNotificationStatus) }}</span></td>
               <td class="col-time">{{ fmtTime(exec.createdAt) }}</td>
               <td>#{{ exec.id }}</td>
               <td class="col-actions">
-                <template v-if="exec.mdFileExists && exec.createdBy === me">
+                <button v-if="exec.errorMsg" class="btn-action" @click="showExecutionError(exec)">错误详情</button>
+                <button v-if="exec.status === 'FAILED'" class="btn-action trigger" :disabled="exec.createdBy !== me || retryingExecutions.has(exec.id)" :title="exec.createdBy === me ? '重新执行此任务' : '仅任务创建人可重试'" @click="retryCenterExecution(exec)">
+                  {{ retryingExecutions.has(exec.id) ? '排队中…' : '重试' }}
+                </button>
+                <template v-if="exec.mdFileExists">
                   <button class="btn-action with-icon" :disabled="viewing.has(exec.id)" title="预览报告" @click="viewCenterReport(exec)">
                     <el-icon><View /></el-icon><span>{{ viewing.has(exec.id) ? '打开中…' : '预览' }}</span>
                   </button>
-                  <button class="btn-action with-icon" title="编辑 HTML" @click="editCenterReport(exec)">
+                  <button v-if="exec.createdBy === me" class="btn-action with-icon" title="编辑 HTML" @click="editCenterReport(exec)">
                     <el-icon><EditPen /></el-icon><span>编辑</span>
                   </button>
                   <button class="btn-action with-icon" :disabled="downloading.has(exec.id)" title="下载 HTML" @click="downloadCenterReport(exec)">
@@ -501,8 +516,7 @@ function metricTitle(job: SkillJob): string {
       />
     </div>
 
-    <SkillJobFormDrawer v-model:open="formOpen" :edit-id="editId" @saved="load" />
-    <SkillJobExecutionDrawer v-model:open="execOpen" :job-id="execJobId" :can-download="execCanDownload" />
+    <SkillJobExecutionDrawer v-model:open="execOpen" :job-id="execJobId" can-download :can-edit="execCanDownload" />
     </template>
     <SkillJobNotificationDrawer v-model:open="notifyOpen" :exec-id="notifyExecId" :can-resend="notifyCanResend" @changed="loadExecutionCenter(true)" />
     <SkillJobReportEditorDrawer
@@ -518,6 +532,10 @@ function metricTitle(job: SkillJob): string {
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
 .page-header h2 { margin: 0; font-size: 20px; font-weight: 700; color: #0f172a; }
 .header-actions { display: flex; gap: 8px; align-items: center; }
+.scope-switch { display: inline-flex; overflow: hidden; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; }
+.scope-switch button { min-width: 52px; height: 32px; border: 0; border-right: 1px solid #cbd5e1; background: #fff; color: #475569; cursor: pointer; font-size: 13px; }
+.scope-switch button:last-child { border-right: 0; }
+.scope-switch button.active { background: #2563eb; color: #fff; }
 .search-input { padding: 7px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; width: 200px; }
 .creator-input { width: 160px; }
 .filter-select { padding: 7px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; background: #fff; }

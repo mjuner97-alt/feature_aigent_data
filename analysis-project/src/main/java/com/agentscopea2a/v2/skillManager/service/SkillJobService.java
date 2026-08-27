@@ -244,6 +244,18 @@ public class SkillJobService {
         return SkillJobExecutionDto.of(exec, queueAheadOf(exec));
     }
 
+    /** Retry a failed historical execution by creating a new manual execution record. */
+    public SkillJobExecutionDto retryExecution(Long execId, String userId) {
+        SkillJobExecution execution = mapper.selectExecutionById(execId);
+        if (execution == null) {
+            throw new IllegalStateException("JobNotFound: 执行记录不存在 (id=" + execId + ")");
+        }
+        if (!"FAILED".equals(execution.getStatus())) {
+            throw new IllegalStateException("ExecutionNotRetryable: 仅失败记录可以重试 (id=" + execId + ")");
+        }
+        return trigger(execution.getJobId(), userId);
+    }
+
     /**
      * 按任务名触发 Job 执行（外部系统调用入口）。
      * 任务名在表中唯一，外部系统用任务名而非 ID 来调起。
@@ -578,15 +590,12 @@ public class SkillJobService {
 
     /**
      * 下载/查看执行记录对应的报告文件（前端入口：校验 userId 归属后委托给无校验版本）。
-     * 仅 createdBy 本人可访问其生成的报告文件。
+     * 报告只读预览和下载允许所有已登录用户访问；编辑源码仍要求任务创建人权限。
      */
     public Resource downloadExecutionFile(SkillJobExecutionDto exec, String userId) {
         SkillJob job = mapper.selectJobById(exec.jobId());
         if (job == null) {
             throw new IllegalStateException("FileNotFoundOrAccessDenied: " + exec.id());
-        }
-        if (!userId.equals(job.getCreatedBy())) {
-            throw new IllegalStateException("JobAccessDenied: 仅创建人可下载此执行结果 (execId=" + exec.id() + ")");
         }
         return downloadExecutionFile(exec);
     }
