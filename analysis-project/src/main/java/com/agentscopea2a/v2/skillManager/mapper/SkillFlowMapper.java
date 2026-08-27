@@ -183,6 +183,13 @@ public interface SkillFlowMapper {
     void insertAttempt(com.agentscopea2a.v2.skillManager.entity.SkillFlowNodeAttempt attempt);
 
     /**
+     * 查询节点审计记录中已存在的最大尝试号。
+     * 手动重跑会把 attempt_count 归零重新获得重试预算,而 (节点, 尝试号) 有唯一索引,
+     * 新尝试的编号必须避开历史记录。
+     */
+    int selectMaxAttemptNo(@Param("nodeId") Long nodeId);
+
+    /**
      * 结束一次尝试，仅允许更新仍为 RUNNING 的记录，防止重复回调覆盖终态。
      *
      * @return 实际更新的记录数；{@code 0} 通常表示该尝试已经结束

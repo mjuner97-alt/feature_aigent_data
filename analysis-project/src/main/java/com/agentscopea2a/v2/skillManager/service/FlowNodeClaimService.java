@@ -49,7 +49,8 @@ public class FlowNodeClaimService {
         if (execution == null || !RUNNABLE_EXECUTION_STATUSES.contains(execution.getStatus())) {
             return false;
         }
-        int limit = Math.max(1, execution.getMaxParallelismSnapshot());
+        int limit = execution.getMaxParallelismSnapshot() == null
+                ? 1 : Math.max(1, execution.getMaxParallelismSnapshot());
         if (mapper.countActiveRunningNodes(execution.getId(), now) >= limit) {
             return false;
         }

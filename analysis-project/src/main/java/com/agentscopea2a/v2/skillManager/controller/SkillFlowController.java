@@ -192,12 +192,20 @@ public class SkillFlowController {
     }
 
     @PostMapping("/api/skill-flow-executions/{id}/summary/retry")
-    public void retrySummary(@PathVariable Long id, @RequestHeader(name = "X-User-Id") String userId) {
+    public void retrySummary(@PathVariable(name = "id") Long id, @RequestHeader(name = "X-User-Id") String userId) {
         queryService.get(id, userId); coordinator.retrySummary(id);
     }
 
     @PostMapping("/api/skill-flow-executions/{id}/nodes/{nodeId}/retry")
-    public void retryNode(@PathVariable Long id, @PathVariable Long nodeId, @RequestHeader(name = "X-User-Id") String userId) {
+    public void retryNode(@PathVariable(name = "id") Long id, @PathVariable(name = "nodeId") Long nodeId,
+                          @RequestHeader(name = "X-User-Id") String userId) {
         queryService.get(id, userId); coordinator.retryNode(id, nodeId);
+    }
+
+    /** 批量重跑该次执行的全部失败 Skill 节点(FAILED/BLOCKED),按原执行顺序重新执行。 */
+    @PostMapping("/api/skill-flow-executions/{id}/nodes/retry-failed")
+    public void retryFailedNodes(@PathVariable(name = "id") Long id,
+                                 @RequestHeader(name = "X-User-Id") String userId) {
+        queryService.get(id, userId); coordinator.retryFailedNodes(id);
     }
 }

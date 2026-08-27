@@ -61,11 +61,9 @@ async function run(flow: SkillFlow) {
   } catch {
     // 预检失败不阻塞,仍尝试触发,由后端兜底判定
   }
-  if (missing.length && !confirm(`流程「${flow.name}」依赖的以下数据今日尚未就绪：\n${missing.join('、')}\n\n仍要执行吗？任务将等待数据就绪后自动开始；若到次日仍未就绪，任务将自动放弃（失败）。`)) return;
   try {
     const result = await runSkillFlow(flow.id);
-    if (result.created) alert(`已触发执行（当前状态：${statusText(result.status)}），可在“长任务执行记录”中查看进度。`);
-    else alert(`今日已有一个进行中的执行（#${result.executionId}），未重复触发。`);
+    if (result.created) alert('已触发任务，可在“长任务执行记录”中查看进度。');
   } catch (e) { alert(e instanceof Error ? e.message : '触发执行失败'); }
 }
 

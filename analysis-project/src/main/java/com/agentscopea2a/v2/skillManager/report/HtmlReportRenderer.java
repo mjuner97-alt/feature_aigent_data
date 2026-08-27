@@ -185,8 +185,7 @@ public class HtmlReportRenderer {
               }
               if(!opt.dataZoom){
                 if(zoomable&&opt.xAxis&&opt.yAxis){
-                  opt.dataZoom=[{type:'inside',xAxisIndex:0,filterMode:'filter'},
-                                {type:'slider',xAxisIndex:0,height:22,bottom:8}];
+                  opt.dataZoom=[{type:'inside',xAxisIndex:0,filterMode:'filter'}];
                 }
               }
               if(hasBar&&opt.xAxis&&opt.yAxis){

@@ -16,6 +16,7 @@ import io.agentscope.core.message.TextBlock;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
@@ -52,6 +53,10 @@ import java.util.concurrent.TimeoutException;
 public class FlowCoordinator {
 
     private static final Logger log = LoggerFactory.getLogger(FlowCoordinator.class);
+
+    /** Whether this instance is allowed to scan and execute long-task workers. */
+    @Value("${harness.a2a.skill-flow.worker-enabled:true}")
+    private boolean workerEnabled;
 
     private final SkillFlowMapper mapper;
     private final HarnessA2aRunnerV2 runner;
@@ -114,7 +119,7 @@ public class FlowCoordinator {
     /** 定时扫描并调度可运行节点;总开关/工作开关任一关闭则直接空转。 */
     @Scheduled(fixedDelay = SkillFlowProperties.SCAN_INTERVAL_MS)
     public void scan() {
-        if (!SkillFlowProperties.ENABLED || !SkillFlowProperties.WORKER_ENABLED) return;
+        if (!SkillFlowProperties.ENABLED || !workerEnabled) return;
         LocalDateTime now = LocalDateTime.now(clock);
         expirePreviousDays();
         expireExhaustedNodes(now);
@@ -142,13 +147,15 @@ public class FlowCoordinator {
     /** 正常路径：流程事务提交后立即派发；定时 scan 仅作为恢复兜底。 */
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void onFlowQueued(FlowQueuedEvent event) {
-        if (!SkillFlowProperties.ENABLED || !SkillFlowProperties.WORKER_ENABLED) return;
+        if (!SkillFlowProperties.ENABLED || !workerEnabled) return;
         dispatchRunnableNodes();
     }
 
     private void dispatchRunnableNodes() {
         LocalDateTime now = LocalDateTime.now(clock);
-        for (SkillFlowNodeExecution node : mapper.selectRunnableNodes(now)) {
+        List<SkillFlowNodeExecution> runnable = mapper.selectRunnableNodes(now);
+        log.debug("Skill flow dispatch scan found {} runnable node(s)", runnable.size());
+        for (SkillFlowNodeExecution node : runnable) {
             // RUNNING 且租约已过期 = 原执行超时/失联；不再等待旧线程结束，直接走重试恢复池。
             boolean expiredAttempt = node.getStatus() == FlowNodeExecutionStatus.RUNNING
                     && node.getLeaseExpiresAt() != null
@@ -160,6 +167,9 @@ public class FlowCoordinator {
                     executor.submit(() -> {
                         try {
                             executeNode(node.getId());
+                        } catch (Exception e) {
+                            // executeNode 内部已兜底,这里防御未被捕获的异常逃逸,至少留下日志
+                            log.error("Skill flow node {} worker task crashed", node.getId(), e);
                         } finally {
                             // 恢复任务没有占用普通池许可，因此这里不能释放普通许可。
                             if (!expiredAttempt) workerPermits.release();
@@ -177,30 +187,45 @@ public class FlowCoordinator {
 
     /** 执行单个节点:渲染模板 -> 调 skill -> 写结果并推进;失败按可重试分类决定重试或终止。 */
     private void executeNode(Long nodeId) {
-        SkillFlowNodeExecution node = mapper.selectNodeExecution(nodeId);
-        if (node == null) return;
-        SkillFlowExecution flow = mapper.selectFlowExecutionById(node.getFlowExecutionId());
-        // 流程已请求取消/已取消:节点直接置 CANCELLED
-        if (flow == null || flow.getStatus() == FlowExecutionStatus.CANCEL_REQUESTED
-                || flow.getStatus() == FlowExecutionStatus.CANCELLED) {
-            cancel(node, flow);
-            return;
-        }
+        // 整个方法都包在 try/catch 内:开审计记录前的任何异常(数据库抖动、唯一键冲突等)
+        // 也会走失败收尾并留日志,而不是把已认领的节点静默卡成无人处理的 RUNNING 僵尸。
+        SkillFlowNodeExecution node = null;
+        SkillFlowExecution flow = null;
+        SkillFlowNodeAttempt audit = null;
         LocalDateTime started = LocalDateTime.now(clock);
-        int attempt = node.getAttemptCount();
-        String attemptLeaseOwner = node.getLeaseOwner();
-        // 认领成功但可能有上次遗留的 RUNNING 尝试记录,先作废再开新尝试
-        mapper.failRunningAttemptsForNode(nodeId, started);
-        SkillFlowNodeAttempt audit = SkillFlowNodeAttempt.builder()
-                .nodeExecutionId(nodeId).attemptNo(attempt)
-                .status(FlowNodeAttemptStatus.RUNNING).retryable(false).startedAt(started).build();
-        mapper.insertAttempt(audit);
+        int attempt = 0;
+        String attemptLeaseOwner = null;
         try {
+            node = mapper.selectNodeExecution(nodeId);
+            if (node == null) return;
+            flow = mapper.selectFlowExecutionById(node.getFlowExecutionId());
+            // 流程已请求取消/已取消:节点直接置 CANCELLED
+            if (flow == null || flow.getStatus() == FlowExecutionStatus.CANCEL_REQUESTED
+                    || flow.getStatus() == FlowExecutionStatus.CANCELLED) {
+                cancel(node, flow);
+                return;
+            }
+            started = LocalDateTime.now(clock);
+            attempt = node.getAttemptCount();
+            attemptLeaseOwner = node.getLeaseOwner();
+            // 认领成功但可能有上次遗留的 RUNNING 尝试记录,先作废再开新尝试
+            mapper.failRunningAttemptsForNode(nodeId, started);
+            // 手动重跑会把 attempt_count 归零重新获得重试预算,而审计表对 (节点, 尝试号) 有唯一索引;
+            // 尝试号必须避开历史记录,否则唯一键冲突会在 try 之前抛出,节点永远停留在 RUNNING。
+            int attemptNo = Math.max(attempt, mapper.selectMaxAttemptNo(nodeId) + 1);
+            audit = SkillFlowNodeAttempt.builder()
+                    .nodeExecutionId(nodeId).attemptNo(attemptNo)
+                    .status(FlowNodeAttemptStatus.RUNNING).retryable(false).startedAt(started).build();
+            mapper.insertAttempt(audit);
             // 状态流转放 try 内:流转失败(如缺列)时走失败路径留下错误信息,而不是静默把节点卡成僵尸 RUNNING
             flow.setStatus(FlowExecutionStatus.RUNNING);
             if (flow.getStartedAt() == null) flow.setStartedAt(started);
             mapper.updateExecution(flow);
-            String rendered = templates.render(node.getQuestionTemplateSnapshot(),
+            String template = node.getQuestionTemplateSnapshot();
+            // 老数据节点模板快照可能为空:兜底直接用原始问题提问,不让节点执行报错
+            String rendered = template == null || template.isBlank()
+                    ? Objects.toString(flow.getOriginalQuestion(), "")
+                    : templates.render(template,
                     new FlowTemplateEngine.Context(Map.of(
                             "server_date", flow.getDataDate().toString(),
                             "original_question", flow.getOriginalQuestion(),
@@ -226,19 +251,32 @@ public class FlowCoordinator {
             }
         } catch (Exception error) {
             // 可重试错误(超时/429/5xx 等)且未到最大尝试次数 -> RETRY_WAIT,指数退避(1s/2s/4s/8s)
-            boolean retryable = retryable(error) && attempt < node.getMaxAttempts();
+            // 老数据可能没有最大重试次数；按单次执行处理，不能让错误处理本身再次抛 NPE，
+            // 否则节点会永远停留在 RUNNING，流程也无法进入最终状态。
+            int maxAttempts = node == null || node.getMaxAttempts() == null ? 1 : Math.max(1, node.getMaxAttempts());
+            boolean retryable = retryable(error) && attempt < maxAttempts;
             String errorCode = retryable ? "RETRYABLE_ERROR" : "EXECUTION_FAILED";
             String errorMessage = errorMessage(error);
-            if (retryable) {
+            if (retryable && node != null) {
                 node.setNextRunAt(LocalDateTime.now(clock).plusSeconds(1L << Math.min(attempt, 3)));
             }
-            completeAudit(audit, FlowNodeAttemptStatus.FAILED, retryable, errorCode, errorMessage, started);
-            boolean completed = attemptCompletionService.completeFailure(node, attempt, attemptLeaseOwner,
-                    retryable, errorCode, errorMessage, LocalDateTime.now(clock));
-            if (completed && !retryable) {
-                advance(flow.getId());
-            } else if (!completed) {
-                log.info("Ignoring stale failure for node {} attempt {}", nodeId, attempt);
+            if (audit != null) {
+                completeAudit(audit, FlowNodeAttemptStatus.FAILED, retryable, errorCode, errorMessage, started);
+            } else {
+                // 审计记录尚未建立(读取节点/写尝试记录阶段就失败):必须留痕,否则无从排查
+                log.error("Skill flow node {} failed before attempt record was created", nodeId, error);
+            }
+            if (node != null && flow != null) {
+                boolean completed = attemptCompletionService.completeFailure(node, attempt, attemptLeaseOwner,
+                        retryable, errorCode, errorMessage, LocalDateTime.now(clock));
+                if (completed && !retryable) {
+                    advance(flow.getId());
+                } else if (!completed) {
+                    log.info("Ignoring stale failure for node {} attempt {}", nodeId, attempt);
+                }
+            } else {
+                log.error("Skill flow node {} failure could not be persisted (node/flow unavailable): {}",
+                        nodeId, errorMessage);
             }
         }
     }
@@ -334,6 +372,83 @@ public class FlowCoordinator {
         clearLease(node); mapper.updateNodeExecution(node);
         flow.setStatus(FlowExecutionStatus.RUNNING); flow.setSummaryJson(null); flow.setReportPath(null); flow.setCompletedAt(null);
         mapper.updateExecution(flow); dispatchRunnableNodes();
+    }
+
+    public void retrySummary(Long flowId) {
+        SkillFlowExecution flow = mapper.selectFlowExecutionForUpdate(flowId);
+        if (flow == null || !(flow.getStatus() == FlowExecutionStatus.SUCCESS
+                || flow.getStatus() == FlowExecutionStatus.FAILED
+                || flow.getStatus() == FlowExecutionStatus.PARTIAL_SUCCESS))
+            throw new IllegalStateException("执行当前不可重新生成汇总");
+        List<SkillFlowNodeExecution> nodes = mapper.selectNodeExecutions(flowId);
+        if (nodes.stream().anyMatch(n -> !n.getStatus().terminal())) throw new IllegalStateException("节点尚未全部结束");
+        flow.setStatus(FlowExecutionStatus.SUMMARIZING);
+        flow.setSummaryJson(null); flow.setReportPath(null); flow.setCompletedAt(null);
+        mapper.updateExecution(flow);
+        finalizeFlow(flow, nodes);
+    }
+
+    public void retryNode(Long flowId, Long nodeId) {
+        SkillFlowExecution flow = mapper.selectFlowExecutionForUpdate(flowId);
+        SkillFlowNodeExecution node = mapper.selectNodeExecution(nodeId);
+        if (flow == null || node == null || !Objects.equals(flowId, node.getFlowExecutionId())) throw new IllegalArgumentException("节点不存在");
+        boolean flowRetryable = flow.getStatus().terminal() || flow.getStatus() == FlowExecutionStatus.RUNNING;
+        if (!flowRetryable || !node.getStatus().terminal() || node.getStatus() == FlowNodeExecutionStatus.SUCCESS)
+            throw new IllegalStateException("节点当前不可重跑");
+        resetForRetry(node);
+        mapper.updateNodeExecution(node);
+        flow.setStatus(FlowExecutionStatus.RUNNING); flow.setSummaryJson(null); flow.setReportPath(null); flow.setCompletedAt(null);
+        mapper.updateExecution(flow);
+        dispatchRunnableNodes();
+        scheduleRetryDispatch();
+    }
+
+    /**
+     * 批量重跑失败节点:FAILED/BLOCKED 节点按原执行顺序重置,
+     * 首个直接 QUEUED,其余 PENDING 由 advance 顺序放行(与首跑的串行模型一致)。
+     *
+     * @return 本次重跑的节点数
+     */
+    public int retryFailedNodes(Long flowId) {
+        SkillFlowExecution flow = mapper.selectFlowExecutionForUpdate(flowId);
+        if (flow == null || (flow.getStatus() != FlowExecutionStatus.FAILED
+                && flow.getStatus() != FlowExecutionStatus.PARTIAL_SUCCESS))
+            throw new IllegalStateException("执行当前不可批量重跑");
+        List<SkillFlowNodeExecution> failed = mapper.selectNodeExecutions(flowId).stream()
+                .filter(n -> n.getStatus() == FlowNodeExecutionStatus.FAILED
+                        || n.getStatus() == FlowNodeExecutionStatus.BLOCKED)
+                .toList();
+        if (failed.isEmpty()) throw new IllegalStateException("没有可重跑的失败任务");
+        for (SkillFlowNodeExecution node : failed) {
+            resetForRetry(node);
+            // 批量重试的失败节点全部重新入队，交由并发上限和 claim 事务统一调度。
+            node.setStatus(FlowNodeExecutionStatus.QUEUED);
+            mapper.updateNodeExecution(node);
+        }
+        flow.setStatus(FlowExecutionStatus.RUNNING); flow.setSummaryJson(null); flow.setReportPath(null); flow.setCompletedAt(null);
+        mapper.updateExecution(flow);
+        // 先推进一次状态，再立即扫描；即使首轮 worker 许可暂时不足，定时扫描也能继续认领。
+        advance(flowId);
+        dispatchRunnableNodes();
+        scheduleRetryDispatch();
+        return failed.size();
+    }
+
+    /** 重置节点为待执行:清空结果/错误/租约,并归零尝试次数,让重跑重新获得完整的重试预算。 */
+    private void resetForRetry(SkillFlowNodeExecution node) {
+        node.setStatus(FlowNodeExecutionStatus.QUEUED);
+        node.setAttemptCount(0);
+        node.setNextRunAt(null); node.setCompletedAt(null);
+        node.setStartedAt(null); node.setErrorCode(null); node.setErrorMessage(null); node.setResultJson(null);
+        clearLease(node);
+    }
+
+    /** 重试请求返回后再补一次扫描，覆盖事务提交可见性和旧 worker 释放许可的竞态。 */
+    private void scheduleRetryDispatch() {
+        recoveryWorkers.submit(() -> {
+            try { Thread.sleep(200L); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+            dispatchRunnableNodes();
+        });
     }
 
     /** 跨天兜底:数据日期已过但还在等指标的执行,整体判 METRIC_TIMEOUT 失败并通知。 */

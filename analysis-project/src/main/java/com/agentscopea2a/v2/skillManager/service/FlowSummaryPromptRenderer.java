@@ -22,6 +22,8 @@ public class FlowSummaryPromptRenderer {
     }
 
     public String render(SkillFlowExecution flow, List<SkillFlowNodeExecution> nodes) {
+        String template = flow.getSummaryQuestionTemplateSnapshot();
+        if (template == null || template.isBlank()) return null; // 老数据没有汇总模板快照,无实际提问可展示
         try {
             String allResults = json.writeValueAsString(nodes.stream().map(node -> Map.of(
                     "nodeKey", node.getNodeKey(),
@@ -29,7 +31,7 @@ public class FlowSummaryPromptRenderer {
                     "status", node.getStatus().name(),
                     "result", Objects.toString(node.getResultJson(), ""),
                     "error", Objects.toString(node.getErrorMessage(), ""))).toList());
-            return templates.render(flow.getSummaryQuestionTemplateSnapshot(),
+            return templates.render(template,
                     new FlowTemplateEngine.Context(Map.of(
                             "server_date", flow.getDataDate().toString(),
                             "original_question", flow.getOriginalQuestion(),
