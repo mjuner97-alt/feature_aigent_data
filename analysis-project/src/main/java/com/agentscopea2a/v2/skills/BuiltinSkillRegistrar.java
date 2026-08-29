@@ -15,11 +15,14 @@
  */
 package com.agentscopea2a.v2.skills;
 
+import com.agentscopea2a.v2.capability.CapabilityMetadata;
+import com.agentscopea2a.v2.capability.CapabilityRepository;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.LinkedHashSet;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -74,16 +77,25 @@ public class BuiltinSkillRegistrar implements CommandLineRunner {
     private static final Pattern DESC_FIELD =
             Pattern.compile("^description:\\s*(?:\"([^\\n]*)\"|([^\\n]+))\\s*$", Pattern.MULTILINE);
 
+    private static final Pattern CAPABILITY_FIELD =
+            Pattern.compile("^capability:\\s*(\\S+)\\s*$", Pattern.MULTILINE);
+
     private final Path skillsDir;
     private final SkillIndexRepository indexRepo;
+    private final SkillRoutingMetadataRepository routingMetadataRepository;
+    private final CapabilityRepository capabilityRepository;
     private final boolean enabled;
 
     public BuiltinSkillRegistrar(
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
             SkillIndexRepository indexRepo,
+            SkillRoutingMetadataRepository routingMetadataRepository,
+            CapabilityRepository capabilityRepository,
             @Value("${harness.skills.builtin-registrar.enabled:true}") boolean enabled) {
         this.skillsDir = Path.of(workspacePath).toAbsolutePath().resolve("skills");
         this.indexRepo = indexRepo;
+        this.routingMetadataRepository = routingMetadataRepository;
+        this.capabilityRepository = capabilityRepository;
         this.enabled = enabled;
     }
 
@@ -125,6 +137,8 @@ public class BuiltinSkillRegistrar implements CommandLineRunner {
                     skipped++;
                     log.debug("Skill '{}' already registered, skipping", pf.name);
                 }
+                ensureRoutingMetadata(pf);
+                ensureExplicitCapabilityBinding(pf);
             } catch (Exception ex) {
                 log.warn("Failed to process {}: {}", skillFile, ex.getMessage());
                 failed++;
@@ -158,7 +172,7 @@ public class BuiltinSkillRegistrar implements CommandLineRunner {
         String name = firstMatch(NAME_FIELD, body);
         String desc = firstMatch(DESC_FIELD, body);
         if (desc == null) desc = "";
-        return new ParsedFrontmatter(name, desc.trim());
+        return new ParsedFrontmatter(name, desc.trim(), firstMatch(CAPABILITY_FIELD, body));
     }
 
     private static String firstMatch(Pattern p, String input) {
@@ -171,5 +185,51 @@ public class BuiltinSkillRegistrar implements CommandLineRunner {
         return null;
     }
 
-    private record ParsedFrontmatter(String name, String description) {}
+    private void ensureRoutingMetadata(ParsedFrontmatter frontmatter) {
+        if (routingMetadataRepository.findBySkillName(frontmatter.name).isPresent()) {
+            return;
+        }
+        SkillRoutingMetadata metadata = new SkillRoutingMetadata(
+                frontmatter.name, shortSummary(frontmatter.description), generatedAliases(frontmatter.name),
+                generatedKeywords(frontmatter.name), List.of(), List.of(),
+                List.of(), 0, false, null);
+        if (routingMetadataRepository.upsert(metadata)) {
+            log.info("Created inactive routing metadata for builtin skill '{}'", frontmatter.name);
+        }
+    }
+
+    private void ensureExplicitCapabilityBinding(ParsedFrontmatter frontmatter) {
+        if (frontmatter.capability == null || frontmatter.capability.isBlank()) return;
+        String capability = frontmatter.capability.trim();
+        if (capabilityRepository.upsert(new CapabilityMetadata(capability, capability, List.of(capability),
+                List.of(), List.of(), 0, true))) {
+            capabilityRepository.bindIfAbsent(frontmatter.name, capability);
+        }
+    }
+
+    private static String shortSummary(String description) {
+        if (description == null) return "";
+        return description.length() <= 500 ? description : description.substring(0, 500);
+    }
+
+    private static List<String> generatedAliases(String name) {
+        if (name == null || name.isBlank()) return List.of();
+        LinkedHashSet<String> result = new LinkedHashSet<>();
+        result.add(name);
+        result.add(name.replace('_', '-'));
+        result.add(name.replace("_", ""));
+        result.removeIf(String::isBlank);
+        return List.copyOf(result);
+    }
+
+    private static List<String> generatedKeywords(String name) {
+        if (name == null || name.isBlank()) return List.of();
+        LinkedHashSet<String> result = new LinkedHashSet<>();
+        for (String term : name.split("[_-]")) {
+            if (term.length() >= 3) result.add(term);
+        }
+        return List.copyOf(result);
+    }
+
+    private record ParsedFrontmatter(String name, String description, String capability) {}
 }

@@ -47,6 +47,9 @@ public class HarnessRunnerProperties {
     @NestedConfigurationProperty
     private SkillJobConfig skillJob = new SkillJobConfig();
 
+    @NestedConfigurationProperty
+    private Compaction compaction = new Compaction();
+
     public Workspace getWorkspace() {
         return workspace;
     }
@@ -77,6 +80,18 @@ public class HarnessRunnerProperties {
 
     public void setSkillJob(SkillJobConfig skillJob) {
         this.skillJob = skillJob;
+    }
+
+    public Compaction getCompaction() { return compaction; }
+    public void setCompaction(Compaction compaction) { this.compaction = compaction; }
+
+    public static class Compaction {
+        private int triggerMessages = 20;
+        private int keepMessages = 8;
+        public int getTriggerMessages() { return triggerMessages; }
+        public void setTriggerMessages(int triggerMessages) { this.triggerMessages = triggerMessages; }
+        public int getKeepMessages() { return keepMessages; }
+        public void setKeepMessages(int keepMessages) { this.keepMessages = keepMessages; }
     }
 
     public static class Workspace {

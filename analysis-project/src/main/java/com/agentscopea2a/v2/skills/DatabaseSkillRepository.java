@@ -31,6 +31,7 @@ public class DatabaseSkillRepository implements AgentSkillRepository {
     private static final Logger log = LoggerFactory.getLogger(DatabaseSkillRepository.class);
 
     private final SkillMapper skillMapper;
+    private final SkillUsageResolver usageResolver;
     private final String userId;
     /** skill 文件磁盘根目录(${skill.file.script}),与 SkillFileService 一致。
      *  DB 中 storage_path 存的是相对路径 {userId}/{filename},读盘时须拼本字段解析成绝对路径。 */
@@ -45,8 +46,10 @@ public class DatabaseSkillRepository implements AgentSkillRepository {
      * @param baseDir     skill 文件磁盘根目录(${skill.file.script})，与 SkillFileService 一致；
      *                    用于把 DB 中的相对 storage_path 解析成绝对路径
      */
-    public DatabaseSkillRepository(SkillMapper skillMapper, String userId, String baseDir) {
+    public DatabaseSkillRepository(SkillMapper skillMapper, SkillUsageResolver usageResolver,
+                                   String userId, String baseDir) {
         this.skillMapper = skillMapper;
+        this.usageResolver = usageResolver;
         this.userId = userId;
         this.baseDir = baseDir;
     }
@@ -55,6 +58,9 @@ public class DatabaseSkillRepository implements AgentSkillRepository {
     public AgentSkill getSkill(String name) {
         try {
             if (userId == null) {
+                return null;
+            }
+            if (!usageResolver.findUsableRetrievalNames(userId).contains(name)) {
                 return null;
             }
             // 优先按 owner 查(快速路径),未命中再按可访问范围查(含维度发布)
@@ -84,11 +90,7 @@ public class DatabaseSkillRepository implements AgentSkillRepository {
             if (userId == null) {
                 return List.of();
             }
-            List<String> names = skillMapper.selectActiveRetrievalNamesByUser(userId);
-            if (names == null) {
-                return List.of();
-            }
-            return names.stream().filter(n -> n != null).collect(Collectors.toList());
+            return new ArrayList<>(usageResolver.findUsableRetrievalNames(userId));
         } catch (Exception e) {
             log.warn("DatabaseSkillRepository: failed to get all skill names: {}", e.getMessage());
             return List.of();
@@ -105,7 +107,9 @@ public class DatabaseSkillRepository implements AgentSkillRepository {
             if (skills == null || skills.isEmpty()) {
                 return List.of();
             }
+            var usableNames = usageResolver.findUsableRetrievalNames(userId);
             return skills.stream()
+                    .filter(skill -> usableNames.contains(skill.getRetrievalName()))
                     .map(this::toAgentSkill)
                     .collect(Collectors.toList());
         } catch (Exception e) {

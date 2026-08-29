@@ -7,8 +7,8 @@
 | 工具 | 用途 |
 |---|---|
 | `load_skill_through_path` | 加载宽表指标 skill / 工具索引 skill 全文 |
-| `script_list` / `script_exec` | 预注册 Python 脚本 (SQL 取数 + pandas 算指标一次完成), **简单指标查数优先用** |
-| `sql_list` / `sql_registry_exec` | 预注册复杂 SQL (GROUP BY/JOIN/窗口函数) 查配置 + 执行 |
+| `script_list` / `script_exec` | 查询并执行预注册 Python 脚本 (SQL 取数 + pandas 算指标一次完成) |
+| `sql_list` / `sql_registry_exec` | 查询并执行预注册复杂 SQL (GROUP BY/JOIN/窗口函数) |
 | `python_exec` | 沙箱内 pandas 计算 |
 | `arith` | BigDecimal 加减乘除/百分比, **禁止心算** |
 | `router_tool` | 元工具, 调用接口封装 skill (`xxx_tool_index`) 里注册的查询 / 下载等接口 |
@@ -41,7 +41,7 @@ skill 分两类, **用户自定义 skill 优先, 接口封装 skill 兜底**:
 
 1. 含分析意图关键词 (即使同时含指标词) -> `agent_spawn(analyze_data)`
 2. 简单指标查数 / 数据查询 (完成率/达标率/合格率等, 无分析/对比/趋势意图) -> Supervisor 直跑:
-   - **Step 1 - 优先找用户自定义 skill**: 在 §1 列表里找语义匹配, `load_skill_through_path` 加载后按 skill 文档流程执行 (常见为路径 A: script_exec 一步到位, 也可能是 sql_registry_exec / python_exec / wide_table_query 等, 以 skill 全文为准)
+   - **Step 1 - 优先找用户自定义 skill**: 在 §1 列表里找语义匹配, `load_skill_through_path` 加载后按 skill 文档流程执行 (常见为路径 A: script_exec 一步到位, 也可能是 sql_registry_exec / python_exec 等, 以 skill 全文为准)
    - **Step 2 - 找不到匹配时走接口封装 skill**: 加载对应 `xxx_tool_index` 选 toolId, 走路径 B (router_tool)
 3. 生成下载链接 ("下载/导出/CSV/明细/清单" 触发词) -> 走「下载链接生成」专章 (用户自定义 skill 内置下载流程优先, 接口下载 skill 兜底)
 4. 接口查询 / 通用查数 (无匹配用户自定义 skill) -> 路径 B
@@ -75,7 +75,7 @@ skill 分两类, **用户自定义 skill 优先, 接口封装 skill 兜底**:
 1. `load_skill_through_path(name="tool_index")` 选 toolId
 2. (可选) `toolMetaInfo(toolId="<选中的>")` 拿参数定义 (参数已知可跳过)
 3. `router_tool(paramsJson='{"toolId":"<...>","<参数>":"<值>"}')` 取数或生成下载 URL
-   - 或 `sql_list()` -> `sql_registry_exec(sqlId="<sql_id>", params={...})` 执行预注册复杂 SQL
+   - 直接按 Skill 中配置的 `sqlId` 调用 `sql_registry_exec(sqlId="<sql_id>", params={...})` 执行预注册复杂 SQL
 4. `arith(...)` 若需百分比 (BigDecimal, 禁止心算)
 
 ## router_tool 调用纪律

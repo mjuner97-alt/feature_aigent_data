@@ -28,6 +28,7 @@ import io.agentscope.core.message.ToolResultState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
+import org.springframework.core.annotation.Order;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -63,6 +64,7 @@ import java.util.function.Function;
  * main agent (via Spring's {@code List<MiddlewareBase>} injection in HarnessA2aRunnerV2)
  * and subagents (via {@link com.agentscopea2a.v2.runner.SubagentRegistrar}).
  */
+@Order(10)
 public class ToolResultTruncationMiddleware implements MiddlewareBase {
 
     private static final Logger log = LoggerFactory.getLogger(ToolResultTruncationMiddleware.class);
@@ -89,10 +91,21 @@ public class ToolResultTruncationMiddleware implements MiddlewareBase {
             return next.apply(input);
         }
 
+        ReasoningInput compactedInput = compactInput(input);
+        return next.apply(compactedInput);
+    }
+
+    /** Applies tool-result compaction to a request copy without invoking the next middleware. */
+    public ReasoningInput compactInput(ReasoningInput input) {
+        if (!enabled || compactTools.isEmpty() || input == null
+                || input.messages() == null || input.messages().isEmpty()) {
+            return input;
+        }
+
         List<Msg> messages = input.messages();
         int lastTrIdx = findLastToolResultIdx(messages);
         if (lastTrIdx < 0) {
-            return next.apply(input);
+            return input;
         }
 
         List<Msg> rewritten = null;
@@ -108,10 +121,9 @@ public class ToolResultTruncationMiddleware implements MiddlewareBase {
         }
 
         if (rewritten == null) {
-            return next.apply(input);
+            return input;
         }
-        ReasoningInput newInput = new ReasoningInput(rewritten, input.tools(), input.options());
-        return next.apply(newInput);
+        return new ReasoningInput(rewritten, input.tools(), input.options());
     }
 
     /**

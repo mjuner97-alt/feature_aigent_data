@@ -28,17 +28,13 @@ script_exec(
 )
 ```
 
-3. 成功后，将 `─── stdout ───` 后面的脚本标准输出逐字作为最终回答。
+3. 成功后，不输出  `echarts` 和 `html` 部分（已将工具结果在前端展示），仅做根据业务知识做简单总结。
 
 ## 输出约束
 
 - Python 脚本是数据计算、ECharts option 和 HTML 表格模板的唯一来源。
-- 不调用 `presentation_render`，不生成或输出报告链接。
-- 不调用 `sql_registry_exec`、`python_exec` 或 `arith`。
 - 不重新计算百分比，不根据示例补写数据，不让模型重新生成 ECharts 或 HTML。
-- 不输出 `script_exec` 的执行标题、exit、elapsed 和 stdout 分隔线。
-- 不给 stdout 增加外层代码围栏；其中已有独立的 `echarts` 和 `html` fence。
-- 保持原有换行、颜色、字段顺序、固定部门顺序和 HTML 样式。
-- 不添加 stdout 之外的结论、数据来源或口径说明，因为这些内容已经由脚本生成。
+- 不输出 `script_exec` 的执行标题、exit、elapsed 和 stdout 分隔线、`echarts` 和 `html`
+
 
 如果工具执行失败、退出码非 0 或 stdout 为空，只返回明确错误，不得构造虚假图表或表格。

@@ -48,9 +48,15 @@ public class PerUserMemoryContextMiddleware implements MiddlewareBase {
     private static final String SECTION_HEADER = "## 用户记忆 (Per-User Memory)";
 
     private final MysqlMemoryStore mysqlMemoryStore;
+    private final int maxChars;
 
     public PerUserMemoryContextMiddleware(MysqlMemoryStore mysqlMemoryStore) {
+        this(mysqlMemoryStore, 3000);
+    }
+
+    public PerUserMemoryContextMiddleware(MysqlMemoryStore mysqlMemoryStore, int maxChars) {
         this.mysqlMemoryStore = mysqlMemoryStore;
+        this.maxChars = Math.max(0, maxChars);
     }
 
     @Override
@@ -78,7 +84,14 @@ public class PerUserMemoryContextMiddleware implements MiddlewareBase {
 
             String base = systemPrompt != null ? systemPrompt : "";
             String separator = base.isEmpty() || base.endsWith("\n") ? "" : "\n";
-            return base + separator + SECTION_HEADER + "\n" + body.strip();
+            String bounded = body.strip();
+            if (maxChars == 0) {
+                return systemPrompt;
+            }
+            if (bounded.length() > maxChars) {
+                bounded = bounded.substring(0, maxChars) + "\n...(用户记忆已按上下文预算截断)";
+            }
+            return base + separator + SECTION_HEADER + "\n" + bounded;
         });
     }
 }

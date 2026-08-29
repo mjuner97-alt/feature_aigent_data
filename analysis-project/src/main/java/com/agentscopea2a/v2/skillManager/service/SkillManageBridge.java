@@ -17,18 +17,29 @@ package com.agentscopea2a.v2.skillManager.service;
 
 import com.agentscopea2a.v2.skills.SkillEntry;
 import com.agentscopea2a.v2.skills.SkillIndexRepository;
+import com.agentscopea2a.v2.skills.SkillRoutingMetadata;
+import com.agentscopea2a.v2.skills.SkillRoutingMetadataRepository;
 import com.agentscopea2a.v2.skillManager.entity.Skill;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.LinkedHashSet;
+import java.util.List;
 
 public class SkillManageBridge {
 
     private static final Logger log = LoggerFactory.getLogger(SkillManageBridge.class);
 
     private final SkillIndexRepository indexRepo;
+    private final SkillRoutingMetadataRepository routingMetadataRepo;
 
     public SkillManageBridge(SkillIndexRepository indexRepo) {
+        this(indexRepo, null);
+    }
+
+    public SkillManageBridge(SkillIndexRepository indexRepo, SkillRoutingMetadataRepository routingMetadataRepo) {
         this.indexRepo = indexRepo;
+        this.routingMetadataRepo = routingMetadataRepo;
     }
 
     /**
@@ -64,6 +75,7 @@ public class SkillManageBridge {
                     throw new IllegalStateException("SkillNameConflict: " + skill.getName());
                 }
                 indexRepo.upsertOnSave(newRn, desc, SkillEntry.SOURCE_USER_GENERATED, skill.getOwnerUserId());
+                ensureRoutingMetadata(newRn, desc);
                 log.info("Page skill synced to retrieval index: {} -> {}", skill.getName(), newRn);
                 return newRn;
             }
@@ -71,6 +83,7 @@ public class SkillManageBridge {
             // 2. 未改名(sanitize 后相同):原地 upsert 更新 description/version
             if (newRn.equals(previousRn)) {
                 indexRepo.upsertOnSave(previousRn, desc, SkillEntry.SOURCE_USER_GENERATED, skill.getOwnerUserId());
+                ensureRoutingMetadata(previousRn, desc);
                 log.info("Page skill synced to retrieval index (in-place): {} -> {}", skill.getName(), previousRn);
                 return previousRn;
             }
@@ -83,12 +96,16 @@ public class SkillManageBridge {
             // 4. 改名:原地重命名 skill_index 行主键,保留 version/usage/统计
             int renamed = indexRepo.renameRow(previousRn, newRn, desc);
             if (renamed > 0) {
+                if (routingMetadataRepo != null && !routingMetadataRepo.rename(previousRn, newRn)) {
+                    ensureRoutingMetadata(newRn, desc);
+                }
                 log.info("Page skill renamed in retrieval index: {} -> {}", previousRn, newRn);
                 return newRn;
             }
             // 旧行不存在(异常情形):回退为新建新名
             log.warn("renameRow({} -> {}) updated 0 rows, fallback to upsert new", previousRn, newRn);
             indexRepo.upsertOnSave(newRn, desc, SkillEntry.SOURCE_USER_GENERATED, skill.getOwnerUserId());
+            ensureRoutingMetadata(newRn, desc);
             return newRn;
         } catch (IllegalStateException ex) {
             // SkillNameConflict 等业务异常:向上传播,回滚外层 create/update 事务并提示用户
@@ -110,6 +127,7 @@ public class SkillManageBridge {
         try {
             // 软删 skill_index 行（markBlacklist 保留历史计数，可恢复）
             indexRepo.markBlacklist(retrievalName);
+            if (routingMetadataRepo != null) routingMetadataRepo.deactivate(retrievalName);
 
             log.info("Page skill removed from retrieval index: {}", retrievalName);
         } catch (Exception ex) {
@@ -130,6 +148,34 @@ public class SkillManageBridge {
         return indexRepo.findByName(name)
                 .map(e -> SkillEntry.STATUS_ACTIVE.equals(e.status()))
                 .orElse(false);
+    }
+
+    /** Creates only an inactive routing draft; existing administrator metadata is never overwritten. */
+    private void ensureRoutingMetadata(String skillName, String description) {
+        if (routingMetadataRepo == null || routingMetadataRepo.findBySkillName(skillName).isPresent()) return;
+        routingMetadataRepo.upsert(new SkillRoutingMetadata(skillName,
+                limitSummary(description), generatedAliases(skillName), generatedKeywords(skillName),
+                List.of(), List.of(), List.of(), 0, false, null));
+    }
+
+    private static String limitSummary(String description) {
+        String value = description == null ? "" : description.trim();
+        return value.length() <= 500 ? value : value.substring(0, 500);
+    }
+
+    private static List<String> generatedAliases(String name) {
+        LinkedHashSet<String> values = new LinkedHashSet<>();
+        values.add(name);
+        values.add(name.replace('_', '-'));
+        values.add(name.replace("_", ""));
+        values.removeIf(String::isBlank);
+        return List.copyOf(values);
+    }
+
+    private static List<String> generatedKeywords(String name) {
+        LinkedHashSet<String> values = new LinkedHashSet<>();
+        for (String part : name.split("[_-]")) if (part.length() >= 3) values.add(part);
+        return List.copyOf(values);
     }
 
 }

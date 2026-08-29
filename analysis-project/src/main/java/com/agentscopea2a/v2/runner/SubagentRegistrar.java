@@ -24,6 +24,7 @@ import com.agentscopea2a.v2.middleware.ArtifactAccessMiddleware;
 import com.agentscopea2a.v2.middleware.PythonExecAccessMiddleware;
 import com.agentscopea2a.v2.middleware.SubagentEventForwardingMiddleware;
 import com.agentscopea2a.v2.middleware.ToolResultTruncationMiddleware;
+import com.agentscopea2a.v2.middleware.ContextBudgetMiddleware;
 import com.agentscopea2a.v2.tools.ArithTool;
 import com.agentscopea2a.v2.tools.PerUserMemoryGetTool;
 import com.agentscopea2a.v2.tools.PythonExecTool;
@@ -140,6 +141,7 @@ public class SubagentRegistrar {
      * main agent; per-call state is derived from RuntimeContext inside the middleware.
      */
     private final ToolResultTruncationMiddleware toolResultTruncationMiddleware;
+    private final ContextBudgetMiddleware contextBudgetMiddleware;
     /**
      * Per-user memory store for replacing the framework's {@code memory_get} tool on
      * subagents. When non-null, each subagent's {@code memory_get} is replaced with
@@ -166,7 +168,8 @@ public class SubagentRegistrar {
             ObjectProvider<ToolCallTrackingHook> toolCallTrackingHookProvider,
             ObjectProvider<AiChatRestToolCallTrackingToDbHook> traceCollectorHookProvider,
             ObjectProvider<MysqlMemoryStore> mysqlMemoryStoreProvider,
-            ObjectProvider<ToolResultTruncationMiddleware> toolResultTruncationMiddlewareProvider) {
+            ObjectProvider<ToolResultTruncationMiddleware> toolResultTruncationMiddlewareProvider,
+            ObjectProvider<ContextBudgetMiddleware> contextBudgetMiddlewareProvider) {
 
         // v1-style: subagents hold only meta-tool beans. Business tools (quality_query_* /
         // data_*) are encapsulated inside ToolRoutersIndex and dispatched via
@@ -219,6 +222,7 @@ public class SubagentRegistrar {
         this.traceCollectorHook = traceCollectorHookProvider.getIfAvailable();
         this.mysqlMemoryStore = mysqlMemoryStoreProvider.getIfAvailable();
         this.toolResultTruncationMiddleware = toolResultTruncationMiddlewareProvider.getIfAvailable();
+        this.contextBudgetMiddleware = contextBudgetMiddlewareProvider.getIfAvailable();
         log.info("SubagentRegistrar: toolRegistry built with {} entries: {}; hooks - handoff={} access={} pyGuard={} retry={} l2Collector={} eventForwarding=true toolTracking={} trace={} truncation={}",
                 toolRegistry.size(), toolRegistry.keySet(),
                 artifactHandoffHook != null, artifactAccessMiddleware != null,
@@ -389,6 +393,9 @@ public class SubagentRegistrar {
             // intact (the LLM is about to consume it); only older ones are shortened.
             if (toolResultTruncationMiddleware != null) {
                 subMiddlewares.add(toolResultTruncationMiddleware);
+            }
+            if (contextBudgetMiddleware != null) {
+                subMiddlewares.add(0, contextBudgetMiddleware);
             }
             if (!subMiddlewares.isEmpty()) {
                 sub.middlewares(subMiddlewares);

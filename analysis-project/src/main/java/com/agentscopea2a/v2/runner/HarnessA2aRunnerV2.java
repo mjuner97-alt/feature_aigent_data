@@ -23,6 +23,7 @@ import com.agentscopea2a.v2.model.FallbackModelDecorator;
 import com.agentscopea2a.v2.model.ModelProvider;
 import com.agentscopea2a.v2.skillManager.mapper.SkillMapper;
 import com.agentscopea2a.v2.skills.DatabaseSkillRepository;
+import com.agentscopea2a.v2.skills.SkillUsageResolver;
 import com.agentscopea2a.v2.tools.PerUserMemoryGetTool;
 import com.agentscopea2a.v2.tools.V2ToolGroupAdapter;
 import io.agentscope.core.a2a.server.executor.runner.AgentRequestOptions;
@@ -83,6 +84,7 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
     private final ModelProvider modelProvider;
     private final ObjectProvider<MysqlMemoryStore> mysqlMemoryStoreProvider;
     private final SkillMapper skillMapper;
+    private final SkillUsageResolver skillUsageResolver;
     /** skill 附件文件磁盘根目录(${skill.file.script}),传给 DatabaseSkillRepository 用于把 DB 中的相对 storage_path 解析成绝对路径。 */
     private final String skillFileBaseDir;
     /**
@@ -109,6 +111,7 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
             ModelProvider modelProvider,
             ObjectProvider<MysqlMemoryStore> mysqlMemoryStoreProvider,
             SkillMapper skillMapper,
+            SkillUsageResolver skillUsageResolver,
             SkillStorageProperties storageProperties) {
         this.runnerProperties = runnerProperties;
         this.dataSource = dataSource;
@@ -126,6 +129,7 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
         this.modelProvider = modelProvider;
         this.mysqlMemoryStoreProvider = mysqlMemoryStoreProvider;
         this.skillMapper = skillMapper;
+        this.skillUsageResolver = skillUsageResolver;
         this.skillFileBaseDir = storageProperties.getScriptDir();
         this.sharedStateStore = new SanitizingAgentStateStore(new MysqlAgentStateStore(dataSource, true));
 
@@ -261,7 +265,8 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
                 .name("QualitySupervisorV2")
                 .model(primaryModel)
                 .workspace(workspace)
-                .skillRepository(new DatabaseSkillRepository(skillMapper, userId != null ? String.valueOf(userId) : null, skillFileBaseDir))
+                .skillRepository(new DatabaseSkillRepository(skillMapper, skillUsageResolver,
+                        userId != null ? String.valueOf(userId) : null, skillFileBaseDir))
                 .toolExecutionConfig(AgentExecutionConfig.TOOL_DEFAULTS)
                 .modelExecutionConfig(AgentExecutionConfig.MODEL_DEFAULTS)
                 .stateStore(sharedStateStore)
@@ -290,8 +295,8 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
                         // 已 20K+), 调到 20/8 让 CompactionMiddleware 更早触发摘要压缩。
                         // 风险: 摘要可能丢早期 tool result 字段名, 但 ToolResultTruncationMiddleware
                         // 已先压缩过 tool result, 摘要压力小。
-                        .triggerMessages(20)
-                        .keepMessages(8)
+                        .triggerMessages(Math.max(1, runnerProperties.getCompaction().getTriggerMessages()))
+                        .keepMessages(Math.max(1, runnerProperties.getCompaction().getKeepMessages()))
                         .build())
                 // 2026/07/28: 禁用 JAR 内置 ToolResultEvictionMiddleware。
                 // wide_table_query 返回 >80K 字符 CSV 时, middleware 调
@@ -364,19 +369,32 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
 
         HarnessAgent agent = builder.build();
 
-        // 2026/07/25: 显式移除 JAR 自动注册的 session 工具(无 disable flag)。
-        // 防止 LLM 把 token 烧在 session_search / session_list 探查上。
+        // 2026/08/28: 主 Agent 仅保留必要的 Harness 系统工具。
         try {
             io.agentscope.core.tool.Toolkit postBuildToolkit = agent.getToolkit();
-            for (String tn : new String[]{"session_search", "session_list", "session_save"}) {
+            java.util.Set<String> retainedSystemTools = java.util.Set.of(
+                    "agent_spawn", "agent_send", "task_output", "task_list",
+                    "load_skill_through_path");
+            java.util.Set<String> removableSystemTools = java.util.Set.of(
+                    "retrieveFromMemory", "memory_search", "memory_get", "recordToMemory",
+                    "session_search", "session_list", "session_history", "session_save",
+                    "read_file", "write_file", "edit_file", "grep_files", "glob_files",
+                    "list_files", "execute", "task_cancel", "agent_list",
+                    "skill_manage", "skill_curator", "propose_skill", "save_skill",
+                    "reset_equipped_tools", "plan_enter", "plan_write", "plan_exit",
+                    "todo_write");
+            for (String tn : new java.util.ArrayList<>(postBuildToolkit.getToolNames())) {
+                if (retainedSystemTools.contains(tn) || !removableSystemTools.contains(tn)) continue;
                 try {
                     postBuildToolkit.removeTool(tn);
                 } catch (Exception ignored) {
-                    // tool not registered by JAR in this config - fine
+                    // Continue if a runtime-added tool disappeared concurrently.
                 }
             }
+            log.info("HarnessA2aRunnerV2: retained system tools={}, removed system tools={}",
+                    retainedSystemTools, removableSystemTools);
         } catch (Exception e) {
-            log.warn("HarnessA2aRunnerV2: failed to strip session tools: {}", e.getMessage());
+            log.warn("HarnessA2aRunnerV2: failed to strip non-essential system tools: {}", e.getMessage());
         }
 
         // Replace the framework's memory_get tool with a per-user DB-backed version.
@@ -391,13 +409,12 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
             try {
                 io.agentscope.core.tool.Toolkit toolkit = agent.getToolkit();
                 toolkit.removeTool("memory_get");
-                toolkit.registerTool(new PerUserMemoryGetTool(mysqlMemoryStore));
-                log.info("HarnessA2aRunnerV2: replaced framework memory_get with PerUserMemoryGetTool (per-user DB-backed)");
+                log.info("HarnessA2aRunnerV2: removed framework memory_get from main Agent toolkit");
             } catch (Exception e) {
-                log.warn("HarnessA2aRunnerV2: failed to replace memory_get tool: {}", e.getMessage());
+                log.warn("HarnessA2aRunnerV2: failed to remove memory_get tool: {}", e.getMessage());
             }
         } else {
-            log.info("HarnessA2aRunnerV2: MysqlMemoryStore not available (mysql-mirror disabled), keeping framework memory_get");
+            log.info("HarnessA2aRunnerV2: MysqlMemoryStore not available (mysql-mirror disabled)");
         }
 
         // Plan mode removed from main agent (supervisor is a pure router, not a planner).
