@@ -187,10 +187,10 @@ public class ToolCallTrackingHook implements Hook, RuntimeContextAware {
         // the frontend can match it to the existing ActivityFeed row and populate
         // the "出参" panel. See EMITTER_CTX_KEY javadoc for the full rationale.
         if ("script_exec".equals(toolName)) {
-            String renderableOutput = ScriptExecOutputExtractor.extractRenderableBlocks(output);
-            if (!renderableOutput.isBlank()) {
-                sendScriptOutputSseEvent(ctx, toolUse.getId(), toolName, renderableOutput);
-            }
+            // Always send the complete non-empty result to the activity sidebar,
+            // including plain-text/empty-data diagnostics without ECharts/HTML.
+            // The chat pane independently extracts only renderable blocks.
+            sendScriptOutputSseEvent(ctx, toolUse.getId(), toolName, output);
         } else if (!Boolean.TRUE.equals(ctx.get(SCRIPT_OUTPUT_ONLY_CTX_KEY))) {
             sendToolOutputSseEvent(ctx, toolUse.getId(), toolName, output);
         }

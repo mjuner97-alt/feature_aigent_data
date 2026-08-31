@@ -291,6 +291,20 @@ public class ScriptExecTool {
         return runProcess(command, env, paramMap, scriptId, timeout);
     }
 
+    /** Adapter used by the HTTP debug service; keeps registry and container validation in one place. */
+    public String executeForDebug(String scriptId, Map<String, Object> params) {
+        ToolResultBlock result = scriptExec(scriptId, params);
+        StringBuilder text = new StringBuilder();
+        if (result.getOutput() != null) {
+            for (Object block : result.getOutput()) {
+                if (block instanceof io.agentscope.core.message.TextBlock tb && tb.getText() != null) {
+                    text.append(tb.getText());
+                }
+            }
+        }
+        return text.toString();
+    }
+
     // ======================================================================
     // Command building (transport abstraction, 与 PythonExecTool.buildCommand 对齐)
     // ======================================================================

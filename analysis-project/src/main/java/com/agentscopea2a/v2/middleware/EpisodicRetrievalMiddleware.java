@@ -47,19 +47,28 @@ public class EpisodicRetrievalMiddleware implements MiddlewareBase {
 
     private final EpisodicMemory episodicMemory;
     private final int searchLimit;
+    private final boolean enabled;
 
     public EpisodicRetrievalMiddleware(EpisodicMemory episodicMemory) {
-        this(episodicMemory, DEFAULT_SEARCH_LIMIT);
+        this(episodicMemory, DEFAULT_SEARCH_LIMIT, false);
     }
 
     public EpisodicRetrievalMiddleware(EpisodicMemory episodicMemory, int searchLimit) {
+        this(episodicMemory, searchLimit, false);
+    }
+
+    public EpisodicRetrievalMiddleware(EpisodicMemory episodicMemory, int searchLimit, boolean enabled) {
         this.episodicMemory = episodicMemory;
         this.searchLimit = searchLimit;
+        this.enabled = enabled;
     }
 
     @Override
     public Mono<String> onSystemPrompt(Agent agent, RuntimeContext ctx, String systemPrompt) {
         return Mono.fromCallable(() -> {
+            if (!enabled) {
+                return systemPrompt;
+            }
             String userQuestion = extractUserQuestion(ctx);
             if (userQuestion == null || userQuestion.isBlank()) {
                 return systemPrompt;

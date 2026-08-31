@@ -62,10 +62,10 @@ COMMENT ON COLUMN skill_index.owner_user_id IS 'PR5: 用户隔离的skill所有�
 COMMENT ON COLUMN skill_index.tool_sequence_fingerprint IS 'Phase 3离线查找键(工具ID序列)';
 COMMENT ON COLUMN skill_index.updated_at IS '更新时间';
 
-CREATE INDEX idx_status ON skill_index(status);
-CREATE INDEX idx_source ON skill_index(source);
-CREATE INDEX idx_tool_seq_fp ON skill_index(tool_sequence_fingerprint);
-CREATE INDEX idx_owner_user_id ON skill_index(owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_skill_index_status ON skill_index(status);
+CREATE INDEX IF NOT EXISTS idx_skill_index_source ON skill_index(source);
+CREATE INDEX IF NOT EXISTS idx_skill_index_tool_seq_fp ON skill_index(tool_sequence_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_skill_index_owner_user_id ON skill_index(owner_user_id);
 
 -- 2.2 skill_candidate -- 待蒸馏的Skill指纹暂存区
 CREATE TABLE IF NOT EXISTS skill_candidate (
@@ -91,9 +91,9 @@ COMMENT ON COLUMN skill_candidate.status IS '状态: pending/synthesized/rejecte
 COMMENT ON COLUMN skill_candidate.synth_skill IS '合成后的skill名称';
 COMMENT ON COLUMN skill_candidate.updated_at IS '更新时间';
 
-CREATE INDEX idx_user_status ON skill_candidate(user_id, status);
-CREATE INDEX idx_hit_count ON skill_candidate(hit_count DESC);
-CREATE INDEX idx_metric_tag ON skill_candidate(metric_tag);
+CREATE INDEX IF NOT EXISTS idx_skill_candidate_user_status ON skill_candidate(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_skill_candidate_hit_count ON skill_candidate(hit_count DESC);
+CREATE INDEX IF NOT EXISTS idx_skill_candidate_metric_tag ON skill_candidate(metric_tag);
 
 -- 2.3 skill_manage -- Skill主表
 CREATE TABLE IF NOT EXISTS skill_manage (
@@ -131,11 +131,11 @@ COMMENT ON COLUMN skill_manage.deleted_at IS '删除时间(软删除)';
 -- 名称冲突改由应用层 existsByName(SQL 已排除 DELETED) + SkillExceptionHandler(409) 处理。
 -- 替换为普通索引:existsByName 等值查询仍走索引,但不强制唯一。
 -- CREATE UNIQUE INDEX uk_name ON skill_manage(name);
-CREATE INDEX idx_name ON skill_manage(name);
-CREATE INDEX idx_owner ON skill_manage(owner_user_id);
-CREATE INDEX idx_status ON skill_manage(status);
-CREATE INDEX idx_like_rank ON skill_manage(like_count DESC, updated_at DESC);
-CREATE INDEX idx_retrieval_name ON skill_manage(retrieval_name);
+CREATE INDEX IF NOT EXISTS idx_skill_manage_name ON skill_manage(name);
+CREATE INDEX IF NOT EXISTS idx_skill_manage_owner ON skill_manage(owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_skill_manage_status ON skill_manage(status);
+CREATE INDEX IF NOT EXISTS idx_skill_manage_like_rank ON skill_manage(like_count DESC, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_skill_manage_retrieval_name ON skill_manage(retrieval_name);
 
 -- 2.4 skill_like -- 点赞记录表
 CREATE TABLE IF NOT EXISTS skill_like (
@@ -151,9 +151,9 @@ COMMENT ON COLUMN skill_like.skill_id IS 'Skill ID';
 COMMENT ON COLUMN skill_like.user_id IS '用户ID';
 COMMENT ON COLUMN skill_like.created_at IS '创建时间';
 
-CREATE UNIQUE INDEX uk_user_skill ON skill_like(user_id, skill_id);
-CREATE INDEX idx_skill ON skill_like(skill_id);
-CREATE INDEX idx_user ON skill_like(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_skill_like_user_skill ON skill_like(user_id, skill_id);
+CREATE INDEX IF NOT EXISTS idx_skill_like_skill ON skill_like(skill_id);
+CREATE INDEX IF NOT EXISTS idx_skill_like_user ON skill_like(user_id);
 
 -- 2.5 skill_reference -- 引用关系表
 CREATE TABLE IF NOT EXISTS skill_reference (
@@ -172,8 +172,8 @@ COMMENT ON COLUMN skill_reference.creator IS '创建者用户ID';
 COMMENT ON COLUMN skill_reference.created_at IS '创建时间';
 
 CREATE UNIQUE INDEX uk_source_target_creator ON skill_reference(source_skill_id, target_skill_id, creator);
-CREATE INDEX idx_creator ON skill_reference(creator);
-CREATE INDEX idx_target ON skill_reference(target_skill_id);
+CREATE INDEX IF NOT EXISTS idx_skill_reference_creator ON skill_reference(creator);
+CREATE INDEX IF NOT EXISTS idx_skill_reference_target ON skill_reference(target_skill_id);
 
 -- 2.6 skill_publish -- Skill发布表
 CREATE TABLE IF NOT EXISTS skill_publish (
@@ -207,10 +207,10 @@ COMMENT ON COLUMN skill_publish.last_approval_comment IS '最后审批评论';
 COMMENT ON COLUMN skill_publish.last_approval_at IS '最后审批时间';
 COMMENT ON COLUMN skill_publish.created_at IS '创建时间';
 
-CREATE INDEX idx_skill ON skill_publish(skill_id);
-CREATE INDEX idx_status ON skill_publish(status);
-CREATE INDEX idx_submitter ON skill_publish(submitter);
-CREATE INDEX idx_approver_pending ON skill_publish(current_approver_user_id, status);
+CREATE INDEX IF NOT EXISTS idx_skill_publish_skill ON skill_publish(skill_id);
+CREATE INDEX IF NOT EXISTS idx_skill_publish_status ON skill_publish(status);
+CREATE INDEX IF NOT EXISTS idx_skill_publish_submitter ON skill_publish(submitter);
+CREATE INDEX IF NOT EXISTS idx_skill_publish_approver_pending ON skill_publish(current_approver_user_id, status);
 
 -- 2.7 skill_approval -- 审批操作记录表
 CREATE TABLE IF NOT EXISTS skill_approval (
@@ -234,9 +234,9 @@ COMMENT ON COLUMN skill_approval.comment IS '评论';
 COMMENT ON COLUMN skill_approval.version_snapshot IS '版本快照';
 COMMENT ON COLUMN skill_approval.created_at IS '创建时间';
 
-CREATE INDEX idx_publish ON skill_approval(publish_id);
-CREATE INDEX idx_draft ON skill_approval(draft_id);
-CREATE INDEX idx_operator ON skill_approval(operator);
+CREATE INDEX IF NOT EXISTS idx_skill_approval_publish ON skill_approval(publish_id);
+CREATE INDEX IF NOT EXISTS idx_skill_approval_draft ON skill_approval(draft_id);
+CREATE INDEX IF NOT EXISTS idx_skill_approval_operator ON skill_approval(operator);
 
 -- 2.8 skill_draft -- Skill草稿表
 CREATE TABLE IF NOT EXISTS skill_draft (
@@ -270,9 +270,9 @@ COMMENT ON COLUMN skill_draft.approve_comment IS '审批评论';
 COMMENT ON COLUMN skill_draft.submitted_at IS '提交时间';
 COMMENT ON COLUMN skill_draft.approved_at IS '审批时间';
 
-CREATE INDEX idx_skill ON skill_draft(skill_id);
-CREATE INDEX idx_status ON skill_draft(status);
-CREATE INDEX idx_submitter ON skill_draft(submitter);
+CREATE INDEX IF NOT EXISTS idx_skill_draft_skill ON skill_draft(skill_id);
+CREATE INDEX IF NOT EXISTS idx_skill_draft_status ON skill_draft(status);
+CREATE INDEX IF NOT EXISTS idx_skill_draft_submitter ON skill_draft(submitter);
 
 -- 2.9 skill_version_history -- 版本历史表
 CREATE TABLE IF NOT EXISTS skill_version_history (
@@ -302,7 +302,7 @@ COMMENT ON COLUMN skill_version_history.edited_by IS '编辑者';
 COMMENT ON COLUMN skill_version_history.edit_reason IS '编辑原因';
 COMMENT ON COLUMN skill_version_history.created_at IS '创建时间';
 
-CREATE INDEX idx_skill_version ON skill_version_history(skill_id, version DESC);
+CREATE INDEX IF NOT EXISTS idx_skill_version_history_skill ON skill_version_history(skill_id, version DESC);
 
 -- 2.10 skill_operation_history -- 操作历史表
 CREATE TABLE IF NOT EXISTS skill_operation_history (
@@ -326,9 +326,9 @@ COMMENT ON COLUMN skill_operation_history.before_data IS '操作前数据(JSON)'
 COMMENT ON COLUMN skill_operation_history.after_data IS '操作后数据(JSON)';
 COMMENT ON COLUMN skill_operation_history.created_at IS '创建时间';
 
-CREATE INDEX idx_skill ON skill_operation_history(skill_id);
-CREATE INDEX idx_publish ON skill_operation_history(publish_id);
-CREATE INDEX idx_operator_time ON skill_operation_history(operator, created_at);
+CREATE INDEX IF NOT EXISTS idx_skill_operation_history_skill ON skill_operation_history(skill_id);
+CREATE INDEX IF NOT EXISTS idx_skill_operation_history_publish ON skill_operation_history(publish_id);
+CREATE INDEX IF NOT EXISTS idx_skill_operation_history_operator_time ON skill_operation_history(operator, created_at);
 
 -- 2.11 skill_user_disable -- 用户禁用Skill表
 CREATE TABLE IF NOT EXISTS skill_user_disable (
@@ -344,7 +344,7 @@ COMMENT ON COLUMN skill_user_disable.skill_id IS 'Skill ID';
 COMMENT ON COLUMN skill_user_disable.user_id IS '用户ID';
 COMMENT ON COLUMN skill_user_disable.created_at IS '创建时间';
 
-CREATE UNIQUE INDEX uk_user_skill ON skill_user_disable(user_id, skill_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_skill_user_disable_user_skill ON skill_user_disable(user_id, skill_id);
 
 -- ============================================================================
 -- 3. 插入模拟数据

@@ -42,9 +42,15 @@ public class DimensionStateMiddleware implements MiddlewareBase {
     private static final String STATE_KEY = "dimensionState";
 
     private final DimensionStateManager dimensionStateManager;
+    private final int maxChars;
 
     public DimensionStateMiddleware(DimensionStateManager dimensionStateManager) {
+        this(dimensionStateManager, 2000);
+    }
+
+    public DimensionStateMiddleware(DimensionStateManager dimensionStateManager, int maxChars) {
         this.dimensionStateManager = dimensionStateManager;
+        this.maxChars = Math.max(0, maxChars);
     }
 
     @Override
@@ -66,6 +72,12 @@ public class DimensionStateMiddleware implements MiddlewareBase {
 
             if (state != null && state.hasDimensions()) {
                 String dimensionPrefix = formatDimensionContext(state);
+                if (maxChars == 0) {
+                    return systemPrompt;
+                }
+                if (dimensionPrefix.length() > maxChars) {
+                    dimensionPrefix = truncateAtLineBoundary(dimensionPrefix, maxChars);
+                }
                 return systemPrompt + "\n\n" + dimensionPrefix;
             }
             return systemPrompt;
@@ -119,5 +131,13 @@ public class DimensionStateMiddleware implements MiddlewareBase {
         }
 
         return sb.toString().trim();
+    }
+
+    private static String truncateAtLineBoundary(String value, int maxChars) {
+        int boundary = value.lastIndexOf('\n', maxChars);
+        if (boundary <= 0) {
+            return value.substring(0, maxChars) + "\n...(维度上下文已按预算截断)";
+        }
+        return value.substring(0, boundary) + "\n...(维度上下文已按预算截断)";
     }
 }

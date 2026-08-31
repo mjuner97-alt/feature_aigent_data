@@ -73,6 +73,22 @@ public class ArtifactStore {
         return save(ctx, toolName, csv, columns, rows, previewMarkdown, null);
     }
 
+    /** Saves a non-tabular tool result without exposing its full body to the model. */
+    public ArtifactRef saveText(ArtifactContext ctx, String toolName, String text) {
+        String id = toolName + "-" + UUID.randomUUID();
+        String filename = id + ".txt";
+        try {
+            io.writeAtomic(ctx.userBucket(), ctx.taskBucket(), filename, text == null ? "" : text);
+            String agentPath = mountPrefix + "/" + ctx.userBucket() + "/" + ctx.taskBucket() + "/" + filename;
+            return new ArtifactRef(id, agentPath,
+                    io.describePath(ctx.userBucket(), ctx.taskBucket(), filename), List.of(), 0, "", null);
+        } catch (IOException e) {
+            log.warn("Artifact text save failed for tool={} user={} task={}: {}",
+                    toolName, ctx.userBucket(), ctx.taskBucket(), e.getMessage());
+            return new ArtifactRef("save-failed", "(artifact-save-failed)", "(none)", List.of(), 0, "", null);
+        }
+    }
+
     public ArtifactRef save(
             ArtifactContext ctx,
             String toolName,

@@ -25,9 +25,13 @@ import com.agentscopea2a.v2.skills.BuiltinSkillRegistrar;
 import com.agentscopea2a.v2.skills.FingerprintCalculator;
 import com.agentscopea2a.v2.skills.MetricClassificationService;
 import com.agentscopea2a.v2.skills.SkillCandidateRepository;
+import com.agentscopea2a.v2.skills.SkillCandidateSelector;
 import com.agentscopea2a.v2.skills.SkillDistiller;
 import com.agentscopea2a.v2.skills.SkillEvolutionRunner;
 import com.agentscopea2a.v2.skills.SkillIndexRepository;
+import com.agentscopea2a.v2.skills.SkillRoutingMetadataRepository;
+import com.agentscopea2a.v2.capability.CapabilityRepository;
+import com.agentscopea2a.v2.capability.CapabilityRouter;
 import com.agentscopea2a.v2.skills.SkillSynthesisRunner;
 import com.agentscopea2a.v2.skills.SkillVectorIndexVisibilityFilter;
 import com.agentscopea2a.v2.skillManager.service.SkillManageBridge;
@@ -57,9 +61,10 @@ import java.nio.file.Paths;
  * propose -> promote -> usage -> audit -> security -> curator.
  * Uses {@link LocalApprovalGate} for HITL (human-in-the-loop) skill promotion.
  *
- * <p>Also wires the {@link SkillVectorIndexVisibilityFilter} as a pass-through
- * {@link SkillVisibilityFilter} so the JAR's {@code HarnessSkillMiddleware}
- * surfaces all builtin skills to the LLM.
+ * <p>Also wires the {@link SkillVectorIndexVisibilityFilter} as the runtime
+ * {@link SkillVisibilityFilter}: it narrows the model-visible skill catalogue to
+ * Top-K candidates routed from {@code skill_routing_metadata} (with fallback to
+ * all skills on empty selection / unconfigured rows, see the filter javadoc).
  */
 @Configuration
 public class V2SkillConfig {
@@ -94,16 +99,34 @@ public class V2SkillConfig {
     @Bean
     public BuiltinSkillRegistrar builtinSkillRegistrar(
             SkillIndexRepository indexRepo,
+            SkillRoutingMetadataRepository routingMetadataRepository,
+            CapabilityRepository capabilityRepository,
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
             @Value("${harness.skills.builtin-registrar.enabled:true}") boolean enabled) {
         log.info("BuiltinSkillRegistrar: enabled={}, workspacePath={}", enabled, workspacePath);
-        return new BuiltinSkillRegistrar(workspacePath, indexRepo, enabled);
+        return new BuiltinSkillRegistrar(workspacePath, indexRepo, routingMetadataRepository,
+                capabilityRepository, enabled);
     }
 
     @Bean
-    public SkillVisibilityFilter skillVectorIndexVisibilityFilter() {
-        log.info("SkillVectorIndexVisibilityFilter: pass-through (hot-load enabled)");
-        return new SkillVectorIndexVisibilityFilter();
+    public SkillVisibilityFilter skillVectorIndexVisibilityFilter(
+            SkillRoutingMetadataRepository routingMetadataRepository,
+            CapabilityRepository capabilityRepository,
+            @Value("${harness.a2a.skill-context.routing.enabled:false}") boolean enabled,
+            @Value("${harness.a2a.capability-routing.enabled:false}") boolean capabilityEnabled,
+            @Value("${harness.a2a.capability-routing.max-capabilities:3}") int maxCapabilities,
+            @Value("${harness.a2a.capability-routing.max-recalled-skills:20}") int maxRecalledSkills,
+            @Value("${harness.a2a.skill-context.max-visible-skills:5}") int maxVisibleSkills,
+            @Value("${harness.a2a.skill-context.fallback-visible-skills:10}") int fallbackVisibleSkills,
+            @Value("${harness.a2a.skill-context.min-confidence:0.65}") double minConfidence,
+            @Value("${harness.a2a.skill-context.min-score-gap:0.10}") double minScoreGap) {
+        log.info("SkillVectorIndexVisibilityFilter: routingEnabled={}, maxVisible={}, fallbackVisible={}",
+                enabled, maxVisibleSkills, fallbackVisibleSkills);
+        CapabilityRouter router = capabilityEnabled
+                ? new CapabilityRouter(maxCapabilities, maxRecalledSkills) : null;
+        return new SkillVectorIndexVisibilityFilter(routingMetadataRepository,
+                new SkillCandidateSelector(maxVisibleSkills, fallbackVisibleSkills, minConfidence, minScoreGap),
+                enabled, capabilityRepository, router);
     }
 
 
@@ -318,8 +341,9 @@ public class V2SkillConfig {
      * 可通过 {@code harness.skills.page-bridge.enabled=false} 关闭。
      */
     @Bean
-    public SkillManageBridge skillManageBridge(SkillIndexRepository indexRepo) {
-        return new SkillManageBridge(indexRepo);
+    public SkillManageBridge skillManageBridge(SkillIndexRepository indexRepo,
+                                               SkillRoutingMetadataRepository routingMetadataRepository) {
+        return new SkillManageBridge(indexRepo, routingMetadataRepository);
     }
 
     /**

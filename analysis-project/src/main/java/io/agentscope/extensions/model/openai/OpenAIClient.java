@@ -409,8 +409,13 @@ public class OpenAIClient {
             return transport.stream(httpRequest)
                     .doOnSubscribe(s -> LlmFileTrace.write(traceId, "OpenAIClient", "订阅传输", ""))
                     .filter(data -> !data.equals("[DONE]"))
-                    .doOnNext(data -> LlmFileTrace.write(traceId, "OpenAIClient", "收到原始数据",
-                            "elapsedMs=" + elapsedMs(started) + " data=" + LlmFileTrace.shortText(data)))
+                    .doOnNext(data -> {
+                        // 每条 chunk 都写文件 + shortText 有开销，关闭 trace 时整段跳过
+                        if (LlmFileTrace.isEnabled()) {
+                            LlmFileTrace.write(traceId, "OpenAIClient", "收到原始数据",
+                                    "elapsedMs=" + elapsedMs(started) + " data=" + LlmFileTrace.shortText(data));
+                        }
+                    })
                     .<OpenAIResponse>handle(
                             (data, sink) -> {
                                 OpenAIResponse response = parseStreamData(data);

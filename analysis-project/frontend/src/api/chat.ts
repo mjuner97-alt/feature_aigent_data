@@ -83,6 +83,7 @@ export type ChatEvent =
   | { type: 'think'; chunk: string; action: string; topic: string; finish: boolean }
   | { type: 'text'; chunk: string; finish: boolean; conversationId: string }
   | { type: 'process'; process: ProcessEvent }
+  | { type: 'scriptOutput'; output: string; toolCallId?: string }
   | { type: 'toolOutputUpdate'; process: ProcessEvent }
   | { type: 'error'; error: string };
 
@@ -166,6 +167,8 @@ export async function* streamChat(req: ChatRequest, signal?: AbortSignal): Async
             finish: json.finish === true,
             conversationId: typeof json.conversationId === 'string' ? json.conversationId : '',
           };
+        } else if (eventName === 'script_output') {
+          yield { type: 'scriptOutput', output: typeof json.toolOutput === 'string' ? json.toolOutput : (typeof json.lineResult === 'string' ? json.lineResult : ''), toolCallId: json.toolCallId ?? undefined };
         } else if (eventName === 'tool_output') {
           // Supplementary event from PostActing hook — carries the tool output
           // that wasn't available when tool_result_end was emitted (PostActing

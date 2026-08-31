@@ -79,8 +79,12 @@ public class V2MemoryConfig {
     }
 
     @Bean
-    public EpisodicRetrievalMiddleware episodicRetrievalMiddleware(EpisodicMemory episodicMemory) {
-        return new EpisodicRetrievalMiddleware(episodicMemory);
+    public EpisodicRetrievalMiddleware episodicRetrievalMiddleware(
+            EpisodicMemory episodicMemory,
+            @Value("${harness.episodic.retrieval.enabled:false}") boolean enabled,
+            @Value("${harness.episodic.search-limit:5}") int searchLimit) {
+        log.info("EpisodicRetrievalMiddleware: enabled={}, searchLimit={}", enabled, searchLimit);
+        return new EpisodicRetrievalMiddleware(episodicMemory, searchLimit, enabled);
     }
 
     /**
@@ -99,9 +103,11 @@ public class V2MemoryConfig {
             name = "enabled",
             havingValue = "true",
             matchIfMissing = false)
-    public PerUserMemoryContextMiddleware perUserMemoryContextMiddleware(MysqlMemoryStore mysqlMemoryStore) {
-        log.info("PerUserMemoryContextMiddleware: wired (injects per-user MEMORY.md from agent_memory table)");
-        return new PerUserMemoryContextMiddleware(mysqlMemoryStore);
+    public PerUserMemoryContextMiddleware perUserMemoryContextMiddleware(
+            MysqlMemoryStore mysqlMemoryStore,
+            @Value("${harness.a2a.memory.max-system-prompt-chars:3000}") int maxChars) {
+        log.info("PerUserMemoryContextMiddleware: wired (maxChars={})", maxChars);
+        return new PerUserMemoryContextMiddleware(mysqlMemoryStore, maxChars);
     }
 
     /**

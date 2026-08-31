@@ -387,8 +387,27 @@ export default function ChatPanel({
             : evt.output;
           const scriptText = scriptOutputRef.current;
           setMessages(prev => prev.map(m => m.id === replyMsg.id
-            ? { ...m, text: scriptText }
+            ? { ...m, text: extractRenderableBlocks(scriptText).join('\n\n') }
             : m));
+          setActivityEvents(prev => {
+            const idx = evt.toolCallId
+              ? prev.findIndex(e => e.toolCallId === evt.toolCallId)
+              : [...prev].map((e, i) => ({ e, i })).reverse().find(({ e }) => e.toolCallName === 'script_exec')?.i ?? -1;
+            if (idx < 0) {
+              return [...prev, {
+                eventType: 'script_output',
+                message: '完成：script_exec (SUCCESS)',
+                source: null,
+                toolCallId: evt.toolCallId,
+                toolCallName: 'script_exec',
+                toolCallState: 'SUCCESS',
+                toolOutput: scriptText,
+              }];
+            }
+            const next = prev.slice();
+            next[idx] = { ...next[idx], toolOutput: scriptText };
+            return next;
+          });
         } else if (evt.type === 'toolOutputUpdate') {
           // Supplementary tool_output event from PostActing hook (see
           // ToolCallTrackingHook.sendToolOutputSseEvent). The framework's

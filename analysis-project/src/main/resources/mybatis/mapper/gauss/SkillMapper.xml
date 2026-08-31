@@ -96,6 +96,8 @@
         WHERE retrieval_name = #{retrievalName}
           AND status = 'ACTIVE'
           AND deleted_at IS NULL
+          <!-- PERSONAL is owner-only at runtime; PUBLIC/PRIVATE may use the existing sources below. -->
+          AND (COALESCE(visibility, 'PERSONAL') &lt;&gt; 'PERSONAL' OR owner_user_id = #{userId})
           AND id IN (<include refid="visibleSkillIds"/>)
           AND (
               owner_user_id = #{userId}
@@ -108,7 +110,8 @@
 
     <select id="selectActiveRetrievalNamesByUser" resultType="java.lang.String">
         SELECT retrieval_name FROM skill_manage
-        WHERE (
+        WHERE (COALESCE(visibility, 'PERSONAL') &lt;&gt; 'PERSONAL' OR owner_user_id = #{userId})
+          AND (
             owner_user_id = #{userId}
             OR id IN (SELECT target_skill_id FROM skill_reference WHERE creator = #{userId})
             OR id IN (<include refid="dimensionUsedSkillIds"/>)
@@ -122,7 +125,8 @@
 
     <select id="selectActiveByUser" resultMap="SkillResultMap">
         SELECT <include refid="skillCols"/> FROM skill_manage
-        WHERE (
+        WHERE (COALESCE(visibility, 'PERSONAL') &lt;&gt; 'PERSONAL' OR owner_user_id = #{userId})
+          AND (
             owner_user_id = #{userId}
             OR id IN (SELECT target_skill_id FROM skill_reference WHERE creator = #{userId})
             OR id IN (<include refid="dimensionUsedSkillIds"/>)
@@ -168,6 +172,7 @@
         WHERE s.id = #{skillId}
           AND s.status = 'ACTIVE'
           AND s.deleted_at IS NULL
+          AND (COALESCE(s.visibility, 'PERSONAL') &lt;&gt; 'PERSONAL' OR s.owner_user_id = #{userId})
           AND NOT EXISTS (
               SELECT 1 FROM skill_user_disable d
               WHERE d.skill_id = s.id AND d.user_id = #{userId}

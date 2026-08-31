@@ -1,0 +1,12 @@
+event:agent_start
+data:{"code":0,"errorMsg":null,"ansUUID":null,"lineResult":"\uD83E\uDD16 启动智能体：QualitySupervisorV2 (assistant)","resultAll":null,"formType":null,"agentId":null,"agentName":null,"source":null,"conversationId":null,"eventType":"agent_start","toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":"QualitySupervisorV2","agentRole":"assistant"}
+
+event:tool_call_start
+data:{"code":0,"errorMsg":null,"ansUUID":null,"lineResult":"\uD83D\uDD27 调用工具：load_skill_through_path","resultAll":null,"formType":null,"agentId":null,"agentName":null,"source":null,"conversationId":null,"eventType":"tool_call_start","toolCallId":"call_olmidnx66qqc0reycaj4t4rr","toolCallName":"load_skill_through_path","toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:tool_result_end
+data:{"code":0,"errorMsg":null,"ansUUID":null,"lineResult":"✅ 完成：load_skill_through_path (SUCCESS)","resultAll":null,"formType":null,"agentId":null,"agentName":null,"source":null,"conversationId":null,"eventType":"tool_result_end","toolCallId":"call_olmidnx66qqc0reycaj4t4rr","toolCallName":"load_skill_through_path","toolCallState":"SUCCESS","toolInput":"skillId=test0831_user_generated, path=SKILL.md","toolOutput":"","subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:tool_output
+data:{"code":0,"errorMsg":null,"ansUUID":"e2e-test-5bb08f03-5c77-42e0-87d6-924e6a444fb7","lineResult":"📤 load_skill_through_path 输出","resultAll":null,"formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":"e2e-test-5bb08f03-5c77-42e0-87d6-924e6a444fb7","eventType":"tool_output","toolCallId":"call_olmidnx66qqc0reycaj4t4rr","toolCallName":"load_skill_through_path","toolCallState":null,"toolInput":null,"toolOutput":"Successfully loaded skill: test0831_user_generated\n\nName: test0831\nDescription: 1111\nSource: user_generated\n\nContent (SKILL.md):\n````markdown\n---\nname: test0831\ndescription: '1111'\n---\n\n1111\n````","subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+

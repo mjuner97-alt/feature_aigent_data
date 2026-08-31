@@ -22,9 +22,12 @@ import io.agentscope.core.model.transport.HttpTransportException;
 import io.agentscope.core.model.transport.TransportConstants;
 import io.agentscope.diagnostics.LlmFileTrace;
 import io.netty.channel.ChannelOption;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
@@ -173,11 +176,21 @@ public class WebClientHttpTransport implements HttpTransport {
     /**
      * 把响应体按行切分（跨 DataBuffer 的残行用 per-subscription 的 StringBuilder 拼接），
      * 再按 SSE/NDJSON 过滤出上游 OpenAIClient 期望的 data 行。
+     *
+     * <p>注意必须用 {@code bodyToFlux(DataBuffer.class)} 拿原始字节：{@code bodyToFlux(String.class)}
+     * 会被 Spring 默认 codec 预处理掉（text/event-stream 走 SSE reader 直接剥掉 {@code data:} 前缀、
+     * 其他类型走 StringDecoder 按 \n 切行并剥掉换行符），导致这里的行切分/前缀过滤一条都匹配不上。
      */
     private Flux<String> readStreamLines(ClientResponse resp, boolean isNdjson, String traceId) {
         return Flux.defer(() -> {
             StringBuilder pending = new StringBuilder();
-            return resp.bodyToFlux(String.class)
+            return resp.bodyToFlux(DataBuffer.class)
+                    .map(buffer -> {
+                        byte[] bytes = new byte[buffer.readableByteCount()];
+                        buffer.read(bytes);
+                        DataBufferUtils.release(buffer);
+                        return new String(bytes, StandardCharsets.UTF_8);
+                    })
                     .flatMap(chunk -> {
                         pending.append(chunk);
                         String text = pending.toString();
@@ -190,6 +203,12 @@ public class WebClientHttpTransport implements HttpTransport {
                         pending.append(text.substring(lastNl + 1));
                         return completed.isEmpty() ? Flux.<String>empty() : Flux.fromArray(completed.split("\\r?\\n"));
                     })
+                    // 上游结束后 flush 末尾没有换行符的半行（对齐 BufferedReader.lines() 的行为）
+                    .concatWith(Flux.defer(() -> {
+                        String rest = pending.toString();
+                        pending.setLength(0);
+                        return rest.isEmpty() ? Flux.empty() : Flux.fromArray(rest.split("\\r?\\n"));
+                    }))
                     .concatMap(line -> {
                         if (isNdjson) {
                             return line.isEmpty() ? Flux.<String>empty() : Flux.just(line);
@@ -203,8 +222,13 @@ public class WebClientHttpTransport implements HttpTransport {
                         }
                         return Flux.just(data);
                     })
-                    .doOnNext(data -> LlmFileTrace.write(traceId, "WebClientHttpTransport", "SSE数据",
-                            "data=" + LlmFileTrace.shortText(data)));
+                    .doOnNext(data -> {
+                        // 每条 SSE chunk 打点，关闭 trace 时跳过，避免 shortText + 文件 I/O
+                        if (LlmFileTrace.isEnabled()) {
+                            LlmFileTrace.write(traceId, "WebClientHttpTransport", "SSE数据",
+                                    "data=" + LlmFileTrace.shortText(data));
+                        }
+                    });
         });
     }
 

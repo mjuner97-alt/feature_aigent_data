@@ -9,13 +9,18 @@ import java.nio.file.StandardOpenOption;
 import java.time.OffsetDateTime;
 import java.util.UUID;
 
-/** 将模型调用诊断信息追加写入独立文件。 */
+/** 将模型调用诊断信息追加写入独立文件。可通过开关进行控制 agentscope.llm.trace.enabled写入logs/llm-call-trace.log */
 public final class LlmFileTrace {
     private static final Object LOCK = new Object();
     private static final Path FILE = Paths.get(System.getProperty("agentscope.llm.trace.file", "logs/llm-call-trace.log"));
+    /** 全局开关：-Dagentscope.llm.trace.enabled=false 关闭，write 直接跳过，避免逐 chunk 文件 I/O。 */
+    private static final boolean ENABLED =
+            !"false".equalsIgnoreCase(System.getProperty("agentscope.llm.trace.enabled", "false"));
     private LlmFileTrace() {}
+    public static boolean isEnabled() { return ENABLED; }
     public static String id() { return UUID.randomUUID().toString().substring(0, 12); }
     public static void write(String id, String layer, String event, String details) {
+        if (!ENABLED) return;
         String line = OffsetDateTime.now() + " traceId=" + id + " layer=" + layer + " event=" + event + " "
                 + (details == null ? "" : details) + System.lineSeparator();
         synchronized (LOCK) {

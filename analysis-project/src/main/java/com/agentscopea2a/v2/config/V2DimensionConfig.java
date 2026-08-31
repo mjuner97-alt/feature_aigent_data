@@ -56,7 +56,9 @@ public class V2DimensionConfig {
     }
 
     @Bean
-    public DimensionStateMiddleware dimensionStateMiddleware(DimensionStateManager dimensionStateManager) {
-        return new DimensionStateMiddleware(dimensionStateManager);
+    public DimensionStateMiddleware dimensionStateMiddleware(
+            DimensionStateManager dimensionStateManager,
+            @Value("${harness.a2a.dimension.max-chars:2000}") int maxChars) {
+        return new DimensionStateMiddleware(dimensionStateManager, maxChars);
     }
 }
