@@ -2,14 +2,13 @@
 /**
  * SCRIPT 注册表 shell: 侧边栏 + 子列表.
  *
- * 子列表: SQL 注册 / python 脚本注册 / Skill 配置.
+ * 子列表: SQL 注册 / python 脚本注册 (后续新增列表只需加 nav 项 + 子路由, 不引入字典).
  */
 import { RouterLink, RouterView } from 'vue-router';
 
 const nav = [
   { to: '/script-registry', label: 'SQL 注册' },
   { to: '/script-registry/python', label: 'python 脚本注册' },
-  { to: '/script-registry/skills', label: 'Skill 配置' },
 ];
 </script>
 

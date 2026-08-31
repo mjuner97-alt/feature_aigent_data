@@ -30,7 +30,6 @@ import SkillVirtualGroupPage from './pages/skill/SkillVirtualGroupPage.vue';
 import SqlRegistryPage from './pages/SqlRegistryPage.vue';
 import ScriptRegistryShell from './components/ScriptRegistryShell.vue';
 import ScriptRegistryPage from './pages/ScriptRegistryPage.vue';
-import SkillRoutingConfigPage from './pages/SkillRoutingConfigPage.vue';
 import ChatWorkspacePage from './pages/ChatWorkspacePage.vue';
 import SessionHistoryPage from './pages/SessionHistoryPage.vue';
 import { isLoggedIn } from './utils/auth';
@@ -92,7 +91,6 @@ const routes: RouteRecordRaw[] = [
         children: [
           { path: '', component: SqlRegistryPage, meta: { requiresAuth: true, title: 'SQL 注册' } },
           { path: 'python', component: ScriptRegistryPage, meta: { requiresAuth: true, title: 'python 脚本注册' } },
-          { path: 'skills', component: SkillRoutingConfigPage, meta: { requiresAuth: true, title: 'Skill 配置' } },
         ],
       },
       // 兼容旧书签: /sql-registry -> /script-registry

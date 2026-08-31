@@ -26,12 +26,13 @@ import com.agentscopea2a.v2.dimension.DimensionStateManager;
 import com.agentscopea2a.v2.hooks.ArtifactHandoffHook;
 import com.agentscopea2a.v2.hooks.PythonExecRetryHook;
 import com.agentscopea2a.v2.hooks.ToolCallTrackingHook;
+import com.agentscopea2a.v2.hooks.ChatScriptExecResultHook;
+import com.agentscopea2a.v2.hooks.ChatScriptExecResultHook;
+import com.agentscopea2a.v2.tools.ToolResultRegistry;
 import com.agentscopea2a.v2.verify.L2EventCollectorHook;
 import com.agentscopea2a.v2.verify.VerificationHook;
 import com.agentscopea2a.v2.verify.VerifyLoopOrchestrator;
 import com.agentscopea2a.v2.middleware.ArtifactAccessMiddleware;
-import com.agentscopea2a.v2.middleware.ContextBudgetMiddleware;
-import com.agentscopea2a.v2.context.ContextBudgetProperties;
 import com.agentscopea2a.v2.middleware.PythonExecAccessMiddleware;
 import com.agentscopea2a.v2.middleware.ResponseCacheMiddleware;
 import com.agentscopea2a.v2.middleware.SessionMiddleware;
@@ -46,7 +47,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 
 import javax.sql.DataSource;
@@ -58,7 +58,6 @@ import java.util.stream.Collectors;
 
 /** V2 基础设施配置：响应缓存、Artifact 存储及相关中间件和 Hook 的 Bean 注册 */
 @Configuration
-@EnableConfigurationProperties(ContextBudgetProperties.class)
 public class V2InfraConfig {
 
     private static final Logger log = LoggerFactory.getLogger(V2InfraConfig.class);
@@ -206,9 +205,14 @@ public class V2InfraConfig {
 
     @Bean
     @SuppressWarnings("deprecation")
-    public ToolCallTrackingHook toolCallTrackingHook() {
-        log.info("ToolCallTrackingHook: wired (priority=45, RuntimeContextAware-based)");
+    public ToolCallTrackingHook toolCallTrackingHook(ToolResultRegistry registry) {
+        log.info("ToolCallTrackingHook: wired (priority=50, RuntimeContextAware-based)");
         return new ToolCallTrackingHook();
+    }
+
+    @Bean
+    public ChatScriptExecResultHook chatScriptExecResultHook(ToolResultRegistry registry) {
+        return new ChatScriptExecResultHook(registry);
     }
 
     // ── Arith Mental Math Detector Hook (soft observability - logs warn when LLM does
@@ -250,28 +254,13 @@ public class V2InfraConfig {
     @Bean
     public ToolResultTruncationMiddleware toolResultTruncationMiddleware(
             @Value("${harness.a2a.tool-truncation.enabled:true}") boolean enabled,
-            @Value("${harness.a2a.context-budget.compactable-tools:${harness.a2a.tool-truncation.tools:load_skill_through_path}}") String toolsCsv) {
+            @Value("${harness.a2a.tool-truncation.tools:load_skill_through_path}") String toolsCsv) {
         Set<String> tools = Arrays.stream(toolsCsv.split(","))
                 .map(String::trim)
                 .filter(s -> !s.isEmpty())
                 .collect(Collectors.toUnmodifiableSet());
         log.info("ToolResultTruncationMiddleware: enabled={}, tools={}", enabled, tools);
         return new ToolResultTruncationMiddleware(tools, enabled);
-    }
-
-    @Bean
-    public ContextBudgetMiddleware contextBudgetMiddleware(ContextBudgetProperties properties,
-                                                            ToolResultTruncationMiddleware toolResultTruncationMiddleware,
-                                                            com.agentscopea2a.v2.artifact.ArtifactStore artifactStore,
-                                                            @Value("${harness.a2a.context-budget.artifact-tools:sql_registry_exec,script_exec,wide_table_query,python_exec}") String artifactToolsCsv,
-                                                            @Value("${harness.a2a.context-budget.max-latest-tool-tokens:8000}") int maxLatestToolTokens) {
-        log.info("ContextBudgetMiddleware: enabled={}, maxInputTokens={}, warnRatio={}, hardRatio={}",
-                properties.isEnabled(), properties.getMaxInputTokens(), properties.getWarnRatio(),
-                properties.getHardRatio());
-        Set<String> artifactTools = Arrays.stream(artifactToolsCsv.split(","))
-                .map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toUnmodifiableSet());
-        return new ContextBudgetMiddleware(properties, toolResultTruncationMiddleware, artifactStore,
-                artifactTools, maxLatestToolTokens);
     }
 
     // ── V3.0 Verification Agent hooks (supervisor-side VerificationHook + sub-agent L2 collector) ──

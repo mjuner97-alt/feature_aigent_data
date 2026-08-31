@@ -113,6 +113,7 @@ public class HarnessAgentPartsConfig {
             ObjectProvider<ArtifactHandoffHook> artifactHandoffHookProvider,
             ObjectProvider<PythonExecRetryHook> pythonExecRetryHookProvider,
             ObjectProvider<ToolCallTrackingHook> toolCallTrackingHookProvider,
+            ObjectProvider<ChatScriptExecResultHook> chatScriptExecResultHookProvider,
             ObjectProvider<SkillSynthesisHook> skillSynthesisHookProvider,
             ObjectProvider<SkillEvolutionHook> skillEvolutionHookProvider,
             ObjectProvider<KnowledgeRetrievalHook> knowledgeRetrievalHookProvider,
@@ -134,8 +135,10 @@ public class HarnessAgentPartsConfig {
         ToolCallTrackingHook tracking = toolCallTrackingHookProvider.getIfAvailable();
         if (tracking != null) {
             hooks.add(tracking);
-            log.info("HarnessAgentPartsConfig: ToolCallTrackingHook wired (priority=45)");
+            log.info("HarnessAgentPartsConfig: ToolCallTrackingHook wired (priority=50)");
         }
+        ChatScriptExecResultHook chatScript = chatScriptExecResultHookProvider.getIfAvailable();
+        if (chatScript != null) hooks.add(chatScript);
         VerificationHook verification = verificationHookProvider.getIfAvailable();
         if (verification != null) {
             hooks.add(verification);

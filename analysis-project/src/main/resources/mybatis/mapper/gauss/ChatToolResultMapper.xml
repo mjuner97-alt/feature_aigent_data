@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.mapper.gauss.ChatToolResultMapper">
+
+    <insert id="insertToolResult">
+        INSERT INTO ai_chat_tool_result (ref_id, conversation_id, tool_call_id, tool_name, content, created_at)
+        VALUES (#{refId}, #{conversationId}, #{toolCallId}, #{toolName}, #{content}, now())
+    </insert>
+
+    <select id="selectContentByRefId" resultType="java.lang.String">
+        SELECT content
+        FROM ai_chat_tool_result
+        WHERE ref_id = #{refId}
+    </select>
+
+</mapper>

@@ -242,20 +242,9 @@ function editCenterReport(exec: SkillJobExecution) {
   reportEditorOpen.value = true;
 }
 
-function executionReason(message?: string): string {
-  if (!message) return '';
-  if (message.startsWith('JobNotFound')) return '任务不存在';
-  if (message.startsWith('JobDisabled')) return '任务已禁用';
-  if (message.startsWith('JobNotConfigured')) return '任务配置不完整';
-  if (message.startsWith('SkillPermissionDenied')) return 'Skill 权限失效';
-  if (/timeout|timed out|超时/i.test(message)) return '执行超时';
-  if (/model|llm|模型/i.test(message)) return '模型调用失败';
-  if (/report|artifact|文件|报告/i.test(message)) return '报告生成失败';
-  return '';
-}
-
 function showExecutionError(exec: SkillJobExecution) {
-  ElMessageBox.alert(exec.errorMsg || '暂无错误详情', `执行 #${exec.id} 错误详情`, {
+  const detail = `状态：${executionStatus(exec.status)}\n开始时间：${fmtTime(exec.startedAt)}\n完成时间：${fmtTime(exec.completedAt)}\n会话 ID：${exec.conversationId || '-'}\n\n错误信息：\n${exec.errorMsg || '暂无错误详情'}`;
+  ElMessageBox.alert(detail, `执行 #${exec.id} 错误详情`, {
     confirmButtonText: '关闭', customClass: 'execution-error-dialog',
   });
 }
@@ -409,7 +398,6 @@ function metricTitle(job: SkillJob): string {
               <td>
                 <span class="status-badge" :class="executionStatusClass(exec.status)">{{ executionStatus(exec.status) }}</span>
                 <span v-if="exec.status === 'PENDING' && exec.queueAhead != null" class="queue-hint">{{ exec.queueAhead === 0 ? '即将执行' : `前面 ${exec.queueAhead} 个` }}</span>
-                <span v-if="(exec.status === 'SKIPPED' || exec.status === 'FAILED') && executionReason(exec.errorMsg)" class="execution-reason" :class="{ failed: exec.status === 'FAILED' }">{{ executionReason(exec.errorMsg) }}</span>
               </td>
               <td><span class="notify-badge" :class="notificationStatusClass(exec.latestNotificationStatus)">{{ notificationStatus(exec.latestNotificationStatus) }}</span></td>
               <td class="col-time">{{ fmtTime(exec.createdAt) }}</td>
@@ -423,10 +411,10 @@ function metricTitle(job: SkillJob): string {
                   <button class="btn-action with-icon" :disabled="viewing.has(exec.id)" title="预览报告" @click="viewCenterReport(exec)">
                     <el-icon><View /></el-icon><span>{{ viewing.has(exec.id) ? '打开中…' : '预览' }}</span>
                   </button>
-                  <button v-if="previewed.has(exec.id) && exec.createdBy === me" class="btn-action with-icon" title="编辑 HTML" @click="editCenterReport(exec)">
+                  <button v-if="exec.createdBy === me" class="btn-action with-icon" title="编辑 HTML" @click="editCenterReport(exec)">
                     <el-icon><EditPen /></el-icon><span>编辑</span>
                   </button>
-                  <button v-if="previewed.has(exec.id)" class="btn-action with-icon" :disabled="downloading.has(exec.id)" title="下载 HTML" @click="downloadCenterReport(exec)">
+                  <button class="btn-action with-icon" :disabled="downloading.has(exec.id)" title="下载 HTML" @click="downloadCenterReport(exec)">
                     <el-icon><Download /></el-icon><span>{{ downloading.has(exec.id) ? '下载中…' : '下载' }}</span>
                   </button>
                 </template>

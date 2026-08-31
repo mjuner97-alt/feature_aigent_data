@@ -4,6 +4,7 @@ import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.skillManager.config.SkillFlowProperties;
 import com.agentscopea2a.v2.skillManager.entity.*;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
+import com.agentscopea2a.v2.tools.ToolResultRegistry;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.RuntimeContext;
@@ -79,10 +80,12 @@ public class FlowCoordinator {
     private final FlowCompletionService completionService;
     private final FlowNodeClaimService claimService;
     private final NodeAttemptCompletionService attemptCompletionService;
+    private final ToolResultRegistry toolResultRegistry;
 
     public FlowCoordinator(SkillFlowMapper mapper, HarnessA2aRunnerV2 runner, ObjectMapper json, Clock skillFlowClock,
                            FlowCompletionService completionService, FlowNodeClaimService claimService,
-                           NodeAttemptCompletionService attemptCompletionService) {
+                           NodeAttemptCompletionService attemptCompletionService,
+                           ToolResultRegistry toolResultRegistry) {
         this.mapper = mapper;
         this.runner = runner;
         this.json = json;
@@ -90,6 +93,7 @@ public class FlowCoordinator {
         this.completionService = completionService;
         this.claimService = claimService;
         this.attemptCompletionService = attemptCompletionService;
+        this.toolResultRegistry = toolResultRegistry;
         int workerCount = Math.max(1, SkillFlowProperties.WORKER_COUNT);
         this.workerPermits = new Semaphore(workerCount);
         this.workers = Executors.newFixedThreadPool(workerCount, r -> {
@@ -239,7 +243,7 @@ public class FlowCoordinator {
             List<AgentEvent> events = runner.streamEvents(List.of(Msg.builder()
                             .role(MsgRole.USER).content(TextBlock.builder().text(question).build()).build()),
                     context).collectList().block(Duration.ofMinutes(10));
-            String result = extract(events);
+            String result = toolResultRegistry.resolveFinalResult(extract(events));
             if (result == null || result.isBlank()) throw new IllegalStateException("Skill returned empty result");
             String resultJson = json(Map.of("text", result));
             completeAudit(audit, FlowNodeAttemptStatus.SUCCESS, false, null, null, started);

@@ -128,7 +128,6 @@ const input = ref('');
 const busy = ref(false);
 const hasInFlight = ref(false);
 const activityEvents = ref<ProcessEvent[]>([]);
-const scriptOutput = ref('');
 const threadRef = ref<HTMLDivElement | null>(null);
 const inputRef = ref<HTMLTextAreaElement | null>(null);
 
@@ -209,7 +208,6 @@ async function sendMessage(text: string) {
 
   // Reset activity and subagent state
   activityEvents.value = [];
-  scriptOutput.value = '';
   subagentPlans.value = {};
   subagentTodoCounts.value = {};
   props.onSubagentPlanChange?.({}, {});
@@ -240,8 +238,7 @@ async function sendMessage(text: string) {
         messages.value = messages.value.map(m => m.id === replyMsg.id
           ? { ...m, text: m.text + evt.chunk, pending: !evt.finish }
           : m);
-        // Keep consuming the stream after text finishes: script_output and
-        // tool_output SSE events can arrive during tool PostActing afterward.
+        if (evt.finish) break;
       } else if (evt.type === 'process') {
         activityEvents.value = [...activityEvents.value, evt.process];
 
@@ -263,25 +260,6 @@ async function sendMessage(text: string) {
             subagentTodoCounts.value = { ...subagentTodoCounts.value, [p.source]: (subagentTodoCounts.value[p.source] ?? 0) + 1 };
             props.onSubagentPlanChange?.(subagentPlans.value, subagentTodoCounts.value);
           }
-        }
-      } else if (evt.type === 'scriptOutput') {
-        if (!evt.output) continue;
-        scriptOutput.value = scriptOutput.value ? `${scriptOutput.value}\n\n${evt.output}` : evt.output;
-        const idx = evt.toolCallId
-          ? activityEvents.value.findIndex(e => e.toolCallId === evt.toolCallId)
-          : [...activityEvents.value].map((e, i) => ({ e, i })).reverse().find(({ e }) => e.toolCallName === 'script_exec')?.i ?? -1;
-        if (idx >= 0) {
-          activityEvents.value[idx] = { ...activityEvents.value[idx], toolOutput: scriptOutput.value };
-        } else {
-          activityEvents.value = [...activityEvents.value, {
-            eventType: 'script_output',
-            message: '完成：script_exec (SUCCESS)',
-            source: null,
-            toolCallId: evt.toolCallId,
-            toolCallName: 'script_exec',
-            toolCallState: 'SUCCESS',
-            toolOutput: scriptOutput.value,
-          }];
         }
       } else if (evt.type === 'toolOutputUpdate') {
         const update = evt.process;
@@ -321,7 +299,7 @@ async function sendMessage(text: string) {
             messages.value = messages.value.map(m => m.id === replyMsg.id
               ? { ...m, text: m.text + evt.chunk, pending: !evt.finish }
               : m);
-            // Keep consuming trailing tool output events after text finishes.
+            if (evt.finish) return;
           } else if (evt.type === 'process') {
             activityEvents.value = [...activityEvents.value, evt.process];
             const p = evt.process;

@@ -12,6 +12,8 @@ import com.agentscopea2a.v2.exception.TooManyRequestsException;
 import com.agentscopea2a.v2.memory.EpisodicMemory;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.service.ChatStreamService;
+import com.agentscopea2a.v2.tools.ToolResultRegistry;
+import com.agentscopea2a.v2.hooks.ChatScriptExecResultHook;
 import com.agentscopea2a.v2.trace.collector.TraceSession;
 import com.agentscopea2a.v2.trace.assembler.TraceAssembler;
 import com.agentscopea2a.v2.trace.model.AssembledTrace;
@@ -36,10 +38,21 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -50,8 +63,28 @@ import java.util.concurrent.atomic.AtomicReference;
 public class ChatStreamServiceImpl implements ChatStreamService {
 
     private static final Logger log = LoggerFactory.getLogger(ChatStreamServiceImpl.class);
-    /** SSE 连接超时时间：10 分钟（单位毫秒），覆盖长思考 / 工具调用场景 */
-    private static final long SSE_TIMEOUT = 600_000L;
+    private static final Logger llmTraceLog = LoggerFactory.getLogger("llm.trace");
+    /** SSE 连接超时时间：20 分钟（单位毫秒），覆盖长思考 / 工具调用场景 */
+    private static final long SSE_TIMEOUT = 1200_000L;
+    /**
+     * 看门狗时间60s
+     * 容器 async 超时兜底：比看门狗晚 60 秒，正常情况永不触发。
+     * 真正的超时处理由 {@link #SSE_TIMEOUT_WATCHDOG} 负责——容器超时触发时响应已被销毁，
+     * emitter.send 必然失败（连接已关），前端收不到任何事件；看门狗在连接存活期间
+     * 主动下发超时错误再 complete，前端才能收到。
+     */
+    private static final long CONTAINER_TIMEOUT_GRACE = 60_000L;
+
+    /**
+     * SSE 超时看门狗调度器：守护线程，到点后先发 error 事件再关连接。
+     * 单线程即可（任务只做 send + complete，耗时毫秒级）。
+     */
+    private static final ScheduledExecutorService SSE_TIMEOUT_WATCHDOG =
+            Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "sse-timeout-watchdog");
+                t.setDaemon(true);
+                return t;
+            });
 
     /** 默认 agent 身份字段（请求未带时回填），与 v1 保持一致 */
     private static final String DEFAULT_AGENT_ID = "7";
@@ -63,6 +96,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     private final EpisodicMemory episodicMemory;
     private final TraceAssembler traceAssembler;
     private final TraceBatchWriter traceBatchWriter;
+    private final ToolResultRegistry toolResultRegistry;
 
     @Autowired
     private MainAgentMapper mainAgentMapper;
@@ -89,12 +123,14 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     public ChatStreamServiceImpl(HarnessA2aRunnerV2 runner, ArtifactStore artifactStore,
                                  EpisodicMemory episodicMemory,
                                  TraceAssembler traceAssembler,
-                                 TraceBatchWriter traceBatchWriter) {
+                                 TraceBatchWriter traceBatchWriter,
+                                 ToolResultRegistry toolResultRegistry) {
         this.runner = runner;
         this.artifactStore = artifactStore;
         this.episodicMemory = episodicMemory;
         this.traceAssembler = traceAssembler;
         this.traceBatchWriter = traceBatchWriter;
+        this.toolResultRegistry = toolResultRegistry;
     }
 
     /**
@@ -125,6 +161,8 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         final AtomicReference<Disposable> subscription = new AtomicReference<>();
         /** 保证 cleanup 只执行一次（onCompletion / onTimeout / onError 可能多次触发） */
         final AtomicBoolean cleaned = new AtomicBoolean(false);
+        /** SSE 超时看门狗句柄，供 cleanup 在正常完成时取消 */
+        final AtomicReference<ScheduledFuture<?>> timeoutWatchdog = new AtomicReference<>();
         /** 是否已发送过"执行中"，用于保证"执行中"和"已执行"成对出现 */
         final AtomicBoolean hasSentExecuting = new AtomicBoolean(false);
         /** 请求级 Trace 会话，直接存储框架 AgentEvent，供 cleanup 组装 */
@@ -269,7 +307,8 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         }
         ResponseStrategy strategy = managerMode ? managerStrategy : publicStrategy;
 
-        SseEmitter emitter = new SseEmitter(SSE_TIMEOUT);
+        // 容器级超时 = SSE_TIMEOUT + 60s，只做兜底；真正的超时处理走下方看门狗
+        SseEmitter emitter = new SseEmitter(SSE_TIMEOUT + CONTAINER_TIMEOUT_GRACE);
 
         String text = req.getQuestion();
         String userId = req.getUserId();
@@ -294,6 +333,10 @@ public class ChatStreamServiceImpl implements ChatStreamService {
 
         // 构造运行时上下文：携带 sessionId / userId / lastQuestion 供中间件 / hooks 访问
         RuntimeContext ctx = buildRuntimeContext(conversationId, userId, text);
+        ctx.put(ChatScriptExecResultHook.ENABLED_CTX_KEY, Boolean.TRUE);
+
+        // 工具结果引用开关：仅 /ai/chat 路径开启。ToolResultRefHook 据此把 script_exec
+        // 的图表块登记进结果池并替换成 stub（/v2/ai/chat 不设此 key，行为不变）。
 
         // Trace 监控：创建请求级 TraceSession 并放入 RuntimeContext。
         TraceSession traceCtx = new TraceSession(conversationId, UUID.randomUUID().toString(), userId, "v1_chat", text);
@@ -320,9 +363,9 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         // 导致 done 事件重复发送（前端收到"你好你好"的重复输出 bug）。
         emitter.onCompletion(cleanup);
         emitter.onTimeout(() -> {
-            // Trace 状态标记：标记 TIMEOUT（设计 5.2）。先于 handleStreamError 标记，
-            // 随后 handleStreamError 的 markError 会覆盖为 ERROR；若需保留 TIMEOUT 语义
-            // 需调整 TraceContext.markError 不覆盖终态——此处按 brief 要求调用 markTimeout。
+            // 兜底路径：正常情况看门狗会先于容器超时（晚 60s）完成处理。走到这里说明
+            // 连接已被容器关闭，此时任何 emitter.send 都到不了客户端，只做 trace 标记
+            // 和资源清理，不再尝试 send（send 必然抛异常且前端收不到）。
             try {
                 if (streamCtx.traceCtx != null) {
                     streamCtx.traceCtx.markTimeout();
@@ -330,13 +373,53 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             } catch (Exception te) {
                 log.warn("Trace markTimeout failed for sessionId={}: {}", streamCtx.conversationId, te.getMessage());
             }
-            handleStreamError(streamCtx, new RuntimeException("Model request timeout after"), strategy);
             cleanup.run();
         });
         emitter.onError(e -> {
             handleStreamError(streamCtx, e, strategy);
             cleanup.run();
         });
+
+        // 超时看门狗：到点时 emitter 尚未 complete、连接仍存活，此刻 send 超时错误
+        // 是可达客户端的（这是与容器 async 超时的本质区别--容器超时后响应已销毁，
+        // emitter.send 必然失败，前端收不到任何事件）。先发错误、再关连接、最后统一
+        // cleanup（幂等）。
+        streamCtx.timeoutWatchdog.set(SSE_TIMEOUT_WATCHDOG.schedule(() -> {
+            if (streamCtx.cleaned.get()) return; // 已正常完成 / 已被其他路径清理
+            log.warn("SSE watchdog timeout for sessionId={}", conversationId);
+            // 1. Trace 状态标记 TIMEOUT（在 cleanup 的 assemble 之前）
+            try {
+                if (streamCtx.traceCtx != null) {
+                    streamCtx.traceCtx.markTimeout();
+                }
+            } catch (Exception te) {
+                log.warn("Trace markTimeout failed for sessionId={}: {}", streamCtx.conversationId, te.getMessage());
+            }
+            // 2. 先取消订阅，停止继续消耗 LLM token（dispose 是取消，不会触发 onError 回调）
+            Disposable d = streamCtx.subscription.get();
+            if (d != null && !d.isDisposed()) {
+                d.dispose();
+                log.info("v2 stream cancelled for sessionId={} (watchdog timeout)", streamCtx.conversationId);
+            }
+            // 3. 连接仍存活，发送超时错误事件（含"已执行"补发，保证与"执行中"成对）
+            try {
+                if (streamCtx.hasSentExecuting.get()) {
+                    strategy.sendThink(streamCtx, ThinkPayload.done("分析执行智能体"));
+                }
+                strategy.sendError(streamCtx, new RuntimeException(
+                        "流程超时：本次对话处理时间过长（已等待 " + (SSE_TIMEOUT / 60_000) + " 分钟），会话已自动结束。"
+                                + "请稍后重试，或尝试精简问题以缩短处理时间。"));
+            } catch (Exception e) {
+                log.warn("发送超时错误失败: sessionId={}", streamCtx.conversationId, e);
+            }
+            // 4. 关闭 emitter 并统一清理（saveAnswerIntoDB / trace 落库等照常执行）
+            try {
+                streamCtx.emitter.complete();
+            } catch (Exception e) {
+                log.warn("emitter.complete() 失败: sessionId={}", streamCtx.conversationId, e);
+            }
+            cleanup.run();
+        }, SSE_TIMEOUT, TimeUnit.MILLISECONDS));
 
         // 在 boundedElastic 调度器上异步启动流式订阅，避免阻塞 Servlet 容器线程
         Mono.fromRunnable(() -> {
@@ -492,12 +575,16 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             }
             // 流式输出最终结果：每 5 个字符一片
             String finalAnswer = ctx.answerContent.toString();
+            // /ai/chat 的最终返回层：Hook 只把 HTML 缓存并写入引用标记，
+            // SSE 返回前端；前端 Markdown 组件随后负责 HTML 清洗和渲染。
+            finalAnswer = toolResultRegistry.resolveFinalResult(finalAnswer);
             // 回答末尾追加管理后台地址(md)。配置留空则不追加。
             // 仅作用于 SSE 下发的 finalAnswer,不修改 ctx.answerContent,故不入问答库。
-            if (StringUtils.isNotBlank(managementUrl)) {
-                String notice = "\n\n---\n管理后台页面：[点击进入](" + managementUrl + ")";
-                finalAnswer = StringUtils.isBlank(finalAnswer) ? notice : finalAnswer + notice;
-            }
+//            if (StringUtils.isNotBlank(managementUrl)) {
+//                String notice = "\n\n---\n管理后台页面：[点击进入](" + managementUrl + ")";
+//                finalAnswer = StringUtils.isBlank(finalAnswer) ? notice : finalAnswer + notice;
+//            }
+
             if (StringUtils.isNotBlank(finalAnswer)) {
                 int len = finalAnswer.length();
                 int pos = 0;
@@ -549,6 +636,11 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         return () -> {
             // CAS 保证幂等：只执行一次
             if (!ctx.cleaned.compareAndSet(false, true)) return;
+            // 0. 取消超时看门狗（正常完成时无需触发；watchdog 自身调用 cleanup 时 cancel 是无害的空操作）
+            ScheduledFuture<?> watchdog = ctx.timeoutWatchdog.get();
+            if (watchdog != null) {
+                watchdog.cancel(false);
+            }
             // 1. 取消 Reactor 订阅，停止继续消耗 LLM token
             Disposable d = ctx.subscription.get();
             if (d != null && !d.isDisposed()) {
@@ -600,14 +692,27 @@ public class ChatStreamServiceImpl implements ChatStreamService {
      * 构造错误消息：对常见的模型重试超时等错误做友好提示，其他直接透传。
      */
     private String buildErrorMessage(Throwable error) {
-        String message = error.getMessage();
-        if (message == null) {
-            return "未知错误";
-        }
-        if (message.contains("Retries exhausted") || message.contains("Model request timeout after")) {
+        return friendlyErrorMessage(error);
+    }
+
+    static String friendlyErrorMessage(Throwable error) {
+        if (isRetryOrTimeout(error)) {
             return "请求已达最大重试次数，当前模型资源不足，请稍后再试。";
         }
-        return message;
+        return "模型服务暂时不可用，请稍后重试";
+    }
+
+    private static boolean isRetryOrTimeout(Throwable error) {
+        for (Throwable current = error; current != null; current = current.getCause()) {
+            String text = (current.getClass().getName() + " " + current.getMessage()).toLowerCase(Locale.ROOT);
+            if (text.contains("retries exhausted") || text.contains("retry exhausted")
+                    || text.contains("model request timeout") || text.contains("timeout")
+                    || text.contains("timed out") || text.contains("read timed out")
+                    || text.contains("超时")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

@@ -178,20 +178,9 @@ function editFile(execId: number) {
   editorOpen.value = true;
 }
 
-function executionReason(message?: string): string {
-  if (!message) return '-';
-  if (message.startsWith('JobNotFound')) return '任务不存在';
-  if (message.startsWith('JobDisabled')) return '任务已禁用';
-  if (message.startsWith('JobNotConfigured')) return '任务配置不完整';
-  if (message.startsWith('SkillPermissionDenied')) return 'Skill 权限失效';
-  if (/timeout|timed out|超时/i.test(message)) return '执行超时';
-  if (/model|llm|模型/i.test(message)) return '模型调用失败';
-  if (/report|artifact|文件|报告/i.test(message)) return '报告生成失败';
-  return '';
-}
-
 function showError(exec: SkillJobExecution) {
-  ElMessageBox.alert(exec.errorMsg || '暂无错误详情', `执行 #${exec.id} 错误详情`, {
+  const detail = `状态：${statusText(exec.status)}\n开始时间：${fmtTime(exec.startedAt)}\n完成时间：${fmtTime(exec.completedAt)}\n耗时：${duration(exec.startedAt, exec.completedAt)}\n会话 ID：${exec.conversationId || '-'}\n\n错误信息：\n${exec.errorMsg || '暂无错误详情'}`;
+  ElMessageBox.alert(detail, `执行 #${exec.id} 错误详情`, {
     confirmButtonText: '关闭', customClass: 'execution-error-dialog',
   });
 }
@@ -269,7 +258,6 @@ async function retry(exec: SkillJobExecution) {
                   <div v-if="exec.errorMsg" class="detail-row">
                     <span class="dl">{{ exec.status === 'SKIPPED' ? '未执行原因' : '错误信息' }}</span>
                     <div class="error-summary">
-                      <span v-if="executionReason(exec.errorMsg)" class="dv" :class="{ err: exec.status === 'FAILED' }">{{ executionReason(exec.errorMsg) }}</span>
                       <button class="report-action" @click.stop="showError(exec)">错误详情</button>
                       <button v-if="exec.status === 'FAILED' && canDownload" class="report-action" :disabled="retrying.has(exec.id)" @click.stop="retry(exec)">{{ retrying.has(exec.id) ? '排队中…' : '重试' }}</button>
                     </div>
@@ -280,10 +268,10 @@ async function retry(exec: SkillJobExecution) {
                       <button class="report-action" :disabled="viewing.has(exec.id)" title="预览报告" @click.stop="viewFile(exec.id)">
                         <el-icon><View /></el-icon><span>{{ viewing.has(exec.id) ? '打开中…' : '预览' }}</span>
                       </button>
-                      <button v-if="previewed.has(exec.id) && canEdit" class="report-action" title="编辑 HTML" @click.stop="editFile(exec.id)">
+                      <button v-if="canEdit" class="report-action" title="编辑 HTML" @click.stop="editFile(exec.id)">
                         <el-icon><EditPen /></el-icon><span>编辑</span>
                       </button>
-                      <button v-if="previewed.has(exec.id)" class="report-action" :disabled="downloading.has(exec.id)" title="下载 HTML" @click.stop="downloadFile(exec.id)">
+                      <button class="report-action" :disabled="downloading.has(exec.id)" title="下载 HTML" @click.stop="downloadFile(exec.id)">
                         <el-icon><Download /></el-icon><span>{{ downloading.has(exec.id) ? '下载中…' : '下载' }}</span>
                       </button>
                     </div>

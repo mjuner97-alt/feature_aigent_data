@@ -96,8 +96,6 @@
         WHERE retrieval_name = #{retrievalName}
           AND status = 'ACTIVE'
           AND deleted_at IS NULL
-          <!-- PERSONAL is owner-only at runtime; PUBLIC/PRIVATE may use the existing sources below. -->
-          AND (COALESCE(visibility, 'PERSONAL') &lt;&gt; 'PERSONAL' OR owner_user_id = #{userId})
           AND id IN (<include refid="visibleSkillIds"/>)
           AND (
               owner_user_id = #{userId}
@@ -109,9 +107,8 @@
     </select>
 
     <select id="selectActiveRetrievalNamesByUser" resultType="java.lang.String">
-        SELECT retrieval_name FROM skill_manage
-        WHERE (COALESCE(visibility, 'PERSONAL') &lt;&gt; 'PERSONAL' OR owner_user_id = #{userId})
-          AND (
+        SELECT DISTINCT retrieval_name FROM skill_manage
+        WHERE (
             owner_user_id = #{userId}
             OR id IN (SELECT target_skill_id FROM skill_reference WHERE creator = #{userId})
             OR id IN (<include refid="dimensionUsedSkillIds"/>)
@@ -125,8 +122,7 @@
 
     <select id="selectActiveByUser" resultMap="SkillResultMap">
         SELECT <include refid="skillCols"/> FROM skill_manage
-        WHERE (COALESCE(visibility, 'PERSONAL') &lt;&gt; 'PERSONAL' OR owner_user_id = #{userId})
-          AND (
+        WHERE (
             owner_user_id = #{userId}
             OR id IN (SELECT target_skill_id FROM skill_reference WHERE creator = #{userId})
             OR id IN (<include refid="dimensionUsedSkillIds"/>)
@@ -172,7 +168,6 @@
         WHERE s.id = #{skillId}
           AND s.status = 'ACTIVE'
           AND s.deleted_at IS NULL
-          AND (COALESCE(s.visibility, 'PERSONAL') &lt;&gt; 'PERSONAL' OR s.owner_user_id = #{userId})
           AND NOT EXISTS (
               SELECT 1 FROM skill_user_disable d
               WHERE d.skill_id = s.id AND d.user_id = #{userId}
@@ -297,7 +292,8 @@
                 <when test="view == 'used'">
                     s.status = 'ACTIVE' AND d.skill_id IS NULL
                     AND (
-                        s.id IN (SELECT target_skill_id FROM skill_reference WHERE creator = #{userId})
+                        s.owner_user_id = #{userId}
+                        OR s.id IN (SELECT target_skill_id FROM skill_reference WHERE creator = #{userId})
                         OR s.id IN (<include refid="dimensionUsedSkillIds"/>)
                         OR s.id IN (SELECT g.skill_id FROM skill_visible_grant g WHERE <include refid="grantMatchCondition"/>)
                     )

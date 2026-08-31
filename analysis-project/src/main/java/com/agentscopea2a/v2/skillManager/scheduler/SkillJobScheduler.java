@@ -28,6 +28,7 @@ import com.agentscopea2a.v2.skillManager.notification.NotificationService;
 import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
 import com.agentscopea2a.v2.skillManager.report.ReportFilenamePolicy;
 import com.agentscopea2a.v2.tools.WriteMarkdownTool;
+import com.agentscopea2a.v2.tools.ToolResultRegistry;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.AgentResultEvent;
@@ -114,6 +115,7 @@ public class SkillJobScheduler implements WriteCallback {
     private final WriteMarkdownTool writeMarkdownTool;
     /** Markdown -> 自包含 HTML 渲染器（含表格样式 + 内联 echarts）。 */
     private final HtmlReportRenderer htmlReportRenderer;
+    private final ToolResultRegistry toolResultRegistry;
 
     /** Skill Job 报告根目录(${skill.job.base-dir})。 */
     private final String baseDir;
@@ -165,7 +167,8 @@ public class SkillJobScheduler implements WriteCallback {
             HarnessRunnerProperties properties,
             SkillStorageProperties storageProperties,
             WriteMarkdownTool writeMarkdownTool,
-            HtmlReportRenderer htmlReportRenderer) {
+            HtmlReportRenderer htmlReportRenderer,
+            ToolResultRegistry toolResultRegistry) {
         this.runner = runner;
         this.mapper = mapper;
         this.skillMapper = skillMapper;
@@ -174,6 +177,7 @@ public class SkillJobScheduler implements WriteCallback {
         this.baseDir = storageProperties.getJobReportDir();
         this.writeMarkdownTool = writeMarkdownTool;
         this.htmlReportRenderer = htmlReportRenderer;
+        this.toolResultRegistry = toolResultRegistry;
         // 手动/批量各自独立线程池：互不阻塞，大小与队列容量均配置驱动
         this.directExecutor = newThreadPool(config.getManualPoolSize(), config.getQueueCapacity(), "skill-job-manual-executor");
         this.batchExecutor = newThreadPool(config.getBatchPoolSize(), config.getQueueCapacity(), "skill-job-batch-executor");
@@ -499,7 +503,7 @@ public class SkillJobScheduler implements WriteCallback {
                         .block(Duration.ofSeconds(60 * 10));
 
                 // 提取AI最终文本结果
-                String agentResult = extractFinalText(events);
+                String agentResult = toolResultRegistry.resolveFinalResult(extractFinalText(events));
 
                 // 校验模型输出：误产出 tool_call 或以 think 结尾（思考未转正文）判失败，不写入半成品报告
                 if (agentResult != null && !agentResult.isBlank() && !isValidReportContent(agentResult)) {
@@ -528,7 +532,7 @@ public class SkillJobScheduler implements WriteCallback {
             } catch (Exception e) {
                 log.error("Job {} execution failed (attempt {})", jobId, attempt, e);
                 execution.setStatus("FAILED");
-                execution.setErrorMsg(e.getMessage());
+                execution.setErrorMsg(formatExecutionError("MODEL_STREAM", e));
                 execution.setCompletedAt(LocalDateTime.now());
                 mapper.updateExecutionStatus(execution);
                 return execution;
@@ -555,7 +559,7 @@ public class SkillJobScheduler implements WriteCallback {
         } catch (Exception e) {
             log.error("Job {} attempt {} execution error", jobId, attempt, e);
             execution.setStatus("FAILED");
-            execution.setErrorMsg(e.getMessage());
+            execution.setErrorMsg(formatExecutionError("EXECUTION", e));
             execution.setCompletedAt(LocalDateTime.now());
             try {
                 mapper.updateExecutionStatus(execution);
@@ -567,6 +571,14 @@ public class SkillJobScheduler implements WriteCallback {
             mdWrittenPaths.remove(execution.getId());
         }
         return execution;
+    }
+
+    private String formatExecutionError(String stage, Throwable error) {
+        Throwable root = error;
+        while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+        String type = root.getClass().getSimpleName();
+        String message = root.getMessage();
+        return stage + ": " + type + (message == null || message.isBlank() ? "" : " - " + message);
     }
 
     /** Sends exactly once after the final SUCCESS/FAILED attempt; sender chooses channel-specific content. */

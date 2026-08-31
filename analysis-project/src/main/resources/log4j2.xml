@@ -22,12 +22,44 @@
     <Properties>
         <Property name="AGENTSCOPE_LEVEL">${env:AGENTSCOPE_LOG_LEVEL:-INFO}</Property>
         <Property name="CONSOLE_PATTERN">%d{HH:mm:ss.SSS} %-5level %-36.36c{1.} : %m%n%throwable</Property>
+        <Property name="LOG_DIR">/opt/agentscope-workspace/harness-a2a/logs</Property>
     </Properties>
 
     <Appenders>
         <Console name="Console" target="SYSTEM_OUT">
             <PatternLayout pattern="${CONSOLE_PATTERN}" charset="UTF-8"/>
         </Console>
+        <RollingFile name="InfoFile" fileName="${LOG_DIR}/info.log"
+                     filePattern="${LOG_DIR}/info-%d{yyyy-MM-dd}-%i.log.gz">
+            <PatternLayout pattern="${CONSOLE_PATTERN}" charset="UTF-8"/>
+            <Filters>
+                <LevelRangeFilter minLevel="INFO" maxLevel="WARN" onMatch="ACCEPT" onMismatch="DENY"/>
+            </Filters>
+            <Policies>
+                <TimeBasedTriggeringPolicy/>
+                <SizeBasedTriggeringPolicy size="100 MB"/>
+            </Policies>
+            <DefaultRolloverStrategy max="30"/>
+        </RollingFile>
+        <RollingFile name="ErrorFile" fileName="${LOG_DIR}/error.log"
+                     filePattern="${LOG_DIR}/error-%d{yyyy-MM-dd}-%i.log.gz">
+            <PatternLayout pattern="${CONSOLE_PATTERN}" charset="UTF-8"/>
+            <ThresholdFilter level="ERROR" onMatch="ACCEPT" onMismatch="DENY"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy/>
+                <SizeBasedTriggeringPolicy size="100 MB"/>
+            </Policies>
+            <DefaultRolloverStrategy max="30"/>
+        </RollingFile>
+        <RollingFile name="LlmTraceFile" fileName="${LOG_DIR}/llm-call-trace.log"
+                     filePattern="${LOG_DIR}/llm-call-trace-%d{yyyy-MM-dd}-%i.log.gz">
+            <PatternLayout pattern="%d{ISO8601} %m%n%throwable" charset="UTF-8"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy/>
+                <SizeBasedTriggeringPolicy size="100 MB"/>
+            </Policies>
+            <DefaultRolloverStrategy max="30"/>
+        </RollingFile>
     </Appenders>
 
     <Loggers>
@@ -41,9 +73,14 @@
         <Logger name="io.projectreactor" level="WARN"/>
         <Logger name="okhttp3" level="WARN"/>
         <Logger name="com.alibaba" level="WARN"/>
+        <Logger name="llm.trace" level="ERROR" additivity="false">
+            <AppenderRef ref="LlmTraceFile"/>
+        </Logger>
 
         <Root level="INFO">
             <AppenderRef ref="Console"/>
+            <AppenderRef ref="InfoFile"/>
+            <AppenderRef ref="ErrorFile"/>
         </Root>
     </Loggers>
 </Configuration>

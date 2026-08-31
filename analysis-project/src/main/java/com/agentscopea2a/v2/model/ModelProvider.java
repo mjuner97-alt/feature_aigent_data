@@ -70,17 +70,7 @@ public class ModelProvider {
         this.webClientTransport = webClientTransport;
 
         // 统一从 agentscope.llm.* 构建默认模型 (deepseek)
-//        this.defaultModel = OpenAIChatModel.builder()
-//                .apiKey(llmApiKey)
-//                .baseUrl(llmApiUrl)
-//                .modelName(llmModel)
-//                .stream(true)
-//                .build();
-
-        // fallback 模型：同一默认 deepseek 端点，但走 WebClient(HTTP/1.1) 传输。
-        // 主模型(JdkHttpTransport/HTTP2) 超时/失败时降级到它，规避 JDK HTTP2+SSE 卡死
-        //（与用户实测 WebClient 每次都能连通一致）。
-        this.fallbackModel = OpenAIChatModel.builder()
+        this.defaultModel =   OpenAIChatModel.builder()
                 .httpTransport(webClientTransport)
                 .apiKey(llmApiKey)
                 .baseUrl(llmApiUrl)
@@ -88,8 +78,10 @@ public class ModelProvider {
                 .stream(true)
                 .build();
 
-
-        this.defaultModel = OpenAIChatModel.builder()
+        // fallback 模型：同一默认 deepseek 端点，但走 WebClient(HTTP/1.1) 传输。
+        // 主模型(JdkHttpTransport/HTTP2) 超时/失败时降级到它，规避 JDK HTTP2+SSE 卡死
+        //（与用户实测 WebClient 每次都能连通一致）。
+        this.fallbackModel = OpenAIChatModel.builder()
                 .httpTransport(webClientTransport)
                 .apiKey(llmApiKey)
                 .baseUrl(llmApiUrl)
