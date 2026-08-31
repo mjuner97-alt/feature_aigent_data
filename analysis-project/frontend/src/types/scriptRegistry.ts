@@ -56,3 +56,33 @@ export interface ParamSchemaItem {
   required: boolean;
   description: string;
 }
+
+export interface ScriptSourceResponse {
+  scriptId: string;
+  scriptPath: string;
+  content: string;
+  contentHash: string;
+  updatedAt?: string;
+}
+
+export interface ScriptDebugRun {
+  runId: string;
+  scriptId: string;
+  status: 'QUEUED' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'TIMEOUT' | 'CANCELLED';
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  elapsedMs: number | null;
+  updatedAt?: string;
+}
+
+export interface ScriptDebugEvent {
+  type: string;
+  runId: string;
+  status: ScriptDebugRun['status'];
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  terminalStatus?: string;
+  elapsedMs: number;
+}

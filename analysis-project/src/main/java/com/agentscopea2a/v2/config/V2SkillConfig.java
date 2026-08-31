@@ -61,9 +61,10 @@ import java.nio.file.Paths;
  * propose -> promote -> usage -> audit -> security -> curator.
  * Uses {@link LocalApprovalGate} for HITL (human-in-the-loop) skill promotion.
  *
- * <p>Also wires the {@link SkillVectorIndexVisibilityFilter} as a pass-through
- * {@link SkillVisibilityFilter} so the JAR's {@code HarnessSkillMiddleware}
- * surfaces all builtin skills to the LLM.
+ * <p>Also wires the {@link SkillVectorIndexVisibilityFilter} as the runtime
+ * {@link SkillVisibilityFilter}: it narrows the model-visible skill catalogue to
+ * Top-K candidates routed from {@code skill_routing_metadata} (with fallback to
+ * all skills on empty selection / unconfigured rows, see the filter javadoc).
  */
 @Configuration
 public class V2SkillConfig {

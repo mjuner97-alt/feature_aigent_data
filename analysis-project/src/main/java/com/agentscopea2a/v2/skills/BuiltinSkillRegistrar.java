@@ -192,9 +192,10 @@ public class BuiltinSkillRegistrar implements CommandLineRunner {
         SkillRoutingMetadata metadata = new SkillRoutingMetadata(
                 frontmatter.name, shortSummary(frontmatter.description), generatedAliases(frontmatter.name),
                 generatedKeywords(frontmatter.name), List.of(), List.of(),
-                List.of(), 0, false, null);
+                List.of(), 0, true, null);
         if (routingMetadataRepository.upsert(metadata)) {
-            log.info("Created inactive routing metadata for builtin skill '{}'", frontmatter.name);
+            log.info("Created active routing metadata for builtin skill '{}' (name-derived, unconfigured)",
+                    frontmatter.name);
         }
     }
 

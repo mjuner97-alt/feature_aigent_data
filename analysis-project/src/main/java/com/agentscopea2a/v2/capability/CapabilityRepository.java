@@ -16,11 +16,21 @@ public class CapabilityRepository {
     private static final TypeReference<List<String>> LIST = new TypeReference<>() {};
     private final DataSource dataSource;
     private final ObjectMapper mapper;
+    private final long cacheTtlMillis;
     private volatile boolean ensured;
+    /** Capabilities + skill bindings are refreshed together as one TTL snapshot. */
+    private volatile List<CapabilityMetadata> cachedCapabilities;
+    private volatile Map<String, List<String>> cachedBindings;
+    private volatile long cachedAt;
 
     public CapabilityRepository(DataSource dataSource, ObjectMapper mapper) {
+        this(dataSource, mapper, 0L);
+    }
+
+    public CapabilityRepository(DataSource dataSource, ObjectMapper mapper, long cacheTtlMillis) {
         this.dataSource = dataSource;
         this.mapper = mapper;
+        this.cacheTtlMillis = cacheTtlMillis;
     }
 
     @PostConstruct
@@ -28,6 +38,42 @@ public class CapabilityRepository {
 
     public List<CapabilityMetadata> findActive() {
         ensureSchema();
+        refreshSnapshotIfNeeded();
+        List<CapabilityMetadata> snapshot = cachedCapabilities;
+        return snapshot != null ? snapshot : List.of();
+    }
+
+    public Map<String, List<String>> findActiveSkillBindings() {
+        ensureSchema();
+        refreshSnapshotIfNeeded();
+        Map<String, List<String>> snapshot = cachedBindings;
+        return snapshot != null ? snapshot : Map.of();
+    }
+
+    /** Drops the TTL snapshot so the next read hits the database. */
+    public void invalidateCache() {
+        cachedCapabilities = null;
+        cachedBindings = null;
+    }
+
+    private void refreshSnapshotIfNeeded() {
+        List<CapabilityMetadata> capabilities = cachedCapabilities;
+        if (capabilities != null && cacheTtlMillis > 0
+                && System.currentTimeMillis() - cachedAt < cacheTtlMillis) {
+            return;
+        }
+        synchronized (this) {
+            if (cachedCapabilities != null && cacheTtlMillis > 0
+                    && System.currentTimeMillis() - cachedAt < cacheTtlMillis) {
+                return;
+            }
+            cachedCapabilities = queryCapabilities();
+            cachedBindings = queryBindings();
+            cachedAt = System.currentTimeMillis();
+        }
+    }
+
+    private List<CapabilityMetadata> queryCapabilities() {
         List<CapabilityMetadata> result = new ArrayList<>();
         String sql = "SELECT capability_name, short_summary, aliases, keywords, domain_tags, priority, active "
                 + "FROM capability_registry WHERE active = TRUE ORDER BY priority DESC, capability_name";
@@ -36,18 +82,17 @@ public class CapabilityRepository {
             while (rs.next()) result.add(new CapabilityMetadata(rs.getString(1), rs.getString(2),
                     parse(rs.getString(3)), parse(rs.getString(4)), parse(rs.getString(5)), rs.getInt(6), rs.getBoolean(7)));
         } catch (SQLException e) { log.warn("findActive capabilities failed: {}", e.getMessage()); }
-        return result;
+        return List.copyOf(result);
     }
 
-    public Map<String, List<String>> findActiveSkillBindings() {
-        ensureSchema();
+    private Map<String, List<String>> queryBindings() {
         Map<String, List<String>> result = new HashMap<>();
         String sql = "SELECT capability_name, skill_name FROM skill_capability_binding WHERE active = TRUE";
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql);
              ResultSet rs = ps.executeQuery()) {
             while (rs.next()) result.computeIfAbsent(rs.getString(1), ignored -> new ArrayList<>()).add(rs.getString(2));
         } catch (SQLException e) { log.warn("findActive capability bindings failed: {}", e.getMessage()); }
-        return result;
+        return Map.copyOf(result);
     }
 
     /** Inserts or refreshes a capability record discovered from explicit Skill frontmatter. */
@@ -59,7 +104,9 @@ public class CapabilityRepository {
             ps.setString(1, metadata.name()); ps.setString(2, metadata.shortSummary());
             ps.setString(3, json(metadata.aliases())); ps.setString(4, json(metadata.keywords()));
             ps.setString(5, json(metadata.domainTags())); ps.setInt(6, metadata.priority()); ps.setBoolean(7, metadata.active());
-            ps.executeUpdate(); return true;
+            ps.executeUpdate();
+            invalidateCache();
+            return true;
         } catch (SQLException e) { log.warn("upsert capability {} failed: {}", metadata.name(), e.getMessage()); return false; }
     }
 
@@ -69,7 +116,9 @@ public class CapabilityRepository {
         String sql = "INSERT INTO skill_capability_binding (skill_name, capability_name, active, updated_at) "
                 + "VALUES (?, ?, TRUE, now()) ON DUPLICATE KEY UPDATE updated_at = updated_at";
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setString(1, skillName); ps.setString(2, capabilityName); ps.executeUpdate(); return true;
+            ps.setString(1, skillName); ps.setString(2, capabilityName); ps.executeUpdate();
+            invalidateCache();
+            return true;
         } catch (SQLException e) { log.warn("bind {} -> {} failed: {}", skillName, capabilityName, e.getMessage()); return false; }
     }
 

@@ -26,27 +26,32 @@ import org.slf4j.LoggerFactory;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * Pass-through {@link SkillVisibilityFilter} that lets the JAR
- * {@code HarnessSkillMiddleware} surface all {@code skills/} entries in the
- * catalogue; the LLM picks by name+description and loads body on demand.
+ * Metadata-driven {@link SkillVisibilityFilter} that narrows the skill catalogue the
+ * LLM sees to the Top-K candidates routed by {@link SkillCandidateSelector} from
+ * {@code skill_routing_metadata} (aliases/keywords/tags/priority), with capability
+ * coarse recall via {@link CapabilityRouter}.
  *
- * <p>2026/07/29: filter body trimmed to pass-through. Original logic narrowed
- * the catalogue by question embedding top-K, but that blocked hot-loading: a
- * newly-dropped {@code SKILL.md} had no {@code skill_index} row and was filtered
- * out before the LLM ever saw it. With retrieval already disabled
- * ({@code harness.skills.retrieval.enabled=false}) and the analyze_data workflow
- * using explicit {@code load_skill_through_path}, the vector filter was dead
- * weight.
- * <p>During agent execution, the curator asks all registered
- * {@link SkillVisibilityFilter}s to trim the full skill catalogue down to the
- * ones relevant for the current request. This filter:
+ * <p>Availability rules (routing must never make skills unreachable):
+ * <ul>
+ *   <li>Skills with no routing metadata row (e.g. a freshly hot-loaded SKILL.md before
+ *       {@code BuiltinSkillRegistrar} runs) are always appended to the visible set, so
+ *       the 2026/07/29 hot-loading regression cannot recur. New skills get an active
+ *       name-derived draft row from the registrar, so they route immediately.</li>
+ *   <li>If the selected candidate set ends up empty, the filter falls back to all
+ *       skills: a routing miss costs precision, not availability.</li>
+ *   <li>Skills explicitly disabled by an administrator ({@code active=false}) stay
+ *       hidden - "no row" and "disabled row" are distinguished via
+ *       {@link SkillRoutingMetadataRepository#findAll()}.</li>
+ * </ul>
  *
- * <p>2026/07/30: embedding/vector dependencies removed entirely. The class is
- * kept as a no-arg bean because {@code HarnessA2aRunnerV2} wraps it in a
- * {@code CompositeFilter} via the {@code SkillVisibilityFilter} type.
+ * <p>2026/07/29-30 history: the filter was briefly a pure pass-through after the
+ * embedding-based vector filter was removed (it blocked hot-loading and was dead
+ * weight with retrieval disabled). The deterministic metadata routing replaced it
+ * on 2026/08/31.
  */
 public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
 
@@ -91,11 +96,12 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
         if (question == null || question.isBlank()) {
             return all;
         }
-        List<SkillRoutingMetadata> metadata = routingMetadataRepository.findActive();
-        if (metadata.isEmpty()) {
-            log.warn("No active skill routing metadata; leaving {} skills visible", all.size());
+        List<SkillRoutingMetadata> allMetadata = routingMetadataRepository.findAll();
+        if (allMetadata.isEmpty()) {
+            log.warn("No skill routing metadata configured; leaving {} skills visible", all.size());
             return all;
         }
+        List<SkillRoutingMetadata> metadata = allMetadata.stream().filter(SkillRoutingMetadata::active).toList();
         boolean explicitSkill = metadata.stream().anyMatch(m -> contains(question, m.skillName())
                 || (m.aliases() != null && m.aliases().stream().anyMatch(a -> contains(question, a))));
         if (!explicitSkill) {
@@ -113,16 +119,27 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
             }
         }
         SkillCandidateSelection selection = candidateSelector.select(all, metadata, question);
-        if (selection.skillNames().isEmpty()) {
-            log.warn("No routed Skill candidates after visibility/domain filtering");
-            return List.of();
-        }
         Map<String, AgentSkill> byName = all.stream()
                 .collect(Collectors.toMap(AgentSkill::getName, skill -> skill, (left, right) -> left));
-        List<AgentSkill> result = selection.skillNames().stream()
-                .map(byName::get)
-                .filter(java.util.Objects::nonNull)
-                .toList();
+        List<AgentSkill> result = new java.util.ArrayList<>();
+        for (String name : selection.skillNames()) {
+            AgentSkill skill = byName.get(name);
+            if (skill != null) result.add(skill);
+        }
+        // Skills without a routing metadata row are always visible so that hot-loaded
+        // SKILL.md files surface before an administrator configures them. Rows with
+        // active=false are "configured and disabled" and stay hidden.
+        Set<String> configuredNames = allMetadata.stream()
+                .map(SkillRoutingMetadata::skillName).collect(Collectors.toSet());
+        for (AgentSkill skill : all) {
+            if (!configuredNames.contains(skill.getName())) {
+                result.add(skill);
+            }
+        }
+        if (result.isEmpty()) {
+            log.warn("No routed Skill candidates; falling back to all {} skills", all.size());
+            return all;
+        }
         log.debug("Skill candidate selection: all={}, selected={}, explicit={}, confident={}, fallback={}",
                 all.size(), result.size(), selection.explicitNameMatched(), selection.confident(),
                 selection.fallbackExpanded());

@@ -1,4 +1,4 @@
-import type { ScriptRegistryEntry, ScriptRegistryInput, ScriptRegistryListItem } from '../types/scriptRegistry';
+import type { ScriptDebugEvent, ScriptDebugRun, ScriptRegistryEntry, ScriptRegistryInput, ScriptRegistryListItem, ScriptSourceResponse } from '../types/scriptRegistry';
 import { apiErrorDetail } from '../utils/apiError';
 
 const BASE = '/api/script-registry';
@@ -64,4 +64,49 @@ export async function setEntryEnabled(id: number, enabled: number): Promise<void
 export async function deleteEntry(id: number): Promise<void> {
   const res = await fetch(`${BASE}?id=${id}`, { method: 'DELETE', headers: authHeaders() });
   if (!res.ok) throw new Error(`删除失败: ${res.status}`);
+}
+
+export async function getSource(id: number): Promise<ScriptSourceResponse> {
+  const res = await fetch(`${BASE}/${id}/source`, { headers: authHeaders() });
+  if (!res.ok) throw new Error((await apiErrorDetail(res)) || `读取源码失败 (HTTP ${res.status})`);
+  return res.json();
+}
+
+export async function saveSource(id: number, content: string, expectedContentHash: string): Promise<ScriptSourceResponse> {
+  const res = await fetch(`${BASE}/${id}/source`, {
+    method: 'PUT', headers: jsonHeaders(),
+    body: JSON.stringify({ content, expectedContentHash }),
+  });
+  if (!res.ok) throw new Error((await apiErrorDetail(res)) || (res.status === 409 ? '源码已被其他编辑修改' : `保存源码失败 (HTTP ${res.status})`));
+  return res.json();
+}
+
+export async function startDebug(id: number, params: Record<string, unknown>, timeoutSeconds: number): Promise<ScriptDebugRun> {
+  const res = await fetch(`${BASE}/${id}/debug`, {
+    method: 'POST', headers: jsonHeaders(),
+    body: JSON.stringify({ params, timeoutSeconds, sourceMode: 'SAVED' }),
+  });
+  if (!res.ok) throw new Error((await apiErrorDetail(res)) || `启动调试失败 (HTTP ${res.status})`);
+  return res.json();
+}
+
+export async function cancelDebug(runId: string): Promise<void> {
+  const res = await fetch(`${BASE}/debug/${runId}/cancel`, { method: 'POST', headers: jsonHeaders() });
+  if (!res.ok) throw new Error((await apiErrorDetail(res)) || `停止调试失败 (HTTP ${res.status})`);
+}
+
+export function subscribeDebug(runId: string, handlers: {
+  event: (event: ScriptDebugEvent) => void;
+  error: (error: Event) => void;
+  complete: () => void;
+}): EventSource {
+  const source = new EventSource(`${BASE}/debug/${runId}/events`);
+  ['run_started', 'stdout', 'stderr', 'run_finished', 'run_failed', 'run_cancelled'].forEach(type => {
+    source.addEventListener(type, (event) => handlers.event(JSON.parse((event as MessageEvent).data)));
+  });
+  source.onerror = (event) => {
+    handlers.error(event);
+    if (source.readyState === EventSource.CLOSED) handlers.complete();
+  };
+  return source;
 }

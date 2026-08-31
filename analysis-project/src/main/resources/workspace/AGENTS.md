@@ -21,6 +21,8 @@
 
 ## Skill 分类与选择优先级
 
+系统已按当前问题自动筛选出最相关的 skill 候选(对话中可见的 skill 列表即筛选结果),**直接从可见列表中选择,不要按名称盲猜、不要反复试探加载**。未配置路由的 skill 与低置信问题会回退全量列表,此时按下述双轨优先级判断。
+
 skill 分两类, **用户自定义 skill 优先, 接口封装 skill 兜底**:
 
 ### 1. 用户自定义 skill (优先选择)
@@ -28,9 +30,8 @@ skill 分两类, **用户自定义 skill 优先, 接口封装 skill 兜底**:
 专门为特定查数流程定义好的 skill, 包含完整工作流 (取数 + 计算 + 输出)。命名无固定规则 (不以 `xxx_tool_index` 结尾), 生产环境陆续新增。
 
 **匹配判断**:
-- 用户问的指标 + 维度组合与 skill 名称/描述语义相符 (按用户问的指标 / 维度 / 业务领域等关键词猜候选 skill 名)
-- `load_skill_through_path(name="<候选 skill 名>")` 加载成功, 且 skill 全文 "适用场景" 覆盖用户问题即匹配
-- 加载失败或 "适用场景" 不覆盖 -> 尝试下一个候选名, 都不匹配则退回 §2
+- 用户问的指标 + 维度组合与可见 skill 的名称/描述语义相符即匹配
+- 可见列表没有覆盖用户问题的 skill 时 -> 退回 §2
 
 ### 2. 接口封装 skill (兜底, 命名 `xxx_tool_index`)
 
@@ -41,7 +42,7 @@ skill 分两类, **用户自定义 skill 优先, 接口封装 skill 兜底**:
 
 1. 含分析意图关键词 (即使同时含指标词) -> `agent_spawn(analyze_data)`
 2. 简单指标查数 / 数据查询 (完成率/达标率/合格率等, 无分析/对比/趋势意图) -> Supervisor 直跑:
-   - **Step 1 - 优先找用户自定义 skill**: 在 §1 列表里找语义匹配, `load_skill_through_path` 加载后按 skill 文档流程执行 (常见为路径 A: script_exec 一步到位, 也可能是 sql_registry_exec / python_exec 等, 以 skill 全文为准)
+   - **Step 1 - 优先找用户自定义 skill**: 在可见 skill 列表里找语义匹配, `load_skill_through_path` 加载全文后按 skill 文档流程执行 (常见为路径 A: script_exec 一步到位, 也可能是 sql_registry_exec / python_exec 等, 以 skill 全文为准)
    - **Step 2 - 找不到匹配时走接口封装 skill**: 加载对应 `xxx_tool_index` 选 toolId, 走路径 B (router_tool)
 3. 生成下载链接 ("下载/导出/CSV/明细/清单" 触发词) -> 走「下载链接生成」专章 (用户自定义 skill 内置下载流程优先, 接口下载 skill 兜底)
 4. 接口查询 / 通用查数 (无匹配用户自定义 skill) -> 路径 B
@@ -50,7 +51,7 @@ skill 分两类, **用户自定义 skill 优先, 接口封装 skill 兜底**:
 **关键**:
 - 分析意图优先级最高, Supervisor 单轮工具调用兜不住 5 步工作流。
 - **用户自定义 skill 优先于接口封装 skill**: 专用流程比通用接口更准确, 一次调用拿到全部数字 (含百分比), 不写 python 代码, 不卡 LLM。
-- **不要默认跳到 `xxx_tool_index`**: 先按用户问的指标/维度/业务领域猜候选 skill 名, `load_skill_through_path` 尝试加载; 只有用户自定义 skill 里确实没有对应流程时才退回 `xxx_tool_index`。
+- 用户显式指名某个 skill 时直接 `load_skill_through_path(name=...)` 加载执行。
 
 ## Supervisor 直跑 - 两条路径
 

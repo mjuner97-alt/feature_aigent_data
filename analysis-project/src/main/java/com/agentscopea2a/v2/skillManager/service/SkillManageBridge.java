@@ -150,12 +150,12 @@ public class SkillManageBridge {
                 .orElse(false);
     }
 
-    /** Creates only an inactive routing draft; existing administrator metadata is never overwritten. */
+    /** Creates an active (name-derived) routing draft; existing administrator metadata is never overwritten. */
     private void ensureRoutingMetadata(String skillName, String description) {
         if (routingMetadataRepo == null || routingMetadataRepo.findBySkillName(skillName).isPresent()) return;
         routingMetadataRepo.upsert(new SkillRoutingMetadata(skillName,
                 limitSummary(description), generatedAliases(skillName), generatedKeywords(skillName),
-                List.of(), List.of(), List.of(), 0, false, null));
+                List.of(), List.of(), List.of(), 0, true, null));
     }
 
     private static String limitSummary(String description) {

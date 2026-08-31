@@ -16,11 +16,11 @@ public class SkillRoutingMetadataAdminService {
     }
 
     public List<SkillRoutingMetadataView> list(String keyword, Boolean active, int limit, int offset) {
-        return repository.findAllWithSkillIndex(keyword, active, limit, offset);
+        return repository.findAllWithSkillManage(keyword, active, limit, offset);
     }
 
     public SkillRoutingMetadataView get(String skillName) {
-        return repository.findOneWithSkillIndex(skillName)
+        return repository.findOneWithSkillManage(skillName)
                 .orElseThrow(() -> new IllegalArgumentException("SkillNotFound: " + skillName));
     }
 

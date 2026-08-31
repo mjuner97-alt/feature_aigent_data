@@ -104,17 +104,21 @@ public class V2ToolConfig {
     @Bean
     public SkillRoutingMetadataRepository skillRoutingMetadataRepository(
             @org.springframework.beans.factory.annotation.Qualifier("gaussDataSource") DataSource dataSource,
-            com.fasterxml.jackson.databind.ObjectMapper objectMapper) {
-        log.info("SkillRoutingMetadataRepository: wired (GaussDB-backed)");
-        return new SkillRoutingMetadataRepository(dataSource, objectMapper);
+            com.fasterxml.jackson.databind.ObjectMapper objectMapper,
+            @org.springframework.beans.factory.annotation.Value(
+                    "${harness.a2a.skill-context.metadata-cache-ttl-ms:30000}") long metadataCacheTtlMillis) {
+        log.info("SkillRoutingMetadataRepository: wired (GaussDB-backed, cacheTtl={}ms)", metadataCacheTtlMillis);
+        return new SkillRoutingMetadataRepository(dataSource, objectMapper, metadataCacheTtlMillis);
     }
 
     @Bean
     public CapabilityRepository capabilityRepository(
             @org.springframework.beans.factory.annotation.Qualifier("gaussDataSource") DataSource dataSource,
-            com.fasterxml.jackson.databind.ObjectMapper objectMapper) {
-        log.info("CapabilityRepository: wired (GaussDB-backed)");
-        return new CapabilityRepository(dataSource, objectMapper);
+            com.fasterxml.jackson.databind.ObjectMapper objectMapper,
+            @org.springframework.beans.factory.annotation.Value(
+                    "${harness.a2a.capability-routing.cache-ttl-ms:30000}") long capabilityCacheTtlMillis) {
+        log.info("CapabilityRepository: wired (GaussDB-backed, cacheTtl={}ms)", capabilityCacheTtlMillis);
+        return new CapabilityRepository(dataSource, objectMapper, capabilityCacheTtlMillis);
     }
 
     // ── Quality tools ─────────────────────────────────────────────────────

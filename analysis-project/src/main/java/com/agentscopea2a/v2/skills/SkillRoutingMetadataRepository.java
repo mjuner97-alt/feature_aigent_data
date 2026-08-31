@@ -25,11 +25,19 @@ public class SkillRoutingMetadataRepository {
 
     private final DataSource dataSource;
     private final ObjectMapper objectMapper;
+    private final long cacheTtlMillis;
     private volatile boolean tableEnsured;
+    private volatile List<SkillRoutingMetadata> cachedAll;
+    private volatile long cachedAt;
 
     public SkillRoutingMetadataRepository(DataSource dataSource, ObjectMapper objectMapper) {
+        this(dataSource, objectMapper, 0L);
+    }
+
+    public SkillRoutingMetadataRepository(DataSource dataSource, ObjectMapper objectMapper, long cacheTtlMillis) {
         this.dataSource = dataSource;
         this.objectMapper = objectMapper;
+        this.cacheTtlMillis = cacheTtlMillis;
     }
 
     @PostConstruct
@@ -37,21 +45,47 @@ public class SkillRoutingMetadataRepository {
         ensureTable();
     }
 
+    /**
+     * Active routing metadata only. Reads go through the TTL snapshot cache when
+     * {@code cacheTtlMillis > 0}; write paths ({@link #upsert}/{@link #rename}/
+     * {@link #deactivate}) invalidate it so admin-page saves take effect immediately.
+     */
     public List<SkillRoutingMetadata> findActive() {
+        return findAll().stream().filter(SkillRoutingMetadata::active).toList();
+    }
+
+    /**
+     * All routing metadata rows including {@code active=false}. The caller needs the
+     * full set to distinguish "never configured" (hot-load a new SKILL.md should stay
+     * visible) from "explicitly disabled" (must stay hidden).
+     */
+    public List<SkillRoutingMetadata> findAll() {
         ensureTable();
+        List<SkillRoutingMetadata> snapshot = cachedAll;
+        if (snapshot != null && cacheTtlMillis > 0
+                && System.currentTimeMillis() - cachedAt < cacheTtlMillis) {
+            return snapshot;
+        }
         String sql = "SELECT skill_name, short_summary, aliases, keywords, metric_tags, domain_tags, "
                 + "data_source_tags, priority, active, updated_at "
-                + "FROM skill_routing_metadata WHERE active = TRUE ORDER BY priority DESC, skill_name";
+                + "FROM skill_routing_metadata ORDER BY priority DESC, skill_name";
         List<SkillRoutingMetadata> result = new ArrayList<>();
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql);
              ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
                 result.add(map(rs));
             }
+            cachedAll = List.copyOf(result);
+            cachedAt = System.currentTimeMillis();
         } catch (SQLException e) {
-            log.warn("findActive skill routing metadata failed: {}", e.getMessage());
+            log.warn("findAll skill routing metadata failed: {}", e.getMessage());
         }
         return result;
+    }
+
+    /** Drops the TTL snapshot so the next read hits the database. */
+    public void invalidateCache() {
+        cachedAll = null;
     }
 
     public Optional<SkillRoutingMetadata> findBySkillName(String skillName) {
@@ -72,8 +106,11 @@ public class SkillRoutingMetadataRepository {
 
     public boolean skillExists(String skillName) {
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(
-                "SELECT 1 FROM skill_index WHERE name = ? AND status = 'active'")) {
+                "SELECT 1 FROM skill_manage WHERE retrieval_name = ? "
+                        + "AND status = 'ACTIVE' AND deleted_at IS NULL "
+                        + "UNION ALL SELECT 1 FROM skill_index WHERE name = ? AND status = 'active' LIMIT 1")) {
             ps.setString(1, skillName);
+            ps.setString(2, skillName);
             try (ResultSet rs = ps.executeQuery()) { return rs.next(); }
         } catch (SQLException e) {
             log.warn("skillExists({}) failed: {}", skillName, e.getMessage());
@@ -81,16 +118,17 @@ public class SkillRoutingMetadataRepository {
         }
     }
 
-    public List<SkillRoutingMetadataView> findAllWithSkillIndex(String keyword, Boolean active, int limit, int offset) {
+    /** Lists active, non-deleted Skills from skill_manage with optional routing metadata. */
+    public List<SkillRoutingMetadataView> findAllWithSkillManage(String keyword, Boolean active, int limit, int offset) {
         ensureTable();
-        StringBuilder sql = new StringBuilder("SELECT i.name, i.description, r.short_summary, r.aliases, r.keywords, r.metric_tags, r.domain_tags, r.data_source_tags, r.priority, r.active, r.updated_at, r.skill_name IS NOT NULL configured FROM skill_index i LEFT JOIN skill_routing_metadata r ON r.skill_name=i.name WHERE i.status='active'");
-        if (keyword != null && !keyword.isBlank()) sql.append(" AND (LOWER(i.name) LIKE ? OR LOWER(COALESCE(i.description,'')) LIKE ?)");
+        StringBuilder sql = new StringBuilder("SELECT x.name, x.description, r.short_summary, r.aliases, r.keywords, r.metric_tags, r.domain_tags, r.data_source_tags, r.priority, r.active, r.updated_at, r.skill_name IS NOT NULL configured FROM (SELECT s.retrieval_name AS name, s.description FROM skill_manage s WHERE s.retrieval_name IS NOT NULL AND s.status='ACTIVE' AND s.deleted_at IS NULL UNION SELECT i.name, i.description FROM skill_index i WHERE i.status='active' AND NOT EXISTS (SELECT 1 FROM skill_manage s2 WHERE s2.retrieval_name=i.name AND s2.status='ACTIVE' AND s2.deleted_at IS NULL)) x LEFT JOIN skill_routing_metadata r ON r.skill_name=x.name WHERE 1=1");
+        if (keyword != null && !keyword.isBlank()) sql.append(" AND (LOWER(x.name) LIKE ? OR LOWER(COALESCE(x.description,'')) LIKE ?)");
         if (active != null) sql.append(" AND COALESCE(r.active, TRUE)=?");
-        sql.append(" ORDER BY i.name LIMIT ? OFFSET ?");
+        sql.append(" ORDER BY x.name LIMIT ? OFFSET ?");
         List<SkillRoutingMetadataView> result = new ArrayList<>();
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql.toString())) {
             int p = 1;
-            if (keyword != null && !keyword.isBlank()) { String q = "%" + keyword.trim().toLowerCase() + "%"; ps.setString(p++, q); ps.setString(p++, q); }
+            if (keyword != null && !keyword.isBlank()) { String q = "%" + keyword.trim().toLowerCase() + "%"; ps.setString(p++, q); ps.setString(p++, q); ps.setString(p++, q); }
             if (active != null) ps.setBoolean(p++, active);
             ps.setInt(p++, Math.max(1, Math.min(limit, 200))); ps.setInt(p, Math.max(0, offset));
             try (ResultSet rs = ps.executeQuery()) { while (rs.next()) result.add(mapView(rs)); }
@@ -98,9 +136,10 @@ public class SkillRoutingMetadataRepository {
         return result;
     }
 
-    public Optional<SkillRoutingMetadataView> findOneWithSkillIndex(String skillName) {
+    /** Loads one configurable Skill from skill_manage with optional routing metadata. */
+    public Optional<SkillRoutingMetadataView> findOneWithSkillManage(String skillName) {
         ensureTable();
-        String sql = "SELECT i.name, i.description, r.short_summary, r.aliases, r.keywords, r.metric_tags, r.domain_tags, r.data_source_tags, r.priority, r.active, r.updated_at, r.skill_name IS NOT NULL configured FROM skill_index i LEFT JOIN skill_routing_metadata r ON r.skill_name=i.name WHERE i.name=? AND i.status='active'";
+        String sql = "SELECT x.name, x.description, r.short_summary, r.aliases, r.keywords, r.metric_tags, r.domain_tags, r.data_source_tags, r.priority, r.active, r.updated_at, r.skill_name IS NOT NULL configured FROM (SELECT s.retrieval_name AS name, s.description FROM skill_manage s WHERE s.retrieval_name IS NOT NULL AND s.status='ACTIVE' AND s.deleted_at IS NULL UNION SELECT i.name, i.description FROM skill_index i WHERE i.status='active' AND NOT EXISTS (SELECT 1 FROM skill_manage s2 WHERE s2.retrieval_name=i.name AND s2.status='ACTIVE' AND s2.deleted_at IS NULL)) x LEFT JOIN skill_routing_metadata r ON r.skill_name=x.name WHERE x.name=?";
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, skillName);
             try (ResultSet rs = ps.executeQuery()) { return rs.next() ? Optional.of(mapView(rs)) : Optional.empty(); }
@@ -127,6 +166,7 @@ public class SkillRoutingMetadataRepository {
             ps.setInt(8, metadata.priority());
             ps.setBoolean(9, metadata.active());
             ps.executeUpdate();
+            invalidateCache();
             return true;
         } catch (SQLException e) {
             log.warn("upsert skill routing metadata for {} failed: {}", metadata.skillName(), e.getMessage());
@@ -140,7 +180,9 @@ public class SkillRoutingMetadataRepository {
                 "UPDATE skill_routing_metadata SET skill_name = ?, updated_at = now() WHERE skill_name = ?")) {
             ps.setString(1, newName);
             ps.setString(2, oldName);
-            return ps.executeUpdate() > 0;
+            boolean renamed = ps.executeUpdate() > 0;
+            if (renamed) invalidateCache();
+            return renamed;
         } catch (SQLException e) {
             log.warn("rename skill routing metadata {} -> {} failed: {}", oldName, newName, e.getMessage());
             return false;
@@ -152,7 +194,9 @@ public class SkillRoutingMetadataRepository {
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(
                 "UPDATE skill_routing_metadata SET active = FALSE, updated_at = now() WHERE skill_name = ?")) {
             ps.setString(1, skillName);
-            return ps.executeUpdate() > 0;
+            boolean deactivated = ps.executeUpdate() > 0;
+            if (deactivated) invalidateCache();
+            return deactivated;
         } catch (SQLException e) {
             log.warn("deactivate skill routing metadata {} failed: {}", skillName, e.getMessage());
             return false;
