@@ -36,25 +36,25 @@ public class TraceQueryService {
     }
 
     /** 会话列表（分页）。 */
-    public Map<String, Object> listConversations(String source, String userId, int page, int size) {
+    public Map<String, Object> listConversations(String source, String userId, String keyword, int page, int size) {
         int offset = page * size;
-        List<TraceConversation> rows = traceCkMapper.listConversations(source, userId, offset, size);
+        List<TraceConversation> rows = traceCkMapper.listConversations(source, userId, keyword, offset, size);
         List<Map<String, Object>> items = rows == null || rows.isEmpty()
                 ? Collections.emptyList()
                 : rows.stream().map(TraceQueryService::toSummary).toList();
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("conversations", items);
-        resp.put("total", traceCkMapper.countConversations(source, userId));
+        resp.put("total", traceCkMapper.countConversations(source, userId, keyword));
         resp.put("page", page);
         resp.put("size", size);
         return resp;
     }
 
-    /** 单会话详情（含事件 JSON 列表，按 timestamp ASC）。按 trace_id 过滤，只取当前轮事件。 */
+    /** 单会话详情（含全部轮次的事件 JSON 列表，按 timestamp ASC）。 */
     public Map<String, Object> getDetail(String conversationId) {
         TraceConversation c = traceCkMapper.getConversation(conversationId);
         if (c == null) return null;
-        List<String> events = traceCkMapper.listEventJsons(conversationId, c.getTraceId());
+        List<String> events = traceCkMapper.listEventJsons(conversationId);
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("conversation", toSummary(c));
         resp.put("events", events == null ? Collections.emptyList() : events);

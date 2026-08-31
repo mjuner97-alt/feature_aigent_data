@@ -76,6 +76,7 @@
                 <if test="userId != null and userId != ''">
                     AND user_id = #{userId}
                 </if>
+                <if test="keyword != null and keyword != ''">AND (conversation_id LIKE concat('%', #{keyword}, '%') OR user_id LIKE concat('%', #{keyword}, '%') OR agent_name LIKE concat('%', #{keyword}, '%'))</if>
             </where>
             GROUP BY conversation_id
         ) latest ON t.conversation_id = latest.conversation_id
@@ -95,6 +96,7 @@
             <if test="userId != null and userId != ''">
                 AND user_id = #{userId}
             </if>
+            <if test="keyword != null and keyword != ''">AND (conversation_id LIKE concat('%', #{keyword}, '%') OR user_id LIKE concat('%', #{keyword}, '%') OR agent_name LIKE concat('%', #{keyword}, '%'))</if>
         </where>
     </select>
 
@@ -112,15 +114,11 @@
         LIMIT 1
     </select>
 
-    <!--
-        查询指定会话指定轮次的事件 JSON 列表（按 timestamp ASC）。
-        按 trace_id 过滤，多轮对话时只取当前轮的事件，避免跨轮事件混淆。
-    -->
+    <!-- 查询指定会话全部轮次的事件 JSON 列表（按 timestamp ASC）。 -->
     <select id="listEventJsons" resultType="java.lang.String">
         SELECT event_json
         FROM trace_event
         WHERE conversation_id = #{conversationId}
-          AND trace_id = #{traceId}
         ORDER BY timestamp ASC
     </select>
 

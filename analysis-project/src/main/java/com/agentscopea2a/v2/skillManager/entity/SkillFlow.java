@@ -23,6 +23,8 @@ public class SkillFlow {
     private String taskQuestion;
     private String summaryQuestionTemplate;
     private Boolean enabled;
+    /** JSON weekday to time list shared by scheduled long-task triggers. */
+    private String scheduleRules;
     private Integer maxParallelism;
     private Boolean notifyEnabled;
     private String createdBy;

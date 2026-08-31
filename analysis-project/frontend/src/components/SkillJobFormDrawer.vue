@@ -13,6 +13,7 @@ import { listSkills } from '../api/skill';
 import type { SkillJobInput, SkillJobUpdateInput } from '../types/skillJob';
 import type { SkillListItem } from '../types/skill';
 import type { SkillDependencyMetric } from '../types/skillJob';
+import ScheduleRulesEditor from './ScheduleRulesEditor.vue';
 
 const props = withDefaults(defineProps<{ open: boolean; editId: number | null; page?: boolean }>(), { page: false });
 const emit = defineEmits<{
@@ -22,7 +23,7 @@ const emit = defineEmits<{
 
 const isEdit = computed(() => props.editId != null);
 
-const form = ref<SkillJobInput>({ name: '', skillId: 0, questionTemplate: '', metricId: null });
+const form = ref<SkillJobInput>({ name: '', skillId: 0, questionTemplate: '', metricId: null, scheduleRules: null });
 const baseline = ref('');
 const isDirty = computed(() => JSON.stringify(form.value) !== baseline.value);
 const formLoading = ref(false);
@@ -80,7 +81,7 @@ async function searchMetrics(query: string) {
 }
 
 function resetForm() {
-  form.value = { name: '', skillId: 0, questionTemplate: '', metricId: null };
+  form.value = { name: '', skillId: 0, questionTemplate: '', metricId: null, scheduleRules: null };
   baseline.value = JSON.stringify(form.value);
   formError.value = '';
 }
@@ -105,6 +106,7 @@ async function loadForEdit(id: number) {
       questionTemplate: job.questionTemplate ?? '',
       enabled: job.enabled,
       metricId: job.metricId ?? null,
+      scheduleRules: job.scheduleRules ?? null,
     };
     baseline.value = JSON.stringify(form.value);
   } catch (e) {
@@ -167,6 +169,11 @@ defineExpose({ isDirty });
                 <label class="field">
                   <span class="label">任务名称 *</span>
                   <input v-model="form.name" placeholder="如 daily_quality_report" />
+                </label>
+                <label class="field">
+                  <span class="label">自动触发定时规则</span>
+                  <ScheduleRulesEditor v-model="form.scheduleRules" />
+                  <span class="tip">所选星期内，依赖数据准备完成后立即自动触发；不选默认每天都执行</span>
                 </label>
                 <label class="field">
                   <span class="label">关联 Skill *</span>

@@ -33,11 +33,12 @@ function toQuery(params: Record<string, unknown>): string {
 export function listConversations(
   source?: string,
   userId?: string,
+  keyword?: string,
   page = 0,
   size = 20,
 ): Promise<ConversationListResponse> {
   return http<ConversationListResponse>(
-    `${BASE}/conversations${toQuery({ source, userId, page, size })}`,
+    `${BASE}/conversations${toQuery({ source, userId, keyword, page, size })}`,
   );
 }
 

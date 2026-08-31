@@ -7,6 +7,10 @@
         <div :style="subtitleStyle">Session History</div>
       </div>
       <div :style="headerRight">
+        <el-radio-group v-model="scope" size="small" @change="currentPage = 1; syncQuery(); refreshConversations()">
+          <el-radio-button label="mine">我的</el-radio-button>
+          <el-radio-button label="all">全部</el-radio-button>
+        </el-radio-group>
         <el-input
           v-model="selectedUserId"
           placeholder="提问人"
@@ -124,14 +128,17 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import { useRouter } from 'vue-router';
 import { listConversations, search } from '../api/trace';
 import type { Conversation, TraceStatus } from '../types/trace';
 import { STATUS_TAG_TYPE } from '../types/trace';
 import dayjs from 'dayjs';
+import { getLoggedInUserId } from '../utils/auth';
 
 const router = useRouter();
+const route = useRoute();
 
 const loading = ref(false);
 const error = ref<string | null>(null);
@@ -142,6 +149,18 @@ const currentPage = ref(1);
 const pageSize = 20;
 const searchKeyword = ref('');
 const selectedUserId = ref<string>('');
+const scope = ref<'mine' | 'all'>((route.query.scope as 'mine' | 'all') || 'mine');
+
+function syncQuery() {
+  router.replace({ query: { ...route.query, scope: scope.value, user: selectedUserId.value || undefined, q: searchKeyword.value || undefined, page: currentPage.value > 1 ? String(currentPage.value) : undefined } });
+}
+
+function applyRouteState() {
+  scope.value = route.query.scope === 'all' ? 'all' : 'mine';
+  selectedUserId.value = (route.query.user as string) || '';
+  searchKeyword.value = (route.query.q as string) || '';
+  currentPage.value = Math.max(1, Number(route.query.page) || 1);
+}
 
 function statusTagType(status: TraceStatus) {
   return STATUS_TAG_TYPE[status] ?? 'info';
@@ -174,7 +193,8 @@ async function refreshConversations() {
   try {
     const data = await listConversations(
       undefined,
-      selectedUserId.value || undefined,
+      scope.value === 'mine' ? (selectedUserId.value || getLoggedInUserId() || undefined) : (selectedUserId.value || undefined),
+      searchKeyword.value.trim() || undefined,
       currentPage.value - 1,
       pageSize,
     );
@@ -200,18 +220,12 @@ async function handleSearch() {
     const data = await listConversations(
       undefined,
       selectedUserId.value || undefined,
+      searchKeyword.value.trim() || undefined,
       currentPage.value - 1,
       pageSize,
     );
-    const kw = searchKeyword.value.trim().toLowerCase();
-    const filtered = (data.conversations ?? []).filter(
-      (c) =>
-        c.conversationId.toLowerCase().includes(kw) ||
-        (c.userId || '').toLowerCase().includes(kw) ||
-        (c.agentName || '').toLowerCase().includes(kw),
-    );
-    conversations.value = filtered;
-    total.value = filtered.length;
+    conversations.value = data.conversations ?? [];
+    total.value = data.total ?? 0;
     lastUpdated.value = new Date().toLocaleTimeString('zh-CN', { hour12: false });
   } catch {
     error.value = '搜索失败';
@@ -224,11 +238,13 @@ function handleClearSearch() {
   searchKeyword.value = '';
   currentPage.value = 1;
   refreshConversations();
+  syncQuery();
 }
 
 function handleUserFilter() {
   currentPage.value = 1;
   refreshConversations();
+  syncQuery();
 }
 
 function handlePageChange(page: number) {
@@ -238,6 +254,7 @@ function handlePageChange(page: number) {
   } else {
     refreshConversations();
   }
+  syncQuery();
 }
 
 function handleRowClick(row: Conversation) {
@@ -245,12 +262,14 @@ function handleRowClick(row: Conversation) {
 }
 
 function goDetail(conversationId: string) {
-  router.push(`/chat/${encodeURIComponent(conversationId)}`);
+  router.push({ path: `/sessions/${encodeURIComponent(conversationId)}`, query: { ...route.query } });
 }
 
 onMounted(() => {
+  applyRouteState();
   refreshConversations();
 });
+watch(() => route.query, () => { applyRouteState(); refreshConversations(); });
 
 // ---- styles ----
 const rootStyle: any = {

@@ -15,6 +15,7 @@ public record SkillFlowDto(
         String taskQuestion,
         String summaryQuestionTemplate,
         Boolean enabled,
+        String scheduleRules,
         Integer maxParallelism,
         Boolean notifyEnabled,
         List<Trigger> triggers,

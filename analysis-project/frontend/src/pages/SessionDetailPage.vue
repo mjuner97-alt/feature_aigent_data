@@ -388,7 +388,7 @@ function onStepClick(step: Step) {
 }
 
 function goBack() {
-  router.back();
+  router.push({ path: '/sessions', query: route.query });
 }
 
 async function loadData() {

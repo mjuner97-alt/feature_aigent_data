@@ -7,6 +7,7 @@ import { listMetrics } from '../api/skillDependencyMetric';
 import type { SkillListItem } from '../types/skill';
 import type { SkillDependencyMetric } from '../types/skillJob';
 import type { SkillFlow, SkillFlowInput, SkillFlowNode } from '../types/skillFlow';
+import ScheduleRulesEditor from './ScheduleRulesEditor.vue';
 
 const props = withDefaults(defineProps<{ open: boolean; editId: number | null; knownFlows: SkillFlow[]; page?: boolean }>(), { page: false });
 const emit = defineEmits<{ (e: 'update:open', open: boolean): void; (e: 'saved'): void }>();
@@ -37,7 +38,7 @@ function emptyNode(nodeKey: string, sortOrder: number): SkillFlowNode {
 }
 
 function emptyForm(): SkillFlowInput {
-  return { name: '', code: '', description: '', taskQuestion: '', summaryQuestionTemplate: '', enabled: true, maxParallelism: 2, notifyEnabled: true, triggers: [], nodes: [emptyNode('node_1', 1)] };
+  return { name: '', code: '', description: '', taskQuestion: '', summaryQuestionTemplate: '', enabled: true, scheduleRules: null, maxParallelism: 2, notifyEnabled: true, triggers: [], nodes: [emptyNode('node_1', 1)] };
 }
 
 const isEdit = computed(() => props.editId != null);
@@ -167,6 +168,7 @@ function normalizeFlow(flow: SkillFlow): SkillFlowInput {
   return {
     code: flow.code || '', name: flow.name || '', description: flow.description || '', taskQuestion: flow.taskQuestion || '',
     summaryQuestionTemplate: flow.summaryQuestionTemplate || '', enabled: flow.enabled !== false,
+    scheduleRules: flow.scheduleRules ?? null,
     maxParallelism: 2, notifyEnabled: flow.notifyEnabled !== false,
     triggers: (flow.triggers || []).map(trigger => ({ ...trigger, enabled: trigger.enabled !== false })),
     nodes: (flow.nodes || []).map((node, index) => ({ ...node, skillId: node.skillId ?? null, metricIds: (node.metricIds || []).slice(0, 1), required: node.required !== false, maxAttempts: node.maxAttempts || 4, sortOrder: node.sortOrder || index + 1 })),
@@ -232,6 +234,7 @@ defineExpose({ isDirty });
               <div class="basic-row">
                 <label class="toggle-row"><input v-model="form.enabled" type="checkbox" /><span>保存后启用流程</span></label>
               </div>
+              <label><span>自动触发定时规则</span><ScheduleRulesEditor v-model="form.scheduleRules" /><small>所选星期内，依赖数据准备完成后立即自动触发；不选默认每天都执行</small></label>
             </section>
 
             <section class="form-section wide">

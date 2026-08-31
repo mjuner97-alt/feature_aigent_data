@@ -12,6 +12,7 @@
         <result column="question_template" property="questionTemplate"/>
         <result column="output_path" property="outputPath"/>
         <result column="enabled" property="enabled"/>
+        <result column="schedule_rules" property="scheduleRules"/>
         <result column="created_by" property="createdBy"/>
         <result column="created_at" property="createdAt"/>
         <result column="updated_at" property="updatedAt"/>
@@ -22,15 +23,15 @@
     </resultMap>
 
     <sql id="skillJobCols">
-        j.id, j.name, j.skill_id, j.question_template, j.output_path, j.enabled,
+        j.id, j.name, j.skill_id, j.question_template, j.output_path, j.enabled, j.schedule_rules,
         j.created_by, j.created_at, j.updated_at, j.metric_id,
         m.code AS metric_code, m.name AS metric_name,
         s.name AS skill_name
     </sql>
 
     <insert id="insertSkillJob" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillJob" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO skill_job (name, skill_id, question_template, output_path, enabled, created_by, metric_id)
-        VALUES (#{name}, #{skillId}, #{questionTemplate}, #{outputPath}, #{enabled}, #{createdBy}, #{metricId})
+        INSERT INTO skill_job (name, skill_id, question_template, output_path, enabled, schedule_rules, created_by, metric_id)
+        VALUES (#{name}, #{skillId}, #{questionTemplate}, #{outputPath}, #{enabled}, #{scheduleRules}, #{createdBy}, #{metricId})
     </insert>
 
     <select id="selectJobById" resultMap="SkillJobResultMap">
@@ -65,7 +66,7 @@
     <update id="updateJobById" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillJob">
         UPDATE skill_job
         SET name=#{name}, skill_id=#{skillId}, question_template=#{questionTemplate},
-            output_path=#{outputPath}, enabled=#{enabled}, metric_id=#{metricId}, updated_at=NOW()
+            output_path=#{outputPath}, enabled=#{enabled}, schedule_rules=#{scheduleRules}, metric_id=#{metricId}, updated_at=NOW()
         WHERE id = #{id}
     </update>
 
@@ -162,6 +163,14 @@
             md_file_written=#{mdFileWritten}, md_file_exists=#{mdFileExists},
             error_msg=#{errorMsg}, started_at=#{startedAt}, completed_at=#{completedAt}
         WHERE id = #{id}
+    </update>
+
+    <update id="resetExecutionForRetry">
+        UPDATE skill_job_execution
+        SET trigger_type=#{triggerType}, status=#{status}, conversation_id=NULL,
+            resolved_output_path=NULL, md_file_written=FALSE, md_file_exists=FALSE,
+            error_msg=NULL, started_at=#{startedAt}, completed_at=NULL
+        WHERE id=#{id}
     </update>
 
     <!-- 应用重启时恢复僵尸执行记录：把残留的 RUNNING/PENDING 标记为 FAILED -->

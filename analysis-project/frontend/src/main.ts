@@ -31,6 +31,7 @@ import SqlRegistryPage from './pages/SqlRegistryPage.vue';
 import ScriptRegistryShell from './components/ScriptRegistryShell.vue';
 import ScriptRegistryPage from './pages/ScriptRegistryPage.vue';
 import ChatWorkspacePage from './pages/ChatWorkspacePage.vue';
+import SessionHistoryPage from './pages/SessionHistoryPage.vue';
 import { isLoggedIn } from './utils/auth';
 
 const routes: RouteRecordRaw[] = [
@@ -69,6 +70,16 @@ const routes: RouteRecordRaw[] = [
       },
       {
         path: 'chat/:id',
+        redirect: to => ({ path: `/sessions/${encodeURIComponent(String(to.params.id))}`, query: to.query }),
+      },
+      {
+        path: 'sessions',
+        name: 'SessionHistory',
+        component: SessionHistoryPage,
+        meta: { requiresAuth: true, title: '对话记录' },
+      },
+      {
+        path: 'sessions/:id',
         name: 'SessionDetail',
         component: () => import('./pages/SessionDetailPage.vue'),
         meta: { requiresAuth: true, title: '会话详情' },
@@ -91,7 +102,7 @@ const routes: RouteRecordRaw[] = [
         component: () => import('./pages/UserModelConfigPage.vue'),
         meta: { requiresAuth: true, title: '用户模型配置' },
       },
-      { path: 'trace', redirect: '/chat' },
+      { path: 'trace', redirect: '/sessions' },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/' },

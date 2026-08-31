@@ -45,6 +45,8 @@ public class SkillJob {
     private String outputPath;
     /** 是否启用 */
     private Boolean enabled;
+    /** JSON weekday to time list, e.g. {"WED":["09:00"]}. */
+    private String scheduleRules;
     /** 依赖指标 ID（多对一）；可选，关联后随指标就绪触发（triggerByMetric） */
     private Long metricId;
     /** 依赖指标编码（join 展示，非持久化） */

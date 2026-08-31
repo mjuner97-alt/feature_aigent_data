@@ -68,6 +68,7 @@ public class FlowExecutionService {
     @Transactional("gaussTransactionManager")
     public void triggerReadyFlows(Long metricId, LocalDate dataDate) {
         for (SkillFlow flow : mapper.selectEnabledFlowsByMetricId(metricId)) {
+            if (!SkillJobService.runsOn(flow.getScheduleRules(), dataDate.getDayOfWeek())) continue;
             String conversationId = "auto:" + flow.getId() + ":" + dataDate;
             // 自动指标触发必须等全部依赖指标 READY 后才创建执行。
             createExecution(flow, flow.getCreatedBy(), conversationId, flow.getTaskQuestion(), dataDate,

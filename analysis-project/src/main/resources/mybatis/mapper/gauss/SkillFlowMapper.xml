@@ -11,6 +11,7 @@
         <result column="task_question" property="taskQuestion"/>
         <result column="summary_question_template" property="summaryQuestionTemplate"/>
         <result column="enabled" property="enabled"/>
+        <result column="schedule_rules" property="scheduleRules"/>
         <result column="max_parallelism" property="maxParallelism"/>
         <result column="notify_enabled" property="notifyEnabled"/>
         <result column="created_by" property="createdBy"/>
@@ -113,7 +114,7 @@
         <result column="updated_at" property="updatedAt"/>
     </resultMap>
 
-    <sql id="flowColumns">id, code, name, description, task_question, summary_question_template, enabled, max_parallelism,
+    <sql id="flowColumns">id, code, name, description, task_question, summary_question_template, enabled, schedule_rules, max_parallelism,
         notify_enabled, created_by, created_at, updated_at, deleted_at</sql>
     <sql id="nodeColumns">id, flow_id, node_key, skill_id, question_template, depends_on_json, required,
         max_attempts, sort_order, created_at, updated_at</sql>
@@ -123,9 +124,9 @@
         metadata_json, created_at, updated_at</sql>
 
     <insert id="insertFlow" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO skill_flow (code, name, description, task_question, summary_question_template, enabled, max_parallelism,
+        INSERT INTO skill_flow (code, name, description, task_question, summary_question_template, enabled, schedule_rules, max_parallelism,
                                 notify_enabled, created_by)
-        VALUES (#{code}, #{name}, #{description}, #{taskQuestion}, #{summaryQuestionTemplate}, #{enabled}, #{maxParallelism},
+        VALUES (#{code}, #{name}, #{description}, #{taskQuestion}, #{summaryQuestionTemplate}, #{enabled}, #{scheduleRules}, #{maxParallelism},
                 #{notifyEnabled}, #{createdBy})
     </insert>
 
@@ -164,7 +165,7 @@
 
     <update id="updateFlow">
         UPDATE skill_flow SET code=#{code}, name=#{name}, description=#{description},
-            task_question=#{taskQuestion}, summary_question_template=#{summaryQuestionTemplate}, enabled=#{enabled},
+            task_question=#{taskQuestion}, summary_question_template=#{summaryQuestionTemplate}, enabled=#{enabled}, schedule_rules=#{scheduleRules},
             max_parallelism=#{maxParallelism}, notify_enabled=#{notifyEnabled}, updated_at=NOW()
         WHERE id=#{id} AND deleted_at IS NULL
     </update>

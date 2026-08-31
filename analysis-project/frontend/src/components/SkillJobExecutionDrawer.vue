@@ -145,6 +145,7 @@ function duration(startedAt: string, completedAt: string): string {
 function close() { emit('update:open', false); }
 
 const viewing = ref<Set<number>>(new Set());
+const previewed = ref<Set<number>>(new Set());
 const downloading = ref<Set<number>>(new Set());
 const editorOpen = ref(false);
 const editorExecutionId = ref<number | null>(null);
@@ -153,6 +154,7 @@ async function viewFile(execId: number) {
   viewing.value.add(execId);
   try {
     await viewExecutionFile(execId);
+    previewed.value.add(execId);
   } catch (e) {
     alert(e instanceof Error ? e.message : '打开失败');
   } finally {
@@ -278,10 +280,10 @@ async function retry(exec: SkillJobExecution) {
                       <button class="report-action" :disabled="viewing.has(exec.id)" title="预览报告" @click.stop="viewFile(exec.id)">
                         <el-icon><View /></el-icon><span>{{ viewing.has(exec.id) ? '打开中…' : '预览' }}</span>
                       </button>
-                      <button v-if="canEdit" class="report-action" title="编辑 HTML" @click.stop="editFile(exec.id)">
+                      <button v-if="previewed.has(exec.id) && canEdit" class="report-action" title="编辑 HTML" @click.stop="editFile(exec.id)">
                         <el-icon><EditPen /></el-icon><span>编辑</span>
                       </button>
-                      <button class="report-action" :disabled="downloading.has(exec.id)" title="下载 HTML" @click.stop="downloadFile(exec.id)">
+                      <button v-if="previewed.has(exec.id)" class="report-action" :disabled="downloading.has(exec.id)" title="下载 HTML" @click.stop="downloadFile(exec.id)">
                         <el-icon><Download /></el-icon><span>{{ downloading.has(exec.id) ? '下载中…' : '下载' }}</span>
                       </button>
                     </div>

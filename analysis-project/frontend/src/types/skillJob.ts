@@ -7,6 +7,7 @@ export interface SkillJob {
   skillName?: string;
   questionTemplate: string;
   enabled: boolean;
+  scheduleRules?: string | null;
   /** 依赖指标 ID（可选，关联后随指标就绪触发） */
   metricId?: number | null;
   /** 依赖指标编码（join 展示） */
@@ -28,6 +29,7 @@ export interface SkillJobInput {
   /** 依赖指标 ID，可选 */
   metricId?: number | null;
   enabled?: boolean;
+  scheduleRules?: string | null;
 }
 
 /**
@@ -42,6 +44,7 @@ export interface SkillJobUpdateInput {
   metricId?: number;
   questionTemplate?: string;
   enabled?: boolean;
+  scheduleRules?: string | null;
 }
 
 /** 执行记录。resolvedOutputPath 不暴露给前端，判"有没有文件"用 mdFileExists */

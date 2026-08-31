@@ -124,7 +124,7 @@ export async function getExecution(execId: number): Promise<SkillJobExecution> {
   return res.json();
 }
 
-/** Retry a failed historical execution. A new execution record is returned. */
+/** Retry a failed historical execution in place. */
 export async function retryExecution(execId: number): Promise<SkillJobExecution> {
   const res = await fetch(`${BASE}/executions/${execId}/retry`, { method: 'POST', headers: authHeaders() });
   if (!res.ok) throw await jobError(res, '重试失败');

@@ -4,6 +4,7 @@
       <div :style="S.nav">
         <router-link to="/skills" :style="navStyle('/skills')"><el-icon><Grid /></el-icon> Skill 广场</router-link>
         <router-link to="/script-registry" :style="navStyle('/script-registry')"><el-icon><Files /></el-icon> SCRIPT 注册表</router-link>
+        <router-link to="/sessions" :style="navStyle('/sessions')"><el-icon><Clock /></el-icon> 对话记录</router-link>
         <router-link to="/model-config" :style="navStyle('/model-config')"><el-icon><Setting /></el-icon> 模型配置</router-link>
         <div :style="S.navRight">
           <span v-if="user" :style="S.userName">{{ user.name }} ({{ user.userId }})</span>
@@ -20,7 +21,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { Files, Grid, Setting } from '@element-plus/icons-vue';
+import { Clock, Files, Grid, Setting } from '@element-plus/icons-vue';
 import { getLoggedInUser, logout } from '../utils/auth';
 
 const route = useRoute();

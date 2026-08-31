@@ -100,6 +100,7 @@ const notifyOpen = ref(false);
 const notifyExecId = ref<number | null>(null);
 const notifyCanResend = ref(false);
 const viewing = ref<Set<number>>(new Set());
+const previewed = ref<Set<number>>(new Set());
 const downloading = ref<Set<number>>(new Set());
 const reportEditorOpen = ref(false);
 const reportEditorExecutionId = ref<number | null>(null);
@@ -216,6 +217,7 @@ async function viewCenterReport(exec: SkillJobExecution) {
   viewing.value.add(exec.id);
   try {
     await viewExecutionFile(exec.id);
+    previewed.value.add(exec.id);
   } catch (e) {
     alert(e instanceof Error ? e.message : '打开失败');
   } finally {
@@ -421,10 +423,10 @@ function metricTitle(job: SkillJob): string {
                   <button class="btn-action with-icon" :disabled="viewing.has(exec.id)" title="预览报告" @click="viewCenterReport(exec)">
                     <el-icon><View /></el-icon><span>{{ viewing.has(exec.id) ? '打开中…' : '预览' }}</span>
                   </button>
-                  <button v-if="exec.createdBy === me" class="btn-action with-icon" title="编辑 HTML" @click="editCenterReport(exec)">
+                  <button v-if="previewed.has(exec.id) && exec.createdBy === me" class="btn-action with-icon" title="编辑 HTML" @click="editCenterReport(exec)">
                     <el-icon><EditPen /></el-icon><span>编辑</span>
                   </button>
-                  <button class="btn-action with-icon" :disabled="downloading.has(exec.id)" title="下载 HTML" @click="downloadCenterReport(exec)">
+                  <button v-if="previewed.has(exec.id)" class="btn-action with-icon" :disabled="downloading.has(exec.id)" title="下载 HTML" @click="downloadCenterReport(exec)">
                     <el-icon><Download /></el-icon><span>{{ downloading.has(exec.id) ? '下载中…' : '下载' }}</span>
                   </button>
                 </template>

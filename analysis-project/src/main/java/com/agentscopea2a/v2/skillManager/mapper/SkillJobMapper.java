@@ -66,6 +66,10 @@ public interface SkillJobMapper {
 
     void updateExecutionStatus(SkillJobExecution exec);
 
+    /** Reset an existing failed execution for a manual retry. */
+    void resetExecutionForRetry(@Param("id") Long id, @Param("triggerType") String triggerType,
+                                @Param("status") String status, @Param("startedAt") java.time.LocalDateTime startedAt);
+
     /** 删除执行记录（触发被拒时清理刚插入的 PENDING，避免孤儿记录） */
     void deleteExecutionById(@Param("id") Long id);
 

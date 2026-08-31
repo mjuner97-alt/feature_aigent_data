@@ -272,7 +272,7 @@ public class FlowDefinitionService {
                 .map(trigger -> new SkillFlowDefinitionRequest.Trigger(trigger.getKeyword(), trigger.getPriority(), trigger.getEnabled()))
                 .toList();
         return new SkillFlowDefinitionRequest(flow.getCode(), flow.getName(), flow.getDescription(), flow.getTaskQuestion(),
-                flow.getSummaryQuestionTemplate(), flow.getEnabled(), flow.getMaxParallelism(), flow.getNotifyEnabled(),
+                flow.getSummaryQuestionTemplate(), flow.getEnabled(), flow.getScheduleRules(), flow.getMaxParallelism(), flow.getNotifyEnabled(),
                 triggers, nodes);
     }
 
@@ -292,7 +292,7 @@ public class FlowDefinitionService {
                             node.getRequired(), node.getMaxAttempts(), node.getSortOrder());
                 }).toList();
         return new SkillFlowDto(flow.getId(), flow.getCode(), flow.getName(), flow.getDescription(), flow.getTaskQuestion(),
-                flow.getSummaryQuestionTemplate(), flow.getEnabled(), flow.getMaxParallelism(), flow.getNotifyEnabled(),
+                flow.getSummaryQuestionTemplate(), flow.getEnabled(), flow.getScheduleRules(), flow.getMaxParallelism(), flow.getNotifyEnabled(),
                 triggers, nodes, flow.getCreatedBy(), flow.getCreatedAt(), flow.getUpdatedAt(), flow.getDeletedAt() != null);
     }
 
@@ -301,6 +301,7 @@ public class FlowDefinitionService {
         return SkillFlow.builder().code(code).name(trim(request.name())).description(request.description())
                 .taskQuestion(trim(request.taskQuestion()))
                 .summaryQuestionTemplate(request.summaryQuestionTemplate())
+                .scheduleRules(request.scheduleRules())
                 .enabled(Boolean.TRUE.equals(request.enabled())).maxParallelism(DEFAULT_MAX_PARALLELISM)
                 .notifyEnabled(request.notifyEnabled() == null || request.notifyEnabled()).createdBy(createdBy).build();
     }

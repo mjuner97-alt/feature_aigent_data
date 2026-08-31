@@ -244,7 +244,7 @@ public class SkillJobService {
         return SkillJobExecutionDto.of(exec, queueAheadOf(exec));
     }
 
-    /** Retry a failed historical execution by creating a new manual execution record. */
+    /** Retry a failed historical execution in place, preserving its execution id. */
     public SkillJobExecutionDto retryExecution(Long execId, String userId) {
         SkillJobExecution execution = mapper.selectExecutionById(execId);
         if (execution == null) {
@@ -253,7 +253,19 @@ public class SkillJobService {
         if (!"FAILED".equals(execution.getStatus())) {
             throw new IllegalStateException("ExecutionNotRetryable: 仅失败记录可以重试 (id=" + execId + ")");
         }
-        return trigger(execution.getJobId(), userId);
+        SkillJob job = mapper.selectJobById(execution.getJobId());
+        if (job == null || !userId.equals(job.getCreatedBy())) {
+            throw new IllegalStateException("JobAccessDenied: 仅创建人可重试此任务 (id=" + execId + ")");
+        }
+        java.time.LocalDateTime now = java.time.LocalDateTime.now();
+        mapper.resetExecutionForRetry(execId, "MANUAL", "PENDING", now);
+        if (!trySubmitOrCleanup(execution.getJobId(), execId, "MANUAL")) {
+            mapper.updateExecutionStatus(SkillJobExecution.builder().id(execId).status("FAILED")
+                    .errorMsg("重试入队失败").startedAt(now).completedAt(java.time.LocalDateTime.now()).build());
+            throw new IllegalStateException("JobAlreadyRunning: 该任务已有执行在进行中");
+        }
+        SkillJobExecution refreshed = mapper.selectExecutionById(execId);
+        return SkillJobExecutionDto.of(refreshed, queueAheadOf(refreshed));
     }
 
     /**
@@ -310,11 +322,21 @@ public class SkillJobService {
         List<SkillJob> jobs = mapper.selectEnabledJobsByMetricId(metric.getId());
         List<MetricTriggerItemDto> results = new ArrayList<>();
         for (SkillJob job : jobs) {
+            if (!runsOn(job.getScheduleRules(), java.time.LocalDate.now().getDayOfWeek())) {
+                continue;
+            }
             results.add(triggerOneForMetric(job, caller));
         }
         log.info("[SkillJob] triggerByMetric: code={}, metricId={}, total={}, caller={}",
                 code, metric.getId(), results.size(), caller);
         return new MetricTriggerBatchDto(code, results.size(), results);
+    }
+
+    /** Empty rules mean every day; otherwise the JSON weekday array limits automatic triggers. */
+    static boolean runsOn(String scheduleRules, java.time.DayOfWeek day) {
+        if (scheduleRules == null || scheduleRules.isBlank()) return true;
+        String token = "\"" + day.name().substring(0, 3) + "\"";
+        return scheduleRules.contains(token);
     }
 
     /**
