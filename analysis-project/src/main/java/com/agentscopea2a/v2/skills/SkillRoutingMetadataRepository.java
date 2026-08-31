@@ -128,11 +128,11 @@ public class SkillRoutingMetadataRepository {
         List<SkillRoutingMetadataView> result = new ArrayList<>();
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql.toString())) {
             int p = 1;
-            if (keyword != null && !keyword.isBlank()) { String q = "%" + keyword.trim().toLowerCase() + "%"; ps.setString(p++, q); ps.setString(p++, q); ps.setString(p++, q); }
+            if (keyword != null && !keyword.isBlank()) { String q = "%" + keyword.trim().toLowerCase() + "%"; ps.setString(p++, q); ps.setString(p++, q); }
             if (active != null) ps.setBoolean(p++, active);
             ps.setInt(p++, Math.max(1, Math.min(limit, 200))); ps.setInt(p, Math.max(0, offset));
             try (ResultSet rs = ps.executeQuery()) { while (rs.next()) result.add(mapView(rs)); }
-        } catch (SQLException e) { log.warn("findAllWithSkillIndex failed: {}", e.getMessage()); }
+        } catch (SQLException e) { log.warn("findAllWithSkillManage failed: {}", e.getMessage()); }
         return result;
     }
 

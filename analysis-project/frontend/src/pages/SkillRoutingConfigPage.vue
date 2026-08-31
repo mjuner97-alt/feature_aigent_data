@@ -63,8 +63,10 @@ load();
     <el-table :data="rows" v-loading="loading" stripe border size="small">
       <el-table-column prop="skillName" label="Skill 名称" width="260" show-overflow-tooltip />
       <el-table-column prop="description" label="已有描述" min-width="220" show-overflow-tooltip />
-      <el-table-column label="路由摘要" min-width="220" show-overflow-tooltip><template #default="{ row }"><span :class="{ muted: !row.configured }">{{ row.shortSummary || '待配置' }}</span></template></el-table-column>
-      <el-table-column label="关键词 / 别名" min-width="220" show-overflow-tooltip><template #default="{ row }">{{ [...row.keywords, ...row.aliases].join('、') || '-' }}</template></el-table-column>
+      <el-table-column label="领域标签" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ row.domainTags.join('、') || '-' }}</template></el-table-column>
+      <el-table-column label="指标标签" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ row.metricTags.join('、') || '-' }}</template></el-table-column>
+      <el-table-column label="关键词" min-width="220" show-overflow-tooltip><template #default="{ row }">{{ row.keywords.join('、') || '-' }}</template></el-table-column>
+      <el-table-column label="别名" min-width="220" show-overflow-tooltip><template #default="{ row }">{{ row.aliases.join('、') || '-' }}</template></el-table-column>
       <el-table-column prop="priority" label="优先级" width="80" align="center" />
       <el-table-column label="状态" width="80" align="center"><template #default="{ row }"><el-switch :model-value="row.active" size="small" @change="toggle(row)" /></template></el-table-column>
       <el-table-column label="操作" width="90" fixed="right"><template #default="{ row }"><el-button size="small" @click="openEdit(row)">配置</el-button></template></el-table-column>
