@@ -16,8 +16,6 @@ public class SkillCandidateSelector {
 
     private static final int EXPLICIT_NAME_SCORE = 10_000;
     private static final int TERM_SCORE = 25;
-    private static final String MEETING_MATERIAL_DOMAIN = "例会材料";
-
     private final int maxVisibleSkills;
     private final int fallbackVisibleSkills;
     private final double minConfidence;
@@ -39,7 +37,13 @@ public class SkillCandidateSelector {
         }
         Set<String> availableNames = allSkills.stream().map(AgentSkill::getName).collect(Collectors.toSet());
         String normalizedQuestion = normalize(question);
-        boolean meetingMaterialRequest = normalizedQuestion.contains(MEETING_MATERIAL_DOMAIN);
+        Set<String> requestedDomains = metadata.stream()
+                .flatMap(entry -> entry.domainTags() == null ? java.util.stream.Stream.empty()
+                        : entry.domainTags().stream())
+                .filter(java.util.Objects::nonNull)
+                .map(SkillCandidateSelector::normalize)
+                .filter(tag -> !tag.isEmpty() && normalizedQuestion.contains(tag))
+                .collect(Collectors.toSet());
         List<ScoredSkill> scored = new ArrayList<>();
         for (SkillRoutingMetadata entry : metadata) {
             if (!entry.active() || !availableNames.contains(entry.skillName())) {
@@ -47,8 +51,9 @@ public class SkillCandidateSelector {
             }
             int score = entry.priority();
             boolean explicit = contains(normalizedQuestion, entry.skillName()) || matchesAny(normalizedQuestion, entry.aliases());
-            boolean meetingMaterialSkill = hasExactTag(entry.domainTags(), MEETING_MATERIAL_DOMAIN);
-            if (!explicit && meetingMaterialRequest != meetingMaterialSkill) {
+            if (!explicit && (requestedDomains.isEmpty()
+                    ? hasAnyDomain(entry.domainTags())
+                    : !hasAnyDomain(entry.domainTags(), requestedDomains))) {
                 continue;
             }
             if (explicit) {
@@ -80,14 +85,17 @@ public class SkillCandidateSelector {
         return (int) terms.stream().filter(term -> contains(question, term)).count();
     }
 
-    private static boolean matchesAny(String question, List<String> aliases) {
-        return aliases != null && aliases.stream().anyMatch(alias -> contains(question, alias));
+    private static boolean hasAnyDomain(List<String> tags) {
+        return tags != null && tags.stream().anyMatch(tag -> tag != null && !tag.trim().isEmpty());
     }
 
-    private static boolean hasExactTag(List<String> tags, String expected) {
-        String normalizedExpected = normalize(expected);
-        return tags != null && tags.stream().map(SkillCandidateSelector::normalize)
-                .anyMatch(normalizedExpected::equals);
+    private static boolean hasAnyDomain(List<String> tags, Set<String> domains) {
+        return tags != null && tags.stream().filter(java.util.Objects::nonNull)
+                .map(SkillCandidateSelector::normalize).anyMatch(domains::contains);
+    }
+
+    private static boolean matchesAny(String question, List<String> aliases) {
+        return aliases != null && aliases.stream().anyMatch(alias -> contains(question, alias));
     }
 
     private static boolean contains(String question, String value) {

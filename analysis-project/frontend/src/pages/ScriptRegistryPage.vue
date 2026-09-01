@@ -11,10 +11,10 @@
  * params_schema 用原始 JSON 文本框编辑, 保存前校验合法 JSON 数组.
  * datasources 是 JSON 数组字符串 (如 ["gauss","mysql"]), 前端用多选维护, 保存时 JSON.stringify.
  */
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onUnmounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { listEntries, getEntry, createEntry, updateEntry, deleteEntry, setEntryEnabled } from '../api/scriptRegistry';
-import type { ScriptRegistryListItem, ScriptRegistryInput } from '../types/scriptRegistry';
+import { listEntries, getEntry, createEntry, updateEntry, deleteEntry, setEntryEnabled, getSource, saveSource, startDebug, cancelDebug, subscribeDebug } from '../api/scriptRegistry';
+import type { ScriptDebugRun, ScriptRegistryListItem, ScriptRegistryInput } from '../types/scriptRegistry';
 
 // ==================== 列表 ====================
 const items = ref<ScriptRegistryListItem[]>([]);
@@ -113,6 +113,13 @@ const editId = ref<number>(0);
 
 // 数据源多选: 维护数组, 保存时 JSON.stringify 到 form.datasources
 const dsArr = ref<string[]>(['gauss']);
+const sourceCode = ref('');
+const sourceHash = ref('');
+const sourceLoading = ref(false);
+const debugParamsJson = ref('{}');
+const debugRun = ref<ScriptDebugRun | null>(null);
+let debugEvents: EventSource | undefined;
+let elapsedTimer: ReturnType<typeof setInterval> | undefined;
 
 function openCreate() {
   formMode.value = 'create';
@@ -123,6 +130,9 @@ function openCreate() {
   };
   dsArr.value = ['gauss'];
   showSchemaExample.value = false;
+  sourceCode.value = '#!/usr/bin/env python3\n\nimport sys\n\nprint(sys.stdin.read())\n';
+  sourceHash.value = '';
+  debugRun.value = null;
   formVisible.value = true;
 }
 
@@ -131,6 +141,9 @@ async function openEdit(row: ScriptRegistryListItem) {
   editId.value = row.id;
   formLoading.value = true;
   showSchemaExample.value = false;
+  sourceCode.value = '';
+  sourceHash.value = '';
+  debugRun.value = null;
   formVisible.value = true;
   try {
     const detail = await getEntry(row.id);
@@ -142,12 +155,81 @@ async function openEdit(row: ScriptRegistryListItem) {
     };
     dsArr.value = parseDatasources(detail.datasources);
     if (dsArr.value.length === 0) dsArr.value = ['gauss'];
+    sourceLoading.value = true;
+    const source = await getSource(row.id);
+    sourceCode.value = source.content;
+    sourceHash.value = source.contentHash;
   } catch (e: any) {
     ElMessage.error(e.message || '加载详情失败');
   } finally {
+    sourceLoading.value = false;
     formLoading.value = false;
   }
 }
+
+async function saveCurrentSource() {
+  if (!editId.value) {
+    ElMessage.warning('请先保存脚本注册信息，再保存源码');
+    return;
+  }
+  try {
+    sourceLoading.value = true;
+    const saved = await saveSource(editId.value, sourceCode.value, sourceHash.value);
+    sourceHash.value = saved.contentHash;
+    ElMessage.success('源码已保存');
+  } catch (e: any) {
+    ElMessageBox.alert(e.message || '保存源码失败', '操作失败', { type: 'error' });
+  } finally {
+    sourceLoading.value = false;
+  }
+}
+
+async function runDebug() {
+  if (!editId.value) { ElMessage.warning('请先保存脚本注册信息'); return; }
+  const params = tryParseJson(debugParamsJson.value);
+  if (!params || Array.isArray(params) || typeof params !== 'object') {
+    ElMessage.error('调试参数必须是 JSON 对象');
+    return;
+  }
+  try {
+    debugRun.value = await startDebug(editId.value, params, Number(form.value.timeoutSeconds));
+    debugEvents?.close();
+    debugEvents = subscribeDebug(debugRun.value.runId, {
+      event: (event) => {
+        if (!debugRun.value) return;
+        debugRun.value.status = event.status;
+        debugRun.value.exitCode = event.exitCode;
+        debugRun.value.elapsedMs = event.elapsedMs;
+        if (event.stdout) debugRun.value.stdout = event.stdout;
+        if (event.stderr) debugRun.value.stderr = event.stderr;
+      },
+      error: () => { /* completion/error state is supplied by the final event when available */ },
+      complete: () => {},
+    });
+  } catch (e: any) {
+    ElMessage.error(e.message || '启动调试失败');
+  }
+}
+
+async function stopDebug() {
+  if (!debugRun.value || ['SUCCESS', 'FAILED', 'TIMEOUT', 'CANCELLED'].includes(debugRun.value.status)) return;
+  try {
+    await cancelDebug(debugRun.value.runId);
+    debugRun.value.status = 'CANCELLED';
+    debugEvents?.close();
+  } catch (e: any) { ElMessage.error(e.message || '停止调试失败'); }
+}
+
+function closeForm() {
+  if (debugRun.value && ['QUEUED', 'RUNNING'].includes(debugRun.value.status)) {
+    ElMessage.warning('请先停止正在运行的调试任务');
+    return;
+  }
+  formVisible.value = false;
+  debugEvents?.close();
+}
+
+onUnmounted(() => { debugEvents?.close(); if (elapsedTimer) clearInterval(elapsedTimer); });
 
 /** 安全 JSON.parse: 失败返回 null (不抛) */
 function tryParseJson(text: string): any {
@@ -314,7 +396,7 @@ const S = {
     </div>
 
     <!-- 新增/编辑弹窗 -->
-    <el-dialog v-model="formVisible" :title="formMode === 'create' ? '新增脚本' : '编辑脚本'" width="760px" destroy-on-close>
+    <el-dialog v-model="formVisible" :title="formMode === 'create' ? '新增脚本' : '编辑脚本'" width="1100px" destroy-on-close>
       <el-form v-loading="formLoading" label-width="100px" size="small">
         <el-form-item label="script_id" required>
           <el-input v-model="form.scriptId" placeholder="snake_case, 如 q2_1_metrics_by_dept_version" />
@@ -357,9 +439,36 @@ const S = {
         <el-form-item label="启用" v-if="formMode === 'edit'">
           <el-switch v-model="form.enabled" :active-value="1" :inactive-value="0" />
         </el-form-item>
+        <el-divider content-position="left">Python 源码与调试</el-divider>
+        <el-row :gutter="16">
+          <el-col :span="15">
+            <el-form-item label="源码">
+              <el-input v-model="sourceCode" type="textarea" :rows="18" :disabled="sourceLoading" :style="S.jsonEditor" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="9">
+            <el-form-item label="调试参数">
+              <el-input v-model="debugParamsJson" type="textarea" :rows="8" :style="S.jsonEditor" placeholder="{}" />
+            </el-form-item>
+            <div class="debug-actions">
+              <el-button size="small" @click="saveCurrentSource" :loading="sourceLoading">保存源码</el-button>
+              <el-button size="small" type="primary" @click="runDebug" :disabled="!!debugRun && ['QUEUED', 'RUNNING'].includes(debugRun.status)">调试运行</el-button>
+              <el-button size="small" type="danger" plain @click="stopDebug" :disabled="!debugRun || !['QUEUED', 'RUNNING'].includes(debugRun.status)">停止</el-button>
+            </div>
+            <div v-if="debugRun" class="debug-meta">
+              <span>状态：{{ debugRun.status }}</span>
+              <span>退出码：{{ debugRun.exitCode ?? '-' }}</span>
+              <span>耗时：{{ debugRun.elapsedMs ?? 0 }} ms</span>
+            </div>
+          </el-col>
+        </el-row>
+        <el-row v-if="debugRun" :gutter="16" class="debug-output">
+          <el-col :span="12"><div class="output-title">stdout</div><pre>{{ debugRun.stdout || '(空)' }}</pre></el-col>
+          <el-col :span="12"><div class="output-title">stderr / traceback</div><pre class="stderr">{{ debugRun.stderr || '(空)' }}</pre></el-col>
+        </el-row>
       </el-form>
       <template #footer>
-        <el-button @click="formVisible = false">取消</el-button>
+        <el-button @click="closeForm">取消</el-button>
         <el-button type="primary" :loading="formLoading" @click="saveForm">保存</el-button>
       </template>
     </el-dialog>
@@ -372,6 +481,12 @@ const S = {
   justify-content: flex-end;
   padding: 14px 0 2px;
 }
+
+.debug-actions, .debug-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.debug-meta { margin-top: 12px; color: #475569; font-size: 12px; }
+.debug-output pre { height: 180px; overflow: auto; padding: 10px; margin: 0; background: #0f172a; color: #e2e8f0; white-space: pre-wrap; font: 12px/1.5 Consolas, monospace; }
+.output-title { margin-bottom: 6px; font-weight: 600; color: #475569; }
+.debug-output .stderr { color: #fecaca; }
 
 :deep(.el-textarea__inner) {
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
