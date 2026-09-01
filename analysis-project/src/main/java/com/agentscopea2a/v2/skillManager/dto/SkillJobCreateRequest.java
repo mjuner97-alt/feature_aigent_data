@@ -24,5 +24,7 @@ public record SkillJobCreateRequest(
         String name,
         Long skillId,
         String questionTemplate,
-        Long metricId
+        Long metricId,
+        /** 按星期配置执行时间，JSON 格式如 {"WED":["09:00"]} */
+        String scheduleRules
 ) {}

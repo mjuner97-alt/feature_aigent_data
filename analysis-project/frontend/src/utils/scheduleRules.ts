@@ -1,9 +1,10 @@
 export type ScheduleRules = Record<string, string[]>;
 
-export function parseScheduleRules(value?: string | null): ScheduleRules {
+export function parseScheduleRules(value?: string | ScheduleRules | null): ScheduleRules {
   if (!value) return {};
   try {
-    const parsed = JSON.parse(value) as unknown;
+    // 兼容后端返回 JSON 字符串或已反序列化的 JSON 对象。
+    const parsed = typeof value === 'string' ? JSON.parse(value) as unknown : value;
     if (Array.isArray(parsed)) return Object.fromEntries(parsed.filter(day => typeof day === 'string').map(day => [day, []]));
     if (!parsed || typeof parsed !== 'object') return {};
     return Object.fromEntries(Object.entries(parsed).filter(([, times]) => Array.isArray(times))

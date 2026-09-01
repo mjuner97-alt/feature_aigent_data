@@ -318,11 +318,26 @@ public class ScriptExecTool {
         labelJson.append(']'); revenueJson.append(']'); orderJson.append(']');
         int latest = revenue[weeks - 1], previous = weeks > 1 ? revenue[weeks - 2] : latest;
         double change = previous == 0 ? 0 : Math.round((latest - previous) * 1000.0 / previous) / 10.0;
-        return "# 每周经营数据 HTML 快报（Mock）\n\n"
-                + "- 业务范围：" + line + "\n- 统计周期：最近 " + weeks + " 周\n\n"
-                + "## 核心结论\n本周收入 **" + latest + " 万元**，较上周增长 **" + change + "%**。\n\n"
-                + "## 趋势图\n```echarts\n{\"title\":{\"text\":\"周收入与订单趋势\"},\"tooltip\":{\"trigger\":\"axis\"},\"xAxis\":{\"type\":\"category\",\"data\":" + labelJson + "},\"yAxis\":[{\"type\":\"value\"},{\"type\":\"value\"}],\"series\":[{\"name\":\"收入(万元)\",\"type\":\"line\",\"data\":" + revenueJson + "},{\"name\":\"订单数\",\"type\":\"bar\",\"yAxisIndex\":1,\"data\":" + orderJson + "}]}\n```\n\n"
-                + "## 收入构成\n```echarts\n{\"title\":{\"text\":\"业务线收入构成\",\"left\":\"center\"},\"tooltip\":{\"trigger\":\"item\"},\"series\":[{\"name\":\"收入占比\",\"type\":\"pie\",\"data\":[{\"name\":\"线上直营\",\"value\":42},{\"name\":\"渠道分销\",\"value\":33},{\"name\":\"企业客户\",\"value\":25}]}]}\n```\n";
+        return "```html\n"
+                + "<div style='font-family:Microsoft YaHei;padding:20px;background:#f5f7fa;'>"
+                + "<div style='background:#fff;border-radius:10px;padding:25px;box-shadow:0 2px 8px rgba(0,0,0,0.06);'>"
+                + "<h2 style='color:#2c3e50;margin:0 0 5px 0;'>📊 每周经营数据快报</h2>"
+                + "<p style='color:#7f8c8d;font-size:13px;margin:0 0 15px 0;'>业务范围：" + line + " ｜ 最近 " + weeks + " 周</p>"
+                + "<div style='background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;padding:18px 22px;border-radius:8px;margin:10px 0 20px 0;display:flex;justify-content:space-between;'>"
+                + "<div><span style='font-size:13px;opacity:0.9;'>本周收入</span><br><span style='font-size:32px;font-weight:bold;'>" + latest + " 万元</span></div>"
+                + "<div style='text-align:right;'><span style='font-size:13px;opacity:0.9;'>较上周</span><br><span style='font-size:20px;font-weight:bold;color:" + (Double.parseDouble(String.valueOf(change)) >= 0 ? "#2ecc71" : "#e74c3c") + ";'>" + (Double.parseDouble(String.valueOf(change)) >= 0 ? "↑" : "↓") + " " + Math.abs(Double.parseDouble(String.valueOf(change))) + "%</span></div>"
+                + "</div>"
+                + "<p style='color:#95a5a6;font-size:12px;text-align:center;margin-top:20px;padding-top:12px;border-top:1px solid #eee;'>© 2026 经营数据分析 · 内部参考</p>"
+                + "</div></div>\n"
+                + "```\n\n"
+                + "## 趋势图\n"
+                + "```echarts\n"
+                + "{\"title\":{\"text\":\"周收入与订单趋势\"},\"tooltip\":{\"trigger\":\"axis\"},\"xAxis\":{\"type\":\"category\",\"data\":" + labelJson + "},\"yAxis\":[{\"type\":\"value\"},{\"type\":\"value\"}],\"series\":[{\"name\":\"收入(万元)\",\"type\":\"line\",\"data\":" + revenueJson + "},{\"name\":\"订单数\",\"type\":\"bar\",\"yAxisIndex\":1,\"data\":" + orderJson + "}]}\n"
+                + "```\n\n"
+                + "## 收入构成\n"
+                + "```echarts\n"
+                + "{\"title\":{\"text\":\"业务线收入构成\",\"left\":\"center\"},\"tooltip\":{\"trigger\":\"item\"},\"series\":[{\"name\":\"收入占比\",\"type\":\"pie\",\"data\":[{\"name\":\"线上直营\",\"value\":42},{\"name\":\"渠道分销\",\"value\":33},{\"name\":\"企业客户\",\"value\":25}]}]}\n"
+                + "```";
     }
 
     /** Adapter used by the HTTP debug service; keeps registry and container validation in one place. */
@@ -358,7 +373,6 @@ public class ScriptExecTool {
      * 显式传. value 用单引号包裹防远端 shell 元字符 (?, $, 空格等) 被解析. 本地 fork 模式仍走
      * ProcessBuilder.environment() (runProcess 会 putAll).
      *
-     * <p>参考 {@link PythonExecTool#buildCommand()} 第 182-208 行.
      */
     private List<String> buildCommand(String hostScriptPath, String containerScriptPath, Map<String, String> env) {
         if (sandbox != null && sandbox.isEnabled() && !isBlank(sandbox.getSharedContainerName())) {
