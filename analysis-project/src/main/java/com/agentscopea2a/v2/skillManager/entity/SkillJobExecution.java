@@ -42,6 +42,8 @@ public class SkillJobExecution {
     private String conversationId;
     /** 实际解析后的输出路径（{date} 已替换） */
     private String resolvedOutputPath;
+    /** Complete Markdown source used to render the report; DB fallback for missing files. */
+    private String reportMarkdown;
     /** WriteMarkdownTool 是否已成功写入（由 SkillJobScheduler 直接 Java 调用） */
     private Boolean mdFileWritten;
     /** 报告文件是否存在且非空（.html，字段名保留兼容 DB 列 md_file_exists） */

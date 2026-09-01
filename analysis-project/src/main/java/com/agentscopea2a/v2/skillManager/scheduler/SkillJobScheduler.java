@@ -18,6 +18,7 @@ package com.agentscopea2a.v2.skillManager.scheduler;
 import com.agentscopea2a.v2.config.HarnessRunnerProperties;
 import com.agentscopea2a.v2.config.SkillStorageProperties;
 import com.agentscopea2a.v2.config.TimeoutProfile;
+import com.agentscopea2a.v2.hooks.ChatScriptExecResultHook;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.skillManager.entity.SkillJob;
 import com.agentscopea2a.v2.skillManager.entity.SkillJobExecution;
@@ -27,6 +28,7 @@ import com.agentscopea2a.v2.skillManager.notification.NotificationSender;
 import com.agentscopea2a.v2.skillManager.notification.NotificationService;
 import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
 import com.agentscopea2a.v2.skillManager.report.ReportFilenamePolicy;
+import com.agentscopea2a.v2.skillManager.report.ReportMarkdownComposer;
 import com.agentscopea2a.v2.tools.WriteMarkdownTool;
 import com.agentscopea2a.v2.tools.ToolResultRegistry;
 import io.agentscope.core.agent.RuntimeContext;
@@ -461,6 +463,8 @@ public class SkillJobScheduler implements WriteCallback {
             // 2. 拼接完整提问：调用{skillName} + 用户问题（MD写入由Java代码直接调用WriteMarkdownTool）
             String skillName = resolveSkillName(job.getSkillId());
             String resolvedOutputPath = resolveOutputPath(job.getOutputPath());
+            String reportFileName = buildReportFileName(job, execution.getId());
+            String intendedReportPath = userId + "/" + reportFileName;
             String question = buildQuestion(job.getQuestionTemplate(), skillName);
             // 重试：复用同一会话续接。若上次历史已恢复则直接续做，不重复查数；
             // 若历史丢失（如超时中断未落库）则消息里带上原提问兜底，避免模型在空上下文上瞎续。
@@ -472,7 +476,7 @@ public class SkillJobScheduler implements WriteCallback {
             // 3. 标记为 RUNNING（复用同一条 execution 记录，重试不新建记录）
             execution.setStatus("RUNNING");
             execution.setConversationId(conversationId);
-            execution.setResolvedOutputPath(resolvedOutputPath);
+            execution.setResolvedOutputPath(intendedReportPath);
             execution.setStartedAt(LocalDateTime.now());
             execution.setMdFileWritten(false);
             execution.setMdFileExists(false);
@@ -485,6 +489,9 @@ public class SkillJobScheduler implements WriteCallback {
                     .sessionId(conversationId)
                     .userId(userId)
                     .build();
+            ctx.put(ChatScriptExecResultHook.ENABLED_CTX_KEY, Boolean.TRUE);
+            String requestId = java.util.UUID.randomUUID().toString();
+            ctx.put(ChatScriptExecResultHook.REQUEST_ID_CTX_KEY, requestId);
 
             try {
                 Msg userMsg = Msg.builder()
@@ -503,7 +510,17 @@ public class SkillJobScheduler implements WriteCallback {
                         .block(Duration.ofSeconds(60 * 10));
 
                 // 提取AI最终文本结果
-                String agentResult = toolResultRegistry.resolveFinalResult(extractFinalText(events));
+                String agentResult = toolResultRegistry.resolveAndAppendCurrentResults(
+                        extractFinalText(events), toolResultRegistry.getRequestRefs(requestId));
+                toolResultRegistry.clearRequestRefs(requestId);
+
+                //最终结果拼接html
+                List<String> rawBlocks = rawScriptBlocks(ctx);
+                String reportMarkdown = ReportMarkdownComposer.compose(agentResult, rawBlocks);
+                if (!reportMarkdown.isBlank()) {
+                    execution.setReportMarkdown(reportMarkdown);
+                    mapper.updateExecutionStatus(execution);
+                }
 
                 // 校验模型输出：误产出 tool_call 或以 think 结尾（思考未转正文）判失败，不写入半成品报告
                 if (agentResult != null && !agentResult.isBlank() && !isValidReportContent(agentResult)) {
@@ -516,9 +533,8 @@ public class SkillJobScheduler implements WriteCallback {
                 }
 
                 // 渲染为自包含 HTML（表格样式 + echarts 内联）后写入，不走模型tool_call
-                if (agentResult != null && !agentResult.isBlank() && resolvedOutputPath != null && !resolvedOutputPath.isBlank()) {
-                    String reportFileName = buildReportFileName(job, execution.getId());
-                    String htmlContent = htmlReportRenderer.render(agentResult, job.getName());
+                if (!reportMarkdown.isBlank() && resolvedOutputPath != null && !resolvedOutputPath.isBlank()) {
+                    String htmlContent = htmlReportRenderer.render(reportMarkdown, job.getName());
                     boolean writeOk = writeMarkdownTool.writeMarkdown(reportFileName, htmlContent, execution.getId(), userId);
                     if (!writeOk) {
                         log.warn("Job {} write report failed: userId={}, fileName={}", jobId, userId, reportFileName);
@@ -729,6 +745,12 @@ public class SkillJobScheduler implements WriteCallback {
             }
         }
         return sb.toString();
+    }
+
+    private static List<String> rawScriptBlocks(RuntimeContext ctx) {
+        Object blocks = ctx.get(ChatScriptExecResultHook.RAW_BLOCKS_CTX_KEY);
+        if (!(blocks instanceof List<?> values)) return List.of();
+        return values.stream().filter(String.class::isInstance).map(String.class::cast).toList();
     }
 
     /**

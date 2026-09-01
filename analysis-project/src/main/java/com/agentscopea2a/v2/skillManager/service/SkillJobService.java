@@ -25,6 +25,7 @@ import com.agentscopea2a.v2.skillManager.entity.SkillJobNotification;
 import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillJobMapper;
 import com.agentscopea2a.v2.skillManager.notification.NotificationService;
+import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
 import com.agentscopea2a.v2.skillManager.scheduler.SkillJobScheduler;
 import com.agentscopea2a.v2.util.SkillFileMirror;
 import org.slf4j.Logger;
@@ -71,6 +72,7 @@ public class SkillJobService {
     private final SkillDependencyMetricMapper metricMapper;
     private final MockOrgService mockOrgService;
     private final NotificationService notificationService;
+    private final HtmlReportRenderer htmlReportRenderer;
 
     /** 指标就绪登记服务:外部指标到达时记录 READY 状态,Skill Flow 的指标门控以此解锁。 */
     @Autowired(required = false)
@@ -89,12 +91,14 @@ public class SkillJobService {
     public SkillJobService(SkillJobMapper mapper, SkillJobScheduler scheduler,
                            SkillDependencyMetricMapper metricMapper, MockOrgService mockOrgService,
                            NotificationService notificationService,
-                           SkillStorageProperties storageProperties) {
+                           SkillStorageProperties storageProperties,
+                           HtmlReportRenderer htmlReportRenderer) {
         this.mapper = mapper;
         this.scheduler = scheduler;
         this.metricMapper = metricMapper;
         this.mockOrgService = mockOrgService;
         this.notificationService = notificationService;
+        this.htmlReportRenderer = htmlReportRenderer;
         this.baseDir = storageProperties.getJobReportDir();
         this.backupDir = storageProperties.getJobBackupDir();
     }
@@ -568,7 +572,7 @@ public class SkillJobService {
      * 下载/查看执行记录对应的报告文件（内部纯文件服务：路径解析 + 路径穿越防护，无归属校验）。
      * 供短链端点 {@code downloadByShortCode} 调用（shortCode 即访问凭据，无需 userId）。
      * resolvedOutputPath 存相对路径({userId}/{mdFileName})，先从报告主目录读取，
-     * 主文件不存在时再从报告备份目录读取。
+     * 主文件不存在时再从报告备份目录读取；两处都没有时尝试从数据库 Markdown 恢复。
      * 路径穿越 base = baseDir/{createdBy}。
      */
     public Resource downloadExecutionFile(SkillJobExecutionDto exec) {
@@ -595,6 +599,7 @@ public class SkillJobService {
             throw new IllegalStateException("PathTraversal: " + exec.resolvedOutputPath());
         }
         if (!Files.exists(mdFile) || !Files.isRegularFile(mdFile)) {
+            // 主文件缺失时优先使用备份文件，避免不必要地重新生成报告。
             Path backupFile = Paths.get(backupDir).resolve(relativeOutputPath).normalize().toAbsolutePath();
             Path expectedBackupBase = Paths.get(backupDir, job.getCreatedBy()).normalize().toAbsolutePath();
             if (!backupFile.startsWith(expectedBackupBase)) {
@@ -604,6 +609,13 @@ public class SkillJobService {
                 log.warn("SkillJob report primary missing, serving from backup: {} -> {}", mdFile, backupFile);
                 return new FileSystemResource(backupFile);
             }
+            // 主文件和备份都丢失时，用执行记录中保存的 Markdown 重建 HTML，并同步备份。
+            SkillJobExecution execution = mapper.selectExecutionById(exec.id());
+            if (execution != null && restoreReportIfMissing(execution, job, mdFile,
+                    relativeOutputPath.toString())) {
+                return new FileSystemResource(mdFile);
+            }
+            // 没有可恢复内容或恢复失败，交由 controller 转成统一的 404 友好页。
             throw new IllegalStateException("FileNotOnDisk: " + exec.resolvedOutputPath());
         }
 
@@ -611,8 +623,8 @@ public class SkillJobService {
     }
 
     /**
-     * 下载/查看执行记录对应的报告文件（前端入口：校验 userId 归属后委托给无校验版本）。
-     * 报告只读预览和下载允许所有已登录用户访问；编辑源码仍要求任务创建人权限。
+     * 前端下载入口的委托方法。
+     * 当前仅确认关联 Job 存在，userId 未与 job.createdBy 比较；因此下载权限实际由 execId 控制。
      */
     public Resource downloadExecutionFile(SkillJobExecutionDto exec, String userId) {
         SkillJob job = mapper.selectJobById(exec.jobId());
@@ -692,10 +704,38 @@ public class SkillJobService {
         if (!primary.startsWith(primaryUserRoot) || !backup.startsWith(backupUserRoot)) {
             throw new IllegalStateException("ReportInvalid: 报告路径无效 (execId=" + execId + ")");
         }
-        if (!Files.isRegularFile(primary) && !Files.isRegularFile(backup)) {
+        if (!Files.isRegularFile(primary) && !Files.isRegularFile(backup)
+                && !restoreReportIfMissing(execution, job, primary, relative.toString())) {
             throw new IllegalStateException("ReportNotFound: 报告文件不存在 (execId=" + execId + ")");
         }
         return new OwnedReport(primary, backup, relative.toString());
+    }
+
+    private boolean restoreReportIfMissing(SkillJobExecution execution, SkillJob job,
+                                           Path primary, String relativePath) {
+        String markdown = execution.getReportMarkdown();
+        if (markdown == null || markdown.isBlank() || job == null) return false;
+        try {
+            Path parent = primary.getParent();
+            if (parent != null) Files.createDirectories(parent);
+            Path temporary = Files.createTempFile(parent, primary.getFileName().toString() + ".", ".restore.tmp");
+            try {
+                Files.writeString(temporary, htmlReportRenderer.render(markdown, job.getName()), StandardCharsets.UTF_8);
+                try {
+                    Files.move(temporary, primary, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (AtomicMoveNotSupportedException e) {
+                    Files.move(temporary, primary, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } finally {
+                Files.deleteIfExists(temporary);
+            }
+            SkillFileMirror.mirror(baseDir, backupDir, relativePath);
+            log.info("Restored missing Skill Job report from database: execId={}, path={}", execution.getId(), primary);
+            return Files.isRegularFile(primary) && Files.size(primary) > 0;
+        } catch (Exception e) {
+            log.warn("Failed to restore Skill Job report from database: execId={}, error={}", execution.getId(), e.getMessage());
+            return false;
+        }
     }
 
     private static void validateEditableHtml(String html) {

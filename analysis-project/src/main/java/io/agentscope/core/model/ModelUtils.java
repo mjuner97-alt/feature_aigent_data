@@ -93,9 +93,9 @@ public final class ModelUtils {
                 // - chunkGap：两个 chunk 之间的间隔超时，用于抓真正的中途卡死
                 //   （连接半死/断流时 JDK HttpClient 的 BufferedReader 会永久阻塞，
                 //   没有它前端只会收到部分 think 后永远没下文）。
-                //   默认 40s，可用 -Dagentscope.llm.chunk-gap-timeout-seconds 覆盖。
+                //   默认 120，可用 -Dagentscope.llm.chunk-gap-timeout-seconds 覆盖。
                 Duration chunkGap = Duration.ofSeconds(
-                        Integer.getInteger("agentscope.llm.chunk-gap-timeout-seconds", 40));
+                        Integer.getInteger("agentscope.llm.chunk-gap-timeout-seconds", 2*60));
                 LlmFileTrace.write(traceId, "ModelUtils", "应用超时", "timeout=" + timeout + " chunkGap=" + chunkGap);
                 // reactor 3.6 无 timeout(Duration, Duration, fallback) 重载，用 Publisher 形式：
                 // Mono.delay(timeout) 约束首包（prefill），Mono.delay(chunkGap) 约束 chunk 间隔。

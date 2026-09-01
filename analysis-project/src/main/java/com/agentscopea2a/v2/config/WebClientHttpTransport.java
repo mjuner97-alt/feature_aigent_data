@@ -171,41 +171,47 @@ public class WebClientHttpTransport implements HttpTransport {
     }
 
     /**
-     * 把响应体按行切分（跨 DataBuffer 的残行用 per-subscription 的 StringBuilder 拼接），
-     * 再按 SSE/NDJSON 过滤出上游 OpenAIClient 期望的 data 行。
+     * WebClient's SSE reader already removes {@code data:} and event boundaries when the
+     * response is {@code text/event-stream}. Accept those decoded payloads directly. Some
+     * OpenAI-compatible gateways use a generic content type, so raw {@code data:} lines remain
+     * supported as a compatibility path.
      */
     private Flux<String> readStreamLines(ClientResponse resp, boolean isNdjson, String traceId) {
-        return Flux.defer(() -> {
-            StringBuilder pending = new StringBuilder();
-            return resp.bodyToFlux(String.class)
-                    .flatMap(chunk -> {
-                        pending.append(chunk);
-                        String text = pending.toString();
-                        int lastNl = text.lastIndexOf('\n');
-                        if (lastNl < 0) {
-                            return Flux.empty();
-                        }
-                        String completed = text.substring(0, lastNl);
-                        pending.setLength(0);
-                        pending.append(text.substring(lastNl + 1));
-                        return completed.isEmpty() ? Flux.<String>empty() : Flux.fromArray(completed.split("\\r?\\n"));
-                    })
-                    .concatMap(line -> {
-                        if (isNdjson) {
-                            return line.isEmpty() ? Flux.<String>empty() : Flux.just(line);
-                        }
-                        if (!line.startsWith(SSE_DATA_PREFIX)) {
-                            return Flux.empty();
-                        }
-                        String data = line.substring(SSE_DATA_PREFIX.length()).trim();
-                        if (data.isEmpty() || SSE_DONE_MARKER.equals(data)) {
-                            return Flux.empty();
-                        }
-                        return Flux.just(data);
-                    })
-                    .doOnNext(data -> LlmFileTrace.write(traceId, "WebClientHttpTransport", "SSE数据",
-                            "data=" + LlmFileTrace.shortText(data)));
-        });
+        return resp.bodyToFlux(String.class)
+                .concatMapIterable(chunk -> decodeStreamElement(chunk, isNdjson))
+                .takeWhile(data -> !SSE_DONE_MARKER.equals(data))
+                .filter(data -> !data.isEmpty())
+                .doOnNext(data -> LlmFileTrace.write(traceId, "WebClientHttpTransport", "SSE数据",
+                        "data=" + LlmFileTrace.shortText(data)));
+    }
+
+    private static java.util.List<String> decodeStreamElement(String chunk, boolean isNdjson) {
+        if (chunk == null || chunk.isEmpty()) {
+            return java.util.List.of();
+        }
+        String[] lines = chunk.split("\\r?\\n");
+        java.util.List<String> result = new java.util.ArrayList<>(lines.length);
+        boolean containsRawSseLine = false;
+        if (!isNdjson) {
+            for (String line : lines) {
+                if (line.startsWith(SSE_DATA_PREFIX)) {
+                    containsRawSseLine = true;
+                    break;
+                }
+            }
+        }
+        for (String line : lines) {
+            if (isNdjson) {
+                if (!line.isEmpty()) result.add(line);
+            } else if (containsRawSseLine) {
+                if (line.startsWith(SSE_DATA_PREFIX)) {
+                    result.add(line.substring(SSE_DATA_PREFIX.length()).trim());
+                }
+            } else if (!line.isEmpty()) {
+                result.add(line);
+            }
+        }
+        return result;
     }
 
     // ── 请求构造与关闭 ──────────────────────────────────────────────────────

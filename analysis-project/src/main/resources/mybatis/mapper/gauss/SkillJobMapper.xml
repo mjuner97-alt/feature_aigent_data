@@ -94,6 +94,7 @@
         <result column="status" property="status"/>
         <result column="conversation_id" property="conversationId"/>
         <result column="resolved_output_path" property="resolvedOutputPath"/>
+        <result column="report_markdown" property="reportMarkdown"/>
         <result column="md_file_written" property="mdFileWritten"/>
         <result column="md_file_exists" property="mdFileExists"/>
         <result column="error_msg" property="errorMsg"/>
@@ -107,11 +108,11 @@
         <result column="notification_attempt_count" property="notificationAttemptCount"/>
     </resultMap>
 
-    <sql id="skillJobExecutionCols">id, job_id, trigger_type, status, conversation_id, resolved_output_path, md_file_written, md_file_exists, error_msg, started_at, completed_at, created_at</sql>
+    <sql id="skillJobExecutionCols">id, job_id, trigger_type, status, conversation_id, resolved_output_path, report_markdown, md_file_written, md_file_exists, error_msg, started_at, completed_at, created_at</sql>
 
     <insert id="insertExecution" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillJobExecution" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO skill_job_execution (job_id, trigger_type, status, conversation_id, resolved_output_path, md_file_written, md_file_exists, error_msg, started_at, completed_at)
-        VALUES (#{jobId}, #{triggerType}, #{status}, #{conversationId}, #{resolvedOutputPath}, #{mdFileWritten}, #{mdFileExists}, #{errorMsg}, #{startedAt}, #{completedAt})
+        INSERT INTO skill_job_execution (job_id, trigger_type, status, conversation_id, resolved_output_path, report_markdown, md_file_written, md_file_exists, error_msg, started_at, completed_at)
+        VALUES (#{jobId}, #{triggerType}, #{status}, #{conversationId}, #{resolvedOutputPath}, #{reportMarkdown}, #{mdFileWritten}, #{mdFileExists}, #{errorMsg}, #{startedAt}, #{completedAt})
     </insert>
 
     <select id="selectExecutionById" resultMap="SkillJobExecutionResultMap">
@@ -136,7 +137,7 @@
     <!-- 执行中心：创建人按 userId 精确筛选，限制最近 500 条避免无界查询。 -->
     <select id="selectExecutionCenter" resultMap="SkillJobExecutionResultMap">
         SELECT e.id, e.job_id, e.trigger_type, e.status, e.conversation_id,
-               e.resolved_output_path, e.md_file_written, e.md_file_exists, e.error_msg,
+               e.resolved_output_path, e.report_markdown, e.md_file_written, e.md_file_exists, e.error_msg,
                e.started_at, e.completed_at, e.created_at,
                j.name AS job_name, s.name AS skill_name, j.created_by
         FROM skill_job_execution e
@@ -160,6 +161,7 @@
         SET status=#{status},
             conversation_id=#{conversationId},
             resolved_output_path=#{resolvedOutputPath},
+            report_markdown=COALESCE(#{reportMarkdown}, report_markdown),
             md_file_written=#{mdFileWritten}, md_file_exists=#{mdFileExists},
             error_msg=#{errorMsg}, started_at=#{startedAt}, completed_at=#{completedAt}
         WHERE id = #{id}

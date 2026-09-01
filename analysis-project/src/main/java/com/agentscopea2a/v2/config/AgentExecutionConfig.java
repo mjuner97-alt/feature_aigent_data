@@ -39,7 +39,7 @@ public final class AgentExecutionConfig {
      *
      * <table>
      *   <tr><th>参数</th><th>值</th><th>说明</th></tr>
-     *   <tr><td>timeout</td><td>180秒</td><td>首包(prefill)超时：大上下文冷请求 prefill 可能耗时几十秒，必须给足；中途卡死由 ModelUtils 的 chunk 间隔超时(默认40s)兜底</td></tr>
+     *   <tr><td>timeout</td><td>120秒</td><td>首包(prefill)超时：大上下文冷请求 prefill 可能耗时几十秒，必须给足；中途卡死由 ModelUtils 的 chunkGap 间隔超时(默认120s)兜底</td></tr>
      *   <tr><td>maxAttempts</td><td>1次</td><td>框架层面不重试，由 FallbackModelDecorator 处理降级</td></tr>
      *   <tr><td>initialBackoff</td><td>2秒</td><td>首次重试延迟（仅在 maxAttempts > 1 时生效）</td></tr>
      *   <tr><td>maxBackoff</td><td>30秒</td><td>最大退避时间</td></tr>
@@ -49,7 +49,7 @@ public final class AgentExecutionConfig {
      */
     public static final ExecutionConfig MODEL_DEFAULTS =
             ExecutionConfig.builder()
-                    .timeout(Duration.ofSeconds(3 * 60))
+                    .timeout(Duration.ofSeconds(2 * 60)) //2分钟
                     .maxAttempts(1)
                     .initialBackoff(Duration.ofSeconds(2))
                     .maxBackoff(Duration.ofSeconds(30))

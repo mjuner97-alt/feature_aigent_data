@@ -155,7 +155,8 @@ public class SkillJobController {
     }
 
     /**
-     * 下载/查看执行记录对应的报告文件（前端入口：X-User-Id 请求头 + 归属校验，仅创建人可访问）。
+     * 下载/查看执行记录对应的报告文件。
+     * 请求必须带 X-User-Id；当前 service 层仅用它满足入口参数，未按创建人做归属校验。
      */
     @GetMapping("/executions/{execId}/download")
     public ResponseEntity<Resource> downloadExecutionFile(@PathVariable(name = "execId") Long execId,
@@ -163,6 +164,7 @@ public class SkillJobController {
         try {
             SkillJobExecutionDto exec = service.getExecution(execId);
             if (exec.resolvedOutputPath() == null || exec.resolvedOutputPath().isBlank()) {
+                // 执行记录存在，但尚未生成报告路径，和磁盘文件丢失一样都返回 404 友好页。
                 log.warn("SkillJob download execId={} has no output path", execId);
                 return htmlResponse(HttpStatus.NOT_FOUND, DownloadErrorPage.reportNotGenerated());
             }
@@ -170,7 +172,7 @@ public class SkillJobController {
             return fileResponse(resource, exec.resolvedOutputPath());
         } catch (IllegalStateException e) {
             // FileNotFound / FileNotOnDisk / FileNotFoundOrAccessDenied / JobAccessDenied / JobNotFound 等
-            // 统一回 "文件不存在" 友好页; 真实原因 (含路径) 只进日志, 不回浏览器
+            // 统一回 "文件不存在" 友好页；真实原因（含磁盘路径）只进日志，不回浏览器。
             log.warn("SkillJob download execId={} failed: {}", execId, e.getMessage());
             return htmlResponse(HttpStatus.NOT_FOUND, DownloadErrorPage.fileNotFound());
         }

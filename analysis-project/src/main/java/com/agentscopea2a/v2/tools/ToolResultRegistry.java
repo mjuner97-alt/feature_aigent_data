@@ -24,7 +24,10 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.Iterator;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
@@ -66,6 +69,19 @@ public class ToolResultRegistry {
 
     private final ConcurrentHashMap<String, String> store = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long> createdAt = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, java.util.concurrent.CopyOnWriteArrayList<String>> requestRefs = new ConcurrentHashMap<>();
+
+    public void addRequestRef(String requestId, String refId) {
+        if (requestId != null && refId != null) requestRefs.computeIfAbsent(requestId, k -> new java.util.concurrent.CopyOnWriteArrayList<>()).add(refId);
+    }
+
+    public List<String> getRequestRefs(String requestId) {
+        if (requestId == null) return List.of();
+        List<String> refs = requestRefs.get(requestId);
+        return refs == null ? List.of() : List.copyOf(refs);
+    }
+
+    public void clearRequestRefs(String requestId) { if (requestId != null) requestRefs.remove(requestId); }
 
     /** Gauss mapper 可缺席（gauss 数据源关闭的部署形态），届时退化为纯内存 */
     private final ObjectProvider<ChatToolResultMapper> mapperProvider;
@@ -144,6 +160,42 @@ public class ToolResultRegistry {
      */
     public String resolveFinalResult(String text) {
         return resolveMarkers(text);
+    }
+
+    /**
+     * /ai/chat 最终出参专用：仅展开当前请求登记的引用，并补上模型遗漏的可渲染结果。
+     * 历史轮次的 ref 即使仍在内存池，也不会被本轮答案解析或追加。
+     */
+    public String resolveAndAppendCurrentResults(String text, List<String> currentRefs) {
+        String resolved = resolveCurrentMarkers(text, currentRefs);
+        if (currentRefs == null || currentRefs.isEmpty()) return resolved;
+
+        StringBuilder answer = new StringBuilder(resolved);
+        // 保持工具调用顺序；重复 ref 只展示一次，避免模型引用后又被重复追加。
+        for (String ref : new LinkedHashSet<>(currentRefs)) {
+            String content = store.get(ref);
+            if (content == null || content.isBlank() || answer.toString().contains(content)) continue;
+            if (!answer.isEmpty()) answer.append("\n\n");
+            answer.append(content);
+        }
+        return answer.toString();
+    }
+
+    /** 只允许当前请求的 marker 从内存池取值，其他 marker 直接移除。 */
+    private String resolveCurrentMarkers(String text, List<String> currentRefs) {
+        if (text == null || text.isEmpty()) return text;
+        if (currentRefs == null || currentRefs.isEmpty()) return MARKER_PATTERN.matcher(text).replaceAll("");
+        Set<String> allowed = new LinkedHashSet<>(currentRefs);
+        Matcher m = MARKER_PATTERN.matcher(text);
+        StringBuffer sb = new StringBuffer();
+        while (m.find()) {
+            String ref = m.group(1);
+            String replacement = allowed.contains(ref) ? store.get(ref) : "";
+            if (replacement == null) replacement = "";
+            m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
+        }
+        m.appendTail(sb);
+        return sb.toString();
     }
 
     /** 懒清理：条目超上限时移除超 TTL 的旧条目；仍超限则整体清空兜底（DB 兜着）。 */

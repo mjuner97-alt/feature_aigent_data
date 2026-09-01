@@ -29,6 +29,9 @@ public class ChatScriptExecResultHook implements Hook, RuntimeContextAware {
     public static final String ENABLED_CTX_KEY = "chatScriptExecResultHook.enabled";
     /** 当前请求已登记的可渲染结果引用，供最终回答层直接展开。 */
     public static final String REFERENCES_CTX_KEY = "chatScriptExecResultHook.references";
+    public static final String REQUEST_ID_CTX_KEY = "chatScriptExecResultHook.requestId";
+    /** Original fenced blocks collected for independent Skill Job report persistence. */
+    public static final String RAW_BLOCKS_CTX_KEY = "chatScriptExecResultHook.rawBlocks";
     private final ToolResultRegistry registry;
     private volatile RuntimeContext currentContext;
 
@@ -67,13 +70,27 @@ public class ChatScriptExecResultHook implements Hook, RuntimeContextAware {
         // 每个可渲染代码块独立登记，避免多个图表共用同一个引用。
         while (matcher.find()) {
             found = true;
+            Object existing = ctx.get(RAW_BLOCKS_CTX_KEY);
+            List<String> rawBlocks = new java.util.ArrayList<>();
+            if (existing instanceof List<?> values) values.stream().filter(String.class::isInstance).map(String.class::cast).forEach(rawBlocks::add);
+            rawBlocks.add(matcher.group());
+            ctx.put(RAW_BLOCKS_CTX_KEY, List.copyOf(rawBlocks));
             String ref = registry.register(ctx.getSessionId(), use.getId(), use.getName(), stripFence(matcher.group()));
             refs.add(ref);
+            Object requestId = ctx.get(REQUEST_ID_CTX_KEY);
+            if (requestId instanceof String id) registry.addRequestRef(id, ref);
             matcher.appendReplacement(rewritten, Matcher.quoteReplacement(referenceMarker(ref)));
         }
         if (!found) return;
         matcher.appendTail(rewritten);
-        ctx.put(REFERENCES_CTX_KEY, refs);
+        // 同一请求可多次调用 script_exec，不能让后一次调用覆盖前一次图表引用。
+        List<String> allRefs = new java.util.ArrayList<>();
+        Object existingRefs = ctx.get(REFERENCES_CTX_KEY);
+        if (existingRefs instanceof List<?> values) {
+            values.stream().filter(String.class::isInstance).map(String.class::cast).forEach(allRefs::add);
+        }
+        allRefs.addAll(refs);
+        ctx.put(REFERENCES_CTX_KEY, List.copyOf(allRefs));
         // PostActingEvent 同时更新两个字段，确保后续 Agent 消息和框架工具消息都看到替换结果。
         ToolResultBlock replacement = ToolResultBlock.of(use.getId(), use.getName(),
                 List.of(TextBlock.builder().text(rewritten.toString()).build()));

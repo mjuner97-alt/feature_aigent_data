@@ -167,9 +167,10 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         final AtomicBoolean hasSentExecuting = new AtomicBoolean(false);
         /** 请求级 Trace 会话，直接存储框架 AgentEvent，供 cleanup 组装 */
         final TraceSession traceCtx;
+        final String requestId;
 
         StreamContext(SseEmitter emitter, ChatRequest req, RuntimeContext runtimeCtx, Msg userMsg, String episodicSessionId,
-                      TraceSession traceCtx) {
+                      TraceSession traceCtx, String requestId) {
             this.emitter = emitter;
             this.req = req;
             this.runtimeCtx = runtimeCtx;
@@ -182,6 +183,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             this.agentName = StringUtils.defaultIfBlank(req.getAgentName(), DEFAULT_AGENT_NAME);
             this.formType = StringUtils.defaultIfBlank(req.getFromType(), DEFAULT_FROM_TYPE);
             this.traceCtx = traceCtx;
+            this.requestId = requestId;
         }
     }
 
@@ -334,6 +336,8 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         // 构造运行时上下文：携带 sessionId / userId / lastQuestion 供中间件 / hooks 访问
         RuntimeContext ctx = buildRuntimeContext(conversationId, userId, text);
         ctx.put(ChatScriptExecResultHook.ENABLED_CTX_KEY, Boolean.TRUE);
+        String requestId = UUID.randomUUID().toString();
+        ctx.put(ChatScriptExecResultHook.REQUEST_ID_CTX_KEY, requestId);
 
         // 工具结果引用开关：仅 /ai/chat 路径开启。ToolResultRefHook 据此把 script_exec
         // 的图表块登记进结果池并替换成 stub（/v2/ai/chat 不设此 key，行为不变）。
@@ -351,7 +355,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         String episodicSessionId = "user:" + episodicUserId + ":" + conversationId;
 
         // 把 per-request 状态收拢进 StreamContext（参考 v1 流处理模式）
-        StreamContext streamCtx = new StreamContext(emitter, req, ctx, userMsg, episodicSessionId, traceCtx);
+        StreamContext streamCtx = new StreamContext(emitter, req, ctx, userMsg, episodicSessionId, traceCtx, requestId);
 
         // 清理逻辑：取消订阅、清理 artifact、持久化 episodic 记忆、移除进行中调用标记
         Runnable cleanup = buildCleanup(streamCtx, callKey, inFlight);
@@ -575,11 +579,15 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             }
             // 流式输出最终结果：每 5 个字符一片
             String finalAnswer = ctx.answerContent.toString();
-            // /ai/chat 的最终返回层：Hook 只把 HTML 缓存并写入引用标记，
-            // SSE 返回前端；前端 Markdown 组件随后负责 HTML 清洗和渲染。
-            finalAnswer = toolResultRegistry.resolveFinalResult(finalAnswer);
+            // 仅展开本请求的 refs，历史会话残留的 marker 不得串入当前轮。
+            // 即使模型未输出 marker，本轮 HTML/ECharts 也会在末尾补齐。
+            List<String> currentRefs = toolResultRegistry.getRequestRefs(ctx.requestId);
+            finalAnswer = toolResultRegistry.resolveAndAppendCurrentResults(finalAnswer, currentRefs);
+            // 保存与前端展示相同的最终答案，刷新历史时也能看到本轮图表。
+            ctx.answerContent.setLength(0);
+            ctx.answerContent.append(finalAnswer == null ? "" : finalAnswer);
             // 回答末尾追加管理后台地址(md)。配置留空则不追加。
-            // 仅作用于 SSE 下发的 finalAnswer,不修改 ctx.answerContent,故不入问答库。
+            // 管理后台地址仍只作用于 SSE 下发，不写入问答库。
 //            if (StringUtils.isNotBlank(managementUrl)) {
 //                String notice = "\n\n---\n管理后台页面：[点击进入](" + managementUrl + ")";
 //                finalAnswer = StringUtils.isBlank(finalAnswer) ? notice : finalAnswer + notice;
@@ -595,6 +603,14 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                     strategy.sendText(ctx, TextPayload.chunk(chunk, isLast));
                     pos = end;
                 }
+            } else {
+                // AgentResultEvent may be terminal while carrying no text (for example when
+                // the model returns an empty completion). Never close the SSE stream silently:
+                // the client needs a terminal error frame to stop its loading state and expose
+                // a useful retryable failure.
+                log.warn("Empty agent completion: sessionId={} thinkLen={} refs={}",
+                        ctx.conversationId, ctx.thinkContent.length(), currentRefs.size());
+                strategy.sendError(ctx, new IllegalStateException("模型返回为空,请稍后重试..."));
             }
         } catch (Exception e) {
             log.warn("发送最终结果失败: sessionId={}", ctx.conversationId, e);
@@ -614,6 +630,12 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                 log.warn("emitter.complete() 失败: sessionId={}", ctx.conversationId, e);
             }
         }
+    }
+
+    private static List<String> currentChatToolResultRefs(RuntimeContext runtimeCtx) {
+        Object refs = runtimeCtx.get(ChatScriptExecResultHook.REFERENCES_CTX_KEY);
+        if (!(refs instanceof List<?> values)) return List.of();
+        return values.stream().filter(String.class::isInstance).map(String.class::cast).toList();
     }
 
     /**
@@ -636,6 +658,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         return () -> {
             // CAS 保证幂等：只执行一次
             if (!ctx.cleaned.compareAndSet(false, true)) return;
+            toolResultRegistry.clearRequestRefs(ctx.requestId);
             // 0. 取消超时看门狗（正常完成时无需触发；watchdog 自身调用 cleanup 时 cancel 是无害的空操作）
             ScheduledFuture<?> watchdog = ctx.timeoutWatchdog.get();
             if (watchdog != null) {

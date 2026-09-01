@@ -99,6 +99,8 @@ public class ScriptExecTool {
 
     /** 超时硬上限, 防 LLM 通过 entry.timeoutSeconds 传 99999. */
     private static final int MAX_TIMEOUT_SECONDS = 300;
+    /** Built-in rendering smoke test that does not require a Python runtime or a script file. */
+    static final String WEEKLY_BUSINESS_MOCK_ID = "weekly_business_html_brief_mock";
 
     /**
      * opengauss-jdbc jar 路径 (容器内 .m2 缓存, Dockerfile build 时预填).
@@ -156,6 +158,9 @@ public class ScriptExecTool {
 
         if (scriptId == null || scriptId.isBlank()) {
             return ToolResultBlock.text("script_exec 拒绝执行: scriptId 为空. 先调 script_list 查可用 script_id");
+        }
+        if (WEEKLY_BUSINESS_MOCK_ID.equals(scriptId)) {
+            return ToolResultBlock.text(formatWeeklyBusinessMock(params));
         }
         if (registryMapper == null) {
             return ToolResultBlock.text("script_exec 不可用: registryMapper 未注入 (检查 ScriptRegistryMapper bean)");
@@ -289,6 +294,35 @@ public class ScriptExecTool {
                 dsList, timeout, paramMap);
 
         return runProcess(command, env, paramMap, scriptId, timeout);
+    }
+
+    /** Generates deterministic renderable output entirely in Java for local smoke tests. */
+    static String formatWeeklyBusinessMock(Map<String, Object> params) {
+        int weeks = 4;
+        if (params != null && params.get("weeks") != null) {
+            try { weeks = Math.max(1, Math.min(8, Integer.parseInt(String.valueOf(params.get("weeks"))))); }
+            catch (NumberFormatException ignored) { }
+        }
+        String line = params == null || params.get("business_line") == null
+                ? "全部业务线" : String.valueOf(params.get("business_line"));
+        int[] revenue = {128, 142, 151, 168, 176, 184, 193, 207};
+        int[] orders = {860, 910, 980, 1060, 1110, 1180, 1230, 1310};
+        String[] labels = {"第1周", "第2周", "第3周", "第4周", "第5周", "第6周", "第7周", "第8周"};
+        StringBuilder labelJson = new StringBuilder("[");
+        StringBuilder revenueJson = new StringBuilder("[");
+        StringBuilder orderJson = new StringBuilder("[");
+        for (int i = 0; i < weeks; i++) {
+            if (i > 0) { labelJson.append(','); revenueJson.append(','); orderJson.append(','); }
+            labelJson.append('"').append(labels[i]).append('"'); revenueJson.append(revenue[i]); orderJson.append(orders[i]);
+        }
+        labelJson.append(']'); revenueJson.append(']'); orderJson.append(']');
+        int latest = revenue[weeks - 1], previous = weeks > 1 ? revenue[weeks - 2] : latest;
+        double change = previous == 0 ? 0 : Math.round((latest - previous) * 1000.0 / previous) / 10.0;
+        return "# 每周经营数据 HTML 快报（Mock）\n\n"
+                + "- 业务范围：" + line + "\n- 统计周期：最近 " + weeks + " 周\n\n"
+                + "## 核心结论\n本周收入 **" + latest + " 万元**，较上周增长 **" + change + "%**。\n\n"
+                + "## 趋势图\n```echarts\n{\"title\":{\"text\":\"周收入与订单趋势\"},\"tooltip\":{\"trigger\":\"axis\"},\"xAxis\":{\"type\":\"category\",\"data\":" + labelJson + "},\"yAxis\":[{\"type\":\"value\"},{\"type\":\"value\"}],\"series\":[{\"name\":\"收入(万元)\",\"type\":\"line\",\"data\":" + revenueJson + "},{\"name\":\"订单数\",\"type\":\"bar\",\"yAxisIndex\":1,\"data\":" + orderJson + "}]}\n```\n\n"
+                + "## 收入构成\n```echarts\n{\"title\":{\"text\":\"业务线收入构成\",\"left\":\"center\"},\"tooltip\":{\"trigger\":\"item\"},\"series\":[{\"name\":\"收入占比\",\"type\":\"pie\",\"data\":[{\"name\":\"线上直营\",\"value\":42},{\"name\":\"渠道分销\",\"value\":33},{\"name\":\"企业客户\",\"value\":25}]}]}\n```\n";
     }
 
     /** Adapter used by the HTTP debug service; keeps registry and container validation in one place. */

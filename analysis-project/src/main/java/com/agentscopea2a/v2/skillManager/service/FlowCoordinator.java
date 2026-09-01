@@ -240,10 +240,15 @@ public class FlowCoordinator {
             RuntimeContext context = RuntimeContext.builder()
                     .sessionId("flow-" + flow.getId() + "-" + node.getNodeKey())
                     .userId(flow.getTriggerUserId()).build();
+            String requestId = java.util.UUID.randomUUID().toString();
+            context.put(com.agentscopea2a.v2.hooks.ChatScriptExecResultHook.ENABLED_CTX_KEY, Boolean.TRUE);
+            context.put(com.agentscopea2a.v2.hooks.ChatScriptExecResultHook.REQUEST_ID_CTX_KEY, requestId);
             List<AgentEvent> events = runner.streamEvents(List.of(Msg.builder()
                             .role(MsgRole.USER).content(TextBlock.builder().text(question).build()).build()),
                     context).collectList().block(Duration.ofMinutes(10));
-            String result = toolResultRegistry.resolveFinalResult(extract(events));
+            String result = toolResultRegistry.resolveAndAppendCurrentResults(
+                    extract(events), toolResultRegistry.getRequestRefs(requestId));
+            toolResultRegistry.clearRequestRefs(requestId);
             if (result == null || result.isBlank()) throw new IllegalStateException("Skill returned empty result");
             String resultJson = json(Map.of("text", result));
             completeAudit(audit, FlowNodeAttemptStatus.SUCCESS, false, null, null, started);
