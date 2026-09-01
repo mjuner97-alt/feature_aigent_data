@@ -45,6 +45,11 @@ public class ChatScriptExecResultHook implements Hook, RuntimeContextAware {
     public static String referenceMarker(String ref) {
         return String.format(ToolResultRegistry.MARKER_TEMPLATE, ref);
     }
+
+    /** Text returned to the model in place of an internal result reference. */
+    public static String modelVisiblePlaceholder() {
+        return "[系统提示：图表已生成，系统会在最终回答中自动附加。请勿输出内部引用 ID。]";
+    }
     @Override public int priority() { return 50; }
     @Override public void setRuntimeContext(RuntimeContext context) { currentContext = context; }
 
@@ -79,7 +84,7 @@ public class ChatScriptExecResultHook implements Hook, RuntimeContextAware {
             refs.add(ref);
             Object requestId = ctx.get(REQUEST_ID_CTX_KEY);
             if (requestId instanceof String id) registry.addRequestRef(id, ref);
-            matcher.appendReplacement(rewritten, Matcher.quoteReplacement(referenceMarker(ref)));
+            matcher.appendReplacement(rewritten, Matcher.quoteReplacement(modelVisiblePlaceholder()));
         }
         if (!found) return;
         matcher.appendTail(rewritten);
