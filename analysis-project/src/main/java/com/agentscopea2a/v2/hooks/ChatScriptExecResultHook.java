@@ -50,6 +50,22 @@ public class ChatScriptExecResultHook implements Hook, RuntimeContextAware {
     public static String modelVisiblePlaceholder() {
         return "[系统提示：图表已生成，系统会在最终回答中自动附加。请勿输出内部引用 ID。]";
     }
+
+    /** Converts fenced chart output to the tag format consumed by report rendering. */
+    public static String renderableContent(String block) {
+        if (block == null) return "";
+        int newline = block.indexOf('\n');
+        String language = newline >= 0 ? block.substring(3, newline).trim().toLowerCase() : "";
+        String content = stripFence(block);
+        if ("echart".equals(language) || "echarts".equals(language)) {
+            return "<echarts>\n" + content + "\n</echarts>";
+        }
+        if ("html".equals(language) || "htm".equals(language)) {
+            // HTML is cached as-is after removing the Markdown fence; do not add an echarts tag.
+            return content;
+        }
+        return content;
+    }
     @Override public int priority() { return 50; }
     @Override public void setRuntimeContext(RuntimeContext context) { currentContext = context; }
 
@@ -80,7 +96,7 @@ public class ChatScriptExecResultHook implements Hook, RuntimeContextAware {
             if (existing instanceof List<?> values) values.stream().filter(String.class::isInstance).map(String.class::cast).forEach(rawBlocks::add);
             rawBlocks.add(matcher.group());
             ctx.put(RAW_BLOCKS_CTX_KEY, List.copyOf(rawBlocks));
-            String ref = registry.register(ctx.getSessionId(), use.getId(), use.getName(), stripFence(matcher.group()));
+            String ref = registry.register(ctx.getSessionId(), use.getId(), use.getName(), renderableContent(matcher.group()));
             refs.add(ref);
             Object requestId = ctx.get(REQUEST_ID_CTX_KEY);
             if (requestId instanceof String id) registry.addRequestRef(id, ref);

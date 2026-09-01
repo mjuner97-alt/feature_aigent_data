@@ -29,6 +29,8 @@ public record SkillJobDto(
         String skillName,
         String questionTemplate,
         Boolean enabled,
+        /** 按星期配置的执行时间，JSON 格式如 {"WED":["09:00"]} */
+        String scheduleRules,
         Long metricId,
         String metricCode,
         String metricName,
@@ -47,6 +49,7 @@ public record SkillJobDto(
                 job.getId(), job.getName(), job.getSkillId(), job.getSkillName(),
                 job.getQuestionTemplate(),
                 job.getEnabled(),
+                job.getScheduleRules(),
                 job.getMetricId(), job.getMetricCode(), job.getMetricName(),
                 job.getCreatedBy(), createdByName, job.getCreatedAt(), job.getUpdatedAt());
     }

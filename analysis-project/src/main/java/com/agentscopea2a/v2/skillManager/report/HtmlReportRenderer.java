@@ -58,6 +58,8 @@ public class HtmlReportRenderer {
     /** 普通代码块（非 echarts）：```lang\n code ```。 */
     private static final Pattern CODE_BLOCK =
             Pattern.compile("```(\\w*)\\n([\\s\\S]*?)```");
+    private static final Pattern HTML_CODE_BLOCK =
+            Pattern.compile("```html?\\s*\\n([\\s\\S]*?)```", Pattern.CASE_INSENSITIVE);
 
     // ── 行级 Markdown 正则（MULTILINE：^ $ 匹配行首行尾）──────────────────────
     private static final Pattern HR = Pattern.compile("^---+\\s*$", Pattern.MULTILINE);
@@ -444,6 +446,19 @@ public class HtmlReportRenderer {
     private String markdownToHtml(String md) {
         if (md == null || md.isEmpty()) return "";
         StringBuilder out = new StringBuilder();
+        Matcher htmlBlocks = HTML_CODE_BLOCK.matcher(md);
+        int htmlLast = 0;
+        boolean hasHtml = false;
+        while (htmlBlocks.find()) {
+            hasHtml = true;
+            if (htmlBlocks.start() > htmlLast) out.append(renderInline(md.substring(htmlLast, htmlBlocks.start())));
+            out.append(htmlBlocks.group(1).trim()).append('\n');
+            htmlLast = htmlBlocks.end();
+        }
+        if (hasHtml) {
+            if (htmlLast < md.length()) out.append(renderInline(md.substring(htmlLast)));
+            return out.toString();
+        }
         Matcher code = CODE_BLOCK.matcher(md);
         int last = 0;
         while (code.find()) {

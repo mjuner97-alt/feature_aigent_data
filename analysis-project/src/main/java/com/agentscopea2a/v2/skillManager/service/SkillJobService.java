@@ -137,6 +137,7 @@ public class SkillJobService {
                 .enabled(true)
                 .createdBy(userId)
                 .metricId(req.metricId())
+                .scheduleRules(req.scheduleRules())
                 .build();
         mapper.insertSkillJob(job);
 
@@ -200,6 +201,8 @@ public class SkillJobService {
         }
         if (req.questionTemplate() != null) job.setQuestionTemplate(req.questionTemplate());
         if (req.enabled() != null) job.setEnabled(req.enabled());
+        // 编辑表单始终提交定时规则：JSON 原样保存，传 null 表示清空定时配置
+        if (req.scheduleRules() != null) job.setScheduleRules(req.scheduleRules());
         mapper.updateJobById(job);
         return SkillJobDto.of(job);
     }
@@ -336,7 +339,10 @@ public class SkillJobService {
         return new MetricTriggerBatchDto(code, results.size(), results);
     }
 
-    /** Empty rules mean every day; otherwise the JSON weekday array limits automatic triggers. */
+    /**
+     * 判断任务今天是否应该执行：未配置规则时每天执行；配置了 JSON 星期数组时，
+     * 只有当前星期的三字母标记（如 MON、WED）存在于规则中才执行。
+     */
     static boolean runsOn(String scheduleRules, java.time.DayOfWeek day) {
         if (scheduleRules == null || scheduleRules.isBlank()) return true;
         String token = "\"" + day.name().substring(0, 3) + "\"";

@@ -54,6 +54,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -165,6 +166,10 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         final AtomicReference<ScheduledFuture<?>> timeoutWatchdog = new AtomicReference<>();
         /** 是否已发送过"执行中"，用于保证"执行中"和"已执行"成对出现 */
         final AtomicBoolean hasSentExecuting = new AtomicBoolean(false);
+        /** 是否已向前端发送过可见 think 内容（等待/工具提示或真实模型增量）。 */
+        final AtomicBoolean hasSentVisibleThink = new AtomicBoolean(false);
+        /** 已发生的模型调用轮数（ModelCallStartEvent 计数），用于多轮调用时提示第几轮。 */
+        final AtomicInteger modelCallCount = new AtomicInteger(0);
         /** 请求级 Trace 会话，直接存储框架 AgentEvent，供 cleanup 组装 */
         final TraceSession traceCtx;
         final String requestId;
@@ -357,6 +362,9 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         // 把 per-request 状态收拢进 StreamContext（参考 v1 流处理模式）
         StreamContext streamCtx = new StreamContext(emitter, req, ctx, userMsg, episodicSessionId, traceCtx, requestId);
 
+        // 先发送一条真实的请求状态，避免模型首 token 较慢时前端看起来像卡死。
+        sendVisibleThinkStatus(streamCtx, strategy, "正在调用模型，请稍候...\n");
+
         // 清理逻辑：取消订阅、清理 artifact、持久化 episodic 记忆、移除进行中调用标记
         Runnable cleanup = buildCleanup(streamCtx, callKey, inFlight);
 
@@ -491,6 +499,22 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                 return;
             }
 
+            // 工具生命周期事件不写入 thinkContent，只作为前端即时状态提示。
+            if (event instanceof ModelCallStartEvent) {
+                // 多轮模型调用：首轮提示已在 stream() 开头发出，此处只补第 2 轮及以后的状态，
+                // 让用户在"工具执行完成"后知道模型又被调用了一次。
+                if (ctx.modelCallCount.incrementAndGet() > 1) {
+                    sendVisibleThinkStatus(ctx, strategy, "正在调用模型，请稍候...\n");
+                }
+            }
+            if (event instanceof ToolCallStartEvent toolStart) {
+                String toolName = toolStart.getToolCallName();
+                sendVisibleThinkStatus(ctx, strategy, "正在调用工具：" + toolName + "..." + "\n");
+            } else if (event instanceof ToolResultEndEvent toolEnd) {
+                String toolName = toolEnd.getToolCallName();
+                sendVisibleThinkStatus(ctx, strategy, "工具执行完成：" + toolName + "\n");
+            }
+
             // 从流式增量事件中提取文本 chunk
             String chunk = null;
             if (event instanceof TextBlockDeltaEvent delta) {
@@ -507,6 +531,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             ctx.thinkContent.append(chunk);
             ctx.hasSentExecuting.set(true);
             strategy.sendThink(ctx, ThinkPayload.progress(chunk));
+            ctx.hasSentVisibleThink.set(true);
 
         } catch (Exception e) {
             // 仅在确实发送过"执行中"时才补发"已执行"，保证成对
@@ -516,6 +541,14 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             log.error("处理流式事件失败: sessionId={}", ctx.conversationId, e);
             throw new RuntimeException(e.getMessage(), e);
         }
+    }
+
+    /** 发送仅供前端展示的运行状态，不追加到持久化的 thinkContent。 */
+    private void sendVisibleThinkStatus(StreamContext ctx, ResponseStrategy strategy, String status) {
+        if (StringUtils.isBlank(status)) return;
+        String content = ctx.hasSentVisibleThink.get() ? "\n" + status : status;
+        strategy.sendThink(ctx, ThinkPayload.progress(content));
+        ctx.hasSentVisibleThink.set(true);
     }
 
 

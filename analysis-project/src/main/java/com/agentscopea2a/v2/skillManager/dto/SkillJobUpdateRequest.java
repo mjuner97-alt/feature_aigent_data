@@ -27,5 +27,7 @@ public record SkillJobUpdateRequest(
         Long skillId,
         Long metricId,
         String questionTemplate,
-        Boolean enabled
+        Boolean enabled,
+        /** 按星期配置执行时间；传 null 表示保留原配置 */
+        String scheduleRules
 ) {}

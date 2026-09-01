@@ -132,6 +132,7 @@ async function submit() {
         metricId: form.value.metricId ?? 0,
         questionTemplate: form.value.questionTemplate,
         enabled: form.value.enabled,
+        scheduleRules: form.value.scheduleRules,
       };
       await updateJob(props.editId, payload);
     } else {
