@@ -68,7 +68,7 @@ public class SqlRegistryManageService {
     public SqlRegistryManageService(
             SqlRegistryMapper mapper,
             @org.springframework.beans.factory.annotation.Qualifier("mysqlDataSource") DataSource mysqlDataSource,
-            @org.springframework.beans.factory.annotation.Qualifier("gaussDataSource") DataSource gaussDataSource,
+            @org.springframework.beans.factory.annotation.Qualifier("gaussCustomerDataSource") DataSource gaussDataSource,
             @org.springframework.beans.factory.annotation.Qualifier("clickHouseDataSource") DataSource clickHouseDataSource) {
         this.mapper = mapper;
         Map<String, DataSource> m = new LinkedHashMap<>();
@@ -104,7 +104,7 @@ public class SqlRegistryManageService {
         return mapper.selectBySqlId(sqlId);
     }
 
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public SqlRegistryEntry create(SqlRegistryEntry entry, String userId) {
         // 校验 sql_template
         String validationError = validateTemplate(entry.getSqlTemplate());
@@ -126,7 +126,7 @@ public class SqlRegistryManageService {
         return entry;
     }
 
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public SqlRegistryEntry update(Long id, SqlRegistryEntry patch) {
         SqlRegistryEntry existing = mapper.selectById(id);
         if (existing == null) {
@@ -162,7 +162,7 @@ public class SqlRegistryManageService {
         return existing;
     }
 
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void delete(Long id) {
         SqlRegistryEntry existing = mapper.selectById(id);
         if (existing == null) {

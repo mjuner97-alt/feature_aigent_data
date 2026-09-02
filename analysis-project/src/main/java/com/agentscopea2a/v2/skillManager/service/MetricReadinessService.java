@@ -29,7 +29,7 @@ public class MetricReadinessService {
     }
 
     /** 登记某指标当日就绪(按 指标+数据日期 upsert),供等待中的流程执行解锁。 */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public SkillMetricReadiness recordReady(SkillDependencyMetric metric) {
         if (metric == null || metric.getId() == null || metric.getCode() == null || metric.getCode().isBlank()) {
             throw new IllegalArgumentException("metric identity must not be blank");

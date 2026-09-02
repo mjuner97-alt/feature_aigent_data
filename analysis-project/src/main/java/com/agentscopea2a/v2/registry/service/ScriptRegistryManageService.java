@@ -92,7 +92,7 @@ public class ScriptRegistryManageService {
         return mapper.selectByScriptId(scriptId);
     }
 
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public ScriptRegistryEntry create(ScriptRegistryEntry entry, String userId) {
         // 校验 script_id 非空 (拼路径依赖) + 唯一性 (含禁用记录, 防止注册乱象下重复)
         if (entry.getScriptId() == null || entry.getScriptId().isBlank()) {
@@ -121,7 +121,7 @@ public class ScriptRegistryManageService {
         return entry;
     }
 
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public ScriptRegistryEntry update(Long id, ScriptRegistryEntry patch) {
         ScriptRegistryEntry existing = mapper.selectById(id);
         if (existing == null) {
@@ -151,7 +151,7 @@ public class ScriptRegistryManageService {
         return existing;
     }
 
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void delete(Long id) {
         ScriptRegistryEntry existing = mapper.selectById(id);
         if (existing == null) {

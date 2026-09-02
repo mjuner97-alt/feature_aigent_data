@@ -77,7 +77,7 @@ public class SkillVirtualGroupService {
      * 若带首个成员则一并写入。组的存在性与成员行解耦。
      * 组名不得与真实统计组(GROUP)重名:授权下拉里"小组"与"虚拟组"同名会混淆授权对象。
      */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void createGroup(String groupName, String firstUserId, String operator) {
         validateGroupName(groupName);
         if (mockOrgService.orgExists("GROUP", groupName)) {
@@ -97,7 +97,7 @@ public class SkillVirtualGroupService {
     }
 
     /** 加成员(幂等)。组必须存在;成员必须存在于人员表(developer_pl_person_info)。 */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void addMember(String groupName, String userId, String operator) {
         validateGroupName(groupName);
         if (!virtualGroupMapper.existsGroup(groupName)) {
@@ -107,7 +107,7 @@ public class SkillVirtualGroupService {
     }
 
     /** 移除成员。移除最后一个成员后组仍在(组由组头表定义)。 */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void removeMember(String groupName, String userId) {
         virtualGroupMapper.deleteMember(groupName, userId);
     }
@@ -116,7 +116,7 @@ public class SkillVirtualGroupService {
      * 删除整个组。被私有授权(VIRTUAL_GROUP)引用时阻止删除,
      * 避免留下悬空授权(组没了,授权还在,永不命中)。
      */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void deleteGroup(String groupName) {
         validateGroupName(groupName);
         long referenced = virtualGroupMapper.countGrantsReferencingGroup(groupName);

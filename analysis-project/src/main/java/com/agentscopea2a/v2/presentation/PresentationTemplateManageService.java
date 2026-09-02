@@ -34,7 +34,7 @@ public class PresentationTemplateManageService {
         return mapper.selectById(id);
     }
 
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public PresentationTemplateEntry create(PresentationTemplateEntry entry, String userId) {
         normalizeAndValidate(entry);
         if (mapper.countByTemplateId(entry.getTemplateId()) > 0) {
@@ -46,7 +46,7 @@ public class PresentationTemplateManageService {
         return entry;
     }
 
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public PresentationTemplateEntry update(Long id, PresentationTemplateEntry patch) {
         PresentationTemplateEntry existing = mapper.selectById(id);
         if (existing == null) throw new IllegalArgumentException("记录不存在: id=" + id);
@@ -70,7 +70,7 @@ public class PresentationTemplateManageService {
         return existing;
     }
 
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void delete(Long id) {
         if (mapper.selectById(id) == null) throw new IllegalArgumentException("记录不存在: id=" + id);
         mapper.deleteById(id);

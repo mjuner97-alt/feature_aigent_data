@@ -78,7 +78,7 @@ public class UserModelConfigManageService {
     /**
      * 新增.
      */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public UserModelConfig create(UserModelConfig config) {
         validate(config, true);
 
@@ -101,7 +101,7 @@ public class UserModelConfigManageService {
     /**
      * 修改 (选择性覆盖: 非 null 字段才更新).
      */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public UserModelConfig update(String userId, UserModelConfig patch) {
         UserModelConfig existing = mapper.selectByUserId(userId);
         if (existing == null) {
@@ -126,7 +126,7 @@ public class UserModelConfigManageService {
     /**
      * 删除.
      */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void delete(String userId) {
         UserModelConfig existing = mapper.selectByUserId(userId);
         if (existing == null) {

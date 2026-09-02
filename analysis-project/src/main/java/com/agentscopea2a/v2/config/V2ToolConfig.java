@@ -96,14 +96,14 @@ public class V2ToolConfig {
     // ── Skill index repository ────────────────────────────────────────────
     @Bean
     public SkillIndexRepository skillIndexRepository(
-            @org.springframework.beans.factory.annotation.Qualifier("gaussDataSource") DataSource dataSource) {
+            @org.springframework.beans.factory.annotation.Qualifier("gaussCustomerDataSource") DataSource dataSource) {
         log.info("SkillIndexRepository: wired (GaussDB-backed)");
         return new SkillIndexRepository(dataSource);
     }
 
     @Bean
     public SkillRoutingMetadataRepository skillRoutingMetadataRepository(
-            @org.springframework.beans.factory.annotation.Qualifier("gaussDataSource") DataSource dataSource,
+            @org.springframework.beans.factory.annotation.Qualifier("gaussCustomerDataSource") DataSource dataSource,
             com.fasterxml.jackson.databind.ObjectMapper objectMapper,
             @org.springframework.beans.factory.annotation.Value(
                     "${harness.a2a.skill-context.metadata-cache-ttl-ms:30000}") long metadataCacheTtlMillis) {
@@ -113,7 +113,7 @@ public class V2ToolConfig {
 
     @Bean
     public CapabilityRepository capabilityRepository(
-            @org.springframework.beans.factory.annotation.Qualifier("gaussDataSource") DataSource dataSource,
+            @org.springframework.beans.factory.annotation.Qualifier("gaussCustomerDataSource") DataSource dataSource,
             com.fasterxml.jackson.databind.ObjectMapper objectMapper,
             @org.springframework.beans.factory.annotation.Value(
                     "${harness.a2a.capability-routing.cache-ttl-ms:30000}") long capabilityCacheTtlMillis) {
@@ -152,8 +152,8 @@ public class V2ToolConfig {
     // 防止 LLM 跳过 skill 直接调用. 仅通过 SubagentRegistrar 注册给 analyze_data 子 agent.
     @Bean
     public WideTableMetricsTool wideTableMetricsTool(
-            @Qualifier("gaussDataSource") DataSource gaussDataSource) {
-        log.info("WideTableMetricsTool: wired (gaussDataSource-backed, legacy-skill-only)");
+            @Qualifier("gaussCustomerDataSource") DataSource gaussDataSource) {
+        log.info("WideTableMetricsTool: wired (gaussCustomerDataSource-backed, legacy-skill-only)");
         return new WideTableMetricsTool(gaussDataSource);
     }
 
@@ -174,7 +174,7 @@ public class V2ToolConfig {
     @Bean
     public SqlRegistryExecTool sqlRegistryExecTool(
             @Qualifier("mysqlDataSource") DataSource mysqlDataSource,
-            @Qualifier("gaussDataSource") DataSource gaussDataSource,
+            @Qualifier("gaussCustomerDataSource") DataSource gaussDataSource,
             @Qualifier("clickHouseDataSource") DataSource clickHouseDataSource,
             SqlRegistryMapper sqlRegistryMapper,
             DownloadContentService downloadContentService,
@@ -194,7 +194,7 @@ public class V2ToolConfig {
     @Bean
     public ScriptExecTool scriptExecTool(
             @Qualifier("mysqlDataSource") DataSource mysqlDataSource,
-            @Qualifier("gaussDataSource") DataSource gaussDataSource,
+            @Qualifier("gaussCustomerDataSource") DataSource gaussDataSource,
             @Qualifier("clickHouseDataSource") DataSource clickHouseDataSource,
             ScriptRegistryMapper scriptRegistryMapper,
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,

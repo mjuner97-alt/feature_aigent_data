@@ -54,7 +54,7 @@ public class FlowExecutionService {
      * guardKey = 用户:会话:流程:数据日期,唯一索引兜底,同一天同一会话只跑一次;
      * 同时为每个节点生成节点执行记录(无依赖且指标就绪的节点直接 QUEUED,否则 PENDING 等待推进)。
      */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public TriggerResult trigger(Long flowId, String userId, String conversationId, String question) {
         SkillFlow flow = mapper.selectFlowById(flowId);
         if (flow == null || !Boolean.TRUE.equals(flow.getEnabled())) throw new IllegalStateException("FlowNotFoundOrDisabled: " + flowId);
@@ -65,7 +65,7 @@ public class FlowExecutionService {
     }
 
     /** 指标到达后，为依赖该指标且全部日指标已就绪的流程创建每日自动执行。 */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void triggerReadyFlows(Long metricId, LocalDate dataDate) {
         for (SkillFlow flow : mapper.selectEnabledFlowsByMetricId(metricId)) {
             if (!SkillJobService.runsOn(flow.getScheduleRules(), dataDate.getDayOfWeek())) continue;
@@ -80,7 +80,7 @@ public class FlowExecutionService {
      * 手动触发(流程列表"执行"按钮):仅 owner;conversationId 独立成 manual 域,
      * 与聊天会话互不干扰;确认执行后不等待指标就绪。
      */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public TriggerResult triggerManual(Long flowId, String userId) {
         SkillFlow flow = mapper.selectFlowById(flowId);
         if (flow == null || !Boolean.TRUE.equals(flow.getEnabled())) throw new IllegalStateException("FlowNotFoundOrDisabled: " + flowId);
@@ -153,7 +153,7 @@ public class FlowExecutionService {
      * 指标就绪回调(Skill Job 在外部指标到达时调用):
      * 重新计算所有等待中执行的就绪门控,全部就绪则放行进入执行队列。
      */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void metricBecameReady(Long metricId, LocalDate dataDate) {
         for (SkillFlowExecution execution : mapper.selectWaitingExecutions()) {
             if (!dataDate.equals(execution.getDataDate())) continue;
@@ -162,7 +162,7 @@ public class FlowExecutionService {
     }
 
     /** 重算就绪门控:全部指标就绪时,流程置 QUEUED,仅放行第一个节点。 */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void recomputeGate(SkillFlowExecution execution) {
         List<Long> missing = readLongList(execution.getMissingMetricsJson()).stream()
                 .filter(id -> {
@@ -184,7 +184,7 @@ public class FlowExecutionService {
     }
 
     /** 取消该会话内最近一次执行:在跑的转 CANCEL_REQUESTED(等工作线程善后),其余直接 CANCELLED。 */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public Optional<SkillFlowExecution> cancelLatest(String userId, String conversationId) {
         SkillFlowExecution execution = mapper.selectLatestConversationExecution(userId, conversationId);
         if (execution == null) return Optional.empty();

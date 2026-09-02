@@ -55,7 +55,7 @@ public class FlowDefinitionService {
     }
 
     /** 创建流程;code 缺省自动生成,enabled=true 时先做完整性校验。 */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public SkillFlowDto create(SkillFlowDefinitionRequest request, String userId) {
         requireUser(userId);
         request = withBackendDefaults(request);
@@ -71,7 +71,7 @@ public class FlowDefinitionService {
     }
 
     /** 更新流程:仅 owner;code 不能撞其他流程;启用态必须完整。 */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public SkillFlowDto update(Long id, SkillFlowDefinitionRequest request, String userId) {
         SkillFlow existing = requireOwner(id, userId);
         request = withBackendDefaults(request);
@@ -90,7 +90,7 @@ public class FlowDefinitionService {
     }
 
     /** 启用/停用:启用前强制完整性校验(不能启用一个跑不起来的编排)。 */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public SkillFlowDto setEnabled(Long id, boolean enabled, String userId) {
         SkillFlow flow = requireOwner(id, userId);
         if (enabled) {
@@ -102,7 +102,7 @@ public class FlowDefinitionService {
     }
 
     /** 软删除流程。 */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void delete(Long id, String userId) {
         requireOwner(id, userId);
         flowMapper.deleteTriggersByFlowId(id);

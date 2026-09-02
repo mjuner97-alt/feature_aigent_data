@@ -106,7 +106,7 @@ public class SkillJobService {
     // ==================== CRUD ====================
 
     /** 创建 Job，自动生成 outputPath */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public SkillJobDto create(SkillJobCreateRequest req, String userId) {
         log.info("[SkillJob] create: name={}, skillId={}, userId={}", req.name(), req.skillId(), userId);
 
@@ -171,7 +171,7 @@ public class SkillJobService {
     /** 更新 Job，仅更新非 null 字段；createdBy 不可变，仅创建人本人可改。
      *  skillId / metricId 可改：metricId=0 表示清除关联（不关联），null 表示保留原值。
      *  更换 skillId 不影响 outputPath（outputPath 按 userId 生成，与 skill 无关）。 */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public SkillJobDto update(Long id, SkillJobUpdateRequest req, String userId) {
         SkillJob job = mapper.selectJobById(id);
         if (job == null) {
@@ -208,7 +208,7 @@ public class SkillJobService {
     }
 
     /** 删除 Job，仅创建人本人可删 */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void delete(Long id, String userId) {
         SkillJob job = mapper.selectJobById(id);
         if (job == null) {

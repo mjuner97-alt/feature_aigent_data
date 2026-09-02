@@ -38,7 +38,7 @@ public class FlowNodeClaimService {
      * 尝试认领节点:成功则租约(leaseOwner/leaseExpiresAt)写入本 worker,返回 true;
      * 被其他 worker 抢先或并发超限返回 false。
      */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public boolean claim(Long nodeId, String owner, LocalDateTime expiresAt, LocalDateTime now) {
         SkillFlowNodeExecution node = mapper.selectNodeExecution(nodeId);
         if (node == null || !runnable(node, now)) {

@@ -49,7 +49,7 @@ import java.util.List;
  *   <li>上传(覆盖): 写新文件 -> 更新 DB。</li>
  *   <li>删除: 先删 DB(事务内)再删磁盘;磁盘失败仅记日志不回滚(DB 已删,至多遗留孤儿)。</li>
  * </ul>
- * DB 操作使用 {@code gaussTransactionManager} 事务管理器。
+ * DB 操作使用 {@code gaussCustomerTransactionManager} 事务管理器。
  */
 @Service
 public class SkillFileService {
@@ -73,7 +73,7 @@ public class SkillFileService {
      * 上传文件。校验文件名/大小/扩展名/内容，同名文件直接覆盖。
      * DB 仅存相对路径 {@code {userId}/{filename}}。
      */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public SkillFileUploadResponse upload(MultipartFile file, String description, String userId) {
         String filename = file.getOriginalFilename();
         long fileSize = file.getSize();
@@ -228,7 +228,7 @@ public class SkillFileService {
      * 删除文件。先删 DB(事务内: 级联引用 + 文件记录),再清理磁盘(失败仅记日志不回滚)。
      * 这样 DB 失败时磁盘未动(一致);磁盘失败时 DB 已删(至多遗留孤儿文件,无害)。
      */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void delete(Long fileId, String userId) {
         SkillFile skillFile = skillMapper.selectFileById(fileId);
         if (skillFile == null || !skillFile.getUserId().equals(userId)) {
@@ -255,7 +255,7 @@ public class SkillFileService {
     /**
      * 更新文件描述。
      */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public SkillFileListItem updateDescription(Long fileId, String description, String userId) {
         SkillFile skillFile = skillMapper.selectFileById(fileId);
         if (skillFile == null || !skillFile.getUserId().equals(userId)) {

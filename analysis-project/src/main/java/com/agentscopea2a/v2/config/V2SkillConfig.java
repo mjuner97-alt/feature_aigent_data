@@ -209,7 +209,7 @@ public class V2SkillConfig {
 
     @Bean
     public SkillCandidateRepository skillCandidateRepository(
-            @org.springframework.beans.factory.annotation.Qualifier("gaussDataSource") DataSource dataSource) {
+            @org.springframework.beans.factory.annotation.Qualifier("gaussCustomerDataSource") DataSource dataSource) {
         SkillCandidateRepository repo = new SkillCandidateRepository(dataSource);
         repo.initSchema();
         return repo;

@@ -197,7 +197,7 @@ public class SkillManageService {
         return skillMapper.selectAllTags(userId);
     }
 
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public Skill create(Skill skill, String ownerUserId) {
         requireSkillText(skill.getName(), "名称");
         requireSkillText(skill.getDescription(), "描述");
@@ -244,7 +244,7 @@ public class SkillManageService {
      * @param ownerUserId   所有者 userId
      * @param retrievalName 检索名(如 quality_query)
      */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void createForAgent(Skill skill, String ownerUserId, String retrievalName) {
         skill.setOwnerUserId(ownerUserId);
         skill.setStatus("ACTIVE");
@@ -333,7 +333,7 @@ public class SkillManageService {
      * 新增授权。首个授权自动把 skill 切为 PRIVATE("要定向分享"即表达不想公开,帮用户省一步)。
      * 仅 owner 可操作;重复授权幂等。
      */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void addGrant(Long skillId, String grantType, String targetId, String userId) {
         Skill s = get(skillId);
         if (!s.getOwnerUserId().equals(userId)) {
@@ -355,7 +355,7 @@ public class SkillManageService {
     }
 
     /** 删除授权。仅 owner 可操作;删除最后一条授权后 skill 保持 PRIVATE(owner 仍可见)。 */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void removeGrant(Long skillId, String grantType, String targetId, String userId) {
         Skill s = get(skillId);
         if (!s.getOwnerUserId().equals(userId)) {
@@ -382,7 +382,7 @@ public class SkillManageService {
         }
     }
 
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public Skill update(Long id, Skill patch, String userId) {
         Skill s = get(id);
         if (!s.getOwnerUserId().equals(userId)) {
@@ -429,7 +429,7 @@ public class SkillManageService {
         }
     }
 
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void delete(Long id, String userId) {
         Skill s = get(id);
         if (!s.getOwnerUserId().equals(userId)) {
@@ -477,7 +477,7 @@ public class SkillManageService {
 
     // ==================== 点赞(幂等 toggle + like_count 原子增减) ====================
 
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public LikeStatus like(Long skillId, String userId) {
         assertVisible(skillId, userId);
         assertActive(skillId);
@@ -494,7 +494,7 @@ public class SkillManageService {
         return new LikeStatus(true, currentLikeCount(skillId));
     }
 
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public LikeStatus unlike(Long skillId, String userId) {
         assertVisible(skillId, userId);
         assertActive(skillId);
@@ -517,7 +517,7 @@ public class SkillManageService {
     // 它【不影响】②所有者身份 与 ③维度默认可用:维度内的 skill 即便不显式引用也 used=true。
     // 详情页"引用/取消引用"按钮(referenced)即对应这里的操作。
 
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void reference(Long skillId, String userId) {
         assertVisible(skillId, userId); // 不可见不可引用(私有未授权返回 SkillNotFound)
         Skill skill = get(skillId); // 校验 Skill 存在
@@ -537,7 +537,7 @@ public class SkillManageService {
         // 引用不复制文件:检索层通过 skill_reference 表感知引用关系
     }
 
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void unreference(Long skillId, String userId) {
         assertVisible(skillId, userId);
         get(skillId); // 校验 Skill 存在
@@ -604,7 +604,7 @@ public class SkillManageService {
 
     // ==================== 用户禁用(幂等) ====================
 
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void disable(Long skillId, String userId) {
         assertVisible(skillId, userId);
         get(skillId); // 校验 Skill 存在
@@ -621,7 +621,7 @@ public class SkillManageService {
         }
     }
 
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void enable(Long skillId, String userId) {
         assertVisible(skillId, userId);
         get(skillId); // 校验 Skill 存在
@@ -641,7 +641,7 @@ public class SkillManageService {
      *
      * @return 新建的发布记录 id
      */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public Long submitPublish(Long skillId, String targetType, String targetId, String targetName, String userId) {
         Skill s = get(skillId); // 不存在抛 IllegalStateException
         if (!s.getOwnerUserId().equals(userId)) {
@@ -680,7 +680,7 @@ public class SkillManageService {
     /**
      * 审批通过。仅当前审批人可操作,且发布记录须处于 PENDING 状态。
      */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void approvePublish(Long publishId, String approverId, String comment) {
         SkillPublish p = skillMapper.selectPublishById(publishId);
         if (p == null) {
@@ -716,7 +716,7 @@ public class SkillManageService {
     /**
      * 审批退回。仅当前审批人可操作,且发布记录须处于 PENDING 状态。
      */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void rejectPublish(Long publishId, String approverId, String comment) {
         SkillPublish p = skillMapper.selectPublishById(publishId);
         if (p == null) {
@@ -778,7 +778,7 @@ public class SkillManageService {
     /**
      * 审批通过:校验审批人(或签)-> 存旧版本到版本历史 -> 应用草稿到主表 -> 标记草稿 APPROVED。
      */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void approveDraft(Long draftId, String approverId, String comment) {
         SkillDraft draft = skillMapper.selectDraftById(draftId);
         if (draft == null) {
@@ -841,7 +841,7 @@ public class SkillManageService {
     /**
      * 审批退回:校验审批人(或签)-> 标记草稿 REJECTED。
      */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void rejectDraft(Long draftId, String approverId, String comment) {
         SkillDraft draft = skillMapper.selectDraftById(draftId);
         if (draft == null) {
@@ -972,7 +972,7 @@ public class SkillManageService {
     /**
      * Skill 引用一个文件(幂等)。
      */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void addFileReference(Long skillId, Long fileId, String referenceType, String userId) {
         assertOwner(skillId, userId);
         if (skillMapper.selectFileById(fileId) == null) {
@@ -996,7 +996,7 @@ public class SkillManageService {
     /**
      * Skill 取消引用一个文件。
      */
-    @Transactional("gaussTransactionManager")
+    @Transactional("gaussCustomerTransactionManager")
     public void removeFileReference(Long skillId, Long fileId, String userId) {
         assertOwner(skillId, userId);
         skillMapper.deleteSkillFileReference(skillId, fileId);

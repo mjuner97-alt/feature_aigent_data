@@ -26,17 +26,17 @@ import org.springframework.transaction.PlatformTransactionManager;
 import javax.sql.DataSource;
 
 /**
- * GaussDB / openGauss 配置。
+ * GaussDB 客户业务数据源配置（Skill、脚本、附件等）。
  *
  * <p>本配置类一站式声明 GaussDB 全套基础设施:
  * <ul>
- *   <li>{@code gaussDataSource} —— Hikari 连接池</li>
- *   <li>{@code gaussSqlSessionFactory} —— MyBatis SqlSessionFactory</li>
- *   <li>{@code gaussTransactionManager} —— 事务管理器</li>
- *   <li>Mapper 扫描 —— {@code com.agentscopea2a.mapper.gauss.*}</li>
+ *   <li>{@code gaussCustomerDataSource} —— Hikari 连接池</li>
+ *   <li>{@code gaussCustomerSqlSessionFactory} —— MyBatis SqlSessionFactory</li>
+ *   <li>{@code gaussCustomerTransactionManager} —— 事务管理器</li>
+ *   <li>仅扫描客户侧 Mapper</li>
  * </ul>
  *
- * <p>Hikari 参数从 {@code spring.datasource.hikari.gauss.*} 绑定;
+ * <p>Hikari 参数从 {@code spring.datasource.hikari.gauss-customer.*} 绑定;
  * Mapper XML 扫描路径为 {@code classpath*:mybatis/mapper/gauss/*.xml}。
  *
  * <p>openGauss 兼容 PostgreSQL 协议,JDBC URL 形式为
@@ -57,31 +57,29 @@ import javax.sql.DataSource;
  * }</pre>
  */
 @Configuration
-@ConditionalOnProperty(prefix = "spring.datasource.hikari.gauss", name = "enabled", havingValue = "true")
+@ConditionalOnProperty(prefix = "spring.datasource.hikari.gauss-customer", name = "enabled", havingValue = "true")
 @MapperScan(
-        basePackages = {GaussConfig.MAPPER_PACKAGE_1, GaussConfig.MAPPER_PACKAGE_2, GaussConfig.MAPPER_PACKAGE_3, GaussConfig.MAPPER_PACKAGE_4, GaussConfig.MAPPER_PACKAGE_5},
+        basePackages = {GaussConfig.MAPPER_PACKAGE_1, GaussConfig.MAPPER_PACKAGE_2, GaussConfig.MAPPER_PACKAGE_3},
         sqlSessionFactoryRef = GaussConfig.SSF_NAME)
 public class GaussConfig {
 
-    static final String DS_NAME = "gaussDataSource";
-    static final String SSF_NAME = "gaussSqlSessionFactory";
-    static final String TX_NAME = "gaussTransactionManager";
+    public static final String DS_NAME = "gaussCustomerDataSource";
+    public static final String SSF_NAME = "gaussCustomerSqlSessionFactory";
+    public static final String TX_NAME = "gaussCustomerTransactionManager";
     static final String MAPPER_PACKAGE_1 = "com.agentscopea2a.mapper.db1";
     static final String MAPPER_PACKAGE_2 = "com.agentscopea2a.v2.skillManager.mapper";
-    static final String MAPPER_PACKAGE_3 = "com.agentscopea2a.v2.auth.mapper";
-    static final String MAPPER_PACKAGE_4 = "com.agentscopea2a.mapper.gauss";
-    static final String MAPPER_PACKAGE_5 = "com.agentscopea2a.v2.skillManager.mapper";
+    static final String MAPPER_PACKAGE_3 = "com.agentscopea2a.mapper.gauss";
     static final String MAPPER_XML_1 = "classpath*:mybatis/mapper/db1/*.xml";
     static final String MAPPER_XML_2 = "classpath*:mybatis/mapper/gauss/*.xml";
 
     @Bean(name = DS_NAME, destroyMethod = "close")
-    @ConfigurationProperties(prefix = "spring.datasource.hikari.gauss")
-    public DataSource gaussDataSource() {
+    @ConfigurationProperties(prefix = "spring.datasource.hikari.gauss-customer")
+    public DataSource gaussCustomerDataSource() {
         return DataSourceBuilder.create().type(HikariDataSource.class).build();
     }
 
     @Bean(name = SSF_NAME)
-    public SqlSessionFactory gaussSqlSessionFactory(
+    public SqlSessionFactory gaussCustomerSqlSessionFactory(
             @Qualifier(DS_NAME) DataSource dataSource) throws Exception {
         SqlSessionFactoryBean factory = new SqlSessionFactoryBean();
         factory.setDataSource(dataSource);
@@ -99,7 +97,7 @@ public class GaussConfig {
     }
 
     @Bean(name = TX_NAME)
-    public PlatformTransactionManager gaussTransactionManager(
+    public PlatformTransactionManager gaussCustomerTransactionManager(
             @Qualifier(DS_NAME) DataSource dataSource) {
         return new DataSourceTransactionManager(dataSource);
     }
