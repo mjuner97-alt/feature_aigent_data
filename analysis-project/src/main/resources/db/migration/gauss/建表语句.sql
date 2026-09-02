@@ -1,3 +1,12 @@
+-- ==================== 创建序列 ====================
+CREATE SEQUENCE IF NOT EXISTS seq_developer_pl_person_info_id
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+-- ==================== developer_pl_person_info ====================
 create table developer_pl_person_info
 (
     id                           numeric default nextval('seq_developer_pl_person_info_id'::regclass) not null
@@ -111,6 +120,7 @@ create index idx_developer_pl_person_info_month
 create index idx_developer_pl_person_info_dept
     on developer_pl_person_info (部门);
 
+-- ==================== skill_approver ====================
 create table skill_approver
 (
     id                  bigserial
@@ -155,10 +165,11 @@ create index idx_approver_user_id
 create index idx_approver_scope
     on skill_approver (approval_scope_type, approval_scope_name);
 
+-- ==================== skill_index ====================
 create table skill_index
 (
-    name          varchar(128)                                              not null
-        primary key,
+    id            bigserial primary key,
+    name          varchar(128)                                              not null,
     fingerprint   varchar(255),
     description   text,
     version       integer     default 1                                     not null,
@@ -169,11 +180,16 @@ create table skill_index
     status        varchar(16) default 'active'::character varying           not null,
     source        varchar(16) default 'auto_synthesized'::character varying not null,
     owner_user_id varchar(64) default NULL::character varying,
-    updated_at    timestamp   default now()                                 not null
+    updated_at    timestamp   default now()                                 not null,
+    constraint uk_skill_index_name unique (name)
 )
     with (orientation = row, compression = no);
 
 comment on table skill_index is 'Skill 检索注册表';
+
+comment on column skill_index.id is '主键ID';
+
+comment on column skill_index.name is 'Skill名称';
 
 comment on column skill_index.fingerprint is 'L1 lookup key';
 
@@ -193,6 +209,7 @@ create index idx_source
 create index idx_owner_user_id
     on skill_index (owner_user_id);
 
+-- ==================== skill_candidate ====================
 create table skill_candidate
 (
     fingerprint   varchar(255)                                     not null
@@ -222,6 +239,7 @@ create index idx_hit_count
 create index idx_metric_tag
     on skill_candidate (metric_tag);
 
+-- ==================== skill_manage ====================
 create table skill_manage
 (
     id             bigserial
@@ -251,6 +269,7 @@ comment on column skill_manage.visibility is '可见性: PUBLIC=公开(所有可
 alter table skill_manage
     owner to readwriter;
 
+-- ==================== skill_like ====================
 create table skill_like
 (
     id         bigserial
@@ -275,6 +294,7 @@ create index idx_skill
 create index idx_user
     on skill_like (user_id);
 
+-- ==================== skill_reference ====================
 create table skill_reference
 (
     id              bigserial
@@ -300,6 +320,7 @@ create index idx_creator
 create index idx_target
     on skill_reference (target_skill_id);
 
+-- ==================== skill_publish ====================
 create table skill_publish
 (
     id                       bigserial
@@ -324,6 +345,7 @@ comment on table skill_publish is 'Skill 发布表';
 alter table skill_publish
     owner to readwriter;
 
+-- ==================== url_shortener ====================
 create table url_shortener
 (
     id           bigserial
@@ -338,6 +360,7 @@ create table url_shortener
 alter table url_shortener
     owner to readwriter;
 
+-- ==================== skill_user_disable ====================
 create table skill_user_disable
 (
     id         bigserial
@@ -361,6 +384,7 @@ comment on column skill_user_disable.created_at is '创建时间';
 alter table skill_user_disable
     owner to readwriter;
 
+-- ==================== user_model_config ====================
 create table user_model_config
 (
     user_id          varchar(64)                                     not null
@@ -379,6 +403,7 @@ create table user_model_config
 alter table user_model_config
     owner to readwriter;
 
+-- ==================== skill_file ====================
 create table skill_file
 (
     id           bigserial
@@ -424,6 +449,7 @@ create index idx_skill_file_user
 create index idx_skill_file_type
     on skill_file (file_type);
 
+-- ==================== skill_file_reference ====================
 create table skill_file_reference
 (
     id             bigserial
@@ -458,6 +484,7 @@ create index idx_skill_file_ref_skill
 create index idx_skill_file_ref_file
     on skill_file_reference (file_id);
 
+-- ==================== skill_approval ====================
 create table skill_approval
 (
     id               bigserial
@@ -502,6 +529,7 @@ create index idx_draft
 create index idx_operator
     on skill_approval (operator);
 
+-- ==================== skill_operation_history ====================
 create table skill_operation_history
 (
     id          bigserial
@@ -537,6 +565,7 @@ comment on column skill_operation_history.created_at is '创建时间';
 alter table skill_operation_history
     owner to readwriter;
 
+-- ==================== sql_registry ====================
 create table sql_registry
 (
     id            bigserial
@@ -557,6 +586,7 @@ create table sql_registry
 alter table sql_registry
     owner to readwriter;
 
+-- ==================== skill_dependency_metric ====================
 create table skill_dependency_metric
 (
     id                      bigserial
@@ -591,6 +621,7 @@ alter table skill_dependency_metric
 create unique index uk_metric_code
     on skill_dependency_metric (code);
 
+-- ==================== skill_job ====================
 create table skill_job
 (
     id                bigserial
@@ -633,6 +664,7 @@ create index idx_skill_job_created_by
 create index idx_skill_job_enabled
     on skill_job (enabled);
 
+-- ==================== skill_job_execution ====================
 create table skill_job_execution
 (
     id                   bigserial
@@ -669,6 +701,7 @@ create index idx_execution_status
 create index idx_execution_created
     on skill_job_execution (created_at desc);
 
+-- ==================== script_registry ====================
 create table script_registry
 (
     id              bigserial
@@ -695,12 +728,7 @@ alter table script_registry
 create index idx_script_registry_enabled
     on script_registry (enabled);
 
-create trigger trg_script_registry_updated_at
-    before update
-    on script_registry
-    for each row
-    execute procedure fn_script_registry_updated_at();
-
+-- ==================== skill_visible_grant ====================
 create table skill_visible_grant
 (
     id         bigserial
@@ -734,6 +762,7 @@ create unique index uk_skill_grant
 create unique index uk_visible_grant_target
     on skill_visible_grant (skill_id, grant_type, target_id);
 
+-- ==================== skill_job_notification ====================
 create table skill_job_notification
 (
     id                bigserial
@@ -772,6 +801,7 @@ create index idx_skill_job_notification_execution
 create index idx_skill_job_notification_status
     on skill_job_notification (status asc, requested_at desc);
 
+-- ==================== skill_virtual_group ====================
 create table skill_virtual_group
 (
     id         bigserial
@@ -804,6 +834,7 @@ create unique index uk_virtual_group_member
 create index idx_virtual_group_user
     on skill_virtual_group (user_id);
 
+-- ==================== skill_virtual_group_def ====================
 create table skill_virtual_group_def
 (
     group_name varchar(128)            not null
@@ -824,6 +855,7 @@ comment on column skill_virtual_group_def.created_at is '创建时间';
 alter table skill_virtual_group_def
     owner to readwriter;
 
+-- ==================== skill_flow_builtin_prompt ====================
 create table skill_flow_builtin_prompt
 (
     prompt_key     varchar(128) primary key,
@@ -867,6 +899,7 @@ values ('SKILL_FLOW_NODE_QUESTION_TEMPLATE', 'Skill 节点默认提示词', '你
 各 Skill 节点结果：
 {all_results}');
 
+-- ==================== skill_flow ====================
 create table skill_flow
 (
     id                        bigserial
@@ -920,6 +953,7 @@ alter table skill_flow
 create index idx_skill_flow_enabled
     on skill_flow (enabled, deleted_at);
 
+-- ==================== skill_flow_node ====================
 create table skill_flow_node
 (
     id                bigserial
@@ -975,6 +1009,7 @@ create index idx_skill_flow_node_flow_order
 create index idx_skill_flow_node_skill
     on skill_flow_node (skill_id);
 
+-- ==================== skill_flow_node_metric ====================
 create table skill_flow_node_metric
 (
     id           bigserial
@@ -1004,6 +1039,7 @@ alter table skill_flow_node_metric
 create index idx_skill_flow_node_metric_metric
     on skill_flow_node_metric (metric_id, flow_node_id);
 
+-- ==================== skill_flow_trigger ====================
 create table skill_flow_trigger
 (
     id                 bigserial
@@ -1050,6 +1086,7 @@ create index idx_skill_flow_trigger_enabled_priority
 create index idx_skill_flow_trigger_flow
     on skill_flow_trigger (flow_id);
 
+-- ==================== skill_metric_readiness ====================
 create table skill_metric_readiness
 (
     id            bigserial
@@ -1101,6 +1138,7 @@ create index idx_skill_metric_readiness_code_date
 create index idx_skill_metric_readiness_expiry
     on skill_metric_readiness (expires_at, status);
 
+-- ==================== skill_flow_execution ====================
 create table skill_flow_execution
 (
     id                                 bigserial
@@ -1201,6 +1239,7 @@ create index idx_skill_flow_execution_conversation_user
 create index idx_skill_flow_execution_flow
     on skill_flow_execution (flow_id asc, created_at desc);
 
+-- ==================== skill_flow_node_execution ====================
 create table skill_flow_node_execution
 (
     id                         bigserial
@@ -1299,6 +1338,7 @@ create index idx_skill_flow_node_execution_lease
 create index idx_skill_flow_node_execution_flow
     on skill_flow_node_execution (flow_execution_id, status);
 
+-- ==================== skill_flow_node_attempt ====================
 create table skill_flow_node_attempt
 (
     id                bigserial
@@ -1352,6 +1392,7 @@ alter table skill_flow_node_attempt
 create index idx_skill_flow_node_attempt_node
     on skill_flow_node_attempt (node_execution_id, attempt_no);
 
+-- ==================== skill_flow_notification ====================
 create table skill_flow_notification
 (
     id                bigserial
@@ -1407,3 +1448,6 @@ create index idx_skill_flow_notification_execution
 create index idx_skill_flow_notification_status
     on skill_flow_notification (status, created_at);
 
+
+ALTER TABLE skill_job_execution ADD COLUMN  report_markdown TEXT;
+COMMENT ON COLUMN skill_job_execution.report_markdown IS '独立任务最终 Markdown 源，文件丢失时用于重新渲染 HTML';

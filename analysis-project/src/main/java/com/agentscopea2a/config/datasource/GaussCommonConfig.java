@@ -21,7 +21,7 @@ import javax.sql.DataSource;
  * 事务方法请使用 {@code @Transactional("gaussCommonTransactionManager")}。
  */
 @Configuration
-@ConditionalOnProperty(prefix = "spring.datasource.hikari.gaussCommon", name = "enabled", havingValue = "true")
+@ConditionalOnProperty(prefix = "spring.datasource.hikari.gauss-common", name = "enabled", havingValue = "true")
 @MapperScan(basePackages = {"com.agentscopea2a.v2.auth.mapper", "com.agentscopea2a.mapper.gaussCommon"},
         sqlSessionFactoryRef = "gaussCommonSqlSessionFactory")
 public class GaussCommonConfig {
