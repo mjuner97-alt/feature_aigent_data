@@ -1451,3 +1451,10 @@ create index idx_skill_flow_notification_status
 
 ALTER TABLE skill_job_execution ADD COLUMN  report_markdown TEXT;
 COMMENT ON COLUMN skill_job_execution.report_markdown IS '独立任务最终 Markdown 源，文件丢失时用于重新渲染 HTML';
+
+
+ALTER TABLE skill_job
+    ADD COLUMN  schedule_rules VARCHAR(256);
+
+ALTER TABLE skill_flow
+    ADD COLUMN  schedule_rules VARCHAR(256);
