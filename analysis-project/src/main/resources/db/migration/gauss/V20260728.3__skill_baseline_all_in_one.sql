@@ -5,22 +5,22 @@
 -- 目标数据库: openGauss(PostgreSQL 兼容)
 -- ============================================================================
 
--- ============================================================================
--- 1. 删除已存在的表(保证幂等)
--- 1. 删除已存在的表(保证幂等)
--- ============================================================================
-
-DROP TABLE IF EXISTS skill_user_disable;
-DROP TABLE IF EXISTS skill_operation_history;
-DROP TABLE IF EXISTS skill_version_history;
-DROP TABLE IF EXISTS skill_draft;
-DROP TABLE IF EXISTS skill_approval;
-DROP TABLE IF EXISTS skill_publish;
-DROP TABLE IF EXISTS skill_reference;
-DROP TABLE IF EXISTS skill_like;
-DROP TABLE IF EXISTS skill_manage;
-DROP TABLE IF EXISTS skill_candidate;
-DROP TABLE IF EXISTS skill_index;
+-- -- ============================================================================
+-- -- 1. 删除已存在的表(保证幂等)
+-- -- 1. 删除已存在的表(保证幂等)
+-- -- ============================================================================
+--
+-- DROP TABLE IF EXISTS skill_user_disable;
+-- DROP TABLE IF EXISTS skill_operation_history;
+-- DROP TABLE IF EXISTS skill_version_history;
+-- DROP TABLE IF EXISTS skill_draft;
+-- DROP TABLE IF EXISTS skill_approval;
+-- DROP TABLE IF EXISTS skill_publish;
+-- DROP TABLE IF EXISTS skill_reference;
+-- DROP TABLE IF EXISTS skill_like;
+-- DROP TABLE IF EXISTS skill_manage;
+-- DROP TABLE IF EXISTS skill_candidate;
+-- DROP TABLE IF EXISTS skill_index;
 
 -- ============================================================================
 -- 2. 创建表

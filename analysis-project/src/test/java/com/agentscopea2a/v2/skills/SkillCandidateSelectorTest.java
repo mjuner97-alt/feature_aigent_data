@@ -94,6 +94,20 @@ class SkillCandidateSelectorTest {
         assertTrue(selection.explicitNameMatched());
     }
 
+    @Test
+    void arbitraryRegisteredDomainIsNotVisibleUnlessQuestionContainsIt() {
+        SkillRoutingMetadata weeklyMeeting = metadataWithDomain(
+                "demo_company_quality", List.of("检出率"), List.of("杭研周例会"), 100);
+        SkillRoutingMetadata ordinary = metadataWithDomain(
+                "ordinary", List.of("检出率"), List.of(), 0);
+
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(weeklyMeeting.skillName()), skill(ordinary.skillName())),
+                List.of(weeklyMeeting, ordinary), "杭州开发一部七月 Q2-1 检出率");
+
+        assertEquals(List.of("ordinary"), selection.skillNames());
+    }
+
     private static SkillRoutingMetadata metadata(String name, List<String> aliases, List<String> keywords, int priority) {
         return new SkillRoutingMetadata(name, name + " 摘要", aliases, keywords, List.of(), List.of(),
                 List.of(), priority, true, null);
