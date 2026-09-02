@@ -48,12 +48,16 @@ public class ChatScriptExecResultHook implements Hook, RuntimeContextAware {
 
     /** Text returned to the model in place of an internal result reference. */
     public static String modelVisiblePlaceholder() {
-        return "[系统提示：图表已生成，系统会在最终回答中自动附加。请勿输出内部引用 ID。]";
+        return "[系统内部：已接管可渲染内容。请勿复述该内容、生成代码块或输出内部引用 ID；仅根据其余执行结果回答用户。]";
     }
 
     /** Converts fenced chart output to the tag format consumed by report rendering. */
     public static String renderableContent(String block) {
         if (block == null) return "";
+        String trimmedBlock = block.trim();
+        if (!trimmedBlock.startsWith("```")) {
+            return trimmedBlock;
+        }
         int newline = block.indexOf('\n');
         String language = newline >= 0 ? block.substring(3, newline).trim().toLowerCase() : "";
         String content = stripFence(block);
