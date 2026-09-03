@@ -122,7 +122,7 @@ public class TraceBatchWriter {
         row.put("source", "");
         // DateTime64(3) 列：用 Timestamp 写入，驱动按日期处理；直接写 long 会被当作秒解析
         row.put("timestamp", new Timestamp(System.currentTimeMillis()));
-        row.put("duration_ms", 0);
+        row.put("duration_ms", 0L);
         row.put("event_json", json);
         try {
             JsonNode n = MAPPER.readTree(json);
@@ -130,6 +130,7 @@ public class TraceBatchWriter {
             row.put("event_type", textOrEmpty(n, "type"));
             row.put("event_name", textOrEmpty(n, "type"));  // 同 type
             row.put("source", textOrEmpty(n, "source"));
+            row.put("duration_ms", durationMs(n));
             String createdAt = textOrEmpty(n, "createdAt");
             if (!createdAt.isEmpty()) {
                 try {
@@ -147,5 +148,12 @@ public class TraceBatchWriter {
     private static String textOrEmpty(JsonNode n, String field) {
         JsonNode v = n.get(field);
         return v == null || v.isNull() ? "" : v.asText("");
+    }
+
+    static long durationMs(JsonNode n) {
+        if (n == null) return 0L;
+        JsonNode value = n.get("durationMs");
+        if (value == null || !value.isNumber()) return 0L;
+        return Math.max(0L, Math.min(0xFFFF_FFFFL, value.asLong()));
     }
 }

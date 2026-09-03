@@ -114,6 +114,7 @@
         <result column="updated_at" property="updatedAt"/>
     </resultMap>
 
+    <!-- 流程主表、节点、触发词和指标就绪记录的公共字段列表，供查询复用。 -->
     <sql id="flowColumns">id, code, name, description, task_question, summary_question_template, enabled, schedule_rules, max_parallelism,
         notify_enabled, created_by, created_at, updated_at, deleted_at</sql>
     <sql id="nodeColumns">id, flow_id, node_key, skill_id, question_template, depends_on_json, required,
@@ -123,6 +124,7 @@
     <sql id="readinessColumns">id, metric_id, metric_code, data_date, status, ready_at, expires_at,
         metadata_json, created_at, updated_at</sql>
 
+    <!-- 流程定义：保存基本信息、调度规则、并发数和通知开关。 -->
     <insert id="insertFlow" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO skill_flow (code, name, description, task_question, summary_question_template, enabled, schedule_rules, max_parallelism,
                                 notify_enabled, created_by)
@@ -142,6 +144,7 @@
         SELECT <include refid="flowColumns"/> FROM skill_flow WHERE name = #{name} AND deleted_at IS NULL
     </select>
 
+    <!-- 根据指标反查启用中的流程，用于指标完成后唤醒等待中的流程。 -->
     <select id="selectEnabledFlowsByMetricId" resultMap="FlowMap">
         SELECT DISTINCT f.*
         FROM skill_flow f
@@ -150,6 +153,7 @@
         WHERE nm.metric_id = #{metricId} AND f.enabled = TRUE AND f.deleted_at IS NULL
     </select>
 
+    <!-- 流程管理列表：支持按所有者、启用状态、名称/编码关键字筛选，已删除数据不返回。 -->
     <select id="selectFlows" resultMap="FlowMap">
         SELECT <include refid="flowColumns"/> FROM skill_flow
         WHERE deleted_at IS NULL
@@ -174,11 +178,13 @@
         UPDATE skill_flow SET enabled=#{enabled}, updated_at=NOW() WHERE id=#{id} AND deleted_at IS NULL
     </update>
 
+    <!-- 软删除流程：保留历史执行记录，只停止该流程并记录删除时间。 -->
     <update id="softDeleteFlow">
         UPDATE skill_flow SET enabled=FALSE, deleted_at=NOW(), updated_at=NOW()
         WHERE id=#{id} AND deleted_at IS NULL
     </update>
 
+    <!-- 流程节点及其指标关联：节点按 sort_order 执行，depends_on_json 保存依赖关系。 -->
     <insert id="insertNode" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO skill_flow_node (flow_id, node_key, skill_id, question_template, depends_on_json,
                                      required, max_attempts, sort_order)
@@ -206,6 +212,7 @@
         SELECT metric_id FROM skill_flow_node_metric WHERE flow_node_id=#{nodeId} ORDER BY metric_id
     </select>
 
+    <!-- 触发词配置：normalized_keyword 用于匹配用户输入，priority 决定冲突时的优先级。 -->
     <insert id="insertTrigger" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO skill_flow_trigger (flow_id, keyword, normalized_keyword, priority, enabled, created_by)
         VALUES (#{flowId}, #{keyword}, #{normalizedKeyword}, #{priority}, #{enabled}, #{createdBy})
@@ -224,6 +231,7 @@
 
     <delete id="deleteTriggersByFlowId">DELETE FROM skill_flow_trigger WHERE flow_id=#{flowId}</delete>
 
+    <!-- 指标就绪状态幂等写入：同一指标和日期重复上报时更新状态和有效期。 -->
     <insert id="upsertMetricReadiness">
         INSERT INTO skill_metric_readiness
             (metric_id, metric_code, data_date, status, ready_at, expires_at, metadata_json)
@@ -245,6 +253,7 @@
         <foreach collection="metricIds" item="metricId" open="(" separator="," close=")">#{metricId}</foreach>
     </select>
 
+    <!-- 创建一次流程执行快照：保存触发信息及当时的流程配置，避免后续配置变更影响历史执行。 -->
     <insert id="insertFlowExecution" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO skill_flow_execution
             (flow_id, flow_code, flow_name, summary_question_template_snapshot, max_parallelism_snapshot, notify_enabled_snapshot, trigger_type,
@@ -262,10 +271,12 @@
         SELECT * FROM skill_flow_execution WHERE id=#{id}
     </select>
 
+    <!-- 查询并锁定流程执行，用于并发状态推进和防止重复处理。 -->
     <select id="selectFlowExecutionForUpdate" resultMap="ExecutionMap">
         SELECT * FROM skill_flow_execution WHERE id=#{id} FOR UPDATE
     </select>
 
+    <!-- 为流程中的每个节点创建执行实例，记录重试次数、租约和运行时结果。 -->
     <insert id="insertNodeExecution" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO skill_flow_node_execution
             (flow_execution_id, node_key, skill_id, skill_name, skill_retrieval_name, question_template_snapshot,
@@ -280,21 +291,29 @@
         ORDER BY id
     </select>
 
+    <!-- 调度入口：只返回启用且所属流程未删除的触发词，按优先级降序匹配。 -->
     <select id="selectEnabledTriggers" resultMap="TriggerMap">SELECT t.* FROM skill_flow_trigger t JOIN skill_flow f ON f.id=t.flow_id WHERE t.enabled=TRUE AND f.enabled=TRUE AND f.deleted_at IS NULL ORDER BY t.priority DESC,t.id</select>
+    <!-- 根据幂等 guard key 查找正在执行的流程，避免同一业务被重复启动。 -->
     <select id="selectActiveExecution" resultMap="ExecutionMap">SELECT * FROM skill_flow_execution WHERE active_guard_key=#{guardKey} LIMIT 1</select>
     <select id="selectLatestConversationExecution" resultMap="ExecutionMap">SELECT * FROM skill_flow_execution WHERE trigger_user_id=#{userId} AND conversation_id=#{conversationId} ORDER BY CASE WHEN active_guard_key IS NOT NULL THEN 0 ELSE 1 END,created_at DESC LIMIT 1</select>
+    <!-- 执行记录管理列表：按触发用户/状态筛选，最多返回最近 500 条。 -->
     <select id="selectExecutions" resultMap="ExecutionMap">SELECT * FROM skill_flow_execution WHERE 1=1<if test="userId != null and userId != ''"> AND trigger_user_id=#{userId}</if><if test="status != null and status != ''"> AND status=#{status}</if><if test="createdBy != null and createdBy != ''"> AND trigger_user_id=#{createdBy}</if> ORDER BY created_at DESC LIMIT 500</select>
     <select id="selectWaitingExecutions" resultMap="ExecutionMap">SELECT * FROM skill_flow_execution WHERE status='WAITING_METRICS' ORDER BY id LIMIT 2000</select>
+    <!-- 推进流程执行状态，并同步指标计数、摘要、报告和取消时间等运行结果。 -->
     <update id="updateExecution">UPDATE skill_flow_execution SET status=#{status},active_guard_key=#{activeGuardKey},ready_metric_count=#{readyMetricCount},missing_metrics_json=#{missingMetricsJson},rendered_summary_question=#{renderedSummaryQuestion},summary_json=#{summaryJson},report_path=#{reportPath},cancel_requested_at=#{cancelRequestedAt},started_at=#{startedAt},completed_at=#{completedAt},updated_at=NOW() WHERE id=#{id}</update>
     <select id="selectNodeExecution" resultMap="NodeExecutionMap">SELECT * FROM skill_flow_node_execution WHERE id=#{id}</select>
+    <!-- 查找可执行节点：包括排队、重试到期或租约已过期且仍可重试的节点，并受流程并发上限约束。 -->
     <select id="selectRunnableNodes" resultMap="NodeExecutionMap">SELECT n.* FROM skill_flow_node_execution n JOIN skill_flow_execution e ON e.id=n.flow_execution_id WHERE (n.status IN ('QUEUED','RETRY_WAIT') OR (n.status='RUNNING' AND n.lease_expires_at &lt;#{now} AND n.attempt_count &lt; COALESCE(NULLIF(n.max_attempts,0),1))) AND (n.next_run_at IS NULL OR n.next_run_at &lt;=#{now}) AND (n.lease_expires_at IS NULL OR n.lease_expires_at &lt;#{now}) AND (SELECT COUNT(*) FROM skill_flow_node_execution r WHERE r.flow_execution_id=n.flow_execution_id AND r.status='RUNNING' AND r.lease_expires_at&gt;=#{now}) &lt; GREATEST(COALESCE(e.max_parallelism_snapshot,1),1) ORDER BY n.id LIMIT 100</select>
+    <!-- 抢占节点租约：原子校验状态和租约后切换为 RUNNING，防止多个 worker 重复执行。 -->
     <update id="claimNode">UPDATE skill_flow_node_execution SET status='RUNNING',attempt_count=COALESCE(attempt_count,0)+1,lease_owner=#{owner},lease_expires_at=#{expiresAt},started_at=COALESCE(started_at,#{now}),updated_at=NOW() WHERE id=#{id} AND (status IN ('QUEUED','RETRY_WAIT') OR (status='RUNNING' AND lease_expires_at &lt;#{now} AND attempt_count &lt; COALESCE(NULLIF(max_attempts,0),1))) AND (lease_expires_at IS NULL OR lease_expires_at &lt;#{now})</update>
     <!-- 租约过期且尝试次数已用尽仍卡在 RUNNING 的节点,由扫描兜底判失败,否则流程永远"执行中" -->
     <select id="selectExpiredExhaustedNodes" resultMap="NodeExecutionMap">SELECT * FROM skill_flow_node_execution WHERE status='RUNNING' AND lease_expires_at &lt; #{now} AND attempt_count &gt;= max_attempts</select>
     <update id="recoverAbandonedRunningNodes">UPDATE skill_flow_node_execution SET status='RETRY_WAIT',next_run_at=#{now},lease_owner=NULL,lease_expires_at=NULL,error_code='WORKER_RESTARTED',error_message='Previous worker stopped before completion',updated_at=NOW() WHERE status='RUNNING' AND (lease_owner IS NULL OR lease_owner &lt;&gt; #{owner})</update>
     <select id="countActiveRunningNodes" resultType="int">SELECT COUNT(*) FROM skill_flow_node_execution WHERE flow_execution_id=#{flowExecutionId} AND status='RUNNING' AND lease_expires_at&gt;=#{now}</select>
+    <!-- 抢占摘要阶段：只有排队或运行中的流程可以转换为 SUMMARIZING，保证摘要只执行一次。 -->
     <update id="claimExecutionForSummary">UPDATE skill_flow_execution SET status='SUMMARIZING',updated_at=NOW() WHERE id=#{id} AND status IN ('QUEUED','RUNNING')</update>
     <update id="updateNodeExecution">UPDATE skill_flow_node_execution SET skill_retrieval_name=#{skillRetrievalName},rendered_question=#{renderedQuestion},status=#{status},attempt_count=#{attemptCount},next_run_at=#{nextRunAt},lease_owner=#{leaseOwner},lease_expires_at=#{leaseExpiresAt},result_json=#{resultJson},artifact_path=#{artifactPath},error_code=#{errorCode},error_message=#{errorMessage},started_at=#{startedAt},completed_at=#{completedAt},updated_at=NOW() WHERE id=#{id}</update>
+    <!-- 完成节点尝试：同时校验尝试次数和租约持有者，防止旧 worker 覆盖新 worker 的结果。 -->
     <update id="completeNodeAttempt">UPDATE skill_flow_node_execution SET rendered_question=#{node.renderedQuestion},status=#{node.status},next_run_at=#{node.nextRunAt},lease_owner=#{node.leaseOwner},lease_expires_at=#{node.leaseExpiresAt},result_json=#{node.resultJson},artifact_path=#{node.artifactPath},error_code=#{node.errorCode},error_message=#{node.errorMessage},completed_at=#{node.completedAt},updated_at=NOW() WHERE id=#{node.id} AND status='RUNNING' AND attempt_count=#{expectedAttempt} AND lease_owner=#{expectedLeaseOwner}</update>
     <resultMap id="AttemptMap" type="com.agentscopea2a.v2.skillManager.entity.SkillFlowNodeAttempt"><id column="id" property="id"/><result column="node_execution_id" property="nodeExecutionId"/><result column="attempt_no" property="attemptNo"/><result column="status" property="status" javaType="com.agentscopea2a.v2.skillManager.entity.FlowNodeAttemptStatus"/><result column="retryable" property="retryable"/><result column="error_code" property="errorCode"/><result column="error_message" property="errorMessage"/><result column="started_at" property="startedAt"/><result column="completed_at" property="completedAt"/><result column="duration_ms" property="durationMs"/><result column="created_at" property="createdAt"/></resultMap>
     <insert id="insertAttempt" useGeneratedKeys="true" keyProperty="id">INSERT INTO skill_flow_node_attempt(node_execution_id,attempt_no,status,retryable,error_code,error_message,started_at,completed_at,duration_ms) VALUES(#{nodeExecutionId},#{attemptNo},#{status},#{retryable},#{errorCode},#{errorMessage},#{startedAt},#{completedAt},#{durationMs})</insert>
@@ -304,6 +323,7 @@
     <!-- 手动重跑归零 attempt_count 后,新尝试号要避开历史记录,否则撞 (node_execution_id, attempt_no) 唯一索引 -->
     <select id="selectMaxAttemptNo" resultType="int">SELECT COALESCE(MAX(attempt_no),0) FROM skill_flow_node_attempt WHERE node_execution_id=#{nodeId}</select>
     <resultMap id="NotificationMap" type="com.agentscopea2a.v2.skillManager.entity.SkillFlowNotification"><id column="id" property="id"/><result column="flow_execution_id" property="flowExecutionId"/><result column="delivery_key" property="deliveryKey"/><result column="status" property="status" javaType="com.agentscopea2a.v2.skillManager.entity.FlowNotificationStatus"/><result column="recipient" property="recipient"/><result column="channel" property="channel"/><result column="request_json" property="requestJson"/><result column="response_json" property="responseJson"/><result column="error_message" property="errorMessage"/><result column="sent_at" property="sentAt"/><result column="created_at" property="createdAt"/><result column="updated_at" property="updatedAt"/></resultMap>
+    <!-- 查询流程通知投递记录，用于展示通知状态和排查失败原因。 -->
     <select id="selectNotifications" resultMap="NotificationMap">SELECT * FROM skill_flow_notification WHERE flow_execution_id=#{executionId} ORDER BY id DESC</select>
     <insert id="insertNotification" useGeneratedKeys="true" keyProperty="id">INSERT INTO skill_flow_notification(flow_execution_id,delivery_key,status,recipient,channel,request_json) VALUES(#{flowExecutionId},#{deliveryKey},#{status},#{recipient},#{channel},#{requestJson})</insert>
     <update id="updateNotification">UPDATE skill_flow_notification SET status=#{status},response_json=#{responseJson},error_message=#{errorMessage},sent_at=#{sentAt},updated_at=NOW() WHERE id=#{id}</update>

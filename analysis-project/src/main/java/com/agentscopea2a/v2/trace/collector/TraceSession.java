@@ -26,6 +26,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -56,6 +57,7 @@ public class TraceSession {
 
     /** Hook 事件记录列表（每条已含完整 payload 的 JSON） */
     private final CopyOnWriteArrayList<TraceEventRecord> records = new CopyOnWriteArrayList<>();
+    private final ConcurrentHashMap<String, ToolTimingStart> activeToolTimings = new ConcurrentHashMap<>();
 
     /** token 统计：由 ModelCallEndEvent 累加（不依赖 records） */
     private final AtomicLong tokenInput = new AtomicLong(0);
@@ -79,6 +81,22 @@ public class TraceSession {
         if (sealed || record == null) return;
         records.add(record);
     }
+
+    public void startToolTiming(String toolCallId, Instant startedAt, long startedNanos) {
+        if (sealed || toolCallId == null || toolCallId.isBlank() || startedAt == null) return;
+        activeToolTimings.put(toolCallId, new ToolTimingStart(startedAt, startedNanos));
+    }
+
+    public ToolTiming finishToolTiming(String toolCallId, Instant endedAt, long endedNanos) {
+        if (toolCallId == null || toolCallId.isBlank() || endedAt == null) return null;
+        ToolTimingStart start = activeToolTimings.remove(toolCallId);
+        if (start == null) return null;
+        long durationMs = Math.max(0L, (endedNanos - start.startedNanos) / 1_000_000L);
+        return new ToolTiming(start.startedAt.toString(), endedAt.toString(), durationMs);
+    }
+
+    private record ToolTimingStart(Instant startedAt, long startedNanos) {}
+    public record ToolTiming(String startedAt, String endedAt, long durationMs) {}
 
     /** 累加 ModelCallEndEvent 的 token 用量（token 统计专用），sealed 后丢弃 */
     public void recordUsage(ModelCallEndEvent event) {
