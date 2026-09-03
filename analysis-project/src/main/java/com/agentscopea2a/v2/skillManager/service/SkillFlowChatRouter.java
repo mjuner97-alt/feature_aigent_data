@@ -9,6 +9,7 @@ import com.agentscopea2a.v2.skillManager.entity.SkillFlowExecution;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowTrigger;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.service.ChatStreamService;
+import com.agentscopea2a.v2.service.ChatRuntimeConfigService;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -34,13 +35,16 @@ public class SkillFlowChatRouter {
     private final SkillFlowMapper mapper;
     private final FlowExecutionService executions;
     private final ChatStreamService normalChat;
+    private final ChatRuntimeConfigService chatRuntimeConfigService;
     private final Map<String, PendingConfirmation> pending = new ConcurrentHashMap<>();
     private static final long CONFIRMATION_TTL_MS = 5 * 60 * 1000L;
 
-    public SkillFlowChatRouter(SkillFlowMapper mapper, FlowExecutionService executions, ChatStreamService normalChat) {
+    public SkillFlowChatRouter(SkillFlowMapper mapper, FlowExecutionService executions,
+                               ChatStreamService normalChat, ChatRuntimeConfigService chatRuntimeConfigService) {
         this.mapper = mapper;
         this.executions = executions;
         this.normalChat = normalChat;
+        this.chatRuntimeConfigService = chatRuntimeConfigService;
     }
 
     /** 路由类型。 */
@@ -53,13 +57,16 @@ public class SkillFlowChatRouter {
 
     /** 对外主入口:根据问题内容分流,返回 SSE。 */
     public SseEmitter route(ChatRequest request) {
-        // ENABLED 是 Skill Flow 总开关;CHAT_ROUTING_ENABLED 只控制 ai/chat 是否接入长任务路由。
-        // 因此可以在保留手动/自动流程执行的同时,单独关闭对话入口的自动识别。
-        if (!SkillFlowProperties.ENABLED || !SkillFlowProperties.CHAT_ROUTING_ENABLED) return normalChat.stream(request);
         String userId = request.getUserId() == null || request.getUserId().isBlank() ? "anonymous" : request.getUserId();
         String conversationId = request.getConversationId() == null || request.getConversationId().isBlank()
                 ? UUID.randomUUID().toString() : request.getConversationId();
         request.setConversationId(conversationId);
+        // ENABLED 是 Skill Flow 总开关;CHAT_ROUTING_ENABLED 只控制 ai/chat 是否接入长任务路由。
+        // 字典开关仅作用于 /ai/chat；缺失或非 true 时不进入长任务路由。
+        if (!SkillFlowProperties.ENABLED || !SkillFlowProperties.CHAT_ROUTING_ENABLED
+                || !chatRuntimeConfigService.resolve(userId, conversationId).longTaskEnabled()) {
+            return normalChat.stream(request);
+        }
         String sessionKey = userId + ":" + conversationId;
 
         // 二次确认入口:只在当前用户+会话下查找待确认任务,避免串用其他会话的确认状态。

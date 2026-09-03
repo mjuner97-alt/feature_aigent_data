@@ -38,6 +38,7 @@ import com.agentscopea2a.v2.trace.collector.AiChatRestToolCallTrackingToDbHook;
 import com.agentscopea2a.v2.verify.L2EventCollectorHook;
 import com.agentscopea2a.v2.config.WorkspaceMaterializer;
 import io.agentscope.core.model.Model;
+import io.agentscope.core.model.ExecutionConfig;
 import io.agentscope.core.tool.Toolkit;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.filesystem.spec.SandboxFilesystemSpec;
@@ -264,9 +265,10 @@ public class SubagentRegistrar {
             HarnessAgent.Builder builder,
             Model model,
             Path workspace,
-            ObjectProvider<SandboxFilesystemSpec> sandboxFsProvider) {
+            ObjectProvider<SandboxFilesystemSpec> sandboxFsProvider,
+            ExecutionConfig modelExecutionConfig) {
         for (SubagentDeclaration spec : specs) {
-            registerSubagentFromSpec(builder, spec, model, workspace, sandboxFsProvider);
+            registerSubagentFromSpec(builder, spec, model, workspace, sandboxFsProvider, modelExecutionConfig);
         }
         log.info("SubagentRegistrar: registered {} subagent factories on builder", specs.size());
     }
@@ -276,7 +278,8 @@ public class SubagentRegistrar {
             SubagentDeclaration spec,
             Model model,
             Path workspace,
-            ObjectProvider<SandboxFilesystemSpec> sandboxFsProvider) {
+            ObjectProvider<SandboxFilesystemSpec> sandboxFsProvider,
+            ExecutionConfig modelExecutionConfig) {
         String agentId = spec.getName();
         String basePrompt = spec.getInlineAgentsBody();
         // Prepend shared hard rules (_common/SKILL.md) so each *_metrics skill
@@ -321,7 +324,7 @@ public class SubagentRegistrar {
                     .model(model)
                     .workspace(workspace)
                     .toolkit(tk)
-                    .modelExecutionConfig(AgentExecutionConfig.MODEL_DEFAULTS)
+                    .modelExecutionConfig(modelExecutionConfig)
                     .toolExecutionConfig(AgentExecutionConfig.TOOL_DEFAULTS)
                     .sysPrompt(sysPrompt)
                     .maxIters(steps)
