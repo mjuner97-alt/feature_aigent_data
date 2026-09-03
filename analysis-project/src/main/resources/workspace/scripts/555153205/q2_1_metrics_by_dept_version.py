@@ -38,11 +38,19 @@ def main():
         print(f"ERROR 解析 stdin JSON 失败: {e}", file=sys.stderr)
         sys.exit(1)
 
-    dept = params.get("dept")
-    version = params.get("version")
-    if not dept or not version:
+    depts = params.get("dept")
+    versions = params.get("version")
+    if isinstance(depts, str): depts = [depts]
+    if isinstance(versions, str): versions = [versions]
+    if not isinstance(depts, list) or not isinstance(versions, list):
+        print(f"ERROR 参数 dept/version 必须是字符串或字符串数组, 收到: {params}", file=sys.stderr)
+        sys.exit(1)
+    depts = [str(v).strip() for v in depts if v is not None and str(v).strip()]
+    versions = [str(v).strip() for v in versions if v is not None and str(v).strip()]
+    if not depts or not versions:
         print(f"ERROR 缺少必填参数 dept/version, 收到: {params}", file=sys.stderr)
         sys.exit(1)
+
 
     # 2. 执行 SQL (JPype + opengauss-jdbc, psycopg2 不支持 openGauss SHA256 SASL 认证)
     sql = """
@@ -57,15 +65,15 @@ def main():
           score_status_2_1 AS "Q2_1打分状态",
           standard_is_2_1 AS "Q2_1是否达标"
         FROM dsqa_dwd_req_item_app_portrait_wide_inf
-        WHERE dev_dept = :dept
-          AND version_plan = :version
+        WHERE dev_dept IN (:dept)
+          AND version_plan IN (:version)
           AND in_date = (
             SELECT MAX(in_date) FROM dsqa_dwd_req_item_app_portrait_wide_inf
           )
     """
 
     try:
-        rows = query_gauss(sql, params={"dept": dept, "version": version})
+        rows = query_gauss(sql, params={"dept": depts, "version": versions})
         df = pd.DataFrame(rows)
     except Exception as e:
         print(f"ERROR 查询 GaussDB 失败: {type(e).__name__}: {e}", file=sys.stderr)

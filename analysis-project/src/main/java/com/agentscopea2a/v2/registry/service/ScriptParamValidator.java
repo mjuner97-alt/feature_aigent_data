@@ -48,8 +48,10 @@ public class ScriptParamValidator {
         return switch (type) {
             case "string" -> value instanceof String;
             case "int" -> value instanceof Integer || value instanceof Long || value instanceof Short;
+            case "float" -> value instanceof Number;
             case "boolean" -> value instanceof Boolean;
             case "date" -> value instanceof String text && validDate(text);
+            case "array" -> value instanceof List<?>;
             case "string[]" -> value instanceof List<?> list && list.stream().allMatch(String.class::isInstance);
             case "int[]" -> value instanceof List<?> list && list.stream().allMatch(v -> v instanceof Integer || v instanceof Long || v instanceof Short);
             case "date[]" -> value instanceof List<?> list && list.stream().allMatch(v -> v instanceof String text && validDate(text));

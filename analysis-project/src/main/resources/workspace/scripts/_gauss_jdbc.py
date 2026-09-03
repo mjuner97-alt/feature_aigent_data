@@ -62,7 +62,13 @@ def _convert_placeholders(sql, params):
     def replace(m):
         name = m.group(1)
         if name in params:
-            values.append(params[name])
+            value = params[name]
+            if isinstance(value, (list, tuple)):
+                if not value:
+                    raise ValueError(f"参数 {name} 数组不能为空")
+                values.extend(value)
+                return ", ".join("?" for _ in value)
+            values.append(value)
             return "?"
         return m.group(0)
 
@@ -71,21 +77,13 @@ def _convert_placeholders(sql, params):
 
 
 def query_gauss(sql, params=None):
-    """执行参数化 SQL 查询, 返回 list of dict.
-
-    Args:
-        sql: SQL 字符串, 用 :param_name 占位 (如 WHERE dept = :dept)
-        params: dict, 如 {"dept": "杭州开发二部", "version": "2026年7月份版本"}
-
-    Returns:
-        list of dict, 每个 dict 是一行, key 是 SQL AS 别名 (getColumnLabel).
-        空结果返回 [].
-    """
+    """执行参数化 SQL 查询, 返回 list of dict."""
     _ensure_jvm()
 
     import jpype
     from java.sql import DriverManager
 
+    # 从环境变量获取连接信息（示例值）
     jdbc_url = os.environ.get("GAUSS_JDBC_URL")
     user = os.environ.get("GAUSS_USER")
     password = os.environ.get("GAUSS_PASS")
@@ -104,13 +102,37 @@ def query_gauss(sql, params=None):
         rs = stmt.executeQuery()
         meta = rs.getMetaData()
         n = meta.getColumnCount()
-        labels = [meta.getColumnLabel(i) for i in range(1, n + 1)]
+
+        # 修复列名：将 Java 字符串转换为 Python 字符串
+        labels = []
+        for i in range(1, n + 1):
+            label = meta.getColumnLabel(i)
+            if jpype.JString is not None and isinstance(label, jpype.JString):
+                labels.append(str(label))  # 显式转换为 Python 字符串
+            else:
+                labels.append(label)
 
         rows = []
         while rs.next():
             row = {}
-            for idx, label in enumerate(labels, 1):
-                row[label] = rs.getString(idx)
+            for idx in range(1, n + 1):
+                # 获取字段值并修复类型
+                value = rs.getObject(idx)
+
+                # 处理字符串类型（合并字符元组）
+                if isinstance(value, jpype.JString):
+                    value = str(value)
+                # 处理数值类型（直接转换）
+                elif isinstance(value, (jpype.JInt, jpype.JLong, jpype.JDouble)):
+                    value = int(value) if isinstance(value, (jpype.JInt, jpype.JLong)) else float(value)
+                # 处理 NULL 值
+                elif value is None:
+                    value = None
+                # 其他类型保持原样
+                else:
+                    value = str(value)
+
+                row[labels[idx - 1]] = value
             rows.append(row)
 
         return rows

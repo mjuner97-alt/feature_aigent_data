@@ -199,7 +199,7 @@ public class V2ToolConfig {
             ScriptRegistryMapper scriptRegistryMapper,
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
             SandboxPropertiesV2 sandboxProperties,
-            @Value("${harness.a2a.sandbox.workspace-container-path:/workspace/harness-a2a}") String containerWorkspacePath) {
+            @Value("${harness.a2a.sandbox.workspace-container-path:/workspace}") String containerWorkspacePath) {
         log.info("ScriptExecTool: wired (mysql/gauss/clickhouse env injection + script_registry lookup, workspacePath={} containerWorkspacePath={})", workspacePath, containerWorkspacePath);
         return new ScriptExecTool(mysqlDataSource, gaussDataSource, clickHouseDataSource,
                 scriptRegistryMapper, workspacePath, sandboxProperties, containerWorkspacePath);

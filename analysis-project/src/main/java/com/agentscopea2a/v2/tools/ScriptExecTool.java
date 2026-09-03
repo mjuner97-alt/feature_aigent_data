@@ -132,7 +132,7 @@ public class ScriptExecTool {
         this.workspacePath = workspacePath;
         this.sandbox = sandboxProps != null ? sandboxProps.getSandbox() : null;
         this.containerWorkspacePath = containerWorkspacePath == null || containerWorkspacePath.isBlank()
-                ? "/workspace/harness-a2a" : containerWorkspacePath;
+                ? "/workspace" : containerWorkspacePath;
     }
 
     @Tool(

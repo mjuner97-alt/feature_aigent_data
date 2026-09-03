@@ -256,6 +256,8 @@ PythonExecutionResult run(PythonExecutionRequest request)
 
 当前 `ScriptExecTool` 只做参数名和必填校验，实施时应将 schema 解析/类型校验抽取为独立组件，避免 Agent 执行和前端调试行为不一致。
 
+数组参数兼容约定：业务脚本可以继续使用原有 SQL 写法 `IN (:param)`，无需为数组参数手工拼接占位符。公共脚本模块 `_gauss_jdbc.query_gauss` 会将列表值自动展开为 `IN (?, ?, ...)` 并按顺序绑定元素；空数组会被拒绝。这样既保持已注册 SQL 不变，也让前端调试和 Agent 执行使用同一套数组绑定逻辑。
+
 ### 6.2 源码
 
 源码保存前校验：
@@ -473,4 +475,3 @@ ssh docker-host 'docker exec analysis-project-test test -f /workspace/harness-a2
 - 调试运行历史和结果下载。
 - 基于版本号的源码版本管理和回滚。
 - 独立调试容器或更严格的资源限制。
-

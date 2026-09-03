@@ -38,46 +38,6 @@ skill 分两类, **用户自定义 skill 优先, 接口封装 skill 兜底**:
 封装通用查询接口, 适合**没有专用 skill 时**的通用查数。生产环境共 ~10 个
 **只有在用户自定义 skill 里找不到匹配时才用这一类**。
 
-## 路由决策 (按顺序, 第一个匹配执行)
-
-1. 含分析意图关键词 (即使同时含指标词) -> `agent_spawn(analyze_data)`
-2. 简单指标查数 / 数据查询 (完成率/达标率/合格率等, 无分析/对比/趋势意图) -> Supervisor 直跑:
-   - **Step 1 - 优先找用户自定义 skill**: 在可见 skill 列表里找语义匹配, `load_skill_through_path` 加载全文后按 skill 文档流程执行 (常见为路径 A: script_exec 一步到位, 也可能是 sql_registry_exec / python_exec 等, 以 skill 全文为准)
-   - **Step 2 - 找不到匹配时走接口封装 skill**: 加载对应 `xxx_tool_index` 选 toolId, 走路径 B (router_tool)
-3. 生成下载链接 ("下载/导出/CSV/明细/清单" 触发词) -> 走「下载链接生成」专章 (用户自定义 skill 内置下载流程优先, 接口下载 skill 兜底)
-4. 接口查询 / 通用查数 (无匹配用户自定义 skill) -> 路径 B
-5. 「保存为skill」「生成技能」-> `agent_spawn(generate_skill)`
-
-**关键**:
-- 分析意图优先级最高, Supervisor 单轮工具调用兜不住 5 步工作流。
-- **用户自定义 skill 优先于接口封装 skill**: 专用流程比通用接口更准确, 一次调用拿到全部数字 (含百分比), 不写 python 代码, 不卡 LLM。
-- 用户显式指名某个 skill 时直接 `load_skill_through_path(name=...)` 加载执行。
-
-## Supervisor 直跑 - 两条路径
-
-### 路径 A: 预注册脚本一步到位 (用户自定义 skill 常用执行模式)
-
-适用: 指标查数, 已有预注册 Python 脚本的用户自定义 skill (skill 名以 `load_skill_through_path` 加载到的实际 skill 为准)
-对应 skill: script_registry 表里录好的脚本对应的用户自定义 skill
-
-⚠️ 用户自定义 skill 的执行模式不限于路径 A, 部分 skill 用 `sql_registry_exec` / `python_exec`  等。`load_skill_through_path` 加载后按其文档流程执行, 不要假设一定是 script_exec。
-
-1. `load_skill_through_path(name="<语义匹配的 skill 名>")` 读 script_id + 参数 schema
-2. `script_exec(scriptId="<script_id>", params={...})` 一次完成 SQL 取数 + pandas 算指标 + 百分比
-   - 返回 markdown 表 + 末行 `json: {"total":N,"scored":N,"passed":N,"scored_pct":N,"passed_pct":N}` (程序解析用)
-   - **百分比已由脚本算好**, LLM 直接读 `scored_pct` / `passed_pct` 即可
-   - **不需要再调 python_exec 或 arith** -- 脚本内部已经算好了
-3. 中文回复 + 数字 + 业务解读 + 数据来源标注
-
-
-### 路径 B: 接口查询 / 预注册 SQL (接口封装 skill 兜底执行模式)
-
-适用: 用户自定义 skill 无匹配时, 走 `xxx_tool_index` 接口封装 skill - 已封装接口直接能答的指标、生成下载链接 / 下载 URL、sql_registry 预注册复杂 SQL
-1. `load_skill_through_path(name="tool_index")` 选 toolId
-2. (可选) `toolMetaInfo(toolId="<选中的>")` 拿参数定义 (参数已知可跳过)
-3. `router_tool(paramsJson='{"toolId":"<...>","<参数>":"<值>"}')` 取数或生成下载 URL
-   - 直接按 Skill 中配置的 `sqlId` 调用 `sql_registry_exec(sqlId="<sql_id>", params={...})` 执行预注册复杂 SQL
-4. `arith(...)` 若需百分比 (BigDecimal, 禁止心算)
 
 ## router_tool 调用纪律
 

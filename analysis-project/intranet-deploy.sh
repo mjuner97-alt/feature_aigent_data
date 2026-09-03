@@ -25,7 +25,7 @@ SRC_DIR="${1:-$(pwd)}"
 IMG_TAR="${2:-analysis-project-plan-b.tar.gz}"
 CONTAINER_NAME="${3:-analysis-project-test}"
 HOST_PORT="${4:-18080}"
-WORKSPACE_DIR="${WORKSPACE_DIR:-$SRC_DIR/../analysis-workspace}"
+WORKSPACE_DIR="/java/analysis-project/analysis-project/workspace"
 
 echo "[deploy] 源码目录:   $SRC_DIR"
 echo "[deploy] 镜像包:     $IMG_TAR"
@@ -74,16 +74,35 @@ mkdir -p "$WORKSPACE_DIR"
 WORKSPACE_DIR_ABS=$(cd "$WORKSPACE_DIR" && pwd)
 echo "[deploy] workspace 目录: $WORKSPACE_DIR_ABS"
 
-# 迁移: 如果旧容器存在且有 workspace 数据, 且 host 目录是空的, docker cp 出来
+# 迁移 A: 如果旧容器存在且有 workspace 数据, 且 host 目录是空的, docker cp 出来
 # (从无 bind mount 的老版本升级时, 保留 memory/artifacts/sessions)
 if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-    OLD_WS_COUNT=$(docker exec "$CONTAINER_NAME" sh -c 'ls -A /workspace/harness-a2a 2>/dev/null | wc -l' 2>/dev/null || echo 0)
+    OLD_WS_COUNT=$(docker exec "$CONTAINER_NAME" sh -c 'ls -A /workspace 2>/dev/null | wc -l' 2>/dev/null || echo 0)
     HOST_WS_COUNT=$(ls -A "$WORKSPACE_DIR_ABS" 2>/dev/null | wc -l)
     if [ "$OLD_WS_COUNT" -gt 0 ] && [ "$HOST_WS_COUNT" -eq 0 ]; then
-        echo "[deploy] 迁移: 从旧容器 $CONTAINER_NAME 复制 workspace 到 $WORKSPACE_DIR_ABS ..."
-        docker cp "$CONTAINER_NAME":/workspace/harness-a2a/. "$WORKSPACE_DIR_ABS"/
-        echo "[deploy] 迁移完成"
+        echo "[deploy] 迁移 A: 从旧容器 $CONTAINER_NAME 复制 /workspace 到 $WORKSPACE_DIR_ABS ..."
+        docker cp "$CONTAINER_NAME":/workspace/. "$WORKSPACE_DIR_ABS"/
+        echo "[deploy] 迁移 A 完成"
     fi
+fi
+
+# 迁移 B: workspace.path 从 /workspace/harness-a2a 收敛到 /workspace 后,
+# 旧结构的 $WORKSPACE_DIR_ABS/harness-a2a/* 需要提升一层到 $WORKSPACE_DIR_ABS/
+# (同名目录已存在时跳过该目录, 不覆盖; 全部移完且目录空则删除空的 harness-a2a/)
+LEGACY_WS_SUB="$WORKSPACE_DIR_ABS/harness-a2a"
+if [ -d "$LEGACY_WS_SUB" ]; then
+    echo "[deploy] 迁移 B: $LEGACY_WS_SUB/* 提升到 $WORKSPACE_DIR_ABS/ ..."
+    for item in "$LEGACY_WS_SUB"/* "$LEGACY_WS_SUB"/.[!.]*; do
+        [ -e "$item" ] || continue
+        base=$(basename "$item")
+        if [ -e "$WORKSPACE_DIR_ABS/$base" ]; then
+            echo "[deploy]   跳过(已存在): $base"
+        else
+            mv "$item" "$WORKSPACE_DIR_ABS/"
+        fi
+    done
+    rmdir "$LEGACY_WS_SUB" 2>/dev/null \
+        || echo "[deploy]   提示: harness-a2a/ 未清空(有同名跳过的目录), 保留原目录"
 fi
 
 # ----------------------------------------------------------------------------
@@ -109,7 +128,9 @@ LLM_ENV=""
 # 三个 bind mount:
 #   $SRC_DIR -> /app                       源码 + prebuilt jar + entrypoint.sh
 #   $SRC_DIR/nginx.conf -> /etc/nginx/conf.d/default.conf  覆盖镜像里的 nginx 配置 (改 listen 端口)
-#   $WORKSPACE_DIR_ABS -> /workspace/harness-a2a  持久化 workspace (memory/artifacts/sessions/scripts)
+#   $WORKSPACE_DIR_ABS -> /workspace       持久化 workspace (memory/artifacts/sessions/scripts)
+#                                          注意: 容器内 workspace.path 即 /workspace (docker profile 配置),
+#                                          与本挂载点一一对齐, 无 harness-a2a 子层
 docker run -d --name "$CONTAINER_NAME" \
     --security-opt seccomp=unconfined \
     --network host \
@@ -117,7 +138,7 @@ docker run -d --name "$CONTAINER_NAME" \
     $LLM_ENV \
     -v "$SRC_DIR":/app \
     -v "$SRC_DIR/nginx.conf":/etc/nginx/conf.d/default.conf:ro \
-    -v "$WORKSPACE_DIR_ABS":/workspace/harness-a2a \
+    -v "$WORKSPACE_DIR_ABS":/workspace \
     analysis-project:plan-b
 
 echo "[deploy] 容器已启动, 等待健康检查 (jar 直跑模式约 35-40s, fallback mvn 约 70-80s)..."
