@@ -97,23 +97,39 @@ public class AiChatRestToolCallTrackingToDbHook implements Hook, RuntimeContextA
             return;
         }
         try {
-            String createdAt = Instant.now().toString();
-            String json = toJson(event, createdAt);
+            Instant capturedAt = Instant.now();
+            long capturedNanos = System.nanoTime();
+            TraceSession.ToolTiming timing = null;
+            if (event instanceof PreActingEvent pre) {
+                String id = pre.getToolUse() == null ? "" : pre.getToolUse().getId();
+                session.startToolTiming(id, capturedAt, capturedNanos);
+            } else if (event instanceof PostActingEvent post) {
+                String id = post.getToolUse() == null ? "" : post.getToolUse().getId();
+                timing = session.finishToolTiming(id, capturedAt, capturedNanos);
+            }
+            String json = toJson(event, capturedAt.toString(), timing);
             if (json != null) {
-                session.addRecord(new TraceEventRecord(createdAt, json));
+                session.addRecord(new TraceEventRecord(capturedAt.toString(), json));
             }
         } catch (Exception e) {
             log.warn("AiChatRestToolCallTrackingToDbHook capture failed: {} {}", event.getType(), e.getMessage());
         }
     }
 
-    private String toJson(HookEvent event, String createdAt) throws Exception {
+    private String toJson(HookEvent event, String createdAt, TraceSession.ToolTiming timing) throws Exception {
         ObjectNode node = MAPPER.createObjectNode();
         String type = event.getType().name();
         node.put("id", UUID.randomUUID().toString().replace("-", ""));
         node.put("type", type);
         node.put("createdAt", createdAt);
         node.put("source", sourceOf(event));
+        if (timing != null) {
+            node.put("startedAt", timing.startedAt());
+            node.put("endedAt", timing.endedAt());
+            node.put("durationMs", timing.durationMs());
+        } else if (event instanceof PreActingEvent) {
+            node.put("startedAt", createdAt);
+        }
 
         switch (type) {
             case "PRE_CALL" -> {

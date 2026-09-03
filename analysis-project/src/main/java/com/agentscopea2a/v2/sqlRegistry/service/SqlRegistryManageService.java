@@ -68,7 +68,7 @@ public class SqlRegistryManageService {
     public SqlRegistryManageService(
             SqlRegistryMapper mapper,
             @org.springframework.beans.factory.annotation.Qualifier("mysqlDataSource") DataSource mysqlDataSource,
-            @org.springframework.beans.factory.annotation.Qualifier("gaussCustomerDataSource") DataSource gaussDataSource,
+            @org.springframework.beans.factory.annotation.Qualifier("gaussCommonDataSource") DataSource gaussDataSource,
             @org.springframework.beans.factory.annotation.Qualifier("clickHouseDataSource") DataSource clickHouseDataSource) {
         this.mapper = mapper;
         Map<String, DataSource> m = new LinkedHashMap<>();
