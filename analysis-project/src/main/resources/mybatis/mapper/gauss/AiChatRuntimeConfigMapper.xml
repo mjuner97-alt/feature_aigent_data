@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.mapper.gauss.AiChatRuntimeConfigMapper">
+    <resultMap id="BaseResultMap" type="com.agentscopea2a.entity.AiChatRuntimeConfig">
+        <id column="config_key" property="configKey"/>
+        <result column="config_value" property="configValue"/>
+        <result column="config_description" property="configDescription"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <select id="selectAll" resultMap="BaseResultMap">
+        SELECT config_key, config_value, config_description, updated_at
+        FROM ai_chat_runtime_config
+    </select>
+</mapper>
