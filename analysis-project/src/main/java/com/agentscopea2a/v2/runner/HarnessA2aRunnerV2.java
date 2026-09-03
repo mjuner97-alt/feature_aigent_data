@@ -16,6 +16,7 @@
 package com.agentscopea2a.v2.runner;
 
 import com.agentscopea2a.v2.config.AgentExecutionConfig;
+import com.agentscopea2a.v2.service.ChatRuntimeConfigService;
 import com.agentscopea2a.v2.config.HarnessRunnerProperties;
 import com.agentscopea2a.v2.config.SkillStorageProperties;
 import com.agentscopea2a.v2.memory.MysqlMemoryStore;
@@ -31,6 +32,7 @@ import io.agentscope.core.a2a.server.executor.runner.AgentRunner;
 import io.agentscope.core.agent.Event;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
+import io.agentscope.core.model.ExecutionConfig;
 import io.agentscope.core.hook.Hook;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.middleware.MiddlewareBase;
@@ -246,9 +248,19 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
      */
     private HarnessAgent buildAgent(RuntimeContext ctx) {
         String userId = extractUserId(ctx);
+        ChatRuntimeConfigService.RuntimeConfig runtimeConfig = ctx == null ? null
+                : ctx.get(ChatRuntimeConfigService.RUNTIME_CONFIG_CTX_KEY,
+                        ChatRuntimeConfigService.RuntimeConfig.class);
+        ExecutionConfig modelExecutionConfig = runtimeConfig == null
+                ? AgentExecutionConfig.MODEL_DEFAULTS
+                : AgentExecutionConfig.customModelConfig(
+                        Duration.ofSeconds(runtimeConfig.modelTimeoutSeconds()), 1);
 
         // 获取带降级逻辑的主模型
         FallbackModelDecorator primaryModel = modelProvider.getModelForUser(userId);
+        if (runtimeConfig != null) {
+            primaryModel.withMaxRetries(runtimeConfig.modelRetryCount());
+        }
 
         // Memory 使用固定的小模型(light-classifier), 不走 deepseek(分类/蒸馏用小模型更省)
         HarnessRunnerProperties.ModelInstance light = runnerProperties.getModel().getInstances().getLightClassifier();
@@ -268,7 +280,7 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
                 .skillRepository(new DatabaseSkillRepository(skillMapper, skillUsageResolver,
                         userId != null ? String.valueOf(userId) : null, skillFileBaseDir))
                 .toolExecutionConfig(AgentExecutionConfig.TOOL_DEFAULTS)
-                .modelExecutionConfig(AgentExecutionConfig.MODEL_DEFAULTS)
+                .modelExecutionConfig(modelExecutionConfig)
                 .stateStore(sharedStateStore)
                 .memory(MemoryConfig.builder()
                         .model(smallModel)
@@ -363,7 +375,7 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
         // SupervisorService pattern; agent-subagents/ (not subagents/) avoids JAR auto-load.
         SubagentRegistrar registrar = subagentRegistrarProvider.getIfAvailable();
         if (registrar != null) {
-            registrar.registerAll(builder, primaryModel, workspace, sandboxFilesystemProvider);
+            registrar.registerAll(builder, primaryModel, workspace, sandboxFilesystemProvider, modelExecutionConfig);
             log.debug("HarnessA2aRunnerV2: subagents registered via manual factory");
         }
 

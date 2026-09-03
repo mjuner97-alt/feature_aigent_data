@@ -12,6 +12,7 @@ import com.agentscopea2a.v2.exception.TooManyRequestsException;
 import com.agentscopea2a.v2.memory.EpisodicMemory;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.service.ChatStreamService;
+import com.agentscopea2a.v2.service.ChatRuntimeConfigService;
 import com.agentscopea2a.v2.tools.ToolResultRegistry;
 import com.agentscopea2a.v2.hooks.ChatScriptExecResultHook;
 import com.agentscopea2a.v2.trace.collector.TraceSession;
@@ -65,8 +66,6 @@ public class ChatStreamServiceImpl implements ChatStreamService {
 
     private static final Logger log = LoggerFactory.getLogger(ChatStreamServiceImpl.class);
     private static final Logger llmTraceLog = LoggerFactory.getLogger("llm.trace");
-    /** SSE 连接超时时间：20 分钟（单位毫秒），覆盖长思考 / 工具调用场景 */
-    private static final long SSE_TIMEOUT = 1200_000L;
     /**
      * 看门狗时间60s
      * 容器 async 超时兜底：比看门狗晚 60 秒，正常情况永不触发。
@@ -98,6 +97,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     private final TraceAssembler traceAssembler;
     private final TraceBatchWriter traceBatchWriter;
     private final ToolResultRegistry toolResultRegistry;
+    private final ChatRuntimeConfigService chatRuntimeConfigService;
 
     @Autowired
     private MainAgentMapper mainAgentMapper;
@@ -125,13 +125,15 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                                  EpisodicMemory episodicMemory,
                                  TraceAssembler traceAssembler,
                                  TraceBatchWriter traceBatchWriter,
-                                 ToolResultRegistry toolResultRegistry) {
+                                 ToolResultRegistry toolResultRegistry,
+                                 ChatRuntimeConfigService chatRuntimeConfigService) {
         this.runner = runner;
         this.artifactStore = artifactStore;
         this.episodicMemory = episodicMemory;
         this.traceAssembler = traceAssembler;
         this.traceBatchWriter = traceBatchWriter;
         this.toolResultRegistry = toolResultRegistry;
+        this.chatRuntimeConfigService = chatRuntimeConfigService;
     }
 
     /**
@@ -314,12 +316,15 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         }
         ResponseStrategy strategy = managerMode ? managerStrategy : publicStrategy;
 
-        // 容器级超时 = SSE_TIMEOUT + 60s，只做兜底；真正的超时处理走下方看门狗
-        SseEmitter emitter = new SseEmitter(SSE_TIMEOUT + CONTAINER_TIMEOUT_GRACE);
-
         String text = req.getQuestion();
         String userId = req.getUserId();
         String conversationId = req.getConversationId();
+        ChatRuntimeConfigService.RuntimeConfig runtimeConfig =
+                chatRuntimeConfigService.resolve(userId, conversationId);
+        long streamTimeoutMs = TimeUnit.SECONDS.toMillis(runtimeConfig.streamTimeoutSeconds());
+
+        // 容器级超时比看门狗晚 60 秒，只做兜底；真正的超时处理走下方看门狗。
+        SseEmitter emitter = new SseEmitter(streamTimeoutMs + CONTAINER_TIMEOUT_GRACE);
 
         // 构造调用键：同一 (userId, conversationId) 只允许一个进行中的流式调用
         String callKey = callKey(userId, conversationId);
@@ -340,6 +345,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
 
         // 构造运行时上下文：携带 sessionId / userId / lastQuestion 供中间件 / hooks 访问
         RuntimeContext ctx = buildRuntimeContext(conversationId, userId, text);
+        ctx.put(ChatRuntimeConfigService.RUNTIME_CONFIG_CTX_KEY, runtimeConfig);
         ctx.put(ChatScriptExecResultHook.ENABLED_CTX_KEY, Boolean.TRUE);
         String requestId = UUID.randomUUID().toString();
         ctx.put(ChatScriptExecResultHook.REQUEST_ID_CTX_KEY, requestId);
@@ -416,10 +422,10 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             // 3. 连接仍存活，发送超时错误事件（含"已执行"补发，保证与"执行中"成对）
             try {
                 if (streamCtx.hasSentExecuting.get()) {
-                    strategy.sendThink(streamCtx, ThinkPayload.done("分析执行智能体"));
+                    strategy.sendThink(streamCtx, ThinkPayload.done(AGENT_RETURN_NAME));
                 }
                 strategy.sendError(streamCtx, new RuntimeException(
-                        "流程超时：本次对话处理时间过长（已等待 " + (SSE_TIMEOUT / 60_000) + " 分钟），会话已自动结束。"
+                        "流程超时：本次对话处理时间过长（已等待 " + (streamTimeoutMs / 60_000) + " 分钟），会话已自动结束。"
                                 + "请稍后重试，或尝试精简问题以缩短处理时间。"));
             } catch (Exception e) {
                 log.warn("发送超时错误失败: sessionId={}", streamCtx.conversationId, e);
@@ -431,7 +437,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                 log.warn("emitter.complete() 失败: sessionId={}", streamCtx.conversationId, e);
             }
             cleanup.run();
-        }, SSE_TIMEOUT, TimeUnit.MILLISECONDS));
+        }, streamTimeoutMs, TimeUnit.MILLISECONDS));
 
         // 在 boundedElastic 调度器上异步启动流式订阅，避免阻塞 Servlet 容器线程
         Mono.fromRunnable(() -> {
@@ -536,7 +542,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         } catch (Exception e) {
             // 仅在确实发送过"执行中"时才补发"已执行"，保证成对
             if (ctx.hasSentExecuting.get()) {
-                strategy.sendThink(ctx, ThinkPayload.done("分析执行智能体"));
+                strategy.sendThink(ctx, ThinkPayload.done(AGENT_RETURN_NAME));
             }
             log.error("处理流式事件失败: sessionId={}", ctx.conversationId, e);
             throw new RuntimeException(e.getMessage(), e);
@@ -582,7 +588,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         try {
             // 仅在确实发送过"执行中"时才补发"已执行"，保证成对
             if (ctx.hasSentExecuting.get()) {
-                strategy.sendThink(ctx, ThinkPayload.done("分析执行智能体"));
+                strategy.sendThink(ctx, ThinkPayload.done(AGENT_RETURN_NAME));
             }
             strategy.sendError(ctx, error);
         } catch (Exception e) {
@@ -608,7 +614,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         try {
             // 仅在确实发送过"执行中"时才发送"已执行"，保证成对
             if (ctx.hasSentExecuting.get()) {
-                strategy.sendThink(ctx, ThinkPayload.done("分析智能体"));
+                strategy.sendThink(ctx, ThinkPayload.done(AGENT_RETURN_NAME));
             }
             // 流式输出最终结果：每 5 个字符一片
             String finalAnswer = ctx.answerContent.toString();

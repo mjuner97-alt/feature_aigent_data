@@ -67,6 +67,12 @@ public class FallbackModelDecorator implements Model {
         this.fallbackModel = fallbackModel;
     }
 
+    /** Configures retry count on this per-request decorator instance. */
+    public FallbackModelDecorator withMaxRetries(int maxRetries) {
+        this.maxRetries = Math.max(0, maxRetries);
+        return this;
+    }
+
     @Override
     public String getModelName() {
         return primaryModel.getModelName();

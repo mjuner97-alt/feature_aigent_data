@@ -51,6 +51,15 @@ public class ChatScriptExecResultHook implements Hook, RuntimeContextAware {
         return "[系统内部：已接管可渲染内容。请勿复述该内容、生成代码块或输出内部引用 ID；仅根据其余执行结果回答用户。]";
     }
 
+    /**
+     * A script result carrying a renderable block is entirely server-owned:
+     * its prose labels must not prompt the model to recreate a chart-to-title
+     * association that the final response does not preserve.
+     */
+    static String modelVisibleOutput(String output, boolean hasRenderableBlocks) {
+        return hasRenderableBlocks ? modelVisiblePlaceholder() : output;
+    }
+
     /** Converts fenced chart output to the tag format consumed by report rendering. */
     public static String renderableContent(String block) {
         if (block == null) return "";
@@ -70,6 +79,21 @@ public class ChatScriptExecResultHook implements Hook, RuntimeContextAware {
         }
         return content;
     }
+
+    /**
+     * Preserves the complete user-facing stdout while converting fenced
+     * renderable blocks to the format consumed by the final chat renderer.
+     */
+    static String renderableOutput(String toolOutput) {
+        String stdout = ScriptExecOutputExtractor.extractStdout(toolOutput);
+        Matcher matcher = ScriptExecOutputExtractor.RENDERABLE_BLOCK_PATTERN.matcher(stdout);
+        StringBuffer rendered = new StringBuffer();
+        while (matcher.find()) {
+            matcher.appendReplacement(rendered, Matcher.quoteReplacement(renderableContent(matcher.group())));
+        }
+        matcher.appendTail(rendered);
+        return rendered.toString().trim();
+    }
     @Override public int priority() { return 50; }
     @Override public void setRuntimeContext(RuntimeContext context) { currentContext = context; }
 
@@ -86,39 +110,37 @@ public class ChatScriptExecResultHook implements Hook, RuntimeContextAware {
         ToolUseBlock use = post.getToolUse();
         ToolResultBlock result = post.getToolResult();
         if (use == null || result == null || !"script_exec".equals(use.getName())) return;
-        // 工具结果可能包含普通文本和 fenced HTML/ECharts 代码块，先拼成完整文本再解析。
+        // 只向用户保留 stdout；执行信封和 stderr 不能混入最终回答。
         String output = extractText(result.getOutput());
-        Matcher matcher = ScriptExecOutputExtractor.RENDERABLE_BLOCK_PATTERN.matcher(output);
-        StringBuffer rewritten = new StringBuffer();
-        List<String> refs = new java.util.ArrayList<>();
+        String stdout = ScriptExecOutputExtractor.extractStdout(output);
+        Matcher matcher = ScriptExecOutputExtractor.RENDERABLE_BLOCK_PATTERN.matcher(stdout);
         boolean found = false;
-        // 每个可渲染代码块独立登记，避免多个图表共用同一个引用。
+        Object existing = ctx.get(RAW_BLOCKS_CTX_KEY);
+        List<String> rawBlocks = new java.util.ArrayList<>();
+        if (existing instanceof List<?> values) {
+            values.stream().filter(String.class::isInstance).map(String.class::cast).forEach(rawBlocks::add);
+        }
+        // 原始 fenced 块仍分别留给独立 Skill Job 报告；聊天最终结果则作为一个完整 stdout 保存。
         while (matcher.find()) {
             found = true;
-            Object existing = ctx.get(RAW_BLOCKS_CTX_KEY);
-            List<String> rawBlocks = new java.util.ArrayList<>();
-            if (existing instanceof List<?> values) values.stream().filter(String.class::isInstance).map(String.class::cast).forEach(rawBlocks::add);
             rawBlocks.add(matcher.group());
-            ctx.put(RAW_BLOCKS_CTX_KEY, List.copyOf(rawBlocks));
-            String ref = registry.register(ctx.getSessionId(), use.getId(), use.getName(), renderableContent(matcher.group()));
-            refs.add(ref);
-            Object requestId = ctx.get(REQUEST_ID_CTX_KEY);
-            if (requestId instanceof String id) registry.addRequestRef(id, ref);
-            matcher.appendReplacement(rewritten, Matcher.quoteReplacement(modelVisiblePlaceholder()));
         }
         if (!found) return;
-        matcher.appendTail(rewritten);
+        ctx.put(RAW_BLOCKS_CTX_KEY, List.copyOf(rawBlocks));
+        String ref = registry.register(ctx.getSessionId(), use.getId(), use.getName(), renderableOutput(output));
+        Object requestId = ctx.get(REQUEST_ID_CTX_KEY);
+        if (requestId instanceof String id) registry.addRequestRef(id, ref);
         // 同一请求可多次调用 script_exec，不能让后一次调用覆盖前一次图表引用。
         List<String> allRefs = new java.util.ArrayList<>();
         Object existingRefs = ctx.get(REFERENCES_CTX_KEY);
         if (existingRefs instanceof List<?> values) {
             values.stream().filter(String.class::isInstance).map(String.class::cast).forEach(allRefs::add);
         }
-        allRefs.addAll(refs);
+        allRefs.add(ref);
         ctx.put(REFERENCES_CTX_KEY, List.copyOf(allRefs));
         // PostActingEvent 同时更新两个字段，确保后续 Agent 消息和框架工具消息都看到替换结果。
         ToolResultBlock replacement = ToolResultBlock.of(use.getId(), use.getName(),
-                List.of(TextBlock.builder().text(rewritten.toString()).build()));
+                List.of(TextBlock.builder().text(modelVisibleOutput(output, true)).build()));
         post.setToolResult(replacement);
         post.setToolResultMsg(Msg.builder().role(MsgRole.TOOL).content(replacement).build());
     }
