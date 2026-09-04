@@ -21,5 +21,6 @@ VALUES
     ('model_timeout_seconds', '120', '模型请求首包等待时间，单位秒；超时后本次模型调用失败。有效范围：10-600。'),
     ('model_retry_count', '3', '主模型请求失败后的重试次数；0 表示不重试，耗尽后切换备用模型。有效范围：0-10。'),
     ('stream_timeout_seconds', '1200', '整个 /ai/chat SSE 流允许的最长处理时间，单位秒；超时后停止模型和工具执行。有效范围：60-3600。'),
+    ('chunk_gap_timeout_seconds', '120', '模型流相邻 chunk 之间允许的最大间隔，单位秒；超时后本次模型调用失败。有效范围：10-600。'),
     ('long_task_enabled', 'false', '是否允许 /ai/chat 根据触发词进入长任务流程；true 开启，缺失或其他值按 false 处理。'),
     ('script_exec_enabled', 'false', '是否允许 /ai/chat 执行 script_exec 工具并输出可渲染结果；true 开启，缺失或其他值按 false 处理。');
