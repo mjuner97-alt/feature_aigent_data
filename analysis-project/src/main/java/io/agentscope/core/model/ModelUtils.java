@@ -41,7 +41,7 @@ public final class ModelUtils {
     }
 
     public static void configureChunkGapTimeoutSeconds(int seconds) {
-        if (seconds > 0) chunkGapTimeoutSeconds = seconds;
+        chunkGapTimeoutSeconds = seconds;
     }
 
     /**

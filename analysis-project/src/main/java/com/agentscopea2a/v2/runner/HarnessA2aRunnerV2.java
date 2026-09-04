@@ -17,6 +17,7 @@ package com.agentscopea2a.v2.runner;
 
 import com.agentscopea2a.v2.config.AgentExecutionConfig;
 import com.agentscopea2a.v2.service.ChatRuntimeConfigService;
+import com.agentscopea2a.v2.service.ChatRuntimeConfig;
 import com.agentscopea2a.v2.config.HarnessRunnerProperties;
 import com.agentscopea2a.v2.config.SkillStorageProperties;
 import com.agentscopea2a.v2.memory.MysqlMemoryStore;
@@ -63,6 +64,9 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.List;
+
+import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.MODEL_RETRY_COUNT;
+import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.MODEL_TIMEOUT_SECONDS;
 
 
 @Component
@@ -248,18 +252,18 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
      */
     private HarnessAgent buildAgent(RuntimeContext ctx) {
         String userId = extractUserId(ctx);
-        ChatRuntimeConfigService.RuntimeConfig runtimeConfig = ctx == null ? null
+        ChatRuntimeConfig runtimeConfig = ctx == null ? null
                 : ctx.get(ChatRuntimeConfigService.RUNTIME_CONFIG_CTX_KEY,
-                        ChatRuntimeConfigService.RuntimeConfig.class);
+                        ChatRuntimeConfig.class);
         ExecutionConfig modelExecutionConfig = runtimeConfig == null
                 ? AgentExecutionConfig.MODEL_DEFAULTS
                 : AgentExecutionConfig.customModelConfig(
-                        Duration.ofSeconds(runtimeConfig.modelTimeoutSeconds()), 1);
+                        Duration.ofSeconds(runtimeConfig.getIntOrDefault(MODEL_TIMEOUT_SECONDS, 120)), 1);
 
         // 获取带降级逻辑的主模型
         FallbackModelDecorator primaryModel = modelProvider.getModelForUser(userId);
         if (runtimeConfig != null) {
-            primaryModel.withMaxRetries(runtimeConfig.modelRetryCount());
+            primaryModel.withMaxRetries(runtimeConfig.getIntOrDefault(MODEL_RETRY_COUNT, 3));
         }
 
         // Memory 使用固定的小模型(light-classifier), 不走 deepseek(分类/蒸馏用小模型更省)

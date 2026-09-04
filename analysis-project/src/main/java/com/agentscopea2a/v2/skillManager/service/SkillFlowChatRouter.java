@@ -20,6 +20,8 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
+import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.LONG_TASK_ENABLED;
+
 /**
  * Chat 入口路由器:公开对话请求先经过这里,再决定走哪条链路。
  * <ul>
@@ -64,7 +66,8 @@ public class SkillFlowChatRouter {
         // ENABLED 是 Skill Flow 总开关;CHAT_ROUTING_ENABLED 只控制 ai/chat 是否接入长任务路由。
         // 字典开关仅作用于 /ai/chat；缺失或非 true 时不进入长任务路由。
         if (!SkillFlowProperties.ENABLED || !SkillFlowProperties.CHAT_ROUTING_ENABLED
-                || !chatRuntimeConfigService.resolve(userId, conversationId).longTaskEnabled()) {
+                || !chatRuntimeConfigService.resolve(userId, conversationId).getBooleanOrDefault(
+                        LONG_TASK_ENABLED, false)) {
             return normalChat.stream(request);
         }
         String sessionKey = userId + ":" + conversationId;

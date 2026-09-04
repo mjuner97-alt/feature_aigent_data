@@ -12,6 +12,7 @@ import com.agentscopea2a.v2.exception.TooManyRequestsException;
 import com.agentscopea2a.v2.memory.EpisodicMemory;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.service.ChatStreamService;
+import com.agentscopea2a.v2.service.ChatRuntimeConfig;
 import com.agentscopea2a.v2.service.ChatRuntimeConfigService;
 import com.agentscopea2a.v2.tools.ToolResultRegistry;
 import com.agentscopea2a.v2.hooks.ChatScriptExecResultHook;
@@ -23,6 +24,7 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.*;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
+import io.agentscope.core.model.ModelUtils;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.harness.agent.sandbox.SandboxException;
 import org.apache.commons.lang3.StringUtils;
@@ -57,6 +59,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+
+import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.CHUNK_GAP_TIMEOUT_SECONDS;
+import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.SCRIPT_EXEC_ENABLED;
+import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.STREAM_TIMEOUT_SECONDS;
 
 /**
  * 流式聊天服务实现，基于 SSE 推送 Agent 事件流
@@ -319,9 +325,12 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         String text = req.getQuestion();
         String userId = req.getUserId();
         String conversationId = req.getConversationId();
-        ChatRuntimeConfigService.RuntimeConfig runtimeConfig =
+        ChatRuntimeConfig runtimeConfig =
                 chatRuntimeConfigService.resolve(userId, conversationId);
-        long streamTimeoutMs = TimeUnit.SECONDS.toMillis(runtimeConfig.streamTimeoutSeconds());
+        long streamTimeoutMs = TimeUnit.SECONDS.toMillis(
+                runtimeConfig.getIntOrDefault(STREAM_TIMEOUT_SECONDS, 1200));
+        ModelUtils.configureChunkGapTimeoutSeconds(
+                runtimeConfig.getIntOrDefault(CHUNK_GAP_TIMEOUT_SECONDS, 120));
 
         // 容器级超时比看门狗晚 60 秒，只做兜底；真正的超时处理走下方看门狗。
         SseEmitter emitter = new SseEmitter(streamTimeoutMs + CONTAINER_TIMEOUT_GRACE);
@@ -346,7 +355,8 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         // 构造运行时上下文：携带 sessionId / userId / lastQuestion 供中间件 / hooks 访问
         RuntimeContext ctx = buildRuntimeContext(conversationId, userId, text);
         ctx.put(ChatRuntimeConfigService.RUNTIME_CONFIG_CTX_KEY, runtimeConfig);
-        ctx.put(ChatScriptExecResultHook.ENABLED_CTX_KEY, runtimeConfig.scriptExecEnabled());
+        ctx.put(ChatScriptExecResultHook.ENABLED_CTX_KEY,
+                runtimeConfig.getBooleanOrDefault(SCRIPT_EXEC_ENABLED, false));
         String requestId = UUID.randomUUID().toString();
         ctx.put(ChatScriptExecResultHook.REQUEST_ID_CTX_KEY, requestId);
 
