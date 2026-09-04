@@ -2,6 +2,7 @@ package com.agentscopea2a.v2.service;
 
 import com.agentscopea2a.entity.AiChatRuntimeConfig;
 import com.agentscopea2a.mapper.gauss.AiChatRuntimeConfigMapper;
+import io.agentscope.core.model.ModelUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -15,7 +16,7 @@ public class ChatRuntimeConfigService {
     public static final String RUNTIME_CONFIG_CTX_KEY = "aiChatRuntimeConfig";
     private static final Logger log = LoggerFactory.getLogger(ChatRuntimeConfigService.class);
     private static final long SESSION_IDLE_TTL_MS = 2 * 60 * 60 * 1000L;
-    private static final RuntimeConfig DEFAULT = new RuntimeConfig(120, 3, 1200, false);
+    private static final RuntimeConfig DEFAULT = new RuntimeConfig(120, 3, 1200, 120, false, false);
 
     private final AiChatRuntimeConfigMapper mapper;
     private final Map<SessionKey, CacheEntry> sessionCache = new ConcurrentHashMap<>();
@@ -45,11 +46,15 @@ public class ChatRuntimeConfigService {
                     values.put(config.getConfigKey(), config.getConfigValue());
                 }
             }
-            return new RuntimeConfig(
+            RuntimeConfig runtimeConfig = new RuntimeConfig(
                     inRange(values.get("model_timeout_seconds"), 10, 600, DEFAULT.modelTimeoutSeconds()),
                     inRange(values.get("model_retry_count"), 0, 10, DEFAULT.modelRetryCount()),
                     inRange(values.get("stream_timeout_seconds"), 60, 3600, DEFAULT.streamTimeoutSeconds()),
-                    Boolean.parseBoolean(values.get("long_task_enabled")));
+                    inRange(values.get("chunk_gap_timeout_seconds"), 10, 600, DEFAULT.chunkGapTimeoutSeconds()),
+                    Boolean.parseBoolean(values.get("long_task_enabled")),
+                    Boolean.parseBoolean(values.get("script_exec_enabled")));
+            ModelUtils.configureChunkGapTimeoutSeconds(runtimeConfig.chunkGapTimeoutSeconds());
+            return runtimeConfig;
         } catch (Exception e) {
             log.warn("Unable to load /ai/chat runtime configuration; using defaults: {}", e.getMessage());
             return DEFAULT;
@@ -73,7 +78,9 @@ public class ChatRuntimeConfigService {
             int modelTimeoutSeconds,
             int modelRetryCount,
             int streamTimeoutSeconds,
-            boolean longTaskEnabled) { }
+            int chunkGapTimeoutSeconds,
+            boolean longTaskEnabled,
+            boolean scriptExecEnabled) { }
 
     private record SessionKey(String userId, String conversationId) { }
 

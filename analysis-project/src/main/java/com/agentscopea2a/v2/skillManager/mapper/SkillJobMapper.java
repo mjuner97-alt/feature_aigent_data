@@ -73,8 +73,11 @@ public interface SkillJobMapper {
     /** 删除执行记录（触发被拒时清理刚插入的 PENDING，避免孤儿记录） */
     void deleteExecutionById(@Param("id") Long id);
 
-    /** 将残留的 RUNNING/PENDING 执行记录标记为 FAILED（应用重启时恢复僵尸记录） */
-    int markStaleRunningAsFailed();
+    /** 查询当天因应用重启中断、需要重新排队的执行记录。 */
+    List<SkillJobExecution> selectTodayInterruptedExecutions();
+
+    /** 将当天因应用重启中断的执行记录恢复为 PENDING。 */
+    int recoverTodayInterruptedExecutions();
 
     // ---- skill_job_notification ----
 

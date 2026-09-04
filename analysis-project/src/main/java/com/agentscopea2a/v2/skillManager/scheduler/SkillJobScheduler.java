@@ -222,16 +222,22 @@ public class SkillJobScheduler implements WriteCallback {
         log.info("SkillJobScheduler executors shut down");
     }
 
-    /**
-     * 应用启动时恢复僵尸执行记录：把进程退出时仍处于 RUNNING/PENDING 的记录标记为 FAILED。
-     * 否则这些记录会永远停留在"运行中"，前端列表堆积假记录。
-     */
+    /** 应用启动时恢复当天被进程退出中断的记录，并重新提交到原触发类型对应的队列。 */
     @PostConstruct
     public void recoverStaleExecutions() {
         try {
-            int n = mapper.markStaleRunningAsFailed();
+            List<SkillJobExecution> interrupted = mapper.selectTodayInterruptedExecutions();
+            int n = mapper.recoverTodayInterruptedExecutions();
             if (n > 0) {
-                log.warn("Recovered {} stale RUNNING/PENDING execution(s) to FAILED on startup", n);
+                log.info("Recovered {} interrupted execution(s) to PENDING on startup", n);
+                for (SkillJobExecution execution : interrupted) {
+                    try {
+                        submit(execution.getJobId(), execution.getId(), execution.getTriggerType());
+                    } catch (Exception submitError) {
+                        log.warn("Failed to resubmit recovered execution {}: {}",
+                                execution.getId(), submitError.getMessage());
+                    }
+                }
             }
         } catch (Exception e) {
             log.warn("Failed to recover stale executions on startup: {}", e.getMessage());

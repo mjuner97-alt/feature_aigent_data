@@ -21,6 +21,7 @@ import io.agentscope.core.model.transport.HttpTransport;
 import io.agentscope.core.model.transport.HttpTransportException;
 import io.agentscope.core.model.transport.TransportConstants;
 import io.agentscope.diagnostics.LlmFileTrace;
+import com.agentscopea2a.v2.service.ChatRuntimeConfigService;
 import io.netty.channel.ChannelOption;
 import java.time.Duration;
 import java.util.Map;
@@ -62,18 +63,25 @@ public class WebClientHttpTransport implements HttpTransport {
     private static final String SSE_DONE_MARKER = "[DONE]";
 
     private final WebClient webClient;
+    private final ChatRuntimeConfigService chatRuntimeConfigService;
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
-    public WebClientHttpTransport() {
+    public WebClientHttpTransport(ChatRuntimeConfigService chatRuntimeConfigService) {
+        this.chatRuntimeConfigService = chatRuntimeConfigService;
         // reactor-netty 默认 HTTP/1.1。responseTimeout 只到响应头，流式 body 不截断。
         // 连接超时用 ChannelOption（reactor-netty 1.1 无 HttpClient.connectTimeout(Duration)）。
         HttpClient httpClient = HttpClient.create()
-                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 30_000)
-                .responseTimeout(Duration.ofSeconds(30))
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS,
+                        Math.toIntExact(Duration.ofSeconds(resolveModelTimeoutSeconds()).toMillis()))
+                .responseTimeout(Duration.ofSeconds(resolveModelTimeoutSeconds()))
                 .followRedirect(true);
         this.webClient = WebClient.builder()
                 .clientConnector(new ReactorClientHttpConnector(httpClient))
                 .build();
+    }   
+
+    private long resolveModelTimeoutSeconds() {
+        return chatRuntimeConfigService.resolve("__transport__", "").modelTimeoutSeconds();
     }
 
     // ── 非流式 ──────────────────────────────────────────────────────────────

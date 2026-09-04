@@ -346,7 +346,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         // 构造运行时上下文：携带 sessionId / userId / lastQuestion 供中间件 / hooks 访问
         RuntimeContext ctx = buildRuntimeContext(conversationId, userId, text);
         ctx.put(ChatRuntimeConfigService.RUNTIME_CONFIG_CTX_KEY, runtimeConfig);
-        ctx.put(ChatScriptExecResultHook.ENABLED_CTX_KEY, Boolean.TRUE);
+        ctx.put(ChatScriptExecResultHook.ENABLED_CTX_KEY, runtimeConfig.scriptExecEnabled());
         String requestId = UUID.randomUUID().toString();
         ctx.put(ChatScriptExecResultHook.REQUEST_ID_CTX_KEY, requestId);
 
@@ -758,10 +758,11 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     }
 
     static String friendlyErrorMessage(Throwable error) {
-        if (isRetryOrTimeout(error)) {
-            return "请求已达最大重试次数，当前模型资源不足，请稍后再试。";
-        }
-        return "模型服务暂时不可用，请稍后重试";
+//        if (isRetryOrTimeout(error)) {
+//            return "请求已达最大重试次数，当前模型资源不足，请稍后再试。";
+//        }
+//        return "模型服务暂时不可用，请稍后重试";
+        return "请求模型超时,请稍后重试";
     }
 
     private static boolean isRetryOrTimeout(Throwable error) {

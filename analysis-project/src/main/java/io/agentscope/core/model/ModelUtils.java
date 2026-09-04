@@ -33,9 +33,15 @@ import reactor.util.retry.Retry;
 public final class ModelUtils {
 
     private static final Logger LOG = LoggerFactory.getLogger(ModelUtils.class);
+    private static volatile int chunkGapTimeoutSeconds =
+            Integer.getInteger("chunk-gap-timeout-seconds", 120);
 
     private ModelUtils() {
         // Utility class - prevent instantiation
+    }
+
+    public static void configureChunkGapTimeoutSeconds(int seconds) {
+        if (seconds > 0) chunkGapTimeoutSeconds = seconds;
     }
 
     /**
@@ -95,7 +101,7 @@ public final class ModelUtils {
                 //   没有它前端只会收到部分 think 后永远没下文）。
                 //   默认 120，可用 -Dagentscope.llm.chunk-gap-timeout-seconds 覆盖。
                 Duration chunkGap = Duration.ofSeconds(
-                        Integer.getInteger("agentscope.llm.chunk-gap-timeout-seconds", 2*60));
+                        chunkGapTimeoutSeconds);
                 LlmFileTrace.write(traceId, "ModelUtils", "应用超时", "timeout=" + timeout + " chunkGap=" + chunkGap);
                 // reactor 3.6 无 timeout(Duration, Duration, fallback) 重载，用 Publisher 形式：
                 // Mono.delay(timeout) 约束首包（prefill），Mono.delay(chunkGap) 约束 chunk 间隔。
