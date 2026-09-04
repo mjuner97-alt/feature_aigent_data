@@ -372,18 +372,38 @@ public class FlowCoordinator {
         finalizeFlow(flow, nodes);
     }
 
+    /**
+     * 手动重跑单个节点。
+     *
+     * <p>该方法只负责把节点恢复为可调度状态，并唤醒调度器；真正的节点执行仍由
+     * {@link #dispatchRunnableNodes()} 认领后提交给 worker 线程池完成。
+     *
+     * <p>允许从已经结束的流程中重跑，也允许在 RUNNING 流程中重跑已经结束的节点；
+     * 正在执行或等待执行的节点不能重复重跑，避免同一节点产生并发执行。
+     *
+     * @param flowId 节点所属的流程执行 ID
+     * @param nodeId 要重跑的节点执行 ID
+     */
     public void retryNode(Long flowId, Long nodeId) {
+        // 锁定流程记录，串行化同一流程上的重跑、取消等状态修改。
         SkillFlowExecution flow = mapper.selectFlowExecutionForUpdate(flowId);
         SkillFlowNodeExecution node = mapper.selectNodeExecution(nodeId);
+        // 同时校验节点归属，防止拿其他流程的 nodeId 发起重跑。
         if (flow == null || node == null || !Objects.equals(flowId, node.getFlowExecutionId())) throw new IllegalArgumentException("节点不存在");
-        boolean flowRetryable = flow.getStatus().terminal() || flow.getStatus() == FlowExecutionStatus.RUNNING;
-        if (!flowRetryable || !node.getStatus().terminal() || node.getStatus() == FlowNodeExecutionStatus.SUCCESS)
+        // 流程必须仍在运行，或已经进入某个终态；中间状态（例如汇总中）不允许重跑。
+        if (!flow.getStatus().terminal() && flow.getStatus() != FlowExecutionStatus.RUNNING)
+            throw new IllegalStateException("执行当前不可重跑");
+        // 仅终态节点可重跑，避免覆盖正在运行节点的租约、结果或尝试次数。
+        if (!node.getStatus().terminal())
             throw new IllegalStateException("节点当前不可重跑");
+        // 清空上次执行的结果、错误、时间和租约，并恢复完整重试预算。
         resetForRetry(node);
         mapper.updateNodeExecution(node);
-        flow.setStatus(FlowExecutionStatus.RUNNING); flow.setSummaryJson(null); flow.setReportPath(null); flow.setCompletedAt(null);
-        mapper.updateExecution(flow);
+        // 重新计算流程状态并放行满足依赖条件的节点。
+        advance(flowId);
+        // 立即扫描一次，尽快认领刚刚重新入队的节点。
         dispatchRunnableNodes();
+        // 延迟再扫一次，兜底处理事务提交可见性或旧 worker 尚未释放许可的竞态。
         scheduleRetryDispatch();
     }
 
