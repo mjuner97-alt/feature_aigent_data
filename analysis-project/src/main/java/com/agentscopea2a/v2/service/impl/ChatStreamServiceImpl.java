@@ -8,7 +8,6 @@ import com.agentscopea2a.dto.response.*;
 import com.agentscopea2a.mapper.gauss.MainAgentMapper;
 import com.agentscopea2a.v2.artifact.ArtifactContext;
 import com.agentscopea2a.v2.artifact.ArtifactStore;
-import com.agentscopea2a.v2.exception.TooManyRequestsException;
 import com.agentscopea2a.v2.memory.EpisodicMemory;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.service.ChatStreamService;
@@ -69,6 +68,8 @@ import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.STREAM_TIMEOUT
  */
 @Service
 public class ChatStreamServiceImpl implements ChatStreamService {
+
+    private static final String IN_FLIGHT_NOTICE = "当前会话正在处理中，请等待本次回答完成后再试。";
 
     private static final Logger log = LoggerFactory.getLogger(ChatStreamServiceImpl.class);
     private static final Logger llmTraceLog = LoggerFactory.getLogger("llm.trace");
@@ -211,6 +212,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     private interface ResponseStrategy {
         void sendThink(StreamContext ctx, ThinkPayload payload);
         void sendText(StreamContext ctx, TextPayload payload);
+        void sendInFlight(SseEmitter emitter, ChatRequest req);
         void sendError(StreamContext ctx, Throwable error);
     }
 
@@ -255,6 +257,18 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         }
 
         @Override
+        public void sendInFlight(SseEmitter emitter, ChatRequest req) {
+            TextManagerResponseDto dto = new TextManagerResponseDto();
+            dto.setData(inFlightNoticeContent());
+            dto.setFinish(true);
+            dto.setCode(200);
+            dto.setAnsUUID(req.getConversationId());
+            dto.setConversationId(req.getConversationId());
+            dto.setFromType(req.getFromType());
+            safeSend(emitter, dto, MediaType.APPLICATION_JSON);
+        }
+
+        @Override
         public void sendError(StreamContext ctx, Throwable error) {
             TextManagerResponseDto dto = new TextManagerResponseDto();
             ContentDto contentDto = new ContentDto();
@@ -288,6 +302,14 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             dto.setData(contentDto);
             dto.setFinish(payload.isFinish());
             safeSend(ctx.emitter, dto, MediaType.APPLICATION_JSON);
+        }
+
+        @Override
+        public void sendInFlight(SseEmitter emitter, ChatRequest req) {
+            TextResponseDto dto = new TextResponseDto();
+            dto.setData(inFlightNoticeContent());
+            dto.setFinish(true);
+            safeSend(emitter, dto, MediaType.APPLICATION_JSON);
         }
 
         @Override
@@ -341,9 +363,8 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         // putIfAbsent：若已存在同会话的进行中调用，直接拒绝，防止并发覆盖 / 重复消耗 LLM token
         InFlightCall existing = inFlightCalls.putIfAbsent(callKey, inFlight);
         if (existing != null) {
-            emitter.completeWithError(new TooManyRequestsException(
-                    "Session " + conversationId + " already has an in-flight call; "
-                            + "wait for it to finish or use POST /v2/ai/chat/interrupt to redirect"));
+            strategy.sendInFlight(emitter, req);
+            emitter.complete();
             return emitter;
         }
 
@@ -454,7 +475,8 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             try {
                 // 核心：触发 Agent 流式事件流（文本增量、工具调用、最终结果等事件）
                 // 事件类型基类为 io.agentscope.core.event.AgentEvent
-                Flux<AgentEvent> eventFlux = runner.streamEvents(List.of(userMsg), ctx);
+                Flux<AgentEvent> eventFlux = monitorTermination(
+                        runner.streamEvents(List.of(userMsg), ctx), cleanup);
 
                 // 订阅事件流：onNext 处理每个事件，onError 处理异常，onComplete 处理结束
                 // 参考 v1 流处理模式：processChunk 处理增量，handleStreamError/Success 处理终止
@@ -700,6 +722,14 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     }
 
     /**
+     * 监听 Reactor 流的全部终止信号，包括客户端断开后产生的 CANCEL。
+     * cleanup 本身具有幂等保护，可与 SseEmitter 生命周期回调安全并存。
+     */
+    static <T> Flux<T> monitorTermination(Flux<T> flux, Runnable cleanup) {
+        return flux.doFinally(signalType -> cleanup.run());
+    }
+
+    /**
      * 构造 cleanup 逻辑：取消订阅、清理 artifact、持久化 episodic 记忆、移除进行中调用标记。
      * 幂等执行（CAS 保证只执行一次）。
      */
@@ -765,6 +795,15 @@ public class ChatStreamServiceImpl implements ChatStreamService {
      */
     private String buildErrorMessage(Throwable error) {
         return friendlyErrorMessage(error);
+    }
+
+    /** 构造重复请求提示内容；具体响应 DTO 由 ResponseStrategy 决定。 */
+    static ContentDto inFlightNoticeContent() {
+        ContentDto content = new ContentDto();
+        content.setContent(IN_FLIGHT_NOTICE);
+        content.setAction("");
+        content.setTopic("");
+        return content;
     }
 
     static String friendlyErrorMessage(Throwable error) {
