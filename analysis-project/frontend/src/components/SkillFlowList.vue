@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router';
 import { deleteSkillFlow, getSkillFlowMetricPrecheck, listSkillFlows, runSkillFlow, setSkillFlowEnabled } from '../api/skillFlow';
 import { currentUserId } from '../api/skill';
 import type { SkillFlow } from '../types/skillFlow';
+import { manualTriggerMessage } from './skillFlowExecutionPresentation';
 
 const emit = defineEmits<{ 'view-records': [flowName: string] }>();
 const props = withDefaults(defineProps<{ scope?: 'mine' | 'all'; createdBy?: string }>(), { scope: 'mine', createdBy: '' });
@@ -63,7 +64,7 @@ async function run(flow: SkillFlow) {
   }
   try {
     const result = await runSkillFlow(flow.id);
-    if (result.created) alert('已触发任务，可在“长任务执行记录”中查看进度。');
+    alert(manualTriggerMessage(result.created));
   } catch (e) { alert(e instanceof Error ? e.message : '触发执行失败'); }
 }
 

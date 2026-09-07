@@ -17,7 +17,6 @@ import io.agentscope.core.message.TextBlock;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
@@ -54,10 +53,6 @@ import java.util.concurrent.TimeoutException;
 public class FlowCoordinator {
 
     private static final Logger log = LoggerFactory.getLogger(FlowCoordinator.class);
-
-    /** Whether this instance is allowed to scan and execute long-task workers. */
-    @Value("${harness.a2a.skill-flow.worker-enabled:true}")
-    private boolean workerEnabled;
 
     private final SkillFlowMapper mapper;
     private final HarnessA2aRunnerV2 runner;
@@ -123,7 +118,6 @@ public class FlowCoordinator {
     /** 定时扫描并调度可运行节点;总开关/工作开关任一关闭则直接空转。 */
     @Scheduled(fixedDelay = SkillFlowProperties.SCAN_INTERVAL_MS)
     public void scan() {
-        if (!SkillFlowProperties.ENABLED || !workerEnabled) return;
         LocalDateTime now = LocalDateTime.now(clock);
         expirePreviousDays();
         expireExhaustedNodes(now);
@@ -151,7 +145,6 @@ public class FlowCoordinator {
     /** 正常路径：流程事务提交后立即派发；定时 scan 仅作为恢复兜底。 */
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void onFlowQueued(FlowQueuedEvent event) {
-        if (!SkillFlowProperties.ENABLED || !workerEnabled) return;
         dispatchRunnableNodes();
     }
 
@@ -199,10 +192,13 @@ public class FlowCoordinator {
         LocalDateTime started = LocalDateTime.now(clock);
         int attempt = 0;
         String attemptLeaseOwner = null;
+        String requestId = null;
         try {
+            if (nodeId == null) throw new IllegalArgumentException("NodeExecutionIdMissing");
             node = mapper.selectNodeExecution(nodeId);
             if (node == null) return;
-            flow = mapper.selectFlowExecutionById(node.getFlowExecutionId());
+            Long flowExecutionId = Objects.requireNonNull(node.getFlowExecutionId(), "FlowExecutionIdMissing");
+            flow = mapper.selectFlowExecutionById(flowExecutionId);
             // 流程已请求取消/已取消:节点直接置 CANCELLED
             if (flow == null || flow.getStatus() == FlowExecutionStatus.CANCEL_REQUESTED
                     || flow.getStatus() == FlowExecutionStatus.CANCELLED) {
@@ -210,7 +206,8 @@ public class FlowCoordinator {
                 return;
             }
             started = LocalDateTime.now(clock);
-            attempt = node.getAttemptCount();
+            // 历史数据可能没有 attempt_count；避免 Integer 自动拆箱触发 NPE。
+            attempt = node.getAttemptCount() == null ? 0 : node.getAttemptCount();
             attemptLeaseOwner = node.getLeaseOwner();
             // 认领成功但可能有上次遗留的 RUNNING 尝试记录,先作废再开新尝试
             mapper.failRunningAttemptsForNode(nodeId, started);
@@ -231,24 +228,25 @@ public class FlowCoordinator {
                     ? Objects.toString(flow.getOriginalQuestion(), "")
                     : templates.render(template,
                     new FlowTemplateEngine.Context(Map.of(
-                            "server_date", flow.getDataDate().toString(),
-                            "original_question", flow.getOriginalQuestion(),
-                            "flow_name", flow.getFlowName(),
-                            "skill_name", node.getSkillName())));
+                            // Map.of rejects null values; old flow snapshots may omit optional fields.
+                            "server_date", Objects.toString(flow.getDataDate(), LocalDate.now(clock).toString()),
+                            "original_question", Objects.toString(flow.getOriginalQuestion(), ""),
+                            "flow_name", Objects.toString(flow.getFlowName(), ""),
+                            "skill_name", Objects.toString(node.getSkillName(), ""))));
             String question = buildPrompt(node, rendered);
             node.setRenderedQuestion(question);
             RuntimeContext context = RuntimeContext.builder()
                     .sessionId("flow-" + flow.getId() + "-" + node.getNodeKey())
                     .userId(flow.getTriggerUserId()).build();
-            String requestId = java.util.UUID.randomUUID().toString();
+            requestId = java.util.UUID.randomUUID().toString();
             context.put(com.agentscopea2a.v2.hooks.ChatScriptExecResultHook.ENABLED_CTX_KEY, Boolean.TRUE);
             context.put(com.agentscopea2a.v2.hooks.ChatScriptExecResultHook.REQUEST_ID_CTX_KEY, requestId);
             List<AgentEvent> events = runner.streamEvents(List.of(Msg.builder()
                             .role(MsgRole.USER).content(TextBlock.builder().text(question).build()).build()),
-                    context).collectList().block(Duration.ofMinutes(10));
+                    context).collectList().block(Duration.ofMinutes(
+                            SkillFlowProperties.NODE_EXECUTION_TIMEOUT_MINUTES));
             String result = toolResultRegistry.resolveAndAppendCurrentResults(
                     extract(events), toolResultRegistry.getRequestRefs(requestId));
-            toolResultRegistry.clearRequestRefs(requestId);
             if (result == null || result.isBlank()) throw new IllegalStateException("Skill returned empty result");
             String resultJson = json(Map.of("text", result));
             completeAudit(audit, FlowNodeAttemptStatus.SUCCESS, false, null, null, started);
@@ -259,6 +257,9 @@ public class FlowCoordinator {
                 log.info("Ignoring stale success for node {} attempt {}", nodeId, attempt);
             }
         } catch (Exception error) {
+            Long flowId = flow != null ? flow.getId() : node != null ? node.getFlowExecutionId() : null;
+            log.error("Skill flow node execution failed: nodeId={}, flowId={}, attempt={}",
+                    nodeId, flowId, attempt, error);
             // 可重试错误(超时/429/5xx 等)且未到最大尝试次数 -> RETRY_WAIT,指数退避(1s/2s/4s/8s)
             // 老数据可能没有最大重试次数；按单次执行处理，不能让错误处理本身再次抛 NPE，
             // 否则节点会永远停留在 RUNNING，流程也无法进入最终状态。
@@ -270,22 +271,41 @@ public class FlowCoordinator {
                 node.setNextRunAt(LocalDateTime.now(clock).plusSeconds(1L << Math.min(attempt, 3)));
             }
             if (audit != null) {
-                completeAudit(audit, FlowNodeAttemptStatus.FAILED, retryable, errorCode, errorMessage, started);
+                try {
+                    completeAudit(audit, FlowNodeAttemptStatus.FAILED, retryable, errorCode, errorMessage, started);
+                } catch (Exception auditError) {
+                    // 错误收尾也可能遇到数据库异常；记录二次故障，但继续尝试回写节点终态。
+                    log.error("Failed to persist skill flow attempt failure: nodeId={}, attempt={}",
+                            nodeId, attempt, auditError);
+                }
             } else {
-                // 审计记录尚未建立(读取节点/写尝试记录阶段就失败):必须留痕,否则无从排查
-                log.error("Skill flow node {} failed before attempt record was created", nodeId, error);
+                log.warn("Skill flow node {} failed before attempt record was created", nodeId);
             }
             if (node != null && flow != null) {
-                boolean completed = attemptCompletionService.completeFailure(node, attempt, attemptLeaseOwner,
-                        retryable, errorCode, errorMessage, LocalDateTime.now(clock));
-                if (completed && !retryable) {
-                    advance(flow.getId());
-                } else if (!completed) {
-                    log.info("Ignoring stale failure for node {} attempt {}", nodeId, attempt);
+                try {
+                    boolean completed = attemptCompletionService.completeFailure(node, attempt, attemptLeaseOwner,
+                            retryable, errorCode, errorMessage, LocalDateTime.now(clock));
+                    if (completed && !retryable) {
+                        advance(flow.getId());
+                    } else if (!completed) {
+                        log.info("Ignoring stale failure for node {} attempt {}", nodeId, attempt);
+                    }
+                } catch (Exception persistenceError) {
+                    log.error("Failed to persist skill flow node failure: nodeId={}, flowId={}, attempt={}",
+                            nodeId, flow.getId(), attempt, persistenceError);
                 }
             } else {
                 log.error("Skill flow node {} failure could not be persisted (node/flow unavailable): {}",
                         nodeId, errorMessage);
+            }
+        } finally {
+            if (requestId != null) {
+                try {
+                    toolResultRegistry.clearRequestRefs(requestId);
+                } catch (Exception cleanupError) {
+                    log.error("Failed to clear tool result references: nodeId={}, requestId={}",
+                            nodeId, requestId, cleanupError);
+                }
             }
         }
     }
@@ -399,6 +419,13 @@ public class FlowCoordinator {
         // 清空上次执行的结果、错误、时间和租约，并恢复完整重试预算。
         resetForRetry(node);
         mapper.updateNodeExecution(node);
+        // 终态流程必须先恢复为 RUNNING，否则 FlowNodeClaimService 会拒绝认领 QUEUED 节点，
+        // 节点将永久停在“排队中”。旧汇总也已失效，等待节点完成后重新生成。
+        flow.setStatus(FlowExecutionStatus.RUNNING);
+        flow.setSummaryJson(null);
+        flow.setReportPath(null);
+        flow.setCompletedAt(null);
+        mapper.updateExecution(flow);
         // 重新计算流程状态并放行满足依赖条件的节点。
         advance(flowId);
         // 立即扫描一次，尽快认领刚刚重新入队的节点。
@@ -485,9 +512,17 @@ public class FlowCoordinator {
         if (flow != null) advance(flow.getId());
     }
 
-    /** 组装发给 AI 的最终问题:使用 Skill 展示名称 + 渲染后的用户问题;查询侧兜底渲染共用同一格式。 */
+    /**
+     * 组装发给 AI 的最终问题:优先用 Skill 检索名——框架按检索名加载/调用 Skill
+     * (见 DatabaseSkillRepository),单 Skill 任务 SkillJobScheduler 同样用检索名;
+     * 检索名缺失时回退展示名,两者都为空才抛 SkillNameMissing(而不是 NPE)。
+     * 查询侧兜底渲染共用同一格式。
+     */
     static String buildPrompt(SkillFlowNodeExecution node, String renderedQuestion) {
-        String skillName = node.getSkillName();
+        String skillName = node.getSkillRetrievalName();
+        if (skillName == null || skillName.isBlank()) {
+            skillName = node.getSkillName();
+        }
         if (skillName == null || skillName.isBlank()) {
             throw new IllegalStateException("SkillNameMissing");
         }
@@ -524,9 +559,9 @@ public class FlowCoordinator {
     private String extract(List<AgentEvent> events) {
         if (events == null) return "";
         for (AgentEvent event : events) {
-            if (event instanceof AgentResultEvent result && result.getResult() != null
-                    && !result.getResult().getTextContent().isBlank()) {
-                return result.getResult().getTextContent();
+            if (event instanceof AgentResultEvent result && result.getResult() != null) {
+                String textContent = result.getResult().getTextContent();
+                if (textContent != null && !textContent.isBlank()) return textContent;
             }
         }
         StringBuilder text = new StringBuilder();

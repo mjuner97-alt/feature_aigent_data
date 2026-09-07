@@ -4,7 +4,6 @@ import com.agentscopea2a.dto.ChatRequest;
 import com.agentscopea2a.dto.response.ContentDto;
 import com.agentscopea2a.dto.response.TextManagerResponseDto;
 import com.agentscopea2a.dto.response.TextResponseDto;
-import com.agentscopea2a.v2.skillManager.config.SkillFlowProperties;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowExecution;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowTrigger;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
@@ -29,7 +28,7 @@ import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.LONG_TASK_ENAB
  *   <li>{@link RouteType#LONG_TASK} 命中 Skill Flow 触发词,创建/复用当日长任务并即时返回提示(不等执行完成);</li>
  *   <li>{@link RouteType#DIRECT_ANSWER} 用户回复"直接回答",取消当前长任务改走普通对话。</li>
  * </ul>
- * 总开关在 {@link SkillFlowProperties#CHAT_ROUTING_ENABLED},关闭时所有请求都走普通对话。
+ * 路由开关由数据库中的 {@code long_task_enabled} 配置控制。
  */
 @Service
 public class SkillFlowChatRouter {
@@ -63,10 +62,7 @@ public class SkillFlowChatRouter {
         String conversationId = request.getConversationId() == null || request.getConversationId().isBlank()
                 ? UUID.randomUUID().toString() : request.getConversationId();
         request.setConversationId(conversationId);
-        // ENABLED 是 Skill Flow 总开关;CHAT_ROUTING_ENABLED 只控制 ai/chat 是否接入长任务路由。
-        // 字典开关仅作用于 /ai/chat；缺失或非 true 时不进入长任务路由。
-        if (!SkillFlowProperties.ENABLED || !SkillFlowProperties.CHAT_ROUTING_ENABLED
-                || !chatRuntimeConfigService.resolve(userId, conversationId).getBooleanOrDefault(
+        if (!chatRuntimeConfigService.resolve(userId, conversationId).getBooleanOrDefault(
                         LONG_TASK_ENABLED, false)) {
             return normalChat.stream(request);
         }

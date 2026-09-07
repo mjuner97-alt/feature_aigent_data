@@ -35,18 +35,21 @@ public class FlowQueryService {
     private final ObjectMapper json;
     private final FlowSummaryPromptRenderer promptRenderer;
     private final HtmlReportRenderer reportRenderer;
+    private final FlowCompletionService completionService;
     private final FlowTemplateEngine templates = new FlowTemplateEngine();
     /** 报告根目录(${skill.job.base-dir}),用于报告文件定位与越权防护。 */
     private final Path reportRoot;
 
     public FlowQueryService(SkillFlowMapper mapper, SkillDependencyMetricMapper metrics,
                             ObjectMapper json, SkillStorageProperties storage,
-                            FlowSummaryPromptRenderer promptRenderer, HtmlReportRenderer reportRenderer) {
+                            FlowSummaryPromptRenderer promptRenderer, HtmlReportRenderer reportRenderer,
+                            FlowCompletionService completionService) {
         this.mapper = mapper;
         this.metrics = metrics;
         this.json = json;
         this.promptRenderer = promptRenderer;
         this.reportRenderer = reportRenderer;
+        this.completionService = completionService;
         this.reportRoot = Paths.get(storage.getJobReportDir()).normalize().toAbsolutePath();
     }
 
@@ -112,18 +115,33 @@ public class FlowQueryService {
         return mapper.selectNotifications(id);
     }
 
-    /** 读取 HTML 报告文件:解析后强制限制在 本人目录 内,防路径穿越读他人文件。 */
-    public Resource report(Long id, String userId) {
-        SkillFlowExecution e = readable(id);
-        if (e.getReportPath() == null || e.getReportPath().isBlank()) {
-            throw new IllegalStateException("FlowReportNotFound: " + id);
+    /** 读取 HTML 报告；终态执行的文件丢失时，使用已落库的节点结果即时重建。 */
+    public synchronized Resource report(Long id, String userId) {
+        SkillFlowExecution e = requireOwner(id, userId);
+        Path report = resolveReportPath(e);
+        if (report == null || !Files.isRegularFile(report)) {
+            if (!e.getStatus().terminal()) {
+                throw new IllegalStateException("FlowReportNotFound: " + id);
+            }
+            FlowCompletionService.Summary summary = completionService.summarize(
+                    e, mapper.selectNodeExecutions(e.getId()));
+            e.setSummaryJson(summary.summaryJson());
+            e.setReportPath(summary.reportPath());
+            mapper.updateExecution(e);
+            report = resolveReportPath(e);
         }
-        Path expectedUserRoot = reportRoot.resolve(e.getTriggerUserId()).normalize();
-        Path report = reportRoot.resolve(e.getReportPath()).normalize().toAbsolutePath();
-        if (!report.startsWith(expectedUserRoot) || !Files.isRegularFile(report)) {
+        if (report == null || !Files.isRegularFile(report)) {
             throw new IllegalStateException("FlowReportNotFound: " + id);
         }
         return new FileSystemResource(report);
+    }
+
+    /** 解析报告路径，并强制限制在当前执行用户目录内，防止路径穿越。 */
+    private Path resolveReportPath(SkillFlowExecution e) {
+        if (e.getReportPath() == null || e.getReportPath().isBlank()) return null;
+        Path expectedUserRoot = reportRoot.resolve(e.getTriggerUserId()).normalize();
+        Path report = reportRoot.resolve(e.getReportPath()).normalize().toAbsolutePath();
+        return report.startsWith(expectedUserRoot) ? report : null;
     }
 
     /** 取执行记录并校验:仅触发用户本人可读。 */
@@ -143,6 +161,7 @@ public class FlowQueryService {
     private ExecutionDto dto(SkillFlowExecution e) {
         List<SkillFlowNodeExecution> nodes = mapper.selectNodeExecutions(e.getId());
         return new ExecutionDto(e.getId(), e.getFlowId(), e.getFlowName(), e.getFlowCode(), e.getStatus().name(),
+                e.getTriggerType() == null ? null : e.getTriggerType().name(),
                 e.getTriggerUserId(), e.getOriginalQuestion(), e.getDataDate(), e.getRequiredMetricCount(),
                 e.getReadyMetricCount(), nodes.size(), (int) nodes.stream().filter(n -> n.getStatus().terminal()).count(),
                 e.getSummaryQuestionTemplateSnapshot(), renderedSummaryQuestion(e, nodes),
@@ -208,6 +227,7 @@ public class FlowQueryService {
 
     /** 执行记录列表/详情返回体。 */
     public record ExecutionDto(Long id, Long flowId, String flowName, String flowCode, String status,
+                               String triggerType,
                                String triggerUserId, String originalQuestion, LocalDate dataDate,
                                Integer requiredMetricCount, Integer readyMetricCount,
                                Integer totalNodeCount, Integer completedNodeCount,
