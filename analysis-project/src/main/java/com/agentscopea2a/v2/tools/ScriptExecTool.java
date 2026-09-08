@@ -137,27 +137,20 @@ public class ScriptExecTool {
 
     @Tool(
             name = "script_exec",
-            description = "执行预注册的 Python 指标计算脚本 (script_registry 表内注册). "
-                    + "在 plan-b 容器内同进程 fork python3, 无 ssh/docker 远端往返. "
-                    + "脚本内部完成 SQL 取数 + pandas 算指标, 一次调用拿到全部数字. "
-                    + "先用 script_list 查可用 script_id. "
-                    + "替代 sql_registry_exec + python_exec 两步走, 也替代 wide_table_query + python_exec 两步走.")
+            description = "执行预注册指标脚本。scriptId 来自 tool_index，参数以 toolMetaInfo 为准。")
     public ToolResultBlock scriptExec(
             @ToolParam(
                     name = "scriptId",
-                    description = "预注册脚本 ID, 如 q2_1_metrics_by_dept_version. "
-                            + "可用 script_id 见 script_list 返回")
+                    description = "tool_index 返回的脚本工具 ID")
                     String scriptId,
             @ToolParam(
                     name = "params",
-                    description = "脚本参数 JSON 对象, 如 {\"dept\":\"杭州开发二部\",\"version\":\"2026年7月份版本\"}. "
-                            + "参数名必须在 params_schema 内 (多余参数会被拒执行防注入). "
-                            + "参数名 + 类型见 script_list 返回",
+                    description = "可选；参数以 toolMetaInfo 为准",
                     required = false)
                     Map<String, Object> params) {
 
         if (scriptId == null || scriptId.isBlank()) {
-            return ToolResultBlock.text("script_exec 拒绝执行: scriptId 为空. 先调 script_list 查可用 script_id");
+            return ToolResultBlock.text("script_exec 拒绝执行: scriptId 不能为空，请先调用 tool_index");
         }
         if (WEEKLY_BUSINESS_MOCK_ID.equals(scriptId)) {
             return ToolResultBlock.text(formatWeeklyBusinessMock(params));
@@ -176,8 +169,7 @@ public class ScriptExecTool {
                     + e.getClass().getSimpleName() + ": " + e.getMessage());
         }
         if (entry == null) {
-            return ToolResultBlock.text("script_exec 拒绝执行: script_id='" + scriptId
-                    + "' 不存在或已禁用 (enabled=0). 先调 script_list 查可用 script_id");
+            return ToolResultBlock.text("script_exec 拒绝执行: scriptId 不存在或不可用");
         }
 
         String scriptPath = entry.getScriptPath();

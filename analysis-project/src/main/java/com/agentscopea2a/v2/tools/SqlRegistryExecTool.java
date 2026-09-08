@@ -57,7 +57,7 @@ import org.springframework.jdbc.core.namedparam.NamedParameterUtils;
  * <ul>
  *   <li>简单等值查询 (WHERE col=val) -> 走 wide_table_query / clickhouse_query</li>
  *   <li>等值子查询 (WHERE col=(SELECT MAX...)) -> 走 wide_table_query + subqueryFilters</li>
- *   <li>复杂聚合/JOIN/CASE WHEN/窗口函数 -> 走 sql_list -> sql_registry_exec</li>
+ *   <li>复杂聚合/JOIN/CASE WHEN/窗口函数 -> 走 tool_index -> toolMetaInfo -> sql_registry_exec</li>
  * </ul>
  *
  * <p><b>SQL 注入防护 (三层):</b>
@@ -143,34 +143,25 @@ public class SqlRegistryExecTool {
 
     @Tool(
             name = "sql_registry_exec",
-            description = "通过 sql_id 执行预注册 SQL (业务方/DBA 预审的复杂 SQL: GROUP BY/CASE WHEN/JOIN/窗口函数). "
-                    + "先用 sql_list 查可用 sql_id 再传参. "
-                    + "返回 markdown 表 (>=4 行时自动落 CSV artifact + 预览). "
-                    + "传 downloadFilename 则额外返回 CSV 下载短链；referenceOnly=true 时只返回 resultRef，不把明细送入模型. "
-                    + "简单等值查询走 wide_table_query / clickhouse_query, 复杂聚合走本工具.")
+            description = "执行预注册 SQL。sqlId 来自 tool_index，参数以 toolMetaInfo 为准。")
     public ToolResultBlock sqlRegistryExec(
             @ToolParam(
                     name = "sqlId",
-                    description = "预注册 SQL 的 ID, 如 req_sign_status_by_item / trace_recent_stats_by_user. "
-                            + "可用 sql_id 见 sql_list 返回")
+                    description = "tool_index 返回的 SQL 工具 ID")
                     String sqlId,
             @ToolParam(
                     name = "params",
-                    description = "SQL 模板参数, JSON 对象, 如 {\"limit\":100, \"userId\":\"alice\"}. "
-                            + "参数名必须在 params_schema 内 (多余参数会被拒执行防注入). "
-                            + "参数名 + 类型见 sql_list 返回",
+                    description = "可选；参数以 toolMetaInfo 为准",
                     required = false)
                     Map<String, Object> params,
             @ToolParam(
                     name = "downloadFilename",
-                    description = "可选. 传了则在结果末尾附 CSV 下载短链 (内容落 url_shortener 表, 跨会话清理安全). "
-                            + "如 q2_1_杭州开发二部.csv. 不传则不生成 (默认行为不变). "
-                            + "用户明确要导出/下载时才传, 只问数据不传",
+                    description = "可选；导出 CSV 时指定文件名",
                     required = false)
                     String downloadFilename,
             @ToolParam(
                     name = "referenceOnly",
-                    description = "可选。大结果需交给 presentation_render 时传 true，只返回 resultRef、列名和行数，不返回 Markdown 明细",
+                    description = "可选；true 时仅返回结果引用",
                     required = false)
                     Boolean referenceOnly) {
 
@@ -192,7 +183,7 @@ public class SqlRegistryExecTool {
     public QueryResult executeStructured(String sqlId, Map<String, Object> params) {
 
         if (sqlId == null || sqlId.isBlank()) {
-            throw new IllegalArgumentException("sql_registry_exec 拒绝执行: sqlId 为空. 先调 sql_list 查可用 sql_id");
+            throw new IllegalArgumentException("sql_registry_exec 拒绝执行: sqlId 不能为空，请先调用 tool_index");
         }
         if (registryMapper == null) {
             throw new IllegalStateException("sql_registry_exec 不可用: registryMapper 未注入 (检查 SqlRegistryMapper bean)");
@@ -208,8 +199,7 @@ public class SqlRegistryExecTool {
                     + e.getClass().getSimpleName() + ": " + e.getMessage(), e);
         }
         if (entry == null) {
-            throw new IllegalArgumentException("sql_registry_exec 拒绝执行: sql_id='" + sqlId
-                    + "' 不存在或已禁用 (enabled=0). 先调 sql_list 查可用 sql_id");
+            throw new IllegalArgumentException("sql_registry_exec 拒绝执行: sqlId 不存在或不可用");
         }
 
         String template = entry.getSqlTemplate();

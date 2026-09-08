@@ -7,6 +7,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public class ContextBudgetProperties {
     private boolean enabled = true;
     private int maxInputTokens = 50000;
+    private int modelContextTokens = 64000;
     private int reserveOutputTokens = 8000;
     private double warnRatio = 0.80d;
     private double hardRatio = 1.00d;
@@ -16,8 +17,13 @@ public class ContextBudgetProperties {
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public int getMaxInputTokens() { return maxInputTokens; }
     public void setMaxInputTokens(int maxInputTokens) { this.maxInputTokens = maxInputTokens; }
+    public int getModelContextTokens() { return modelContextTokens; }
+    public void setModelContextTokens(int modelContextTokens) { this.modelContextTokens = modelContextTokens; }
     public int getReserveOutputTokens() { return reserveOutputTokens; }
     public void setReserveOutputTokens(int reserveOutputTokens) { this.reserveOutputTokens = reserveOutputTokens; }
+    public int effectiveInputBudget() {
+        return Math.max(1, Math.min(maxInputTokens, modelContextTokens - reserveOutputTokens));
+    }
     public double getWarnRatio() { return warnRatio; }
     public void setWarnRatio(double warnRatio) { this.warnRatio = warnRatio; }
     public double getHardRatio() { return hardRatio; }

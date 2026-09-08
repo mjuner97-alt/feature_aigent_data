@@ -120,6 +120,7 @@ public class BuiltinSkillRegistrar implements CommandLineRunner {
         int inserted = 0;
         int skipped = 0;
         int failed = 0;
+        java.util.Set<String> builtinNames = new java.util.HashSet<>();
         for (Path skillFile : skillFiles) {
             try {
                 ParsedFrontmatter pf = parseFrontmatter(skillFile);
@@ -128,6 +129,7 @@ public class BuiltinSkillRegistrar implements CommandLineRunner {
                     failed++;
                     continue;
                 }
+                builtinNames.add(pf.name);
                 Optional<SkillEntry> existing = indexRepo.findByName(pf.name);
                 if (existing.isEmpty()) {
                     indexRepo.upsertOnSave(pf.name, pf.description, SkillEntry.SOURCE_AUTO_SYNTHESIZED);
@@ -144,9 +146,75 @@ public class BuiltinSkillRegistrar implements CommandLineRunner {
                 failed++;
             }
         }
+        int tombstoned = cleanupRemovedSkills(builtinNames);
         log.info(
-                "BuiltinSkillRegistrar done: inserted={}, skipped={}, failed={}, total={}",
-                inserted, skipped, failed, skillFiles.size());
+                "BuiltinSkillRegistrar done: inserted={}, skipped={}, failed={}, tombstoned={}, total={}",
+                inserted, skipped, failed, tombstoned, skillFiles.size());
+    }
+
+    /**
+     * Tombstone cleanup for removed workspace skills. WorkspaceMaterializer and this registrar
+     * only ADD/UPDATE rows, so deleting a SKILL.md (e.g. the retired {@code tool_index} wrapper)
+     * previously left a stale {@code skill_index} row plus its {@code skill_routing_metadata},
+     * keeping the removed skill visible to LLM skill routing.
+     *
+     * <p>Only {@code source='auto_synthesized'} rows whose name has no SKILL.md under
+     * {@code skills/}, {@code skills-auto/} or {@code skills-user/} are removed — user-facing
+     * 广场 records and remotely stored user skills are never touched here.
+     */
+    private int cleanupRemovedSkills(java.util.Set<String> builtinNames) {
+        try {
+            java.util.Set<String> liveNames = new java.util.HashSet<>(builtinNames);
+            Path workspaceRoot = skillsDir.getParent();
+            for (String dir : new String[] {"skills-auto", "skills-user"}) {
+                scanSkillNames(workspaceRoot.resolve(dir), liveNames);
+            }
+            int removed = 0;
+            for (String name : indexRepo.listNames()) {
+                Optional<SkillEntry> entry = indexRepo.findByName(name);
+                if (entry.isEmpty() || !SkillEntry.SOURCE_AUTO_SYNTHESIZED.equals(entry.get().source())) {
+                    continue;
+                }
+                if (!liveNames.contains(name)) {
+                    indexRepo.deleteByName(name);
+                    routingMetadataRepository.delete(name);
+                    removed++;
+                    log.info("Tombstoned removed skill '{}': deleted skill_index and skill_routing_metadata rows", name);
+                }
+            }
+            return removed;
+        } catch (Exception ex) {
+            log.warn("Skill tombstone cleanup failed (non-fatal): {}", ex.getMessage());
+            return 0;
+        }
+    }
+
+    private static void scanSkillNames(Path dir, java.util.Set<String> names) {
+        if (!Files.isDirectory(dir)) {
+            return;
+        }
+        try (var stream = Files.walk(dir, 2)) {
+            stream.filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().equals("SKILL.md"))
+                    .forEach(p -> {
+                        Matcher m = NAME_FIELD.matcher(readHead(p));
+                        if (m.find()) {
+                            names.add(m.group(1).trim());
+                        }
+                    });
+        } catch (IOException e) {
+            log.debug("Scanning {} failed: {}", dir, e.getMessage());
+        }
+    }
+
+    private static String readHead(Path skillFile) {
+        try {
+            String content = Files.readString(skillFile, StandardCharsets.UTF_8);
+            Matcher fm = FRONTMATTER.matcher(content);
+            return fm.find() && fm.start() == 0 ? fm.group(1) : content;
+        } catch (IOException e) {
+            return "";
+        }
     }
 
     private List<Path> scanSkillFiles() {
@@ -190,9 +258,8 @@ public class BuiltinSkillRegistrar implements CommandLineRunner {
             return;
         }
         SkillRoutingMetadata metadata = new SkillRoutingMetadata(
-                frontmatter.name, shortSummary(frontmatter.description), generatedAliases(frontmatter.name),
-                generatedKeywords(frontmatter.name), List.of(), List.of(),
-                List.of(), 0, true, null);
+                frontmatter.name, shortSummary(frontmatter.description), generatedKeywords(frontmatter.name),
+                List.of(), List.of(), List.of(), "", 0, true, null);
         if (routingMetadataRepository.upsert(metadata)) {
             log.info("Created active routing metadata for builtin skill '{}' (name-derived, unconfigured)",
                     frontmatter.name);
@@ -211,16 +278,6 @@ public class BuiltinSkillRegistrar implements CommandLineRunner {
     private static String shortSummary(String description) {
         if (description == null) return "";
         return description.length() <= 500 ? description : description.substring(0, 500);
-    }
-
-    private static List<String> generatedAliases(String name) {
-        if (name == null || name.isBlank()) return List.of();
-        LinkedHashSet<String> result = new LinkedHashSet<>();
-        result.add(name);
-        result.add(name.replace('_', '-'));
-        result.add(name.replace("_", ""));
-        result.removeIf(String::isBlank);
-        return List.copyOf(result);
     }
 
     private static List<String> generatedKeywords(String name) {

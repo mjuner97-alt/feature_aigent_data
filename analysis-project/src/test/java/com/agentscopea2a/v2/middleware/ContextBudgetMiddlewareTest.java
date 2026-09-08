@@ -31,10 +31,22 @@ class ContextBudgetMiddlewareTest {
     void hardBudgetRejectsWhenSingleRequestCannotBeCompacted() {
         ContextBudgetProperties props = new ContextBudgetProperties();
         props.setMaxInputTokens(100);
+        props.setModelContextTokens(1000);
+        props.setReserveOutputTokens(900);
         ContextBudgetMiddleware middleware = new ContextBudgetMiddleware(props, null);
         ReasoningInput input = inputWithChars(1000);
         assertThrows(ContextBudgetMiddleware.ContextBudgetExceededException.class,
                 () -> middleware.onReasoning(null, null, input, ignored -> reactor.core.publisher.Flux.empty()).blockLast());
+    }
+
+    @Test
+    void outputReserveReducesEffectiveInputBudget() {
+        ContextBudgetProperties props = new ContextBudgetProperties();
+        props.setMaxInputTokens(50_000);
+        props.setModelContextTokens(32_000);
+        props.setReserveOutputTokens(8_000);
+
+        org.junit.jupiter.api.Assertions.assertEquals(24_000, props.effectiveInputBudget());
     }
 
     @Test

@@ -17,10 +17,11 @@ async function ensureOk(res: Response, action: string): Promise<void> {
   }
 }
 
-export async function listSkillRouting(keyword?: string, active?: boolean): Promise<SkillRoutingMetadata[]> {
+export async function listSkillRouting(keyword?: string, active?: boolean, mine = false): Promise<SkillRoutingMetadata[]> {
   const query = new URLSearchParams();
   if (keyword) query.set('keyword', keyword);
   if (active != null) query.set('active', String(active));
+  if (mine) query.set('mine', 'true');
   const res = await fetch(`${BASE}?${query}`, { headers: headers() });
   await ensureOk(res, '加载 Skill 配置');
   return res.json();

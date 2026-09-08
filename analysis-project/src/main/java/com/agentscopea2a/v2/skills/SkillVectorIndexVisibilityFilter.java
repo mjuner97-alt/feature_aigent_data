@@ -32,7 +32,7 @@ import java.util.stream.Collectors;
 /**
  * Metadata-driven {@link SkillVisibilityFilter} that narrows the skill catalogue the
  * LLM sees to the Top-K candidates routed by {@link SkillCandidateSelector} from
- * {@code skill_routing_metadata} (aliases/keywords/tags/priority), with capability
+ * {@code skill_routing_metadata} (keywords/tags/priority), with capability
  * coarse recall via {@link CapabilityRouter}.
  *
  * <p>Availability rules (routing must never make skills unreachable):
@@ -43,7 +43,7 @@ import java.util.stream.Collectors;
  *       name-derived draft row from the registrar, so they route immediately.</li>
  *   <li>Domain tags are hard gates. Their values are discovered from routing metadata:
  *       a tagged Skill is visible only when the question contains one of its domains,
- *       unless the user explicitly names that Skill or one of its aliases.</li>
+ *       unless the user explicitly names that Skill.</li>
  *   <li>Skills explicitly disabled by an administrator ({@code active=false}) stay
  *       hidden - "no row" and "disabled row" are distinguished via
  *       {@link SkillRoutingMetadataRepository#findAll()}.</li>
@@ -62,12 +62,13 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
     private final boolean enabled;
     private final CapabilityRepository capabilityRepository;
     private final CapabilityRouter capabilityRouter;
+    private final SkillUsageResolver skillUsageResolver;
 
     public SkillVectorIndexVisibilityFilter(
             SkillRoutingMetadataRepository routingMetadataRepository,
             SkillCandidateSelector candidateSelector,
             boolean enabled) {
-        this(routingMetadataRepository, candidateSelector, enabled, null, null);
+        this(routingMetadataRepository, candidateSelector, enabled, null, null, null);
     }
 
     public SkillVectorIndexVisibilityFilter(
@@ -76,11 +77,22 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
             boolean enabled,
             CapabilityRepository capabilityRepository,
             CapabilityRouter capabilityRouter) {
+        this(routingMetadataRepository, candidateSelector, enabled, capabilityRepository, capabilityRouter, null);
+    }
+
+    public SkillVectorIndexVisibilityFilter(
+            SkillRoutingMetadataRepository routingMetadataRepository,
+            SkillCandidateSelector candidateSelector,
+            boolean enabled,
+            CapabilityRepository capabilityRepository,
+            CapabilityRouter capabilityRouter,
+            SkillUsageResolver skillUsageResolver) {
         this.routingMetadataRepository = routingMetadataRepository;
         this.candidateSelector = candidateSelector;
         this.enabled = enabled;
         this.capabilityRepository = capabilityRepository;
         this.capabilityRouter = capabilityRouter;
+        this.skillUsageResolver = skillUsageResolver;
     }
 
     @Override
@@ -90,6 +102,19 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
         }
         if (!enabled || ctx == null) {
             return all;
+        }
+        if (skillUsageResolver != null) {
+            String userId = ctx.getUserId();
+            if (userId == null || userId.isBlank()) return List.of();
+            try {
+                Set<String> usable = skillUsageResolver.findUsableRetrievalNames(userId);
+                if (usable == null || usable.isEmpty()) return List.of();
+                all = all.stream().filter(skill -> usable.contains(skill.getName())).toList();
+                if (all.isEmpty()) return List.of();
+            } catch (RuntimeException e) {
+                log.warn("Skill usage resolution failed; hiding all Skills", e);
+                return List.of();
+            }
         }
         String question = ctx.get("lastQuestion", String.class);
         if (question == null || question.isBlank()) {
@@ -102,8 +127,7 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
         }
         List<SkillRoutingMetadata> activeMetadata = allMetadata.stream().filter(SkillRoutingMetadata::active).toList();
         List<SkillRoutingMetadata> metadata = activeMetadata;
-        boolean explicitSkill = activeMetadata.stream().anyMatch(m -> contains(question, m.skillName())
-                || (m.aliases() != null && m.aliases().stream().anyMatch(a -> contains(question, a))));
+        boolean explicitSkill = activeMetadata.stream().anyMatch(m -> contains(question, m.skillName()));
         if (!explicitSkill) {
             Set<String> requestedDomains = matchedDomains(question, activeMetadata);
             if (!requestedDomains.isEmpty()) {

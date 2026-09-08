@@ -5,11 +5,10 @@ import java.util.List;
 /** Editable routing fields; Skill content is intentionally excluded. */
 public record SkillRoutingMetadataInput(
         String shortSummary,
-        List<String> aliases,
         List<String> keywords,
-        List<String> metricTags,
         List<String> domainTags,
-        List<String> dataSourceTags,
+        List<String> topicTags,
+        List<String> metricTags,
         int priority,
         boolean active) {
 }

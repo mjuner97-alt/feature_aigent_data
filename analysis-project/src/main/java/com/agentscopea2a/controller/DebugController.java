@@ -73,19 +73,19 @@ public class DebugController {
     private static final int PREVIEW_CHARS = 1200;
 
     private final Path workspace;
-    private final MemoryDigestionService digestionService;
+    private final ObjectProvider<MemoryDigestionService> digestionServiceProvider;
     private final ObjectProvider<MysqlMemoryStore> storeProvider;
     private final ObjectProvider<com.agentscopea2a.v2.artifact.ArtifactSweeper> sweeperProvider;
     private final PermissionModeHelper permissionModeHelper;
 
     public DebugController(
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
-            MemoryDigestionService digestionService,
+            ObjectProvider<MemoryDigestionService> digestionServiceProvider,
             ObjectProvider<MysqlMemoryStore> storeProvider,
             ObjectProvider<com.agentscopea2a.v2.artifact.ArtifactSweeper> sweeperProvider,
             PermissionModeHelper permissionModeHelper) {
         this.workspace = Paths.get(workspacePath).toAbsolutePath();
-        this.digestionService = digestionService;
+        this.digestionServiceProvider = digestionServiceProvider;
         this.storeProvider = storeProvider;
         this.sweeperProvider = sweeperProvider;
         this.permissionModeHelper = permissionModeHelper;
@@ -189,6 +189,13 @@ public class DebugController {
         Map<String, Object> out = new HashMap<>();
         long start = System.currentTimeMillis();
         try {
+            MemoryDigestionService digestionService = digestionServiceProvider.getIfAvailable();
+            if (digestionService == null) {
+                out.put("status", "error");
+                out.put("message", "memory digestion disabled (harness.a2a.memory.digestion.enabled=false)");
+                out.put("timestamp", java.time.LocalDateTime.now().toString());
+                return out;
+            }
             digestionService.digest();
             out.put("status", "ok");
             out.put("elapsedMs", System.currentTimeMillis() - start);

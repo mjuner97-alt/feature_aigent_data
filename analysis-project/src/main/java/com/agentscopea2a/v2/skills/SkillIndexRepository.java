@@ -86,6 +86,40 @@ public class SkillIndexRepository {
         return Optional.empty();
     }
 
+    /** All indexed names, used by the builtin registrar to tombstone rows whose files are gone. */
+    public java.util.List<String> listNames() {
+        ensureTable();
+        String sql = "SELECT name FROM skill_index";
+        java.util.List<String> names = new java.util.ArrayList<>();
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql);
+                ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                names.add(rs.getString(1));
+            }
+        } catch (SQLException e) {
+            log.warn("listNames failed: {}", e.getMessage());
+        }
+        return names;
+    }
+
+    /**
+     * Removes an index row for a skill whose SKILL.md no longer exists on disk.
+     * Only invoked by the builtin registrar's tombstone cleanup; file deletion is the
+     * authoritative signal, this keeps the runtime index from resurrecting removed skills.
+     */
+    public int deleteByName(String name) {
+        ensureTable();
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement("DELETE FROM skill_index WHERE name = ?")) {
+            ps.setString(1, name);
+            return ps.executeUpdate();
+        } catch (SQLException e) {
+            log.warn("deleteByName({}) failed: {}", name, e.getMessage());
+            return 0;
+        }
+    }
+
     /**
      * Insert-or-bump-version. Returns the new version number that the caller should embed
      * into the SKILL.md frontmatter. Atomic via {@code ON DUPLICATE KEY UPDATE}.

@@ -63,9 +63,9 @@ maxIters: 3
 - `# <技能中文名>` + 一句话场景说明 (什么类型的问题会触发此技能)
 - `## 父智能体派单逻辑` - 意图识别 + 参数提取 + 派单决策 + agent_spawn 入参 JSON 示例
 - `## 子智能体处理步骤` - 每步包含工具名 + 入参 JSON 示例 + 返回结果格式
-  - 步骤 1: 查阅 tool_index 选 toolId
+  - 步骤 1: 调 `tool_index(topicTags, metricTags)` 按规范主题/指标选 toolId
   - 步骤 2: (可选) 调 toolMetaInfo 获取参数定义
-  - 步骤 3: 调 router_tool 执行查询
+  - 步骤 3: 按 executeWith 调用执行器 (API 工具走 router_tool, SQL 走 sql_registry_exec, 脚本走 script_exec)
 - `## 调用顺序图` - 例: Supervisor -> 子智能体 -> tool_index -> toolMetaInfo -> router_tool
 - `## 参数标准化约束` - 时间格式转换 / 区域名称匹配 / 数据类型校验规则
 - `## 异常处理` - 工具未找到 / 参数缺失 / 查询超时 / 空结果集 各自处理
@@ -74,5 +74,5 @@ maxIters: 3
 ## 重要规则
 
 - 不要在 content 参数中包含 YAML frontmatter, 系统会自动生成 name/description/version/last_evolved_at
-- 工具名只能用真实名称 (tool_index / toolMetaInfo / router_tool / agent_spawn), 不要使用泛化名称
+- 工具名只能用真实名称 (tool_index / toolMetaInfo / router_tool / sql_registry_exec / script_exec / agent_spawn), 不要使用泛化名称
 - 正文必须 ≥60 行, 每个步骤都要有 JSON 入参示例和返回结果格式

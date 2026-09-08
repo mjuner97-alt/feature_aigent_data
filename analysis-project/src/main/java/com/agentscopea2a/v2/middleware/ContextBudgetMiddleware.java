@@ -66,7 +66,7 @@ public class ContextBudgetMiddleware implements MiddlewareBase {
         log.info("LLM request tools: count={}, names={}", toolNames.size(), toolNames);
         if (!properties.isEnabled()) return next.apply(input);
         ContextSizeSnapshot snapshot = ContextSizeEstimator.estimate(input);
-        int budget = Math.max(1, properties.getMaxInputTokens());
+        int budget = properties.effectiveInputBudget();
         double ratio = snapshot.estimatedInputTokens() / (double) budget;
         ReasoningInput effectiveInput = input;
         if (ratio >= properties.getWarnRatio() && toolResultTruncation != null) {
@@ -106,7 +106,7 @@ public class ContextBudgetMiddleware implements MiddlewareBase {
                 if (!(block instanceof ToolResultBlock result) || result.getName() == null
                         || !artifactTools.contains(result.getName())) continue;
                 String text = extractText(result);
-                if (text.isBlank() || estimateTokens(text.length()) <= maxLatestToolTokens) return input;
+                if (text.isBlank() || ContextSizeEstimator.estimateTextTokens(text) <= maxLatestToolTokens) return input;
                 ArtifactRef ref = artifactStore.saveText(ArtifactContext.from(ctx), result.getName(), text);
                 ToolResultBlock replacement = new ToolResultBlock(result.getId(), result.getName(),
                         List.of(TextBlock.builder().text(result.getName() + " 结果过大，完整内容已保存为 artifact：\n"
@@ -126,10 +126,6 @@ public class ContextBudgetMiddleware implements MiddlewareBase {
         if (result.getOutput() != null) for (ContentBlock block : result.getOutput())
             if (block instanceof TextBlock tb && tb.getText() != null) sb.append(tb.getText());
         return sb.toString();
-    }
-
-    private static int estimateTokens(int chars) {
-        return chars <= 0 ? 0 : (int) Math.ceil(chars / 4.0);
     }
 
     /** Keep the system message and recent turns while preserving the original memory state. */

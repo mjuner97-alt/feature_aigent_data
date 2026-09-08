@@ -137,7 +137,7 @@ public class ToolCallTrackingHook implements Hook, RuntimeContextAware {
             return;
         }
         if (event instanceof PreActingEvent pre) {
-            handlePreActing(pre, collector);
+            handlePreActing(pre, collector, ctx);
         } else if (event instanceof PostActingEvent post) {
             handlePostActing(post, collector, ctx);
         }
@@ -145,7 +145,7 @@ public class ToolCallTrackingHook implements Hook, RuntimeContextAware {
 
     // -------- PreActing: record tool name + input --------
 
-    private void handlePreActing(PreActingEvent event, ToolCallCollector collector) {
+    private void handlePreActing(PreActingEvent event, ToolCallCollector collector, RuntimeContext ctx) {
         ToolUseBlock toolUse = event.getToolUse();
         if (toolUse == null) return;
 
@@ -174,6 +174,19 @@ public class ToolCallTrackingHook implements Hook, RuntimeContextAware {
         log.info("[ToolCallTracking] PostActing tool={} outputLen={} blank={}",
                 toolName, output.length(), output.isBlank());
         if (output.isBlank()) return;
+
+        // Publish the Skill only after the trusted loader returned a non-empty result.
+        // A failed or denied skill load must not affect subsequent tool calls.
+        if ("load_skill_through_path".equals(toolName) && toolUse.getInput() != null
+                && result.getState() != io.agentscope.core.message.ToolResultState.ERROR
+                && result.getState() != io.agentscope.core.message.ToolResultState.DENIED) {
+            Object name = toolUse.getInput().get("name");
+            if (name instanceof String skillName && !skillName.isBlank()
+                    && !"_common".equalsIgnoreCase(skillName.trim())
+                    && !"tool_index".equalsIgnoreCase(skillName.trim())) {
+                ctx.put("activeSkillName", skillName.trim());
+            }
+        }
 
         collector.updateLastL1Output(toolName, output);
         // Also update by toolCallId for live SSE lookup — V2ChatStreamServiceImpl

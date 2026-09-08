@@ -5,6 +5,7 @@ import io.agentscope.core.skill.AgentSkill;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -18,8 +19,8 @@ class SkillVectorIndexVisibilityFilterTest {
     void requestWithoutRegisteredDomainExcludesDomainTaggedSkills() {
         SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
         SkillRoutingMetadata meeting = new SkillRoutingMetadata(
-                "meeting", "meeting", List.of(), List.of(), List.of("达标率"),
-                List.of("例会材料"), List.of(), 0, true, null);
+                "meeting", "meeting", List.of(), List.of("例会材料"), List.of(),
+                List.of("达标率"), "", 0, true, null);
         when(repository.findAll()).thenReturn(List.of(meeting));
         SkillVectorIndexVisibilityFilter filter = new SkillVectorIndexVisibilityFilter(
                 repository, new SkillCandidateSelector(5, 10, 0.65d, 0.10d), true);
@@ -35,11 +36,11 @@ class SkillVectorIndexVisibilityFilterTest {
     void actualRegisteredDomainValueGatesSkillVisibility() {
         SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
         SkillRoutingMetadata weeklyMeeting = new SkillRoutingMetadata(
-                "demo_company_quality", "quality", List.of(), List.of("Q2-1"), List.of("检出率"),
-                List.of("杭研周例会"), List.of(), 0, true, null);
+                "demo_company_quality", "quality", List.of("Q2-1"), List.of("杭研周例会"), List.of(),
+                List.of("检出率"), "", 0, true, null);
         SkillRoutingMetadata ordinary = new SkillRoutingMetadata(
-                "ordinary_quality", "quality", List.of(), List.of("Q2-1"), List.of("检出率"),
-                List.of(), List.of(), 0, true, null);
+                "ordinary_quality", "quality", List.of("Q2-1"), List.of(), List.of(),
+                List.of("检出率"), "", 0, true, null);
         when(repository.findAll()).thenReturn(List.of(weeklyMeeting, ordinary));
         SkillVectorIndexVisibilityFilter filter = new SkillVectorIndexVisibilityFilter(
                 repository, new SkillCandidateSelector(5, 10, 0.65d, 0.10d), true);
@@ -61,8 +62,8 @@ class SkillVectorIndexVisibilityFilterTest {
     void explicitSkillNameOverridesRegisteredDomainGate() {
         SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
         SkillRoutingMetadata weeklyMeeting = new SkillRoutingMetadata(
-                "demo_company_quality", "quality", List.of(), List.of(), List.of(),
-                List.of("杭研周例会"), List.of(), 0, true, null);
+                "demo_company_quality", "quality", List.of(), List.of("杭研周例会"), List.of(),
+                List.of(), "", 0, true, null);
         when(repository.findAll()).thenReturn(List.of(weeklyMeeting));
         SkillVectorIndexVisibilityFilter filter = new SkillVectorIndexVisibilityFilter(
                 repository, new SkillCandidateSelector(5, 10, 0.65d, 0.10d), true);
@@ -78,8 +79,8 @@ class SkillVectorIndexVisibilityFilterTest {
     void unconfiguredSkillIsAlwaysVisible() {
         SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
         SkillRoutingMetadata routed = new SkillRoutingMetadata(
-                "routed", "routed", List.of(), List.of("达标率"), List.of(), List.of(),
-                List.of(), 0, true, null);
+                "routed", "routed", List.of("达标率"), List.of(), List.of(), List.of(),
+                "", 0, true, null);
         when(repository.findAll()).thenReturn(List.of(routed));
         SkillVectorIndexVisibilityFilter filter = new SkillVectorIndexVisibilityFilter(
                 repository, new SkillCandidateSelector(5, 10, 0.65d, 0.10d), true);
@@ -97,10 +98,10 @@ class SkillVectorIndexVisibilityFilterTest {
         SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
         SkillRoutingMetadata disabled = new SkillRoutingMetadata(
                 "disabled", "disabled", List.of(), List.of(), List.of(), List.of(),
-                List.of(), 0, false, null);
+                "", 0, false, null);
         SkillRoutingMetadata routed = new SkillRoutingMetadata(
-                "routed", "routed", List.of(), List.of("达标率"), List.of(), List.of(),
-                List.of(), 0, true, null);
+                "routed", "routed", List.of("达标率"), List.of(), List.of(), List.of(),
+                "", 0, true, null);
         when(repository.findAll()).thenReturn(List.of(disabled, routed));
         SkillVectorIndexVisibilityFilter filter = new SkillVectorIndexVisibilityFilter(
                 repository, new SkillCandidateSelector(5, 10, 0.65d, 0.10d), true);
@@ -112,6 +113,22 @@ class SkillVectorIndexVisibilityFilterTest {
 
         assertTrue(result.stream().anyMatch(s -> s.getName().equals("routed")));
         assertFalse(result.stream().anyMatch(s -> s.getName().equals("disabled")));
+    }
+
+    @Test
+    void usageResolverIsAFailClosedFinalVisibilityGate() {
+        SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
+        when(repository.findAll()).thenReturn(List.of());
+        SkillUsageResolver resolver = mock(SkillUsageResolver.class);
+        when(resolver.findUsableRetrievalNames("u1")).thenReturn(Set.of("allowed"));
+        SkillVectorIndexVisibilityFilter filter = new SkillVectorIndexVisibilityFilter(
+                repository, new SkillCandidateSelector(5, 10, 0.65d, 0.10d), true,
+                null, null, resolver);
+        RuntimeContext context = RuntimeContext.builder().userId("u1").build();
+        context.put("lastQuestion", "查询");
+
+        assertEquals(List.of("allowed"), names(filter.filter(
+                List.of(skill("allowed"), skill("forbidden")), context)));
     }
 
     private static AgentSkill skill(String name) {

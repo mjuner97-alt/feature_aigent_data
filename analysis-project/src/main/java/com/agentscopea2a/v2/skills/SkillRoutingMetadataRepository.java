@@ -1,5 +1,7 @@
 package com.agentscopea2a.v2.skills;
 
+import com.agentscopea2a.v2.toolrouting.ToolRoutingTagDictionary;
+import com.agentscopea2a.v2.toolrouting.ToolRoutingTagType;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
@@ -26,6 +28,7 @@ public class SkillRoutingMetadataRepository {
     private final DataSource dataSource;
     private final ObjectMapper objectMapper;
     private final long cacheTtlMillis;
+    private final ToolRoutingTagDictionary tagDictionary;
     private volatile boolean tableEnsured;
     private volatile List<SkillRoutingMetadata> cachedAll;
     private volatile long cachedAt;
@@ -35,9 +38,19 @@ public class SkillRoutingMetadataRepository {
     }
 
     public SkillRoutingMetadataRepository(DataSource dataSource, ObjectMapper objectMapper, long cacheTtlMillis) {
+        this(dataSource, objectMapper, cacheTtlMillis, null);
+    }
+
+    /**
+     * Uses the unified routing dictionary when tool routing is enabled; callers that do not
+     * participate in the unified rollout retain the legacy free-form metadata behavior.
+     */
+    public SkillRoutingMetadataRepository(DataSource dataSource, ObjectMapper objectMapper, long cacheTtlMillis,
+                                          ToolRoutingTagDictionary tagDictionary) {
         this.dataSource = dataSource;
         this.objectMapper = objectMapper;
         this.cacheTtlMillis = cacheTtlMillis;
+        this.tagDictionary = tagDictionary;
     }
 
     @PostConstruct
@@ -66,8 +79,8 @@ public class SkillRoutingMetadataRepository {
                 && System.currentTimeMillis() - cachedAt < cacheTtlMillis) {
             return snapshot;
         }
-        String sql = "SELECT skill_name, short_summary, aliases, keywords, metric_tags, domain_tags, "
-                + "data_source_tags, priority, active, updated_at "
+        String sql = "SELECT skill_name, short_summary, keywords, domain_tags, topic_tags, metric_tags, maintainer AS creator, "
+                + "priority, active, updated_at "
                 + "FROM skill_routing_metadata ORDER BY priority DESC, skill_name";
         List<SkillRoutingMetadata> result = new ArrayList<>();
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql);
@@ -90,8 +103,8 @@ public class SkillRoutingMetadataRepository {
 
     public Optional<SkillRoutingMetadata> findBySkillName(String skillName) {
         ensureTable();
-        String sql = "SELECT skill_name, short_summary, aliases, keywords, metric_tags, domain_tags, "
-                + "data_source_tags, priority, active, updated_at "
+        String sql = "SELECT skill_name, short_summary, keywords, domain_tags, topic_tags, metric_tags, maintainer AS creator, "
+                + "priority, active, updated_at "
                 + "FROM skill_routing_metadata WHERE skill_name = ?";
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, skillName);
@@ -118,18 +131,50 @@ public class SkillRoutingMetadataRepository {
         }
     }
 
+    /** Resolves the immutable creator from the Skill gallery ownership field. */
+    public String creatorForSkill(String skillName) {
+        if ("_common".equalsIgnoreCase(skillName) || "common".equalsIgnoreCase(skillName)) {
+            return "通用";
+        }
+        String sql = "SELECT owner_user_id FROM skill_manage WHERE retrieval_name = ? "
+                + "AND status = 'ACTIVE' AND deleted_at IS NULL LIMIT 1";
+        try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, skillName);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return "通用";
+                String owner = rs.getString("owner_user_id");
+                return owner == null || owner.isBlank() ? "通用" : owner;
+            }
+        } catch (SQLException e) {
+            log.warn("creatorForSkill({}) failed: {}", skillName, e.getMessage());
+            return "";
+        }
+    }
+
     /** Lists active, non-deleted Skills from skill_manage with optional routing metadata. */
     public List<SkillRoutingMetadataView> findAllWithSkillManage(String keyword, Boolean active, int limit, int offset) {
+        return findAllWithSkillManage(keyword, active, false, null, limit, offset);
+    }
+
+    public List<SkillRoutingMetadataView> findAllWithSkillManage(String keyword, Boolean active, boolean mine,
+                                                                  String userId, int limit, int offset) {
         ensureTable();
-        StringBuilder sql = new StringBuilder("SELECT x.name, x.description, r.short_summary, r.aliases, r.keywords, r.metric_tags, r.domain_tags, r.data_source_tags, r.priority, r.active, r.updated_at, r.skill_name IS NOT NULL configured FROM (SELECT s.retrieval_name AS name, s.description FROM skill_manage s WHERE s.retrieval_name IS NOT NULL AND s.status='ACTIVE' AND s.deleted_at IS NULL UNION SELECT i.name, i.description FROM skill_index i WHERE i.status='active' AND NOT EXISTS (SELECT 1 FROM skill_manage s2 WHERE s2.retrieval_name=i.name AND s2.status='ACTIVE' AND s2.deleted_at IS NULL)) x LEFT JOIN skill_routing_metadata r ON r.skill_name=x.name WHERE 1=1");
-        if (keyword != null && !keyword.isBlank()) sql.append(" AND (LOWER(x.name) LIKE ? OR LOWER(COALESCE(x.description,'')) LIKE ?)");
+        String creatorExpr = "CASE WHEN x.owner_user_id IS NULL OR TRIM(x.owner_user_id) = '' THEN '通用' ELSE x.owner_user_id END";
+        StringBuilder sql = new StringBuilder("SELECT x.name, x.description, r.short_summary, r.keywords, r.domain_tags, r.topic_tags, r.metric_tags, "
+                + creatorExpr + " AS creator, r.priority, r.active, r.updated_at, r.skill_name IS NOT NULL configured FROM (SELECT s.retrieval_name AS name, s.description, s.owner_user_id FROM skill_manage s WHERE s.retrieval_name IS NOT NULL AND s.status='ACTIVE' AND s.deleted_at IS NULL UNION SELECT i.name, i.description, NULL AS owner_user_id FROM skill_index i WHERE i.status='active' AND NOT EXISTS (SELECT 1 FROM skill_manage s2 WHERE s2.retrieval_name=i.name AND s2.status='ACTIVE' AND s2.deleted_at IS NULL)) x LEFT JOIN skill_routing_metadata r ON r.skill_name=x.name WHERE 1=1");
+        if (keyword != null && !keyword.isBlank()) sql.append(" AND (LOWER(x.name) LIKE ? OR LOWER(COALESCE(x.description,'')) LIKE ? OR LOWER(" + creatorExpr + ") LIKE ?)");
         if (active != null) sql.append(" AND COALESCE(r.active, TRUE)=?");
+        if (mine) {
+            if (userId == null || userId.isBlank()) return List.of();
+            sql.append(" AND LOWER(" + creatorExpr + ") = ?");
+        }
         sql.append(" ORDER BY x.name LIMIT ? OFFSET ?");
         List<SkillRoutingMetadataView> result = new ArrayList<>();
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql.toString())) {
             int p = 1;
-            if (keyword != null && !keyword.isBlank()) { String q = "%" + keyword.trim().toLowerCase() + "%"; ps.setString(p++, q); ps.setString(p++, q); }
+            if (keyword != null && !keyword.isBlank()) { String q = "%" + keyword.trim().toLowerCase() + "%"; ps.setString(p++, q); ps.setString(p++, q); ps.setString(p++, q); }
             if (active != null) ps.setBoolean(p++, active);
+            if (mine) ps.setString(p++, userId == null ? "" : userId.trim().toLowerCase());
             ps.setInt(p++, Math.max(1, Math.min(limit, 200))); ps.setInt(p, Math.max(0, offset));
             try (ResultSet rs = ps.executeQuery()) { while (rs.next()) result.add(mapView(rs)); }
         } catch (SQLException e) { log.warn("findAllWithSkillManage failed: {}", e.getMessage()); }
@@ -139,7 +184,7 @@ public class SkillRoutingMetadataRepository {
     /** Loads one configurable Skill from skill_manage with optional routing metadata. */
     public Optional<SkillRoutingMetadataView> findOneWithSkillManage(String skillName) {
         ensureTable();
-        String sql = "SELECT x.name, x.description, r.short_summary, r.aliases, r.keywords, r.metric_tags, r.domain_tags, r.data_source_tags, r.priority, r.active, r.updated_at, r.skill_name IS NOT NULL configured FROM (SELECT s.retrieval_name AS name, s.description FROM skill_manage s WHERE s.retrieval_name IS NOT NULL AND s.status='ACTIVE' AND s.deleted_at IS NULL UNION SELECT i.name, i.description FROM skill_index i WHERE i.status='active' AND NOT EXISTS (SELECT 1 FROM skill_manage s2 WHERE s2.retrieval_name=i.name AND s2.status='ACTIVE' AND s2.deleted_at IS NULL)) x LEFT JOIN skill_routing_metadata r ON r.skill_name=x.name WHERE x.name=?";
+        String sql = "SELECT x.name, x.description, r.short_summary, r.keywords, r.domain_tags, r.topic_tags, r.metric_tags, CASE WHEN x.owner_user_id IS NULL OR TRIM(x.owner_user_id) = '' THEN '通用' ELSE x.owner_user_id END AS creator, r.priority, r.active, r.updated_at, r.skill_name IS NOT NULL configured FROM (SELECT s.retrieval_name AS name, s.description, s.owner_user_id FROM skill_manage s WHERE s.retrieval_name IS NOT NULL AND s.status='ACTIVE' AND s.deleted_at IS NULL UNION SELECT i.name, i.description, NULL AS owner_user_id FROM skill_index i WHERE i.status='active' AND NOT EXISTS (SELECT 1 FROM skill_manage s2 WHERE s2.retrieval_name=i.name AND s2.status='ACTIVE' AND s2.deleted_at IS NULL)) x LEFT JOIN skill_routing_metadata r ON r.skill_name=x.name WHERE x.name=?";
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, skillName);
             try (ResultSet rs = ps.executeQuery()) { return rs.next() ? Optional.of(mapView(rs)) : Optional.empty(); }
@@ -147,22 +192,27 @@ public class SkillRoutingMetadataRepository {
     }
 
     public boolean upsert(SkillRoutingMetadata metadata) {
+        if (tagDictionary != null) {
+            tagDictionary.validateEnabled(ToolRoutingTagType.DOMAIN, metadata.domainTags());
+            tagDictionary.validateEnabled(ToolRoutingTagType.TOPIC, metadata.topicTags());
+            tagDictionary.validateEnabled(ToolRoutingTagType.METRIC, metadata.metricTags());
+        }
         ensureTable();
         String sql = "INSERT INTO skill_routing_metadata "
-                + "(skill_name, short_summary, aliases, keywords, metric_tags, domain_tags, "
-                + "data_source_tags, priority, active, updated_at) "
+                + "(skill_name, short_summary, keywords, domain_tags, topic_tags, metric_tags, maintainer, priority, active, updated_at) "
                 + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, now()) "
-                + "ON DUPLICATE KEY UPDATE short_summary=VALUES(short_summary), aliases=VALUES(aliases), "
-                + "keywords=VALUES(keywords), metric_tags=VALUES(metric_tags), domain_tags=VALUES(domain_tags), "
-                + "data_source_tags=VALUES(data_source_tags), priority=VALUES(priority), active=VALUES(active), updated_at=now()";
+                + "ON DUPLICATE KEY UPDATE short_summary=VALUES(short_summary), "
+                + "keywords=VALUES(keywords), domain_tags=VALUES(domain_tags), topic_tags=VALUES(topic_tags), "
+                + "metric_tags=VALUES(metric_tags), maintainer=VALUES(maintainer), priority=VALUES(priority), "
+                + "active=VALUES(active), updated_at=now()";
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, metadata.skillName());
             ps.setString(2, nullToEmpty(metadata.shortSummary()));
-            ps.setString(3, json(metadata.aliases()));
-            ps.setString(4, json(metadata.keywords()));
-            ps.setString(5, json(metadata.metricTags()));
-            ps.setString(6, json(metadata.domainTags()));
-            ps.setString(7, json(metadata.dataSourceTags()));
+            ps.setString(3, json(metadata.keywords()));
+            ps.setString(4, json(metadata.domainTags()));
+            ps.setString(5, json(metadata.topicTags()));
+            ps.setString(6, json(metadata.metricTags()));
+            ps.setString(7, metadata.creator());
             ps.setInt(8, metadata.priority());
             ps.setBoolean(9, metadata.active());
             ps.executeUpdate();
@@ -203,19 +253,44 @@ public class SkillRoutingMetadataRepository {
         }
     }
 
+    /**
+     * Hard-deletes the routing metadata row for a skill that no longer exists on disk.
+     * Used by the builtin registrar's tombstone cleanup when a workspace skill (e.g. the
+     * retired {@code tool_index} wrapper) is removed in a cutover release.
+     */
+    public boolean delete(String skillName) {
+        ensureTable();
+        try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(
+                "DELETE FROM skill_routing_metadata WHERE skill_name = ?")) {
+            ps.setString(1, skillName);
+            boolean deleted = ps.executeUpdate() > 0;
+            if (deleted) invalidateCache();
+            return deleted;
+        } catch (SQLException e) {
+            log.warn("delete skill routing metadata {} failed: {}", skillName, e.getMessage());
+            return false;
+        }
+    }
+
     private void ensureTable() {
         if (tableEnsured) return;
         synchronized (this) {
             if (tableEnsured) return;
             String ddl = "CREATE TABLE IF NOT EXISTS skill_routing_metadata ("
                     + "skill_name VARCHAR(128) PRIMARY KEY, short_summary VARCHAR(3000) NOT NULL DEFAULT '',"
-                    + "aliases TEXT NOT NULL DEFAULT '[]', keywords TEXT NOT NULL DEFAULT '[]',"
-                    + "metric_tags TEXT NOT NULL DEFAULT '[]', domain_tags TEXT NOT NULL DEFAULT '[]',"
-                    + "data_source_tags TEXT NOT NULL DEFAULT '[]',"
+                    + "keywords TEXT NOT NULL DEFAULT '[]', domain_tags TEXT NOT NULL DEFAULT '[]',"
+                    + "topic_tags TEXT NOT NULL DEFAULT '[]', metric_tags TEXT NOT NULL DEFAULT '[]',"
+                    + "maintainer VARCHAR(128),"
                     + "priority INT NOT NULL DEFAULT 0, active BOOLEAN NOT NULL DEFAULT TRUE,"
                     + "updated_at TIMESTAMP NOT NULL DEFAULT now())";
             try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(ddl)) {
                 ps.execute();
+                // V20260827.1 建的存量表没有 topic_tags/maintainer，且 flyway-core 9.22 对汇报为
+                // PostgreSQL 9.2 的 openGauss 无法执行迁移，这里按运行时约定幂等补列。
+                ensureColumn(c, "topic_tags TEXT NOT NULL DEFAULT '[]'");
+                // 本实例 openGauss 将空字符串视为 NULL，NOT NULL DEFAULT '' 回填会报 "contains null values"，
+                // 因此 maintainer 用可空列，语义上仅作展示字段。
+                ensureColumn(c, "maintainer VARCHAR(128)");
                 tableEnsured = true;
             } catch (SQLException e) {
                 log.warn("skill_routing_metadata DDL failed (will retry): {}", e.getMessage());
@@ -223,11 +298,26 @@ public class SkillRoutingMetadataRepository {
         }
     }
 
+    private static void ensureColumn(Connection c, String columnDefinition) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement(
+                "ALTER TABLE skill_routing_metadata ADD COLUMN " + columnDefinition)) {
+            try {
+                ps.execute();
+            } catch (SQLException alreadyExists) {
+                if (!("42701".equals(alreadyExists.getSQLState())
+                        || (alreadyExists.getMessage() != null
+                                && alreadyExists.getMessage().toLowerCase().contains("already exists")))) {
+                    throw alreadyExists;
+                }
+            }
+        }
+    }
+
     private SkillRoutingMetadata map(ResultSet rs) throws SQLException {
         return new SkillRoutingMetadata(
-                rs.getString("skill_name"), rs.getString("short_summary"), parse(rs.getString("aliases")),
-                parse(rs.getString("keywords")), parse(rs.getString("metric_tags")),
-                parse(rs.getString("domain_tags")), parse(rs.getString("data_source_tags")),
+                rs.getString("skill_name"), rs.getString("short_summary"), parse(rs.getString("keywords")),
+                parse(rs.getString("domain_tags")), parse(rs.getString("topic_tags")), parse(rs.getString("metric_tags")),
+                rs.getString("creator"),
                 rs.getInt("priority"), rs.getBoolean("active"),
                 timestamp(rs.getTimestamp("updated_at")));
     }
@@ -236,9 +326,9 @@ public class SkillRoutingMetadataRepository {
         boolean configured = rs.getBoolean("configured");
         String summary = configured ? rs.getString("short_summary") : rs.getString("description");
         return new SkillRoutingMetadataView(rs.getString("name"), rs.getString("description"), summary,
-                configured ? parse(rs.getString("aliases")) : List.of(), configured ? parse(rs.getString("keywords")) : List.of(),
-                configured ? parse(rs.getString("metric_tags")) : List.of(), configured ? parse(rs.getString("domain_tags")) : List.of(),
-                configured ? parse(rs.getString("data_source_tags")) : List.of(), configured ? rs.getInt("priority") : 0,
+                configured ? parse(rs.getString("keywords")) : List.of(), configured ? parse(rs.getString("domain_tags")) : List.of(),
+                configured ? parse(rs.getString("topic_tags")) : List.of(), configured ? parse(rs.getString("metric_tags")) : List.of(),
+                rs.getString("creator"), configured ? rs.getInt("priority") : 0,
                 !configured || rs.getBoolean("active"), timestamp(rs.getTimestamp("updated_at")), configured);
     }
 

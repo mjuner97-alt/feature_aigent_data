@@ -20,8 +20,20 @@ class ContextSizeEstimatorTest {
         ContextSizeSnapshot snapshot = ContextSizeEstimator.estimate(input);
 
         assertEquals(500, snapshot.totalChars());
-        assertTrue(snapshot.estimatedInputTokens() >= 125);
-        assertTrue(snapshot.estimatedInputTokens() <= 130);
+        assertTrue(snapshot.estimatedInputTokens() >= 195,
+                "CJK characters must not be estimated as ASCII chars / 4");
+        assertTrue(snapshot.estimatedInputTokens() <= 230);
         assertEquals(1, snapshot.messageCount());
+    }
+
+    @Test
+    void countsSurrogatePairsAsOneUnicodeCodePoint() {
+        Msg message = Msg.builder().role(MsgRole.USER).textContent("😀".repeat(100)).build();
+        ReasoningInput input = new ReasoningInput(List.of(message), List.of(), null);
+
+        ContextSizeSnapshot snapshot = ContextSizeEstimator.estimate(input);
+
+        assertTrue(snapshot.estimatedInputTokens() >= 65);
+        assertTrue(snapshot.estimatedInputTokens() <= 180);
     }
 }

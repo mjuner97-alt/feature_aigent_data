@@ -16,7 +16,12 @@ public class SkillRoutingMetadataAdminService {
     }
 
     public List<SkillRoutingMetadataView> list(String keyword, Boolean active, int limit, int offset) {
-        return repository.findAllWithSkillManage(keyword, active, limit, offset);
+        return list(keyword, active, false, null, limit, offset);
+    }
+
+    public List<SkillRoutingMetadataView> list(String keyword, Boolean active, boolean mine, String userId,
+                                               int limit, int offset) {
+        return repository.findAllWithSkillManage(keyword, active, mine, userId, limit, offset);
     }
 
     public SkillRoutingMetadataView get(String skillName) {
@@ -25,6 +30,10 @@ public class SkillRoutingMetadataAdminService {
     }
 
     public SkillRoutingMetadata save(String skillName, SkillRoutingMetadataInput input) {
+        return save(skillName, input, "");
+    }
+
+    public SkillRoutingMetadata save(String skillName, SkillRoutingMetadataInput input, String ignoredUserId) {
         if (skillName == null || skillName.isBlank() || !repository.skillExists(skillName)) {
             throw new IllegalArgumentException("SkillNotFound: " + skillName);
         }
@@ -33,19 +42,20 @@ public class SkillRoutingMetadataAdminService {
             throw new IllegalArgumentException("PriorityOutOfRange: -1000..1000");
         }
         String summary = cleanSummary(input.shortSummary());
+        String creator = repository.creatorForSkill(skillName);
         SkillRoutingMetadata metadata = new SkillRoutingMetadata(skillName, summary,
-                cleanTags(input.aliases()), cleanTags(input.keywords()), cleanTags(input.metricTags()),
-                cleanTags(input.domainTags()), cleanTags(input.dataSourceTags()), input.priority(), input.active(), null);
+                cleanTags(input.keywords()), cleanTags(input.domainTags()), cleanTags(input.topicTags()),
+                cleanTags(input.metricTags()), creator,
+                input.priority(), input.active(), null);
         if (!repository.upsert(metadata)) throw new IllegalStateException("RoutingConfigSaveFailed");
         return metadata;
     }
 
     public SkillRoutingMetadataView setActive(String skillName, boolean active) {
         SkillRoutingMetadataView current = get(skillName);
-        SkillRoutingMetadataInput input = new SkillRoutingMetadataInput(current.shortSummary(), current.aliases(),
-                current.keywords(), current.metricTags(), current.domainTags(), current.dataSourceTags(),
-                current.priority(), active);
-        save(skillName, input);
+        SkillRoutingMetadataInput input = new SkillRoutingMetadataInput(current.shortSummary(), current.keywords(),
+                current.domainTags(), current.topicTags(), current.metricTags(), current.priority(), active);
+        save(skillName, input, null);
         return get(skillName);
     }
 

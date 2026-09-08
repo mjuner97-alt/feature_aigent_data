@@ -21,7 +21,10 @@ import io.agentscope.core.agent.RuntimeContext;
 import reactor.core.publisher.Mono;
 
 import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -201,17 +204,35 @@ public class DimensionStateManager {
     private static final Pattern REF_PRODUCT = Pattern.compile("这个产品线|那个产品线");
     private static final Pattern REF_REQUIREMENT = Pattern.compile("这个需求项|那个需求项");
 
-    private static final Pattern EXPLICIT_VERSION = Pattern.compile("(\\d{4}年\\d{1,2}月份版本)");
-    private static final Pattern EXPLICIT_QUARTER = Pattern.compile("(\\d{4}年\\d{1,2}季度)");
-    private static final Pattern EXPLICIT_MONTH = Pattern.compile("(\\d{1,2})月(?!份)");
-    private static final Pattern EXPLICIT_SHORT_QUARTER = Pattern.compile("(\\d{1,2})季度");
+    // 年份前缀可选：无年份时由调用方补当前年（"4月份版本" → "2026年4月份版本"）
+    private static final Pattern EXPLICIT_VERSION = Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})月份版本");
+    private static final Pattern EXPLICIT_QUARTER = Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})季度");
+    private static final Pattern EXPLICIT_MONTH = Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})月(?!份)");
     // Q1/Q2/Q3/Q4 / 一季度 / 二季度 alias — normalised to "{year}年{n}季度" for fingerprint stability
     private static final Pattern EXPLICIT_QUARTER_ALIAS =
             Pattern.compile("(?:Q|q)([1-4])|([一二三四])季度");
-    // KNOWLEDGE.md §部门 标准枚举 — 漏掉非"杭州开发X部"的会让用户连问 N 次也触发不了同指纹
+    // KNOWLEDGE.md §部门 标准枚举 — 漏掉非"杭州开发X部"的会让用户连问 N 次也触发不了同指纹。
+    // 别名按"长前短后"排列，避免"杭州服务支持部"被"服务支持"截胡；命中后经 normalizeDepartment 映射回标准名
     private static final Pattern EXPLICIT_DEPT =
             Pattern.compile(
-                    "(杭州开发[一二三四五]部|云计算实验室|杭州技术部|杭州服务支持部)");
+                    "(杭州开发[一二三四五]部|杭州服务支持部|杭州技术部|云计算实验室"
+                            + "|杭州[一二三四五]部|[一二三四五]部"
+                            + "|服务支持部|服务支持|技术部|云计算|实验室)");
+
+    /** 部门简称 → KNOWLEDGE.md 标准名，保证与全称写法生成同一指纹 */
+    private static String normalizeDepartment(String matched) {
+        return switch (matched) {
+            case "杭州一部", "一部" -> "杭州开发一部";
+            case "杭州二部", "二部" -> "杭州开发二部";
+            case "杭州三部", "三部" -> "杭州开发三部";
+            case "杭州四部", "四部" -> "杭州开发四部";
+            case "杭州五部", "五部" -> "杭州开发五部";
+            case "技术部" -> "杭州技术部";
+            case "服务支持部", "服务支持" -> "杭州服务支持部";
+            case "云计算", "实验室" -> "云计算实验室";
+            default -> matched;
+        };
+    }
     // 应用 F-XXX / 群组 F-XXX-XXX — 同一正则吃下,后者只是更长
     private static final Pattern EXPLICIT_APP = Pattern.compile("(F-[A-Za-z][A-Za-z0-9-]*)");
     // 小组:KNOWLEDGE.md 举例都 5+ 字(如"金融市场自营测试组"),放宽到 {2,}
@@ -278,7 +299,6 @@ public class DimensionStateManager {
         if (EXPLICIT_VERSION.matcher(q).find()
                 || EXPLICIT_MONTH.matcher(q).find()
                 || EXPLICIT_QUARTER.matcher(q).find()
-                || EXPLICIT_SHORT_QUARTER.matcher(q).find()
                 || refType == QuestionAnalysis.ReferenceType.TIME)
             return QuestionAnalysis.QuestionLevel.TIME;
         // No dimensions detected — non-dimension question (e.g. "数据服务表清单下载")
@@ -289,80 +309,72 @@ public class DimensionStateManager {
         QuestionAnalysis.ExplicitDimensions explicit = new QuestionAnalysis.ExplicitDimensions();
         int year = LocalDate.now().getYear();
 
-        // Full version format: "2026年4月份版本"
+        // 时间维度：各写法归一化后多值收集（"4月版和5月版" → 两个版本计划）。
+        // 带年份前缀用前缀年（"2025年4月"），否则补当前年。全部写法归一为完整格式，
+        // 不同写法生成同一指纹，auto-synth 计数才能累积。
+        // VERSION 与 QUARTER 同现时 VERSION 优先 — TimeDimension 单类型，混用只保一。
+        Set<String> versions = new LinkedHashSet<>();
+        Set<String> quarters = new LinkedHashSet<>();
+        String currentYear = String.valueOf(year);
+
         Matcher versionMatcher = EXPLICIT_VERSION.matcher(q);
-        if (versionMatcher.find()) {
-            explicit.setTimeDimension(
-                    new DimensionState.TimeDimension(
-                            DimensionState.TimeDimensionType.VERSION,
-                            List.of(versionMatcher.group())));
+        while (versionMatcher.find()) {
+            String y = versionMatcher.group(1) != null ? versionMatcher.group(1) : currentYear;
+            versions.add(y + "年" + versionMatcher.group(2) + "月份版本");
         }
 
-        // Full quarter format: "2026年1季度"
-        if (explicit.getTimeDimension() == null) {
-            Matcher quarterMatcher = EXPLICIT_QUARTER.matcher(q);
-            if (quarterMatcher.find()) {
-                explicit.setTimeDimension(
-                        new DimensionState.TimeDimension(
-                                DimensionState.TimeDimensionType.QUARTER,
-                                List.of(quarterMatcher.group())));
-            }
+        Matcher quarterMatcher = EXPLICIT_QUARTER.matcher(q);
+        while (quarterMatcher.find()) {
+            String y = quarterMatcher.group(1) != null ? quarterMatcher.group(1) : currentYear;
+            quarters.add(y + "年" + quarterMatcher.group(2) + "季度");
         }
 
-        // Short month format: "4月" → construct full version
-        if (explicit.getTimeDimension() == null) {
-            Matcher monthMatcher = EXPLICIT_MONTH.matcher(q);
-            if (monthMatcher.find()) {
-                String month = monthMatcher.group(1);
-                explicit.setTimeDimension(
-                        new DimensionState.TimeDimension(
-                                DimensionState.TimeDimensionType.VERSION,
-                                List.of(year + "年" + month + "月份版本")));
-            }
-        }
-
-        // Short quarter format: "1季度" → construct full quarter
-        if (explicit.getTimeDimension() == null) {
-            Matcher shortQMatcher = EXPLICIT_SHORT_QUARTER.matcher(q);
-            if (shortQMatcher.find()) {
-                String qNum = shortQMatcher.group(1);
-                explicit.setTimeDimension(
-                        new DimensionState.TimeDimension(
-                                DimensionState.TimeDimensionType.QUARTER,
-                                List.of(year + "年" + qNum + "季度")));
-            }
+        // Short month format: "4月" → construct full version（"4月份版本"已被上面吃掉）
+        Matcher monthMatcher = EXPLICIT_MONTH.matcher(q);
+        while (monthMatcher.find()) {
+            String y = monthMatcher.group(1) != null ? monthMatcher.group(1) : currentYear;
+            versions.add(y + "年" + monthMatcher.group(2) + "月份版本");
         }
 
         // Quarter aliases: "Q1" / "q1" / "一季度" — normalise so user shorthand maps to the same
         // fingerprint as "2026年1季度". Without this, "Q1 杭一部" and "1季度 杭一部" are different
         // candidates and the auto-synth counter never accumulates.
-        if (explicit.getTimeDimension() == null) {
-            Matcher aliasMatcher = EXPLICIT_QUARTER_ALIAS.matcher(q);
-            if (aliasMatcher.find()) {
-                String qNum;
-                if (aliasMatcher.group(1) != null) {
-                    qNum = aliasMatcher.group(1); // Q1-Q4
-                } else {
-                    qNum = switch (aliasMatcher.group(2)) {
+        Matcher aliasMatcher = EXPLICIT_QUARTER_ALIAS.matcher(q);
+        while (aliasMatcher.find()) {
+            String qNum = aliasMatcher.group(1) != null
+                    ? aliasMatcher.group(1) // Q1-Q4
+                    : switch (aliasMatcher.group(2)) {
                         case "一" -> "1";
                         case "二" -> "2";
                         case "三" -> "3";
                         case "四" -> "4";
                         default -> null;
                     };
-                }
-                if (qNum != null) {
-                    explicit.setTimeDimension(
-                            new DimensionState.TimeDimension(
-                                    DimensionState.TimeDimensionType.QUARTER,
-                                    List.of(year + "年" + qNum + "季度")));
-                }
+            if (qNum != null) {
+                quarters.add(currentYear + "年" + qNum + "季度");
             }
         }
 
+        if (!versions.isEmpty()) {
+            explicit.setTimeDimension(
+                    new DimensionState.TimeDimension(
+                            DimensionState.TimeDimensionType.VERSION,
+                            new ArrayList<>(versions)));
+        } else if (!quarters.isEmpty()) {
+            explicit.setTimeDimension(
+                    new DimensionState.TimeDimension(
+                            DimensionState.TimeDimensionType.QUARTER,
+                            new ArrayList<>(quarters)));
+        }
+
+        // 部门：收集全部命中（"一部和二部比" → 两个部门），归一化后去重
         Matcher deptMatcher = EXPLICIT_DEPT.matcher(q);
-        if (deptMatcher.find()) {
-            explicit.setDepartments(List.of(deptMatcher.group()));
+        Set<String> departments = new LinkedHashSet<>();
+        while (deptMatcher.find()) {
+            departments.add(normalizeDepartment(deptMatcher.group()));
+        }
+        if (!departments.isEmpty()) {
+            explicit.setDepartments(new ArrayList<>(departments));
         }
 
         // 应用（F-xxx）

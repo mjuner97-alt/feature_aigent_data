@@ -34,19 +34,26 @@ import com.agentscopea2a.v2.tools.CsvDownloadTool;
 import com.agentscopea2a.v2.tools.PythonExecTool;
 import com.agentscopea2a.v2.tools.QualityTools;
 import com.agentscopea2a.v2.tools.ScriptExecTool;
-import com.agentscopea2a.v2.tools.ScriptListTool;
 import com.agentscopea2a.v2.tools.SkillSaveTool;
-import com.agentscopea2a.v2.tools.SqlListTool;
 import com.agentscopea2a.v2.tools.SqlRegistryExecTool;
 import com.agentscopea2a.v2.tools.ToolRoutersIndex;
+import com.agentscopea2a.v2.tools.ToolIndexTool;
 import com.agentscopea2a.v2.tools.V2ToolGroupAdapter;
 import com.agentscopea2a.v2.tools.WideTableMetricsTool;
+import com.agentscopea2a.v2.toolrouting.ToolIndexService;
+import com.agentscopea2a.v2.toolrouting.ToolRoutingAvailabilityResolver;
+import com.agentscopea2a.v2.toolrouting.ToolRoutingCatalogService;
+import com.agentscopea2a.v2.toolrouting.ToolRoutingMetadataRepository;
+import com.agentscopea2a.v2.toolrouting.ToolRoutingTagDictionary;
+import com.agentscopea2a.v2.toolrouting.UnifiedToolMetadataService;
+import com.agentscopea2a.v2.registry.service.ScriptSourceService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -105,10 +112,13 @@ public class V2ToolConfig {
     public SkillRoutingMetadataRepository skillRoutingMetadataRepository(
             @org.springframework.beans.factory.annotation.Qualifier("gaussCustomerDataSource") DataSource dataSource,
             com.fasterxml.jackson.databind.ObjectMapper objectMapper,
+            ObjectProvider<ToolRoutingTagDictionary> toolRoutingTagDictionaryProvider,
             @org.springframework.beans.factory.annotation.Value(
-                    "${harness.a2a.skill-context.metadata-cache-ttl-ms:30000}") long metadataCacheTtlMillis) {
+                    "${harness.a2a.skill-context.metadata-cache-ttl-ms:30000}") long metadataCacheTtlMillis,
+            @Value("${harness.a2a.tool-routing.enabled:false}") boolean toolRoutingEnabled) {
         log.info("SkillRoutingMetadataRepository: wired (GaussDB-backed, cacheTtl={}ms)", metadataCacheTtlMillis);
-        return new SkillRoutingMetadataRepository(dataSource, objectMapper, metadataCacheTtlMillis);
+        return new SkillRoutingMetadataRepository(dataSource, objectMapper, metadataCacheTtlMillis,
+                toolRoutingEnabled ? toolRoutingTagDictionaryProvider.getIfAvailable() : null);
     }
 
     @Bean
@@ -119,6 +129,90 @@ public class V2ToolConfig {
                     "${harness.a2a.capability-routing.cache-ttl-ms:30000}") long capabilityCacheTtlMillis) {
         log.info("CapabilityRepository: wired (GaussDB-backed, cacheTtl={}ms)", capabilityCacheTtlMillis);
         return new CapabilityRepository(dataSource, objectMapper, capabilityCacheTtlMillis);
+    }
+
+    // ── Unified SQL/API/SCRIPT routing catalog ────────────────────────────
+    @Bean
+    public ToolRoutingTagDictionary toolRoutingTagDictionary(
+            @Qualifier("gaussCustomerDataSource") DataSource dataSource) {
+        return new ToolRoutingTagDictionary(dataSource);
+    }
+
+    @Bean
+    public ToolRoutingMetadataRepository toolRoutingMetadataRepository(
+            @Qualifier("gaussCustomerDataSource") DataSource dataSource,
+            com.fasterxml.jackson.databind.ObjectMapper objectMapper,
+            ToolRoutingTagDictionary toolRoutingTagDictionary,
+            @Value("${harness.a2a.tool-routing.metadata-cache-ttl-ms:30000}") long cacheTtlMillis) {
+        return new ToolRoutingMetadataRepository(dataSource, objectMapper, toolRoutingTagDictionary, cacheTtlMillis);
+    }
+
+    @Bean
+    public ToolRoutingAvailabilityResolver toolRoutingAvailabilityResolver(
+            SqlRegistryMapper sqlRegistryMapper,
+            ScriptRegistryMapper scriptRegistryMapper,
+            ToolRoutersIndex toolRoutersIndex,
+            ScriptSourceService scriptSourceService) {
+        return new ToolRoutingAvailabilityResolver(sqlRegistryMapper, scriptRegistryMapper,
+                toolRoutersIndex, scriptSourceService);
+    }
+
+    @Bean
+    public ToolRoutingCatalogService toolRoutingCatalogService(
+            ToolRoutingMetadataRepository toolRoutingMetadataRepository,
+            ToolRoutingTagDictionary toolRoutingTagDictionary,
+            ToolRoutingAvailabilityResolver toolRoutingAvailabilityResolver,
+            com.agentscopea2a.v2.toolrouting.ToolRoutingMetrics toolRoutingMetrics) {
+        return new ToolRoutingCatalogService(toolRoutingMetadataRepository, toolRoutingTagDictionary,
+                toolRoutingAvailabilityResolver, toolRoutingMetrics);
+    }
+
+    @Bean
+    public com.agentscopea2a.v2.toolrouting.ToolRoutingMetrics toolRoutingMetrics(
+            org.springframework.beans.factory.ObjectProvider<io.micrometer.core.instrument.MeterRegistry> meterRegistryProvider) {
+        return new com.agentscopea2a.v2.toolrouting.ToolRoutingMetrics(meterRegistryProvider.getIfAvailable());
+    }
+
+    @Bean
+    public ToolIndexService toolIndexService(
+            com.agentscopea2a.v2.toolrouting.ToolRoutingMetrics toolRoutingMetrics,
+            @Value("${harness.a2a.tool-routing.default-limit:10}") int defaultLimit,
+            @Value("${harness.a2a.tool-routing.max-limit:20}") int maxLimit) {
+        return new ToolIndexService(defaultLimit, maxLimit, toolRoutingMetrics);
+    }
+
+    @Bean
+    @ConditionalOnProperty(prefix = "harness.a2a.tool-routing", name = "enabled", havingValue = "true")
+    public com.agentscopea2a.v2.toolrouting.ToolRoutingStartupAudit toolRoutingStartupAudit(
+            com.agentscopea2a.v2.toolrouting.ToolRoutingScanService scanService,
+            ToolRoutingMetadataRepository toolRoutingMetadataRepository,
+            com.agentscopea2a.v2.toolrouting.ToolRoutingMetrics toolRoutingMetrics,
+            @Value("${harness.a2a.tool-routing.strict-startup:false}") boolean strictStartup) {
+        log.info("ToolRoutingStartupAudit: wired (strict-startup={})", strictStartup);
+        return new com.agentscopea2a.v2.toolrouting.ToolRoutingStartupAudit(scanService,
+                toolRoutingMetadataRepository, toolRoutingMetrics, strictStartup);
+    }
+
+    @Bean
+    @ConditionalOnProperty(prefix = "harness.a2a.tool-routing", name = "enabled", havingValue = "true")
+    public UnifiedToolMetadataService unifiedToolMetadataService(
+            ToolRoutingMetadataRepository toolRoutingMetadataRepository,
+            ToolRoutingAvailabilityResolver toolRoutingAvailabilityResolver,
+            SqlRegistryMapper sqlRegistryMapper,
+            ScriptRegistryMapper scriptRegistryMapper,
+            ObjectProvider<com.agentscopea2a.v2.toolrouting.ApiToolMetadataProvider> apiToolMetadataProvider,
+            com.fasterxml.jackson.databind.ObjectMapper objectMapper,
+            com.agentscopea2a.v2.toolrouting.ToolRoutingMetrics toolRoutingMetrics) {
+        return new UnifiedToolMetadataService(toolRoutingMetadataRepository, toolRoutingAvailabilityResolver,
+                sqlRegistryMapper, scriptRegistryMapper, apiToolMetadataProvider, objectMapper,
+                toolRoutingMetrics);
+    }
+
+    @Bean
+    @ConditionalOnProperty(prefix = "harness.a2a.tool-routing", name = "enabled", havingValue = "true")
+    public ToolIndexTool toolIndexTool(ToolRoutingCatalogService toolRoutingCatalogService,
+                                       ToolIndexService toolIndexService) {
+        return new ToolIndexTool(toolRoutingCatalogService, toolIndexService);
     }
 
     // ── Quality tools ─────────────────────────────────────────────────────
@@ -166,12 +260,6 @@ public class V2ToolConfig {
 
     // ── SQL Registry (DBA 预审 SQL 模板 + sql_id 调用执行) ──────────────────
     @Bean
-    public SqlListTool sqlListTool(SqlRegistryMapper sqlRegistryMapper) {
-        log.info("SqlListTool: wired (lists sql_registry entries for LLM tool selection)");
-        return new SqlListTool(sqlRegistryMapper);
-    }
-
-    @Bean
     public SqlRegistryExecTool sqlRegistryExecTool(
             @Qualifier("mysqlDataSource") DataSource mysqlDataSource,
             @Qualifier("gaussCustomerDataSource") DataSource gaussDataSource,
@@ -180,17 +268,12 @@ public class V2ToolConfig {
             DownloadContentService downloadContentService,
             com.agentscopea2a.v2.presentation.PresentationDataReferenceStore dataReferenceStore) {
         log.info("SqlRegistryExecTool: wired (mysql/gauss/clickhouse routing + sql_registry lookup + downloadFilename)");
-        return new SqlRegistryExecTool(mysqlDataSource, gaussDataSource, clickHouseDataSource,
+        SqlRegistryExecTool tool = new SqlRegistryExecTool(mysqlDataSource, gaussDataSource, clickHouseDataSource,
                 sqlRegistryMapper, downloadContentService, dataReferenceStore);
+        return tool;
     }
 
     // ── Script Registry (Python 指标脚本: SQL 取数 + pandas 算指标一次完成) ──
-    @Bean
-    public ScriptListTool scriptListTool(ScriptRegistryMapper scriptRegistryMapper) {
-        log.info("ScriptListTool: wired (lists script_registry entries for LLM tool selection)");
-        return new ScriptListTool(scriptRegistryMapper);
-    }
-
     @Bean
     public ScriptExecTool scriptExecTool(
             @Qualifier("mysqlDataSource") DataSource mysqlDataSource,
@@ -201,8 +284,9 @@ public class V2ToolConfig {
             SandboxPropertiesV2 sandboxProperties,
             @Value("${harness.a2a.sandbox.workspace-container-path:/workspace}") String containerWorkspacePath) {
         log.info("ScriptExecTool: wired (mysql/gauss/clickhouse env injection + script_registry lookup, workspacePath={} containerWorkspacePath={})", workspacePath, containerWorkspacePath);
-        return new ScriptExecTool(mysqlDataSource, gaussDataSource, clickHouseDataSource,
+        ScriptExecTool tool = new ScriptExecTool(mysqlDataSource, gaussDataSource, clickHouseDataSource,
                 scriptRegistryMapper, workspacePath, sandboxProperties, containerWorkspacePath);
+        return tool;
     }
 
     // ── Tool router ────────────────────────────────────────────────────────
@@ -210,11 +294,11 @@ public class V2ToolConfig {
     public ToolRoutersIndex toolRoutersIndex(AgentTools agentTools,
                                              DataPrimitivesTool dataPrimitivesTool,
                                              CsvDownloadTool csvDownloadTool,
-                                             SqlListTool sqlListTool,
-                                             SqlRegistryExecTool sqlRegistryExecTool) {
+                                             SqlRegistryExecTool sqlRegistryExecTool,
+                                             ObjectProvider<UnifiedToolMetadataService> unifiedToolMetadataServiceProvider) {
         return new ToolRoutersIndex(agentTools, dataPrimitivesTool,
                 csvDownloadTool,
-                sqlListTool, sqlRegistryExecTool);
+                sqlRegistryExecTool, unifiedToolMetadataServiceProvider);
     }
 
     // ── URL shortener + CSV download tool ──────────────────────────────────
@@ -251,13 +335,12 @@ public class V2ToolConfig {
             DataPrimitivesTool dataPrimitivesTool,
             ObjectProvider<PythonExecTool> pythonExecToolProvider,
             ObjectProvider<ArithTool> arithToolProvider,
-            ObjectProvider<SqlListTool> sqlListToolProvider,
             ObjectProvider<SqlRegistryExecTool> sqlRegistryExecToolProvider,
-            ObjectProvider<ScriptListTool> scriptListToolProvider,
             ObjectProvider<ScriptExecTool> scriptExecToolProvider,
-            ObjectProvider<ToolRoutersIndex> toolRoutersIndexProvider) {
+            ObjectProvider<ToolRoutersIndex> toolRoutersIndexProvider,
+            ObjectProvider<ToolIndexTool> toolIndexToolProvider) {
         // 主智能体注册 ungrouped 工具: tool_router + python_exec + arith
-        // + sql_list + sql_registry_exec + script_list + script_exec.
+        // + sql_registry_exec + script_exec.
         // 全部 ungrouped (始终可见给 LLM), 不分组不挂 meta-tool.
         // 原因: 之前把 python_exec 放进 group + 挂 reset_equipped_tools 元工具, 实测 LLM
         // 调 reset_equipped_tools 后 python_exec 仍报 "Tool not found", grouped tool 机制
@@ -278,19 +361,20 @@ public class V2ToolConfig {
             b.tool(unwrapCglib(at));
             log.info("V2ToolGroupAdapter: registered ArithTool (ungrouped)");
         }
-        SqlListTool slt = sqlListToolProvider.getIfAvailable();
-        if (slt != null) b.tool(unwrapCglib(slt));
         SqlRegistryExecTool sre = sqlRegistryExecToolProvider.getIfAvailable();
         if (sre != null) {
             b.tool(unwrapCglib(sre));
             log.info("V2ToolGroupAdapter: registered SqlRegistryExecTool (ungrouped)");
         }
-        ScriptListTool scL = scriptListToolProvider.getIfAvailable();
-        if (scL != null) b.tool(unwrapCglib(scL));
         ScriptExecTool scE = scriptExecToolProvider.getIfAvailable();
         if (scE != null) {
             b.tool(unwrapCglib(scE));
             log.info("V2ToolGroupAdapter: registered ScriptExecTool (ungrouped)");
+        }
+        ToolIndexTool toolIndex = toolIndexToolProvider.getIfAvailable();
+        if (toolIndex != null) {
+            b.tool(unwrapCglib(toolIndex));
+            log.info("V2ToolGroupAdapter: registered unified tool_index");
         }
         ToolRoutersIndex tri = toolRoutersIndexProvider.getIfAvailable();
         if (tri != null) {
@@ -304,10 +388,9 @@ public class V2ToolConfig {
         log.info("V2ToolGroupAdapter: main-agent toolkit with"
                 + (py != null ? " python_exec" : "")
                 + (at != null ? " + arith" : "")
-                + (slt != null ? " + sql_list" : "")
                 + (sre != null ? " + sql_registry_exec" : "")
-                + (scL != null ? " + script_list" : "")
                 + (scE != null ? " + script_exec" : "")
+                + (toolIndex != null ? " + tool_index" : "")
                 + (tri != null ? " + tool_router" : "")
                 + " (all ungrouped, no meta-tool)");
         return adapter;

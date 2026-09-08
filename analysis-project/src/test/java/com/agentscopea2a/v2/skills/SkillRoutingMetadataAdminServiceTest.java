@@ -10,6 +10,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.eq;
 
 class SkillRoutingMetadataAdminServiceTest {
 
@@ -19,25 +20,30 @@ class SkillRoutingMetadataAdminServiceTest {
     @Test
     void saveNormalizesAndDeduplicatesTags() {
         when(repository.skillExists("q2_skill")).thenReturn(true);
+        when(repository.creatorForSkill("q2_skill")).thenReturn("admin");
         when(repository.upsert(any())).thenReturn(true);
 
         SkillRoutingMetadata result = service.save("q2_skill", new SkillRoutingMetadataInput(
-                " Q2 summary ", List.of(" q2 ", "q2", ""), List.of(" 达标率 "),
-                List.of(), List.of("quality"), List.of("gauss"), 10, true));
+                " Q2 summary ", List.of(" 达标率 "), List.of("质量管理"),
+                List.of("QI卡口"), List.of("质量分"), 10, true), "admin");
 
         assertEquals("Q2 summary", result.shortSummary());
-        assertEquals(List.of("q2"), result.aliases());
         assertEquals(List.of("达标率"), result.keywords());
+        assertEquals(List.of("质量管理"), result.domainTags());
+        assertEquals(List.of("QI卡口"), result.topicTags());
+        assertEquals(List.of("质量分"), result.metricTags());
+        assertEquals("admin", result.creator());
         verify(repository).upsert(result);
     }
 
     @Test
     void saveSplitsChineseListSeparatorsInsideTagValues() {
         when(repository.skillExists("q2_skill")).thenReturn(true);
+        when(repository.creatorForSkill("q2_skill")).thenReturn("admin");
         when(repository.upsert(any())).thenReturn(true);
 
         SkillRoutingMetadata result = service.save("q2_skill", new SkillRoutingMetadataInput(
-                "summary", List.of(), List.of("Q2-1、部门、版本、达标率", "打分率，项目总数"),
+                "summary", List.of("Q2-1、部门、版本、达标率", "打分率，项目总数"),
                 List.of(), List.of(), List.of(), 10, true));
 
         assertEquals(List.of("Q2-1", "部门", "版本", "达标率", "打分率", "项目总数"), result.keywords());
@@ -63,8 +69,14 @@ class SkillRoutingMetadataAdminServiceTest {
         assertEquals("PriorityOutOfRange: -1000..1000", error.getMessage());
     }
 
+    @Test
+    void listPassesCurrentUserAndMineFilterToRepository() {
+        service.list("alice", null, true, "alice", 200, 0);
+
+        verify(repository).findAllWithSkillManage(eq("alice"), eq(null), eq(true), eq("alice"), eq(200), eq(0));
+    }
+
     private static SkillRoutingMetadataInput emptyInput(int priority) {
-        return new SkillRoutingMetadataInput("summary", List.of(), List.of(), List.of(), List.of(), List.of(),
-                priority, true);
+        return new SkillRoutingMetadataInput("summary", List.of(), List.of(), List.of(), List.of(), priority, true);
     }
 }

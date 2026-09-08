@@ -27,12 +27,16 @@ import com.agentscopea2a.v2.middleware.PythonExecAccessMiddleware;
 import com.agentscopea2a.v2.middleware.ResponseCacheMiddleware;
 import com.agentscopea2a.v2.middleware.SessionMiddleware;
 import com.agentscopea2a.v2.middleware.ToolCallContentRepairMiddleware;
+import com.agentscopea2a.v2.middleware.ToolMetricCatalogMiddleware;
+import com.agentscopea2a.v2.toolrouting.ToolRoutingCatalogService;
 import io.agentscope.core.hook.Hook;
 import io.agentscope.core.middleware.MiddlewareBase;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -50,6 +54,14 @@ public class HarnessAgentPartsConfig {
     public ToolCallContentRepairMiddleware toolCallContentRepairMiddleware() {
         log.info("HarnessAgentPartsConfig: ToolCallContentRepairMiddleware @Bean registered (priority=-100)");
         return new ToolCallContentRepairMiddleware();
+    }
+
+    @Bean
+    @ConditionalOnProperty(prefix = "harness.a2a.tool-routing", name = "enabled", havingValue = "true")
+    public ToolMetricCatalogMiddleware toolMetricCatalogMiddleware(
+            ToolRoutingCatalogService toolRoutingCatalogService,
+            @Value("${harness.a2a.tool-routing.metric-catalog-max-chars:8000}") int maxChars) {
+        return new ToolMetricCatalogMiddleware(toolRoutingCatalogService, maxChars);
     }
 
 

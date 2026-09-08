@@ -30,6 +30,7 @@ import com.agentscopea2a.v2.skills.SkillDistiller;
 import com.agentscopea2a.v2.skills.SkillEvolutionRunner;
 import com.agentscopea2a.v2.skills.SkillIndexRepository;
 import com.agentscopea2a.v2.skills.SkillRoutingMetadataRepository;
+import com.agentscopea2a.v2.skills.SkillUsageResolver;
 import com.agentscopea2a.v2.capability.CapabilityRepository;
 import com.agentscopea2a.v2.capability.CapabilityRouter;
 import com.agentscopea2a.v2.skills.SkillSynthesisRunner;
@@ -111,6 +112,7 @@ public class V2SkillConfig {
     @Bean
     public SkillVisibilityFilter skillVectorIndexVisibilityFilter(
             SkillRoutingMetadataRepository routingMetadataRepository,
+            SkillUsageResolver skillUsageResolver,
             CapabilityRepository capabilityRepository,
             @Value("${harness.a2a.skill-context.routing.enabled:false}") boolean enabled,
             @Value("${harness.a2a.capability-routing.enabled:false}") boolean capabilityEnabled,
@@ -126,7 +128,7 @@ public class V2SkillConfig {
                 ? new CapabilityRouter(maxCapabilities, maxRecalledSkills) : null;
         return new SkillVectorIndexVisibilityFilter(routingMetadataRepository,
                 new SkillCandidateSelector(maxVisibleSkills, fallbackVisibleSkills, minConfidence, minScoreGap),
-                enabled, capabilityRepository, router);
+                enabled, capabilityRepository, router, skillUsageResolver);
     }
 
 

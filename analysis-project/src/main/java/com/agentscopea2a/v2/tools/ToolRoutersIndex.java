@@ -12,12 +12,17 @@ package com.agentscopea2a.v2.tools;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.agentscopea2a.v2.toolrouting.ApiToolMetadataProvider;
+import com.agentscopea2a.v2.toolrouting.ApiToolMetadata;
+import com.agentscopea2a.v2.toolrouting.ToolParameterMetadata;
+import com.agentscopea2a.v2.toolrouting.UnifiedToolMetadataService;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
 import io.micrometer.core.annotation.Timed;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 
 import java.lang.annotation.Annotation;
 import java.lang.reflect.InvocationTargetException;
@@ -27,6 +32,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -36,7 +42,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p><b>Bean wiring:</b> Created by {@link com.agentscopea2a.v2.config.V2ToolConfig} — not
  * component-scanned.
  */
-public class ToolRoutersIndex {
+public class ToolRoutersIndex implements ApiToolMetadataProvider {
 
     private static final Logger log = LoggerFactory.getLogger(ToolRoutersIndex.class);
 
@@ -54,19 +60,19 @@ public class ToolRoutersIndex {
     private final AgentTools agentTools;
     private final DataPrimitivesTool dataPrimitivesTool;
     private final CsvDownloadTool csvDownloadTool;
-    private final SqlListTool sqlListTool;
     private final SqlRegistryExecTool sqlRegistryExecTool;
+    private final ObjectProvider<UnifiedToolMetadataService> unifiedToolMetadataServiceProvider;
 
     public ToolRoutersIndex(AgentTools agentTools,
                             DataPrimitivesTool dataPrimitivesTool,
                             CsvDownloadTool csvDownloadTool,
-                            SqlListTool sqlListTool,
-                            SqlRegistryExecTool sqlRegistryExecTool) {
+                            SqlRegistryExecTool sqlRegistryExecTool,
+                            ObjectProvider<UnifiedToolMetadataService> unifiedToolMetadataServiceProvider) {
         this.agentTools = agentTools;
         this.dataPrimitivesTool = dataPrimitivesTool;
         this.csvDownloadTool = csvDownloadTool;
-        this.sqlListTool = sqlListTool;
         this.sqlRegistryExecTool = sqlRegistryExecTool;
+        this.unifiedToolMetadataServiceProvider = unifiedToolMetadataServiceProvider;
     }
 
     /** 容器装配完成后,反射扫描各 Tool Bean,登记 @Tool 方法。 */
@@ -75,13 +81,32 @@ public class ToolRoutersIndex {
         registerTools(AgentTools.class, agentTools);
         registerTools(DataPrimitivesTool.class, dataPrimitivesTool);
         registerTools(CsvDownloadTool.class, csvDownloadTool);
-        registerTools(SqlListTool.class, sqlListTool);
         registerTools(SqlRegistryExecTool.class, sqlRegistryExecTool);
         log.info("ToolRoutersIndex 初始化完成,已注册工具: {}", toolMethodMap.keySet());
     }
 
     public Map<String, MethodInfo> getToolMethodMap() {
         return Collections.unmodifiableMap(toolMethodMap);
+    }
+
+    @Override
+    public boolean isActiveApiTool(String toolId) {
+        return toolId != null && toolMethodMap.containsKey(toolId);
+    }
+
+    @Override
+    public Optional<ApiToolMetadata> findApiTool(String toolId) {
+        MethodInfo info = toolId == null ? null : toolMethodMap.get(toolId);
+        if (info == null) {
+            return Optional.empty();
+        }
+        Tool annotation = info.method.getAnnotation(Tool.class);
+        List<ToolParameterMetadata> parameters = info.paramInfos.stream()
+                .filter(param -> !param.autoInjected && param.name != null)
+                .map(param -> new ToolParameterMetadata(param.name, param.genericType.getTypeName(),
+                        param.required, param.description))
+                .toList();
+        return Optional.of(new ApiToolMetadata(toolId, annotation == null ? "" : annotation.description(), parameters));
     }
 
     @Tool(
@@ -143,6 +168,14 @@ public class ToolRoutersIndex {
         }
         String normalizedToolId = toolId.trim();
         log.info("toolMetaInfo called: toolId={}", normalizedToolId);
+        UnifiedToolMetadataService unifiedService = unifiedToolMetadataServiceProvider.getIfAvailable();
+        if (unifiedService != null) {
+            try {
+                return unifiedService.find(normalizedToolId);
+            } catch (IllegalArgumentException e) {
+                return Map.of("error", e.getMessage());
+            }
+        }
         MethodInfo info = toolMethodMap.get(normalizedToolId);
         if (info == null) {
             return Map.of("error", "未知的 toolId='" + normalizedToolId + "'。请检查工具索引技能中的工具 ID 是否正确。");
@@ -184,10 +217,12 @@ public class ToolRoutersIndex {
             }
             String name = null;
             boolean required = true;
+            String description = "";
             for (Annotation a : paramAnnotations[i]) {
                 if (a instanceof ToolParam tp) {
                     name = tp.name();
                     required = tp.required();
+                    description = tp.description();
                     break;
                 }
             }
@@ -195,7 +230,7 @@ public class ToolRoutersIndex {
             if (name == null || name.isEmpty()) {
                 name = "arg" + i;
             }
-            paramInfos.add(new ParamInfo(name, genericParamTypes[i], paramTypes[i], required));
+            paramInfos.add(new ParamInfo(name, genericParamTypes[i], paramTypes[i], required, description));
         }
         return paramInfos;
     }
@@ -292,7 +327,8 @@ public class ToolRoutersIndex {
                     Map.of(
                             "name", param.name,
                             "type", param.genericType.getTypeName(),
-                            "required", param.required));
+                            "required", param.required,
+                            "description", param.description));
         }
         return Map.of(
                 "toolId", toolId,
@@ -344,13 +380,15 @@ public class ToolRoutersIndex {
         public final Type genericType;
         public final Class<?> rawType;
         public final boolean required;
+        public final String description;
         public final boolean autoInjected;
 
-        public ParamInfo(String name, Type genericType, Class<?> rawType, boolean required) {
+        public ParamInfo(String name, Type genericType, Class<?> rawType, boolean required, String description) {
             this.name = name;
             this.genericType = genericType;
             this.rawType = rawType;
             this.required = required;
+            this.description = description == null ? "" : description;
             this.autoInjected = false;
         }
 
@@ -359,6 +397,7 @@ public class ToolRoutersIndex {
             this.genericType = genericType;
             this.rawType = (genericType instanceof Class<?>) ? (Class<?>) genericType : Object.class;
             this.required = false;
+            this.description = "";
             this.autoInjected = true;
         }
 

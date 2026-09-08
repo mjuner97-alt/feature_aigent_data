@@ -154,22 +154,13 @@ public class SkillManageBridge {
     private void ensureRoutingMetadata(String skillName, String description) {
         if (routingMetadataRepo == null || routingMetadataRepo.findBySkillName(skillName).isPresent()) return;
         routingMetadataRepo.upsert(new SkillRoutingMetadata(skillName,
-                limitSummary(description), generatedAliases(skillName), generatedKeywords(skillName),
-                List.of(), List.of(), List.of(), 0, true, null));
+                limitSummary(description), generatedKeywords(skillName), List.of(), List.of(), List.of(),
+                "", 0, true, null));
     }
 
     private static String limitSummary(String description) {
         String value = description == null ? "" : description.trim();
         return value.length() <= 500 ? value : value.substring(0, 500);
-    }
-
-    private static List<String> generatedAliases(String name) {
-        LinkedHashSet<String> values = new LinkedHashSet<>();
-        values.add(name);
-        values.add(name.replace('_', '-'));
-        values.add(name.replace("_", ""));
-        values.removeIf(String::isBlank);
-        return List.copyOf(values);
     }
 
     private static List<String> generatedKeywords(String name) {

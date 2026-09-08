@@ -4,8 +4,7 @@ import org.flywaydb.core.Flyway;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -61,8 +60,10 @@ public class FlywayConfig {
      * Flyway Community Edition 9.22 拒绝迁移,需关闭。
      */
     @Bean(name = "gaussFlyway", initMethod = "migrate")
-    @ConditionalOnBean(name = GaussConfig.DS_NAME)
-    @ConditionalOnProperty(prefix = "harness.flyway.gauss", name = "enabled", havingValue = "true", matchIfMissing = true)
+    // Spring Boot 3.2 的 @ConditionalOnProperty 不可重复，两个开关只能合并为表达式；
+    // gauss-customer 缺省 false 与 GaussConfig 自身的条件保持一致，避免数据源 bean 不存在时启动失败。
+    @ConditionalOnExpression("${spring.datasource.hikari.gauss-customer.enabled:false}"
+            + " and ${harness.flyway.gauss.enabled:true}")
     public Flyway gaussFlyway(
             @Qualifier(GaussConfig.DS_NAME) DataSource dataSource) {
         log.info("初始化 GaussDB Flyway 迁移 (db/migration/gauss)");

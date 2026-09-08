@@ -2,11 +2,11 @@ export interface SkillRoutingMetadata {
   skillName: string;
   description: string | null;
   shortSummary: string;
-  aliases: string[];
   keywords: string[];
-  metricTags: string[];
   domainTags: string[];
-  dataSourceTags: string[];
+  topicTags: string[];
+  metricTags: string[];
+  creator: string;
   priority: number;
   active: boolean;
   updatedAt: string | null;
@@ -15,11 +15,10 @@ export interface SkillRoutingMetadata {
 
 export interface SkillRoutingInput {
   shortSummary: string;
-  aliases: string[];
   keywords: string[];
-  metricTags: string[];
   domainTags: string[];
-  dataSourceTags: string[];
+  topicTags: string[];
+  metricTags: string[];
   priority: number;
   active: boolean;
 }

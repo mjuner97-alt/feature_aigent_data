@@ -33,20 +33,69 @@ public final class ContextSizeEstimator {
         int toolSchemaChars = input == null || input.tools() == null ? 0 : input.tools().stream()
                 .mapToInt(tool -> tool == null ? 0 : tool.toString().length()).sum();
         totalChars += toolSchemaChars;
-        int estimatedTokens = estimateTokens(totalChars);
+        int estimatedTokens = 0;
+        if (input != null && input.messages() != null) {
+            for (Msg message : input.messages()) {
+                if (message == null || message.getContent() == null) continue;
+                for (ContentBlock block : message.getContent()) {
+                    estimatedTokens += estimateTextTokens(textValue(block));
+                }
+            }
+        }
+        if (input != null && input.tools() != null) {
+            for (Object tool : input.tools()) {
+                if (tool != null) estimatedTokens += estimateTextTokens(tool.toString());
+            }
+        }
         return new ContextSizeSnapshot(messageCount, totalChars, toolSchemaChars,
                 toolResultChars, largestBlockChars, estimatedTokens);
     }
 
-    static int estimateTokens(int chars) {
-        if (chars <= 0) return 0;
-        return (int) Math.ceil(chars / 4.0);
+    public static int estimateTextTokens(String text) {
+        if (text == null || text.isEmpty()) return 0;
+        int ascii = 0;
+        int other = 0;
+        int tokens = 0;
+        for (int offset = 0; offset < text.length();) {
+            int codePoint = text.codePointAt(offset);
+            offset += Character.charCount(codePoint);
+            if (codePoint <= 0x7f) {
+                ascii++;
+                continue;
+            }
+            if (ascii > 0) {
+                tokens += (int) Math.ceil(ascii / 4.0);
+                ascii = 0;
+            }
+            if (isCjk(codePoint)) {
+                if (other > 0) {
+                    tokens += (int) Math.ceil(other / 1.5);
+                    other = 0;
+                }
+                tokens++;
+            } else {
+                other++;
+            }
+        }
+        if (ascii > 0) tokens += (int) Math.ceil(ascii / 4.0);
+        if (other > 0) tokens += (int) Math.ceil(other / 1.5);
+        return tokens;
     }
 
     private static int textLength(ContentBlock block) {
-        if (block instanceof TextBlock text && text.getText() != null) {
-            return text.getText().length();
-        }
-        return block == null ? 0 : block.toString().length();
+        return textValue(block).length();
+    }
+
+    private static String textValue(ContentBlock block) {
+        if (block instanceof TextBlock text && text.getText() != null) return text.getText();
+        return block == null ? "" : block.toString();
+    }
+
+    private static boolean isCjk(int codePoint) {
+        return (codePoint >= 0x2e80 && codePoint <= 0x9fff)
+                || (codePoint >= 0xac00 && codePoint <= 0xd7af)
+                || (codePoint >= 0xa960 && codePoint <= 0xa97f)
+                || (codePoint >= 0x3040 && codePoint <= 0x30ff)
+                || (codePoint >= 0x31f0 && codePoint <= 0x31ff);
     }
 }

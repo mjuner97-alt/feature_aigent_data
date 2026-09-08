@@ -7,20 +7,20 @@ import java.util.List;
 public record SkillRoutingMetadata(
         String skillName,
         String shortSummary,
-        List<String> aliases,
         List<String> keywords,
-        List<String> metricTags,
         List<String> domainTags,
-        List<String> dataSourceTags,
+        List<String> topicTags,
+        List<String> metricTags,
+        String creator,
         int priority,
         boolean active,
         LocalDateTime updatedAt) {
 
     public SkillRoutingMetadata {
-        aliases = aliases == null ? List.of() : List.copyOf(aliases);
         keywords = keywords == null ? List.of() : List.copyOf(keywords);
-        metricTags = metricTags == null ? List.of() : List.copyOf(metricTags);
         domainTags = domainTags == null ? List.of() : List.copyOf(domainTags);
-        dataSourceTags = dataSourceTags == null ? List.of() : List.copyOf(dataSourceTags);
+        topicTags = topicTags == null ? List.of() : List.copyOf(topicTags);
+        metricTags = metricTags == null ? List.of() : List.copyOf(metricTags);
+        creator = creator == null ? "" : creator;
     }
 }

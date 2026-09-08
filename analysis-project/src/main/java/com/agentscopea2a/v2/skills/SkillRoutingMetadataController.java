@@ -7,6 +7,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -27,9 +28,11 @@ public class SkillRoutingMetadataController {
     public List<SkillRoutingMetadataView> list(
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) Boolean active,
+            @RequestParam(defaultValue = "false") boolean mine,
             @RequestParam(defaultValue = "200") int limit,
-            @RequestParam(defaultValue = "0") int offset) {
-        return service.list(keyword, active, limit, offset);
+            @RequestParam(defaultValue = "0") int offset,
+            @RequestHeader(value = "X-User-Id", required = false) String userId) {
+        return service.list(keyword, active, mine, userId, limit, offset);
     }
 
     @GetMapping("/{skillName}")
@@ -38,8 +41,9 @@ public class SkillRoutingMetadataController {
     }
 
     @PutMapping("/{skillName}")
-    public SkillRoutingMetadata save(@PathVariable String skillName, @RequestBody SkillRoutingMetadataInput input) {
-        return service.save(skillName, input);
+    public SkillRoutingMetadata save(@PathVariable String skillName, @RequestBody SkillRoutingMetadataInput input,
+                                     @RequestHeader(value = "X-User-Id", required = false) String userId) {
+        return service.save(skillName, input, userId);
     }
 
     @PatchMapping("/{skillName}/active")

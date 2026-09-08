@@ -25,15 +25,15 @@ import com.agentscopea2a.v2.middleware.PythonExecAccessMiddleware;
 import com.agentscopea2a.v2.middleware.SubagentEventForwardingMiddleware;
 import com.agentscopea2a.v2.middleware.ToolResultTruncationMiddleware;
 import com.agentscopea2a.v2.middleware.ContextBudgetMiddleware;
+import com.agentscopea2a.v2.middleware.ToolMetricCatalogMiddleware;
 import com.agentscopea2a.v2.tools.ArithTool;
 import com.agentscopea2a.v2.tools.PerUserMemoryGetTool;
 import com.agentscopea2a.v2.tools.PythonExecTool;
 import com.agentscopea2a.v2.tools.ScriptExecTool;
-import com.agentscopea2a.v2.tools.ScriptListTool;
 import com.agentscopea2a.v2.tools.SkillSaveTool;
-import com.agentscopea2a.v2.tools.SqlListTool;
 import com.agentscopea2a.v2.tools.SqlRegistryExecTool;
 import com.agentscopea2a.v2.tools.ToolRoutersIndex;
+import com.agentscopea2a.v2.tools.ToolIndexTool;
 import com.agentscopea2a.v2.trace.collector.AiChatRestToolCallTrackingToDbHook;
 import com.agentscopea2a.v2.verify.L2EventCollectorHook;
 import com.agentscopea2a.v2.config.WorkspaceMaterializer;
@@ -142,6 +142,7 @@ public class SubagentRegistrar {
      */
     private final ToolResultTruncationMiddleware toolResultTruncationMiddleware;
     private final ContextBudgetMiddleware contextBudgetMiddleware;
+    private final ToolMetricCatalogMiddleware toolMetricCatalogMiddleware;
     /**
      * Per-user memory store for replacing the framework's {@code memory_get} tool on
      * subagents. When non-null, each subagent's {@code memory_get} is replaced with
@@ -156,10 +157,9 @@ public class SubagentRegistrar {
             ObjectProvider<PythonExecTool> pythonExecToolProvider,
             ObjectProvider<SkillSaveTool> skillSaveToolProvider,
             ObjectProvider<ArithTool> arithToolProvider,
-            ObjectProvider<SqlListTool> sqlListToolProvider,
             ObjectProvider<SqlRegistryExecTool> sqlRegistryExecToolProvider,
-            ObjectProvider<ScriptListTool> scriptListToolProvider,
             ObjectProvider<ScriptExecTool> scriptExecToolProvider,
+            ObjectProvider<ToolIndexTool> toolIndexToolProvider,
             ObjectProvider<ArtifactHandoffHook> artifactHandoffHookProvider,
             ObjectProvider<ArtifactAccessMiddleware> artifactAccessMiddlewareProvider,
             ObjectProvider<PythonExecAccessMiddleware> pythonExecAccessMiddlewareProvider,
@@ -169,7 +169,8 @@ public class SubagentRegistrar {
             ObjectProvider<AiChatRestToolCallTrackingToDbHook> traceCollectorHookProvider,
             ObjectProvider<MysqlMemoryStore> mysqlMemoryStoreProvider,
             ObjectProvider<ToolResultTruncationMiddleware> toolResultTruncationMiddlewareProvider,
-            ObjectProvider<ContextBudgetMiddleware> contextBudgetMiddlewareProvider) {
+            ObjectProvider<ContextBudgetMiddleware> contextBudgetMiddlewareProvider,
+            ObjectProvider<ToolMetricCatalogMiddleware> toolMetricCatalogMiddlewareProvider) {
 
         // v1-style: subagents hold only meta-tool beans. Business tools (quality_query_* /
         // data_*) are encapsulated inside ToolRoutersIndex and dispatched via
@@ -189,28 +190,17 @@ public class SubagentRegistrar {
         if (at != null) {
             toolRegistry.put("arith", at);
         }
-        // sql_list + sql_registry_exec 直接注册给子 agent, 跳过 router_tool. 让 analyze_data 子 agent
-        // 调 sql_list 看可用 sql_id 后直接调 sql_registry_exec(sqlId, params) 执行预注册复杂 SQL
-        // (GROUP BY / CASE WHEN / JOIN 等).
-        SqlListTool slt = sqlListToolProvider.getIfAvailable();
-        if (slt != null) {
-            toolRegistry.put("sql_list", slt);
-        }
         SqlRegistryExecTool sre = sqlRegistryExecToolProvider.getIfAvailable();
         if (sre != null) {
             toolRegistry.put("sql_registry_exec", sre);
         }
-        // script_list + script_exec 直接注册给子 agent, 跳过 router_tool. 与 sql_list / sql_registry_exec
-        // 对齐, 让 analyze_data 子 agent 调 script_list 看可用 script_id 后直接调
-        // script_exec(scriptId, params) 执行预注册 Python 脚本 (SQL 取数 + pandas 算指标一次完成),
-        // 替代 sql_registry_exec + python_exec 两步走, 避免 LLM 写 pandas 代码卡死.
-        ScriptListTool sl = scriptListToolProvider.getIfAvailable();
-        if (sl != null) {
-            toolRegistry.put("script_list", sl);
-        }
         ScriptExecTool se = scriptExecToolProvider.getIfAvailable();
         if (se != null) {
             toolRegistry.put("script_exec", se);
+        }
+        ToolIndexTool toolIndex = toolIndexToolProvider.getIfAvailable();
+        if (toolIndex != null) {
+            toolRegistry.put("tool_index", toolIndex);
         }
         this.artifactHandoffHook = artifactHandoffHookProvider.getIfAvailable();
         this.artifactAccessMiddleware = artifactAccessMiddlewareProvider.getIfAvailable();
@@ -223,6 +213,7 @@ public class SubagentRegistrar {
         this.mysqlMemoryStore = mysqlMemoryStoreProvider.getIfAvailable();
         this.toolResultTruncationMiddleware = toolResultTruncationMiddlewareProvider.getIfAvailable();
         this.contextBudgetMiddleware = contextBudgetMiddlewareProvider.getIfAvailable();
+        this.toolMetricCatalogMiddleware = toolMetricCatalogMiddlewareProvider.getIfAvailable();
         log.info("SubagentRegistrar: toolRegistry built with {} entries: {}; hooks - handoff={} access={} pyGuard={} retry={} l2Collector={} eventForwarding=true toolTracking={} trace={} truncation={}",
                 toolRegistry.size(), toolRegistry.keySet(),
                 artifactHandoffHook != null, artifactAccessMiddleware != null,
@@ -396,6 +387,9 @@ public class SubagentRegistrar {
             }
             if (contextBudgetMiddleware != null) {
                 subMiddlewares.add(0, contextBudgetMiddleware);
+            }
+            if (toolNames.contains("tool_index") && toolMetricCatalogMiddleware != null) {
+                subMiddlewares.add(toolMetricCatalogMiddleware);
             }
             if (!subMiddlewares.isEmpty()) {
                 sub.middlewares(subMiddlewares);

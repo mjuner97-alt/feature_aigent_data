@@ -45,6 +45,15 @@ public class ScriptSourceService {
         }
     }
 
+    /** Uses the same path safety rules as source reads without exposing the resolved path. */
+    public boolean isAvailable(ScriptRegistryEntry entry) {
+        try {
+            return Files.isRegularFile(resolve(entry));
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+
     public Source save(ScriptRegistryEntry entry, String content, String expectedContentHash) {
         if (content == null) throw new IllegalArgumentException("源码不能为空");
         byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
