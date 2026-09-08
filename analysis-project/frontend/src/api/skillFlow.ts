@@ -48,15 +48,23 @@ export async function getSkillFlow(id: number): Promise<SkillFlow> {
 }
 
 export async function createSkillFlow(input: SkillFlowInput): Promise<SkillFlow> {
-  const res = await fetch(FLOW_BASE, { method: 'POST', headers: jsonHeaders(), body: JSON.stringify(input) });
+  const res = await fetch(FLOW_BASE, { method: 'POST', headers: jsonHeaders(), body: JSON.stringify(withoutNodeAttemptPolicy(input)) });
   if (!res.ok) throw await requestError(res, '创建流程失败');
   return res.json();
 }
 
 export async function updateSkillFlow(id: number, input: SkillFlowInput): Promise<SkillFlow> {
-  const res = await fetch(`${FLOW_BASE}/${id}`, { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(input) });
+  const res = await fetch(`${FLOW_BASE}/${id}`, { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(withoutNodeAttemptPolicy(input)) });
   if (!res.ok) throw await requestError(res, '保存流程失败');
   return res.json();
+}
+
+// Node retry policy is owned by the backend. Strip stale fields from older UI state.
+function withoutNodeAttemptPolicy(input: SkillFlowInput) {
+  return {
+    ...input,
+    nodes: input.nodes.map(({ maxAttempts: _ignored, ...node }) => node),
+  };
 }
 
 export async function setSkillFlowEnabled(id: number, enabled: boolean): Promise<SkillFlow> {

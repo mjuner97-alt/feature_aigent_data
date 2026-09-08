@@ -1,5 +1,6 @@
 package com.agentscopea2a.v2.skillManager.service;
 
+import com.agentscopea2a.v2.skillManager.config.SkillFlowProperties;
 import com.agentscopea2a.v2.skillManager.entity.*;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillMapper;
@@ -141,7 +142,8 @@ public class FlowExecutionService {
             mapper.insertNodeExecution(SkillFlowNodeExecution.builder().flowExecutionId(execution.getId())
                     .nodeKey(node.getNodeKey()).skillId(node.getSkillId()).skillName(skillName).skillRetrievalName(retrievalName)
                     .questionTemplateSnapshot(node.getQuestionTemplate()).dependsOnJson(node.getDependsOnJson())
-                    .required(node.getRequired()).status(status).attemptCount(0).maxAttempts(node.getMaxAttempts()).build());
+                    .required(node.getRequired()).status(status).attemptCount(0)
+                    .maxAttempts(SkillFlowProperties.NODE_MAX_ATTEMPTS).build());
         }
         if (execution.getStatus() == FlowExecutionStatus.QUEUED) {
             events.publishEvent(new FlowQueuedEvent(execution.getId()));

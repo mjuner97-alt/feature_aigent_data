@@ -397,7 +397,15 @@ public class FlowCoordinator {
         flow.setCompletedAt(LocalDateTime.now(clock));
         releaseRepeatableGuard(flow);
         mapper.updateExecution(flow);
-        completionService.sendInitial(flow);
+        try {
+            completionService.sendInitial(flow);
+        } catch (RuntimeException e) {
+            // 通知是终态后的附加动作，失败不能反向污染最后一个已成功节点。
+            FlowFailureDiagnostic diagnostic = FlowFailureDiagnostic.capture(
+                    e, "SEND_NOTIFICATION", flow.getId(), null);
+            log.error("Flow notification failed: errorId={}, stage={}, flowId={}",
+                    diagnostic.errorId(), diagnostic.stage(), flow.getId(), e);
+        }
     }
 
     public void retrySummary(Long flowId) {
@@ -523,7 +531,8 @@ public class FlowCoordinator {
                 }
             }
             flow.setStatus(FlowExecutionStatus.FAILED);
-            flow.setSummaryJson(json(Map.of("errorCode", "METRIC_TIMEOUT", "missingMetrics", flow.getMissingMetricsJson())));
+            flow.setSummaryJson(json(Map.of("errorCode", "METRIC_TIMEOUT", "missingMetrics",
+                    Objects.toString(flow.getMissingMetricsJson(), ""))));
             releaseRepeatableGuard(flow);
             flow.setCompletedAt(LocalDateTime.now(clock));
             mapper.updateExecution(flow);
@@ -563,6 +572,9 @@ public class FlowCoordinator {
     static boolean retryable(Throwable error) {
         Throwable current = error;
         while (current != null) {
+            // 历史数据/框架状态异常可能表现为 NPE。允许一次恢复性重试，
+            // 由 NODE_MAX_ATTEMPTS=2 严格限制总次数，避免无限循环。
+            if (current instanceof NullPointerException) return true;
             if (current instanceof SocketTimeoutException || current instanceof ConnectException
                     || current instanceof TimeoutException) return true;
             String message = current.getMessage() == null ? "" : current.getMessage().toLowerCase();

@@ -147,7 +147,7 @@ public class FlowReportStorage {
     public static final class ReportStorageException extends RuntimeException {
         private final String code;
 
-        ReportStorageException(String code, String message, Throwable cause) {
+        public ReportStorageException(String code, String message, Throwable cause) {
             super(message, cause);
             this.code = code;
         }
