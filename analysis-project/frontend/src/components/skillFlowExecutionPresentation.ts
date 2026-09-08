@@ -9,14 +9,6 @@ export interface NodeErrorLike {
   errorMessage?: string | null;
 }
 
-export function statusText(value: string): string {
-  return ({
-    WAITING_METRICS: '排队中', QUEUED: '排队中', RUNNING: '执行中', SUMMARIZING: '汇总中',
-    SUCCESS: '成功', PARTIAL_SUCCESS: '部分成功', FAILED: '失败', CANCELLED: '已取消',
-    CANCEL_REQUESTED: '取消中', PENDING: '排队中', RETRY_WAIT: '等待重试', BLOCKED: '已阻塞',
-  } as Record<string, string>)[value] || value;
-}
-
 export function formatNodeErrorDetails(node: NodeErrorLike): string {
   return [
     `节点：${node.skillName || node.nodeKey || '-'}`,
