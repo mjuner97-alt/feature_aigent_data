@@ -53,7 +53,7 @@ public class AiChatMonitor {
         record("error", startedAtNanos);
         Counter.builder("ai_chat_errors").tag("type", type).register(meterRegistry).increment();
         if (alertEnabled && alertTypes.contains(type) && acquireAlertPermit(type)) {
-            AiChatNotificationUtil.send(type, conversationId, userId, message(error));
+            AiChatNotificationUtil.send(userId, message(error));
         }
     }
 
@@ -63,7 +63,7 @@ public class AiChatMonitor {
         record("error", startedAtNanos);
         Counter.builder("ai_chat_errors").tag("type", type).register(meterRegistry).increment();
         if (alertEnabled && alertTypes.contains(type) && acquireAlertPermit(type)) {
-            AiChatNotificationUtil.send(type, conversationId, userId, message(error));
+            AiChatNotificationUtil.send(userId, message(error));
         }
     }
 
