@@ -53,7 +53,7 @@ async function remove(flow: SkillFlow) {
   catch (e) { alert(e instanceof Error ? e.message : '删除流程失败'); }
 }
 
-function statusText(value: string) { return ({ WAITING_METRICS: '等待指标', QUEUED: '排队中', RUNNING: '执行中', SUMMARIZING: '汇总中' } as Record<string, string>)[value] || value; }
+function statusText(value: string) { return ({ WAITING_METRICS: '排队中', QUEUED: '排队中', RUNNING: '执行中', SUMMARIZING: '汇总中' } as Record<string, string>)[value] || value; }
 function metricLabel(item: { metricId: number; metricCode?: string; metricName?: string }) { return item.metricName || item.metricCode || `指标 #${item.metricId}`; }
 
 /** 手动执行:先查指标就绪,有未就绪的弹确认;确认后触发(未就绪时任务挂起等数据)。 */

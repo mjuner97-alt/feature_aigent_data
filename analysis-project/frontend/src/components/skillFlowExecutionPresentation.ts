@@ -18,6 +18,23 @@ export function statusClass(status: string): string {
   return 'status-neutral';
 }
 
+export function statusText(status: string): string {
+  return ({
+    WAITING_METRICS: '排队中',
+    QUEUED: '排队中',
+    RUNNING: '执行中',
+    SUMMARIZING: '汇总中',
+    SUCCESS: '成功',
+    PARTIAL_SUCCESS: '部分成功',
+    FAILED: '失败',
+    CANCELLED: '已取消',
+    CANCEL_REQUESTED: '取消中',
+    PENDING: '排队中',
+    RETRY_WAIT: '等待重试',
+    BLOCKED: '已阻塞',
+  } as Record<string, string>)[status] ?? status;
+}
+
 export function triggerTypeText(triggerType?: string | null): string {
   return ({
     AUTO_METRIC: '自动触发',

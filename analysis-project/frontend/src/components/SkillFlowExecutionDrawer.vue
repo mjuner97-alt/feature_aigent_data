@@ -4,7 +4,7 @@ import { ElMessageBox } from 'element-plus';
 import { getSkillFlowExecution, getSkillFlowExecutionMetrics, getSkillFlowExecutionNodes, getSkillFlowExecutionNotifications, getSkillFlowExecutionReportUrl, getSkillFlowNodeReportUrl, resendSkillFlowExecutionNotification, retrySkillFlowSummary, retrySkillFlowNode, retrySkillFlowFailedNodes } from '../api/skillFlow';
 import type { SkillFlowExecution, SkillFlowNodeExecution } from '../types/skillFlow';
 import { currentUserId } from '../api/skill';
-import { canRetryNode, shouldShowMetricReadiness, shouldShowNodeTimes, statusClass } from './skillFlowExecutionPresentation';
+import { canRetryNode, shouldShowMetricReadiness, shouldShowNodeTimes, statusClass, statusText } from './skillFlowExecutionPresentation';
 
 const props = defineProps<{ open: boolean; executionId: number | null }>();
 const emit = defineEmits<{ (e: 'update:open', open: boolean): void; (e: 'changed'): void }>();
@@ -31,7 +31,6 @@ const summaryGenerationError = computed(() => {
   return typeof value === 'string' ? value : '';
 });
 function formatTime(value?: string | null) { return value ? value.replace('T', ' ').slice(0, 19) : '-'; }
-function statusText(value: string) { return ({ WAITING_METRICS: '等待指标', QUEUED: '排队中', RUNNING: '执行中', SUMMARIZING: '汇总中', SUCCESS: '成功', PARTIAL_SUCCESS: '部分成功', FAILED: '失败', CANCELLED: '已取消', CANCEL_REQUESTED: '取消中', PENDING: '等待指标', RETRY_WAIT: '等待重试', BLOCKED: '已阻塞' } as Record<string, string>)[value] || value; }
 function listText(value?: string[]) { return value?.length ? value.join('、') : '-'; }
 function showNodeError(node: SkillFlowNodeExecution) {
   const detail = `状态：${statusText(node.status)}\n开始时间：${formatTime(node.startedAt)}\n结束时间：${formatTime(node.completedAt)}\n\n错误信息：\n${node.errorCode ? `${node.errorCode}: ` : ''}${node.errorMessage || '暂无错误详情'}`;

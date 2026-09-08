@@ -12,7 +12,7 @@ const loading = ref(false); const error = ref(''); const currentStatus = ref('')
 const paged = computed(() => executions.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value));
 let timer: ReturnType<typeof setInterval> | undefined;
 function formatTime(value?: string | null) { return value ? value.replace('T', ' ').slice(0, 19) : '-'; }
-function statusText(value: string) { return ({ WAITING_METRICS: '等待指标', QUEUED: '排队中', RUNNING: '执行中', SUMMARIZING: '汇总中', SUCCESS: '成功', PARTIAL_SUCCESS: '部分成功', FAILED: '失败', CANCELLED: '已取消', CANCEL_REQUESTED: '取消中' } as Record<string, string>)[value] || value; }
+function statusText(value: string) { return ({ WAITING_METRICS: '排队中', QUEUED: '排队中', RUNNING: '执行中', SUMMARIZING: '汇总中', SUCCESS: '成功', PARTIAL_SUCCESS: '部分成功', FAILED: '失败', CANCELLED: '已取消', CANCEL_REQUESTED: '取消中' } as Record<string, string>)[value] || value; }
 function statusClass(value: string) { return ({ WAITING_METRICS: 'st-pending', QUEUED: 'st-pending', RUNNING: 'st-running', SUMMARIZING: 'st-pending', SUCCESS: 'st-success', PARTIAL_SUCCESS: 'st-success', FAILED: 'st-failed', CANCELLED: 'st-off', CANCEL_REQUESTED: 'st-pending' } as Record<string, string>)[value] || ''; }
 function notificationClass(value?: string | null) { return value ? `nt-${value.toLowerCase()}` : 'nt-none'; }
 function duration(start?: string | null, end?: string | null) { if (!start || !end) return '-'; const seconds = Math.round((new Date(end).getTime() - new Date(start).getTime()) / 1000); return Number.isFinite(seconds) && seconds >= 0 ? (seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m${seconds % 60}s`) : '-'; }
