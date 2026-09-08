@@ -262,7 +262,7 @@ public class V2ToolConfig {
     @Bean
     public SqlRegistryExecTool sqlRegistryExecTool(
             @Qualifier("mysqlDataSource") DataSource mysqlDataSource,
-            @Qualifier("gaussCustomerDataSource") DataSource gaussDataSource,
+            @Qualifier("gaussCommonDataSource") DataSource gaussDataSource,
             @Qualifier("clickHouseDataSource") DataSource clickHouseDataSource,
             SqlRegistryMapper sqlRegistryMapper,
             DownloadContentService downloadContentService,
@@ -277,7 +277,7 @@ public class V2ToolConfig {
     @Bean
     public ScriptExecTool scriptExecTool(
             @Qualifier("mysqlDataSource") DataSource mysqlDataSource,
-            @Qualifier("gaussCustomerDataSource") DataSource gaussDataSource,
+            @Qualifier("gaussCommonDataSource") DataSource gaussDataSource,
             @Qualifier("clickHouseDataSource") DataSource clickHouseDataSource,
             ScriptRegistryMapper scriptRegistryMapper,
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,

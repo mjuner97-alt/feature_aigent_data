@@ -4,11 +4,11 @@ import com.agentscopea2a.dto.ChatRequest;
 import com.agentscopea2a.dto.response.ContentDto;
 import com.agentscopea2a.dto.response.TextManagerResponseDto;
 import com.agentscopea2a.dto.response.TextResponseDto;
-import com.agentscopea2a.v2.skillManager.config.SkillFlowProperties;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowExecution;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowTrigger;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.service.ChatStreamService;
+import com.agentscopea2a.v2.service.ChatRuntimeConfigService;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -19,6 +19,8 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
+import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.LONG_TASK_ENABLED;
+
 /**
  * Chat 入口路由器:公开对话请求先经过这里,再决定走哪条链路。
  * <ul>
@@ -26,7 +28,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li>{@link RouteType#LONG_TASK} 命中 Skill Flow 触发词,创建/复用当日长任务并即时返回提示(不等执行完成);</li>
  *   <li>{@link RouteType#DIRECT_ANSWER} 用户回复"直接回答",取消当前长任务改走普通对话。</li>
  * </ul>
- * 总开关在 {@link SkillFlowProperties#CHAT_ROUTING_ENABLED},关闭时所有请求都走普通对话。
+ * 路由开关由数据库中的 {@code long_task_enabled} 配置控制。
  */
 @Service
 public class SkillFlowChatRouter {
@@ -34,13 +36,16 @@ public class SkillFlowChatRouter {
     private final SkillFlowMapper mapper;
     private final FlowExecutionService executions;
     private final ChatStreamService normalChat;
+    private final ChatRuntimeConfigService chatRuntimeConfigService;
     private final Map<String, PendingConfirmation> pending = new ConcurrentHashMap<>();
     private static final long CONFIRMATION_TTL_MS = 5 * 60 * 1000L;
 
-    public SkillFlowChatRouter(SkillFlowMapper mapper, FlowExecutionService executions, ChatStreamService normalChat) {
+    public SkillFlowChatRouter(SkillFlowMapper mapper, FlowExecutionService executions,
+                               ChatStreamService normalChat, ChatRuntimeConfigService chatRuntimeConfigService) {
         this.mapper = mapper;
         this.executions = executions;
         this.normalChat = normalChat;
+        this.chatRuntimeConfigService = chatRuntimeConfigService;
     }
 
     /** 路由类型。 */
@@ -53,13 +58,14 @@ public class SkillFlowChatRouter {
 
     /** 对外主入口:根据问题内容分流,返回 SSE。 */
     public SseEmitter route(ChatRequest request) {
-        // ENABLED 是 Skill Flow 总开关;CHAT_ROUTING_ENABLED 只控制 ai/chat 是否接入长任务路由。
-        // 因此可以在保留手动/自动流程执行的同时,单独关闭对话入口的自动识别。
-        if (!SkillFlowProperties.ENABLED || !SkillFlowProperties.CHAT_ROUTING_ENABLED) return normalChat.stream(request);
         String userId = request.getUserId() == null || request.getUserId().isBlank() ? "anonymous" : request.getUserId();
         String conversationId = request.getConversationId() == null || request.getConversationId().isBlank()
                 ? UUID.randomUUID().toString() : request.getConversationId();
         request.setConversationId(conversationId);
+        if (!chatRuntimeConfigService.resolve(userId, conversationId).getBooleanOrDefault(
+                        LONG_TASK_ENABLED, false)) {
+            return normalChat.stream(request);
+        }
         String sessionKey = userId + ":" + conversationId;
 
         // 二次确认入口:只在当前用户+会话下查找待确认任务,避免串用其他会话的确认状态。

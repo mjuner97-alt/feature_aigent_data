@@ -1,7 +1,7 @@
 package com.agentscopea2a.v2.modelConfig.service;
 
 import com.agentscopea2a.entity.UserModelConfig;
-import com.agentscopea2a.mapper.gauss.UserModelConfigMapper;
+import com.agentscopea2a.mapper.gaussCommon.UserModelConfigMapper;
 import com.agentscopea2a.v2.model.ModelProvider;
 import com.agentscopea2a.v2.modelConfig.dto.ModelTestResult;
 import com.agentscopea2a.v2.modelConfig.dto.UserModelConfigListItem;

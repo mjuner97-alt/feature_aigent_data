@@ -72,7 +72,7 @@ public class SqlRegistryManageService {
             SqlRegistryMapper mapper,
             DeveloperPlPersonInfoMapper personInfoMapper,
             @org.springframework.beans.factory.annotation.Qualifier("mysqlDataSource") DataSource mysqlDataSource,
-            @org.springframework.beans.factory.annotation.Qualifier("gaussCustomerDataSource") DataSource gaussDataSource,
+            @org.springframework.beans.factory.annotation.Qualifier("gaussCommonDataSource") DataSource gaussDataSource,
             @org.springframework.beans.factory.annotation.Qualifier("clickHouseDataSource") DataSource clickHouseDataSource) {
         this.mapper = mapper;
         this.personInfoMapper = personInfoMapper;

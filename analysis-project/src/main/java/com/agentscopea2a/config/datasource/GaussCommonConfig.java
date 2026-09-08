@@ -44,8 +44,8 @@ public class GaussCommonConfig {
         SqlSessionFactoryBean factory = new SqlSessionFactoryBean();
         factory.setDataSource(dataSource);
         factory.setMapperLocations(new PathMatchingResourcePatternResolver()
-                .getResources("classpath*:mybatis/mapper/gauss/DeveloperPlPersonInfoMapper.xml"));
-        factory.setTypeAliasesPackage("com.agentscopea2a.v2.auth.entity");
+                .getResources("classpath*:mybatis/mapper/gauss-common/*.xml"));
+        factory.setTypeAliasesPackage("com.agentscopea2a.v2.auth.entity,com.agentscopea2a.entity");
         return factory.getObject();
     }
 

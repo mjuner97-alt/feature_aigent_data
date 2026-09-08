@@ -46,6 +46,15 @@ public class FlowNodeClaimService {
         }
         // 行锁锁流程,保证同一流程的并发计数判断原子
         SkillFlowExecution execution = mapper.selectFlowExecutionForUpdate(node.getFlowExecutionId());
+        // 兼容旧版本留下的矛盾状态：单节点重跑已入队，但流程仍停留在终态。
+        // 发现可运行节点即说明汇总已经失效，先恢复流程再继续认领。
+        if (execution != null && execution.getStatus().terminal()) {
+            execution.setStatus(FlowExecutionStatus.RUNNING);
+            execution.setSummaryJson(null);
+            execution.setReportPath(null);
+            execution.setCompletedAt(null);
+            mapper.updateExecution(execution);
+        }
         if (execution == null || !RUNNABLE_EXECUTION_STATUSES.contains(execution.getStatus())) {
             return false;
         }

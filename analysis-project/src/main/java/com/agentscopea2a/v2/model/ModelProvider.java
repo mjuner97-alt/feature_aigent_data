@@ -16,7 +16,7 @@
 package com.agentscopea2a.v2.model;
 
 import com.agentscopea2a.entity.UserModelConfig;
-import com.agentscopea2a.mapper.gauss.UserModelConfigMapper;
+import com.agentscopea2a.mapper.gaussCommon.UserModelConfigMapper;
 import com.agentscopea2a.v2.config.HarnessRunnerProperties;
 import com.agentscopea2a.v2.config.WebClientHttpTransport;
 import io.agentscope.core.model.Model;

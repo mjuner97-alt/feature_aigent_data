@@ -1,0 +1,2 @@
+-- Retained as an empty compatibility migration. Built-in flow prompts are no longer used;
+-- Skill questions are stored on skill_manage.long_task_question.

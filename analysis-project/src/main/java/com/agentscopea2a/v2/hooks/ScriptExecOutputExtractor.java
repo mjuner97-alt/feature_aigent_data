@@ -20,7 +20,9 @@ final class ScriptExecOutputExtractor {
      * sanitization happen in the frontend Markdown renderer.
      */
     static final java.util.regex.Pattern RENDERABLE_BLOCK_PATTERN = java.util.regex.Pattern.compile(
-            "```\\s*(echarts?|html?|htm)\\s*\\n[\\s\\S]*?```",
+            "(?:```\\s*(echarts?|html?|htm)\\s*\\n[\\s\\S]*?```"
+                    + "|<(echarts?|echart|html|htm)\\b[^>]*>[\\s\\S]*?</\\2\\s*>"
+                    + "|<!doctype\\s+html\\b[^>]*>[\\s\\S]*?</html\\s*>)",
             java.util.regex.Pattern.CASE_INSENSITIVE);
 
     private ScriptExecOutputExtractor() {

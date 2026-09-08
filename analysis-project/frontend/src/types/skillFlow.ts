@@ -105,6 +105,7 @@ export interface SkillFlowExecution {
   flowName: string;
   flowCode?: string;
   status: string;
+  triggerType?: 'AUTO_METRIC' | 'MANUAL' | 'CHAT' | null;
   triggerUserId?: string;
   triggerUserName?: string;
   originalQuestion?: string;

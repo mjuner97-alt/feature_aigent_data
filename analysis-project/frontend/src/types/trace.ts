@@ -65,6 +65,9 @@ export interface AgentEvent {
   id: string;
   type: string;
   createdAt: string;
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
   source?: string;
   replyId?: string;
   toolCallId?: string;

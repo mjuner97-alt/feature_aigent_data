@@ -8,10 +8,11 @@ import com.agentscopea2a.dto.response.*;
 import com.agentscopea2a.mapper.gauss.MainAgentMapper;
 import com.agentscopea2a.v2.artifact.ArtifactContext;
 import com.agentscopea2a.v2.artifact.ArtifactStore;
-import com.agentscopea2a.v2.exception.TooManyRequestsException;
 import com.agentscopea2a.v2.memory.EpisodicMemory;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.service.ChatStreamService;
+import com.agentscopea2a.v2.service.ChatRuntimeConfig;
+import com.agentscopea2a.v2.service.ChatRuntimeConfigService;
 import com.agentscopea2a.v2.tools.ToolResultRegistry;
 import com.agentscopea2a.v2.hooks.ChatScriptExecResultHook;
 import com.agentscopea2a.v2.trace.collector.TraceSession;
@@ -22,6 +23,7 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.*;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
+import io.agentscope.core.model.ModelUtils;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.harness.agent.sandbox.SandboxException;
 import org.apache.commons.lang3.StringUtils;
@@ -57,16 +59,20 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.CHUNK_GAP_TIMEOUT_SECONDS;
+import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.SCRIPT_EXEC_ENABLED;
+import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.STREAM_TIMEOUT_SECONDS;
+
 /**
  * 流式聊天服务实现，基于 SSE 推送 Agent 事件流
  */
 @Service
 public class ChatStreamServiceImpl implements ChatStreamService {
 
+    private static final String IN_FLIGHT_NOTICE = "当前会话正在处理中，请等待本次回答完成后再试。";
+
     private static final Logger log = LoggerFactory.getLogger(ChatStreamServiceImpl.class);
     private static final Logger llmTraceLog = LoggerFactory.getLogger("llm.trace");
-    /** SSE 连接超时时间：20 分钟（单位毫秒），覆盖长思考 / 工具调用场景 */
-    private static final long SSE_TIMEOUT = 1200_000L;
     /**
      * 看门狗时间60s
      * 容器 async 超时兜底：比看门狗晚 60 秒，正常情况永不触发。
@@ -98,6 +104,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     private final TraceAssembler traceAssembler;
     private final TraceBatchWriter traceBatchWriter;
     private final ToolResultRegistry toolResultRegistry;
+    private final ChatRuntimeConfigService chatRuntimeConfigService;
 
     @Autowired
     private MainAgentMapper mainAgentMapper;
@@ -125,13 +132,15 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                                  EpisodicMemory episodicMemory,
                                  TraceAssembler traceAssembler,
                                  TraceBatchWriter traceBatchWriter,
-                                 ToolResultRegistry toolResultRegistry) {
+                                 ToolResultRegistry toolResultRegistry,
+                                 ChatRuntimeConfigService chatRuntimeConfigService) {
         this.runner = runner;
         this.artifactStore = artifactStore;
         this.episodicMemory = episodicMemory;
         this.traceAssembler = traceAssembler;
         this.traceBatchWriter = traceBatchWriter;
         this.toolResultRegistry = toolResultRegistry;
+        this.chatRuntimeConfigService = chatRuntimeConfigService;
     }
 
     /**
@@ -203,6 +212,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     private interface ResponseStrategy {
         void sendThink(StreamContext ctx, ThinkPayload payload);
         void sendText(StreamContext ctx, TextPayload payload);
+        void sendInFlight(SseEmitter emitter, ChatRequest req);
         void sendError(StreamContext ctx, Throwable error);
     }
 
@@ -247,6 +257,18 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         }
 
         @Override
+        public void sendInFlight(SseEmitter emitter, ChatRequest req) {
+            TextManagerResponseDto dto = new TextManagerResponseDto();
+            dto.setData(inFlightNoticeContent());
+            dto.setFinish(true);
+            dto.setCode(200);
+            dto.setAnsUUID(req.getConversationId());
+            dto.setConversationId(req.getConversationId());
+            dto.setFromType(req.getFromType());
+            safeSend(emitter, dto, MediaType.APPLICATION_JSON);
+        }
+
+        @Override
         public void sendError(StreamContext ctx, Throwable error) {
             TextManagerResponseDto dto = new TextManagerResponseDto();
             ContentDto contentDto = new ContentDto();
@@ -283,6 +305,14 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         }
 
         @Override
+        public void sendInFlight(SseEmitter emitter, ChatRequest req) {
+            TextResponseDto dto = new TextResponseDto();
+            dto.setData(inFlightNoticeContent());
+            dto.setFinish(true);
+            safeSend(emitter, dto, MediaType.APPLICATION_JSON);
+        }
+
+        @Override
         public void sendError(StreamContext ctx, Throwable error) {
             TextResponseDto dto = new TextResponseDto();
             ContentDto contentDto = new ContentDto();
@@ -314,12 +344,18 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         }
         ResponseStrategy strategy = managerMode ? managerStrategy : publicStrategy;
 
-        // 容器级超时 = SSE_TIMEOUT + 60s，只做兜底；真正的超时处理走下方看门狗
-        SseEmitter emitter = new SseEmitter(SSE_TIMEOUT + CONTAINER_TIMEOUT_GRACE);
-
         String text = req.getQuestion();
         String userId = req.getUserId();
         String conversationId = req.getConversationId();
+        ChatRuntimeConfig runtimeConfig =
+                chatRuntimeConfigService.resolve(userId, conversationId);
+        long streamTimeoutMs = TimeUnit.SECONDS.toMillis(
+                runtimeConfig.getIntOrDefault(STREAM_TIMEOUT_SECONDS, 1200));
+        ModelUtils.configureChunkGapTimeoutSeconds(
+                runtimeConfig.getIntOrDefault(CHUNK_GAP_TIMEOUT_SECONDS, 120));
+
+        // 容器级超时比看门狗晚 60 秒，只做兜底；真正的超时处理走下方看门狗。
+        SseEmitter emitter = new SseEmitter(streamTimeoutMs + CONTAINER_TIMEOUT_GRACE);
 
         // 构造调用键：同一 (userId, conversationId) 只允许一个进行中的流式调用
         String callKey = callKey(userId, conversationId);
@@ -327,9 +363,8 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         // putIfAbsent：若已存在同会话的进行中调用，直接拒绝，防止并发覆盖 / 重复消耗 LLM token
         InFlightCall existing = inFlightCalls.putIfAbsent(callKey, inFlight);
         if (existing != null) {
-            emitter.completeWithError(new TooManyRequestsException(
-                    "Session " + conversationId + " already has an in-flight call; "
-                            + "wait for it to finish or use POST /v2/ai/chat/interrupt to redirect"));
+            strategy.sendInFlight(emitter, req);
+            emitter.complete();
             return emitter;
         }
 
@@ -340,7 +375,9 @@ public class ChatStreamServiceImpl implements ChatStreamService {
 
         // 构造运行时上下文：携带 sessionId / userId / lastQuestion 供中间件 / hooks 访问
         RuntimeContext ctx = buildRuntimeContext(conversationId, userId, text);
-        ctx.put(ChatScriptExecResultHook.ENABLED_CTX_KEY, Boolean.TRUE);
+        ctx.put(ChatRuntimeConfigService.RUNTIME_CONFIG_CTX_KEY, runtimeConfig);
+        ctx.put(ChatScriptExecResultHook.ENABLED_CTX_KEY,
+                runtimeConfig.getBooleanOrDefault(SCRIPT_EXEC_ENABLED, false));
         String requestId = UUID.randomUUID().toString();
         ctx.put(ChatScriptExecResultHook.REQUEST_ID_CTX_KEY, requestId);
 
@@ -416,10 +453,10 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             // 3. 连接仍存活，发送超时错误事件（含"已执行"补发，保证与"执行中"成对）
             try {
                 if (streamCtx.hasSentExecuting.get()) {
-                    strategy.sendThink(streamCtx, ThinkPayload.done("分析执行智能体"));
+                    strategy.sendThink(streamCtx, ThinkPayload.done(AGENT_RETURN_NAME));
                 }
                 strategy.sendError(streamCtx, new RuntimeException(
-                        "流程超时：本次对话处理时间过长（已等待 " + (SSE_TIMEOUT / 60_000) + " 分钟），会话已自动结束。"
+                        "流程超时：本次对话处理时间过长（已等待 " + (streamTimeoutMs / 60_000) + " 分钟），会话已自动结束。"
                                 + "请稍后重试，或尝试精简问题以缩短处理时间。"));
             } catch (Exception e) {
                 log.warn("发送超时错误失败: sessionId={}", streamCtx.conversationId, e);
@@ -431,14 +468,15 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                 log.warn("emitter.complete() 失败: sessionId={}", streamCtx.conversationId, e);
             }
             cleanup.run();
-        }, SSE_TIMEOUT, TimeUnit.MILLISECONDS));
+        }, streamTimeoutMs, TimeUnit.MILLISECONDS));
 
         // 在 boundedElastic 调度器上异步启动流式订阅，避免阻塞 Servlet 容器线程
         Mono.fromRunnable(() -> {
             try {
                 // 核心：触发 Agent 流式事件流（文本增量、工具调用、最终结果等事件）
                 // 事件类型基类为 io.agentscope.core.event.AgentEvent
-                Flux<AgentEvent> eventFlux = runner.streamEvents(List.of(userMsg), ctx);
+                Flux<AgentEvent> eventFlux = monitorTermination(
+                        runner.streamEvents(List.of(userMsg), ctx), cleanup);
 
                 // 订阅事件流：onNext 处理每个事件，onError 处理异常，onComplete 处理结束
                 // 参考 v1 流处理模式：processChunk 处理增量，handleStreamError/Success 处理终止
@@ -536,7 +574,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         } catch (Exception e) {
             // 仅在确实发送过"执行中"时才补发"已执行"，保证成对
             if (ctx.hasSentExecuting.get()) {
-                strategy.sendThink(ctx, ThinkPayload.done("分析执行智能体"));
+                strategy.sendThink(ctx, ThinkPayload.done(AGENT_RETURN_NAME));
             }
             log.error("处理流式事件失败: sessionId={}", ctx.conversationId, e);
             throw new RuntimeException(e.getMessage(), e);
@@ -582,7 +620,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         try {
             // 仅在确实发送过"执行中"时才补发"已执行"，保证成对
             if (ctx.hasSentExecuting.get()) {
-                strategy.sendThink(ctx, ThinkPayload.done("分析执行智能体"));
+                strategy.sendThink(ctx, ThinkPayload.done(AGENT_RETURN_NAME));
             }
             strategy.sendError(ctx, error);
         } catch (Exception e) {
@@ -608,7 +646,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         try {
             // 仅在确实发送过"执行中"时才发送"已执行"，保证成对
             if (ctx.hasSentExecuting.get()) {
-                strategy.sendThink(ctx, ThinkPayload.done("分析智能体"));
+                strategy.sendThink(ctx, ThinkPayload.done(AGENT_RETURN_NAME));
             }
             // 流式输出最终结果：每 5 个字符一片
             String finalAnswer = ctx.answerContent.toString();
@@ -684,6 +722,14 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     }
 
     /**
+     * 监听 Reactor 流的全部终止信号，包括客户端断开后产生的 CANCEL。
+     * cleanup 本身具有幂等保护，可与 SseEmitter 生命周期回调安全并存。
+     */
+    static <T> Flux<T> monitorTermination(Flux<T> flux, Runnable cleanup) {
+        return flux.doFinally(signalType -> cleanup.run());
+    }
+
+    /**
      * 构造 cleanup 逻辑：取消订阅、清理 artifact、持久化 episodic 记忆、移除进行中调用标记。
      * 幂等执行（CAS 保证只执行一次）。
      */
@@ -751,11 +797,21 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         return friendlyErrorMessage(error);
     }
 
+    /** 构造重复请求提示内容；具体响应 DTO 由 ResponseStrategy 决定。 */
+    static ContentDto inFlightNoticeContent() {
+        ContentDto content = new ContentDto();
+        content.setContent(IN_FLIGHT_NOTICE);
+        content.setAction("");
+        content.setTopic("");
+        return content;
+    }
+
     static String friendlyErrorMessage(Throwable error) {
-        if (isRetryOrTimeout(error)) {
-            return "请求已达最大重试次数，当前模型资源不足，请稍后再试。";
-        }
-        return "模型服务暂时不可用，请稍后重试";
+//        if (isRetryOrTimeout(error)) {
+//            return "请求已达最大重试次数，当前模型资源不足，请稍后再试。";
+//        }
+//        return "模型服务暂时不可用，请稍后重试";
+        return "请求模型超时,请稍后重试";
     }
 
     private static boolean isRetryOrTimeout(Throwable error) {

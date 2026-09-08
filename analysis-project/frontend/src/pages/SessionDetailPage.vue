@@ -46,7 +46,11 @@
             <el-icon class="step-icon"><component :is="step.icon" /></el-icon>
             <span class="step-title">{{ step.title }}</span>
             <span class="step-time">{{ formatTime(step.createdAt) }}</span>
+            <span v-if="step.durationMs != null" class="step-duration">{{ formatDuration(step.durationMs) }}</span>
             <el-tag v-if="step.subtitle" size="small" type="info" effect="plain">{{ step.subtitle }}</el-tag>
+          </div>
+          <div v-if="step.startedAt && step.endedAt" class="step-interval">
+            {{ formatTime(step.startedAt) }} - {{ formatTime(step.endedAt) }}
           </div>
           <div v-if="step.body" class="step-body" :class="{ collapsed: !isExpanded(step) && step.collapsible }">
             <pre v-if="step.kind === 'tool' || step.kind === 'tool-result'" class="code">{{ step.body }}</pre>
@@ -125,6 +129,9 @@ interface Step {
   subtitle?: string;
   body?: string;
   createdAt: string;
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
   color: string;
   collapsible: boolean;
   /** 原始事件（点击卡片其他区域时弹窗展示完整 JSON）。 */
@@ -157,6 +164,16 @@ const steps = computed<Step[]>(() => {
   const out: Step[] = [];
   let idx = 0;
   const nextId = (prefix: string) => `${prefix}-${idx++}`;
+  const timedResults = new Map<string, AgentEvent>();
+  const consumedResults = new Set<AgentEvent>();
+
+  for (const event of rawEvents.value) {
+    if ((event.type || '').toUpperCase() !== 'POST_ACTING') continue;
+    const toolId = (event.tool_use as any)?.id || (event.tool_result as any)?.id;
+    if (toolId && event.startedAt && event.endedAt && typeof event.durationMs === 'number') {
+      timedResults.set(String(toolId), event);
+    }
+  }
 
   for (const e of rawEvents.value) {
     const t = (e.type || '').toUpperCase();
@@ -229,7 +246,13 @@ const steps = computed<Step[]>(() => {
       case 'PRE_ACTING': {
         const tu = e.tool_use as any;
         const name = tu?.name || 'tool';
-        const body = formatToolInput(tu?.input);
+        const result = tu?.id ? timedResults.get(String(tu.id)) : undefined;
+        if (result) consumedResults.add(result);
+        const input = formatToolInput(tu?.input);
+        const output = result ? extractOutputText((result.tool_result as any)?.output) : '';
+        const body = result
+          ? [`[INPUT]\n${input}`, `[OUTPUT]\n${output}`].filter(part => !part.endsWith('\n')).join('\n\n')
+          : input;
         out.push({
           id: e.id || nextId('tool'),
           kind: 'tool',
@@ -237,13 +260,17 @@ const steps = computed<Step[]>(() => {
           title: `工具调用 · ${name}`,
           subtitle: tu?.id as string | undefined,
           body,
-          createdAt,
+          createdAt: result?.startedAt || createdAt,
+          startedAt: result?.startedAt,
+          endedAt: result?.endedAt,
+          durationMs: result?.durationMs,
           collapsible: !!body && body.length > 80,
           raw: e,
         });
         break;
       }
       case 'POST_ACTING': {
+        if (consumedResults.has(e)) break;
         const tr = e.tool_result as any;
         const name = tr?.name || (e.tool_use as any)?.name || 'tool';
         const body = extractOutputText(tr?.output);
@@ -370,7 +397,7 @@ const statusTagType = computed<'success' | 'danger' | 'warning' | 'info'>(() => 
 });
 
 function formatDuration(ms: number): string {
-  if (!ms) return '-';
+  if (ms == null) return '-';
   if (ms < 1000) return `${Math.round(ms)}ms`;
   return `${(ms / 1000).toFixed(2)}s`;
 }
@@ -515,6 +542,8 @@ onMounted(loadData);
 .step-icon { font-size: 16px; }
 .step-title { flex: 1; }
 .step-time { font-size: 11px; color: #94a3b8; font-weight: 400; }
+.step-duration { font-size: 11px; color: #b45309; font-weight: 600; }
+.step-interval { margin-top: 4px; font-size: 11px; color: #64748b; font-family: ui-monospace, monospace; }
 .step-body {
   margin-top: 8px;
   font-size: 13px;

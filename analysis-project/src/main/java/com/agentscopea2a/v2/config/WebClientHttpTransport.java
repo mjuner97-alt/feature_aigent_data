@@ -21,6 +21,8 @@ import io.agentscope.core.model.transport.HttpTransport;
 import io.agentscope.core.model.transport.HttpTransportException;
 import io.agentscope.core.model.transport.TransportConstants;
 import io.agentscope.diagnostics.LlmFileTrace;
+import com.agentscopea2a.v2.service.ChatRuntimeConfigService;
+import com.agentscopea2a.v2.service.ChatRuntimeConfig;
 import io.netty.channel.ChannelOption;
 import java.time.Duration;
 import java.util.Map;
@@ -53,7 +55,7 @@ import reactor.netty.http.client.HttpClient;
  * </ul>
  *
  * <p>超时策略：connectTimeout / responseTimeout 只覆盖到「响应头」；流式 body 不设整体超时，
- * 中途卡死由 {@code ModelUtils} 的 chunk 间隔超时（默认 40s）兜底——与 JDK 实现一致。
+ * 中途卡死由 {@code ModelUtils} 的可配置 chunk 间隔超时兜底——与 JDK 实现一致。
  */
 @Component
 public class WebClientHttpTransport implements HttpTransport {
@@ -64,17 +66,22 @@ public class WebClientHttpTransport implements HttpTransport {
     private final WebClient webClient;
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
-    public WebClientHttpTransport() {
+    public WebClientHttpTransport(ChatRuntimeConfigService chatRuntimeConfigService) {
+        ChatRuntimeConfig runtimeConfig =
+                chatRuntimeConfigService.resolve("__transport__", "");
         // reactor-netty 默认 HTTP/1.1。responseTimeout 只到响应头，流式 body 不截断。
         // 连接超时用 ChannelOption（reactor-netty 1.1 无 HttpClient.connectTimeout(Duration)）。
         HttpClient httpClient = HttpClient.create()
-                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 30_000)
-                .responseTimeout(Duration.ofSeconds(30))
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS,
+                        Math.toIntExact(Duration.ofSeconds(runtimeConfig.getIntOrDefault(
+                                AiChatRuntimeConfigKeys.CONNECT_TIMEOUT_SECONDS, 120)).toMillis()))
+                .responseTimeout(Duration.ofSeconds(runtimeConfig.getIntOrDefault(
+                        AiChatRuntimeConfigKeys.RESPONSE_TIMEOUT_SECONDS, 120)))
                 .followRedirect(true);
         this.webClient = WebClient.builder()
                 .clientConnector(new ReactorClientHttpConnector(httpClient))
                 .build();
-    }
+    }   
 
     // ── 非流式 ──────────────────────────────────────────────────────────────
 

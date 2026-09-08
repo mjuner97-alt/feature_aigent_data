@@ -175,14 +175,30 @@
         WHERE id=#{id}
     </update>
 
-    <!-- 应用重启时恢复僵尸执行记录：把残留的 RUNNING/PENDING 标记为 FAILED -->
-    <update id="markStaleRunningAsFailed">
+    <!-- 应用重启时仅恢复当天残留/旧版本中断记录，并重新排队 -->
+    <select id="selectTodayInterruptedExecutions" resultMap="SkillJobExecutionResultMap">
+        SELECT <include refid="skillJobExecutionCols"/>
+        FROM skill_job_execution
+        WHERE (
+            status IN ('RUNNING', 'PENDING')
+            OR (status = 'FAILED' AND error_msg LIKE '应用重启中断%')
+        )
+        AND created_at >= CURRENT_DATE
+        AND created_at &lt; CURRENT_DATE + 1
+        ORDER BY id
+    </select>
+
+    <update id="recoverTodayInterruptedExecutions">
         UPDATE skill_job_execution
-        SET status = 'FAILED',
-            error_msg = '应用重启中断：进程退出时仍在运行',
-            started_at = COALESCE(started_at, NOW()),
-            completed_at = NOW()
-        WHERE status IN ('RUNNING', 'PENDING')
+        SET status = 'PENDING',
+            error_msg = '应用重启中断，已恢复排队',
+            completed_at = NULL
+        WHERE (
+            status IN ('RUNNING', 'PENDING')
+            OR (status = 'FAILED' AND error_msg LIKE '应用重启中断%')
+        )
+        AND created_at >= CURRENT_DATE
+        AND created_at &lt; CURRENT_DATE + 1
     </update>
 
     <!-- ==================== skill_job_notification ==================== -->
