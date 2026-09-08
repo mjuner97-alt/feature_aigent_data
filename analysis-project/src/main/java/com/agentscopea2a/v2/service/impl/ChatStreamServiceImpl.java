@@ -429,7 +429,13 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             cleanup.run();
         });
         emitter.onError(e -> {
-            handleStreamError(streamCtx, e, strategy);
+            if (isEmitterDisconnected(e)) {
+                if (streamCtx.traceCtx != null) {
+                    streamCtx.traceCtx.markCancelled("CLIENT_DISCONNECTED", "客户端在生成完成前断开连接");
+                }
+            } else {
+                handleStreamError(streamCtx, e, strategy);
+            }
             cleanup.run();
         });
 
@@ -607,7 +613,25 @@ public class ChatStreamServiceImpl implements ChatStreamService {
      * 避免 HTTP 500。其他错误（streaming 中途真异常、空响应）仍走 error 路径。
      */
     private void handleStreamError(StreamContext ctx, Throwable error, ResponseStrategy strategy) {
+        if (isClientDisconnected(error)) {
+            log.info("Client disconnected before stream completion: sessionId={}", ctx.conversationId);
+            try {
+                if (ctx.traceCtx != null) {
+                    ctx.traceCtx.markCancelled("CLIENT_DISCONNECTED", "客户端在生成完成前断开连接");
+                }
+            } catch (Exception te) {
+                log.warn("Trace markCancelled failed for sessionId={}: {}", ctx.conversationId, te.getMessage());
+            }
+            try {
+                ctx.emitter.complete();
+            } catch (Exception ignored) {
+                // The connection is already gone; completion only triggers idempotent cleanup.
+            }
+            return;
+        }
         log.error("处理流式异常: sessionId={}", ctx.conversationId, error);
+        // /ai/chat 真实执行失败才进入失败监控；客户端断连已在上方识别并提前返回，
+        // 避免刷新/关闭页面触发告警通知。此调用只记录监控，不负责修改 trace 状态。
         recordMonitorFailure(ctx, error);
         // Trace 状态标记：标记 ERROR（在 cleanup 的 assemble 之前调用，设计 5.2）。
         try {
@@ -689,11 +713,13 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                 log.warn("Empty agent completion: sessionId={} thinkLen={} refs={}",
                         ctx.conversationId, ctx.thinkContent.length(), currentRefs.size());
                 IllegalStateException emptyCompletion = new IllegalStateException(EMPTY_MODEL_COMPLETION_MESSAGE);
+                // 模型正常结束但未返回任何内容，属于可重试的业务失败，需要进入 /ai/chat 失败监控。
                 recordMonitorFailure(ctx, emptyCompletion);
                 strategy.sendError(ctx, emptyCompletion);
             }
         } catch (Exception e) {
             log.warn("发送最终结果失败: sessionId={}", ctx.conversationId, e);
+            // 最终结果组装或发送失败时补记监控；monitorRecorded 保证同一请求只记录一次。
             recordMonitorFailure(ctx, e);
         } finally {
             // Trace 状态标记：标记 SUCCESS（在 cleanup 的 assemble 之前调用，设计 5.2）。
@@ -721,8 +747,9 @@ public class ChatStreamServiceImpl implements ChatStreamService {
 //        }
     }
 
-    //失败
+    // /ai/chat 失败监控入口：负责耗时统计和失败告警，不负责 trace ERROR/CANCELLED 状态流转。
     private void recordMonitorFailure(StreamContext ctx, Throwable error) {
+        // 多个异常路径可能依次到达这里，CAS 防止同一请求重复计数、重复发送告警。
         if (ctx.monitorRecorded.compareAndSet(false, true)) {
             aiChatMonitor.failure(ctx.monitorStartedAtNanos, ctx.conversationId, ctx.userId, error);
         }
@@ -749,7 +776,49 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         try {
             emitter.send(data, mediaType);
         } catch (IOException e) {
-            throw new RuntimeException(e.getMessage(), e);
+            throw new ClientDisconnectedException(e);
+        }
+    }
+
+    static boolean isClientDisconnected(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof ClientDisconnectedException) return true;
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    //判断是不是中断链接
+    static boolean isEmitterDisconnected(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof ClientDisconnectedException) return true;
+            String className = current.getClass().getName();
+            if (className.endsWith("ClientAbortException")
+                    || className.endsWith("AsyncRequestNotUsableException")
+                    || className.endsWith("EofException")) {
+                return true;
+            }
+            String message = current.getMessage();
+            if (message != null) {
+                String normalized = message.toLowerCase();
+                if (normalized.contains("broken pipe")
+                        || normalized.contains("connection reset")
+                        || normalized.contains("connection aborted")
+                        || message.contains("中止了一个已建立的连接")
+                        || message.contains("远程主机强迫关闭")) {
+                    return true;
+                }
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    static final class ClientDisconnectedException extends RuntimeException {
+        ClientDisconnectedException(IOException cause) {
+            super(cause.getMessage(), cause);
         }
     }
 
@@ -787,6 +856,9 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             //     异步执行，不阻塞 SSE 完成回调（与 answer 落库一致）。
             try {
                 if (ctx.traceCtx != null) {
+                    if ("RUNNING".equals(ctx.traceCtx.getStatus())) {
+                        ctx.traceCtx.markCancelled("CLIENT_DISCONNECTED", "客户端在生成完成前断开连接");
+                    }
                     AssembledTrace trace = traceAssembler.assemble(ctx.traceCtx);
                     Mono.fromRunnable(() -> {
                         try {

@@ -122,6 +122,27 @@ public class TraceSession {
     }
 
     /**
+     * 把仍在运行的请求标记为已取消，并追加一条仅供 trace 记录和展示的终态事件。
+     * 已经成功、失败或超时的请求不会被覆盖，也不会重复追加取消事件。
+     */
+    public void markCancelled(String reason, String message) {
+        if (!status.compareAndSet("RUNNING", "CANCELLED")) return;
+        Instant now = Instant.now();
+        try {
+            com.fasterxml.jackson.databind.node.ObjectNode node = MAPPER.createObjectNode();
+            node.put("id", UUID.randomUUID().toString().replace("-", ""));
+            node.put("type", "CANCELLED");
+            node.put("createdAt", now.toString());
+            node.put("source", "user");
+            node.put("reason", reason == null || reason.isBlank() ? "USER_CANCELLED" : reason);
+            node.put("message", message == null ? "" : message);
+            addRecord(new TraceEventRecord(now.toString(), MAPPER.writeValueAsString(node)));
+        } catch (Exception ex) {
+            log.warn("TraceSession serialize cancellation failed: {}", ex.getMessage());
+        }
+    }
+
+    /**
      * 序列化全部记录为 JSON 字符串列表（按 createdAt 升序）。
      * 头部插入一条 USER_INPUT 虚拟事件承载用户原始输入。调用后 sealed，阻止后续写入。
      */

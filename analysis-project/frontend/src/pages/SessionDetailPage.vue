@@ -123,7 +123,7 @@ function expandAll(value: boolean) {
 
 interface Step {
   id: string;
-  kind: 'user' | 'thinking' | 'answer' | 'tool' | 'tool-result' | 'agent' | 'error' | 'other';
+  kind: 'user' | 'thinking' | 'answer' | 'tool' | 'tool-result' | 'agent' | 'error' | 'cancelled' | 'other';
   icon: Component;
   title: string;
   subtitle?: string;
@@ -146,6 +146,7 @@ const KIND_META: Record<Step['kind'], { icon: Component; color: string }> = {
   tool:          { icon: Tools, color: '#F59E0B' },
   'tool-result': { icon: Document, color: '#0EA5E9' },
   error:         { icon: Warning, color: '#EF4444' },
+  cancelled:     { icon: Warning, color: '#F59E0B' },
   other:         { icon: Document, color: '#94A3B8' },
 };
 
@@ -158,6 +159,7 @@ const KIND_META: Record<Step['kind'], { icon: Component; color: string }> = {
  *   POST_ACTING    -> 工具输出卡片（tool_result.output）
  *   POST_CALL      -> Agent 最终回复卡片（final_message）
  *   ERROR          -> 异常卡片
+ *   CANCELLED      -> 用户取消卡片
  * 每个操作一条事件、完整 payload，无需累积 delta。
  */
 const steps = computed<Step[]>(() => {
@@ -311,6 +313,20 @@ const steps = computed<Step[]>(() => {
           title: '异常',
           subtitle: (e.error_class as string) || undefined,
           body: (e.error_message as string) || '',
+          createdAt,
+          collapsible: false,
+          raw: e,
+        });
+        break;
+      }
+      case 'CANCELLED': {
+        out.push({
+          id: e.id || nextId('cancelled'),
+          kind: 'cancelled',
+          ...KIND_META.cancelled,
+          title: '用户已取消',
+          subtitle: (e.reason as string) || undefined,
+          body: (e.message as string) || '用户中断了本次生成',
           createdAt,
           collapsible: false,
           raw: e,

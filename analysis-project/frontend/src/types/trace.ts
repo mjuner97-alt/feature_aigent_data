@@ -5,7 +5,7 @@
  * 前端不维护 DTO 镜像，只在解析时按 type 字段分发。
  */
 
-export type TraceStatus = 'SUCCESS' | 'ERROR' | 'TIMEOUT' | 'RUNNING';
+export type TraceStatus = 'SUCCESS' | 'ERROR' | 'TIMEOUT' | 'CANCELLED' | 'RUNNING';
 
 /**
  * Element Plus <el-tag> 的 type 映射，按 TraceStatus 取色。
@@ -15,6 +15,7 @@ export const STATUS_TAG_TYPE: Record<TraceStatus, string> = {
   SUCCESS: 'success',
   ERROR: 'danger',
   TIMEOUT: 'warning',
+  CANCELLED: 'info',
   RUNNING: 'primary',
 };
 
