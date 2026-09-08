@@ -4,7 +4,7 @@ import { ElMessageBox } from 'element-plus';
 import { getSkillFlowExecution, getSkillFlowExecutionMetrics, getSkillFlowExecutionNodes, getSkillFlowExecutionNotifications, getSkillFlowExecutionReportUrl, getSkillFlowNodeReportUrl, resendSkillFlowExecutionNotification, retrySkillFlowSummary, retrySkillFlowNode, retrySkillFlowFailedNodes } from '../api/skillFlow';
 import type { SkillFlowExecution, SkillFlowNodeExecution } from '../types/skillFlow';
 import { currentUserId } from '../api/skill';
-import { canRetryNode, shouldShowMetricReadiness, shouldShowNodeTimes, statusClass, statusText } from './skillFlowExecutionPresentation';
+import { canRetryNode, formatNodeErrorDetails, shouldShowMetricReadiness, shouldShowNodeTimes, statusClass, statusText } from './skillFlowExecutionPresentation';
 
 const props = defineProps<{ open: boolean; executionId: number | null }>();
 const emit = defineEmits<{ (e: 'update:open', open: boolean): void; (e: 'changed'): void }>();
@@ -33,7 +33,7 @@ const summaryGenerationError = computed(() => {
 function formatTime(value?: string | null) { return value ? value.replace('T', ' ').slice(0, 19) : '-'; }
 function listText(value?: string[]) { return value?.length ? value.join('、') : '-'; }
 function showNodeError(node: SkillFlowNodeExecution) {
-  const detail = `状态：${statusText(node.status)}\n开始时间：${formatTime(node.startedAt)}\n结束时间：${formatTime(node.completedAt)}\n\n错误信息：\n${node.errorCode ? `${node.errorCode}: ` : ''}${node.errorMessage || '暂无错误详情'}`;
+  const detail = `状态：${statusText(node.status)}\n开始时间：${formatTime(node.startedAt)}\n结束时间：${formatTime(node.completedAt)}\n\n${formatNodeErrorDetails(node)}`;
   ElMessageBox.alert(detail, `${node.skillName || node.nodeKey} 错误详情`, {
     confirmButtonText: '关闭',
     customClass: 'execution-error-dialog',

@@ -1,6 +1,32 @@
 const TERMINAL_FLOW_STATUSES = new Set(['SUCCESS', 'FAILED', 'PARTIAL_SUCCESS', 'CANCELLED']);
 const RETRYABLE_NODE_STATUSES = new Set(['SUCCESS', 'FAILED', 'CANCELLED', 'BLOCKED']);
 
+export interface NodeErrorLike {
+  id?: number | null;
+  nodeKey?: string | null;
+  skillName?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}
+
+export function statusText(value: string): string {
+  return ({
+    WAITING_METRICS: '排队中', QUEUED: '排队中', RUNNING: '执行中', SUMMARIZING: '汇总中',
+    SUCCESS: '成功', PARTIAL_SUCCESS: '部分成功', FAILED: '失败', CANCELLED: '已取消',
+    CANCEL_REQUESTED: '取消中', PENDING: '排队中', RETRY_WAIT: '等待重试', BLOCKED: '已阻塞',
+  } as Record<string, string>)[value] || value;
+}
+
+export function formatNodeErrorDetails(node: NodeErrorLike): string {
+  return [
+    `节点：${node.skillName || node.nodeKey || '-'}`,
+    `节点ID：${node.id ?? '-'}`,
+    `错误代码：${node.errorCode || '-'}`,
+    '',
+    node.errorMessage || '暂无错误详情',
+  ].join('\n');
+}
+
 export function canRetryNode(flowStatus: string, nodeStatus: string): boolean {
   return TERMINAL_FLOW_STATUSES.has(flowStatus) && RETRYABLE_NODE_STATUSES.has(nodeStatus);
 }
