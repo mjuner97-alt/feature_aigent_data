@@ -55,6 +55,9 @@ public class ModelProvider {
     /** fallback 模型：同一默认 deepseek 端点，但走 WebClient(HTTP/1.1) 传输，主模型超时/失败时降级。 */
     private final Model fallbackModel;
 
+    /** 文本格式工具调用兜底：通道不支持 function calling 时把标记文本解析回真实工具调用。 */
+    private final boolean textToolCallFallbackEnabled;
+
     /** userId -> 缓存条目（含配置和过期时间戳） */
     private final Map<String, CacheEntry> userModelCache = new ConcurrentHashMap<>();
 
@@ -64,10 +67,12 @@ public class ModelProvider {
             WebClientHttpTransport webClientTransport,
             @Value("${agentscope.llm.api-key:}") String llmApiKey,
             @Value("${agentscope.llm.api-url:}") String llmApiUrl,
-            @Value("${agentscope.llm.model:}") String llmModel) {
+            @Value("${agentscope.llm.model:}") String llmModel,
+            @Value("${harness.a2a.tool-text-fallback.enabled:true}") boolean textToolCallFallbackEnabled) {
         this.userModelConfigMapper = userModelConfigMapper;
         this.harnessRunnerProperties = harnessRunnerProperties;
         this.webClientTransport = webClientTransport;
+        this.textToolCallFallbackEnabled = textToolCallFallbackEnabled;
 
         // 统一从 agentscope.llm.* 构建默认模型 (deepseek)
         this.defaultModel =   OpenAIChatModel.builder()
@@ -122,7 +127,17 @@ public class ModelProvider {
             primaryModel = defaultModel;
         }
 
-        return new FallbackModelDecorator(primaryModel, fallbackModel);
+        return new FallbackModelDecorator(
+                wrapTextToolCallFallback(primaryModel),
+                wrapTextToolCallFallback(fallbackModel));
+    }
+
+    /**
+     * 按 {@code harness.a2a.tool-text-fallback.enabled} 包一层文本工具调用兜底（默认开启）。
+     * primary 与 fallback 都要包：降级后的输出同样可能是文本格式工具调用。
+     */
+    private Model wrapTextToolCallFallback(Model model) {
+        return textToolCallFallbackEnabled ? new TextToolCallFallbackModel(model) : model;
     }
 
     /**
@@ -220,7 +235,9 @@ public class ModelProvider {
      */
     public FallbackModelDecorator getModelByKey(String instanceKey) {
         if (instanceKey == null || instanceKey.isBlank()) {
-            return new FallbackModelDecorator(defaultModel, fallbackModel);
+            return new FallbackModelDecorator(
+                    wrapTextToolCallFallback(defaultModel),
+                    wrapTextToolCallFallback(fallbackModel));
         }
         HarnessRunnerProperties.Instances inst = harnessRunnerProperties.getModel().getInstances();
         HarnessRunnerProperties.ModelInstance mi = switch (instanceKey) {
@@ -231,7 +248,9 @@ public class ModelProvider {
         };
         if (mi == null || !mi.isConfigured()) {
             log.info("ModelProvider: instance '{}' not configured, using default model", instanceKey);
-            return new FallbackModelDecorator(defaultModel, fallbackModel);
+            return new FallbackModelDecorator(
+                    wrapTextToolCallFallback(defaultModel),
+                    wrapTextToolCallFallback(fallbackModel));
         }
         Model m = OpenAIChatModel.builder()
                 .apiKey(mi.getApiKey())
@@ -240,7 +259,9 @@ public class ModelProvider {
                 .stream(true)
                 .build();
         log.info("ModelProvider: resolved independent model instance '{}' name={}", instanceKey, mi.getName());
-        return new FallbackModelDecorator(m, fallbackModel);
+        return new FallbackModelDecorator(
+                wrapTextToolCallFallback(m),
+                wrapTextToolCallFallback(fallbackModel));
     }
 
     /**
