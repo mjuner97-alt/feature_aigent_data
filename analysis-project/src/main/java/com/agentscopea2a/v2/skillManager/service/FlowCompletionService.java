@@ -6,6 +6,7 @@ import com.agentscopea2a.v2.skillManager.entity.*;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.skillManager.notification.NotificationPayload;
 import com.agentscopea2a.v2.skillManager.notification.NotificationSender;
+import com.agentscopea2a.v2.skillManager.report.FlowReportStorage;
 import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.RuntimeContext;
@@ -21,8 +22,6 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Clock;
@@ -55,13 +54,15 @@ public class FlowCompletionService {
     private final NotificationSender sender;
     private final Clock clock;
     private final FlowSummaryPromptRenderer promptRenderer;
+    private final FlowReportStorage reportStorage;
     /** 报告根目录(${skill.job.base-dir}),报告以 用户目录/flow-{id}-report.html 存放。 */
     private final Path reportRoot;
 
     public FlowCompletionService(HarnessA2aRunnerV2 runner, ObjectMapper json, HtmlReportRenderer renderer,
                                  SkillFlowMapper mapper, NotificationSender sender,
                                  @Qualifier("skillFlowClock") Clock skillFlowClock,
-                                 SkillStorageProperties storage, FlowSummaryPromptRenderer promptRenderer) {
+                                 SkillStorageProperties storage, FlowSummaryPromptRenderer promptRenderer,
+                                 FlowReportStorage reportStorage) {
         this.runner = runner;
         this.json = json;
         this.renderer = renderer;
@@ -69,6 +70,7 @@ public class FlowCompletionService {
         this.sender = sender;
         this.clock = skillFlowClock;
         this.promptRenderer = promptRenderer;
+        this.reportStorage = reportStorage;
         this.reportRoot = Paths.get(storage.getJobReportDir()).normalize().toAbsolutePath();
     }
 
@@ -81,20 +83,16 @@ public class FlowCompletionService {
             String text = orderedReportText(nodes);
             flow.setRenderedSummaryQuestion(null);
             mapper.updateExecution(flow);
-            Path relative = Paths.get(flow.getTriggerUserId(), "flow-" + flow.getId() + "-report.html");
-            Path target = reportRoot.resolve(relative).normalize();
-            if (!target.startsWith(reportRoot)) throw new IllegalStateException("invalid report path");
-            Path parent = target.getParent();
-            if (parent != null && Files.notExists(parent)) {
-                Files.createDirectories(parent);
-            }
-            Files.writeString(target, renderer.render(text, flow.getFlowName()), StandardCharsets.UTF_8);
+            String reportPath = reportStorage.write(flow.getTriggerUserId(), flow.getId(),
+                    renderer.render(text, Objects.toString(flow.getFlowName(), "长任务报告")));
             return new Summary(json.writeValueAsString(Map.of("results", nodes.stream()
                     .map(n -> Map.of("nodeKey", Objects.toString(n.getNodeKey(), ""),
                             "skillName", Objects.toString(n.getSkillName(), ""),
-                            "status", n.getStatus().name(),
+                            "status", n.getStatus() == null ? "UNKNOWN" : n.getStatus().name(),
                             "result", Objects.toString(n.getResultJson(), ""))).toList())),
-                    relative.toString().replace('\\', '/'));
+                    reportPath);
+        } catch (FlowReportStorage.ReportStorageException e) {
+            throw new IllegalStateException(e.code() + ": " + e.getMessage(), e);
         } catch (Exception e) {
             throw new IllegalStateException("FlowSummaryFailed: " + e.getMessage(), e);
         }
@@ -106,7 +104,8 @@ public class FlowCompletionService {
             SkillFlowNodeExecution node = nodes.get(index);
             report.append("## ").append(index + 1).append(". ")
                     .append(Objects.toString(node.getSkillName(), node.getNodeKey())).append('\n');
-            report.append("状态：").append(node.getStatus().name()).append("\n\n");
+            report.append("状态：").append(node.getStatus() == null ? "UNKNOWN" : node.getStatus().name())
+                    .append("\n\n");
             report.append(extractResultText(node.getResultJson())).append("\n\n");
         }
         return report.toString();

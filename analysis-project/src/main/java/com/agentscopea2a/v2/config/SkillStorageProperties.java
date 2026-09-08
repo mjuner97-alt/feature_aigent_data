@@ -24,6 +24,12 @@ public class SkillStorageProperties {
     @Value("${skill.job.backup-dir}")
     private String jobBackupDir;
 
+    @Value("${skill.job.report-min-free-bytes:104857600}")
+    private long reportMinFreeBytes;
+
+    @Value("${skill.job.report-retention-days:30}")
+    private int reportRetentionDays;
+
     public String getJobReportDir() {
         return ReportStoragePathResolver.resolve(jobReportDir).toString();
     }

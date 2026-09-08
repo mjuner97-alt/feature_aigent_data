@@ -65,6 +65,9 @@ public class ScriptDebugService implements AutoCloseable {
 
         String runId = UUID.randomUUID().toString();
         RunState state = new RunState(runId, entry.getScriptId());
+        // Publish RUNNING before handing the state to another thread. The worker must never
+        // write RUNNING after it may already have published a terminal result.
+        state.status = "RUNNING";
         runs.put(runId, state);
         state.startedAt = System.currentTimeMillis();
         state.events.add(new DebugEvent("run_started", runId, "RUNNING", "", "", null, null, 0));
@@ -85,7 +88,6 @@ public class ScriptDebugService implements AutoCloseable {
     }
 
     private void execute(RunState state, Map<String, Object> params, int timeout) {
-        state.status = "RUNNING";
         long started = state.startedAt;
         try {
             String output = invoker.invoke(state.scriptId, params);
