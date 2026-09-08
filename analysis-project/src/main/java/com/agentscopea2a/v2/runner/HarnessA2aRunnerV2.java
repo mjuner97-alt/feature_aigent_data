@@ -258,7 +258,7 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
         ExecutionConfig modelExecutionConfig = runtimeConfig == null
                 ? AgentExecutionConfig.MODEL_DEFAULTS
                 : AgentExecutionConfig.customModelConfig(
-                        Duration.ofSeconds(runtimeConfig.getIntOrDefault(MODEL_TIMEOUT_SECONDS, 120)), 1);
+                        Duration.ofSeconds(runtimeConfig.getIntOrDefault(MODEL_TIMEOUT_SECONDS, 900)), 1);
 
         // 获取带降级逻辑的主模型
         FallbackModelDecorator primaryModel = modelProvider.getModelForUser(userId);
@@ -280,6 +280,8 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
         HarnessAgent.Builder builder = HarnessAgent.builder()
                 .name("QualitySupervisorV2")
                 .model(primaryModel)
+                //设置agent最大迭代次数30次
+                .maxIters(30)
                 .workspace(workspace)
                 .skillRepository(new DatabaseSkillRepository(skillMapper, skillUsageResolver,
                         userId != null ? String.valueOf(userId) : null, skillFileBaseDir))

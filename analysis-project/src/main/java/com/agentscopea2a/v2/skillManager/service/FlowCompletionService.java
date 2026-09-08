@@ -28,6 +28,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -83,18 +84,29 @@ public class FlowCompletionService {
             String text = orderedReportText(nodes);
             flow.setRenderedSummaryQuestion(null);
             mapper.updateExecution(flow);
-            String reportPath = reportStorage.write(flow.getTriggerUserId(), flow.getId(),
-                    renderer.render(text, Objects.toString(flow.getFlowName(), "长任务报告")));
-            return new Summary(json.writeValueAsString(Map.of("results", nodes.stream()
+            List<Map<String, String>> results = nodes.stream()
                     .map(n -> Map.of("nodeKey", Objects.toString(n.getNodeKey(), ""),
                             "skillName", Objects.toString(n.getSkillName(), ""),
                             "status", n.getStatus() == null ? "UNKNOWN" : n.getStatus().name(),
-                            "result", Objects.toString(n.getResultJson(), ""))).toList())),
-                    reportPath);
-        } catch (FlowReportStorage.ReportStorageException e) {
-            throw new IllegalStateException(e.code() + ": " + e.getMessage(), e);
+                            "result", Objects.toString(n.getResultJson(), ""))).toList();
+            try {
+                String reportPath = reportStorage.write(flow.getTriggerUserId(), flow.getId(),
+                        renderer.render(text, Objects.toString(flow.getFlowName(), "长任务报告")));
+                return new Summary(json.writeValueAsString(Map.of("results", results)), reportPath);
+            } catch (FlowReportStorage.ReportStorageException e) {
+                // 报告属于收尾附件，磁盘不足不能反向把已经成功的节点和流程改成失败。
+                // 节点结果仍保存在 summaryJson，释放空间后可通过“重新生成汇总”补建报告。
+                log.error("Flow report persistence failed: code={}, flowId={}, reason={}",
+                        e.code(), flow.getId(), e.getMessage(), e);
+                Map<String, Object> degraded = new LinkedHashMap<>();
+                degraded.put("results", results);
+                degraded.put("reportError", Map.of("code", e.code(),
+                        "message", Objects.toString(e.getMessage(), "报告写入失败")));
+                return new Summary(json.writeValueAsString(degraded), null);
+            }
         } catch (Exception e) {
-            throw new IllegalStateException("FlowSummaryFailed: " + e.getMessage(), e);
+            throw new IllegalStateException("FlowSummaryFailed: "
+                    + Objects.toString(e.getMessage(), e.getClass().getSimpleName()), e);
         }
     }
 

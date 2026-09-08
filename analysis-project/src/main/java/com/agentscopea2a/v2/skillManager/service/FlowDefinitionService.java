@@ -1,5 +1,6 @@
 package com.agentscopea2a.v2.skillManager.service;
 
+import com.agentscopea2a.v2.skillManager.config.SkillFlowProperties;
 import com.agentscopea2a.v2.skillManager.dto.FlowMetricReadinessDto;
 import com.agentscopea2a.v2.skillManager.dto.FlowValidationDto;
 import com.agentscopea2a.v2.skillManager.dto.SkillFlowDefinitionRequest;
@@ -246,7 +247,7 @@ public class FlowDefinitionService {
                     .skillId(item.skillId()).questionTemplate(trim(item.questionTemplate()))
                     .dependsOnJson("[]")
                     .required(item.required() == null || item.required())
-                    .maxAttempts(item.maxAttempts() == null ? 4 : item.maxAttempts())
+                    .maxAttempts(SkillFlowProperties.NODE_MAX_ATTEMPTS)
                     .sortOrder(item.sortOrder() == null ? 0 : item.sortOrder()).build();
             flowMapper.insertNode(node);
             for (Long metricId : item.metricIds()) {

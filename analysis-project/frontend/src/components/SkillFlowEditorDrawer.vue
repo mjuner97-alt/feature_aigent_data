@@ -34,7 +34,7 @@ function nextNodeKey(): string {
 }
 
 function emptyNode(nodeKey: string, sortOrder: number): SkillFlowNode {
-  return { nodeKey, skillId: null, questionTemplate: '', metricIds: [], required: true, maxAttempts: 4, sortOrder };
+  return { nodeKey, skillId: null, questionTemplate: '', metricIds: [], required: true, maxAttempts: 2, sortOrder };
 }
 
 function emptyForm(): SkillFlowInput {
@@ -171,7 +171,7 @@ function normalizeFlow(flow: SkillFlow): SkillFlowInput {
     scheduleRules: flow.scheduleRules ?? null,
     maxParallelism: 2, notifyEnabled: flow.notifyEnabled !== false,
     triggers: (flow.triggers || []).map(trigger => ({ ...trigger, enabled: trigger.enabled !== false })),
-    nodes: (flow.nodes || []).map((node, index) => ({ ...node, skillId: node.skillId ?? null, metricIds: (node.metricIds || []).slice(0, 1), required: node.required !== false, maxAttempts: node.maxAttempts || 4, sortOrder: node.sortOrder || index + 1 })),
+    nodes: (flow.nodes || []).map((node, index) => ({ ...node, skillId: node.skillId ?? null, metricIds: (node.metricIds || []).slice(0, 1), required: node.required !== false, maxAttempts: 2, sortOrder: node.sortOrder || index + 1 })),
   };
 }
 

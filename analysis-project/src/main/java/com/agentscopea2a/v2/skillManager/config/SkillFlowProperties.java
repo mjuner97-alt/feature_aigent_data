@@ -19,6 +19,9 @@ public final class SkillFlowProperties {
     /** 单个 Skill 节点允许执行的最长时间，单位为分钟。 */
     public static final int NODE_EXECUTION_TIMEOUT_MINUTES = 30;
 
+    /** 后端统一控制单节点最大尝试次数，前端传入值不参与执行策略。 */
+    public static final int NODE_MAX_ATTEMPTS = 2;
+
     /**
      * 节点租约秒数。必须大于单节点执行超时(30 分钟):
      * 租约先于调用到期会把还在跑的节点重新认领重跑,原尝试最终成功(文件已生成)却因

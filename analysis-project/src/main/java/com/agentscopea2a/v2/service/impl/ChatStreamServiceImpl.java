@@ -19,6 +19,7 @@ import com.agentscopea2a.v2.trace.collector.TraceSession;
 import com.agentscopea2a.v2.trace.assembler.TraceAssembler;
 import com.agentscopea2a.v2.trace.model.AssembledTrace;
 import com.agentscopea2a.v2.trace.writer.TraceBatchWriter;
+import com.agentscopea2a.util.AiChatMonitor;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.*;
 import io.agentscope.core.message.Msg;
@@ -55,6 +56,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -70,6 +72,7 @@ import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.STREAM_TIMEOUT
 public class ChatStreamServiceImpl implements ChatStreamService {
 
     private static final String IN_FLIGHT_NOTICE = "当前会话正在处理中，请等待本次回答完成后再试。";
+    private static final String EMPTY_MODEL_COMPLETION_MESSAGE = "模型返回为空,请稍后重试...";
 
     private static final Logger log = LoggerFactory.getLogger(ChatStreamServiceImpl.class);
     private static final Logger llmTraceLog = LoggerFactory.getLogger("llm.trace");
@@ -105,6 +108,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     private final TraceBatchWriter traceBatchWriter;
     private final ToolResultRegistry toolResultRegistry;
     private final ChatRuntimeConfigService chatRuntimeConfigService;
+    private final AiChatMonitor aiChatMonitor;
 
     @Autowired
     private MainAgentMapper mainAgentMapper;
@@ -133,7 +137,8 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                                  TraceAssembler traceAssembler,
                                  TraceBatchWriter traceBatchWriter,
                                  ToolResultRegistry toolResultRegistry,
-                                 ChatRuntimeConfigService chatRuntimeConfigService) {
+                                 ChatRuntimeConfigService chatRuntimeConfigService,
+                                 AiChatMonitor aiChatMonitor) {
         this.runner = runner;
         this.artifactStore = artifactStore;
         this.episodicMemory = episodicMemory;
@@ -141,6 +146,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         this.traceBatchWriter = traceBatchWriter;
         this.toolResultRegistry = toolResultRegistry;
         this.chatRuntimeConfigService = chatRuntimeConfigService;
+        this.aiChatMonitor = aiChatMonitor;
     }
 
     /**
@@ -182,6 +188,9 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         /** 请求级 Trace 会话，直接存储框架 AgentEvent，供 cleanup 组装 */
         final TraceSession traceCtx;
         final String requestId;
+        final long monitorStartedAtNanos;
+        /** Prevent duplicate terminal callbacks from inflating monitoring counters. */
+        final AtomicBoolean monitorRecorded = new AtomicBoolean(false);
 
         StreamContext(SseEmitter emitter, ChatRequest req, RuntimeContext runtimeCtx, Msg userMsg, String episodicSessionId,
                       TraceSession traceCtx, String requestId) {
@@ -198,6 +207,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             this.formType = StringUtils.defaultIfBlank(req.getFromType(), DEFAULT_FROM_TYPE);
             this.traceCtx = traceCtx;
             this.requestId = requestId;
+            this.monitorStartedAtNanos = System.nanoTime();
         }
     }
 
@@ -398,6 +408,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
 
         // 把 per-request 状态收拢进 StreamContext（参考 v1 流处理模式）
         StreamContext streamCtx = new StreamContext(emitter, req, ctx, userMsg, episodicSessionId, traceCtx, requestId);
+        aiChatMonitor.start();
 
         // 先发送一条真实的请求状态，避免模型首 token 较慢时前端看起来像卡死。
         sendVisibleThinkStatus(streamCtx, strategy, "正在调用模型，请稍候...\n");
@@ -436,6 +447,8 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         streamCtx.timeoutWatchdog.set(SSE_TIMEOUT_WATCHDOG.schedule(() -> {
             if (streamCtx.cleaned.get()) return; // 已正常完成 / 已被其他路径清理
             log.warn("SSE watchdog timeout for sessionId={}", conversationId);
+            //发送失败结果
+            recordMonitorStreamTimeout(streamCtx, new TimeoutException("/ai/chat stream watchdog timeout"));
             // 1. Trace 状态标记 TIMEOUT（在 cleanup 的 assemble 之前）
             try {
                 if (streamCtx.traceCtx != null) {
@@ -602,6 +615,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
      */
     private void handleStreamError(StreamContext ctx, Throwable error, ResponseStrategy strategy) {
         log.error("处理流式异常: sessionId={}", ctx.conversationId, error);
+        recordMonitorFailure(ctx, error);
         // Trace 状态标记：标记 ERROR（在 cleanup 的 assemble 之前调用，设计 5.2）。
         try {
             if (ctx.traceCtx != null) {
@@ -681,14 +695,18 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                 // a useful retryable failure.
                 log.warn("Empty agent completion: sessionId={} thinkLen={} refs={}",
                         ctx.conversationId, ctx.thinkContent.length(), currentRefs.size());
-                strategy.sendError(ctx, new IllegalStateException("模型返回为空,请稍后重试..."));
+                IllegalStateException emptyCompletion = new IllegalStateException(EMPTY_MODEL_COMPLETION_MESSAGE);
+                recordMonitorFailure(ctx, emptyCompletion);
+                strategy.sendError(ctx, emptyCompletion);
             }
         } catch (Exception e) {
             log.warn("发送最终结果失败: sessionId={}", ctx.conversationId, e);
+            recordMonitorFailure(ctx, e);
         } finally {
             // Trace 状态标记：标记 SUCCESS（在 cleanup 的 assemble 之前调用，设计 5.2）。
             // markSuccess 仅在 RUNNING 时生效，已为终态（ERROR/TIMEOUT）时不覆盖。
             try {
+                recordMonitorSuccess(ctx);
                 if (ctx.traceCtx != null) {
                     ctx.traceCtx.markSuccess();
                 }
@@ -700,6 +718,27 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             } catch (Exception e) {
                 log.warn("emitter.complete() 失败: sessionId={}", ctx.conversationId, e);
             }
+        }
+    }
+
+    //成功不发送
+    private void recordMonitorSuccess(StreamContext ctx) {
+//        if (ctx.monitorRecorded.compareAndSet(false, true)) {
+//            aiChatMonitor.success(ctx.monitorStartedAtNanos);
+//        }
+    }
+
+    //失败
+    private void recordMonitorFailure(StreamContext ctx, Throwable error) {
+        if (ctx.monitorRecorded.compareAndSet(false, true)) {
+            aiChatMonitor.failure(ctx.monitorStartedAtNanos, ctx.conversationId, ctx.userId, error);
+        }
+    }
+
+    //流超时
+    private void recordMonitorStreamTimeout(StreamContext ctx, Throwable error) {
+        if (ctx.monitorRecorded.compareAndSet(false, true)) {
+            aiChatMonitor.streamTimeout(ctx.monitorStartedAtNanos, ctx.conversationId, ctx.userId, error);
         }
     }
 
