@@ -23,7 +23,7 @@ import java.util.function.LongSupplier;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
-/** Capacity-aware, atomic filesystem storage for long-task HTML reports. */
+/** Capacity-aware, atomic storage for long-task reports under the shared Skill Job root. */
 @Component
 public class FlowReportStorage {
 

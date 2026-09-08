@@ -4,7 +4,7 @@ import lombok.Getter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-/** Skill 文件存储配置，所有目录统一从 application.properties 读取。 */
+/** Skill 文件存储配置；独立任务与长任务共用 jobReportDir 报告根目录。 */
 @Getter
 @Component
 public class SkillStorageProperties {
