@@ -37,7 +37,7 @@ import java.util.UUID;
  * Skill Flow 收尾服务:流程全部节点到达终态后做两件事——
  * <ol>
  *   <li>{@link #summarize}:用汇总模板把各节点结果交给 AI 生成总结,渲染成自包含 HTML 报告落盘;</li>
- *   <li>{@link #sendInitial} / {@link #resend}:按执行快照(notifyEnabledSnapshot)给触发用户发完成通知。</li>
+ *   <li>{@link #sendInitial} / {@link #resend}:给本次执行的通知对象发完成通知。</li>
  * </ol>
  */
 @Service
@@ -124,16 +124,20 @@ public class FlowCompletionService {
         }
     }
 
-    /** 执行完成后的首次通知:deliveryKey 固定为 flow:{id}:INITIAL,借唯一索引天然幂等(重试不重发)。 */
+    /**
+     * 执行完成后的首次通知:所有触发类型均通知其对应用户。
+     * CHAT 通知对话触发人, MANUAL 通知点击执行的人, AUTO_METRIC 通知流程创建人
+     * （三类场景的接收人均已在 triggerUserId 中快照）。deliveryKey 固定为
+     * flow:{id}:INITIAL,借唯一索引天然幂等(复用执行记录或重试均不重复通知)。
+     */
     public void sendInitial(SkillFlowExecution execution) {
-        if (!Boolean.TRUE.equals(execution.getNotifyEnabledSnapshot()) || execution.getStatus() == FlowExecutionStatus.CANCELLED) return;
+        if (execution.getStatus() == FlowExecutionStatus.CANCELLED) return;
         send(execution, "flow:" + execution.getId() + ":INITIAL");
     }
 
     /** 手动重发通知:仅终态(且非取消)的执行可用。 */
     public void resend(SkillFlowExecution execution) {
-        if (!Boolean.TRUE.equals(execution.getNotifyEnabledSnapshot())
-                || !execution.getStatus().terminal()
+        if (!execution.getStatus().terminal()
                 || execution.getStatus() == FlowExecutionStatus.CANCELLED) {
             throw new IllegalStateException("FlowNotificationResendUnavailable: " + execution.getId());
         }

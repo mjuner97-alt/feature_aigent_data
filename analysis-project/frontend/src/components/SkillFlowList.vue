@@ -16,8 +16,11 @@ const currentCreatedBy = ref('');
 const currentEnabled = ref<boolean | undefined>();
 const loading = ref(false);
 const error = ref('');
+
+const triggerMsg = ref('');
 const page = ref(1);
 const pageSize = ref(20);
+let triggerMsgTimer: ReturnType<typeof setTimeout> | undefined;
 const pagedFlows = computed(() => flows.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value));
 
 function formatTime(value?: string) { return value ? value.replace('T', ' ').slice(0, 19) : '-'; }
@@ -64,8 +67,17 @@ async function run(flow: SkillFlow) {
   }
   try {
     const result = await runSkillFlow(flow.id);
-    alert(manualTriggerMessage(result.created));
+    showTriggerMsg(result.created
+      ? '已提交到执行队列，可在“长任务执行记录”中查看进度。'
+      : '该长任务正在执行中，请勿重复触发，可在“长任务执行记录”中查看进度。');
   } catch (e) { alert(e instanceof Error ? e.message : '触发执行失败'); }
+}
+
+/** 与独立任务保持一致的成功提示；不展示执行地址或 IP。 */
+function showTriggerMsg(message: string) {
+  triggerMsg.value = message;
+  if (triggerMsgTimer) clearTimeout(triggerMsgTimer);
+  triggerMsgTimer = setTimeout(() => { triggerMsg.value = ''; }, 3000);
 }
 
 defineExpose({ load, create });
@@ -75,6 +87,7 @@ watch(() => [props.scope, props.createdBy] as const, () => load('', props.create
 
 <template>
   <section class="flow-list">
+    <div v-if="triggerMsg" class="toast">{{ triggerMsg }}</div>
     <div v-if="error" class="error">{{ error }}</div>
     <div v-if="loading" class="empty">加载中…</div>
     <div v-else-if="!flows.length" class="empty">暂无长任务流程</div>
@@ -160,4 +173,5 @@ watch(() => [props.scope, props.createdBy] as const, () => load('', props.create
 .pagination-bar { display: flex; justify-content: flex-end; padding: 14px 0 2px; }
 .empty { padding: 48px 0; color: #94a3b8; text-align: center; font-size: 14px; background: #fff; border-radius: 8px; }
 .error { margin-bottom: 12px; padding: 9px 12px; border: 1px solid #fecaca; border-radius: 5px; background: #fef2f2; color: #b91c1c; font-size: 13px; }
+.toast { position: fixed; top: 20px; left: 50%; z-index: 2000; transform: translateX(-50%); padding: 8px 20px; border-radius: 8px; background: #16a34a; box-shadow: 0 4px 12px rgba(0,0,0,0.15); color: #fff; font-size: 14px; }
 </style>
