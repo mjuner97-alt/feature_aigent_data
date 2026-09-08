@@ -1,4 +1,4 @@
-package com.agentscopea2a.mapper.gauss;
+package com.agentscopea2a.mapper.gaussCommon;
 
 import com.agentscopea2a.dto.QuestionAnswerDto;
 import org.apache.ibatis.annotations.Mapper;
