@@ -222,9 +222,17 @@ public class SkillJobScheduler implements WriteCallback {
         log.info("SkillJobScheduler executors shut down");
     }
 
-    /** 应用启动时恢复当天被进程退出中断的记录，并重新提交到原触发类型对应的队列。 */
+    /**
+     * 应用启动时恢复当天被进程退出中断的记录，并重新提交到原触发类型对应的队列。
+     * harness.a2a.skill-job.recover-on-startup=false 时跳过恢复（dev 本地调试用，
+     * 避免每次重启都触发一批残留任务）；手动触发 job 不受影响。
+     */
     @PostConstruct
     public void recoverStaleExecutions() {
+        if (!config.isRecoverOnStartup()) {
+            log.info("SkillJob startup recovery skipped (harness.a2a.skill-job.recover-on-startup=false)");
+            return;
+        }
         try {
             List<SkillJobExecution> interrupted = mapper.selectTodayInterruptedExecutions();
             int n = mapper.recoverTodayInterruptedExecutions();

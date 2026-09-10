@@ -11,6 +11,7 @@ import com.agentscopea2a.v2.skillManager.service.FlowDefinitionService;
 import com.agentscopea2a.v2.skillManager.service.FlowExecutionService;
 import com.agentscopea2a.v2.skillManager.service.FlowQueryService;
 import com.agentscopea2a.v2.skillManager.service.FlowCoordinator;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -29,6 +30,7 @@ import java.util.List;
  */
 @RestController
 @CrossOrigin(origins = "*", maxAge = 3600)
+@ConditionalOnProperty(prefix = "harness.a2a.skill-flow", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class SkillFlowController {
 
     private final FlowDefinitionService definitionService;

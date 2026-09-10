@@ -453,6 +453,8 @@ public class HarnessRunnerProperties {
         // 未配置时 SkillJob 功能启用，config.isEnabled() 也返回 true。
         private boolean enabled = true;
         private long executionTimeoutSeconds = 300;
+        /** 启动时是否恢复当天被进程退出中断的执行；dev 本地调试设 false 避免重启即触发一批任务 */
+        private boolean recoverOnStartup = true;
 
         /** 手动触发(MANUAL)专用线程池大小；与批量池隔离，自动触发堆积不阻塞手动触发 */
         private int manualPoolSize = 2;
@@ -463,6 +465,8 @@ public class HarnessRunnerProperties {
 
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean v) { this.enabled = v; }
+        public boolean isRecoverOnStartup() { return recoverOnStartup; }
+        public void setRecoverOnStartup(boolean v) { this.recoverOnStartup = v; }
         public long getExecutionTimeoutSeconds() { return executionTimeoutSeconds; }
         public void setExecutionTimeoutSeconds(long v) { this.executionTimeoutSeconds = v; }
         public int getManualPoolSize() { return manualPoolSize; }

@@ -17,6 +17,7 @@ import io.agentscope.core.message.TextBlock;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
@@ -50,6 +51,7 @@ import java.util.concurrent.TimeoutException;
  * 节点级并发用许可信号量(workerPermits)限流,流程级并发上限由执行快照 maxParallelismSnapshot 控制。
  */
 @Component
+@ConditionalOnProperty(prefix = "harness.a2a.skill-flow", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class FlowCoordinator {
 
     private static final Logger log = LoggerFactory.getLogger(FlowCoordinator.class);
