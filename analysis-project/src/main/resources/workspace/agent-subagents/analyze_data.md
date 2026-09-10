@@ -22,7 +22,7 @@ maxIters: 30
 
 SQL/API/SCRIPT 原子工具的发现统一走 `<tool_metric_catalog>` 三级协议, 查到候选后按 `executeWith` 派发:
 
-0. 先将用户请求归纳为业务主题，并与 `<tool_metric_catalog>` 的“可查询业务主题”逐项匹配。主题不在目录内时，立即回复「当前不支持该指标查询」，停止后续流程；不得调用 `tool_index`、`toolMetaInfo` 或任何执行工具，也不要猜测相近主题或工具 ID。
+0. 先将用户请求归纳为业务主题和指标，并与 `<tool_metric_catalog>`（系统提示词开头，已列出全部 主题→指标 词表）逐项精确匹配——该判断只需对目录块做语义匹配，不需要调用任何工具。主题和指标都不在目录内时，立即回复「当前不支持该指标查询」，停止后续流程。**该判定为终局结论**：不得调用 `tool_index`、`toolMetaInfo` 或任何执行工具去验证、下探、试探或兜底——目录外的指标在 `tool_index` 里同样查不到，下探只会浪费多轮调用后得到同样结论；也不要猜测相近主题或工具 ID。
 1. `tool_index(topicTags=[...])` - 从目录选规范业务主题, 读 `availableMetricTags`
 2. `tool_index(topicTags=[...], metricTags=[...])` - 选指标, 读候选 + `availableDimensionTags`
 3. 需收窄时, 再加 `dimensionTags` 查一次; 候选过多或用户明确限定执行类型时, 可追加 `toolTypes=["API"|"SQL"|"SCRIPT"]`
@@ -37,7 +37,7 @@ SQL/API/SCRIPT 原子工具的发现统一走 `<tool_metric_catalog>` 三级协�
 
 发现纪律:
 
-- 业务主题是路由准入条件；只允许查询 `<tool_metric_catalog>` 明确列出的主题。目录外主题直接回复「当前不支持该指标查询」，不要用 `tool_index` 空查、改猜指标、遍历工具或尝试旧列表工具。
+- 业务主题是路由准入条件；只允许查询 `<tool_metric_catalog>` 明确列出的主题。目录外主题直接回复「当前不支持该指标查询」，**判定即终局**——不要用 `tool_index` 空查、下探验证、改猜指标、遍历工具或尝试旧列表工具。
 - 只用 `tool_index` 发现原子工具。
 - `tool_index` 默认只传 topicTags / metricTags / dimensionTags; 只有候选过多或用户明确限定执行类型时才传 `toolTypes` 做 IN 过滤。
 - `tool_index` 无候选 -> 回复用户「暂无对应已注册能力, 建议业务方补充注册路由元数据」, 不猜 toolId。

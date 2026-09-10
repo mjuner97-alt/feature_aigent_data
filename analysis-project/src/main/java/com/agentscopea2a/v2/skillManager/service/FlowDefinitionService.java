@@ -202,7 +202,7 @@ public class FlowDefinitionService {
                 errors.add("SkillUnavailable: skill is not available to user: " + node.skillId());
             }
             if (trim(node.questionTemplate()).isEmpty()) errors.add("node question must not be blank: " + nodeKey);
-            if (node.maxAttempts() == null || node.maxAttempts() < 1) errors.add("maxAttempts must be positive");
+            if (node.maxAttempts() != null && node.maxAttempts() < 1) errors.add("maxAttempts must be positive");
             if (node.metricIds().size() > 1) errors.add("a skill node can depend on at most one metric");
             for (Long metricId : node.metricIds()) {
                 SkillDependencyMetric metric = metricMapper.selectById(metricId);
