@@ -63,21 +63,45 @@ class ToolIndexToolTest {
     }
 
     @Test
-    void consecutiveEmptyQueriesTripCircuitBreaker() {
+    void consecutiveDiscoveryCallsWithoutExecutionTripCircuitBreaker() {
         ToolRoutingCatalogService catalogService = mock(ToolRoutingCatalogService.class);
         when(catalogService.snapshot()).thenReturn(catalog());
 
         ToolIndexTool tool = new ToolIndexTool(catalogService, new ToolIndexService());
         RuntimeContext ctx = RuntimeContext.empty();
 
-        Object first = tool.toolIndex(ctx, List.of("QI卡口"), List.of("质量分"), List.of("不存在维度"), List.of(), 10);
-        Object second = tool.toolIndex(ctx, List.of("QI卡口"), List.of("质量分"), List.of("不存在维度"), List.of(), 10);
+        // Three-level protocol: topic -> metric -> dimension = 3 calls allowed.
+        Object first = tool.toolIndex(ctx, List.of("QI卡口"), List.of(), List.of(), List.of(), 10);
+        Object second = tool.toolIndex(ctx, List.of("QI卡口"), List.of("质量分"), List.of(), List.of(), 10);
+        Object third = tool.toolIndex(ctx, List.of("QI卡口"), List.of("质量分"), List.of("不存在维度"), List.of(), 10);
         assertTrue(first instanceof ToolIndexResponse);
         assertTrue(second instanceof ToolIndexResponse);
+        assertTrue(third instanceof ToolIndexResponse);
 
-        Object third = tool.toolIndex(ctx, List.of("QI卡口"), List.of("质量分"), List.of("不存在维度"), List.of(), 10);
-        assertTrue(third instanceof String);
-        assertTrue(((String) third).contains("停止继续查询"));
+        // 4th consecutive call (no executor in between) -> stop directive.
+        Object fourth = tool.toolIndex(ctx, List.of("QI卡口"), List.of("质量分"), List.of(), List.of(), 10);
+        assertTrue(fourth instanceof String);
+        String directive = (String) fourth;
+        assertTrue(directive.contains("禁止继续发现查询"));
+        assertTrue(directive.contains("当前不支持该指标查询"));
+    }
+
+    @Test
+    void executorResetViaContextKeyRestoresDiscovery() {
+        ToolRoutingCatalogService catalogService = mock(ToolRoutingCatalogService.class);
+        when(catalogService.snapshot()).thenReturn(catalog());
+
+        ToolIndexTool tool = new ToolIndexTool(catalogService, new ToolIndexService());
+        RuntimeContext ctx = RuntimeContext.empty();
+
+        tool.toolIndex(ctx, List.of("QI卡口"), List.of(), List.of(), List.of(), 10);
+        tool.toolIndex(ctx, List.of("QI卡口"), List.of(), List.of(), List.of(), 10);
+        tool.toolIndex(ctx, List.of("QI卡口"), List.of(), List.of(), List.of(), 10);
+        // DiscoveryStreakResetMiddleware does this when an executor tool is invoked.
+        ctx.put(ToolIndexTool.DISCOVERY_STREAK_KEY, 0);
+
+        Object afterReset = tool.toolIndex(ctx, List.of("QI卡口"), List.of("质量分"), List.of(), List.of(), 10);
+        assertTrue(afterReset instanceof ToolIndexResponse);
     }
 
     @Test

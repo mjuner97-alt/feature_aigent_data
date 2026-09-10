@@ -22,15 +22,21 @@ import java.util.Locale;
  *       catalog returns a terminal directive string instead of search results. Business rule is
  *       exact-match-only, so an out-of-catalog tag means the user's metric is not registered -
  *       probing with other tags cannot change that.</li>
- *   <li><b>Consecutive-empty circuit breaker</b>: all-known tags but zero candidates, 3 times in a
- *       row within one RuntimeContext, returns a stop directive. Kills enumerate-and-probe loops
- *       that pass valid topic tags one by one.</li>
+ *   <li><b>Discovery-streak circuit breaker</b>: every call increments {@code discoveryStreak} on
+ *       the RuntimeContext; {@link com.agentscopea2a.v2.middleware.DiscoveryStreakResetMiddleware}
+ *       resets it when an executor tool is invoked. More than {@link #MAX_DISCOVERY_STREAK}
+ *       consecutive tool_index calls without any executor in between returns a stop directive -
+ *       the three-level protocol needs at most 3 calls, so longer streaks are enumerate-and-probe
+ *       loops (observed on qwen: model judged the metric out-of-catalog, then drilled valid topic
+ *       tags one by one for 5+ calls / several minutes).</li>
  * </ol>
  */
 public class ToolIndexTool {
 
-    static final int MAX_CONSECUTIVE_EMPTY = 3;
-    private static final String EMPTY_COUNT_KEY = "toolIndex.consecutiveEmpty";
+    /** RuntimeContext key for consecutive discovery calls since the last executor invocation. */
+    public static final String DISCOVERY_STREAK_KEY = "toolIndex.discoveryStreak";
+
+    static final int MAX_DISCOVERY_STREAK = 3;
 
     private final ToolRoutingCatalogService catalogService;
     private final ToolIndexService toolIndexService;
@@ -62,28 +68,21 @@ public class ToolIndexTool {
                     + "立即停止所有工具调用，直接回复用户：「当前不支持该指标查询，建议业务方补充注册该指标」。\n";
         }
 
-        ToolIndexResponse response = toolIndexService.index(catalog,
-                new ToolIndexRequest(topicTags, metricTags, dimensionTags, toolTypes, limit));
-
-        if (!response.candidates().isEmpty()) {
-            if (runtimeContext != null) {
-                runtimeContext.put(EMPTY_COUNT_KEY, 0);
-            }
-            return response;
-        }
-
-        int consecutiveEmpty = 1;
+        int streak = 1;
         if (runtimeContext != null) {
-            Integer current = runtimeContext.get(EMPTY_COUNT_KEY, Integer.class);
-            consecutiveEmpty = (current == null ? 0 : current) + 1;
-            runtimeContext.put(EMPTY_COUNT_KEY, consecutiveEmpty);
+            Integer current = runtimeContext.get(DISCOVERY_STREAK_KEY, Integer.class);
+            streak = (current == null ? 0 : current) + 1;
+            runtimeContext.put(DISCOVERY_STREAK_KEY, streak);
         }
-        if (consecutiveEmpty >= MAX_CONSECUTIVE_EMPTY) {
-            return "⛔ 本会话已连续 " + consecutiveEmpty + " 次 tool_index 查询无候选。停止继续查询："
-                    + "用户请求的指标不在 <tool_metric_catalog> 目录内。\n"
-                    + "立即停止所有工具调用，直接回复用户：「当前不支持该指标查询，建议业务方补充注册该指标」。\n";
+        if (streak > MAX_DISCOVERY_STREAK) {
+            return "⛔ 已连续 " + streak + " 次调用 tool_index 且期间未调用任何执行工具。禁止继续发现查询。\n"
+                    + "若此前查询已返回候选工具，立即选定 toolId 并调用执行器 (router_tool / sql_registry_exec / script_exec)；\n"
+                    + "若用户请求的指标不在 <tool_metric_catalog> 目录内，立即停止所有工具调用，"
+                    + "直接回复用户：「当前不支持该指标查询，建议业务方补充注册该指标」。\n";
         }
-        return response;
+
+        return toolIndexService.index(catalog,
+                new ToolIndexRequest(topicTags, metricTags, dimensionTags, toolTypes, limit));
     }
 
     private static List<String> unknownTags(List<String> requested, java.util.Set<String> known) {

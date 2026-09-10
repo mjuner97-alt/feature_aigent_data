@@ -85,4 +85,24 @@ class HtmlReportRendererTest {
         assertTrue(html.contains("echarts-0") && html.contains("echarts-1"), "应有两个图表占位 div");
         assertTrue(html.contains("setOption"), "应调用 setOption");
     }
+
+    @Test
+    void renderKeepsMarkdownAroundEmbeddedCompleteHtmlReport() {
+        HtmlReportRenderer renderer = new HtmlReportRenderer();
+        String input = "## 节点一\n\n节点一内容\n\n"
+                + "<!DOCTYPE html><html><head><style>.node-two{color:red}</style></head>"
+                + "<body><div class='node-two'>节点二完整 HTML</div></body></html>"
+                + "\n\n## 节点三\n\n节点三内容";
+
+        String html = renderer.render(input, "汇总报告");
+
+        assertTrue(html.contains("节点一内容"));
+        assertTrue(html.contains("节点二完整 HTML"));
+        assertTrue(html.contains("节点三内容"));
+        assertTrue(html.indexOf("节点一内容") < html.indexOf("节点二完整 HTML"));
+        assertTrue(html.indexOf("节点二完整 HTML") < html.indexOf("节点三内容"));
+        // 只能有一个外层文档；嵌入的 <style> 保留注入
+        assertTrue(html.indexOf("<!DOCTYPE") == html.lastIndexOf("<!DOCTYPE"));
+        assertTrue(html.contains(".node-two{color:red}"));
+    }
 }

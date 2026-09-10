@@ -249,6 +249,10 @@ public class HtmlReportRenderer {
         String md = markdown == null ? "" : markdown;
         String safeTitle = escapeHtml(title == null ? "报告" : title);
 
+        if (containsEmbeddedCompleteHtml(md)) {
+            return renderMixedContent(md, safeTitle);
+        }
+
         // AI 偶尔把完整 HTML 包在 Markdown 围栏、JSON 字符串或生成器说明文字中。
         // 原样渲染，不走 markdown 转换；<head> 的 <style> 保留注入，<script> 移除防注入
         String completeHtml = extractCompleteHtml(md);
@@ -263,6 +267,66 @@ public class HtmlReportRenderer {
 
         return assembleHtml(safeTitle, body.toString(), charts, "");
     }
+
+    /** Render Markdown interleaved with one or more complete HTML documents. */
+    private String renderMixedContent(String input, String safeTitle) {
+        StringBuilder body = new StringBuilder();
+        StringBuilder styles = new StringBuilder();
+        List<ChartBlock> charts = new ArrayList<>();
+        int cursor = 0;
+        Matcher starts = COMPLETE_HTML_START.matcher(input);
+        while (starts.find(cursor)) {
+            int start = starts.start();
+            CompleteHtmlPart part = extractCompleteHtmlPart(input, start);
+            if (part == null) {
+                cursor = starts.end();  // 伪起始标签：跳过避免 find(cursor) 重复命中同一位置死循环
+                continue;
+            }
+
+            appendMarkdownPart(input.substring(cursor, start), body, charts);
+            Matcher styleMatcher = STYLE_BLOCK.matcher(part.html());
+            while (styleMatcher.find()) styles.append(styleMatcher.group());
+            String bodyContent = sanitizeCompleteBody(extractBodyInner(part.html()));
+            appendHtmlPart(bodyContent, body, charts);
+            cursor = part.end();
+        }
+        appendMarkdownPart(input.substring(cursor), body, charts);
+        return assembleHtml(safeTitle, body.toString(), charts, styles.toString());
+    }
+
+    private boolean containsEmbeddedCompleteHtml(String input) {
+        Matcher starts = COMPLETE_HTML_START.matcher(input);
+        if (!starts.find()) return false;
+        CompleteHtmlPart part = extractCompleteHtmlPart(input, starts.start());
+        return part != null && (starts.start() > 0 || part.end() < input.length());
+    }
+
+    private CompleteHtmlPart extractCompleteHtmlPart(String input, int start) {
+        Matcher body = BODY_OPEN_FULL.matcher(input);
+        if (!body.find(start)) return null;
+        Matcher close = HTML_CLOSE.matcher(input);
+        if (!close.find(body.end())) return null;
+        return new CompleteHtmlPart(input.substring(start, close.end()).trim(), close.end());
+    }
+
+    private void appendMarkdownPart(String part, StringBuilder body, List<ChartBlock> charts) {
+        if (part == null || part.isBlank()) return;
+        splitCharts(part, body, true, charts);
+    }
+
+    private void appendHtmlPart(String part, StringBuilder body, List<ChartBlock> charts) {
+        if (part == null || part.isBlank()) return;
+        splitCharts(part, body, false, charts);
+    }
+
+    private String sanitizeCompleteBody(String bodyContent) {
+        String sanitized = SCRIPT_BLOCK.matcher(bodyContent).replaceAll("");
+        sanitized = SCRIPT_OPEN.matcher(sanitized).replaceAll("");
+        sanitized = SCRIPT_CLOSE.matcher(sanitized).replaceAll("");
+        return STYLE_BLOCK.matcher(sanitized).replaceAll("");
+    }
+
+    private record CompleteHtmlPart(String html, int end) {}
 
     /** 从围栏、JSON 文本值或带前置说明的输入中提取一份结构完整的 HTML 文档。 */
     private String extractCompleteHtml(String input) {
@@ -326,11 +390,7 @@ public class HtmlReportRenderer {
         String bodyContent = extractBodyInner(html);
 
         // 移除 <script>（一般没有，兜底防注入）
-        bodyContent = SCRIPT_BLOCK.matcher(bodyContent).replaceAll("");
-        bodyContent = SCRIPT_OPEN.matcher(bodyContent).replaceAll("");
-        bodyContent = SCRIPT_CLOSE.matcher(bodyContent).replaceAll("");
-        // <style> 已收集到 extraStyles 注入 head，从 body 移除避免重复
-        bodyContent = STYLE_BLOCK.matcher(bodyContent).replaceAll("");
+        bodyContent = sanitizeCompleteBody(bodyContent);
 
         // 仍扫描图表块（body 内若有 ```echarts 或 <echart> 也渲染成图），其余原样为 HTML
         StringBuilder body = new StringBuilder();
@@ -356,9 +416,15 @@ public class HtmlReportRenderer {
      */
     private List<ChartBlock> splitCharts(String text, StringBuilder body, boolean renderMdLeftovers) {
         List<ChartBlock> charts = new ArrayList<>();
+        splitCharts(text, body, renderMdLeftovers, charts);
+        return charts;
+    }
+
+    private void splitCharts(String text, StringBuilder body, boolean renderMdLeftovers,
+                             List<ChartBlock> charts) {
         Matcher m = CHART_BLOCK.matcher(text);
         int last = 0;
-        int idx = 0;
+        int idx = charts.size();
         while (m.find()) {
             if (m.start() > last) {
                 body.append(renderMdLeftovers
@@ -380,7 +446,6 @@ public class HtmlReportRenderer {
         if (last < text.length()) {
             body.append(renderMdLeftovers ? markdownToHtml(text.substring(last)) : text.substring(last));
         }
-        return charts;
     }
 
     /** 去掉标签内容首尾残留的 ``` 围栏（兼容 <echart> 内又套 ```echarts 的双重包裹）。 */

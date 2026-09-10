@@ -144,6 +144,7 @@ public class SubagentRegistrar {
     private final ToolResultTruncationMiddleware toolResultTruncationMiddleware;
     private final ContextBudgetMiddleware contextBudgetMiddleware;
     private final ToolMetricCatalogMiddleware toolMetricCatalogMiddleware;
+    private final com.agentscopea2a.v2.middleware.DiscoveryStreakResetMiddleware discoveryStreakResetMiddleware;
     /**
      * Per-user memory store for replacing the framework's {@code memory_get} tool on
      * subagents. When non-null, each subagent's {@code memory_get} is replaced with
@@ -171,7 +172,8 @@ public class SubagentRegistrar {
             ObjectProvider<MysqlMemoryStore> mysqlMemoryStoreProvider,
             ObjectProvider<ToolResultTruncationMiddleware> toolResultTruncationMiddlewareProvider,
             ObjectProvider<ContextBudgetMiddleware> contextBudgetMiddlewareProvider,
-            ObjectProvider<ToolMetricCatalogMiddleware> toolMetricCatalogMiddlewareProvider) {
+            ObjectProvider<ToolMetricCatalogMiddleware> toolMetricCatalogMiddlewareProvider,
+            ObjectProvider<com.agentscopea2a.v2.middleware.DiscoveryStreakResetMiddleware> discoveryStreakResetMiddlewareProvider) {
 
         // v1-style: subagents hold only meta-tool beans. Business tools (quality_query_* /
         // data_*) are encapsulated inside ToolRoutersIndex and dispatched via
@@ -215,6 +217,7 @@ public class SubagentRegistrar {
         this.toolResultTruncationMiddleware = toolResultTruncationMiddlewareProvider.getIfAvailable();
         this.contextBudgetMiddleware = contextBudgetMiddlewareProvider.getIfAvailable();
         this.toolMetricCatalogMiddleware = toolMetricCatalogMiddlewareProvider.getIfAvailable();
+        this.discoveryStreakResetMiddleware = discoveryStreakResetMiddlewareProvider.getIfAvailable();
         log.info("SubagentRegistrar: toolRegistry built with {} entries: {}; hooks - handoff={} access={} pyGuard={} retry={} l2Collector={} eventForwarding=true toolTracking={} trace={} truncation={}",
                 toolRegistry.size(), toolRegistry.keySet(),
                 artifactHandoffHook != null, artifactAccessMiddleware != null,
@@ -393,6 +396,13 @@ public class SubagentRegistrar {
             }
             if (toolNames.contains("tool_index") && toolMetricCatalogMiddleware != null) {
                 subMiddlewares.add(toolMetricCatalogMiddleware);
+            }
+            // Discovery-streak breaker companion: resets the tool_index consecutive-call counter
+            // when the subagent invokes an executor tool (router_tool/sql_registry_exec/...).
+            // Without it, multi-metric analyses that legitimately interleave discovery and
+            // execution would be cut off by the streak cap.
+            if (toolNames.contains("tool_index") && discoveryStreakResetMiddleware != null) {
+                subMiddlewares.add(discoveryStreakResetMiddleware);
             }
             if (!subMiddlewares.isEmpty()) {
                 sub.middlewares(subMiddlewares);

@@ -64,6 +64,13 @@ public class HarnessAgentPartsConfig {
         return new ToolMetricCatalogMiddleware(toolRoutingCatalogService, maxChars);
     }
 
+    /** Auto-injected into the main agent's middleware list (Spring collects all MiddlewareBase beans). */
+    @Bean
+    @ConditionalOnProperty(prefix = "harness.a2a.tool-routing", name = "enabled", havingValue = "true")
+    public com.agentscopea2a.v2.middleware.DiscoveryStreakResetMiddleware discoveryStreakResetMiddleware() {
+        return new com.agentscopea2a.v2.middleware.DiscoveryStreakResetMiddleware();
+    }
+
 
     @Bean
     public com.agentscopea2a.v2.middleware.ParentEmitterCaptureMiddleware parentEmitterCaptureMiddleware() {
