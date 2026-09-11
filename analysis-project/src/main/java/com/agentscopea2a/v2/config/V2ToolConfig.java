@@ -211,8 +211,12 @@ public class V2ToolConfig {
     @Bean
     @ConditionalOnProperty(prefix = "harness.a2a.tool-routing", name = "enabled", havingValue = "true")
     public ToolIndexTool toolIndexTool(ToolRoutingCatalogService toolRoutingCatalogService,
-                                       ToolIndexService toolIndexService) {
-        return new ToolIndexTool(toolRoutingCatalogService, toolIndexService);
+                                       ToolIndexService toolIndexService,
+                                       ToolRoutingMetadataRepository toolRoutingMetadataRepository,
+                                       SqlRegistryMapper sqlRegistryMapper,
+                                       ScriptRegistryMapper scriptRegistryMapper) {
+        return new ToolIndexTool(toolRoutingCatalogService, toolIndexService,
+                toolRoutingMetadataRepository, sqlRegistryMapper, scriptRegistryMapper);
     }
 
     // ── Quality tools ─────────────────────────────────────────────────────

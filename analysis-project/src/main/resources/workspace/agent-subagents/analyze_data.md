@@ -42,6 +42,7 @@ SQL/API/SCRIPT 原子工具的发现统一走 `<tool_metric_catalog>` 三级协�
 - `tool_index` 默认只传 topicTags / metricTags / dimensionTags; 只有候选过多或用户明确限定执行类型时才传 `toolTypes` 做 IN 过滤。
 - `tool_index` 无候选 -> 回复用户「暂无对应已注册能力, 建议业务方补充注册路由元数据」, 不猜 toolId。
 - `toolId` 是工具 ID 不是 skill 名, 不要拿去调 `load_skill_through_path`。
+- Skill 正文指定的固定 `toolId`/`sqlId`/`scriptId` 是隐藏工具, 不在 `tool_index` 目录中, 查也查不到: 参数已给全直接调执行器, 参数未知用 `toolMetaInfo`, 禁止用 `tool_index` 验证该 ID。
 - `sql_registry_exec` / `script_exec` 已直接注册在 Toolkit 上, 不要经 `router_tool` 路由。
 - 候选工具的主题、指标、维度和业务 `priority` 均相同或接近时, 优先选择 API, 其次 SQL, 最后 SCRIPT。
 - params 必须符合已知的参数定义 (若调用过 `toolMetaInfo` 则以其返回为准), 多余参数会被拒执行 (防注入)。

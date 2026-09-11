@@ -1,13 +1,18 @@
 package com.agentscopea2a.v2.tools;
 
+import com.agentscopea2a.mapper.gauss.SqlRegistryMapper;
 import com.agentscopea2a.v2.toolrouting.ToolIndexService;
 import com.agentscopea2a.v2.toolrouting.ToolIndexResponse;
 import com.agentscopea2a.v2.toolrouting.ToolRoutingCatalog;
 import com.agentscopea2a.v2.toolrouting.ToolRoutingCatalogService;
+import com.agentscopea2a.v2.toolrouting.ToolRoutingMetadata;
+import com.agentscopea2a.v2.toolrouting.ToolRoutingMetadataRepository;
+import com.agentscopea2a.v2.toolrouting.ToolRoutingToolType;
 import io.agentscope.core.agent.RuntimeContext;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -60,6 +65,63 @@ class ToolIndexToolTest {
                 List.of("总体方案评审未报备"), List.of(), List.of(), List.of(), 10);
         assertTrue(result instanceof String);
         assertTrue(((String) result).contains("当前不支持该指标查询"));
+    }
+
+    @Test
+    void unknownTagMatchingRegisteredSqlIdReturnsDirectExecutionDirective() {
+        ToolRoutingCatalogService catalogService = mock(ToolRoutingCatalogService.class);
+        when(catalogService.snapshot()).thenReturn(catalog());
+        SqlRegistryMapper sqlRegistryMapper = mock(SqlRegistryMapper.class);
+        when(sqlRegistryMapper.countBySqlId("q2_1_metrics_by_dept_version")).thenReturn(1);
+
+        ToolIndexTool tool = new ToolIndexTool(catalogService, new ToolIndexService(),
+                null, sqlRegistryMapper, null);
+
+        Object result = tool.toolIndex(RuntimeContext.empty(),
+                List.of("质量"), List.of("q2_1_metrics_by_dept_version"), List.of(), List.of(), 10);
+        assertTrue(result instanceof String);
+        String directive = (String) result;
+        assertTrue(directive.contains("q2_1_metrics_by_dept_version"));
+        assertTrue(directive.contains("sql_registry_exec(sqlId="));
+        assertTrue(directive.contains("禁止再用 tool_index 查询或验证"));
+    }
+
+    @Test
+    void unknownTagOpenInRoutingMetadataReturnsUsageDirectiveNotDirectExecution() {
+        ToolRoutingCatalogService catalogService = mock(ToolRoutingCatalogService.class);
+        when(catalogService.snapshot()).thenReturn(catalog());
+        ToolRoutingMetadataRepository routingRepository = mock(ToolRoutingMetadataRepository.class);
+        when(routingRepository.findByToolId("q2_1_metrics_by_dept_version"))
+                .thenReturn(Optional.of(new ToolRoutingMetadata("q2_1_metrics_by_dept_version",
+                        ToolRoutingToolType.SQL, "desc", List.of(), List.of(), List.of(), 0, true, null)));
+
+        ToolIndexTool tool = new ToolIndexTool(catalogService, new ToolIndexService(),
+                routingRepository, null, null);
+
+        Object result = tool.toolIndex(RuntimeContext.empty(),
+                List.of("质量"), List.of("q2_1_metrics_by_dept_version"), List.of(), List.of(), 10);
+        assertTrue(result instanceof String);
+        String directive = (String) result;
+        assertTrue(directive.contains("tool_index 可发现工具的 ID"));
+        assertTrue(directive.contains("不能作为 topicTags/metricTags 标签传入"));
+    }
+
+    @Test
+    void unknownTagDisabledInRoutingMetadataReturnsDirectExecutionDirective() {
+        ToolRoutingCatalogService catalogService = mock(ToolRoutingCatalogService.class);
+        when(catalogService.snapshot()).thenReturn(catalog());
+        ToolRoutingMetadataRepository routingRepository = mock(ToolRoutingMetadataRepository.class);
+        when(routingRepository.findByToolId("q2_1_metrics_by_dept_version"))
+                .thenReturn(Optional.of(new ToolRoutingMetadata("q2_1_metrics_by_dept_version",
+                        ToolRoutingToolType.SQL, "desc", List.of(), List.of(), List.of(), 0, false, null)));
+
+        ToolIndexTool tool = new ToolIndexTool(catalogService, new ToolIndexService(),
+                routingRepository, null, null);
+
+        Object result = tool.toolIndex(RuntimeContext.empty(),
+                List.of("质量"), List.of("q2_1_metrics_by_dept_version"), List.of(), List.of(), 10);
+        assertTrue(result instanceof String);
+        assertTrue(((String) result).contains("Skill 指定的固定 ID 工具是隐藏的"));
     }
 
     @Test

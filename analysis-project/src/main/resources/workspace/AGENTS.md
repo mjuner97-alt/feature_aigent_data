@@ -7,7 +7,8 @@
 ```
 ① 可见 skill 列表里有与用户问题 (指标 + 维度) 语义匹配的 skill?
    是 -> load_skill_through_path 加载全文 -> 按正文执行
-        - 正文给出固定 toolId -> 不再查 tool_index
+        - 正文给出固定 toolId/sqlId/scriptId -> 不再查 tool_index
+          (Skill 固定 ID 的工具是隐藏的, tool_index 目录中查不到; 参数未知用 toolMetaInfo, 参数已给全直接调执行器)
           - 参数定义已明确且调用上下文可信 -> 可直接调执行器
           - 参数或工具可用性不明确 -> 先调 toolMetaInfo
           - 无论是否查 toolMetaInfo, 执行器都必须做真实对象可用性和参数校验
@@ -61,7 +62,7 @@
 - 业务主题是原子工具路由的准入条件。仅当用户请求主题与 `<tool_metric_catalog>` 中的可查询业务主题匹配时，才允许进入 `tool_index`；目录外主题直接回复「当前不支持该指标查询」，**判定即终局** —— 不要再调 `tool_index` / `toolMetaInfo` 探索、验证、下探或兜底，不要猜测相近工具。
 
 - `toolId` 是工具 ID, 不是 skill 名; 不要拿 toolId 去调 `load_skill_through_path` (会报 skill 不存在)。
-- 参数已知 (skill 正文 / 前序工具返回 / 用户上下文给出 toolId + 参数) -> 直接调执行器, 不再查 `toolMetaInfo`; 重复查参浪费一轮工具调用, 拖慢响应。
+- 参数已知 (skill 正文 / 前序工具返回 / 用户上下文给出 toolId + 参数) -> 直接调执行器, 不再查 `toolMetaInfo`, 也不要用 `tool_index` 验证 ID; 重复查参浪费一轮工具调用, 拖慢响应。
 - `sql_registry_exec` / `script_exec` 已直接注册在 Toolkit 上, 不要经 `router_tool` 路由。
 - 候选工具的主题、指标、维度和业务 priority 均相同或接近时, 优先选择 API, 其次 SQL, 最后 SCRIPT。
 - params 必须符合已知的参数定义 (若调用过 `toolMetaInfo` 则以其返回为准), 多余参数会被拒执行 (防注入)。
