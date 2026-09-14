@@ -183,7 +183,8 @@ public class SqlRegistryExecTool {
     public QueryResult executeStructured(String sqlId, Map<String, Object> params) {
 
         if (sqlId == null || sqlId.isBlank()) {
-            throw new IllegalArgumentException("sql_registry_exec 拒绝执行: sqlId 不能为空，请先调用 tool_index");
+            throw new IllegalArgumentException("sql_registry_exec 拒绝执行: sqlId 不能为空。若当前 Skill 已指定 sqlId，"
+                    + "请按 Skill 正文原样填写；没有固定 ID 时才通过 tool_index 查询");
         }
         if (registryMapper == null) {
             throw new IllegalStateException("sql_registry_exec 不可用: registryMapper 未注入 (检查 SqlRegistryMapper bean)");
@@ -199,7 +200,9 @@ public class SqlRegistryExecTool {
                     + e.getClass().getSimpleName() + ": " + e.getMessage(), e);
         }
         if (entry == null) {
-            throw new IllegalArgumentException("sql_registry_exec 拒绝执行: sqlId 不存在或不可用");
+            throw new IllegalArgumentException("sql_registry_exec 拒绝执行: sqlId='" + sqlId
+                    + "' 不存在或不可用。若当前 Skill 已固定 sqlId，请核对 Skill 原文后原样重试（传入的 ID 可能抄错），"
+                    + "不要改猜其他 ID，也不要改用 tool_index 重新发现；若确属 ID 失效，请如实向用户报告");
         }
 
         String template = entry.getSqlTemplate();

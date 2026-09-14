@@ -24,6 +24,7 @@ import com.agentscopea2a.v2.artifact.SshArtifactIo;
 import com.agentscopea2a.v2.cache.ResponseCacheService;
 import com.agentscopea2a.v2.dimension.DimensionStateManager;
 import com.agentscopea2a.v2.hooks.ArtifactHandoffHook;
+import com.agentscopea2a.v2.hooks.SkillFixedToolGuardHook;
 import com.agentscopea2a.v2.hooks.PythonExecRetryHook;
 import com.agentscopea2a.v2.hooks.ToolCallTrackingHook;
 import com.agentscopea2a.v2.hooks.ChatScriptExecResultHook;
@@ -206,6 +207,18 @@ public class V2InfraConfig {
     // Retrieves the per-request ToolCallCollector from RuntimeContext (pushed by the
     // framework via RuntimeContextAware) instead of ThreadLocal, which broke across
     // reactive thread boundaries.
+
+    // ── Skill Fixed Tool Guard (v2 Hook — mechanical backstop for "Skill 固定流程优先") ──
+    // After load_skill_through_path returns a body with fixed sqlId/scriptId/toolId,
+    // replaces tool_index / toolMetaInfo results with a corrective message so the LLM
+    // cannot wander into dynamic discovery mid-skill (2026/09/14 incident).
+
+    @Bean
+    @SuppressWarnings("deprecation")
+    public SkillFixedToolGuardHook skillFixedToolGuardHook() {
+        log.info("SkillFixedToolGuardHook: wired (priority=14, RuntimeContextAware-based)");
+        return new SkillFixedToolGuardHook();
+    }
 
     @Bean
     @SuppressWarnings("deprecation")

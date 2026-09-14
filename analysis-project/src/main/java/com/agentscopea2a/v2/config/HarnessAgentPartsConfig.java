@@ -131,6 +131,7 @@ public class HarnessAgentPartsConfig {
     public List<Hook> harnessHooks(
             ObjectProvider<ArtifactHandoffHook> artifactHandoffHookProvider,
             ObjectProvider<PythonExecRetryHook> pythonExecRetryHookProvider,
+            ObjectProvider<SkillFixedToolGuardHook> skillFixedToolGuardHookProvider,
             ObjectProvider<ToolCallTrackingHook> toolCallTrackingHookProvider,
             ObjectProvider<ChatScriptExecResultHook> chatScriptExecResultHookProvider,
             ObjectProvider<SkillSynthesisHook> skillSynthesisHookProvider,
@@ -149,6 +150,15 @@ public class HarnessAgentPartsConfig {
         if (retry != null) {
             hooks.add(retry);
             log.info("HarnessAgentPartsConfig: PythonExecRetryHook wired (priority=13)");
+        }
+
+        // Skill 固定流程机械兜底：skill 加载固定 ID 后拦截 tool_index/toolMetaInfo 的
+        // 动态发现结果。必须在 ToolCallTrackingHook(45)/trace(47) 之前, 让 SSE 和 trace
+        // 记录的是覆写后的纠偏消息。
+        SkillFixedToolGuardHook fixedToolGuard = skillFixedToolGuardHookProvider.getIfAvailable();
+        if (fixedToolGuard != null) {
+            hooks.add(fixedToolGuard);
+            log.info("HarnessAgentPartsConfig: SkillFixedToolGuardHook wired (priority=14)");
         }
 
         ToolCallTrackingHook tracking = toolCallTrackingHookProvider.getIfAvailable();
