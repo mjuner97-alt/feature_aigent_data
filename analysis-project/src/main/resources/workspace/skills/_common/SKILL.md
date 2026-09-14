@@ -13,7 +13,9 @@ description: 所有 *_metrics skill 共享的硬规则 (CSV 路径 / arith / 空
 工具发现协议。固定 ID 执行失败时如实报告失败，不得改猜其他工具或回退到 `tool_index`。
 
 > SubagentRegistrar 启动时把本文件内容 prepend 到每个子 agent sysPrompt。
-> 主 agent (Supervisor) 见 AGENTS.md (已含相同规则)。各 `*_metrics` skill 不再重复。
+> 「Skill 固定流程优先」规则的唯一维护位置：本文件（子 agent）+ AGENTS.md（主 agent）。
+> agent-subagents/*.md 与各 skill 正文一律不再重复此规则。该规则另有
+> SkillFixedToolGuardHook 机械兜底（skill 固定 ID 加载后覆写 tool_index/toolMetaInfo 结果）。
 
 ## CSV 路径
 

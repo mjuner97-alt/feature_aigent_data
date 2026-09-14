@@ -150,7 +150,8 @@ public class ScriptExecTool {
                     Map<String, Object> params) {
 
         if (scriptId == null || scriptId.isBlank()) {
-            return ToolResultBlock.text("script_exec 拒绝执行: scriptId 不能为空，请先调用 tool_index");
+            return ToolResultBlock.text("script_exec 拒绝执行: scriptId 不能为空。若当前 Skill 已指定 scriptId，"
+                    + "请按 Skill 正文原样填写；没有固定 ID 时才通过 tool_index 查询");
         }
         if (WEEKLY_BUSINESS_MOCK_ID.equals(scriptId)) {
             return ToolResultBlock.text(formatWeeklyBusinessMock(params));
@@ -169,7 +170,9 @@ public class ScriptExecTool {
                     + e.getClass().getSimpleName() + ": " + e.getMessage());
         }
         if (entry == null) {
-            return ToolResultBlock.text("script_exec 拒绝执行: scriptId 不存在或不可用");
+            return ToolResultBlock.text("script_exec 拒绝执行: scriptId='" + scriptId
+                    + "' 不存在或不可用。若当前 Skill 已固定 scriptId，请核对 Skill 原文后原样重试（传入的 ID 可能抄错），"
+                    + "不要改猜其他 ID，也不要改用 tool_index 重新发现；若确属 ID 失效，请如实向用户报告");
         }
 
         String scriptPath = entry.getScriptPath();

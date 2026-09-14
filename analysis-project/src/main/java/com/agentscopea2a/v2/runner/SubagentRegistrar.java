@@ -131,6 +131,13 @@ public class SubagentRegistrar {
      */
     private final ToolCallTrackingHook toolCallTrackingHook;
     /**
+     * Skill 固定流程机械兜底（与主 agent 共用单例）。子 agent 加载含固定
+     * sqlId/scriptId/toolId 的 skill 后，覆写 tool_index/toolMetaInfo 的发现结果，
+     * 防止子 agent 在 skill 流程中途改走动态发现。priority=14，在
+     * L2EventCollectorHook(44)/ToolCallTrackingHook(45)/trace(47) 之前。
+     */
+    private final com.agentscopea2a.v2.hooks.SkillFixedToolGuardHook skillFixedToolGuardHook;
+    /**
      * Trace 采集 Hook（与主 agent 共用单例）。子 agent 共享请求级 RuntimeContext，故能拿到
      * 同一个 TraceSession，捕获子 agent 的 LLM 输入/思考/输出、工具入参/返回（source 字段为
      * 子 agent 名以区分）。priority=47，在 L2EventCollectorHook(44)/ToolCallTrackingHook(45) 之后。
@@ -168,6 +175,7 @@ public class SubagentRegistrar {
             ObjectProvider<PythonExecRetryHook> pythonExecRetryHookProvider,
             ObjectProvider<L2EventCollectorHook> l2EventCollectorHookProvider,
             ObjectProvider<ToolCallTrackingHook> toolCallTrackingHookProvider,
+            ObjectProvider<com.agentscopea2a.v2.hooks.SkillFixedToolGuardHook> skillFixedToolGuardHookProvider,
             ObjectProvider<AiChatRestToolCallTrackingToDbHook> traceCollectorHookProvider,
             ObjectProvider<MysqlMemoryStore> mysqlMemoryStoreProvider,
             ObjectProvider<ToolResultTruncationMiddleware> toolResultTruncationMiddlewareProvider,
@@ -212,6 +220,7 @@ public class SubagentRegistrar {
         this.l2EventCollectorHook = l2EventCollectorHookProvider.getIfAvailable();
         this.subagentEventForwardingMiddleware = new SubagentEventForwardingMiddleware();
         this.toolCallTrackingHook = toolCallTrackingHookProvider.getIfAvailable();
+        this.skillFixedToolGuardHook = skillFixedToolGuardHookProvider.getIfAvailable();
         this.traceCollectorHook = traceCollectorHookProvider.getIfAvailable();
         this.mysqlMemoryStore = mysqlMemoryStoreProvider.getIfAvailable();
         this.toolResultTruncationMiddleware = toolResultTruncationMiddlewareProvider.getIfAvailable();
@@ -366,6 +375,12 @@ public class SubagentRegistrar {
             boolean hasPythonExec = toolNames.contains("python_exec");
             if (artifactHandoffHook != null) {
                 sub.hook(artifactHandoffHook);
+            }
+            // SkillFixedToolGuardHook: skill 固定流程机械兜底。RuntimeContext 为主/子
+            // agent 共享，主 agent 或子 agent 任一方加载了含固定 ID 的 skill，本请求内
+            // 所有 tool_index/toolMetaInfo 发现结果都会被覆写为纠偏消息。
+            if (skillFixedToolGuardHook != null) {
+                sub.hook(skillFixedToolGuardHook);
             }
             List<io.agentscope.core.middleware.MiddlewareBase> subMiddlewares = new ArrayList<>();
             if (artifactAccessMiddleware != null) {

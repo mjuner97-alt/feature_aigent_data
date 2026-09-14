@@ -1,0 +1,339 @@
+event:agent_start
+data:{"code":0,"errorMsg":null,"ansUUID":null,"lineResult":"\uD83E\uDD16 启动智能体：QualitySupervisorV2 (assistant)","resultAll":null,"formType":null,"agentId":null,"agentName":null,"source":null,"conversationId":null,"eventType":"agent_start","toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":"QualitySupervisorV2","agentRole":"assistant"}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"已","resultAll":"已","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"为","resultAll":"已为","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"您","resultAll":"已为您","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"查询","resultAll":"已为您查询","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"到","resultAll":"已为您查询到","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"杭州","resultAll":"已为您查询到杭州","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"开发","resultAll":"已为您查询到杭州开发","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"二","resultAll":"已为您查询到杭州开发二","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"部","resultAll":"已为您查询到杭州开发二部","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"2","resultAll":"已为您查询到杭州开发二部2","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"0","resultAll":"已为您查询到杭州开发二部20","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"2","resultAll":"已为您查询到杭州开发二部202","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"6","resultAll":"已为您查询到杭州开发二部2026","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"年","resultAll":"已为您查询到杭州开发二部2026年","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"7","resultAll":"已为您查询到杭州开发二部2026年7","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"月份","resultAll":"已为您查询到杭州开发二部2026年7月份","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"版本","resultAll":"已为您查询到杭州开发二部2026年7月份版本","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"的","resultAll":"已为您查询到杭州开发二部2026年7月份版本的","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"Q","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"2","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"-","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"1","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"数据","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"汇总","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"结果","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"：","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"|","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"总数","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":" |","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"已","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"打分","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":" |","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"达标","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"数","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":" |","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"打分","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"率","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":" |","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"达标","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"率","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":" |","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 |","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"|","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"-----","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":":","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"|","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"-------","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":":","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"|","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"-------","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":":","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"|","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"-------","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":":","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"|","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"--------","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":":","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"|","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:|","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"|","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"8","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||8","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"0","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":" |","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"0","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":" |","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"8","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |8","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"0","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":" |","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"0","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":".","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"0","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"%","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0%","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":" |","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"1","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |1","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"0","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |10","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"0","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":".","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"0","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"%","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0%","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":" |","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"注","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"：","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"由于","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"明细","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"查询","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"的","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"SQL","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"标识","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"未","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"正确","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"配置","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"，","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置，","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"暂时","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置，暂时","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"无法","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置，暂时无法","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"生成","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置，暂时无法生成","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"下载","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置，暂时无法生成下载","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"链接","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置，暂时无法生成下载链接","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"。","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置，暂时无法生成下载链接。","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"如果","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置，暂时无法生成下载链接。如果","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"您","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置，暂时无法生成下载链接。如果您","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"需要","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置，暂时无法生成下载链接。如果您需要","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"其他","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置，暂时无法生成下载链接。如果您需要其他","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"维度","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置，暂时无法生成下载链接。如果您需要其他维度","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"或","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置，暂时无法生成下载链接。如果您需要其他维度或","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"指标","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置，暂时无法生成下载链接。如果您需要其他维度或指标","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"的数据","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置，暂时无法生成下载链接。如果您需要其他维度或指标的数据","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"，请","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置，暂时无法生成下载链接。如果您需要其他维度或指标的数据，请","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"补充","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置，暂时无法生成下载链接。如果您需要其他维度或指标的数据，请补充","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"具体","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置，暂时无法生成下载链接。如果您需要其他维度或指标的数据，请补充具体","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"需求","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置，暂时无法生成下载链接。如果您需要其他维度或指标的数据，请补充具体需求","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"。","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置，暂时无法生成下载链接。如果您需要其他维度或指标的数据，请补充具体需求。","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:agent_end
+data:{"code":0,"errorMsg":null,"ansUUID":null,"lineResult":"✅ 智能体完成","resultAll":null,"formType":null,"agentId":null,"agentName":null,"source":null,"conversationId":null,"eventType":"agent_end","toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:text_block_delta
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":" ","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：|总数 |已打分 |达标数 |打分率 |达标率 ||-----:|-------:|-------:|-------:|--------:||80 |0 |80 |0.0% |100.0% |注：由于明细查询的SQL标识未正确配置，暂时无法生成下载链接。如果您需要其他维度或指标的数据，请补充具体需求。","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
+event:done
+data:{"code":200,"errorMsg":null,"ansUUID":null,"lineResult":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：\n\n| 总数 | 已打分 | 达标数 | 打分率 | 达标率  |\n|-----:|-------:|-------:|-------:|--------:|\n|   80 |      0 |     80 |  0.0%  | 100.0%  |\n\n注：由于明细查询的SQL标识未正确配置，暂时无法生成下载链接。如果您需要其他维度或指标的数据，请补充具体需求。","resultAll":"已为您查询到杭州开发二部2026年7月份版本的Q2-1数据汇总结果：\n\n| 总数 | 已打分 | 达标数 | 打分率 | 达标率  |\n|-----:|-------:|-------:|-------:|--------:|\n|   80 |      0 |     80 |  0.0%  | 100.0%  |\n\n注：由于明细查询的SQL标识未正确配置，暂时无法生成下载链接。如果您需要其他维度或指标的数据，请补充具体需求。","formType":"HXY","agentId":"7","agentName":"数字QA助手","source":null,"conversationId":null,"eventType":null,"toolCallId":null,"toolCallName":null,"toolCallState":null,"toolInput":null,"toolOutput":null,"subagentId":null,"subagentLabel":null,"agentNameRaw":null,"agentRole":null}
+
