@@ -41,6 +41,11 @@ class UnifiedToolMetadataServiceTest {
         assertEquals("sqlId", response.invocation().idField());
         assertEquals("department", response.parameters().get(0).name());
         assertEquals("部门", response.parameters().get(0).description());
+        assertEquals("downloadFilename", response.parameters().get(1).name());
+        assertEquals("string", response.parameters().get(1).type());
+        assertEquals(false, response.parameters().get(1).required());
+        assertEquals("referenceOnly", response.parameters().get(2).name());
+        assertEquals("boolean", response.parameters().get(2).type());
     }
 
     @Test
@@ -63,5 +68,7 @@ class UnifiedToolMetadataServiceTest {
                 scriptMapper, apiProvider, new ObjectMapper()).find("quality_sql");
 
         assertEquals("quality_sql", response.toolId());
+        assertEquals("downloadFilename", response.parameters().get(0).name());
+        assertEquals("referenceOnly", response.parameters().get(1).name());
     }
 }

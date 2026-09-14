@@ -108,8 +108,11 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
             if (userId == null || userId.isBlank()) return List.of();
             try {
                 Set<String> usable = skillUsageResolver.findUsableRetrievalNames(userId);
-                if (usable == null || usable.isEmpty()) return List.of();
-                all = all.stream().filter(skill -> usable.contains(skill.getName())).toList();
+                Set<String> usableNames = usable == null ? Set.of() : usable;
+                all = all.stream()
+                        .filter(skill -> isBuiltinWorkspaceSkill(skill)
+                                || usableNames.contains(skill.getName()))
+                        .toList();
                 if (all.isEmpty()) return List.of();
             } catch (RuntimeException e) {
                 log.warn("Skill usage resolution failed; hiding all Skills", e);
@@ -178,6 +181,21 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
                 all.size(), result.size(), selection.explicitNameMatched(), selection.confident(),
                 selection.fallbackExpanded());
         return result;
+    }
+
+    /**
+     * Builtin skills are shipped under workspace/skills and are global capabilities, not rows in
+     * the per-user skill_manage permission table. User-created skills use the user_generated
+     * source and remain subject to the resolver above.
+     */
+    private static boolean isBuiltinWorkspaceSkill(AgentSkill skill) {
+        if (skill == null || skill.getSource() == null) {
+            return false;
+        }
+        String source = skill.getSource();
+        return "workspace".equals(source)
+                || "workspace-namespaced".equals(source)
+                || source.startsWith("filesystem-");
     }
 
     private static boolean contains(String question, String value) {

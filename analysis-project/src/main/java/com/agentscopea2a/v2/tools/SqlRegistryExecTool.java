@@ -143,11 +143,11 @@ public class SqlRegistryExecTool {
 
     @Tool(
             name = "sql_registry_exec",
-            description = "执行预注册 SQL。sqlId 来自 tool_index，参数以 toolMetaInfo 为准。")
+            description = "执行预注册 SQL。sqlId 可来自当前 Skill 固定流程或 tool_index；参数以 Skill 或 toolMetaInfo 为准。")
     public ToolResultBlock sqlRegistryExec(
             @ToolParam(
                     name = "sqlId",
-                    description = "tool_index 返回的 SQL 工具 ID")
+                    description = "当前 Skill 或 tool_index 提供的 SQL 工具 ID")
                     String sqlId,
             @ToolParam(
                     name = "params",

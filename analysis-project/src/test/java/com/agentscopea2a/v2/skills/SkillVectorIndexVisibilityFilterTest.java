@@ -131,8 +131,31 @@ class SkillVectorIndexVisibilityFilterTest {
                 List.of(skill("allowed"), skill("forbidden")), context)));
     }
 
+    @Test
+    void builtinWorkspaceSkillsRemainVisibleWhenUserHasNoManagedSkills() {
+        SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
+        when(repository.findAll()).thenReturn(List.of());
+        SkillUsageResolver resolver = mock(SkillUsageResolver.class);
+        when(resolver.findUsableRetrievalNames("u1")).thenReturn(Set.of());
+        SkillVectorIndexVisibilityFilter filter = new SkillVectorIndexVisibilityFilter(
+                repository, new SkillCandidateSelector(5, 10, 0.65d, 0.10d), true,
+                null, null, resolver);
+        RuntimeContext context = RuntimeContext.builder().userId("u1").build();
+        context.put("lastQuestion", "查询");
+
+        List<AgentSkill> result = filter.filter(
+                List.of(skill("builtin", "workspace"), skill("managed", "user_generated")), context);
+
+        assertEquals(List.of("builtin"), names(result));
+    }
+
     private static AgentSkill skill(String name) {
         return AgentSkill.builder().name(name).description(name).skillContent("rules").build();
+    }
+
+    private static AgentSkill skill(String name, String source) {
+        return AgentSkill.builder().name(name).description(name).skillContent("rules")
+                .source(source).build();
     }
 
     private static List<String> names(List<AgentSkill> skills) {

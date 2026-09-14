@@ -137,11 +137,11 @@ public class ScriptExecTool {
 
     @Tool(
             name = "script_exec",
-            description = "执行预注册指标脚本。scriptId 来自 tool_index，参数以 toolMetaInfo 为准。")
+            description = "执行预注册指标脚本。scriptId 可来自当前 Skill 固定流程或 tool_index；参数以 Skill 或 toolMetaInfo 为准。")
     public ToolResultBlock scriptExec(
             @ToolParam(
                     name = "scriptId",
-                    description = "tool_index 返回的脚本工具 ID")
+                    description = "当前 Skill 或 tool_index 提供的脚本工具 ID")
                     String scriptId,
             @ToolParam(
                     name = "params",

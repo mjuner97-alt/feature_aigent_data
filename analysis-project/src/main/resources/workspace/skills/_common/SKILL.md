@@ -5,6 +5,13 @@ description: 所有 *_metrics skill 共享的硬规则 (CSV 路径 / arith / 空
 
 # Skill 共享硬规则
 
+## Skill 固定流程优先（最高优先级）
+
+若当前 Skill 正文明确给出固定的 `toolId`、`sqlId` 或 `scriptId`、调用顺序及参数，
+必须严格按正文执行并逐步完成，不能自由发挥。禁止调用 `tool_index`、`toolMetaInfo`
+或 `router_tool` 验证、替换或重新发现这些固定 ID；只有正文明确要求动态选工具时才走
+工具发现协议。固定 ID 执行失败时如实报告失败，不得改猜其他工具或回退到 `tool_index`。
+
 > SubagentRegistrar 启动时把本文件内容 prepend 到每个子 agent sysPrompt。
 > 主 agent (Supervisor) 见 AGENTS.md (已含相同规则)。各 `*_metrics` skill 不再重复。
 

@@ -16,6 +16,9 @@ import java.util.Map;
 public class UnifiedToolMetadataService {
 
     private static final TypeReference<List<Map<String, Object>>> PARAMETER_LIST = new TypeReference<>() { };
+    private static final List<ToolParameterMetadata> SQL_EXECUTOR_PARAMETERS = List.of(
+            new ToolParameterMetadata("downloadFilename", "string", false, "可选；导出 CSV 时指定文件名"),
+            new ToolParameterMetadata("referenceOnly", "boolean", false, "可选；true 时仅返回结果引用"));
 
     private final ToolRoutingMetadataRepository metadataRepository;
     private final ToolRoutingAvailabilityResolver availabilityResolver;
@@ -70,7 +73,7 @@ public class UnifiedToolMetadataService {
 
     private ToolMetadataResponse resolveParameters(ToolRoutingMetadata metadata) {
         List<ToolParameterMetadata> parameters = switch (metadata.toolType()) {
-            case SQL -> parameters(sqlRegistryMapper.selectBySqlId(metadata.toolId()));
+            case SQL -> sqlParameters(sqlRegistryMapper.selectBySqlId(metadata.toolId()));
             case SCRIPT -> parameters(scriptRegistryMapper.selectByScriptId(metadata.toolId()));
             case API -> apiParameters(metadata.toolId());
         };
@@ -84,6 +87,17 @@ public class UnifiedToolMetadataService {
             throw new IllegalArgumentException("工具不存在或不可用");
         }
         return parseParameters(entry.getParamsSchema());
+    }
+
+    /** SQL registry metadata contains business parameters; expose executor options too. */
+    private List<ToolParameterMetadata> sqlParameters(SqlRegistryEntry entry) {
+        List<ToolParameterMetadata> parameters = new ArrayList<>(parameters(entry));
+        for (ToolParameterMetadata executorParameter : SQL_EXECUTOR_PARAMETERS) {
+            if (parameters.stream().noneMatch(p -> p.name().equals(executorParameter.name()))) {
+                parameters.add(executorParameter);
+            }
+        }
+        return List.copyOf(parameters);
     }
 
     private List<ToolParameterMetadata> parameters(ScriptRegistryEntry entry) {
