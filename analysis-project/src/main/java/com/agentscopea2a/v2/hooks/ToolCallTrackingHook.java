@@ -17,6 +17,7 @@ package com.agentscopea2a.v2.hooks;
 
 import com.agentscopea2a.entity.AiChatResult;
 import com.agentscopea2a.v2.tools.ToolCallCollector;
+import com.agentscopea2a.v2.service.ChatStreamTimeoutWatchdog;
 import com.agentscopea2a.v2.util.HookRuntimeContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.RuntimeContext;
@@ -35,6 +36,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.publisher.Mono;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Records every L1 (supervisor-level) tool invocation into the request-scoped
@@ -132,6 +134,9 @@ public class ToolCallTrackingHook implements Hook, RuntimeContextAware {
     }
 
     private void track(HookEvent event, RuntimeContext ctx) {
+        if (event instanceof PreActingEvent pre) {
+            upgradeAnalysisTimeoutIfNeeded(pre.getToolUse(), ctx);
+        }
         ToolCallCollector collector = ctx.get(COLLECTOR_CTX_KEY);
         if (collector == null) {
             return;
@@ -141,6 +146,98 @@ public class ToolCallTrackingHook implements Hook, RuntimeContextAware {
         } else if (event instanceof PostActingEvent post) {
             handlePostActing(post, collector, ctx);
         }
+    }
+
+    /**
+     * 根据当前工具调用判断是否需要把请求级超时档位升级为 analyze_data 分析档。
+     *
+     * <p>背景：</p>
+     * <ul>
+     *     <li>/ai/chat 请求默认使用普通档超时（例如 30 分钟），覆盖普通问答、简单问数和 Skill 流程。</li>
+     *     <li>当模型实际派生 analyze_data 子 Agent 时，任务耗时可能显著变长，需要升级到分析档
+     *         （例如 60 分钟），且不能中断当前请求。</li>
+     *     <li>升级由看门狗负责，升级后仍以请求进入接口的时间为起点重新计算剩余时间，不会重置计时。</li>
+     * </ul>
+     *
+     * <p>方法职责：</p>
+     * <ol>
+     *     <li>判断当前 toolUse 是否是派发 analyze_data 子 Agent 的调用；不是则直接返回，保持普通档。</li>
+     *     <li>从 RuntimeContext 中取出当前请求的看门狗实例。</li>
+     *     <li>调用 {@link ChatStreamTimeoutWatchdog#upgradeToAnalysis()} 尝试升级档位。</li>
+     *     <li>升级成功后，把当前档位写回 RuntimeContext，供日志和链路观测使用。</li>
+     * </ol>
+     *
+     * <p>幂等性：</p>
+     * <ul>
+     *     <li>看门狗内部的 {@code upgradeToAnalysis()} 使用 CAS 保证档位只能从 NORMAL 升级到
+     *         ANALYZE_DATA 一次，重复调用会返回 false，不会重复调度或重复记录日志。</li>
+     *     <li>本方法本身不保证幂等，但依赖看门狗的幂等性，因此可以安全地在每次工具调用时调用。</li>
+     * </ul>
+     *
+     * <p>空值处理：</p>
+     * <ul>
+     *     <li>toolUse 为 null 时直接返回，避免空指针。</li>
+     *     <li>RuntimeContext 中没有看门狗时（例如非 /ai/chat 请求或看门狗未初始化），直接跳过升级，
+     *         不影响主流程。</li>
+     * </ul>
+     *
+     * @param toolUse 当前模型发起的工具调用块，包含工具名和输入参数
+     * @param ctx     当前请求的 AgentScope RuntimeContext，用于存取请求级看门狗和档位标记
+     */
+    private void upgradeAnalysisTimeoutIfNeeded(ToolUseBlock toolUse, RuntimeContext ctx) {
+        // 只有模型实际派生 analyze_data 时才升级到 60 分钟；Skill 和普通问答继续使用 30 分钟。
+        if (toolUse == null || !isAnalyzeDataSpawn(toolUse.getName(), toolUse.getInput())) return;
+
+        // 取出请求级看门狗。非 /ai/chat 请求或未初始化看门狗时返回 null，此时不做升级。
+        ChatStreamTimeoutWatchdog watchdog = ctx.get(ChatStreamTimeoutWatchdog.RUNTIME_CONTEXT_KEY);
+
+        // upgradeToAnalysis() 内部通过 CAS 保证只升级一次；返回 true 表示本次调用真正完成了升级。
+        if (watchdog != null && watchdog.upgradeToAnalysis()) {
+            // 记录当前档位，便于日志、链路追踪和问题排查时确认请求实际使用的超时策略。
+            ctx.put(ChatStreamTimeoutWatchdog.PROFILE_CONTEXT_KEY,
+                    ChatStreamTimeoutWatchdog.Profile.ANALYZE_DATA.name());
+            log.info("[ToolCallTracking] /ai/chat timeout profile upgraded to ANALYZE_DATA");
+        }
+    }
+
+    /**
+     * 判断一次工具调用是否是派发 analyze_data 子 Agent。
+     *
+     * <p>判定规则：</p>
+     * <ol>
+     *     <li>工具名必须严格等于 {@code agent_spawn}（区分大小写）。</li>
+     *     <li>输入参数 input 不能为 null。</li>
+     *     <li>输入参数中必须包含 {@code agent_id} 字段，且其值为字符串。</li>
+     *     <li>{@code agent_id} 去除首尾空白后，忽略大小写等于 {@code analyze_data}。</li>
+     * </ol>
+     *
+     * <p>示例：以下输入都会被认为是 analyze_data 派发：</p>
+     * <ul>
+     *     <li>{@code {"agent_id": "analyze_data"}}</li>
+     *     <li>{@code {"agent_id": " Analyze_Data "}}</li>
+     * </ul>
+     *
+     * <p>以下输入不会被识别：</p>
+     * <ul>
+     *     <li>工具名不是 agent_spawn，例如 skill_call、simple_query。</li>
+     *     <li>input 为 null，或没有 agent_id 字段。</li>
+     *     <li>agent_id 不是字符串，例如数字或嵌套对象。</li>
+     *     <li>agent_id 是其他子 Agent，例如 report_generator。</li>
+     * </ul>
+     *
+     * @param toolName 工具名称，例如 agent_spawn
+     * @param input    工具输入参数，通常是 Map 结构
+     * @return true 表示这是一次派发 analyze_data 子 Agent 的调用；否则返回 false
+     */
+    static boolean isAnalyzeDataSpawn(String toolName, Map<?, ?> input) {
+        // 仅识别 agent_spawn 工具；其他工具一律不触发档位升级。
+        if (!"agent_spawn".equals(toolName) || input == null) return false;
+
+        // 读取 agent_id 并做类型校验，避免 ClassCastException 或误判。
+        Object target = input.get("agent_id");
+
+        // 仅当 agent_id 是字符串且 trim 后忽略大小写等于 analyze_data 时，才认为是分析档派发。
+        return target instanceof String value && "analyze_data".equalsIgnoreCase(value.trim());
     }
 
     // -------- PreActing: record tool name + input --------

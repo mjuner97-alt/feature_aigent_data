@@ -13,4 +13,10 @@
         SELECT config_key, config_value, config_description, updated_at
         FROM ai_chat_runtime_config
     </select>
+
+    <select id="selectByConfigKey" resultMap="BaseResultMap">
+        SELECT config_key, config_value, config_description, updated_at
+        FROM ai_chat_runtime_config
+        WHERE config_key = #{configKey}
+    </select>
 </mapper>

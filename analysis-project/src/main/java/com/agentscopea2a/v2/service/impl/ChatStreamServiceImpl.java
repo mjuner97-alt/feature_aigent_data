@@ -13,6 +13,8 @@ import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.service.ChatStreamService;
 import com.agentscopea2a.v2.service.ChatRuntimeConfig;
 import com.agentscopea2a.v2.service.ChatRuntimeConfigService;
+import com.agentscopea2a.v2.service.ChatStreamTimeouts;
+import com.agentscopea2a.v2.service.ChatStreamTimeoutWatchdog;
 import com.agentscopea2a.v2.tools.ToolResultRegistry;
 import com.agentscopea2a.v2.hooks.ChatScriptExecResultHook;
 import com.agentscopea2a.v2.trace.collector.TraceSession;
@@ -47,8 +49,6 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -56,7 +56,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.CHUNK_GAP_TIMEOUT_SECONDS;
 import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.SCRIPT_EXEC_ENABLED;
-import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.STREAM_TIMEOUT_SECONDS;
 
 /**
  * 流式聊天服务实现，基于 SSE 推送 Agent 事件流
@@ -170,8 +169,8 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         final AtomicReference<Disposable> subscription = new AtomicReference<>();
         /** 保证 cleanup 只执行一次（onCompletion / onTimeout / onError 可能多次触发） */
         final AtomicBoolean cleaned = new AtomicBoolean(false);
-        /** SSE 超时看门狗句柄，供 cleanup 在正常完成时取消 */
-        final AtomicReference<ScheduledFuture<?>> timeoutWatchdog = new AtomicReference<>();
+        /** 请求级可切换超时控制器，供 cleanup 在正常完成时取消。 */
+        final AtomicReference<ChatStreamTimeoutWatchdog> timeoutWatchdog = new AtomicReference<>();
         /** 是否已发送过"执行中"，用于保证"执行中"和"已执行"成对出现 */
         final AtomicBoolean hasSentExecuting = new AtomicBoolean(false);
         /** 是否已向前端发送过可见 think 内容（等待/工具提示或真实模型增量）。 */
@@ -338,6 +337,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
      */
     @Override
     public SseEmitter stream(ChatRequest req) {
+        long requestStartedAtNanos = System.nanoTime();
         // 判断 managerMode 必须在回填默认值之前，否则会被默认值覆盖
         boolean managerMode = StringUtils.isNoneEmpty(req.getAgentName());
         if (!managerMode) {
@@ -352,13 +352,12 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         String conversationId = req.getConversationId();
         ChatRuntimeConfig runtimeConfig =
                 chatRuntimeConfigService.resolve(userId, conversationId);
-        long streamTimeoutMs = TimeUnit.SECONDS.toMillis(
-                runtimeConfig.getIntOrDefault(STREAM_TIMEOUT_SECONDS, 1200));
+        ChatStreamTimeouts streamTimeouts = ChatStreamTimeouts.from(runtimeConfig);
         ModelUtils.configureChunkGapTimeoutSeconds(
                 runtimeConfig.getIntOrDefault(CHUNK_GAP_TIMEOUT_SECONDS, 120));
 
         // 容器级超时比看门狗晚 60 秒，只做兜底；真正的超时处理走下方看门狗。
-        SseEmitter emitter = new SseEmitter(streamTimeoutMs + CONTAINER_TIMEOUT_GRACE);
+        SseEmitter emitter = new SseEmitter(streamTimeouts.analysisTimeoutMs() + CONTAINER_TIMEOUT_GRACE);
 
         // 构造调用键：同一 (userId, conversationId) 只允许一个进行中的流式调用
         String callKey = callKey(userId, conversationId);
@@ -379,6 +378,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         // 构造运行时上下文：携带 sessionId / userId / lastQuestion 供中间件 / hooks 访问
         RuntimeContext ctx = buildRuntimeContext(conversationId, userId, text);
         ctx.put(ChatRuntimeConfigService.RUNTIME_CONFIG_CTX_KEY, runtimeConfig);
+        ctx.put(ChatStreamTimeoutWatchdog.PROFILE_CONTEXT_KEY, ChatStreamTimeoutWatchdog.Profile.NORMAL.name());
         ctx.put(ChatScriptExecResultHook.ENABLED_CTX_KEY,
                 runtimeConfig.getBooleanOrDefault(SCRIPT_EXEC_ENABLED, false));
         String requestId = UUID.randomUUID().toString();
@@ -439,13 +439,27 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             cleanup.run();
         });
 
-        // 超时看门狗：到点时 emitter 尚未 complete、连接仍存活，此刻 send 超时错误
+        // 普通流程先使用 30 分钟档案；真实派单 analyze_data 后由 Hook 把同一个控制器
+        // 升级到 60 分钟绝对截止时间。容器超时从一开始就按最长档案创建。
+        // 到点时 emitter 尚未 complete、连接仍存活，此刻 send 超时错误
         // 是可达客户端的（这是与容器 async 超时的本质区别--容器超时后响应已销毁，
         // emitter.send 必然失败，前端收不到任何事件）。先发错误、再关连接、最后统一
         // cleanup（幂等）。
-        streamCtx.timeoutWatchdog.set(SSE_TIMEOUT_WATCHDOG.schedule(() -> {
+        ChatStreamTimeoutWatchdog timeoutWatchdog = new ChatStreamTimeoutWatchdog(
+                SSE_TIMEOUT_WATCHDOG,
+                requestStartedAtNanos,
+                streamTimeouts.normalTimeoutMs(),
+                streamTimeouts.analysisTimeoutMs(),
+                () -> {
             if (streamCtx.cleaned.get()) return; // 已正常完成 / 已被其他路径清理
-            log.warn("SSE watchdog timeout for sessionId={}", conversationId);
+            ChatStreamTimeoutWatchdog activeWatchdog = streamCtx.timeoutWatchdog.get();
+            String timeoutProfile = activeWatchdog == null
+                    ? ChatStreamTimeoutWatchdog.Profile.NORMAL.name()
+                    : activeWatchdog.profile().name();
+            long activeTimeoutMs = activeWatchdog == null
+                    ? streamTimeouts.normalTimeoutMs()
+                    : activeWatchdog.activeTimeoutMs();
+            log.warn("SSE watchdog timeout for sessionId={} profile={}", conversationId, timeoutProfile);
             //发送失败结果
             recordMonitorStreamTimeout(streamCtx, new TimeoutException("/ai/chat stream watchdog timeout"));
             // 1. Trace 状态标记 TIMEOUT（在 cleanup 的 assemble 之前）
@@ -468,7 +482,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                     strategy.sendThink(streamCtx, ThinkPayload.done(AGENT_RETURN_NAME));
                 }
                 strategy.sendError(streamCtx, new RuntimeException(
-                        "流程超时：本次对话处理时间过长（已等待 " + (streamTimeoutMs / 60_000) + " 分钟），会话已自动结束。"
+                        "流程超时：本次对话处理时间过长（已等待 " + (activeTimeoutMs / 60_000) + " 分钟），会话已自动结束。"
                                 + "请稍后重试，或尝试精简问题以缩短处理时间。"));
             } catch (Exception e) {
                 log.warn("发送超时错误失败: sessionId={}", streamCtx.conversationId, e);
@@ -480,7 +494,10 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                 log.warn("emitter.complete() 失败: sessionId={}", streamCtx.conversationId, e);
             }
             cleanup.run();
-        }, streamTimeoutMs, TimeUnit.MILLISECONDS));
+        });
+        streamCtx.timeoutWatchdog.set(timeoutWatchdog);
+        ctx.put(ChatStreamTimeoutWatchdog.RUNTIME_CONTEXT_KEY, timeoutWatchdog);
+        timeoutWatchdog.scheduleNormal();
 
         // 在 boundedElastic 调度器上异步启动流式订阅，避免阻塞 Servlet 容器线程
         Mono.fromRunnable(() -> {
@@ -840,10 +857,8 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             if (!ctx.cleaned.compareAndSet(false, true)) return;
             toolResultRegistry.clearRequestRefs(ctx.requestId);
             // 0. 取消超时看门狗（正常完成时无需触发；watchdog 自身调用 cleanup 时 cancel 是无害的空操作）
-            ScheduledFuture<?> watchdog = ctx.timeoutWatchdog.get();
-            if (watchdog != null) {
-                watchdog.cancel(false);
-            }
+            ChatStreamTimeoutWatchdog timeoutWatchdog = ctx.timeoutWatchdog.get();
+            if (timeoutWatchdog != null) timeoutWatchdog.cancel();
             // 1. 取消 Reactor 订阅，停止继续消耗 LLM token
             Disposable d = ctx.subscription.get();
             if (d != null && !d.isDisposed()) {

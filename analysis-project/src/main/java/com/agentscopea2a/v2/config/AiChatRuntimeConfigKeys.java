@@ -5,11 +5,14 @@ public final class AiChatRuntimeConfigKeys {
     public static final String MODEL_TIMEOUT_SECONDS = "model_timeout_seconds";
     public static final String MODEL_RETRY_COUNT = "model_retry_count";
     public static final String STREAM_TIMEOUT_SECONDS = "stream_timeout_seconds";
+    public static final String NORMAL_STREAM_TIMEOUT_SECONDS = "normal_stream_timeout_seconds";
+    public static final String ANALYSIS_STREAM_TIMEOUT_SECONDS = "analysis_stream_timeout_seconds";
     public static final String CHUNK_GAP_TIMEOUT_SECONDS = "chunk_gap_timeout_seconds";
     public static final String CONNECT_TIMEOUT_SECONDS = "connect_timeout_seconds";
     public static final String RESPONSE_TIMEOUT_SECONDS = "response_timeout_seconds";
     public static final String LONG_TASK_ENABLED = "long_task_enabled";
     public static final String SCRIPT_EXEC_ENABLED = "script_exec_enabled";
+    public static final String SKILL_FINAL_REVIEWER_USER_IDS = "skill_final_reviewer_user_ids";
 
     private AiChatRuntimeConfigKeys() {
     }
