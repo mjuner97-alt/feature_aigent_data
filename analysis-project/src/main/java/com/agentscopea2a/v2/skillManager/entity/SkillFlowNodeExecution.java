@@ -19,6 +19,7 @@ public class SkillFlowNodeExecution {
     private Long id;
     private Long flowExecutionId;
     private String nodeKey;
+    private String nodeName;
     private Long skillId;
     private String skillName;
     private String skillRetrievalName;

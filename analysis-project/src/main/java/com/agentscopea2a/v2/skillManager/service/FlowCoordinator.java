@@ -392,7 +392,9 @@ public class FlowCoordinator {
                     diagnostic.errorId(), diagnostic.stage(), flow.getId(), e);
             flow.setSummaryJson(json(Map.of("summaryError", diagnostic.displayMessage(),
                     "nodes", safeNodeList.stream().map(n -> Map.of(
-                            "nodeKey", Objects.toString(n.getNodeKey(), ""), "status", statusName(n),
+                            "nodeKey", Objects.toString(n.getNodeKey(), ""),
+                            "nodeName", n.getNodeName() == null || n.getNodeName().isBlank() ? Objects.toString(n.getSkillName(), "") : n.getNodeName(),
+                            "status", statusName(n),
                             "error", Objects.toString(n.getErrorMessage(), ""))).toList())));
             if (flow.getStatus() == FlowExecutionStatus.SUCCESS) flow.setStatus(FlowExecutionStatus.FAILED);
         }

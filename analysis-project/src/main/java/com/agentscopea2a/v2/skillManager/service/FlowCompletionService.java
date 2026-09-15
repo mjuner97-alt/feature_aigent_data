@@ -86,6 +86,7 @@ public class FlowCompletionService {
             mapper.updateExecution(flow);
             List<Map<String, String>> results = nodes.stream()
                     .map(n -> Map.of("nodeKey", Objects.toString(n.getNodeKey(), ""),
+                            "nodeName", n.getNodeName() == null || n.getNodeName().isBlank() ? Objects.toString(n.getSkillName(), "") : n.getNodeName(),
                             "skillName", Objects.toString(n.getSkillName(), ""),
                             "status", n.getStatus() == null ? "UNKNOWN" : n.getStatus().name(),
                             "result", Objects.toString(n.getResultJson(), ""))).toList();
@@ -115,7 +116,8 @@ public class FlowCompletionService {
         for (int index = 0; index < nodes.size(); index++) {
             SkillFlowNodeExecution node = nodes.get(index);
             report.append("## ").append(index + 1).append(". ")
-                    .append(Objects.toString(node.getSkillName(), node.getNodeKey())).append('\n');
+                    .append(node.getNodeName() == null || node.getNodeName().isBlank()
+                            ? Objects.toString(node.getSkillName(), node.getNodeKey()) : node.getNodeName()).append('\n');
             report.append("状态：").append(node.getStatus() == null ? "UNKNOWN" : node.getStatus().name())
                     .append("\n\n");
             report.append(extractResultText(node.getResultJson())).append("\n\n");

@@ -140,7 +140,8 @@ public class FlowExecutionService {
                     : FlowNodeExecutionStatus.PENDING;
             if (status == FlowNodeExecutionStatus.QUEUED) firstRunnableNode = false;
             mapper.insertNodeExecution(SkillFlowNodeExecution.builder().flowExecutionId(execution.getId())
-                    .nodeKey(node.getNodeKey()).skillId(node.getSkillId()).skillName(skillName).skillRetrievalName(retrievalName)
+                    .nodeKey(node.getNodeKey()).nodeName(FlowDefinitionService.resolveNodeDisplayName(node.getNodeName(), skillName))
+                    .skillId(node.getSkillId()).skillName(skillName).skillRetrievalName(retrievalName)
                     .questionTemplateSnapshot(node.getQuestionTemplate()).dependsOnJson(node.getDependsOnJson())
                     .required(node.getRequired()).status(status).attemptCount(0)
                     .maxAttempts(SkillFlowProperties.NODE_MAX_ATTEMPTS).build());

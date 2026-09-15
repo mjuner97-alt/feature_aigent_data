@@ -67,7 +67,7 @@ public class FlowQueryService {
     public List<NodeDto> nodes(Long id, String userId) {
         SkillFlowExecution execution = readable(id);
         return mapper.selectNodeExecutions(id).stream()
-                .map(n -> new NodeDto(n.getId(), n.getNodeKey(), n.getSkillName(), n.getQuestionTemplateSnapshot(),
+                .map(n -> new NodeDto(n.getId(), n.getNodeKey(), displayName(n), n.getSkillName(), n.getQuestionTemplateSnapshot(),
                         renderedQuestion(execution, n), Boolean.TRUE.equals(n.getRequired()),
                         n.getStatus().name(), n.getAttemptCount(), n.getMaxAttempts(), n.getErrorCode(),
                         n.getErrorMessage(), hasResult(n), n.getStartedAt(), n.getCompletedAt(), mapper.selectAttempts(n.getId())))
@@ -85,7 +85,7 @@ public class FlowQueryService {
         if (node.getStatus() != FlowNodeExecutionStatus.SUCCESS || content == null) {
             throw new IllegalStateException("FlowNodeReportNotFound: " + nodeId);
         }
-        String title = execution.getFlowName() + " - " + Objects.toString(node.getSkillName(), node.getNodeKey());
+        String title = execution.getFlowName() + " - " + displayName(node);
         return reportRenderer.render(content, title);
     }
 
@@ -225,6 +225,11 @@ public class FlowQueryService {
         }
     }
 
+    private static String displayName(SkillFlowNodeExecution node) {
+        return node.getNodeName() == null || node.getNodeName().isBlank()
+                ? node.getSkillName() : node.getNodeName();
+    }
+
     /** 执行记录列表/详情返回体。 */
     public record ExecutionDto(Long id, Long flowId, String flowName, String flowCode, String status,
                                String triggerType,
@@ -236,7 +241,7 @@ public class FlowQueryService {
                                LocalDateTime createdAt, LocalDateTime startedAt, LocalDateTime completedAt) {}
 
     /** 节点执行明细返回体(attempts 为每次尝试的审计记录;节点全并行,无依赖)。 */
-    public record NodeDto(Long id, String nodeKey, String skillName, String questionTemplateSnapshot,
+    public record NodeDto(Long id, String nodeKey, String nodeName, String skillName, String questionTemplateSnapshot,
                           String renderedQuestion, boolean required, String status,
                           Integer attemptCount, Integer maxAttempts, String errorCode, String errorMessage,
                           boolean hasResult, LocalDateTime startedAt, LocalDateTime completedAt,

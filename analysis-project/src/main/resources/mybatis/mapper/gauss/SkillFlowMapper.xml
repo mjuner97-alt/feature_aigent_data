@@ -24,6 +24,7 @@
         <id column="id" property="id"/>
         <result column="flow_id" property="flowId"/>
         <result column="node_key" property="nodeKey"/>
+        <result column="node_name" property="nodeName"/>
         <result column="skill_id" property="skillId"/>
         <result column="question_template" property="questionTemplate"/>
         <result column="depends_on_json" property="dependsOnJson"/>
@@ -94,6 +95,7 @@
         <id column="id" property="id"/>
         <result column="flow_execution_id" property="flowExecutionId"/>
         <result column="node_key" property="nodeKey"/>
+        <result column="node_name" property="nodeName"/>
         <result column="skill_id" property="skillId"/>
         <result column="skill_name" property="skillName"/>
         <result column="skill_retrieval_name" property="skillRetrievalName"/>
@@ -123,7 +125,7 @@
     , code, name, description, task_question, summary_question_template, enabled, schedule_rules, max_parallelism,
         notify_enabled, created_by, created_at, updated_at, deleted_at</sql>
     <sql id="nodeColumns">id
-    , flow_id, node_key, skill_id, question_template, depends_on_json, required,
+    , flow_id, node_key, node_name, skill_id, question_template, depends_on_json, required,
         max_attempts, sort_order, created_at, updated_at</sql>
     <sql id="triggerColumns">id
     , flow_id, keyword, normalized_keyword, priority, enabled, created_by,
@@ -223,9 +225,9 @@
 
     <!-- 流程节点及其指标关联：节点按 sort_order 执行，depends_on_json 保存依赖关系。 -->
     <insert id="insertNode" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO skill_flow_node (flow_id, node_key, skill_id, question_template, depends_on_json,
+        INSERT INTO skill_flow_node (flow_id, node_key, node_name, skill_id, question_template, depends_on_json,
                                      required, max_attempts, sort_order)
-        VALUES (#{flowId}, #{nodeKey}, #{skillId}, #{questionTemplate}, #{dependsOnJson},
+        VALUES (#{flowId}, #{nodeKey}, #{nodeName}, #{skillId}, #{questionTemplate}, #{dependsOnJson},
                 #{required}, #{maxAttempts}, #{sortOrder})
     </insert>
 
@@ -344,9 +346,9 @@
     <!-- 为流程中的每个节点创建执行实例，记录重试次数、租约和运行时结果。 -->
     <insert id="insertNodeExecution" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO skill_flow_node_execution
-        (flow_execution_id, node_key, skill_id, skill_name, skill_retrieval_name, question_template_snapshot,
+        (flow_execution_id, node_key, node_name, skill_id, skill_name, skill_retrieval_name, question_template_snapshot,
          rendered_question, depends_on_json, required, status, attempt_count, max_attempts, next_run_at)
-        VALUES (#{flowExecutionId}, #{nodeKey}, #{skillId}, #{skillName}, #{skillRetrievalName},
+        VALUES (#{flowExecutionId}, #{nodeKey}, #{nodeName}, #{skillId}, #{skillName}, #{skillRetrievalName},
                 #{questionTemplateSnapshot},
                 #{renderedQuestion}, #{dependsOnJson}, #{required}, #{status}, #{attemptCount},
                 #{maxAttempts}, #{nextRunAt})
