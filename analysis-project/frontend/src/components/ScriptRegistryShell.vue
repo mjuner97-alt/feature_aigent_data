@@ -11,6 +11,7 @@ const nav = [
   { to: '/script-registry/python', label: 'python 脚本注册' },
   { to: '/script-registry/skills', label: 'Skill 配置' },
   { to: '/script-registry/tool-routing', label: '工具路由' },
+  { to: '/script-registry/overlap', label: '重叠检测' },
 ];
 </script>
 

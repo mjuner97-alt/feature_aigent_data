@@ -15,7 +15,7 @@ import static org.mockito.Mockito.eq;
 class SkillRoutingMetadataAdminServiceTest {
 
     private final SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
-    private final SkillRoutingMetadataAdminService service = new SkillRoutingMetadataAdminService(repository);
+    private final SkillRoutingMetadataAdminService service = new SkillRoutingMetadataAdminService(repository, null);
 
     @Test
     void saveNormalizesAndDeduplicatesTags() {
@@ -25,13 +25,12 @@ class SkillRoutingMetadataAdminServiceTest {
 
         SkillRoutingMetadata result = service.save("q2_skill", new SkillRoutingMetadataInput(
                 " Q2 summary ", List.of(" 达标率 "), List.of("质量管理"),
-                List.of("QI卡口"), List.of("质量分"), 10, true), "admin");
+                List.of("QI卡口"), true), "admin");
 
         assertEquals("Q2 summary", result.shortSummary());
         assertEquals(List.of("达标率"), result.keywords());
         assertEquals(List.of("质量管理"), result.domainTags());
         assertEquals(List.of("QI卡口"), result.topicTags());
-        assertEquals(List.of("质量分"), result.metricTags());
         assertEquals("admin", result.creator());
         verify(repository).upsert(result);
     }
@@ -44,7 +43,7 @@ class SkillRoutingMetadataAdminServiceTest {
 
         SkillRoutingMetadata result = service.save("q2_skill", new SkillRoutingMetadataInput(
                 "summary", List.of("Q2-1、部门、版本、达标率", "打分率，项目总数"),
-                List.of(), List.of(), List.of(), 10, true));
+                List.of(), List.of(), true));
 
         assertEquals(List.of("Q2-1", "部门", "版本", "达标率", "打分率", "项目总数"), result.keywords());
     }
@@ -54,19 +53,9 @@ class SkillRoutingMetadataAdminServiceTest {
         when(repository.skillExists("missing")).thenReturn(false);
 
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> service.save("missing", emptyInput(0)));
+                () -> service.save("missing", emptyInput()));
 
         assertEquals("SkillNotFound: missing", error.getMessage());
-    }
-
-    @Test
-    void saveRejectsPriorityOutsideSupportedRange() {
-        when(repository.skillExists("q2_skill")).thenReturn(true);
-
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> service.save("q2_skill", emptyInput(1001)));
-
-        assertEquals("PriorityOutOfRange: -1000..1000", error.getMessage());
     }
 
     @Test
@@ -76,7 +65,7 @@ class SkillRoutingMetadataAdminServiceTest {
         verify(repository).findAllWithSkillManage(eq("alice"), eq(null), eq(true), eq("alice"), eq(200), eq(0));
     }
 
-    private static SkillRoutingMetadataInput emptyInput(int priority) {
-        return new SkillRoutingMetadataInput("summary", List.of(), List.of(), List.of(), List.of(), priority, true);
+    private static SkillRoutingMetadataInput emptyInput() {
+        return new SkillRoutingMetadataInput("summary", List.of(), List.of(), List.of(), true);
     }
 }

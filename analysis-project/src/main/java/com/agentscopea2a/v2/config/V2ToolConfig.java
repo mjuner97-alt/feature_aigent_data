@@ -25,7 +25,7 @@ import com.agentscopea2a.v2.service.UrlShortenerService;
 import com.agentscopea2a.v2.skills.SkillEntry;
 import com.agentscopea2a.v2.skills.SkillIndexRepository;
 import com.agentscopea2a.v2.skills.SkillRoutingMetadataRepository;
-import com.agentscopea2a.v2.capability.CapabilityRepository;
+import com.agentscopea2a.v2.skills.SkillRoutingTagDictionary;
 import com.agentscopea2a.v2.tools.AgentTools;
 import com.agentscopea2a.v2.tools.ArithTool;
 import com.agentscopea2a.v2.tools.ClickHouseWideTableMetricsTool;
@@ -46,6 +46,10 @@ import com.agentscopea2a.v2.toolrouting.ToolRoutingCatalogService;
 import com.agentscopea2a.v2.toolrouting.ToolRoutingMetadataRepository;
 import com.agentscopea2a.v2.toolrouting.ToolRoutingTagDictionary;
 import com.agentscopea2a.v2.toolrouting.UnifiedToolMetadataService;
+import com.agentscopea2a.v2.governance.GovernanceEmbeddingCache;
+import com.agentscopea2a.v2.governance.JdbcSkillDescriptionSource;
+import com.agentscopea2a.v2.governance.SkillDescriptionSource;
+import com.agentscopea2a.v2.skills.EmbeddingClient;
 import com.agentscopea2a.v2.registry.service.ScriptSourceService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -112,23 +116,19 @@ public class V2ToolConfig {
     public SkillRoutingMetadataRepository skillRoutingMetadataRepository(
             @org.springframework.beans.factory.annotation.Qualifier("gaussCustomerDataSource") DataSource dataSource,
             com.fasterxml.jackson.databind.ObjectMapper objectMapper,
-            ObjectProvider<ToolRoutingTagDictionary> toolRoutingTagDictionaryProvider,
+            SkillRoutingTagDictionary skillRoutingTagDictionary,
             @org.springframework.beans.factory.annotation.Value(
-                    "${harness.a2a.skill-context.metadata-cache-ttl-ms:30000}") long metadataCacheTtlMillis,
-            @Value("${harness.a2a.tool-routing.enabled:false}") boolean toolRoutingEnabled) {
+                    "${harness.a2a.skill-context.metadata-cache-ttl-ms:30000}") long metadataCacheTtlMillis) {
         log.info("SkillRoutingMetadataRepository: wired (GaussDB-backed, cacheTtl={}ms)", metadataCacheTtlMillis);
         return new SkillRoutingMetadataRepository(dataSource, objectMapper, metadataCacheTtlMillis,
-                toolRoutingEnabled ? toolRoutingTagDictionaryProvider.getIfAvailable() : null);
+                skillRoutingTagDictionary);
     }
 
+    /** Skill 侧独立标签词典 (仅业务主题), 与 tool_route_tag_dictionary 分离。 */
     @Bean
-    public CapabilityRepository capabilityRepository(
-            @org.springframework.beans.factory.annotation.Qualifier("gaussCustomerDataSource") DataSource dataSource,
-            com.fasterxml.jackson.databind.ObjectMapper objectMapper,
-            @org.springframework.beans.factory.annotation.Value(
-                    "${harness.a2a.capability-routing.cache-ttl-ms:30000}") long capabilityCacheTtlMillis) {
-        log.info("CapabilityRepository: wired (GaussDB-backed, cacheTtl={}ms)", capabilityCacheTtlMillis);
-        return new CapabilityRepository(dataSource, objectMapper, capabilityCacheTtlMillis);
+    public SkillRoutingTagDictionary skillRoutingTagDictionary(
+            @Qualifier("gaussCustomerDataSource") DataSource dataSource) {
+        return new SkillRoutingTagDictionary(dataSource);
     }
 
     // ── Unified SQL/API/SCRIPT routing catalog ────────────────────────────
@@ -136,6 +136,62 @@ public class V2ToolConfig {
     public ToolRoutingTagDictionary toolRoutingTagDictionary(
             @Qualifier("gaussCustomerDataSource") DataSource dataSource) {
         return new ToolRoutingTagDictionary(dataSource);
+    }
+
+    // ── Governance: overlap + similarity detection ─────────────────────────
+    @Bean
+    public SkillDescriptionSource skillDescriptionSource(
+            @Qualifier("gaussCustomerDataSource") DataSource dataSource) {
+        return new JdbcSkillDescriptionSource(dataSource);
+    }
+
+    /**
+     * 治理描述向量缓存。EmbeddingClient 当前不装配 (harness.embedding.* 已删) 时
+     * semanticAvailable()=false, 重叠/相似检测自动降级为纯文本信号。
+     */
+    @Bean
+    public GovernanceEmbeddingCache governanceEmbeddingCache(
+            ObjectProvider<EmbeddingClient> embeddingClientProvider,
+            SkillDescriptionSource skillDescriptionSource,
+            ToolRoutingMetadataRepository toolRoutingMetadataRepository) {
+        log.info("GovernanceEmbeddingCache: wired (semanticAvailable={})",
+                embeddingClientProvider.getIfAvailable() != null);
+        return new GovernanceEmbeddingCache(embeddingClientProvider.getIfAvailable(),
+                skillDescriptionSource, toolRoutingMetadataRepository);
+    }
+
+    @Bean
+    public com.agentscopea2a.v2.governance.SkillToolOverlapService skillToolOverlapService(
+            SkillRoutingMetadataRepository skillRoutingMetadataRepository,
+            SkillIndexRepository skillIndexRepository,
+            ToolRoutingMetadataRepository toolRoutingMetadataRepository,
+            com.agentscopea2a.v2.governance.GovernanceEmbeddingCache governanceEmbeddingCache,
+            SkillDescriptionSource skillDescriptionSource,
+            @Value("${harness.a2a.governance.overlap.cosine-threshold:0.80}") double cosineThreshold,
+            @Value("${harness.a2a.governance.overlap.cosine-high-threshold:0.88}") double cosineHighThreshold,
+            @Value("${harness.a2a.governance.overlap.name-similarity-threshold:0.85}") double nameSimilarityThreshold,
+            @Value("${harness.a2a.governance.overlap.cache-ttl-ms:300000}") long cacheTtlMillis) {
+        log.info("SkillToolOverlapService: wired (cosine={}, ttl={}ms)", cosineThreshold, cacheTtlMillis);
+        return new com.agentscopea2a.v2.governance.SkillToolOverlapService(
+                skillRoutingMetadataRepository, skillIndexRepository, toolRoutingMetadataRepository,
+                governanceEmbeddingCache, skillDescriptionSource,
+                cosineThreshold, cosineHighThreshold, nameSimilarityThreshold,
+                cacheTtlMillis);
+    }
+
+    @Bean
+    public com.agentscopea2a.v2.governance.SkillDescriptionSimilarityService skillDescriptionSimilarityService(
+            SkillDescriptionSource skillDescriptionSource,
+            SkillRoutingMetadataRepository skillRoutingMetadataRepository,
+            com.agentscopea2a.v2.governance.GovernanceEmbeddingCache governanceEmbeddingCache,
+            @Value("${harness.a2a.governance.similarity.cosine-threshold:0.85}") double cosineThreshold,
+            @Value("${harness.a2a.governance.similarity.name-levenshtein-threshold:0.85}") double nameLevenshteinThreshold,
+            @Value("${harness.a2a.governance.similarity.jaccard-threshold:0.60}") double jaccardThreshold) {
+        log.info("SkillDescriptionSimilarityService: wired (cosine={}, jaccard={})",
+                cosineThreshold, jaccardThreshold);
+        return new com.agentscopea2a.v2.governance.SkillDescriptionSimilarityService(
+                skillDescriptionSource, skillRoutingMetadataRepository, governanceEmbeddingCache,
+                cosineThreshold, nameLevenshteinThreshold, jaccardThreshold);
     }
 
     @Bean

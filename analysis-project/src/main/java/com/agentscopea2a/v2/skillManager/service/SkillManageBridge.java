@@ -154,8 +154,8 @@ public class SkillManageBridge {
     private void ensureRoutingMetadata(String skillName, String description) {
         if (routingMetadataRepo == null || routingMetadataRepo.findBySkillName(skillName).isPresent()) return;
         routingMetadataRepo.upsert(new SkillRoutingMetadata(skillName,
-                limitSummary(description), generatedKeywords(skillName), List.of(), List.of(), List.of(),
-                "", 0, true, null));
+                limitSummary(description), generatedKeywords(skillName), List.of(), List.of(),
+                "", true, null));
     }
 
     private static String limitSummary(String description) {

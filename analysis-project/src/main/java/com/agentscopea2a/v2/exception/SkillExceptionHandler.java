@@ -57,6 +57,9 @@ public class SkillExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(ex.getMessage());
     }
 
+    // SkillDescriptionSimilarException 的 409 结构化响应在 GlobalExceptionHandler
+    // (HIGHEST_PRECEDENCE) 中处理, 这里加会被其 Exception 兜底抢先, 勿重复添加。
+
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<String> handleIllegalState(IllegalStateException ex) {
         String message = ex.getMessage();

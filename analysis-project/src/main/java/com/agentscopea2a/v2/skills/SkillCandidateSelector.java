@@ -4,28 +4,34 @@ import io.agentscope.core.skill.AgentSkill;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-/** Deterministic, metadata-driven selector for model-visible Skill candidates. */
+/**
+ * Deterministic, keyword-driven selector for model-visible Skill candidates.
+ *
+ * <p>匹配语义: 用户问题显式点名 skill 名称, 或命中其任一 keyword, 才进入候选;
+ * 全部未命中返回空集合 (LLM 直接走工具)。领域标签 {@code domainTags} 仅做互斥域
+ * 过滤 (问题命中领域时排除其他领域的 skill, 通用 skill 始终保留) 与排序加成
+ * (领域命中的 skill 排在通用 skill 之前); {@code topicTags} 仅内部管理归类,
+ * 不参与匹配; 指标标签与 priority 已随评分体系简化移除。
+ */
 public class SkillCandidateSelector {
 
     private static final int EXPLICIT_NAME_SCORE = 10_000;
+    /** 高于关键词命中分上限 (1500), 保证领域命中的 skill 排在所有通用 skill 之前。 */
+    private static final int DOMAIN_MATCH_SCORE = 3_000;
+    private static final int KEYWORD_SCORE_PER_HIT = 500;
+    private static final int KEYWORD_SCORE_CAP = 1_500;
+
     private final int maxVisibleSkills;
     private final int fallbackVisibleSkills;
-    private final double minConfidence;
-    private final double minScoreGap;
 
-    public SkillCandidateSelector(int maxVisibleSkills, int fallbackVisibleSkills,
-                                  double minConfidence, double minScoreGap) {
+    public SkillCandidateSelector(int maxVisibleSkills, int fallbackVisibleSkills) {
         this.maxVisibleSkills = Math.max(1, maxVisibleSkills);
         this.fallbackVisibleSkills = Math.max(this.maxVisibleSkills, fallbackVisibleSkills);
-        this.minConfidence = minConfidence;
-        this.minScoreGap = minScoreGap;
     }
 
     public SkillCandidateSelection select(List<AgentSkill> allSkills,
@@ -37,53 +43,43 @@ public class SkillCandidateSelector {
         Set<String> availableNames = allSkills.stream().map(AgentSkill::getName).collect(Collectors.toSet());
         String normalizedQuestion = normalize(question);
         Set<String> requestedDomains = matchedTags(normalizedQuestion, metadata, SkillRoutingMetadata::domainTags);
-        Set<String> requestedTopics = matchedTags(normalizedQuestion, metadata, SkillRoutingMetadata::topicTags);
-        Set<String> requestedMetrics = matchedTags(normalizedQuestion, metadata, SkillRoutingMetadata::metricTags);
+
         List<ScoredSkill> scored = new ArrayList<>();
-        List<SkillRoutingMetadata> eligible = metadata.stream()
-                .filter(SkillRoutingMetadata::active)
-                .filter(entry -> availableNames.contains(entry.skillName()))
-                .toList();
-        List<SkillRoutingMetadata> explicitEntries = eligible.stream()
-                .filter(entry -> contains(normalizedQuestion, entry.skillName()))
-                .toList();
-        List<SkillRoutingMetadata> remaining = eligible.stream()
-                .filter(entry -> explicitEntries.stream().noneMatch(named -> named.skillName().equals(entry.skillName())))
-                .filter(entry -> requestedDomains.isEmpty()
-                        ? !hasAnyDomain(entry.domainTags())
-                        : hasAnyDomain(entry.domainTags(), requestedDomains))
-                .toList();
-        remaining = narrowByTags(remaining, requestedTopics, SkillRoutingMetadata::topicTags);
-        remaining = narrowByTags(remaining, requestedMetrics, SkillRoutingMetadata::metricTags);
-        for (SkillRoutingMetadata entry : explicitEntries) {
-            scored.add(new ScoredSkill(entry.skillName(), EXPLICIT_NAME_SCORE, 0, 0, 0, 0, entry.priority(), true));
-        }
-        for (SkillRoutingMetadata entry : remaining) {
-            int metricScore = Math.min(1500, 500 * matchedTerms(normalizedQuestion, entry.metricTags()));
-            int topicScore = Math.min(600, 300 * matchedTerms(normalizedQuestion, entry.topicTags()));
-            int keywordScore = Math.min(300, 50 * matchedTerms(normalizedQuestion, entry.keywords()));
-            int priorityScore = Math.max(-100, Math.min(100, entry.priority()));
-            scored.add(new ScoredSkill(entry.skillName(), metricScore + topicScore + keywordScore + priorityScore,
-                    metricScore, topicScore, keywordScore, 0, entry.priority(), false));
+        boolean explicitAny = false;
+        for (SkillRoutingMetadata entry : metadata) {
+            if (!entry.active() || !availableNames.contains(entry.skillName())) {
+                continue;
+            }
+            boolean explicit = contains(normalizedQuestion, entry.skillName());
+            if (explicit) {
+                explicitAny = true;
+            }
+            int keywordHits = explicit ? 0 : matchedTerms(normalizedQuestion, entry.keywords());
+            if (!explicit && keywordHits == 0) {
+                continue;
+            }
+            if (!explicit && !requestedDomains.isEmpty()
+                    && hasDomainTags(entry.domainTags())
+                    && !hasAnyDomain(entry.domainTags(), requestedDomains)) {
+                continue;
+            }
+            int domainScore = requestedDomains.isEmpty() || !hasDomainTags(entry.domainTags())
+                    ? 0 : DOMAIN_MATCH_SCORE;
+            int keywordScore = Math.min(KEYWORD_SCORE_CAP, KEYWORD_SCORE_PER_HIT * keywordHits);
+            scored.add(new ScoredSkill(entry.skillName(),
+                    (explicit ? EXPLICIT_NAME_SCORE : 0) + domainScore + keywordScore,
+                    keywordHits, domainScore > 0, explicit));
         }
         scored.sort(Comparator.comparing(ScoredSkill::explicit).reversed()
                 .thenComparing(Comparator.comparingInt(ScoredSkill::score).reversed())
-                .thenComparing(Comparator.comparingInt(ScoredSkill::metricScore).reversed())
-                .thenComparing(Comparator.comparingInt(ScoredSkill::topicScore).reversed())
-                .thenComparing(Comparator.comparingInt(ScoredSkill::keywordScore).reversed())
-                .thenComparing(Comparator.comparingInt(ScoredSkill::priority).reversed())
+                .thenComparing(Comparator.comparingInt(ScoredSkill::keywordHits).reversed())
                 .thenComparing(ScoredSkill::name));
         if (scored.isEmpty()) {
             return new SkillCandidateSelection(List.of(), false, false, false);
         }
-
-        boolean explicit = !explicitEntries.isEmpty();
-        boolean confident = explicit || evidence(scored.get(0)) >= minConfidence;
-        boolean closeScores = scored.size() > 1 && scoreGap(scored) < minScoreGap;
-        boolean fallbackExpanded = !confident || closeScores;
-        int limit = fallbackExpanded ? fallbackVisibleSkills : maxVisibleSkills;
+        int limit = fallbackVisibleSkills;
         List<String> selected = scored.stream().limit(limit).map(ScoredSkill::name).toList();
-        return new SkillCandidateSelection(selected, explicit, confident, fallbackExpanded);
+        return new SkillCandidateSelection(selected, explicitAny, true, scored.size() > limit);
     }
 
     private static int matchedTerms(String question, List<String> terms) {
@@ -91,7 +87,7 @@ public class SkillCandidateSelector {
         return (int) terms.stream().filter(term -> contains(question, term)).count();
     }
 
-    private static boolean hasAnyDomain(List<String> tags) {
+    private static boolean hasDomainTags(List<String> tags) {
         return tags != null && tags.stream().anyMatch(tag -> tag != null && !tag.trim().isEmpty());
     }
 
@@ -109,12 +105,6 @@ public class SkillCandidateSelector {
         return value == null ? "" : value.toLowerCase(Locale.ROOT).trim();
     }
 
-    private static List<SkillRoutingMetadata> narrowByTags(List<SkillRoutingMetadata> pool, Set<String> requested,
-                                                            java.util.function.Function<SkillRoutingMetadata, List<String>> tags) {
-        if (requested.isEmpty()) return pool;
-        return pool.stream().filter(entry -> intersects(tags.apply(entry), requested)).toList();
-    }
-
     private static Set<String> matchedTags(String question, List<SkillRoutingMetadata> metadata,
                                            java.util.function.Function<SkillRoutingMetadata, List<String>> tags) {
         return metadata.stream().flatMap(entry -> tags.apply(entry).stream()).filter(java.util.Objects::nonNull)
@@ -122,23 +112,5 @@ public class SkillCandidateSelector {
                 .collect(Collectors.toSet());
     }
 
-    private static boolean intersects(List<String> tags, Set<String> requested) {
-        return tags != null && tags.stream().filter(java.util.Objects::nonNull)
-                .map(SkillCandidateSelector::normalize).anyMatch(requested::contains);
-    }
-
-    private static double evidence(ScoredSkill first) {
-        return (first.metricScore() > 0 ? 0.60d : 0d)
-                + (first.topicScore() > 0 ? 0.30d : 0d)
-                + (first.keywordScore() > 0 ? 0.10d : 0d);
-    }
-
-    private static double scoreGap(List<ScoredSkill> scored) {
-        int first = scored.get(0).score();
-        if (first <= 0) return 0d;
-        return (first - scored.get(1).score()) / (double) first;
-    }
-
-    private record ScoredSkill(String name, int score, int metricScore, int topicScore, int keywordScore,
-                               int capabilityScore, int priority, boolean explicit) {}
+    private record ScoredSkill(String name, int score, int keywordHits, boolean domainMatched, boolean explicit) {}
 }

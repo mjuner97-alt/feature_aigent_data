@@ -15,8 +15,6 @@
  */
 package com.agentscopea2a.v2.skills;
 
-import com.agentscopea2a.v2.capability.CapabilityMetadata;
-import com.agentscopea2a.v2.capability.CapabilityRepository;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -77,25 +75,19 @@ public class BuiltinSkillRegistrar implements CommandLineRunner {
     private static final Pattern DESC_FIELD =
             Pattern.compile("^description:\\s*(?:\"([^\\n]*)\"|([^\\n]+))\\s*$", Pattern.MULTILINE);
 
-    private static final Pattern CAPABILITY_FIELD =
-            Pattern.compile("^capability:\\s*(\\S+)\\s*$", Pattern.MULTILINE);
-
     private final Path skillsDir;
     private final SkillIndexRepository indexRepo;
     private final SkillRoutingMetadataRepository routingMetadataRepository;
-    private final CapabilityRepository capabilityRepository;
     private final boolean enabled;
 
     public BuiltinSkillRegistrar(
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
             SkillIndexRepository indexRepo,
             SkillRoutingMetadataRepository routingMetadataRepository,
-            CapabilityRepository capabilityRepository,
             @Value("${harness.skills.builtin-registrar.enabled:true}") boolean enabled) {
         this.skillsDir = Path.of(workspacePath).toAbsolutePath().resolve("skills");
         this.indexRepo = indexRepo;
         this.routingMetadataRepository = routingMetadataRepository;
-        this.capabilityRepository = capabilityRepository;
         this.enabled = enabled;
     }
 
@@ -140,7 +132,6 @@ public class BuiltinSkillRegistrar implements CommandLineRunner {
                     log.debug("Skill '{}' already registered, skipping", pf.name);
                 }
                 ensureRoutingMetadata(pf);
-                ensureExplicitCapabilityBinding(pf);
             } catch (Exception ex) {
                 log.warn("Failed to process {}: {}", skillFile, ex.getMessage());
                 failed++;
@@ -240,7 +231,7 @@ public class BuiltinSkillRegistrar implements CommandLineRunner {
         String name = firstMatch(NAME_FIELD, body);
         String desc = firstMatch(DESC_FIELD, body);
         if (desc == null) desc = "";
-        return new ParsedFrontmatter(name, desc.trim(), firstMatch(CAPABILITY_FIELD, body));
+        return new ParsedFrontmatter(name, desc.trim());
     }
 
     private static String firstMatch(Pattern p, String input) {
@@ -259,19 +250,10 @@ public class BuiltinSkillRegistrar implements CommandLineRunner {
         }
         SkillRoutingMetadata metadata = new SkillRoutingMetadata(
                 frontmatter.name, shortSummary(frontmatter.description), generatedKeywords(frontmatter.name),
-                List.of(), List.of(), List.of(), "", 0, true, null);
+                List.of(), List.of(), "", true, null);
         if (routingMetadataRepository.upsert(metadata)) {
             log.info("Created active routing metadata for builtin skill '{}' (name-derived, unconfigured)",
                     frontmatter.name);
-        }
-    }
-
-    private void ensureExplicitCapabilityBinding(ParsedFrontmatter frontmatter) {
-        if (frontmatter.capability == null || frontmatter.capability.isBlank()) return;
-        String capability = frontmatter.capability.trim();
-        if (capabilityRepository.upsert(new CapabilityMetadata(capability, capability, List.of(capability),
-                List.of(), List.of(), 0, true))) {
-            capabilityRepository.bindIfAbsent(frontmatter.name, capability);
         }
     }
 
@@ -289,5 +271,5 @@ public class BuiltinSkillRegistrar implements CommandLineRunner {
         return List.copyOf(result);
     }
 
-    private record ParsedFrontmatter(String name, String description, String capability) {}
+    private record ParsedFrontmatter(String name, String description) {}
 }

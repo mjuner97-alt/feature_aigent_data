@@ -63,10 +63,13 @@ public class SkillManageController {
 
     private final SkillManageService skillService;
     private final MockOrgService mockOrgService;
+    private final com.agentscopea2a.v2.governance.SkillDescriptionSimilarityService similarityService;
 
-    public SkillManageController(SkillManageService skillService, MockOrgService mockOrgService) {
+    public SkillManageController(SkillManageService skillService, MockOrgService mockOrgService,
+                                  com.agentscopea2a.v2.governance.SkillDescriptionSimilarityService similarityService) {
         this.skillService = skillService;
         this.mockOrgService = mockOrgService;
+        this.similarityService = similarityService;
     }
 
     // ==================== Skill CRUD + 列表 (§12.1) ====================
@@ -98,12 +101,23 @@ public class SkillManageController {
     }
 
     /**
-     * 创建 Skill。
+     * 创建 Skill。命中高相似描述返回 409 + matches, 用户仅能返回修改 (无放行参数)。
      */
     @PostMapping("/skills")
     public Skill create(@RequestBody Skill skill, @RequestHeader("X-User-Id") String userId) {
         return skillService.create(skill, userId);
     }
+
+    /**
+     * 保存前描述相似预检 (前端弹确认框用): 返回与全库未删除 Skill 的相似列表。
+     */
+    @PostMapping("/skills/similarity-check")
+    public com.agentscopea2a.v2.governance.SkillSimilarityCheckResult similarityCheck(
+            @RequestBody SimilarityCheckRequest request) {
+        return similarityService.check(request.name(), request.description(), request.excludeSkillId());
+    }
+
+    public record SimilarityCheckRequest(String name, String description, Long excludeSkillId) {}
 
     /**
      * 查询 Skill 详情(带可见性校验:私有未授权返回 SkillNotFound)。
@@ -114,7 +128,7 @@ public class SkillManageController {
     }
 
     /**
-     * 更新 Skill(仅所有者)。
+     * 更新 Skill(仅所有者; name/description 变更时做相似复检, 语义同 create: 命中即 409)。
      */
     @PutMapping("/skills")
     public Skill update(@RequestParam(name = "id") Long id, @RequestBody Skill patch,

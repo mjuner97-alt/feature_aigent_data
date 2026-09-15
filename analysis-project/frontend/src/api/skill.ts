@@ -1,4 +1,5 @@
 import type { SkillListItem, SkillDetail, LikeStatus, SkillInput, SkillPublishRecord, PublishTargetGroup, PublishPendingItem, SkillApprovalRecord, SkillFileUploadResponse, SkillFileItem, SkillFileReferenceItem, SkillFileReferenceRequest, SkillGrant } from '../types/skill';
+import type { SkillSimilarityMatch } from '../types/routingOverlap';
 import { apiErrorDetail } from '../utils/apiError';
 
 const BASE = '/api/skills';
@@ -90,17 +91,44 @@ export async function unreferenceSkill(id: number): Promise<void> {
   if (!res.ok) throw new Error(`unreference failed: ${res.status}`);
 }
 
+/** 保存命中相近描述被后端 409 拦截(携带相似列表,含 owner 联系人)。 */
+export class SkillSimilarError extends Error {
+  matches: SkillSimilarityMatch[];
+  degraded: boolean;
+  constructor(matches: SkillSimilarityMatch[], degraded: boolean) {
+    super('已存在相近描述的 Skill,请联系已有 Skill 的责任人确认');
+    this.matches = matches;
+    this.degraded = degraded;
+  }
+}
+
+/** 保存类接口的错误解析:优先识别 SkillDescriptionSimilar 409 结构化响应,其余走通用 skillError。 */
+async function skillSaveError(res: Response, fallback: string): Promise<Error> {
+  try {
+    const ct = res.headers.get('content-type') || '';
+    if (res.status === 409 && ct.includes('application/json')) {
+      const body = await res.json();
+      if (body && body.code === 'SkillDescriptionSimilar') {
+        return new SkillSimilarError(body.matches || [], !!body.degraded);
+      }
+    }
+  } catch {
+    /* 解析失败走通用路径 */
+  }
+  return skillError(res, fallback);
+}
+
 /** 创建 Skill(POST /api/skills)。后端自填 ownerUserId/status/likeCount/时间戳。 */
 export async function createSkill(input: SkillInput): Promise<SkillDetail> {
   const res = await fetch(BASE, { method: 'POST', headers: jsonHeaders(), body: JSON.stringify(input) });
-  if (!res.ok) throw await skillError(res, '创建失败');
+  if (!res.ok) throw await skillSaveError(res, '创建失败');
   return res.json();
 }
 
 /** 编辑 Skill(PUT /api/skills?id=)。后端做 owner 校验,非 owner 抛 SkillAccessDenied。 */
 export async function updateSkill(id: number, input: SkillInput): Promise<SkillDetail> {
   const res = await fetch(`${BASE}?id=${id}`, { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(input) });
-  if (!res.ok) throw await skillError(res, '保存失败');
+  if (!res.ok) throw await skillSaveError(res, '保存失败');
   return res.json();
 }
 

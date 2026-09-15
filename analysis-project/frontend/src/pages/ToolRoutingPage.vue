@@ -2,11 +2,15 @@
 import { computed, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { getToolRoutingStatus, listTags, listToolRouting, saveTag, saveToolRouting, scanToolRouting, setToolRoutingEnabled } from '../api/toolRouting';
+import { routingOverlapSummary } from '../api/routingOverlap';
+import { useRouter } from 'vue-router';
 import type { TagType, ToolRoutingInput, ToolRoutingMetadata, ToolRoutingScanCandidate, ToolRoutingStatus, ToolRoutingTag } from '../types/toolRouting';
 
+const router = useRouter();
 const loading = ref(false);
 const saving = ref(false);
 const rows = ref<ToolRoutingScanCandidate[]>([]);
+const highOverlap = ref<Record<string, number>>({});
 const configurations = ref<Record<string, ToolRoutingMetadata>>({});
 const topics = ref<ToolRoutingTag[]>([]);
 const metrics = ref<ToolRoutingTag[]>([]);
@@ -37,10 +41,12 @@ const dimensionOptions = computed(() => dimensions.value.map(tag => tag.tagName)
 async function load() {
   loading.value = true;
   try {
-    const [scanned, configured, currentStatus, topicTags, metricTags, dimensionTags] = await Promise.all([
+    const [scanned, configured, currentStatus, topicTags, metricTags, dimensionTags, overlap] = await Promise.all([
       scanToolRouting(), listToolRouting(), getToolRoutingStatus(), listTags('TOPIC'), listTags('METRIC'), listTags('DIMENSION'),
+      routingOverlapSummary().catch(() => null),
     ]);
     rows.value = scanned;
+    highOverlap.value = overlap?.highByTool || {};
     configurations.value = Object.fromEntries(configured.map(item => [item.toolId, item]));
     status.value = currentStatus;
     topics.value = topicTags;
@@ -102,6 +108,9 @@ async function createTag() {
   } catch (error: any) { ElMessage.error(error.message || '保存失败'); }
 }
 function issues(row: ToolRoutingScanCandidate) { return row.issueCodes.length ? row.issueCodes.join('、') : '-'; }
+function viewOverlap(toolId: string) {
+  router.push({ path: '/script-registry/overlap', query: { toolId } });
+}
 load();
 </script>
 
@@ -122,7 +131,14 @@ load();
           <el-select v-model="typeFilter" placeholder="全部类型" clearable size="small" style="width: 120px"><el-option label="SQL" value="SQL" /><el-option label="API" value="API" /><el-option label="Python 脚本" value="SCRIPT" /></el-select>
           <el-select v-model="ownerFilter" placeholder="全部范围" clearable size="small" style="width: 120px"><el-option label="全部" value="" /><el-option label="我的" value="mine" /></el-select></div>
         <el-table :data="filteredRows" v-loading="loading" stripe border size="small">
-          <el-table-column prop="toolId" label="工具 ID" min-width="180" show-overflow-tooltip />
+          <el-table-column prop="toolId" label="工具 ID" min-width="180" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span>{{ row.toolId }}</span>
+              <el-tag v-if="highOverlap[row.toolId]" type="danger" size="small" style="margin-left: 6px; cursor: pointer"
+                title="与 Skill 存在 HIGH 级别能力重叠，点击查看"
+                @click="viewOverlap(row.toolId)">重叠 {{ highOverlap[row.toolId] }}</el-tag>
+            </template>
+          </el-table-column>
           <el-table-column prop="toolType" label="类型" width="90" align="center" />
           <el-table-column prop="description" label="来源描述" min-width="260" show-overflow-tooltip />
           <el-table-column prop="creator" label="创建人" width="130" show-overflow-tooltip><template #default="{ row }">{{ row.creator || '-' }}</template></el-table-column>

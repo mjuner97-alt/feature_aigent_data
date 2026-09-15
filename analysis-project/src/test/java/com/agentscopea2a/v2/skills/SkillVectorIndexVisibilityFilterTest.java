@@ -16,14 +16,14 @@ import static org.mockito.Mockito.when;
 class SkillVectorIndexVisibilityFilterTest {
 
     @Test
-    void requestWithoutRegisteredDomainExcludesDomainTaggedSkills() {
+    void requestWithoutKeywordHitHidesConfiguredSkills() {
         SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
         SkillRoutingMetadata meeting = new SkillRoutingMetadata(
-                "meeting", "meeting", List.of(), List.of("例会材料"), List.of(),
-                List.of("达标率"), "", 0, true, null);
+                "meeting", "meeting", List.of("达标率"), List.of("例会材料"), List.of(),
+                "", true, null);
         when(repository.findAll()).thenReturn(List.of(meeting));
         SkillVectorIndexVisibilityFilter filter = new SkillVectorIndexVisibilityFilter(
-                repository, new SkillCandidateSelector(5, 10, 0.65d, 0.10d), true);
+                repository, new SkillCandidateSelector(5, 10), true);
         RuntimeContext context = RuntimeContext.empty();
         context.put("lastQuestion", "随便聊聊");
 
@@ -33,29 +33,53 @@ class SkillVectorIndexVisibilityFilterTest {
     }
 
     @Test
-    void actualRegisteredDomainValueGatesSkillVisibility() {
+    void requestWithoutDomainKeepsDomainTaggedSkillsOnKeywordHit() {
+        SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
+        SkillRoutingMetadata meeting = new SkillRoutingMetadata(
+                "meeting", "meeting", List.of("达标率"), List.of("例会材料"), List.of(),
+                "", true, null);
+        when(repository.findAll()).thenReturn(List.of(meeting));
+        SkillVectorIndexVisibilityFilter filter = new SkillVectorIndexVisibilityFilter(
+                repository, new SkillCandidateSelector(5, 10), true);
+        RuntimeContext context = RuntimeContext.empty();
+        context.put("lastQuestion", "查询达标率");
+
+        List<AgentSkill> result = filter.filter(List.of(skill("meeting")), context);
+
+        assertEquals(List.of("meeting"), names(result));
+    }
+
+    @Test
+    void domainQuestionKeepsDomainAndGenericSkillsExcludingOtherDomains() {
         SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
         SkillRoutingMetadata weeklyMeeting = new SkillRoutingMetadata(
                 "demo_company_quality", "quality", List.of("Q2-1"), List.of("杭研周例会"), List.of(),
-                List.of("检出率"), "", 0, true, null);
+                "", true, null);
         SkillRoutingMetadata ordinary = new SkillRoutingMetadata(
                 "ordinary_quality", "quality", List.of("Q2-1"), List.of(), List.of(),
-                List.of("检出率"), "", 0, true, null);
-        when(repository.findAll()).thenReturn(List.of(weeklyMeeting, ordinary));
+                "", true, null);
+        SkillRoutingMetadata otherDomain = new SkillRoutingMetadata(
+                "other_domain_quality", "quality", List.of("Q2-1"), List.of("质量管理"), List.of(),
+                "", true, null);
+        when(repository.findAll()).thenReturn(List.of(weeklyMeeting, ordinary, otherDomain));
         SkillVectorIndexVisibilityFilter filter = new SkillVectorIndexVisibilityFilter(
-                repository, new SkillCandidateSelector(5, 10, 0.65d, 0.10d), true);
+                repository, new SkillCandidateSelector(5, 10), true);
 
-        RuntimeContext ordinaryContext = RuntimeContext.empty();
-        ordinaryContext.put("lastQuestion", "杭州开发一部七月 Q2-1 检出率");
-        List<AgentSkill> ordinaryResult = filter.filter(
-                List.of(skill("demo_company_quality"), skill("ordinary_quality")), ordinaryContext);
-        assertEquals(List.of("ordinary_quality"), names(ordinaryResult));
+        RuntimeContext noDomainContext = RuntimeContext.empty();
+        noDomainContext.put("lastQuestion", "杭州开发一部七月 Q2-1 检出率");
+        List<AgentSkill> noDomainResult = filter.filter(
+                List.of(skill("demo_company_quality"), skill("ordinary_quality"), skill("other_domain_quality")),
+                noDomainContext);
+        assertEquals(3, noDomainResult.size());
 
         RuntimeContext domainContext = RuntimeContext.empty();
         domainContext.put("lastQuestion", "杭研周例会，杭州开发一部七月 Q2-1 检出率");
         List<AgentSkill> domainResult = filter.filter(
-                List.of(skill("demo_company_quality"), skill("ordinary_quality")), domainContext);
-        assertEquals(List.of("demo_company_quality"), names(domainResult));
+                List.of(skill("demo_company_quality"), skill("ordinary_quality"), skill("other_domain_quality")),
+                domainContext);
+        assertTrue(names(domainResult).contains("demo_company_quality"));
+        assertTrue(names(domainResult).contains("ordinary_quality"));
+        assertFalse(names(domainResult).contains("other_domain_quality"));
     }
 
     @Test
@@ -63,10 +87,10 @@ class SkillVectorIndexVisibilityFilterTest {
         SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
         SkillRoutingMetadata weeklyMeeting = new SkillRoutingMetadata(
                 "demo_company_quality", "quality", List.of(), List.of("杭研周例会"), List.of(),
-                List.of(), "", 0, true, null);
+                "", true, null);
         when(repository.findAll()).thenReturn(List.of(weeklyMeeting));
         SkillVectorIndexVisibilityFilter filter = new SkillVectorIndexVisibilityFilter(
-                repository, new SkillCandidateSelector(5, 10, 0.65d, 0.10d), true);
+                repository, new SkillCandidateSelector(5, 10), true);
         RuntimeContext context = RuntimeContext.empty();
         context.put("lastQuestion", "请使用 demo_company_quality 查询指标");
 
@@ -79,11 +103,11 @@ class SkillVectorIndexVisibilityFilterTest {
     void unconfiguredSkillIsAlwaysVisible() {
         SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
         SkillRoutingMetadata routed = new SkillRoutingMetadata(
-                "routed", "routed", List.of("达标率"), List.of(), List.of(), List.of(),
-                "", 0, true, null);
+                "routed", "routed", List.of("达标率"), List.of(), List.of(),
+                "", true, null);
         when(repository.findAll()).thenReturn(List.of(routed));
         SkillVectorIndexVisibilityFilter filter = new SkillVectorIndexVisibilityFilter(
-                repository, new SkillCandidateSelector(5, 10, 0.65d, 0.10d), true);
+                repository, new SkillCandidateSelector(5, 10), true);
         RuntimeContext context = RuntimeContext.empty();
         context.put("lastQuestion", "查询达标率");
 
@@ -97,14 +121,14 @@ class SkillVectorIndexVisibilityFilterTest {
     void adminDisabledSkillHiddenWhenOthersVisible() {
         SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
         SkillRoutingMetadata disabled = new SkillRoutingMetadata(
-                "disabled", "disabled", List.of(), List.of(), List.of(), List.of(),
-                "", 0, false, null);
+                "disabled", "disabled", List.of(), List.of(), List.of(),
+                "", false, null);
         SkillRoutingMetadata routed = new SkillRoutingMetadata(
-                "routed", "routed", List.of("达标率"), List.of(), List.of(), List.of(),
-                "", 0, true, null);
+                "routed", "routed", List.of("达标率"), List.of(), List.of(),
+                "", true, null);
         when(repository.findAll()).thenReturn(List.of(disabled, routed));
         SkillVectorIndexVisibilityFilter filter = new SkillVectorIndexVisibilityFilter(
-                repository, new SkillCandidateSelector(5, 10, 0.65d, 0.10d), true);
+                repository, new SkillCandidateSelector(5, 10), true);
         RuntimeContext context = RuntimeContext.empty();
         context.put("lastQuestion", "查询达标率");
 
@@ -122,8 +146,7 @@ class SkillVectorIndexVisibilityFilterTest {
         SkillUsageResolver resolver = mock(SkillUsageResolver.class);
         when(resolver.findUsableRetrievalNames("u1")).thenReturn(Set.of("allowed"));
         SkillVectorIndexVisibilityFilter filter = new SkillVectorIndexVisibilityFilter(
-                repository, new SkillCandidateSelector(5, 10, 0.65d, 0.10d), true,
-                null, null, resolver);
+                repository, new SkillCandidateSelector(5, 10), true, resolver);
         RuntimeContext context = RuntimeContext.builder().userId("u1").build();
         context.put("lastQuestion", "查询");
 
@@ -138,8 +161,7 @@ class SkillVectorIndexVisibilityFilterTest {
         SkillUsageResolver resolver = mock(SkillUsageResolver.class);
         when(resolver.findUsableRetrievalNames("u1")).thenReturn(Set.of());
         SkillVectorIndexVisibilityFilter filter = new SkillVectorIndexVisibilityFilter(
-                repository, new SkillCandidateSelector(5, 10, 0.65d, 0.10d), true,
-                null, null, resolver);
+                repository, new SkillCandidateSelector(5, 10), true, resolver);
         RuntimeContext context = RuntimeContext.builder().userId("u1").build();
         context.put("lastQuestion", "查询");
 
