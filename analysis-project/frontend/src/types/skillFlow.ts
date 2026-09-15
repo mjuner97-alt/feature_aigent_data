@@ -8,6 +8,7 @@ export interface SkillFlowTrigger {
 export interface SkillFlowNode {
   id?: number;
   nodeKey: string;
+  nodeName?: string;
   skillId: number | null;
   skillName?: string;
   questionTemplate: string;
@@ -74,6 +75,7 @@ export interface SkillFlowNodeAttempt {
 export interface SkillFlowNodeExecution {
   id?: number;
   nodeKey: string;
+  nodeName?: string;
   skillName?: string;
   questionTemplateSnapshot?: string;
   renderedQuestion?: string;
