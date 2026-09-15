@@ -143,6 +143,12 @@ public class MockOrgService {
         return approvers.get(0).getUserId();
     }
 
+    /** 获取全局开发复核人，复用 skill_approver 台账。 */
+    public String getDeveloperReviewer() {
+        List<SkillApprover> reviewers = skillApproverMapper.selectByScope("DEVELOPER_REVIEW", "GLOBAL");
+        return reviewers == null || reviewers.isEmpty() ? null : reviewers.get(0).getUserId();
+    }
+
     /**
      * 判断用户是否为审批人。使用短 TTL 缓存避免频繁查全表。
      */

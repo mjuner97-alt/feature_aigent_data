@@ -1,4 +1,4 @@
-import type { SkillListItem, SkillDetail, LikeStatus, SkillInput, SkillPublishRecord, PublishTargetGroup, PublishPendingItem, SkillFileUploadResponse, SkillFileItem, SkillFileReferenceItem, SkillFileReferenceRequest, SkillGrant } from '../types/skill';
+import type { SkillListItem, SkillDetail, LikeStatus, SkillInput, SkillPublishRecord, PublishTargetGroup, PublishPendingItem, SkillApprovalRecord, SkillFileUploadResponse, SkillFileItem, SkillFileReferenceItem, SkillFileReferenceRequest, SkillGrant } from '../types/skill';
 import { apiErrorDetail } from '../utils/apiError';
 
 const BASE = '/api/skills';
@@ -28,6 +28,9 @@ async function skillError(res: Response, fallback: string): Promise<Error> {
   if (detail.startsWith('SkillNameConflict')) return new Error('名称已存在,请更换 Skill 名称');
   if (detail.startsWith('SkillNotFound')) return new Error('Skill 不存在或已被删除');
   if (detail.startsWith('SkillPendingApproval')) return new Error('审批中的 Skill 不可编辑或删除,请等待审批完成');
+  if (detail.startsWith('NoDeveloperReviewerConfigured')) return new Error('尚未配置开发者复核人，请联系管理员');
+  if (detail.startsWith('NotApprover')) return new Error('当前用户不是该阶段的审批人');
+  if (detail.startsWith('PublishAlreadyApproved')) return new Error('该审批已被处理，请刷新页面查看最新状态');
   return new Error(detail ? `${fallback}:${detail}` : `${fallback}(HTTP ${res.status})`);
 }
 
@@ -213,6 +216,12 @@ export async function listPendingPublishes(): Promise<PublishPendingItem[]> {
 export async function listApprovedPublishes(): Promise<PublishPendingItem[]> {
   const res = await fetch('/api/publish/history', { headers: authHeaders() });
   if (!res.ok) throw await skillError(res, '获取已审批发布列表失败');
+  return res.json();
+}
+
+export async function getPublishApprovals(id: number): Promise<SkillApprovalRecord[]> {
+  const res = await fetch(`/api/publish/${id}/approvals`, { headers: authHeaders() });
+  if (!res.ok) throw await skillError(res, '获取审批轨迹失败');
   return res.json();
 }
 

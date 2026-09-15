@@ -70,6 +70,20 @@ async function openSummaryReport() {
     reportError.value = e instanceof Error ? e.message : '汇总文件不存在或无法读取';
   }
 }
+async function downloadSummaryReport() {
+  if (!props.executionId) return;
+  reportError.value = '';
+  try {
+    const url = await getSkillFlowExecutionReportUrl(props.executionId, true);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'flow-report.html';
+    anchor.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    reportError.value = e instanceof Error ? e.message : '汇总文件不存在或无法下载';
+  }
+}
 
 async function load() {
   if (!props.executionId) return;
@@ -102,7 +116,7 @@ watch(() => props.open, open => { if (open) load(); });
             <section class="summary"><div><span>状态</span><strong class="status" :class="statusClass(execution.status)">{{ statusText(execution.status) }}</strong></div><div v-if="shouldShowMetricReadiness(execution.triggerType)"><span>指标</span><strong>{{ execution.readyMetricCount }} / {{ execution.requiredMetricCount }} 已就绪</strong></div><div><span>Skill</span><strong>{{ execution.completedNodeCount ?? 0 }} / {{ execution.totalNodeCount ?? execution.nodes?.length ?? 0 }} 已完成</strong></div></section>
             <section v-if="shouldShowMetricReadiness(execution.triggerType)"><h4>指标门闩</h4><p class="caption">已就绪 {{ readyMetrics.length }} 项，待处理或已过期 {{ waitingMetrics.length }} 项</p><div class="metric-list"><div v-for="metric in execution.metrics" :key="`${metric.metricId}-${metric.metricCode}`" class="metric-row"><span class="metric-status" :class="metric.status === 'READY' ? 'ready' : 'waiting'">{{ metric.status === 'READY' ? '已就绪' : metric.status === 'EXPIRED' ? '已过期' : '未就绪' }}</span><div><strong>{{ metric.metricCode || metric.metricName || '未知指标' }}</strong><span>{{ metric.metricName }}</span></div><span>{{ formatTime(metric.readyAt) }}</span><span>影响 {{ listText(metric.affectedSkills) }}</span></div></div></section>
             <section><div class="section-heading"><h4>Skill 执行时间线</h4><button v-if="isOwner && batchRetryable" class="btn-link" :disabled="!!retrying" @click="retryFailedNodes">{{ retrying === 'failed-nodes' ? '批量重跑中…' : `批量重跑失败任务（${failedNodes.length} 个）` }}</button></div><div class="timeline"><article v-for="node in execution.nodes" :key="node.id || node.nodeKey"><div class="timeline-head"><strong>{{ node.skillName || node.nodeKey }}</strong><span class="status" :class="statusClass(node.status)">{{ statusText(node.status) }}</span><span v-if="retryStatusText(node)">{{ retryStatusText(node) }}</span><button v-if="node.status === 'SUCCESS' && node.hasResult" class="btn-link" @click="openNodeReport(node)">查看内容</button><button v-if="node.status !== 'SUCCESS' && node.errorMessage" class="btn-link" @click="showNodeError(node)">错误详情</button><button v-if="isOwner && canRetryNode(execution.status, node.status)" class="btn-link" :disabled="!!retrying" @click="retryNode(node)">{{ retrying === `node-${node.id}` ? '重跑中…' : '重跑此任务' }}</button></div><div class="node-detail"><span>{{ node.required ? '必需节点' : '可选节点' }}</span><template v-if="shouldShowNodeTimes(node.attempts)"><span>开始时间：{{ formatTime(node.startedAt) }}</span><span>结束时间：{{ formatTime(node.completedAt) }}</span></template></div><template v-if="latestAttempt(node) && node.status !== 'RUNNING' && node.status !== 'QUEUED'"><div class="attempts"><div><strong class="status" :class="statusClass(latestAttempt(node)?.status || '')">第 {{ latestAttempt(node)?.attemptNo }} 次 · {{ latestAttempt(node) ? statusText(latestAttempt(node).status) : '' }}</strong><span>开始时间：{{ formatTime(latestAttempt(node)?.startedAt) }}</span><span>结束时间：{{ formatTime(latestAttempt(node)?.completedAt) }}</span></div></div></template></article></div></section>
-            <section><h4>汇总报告</h4><button v-if="execution.reportPath" class="btn-link" @click="openSummaryReport">查看汇总</button><button v-if="isOwner && summaryRetryable" class="btn-link summary-action" :disabled="!!retrying" @click="retrySummary">{{ retrying === 'summary' ? '生成中…' : '重新生成汇总' }}</button><p v-else-if="!execution.reportPath" class="caption">报告生成中或暂不可用</p><p v-if="summaryActionError || summaryGenerationError || reportError" class="summary-error">{{ summaryActionError || summaryGenerationError || reportError }}</p></section>
+            <section><h4>汇总报告</h4><span v-if="execution.reportPath" class="report-actions"><button class="btn-link" @click="openSummaryReport">预览</button><span class="action-divider">/</span><button class="btn-link" @click="downloadSummaryReport">下载</button></span><button v-if="isOwner && summaryRetryable" class="btn-link summary-action" :disabled="!!retrying" @click="retrySummary">{{ retrying === 'summary' ? '生成中…' : '重新生成汇总' }}</button><p v-else-if="!execution.reportPath" class="caption">报告生成中或暂不可用</p><p v-if="summaryActionError || summaryGenerationError || reportError" class="summary-error">{{ summaryActionError || summaryGenerationError || reportError }}</p></section>
             <section><div class="notification-heading"><h4>通知记录</h4><button v-if="isOwner" class="btn" :disabled="resending" @click="resend">{{ resending ? '补发中…' : '补发通知' }}</button></div><div v-if="!execution.notifications?.length" class="caption">暂无通知记录</div><div v-for="notification in execution.notifications" :key="notification.id" class="notification-row"><strong>{{ notification.status }}</strong><span>{{ notification.requestType || 'INITIAL' }}</span><span>{{ notification.recipientSummary || '-' }}</span><span>{{ notification.errorMessage || formatTime(notification.completedAt || notification.createdAt) }}</span></div></section>
           </template>
         </main>
@@ -120,4 +134,6 @@ watch(() => props.open, open => { if (open) load(); });
 .status-waiting { background: #fef3c7; color: #92400e !important; }
 .status-cancelled, .status-neutral { background: #f1f5f9; color: #64748b !important; }
 .summary-action { margin-left: 14px; }
+.report-actions { display: inline-flex; align-items: center; gap: 8px; }
+.action-divider { color: #cbd5e1; font-size: 12px; }
 </style>

@@ -686,17 +686,28 @@ public class SkillManageService {
         if (p == null) {
             throw new IllegalStateException("PublishNotFound: " + publishId);
         }
-        if (!"PENDING".equals(p.getStatus())) {
+        if (!"PENDING".equals(p.getStatus()) && !"PENDING_DEVELOPER_REVIEW".equals(p.getStatus())) {
             throw new PublishAlreadyApprovedException("PublishAlreadyApproved: " + publishId);
         }
         if (!approverId.equals(p.getCurrentApproverUserId())) {
             throw new NotApproverException("NotApprover: " + approverId);
         }
-        skillMapper.updatePublishStatus(publishId, "APPROVED", approverId, comment);
+        String developerReviewer = mockOrgService.getDeveloperReviewer();
+        if (developerReviewer == null) {
+            throw new IllegalStateException("NoDeveloperReviewerConfigured");
+        }
+        String nextStatus = "PENDING_DEVELOPER_REVIEW";
+        if ("PENDING_DEVELOPER_REVIEW".equals(p.getStatus())) {
+            if (!developerReviewer.equals(approverId)) throw new NotApproverException("NotApprover: " + approverId);
+            nextStatus = "APPROVED";
+        }
+        int changed = skillMapper.updatePublishStatus(publishId, nextStatus, approverId, comment,
+                "APPROVED".equals(nextStatus) ? approverId : developerReviewer, p.getStatus());
+        if (changed == 0) throw new PublishAlreadyApprovedException("PublishAlreadyApproved: " + publishId);
         // 公开=审批通过:发布审批通过即进入"公开"态(全员可见,且维度内用户默认使用)。
         // 个人/私有 skill 被发布审批通过后同样切为公开;原 PRIVATE 授权仍保留(授权命中依旧可见)。
         Skill published = skillMapper.selectById(p.getSkillId());
-        if (published != null && !"PUBLIC".equals(published.getVisibility())) {
+        if ("APPROVED".equals(nextStatus) && published != null && !"PUBLIC".equals(published.getVisibility())) {
             published.setVisibility("PUBLIC");
             published.setUpdatedAt(LocalDateTime.now());
             skillMapper.updateSkill(published);
@@ -704,7 +715,7 @@ public class SkillManageService {
         skillMapper.insertSkillApproval(SkillApproval.builder()
                 .publishId(publishId)
                 .draftId(null)
-                .action("APPROVE")
+                .action("APPROVED".equals(nextStatus) ? "DEVELOPER_APPROVE" : "DIMENSION_APPROVE")
                 .operator(approverId)
                 .comment(comment)
                 .versionSnapshot(0)
@@ -722,17 +733,22 @@ public class SkillManageService {
         if (p == null) {
             throw new IllegalStateException("PublishNotFound: " + publishId);
         }
-        if (!"PENDING".equals(p.getStatus())) {
+        if (!"PENDING".equals(p.getStatus()) && !"PENDING_DEVELOPER_REVIEW".equals(p.getStatus())) {
             throw new PublishAlreadyApprovedException("PublishAlreadyApproved: " + publishId);
         }
         if (!approverId.equals(p.getCurrentApproverUserId())) {
             throw new NotApproverException("NotApprover: " + approverId);
         }
-        skillMapper.updatePublishStatus(publishId, "REJECTED", approverId, comment);
+        String expected = p.getStatus();
+        if ("PENDING_DEVELOPER_REVIEW".equals(expected) && !approverId.equals(mockOrgService.getDeveloperReviewer())) {
+            throw new NotApproverException("NotApprover: " + approverId);
+        }
+        int changed = skillMapper.updatePublishStatus(publishId, "REJECTED", approverId, comment, approverId, expected);
+        if (changed == 0) throw new PublishAlreadyApprovedException("PublishAlreadyApproved: " + publishId);
         skillMapper.insertSkillApproval(SkillApproval.builder()
                 .publishId(publishId)
                 .draftId(null)
-                .action("REJECT")
+                .action("PENDING_DEVELOPER_REVIEW".equals(expected) ? "DEVELOPER_REJECT" : "DIMENSION_REJECT")
                 .operator(approverId)
                 .comment(comment)
                 .versionSnapshot(0)

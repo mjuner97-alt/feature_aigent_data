@@ -128,6 +128,9 @@ public class GlobalExceptionHandler {
         if (message.startsWith("SkillPendingApproval")) {
             return HttpStatus.CONFLICT;
         }
+        if (message.startsWith("NoDeveloperReviewerConfigured")) {
+            return HttpStatus.CONFLICT;
+        }
         // SkillJob 相关异常前缀
         if (message.startsWith("JobNotFound")) {
             return HttpStatus.NOT_FOUND;

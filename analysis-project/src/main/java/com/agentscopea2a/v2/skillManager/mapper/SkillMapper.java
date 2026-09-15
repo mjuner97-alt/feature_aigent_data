@@ -187,7 +187,9 @@ public interface SkillMapper {
     SkillPublish selectPublishById(@Param("id") Long id);
 
     int updatePublishStatus(@Param("id") Long id, @Param("status") String status,
-                            @Param("approver") String approver, @Param("comment") String comment);
+                            @Param("approver") String approver, @Param("comment") String comment,
+                            @Param("currentApproverUserId") String currentApproverUserId,
+                            @Param("expectedStatus") String expectedStatus);
 
     List<SkillPublish> selectPublishBySkillId(@Param("skillId") Long skillId);
 

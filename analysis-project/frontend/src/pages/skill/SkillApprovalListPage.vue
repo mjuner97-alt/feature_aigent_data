@@ -22,6 +22,20 @@ const router = useRouter();
 const tab = ref<'pending' | 'approved'>('pending');
 const pendingList = ref<PublishPendingItem[]>([]);
 const approvedList = ref<PublishPendingItem[]>([]);
+
+function statusLabel(status: string): string {
+  if (status === 'PENDING') return '审批中';
+  if (status === 'PENDING_DEVELOPER_REVIEW') return '复核中';
+  if (status === 'APPROVED') return '已通过';
+  if (status === 'REJECTED') return '已退回';
+  return status;
+}
+function approveLabel(status: string): string {
+  return status === 'PENDING_DEVELOPER_REVIEW' ? '通过复核' : '通过审批';
+}
+function rejectLabel(status: string): string {
+  return status === 'PENDING_DEVELOPER_REVIEW' ? '退回复核' : '退回审批';
+}
 const loading = ref(false);
 const errorMsg = ref('');
 
@@ -66,10 +80,8 @@ async function doApprove(item: PublishPendingItem) {
   actionDone.value[item.id] = '';
   try {
     await approvePublish(item.id, getComment(item.id) || '通过');
-    actionDone.value[item.id] = '已通过';
-    // 从待审批列表移除,加到已审批列表头部
-    pendingList.value = pendingList.value.filter(p => p.id !== item.id);
-    approvedList.value = [{ ...item, status: 'APPROVED' }, ...approvedList.value];
+    actionDone.value[item.id] = item.status === 'PENDING_DEVELOPER_REVIEW' ? '开发者复核已通过' : '维度审批已通过，等待开发者复核';
+    await load();
   } catch (e) {
     actionError.value[item.id] = e instanceof Error ? e.message : '审批通过失败';
   } finally {
@@ -90,8 +102,7 @@ async function doReject(item: PublishPendingItem) {
   try {
     await rejectPublish(item.id, c);
     actionDone.value[item.id] = '已退回';
-    pendingList.value = pendingList.value.filter(p => p.id !== item.id);
-    approvedList.value = [{ ...item, status: 'REJECTED' }, ...approvedList.value];
+    await load();
   } catch (e) {
     actionError.value[item.id] = e instanceof Error ? e.message : '审批退回失败';
   } finally {
@@ -123,7 +134,7 @@ onMounted(load);
       <li v-for="item in pendingList" :key="item.id" class="item">
         <div class="item-head" @click="goDetail(item)">
           <span class="item-name">{{ item.name || `Skill #${item.skillId}` }}</span>
-          <span class="item-status pending">待审批</span>
+          <span class="item-status" :class="item.status.toLowerCase()">{{ statusLabel(item.status) }}</span>
         </div>
         <div class="item-meta">
           <span>提交人:{{ item.submitter }}</span>
@@ -147,12 +158,12 @@ onMounted(load);
               class="approve"
               :disabled="actionLoading.has(item.id)"
               @click="doApprove(item)"
-            >通过</button>
+            >{{ approveLabel(item.status) }}</button>
             <button
               class="reject"
               :disabled="actionLoading.has(item.id)"
               @click="doReject(item)"
-            >退回</button>
+            >{{ rejectLabel(item.status) }}</button>
             <button class="goto-detail" @click="goDetail(item)">查看详情 →</button>
           </div>
           <div v-if="actionError[item.id]" class="action-error">{{ actionError[item.id] }}</div>
@@ -170,7 +181,7 @@ onMounted(load);
       <li v-for="item in approvedList" :key="item.id" class="item" @click="goDetail(item)">
         <div class="item-head">
           <span class="item-name">{{ item.name || `Skill #${item.skillId}` }}</span>
-          <span class="item-status" :class="item.status.toLowerCase()">{{ item.status === 'APPROVED' ? '已通过' : '已退回' }}</span>
+          <span class="item-status" :class="item.status.toLowerCase()">{{ statusLabel(item.status) }}</span>
         </div>
         <div class="item-meta">
           <span>提交人:{{ item.submitter }}</span>
@@ -250,6 +261,7 @@ h2 { margin: 0 0 8px; }
   font-weight: 600;
 }
 .item-status.pending { background: #dbeafe; color: #1d4ed8; }
+.item-status.pending_developer_review { background: #dbeafe; color: #1d4ed8; }
 .item-status.approved { background: #d1fae5; color: #047857; }
 .item-status.rejected { background: #fee2e2; color: #b91c1c; }
 .item-meta { display: flex; gap: 16px; color: #64748b; font-size: 12px; flex-wrap: wrap; }

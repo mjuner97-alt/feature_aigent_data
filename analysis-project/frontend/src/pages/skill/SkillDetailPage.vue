@@ -26,10 +26,11 @@ import {
   listApprovedPublishes,
   approvePublish,
   rejectPublish,
+  getPublishApprovals,
   getSkillFiles,
   fetchFileBlob,
 } from '../../api/skill';
-import type { SkillDetail, LikeStatus, SkillPublishRecord, PublishPendingItem, SkillFileReferenceItem } from '../../types/skill';
+import type { SkillDetail, LikeStatus, SkillPublishRecord, PublishPendingItem, SkillApprovalRecord, SkillFileReferenceItem } from '../../types/skill';
 import SkillGrantEditor from '../../components/SkillGrantEditor.vue';
 
 const route = useRoute();
@@ -129,8 +130,30 @@ const approvalActionLoading = ref(false);
 const approvalActionError = ref('');
 const approvalActionDone = ref('');
 const approvalComment = ref('');
+const approvalTrail = ref<SkillApprovalRecord[]>([]);
 
 const isPending = computed(() => !!publishPending.value);
+const currentPublish = computed(() => {
+  if (publishPending.value) return publishPending.value;
+  return publishes.value.find((p) => p.status === 'PENDING_DEVELOPER_REVIEW' || p.status === 'PENDING') ?? null;
+});
+
+function publishStatusLabel(status: string): string {
+  if (status === 'PENDING') return '维度审批中';
+  if (status === 'PENDING_DEVELOPER_REVIEW') return '开发者复核中';
+  if (status === 'APPROVED') return '已生效';
+  if (status === 'REJECTED') return '已退回';
+  return status;
+}
+
+function approvalActionLabel(action: string): string {
+  if (action === 'SUBMIT') return '已提交维度审批';
+  if (action === 'DIMENSION_APPROVE') return '维度审批已通过';
+  if (action === 'DIMENSION_REJECT') return '维度审批已退回';
+  if (action === 'DEVELOPER_APPROVE') return '开发者复核已通过';
+  if (action === 'DEVELOPER_REJECT') return '开发者复核已退回';
+  return action;
+}
 
 // ============ Markdown 渲染 ============
 // 使用零依赖 Markdown 组件，兼容所有浏览器
@@ -211,6 +234,9 @@ async function loadPublishes(id: number) {
   publishError.value = '';
   try {
     publishes.value = await getSkillPublishes(id);
+    approvalTrail.value = publishes.value.length > 0
+      ? await getPublishApprovals(publishes.value[0].id)
+      : [];
   } catch (e) {
     publishError.value = e instanceof Error ? e.message : '获取维度信息失败';
   } finally {
@@ -368,9 +394,9 @@ watch(() => route.params.id, () => {
       <ul>
         <li v-for="p in publishes" :key="p.id" class="publish-item">
           <span class="p-target">{{ formatDimension(p) }}</span>
-          <span class="p-status" :class="p.status.toLowerCase()">{{ p.status }}</span>
+          <span class="p-status" :class="p.status.toLowerCase()">{{ publishStatusLabel(p.status) }}</span>
           <span class="p-meta">提交人 {{ p.submitter }}</span>
-          <span v-if="p.approver" class="p-meta">审批人 {{ p.approver }}</span>
+          <span v-if="p.approver && p.status !== 'PENDING_DEVELOPER_REVIEW'" class="p-meta">审批人 {{ p.approver }}</span>
         </li>
       </ul>
     </details>
@@ -417,35 +443,49 @@ watch(() => route.params.id, () => {
     <section class="block approval-section">
       <h3 class="block-title">
         <span class="bar"></span>发布审批
-        <span v-if="publishPending" class="type-badge pending">待审批</span>
+        <span v-if="currentPublish" class="type-badge" :class="currentPublish.status.toLowerCase()">
+          {{ publishStatusLabel(currentPublish.status) }}
+        </span>
         <span v-else-if="publishHistory" class="type-badge" :class="publishHistory.status.toLowerCase()">
-          {{ publishHistory.status === 'APPROVED' ? '已通过' : '已退回' }}
+          {{ publishStatusLabel(publishHistory.status) }}
         </span>
       </h3>
 
       <!-- 待审发布详情 -->
-      <div v-if="publishPending" class="info">
-        <div class="info-row"><label>提交人</label><span>{{ publishPending.submitter }}</span></div>
-        <div class="info-row"><label>提交时间</label><span>{{ publishPending.createdAt }}</span></div>
-        <div class="info-row"><label>目标维度</label><span>{{ publishPending.targetName }}</span></div>
-        <div v-if="publishPending.description" class="info-row"><label>描述</label><span>{{ publishPending.description }}</span></div>
+      <div v-if="currentPublish" class="info">
+        <div class="info-row"><label>提交人</label><span>{{ currentPublish.submitter }}</span></div>
+        <div class="info-row"><label>提交时间</label><span>{{ currentPublish.createdAt }}</span></div>
+        <div class="info-row"><label>目标维度</label><span>{{ currentPublish.targetName }}</span></div>
+        <div class="info-row"><label>当前进度</label><span>{{ publishStatusLabel(currentPublish.status) }}</span></div>
+        <div v-if="currentPublish.description" class="info-row"><label>描述</label><span>{{ currentPublish.description }}</span></div>
       </div>
       <!-- 已审记录详情 -->
       <div v-else-if="publishHistory" class="info">
         <div class="info-row"><label>提交人</label><span>{{ publishHistory.submitter }}</span></div>
-        <div class="info-row"><label>审批结果</label><span>{{ publishHistory.status === 'APPROVED' ? '通过' : '退回' }}</span></div>
+        <div class="info-row"><label>审批结果</label><span>{{ publishStatusLabel(publishHistory.status) }}</span></div>
         <div v-if="publishHistory.approveTime" class="info-row"><label>审批时间</label><span>{{ publishHistory.approveTime }}</span></div>
         <div class="info-row"><label>目标维度</label><span>{{ publishHistory.targetName }}</span></div>
         <div v-if="publishHistory.lastApprovalComment" class="info-row"><label>审批意见</label><span>{{ publishHistory.lastApprovalComment }}</span></div>
       </div>
       <div v-else class="no-pending">该 Skill 当前无发布审批记录。</div>
 
+      <div v-if="approvalTrail.length > 0" class="approval-trail">
+        <div v-for="step in approvalTrail" :key="step.id" class="trail-step">
+          <span class="trail-action">{{ approvalActionLabel(step.action) }}</span>
+          <span class="trail-meta">{{ step.operator }} · {{ step.createdAt }}</span>
+          <span v-if="step.comment" class="trail-comment">{{ step.comment }}</span>
+        </div>
+        <div v-if="currentPublish?.status === 'PENDING_DEVELOPER_REVIEW'" class="trail-step active">
+          <span class="trail-action">开发者复核中</span>
+        </div>
+      </div>
+
       <!-- 审批操作(仅待审状态可操作) -->
       <div v-if="isPending" class="approval-actions">
         <textarea v-model="approvalComment" class="comment-input" placeholder="审批意见(退回必填)" rows="3"></textarea>
         <div class="btns">
-          <button class="approve" :disabled="approvalActionLoading" @click="doApprove">通过</button>
-          <button class="reject" :disabled="approvalActionLoading" @click="doReject">退回</button>
+          <button class="approve" :disabled="approvalActionLoading" @click="doApprove">{{ publishPending?.status === 'PENDING_DEVELOPER_REVIEW' ? '通过复核' : '通过审批' }}</button>
+          <button class="reject" :disabled="approvalActionLoading" @click="doReject">{{ publishPending?.status === 'PENDING_DEVELOPER_REVIEW' ? '退回复核' : '退回审批' }}</button>
         </div>
         <div v-if="approvalActionError" class="action-error">{{ approvalActionError }}</div>
         <div v-if="approvalActionDone" class="action-done">{{ approvalActionDone }}</div>
@@ -489,7 +529,14 @@ watch(() => route.params.id, () => {
 .p-status { padding: 1px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
 .p-status.approved { background: #d1fae5; color: #047857; }
 .p-status.pending { background: #fef3c7; color: #b45309; }
+.p-status.pending_developer_review { background: #dbeafe; color: #1d4ed8; }
 .p-status.rejected { background: #fee2e2; color: #b91c1c; }
+.approval-trail { margin-top: 14px; border-left: 2px solid #cbd5e1; padding-left: 14px; display: grid; gap: 10px; }
+.trail-step { display: grid; gap: 2px; position: relative; }
+.trail-step::before { content: ''; position: absolute; left: -20px; top: 6px; width: 8px; height: 8px; border-radius: 50%; background: #64748b; }
+.trail-step.active::before { background: #2563eb; box-shadow: 0 0 0 3px #dbeafe; }
+.trail-action { font-weight: 600; color: #334155; }
+.trail-meta, .trail-comment { color: #64748b; font-size: 12px; }
 .p-meta { color: #64748b; font-size: 12px; }
 .actions { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
 .referencer-count { font-size: 12px; color: #64748b; padding: 4px 8px; }

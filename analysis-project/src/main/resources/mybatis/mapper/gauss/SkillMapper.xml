@@ -260,7 +260,16 @@
     <sql id="visibleSkillIds">
         SELECT v.id FROM skill_manage v WHERE v.owner_user_id = #{userId}
         UNION
-        SELECT v.id FROM skill_manage v WHERE COALESCE(v.visibility, 'PERSONAL') != 'PRIVATE'
+        SELECT v.id FROM skill_manage v
+        WHERE COALESCE(v.visibility, 'PERSONAL') != 'PRIVATE'
+          AND (
+              v.visibility = 'PUBLIC'
+              OR NOT EXISTS (
+                  SELECT 1 FROM skill_publish pending
+                  WHERE pending.skill_id = v.id
+                    AND pending.status IN ('PENDING', 'PENDING_DEVELOPER_REVIEW')
+              )
+          )
         UNION
         SELECT g.skill_id FROM skill_visible_grant g
         JOIN skill_manage vg ON vg.id = g.skill_id AND vg.visibility = 'PRIVATE'
@@ -520,8 +529,9 @@
     <update id="updatePublishStatus">
         UPDATE skill_publish
         SET status = #{status}, approver = #{approver}, approve_time = now(),
-            last_approval_comment = #{comment}, last_approval_at = now()
-        WHERE id = #{id}
+            last_approval_comment = #{comment}, last_approval_at = now(),
+            current_approver_user_id = #{currentApproverUserId}
+        WHERE id = #{id} AND status = #{expectedStatus}
     </update>
 
     <select id="selectPublishBySkillId" resultMap="SkillPublishResultMap">
@@ -533,7 +543,7 @@
     </select>
 
     <select id="hasPendingBySkillId" resultType="boolean">
-        SELECT COUNT(1) &gt; 0 FROM skill_publish WHERE skill_id = #{skillId} AND status = 'PENDING'
+        SELECT COUNT(1) &gt; 0 FROM skill_publish WHERE skill_id = #{skillId} AND status IN ('PENDING', 'PENDING_DEVELOPER_REVIEW')
     </select>
 
     <select id="selectApprovedBySkillId" resultMap="SkillPublishResultMap">
@@ -547,7 +557,8 @@
                s.name AS skill_name, s.description AS skill_description, s.category AS skill_category
         FROM skill_publish p
         LEFT JOIN skill_manage s ON s.id = p.skill_id
-        WHERE p.current_approver_user_id = #{approverUserId} AND p.status = 'PENDING'
+        WHERE p.current_approver_user_id = #{approverUserId}
+          AND p.status IN ('PENDING', 'PENDING_DEVELOPER_REVIEW')
         ORDER BY p.created_at DESC
     </select>
 
@@ -558,7 +569,10 @@
                s.name AS skill_name, s.description AS skill_description, s.category AS skill_category
         FROM skill_publish p
         LEFT JOIN skill_manage s ON s.id = p.skill_id
-        WHERE p.approver = #{approverUserId} AND p.status IN ('APPROVED', 'REJECTED')
+        WHERE (p.approver = #{approverUserId}
+            OR EXISTS (SELECT 1 FROM skill_approval a WHERE a.publish_id = p.id AND a.operator = #{approverUserId}
+                       AND a.action IN ('DIMENSION_APPROVE','DIMENSION_REJECT','DEVELOPER_APPROVE','DEVELOPER_REJECT')))
+          AND p.status IN ('APPROVED', 'REJECTED', 'PENDING_DEVELOPER_REVIEW')
         ORDER BY p.approve_time DESC
     </select>
 

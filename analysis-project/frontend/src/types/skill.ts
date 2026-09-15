@@ -61,7 +61,7 @@ export interface SkillPublishRecord {
   targetType: string;   // GROUP / DEPARTMENT / PRODUCT_LINE / COMPANY
   targetId: string;
   targetName: string;   // 组织显示名称(如"开发一组"、"杭研")
-  status: string;       // PENDING / APPROVED / REJECTED
+  status: string;       // PENDING / PENDING_DEVELOPER_REVIEW / APPROVED / REJECTED
   submitter: string;
   approver: string | null;
   approveTime: string | null;
@@ -96,7 +96,7 @@ export interface PublishPendingItem {
   targetType: string;    // GROUP / DEPARTMENT / PRODUCT_LINE / COMPANY
   targetId: string;
   targetName: string;    // 组织显示名称(如"开发一组"、"杭研")
-  status: string;        // PENDING / APPROVED / REJECTED
+  status: string;        // PENDING / PENDING_DEVELOPER_REVIEW / APPROVED / REJECTED
   submitter: string;
   approver: string | null;
   approveTime: string | null;
@@ -109,6 +109,17 @@ export interface PublishPendingItem {
   description?: string;
   category?: string;
   createdBy?: string;
+}
+
+export interface SkillApprovalRecord {
+  id: number;
+  publishId: number;
+  draftId: number | null;
+  action: string;
+  operator: string;
+  comment: string | null;
+  versionSnapshot: number;
+  createdAt: string;
 }
 
 /** Skill 变更草稿。对应后端 SkillDraft 实体,用于草稿审批流。 */

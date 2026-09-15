@@ -340,7 +340,8 @@ create table skill_publish
 )
     with (orientation = row, compression = no);
 
-comment on table skill_publish is 'Skill 发布表';
+  comment on table skill_publish is 'Skill 发布表';
+  comment on column skill_publish.status is '发布状态:PENDING维度审批/PENDING_DEVELOPER_REVIEW开发复核/APPROVED已生效/REJECTED已拒绝';
 
 alter table skill_publish
     owner to readwriter;
