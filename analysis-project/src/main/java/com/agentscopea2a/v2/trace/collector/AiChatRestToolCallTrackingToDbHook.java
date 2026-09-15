@@ -107,6 +107,11 @@ public class AiChatRestToolCallTrackingToDbHook implements Hook, RuntimeContextA
                 String id = post.getToolUse() == null ? "" : post.getToolUse().getId();
                 timing = session.finishToolTiming(id, capturedAt, capturedNanos);
             }
+            if (event instanceof PreReasoningEvent) {
+                session.beginModelCall();
+            } else if (event instanceof PostReasoningEvent) {
+                session.completeModelCall(true);
+            }
             String json = toJson(event, capturedAt.toString(), timing);
             if (json != null) {
                 session.addRecord(new TraceEventRecord(capturedAt.toString(), json));
