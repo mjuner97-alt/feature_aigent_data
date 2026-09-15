@@ -12,8 +12,6 @@ public final class AiChatRuntimeConfigKeys {
     public static final String RESPONSE_TIMEOUT_SECONDS = "response_timeout_seconds";
     public static final String LONG_TASK_ENABLED = "long_task_enabled";
     public static final String SCRIPT_EXEC_ENABLED = "script_exec_enabled";
-    public static final String SKILL_FINAL_REVIEWER_USER_IDS = "skill_final_reviewer_user_ids";
-
     private AiChatRuntimeConfigKeys() {
     }
 }
