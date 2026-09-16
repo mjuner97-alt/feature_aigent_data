@@ -1,6 +1,5 @@
 package com.agentscopea2a.v2.skills;
 
-import com.agentscopea2a.v2.toolrouting.ToolRoutingTagDictionary;
 import com.agentscopea2a.v2.toolrouting.ToolRoutingTagType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -37,7 +36,7 @@ class SkillRoutingMetadataRepositoryTest {
         markSchemaReady(repository);
 
         repository.upsert(new SkillRoutingMetadata("q2_skill", "summary", List.of("q2"), List.of("质量管理"),
-                List.of("QI卡口"), List.of("质量分"), "admin", 0, true, null));
+                List.of("QI卡口"), "admin", true, null));
 
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
         verify(connection).prepareStatement(sql.capture());
@@ -46,6 +45,8 @@ class SkillRoutingMetadataRepositoryTest {
         assertTrue(sql.getValue().contains("maintainer"));
         assertTrue(sql.getValue().contains("VALUES(short_summary)"));
         assertFalse(sql.getValue().contains("ON CONFLICT"));
+        assertFalse(sql.getValue().contains("metric_tags"));
+        assertFalse(sql.getValue().contains("priority"));
     }
 
     @Test
@@ -63,9 +64,7 @@ class SkillRoutingMetadataRepositoryTest {
         when(rs.getString("keywords")).thenReturn("[]", "[]");
         when(rs.getString("domain_tags")).thenReturn("[]", "[]");
         when(rs.getString("topic_tags")).thenReturn("[]", "[]");
-        when(rs.getString("metric_tags")).thenReturn("[]", "[]");
         when(rs.getString("creator")).thenReturn("", "");
-        when(rs.getInt("priority")).thenReturn(0, 0);
         when(rs.getBoolean("active")).thenReturn(true, false);
 
         SkillRoutingMetadataRepository repository =
@@ -99,7 +98,7 @@ class SkillRoutingMetadataRepositoryTest {
 
         assertTrue(repository.findAll().isEmpty());
         repository.upsert(new SkillRoutingMetadata("q2_skill", "summary", List.of(), List.of(),
-                List.of(), List.of(), "", 0, true, null));
+                List.of(), "", true, null));
 
         // Cache invalidated -> next read goes back to the database
         // (initial findAll + upsert itself + post-upsert findAll).
@@ -108,11 +107,11 @@ class SkillRoutingMetadataRepositoryTest {
     }
 
     @Test
-    void upsertValidatesDomainTopicAndMetricTagsAgainstTheSharedDictionaryWhenConfigured() throws Exception {
+    void upsertValidatesDomainAndTopicTagsAgainstSkillDictionaryWhenConfigured() throws Exception {
         DataSource dataSource = mock(DataSource.class);
         Connection connection = mock(Connection.class);
         PreparedStatement statement = mock(PreparedStatement.class);
-        ToolRoutingTagDictionary dictionary = mock(ToolRoutingTagDictionary.class);
+        SkillRoutingTagDictionary dictionary = mock(SkillRoutingTagDictionary.class);
         when(dataSource.getConnection()).thenReturn(connection);
         when(connection.prepareStatement(anyString())).thenReturn(statement);
         when(statement.executeUpdate()).thenReturn(1);
@@ -122,11 +121,10 @@ class SkillRoutingMetadataRepositoryTest {
         markSchemaReady(repository);
 
         repository.upsert(new SkillRoutingMetadata("q2_skill", "summary", List.of(), List.of("质量管理"),
-                List.of("QI卡口"), List.of("达标率"), "admin", 0, true, null));
+                List.of("QI卡口"), "admin", true, null));
 
         verify(dictionary).validateEnabled(ToolRoutingTagType.DOMAIN, List.of("质量管理"));
         verify(dictionary).validateEnabled(ToolRoutingTagType.TOPIC, List.of("QI卡口"));
-        verify(dictionary).validateEnabled(ToolRoutingTagType.METRIC, List.of("达标率"));
     }
 
     @Test

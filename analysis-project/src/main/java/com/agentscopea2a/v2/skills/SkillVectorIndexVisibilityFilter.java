@@ -15,8 +15,6 @@
  */
 package com.agentscopea2a.v2.skills;
 
-import com.agentscopea2a.v2.capability.CapabilityRepository;
-import com.agentscopea2a.v2.capability.CapabilityRouter;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.skill.AgentSkill;
 import io.agentscope.harness.agent.skill.curator.SkillVisibilityFilter;
@@ -32,8 +30,7 @@ import java.util.stream.Collectors;
 /**
  * Metadata-driven {@link SkillVisibilityFilter} that narrows the skill catalogue the
  * LLM sees to the Top-K candidates routed by {@link SkillCandidateSelector} from
- * {@code skill_routing_metadata} (keywords/tags/priority), with capability
- * coarse recall via {@link CapabilityRouter}.
+ * {@code skill_routing_metadata} (keywords/domain filter), gated by per-user usage.
  *
  * <p>Availability rules (routing must never make skills unreachable):
  * <ul>
@@ -60,38 +57,23 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
     private final SkillRoutingMetadataRepository routingMetadataRepository;
     private final SkillCandidateSelector candidateSelector;
     private final boolean enabled;
-    private final CapabilityRepository capabilityRepository;
-    private final CapabilityRouter capabilityRouter;
     private final SkillUsageResolver skillUsageResolver;
 
     public SkillVectorIndexVisibilityFilter(
             SkillRoutingMetadataRepository routingMetadataRepository,
             SkillCandidateSelector candidateSelector,
             boolean enabled) {
-        this(routingMetadataRepository, candidateSelector, enabled, null, null, null);
+        this(routingMetadataRepository, candidateSelector, enabled, null);
     }
 
     public SkillVectorIndexVisibilityFilter(
             SkillRoutingMetadataRepository routingMetadataRepository,
             SkillCandidateSelector candidateSelector,
             boolean enabled,
-            CapabilityRepository capabilityRepository,
-            CapabilityRouter capabilityRouter) {
-        this(routingMetadataRepository, candidateSelector, enabled, capabilityRepository, capabilityRouter, null);
-    }
-
-    public SkillVectorIndexVisibilityFilter(
-            SkillRoutingMetadataRepository routingMetadataRepository,
-            SkillCandidateSelector candidateSelector,
-            boolean enabled,
-            CapabilityRepository capabilityRepository,
-            CapabilityRouter capabilityRouter,
             SkillUsageResolver skillUsageResolver) {
         this.routingMetadataRepository = routingMetadataRepository;
         this.candidateSelector = candidateSelector;
         this.enabled = enabled;
-        this.capabilityRepository = capabilityRepository;
-        this.capabilityRouter = capabilityRouter;
         this.skillUsageResolver = skillUsageResolver;
     }
 
@@ -134,16 +116,9 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
         if (!explicitSkill) {
             Set<String> requestedDomains = matchedDomains(question, activeMetadata);
             if (!requestedDomains.isEmpty()) {
-                metadata = metadata.stream().filter(m -> hasAnyDomain(m.domainTags(), requestedDomains)).toList();
-            } else {
-                metadata = metadata.stream().filter(m -> !hasAnyDomain(m.domainTags())).toList();
-            }
-        }
-        if (!explicitSkill && capabilityRepository != null && capabilityRouter != null) {
-            var recalled = capabilityRouter.recallSkillNames(question,
-                    capabilityRepository.findActive(), capabilityRepository.findActiveSkillBindings());
-            if (!recalled.isEmpty()) {
-                metadata = metadata.stream().filter(m -> recalled.contains(m.skillName())).toList();
+                // 命中领域时只排除其他领域: 保留该领域 + 无领域标签(通用)的 skill
+                metadata = activeMetadata.stream().filter(m -> !hasAnyDomain(m.domainTags())
+                        || hasAnyDomain(m.domainTags(), requestedDomains)).toList();
             }
         }
         SkillCandidateSelection selection = candidateSelector.select(all, metadata, question);
@@ -159,27 +134,15 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
         // active=false are "configured and disabled" and stay hidden.
         Set<String> configuredNames = allMetadata.stream()
                 .map(SkillRoutingMetadata::skillName).collect(Collectors.toSet());
-        Set<String> requestedDomains = matchedDomains(question, activeMetadata);
         for (AgentSkill skill : all) {
-            if (requestedDomains.isEmpty() && !configuredNames.contains(skill.getName())) {
+            if (!configuredNames.contains(skill.getName())) {
                 result.add(skill);
             }
         }
-        if (result.isEmpty()) {
-            List<AgentSkill> gated = all.stream().filter(skill -> {
-                SkillRoutingMetadata row = allMetadata.stream()
-                        .filter(m -> m.skillName().equals(skill.getName())).findFirst().orElse(null);
-                if (row == null || !row.active()) return false;
-                return requestedDomains.isEmpty()
-                        ? !hasAnyDomain(row.domainTags())
-                        : hasAnyDomain(row.domainTags(), requestedDomains);
-            }).toList();
-            log.warn("No routed Skill candidates; returning domain-gated set size={}", gated.size());
-            return gated;
-        }
-        log.debug("Skill candidate selection: all={}, selected={}, explicit={}, confident={}, fallback={}",
-                all.size(), result.size(), selection.explicitNameMatched(), selection.confident(),
-                selection.fallbackExpanded());
+        // 纯关键词语义: 配置了路由行的 skill 若无关键词命中 (且未被显式点名) 则不可见,
+        // 返回空集合, LLM 直接走工具; 不再做 domain-gated 兜底。
+        log.debug("Skill candidate selection: all={}, selected={}, explicit={}, fallback={}",
+                all.size(), result.size(), selection.explicitNameMatched(), selection.fallbackExpanded());
         return result;
     }
 

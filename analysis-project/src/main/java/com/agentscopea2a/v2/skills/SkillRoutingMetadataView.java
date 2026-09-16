@@ -11,9 +11,7 @@ public record SkillRoutingMetadataView(
         List<String> keywords,
         List<String> domainTags,
         List<String> topicTags,
-        List<String> metricTags,
         String creator,
-        int priority,
         boolean active,
         LocalDateTime updatedAt,
         boolean configured) {

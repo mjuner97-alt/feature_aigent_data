@@ -6,16 +6,17 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SkillCandidateSelectorTest {
 
-    private final SkillCandidateSelector selector = new SkillCandidateSelector(5, 10, 0.65d, 0.10d);
+    private final SkillCandidateSelector selector = new SkillCandidateSelector(5, 10);
 
     @Test
     void explicitSkillNameIsAlwaysFirstCandidate() {
-        SkillRoutingMetadata q21 = metadata("q2_1_by_dept_version_metrics", List.of("达标率"), 0);
-        SkillRoutingMetadata trace = metadata("trace_recent_metrics", List.of("追踪"), 10);
+        SkillRoutingMetadata q21 = metadata("q2_1_by_dept_version_metrics", List.of("达标率"));
+        SkillRoutingMetadata trace = metadata("trace_recent_metrics", List.of("追踪", "达标率", "数据", "报告", "审计", "质量"));
 
         SkillCandidateSelection selection = selector.select(
                 List.of(skill(trace.skillName()), skill(q21.skillName())),
@@ -28,110 +29,103 @@ class SkillCandidateSelectorTest {
     }
 
     @Test
-    void lowConfidenceExpandsToTenActualSkillsWithoutGenericEntry() {
+    void noKeywordOrNameHitReturnsEmptySelection() {
         List<SkillRoutingMetadata> metadata = List.of(
-                metadata("q2", List.of("达标率"), 10),
-                metadata("trace", List.of("追踪"), 9),
-                metadata("report", List.of("报告"), 8),
-                metadata("data", List.of("数据"), 7),
-                metadata("audit", List.of("审计"), 6),
-                metadata("quality", List.of("质量"), 5));
+                metadata("q2", List.of("达标率")),
+                metadata("trace", List.of("追踪")),
+                metadata("report", List.of("报告")));
 
         SkillCandidateSelection selection = selector.select(
                 metadata.stream().map(m -> skill(m.skillName())).toList(), metadata, "完全未知的问题");
 
-        assertEquals(6, selection.skillNames().size());
-        assertTrue(selection.fallbackExpanded());
-        assertTrue(selection.skillNames().stream().noneMatch(name -> name.contains("generic")));
+        assertTrue(selection.skillNames().isEmpty());
+        assertFalse(selection.explicitNameMatched());
+        assertFalse(selection.fallbackExpanded());
     }
 
     @Test
-    void keywordMatchRanksRelatedSkillBeforeHigherPriorityUnrelatedSkill() {
-        SkillRoutingMetadata q21 = metadata("q2", List.of("达标率", "打分率"), 0);
-        SkillRoutingMetadata trace = metadata("trace", List.of("追踪"), 100);
+    void keywordHitReturnsSkill() {
+        SkillRoutingMetadata q21 = metadata("q2", List.of("达标率"));
+        SkillRoutingMetadata trace = metadata("trace", List.of("追踪"));
 
         SkillCandidateSelection selection = selector.select(
                 List.of(skill(trace.skillName()), skill(q21.skillName())), List.of(q21, trace), "Q2-1 达标率是多少");
 
-        assertEquals("q2", selection.skillNames().get(0));
+        assertEquals(List.of("q2"), selection.skillNames());
     }
 
     @Test
-    void topicMatchRanksRelatedSkillBeforeHigherPriorityUnrelatedSkill() {
-        SkillRoutingMetadata qiGate = new SkillRoutingMetadata(
-                "qi_gate", "QI gate", List.of(), List.of(), List.of("QI卡口"), List.of(),
-                "", 0, true, null);
-        SkillRoutingMetadata unrelated = new SkillRoutingMetadata(
-                "unrelated", "unrelated", List.of(), List.of(), List.of("质量度量"), List.of(),
-                "", 20, true, null);
+    void moreKeywordHitsRankFirst() {
+        SkillRoutingMetadata twoHits = metadata("two_hits", List.of("达标率", "版本"));
+        SkillRoutingMetadata oneHit = metadata("one_hit", List.of("达标率"));
+
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(oneHit.skillName()), skill(twoHits.skillName())),
+                List.of(twoHits, oneHit), "按版本统计达标率");
+
+        assertEquals("two_hits", selection.skillNames().get(0));
+        assertEquals("one_hit", selection.skillNames().get(1));
+    }
+
+    @Test
+    void topicTagsDoNotAffectMatching() {
+        SkillRoutingMetadata qiGate = metadataWithTopic("qi_gate", List.of(), List.of("QI卡口"));
+        SkillRoutingMetadata unrelated = metadataWithTopic("unrelated", List.of(), List.of("质量度量"));
 
         SkillCandidateSelection selection = selector.select(
                 List.of(skill(unrelated.skillName()), skill(qiGate.skillName())),
                 List.of(qiGate, unrelated), "查询 QI卡口 的质量情况");
 
-        assertEquals("qi_gate", selection.skillNames().get(0));
+        assertTrue(selection.skillNames().isEmpty());
     }
 
     @Test
-    void matchedTopicHardFiltersUnrelatedSkillsAfterDomainGate() {
-        SkillRoutingMetadata qiGate = new SkillRoutingMetadata(
-                "qi_gate", "QI gate", List.of(), List.of(), List.of("QI卡口"), List.of(),
-                "", 0, true, null);
-        SkillRoutingMetadata unrelated = new SkillRoutingMetadata(
-                "unrelated", "unrelated", List.of(), List.of(), List.of("质量度量"), List.of(),
-                "", 100, true, null);
+    void domainRequestKeepsDomainAndGenericSkillsExcludingOtherDomains() {
+        SkillRoutingMetadata meeting = metadataWithDomain("meeting", List.of("达标率"), List.of("例会材料"));
+        SkillRoutingMetadata otherDomain = metadataWithDomain("other_domain", List.of("达标率"), List.of("质量管理"));
+        SkillRoutingMetadata generic = metadataWithDomain("generic", List.of("达标率"), List.of());
 
         SkillCandidateSelection selection = selector.select(
-                List.of(skill(unrelated.skillName()), skill(qiGate.skillName())),
-                List.of(qiGate, unrelated), "查询 QI卡口 的质量情况");
+                List.of(skill(meeting.skillName()), skill(otherDomain.skillName()), skill(generic.skillName())),
+                List.of(meeting, otherDomain, generic), "生成例会材料，包含达标率");
 
-        assertEquals(List.of("qi_gate"), selection.skillNames());
+        assertTrue(selection.skillNames().contains("meeting"));
+        assertTrue(selection.skillNames().contains("generic"));
+        assertTrue(selection.skillNames().stream().noneMatch("other_domain"::equals));
     }
 
     @Test
-    void matchedMetricHardFiltersUnrelatedSkillsAfterTopicGate() {
-        SkillRoutingMetadata q21 = new SkillRoutingMetadata(
-                "q2_1", "q2_1", List.of(), List.of(), List.of("QI卡口"), List.of("Q2-1"),
-                "", 0, true, null);
-        SkillRoutingMetadata q11 = new SkillRoutingMetadata(
-                "q1_1", "q1_1", List.of(), List.of(), List.of("QI卡口"), List.of("Q1-1"),
-                "", 100, true, null);
+    void domainMatchedSkillRanksAboveGenericSkills() {
+        SkillRoutingMetadata domain = metadataWithDomain("domain_skill", List.of("达标率"), List.of("例会材料"));
+        SkillRoutingMetadata generic = metadataWithDomain("generic", List.of("达标率", "数据", "统计"), List.of());
 
         SkillCandidateSelection selection = selector.select(
-                List.of(skill(q11.skillName()), skill(q21.skillName())),
-                List.of(q21, q11), "查询 QI卡口 的 Q2-1 结果");
+                List.of(skill(generic.skillName()), skill(domain.skillName())),
+                List.of(domain, generic), "生成例会材料，包含达标率");
 
-        assertEquals(List.of("q2_1"), selection.skillNames());
+        assertEquals(2, selection.skillNames().size());
+        assertEquals("domain_skill", selection.skillNames().get(0));
+        assertEquals("generic", selection.skillNames().get(1));
     }
 
     @Test
-    void meetingMaterialRequestOnlyUsesMeetingMaterialDomain() {
-        SkillRoutingMetadata meeting = metadataWithDomain("meeting", List.of("达标率"), List.of("例会材料"), 0);
-        SkillRoutingMetadata ordinary = metadataWithDomain("ordinary", List.of("达标率"), List.of(), 100);
-
-        SkillCandidateSelection selection = selector.select(
-                List.of(skill(meeting.skillName()), skill(ordinary.skillName())),
-                List.of(meeting, ordinary), "生成例会材料，包含达标率");
-
-        assertEquals(List.of("meeting"), selection.skillNames());
-    }
-
-    @Test
-    void nonMeetingRequestExcludesMeetingMaterialDomain() {
-        SkillRoutingMetadata meeting = metadataWithDomain("meeting", List.of("达标率"), List.of("例会材料"), 100);
-        SkillRoutingMetadata ordinary = metadataWithDomain("ordinary", List.of("达标率"), List.of(), 0);
+    void noDomainHitIncludesDomainTaggedSkillsOnKeywordMatch() {
+        SkillRoutingMetadata meeting = metadataWithDomain("meeting", List.of("达标率"), List.of("例会材料"));
+        SkillRoutingMetadata ordinary = metadataWithDomain("ordinary", List.of("达标率"), List.of());
 
         SkillCandidateSelection selection = selector.select(
                 List.of(skill(meeting.skillName()), skill(ordinary.skillName())),
                 List.of(meeting, ordinary), "查询杭州开发二部达标率");
 
-        assertEquals(List.of("ordinary"), selection.skillNames());
+        assertEquals(2, selection.skillNames().size());
+        assertTrue(selection.skillNames().contains("meeting"));
+        assertTrue(selection.skillNames().contains("ordinary"));
     }
 
     @Test
-    void explicitSkillNameOverridesMeetingMaterialDomainGate() {
-        SkillRoutingMetadata meeting = metadataWithDomain("meeting", List.of("达标率"), List.of("例会材料"), 0);
-        SkillRoutingMetadata ordinary = metadataWithDomain("ordinary", List.of("达标率"), List.of(), 0);
+    void explicitSkillNameOverridesDomainGate() {
+        SkillRoutingMetadata meeting = metadataWithDomain("meeting", List.of("达标率"), List.of("例会材料"));
+        SkillRoutingMetadata ordinary = metadataWithDomain("ordinary", List.of("达标率"), List.of());
 
         SkillCandidateSelection selection = selector.select(
                 List.of(skill(meeting.skillName()), skill(ordinary.skillName())),
@@ -142,27 +136,13 @@ class SkillCandidateSelectorTest {
     }
 
     @Test
-    void arbitraryRegisteredDomainIsNotVisibleUnlessQuestionContainsIt() {
-        SkillRoutingMetadata weeklyMeeting = metadataWithDomain(
-                "demo_company_quality", List.of("检出率"), List.of("杭研周例会"), 100);
-        SkillRoutingMetadata ordinary = metadataWithDomain(
-                "ordinary", List.of("检出率"), List.of(), 0);
-
-        SkillCandidateSelection selection = selector.select(
-                List.of(skill(weeklyMeeting.skillName()), skill(ordinary.skillName())),
-                List.of(weeklyMeeting, ordinary), "杭州开发一部七月 Q2-1 检出率");
-
-        assertEquals(List.of("ordinary"), selection.skillNames());
-    }
-
-    @Test
     void multipleDomainTagsUseOrSemantics() {
         SkillRoutingMetadata multiDomain = metadataWithDomain(
-                "multi_domain", List.of(), List.of("质量管理", "QI卡口"), 0);
+                "multi_domain", List.of("数据"), List.of("质量管理", "QI卡口"));
         SkillRoutingMetadata qualityOnly = metadataWithDomain(
-                "quality_only", List.of(), List.of("质量管理"), 0);
+                "quality_only", List.of("数据"), List.of("质量管理"));
         SkillRoutingMetadata qiOnly = metadataWithDomain(
-                "qi_only", List.of(), List.of("QI卡口"), 0);
+                "qi_only", List.of("数据"), List.of("QI卡口"));
 
         List<AgentSkill> skills = List.of(
                 skill(multiDomain.skillName()), skill(qualityOnly.skillName()), skill(qiOnly.skillName()));
@@ -180,25 +160,40 @@ class SkillCandidateSelectorTest {
     }
 
     @Test
-    void multipleDomainTagsRemainHardGatedWhenQuestionMatchesNeither() {
+    void domainTagsAloneWithoutKeywordHitStillEmpty() {
         SkillRoutingMetadata multiDomain = metadataWithDomain(
-                "multi_domain", List.of(), List.of("质量管理", "QI卡口"), 0);
+                "multi_domain", List.of(), List.of("质量管理", "QI卡口"));
 
         SkillCandidateSelection selection = selector.select(
-                List.of(skill(multiDomain.skillName())), List.of(multiDomain), "查询普通数据");
+                List.of(skill(multiDomain.skillName())), List.of(multiDomain), "查询质量管理相关数据");
 
         assertTrue(selection.skillNames().isEmpty());
     }
 
-    private static SkillRoutingMetadata metadata(String name, List<String> keywords, int priority) {
-        return new SkillRoutingMetadata(name, name + " 摘要", keywords, List.of(), List.of(), List.of(),
-                "", priority, true, null);
+    @Test
+    void inactiveOrUnavailableSkillsExcluded() {
+        SkillRoutingMetadata inactive = new SkillRoutingMetadata(
+                "inactive", "inactive 摘要", List.of("达标率"), List.of(), List.of(), "", false, null);
+        SkillRoutingMetadata unavailable = metadata("unavailable", List.of("达标率"));
+
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(inactive.skillName())), List.of(inactive, unavailable), "查询达标率");
+
+        assertTrue(selection.skillNames().isEmpty());
     }
 
-    private static SkillRoutingMetadata metadataWithDomain(String name, List<String> metricTags,
-                                                           List<String> domainTags, int priority) {
-        return new SkillRoutingMetadata(name, name + " 摘要", List.of(), domainTags, List.of(), metricTags,
-                "", priority, true, null);
+    private static SkillRoutingMetadata metadata(String name, List<String> keywords) {
+        return new SkillRoutingMetadata(name, name + " 摘要", keywords, List.of(), List.of(), "", true, null);
+    }
+
+    private static SkillRoutingMetadata metadataWithDomain(String name, List<String> keywords,
+                                                           List<String> domainTags) {
+        return new SkillRoutingMetadata(name, name + " 摘要", keywords, domainTags, List.of(), "", true, null);
+    }
+
+    private static SkillRoutingMetadata metadataWithTopic(String name, List<String> keywords,
+                                                          List<String> topicTags) {
+        return new SkillRoutingMetadata(name, name + " 摘要", keywords, List.of(), topicTags, "", true, null);
     }
 
     private static AgentSkill skill(String name) {

@@ -1,3 +1,4 @@
+import type { TagType, ToolRoutingTag } from '../types/toolRouting';
 import type { SkillRoutingInput, SkillRoutingMetadata } from '../types/skillRouting';
 
 const BASE = '/api/skill-routing';
@@ -40,5 +41,19 @@ export async function setSkillRoutingActive(skillName: string, active: boolean):
     method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ active }),
   });
   await ensureOk(res, '切换 Skill 配置');
+  return res.json();
+}
+
+export async function listSkillTags(type: TagType): Promise<ToolRoutingTag[]> {
+  const res = await fetch(`${BASE}/tags/${type}`, { headers: headers() });
+  await ensureOk(res, '加载标签词典');
+  return res.json();
+}
+
+export async function saveSkillTag(type: TagType, tagName: string, description: string, enabled = true): Promise<ToolRoutingTag> {
+  const res = await fetch(`${BASE}/tags/${type}/${encodeURIComponent(tagName)}`, {
+    method: 'PUT', headers: jsonHeaders(), body: JSON.stringify({ description, enabled }),
+  });
+  await ensureOk(res, '保存标签');
   return res.json();
 }

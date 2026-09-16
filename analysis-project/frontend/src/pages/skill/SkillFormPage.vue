@@ -10,6 +10,7 @@
  */
 import { ref, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { ElMessageBox } from 'element-plus';
 import SkillFileAttachment from '../../components/SkillFileAttachment.vue';
 import DimensionCascader from '../../components/DimensionCascader.vue';
 import {
@@ -21,7 +22,10 @@ import {
   getGrants,
   getPublishTargets,
   submitPublish,
+  SkillSimilarError,
 } from '../../api/skill';
+import { checkSkillSimilarity } from '../../api/routingOverlap';
+import type { SkillSimilarityMatch } from '../../types/routingOverlap';
 import type { SkillInput, SkillGrant, PublishTargetGroup } from '../../types/skill';
 import SkillGrantEditor from '../../components/SkillGrantEditor.vue';
 
@@ -131,6 +135,42 @@ onMounted(async () => {
   }
 });
 
+// ============ 描述相似拦截(保存前预检 + 后端 409 兜底, 仅能返回修改) ============
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch] || ch));
+}
+
+/** 命中相近描述: 强制提示框, 无"仍要保存"选项, 用户只能返回修改。 */
+async function showSimilarAlert(matches: SkillSimilarityMatch[]): Promise<void> {
+  const lines = matches.slice(0, 5).map(m =>
+    `<div style="margin:4px 0;">「${escapeHtml(m.name)}」 联系人: ${escapeHtml(m.ownerUserId || '-')} (相似度 ${Math.round(m.similarity * 100)}%)</div>`
+  ).join('');
+  await ElMessageBox.alert(
+    `<div style="font-size:13px;line-height:1.6;">${lines}<div style="margin-top:8px;color:#92400e;">请修改名称或描述后重试;如确认功能不同,请先与上述责任人沟通。</div></div>`,
+    '已存在相近描述的 Skill',
+    { dangerouslyUseHTMLString: true, confirmButtonText: '返回修改', type: 'warning' },
+  );
+}
+
+/** 保存前相似预检。true = 无相近(或预检失败,靠后端 409 兜底),可继续保存; false = 有相近,已弹提示,中止。 */
+async function checkNoSimilar(): Promise<boolean> {
+  let matches: SkillSimilarityMatch[] = [];
+  try {
+    const result = await checkSkillSimilarity({
+      name: form.value.name.trim(),
+      description: form.value.description.trim(),
+      excludeSkillId: editId.value ?? undefined,
+    });
+    matches = result.matches;
+  } catch {
+    return true;
+  }
+  if (!matches.length) return true;
+  await showSimilarAlert(matches);
+  return false;
+}
+
 async function submit() {
   formError.value = '';
   publishResult.value = '';
@@ -144,14 +184,15 @@ async function submit() {
   }
   saving.value = true;
   try {
+    if (!(await checkNoSimilar())) return; // 命中相近描述, 只能返回修改
     // visibility 作为 SkillInput 传给后端(PERSONAL/PRIVATE/PUBLIC)
     const payload: SkillInput = { ...form.value, visibility: visibility.value };
     let skillId: number;
     if (editId.value != null) {
       await updateSkill(editId.value, payload);
-      skillId = editId.value;
       // 编辑模式:授权编辑器已即时生效(加/删都直接调后端,首个授权自动切 PRIVATE),
       // 无需在此二次同步;仅兜底保证 visibility 已按开关更新。
+      skillId = editId.value;
     } else {
       const created = await createSkill(payload);
       skillId = created.id;
@@ -187,6 +228,11 @@ async function submit() {
       }, 1200);
     }
   } catch (e) {
+    // 预检与保存之间的竞态: 后端 409 兜底, 同样仅能返回修改
+    if (e instanceof SkillSimilarError) {
+      await showSimilarAlert(e.matches);
+      return;
+    }
     formError.value = e instanceof Error ? e.message : '保存失败';
   } finally {
     saving.value = false;

@@ -10,8 +10,12 @@ public class ToolRoutingMetadataAdminService {
 
     private static final Pattern TAG_SEPARATOR = Pattern.compile("[,，、\\r\\n]+");
     private final ToolRoutingMetadataRepository repository;
-    public ToolRoutingMetadataAdminService(ToolRoutingMetadataRepository repository) {
+    private final com.agentscopea2a.v2.governance.SkillToolOverlapService overlapService;
+    public ToolRoutingMetadataAdminService(
+            ToolRoutingMetadataRepository repository,
+            com.agentscopea2a.v2.governance.SkillToolOverlapService overlapService) {
         this.repository = repository;
+        this.overlapService = overlapService;
     }
 
     public ToolRoutingMetadata save(String toolId, ToolRoutingMetadataInput input) {
@@ -40,6 +44,7 @@ public class ToolRoutingMetadataAdminService {
         if (!repository.upsert(metadata)) {
             throw new IllegalStateException("ToolRoutingMetadataSaveFailed");
         }
+        if (overlapService != null) overlapService.invalidate();
         return metadata;
     }
 

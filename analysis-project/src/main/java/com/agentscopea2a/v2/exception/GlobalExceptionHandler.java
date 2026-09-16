@@ -93,6 +93,23 @@ public class GlobalExceptionHandler {
         return jsonBody(HttpStatus.TOO_MANY_REQUESTS, ex.getMessage());
     }
 
+    /**
+     * 创建/更新 Skill 命中高相似描述: 409 + 结构化相似列表 (含 ownerUserId),
+     * 前端转"已存在相近描述"提示框, 用户仅能返回修改 (无放行路径)。
+     * 必须放在本类 (HIGHEST_PRECEDENCE): 否则被下方 Exception 兜底吃掉变 500。
+     */
+    @ExceptionHandler(SkillDescriptionSimilarException.class)
+    public ResponseEntity<Map<String, Object>> handleDescriptionSimilar(SkillDescriptionSimilarException ex) {
+        log.warn("SkillDescriptionSimilar: matches={}", ex.result().matches().size());
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of(
+                        "code", "SkillDescriptionSimilar",
+                        "message", "已存在相近描述的 Skill, 请修改名称或描述后重试 (联系人见 matches[].ownerUserId)",
+                        "degraded", ex.result().degraded(),
+                        "matches", ex.result().matches()));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, String>> handleUnexpected(
             Exception ex, HttpServletRequest request) {

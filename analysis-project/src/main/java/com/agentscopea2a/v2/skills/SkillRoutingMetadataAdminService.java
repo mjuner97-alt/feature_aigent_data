@@ -10,9 +10,13 @@ public class SkillRoutingMetadataAdminService {
     private static final Pattern TAG_SEPARATOR = Pattern.compile("[,，、\\r\\n]+");
 
     private final SkillRoutingMetadataRepository repository;
+    private final com.agentscopea2a.v2.governance.SkillToolOverlapService overlapService;
 
-    public SkillRoutingMetadataAdminService(SkillRoutingMetadataRepository repository) {
+    public SkillRoutingMetadataAdminService(
+            SkillRoutingMetadataRepository repository,
+            com.agentscopea2a.v2.governance.SkillToolOverlapService overlapService) {
         this.repository = repository;
+        this.overlapService = overlapService;
     }
 
     public List<SkillRoutingMetadataView> list(String keyword, Boolean active, int limit, int offset) {
@@ -38,25 +42,26 @@ public class SkillRoutingMetadataAdminService {
             throw new IllegalArgumentException("SkillNotFound: " + skillName);
         }
         if (input == null) throw new IllegalArgumentException("RoutingConfigRequired");
-        if (input.priority() < -1000 || input.priority() > 1000) {
-            throw new IllegalArgumentException("PriorityOutOfRange: -1000..1000");
-        }
         String summary = cleanSummary(input.shortSummary());
         String creator = repository.creatorForSkill(skillName);
         SkillRoutingMetadata metadata = new SkillRoutingMetadata(skillName, summary,
                 cleanTags(input.keywords()), cleanTags(input.domainTags()), cleanTags(input.topicTags()),
-                cleanTags(input.metricTags()), creator,
-                input.priority(), input.active(), null);
+                creator, input.active(), null);
         if (!repository.upsert(metadata)) throw new IllegalStateException("RoutingConfigSaveFailed");
+        invalidateOverlapCache();
         return metadata;
     }
 
     public SkillRoutingMetadataView setActive(String skillName, boolean active) {
         SkillRoutingMetadataView current = get(skillName);
         SkillRoutingMetadataInput input = new SkillRoutingMetadataInput(current.shortSummary(), current.keywords(),
-                current.domainTags(), current.topicTags(), current.metricTags(), current.priority(), active);
+                current.domainTags(), current.topicTags(), active);
         save(skillName, input, null);
         return get(skillName);
+    }
+
+    private void invalidateOverlapCache() {
+        if (overlapService != null) overlapService.invalidate();
     }
 
     private static String cleanSummary(String value) {

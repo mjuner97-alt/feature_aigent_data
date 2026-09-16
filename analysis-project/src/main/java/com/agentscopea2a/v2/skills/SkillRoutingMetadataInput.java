@@ -8,7 +8,5 @@ public record SkillRoutingMetadataInput(
         List<String> keywords,
         List<String> domainTags,
         List<String> topicTags,
-        List<String> metricTags,
-        int priority,
         boolean active) {
 }

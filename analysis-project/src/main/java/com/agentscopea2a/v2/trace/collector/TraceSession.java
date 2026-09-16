@@ -64,6 +64,7 @@ public class TraceSession {
     private final AtomicLong tokenOutput = new AtomicLong(0);
 
     private final AtomicReference<String> status = new AtomicReference<>("RUNNING");
+    private final AtomicReference<ModelTiming> activeModel = new AtomicReference<>();
     private volatile String errorMessage = "";
     private volatile boolean sealed = false;
 
@@ -111,15 +112,56 @@ public class TraceSession {
     public void markError(String msg) {
         status.compareAndSet("RUNNING", "ERROR");
         if (msg != null) errorMessage = msg;
+        appendModelInterrupted("ERROR", msg);
     }
 
     public void markTimeout() {
         status.compareAndSet("RUNNING", "TIMEOUT");
+        appendModelInterrupted("TIMEOUT", "model request timed out");
     }
 
     public void markSuccess() {
         status.compareAndSet("RUNNING", "SUCCESS");
+        completeModelCall(false);
     }
+
+    public void beginModelCall() {
+        if (!sealed) activeModel.compareAndSet(null, new ModelTiming(System.nanoTime()));
+    }
+
+    public void completeModelCall(boolean hasOutput) {
+        ModelTiming timing = activeModel.getAndSet(null);
+        if (timing != null && !hasOutput) appendModelInterrupted("NO_OUTPUT", "model call completed without output", timing);
+    }
+
+    public void cancelModelCall(String message) {
+        status.compareAndSet("RUNNING", "CANCELLED");
+        appendModelInterrupted("CANCELLED", message);
+    }
+
+    private void appendModelInterrupted(String reason, String message) {
+        appendModelInterrupted(reason, message, activeModel.getAndSet(null));
+    }
+
+    private void appendModelInterrupted(String reason, String message, ModelTiming timing) {
+        if (timing == null || sealed) return;
+        try {
+            Instant now = Instant.now();
+            var node = MAPPER.createObjectNode();
+            node.put("id", UUID.randomUUID().toString().replace("-", ""));
+            node.put("type", "MODEL_CALL_INTERRUPTED");
+            node.put("createdAt", now.toString());
+            node.put("source", "model");
+            node.put("reason", reason);
+            node.put("message", message == null ? "" : message);
+            node.put("has_input", true);
+            node.put("has_output", false);
+            node.put("durationMs", Math.max(0L, (System.nanoTime() - timing.startedNanos) / 1_000_000L));
+            addRecord(new TraceEventRecord(now.toString(), MAPPER.writeValueAsString(node)));
+        } catch (Exception ex) { log.warn("TraceSession serialize model interruption failed: {}", ex.getMessage()); }
+    }
+
+    private record ModelTiming(long startedNanos) {}
 
     /**
      * 把仍在运行的请求标记为已取消，并追加一条仅供 trace 记录和展示的终态事件。

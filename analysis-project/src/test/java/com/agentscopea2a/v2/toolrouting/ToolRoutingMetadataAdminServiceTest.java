@@ -17,7 +17,7 @@ class ToolRoutingMetadataAdminServiceTest {
     void normalizesMetadataBeforePersisting() {
         ToolRoutingMetadataRepository repository = mock(ToolRoutingMetadataRepository.class);
         when(repository.upsert(any())).thenReturn(true);
-        ToolRoutingMetadataAdminService service = new ToolRoutingMetadataAdminService(repository);
+        ToolRoutingMetadataAdminService service = new ToolRoutingMetadataAdminService(repository, null);
 
         ToolRoutingMetadata saved = service.save("q2_metrics", new ToolRoutingMetadataInput(
                 ToolRoutingToolType.SCRIPT, "  按部门统计质量分  ", List.of(" QI卡口 "), List.of(" 质量分 ", "质量分"),
@@ -34,7 +34,7 @@ class ToolRoutingMetadataAdminServiceTest {
     @Test
     void rejectsOutOfRangePriority() {
         ToolRoutingMetadataRepository repository = mock(ToolRoutingMetadataRepository.class);
-        ToolRoutingMetadataAdminService service = new ToolRoutingMetadataAdminService(repository);
+        ToolRoutingMetadataAdminService service = new ToolRoutingMetadataAdminService(repository, null);
 
         assertThrows(IllegalArgumentException.class, () -> service.save("q2_metrics",
                 new ToolRoutingMetadataInput(ToolRoutingToolType.SQL, "x", List.of("QI卡口"), List.of("质量分"), List.of(), 1001, true)));

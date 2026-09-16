@@ -76,6 +76,8 @@ public class SkillManageService {
     private final SkillVirtualGroupService virtualGroupService;
     /** 页面 Skill 双写桥接，用 ObjectProvider 避免启动顺序问题 */
     private final ObjectProvider<SkillManageBridge> bridgeProvider;
+    /** 描述相似检测 (治理), bean 缺失时静默跳过 */
+    private final ObjectProvider<com.agentscopea2a.v2.governance.SkillDescriptionSimilarityService> similarityServiceProvider;
 
     /** 检索 body 缓存:retrieval_name -> content,60s TTL(与 SkillVectorIndex 缓存节奏一致)。 */
     private static final long BODY_CACHE_TTL_NANOS = TimeUnit.SECONDS.toNanos(60);
@@ -87,11 +89,13 @@ public class SkillManageService {
     public SkillManageService(SkillMapper skillMapper,
                               MockOrgService mockOrgService,
                               SkillVirtualGroupService virtualGroupService,
-                              ObjectProvider<SkillManageBridge> bridgeProvider) {
+                              ObjectProvider<SkillManageBridge> bridgeProvider,
+                              ObjectProvider<com.agentscopea2a.v2.governance.SkillDescriptionSimilarityService> similarityServiceProvider) {
         this.skillMapper = skillMapper;
         this.mockOrgService = mockOrgService;
         this.virtualGroupService = virtualGroupService;
         this.bridgeProvider = bridgeProvider;
+        this.similarityServiceProvider = similarityServiceProvider;
     }
 
     // ==================== Skill CRUD + 列表 ====================
@@ -197,6 +201,11 @@ public class SkillManageService {
         return skillMapper.selectAllTags(userId);
     }
 
+    /**
+     * 创建 Skill (带描述相似复检)。命中高相似时抛
+     * {@link com.agentscopea2a.v2.exception.SkillDescriptionSimilarException} (HTTP 409 + 相似列表),
+     * 用户仅能返回修改, 不提供放行路径。
+     */
     @Transactional("gaussCustomerTransactionManager")
     public Skill create(Skill skill, String ownerUserId) {
         requireSkillText(skill.getName(), "名称");
@@ -204,6 +213,7 @@ public class SkillManageService {
         if (skillMapper.existsByName(skill.getName())) {
             throw new IllegalStateException("SkillNameConflict: " + skill.getName());
         }
+        enforceDescriptionSimilarity(skill.getName(), skill.getDescription(), null);
         skill.setOwnerUserId(ownerUserId);
         skill.setStatus("ACTIVE");
         // 可见性三态规则:
@@ -246,6 +256,18 @@ public class SkillManageService {
      */
     @Transactional("gaussCustomerTransactionManager")
     public void createForAgent(Skill skill, String ownerUserId, String retrievalName) {
+        // agent 无法响应 HITL 确认框: 命中相似只记日志不阻塞 (方案 §2.3), 供重叠页事后人工跟进
+        com.agentscopea2a.v2.governance.SkillDescriptionSimilarityService similarity =
+                similarityServiceProvider.getIfAvailable();
+        if (similarity != null) {
+            com.agentscopea2a.v2.governance.SkillSimilarityCheckResult result =
+                    similarity.check(skill.getName(), skill.getDescription(), null);
+            if (!result.matches().isEmpty()) {
+                log.warn("Agent-created skill '{}' has similar existing descriptions (first match: '{}', owner={}): {}",
+                        skill.getName(), result.matches().get(0).name(),
+                        result.matches().get(0).ownerUserId(), result.matches().get(0).evidence());
+            }
+        }
         skill.setOwnerUserId(ownerUserId);
         skill.setStatus("ACTIVE");
         // Agent 创建的 skill 默认个人(与页面创建一致)
@@ -382,6 +404,7 @@ public class SkillManageService {
         }
     }
 
+    /** 更新 Skill (仅所有者; description/name 变更时做描述相似复检, 排除自身)。 */
     @Transactional("gaussCustomerTransactionManager")
     public Skill update(Long id, Skill patch, String userId) {
         Skill s = get(id);
@@ -396,6 +419,13 @@ public class SkillManageService {
         if (patch.getName() != null && !patch.getName().equals(s.getName())
                 && skillMapper.existsByName(patch.getName())) {
             throw new IllegalStateException("SkillNameConflict: " + patch.getName());
+        }
+        boolean textChanged = (patch.getName() != null && !patch.getName().equals(s.getName()))
+                || (patch.getDescription() != null && !patch.getDescription().equals(s.getDescription()));
+        if (textChanged) {
+            String nextName = patch.getName() != null ? patch.getName() : s.getName();
+            String nextDescription = patch.getDescription() != null ? patch.getDescription() : s.getDescription();
+            enforceDescriptionSimilarity(nextName, nextDescription, id);
         }
         if (patch.getName() != null) s.setName(patch.getName());
         if (patch.getDescription() != null) s.setDescription(patch.getDescription());
@@ -427,6 +457,24 @@ public class SkillManageService {
         if (value == null || value.isBlank()) {
             throw new IllegalArgumentException("Skill " + fieldName + "不能为空");
         }
+    }
+
+    /**
+     * 描述相似复检 (方案 §2.3): 命中高相似 -> 409 + 相似列表, 用户仅能返回修改,
+     * 不提供放行路径。相似服务 bean 缺失时静默跳过。
+     */
+    private void enforceDescriptionSimilarity(String name, String description, Long excludeSkillId) {
+        com.agentscopea2a.v2.governance.SkillDescriptionSimilarityService similarity =
+                similarityServiceProvider.getIfAvailable();
+        if (similarity == null) {
+            return;
+        }
+        com.agentscopea2a.v2.governance.SkillSimilarityCheckResult result =
+                similarity.check(name, description, excludeSkillId);
+        if (result.matches().isEmpty()) {
+            return;
+        }
+        throw new com.agentscopea2a.v2.exception.SkillDescriptionSimilarException(result);
     }
 
     @Transactional("gaussCustomerTransactionManager")
