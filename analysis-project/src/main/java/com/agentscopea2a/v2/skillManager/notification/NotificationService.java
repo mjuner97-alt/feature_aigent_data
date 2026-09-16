@@ -37,17 +37,22 @@ import java.util.concurrent.Executors;
 public class NotificationService {
     private static final Logger log = LoggerFactory.getLogger(NotificationService.class);
 
-    /** 内置默认 HTML 模板（notify_content_template 为空且 type=HTML 时使用） */
+    /**
+     * 内置默认 HTML 模板（notify_content_template 为空且 type=HTML 时使用）。
+     * 邮件客户端会剥离 <script>（ECharts 图表必然丢失），正文只放摘要+报告地址，不嵌报告全文。
+     */
     private static final String DEFAULT_HTML_TEMPLATE = """
-            <div>
+            <html><body>
               <h3>指标分析报告已生成</h3>
+              <p>任务已完成，请点击以下地址查看完整报告（含图表）：</p>
+              <p><a href="{file_url}">打开分析报告</a></p>
               <table>
                 <tr><td>依赖指标</td><td>{metric_name}（{metric_code}）</td></tr>
                 <tr><td>任务名称</td><td>{job_name}</td></tr>
                 <tr><td>生成时间</td><td>{date}</td></tr>
-                <tr><td>报告下载</td><td>{file_link}</td></tr>
               </table>
-            </div>""";
+              <p style="color:#666;font-size:12px;">如果链接无法打开，请复制以下地址到浏览器：<br>{file_url}</p>
+            </body></html>""";
 
     /** 内置默认纯文本模板（notify_content_template 为空且 type=TEXT 时使用） */
     private static final String DEFAULT_TEXT_TEMPLATE = """
@@ -55,7 +60,7 @@ public class NotificationService {
             依赖指标：{metric_name}（{metric_code}）
             任务名称：{job_name}
             生成时间：{date}
-            报告下载：{file_link}""";
+            报告地址：{file_url}""";
 
     private final SkillDependencyMetricMapper metricMapper;
     private final SkillJobMapper jobMapper;
@@ -134,7 +139,7 @@ public class NotificationService {
                                          String triggerType, String requestType) {
         String contentType = (metric != null && metric.getNotifyContentType() != null && !metric.getNotifyContentType().isBlank())
                 ? metric.getNotifyContentType().toUpperCase() : "HTML";
-        // An empty template is intentional: the concrete sender owns channel-specific formatting.
+        // 模板为空时回退到内置默认模板（HTML 链接式，避免邮件丢图表；TEXT 同理只给地址）。
         String template = metric != null ? metric.getNotifyContentTemplate() : null;
         String fileUrl = buildFileUrl(execution.getId());
         String content = render(template, contentType, fileUrl, job, metric, execution, filePath);
@@ -237,25 +242,53 @@ public class NotificationService {
         executor.shutdown();
     }
 
+    /**
+     * 渲染通知正文。邮件客户端会剥离 {@code <script>}，报告里的 ECharts 图表必然丢失，
+     * 因此默认模板（同 {@code FlowCompletionService} 的 flow 通知）只放摘要+报告地址，不嵌报告全文。
+     * admin 配置的自定义模板仍按占位符替换；HTML 类型下所有注入值做转义，仅 {file_link} 保留自身标签。
+     */
     private String render(String template, String contentType, String fileUrl, SkillJob job, SkillDependencyMetric metric,
                           SkillJobExecution execution, String filePath) {
+        boolean html = "HTML".equals(contentType);
         String fileName = fileNameOf(filePath);
-        String fileLink = "HTML".equals(contentType)
-                ? "<a href=\"" + fileUrl + "\">" + fileName + "</a>"
+        String fileLink = html
+                ? "<a href=\"" + escapeHtml(fileUrl) + "\">" + escapeHtml(fileName) + "</a>"
                 : fileUrl;
         if (template == null || template.isBlank()) {
-            return "";
+            template = html ? DEFAULT_HTML_TEMPLATE : DEFAULT_TEXT_TEMPLATE;
+        }
+        String metricName = metric != null ? nullSafe(metric.getName()) : "";
+        String metricCode = metric != null ? nullSafe(metric.getCode()) : "";
+        String jobName = nullSafe(job.getName());
+        String status = nullSafe(execution.getStatus());
+        String date = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        String path = nullSafe(filePath);
+        if (html) {
+            metricName = escapeHtml(metricName);
+            metricCode = escapeHtml(metricCode);
+            jobName = escapeHtml(jobName);
+            status = escapeHtml(status);
+            date = escapeHtml(date);
+            path = escapeHtml(path);
+            fileUrl = escapeHtml(fileUrl);
         }
         return template
-                .replace("{metric_name}", metric != null ? nullSafe(metric.getName()) : "")
-                .replace("{metric_code}", metric != null ? nullSafe(metric.getCode()) : "")
-                .replace("{job_name}", nullSafe(job.getName()))
-                .replace("{status}", nullSafe(execution.getStatus()))
-                .replace("{date}", LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")))
-                .replace("{file_name}", fileName)
-                .replace("{file_path}", filePath)
+                .replace("{metric_name}", metricName)
+                .replace("{metric_code}", metricCode)
+                .replace("{job_name}", jobName)
+                .replace("{status}", status)
+                .replace("{date}", date)
+                .replace("{file_name}", html ? escapeHtml(fileName) : fileName)
+                .replace("{file_path}", path)
                 .replace("{file_url}", fileUrl)
                 .replace("{file_link}", fileLink);
+    }
+
+    private static String escapeHtml(String value) {
+        return value.replace("&", "&amp;")
+                .replace("\"", "&quot;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;");
     }
 
     /**
@@ -277,6 +310,8 @@ public class NotificationService {
         }
         String path = "/api/skill-jobs/download?shortCode=" + shortCode;
         if (downloadBaseUrl == null || downloadBaseUrl.isBlank()) {
+            // 邮件客户端无法解析相对路径：未配置域名时通知里的链接点不开，这里显式告警提示配置
+            log.warn("harness.a2a.csv-download.base-url 未配置，通知中的报告链接为相对路径({})，邮件收件人无法直接打开", path);
             return path;
         }
         return stripTrailingSlash(downloadBaseUrl) + path;

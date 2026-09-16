@@ -18,13 +18,11 @@ import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Clock;
@@ -59,6 +57,8 @@ public class FlowCompletionService {
     private final Clock clock;
     private final FlowSummaryPromptRenderer promptRenderer;
     private final FlowReportStorage reportStorage;
+    @Value("${harness.a2a.csv-download.base-url:}")
+    private String reportBaseUrl;
     /** 报告根目录(${skill.job.base-dir}),报告以 用户目录/flow-{id}-report.html 存放。 */
     private final Path reportRoot;
 
@@ -196,20 +196,19 @@ public class FlowCompletionService {
         return path.toString();
     }
 
-    /** 长任务通知正文使用已渲染的 HTML 报告；报告文件缺失时用入库结果兜底渲染。 */
+    /** 长任务通知正文只发送报告地址，避免邮件客户端丢失报告中的图片和脚本。 */
     private String notificationHtml(SkillFlowExecution execution, String filePath) {
-        if (filePath != null && !filePath.isBlank()) {
-            try {
-                Path path = Paths.get(filePath).normalize().toAbsolutePath();
-                if (path.startsWith(reportRoot) && Files.isRegularFile(path)) {
-                    return Files.readString(path, StandardCharsets.UTF_8);
-                }
-            } catch (IOException e) {
-                log.warn("Read flow report failed for notification: executionId={}, path={}, reason={}",
-                        execution.getId(), filePath, e.getMessage());
-            }
+        String url = reportUrl(execution);
+        String title = escapeHtml(Objects.toString(execution.getFlowName(), "长任务报告"));
+        if (url.isBlank()) {
+            return "<html><body><h3>" + title + "</h3><p>报告地址暂不可用，请登录系统查看。</p></body></html>";
         }
-        return renderer.render(summaryText(execution), Objects.toString(execution.getFlowName(), "长任务报告"));
+        String escapedUrl = escapeHtml(url);
+        return "<html><body><h3>" + title + "</h3>"
+                + "<p>长任务已完成，请点击以下地址查看完整报告：</p>"
+                + "<p><a href=\"" + escapedUrl + "\">打开长任务报告</a></p>"
+                + "<p style=\"color:#666;font-size:12px;\">如果链接无法打开，请复制以下地址到浏览器：<br>"
+                + escapedUrl + "</p></body></html>";
     }
 
     private String summaryText(SkillFlowExecution execution) {
@@ -246,8 +245,24 @@ public class FlowCompletionService {
         return execution.getReportPath() == null ? "" : Paths.get(execution.getReportPath()).getFileName().toString();
     }
 
-    private static String reportUrl(SkillFlowExecution execution) {
-        return execution.getId() == null ? "" : "/api/skill-flow-executions/" + execution.getId() + "/report";
+    private String reportUrl(SkillFlowExecution execution) {
+        if (execution.getId() == null) {
+            return "";
+        }
+        String path = "/api/skill-flow-executions/" + execution.getId() + "/report";
+        if (reportBaseUrl == null || reportBaseUrl.isBlank()) {
+            return path;
+        }
+        return reportBaseUrl.endsWith("/")
+                ? reportBaseUrl.substring(0, reportBaseUrl.length() - 1) + path
+                : reportBaseUrl + path;
+    }
+
+    private static String escapeHtml(String value) {
+        return value.replace("&", "&amp;")
+                .replace("\"", "&quot;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;");
     }
 
     /** 从 AI 事件流提取回答文本:优先取最终结果,否则拼接增量 delta。 */
