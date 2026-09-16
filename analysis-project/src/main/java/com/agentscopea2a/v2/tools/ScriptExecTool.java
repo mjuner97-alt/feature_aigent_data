@@ -18,6 +18,7 @@ package com.agentscopea2a.v2.tools;
 import com.agentscopea2a.entity.ScriptRegistryEntry;
 import com.agentscopea2a.mapper.gauss.ScriptRegistryMapper;
 import com.agentscopea2a.v2.config.V2SandboxConfig.SandboxPropertiesV2;
+import com.agentscopea2a.v2.service.DownloadContentService;
 import com.zaxxer.hikari.HikariDataSource;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.tool.Tool;
@@ -37,6 +38,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.sql.DataSource;
 import org.slf4j.Logger;
@@ -99,6 +101,14 @@ public class ScriptExecTool {
 
     /** 超时硬上限, 防 LLM 通过 entry.timeoutSeconds 传 99999. */
     private static final int MAX_TIMEOUT_SECONDS = 300;
+
+    // ── stdout 下载块协议 (方案 A: 脚本声明下载内容, Java 剥离后落库生成短链) ──
+    // 标记必须行首出现, 防业务数据偶然出现同名字符串误触发. 见 docs/script-exec-sql-dispatch-and-download-plan.md §4.1
+    static final String DOWNLOAD_META_MARKER = "<<<DOWNLOAD_META>>>";
+    static final String DOWNLOAD_CONTENT_MARKER = "<<<DOWNLOAD_CONTENT>>>";
+    static final String DOWNLOAD_END_MARKER = "<<<DOWNLOAD_END>>>";
+    private static final Pattern DOWNLOAD_META_JSON =
+            Pattern.compile("^" + Pattern.quote(DOWNLOAD_META_MARKER) + "\\s*(\\{.*})\\s*$");
     /** Built-in rendering smoke test that does not require a Python runtime or a script file. */
     static final String WEEKLY_BUSINESS_MOCK_ID = "weekly_business_html_brief_mock";
 
@@ -115,6 +125,7 @@ public class ScriptExecTool {
     private final String workspacePath;
     private final SandboxPropertiesV2.Sandbox sandbox;
     private final String containerWorkspacePath;
+    private final DownloadContentService downloadContentService;
 
     public ScriptExecTool(DataSource mysqlDs,
                           DataSource gaussDs,
@@ -122,7 +133,8 @@ public class ScriptExecTool {
                           ScriptRegistryMapper registryMapper,
                           String workspacePath,
                           SandboxPropertiesV2 sandboxProps,
-                          String containerWorkspacePath) {
+                          String containerWorkspacePath,
+                          DownloadContentService downloadContentService) {
         Map<String, DataSource> m = new LinkedHashMap<>();
         m.put("mysql", mysqlDs);
         m.put("gauss", gaussDs);
@@ -133,11 +145,13 @@ public class ScriptExecTool {
         this.sandbox = sandboxProps != null ? sandboxProps.getSandbox() : null;
         this.containerWorkspacePath = containerWorkspacePath == null || containerWorkspacePath.isBlank()
                 ? "/workspace" : containerWorkspacePath;
+        this.downloadContentService = downloadContentService;
     }
 
     @Tool(
             name = "script_exec",
-            description = "执行预注册指标脚本。scriptId 可来自当前 Skill 固定流程或 tool_index；参数以 Skill 或 toolMetaInfo 为准。")
+            description = "执行预注册指标脚本。scriptId 可来自当前 Skill 固定流程或 tool_index；参数以 Skill 或 toolMetaInfo 为准。"
+                    + "脚本可自带明细下载块（文件名固化在脚本内），调用方无需传下载参数。")
     public ToolResultBlock scriptExec(
             @ToolParam(
                     name = "scriptId",
@@ -519,6 +533,7 @@ public class ScriptExecTool {
         }
 
         String stdout = readTemp(tmpOut);
+        stdout = extractDownloads(stdout);
         String stderr = readTemp(tmpErr);
         int exit = p.exitValue();
         long elapsed = System.currentTimeMillis() - start;
@@ -526,6 +541,106 @@ public class ScriptExecTool {
         log.info("script_exec done: scriptId={} exit={} elapsed={}ms stdoutBytes={} stderrBytes={}",
                 scriptId, exit, elapsed, stdout.length(), stderr.length());
         return ToolResultBlock.text(formatResult(scriptId, exit, elapsed, stdout, stderr, null));
+    }
+
+    // ======================================================================
+    // stdout 下载块解析 (方案 A: 见 docs/script-exec-sql-dispatch-and-download-plan.md §4.2)
+    // ======================================================================
+
+    /**
+     * 扫描 stdout 中的下载块 (DOWNLOAD_META / DOWNLOAD_CONTENT / DOWNLOAD_END, 须行首),
+     * 把每个块<b>原位替换</b>成一条可点击的 Markdown 下载链接
+     * {@code 📥 [filename](/redirect/download?shortCode=xxx)}.
+     *
+     * <p>块内内容经 {@link DownloadContentService#create} 落 {@code url_shortener} 表
+     * (markdown 表自动转 CSV), 只生成短链, <b>既不进 LLM 上下文也不出现在工具结果里</b>.
+     * 替换发生在 {@link #formatResult} 拼信封之前, 链接行是 stdout 的一部分 ——
+     * /ai/chat 展示链路 (ChatScriptExecResultHook) 只把 stdout 段追加给用户,
+     * 落在信封外的链接用户看不到.
+     *
+     * <p>容错: 缺 END / META 非法 JSON / filename 缺失 -> 保留原文 + log.warn,
+     * 不生成链接也不断言失败 (宁可多给 LLM 看原文也不吞数据). 下载落库抛错
+     * (如超 5MB) -> 块原位替换成如实报错行.
+     */
+    private String extractDownloads(String stdout) {
+        if (stdout == null || stdout.isEmpty() || downloadContentService == null) {
+            return stdout;
+        }
+        if (!stdout.contains(DOWNLOAD_META_MARKER)) {
+            return stdout;
+        }
+        List<String> lines = new ArrayList<>(List.of(stdout.split("\n", -1)));
+        List<String> out = new ArrayList<>(lines.size());
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i);
+            if (!line.startsWith(DOWNLOAD_META_MARKER)) {
+                out.add(line);
+                continue;
+            }
+            int end = findDownloadEnd(lines, i);
+            String blockText = String.join("\n", lines.subList(i, Math.min(end + 1, lines.size())));
+            String filename = null;
+            String mimeType = null;
+            boolean wellFormed = end > i + 1 && end < lines.size()
+                    && lines.get(i + 1).startsWith(DOWNLOAD_CONTENT_MARKER);
+            if (wellFormed) {
+                Matcher m = DOWNLOAD_META_JSON.matcher(line);
+                if (m.matches()) {
+                    try {
+                        Map<?, ?> meta = JSON_MAPPER.readValue(m.group(1), Map.class);
+                        Object f = meta.get("filename");
+                        Object mime = meta.get("mimeType");
+                        if (f != null && !String.valueOf(f).isBlank()) {
+                            filename = String.valueOf(f);
+                            mimeType = mime == null ? null : String.valueOf(mime);
+                        }
+                    } catch (Exception ignore) {
+                        // META 非法 JSON -> filename 保持 null, 走下方容错分支
+                    }
+                }
+            }
+            if (!wellFormed || filename == null) {
+                // 缺 END / CONTENT 未紧跟 META / META 非法: 保留原文, 不生成链接也不断言失败
+                log.warn("script_exec 下载块解析失败 (缺 {} 或 META 非法), 保留原文: {}",
+                        DOWNLOAD_END_MARKER, abbreviate(blockText));
+                if (end == lines.size()) {
+                    out.addAll(lines.subList(i, lines.size()));
+                    break;
+                }
+                out.add(line);
+                continue;
+            }
+            // 块内容 = CONTENT 标记行之后到 END 标记行之前 (不含 END 行本身)
+            String content = String.join("\n", lines.subList(i + 2, end));
+            try {
+                String shortCode = downloadContentService.create(content, filename, mimeType);
+                String url = downloadContentService.buildDownloadUrl(shortCode);
+                out.add("📥 [" + filename + "](" + url + ")");
+            } catch (Exception e) {
+                log.warn("script_exec 下载内容落库失败: filename={} bytes={}", filename,
+                        content == null ? 0 : content.length(), e);
+                out.add("📥 下载生成失败: " + e.getMessage() + " (filename=" + filename + ")");
+            }
+            i = end;
+        }
+        return String.join("\n", out);
+    }
+
+    /**
+     * 从 from (含 META 行) 开始找行首 END 标记. 找到返回其下标; 没找到返回 lines.size().
+     */
+    private static int findDownloadEnd(List<String> lines, int from) {
+        for (int j = from + 1; j < lines.size(); j++) {
+            if (lines.get(j).startsWith(DOWNLOAD_END_MARKER)) {
+                return j;
+            }
+        }
+        return lines.size();
+    }
+
+    private static String abbreviate(String s) {
+        if (s == null) return "";
+        return s.length() <= 200 ? s : s.substring(0, 200) + "...(" + s.length() + " chars)";
     }
 
     private static String readTemp(Path p) {
