@@ -41,6 +41,11 @@ function emptyForm(): SkillFlowInput {
   return { name: '', code: '', description: '', taskQuestion: '', summaryQuestionTemplate: '', enabled: true, scheduleRules: null, maxParallelism: 2, notifyEnabled: true, triggers: [], nodes: [emptyNode('node_1', 1)] };
 }
 
+const chineseStepLabels = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
+function stepLabel(index: number): string {
+  return chineseStepLabels[index] || String(index + 1);
+}
+
 const isEdit = computed(() => props.editId != null);
 const validationErrors = computed(() => {
   const errors: string[] = [];
@@ -249,7 +254,7 @@ defineExpose({ isDirty });
               <div v-for="(node, index) in form.nodes" :key="node.nodeKey" class="node-card" :class="{ dragging: dragIndex === index }" @dragover.prevent="onDragOver(index)" @drop.prevent="finishDrag">
                 <div class="node-toolbar">
                   <span class="drag-handle" draggable="true" title="拖拽排序" aria-label="拖拽排序" @dragstart="onDragStart(index, $event)" @dragend="finishDrag">⇕</span>
-                  <strong>{{ index + 1 }}. {{ node.nodeName?.trim() || node.skillName || '未选择 Skill' }}</strong>
+                  <strong>{{ stepLabel(index) }}、{{ node.nodeName?.trim() || node.skillName || '未选择 Skill' }}</strong>
                   <div>
                     <button class="icon-button" title="上移" :disabled="index === 0" @click="moveNode(index, -1)">↑</button>
                     <button class="icon-button" title="下移" :disabled="index === form.nodes.length - 1" @click="moveNode(index, 1)">↓</button>
