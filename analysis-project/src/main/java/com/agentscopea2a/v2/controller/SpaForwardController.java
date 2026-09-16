@@ -30,6 +30,18 @@ import org.springframework.web.bind.annotation.GetMapping;
 @Controller
 public class SpaForwardController {
 
+    /**
+     * /pm 和 /pm/chat 转发到 React 子应用 (frontend-pm, 构建产物在 static/pm/,
+     * base=/pm/), 转发到它自己的 index.html 而非 Vue 的。
+     * 注意: 不能用 /pm/** (会把 forward 目标 /pm/index.html 也匹配回来,
+     * 造成无限 forward -> StackOverflowError); /pm/index.html 与 /pm/assets/**
+     * 由静态资源处理器直接返回。
+     */
+    @GetMapping({ "/pm", "/pm/chat", "/pm/chat/**" })
+    public String forwardPm() {
+        return "forward:/pm/index.html";
+    }
+
     @GetMapping({ "/", "/chat", "/dashboard", "/skills", "/skills/**", "/sql-registry", "/sql-registry/**", "/script-registry", "/script-registry/**", "/model-config" })
     public String forward() {
         return "forward:/index.html";

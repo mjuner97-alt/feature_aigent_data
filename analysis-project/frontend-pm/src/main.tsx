@@ -15,7 +15,7 @@ import ChatPage from './pages/ChatPage';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename="/pm">
       <Routes>
         <Route element={<AppShell />}>
           <Route index element={<Navigate to="/chat" replace />} />
