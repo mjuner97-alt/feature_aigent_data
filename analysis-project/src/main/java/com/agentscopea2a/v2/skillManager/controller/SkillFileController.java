@@ -92,12 +92,12 @@ public class SkillFileController {
     }
 
     /**
-     * 下载文件。
+     * 下载文件(不限制下载人,X-User-Id 仅用于兼容前端调用与日志追溯)。
      */
     @GetMapping("/files/{id}/download")
     public ResponseEntity<Resource> download(
             @PathVariable(name = "id") Long id,
-            @RequestHeader("X-User-Id") String userId) {
+            @RequestHeader(value = "X-User-Id", required = false) String userId) {
         try {
             Resource resource = skillFileService.download(id, userId);
             String filename = skillFileService.getFilename(id, userId);

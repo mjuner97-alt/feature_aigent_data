@@ -25,7 +25,7 @@ import java.util.Objects;
 /**
  * Skill Flow 执行记录查询服务(读侧):
  * 列表/详情/节点明细/指标就绪情况/通知记录/HTML 报告下载。
- * 执行记录仅触发用户本人可见({@link #owned} 统一校验)。
+ * 执行记录查看不限制创建人(报告链接可被邮件直接打开);变更操作经 {@link #requireOwner} 限制为触发人本人。
  */
 @Service
 public class FlowQueryService {
@@ -115,9 +115,9 @@ public class FlowQueryService {
         return mapper.selectNotifications(id);
     }
 
-    /** 读取 HTML 报告；终态执行的文件丢失时，使用已落库的节点结果即时重建。 */
+    /** 读取 HTML 报告；不限制下载人（报告链接可被邮件直接打开）；终态执行的文件丢失时，使用已落库的节点结果即时重建。 */
     public synchronized Resource report(Long id, String userId) {
-        SkillFlowExecution e = requireOwner(id, userId);
+        SkillFlowExecution e = readable(id);
         Path report = resolveReportPath(e);
         if (report == null || !Files.isRegularFile(report)) {
             if (!e.getStatus().terminal()) {
@@ -144,7 +144,7 @@ public class FlowQueryService {
         return report.startsWith(expectedUserRoot) ? report : null;
     }
 
-    /** 取执行记录并校验:仅触发用户本人可读。 */
+    /** 取执行记录(仅校验存在性;查看不限制创建人,变更操作另经 requireOwner 校验)。 */
     private SkillFlowExecution readable(Long id) {
         SkillFlowExecution e = mapper.selectFlowExecutionById(id);
         if (e == null) throw new IllegalStateException("FlowExecutionNotFound: " + id);

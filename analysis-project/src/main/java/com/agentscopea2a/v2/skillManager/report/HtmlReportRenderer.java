@@ -29,6 +29,12 @@ import java.util.regex.Pattern;
  *       + {@code setOption} 脚本。echarts.min.js 仅在存在图表时内联，无图省 1.1MB。</li>
  * </ol>
  *
+ * <p>多份完整 HTML 文档与 Markdown 混排时（如 Skill Flow 汇总报告按节点拼接），
+ * 每份 HTML 文档渲染成独立子文档后以固定尺寸 iframe 嵌入（srcdoc，报告仍自包含）：
+ * 各文档样式/脚本隔离在各自 iframe 内，避免拼接到同一页面时互相覆盖导致图表被挤压；
+ * 所有子报告宽高统一（宽 100%、高固定 600px），内容超出时在 iframe 内部滚动，
+ * 图表按子文档自然布局渲染不被压缩。</p>
+ *
  * <p>生成的 HTML 自包含：邮件附件、下载到本地、断网打开均能渲染表格和图表。
  * echarts.min.js 从 classpath {@code report-assets/echarts.min.js} 读取，启动时加载一次缓存。
  */
@@ -152,6 +158,8 @@ public class HtmlReportRenderer {
             .echarts-fullscreen:hover{background:#f8fafc;color:#0f172a}
             .echarts-shell:fullscreen{padding:48px 16px 16px;background:#fff}
             .echarts-shell:fullscreen .echarts-chart{height:calc(100vh - 64px)}
+            .report-frame-shell{margin:12px 0}
+            .report-frame{width:100%;height:600px;border:1px solid #e2e8f0;border-radius:6px;display:block;background:#fff}
             """;
 
     /**
@@ -222,6 +230,13 @@ public class HtmlReportRenderer {
             }
             """;
 
+    /**
+     * 保留 AI 子报告自带样式时过滤阴影：AI 直出的 HTML 常给表格/卡片容器加 box-shadow，
+     * 汇总页面里这类阴影被用户视为多余装饰，注入前统一剔除（不影响其余样式）。
+     */
+    private static final Pattern BOX_SHADOW_DECL =
+            Pattern.compile("(?i)(?<![\\w-])(?:-webkit-)?box-shadow\\s*:[^;}]*;?");
+
     /** 启动时加载一次的 echarts.min.js 全文，内联进每个含图表的报告。 */
     private String echartsJs;
 
@@ -268,11 +283,15 @@ public class HtmlReportRenderer {
         return assembleHtml(safeTitle, body.toString(), charts, "");
     }
 
-    /** Render Markdown interleaved with one or more complete HTML documents. */
+    /**
+     * 渲染 Markdown 与一份或多份完整 HTML 文档混排的内容:
+     * Markdown 片段照常转换;每份完整 HTML 文档各自渲染成独立子文档后以自适应高度 iframe 嵌入——
+     * 各文档的样式/脚本隔离在各自 iframe 内,避免多份 HTML 拼接到同一页面时样式互相覆盖导致图表被挤压。
+     */
     private String renderMixedContent(String input, String safeTitle) {
         StringBuilder body = new StringBuilder();
-        StringBuilder styles = new StringBuilder();
         List<ChartBlock> charts = new ArrayList<>();
+        int frameIndex = 0;
         int cursor = 0;
         Matcher starts = COMPLETE_HTML_START.matcher(input);
         while (starts.find(cursor)) {
@@ -284,14 +303,11 @@ public class HtmlReportRenderer {
             }
 
             appendMarkdownPart(input.substring(cursor, start), body, charts);
-            Matcher styleMatcher = STYLE_BLOCK.matcher(part.html());
-            while (styleMatcher.find()) styles.append(styleMatcher.group());
-            String bodyContent = sanitizeCompleteBody(extractBodyInner(part.html()));
-            appendHtmlPart(bodyContent, body, charts);
+            appendFramePart(part.html(), frameIndex++, body);
             cursor = part.end();
         }
         appendMarkdownPart(input.substring(cursor), body, charts);
-        return assembleHtml(safeTitle, body.toString(), charts, styles.toString());
+        return assembleHtml(safeTitle, body.toString(), charts, "");
     }
 
     private boolean containsEmbeddedCompleteHtml(String input) {
@@ -314,9 +330,19 @@ public class HtmlReportRenderer {
         splitCharts(part, body, true, charts);
     }
 
-    private void appendHtmlPart(String part, StringBuilder body, List<ChartBlock> charts) {
-        if (part == null || part.isBlank()) return;
-        splitCharts(part, body, false, charts);
+    /** 把一份完整 HTML 文档渲染成独立子文档并以固定尺寸 iframe 嵌入(srcdoc 保持报告自包含)。 */
+    private void appendFramePart(String html, int index, StringBuilder body) {
+        // 单份完整文档走 renderCompleteHtml:剥离脚本防注入、保留原样式(剔除阴影)、转换 ```echarts 块为图表
+        String frameDoc = render(html, null);
+        // allowfullscreen:子文档内图表的 ⛶ 全屏按钮需要 iframe 显式授权,否则 requestFullscreen 被浏览器拦截
+        body.append("<div class=\"report-frame-shell\">")
+                .append("<iframe class=\"report-frame\" title=\"节点报告\" allowfullscreen allow=\"fullscreen\"")
+                .append(" srcdoc=\"").append(escapeSrcdoc(frameDoc)).append("\"></iframe></div>\n");
+    }
+
+    /** iframe srcdoc 属性转义:先转 & 再转 "(属性值内的 < > 合法,无需转义)。 */
+    private static String escapeSrcdoc(String html) {
+        return html.replace("&", "&amp;").replace("\"", "&quot;");
     }
 
     private String sanitizeCompleteBody(String bodyContent) {
@@ -379,11 +405,11 @@ public class HtmlReportRenderer {
      * <p>body 内若含 {@code ```echarts} 代码块仍渲染成图表；其余原样作为 HTML 嵌入。
      */
     private String renderCompleteHtml(String html, String safeTitle) {
-        // 收集 <style>...</style>（通常在 head），注入报告保留 AI 样式
+        // 收集 <style>...</style>（通常在 head），注入报告保留 AI 样式（剔除 box-shadow 阴影）
         StringBuilder extraStyles = new StringBuilder();
         Matcher sm = STYLE_BLOCK.matcher(html);
         while (sm.find()) {
-            extraStyles.append(sm.group());
+            extraStyles.append(BOX_SHADOW_DECL.matcher(sm.group()).replaceAll(""));
         }
 
         // 抽取 <body...>...</body> 内嵌内容；无 <body> 兜底用全文
@@ -487,7 +513,11 @@ public class HtmlReportRenderer {
                   .append(safeOptionJson(c.json)).append("}");
             }
             sb.append("];var chartInstances=[];for(var i=0;i<charts.length;i++){var el=document.getElementById(charts[i].id);");
-            sb.append("if(el){var chart=echarts.init(el);var option=normalizeChartOption(charts[i].option,el.clientWidth);")
+            sb.append("if(el){var option=charts[i].option;")
+                    // option.chartHeight 为可选自定义高度(prompt 中约定),设置后再交给 echarts 初始化
+                    .append("var ch=parseInt(option&&option.chartHeight,10);if(ch>100){el.style.height=ch+'px';}")
+                    .append("if(option){delete option.chartHeight;}")
+                    .append("var chart=echarts.init(el);option=normalizeChartOption(option,el.clientWidth);")
                     .append("chart.setOption(option);chartInstances.push({chart:chart,option:option,el:el});}}")
                     .append("function applyResponsiveChartLayout(entry){var chart=entry.chart;")
                     .append("if(chart&&!chart.isDisposed()){var option=normalizeChartOption(entry.option,entry.el.clientWidth);")

@@ -195,11 +195,11 @@ public class SkillFileService {
     // ==================== 下载 ====================
 
     /**
-     * 下载文件。校验 userId 归属后返回磁盘文件 Resource。
+     * 下载文件。不限制下载人（userId 仅用于日志追溯），返回磁盘文件 Resource。
      */
     public Resource download(Long fileId, String userId) {
         SkillFile skillFile = skillMapper.selectFileById(fileId);
-        if (skillFile == null || !skillFile.getUserId().equals(userId)) {
+        if (skillFile == null) {
             throw new IllegalStateException("FileNotFoundOrAccessDenied: " + fileId);
         }
 
@@ -212,11 +212,11 @@ public class SkillFileService {
     }
 
     /**
-     * 获取文件名(供下载时设置 Content-Disposition)。
+     * 获取文件名(供下载时设置 Content-Disposition)。不限制下载人。
      */
     public String getFilename(Long fileId, String userId) {
         SkillFile skillFile = skillMapper.selectFileById(fileId);
-        if (skillFile == null || !skillFile.getUserId().equals(userId)) {
+        if (skillFile == null) {
             throw new IllegalStateException("FileNotFoundOrAccessDenied: " + fileId);
         }
         return skillFile.getFilename();

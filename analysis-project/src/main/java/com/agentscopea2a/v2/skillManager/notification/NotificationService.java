@@ -51,7 +51,6 @@ public class NotificationService {
                 <tr><td>任务名称</td><td>{job_name}</td></tr>
                 <tr><td>生成时间</td><td>{date}</td></tr>
               </table>
-              <p style="color:#666;font-size:12px;">如果链接无法打开，请复制以下地址到浏览器：<br>{file_url}</p>
             </body></html>""";
 
     /** 内置默认纯文本模板（notify_content_template 为空且 type=TEXT 时使用） */

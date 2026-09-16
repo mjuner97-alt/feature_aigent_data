@@ -121,8 +121,6 @@ public class FlowCompletionService {
             report.append("## ").append(index + 1).append(". ")
                     .append(node.getNodeName() == null || node.getNodeName().isBlank()
                             ? Objects.toString(node.getSkillName(), node.getNodeKey()) : node.getNodeName()).append('\n');
-            report.append("状态：").append(node.getStatus() == null ? "UNKNOWN" : node.getStatus().name())
-                    .append("\n\n");
             report.append(extractResultText(node.getResultJson())).append("\n\n");
         }
         return report.toString();
@@ -206,9 +204,7 @@ public class FlowCompletionService {
         String escapedUrl = escapeHtml(url);
         return "<html><body><h3>" + title + "</h3>"
                 + "<p>长任务已完成，请点击以下地址查看完整报告：</p>"
-                + "<p><a href=\"" + escapedUrl + "\">打开长任务报告</a></p>"
-                + "<p style=\"color:#666;font-size:12px;\">如果链接无法打开，请复制以下地址到浏览器：<br>"
-                + escapedUrl + "</p></body></html>";
+                + "<p><a href=\"" + escapedUrl + "\">打开长任务报告</a></p></body></html>";
     }
 
     private String summaryText(SkillFlowExecution execution) {
@@ -225,7 +221,6 @@ public class FlowCompletionService {
                 for (var result : results) {
                     text.append("## ").append(index++).append(". ")
                             .append(result.path("nodeName").asText(result.path("skillName").asText("节点结果")))
-                            .append("\n状态：").append(result.path("status").asText("UNKNOWN"))
                             .append("\n\n")
                             .append(extractResultText(result.path("result").asText("")))
                             .append("\n\n");
@@ -245,6 +240,7 @@ public class FlowCompletionService {
         return execution.getReportPath() == null ? "" : Paths.get(execution.getReportPath()).getFileName().toString();
     }
 
+    /** 报告查看链接:/api/skill-flow-executions/{id}/report,端点不限制下载人,邮件点击可直接打开。 */
     private String reportUrl(SkillFlowExecution execution) {
         if (execution.getId() == null) {
             return "";
