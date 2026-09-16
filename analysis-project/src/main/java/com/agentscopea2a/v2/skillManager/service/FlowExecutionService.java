@@ -99,7 +99,12 @@ public class FlowExecutionService {
                                           boolean requireAllMetrics) {
         SkillFlowExecution existing = mapper.selectActiveExecution(guard);
         if (existing != null) return new TriggerResult(existing, false);
-        // 汇总全部节点依赖的指标,逐一检查就绪状态
+        // ── 判定「长任务依赖的所有指标是否都就绪」──────────────────────────────
+        // 1) 取该流程全部节点依赖的指标 id 去重(node_metric 关联表),得到 required 集合;
+        // 2) 逐一到 skill_metric_readiness 就绪登记表按「指标 id + 数据日期」查当日记录,
+        //    记录不存在或状态 != READY 即计入 missing——全部不在 missing 中 = 所有依赖指标都就绪。
+        // 就绪记录由外部指标到达时 upsert(见 MetricReadinessService#recordReady),次日跨天作废。
+        // 快照写入 requiredMetricCount / readyMetricCount / missingMetricsJson,供执行详情展示与门控重算。
         List<SkillFlowNode> nodes = mapper.selectNodesByFlowId(flow.getId());
         Set<Long> metrics = new LinkedHashSet<>();
         nodes.forEach(n -> metrics.addAll(mapper.selectMetricIdsByNodeId(n.getId())));
@@ -153,20 +158,43 @@ public class FlowExecutionService {
     }
 
     /**
-     * 指标就绪回调(Skill Job 在外部指标到达时调用):
-     * 重新计算所有等待中执行的就绪门控,全部就绪则放行进入执行队列。
+     * 指标就绪回调入口(Skill Job 在外部指标到达时调用,推送式广播)。
+     *
+     * <p>判定语义：某一天可能有多个流程执行同时停在 WAITING_METRICS——
+     * 有的等指标 A、有的等指标 B、有的 A/B 都等。任一指标就绪只对「等它的执行」有意义,
+     * 因此这里把当前所有 WAITING_METRICS 的执行捞出来,逐个交给 {@link #recomputeGate} 重新判定:
+     * <ul>
+     *   <li>执行依赖的指标还没到齐 → 只更新 readyMetricCount 快照,继续等待;</li>
+     *   <li>全部到齐(missing 清空) → 放行动作,见 {@link #recomputeGate} 的 javadoc。</li>
+     * </ul>
+     * 只处理数据日期匹配的执行:就绪记录按「指标 + 数据日期」登记,昨天的指标救不了今天的执行
+     * (跨天由 {@code FlowCoordinator#expirePreviousDays} 兜底判失败)。
      */
     @Transactional("gaussCustomerTransactionManager")
     public void metricBecameReady(Long metricId, LocalDate dataDate) {
+        // 广播式重算:不区分该指标被谁依赖,统一让所有等待中的执行各自复查一遍(简单且不会漏)
         for (SkillFlowExecution execution : mapper.selectWaitingExecutions()) {
-            if (!dataDate.equals(execution.getDataDate())) continue;
+            if (!dataDate.equals(execution.getDataDate())) continue;  // 数据日期不同,与本次就绪无关
             recomputeGate(execution);
         }
     }
 
-    /** 重算就绪门控:全部指标就绪时,流程置 QUEUED,仅放行第一个节点。 */
+    /**
+     * 重算就绪门控(推送式,指标到达时由 {@link #metricBecameReady} 逐个等待中的执行调用):
+     * 基于执行记录上快照的 missingMetricsJson 重新逐项查就绪登记表,
+     * missing 清空(全部依赖指标就绪)且流程仍停在 WAITING_METRICS 时触发放行动作:
+     * <ol>
+     *   <li>流程状态 WAITING_METRICS -&gt; QUEUED;</li>
+     *   <li>仅把第一个节点 PENDING -&gt; QUEUED(其余节点由依赖推进逐步放行);</li>
+     *   <li>发布 {@link FlowQueuedEvent}——FlowCoordinator 在事务提交后
+     *       ({@code @TransactionalEventListener(AFTER_COMMIT)}) 收到即调用 dispatchRunnableNodes 立即派发;</li>
+     *   <li>落库更新 readyMetricCount / missingMetricsJson 快照。</li>
+     * </ol>
+     * 定时 scan 只做恢复兜底,不重算门控;等待中的执行只靠本推送路径放行。
+     */
     @Transactional("gaussCustomerTransactionManager")
     public void recomputeGate(SkillFlowExecution execution) {
+        // 只对快照里缺失过的指标重查就绪登记表,已就绪的无需重复检查
         List<Long> missing = readLongList(execution.getMissingMetricsJson()).stream()
                 .filter(id -> {
                     SkillMetricReadiness ready = mapper.selectMetricReadiness(id, execution.getDataDate());
@@ -174,13 +202,16 @@ public class FlowExecutionService {
                 }).toList();
         execution.setReadyMetricCount(Math.max(0, execution.getRequiredMetricCount() - missing.size()));
         execution.setMissingMetricsJson(json(missing));
+        // missing 为空 = 长任务依赖的所有指标都已就绪,执行放行动作(见方法 javadoc)
         if (missing.isEmpty() && execution.getStatus() == FlowExecutionStatus.WAITING_METRICS) {
             execution.setStatus(FlowExecutionStatus.QUEUED);
             List<SkillFlowNodeExecution> nodes = mapper.selectNodeExecutions(execution.getId());
             if (!nodes.isEmpty()) {
+                // 仅放行第一个节点,其余节点等依赖关系逐级推进
                 nodes.get(0).setStatus(FlowNodeExecutionStatus.QUEUED);
                 mapper.updateNodeExecution(nodes.get(0));
             }
+            // 事务提交后 FlowCoordinator.onFlowQueued 立即派发可运行节点
             events.publishEvent(new FlowQueuedEvent(execution.getId()));
         }
         mapper.updateExecution(execution);

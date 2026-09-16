@@ -166,7 +166,8 @@ public class FlowQueryService {
                 e.getReadyMetricCount(), nodes.size(), (int) nodes.stream().filter(n -> n.getStatus().terminal()).count(),
                 e.getSummaryQuestionTemplateSnapshot(), renderedSummaryQuestion(e, nodes),
                 readJson(e.getSummaryJson()), e.getReportPath(),
-                e.getCreatedAt(), e.getStartedAt(), e.getCompletedAt());
+                e.getCreatedAt(), e.getStartedAt(), e.getCompletedAt(),
+                mapper.selectActiveDurationSeconds(e.getId()));
     }
 
     /**
@@ -230,7 +231,7 @@ public class FlowQueryService {
                 ? node.getSkillName() : node.getNodeName();
     }
 
-    /** 执行记录列表/详情返回体。 */
+    /** 执行记录列表/详情返回体。activeDurationSeconds 为所有尝试审计耗时之和(秒),无尝试记录时为 null。 */
     public record ExecutionDto(Long id, Long flowId, String flowName, String flowCode, String status,
                                String triggerType,
                                String triggerUserId, String originalQuestion, LocalDate dataDate,
@@ -238,7 +239,8 @@ public class FlowQueryService {
                                Integer totalNodeCount, Integer completedNodeCount,
                                String summaryQuestionTemplateSnapshot, String renderedSummaryQuestion,
                                Object summaryJson, String reportPath,
-                               LocalDateTime createdAt, LocalDateTime startedAt, LocalDateTime completedAt) {}
+                               LocalDateTime createdAt, LocalDateTime startedAt, LocalDateTime completedAt,
+                               Long activeDurationSeconds) {}
 
     /** 节点执行明细返回体(attempts 为每次尝试的审计记录;节点全并行,无依赖)。 */
     public record NodeDto(Long id, String nodeKey, String nodeName, String skillName, String questionTemplateSnapshot,

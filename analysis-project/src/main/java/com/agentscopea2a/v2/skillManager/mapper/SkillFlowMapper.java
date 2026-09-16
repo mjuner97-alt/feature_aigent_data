@@ -250,6 +250,13 @@ public interface SkillFlowMapper {
     /** 查节点的全部尝试审计记录,按 id(=尝试号)顺序,详情页重试轨迹展示用。 */
     List<com.agentscopea2a.v2.skillManager.entity.SkillFlowNodeAttempt> selectAttempts(@Param("nodeId") Long nodeId);
 
+    /**
+     * 汇总流程的有效执行耗时(秒):该执行下所有尝试审计记录的耗时之和(重跑多次会累加)。
+     * 仍在 RUNNING 的尝试按当前时间计到此刻,因此执行中的任务也能得到已耗时。
+     * 没有任何尝试记录(如还在等指标)返回 null。
+     */
+    Long selectActiveDurationSeconds(@Param("flowExecutionId") Long flowExecutionId);
+
     // ==================== 流程完成通知 ====================
 
     /** 查执行实例的通知投递记录(倒序),详情页展示通知状态/排查发送失败原因。 */

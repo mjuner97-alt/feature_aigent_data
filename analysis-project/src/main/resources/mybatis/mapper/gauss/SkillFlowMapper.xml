@@ -695,6 +695,18 @@
         ORDER BY id
     </select>
 
+    <!-- 汇总流程的有效执行耗时(秒):所有尝试审计记录耗时之和,不含排队/等指标/重跑间隔;
+         进行中的尝试用 NOW() 计到当前时刻,执行中的任务也能得到已耗时。
+         还没有任何尝试(排队/等指标)时返回 NULL。用时间戳差值而不是 duration_ms 求和:历史数据 duration_ms 可能为空 -->
+    <select id="selectActiveDurationSeconds" resultType="java.lang.Long">
+        SELECT SUM(EXTRACT(EPOCH FROM (COALESCE(a.completed_at, NOW()) - a.started_at)))
+        FROM skill_flow_node_attempt a
+                 JOIN skill_flow_node_execution n ON n.id = a.node_execution_id
+        WHERE n.flow_execution_id = #{flowExecutionId}
+          AND a.started_at IS NOT NULL
+          AND (a.completed_at IS NULL OR a.completed_at &gt;= a.started_at)
+    </select>
+
     <!-- 查节点已存在的最大尝试号:手动重跑把 attempt_count 归零后,
          新尝试号必须避开历史记录,否则撞 (node_execution_id, attempt_no) 唯一索引 -->
     <select id="selectMaxAttemptNo" resultType="int">
