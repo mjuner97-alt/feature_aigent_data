@@ -22,6 +22,9 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Clock;
@@ -171,9 +174,9 @@ public class FlowCompletionService {
         }
         try {
             String filePath = resolveReportPath(execution);
-            sender.send(new NotificationPayload("HTML", Objects.toString(execution.getSummaryJson(), ""),
-                    filePath, execution.getReportPath() == null ? "" : Paths.get(execution.getReportPath()).getFileName().toString(),
-                    "", execution.getFlowId(), execution.getFlowName(), null, null,
+            sender.send(new NotificationPayload("HTML", notificationHtml(execution, filePath),
+                    filePath, reportFileName(execution),
+                    reportUrl(execution), execution.getFlowId(), execution.getFlowName(), null, null,
                     execution.getId(), execution.getStatus().name(), LocalDateTime.now(clock),
                     List.of(execution.getTriggerUserId()), "FLOW"));
             record.setStatus(FlowNotificationStatus.SENT);
@@ -191,6 +194,60 @@ public class FlowCompletionService {
         Path path = reportRoot.resolve(execution.getReportPath()).normalize().toAbsolutePath();
         if (!path.startsWith(reportRoot)) throw new IllegalStateException("invalid report path");
         return path.toString();
+    }
+
+    /** 长任务通知正文使用已渲染的 HTML 报告；报告文件缺失时用入库结果兜底渲染。 */
+    private String notificationHtml(SkillFlowExecution execution, String filePath) {
+        if (filePath != null && !filePath.isBlank()) {
+            try {
+                Path path = Paths.get(filePath).normalize().toAbsolutePath();
+                if (path.startsWith(reportRoot) && Files.isRegularFile(path)) {
+                    return Files.readString(path, StandardCharsets.UTF_8);
+                }
+            } catch (IOException e) {
+                log.warn("Read flow report failed for notification: executionId={}, path={}, reason={}",
+                        execution.getId(), filePath, e.getMessage());
+            }
+        }
+        return renderer.render(summaryText(execution), Objects.toString(execution.getFlowName(), "长任务报告"));
+    }
+
+    private String summaryText(SkillFlowExecution execution) {
+        String summaryJson = execution.getSummaryJson();
+        if (summaryJson == null || summaryJson.isBlank()) {
+            return "暂无结果";
+        }
+        try {
+            var root = json.readTree(summaryJson);
+            var results = root == null ? null : root.get("results");
+            if (results != null && results.isArray()) {
+                StringBuilder text = new StringBuilder();
+                int index = 1;
+                for (var result : results) {
+                    text.append("## ").append(index++).append(". ")
+                            .append(result.path("nodeName").asText(result.path("skillName").asText("节点结果")))
+                            .append("\n状态：").append(result.path("status").asText("UNKNOWN"))
+                            .append("\n\n")
+                            .append(extractResultText(result.path("result").asText("")))
+                            .append("\n\n");
+                }
+                if (!text.isEmpty()) {
+                    return text.toString();
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Parse flow summary failed for notification: executionId={}, reason={}",
+                    execution.getId(), e.getMessage());
+        }
+        return summaryJson;
+    }
+
+    private static String reportFileName(SkillFlowExecution execution) {
+        return execution.getReportPath() == null ? "" : Paths.get(execution.getReportPath()).getFileName().toString();
+    }
+
+    private static String reportUrl(SkillFlowExecution execution) {
+        return execution.getId() == null ? "" : "/api/skill-flow-executions/" + execution.getId() + "/report";
     }
 
     /** 从 AI 事件流提取回答文本:优先取最终结果,否则拼接增量 delta。 */

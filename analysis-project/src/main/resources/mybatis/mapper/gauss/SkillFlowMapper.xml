@@ -287,16 +287,15 @@
                                         WHERE flow_id = #{flowId}</delete>
 
     <!-- 指标就绪状态幂等写入：同一指标和日期重复上报时更新状态和有效期。 -->
-    <insert id="upsertMetricReadiness">
+    <delete id="deleteMetricReadiness">
+        DELETE FROM skill_metric_readiness
+        WHERE metric_id = #{metricId} AND data_date = #{dataDate}
+    </delete>
+    <insert id="insertMetricReadiness">
         INSERT INTO skill_metric_readiness
         (metric_id, metric_code, data_date, status, ready_at, expires_at, metadata_json)
         VALUES (#{metricId}, #{metricCode}, #{dataDate}, #{status}, #{readyAt}, #{expiresAt},
-                #{metadataJson}) ON DUPLICATE KEY
-        UPDATE
-            metric_code=
-        VALUES (metric_code), status='READY', ready_at=LEAST(skill_metric_readiness.ready_at, VALUES (ready_at)), expires_at=
-        VALUES (expires_at), metadata_json=
-        VALUES (metadata_json), updated_at=NOW()
+                #{metadataJson})
     </insert>
 
     <select id="selectMetricReadiness" resultMap="ReadinessMap">

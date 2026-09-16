@@ -83,7 +83,9 @@ public interface SkillFlowMapper {
 
     // 记录某个业务日期的指标是否已准备完成，供流程判断是否可以从等待状态进入执行阶段。
     // upsert 会合并同一指标、同一日期的重复上报。
-    void upsertMetricReadiness(SkillMetricReadiness readiness);
+    void deleteMetricReadiness(@Param("metricId") Long metricId, @Param("dataDate") LocalDate dataDate);
+
+    void insertMetricReadiness(SkillMetricReadiness readiness);
 
     SkillMetricReadiness selectMetricReadiness(@Param("metricId") Long metricId,
                                                @Param("dataDate") LocalDate dataDate);
