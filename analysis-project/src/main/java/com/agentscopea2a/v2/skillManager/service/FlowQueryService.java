@@ -115,8 +115,11 @@ public class FlowQueryService {
         return mapper.selectNotifications(id);
     }
 
+    /** 报告内容与下载文件名(文件名随流程名称,供 Content-Disposition 使用)。 */
+    public record ReportDownload(Resource resource, String downloadName) {}
+
     /** 读取 HTML 报告；不限制下载人（报告链接可被邮件直接打开）；终态执行的文件丢失时，使用已落库的节点结果即时重建。 */
-    public synchronized Resource report(Long id, String userId) {
+    public synchronized ReportDownload report(Long id, String userId) {
         SkillFlowExecution e = readable(id);
         Path report = resolveReportPath(e);
         if (report == null || !Files.isRegularFile(report)) {
@@ -133,7 +136,16 @@ public class FlowQueryService {
         if (report == null || !Files.isRegularFile(report)) {
             throw new IllegalStateException("FlowReportNotFound: " + id);
         }
-        return new FileSystemResource(report);
+        return new ReportDownload(new FileSystemResource(report), downloadName(e));
+    }
+
+    /** 下载文件名: {流程名称}-flow-report.html; 剔除文件系统非法字符并限长,避免超长响应头。 */
+    private static String downloadName(SkillFlowExecution e) {
+        String safe = Objects.toString(e.getFlowName(), "")
+                .replaceAll("[\\\\/:*?\"<>|\\r\\n\\t]", "").trim();
+        if (safe.isEmpty()) return "flow-report.html";
+        if (safe.length() > 80) safe = safe.substring(0, 80);
+        return safe + "-flow-report.html";
     }
 
     /** 解析报告路径，并强制限制在当前执行用户目录内，防止路径穿越。 */

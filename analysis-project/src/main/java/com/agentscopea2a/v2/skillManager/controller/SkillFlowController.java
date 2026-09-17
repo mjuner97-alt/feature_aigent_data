@@ -11,6 +11,7 @@ import com.agentscopea2a.v2.skillManager.service.FlowDefinitionService;
 import com.agentscopea2a.v2.skillManager.service.FlowExecutionService;
 import com.agentscopea2a.v2.skillManager.service.FlowQueryService;
 import com.agentscopea2a.v2.skillManager.service.FlowCoordinator;
+import com.agentscopea2a.v2.skillManager.service.FlowQueryService.ReportDownload;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
@@ -18,6 +19,8 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /**
@@ -171,10 +174,13 @@ public class SkillFlowController {
     @GetMapping("/api/skill-flow-executions/{id}/report")
     public ResponseEntity<Resource> report(@PathVariable(name = "id") Long id,
                                            @RequestHeader(name = "X-User-Id", required = false) String userId) {
-        Resource report = queryService.report(id, userId);
+        ReportDownload download = queryService.report(id, userId);
+        // RFC 5987: 中文文件名用 filename*=UTF-8'' 编码;ASCII 回退名给不识别 filename* 的老客户端
+        String encoded = URLEncoder.encode(download.downloadName(), StandardCharsets.UTF_8).replace("+", "%20");
         return ResponseEntity.ok().contentType(MediaType.TEXT_HTML)
-                .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"flow-report.html\"")
-                .body(report);
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "inline; filename=\"flow-report.html\"; filename*=UTF-8''" + encoded)
+                .body(download.resource());
     }
 
     /** 按需渲染单个成功 Skill 节点的 HTML 内容，不落盘。 */

@@ -65,7 +65,7 @@ async function openSummaryReport() {
   const reportWindow = window.open('', '_blank');
   reportError.value = '';
   try {
-    const url = await getSkillFlowExecutionReportUrl(props.executionId);
+    const { url } = await getSkillFlowExecutionReportUrl(props.executionId);
     if (reportWindow) reportWindow.location.href = url;
     else window.open(url, '_blank', 'noopener');
   } catch (e) {
@@ -77,10 +77,10 @@ async function downloadSummaryReport() {
   if (!props.executionId) return;
   reportError.value = '';
   try {
-    const url = await getSkillFlowExecutionReportUrl(props.executionId, true);
+    const { url, downloadName } = await getSkillFlowExecutionReportUrl(props.executionId);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = 'flow-report.html';
+    anchor.download = downloadName || 'flow-report.html';
     anchor.click();
     URL.revokeObjectURL(url);
   } catch (e) {
