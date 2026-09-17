@@ -48,6 +48,7 @@ public class SkillDescriptionSimilarityService {
 
     private static final int MAX_MATCHES = 5;
 
+    private final boolean enabled;
     private final SkillDescriptionSource skillDescriptionSource;
     private final SkillRoutingMetadataRepository skillRoutingMetadataRepository;
     private final GovernanceEmbeddingCache embeddingCache;
@@ -57,12 +58,14 @@ public class SkillDescriptionSimilarityService {
     private final double jaccardThreshold;
 
     public SkillDescriptionSimilarityService(
+            boolean enabled,
             SkillDescriptionSource skillDescriptionSource,
             SkillRoutingMetadataRepository skillRoutingMetadataRepository,
             GovernanceEmbeddingCache embeddingCache,
             double cosineThreshold,
             double nameLevenshteinThreshold,
             double jaccardThreshold) {
+        this.enabled = enabled;
         this.skillDescriptionSource = skillDescriptionSource;
         this.skillRoutingMetadataRepository = skillRoutingMetadataRepository;
         this.embeddingCache = embeddingCache;
@@ -73,6 +76,9 @@ public class SkillDescriptionSimilarityService {
 
     public SkillSimilarityCheckResult check(String candidateName, String candidateDescription,
                                              Long excludeSkillId) {
+        if (!enabled) {
+            return new SkillSimilarityCheckResult(false, List.of());
+        }
         boolean degraded = !embeddingCache.semanticAvailable() || !embeddingCache.warm();
         List<SkillDescriptionSource.SkillDescriptionRow> rows = skillDescriptionSource.allActiveSkills();
         if (rows.isEmpty()) {

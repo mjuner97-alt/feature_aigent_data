@@ -21,6 +21,7 @@ const dialogVisible = ref(false);
 const saving = ref(false);
 const current = ref<SkillRoutingMetadata | null>(null);
 const form = ref<SkillRoutingInput>(emptyInput());
+const keywordsText = ref('');
 const domainTags = ref<ToolRoutingTag[]>([]);
 const topicTags = ref<ToolRoutingTag[]>([]);
 const tagDialogVisible = ref(false);
@@ -50,6 +51,7 @@ function openEdit(row: SkillRoutingMetadata) {
     shortSummary: row.shortSummary || '', keywords: [...row.keywords], domainTags: [...row.domainTags],
     topicTags: [...row.topicTags], active: row.active,
   };
+  keywordsText.value = tags(form.value.keywords);
   dialogVisible.value = true;
 }
 async function load() {
@@ -91,6 +93,7 @@ async function save() {
   if (!current.value) return;
   saving.value = true;
   try {
+    form.value.keywords = split(keywordsText.value);
     const result = await saveSkillRouting(current.value.skillName, form.value);
     const index = rows.value.findIndex(r => r.skillName === result.skillName);
     if (index >= 0) rows.value[index] = { ...rows.value[index], ...result, configured: true };
@@ -156,7 +159,7 @@ load();
         <el-form-item label="已有描述"><el-input :model-value="current?.description || '-'" type="textarea" :rows="3" disabled /></el-form-item>
         <el-form-item label="领域标签"><el-select v-model="form.domainTags" multiple filterable style="width: 100%" placeholder="从标签词典选择"><el-option v-for="tag in domainOptions" :key="tag" :label="tag" :value="tag" /></el-select></el-form-item>
         <el-form-item label="业务主题"><el-select v-model="form.topicTags" multiple filterable style="width: 100%" placeholder="从标签词典选择"><el-option v-for="tag in topicOptions" :key="tag" :label="tag" :value="tag" /></el-select></el-form-item>
-        <el-form-item label="关键词"><el-input :model-value="tags(form.keywords)" @update:model-value="v => form.keywords = split(v)" placeholder="逗号、顿号或换行分隔，如 达标率、打分率" /></el-form-item>
+        <el-form-item label="关键词"><el-input v-model="keywordsText" placeholder="逗号、顿号或换行分隔，如 达标率、打分率" /></el-form-item>
         <el-form-item label="启用"><el-switch v-model="form.active" /></el-form-item>
       </el-form>
       <template #footer><el-button @click="dialogVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="save">保存</el-button></template>

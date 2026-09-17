@@ -13,11 +13,10 @@ description: Q2-1 数据
 
 - `dept`：开发部门，例如 `杭州开发二部`
 - `version`：完整版本，例如 `2026年7月份版本`
-- `downloadFilename`：固定使用 `q2_1_明细.csv`
 
 如果缺少 `dept` 或 `version`，先追问，不得默认查全部。
 
-### Step 2：先执行 Python 脚本
+### Step 2：执行脚本（已内置明细下载）
 
 必须直接调用一次 `script_exec`：
 
@@ -28,22 +27,10 @@ script_exec(
 )
 ```
 
+脚本内部已固化明细下载文件名（q2_1_明细.csv），**不要**传 `downloadFilename` 参数，
+也**不要**再调用 `sql_registry_exec`。
 
-### Step 3：执行 SQL 并生成下载短链
+### Step 3：回复用户
 
-```text
-sql_registry_exec(
-  sqlId="q2_1_metrics_by_dept_version",
-  params={"dept":"杭州开发二部","version":"2026年7月份版本"},
-  downloadFilename="q2_1_明细.csv"
-)
-```
-
-### Step 4：回复用户
-
-- 简要总结 Step 2 的脚本计算结果；
-- 从 Step 3 工具结果中原样复制 `📥 下载链接:` 后面的 URL；
-- 使用 Markdown 链接渲染，例如 `[点击下载 CSV](/redirect/download?shortCode=xxx)`；
-- 不要手工编造或修改 shortCode。
-
-
+- 工具结果会被系统接管（你看到的是占位符）：指标表、图表与下载链接由系统自动附在回答末尾；
+- 只需根据问题写简短的业务总结，**不要**复述图表内容、不要编造下载链接或 shortCode。
