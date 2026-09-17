@@ -47,8 +47,9 @@ public class SkillRoutingMetadataController {
     }
 
     @PatchMapping("/{skillName}/active")
-    public SkillRoutingMetadataView setActive(@PathVariable String skillName, @RequestBody ActiveRequest request) {
-        return service.setActive(skillName, request != null && request.active());
+    public SkillRoutingMetadataView setActive(@PathVariable String skillName, @RequestBody ActiveRequest request,
+                                              @RequestHeader("X-User-Id") String userId) {
+        return service.setActive(skillName, request != null && request.active(), userId);
     }
 
     public record ActiveRequest(boolean active) {}

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import { ElMessageBox } from 'element-plus';
-import { getSkillFlowExecution, getSkillFlowExecutionMetrics, getSkillFlowExecutionNodes, getSkillFlowExecutionNotifications, getSkillFlowExecutionReportUrl, getSkillFlowNodeReportUrl, resendSkillFlowExecutionNotification, retrySkillFlowSummary, retrySkillFlowNode, retrySkillFlowFailedNodes } from '../api/skillFlow';
+import { getSkillFlowExecution, getSkillFlowExecutionMetrics, getSkillFlowExecutionNodes, getSkillFlowExecutionNotifications, getSkillFlowExecutionReportUrl, getSkillFlowNodeReportUrl, resendSkillFlowExecutionNotification, retrySkillFlowSummary, retrySkillFlowNode, retrySkillFlowFailedNodes, cancelSkillFlowExecution } from '../api/skillFlow';
 import type { SkillFlowExecution, SkillFlowNodeExecution } from '../types/skillFlow';
 import { currentUserId } from '../api/skill';
 import { canRetryNode, formatNodeErrorDetails, shouldShowMetricReadiness, shouldShowNodeTimes, statusClass, statusText } from './skillFlowExecutionPresentation';
@@ -13,7 +13,10 @@ const loading = ref(false);
 const error = ref('');
 const resending = ref(false);
 const retrying = ref<string | null>(null);
+const cancelling = ref(false);
 const isOwner = computed(() => execution.value?.triggerUserId === currentUserId());
+// 可终止 = 本人触发 且 尚未开始收尾(汇总中不再提供终止;取消中/已终态不显示)
+const cancellable = computed(() => isOwner.value && ['WAITING_METRICS', 'QUEUED', 'RUNNING'].includes(execution.value?.status ?? ''));
 const reportError = ref('');
 const summaryActionError = ref('');
 
@@ -85,23 +88,46 @@ async function downloadSummaryReport() {
   }
 }
 
-async function load() {
+async function load(silent = false) {
   if (!props.executionId) return;
-  loading.value = true; error.value = ''; reportError.value = ''; summaryActionError.value = '';
+  if (!silent) loading.value = true;
+  if (!silent) error.value = ''; reportError.value = ''; summaryActionError.value = '';
   try {
     const detail = await getSkillFlowExecution(props.executionId);
     const [metrics, nodes, notifications] = await Promise.all([
       getSkillFlowExecutionMetrics(props.executionId), getSkillFlowExecutionNodes(props.executionId), getSkillFlowExecutionNotifications(props.executionId),
     ]);
     execution.value = { ...detail, metrics, nodes, notifications, reportUrl: null };
-  } catch (e) { error.value = e instanceof Error ? e.message : '加载执行详情失败'; execution.value = null; }
-  finally { loading.value = false; }
+  } catch (e) { if (!silent) { error.value = e instanceof Error ? e.message : '加载执行详情失败'; execution.value = null; } }
+  finally { if (!silent) loading.value = false; }
 }
 async function resend() { if (!props.executionId) return; resending.value = true; try { await resendSkillFlowExecutionNotification(props.executionId); await load(); emit('changed'); } catch (e) { error.value = e instanceof Error ? e.message : '补发通知失败'; } finally { resending.value = false; } }
 async function retrySummary() { if (!props.executionId) return; retrying.value = 'summary'; summaryActionError.value = ''; try { await retrySkillFlowSummary(props.executionId); await load(); emit('changed'); } catch (e) { summaryActionError.value = e instanceof Error ? e.message : '重新生成汇总失败'; } finally { retrying.value = null; } }
 async function retryNode(node: SkillFlowNodeExecution) { if (!props.executionId || !node.id) return; retrying.value = `node-${node.id}`; try { await retrySkillFlowNode(props.executionId, node.id); node.errorMessage = null; node.errorCode = null; await load(); emit('changed'); } catch (e) { error.value = e instanceof Error ? e.message : '重跑任务失败'; } finally { retrying.value = null; } }
 async function retryFailedNodes() { if (!props.executionId) return; retrying.value = 'failed-nodes'; try { await retrySkillFlowFailedNodes(props.executionId); await load(); emit('changed'); } catch (e) { error.value = e instanceof Error ? e.message : '批量重跑失败任务失败'; } finally { retrying.value = null; } }
-watch(() => props.open, open => { if (open) load(); });
+async function cancelExecution() {
+  if (!props.executionId) return;
+  try {
+    await ElMessageBox.confirm('确定终止该长任务吗？正在执行的节点完成后其结果将被丢弃，后续节点不再执行。', '终止任务',
+      { confirmButtonText: '终止', cancelButtonText: '继续执行', type: 'warning' });
+  } catch { return; }
+  cancelling.value = true;
+  try { await cancelSkillFlowExecution(props.executionId); await load(); emit('changed'); }
+  catch (e) { error.value = e instanceof Error ? e.message : '终止任务失败'; }
+  finally { cancelling.value = false; }
+}
+// 执行尚未到终态时每 5 秒静默刷新一次(与列表页轮询一致),进入终态或抽屉关闭即停。
+const POLLING_STATUSES = ['WAITING_METRICS', 'QUEUED', 'RUNNING', 'SUMMARIZING', 'CANCEL_REQUESTED'];
+let pollTimer: ReturnType<typeof setInterval> | undefined;
+function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = undefined; } }
+function syncPolling() {
+  const active = props.open && execution.value != null && POLLING_STATUSES.includes(execution.value.status);
+  if (active && !pollTimer) pollTimer = setInterval(() => { if (props.open) load(true); else stopPolling(); }, 5000);
+  if (!active) stopPolling();
+}
+watch(() => props.open, open => { if (open) { load(); } else { stopPolling(); } });
+watch(execution, syncPolling);
+onUnmounted(stopPolling);
 </script>
 
 <template>
@@ -113,7 +139,7 @@ watch(() => props.open, open => { if (open) load(); });
           <div v-if="loading" class="empty">加载中…</div>
           <div v-else-if="error" class="error">{{ error }}</div>
           <template v-else-if="execution">
-            <section class="summary"><div><span>状态</span><strong class="status" :class="statusClass(execution.status)">{{ statusText(execution.status) }}</strong></div><div v-if="shouldShowMetricReadiness(execution.triggerType)"><span>指标</span><strong>{{ execution.readyMetricCount }} / {{ execution.requiredMetricCount }} 已就绪</strong></div><div><span>Skill</span><strong>{{ execution.completedNodeCount ?? 0 }} / {{ execution.totalNodeCount ?? execution.nodes?.length ?? 0 }} 已完成</strong></div></section>
+            <section class="summary"><div><span>状态</span><strong class="status" :class="statusClass(execution.status)">{{ statusText(execution.status) }}</strong><button v-if="cancellable" class="btn-link cancel-action" :disabled="cancelling" @click="cancelExecution">{{ cancelling ? '终止中…' : '终止任务' }}</button></div><div v-if="shouldShowMetricReadiness(execution.triggerType)"><span>指标</span><strong>{{ execution.readyMetricCount }} / {{ execution.requiredMetricCount }} 已就绪</strong></div><div><span>Skill</span><strong>{{ execution.completedNodeCount ?? 0 }} / {{ execution.totalNodeCount ?? execution.nodes?.length ?? 0 }} 已完成</strong></div></section>
             <section v-if="shouldShowMetricReadiness(execution.triggerType)"><h4>指标门闩</h4><p class="caption">已就绪 {{ readyMetrics.length }} 项，待处理或已过期 {{ waitingMetrics.length }} 项</p><div class="metric-list"><div v-for="metric in execution.metrics" :key="`${metric.metricId}-${metric.metricCode}`" class="metric-row"><span class="metric-status" :class="metric.status === 'READY' ? 'ready' : 'waiting'">{{ metric.status === 'READY' ? '已就绪' : metric.status === 'EXPIRED' ? '已过期' : '未就绪' }}</span><div><strong>{{ metric.metricCode || metric.metricName || '未知指标' }}</strong><span>{{ metric.metricName }}</span></div><span>{{ formatTime(metric.readyAt) }}</span><span>影响 {{ listText(metric.affectedSkills) }}</span></div></div></section>
             <section><div class="section-heading"><h4>Skill 执行时间线</h4><button v-if="isOwner && batchRetryable" class="btn-link" :disabled="!!retrying" @click="retryFailedNodes">{{ retrying === 'failed-nodes' ? '批量重跑中…' : `批量重跑失败任务（${failedNodes.length} 个）` }}</button></div><div class="timeline"><article v-for="node in execution.nodes" :key="node.id || node.nodeKey"><div class="timeline-head"><strong>{{ node.nodeName || node.skillName || node.nodeKey }}</strong><span class="status" :class="statusClass(node.status)">{{ statusText(node.status) }}</span><span v-if="retryStatusText(node)">{{ retryStatusText(node) }}</span><button v-if="node.status === 'SUCCESS' && node.hasResult" class="btn-link" @click="openNodeReport(node)">查看内容</button><button v-if="node.status !== 'SUCCESS' && node.errorMessage" class="btn-link" @click="showNodeError(node)">错误详情</button><button v-if="isOwner && canRetryNode(execution.status, node.status)" class="btn-link" :disabled="!!retrying" @click="retryNode(node)">{{ retrying === `node-${node.id}` ? '重跑中…' : '重跑此任务' }}</button></div><div class="node-detail"><span>{{ node.required ? '必需节点' : '可选节点' }}</span><template v-if="shouldShowNodeTimes(node.attempts)"><span>开始时间：{{ formatTime(node.startedAt) }}</span><span>结束时间：{{ formatTime(node.completedAt) }}</span></template></div><template v-if="latestAttempt(node) && node.status !== 'RUNNING' && node.status !== 'QUEUED'"><div class="attempts"><div><strong class="status" :class="statusClass(latestAttempt(node)?.status || '')">第 {{ latestAttempt(node)?.attemptNo }} 次 · {{ latestAttempt(node) ? statusText(latestAttempt(node).status) : '' }}</strong><span>开始时间：{{ formatTime(latestAttempt(node)?.startedAt) }}</span><span>结束时间：{{ formatTime(latestAttempt(node)?.completedAt) }}</span></div></div></template></article></div></section>
             <section><h4>汇总报告</h4><span v-if="execution.reportPath" class="report-actions"><button class="btn-link" @click="openSummaryReport">预览</button><span class="action-divider">/</span><button class="btn-link" @click="downloadSummaryReport">下载</button></span><button v-if="isOwner && summaryRetryable" class="btn-link summary-action" :disabled="!!retrying" @click="retrySummary">{{ retrying === 'summary' ? '生成中…' : '重新生成汇总' }}</button><p v-else-if="!execution.reportPath" class="caption">报告生成中或暂不可用</p><p v-if="summaryActionError || summaryGenerationError || reportError" class="summary-error">{{ summaryActionError || summaryGenerationError || reportError }}</p></section>
@@ -134,6 +160,7 @@ watch(() => props.open, open => { if (open) load(); });
 .status-waiting { background: #fef3c7; color: #92400e !important; }
 .status-cancelled, .status-neutral { background: #f1f5f9; color: #64748b !important; }
 .summary-action { margin-left: 14px; }
+.cancel-action { margin-left: 8px; color: #b91c1c; }
 .report-actions { display: inline-flex; align-items: center; gap: 8px; }
 .action-divider { color: #cbd5e1; font-size: 12px; }
 </style>

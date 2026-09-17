@@ -67,7 +67,7 @@ public class SqlRegistryController {
     public SqlRegistryEntry update(@RequestParam(name = "id") Long id,
                                    @RequestBody SqlRegistryEntry patch,
                                    @RequestHeader("X-User-Id") String userId) {
-        return service.update(id, patch);
+        return service.update(id, patch, userId);
     }
 
     /**
@@ -77,7 +77,7 @@ public class SqlRegistryController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@RequestParam(name = "id") Long id,
                        @RequestHeader("X-User-Id") String userId) {
-        service.delete(id);
+        service.delete(id, userId);
     }
 
     // ==================== SQL 测试 ====================

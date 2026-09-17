@@ -94,6 +94,7 @@ public class ScriptRegistryManageService {
 
     @Transactional("gaussCustomerTransactionManager")
     public ScriptRegistryEntry create(ScriptRegistryEntry entry, String userId) {
+        if (userId == null || userId.isBlank()) throw new IllegalStateException("ResourceAccessDenied");
         // 校验 script_id 非空 (拼路径依赖) + 唯一性 (含禁用记录, 防止注册乱象下重复)
         if (entry.getScriptId() == null || entry.getScriptId().isBlank()) {
             throw new IllegalArgumentException("script_id 不能为空");
@@ -122,11 +123,12 @@ public class ScriptRegistryManageService {
     }
 
     @Transactional("gaussCustomerTransactionManager")
-    public ScriptRegistryEntry update(Long id, ScriptRegistryEntry patch) {
+    public ScriptRegistryEntry update(Long id, ScriptRegistryEntry patch, String userId) {
         ScriptRegistryEntry existing = mapper.selectById(id);
         if (existing == null) {
             throw new IllegalArgumentException("记录不存在: id=" + id);
         }
+        assertOwner(existing.getCreatedBy(), userId);
 
         // 如果 script_id 有变更, 检查唯一性 (含禁用记录)
         if (patch.getScriptId() != null && !patch.getScriptId().equals(existing.getScriptId())) {
@@ -152,12 +154,33 @@ public class ScriptRegistryManageService {
     }
 
     @Transactional("gaussCustomerTransactionManager")
-    public void delete(Long id) {
+    public void delete(Long id, String userId) {
         ScriptRegistryEntry existing = mapper.selectById(id);
         if (existing == null) {
             throw new IllegalArgumentException("记录不存在: id=" + id);
         }
+        assertOwner(existing.getCreatedBy(), userId);
         mapper.deleteById(id);
+    }
+
+    public ScriptRegistryEntry requireOwner(Long id, String userId) {
+        ScriptRegistryEntry existing = mapper.selectById(id);
+        if (existing == null) throw new IllegalArgumentException("记录不存在: id=" + id);
+        assertOwner(existing.getCreatedBy(), userId);
+        return existing;
+    }
+
+    public ScriptRegistryEntry requireOwnerByScriptId(String scriptId, String userId) {
+        ScriptRegistryEntry existing = mapper.selectByScriptId(scriptId);
+        if (existing == null) throw new IllegalArgumentException("记录不存在: scriptId=" + scriptId);
+        assertOwner(existing.getCreatedBy(), userId);
+        return existing;
+    }
+
+    private static void assertOwner(String owner, String userId) {
+        if (owner == null || owner.isBlank() || userId == null || userId.isBlank() || !owner.trim().equals(userId.trim())) {
+            throw new IllegalStateException("ResourceAccessDenied");
+        }
     }
 
     /** 脚本相对路径 = {userId}/{scriptId}.py (相对 workspace/scripts/, 由后端拼接, 前端不参与)。

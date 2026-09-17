@@ -11,16 +11,41 @@ public class ToolRoutingMetadataAdminService {
     private static final Pattern TAG_SEPARATOR = Pattern.compile("[,，、\\r\\n]+");
     private final ToolRoutingMetadataRepository repository;
     private final com.agentscopea2a.v2.governance.SkillToolOverlapService overlapService;
+    private final com.agentscopea2a.mapper.gauss.SqlRegistryMapper sqlRegistryMapper;
+    private final com.agentscopea2a.mapper.gauss.ScriptRegistryMapper scriptRegistryMapper;
     public ToolRoutingMetadataAdminService(
             ToolRoutingMetadataRepository repository,
-            com.agentscopea2a.v2.governance.SkillToolOverlapService overlapService) {
+            com.agentscopea2a.v2.governance.SkillToolOverlapService overlapService,
+            com.agentscopea2a.mapper.gauss.SqlRegistryMapper sqlRegistryMapper,
+            com.agentscopea2a.mapper.gauss.ScriptRegistryMapper scriptRegistryMapper) {
         this.repository = repository;
         this.overlapService = overlapService;
+        this.sqlRegistryMapper = sqlRegistryMapper;
+        this.scriptRegistryMapper = scriptRegistryMapper;
     }
 
-    public ToolRoutingMetadata save(String toolId, ToolRoutingMetadataInput input) {
+    public ToolRoutingMetadata save(String toolId, ToolRoutingMetadataInput input, String userId) {
         ToolRoutingMetadata metadata = buildMetadata(toolId, input);
+        assertOwner(metadata, userId);
         return saveMetadata(metadata);
+    }
+
+    private void assertOwner(ToolRoutingMetadata metadata, String userId) {
+        String owner = switch (metadata.toolType()) {
+            case SQL -> {
+                var entry = sqlRegistryMapper.selectBySqlId(metadata.toolId());
+                yield entry == null ? null : entry.getCreatedBy();
+            }
+            case SCRIPT -> {
+                var entry = scriptRegistryMapper.selectByScriptId(metadata.toolId());
+                yield entry == null ? null : entry.getCreatedBy();
+            }
+            case API -> null;
+        };
+        if (owner == null || owner.isBlank() || userId == null || userId.isBlank()
+                || !owner.trim().equals(userId.trim())) {
+            throw new IllegalStateException("ResourceAccessDenied");
+        }
     }
 
     private ToolRoutingMetadata buildMetadata(String toolId, ToolRoutingMetadataInput input) {

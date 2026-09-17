@@ -20,6 +20,7 @@
         <result column="schedule_rules" property="scheduleRules"/>
         <result column="max_parallelism" property="maxParallelism"/>
         <result column="notify_enabled" property="notifyEnabled"/>
+        <result column="chat_public" property="chatPublic"/>
         <result column="created_by" property="createdBy"/>
         <result column="created_at" property="createdAt"/>
         <result column="updated_at" property="updatedAt"/>
@@ -167,7 +168,7 @@
     <!-- 各表公共列清单,供查询复用;新增列时记得同步维护 -->
     <sql id="flowColumns">
         id, code, name, description, task_question, summary_question_template, enabled, schedule_rules,
-        max_parallelism, notify_enabled, created_by, created_at, updated_at, deleted_at
+        max_parallelism, notify_enabled, chat_public, created_by, created_at, updated_at, deleted_at
     </sql>
     <sql id="nodeColumns">
         id, flow_id, node_key, node_name, skill_id, question_template, depends_on_json, required,
@@ -257,6 +258,7 @@
             schedule_rules=#{scheduleRules},
             max_parallelism=#{maxParallelism},
             notify_enabled=#{notifyEnabled},
+            chat_public=#{chatPublic},
             updated_at=NOW()
         WHERE id = #{id}
           AND deleted_at IS NULL

@@ -11,6 +11,10 @@ import ScheduleRulesEditor from './ScheduleRulesEditor.vue';
 
 const props = withDefaults(defineProps<{ open: boolean; editId: number | null; knownFlows: SkillFlow[]; page?: boolean }>(), { page: false });
 const emit = defineEmits<{ (e: 'update:open', open: boolean): void; (e: 'saved'): void }>();
+/** 编辑中的流程当前是否为公开状态(公开流程保存修改后会自动退出公开,需重新联系开发人员开通)。 */
+const wasPublic = ref(false);
+/** 加载时的触发关键词快照,保存时对比是否改动过关键词。 */
+const originalKeywords = ref<string[]>([]);
 
 const loading = ref(false);
 const saving = ref(false);
@@ -183,11 +187,15 @@ function normalizeFlow(flow: SkillFlow): SkillFlowInput {
 async function load() {
   loading.value = true;
   error.value = '';
+  wasPublic.value = false;
   form.value = emptyForm();
   await loadOptions();
   if (props.editId != null) {
     try {
-      form.value = normalizeFlow(await getSkillFlow(props.editId));
+      const flow = await getSkillFlow(props.editId);
+      wasPublic.value = flow.chatPublic === true;
+      originalKeywords.value = (flow.triggers || []).map(trigger => trigger.keyword.trim().toLowerCase()).filter(Boolean);
+      form.value = normalizeFlow(flow);
     } catch (e) {
       error.value = e instanceof Error ? e.message : '加载流程失败';
     }
@@ -196,12 +204,30 @@ async function load() {
   loading.value = false;
 }
 
+/** 关键词集合相对加载时是否发生变化(增删改都算)。 */
+function keywordsChanged(): boolean {
+  const current = form.value.triggers.map(trigger => trigger.keyword.trim().toLowerCase()).filter(Boolean);
+  const before = originalKeywords.value;
+  return current.length !== before.length || current.some((keyword, index) => keyword !== before[index]);
+}
+
 async function save() {
   error.value = '';
   if (validationErrors.value.length) {
     error.value = validationErrors.value[0];
     await ElMessageBox.alert(validationErrors.value[0], '请检查填写内容', { type: 'warning' });
     return;
+  }
+  if (wasPublic.value && keywordsChanged()) {
+    try {
+      await ElMessageBox.confirm(
+        '触发关键词已修改，保存后流程将自动退出公开状态，仅您自己可通过聊天触发；如需恢复公开请联系开发人员。是否继续保存？',
+        '关键词已修改',
+        { type: 'warning', confirmButtonText: '继续保存', cancelButtonText: '再检查一下' },
+      );
+    } catch {
+      return;
+    }
   }
   saving.value = true;
   try {
@@ -243,7 +269,9 @@ defineExpose({ isDirty });
             </section>
 
             <section class="form-section wide section-card">
-              <div class="section-heading"><div><h4>触发关键词</h4><p>关键词在所有长任务流程中唯一。</p></div><button class="btn primary" @click="addTrigger">添加关键词</button></div>
+              <div class="section-heading"><div><h4>触发关键词</h4><p>关键词在所有长任务流程中唯一；聊天只会触发您自己的流程（公开流程除外）。</p></div><button class="btn primary" @click="addTrigger">添加关键词</button></div>
+              <div v-if="wasPublic" class="public-hint warning">该流程当前为公开状态（所有人的聊天都能触发）。保存修改后将自动退出公开、仅您自己可触发；如需恢复公开请联系开发人员。</div>
+              <div v-else class="public-hint">如需将流程设为公开（所有人的聊天都能触发该流程），请联系开发人员开通。</div>
               <div v-if="!form.triggers.length" class="subtle-empty">未配置关键词，聊天不会触发这个流程。</div>
               <div v-for="(trigger, index) in form.triggers" :key="index" class="trigger-row"><input v-model="trigger.keyword" placeholder="输入触发关键词" /><label class="toggle-row"><input v-model="trigger.enabled" type="checkbox" /><span>启用</span></label><button class="icon-button danger" title="删除关键词" @click="removeTrigger(index)">×</button></div>
               <label class="toggle-row"><input v-model="form.notifyEnabled" type="checkbox" /><span>汇总完成后通知触发用户</span></label>
@@ -299,7 +327,7 @@ input, select, textarea { box-sizing: border-box; width: 100%; border: 1px solid
 .node-toolbar strong { color: #0f172a; font-size: 14px; flex: 1; }.node-toolbar > div { display: flex; gap: 4px; }
 .drag-handle { cursor: grab; color: #94a3b8; font-size: 18px; padding: 0 4px; user-select: none; }.drag-handle:active { cursor: grabbing; }
 .node-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
-.trigger-row { display: grid; grid-template-columns: minmax(160px, 1fr) auto 30px; align-items: center; gap: 8px; }.subtle-empty, .empty { color: #94a3b8; font-size: 13px; padding: 18px 0; }
+.trigger-row { display: grid; grid-template-columns: minmax(160px, 1fr) auto 30px; align-items: center; gap: 8px; }.public-hint { padding: 8px 12px; border-left: 3px solid #f59e0b; background: #fffbeb; color: #92400e; font-size: 12px; }.public-hint.warning { border-color: #dc2626; background: #fef2f2; color: #b91c1c; }.subtle-empty, .empty { color: #94a3b8; font-size: 13px; padding: 18px 0; }
 .validation, .error { display: grid; gap: 4px; margin-top: 18px; padding: 10px 12px; border-left: 3px solid #f59e0b; background: #fffbeb; color: #92400e; font-size: 13px; }.error { border-color: #dc2626; background: #fef2f2; color: #b91c1c; }
 .btn, .icon-button { border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #475569; cursor: pointer; font-size: 13px; }.btn { padding: 7px 14px; }.btn.primary { border-color: #3b82f6; background: #3b82f6; color: #fff; }.btn:disabled, .icon-button:disabled { cursor: not-allowed; opacity: .45; }.icon-button { width: 28px; height: 28px; padding: 0; font-size: 18px; line-height: 1; }.icon-button.danger { color: #dc2626; border-color: #fecaca; }
 @media (max-width: 760px) { .drawer { width: 100vw; }.node-grid, .basic-row { grid-template-columns: 1fr; flex-direction: column; align-items: stretch; }.trigger-row { grid-template-columns: 1fr auto 30px; }.drawer-body { padding: 14px; } }

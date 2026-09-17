@@ -270,6 +270,16 @@ public class FlowCoordinator {
             String result = toolResultRegistry.resolveAndAppendCurrentResults(
                     extract(events), toolResultRegistry.getRequestRefs(requestId));
             if (result == null || result.isBlank()) throw new IllegalStateException("Skill returned empty result");
+            // 软取消检查点:节点已跑完但结果尚未落库,此时流程已请求取消则丢弃结果——
+            // 节点置 CANCELLED 并触发 advance 善后(后续节点不再执行,流程落终态 CANCELLED)。
+            flow = mapper.selectFlowExecutionById(flow.getId());
+            if (flow.getStatus() == FlowExecutionStatus.CANCEL_REQUESTED
+                    || flow.getStatus() == FlowExecutionStatus.CANCELLED) {
+                completeAudit(audit, FlowNodeAttemptStatus.CANCELLED, false, "CANCELLED",
+                        "Flow cancelled before result persisted", started);
+                cancel(node, flow);
+                return;
+            }
             String resultJson = json(Map.of("text", result));
             stage = "PERSIST_RESULT";
             completeAudit(audit, FlowNodeAttemptStatus.SUCCESS, false, null, null, started);

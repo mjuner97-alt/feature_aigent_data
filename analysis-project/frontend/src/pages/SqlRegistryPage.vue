@@ -23,8 +23,12 @@ const loading = ref(false);
 const datasourceFilter = ref('');
 const createdByFilter = ref('');
 const keyword = ref('');
+// 我的/全部 范围切换: 默认'我的', 后端按 createdBy = 当前用户过滤 (沿用 SessionHistoryPage 的样式)
+const scope = ref<'mine' | 'all'>('mine');
 const currentPage = ref(1);
 const pageSize = ref(20);
+const currentUserId = localStorage.getItem('skill-user-id') || 'demo-user';
+const canEdit = (row: SqlRegistryListItem) => !!row.createdBy && row.createdBy === currentUserId;
 
 function formatCreator(row: SqlRegistryListItem): string {
   return row.createdByName
@@ -62,7 +66,9 @@ function handlePageSizeChange(size: number) {
 async function loadList() {
   loading.value = true;
   try {
-    items.value = await listEntries(datasourceFilter.value || undefined, createdByFilter.value || undefined);
+    // 'mine' 时强制按当前用户过滤, 忽略创建人输入框 (仅 'all' 范围下展示)
+    const createdBy = scope.value === 'mine' ? currentUserId : (createdByFilter.value || undefined);
+    items.value = await listEntries(datasourceFilter.value || undefined, createdBy);
   } catch (e: any) {
     ElMessage.error(e.message || '加载失败');
   } finally {
@@ -71,6 +77,10 @@ async function loadList() {
 }
 
 watch(keyword, resetPage);
+watch(scope, () => {
+  resetPage();
+  loadList();
+});
 watch(datasourceFilter, () => {
   resetPage();
   loadList();
@@ -323,8 +333,12 @@ const S = {
         <el-option label="GaussDB" value="gauss" />
         <el-option label="ClickHouse" value="clickhouse" />
       </el-select>
-      <el-input v-model="createdByFilter" placeholder="创建人" style="width: 140px" size="small" clearable />
+      <el-input v-if="scope === 'all'" v-model="createdByFilter" placeholder="创建人" style="width: 140px" size="small" clearable />
       <el-button type="primary" size="small" @click="openCreate">＋ 新增 SQL</el-button>
+      <el-radio-group v-model="scope" size="small" style="margin-left: auto">
+        <el-radio-button label="mine">我的</el-radio-button>
+        <el-radio-button label="all">全部</el-radio-button>
+      </el-radio-group>
     </div>
 
     <!-- 列表 -->
@@ -341,7 +355,8 @@ const S = {
       </el-table-column>
       <el-table-column label="启用" width="70" align="center">
         <template #default="{ row }">
-          <el-switch :model-value="row.enabled === 1" size="small" @change="toggleEnabled(row)" />
+          <el-switch v-if="canEdit(row)" :model-value="row.enabled === 1" size="small" @change="toggleEnabled(row)" />
+          <span v-else>{{ row.enabled === 1 ? '已启用' : '已停用' }}</span>
         </template>
       </el-table-column>
       <el-table-column label="创建人" min-width="160" show-overflow-tooltip>
@@ -350,8 +365,8 @@ const S = {
       <el-table-column prop="updatedAt" label="更新时间" width="160" />
       <el-table-column label="操作" width="140" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" @click="openEdit(row)">编辑</el-button>
-          <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+          <el-button v-if="canEdit(row)" size="small" @click="openEdit(row)">编辑</el-button>
+          <el-button v-if="canEdit(row)" size="small" type="danger" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -372,9 +387,6 @@ const S = {
       <el-form v-loading="formLoading" label-width="100px" size="small">
         <el-form-item label="sql_id" required>
           <el-input v-model="form.sqlId" placeholder="snake_case, 如 trace_stats_by_user" />
-        </el-form-item>
-        <el-form-item label="创建人" v-if="formMode === 'edit'">
-          <el-input v-model="form.createdBy" placeholder="统一认证号, 如 alice; 临时放开修正, 后续会关闭" />
         </el-form-item>
         <el-form-item label="名称" required>
           <el-input v-model="form.name" placeholder="中文名称" />

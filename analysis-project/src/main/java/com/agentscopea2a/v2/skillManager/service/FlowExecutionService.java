@@ -24,7 +24,8 @@ import java.util.Set;
  * Skill Flow 执行生命周期服务:
  * <ul>
      *   <li>{@link #trigger}:对话触发按(用户, 会话, 流程, 数据日期)幂等执行,不等待指标;</li>
- *   <li>{@link #cancelLatest}:取消会话内最近一次执行(用户回复"直接回答"时调用)。</li>
+ *   <li>{@link #cancelLatest}:取消会话内最近一次执行(用户回复"直接回答"时调用);</li>
+ *   <li>{@link #cancel}:按执行 ID 取消(前端长任务列表/详情的"终止"按钮)。</li>
  * </ul>
  * 执行记录会快照流程当时的模板/并发度/通知开关,后续改编排不影响在跑的执行。
  */
@@ -98,7 +99,17 @@ public class FlowExecutionService {
                                           LocalDate dataDate, FlowTriggerType triggerType, String guard,
                                           boolean requireAllMetrics) {
         SkillFlowExecution existing = mapper.selectActiveExecution(guard);
-        if (existing != null) return new TriggerResult(existing, false);
+        if (existing != null) {
+            // 仅"真正活跃"的执行(排队/运行/等指标/汇总中)防重;
+            // "取消中"(CANCEL_REQUESTED)可能因 worker 中断永久滞留且仍持有 guard,放行新执行。
+            if (existing.getStatus() != null && existing.getStatus() != FlowExecutionStatus.CANCEL_REQUESTED
+                    && !existing.getStatus().terminal()) {
+                return new TriggerResult(existing, false);
+            }
+            // 陈旧 guard 兜底:终态或取消中的执行不应阻塞新执行,释放其 guard(满足唯一索引)后继续创建。
+            existing.setActiveGuardKey(null);
+            mapper.updateExecution(existing);
+        }
         // ── 判定「长任务依赖的所有指标是否都就绪」──────────────────────────────
         // 1) 取该流程全部节点依赖的指标 id 去重(node_metric 关联表),得到 required 集合;
         // 2) 逐一到 skill_metric_readiness 就绪登记表按「指标 id + 数据日期」查当日记录,
@@ -240,6 +251,37 @@ public class FlowExecutionService {
             }
         }
         return Optional.of(execution);
+    }
+
+    /**
+     * 按执行 ID 取消(前端长任务列表/详情的"终止"按钮):直接落终态 CANCELLED,
+     * 前端立即显示"已取消"。正在执行的节点由 worker 跑完后在软取消检查点
+     * (FlowCoordinator#executeNode)丢弃结果,后续节点不会再被认领执行。
+     * 与 {@link FlowCoordinator#advance} 对 CANCELLED 的善后分支保持兼容。
+     */
+    @Transactional("gaussCustomerTransactionManager")
+    public SkillFlowExecution cancel(Long executionId) {
+        // 锁定流程行,串行化同一执行上的取消/重跑等状态修改(与 FlowCoordinator.retryNode 同款)
+        SkillFlowExecution execution = mapper.selectFlowExecutionForUpdate(executionId);
+        if (execution == null) throw new IllegalArgumentException("执行不存在: " + executionId);
+        if (execution.getStatus() == null || execution.getStatus().terminal())
+            throw new IllegalStateException("执行已结束,无法取消");
+        LocalDateTime now = LocalDateTime.now(clock);
+        execution.setCancelRequestedAt(now);
+        execution.setStatus(FlowExecutionStatus.CANCELLED);
+        execution.setActiveGuardKey(null);
+        execution.setCompletedAt(now);
+        mapper.updateExecution(execution);
+        // 所有未终态节点(含正在执行的)一并置 CANCELLED;在跑节点的 worker 结束后
+        // 会发现流程已取消,直接丢弃结果,不会覆盖这里的终态。
+        for (SkillFlowNodeExecution node : mapper.selectNodeExecutions(execution.getId())) {
+            if (node.getStatus() != null && !node.getStatus().terminal()) {
+                node.setStatus(FlowNodeExecutionStatus.CANCELLED);
+                node.setCompletedAt(now);
+                mapper.updateNodeExecution(node);
+            }
+        }
+        return execution;
     }
 
     private String json(Object value) {

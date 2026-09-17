@@ -37,13 +37,14 @@ public class SkillRoutingMetadataAdminService {
         return save(skillName, input, "");
     }
 
-    public SkillRoutingMetadata save(String skillName, SkillRoutingMetadataInput input, String ignoredUserId) {
+    public SkillRoutingMetadata save(String skillName, SkillRoutingMetadataInput input, String userId) {
         if (skillName == null || skillName.isBlank() || !repository.skillExists(skillName)) {
             throw new IllegalArgumentException("SkillNotFound: " + skillName);
         }
         if (input == null) throw new IllegalArgumentException("RoutingConfigRequired");
         String summary = cleanSummary(input.shortSummary());
         String creator = repository.creatorForSkill(skillName);
+        assertOwner(creator, userId);
         SkillRoutingMetadata metadata = new SkillRoutingMetadata(skillName, summary,
                 cleanTags(input.keywords()), cleanTags(input.domainTags()), cleanTags(input.topicTags()),
                 creator, input.active(), null);
@@ -52,12 +53,19 @@ public class SkillRoutingMetadataAdminService {
         return metadata;
     }
 
-    public SkillRoutingMetadataView setActive(String skillName, boolean active) {
+    public SkillRoutingMetadataView setActive(String skillName, boolean active, String userId) {
         SkillRoutingMetadataView current = get(skillName);
         SkillRoutingMetadataInput input = new SkillRoutingMetadataInput(current.shortSummary(), current.keywords(),
                 current.domainTags(), current.topicTags(), active);
-        save(skillName, input, null);
+        save(skillName, input, userId);
         return get(skillName);
+    }
+
+    private static void assertOwner(String owner, String userId) {
+        if (owner == null || owner.isBlank() || userId == null || userId.isBlank()
+                || !owner.trim().equals(userId.trim())) {
+            throw new IllegalStateException("ResourceAccessDenied");
+        }
     }
 
     private void invalidateOverlapCache() {

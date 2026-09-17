@@ -7,6 +7,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestHeader;
 
 import java.util.List;
 
@@ -35,8 +36,9 @@ public class ToolRoutingMetadataController {
     }
 
     @PutMapping("/{toolId}")
-    public ToolRoutingMetadata save(@PathVariable String toolId, @RequestBody ToolRoutingMetadataInput input) {
-        return service.save(toolId, input);
+    public ToolRoutingMetadata save(@PathVariable String toolId, @RequestBody ToolRoutingMetadataInput input,
+                                    @RequestHeader("X-User-Id") String userId) {
+        return service.save(toolId, input, userId);
     }
 
     @GetMapping("/scan")

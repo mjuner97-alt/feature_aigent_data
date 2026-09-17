@@ -51,11 +51,12 @@ public class ToolRoutingScanService {
         }
         List<RawCandidate> raw = new ArrayList<>();
         for (SqlRegistryEntry entry : sqlRegistryMapper.listAllEnabled()) {
-            raw.add(new RawCandidate(entry.getSqlId(), ToolRoutingToolType.SQL, entry.getName(), entry.getDescription(), creator(entry.getCreatedByName(), entry.getCreatedBy()), true));
+            raw.add(new RawCandidate(entry.getSqlId(), ToolRoutingToolType.SQL, entry.getName(), entry.getDescription(), creator(entry.getCreatedByName(), entry.getCreatedBy()), entry.getCreatedBy(), true));
         }
         for (ScriptRegistryEntry entry : scriptRegistryMapper.listAllEnabled()) {
             raw.add(new RawCandidate(entry.getScriptId(), ToolRoutingToolType.SCRIPT, entry.getName(), entry.getDescription(),
                     creator(entry.getCreatedByName(), entry.getCreatedBy()),
+                    entry.getCreatedBy(),
                     scriptSourceService.isAvailable(entry)));
         }
         for (String toolId : apiIndex.getToolMethodMap().keySet()) {
@@ -64,7 +65,7 @@ public class ToolRoutingScanService {
             }
             ApiToolMetadata api = apiIndex.findApiTool(toolId).orElse(null);
             raw.add(new RawCandidate(toolId, ToolRoutingToolType.API, toolId,
-                    api == null ? "" : api.description(), "通用", api != null));
+                    api == null ? "" : api.description(), "通用", "", api != null));
         }
         Map<String, Long> idCounts = raw.stream().collect(java.util.stream.Collectors.groupingBy(
                 RawCandidate::toolId, java.util.stream.Collectors.counting()));
@@ -92,7 +93,7 @@ public class ToolRoutingScanService {
             issues.add("MISSING_DESCRIPTION");
         }
         return new ToolRoutingScanCandidate(candidate.toolId(), candidate.toolType(), candidate.name(),
-                candidate.description() == null ? "" : candidate.description(), candidate.creator(), candidate.sourceAvailable(),
+                candidate.description() == null ? "" : candidate.description(), candidate.creator(), candidate.ownerUserId(), candidate.sourceAvailable(),
                 metadata != null, metadata != null && metadata.enabled(), List.copyOf(issues));
     }
 
@@ -106,7 +107,7 @@ public class ToolRoutingScanService {
     }
 
     private record RawCandidate(String toolId, ToolRoutingToolType toolType, String name, String description,
-                                String creator,
+                                String creator, String ownerUserId,
                                 boolean sourceAvailable) {
     }
 }

@@ -35,13 +35,7 @@ public class SkillRoutingTagController {
     @PutMapping("/{tagType}/{tagName}")
     public ToolRoutingTag save(@PathVariable ToolRoutingTagType tagType, @PathVariable String tagName,
                                @RequestBody ToolRoutingTagInput input) {
-        ToolRoutingTag tag = new ToolRoutingTag(tagType, tagName,
-                input == null || input.description() == null ? "" : input.description(),
-                input == null || input.enabled());
-        if (!dictionary.upsert(tag)) {
-            throw new IllegalStateException("SkillRoutingTagSaveFailed");
-        }
-        return tag;
+        throw new IllegalStateException("ResourceAccessDenied");
     }
 
     public record ToolRoutingTagInput(String description, boolean enabled) {

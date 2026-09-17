@@ -166,16 +166,6 @@ const steps = computed<Step[]>(() => {
   const out: Step[] = [];
   let idx = 0;
   const nextId = (prefix: string) => `${prefix}-${idx++}`;
-  const timedResults = new Map<string, AgentEvent>();
-  const consumedResults = new Set<AgentEvent>();
-
-  for (const event of rawEvents.value) {
-    if ((event.type || '').toUpperCase() !== 'POST_ACTING') continue;
-    const toolId = (event.tool_use as any)?.id || (event.tool_result as any)?.id;
-    if (toolId && event.startedAt && event.endedAt && typeof event.durationMs === 'number') {
-      timedResults.set(String(toolId), event);
-    }
-  }
 
   for (const e of rawEvents.value) {
     const t = (e.type || '').toUpperCase();
@@ -248,31 +238,22 @@ const steps = computed<Step[]>(() => {
       case 'PRE_ACTING': {
         const tu = e.tool_use as any;
         const name = tu?.name || 'tool';
-        const result = tu?.id ? timedResults.get(String(tu.id)) : undefined;
-        if (result) consumedResults.add(result);
         const input = formatToolInput(tu?.input);
-        const output = result ? extractOutputText((result.tool_result as any)?.output) : '';
-        const body = result
-          ? [`[INPUT]\n${input}`, `[OUTPUT]\n${output}`].filter(part => !part.endsWith('\n')).join('\n\n')
-          : input;
         out.push({
           id: e.id || nextId('tool'),
           kind: 'tool',
           ...KIND_META.tool,
           title: `工具调用 · ${name}`,
           subtitle: tu?.id as string | undefined,
-          body,
-          createdAt: result?.startedAt || createdAt,
-          startedAt: result?.startedAt,
-          endedAt: result?.endedAt,
-          durationMs: result?.durationMs,
-          collapsible: !!body && body.length > 80,
+          body: input,
+          createdAt,
+          collapsible: !!input && input.length > 80,
           raw: e,
         });
         break;
       }
       case 'POST_ACTING': {
-        if (consumedResults.has(e)) break;
+        // 工具输出独立成卡，耗时（startedAt/endedAt/durationMs）只在本卡展示
         const tr = e.tool_result as any;
         const name = tr?.name || (e.tool_use as any)?.name || 'tool';
         const body = extractOutputText(tr?.output);
@@ -284,6 +265,9 @@ const steps = computed<Step[]>(() => {
           subtitle: tr?.id as string | undefined,
           body,
           createdAt,
+          startedAt: e.startedAt,
+          endedAt: e.endedAt,
+          durationMs: e.durationMs,
           collapsible: !!body && body.length > 80,
           raw: e,
         });

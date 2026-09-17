@@ -15,6 +15,8 @@ const highOverlap = ref<Record<string, number>>({});
 const loading = ref(false);
 const keyword = ref('');
 const activeFilter = ref<string>('');
+// 我的/全部 范围切换: 默认'我的', 后端按 creator = 当前用户过滤 (沿用 SessionHistoryPage 的样式)
+const scope = ref<'mine' | 'all'>('mine');
 const dialogVisible = ref(false);
 const saving = ref(false);
 const current = ref<SkillRoutingMetadata | null>(null);
@@ -26,6 +28,8 @@ const tagSaving = ref(false);
 const tagType = ref<SkillTagType>('DOMAIN');
 const tagName = ref('');
 const tagDescription = ref('');
+const currentUserId = localStorage.getItem('skill-user-id') || 'demo-user';
+const canEdit = (row: SkillRoutingMetadata) => !!row.creator && row.creator === currentUserId;
 
 const domainOptions = computed(() => [...new Set([...domainTags.value.map(tag => tag.tagName), ...form.value.domainTags])]);
 const topicOptions = computed(() => [...new Set([...topicTags.value.map(tag => tag.tagName), ...form.value.topicTags])]);
@@ -53,8 +57,8 @@ async function load() {
   try {
     const [skills, domains, topics, overlap] = await Promise.all([
       listSkillRouting(keyword.value || undefined,
-      activeFilter.value === '' || activeFilter.value === 'mine' ? undefined : activeFilter.value === 'true',
-      activeFilter.value === 'mine'),
+      activeFilter.value === '' ? undefined : activeFilter.value === 'true',
+      scope.value === 'mine'),
       listSkillTags('DOMAIN'), listSkillTags('TOPIC'),
       routingOverlapSummary().catch(() => null),
     ]);
@@ -100,7 +104,7 @@ async function toggle(row: SkillRoutingMetadata) {
   try { const result = await setSkillRoutingActive(row.skillName, next); Object.assign(row, result); ElMessage.success(next ? '已启用' : '已停用'); }
   catch (e: any) { ElMessage.error(e.message || '操作失败'); }
 }
-watch([keyword, activeFilter], load);
+watch([keyword, activeFilter, scope], load);
 load();
 </script>
 
@@ -110,9 +114,13 @@ load();
       <h2>Skill 配置</h2>
       <el-input v-model="keyword" placeholder="搜索名称 / 描述 / 创建人" clearable size="small" style="width: 240px" />
       <el-select v-model="activeFilter" placeholder="全部状态" clearable size="small" style="width: 120px">
-        <el-option label="全部" value="" /><el-option label="已启用" value="true" /><el-option label="已停用" value="false" /><el-option label="我的" value="mine" />
+        <el-option label="全部" value="" /><el-option label="已启用" value="true" /><el-option label="已停用" value="false" />
       </el-select>
       <span class="hint">仅配置路由元数据，Skill 正文请在 Skill 广场维护</span>
+      <el-radio-group v-model="scope" size="small">
+        <el-radio-button label="mine">我的</el-radio-button>
+        <el-radio-button label="all">全部</el-radio-button>
+      </el-radio-group>
     </div>
     <el-tabs>
       <el-tab-pane label="Skill 配置">
@@ -130,14 +138,14 @@ load();
       <el-table-column label="业务主题" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ row.topicTags.join('、') || '-' }}</template></el-table-column>
       <el-table-column label="关键词" min-width="220" show-overflow-tooltip><template #default="{ row }">{{ row.keywords.join('、') || '-' }}</template></el-table-column>
       <el-table-column prop="creator" label="创建人" width="130" show-overflow-tooltip><template #default="{ row }">{{ row.creator || '-' }}</template></el-table-column>
-      <el-table-column label="状态" width="80" align="center"><template #default="{ row }"><el-switch :model-value="row.active" size="small" @change="toggle(row)" /></template></el-table-column>
-      <el-table-column label="操作" width="90" fixed="right"><template #default="{ row }"><el-button size="small" @click="openEdit(row)">配置</el-button></template></el-table-column>
+      <el-table-column label="状态" width="80" align="center"><template #default="{ row }"><el-switch v-if="canEdit(row)" :model-value="row.active" size="small" @change="toggle(row)" /><span v-else>{{ row.active ? '已启用' : '已停用' }}</span></template></el-table-column>
+      <el-table-column label="操作" width="90" fixed="right"><template #default="{ row }"><el-button v-if="canEdit(row)" size="small" @click="openEdit(row)">配置</el-button></template></el-table-column>
     </el-table>
       </el-tab-pane>
       <el-tab-pane label="标签词典">
         <div class="dictionary">
-          <section><div class="section-head"><h3>领域字典</h3><el-button size="small" type="primary" @click="openTag('DOMAIN')">新增领域</el-button></div><el-tag v-for="tag in domainTags" :key="tag.tagName" class="tag" type="success">{{ tag.tagName }}</el-tag><span v-if="!domainTags.length" class="empty">暂无标签</span></section>
-          <section><div class="section-head"><h3>主题词典</h3><el-button size="small" type="primary" @click="openTag('TOPIC')">新增主题</el-button></div><el-tag v-for="tag in topicTags" :key="tag.tagName" class="tag" type="warning">{{ tag.tagName }}</el-tag><span v-if="!topicTags.length" class="empty">暂无标签</span></section>
+          <section><div class="section-head"><h3>领域字典</h3></div><el-tag v-for="tag in domainTags" :key="tag.tagName" class="tag" type="success">{{ tag.tagName }}</el-tag><span v-if="!domainTags.length" class="empty">暂无标签</span></section>
+          <section><div class="section-head"><h3>主题词典</h3></div><el-tag v-for="tag in topicTags" :key="tag.tagName" class="tag" type="warning">{{ tag.tagName }}</el-tag><span v-if="!topicTags.length" class="empty">暂无标签</span></section>
         </div>
       </el-tab-pane>
     </el-tabs>
