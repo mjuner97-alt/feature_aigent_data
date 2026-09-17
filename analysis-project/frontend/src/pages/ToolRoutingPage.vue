@@ -157,7 +157,8 @@ load();
           <el-table-column label="操作" width="88" fixed="right"><template #default="{ row }"><el-button v-if="canEdit(row)" size="small" @click="openConfig(row)">配置</el-button></template></el-table-column>
         </el-table>
       </el-tab-pane>
-      <el-tab-pane label="标签词典">
+      <!-- 标签词典 tab 暂时隐藏 (数据加载保留, 配置弹窗下拉仍依赖词典接口) -->
+      <el-tab-pane v-if="false" label="标签词典">
         <div class="dictionary"><section><div class="section-head"><h3>业务主题</h3></div><el-tag v-for="tag in topics" :key="tag.tagName" class="tag" type="warning">{{ tag.tagName }}</el-tag><span v-if="!topics.length" class="empty">暂无标签</span></section>
           <section><div class="section-head"><h3>指标标签</h3></div><el-tag v-for="tag in metrics" :key="tag.tagName" class="tag">{{ tag.tagName }}</el-tag><span v-if="!metrics.length" class="empty">暂无标签</span></section>
           <section><div class="section-head"><h3>维度标签</h3></div><el-tag v-for="tag in dimensions" :key="tag.tagName" class="tag" type="success">{{ tag.tagName }}</el-tag><span v-if="!dimensions.length" class="empty">暂无标签</span></section></div>

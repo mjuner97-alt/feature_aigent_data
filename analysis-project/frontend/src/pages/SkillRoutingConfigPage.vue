@@ -142,7 +142,8 @@ load();
       <el-table-column label="操作" width="90" fixed="right"><template #default="{ row }"><el-button v-if="canEdit(row)" size="small" @click="openEdit(row)">配置</el-button></template></el-table-column>
     </el-table>
       </el-tab-pane>
-      <el-tab-pane label="标签词典">
+      <!-- 标签词典 tab 暂时隐藏 (数据加载保留, 配置弹窗下拉仍依赖词典接口) -->
+      <el-tab-pane v-if="false" label="标签词典">
         <div class="dictionary">
           <section><div class="section-head"><h3>领域字典</h3></div><el-tag v-for="tag in domainTags" :key="tag.tagName" class="tag" type="success">{{ tag.tagName }}</el-tag><span v-if="!domainTags.length" class="empty">暂无标签</span></section>
           <section><div class="section-head"><h3>主题词典</h3></div><el-tag v-for="tag in topicTags" :key="tag.tagName" class="tag" type="warning">{{ tag.tagName }}</el-tag><span v-if="!topicTags.length" class="empty">暂无标签</span></section>
