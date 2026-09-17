@@ -59,3 +59,4 @@ classpath.txt
 ### Local docker compose scratch ###
 ../tmp_new_api_docker_compose.yml
 
+__pycache__/
