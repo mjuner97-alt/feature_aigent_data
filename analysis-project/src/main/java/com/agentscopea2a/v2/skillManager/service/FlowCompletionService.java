@@ -18,6 +18,7 @@ import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -56,6 +57,8 @@ public class FlowCompletionService {
     private final Clock clock;
     private final FlowSummaryPromptRenderer promptRenderer;
     private final FlowReportStorage reportStorage;
+    @Value("${harness.a2a.csv-download.base-url:}")
+    private String reportBaseUrl;
     /** 报告根目录(${skill.job.base-dir}),报告以 用户目录/flow-{id}-report.html 存放。 */
     private final Path reportRoot;
 
@@ -86,6 +89,7 @@ public class FlowCompletionService {
             mapper.updateExecution(flow);
             List<Map<String, String>> results = nodes.stream()
                     .map(n -> Map.of("nodeKey", Objects.toString(n.getNodeKey(), ""),
+                            "nodeName", n.getNodeName() == null || n.getNodeName().isBlank() ? Objects.toString(n.getSkillName(), "") : n.getNodeName(),
                             "skillName", Objects.toString(n.getSkillName(), ""),
                             "status", n.getStatus() == null ? "UNKNOWN" : n.getStatus().name(),
                             "result", Objects.toString(n.getResultJson(), ""))).toList();
@@ -115,9 +119,8 @@ public class FlowCompletionService {
         for (int index = 0; index < nodes.size(); index++) {
             SkillFlowNodeExecution node = nodes.get(index);
             report.append("## ").append(index + 1).append(". ")
-                    .append(Objects.toString(node.getSkillName(), node.getNodeKey())).append('\n');
-            report.append("状态：").append(node.getStatus() == null ? "UNKNOWN" : node.getStatus().name())
-                    .append("\n\n");
+                    .append(node.getNodeName() == null || node.getNodeName().isBlank()
+                            ? Objects.toString(node.getSkillName(), node.getNodeKey()) : node.getNodeName()).append('\n');
             report.append(extractResultText(node.getResultJson())).append("\n\n");
         }
         return report.toString();
@@ -169,9 +172,9 @@ public class FlowCompletionService {
         }
         try {
             String filePath = resolveReportPath(execution);
-            sender.send(new NotificationPayload("HTML", Objects.toString(execution.getSummaryJson(), ""),
-                    filePath, execution.getReportPath() == null ? "" : Paths.get(execution.getReportPath()).getFileName().toString(),
-                    "", execution.getFlowId(), execution.getFlowName(), null, null,
+            sender.send(new NotificationPayload("HTML", notificationHtml(execution, filePath),
+                    filePath, reportFileName(execution),
+                    reportUrl(execution), execution.getFlowId(), execution.getFlowName(), null, null,
                     execution.getId(), execution.getStatus().name(), LocalDateTime.now(clock),
                     List.of(execution.getTriggerUserId()), "FLOW"));
             record.setStatus(FlowNotificationStatus.SENT);
@@ -189,6 +192,73 @@ public class FlowCompletionService {
         Path path = reportRoot.resolve(execution.getReportPath()).normalize().toAbsolutePath();
         if (!path.startsWith(reportRoot)) throw new IllegalStateException("invalid report path");
         return path.toString();
+    }
+
+    /** 长任务通知正文只发送报告地址，避免邮件客户端丢失报告中的图片和脚本。 */
+    private String notificationHtml(SkillFlowExecution execution, String filePath) {
+        String url = reportUrl(execution);
+        String title = escapeHtml(Objects.toString(execution.getFlowName(), "长任务报告"));
+        if (url.isBlank()) {
+            return "<html><body><h3>" + title + "</h3><p>报告地址暂不可用，请登录系统查看。</p></body></html>";
+        }
+        String escapedUrl = escapeHtml(url);
+        return "<html><body><h3>" + title + "</h3>"
+                + "<p>长任务已完成，请点击以下地址查看完整报告：</p>"
+                + "<p><a href=\"" + escapedUrl + "\">打开长任务报告</a></p></body></html>";
+    }
+
+    private String summaryText(SkillFlowExecution execution) {
+        String summaryJson = execution.getSummaryJson();
+        if (summaryJson == null || summaryJson.isBlank()) {
+            return "暂无结果";
+        }
+        try {
+            var root = json.readTree(summaryJson);
+            var results = root == null ? null : root.get("results");
+            if (results != null && results.isArray()) {
+                StringBuilder text = new StringBuilder();
+                int index = 1;
+                for (var result : results) {
+                    text.append("## ").append(index++).append(". ")
+                            .append(result.path("nodeName").asText(result.path("skillName").asText("节点结果")))
+                            .append("\n\n")
+                            .append(extractResultText(result.path("result").asText("")))
+                            .append("\n\n");
+                }
+                if (!text.isEmpty()) {
+                    return text.toString();
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Parse flow summary failed for notification: executionId={}, reason={}",
+                    execution.getId(), e.getMessage());
+        }
+        return summaryJson;
+    }
+
+    private static String reportFileName(SkillFlowExecution execution) {
+        return execution.getReportPath() == null ? "" : Paths.get(execution.getReportPath()).getFileName().toString();
+    }
+
+    /** 报告查看链接:/api/skill-flow-executions/{id}/report,端点不限制下载人,邮件点击可直接打开。 */
+    private String reportUrl(SkillFlowExecution execution) {
+        if (execution.getId() == null) {
+            return "";
+        }
+        String path = "/api/skill-flow-executions/" + execution.getId() + "/report";
+        if (reportBaseUrl == null || reportBaseUrl.isBlank()) {
+            return path;
+        }
+        return reportBaseUrl.endsWith("/")
+                ? reportBaseUrl.substring(0, reportBaseUrl.length() - 1) + path
+                : reportBaseUrl + path;
+    }
+
+    private static String escapeHtml(String value) {
+        return value.replace("&", "&amp;")
+                .replace("\"", "&quot;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;");
     }
 
     /** 从 AI 事件流提取回答文本:优先取最终结果,否则拼接增量 delta。 */

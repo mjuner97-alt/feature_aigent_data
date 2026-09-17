@@ -4,6 +4,7 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
 
 import java.net.ConnectException;
 import java.net.SocketTimeoutException;
@@ -15,6 +16,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 
 /** 记录 {@code POST /ai/chat} 请求的端到端执行结果指标。 */
+@Component
 public class AiChatMonitor {
 
     private static final String ALERT_ENABLED_PROPERTY = "${harness.chat.monitor.alert-enabled:false}";

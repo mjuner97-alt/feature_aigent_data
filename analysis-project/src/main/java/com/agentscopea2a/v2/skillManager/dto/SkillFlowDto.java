@@ -35,6 +35,7 @@ public record SkillFlowDto(
     public record Node(
             Long id,
             String nodeKey,
+            String nodeName,
             Long skillId,
             String skillName,
             String questionTemplate,

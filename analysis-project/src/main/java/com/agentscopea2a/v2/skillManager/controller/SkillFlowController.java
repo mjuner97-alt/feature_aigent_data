@@ -26,7 +26,7 @@ import java.util.List;
  *   <li>流程定义 CRUD:/api/skill-flows(创建/编辑/启停/校验编排);</li>
  *   <li>执行记录查询:/api/skill-flow-executions(列表/节点明细/指标就绪/通知/报告)。</li>
  * </ul>
- * 用户身份一律取自 X-User-Id 请求头,流程定义与执行记录仅对创建人可见。
+ * 用户身份一律取自 X-User-Id 请求头;执行记录与报告查看不限制创建人,流程定义及变更操作仅创建人可用。
  */
 @RestController
 @CrossOrigin(origins = "*", maxAge = 3600)
@@ -167,10 +167,10 @@ public class SkillFlowController {
         return queryService.notifications(id, userId);
     }
 
-    /** 在线查看 HTML 报告(inline 渲染,限本人目录内的文件)。 */
+    /** 在线查看 HTML 报告(inline 渲染;不限制下载人,邮件链接可直接打开,X-User-Id 仅用于兼容前端调用)。 */
     @GetMapping("/api/skill-flow-executions/{id}/report")
     public ResponseEntity<Resource> report(@PathVariable(name = "id") Long id,
-                                           @RequestHeader(name = "X-User-Id") String userId) {
+                                           @RequestHeader(name = "X-User-Id", required = false) String userId) {
         Resource report = queryService.report(id, userId);
         return ResponseEntity.ok().contentType(MediaType.TEXT_HTML)
                 .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"flow-report.html\"")

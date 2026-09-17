@@ -243,7 +243,7 @@ public class FlowDefinitionService {
         flowMapper.deleteNodesByFlowId(flowId);
         flowMapper.deleteTriggersByFlowId(flowId);
         for (SkillFlowDefinitionRequest.Node item : request.nodes()) {
-            SkillFlowNode node = SkillFlowNode.builder().flowId(flowId).nodeKey(trim(item.nodeKey()))
+            SkillFlowNode node = SkillFlowNode.builder().flowId(flowId).nodeKey(trim(item.nodeKey())).nodeName(trim(item.nodeName()))
                     .skillId(item.skillId()).questionTemplate(trim(item.questionTemplate()))
                     .dependsOnJson("[]")
                     .required(item.required() == null || item.required())
@@ -266,7 +266,7 @@ public class FlowDefinitionService {
     /** 把库里的流程定义还原成请求对象(启用校验复用同一套逻辑)。 */
     private SkillFlowDefinitionRequest toRequest(SkillFlow flow, Long flowId) {
         List<SkillFlowDefinitionRequest.Node> nodes = flowMapper.selectNodesByFlowId(flowId).stream()
-                .map(node -> new SkillFlowDefinitionRequest.Node(node.getNodeKey(), node.getSkillId(), node.getQuestionTemplate(),
+                .map(node -> new SkillFlowDefinitionRequest.Node(node.getNodeKey(), node.getNodeName(), node.getSkillId(), node.getQuestionTemplate(),
                         flowMapper.selectMetricIdsByNodeId(node.getId()),
                         node.getRequired(), node.getMaxAttempts(), node.getSortOrder())).toList();
         List<SkillFlowDefinitionRequest.Trigger> triggers = flowMapper.selectTriggersByFlowId(flowId).stream()
@@ -288,8 +288,9 @@ public class FlowDefinitionService {
                     List<Long> metricIds = flowMapper.selectMetricIdsByNodeId(node.getId());
                     List<String> metricNames = metricIds.stream().map(metricMapper::selectById)
                             .map(metric -> metric == null ? null : metric.getName()).filter(Objects::nonNull).toList();
-                    return new SkillFlowDto.Node(node.getId(), node.getNodeKey(), node.getSkillId(),
-                            skill == null ? null : skill.getName(), node.getQuestionTemplate(), metricIds, metricNames,
+                    String skillName = skill == null ? null : skill.getName();
+                    return new SkillFlowDto.Node(node.getId(), node.getNodeKey(), resolveNodeDisplayName(node.getNodeName(), skillName), node.getSkillId(),
+                            skillName, node.getQuestionTemplate(), metricIds, metricNames,
                             node.getRequired(), node.getMaxAttempts(), node.getSortOrder());
                 }).toList();
         return new SkillFlowDto(flow.getId(), flow.getCode(), flow.getName(), flow.getDescription(), flow.getTaskQuestion(),
@@ -305,6 +306,10 @@ public class FlowDefinitionService {
                 .scheduleRules(request.scheduleRules())
                 .enabled(Boolean.TRUE.equals(request.enabled())).maxParallelism(DEFAULT_MAX_PARALLELISM)
                 .notifyEnabled(request.notifyEnabled() == null || request.notifyEnabled()).createdBy(createdBy).build();
+    }
+
+    static String resolveNodeDisplayName(String nodeName, String skillName) {
+        return nodeName == null || nodeName.trim().isEmpty() ? skillName : nodeName.trim();
     }
 
     private SkillFlowDefinitionRequest withBackendDefaults(SkillFlowDefinitionRequest request) {

@@ -30,6 +30,7 @@ public class FlowSummaryPromptRenderer {
                     : nodes.stream().filter(Objects::nonNull).toList();
             String allResults = json.writeValueAsString(safeNodes.stream().map(node -> Map.of(
                     "nodeKey", Objects.toString(node.getNodeKey(), ""),
+                    "nodeName", node.getNodeName() == null || node.getNodeName().isBlank() ? Objects.toString(node.getSkillName(), "") : node.getNodeName(),
                     "skill", Objects.toString(node.getSkillName(), ""),
                     "status", node.getStatus() == null ? "UNKNOWN" : node.getStatus().name(),
                     "result", Objects.toString(node.getResultJson(), ""),

@@ -20,6 +20,7 @@ public class SkillFlowNode {
     private Long id;
     private Long flowId;
     private String nodeKey;
+    private String nodeName;
     private Long skillId;
     private String questionTemplate;
     private String dependsOnJson;

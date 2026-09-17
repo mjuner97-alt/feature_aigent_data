@@ -44,7 +44,10 @@ public class MetricReadinessService {
                 .readyAt(receivedAt)
                 .expiresAt(dataDate.plusDays(1).atStartOfDay())
                 .build();
-        mapper.upsertMetricReadiness(readiness);
+        // 兼容不同 openGauss/PostgreSQL 版本：在同一事务内先删后插，
+        // 不依赖 ON CONFLICT 或 MySQL 的 ON DUPLICATE KEY UPDATE。
+        mapper.deleteMetricReadiness(readiness.getMetricId(), readiness.getDataDate());
+        mapper.insertMetricReadiness(readiness);
         return readiness;
     }
 }

@@ -25,7 +25,7 @@ record FlowFailureDiagnostic(String errorId, String stage, String rootType,
                 : simpleClassName(frame.getClassName()) + "." + frame.getMethodName()
                 + ":" + frame.getLineNumber();
         String nodeName = node == null ? "未命名节点"
-                : Stream.of(node.getSkillName(), node.getSkillRetrievalName(), node.getNodeKey())
+                : Stream.of(node.getNodeName(), node.getSkillName(), node.getSkillRetrievalName(), node.getNodeKey())
                 .filter(value -> value != null && !value.isBlank())
                 .findFirst().orElse("未命名节点");
         String message = root.getMessage() == null || root.getMessage().isBlank()

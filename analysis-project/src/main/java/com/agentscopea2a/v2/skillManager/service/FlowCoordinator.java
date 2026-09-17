@@ -121,9 +121,9 @@ public class FlowCoordinator {
     @Scheduled(fixedDelay = SkillFlowProperties.SCAN_INTERVAL_MS)
     public void scan() {
         LocalDateTime now = LocalDateTime.now(clock);
-        expirePreviousDays();
-        expireExhaustedNodes(now);
-        dispatchRunnableNodes();
+        expirePreviousDays();       // 跨天兜底:仍在等指标(WAITING_METRICS)的执行直接判失败
+        expireExhaustedNodes(now);  // 最终超时兜底:已达最大尝试次数且租约到期的节点直接判失败并推进流程
+        dispatchRunnableNodes();    // 认领并调度可运行节点
     }
 
     /**
@@ -152,6 +152,17 @@ public class FlowCoordinator {
 
     private void dispatchRunnableNodes() {
         LocalDateTime now = LocalDateTime.now(clock);
+        // selectRunnableNodes SQL 逻辑(mybatis/mapper/gauss/SkillFlowMapper.xml)：
+        // 1) 状态候选：QUEUED / RETRY_WAIT；或「RUNNING 但租约已过期且 attempt_count < max_attempts」
+        //    （原执行超时/失联，尝试次数未用尽仍可重试恢复）；
+        // 2) 退避到期：next_run_at 为 NULL 或 <= now（失败重试的退避间隔未到不捞）；
+        // 3) 租约空闲：lease_expires_at 为 NULL 或 < now（不捞走仍被其他 worker 持租执行中的节点）；
+        // 4) 并行度门控：同一流程内「RUNNING 且租约未过期」的活跃节点数
+        //    < max_parallelism_snapshot（流程执行记录上的快照，NULL 兜底 1）；
+        // 5) 按 id 升序 LIMIT 100，防止单轮扫描刷库。
+        // 注意：返回的只是「有资格跑」的候选，还须经 claimService.claim 原子抢占
+        // （条件 UPDATE 切 RUNNING + 写租约，谁先执行谁赢）成功才真正提交执行，
+        // 多实例部署时由此保证同一节点只被一个 worker 执行。safeNodes 仅过滤 null 元素做防御。
         List<SkillFlowNodeExecution> runnable = safeNodes(mapper.selectRunnableNodes(now));
         log.debug("Skill flow dispatch scan found {} runnable node(s)", runnable.size());
         for (SkillFlowNodeExecution node : runnable) {
@@ -392,7 +403,9 @@ public class FlowCoordinator {
                     diagnostic.errorId(), diagnostic.stage(), flow.getId(), e);
             flow.setSummaryJson(json(Map.of("summaryError", diagnostic.displayMessage(),
                     "nodes", safeNodeList.stream().map(n -> Map.of(
-                            "nodeKey", Objects.toString(n.getNodeKey(), ""), "status", statusName(n),
+                            "nodeKey", Objects.toString(n.getNodeKey(), ""),
+                            "nodeName", n.getNodeName() == null || n.getNodeName().isBlank() ? Objects.toString(n.getSkillName(), "") : n.getNodeName(),
+                            "status", statusName(n),
                             "error", Objects.toString(n.getErrorMessage(), ""))).toList())));
             if (flow.getStatus() == FlowExecutionStatus.SUCCESS) flow.setStatus(FlowExecutionStatus.FAILED);
         }

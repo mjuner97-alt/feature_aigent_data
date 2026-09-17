@@ -34,11 +34,16 @@ function nextNodeKey(): string {
 }
 
 function emptyNode(nodeKey: string, sortOrder: number): SkillFlowNode {
-  return { nodeKey, skillId: null, questionTemplate: '', metricIds: [], required: true, maxAttempts: 2, sortOrder };
+  return { nodeKey, nodeName: '', skillId: null, questionTemplate: '', metricIds: [], required: true, maxAttempts: 2, sortOrder };
 }
 
 function emptyForm(): SkillFlowInput {
   return { name: '', code: '', description: '', taskQuestion: '', summaryQuestionTemplate: '', enabled: true, scheduleRules: null, maxParallelism: 2, notifyEnabled: true, triggers: [], nodes: [emptyNode('node_1', 1)] };
+}
+
+const chineseStepLabels = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
+function stepLabel(index: number): string {
+  return chineseStepLabels[index] || String(index + 1);
 }
 
 const isEdit = computed(() => props.editId != null);
@@ -71,7 +76,7 @@ const validationErrors = computed(() => {
 });
 
 const preview = computed(() => form.value.nodes
-  .map(node => skills.value.find(item => item.id === node.skillId)?.name || '未配置 Skill')
+  .map(node => node.nodeName?.trim() || node.skillName || skills.value.find(item => item.id === node.skillId)?.name || '未配置 Skill')
   .join('、'));
 
 function syncNodeSkillName(node: SkillFlowNode) {
@@ -223,11 +228,11 @@ defineExpose({ isDirty });
   <Teleport to="body" :disabled="page">
     <div v-if="open" class="mask" :class="{ 'page-mode': page }" @click.self="!page && emit('update:open', false)">
       <section class="drawer" aria-label="长任务流程编辑器">
-        <header class="drawer-header"><h3>{{ isEdit ? '编辑长任务流程' : '创建长任务流程' }}</h3><button class="icon-button" title="关闭" aria-label="关闭" @click="emit('update:open', false)">×</button></header>
+        <header class="drawer-header"><div><div class="eyebrow">长任务流程</div><h3>{{ isEdit ? '编辑长任务流程' : '创建长任务流程' }}</h3><p>配置触发条件与执行步骤，生成结构化汇总结果</p></div><button class="icon-button" title="关闭" aria-label="关闭" @click="emit('update:open', false)">×</button></header>
         <main class="drawer-body">
           <div v-if="loading" class="empty">加载中…</div>
           <template v-else>
-            <section class="form-section">
+            <section class="form-section wide section-card">
               <div class="section-heading"><h4>基本信息</h4></div>
               <label><span>流程名称 *</span><input v-model="form.name" placeholder="如 每日质量综合分析" /></label>
               <label><span>说明(非必填)</span><textarea v-model="form.description" rows="2" placeholder="说明该流程处理的业务问题" /></label>
@@ -237,19 +242,19 @@ defineExpose({ isDirty });
               <label><span>自动触发定时规则</span><ScheduleRulesEditor v-model="form.scheduleRules" /><small>所选星期内，依赖数据准备完成后立即自动触发；不选默认每天都执行</small></label>
             </section>
 
-            <section class="form-section wide">
+            <section class="form-section wide section-card">
               <div class="section-heading"><div><h4>触发关键词</h4><p>关键词在所有长任务流程中唯一。</p></div><button class="btn primary" @click="addTrigger">添加关键词</button></div>
               <div v-if="!form.triggers.length" class="subtle-empty">未配置关键词，聊天不会触发这个流程。</div>
               <div v-for="(trigger, index) in form.triggers" :key="index" class="trigger-row"><input v-model="trigger.keyword" placeholder="输入触发关键词" /><label class="toggle-row"><input v-model="trigger.enabled" type="checkbox" /><span>启用</span></label><button class="icon-button danger" title="删除关键词" @click="removeTrigger(index)">×</button></div>
               <label class="toggle-row"><input v-model="form.notifyEnabled" type="checkbox" /><span>汇总完成后通知触发用户</span></label>
             </section>
 
-            <section class="form-section wide">
+            <section class="form-section wide section-card nodes-section">
               <div class="section-heading"><div><h4>Skill 卡片</h4><p>拖拽 ⇕ 调整顺序；卡片从上到下的顺序就是最终报告的拼接顺序，Skill 之间并行执行、互不依赖。</p></div><button class="btn primary" @click="addNode">添加 Skill</button></div>
               <div v-for="(node, index) in form.nodes" :key="node.nodeKey" class="node-card" :class="{ dragging: dragIndex === index }" @dragover.prevent="onDragOver(index)" @drop.prevent="finishDrag">
                 <div class="node-toolbar">
                   <span class="drag-handle" draggable="true" title="拖拽排序" aria-label="拖拽排序" @dragstart="onDragStart(index, $event)" @dragend="finishDrag">⇕</span>
-                  <strong>{{ index + 1 }}. {{ node.skillName || '未选择 Skill' }}</strong>
+                  <strong>{{ stepLabel(index) }}、{{ node.nodeName?.trim() || node.skillName || '未选择 Skill' }}</strong>
                   <div>
                     <button class="icon-button" title="上移" :disabled="index === 0" @click="moveNode(index, -1)">↑</button>
                     <button class="icon-button" title="下移" :disabled="index === form.nodes.length - 1" @click="moveNode(index, 1)">↓</button>
@@ -257,6 +262,7 @@ defineExpose({ isDirty });
                   </div>
                 </div>
                 <div class="node-grid">
+                  <label><span>节点名称</span><input v-model="node.nodeName" :placeholder="node.skillName || '为空时使用 Skill 名称'" /></label>
                   <label><span>Skill *</span><el-select v-model="node.skillId" filterable remote reserve-keyword :remote-method="searchSkills" :loading="skillLoading" placeholder="请选择 Skill" clearable style="width: 100%" @change="syncNodeSkillName(node)"><el-option v-for="skill in skills" :key="skill.id" :value="skill.id" :label="skill.name" /></el-select></label>
                   <label><span>本流程问题 *</span><textarea v-model="node.questionTemplate" rows="3" placeholder="填写该 Skill 在本流程中要执行的问题" /></label>
                   <label><span>依赖指标</span><el-select :model-value="node.metricIds[0] ?? null" filterable remote reserve-keyword :remote-method="searchMetrics" :loading="metricLoading" placeholder="无需依赖指标" clearable style="width: 100%" @change="setNodeMetric(node, $event)"><el-option v-for="metric in metrics" :key="metric.id" :value="metric.id" :label="`${metric.name} (${metric.code})`" /></el-select></label>
@@ -277,19 +283,19 @@ defineExpose({ isDirty });
 
 <style scoped>
 .mask { position: fixed; inset: 0; z-index: 1000; display: flex; justify-content: flex-end; background: rgb(15 23 42 / 45%); }
-.drawer { width: min(880px, 96vw); height: 100%; display: flex; flex-direction: column; background: #fff; box-shadow: -8px 0 24px rgb(15 23 42 / 12%); }
-.mask.page-mode { position: static; min-height: 100%; justify-content: stretch; background: #f8fafc; }
+.drawer { width: min(880px, 96vw); height: 100%; display: flex; flex-direction: column; background: #f5f7fb; box-shadow: -8px 0 24px rgb(15 23 42 / 12%); }
+.mask.page-mode { position: static; min-height: 100%; justify-content: stretch; background: #f5f7fb; }
 .page-mode .drawer { width: 100%; min-height: 100%; box-shadow: none; }
 .page-mode .drawer-body { width: min(1100px, 100%); margin: 0 auto; box-sizing: border-box; }
 .drawer-header, .drawer-footer, .section-heading, .node-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.drawer-header { padding: 14px 20px; border-bottom: 1px solid #e2e8f0; }.drawer-header h3 { margin: 0; color: #0f172a; font-size: 18px; }
-.drawer-body { flex: 1; overflow: auto; padding: 20px; }.drawer-footer { justify-content: flex-end; padding: 12px 20px; border-top: 1px solid #e2e8f0; }
-.form-section { display: grid; gap: 14px; max-width: 620px; margin-bottom: 26px; }.form-section.wide { max-width: none; }.form-section label { display: grid; gap: 5px; }.form-section label > span, .section-heading h4 { color: #475569; font-size: 13px; font-weight: 600; }.section-heading h4 { color: #0f172a; font-size: 15px; margin: 0; }.section-heading p { margin: 3px 0 0; color: #64748b; font-size: 12px; }
+.drawer-header { padding: 20px 28px 18px; border-bottom: 1px solid #e2e8f0; background: #fff; }.drawer-header h3 { margin: 2px 0 3px; color: #0f172a; font-size: 20px; }.drawer-header p { margin: 0; color: #64748b; font-size: 12px; }.eyebrow { color: #3b82f6; font-size: 12px; font-weight: 700; letter-spacing: .04em; }
+.drawer-body { flex: 1; overflow: auto; padding: 24px 28px 36px; }.drawer-footer { justify-content: flex-end; padding: 14px 28px; border-top: 1px solid #e2e8f0; background: #fff; }
+.form-section { display: grid; gap: 14px; max-width: 620px; margin: 0 auto 18px; }.form-section.wide { max-width: none; }.section-card { padding: 20px; border: 1px solid #e2e8f0; border-radius: 12px; background: #fff; box-shadow: 0 2px 8px rgb(15 23 42 / 3%); }.form-section label { display: grid; gap: 5px; }.form-section label > span, .section-heading h4 { color: #475569; font-size: 13px; font-weight: 600; }.section-heading h4 { color: #0f172a; font-size: 15px; margin: 0; }.section-heading p { margin: 3px 0 0; color: #64748b; font-size: 12px; }
 .basic-row { display: flex; gap: 20px; align-items: end; flex-wrap: wrap; }.basic-row > label:first-child { width: 180px; }
 input, select, textarea { box-sizing: border-box; width: 100%; border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 10px; background: #fff; color: #1e293b; font: inherit; font-size: 14px; } textarea { resize: vertical; }.toggle-row { display: flex !important; align-items: center; grid-template-columns: none !important; gap: 7px !important; color: #475569; font-size: 13px; }.toggle-row input { width: auto; }
 .flow-preview { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; border-left: 3px solid #3b82f6; background: #f8fafc; color: #475569; font-size: 13px; }.preview-nodes { color: #1d4ed8; }
 .section-heading { margin-top: 8px; }
-.node-card { display: grid; gap: 10px; padding: 14px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; }.node-card + .node-card { margin-top: 10px; }.node-card.dragging { border-color: #3b82f6; background: #eff6ff; }
+.node-card { display: grid; gap: 14px; padding: 16px; border: 1px solid #dbe4f0; border-radius: 10px; background: #fbfdff; }.node-card + .node-card { margin-top: 12px; }.node-card.dragging { border-color: #3b82f6; background: #eff6ff; }
 .node-toolbar strong { color: #0f172a; font-size: 14px; flex: 1; }.node-toolbar > div { display: flex; gap: 4px; }
 .drag-handle { cursor: grab; color: #94a3b8; font-size: 18px; padding: 0 4px; user-select: none; }.drag-handle:active { cursor: grabbing; }
 .node-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }

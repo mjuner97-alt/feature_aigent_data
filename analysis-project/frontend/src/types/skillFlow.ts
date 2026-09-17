@@ -8,6 +8,7 @@ export interface SkillFlowTrigger {
 export interface SkillFlowNode {
   id?: number;
   nodeKey: string;
+  nodeName?: string;
   skillId: number | null;
   skillName?: string;
   questionTemplate: string;
@@ -74,6 +75,7 @@ export interface SkillFlowNodeAttempt {
 export interface SkillFlowNodeExecution {
   id?: number;
   nodeKey: string;
+  nodeName?: string;
   skillName?: string;
   questionTemplateSnapshot?: string;
   renderedQuestion?: string;
@@ -123,6 +125,8 @@ export interface SkillFlowExecution {
   createdAt?: string;
   startedAt?: string | null;
   completedAt?: string | null;
+  /** 有效执行耗时(秒):所有尝试审计耗时之和,不含排队/等指标/重跑间隔;尚无尝试记录时为 null。 */
+  activeDurationSeconds?: number | null;
   metrics?: FlowMetricReadiness[];
   nodes?: SkillFlowNodeExecution[];
   notifications?: SkillFlowNotification[];

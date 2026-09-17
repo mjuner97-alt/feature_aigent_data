@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { deleteSkillFlow, getSkillFlowMetricPrecheck, listSkillFlows, runSkillFlow, setSkillFlowEnabled } from '../api/skillFlow';
 import { currentUserId } from '../api/skill';
-import type { SkillFlow } from '../types/skillFlow';
+import type { SkillFlow, FlowMetricPrecheck } from '../types/skillFlow';
 import { manualTriggerMessage } from './skillFlowExecutionPresentation';
 
 const emit = defineEmits<{ 'view-records': [flowName: string] }>();
@@ -16,6 +16,11 @@ const currentCreatedBy = ref('');
 const currentEnabled = ref<boolean | undefined>();
 const loading = ref(false);
 const error = ref('');
+const metricDialogOpen = ref(false);
+const metricDialogFlow = ref<SkillFlow | null>(null);
+const metricRows = ref<FlowMetricPrecheck[]>([]);
+const metricLoading = ref(false);
+const metricError = ref('');
 
 const triggerMsg = ref('');
 const page = ref(1);
@@ -55,6 +60,18 @@ async function remove(flow: SkillFlow) {
 
 function statusText(value: string) { return ({ WAITING_METRICS: '排队中', QUEUED: '排队中', RUNNING: '执行中', SUMMARIZING: '汇总中' } as Record<string, string>)[value] || value; }
 function metricLabel(item: { metricId: number; metricCode?: string; metricName?: string }) { return item.metricName || item.metricCode || `指标 #${item.metricId}`; }
+function today() {
+  const date = new Date();
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+async function showMetrics(flow: SkillFlow) {
+  metricDialogFlow.value = flow; metricDialogOpen.value = true;
+  metricLoading.value = true; metricError.value = ''; metricRows.value = [];
+  try { metricRows.value = await getSkillFlowMetricPrecheck(flow.id); }
+  catch (e) { metricError.value = e instanceof Error ? e.message : '加载指标状态失败'; }
+  finally { metricLoading.value = false; }
+}
+function metricStatusText(status: string) { return status === 'READY' ? '已就绪' : '未就绪'; }
 
 /** 手动执行:先查指标就绪,有未就绪的弹确认;确认后触发(未就绪时任务挂起等数据)。 */
 async function run(flow: SkillFlow) {
@@ -111,7 +128,7 @@ watch(() => [props.scope, props.createdBy] as const, () => load('', props.create
               <span v-if="flow.description" class="col-description" :title="flow.description">{{ flow.description }}</span>
             </td>
             <td>{{ flow.nodes.length }}</td>
-            <td>{{ metricCount(flow) }}</td>
+            <td><button class="metric-link" type="button" @click="showMetrics(flow)">{{ metricCount(flow) }}</button></td>
             <td>
               <span class="status-badge" :class="enabledStatusClass(flow)">{{ flow.enabled ? '启用' : '禁用' }}</span>
             </td>
@@ -131,6 +148,20 @@ watch(() => [props.scope, props.createdBy] as const, () => load('', props.create
         </tbody>
       </table>
     </div>
+    <el-dialog v-model="metricDialogOpen" :title="(metricDialogFlow?.name || '') + ' · 依赖指标'" width="620px">
+      <div class="metric-date">状态日期：{{ today() }}</div>
+      <div v-if="metricLoading" class="empty">加载中…</div>
+      <div v-else-if="metricError" class="error">{{ metricError }}</div>
+      <div v-else-if="!metricRows.length" class="empty">该流程没有配置依赖指标</div>
+      <table v-else class="metric-detail-table">
+        <thead><tr><th>指标</th><th>状态</th><th>影响节点</th></tr></thead>
+        <tbody><tr v-for="item in metricRows" :key="item.metricId">
+          <td><strong>{{ item.metricName || item.metricCode || ('指标 #' + item.metricId) }}</strong><span class="metric-code">{{ item.metricCode }}</span></td>
+          <td><span class="status-badge" :class="item.status === 'READY' ? 'st-on' : 'st-off'">{{ metricStatusText(item.status) }}</span></td>
+          <td>{{ item.affectedNodeKeys?.join('、') || '-' }}</td>
+        </tr></tbody>
+      </table>
+    </el-dialog>
     <div v-if="!loading && flows.length > 0" class="pagination-bar">
       <el-pagination
         v-model:current-page="page"
@@ -174,4 +205,9 @@ watch(() => [props.scope, props.createdBy] as const, () => load('', props.create
 .empty { padding: 48px 0; color: #94a3b8; text-align: center; font-size: 14px; background: #fff; border-radius: 8px; }
 .error { margin-bottom: 12px; padding: 9px 12px; border: 1px solid #fecaca; border-radius: 5px; background: #fef2f2; color: #b91c1c; font-size: 13px; }
 .toast { position: fixed; top: 20px; left: 50%; z-index: 2000; transform: translateX(-50%); padding: 8px 20px; border-radius: 8px; background: #16a34a; box-shadow: 0 4px 12px rgba(0,0,0,0.15); color: #fff; font-size: 14px; }
+.metric-link { border: 0; background: transparent; color: #2563eb; cursor: pointer; font-size: 13px; text-decoration: underline; }
+.metric-date { margin-bottom: 12px; color: #64748b; font-size: 13px; }
+.metric-detail-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.metric-detail-table th, .metric-detail-table td { padding: 10px 8px; border-bottom: 1px solid #e2e8f0; text-align: left; }
+.metric-code { display: block; margin-top: 3px; color: #94a3b8; font-size: 11px; }
 </style>

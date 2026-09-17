@@ -25,7 +25,7 @@ import java.util.Objects;
 /**
  * Skill Flow 执行记录查询服务(读侧):
  * 列表/详情/节点明细/指标就绪情况/通知记录/HTML 报告下载。
- * 执行记录仅触发用户本人可见({@link #owned} 统一校验)。
+ * 执行记录查看不限制创建人(报告链接可被邮件直接打开);变更操作经 {@link #requireOwner} 限制为触发人本人。
  */
 @Service
 public class FlowQueryService {
@@ -67,7 +67,7 @@ public class FlowQueryService {
     public List<NodeDto> nodes(Long id, String userId) {
         SkillFlowExecution execution = readable(id);
         return mapper.selectNodeExecutions(id).stream()
-                .map(n -> new NodeDto(n.getId(), n.getNodeKey(), n.getSkillName(), n.getQuestionTemplateSnapshot(),
+                .map(n -> new NodeDto(n.getId(), n.getNodeKey(), displayName(n), n.getSkillName(), n.getQuestionTemplateSnapshot(),
                         renderedQuestion(execution, n), Boolean.TRUE.equals(n.getRequired()),
                         n.getStatus().name(), n.getAttemptCount(), n.getMaxAttempts(), n.getErrorCode(),
                         n.getErrorMessage(), hasResult(n), n.getStartedAt(), n.getCompletedAt(), mapper.selectAttempts(n.getId())))
@@ -85,7 +85,7 @@ public class FlowQueryService {
         if (node.getStatus() != FlowNodeExecutionStatus.SUCCESS || content == null) {
             throw new IllegalStateException("FlowNodeReportNotFound: " + nodeId);
         }
-        String title = execution.getFlowName() + " - " + Objects.toString(node.getSkillName(), node.getNodeKey());
+        String title = execution.getFlowName() + " - " + displayName(node);
         return reportRenderer.render(content, title);
     }
 
@@ -115,9 +115,9 @@ public class FlowQueryService {
         return mapper.selectNotifications(id);
     }
 
-    /** 读取 HTML 报告；终态执行的文件丢失时，使用已落库的节点结果即时重建。 */
+    /** 读取 HTML 报告；不限制下载人（报告链接可被邮件直接打开）；终态执行的文件丢失时，使用已落库的节点结果即时重建。 */
     public synchronized Resource report(Long id, String userId) {
-        SkillFlowExecution e = requireOwner(id, userId);
+        SkillFlowExecution e = readable(id);
         Path report = resolveReportPath(e);
         if (report == null || !Files.isRegularFile(report)) {
             if (!e.getStatus().terminal()) {
@@ -144,7 +144,7 @@ public class FlowQueryService {
         return report.startsWith(expectedUserRoot) ? report : null;
     }
 
-    /** 取执行记录并校验:仅触发用户本人可读。 */
+    /** 取执行记录(仅校验存在性;查看不限制创建人,变更操作另经 requireOwner 校验)。 */
     private SkillFlowExecution readable(Long id) {
         SkillFlowExecution e = mapper.selectFlowExecutionById(id);
         if (e == null) throw new IllegalStateException("FlowExecutionNotFound: " + id);
@@ -166,7 +166,8 @@ public class FlowQueryService {
                 e.getReadyMetricCount(), nodes.size(), (int) nodes.stream().filter(n -> n.getStatus().terminal()).count(),
                 e.getSummaryQuestionTemplateSnapshot(), renderedSummaryQuestion(e, nodes),
                 readJson(e.getSummaryJson()), e.getReportPath(),
-                e.getCreatedAt(), e.getStartedAt(), e.getCompletedAt());
+                e.getCreatedAt(), e.getStartedAt(), e.getCompletedAt(),
+                mapper.selectActiveDurationSeconds(e.getId()));
     }
 
     /**
@@ -225,7 +226,12 @@ public class FlowQueryService {
         }
     }
 
-    /** 执行记录列表/详情返回体。 */
+    private static String displayName(SkillFlowNodeExecution node) {
+        return node.getNodeName() == null || node.getNodeName().isBlank()
+                ? node.getSkillName() : node.getNodeName();
+    }
+
+    /** 执行记录列表/详情返回体。activeDurationSeconds 为所有尝试审计耗时之和(秒),无尝试记录时为 null。 */
     public record ExecutionDto(Long id, Long flowId, String flowName, String flowCode, String status,
                                String triggerType,
                                String triggerUserId, String originalQuestion, LocalDate dataDate,
@@ -233,10 +239,11 @@ public class FlowQueryService {
                                Integer totalNodeCount, Integer completedNodeCount,
                                String summaryQuestionTemplateSnapshot, String renderedSummaryQuestion,
                                Object summaryJson, String reportPath,
-                               LocalDateTime createdAt, LocalDateTime startedAt, LocalDateTime completedAt) {}
+                               LocalDateTime createdAt, LocalDateTime startedAt, LocalDateTime completedAt,
+                               Long activeDurationSeconds) {}
 
     /** 节点执行明细返回体(attempts 为每次尝试的审计记录;节点全并行,无依赖)。 */
-    public record NodeDto(Long id, String nodeKey, String skillName, String questionTemplateSnapshot,
+    public record NodeDto(Long id, String nodeKey, String nodeName, String skillName, String questionTemplateSnapshot,
                           String renderedQuestion, boolean required, String status,
                           Integer attemptCount, Integer maxAttempts, String errorCode, String errorMessage,
                           boolean hasResult, LocalDateTime startedAt, LocalDateTime completedAt,

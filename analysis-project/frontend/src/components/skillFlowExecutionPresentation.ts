@@ -4,6 +4,7 @@ const RETRYABLE_NODE_STATUSES = new Set(['SUCCESS', 'FAILED', 'CANCELLED', 'BLOC
 export interface NodeErrorLike {
   id?: number | null;
   nodeKey?: string | null;
+  nodeName?: string | null;
   skillName?: string | null;
   errorCode?: string | null;
   errorMessage?: string | null;
@@ -11,7 +12,7 @@ export interface NodeErrorLike {
 
 export function formatNodeErrorDetails(node: NodeErrorLike): string {
   return [
-    `节点：${node.skillName || node.nodeKey || '-'}`,
+    `节点：${node.nodeName || node.skillName || node.nodeKey || '-'}`,
     `节点ID：${node.id ?? '-'}`,
     `错误代码：${node.errorCode || '-'}`,
     '',

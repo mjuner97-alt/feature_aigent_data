@@ -34,6 +34,7 @@ public record SkillFlowDefinitionRequest(
      */
     public record Node(
             String nodeKey,
+            String nodeName,
             Long skillId,
             String questionTemplate,
             List<Long> metricIds,
