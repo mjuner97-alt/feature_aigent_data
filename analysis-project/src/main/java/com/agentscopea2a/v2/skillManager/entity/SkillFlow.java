@@ -27,6 +27,8 @@ public class SkillFlow {
     private String scheduleRules;
     private Integer maxParallelism;
     private Boolean notifyEnabled;
+    /** 是否公开触发:开启后所有用户的聊天均可命中该流程;仅开发人员可开通,创建人修改流程后自动退出公开。 */
+    private Boolean chatPublic;
     private String createdBy;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

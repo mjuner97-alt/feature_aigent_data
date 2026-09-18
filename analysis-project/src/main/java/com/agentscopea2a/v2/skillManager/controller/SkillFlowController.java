@@ -11,6 +11,7 @@ import com.agentscopea2a.v2.skillManager.service.FlowDefinitionService;
 import com.agentscopea2a.v2.skillManager.service.FlowExecutionService;
 import com.agentscopea2a.v2.skillManager.service.FlowQueryService;
 import com.agentscopea2a.v2.skillManager.service.FlowCoordinator;
+import com.agentscopea2a.v2.skillManager.service.FlowQueryService.ReportDownload;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
@@ -18,6 +19,8 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /**
@@ -26,7 +29,7 @@ import java.util.List;
  *   <li>流程定义 CRUD:/api/skill-flows(创建/编辑/启停/校验编排);</li>
  *   <li>执行记录查询:/api/skill-flow-executions(列表/节点明细/指标就绪/通知/报告)。</li>
  * </ul>
- * 用户身份一律取自 X-User-Id 请求头,流程定义与执行记录仅对创建人可见。
+ * 用户身份一律取自 X-User-Id 请求头;执行记录与报告查看不限制创建人,流程定义及变更操作仅创建人可用。
  */
 @RestController
 @CrossOrigin(origins = "*", maxAge = 3600)
@@ -167,14 +170,17 @@ public class SkillFlowController {
         return queryService.notifications(id, userId);
     }
 
-    /** 在线查看 HTML 报告(inline 渲染,限本人目录内的文件)。 */
+    /** 在线查看 HTML 报告(inline 渲染;不限制下载人,邮件链接可直接打开,X-User-Id 仅用于兼容前端调用)。 */
     @GetMapping("/api/skill-flow-executions/{id}/report")
     public ResponseEntity<Resource> report(@PathVariable(name = "id") Long id,
-                                           @RequestHeader(name = "X-User-Id") String userId) {
-        Resource report = queryService.report(id, userId);
+                                           @RequestHeader(name = "X-User-Id", required = false) String userId) {
+        ReportDownload download = queryService.report(id, userId);
+        // RFC 5987: 中文文件名用 filename*=UTF-8'' 编码;ASCII 回退名给不识别 filename* 的老客户端
+        String encoded = URLEncoder.encode(download.downloadName(), StandardCharsets.UTF_8).replace("+", "%20");
         return ResponseEntity.ok().contentType(MediaType.TEXT_HTML)
-                .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"flow-report.html\"")
-                .body(report);
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "inline; filename=\"flow-report.html\"; filename*=UTF-8''" + encoded)
+                .body(download.resource());
     }
 
     /** 按需渲染单个成功 Skill 节点的 HTML 内容，不落盘。 */
@@ -210,5 +216,13 @@ public class SkillFlowController {
     public void retryFailedNodes(@PathVariable(name = "id") Long id,
                                  @RequestHeader(name = "X-User-Id") String userId) {
         queryService.get(id, userId); coordinator.retryFailedNodes(id);
+    }
+
+    /** 终止该次执行(仅触发人本人):正在执行的节点跑完后结果被丢弃,后续节点不再执行,流程落 CANCELLED。 */
+    @PostMapping("/api/skill-flow-executions/{id}/cancel")
+    public void cancel(@PathVariable(name = "id") Long id,
+                       @RequestHeader(name = "X-User-Id") String userId) {
+        queryService.requireOwner(id, userId);
+        executionService.cancel(id);
     }
 }

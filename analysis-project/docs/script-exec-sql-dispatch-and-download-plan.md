@@ -1,7 +1,7 @@
 # script_exec 统一执行能力设计：SQL 调配 + 明细下载合并
 
-> 状态：设计稿（未实施）
-> 日期：2026/09/14
+> 状态：Phase 1 已实施（2026/09/16）—— Java 下载块解析 + `_sql_registry.py` + q2_1 脚本/Skill 单步化 + 单测 13 个全过（Java 7 + Python 6）
+> 日期：2026/09/14（设计）/ 2026/09/16（Phase 1 落地）
 > 关联：`SkillFixedToolGuardHook`（2026/09/14 固定流程机械兜底）、`docs/table-mertics/`、`docs/prompt/python-exec-optimization-plan.md`
 
 ---

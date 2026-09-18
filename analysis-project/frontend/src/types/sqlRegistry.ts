@@ -41,7 +41,7 @@ export interface SqlRegistryInput {
   sqlTemplate: string;
   paramsSchema: string;
   enabled?: number;
-  /** 创建人(统一认证号); 编辑时允许临时修正, 新增时后端默认取当前用户 */
+  /** 创建人仅用于兼容旧调用；后端始终以当前登录用户为准且不允许修改。 */
   createdBy?: string;
 }
 

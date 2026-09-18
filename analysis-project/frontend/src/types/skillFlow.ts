@@ -33,6 +33,8 @@ export interface SkillFlow {
   triggers: SkillFlowTrigger[];
   nodes: SkillFlowNode[];
   createdBy?: string;
+  /** 是否公开触发(由开发人员开通,前端只读展示):开启后所有人的聊天都会命中该流程,关闭时只有创建人自己的对话能触发。 */
+  chatPublic?: boolean;
   createdAt?: string;
   updatedAt?: string;
   deleted?: boolean;
@@ -125,6 +127,8 @@ export interface SkillFlowExecution {
   createdAt?: string;
   startedAt?: string | null;
   completedAt?: string | null;
+  /** 有效执行耗时(秒):所有尝试审计耗时之和,不含排队/等指标/重跑间隔;尚无尝试记录时为 null。 */
+  activeDurationSeconds?: number | null;
   metrics?: FlowMetricReadiness[];
   nodes?: SkillFlowNodeExecution[];
   notifications?: SkillFlowNotification[];

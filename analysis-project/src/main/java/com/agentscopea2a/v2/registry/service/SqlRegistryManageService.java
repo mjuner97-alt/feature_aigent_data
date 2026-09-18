@@ -137,6 +137,7 @@ public class SqlRegistryManageService {
 
     @Transactional("gaussCustomerTransactionManager")
     public SqlRegistryEntry create(SqlRegistryEntry entry, String userId) {
+        requireAuthenticatedUser(userId);
         // 校验 sql_template (暂关闭: Connection 只读, 形态/关键字校验无必要)
 //        String validationError = validateTemplate(entry.getSqlTemplate());
 //        if (validationError != null) {
@@ -157,11 +158,12 @@ public class SqlRegistryManageService {
     }
 
     @Transactional("gaussCustomerTransactionManager")
-    public SqlRegistryEntry update(Long id, SqlRegistryEntry patch) {
+    public SqlRegistryEntry update(Long id, SqlRegistryEntry patch, String userId) {
         SqlRegistryEntry existing = mapper.selectById(id);
         if (existing == null) {
             throw new IllegalArgumentException("记录不存在: id=" + id);
         }
+        assertOwner(existing.getCreatedBy(), userId);
 
         // 如果 sql_template 有变更, 重新校验 (暂关闭: Connection 只读, 形态/关键字校验无必要)
 //        if (patch.getSqlTemplate() != null && !patch.getSqlTemplate().equals(existing.getSqlTemplate())) {
@@ -186,20 +188,34 @@ public class SqlRegistryManageService {
         if (patch.getSqlTemplate() != null) existing.setSqlTemplate(patch.getSqlTemplate());
         if (patch.getParamsSchema() != null) existing.setParamsSchema(patch.getParamsSchema());
         if (patch.getEnabled() != null) existing.setEnabled(patch.getEnabled());
-        // 创建人: 管理端统一修正用(临时放开, 后续可再关闭)。空串视为不改。
-        if (patch.getCreatedBy() != null && !patch.getCreatedBy().isBlank()) existing.setCreatedBy(patch.getCreatedBy());
-
         mapper.update(existing);
         return existing;
     }
 
     @Transactional("gaussCustomerTransactionManager")
-    public void delete(Long id) {
+    public void delete(Long id, String userId) {
         SqlRegistryEntry existing = mapper.selectById(id);
         if (existing == null) {
             throw new IllegalArgumentException("记录不存在: id=" + id);
         }
+        assertOwner(existing.getCreatedBy(), userId);
         mapper.deleteById(id);
+    }
+
+    public void assertOwner(Long id, String userId) {
+        SqlRegistryEntry existing = mapper.selectById(id);
+        if (existing == null) throw new IllegalArgumentException("记录不存在: id=" + id);
+        assertOwner(existing.getCreatedBy(), userId);
+    }
+
+    private static void assertOwner(String owner, String userId) {
+        if (owner == null || owner.isBlank() || userId == null || userId.isBlank() || !owner.trim().equals(userId.trim())) {
+            throw new IllegalStateException("ResourceAccessDenied");
+        }
+    }
+
+    private static void requireAuthenticatedUser(String userId) {
+        if (userId == null || userId.isBlank()) throw new IllegalStateException("ResourceAccessDenied");
     }
 
     // ======================================================================

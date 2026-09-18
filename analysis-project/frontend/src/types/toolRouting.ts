@@ -28,6 +28,8 @@ export interface ToolRoutingScanCandidate {
   toolType: ToolType;
   name: string;
   description: string;
+  creator: string;
+  ownerUserId: string;
   sourceAvailable: boolean;
   configured: boolean;
   routeEnabled: boolean;

@@ -184,13 +184,14 @@ public class V2ToolConfig {
             SkillDescriptionSource skillDescriptionSource,
             SkillRoutingMetadataRepository skillRoutingMetadataRepository,
             com.agentscopea2a.v2.governance.GovernanceEmbeddingCache governanceEmbeddingCache,
+            @Value("${harness.a2a.governance.similarity.enabled:true}") boolean enabled,
             @Value("${harness.a2a.governance.similarity.cosine-threshold:0.85}") double cosineThreshold,
             @Value("${harness.a2a.governance.similarity.name-levenshtein-threshold:0.85}") double nameLevenshteinThreshold,
             @Value("${harness.a2a.governance.similarity.jaccard-threshold:0.60}") double jaccardThreshold) {
-        log.info("SkillDescriptionSimilarityService: wired (cosine={}, jaccard={})",
-                cosineThreshold, jaccardThreshold);
+        log.info("SkillDescriptionSimilarityService: wired (enabled={}, cosine={}, jaccard={})",
+                enabled, cosineThreshold, jaccardThreshold);
         return new com.agentscopea2a.v2.governance.SkillDescriptionSimilarityService(
-                skillDescriptionSource, skillRoutingMetadataRepository, governanceEmbeddingCache,
+                enabled, skillDescriptionSource, skillRoutingMetadataRepository, governanceEmbeddingCache,
                 cosineThreshold, nameLevenshteinThreshold, jaccardThreshold);
     }
 
@@ -342,10 +343,11 @@ public class V2ToolConfig {
             ScriptRegistryMapper scriptRegistryMapper,
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
             SandboxPropertiesV2 sandboxProperties,
-            @Value("${harness.a2a.sandbox.workspace-container-path:/workspace}") String containerWorkspacePath) {
-        log.info("ScriptExecTool: wired (mysql/gauss/clickhouse env injection + script_registry lookup, workspacePath={} containerWorkspacePath={})", workspacePath, containerWorkspacePath);
+            @Value("${harness.a2a.sandbox.workspace-container-path:/workspace}") String containerWorkspacePath,
+            DownloadContentService downloadContentService) {
+        log.info("ScriptExecTool: wired (mysql/gauss/clickhouse env injection + script_registry lookup + stdout download blocks, workspacePath={} containerWorkspacePath={})", workspacePath, containerWorkspacePath);
         ScriptExecTool tool = new ScriptExecTool(mysqlDataSource, gaussDataSource, clickHouseDataSource,
-                scriptRegistryMapper, workspacePath, sandboxProperties, containerWorkspacePath);
+                scriptRegistryMapper, workspacePath, sandboxProperties, containerWorkspacePath, downloadContentService);
         return tool;
     }
 

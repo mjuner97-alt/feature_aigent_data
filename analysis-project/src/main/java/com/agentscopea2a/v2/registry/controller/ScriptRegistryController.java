@@ -82,7 +82,7 @@ public class ScriptRegistryController {
     public ScriptRegistryEntry update(@RequestParam(name = "id") Long id,
                                       @RequestBody ScriptRegistryEntry patch,
                                       @RequestHeader("X-User-Id") String userId) {
-        return service.update(id, patch);
+        return service.update(id, patch, userId);
     }
 
     /**
@@ -92,13 +92,15 @@ public class ScriptRegistryController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@RequestParam(name = "id") Long id,
                       @RequestHeader("X-User-Id") String userId) {
-        service.delete(id);
+        service.delete(id, userId);
     }
 
     @GetMapping("/{id}/source")
-    public ResponseEntity<ScriptSourceResponse> source(@PathVariable Long id) {
+    public ResponseEntity<ScriptSourceResponse> source(@PathVariable Long id,
+                                                       @RequestHeader("X-User-Id") String userId) {
         ScriptRegistryEntry entry = mapper.selectById(id);
         if (entry == null) return ResponseEntity.notFound().build();
+        service.requireOwner(id, userId);
         var source = sourceService.read(entry);
         return ResponseEntity.ok(new ScriptSourceResponse(source.scriptId(), source.scriptPath(), source.content(),
                 source.contentHash(), entry.getUpdatedAt() == null ? null : entry.getUpdatedAt().toString()));
@@ -123,6 +125,7 @@ public class ScriptRegistryController {
     public ScriptDebugService.DebugRun debug(@PathVariable Long id,
                                              @RequestBody ScriptDebugRequest request,
                                              @RequestHeader("X-User-Id") String userId) {
+        service.requireOwner(id, userId);
         if (request.sourceMode() != null && !request.sourceMode().isBlank()
                 && !"SAVED".equalsIgnoreCase(request.sourceMode())) {
             throw new IllegalArgumentException("仅支持 sourceMode=SAVED");
@@ -155,6 +158,7 @@ public class ScriptRegistryController {
     @PostMapping("/debug/{runId}/cancel")
     public ResponseEntity<Void> cancelDebug(@PathVariable String runId,
                                             @RequestHeader("X-User-Id") String userId) {
+        service.requireOwnerByScriptId(debugService.get(runId).scriptId(), userId);
         debugService.cancel(runId);
         return ResponseEntity.noContent().build();
     }

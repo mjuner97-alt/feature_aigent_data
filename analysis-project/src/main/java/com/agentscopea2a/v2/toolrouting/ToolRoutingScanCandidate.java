@@ -9,6 +9,7 @@ public record ToolRoutingScanCandidate(
         String name,
         String description,
         String creator,
+        String ownerUserId,
         boolean sourceAvailable,
         boolean configured,
         boolean routeEnabled,
@@ -17,6 +18,6 @@ public record ToolRoutingScanCandidate(
     public ToolRoutingScanCandidate(String toolId, ToolRoutingToolType toolType, String name,
                                     String description, boolean sourceAvailable, boolean configured,
                                     boolean routeEnabled, List<String> issueCodes) {
-        this(toolId, toolType, name, description, "", sourceAvailable, configured, routeEnabled, issueCodes);
+        this(toolId, toolType, name, description, "", "", sourceAvailable, configured, routeEnabled, issueCodes);
     }
 }

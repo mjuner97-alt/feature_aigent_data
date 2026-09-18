@@ -135,14 +135,22 @@ export async function resendSkillFlowExecutionNotification(id: number): Promise<
   const res = await fetch(`${EXECUTION_BASE}/${id}/notifications/resend`, { method: 'POST', headers: authHeaders() });
   if (!res.ok) throw await requestError(res, '补发通知失败');
 }
-export async function getSkillFlowExecutionReportUrl(id: number): Promise<string> {
+/** 拉取汇总报告 blob;并从 Content-Disposition 解析下载文件名(后端按 {任务名称}-flow-report.html 生成)。 */
+export async function getSkillFlowExecutionReportUrl(id: number): Promise<{ url: string; downloadName?: string }> {
   const res = await fetch(`${EXECUTION_BASE}/${id}/report`, { headers: authHeaders() });
   if (!res.ok) throw await requestError(res, '打开汇总报告失败');
-  return URL.createObjectURL(await res.blob());
+  const disposition = res.headers.get('Content-Disposition') || '';
+  const utf8 = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+  const ascii = /filename="?([^";]+)"?/i.exec(disposition);
+  const downloadName = utf8 ? decodeURIComponent(utf8[1]) : (ascii ? ascii[1] : undefined);
+  return { url: URL.createObjectURL(await res.blob()), downloadName };
 }
 export async function retrySkillFlowSummary(id: number): Promise<void> { const res = await fetch(`${EXECUTION_BASE}/${id}/summary/retry`, { method: 'POST', headers: authHeaders() }); if (!res.ok) throw await requestError(res, '重新生成汇总失败'); }
 export async function retrySkillFlowNode(executionId: number, nodeId: number): Promise<void> { const res = await fetch(`${EXECUTION_BASE}/${executionId}/nodes/${nodeId}/retry`, { method: 'POST', headers: authHeaders() }); if (!res.ok) throw await requestError(res, '重跑任务失败'); }
 export async function retrySkillFlowFailedNodes(executionId: number): Promise<void> { const res = await fetch(`${EXECUTION_BASE}/${executionId}/nodes/retry-failed`, { method: 'POST', headers: authHeaders() }); if (!res.ok) throw await requestError(res, '批量重跑失败任务失败'); }
+
+/** 终止该次长任务执行:当前节点跑完后结果被丢弃,后续节点不再执行,流程落 CANCELLED。 */
+export async function cancelSkillFlowExecution(executionId: number): Promise<void> { const res = await fetch(`${EXECUTION_BASE}/${executionId}/cancel`, { method: 'POST', headers: authHeaders() }); if (!res.ok) throw await requestError(res, '终止任务失败'); }
 
 export async function getSkillFlowNodeReportUrl(executionId: number, nodeId: number): Promise<string> {
   const res = await fetch(`${EXECUTION_BASE}/${executionId}/nodes/${nodeId}/report`, { headers: authHeaders() });

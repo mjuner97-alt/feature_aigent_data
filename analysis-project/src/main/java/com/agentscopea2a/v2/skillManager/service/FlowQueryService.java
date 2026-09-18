@@ -25,7 +25,7 @@ import java.util.Objects;
 /**
  * Skill Flow 执行记录查询服务(读侧):
  * 列表/详情/节点明细/指标就绪情况/通知记录/HTML 报告下载。
- * 执行记录仅触发用户本人可见({@link #owned} 统一校验)。
+ * 执行记录查看不限制创建人(报告链接可被邮件直接打开);变更操作经 {@link #requireOwner} 限制为触发人本人。
  */
 @Service
 public class FlowQueryService {
@@ -115,9 +115,12 @@ public class FlowQueryService {
         return mapper.selectNotifications(id);
     }
 
-    /** 读取 HTML 报告；终态执行的文件丢失时，使用已落库的节点结果即时重建。 */
-    public synchronized Resource report(Long id, String userId) {
-        SkillFlowExecution e = requireOwner(id, userId);
+    /** 报告内容与下载文件名(文件名随流程名称,供 Content-Disposition 使用)。 */
+    public record ReportDownload(Resource resource, String downloadName) {}
+
+    /** 读取 HTML 报告；不限制下载人（报告链接可被邮件直接打开）；终态执行的文件丢失时，使用已落库的节点结果即时重建。 */
+    public synchronized ReportDownload report(Long id, String userId) {
+        SkillFlowExecution e = readable(id);
         Path report = resolveReportPath(e);
         if (report == null || !Files.isRegularFile(report)) {
             if (!e.getStatus().terminal()) {
@@ -133,7 +136,16 @@ public class FlowQueryService {
         if (report == null || !Files.isRegularFile(report)) {
             throw new IllegalStateException("FlowReportNotFound: " + id);
         }
-        return new FileSystemResource(report);
+        return new ReportDownload(new FileSystemResource(report), downloadName(e));
+    }
+
+    /** 下载文件名: {流程名称}-flow-report.html; 剔除文件系统非法字符并限长,避免超长响应头。 */
+    private static String downloadName(SkillFlowExecution e) {
+        String safe = Objects.toString(e.getFlowName(), "")
+                .replaceAll("[\\\\/:*?\"<>|\\r\\n\\t]", "").trim();
+        if (safe.isEmpty()) return "flow-report.html";
+        if (safe.length() > 80) safe = safe.substring(0, 80);
+        return safe + "-flow-report.html";
     }
 
     /** 解析报告路径，并强制限制在当前执行用户目录内，防止路径穿越。 */
@@ -144,7 +156,7 @@ public class FlowQueryService {
         return report.startsWith(expectedUserRoot) ? report : null;
     }
 
-    /** 取执行记录并校验:仅触发用户本人可读。 */
+    /** 取执行记录(仅校验存在性;查看不限制创建人,变更操作另经 requireOwner 校验)。 */
     private SkillFlowExecution readable(Long id) {
         SkillFlowExecution e = mapper.selectFlowExecutionById(id);
         if (e == null) throw new IllegalStateException("FlowExecutionNotFound: " + id);
@@ -166,7 +178,8 @@ public class FlowQueryService {
                 e.getReadyMetricCount(), nodes.size(), (int) nodes.stream().filter(n -> n.getStatus().terminal()).count(),
                 e.getSummaryQuestionTemplateSnapshot(), renderedSummaryQuestion(e, nodes),
                 readJson(e.getSummaryJson()), e.getReportPath(),
-                e.getCreatedAt(), e.getStartedAt(), e.getCompletedAt());
+                e.getCreatedAt(), e.getStartedAt(), e.getCompletedAt(),
+                mapper.selectActiveDurationSeconds(e.getId()));
     }
 
     /**
@@ -230,7 +243,7 @@ public class FlowQueryService {
                 ? node.getSkillName() : node.getNodeName();
     }
 
-    /** 执行记录列表/详情返回体。 */
+    /** 执行记录列表/详情返回体。activeDurationSeconds 为所有尝试审计耗时之和(秒),无尝试记录时为 null。 */
     public record ExecutionDto(Long id, Long flowId, String flowName, String flowCode, String status,
                                String triggerType,
                                String triggerUserId, String originalQuestion, LocalDate dataDate,
@@ -238,7 +251,8 @@ public class FlowQueryService {
                                Integer totalNodeCount, Integer completedNodeCount,
                                String summaryQuestionTemplateSnapshot, String renderedSummaryQuestion,
                                Object summaryJson, String reportPath,
-                               LocalDateTime createdAt, LocalDateTime startedAt, LocalDateTime completedAt) {}
+                               LocalDateTime createdAt, LocalDateTime startedAt, LocalDateTime completedAt,
+                               Long activeDurationSeconds) {}
 
     /** 节点执行明细返回体(attempts 为每次尝试的审计记录;节点全并行,无依赖)。 */
     public record NodeDto(Long id, String nodeKey, String nodeName, String skillName, String questionTemplateSnapshot,

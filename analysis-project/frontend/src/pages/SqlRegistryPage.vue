@@ -2,7 +2,7 @@
 /**
  * SQL 注册表管理页面
  *
- * 功能: 列表 / 新增 / 编辑 / 删除 + 表单内 SQL 测试
+ * 功能: 列表 / 新增 / 编辑 / 删除 + 表单内 SQL 测试 / 查看(非本人或创建人为空的记录只读查看)
  *
  * params_schema 与测试参数均用原始 JSON 文本框编辑, 前端解析后发送:
  *   - params_schema: JSON 数组字符串 (后端按 String 接收, 与 SqlRegistryEntry 字段一致)
@@ -15,7 +15,7 @@
 import { ref, computed, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { listEntries, getEntry, createEntry, updateEntry, deleteEntry, testSql, setEntryEnabled } from '../api/sqlRegistry';
-import type { SqlRegistryListItem, SqlRegistryInput, SqlTestResult, ParamSchemaItem } from '../types/sqlRegistry';
+import type { SqlRegistryEntry, SqlRegistryListItem, SqlRegistryInput, SqlTestResult, ParamSchemaItem } from '../types/sqlRegistry';
 
 // ==================== 列表 ====================
 const items = ref<SqlRegistryListItem[]>([]);
@@ -23,8 +23,12 @@ const loading = ref(false);
 const datasourceFilter = ref('');
 const createdByFilter = ref('');
 const keyword = ref('');
+// 我的/全部 范围切换: 默认'我的', 后端按 createdBy = 当前用户过滤 (沿用 SessionHistoryPage 的样式)
+const scope = ref<'mine' | 'all'>('mine');
 const currentPage = ref(1);
 const pageSize = ref(20);
+const currentUserId = localStorage.getItem('skill-user-id') || 'demo-user';
+const canEdit = (row: SqlRegistryListItem) => !!row.createdBy && row.createdBy === currentUserId;
 
 function formatCreator(row: SqlRegistryListItem): string {
   return row.createdByName
@@ -62,7 +66,9 @@ function handlePageSizeChange(size: number) {
 async function loadList() {
   loading.value = true;
   try {
-    items.value = await listEntries(datasourceFilter.value || undefined, createdByFilter.value || undefined);
+    // 'mine' 时强制按当前用户过滤, 忽略创建人输入框 (仅 'all' 范围下展示)
+    const createdBy = scope.value === 'mine' ? currentUserId : (createdByFilter.value || undefined);
+    items.value = await listEntries(datasourceFilter.value || undefined, createdBy);
   } catch (e: any) {
     ElMessage.error(e.message || '加载失败');
   } finally {
@@ -71,6 +77,10 @@ async function loadList() {
 }
 
 watch(keyword, resetPage);
+watch(scope, () => {
+  resetPage();
+  loadList();
+});
 watch(datasourceFilter, () => {
   resetPage();
   loadList();
@@ -210,6 +220,24 @@ async function toggleEnabled(row: SqlRegistryListItem) {
   }
 }
 
+// ==================== 查看弹窗 (非本人 / 创建人为空的记录只读查看) ====================
+const viewVisible = ref(false);
+const viewLoading = ref(false);
+const viewEntry = ref<SqlRegistryEntry | null>(null);
+
+async function openView(row: SqlRegistryListItem) {
+  viewVisible.value = true;
+  viewLoading.value = true;
+  viewEntry.value = null;
+  try {
+    viewEntry.value = await getEntry(row.id);
+  } catch (e: any) {
+    ElMessage.error(e.message || '加载详情失败');
+  } finally {
+    viewLoading.value = false;
+  }
+}
+
 // ==================== 表单内测试连接 ====================
 const testStatus = ref<'idle' | 'loading' | 'success' | 'fail'>('idle');
 const testErrorMsg = ref('');
@@ -323,8 +351,12 @@ const S = {
         <el-option label="GaussDB" value="gauss" />
         <el-option label="ClickHouse" value="clickhouse" />
       </el-select>
-      <el-input v-model="createdByFilter" placeholder="创建人" style="width: 140px" size="small" clearable />
+      <el-input v-if="scope === 'all'" v-model="createdByFilter" placeholder="创建人" style="width: 140px" size="small" clearable />
       <el-button type="primary" size="small" @click="openCreate">＋ 新增 SQL</el-button>
+      <el-radio-group v-model="scope" size="small" style="margin-left: auto">
+        <el-radio-button label="mine">我的</el-radio-button>
+        <el-radio-button label="all">全部</el-radio-button>
+      </el-radio-group>
     </div>
 
     <!-- 列表 -->
@@ -341,17 +373,22 @@ const S = {
       </el-table-column>
       <el-table-column label="启用" width="70" align="center">
         <template #default="{ row }">
-          <el-switch :model-value="row.enabled === 1" size="small" @change="toggleEnabled(row)" />
+          <el-switch v-if="canEdit(row)" :model-value="row.enabled === 1" size="small" @change="toggleEnabled(row)" />
+          <span v-else>{{ row.enabled === 1 ? '已启用' : '已停用' }}</span>
         </template>
       </el-table-column>
       <el-table-column label="创建人" min-width="160" show-overflow-tooltip>
         <template #default="{ row }">{{ formatCreator(row) }}</template>
       </el-table-column>
       <el-table-column prop="updatedAt" label="更新时间" width="160" />
-      <el-table-column label="操作" width="140" fixed="right">
+      <el-table-column label="操作" width="210" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" @click="openEdit(row)">编辑</el-button>
-          <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+          <!-- 查看所有人可见; 编辑/删除仅本人 -->
+          <el-button size="small" @click="openView(row)">查看</el-button>
+          <template v-if="canEdit(row)">
+            <el-button size="small" @click="openEdit(row)">编辑</el-button>
+            <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+          </template>
         </template>
       </el-table-column>
     </el-table>
@@ -372,9 +409,6 @@ const S = {
       <el-form v-loading="formLoading" label-width="100px" size="small">
         <el-form-item label="sql_id" required>
           <el-input v-model="form.sqlId" placeholder="snake_case, 如 trace_stats_by_user" />
-        </el-form-item>
-        <el-form-item label="创建人" v-if="formMode === 'edit'">
-          <el-input v-model="form.createdBy" placeholder="统一认证号, 如 alice; 临时放开修正, 后续会关闭" />
         </el-form-item>
         <el-form-item label="名称" required>
           <el-input v-model="form.name" placeholder="中文名称" />
@@ -476,6 +510,39 @@ const S = {
       <template #footer>
         <el-button @click="formVisible = false">取消</el-button>
         <el-button type="primary" :loading="formLoading" @click="saveForm">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 查看弹窗 (只读, 非本人 / 创建人为空的记录) -->
+    <el-dialog v-model="viewVisible" title="查看 SQL (只读)" width="760px" destroy-on-close>
+      <el-form v-loading="viewLoading" label-width="100px" size="small" :disabled="true">
+        <el-form-item label="sql_id">
+          <el-input :model-value="viewEntry?.sqlId" />
+        </el-form-item>
+        <el-form-item label="名称">
+          <el-input :model-value="viewEntry?.name" />
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input :model-value="viewEntry?.description" type="textarea" :rows="2" />
+        </el-form-item>
+        <el-form-item label="数据源">
+          <el-tag size="small"
+            :type="viewEntry?.datasource === 'clickhouse' ? 'warning' : viewEntry?.datasource === 'gauss' ? 'success' : 'info'">
+            {{ viewEntry?.datasource || '-' }}
+          </el-tag>
+        </el-form-item>
+        <el-form-item label="SQL 模板">
+          <el-input :model-value="viewEntry?.sqlTemplate" type="textarea" :rows="8" :style="S.jsonEditor" />
+        </el-form-item>
+        <el-form-item label="参数定义">
+          <el-input :model-value="viewEntry?.paramsSchema" type="textarea" :rows="6" :style="S.jsonEditor" />
+        </el-form-item>
+        <el-form-item label="启用">
+          <span>{{ viewEntry?.enabled === 1 ? '已启用' : '已停用' }}</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="viewVisible = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>

@@ -118,14 +118,21 @@ public class FlowCompletionService {
         StringBuilder report = new StringBuilder();
         for (int index = 0; index < nodes.size(); index++) {
             SkillFlowNodeExecution node = nodes.get(index);
-            report.append("## ").append(index + 1).append(". ")
+            report.append("## ").append(chineseNumber(index + 1)).append("、")
                     .append(node.getNodeName() == null || node.getNodeName().isBlank()
                             ? Objects.toString(node.getSkillName(), node.getNodeKey()) : node.getNodeName()).append('\n');
-            report.append("状态：").append(node.getStatus() == null ? "UNKNOWN" : node.getStatus().name())
-                    .append("\n\n");
             report.append(extractResultText(node.getResultJson())).append("\n\n");
         }
         return report.toString();
+    }
+
+    /** 序号转中文数字(一、二、…、十、十一、…、九十九),报告标题编号用;超出范围回退阿拉伯数字。 */
+    private static String chineseNumber(int number) {
+        if (number <= 0 || number >= 100) return String.valueOf(number);
+        String[] digits = {"", "一", "二", "三", "四", "五", "六", "七", "八", "九"};
+        if (number < 10) return digits[number];
+        String tens = number / 10 == 1 ? "十" : digits[number / 10] + "十";
+        return tens + digits[number % 10];
     }
 
     /** 节点结果以 {"text": "..."} 保存，报告只渲染 text，避免把内部 JSON 暴露给用户。 */
@@ -206,9 +213,7 @@ public class FlowCompletionService {
         String escapedUrl = escapeHtml(url);
         return "<html><body><h3>" + title + "</h3>"
                 + "<p>长任务已完成，请点击以下地址查看完整报告：</p>"
-                + "<p><a href=\"" + escapedUrl + "\">打开长任务报告</a></p>"
-                + "<p style=\"color:#666;font-size:12px;\">如果链接无法打开，请复制以下地址到浏览器：<br>"
-                + escapedUrl + "</p></body></html>";
+                + "<p><a href=\"" + escapedUrl + "\">打开长任务报告</a></p></body></html>";
     }
 
     private String summaryText(SkillFlowExecution execution) {
@@ -223,9 +228,8 @@ public class FlowCompletionService {
                 StringBuilder text = new StringBuilder();
                 int index = 1;
                 for (var result : results) {
-                    text.append("## ").append(index++).append(". ")
+                    text.append("## ").append(chineseNumber(index++)).append("、")
                             .append(result.path("nodeName").asText(result.path("skillName").asText("节点结果")))
-                            .append("\n状态：").append(result.path("status").asText("UNKNOWN"))
                             .append("\n\n")
                             .append(extractResultText(result.path("result").asText("")))
                             .append("\n\n");
@@ -245,6 +249,7 @@ public class FlowCompletionService {
         return execution.getReportPath() == null ? "" : Paths.get(execution.getReportPath()).getFileName().toString();
     }
 
+    /** 报告查看链接:/api/skill-flow-executions/{id}/report,端点不限制下载人,邮件点击可直接打开。 */
     private String reportUrl(SkillFlowExecution execution) {
         if (execution.getId() == null) {
             return "";

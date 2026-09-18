@@ -125,6 +125,7 @@ watch(() => [props.scope, props.createdBy] as const, () => load('', props.create
           <tr v-for="flow in pagedFlows" :key="flow.id">
             <td>
               <span class="col-name selectable" :title="flow.name">{{ flow.name }}</span>
+              <span v-if="flow.chatPublic" class="public-tag" title="公开流程：所有人的聊天都能触发（由开发人员开通）">公开</span>
               <span v-if="flow.description" class="col-description" :title="flow.description">{{ flow.description }}</span>
             </td>
             <td>{{ flow.nodes.length }}</td>
@@ -183,6 +184,7 @@ watch(() => [props.scope, props.createdBy] as const, () => load('', props.create
 .job-table tr:hover td { background: #f8fafc; }
 .flow-table .col-actions { min-width: 178px; }
 .col-name { display: block; font-weight: 600; }
+.public-tag { display: inline-block; margin-top: 2px; padding: 1px 6px; border-radius: 4px; background: #fef3c7; color: #92400e; font-size: 11px; font-weight: 600; cursor: help; }
 .col-description { display: block; max-width: 180px; margin-top: 2px; overflow: hidden; color: #94a3b8; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .col-template { max-width: 240px; overflow: hidden; color: #475569; text-overflow: ellipsis; white-space: nowrap; }
 .col-time { color: #94a3b8; font-size: 12px; white-space: nowrap; }

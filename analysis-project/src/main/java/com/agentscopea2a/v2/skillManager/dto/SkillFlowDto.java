@@ -18,6 +18,8 @@ public record SkillFlowDto(
         String scheduleRules,
         Integer maxParallelism,
         Boolean notifyEnabled,
+        /** 是否公开触发(由开发人员开通,创建人修改后自动退出公开);前端据此展示公开标识与编辑警告。 */
+        Boolean chatPublic,
         List<Trigger> triggers,
         List<Node> nodes,
         String createdBy,

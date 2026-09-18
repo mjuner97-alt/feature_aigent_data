@@ -9,6 +9,8 @@ import com.agentscopea2a.v2.skillManager.entity.*;
 import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -39,6 +41,8 @@ import java.util.UUID;
  */
 @Service
 public class FlowDefinitionService {
+
+    private static final Logger log = LoggerFactory.getLogger(FlowDefinitionService.class);
 
     static final int DEFAULT_MAX_PARALLELISM = 2;
     private final SkillFlowMapper flowMapper;
@@ -71,7 +75,7 @@ public class FlowDefinitionService {
         return get(flow.getId(), userId);
     }
 
-    /** 更新流程:仅 owner;code 不能撞其他流程;启用态必须完整。 */
+    /** 更新流程:仅 owner;code 不能撞其他流程;启用态必须完整;公开流程被修改后自动退出公开。 */
     @Transactional("gaussCustomerTransactionManager")
     public SkillFlowDto update(Long id, SkillFlowDefinitionRequest request, String userId) {
         SkillFlow existing = requireOwner(id, userId);
@@ -85,8 +89,15 @@ public class FlowDefinitionService {
         }
         SkillFlow updated = toFlow(request, existing.getCreatedBy(), existing.getCode());
         updated.setId(id);
+        // 公开流程一旦被创建人修改即自动退出公开(须重新联系开发人员开通),普通更新接口不允许保留该状态。
+        boolean wasPublic = Boolean.TRUE.equals(existing.getChatPublic());
+        updated.setChatPublic(false);
         flowMapper.updateFlow(updated);
         replaceChildren(id, request, userId);
+        if (wasPublic) {
+            // TODO 通知开发人员:公开流程已被修改并自动退出公开,需审核后重新开通(接入内部通知系统后实现)。
+            log.warn("[Flow] public flow auto-exited public on update: flowId={}, name={}, owner={}", id, updated.getName(), userId);
+        }
         return get(id, userId);
     }
 
@@ -295,6 +306,7 @@ public class FlowDefinitionService {
                 }).toList();
         return new SkillFlowDto(flow.getId(), flow.getCode(), flow.getName(), flow.getDescription(), flow.getTaskQuestion(),
                 flow.getSummaryQuestionTemplate(), flow.getEnabled(), flow.getScheduleRules(), flow.getMaxParallelism(), flow.getNotifyEnabled(),
+                Boolean.TRUE.equals(flow.getChatPublic()),
                 triggers, nodes, flow.getCreatedBy(), flow.getCreatedAt(), flow.getUpdatedAt(), flow.getDeletedAt() != null);
     }
 

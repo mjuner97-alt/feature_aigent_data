@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-q2_1_metrics_by_dept_version - Q2-1 打分状态/达标率指标计算
+q2_1_metrics_by_dept_version - Q2-1 打分状态/达标率指标计算 + 明细下载 (一步完成)
 
-由 script_exec 工具调用, 替代 sql_registry_exec + python_exec 两步走.
-脚本内部完成: SQL 取数 (GaussDB via JPype+opengauss-jdbc) + pandas 算 总数/已打分/达标数, 一次返回.
+由 script_exec 工具调用. 脚本内部完成: 注册 SQL 调配 (sql_registry via _sql_registry,
+与 sql_registry_exec 用同一个 sqlId) + pandas 算 总数/已打分/达标数 + 明细 CSV 下载块.
 
 调用方式 (Java 端 script_exec 工具):
     python3 q2_1_metrics_by_dept_version.py
@@ -13,8 +13,10 @@ q2_1_metrics_by_dept_version - Q2-1 打分状态/达标率指标计算
            GAUSS_USER=...  GAUSS_PASS=...  GAUSS_JAR=/root/.m2/.../opengauss-jdbc-5.1.0.jar
 
 输出约定 (stdout):
-    前 N 行 markdown 表 (LLM 直读)
-    末行 json: {...} (程序解析用)
+    汇总 markdown 表 + json: {...} 行 + echarts 可渲染块
+    + <<<DOWNLOAD_META>>>/<<<DOWNLOAD_CONTENT>>>/<<<DOWNLOAD_END>>> 下载块
+    (下载块由 Java ScriptExecTool 剥离落库生成短链, 原位替换成下载链接;
+     明细行只进下载块, 不进 LLM 上下文)
 
 返回字段:
     total       - 总行数
@@ -25,9 +27,26 @@ q2_1_metrics_by_dept_version - Q2-1 打分状态/达标率指标计算
 """
 import sys
 import json
-import os
 import pandas as pd
-from _gauss_jdbc import query_gauss
+from _gauss_jdbc import query_gauss          # 保留 (_sql_registry 内部依赖)
+from _sql_registry import run_registered_sql
+
+SQL_ID = "q2_1_metrics_by_dept_version"      # 与 sql_registry 注册的 sqlId 一致
+DOWNLOAD_FILENAME = "q2_1_明细.csv"           # downloadFilename 固化在脚本里, LLM 不传
+
+
+def _render_markdown_table(df):
+    """df -> markdown 表 (不依赖 tabulate). 列分隔符按 MarkdownTableConverter 规则转义."""
+    cols = [str(c) for c in df.columns]
+    lines = ["| " + " | ".join(cols) + " |", "|" + "|".join(["---"] * len(cols)) + "|"]
+    for _, row in df.iterrows():
+        cells = []
+        for c in df.columns:
+            v = row[c]
+            s = "" if v is None else str(v)
+            cells.append(s.replace("|", "\\|").replace("\n", " "))
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
 
 
 def main():
@@ -51,32 +70,14 @@ def main():
         print(f"ERROR 缺少必填参数 dept/version, 收到: {params}", file=sys.stderr)
         sys.exit(1)
 
-
-    # 2. 执行 SQL (JPype + opengauss-jdbc, psycopg2 不支持 openGauss SHA256 SASL 认证)
-    sql = """
-        SELECT
-          projectzh_no AS "项目编号",
-          projectzh_name AS "项目名称",
-          dev_dept AS "开发部门",
-          version_plan AS "版本计划",
-          app AS "涉及应用",
-          product_line AS "产品线",
-          stat_group AS "统计组",
-          score_status_2_1 AS "Q2_1打分状态",
-          standard_is_2_1 AS "Q2_1是否达标"
-        FROM dsqa_dwd_req_item_app_portrait_wide_inf
-        WHERE dev_dept IN (:dept)
-          AND version_plan IN (:version)
-          AND in_date = (
-            SELECT MAX(in_date) FROM dsqa_dwd_req_item_app_portrait_wide_inf
-          )
-    """
-
+    # 2. 调配注册 SQL (脚本内不再硬编码 SQL, 与 sql_registry_exec 用同一份)
     try:
-        rows = query_gauss(sql, params={"dept": depts, "version": versions})
+        rows = run_registered_sql(SQL_ID, {"dept": depts, "version": versions})
         df = pd.DataFrame(rows)
+    except SystemExit:
+        raise
     except Exception as e:
-        print(f"ERROR 查询 GaussDB 失败: {type(e).__name__}: {e}", file=sys.stderr)
+        print(f"ERROR 调配注册 SQL 失败: {type(e).__name__}: {e}", file=sys.stderr)
         sys.exit(2)
 
     # 3. 算指标 (空结果 total=0 时, scored/passed/pct 都为 0)
@@ -92,8 +93,8 @@ def main():
         scored_pct = round(scored / total * 100, 2)
         passed_pct = round(passed / total * 100, 2)
 
-    # 4. 输出 (markdown 表 + JSON 行)
-    # 4.1 markdown 表
+    # 4. 输出 (markdown 表 + JSON 行 + echarts 块 + 下载块)
+    # 4.1 汇总表
     print(f"| 总数 | 已打分 | 达标数 | 打分率 | 达标率 |")
     print(f"|---:|---:|---:|---:|---:|")
     print(f"| {total} | {scored} | {passed} | {scored_pct}% | {passed_pct}% |")
@@ -106,6 +107,36 @@ def main():
 
     # 4.3 JSON 行 (程序解析用, 含百分比, LLM 直接读无需 arith 复算)
     print(f'json: {{"total":{total},"scored":{scored},"passed":{passed},"scored_pct":{scored_pct},"passed_pct":{passed_pct}}}')
+
+    # 4.4 echarts 可渲染块 (script_exec 约定: 输出必带 html/echarts,
+    #     /ai/chat 的 ChatScriptExecResultHook 据此接管 stdout、末尾追加展示)
+    option = {
+        "title": {"text": "Q2-1 打分率/达标率", "left": "center"},
+        "tooltip": {"trigger": "axis"},
+        "xAxis": {"type": "category", "data": ["打分率", "达标率"]},
+        "yAxis": {"type": "value", "max": 100, "axisLabel": {"formatter": "{value}%"}},
+        "series": [{
+            "type": "bar",
+            "data": [
+                {"value": scored_pct, "itemStyle": {"color": "#2563EB"}},
+                {"value": passed_pct, "itemStyle": {"color": "#16803A"}},
+            ],
+            "label": {"show": True, "position": "top", "formatter": "{c}%"},
+        }],
+    }
+    print("```echarts")
+    print(json.dumps(option, ensure_ascii=False))
+    print("```")
+
+    # 4.5 明细进下载块: N 行只落库生成短链, 不占 LLM 上下文;
+    #     下载块 print 在 echarts 块之后 -> 最终展示"图在上、下载链接在下";
+    #     要"链接在上、图在下"时, 把这段挪到 echarts print 之前即可
+    if total:
+        detail_md = _render_markdown_table(df)
+        print(f'<<<DOWNLOAD_META>>> {json.dumps({"filename": DOWNLOAD_FILENAME}, ensure_ascii=False)}')
+        print("<<<DOWNLOAD_CONTENT>>>")
+        print(detail_md)
+        print("<<<DOWNLOAD_END>>>")
 
 
 if __name__ == "__main__":

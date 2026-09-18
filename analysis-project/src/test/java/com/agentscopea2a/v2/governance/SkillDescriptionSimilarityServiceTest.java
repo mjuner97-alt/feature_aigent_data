@@ -23,10 +23,14 @@ class SkillDescriptionSimilarityServiceTest {
     }
 
     private SkillDescriptionSimilarityService service(SkillDescriptionSource source) {
+        return service(source, true);
+    }
+
+    private SkillDescriptionSimilarityService service(SkillDescriptionSource source, boolean enabled) {
         // EmbeddingClient=null -> degraded, 只跑 L1 文本信号
         GovernanceEmbeddingCache cache = new GovernanceEmbeddingCache(null, source, null);
         cache.startWarmup();
-        return new SkillDescriptionSimilarityService(source, skillRoutingRepo, cache,
+        return new SkillDescriptionSimilarityService(enabled, source, skillRoutingRepo, cache,
                 0.85, 0.85, 0.60);
     }
 
@@ -95,5 +99,15 @@ class SkillDescriptionSimilarityServiceTest {
         SkillDescriptionSource source = List::of;
         SkillSimilarityCheckResult result = service(source).check("x", "y", null);
         assertTrue(result.matches().isEmpty());
+    }
+
+    @Test
+    void disabledReturnsEmptyResult() {
+        SkillDescriptionSource source = () -> List.of(
+                row(1, "质量统计", "按部门统计质量分和达标率并输出月报", "page_1", "u_a", "PUBLIC"));
+        SkillSimilarityCheckResult result = service(source, false).check(
+                "质量统计", "按部门统计质量分和达标率并输出月报", null);
+        assertTrue(result.matches().isEmpty());
+        assertTrue(!result.degraded());
     }
 }
