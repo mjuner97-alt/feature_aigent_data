@@ -2,7 +2,7 @@
 /**
  * python 脚本注册表管理页面
  *
- * 功能: 列表 / 新增 / 编辑 / 删除 / 启停
+ * 功能: 列表 / 新增 / 编辑 / 删除 / 启停 / 查看(非本人或创建人为空的记录只读查看)
  *
  * 与 SqlRegistryPage 同构, 但:
  *   - 字段为 script_id / script_path / datasources(多选) / params_schema / timeout_seconds
@@ -14,7 +14,7 @@
 import { ref, computed, watch, onUnmounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { listEntries, getEntry, createEntry, updateEntry, deleteEntry, setEntryEnabled, getSource, saveSource, startDebug, cancelDebug, subscribeDebug } from '../api/scriptRegistry';
-import type { ScriptDebugRun, ScriptRegistryListItem, ScriptRegistryInput } from '../types/scriptRegistry';
+import type { ScriptDebugRun, ScriptRegistryEntry, ScriptRegistryListItem, ScriptRegistryInput } from '../types/scriptRegistry';
 
 // ==================== 列表 ====================
 const items = ref<ScriptRegistryListItem[]>([]);
@@ -324,6 +324,28 @@ async function toggleEnabled(row: ScriptRegistryListItem) {
   }
 }
 
+// ==================== 查看弹窗 (非本人 / 创建人为空的记录只读查看) ====================
+const viewVisible = ref(false);
+const viewLoading = ref(false);
+const viewEntry = ref<ScriptRegistryEntry | null>(null);
+const viewSourceCode = ref('');
+
+async function openView(row: ScriptRegistryListItem) {
+  viewVisible.value = true;
+  viewLoading.value = true;
+  viewEntry.value = null;
+  viewSourceCode.value = '';
+  try {
+    viewEntry.value = await getEntry(row.id);
+    const source = await getSource(row.id);
+    viewSourceCode.value = source.content;
+  } catch (e: any) {
+    ElMessage.error(e.message || '加载详情失败');
+  } finally {
+    viewLoading.value = false;
+  }
+}
+
 // ==================== 参数定义格式化 / 示例 ====================
 function formatJson() {
   const parsed = tryParseJson(form.value.paramsSchema);
@@ -391,10 +413,14 @@ const S = {
         <template #default="{ row }">{{ formatCreator(row) }}</template>
       </el-table-column>
       <el-table-column prop="updatedAt" label="更新时间" width="160" />
-      <el-table-column label="操作" width="140" fixed="right">
+      <el-table-column label="操作" width="210" fixed="right">
         <template #default="{ row }">
-          <el-button v-if="canEdit(row)" size="small" @click="openEdit(row)">编辑</el-button>
-          <el-button v-if="canEdit(row)" size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+          <!-- 查看所有人可见; 编辑/删除仅本人 -->
+          <el-button size="small" @click="openView(row)">查看</el-button>
+          <template v-if="canEdit(row)">
+            <el-button size="small" @click="openEdit(row)">编辑</el-button>
+            <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+          </template>
         </template>
       </el-table-column>
     </el-table>
@@ -485,6 +511,46 @@ const S = {
       <template #footer>
         <el-button @click="closeForm">取消</el-button>
         <el-button type="primary" :loading="formLoading" @click="saveForm">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 查看弹窗 (只读, 非本人 / 创建人为空的记录) -->
+    <el-dialog v-model="viewVisible" title="查看脚本 (只读)" width="1100px" destroy-on-close>
+      <el-form v-loading="viewLoading" label-width="100px" size="small" :disabled="true">
+        <el-form-item label="script_id">
+          <el-input :model-value="viewEntry?.scriptId" />
+        </el-form-item>
+        <el-form-item label="名称">
+          <el-input :model-value="viewEntry?.name" />
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input :model-value="viewEntry?.description" type="textarea" :rows="2" />
+        </el-form-item>
+        <el-form-item label="数据源">
+          <template v-if="viewEntry">
+            <el-tag v-for="ds in parseDatasources(viewEntry.datasources)" :key="ds" size="small"
+              :type="ds === 'clickhouse' ? 'warning' : ds === 'gauss' ? 'success' : 'info'"
+              style="margin-right: 4px">
+              {{ ds }}
+            </el-tag>
+          </template>
+        </el-form-item>
+        <el-form-item label="参数定义">
+          <el-input :model-value="viewEntry?.paramsSchema" type="textarea" :rows="6" :style="S.jsonEditor" />
+        </el-form-item>
+        <el-form-item label="超时(秒)">
+          <span>{{ viewEntry?.timeoutSeconds ?? '-' }}</span>
+        </el-form-item>
+        <el-form-item label="启用">
+          <span>{{ viewEntry?.enabled === 1 ? '已启用' : '已停用' }}</span>
+        </el-form-item>
+        <el-divider content-position="left">Python 源码</el-divider>
+        <el-form-item label="源码">
+          <el-input :model-value="viewSourceCode" type="textarea" :rows="18" :style="S.jsonEditor" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="viewVisible = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>

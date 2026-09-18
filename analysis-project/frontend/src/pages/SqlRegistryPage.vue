@@ -2,7 +2,7 @@
 /**
  * SQL 注册表管理页面
  *
- * 功能: 列表 / 新增 / 编辑 / 删除 + 表单内 SQL 测试
+ * 功能: 列表 / 新增 / 编辑 / 删除 + 表单内 SQL 测试 / 查看(非本人或创建人为空的记录只读查看)
  *
  * params_schema 与测试参数均用原始 JSON 文本框编辑, 前端解析后发送:
  *   - params_schema: JSON 数组字符串 (后端按 String 接收, 与 SqlRegistryEntry 字段一致)
@@ -15,7 +15,7 @@
 import { ref, computed, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { listEntries, getEntry, createEntry, updateEntry, deleteEntry, testSql, setEntryEnabled } from '../api/sqlRegistry';
-import type { SqlRegistryListItem, SqlRegistryInput, SqlTestResult, ParamSchemaItem } from '../types/sqlRegistry';
+import type { SqlRegistryEntry, SqlRegistryListItem, SqlRegistryInput, SqlTestResult, ParamSchemaItem } from '../types/sqlRegistry';
 
 // ==================== 列表 ====================
 const items = ref<SqlRegistryListItem[]>([]);
@@ -220,6 +220,24 @@ async function toggleEnabled(row: SqlRegistryListItem) {
   }
 }
 
+// ==================== 查看弹窗 (非本人 / 创建人为空的记录只读查看) ====================
+const viewVisible = ref(false);
+const viewLoading = ref(false);
+const viewEntry = ref<SqlRegistryEntry | null>(null);
+
+async function openView(row: SqlRegistryListItem) {
+  viewVisible.value = true;
+  viewLoading.value = true;
+  viewEntry.value = null;
+  try {
+    viewEntry.value = await getEntry(row.id);
+  } catch (e: any) {
+    ElMessage.error(e.message || '加载详情失败');
+  } finally {
+    viewLoading.value = false;
+  }
+}
+
 // ==================== 表单内测试连接 ====================
 const testStatus = ref<'idle' | 'loading' | 'success' | 'fail'>('idle');
 const testErrorMsg = ref('');
@@ -363,10 +381,14 @@ const S = {
         <template #default="{ row }">{{ formatCreator(row) }}</template>
       </el-table-column>
       <el-table-column prop="updatedAt" label="更新时间" width="160" />
-      <el-table-column label="操作" width="140" fixed="right">
+      <el-table-column label="操作" width="210" fixed="right">
         <template #default="{ row }">
-          <el-button v-if="canEdit(row)" size="small" @click="openEdit(row)">编辑</el-button>
-          <el-button v-if="canEdit(row)" size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+          <!-- 查看所有人可见; 编辑/删除仅本人 -->
+          <el-button size="small" @click="openView(row)">查看</el-button>
+          <template v-if="canEdit(row)">
+            <el-button size="small" @click="openEdit(row)">编辑</el-button>
+            <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+          </template>
         </template>
       </el-table-column>
     </el-table>
@@ -488,6 +510,39 @@ const S = {
       <template #footer>
         <el-button @click="formVisible = false">取消</el-button>
         <el-button type="primary" :loading="formLoading" @click="saveForm">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 查看弹窗 (只读, 非本人 / 创建人为空的记录) -->
+    <el-dialog v-model="viewVisible" title="查看 SQL (只读)" width="760px" destroy-on-close>
+      <el-form v-loading="viewLoading" label-width="100px" size="small" :disabled="true">
+        <el-form-item label="sql_id">
+          <el-input :model-value="viewEntry?.sqlId" />
+        </el-form-item>
+        <el-form-item label="名称">
+          <el-input :model-value="viewEntry?.name" />
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input :model-value="viewEntry?.description" type="textarea" :rows="2" />
+        </el-form-item>
+        <el-form-item label="数据源">
+          <el-tag size="small"
+            :type="viewEntry?.datasource === 'clickhouse' ? 'warning' : viewEntry?.datasource === 'gauss' ? 'success' : 'info'">
+            {{ viewEntry?.datasource || '-' }}
+          </el-tag>
+        </el-form-item>
+        <el-form-item label="SQL 模板">
+          <el-input :model-value="viewEntry?.sqlTemplate" type="textarea" :rows="8" :style="S.jsonEditor" />
+        </el-form-item>
+        <el-form-item label="参数定义">
+          <el-input :model-value="viewEntry?.paramsSchema" type="textarea" :rows="6" :style="S.jsonEditor" />
+        </el-form-item>
+        <el-form-item label="启用">
+          <span>{{ viewEntry?.enabled === 1 ? '已启用' : '已停用' }}</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="viewVisible = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>

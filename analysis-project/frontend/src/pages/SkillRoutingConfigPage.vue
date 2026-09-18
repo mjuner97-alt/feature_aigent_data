@@ -54,6 +54,13 @@ function openEdit(row: SkillRoutingMetadata) {
   keywordsText.value = tags(form.value.keywords);
   dialogVisible.value = true;
 }
+// ==================== 查看弹窗 (所有人可见, 只读) ====================
+const viewVisible = ref(false);
+const viewRow = ref<SkillRoutingMetadata | null>(null);
+function openView(row: SkillRoutingMetadata) {
+  viewRow.value = row;
+  viewVisible.value = true;
+}
 async function load() {
   loading.value = true;
   try {
@@ -142,7 +149,7 @@ load();
       <el-table-column label="关键词" min-width="220" show-overflow-tooltip><template #default="{ row }">{{ row.keywords.join('、') || '-' }}</template></el-table-column>
       <el-table-column prop="creator" label="创建人" width="130" show-overflow-tooltip><template #default="{ row }">{{ row.creator || '-' }}</template></el-table-column>
       <el-table-column label="状态" width="80" align="center"><template #default="{ row }"><el-switch v-if="canEdit(row)" :model-value="row.active" size="small" @change="toggle(row)" /><span v-else>{{ row.active ? '已启用' : '已停用' }}</span></template></el-table-column>
-      <el-table-column label="操作" width="90" fixed="right"><template #default="{ row }"><el-button v-if="canEdit(row)" size="small" @click="openEdit(row)">配置</el-button></template></el-table-column>
+      <el-table-column label="操作" width="150" fixed="right"><template #default="{ row }"><!-- 查看所有人可见; 配置仅本人 --><el-button size="small" @click="openView(row)">查看</el-button><el-button v-if="canEdit(row)" size="small" @click="openEdit(row)">配置</el-button></template></el-table-column>
     </el-table>
       </el-tab-pane>
       <!-- 标签词典 tab 暂时隐藏 (数据加载保留, 配置弹窗下拉仍依赖词典接口) -->
@@ -163,6 +170,18 @@ load();
         <el-form-item label="启用"><el-switch v-model="form.active" /></el-form-item>
       </el-form>
       <template #footer><el-button @click="dialogVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="save">保存</el-button></template>
+    </el-dialog>
+    <!-- 查看弹窗 (只读, 所有人可见) -->
+    <el-dialog v-model="viewVisible" :title="`查看 Skill: ${viewRow?.skillName || ''}`" width="680px" destroy-on-close>
+      <el-form label-width="110px" size="small" :disabled="true">
+        <el-form-item label="Skill 名称"><el-input :model-value="viewRow?.skillName" /></el-form-item>
+        <el-form-item label="已有描述"><el-input :model-value="viewRow?.description || '-'" type="textarea" :rows="3" /></el-form-item>
+        <el-form-item label="领域标签"><el-input :model-value="viewRow?.domainTags.join('、') || '-'" /></el-form-item>
+        <el-form-item label="业务主题"><el-input :model-value="viewRow?.topicTags.join('、') || '-'" /></el-form-item>
+        <el-form-item label="关键词"><el-input :model-value="viewRow?.keywords.join('、') || '-'" /></el-form-item>
+        <el-form-item label="启用"><span>{{ viewRow?.active ? '已启用' : '已停用' }}</span></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="viewVisible = false">关闭</el-button></template>
     </el-dialog>
     <el-dialog v-model="tagDialogVisible" :title="tagType === 'DOMAIN' ? '新增领域标签' : '新增业务主题'" width="480px">
       <el-form label-width="84px"><el-form-item label="标签名称" required><el-input v-model="tagName" maxlength="64" /></el-form-item><el-form-item label="说明"><el-input v-model="tagDescription" type="textarea" :rows="3" maxlength="500" /></el-form-item></el-form>
