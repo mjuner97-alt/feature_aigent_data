@@ -1,5 +1,6 @@
 <template>
   <div :style="theme.root">
+    <button v-if="hasHtmlContent" class="html-expand-button" type="button" aria-label="放大 HTML 内容" @click="expanded = true">⛶ 放大</button>
     <!-- 完整 HTML 文档(<!doctype>/<html>):iframe srcdoc 隔离渲染,自带样式与脚本不污染外层 -->
     <iframe
       v-if="isFullHtmlDoc"
@@ -11,10 +12,19 @@
     <!-- Markdown 或 HTML 片段:v-html 渲染,HTML 标签透传不转义 -->
     <div v-else v-html="renderedHtml"></div>
   </div>
+  <Teleport to="body">
+    <div v-if="expanded" class="html-overlay" role="dialog" aria-modal="true" aria-label="放大 HTML 内容" @mousedown.self="expanded = false">
+      <div class="html-modal">
+        <button class="html-close-button" type="button" aria-label="关闭 HTML 放大视图" @click="expanded = false">×</button>
+        <iframe v-if="isFullHtmlDoc" :srcdoc="text" class="html-doc-frame html-doc-frame-expanded" sandbox="allow-scripts allow-same-origin" @load="onFrameLoad"></iframe>
+        <div v-else class="html-fragment-expanded" v-html="renderedHtml"></div>
+      </div>
+    </div>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 
 const props = withDefaults(defineProps<{
   text: string;
@@ -22,6 +32,10 @@ const props = withDefaults(defineProps<{
 }>(), {
   theme: 'light',
 });
+const expanded = ref(false);
+function onKeyDown(e: KeyboardEvent) { if (e.key === 'Escape') expanded.value = false; }
+onMounted(() => document.addEventListener('keydown', onKeyDown));
+onUnmounted(() => document.removeEventListener('keydown', onKeyDown));
 
 // ── Theme presets ──────────────────────────────────────────────────────────
 
@@ -79,6 +93,7 @@ const isFullHtmlDoc = computed(() => {
     .toLowerCase();
   return stripped.startsWith('<!doctype') || stripped.startsWith('<html');
 });
+const hasHtmlContent = computed(() => isFullHtmlDoc.value || /<\/?[a-z][^>]*>/i.test(props.text));
 
 // Markdown / HTML 片段 -> HTML(保留 HTML 标签,仅转义纯文本)
 const renderedHtml = computed(() => markdownToHtml(props.text));
@@ -217,4 +232,52 @@ function escapePreservingHtml(text: string): string {
   border-radius: 8px;
   background: #fff;
 }
+.html-expand-button {
+  float: right;
+  margin: 4px 0 6px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: #334155;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.html-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(15, 23, 42, .58);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.html-modal {
+  position: relative;
+  width: min(1200px, 96vw);
+  height: min(900px, 94vh);
+  overflow: auto;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, .35);
+  padding: 16px;
+}
+.html-close-button {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 2;
+  width: 30px;
+  height: 30px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: #334155;
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+}
+.html-doc-frame-expanded { height: 100%; border: 0; }
+.html-fragment-expanded { min-height: 100%; overflow: auto; background: #fff; color: #111827; }
 </style>
