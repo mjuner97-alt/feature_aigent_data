@@ -18,6 +18,7 @@ package com.agentscopea2a.v2.tools;
 import com.agentscopea2a.entity.ScriptRegistryEntry;
 import com.agentscopea2a.mapper.gauss.ScriptRegistryMapper;
 import com.agentscopea2a.v2.config.V2SandboxConfig.SandboxPropertiesV2;
+import com.agentscopea2a.v2.sandbox.DockerCliRunner;
 import com.agentscopea2a.v2.service.DownloadContentService;
 import com.zaxxer.hikari.HikariDataSource;
 import io.agentscope.core.message.ToolResultBlock;
@@ -229,22 +230,40 @@ public class ScriptExecTool {
         }
 
         // 4. 拼脚本绝对路径 + 检查文件存在
-        //    宿主机 path 用于安全 normalize 检查 + 文件存在检查 (bind-mount 来源, 宿主机有就容器也有)
-        //    容器内 path 用于实际命令参数 (ssh+docker 模式下 python3 跑在容器内, 看不到宿主机路径)
+        //    容器模式 (ssh+docker / local-docker): 存在性检查在容器内做 (docker exec test -f) —
+        //    业务人员直接把 .py 上传到服务器共享容器, 开发本地 workspace 往往没有该文件,
+        //    宿主机检查会误报 "脚本文件不存在". 容器内路径安全由 SCRIPT_PATH_PATTERN + 禁 .. 兜底.
+        //    host-python fallback: 仍检查宿主机文件.
         Path scriptsDir = Paths.get(workspacePath).toAbsolutePath().resolve("scripts");
         Path scriptAbsPath = scriptsDir.resolve(scriptPath).normalize().toAbsolutePath();
         if (!scriptAbsPath.startsWith(scriptsDir)) {
             return ToolResultBlock.text("script_exec 拒绝执行: script_path '" + scriptPath
                     + "' 解析后逃逸出 scripts 目录 (安全限制)");
         }
-        if (!Files.isRegularFile(scriptAbsPath)) {
+        // 容器内路径: containerWorkspacePath + /scripts/ + scriptPath (scriptPath 已通过正则校验,
+        // 不含 .. 逃逸, 拼接安全)
+        String containerScriptPath = containerWorkspacePath + "/scripts/" + scriptPath;
+        boolean containerMode = sandbox != null && sandbox.isEnabled() && !isBlank(sandbox.getSharedContainerName());
+        if (containerMode) {
+            try {
+                DockerCliRunner.CommandResult r = DockerCliRunner.run(
+                        (int) Math.max(5, sandbox.getRemoteDockerTimeoutSeconds()),
+                        "exec", sandbox.getSharedContainerName(), "test", "-f", containerScriptPath);
+                if (r.exitCode() != 0) {
+                    return ToolResultBlock.text("script_exec 拒绝执行: 容器内脚本不存在: " + containerScriptPath
+                            + "\n排查: 业务人员上传的 .py 是否在共享容器 " + sandbox.getSharedContainerName()
+                            + " 的 scripts 目录下? (宿主机本地有无该文件不影响执行)");
+                }
+            } catch (Exception e) {
+                log.error("script_exec 容器内脚本存在性检查失败: scriptId={} path={}", scriptId, containerScriptPath, e);
+                return ToolResultBlock.text("script_exec 拒绝执行: 容器内脚本存在性检查失败: " + e.getMessage()
+                        + "\n排查: 共享容器 " + sandbox.getSharedContainerName() + " 是否在运行? docker 命令链路是否通?");
+            }
+        } else if (!Files.isRegularFile(scriptAbsPath)) {
             return ToolResultBlock.text("script_exec 拒绝执行: 脚本文件不存在: " + scriptAbsPath
                     + "\n排查: 开发人员是否已把 .py 部署到 workspace/scripts/ 下?"
                     + "\n若刚注册 script_registry 但未部署 .py, 请同步部署后再调.");
         }
-        // 容器内路径: containerWorkspacePath + /scripts/ + scriptPath (scriptPath 已通过正则校验,
-        // 不含 .. 逃逸, 拼接安全)
-        String containerScriptPath = containerWorkspacePath + "/scripts/" + scriptPath;
 
         // 5. 注入环境变量
         //    gauss (openGauss): 注入 GAUSS_JDBC_URL/USER/PASS/JAR, Python 用 JPype + opengauss-jdbc
