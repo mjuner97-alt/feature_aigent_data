@@ -9,7 +9,7 @@
 import { ref, watch, computed } from 'vue';
 import { getJob, createJob, updateJob } from '../api/skillJob';
 import { listMetrics } from '../api/skillDependencyMetric';
-import { listSkills } from '../api/skill';
+import { getSkill, listSkills } from '../api/skill';
 import type { SkillJobInput, SkillJobUpdateInput } from '../types/skillJob';
 import type { SkillListItem } from '../types/skill';
 import type { SkillDependencyMetric } from '../types/skillJob';
@@ -38,7 +38,7 @@ let metricSearchSeq = 0;
 
 /** 当前选中的依赖指标 (用于在 select 下方展示描述) */
 const selectedMetric = computed(() =>
-  metrics.value.find(m => m.id === form.value.metricId) ?? null
+    metrics.value.find(m => m.id === form.value.metricId) ?? null
 );
 
 /** 是否展开依赖指标描述 (点击「查看指标描述」切换) */
@@ -59,11 +59,35 @@ async function searchSkills(query: string) {
   skillLoading.value = true;
   try {
     const result = await listSkills({ view: 'used', keyword: query.trim(), limit: 50 });
-    if (seq === skillSearchSeq) skills.value = result;
+    if (seq === skillSearchSeq) {
+      // Keep the currently selected option visible even when a remote search
+      // result no longer contains it; otherwise Element Plus renders the raw
+      // numeric skillId while editing older/less common Skills.
+      const selected = skills.value.find(skill => skill.id === form.value.skillId);
+      skills.value = selected && !result.some(skill => skill.id === selected.id)
+          ? [selected, ...result]
+          : result;
+    }
   } catch {
-    if (seq === skillSearchSeq) skills.value = [];
+    // A failed/stale remote search must not discard the option currently
+    // selected in the form; otherwise Element Plus renders the raw numeric ID.
+    if (seq === skillSearchSeq) {
+      const selected = skills.value.find(skill => skill.id === form.value.skillId);
+      skills.value = selected ? [selected] : [];
+    }
   } finally {
     if (seq === skillSearchSeq) skillLoading.value = false;
+  }
+}
+
+async function ensureSelectedSkill(skillId: number) {
+  if (!skillId || skills.value.some(skill => skill.id === skillId)) return;
+  try {
+    const selected = await getSkill(skillId);
+    if (!skills.value.some(skill => skill.id === selected.id)) skills.value = [selected, ...skills.value];
+  } catch {
+    // The job may reference a Skill no longer visible to the current user.
+    // Leave the form usable; the server remains the source of truth.
   }
 }
 
@@ -100,7 +124,7 @@ async function loadForEdit(id: number) {
   formLoading.value = true;
   try {
     const job = await getJob(id);
-    form.value = {
+    const nextForm: SkillJobInput = {
       name: job.name ?? '',
       skillId: job.skillId ?? 0,
       questionTemplate: job.questionTemplate ?? '',
@@ -108,6 +132,10 @@ async function loadForEdit(id: number) {
       metricId: job.metricId ?? null,
       scheduleRules: job.scheduleRules ?? null,
     };
+    // Resolve the selected option before exposing the loaded form. This avoids
+    // the select briefly rendering the numeric skillId while getSkill is in flight.
+    await ensureSelectedSkill(nextForm.skillId);
+    form.value = nextForm;
     baseline.value = JSON.stringify(form.value);
   } catch (e) {
     formError.value = e instanceof Error ? e.message : '加载失败';
