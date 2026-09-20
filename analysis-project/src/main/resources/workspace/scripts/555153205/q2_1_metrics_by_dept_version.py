@@ -30,23 +30,10 @@ import json
 import pandas as pd
 from _gauss_jdbc import query_gauss          # 保留 (_sql_registry 内部依赖)
 from _sql_registry import run_registered_sql
+from _download import print_download_csv, print_download_xlsx
 
 SQL_ID = "q2_1_metrics_by_dept_version"      # 与 sql_registry 注册的 sqlId 一致
 DOWNLOAD_FILENAME = "q2_1_明细.csv"           # downloadFilename 固化在脚本里, LLM 不传
-
-
-def _render_markdown_table(df):
-    """df -> markdown 表 (不依赖 tabulate). 列分隔符按 MarkdownTableConverter 规则转义."""
-    cols = [str(c) for c in df.columns]
-    lines = ["| " + " | ".join(cols) + " |", "|" + "|".join(["---"] * len(cols)) + "|"]
-    for _, row in df.iterrows():
-        cells = []
-        for c in df.columns:
-            v = row[c]
-            s = "" if v is None else str(v)
-            cells.append(s.replace("|", "\\|").replace("\n", " "))
-        lines.append("| " + " | ".join(cells) + " |")
-    return "\n".join(lines)
 
 
 def main():
@@ -129,15 +116,15 @@ def main():
     print("```")
 
     # 4.5 明细进下载块: N 行只落库生成短链, 不占 LLM 上下文;
-    #     下载块 print 在 echarts 块之后 -> 最终展示"图在上、下载链接在下";
-    #     要"链接在上、图在下"时, 把这段挪到 echarts print 之前即可
+    #     块 print 在 echarts 块之后 -> 最终展示"图在上、下载链接在下";
+    #     两个块 (CSV + xlsx 多sheet) 依次生成两条链接, 顺序 = print 顺序
     if total:
-        detail_md = _render_markdown_table(df)
-        print(f'<<<DOWNLOAD_META>>> {json.dumps({"filename": DOWNLOAD_FILENAME}, ensure_ascii=False)}')
-        print("<<<DOWNLOAD_CONTENT>>>")
-        print(detail_md)
-        print("<<<DOWNLOAD_END>>>")
-
+        summary_df = pd.DataFrame({
+            "指标": ["总数", "已打分", "达标数", "打分率%", "达标率%"],
+            "值": [total, scored, passed, scored_pct, passed_pct],
+        })
+        print_download_csv(df, DOWNLOAD_FILENAME)
+        print_download_xlsx({"明细": df, "汇总": summary_df}, "q2_1_明细.xlsx")
 
 if __name__ == "__main__":
     main()
