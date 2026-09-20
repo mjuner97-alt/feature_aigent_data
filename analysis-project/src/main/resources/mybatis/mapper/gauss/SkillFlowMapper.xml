@@ -197,7 +197,7 @@
         <include refid="flowColumns"/>
         FROM skill_flow
         WHERE id = #{id}
-          AND deleted_at IS NULL
+        AND deleted_at IS NULL
     </select>
 
     <!-- 按编码查流程(编码全局唯一),已软删除的视为不存在 -->
@@ -206,7 +206,7 @@
         <include refid="flowColumns"/>
         FROM skill_flow
         WHERE code = #{code}
-          AND deleted_at IS NULL
+        AND deleted_at IS NULL
     </select>
 
     <!-- 按名称精确查流程,用于重名校验等场景,已软删除的视为不存在 -->
@@ -215,7 +215,7 @@
         <include refid="flowColumns"/>
         FROM skill_flow
         WHERE name = #{name}
-          AND deleted_at IS NULL
+        AND deleted_at IS NULL
     </select>
 
     <!-- 根据指标反查启用中的流程(指标 → 节点 → 流程 三表 JOIN),
@@ -231,6 +231,33 @@
     </select>
 
     <!-- 流程管理列表:支持按所有者/启用状态/名称编码关键字筛选,按更新时间倒序,已删除不返回 -->
+    <!-- 定时兜底扫描:启用未删、节点挂有依赖指标、当日尚无 AUTO_METRIC 执行、
+         且全部依赖指标当日已登记 READY 的流程,由 scanAutoTriggerFlows 补建每日自动执行。 -->
+    <select id="selectAutoTriggerCandidates" resultMap="FlowMap">
+        SELECT f.*
+        FROM skill_flow f
+        WHERE f.enabled = TRUE
+          AND f.deleted_at IS NULL
+          AND f.created_by IS NOT NULL
+          AND EXISTS (SELECT 1
+                      FROM skill_flow_node n
+                               JOIN skill_flow_node_metric nm ON nm.flow_node_id = n.id
+                      WHERE n.flow_id = f.id)
+          AND NOT EXISTS (SELECT 1
+                          FROM skill_flow_execution e
+                          WHERE e.flow_id = f.id
+                            AND e.trigger_type = 'AUTO_METRIC'
+                            AND e.data_date = #{dataDate})
+          AND NOT EXISTS (SELECT 1
+                          FROM skill_flow_node n
+                                   JOIN skill_flow_node_metric nm ON nm.flow_node_id = n.id
+                                   LEFT JOIN skill_metric_readiness r
+                                             ON r.metric_id = nm.metric_id AND r.data_date = #{dataDate}
+                          WHERE n.flow_id = f.id
+                            AND r.status IS DISTINCT FROM 'READY')
+    </select>
+
+    <!-- 流程管理列表：支持按所有者、启用状态、名称/编码关键字筛选，已删除数据不返回。 -->
     <select id="selectFlows" resultMap="FlowMap">
         SELECT
         <include refid="flowColumns"/>
@@ -388,7 +415,7 @@
         <include refid="readinessColumns"/>
         FROM skill_metric_readiness
         WHERE metric_id = #{metricId}
-          AND data_date = #{dataDate}
+        AND data_date = #{dataDate}
     </select>
 
     <!-- 批量查一组指标在指定日期已 READY 的记录,用于列表页展示就绪进度等 -->
@@ -397,8 +424,8 @@
         <include refid="readinessColumns"/>
         FROM skill_metric_readiness
         WHERE data_date = #{dataDate}
-          AND status = 'READY'
-          AND metric_id IN
+        AND status = 'READY'
+        AND metric_id IN
         <foreach collection="metricIds" item="metricId" open="(" separator="," close=")">#{metricId}</foreach>
     </select>
 
@@ -432,7 +459,7 @@
         SELECT *
         FROM skill_flow_execution
         WHERE id = #{id}
-        FOR UPDATE
+            FOR UPDATE
     </select>
 
     <!-- 为执行实例创建节点执行快照:模板/依赖/所需技能全部落快照,并初始化重试预算 -->
@@ -473,7 +500,7 @@
         SELECT *
         FROM skill_flow_execution
         WHERE active_guard_key = #{guardKey}
-        LIMIT 1
+            LIMIT 1
     </select>
 
     <!-- 查某用户某会话最近的执行实例,活跃(仍持有 guard)的优先,其次按创建时间倒序;用于"直接回答"时取消最近执行 -->
@@ -483,7 +510,7 @@
         WHERE trigger_user_id = #{userId}
           AND conversation_id = #{conversationId}
         ORDER BY CASE WHEN active_guard_key IS NOT NULL THEN 0 ELSE 1 END, created_at DESC
-        LIMIT 1
+            LIMIT 1
     </select>
 
     <!-- 执行记录管理列表:按触发用户/状态筛选,最多返回最近 500 条,createdBy 参数与 userId 同列过滤 -->

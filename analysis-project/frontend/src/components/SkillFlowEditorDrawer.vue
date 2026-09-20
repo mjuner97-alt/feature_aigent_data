@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { ElMessageBox } from 'element-plus';
 import { createSkillFlow, getSkillFlow, updateSkillFlow, validateSkillFlow } from '../api/skillFlow';
-import { listSkills } from '../api/skill';
+import { getSkill, listSkills } from '../api/skill';
 import { listMetrics } from '../api/skillDependencyMetric';
 import type { SkillListItem } from '../types/skill';
 import type { SkillDependencyMetric } from '../types/skillJob';
@@ -80,8 +80,8 @@ const validationErrors = computed(() => {
 });
 
 const preview = computed(() => form.value.nodes
-  .map(node => node.nodeName?.trim() || node.skillName || skills.value.find(item => item.id === node.skillId)?.name || '未配置 Skill')
-  .join('、'));
+    .map(node => node.nodeName?.trim() || node.skillName || skills.value.find(item => item.id === node.skillId)?.name || '未配置 Skill')
+    .join('、'));
 
 function syncNodeSkillName(node: SkillFlowNode) {
   node.skillName = skills.value.find(skill => skill.id === node.skillId)?.name;
@@ -96,12 +96,31 @@ async function searchSkills(query: string) {
   skillLoading.value = true;
   try {
     const result = await listSkills({ view: 'used', keyword: query.trim(), limit: 50 });
-    if (seq === skillSearchSeq) skills.value = result;
+    if (seq === skillSearchSeq) {
+      const selectedIds = new Set(form.value.nodes.map(node => node.skillId).filter((id): id is number => !!id));
+      const retained = skills.value.filter(skill => selectedIds.has(skill.id) && !result.some(item => item.id === skill.id));
+      skills.value = [...retained, ...result];
+    }
   } catch {
-    if (seq === skillSearchSeq) skills.value = [];
+    // Keep already selected options when a remote search fails. Dropping them
+    // makes Element Plus fall back to displaying numeric skill IDs.
+    if (seq === skillSearchSeq) {
+      const selectedIds = new Set(form.value.nodes.map(node => node.skillId).filter((id): id is number => !!id));
+      skills.value = skills.value.filter(skill => selectedIds.has(skill.id));
+    }
   } finally {
     if (seq === skillSearchSeq) skillLoading.value = false;
   }
+}
+
+async function ensureSelectedSkills(skillIds: number[]) {
+  const missing = [...new Set(skillIds)].filter(id => id > 0 && !skills.value.some(skill => skill.id === id));
+  if (!missing.length) return;
+  const loaded = await Promise.all(missing.map(async id => {
+    try { return await getSkill(id); } catch { return null; }
+  }));
+  const additions = loaded.filter((skill): skill is SkillListItem => !!skill);
+  if (additions.length) skills.value = [...additions, ...skills.value.filter(skill => !additions.some(item => item.id === skill.id))];
 }
 
 async function searchMetrics(query: string) {
@@ -193,6 +212,7 @@ async function load() {
   if (props.editId != null) {
     try {
       const flow = await getSkillFlow(props.editId);
+      await ensureSelectedSkills((flow.nodes || []).map(node => node.skillId ?? 0));
       wasPublic.value = flow.chatPublic === true;
       originalKeywords.value = (flow.triggers || []).map(trigger => trigger.keyword.trim().toLowerCase()).filter(Boolean);
       form.value = normalizeFlow(flow);
@@ -221,9 +241,9 @@ async function save() {
   if (wasPublic.value && keywordsChanged()) {
     try {
       await ElMessageBox.confirm(
-        '触发关键词已修改，保存后流程将自动退出公开状态，仅您自己可通过聊天触发；如需恢复公开请联系开发人员。是否继续保存？',
-        '关键词已修改',
-        { type: 'warning', confirmButtonText: '继续保存', cancelButtonText: '再检查一下' },
+          '触发关键词已修改，保存后流程将自动退出公开状态，仅您自己可通过聊天触发；如需恢复公开请联系开发人员。是否继续保存？',
+          '关键词已修改',
+          { type: 'warning', confirmButtonText: '继续保存', cancelButtonText: '再检查一下' },
       );
     } catch {
       return;

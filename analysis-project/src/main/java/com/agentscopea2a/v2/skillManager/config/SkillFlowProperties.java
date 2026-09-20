@@ -33,7 +33,7 @@ public final class SkillFlowProperties {
      * 指标就绪自动触发  后台兜底扫描间隔，单位为毫秒。
      * 扫描用于发现排队、待重试或租约过期的节点，不会占用执行 Skill 的 worker 线程。
      */
-    public static final long SCAN_INTERVAL_MS = 1000 * 60 * 10;
+    public static final long SCAN_INTERVAL_MS = 1000 * 60 * 1;
 
     private SkillFlowProperties() {
     }
