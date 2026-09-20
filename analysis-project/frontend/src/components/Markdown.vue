@@ -129,6 +129,12 @@ function markdownToHtml(md: string): string {
       parts.push(renderInlineHtml(md.slice(lastIdx, m.index)));
     }
     const lang = m[1] || '';
+    // HTML 围栏作为可渲染 HTML 片段处理，便于报告中的表格/卡片支持放大查看。
+    if (/^html?$/i.test(lang)) {
+      parts.push(`<div class="rendered-html-block">${m[2]}</div>`);
+      lastIdx = m.index + m[0].length;
+      continue;
+    }
     const code = escHtml(m[2]);
     const langLabel = lang ? ` class="language-${lang}"` : '';
     parts.push(`<pre style="background:${t.codeBlockBg};color:${t.codeBlockColor};border:${t.codeBlockBorder};padding:10px 14px;border-radius:6px;overflow-x:auto;margin:8px 0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.85rem;line-height:1.5"><code${langLabel}>${code}</code></pre>`);
