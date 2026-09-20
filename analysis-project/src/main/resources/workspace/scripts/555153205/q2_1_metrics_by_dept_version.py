@@ -30,23 +30,10 @@ import json
 import pandas as pd
 from _gauss_jdbc import query_gauss          # 保留 (_sql_registry 内部依赖)
 from _sql_registry import run_registered_sql
+from _download import print_download_block
 
 SQL_ID = "q2_1_metrics_by_dept_version"      # 与 sql_registry 注册的 sqlId 一致
 DOWNLOAD_FILENAME = "q2_1_明细.csv"           # downloadFilename 固化在脚本里, LLM 不传
-
-
-def _render_markdown_table(df):
-    """df -> markdown 表 (不依赖 tabulate). 列分隔符按 MarkdownTableConverter 规则转义."""
-    cols = [str(c) for c in df.columns]
-    lines = ["| " + " | ".join(cols) + " |", "|" + "|".join(["---"] * len(cols)) + "|"]
-    for _, row in df.iterrows():
-        cells = []
-        for c in df.columns:
-            v = row[c]
-            s = "" if v is None else str(v)
-            cells.append(s.replace("|", "\\|").replace("\n", " "))
-        lines.append("| " + " | ".join(cells) + " |")
-    return "\n".join(lines)
 
 
 def main():
@@ -129,14 +116,9 @@ def main():
     print("```")
 
     # 4.5 明细进下载块: N 行只落库生成短链, 不占 LLM 上下文;
-    #     下载块 print 在 echarts 块之后 -> 最终展示"图在上、下载链接在下";
-    #     要"链接在上、图在下"时, 把这段挪到 echarts print 之前即可
+    #     块 print 在 echarts 块之后 -> 最终展示"图在上、下载链接在下"
     if total:
-        detail_md = _render_markdown_table(df)
-        print(f'<<<DOWNLOAD_META>>> {json.dumps({"filename": DOWNLOAD_FILENAME}, ensure_ascii=False)}')
-        print("<<<DOWNLOAD_CONTENT>>>")
-        print(detail_md)
-        print("<<<DOWNLOAD_END>>>")
+        print_download_block(df, DOWNLOAD_FILENAME)
 
 
 if __name__ == "__main__":
