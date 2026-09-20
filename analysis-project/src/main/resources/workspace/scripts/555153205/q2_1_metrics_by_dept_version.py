@@ -30,7 +30,7 @@ import json
 import pandas as pd
 from _gauss_jdbc import query_gauss          # 保留 (_sql_registry 内部依赖)
 from _sql_registry import run_registered_sql
-from _download import print_download_block
+from _download import print_download_csv, print_download_xlsx
 
 SQL_ID = "q2_1_metrics_by_dept_version"      # 与 sql_registry 注册的 sqlId 一致
 DOWNLOAD_FILENAME = "q2_1_明细.csv"           # downloadFilename 固化在脚本里, LLM 不传
@@ -116,10 +116,15 @@ def main():
     print("```")
 
     # 4.5 明细进下载块: N 行只落库生成短链, 不占 LLM 上下文;
-    #     块 print 在 echarts 块之后 -> 最终展示"图在上、下载链接在下"
+    #     块 print 在 echarts 块之后 -> 最终展示"图在上、下载链接在下";
+    #     两个块 (CSV + xlsx 多sheet) 依次生成两条链接, 顺序 = print 顺序
     if total:
-        print_download_block(df, DOWNLOAD_FILENAME)
-
+        summary_df = pd.DataFrame({
+            "指标": ["总数", "已打分", "达标数", "打分率%", "达标率%"],
+            "值": [total, scored, passed, scored_pct, passed_pct],
+        })
+        print_download_csv(df, DOWNLOAD_FILENAME)
+        print_download_xlsx({"明细": df, "汇总": summary_df}, "q2_1_明细.xlsx")
 
 if __name__ == "__main__":
     main()

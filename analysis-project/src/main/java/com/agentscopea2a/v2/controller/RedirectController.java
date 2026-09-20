@@ -17,6 +17,7 @@ package com.agentscopea2a.v2.controller;
 
 import com.agentscopea2a.entity.UrlShortenerRecord;
 import com.agentscopea2a.v2.artifact.ArtifactStore;
+import com.agentscopea2a.v2.service.DownloadContentService;
 import com.agentscopea2a.v2.service.UrlShortenerService;
 import com.agentscopea2a.v2.util.DownloadErrorPage;
 import org.slf4j.Logger;
@@ -34,6 +35,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 
 /**
  * CSV 短链下载控制器 - 解 shortCode 后从 {@link ArtifactStore} 流式吐 CSV 文件.
@@ -89,7 +91,19 @@ public class RedirectController {
 
         if (record.getContent() != null) {
             // 新路径: content 直接落库 (DownloadContentService), 不碰磁盘. 跨会话清理安全.
-            bytes = record.getContent().getBytes(StandardCharsets.UTF_8);
+            // base64: 前缀 = 二进制内容 (xlsx 等) base64 落库, 下载时解码回原始字节
+            String content = record.getContent();
+            if (content.startsWith(DownloadContentService.BASE64_CONTENT_PREFIX)) {
+                try {
+                    bytes = Base64.getMimeDecoder().decode(
+                            content.substring(DownloadContentService.BASE64_CONTENT_PREFIX.length()));
+                } catch (IllegalArgumentException e) {
+                    log.warn("Base64 content decode failed: shortCode={}", shortCode, e);
+                    return htmlResponse(HttpStatus.INTERNAL_SERVER_ERROR, DownloadErrorPage.linkInvalid());
+                }
+            } else {
+                bytes = content.getBytes(StandardCharsets.UTF_8);
+            }
             filename = record.getFilename();
             mimeType = record.getMimeType();
             log.info("Content download: shortCode={} -> {} ({} bytes)", shortCode, filename, bytes.length);
@@ -118,14 +132,16 @@ public class RedirectController {
         // ContentDisposition 用 Spring builder: 自动生成 RFC 5987 filename*=UTF-8''<pct-encoded>
         // + RFC 2047 encoded-word fallback, 全 ASCII, 避免 Tomcat 用 ISO-8859-1 写中文 filename 抛
         // IllegalArgumentException (code point 26477 = 杭 无法编码). mimeType null 兜底防
-        // "null; charset=UTF-8" 非法 MediaType.
+        // "null; charset=UTF-8" 非法 MediaType. charset 只对 text/* 拼, 二进制 MIME (xlsx 等) 拼了不合法
         String contentType = (mimeType == null || mimeType.isBlank()) ? "text/csv" : mimeType;
+        MediaType mediaType = MediaType.parseMediaType(
+                contentType.startsWith("text/") ? contentType + "; charset=UTF-8" : contentType);
         org.springframework.http.ContentDisposition disposition =
                 org.springframework.http.ContentDisposition.attachment()
                         .filename(filename, StandardCharsets.UTF_8)
                         .build();
         return ResponseEntity.ok()
-                .contentType(MediaType.parseMediaType(contentType + "; charset=UTF-8"))
+                .contentType(mediaType)
                 .header(HttpHeaders.CONTENT_DISPOSITION, disposition.toString())
                 .body(bytes);
     }
