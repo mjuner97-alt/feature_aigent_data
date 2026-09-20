@@ -54,6 +54,12 @@ public interface SkillFlowMapper {
     List<SkillFlow> selectEnabledFlowsByMetricId(@Param("metricId") Long metricId);
 
     /** 全量更新流程定义(按 id);软删除的流程不允许再改。 */
+    /**
+     * 定时兜底扫描:当日全部依赖指标已 READY 且尚无 AUTO_METRIC 执行的启用流程。
+     * 与推模式(triggerReadyFlows)互补,任一环抖动导致推送丢失时由此补建每日自动执行。
+     */
+    List<SkillFlow> selectAutoTriggerCandidates(@Param("dataDate") LocalDate dataDate);
+
     void updateFlow(SkillFlow flow);
 
     /** 只切换启用/停用开关。 */

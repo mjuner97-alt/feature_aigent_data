@@ -7,6 +7,8 @@ import com.agentscopea2a.v2.skillManager.mapper.SkillMapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DuplicateKeyException;
@@ -23,7 +25,7 @@ import java.util.Set;
 /**
  * Skill Flow 执行生命周期服务:
  * <ul>
-     *   <li>{@link #trigger}:对话触发按(用户, 会话, 流程, 数据日期)幂等执行,不等待指标;</li>
+ *   <li>{@link #trigger}:对话触发按(用户, 会话, 流程, 数据日期)幂等执行,不等待指标;</li>
  *   <li>{@link #cancelLatest}:取消会话内最近一次执行(用户回复"直接回答"时调用);</li>
  *   <li>{@link #cancel}:按执行 ID 取消(前端长任务列表/详情的"终止"按钮)。</li>
  * </ul>
@@ -31,6 +33,8 @@ import java.util.Set;
  */
 @Service
 public class FlowExecutionService {
+
+    private static final Logger log = LoggerFactory.getLogger(FlowExecutionService.class);
 
     private final SkillFlowMapper mapper;
     private final SkillMapper skillMapper;
@@ -76,6 +80,51 @@ public class FlowExecutionService {
             createExecution(flow, flow.getCreatedBy(), conversationId, flow.getTaskQuestion(), dataDate,
                     FlowTriggerType.AUTO_METRIC, conversationId, true);
         }
+    }
+
+    /**
+     * 定时兜底扫描(由 FlowCoordinator 的 30 秒 scan 周期调用):
+     * 为"当日全部依赖指标已 READY 但还没有 AUTO_METRIC 执行"的启用流程补建每日自动执行。
+     *
+     * <p>与推模式({@link #triggerReadyFlows})互补:外部触发调用丢失、异步门控重算失败、
+     * 事件未送达等任一环抖动,最迟一个扫描周期(30 秒)内由本方法补偿。
+     * 当天已有 AUTO_METRIC 执行(含终态)的流程不重复创建——每天最多自动执行一次;
+     * 单个流程补建失败只记日志,不影响其余流程。</p>
+     */
+    public void scanAutoTriggerFlows() {
+        // 与推模式用同一个 clock 取"今天",保证就绪日期、guard key、扫描判断的日期口径一致
+        LocalDate dataDate = LocalDate.now(clock);
+        // 候选已在 SQL 里过滤(见 selectAutoTriggerCandidates):启用未删、created_by 非空、
+        // 节点挂了指标、当天没有 AUTO_METRIC 执行(含终态)、全部依赖指标当天 READY。
+        // 所以这里循环的每一个流程都"该建而未建",直接逐个补建即可。
+        for (SkillFlow flow : mapper.selectAutoTriggerCandidates(dataDate)) {
+            try {
+                autoTriggerFlow(flow.getId());
+            } catch (RuntimeException e) {
+                // 单个流程建失败(数据库抖动、并发冲突等)只记日志,不影响其余流程,
+                // 下一轮扫描(30 秒后)会再次尝试——候选查询的 NOT EXISTS 条件天然支持重试
+                log.error("[SkillFlow] auto trigger scan failed to create execution: flowId={}, code={}",
+                        flow.getId(), flow.getCode(), e);
+            }
+        }
+    }
+
+    /** 为单个流程创建当日自动执行(幂等:候选查询已排除当日有 AUTO_METRIC 执行的流程)。 */
+    @Transactional("gaussCustomerTransactionManager")
+    public void autoTriggerFlow(Long flowId) {
+        // 重新按 id 查一遍而不是直接用候选行:scan 循环和事务之间可能有几百毫秒间隙,
+        // 期间流程可能被停用/删除,过期数据不该再触发
+        SkillFlow flow = mapper.selectFlowById(flowId);
+        if (flow == null || !Boolean.TRUE.equals(flow.getEnabled())) return;
+        LocalDate dataDate = LocalDate.now(clock);
+        // 星期排程过滤(schedule_rules 为空 = 每天都跑);与推模式 triggerReadyFlows 同一判定
+        if (!SkillJobService.runsOn(flow.getScheduleRules(), dataDate.getDayOfWeek())) return;
+        // guard/conversation 与推模式同格式 auto:{flowId}:{日期},两路触发互为幂等屏障
+        String conversationId = "auto:" + flow.getId() + ":" + dataDate;
+        // requireAllMetrics=true:自动触发必须全部依赖指标 READY 才建执行(缺则静默返回);
+        // 建成即 QUEUED 并发 FlowQueuedEvent,事务提交后 FlowCoordinator 立即派发首节点
+        createExecution(flow, flow.getCreatedBy(), conversationId, flow.getTaskQuestion(), dataDate,
+                FlowTriggerType.AUTO_METRIC, conversationId, true);
     }
 
     /**

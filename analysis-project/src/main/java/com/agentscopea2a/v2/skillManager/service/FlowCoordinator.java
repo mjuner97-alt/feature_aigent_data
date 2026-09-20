@@ -1,5 +1,6 @@
 package com.agentscopea2a.v2.skillManager.service;
 
+import com.agentscopea2a.v2.skillManager.flowcache.FlowNodeCacheService;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.skillManager.config.SkillFlowProperties;
 import com.agentscopea2a.v2.skillManager.entity.*;
@@ -32,7 +33,9 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -43,7 +46,8 @@ import java.util.concurrent.TimeoutException;
  * Skill Flow 执行协调器(后台工作线程的心脏):
  * <ol>
  *   <li>{@link #scan} 定时扫描可运行节点(QUEUED/RETRY_WAIT/租约过期),经
- *       {@link FlowNodeClaimService} 抢占认领后提交到工作线程池;</li>
+ *       {@link FlowNodeClaimService} 抢占认领后提交到工作线程池;同一周期内先兜底补建
+ *       指标就绪但推送触发丢失的每日自动执行;</li>
  *   <li>{@link #executeNode} 渲染节点问题模板 -> 调 AI 执行该节点 skill,成功后推进;</li>
  *   <li>{@link #advance} 推进:放行等待节点、处理取消、全部终态后触发汇总与通知;</li>
  *   <li>{@link #expirePreviousDays} 跨天兜底:仍在等指标(WAITING_METRICS)的执行直接判失败。</li>
@@ -78,11 +82,18 @@ public class FlowCoordinator {
     private final FlowNodeClaimService claimService;
     private final NodeAttemptCompletionService attemptCompletionService;
     private final ToolResultRegistry toolResultRegistry;
+    /** 流程执行生命周期服务:scan 周期里兜底补建"指标已就绪但未被推送触发"的每日自动执行。 */
+    private final FlowExecutionService flowExecutionService;
+    /** 节点结果缓存:同流程同节点同问题同数据日期的长任务结果复用(缓存异常自动降级为 miss)。 */
+    private final FlowNodeCacheService nodeCache;
+    /** 要求绕过缓存重新执行的节点执行 ID(手动重跑单个节点时置入,执行时取出)。 */
+    private final Set<Long> refreshRequested = ConcurrentHashMap.newKeySet();
 
     public FlowCoordinator(SkillFlowMapper mapper, HarnessA2aRunnerV2 runner, ObjectMapper json, Clock skillFlowClock,
                            FlowCompletionService completionService, FlowNodeClaimService claimService,
                            NodeAttemptCompletionService attemptCompletionService,
-                           ToolResultRegistry toolResultRegistry) {
+                           ToolResultRegistry toolResultRegistry, FlowNodeCacheService nodeCache,
+                           FlowExecutionService flowExecutionService) {
         this.mapper = mapper;
         this.runner = runner;
         this.json = json;
@@ -91,6 +102,8 @@ public class FlowCoordinator {
         this.claimService = claimService;
         this.attemptCompletionService = attemptCompletionService;
         this.toolResultRegistry = toolResultRegistry;
+        this.nodeCache = nodeCache;
+        this.flowExecutionService = flowExecutionService;
         int workerCount = Math.max(1, SkillFlowProperties.WORKER_COUNT);
         this.workerPermits = new Semaphore(workerCount);
         this.workers = Executors.newFixedThreadPool(workerCount, r -> {
@@ -117,13 +130,51 @@ public class FlowCoordinator {
         }
     }
 
-    /** 定时扫描并调度可运行节点;总开关/工作开关任一关闭则直接空转。 */
+    /**
+     * 定时心跳扫描(每 30 秒一轮,上一轮跑完后间隔 30 秒再跑下一轮),是长任务后台的"总调度循环":
+     * <ol>
+     *   <li>兜底补建自动执行 —— 指标已就绪但外部推送触发丢失的流程,在这里被补建为
+     *       今日 AUTO_METRIC 执行(推模式正常时约 1 秒触发,扫描只是保险丝);</li>
+     *   <li>跨天清理 —— 数据日期已过的等待执行判失败,释放占位;</li>
+     *   <li>超时回收 —— 达到最大重试次数且租约过期的节点判失败,推进流程;</li>
+     *   <li>派发执行 —— 认领可运行节点提交给工作线程池,这一步让上面三步产生的
+     *       可运行节点(新建的 QUEUED/重试的 RETRY_WAIT/租约过期的 RUNNING)立即开跑,
+     *       不用再等下一轮扫描。</li>
+     * </ol>
+     * 顺序有讲究:先清理(2、3 步)再派发(4 步),清理腾出的位置和状态在同一轮就能被派发利用;
+     * 兜底补建(1 步)放最前,让新建执行的事务先提交,其 AFTER_COMMIT 事件会直接触发派发,
+     * 4 步对它只是双保险。
+     * </ol>
+     * 开关:本 Bean 受 harness.a2a.skill-flow.enabled 控制(默认开启),关闭时整个协调器
+     * 不注册,定时扫描自然不会执行。
+     */
     @Scheduled(fixedDelay = SkillFlowProperties.SCAN_INTERVAL_MS)
     public void scan() {
+        // 统一取当前时间:租约过期判断、跨天判断都用同一个时刻,避免一轮扫描内时钟漂移
         LocalDateTime now = LocalDateTime.now(clock);
         expirePreviousDays();       // 跨天兜底:仍在等指标(WAITING_METRICS)的执行直接判失败
         expireExhaustedNodes(now);  // 最终超时兜底:已达最大尝试次数且租约到期的节点直接判失败并推进流程
         dispatchRunnableNodes();    // 认领并调度可运行节点
+
+        // 第 1 步:兜底补建自动触发执行。
+        // 查"启用 + 当日全部依赖指标 READY + 当天还没有 AUTO_METRIC 执行"的流程,
+        // 逐个走 createExecution 补建(事务提交后发 FlowQueuedEvent,AFTER_COMMIT 监听器会立刻派发)。
+        // 与外部调 triggerByMetric 的推模式互补:推丢了、异步异常了,最迟 30 秒在这里补偿。
+        flowExecutionService.scanAutoTriggerFlows();
+
+        // 第 2 步:跨天兜底。数据日期是昨天或更早、还卡在等指标状态的执行,整体判 METRIC_TIMEOUT 失败,
+        // 不让昨天的僵尸执行永远挂着。
+        expirePreviousDays();
+
+        // 第 3 步:最终超时兜底。节点已到最大尝试次数且租约也过期 = worker 死了或模型调用僵死,
+        // 不再重试,直接判节点失败并推进流程(流程才能走到终态/汇总)。
+        expireExhaustedNodes(now);
+
+        // 第 4 步:派发可运行节点。QUEUED(新入队)/RETRY_WAIT(到重试时间)/RUNNING 但租约过期(要恢复)
+        // 的节点,在 worker 许可用量允许的前提下抢占认领并提交线程池执行。
+        // 正常路径下流程事务提交后就有事件监听立即派发,这里主要是兜底:事件丢失、
+        // 上一轮 worker 许可不足、重启恢复等场景靠这 30 秒一扫收敛。
+        dispatchRunnableNodes();
     }
 
     /**
@@ -132,14 +183,19 @@ public class FlowCoordinator {
      * 避免节点和流程永久显示“执行中”。尚未达到最大次数的过期节点由普通扫描逻辑重新认领重试。
      */
     private void expireExhaustedNodes(LocalDateTime now) {
+        // 查询条件(见 selectExpiredExhaustedNodes):status=RUNNING + attempt_count>=max_attempts
+        // + lease_expires_at < now,即"重试预算用完且最后一次尝试也失联"的节点
         for (SkillFlowNodeExecution node : mapper.selectExpiredExhaustedNodes(now)) {
+            // 把该节点遗留的 RUNNING 尝试记录(audit 表)统一判失败,保持审计数据一致
             mapper.failRunningAttemptsForNode(node.getId(), now);
+            // 节点落终态 FAILED,错误码 LEASE_EXPIRED 标明"不是业务失败,是基础设施失联"
             node.setStatus(FlowNodeExecutionStatus.FAILED);
             node.setErrorCode("LEASE_EXPIRED");
             node.setErrorMessage("Worker lease expired before completion");
             node.setCompletedAt(now);
-            clearLease(node);
+            clearLease(node);            // 清空租约字段,节点不再被任何 worker 认领
             mapper.updateNodeExecution(node);
+            // 推进流程:该节点终态后,下一个 PENDING 节点可以放行;若全部节点已终态则触发汇总收尾
             advance(node.getFlowExecutionId());
         }
     }
@@ -152,6 +208,9 @@ public class FlowCoordinator {
 
     private void dispatchRunnableNodes() {
         LocalDateTime now = LocalDateTime.now(clock);
+        // 候选集 = QUEUED / 到重试时间的 RETRY_WAIT / 租约过期的 RUNNING(可恢复重试),
+        // 且受 next_run_at(退避时间)、租约有效期、流程级 maxParallelism 三重过滤。
+        // 候选只是"有资格跑",还必须 claim 原子抢占成功才真正执行。
         // selectRunnableNodes SQL 逻辑(mybatis/mapper/gauss/SkillFlowMapper.xml)：
         // 1) 状态候选：QUEUED / RETRY_WAIT；或「RUNNING 但租约已过期且 attempt_count < max_attempts」
         //    （原执行超时/失联，尝试次数未用尽仍可重试恢复）；
@@ -166,13 +225,18 @@ public class FlowCoordinator {
         List<SkillFlowNodeExecution> runnable = safeNodes(mapper.selectRunnableNodes(now));
         log.debug("Skill flow dispatch scan found {} runnable node(s)", runnable.size());
         for (SkillFlowNodeExecution node : runnable) {
-            // RUNNING 且租约已过期 = 原执行超时/失联；不再等待旧线程结束，直接走重试恢复池。
+            // RUNNING 且租约已过期 = 原执行超时/失联;这类恢复尝试走独立线程池,不占普通池许可
             boolean expiredAttempt = node.getStatus() == FlowNodeExecutionStatus.RUNNING
                     && node.getLeaseExpiresAt() != null
                     && node.getLeaseExpiresAt().isBefore(now);
-            if (!expiredAttempt && !workerPermits.tryAcquire()) break; // 普通池已满,本轮不再认领
+            // 普通路径:池子满了(tryAcquire 失败)就停止本轮认领,剩下的留给下一轮扫描。
+            // 恢复路径(租约过期的 RUNNING)绕过许可检查,保证模型调用僵死时重试仍能立即启动。
+            if (!expiredAttempt && !workerPermits.tryAcquire()) break;
+            // 原子抢占:把节点标记为本 worker 认领并写入新租约;失败说明被其他实例/线程抢先,让出许可
             if (claimService.claim(node.getId(), workerId, now.plusSeconds(SkillFlowProperties.LEASE_SECONDS), now)) {
                 try {
+                    // 失联恢复走 recoveryWorkers(弹性线程池,与普通池隔离),
+                    // 否则旧调用占着普通池 worker,恢复任务永远排不上队
                     ExecutorService executor = expiredAttempt ? recoveryWorkers : workers;
                     executor.submit(() -> {
                         try {
@@ -206,6 +270,7 @@ public class FlowCoordinator {
         int attempt = 0;
         String attemptLeaseOwner = null;
         String requestId = null;
+        FlowNodeCacheService.Claim cacheClaim = null;
         String stage = "LOAD_EXECUTION";
         try {
             if (nodeId == null) throw new IllegalArgumentException("NodeExecutionIdMissing");
@@ -253,23 +318,39 @@ public class FlowCoordinator {
                             "skill_name", Objects.toString(node.getSkillName(), ""))));
             String question = buildPrompt(node, rendered);
             node.setRenderedQuestion(question);
-            stage = "CREATE_RUNTIME_CONTEXT";
-            String triggerUserId = requireText(flow.getTriggerUserId(), "TriggerUserIdMissing");
-            RuntimeContext context = RuntimeContext.builder()
-                    .sessionId("flow-" + flow.getId() + "-" + node.getNodeKey())
-                    .userId(triggerUserId).build();
-            requestId = java.util.UUID.randomUUID().toString();
-            context.put(com.agentscopea2a.v2.hooks.ChatScriptExecResultHook.ENABLED_CTX_KEY, Boolean.TRUE);
-            context.put(com.agentscopea2a.v2.hooks.ChatScriptExecResultHook.REQUEST_ID_CTX_KEY, requestId);
-            stage = "RUN_SKILL";
-            List<AgentEvent> events = runner.streamEvents(List.of(Msg.builder()
-                            .role(MsgRole.USER).content(TextBlock.builder().text(question).build()).build()),
-                    context).collectList().block(Duration.ofMinutes(
-                            SkillFlowProperties.NODE_EXECUTION_TIMEOUT_MINUTES));
-            stage = "EXTRACT_RESULT";
-            String result = toolResultRegistry.resolveAndAppendCurrentResults(
-                    extract(events), toolResultRegistry.getRequestRefs(requestId));
-            if (result == null || result.isBlank()) throw new IllegalStateException("Skill returned empty result");
+            stage = "NODE_CACHE_LOOKUP";
+            // 节点结果缓存:缓存 key 维度 = 节点(流程+nodeKey+skill) + skillId(版本) + 渲染后问题(输入) + 数据日期。
+            // 手动重跑单个节点会置入 refreshRequested,要求绕过缓存重新执行。
+            String cacheNodeId = "flow-" + flow.getFlowId() + "-" + node.getNodeKey() + "-skill-" + node.getSkillId();
+            String cacheVersion = String.valueOf(node.getSkillId());
+            boolean forceRefresh = refreshRequested.remove(nodeId);
+            String result = nodeCache.hit(cacheNodeId, cacheVersion, question, null, flow.getDataDate(), forceRefresh)
+                    .orElse(null); // miss/降级均为 null,照常执行
+            boolean cacheHit = result != null;
+            if (!cacheHit) {
+                cacheClaim = nodeCache.claim(cacheNodeId, cacheVersion, question, null, flow.getDataDate(), forceRefresh);
+                stage = "CREATE_RUNTIME_CONTEXT";
+                String triggerUserId = requireText(flow.getTriggerUserId(), "TriggerUserIdMissing");
+                RuntimeContext context = RuntimeContext.builder()
+                        .sessionId("flow-" + flow.getId() + "-" + node.getNodeKey())
+                        .userId(triggerUserId).build();
+                requestId = java.util.UUID.randomUUID().toString();
+                context.put(com.agentscopea2a.v2.hooks.ChatScriptExecResultHook.ENABLED_CTX_KEY, Boolean.TRUE);
+                context.put(com.agentscopea2a.v2.hooks.ChatScriptExecResultHook.REQUEST_ID_CTX_KEY, requestId);
+                stage = "RUN_SKILL";
+                List<AgentEvent> events = runner.streamEvents(List.of(Msg.builder()
+                                .role(MsgRole.USER).content(TextBlock.builder().text(question).build()).build()),
+                        context).collectList().block(Duration.ofMinutes(
+                        SkillFlowProperties.NODE_EXECUTION_TIMEOUT_MINUTES));
+                stage = "EXTRACT_RESULT";
+                result = toolResultRegistry.resolveAndAppendCurrentResults(
+                        extract(events), toolResultRegistry.getRequestRefs(requestId));
+                if (result == null || result.isBlank()) throw new IllegalStateException("Skill returned empty result");
+                // 只有抢占成功的执行才把结果写回缓存;输家照常返回结果但不落库、不覆盖赢家文件。
+                if (cacheClaim.won()) nodeCache.success(cacheClaim, result);
+            } else {
+                log.info("Skill flow node {} served from node cache", nodeId);
+            }
             // 软取消检查点:节点已跑完但结果尚未落库,此时流程已请求取消则丢弃结果——
             // 节点置 CANCELLED 并触发 advance 善后(后续节点不再执行,流程落终态 CANCELLED)。
             flow = mapper.selectFlowExecutionById(flow.getId());
@@ -291,6 +372,14 @@ public class FlowCoordinator {
                 log.info("Ignoring stale success for node {} attempt {}", nodeId, attempt);
             }
         } catch (Exception error) {
+            // 长任务失败:回收自己抢占的缓存锁,避免留下 10 分钟的僵尸 BUILDING 挡住后续重跑。
+            if (cacheClaim != null) {
+                try {
+                    nodeCache.failure(cacheClaim);
+                } catch (Exception cacheCleanupError) {
+                    log.warn("Failed to release node cache claim: nodeId={}", nodeId, cacheCleanupError);
+                }
+            }
             Long flowId = flow != null ? flow.getId() : node != null ? node.getFlowExecutionId() : null;
             FlowFailureDiagnostic diagnostic = FlowFailureDiagnostic.capture(error, stage, flowId, node);
             log.error("Skill flow node execution failed: errorId={}, stage={}, nodeId={}, flowId={}, attempt={}",
@@ -373,12 +462,20 @@ public class FlowCoordinator {
         boolean activeNode = nodes.stream().anyMatch(n -> n.getStatus() == FlowNodeExecutionStatus.RUNNING
                 || n.getStatus() == FlowNodeExecutionStatus.RETRY_WAIT
                 || n.getStatus() == FlowNodeExecutionStatus.QUEUED);
+        boolean releasedNextNode = false;
         if (!activeNode) {
-            nodes.stream().filter(n -> n.getStatus() == FlowNodeExecutionStatus.PENDING).findFirst()
-                    .ifPresent(node -> {
-                        node.setStatus(FlowNodeExecutionStatus.QUEUED);
-                        mapper.updateNodeExecution(node);
-                    });
+            var nextNode = nodes.stream().filter(n -> n.getStatus() == FlowNodeExecutionStatus.PENDING).findFirst();
+            if (nextNode.isPresent()) {
+                SkillFlowNodeExecution node = nextNode.get();
+                node.setStatus(FlowNodeExecutionStatus.QUEUED);
+                mapper.updateNodeExecution(node);
+                releasedNextNode = true;
+            }
+        }
+        // 节点完成后放行的后继节点不能只等定时扫描，否则正常串行流程会额外
+        // 等待一个 scan 周期（当前为 30 秒）；扫描仅作为事件丢失/重启兜底。
+        if (releasedNextNode) {
+            dispatchRunnableNodes();
         }
         // 全部节点终态:抢占汇总权(claimExecutionForSummary 保证只汇总一次)后收尾
         nodes = safeNodes(mapper.selectNodeExecutions(flow.getId()));
@@ -476,6 +573,8 @@ public class FlowCoordinator {
             throw new IllegalStateException("节点当前不可重跑");
         // 清空上次执行的结果、错误、时间和租约，并恢复完整重试预算。
         resetForRetry(node);
+        // 手动重跑单个节点 = 明确要求重新执行,绕过节点缓存(否则会直接秒回上次的缓存结果)。
+        refreshRequested.add(nodeId);
         mapper.updateNodeExecution(node);
         // 终态流程必须先恢复为 RUNNING，否则 FlowNodeClaimService 会拒绝认领 QUEUED 节点，
         // 节点将永久停在“排队中”。旧汇总也已失效，等待节点完成后重新生成。
@@ -543,10 +642,14 @@ public class FlowCoordinator {
     /** 跨天兜底:数据日期已过但还在等指标的执行,整体判 METRIC_TIMEOUT 失败并通知。 */
     private void expirePreviousDays() {
         LocalDate today = LocalDate.now(clock);
+        // 等指标执行的判死只发生在"跨天"时刻:数据日期 < 今天 说明这一天已经过去,
+        // 指标再也不会为那个日期就绪(就绪记录按天登记,过期作废)。
         List<SkillFlowExecution> waiting = mapper.selectWaitingExecutions();
         for (SkillFlowExecution flow : waiting == null ? List.<SkillFlowExecution>of() : waiting) {
+            // data_date 为空按今天处理(老数据容错),不误杀
             LocalDate dataDate = flow.getDataDate() == null ? today : flow.getDataDate();
-            if (!dataDate.isBefore(today)) continue;
+            if (!dataDate.isBefore(today)) continue;   // 今天或未来的执行,不归跨天兜底管
+            // 该执行下所有未终态的节点统一判 BLOCKED(依赖指标超时),错误码 METRIC_TIMEOUT
             for (SkillFlowNodeExecution node : safeNodes(mapper.selectNodeExecutions(flow.getId()))) {
                 if (node.getStatus() == null || !node.getStatus().terminal()) {
                     node.setStatus(FlowNodeExecutionStatus.BLOCKED);
@@ -555,12 +658,14 @@ public class FlowCoordinator {
                     mapper.updateNodeExecution(node);
                 }
             }
+            // 流程整体落 FAILED,summary 里记录超时错误码和缺失指标明细,便于排查哪天哪个指标没来
             flow.setStatus(FlowExecutionStatus.FAILED);
             flow.setSummaryJson(json(Map.of("errorCode", "METRIC_TIMEOUT", "missingMetrics",
                     Objects.toString(flow.getMissingMetricsJson(), ""))));
-            releaseRepeatableGuard(flow);
+            releaseRepeatableGuard(flow);   // 释放幂等 guard,当天/以后可再次触发
             flow.setCompletedAt(LocalDateTime.now(clock));
             mapper.updateExecution(flow);
+            // 发通知告知失败(通知失败不影响状态,发送内部自行兜底)
             completionService.sendInitial(flow);
         }
     }
@@ -640,8 +745,15 @@ public class FlowCoordinator {
         node.setLeaseExpiresAt(null);
     }
 
+    /**
+     * 流程终态后释放幂等 guard,让同 guard key(用户:会话:流程:日期)能再次触发新一轮执行。
+     *
+     * <p>对所有触发类型一律释放(含 AUTO_METRIC):执行活跃期间 guard 保留,并发重复触发仍被
+     * createExecution 的幂等复用挡住;终态后不清会导致当天后续触发被终态记录永久占用,
+     * selectActiveExecution 不区分状态,复用到终态记录后静默不创建新执行。</p>
+     */
     private void releaseRepeatableGuard(SkillFlowExecution flow) {
-        if (flow.getTriggerType() != FlowTriggerType.AUTO_METRIC) flow.setActiveGuardKey(null);
+        flow.setActiveGuardKey(null);
     }
 
     /** 回写尝试(audit)记录的最终结果。 */

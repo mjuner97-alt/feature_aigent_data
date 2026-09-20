@@ -49,6 +49,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -65,6 +66,13 @@ public class ChatStreamServiceImpl implements ChatStreamService {
 
     private static final String IN_FLIGHT_NOTICE = "当前会话正在处理中，请等待本次回答完成后再试。";
     private static final String EMPTY_MODEL_COMPLETION_MESSAGE = "模型返回为空,请稍后重试...";
+    /**
+     * 同会话并发拒绝前的宽限等待（秒）。客户端"终止"是断连式取消：服务端要等旧流下一次
+     * SSE 写失败才会感知并触发 cleanup（cleanup 第 5 步 complete {@code completion()}）。
+     * 撞上"马上就要被清理的旧条目"时，先在宽限期内等旧调用终止，终止即放行本次新提问，
+     * 避免"点了终止马上重问"被误拒。
+     */
+    private static final long IN_FLIGHT_GRACE_SECONDS = 5;
 
     private static final Logger log = LoggerFactory.getLogger(ChatStreamServiceImpl.class);
     private static final Logger llmTraceLog = LoggerFactory.getLogger("llm.trace");
@@ -365,9 +373,23 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         // putIfAbsent：若已存在同会话的进行中调用，直接拒绝，防止并发覆盖 / 重复消耗 LLM token
         InFlightCall existing = inFlightCalls.putIfAbsent(callKey, inFlight);
         if (existing != null) {
-            strategy.sendInFlight(emitter, req);
-            emitter.complete();
-            return emitter;
+            // 宽限期等待：旧调用可能在客户端断连后马上被 cancel 清理（completion 由 cleanup
+            // 在 remove 之后 complete），等它终止就放行本次新提问，而不是立刻拒绝。
+            boolean oldEnded = false;
+            try {
+                existing.completion().get(IN_FLIGHT_GRACE_SECONDS, TimeUnit.SECONDS);
+                oldEnded = true;
+            } catch (TimeoutException te) {
+                // 旧调用确实还在跑 → 走拒绝
+            } catch (Exception e) {
+                log.warn("in-flight completion wait failed for sessionId={}: {}", conversationId, e.getMessage());
+            }
+            // 放行条件：旧调用已终止 且 成功抢到标记（防止宽限期间另一请求先注册）
+            if (!oldEnded || inFlightCalls.putIfAbsent(callKey, inFlight) != null) {
+                strategy.sendInFlight(emitter, req);
+                emitter.complete();
+                return emitter;
+            }
         }
 
         // 构造用户消息（纯文本内容块）
@@ -451,50 +473,50 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                 streamTimeouts.normalTimeoutMs(),
                 streamTimeouts.analysisTimeoutMs(),
                 () -> {
-            if (streamCtx.cleaned.get()) return; // 已正常完成 / 已被其他路径清理
-            ChatStreamTimeoutWatchdog activeWatchdog = streamCtx.timeoutWatchdog.get();
-            String timeoutProfile = activeWatchdog == null
-                    ? ChatStreamTimeoutWatchdog.Profile.NORMAL.name()
-                    : activeWatchdog.profile().name();
-            long activeTimeoutMs = activeWatchdog == null
-                    ? streamTimeouts.normalTimeoutMs()
-                    : activeWatchdog.activeTimeoutMs();
-            log.warn("SSE watchdog timeout for sessionId={} profile={}", conversationId, timeoutProfile);
-            //发送失败结果
-            recordMonitorStreamTimeout(streamCtx, new TimeoutException("/ai/chat stream watchdog timeout"));
-            // 1. Trace 状态标记 TIMEOUT（在 cleanup 的 assemble 之前）
-            try {
-                if (streamCtx.traceCtx != null) {
-                    streamCtx.traceCtx.markTimeout();
-                }
-            } catch (Exception te) {
-                log.warn("Trace markTimeout failed for sessionId={}: {}", streamCtx.conversationId, te.getMessage());
-            }
-            // 2. 先取消订阅，停止继续消耗 LLM token（dispose 是取消，不会触发 onError 回调）
-            Disposable d = streamCtx.subscription.get();
-            if (d != null && !d.isDisposed()) {
-                d.dispose();
-                log.info("v2 stream cancelled for sessionId={} (watchdog timeout)", streamCtx.conversationId);
-            }
-            // 3. 连接仍存活，发送超时错误事件（含"已执行"补发，保证与"执行中"成对）
-            try {
-                if (streamCtx.hasSentExecuting.get()) {
-                    strategy.sendThink(streamCtx, ThinkPayload.done(AGENT_RETURN_NAME));
-                }
-                strategy.sendError(streamCtx, new RuntimeException(
-                        "流程超时：本次对话处理时间过长（已等待 " + (activeTimeoutMs / 60_000) + " 分钟），会话已自动结束。"
-                                + "请稍后重试，或尝试精简问题以缩短处理时间。"));
-            } catch (Exception e) {
-                log.warn("发送超时错误失败: sessionId={}", streamCtx.conversationId, e);
-            }
-            // 4. 关闭 emitter 并统一清理（saveAnswerIntoDB / trace 落库等照常执行）
-            try {
-                streamCtx.emitter.complete();
-            } catch (Exception e) {
-                log.warn("emitter.complete() 失败: sessionId={}", streamCtx.conversationId, e);
-            }
-            cleanup.run();
-        });
+                    if (streamCtx.cleaned.get()) return; // 已正常完成 / 已被其他路径清理
+                    ChatStreamTimeoutWatchdog activeWatchdog = streamCtx.timeoutWatchdog.get();
+                    String timeoutProfile = activeWatchdog == null
+                            ? ChatStreamTimeoutWatchdog.Profile.NORMAL.name()
+                            : activeWatchdog.profile().name();
+                    long activeTimeoutMs = activeWatchdog == null
+                            ? streamTimeouts.normalTimeoutMs()
+                            : activeWatchdog.activeTimeoutMs();
+                    log.warn("SSE watchdog timeout for sessionId={} profile={}", conversationId, timeoutProfile);
+                    //发送失败结果
+                    recordMonitorStreamTimeout(streamCtx, new TimeoutException("/ai/chat stream watchdog timeout"));
+                    // 1. Trace 状态标记 TIMEOUT（在 cleanup 的 assemble 之前）
+                    try {
+                        if (streamCtx.traceCtx != null) {
+                            streamCtx.traceCtx.markTimeout();
+                        }
+                    } catch (Exception te) {
+                        log.warn("Trace markTimeout failed for sessionId={}: {}", streamCtx.conversationId, te.getMessage());
+                    }
+                    // 2. 先取消订阅，停止继续消耗 LLM token（dispose 是取消，不会触发 onError 回调）
+                    Disposable d = streamCtx.subscription.get();
+                    if (d != null && !d.isDisposed()) {
+                        d.dispose();
+                        log.info("v2 stream cancelled for sessionId={} (watchdog timeout)", streamCtx.conversationId);
+                    }
+                    // 3. 连接仍存活，发送超时错误事件（含"已执行"补发，保证与"执行中"成对）
+                    try {
+                        if (streamCtx.hasSentExecuting.get()) {
+                            strategy.sendThink(streamCtx, ThinkPayload.done(AGENT_RETURN_NAME));
+                        }
+                        strategy.sendError(streamCtx, new RuntimeException(
+                                "流程超时：本次对话处理时间过长（已等待 " + (activeTimeoutMs / 60_000) + " 分钟），会话已自动结束。"
+                                        + "请稍后重试，或尝试精简问题以缩短处理时间。"));
+                    } catch (Exception e) {
+                        log.warn("发送超时错误失败: sessionId={}", streamCtx.conversationId, e);
+                    }
+                    // 4. 关闭 emitter 并统一清理（saveAnswerIntoDB / trace 落库等照常执行）
+                    try {
+                        streamCtx.emitter.complete();
+                    } catch (Exception e) {
+                        log.warn("emitter.complete() 失败: sessionId={}", streamCtx.conversationId, e);
+                    }
+                    cleanup.run();
+                });
         streamCtx.timeoutWatchdog.set(timeoutWatchdog);
         ctx.put(ChatStreamTimeoutWatchdog.RUNTIME_CONTEXT_KEY, timeoutWatchdog);
         timeoutWatchdog.scheduleNormal();
