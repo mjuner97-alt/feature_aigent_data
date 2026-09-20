@@ -13,8 +13,8 @@ public final class SkillFlowProperties {
     /** Skill Flow 使用的业务时区，用于计算数据日期和每日幂等键。 */
     public static final ZoneId ZONE_ID = ZoneId.of("Asia/Shanghai");
 
-    /** 后台同时执行的节点数量上限。每个流程还受自身并发配置限制。 */
-    public static final int WORKER_COUNT = 2;
+    /** 长任务后台同时执行的节点数量上限。每个流程还受自身并发配置限制。 */
+    public static final int WORKER_COUNT = 3;
 
     /** 单个 Skill 节点允许执行的最长时间，单位为分钟。 */
     public static final int NODE_EXECUTION_TIMEOUT_MINUTES = 30;
@@ -33,7 +33,7 @@ public final class SkillFlowProperties {
      * 指标就绪自动触发  后台兜底扫描间隔，单位为毫秒。
      * 扫描用于发现排队、待重试或租约过期的节点，不会占用执行 Skill 的 worker 线程。
      */
-    public static final long SCAN_INTERVAL_MS = 1000 * 60 * 1;
+    public static final long SCAN_INTERVAL_MS = 1000 * 60 ;
 
     private SkillFlowProperties() {
     }

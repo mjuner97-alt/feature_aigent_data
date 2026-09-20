@@ -3,6 +3,8 @@ package com.agentscopea2a.v2.skillManager.controller;
 
 import com.agentscopea2a.v2.service.UrlShortenerService;
 import com.agentscopea2a.v2.skillManager.dto.MetricTriggerBatchDto;
+import com.agentscopea2a.v2.skillManager.dto.NotifySettingsDto;
+import com.agentscopea2a.v2.skillManager.dto.NotifySettingsUpdateRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillDependencyMetricDto;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobCreateRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobDto;
@@ -81,6 +83,23 @@ public class SkillJobController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable(name = "id" ) Long id, @RequestHeader("X-User-Id") String userId) {
         service.delete(id, userId);
+    }
+
+    // ---- 通知设置 ----
+
+    /** 查询任务通知设置(收件人名单;仅创建人)。 */
+    @GetMapping("/{id}/notify-settings")
+    public NotifySettingsDto getNotifySettings(@PathVariable(name = "id") Long id,
+                                               @RequestHeader("X-User-Id") String userId) {
+        return service.getNotifySettings(id, userId);
+    }
+
+    /** 更新任务通知设置(全量替换收件人名单;空列表 = 清空恢复发创建人;收件人须存在于人员表)。 */
+    @PutMapping("/{id}/notify-settings")
+    public NotifySettingsDto updateNotifySettings(@PathVariable(name = "id") Long id,
+                                                  @RequestBody NotifySettingsUpdateRequest req,
+                                                  @RequestHeader("X-User-Id") String userId) {
+        return service.updateNotifySettings(id, req, userId);
     }
 
     // ---- 执行 ----

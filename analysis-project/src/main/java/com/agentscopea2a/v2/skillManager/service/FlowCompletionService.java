@@ -5,6 +5,7 @@ import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.skillManager.entity.*;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.skillManager.notification.NotificationPayload;
+import com.agentscopea2a.v2.skillManager.notification.NotificationReceivers;
 import com.agentscopea2a.v2.skillManager.notification.NotificationSender;
 import com.agentscopea2a.v2.skillManager.report.FlowReportStorage;
 import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
@@ -28,6 +29,7 @@ import java.nio.file.Paths;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -54,6 +56,7 @@ public class FlowCompletionService {
     private final HtmlReportRenderer renderer;
     private final SkillFlowMapper mapper;
     private final NotificationSender sender;
+    private final MockOrgService orgService;
     private final Clock clock;
     private final FlowSummaryPromptRenderer promptRenderer;
     private final FlowReportStorage reportStorage;
@@ -63,7 +66,7 @@ public class FlowCompletionService {
     private final Path reportRoot;
 
     public FlowCompletionService(HarnessA2aRunnerV2 runner, ObjectMapper json, HtmlReportRenderer renderer,
-                                 SkillFlowMapper mapper, NotificationSender sender,
+                                 SkillFlowMapper mapper, NotificationSender sender, MockOrgService orgService,
                                  @Qualifier("skillFlowClock") Clock skillFlowClock,
                                  SkillStorageProperties storage, FlowSummaryPromptRenderer promptRenderer,
                                  FlowReportStorage reportStorage) {
@@ -72,6 +75,7 @@ public class FlowCompletionService {
         this.renderer = renderer;
         this.mapper = mapper;
         this.sender = sender;
+        this.orgService = orgService;
         this.clock = skillFlowClock;
         this.promptRenderer = promptRenderer;
         this.reportStorage = reportStorage;
@@ -169,10 +173,13 @@ public class FlowCompletionService {
 
     /** 落通知记录 -> 真正发送 -> 回写结果状态;deliveryKey 重复(首次已发过)则直接跳过。 */
     private void send(SkillFlowExecution execution, String key) {
+        // 收件人:执行时快照的名单 + 触发类型范围;命中范围且名单非空则整名单一次批量发送,
+        // 否则维持原语义发触发人(triggerUserId 已按触发类型快照:CHAT/MANUAL=触发人,AUTO_METRIC=流程创建人)。
+        List<String> receivers = receiversFor(execution);
         SkillFlowNotification record = SkillFlowNotification.builder()
                 .flowExecutionId(execution.getId()).deliveryKey(key)
                 .status(FlowNotificationStatus.PENDING)
-                .recipient(execution.getTriggerUserId()).channel("DEFAULT")
+                .recipient(String.join(",", receivers)).channel("DEFAULT")
                 .requestJson(execution.getSummaryJson()).build();
         try {
             mapper.insertNotification(record);
@@ -185,7 +192,7 @@ public class FlowCompletionService {
                     filePath, reportFileName(execution),
                     reportUrl(execution), execution.getFlowId(), execution.getFlowName(), null, null,
                     execution.getId(), execution.getStatus().name(), LocalDateTime.now(clock),
-                    List.of(execution.getTriggerUserId()), "FLOW"));
+                    receivers, "FLOW"));
             record.setStatus(FlowNotificationStatus.SENT);
             record.setSentAt(LocalDateTime.now(clock));
         } catch (Exception e) {
@@ -193,6 +200,34 @@ public class FlowCompletionService {
             record.setErrorMessage(e.getMessage());
         }
         mapper.updateNotification(record);
+    }
+
+    /**
+     * 解析本次执行的通知收件人:触发人始终合并在内(默认收到,无需加入名单);
+     * 触发类型在快照配置的范围内(未配置默认仅 AUTO_METRIC)时,再并上名单
+     * (名单中人员表已失效的工号直接剔除,不报错)。
+     */
+    private List<String> receiversFor(SkillFlowExecution execution) {
+        List<String> receivers = new ArrayList<>();
+        String triggerUserId = execution.getTriggerUserId();
+        if (triggerUserId != null && !triggerUserId.isBlank()) {
+            receivers.add(triggerUserId);
+        }
+        List<String> configured = NotificationReceivers.parse(execution.getNotifyReceiversSnapshot());
+        if (!configured.isEmpty()) {
+            List<String> triggers = NotificationReceivers.parse(execution.getNotifyReceiverTriggersSnapshot());
+            FlowTriggerType triggerType = execution.getTriggerType();
+            // 未配置触发类型范围时默认仅 AUTO_METRIC 发名单(贴近原语义:定时/指标触达名单,对话不打扰)
+            boolean inScope = triggers.isEmpty()
+                    ? triggerType == FlowTriggerType.AUTO_METRIC
+                    : triggers.contains(triggerType == null ? "" : triggerType.name());
+            if (inScope) {
+                for (String uid : orgService.filterExistingUserIds(configured)) {
+                    if (!receivers.contains(uid)) receivers.add(uid);
+                }
+            }
+        }
+        return receivers;
     }
 
     /** 解析报告绝对路径,并限制在报告根目录内(防路径穿越)。 */

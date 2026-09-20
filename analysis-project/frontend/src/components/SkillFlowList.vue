@@ -22,6 +22,11 @@ const metricRows = ref<FlowMetricPrecheck[]>([]);
 const metricLoading = ref(false);
 const metricError = ref('');
 
+// 通知设置:独立页面(仅创建人入口)
+function openNotifySettings(flow: SkillFlow) {
+  router.push(`/skills/jobs/flows/${flow.id}/notify`);
+}
+
 const triggerMsg = ref('');
 const page = ref(1);
 const pageSize = ref(20);
@@ -140,6 +145,7 @@ watch(() => [props.scope, props.createdBy] as const, () => load('', props.create
               <button class="btn-action" @click="viewRecords(flow)">记录</button>
               <template v-if="isOwner(flow)">
                 <button class="btn-action" @click="edit(flow.id)">编辑</button>
+                <button class="btn-action" title="配置完成通知的收件人名单" @click="openNotifySettings(flow)">通知</button>
                 <button class="btn-action toggle" @click="toggle(flow)">{{ flow.enabled ? '禁用' : '启用' }}</button>
                 <button class="btn-action danger" @click="remove(flow)">删除</button>
               </template>

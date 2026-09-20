@@ -1,4 +1,5 @@
 import type { SkillJob, SkillJobInput, SkillJobUpdateInput, SkillJobExecution, SkillJobNotification } from '../types/skillJob';
+import type { NotifySettings, NotifySettingsUpdateInput } from '../types/notifySettings';
 import { apiErrorDetail } from '../utils/apiError';
 
 const BASE = '/api/skill-jobs';
@@ -22,6 +23,7 @@ async function jobError(res: Response, fallback: string): Promise<Error> {
   if (detail.startsWith('MetricNotFound')) return new Error('依赖指标不存在或已删除');
   if (detail.startsWith('MetricDisabled')) return new Error('依赖指标已停用，不可选用');
   if (detail.startsWith('NotificationResendUnavailable')) return new Error('当前执行没有可补发的报告');
+  if (detail.startsWith('NotifyReceiverTooMany')) return new Error('收件人数量不能超过 50');
   return new Error(detail ? `${fallback}: ${detail}` : `${fallback} (HTTP ${res.status})`);
 }
 
@@ -61,6 +63,22 @@ export async function updateJob(id: number, input: SkillJobUpdateInput): Promise
 export async function deleteJob(id: number): Promise<void> {
   const res = await fetch(`${BASE}/${id}`, { method: 'DELETE', headers: authHeaders() });
   if (!res.ok) throw await jobError(res, '删除失败');
+}
+
+/** 查询任务通知设置(仅创建人) */
+export async function getJobNotifySettings(id: number): Promise<NotifySettings> {
+  const res = await fetch(`${BASE}/${id}/notify-settings`, { headers: authHeaders() });
+  if (!res.ok) throw await jobError(res, '查询通知设置失败');
+  const body = await res.json();
+  return { notifyReceivers: body.notifyReceivers ?? [] };
+}
+
+/** 更新任务通知设置(全量替换;空数组 = 清空恢复发创建人) */
+export async function updateJobNotifySettings(id: number, input: NotifySettingsUpdateInput): Promise<NotifySettings> {
+  const res = await fetch(`${BASE}/${id}/notify-settings`, { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(input) });
+  if (!res.ok) throw await jobError(res, '保存通知设置失败');
+  const body = await res.json();
+  return { notifyReceivers: body.notifyReceivers ?? [] };
 }
 
 /** 触发执行（按 ID） */
