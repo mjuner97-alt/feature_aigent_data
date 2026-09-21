@@ -3,12 +3,15 @@ package com.agentscopea2a.v2.skillManager.service;
 import com.agentscopea2a.v2.skillManager.config.SkillFlowProperties;
 import com.agentscopea2a.v2.skillManager.dto.FlowMetricReadinessDto;
 import com.agentscopea2a.v2.skillManager.dto.FlowValidationDto;
+import com.agentscopea2a.v2.skillManager.dto.NotifySettingsDto;
+import com.agentscopea2a.v2.skillManager.dto.NotifySettingsUpdateRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillFlowDefinitionRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillFlowDto;
 import com.agentscopea2a.v2.skillManager.entity.*;
 import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillMapper;
+import com.agentscopea2a.v2.skillManager.notification.NotificationReceivers;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -48,14 +51,16 @@ public class FlowDefinitionService {
     private final SkillFlowMapper flowMapper;
     private final SkillMapper skillMapper;
     private final SkillDependencyMetricMapper metricMapper;
+    private final MockOrgService orgService;
     private final Clock clock;
 
     public FlowDefinitionService(SkillFlowMapper flowMapper, SkillMapper skillMapper,
-                                 SkillDependencyMetricMapper metricMapper,
+                                 SkillDependencyMetricMapper metricMapper, MockOrgService orgService,
                                  @Qualifier("skillFlowClock") Clock skillFlowClock) {
         this.flowMapper = flowMapper;
         this.skillMapper = skillMapper;
         this.metricMapper = metricMapper;
+        this.orgService = orgService;
         this.clock = skillFlowClock;
     }
 
@@ -89,6 +94,9 @@ public class FlowDefinitionService {
         }
         SkillFlow updated = toFlow(request, existing.getCreatedBy(), existing.getCode());
         updated.setId(id);
+        // 通知收件人配置不在编排表单里(toFlow 不会带),整体替换定义时原样保留,由通知设置抽屉独立维护。
+        updated.setNotifyReceivers(existing.getNotifyReceivers());
+        updated.setNotifyReceiverTriggers(existing.getNotifyReceiverTriggers());
         // 公开流程一旦被创建人修改即自动退出公开(须重新联系开发人员开通),普通更新接口不允许保留该状态。
         boolean wasPublic = Boolean.TRUE.equals(existing.getChatPublic());
         updated.setChatPublic(false);
@@ -130,6 +138,42 @@ public class FlowDefinitionService {
     /** 流程详情。 */
     public SkillFlowDto get(Long id, String userId) {
         return toDto(requireOwner(id, userId));
+    }
+
+    // ==================== 通知设置(通知设置抽屉专用,与流程编排表单解耦) ====================
+
+    /** 查询流程通知设置(仅创建人)。人员表中已失效的收件人工号直接剔除不回显。 */
+    public NotifySettingsDto getNotifySettings(Long id, String userId) {
+        SkillFlow flow = requireOwner(id, userId);
+        List<String> receivers = orgService.filterExistingUserIds(
+                NotificationReceivers.parse(flow.getNotifyReceivers()));
+        List<String> triggers = NotificationReceivers.parse(flow.getNotifyReceiverTriggers());
+        return new NotifySettingsDto(receivers, triggers.isEmpty() ? null : triggers, flow.getNotifyEnabled());
+    }
+
+    /**
+     * 更新流程通知设置:全量替换收件人名单;人员表中已不存在的工号静默剔除(不报错),
+     * 空名单 = 清空。触发类型范围只做值域校验(CHAT/MANUAL/AUTO_METRIC,非人员,不做人员表校验)。
+     * 发送侧始终把触发人合并进收件人(触发人默认收到,无需加入名单)。
+     */
+    @Transactional("gaussCustomerTransactionManager")
+    public NotifySettingsDto updateNotifySettings(Long id, NotifySettingsUpdateRequest req, String userId) {
+        SkillFlow flow = requireOwner(id, userId);
+        String receivers = NotificationReceivers.toCsv(
+                orgService.filterExistingUserIds(req == null ? null : req.notifyReceivers()));
+        String triggerScope = NotificationReceivers.toCsv(req == null ? null : req.notifyReceiverTriggers());
+        validateTriggerScope(NotificationReceivers.parse(triggerScope));
+        flowMapper.updateFlowNotifySettings(id, receivers, triggerScope);
+        return getNotifySettings(id, userId);
+    }
+
+    /** 触发类型范围值域校验:仅允许 CHAT/MANUAL/AUTO_METRIC。 */
+    private void validateTriggerScope(List<String> triggers) {
+        for (String trigger : triggers) {
+            if (!"CHAT".equals(trigger) && !"MANUAL".equals(trigger) && !"AUTO_METRIC".equals(trigger)) {
+                throw new IllegalArgumentException("NotifyTriggerScopeInvalid: 非法触发类型 " + trigger);
+            }
+        }
     }
 
     /** 完整性预检:收集全部错误返回(不抛异常),供编辑器展示。 */

@@ -26,6 +26,7 @@ import SkillApprovalListPage from './pages/skill/SkillApprovalListPage.vue';
 import SkillJobListPage from './pages/skill/SkillJobListPage.vue';
 import SkillJobFormPage from './pages/skill/SkillJobFormPage.vue';
 import SkillFlowFormPage from './pages/skill/SkillFlowFormPage.vue';
+import SkillNotifySettingsPage from './pages/skill/SkillNotifySettingsPage.vue';
 import SkillVirtualGroupPage from './pages/skill/SkillVirtualGroupPage.vue';
 import SqlRegistryPage from './pages/SqlRegistryPage.vue';
 import ScriptRegistryShell from './components/ScriptRegistryShell.vue';
@@ -57,8 +58,10 @@ const routes: RouteRecordRaw[] = [
           { path: 'jobs', component: SkillJobListPage },
           { path: 'jobs/new', component: SkillJobFormPage },
           { path: 'jobs/:id/edit', component: SkillJobFormPage },
+          { path: 'jobs/:id/notify', component: SkillNotifySettingsPage, props: { type: 'job' } },
           { path: 'jobs/flows/new', component: SkillFlowFormPage },
           { path: 'jobs/flows/:id/edit', component: SkillFlowFormPage },
+          { path: 'jobs/flows/:id/notify', component: SkillNotifySettingsPage, props: { type: 'flow' } },
           { path: 'virtual-groups', component: SkillVirtualGroupPage },
           { path: 'new', component: SkillFormPage },
           { path: ':id/edit', component: SkillFormPage },

@@ -22,6 +22,7 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
+import java.util.Base64;
 import java.util.Random;
 import java.util.Set;
 
@@ -53,7 +54,18 @@ public class DownloadContentService {
 
     /** MIME 白名单, 防 XSS (拒 text/html 等). */
     private static final Set<String> ALLOWED_MIME = Set.of(
-            "text/csv", "application/json", "text/plain", "text/markdown", "text/html");
+            "text/csv", "application/json", "text/plain", "text/markdown", "text/html",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/zip");
+
+    /**
+     * 二进制内容前缀约定: content 以此开头时, 其余部分是 Base64 (Mime 兼容解码, 容忍换行).
+     * url_shortener.content 是 TEXT 列存不了原始字节, 二进制 (xlsx/pptx/zip) 统一
+     * base64 落库, {@link RedirectController} 下载时按前缀解码回吐, 表结构零迁移.
+     * 解码后大小仍受 {@link #MAX_CONTENT_BYTES} 约束 (即 base64 原始文件需 <= ~3.6MB).
+     */
+    public static final String BASE64_CONTENT_PREFIX = "base64:";
 
     /** 短码字符集 + 长度, 与 {@link UrlShortenerService} 一致. */
     private static final String BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -110,14 +122,26 @@ public class DownloadContentService {
                     "不支持的 mimeType: " + mime + ", 允许: " + ALLOWED_MIME);
         }
 
-        // markdown 表 -> 标准 CSV (仅 text/csv 触发; text/markdown 原样存)
+        // base64 二进制内容: 解码校验 + 按解码后字节计大小; markdown->CSV 转换必须跳过
+        boolean isBase64 = content.startsWith(BASE64_CONTENT_PREFIX);
+        byte[] decoded = null;
+        if (isBase64) {
+            try {
+                decoded = Base64.getMimeDecoder().decode(
+                        content.substring(BASE64_CONTENT_PREFIX.length()));
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException("base64 内容解码失败: " + e.getMessage());
+            }
+        }
+
+        // markdown 表 -> 标准 CSV (仅 text/csv 且非二进制触发; text/markdown 原样存)
         String finalContent = content;
-        if ("text/csv".equals(mime) && MarkdownTableConverter.isMarkdownTable(content)) {
+        if (!isBase64 && "text/csv".equals(mime) && MarkdownTableConverter.isMarkdownTable(content)) {
             finalContent = MarkdownTableConverter.toCsv(content);
             log.info("Markdown table -> CSV ({} -> {} chars)", content.length(), finalContent.length());
         }
 
-        byte[] bytes = finalContent.getBytes(StandardCharsets.UTF_8);
+        byte[] bytes = isBase64 ? decoded : finalContent.getBytes(StandardCharsets.UTF_8);
         if (bytes.length > MAX_CONTENT_BYTES) {
             throw new IllegalArgumentException(
                     "content 超过 5MB 上限: " + bytes.length + " bytes");

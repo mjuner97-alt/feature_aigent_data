@@ -24,6 +24,7 @@ import com.agentscopea2a.v2.skillManager.entity.SkillJobExecution;
 import com.agentscopea2a.v2.skillManager.entity.SkillJobNotification;
 import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillJobMapper;
+import com.agentscopea2a.v2.skillManager.notification.NotificationReceivers;
 import com.agentscopea2a.v2.skillManager.notification.NotificationService;
 import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
 import com.agentscopea2a.v2.skillManager.scheduler.SkillJobScheduler;
@@ -219,6 +220,41 @@ public class SkillJobService {
         }
         mapper.deleteJobById(id);
         log.info("[SkillJob] delete: id={}, userId={}", id, userId);
+    }
+
+    // ==================== 通知设置(通知设置抽屉专用,与任务表单解耦) ====================
+
+    /** 查询任务通知设置(仅创建人)。人员表中已失效的工号直接剔除不回显。job 无触发类型范围。 */
+    public NotifySettingsDto getNotifySettings(Long id, String userId) {
+        SkillJob job = requireOwnedJob(id, userId);
+        List<String> receivers = mockOrgService.filterExistingUserIds(
+                NotificationReceivers.parse(job.getNotifyReceivers()));
+        return new NotifySettingsDto(receivers, null, null);
+    }
+
+    /**
+     * 更新任务通知设置:全量替换收件人名单;人员表中已不存在的工号静默剔除(不报错),
+     * 空名单 = 清空。发送侧始终把创建人合并进收件人(创建人默认收到,无需加入名单)。
+     */
+    @Transactional("gaussCustomerTransactionManager")
+    public NotifySettingsDto updateNotifySettings(Long id, NotifySettingsUpdateRequest req, String userId) {
+        SkillJob job = requireOwnedJob(id, userId);
+        job.setNotifyReceivers(NotificationReceivers.toCsv(
+                mockOrgService.filterExistingUserIds(req == null ? null : req.notifyReceivers())));
+        mapper.updateJobById(job);
+        return getNotifySettings(id, userId);
+    }
+
+    /** 取任务并校验创建人(通知设置仅创建人可读写)。 */
+    private SkillJob requireOwnedJob(Long id, String userId) {
+        SkillJob job = mapper.selectJobById(id);
+        if (job == null) {
+            throw new IllegalStateException("JobNotFound: 任务不存在 (id=" + id + ")");
+        }
+        if (userId == null || !userId.equals(job.getCreatedBy())) {
+            throw new IllegalStateException("JobAccessDenied: 仅创建人可管理通知设置 (id=" + id + ")");
+        }
+        return job;
     }
 
     // ==================== 执行 ====================

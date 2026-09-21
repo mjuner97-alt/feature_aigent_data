@@ -1,4 +1,5 @@
 import type { SkillFlow, SkillFlowExecution, SkillFlowInput, SkillFlowNodeExecution, FlowMetricReadiness, FlowMetricPrecheck, SkillFlowRunResult, SkillFlowNotification } from '../types/skillFlow';
+import type { NotifySettings, NotifySettingsUpdateInput } from '../types/notifySettings';
 import { apiErrorDetail } from '../utils/apiError';
 
 const FLOW_BASE = '/api/skill-flows';
@@ -17,6 +18,8 @@ async function requestError(res: Response, fallback: string): Promise<Error> {
   if (/keyword.*(exist|conflict|duplicate)/i.test(detail)) return new Error('触发关键词已被其他流程使用');
   if (/cycle|dag/i.test(detail)) return new Error('前置 Skill 不能形成环');
   if (/access|denied/i.test(detail)) return new Error('无权限执行此操作');
+  if (detail.startsWith('NotifyReceiverTooMany')) return new Error('收件人数量不能超过 50');
+  if (detail.startsWith('NotifyTriggerScopeInvalid')) return new Error('触发类型范围包含非法值');
   return new Error(detail ? `${fallback}: ${detail}` : `${fallback} (HTTP ${res.status})`);
 }
 
@@ -76,6 +79,30 @@ export async function setSkillFlowEnabled(id: number, enabled: boolean): Promise
 export async function deleteSkillFlow(id: number): Promise<void> {
   const res = await fetch(`${FLOW_BASE}/${id}`, { method: 'DELETE', headers: authHeaders() });
   if (!res.ok) throw await requestError(res, '删除流程失败');
+}
+
+/** 查询流程通知设置(仅创建人) */
+export async function getFlowNotifySettings(id: number): Promise<NotifySettings> {
+  const res = await fetch(`${FLOW_BASE}/${id}/notify-settings`, { headers: authHeaders() });
+  if (!res.ok) throw await requestError(res, '查询通知设置失败');
+  const body = await res.json();
+  return {
+    notifyReceivers: body.notifyReceivers ?? [],
+    notifyReceiverTriggers: body.notifyReceiverTriggers ?? undefined,
+    notifyEnabled: body.notifyEnabled ?? undefined,
+  };
+}
+
+/** 更新流程通知设置(全量替换;空数组 = 清空恢复发触发人;触发类型范围空 = 默认仅 AUTO_METRIC 发名单) */
+export async function updateFlowNotifySettings(id: number, input: NotifySettingsUpdateInput): Promise<NotifySettings> {
+  const res = await fetch(`${FLOW_BASE}/${id}/notify-settings`, { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(input) });
+  if (!res.ok) throw await requestError(res, '保存通知设置失败');
+  const body = await res.json();
+  return {
+    notifyReceivers: body.notifyReceivers ?? [],
+    notifyReceiverTriggers: body.notifyReceiverTriggers ?? undefined,
+    notifyEnabled: body.notifyEnabled ?? undefined,
+  };
 }
 
 export async function validateSkillFlow(id: number): Promise<void> {

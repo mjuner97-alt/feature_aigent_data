@@ -7,6 +7,7 @@ import com.agentscopea2a.v2.skillManager.entity.SkillJobExecution;
 import com.agentscopea2a.v2.skillManager.entity.SkillJobNotification;
 import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillJobMapper;
+import com.agentscopea2a.v2.skillManager.service.MockOrgService;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,7 +16,8 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -65,6 +67,7 @@ public class NotificationService {
     private final SkillJobMapper jobMapper;
     private final NotificationSender sender;
     private final UrlShortenerService urlShortenerService;
+    private final MockOrgService orgService;
 
     /**
      * 报告下载链接的 base URL（对应 {@code harness.a2a.skill-job.download-base-url}）。
@@ -82,11 +85,13 @@ public class NotificationService {
 
     public NotificationService(SkillDependencyMetricMapper metricMapper, SkillJobMapper jobMapper,
                                NotificationSender sender,
-                               UrlShortenerService urlShortenerService) {
+                               UrlShortenerService urlShortenerService,
+                               MockOrgService orgService) {
         this.metricMapper = metricMapper;
         this.jobMapper = jobMapper;
         this.sender = sender;
         this.urlShortenerService = urlShortenerService;
+        this.orgService = orgService;
     }
 
     /**
@@ -143,12 +148,14 @@ public class NotificationService {
         String fileUrl = buildFileUrl(execution.getId());
         String content = render(template, contentType, fileUrl, job, metric, execution, filePath);
         String fileName = fileNameOf(filePath);
+        // 收件人:配置了名单则整名单一次批量发送(toUserList),未配置兜底发创建人
+        List<String> receivers = receiversOf(job);
         NotificationPayload payload = new NotificationPayload(
                 contentType, content, filePath, fileName, fileUrl,
                 job.getId(), job.getName(),
                 metric != null ? metric.getCode() : null,
                 metric != null ? metric.getName() : null,
-                execution.getId(), execution.getStatus(), LocalDateTime.now(), Arrays.asList(job.getCreatedBy()),
+                execution.getId(), execution.getStatus(), LocalDateTime.now(), receivers,
                 triggerType);
         SkillJobNotification notification = SkillJobNotification.builder()
                 .jobId(job.getId())
@@ -167,6 +174,17 @@ public class NotificationService {
         jobMapper.insertNotification(notification);
         executor.submit(() -> doSend(notification, payload));
         return notification;
+    }
+
+    /** 收件人解析:配置了名单(剔除人员表已失效的工号)则整名单一次批量发送;创建人始终合并在内,无需加入名单。 */
+    private List<String> receiversOf(SkillJob job) {
+        List<String> configured = orgService.filterExistingUserIds(
+                NotificationReceivers.parse(job.getNotifyReceivers()));
+        List<String> receivers = new ArrayList<>(configured);
+        if (job.getCreatedBy() != null && !receivers.contains(job.getCreatedBy())) {
+            receivers.add(job.getCreatedBy());
+        }
+        return receivers;
     }
 
     private void recordSkipped(SkillJob job, SkillJobExecution execution, String filePath,

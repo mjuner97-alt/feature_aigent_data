@@ -20,6 +20,8 @@
         <result column="schedule_rules" property="scheduleRules"/>
         <result column="max_parallelism" property="maxParallelism"/>
         <result column="notify_enabled" property="notifyEnabled"/>
+        <result column="notify_receivers" property="notifyReceivers"/>
+        <result column="notify_receiver_triggers" property="notifyReceiverTriggers"/>
         <result column="chat_public" property="chatPublic"/>
         <result column="created_by" property="createdBy"/>
         <result column="created_at" property="createdAt"/>
@@ -81,6 +83,8 @@
         <result column="rendered_summary_question" property="renderedSummaryQuestion"/>
         <result column="max_parallelism_snapshot" property="maxParallelismSnapshot"/>
         <result column="notify_enabled_snapshot" property="notifyEnabledSnapshot"/>
+        <result column="notify_receivers_snapshot" property="notifyReceiversSnapshot"/>
+        <result column="notify_receiver_triggers_snapshot" property="notifyReceiverTriggersSnapshot"/>
         <result column="trigger_type" property="triggerType"
                 javaType="com.agentscopea2a.v2.skillManager.entity.FlowTriggerType"/>
         <result column="trigger_user_id" property="triggerUserId"/>
@@ -168,7 +172,8 @@
     <!-- 各表公共列清单,供查询复用;新增列时记得同步维护 -->
     <sql id="flowColumns">
         id, code, name, description, task_question, summary_question_template, enabled, schedule_rules,
-        max_parallelism, notify_enabled, chat_public, created_by, created_at, updated_at, deleted_at
+        max_parallelism, notify_enabled, notify_receivers, notify_receiver_triggers, chat_public,
+        created_by, created_at, updated_at, deleted_at
     </sql>
     <sql id="nodeColumns">
         id, flow_id, node_key, node_name, skill_id, question_template, depends_on_json, required,
@@ -186,9 +191,11 @@
     <!-- 新建流程:保存编码/名称/任务问题/汇总模板/排程星期/并发数/通知开关 -->
     <insert id="insertFlow" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO skill_flow (code, name, description, task_question, summary_question_template, enabled,
-                                schedule_rules, max_parallelism, notify_enabled, created_by)
+                                schedule_rules, max_parallelism, notify_enabled, notify_receivers,
+                                notify_receiver_triggers, created_by)
         VALUES (#{code}, #{name}, #{description}, #{taskQuestion}, #{summaryQuestionTemplate}, #{enabled},
-                #{scheduleRules}, #{maxParallelism}, #{notifyEnabled}, #{createdBy})
+                #{scheduleRules}, #{maxParallelism}, #{notifyEnabled}, #{notifyReceivers},
+                #{notifyReceiverTriggers}, #{createdBy})
     </insert>
 
     <!-- 按 id 查流程,已软删除的视为不存在 -->
@@ -285,6 +292,8 @@
             schedule_rules=#{scheduleRules},
             max_parallelism=#{maxParallelism},
             notify_enabled=#{notifyEnabled},
+            notify_receivers=#{notifyReceivers},
+            notify_receiver_triggers=#{notifyReceiverTriggers},
             chat_public=#{chatPublic},
             updated_at=NOW()
         WHERE id = #{id}
@@ -295,6 +304,16 @@
     <update id="updateFlowEnabled">
         UPDATE skill_flow
         SET enabled=#{enabled},
+            updated_at=NOW()
+        WHERE id = #{id}
+          AND deleted_at IS NULL
+    </update>
+
+    <!-- 只更新通知收件人配置(通知设置抽屉专用):全量替换名单与触发类型范围,传空串/空列表即清空 -->
+    <update id="updateFlowNotifySettings">
+        UPDATE skill_flow
+        SET notify_receivers=#{notifyReceivers},
+            notify_receiver_triggers=#{notifyReceiverTriggers},
             updated_at=NOW()
         WHERE id = #{id}
           AND deleted_at IS NULL
@@ -438,10 +457,12 @@
     <insert id="insertFlowExecution" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO skill_flow_execution
         (flow_id, flow_code, flow_name, summary_question_template_snapshot, max_parallelism_snapshot,
-         notify_enabled_snapshot, trigger_type, trigger_user_id, conversation_id, original_question, data_date,
+         notify_enabled_snapshot, notify_receivers_snapshot, notify_receiver_triggers_snapshot,
+         trigger_type, trigger_user_id, conversation_id, original_question, data_date,
          status, active_guard_key, required_metric_count, ready_metric_count, missing_metrics_json)
         VALUES (#{flowId}, #{flowCode}, #{flowName}, #{summaryQuestionTemplateSnapshot}, #{maxParallelismSnapshot},
-                #{notifyEnabledSnapshot}, #{triggerType}, #{triggerUserId}, #{conversationId},
+                #{notifyEnabledSnapshot}, #{notifyReceiversSnapshot}, #{notifyReceiverTriggersSnapshot},
+                #{triggerType}, #{triggerUserId}, #{conversationId},
                 #{originalQuestion}, #{dataDate}, #{status}, #{activeGuardKey}, #{requiredMetricCount},
                 #{readyMetricCount}, #{missingMetricsJson})
     </insert>

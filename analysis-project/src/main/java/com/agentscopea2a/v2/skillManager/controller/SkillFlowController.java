@@ -2,6 +2,8 @@ package com.agentscopea2a.v2.skillManager.controller;
 
 import com.agentscopea2a.v2.skillManager.dto.FlowMetricReadinessDto;
 import com.agentscopea2a.v2.skillManager.dto.FlowValidationDto;
+import com.agentscopea2a.v2.skillManager.dto.NotifySettingsDto;
+import com.agentscopea2a.v2.skillManager.dto.NotifySettingsUpdateRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillFlowDefinitionRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillFlowDto;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowNotification;
@@ -101,6 +103,21 @@ public class SkillFlowController {
     public void delete(@PathVariable(name = "id") Long id,
                        @RequestHeader(name = "X-User-Id") String userId) {
         definitionService.delete(id, userId);
+    }
+
+    /** 查询流程通知设置(收件人名单/触发类型范围/通知开关;仅创建人)。 */
+    @GetMapping("/api/skill-flows/{id}/notify-settings")
+    public NotifySettingsDto getNotifySettings(@PathVariable(name = "id") Long id,
+                                               @RequestHeader(name = "X-User-Id") String userId) {
+        return definitionService.getNotifySettings(id, userId);
+    }
+
+    /** 更新流程通知设置(全量替换名单;空列表 = 清空恢复发触发人;收件人须存在于人员表)。 */
+    @PutMapping("/api/skill-flows/{id}/notify-settings")
+    public NotifySettingsDto updateNotifySettings(@PathVariable(name = "id") Long id,
+                                                  @RequestBody NotifySettingsUpdateRequest req,
+                                                  @RequestHeader(name = "X-User-Id") String userId) {
+        return definitionService.updateNotifySettings(id, req, userId);
     }
 
     /** 完整性预检:启用前编辑器可调用,返回全部校验错误而非直接抛异常。 */

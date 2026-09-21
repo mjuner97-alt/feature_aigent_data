@@ -248,10 +248,36 @@ public class MockOrgService {
     }
 
     /**
+     * 过滤并规范化通知收件人名单(定时任务/长任务完成通知的收件人):
+     * 去空白去重;人员表(developer_pl_person_info)中已不存在的工号直接剔除(不报错、不回显)——
+     * 名单只能从人员表搜索选人,出现失效基本是保存后人员版本更新(离职/调岗/版本月份切换)。
+     * 返回仍有效名单(可能为空,发送侧兜底创建人/触发人)。
+     */
+    public List<String> filterExistingUserIds(Collection<String> userIds) {
+        if (userIds == null) {
+            return List.of();
+        }
+        List<String> distinct = userIds.stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(id -> !id.isEmpty())
+                .distinct()
+                .toList();
+        // 上限 50:防止误传超大名单撑爆通知记录的收件人列(varchar 1024)与邮件系统
+        if (distinct.size() > 50) {
+            throw new IllegalArgumentException("NotifyReceiverTooMany: 收件人数量不能超过 50");
+        }
+        List<String> stale = distinct.stream().filter(id -> !userExists(id)).toList();
+        if (!stale.isEmpty()) {
+            log.info("[NotifyReceivers] dropped receiver ids absent from person table (left/refreshed): {}", stale);
+        }
+        return distinct.stream().filter(id -> !stale.contains(id)).toList();
+    }
+
+    /**
      * 按姓名/统一认证号模糊搜人(授权选人用)。按 userId 去重,取首条姓名与部门。
      */
-    public List<UserSearchItem> searchUsers(String keyword) {
-        if (keyword == null || keyword.isBlank()) {
+    public List<UserSearchItem> searchUsers(String keyword) {        if (keyword == null || keyword.isBlank()) {
             return List.of();
         }
         List<DeveloperPlPersonInfo> rows = personInfoMapper.selectByKeyword(keyword.trim());

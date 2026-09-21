@@ -99,6 +99,11 @@ const execCanDownload = ref(false);
 const notifyOpen = ref(false);
 const notifyExecId = ref<number | null>(null);
 const notifyCanResend = ref(false);
+
+// 通知设置:独立页面(仅创建人入口)
+function openNotifySettings(jobId: number) {
+  router.push(`/skills/jobs/${jobId}/notify`);
+}
 const viewing = ref<Set<number>>(new Set());
 const previewed = ref<Set<number>>(new Set());
 const downloading = ref<Set<number>>(new Set());
@@ -486,6 +491,7 @@ function metricTitle(job: SkillJob): string {
             <button class="btn-action" @click="openExecutions(job)">记录</button>
             <template v-if="isOwner(job)">
               <button class="btn-action" @click="openEdit(job.id)">编辑</button>
+              <button class="btn-action" title="配置完成通知的收件人名单" @click="openNotifySettings(job.id)">通知</button>
               <button class="btn-action toggle" @click="toggleEnabled(job)">{{ job.enabled ? '禁用' : '启用' }}</button>
               <button class="btn-action danger" @click="remove(job.id)">删除</button>
             </template>
