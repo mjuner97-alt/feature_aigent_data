@@ -21,7 +21,11 @@ public class SkillFlowNode {
     private Long flowId;
     private String nodeKey;
     private String nodeName;
+    /** python/skill; null keeps legacy behavior. */
+    private String nodeType;
     private Long skillId;
+    private String scriptId;
+    private String scriptParamsJson;
     private String questionTemplate;
     private String dependsOnJson;
     private Boolean required;

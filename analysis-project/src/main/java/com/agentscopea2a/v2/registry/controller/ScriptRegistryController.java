@@ -125,7 +125,7 @@ public class ScriptRegistryController {
     public ScriptDebugService.DebugRun debug(@PathVariable Long id,
                                              @RequestBody ScriptDebugRequest request,
                                              @RequestHeader("X-User-Id") String userId) {
-        service.requireOwner(id, userId);
+        // 试跑不校验 owner:所有用户都可对已启用脚本调试运行(与列表读取同口径),写操作仍走 owner 校验
         if (request.sourceMode() != null && !request.sourceMode().isBlank()
                 && !"SAVED".equalsIgnoreCase(request.sourceMode())) {
             throw new IllegalArgumentException("仅支持 sourceMode=SAVED");
@@ -158,7 +158,7 @@ public class ScriptRegistryController {
     @PostMapping("/debug/{runId}/cancel")
     public ResponseEntity<Void> cancelDebug(@PathVariable String runId,
                                             @RequestHeader("X-User-Id") String userId) {
-        service.requireOwnerByScriptId(debugService.get(runId).scriptId(), userId);
+        // 与试跑同口径:runId 本身不可枚举,不校验 owner
         debugService.cancel(runId);
         return ResponseEntity.noContent().build();
     }

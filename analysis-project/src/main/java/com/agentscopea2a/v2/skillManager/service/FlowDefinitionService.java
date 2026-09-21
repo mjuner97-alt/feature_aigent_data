@@ -12,6 +12,10 @@ import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillMapper;
 import com.agentscopea2a.v2.skillManager.notification.NotificationReceivers;
+import com.agentscopea2a.mapper.gauss.ScriptRegistryMapper;
+import com.agentscopea2a.entity.ScriptRegistryEntry;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -53,15 +57,20 @@ public class FlowDefinitionService {
     private final SkillDependencyMetricMapper metricMapper;
     private final MockOrgService orgService;
     private final Clock clock;
+    private final ScriptRegistryMapper scriptRegistryMapper;
+    private final ObjectMapper objectMapper;
 
     public FlowDefinitionService(SkillFlowMapper flowMapper, SkillMapper skillMapper,
                                  SkillDependencyMetricMapper metricMapper, MockOrgService orgService,
-                                 @Qualifier("skillFlowClock") Clock skillFlowClock) {
+                                 @Qualifier("skillFlowClock") Clock skillFlowClock,
+                                 ScriptRegistryMapper scriptRegistryMapper, ObjectMapper objectMapper) {
         this.flowMapper = flowMapper;
         this.skillMapper = skillMapper;
         this.metricMapper = metricMapper;
         this.orgService = orgService;
         this.clock = skillFlowClock;
+        this.scriptRegistryMapper = scriptRegistryMapper;
+        this.objectMapper = objectMapper;
     }
 
     /** 创建流程;code 缺省自动生成,enabled=true 时先做完整性校验。 */
@@ -215,11 +224,20 @@ public class FlowDefinitionService {
                 .trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
     }
 
-    /** 基础校验(创建/更新都做):名称、触发词冲突。 */
+    /** 基础校验(创建/更新都做):名称、触发词冲突、报告大纲结构。 */
     private void validateBasic(SkillFlowDefinitionRequest request, Long currentFlowId) {
         if (request == null) throw new IllegalStateException("FlowValidationFailed: request is required");
         if (trim(request.name()).isEmpty()) throw new IllegalStateException("FlowValidationFailed: name is required");
+        List<String> outlineErrors = ReportOutlineValidator.validate(request.reportOutline(), nodeKeysOf(request));
+        if (!outlineErrors.isEmpty()) {
+            throw new IllegalStateException("FlowOutlineInvalid: " + String.join("; ", outlineErrors));
+        }
         validateKeywordConflicts(request.triggers(), currentFlowId);
+    }
+
+    private static Set<String> nodeKeysOf(SkillFlowDefinitionRequest request) {
+        return request.nodes().stream().map(node -> node.nodeKey() == null ? "" : node.nodeKey().trim())
+                .filter(key -> !key.isEmpty()).collect(java.util.stream.Collectors.toSet());
     }
 
     /** 完整性校验:任何错误直接抛异常(启用流程的硬门槛)。 */
@@ -248,15 +266,34 @@ public class FlowDefinitionService {
         }
 
         Set<String> nodeKeys = new HashSet<>();
+        boolean hasPython = false, hasLegacy = false;
         for (SkillFlowDefinitionRequest.Node node : request.nodes()) {
             String nodeKey = trim(node.nodeKey());
             if (nodeKey.isEmpty()) errors.add("node key must not be blank");
             else if (!nodeKeys.add(nodeKey)) errors.add("duplicate node key: " + nodeKey);
-            Skill skill = node.skillId() == null ? null : skillMapper.selectById(node.skillId());
-            if (node.skillId() == null || !skillMapper.selectSkillAvailableForUser(node.skillId(), userId)) {
-                errors.add("SkillUnavailable: skill is not available to user: " + node.skillId());
-            }
-            if (trim(node.questionTemplate()).isEmpty()) errors.add("node question must not be blank: " + nodeKey);
+            String type = node.nodeType() == null || node.nodeType().isBlank() ? "skill" : node.nodeType().toLowerCase(Locale.ROOT);
+            boolean python = "python".equals(type);
+            boolean legacy = !python && ("skill".equals(type) || node.nodeType() == null || node.nodeType().isBlank());
+            hasPython |= python; hasLegacy |= legacy;
+            if (python) {
+                if (node.skillId() != null) errors.add("PythonNodeMustNotBindSkill: " + nodeKey);
+                if (trim(node.scriptId()).isEmpty()) errors.add("PythonScriptRequired: " + nodeKey);
+                else {
+                    ScriptRegistryEntry script = scriptRegistryMapper.selectByScriptId(node.scriptId());
+                    if (script == null || !Integer.valueOf(1).equals(script.getEnabled())) errors.add("ScriptUnavailable: " + node.scriptId());
+                }
+                if (node.scriptParamsJson() != null && !node.scriptParamsJson().isBlank()) {
+                    try { objectMapper.readTree(node.scriptParamsJson()); }
+                    catch (Exception e) { errors.add("MalformedScriptParamsJson: " + nodeKey); }
+                }
+                if (!node.metricIds().isEmpty()) errors.add("PythonNodeCannotDependOnMetric: " + nodeKey);
+            } else if (legacy) {
+                if (node.skillId() == null || !skillMapper.selectSkillAvailableForUser(node.skillId(), userId)) {
+                    errors.add("SkillUnavailable: skill is not available to user: " + node.skillId());
+                }
+            } else errors.add("UnsupportedNodeType: " + node.nodeType());
+            // Python 节点按脚本+参数执行,问题模板选填;只有旧 Skill 节点必须填(它就是 Skill 的输入)
+            if (!python && trim(node.questionTemplate()).isEmpty()) errors.add("node question must not be blank: " + nodeKey);
             if (node.maxAttempts() != null && node.maxAttempts() < 1) errors.add("maxAttempts must be positive");
             if (node.metricIds().size() > 1) errors.add("a skill node can depend on at most one metric");
             for (Long metricId : node.metricIds()) {
@@ -266,6 +303,8 @@ public class FlowDefinitionService {
                 }
             }
         }
+        if (hasPython && hasLegacy) errors.add("MixedNodeTypesUnsupported: Python and legacy Skill nodes cannot be combined");
+        errors.addAll(ReportOutlineValidator.validate(request.reportOutline(), nodeKeysOf(request)));
         return errors;
     }
 
@@ -299,6 +338,7 @@ public class FlowDefinitionService {
         flowMapper.deleteTriggersByFlowId(flowId);
         for (SkillFlowDefinitionRequest.Node item : request.nodes()) {
             SkillFlowNode node = SkillFlowNode.builder().flowId(flowId).nodeKey(trim(item.nodeKey())).nodeName(trim(item.nodeName()))
+                    .nodeType(item.nodeType()).scriptId(trim(item.scriptId())).scriptParamsJson(item.scriptParamsJson())
                     .skillId(item.skillId()).questionTemplate(trim(item.questionTemplate()))
                     .dependsOnJson("[]")
                     .required(item.required() == null || item.required())
@@ -321,15 +361,15 @@ public class FlowDefinitionService {
     /** 把库里的流程定义还原成请求对象(启用校验复用同一套逻辑)。 */
     private SkillFlowDefinitionRequest toRequest(SkillFlow flow, Long flowId) {
         List<SkillFlowDefinitionRequest.Node> nodes = flowMapper.selectNodesByFlowId(flowId).stream()
-                .map(node -> new SkillFlowDefinitionRequest.Node(node.getNodeKey(), node.getNodeName(), node.getSkillId(), node.getQuestionTemplate(),
+                .map(node -> new SkillFlowDefinitionRequest.Node(node.getNodeKey(), node.getNodeName(), node.getNodeType(), node.getSkillId(), node.getScriptId(), node.getScriptParamsJson(), node.getQuestionTemplate(),
                         flowMapper.selectMetricIdsByNodeId(node.getId()),
                         node.getRequired(), node.getMaxAttempts(), node.getSortOrder())).toList();
         List<SkillFlowDefinitionRequest.Trigger> triggers = flowMapper.selectTriggersByFlowId(flowId).stream()
                 .map(trigger -> new SkillFlowDefinitionRequest.Trigger(trigger.getKeyword(), trigger.getPriority(), trigger.getEnabled()))
                 .toList();
         return new SkillFlowDefinitionRequest(flow.getCode(), flow.getName(), flow.getDescription(), flow.getTaskQuestion(),
-                flow.getSummaryQuestionTemplate(), flow.getEnabled(), flow.getScheduleRules(), flow.getMaxParallelism(), flow.getNotifyEnabled(),
-                triggers, nodes);
+                flow.getSummaryQuestionTemplate(), flow.getEnabled(), flow.getScheduleRules(),
+                flow.getMaxParallelism(), flow.getNotifyEnabled(), triggers, nodes, parseStoredOutline(flow));
     }
 
     /** 组装返回 DTO,附带 skill 名称与指标名称等展示信息。 */
@@ -344,14 +384,14 @@ public class FlowDefinitionService {
                     List<String> metricNames = metricIds.stream().map(metricMapper::selectById)
                             .map(metric -> metric == null ? null : metric.getName()).filter(Objects::nonNull).toList();
                     String skillName = skill == null ? null : skill.getName();
-                    return new SkillFlowDto.Node(node.getId(), node.getNodeKey(), resolveNodeDisplayName(node.getNodeName(), skillName), node.getSkillId(),
-                            skillName, node.getQuestionTemplate(), metricIds, metricNames,
+                    return new SkillFlowDto.Node(node.getId(), node.getNodeKey(), resolveNodeDisplayName(node.getNodeName(), skillName), node.getNodeType(),
+                            node.getSkillId(), node.getScriptId(), node.getScriptParamsJson(), skillName, node.getQuestionTemplate(), metricIds, metricNames,
                             node.getRequired(), node.getMaxAttempts(), node.getSortOrder());
                 }).toList();
         return new SkillFlowDto(flow.getId(), flow.getCode(), flow.getName(), flow.getDescription(), flow.getTaskQuestion(),
-                flow.getSummaryQuestionTemplate(), flow.getEnabled(), flow.getScheduleRules(), flow.getMaxParallelism(), flow.getNotifyEnabled(),
-                Boolean.TRUE.equals(flow.getChatPublic()),
-                triggers, nodes, flow.getCreatedBy(), flow.getCreatedAt(), flow.getUpdatedAt(), flow.getDeletedAt() != null);
+                flow.getSummaryQuestionTemplate(), flow.getEnabled(), flow.getScheduleRules(), flow.getMaxParallelism(),
+                flow.getNotifyEnabled(), Boolean.TRUE.equals(flow.getChatPublic()),
+                triggers, nodes, parseOutlineObject(flow), flow.getCreatedBy(), flow.getCreatedAt(), flow.getUpdatedAt(), flow.getDeletedAt() != null);
     }
 
     private SkillFlow toFlow(SkillFlowDefinitionRequest request, String createdBy, String existingCode) {
@@ -359,9 +399,48 @@ public class FlowDefinitionService {
         return SkillFlow.builder().code(code).name(trim(request.name())).description(request.description())
                 .taskQuestion(trim(request.taskQuestion()))
                 .summaryQuestionTemplate(request.summaryQuestionTemplate())
+                .reportOutline(serializeOutline(request.reportOutline()))
                 .scheduleRules(request.scheduleRules())
                 .enabled(Boolean.TRUE.equals(request.enabled())).maxParallelism(DEFAULT_MAX_PARALLELISM)
                 .notifyEnabled(request.notifyEnabled() == null || request.notifyEnabled()).createdBy(createdBy).build();
+    }
+
+    /** 大纲序列化:未配置(空 items)存 null;序列化失败或超长(20000 字符)按配置错误抛出。 */
+    private String serializeOutline(SkillFlowDefinitionRequest.ReportOutline outline) {
+        if (outline == null || outline.items().isEmpty()) return null;
+        try {
+            String jsonText = objectMapper.writeValueAsString(outline);
+            if (jsonText.length() > 20000) {
+                throw new IllegalStateException("FlowOutlineInvalid: 报告大纲 JSON 超长(上限 20000 字符)");
+            }
+            return jsonText;
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("FlowOutlineInvalid: 报告大纲序列化失败", e);
+        }
+    }
+
+    /** 解析库里的大纲 JSON;为空或解析失败(老数据/坏数据)返回 null,视为未配置。 */
+    private SkillFlowDefinitionRequest.ReportOutline parseStoredOutline(SkillFlow flow) {
+        String stored = flow.getReportOutline();
+        if (stored == null || stored.isBlank()) return null;
+        try {
+            return objectMapper.readValue(stored, SkillFlowDefinitionRequest.ReportOutline.class);
+        } catch (Exception e) {
+            log.warn("[Flow] parse report outline failed, fallback to legacy report: flowId={}, reason={}",
+                    flow.getId(), e.getMessage());
+            return null;
+        }
+    }
+
+    /** DTO 返回的大纲:解析为通用对象(Map/List),空或解析失败返回 null。 */
+    private Object parseOutlineObject(SkillFlow flow) {
+        String stored = flow.getReportOutline();
+        if (stored == null || stored.isBlank()) return null;
+        try {
+            return objectMapper.readValue(stored, Object.class);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     static String resolveNodeDisplayName(String nodeName, String skillName) {

@@ -16,6 +16,7 @@
         <result column="description" property="description"/>
         <result column="task_question" property="taskQuestion"/>
         <result column="summary_question_template" property="summaryQuestionTemplate"/>
+        <result column="report_outline" property="reportOutline"/>
         <result column="enabled" property="enabled"/>
         <result column="schedule_rules" property="scheduleRules"/>
         <result column="max_parallelism" property="maxParallelism"/>
@@ -35,7 +36,10 @@
         <result column="flow_id" property="flowId"/>
         <result column="node_key" property="nodeKey"/>
         <result column="node_name" property="nodeName"/>
+        <result column="node_type" property="nodeType"/>
         <result column="skill_id" property="skillId"/>
+        <result column="script_id" property="scriptId"/>
+        <result column="script_params_json" property="scriptParamsJson"/>
         <result column="question_template" property="questionTemplate"/>
         <result column="depends_on_json" property="dependsOnJson"/>
         <result column="required" property="required"/>
@@ -115,6 +119,8 @@
         <result column="skill_id" property="skillId"/>
         <result column="skill_name" property="skillName"/>
         <result column="skill_retrieval_name" property="skillRetrievalName"/>
+        <result column="script_id" property="scriptId"/>
+        <result column="script_params_json" property="scriptParamsJson"/>
         <result column="question_template_snapshot" property="questionTemplateSnapshot"/>
         <result column="rendered_question" property="renderedQuestion"/>
         <result column="depends_on_json" property="dependsOnJson"/>
@@ -173,10 +179,10 @@
     <sql id="flowColumns">
         id, code, name, description, task_question, summary_question_template, enabled, schedule_rules,
         max_parallelism, notify_enabled, notify_receivers, notify_receiver_triggers, chat_public,
-        created_by, created_at, updated_at, deleted_at
+        report_outline, created_by, created_at, updated_at, deleted_at
     </sql>
     <sql id="nodeColumns">
-        id, flow_id, node_key, node_name, skill_id, question_template, depends_on_json, required,
+        id, flow_id, node_key, node_name, node_type, skill_id, script_id, script_params_json, question_template, depends_on_json, required,
         max_attempts, sort_order, created_at, updated_at
     </sql>
     <sql id="triggerColumns">
@@ -191,11 +197,11 @@
     <!-- 新建流程:保存编码/名称/任务问题/汇总模板/排程星期/并发数/通知开关 -->
     <insert id="insertFlow" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO skill_flow (code, name, description, task_question, summary_question_template, enabled,
-                                schedule_rules, max_parallelism, notify_enabled, notify_receivers,
+                                schedule_rules, max_parallelism, notify_enabled, notify_receivers, report_outline,
                                 notify_receiver_triggers, created_by)
         VALUES (#{code}, #{name}, #{description}, #{taskQuestion}, #{summaryQuestionTemplate}, #{enabled},
                 #{scheduleRules}, #{maxParallelism}, #{notifyEnabled}, #{notifyReceivers},
-                #{notifyReceiverTriggers}, #{createdBy})
+                #{notifyReceiverTriggers}, #{reportOutline}, #{createdBy})
     </insert>
 
     <!-- 按 id 查流程,已软删除的视为不存在 -->
@@ -288,6 +294,7 @@
             description=#{description},
             task_question=#{taskQuestion},
             summary_question_template=#{summaryQuestionTemplate},
+            report_outline=#{reportOutline},
             enabled=#{enabled},
             schedule_rules=#{scheduleRules},
             max_parallelism=#{maxParallelism},
@@ -333,9 +340,9 @@
 
     <!-- 新建节点:node_key 流程内唯一,depends_on_json 存前置节点 key 数构 DAG,sort_order 决定执行顺序 -->
     <insert id="insertNode" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO skill_flow_node (flow_id, node_key, node_name, skill_id, question_template, depends_on_json,
+        INSERT INTO skill_flow_node (flow_id, node_key, node_name, node_type, skill_id, script_id, script_params_json, question_template, depends_on_json,
                                      required, max_attempts, sort_order)
-        VALUES (#{flowId}, #{nodeKey}, #{nodeName}, #{skillId}, #{questionTemplate}, #{dependsOnJson},
+        VALUES (#{flowId}, #{nodeKey}, #{nodeName}, #{nodeType}, #{skillId}, #{scriptId}, #{scriptParamsJson}, #{questionTemplate}, #{dependsOnJson},
                 #{required}, #{maxAttempts}, #{sortOrder})
     </insert>
 
@@ -486,10 +493,10 @@
     <!-- 为执行实例创建节点执行快照:模板/依赖/所需技能全部落快照,并初始化重试预算 -->
     <insert id="insertNodeExecution" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO skill_flow_node_execution
-        (flow_execution_id, node_key, node_name, skill_id, skill_name, skill_retrieval_name,
+        (flow_execution_id, node_key, node_name, skill_id, script_id, script_params_json, skill_name, skill_retrieval_name,
          question_template_snapshot, rendered_question, depends_on_json, required, status, attempt_count,
          max_attempts, next_run_at)
-        VALUES (#{flowExecutionId}, #{nodeKey}, #{nodeName}, #{skillId}, #{skillName}, #{skillRetrievalName},
+        VALUES (#{flowExecutionId}, #{nodeKey}, #{nodeName}, #{skillId}, #{scriptId}, #{scriptParamsJson}, #{skillName}, #{skillRetrievalName},
                 #{questionTemplateSnapshot}, #{renderedQuestion}, #{dependsOnJson}, #{required}, #{status},
                 #{attemptCount}, #{maxAttempts}, #{nextRunAt})
     </insert>

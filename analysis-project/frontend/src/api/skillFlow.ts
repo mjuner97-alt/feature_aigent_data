@@ -66,7 +66,12 @@ export async function updateSkillFlow(id: number, input: SkillFlowInput): Promis
 function withoutNodeAttemptPolicy(input: SkillFlowInput) {
   return {
     ...input,
-    nodes: input.nodes.map(({ maxAttempts: _ignored, ...node }) => node),
+    nodes: input.nodes.map(({ maxAttempts: _ignored, scriptParams, ...node }) => ({
+      ...node,
+      // Java request DTO stores this field as JSON text. Keep the editor state
+      // object-shaped for rendering, and serialize only at the API boundary.
+      scriptParamsJson: JSON.stringify(scriptParams || {}),
+    })),
   };
 }
 
@@ -183,4 +188,20 @@ export async function getSkillFlowNodeReportUrl(executionId: number, nodeId: num
   const res = await fetch(`${EXECUTION_BASE}/${executionId}/nodes/${nodeId}/report`, { headers: authHeaders() });
   if (!res.ok) throw await requestError(res, '打开 Skill 内容失败');
   return URL.createObjectURL(await res.blob());
+}
+
+/** 读取可编辑的汇总报告 HTML 源码(仅触发人本人)。 */
+export async function getFlowReportSource(id: number): Promise<string> {
+  const res = await fetch(`${EXECUTION_BASE}/${id}/report-source`, { headers: authHeaders() });
+  if (!res.ok) throw await requestError(res, '读取汇总报告失败');
+  return res.text();
+}
+
+/** 整体替换汇总报告内容并返回持久化后的全文。 */
+export async function saveFlowReportSource(id: number, html: string): Promise<string> {
+  const res = await fetch(`${EXECUTION_BASE}/${id}/report-source`, {
+    method: 'PUT', headers: jsonHeaders(), body: JSON.stringify({ html }),
+  });
+  if (!res.ok) throw await requestError(res, '保存汇总报告失败');
+  return res.text();
 }

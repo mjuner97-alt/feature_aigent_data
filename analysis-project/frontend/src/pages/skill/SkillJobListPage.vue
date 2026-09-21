@@ -14,7 +14,7 @@ import { listMetrics } from '../../api/skillDependencyMetric';
 import type { SkillJob, SkillJobExecution } from '../../types/skillJob';
 import SkillJobExecutionDrawer from '../../components/SkillJobExecutionDrawer.vue';
 import SkillJobNotificationDrawer from '../../components/SkillJobNotificationDrawer.vue';
-import SkillJobReportEditorDrawer from '../../components/SkillJobReportEditorDrawer.vue';
+import ReportEditorDrawer from '../../components/ReportEditorDrawer.vue';
 import SkillFlowList from '../../components/SkillFlowList.vue';
 import SkillFlowExecutionList from '../../components/SkillFlowExecutionList.vue';
 
@@ -515,9 +515,10 @@ function metricTitle(job: SkillJob): string {
     <SkillJobExecutionDrawer v-model:open="execOpen" :job-id="execJobId" can-download :can-edit="execCanDownload" />
     </template>
     <SkillJobNotificationDrawer v-model:open="notifyOpen" :exec-id="notifyExecId" :can-resend="notifyCanResend" @changed="loadExecutionCenter(true)" />
-    <SkillJobReportEditorDrawer
+    <ReportEditorDrawer
       v-model:open="reportEditorOpen"
       :execution-id="reportEditorExecutionId"
+      kind="job"
       @saved="loadExecutionCenter(true)"
     />
   </div>

@@ -23,6 +23,10 @@ public class SkillFlowNodeExecution {
     private Long skillId;
     private String skillName;
     private String skillRetrievalName;
+    /** Python 脚本注册表 ID 快照;非空时节点直接执行脚本不走 AI */
+    private String scriptId;
+    /** Python 脚本参数 JSON 快照 */
+    private String scriptParamsJson;
     private String questionTemplateSnapshot;
     private String renderedQuestion;
     private String dependsOnJson;

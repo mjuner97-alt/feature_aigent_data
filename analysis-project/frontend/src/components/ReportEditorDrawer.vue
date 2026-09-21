@@ -2,8 +2,11 @@
 import { computed, ref, watch } from 'vue';
 import { Check, Close, EditPen, View } from '@element-plus/icons-vue';
 import { getExecutionReportSource, saveExecutionReportSource } from '../api/skillJob';
+import { getFlowReportSource, saveFlowReportSource } from '../api/skillFlow';
 
-const props = defineProps<{ open: boolean; executionId: number | null }>();
+type ReportKind = 'job' | 'flow';
+
+const props = defineProps<{ open: boolean; executionId: number | null; kind: ReportKind }>();
 const emit = defineEmits<{
   (e: 'update:open', value: boolean): void;
   (e: 'saved'): void;
@@ -11,13 +14,21 @@ const emit = defineEmits<{
 
 const source = ref('');
 const savedSource = ref('');
-const mode = ref<'source' | 'preview'>('source');
+const mode = ref<'visual' | 'source'>('visual');
 const loading = ref(false);
 const saving = ref(false);
 const error = ref('');
+const visualFrame = ref<HTMLIFrameElement | null>(null);
+const frameKey = ref(0);
+const visualDirty = ref(false);
 
-const dirty = computed(() => source.value !== savedSource.value);
-const canSave = computed(() => dirty.value && source.value.trim().length > 0 && !saving.value);
+const api = computed(() => props.kind === 'flow'
+  ? { load: getFlowReportSource, save: saveFlowReportSource }
+  : { load: getExecutionReportSource, save: saveExecutionReportSource });
+
+const dirty = computed(() => visualDirty.value || source.value !== savedSource.value);
+const canSave = computed(() =>
+  dirty.value && !saving.value && (mode.value === 'visual' || source.value.trim().length > 0));
 
 watch(() => [props.open, props.executionId] as const, ([open, executionId]) => {
   if (open && executionId) load(executionId);
@@ -27,13 +38,15 @@ watch(() => [props.open, props.executionId] as const, ([open, executionId]) => {
 async function load(executionId: number) {
   loading.value = true;
   error.value = '';
-  mode.value = 'source';
+  mode.value = 'visual';
+  visualDirty.value = false;
   try {
-    const html = await getExecutionReportSource(executionId);
+    const html = await api.value.load(executionId);
     source.value = html;
     savedSource.value = html;
+    frameKey.value++;
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '读取报告源码失败';
+    error.value = e instanceof Error ? e.message : '读取报告失败';
   } finally {
     loading.value = false;
   }
@@ -44,16 +57,29 @@ async function save() {
   saving.value = true;
   error.value = '';
   try {
-    const persisted = await saveExecutionReportSource(props.executionId, source.value);
+    const html = mode.value === 'visual' ? serializeVisual() : source.value;
+    const persisted = await api.value.save(props.executionId, html);
     source.value = persisted;
     savedSource.value = persisted;
-    mode.value = 'preview';
+    visualDirty.value = false;
+    mode.value = 'visual';
+    frameKey.value++; // 用持久化后的内容重载可视化视图
     emit('saved');
   } catch (e) {
     error.value = e instanceof Error ? e.message : '保存报告失败';
   } finally {
     saving.value = false;
   }
+}
+
+function switchMode(next: 'visual' | 'source') {
+  if (next === mode.value) return;
+  if (next === 'source') {
+    try { source.value = serializeVisual(); } catch { /* 文档不可用时保留原 source */ }
+  } else {
+    frameKey.value++; // 以当前 source 重新渲染
+  }
+  mode.value = next;
 }
 
 function close() {
@@ -67,13 +93,58 @@ function reset() {
   error.value = '';
   loading.value = false;
   saving.value = false;
+  visualDirty.value = false;
+  visualFrame.value = null;
+}
+
+/** 对文档及嵌套 srcdoc 子文档递归开启 designMode——所见即所得编辑的入口。 */
+function enableVisualEditing(frameWindow: Window) {
+  const doc = frameWindow.document;
+  doc.designMode = 'on';
+  doc.addEventListener('input', () => { visualDirty.value = true; });
+  for (const nested of Array.from(doc.querySelectorAll('iframe'))) {
+    try {
+      const nestedWindow = nested.contentWindow;
+      if (!nestedWindow) continue;
+      if (nestedWindow.document.readyState === 'complete') enableVisualEditing(nestedWindow);
+      else nested.addEventListener('load', () => enableVisualEditing(nestedWindow), { once: true });
+    } catch { /* 跨源嵌套：跳过 */ }
+  }
+}
+
+function onVisualFrameLoad() {
+  const win = visualFrame.value?.contentWindow;
+  if (win?.document) enableVisualEditing(win);
+}
+
+/** 序列化前清理渲染产物：清空 echarts 容器(移除运行时 canvas)，嵌套 srcdoc 子文档自底向上回写。 */
+function cleanForSerialize(doc: Document) {
+  for (const el of Array.from(doc.querySelectorAll('.echarts-chart'))) {
+    el.innerHTML = '';
+    el.removeAttribute('_echarts_instance_');
+  }
+  for (const frame of Array.from(doc.querySelectorAll('iframe'))) {
+    try {
+      const inner = frame.contentDocument;
+      if (!inner?.documentElement) continue;
+      cleanForSerialize(inner);
+      frame.setAttribute('srcdoc', '<!DOCTYPE html>' + inner.documentElement.outerHTML);
+    } catch { /* 跨源嵌套：保留原 srcdoc */ }
+  }
+}
+
+function serializeVisual(): string {
+  const doc = visualFrame.value?.contentDocument;
+  if (!doc?.documentElement) throw new Error('可视化内容不可用，请切换到源码模式保存');
+  cleanForSerialize(doc);
+  return '<!DOCTYPE html>' + doc.documentElement.outerHTML;
 }
 </script>
 
 <template>
   <Teleport to="body">
     <div v-if="open" class="report-editor-mask" @click.self="close">
-      <section class="report-editor" aria-label="编辑 HTML 报告">
+      <section class="report-editor" aria-label="编辑报告">
         <header>
           <div>
             <h3>编辑报告</h3>
@@ -86,11 +157,11 @@ function reset() {
 
         <div class="editor-toolbar">
           <div class="mode-switch" role="tablist" aria-label="编辑模式">
-            <button :class="{ active: mode === 'source' }" type="button" @click="mode = 'source'">
-              <el-icon><EditPen /></el-icon><span>源码</span>
+            <button :class="{ active: mode === 'visual' }" type="button" @click="switchMode('visual')">
+              <el-icon><EditPen /></el-icon><span>可视化</span>
             </button>
-            <button :class="{ active: mode === 'preview' }" type="button" @click="mode = 'preview'">
-              <el-icon><View /></el-icon><span>预览</span>
+            <button :class="{ active: mode === 'source' }" type="button" @click="switchMode('source')">
+              <el-icon><View /></el-icon><span>源码</span>
             </button>
           </div>
           <span v-if="dirty" class="dirty-state">未保存</span>
@@ -101,19 +172,22 @@ function reset() {
           <div v-else-if="error && !source" class="error-state">{{ error }}</div>
           <template v-else>
             <div v-if="error" class="error-state compact">{{ error }}</div>
+            <iframe
+              v-if="mode === 'visual'"
+              :key="frameKey"
+              ref="visualFrame"
+              class="report-preview"
+              :srcdoc="source"
+              sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-same-origin"
+              title="HTML 报告可视化编辑"
+              @load="onVisualFrameLoad"
+            />
             <textarea
-              v-if="mode === 'source'"
+              v-else
               v-model="source"
               class="source-editor"
               spellcheck="false"
               aria-label="HTML 源码"
-            />
-            <iframe
-              v-else
-              class="report-preview"
-              :srcdoc="source"
-              sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads"
-              title="HTML 报告预览"
             />
           </template>
         </main>

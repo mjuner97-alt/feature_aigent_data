@@ -9,6 +9,7 @@ import com.agentscopea2a.v2.skillManager.notification.NotificationReceivers;
 import com.agentscopea2a.v2.skillManager.notification.NotificationSender;
 import com.agentscopea2a.v2.skillManager.report.FlowReportStorage;
 import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
+import com.agentscopea2a.v2.skillManager.report.ReportOutlineComposer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
@@ -45,6 +46,8 @@ import java.util.UUID;
  */
 @Service
 public class FlowCompletionService {
+    /** 是否在未配置自定义大纲的兼容报告中显示节点名称；当前产品要求隐藏。 */
+    private static final boolean SHOW_NODE_NAMES_IN_LEGACY_REPORT = false;
 
     private static final Logger log = LoggerFactory.getLogger(FlowCompletionService.class);
 
@@ -60,6 +63,7 @@ public class FlowCompletionService {
     private final Clock clock;
     private final FlowSummaryPromptRenderer promptRenderer;
     private final FlowReportStorage reportStorage;
+    private final ReportOutlineComposer outlineComposer;
     @Value("${harness.a2a.csv-download.base-url:}")
     private String reportBaseUrl;
     /** 报告根目录(${skill.job.base-dir}),报告以 用户目录/flow-{id}-report.html 存放。 */
@@ -69,7 +73,7 @@ public class FlowCompletionService {
                                  SkillFlowMapper mapper, NotificationSender sender, MockOrgService orgService,
                                  @Qualifier("skillFlowClock") Clock skillFlowClock,
                                  SkillStorageProperties storage, FlowSummaryPromptRenderer promptRenderer,
-                                 FlowReportStorage reportStorage) {
+                                 FlowReportStorage reportStorage, ReportOutlineComposer outlineComposer) {
         this.runner = runner;
         this.json = json;
         this.renderer = renderer;
@@ -79,6 +83,7 @@ public class FlowCompletionService {
         this.clock = skillFlowClock;
         this.promptRenderer = promptRenderer;
         this.reportStorage = reportStorage;
+        this.outlineComposer = outlineComposer;
         this.reportRoot = Paths.get(storage.getJobReportDir()).normalize().toAbsolutePath();
     }
 
@@ -88,7 +93,7 @@ public class FlowCompletionService {
     /** 按节点配置顺序拼接结果并生成 HTML 报告，不调用汇总模型。 */
     public Summary summarize(SkillFlowExecution flow, List<SkillFlowNodeExecution> nodes) {
         try {
-            String text = orderedReportText(nodes);
+            String text = orderedReportText(flow, nodes);
             flow.setRenderedSummaryQuestion(null);
             mapper.updateExecution(flow);
             List<Map<String, String>> results = nodes.stream()
@@ -118,13 +123,29 @@ public class FlowCompletionService {
         }
     }
 
-    private String orderedReportText(List<SkillFlowNodeExecution> nodes) {
+    private String orderedReportText(SkillFlowExecution execution, List<SkillFlowNodeExecution> nodes) {
+        // Definitions are read lazily so old executions (and old rows without an
+        // outline) retain the exact legacy summary behavior.
+        if (execution != null && execution.getFlowId() != null) {
+            try {
+                SkillFlow definition = mapper.selectFlowById(execution.getFlowId());
+                if (definition != null && definition.getReportOutline() != null
+                        && !definition.getReportOutline().isBlank()) {
+                    String composed = outlineComposer.compose(definition.getReportOutline(), nodes);
+                    if (composed != null && !composed.isBlank()) return composed;
+                }
+            } catch (RuntimeException ignored) {
+                log.warn("Invalid report outline for flow {}, falling back to legacy summary", execution.getFlowId());
+            }
+        }
         StringBuilder report = new StringBuilder();
         for (int index = 0; index < nodes.size(); index++) {
             SkillFlowNodeExecution node = nodes.get(index);
-            report.append("## ").append(chineseNumber(index + 1)).append("、")
-                    .append(node.getNodeName() == null || node.getNodeName().isBlank()
-                            ? Objects.toString(node.getSkillName(), node.getNodeKey()) : node.getNodeName()).append('\n');
+            if (SHOW_NODE_NAMES_IN_LEGACY_REPORT) {
+                report.append("## ").append(chineseNumber(index + 1)).append("、")
+                        .append(node.getNodeName() == null || node.getNodeName().isBlank()
+                                ? Objects.toString(node.getSkillName(), node.getNodeKey()) : node.getNodeName()).append('\n');
+            }
             report.append(extractResultText(node.getResultJson())).append("\n\n");
         }
         return report.toString();

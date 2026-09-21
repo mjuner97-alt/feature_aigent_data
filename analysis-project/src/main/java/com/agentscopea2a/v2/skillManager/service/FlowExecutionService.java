@@ -1,5 +1,7 @@
 package com.agentscopea2a.v2.skillManager.service;
 
+import com.agentscopea2a.entity.ScriptRegistryEntry;
+import com.agentscopea2a.mapper.gauss.ScriptRegistryMapper;
 import com.agentscopea2a.v2.skillManager.config.SkillFlowProperties;
 import com.agentscopea2a.v2.skillManager.entity.*;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
@@ -19,6 +21,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
@@ -38,15 +41,18 @@ public class FlowExecutionService {
 
     private final SkillFlowMapper mapper;
     private final SkillMapper skillMapper;
+    private final ScriptRegistryMapper scriptRegistryMapper;
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final ApplicationEventPublisher events;
 
     public FlowExecutionService(SkillFlowMapper mapper, SkillMapper skillMapper,
+                                ScriptRegistryMapper scriptRegistryMapper,
                                 ObjectMapper objectMapper, Clock skillFlowClock,
                                 ApplicationEventPublisher events) {
         this.mapper = mapper;
         this.skillMapper = skillMapper;
+        this.scriptRegistryMapper = scriptRegistryMapper;
         this.objectMapper = objectMapper;
         this.clock = skillFlowClock;
         this.events = events;
@@ -206,18 +212,32 @@ public class FlowExecutionService {
         }
         boolean firstRunnableNode = true;
         for (SkillFlowNode node : nodes) {
-            Skill skill = skillMapper.selectById(node.getSkillId());
-            String skillName = skill == null ? "Skill #" + node.getSkillId() : skill.getName();
-            String retrievalName = skill == null || skill.getRetrievalName() == null || skill.getRetrievalName().isBlank()
-                    ? skillName : skill.getRetrievalName();
+            // Python 脚本节点不绑 Skill:名称取脚本注册表,skillId 留空
+            boolean scriptNode = node.getScriptId() != null && !node.getScriptId().isBlank();
+            String skillName;
+            String retrievalName;
+            if (scriptNode) {
+                ScriptRegistryEntry script = scriptRegistryMapper.selectByScriptId(node.getScriptId());
+                skillName = script == null ? node.getScriptId() : script.getName();
+                retrievalName = skillName;
+            } else {
+                Skill skill = skillMapper.selectById(node.getSkillId());
+                skillName = skill == null ? "Skill #" + node.getSkillId() : skill.getName();
+                retrievalName = skill == null || skill.getRetrievalName() == null || skill.getRetrievalName().isBlank()
+                        ? skillName : skill.getRetrievalName();
+            }
             FlowNodeExecutionStatus status = !requireAllMetrics || missing.isEmpty()
                     ? (firstRunnableNode ? FlowNodeExecutionStatus.QUEUED : FlowNodeExecutionStatus.PENDING)
                     : FlowNodeExecutionStatus.PENDING;
             if (status == FlowNodeExecutionStatus.QUEUED) firstRunnableNode = false;
             mapper.insertNodeExecution(SkillFlowNodeExecution.builder().flowExecutionId(execution.getId())
                     .nodeKey(node.getNodeKey()).nodeName(FlowDefinitionService.resolveNodeDisplayName(node.getNodeName(), skillName))
-                    .skillId(node.getSkillId()).skillName(skillName).skillRetrievalName(retrievalName)
-                    .questionTemplateSnapshot(node.getQuestionTemplate()).dependsOnJson(node.getDependsOnJson())
+                    .skillId(scriptNode ? null : node.getSkillId()).skillName(skillName).skillRetrievalName(retrievalName)
+                    .scriptId(scriptNode ? node.getScriptId() : null)
+                    .scriptParamsJson(scriptNode ? node.getScriptParamsJson() : null)
+                    // Python 节点问题模板选填;列 NOT NULL,空值落空串
+                    .questionTemplateSnapshot(Objects.toString(node.getQuestionTemplate(), ""))
+                    .dependsOnJson(node.getDependsOnJson())
                     .required(node.getRequired()).status(status).attemptCount(0)
                     .maxAttempts(SkillFlowProperties.NODE_MAX_ATTEMPTS).build());
         }

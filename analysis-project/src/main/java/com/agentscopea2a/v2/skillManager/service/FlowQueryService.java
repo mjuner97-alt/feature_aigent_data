@@ -5,6 +5,7 @@ import com.agentscopea2a.v2.skillManager.entity.*;
 import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
+import com.agentscopea2a.v2.skillManager.report.ReportSourceValidator;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.core.io.FileSystemResource;
@@ -14,6 +15,9 @@ import org.springframework.stereotype.Service;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.nio.charset.StandardCharsets;
+import java.io.IOException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -139,6 +143,30 @@ public class FlowQueryService {
         return new ReportDownload(new FileSystemResource(report), downloadName(e));
     }
 
+    public String readFlowReportSource(Long id, String userId) {
+        SkillFlowExecution e = requireOwner(id, userId);
+        Path report = resolveReportPath(e);
+        if (report == null || !Files.isRegularFile(report)) throw new IllegalStateException("FlowReportNotFound: " + id);
+        try { return Files.readString(report, StandardCharsets.UTF_8); }
+        catch (IOException ex) { throw new IllegalStateException("ReportReadFailed: 无法读取报告内容", ex); }
+    }
+
+    public String updateFlowReportSource(Long id, String userId, String html) {
+        SkillFlowExecution e = requireOwner(id, userId);
+        ReportSourceValidator.validate(html);
+        Path report = resolveReportPath(e);
+        if (report == null || !Files.isRegularFile(report)) throw new IllegalStateException("FlowReportNotFound: " + id);
+        Path tmp = null;
+        try {
+            tmp = Files.createTempFile(report.getParent(), report.getFileName().toString() + ".", ".edit.tmp");
+            Files.writeString(tmp, html, StandardCharsets.UTF_8);
+            try { Files.move(tmp, report, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING); }
+            catch (java.nio.file.AtomicMoveNotSupportedException ex) { Files.move(tmp, report, StandardCopyOption.REPLACE_EXISTING); }
+            return Files.readString(report, StandardCharsets.UTF_8);
+        } catch (IOException ex) { throw new IllegalStateException("ReportWriteFailed: 无法保存报告", ex); }
+        finally { if (tmp != null) try { Files.deleteIfExists(tmp); } catch (IOException ignored) {} }
+    }
+
     /** 下载文件名: {流程名称}-flow-report.html; 剔除文件系统非法字符并限长,避免超长响应头。 */
     private static String downloadName(SkillFlowExecution e) {
         String safe = Objects.toString(e.getFlowName(), "")
@@ -239,8 +267,9 @@ public class FlowQueryService {
     }
 
     private static String displayName(SkillFlowNodeExecution node) {
-        return node.getNodeName() == null || node.getNodeName().isBlank()
-                ? node.getSkillName() : node.getNodeName();
+        if (node.getNodeName() != null && !node.getNodeName().isBlank()) return node.getNodeName();
+        if (node.getScriptId() != null && !node.getScriptId().isBlank()) return node.getScriptId();
+        return node.getSkillName();
     }
 
     /** 执行记录列表/详情返回体。activeDurationSeconds 为所有尝试审计耗时之和(秒),无尝试记录时为 null。 */

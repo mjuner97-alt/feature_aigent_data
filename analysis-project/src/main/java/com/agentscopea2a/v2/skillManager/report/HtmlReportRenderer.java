@@ -123,16 +123,21 @@ public class HtmlReportRenderer {
     private static final Pattern COMPLETE_HTML_START =
             Pattern.compile("<!doctype\\b[^>]*>|<html\\b[^>]*>", Pattern.CASE_INSENSITIVE);
     private static final Pattern HTML_CLOSE = Pattern.compile("</html\\s*>", Pattern.CASE_INSENSITIVE);
+    /** AI 常见的 HTML 片段（没有外层 html/body 文档壳）。 */
+    private static final Pattern HTML_FRAGMENT = Pattern.compile(
+            "<\\s*(?:div|section|article|main|table|svg|h[1-6])\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern WHOLE_MARKDOWN_FENCE = Pattern.compile(
             "^\\s*```[^\\r\\n]*\\R([\\s\\S]*?)\\R?```\\s*$", Pattern.CASE_INSENSITIVE);
 
     /** 内联 CSS：复用前端 Markdown.vue LIGHT 主题，表格斑马纹/边框/表头底色。 */
     private static final String CSS = """
             *{box-sizing:border-box}
-            body{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.6;color:#1e293b;background:#fff;margin:0;padding:24px}
-            .report{max-width:1100px;margin:0 auto}
+            /* 报告正文使用更宽的画布，减少大屏左右空白；同时保留最小内边距。 */
+            body{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:15px;line-height:1.7;color:#1e293b;background:#fff;margin:0;padding:28px clamp(18px,3vw,48px)}
+            .report{width:100%;max-width:1600px;margin:0 auto}
             h1,h2,h3,h4,h5,h6{color:#0f172a;margin:16px 0 8px;line-height:1.3}
             h1{font-size:1.6rem;border-bottom:1px solid #e2e8f0;padding-bottom:6px}
+            .report>h1{text-align:center}
             h2{font-size:1.35rem;border-bottom:1px solid #e2e8f0;padding-bottom:4px}
             h3{font-size:1.18rem}
             h4{font-size:1.05rem}
@@ -144,8 +149,8 @@ public class HtmlReportRenderer {
             code{background:#f1f5f9;color:#be185d;padding:1px 5px;border-radius:4px;font-family:ui-monospace,"SFMono-Regular",Menlo,monospace;font-size:0.88em}
             pre{background:#0f172a;color:#e2e8f0;border:1px solid #334155;padding:10px 14px;border-radius:6px;overflow-x:auto;margin:8px 0}
             pre code{background:transparent;color:inherit;padding:0;font-size:0.85rem}
-            table{border-collapse:collapse;width:100%;font-size:0.88rem;margin:8px 0}
-            th,td{border:1px solid #e2e8f0;padding:6px 10px;text-align:left;vertical-align:top}
+            table{border-collapse:collapse;width:100%;font-size:0.94rem;margin:10px 0}
+            th,td{border:1px solid #e2e8f0;padding:8px 12px;text-align:left;vertical-align:top}
             th{background:#f8fafc;font-weight:600;color:#1e293b}
             /* 长表格表头 sticky：滚动时表头钉住，仅数据滚动。仅作用于渲染器生成的表格
                （.table-scroll 包裹），不影响 AI 直出 HTML 自带样式的表格。
@@ -160,13 +165,17 @@ public class HtmlReportRenderer {
             a{color:#6366f1;text-decoration:none}
             a:hover{text-decoration:underline}
             .echarts-shell{position:relative;width:100%;margin:12px 0;background:#fff}
-            .echarts-chart{width:100%;height:400px}
+            .echarts-chart{width:100%;height:460px}
             .echarts-fullscreen{position:absolute;z-index:2;top:8px;right:8px;width:32px;height:32px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;color:#334155;cursor:pointer;font-size:18px;line-height:28px}
             .echarts-fullscreen:hover{background:#f8fafc;color:#0f172a}
             .echarts-shell:fullscreen{padding:48px 16px 16px;background:#fff}
             .echarts-shell:fullscreen .echarts-chart{height:calc(100vh - 64px)}
             .report-frame-shell{margin:12px 0}
             .report-frame{width:100%;height:600px;border:1px solid #e2e8f0;border-radius:6px;display:block;background:#fff}
+            .html-content-shell{position:relative;margin:12px 0;padding:36px 12px 12px;border:1px solid #e2e8f0;border-radius:6px;background:#fff}
+            .html-content-shell:fullscreen{width:100%;height:100%;overflow:auto;padding:48px 28px 28px;background:#fff}
+            .html-fullscreen{position:absolute;z-index:2;top:8px;right:8px;width:32px;height:32px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;color:#334155;cursor:pointer;font-size:18px;line-height:28px}
+            .html-fullscreen:hover{background:#f8fafc;color:#0f172a}
             """;
 
     /**
@@ -316,6 +325,15 @@ public class HtmlReportRenderer {
         //    块间片段转 HTML，块位置插入图表占位 div
         StringBuilder body = new StringBuilder();
         List<ChartBlock> charts = splitCharts(md, body, true);
+        // 节点结果常返回 HTML 片段而不是完整 HTML 文档；这条路径同样需要
+        // 与完整文档一致的全屏入口，否则用户只能看到内容而无法放大。
+        if (HTML_FRAGMENT.matcher(md).find()) {
+            String renderedBody = body.toString();
+            body.setLength(0);
+            body.append("<div class=\"html-content-shell\" id=\"html-content-0\">")
+                    .append("<button class=\"html-fullscreen\" type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-html-fullscreen=\"html-content-0\">&#x26F6;</button>")
+                    .append(renderedBody).append("</div>\n");
+        }
 
         return assembleHtml(safeTitle, body.toString(), charts, "");
     }
@@ -462,6 +480,11 @@ public class HtmlReportRenderer {
         // 仍扫描图表块（body 内若有 ```echarts 或 <echart> 也渲染成图），其余原样为 HTML
         StringBuilder body = new StringBuilder();
         List<ChartBlock> charts = splitCharts(bodyContent, body, false);
+        String renderedBody = body.toString();
+        body.setLength(0);
+        body.append("<div class=\"html-content-shell\" id=\"html-content-0\">")
+                .append("<button class=\"html-fullscreen\" type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-html-fullscreen=\"html-content-0\">&#x26F6;</button>")
+                .append(renderedBody).append("</div>\n");
 
         return assembleHtml(safeTitle, body.toString(), charts, extraStyles.toString());
     }
@@ -544,6 +567,7 @@ public class HtmlReportRenderer {
         sb.append("</div>");
         // 表头 sticky 自适应脚本：不依赖图表，始终内联
         sb.append("<script>").append(TABLE_STICKY_JS).append("</script>");
+        sb.append("<script>(function(){var buttons=document.querySelectorAll('[data-html-fullscreen]');for(var i=0;i<buttons.length;i++){buttons[i].addEventListener('click',function(){var shell=document.getElementById(this.getAttribute('data-html-fullscreen'));if(document.fullscreenElement===shell){document.exitFullscreen();}else if(shell&&shell.requestFullscreen){shell.requestFullscreen();}});}})();</script>");
         // 仅在有图表时内联 echarts.min.js；无图省 1.1MB
         if (!charts.isEmpty()) {
             sb.append("<script>").append(echartsJs).append("</script>");

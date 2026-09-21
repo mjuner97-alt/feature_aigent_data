@@ -114,6 +114,14 @@ public class ScriptExecTool {
     static final String WEEKLY_BUSINESS_MOCK_ID = "weekly_business_html_brief_mock";
 
     /**
+     * 演示用模拟脚本 id:命中后不查磁盘、不启动 python,直接返回模拟 HTML 报告。
+     * 用于本机没有 python 执行环境时跑通试跑与长任务流程链路。
+     */
+    private static final Set<String> MOCK_SCRIPT_IDS = Set.of(
+            "sales_daily_report", "user_retention_analysis", "inventory_turnover",
+            "channel_conversion_funnel", "monthly_revenue_forecast", "region_sales_rank");
+
+    /**
      * opengauss-jdbc jar 路径 (容器内 .m2 缓存, Dockerfile build 时预填).
      * psycopg2 不支持 openGauss SHA256 SASL 认证, Python 脚本需用 JPype 调此 jar.
      * 详见 docs/table-mertics/test_opengauss_connection.py
@@ -170,6 +178,9 @@ public class ScriptExecTool {
         }
         if (WEEKLY_BUSINESS_MOCK_ID.equals(scriptId)) {
             return ToolResultBlock.text(formatWeeklyBusinessMock(params));
+        }
+        if (MOCK_SCRIPT_IDS.contains(scriptId)) {
+            return ToolResultBlock.text(formatMockHtmlReport(scriptId, params));
         }
         if (registryMapper == null) {
             return ToolResultBlock.text("script_exec 不可用: registryMapper 未注入 (检查 ScriptRegistryMapper bean)");
@@ -366,6 +377,127 @@ public class ScriptExecTool {
                 + "```echarts\n"
                 + "{\"title\":{\"text\":\"业务线收入构成\",\"left\":\"center\"},\"tooltip\":{\"trigger\":\"item\"},\"series\":[{\"name\":\"收入占比\",\"type\":\"pie\",\"data\":[{\"name\":\"线上直营\",\"value\":42},{\"name\":\"渠道分销\",\"value\":33},{\"name\":\"企业客户\",\"value\":25}]}]}\n"
                 + "```";
+    }
+
+    /**
+     * 模拟脚本统一输出:自包含 HTML 报告(内联样式,零外部依赖),
+     * 内容含参数回显 + 多组明细表格 + ECharts 折线/柱状/饼图,用于演示与链路验证。
+     */
+    private static String formatMockHtmlReport(String scriptId, Map<String, Object> params) {
+        int weeks = 4;
+        if (params != null && params.get("weeks") != null) {
+            try { weeks = Math.max(1, Math.min(8, Integer.parseInt(String.valueOf(params.get("weeks"))))); }
+            catch (NumberFormatException ignored) { }
+        }
+        String line = params == null || params.get("business_line") == null
+                ? "全部业务线" : String.valueOf(params.get("business_line"));
+        int[] revenue = {128, 142, 151, 168, 176, 184, 193, 207};
+        int[] orders = {860, 910, 980, 1060, 1110, 1180, 1230, 1310};
+        String[] labels = {"第1周", "第2周", "第3周", "第4周", "第5周", "第6周", "第7周", "第8周"};
+        StringBuilder labelJson = new StringBuilder("[");
+        StringBuilder revenueJson = new StringBuilder("[");
+        StringBuilder orderJson = new StringBuilder("[");
+        for (int i = 0; i < weeks; i++) {
+            if (i > 0) { labelJson.append(','); revenueJson.append(','); orderJson.append(','); }
+            labelJson.append('"').append(labels[i]).append('"'); revenueJson.append(revenue[i]); orderJson.append(orders[i]);
+        }
+        labelJson.append(']'); revenueJson.append(']'); orderJson.append(']');
+        int latest = revenue[weeks - 1], previous = weeks > 1 ? revenue[weeks - 2] : latest;
+        double change = previous == 0 ? 0 : Math.round((latest - previous) * 1000.0 / previous) / 10.0;
+
+        // 明细表格: 4 大区 × 8 业务线 = 32 行 × 16 列 (确定性伪随机, 每次输出一致)
+        String[] regions = {"华东大区", "华北大区", "华南大区", "西部大区"};
+        String[] bizLines = {"线上直营", "渠道分销", "企业客户", "会员运营", "跨境业务", "新零售", "直播电商", "线下门店"};
+        String[] owners = {"张伟", "李娜", "王强", "赵敏", "刘洋", "陈静", "杨帆", "周婷"};
+        String[] headers = {"业务线", "大区", "负责人", "订单数", "收入(万元)", "销售目标(万元)", "完成率", "客单价(元)",
+                "转化率", "毛利率", "退款率", "环比增幅", "新客数", "复购率", "库存周转(天)", "状态"};
+        String[] headerAlign = {"left", "left", "left", "right", "right", "right", "right", "right",
+                "right", "right", "right", "right", "right", "right", "right", "center"};
+        StringBuilder detailRows = new StringBuilder();
+        int seq = 0;
+        for (String region : regions) {
+            for (String biz : bizLines) {
+                seq++;
+                int ord = 600 + (seq * 97 + 31) % 700;                 // 订单数
+                int rev = 60 + (seq * 53 + 17) % 180;                  // 收入(万元)
+                int target = rev + 20 + (seq * 29) % 60;               // 销售目标(万元)
+                double completion = Math.round(rev * 1000.0 / target) / 10.0;             // 完成率 %
+                int price = rev * 10000 / Math.max(ord, 1);            // 客单价(元)
+                double conv = Math.round((2 + (seq * 37 % 60) / 10.0) * 10) / 10.0;       // 转化率 %
+                double gross = Math.round((15 + (seq * 23 % 40) / 10.0) * 10) / 10.0;     // 毛利率 %
+                double refund = Math.round((seq * 17 % 50) / 10.0 * 10) / 10.0;           // 退款率 %
+                double mom = Math.round(((seq * 71 + 13) % 200 - 90) / 10.0 * 10) / 10.0; // 环比 %
+                int newCust = 50 + (seq * 83) % 450;                   // 新客数
+                double repurchase = Math.round((20 + (seq * 41 % 55) / 10.0) * 10) / 10.0; // 复购率 %
+                int turnover = 15 + (seq * 13) % 35;                   // 库存周转(天)
+                boolean up = mom >= 0;
+                String status = completion >= 100 ? "优秀" : completion >= 85 ? "正常" : "待改进";
+                String statusColor = completion >= 100 ? "#27ae60" : completion >= 85 ? "#f39c12" : "#e74c3c";
+                String td = "padding:8px 12px;border-bottom:1px solid #eef1f5;"
+                        + (seq % 2 == 0 ? "background:#f8f9fb;" : "");
+                detailRows.append("<tr>")
+                        .append("<td style='").append(td).append("text-align:left;white-space:nowrap;'>").append(biz).append("</td>")
+                        .append("<td style='").append(td).append("text-align:left;white-space:nowrap;color:#7f8c8d;'>").append(region).append("</td>")
+                        .append("<td style='").append(td).append("text-align:left;white-space:nowrap;'>").append(owners[seq % owners.length]).append("</td>")
+                        .append("<td style='").append(td).append("text-align:right;'>").append(ord).append("</td>")
+                        .append("<td style='").append(td).append("text-align:right;'>").append(rev).append("</td>")
+                        .append("<td style='").append(td).append("text-align:right;'>").append(target).append("</td>")
+                        .append("<td style='").append(td).append("text-align:right;font-weight:bold;color:")
+                        .append(completion >= 100 ? "#2ecc71" : completion >= 85 ? "#f39c12" : "#e74c3c").append(";'>")
+                        .append(completion).append("%</td>")
+                        .append("<td style='").append(td).append("text-align:right;'>").append(price).append("</td>")
+                        .append("<td style='").append(td).append("text-align:right;'>").append(conv).append("%</td>")
+                        .append("<td style='").append(td).append("text-align:right;'>").append(gross).append("%</td>")
+                        .append("<td style='").append(td).append("text-align:right;'>").append(refund).append("%</td>")
+                        .append("<td style='").append(td).append("text-align:right;font-weight:bold;color:").append(up ? "#2ecc71" : "#e74c3c").append(";'>")
+                        .append(up ? "↑ " : "↓ ").append(Math.abs(mom)).append("%</td>")
+                        .append("<td style='").append(td).append("text-align:right;'>").append(newCust).append("</td>")
+                        .append("<td style='").append(td).append("text-align:right;'>").append(repurchase).append("%</td>")
+                        .append("<td style='").append(td).append("text-align:right;'>").append(turnover).append("</td>")
+                        .append("<td style='").append(td).append("text-align:center;'>")
+                        .append("<span style='display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px;white-space:nowrap;background:").append(statusColor).append("1a;color:").append(statusColor).append(";'>")
+                        .append(status).append("</span></td>")
+                        .append("</tr>");
+            }
+        }
+        StringBuilder detailHeader = new StringBuilder();
+        for (int i = 0; i < headers.length; i++) {
+            detailHeader.append("<th style='padding:10px 12px;text-align:").append(headerAlign[i])
+                    .append(";white-space:nowrap;font-weight:600;'>").append(headers[i]).append("</th>");
+        }
+        String detailTable = "<h3 style='color:#2c3e50;font-size:16px;margin:25px 0 12px 0;'>📋 业务线明细数据（共 " + seq + " 行 × " + headers.length + " 列）</h3>"
+                + "<div style='overflow-x:auto;'>"
+                + "<table style='border-collapse:collapse;width:100%;font-size:13px;color:#34495e;'>"
+                + "<thead><tr style='background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;'>" + detailHeader + "</tr></thead>"
+                + "<tbody>" + detailRows + "</tbody></table></div>";
+
+        return "```html\n"
+                + "<div style='font-family:Microsoft YaHei;padding:20px;background:#f5f7fa;'>"
+                + "<div style='background:#fff;border-radius:10px;padding:25px;box-shadow:0 2px 8px rgba(0,0,0,0.06);'>"
+                + "<h2 style='color:#2c3e50;margin:0 0 5px 0;'>📊 每周经营数据快报</h2>"
+                + "<p style='color:#7f8c8d;font-size:13px;margin:0 0 15px 0;'>业务范围：" + line + " ｜ 最近 " + weeks + " 周</p>"
+                + "<div style='background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;padding:18px 22px;border-radius:8px;margin:10px 0 20px 0;display:flex;justify-content:space-between;'>"
+                + "<div><span style='font-size:13px;opacity:0.9;'>本周收入</span><br><span style='font-size:32px;font-weight:bold;'>" + latest + " 万元</span></div>"
+                + "<div style='text-align:right;'><span style='font-size:13px;opacity:0.9;'>较上周</span><br><span style='font-size:20px;font-weight:bold;color:" + (Double.parseDouble(String.valueOf(change)) >= 0 ? "#2ecc71" : "#e74c3c") + ";'>" + (Double.parseDouble(String.valueOf(change)) >= 0 ? "↑" : "↓") + " " + Math.abs(Double.parseDouble(String.valueOf(change))) + "%</span></div>"
+                + "</div>"
+                + detailTable
+                + "<p style='color:#95a5a6;font-size:12px;text-align:center;margin-top:20px;padding-top:12px;border-top:1px solid #eee;'>© 2026 经营数据分析 · 内部参考</p>"
+                + "</div></div>\n"
+                + "```\n\n"
+                + "## 趋势图\n"
+                + "```echarts\n"
+                + "{\"title\":{\"text\":\"周收入与订单趋势\"},\"tooltip\":{\"trigger\":\"axis\"},\"xAxis\":{\"type\":\"category\",\"data\":" + labelJson + "},\"yAxis\":[{\"type\":\"value\"},{\"type\":\"value\"}],\"series\":[{\"name\":\"收入(万元)\",\"type\":\"line\",\"data\":" + revenueJson + "},{\"name\":\"订单数\",\"type\":\"bar\",\"yAxisIndex\":1,\"data\":" + orderJson + "}]}\n"
+                + "```\n\n"
+                + "## 收入构成\n"
+                + "```echarts\n"
+                + "{\"title\":{\"text\":\"业务线收入构成\",\"left\":\"center\"},\"tooltip\":{\"trigger\":\"item\"},\"series\":[{\"name\":\"收入占比\",\"type\":\"pie\",\"data\":[{\"name\":\"线上直营\",\"value\":42},{\"name\":\"渠道分销\",\"value\":33},{\"name\":\"企业客户\",\"value\":25}]}]}\n"
+                + "```";
+    }
+
+    private static String escapeHtml(String text) {
+        if (text == null) return "";
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace("\"", "&quot;");
     }
 
     /** Adapter used by the HTTP debug service; keeps registry and container validation in one place. */

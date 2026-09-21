@@ -27,6 +27,7 @@ import com.agentscopea2a.v2.skillManager.mapper.SkillJobMapper;
 import com.agentscopea2a.v2.skillManager.notification.NotificationReceivers;
 import com.agentscopea2a.v2.skillManager.notification.NotificationService;
 import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
+import com.agentscopea2a.v2.skillManager.report.ReportSourceValidator;
 import com.agentscopea2a.v2.skillManager.scheduler.SkillJobScheduler;
 import com.agentscopea2a.v2.util.SkillFileMirror;
 import org.slf4j.Logger;
@@ -66,7 +67,6 @@ import java.util.concurrent.CompletableFuture;
 public class SkillJobService {
 
     private static final Logger log = LoggerFactory.getLogger(SkillJobService.class);
-    private static final int MAX_EDITABLE_REPORT_BYTES = 2 * 1024 * 1024;
 
     private final SkillJobMapper mapper;
     private final SkillJobScheduler scheduler;
@@ -690,7 +690,7 @@ public class SkillJobService {
     /** Atomically replace an owned execution report and mirror the saved file to backup storage. */
     public String updateExecutionReportSource(Long execId, String userId, String html) {
         OwnedReport report = resolveOwnedHtmlReport(execId, userId);
-        validateEditableHtml(html);
+        ReportSourceValidator.validate(html);
         Path temporary = null;
         try {
             Path parent = report.primary().getParent();
@@ -777,20 +777,6 @@ public class SkillJobService {
         } catch (Exception e) {
             log.warn("Failed to restore Skill Job report from database: execId={}, error={}", execution.getId(), e.getMessage());
             return false;
-        }
-    }
-
-    private static void validateEditableHtml(String html) {
-        if (html == null || html.isBlank()) {
-            throw new IllegalStateException("ReportContentInvalid: HTML 内容不能为空");
-        }
-        int byteLength = html.getBytes(StandardCharsets.UTF_8).length;
-        if (byteLength > MAX_EDITABLE_REPORT_BYTES) {
-            throw new IllegalStateException("ReportContentTooLarge: HTML 内容不能超过 2 MB");
-        }
-        String normalized = html.toLowerCase(Locale.ROOT);
-        if (!normalized.contains("<html") && !normalized.contains("<!doctype html")) {
-            throw new IllegalStateException("ReportContentInvalid: 内容必须是完整 HTML 文档");
         }
     }
 

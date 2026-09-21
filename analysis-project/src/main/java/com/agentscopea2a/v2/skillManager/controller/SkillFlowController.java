@@ -4,6 +4,7 @@ import com.agentscopea2a.v2.skillManager.dto.FlowMetricReadinessDto;
 import com.agentscopea2a.v2.skillManager.dto.FlowValidationDto;
 import com.agentscopea2a.v2.skillManager.dto.NotifySettingsDto;
 import com.agentscopea2a.v2.skillManager.dto.NotifySettingsUpdateRequest;
+import com.agentscopea2a.v2.skillManager.dto.FlowReportUpdateRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillFlowDefinitionRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillFlowDto;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowNotification;
@@ -198,6 +199,19 @@ public class SkillFlowController {
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                         "inline; filename=\"flow-report.html\"; filename*=UTF-8''" + encoded)
                 .body(download.resource());
+    }
+
+    @GetMapping(value = "/api/skill-flow-executions/{id}/report-source", produces = MediaType.TEXT_HTML_VALUE)
+    public ResponseEntity<String> reportSource(@PathVariable(name = "id") Long id,
+                                               @RequestHeader(name = "X-User-Id") String userId) {
+        return ResponseEntity.ok().contentType(MediaType.TEXT_HTML).body(queryService.readFlowReportSource(id, userId));
+    }
+
+    @PutMapping(value = "/api/skill-flow-executions/{id}/report-source", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.TEXT_HTML_VALUE)
+    public ResponseEntity<String> updateReportSource(@PathVariable(name = "id") Long id,
+                                                     @RequestHeader(name = "X-User-Id") String userId,
+                                                     @RequestBody FlowReportUpdateRequest request) {
+        return ResponseEntity.ok().contentType(MediaType.TEXT_HTML).body(queryService.updateFlowReportSource(id, userId, request.html()));
     }
 
     /** 按需渲染单个成功 Skill 节点的 HTML 内容，不落盘。 */

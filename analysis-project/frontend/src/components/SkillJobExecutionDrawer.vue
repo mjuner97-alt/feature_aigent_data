@@ -9,7 +9,7 @@ import { Download, EditPen, View } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { downloadExecutionFile, listExecutions, retryExecution, viewExecutionFile } from '../api/skillJob';
 import type { SkillJobExecution } from '../types/skillJob';
-import SkillJobReportEditorDrawer from './SkillJobReportEditorDrawer.vue';
+import ReportEditorDrawer from './ReportEditorDrawer.vue';
 
 const props = defineProps<{ open: boolean; jobId: number | null; canDownload?: boolean; canEdit?: boolean }>();
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>();
@@ -301,9 +301,10 @@ async function retry(exec: SkillJobExecution) {
         </div>
       </div>
     </transition>
-    <SkillJobReportEditorDrawer
+    <ReportEditorDrawer
       v-model:open="editorOpen"
       :execution-id="editorExecutionId"
+      kind="job"
       @saved="refresh"
     />
   </Teleport>
