@@ -147,6 +147,13 @@ public class HtmlReportRenderer {
             table{border-collapse:collapse;width:100%;font-size:0.88rem;margin:8px 0}
             th,td{border:1px solid #e2e8f0;padding:6px 10px;text-align:left;vertical-align:top}
             th{background:#f8fafc;font-weight:600;color:#1e293b}
+            /* 长表格表头 sticky：滚动时表头钉住，仅数据滚动。仅作用于渲染器生成的表格
+               （.table-scroll 包裹），不影响 AI 直出 HTML 自带样式的表格。
+               outline 兜底 border-collapse:collapse 下 sticky 表头随滚动丢失的边框线；
+               默认 overflow-x:auto 供宽表横向滚动（无 JS 场景的兜底），
+               overflow 滚动容器会困住 sticky，由 TABLE_STICKY_JS 按表格实际宽度动态解除。 */
+            .table-scroll{overflow-x:auto}
+            .table-scroll th{position:sticky;top:0;z-index:1;outline:1px solid #e2e8f0;outline-offset:-1px}
             tbody tr:nth-child(even){background:#f8fafc}
             ul,ol{margin:6px 0;padding-left:22px}
             li{margin:2px 0}
@@ -237,6 +244,36 @@ public class HtmlReportRenderer {
     private static final Pattern BOX_SHADOW_DECL =
             Pattern.compile("(?i)(?<![\\w-])(?:-webkit-)?box-shadow\\s*:[^;}]*;?");
 
+    /**
+     * 表头 sticky 自适应脚本：表格默认被 {@code .table-scroll}（overflow-x:auto）包裹供宽表横向滚动，
+     * 但 overflow 滚动容器会困住 {@code position:sticky}（sticky 相对最近滚动容器生效，而该容器
+     * 垂直方向不滚动），表头无法相对页面钉住。载入/resize 时逐表检测：
+     * <ul>
+     *   <li>表格不超宽：解除滚动容器（overflow:visible），表头 sticky 相对页面/iframe 视口生效；</li>
+     *   <li>超宽的宽表：保留横向滚动；若同时超高（&gt;70vh）则限高为内部滚动窗格，表头在窗格内 sticky。</li>
+     * </ul>
+     * 不依赖图表块，无图表的报告也要内联。
+     */
+    private static final String TABLE_STICKY_JS = """
+            (function(){
+              function fixTableScroll(){
+                var ds=document.querySelectorAll('.table-scroll');
+                for(var i=0;i<ds.length;i++){
+                  var d=ds[i];var t=d.querySelector('table');if(!t) continue;
+                  if(t.scrollWidth<=d.clientWidth+1){
+                    d.style.overflow='visible';d.style.maxHeight='';
+                  }else{
+                    d.style.overflow='auto';
+                    d.style.maxHeight=(t.offsetHeight>window.innerHeight*0.7)?'70vh':'';
+                  }
+                }
+              }
+              if(document.readyState==='complete'){fixTableScroll();}
+              else{window.addEventListener('load',fixTableScroll);}
+              window.addEventListener('resize',fixTableScroll);
+            })();
+            """;
+
     /** 启动时加载一次的 echarts.min.js 全文，内联进每个含图表的报告。 */
     private String echartsJs;
 
@@ -314,7 +351,11 @@ public class HtmlReportRenderer {
         Matcher starts = COMPLETE_HTML_START.matcher(input);
         if (!starts.find()) return false;
         CompleteHtmlPart part = extractCompleteHtmlPart(input, starts.start());
-        return part != null && (starts.start() > 0 || part.end() < input.length());
+        if (part == null) return false;
+        // 文档前后仅空白（AI 输出常见尾随换行）不算混排，仍走完整文档渲染保持自然高度
+        boolean prefixHasContent = !input.substring(0, starts.start()).isBlank();
+        boolean suffixHasContent = !input.substring(part.end()).isBlank();
+        return prefixHasContent || suffixHasContent;
     }
 
     private CompleteHtmlPart extractCompleteHtmlPart(String input, int start) {
@@ -340,9 +381,9 @@ public class HtmlReportRenderer {
                 .append(" srcdoc=\"").append(escapeSrcdoc(frameDoc)).append("\"></iframe></div>\n");
     }
 
-    /** iframe srcdoc 属性转义:先转 & 再转 "(属性值内的 < > 合法,无需转义)。 */
+    /** iframe srcdoc 属性转义:先转 & 再转 < > "(属性值内的实体由浏览器解析还原后交给 iframe)。 */
     private static String escapeSrcdoc(String html) {
-        return html.replace("&", "&amp;").replace("\"", "&quot;");
+        return html.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
     }
 
     private String sanitizeCompleteBody(String bodyContent) {
@@ -501,6 +542,8 @@ public class HtmlReportRenderer {
         sb.append("</head><body><div class=\"report\">");
         sb.append(body);
         sb.append("</div>");
+        // 表头 sticky 自适应脚本：不依赖图表，始终内联
+        sb.append("<script>").append(TABLE_STICKY_JS).append("</script>");
         // 仅在有图表时内联 echarts.min.js；无图省 1.1MB
         if (!charts.isEmpty()) {
             sb.append("<script>").append(echartsJs).append("</script>");
@@ -613,7 +656,7 @@ public class HtmlReportRenderer {
                     rows.add(splitRow(lines[i]));
                     i++;
                 }
-                out.append("<div style=\"overflow-x:auto\"><table><thead><tr>");
+                out.append("<div class=\"table-scroll\"><table><thead><tr>");
                 for (String h : header) {
                     out.append("<th>").append(h).append("</th>");
                 }
