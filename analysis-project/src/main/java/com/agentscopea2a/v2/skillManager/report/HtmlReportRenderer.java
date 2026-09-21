@@ -553,7 +553,7 @@ public class HtmlReportRenderer {
                 if (i > 0) sb.append(',');
                 ChartBlock c = charts.get(i);
                 sb.append("{id:").append(jsString(c.id)).append(",option:")
-                  .append(safeOptionJson(c.json)).append("}");
+                        .append(safeOptionJson(c.json)).append("}");
             }
             sb.append("];var chartInstances=[];for(var i=0;i<charts.length;i++){var el=document.getElementById(charts[i].id);");
             sb.append("if(el){var option=charts[i].option;")
