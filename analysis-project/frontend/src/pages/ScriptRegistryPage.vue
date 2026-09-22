@@ -15,6 +15,7 @@ import { ref, computed, watch, onUnmounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { listEntries, getEntry, createEntry, updateEntry, deleteEntry, setEntryEnabled, getSource, saveSource, startDebug, cancelDebug, subscribeDebug } from '../api/scriptRegistry';
 import type { ScriptDebugRun, ScriptRegistryEntry, ScriptRegistryListItem, ScriptRegistryInput } from '../types/scriptRegistry';
+import { isAdmin } from '../utils/auth';
 
 // ==================== 列表 ====================
 const items = ref<ScriptRegistryListItem[]>([]);
@@ -22,12 +23,12 @@ const loading = ref(false);
 const datasourceFilter = ref('');
 const createdByFilter = ref('');
 const keyword = ref('');
-// 我的/全部 范围切换: 默认'我的', 后端按 createdBy = 当前用户过滤 (沿用 SessionHistoryPage 的样式)
-const scope = ref<'mine' | 'all'>('mine');
+// 我的/全部 范围切换: 管理员默认'全部', 普通用户默认'我的', 后端按 createdBy = 当前用户过滤
+const scope = ref<'mine' | 'all'>(isAdmin() ? 'all' : 'mine');
 const currentPage = ref(1);
 const pageSize = ref(20);
 const currentUserId = localStorage.getItem('skill-user-id') || 'demo-user';
-const canEdit = (row: ScriptRegistryListItem) => !!row.createdBy && row.createdBy === currentUserId;
+const canEdit = (row: ScriptRegistryListItem) => isAdmin() || (!!row.createdBy && row.createdBy === currentUserId);
 
 const filteredItems = computed(() => {
   let list = items.value;

@@ -8,6 +8,7 @@ const USERNAME_KEY = 'skill-user-name';
 const USER_DEPTS_KEY = 'skill-user-depts';
 const USER_GROUPS_KEY = 'skill-user-groups';
 const USER_PRODUCTS_KEY = 'skill-user-products';
+const USER_ADMIN_KEY = 'skill-user-admin';
 
 export interface AuthUser {
   userId: string;
@@ -15,6 +16,8 @@ export interface AuthUser {
   departments: string[];
   statisticsGroups: string[];
   productLines: string[];
+  /** 管理员（app.auth.admin-users 配置且密码校验通过） */
+  admin?: boolean;
 }
 
 export function getLoggedInUserId(): string | null {
@@ -28,7 +31,8 @@ export function getLoggedInUser(): AuthUser | null {
   const departments = parseJsonList(localStorage.getItem(USER_DEPTS_KEY));
   const statisticsGroups = parseJsonList(localStorage.getItem(USER_GROUPS_KEY));
   const productLines = parseJsonList(localStorage.getItem(USER_PRODUCTS_KEY));
-  return { userId, name, departments, statisticsGroups, productLines };
+  const admin = localStorage.getItem(USER_ADMIN_KEY) === '1';
+  return { userId, name, departments, statisticsGroups, productLines, admin };
 }
 
 export function saveLoggedInUser(user: AuthUser): void {
@@ -37,6 +41,12 @@ export function saveLoggedInUser(user: AuthUser): void {
   localStorage.setItem(USER_DEPTS_KEY, JSON.stringify(user.departments));
   localStorage.setItem(USER_GROUPS_KEY, JSON.stringify(user.statisticsGroups));
   localStorage.setItem(USER_PRODUCTS_KEY, JSON.stringify(user.productLines));
+  if (user.admin) localStorage.setItem(USER_ADMIN_KEY, '1');
+  else localStorage.removeItem(USER_ADMIN_KEY);
+}
+
+export function isAdmin(): boolean {
+  return localStorage.getItem(USER_ADMIN_KEY) === '1';
 }
 
 export function logout(): void {
@@ -45,6 +55,7 @@ export function logout(): void {
   localStorage.removeItem(USER_DEPTS_KEY);
   localStorage.removeItem(USER_GROUPS_KEY);
   localStorage.removeItem(USER_PRODUCTS_KEY);
+  localStorage.removeItem(USER_ADMIN_KEY);
 }
 
 export function isLoggedIn(): boolean {

@@ -80,4 +80,35 @@ class ScriptExecOutputExtractorTest {
 
         assertEquals("", ScriptExecOutputExtractor.extractRenderableBlocks(output));
     }
+
+    @Test
+    void detectsDownloadLinkLineInStdout() {
+        String output = """
+                [script_exec] scriptId=test exit=0 elapsed=1ms
+                ─── stdout ─────────────────────────
+                汇总表如下。
+                📥 [q2_1_明细.csv](http://localhost:18080/redirect/download?shortCode=abc123)
+                ─── stderr ─────────────────────────
+                INFO: connection
+                """;
+
+        String stdout = ScriptExecOutputExtractor.extractStdout(output);
+        assertEquals("", ScriptExecOutputExtractor.extractRenderableBlocks(output));
+        assertEquals(true, ScriptExecOutputExtractor.stdoutHasDownloadLink(stdout));
+    }
+
+    @Test
+    void downloadLinkDetectionIgnoresFailureLineAndOrdinaryText() {
+        String output = """
+                [script_exec] scriptId=test exit=0 elapsed=1ms
+                ─── stdout ─────────────────────────
+                📥 下载生成失败: too large (filename=明细.csv)
+                详见 /redirect/download?shortCode= 文档说明
+                ─── stderr ─────────────────────────
+                INFO: connection
+                """;
+
+        assertEquals(false,
+                ScriptExecOutputExtractor.stdoutHasDownloadLink(ScriptExecOutputExtractor.extractStdout(output)));
+    }
 }

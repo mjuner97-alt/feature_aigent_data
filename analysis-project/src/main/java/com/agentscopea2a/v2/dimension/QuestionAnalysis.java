@@ -56,6 +56,9 @@ public class QuestionAnalysis {
     /** 用户在新问题中显式指定的维度（覆盖继承值） */
     private ExplicitDimensions explicitDimensions;
 
+    /** 同义词表解析出的同维度一对多歧义（不走反问短路时为 null）。运行时由 AliasResolver 填充，不参与 JSON 反序列化 */
+    private List<AliasResolver.AmbiguousAlias> ambiguousAliases;
+
     public QuestionAnalysis() {}
 
     @JsonCreator
@@ -110,6 +113,14 @@ public class QuestionAnalysis {
 
     public void setExplicitDimensions(ExplicitDimensions explicitDimensions) {
         this.explicitDimensions = explicitDimensions;
+    }
+
+    public List<AliasResolver.AmbiguousAlias> getAmbiguousAliases() {
+        return ambiguousAliases;
+    }
+
+    public void setAmbiguousAliases(List<AliasResolver.AmbiguousAlias> ambiguousAliases) {
+        this.ambiguousAliases = ambiguousAliases;
     }
 
     // ==================== 枚举 ====================

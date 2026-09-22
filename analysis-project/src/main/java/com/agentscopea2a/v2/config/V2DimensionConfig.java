@@ -15,15 +15,20 @@
  */
 package com.agentscopea2a.v2.config;
 
+import com.agentscopea2a.v2.dimension.AliasResolver;
+import com.agentscopea2a.v2.dimension.DimensionAliasRepository;
 import com.agentscopea2a.v2.dimension.DimensionStateManager;
 import com.agentscopea2a.v2.dimension.LlmDimensionService;
 import com.agentscopea2a.v2.dimension.OpenAILlmDimensionService;
 import com.agentscopea2a.v2.middleware.DimensionStateMiddleware;
 import io.agentscope.core.model.Model;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import javax.sql.DataSource;
 
 /**
  * v2 维度状态配置。
@@ -51,8 +56,25 @@ public class V2DimensionConfig {
     }
 
     @Bean
-    public DimensionStateManager dimensionStateManager(LlmDimensionService llmService) {
-        return new DimensionStateManager(llmService);
+    public DimensionStateManager dimensionStateManager(
+            LlmDimensionService llmService, AliasResolver aliasResolver) {
+        return new DimensionStateManager(llmService, aliasResolver);
+    }
+
+    /**
+     * 维度同义词仓储（gaussCustomerDataSource，与 skill_index 同库）；
+     * 表不存在时首连自动建表 + 灌种子数据，TTL 5 分钟快照。
+     */
+    @Bean
+    public DimensionAliasRepository dimensionAliasRepository(
+            @Qualifier("gaussCustomerDataSource") DataSource dataSource,
+            @Value("${harness.a2a.dimension.alias-cache-ttl-millis:300000}") long cacheTtlMillis) {
+        return new DimensionAliasRepository(dataSource, cacheTtlMillis);
+    }
+
+    @Bean
+    public AliasResolver aliasResolver(DimensionAliasRepository dimensionAliasRepository) {
+        return new AliasResolver(dimensionAliasRepository::findAllEnabled);
     }
 
     @Bean

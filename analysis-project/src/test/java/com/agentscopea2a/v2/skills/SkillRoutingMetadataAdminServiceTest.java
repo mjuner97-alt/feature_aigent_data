@@ -15,7 +15,8 @@ import static org.mockito.Mockito.eq;
 class SkillRoutingMetadataAdminServiceTest {
 
     private final SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
-    private final SkillRoutingMetadataAdminService service = new SkillRoutingMetadataAdminService(repository, null);
+    private final SkillRoutingMetadataAdminService service =
+            new SkillRoutingMetadataAdminService(repository, null, new com.agentscopea2a.v2.auth.service.AdminRoleService(""));
 
     @Test
     void saveNormalizesAndDeduplicatesTags() {
@@ -43,7 +44,7 @@ class SkillRoutingMetadataAdminServiceTest {
 
         SkillRoutingMetadata result = service.save("q2_skill", new SkillRoutingMetadataInput(
                 "summary", List.of("Q2-1、部门、版本、达标率", "打分率，项目总数"),
-                List.of(), List.of(), true));
+                List.of(), List.of(), true), "admin");
 
         assertEquals(List.of("Q2-1", "部门", "版本", "达标率", "打分率", "项目总数"), result.keywords());
     }

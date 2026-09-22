@@ -19,7 +19,7 @@ import java.util.regex.Matcher;
 /**
  * /ai/chat 专用的 script_exec 可渲染结果 Hook。
  *
- * <p>只处理 script_exec 返回的 HTML/ECharts 代码块：将原文登记到结果池，
+ * <p>只处理 script_exec 返回的 HTML/ECharts 代码块和 stdout 下载短链：将原文登记到结果池，
  * 再把完整内容替换成短引用交给模型；最终回答层再根据引用恢复原文。
  * 其他工具、工具明细和普通 SSE 出参均不在本类处理范围内。</p>
  */
@@ -125,7 +125,9 @@ public class ChatScriptExecResultHook implements Hook, RuntimeContextAware {
             found = true;
             rawBlocks.add(matcher.group());
         }
-        if (!found) return;
+        // 纯下载链接（无渲染块）的 stdout 同样接管，链接随整段 stdout 由系统附在回答末尾。
+        boolean hasDownloadLink = ScriptExecOutputExtractor.stdoutHasDownloadLink(stdout);
+        if (!found && !hasDownloadLink) return;
         ctx.put(RAW_BLOCKS_CTX_KEY, List.copyOf(rawBlocks));
         String ref = registry.register(ctx.getSessionId(), use.getId(), use.getName(), renderableOutput(output));
         Object requestId = ctx.get(REQUEST_ID_CTX_KEY);

@@ -103,7 +103,11 @@ public class DimensionStateMiddleware implements MiddlewareBase {
     }
 
     private String formatDimensionContext(DimensionState state) {
-        StringBuilder sb = new StringBuilder("## 当前对话维度上下文\n");
+        StringBuilder sb = new StringBuilder("<dimension_context>\n");
+        sb.append("当前对话维度上下文。以下维度值是系统根据用户口语化表述确定性解析出的标准名（非猜测），"
+                + "视为用户本轮提问的确定查询条件：构造查询参数时必须直接采用，"
+                + "用户原文中的口语词/简称一律视为已映射到此；禁止向用户追问"
+                + "「具体指哪个部门/产品线/应用」或要求用户确认口径。\n\n");
 
         if (state.getTimeDimension() != null && !state.getTimeDimension().isEmpty()) {
             String label = state.getTimeDimension().getType()
@@ -129,8 +133,8 @@ public class DimensionStateMiddleware implements MiddlewareBase {
         if (state.getPersons() != null && !state.getPersons().isEmpty()) {
             sb.append("人：").append(String.join("、", state.getPersons())).append("\n");
         }
-
-        return sb.toString().trim();
+        sb.append("</dimension_context>");
+        return sb.toString() + "\n\n";
     }
 
     private static String truncateAtLineBoundary(String value, int maxChars) {

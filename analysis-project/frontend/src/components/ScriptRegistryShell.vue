@@ -12,13 +12,14 @@ const nav = [
   { to: '/script-registry/skills', label: 'Skill 配置' },
   { to: '/script-registry/tool-routing', label: '工具路由' },
   { to: '/script-registry/overlap', label: '重叠检测' },
+  { to: '/script-registry/dimension-alias', label: '维度同义词' },
 ];
 </script>
 
 <template>
   <div class="script-shell">
     <aside class="nav">
-      <div class="logo">SCRIPT 注册表</div>
+      <div class="logo">配置广场</div>
       <RouterLink v-for="n in nav" :key="n.to" :to="n.to" class="nav-item">
         <span>{{ n.label }}</span>
       </RouterLink>

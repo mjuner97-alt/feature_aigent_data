@@ -11,12 +11,15 @@ public class SkillRoutingMetadataAdminService {
 
     private final SkillRoutingMetadataRepository repository;
     private final com.agentscopea2a.v2.governance.SkillToolOverlapService overlapService;
+    private final com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService;
 
     public SkillRoutingMetadataAdminService(
             SkillRoutingMetadataRepository repository,
-            com.agentscopea2a.v2.governance.SkillToolOverlapService overlapService) {
+            com.agentscopea2a.v2.governance.SkillToolOverlapService overlapService,
+            com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService) {
         this.repository = repository;
         this.overlapService = overlapService;
+        this.adminRoleService = adminRoleService;
     }
 
     public List<SkillRoutingMetadataView> list(String keyword, Boolean active, int limit, int offset) {
@@ -61,7 +64,10 @@ public class SkillRoutingMetadataAdminService {
         return get(skillName);
     }
 
-    private static void assertOwner(String owner, String userId) {
+    private void assertOwner(String owner, String userId) {
+        if (adminRoleService.isAdminUserId(userId)) {
+            return;
+        }
         if (owner == null || owner.isBlank() || userId == null || userId.isBlank()
                 || !owner.trim().equals(userId.trim())) {
             throw new IllegalStateException("ResourceAccessDenied");

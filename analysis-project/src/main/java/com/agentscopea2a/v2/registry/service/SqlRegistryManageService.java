@@ -67,13 +67,15 @@ public class SqlRegistryManageService {
     private final SqlRegistryMapper mapper;
     private final DeveloperPlPersonInfoMapper personInfoMapper;
     private final Map<String, DataSource> dataSourceMap;
+    private final com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService;
 
     public SqlRegistryManageService(
             SqlRegistryMapper mapper,
             DeveloperPlPersonInfoMapper personInfoMapper,
             @org.springframework.beans.factory.annotation.Qualifier("mysqlDataSource") DataSource mysqlDataSource,
             @org.springframework.beans.factory.annotation.Qualifier("gaussCommonDataSource") DataSource gaussDataSource,
-            @org.springframework.beans.factory.annotation.Qualifier("clickHouseDataSource") DataSource clickHouseDataSource) {
+            @org.springframework.beans.factory.annotation.Qualifier("clickHouseDataSource") DataSource clickHouseDataSource,
+            com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService) {
         this.mapper = mapper;
         this.personInfoMapper = personInfoMapper;
         Map<String, DataSource> m = new LinkedHashMap<>();
@@ -81,6 +83,7 @@ public class SqlRegistryManageService {
         m.put("gauss", gaussDataSource);
         m.put("clickhouse", clickHouseDataSource);
         this.dataSourceMap = Collections.unmodifiableMap(m);
+        this.adminRoleService = adminRoleService;
     }
 
     // ======================================================================
@@ -208,7 +211,10 @@ public class SqlRegistryManageService {
         assertOwner(existing.getCreatedBy(), userId);
     }
 
-    private static void assertOwner(String owner, String userId) {
+    private void assertOwner(String owner, String userId) {
+        if (adminRoleService.isAdminUserId(userId)) {
+            return;
+        }
         if (owner == null || owner.isBlank() || userId == null || userId.isBlank() || !owner.trim().equals(userId.trim())) {
             throw new IllegalStateException("ResourceAccessDenied");
         }

@@ -5,6 +5,8 @@ const BASE = '/api/auth';
 
 export interface LoginRequest {
   userId: string;
+  /** 仅管理员账号必填 */
+  password?: string;
 }
 
 export async function login(req: LoginRequest): Promise<AuthUser> {
@@ -23,5 +25,6 @@ export async function login(req: LoginRequest): Promise<AuthUser> {
     departments: data.departments || [],
     statisticsGroups: data.statisticsGroups || [],
     productLines: data.productLines || [],
+    admin: !!data.admin,
   };
 }
