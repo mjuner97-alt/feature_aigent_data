@@ -26,5 +26,6 @@ export async function login(req: LoginRequest): Promise<AuthUser> {
     statisticsGroups: data.statisticsGroups || [],
     productLines: data.productLines || [],
     admin: !!data.admin,
+    productionMode: !!data.productionMode,
   };
 }

@@ -30,9 +30,11 @@ public class LoginResponse {
     private String message;
     /** 是否管理员（app.auth.admin-users 配置的账号，密码校验通过） */
     private boolean admin;
+    /** 生产环境标记（app.env.production=true 时前端隐藏非管理员的编辑入口） */
+    private boolean productionMode;
 
     public LoginResponse(String userId, String name, List<String> departments,
                          List<String> statisticsGroups, List<String> productLines, String message) {
-        this(userId, name, departments, statisticsGroups, productLines, message, false);
+        this(userId, name, departments, statisticsGroups, productLines, message, false, false);
     }
 }

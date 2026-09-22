@@ -34,6 +34,9 @@ public class ToolRoutingMetadataAdminService {
     }
 
     private void assertOwner(ToolRoutingMetadata metadata, String userId) {
+        if (!adminRoleService.canEditConfig(userId)) {
+            throw new IllegalStateException("ResourceAccessDenied");
+        }
         if (adminRoleService.isAdminUserId(userId)) {
             return;
         }

@@ -33,11 +33,14 @@ import java.util.Map;
 public class AdminRoleService {
 
     private final String rawConfig;
+    private final boolean productionMode;
 
     private Map<String, String> credentials = Map.of();
 
-    public AdminRoleService(@Value("${app.auth.admin-users:}") String rawConfig) {
+    public AdminRoleService(@Value("${app.auth.admin-users:}") String rawConfig,
+                            @Value("${app.env.production:false}") boolean productionMode) {
         this.rawConfig = rawConfig == null ? "" : rawConfig;
+        this.productionMode = productionMode;
         parse();
     }
 
@@ -71,5 +74,14 @@ public class AdminRoleService {
         }
         String expected = credentials.get(userId.trim().toLowerCase(Locale.ROOT));
         return expected != null && expected.equals(rawPassword);
+    }
+
+    public boolean isProductionMode() {
+        return productionMode;
+    }
+
+    /** 生产环境下配置广场写权限收紧为仅管理员；测试环境保持管理员或本人(owner)。 */
+    public boolean canEditConfig(String userId) {
+        return !productionMode || isAdminUserId(userId);
     }
 }

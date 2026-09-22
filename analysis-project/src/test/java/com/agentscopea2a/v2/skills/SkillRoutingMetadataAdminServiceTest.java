@@ -16,7 +16,9 @@ class SkillRoutingMetadataAdminServiceTest {
 
     private final SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
     private final SkillRoutingMetadataAdminService service =
-            new SkillRoutingMetadataAdminService(repository, null, new com.agentscopea2a.v2.auth.service.AdminRoleService(""));
+            new SkillRoutingMetadataAdminService(repository, null, new com.agentscopea2a.v2.auth.service.AdminRoleService("", false));
+    private final SkillRoutingMetadataAdminService prodService =
+            new SkillRoutingMetadataAdminService(repository, null, new com.agentscopea2a.v2.auth.service.AdminRoleService("admin:secret1", true));
 
     @Test
     void saveNormalizesAndDeduplicatesTags() {
@@ -64,6 +66,20 @@ class SkillRoutingMetadataAdminServiceTest {
         service.list("alice", null, true, "alice", 200, 0);
 
         verify(repository).findAllWithSkillManage(eq("alice"), eq(null), eq(true), eq("alice"), eq(200), eq(0));
+    }
+
+    @Test
+    void productionModeBlocksOwnerButAllowsAdmin() {
+        when(repository.skillExists("q2_skill")).thenReturn(true);
+        when(repository.creatorForSkill("q2_skill")).thenReturn("alice");
+
+        IllegalStateException denied = assertThrows(IllegalStateException.class,
+                () -> prodService.save("q2_skill", emptyInput(), "alice"));
+        assertEquals("ResourceAccessDenied", denied.getMessage());
+
+        when(repository.upsert(any())).thenReturn(true);
+        prodService.save("q2_skill", emptyInput(), "admin");
+        verify(repository).upsert(any());
     }
 
     private static SkillRoutingMetadataInput emptyInput() {

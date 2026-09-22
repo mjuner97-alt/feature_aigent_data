@@ -75,7 +75,9 @@ public class AuthService {
                 departments,
                 statisticsGroups,
                 productLines,
-                "登录成功"
+                "登录成功",
+                false,
+                adminRoleService.isProductionMode()
         );
     }
 
@@ -83,6 +85,7 @@ public class AuthService {
         if (!adminRoleService.matchesPassword(userId, password)) {
             throw new IllegalArgumentException("管理员密码错误");
         }
-        return new LoginResponse(userId, userId, List.of(), List.of(), List.of(), "登录成功", true);
+        return new LoginResponse(userId, userId, List.of(), List.of(), List.of(), "登录成功",
+                true, adminRoleService.isProductionMode());
     }
 }
