@@ -65,6 +65,14 @@ public class DimensionStateManager {
     private DimensionState currentState;
 
     /**
+     * 反问确认轮的一次性回填：consumeClarification 命中后记录（问题文本 → 确认的 peer 维度）。
+     * 确认后的标准名可能不在产品线/小组正则的固定词表里（如"金融产品定价与估值系统"），
+     * 本轮 processQuestionInContext 按问题文本精确匹配后回填 peer 与映射显示，用后即清。
+     */
+    private volatile String clarifiedPeerQuestion;
+    private volatile DimensionState.PeerDimension clarifiedPeer;
+
+    /**
      * 创建维度状态管理器。
      *
      * @param llmService LLM 维度分析服务，可为 null（仅 {@link #updateFromAnswer} 需要）
@@ -122,10 +130,23 @@ public class DimensionStateManager {
         DimensionState inherited = inheritDimensions(loaded, analysis);
         String resolvedQuestion = resolveReference(inherited, analysis, userQuestion);
         String enriched = assembleQuestion(inherited, resolvedQuestion);
+        List<AliasResolver.ResolvedAlias> resolvedAliases =
+                new ArrayList<>(analysis.getAliasResolution().resolved());
+        // 反问确认轮回填（用后即清）：确认出的标准名往往不被正则词表识别，上面的
+        // 解析/继承链会把 peer 丢掉；这里按问题文本精确匹配把确认结果补回状态。
+        // 只写维度+标准名，不进「同义词解析映射」段——选词是用户自己确认的，无需口语对应
+        if (clarifiedPeerQuestion != null && clarifiedPeerQuestion.equals(userQuestion)
+                && clarifiedPeer != null && inherited != null) {
+            inherited.setPeerDimension(clarifiedPeer);
+            log.info("Clarified peer re-applied to context: dimension={} values={}",
+                    clarifiedPeer.getType(), clarifiedPeer.getValues());
+            clarifiedPeerQuestion = null;
+            clarifiedPeer = null;
+        }
         if (inherited != null && ctx != null) {
             ctx.put(STATE_KEY, DimensionState.class, inherited);
         }
-        return new ProcessResult(enriched, inherited, analysis.getAliasResolution().resolved());
+        return new ProcessResult(enriched, inherited, resolvedAliases);
     }
 
     /** processQuestionInContext 的返回值。resolvedAliases 是本轮同义词表解析出的口语词→标准名映射。 */
@@ -223,7 +244,9 @@ public class DimensionStateManager {
     // 年份前缀可选：无年份时由调用方补当前年（"4月份版本" → "2026年4月份版本"）
     private static final Pattern EXPLICIT_VERSION = Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})月份版本");
     private static final Pattern EXPLICIT_QUARTER = Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})季度");
-    private static final Pattern EXPLICIT_MONTH = Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})月(?!份)");
+    // "9月份"（无"版本"后缀）也算版本计划；(?!版本) 防止与 EXPLICIT_VERSION 重复计数值，
+    // "9月份版本" 会由 MONTH 退回匹配 "9月" 归一出同一值，Set 去重后指纹一致
+    private static final Pattern EXPLICIT_MONTH = Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})月份?(?!版本)");
     // Q1/Q2/Q3/Q4 / 一季度 / 二季度 alias — normalised to "{year}年{n}季度" for fingerprint stability
     private static final Pattern EXPLICIT_QUARTER_ALIAS =
             Pattern.compile("(?:Q|q)([1-4])|([一二三四])季度");
@@ -992,6 +1015,9 @@ public class DimensionStateManager {
         String resolved = (original != null && alias != null && !alias.isBlank() && original.contains(alias))
                 ? original.replaceFirst(Pattern.quote(alias), Matcher.quoteReplacement(chosen))
                 : original;
+        // 一次性回填记录：本轮 agent 的中间件按问题文本精确匹配后补回 peer
+        this.clarifiedPeerQuestion = resolved;
+        this.clarifiedPeer = new DimensionState.PeerDimension(pending.getDimension(), List.of(chosen));
         log.info("Clarification resolved: alias={} -> {} (dimension={})", alias, chosen, pending.getDimension());
         return resolved;
     }

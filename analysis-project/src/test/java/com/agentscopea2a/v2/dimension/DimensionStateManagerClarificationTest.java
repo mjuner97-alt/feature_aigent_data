@@ -118,6 +118,28 @@ class DimensionStateManagerClarificationTest {
     }
 
     @Test
+    void clarifiedPeerReappliedToContextStateAndMapping() {
+        // 确认后的标准名可能不在正则词表（"金融产品定价与估值系统"），维度上下文必须回填；
+        // 只写维度+标准名（走 peerDimension 渲染），不进「同义词解析映射」段
+        startAndCapture("风险组的缺陷密度9月份");
+        String clarified = manager.consumeClarification("2");
+        assertEquals("金融产品定价与估值系统的缺陷密度9月份", clarified);
+
+        io.agentscope.core.agent.RuntimeContext ctx = io.agentscope.core.agent.RuntimeContext.builder()
+                .sessionId("t1").userId("u").build();
+        DimensionStateManager.ProcessResult result = manager.processQuestionInContext(ctx, clarified);
+        assertEquals(PeerDimensionType.PRODUCT_LINE, result.newState().getPeerDimension().getType());
+        assertEquals(List.of("金融产品定价与估值系统"),
+                result.newState().getPeerDimension().getValues());
+        assertTrue(result.resolvedAliases().isEmpty(), "确认轮不产出口语映射行");
+
+        // 一次性回填：再次处理同一问题不再重复注入
+        DimensionStateManager.ProcessResult second = manager.processQuestionInContext(ctx, clarified);
+        assertNull(second.newState().getPeerDimension());
+        assertTrue(second.resolvedAliases().isEmpty());
+    }
+
+    @Test
     void newPendingOverwritesOldOne() {
         startAndCapture(AMBIGUOUS_QUESTION);
         // 未消费 pending 前又来了一个新歧义问题 → 覆盖

@@ -97,4 +97,28 @@ class DimensionStateManagerRuleTest {
         DimensionState.TimeDimension time = extractTime("4月份版本的质量");
         assertEquals(List.of(y + "年4月份版本"), time.getValues());
     }
+
+    @Test
+    void monthSuffixWithoutVersionWordStillDetected() {
+        // "9月份"（无"版本"后缀）也要识别为版本计划，否则反问确认轮整块维度上下文丢失
+        String y = String.valueOf(currentYear());
+        DimensionState.TimeDimension time = extractTime("金融产品定价与估值系统的缺陷密度9月份");
+        assertEquals(DimensionState.TimeDimensionType.VERSION, time.getType());
+        assertEquals(List.of(y + "年9月份版本"), time.getValues());
+    }
+
+    @Test
+    void monthSuffixAndFullVersionDedupeToSameFingerprint() {
+        String y = String.valueOf(currentYear());
+        assertEquals(extractTime("9月份的质量"), extractTime("9月份版本的质量"));
+    }
+
+    @Test
+    void bareMonthDetectedAsVersion() {
+        // "9月"（不带"份"）同样识别为版本计划
+        String y = String.valueOf(currentYear());
+        DimensionState.TimeDimension time = extractTime("风险组的缺陷密度9月");
+        assertEquals(DimensionState.TimeDimensionType.VERSION, time.getType());
+        assertEquals(List.of(y + "年9月份版本"), time.getValues());
+    }
 }
