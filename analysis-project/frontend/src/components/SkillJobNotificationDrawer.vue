@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
+import { ElMessageBox } from 'element-plus';
 import { listExecutionNotifications, resendExecutionNotification } from '../api/skillJob';
 import type { SkillJobNotification } from '../types/skillJob';
 
@@ -45,10 +46,24 @@ function stopPolling() {
 
 async function resend() {
   if (!props.execId || resending.value) return;
+  const previous = localStorage.getItem('skill-job-interactive-receivers')
+    || records.value.find(r => r.recipientSummary)?.recipientSummary || '';
+  let input = '';
+  try {
+    const result = await ElMessageBox.prompt(
+      '请确认本次收件人。可使用逗号、分号或空格分隔；确认后才会发送。',
+      '确认发送通知',
+      { inputValue: previous, confirmButtonText: '确认发送', cancelButtonText: '取消', inputPlaceholder: '输入统一认证号' },
+    );
+    input = result.value;
+  } catch { return; }
+  const notifyReceivers = [...new Set(input.split(/[,;，；\s]+/).map(v => v.trim()).filter(Boolean))];
+  if (!notifyReceivers.length) { error.value = '请至少保留一个收件人'; return; }
   resending.value = true;
   error.value = '';
   try {
-    await resendExecutionNotification(props.execId);
+    await resendExecutionNotification(props.execId, notifyReceivers);
+    localStorage.setItem('skill-job-interactive-receivers', notifyReceivers.join(','));
     await load(true);
     emit('changed');
   } catch (e) {

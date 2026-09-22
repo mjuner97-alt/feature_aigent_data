@@ -163,8 +163,11 @@ export async function getSkillFlowExecutionNotifications(id: number): Promise<Sk
   return listBody<SkillFlowNotification>(await res.json());
 }
 
-export async function resendSkillFlowExecutionNotification(id: number): Promise<void> {
-  const res = await fetch(`${EXECUTION_BASE}/${id}/notifications/resend`, { method: 'POST', headers: authHeaders() });
+export async function resendSkillFlowExecutionNotification(id: number, notifyReceivers: string[]): Promise<void> {
+  const res = await fetch(`${EXECUTION_BASE}/${id}/notifications/resend`, {
+    method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmed: true, notifyReceivers }),
+  });
   if (!res.ok) throw await requestError(res, '补发通知失败');
 }
 /** 拉取汇总报告 blob;并从 Content-Disposition 解析下载文件名(后端按 {任务名称}-flow-report.html 生成)。 */

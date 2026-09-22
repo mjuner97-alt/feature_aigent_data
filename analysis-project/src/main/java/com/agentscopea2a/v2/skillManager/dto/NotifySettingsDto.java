@@ -1,6 +1,7 @@
 package com.agentscopea2a.v2.skillManager.dto;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 定时任务 / 长任务流程的通知设置(通知设置抽屉专用,与任务创建/编辑表单解耦)。
@@ -12,4 +13,10 @@ public record NotifySettingsDto(
         /** 仅流程有:哪些触发类型发名单(CHAT/MANUAL/AUTO_METRIC);null = 未配置(默认仅 AUTO_METRIC)。 */
         List<String> notifyReceiverTriggers,
         /** 仅流程有:完成通知开关;job 侧恒为 null(job 的发送时机由依赖指标的 notify_enabled 控制)。 */
-        Boolean notifyEnabled) {}
+        Boolean notifyEnabled,
+        Map<String, List<String>> notifyReceiversByTrigger) {
+    public NotifySettingsDto(List<String> notifyReceivers, List<String> notifyReceiverTriggers,
+                             Boolean notifyEnabled) {
+        this(notifyReceivers, notifyReceiverTriggers, notifyEnabled, Map.of());
+    }
+}

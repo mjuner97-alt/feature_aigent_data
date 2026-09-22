@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import { ElMessageBox } from 'element-plus';
 import { listSkillFlowExecutions, cancelSkillFlowExecution } from '../api/skillFlow';
 import type { SkillFlowExecution } from '../types/skillFlow';
@@ -10,6 +11,7 @@ import { formatDuration } from '../utils/flowDuration.js';
 import { InfoFilled } from '@element-plus/icons-vue';
 
 const props = withDefaults(defineProps<{ scope?: 'mine' | 'all'; createdBy?: string }>(), { scope: 'mine', createdBy: '' });
+const router = useRouter();
 
 const executions = ref<SkillFlowExecution[]>([]);
 const loading = ref(false); const error = ref(''); const currentStatus = ref(''); const currentCreatedBy = ref(''); const page = ref(1); const pageSize = ref(20); const detailId = ref<number | null>(null); const detailOpen = ref(false);
@@ -23,6 +25,9 @@ function duration(start?: string | null, end?: string | null) { if (!start || !e
 function activeDuration(item: SkillFlowExecution) { return formatDuration(item.activeDurationSeconds) ?? '-'; }
 async function load(status = currentStatus.value, createdBy = currentCreatedBy.value, silent = false, scope: 'mine' | 'all' = props.scope) { currentStatus.value = status; currentCreatedBy.value = createdBy; if (!silent) loading.value = true; error.value = ''; try { executions.value = await listSkillFlowExecutions(status || undefined, createdBy.trim() || undefined, scope); page.value = 1; } catch (e) { error.value = e instanceof Error ? e.message : '加载长任务执行记录失败'; if (!silent) executions.value = []; } finally { loading.value = false; } }
 function showDetail(id: number) { detailId.value = id; detailOpen.value = true; }
+function openNotify(item: SkillFlowExecution) {
+  if (item.flowId) router.push(`/skills/jobs/flows/${item.flowId}/notify`);
+}
 // 可终止 = 本人触发 且 尚未开始收尾(汇总中不再提供终止;取消中按钮隐藏靠状态过滤)
 const CANCELLABLE_STATUSES = ['WAITING_METRICS', 'QUEUED', 'RUNNING'];
 const cancelling = ref<number | null>(null);
@@ -82,3 +87,5 @@ watch(() => [props.scope, props.createdBy] as const, () => load('', props.create
 /* 列头解释气泡(el-tooltip 渲染在 body 下,scoped 样式作用不到) */
 .flow-th-tooltip { max-width: 300px; line-height: 1.6; }
 </style>
+
+

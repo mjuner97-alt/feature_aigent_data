@@ -227,9 +227,13 @@ public class SkillFlowController {
     /** 手动重发该次执行完成通知(仅终态执行可用)。 */
     @PostMapping("/api/skill-flow-executions/{id}/notifications/resend")
     public void resend(@PathVariable(name = "id") Long id,
-                       @RequestHeader(name = "X-User-Id") String userId) {
+                       @RequestHeader(name = "X-User-Id") String userId,
+                       @RequestBody(required = false) com.agentscopea2a.v2.skillManager.dto.ManualNotificationSendRequest request) {
+        if (request != null && !Boolean.TRUE.equals(request.confirmed())) {
+            throw new IllegalArgumentException("NotificationConfirmationRequired: 请先确认收件人");
+        }
         queryService.requireOwner(id, userId);
-        completionService.resend(mapper.selectFlowExecutionById(id));
+        completionService.resend(mapper.selectFlowExecutionById(id), request == null ? null : request.notifyReceivers());
     }
 
     @PostMapping("/api/skill-flow-executions/{id}/summary/retry")

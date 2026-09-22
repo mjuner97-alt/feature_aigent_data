@@ -316,11 +316,19 @@
           AND deleted_at IS NULL
     </update>
 
-    <!-- 只更新通知收件人配置(通知设置抽屉专用):全量替换名单与触发类型范围,传空串/空列表即清空 -->
+    <!-- 只更新通知收件人配置(通知设置抽屉专用):全量替换名单与触发类型范围,传空串/空列表即清空;
+         notify_enabled 为完成通知开关,请求未携带(null)时 COALESCE 保持原值不动 -->
     <update id="updateFlowNotifySettings">
         UPDATE skill_flow
         SET notify_receivers=#{notifyReceivers},
             notify_receiver_triggers=#{notifyReceiverTriggers},
+            -- 线上 GaussDB 的历史字段为 SMALLINT(0/1),请求 DTO 仍使用 Boolean。
+            -- 先判断 null 保持原值,再显式转换为 0/1,避免 COALESCE(smallint, boolean) 类型冲突。
+            notify_enabled=CASE
+                WHEN #{notifyEnabled} IS NULL THEN notify_enabled
+                WHEN #{notifyEnabled} THEN 1
+                ELSE 0
+            END,
             updated_at=NOW()
         WHERE id = #{id}
           AND deleted_at IS NULL

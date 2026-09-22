@@ -127,9 +127,10 @@ export async function listExecutionNotifications(execId: number): Promise<SkillJ
   return res.json();
 }
 
-export async function resendExecutionNotification(execId: number): Promise<SkillJobNotification> {
+export async function resendExecutionNotification(execId: number, notifyReceivers: string[]): Promise<SkillJobNotification> {
   const res = await fetch(`${BASE}/executions/${execId}/notifications/resend`, {
-    method: 'POST', headers: authHeaders(),
+    method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmed: true, notifyReceivers }),
   });
   if (!res.ok) throw await jobError(res, '补发失败');
   return res.json();

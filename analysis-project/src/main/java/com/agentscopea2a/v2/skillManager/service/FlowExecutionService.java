@@ -6,11 +6,13 @@ import com.agentscopea2a.v2.skillManager.config.SkillFlowProperties;
 import com.agentscopea2a.v2.skillManager.entity.*;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillMapper;
+import com.agentscopea2a.v2.skillManager.notification.NotificationReceivers;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DuplicateKeyException;
@@ -45,17 +47,29 @@ public class FlowExecutionService {
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final ApplicationEventPublisher events;
+    private final NotificationRecipientService recipientService;
 
+    @Autowired
     public FlowExecutionService(SkillFlowMapper mapper, SkillMapper skillMapper,
                                 ScriptRegistryMapper scriptRegistryMapper,
                                 ObjectMapper objectMapper, Clock skillFlowClock,
-                                ApplicationEventPublisher events) {
+                                ApplicationEventPublisher events,
+                                NotificationRecipientService recipientService) {
         this.mapper = mapper;
         this.skillMapper = skillMapper;
         this.scriptRegistryMapper = scriptRegistryMapper;
         this.objectMapper = objectMapper;
         this.clock = skillFlowClock;
         this.events = events;
+        this.recipientService = recipientService;
+    }
+
+    /** Compatibility constructor for callers created before script metadata was added. */
+    public FlowExecutionService(SkillFlowMapper mapper, SkillMapper skillMapper,
+                                ObjectMapper objectMapper, Clock skillFlowClock,
+                                ApplicationEventPublisher events,
+                                NotificationRecipientService recipientService) {
+        this(mapper, skillMapper, null, objectMapper, skillFlowClock, events, recipientService);
     }
 
     /** 触发结果:created=false 表示当日已有同一(用户,会话,流程)的活跃执行,直接复用。 */
@@ -189,7 +203,7 @@ public class FlowExecutionService {
                 .maxParallelismSnapshot(flow.getMaxParallelism())
                 // 通知配置快照:执行期间以快照为准,发通知时不再回读流程定义
                 .notifyEnabledSnapshot(flow.getNotifyEnabled())
-                .notifyReceiversSnapshot(flow.getNotifyReceivers())
+                .notifyReceiversSnapshot(resolveNotifyReceiversSnapshot(flow, triggerType))
                 .notifyReceiverTriggersSnapshot(flow.getNotifyReceiverTriggers())
                 // 触发来源:触发类型(CHAT/MANUAL/METRIC 等)与触发人信息
                 .triggerType(triggerType)
@@ -361,6 +375,30 @@ public class FlowExecutionService {
             }
         }
         return execution;
+    }
+
+    /**
+     * 执行创建时解析收件人名单并固化为逗号分隔快照(读取优先级,见设计文档「兼容与迁移」):
+     * <ol>
+     *   <li>{@code notification_config} 存在 → 只读 {@code notification_recipient} 关系表;
+     *       名单为空 = 用户已主动清空,不回退旧字段;</li>
+     *   <li>{@code notification_config} 不存在 → 兼容读取旧 {@code skill_flow.notify_receivers}
+     *       逗号字段(记录兼容日志,待旧字段清理后移除)。</li>
+     * </ol>
+     * 快照沿用现有 {@code skill_flow_execution.notify_receivers_snapshot} 字段,
+     * 发送侧({@code FlowCompletionService})只读快照,后续配置修改不影响已启动执行。
+     */
+    private String resolveNotifyReceiversSnapshot(SkillFlow flow, FlowTriggerType triggerType) {
+        List<String> userIds = recipientService
+                .findConfiguredUserIds(NotificationConfig.TARGET_TYPE_SKILL_FLOW, flow.getId(),
+                        triggerType == FlowTriggerType.MANUAL || triggerType == FlowTriggerType.CHAT
+                                ? "DEFAULT" : (triggerType == null ? "DEFAULT" : triggerType.name()))
+                .orElseGet(() -> {
+                    log.info("[SkillFlow] notification_config missing for flow {}, "
+                            + "snapshot falls back to legacy notify_receivers (compat)", flow.getId());
+                    return NotificationReceivers.parse(flow.getNotifyReceivers());
+                });
+        return NotificationReceivers.toCsv(userIds);
     }
 
     private String json(Object value) {

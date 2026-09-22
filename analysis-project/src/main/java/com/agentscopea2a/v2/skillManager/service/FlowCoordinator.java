@@ -84,6 +84,8 @@ public class FlowCoordinator {
     private final ToolResultRegistry toolResultRegistry;
     /** Python 节点直接执行注册脚本用(与脚本调试运行同一链路,含 params_schema 校验)。 */
     private final com.agentscopea2a.v2.tools.ScriptExecTool scriptExecTool;
+    /** 脚本参数取值规则解析:scriptParamsJson 里的 {"$rule": key} 执行时解析成真实值。 */
+    private final ScriptParamRuleService paramRuleService;
     /** 流程执行生命周期服务:scan 周期里兜底补建"指标已就绪但未被推送触发"的每日自动执行。 */
     private final FlowExecutionService flowExecutionService;
     /** 节点结果缓存:同流程同节点同问题同数据日期的长任务结果复用(缓存异常自动降级为 miss)。 */
@@ -96,7 +98,8 @@ public class FlowCoordinator {
                            NodeAttemptCompletionService attemptCompletionService,
                            ToolResultRegistry toolResultRegistry, FlowNodeCacheService nodeCache,
                            FlowExecutionService flowExecutionService,
-                           com.agentscopea2a.v2.tools.ScriptExecTool scriptExecTool) {
+                           com.agentscopea2a.v2.tools.ScriptExecTool scriptExecTool,
+                           ScriptParamRuleService paramRuleService) {
         this.mapper = mapper;
         this.runner = runner;
         this.json = json;
@@ -108,6 +111,7 @@ public class FlowCoordinator {
         this.nodeCache = nodeCache;
         this.flowExecutionService = flowExecutionService;
         this.scriptExecTool = scriptExecTool;
+        this.paramRuleService = paramRuleService;
         int workerCount = Math.max(1, SkillFlowProperties.WORKER_COUNT);
         this.workerPermits = new Semaphore(workerCount);
         this.workers = Executors.newFixedThreadPool(workerCount, r -> {
@@ -323,6 +327,15 @@ public class FlowCoordinator {
                             "skill_name", Objects.toString(node.getSkillName(), ""))));
             String question = scriptNode ? rendered : buildPrompt(node, rendered);
             node.setRenderedQuestion(question);
+            // Python 节点参数规则解析:scriptParamsJson 里的 {"$rule": key} 按数据日期解析成真实值
+            // (版本/季度/年份类参数随时间自动更新, 不用每次发版改流程定义)。
+            // 解析后的参数参与缓存 key: 改参数后旧缓存自然 miss, 不会命中旧参数的结果。
+            Map<String, Object> scriptParams = null;
+            if (scriptNode) {
+                stage = "RESOLVE_SCRIPT_PARAMS";
+                LocalDate anchor = flow.getDataDate() == null ? LocalDate.now(clock) : flow.getDataDate();
+                scriptParams = paramRuleService.resolve(node.getScriptId(), node.getScriptParamsJson(), anchor);
+            }
             stage = "NODE_CACHE_LOOKUP";
             // 节点结果缓存:缓存 key 维度 = 节点(流程+nodeKey+脚本/Skill) + 版本(脚本 id / skillId) + 渲染后问题(输入) + 数据日期。
             // 手动重跑单个节点会置入 refreshRequested,要求绕过缓存重新执行。
@@ -331,15 +344,15 @@ public class FlowCoordinator {
                     : "flow-" + flow.getFlowId() + "-" + node.getNodeKey() + "-skill-" + node.getSkillId();
             String cacheVersion = scriptNode ? node.getScriptId() : String.valueOf(node.getSkillId());
             boolean forceRefresh = refreshRequested.remove(nodeId);
-            String result = nodeCache.hit(cacheNodeId, cacheVersion, question, null, flow.getDataDate(), forceRefresh)
+            String result = nodeCache.hit(cacheNodeId, cacheVersion, question, scriptParams, flow.getDataDate(), forceRefresh)
                     .orElse(null); // miss/降级均为 null,照常执行
             boolean cacheHit = result != null;
             if (!cacheHit) {
-                cacheClaim = nodeCache.claim(cacheNodeId, cacheVersion, question, null, flow.getDataDate(), forceRefresh);
+                cacheClaim = nodeCache.claim(cacheNodeId, cacheVersion, question, scriptParams, flow.getDataDate(), forceRefresh);
                 if (scriptNode) {
-                    // Python 脚本节点:不走 AI,按脚本注册直接执行,参数来自执行快照
+                    // Python 脚本节点:不走 AI,按脚本注册直接执行,参数已解析(含 $rule 规则值)
                     stage = "RUN_SCRIPT";
-                    result = runScriptDirect(node);
+                    result = runScriptDirect(node, scriptParams);
                     if (result == null || result.isBlank()) throw new IllegalStateException("Script returned empty result");
                     // 只有抢占成功的执行才把结果写回缓存;输家照常返回结果但不落库、不覆盖赢家文件。
                     if (cacheClaim.won()) nodeCache.success(cacheClaim, result);
@@ -712,18 +725,11 @@ public class FlowCoordinator {
     }
 
     /**
-     * Python 节点直接执行注册脚本:不走 AI,参数取执行快照的 script_params_json,
+     * Python 节点直接执行注册脚本:不走 AI,参数为已解析的执行快照 script_params_json
+     * (含 $rule 规则解析结果, 见 {@link ScriptParamRuleService#resolve}),
      * 校验与执行复用 ScriptExecTool(同脚本调试运行链路);失败(exit!=0/拒绝执行)抛异常走重试分类。
      */
-    private String runScriptDirect(SkillFlowNodeExecution node) {
-        Map<String, Object> params;
-        try {
-            params = node.getScriptParamsJson() == null || node.getScriptParamsJson().isBlank()
-                    ? Map.of()
-                    : json.readValue(node.getScriptParamsJson(), new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("ScriptParamsInvalid: " + e.getOriginalMessage());
-        }
+    private String runScriptDirect(SkillFlowNodeExecution node, Map<String, Object> params) {
         String output = scriptExecTool.executeForDebug(node.getScriptId(), params);
         String text = output == null ? "" : output;
         // 成败判定与 ScriptDebugService 一致:stdout 带 exit= 非 0,或出现拒绝执行/启动失败字样

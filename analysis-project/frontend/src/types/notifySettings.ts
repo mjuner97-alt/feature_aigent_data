@@ -9,10 +9,15 @@ export interface NotifySettings {
   notifyReceiverTriggers?: string[];
   /** 仅流程有:完成通知开关 */
   notifyEnabled?: boolean;
+  /** 按触发来源分别配置收件人；旧后端未返回时为空。 */
+  notifyReceiversByTrigger?: Record<string, string[]>;
 }
 
-/** 更新请求体:全量替换,空数组 = 清空名单恢复兜底行为 */
+/** 更新请求体:全量替换,空数组 = 清空名单恢复兜底行为;
+ *  notifyEnabled 仅流程使用(完成通知开关,页面勾选状态必须随保存提交落库) */
 export interface NotifySettingsUpdateInput {
   notifyReceivers: string[];
   notifyReceiverTriggers?: string[];
+  notifyEnabled?: boolean;
+  notifyReceiversByTrigger?: Record<string, string[]>;
 }

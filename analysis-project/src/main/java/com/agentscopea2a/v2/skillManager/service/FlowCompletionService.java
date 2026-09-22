@@ -20,6 +20,7 @@ import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DuplicateKeyException;
@@ -69,6 +70,7 @@ public class FlowCompletionService {
     /** 报告根目录(${skill.job.base-dir}),报告以 用户目录/flow-{id}-report.html 存放。 */
     private final Path reportRoot;
 
+    @Autowired
     public FlowCompletionService(HarnessA2aRunnerV2 runner, ObjectMapper json, HtmlReportRenderer renderer,
                                  SkillFlowMapper mapper, NotificationSender sender, MockOrgService orgService,
                                  @Qualifier("skillFlowClock") Clock skillFlowClock,
@@ -85,6 +87,15 @@ public class FlowCompletionService {
         this.reportStorage = reportStorage;
         this.outlineComposer = outlineComposer;
         this.reportRoot = Paths.get(storage.getJobReportDir()).normalize().toAbsolutePath();
+    }
+
+    /** Compatibility constructor for existing unit tests and integrations. */
+    public FlowCompletionService(HarnessA2aRunnerV2 runner, ObjectMapper json, HtmlReportRenderer renderer,
+                                 SkillFlowMapper mapper, NotificationSender sender, MockOrgService orgService,
+                                 Clock skillFlowClock, SkillStorageProperties storage,
+                                 FlowSummaryPromptRenderer promptRenderer, FlowReportStorage reportStorage) {
+        this(runner, json, renderer, mapper, sender, orgService, skillFlowClock, storage,
+                promptRenderer, reportStorage, null);
     }
 
     /** 汇总结果:summaryJson 入库,reportPath 为报告文件相对路径。 */
@@ -185,18 +196,27 @@ public class FlowCompletionService {
 
     /** 手动重发通知:仅终态(且非取消)的执行可用。 */
     public void resend(SkillFlowExecution execution) {
+        resend(execution, null);
+    }
+
+    public void resend(SkillFlowExecution execution, List<String> confirmedReceivers) {
         if (!execution.getStatus().terminal()
                 || execution.getStatus() == FlowExecutionStatus.CANCELLED) {
             throw new IllegalStateException("FlowNotificationResendUnavailable: " + execution.getId());
         }
-        send(execution, "flow:" + execution.getId() + ":RESEND:" + UUID.randomUUID());
+        send(execution, "flow:" + execution.getId() + ":RESEND:" + UUID.randomUUID(), confirmedReceivers);
     }
 
     /** 落通知记录 -> 真正发送 -> 回写结果状态;deliveryKey 重复(首次已发过)则直接跳过。 */
     private void send(SkillFlowExecution execution, String key) {
+        send(execution, key, null);
+    }
+
+    private void send(SkillFlowExecution execution, String key, List<String> confirmedReceivers) {
         // 收件人:执行时快照的名单 + 触发类型范围;命中范围且名单非空则整名单一次批量发送,
         // 否则维持原语义发触发人(triggerUserId 已按触发类型快照:CHAT/MANUAL=触发人,AUTO_METRIC=流程创建人)。
-        List<String> receivers = receiversFor(execution);
+        List<String> receivers = confirmedReceivers == null || confirmedReceivers.isEmpty()
+                ? receiversFor(execution) : orgService.filterExistingUserIds(confirmedReceivers);
         SkillFlowNotification record = SkillFlowNotification.builder()
                 .flowExecutionId(execution.getId()).deliveryKey(key)
                 .status(FlowNotificationStatus.PENDING)
@@ -239,9 +259,11 @@ public class FlowCompletionService {
             List<String> triggers = NotificationReceivers.parse(execution.getNotifyReceiverTriggersSnapshot());
             FlowTriggerType triggerType = execution.getTriggerType();
             // 未配置触发类型范围时默认仅 AUTO_METRIC 发名单(贴近原语义:定时/指标触达名单,对话不打扰)
-            boolean inScope = triggers.isEmpty()
+            // 手动与对话触发共用 DEFAULT 名单，始终允许本次执行使用最近选择的名单。
+            boolean interactive = triggerType == FlowTriggerType.MANUAL || triggerType == FlowTriggerType.CHAT;
+            boolean inScope = interactive || (triggers.isEmpty()
                     ? triggerType == FlowTriggerType.AUTO_METRIC
-                    : triggers.contains(triggerType == null ? "" : triggerType.name());
+                    : triggers.contains(triggerType == null ? "" : triggerType.name()));
             if (inScope) {
                 for (String uid : orgService.filterExistingUserIds(configured)) {
                     if (!receivers.contains(uid)) receivers.add(uid);

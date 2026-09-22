@@ -169,8 +169,12 @@ public class SkillJobController {
     @ResponseStatus(HttpStatus.ACCEPTED)
     public SkillJobNotificationDto resendNotification(
             @PathVariable(name = "execId") Long execId,
-            @RequestHeader("X-User-Id") String userId) {
-        return service.resendNotification(execId, userId);
+            @RequestHeader("X-User-Id") String userId,
+            @RequestBody(required = false) com.agentscopea2a.v2.skillManager.dto.ManualNotificationSendRequest request) {
+        if (request != null && !Boolean.TRUE.equals(request.confirmed())) {
+            throw new IllegalArgumentException("NotificationConfirmationRequired: 请先确认收件人");
+        }
+        return service.resendNotification(execId, userId, request == null ? null : request.notifyReceivers());
     }
 
     /**

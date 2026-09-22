@@ -59,11 +59,15 @@ public class FlowDefinitionService {
     private final Clock clock;
     private final ScriptRegistryMapper scriptRegistryMapper;
     private final ObjectMapper objectMapper;
+    private final NotificationRecipientService recipientService;
+    private final ScriptParamRuleService paramRuleService;
 
     public FlowDefinitionService(SkillFlowMapper flowMapper, SkillMapper skillMapper,
                                  SkillDependencyMetricMapper metricMapper, MockOrgService orgService,
                                  @Qualifier("skillFlowClock") Clock skillFlowClock,
-                                 ScriptRegistryMapper scriptRegistryMapper, ObjectMapper objectMapper) {
+                                  ScriptRegistryMapper scriptRegistryMapper, ObjectMapper objectMapper,
+                                  NotificationRecipientService recipientService,
+                                  ScriptParamRuleService paramRuleService) {
         this.flowMapper = flowMapper;
         this.skillMapper = skillMapper;
         this.metricMapper = metricMapper;
@@ -71,6 +75,8 @@ public class FlowDefinitionService {
         this.clock = skillFlowClock;
         this.scriptRegistryMapper = scriptRegistryMapper;
         this.objectMapper = objectMapper;
+        this.recipientService = recipientService;
+        this.paramRuleService = paramRuleService;
     }
 
     /** 创建流程;code 缺省自动生成,enabled=true 时先做完整性校验。 */
@@ -151,29 +157,56 @@ public class FlowDefinitionService {
 
     // ==================== 通知设置(通知设置抽屉专用,与流程编排表单解耦) ====================
 
-    /** 查询流程通知设置(仅创建人)。人员表中已失效的收件人工号直接剔除不回显。 */
+    /** 查询流程通知设置(仅创建人)。读取优先级与发送侧一致:配置存在读关系表,不存在兼容读旧字段;失效收件人不回显。 */
     public NotifySettingsDto getNotifySettings(Long id, String userId) {
         SkillFlow flow = requireOwner(id, userId);
-        List<String> receivers = orgService.filterExistingUserIds(
-                NotificationReceivers.parse(flow.getNotifyReceivers()));
+        List<String> receivers = resolveDisplayReceivers(NotificationConfig.TARGET_TYPE_SKILL_FLOW, id,
+                flow.getNotifyReceivers(), "AUTO_METRIC");
         List<String> triggers = NotificationReceivers.parse(flow.getNotifyReceiverTriggers());
-        return new NotifySettingsDto(receivers, triggers.isEmpty() ? null : triggers, flow.getNotifyEnabled());
+        return new NotifySettingsDto(receivers, triggers.isEmpty() ? null : triggers, flow.getNotifyEnabled(),
+                recipientService.findConfiguredUserIdsByTrigger(NotificationConfig.TARGET_TYPE_SKILL_FLOW, id));
     }
 
     /**
-     * 更新流程通知设置:全量替换收件人名单;人员表中已不存在的工号静默剔除(不报错),
-     * 空名单 = 清空。触发类型范围只做值域校验(CHAT/MANUAL/AUTO_METRIC,非人员,不做人员表校验)。
+     * 更新流程通知设置:收件人名单写入 notification_recipient 关系表(主存储,先建配置再全量替换),
+     * 旧逗号字段同步双写(兼容期保留,待旧字段清理后移除);触发类型范围只做值域校验
+     * (CHAT/MANUAL/AUTO_METRIC,非人员,不做人员表校验);notifyEnabled 为完成通知开关
+     * (null = 不修改),经 updateFlowNotifySettings 落库,保证页面勾选状态保存一致。
      * 发送侧始终把触发人合并进收件人(触发人默认收到,无需加入名单)。
      */
     @Transactional("gaussCustomerTransactionManager")
     public NotifySettingsDto updateNotifySettings(Long id, NotifySettingsUpdateRequest req, String userId) {
         SkillFlow flow = requireOwner(id, userId);
-        String receivers = NotificationReceivers.toCsv(
-                orgService.filterExistingUserIds(req == null ? null : req.notifyReceivers()));
+        List<String> receivers = orgService.filterExistingUserIds(req == null ? null : req.notifyReceivers());
+        if (req != null && req.notifyReceiversByTrigger() != null && !req.notifyReceiversByTrigger().isEmpty()) {
+            for (var entry : req.notifyReceiversByTrigger().entrySet()) {
+                String scope = "MANUAL".equalsIgnoreCase(entry.getKey()) || "CHAT".equalsIgnoreCase(entry.getKey())
+                        ? "DEFAULT" : entry.getKey();
+                recipientService.replaceRecipients(NotificationConfig.TARGET_TYPE_SKILL_FLOW, id,
+                        scope, orgService.filterExistingUserIds(entry.getValue()), userId);
+            }
+        } else {
+            recipientService.replaceRecipients(NotificationConfig.TARGET_TYPE_SKILL_FLOW, id, receivers, userId);
+        }
         String triggerScope = NotificationReceivers.toCsv(req == null ? null : req.notifyReceiverTriggers());
         validateTriggerScope(NotificationReceivers.parse(triggerScope));
-        flowMapper.updateFlowNotifySettings(id, receivers, triggerScope);
+        flowMapper.updateFlowNotifySettings(id, NotificationReceivers.toCsv(receivers), triggerScope,
+                req == null ? null : req.notifyEnabled());
         return getNotifySettings(id, userId);
+    }
+
+    /**
+     * 通知设置展示名单解析(与发送侧同一读取优先级):{@code notification_config} 存在
+     * 只读关系表;不存在才兼容读旧逗号字段(记录兼容日志)。再统一剔除人员表已失效的工号。
+     */
+    private List<String> resolveDisplayReceivers(String targetType, Long targetId, String legacyCsv, String triggerType) {
+        List<String> userIds = recipientService.findConfiguredUserIds(targetType, targetId, triggerType)
+                .orElseGet(() -> {
+                    log.info("[Flow] notification_config missing for flow {}, "
+                            + "display falls back to legacy notify_receivers (compat)", targetId);
+                    return NotificationReceivers.parse(legacyCsv);
+                });
+        return orgService.filterExistingUserIds(userIds);
     }
 
     /** 触发类型范围值域校验:仅允许 CHAT/MANUAL/AUTO_METRIC。 */
@@ -285,6 +318,8 @@ public class FlowDefinitionService {
                 if (node.scriptParamsJson() != null && !node.scriptParamsJson().isBlank()) {
                     try { objectMapper.readTree(node.scriptParamsJson()); }
                     catch (Exception e) { errors.add("MalformedScriptParamsJson: " + nodeKey); }
+                    // 规则引用校验:{"$rule": key} 必须存在于 script_param_rule 且类型与参数声明兼容
+                    errors.addAll(paramRuleService.checkRuleRefs(node.scriptId(), node.scriptParamsJson()));
                 }
                 if (!node.metricIds().isEmpty()) errors.add("PythonNodeCannotDependOnMetric: " + nodeKey);
             } else if (legacy) {

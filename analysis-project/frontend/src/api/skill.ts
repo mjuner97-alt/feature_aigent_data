@@ -154,6 +154,33 @@ export async function searchSkillUsers(keyword: string): Promise<SkillUserSearch
   return res.json();
 }
 
+/**
+ * 批量反查收件人姓名(通知收件人回显 / 粘贴工号校验用)。
+ * 后端人员表只有 keyword 模糊搜索接口,没有按 id 批量查询;
+ * 这里逐个用统一认证号精确匹配搜索(结果里取 userId 完全相等的那条),分批并发避免一次打满。
+ * 查不到 / 请求失败的 id 不出现在返回结果里,调用方据此区分"无效工号"。
+ * 已知局限:精确匹配依赖 searchSkillUsers 模糊搜索的首页(LIMIT 50),某有效工号若模糊命中超过 50 人,理论上可能被误判为无效;后续应由后端提供按 id 批量查询接口。
+ */
+export async function batchUserNames(userIds: string[]): Promise<Record<string, string>> {
+  const ids = [...new Set(userIds.map(id => id.trim()).filter(Boolean))];
+  const result: Record<string, string> = {};
+  const CHUNK = 8;
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    const found = await Promise.all(chunk.map(async (id) => {
+      try {
+        const items = await searchSkillUsers(id);
+        const hit = items.find(u => u.userId === id);
+        return hit ? ([id, hit.name || id] as const) : null;
+      } catch { return null; }
+    }));
+    for (const pair of found) {
+      if (pair) result[pair[0]] = pair[1];
+    }
+  }
+  return result;
+}
+
 /** 授权列表(GET /api/skills/{id}/grants)。 */
 export async function getGrants(skillId: number): Promise<SkillGrant[]> {
   const res = await fetch(`${BASE}/${skillId}/grants`, { headers: authHeaders() });
