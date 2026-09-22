@@ -15,12 +15,16 @@
  */
 package com.agentscopea2a.v2.middleware;
 
+import com.agentscopea2a.v2.dimension.AliasResolver;
 import com.agentscopea2a.v2.dimension.DimensionState;
 import com.agentscopea2a.v2.dimension.DimensionStateManager;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.middleware.MiddlewareBase;
 import reactor.core.publisher.Mono;
+
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 /**
  * v2 middleware：在 system prompt 中注入维度状态上下文。
@@ -71,7 +75,7 @@ public class DimensionStateMiddleware implements MiddlewareBase {
             DimensionState state = result.newState();
 
             if (state != null && state.hasDimensions()) {
-                String dimensionPrefix = formatDimensionContext(state);
+                String dimensionPrefix = formatDimensionContext(state, result.resolvedAliases());
                 if (maxChars == 0) {
                     return systemPrompt;
                 }
@@ -102,12 +106,29 @@ public class DimensionStateMiddleware implements MiddlewareBase {
         return conversationId != null ? "" : null;
     }
 
-    private String formatDimensionContext(DimensionState state) {
+    private String formatDimensionContext(
+            DimensionState state, java.util.List<AliasResolver.ResolvedAlias> resolvedAliases) {
         StringBuilder sb = new StringBuilder("<dimension_context>\n");
         sb.append("当前对话维度上下文。以下维度值是系统根据用户口语化表述确定性解析出的标准名（非猜测），"
                 + "视为用户本轮提问的确定查询条件：构造查询参数时必须直接采用，"
-                + "用户原文中的口语词/简称一律视为已映射到此；禁止向用户追问"
-                + "「具体指哪个部门/产品线/应用」或要求用户确认口径。\n\n");
+                + "用户原文中的口语词/简称一律视为已映射到此（口语词与标准名的对应关系见下方映射列表）；"
+                + "禁止向用户追问「具体指哪个部门/产品线/应用」或要求用户确认口径。\n\n");
+
+        if (resolvedAliases != null && !resolvedAliases.isEmpty()) {
+            sb.append("同义词解析映射（口语词 → 维度：标准名）：\n");
+            Set<String> seen = new LinkedHashSet<>();
+            for (AliasResolver.ResolvedAlias hit : resolvedAliases) {
+                String label = switch (hit.dimension()) {
+                    case TEAM -> "组";
+                    case APPLICATION -> "应用";
+                    case PRODUCT_LINE -> "产品线";
+                    case REQUIREMENT -> "需求项";
+                };
+                seen.add("- 口语词「" + hit.alias() + "」→ " + label + "维度：" + hit.standardName());
+            }
+            seen.forEach(line -> sb.append(line).append("\n"));
+            sb.append("\n");
+        }
 
         if (state.getTimeDimension() != null && !state.getTimeDimension().isEmpty()) {
             String label = state.getTimeDimension().getType()

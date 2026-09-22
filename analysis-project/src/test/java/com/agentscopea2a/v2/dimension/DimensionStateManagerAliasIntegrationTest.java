@@ -29,6 +29,16 @@ class DimensionStateManagerAliasIntegrationTest {
     }
 
     @Test
+    void analysisCarriesResolvedAliasMappingForContextInjection() {
+        // 维度上下文要回显「口语词→标准名」映射，analysis 必须保留 resolved 结果
+        QuestionAnalysis analysis = manager.analyzeQuestionRuleBased("军队7月份版本有多少需求项");
+        assertEquals(1, analysis.getAliasResolution().resolved().size());
+        AliasResolver.ResolvedAlias hit = analysis.getAliasResolution().resolved().get(0);
+        assertEquals("军队", hit.alias());
+        assertEquals("企业资金管理系统", hit.standardName());
+    }
+
+    @Test
     void armyGroupResolvesToStandardTeam() {
         PeerDimension peer = extractPeer("军队组的需求项有多少");
         assertEquals(PeerDimensionType.TEAM, peer.getType());

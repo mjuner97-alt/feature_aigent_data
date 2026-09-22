@@ -59,6 +59,9 @@ public class QuestionAnalysis {
     /** 同义词表解析出的同维度一对多歧义（不走反问短路时为 null）。运行时由 AliasResolver 填充，不参与 JSON 反序列化 */
     private List<AliasResolver.AmbiguousAlias> ambiguousAliases;
 
+    /** 本轮同义词表完整解析结果（含 resolved，供维度上下文回显映射用）。运行时填充，不参与 JSON 反序列化 */
+    private transient AliasResolver.AliasResolution aliasResolution = AliasResolver.AliasResolution.EMPTY;
+
     public QuestionAnalysis() {}
 
     @JsonCreator
@@ -121,6 +124,14 @@ public class QuestionAnalysis {
 
     public void setAmbiguousAliases(List<AliasResolver.AmbiguousAlias> ambiguousAliases) {
         this.ambiguousAliases = ambiguousAliases;
+    }
+
+    public AliasResolver.AliasResolution getAliasResolution() {
+        return aliasResolution;
+    }
+
+    public void setAliasResolution(AliasResolver.AliasResolution aliasResolution) {
+        this.aliasResolution = aliasResolution;
     }
 
     // ==================== 枚举 ====================

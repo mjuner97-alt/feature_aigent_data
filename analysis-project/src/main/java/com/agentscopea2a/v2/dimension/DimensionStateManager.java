@@ -125,11 +125,14 @@ public class DimensionStateManager {
         if (inherited != null && ctx != null) {
             ctx.put(STATE_KEY, DimensionState.class, inherited);
         }
-        return new ProcessResult(enriched, inherited);
+        return new ProcessResult(enriched, inherited, analysis.getAliasResolution().resolved());
     }
 
-    /** processQuestionInContext 的返回值。 */
-    public record ProcessResult(String enrichedQuestion, DimensionState newState) {}
+    /** processQuestionInContext 的返回值。resolvedAliases 是本轮同义词表解析出的口语词→标准名映射。 */
+    public record ProcessResult(
+            String enrichedQuestion,
+            DimensionState newState,
+            List<AliasResolver.ResolvedAlias> resolvedAliases) {}
 
     // ==================== 核心流程 ====================
 
@@ -270,6 +273,7 @@ public class DimensionStateManager {
         if (!aliasRes.ambiguous().isEmpty()) {
             analysis.setAmbiguousAliases(aliasRes.ambiguous());
         }
+        analysis.setAliasResolution(aliasRes);
 
         // 1. detect reference
         QuestionAnalysis.ReferenceType refType = detectReferenceType(userQuestion);
