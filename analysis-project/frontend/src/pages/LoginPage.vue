@@ -6,6 +6,7 @@ import { saveLoggedInUser } from '../utils/auth';
 
 const router = useRouter();
 const userId = ref('');
+const password = ref('');
 const loading = ref(false);
 const errorMsg = ref('');
 
@@ -18,7 +19,7 @@ async function handleLogin() {
   loading.value = true;
   errorMsg.value = '';
   try {
-    const user = await login({ userId: id });
+    const user = await login({ userId: id, password: password.value || undefined });
     saveLoggedInUser(user);
     router.push('/');
   } catch (e: any) {
@@ -42,6 +43,14 @@ function handleEnter(e: KeyboardEvent) {
         v-model="userId"
         type="text"
         placeholder="统一认证号"
+        class="login-input"
+        :disabled="loading"
+        @keydown="handleEnter"
+      />
+      <input
+        v-model="password"
+        type="password"
+        placeholder="管理员密码（普通账号无需填写）"
         class="login-input"
         :disabled="loading"
         @keydown="handleEnter"

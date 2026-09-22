@@ -18,6 +18,8 @@ package com.agentscopea2a.v2.dimension;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.RuntimeContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Mono;
 
 import java.time.LocalDate;
@@ -53,10 +55,13 @@ import java.util.regex.Pattern;
  */
 public class DimensionStateManager {
 
+    private static final Logger log = LoggerFactory.getLogger(DimensionStateManager.class);
     private static final String STATE_KEY = "dimensionState";
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final LlmDimensionService llmService;
+    /** 同义词表解析器，null 时退化为纯正则（原行为） */
+    private final AliasResolver aliasResolver;
     private DimensionState currentState;
 
     /**
@@ -65,7 +70,15 @@ public class DimensionStateManager {
      * @param llmService LLM 维度分析服务，可为 null（仅 {@link #updateFromAnswer} 需要）
      */
     public DimensionStateManager(LlmDimensionService llmService) {
+        this(llmService, null);
+    }
+
+    /**
+     * @param aliasResolver 同义词表解析器，可为 null（null 时口语化词识别关闭，仅正则兜底）
+     */
+    public DimensionStateManager(LlmDimensionService llmService, AliasResolver aliasResolver) {
         this.llmService = llmService;
+        this.aliasResolver = aliasResolver;
     }
 
     // ==================== v2 状态持久化 ====================
@@ -112,11 +125,14 @@ public class DimensionStateManager {
         if (inherited != null && ctx != null) {
             ctx.put(STATE_KEY, DimensionState.class, inherited);
         }
-        return new ProcessResult(enriched, inherited);
+        return new ProcessResult(enriched, inherited, analysis.getAliasResolution().resolved());
     }
 
-    /** processQuestionInContext 的返回值。 */
-    public record ProcessResult(String enrichedQuestion, DimensionState newState) {}
+    /** processQuestionInContext 的返回值。resolvedAliases 是本轮同义词表解析出的口语词→标准名映射。 */
+    public record ProcessResult(
+            String enrichedQuestion,
+            DimensionState newState,
+            List<AliasResolver.ResolvedAlias> resolvedAliases) {}
 
     // ==================== 核心流程 ====================
 
@@ -248,18 +264,29 @@ public class DimensionStateManager {
     public QuestionAnalysis analyzeQuestionRuleBased(String userQuestion) {
         QuestionAnalysis analysis = new QuestionAnalysis();
 
+        // 0. 同义词表解析（aliasResolver 为 null 时返回空结果，退化为纯正则）
+        AliasResolver.AliasResolution aliasRes =
+                aliasResolver != null && userQuestion != null && !userQuestion.isBlank()
+                        ? aliasResolver.resolve(userQuestion)
+                        : AliasResolver.AliasResolution.EMPTY;
+        boolean aliasPeerHit = !aliasRes.resolved().isEmpty() || !aliasRes.ambiguous().isEmpty();
+        if (!aliasRes.ambiguous().isEmpty()) {
+            analysis.setAmbiguousAliases(aliasRes.ambiguous());
+        }
+        analysis.setAliasResolution(aliasRes);
+
         // 1. detect reference
         QuestionAnalysis.ReferenceType refType = detectReferenceType(userQuestion);
         analysis.setHasReference(refType != null);
         analysis.setReferenceType(refType);
 
         // 2. detect level
-        QuestionAnalysis.QuestionLevel level = detectLevel(userQuestion, refType);
+        QuestionAnalysis.QuestionLevel level = detectLevel(userQuestion, refType, aliasPeerHit);
         analysis.setLevel(level);
         analysis.setCauseAnalysis(level == QuestionAnalysis.QuestionLevel.CAUSE);
 
         // 3. extract explicit dimensions
-        QuestionAnalysis.ExplicitDimensions explicit = extractExplicitDimensions(userQuestion);
+        QuestionAnalysis.ExplicitDimensions explicit = extractExplicitDimensions(userQuestion, aliasRes);
         analysis.setExplicitDimensions(explicit);
         explicit.build();
 
@@ -277,7 +304,7 @@ public class DimensionStateManager {
     }
 
     private QuestionAnalysis.QuestionLevel detectLevel(
-            String q, QuestionAnalysis.ReferenceType refType) {
+            String q, QuestionAnalysis.ReferenceType refType, boolean aliasPeerHit) {
         if (q.matches(".*原因.*") || q.matches(".*为什么.*"))
             return QuestionAnalysis.QuestionLevel.CAUSE;
         if (q.matches(".*过去.*") || q.matches(".*趋势.*") || q.matches(".*历史.*"))
@@ -287,6 +314,7 @@ public class DimensionStateManager {
                 || refType == QuestionAnalysis.ReferenceType.APPLICATION
                 || refType == QuestionAnalysis.ReferenceType.PRODUCT_LINE
                 || refType == QuestionAnalysis.ReferenceType.REQUIREMENT
+                || aliasPeerHit
                 || EXPLICIT_APP.matcher(q).find()
                 || EXPLICIT_TEAM.matcher(q).find()
                 || EXPLICIT_PRODUCT_LINE.matcher(q).find()
@@ -305,7 +333,8 @@ public class DimensionStateManager {
         return null;
     }
 
-    private QuestionAnalysis.ExplicitDimensions extractExplicitDimensions(String q) {
+    private QuestionAnalysis.ExplicitDimensions extractExplicitDimensions(
+            String q, AliasResolver.AliasResolution aliasRes) {
         QuestionAnalysis.ExplicitDimensions explicit = new QuestionAnalysis.ExplicitDimensions();
         int year = LocalDate.now().getYear();
 
@@ -377,7 +406,8 @@ public class DimensionStateManager {
             explicit.setDepartments(new ArrayList<>(departments));
         }
 
-        // 应用（F-xxx）
+        // 应用（F-xxx）— 优先级最高：alias 解析出组/产品线但问题同时含 F-xxx 编码时，
+        // 保持既有 app > 组/产品线 的优先序，alias 结果让位（歧义项仍记录，供短路反问）
         Matcher appMatcher = EXPLICIT_APP.matcher(q);
         if (appMatcher.find()) {
             explicit.setPeerDimension(
@@ -386,8 +416,17 @@ public class DimensionStateManager {
                             List.of(appMatcher.group())));
         }
 
-        // 组（优先级低于应用）— 排除指代词匹配（"这个组"、"那个组"）
+        // 同义词表解析结果（标准名直接进状态，保证指纹稳定）— 优先于小组/产品线正则
         if (explicit.getPeerDimension() == null) {
+            DimensionState.PeerDimension aliasPeer = buildAliasPeerDimension(aliasRes);
+            if (aliasPeer != null) {
+                explicit.setPeerDimension(aliasPeer);
+            }
+        }
+
+        // 组正则兜底（alias 完全未命中时才跑，防止"风险组"这类歧义词被小组正则抢注）
+        // — 排除指代词匹配（"这个组"、"那个组"）
+        if (explicit.getPeerDimension() == null && !aliasHit(aliasRes)) {
             Matcher teamMatcher = EXPLICIT_TEAM.matcher(q);
             if (teamMatcher.find()) {
                 String matched = teamMatcher.group(1);
@@ -400,8 +439,8 @@ public class DimensionStateManager {
             }
         }
 
-        // 产品线（优先级低于组和应用）— 排除指代词匹配
-        if (explicit.getPeerDimension() == null) {
+        // 产品线（优先级低于组和应用）— 同上，alias 命中时跳过；排除指代词匹配
+        if (explicit.getPeerDimension() == null && !aliasHit(aliasRes)) {
             Matcher plMatcher = EXPLICIT_PRODUCT_LINE.matcher(q);
             if (plMatcher.find()) {
                 String matched = plMatcher.group(1);
@@ -414,8 +453,8 @@ public class DimensionStateManager {
             }
         }
 
-        // 需求项 — 真正的 itemNo 格式 I20260208-0005
-        if (explicit.getPeerDimension() == null) {
+        // 需求项 — 真正的 itemNo 格式 I20260208-0005（alias 命中时同样跳过）
+        if (explicit.getPeerDimension() == null && !aliasHit(aliasRes)) {
             Matcher reqMatcher = EXPLICIT_REQUIREMENT.matcher(q);
             if (reqMatcher.find()) {
                 explicit.setPeerDimension(
@@ -426,6 +465,38 @@ public class DimensionStateManager {
         }
 
         return explicit;
+    }
+
+    /** alias 表是否命中过该问题（含歧义命中）——命中即禁用小组/产品线/需求项正则兜底。 */
+    private static boolean aliasHit(AliasResolver.AliasResolution aliasRes) {
+        return aliasRes != null
+                && (!aliasRes.resolved().isEmpty() || !aliasRes.ambiguous().isEmpty());
+    }
+
+    /**
+     * 把 AliasResolver 的 resolved 结果组装成 PeerDimension（值为标准名）。
+     *
+     * <p>多个命中落在不同维度类型时（PeerDimension 单类型），保留语序最前的类型并 warn；
+     * 同类型多命中去重后全部收集（"比较军队和票据"→ 双产品线值）。
+     */
+    private DimensionState.PeerDimension buildAliasPeerDimension(AliasResolver.AliasResolution aliasRes) {
+        if (aliasRes == null || aliasRes.resolved().isEmpty()) {
+            return null;
+        }
+        List<AliasResolver.ResolvedAlias> hits = aliasRes.resolved();
+        DimensionState.PeerDimensionType type = hits.get(0).dimension();
+        List<String> values = new ArrayList<>();
+        for (AliasResolver.ResolvedAlias hit : hits) {
+            if (hit.dimension() != type) {
+                log.warn("Alias hits span multiple peer dimensions ({} vs {}); keeping the first: {}",
+                        type, hit.dimension(), hits);
+                continue;
+            }
+            if (!values.contains(hit.standardName())) {
+                values.add(hit.standardName());
+            }
+        }
+        return values.isEmpty() ? null : new DimensionState.PeerDimension(type, values);
     }
 
     // ==================== 步骤②：维度继承 ====================
@@ -748,9 +819,7 @@ public class DimensionStateManager {
         if (result.peerDimensionType != null
                 && result.peerDimensionValues != null
                 && !result.peerDimensionValues.isEmpty()) {
-            state.setPeerDimension(
-                    new DimensionState.PeerDimension(
-                            result.peerDimensionType, result.peerDimensionValues));
+            state.setPeerDimension(normalizePeerValues(result.peerDimensionType, result.peerDimensionValues));
         }
 
         if (result.persons != null && !result.persons.isEmpty()) {
@@ -758,6 +827,29 @@ public class DimensionStateManager {
         }
 
         return state;
+    }
+
+    /**
+     * LLM 从回答中提取的 peer 值过一遍同义词表归一化（"风险组"→标准名），
+     * 保证 DimensionState 里存的永远是标准名（指纹/缓存键稳定）。
+     * 精确查表未命中或歧义时保留原值。
+     */
+    private DimensionState.PeerDimension normalizePeerValues(
+            DimensionState.PeerDimensionType type, List<String> values) {
+        if (aliasResolver == null) {
+            return new DimensionState.PeerDimension(type, values);
+        }
+        List<String> normalized = new ArrayList<>(values.size());
+        for (String value : values) {
+            if (value == null) {
+                continue;
+            }
+            String trimmed = value.trim();
+            normalized.add(aliasResolver.lookupExact(trimmed)
+                    .map(AliasResolver.ResolvedAlias::standardName)
+                    .orElse(trimmed));
+        }
+        return new DimensionState.PeerDimension(type, normalized);
     }
 
     // ==================== 步骤⑥：合并更新 ====================
@@ -835,5 +927,149 @@ public class DimensionStateManager {
         public DimensionState.PeerDimensionType peerDimensionType;
         public List<String> peerDimensionValues;
         public List<String> persons;
+    }
+
+    // ==================== P3：一对多歧义反问状态机（方案 §6） ====================
+
+    /** 下一轮回复中的序号："1" / "1." / "第1个" / "第一个" */
+    private static final Pattern CLARIFY_INDEX_REPLY =
+            Pattern.compile("^第?\\s*([0-9０-９一二三四五六七八九十]{1,3})\\s*[个.、,，]?\\s*$");
+    private static final String CN_NUMERALS = "一二三四五六七八九十";
+
+    /**
+     * 短路层入口：问题含同维度一对多歧义时登记 pendingClarification 并返回反问文本；
+     * 无歧义（或 alias 关闭）返回 null，调用方按普通问题继续。
+     *
+     * <p>由 V2ChatStreamServiceImpl 在 agent 启动前调用；反问文本作为最终回答经
+     * SSE "done" 事件下发，本轮不启 agent（零 token）。
+     */
+    public synchronized String startClarificationIfAmbiguous(String question) {
+        if (aliasResolver == null || question == null || question.isBlank()) {
+            return null;
+        }
+        QuestionAnalysis analysis = analyzeQuestionRuleBased(question);
+        List<AliasResolver.AmbiguousAlias> ambiguous = analysis.getAmbiguousAliases();
+        if (ambiguous == null || ambiguous.isEmpty()) {
+            return null;
+        }
+        AliasResolver.AmbiguousAlias amb = ambiguous.get(0);
+        if (currentState == null) {
+            currentState = new DimensionState();
+        }
+        currentState.setPendingClarification(new DimensionState.PendingClarification(
+                amb.dimension(), amb.alias(), List.copyOf(amb.candidates()), question));
+        log.info("Clarification pending registered: alias={} dimension={} candidates={}",
+                amb.alias(), amb.dimension(), amb.candidates());
+        return buildClarifyText(amb.alias(), amb.dimension(), amb.candidates());
+    }
+
+    /**
+     * 下一轮入口：存在待确认歧义时对用户回复做确定性匹配（方案 §6.3）。
+     *
+     * <ul>
+     *   <li>命中（序号或回复包含候选名）→ peerDimension 写入选定标准名、清除 pending，
+     *       返回 alias 位置替换为标准名后的原问题（本轮拿它正常跑 agent）；</li>
+     *   <li>未命中 → 丢弃 pending 返回 null（宁可少问一次也不死循环反问）。</li>
+     * </ul>
+     */
+    public synchronized String consumeClarification(String reply) {
+        DimensionState.PendingClarification pending =
+                currentState != null ? currentState.getPendingClarification() : null;
+        if (pending == null || pending.getCandidates() == null || pending.getCandidates().isEmpty()) {
+            return null;
+        }
+        String chosen = matchClarificationReply(reply, pending.getCandidates());
+        // 无论命中与否都清除 pending：命中则落地，未命中则按普通问题放行
+        currentState.setPendingClarification(null);
+        if (chosen == null) {
+            log.info("Clarification reply not matched, pending dropped: reply={}", reply);
+            return null;
+        }
+        currentState.setPeerDimension(
+                new DimensionState.PeerDimension(pending.getDimension(), List.of(chosen)));
+        String alias = pending.getAlias();
+        String original = pending.getOriginalQuestion();
+        String resolved = (original != null && alias != null && !alias.isBlank() && original.contains(alias))
+                ? original.replaceFirst(Pattern.quote(alias), Matcher.quoteReplacement(chosen))
+                : original;
+        log.info("Clarification resolved: alias={} -> {} (dimension={})", alias, chosen, pending.getDimension());
+        return resolved;
+    }
+
+    /** 反问文本格式（方案 §6.2）：候选顺序即序号顺序。 */
+    static String buildClarifyText(
+            String alias, DimensionState.PeerDimensionType dimension, List<String> candidates) {
+        StringBuilder sb = new StringBuilder()
+                .append("『").append(alias).append("』在")
+                .append(dimensionLabel(dimension)).append("维度有多个匹配，请确认具体指哪一个：\n");
+        for (int i = 0; i < candidates.size(); i++) {
+            sb.append(i + 1).append(". ").append(candidates.get(i)).append("\n");
+        }
+        sb.append("（回复序号或名称即可）");
+        return sb.toString();
+    }
+
+    private static String dimensionLabel(DimensionState.PeerDimensionType type) {
+        return switch (type) {
+            case TEAM -> "组";
+            case APPLICATION -> "应用";
+            case PRODUCT_LINE -> "产品线";
+            case REQUIREMENT -> "需求项";
+        };
+    }
+
+    /** 序号优先，其次回复包含候选名（含即命中，取第一个命中的候选）。 */
+    static String matchClarificationReply(String reply, List<String> candidates) {
+        if (reply == null || reply.isBlank()) {
+            return null;
+        }
+        String trimmed = reply.trim();
+        Matcher m = CLARIFY_INDEX_REPLY.matcher(trimmed);
+        if (m.matches()) {
+            Integer idx = parseOrdinal(m.group(1));
+            if (idx != null && idx >= 1 && idx <= candidates.size()) {
+                return candidates.get(idx - 1);
+            }
+            return null;
+        }
+        for (String candidate : candidates) {
+            if (candidate != null && trimmed.contains(candidate)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /** "1"/"１"/"一" → 1；解析失败返回 null（含"十"的复合数词不作为序号，按文本匹配兜底）。 */
+    private static Integer parseOrdinal(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return null;
+        }
+        if (raw.length() == 1) {
+            char c = raw.charAt(0);
+            if (c >= '0' && c <= '9') {
+                return c - '0';
+            }
+            if (c >= '０' && c <= '９') {
+                return c - '０';
+            }
+            int cn = CN_NUMERALS.indexOf(c);
+            return cn >= 0 ? cn + 1 : null;
+        }
+        try {
+            int n = 0;
+            for (char c : raw.toCharArray()) {
+                if (c >= '0' && c <= '9') {
+                    n = n * 10 + (c - '0');
+                } else if (c >= '０' && c <= '９') {
+                    n = n * 10 + (c - '０');
+                } else {
+                    return null;
+                }
+            }
+            return n;
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 }

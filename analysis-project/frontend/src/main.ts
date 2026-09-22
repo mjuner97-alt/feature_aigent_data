@@ -34,6 +34,7 @@ import ScriptRegistryPage from './pages/ScriptRegistryPage.vue';
 import SkillRoutingConfigPage from './pages/SkillRoutingConfigPage.vue';
 import ToolRoutingPage from './pages/ToolRoutingPage.vue';
 import RoutingOverlapPage from './pages/RoutingOverlapPage.vue';
+import DimensionAliasPage from './pages/DimensionAliasPage.vue';
 import ChatWorkspacePage from './pages/ChatWorkspacePage.vue';
 import SessionHistoryPage from './pages/SessionHistoryPage.vue';
 import { isLoggedIn } from './utils/auth';
@@ -100,6 +101,7 @@ const routes: RouteRecordRaw[] = [
           { path: 'skills', component: SkillRoutingConfigPage, meta: { requiresAuth: true, title: 'Skill 配置' } },
           { path: 'tool-routing', component: ToolRoutingPage, meta: { requiresAuth: true, title: '工具路由' } },
           { path: 'overlap', component: RoutingOverlapPage, meta: { requiresAuth: true, title: '重叠检测' } },
+          { path: 'dimension-alias', component: DimensionAliasPage, meta: { requiresAuth: true, title: '维度同义词' } },
         ],
       },
       // 兼容旧书签: /sql-registry -> /script-registry

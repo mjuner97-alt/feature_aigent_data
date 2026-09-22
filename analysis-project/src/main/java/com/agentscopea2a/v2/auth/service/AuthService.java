@@ -26,15 +26,21 @@ import java.util.stream.Collectors;
 public class AuthService {
 
     private final DeveloperPlPersonInfoMapper personInfoMapper;
+    private final AdminRoleService adminRoleService;
 
-    public AuthService(DeveloperPlPersonInfoMapper personInfoMapper) {
+    public AuthService(DeveloperPlPersonInfoMapper personInfoMapper, AdminRoleService adminRoleService) {
         this.personInfoMapper = personInfoMapper;
+        this.adminRoleService = adminRoleService;
     }
 
     public LoginResponse login(LoginRequest request) {
         String userId = request.getUserId();
         if (userId == null || userId.isBlank()) {
             throw new IllegalArgumentException("工号不能为空");
+        }
+
+        if (adminRoleService.isAdminUserId(userId)) {
+            return adminLogin(userId, request.getPassword());
         }
 
         int count = personInfoMapper.countByUserId(userId);
@@ -71,5 +77,12 @@ public class AuthService {
                 productLines,
                 "登录成功"
         );
+    }
+
+    private LoginResponse adminLogin(String userId, String password) {
+        if (!adminRoleService.matchesPassword(userId, password)) {
+            throw new IllegalArgumentException("管理员密码错误");
+        }
+        return new LoginResponse(userId, userId, List.of(), List.of(), List.of(), "登录成功", true);
     }
 }

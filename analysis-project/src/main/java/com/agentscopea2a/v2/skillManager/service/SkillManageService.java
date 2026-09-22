@@ -79,6 +79,8 @@ public class SkillManageService {
     /** 描述相似检测 (治理), bean 缺失时静默跳过 */
     private final ObjectProvider<com.agentscopea2a.v2.governance.SkillDescriptionSimilarityService> similarityServiceProvider;
 
+    private final com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService;
+
     /** 检索 body 缓存:retrieval_name -> content,60s TTL(与 SkillVectorIndex 缓存节奏一致)。 */
     private static final long BODY_CACHE_TTL_NANOS = TimeUnit.SECONDS.toNanos(60);
     private final ConcurrentHashMap<String, BodyCacheEntry> bodyCache = new ConcurrentHashMap<>();
@@ -90,12 +92,14 @@ public class SkillManageService {
                               MockOrgService mockOrgService,
                               SkillVirtualGroupService virtualGroupService,
                               ObjectProvider<SkillManageBridge> bridgeProvider,
-                              ObjectProvider<com.agentscopea2a.v2.governance.SkillDescriptionSimilarityService> similarityServiceProvider) {
+                              ObjectProvider<com.agentscopea2a.v2.governance.SkillDescriptionSimilarityService> similarityServiceProvider,
+                              com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService) {
         this.skillMapper = skillMapper;
         this.mockOrgService = mockOrgService;
         this.virtualGroupService = virtualGroupService;
         this.bridgeProvider = bridgeProvider;
         this.similarityServiceProvider = similarityServiceProvider;
+        this.adminRoleService = adminRoleService;
     }
 
     // ==================== Skill CRUD + 列表 ====================
@@ -1069,7 +1073,7 @@ public class SkillManageService {
     /** 附件关联属于 Skill 内容维护，仅创建者可增删。 */
     private Skill assertOwner(Long skillId, String userId) {
         Skill skill = get(skillId);
-        if (!skill.getOwnerUserId().equals(userId)) {
+        if (!skill.getOwnerUserId().equals(userId) && !adminRoleService.isAdminUserId(userId)) {
             throw new IllegalStateException("SkillAccessDenied: " + skillId);
         }
         return skill;

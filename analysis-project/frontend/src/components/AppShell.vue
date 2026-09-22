@@ -3,7 +3,7 @@
     <div :style="S.main">
       <div :style="S.nav">
         <router-link to="/skills" :style="navStyle('/skills')"><el-icon><Grid /></el-icon> Skill 广场</router-link>
-        <router-link to="/script-registry" :style="navStyle('/script-registry')"><el-icon><Files /></el-icon> SCRIPT 注册表</router-link>
+        <router-link to="/script-registry" :style="navStyle('/script-registry')"><el-icon><Files /></el-icon> 配置广场</router-link>
         <router-link to="/sessions" :style="navStyle('/sessions')"><el-icon><Clock /></el-icon> 对话记录</router-link>
         <router-link to="/model-config" :style="navStyle('/model-config')"><el-icon><Setting /></el-icon> 模型配置</router-link>
         <div :style="S.navRight">

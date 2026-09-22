@@ -32,6 +32,7 @@ import {
 } from '../../api/skill';
 import type { SkillDetail, LikeStatus, SkillPublishRecord, PublishPendingItem, SkillApprovalRecord, SkillFileReferenceItem } from '../../types/skill';
 import SkillGrantEditor from '../../components/SkillGrantEditor.vue';
+import { isAdmin } from '../../utils/auth';
 
 const route = useRoute();
 const router = useRouter();
@@ -51,9 +52,9 @@ const publishes = ref<SkillPublishRecord[]>([]);
 const publishLoading = ref(false);
 const publishError = ref('');
 
-// 仅所有者可编辑/删除,且审批中的 Skill 不可编辑/删除(后端做双重校验,前端先门控)
+// 仅所有者可编辑/删除,且审批中的 Skill 不可编辑/删除(后端做双重校验,前端先门控);管理员放行
 const canManage = computed(() =>
-  !!skill.value && skill.value.ownerUserId === currentUserId() && !hasPendingPublish.value
+  !!skill.value && (isAdmin() || skill.value.ownerUserId === currentUserId()) && !hasPendingPublish.value
 );
 
 // 编辑:跳转全页面表单

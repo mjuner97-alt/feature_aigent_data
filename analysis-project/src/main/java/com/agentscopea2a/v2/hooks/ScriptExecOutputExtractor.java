@@ -25,6 +25,15 @@ final class ScriptExecOutputExtractor {
                     + "|<!doctype\\s+html\\b[^>]*>[\\s\\S]*?</html\\s*>)",
             java.util.regex.Pattern.CASE_INSENSITIVE);
 
+    /**
+     * Matches the successful in-place download link line produced by
+     * {@code ScriptExecTool.extractDownloads()}. The failure line
+     * ("📥 下载生成失败: ...") is intentionally not matched — it must stay
+     * visible to the model instead of being taken over.
+     */
+    static final java.util.regex.Pattern DOWNLOAD_LINK_PATTERN = java.util.regex.Pattern.compile(
+            "(?m)^📥\\s*\\[[^\\]\\n]+\\]\\([^)\\n]*/redirect/download\\?shortCode=[^)\\n]+\\)\\s*$");
+
     private ScriptExecOutputExtractor() {
     }
 
@@ -53,6 +62,12 @@ final class ScriptExecOutputExtractor {
                 ? toolOutput.substring(stdoutStart, stderrMarker)
                 : toolOutput.substring(stdoutStart)).trim();
         return "(空)".equals(stdout) ? "" : stdout;
+    }
+
+    /** Whether the already-extracted stdout carries at least one download link line. */
+    static boolean stdoutHasDownloadLink(String stdout) {
+        if (stdout == null || stdout.isBlank()) return false;
+        return DOWNLOAD_LINK_PATTERN.matcher(stdout).find();
     }
 
     /**

@@ -3,6 +3,7 @@ import { computed, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { getToolRoutingStatus, listTags, listToolRouting, saveTag, saveToolRouting, scanToolRouting, setToolRoutingEnabled } from '../api/toolRouting';
 import { routingOverlapSummary } from '../api/routingOverlap';
+import { isAdmin } from '../utils/auth';
 import { useRouter } from 'vue-router';
 import type { TagType, ToolRoutingInput, ToolRoutingMetadata, ToolRoutingScanCandidate, ToolRoutingStatus, ToolRoutingTag } from '../types/toolRouting';
 
@@ -18,8 +19,8 @@ const dimensions = ref<ToolRoutingTag[]>([]);
 const status = ref<ToolRoutingStatus | null>(null);
 const keyword = ref('');
 const typeFilter = ref('');
-// 我的/全部 范围切换: 默认'我的', 按创建人字段 (ownerUserId) = 当前用户过滤 (沿用 SessionHistoryPage 的样式)
-const scope = ref<'mine' | 'all'>('mine');
+// 我的/全部 范围切换: 管理员默认'全部', 普通用户默认'我的', 按创建人字段 (ownerUserId) = 当前用户过滤
+const scope = ref<'mine' | 'all'>(isAdmin() ? 'all' : 'mine');
 const dialogVisible = ref(false);
 const current = ref<ToolRoutingScanCandidate | null>(null);
 const form = ref<ToolRoutingInput>(emptyInput());
@@ -28,7 +29,7 @@ const tagType = ref<TagType>('METRIC');
 const tagName = ref('');
 const tagDescription = ref('');
 const currentUserId = localStorage.getItem('skill-user-id') || 'demo-user';
-const canEdit = (row: ToolRoutingScanCandidate) => !!row.ownerUserId && row.ownerUserId === currentUserId;
+const canEdit = (row: ToolRoutingScanCandidate) => isAdmin() || (!!row.ownerUserId && row.ownerUserId === currentUserId);
 
 function emptyInput(): ToolRoutingInput { return { toolType: 'SQL', description: '', topicTags: [], metricTags: [], dimensionTags: [], priority: 0, enabled: false }; }
 const filteredRows = computed(() => rows.value.filter(row => {
@@ -166,11 +167,11 @@ load();
           <el-table-column label="操作" width="150" fixed="right"><template #default="{ row }"><!-- 查看所有人可见; 配置仅本人 --><el-button size="small" @click="openView(row)">查看</el-button><el-button v-if="canEdit(row)" size="small" @click="openConfig(row)">配置</el-button></template></el-table-column>
         </el-table>
       </el-tab-pane>
-      <!-- 标签词典 tab 暂时隐藏 (数据加载保留, 配置弹窗下拉仍依赖词典接口) -->
-      <el-tab-pane v-if="false" label="标签词典">
-        <div class="dictionary"><section><div class="section-head"><h3>业务主题</h3></div><el-tag v-for="tag in topics" :key="tag.tagName" class="tag" type="warning">{{ tag.tagName }}</el-tag><span v-if="!topics.length" class="empty">暂无标签</span></section>
-          <section><div class="section-head"><h3>指标标签</h3></div><el-tag v-for="tag in metrics" :key="tag.tagName" class="tag">{{ tag.tagName }}</el-tag><span v-if="!metrics.length" class="empty">暂无标签</span></section>
-          <section><div class="section-head"><h3>维度标签</h3></div><el-tag v-for="tag in dimensions" :key="tag.tagName" class="tag" type="success">{{ tag.tagName }}</el-tag><span v-if="!dimensions.length" class="empty">暂无标签</span></section></div>
+      <!-- 标签词典仅管理员可见/可新增 (数据加载保留, 配置弹窗下拉依赖词典接口) -->
+      <el-tab-pane v-if="isAdmin()" label="标签词典">
+        <div class="dictionary"><section><div class="section-head"><h3>业务主题</h3><el-button size="small" @click="openTag('TOPIC')">新增</el-button></div><el-tag v-for="tag in topics" :key="tag.tagName" class="tag" type="warning">{{ tag.tagName }}</el-tag><span v-if="!topics.length" class="empty">暂无标签</span></section>
+          <section><div class="section-head"><h3>指标标签</h3><el-button size="small" @click="openTag('METRIC')">新增</el-button></div><el-tag v-for="tag in metrics" :key="tag.tagName" class="tag">{{ tag.tagName }}</el-tag><span v-if="!metrics.length" class="empty">暂无标签</span></section>
+          <section><div class="section-head"><h3>维度标签</h3><el-button size="small" @click="openTag('DIMENSION')">新增</el-button></div><el-tag v-for="tag in dimensions" :key="tag.tagName" class="tag" type="success">{{ tag.tagName }}</el-tag><span v-if="!dimensions.length" class="empty">暂无标签</span></section></div>
       </el-tab-pane>
     </el-tabs>
     <el-dialog v-model="dialogVisible" :title="`配置工具：${current?.toolId || ''}`" width="680px" destroy-on-close><el-form label-width="96px" size="small"><el-form-item label="工具类型"><el-input :model-value="form.toolType" disabled /></el-form-item><el-form-item label="路由描述"><el-input v-model="form.description" type="textarea" :rows="3" maxlength="3000" show-word-limit /></el-form-item><el-form-item label="业务主题" required><el-select v-model="form.topicTags" multiple filterable style="width: 100%" placeholder="从规范词典选择"><el-option v-for="tag in topicOptions" :key="tag" :label="tag" :value="tag" /></el-select></el-form-item><el-form-item label="指标标签" required><el-select v-model="form.metricTags" multiple filterable style="width: 100%" placeholder="从规范词典选择"><el-option v-for="tag in metricOptions" :key="tag" :label="tag" :value="tag" /></el-select></el-form-item><el-form-item label="维度标签"><el-select v-model="form.dimensionTags" multiple filterable style="width: 100%" placeholder="从规范词典选择"><el-option v-for="tag in dimensionOptions" :key="tag" :label="tag" :value="tag" /></el-select></el-form-item><el-form-item label="优先级"><el-input-number v-model="form.priority" :min="-1000" :max="1000" /></el-form-item><el-form-item label="状态"><el-switch v-model="form.enabled" /><span class="field-hint">仅控制是否出现在 tool_index 目录，不影响固定 toolId 的调用。</span></el-form-item></el-form><template #footer><el-button @click="dialogVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveConfig">保存</el-button></template></el-dialog>

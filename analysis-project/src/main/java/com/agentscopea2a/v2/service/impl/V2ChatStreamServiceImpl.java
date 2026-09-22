@@ -19,6 +19,7 @@ import com.agentscopea2a.dto.ChatRequest;
 import com.agentscopea2a.dto.response.ContentDto;
 import com.agentscopea2a.dto.response.TextManagerResponseDto;
 import com.agentscopea2a.dto.response.TextPayload;
+import com.agentscopea2a.v2.dimension.DimensionStateManager;
 import com.agentscopea2a.dto.response.TextResponseDto;
 import com.agentscopea2a.dto.response.ThinkManagerResponseDto;
 import com.agentscopea2a.dto.response.ThinkPayload;
@@ -93,6 +94,7 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
     private final VerificationRecorder verificationRecorder;
     private final TraceAssembler traceAssembler;
     private final TraceQueue traceQueue;
+    private final DimensionStateManager dimensionStateManager;
 
 
     /**
@@ -110,7 +112,8 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
                                     TriggerLevelResolver triggerLevelResolver,
                                     VerificationRecorder verificationRecorder,
                                     TraceAssembler traceAssembler,
-                                    TraceQueue traceQueue) {
+                                    TraceQueue traceQueue,
+                                    DimensionStateManager dimensionStateManager) {
         this.runner = runner;
         this.artifactStore = artifactStore;
         this.episodicMemory = episodicMemory;
@@ -118,6 +121,7 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
         this.verificationRecorder = verificationRecorder;
         this.traceAssembler = traceAssembler;
         this.traceQueue = traceQueue;
+        this.dimensionStateManager = dimensionStateManager;
     }
 
     /**
@@ -316,6 +320,17 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
         }
 
         // 工具调用采集器：记录本轮对话触发的工具调用上下文，供 episodic 记忆持久化使用
+        // ── P3 歧义反问状态机（docs/dimension-alias-config-plan.md §6，确定性短路）──
+        // 上一轮登记了待确认歧义 → 本轮回复先做确定性匹配（序号/候选名），命中则把
+        // 口语词替换为标准名作为本轮问题；未命中丢弃 pending，按普通问题放行。
+        String clarifiedQuestion = dimensionStateManager.consumeClarification(text);
+        if (clarifiedQuestion != null) {
+            req.setQuestion(clarifiedQuestion);
+            text = clarifiedQuestion;
+        }
+        // 本轮问题仍含同维度一对多歧义 → 登记 pending，后续短路反问（不启 agent）
+        String clarifyPrompt = dimensionStateManager.startClarificationIfAmbiguous(text);
+
         ToolCallCollector collector = new ToolCallCollector(text);
 
         // 构造用户消息（纯文本内容块）
@@ -409,6 +424,19 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
             cleanup.run();
         });
         emitter.onError(e -> cleanup.run());
+
+        if (clarifyPrompt != null) {
+            // 歧义短路轮：不启 agent（零 token、不写 ResponseCache），直接经 "done" 事件
+            // 下发反问文本。⚠️ 在 stream() 返回 emitter 之前 complete，Spring 不会派发
+            // onCompletion 回调（E2E 实测 inFlight 永不清理、会话被锁），故显式跑 cleanup
+            // 兜底；cleanup 为 CAS 幂等，若回调稍后仍触发不会重复执行。
+            log.info("Ambiguous alias in question for sessionId={}, short-circuiting with clarify prompt",
+                    conversationId);
+            strategy.sendText(streamCtx, TextPayload.chunk(clarifyPrompt, true));
+            emitter.complete();
+            cleanup.run();
+            return emitter;
+        }
 
         // 在 boundedElastic 调度器上异步启动流式订阅，避免阻塞 Servlet 容器线程
         Mono.fromRunnable(() -> {

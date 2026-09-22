@@ -6,6 +6,7 @@ import { routingOverlapSummary } from '../api/routingOverlap';
 import { useRouter } from 'vue-router';
 import type { ToolRoutingTag } from '../types/toolRouting';
 import type { SkillRoutingInput, SkillRoutingMetadata } from '../types/skillRouting';
+import { isAdmin } from '../utils/auth';
 
 type SkillTagType = 'DOMAIN' | 'TOPIC';
 
@@ -15,8 +16,8 @@ const highOverlap = ref<Record<string, number>>({});
 const loading = ref(false);
 const keyword = ref('');
 const activeFilter = ref<string>('');
-// 我的/全部 范围切换: 默认'我的', 后端按 creator = 当前用户过滤 (沿用 SessionHistoryPage 的样式)
-const scope = ref<'mine' | 'all'>('mine');
+// 我的/全部 范围切换: 管理员默认'全部', 普通用户默认'我的', 后端按 creator = 当前用户过滤
+const scope = ref<'mine' | 'all'>(isAdmin() ? 'all' : 'mine');
 const dialogVisible = ref(false);
 const saving = ref(false);
 const current = ref<SkillRoutingMetadata | null>(null);
@@ -30,7 +31,7 @@ const tagType = ref<SkillTagType>('DOMAIN');
 const tagName = ref('');
 const tagDescription = ref('');
 const currentUserId = localStorage.getItem('skill-user-id') || 'demo-user';
-const canEdit = (row: SkillRoutingMetadata) => !!row.creator && row.creator === currentUserId;
+const canEdit = (row: SkillRoutingMetadata) => isAdmin() || (!!row.creator && row.creator === currentUserId);
 
 const domainOptions = computed(() => [...new Set([...domainTags.value.map(tag => tag.tagName), ...form.value.domainTags])]);
 const topicOptions = computed(() => [...new Set([...topicTags.value.map(tag => tag.tagName), ...form.value.topicTags])]);
@@ -152,11 +153,11 @@ load();
       <el-table-column label="操作" width="150" fixed="right"><template #default="{ row }"><!-- 查看所有人可见; 配置仅本人 --><el-button size="small" @click="openView(row)">查看</el-button><el-button v-if="canEdit(row)" size="small" @click="openEdit(row)">配置</el-button></template></el-table-column>
     </el-table>
       </el-tab-pane>
-      <!-- 标签词典 tab 暂时隐藏 (数据加载保留, 配置弹窗下拉仍依赖词典接口) -->
-      <el-tab-pane v-if="false" label="标签词典">
+      <!-- 标签词典仅管理员可见/可新增 (数据加载保留, 配置弹窗下拉依赖词典接口) -->
+      <el-tab-pane v-if="isAdmin()" label="标签词典">
         <div class="dictionary">
-          <section><div class="section-head"><h3>领域字典</h3></div><el-tag v-for="tag in domainTags" :key="tag.tagName" class="tag" type="success">{{ tag.tagName }}</el-tag><span v-if="!domainTags.length" class="empty">暂无标签</span></section>
-          <section><div class="section-head"><h3>主题词典</h3></div><el-tag v-for="tag in topicTags" :key="tag.tagName" class="tag" type="warning">{{ tag.tagName }}</el-tag><span v-if="!topicTags.length" class="empty">暂无标签</span></section>
+          <section><div class="section-head"><h3>领域字典</h3><el-button size="small" @click="openTag('DOMAIN')">新增</el-button></div><el-tag v-for="tag in domainTags" :key="tag.tagName" class="tag" type="success">{{ tag.tagName }}</el-tag><span v-if="!domainTags.length" class="empty">暂无标签</span></section>
+          <section><div class="section-head"><h3>主题词典</h3><el-button size="small" @click="openTag('TOPIC')">新增</el-button></div><el-tag v-for="tag in topicTags" :key="tag.tagName" class="tag" type="warning">{{ tag.tagName }}</el-tag><span v-if="!topicTags.length" class="empty">暂无标签</span></section>
         </div>
       </el-tab-pane>
     </el-tabs>

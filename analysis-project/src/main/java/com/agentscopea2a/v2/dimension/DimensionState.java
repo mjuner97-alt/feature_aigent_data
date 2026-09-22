@@ -43,6 +43,9 @@ public class DimensionState implements State {
     /** 人（可有多个） */
     private List<String> persons;
 
+    /** 待确认的歧义反问（docs/dimension-alias-config-plan.md §6.3）；流程控制状态，不参与指纹/等值 */
+    private PendingClarification pendingClarification;
+
     public DimensionState() {}
 
     @JsonCreator
@@ -87,6 +90,14 @@ public class DimensionState implements State {
 
     public void setPersons(List<String> persons) {
         this.persons = persons;
+    }
+
+    public PendingClarification getPendingClarification() {
+        return pendingClarification;
+    }
+
+    public void setPendingClarification(PendingClarification pendingClarification) {
+        this.pendingClarification = pendingClarification;
     }
 
     /**
@@ -247,6 +258,75 @@ public class DimensionState implements State {
         @Override
         public String toString() {
             return "TimeDimension{type=" + type + ", values=" + values + '}';
+        }
+    }
+
+    /**
+     * 待确认的歧义反问状态（方案 §6.3）：AliasResolver 命中同维度一对多时登记，
+     * 下一轮用户回复（序号或候选名）确定性匹配后清除。
+     *
+     * <p>流程控制状态，刻意不参与 equals/hashCode/deepCopy/toCacheKey（指纹稳定）。
+     */
+    public static class PendingClarification implements State {
+
+        private PeerDimensionType dimension;
+        /** 触发反问的口语词，如"风险组" */
+        private String alias;
+        /** 同维度候选标准名，展示顺序即序号顺序 */
+        private List<String> candidates;
+        /** 短路前的完整原问题，确认后把 alias 位置替换为标准名再跑 agent */
+        private String originalQuestion;
+
+        public PendingClarification() {}
+
+        public PendingClarification(
+                PeerDimensionType dimension,
+                String alias,
+                List<String> candidates,
+                String originalQuestion) {
+            this.dimension = dimension;
+            this.alias = alias;
+            this.candidates = candidates;
+            this.originalQuestion = originalQuestion;
+        }
+
+        public PeerDimensionType getDimension() {
+            return dimension;
+        }
+
+        public void setDimension(PeerDimensionType dimension) {
+            this.dimension = dimension;
+        }
+
+        public String getAlias() {
+            return alias;
+        }
+
+        public void setAlias(String alias) {
+            this.alias = alias;
+        }
+
+        public List<String> getCandidates() {
+            return candidates;
+        }
+
+        public void setCandidates(List<String> candidates) {
+            this.candidates = candidates;
+        }
+
+        public String getOriginalQuestion() {
+            return originalQuestion;
+        }
+
+        public void setOriginalQuestion(String originalQuestion) {
+            this.originalQuestion = originalQuestion;
+        }
+
+        @Override
+        public String toString() {
+            return "PendingClarification{dimension=" + dimension
+                    + ", alias=" + alias
+                    + ", candidates=" + candidates + '}';
         }
     }
 

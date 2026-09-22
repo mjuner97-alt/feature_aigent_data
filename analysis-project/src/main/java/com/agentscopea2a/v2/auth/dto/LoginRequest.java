@@ -14,11 +14,17 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * 登录请求 DTO - 工号(userId)登录,无密码。
+ * 登录请求 DTO - 工号(userId)登录；管理员账号需带 password。
  */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 public class LoginRequest {
     private String userId;
+    /** 仅管理员账号必填；普通用户无需密码 */
+    private String password;
+
+    public LoginRequest(String userId) {
+        this.userId = userId;
+    }
 }

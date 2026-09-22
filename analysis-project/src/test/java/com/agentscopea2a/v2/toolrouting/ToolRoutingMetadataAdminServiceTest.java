@@ -1,5 +1,7 @@
 package com.agentscopea2a.v2.toolrouting;
 
+import com.agentscopea2a.entity.ScriptRegistryEntry;
+import com.agentscopea2a.mapper.gauss.ScriptRegistryMapper;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -17,11 +19,16 @@ class ToolRoutingMetadataAdminServiceTest {
     void normalizesMetadataBeforePersisting() {
         ToolRoutingMetadataRepository repository = mock(ToolRoutingMetadataRepository.class);
         when(repository.upsert(any())).thenReturn(true);
-        ToolRoutingMetadataAdminService service = new ToolRoutingMetadataAdminService(repository, null);
+        ScriptRegistryMapper scriptRegistryMapper = mock(ScriptRegistryMapper.class);
+        ScriptRegistryEntry entry = new ScriptRegistryEntry();
+        entry.setCreatedBy("tester");
+        when(scriptRegistryMapper.selectByScriptId("q2_metrics")).thenReturn(entry);
+        ToolRoutingMetadataAdminService service = new ToolRoutingMetadataAdminService(
+                repository, null, null, scriptRegistryMapper, new com.agentscopea2a.v2.auth.service.AdminRoleService(""));
 
         ToolRoutingMetadata saved = service.save("q2_metrics", new ToolRoutingMetadataInput(
                 ToolRoutingToolType.SCRIPT, "  按部门统计质量分  ", List.of(" QI卡口 "), List.of(" 质量分 ", "质量分"),
-                List.of(" 部门 "), 10, true));
+                List.of(" 部门 "), 10, true), "tester");
 
         assertEquals("q2_metrics", saved.toolId());
         assertEquals("按部门统计质量分", saved.description());
@@ -34,10 +41,12 @@ class ToolRoutingMetadataAdminServiceTest {
     @Test
     void rejectsOutOfRangePriority() {
         ToolRoutingMetadataRepository repository = mock(ToolRoutingMetadataRepository.class);
-        ToolRoutingMetadataAdminService service = new ToolRoutingMetadataAdminService(repository, null);
+        ToolRoutingMetadataAdminService service = new ToolRoutingMetadataAdminService(
+                repository, null, null, null, new com.agentscopea2a.v2.auth.service.AdminRoleService(""));
 
         assertThrows(IllegalArgumentException.class, () -> service.save("q2_metrics",
-                new ToolRoutingMetadataInput(ToolRoutingToolType.SQL, "x", List.of("QI卡口"), List.of("质量分"), List.of(), 1001, true)));
+                new ToolRoutingMetadataInput(ToolRoutingToolType.SQL, "x", List.of("QI卡口"), List.of("质量分"), List.of(), 1001, true),
+                "tester"));
     }
 
 }

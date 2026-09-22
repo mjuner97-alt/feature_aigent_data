@@ -13,15 +13,18 @@ public class ToolRoutingMetadataAdminService {
     private final com.agentscopea2a.v2.governance.SkillToolOverlapService overlapService;
     private final com.agentscopea2a.mapper.gauss.SqlRegistryMapper sqlRegistryMapper;
     private final com.agentscopea2a.mapper.gauss.ScriptRegistryMapper scriptRegistryMapper;
+    private final com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService;
     public ToolRoutingMetadataAdminService(
             ToolRoutingMetadataRepository repository,
             com.agentscopea2a.v2.governance.SkillToolOverlapService overlapService,
             com.agentscopea2a.mapper.gauss.SqlRegistryMapper sqlRegistryMapper,
-            com.agentscopea2a.mapper.gauss.ScriptRegistryMapper scriptRegistryMapper) {
+            com.agentscopea2a.mapper.gauss.ScriptRegistryMapper scriptRegistryMapper,
+            com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService) {
         this.repository = repository;
         this.overlapService = overlapService;
         this.sqlRegistryMapper = sqlRegistryMapper;
         this.scriptRegistryMapper = scriptRegistryMapper;
+        this.adminRoleService = adminRoleService;
     }
 
     public ToolRoutingMetadata save(String toolId, ToolRoutingMetadataInput input, String userId) {
@@ -31,6 +34,9 @@ public class ToolRoutingMetadataAdminService {
     }
 
     private void assertOwner(ToolRoutingMetadata metadata, String userId) {
+        if (adminRoleService.isAdminUserId(userId)) {
+            return;
+        }
         String owner = switch (metadata.toolType()) {
             case SQL -> {
                 var entry = sqlRegistryMapper.selectBySqlId(metadata.toolId());

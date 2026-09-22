@@ -129,6 +129,19 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * ResponseStatusException 透传: 无此 handler 会被下方 Exception 兜底捕获, 状态码被改写为 500。
+     */
+    @ExceptionHandler(org.springframework.web.server.ResponseStatusException.class)
+    public ResponseEntity<Map<String, String>> handleResponseStatus(
+            org.springframework.web.server.ResponseStatusException ex, HttpServletRequest request) {
+        log.warn("ResponseStatusException: status={}, method={}, uri={}, reason={}",
+                ex.getStatusCode(), request.getMethod(), request.getRequestURI(), ex.getReason());
+        return ResponseEntity.status(ex.getStatusCode())
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("message", ex.getReason() == null ? "" : ex.getReason()));
+    }
+
+    /**
      * 兜底处理器: 未能精确匹配的未知异常 -> 500。
      * 生成随机 errorId 一并写入日志与响应体, 便于用户反馈后按 errorId 反查具体堆栈。
      */

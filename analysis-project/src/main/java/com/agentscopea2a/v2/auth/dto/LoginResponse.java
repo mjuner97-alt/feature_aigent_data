@@ -28,4 +28,11 @@ public class LoginResponse {
     private List<String> statisticsGroups;
     private List<String> productLines;
     private String message;
+    /** 是否管理员（app.auth.admin-users 配置的账号，密码校验通过） */
+    private boolean admin;
+
+    public LoginResponse(String userId, String name, List<String> departments,
+                         List<String> statisticsGroups, List<String> productLines, String message) {
+        this(userId, name, departments, statisticsGroups, productLines, message, false);
+    }
 }

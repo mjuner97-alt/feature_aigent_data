@@ -27,11 +27,14 @@ public class ScriptRegistryManageService {
 
     private final ScriptRegistryMapper mapper;
     private final DeveloperPlPersonInfoMapper personInfoMapper;
+    private final com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService;
 
     public ScriptRegistryManageService(ScriptRegistryMapper mapper,
-                                       DeveloperPlPersonInfoMapper personInfoMapper) {
+                                       DeveloperPlPersonInfoMapper personInfoMapper,
+                                       com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService) {
         this.mapper = mapper;
         this.personInfoMapper = personInfoMapper;
+        this.adminRoleService = adminRoleService;
     }
 
     // ======================================================================
@@ -177,7 +180,10 @@ public class ScriptRegistryManageService {
         return existing;
     }
 
-    private static void assertOwner(String owner, String userId) {
+    private void assertOwner(String owner, String userId) {
+        if (adminRoleService.isAdminUserId(userId)) {
+            return;
+        }
         if (owner == null || owner.isBlank() || userId == null || userId.isBlank() || !owner.trim().equals(userId.trim())) {
             throw new IllegalStateException("ResourceAccessDenied");
         }
