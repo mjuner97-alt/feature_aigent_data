@@ -84,6 +84,10 @@ function paramInputType(type: string): string {
 function paramPlaceholder(type: string): string {
   return type.endsWith('[]') ? '多个值用逗号分隔' : '';
 }
+
+function selectedScript(node: SkillFlowNode, scripts: ScriptRegistryListItem[]): ScriptRegistryListItem | undefined {
+  return scripts.find(script => script.scriptId === node.scriptId);
+}
 </script>
 
 <template>
@@ -102,7 +106,7 @@ function paramPlaceholder(type: string): string {
     </div>
     <div class="node-grid">
       <label><span>节点名称</span><input v-model="node.nodeName" :placeholder="node.skillName || '为空时使用 Skill 名称'" /></label>
-      <label v-if="node.nodeType !== 'SKILL'"><span>Python 脚本 *</span><el-select v-model="node.scriptId" filterable remote reserve-keyword :remote-method="(query: string) => emit('search-scripts', query)" :loading="scriptLoading" placeholder="请选择脚本" clearable style="width: 100%" @change="emit('script-change')"><el-option v-for="script in scripts" :key="script.scriptId" :value="script.scriptId" :label="`${script.scriptId} · ${script.name} · ${script.updatedAt || script.createdAt}`"><template #default><div>{{ script.scriptId }} · {{ script.name }} <small>{{ script.description }}</small></div></template></el-option></el-select></label>
+      <label v-if="node.nodeType !== 'SKILL'"><span>Python 脚本 *</span><el-select v-model="node.scriptId" popper-class="script-select-dropdown" filterable remote reserve-keyword :remote-method="(query: string) => emit('search-scripts', query)" :loading="scriptLoading" placeholder="请选择脚本" clearable style="width: 100%" @change="emit('script-change')"><el-option v-for="script in scripts" :key="script.scriptId" :value="script.scriptId" :label="script.name"><template #default><div class="script-option"><strong>{{ script.name }}</strong><span>{{ script.description || '暂无用途描述' }}</span><small>脚本 ID：{{ script.scriptId }}</small></div></template></el-option></el-select><div v-if="selectedScript(node, scripts)" class="script-detail"><div class="script-detail-title">脚本说明</div><p>{{ selectedScript(node, scripts)?.description || '暂无用途描述' }}</p><div class="script-detail-meta"><span>脚本 ID：{{ selectedScript(node, scripts)?.scriptId }}</span></div></div></label>
       <label v-else><span>旧 Skill（只读兼容）</span><input :value="node.skillName || node.skillId || ''" readonly /></label>
       <div v-if="node.nodeType !== 'SKILL'" class="node-params">
         <div class="node-params-title">脚本参数</div>
@@ -132,7 +136,12 @@ label { display: grid; gap: 5px; } label > span { color: #475569; font-size: 13p
 .node-card { display: grid; gap: 14px; padding: 16px; border: 1px solid #dbe4f0; border-radius: 10px; background: #fbfdff; }.node-card.dragging { border-color: #3b82f6; background: #eff6ff; }
 .node-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.node-toolbar strong { color: #0f172a; font-size: 14px; flex: 1; }.node-toolbar > div { display: flex; gap: 4px; }
 .drag-handle { cursor: grab; color: #94a3b8; font-size: 18px; padding: 0 4px; user-select: none; }.drag-handle:active { cursor: grabbing; }
-.node-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.node-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; align-items: start; }
+.script-option { display: grid; gap: 2px; line-height: 1.35; padding: 3px 0; }.script-option strong { color: #0f172a; font-size: 13px; }.script-option span { overflow: hidden; color: #64748b; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }.script-option small { color: #94a3b8; font-size: 11px; }
+.script-detail { display: grid; gap: 5px; margin-top: 8px; padding: 10px 12px; border: 1px solid #dbeafe; border-radius: 8px; background: #f8fbff; }.script-detail-title { color: #1d4ed8; font-size: 12px; font-weight: 700; }.script-detail p { margin: 0; color: #475569; font-size: 12px; line-height: 1.5; }.script-detail-meta { display: flex; flex-wrap: wrap; gap: 8px 14px; color: #64748b; font-size: 11px; }
+:global(.script-select-dropdown) { min-width: 520px !important; }
+:global(.script-select-dropdown .el-select-dropdown__item) { height: auto !important; min-height: 72px !important; padding: 9px 14px !important; line-height: 1.35 !important; white-space: normal !important; }
+:global(.script-select-dropdown .el-select-dropdown__item .script-option) { width: 100%; }
 .node-params { display: grid; gap: 8px; padding: 10px 12px; border: 1px dashed #cbd5e1; border-radius: 8px; background: #fff; }
 .node-params-title { color: #475569; font-size: 13px; font-weight: 600; }
 .param-list { display: grid; gap: 8px; }
@@ -143,6 +152,6 @@ label { display: grid; gap: 5px; } label > span { color: #475569; font-size: 13p
 .param-check { display: flex !important; align-items: center; gap: 7px !important; grid-template-columns: none !important; color: #475569; font-size: 13px; }.param-check input { width: auto; }
 .param-desc { grid-column: 2; color: #94a3b8; font-size: 12px; }
 .param-empty { color: #94a3b8; font-size: 12px; }
-.btn, .icon-button { border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #475569; cursor: pointer; font-size: 13px; }.btn { padding: 7px 14px; }.btn:disabled, .icon-button:disabled { cursor: not-allowed; opacity: .45; }.icon-button { width: 28px; height: 28px; padding: 0; font-size: 18px; line-height: 1; }.icon-button.danger { color: #dc2626; border-color: #fecaca; }
+.btn, .icon-button { border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #475569; cursor: pointer; font-size: 13px; }.btn { padding: 7px 14px; }.node-toolbar .btn { border-color: #3b82f6; background: #3b82f6; color: #fff; }.node-toolbar .btn:hover:not(:disabled) { background: #2563eb; border-color: #2563eb; }.btn:disabled, .icon-button:disabled { cursor: not-allowed; opacity: .45; }.icon-button { width: 28px; height: 28px; padding: 0; font-size: 18px; line-height: 1; }.icon-button.danger { color: #dc2626; border-color: #fecaca; }
 @media (max-width: 760px) { .node-grid { grid-template-columns: 1fr; } }
 </style>
