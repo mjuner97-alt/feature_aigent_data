@@ -15,6 +15,9 @@
  */
 package com.agentscopea2a.v2.artifact;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
@@ -41,6 +44,8 @@ import java.util.regex.Pattern;
  * zero-effort.
  */
 public final class TabularExtractor {
+
+    private static final Logger log = LoggerFactory.getLogger(TabularExtractor.class);
 
     /** Minimum data rows (excluding header) for an artifact to be worth the indirection. */
     public static final int MIN_DATA_ROWS = 4;
@@ -116,9 +121,14 @@ public final class TabularExtractor {
                     break;
                 }
                 List<String> cells = splitMdRow(row);
-                // Tolerate "| ... |" continuation rows of different width by skipping malformed
-                // ones rather than blowing up — keep collecting until a clean break.
+                // Column-count mismatch means the table is over (or malformed) — collecting
+                // further would silently mix heterogeneous rows into one CSV.
                 if (cells.size() != expectedCols) {
+                    if (log.isWarnEnabled()) {
+                        log.warn("Markdown table truncated at data row {}: cell count {} != header {} "
+                                + "(unescaped pipe in a cell?). Rows collected so far: {}",
+                                j - i - 1, cells.size(), expectedCols, rows.size());
+                    }
                     break;
                 }
                 rows.add(cells);
@@ -142,14 +152,33 @@ public final class TabularExtractor {
         return t.contains("|") && t.replace("|", "").length() < t.length() - 1;
     }
 
+    /**
+     * Splits a pipe-delimited row, honoring the {@code \|} escape that table emitters
+     * (e.g. {@code SqlRegistryExecTool.escapeCell}) apply to literal pipes inside cell values.
+     * Escaped pipes are unescaped back to {@code |} in the returned cells — a regex
+     * {@code split("\\|")} would over-split such rows, the column count would no longer match
+     * the header, and {@link #parseMarkdownTable} would silently truncate the table at the
+     * first offending row (observed: 86-row query artifactized as 42 rows).
+     */
     private static List<String> splitMdRow(String line) {
         String t = line.trim();
         if (t.startsWith("|")) t = t.substring(1);
-        if (t.endsWith("|")) t = t.substring(0, t.length() - 1);
+        if (t.endsWith("|") && !t.endsWith("\\|")) t = t.substring(0, t.length() - 1);
         List<String> cells = new ArrayList<>();
-        for (String cell : t.split("\\|", -1)) {
-            cells.add(cell.trim());
+        StringBuilder cur = new StringBuilder();
+        for (int i = 0; i < t.length(); i++) {
+            char c = t.charAt(i);
+            if (c == '\\' && i + 1 < t.length() && t.charAt(i + 1) == '|') {
+                cur.append('|');
+                i++;
+            } else if (c == '|') {
+                cells.add(cur.toString().trim());
+                cur.setLength(0);
+            } else {
+                cur.append(c);
+            }
         }
+        cells.add(cur.toString().trim());
         return cells;
     }
 

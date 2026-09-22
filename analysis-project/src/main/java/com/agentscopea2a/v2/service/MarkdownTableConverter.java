@@ -15,6 +15,8 @@
  */
 package com.agentscopea2a.v2.service;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.regex.Pattern;
 
 /**
@@ -53,15 +55,39 @@ public final class MarkdownTableConverter {
             if (!line.startsWith("|") || !line.endsWith("|")) continue;  // 跳过非表行 (头尾说明)
             if (SEPARATOR.matcher(line).matches()) continue;             // 跳过 |---| 分隔行
             String body = line.substring(1, line.length() - 1);          // 去首尾 |
-            String[] cells = body.split("\\|", -1);
+            String[] cells = splitRow(body);
             for (int i = 0; i < cells.length; i++) {
-                cells[i] = cells[i].trim().replace("\\|", "|");          // 反转义 \|
+                cells[i] = cells[i].trim();
             }
             if (!firstRow) out.append("\n");
             out.append(toCsvLine(cells));
             firstRow = false;
         }
         return out.toString();
+    }
+
+    /**
+     * 按未转义的 {@code |} 切分单元格, {@code \|} 是表生成方 (如 SqlRegistryExecTool.escapeCell)
+     * 对字段内字面竖线的转义, 反转义回 {@code |}. 正则 {@code split("\\|")} 会把含转义竖线的行
+     * 多切出单元格, 导致下载 CSV 列错位.
+     */
+    private static String[] splitRow(String body) {
+        List<String> cells = new ArrayList<>();
+        StringBuilder cur = new StringBuilder();
+        for (int i = 0; i < body.length(); i++) {
+            char c = body.charAt(i);
+            if (c == '\\' && i + 1 < body.length() && body.charAt(i + 1) == '|') {
+                cur.append('|');
+                i++;
+            } else if (c == '|') {
+                cells.add(cur.toString());
+                cur.setLength(0);
+            } else {
+                cur.append(c);
+            }
+        }
+        cells.add(cur.toString());
+        return cells.toArray(new String[0]);
     }
 
     private static String toCsvLine(String[] cells) {
