@@ -65,6 +65,9 @@ public class SkillRoutingMetadataAdminService {
     }
 
     private void assertOwner(String owner, String userId) {
+        if (!adminRoleService.canEditConfig(userId)) {
+            throw new IllegalStateException("ResourceAccessDenied");
+        }
         if (adminRoleService.isAdminUserId(userId)) {
             return;
         }

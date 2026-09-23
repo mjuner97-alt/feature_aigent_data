@@ -62,15 +62,39 @@ public final class DockerCliRunner {
     }
 
     public static CommandResult run(int timeoutSeconds, List<String> dockerArgs) throws IOException {
+        return runWithStdin(timeoutSeconds, null, dockerArgs);
+    }
+
+    /**
+     * Runs docker with the given bytes piped to the process stdin ({@code docker exec -i}).
+     * Used to write file content back into the container without putting it on the
+     * command line (Windows CreateProcess has an ~8KB argv limit).
+     */
+    public static CommandResult run(int timeoutSeconds, byte[] stdinData, String... dockerArgs) throws IOException {
+        return runWithStdin(timeoutSeconds, stdinData, Arrays.asList(dockerArgs));
+    }
+
+    private static CommandResult runWithStdin(int timeoutSeconds, byte[] stdinData, List<String> dockerArgs) throws IOException {
         Process p = start(dockerArgs);
-        p.getOutputStream().close();
-        ExecutorService executor = Executors.newFixedThreadPool(2, task -> {
+        ExecutorService executor = Executors.newFixedThreadPool(3, task -> {
             Thread thread = new Thread(task, "docker-cli-runner");
             thread.setDaemon(true);
             return thread;
         });
         Future<String> stdout = executor.submit(() -> readAll(p.getInputStream()));
         Future<String> stderr = executor.submit(() -> readAll(p.getErrorStream()));
+        // stdin 写入放独立线程, 防止 stdin/stdout 管道互相填满死锁; 写失败 (如管道早断) 不掩盖
+        // 真实的 exit code/stderr — 由进程退出码判定结果
+        executor.submit(() -> {
+            try (java.io.OutputStream out = p.getOutputStream()) {
+                if (stdinData != null) {
+                    out.write(stdinData);
+                }
+                out.flush();
+            } catch (IOException ignored) {
+            }
+            return true;
+        });
         executor.shutdown();
         boolean exited;
         try {

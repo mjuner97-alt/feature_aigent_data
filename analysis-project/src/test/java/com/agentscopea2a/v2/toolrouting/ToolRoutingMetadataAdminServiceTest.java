@@ -24,7 +24,7 @@ class ToolRoutingMetadataAdminServiceTest {
         entry.setCreatedBy("tester");
         when(scriptRegistryMapper.selectByScriptId("q2_metrics")).thenReturn(entry);
         ToolRoutingMetadataAdminService service = new ToolRoutingMetadataAdminService(
-                repository, null, null, scriptRegistryMapper, new com.agentscopea2a.v2.auth.service.AdminRoleService(""));
+                repository, null, null, scriptRegistryMapper, new com.agentscopea2a.v2.auth.service.AdminRoleService("", false));
 
         ToolRoutingMetadata saved = service.save("q2_metrics", new ToolRoutingMetadataInput(
                 ToolRoutingToolType.SCRIPT, "  按部门统计质量分  ", List.of(" QI卡口 "), List.of(" 质量分 ", "质量分"),
@@ -42,7 +42,7 @@ class ToolRoutingMetadataAdminServiceTest {
     void rejectsOutOfRangePriority() {
         ToolRoutingMetadataRepository repository = mock(ToolRoutingMetadataRepository.class);
         ToolRoutingMetadataAdminService service = new ToolRoutingMetadataAdminService(
-                repository, null, null, null, new com.agentscopea2a.v2.auth.service.AdminRoleService(""));
+                repository, null, null, null, new com.agentscopea2a.v2.auth.service.AdminRoleService("", false));
 
         assertThrows(IllegalArgumentException.class, () -> service.save("q2_metrics",
                 new ToolRoutingMetadataInput(ToolRoutingToolType.SQL, "x", List.of("QI卡口"), List.of("质量分"), List.of(), 1001, true),

@@ -9,6 +9,7 @@ const USER_DEPTS_KEY = 'skill-user-depts';
 const USER_GROUPS_KEY = 'skill-user-groups';
 const USER_PRODUCTS_KEY = 'skill-user-products';
 const USER_ADMIN_KEY = 'skill-user-admin';
+const ENV_PRODUCTION_KEY = 'skill-env-production';
 
 export interface AuthUser {
   userId: string;
@@ -18,6 +19,8 @@ export interface AuthUser {
   productLines: string[];
   /** 管理员（app.auth.admin-users 配置且密码校验通过） */
   admin?: boolean;
+  /** 生产环境（app.env.production=true，配置广场写权限收紧为仅管理员） */
+  productionMode?: boolean;
 }
 
 export function getLoggedInUserId(): string | null {
@@ -32,7 +35,8 @@ export function getLoggedInUser(): AuthUser | null {
   const statisticsGroups = parseJsonList(localStorage.getItem(USER_GROUPS_KEY));
   const productLines = parseJsonList(localStorage.getItem(USER_PRODUCTS_KEY));
   const admin = localStorage.getItem(USER_ADMIN_KEY) === '1';
-  return { userId, name, departments, statisticsGroups, productLines, admin };
+  const productionMode = localStorage.getItem(ENV_PRODUCTION_KEY) === '1';
+  return { userId, name, departments, statisticsGroups, productLines, admin, productionMode };
 }
 
 export function saveLoggedInUser(user: AuthUser): void {
@@ -43,10 +47,21 @@ export function saveLoggedInUser(user: AuthUser): void {
   localStorage.setItem(USER_PRODUCTS_KEY, JSON.stringify(user.productLines));
   if (user.admin) localStorage.setItem(USER_ADMIN_KEY, '1');
   else localStorage.removeItem(USER_ADMIN_KEY);
+  if (user.productionMode) localStorage.setItem(ENV_PRODUCTION_KEY, '1');
+  else localStorage.removeItem(ENV_PRODUCTION_KEY);
 }
 
 export function isAdmin(): boolean {
   return localStorage.getItem(USER_ADMIN_KEY) === '1';
+}
+
+export function isProductionMode(): boolean {
+  return localStorage.getItem(ENV_PRODUCTION_KEY) === '1';
+}
+
+/** 配置广场写权限：管理员始终可写；生产环境下非管理员只读 */
+export function canEditConfig(): boolean {
+  return isAdmin() || !isProductionMode();
 }
 
 export function logout(): void {
@@ -56,6 +71,7 @@ export function logout(): void {
   localStorage.removeItem(USER_GROUPS_KEY);
   localStorage.removeItem(USER_PRODUCTS_KEY);
   localStorage.removeItem(USER_ADMIN_KEY);
+  localStorage.removeItem(ENV_PRODUCTION_KEY);
 }
 
 export function isLoggedIn(): boolean {

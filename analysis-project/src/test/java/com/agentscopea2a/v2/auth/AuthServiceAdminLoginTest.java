@@ -21,7 +21,7 @@ import static org.mockito.Mockito.when;
 class AuthServiceAdminLoginTest {
 
     private final DeveloperPlPersonInfoMapper mapper = mock(DeveloperPlPersonInfoMapper.class);
-    private final AuthService service = new AuthService(mapper, new AdminRoleService("admin:secret1"));
+    private final AuthService service = new AuthService(mapper, new AdminRoleService("admin:secret1", false));
 
     @Test
     void adminLoginWithCorrectPasswordSkipsPersonInfoTable() {

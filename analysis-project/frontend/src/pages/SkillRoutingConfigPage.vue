@@ -6,7 +6,7 @@ import { routingOverlapSummary } from '../api/routingOverlap';
 import { useRouter } from 'vue-router';
 import type { ToolRoutingTag } from '../types/toolRouting';
 import type { SkillRoutingInput, SkillRoutingMetadata } from '../types/skillRouting';
-import { isAdmin } from '../utils/auth';
+import { canEditConfig, isAdmin } from '../utils/auth';
 
 type SkillTagType = 'DOMAIN' | 'TOPIC';
 
@@ -31,7 +31,8 @@ const tagType = ref<SkillTagType>('DOMAIN');
 const tagName = ref('');
 const tagDescription = ref('');
 const currentUserId = localStorage.getItem('skill-user-id') || 'demo-user';
-const canEdit = (row: SkillRoutingMetadata) => isAdmin() || (!!row.creator && row.creator === currentUserId);
+// 生产环境 (app.env.production=true) 下非管理员只读, 即使是本人创建的条目
+const canEdit = (row: SkillRoutingMetadata) => canEditConfig() && (!!row.creator && row.creator === currentUserId || isAdmin());
 
 const domainOptions = computed(() => [...new Set([...domainTags.value.map(tag => tag.tagName), ...form.value.domainTags])]);
 const topicOptions = computed(() => [...new Set([...topicTags.value.map(tag => tag.tagName), ...form.value.topicTags])]);

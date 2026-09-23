@@ -5,6 +5,7 @@ import cn.hutool.core.util.ObjectUtil;
 import com.agentscopea2a.dto.ChatRequest;
 import com.agentscopea2a.dto.QuestionAnswerDto;
 import com.agentscopea2a.dto.response.*;
+import com.agentscopea2a.v2.dimension.DimensionStateManager;
 import com.agentscopea2a.mapper.gaussCommon.MainAgentMapper;
 import com.agentscopea2a.v2.artifact.ArtifactContext;
 import com.agentscopea2a.v2.artifact.ArtifactStore;
@@ -109,6 +110,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     private final ToolResultRegistry toolResultRegistry;
     private final ChatRuntimeConfigService chatRuntimeConfigService;
     private final AiChatMonitor aiChatMonitor;
+    private final DimensionStateManager dimensionStateManager;
 
     @Autowired
     private MainAgentMapper mainAgentMapper;
@@ -138,7 +140,8 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                                  TraceBatchWriter traceBatchWriter,
                                  ToolResultRegistry toolResultRegistry,
                                  ChatRuntimeConfigService chatRuntimeConfigService,
-                                 AiChatMonitor aiChatMonitor) {
+                                 AiChatMonitor aiChatMonitor,
+                                 DimensionStateManager dimensionStateManager) {
         this.runner = runner;
         this.artifactStore = artifactStore;
         this.episodicMemory = episodicMemory;
@@ -147,6 +150,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         this.toolResultRegistry = toolResultRegistry;
         this.chatRuntimeConfigService = chatRuntimeConfigService;
         this.aiChatMonitor = aiChatMonitor;
+        this.dimensionStateManager = dimensionStateManager;
     }
 
     /**
@@ -392,6 +396,15 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             }
         }
 
+        // 反问确认轮：上一轮若在等用户选候选，本轮回复可能是「1/第二个/候选名」
+        String clarifiedQuestion = dimensionStateManager.consumeClarification(text);
+        if (clarifiedQuestion != null) {
+            req.setQuestion(clarifiedQuestion);
+            text = clarifiedQuestion;
+        }
+        // 本轮问题仍含同维度一对多歧义 → 登记 pending，后续短路反问（不启 agent）
+        String clarifyPrompt = dimensionStateManager.startClarificationIfAmbiguous(text);
+
         // 构造用户消息（纯文本内容块）
         Msg userMsg = Msg.builder().role(MsgRole.USER)
                 .content(TextBlock.builder().text(text).build())
@@ -460,6 +473,15 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             }
             cleanup.run();
         });
+
+        if (clarifyPrompt != null) {
+            log.info("Ambiguous alias in question for sessionId={}, short-circuiting with clarify prompt", conversationId);
+            strategy.sendText(streamCtx, TextPayload.chunk(clarifyPrompt, true));
+            // complete() 在 stream() 返回前调用时 Spring 不会派发 onCompletion → 显式 cleanup
+            emitter.complete();
+            cleanup.run();
+            return emitter;
+        }
 
         // 普通流程先使用 30 分钟档案；真实派单 analyze_data 后由 Hook 把同一个控制器
         // 升级到 60 分钟绝对截止时间。容器超时从一开始就按最长档案创建。

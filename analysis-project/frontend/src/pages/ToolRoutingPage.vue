@@ -3,7 +3,7 @@ import { computed, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { getToolRoutingStatus, listTags, listToolRouting, saveTag, saveToolRouting, scanToolRouting, setToolRoutingEnabled } from '../api/toolRouting';
 import { routingOverlapSummary } from '../api/routingOverlap';
-import { isAdmin } from '../utils/auth';
+import { canEditConfig, isAdmin } from '../utils/auth';
 import { useRouter } from 'vue-router';
 import type { TagType, ToolRoutingInput, ToolRoutingMetadata, ToolRoutingScanCandidate, ToolRoutingStatus, ToolRoutingTag } from '../types/toolRouting';
 
@@ -29,7 +29,8 @@ const tagType = ref<TagType>('METRIC');
 const tagName = ref('');
 const tagDescription = ref('');
 const currentUserId = localStorage.getItem('skill-user-id') || 'demo-user';
-const canEdit = (row: ToolRoutingScanCandidate) => isAdmin() || (!!row.ownerUserId && row.ownerUserId === currentUserId);
+// 生产环境 (app.env.production=true) 下非管理员只读, 即使是本人创建的条目
+const canEdit = (row: ToolRoutingScanCandidate) => canEditConfig() && (!!row.ownerUserId && row.ownerUserId === currentUserId || isAdmin());
 
 function emptyInput(): ToolRoutingInput { return { toolType: 'SQL', description: '', topicTags: [], metricTags: [], dimensionTags: [], priority: 0, enabled: false }; }
 const filteredRows = computed(() => rows.value.filter(row => {
