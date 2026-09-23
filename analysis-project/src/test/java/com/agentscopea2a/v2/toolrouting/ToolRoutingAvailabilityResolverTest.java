@@ -24,7 +24,7 @@ class ToolRoutingAvailabilityResolverTest {
         ScriptRegistryMapper scriptMapper = mock(ScriptRegistryMapper.class);
         ApiToolMetadataProvider apiProvider = mock(ApiToolMetadataProvider.class);
         Path workspace = Files.createTempDirectory("tool-routing-workspace");
-        ScriptSourceService sourceService = new ScriptSourceService(workspace.toString());
+        ScriptSourceService sourceService = new ScriptSourceService(workspace.toString(), null, "/workspace");
         ScriptRegistryEntry entry = ScriptRegistryEntry.builder()
                 .scriptId("quality_script").scriptPath("owner/quality_script.py").enabled(1).build();
         when(scriptMapper.selectByScriptId("quality_script")).thenReturn(entry);
