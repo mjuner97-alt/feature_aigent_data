@@ -4,8 +4,11 @@ import com.agentscopea2a.v2.skillManager.entity.FlowNodeExecutionStatus;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowNodeExecution;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
+import java.time.Clock;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -20,6 +23,7 @@ import java.util.regex.Pattern;
  * <p>关键规则(见 docs/superpowers/specs/2026-09-20-long-task-report-outline-design.md):</p>
  * <ul>
  *   <li>标题编号按树路径计算,各层级样式 chinese/arabic/none 可分别设置,缺省一级中文、二三级阿拉伯;</li>
+ *   <li>报告主标题(大纲 title)渲染为居中 h1,尾部拼接生成日期(应用时钟当日,如 "报告 (2026年9月23日)");</li>
  *   <li>章节按 nodeKeys 顺序渲染绑定节点的结果(同一章节可挂多个节点,兼容旧单 nodeKey);</li>
  *   <li>结果开头第一个标题(Markdown/HTML)与叶子标题相同(剥编号、去空白、忽略大小写)时移除该标题;</li>
  *   <li>结果内部标题整体降为正文小节层级(最小层级映射到 h5,相对层级保留,封顶 h6),不覆盖大纲层级;</li>
@@ -57,10 +61,15 @@ public class ReportOutlineComposer {
         }
     }
 
-    private final ObjectMapper json;
+    /** 报告标题尾部拼接的生成日期格式:2026年9月23日。 */
+    private static final DateTimeFormatter TITLE_DATE = DateTimeFormatter.ofPattern("yyyy年M月d日");
 
-    public ReportOutlineComposer(ObjectMapper json) {
+    private final ObjectMapper json;
+    private final Clock clock;
+
+    public ReportOutlineComposer(ObjectMapper json, @Qualifier("skillFlowClock") Clock clock) {
         this.json = json;
+        this.clock = clock;
     }
 
     /**
@@ -83,8 +92,11 @@ public class ReportOutlineComposer {
         }
         StringBuilder report = new StringBuilder();
         if (outline.title() != null && !outline.title().isBlank()) {
+            // 标题尾部拼接报告生成日期,如 "XX报告 (2026年9月23日)"
+            String datedTitle = outline.title().trim() + " ("
+                    + TITLE_DATE.format(java.time.LocalDate.now(clock)) + ")";
             report.append("<h1 class=\"report-outline-title\" data-report-outline-heading=\"true\">")
-                    .append(escapeHtml(outline.title().trim()))
+                    .append(escapeHtml(datedTitle))
                     .append("</h1>\n\n");
         }
         Numbering numbering = outline.numbering() == null ? new Numbering(null, null, null) : outline.numbering();

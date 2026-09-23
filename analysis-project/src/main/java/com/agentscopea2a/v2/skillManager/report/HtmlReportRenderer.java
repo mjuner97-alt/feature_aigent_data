@@ -778,8 +778,11 @@ public class HtmlReportRenderer {
             String tag = m.group(2).toLowerCase();
             String attrs = m.group(3);
             if (SAFE_HTML_TAGS.contains(tag)) {
-                // 属性内 &amp; 还原为 & 保持可读；标签本体还原为真实尖括号交浏览器渲染
-                String replacement = "<" + slash + tag + attrs.replace("&amp;", "&") + ">";
+                // 属性内实体按 escapeHtml 的逆序还原：先 &quot;(属性引号) 再 &amp;，
+                // 否则还原出的标签形如 <h1 class=&quot;x&quot;>，属性值带引号字符，
+                // CSS 选择器/属性选择器匹配不上（大纲标题居中失效即此因）。
+                String replacement = "<" + slash + tag
+                        + attrs.replace("&quot;", "\"").replace("&amp;", "&") + ">";
                 m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
             } else {
                 m.appendReplacement(sb, Matcher.quoteReplacement(m.group(0)));
