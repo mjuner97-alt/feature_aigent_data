@@ -83,7 +83,7 @@ public class ReportOutlineComposer {
         }
         StringBuilder report = new StringBuilder();
         if (outline.title() != null && !outline.title().isBlank()) {
-            report.append("<h1 align=\"center\">")
+            report.append("<h1 class=\"report-outline-title\" data-report-outline-heading=\"true\">")
                     .append(escapeHtml(outline.title().trim()))
                     .append("</h1>\n\n");
         }
@@ -102,8 +102,10 @@ public class ReportOutlineComposer {
             while (counters.size() < level) counters.add(0);
             counters.set(level - 1, counters.get(level - 1) + 1);
             while (counters.size() > level) counters.remove(counters.size() - 1);
-            report.append(headingPrefix(level)).append(renderNumbering(level, counters, numbering))
-                    .append(Objects.toString(item.title(), "").trim()).append('\n');
+            report.append("<h").append(level + 1).append(" data-report-outline-heading=\"true\">")
+                    .append(escapeHtml(renderNumbering(level, counters, numbering)
+                            + Objects.toString(item.title(), "").trim()))
+                    .append("</h").append(level + 1).append(">\n");
             // 章节下绑定的全部节点按序各渲染一段正文(兼容旧单 nodeKey 字段),有子级再继续递归
             for (String key : item.nodeKeys()) {
                 if (!key.isEmpty()) {

@@ -10,7 +10,7 @@ import java.util.Set;
 
 /**
  * 报告大纲结构校验器(纯函数):创建/更新/启用流程时由 {@link FlowDefinitionService} 复用。
- * 规则:最多三级且不能跳级(层级标志必须与树位置一致)、id/title 非空且唯一、
+ * 规则:层级不能跳级(层级标志必须与树位置一致)、id/title 非空且唯一、
  * 章节可绑定多个节点(nodeKeys,兼容旧 nodeKey 字段)且每个节点最多绑定一次、
  * 启用大纲时全部节点必须绑定到某个章节、条目总数受限。
  */
@@ -41,7 +41,7 @@ final class ReportOutlineValidator {
         return errors;
     }
 
-    /** depth 为父项层级(根为 0):子项层级必须恰好 depth+1,同时挡住超三级与跳级。 */
+    /** depth 为父项层级(根为 0):子项层级必须恰好 depth+1,不限制嵌套深度。 */
     private static void walk(List<ReportOutlineItem> items, int depth, Set<String> nodeKeys,
                              Set<String> ids, Set<String> titles, Set<String> boundKeys,
                              int[] count, List<String> errors) {
@@ -50,13 +50,9 @@ final class ReportOutlineValidator {
             int level = depth + 1;
             String id = item.id() == null ? "" : item.id().trim();
             String title = item.title() == null ? "" : item.title().trim();
-            if (level > 3) {
-                errors.add("报告大纲最多三级,条目「" + title + "」层级非法");
-            } else {
-                validateItem(item, id, title, level, nodeKeys, ids, titles, boundKeys, errors);
-                if (!item.children().isEmpty()) {
-                    walk(item.children(), level, nodeKeys, ids, titles, boundKeys, count, errors);
-                }
+            validateItem(item, id, title, level, nodeKeys, ids, titles, boundKeys, errors);
+            if (!item.children().isEmpty()) {
+                walk(item.children(), level, nodeKeys, ids, titles, boundKeys, count, errors);
             }
         }
     }

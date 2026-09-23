@@ -227,12 +227,13 @@ public class FlowExecutionService {
         boolean firstRunnableNode = true;
         for (SkillFlowNode node : nodes) {
             // Python 脚本节点不绑 Skill:名称取脚本注册表,skillId 留空
-            boolean scriptNode = node.getScriptId() != null && !node.getScriptId().isBlank();
+            String normalizedScriptId = node.getScriptId() == null ? null : node.getScriptId().trim();
+            boolean scriptNode = normalizedScriptId != null && !normalizedScriptId.isBlank();
             String skillName;
             String retrievalName;
             if (scriptNode) {
-                ScriptRegistryEntry script = scriptRegistryMapper.selectByScriptId(node.getScriptId());
-                skillName = script == null ? node.getScriptId() : script.getName();
+                ScriptRegistryEntry script = scriptRegistryMapper.selectByScriptId(normalizedScriptId);
+                skillName = script == null ? normalizedScriptId : script.getName();
                 retrievalName = skillName;
             } else {
                 Skill skill = skillMapper.selectById(node.getSkillId());
@@ -247,7 +248,7 @@ public class FlowExecutionService {
             mapper.insertNodeExecution(SkillFlowNodeExecution.builder().flowExecutionId(execution.getId())
                     .nodeKey(node.getNodeKey()).nodeName(FlowDefinitionService.resolveNodeDisplayName(node.getNodeName(), skillName))
                     .skillId(scriptNode ? null : node.getSkillId()).skillName(skillName).skillRetrievalName(retrievalName)
-                    .scriptId(scriptNode ? node.getScriptId() : null)
+                    .scriptId(scriptNode ? normalizedScriptId : null)
                     .scriptParamsJson(scriptNode ? node.getScriptParamsJson() : null)
                     // Python 节点问题模板选填;列 NOT NULL,空值落空串
                     .questionTemplateSnapshot(Objects.toString(node.getQuestionTemplate(), ""))

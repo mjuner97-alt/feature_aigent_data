@@ -128,17 +128,24 @@ public class HtmlReportRenderer {
             "<\\s*(?:div|section|article|main|table|svg|h[1-6])\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern WHOLE_MARKDOWN_FENCE = Pattern.compile(
             "^\\s*```[^\\r\\n]*\\R([\\s\\S]*?)\\R?```\\s*$", Pattern.CASE_INSENSITIVE);
+    /** AI 偶发输出缺失左尖括号的文档壳残片（例如 body> / <html>），不得作为正文显示。 */
+    private static final Pattern DOCUMENT_SHELL_FRAGMENT = Pattern.compile(
+            "(?im)(?<![a-z0-9])/?(?:html|head|body)\\s*>|<\\s*/?\\s*(?:html|head|body)\\s*>");
 
     /** 内联 CSS：复用前端 Markdown.vue LIGHT 主题，表格斑马纹/边框/表头底色。 */
     private static final String CSS = """
             *{box-sizing:border-box}
+            html,body{max-width:100%;overflow-x:hidden}
             /* 报告正文使用更宽的画布，减少大屏左右空白；同时保留最小内边距。 */
             body{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:15px;line-height:1.7;color:#1e293b;background:#fff;margin:0;padding:28px clamp(18px,3vw,48px)}
-            .report{width:100%;max-width:1600px;margin:0 auto}
+            .report-toc{position:fixed;left:0;top:0;bottom:0;z-index:20;width:248px;padding:18px 12px;background:#fff;border-right:1px solid #e2e8f0;box-shadow:2px 0 12px rgba(15,23,42,.06);overflow:auto;transform:translateX(0);transition:transform .2s ease,width .2s,padding .2s;min-width:180px;max-width:460px}.report-toc-resizer{position:absolute;right:-5px;top:0;width:10px;height:100%;cursor:col-resize}
+            .report-toc.collapsed{transform:translateX(-100%);width:248px;padding:18px 12px;overflow:auto}.report-toc-open{position:fixed;left:12px;top:12px;z-index:21;width:32px;height:32px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#334155;cursor:pointer;box-shadow:0 2px 8px rgba(15,23,42,.15)}.report-toc-toggle{width:28px;height:28px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#334155;cursor:pointer}.report-toc-title{margin:12px 4px 8px;font-weight:700;color:#0f172a}.report-toc-list{display:flex;flex-direction:column;gap:3px}.report-toc a{display:block;padding:5px 7px;color:#475569;border-radius:5px;font-size:13px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.report-toc a:hover{background:#eff6ff;color:#2563eb;text-decoration:none}.report-toc a[data-level="3"]{padding-left:18px;font-size:12px}.report-toc a[data-level="4"],.report-toc a[data-level="5"],.report-toc a[data-level="6"]{padding-left:28px;font-size:12px}.report-toc.collapsed .report-toc-title,.report-toc.collapsed .report-toc-list{display:none}.report{width:100%;min-width:0;max-width:none;margin:0;overflow-x:hidden}
             h1,h2,h3,h4,h5,h6{color:#0f172a;margin:16px 0 8px;line-height:1.3}
-            h1{font-size:1.6rem;border-bottom:1px solid #e2e8f0;padding-bottom:6px}
-            .report>h1{text-align:center}
-            h2{font-size:1.35rem;border-bottom:1px solid #e2e8f0;padding-bottom:4px}
+            h1{font-size:1.6rem;padding-bottom:6px}
+              .report .report-outline-title,
+              .report .html-content-shell .report-outline-title,
+              .report .html-content-shell>h1:first-of-type{display:block;width:100%;margin:16px 0 24px;text-align:center !important;border:0 !important;padding-bottom:6px}
+            h2{font-size:1.35rem;padding-bottom:4px}
             h3{font-size:1.18rem}
             h4{font-size:1.05rem}
             h5{font-size:0.95rem}
@@ -157,14 +164,14 @@ public class HtmlReportRenderer {
                outline 兜底 border-collapse:collapse 下 sticky 表头随滚动丢失的边框线；
                默认 overflow-x:auto 供宽表横向滚动（无 JS 场景的兜底），
                overflow 滚动容器会困住 sticky，由 TABLE_STICKY_JS 按表格实际宽度动态解除。 */
-            .table-scroll{overflow-x:auto}
+            .table-scroll{display:block;max-width:100%;min-width:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-ms-overflow-style:none}.table-scroll::-webkit-scrollbar{display:none;width:0;height:0}
             .table-scroll th{position:sticky;top:0;z-index:1;outline:1px solid #e2e8f0;outline-offset:-1px}
             tbody tr:nth-child(even){background:#f8fafc}
             ul,ol{margin:6px 0;padding-left:22px}
             li{margin:2px 0}
             a{color:#6366f1;text-decoration:none}
             a:hover{text-decoration:underline}
-            .echarts-shell{position:relative;width:100%;margin:12px 0;background:#fff}
+            .echarts-shell{position:relative;width:100%;margin:20px 0;background:#fff}
             .echarts-chart{width:100%;height:460px}
             .echarts-fullscreen{position:absolute;z-index:2;top:8px;right:8px;width:32px;height:32px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;color:#334155;cursor:pointer;font-size:18px;line-height:28px}
             .echarts-fullscreen:hover{background:#f8fafc;color:#0f172a}
@@ -172,7 +179,7 @@ public class HtmlReportRenderer {
             .echarts-shell:fullscreen .echarts-chart{height:calc(100vh - 64px)}
             .report-frame-shell{margin:12px 0}
             .report-frame{width:100%;height:600px;border:1px solid #e2e8f0;border-radius:6px;display:block;background:#fff}
-            .html-content-shell{position:relative;margin:12px 0;padding:36px 12px 12px;border:1px solid #e2e8f0;border-radius:6px;background:#fff}
+            .html-content-shell{position:relative;margin:20px 0;padding:36px 0 12px;background:#fff}
             .html-content-shell:fullscreen{width:100%;height:100%;overflow:auto;padding:48px 28px 28px;background:#fff}
             .html-fullscreen{position:absolute;z-index:2;top:8px;right:8px;width:32px;height:32px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;color:#334155;cursor:pointer;font-size:18px;line-height:28px}
             .html-fullscreen:hover{background:#f8fafc;color:#0f172a}
@@ -486,7 +493,7 @@ public class HtmlReportRenderer {
                 .append("<button class=\"html-fullscreen\" type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-html-fullscreen=\"html-content-0\">&#x26F6;</button>")
                 .append(renderedBody).append("</div>\n");
 
-        return assembleHtml(safeTitle, body.toString(), charts, extraStyles.toString());
+        return assembleHtml(safeTitle, body.toString(), charts, extraStyles.toString(), false);
     }
 
     /** 抽取 {@code <body...>...</body>} 之间的内嵌 HTML；无 {@code <body>} 时返回原文。 */
@@ -554,6 +561,11 @@ public class HtmlReportRenderer {
     // ── 组装完整 HTML 文档 ────────────────────────────────────────────────────
 
     private String assembleHtml(String title, String body, List<ChartBlock> charts, String extraStyles) {
+        return assembleHtml(title, body, charts, extraStyles, true);
+    }
+
+    private String assembleHtml(String title, String body, List<ChartBlock> charts, String extraStyles,
+                                boolean includeToc) {
         StringBuilder sb = new StringBuilder(1024 + body.length());
         sb.append("<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">");
         sb.append("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
@@ -562,9 +574,14 @@ public class HtmlReportRenderer {
         if (extraStyles != null && !extraStyles.isEmpty()) {
             sb.append(extraStyles);  // AI 完整 HTML 中的 <style> 块，保留原样式
         }
-        sb.append("</head><body><div class=\"report\">");
+        sb.append("</head><body>");
+        if (includeToc) {
+            sb.append("<button class=\"report-toc-open\" type=\"button\" aria-label=\"展开目录\" hidden>›</button><aside class=\"report-toc\" aria-label=\"报告目录\"><button class=\"report-toc-toggle\" type=\"button\" aria-label=\"收起目录\">‹</button><div class=\"report-toc-title\">报告目录</div><nav class=\"report-toc-list\"></nav><div class=\"report-toc-resizer\"></div></aside>");
+        }
+        sb.append("<div class=\"report\">");
         sb.append(body);
         sb.append("</div>");
+        if (includeToc) sb.append("<script>(function(){var toc=document.querySelector('.report-toc'),list=toc&&toc.querySelector('.report-toc-list'),button=toc&&toc.querySelector('.report-toc-toggle'),openButton=document.querySelector('.report-toc-open'),resizer=toc&&toc.querySelector('.report-toc-resizer');if(!toc||!button||!openButton)return;function syncLayout(){var collapsed=toc.classList.contains('collapsed');document.body.classList.toggle('report-toc-collapsed',collapsed);openButton.hidden=!collapsed;}var heads=document.querySelectorAll('[data-report-outline-heading]');for(var i=0;i<heads.length;i++){var h=heads[i],id='report-section-'+i;h.id=id;if(list){var a=document.createElement('a');a.href='#'+id;a.dataset.level=h.tagName.substring(1);a.textContent=h.textContent||('章节 '+(i+1));a.addEventListener('click',function(e){e.preventDefault();var target=document.getElementById(this.getAttribute('href').substring(1));if(target)target.scrollIntoView({behavior:'smooth',block:'start'});});list.appendChild(a);}}function collapse(){toc.classList.add('collapsed');button.textContent='›';button.setAttribute('aria-label','展开目录');syncLayout();}function expand(){toc.classList.remove('collapsed');button.textContent='‹';button.setAttribute('aria-label','收起目录');syncLayout();}button.addEventListener('click',collapse);openButton.addEventListener('click',expand);if(resizer){resizer.onpointerdown=function(e){e.preventDefault();resizer.setPointerCapture(e.pointerId);resizer.onpointermove=function(ev){toc.style.width=Math.max(180,Math.min(460,ev.clientX))+'px';};resizer.onpointerup=function(){resizer.onpointermove=null;};};}syncLayout();})();</script>");
         // 表头 sticky 自适应脚本：不依赖图表，始终内联
         sb.append("<script>").append(TABLE_STICKY_JS).append("</script>");
         sb.append("<script>(function(){var buttons=document.querySelectorAll('[data-html-fullscreen]');for(var i=0;i<buttons.length;i++){buttons[i].addEventListener('click',function(){var shell=document.getElementById(this.getAttribute('data-html-fullscreen'));if(document.fullscreenElement===shell){document.exitFullscreen();}else if(shell&&shell.requestFullscreen){shell.requestFullscreen();}});}})();</script>");
@@ -607,6 +624,8 @@ public class HtmlReportRenderer {
 
     private String markdownToHtml(String md) {
         if (md == null || md.isEmpty()) return "";
+        // 普通 Markdown 片段中清理不完整的 HTML 文档壳，避免浏览器修复 DOM 后残片可见。
+        md = DOCUMENT_SHELL_FRAGMENT.matcher(md).replaceAll("");
         StringBuilder out = new StringBuilder();
         Matcher htmlBlocks = HTML_CODE_BLOCK.matcher(md);
         int htmlLast = 0;

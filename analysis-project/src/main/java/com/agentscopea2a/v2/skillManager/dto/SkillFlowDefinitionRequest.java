@@ -55,10 +55,10 @@ public record SkillFlowDefinitionRequest(
      * 报告大纲编号配置:各层级取值 chinese(中文序号)/arabic(阿拉伯数字)/none(关闭),
      * null 用缺省(一级 chinese、二三级 arabic)。
      */
-    public record Numbering(String level1, String level2, String level3) {}
+    public record Numbering(String level1, String level2, String level3, String level4) {}
 
     /**
-     * 大纲项:id 唯一、title 非空、level 1~3 且与树位置一致(不能跳级);
+     * 大纲项:id 唯一、title 非空、level 与树位置一致(不能跳级);
      * nodeKeys 为该章节绑定的执行节点列表(按序渲染各自结果,同一章节可挂多个节点)。
      * 兼容旧数据:nodeKeys 为空时回退单个 nodeKey。
      */

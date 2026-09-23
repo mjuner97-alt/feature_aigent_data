@@ -1,10 +1,11 @@
 <script setup lang="ts">
+import { ref, watch } from 'vue';
 import type { SkillFlowNode } from '../types/skillFlow';
 import type { ParamSchemaItem, ScriptRegistryListItem } from '../types/scriptRegistry';
 import type { SkillDependencyMetric } from '../types/skillJob';
 
 /** 流程节点配置卡片:Python 执行节点区和报告输出大纲行内嵌两处复用;排序相关控件仅在 sortable 时显示。 */
-withDefaults(defineProps<{
+const props = withDefaults(defineProps<{
   node: SkillFlowNode;
   /** 工具栏标题(节点区带序号,大纲内嵌为节点名)。 */
   title: string;
@@ -42,48 +43,41 @@ const emit = defineEmits<{
   (e: 'drag-over'): void;
   (e: 'drag-end'): void;
   (e: 'script-change'): void;
+  (e: 'script-params-change', value: { value: Record<string, unknown> | null; error: string }): void;
   (e: 'search-scripts', query: string): void;
   (e: 'search-metrics', query: string): void;
   (e: 'set-metric', value: number | null): void;
 }>();
 
-/** 参数值转输入框展示文本:数组逗号拼接,其余转字符串 */
-function paramDisplayValue(node: SkillFlowNode, item: ParamSchemaItem): string {
-  const value = (node.scriptParams || {})[item.name];
-  if (value == null) return '';
-  if (Array.isArray(value)) return value.join(', ');
-  return String(value);
+const scriptParamsText = ref('{}');
+const scriptParamsError = ref('');
+function formatScriptParams(value: Record<string, unknown> | undefined): string {
+  try { return JSON.stringify(value || {}, null, 2); } catch { return '{}'; }
 }
-
-/** 输入框文本转参数值:按 params_schema 类型转换;空值从参数里剔除 */
-function setParam(node: SkillFlowNode, item: ParamSchemaItem, raw: string) {
-  if (!node.scriptParams) node.scriptParams = {};
-  const text = raw.trim();
-  if (item.type === 'boolean') { node.scriptParams[item.name] = text === 'true'; return; }
-  if (!text) { delete node.scriptParams[item.name]; return; }
-  switch (item.type) {
-    case 'int':
-      node.scriptParams[item.name] = Number(text);
-      break;
-    case 'int[]':
-      node.scriptParams[item.name] = text.split(/[,，]/).map(s => Number(s.trim())).filter(n => !Number.isNaN(n));
-      break;
-    case 'string[]':
-    case 'date[]':
-      node.scriptParams[item.name] = text.split(/[,，]/).map(s => s.trim()).filter(Boolean);
-      break;
-    default:
-      node.scriptParams[item.name] = text;
+function parseScriptParams(raw: string): Record<string, unknown> | null {
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error('根值必须是 JSON 对象');
+    return value as Record<string, unknown>;
+  } catch (e) {
+    scriptParamsError.value = e instanceof Error ? e.message : 'JSON 格式不正确';
+    return null;
   }
 }
-
-function paramInputType(type: string): string {
-  return type === 'int' ? 'number' : 'text';
+function onScriptParamsInput(raw: string) {
+  scriptParamsText.value = raw;
+  const value = parseScriptParams(raw);
+  if (value) { scriptParamsError.value = ''; emit('script-params-change', { value, error: '' }); }
+  else emit('script-params-change', { value: null, error: scriptParamsError.value });
 }
-
-function paramPlaceholder(type: string): string {
-  return type.endsWith('[]') ? '多个值用逗号分隔' : '';
-}
+watch(() => props.node.scriptParams, value => {
+  const formatted = formatScriptParams(value);
+  if (formatted !== scriptParamsText.value) scriptParamsText.value = formatted;
+}, { deep: true, immediate: true });
+watch(() => props.node.scriptId, () => {
+  scriptParamsError.value = '';
+  scriptParamsText.value = formatScriptParams(props.node.scriptParams);
+});
 
 function selectedScript(node: SkillFlowNode, scripts: ScriptRegistryListItem[]): ScriptRegistryListItem | undefined {
   return scripts.find(script => script.scriptId === node.scriptId);
@@ -111,18 +105,9 @@ function selectedScript(node: SkillFlowNode, scripts: ScriptRegistryListItem[]):
       <div v-if="node.nodeType !== 'SKILL'" class="node-params">
         <div class="node-params-title">脚本参数</div>
         <div v-if="!node.scriptId" class="param-empty">请先选择 Python 脚本</div>
-        <div v-else-if="schema?.length" class="param-list">
-          <div v-for="item in schema" :key="item.name" class="param-row">
-            <label class="param-name">{{ item.name }}<em v-if="item.required"> *</em><code class="param-type">{{ item.type }}</code></label>
-            <div class="param-input">
-              <label v-if="item.type === 'boolean'" class="param-check"><input type="checkbox" :checked="node.scriptParams?.[item.name] === true" @change="setParam(node, item, ($event.target as HTMLInputElement)?.checked ? 'true' : '')" /><span>启用</span></label>
-              <input v-else :type="paramInputType(item.type)" :value="paramDisplayValue(node, item)" :placeholder="paramPlaceholder(item.type)" @input="setParam(node, item, ($event.target as HTMLInputElement).value)" />
-            </div>
-            <small v-if="item.description" class="param-desc">{{ item.description }}</small>
-          </div>
-        </div>
-        <div v-else-if="schema" class="param-empty">该脚本无需参数</div>
-        <div v-else class="param-empty">参数定义加载中…（若一直不出现，请重新选择脚本）</div>
+        <textarea class="params-json-input" :value="scriptParamsText" rows="8" spellcheck="false" placeholder="例如：{&#10;  &quot;regions&quot;: [&quot;华东&quot;, &quot;华南&quot;]&#10;}" @input="onScriptParamsInput(($event.target as HTMLTextAreaElement).value)" />
+        <small class="param-hint">数组、嵌套对象等值请直接按 JSON 填写；参数名和类型仍由脚本定义校验。</small>
+        <small v-if="scriptParamsError" class="param-error">JSON 参数无效：{{ scriptParamsError }}</small>
       </div>
       <label v-if="node.nodeType === 'SKILL'"><span>本流程问题 *</span><textarea v-model="node.questionTemplate" rows="3" placeholder="填写该 Skill 在本流程中要执行的问题" /></label>
       <label><span>依赖指标</span><el-select :model-value="node.metricIds[0] ?? null" filterable remote reserve-keyword :remote-method="(query: string) => emit('search-metrics', query)" :loading="metricLoading" placeholder="无需依赖指标" clearable style="width: 100%" @change="(value: number | null) => emit('set-metric', value)"><el-option v-for="metric in metrics" :key="metric.id" :value="metric.id" :label="`${metric.name} (${metric.code})`" /></el-select></label>
@@ -152,6 +137,9 @@ label { display: grid; gap: 5px; } label > span { color: #475569; font-size: 13p
 .param-check { display: flex !important; align-items: center; gap: 7px !important; grid-template-columns: none !important; color: #475569; font-size: 13px; }.param-check input { width: auto; }
 .param-desc { grid-column: 2; color: #94a3b8; font-size: 12px; }
 .param-empty { color: #94a3b8; font-size: 12px; }
+.params-json-input { min-height: 150px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; line-height: 1.5; }
+.param-hint { color: #64748b; font-size: 12px; line-height: 1.4; }
+.param-error { color: #dc2626; font-size: 12px; line-height: 1.4; }
 .btn, .icon-button { border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #475569; cursor: pointer; font-size: 13px; }.btn { padding: 7px 14px; }.node-toolbar .btn { border-color: #3b82f6; background: #3b82f6; color: #fff; }.node-toolbar .btn:hover:not(:disabled) { background: #2563eb; border-color: #2563eb; }.btn:disabled, .icon-button:disabled { cursor: not-allowed; opacity: .45; }.icon-button { width: 28px; height: 28px; padding: 0; font-size: 18px; line-height: 1; }.icon-button.danger { color: #dc2626; border-color: #fecaca; }
 @media (max-width: 760px) { .node-grid { grid-template-columns: 1fr; } }
 </style>

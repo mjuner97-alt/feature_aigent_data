@@ -20,6 +20,11 @@ const settingsId = computed(() => {
 });
 
 function back() {
+  // 从流程编辑页进入时返回上一页，保留编辑上下文；没有历史记录时再回列表。
+  if (window.history.length > 1) {
+    router.back();
+    return;
+  }
   router.push(props.type === 'flow' ? { path: '/skills/jobs', query: { tab: 'flows' } } : '/skills/jobs');
 }
 </script>

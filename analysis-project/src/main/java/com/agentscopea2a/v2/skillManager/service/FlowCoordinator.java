@@ -6,6 +6,7 @@ import com.agentscopea2a.v2.skillManager.config.SkillFlowProperties;
 import com.agentscopea2a.v2.skillManager.entity.*;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.tools.ToolResultRegistry;
+import com.agentscopea2a.v2.hooks.ScriptExecOutputExtractor;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.RuntimeContext;
@@ -730,7 +731,13 @@ public class FlowCoordinator {
      * 校验与执行复用 ScriptExecTool(同脚本调试运行链路);失败(exit!=0/拒绝执行)抛异常走重试分类。
      */
     private String runScriptDirect(SkillFlowNodeExecution node, Map<String, Object> params) {
-        String output = scriptExecTool.executeForDebug(node.getScriptId(), params);
+        String scriptId = node.getScriptId() == null ? "" : node.getScriptId().trim();
+        if (scriptId.isBlank()) {
+            throw new IllegalStateException("ScriptIdMissing");
+        }
+        log.info("skill-flow script execution: nodeId={} scriptId={} params={}",
+                node.getId(), scriptId, params == null ? Map.of() : params);
+        String output = scriptExecTool.executeForDebug(scriptId, params);
         String text = output == null ? "" : output;
         // 成败判定与 ScriptDebugService 一致:stdout 带 exit= 非 0,或出现拒绝执行/启动失败字样
         java.util.regex.Matcher exit = java.util.regex.Pattern.compile("\\bexit=(-?\\d+)").matcher(text);
@@ -740,7 +747,10 @@ public class FlowCoordinator {
         if (text.contains("拒绝执行") || text.contains("启动失败")) {
             throw new IllegalStateException("ScriptRejected: " + abbreviate(text));
         }
-        return text;
+        // Python 节点写入汇总报告时只保留 stdout 的有效中间内容，去掉
+        // ScriptExecTool 的 stdout/stderr 包络，避免把执行协议和错误尾部拼进报告。
+        String stdout = ScriptExecOutputExtractor.extractStdout(text);
+        return stdout.isBlank() ? text : stdout;
     }
 
     /** 错误信息截断:脚本输出可能很长,异常消息里只保留开头部分。 */

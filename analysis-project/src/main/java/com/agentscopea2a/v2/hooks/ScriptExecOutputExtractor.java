@@ -8,7 +8,7 @@ package com.agentscopea2a.v2.hooks;
  * renderable Markdown fenced blocks. The caller decides whether those blocks
  * are cached, replaced with references, or otherwise consumed.
  */
-final class ScriptExecOutputExtractor {
+public final class ScriptExecOutputExtractor {
 
     /** Markers emitted by ScriptExecTool.formatResult(). */
     private static final String STDOUT_MARKER = "─── stdout ";
@@ -37,7 +37,7 @@ final class ScriptExecOutputExtractor {
     private ScriptExecOutputExtractor() {
     }
 
-    static String extractStdout(String toolOutput) {
+    public static String extractStdout(String toolOutput) {
         if (toolOutput == null || toolOutput.isBlank()) {
             return "";
         }

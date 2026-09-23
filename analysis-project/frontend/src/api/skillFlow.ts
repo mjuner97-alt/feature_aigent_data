@@ -178,7 +178,22 @@ export async function getSkillFlowExecutionReportUrl(id: number): Promise<{ url:
   const utf8 = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
   const ascii = /filename="?([^";]+)"?/i.exec(disposition);
   const downloadName = utf8 ? decodeURIComponent(utf8[1]) : (ascii ? ascii[1] : undefined);
-  return { url: URL.createObjectURL(await res.blob()), downloadName };
+  const blob = await res.blob();
+  // 历史报告可能是在目录功能上线前生成的，打开时补注入一次目录，避免必须重新生成汇总。
+  let reportBlob = blob;
+  if (blob.type.includes('html') || downloadName?.endsWith('.html')) {
+    const html = await blob.text();
+    if (html.includes('report-toc')) {
+      const override = '<style>.report-toc{overflow-x:hidden!important;overflow-y:auto!important}.report-toc-resizer{right:-5px!important;width:10px!important}</style>';
+      reportBlob = new Blob([html.replace('</head>', override + '</head>')], { type: 'text/html' });
+    }
+    if (!html.includes('report-toc')) {
+      const style = '<style>.report-toc{position:fixed;left:0;top:0;bottom:0;z-index:20;width:248px;padding:18px 12px;background:#fff;border-right:1px solid #e2e8f0;overflow-y:auto;overflow-x:hidden;min-width:180px;max-width:460px}.report-toc-resizer{position:absolute;right:-5px;top:0;width:10px;height:100%;cursor:col-resize}.report-toc.collapsed{width:42px;padding:12px 7px;overflow:hidden}.report-toc-toggle{width:28px;height:28px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer}.report-toc-title{margin:12px 4px 8px;font-weight:700}.report-toc-list{display:flex;flex-direction:column;gap:3px}.report-toc a{display:block;padding:5px 7px;color:#475569;font-size:13px}.report-toc a[data-level="3"]{padding-left:18px}.report-toc a[data-level="4"],.report-toc a[data-level="5"],.report-toc a[data-level="6"]{padding-left:28px}.report-toc.collapsed .report-toc-title,.report-toc.collapsed .report-toc-list{display:none}.report-toc~.report{margin-left:270px}.report-toc.collapsed~.report{margin-left:54px}</style>';
+      const script = '<script>(function(){var t=document.createElement("aside");t.className="report-toc";t.innerHTML="<button class=report-toc-toggle>‹</button><div class=report-toc-title>报告目录</div><nav class=report-toc-list></nav><div class=report-toc-resizer></div>";document.body.insertBefore(t,document.body.firstChild);var l=t.querySelector(".report-toc-list"),h=document.querySelectorAll(".report h2,.report h3,.report h4,.report h5,.report h6");h.forEach(function(x,i){var id="report-section-"+i;x.id=id;var a=document.createElement("a");a.href="#"+id;a.dataset.level=x.tagName.substring(1);a.textContent=x.textContent;l.appendChild(a)});function sync(){var r=document.querySelector(".report");if(r)r.style.marginLeft=(t.classList.contains("collapsed")?54:t.offsetWidth+22)+"px"}t.querySelector("button").onclick=function(){t.classList.toggle("collapsed");this.textContent=t.classList.contains("collapsed")?"›":"‹";sync()};var drag=t.querySelector(".report-toc-resizer");drag.onpointerdown=function(e){e.preventDefault();drag.setPointerCapture(e.pointerId);function move(ev){t.style.width=Math.max(180,Math.min(460,ev.clientX))+"px";sync()}function up(){drag.onpointermove=null;drag.onpointerup=null}drag.onpointermove=move;drag.onpointerup=up};sync()})();</script>';
+      reportBlob = new Blob([html.replace('</head>', style + '</head>').replace('</body>', script + '</body>')], { type: 'text/html' });
+    }
+  }
+  return { url: URL.createObjectURL(reportBlob), downloadName };
 }
 export async function retrySkillFlowSummary(id: number): Promise<void> { const res = await fetch(`${EXECUTION_BASE}/${id}/summary/retry`, { method: 'POST', headers: authHeaders() }); if (!res.ok) throw await requestError(res, '重新生成汇总失败'); }
 export async function retrySkillFlowNode(executionId: number, nodeId: number): Promise<void> { const res = await fetch(`${EXECUTION_BASE}/${executionId}/nodes/${nodeId}/retry`, { method: 'POST', headers: authHeaders() }); if (!res.ok) throw await requestError(res, '重跑任务失败'); }

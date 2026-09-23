@@ -393,7 +393,7 @@ function metricTitle(job: SkillJob): string {
       <div v-else-if="centerExecutions.length === 0" class="empty"><p>暂无符合条件的执行记录</p></div>
       <div v-else class="job-table-wrap">
         <table class="job-table execution-table">
-          <thead><tr><th>任务名称</th><th>创建人</th><th>Skill</th><th>触发方式</th><th>执行状态</th><th>提交时间</th><th>执行 ID</th><th>操作</th></tr></thead>
+          <thead><tr><th>任务名称</th><th>创建人</th><th>Skill</th><th>触发方式</th><th>执行状态</th><th v-if="false">通知状态</th><th>提交时间</th><th>执行 ID</th><th>操作</th></tr></thead>
           <tbody>
             <tr v-for="exec in pagedCenterExecutions" :key="exec.id">
               <td><span class="col-name">{{ exec.jobName || `任务 #${exec.jobId}` }}</span></td>
@@ -404,6 +404,7 @@ function metricTitle(job: SkillJob): string {
                 <span class="status-badge" :class="executionStatusClass(exec.status)">{{ executionStatus(exec.status) }}</span>
                 <span v-if="exec.status === 'PENDING' && exec.queueAhead != null" class="queue-hint">{{ exec.queueAhead === 0 ? '即将执行' : `前面 ${exec.queueAhead} 个` }}</span>
               </td>
+              <td v-if="false"><span class="notify-badge" :class="notificationStatusClass(exec.latestNotificationStatus)">{{ notificationStatus(exec.latestNotificationStatus) }}</span></td>
               <td class="col-time">{{ fmtTime(exec.createdAt) }}</td>
               <td>#{{ exec.id }}</td>
               <td class="col-actions">
@@ -422,6 +423,7 @@ function metricTitle(job: SkillJob): string {
                     <el-icon><Download /></el-icon><span>{{ downloading.has(exec.id) ? '下载中…' : '下载' }}</span>
                   </button>
                 </template>
+                <button v-if="false" class="btn-action" :disabled="exec.createdBy !== me" :title="exec.createdBy === me ? '' : '仅任务创建人可查看通知'" @click="openNotifications(exec)">通知记录</button>
               </td>
             </tr>
           </tbody>
@@ -489,6 +491,7 @@ function metricTitle(job: SkillJob): string {
             <button class="btn-action" @click="openExecutions(job)">记录</button>
             <template v-if="isOwner(job)">
               <button class="btn-action" @click="openEdit(job.id)">编辑</button>
+              <button v-if="false" class="btn-action" title="配置完成通知的收件人名单" @click="openNotifySettings(job.id)">通知</button>
               <button class="btn-action toggle" @click="toggleEnabled(job)">{{ job.enabled ? '禁用' : '启用' }}</button>
               <button class="btn-action danger" @click="remove(job.id)">删除</button>
             </template>

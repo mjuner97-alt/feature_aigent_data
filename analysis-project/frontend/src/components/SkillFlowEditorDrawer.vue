@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { createSkillFlow, getSkillFlow, updateSkillFlow, validateSkillFlow } from '../api/skillFlow';
 import { getSkill, listSkills } from '../api/skill';
@@ -10,9 +11,11 @@ import type { SkillListItem } from '../types/skill';
 import type { SkillDependencyMetric } from '../types/skillJob';
 import type { SkillFlow, SkillFlowInput, SkillFlowNode } from '../types/skillFlow';
 import { buildOutline, defaultOutlineNumbering, flattenOutline, outlineNumberingPrefixes, validateOutlineRows, type OutlineRow } from '../utils/reportOutline';
+import { paramsFromSchema } from '../utils/scriptParams';
 import FlowNodeCard from './FlowNodeCard.vue';
 import ScheduleRulesEditor from './ScheduleRulesEditor.vue';
 
+const router = useRouter();
 const props = withDefaults(defineProps<{ open: boolean; editId: number | null; knownFlows: SkillFlow[]; page?: boolean }>(), { page: false });
 const emit = defineEmits<{ (e: 'update:open', open: boolean): void; (e: 'saved'): void }>();
 /** 编辑中的流程当前是否为公开状态(公开流程保存修改后会自动退出公开,需重新联系开发人员开通)。 */
@@ -32,7 +35,16 @@ const metricLoading = ref(false);
 let skillSearchSeq = 0;
 let metricSearchSeq = 0;
 const form = ref<SkillFlowInput>(emptyForm());
+const scriptParamErrors = ref<Record<string, string>>({});
 const outlineRows = ref<OutlineRow[]>([]);
+
+function openNotifySettings() {
+  if (!props.editId) {
+    ElMessage.warning('请先保存流程，再添加收件人');
+    return;
+  }
+  router.push(`/skills/jobs/flows/${props.editId}/notify`);
+}
 const reportTitle = ref('');
 /** 每行自动编号(与报告渲染同口径):一级 一、二、三;二级 1.1、1.2。 */
 const outlineNumbers = computed(() => outlineNumberingPrefixes(outlineRows.value, form.value.reportOutline?.numbering || defaultOutlineNumbering()));
@@ -75,6 +87,7 @@ const validationErrors = computed(() => {
     else uniqueKeys.add(key);
     if (node.nodeType === 'SKILL' || (!node.nodeType && node.skillId)) { if (!node.skillId) errors.push(`节点 ${key || index + 1} 未选择 Skill`); }
     else if (!node.scriptId?.trim()) errors.push(`节点 ${key || index + 1} 未选择 Python 脚本`);
+    if (scriptParamErrors.value[node.nodeKey]) errors.push(`节点 ${key || index + 1} 的脚本参数不是合法 JSON 对象`);
     if (node.metricIds.length > 1) errors.push(`节点 ${key || index + 1} 只能依赖一个指标`);
   });
   errors.push(...validateOutlineRows(outlineRows.value, form.value.nodes.map(node => node.nodeKey.trim())));
@@ -135,17 +148,22 @@ async function searchScripts(query = '') {
 /** 脚本参数定义缓存(键=注册表数字 id):选脚本后按 params_schema 渲染参数输入框,不再手写 JSON */
 const scriptSchemas = ref<Record<number, ParamSchemaItem[]>>({});
 
-async function ensureScriptSchema(scriptId: string | null | undefined) {
-  if (!scriptId) return;
+async function ensureScriptSchema(scriptId: string | null | undefined): Promise<ParamSchemaItem[]> {
+  if (!scriptId) return [];
   const row = scripts.value.find(item => item.scriptId === scriptId);
-  if (!row || scriptSchemas.value[row.id]) return;
+  if (!row) return [];
+  if (scriptSchemas.value[row.id]) return scriptSchemas.value[row.id];
   let items: ParamSchemaItem[] = [];
   try {
-    const detail = await getEntry(row.id);
-    const parsed = JSON.parse(detail.paramsSchema || '[]');
+    // Some deployments include paramsSchema in the list response; use it first
+    // so the editor still initializes when the detail endpoint is unavailable.
+    // Otherwise fetch the detail record, which is the authoritative source.
+    const rawSchema = row.paramsSchema?.trim() || (await getEntry(row.id)).paramsSchema || '[]';
+    const parsed = JSON.parse(rawSchema);
     if (Array.isArray(parsed)) items = parsed.filter((item: any) => item && typeof item.name === 'string');
   } catch { /* schema 解析失败按无参数处理,保存/试跑时由后端兜底校验 */ }
   scriptSchemas.value = { ...scriptSchemas.value, [row.id]: items };
+  return items;
 }
 
 function schemaFor(node: SkillFlowNode): ParamSchemaItem[] | null {
@@ -153,10 +171,20 @@ function schemaFor(node: SkillFlowNode): ParamSchemaItem[] | null {
   return row ? (scriptSchemas.value[row.id] ?? null) : null;
 }
 
-function onScriptSelected(node: SkillFlowNode) {
+async function onScriptSelected(node: SkillFlowNode) {
   node.scriptName = scripts.value.find(item => item.scriptId === node.scriptId)?.name;
   node.scriptParams = {};
-  ensureScriptSchema(node.scriptId);
+  delete scriptParamErrors.value[node.nodeKey];
+  const schema = await ensureScriptSchema(node.scriptId);
+  // Keep the JSON editor, but make the saved parameter names visible immediately.
+  // Values remain ordinary JSON so debug uses the same payload as before.
+  if (!Object.keys(node.scriptParams).length && schema.length) node.scriptParams = paramsFromSchema(schema);
+}
+
+function onScriptParamsChange(node: SkillFlowNode, payload: { value: Record<string, unknown> | null; error: string }) {
+  if (payload.value) node.scriptParams = payload.value;
+  if (payload.error) scriptParamErrors.value[node.nodeKey] = payload.error;
+  else delete scriptParamErrors.value[node.nodeKey];
 }
 
 async function ensureSelectedSkills(skillIds: number[]) {
@@ -329,12 +357,22 @@ function debugInProgress(): boolean {
 async function runNodeDebug(node: SkillFlowNode) {
   if (debugInProgress() || debugStarting.value) { ElMessage.warning('已有试跑在进行中，请先等待完成或停止'); return; }
   if (!node.scriptId?.trim()) { ElMessage.warning('请先选择 Python 脚本'); return; }
-  // debug 接口要注册表数字 id,从已加载的脚本选项里按 scriptId 找
-  const script = scripts.value.find(item => item.scriptId === node.scriptId);
-  if (!script) { ElMessage.warning('脚本信息未加载，请重新选择脚本后再试跑'); return; }
+  if (scriptParamErrors.value[node.nodeKey]) { ElMessage.warning('请先修正脚本参数 JSON'); return; }
+  // 与 Python 注册页保持同一口径：试跑前按 scriptId 重新读取注册表详情，
+  // 不依赖远程下拉列表缓存，确保使用注册表当前的数字 id、参数定义和超时。
+  const normalizedScriptId = node.scriptId.trim();
+  const listed = scripts.value.find(item => item.scriptId.trim() === normalizedScriptId);
+  if (!listed) { ElMessage.warning('脚本信息未加载，请重新选择脚本后再试跑'); return; }
   debugNodeKey.value = node.nodeKey;
   debugStarting.value = true;
   try {
+    const script = await getEntry(listed.id);
+    if (script.scriptId.trim() !== normalizedScriptId) {
+      throw new Error('脚本注册信息已变化，请重新选择脚本后再试跑');
+    }
+    if (script.enabled !== 1) {
+      throw new Error('脚本已停用，请先在 Python 注册页面启用');
+    }
     debugRun.value = await startDebug(script.id, node.scriptParams || {}, script.timeoutSeconds ?? 60);
     debugEvents?.close();
     debugEvents = subscribeDebug(debugRun.value.runId, {
@@ -423,7 +461,14 @@ function syncOutlineRows() {
 function addOutlineRow(after: OutlineRow | null, asChild = false) {
   const index = after ? outlineRows.value.indexOf(after) : outlineRows.value.length - 1;
   const level = after ? (asChild ? after.level + 1 : after.level) : 1;
-  outlineRows.value.splice(index + 1, 0, { id: `outline_${Date.now()}_${Math.random().toString(16).slice(2)}`, title: '新章节', level, nodeKeys: [] });
+  // 新章节必须拥有独立的绑定数组；插入章节时只改变章节行，不重建或移动已有节点绑定。
+  const newRow: OutlineRow = {
+    id: `outline_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    title: '新章节',
+    level,
+    nodeKeys: [],
+  };
+  outlineRows.value.splice(Math.max(0, index + 1), 0, newRow);
 }
 
 function removeOutlineRow(row: OutlineRow) {
@@ -440,6 +485,7 @@ async function load() {
   error.value = '';
   wasPublic.value = false;
   form.value = emptyForm();
+  scriptParamErrors.value = {};
   outlineRows.value = [];
   reportTitle.value = '';
   await loadOptions();
@@ -533,6 +579,10 @@ defineExpose({ isDirty });
               <div v-else class="public-hint">如需将流程设为公开（所有人的聊天都能触发该流程），请联系开发人员开通。</div>
               <div v-if="!form.triggers.length" class="subtle-empty">未配置关键词，聊天不会触发这个流程。</div>
               <div v-for="(trigger, index) in form.triggers" :key="index" class="trigger-row"><input v-model="trigger.keyword" placeholder="输入触发关键词" /><label class="toggle-row"><input v-model="trigger.enabled" type="checkbox" /><span>启用</span></label><button class="icon-button danger" title="删除关键词" @click="removeTrigger(index)">×</button></div>
+              <label v-if="false" class="toggle-row"><input v-model="form.notifyEnabled" type="checkbox" /><span>汇总完成后通知触发用户</span></label>
+              <div v-if="false" class="notify-config-row">
+                <button type="button" class="btn" @click="openNotifySettings">添加收件人</button>
+              </div>
             </section>
 
             <section class="form-section wide section-card">
@@ -548,7 +598,7 @@ defineExpose({ isDirty });
                   <button class="icon-button danger" title="删除本节及子级" @click="removeOutlineRow(row)">×</button>
                 </div>
                 <div class="outline-node-area" :style="{ marginLeft: `${Math.min(row.level, 8) * 22}px` }">
-                  <FlowNodeCard v-for="(node, nodeIndex) in nodesForRow(row)" :key="node.nodeKey" class="chapter-node-card" :node="node" :title="nodeTitle(node)" :schema="schemaFor(node)" :scripts="scripts" :metrics="metrics" :script-loading="scriptLoading" :metric-loading="metricLoading" :debug-disabled="!node.scriptId || debugStarting || debugInProgress()" :dragging="dragNodeKey === node.nodeKey" :sortable="true" :is-first="nodeIndex === 0" :is-last="nodeIndex === nodesForRow(row).length - 1" remove-title="删除节点" @move="moveChapterNode(row, node.nodeKey, $event)" @remove="removeChapterNode(row, node.nodeKey)" @debug="runNodeDebug(node)" @drag-start="chapterDragStart(node.nodeKey, $event)" @drag-over="chapterDragOver(row, node.nodeKey)" @drag-end="finishDrag" @script-change="onScriptSelected(node)" @search-scripts="searchScripts" @search-metrics="searchMetrics" @set-metric="setNodeMetric(node, $event)" />
+                  <FlowNodeCard v-for="(node, nodeIndex) in nodesForRow(row)" :key="node.nodeKey" class="chapter-node-card" :node="node" :title="nodeTitle(node)" :schema="schemaFor(node)" :scripts="scripts" :metrics="metrics" :script-loading="scriptLoading" :metric-loading="metricLoading" :debug-disabled="!node.scriptId || debugStarting || debugInProgress()" :dragging="dragNodeKey === node.nodeKey" :sortable="true" :is-first="nodeIndex === 0" :is-last="nodeIndex === nodesForRow(row).length - 1" remove-title="删除节点" @move="moveChapterNode(row, node.nodeKey, $event)" @remove="removeChapterNode(row, node.nodeKey)" @debug="runNodeDebug(node)" @drag-start="chapterDragStart(node.nodeKey, $event)" @drag-over="chapterDragOver(row, node.nodeKey)" @drag-end="finishDrag" @script-change="onScriptSelected(node)" @script-params-change="onScriptParamsChange(node, $event)" @search-scripts="searchScripts" @search-metrics="searchMetrics" @set-metric="setNodeMetric(node, $event)" />
                   <div class="chapter-node-actions">
                     <button class="btn" title="新建一个 Python 节点并放到该章节" @click="addOutlineNode(row)">＋ 添加节点</button>
                     <select v-if="unboundNodes.length" :value="''" @change="bindRowNode(row, ($event.target as HTMLSelectElement).value)"><option value="" disabled>绑定已有未绑定节点…</option><option v-for="node in unboundNodes" :key="node.nodeKey" :value="node.nodeKey">{{ nodeTitle(node) }}（{{ node.nodeKey }}）</option></select>
