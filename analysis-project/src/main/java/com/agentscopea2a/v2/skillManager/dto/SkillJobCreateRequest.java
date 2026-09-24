@@ -15,6 +15,8 @@
  */
 package com.agentscopea2a.v2.skillManager.dto;
 
+import java.util.List;
+
 /**
  * 创建 SkillJob 的请求体。
  * name/skillId/questionTemplate 为必填，metricId 可选（关联后随指标就绪触发），outputPath 由系统自动生成。
@@ -26,5 +28,7 @@ public record SkillJobCreateRequest(
         String questionTemplate,
         Long metricId,
         /** 按星期配置执行时间，JSON 格式如 {"WED":["09:00"]} */
-        String scheduleRules
+        String scheduleRules,
+        /** 通知收件人 userId 列表；空列表表示发送给创建人 */
+        List<String> notifyReceivers
 ) {}

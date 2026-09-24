@@ -423,7 +423,7 @@ function metricTitle(job: SkillJob): string {
                     <el-icon><Download /></el-icon><span>{{ downloading.has(exec.id) ? '下载中…' : '下载' }}</span>
                   </button>
                 </template>
-                <button v-if="false" class="btn-action" :disabled="exec.createdBy !== me" :title="exec.createdBy === me ? '' : '仅任务创建人可查看通知'" @click="openNotifications(exec)">通知记录</button>
+                <button v-if="exec.createdBy === me" class="btn-action" title="查看通知记录并手动发送" @click="openNotifications(exec)">通知记录</button>
               </td>
             </tr>
           </tbody>

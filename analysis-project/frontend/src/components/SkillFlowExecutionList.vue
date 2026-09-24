@@ -1,21 +1,19 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { useRouter } from 'vue-router';
 import { ElMessageBox } from 'element-plus';
 import { listSkillFlowExecutions, cancelSkillFlowExecution } from '../api/skillFlow';
 import type { SkillFlowExecution } from '../types/skillFlow';
 import SkillFlowExecutionDrawer from './SkillFlowExecutionDrawer.vue';
+import SkillFlowExecutionNotificationModal from './SkillFlowExecutionNotificationModal.vue';
 import { currentUserId } from '../api/skill';
 import { triggerTypeText } from './skillFlowExecutionPresentation';
 import { formatDuration } from '../utils/flowDuration.js';
 import { InfoFilled } from '@element-plus/icons-vue';
 
-const router = useRouter();
-
 const props = withDefaults(defineProps<{ scope?: 'mine' | 'all'; createdBy?: string }>(), { scope: 'mine', createdBy: '' });
 
 const executions = ref<SkillFlowExecution[]>([]);
-const loading = ref(false); const error = ref(''); const currentStatus = ref(''); const currentCreatedBy = ref(''); const page = ref(1); const pageSize = ref(20); const detailId = ref<number | null>(null); const detailOpen = ref(false);
+const loading = ref(false); const error = ref(''); const currentStatus = ref(''); const currentCreatedBy = ref(''); const page = ref(1); const pageSize = ref(20); const detailId = ref<number | null>(null); const detailOpen = ref(false); const notificationId = ref<number | null>(null); const notificationOpen = ref(false);
 const paged = computed(() => executions.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value));
 let timer: ReturnType<typeof setInterval> | undefined;
 function formatTime(value?: string | null) { return value ? value.replace('T', ' ').slice(0, 19) : '-'; }
@@ -26,9 +24,7 @@ function duration(start?: string | null, end?: string | null) { if (!start || !e
 function activeDuration(item: SkillFlowExecution) { return formatDuration(item.activeDurationSeconds) ?? '-'; }
 async function load(status = currentStatus.value, createdBy = currentCreatedBy.value, silent = false, scope: 'mine' | 'all' = props.scope) { currentStatus.value = status; currentCreatedBy.value = createdBy; if (!silent) loading.value = true; error.value = ''; try { executions.value = await listSkillFlowExecutions(status || undefined, createdBy.trim() || undefined, scope); page.value = 1; } catch (e) { error.value = e instanceof Error ? e.message : '加载长任务执行记录失败'; if (!silent) executions.value = []; } finally { loading.value = false; } }
 function showDetail(id: number) { detailId.value = id; detailOpen.value = true; }
-function openNotify(item: SkillFlowExecution) {
-  if (item.flowId) router.push(`/skills/jobs/flows/${item.flowId}/notify`);
-}
+function showNotification(id: number) { notificationId.value = id; notificationOpen.value = true; }
 // 可终止 = 本人触发 且 尚未开始收尾(汇总中不再提供终止;取消中按钮隐藏靠状态过滤)
 const CANCELLABLE_STATUSES = ['WAITING_METRICS', 'QUEUED', 'RUNNING'];
 const cancelling = ref<number | null>(null);
@@ -49,7 +45,7 @@ watch(() => [props.scope, props.createdBy] as const, () => load('', props.create
 </script>
 
 <template>
-  <section><div v-if="error" class="center-error">{{ error }}</div><div v-if="loading" class="loading">加载中…</div><div v-else-if="!executions.length" class="empty">暂无长任务执行记录</div><div v-else class="job-table-wrap"><table class="job-table execution-table"><thead><tr><th>任务名称</th><th>状态</th><th>触发方式</th><th>节点 进度</th><th>触发人</th><th>创建时间</th><th><span class="th-with-info" aria-label="总消耗时间：所有实际执行阶段耗时之和，不包含排队、暂停和重跑等待时间。">总消耗时间<el-tooltip placement="top" effect="dark" popper-class="flow-th-tooltip" content="所有实际执行阶段耗时之和，不包含排队、等指标、暂停和重跑等待时间。执行中的任务显示已耗时。"><el-icon class="th-info-icon"><InfoFilled /></el-icon></el-tooltip></span></th><th><span class="th-with-info" aria-label="总历时：从任务首次创建到最终结束的完整时间，包含排队、等指标、暂停和等待重跑时间。">总历时<el-tooltip placement="top" effect="dark" popper-class="flow-th-tooltip" content="从任务首次创建到最终结束的完整时间，包含排队、等指标、暂停和等待重跑时间。与总消耗时间的差值即等待开销。"><el-icon class="th-info-icon"><InfoFilled /></el-icon></el-tooltip></span></th><th>操作</th></tr></thead><tbody><tr v-for="item in paged" :key="item.id"><td><span class="col-name">{{ item.flowName }}</span><span class="col-time">#{{ item.id }}</span></td><td><span class="status-badge" :class="statusClass(item.status)">{{ statusText(item.status) }}</span></td><td>{{ triggerTypeText(item.triggerType) }}</td><td>{{ item.completedNodeCount ?? 0 }} / {{ item.totalNodeCount ?? '-' }}</td><td class="col-owner">{{ item.triggerUserName || item.triggerUserId || '-' }}</td><td class="col-time">{{ formatTime(item.createdAt) }}</td><td title="所有实际执行阶段耗时之和，不包含排队、暂停和重跑等待时间。">{{ activeDuration(item) }}</td><td>{{ duration(item.createdAt, item.completedAt) }}</td><td class="col-actions"><button v-if="false" class="btn-action" @click="openNotify(item)">通知</button><button class="btn-action" @click="showDetail(item.id)">查看详情</button><button v-if="item.triggerUserId === currentUserId() && CANCELLABLE_STATUSES.includes(item.status)" class="btn-action btn-cancel" :disabled="cancelling === item.id" @click="cancelExecution(item)">{{ cancelling === item.id ? '终止中…' : '终止' }}</button><a v-if="item.reportUrl" class="btn-action" :href="item.reportUrl" target="_blank" rel="noopener">查看报告</a></td></tr></tbody></table></div><div v-if="executions.length > pageSize" class="pagination-bar"><el-pagination v-model:current-page="page" :page-size="pageSize" :page-sizes="[10, 20, 50]" :total="executions.length" layout="total, sizes, prev, pager, next" @size-change="(size: number) => { pageSize = size; page = 1; }" /></div><SkillFlowExecutionDrawer v-model:open="detailOpen" :execution-id="detailId" @changed="() => load(currentStatus, currentCreatedBy, true)" /></section>
+  <section><div v-if="error" class="center-error">{{ error }}</div><div v-if="loading" class="loading">加载中…</div><div v-else-if="!executions.length" class="empty">暂无长任务执行记录</div><div v-else class="job-table-wrap"><table class="job-table execution-table"><thead><tr><th>任务名称</th><th>状态</th><th>触发方式</th><th>节点 进度</th><th>触发人</th><th>创建时间</th><th><span class="th-with-info" aria-label="总消耗时间：所有实际执行阶段耗时之和，不包含排队、暂停和重跑等待时间。">总消耗时间<el-tooltip placement="top" effect="dark" popper-class="flow-th-tooltip" content="所有实际执行阶段耗时之和，不包含排队、等指标、暂停和重跑等待时间。执行中的任务显示已耗时。"><el-icon class="th-info-icon"><InfoFilled /></el-icon></el-tooltip></span></th><th><span class="th-with-info" aria-label="总历时：从任务首次创建到最终结束的完整时间，包含排队、等指标、暂停和等待重跑时间。">总历时<el-tooltip placement="top" effect="dark" popper-class="flow-th-tooltip" content="从任务首次创建到最终结束的完整时间，包含排队、等指标、暂停和等待重跑时间。与总消耗时间的差值即等待开销。"><el-icon class="th-info-icon"><InfoFilled /></el-icon></el-tooltip></span></th><th>操作</th></tr></thead><tbody><tr v-for="item in paged" :key="item.id"><td><span class="col-name">{{ item.flowName }}</span><span class="col-time">#{{ item.id }}</span></td><td><span class="status-badge" :class="statusClass(item.status)">{{ statusText(item.status) }}</span></td><td>{{ triggerTypeText(item.triggerType) }}</td><td>{{ item.completedNodeCount ?? 0 }} / {{ item.totalNodeCount ?? '-' }}</td><td class="col-owner">{{ item.triggerUserName || item.triggerUserId || '-' }}</td><td class="col-time">{{ formatTime(item.createdAt) }}</td><td title="所有实际执行阶段耗时之和，不包含排队、暂停和重跑等待时间。">{{ activeDuration(item) }}</td><td>{{ duration(item.createdAt, item.completedAt) }}</td><td class="col-actions"><button v-if="item.triggerUserId === currentUserId() && ['SUCCESS', 'PARTIAL_SUCCESS', 'FAILED'].includes(item.status)" class="btn-action" title="选择收件人并发送通知" @click="showNotification(item.id)">通知</button><button class="btn-action" @click="showDetail(item.id)">查看详情</button><button v-if="item.triggerUserId === currentUserId() && CANCELLABLE_STATUSES.includes(item.status)" class="btn-action btn-cancel" :disabled="cancelling === item.id" @click="cancelExecution(item)">{{ cancelling === item.id ? '终止中…' : '终止' }}</button><a v-if="item.reportUrl" class="btn-action" :href="item.reportUrl" target="_blank" rel="noopener">查看报告</a></td></tr></tbody></table></div><div v-if="executions.length > pageSize" class="pagination-bar"><el-pagination v-model:current-page="page" :page-size="pageSize" :page-sizes="[10, 20, 50]" :total="executions.length" layout="total, sizes, prev, pager, next" @size-change="(size: number) => { pageSize = size; page = 1; }" /></div><SkillFlowExecutionDrawer v-model:open="detailOpen" :execution-id="detailId" @changed="() => load(currentStatus, currentCreatedBy, true)" /><SkillFlowExecutionNotificationModal v-model:open="notificationOpen" :execution-id="notificationId" @sent="load(currentStatus, currentCreatedBy, true)" /></section>
 </template>
 
 <style scoped>

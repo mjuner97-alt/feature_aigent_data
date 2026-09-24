@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
-import { ElMessageBox } from 'element-plus';
 import { listExecutionNotifications, resendExecutionNotification } from '../api/skillJob';
+import { searchSkillUsers } from '../api/skill';
 import type { SkillJobNotification } from '../types/skillJob';
 
 const props = defineProps<{ open: boolean; execId: number | null; canResend?: boolean }>();
@@ -11,6 +11,10 @@ const records = ref<SkillJobNotification[]>([]);
 const loading = ref(false);
 const resending = ref(false);
 const error = ref('');
+const receiverKeyword = ref('');
+const receiverResults = ref<{ userId: string; name: string; department: string | null }[]>([]);
+const selectedReceivers = ref<string[]>([]);
+const receiverNames = ref<Record<string, string>>({});
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 
 const hasPending = computed(() => records.value.some(r => r.status === 'PENDING' || r.status === 'SENDING'));
@@ -46,24 +50,12 @@ function stopPolling() {
 
 async function resend() {
   if (!props.execId || resending.value) return;
-  const previous = localStorage.getItem('skill-job-interactive-receivers')
-    || records.value.find(r => r.recipientSummary)?.recipientSummary || '';
-  let input = '';
-  try {
-    const result = await ElMessageBox.prompt(
-      '请确认本次收件人。可使用逗号、分号或空格分隔；确认后才会发送。',
-      '确认发送通知',
-      { inputValue: previous, confirmButtonText: '确认发送', cancelButtonText: '取消', inputPlaceholder: '输入统一认证号' },
-    );
-    input = result.value;
-  } catch { return; }
-  const notifyReceivers = [...new Set(input.split(/[,;，；\s]+/).map(v => v.trim()).filter(Boolean))];
-  if (!notifyReceivers.length) { error.value = '请至少保留一个收件人'; return; }
+  if (!selectedReceivers.value.length) { error.value = '请先从人员清单选择收件人'; return; }
+  const notifyReceivers = [...selectedReceivers.value];
   resending.value = true;
   error.value = '';
   try {
     await resendExecutionNotification(props.execId, notifyReceivers);
-    localStorage.setItem('skill-job-interactive-receivers', notifyReceivers.join(','));
     await load(true);
     emit('changed');
   } catch (e) {
@@ -71,6 +63,26 @@ async function resend() {
   } finally {
     resending.value = false;
   }
+}
+
+async function searchReceivers() {
+  const keyword = receiverKeyword.value.trim();
+  if (!keyword) { receiverResults.value = []; return; }
+  try {
+    receiverResults.value = (await searchSkillUsers(keyword))
+      .filter(item => !selectedReceivers.value.includes(item.userId));
+  } catch { receiverResults.value = []; }
+}
+
+function addReceiver(item: { userId: string; name: string }) {
+  if (selectedReceivers.value.includes(item.userId)) return;
+  selectedReceivers.value = [...selectedReceivers.value, item.userId];
+  receiverNames.value[item.userId] = item.name || item.userId;
+  receiverResults.value = receiverResults.value.filter(row => row.userId !== item.userId);
+}
+
+function removeReceiver(userId: string) {
+  selectedReceivers.value = selectedReceivers.value.filter(id => id !== userId);
 }
 
 function close() { emit('update:open', false); }
@@ -99,12 +111,30 @@ onUnmounted(stopPolling);
           <div class="toolbar">
             <button class="btn ghost" :disabled="loading" @click="load()">刷新</button>
             <button v-if="canResend" class="btn primary" :disabled="resending" @click="resend">
-              {{ resending ? '补发中…' : '补发通知' }}
+              {{ resending ? '发送中…' : '发送通知' }}
             </button>
           </div>
 
           <div class="drawer-body">
             <div v-if="error" class="error-banner">{{ error }}</div>
+            <div v-if="canResend" class="send-box">
+              <div class="send-help">从人员清单选择本次通知收件人</div>
+              <div class="receiver-search">
+                <input v-model="receiverKeyword" placeholder="输入姓名或统一认证号" @keyup.enter="searchReceivers" />
+                <button class="btn ghost" type="button" @click="searchReceivers">搜索</button>
+              </div>
+              <div v-if="receiverResults.length" class="receiver-results">
+                <button v-for="item in receiverResults" :key="item.userId" type="button" @click="addReceiver(item)">
+                  {{ item.name || item.userId }} ({{ item.userId }})
+                </button>
+              </div>
+              <div class="receiver-chips">
+                <span v-for="userId in selectedReceivers" :key="userId" class="receiver-chip">
+                  {{ receiverNames[userId] || userId }} ({{ userId }})
+                  <button type="button" @click="removeReceiver(userId)">×</button>
+                </span>
+              </div>
+            </div>
             <div v-if="loading" class="empty">加载中…</div>
             <div v-else-if="records.length === 0" class="empty">暂无通知记录</div>
             <div v-else class="record-list">
@@ -175,6 +205,16 @@ pre { max-height: 240px; overflow: auto; margin: 8px 0 0; padding: 10px; backgro
 .btn:disabled { opacity: .55; cursor: not-allowed; }
 .empty { padding: 40px 0; color: #94a3b8; text-align: center; font-size: 13px; }
 .error-banner { margin-bottom: 12px; padding: 8px 10px; border: 1px solid #fecaca; background: #fef2f2; color: #b91c1c; font-size: 12px; }
+.send-box { margin-bottom: 14px; padding: 10px; border: 1px solid #dbeafe; border-radius: 6px; background: #eff6ff; }
+.send-help { margin-bottom: 8px; color: #1e40af; font-size: 12px; }
+.receiver-search { display: flex; gap: 8px; }
+.receiver-search input { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 12px; }
+.receiver-results { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
+.receiver-results button { padding: 6px 8px; border: 0; background: #fff; color: #1e293b; text-align: left; cursor: pointer; }
+.receiver-results button:hover { background: #dbeafe; }
+.receiver-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.receiver-chip { padding: 4px 7px; border-radius: 4px; background: #dbeafe; color: #1e3a8a; font-size: 12px; }
+.receiver-chip button { margin-left: 4px; border: 0; background: transparent; color: #1e3a8a; cursor: pointer; }
 .drawer-fade-enter-active, .drawer-fade-leave-active { transition: opacity .2s; }
 .drawer-fade-enter-active .drawer, .drawer-fade-leave-active .drawer { transition: transform .22s; }
 .drawer-fade-enter-from, .drawer-fade-leave-to { opacity: 0; }

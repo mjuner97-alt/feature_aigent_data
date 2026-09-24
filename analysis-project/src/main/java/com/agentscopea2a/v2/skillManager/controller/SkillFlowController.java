@@ -196,6 +196,7 @@ public class SkillFlowController {
         // RFC 5987: 中文文件名用 filename*=UTF-8'' 编码;ASCII 回退名给不识别 filename* 的老客户端
         String encoded = URLEncoder.encode(download.downloadName(), StandardCharsets.UTF_8).replace("+", "%20");
         return ResponseEntity.ok().contentType(MediaType.TEXT_HTML)
+                .cacheControl(org.springframework.http.CacheControl.noStore())
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                         "inline; filename=\"flow-report.html\"; filename*=UTF-8''" + encoded)
                 .body(download.resource());
@@ -204,7 +205,9 @@ public class SkillFlowController {
     @GetMapping(value = "/api/skill-flow-executions/{id}/report-source", produces = MediaType.TEXT_HTML_VALUE)
     public ResponseEntity<String> reportSource(@PathVariable(name = "id") Long id,
                                                @RequestHeader(name = "X-User-Id") String userId) {
-        return ResponseEntity.ok().contentType(MediaType.TEXT_HTML).body(queryService.readFlowReportSource(id, userId));
+        return ResponseEntity.ok().contentType(MediaType.TEXT_HTML)
+                .cacheControl(org.springframework.http.CacheControl.noStore())
+                .body(queryService.readFlowReportSource(id, userId));
     }
 
     @PutMapping(value = "/api/skill-flow-executions/{id}/report-source", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.TEXT_HTML_VALUE)

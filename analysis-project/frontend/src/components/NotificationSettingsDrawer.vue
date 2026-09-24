@@ -10,7 +10,7 @@
  *    (按逗号/分号/空格/换行拆分,重复/无效/已存在分别反馈)、少量标签 / 大量表格、清空需确认。
  * 4. 发送范围:流程显示触发类型范围;底部显示空名单兜底说明。
  *
- * - 收件人:后端保存时逐个校验人员表并去重、上限 50(服务端为权威);空名单 = 清空恢复兜底行为。
+ * - 收件人:后端保存时逐个校验人员表并去重;空名单 = 清空恢复兜底行为。
  * - 发送方式:整名单一次批量透传邮件 toUserList(一份报告同时发给多人,不循环单发)。
  * - 任务侧发送时机由依赖指标的 notify_enabled(METRIC/EXTERNAL 触发)与 MANUAL 恒发决定。
  */
@@ -41,7 +41,6 @@ const fallbackLabel = computed(() => (isFlow.value ? '流程触发人' : '任务
 const me = currentUserId();
 
 /** 收件人上限,与后端 MockOrgService.filterExistingUserIds 的 50 保持一致 */
-const MAX_RECEIVERS = 50;
 /** 标签视图阈值:超过则切换为表格列表 */
 const TAG_THRESHOLD = 8;
 
@@ -79,8 +78,6 @@ interface PasteResult {
   alreadyIn: string[];
   /** 人员表查不到的无效工号 */
   invalid: string[];
-  /** 超出 50 上限未能添加的工号 */
-  overflow: string[];
 }
 const pasteResult = ref<PasteResult | null>(null);
 
@@ -214,10 +211,6 @@ function closeResults() {
 }
 
 function addUser(opt: { userId: string; name: string }) {
-  if (receivers.value.length >= MAX_RECEIVERS) {
-    searchError.value = `最多添加 ${MAX_RECEIVERS} 人`;
-    return;
-  }
   if (receivers.value.includes(opt.userId)) return;
   if (opt.name && opt.name !== opt.userId) nameMap.value[opt.userId] = opt.name;
   receivers.value = [...receivers.value, opt.userId];
@@ -250,9 +243,7 @@ async function addPasted() {
     const alreadyIn = unique.filter(id => id === me || receivers.value.includes(id));
     const toCheck = unique.filter(id => id !== me && !receivers.value.includes(id));
     // clamp 到 0,防止名单已满时 remaining 为负导致 slice 反向截取、把溢出/可校验工号分错类
-    const remaining = Math.max(0, MAX_RECEIVERS - receivers.value.length);
-    const overflow = toCheck.slice(remaining);
-    const checkable = toCheck.slice(0, remaining);
+    const checkable = toCheck;
     // 人员表精确匹配校验:查得到 = 有效(顺带拿姓名),查不到 = 无效工号
     const names = await batchUserNames(checkable);
     const invalid = checkable.filter(id => !names[id]);
@@ -267,7 +258,6 @@ async function addPasted() {
       dupInPaste,
       alreadyIn,
       invalid,
-      overflow,
     };
   } finally {
     pasteBusy.value = false;
@@ -380,9 +370,7 @@ onBeforeUnmount(() => {
                 </div>
                 <div class="field">
                   <div class="receivers-head">
-                    <span class="counter" :class="{ 'counter-full': receivers.length >= MAX_RECEIVERS }">
-                      已选择 {{ receivers.length }} / {{ MAX_RECEIVERS }} 人
-                    </span>
+                    <span class="counter">已选择 {{ receivers.length }} 人</span>
                     <template v-if="receivers.length">
                       <template v-if="confirmClearing">
                         <span class="clear-confirm-text">确认清空全部收件人?</span>
@@ -470,9 +458,6 @@ onBeforeUnmount(() => {
                     </span>
                     <span v-if="pasteResult.dupInPaste.length" class="pr-dup">
                       粘贴内容重复 {{ pasteResult.dupInPaste.length }} 个：{{ pasteResult.dupInPaste.join('、') }}
-                    </span>
-                    <span v-if="pasteResult.overflow.length" class="pr-invalid">
-                      超出 {{ MAX_RECEIVERS }} 人上限，未添加 {{ pasteResult.overflow.length }} 个：{{ pasteResult.overflow.join('、') }}
                     </span>
                   </div>
 

@@ -146,6 +146,8 @@ public class SkillJobService {
                 .build();
         mapper.insertSkillJob(job);
 
+        saveJobRecipients(job.getId(), req.notifyReceivers(), userId);
+
         log.info("[SkillJob] create OK: id={}, name={}, outputPath={}", job.getId(), job.getName(), outputPath);
         return SkillJobDto.of(job);
     }
@@ -209,7 +211,21 @@ public class SkillJobService {
         // 编辑表单始终提交定时规则：JSON 原样保存，传 null 表示清空定时配置
         if (req.scheduleRules() != null) job.setScheduleRules(req.scheduleRules());
         mapper.updateJobById(job);
+        if (req.notifyReceivers() != null) {
+            saveJobRecipients(id, req.notifyReceivers(), userId);
+        }
         return SkillJobDto.of(job);
+    }
+
+    private void saveJobRecipients(Long jobId, List<String> receivers, String userId) {
+        List<String> validReceivers = mockOrgService.filterExistingUserIds(receivers);
+        recipientService.replaceRecipients(NotificationConfig.TARGET_TYPE_SKILL_JOB,
+                jobId, validReceivers, userId);
+        SkillJob job = mapper.selectJobById(jobId);
+        if (job != null) {
+            job.setNotifyReceivers(NotificationReceivers.toCsv(validReceivers));
+            mapper.updateJobById(job);
+        }
     }
 
     /** 删除 Job，仅创建人本人可删 */

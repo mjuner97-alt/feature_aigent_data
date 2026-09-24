@@ -100,8 +100,26 @@ function reset() {
 /** 对文档及嵌套 srcdoc 子文档递归开启 designMode——所见即所得编辑的入口。 */
 function enableVisualEditing(frameWindow: Window) {
   const doc = frameWindow.document;
-  doc.designMode = 'on';
-  doc.addEventListener('input', () => { visualDirty.value = true; });
+  if (props.kind === 'flow') {
+    doc.designMode = 'off';
+    doc.querySelector('.report')?.setAttribute('contenteditable', 'true');
+  } else {
+    doc.designMode = 'on';
+  }
+  doc.addEventListener('input', event => {
+    visualDirty.value = true;
+    if (props.kind === 'flow' && (event.target as Element)?.closest?.('.report')) syncFlowToc(doc);
+  });
+  if (props.kind === 'flow') {
+    doc.addEventListener('click', event => {
+      const link = (event.target as Element)?.closest?.('.report-toc a') as HTMLAnchorElement | null;
+      if (!link || !link.hash) return;
+      const target = doc.getElementById(link.hash.slice(1));
+      if (!target) return;
+      event.preventDefault();
+      target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    });
+  }
   for (const nested of Array.from(doc.querySelectorAll('iframe'))) {
     try {
       const nestedWindow = nested.contentWindow;
@@ -112,13 +130,35 @@ function enableVisualEditing(frameWindow: Window) {
   }
 }
 
+function syncFlowToc(doc: Document) {
+  const list = doc.querySelector('.report-toc-list');
+  if (!list) return;
+  list.replaceChildren();
+  doc.querySelectorAll<HTMLElement>('.report [data-report-outline-heading]').forEach((heading, index) => {
+    const id = `report-section-${index}`;
+    heading.id = id;
+    const link = doc.createElement('a');
+    link.href = `#${id}`;
+    link.dataset.level = heading.tagName.substring(1);
+    link.textContent = heading.textContent || `章节 ${index + 1}`;
+    list.appendChild(link);
+  });
+}
+
 function onVisualFrameLoad() {
   const win = visualFrame.value?.contentWindow;
-  if (win?.document) enableVisualEditing(win);
+  if (win?.document) {
+    enableVisualEditing(win);
+    if (props.kind === 'flow') syncFlowToc(win.document);
+  }
 }
 
 /** 序列化前清理渲染产物：清空 echarts 容器(移除运行时 canvas)，嵌套 srcdoc 子文档自底向上回写。 */
 function cleanForSerialize(doc: Document) {
+  if (props.kind === 'flow') {
+    doc.querySelector('.report')?.removeAttribute('contenteditable');
+    doc.querySelectorAll('.report-toc-list').forEach(list => list.replaceChildren());
+  }
   for (const el of Array.from(doc.querySelectorAll('.echarts-chart'))) {
     el.innerHTML = '';
     el.removeAttribute('_echarts_instance_');
@@ -160,7 +200,7 @@ function serializeVisual(): string {
             <button :class="{ active: mode === 'visual' }" type="button" @click="switchMode('visual')">
               <el-icon><EditPen /></el-icon><span>可视化</span>
             </button>
-            <button :class="{ active: mode === 'source' }" type="button" @click="switchMode('source')">
+            <button v-if="kind !== 'flow'" :class="{ active: mode === 'source' }" type="button" @click="switchMode('source')">
               <el-icon><View /></el-icon><span>源码</span>
             </button>
           </div>

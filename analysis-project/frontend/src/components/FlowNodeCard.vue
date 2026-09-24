@@ -99,7 +99,7 @@ function selectedScript(node: SkillFlowNode, scripts: ScriptRegistryListItem[]):
       </div>
     </div>
     <div class="node-grid">
-      <label><span>节点名称</span><input v-model="node.nodeName" :placeholder="node.skillName || '为空时使用 Skill 名称'" /></label>
+      <label><span>节点名称</span><input v-model="node.nodeName" :placeholder="node.skillName" /></label>
       <label v-if="node.nodeType !== 'SKILL'"><span>Python 脚本 *</span><el-select v-model="node.scriptId" popper-class="script-select-dropdown" filterable remote reserve-keyword :remote-method="(query: string) => emit('search-scripts', query)" :loading="scriptLoading" placeholder="请选择脚本" clearable style="width: 100%" @change="emit('script-change')"><el-option v-for="script in scripts" :key="script.scriptId" :value="script.scriptId" :label="script.name"><template #default><div class="script-option"><strong>{{ script.name }}</strong><span>{{ script.description || '暂无用途描述' }}</span><small>脚本 ID：{{ script.scriptId }}</small></div></template></el-option></el-select><div v-if="selectedScript(node, scripts)" class="script-detail"><div class="script-detail-title">脚本说明</div><p>{{ selectedScript(node, scripts)?.description || '暂无用途描述' }}</p><div class="script-detail-meta"><span>脚本 ID：{{ selectedScript(node, scripts)?.scriptId }}</span></div></div></label>
       <label v-else><span>旧 Skill（只读兼容）</span><input :value="node.skillName || node.skillId || ''" readonly /></label>
       <div v-if="node.nodeType !== 'SKILL'" class="node-params">

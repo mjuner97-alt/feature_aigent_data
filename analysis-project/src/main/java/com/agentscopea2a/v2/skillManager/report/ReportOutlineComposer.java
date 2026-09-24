@@ -114,20 +114,37 @@ public class ReportOutlineComposer {
             while (counters.size() < level) counters.add(0);
             counters.set(level - 1, counters.get(level - 1) + 1);
             while (counters.size() > level) counters.remove(counters.size() - 1);
-            report.append("<h").append(level + 1).append(" data-report-outline-heading=\"true\">")
-                    .append(escapeHtml(renderNumbering(level, counters, numbering)
-                            + Objects.toString(item.title(), "").trim()))
-                    .append("</h").append(level + 1).append(">\n");
-            // 章节下绑定的全部节点按序各渲染一段正文(兼容旧单 nodeKey 字段),有子级再继续递归
+            StringBuilder section = new StringBuilder();
             for (String key : item.nodeKeys()) {
                 if (!key.isEmpty()) {
-                    report.append(sectionBody(byNodeKey.get(key), item.title())).append("\n\n");
+                    String body = sectionBody(byNodeKey.get(key), item.title());
+                    if (!isEmptyHtml(body)) section.append(body).append("\n\n");
                 }
             }
+            StringBuilder children = new StringBuilder();
             if (item.children() != null && !item.children().isEmpty()) {
-                composeItems(item.children(), numbering, counters, byNodeKey, report, depth + 1);
+                composeItems(item.children(), numbering, counters, byNodeKey, children, depth + 1);
+            }
+            if (section.length() > 0 || children.length() > 0) {
+                report.append("<h").append(level + 1).append(" data-report-outline-heading=\"true\">")
+                        .append(escapeHtml(renderNumbering(level, counters, numbering)
+                                + Objects.toString(item.title(), "").trim()))
+                        .append("</h").append(level + 1).append(">\n")
+                        .append(section).append(children);
             }
         }
+    }
+
+    /** 空 HTML/Markdown 不生成报告节点，避免空章节留下布局高度。 */
+    static boolean isEmptyHtml(String value) {
+        if (value == null || value.isBlank()) return true;
+        String stripped = value.replaceAll("(?is)<!--.*?-->", "")
+                .replaceAll("(?is)<(script|style)\\b[^>]*>.*?</\\1>", "")
+                .replaceAll("(?s)<[^>]*>", "")
+                .replaceAll("&(?:nbsp|#160);", "")
+                .replaceAll("\\s+", "").trim();
+        if (!stripped.isEmpty()) return false;
+        return !value.matches("(?is).*<(img|video|iframe|canvas|svg|table|echart|echarts)\\b.*>");
     }
 
     /** 大纲层级 -> Markdown 标题前缀(1/2/3 级 -> ##/###/####,与现有报告 ## 节点名 风格一致)。 */
@@ -146,6 +163,7 @@ public class ReportOutlineComposer {
 
     /** 层级编号样式解析:未配置时缺省一级 chinese、二三级 arabic。 */
     private static String modeOf(Numbering numbering, int level) {
+        if (level == 1) return "chinese";
         String mode = switch (level) {
             case 1 -> numbering.level1();
             case 2 -> numbering.level2();

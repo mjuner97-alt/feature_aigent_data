@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
-import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { createSkillFlow, getSkillFlow, updateSkillFlow, validateSkillFlow } from '../api/skillFlow';
-import { getSkill, listSkills } from '../api/skill';
+import { createSkillFlow, getSkillFlow, updateSkillFlow, validateSkillFlow, getFlowNotifySettings, updateFlowNotifySettings } from '../api/skillFlow';
+import { getSkill, listSkills, searchSkillUsers } from '../api/skill';
 import { listAllEnabledEntries, startDebug, cancelDebug, subscribeDebug, getEntry } from '../api/scriptRegistry';
 import type { ParamSchemaItem, ScriptDebugRun, ScriptRegistryListItem } from '../types/scriptRegistry';
 import { listMetrics } from '../api/skillDependencyMetric';
@@ -14,8 +13,8 @@ import { buildOutline, defaultOutlineNumbering, flattenOutline, outlineNumbering
 import { paramsFromSchema } from '../utils/scriptParams';
 import FlowNodeCard from './FlowNodeCard.vue';
 import ScheduleRulesEditor from './ScheduleRulesEditor.vue';
+import { scrollToEditorSection } from '../utils/editorNavigation.js';
 
-const router = useRouter();
 const props = withDefaults(defineProps<{ open: boolean; editId: number | null; knownFlows: SkillFlow[]; page?: boolean }>(), { page: false });
 const emit = defineEmits<{ (e: 'update:open', open: boolean): void; (e: 'saved'): void }>();
 /** 编辑中的流程当前是否为公开状态(公开流程保存修改后会自动退出公开,需重新联系开发人员开通)。 */
@@ -38,20 +37,24 @@ const form = ref<SkillFlowInput>(emptyForm());
 const scriptParamErrors = ref<Record<string, string>>({});
 const outlineRows = ref<OutlineRow[]>([]);
 
-function openNotifySettings() {
-  if (!props.editId) {
-    ElMessage.warning('请先保存流程，再添加收件人');
-    return;
-  }
-  router.push(`/skills/jobs/flows/${props.editId}/notify`);
-}
+const notifyReceivers = ref<string[]>([]);
+const receiverKeyword = ref('');
+const receiverResults = ref<{ userId: string; name: string; department: string | null }[]>([]);
+const receiverNames = ref<Record<string, string>>({});
+const receiverSearching = ref(false);
 const reportTitle = ref('');
+const editorBody = ref<HTMLElement | null>(null);
 /** 每行自动编号(与报告渲染同口径):一级 一、二、三;二级 1.1、1.2。 */
 const outlineNumbers = computed(() => outlineNumberingPrefixes(outlineRows.value, form.value.reportOutline?.numbering || defaultOutlineNumbering()));
 const baseline = ref('');
 const isDirty = computed(() => JSON.stringify(form.value) !== baseline.value);
 /** 拖拽排序:正在拖拽的卡片下标;dragover 时实时换位,drop/dragend 收尾。 */
 const dragIndex = ref<number | null>(null);
+function navigateToSection(event: MouseEvent, id: string) {
+  event.preventDefault();
+  if (editorBody.value) scrollToEditorSection(editorBody.value, id);
+}
+
 function nextNodeKey(): string {
   const used = new Set(form.value.nodes.map(node => node.nodeKey));
   let index = form.value.nodes.length + 1;
@@ -485,6 +488,9 @@ async function load() {
   error.value = '';
   wasPublic.value = false;
   form.value = emptyForm();
+  notifyReceivers.value = [];
+  receiverKeyword.value = '';
+  receiverResults.value = [];
   scriptParamErrors.value = {};
   outlineRows.value = [];
   reportTitle.value = '';
@@ -495,7 +501,9 @@ async function load() {
       await ensureSelectedSkills((flow.nodes || []).map(node => node.skillId ?? 0));
       wasPublic.value = flow.chatPublic === true;
       originalKeywords.value = (flow.triggers || []).map(trigger => trigger.keyword.trim().toLowerCase()).filter(Boolean);
-    form.value = normalizeFlow(flow);
+      form.value = normalizeFlow(flow);
+      const notifySettings = await getFlowNotifySettings(props.editId);
+      notifyReceivers.value = [...(notifySettings.notifyReceivers || [])];
     (form.value.nodes || []).forEach(node => { if (node.scriptId) ensureScriptSchema(node.scriptId); });
     } catch (e) {
       error.value = e instanceof Error ? e.message : '加载流程失败';
@@ -504,6 +512,28 @@ async function load() {
   syncOutlineRows();
   baseline.value = JSON.stringify(form.value);
   loading.value = false;
+}
+
+async function searchReceivers() {
+  const keyword = receiverKeyword.value.trim();
+  if (!keyword) { receiverResults.value = []; return; }
+  receiverSearching.value = true;
+  try {
+    receiverResults.value = (await searchSkillUsers(keyword))
+      .filter(item => !notifyReceivers.value.includes(item.userId));
+  } catch { receiverResults.value = []; }
+  finally { receiverSearching.value = false; }
+}
+
+function addReceiver(item: { userId: string; name: string }) {
+  if (notifyReceivers.value.includes(item.userId)) return;
+  notifyReceivers.value = [...notifyReceivers.value, item.userId];
+  receiverNames.value[item.userId] = item.name || item.userId;
+  receiverResults.value = receiverResults.value.filter(row => row.userId !== item.userId);
+}
+
+function removeReceiver(userId: string) {
+  notifyReceivers.value = notifyReceivers.value.filter(id => id !== userId);
 }
 
 /** 关键词集合相对加载时是否发生变化(增删改都算)。 */
@@ -538,6 +568,11 @@ async function save() {
       ? buildOutline(outlineRows.value, form.value.reportOutline?.numbering || defaultOutlineNumbering(), reportTitle.value)
       : null;
     const saved = props.editId == null ? await createSkillFlow(form.value) : await updateSkillFlow(props.editId, form.value);
+    await updateFlowNotifySettings(saved.id, {
+      notifyReceivers: notifyReceivers.value,
+      notifyReceiverTriggers: ['AUTO_METRIC'],
+      notifyReceiversByTrigger: { AUTO_METRIC: notifyReceivers.value },
+    });
     await validateSkillFlow(saved.id);
     baseline.value = JSON.stringify(form.value);
     emit('saved');
@@ -560,10 +595,19 @@ defineExpose({ isDirty });
     <div v-if="open" class="mask" :class="{ 'page-mode': page }" @click.self="!page && emit('update:open', false)">
       <section class="drawer" aria-label="长任务流程编辑器">
         <header class="drawer-header"><div><div class="eyebrow">长任务流程</div><h3>{{ isEdit ? '编辑长任务流程' : '创建长任务流程' }}</h3><p>配置触发条件与执行步骤，生成结构化汇总结果</p></div><button class="icon-button" title="关闭" aria-label="关闭" @click="emit('update:open', false)">×</button></header>
-        <main class="drawer-body">
+        <div class="editor-layout">
+        <nav class="editor-toc" aria-label="长任务配置目录">
+          <a href="#flow-basic" @click="navigateToSection($event, 'flow-basic')">基本信息</a>
+          <a href="#flow-triggers" @click="navigateToSection($event, 'flow-triggers')">触发与通知</a>
+          <a href="#flow-outline" @click="navigateToSection($event, 'flow-outline')">报告大纲与节点</a>
+          <template v-for="(row, index) in outlineRows" :key="row.id">
+            <a class="editor-toc-child" :href="`#flow-outline-${row.id}`" @click="navigateToSection($event, `flow-outline-${row.id}`)">{{ outlineNumbers[index] || `章节 ${index + 1}` }} {{ row.title || '未命名章节' }}</a>
+          </template>
+        </nav>
+        <main ref="editorBody" class="drawer-body">
           <div v-if="loading" class="empty">加载中…</div>
           <template v-else>
-            <section class="form-section wide section-card">
+            <section id="flow-basic" class="form-section wide section-card">
               <div class="section-heading"><h4>基本信息</h4></div>
               <label><span>流程名称 *</span><input v-model="form.name" placeholder="如 每日质量综合分析" /></label>
               <label><span>说明(非必填)</span><textarea v-model="form.description" rows="2" placeholder="说明该流程处理的业务问题" /></label>
@@ -573,24 +617,39 @@ defineExpose({ isDirty });
               <label><span>自动触发定时规则</span><ScheduleRulesEditor v-model="form.scheduleRules" /><small>所选星期内，依赖数据准备完成后立即自动触发；不选默认每天都执行</small></label>
             </section>
 
-            <section class="form-section wide section-card">
+            <section id="flow-triggers" class="form-section wide section-card">
               <div class="section-heading"><div><h4>触发关键词</h4><p>关键词在所有长任务流程中唯一；聊天只会触发您自己的流程（公开流程除外）。</p></div><button class="btn primary" @click="addTrigger">添加关键词</button></div>
               <div v-if="wasPublic" class="public-hint warning">该流程当前为公开状态（所有人的聊天都能触发）。保存修改后将自动退出公开、仅您自己可触发；如需恢复公开请联系开发人员。</div>
               <div v-else class="public-hint">如需将流程设为公开（所有人的聊天都能触发该流程），请联系开发人员开通。</div>
               <div v-if="!form.triggers.length" class="subtle-empty">未配置关键词，聊天不会触发这个流程。</div>
               <div v-for="(trigger, index) in form.triggers" :key="index" class="trigger-row"><input v-model="trigger.keyword" placeholder="输入触发关键词" /><label class="toggle-row"><input v-model="trigger.enabled" type="checkbox" /><span>启用</span></label><button class="icon-button danger" title="删除关键词" @click="removeTrigger(index)">×</button></div>
-              <label v-if="false" class="toggle-row"><input v-model="form.notifyEnabled" type="checkbox" /><span>汇总完成后通知触发用户</span></label>
-              <div v-if="false" class="notify-config-row">
-                <button type="button" class="btn" @click="openNotifySettings">添加收件人</button>
+              <label class="toggle-row"><input v-model="form.notifyEnabled" type="checkbox" /><span>汇总完成后发送通知</span></label>
+              <div class="notify-config-row">
+                <div class="receiver-search">
+                  <input v-model="receiverKeyword" placeholder="输入姓名或统一认证号" @keyup.enter="searchReceivers" />
+                  <button type="button" class="btn" :disabled="receiverSearching" @click="searchReceivers">搜索</button>
+                </div>
+                <div v-if="receiverResults.length" class="receiver-results">
+                  <button v-for="item in receiverResults" :key="item.userId" type="button" @click="addReceiver(item)">
+                    {{ item.name || item.userId }} ({{ item.userId }})
+                  </button>
+                </div>
+                <div class="receiver-chips">
+                  <span v-for="userId in notifyReceivers" :key="userId" class="receiver-chip">
+                    {{ receiverNames[userId] || userId }} ({{ userId }})
+                    <button type="button" @click="removeReceiver(userId)">×</button>
+                  </span>
+                </div>
+                <small>收件人从人员清单中选择；不选则通知流程触发人</small>
               </div>
             </section>
 
-            <section class="form-section wide section-card">
+            <section id="flow-outline" class="form-section wide section-card">
               <div class="section-heading"><div><h4>报告输出大纲</h4><p>先写章节，章节下可添加多个执行节点（拖拽 ⇕ 或 ↑↓ 调整章节内顺序）；序号由渲染器自动生成。</p></div><button class="btn primary" @click="addOutlineRow(null)">添加章节</button></div>
               <label class="report-title-field"><span>报告总标题</span><input v-model="reportTitle" placeholder="例如：月度经营分析报告" /><small>生成汇总时会作为整份报告的居中标题。</small></label>
               <div v-if="!outlineRows.length" class="subtle-empty">尚未配置大纲，报告将按执行节点顺序输出。</div>
               <template v-for="(row, rowIndex) in outlineRows" :key="row.id">
-                <div class="outline-row" :style="{ marginLeft: `${Math.min(row.level - 1, 8) * 22}px` }">
+                <div :id="`flow-outline-${row.id}`" class="outline-row" :style="{ marginLeft: `${Math.min(row.level - 1, 8) * 22}px` }">
                   <span class="outline-level" :title="`第 ${row.level} 级`">{{ outlineNumbers[rowIndex] || `L${row.level}` }}</span>
                   <input v-model="row.title" placeholder="章节标题" />
                   <button class="icon-button" title="添加同级" @click="addOutlineRow(row)">＋</button>
@@ -611,6 +670,7 @@ defineExpose({ isDirty });
             <div v-if="error" class="error">{{ error }}</div>
           </template>
         </main>
+        </div>
         <footer class="drawer-footer"><button class="btn" @click="emit('update:open', false)">取消</button><button class="btn primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存流程' }}</button></footer>
       </section>
       <div v-if="debugRun" class="debug-mask" @click.self="closeNodeDebug">
@@ -649,10 +709,11 @@ defineExpose({ isDirty });
 .drawer { width: min(880px, 96vw); height: 100%; display: flex; flex-direction: column; background: #f5f7fb; box-shadow: -8px 0 24px rgb(15 23 42 / 12%); }
 .mask.page-mode { position: static; min-height: 100%; justify-content: stretch; background: #f5f7fb; }
 .page-mode .drawer { width: 100%; min-height: 100%; box-shadow: none; }
-.page-mode .drawer-body { width: min(1100px, 100%); margin: 0 auto; box-sizing: border-box; }
+.page-mode .drawer-body { width: min(1100px, 100%); margin: 0 auto; box-sizing: border-box; }.page-mode .editor-layout { height: calc(100vh - 140px); flex: 0 0 calc(100vh - 140px); }
 .drawer-header, .drawer-footer, .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .drawer-header { padding: 20px 28px 18px; border-bottom: 1px solid #e2e8f0; background: #fff; }.drawer-header h3 { margin: 2px 0 3px; color: #0f172a; font-size: 20px; }.drawer-header p { margin: 0; color: #64748b; font-size: 12px; }.eyebrow { color: #3b82f6; font-size: 12px; font-weight: 700; letter-spacing: .04em; }
 .drawer-body { flex: 1; overflow: auto; padding: 24px 28px 36px; }.drawer-footer { justify-content: flex-end; padding: 14px 28px; border-top: 1px solid #e2e8f0; background: #fff; }
+.editor-layout { display: flex; flex: 1 1 0; min-height: 0; height: 0; overflow: hidden; }.editor-toc { position: sticky; top: 0; align-self: stretch; flex: 0 0 190px; width: 190px; height: 100%; box-sizing: border-box; padding: 24px 12px; overflow-y: auto; border-right: 1px solid #e2e8f0; background: #fff; }.editor-toc a { display: block; padding: 7px 10px; border-radius: 6px; color: #64748b; font-size: 13px; line-height: 1.4; text-decoration: none; }.editor-toc a:hover { background: #eff6ff; color: #2563eb; }.editor-toc-child { padding-left: 20px !important; font-size: 12px !important; }.editor-layout .drawer-body { flex: 1; min-width: 0; }
 .form-section { display: grid; gap: 14px; max-width: 620px; margin: 0 auto 18px; }.form-section.wide { max-width: none; }.section-card { padding: 20px; border: 1px solid #e2e8f0; border-radius: 12px; background: #fff; box-shadow: 0 2px 8px rgb(15 23 42 / 3%); }.form-section label { display: grid; gap: 5px; }.form-section label > span, .section-heading h4 { color: #475569; font-size: 13px; font-weight: 600; }.section-heading h4 { color: #0f172a; font-size: 15px; margin: 0; }.section-heading p { margin: 3px 0 0; color: #64748b; font-size: 12px; }
 .basic-row { display: flex; gap: 20px; align-items: end; flex-wrap: wrap; }.basic-row > label:first-child { width: 180px; }
 input, select, textarea { box-sizing: border-box; width: 100%; border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 10px; background: #fff; color: #1e293b; font: inherit; font-size: 14px; } textarea { resize: vertical; }.toggle-row { display: flex !important; align-items: center; grid-template-columns: none !important; gap: 7px !important; color: #475569; font-size: 13px; }.toggle-row input { width: auto; }
@@ -664,6 +725,7 @@ input, select, textarea { box-sizing: border-box; width: 100%; border: 1px solid
 .chapter-node-actions { display: flex; gap: 8px; align-items: center; }.chapter-node-actions select { width: auto; min-width: 200px; }
 .outline-item { display: grid; grid-template-columns: 1fr 220px 30px; gap: 8px; align-items: center; margin-top: 8px; }
 .trigger-row { display: grid; grid-template-columns: minmax(160px, 1fr) auto 30px; align-items: center; gap: 8px; }.public-hint { padding: 8px 12px; border-left: 3px solid #f59e0b; background: #fffbeb; color: #92400e; font-size: 12px; }.public-hint.warning { border-color: #dc2626; background: #fef2f2; color: #b91c1c; }.subtle-empty, .empty { color: #94a3b8; font-size: 13px; padding: 18px 0; }
+.notify-config-row { display: grid; gap: 8px; padding: 12px; border: 1px solid #dbeafe; border-radius: 8px; background: #eff6ff; }.notify-config-row small { color: #64748b; font-size: 12px; }.receiver-search { display: flex; gap: 8px; }.receiver-search input { flex: 1; min-width: 0; }.receiver-results { display: grid; gap: 4px; }.receiver-results button { padding: 7px 9px; border: 1px solid #dbeafe; border-radius: 5px; background: #fff; color: #1e293b; text-align: left; cursor: pointer; }.receiver-results button:hover { background: #dbeafe; }.receiver-chips { display: flex; flex-wrap: wrap; gap: 6px; }.receiver-chip { padding: 5px 8px; border-radius: 5px; background: #dbeafe; color: #1e3a8a; font-size: 12px; }.receiver-chip button { margin-left: 5px; border: 0; background: transparent; color: #1e3a8a; cursor: pointer; }
 .validation, .error { display: grid; gap: 4px; margin-top: 18px; padding: 10px 12px; border-left: 3px solid #f59e0b; background: #fffbeb; color: #92400e; font-size: 13px; }.error { border-color: #dc2626; background: #fef2f2; color: #b91c1c; }
 .btn, .icon-button { border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #475569; cursor: pointer; font-size: 13px; }.btn { padding: 7px 14px; }.btn.primary { border-color: #3b82f6; background: #3b82f6; color: #fff; }.btn.danger { border-color: #fecaca; color: #dc2626; }.btn:disabled, .icon-button:disabled { cursor: not-allowed; opacity: .45; }.icon-button { width: 28px; height: 28px; padding: 0; font-size: 18px; line-height: 1; }.icon-button.danger { color: #dc2626; border-color: #fecaca; }
 .debug-mask { position: fixed; inset: 0; z-index: 1100; display: flex; align-items: center; justify-content: center; background: rgb(15 23 42 / 45%); }

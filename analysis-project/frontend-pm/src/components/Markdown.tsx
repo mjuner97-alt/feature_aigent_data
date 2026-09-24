@@ -84,6 +84,7 @@ function HtmlBlock({ source }: { source: string }) {
   // Full reports run inside a sandboxed iframe, so their inline ECharts
   // bootstrap is allowed to execute. HTML fragments remain script-free.
   const clean = sanitizeHtml(source, isDocument);
+  if (isEmptyHtml(clean)) return null;
   if (isDocument) return <iframe title="HTML 报告" srcDoc={clean} sandbox="allow-scripts" style={S.htmlFrame} />;
   return <div style={S.htmlFragment} dangerouslySetInnerHTML={{ __html: clean }} />;
 }
@@ -115,6 +116,14 @@ function normalizeNode(value: unknown, key?: string): unknown {
 }
 
 /** Keep report HTML useful while stripping executable or navigational content. */
+function isEmptyHtml(value: string): boolean {
+  if (!value.trim()) return true;
+  const withoutComments = value.replace(/<!--[\s\S]*?-->/g, '');
+  const text = withoutComments.replace(/<[^>]*>/g, '').replace(/&(?:nbsp|#160);/gi, '').replace(/\s+/g, '').trim();
+  if (text) return false;
+  return !/<(?:img|video|iframe|canvas|svg|table|echart|echarts)\b/i.test(withoutComments);
+}
+
 function sanitizeHtml(source: string, allowInlineScripts = false): string {
   if (typeof DOMParser === 'undefined') return source;
   const doc = new DOMParser().parseFromString(source, 'text/html');

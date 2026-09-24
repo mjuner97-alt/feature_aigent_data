@@ -43,7 +43,7 @@ import java.util.Set;
  * 的读写在事务内的统一入口。
  *
  * <p>第一阶段(phase-1)范围:目标类型仅 SKILL_JOB / SKILL_FLOW,渠道固定 EMAIL,
- * 收件人类型固定 TO;名单最多 {@value #MAX_RECIPIENTS} 人。
+ * 收件人类型固定 TO。
  *
  * <p>注意:{@code notification_config.enabled} 是配置记录启用标记,
  * 不是任务/流程"完成通知开关"——通知开关仍由任务/流程自身配置负责。
@@ -52,9 +52,6 @@ import java.util.Set;
 public class NotificationRecipientService {
 
     private static final Logger log = LoggerFactory.getLogger(NotificationRecipientService.class);
-
-    /** 收件人名单上限(页面与保存侧共用)。 */
-    public static final int MAX_RECIPIENTS = 50;
 
     private final NotificationConfigMapper configMapper;
     private final NotificationRecipientMapper recipientMapper;
@@ -100,7 +97,7 @@ public class NotificationRecipientService {
 
     /**
      * 事务性全量替换某业务对象的收件人名单:
-     * 去重 -> 50 人上限校验 -> 人员服务过滤失效用户 -> 删除旧关系 -> 批量插入新关系。
+     * 去重 -> 人员服务过滤失效用户 -> 删除旧关系 -> 批量插入新关系。
      *
      * @return 实际写入的收件人数量(过滤失效用户后)
      */
@@ -123,10 +120,6 @@ public class NotificationRecipientService {
                 }
             }
         }
-        if (deduped.size() > MAX_RECIPIENTS) {
-            throw new IllegalArgumentException("通知收件人最多 " + MAX_RECIPIENTS + " 人,当前 " + deduped.size() + " 人");
-        }
-
         // 通过人员服务批量过滤失效用户(空名单不进人员查询)
         List<String> validUserIds = filterValidUserIds(new ArrayList<>(deduped));
 

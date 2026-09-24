@@ -72,6 +72,7 @@ function chineseNumber(n: number): string {
 }
 
 function styleFor(numbering: ReportOutlineNumbering, level: number): OutlineNumberingStyle {
+  if (level === 1) return 'chinese';
   const value = level === 1 ? numbering.level1 : level === 2 ? numbering.level2 : numbering.level3;
   return value ?? (level === 1 ? 'chinese' : 'arabic');
 }

@@ -112,6 +112,8 @@ public class ScriptExecTool {
             Pattern.compile("^" + Pattern.quote(DOWNLOAD_META_MARKER) + "\\s*(\\{.*})\\s*$");
     /** Built-in rendering smoke test that does not require a Python runtime or a script file. */
     static final String WEEKLY_BUSINESS_MOCK_ID = "weekly_business_html_brief_mock";
+    /** 空 HTML 布局回归演示：命中后只返回空 HTML，不读文件、不启动 Python。 */
+    static final String EMPTY_HTML_MOCK_ID = "empty_html_flow_demo";
 
     /**
      * 演示用模拟脚本 id:命中后不查磁盘、不启动 python,直接返回模拟 HTML 报告。
@@ -178,6 +180,9 @@ public class ScriptExecTool {
         }
         if (WEEKLY_BUSINESS_MOCK_ID.equals(scriptId)) {
             return ToolResultBlock.text(formatWeeklyBusinessMock(params));
+        }
+        if (EMPTY_HTML_MOCK_ID.equals(scriptId)) {
+            return ToolResultBlock.text("```html\n<!-- intentionally empty html -->\n```");
         }
         if (MOCK_SCRIPT_IDS.contains(scriptId)) {
             return ToolResultBlock.text(formatMockHtmlReport(scriptId, params));

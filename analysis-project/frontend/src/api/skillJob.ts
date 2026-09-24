@@ -23,7 +23,6 @@ async function jobError(res: Response, fallback: string): Promise<Error> {
   if (detail.startsWith('MetricNotFound')) return new Error('依赖指标不存在或已删除');
   if (detail.startsWith('MetricDisabled')) return new Error('依赖指标已停用，不可选用');
   if (detail.startsWith('NotificationResendUnavailable')) return new Error('当前执行没有可补发的报告');
-  if (detail.startsWith('NotifyReceiverTooMany')) return new Error('收件人数量不能超过 50');
   return new Error(detail ? `${fallback}: ${detail}` : `${fallback} (HTTP ${res.status})`);
 }
 

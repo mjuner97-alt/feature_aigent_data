@@ -15,12 +15,38 @@ function jsonHeaders(): Record<string, string> {
 
 async function requestError(res: Response, fallback: string): Promise<Error> {
   const detail = await apiErrorDetail(res);
+  const readable = translateFlowError(detail);
+  if (readable) return new Error(readable);
   if (/keyword.*(exist|conflict|duplicate)/i.test(detail)) return new Error('触发关键词已被其他流程使用');
   if (/cycle|dag/i.test(detail)) return new Error('前置 Skill 不能形成环');
   if (/access|denied/i.test(detail)) return new Error('无权限执行此操作');
-  if (detail.startsWith('NotifyReceiverTooMany')) return new Error('收件人数量不能超过 50');
   if (detail.startsWith('NotifyTriggerScopeInvalid')) return new Error('触发类型范围包含非法值');
   return new Error(detail ? `${fallback}: ${detail}` : `${fallback} (HTTP ${res.status})`);
+}
+
+function translateFlowError(detail: string): string {
+  if (!detail) return '';
+  const rules: Array<[RegExp, string | ((m: RegExpMatchArray) => string)]> = [
+    [/FlowKeywordConflict.*?:\s*(?:keyword is already used by another flow:\s*)?(.+)/i, m => `触发关键词“${m[1]}”已被其他长任务使用`],
+    [/duplicate trigger keyword:\s*(.+)/i, m => `触发关键词“${m[1]}”重复，请修改`],
+    [/trigger keyword must not be blank/i, '触发关键词不能为空'],
+    [/flow must define at least one node/i, '请至少添加一个执行节点'],
+    [/flow must define at least one trigger/i, '请至少添加一个触发关键词'],
+    [/duplicate node key:\s*(.+)/i, m => `节点标识“${m[1]}”重复，请修改`],
+    [/node key must not be blank/i, '节点标识不能为空'],
+    [/node question must not be blank/i, '节点问题不能为空'],
+    [/SkillUnavailable.*?:\s*(.+)/i, m => `所选 Skill 不可用：${m[1]}`],
+    [/ScriptUnavailable.*?:\s*(.+)/i, m => `所选脚本不可用：${m[1]}`],
+    [/MixedNodeTypesUnsupported/i, '暂不支持同时混用 Python 节点和 Skill 节点'],
+    [/PythonScriptRequired/i, 'Python 节点必须选择脚本'],
+    [/ReportOutlineInvalid|FlowOutlineInvalid/i, '报告目录配置有误，请检查章节和节点对应关系'],
+    [/FlowValidationFailed/i, '长任务配置校验失败，请检查必填项和节点配置'],
+  ];
+  for (const [pattern, message] of rules) {
+    const match = detail.match(pattern);
+    if (match) return typeof message === 'function' ? message(match) : message;
+  }
+  return '';
 }
 
 /** Backend DTOs are still evolving; accept a plain array or the common paged/list wrappers in one place. */
@@ -172,24 +198,21 @@ export async function resendSkillFlowExecutionNotification(id: number, notifyRec
 }
 /** 拉取汇总报告 blob;并从 Content-Disposition 解析下载文件名(后端按 {任务名称}-flow-report.html 生成)。 */
 export async function getSkillFlowExecutionReportUrl(id: number): Promise<{ url: string; downloadName?: string }> {
-  const res = await fetch(`${EXECUTION_BASE}/${id}/report`, { headers: authHeaders() });
+  const res = await fetch(`${EXECUTION_BASE}/${id}/report`, { headers: authHeaders(), cache: 'no-store' });
   if (!res.ok) throw await requestError(res, '打开汇总报告失败');
   const disposition = res.headers.get('Content-Disposition') || '';
   const utf8 = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
   const ascii = /filename="?([^";]+)"?/i.exec(disposition);
   const downloadName = utf8 ? decodeURIComponent(utf8[1]) : (ascii ? ascii[1] : undefined);
   const blob = await res.blob();
-  // 历史报告可能是在目录功能上线前生成的，打开时补注入一次目录，避免必须重新生成汇总。
   let reportBlob = blob;
   if (blob.type.includes('html') || downloadName?.endsWith('.html')) {
     const html = await blob.text();
+    const style = '<style>html,body{min-height:100%;margin:0}body{display:flex;align-items:stretch}.report-toc{position:sticky;top:0;align-self:flex-start;height:100vh;max-height:100vh;box-sizing:border-box;width:248px;flex:0 0 248px;box-sizing:border-box;padding:18px 12px;background:#fff;border-right:1px solid #e2e8f0;overflow:visible}.report-toc-list{display:flex;flex-direction:column;gap:3px}.report-toc a{display:block;padding:5px 7px;color:#475569;font-size:13px;line-height:1.35;white-space:normal;overflow:hidden;text-overflow:ellipsis;-webkit-box-orient:vertical;-webkit-line-clamp:2}.report-toc a[data-level="3"]{padding-left:18px}.report-toc a[data-level="4"],.report-toc a[data-level="5"],.report-toc a[data-level="6"]{padding-left:28px}.report{flex:1;min-width:0;margin:0!important;box-sizing:border-box}</style>';
+    const script = '<script>(function(){var t=document.createElement("aside");t.className="report-toc";t.innerHTML="<nav class=report-toc-list></nav>";document.body.insertBefore(t,document.body.firstChild);var l=t.querySelector(".report-toc-list"),h=document.querySelectorAll(".report [data-report-outline-heading],.report h2,.report h3,.report h4,.report h5,.report h6");h.forEach(function(x,i){if(x.classList.contains("report-outline-title")||x.tagName==="H1")return;var id="report-section-"+i;x.id=id;var a=document.createElement("a");a.href="#"+id;a.dataset.level=x.tagName.substring(1);a.textContent=x.textContent||("章节 "+(i+1));a.title=a.textContent;a.addEventListener("click",function(e){var t=document.getElementById(id);if(t){e.preventDefault();t.scrollIntoView({block:"start",behavior:"smooth"})}});l.appendChild(a)});if(!l.children.length)t.style.display="none";})();</script>';
     if (html.includes('report-toc')) {
-      const override = '<style>.report-toc{overflow-x:hidden!important;overflow-y:auto!important}.report-toc-resizer{right:-5px!important;width:10px!important}</style>';
-      reportBlob = new Blob([html.replace('</head>', override + '</head>')], { type: 'text/html' });
-    }
-    if (!html.includes('report-toc')) {
-      const style = '<style>.report-toc{position:fixed;left:0;top:0;bottom:0;z-index:20;width:248px;padding:18px 12px;background:#fff;border-right:1px solid #e2e8f0;overflow-y:auto;overflow-x:hidden;min-width:180px;max-width:460px}.report-toc-resizer{position:absolute;right:-5px;top:0;width:10px;height:100%;cursor:col-resize}.report-toc.collapsed{width:42px;padding:12px 7px;overflow:hidden}.report-toc-toggle{width:28px;height:28px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer}.report-toc-title{margin:12px 4px 8px;font-weight:700}.report-toc-list{display:flex;flex-direction:column;gap:3px}.report-toc a{display:block;padding:5px 7px;color:#475569;font-size:13px}.report-toc a[data-level="3"]{padding-left:18px}.report-toc a[data-level="4"],.report-toc a[data-level="5"],.report-toc a[data-level="6"]{padding-left:28px}.report-toc.collapsed .report-toc-title,.report-toc.collapsed .report-toc-list{display:none}.report-toc~.report{margin-left:270px}.report-toc.collapsed~.report{margin-left:54px}</style>';
-      const script = '<script>(function(){var t=document.createElement("aside");t.className="report-toc";t.innerHTML="<button class=report-toc-toggle>‹</button><div class=report-toc-title>报告目录</div><nav class=report-toc-list></nav><div class=report-toc-resizer></div>";document.body.insertBefore(t,document.body.firstChild);var l=t.querySelector(".report-toc-list"),h=document.querySelectorAll(".report h2,.report h3,.report h4,.report h5,.report h6");h.forEach(function(x,i){var id="report-section-"+i;x.id=id;var a=document.createElement("a");a.href="#"+id;a.dataset.level=x.tagName.substring(1);a.textContent=x.textContent;l.appendChild(a)});function sync(){var r=document.querySelector(".report");if(r)r.style.marginLeft=(t.classList.contains("collapsed")?54:t.offsetWidth+22)+"px"}t.querySelector("button").onclick=function(){t.classList.toggle("collapsed");this.textContent=t.classList.contains("collapsed")?"›":"‹";sync()};var drag=t.querySelector(".report-toc-resizer");drag.onpointerdown=function(e){e.preventDefault();drag.setPointerCapture(e.pointerId);function move(ev){t.style.width=Math.max(180,Math.min(460,ev.clientX))+"px";sync()}function up(){drag.onpointermove=null;drag.onpointerup=null}drag.onpointermove=move;drag.onpointerup=up};sync()})();</script>';
+      reportBlob = new Blob([html.replace('</head>', style + '</head>')], { type: 'text/html' });
+    } else {
       reportBlob = new Blob([html.replace('</head>', style + '</head>').replace('</body>', script + '</body>')], { type: 'text/html' });
     }
   }
@@ -210,7 +233,7 @@ export async function getSkillFlowNodeReportUrl(executionId: number, nodeId: num
 
 /** 读取可编辑的汇总报告 HTML 源码(仅触发人本人)。 */
 export async function getFlowReportSource(id: number): Promise<string> {
-  const res = await fetch(`${EXECUTION_BASE}/${id}/report-source`, { headers: authHeaders() });
+  const res = await fetch(`${EXECUTION_BASE}/${id}/report-source`, { headers: authHeaders(), cache: 'no-store' });
   if (!res.ok) throw await requestError(res, '读取汇总报告失败');
   return res.text();
 }

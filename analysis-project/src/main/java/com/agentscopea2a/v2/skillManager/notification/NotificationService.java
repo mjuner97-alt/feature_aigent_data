@@ -169,6 +169,9 @@ public class NotificationService {
         List<String> receivers = confirmedReceivers == null || confirmedReceivers.isEmpty()
                 ? receiversOf(job, triggerType)
                 : orgService.filterExistingUserIds(confirmedReceivers);
+        if (confirmedReceivers != null && !confirmedReceivers.isEmpty() && receivers.isEmpty()) {
+            throw new IllegalArgumentException("NotifyReceiverInvalid: 所选收件人均已失效，请重新选择");
+        }
         NotificationPayload payload = new NotificationPayload(
                 contentType, content, filePath, fileName, fileUrl,
                 job.getId(), job.getName(),

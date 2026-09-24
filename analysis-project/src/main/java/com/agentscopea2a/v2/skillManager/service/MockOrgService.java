@@ -263,10 +263,6 @@ public class MockOrgService {
                 .filter(id -> !id.isEmpty())
                 .distinct()
                 .toList();
-        // 上限 50:防止误传超大名单撑爆通知记录的收件人列(varchar 1024)与邮件系统
-        if (distinct.size() > 50) {
-            throw new IllegalArgumentException("NotifyReceiverTooMany: 收件人数量不能超过 50");
-        }
         List<String> stale = distinct.stream().filter(id -> !userExists(id)).toList();
         if (!stale.isEmpty()) {
             log.info("[NotifyReceivers] dropped receiver ids absent from person table (left/refreshed): {}", stale);

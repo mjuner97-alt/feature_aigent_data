@@ -159,7 +159,7 @@ export async function searchSkillUsers(keyword: string): Promise<SkillUserSearch
  * 后端人员表只有 keyword 模糊搜索接口,没有按 id 批量查询;
  * 这里逐个用统一认证号精确匹配搜索(结果里取 userId 完全相等的那条),分批并发避免一次打满。
  * 查不到 / 请求失败的 id 不出现在返回结果里,调用方据此区分"无效工号"。
- * 已知局限:精确匹配依赖 searchSkillUsers 模糊搜索的首页(LIMIT 50),某有效工号若模糊命中超过 50 人,理论上可能被误判为无效;后续应由后端提供按 id 批量查询接口。
+ * 搜索接口每次最多返回 50 条；批量反查按人员 ID 分批请求。
  */
 export async function batchUserNames(userIds: string[]): Promise<Record<string, string>> {
   const ids = [...new Set(userIds.map(id => id.trim()).filter(Boolean))];
