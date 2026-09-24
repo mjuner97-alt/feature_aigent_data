@@ -10,7 +10,7 @@ import type { SkillListItem } from '../types/skill';
 import type { SkillDependencyMetric } from '../types/skillJob';
 import type { SkillFlow, SkillFlowInput, SkillFlowNode } from '../types/skillFlow';
 import { buildOutline, defaultOutlineNumbering, flattenOutline, outlineNumberingPrefixes, validateOutlineRows, type OutlineRow } from '../utils/reportOutline';
-import { inferParamSchema, paramsFromSchema } from '../utils/scriptParams';
+import { inferParamSchema, normalizeScriptParams, paramsFromSchema } from '../utils/scriptParams';
 import FlowNodeCard from './FlowNodeCard.vue';
 import ScheduleRulesEditor from './ScheduleRulesEditor.vue';
 import { scrollToEditorSection } from '../utils/editorNavigation.js';
@@ -380,7 +380,9 @@ async function runNodeDebug(node: SkillFlowNode) {
     if (script.enabled !== 1) {
       throw new Error('脚本已停用，请先在 Python 注册页面启用');
     }
-    debugRun.value = await startDebug(script.id, node.scriptParams || {}, script.timeoutSeconds ?? 60);
+    const schema = await ensureScriptSchema(node.scriptId);
+    const params = normalizeScriptParams(node.scriptParams || {}, schema);
+    debugRun.value = await startDebug(script.id, params, script.timeoutSeconds ?? 60);
     debugEvents?.close();
     debugEvents = subscribeDebug(debugRun.value.runId, {
       event: (event) => {
@@ -508,7 +510,11 @@ async function load() {
       form.value = normalizeFlow(flow);
       const notifySettings = await getFlowNotifySettings(props.editId);
       notifyReceivers.value = [...(notifySettings.notifyReceivers || [])];
-      await Promise.all((form.value.nodes || []).map(node => node.scriptId ? ensureScriptSchema(node.scriptId) : Promise.resolve([])));
+      await Promise.all((form.value.nodes || []).map(async node => {
+        if (!node.scriptId) return;
+        const schema = await ensureScriptSchema(node.scriptId);
+        if (schema.length) node.scriptParams = normalizeScriptParams(node.scriptParams || {}, schema);
+      }));
     } catch (e) {
       error.value = e instanceof Error ? e.message : '加载流程失败';
     }
@@ -567,6 +573,9 @@ async function save() {
   }
   saving.value = true;
   try {
+    for (const node of form.value.nodes) {
+      if (node.scriptId) node.scriptParams = normalizeScriptParams(node.scriptParams || {}, await ensureScriptSchema(node.scriptId));
+    }
     renumber();
     form.value.reportOutline = outlineRows.value.length
       ? buildOutline(outlineRows.value, form.value.reportOutline?.numbering || defaultOutlineNumbering(), reportTitle.value)

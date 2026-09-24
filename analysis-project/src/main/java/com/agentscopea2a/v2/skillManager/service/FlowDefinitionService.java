@@ -65,9 +65,9 @@ public class FlowDefinitionService {
     public FlowDefinitionService(SkillFlowMapper flowMapper, SkillMapper skillMapper,
                                  SkillDependencyMetricMapper metricMapper, MockOrgService orgService,
                                  @Qualifier("skillFlowClock") Clock skillFlowClock,
-                                  ScriptRegistryMapper scriptRegistryMapper, ObjectMapper objectMapper,
-                                  NotificationRecipientService recipientService,
-                                  ScriptParamRuleService paramRuleService) {
+                                 ScriptRegistryMapper scriptRegistryMapper, ObjectMapper objectMapper,
+                                 NotificationRecipientService recipientService,
+                                 ScriptParamRuleService paramRuleService) {
         this.flowMapper = flowMapper;
         this.skillMapper = skillMapper;
         this.metricMapper = metricMapper;
@@ -321,7 +321,6 @@ public class FlowDefinitionService {
                     // 规则引用校验:{"$rule": key} 必须存在于 script_param_rule 且类型与参数声明兼容
                     errors.addAll(paramRuleService.checkRuleRefs(node.scriptId(), node.scriptParamsJson()));
                 }
-                if (!node.metricIds().isEmpty()) errors.add("PythonNodeCannotDependOnMetric: " + nodeKey);
             } else if (legacy) {
                 if (node.skillId() == null || !skillMapper.selectSkillAvailableForUser(node.skillId(), userId)) {
                     errors.add("SkillUnavailable: skill is not available to user: " + node.skillId());
@@ -330,7 +329,9 @@ public class FlowDefinitionService {
             // Python 节点按脚本+参数执行,问题模板选填;只有旧 Skill 节点必须填(它就是 Skill 的输入)
             if (!python && trim(node.questionTemplate()).isEmpty()) errors.add("node question must not be blank: " + nodeKey);
             if (node.maxAttempts() != null && node.maxAttempts() < 1) errors.add("maxAttempts must be positive");
-            if (node.metricIds().size() > 1) errors.add("a skill node can depend on at most one metric");
+            // 依赖指标:skill / python 节点均可声明,至多一个,须存在且启用
+            // (执行侧门控/自动触发均按 node_metric 关联表驱动,与节点类型无关)
+            if (node.metricIds().size() > 1) errors.add("a node can depend on at most one metric");
             for (Long metricId : node.metricIds()) {
                 SkillDependencyMetric metric = metricMapper.selectById(metricId);
                 if (metric == null || !Boolean.TRUE.equals(metric.getEnabled())) {
@@ -410,19 +411,19 @@ public class FlowDefinitionService {
     /** 组装返回 DTO,附带 skill 名称与指标名称等展示信息。 */
     private SkillFlowDto toDto(SkillFlow flow) {
         List<SkillFlowDto.Trigger> triggers = flow.getId() == null ? List.of() : flowMapper.selectTriggersByFlowId(flow.getId())
-                .stream().map(item -> new SkillFlowDto.Trigger(item.getId(), item.getKeyword(), item.getPriority(), item.getEnabled()))
-                .toList();
-        List<SkillFlowDto.Node> nodes = flow.getId() == null ? List.of() : flowMapper.selectNodesByFlowId(flow.getId()).stream()
-                .map(node -> {
-                    Skill skill = skillMapper.selectById(node.getSkillId());
-                    List<Long> metricIds = flowMapper.selectMetricIdsByNodeId(node.getId());
-                    List<String> metricNames = metricIds.stream().map(metricMapper::selectById)
-                            .map(metric -> metric == null ? null : metric.getName()).filter(Objects::nonNull).toList();
-                    String skillName = skill == null ? null : skill.getName();
-                    return new SkillFlowDto.Node(node.getId(), node.getNodeKey(), resolveNodeDisplayName(node.getNodeName(), skillName), node.getNodeType(),
-                            node.getSkillId(), node.getScriptId(), node.getScriptParamsJson(), skillName, node.getQuestionTemplate(), metricIds, metricNames,
-                            node.getRequired(), node.getMaxAttempts(), node.getSortOrder());
-                }).toList();
+                                                                                 .stream().map(item -> new SkillFlowDto.Trigger(item.getId(), item.getKeyword(), item.getPriority(), item.getEnabled()))
+                                                                                 .toList();
+        List    <SkillFlowDto.Node> nodes = flow.getId() == null ? List.of() : flowMapper.selectNodesByFlowId(flow.getId()).stream()
+                                                                           .map(node -> {
+                                                                               Skill skill = skillMapper.selectById(node.getSkillId());
+                                                                               List<Long> metricIds = flowMapper.selectMetricIdsByNodeId(node.getId());
+                                                                               List<String> metricNames = metricIds.stream().map(metricMapper::selectById)
+                                                                                       .map(metric -> metric == null ? null : metric.getName()).filter(Objects::nonNull).toList();
+                                                                               String skillName = skill == null ? null : skill.getName();
+                                                                               return new SkillFlowDto.Node(node.getId(), node.getNodeKey(), resolveNodeDisplayName(node.getNodeName(), skillName), node.getNodeType(),
+                                                                                       node.getSkillId(), node.getScriptId(), node.getScriptParamsJson(), skillName, node.getQuestionTemplate(), metricIds, metricNames,
+                                                                                       node.getRequired(), node.getMaxAttempts(), node.getSortOrder());
+                                                                           }).toList();
         return new SkillFlowDto(flow.getId(), flow.getCode(), flow.getName(), flow.getDescription(), flow.getTaskQuestion(),
                 flow.getSummaryQuestionTemplate(), flow.getEnabled(), flow.getScheduleRules(), flow.getMaxParallelism(),
                 flow.getNotifyEnabled(), Boolean.TRUE.equals(flow.getChatPublic()),

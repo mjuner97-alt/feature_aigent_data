@@ -41,10 +41,29 @@ export function coerceParamValue(raw: unknown, type: string): unknown {
   const t = normalizedParamType(type);
   if (t.array) return Array.isArray(raw) ? raw.map(v => coerceParamValue(v, t.base)) : [];
   if (raw === '' || raw === null || raw === undefined) return t.base === 'string' ? '' : null;
-  if (t.base === 'int') return Number.isFinite(Number(raw)) ? Math.trunc(Number(raw)) : raw;
+  if (t.base === 'int') return Number.isInteger(Number(raw)) ? Number(raw) : raw;
   if (t.base === 'float') return Number.isFinite(Number(raw)) ? Number(raw) : raw;
   if (t.base === 'boolean') return raw === true || raw === 'true';
   return String(raw);
+}
+
+/** Normalize legacy values before both debugging and saving a flow. */
+export function normalizeScriptParams(params: Record<string, unknown>, schema: ParamSchemaItem[]): Record<string, unknown> {
+  const result = { ...params };
+  for (const item of schema) {
+    if (!(item.name in result)) continue;
+    let value = result[item.name];
+    if (normalizedParamType(item.type).array && !Array.isArray(value)) {
+      if (typeof value === 'string') {
+        try {
+          const parsed: unknown = JSON.parse(value);
+          value = Array.isArray(parsed) ? parsed : value.trim() ? [value] : [];
+        } catch { value = value.trim() ? [value] : []; }
+      } else value = value == null ? [] : [value];
+    }
+    result[item.name] = coerceParamValue(value, item.type);
+  }
+  return result;
 }
 
 export function validateParamValue(value: unknown, type: string): string {
