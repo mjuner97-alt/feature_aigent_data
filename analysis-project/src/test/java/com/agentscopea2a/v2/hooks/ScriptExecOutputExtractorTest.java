@@ -3,6 +3,7 @@ package com.agentscopea2a.v2.hooks;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ScriptExecOutputExtractorTest {
 
@@ -87,13 +88,23 @@ class ScriptExecOutputExtractorTest {
                 [script_exec] scriptId=test exit=0 elapsed=1ms
                 ─── stdout ─────────────────────────
                 汇总表如下。
-                📥 <a href="http://localhost:18080/redirect/download?shortCode=abc123" target="_blank" rel="noreferrer" style="color:#6366f1;text-decoration:none">q2_1_明细.csv</a>
+                📥 <!DOCTYPE html>
+                <html>
+                <head>
+                    <title></title>
+                </head>
+                <body>
+                <a href="http://localhost:18080/redirect/download?shortCode=abc123" target="_blank" rel="noreferrer" style="color:#6366f1;text-decoration:none">q2_1_明细.csv</a>
+                </body>
+                </html>
                 ─── stderr ─────────────────────────
                 INFO: connection
                 """;
 
         String stdout = ScriptExecOutputExtractor.extractStdout(output);
-        assertEquals("", ScriptExecOutputExtractor.extractRenderableBlocks(output));
+        // 完整 HTML 文档形式的下载块同时命中可渲染块模式 (doctype 分支)
+        assertTrue(ScriptExecOutputExtractor.extractRenderableBlocks(output)
+                .contains("/redirect/download?shortCode=abc123"));
         assertEquals(true, ScriptExecOutputExtractor.stdoutHasDownloadLink(stdout));
     }
 

@@ -68,7 +68,15 @@ class ScriptExecToolTest {
                 "|---:|---:|",
                 "| 80 | 70 |",
                 "json: {\"total\":80}",
-                "📥 <a href=\"/redirect/download?shortCode=abc123DEF456\" target=\"_blank\" rel=\"noreferrer\" style=\"color:#6366f1;text-decoration:none\">q2_1_明细.csv</a>");
+                "📥 <!DOCTYPE html>",
+                "<html>",
+                "<head>",
+                "    <title></title>",
+                "</head>",
+                "<body>",
+                "<a href=\"/redirect/download?shortCode=abc123DEF456\" target=\"_blank\" rel=\"noreferrer\" style=\"color:#6366f1;text-decoration:none\">q2_1_明细.csv</a>",
+                "</body>",
+                "</html>");
         assertEquals(expected, result);
         // 块内明细内容不进工具结果
         assertTrue(!result.contains("P001") && !result.contains("<<<DOWNLOAD"), "块内内容须被剥离");
@@ -102,9 +110,25 @@ class ScriptExecToolTest {
                 "```echarts",
                 "{\"series\":[]}",
                 "```",
-                "📥 <a href=\"/redirect/download?shortCode=abc123DEF456\" target=\"_blank\" rel=\"noreferrer\" style=\"color:#6366f1;text-decoration:none\">明细.csv</a>",
+                "📥 <!DOCTYPE html>",
+                "<html>",
+                "<head>",
+                "    <title></title>",
+                "</head>",
+                "<body>",
+                "<a href=\"/redirect/download?shortCode=abc123DEF456\" target=\"_blank\" rel=\"noreferrer\" style=\"color:#6366f1;text-decoration:none\">明细.csv</a>",
+                "</body>",
+                "</html>",
                 "中间说明文字",
-                "📥 <a href=\"/redirect/download?shortCode=abc123DEF456\" target=\"_blank\" rel=\"noreferrer\" style=\"color:#6366f1;text-decoration:none\">报告.md</a>");
+                "📥 <!DOCTYPE html>",
+                "<html>",
+                "<head>",
+                "    <title></title>",
+                "</head>",
+                "<body>",
+                "<a href=\"/redirect/download?shortCode=abc123DEF456\" target=\"_blank\" rel=\"noreferrer\" style=\"color:#6366f1;text-decoration:none\">报告.md</a>",
+                "</body>",
+                "</html>");
         assertEquals(expected, result);
         assertEquals(2, dl.calls.size());
         assertEquals("text/markdown", dl.calls.get(1).mimeType());

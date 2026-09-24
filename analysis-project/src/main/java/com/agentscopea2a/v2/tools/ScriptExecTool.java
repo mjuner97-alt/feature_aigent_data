@@ -568,10 +568,10 @@ public class ScriptExecTool {
 
     /**
      * 扫描 stdout 中的下载块 (DOWNLOAD_META / DOWNLOAD_CONTENT / DOWNLOAD_END, 须行首),
-     * 把每个块<b>原位替换</b>成一条可点击的 HTML 下载链接
-     * {@code 📥 <a href="/redirect/download?shortCode=xxx" ...>filename</a>}
-     * (HTML 标签而非 Markdown 链接: Vue 端 v-html 原样透传标签, 不依赖前端 Markdown
-     * 链接正则, 模型复述时也更抗改写).
+     * 把每个块<b>原位替换</b>成一个完整 HTML 文档包裹的可点击下载链接
+     * {@code 📥 <!DOCTYPE html>...<a href="/redirect/download?shortCode=xxx" ...>filename</a>...</html>}
+     * (完整文档 + HTML 标签而非 Markdown 链接: Vue 端 v-html 原样透传标签, 不依赖前端
+     * Markdown 链接正则; 📥 前缀使气泡不至于被当成整篇 HTML 文档走 iframe srcdoc 路径).
      *
      * <p>块内内容经 {@link DownloadContentService#create} 落 {@code url_shortener} 表
      * (markdown 表自动转 CSV), 只生成短链, <b>既不进 LLM 上下文也不出现在工具结果里</b>.
@@ -636,8 +636,16 @@ public class ScriptExecTool {
             try {
                 String shortCode = downloadContentService.create(content, filename, mimeType);
                 String url = downloadContentService.buildDownloadUrl(shortCode);
-                out.add("📥 <a href=\"" + url + "\" target=\"_blank\" rel=\"noreferrer\" "
+                out.add("📥 <!DOCTYPE html>");
+                out.add("<html>");
+                out.add("<head>");
+                out.add("    <title></title>");
+                out.add("</head>");
+                out.add("<body>");
+                out.add("<a href=\"" + url + "\" target=\"_blank\" rel=\"noreferrer\" "
                         + "style=\"color:#6366f1;text-decoration:none\">" + filename + "</a>");
+                out.add("</body>");
+                out.add("</html>");
             } catch (Exception e) {
                 log.warn("script_exec 下载内容落库失败: filename={} bytes={}", filename,
                         content == null ? 0 : content.length(), e);

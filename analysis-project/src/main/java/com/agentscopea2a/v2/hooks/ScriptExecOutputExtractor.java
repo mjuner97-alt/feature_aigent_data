@@ -26,13 +26,14 @@ final class ScriptExecOutputExtractor {
             java.util.regex.Pattern.CASE_INSENSITIVE);
 
     /**
-     * Matches the successful in-place download link line produced by
-     * {@code ScriptExecTool.extractDownloads()} (HTML anchor form). The failure
-     * line ("📥 下载生成失败: ...") is intentionally not matched — it must stay
+     * Matches the successful in-place download block produced by
+     * {@code ScriptExecTool.extractDownloads()}: a complete HTML document
+     * (multi-line) whose body carries the download anchor. The failure line
+     * ("📥 下载生成失败: ...") is intentionally not matched — it must stay
      * visible to the model instead of being taken over.
      */
     static final java.util.regex.Pattern DOWNLOAD_LINK_PATTERN = java.util.regex.Pattern.compile(
-            "(?m)^📥\\s*<a\\s+href=\"[^\"\\n]*/redirect/download\\?shortCode=[^\"\\n]+\"[^>]*>[^<\\n]+</a>\\s*$");
+            "(?im)^📥\\s*<!doctype\\s+html\\s*>[\\s\\S]*?<a\\s+href=\"[^\"\\n]*/redirect/download\\?shortCode=[^\"\\n]+\"[^>]*>[^<\\n]+</a>[\\s\\S]*?</html>\\s*$");
 
     private ScriptExecOutputExtractor() {
     }
