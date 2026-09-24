@@ -68,7 +68,7 @@ class ScriptExecToolTest {
                 "|---:|---:|",
                 "| 80 | 70 |",
                 "json: {\"total\":80}",
-                "📥 [q2_1_明细.csv](/redirect/download?shortCode=abc123DEF456)");
+                "📥 <a href=\"/redirect/download?shortCode=abc123DEF456\" target=\"_blank\" rel=\"noreferrer\" style=\"color:#6366f1;text-decoration:none\">q2_1_明细.csv</a>");
         assertEquals(expected, result);
         // 块内明细内容不进工具结果
         assertTrue(!result.contains("P001") && !result.contains("<<<DOWNLOAD"), "块内内容须被剥离");
@@ -102,9 +102,9 @@ class ScriptExecToolTest {
                 "```echarts",
                 "{\"series\":[]}",
                 "```",
-                "📥 [明细.csv](/redirect/download?shortCode=abc123DEF456)",
+                "📥 <a href=\"/redirect/download?shortCode=abc123DEF456\" target=\"_blank\" rel=\"noreferrer\" style=\"color:#6366f1;text-decoration:none\">明细.csv</a>",
                 "中间说明文字",
-                "📥 [报告.md](/redirect/download?shortCode=abc123DEF456)");
+                "📥 <a href=\"/redirect/download?shortCode=abc123DEF456\" target=\"_blank\" rel=\"noreferrer\" style=\"color:#6366f1;text-decoration:none\">报告.md</a>");
         assertEquals(expected, result);
         assertEquals(2, dl.calls.size());
         assertEquals("text/markdown", dl.calls.get(1).mimeType());

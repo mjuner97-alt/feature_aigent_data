@@ -87,7 +87,7 @@ class ScriptExecOutputExtractorTest {
                 [script_exec] scriptId=test exit=0 elapsed=1ms
                 ─── stdout ─────────────────────────
                 汇总表如下。
-                📥 [q2_1_明细.csv](http://localhost:18080/redirect/download?shortCode=abc123)
+                📥 <a href="http://localhost:18080/redirect/download?shortCode=abc123" target="_blank" rel="noreferrer" style="color:#6366f1;text-decoration:none">q2_1_明细.csv</a>
                 ─── stderr ─────────────────────────
                 INFO: connection
                 """;

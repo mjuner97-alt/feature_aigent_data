@@ -3,7 +3,7 @@
 stdout 下载块协议助手 (供 script_exec 脚本 import, 与 _gauss_jdbc/_sql_registry 同级).
 
 Java 端 ScriptExecTool 解析下载块: 内容落库生成短链, 块原位替换成一行
-📥 [filename](/redirect/download?shortCode=xxx) 链接; 块内内容不进 LLM 上下文.
+📥 <a href="/redirect/download?shortCode=xxx" ...>filename</a> HTML 链接; 块内内容不进 LLM 上下文.
 块 print 的位置 = 最终展示里链接行的位置 (原位替换), 需调整图/链接上下顺序时挪 print 顺序即可.
 
 两种内容形态:

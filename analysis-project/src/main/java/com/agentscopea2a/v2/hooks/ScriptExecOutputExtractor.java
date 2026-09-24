@@ -27,12 +27,12 @@ final class ScriptExecOutputExtractor {
 
     /**
      * Matches the successful in-place download link line produced by
-     * {@code ScriptExecTool.extractDownloads()}. The failure line
-     * ("📥 下载生成失败: ...") is intentionally not matched — it must stay
+     * {@code ScriptExecTool.extractDownloads()} (HTML anchor form). The failure
+     * line ("📥 下载生成失败: ...") is intentionally not matched — it must stay
      * visible to the model instead of being taken over.
      */
     static final java.util.regex.Pattern DOWNLOAD_LINK_PATTERN = java.util.regex.Pattern.compile(
-            "(?m)^📥\\s*\\[[^\\]\\n]+\\]\\([^)\\n]*/redirect/download\\?shortCode=[^)\\n]+\\)\\s*$");
+            "(?m)^📥\\s*<a\\s+href=\"[^\"\\n]*/redirect/download\\?shortCode=[^\"\\n]+\"[^>]*>[^<\\n]+</a>\\s*$");
 
     private ScriptExecOutputExtractor() {
     }
