@@ -163,8 +163,8 @@ public class HtmlReportRenderer {
                outline 兜底 border-collapse:collapse 下 sticky 表头随滚动丢失的边框线；
                默认 overflow-x:auto 供宽表横向滚动（无 JS 场景的兜底），
                overflow 滚动容器会困住 sticky，由 TABLE_STICKY_JS 按表格实际宽度动态解除。 */
-            .table-scroll{display:block;max-width:100%;min-width:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-ms-overflow-style:none}.table-scroll::-webkit-scrollbar{display:none;width:0;height:0}
-            .table-scroll th{position:sticky;top:0;z-index:1;outline:1px solid #e2e8f0;outline-offset:-1px}
+            .table-scroll{display:contents;max-width:none;min-width:0;overflow:visible}.table-scroll::-webkit-scrollbar{display:none;width:0;height:0}
+            .table-scroll th{outline:1px solid #e2e8f0;outline-offset:-1px}
             tbody tr:nth-child(even){background:#f8fafc}
             ul,ol{margin:6px 0;padding-left:22px}
             li{margin:2px 0}
@@ -178,7 +178,7 @@ public class HtmlReportRenderer {
             .echarts-shell:fullscreen .echarts-chart{height:calc(100vh - 64px)}
             .report-frame-shell{margin:12px 0}
             .report-frame{width:100%;height:600px;border:1px solid #e2e8f0;border-radius:6px;display:block;background:#fff}
-            .html-content-shell{position:relative;margin:20px 0;padding:36px 0 12px;background:#fff}
+            .html-content-shell{position:relative;margin:0;padding:0;background:transparent;border:0;box-shadow:none}
             .html-content-shell:fullscreen{width:100%;height:100%;overflow:auto;padding:48px 28px 28px;background:#fff}
             .html-fullscreen{position:absolute;z-index:2;top:8px;right:8px;width:32px;height:32px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;color:#334155;cursor:pointer;font-size:18px;line-height:28px}
             .html-fullscreen:hover{background:#f8fafc;color:#0f172a}
@@ -492,7 +492,7 @@ public class HtmlReportRenderer {
                 .append("<button class=\"html-fullscreen\" type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-html-fullscreen=\"html-content-0\">&#x26F6;</button>")
                 .append(renderedBody).append("</div>\n");
 
-        return assembleHtml(safeTitle, body.toString(), charts, extraStyles.toString(), false);
+        return assembleHtml(safeTitle, body.toString(), charts, extraStyles.toString(), true);
     }
 
     /** 抽取 {@code <body...>...</body>} 之间的内嵌 HTML；无 {@code <body>} 时返回原文。 */
@@ -698,7 +698,7 @@ public class HtmlReportRenderer {
                     rows.add(splitRow(lines[i]));
                     i++;
                 }
-                out.append("<div class=\"table-scroll\"><table><thead><tr>");
+                out.append("<table><thead><tr>");
                 for (String h : header) {
                     out.append("<th>").append(h).append("</th>");
                 }
@@ -710,7 +710,7 @@ public class HtmlReportRenderer {
                     }
                     out.append("</tr>");
                 }
-                out.append("</tbody></table></div>\n");
+                out.append("</tbody></table>\n");
             } else {
                 out.append(lines[i]).append('\n');
                 i++;
@@ -821,4 +821,6 @@ public class HtmlReportRenderer {
     /** 一个 echarts 图表块：DOM id + option JSON 文本。 */
     private record ChartBlock(String id, String json) {}
 }
+
+
 

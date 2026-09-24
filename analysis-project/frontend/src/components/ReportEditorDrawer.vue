@@ -103,14 +103,26 @@ function enableVisualEditing(frameWindow: Window) {
   if (props.kind === 'flow') {
     doc.designMode = 'off';
     doc.querySelector('.report')?.setAttribute('contenteditable', 'true');
+    doc.querySelectorAll<HTMLElement>('.report-toc').forEach(toc => {
+      toc.setAttribute('contenteditable', 'false');
+      toc.style.userSelect = 'none';
+    });
   } else {
     doc.designMode = 'on';
   }
   doc.addEventListener('input', event => {
+    const target = event.target as Element;
+    if (props.kind === 'flow' && !target?.closest?.('.report')) return;
     visualDirty.value = true;
-    if (props.kind === 'flow' && (event.target as Element)?.closest?.('.report')) syncFlowToc(doc);
+    if (props.kind === 'flow') syncFlowToc(doc);
   });
   if (props.kind === 'flow') {
+    const blockTocEditing = (event: Event) => {
+      if ((event.target as Element)?.closest?.('.report-toc')) event.preventDefault();
+    };
+    doc.addEventListener('beforeinput', blockTocEditing);
+    doc.addEventListener('paste', blockTocEditing);
+    doc.addEventListener('drop', blockTocEditing);
     doc.addEventListener('click', event => {
       const link = (event.target as Element)?.closest?.('.report-toc a') as HTMLAnchorElement | null;
       if (!link || !link.hash) return;
@@ -119,6 +131,16 @@ function enableVisualEditing(frameWindow: Window) {
       event.preventDefault();
       target.scrollIntoView({ block: 'start', behavior: 'smooth' });
     });
+    const report = doc.querySelector('.report');
+    if (report && !doc.documentElement.dataset.tocSyncObserver) {
+      doc.documentElement.dataset.tocSyncObserver = 'true';
+      new MutationObserver(mutations => {
+        if (mutations.some(mutation => (mutation.target as Element)?.parentElement?.closest?.('[data-report-outline-heading]')
+          || (mutation.target as Element)?.closest?.('[data-report-outline-heading]'))) {
+          syncFlowToc(doc);
+        }
+      }).observe(report, { subtree: true, childList: true, characterData: true });
+    }
   }
   for (const nested of Array.from(doc.querySelectorAll('iframe'))) {
     try {
@@ -140,7 +162,7 @@ function syncFlowToc(doc: Document) {
     const link = doc.createElement('a');
     link.href = `#${id}`;
     link.dataset.level = heading.tagName.substring(1);
-    link.textContent = heading.textContent || `章节 ${index + 1}`;
+    link.textContent = heading.textContent?.trim() || `章节 ${index + 1}`;
     list.appendChild(link);
   });
 }
@@ -157,7 +179,10 @@ function onVisualFrameLoad() {
 function cleanForSerialize(doc: Document) {
   if (props.kind === 'flow') {
     doc.querySelector('.report')?.removeAttribute('contenteditable');
-    doc.querySelectorAll('.report-toc-list').forEach(list => list.replaceChildren());
+    doc.querySelectorAll<HTMLElement>('.report-toc').forEach(toc => {
+      toc.removeAttribute('contenteditable');
+      toc.style.userSelect = '';
+    });
   }
   for (const el of Array.from(doc.querySelectorAll('.echarts-chart'))) {
     el.innerHTML = '';

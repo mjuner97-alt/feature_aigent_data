@@ -10,7 +10,7 @@ import type { SkillListItem } from '../types/skill';
 import type { SkillDependencyMetric } from '../types/skillJob';
 import type { SkillFlow, SkillFlowInput, SkillFlowNode } from '../types/skillFlow';
 import { buildOutline, defaultOutlineNumbering, flattenOutline, outlineNumberingPrefixes, validateOutlineRows, type OutlineRow } from '../utils/reportOutline';
-import { paramsFromSchema } from '../utils/scriptParams';
+import { inferParamSchema, paramsFromSchema } from '../utils/scriptParams';
 import FlowNodeCard from './FlowNodeCard.vue';
 import ScheduleRulesEditor from './ScheduleRulesEditor.vue';
 import { scrollToEditorSection } from '../utils/editorNavigation.js';
@@ -171,7 +171,11 @@ async function ensureScriptSchema(scriptId: string | null | undefined): Promise<
 
 function schemaFor(node: SkillFlowNode): ParamSchemaItem[] | null {
   const row = scripts.value.find(item => item.scriptId === node.scriptId);
-  return row ? (scriptSchemas.value[row.id] ?? null) : null;
+  const saved = node.scriptParams || {};
+  const registered = row ? scriptSchemas.value[row.id] : undefined;
+  if (!registered?.length) return Object.keys(saved).length ? inferParamSchema(saved) : null;
+  const names = new Set(registered.map(item => item.name));
+  return [...registered, ...inferParamSchema(saved).filter(item => !names.has(item.name))];
 }
 
 async function onScriptSelected(node: SkillFlowNode) {
@@ -504,7 +508,7 @@ async function load() {
       form.value = normalizeFlow(flow);
       const notifySettings = await getFlowNotifySettings(props.editId);
       notifyReceivers.value = [...(notifySettings.notifyReceivers || [])];
-    (form.value.nodes || []).forEach(node => { if (node.scriptId) ensureScriptSchema(node.scriptId); });
+      await Promise.all((form.value.nodes || []).map(node => node.scriptId ? ensureScriptSchema(node.scriptId) : Promise.resolve([])));
     } catch (e) {
       error.value = e instanceof Error ? e.message : '加载流程失败';
     }
