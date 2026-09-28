@@ -9,6 +9,7 @@ import com.agentscopea2a.v2.skillManager.notification.NotificationReceivers;
 import com.agentscopea2a.v2.skillManager.notification.NotificationSender;
 import com.agentscopea2a.v2.skillManager.report.FlowReportStorage;
 import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
+import com.agentscopea2a.v2.skillManager.report.LongTaskReportRenderer;
 import com.agentscopea2a.v2.skillManager.report.ReportOutlineComposer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.RuntimeContext;
@@ -57,7 +58,7 @@ public class FlowCompletionService {
 
     private final HarnessA2aRunnerV2 runner;
     private final ObjectMapper json;
-    private final HtmlReportRenderer renderer;
+    private final LongTaskReportRenderer renderer;
     private final SkillFlowMapper mapper;
     private final NotificationSender sender;
     private final MockOrgService orgService;
@@ -71,7 +72,7 @@ public class FlowCompletionService {
     private final Path reportRoot;
 
     @Autowired
-    public FlowCompletionService(HarnessA2aRunnerV2 runner, ObjectMapper json, HtmlReportRenderer renderer,
+    public FlowCompletionService(HarnessA2aRunnerV2 runner, ObjectMapper json, LongTaskReportRenderer renderer,
                                  SkillFlowMapper mapper, NotificationSender sender, MockOrgService orgService,
                                  @Qualifier("skillFlowClock") Clock skillFlowClock,
                                  SkillStorageProperties storage, FlowSummaryPromptRenderer promptRenderer,
@@ -94,7 +95,7 @@ public class FlowCompletionService {
                                  SkillFlowMapper mapper, NotificationSender sender, MockOrgService orgService,
                                  Clock skillFlowClock, SkillStorageProperties storage,
                                  FlowSummaryPromptRenderer promptRenderer, FlowReportStorage reportStorage) {
-        this(runner, json, renderer, mapper, sender, orgService, skillFlowClock, storage,
+        this(runner, json, new LongTaskReportRenderer(renderer), mapper, sender, orgService, skillFlowClock, storage,
                 promptRenderer, reportStorage, null);
     }
 

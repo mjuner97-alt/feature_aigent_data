@@ -91,6 +91,7 @@ public class FlowCoordinator {
     private final FlowExecutionService flowExecutionService;
     /** 节点结果缓存:同流程同节点同问题同数据日期的长任务结果复用(缓存异常自动降级为 miss)。 */
     private final FlowNodeCacheService nodeCache;
+    private final LongTaskNodeExecutionLogService nodeLogService;
     /** 要求绕过缓存重新执行的节点执行 ID(手动重跑单个节点时置入,执行时取出)。 */
     private final Set<Long> refreshRequested = ConcurrentHashMap.newKeySet();
 
@@ -100,7 +101,8 @@ public class FlowCoordinator {
                            ToolResultRegistry toolResultRegistry, FlowNodeCacheService nodeCache,
                            FlowExecutionService flowExecutionService,
                            com.agentscopea2a.v2.tools.ScriptExecTool scriptExecTool,
-                           ScriptParamRuleService paramRuleService) {
+                           ScriptParamRuleService paramRuleService,
+                           LongTaskNodeExecutionLogService nodeLogService) {
         this.mapper = mapper;
         this.runner = runner;
         this.json = json;
@@ -113,6 +115,7 @@ public class FlowCoordinator {
         this.flowExecutionService = flowExecutionService;
         this.scriptExecTool = scriptExecTool;
         this.paramRuleService = paramRuleService;
+        this.nodeLogService = nodeLogService;
         int workerCount = Math.max(1, SkillFlowProperties.WORKER_COUNT);
         this.workerPermits = new Semaphore(workerCount);
         this.workers = Executors.newFixedThreadPool(workerCount, r -> {
@@ -279,6 +282,8 @@ public class FlowCoordinator {
         int attempt = 0;
         String attemptLeaseOwner = null;
         String requestId = null;
+        Map<String, Object> scriptParams = null;
+        String result = null;
         FlowNodeCacheService.Claim cacheClaim = null;
         String stage = "LOAD_EXECUTION";
         try {
@@ -331,7 +336,6 @@ public class FlowCoordinator {
             // Python 节点参数规则解析:scriptParamsJson 里的 {"$rule": key} 按数据日期解析成真实值
             // (版本/季度/年份类参数随时间自动更新, 不用每次发版改流程定义)。
             // 解析后的参数参与缓存 key: 改参数后旧缓存自然 miss, 不会命中旧参数的结果。
-            Map<String, Object> scriptParams = null;
             if (scriptNode) {
                 stage = "RESOLVE_SCRIPT_PARAMS";
                 LocalDate anchor = flow.getDataDate() == null ? LocalDate.now(clock) : flow.getDataDate();
@@ -345,7 +349,7 @@ public class FlowCoordinator {
                     : "flow-" + flow.getFlowId() + "-" + node.getNodeKey() + "-skill-" + node.getSkillId();
             String cacheVersion = scriptNode ? node.getScriptId() : String.valueOf(node.getSkillId());
             boolean forceRefresh = refreshRequested.remove(nodeId);
-            String result = nodeCache.hit(cacheNodeId, cacheVersion, question, scriptParams, flow.getDataDate(), forceRefresh)
+            result = nodeCache.hit(cacheNodeId, cacheVersion, question, scriptParams, flow.getDataDate(), forceRefresh)
                     .orElse(null); // miss/降级均为 null,照常执行
             boolean cacheHit = result != null;
             if (!cacheHit) {
@@ -388,12 +392,14 @@ public class FlowCoordinator {
                     || flow.getStatus() == FlowExecutionStatus.CANCELLED) {
                 completeAudit(audit, FlowNodeAttemptStatus.CANCELLED, false, "CANCELLED",
                         "Flow cancelled before result persisted", started);
+                nodeLogService.record(flow, node, audit, json(scriptParams == null ? Map.of() : scriptParams), result, "Flow cancelled before result persisted");
                 cancel(node, flow);
                 return;
             }
             String resultJson = json(Map.of("text", result));
             stage = "PERSIST_RESULT";
             completeAudit(audit, FlowNodeAttemptStatus.SUCCESS, false, null, null, started);
+            nodeLogService.record(flow, node, audit, json(scriptParams == null ? Map.of() : scriptParams), result, null);
             if (attemptCompletionService.completeSuccess(node, attempt, attemptLeaseOwner,
                     resultJson, LocalDateTime.now(clock))) {
                 stage = "ADVANCE_FLOW";
@@ -426,7 +432,8 @@ public class FlowCoordinator {
             }
             if (audit != null) {
                 try {
-                    completeAudit(audit, FlowNodeAttemptStatus.FAILED, retryable, errorCode, errorMessage, started);
+                completeAudit(audit, FlowNodeAttemptStatus.FAILED, retryable, errorCode, errorMessage, started);
+                    nodeLogService.record(flow, node, audit, json(scriptParams == null ? Map.of() : scriptParams), result, errorMessage);
                 } catch (Exception auditError) {
                     // 错误收尾也可能遇到数据库异常；记录二次故障，但继续尝试回写节点终态。
                     log.error("Failed to persist skill flow attempt failure: nodeId={}, attempt={}",

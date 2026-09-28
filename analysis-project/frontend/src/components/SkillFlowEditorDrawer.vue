@@ -10,6 +10,7 @@ import type { SkillListItem } from '../types/skill';
 import type { SkillDependencyMetric } from '../types/skillJob';
 import type { SkillFlow, SkillFlowInput, SkillFlowNode } from '../types/skillFlow';
 import { buildOutline, defaultOutlineNumbering, flattenOutline, outlineNumberingPrefixes, validateOutlineRows, type OutlineRow } from '../utils/reportOutline';
+import { insertOutlineRow } from '../utils/outlineRows';
 import { inferParamSchema, normalizeScriptParams, paramsFromSchema } from '../utils/scriptParams';
 import FlowNodeCard from './FlowNodeCard.vue';
 import ScheduleRulesEditor from './ScheduleRulesEditor.vue';
@@ -468,7 +469,6 @@ function syncOutlineRows() {
 }
 
 function addOutlineRow(after: OutlineRow | null, asChild = false) {
-  const index = after ? outlineRows.value.indexOf(after) : outlineRows.value.length - 1;
   const level = after ? (asChild ? after.level + 1 : after.level) : 1;
   // 新章节必须拥有独立的绑定数组；插入章节时只改变章节行，不重建或移动已有节点绑定。
   const newRow: OutlineRow = {
@@ -477,7 +477,7 @@ function addOutlineRow(after: OutlineRow | null, asChild = false) {
     level,
     nodeKeys: [],
   };
-  outlineRows.value.splice(Math.max(0, index + 1), 0, newRow);
+  outlineRows.value = insertOutlineRow(outlineRows.value, after?.id ?? null, newRow, { afterSubtree: !asChild });
 }
 
 function removeOutlineRow(row: OutlineRow) {

@@ -155,14 +155,17 @@ export async function runSkillFlow(id: number): Promise<SkillFlowRunResult> {
   return res.json();
 }
 
-export async function listSkillFlowExecutions(status?: string, createdBy?: string, scope: 'mine' | 'all' = 'mine'): Promise<SkillFlowExecution[]> {
+export async function listSkillFlowExecutions(status?: string, createdBy?: string, scope: 'mine' | 'all' = 'mine', page = 1, pageSize = 20): Promise<{ items: SkillFlowExecution[]; page: number; pageSize: number; total: number }> {
   const qs = new URLSearchParams();
   if (status) qs.set('status', status);
   if (createdBy) qs.set('createdBy', createdBy);
   qs.set('scope', scope);
+  qs.set('page', String(page)); qs.set('pageSize', String(pageSize));
   const res = await fetch(`${EXECUTION_BASE}?${qs}`, { headers: authHeaders() });
   if (!res.ok) throw await requestError(res, '查询长任务执行记录失败');
-  return listBody<SkillFlowExecution>(await res.json());
+  const body = await res.json();
+  if (Array.isArray(body)) return { items: body, page, pageSize, total: body.length };
+  return { items: body.items ?? [], page: body.page ?? page, pageSize: body.pageSize ?? pageSize, total: body.total ?? 0 };
 }
 
 export async function getSkillFlowExecution(id: number): Promise<SkillFlowExecution> {
@@ -208,7 +211,7 @@ export async function getSkillFlowExecutionReportUrl(id: number): Promise<{ url:
   let reportBlob = blob;
   if (blob.type.includes('html') || downloadName?.endsWith('.html')) {
     const html = await blob.text();
-    const style = '<style>html,body{height:100%;margin:0;overflow:hidden}body{height:100%;overflow:hidden}.report-toc{position:fixed;inset:0 auto 0 0;height:100vh;width:248px;box-sizing:border-box;padding:18px 12px;background:#fff;border-right:1px solid #e2e8f0;overflow:visible}.report-toc-list{display:flex;flex-direction:column;gap:3px}.table-scroll{display:contents!important;overflow:visible!important;max-height:none!important}.html-content-shell{margin:0!important;padding:0!important;background:transparent!important;border:0!important;box-shadow:none!important}.report-toc a{display:block;padding:5px 7px;color:#475569;font-size:13px;line-height:1.35;white-space:normal;overflow:hidden;text-overflow:ellipsis;-webkit-box-orient:vertical;-webkit-line-clamp:2}.report-toc a[data-level="3"]{padding-left:18px}.report-toc a[data-level="4"],.report-toc a[data-level="5"],.report-toc a[data-level="6"]{padding-left:28px}.report{height:100vh;margin-left:248px!important;box-sizing:border-box;overflow-y:auto}</style>';
+    const style = '<style>html,body{height:100%;margin:0;overflow:hidden}body{height:100%;overflow:hidden}.report-toc{position:fixed;inset:0 auto 0 0;height:100vh;width:248px;box-sizing:border-box;padding:18px 12px;background:#fff;border-right:1px solid #e2e8f0;overflow:visible}.report-toc-list{display:flex;flex-direction:column;gap:3px}.table-scroll{display:contents!important;overflow:visible!important;max-height:none!important}body{background:#fff!important;margin:0!important;padding:0!important;overflow:visible!important}.report table{border-collapse:collapse!important;border:0!important;box-shadow:none!important;width:100%!important;margin:10px 0!important}.report table th,.report table td{border:1px solid #e2e8f0!important;padding:8px 12px!important}.html-fullscreen{position:relative!important;top:auto!important;right:auto!important;display:block!important;margin:0 0 8px auto!important}.html-content-shell{margin:0!important;padding:0!important;background:transparent!important;border:0!important;box-shadow:none!important}.html-content-shell>div:first-of-type{background:transparent!important;border:0!important;box-shadow:none!important;padding-top:0!important}.report-toc a{display:block;padding:5px 7px;color:#475569;font-size:13px;line-height:1.35;white-space:normal;overflow:hidden;text-overflow:ellipsis;-webkit-box-orient:vertical;-webkit-line-clamp:2}.report-toc a[data-level="3"]{padding-left:18px}.report-toc a[data-level="4"],.report-toc a[data-level="5"],.report-toc a[data-level="6"]{padding-left:28px}.report{height:100vh;margin-left:248px!important;box-sizing:border-box;overflow-y:auto}</style>';
     const script = '<script>(function(){var t=document.createElement("aside");t.className="report-toc";t.innerHTML="<nav class=report-toc-list></nav>";document.body.insertBefore(t,document.body.firstChild);var l=t.querySelector(".report-toc-list"),h=document.querySelectorAll(".report [data-report-outline-heading],.report h2,.report h3,.report h4,.report h5,.report h6");h.forEach(function(x,i){if(x.classList.contains("report-outline-title")||x.tagName==="H1")return;var id="report-section-"+i;x.id=id;var a=document.createElement("a");a.href="#"+id;a.dataset.level=x.tagName.substring(1);a.textContent=x.textContent||("章节 "+(i+1));a.title=a.textContent;a.addEventListener("click",function(e){var t=document.getElementById(id);if(t){e.preventDefault();t.scrollIntoView({block:"start",behavior:"smooth"})}});l.appendChild(a)});if(!l.children.length)t.style.display="none";})();</script>';
     if (html.includes('report-toc')) {
       reportBlob = new Blob([html.replace('</head>', style + '</head>')], { type: 'text/html' });
@@ -246,6 +249,10 @@ export async function saveFlowReportSource(id: number, html: string): Promise<st
   if (!res.ok) throw await requestError(res, '保存汇总报告失败');
   return res.text();
 }
+
+
+
+
 
 
 

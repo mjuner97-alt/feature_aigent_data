@@ -153,11 +153,13 @@ public class SkillFlowController {
 
     /** 本人触发的执行记录列表,status/keyword 可选过滤。 */
     @GetMapping("/api/skill-flow-executions")
-    public List<FlowQueryService.ExecutionDto> list(@RequestParam(name = "status", required = false) String status,
+    public FlowQueryService.PageDto list(@RequestParam(name = "status", required = false) String status,
                                                     @RequestParam(name = "createdBy", required = false) String createdBy,
                                                     @RequestParam(name = "scope", defaultValue = "mine") String scope,
-                                                    @RequestHeader(name = "X-User-Id") String userId) {
-        return queryService.list(status, createdBy, userId, "all".equalsIgnoreCase(scope));
+                                                    @RequestHeader(name = "X-User-Id") String userId,
+                                                    @RequestParam(defaultValue = "1") int page,
+                                                    @RequestParam(defaultValue = "20") int pageSize) {
+        return queryService.list(status, createdBy, userId, "all".equalsIgnoreCase(scope), page, pageSize);
     }
 
     /** 执行详情(含汇总结果与报告路径)。 */

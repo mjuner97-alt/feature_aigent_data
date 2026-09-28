@@ -58,8 +58,12 @@ public class FlowQueryService {
     }
 
     /** 执行列表(仅本人触发),status/createdBy 可选过滤。 */
-    public List<ExecutionDto> list(String status, String createdBy, String userId, boolean all) {
-        return mapper.selectExecutions(status, createdBy, all ? null : userId).stream().map(this::dto).toList();
+    public PageDto list(String status, String createdBy, String userId, boolean all, int page, int pageSize) {
+        int safePage = Math.max(1, page), safeSize = Math.min(100, Math.max(1, pageSize));
+        String scopedUser = all ? null : userId;
+        List<ExecutionDto> items = mapper.selectExecutions(status, createdBy, scopedUser, (safePage - 1) * safeSize, safeSize)
+                .stream().map(this::dto).toList();
+        return new PageDto(items, safePage, safeSize, mapper.countExecutions(status, createdBy, scopedUser));
     }
 
     /** 执行详情。 */
@@ -199,15 +203,14 @@ public class FlowQueryService {
     }
 
     private ExecutionDto dto(SkillFlowExecution e) {
-        List<SkillFlowNodeExecution> nodes = mapper.selectNodeExecutions(e.getId());
         return new ExecutionDto(e.getId(), e.getFlowId(), e.getFlowName(), e.getFlowCode(), e.getStatus().name(),
                 e.getTriggerType() == null ? null : e.getTriggerType().name(),
                 e.getTriggerUserId(), e.getOriginalQuestion(), e.getDataDate(), e.getRequiredMetricCount(),
-                e.getReadyMetricCount(), nodes.size(), (int) nodes.stream().filter(n -> n.getStatus().terminal()).count(),
-                e.getSummaryQuestionTemplateSnapshot(), renderedSummaryQuestion(e, nodes),
+                e.getReadyMetricCount(), e.getTotalNodeCount() == null ? 0 : e.getTotalNodeCount(),
+                e.getCompletedNodeCount() == null ? 0 : e.getCompletedNodeCount(),
+                e.getSummaryQuestionTemplateSnapshot(), null,
                 readJson(e.getSummaryJson()), e.getReportPath(),
-                e.getCreatedAt(), e.getStartedAt(), e.getCompletedAt(),
-                mapper.selectActiveDurationSeconds(e.getId()));
+                e.getCreatedAt(), e.getStartedAt(), e.getCompletedAt(), e.getActiveDurationSeconds());
     }
 
     /**
@@ -282,6 +285,7 @@ public class FlowQueryService {
                                Object summaryJson, String reportPath,
                                LocalDateTime createdAt, LocalDateTime startedAt, LocalDateTime completedAt,
                                Long activeDurationSeconds) {}
+    public record PageDto(List<ExecutionDto> items, int page, int pageSize, long total) {}
 
     /** 节点执行明细返回体(attempts 为每次尝试的审计记录;节点全并行,无依赖)。 */
     public record NodeDto(Long id, String nodeKey, String nodeName, String skillName, String questionTemplateSnapshot,

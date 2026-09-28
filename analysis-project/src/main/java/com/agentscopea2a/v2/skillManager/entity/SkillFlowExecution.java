@@ -46,4 +46,8 @@ public class SkillFlowExecution {
     private LocalDateTime completedAt;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+    /** 列表查询的聚合字段，避免逐条加载节点和尝试记录。 */
+    private Integer totalNodeCount;
+    private Integer completedNodeCount;
+    private Long activeDurationSeconds;
 }

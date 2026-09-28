@@ -336,9 +336,8 @@ public class HtmlReportRenderer {
         if (HTML_FRAGMENT.matcher(md).find()) {
             String renderedBody = body.toString();
             body.setLength(0);
-            body.append("<div class=\"html-content-shell\" id=\"html-content-0\">")
-                    .append("<button class=\"html-fullscreen\" type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-html-fullscreen=\"html-content-0\">&#x26F6;</button>")
-                    .append(renderedBody).append("</div>\n");
+            body.append("<button class=\"html-fullscreen\" type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-html-fullscreen=\"report\">&#x26F6;</button>")
+                    .append(renderedBody).append("\n");
         }
 
         return assembleHtml(safeTitle, body.toString(), charts, "");
@@ -392,6 +391,9 @@ public class HtmlReportRenderer {
 
     private void appendMarkdownPart(String part, StringBuilder body, List<ChartBlock> charts) {
         if (part == null || part.isBlank()) return;
+        // 完整 HTML 文档有时仍被工具包在 ```html 围栏中；完整文档会单独进入 iframe，
+        // 围栏标记不能作为 Markdown 文本残留在 iframe 之前。
+        part = part.replaceAll("(?i)(?m)^\\s*```html?\\s*$", "");
         splitCharts(part, body, true, charts);
     }
 
@@ -488,9 +490,8 @@ public class HtmlReportRenderer {
         List<ChartBlock> charts = splitCharts(bodyContent, body, false);
         String renderedBody = body.toString();
         body.setLength(0);
-        body.append("<div class=\"html-content-shell\" id=\"html-content-0\">")
-                .append("<button class=\"html-fullscreen\" type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-html-fullscreen=\"html-content-0\">&#x26F6;</button>")
-                .append(renderedBody).append("</div>\n");
+        body.append("<button class=\"html-fullscreen\" type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-html-fullscreen=\"report\">&#x26F6;</button>")
+                .append(renderedBody).append("\n");
 
         return assembleHtml(safeTitle, body.toString(), charts, extraStyles.toString(), true);
     }
@@ -573,11 +574,13 @@ public class HtmlReportRenderer {
         if (extraStyles != null && !extraStyles.isEmpty()) {
             sb.append(extraStyles);  // AI 完整 HTML 中的 <style> 块，保留原样式
         }
+        // 完整 HTML 节点也必须沿用汇总报告的表格外观，避免自身 CSS 产生第二层边框。
+        sb.append("<style>body{background:#fff!important;margin:0!important;padding:0!important;overflow:visible!important}.report table{border-collapse:collapse!important;border:0!important;box-shadow:none!important;width:100%!important;margin:10px 0!important}.report table th,.report table td{border:1px solid #e2e8f0!important;padding:8px 12px!important}.html-content-shell{margin:0!important;padding:0!important;background:transparent!important;border:0!important;box-shadow:none!important}.html-content-shell>div:first-of-type{background:transparent!important;border:0!important;box-shadow:none!important;padding-top:0!important}.html-fullscreen{position:relative!important;top:auto!important;right:auto!important;display:block!important;margin:0 0 8px auto!important}</style>");
         sb.append("</head><body>");
         if (includeToc) {
             sb.append("<aside class=\"report-toc\" aria-label=\"报告目录\"><nav class=\"report-toc-list\"></nav></aside>");
         }
-        sb.append("<div class=\"report\">");
+        sb.append("<div id=\"report\" class=\"report\">");
         sb.append(body);
         sb.append("</div>");
         if (includeToc) sb.append("<script>(function(){var toc=document.querySelector('.report-toc'),list=toc&&toc.querySelector('.report-toc-list');if(!toc||!list)return;if(list)list.replaceChildren();var heads=document.querySelectorAll('[data-report-outline-heading]');for(var i=0;i<heads.length;i++){var h=heads[i];if(h.classList.contains('report-outline-title')||h.tagName==='H1')continue;var id='report-section-'+i;h.id=id;var a=document.createElement('a');a.href='#'+id;a.dataset.level=h.tagName.substring(1);a.textContent=h.textContent||('章节 '+(i+1));a.title=a.textContent;a.addEventListener('click',function(e){var target=document.getElementById(this.hash.substring(1));if(target){e.preventDefault();target.scrollIntoView({block:'start',behavior:'smooth'});}});list.appendChild(a);}if(!list.children.length)toc.style.display='none';})();</script>");
@@ -821,6 +824,8 @@ public class HtmlReportRenderer {
     /** 一个 echarts 图表块：DOM id + option JSON 文本。 */
     private record ChartBlock(String id, String json) {}
 }
+
+
 
 
 

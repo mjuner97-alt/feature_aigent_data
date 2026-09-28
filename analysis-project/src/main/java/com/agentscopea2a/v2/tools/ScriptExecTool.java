@@ -385,6 +385,32 @@ public class ScriptExecTool {
     }
 
     /**
+     * 销售日报样例渲染入口，供回归测试和本地手动验证使用。
+     *
+     * <p>该方法保留独立名称，避免把“周经营快报”的历史桩输出误当成销售日报；
+     * 返回完整 HTML 文档，页面外壳不设置 padding、背景色或阴影，交给汇总报告容器统一布局。
+     */
+    static String formatSalesDailyReportMock(Map<String, Integer> params) {
+        int days = params == null || params.get("days") == null
+                ? 7 : Math.max(1, Math.min(31, params.get("days")));
+        StringBuilder rows = new StringBuilder();
+        for (int i = 1; i <= days; i++) {
+            rows.append("<tr><td>第").append(i).append("天</td><td>")
+                    .append(30 + i * 4).append("</td><td>")
+                    .append(180 + i * 23).append("</td><td>")
+                    .append(1450 + i * 9).append("</td></tr>");
+        }
+        return "<!doctype html><html lang='zh-CN'><head><meta charset='UTF-8'>"
+                + "<style>body{font-family:Microsoft YaHei,Arial,sans-serif;color:#1f2937}"
+                + "table{border-collapse:collapse;width:100%}th,td{padding:8px 12px;text-align:right;"
+                + "border:1px solid #e2e8f0}th:first-child,td:first-child{text-align:left}"
+                + "th{background:#f8fafc}</style></head><body>"
+                + "<h2>销售日报</h2><p>最近 " + days + " 天</p>"
+                + "<table><thead><tr><th>日期</th><th>收入(万元)</th><th>订单数</th><th>客单价(元)</th></tr></thead>"
+                + "<tbody>" + rows + "</tbody></table></body></html>";
+    }
+
+    /**
      * 模拟脚本统一输出:自包含 HTML 报告(内联样式,零外部依赖),
      * 内容含参数回显 + 多组明细表格 + ECharts 折线/柱状/饼图,用于演示与链路验证。
      */
@@ -438,7 +464,7 @@ public class ScriptExecTool {
                 boolean up = mom >= 0;
                 String status = completion >= 100 ? "优秀" : completion >= 85 ? "正常" : "待改进";
                 String statusColor = completion >= 100 ? "#27ae60" : completion >= 85 ? "#f39c12" : "#e74c3c";
-                String td = "padding:8px 12px;border-bottom:1px solid #eef1f5;"
+                String td = "padding:8px 12px;"
                         + (seq % 2 == 0 ? "background:#f8f9fb;" : "");
                 detailRows.append("<tr>")
                         .append("<td style='").append(td).append("text-align:left;white-space:nowrap;'>").append(biz).append("</td>")
@@ -476,7 +502,7 @@ public class ScriptExecTool {
                 + "<thead><tr style='background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;'>" + detailHeader + "</tr></thead>"
                 + "<tbody>" + detailRows + "</tbody></table></div>";
 
-        return "```html\n"
+        return ""
                 + "<div style='font-family:Microsoft YaHei;padding:20px;background:#f5f7fa;'>"
                 + "<div style='background:#fff;border-radius:10px;padding:25px;box-shadow:0 2px 8px rgba(0,0,0,0.06);'>"
                 + "<h2 style='color:#2c3e50;margin:0 0 5px 0;'>📊 每周经营数据快报</h2>"
@@ -486,9 +512,9 @@ public class ScriptExecTool {
                 + "<div style='text-align:right;'><span style='font-size:13px;opacity:0.9;'>较上周</span><br><span style='font-size:20px;font-weight:bold;color:" + (Double.parseDouble(String.valueOf(change)) >= 0 ? "#2ecc71" : "#e74c3c") + ";'>" + (Double.parseDouble(String.valueOf(change)) >= 0 ? "↑" : "↓") + " " + Math.abs(Double.parseDouble(String.valueOf(change))) + "%</span></div>"
                 + "</div>"
                 + detailTable
-                + "<p style='color:#95a5a6;font-size:12px;text-align:center;margin-top:20px;padding-top:12px;border-top:1px solid #eee;'>© 2026 经营数据分析 · 内部参考</p>"
+                + "<p style='color:#95a5a6;font-size:12px;text-align:center;margin-top:20px;padding-top:12px;'>© 2026 经营数据分析 · 内部参考</p>"
                 + "</div></div>\n"
-                + "```\n\n"
+                + "\n\n"
                 + "## 趋势图\n"
                 + "```echarts\n"
                 + "{\"title\":{\"text\":\"周收入与订单趋势\"},\"tooltip\":{\"trigger\":\"axis\"},\"xAxis\":{\"type\":\"category\",\"data\":" + labelJson + "},\"yAxis\":[{\"type\":\"value\"},{\"type\":\"value\"}],\"series\":[{\"name\":\"收入(万元)\",\"type\":\"line\",\"data\":" + revenueJson + "},{\"name\":\"订单数\",\"type\":\"bar\",\"yAxisIndex\":1,\"data\":" + orderJson + "}]}\n"

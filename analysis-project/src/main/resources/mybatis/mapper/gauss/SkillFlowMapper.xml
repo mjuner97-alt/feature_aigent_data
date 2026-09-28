@@ -27,6 +27,9 @@
         <result column="created_by" property="createdBy"/>
         <result column="created_at" property="createdAt"/>
         <result column="updated_at" property="updatedAt"/>
+        <result column="total_node_count" property="totalNodeCount"/>
+        <result column="completed_node_count" property="completedNodeCount"/>
+        <result column="active_duration_seconds" property="activeDurationSeconds"/>
         <result column="deleted_at" property="deletedAt"/>
     </resultMap>
 
@@ -546,11 +549,29 @@
 
     <!-- 执行记录管理列表:按触发用户/状态筛选,最多返回最近 500 条,createdBy 参数与 userId 同列过滤 -->
     <select id="selectExecutions" resultMap="ExecutionMap">
-        SELECT * FROM skill_flow_execution WHERE 1=1
+        SELECT e.*,
+               CAST((SELECT CASE WHEN COUNT(*) > 0 THEN COUNT(*)
+                                 ELSE (SELECT COUNT(*) FROM skill_flow_node fn WHERE fn.flow_id=e.flow_id)
+                            END
+                       FROM skill_flow_node_execution n WHERE n.flow_execution_id=e.id) AS INTEGER) AS total_node_count,
+               CAST((SELECT COUNT(*) FROM skill_flow_node_execution n WHERE n.flow_execution_id=e.id AND n.status IN ('SUCCESS','FAILED','BLOCKED','CANCELLED')) AS INTEGER) AS completed_node_count,
+               CAST((SELECT SUM(EXTRACT(EPOCH FROM (COALESCE(a.completed_at, NOW()) - a.started_at)))
+                  FROM skill_flow_node_attempt a JOIN skill_flow_node_execution n2 ON n2.id=a.node_execution_id
+                 WHERE n2.flow_execution_id=e.id AND a.started_at IS NOT NULL
+                   AND (a.completed_at IS NULL OR a.completed_at >= a.started_at)) AS BIGINT) AS active_duration_seconds
+        FROM skill_flow_execution e WHERE 1=1
         <if test="userId != null and userId != ''">AND trigger_user_id=#{userId}</if>
         <if test="status != null and status != ''">AND status=#{status}</if>
         <if test="createdBy != null and createdBy != ''">AND trigger_user_id=#{createdBy}</if>
-        ORDER BY created_at DESC LIMIT 500
+        ORDER BY e.created_at DESC LIMIT #{offset}, #{limit}
+    </select>
+
+    <select id="countExecutions" resultType="long">
+        SELECT COUNT(*) FROM skill_flow_execution
+        WHERE 1=1
+        <if test="userId != null and userId != ''">AND trigger_user_id=#{userId}</if>
+        <if test="status != null and status != ''">AND status=#{status}</if>
+        <if test="createdBy != null and createdBy != ''">AND trigger_user_id=#{createdBy}</if>
     </select>
 
     <!-- 扫描仍在等指标(WAITING_METRICS)的执行,供门控重算和跨天超时兜底(expirePreviousDays)使用 -->
