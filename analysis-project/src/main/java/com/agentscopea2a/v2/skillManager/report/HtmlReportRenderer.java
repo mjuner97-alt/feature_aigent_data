@@ -137,8 +137,9 @@ public class HtmlReportRenderer {
             *{box-sizing:border-box}
             html,body{max-width:100%;overflow-x:hidden}
             /* 报告正文使用更宽的画布，减少大屏左右空白；同时保留最小内边距。 */
-            body{min-height:100vh;height:100vh;overflow:hidden;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:15px;line-height:1.7;color:#1e293b;background:#fff;margin:0;padding:0}.report-toc{position:fixed;inset:0 auto 0 0;height:100vh;width:248px;box-sizing:border-box;padding:18px 12px;background:#fff;border-right:1px solid #e2e8f0;overflow-y:auto;overflow-x:hidden}
-            .report-toc.collapsed{flex-basis:44px;width:44px;padding:12px 8px;overflow:hidden}.report-toc-open{display:none}.report-toc-toggle{width:28px;height:28px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#334155;cursor:pointer}.report-toc-title{margin:12px 4px 8px;font-weight:700;color:#0f172a}.report-toc-list{display:flex;flex-direction:column;gap:3px}.report-toc a{display:block;padding:5px 7px;color:#475569;border-radius:5px;font-size:13px;line-height:1.35;white-space:normal;overflow:hidden;text-overflow:ellipsis;-webkit-box-orient:vertical;-webkit-line-clamp:2}.report-toc a:hover{background:#eff6ff;color:#2563eb;text-decoration:none}.report-toc a[data-level="3"]{padding-left:18px;font-size:12px}.report-toc a[data-level="4"],.report-toc a[data-level="5"],.report-toc a[data-level="6"]{padding-left:28px;font-size:12px}.report-toc.collapsed .report-toc-title,.report-toc.collapsed .report-toc-list{display:none}.report{height:100vh;margin-left:248px;padding:28px clamp(18px,3vw,48px);box-sizing:border-box;overflow-x:hidden;overflow-y:auto}
+            body{min-height:100vh;height:100vh;overflow:hidden;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:15px;line-height:1.7;color:#1e293b;background:#fff;margin:0;padding:0}.report-toc{position:fixed;inset:0 auto 0 0;height:100vh;width:248px;box-sizing:border-box;padding:18px 12px;background:#fff;border-right:1px solid #e2e8f0;overflow-y:scroll!important;overflow-x:hidden;pointer-events:auto}
+            .report-toc.collapsed{flex-basis:44px;width:44px;padding:12px 8px;overflow:hidden}.report-toc-open{display:none}.report-toc-toggle{width:28px;height:28px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#334155;cursor:pointer}.report-toc-title{margin:12px 4px 8px;font-weight:700;color:#0f172a}.report-toc-list{display:flex;flex-direction:column;gap:3px;min-height:max-content;padding-bottom:24px}.report-toc a{display:block;padding:5px 7px;color:#475569;border-radius:5px;font-size:13px;line-height:1.35;white-space:normal;overflow:hidden;text-overflow:ellipsis;-webkit-box-orient:vertical;-webkit-line-clamp:2}.report-toc a:hover{background:#eff6ff;color:#2563eb;text-decoration:none}.report-toc a[data-level="3"]{padding-left:18px;font-size:12px}.report-toc a[data-level="4"],.report-toc a[data-level="5"],.report-toc a[data-level="6"]{padding-left:28px;font-size:12px}.report-toc.collapsed .report-toc-title,.report-toc.collapsed .report-toc-list{display:none}#report-shell>#report{height:100vh;margin:0 0 0 10px;padding:0;box-sizing:border-box;overflow-x:hidden;overflow-y:auto}
+            .report-shell{height:100vh;margin-left:10px;box-sizing:border-box;overflow:hidden}
             h1,h2,h3,h4,h5,h6{color:#0f172a;margin:16px 0 8px;line-height:1.3}
             h1{font-size:1.6rem;padding-bottom:6px}
               .report .report-outline-title,
@@ -163,7 +164,7 @@ public class HtmlReportRenderer {
                outline 兜底 border-collapse:collapse 下 sticky 表头随滚动丢失的边框线；
                默认 overflow-x:auto 供宽表横向滚动（无 JS 场景的兜底），
                overflow 滚动容器会困住 sticky，由 TABLE_STICKY_JS 按表格实际宽度动态解除。 */
-            .table-scroll{display:contents;max-width:none;min-width:0;overflow:visible}.table-scroll::-webkit-scrollbar{display:none;width:0;height:0}
+            .table-scroll{display:block;width:100%;max-width:100%;min-width:0;overflow-x:auto;overflow-y:visible;-webkit-overflow-scrolling:touch}.table-scroll::-webkit-scrollbar{height:8px}.table-scroll table{width:max-content;min-width:100%;max-width:none}
             .table-scroll th{outline:1px solid #e2e8f0;outline-offset:-1px}
             tbody tr:nth-child(even){background:#f8fafc}
             ul,ol{margin:6px 0;padding-left:22px}
@@ -172,16 +173,37 @@ public class HtmlReportRenderer {
             a:hover{text-decoration:underline}
             .echarts-shell{position:relative;width:100%;margin:20px 0;background:#fff}
             .echarts-chart{width:100%;height:460px}
-            .echarts-fullscreen{position:absolute;z-index:2;top:8px;right:8px;width:32px;height:32px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;color:#334155;cursor:pointer;font-size:18px;line-height:28px}
-            .echarts-fullscreen:hover{background:#f8fafc;color:#0f172a}
+            .echarts-fullscreen,.html-fullscreen{position:absolute;z-index:2;top:12px;right:12px;width:36px;height:36px;border:1px solid #d7dee8;border-radius:8px;background:rgba(255,255,255,.96);color:#475569;cursor:pointer;font-size:20px;line-height:34px;text-align:center;box-shadow:0 2px 8px rgba(15,23,42,.12);transition:all .2s ease}
+            .echarts-fullscreen:hover,.html-fullscreen:hover{color:#2563eb;border-color:#93c5fd;background:#eff6ff;box-shadow:0 4px 12px rgba(37,99,235,.2)}
+            .echarts-fullscreen:active,.html-fullscreen:active{transform:scale(.94)}
             .echarts-shell:fullscreen{padding:48px 16px 16px;background:#fff}
             .echarts-shell:fullscreen .echarts-chart{height:calc(100vh - 64px)}
             .report-frame-shell{margin:12px 0}
-            .report-frame{width:100%;height:600px;border:1px solid #e2e8f0;border-radius:6px;display:block;background:#fff}
+            .report-frame{width:100%;height:600px;border:0;border-radius:0;outline:0;display:block;background:#fff;overflow:hidden}
+            .report:fullscreen{width:100%!important;height:100%!important;margin:0!important;overflow:auto!important;background:#fff!important;color:#1e293b!important}
+            .long-task-node{display:block;clear:both;width:100%;max-width:100%;min-width:0;box-sizing:border-box;overflow-x:auto;margin:16px 0}
+            .long-task-node table{display:table;width:100%;max-width:100%;margin:10px 0;box-sizing:border-box}
             .html-content-shell{position:relative;margin:0;padding:0;background:transparent;border:0;box-shadow:none}
             .html-content-shell:fullscreen{width:100%;height:100%;overflow:auto;padding:48px 28px 28px;background:#fff}
-            .html-fullscreen{position:absolute;z-index:2;top:8px;right:8px;width:32px;height:32px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;color:#334155;cursor:pointer;font-size:18px;line-height:28px}
-            .html-fullscreen:hover{background:#f8fafc;color:#0f172a}
+            """;
+
+    /** 完整 HTML 只注入报告外壳样式，保留原文档自己的排版和表格设计。 */
+    private static final String COMPLETE_HTML_CSS = """
+            html,body{margin:0;max-width:100%;overflow-x:hidden}
+            body{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+            .report-toc{position:fixed;inset:0 auto 0 0;width:248px;height:100vh;padding:18px 12px;overflow-y:scroll!important;overflow-x:hidden;overscroll-behavior:contain;pointer-events:auto;background:#fff;border-right:1px solid #e2e8f0}
+            .report-toc-list{display:flex;flex-direction:column;gap:3px;min-height:max-content;padding-bottom:24px}
+            .report-toc a{display:block;padding:5px 7px;color:#475569;text-decoration:none;line-height:1.35}
+            .report-shell{height:100vh;margin-left:10px;overflow:hidden}
+            #report-shell>#report{height:100vh;overflow-x:auto;overflow-y:auto;padding:0;margin:0 0 0 10px!important}
+            .report:fullscreen{width:100%;height:100%;margin:0;overflow:auto;background:#fff}
+            .echarts-shell{position:relative;width:100%;margin:20px 0;background:#fff}
+            .echarts-chart{width:100%;height:460px}
+            .echarts-shell:fullscreen{padding:48px 16px 16px;background:#fff}
+            .echarts-shell:fullscreen .echarts-chart{height:calc(100vh - 64px)}
+            .echarts-fullscreen,.html-fullscreen{position:absolute;z-index:2;top:12px;right:12px;width:36px;height:36px;border:1px solid #d7dee8;border-radius:8px;background:rgba(255,255,255,.96);color:#475569;cursor:pointer;font-size:20px;line-height:34px;text-align:center;box-shadow:0 2px 8px rgba(15,23,42,.12)}
+            .echarts-fullscreen:hover,.html-fullscreen:hover{color:#2563eb;border-color:#93c5fd;background:#eff6ff}
+            .html-fullscreen{position:relative;top:auto;right:auto;display:block;margin:0 0 8px auto}
             """;
 
     /**
@@ -192,6 +214,10 @@ public class HtmlReportRenderer {
     private static final String CHART_NORMALIZE_JS = """
             function normalizeChartOption(opt,chartWidth){
               if(!opt||typeof opt!=='object'||!opt.series||!opt.series.length) return opt;
+              // JSON 无法携带可执行 formatter；模型输出的函数字符串会被 ECharts 当作文字显示。
+              if(opt.tooltip&&typeof opt.tooltip.formatter==='string'&&/^\\s*(?:async\\s+)?function\\b|^\\s*\\(?\\s*[\\w,\\s]*\\)?\\s*=>/.test(opt.tooltip.formatter)){
+                delete opt.tooltip.formatter;
+              }
               var colorByName={};
               for(var i=0;i<opt.series.length;i++){
                 var s=opt.series[i]; if(!s||s.type!=='line') continue;
@@ -324,11 +350,19 @@ public class HtmlReportRenderer {
         // 原样渲染，不走 markdown 转换；<head> 的 <style> 保留注入，<script> 移除防注入
         String completeHtml = extractCompleteHtml(md);
         if (completeHtml != null) {
-            return renderCompleteHtml(completeHtml, safeTitle);
+            return renderCompleteHtml(completeHtml, safeTitle, title != null);
         }
 
         // 1. 按图表块切分（```echarts 围栏 + <echart>/<echarts> 标签两种形式）：
         //    块间片段转 HTML，块位置插入图表占位 div
+        // 汇总节点会把原完整 HTML 的 <style> 保留在片段中；样式必须移到 head，
+        // 否则 Markdown 段落转换会把 CSS 行包成 <p>，导致样式失效并把 CSS 显示出来。
+        StringBuilder fragmentStyles = new StringBuilder();
+        Matcher fragmentStyle = STYLE_BLOCK.matcher(md);
+        while (fragmentStyle.find()) {
+            fragmentStyles.append(fragmentStyle.group());
+        }
+        md = fragmentStyle.replaceAll("");
         StringBuilder body = new StringBuilder();
         List<ChartBlock> charts = splitCharts(md, body, true);
         // 节点结果常返回 HTML 片段而不是完整 HTML 文档；这条路径同样需要
@@ -340,7 +374,7 @@ public class HtmlReportRenderer {
                     .append(renderedBody).append("\n");
         }
 
-        return assembleHtml(safeTitle, body.toString(), charts, "");
+        return assembleHtml(safeTitle, body.toString(), charts, fragmentStyles.toString());
     }
 
     /**
@@ -471,12 +505,12 @@ public class HtmlReportRenderer {
      *
      * <p>body 内若含 {@code ```echarts} 代码块仍渲染成图表；其余原样作为 HTML 嵌入。
      */
-    private String renderCompleteHtml(String html, String safeTitle) {
+    private String renderCompleteHtml(String html, String safeTitle, boolean includeToc) {
         // 收集 <style>...</style>（通常在 head），注入报告保留 AI 样式（剔除 box-shadow 阴影）
         StringBuilder extraStyles = new StringBuilder();
         Matcher sm = STYLE_BLOCK.matcher(html);
         while (sm.find()) {
-            extraStyles.append(BOX_SHADOW_DECL.matcher(sm.group()).replaceAll(""));
+            extraStyles.append(sm.group());
         }
 
         // 抽取 <body...>...</body> 内嵌内容；无 <body> 兜底用全文
@@ -493,7 +527,7 @@ public class HtmlReportRenderer {
         body.append("<button class=\"html-fullscreen\" type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-html-fullscreen=\"report\">&#x26F6;</button>")
                 .append(renderedBody).append("\n");
 
-        return assembleHtml(safeTitle, body.toString(), charts, extraStyles.toString(), true);
+        return assembleHtml(safeTitle, body.toString(), charts, extraStyles.toString(), includeToc, true);
     }
 
     /** 抽取 {@code <body...>...</body>} 之间的内嵌 HTML；无 {@code <body>} 时返回原文。 */
@@ -566,23 +600,32 @@ public class HtmlReportRenderer {
 
     private String assembleHtml(String title, String body, List<ChartBlock> charts, String extraStyles,
                                 boolean includeToc) {
+        return assembleHtml(title, body, charts, extraStyles, includeToc, false);
+    }
+
+    private String assembleHtml(String title, String body, List<ChartBlock> charts, String extraStyles,
+                                boolean includeToc, boolean completeHtml) {
         StringBuilder sb = new StringBuilder(1024 + body.length());
         sb.append("<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">");
         sb.append("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
         sb.append("<title>").append(title).append("</title>");
-        sb.append("<style>").append(CSS).append("</style>");
+        sb.append("<style>").append(completeHtml ? COMPLETE_HTML_CSS : CSS).append("</style>");
+        if (!includeToc) {
+            sb.append("<style>html,body{height:auto!important;overflow-y:hidden!important}.report-shell{height:auto!important;min-height:0;margin-left:0;overflow:visible!important}.report{height:auto!important;min-height:0;margin-left:0!important;width:100%;padding:0!important;overflow-y:visible!important}</style>");
+        }
         if (extraStyles != null && !extraStyles.isEmpty()) {
             sb.append(extraStyles);  // AI 完整 HTML 中的 <style> 块，保留原样式
         }
-        // 完整 HTML 节点也必须沿用汇总报告的表格外观，避免自身 CSS 产生第二层边框。
-        sb.append("<style>body{background:#fff!important;margin:0!important;padding:0!important;overflow:visible!important}.report table{border-collapse:collapse!important;border:0!important;box-shadow:none!important;width:100%!important;margin:10px 0!important}.report table th,.report table td{border:1px solid #e2e8f0!important;padding:8px 12px!important}.html-content-shell{margin:0!important;padding:0!important;background:transparent!important;border:0!important;box-shadow:none!important}.html-content-shell>div:first-of-type{background:transparent!important;border:0!important;box-shadow:none!important;padding-top:0!important}.html-fullscreen{position:relative!important;top:auto!important;right:auto!important;display:block!important;margin:0 0 8px auto!important}</style>");
+        if (!completeHtml) sb.append("<style>body{background:#fff!important;margin:0!important;padding:0!important;overflow:visible!important}.report table{border-collapse:collapse!important;border:0!important;box-shadow:none!important;width:max-content!important;min-width:100%!important;max-width:none!important;margin:10px 0!important}.report table th,.report table td{border:1px solid #e2e8f0!important;padding:8px 12px!important}.html-content-shell{margin:0!important;padding:0!important;background:transparent!important;border:0!important;box-shadow:none!important}.html-content-shell>div:first-of-type{background:transparent!important;border:0!important;box-shadow:none!important;padding-top:0!important}.html-fullscreen{position:relative!important;top:auto!important;right:auto!important;display:block!important;margin:0 0 8px auto!important}</style>");
+        if (!includeToc) sb.append("<style>html,body{height:auto!important;overflow-y:hidden!important}.report-shell{height:auto!important;overflow:visible!important}.report{height:auto!important;padding:0!important;overflow-y:visible!important}.report:fullscreen{height:100%!important;overflow:auto!important;background:#fff!important}</style>");
         sb.append("</head><body>");
         if (includeToc) {
             sb.append("<aside class=\"report-toc\" aria-label=\"报告目录\"><nav class=\"report-toc-list\"></nav></aside>");
         }
-        sb.append("<div id=\"report\" class=\"report\">");
+        sb.append("<div id=\"report-shell\" class=\"report-shell\"><div id=\"report\" class=\"report\">");
         sb.append(body);
-        sb.append("</div>");
+        sb.append("</div></div>");
+        if (includeToc) sb.append("<script>(function(){var frames=document.querySelectorAll('.report-frame');for(var i=0;i<frames.length;i++){(function(frame){frame.addEventListener('load',function(){try{var doc=frame.contentDocument;if(!doc)return;var report=doc.getElementById('report');if(!report)return;function fit(){var shell=doc.getElementById('report-shell');var height=Math.max(report.scrollHeight,report.getBoundingClientRect().height,shell&&shell.scrollHeight||0,doc.body.scrollHeight,doc.documentElement.scrollHeight);frame.style.height=Math.ceil(height+2)+'px';}fit();if(doc.defaultView.ResizeObserver){var observer=new doc.defaultView.ResizeObserver(fit);observer.observe(report);var shell=doc.getElementById('report-shell');if(shell)observer.observe(shell);}doc.defaultView.addEventListener('load',fit);}catch(e){}});})(frames[i]);}})();</script>");
         if (includeToc) sb.append("<script>(function(){var toc=document.querySelector('.report-toc'),list=toc&&toc.querySelector('.report-toc-list');if(!toc||!list)return;if(list)list.replaceChildren();var heads=document.querySelectorAll('[data-report-outline-heading]');for(var i=0;i<heads.length;i++){var h=heads[i];if(h.classList.contains('report-outline-title')||h.tagName==='H1')continue;var id='report-section-'+i;h.id=id;var a=document.createElement('a');a.href='#'+id;a.dataset.level=h.tagName.substring(1);a.textContent=h.textContent||('章节 '+(i+1));a.title=a.textContent;a.addEventListener('click',function(e){var target=document.getElementById(this.hash.substring(1));if(target){e.preventDefault();target.scrollIntoView({block:'start',behavior:'smooth'});}});list.appendChild(a);}if(!list.children.length)toc.style.display='none';})();</script>");
         // 表头 sticky 自适应脚本：不依赖图表，始终内联
         sb.append("<script>").append(TABLE_STICKY_JS).append("</script>");

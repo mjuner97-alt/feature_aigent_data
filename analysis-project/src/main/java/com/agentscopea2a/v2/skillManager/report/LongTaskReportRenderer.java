@@ -18,6 +18,8 @@ public class LongTaskReportRenderer {
             "(?is)<!doctype\\s+html\\b[\\s\\S]*?</html\\s*>|<html\\b[\\s\\S]*?</html\\s*>");
     private static final Pattern BODY = Pattern.compile("(?is)<body\\b[^>]*>([\\s\\S]*?)</body\\s*>");
     private static final Pattern STYLE = Pattern.compile("(?is)<style\\b[^>]*>([\\s\\S]*?)</style\\s*>");
+    /** 兼容节点 HTML 中常见的 style 标签拼写错误，避免 CSS 被当作正文显示。 */
+    private static final Pattern STYPE = Pattern.compile("(?is)<stype\\b[^>]*>([\\s\\S]*?)</stype\\s*>");
     private static final Pattern SCRIPT = Pattern.compile("(?is)<script\\b[^>]*>[\\s\\S]*?</script\\s*>");
     private static final Pattern OUTER_LAYOUT = Pattern.compile(
             "(?i)(?:width|min-width|max-width|height|min-height|max-height|margin|padding|background(?:-color)?|box-shadow)\\s*:[^;}]*;?");
@@ -34,24 +36,9 @@ public class LongTaskReportRenderer {
     }
 
     private String normalizeCompleteHtml(String input) {
-        Matcher matcher = HTML_DOCUMENT.matcher(input);
-        StringBuffer out = new StringBuffer();
-        while (matcher.find()) {
-            String document = matcher.group();
-            Matcher body = BODY.matcher(document);
-            String bodyContent = body.find() ? body.group(1) : document;
-            StringBuilder styles = new StringBuilder();
-            Matcher style = STYLE.matcher(document);
-            while (style.find()) {
-                styles.append("<style>").append(normalizeStyles(style.group(1))).append("</style>");
-            }
-            // 节点脚本不能跨完整文档安全执行；静态表格和 renderer 自己的 ECharts 仍可正常处理。
-            bodyContent = SCRIPT.matcher(bodyContent).replaceAll("");
-            String fragment = "<div class=\"long-task-node\">" + styles + bodyContent + "</div>";
-            matcher.appendReplacement(out, Matcher.quoteReplacement(fragment));
-        }
-        matcher.appendTail(out);
-        return out.toString();
+        // 保留每个完整 HTML 文档的边界，让 HtmlReportRenderer 走 iframe 隔离路径。
+        // 不能先把多个文档压成一个 body，否则节点 CSS 会互相覆盖。
+        return STYPE.matcher(input).replaceAll("<style>$1</style>");
     }
 
     private String normalizeStyles(String css) {

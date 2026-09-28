@@ -104,7 +104,6 @@ export function validateOutlineRows(rows: OutlineRow[], nodeKeys: string[]): str
   if (!rows.length) return errors;
   if (rows.length > 50) errors.push('报告大纲条目不能超过 50 个');
   const ids = new Set<string>();
-  const titles = new Set<string>();
   const bound = new Set<string>();
   let prevLevel = 0;
   rows.forEach((row, index) => {
@@ -117,9 +116,6 @@ export function validateOutlineRows(rows: OutlineRow[], nodeKeys: string[]): str
     }
     if (ids.has(row.id)) errors.push(`大纲「${label}」id 重复`);
     ids.add(row.id);
-    const title = row.title.trim();
-    if (title && titles.has(title)) errors.push(`大纲标题「${title}」重复`);
-    titles.add(title);
     if (row.nodeKeys.length) {
       row.nodeKeys.forEach(key => {
         if (!nodeKeys.includes(key)) errors.push(`大纲「${label}」绑定的节点不存在`);
