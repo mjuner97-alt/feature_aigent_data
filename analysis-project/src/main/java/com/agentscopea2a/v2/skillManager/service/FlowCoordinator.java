@@ -2,6 +2,8 @@ package com.agentscopea2a.v2.skillManager.service;
 
 import com.agentscopea2a.v2.skillManager.flowcache.FlowNodeCacheService;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
+import com.agentscopea2a.v2.service.ChatRuntimeConfigService;
+import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.LONG_TASK_NODE_CACHE_ENABLED;
 import com.agentscopea2a.v2.skillManager.config.SkillFlowProperties;
 import com.agentscopea2a.v2.skillManager.entity.*;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
@@ -92,6 +94,7 @@ public class FlowCoordinator {
     /** 节点结果缓存:同流程同节点同问题同数据日期的长任务结果复用(缓存异常自动降级为 miss)。 */
     private final FlowNodeCacheService nodeCache;
     private final LongTaskNodeExecutionLogService nodeLogService;
+    private final ChatRuntimeConfigService runtimeConfigService;
     /** 要求绕过缓存重新执行的节点执行 ID(手动重跑单个节点时置入,执行时取出)。 */
     private final Set<Long> refreshRequested = ConcurrentHashMap.newKeySet();
 
@@ -102,7 +105,8 @@ public class FlowCoordinator {
                            FlowExecutionService flowExecutionService,
                            com.agentscopea2a.v2.tools.ScriptExecTool scriptExecTool,
                            ScriptParamRuleService paramRuleService,
-                           LongTaskNodeExecutionLogService nodeLogService) {
+                           LongTaskNodeExecutionLogService nodeLogService,
+                           ChatRuntimeConfigService runtimeConfigService) {
         this.mapper = mapper;
         this.runner = runner;
         this.json = json;
@@ -116,6 +120,7 @@ public class FlowCoordinator {
         this.scriptExecTool = scriptExecTool;
         this.paramRuleService = paramRuleService;
         this.nodeLogService = nodeLogService;
+        this.runtimeConfigService = runtimeConfigService;
         int workerCount = Math.max(1, SkillFlowProperties.WORKER_COUNT);
         this.workerPermits = new Semaphore(workerCount);
         this.workers = Executors.newFixedThreadPool(workerCount, r -> {
@@ -342,6 +347,8 @@ public class FlowCoordinator {
                 scriptParams = paramRuleService.resolve(node.getScriptId(), node.getScriptParamsJson(), anchor);
             }
             stage = "NODE_CACHE_LOOKUP";
+            boolean cacheEnabled = runtimeConfigService.resolve(flow.getTriggerUserId(), "")
+                    .getBooleanOrDefault(LONG_TASK_NODE_CACHE_ENABLED, true);
             // 节点结果缓存:缓存 key 维度 = 节点(流程+nodeKey+脚本/Skill) + 版本(脚本 id / skillId) + 渲染后问题(输入) + 数据日期。
             // 手动重跑单个节点会置入 refreshRequested,要求绕过缓存重新执行。
             String cacheNodeId = scriptNode
@@ -349,18 +356,21 @@ public class FlowCoordinator {
                     : "flow-" + flow.getFlowId() + "-" + node.getNodeKey() + "-skill-" + node.getSkillId();
             String cacheVersion = scriptNode ? node.getScriptId() : String.valueOf(node.getSkillId());
             boolean forceRefresh = refreshRequested.remove(nodeId);
-            result = nodeCache.hit(cacheNodeId, cacheVersion, question, scriptParams, flow.getDataDate(), forceRefresh)
-                    .orElse(null); // miss/降级均为 null,照常执行
+            result = cacheEnabled
+                    ? nodeCache.hit(cacheNodeId, cacheVersion, question, scriptParams, flow.getDataDate(), forceRefresh).orElse(null)
+                    : null;
             boolean cacheHit = result != null;
             if (!cacheHit) {
-                cacheClaim = nodeCache.claim(cacheNodeId, cacheVersion, question, scriptParams, flow.getDataDate(), forceRefresh);
+                if (cacheEnabled) {
+                    cacheClaim = nodeCache.claim(cacheNodeId, cacheVersion, question, scriptParams, flow.getDataDate(), forceRefresh);
+                }
                 if (scriptNode) {
                     // Python 脚本节点:不走 AI,按脚本注册直接执行,参数已解析(含 $rule 规则值)
                     stage = "RUN_SCRIPT";
                     result = runScriptDirect(node, scriptParams);
                     if (result == null || result.isBlank()) throw new IllegalStateException("Script returned empty result");
                     // 只有抢占成功的执行才把结果写回缓存;输家照常返回结果但不落库、不覆盖赢家文件。
-                    if (cacheClaim.won()) nodeCache.success(cacheClaim, result);
+                    if (cacheClaim != null && cacheClaim.won()) nodeCache.success(cacheClaim, result);
                 } else {
                 stage = "CREATE_RUNTIME_CONTEXT";
                 String triggerUserId = requireText(flow.getTriggerUserId(), "TriggerUserIdMissing");
@@ -380,7 +390,7 @@ public class FlowCoordinator {
                         extract(events), toolResultRegistry.getRequestRefs(requestId));
                 if (result == null || result.isBlank()) throw new IllegalStateException("Skill returned empty result");
                 // 只有抢占成功的执行才把结果写回缓存;输家照常返回结果但不落库、不覆盖赢家文件。
-                if (cacheClaim.won()) nodeCache.success(cacheClaim, result);
+                if (cacheClaim != null && cacheClaim.won()) nodeCache.success(cacheClaim, result);
                 }
             } else {
                 log.info("Skill flow node {} served from node cache", nodeId);
