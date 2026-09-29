@@ -120,6 +120,7 @@ public class HtmlReportRenderer {
     private static final Pattern SCRIPT_BLOCK = Pattern.compile("<script\\b[^>]*>[\\s\\S]*?</script>", Pattern.CASE_INSENSITIVE);
     private static final Pattern SCRIPT_OPEN = Pattern.compile("<script\\b[^>]*>", Pattern.CASE_INSENSITIVE);
     private static final Pattern SCRIPT_CLOSE = Pattern.compile("</script\\s*>", Pattern.CASE_INSENSITIVE);
+    private static final Pattern TABLE_ELEMENT = Pattern.compile("<table\\b[^>]*>[\\s\\S]*?</table\\s*>", Pattern.CASE_INSENSITIVE);
     private static final Pattern COMPLETE_HTML_START =
             Pattern.compile("<!doctype\\b[^>]*>|<html\\b[^>]*>", Pattern.CASE_INSENSITIVE);
     private static final Pattern HTML_CLOSE = Pattern.compile("</html\\s*>", Pattern.CASE_INSENSITIVE);
@@ -138,8 +139,8 @@ public class HtmlReportRenderer {
             html,body{max-width:100%;overflow-x:hidden}
             /* 报告正文使用更宽的画布，减少大屏左右空白；同时保留最小内边距。 */
             body{min-height:100vh;height:100vh;overflow:hidden;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:15px;line-height:1.7;color:#1e293b;background:#fff;margin:0;padding:0}.report-toc{position:fixed;inset:0 auto 0 0;height:100vh;width:248px;box-sizing:border-box;padding:18px 12px;background:#fff;border-right:1px solid #e2e8f0;overflow-y:scroll!important;overflow-x:hidden;pointer-events:auto}
-            .report-toc{scrollbar-width:thin;scrollbar-color:#cbd5e1 transparent}.report-toc::-webkit-scrollbar{width:6px}.report-toc::-webkit-scrollbar-track{background:transparent}.report-toc::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}.report-toc::-webkit-scrollbar-thumb:hover{background:#94a3b8}.report-toc.collapsed{flex-basis:44px;width:44px;padding:12px 8px;overflow:hidden}.report-toc-open{display:none}.report-toc-toggle{width:28px;height:28px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#334155;cursor:pointer}.report-toc-title{margin:12px 4px 8px;font-weight:700;color:#0f172a}.report-toc{scrollbar-width:thin;scrollbar-color:#cbd5e1 transparent}.report-toc::-webkit-scrollbar{width:6px}.report-toc::-webkit-scrollbar-track{background:transparent}.report-toc::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}.report-toc::-webkit-scrollbar-thumb:hover{background:#94a3b8}.report-toc-list{display:flex;flex-direction:column;gap:3px;min-height:max-content;padding-bottom:24px}.report-toc a{display:block;padding:5px 7px;color:#475569;border-radius:5px;font-size:13px;line-height:1.35;white-space:normal;overflow:hidden;text-overflow:ellipsis;-webkit-box-orient:vertical;-webkit-line-clamp:2}.report-toc a:hover{background:#eff6ff;color:#2563eb;text-decoration:none}.report-toc a[data-level="3"]{padding-left:18px;font-size:12px}.report-toc a[data-level="4"],.report-toc a[data-level="5"],.report-toc a[data-level="6"]{padding-left:28px;font-size:12px}.report-toc.collapsed .report-toc-title,.report-toc.collapsed .report-toc-list{display:none}#report-shell>#report{height:100vh;margin:0 0 0 5px;padding:0;box-sizing:border-box;overflow-x:hidden;overflow-y:auto}
-            .report-shell{height:100vh;margin-left:0;box-sizing:border-box;overflow:hidden}
+            .report-toc{scrollbar-width:thin;scrollbar-color:#cbd5e1 transparent}.report-toc::-webkit-scrollbar{width:6px}.report-toc::-webkit-scrollbar-track{background:transparent}.report-toc::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}.report-toc::-webkit-scrollbar-thumb:hover{background:#94a3b8}.report-toc.collapsed{flex-basis:44px;width:44px;padding:12px 8px;overflow:hidden}.report-toc-open{display:none}.report-toc-toggle{width:28px;height:28px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#334155;cursor:pointer}.report-toc-title{margin:12px 4px 8px;font-weight:700;color:#0f172a}.report-toc{scrollbar-width:thin;scrollbar-color:#cbd5e1 transparent}.report-toc::-webkit-scrollbar{width:6px}.report-toc::-webkit-scrollbar-track{background:transparent}.report-toc::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}.report-toc::-webkit-scrollbar-thumb:hover{background:#94a3b8}.report-toc-list{display:flex;flex-direction:column;gap:3px;min-height:max-content;padding-bottom:24px}.report-toc a{display:block;padding:5px 7px;color:#475569;border-radius:5px;font-size:13px;line-height:1.35;white-space:normal;overflow:hidden;text-overflow:ellipsis;-webkit-box-orient:vertical;-webkit-line-clamp:2}.report-toc a:hover{background:#eff6ff;color:#2563eb;text-decoration:none}.report-toc a[data-level="3"]{padding-left:18px;font-size:12px}.report-toc a[data-level="4"],.report-toc a[data-level="5"],.report-toc a[data-level="6"]{padding-left:28px;font-size:12px}.report-toc.collapsed .report-toc-title,.report-toc.collapsed .report-toc-list{display:none}#report-shell>#report{height:100vh;margin:0;padding:0;box-sizing:border-box;overflow-x:hidden;overflow-y:auto}
+            .report-shell{height:100vh;margin-left:10px;box-sizing:border-box;overflow:hidden}
             h1,h2,h3,h4,h5,h6{color:#0f172a;margin:16px 0 8px;line-height:1.3}
             h1{font-size:1.6rem;padding-bottom:6px}
               .report .report-outline-title,
@@ -195,7 +196,8 @@ public class HtmlReportRenderer {
             .report-toc{scrollbar-width:thin;scrollbar-color:#cbd5e1 transparent}.report-toc::-webkit-scrollbar{width:6px}.report-toc::-webkit-scrollbar-track{background:transparent}.report-toc::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}.report-toc::-webkit-scrollbar-thumb:hover{background:#94a3b8}.report-toc-list{display:flex;flex-direction:column;gap:3px;min-height:max-content;padding-bottom:24px}
             .report-toc a{display:block;padding:5px 7px;color:#475569;text-decoration:none;line-height:1.35}
             .report-shell{height:100vh;margin-left:0;overflow:hidden}
-            #report-shell>#report{height:100vh;overflow-x:auto;overflow-y:auto;padding:0;margin:0 0 0 5px!important}
+            #report-shell>#report{height:100vh;overflow-x:auto;overflow-y:auto;padding:0;margin:0!important}
+            .table-scroll{display:block;width:100%;max-width:100%;overflow-x:auto;overflow-y:visible;padding-right:2px;-webkit-overflow-scrolling:touch}.table-scroll table{width:max-content;min-width:100%;max-width:none}
             .report:fullscreen{width:100%;height:100%;margin:0;overflow:auto;background:#fff}
             .echarts-shell{position:relative;width:100%;margin:20px 0;background:#fff}
             .echarts-chart{width:100%;height:460px}
@@ -515,6 +517,7 @@ public class HtmlReportRenderer {
 
         // 移除 <script>（一般没有，兜底防注入）
         bodyContent = sanitizeCompleteBody(bodyContent);
+        bodyContent = wrapTablesForHorizontalScroll(bodyContent);
 
         // 仍扫描图表块（body 内若有 ```echarts 或 <echart> 也渲染成图），其余原样为 HTML
         StringBuilder body = new StringBuilder();
@@ -525,6 +528,20 @@ public class HtmlReportRenderer {
                 .append(renderedBody).append("\n");
 
         return assembleHtml(safeTitle, body.toString(), charts, extraStyles.toString(), includeToc, true);
+    }
+
+    /** 给完整 HTML 中的表格补横向滚动容器，避免宽表被章节外层裁剪。 */
+    private static String wrapTablesForHorizontalScroll(String html) {
+        Matcher matcher = TABLE_ELEMENT.matcher(html);
+        StringBuffer out = new StringBuffer();
+        while (matcher.find()) {
+            String table = matcher.group();
+            String prefix = html.substring(Math.max(0, matcher.start() - 40), matcher.start()).toLowerCase();
+            String replacement = prefix.contains("table-scroll") ? table : "<div class=\"table-scroll\">" + table + "</div>";
+            matcher.appendReplacement(out, Matcher.quoteReplacement(replacement));
+        }
+        matcher.appendTail(out);
+        return out.toString();
     }
 
     /** 抽取 {@code <body...>...</body>} 之间的内嵌 HTML；无 {@code <body>} 时返回原文。 */
@@ -619,7 +636,9 @@ public class HtmlReportRenderer {
         if (includeToc) {
             sb.append("<aside class=\"report-toc\" aria-label=\"报告目录\"><nav class=\"report-toc-list\"></nav></aside>");
         }
-        sb.append("<div id=\"report-shell\" class=\"report-shell\"><div id=\"report\" class=\"report\">");
+        String shellId = completeHtml ? "frame-report-shell" : "report-shell";
+        sb.append("<div id=\"").append(shellId).append("\" class=\"").append(shellId)
+                .append("\"><div id=\"report\" class=\"report\">");
         sb.append(body);
         sb.append("</div></div>");
         if (includeToc) sb.append("<script>(function(){var frames=document.querySelectorAll('.report-frame');for(var i=0;i<frames.length;i++){(function(frame){frame.addEventListener('load',function(){try{var doc=frame.contentDocument;if(!doc)return;var report=doc.getElementById('report');if(!report)return;function fit(){var shell=doc.getElementById('report-shell');var height=Math.max(report.scrollHeight,report.getBoundingClientRect().height,shell&&shell.scrollHeight||0,doc.body.scrollHeight,doc.documentElement.scrollHeight);frame.style.height=Math.ceil(height+2)+'px';}fit();if(doc.defaultView.ResizeObserver){var observer=new doc.defaultView.ResizeObserver(fit);observer.observe(report);var shell=doc.getElementById('report-shell');if(shell)observer.observe(shell);}doc.defaultView.addEventListener('load',fit);}catch(e){}});})(frames[i]);}})();</script>");
