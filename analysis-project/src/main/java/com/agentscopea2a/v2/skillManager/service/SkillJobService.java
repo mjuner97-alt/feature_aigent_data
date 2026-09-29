@@ -16,6 +16,7 @@
 package com.agentscopea2a.v2.skillManager.service;
 
 import com.agentscopea2a.v2.config.SkillStorageProperties;
+import com.agentscopea2a.v2.skillManager.entity.NotificationConfig;
 import com.agentscopea2a.v2.skillManager.entity.SkillMetricReadiness;
 import com.agentscopea2a.v2.skillManager.dto.*;
 import com.agentscopea2a.v2.skillManager.entity.SkillDependencyMetric;
@@ -24,8 +25,10 @@ import com.agentscopea2a.v2.skillManager.entity.SkillJobExecution;
 import com.agentscopea2a.v2.skillManager.entity.SkillJobNotification;
 import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillJobMapper;
+import com.agentscopea2a.v2.skillManager.notification.NotificationReceivers;
 import com.agentscopea2a.v2.skillManager.notification.NotificationService;
 import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
+import com.agentscopea2a.v2.skillManager.report.ReportSourceValidator;
 import com.agentscopea2a.v2.skillManager.scheduler.SkillJobScheduler;
 import com.agentscopea2a.v2.util.SkillFileMirror;
 import org.slf4j.Logger;
@@ -65,7 +68,6 @@ import java.util.concurrent.CompletableFuture;
 public class SkillJobService {
 
     private static final Logger log = LoggerFactory.getLogger(SkillJobService.class);
-    private static final int MAX_EDITABLE_REPORT_BYTES = 2 * 1024 * 1024;
 
     private final SkillJobMapper mapper;
     private final SkillJobScheduler scheduler;
@@ -73,6 +75,7 @@ public class SkillJobService {
     private final MockOrgService mockOrgService;
     private final NotificationService notificationService;
     private final HtmlReportRenderer htmlReportRenderer;
+    private final NotificationRecipientService recipientService;
 
     /** 指标就绪登记服务:外部指标到达时记录 READY 状态,Skill Flow 的指标门控以此解锁。 */
     @Autowired(required = false)
@@ -92,13 +95,15 @@ public class SkillJobService {
                            SkillDependencyMetricMapper metricMapper, MockOrgService mockOrgService,
                            NotificationService notificationService,
                            SkillStorageProperties storageProperties,
-                           HtmlReportRenderer htmlReportRenderer) {
+                           HtmlReportRenderer htmlReportRenderer,
+                           NotificationRecipientService recipientService) {
         this.mapper = mapper;
         this.scheduler = scheduler;
         this.metricMapper = metricMapper;
         this.mockOrgService = mockOrgService;
         this.notificationService = notificationService;
         this.htmlReportRenderer = htmlReportRenderer;
+        this.recipientService = recipientService;
         this.baseDir = storageProperties.getJobReportDir();
         this.backupDir = storageProperties.getJobBackupDir();
     }
@@ -140,6 +145,8 @@ public class SkillJobService {
                 .scheduleRules(req.scheduleRules())
                 .build();
         mapper.insertSkillJob(job);
+
+        saveJobRecipients(job.getId(), req.notifyReceivers(), userId);
 
         log.info("[SkillJob] create OK: id={}, name={}, outputPath={}", job.getId(), job.getName(), outputPath);
         return SkillJobDto.of(job);
@@ -204,7 +211,21 @@ public class SkillJobService {
         // 编辑表单始终提交定时规则：JSON 原样保存，传 null 表示清空定时配置
         if (req.scheduleRules() != null) job.setScheduleRules(req.scheduleRules());
         mapper.updateJobById(job);
+        if (req.notifyReceivers() != null) {
+            saveJobRecipients(id, req.notifyReceivers(), userId);
+        }
         return SkillJobDto.of(job);
+    }
+
+    private void saveJobRecipients(Long jobId, List<String> receivers, String userId) {
+        List<String> validReceivers = mockOrgService.filterExistingUserIds(receivers);
+        recipientService.replaceRecipients(NotificationConfig.TARGET_TYPE_SKILL_JOB,
+                jobId, validReceivers, userId);
+        SkillJob job = mapper.selectJobById(jobId);
+        if (job != null) {
+            job.setNotifyReceivers(NotificationReceivers.toCsv(validReceivers));
+            mapper.updateJobById(job);
+        }
     }
 
     /** 删除 Job，仅创建人本人可删 */
@@ -219,6 +240,51 @@ public class SkillJobService {
         }
         mapper.deleteJobById(id);
         log.info("[SkillJob] delete: id={}, userId={}", id, userId);
+    }
+
+    // ==================== 通知设置(通知设置抽屉专用,与任务表单解耦) ====================
+
+    /** 查询任务通知设置(仅创建人)。读取优先级与发送侧一致:配置存在读关系表,不存在兼容读旧字段;失效收件人不回显。job 无触发类型范围。 */
+    public NotifySettingsDto getNotifySettings(Long id, String userId) {
+        SkillJob job = requireOwnedJob(id, userId);
+        List<String> userIds = recipientService.findConfiguredUserIds(
+                        NotificationConfig.TARGET_TYPE_SKILL_JOB, id)
+                .orElseGet(() -> {
+                    log.info("[SkillJob] notification_config missing for job {}, "
+                            + "display falls back to legacy notify_receivers (compat)", id);
+                    return NotificationReceivers.parse(job.getNotifyReceivers());
+                });
+        List<String> receivers = mockOrgService.filterExistingUserIds(userIds);
+        return new NotifySettingsDto(receivers, null, null,
+                recipientService.findConfiguredUserIdsByTrigger(NotificationConfig.TARGET_TYPE_SKILL_JOB, id));
+    }
+
+    /**
+     * 更新任务通知设置:收件人名单写入 notification_recipient 关系表(主存储,先建配置再全量替换),
+     * 旧逗号字段同步双写(兼容期保留,待旧字段清理后移除);失效工号静默剔除,
+     * 空名单 = 清空(关系表清空后发送侧直接兜底创建人,不再回退旧字段)。
+     * 发送侧始终把创建人合并进收件人(创建人默认收到,无需加入名单)。
+     */
+    @Transactional("gaussCustomerTransactionManager")
+    public NotifySettingsDto updateNotifySettings(Long id, NotifySettingsUpdateRequest req, String userId) {
+        SkillJob job = requireOwnedJob(id, userId);
+        List<String> receivers = mockOrgService.filterExistingUserIds(req == null ? null : req.notifyReceivers());
+        recipientService.replaceRecipients(NotificationConfig.TARGET_TYPE_SKILL_JOB, id, receivers, userId);
+        job.setNotifyReceivers(NotificationReceivers.toCsv(receivers));
+        mapper.updateJobById(job);
+        return getNotifySettings(id, userId);
+    }
+
+    /** 取任务并校验创建人(通知设置仅创建人可读写)。 */
+    private SkillJob requireOwnedJob(Long id, String userId) {
+        SkillJob job = mapper.selectJobById(id);
+        if (job == null) {
+            throw new IllegalStateException("JobNotFound: 任务不存在 (id=" + id + ")");
+        }
+        if (userId == null || !userId.equals(job.getCreatedBy())) {
+            throw new IllegalStateException("JobAccessDenied: 仅创建人可管理通知设置 (id=" + id + ")");
+        }
+        return job;
     }
 
     // ==================== 执行 ====================
@@ -491,6 +557,10 @@ public class SkillJobService {
 
     /** Queue a new notification attempt without re-running the skill job. */
     public SkillJobNotificationDto resendNotification(Long execId, String userId) {
+        return resendNotification(execId, userId, null);
+    }
+
+    public SkillJobNotificationDto resendNotification(Long execId, String userId, List<String> confirmedReceivers) {
         SkillJobExecution execution = requireOwnedExecution(execId, userId);
         if (!"SUCCESS".equals(execution.getStatus()) || !Boolean.TRUE.equals(execution.getMdFileExists())) {
             throw new IllegalStateException("NotificationResendUnavailable: 仅可补发已成功且报告文件存在的执行 (execId="
@@ -500,7 +570,7 @@ public class SkillJobService {
         Resource report = downloadExecutionFile(SkillJobExecutionDto.of(execution), userId);
         try {
             SkillJobNotification notification = notificationService.resend(
-                    job, execution, report.getFile().getAbsolutePath());
+                    job, execution, report.getFile().getAbsolutePath(), confirmedReceivers);
             log.info("[SkillJob] notification resend queued: execId={}, notificationId={}, userId={}",
                     execId, notification.getId(), userId);
             return SkillJobNotificationDto.of(notification);
@@ -654,7 +724,7 @@ public class SkillJobService {
     /** Atomically replace an owned execution report and mirror the saved file to backup storage. */
     public String updateExecutionReportSource(Long execId, String userId, String html) {
         OwnedReport report = resolveOwnedHtmlReport(execId, userId);
-        validateEditableHtml(html);
+        ReportSourceValidator.validate(html);
         Path temporary = null;
         try {
             Path parent = report.primary().getParent();
@@ -741,20 +811,6 @@ public class SkillJobService {
         } catch (Exception e) {
             log.warn("Failed to restore Skill Job report from database: execId={}, error={}", execution.getId(), e.getMessage());
             return false;
-        }
-    }
-
-    private static void validateEditableHtml(String html) {
-        if (html == null || html.isBlank()) {
-            throw new IllegalStateException("ReportContentInvalid: HTML 内容不能为空");
-        }
-        int byteLength = html.getBytes(StandardCharsets.UTF_8).length;
-        if (byteLength > MAX_EDITABLE_REPORT_BYTES) {
-            throw new IllegalStateException("ReportContentTooLarge: HTML 内容不能超过 2 MB");
-        }
-        String normalized = html.toLowerCase(Locale.ROOT);
-        if (!normalized.contains("<html") && !normalized.contains("<!doctype html")) {
-            throw new IllegalStateException("ReportContentInvalid: 内容必须是完整 HTML 文档");
         }
     }
 

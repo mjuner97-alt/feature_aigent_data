@@ -1,14 +1,18 @@
 package com.agentscopea2a.v2.skillManager.service;
 
+import com.agentscopea2a.entity.ScriptRegistryEntry;
+import com.agentscopea2a.mapper.gauss.ScriptRegistryMapper;
 import com.agentscopea2a.v2.skillManager.config.SkillFlowProperties;
 import com.agentscopea2a.v2.skillManager.entity.*;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillMapper;
+import com.agentscopea2a.v2.skillManager.notification.NotificationReceivers;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DuplicateKeyException;
@@ -19,6 +23,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
@@ -38,18 +43,33 @@ public class FlowExecutionService {
 
     private final SkillFlowMapper mapper;
     private final SkillMapper skillMapper;
+    private final ScriptRegistryMapper scriptRegistryMapper;
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final ApplicationEventPublisher events;
+    private final NotificationRecipientService recipientService;
 
+    @Autowired
     public FlowExecutionService(SkillFlowMapper mapper, SkillMapper skillMapper,
+                                ScriptRegistryMapper scriptRegistryMapper,
                                 ObjectMapper objectMapper, Clock skillFlowClock,
-                                ApplicationEventPublisher events) {
+                                ApplicationEventPublisher events,
+                                NotificationRecipientService recipientService) {
         this.mapper = mapper;
         this.skillMapper = skillMapper;
+        this.scriptRegistryMapper = scriptRegistryMapper;
         this.objectMapper = objectMapper;
         this.clock = skillFlowClock;
         this.events = events;
+        this.recipientService = recipientService;
+    }
+
+    /** Compatibility constructor for callers created before script metadata was added. */
+    public FlowExecutionService(SkillFlowMapper mapper, SkillMapper skillMapper,
+                                ObjectMapper objectMapper, Clock skillFlowClock,
+                                ApplicationEventPublisher events,
+                                NotificationRecipientService recipientService) {
+        this(mapper, skillMapper, null, objectMapper, skillFlowClock, events, recipientService);
     }
 
     /** 触发结果:created=false 表示当日已有同一(用户,会话,流程)的活跃执行,直接复用。 */
@@ -175,14 +195,24 @@ public class FlowExecutionService {
         // 只有自动指标触发开启门控; CHAT/MANUAL 即使有缺失指标也继续创建并排队。
         if (requireAllMetrics && !missing.isEmpty()) return new TriggerResult(null, false);
         SkillFlowExecution execution = SkillFlowExecution.builder()
+                // 关联的流程定义信息(编号 + 名称),便于执行记录自描述展示
                 .flowId(flow.getId()).flowCode(flow.getCode()).flowName(flow.getName())
+                // 快照:把流程定义当时的配置固化到执行记录,
+                // 后续流程定义被修改不影响本次执行(总结问题模板 / 最大并行度)
                 .summaryQuestionTemplateSnapshot(flow.getSummaryQuestionTemplate())
                 .maxParallelismSnapshot(flow.getMaxParallelism())
-                .notifyEnabledSnapshot(flow.getNotifyEnabled()).triggerType(triggerType)
+                // 通知配置快照:执行期间以快照为准,发通知时不再回读流程定义
+                .notifyEnabledSnapshot(flow.getNotifyEnabled())
+                .notifyReceiversSnapshot(resolveNotifyReceiversSnapshot(flow, triggerType))
+                .notifyReceiverTriggersSnapshot(flow.getNotifyReceiverTriggers())
+                // 触发来源:触发类型(CHAT/MANUAL/METRIC 等)与触发人信息
+                .triggerType(triggerType)
+                // 触发上下文:触发人、会话 id、原始提问、数据日期(用于指标就绪判断)
                 .triggerUserId(userId).conversationId(conversationId).originalQuestion(question).dataDate(dataDate)
                 // 非自动触发直接 QUEUED;自动触发有缺失指标时才进入 WAITING_METRICS。
                 .status(!requireAllMetrics || missing.isEmpty()
                         ? FlowExecutionStatus.QUEUED : FlowExecutionStatus.WAITING_METRICS)
+                // 指标门控信息:防重 guard key、所需指标总数、当前已就绪数、缺失指标 id 列表(JSON)
                 .activeGuardKey(guard).requiredMetricCount(metrics.size())
                 .readyMetricCount(metrics.size() - missing.size())
                 .missingMetricsJson(json(missing)).build();
@@ -196,18 +226,33 @@ public class FlowExecutionService {
         }
         boolean firstRunnableNode = true;
         for (SkillFlowNode node : nodes) {
-            Skill skill = skillMapper.selectById(node.getSkillId());
-            String skillName = skill == null ? "Skill #" + node.getSkillId() : skill.getName();
-            String retrievalName = skill == null || skill.getRetrievalName() == null || skill.getRetrievalName().isBlank()
-                    ? skillName : skill.getRetrievalName();
+            // Python 脚本节点不绑 Skill:名称取脚本注册表,skillId 留空
+            String normalizedScriptId = node.getScriptId() == null ? null : node.getScriptId().trim();
+            boolean scriptNode = normalizedScriptId != null && !normalizedScriptId.isBlank();
+            String skillName;
+            String retrievalName;
+            if (scriptNode) {
+                ScriptRegistryEntry script = scriptRegistryMapper.selectByScriptId(normalizedScriptId);
+                skillName = script == null ? normalizedScriptId : script.getName();
+                retrievalName = skillName;
+            } else {
+                Skill skill = skillMapper.selectById(node.getSkillId());
+                skillName = skill == null ? "Skill #" + node.getSkillId() : skill.getName();
+                retrievalName = skill == null || skill.getRetrievalName() == null || skill.getRetrievalName().isBlank()
+                        ? skillName : skill.getRetrievalName();
+            }
             FlowNodeExecutionStatus status = !requireAllMetrics || missing.isEmpty()
                     ? (firstRunnableNode ? FlowNodeExecutionStatus.QUEUED : FlowNodeExecutionStatus.PENDING)
                     : FlowNodeExecutionStatus.PENDING;
             if (status == FlowNodeExecutionStatus.QUEUED) firstRunnableNode = false;
             mapper.insertNodeExecution(SkillFlowNodeExecution.builder().flowExecutionId(execution.getId())
                     .nodeKey(node.getNodeKey()).nodeName(FlowDefinitionService.resolveNodeDisplayName(node.getNodeName(), skillName))
-                    .skillId(node.getSkillId()).skillName(skillName).skillRetrievalName(retrievalName)
-                    .questionTemplateSnapshot(node.getQuestionTemplate()).dependsOnJson(node.getDependsOnJson())
+                    .skillId(scriptNode ? null : node.getSkillId()).skillName(skillName).skillRetrievalName(retrievalName)
+                    .scriptId(scriptNode ? normalizedScriptId : null)
+                    .scriptParamsJson(scriptNode ? node.getScriptParamsJson() : null)
+                    // Python 节点问题模板选填;列 NOT NULL,空值落空串
+                    .questionTemplateSnapshot(Objects.toString(node.getQuestionTemplate(), ""))
+                    .dependsOnJson(node.getDependsOnJson())
                     .required(node.getRequired()).status(status).attemptCount(0)
                     .maxAttempts(SkillFlowProperties.NODE_MAX_ATTEMPTS).build());
         }
@@ -331,6 +376,30 @@ public class FlowExecutionService {
             }
         }
         return execution;
+    }
+
+    /**
+     * 执行创建时解析收件人名单并固化为逗号分隔快照(读取优先级,见设计文档「兼容与迁移」):
+     * <ol>
+     *   <li>{@code notification_config} 存在 → 只读 {@code notification_recipient} 关系表;
+     *       名单为空 = 用户已主动清空,不回退旧字段;</li>
+     *   <li>{@code notification_config} 不存在 → 兼容读取旧 {@code skill_flow.notify_receivers}
+     *       逗号字段(记录兼容日志,待旧字段清理后移除)。</li>
+     * </ol>
+     * 快照沿用现有 {@code skill_flow_execution.notify_receivers_snapshot} 字段,
+     * 发送侧({@code FlowCompletionService})只读快照,后续配置修改不影响已启动执行。
+     */
+    private String resolveNotifyReceiversSnapshot(SkillFlow flow, FlowTriggerType triggerType) {
+        List<String> userIds = recipientService
+                .findConfiguredUserIds(NotificationConfig.TARGET_TYPE_SKILL_FLOW, flow.getId(),
+                        triggerType == FlowTriggerType.MANUAL || triggerType == FlowTriggerType.CHAT
+                                ? "DEFAULT" : (triggerType == null ? "DEFAULT" : triggerType.name()))
+                .orElseGet(() -> {
+                    log.info("[SkillFlow] notification_config missing for flow {}, "
+                            + "snapshot falls back to legacy notify_receivers (compat)", flow.getId());
+                    return NotificationReceivers.parse(flow.getNotifyReceivers());
+                });
+        return NotificationReceivers.toCsv(userIds);
     }
 
     private String json(Object value) {

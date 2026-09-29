@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.v2.skillManager.mapper.NotificationRecipientMapper">
+
+    <resultMap id="RecipientMap" type="com.agentscopea2a.v2.skillManager.entity.NotificationRecipient">
+        <id column="id" property="id"/>
+        <result column="config_id" property="configId"/>
+        <result column="user_id" property="userId"/>
+        <result column="trigger_type" property="triggerType"/>
+        <result column="recipient_type" property="recipientType"/>
+        <result column="channel" property="channel"/>
+        <result column="enabled" property="enabled"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <!-- 查某配置下启用的收件人关系 -->
+    <select id="selectEnabledByConfigId" resultMap="RecipientMap">
+        SELECT id, config_id, user_id, trigger_type, recipient_type, channel, enabled, created_at, updated_at
+        FROM notification_recipient
+        WHERE config_id = #{configId}
+          AND enabled = TRUE
+        ORDER BY id
+    </select>
+
+    <!-- 按 (target_type, target_id) 联查启用收件人,发送侧一次查询拿到名单 -->
+    <select id="selectEnabledByTarget" resultMap="RecipientMap">
+        SELECT r.id, r.config_id, r.user_id, r.trigger_type, r.recipient_type, r.channel, r.enabled, r.created_at, r.updated_at
+        FROM notification_recipient r
+        JOIN notification_config c ON c.id = r.config_id
+        WHERE c.target_type = #{targetType}
+          AND c.target_id = #{targetId}
+          AND r.enabled = TRUE
+        ORDER BY r.id
+    </select>
+
+    <select id="selectEnabledByTargetAndTrigger" resultMap="RecipientMap">
+        SELECT r.id, r.config_id, r.user_id, r.trigger_type, r.recipient_type, r.channel, r.enabled, r.created_at, r.updated_at
+        FROM notification_recipient r
+        JOIN notification_config c ON c.id = r.config_id
+        WHERE c.target_type = #{targetType} AND c.target_id = #{targetId}
+          AND r.trigger_type = #{triggerType} AND r.enabled = TRUE
+        ORDER BY r.id
+    </select>
+
+    <!-- 删除某配置下的全部收件人关系(全量替换第一步,先清后建,须在事务内) -->
+    <delete id="deleteByConfigId">
+        DELETE FROM notification_recipient
+        WHERE config_id = #{configId}
+    </delete>
+
+    <delete id="deleteByConfigIdAndTrigger">
+        DELETE FROM notification_recipient WHERE config_id = #{configId} AND trigger_type = #{triggerType}
+    </delete>
+
+    <!-- 批量插入收件人关系(全量替换第二步;多行 VALUES,唯一索引防同一用户同渠道重复) -->
+    <insert id="batchInsert">
+        INSERT INTO notification_recipient (config_id, user_id, trigger_type, recipient_type, channel, enabled)
+        VALUES
+        <foreach collection="recipients" item="r" separator=",">
+            (#{r.configId}, #{r.userId}, #{r.triggerType}, #{r.recipientType}, #{r.channel}, #{r.enabled})
+        </foreach>
+    </insert>
+
+</mapper>

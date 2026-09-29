@@ -1,7 +1,13 @@
 <template>
-  <div :style="rootStyle">
+  <div class="history-shell">
+    <aside class="history-nav" aria-label="历史记录导航">
+      <div class="history-nav-title">历史记录</div>
+      <button type="button" class="history-nav-item" :class="{ active: activeTab === 'sessions' }" :aria-current="activeTab === 'sessions' ? 'page' : undefined" @click="activeTab = 'sessions'">会话历史</button>
+      <button type="button" class="history-nav-item" :class="{ active: activeTab === 'nodeLogs' }" :aria-current="activeTab === 'nodeLogs' ? 'page' : undefined" @click="activeTab = 'nodeLogs'">节点执行日志</button>
+    </aside>
+    <main class="history-content" :style="rootStyle">
     <!-- Header -->
-    <div :style="headerStyle">
+    <div v-show="activeTab === 'sessions'" :style="headerStyle">
       <div>
         <div :style="titleStyle">会话历史</div>
         <div :style="subtitleStyle">Session History</div>
@@ -45,7 +51,7 @@
     </div>
 
     <!-- Table -->
-    <div :style="tableContainerStyle">
+    <div v-show="activeTab === 'sessions'" :style="tableContainerStyle">
       <el-table
         :data="conversations"
         v-loading="loading"
@@ -115,7 +121,7 @@
     </div>
 
     <!-- Pagination -->
-    <div :style="paginationStyle">
+    <div v-show="activeTab === 'sessions'" :style="paginationStyle">
       <el-pagination
         v-model:current-page="currentPage"
         :page-size="pageSize"
@@ -124,6 +130,8 @@
         @current-change="handlePageChange"
       />
     </div>
+    <LongTaskNodeLogPanel v-if="activeTab === 'nodeLogs'" style="flex:1;overflow:auto" />
+    </main>
   </div>
 </template>
 
@@ -136,6 +144,7 @@ import type { Conversation, TraceStatus } from '../types/trace';
 import { STATUS_TAG_TYPE } from '../types/trace';
 import dayjs from 'dayjs';
 import { getLoggedInUserId } from '../utils/auth';
+import LongTaskNodeLogPanel from '../components/LongTaskNodeLogPanel.vue';
 
 const router = useRouter();
 const route = useRoute();
@@ -150,6 +159,7 @@ const pageSize = 20;
 const searchKeyword = ref('');
 const selectedUserId = ref<string>('');
 const scope = ref<'mine' | 'all'>((route.query.scope as 'mine' | 'all') || 'mine');
+const activeTab = ref<'sessions' | 'nodeLogs'>('sessions');
 
 function syncQuery() {
   router.replace({ query: { ...route.query, scope: scope.value, user: selectedUserId.value || undefined, q: searchKeyword.value || undefined, page: currentPage.value > 1 ? String(currentPage.value) : undefined } });
@@ -318,3 +328,14 @@ function durationStyle(ms: number): any {
   };
 }
 </script>
+
+<style scoped>
+.history-shell { display: flex; height: 100%; min-width: 0; }
+.history-nav { width: 200px; box-sizing: border-box; background: #0f172a; color: #cbd5e1; padding: 12px; display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
+.history-nav-title { font-weight: bold; color: #fff; margin-bottom: 12px; }
+.history-nav-item { width: 100%; border: 0; padding: 8px 10px; border-radius: 6px; background: transparent; color: #cbd5e1; text-align: left; font: inherit; cursor: pointer; }
+.history-nav-item:hover:not(.active) { background: #1e293b; color: #fff; }
+.history-nav-item.active { background: #3b82f6; color: #fff; }
+.history-nav-item:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
+.history-content { min-width: 0; flex: 1; }
+</style>

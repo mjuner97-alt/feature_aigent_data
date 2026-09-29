@@ -1,5 +1,8 @@
 /** Python 脚本注册表相关类型 (对应后端 ScriptRegistryEntry) */
 
+/** Runtime values sent as script_params_json for a Python node. */
+export type ScriptParams = Record<string, unknown>;
+
 export interface ScriptRegistryEntry {
   id: number;
   scriptId: string;

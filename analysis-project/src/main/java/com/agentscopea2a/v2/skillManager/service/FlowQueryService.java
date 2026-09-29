@@ -5,6 +5,7 @@ import com.agentscopea2a.v2.skillManager.entity.*;
 import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
+import com.agentscopea2a.v2.skillManager.report.ReportSourceValidator;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.core.io.FileSystemResource;
@@ -14,6 +15,9 @@ import org.springframework.stereotype.Service;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.nio.charset.StandardCharsets;
+import java.io.IOException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -54,8 +58,12 @@ public class FlowQueryService {
     }
 
     /** 执行列表(仅本人触发),status/createdBy 可选过滤。 */
-    public List<ExecutionDto> list(String status, String createdBy, String userId, boolean all) {
-        return mapper.selectExecutions(status, createdBy, all ? null : userId).stream().map(this::dto).toList();
+    public PageDto list(String status, String createdBy, String userId, boolean all, int page, int pageSize) {
+        int safePage = Math.max(1, page), safeSize = Math.min(100, Math.max(1, pageSize));
+        String scopedUser = all ? null : userId;
+        List<ExecutionDto> items = mapper.selectExecutions(status, createdBy, scopedUser, (safePage - 1) * safeSize, safeSize)
+                .stream().map(this::dto).toList();
+        return new PageDto(items, safePage, safeSize, mapper.countExecutions(status, createdBy, scopedUser));
     }
 
     /** 执行详情。 */
@@ -139,6 +147,30 @@ public class FlowQueryService {
         return new ReportDownload(new FileSystemResource(report), downloadName(e));
     }
 
+    public String readFlowReportSource(Long id, String userId) {
+        SkillFlowExecution e = requireOwner(id, userId);
+        Path report = resolveReportPath(e);
+        if (report == null || !Files.isRegularFile(report)) throw new IllegalStateException("FlowReportNotFound: " + id);
+        try { return Files.readString(report, StandardCharsets.UTF_8); }
+        catch (IOException ex) { throw new IllegalStateException("ReportReadFailed: 无法读取报告内容", ex); }
+    }
+
+    public String updateFlowReportSource(Long id, String userId, String html) {
+        SkillFlowExecution e = requireOwner(id, userId);
+        ReportSourceValidator.validate(html);
+        Path report = resolveReportPath(e);
+        if (report == null || !Files.isRegularFile(report)) throw new IllegalStateException("FlowReportNotFound: " + id);
+        Path tmp = null;
+        try {
+            tmp = Files.createTempFile(report.getParent(), report.getFileName().toString() + ".", ".edit.tmp");
+            Files.writeString(tmp, html, StandardCharsets.UTF_8);
+            try { Files.move(tmp, report, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING); }
+            catch (java.nio.file.AtomicMoveNotSupportedException ex) { Files.move(tmp, report, StandardCopyOption.REPLACE_EXISTING); }
+            return Files.readString(report, StandardCharsets.UTF_8);
+        } catch (IOException ex) { throw new IllegalStateException("ReportWriteFailed: 无法保存报告", ex); }
+        finally { if (tmp != null) try { Files.deleteIfExists(tmp); } catch (IOException ignored) {} }
+    }
+
     /** 下载文件名: {流程名称}-flow-report.html; 剔除文件系统非法字符并限长,避免超长响应头。 */
     private static String downloadName(SkillFlowExecution e) {
         String safe = Objects.toString(e.getFlowName(), "")
@@ -171,15 +203,14 @@ public class FlowQueryService {
     }
 
     private ExecutionDto dto(SkillFlowExecution e) {
-        List<SkillFlowNodeExecution> nodes = mapper.selectNodeExecutions(e.getId());
         return new ExecutionDto(e.getId(), e.getFlowId(), e.getFlowName(), e.getFlowCode(), e.getStatus().name(),
                 e.getTriggerType() == null ? null : e.getTriggerType().name(),
                 e.getTriggerUserId(), e.getOriginalQuestion(), e.getDataDate(), e.getRequiredMetricCount(),
-                e.getReadyMetricCount(), nodes.size(), (int) nodes.stream().filter(n -> n.getStatus().terminal()).count(),
-                e.getSummaryQuestionTemplateSnapshot(), renderedSummaryQuestion(e, nodes),
+                e.getReadyMetricCount(), e.getTotalNodeCount() == null ? 0 : e.getTotalNodeCount(),
+                e.getCompletedNodeCount() == null ? 0 : e.getCompletedNodeCount(),
+                e.getSummaryQuestionTemplateSnapshot(), null,
                 readJson(e.getSummaryJson()), e.getReportPath(),
-                e.getCreatedAt(), e.getStartedAt(), e.getCompletedAt(),
-                mapper.selectActiveDurationSeconds(e.getId()));
+                e.getCreatedAt(), e.getStartedAt(), e.getCompletedAt(), e.getActiveDurationSeconds());
     }
 
     /**
@@ -239,8 +270,9 @@ public class FlowQueryService {
     }
 
     private static String displayName(SkillFlowNodeExecution node) {
-        return node.getNodeName() == null || node.getNodeName().isBlank()
-                ? node.getSkillName() : node.getNodeName();
+        if (node.getNodeName() != null && !node.getNodeName().isBlank()) return node.getNodeName();
+        if (node.getScriptId() != null && !node.getScriptId().isBlank()) return node.getScriptId();
+        return node.getSkillName();
     }
 
     /** 执行记录列表/详情返回体。activeDurationSeconds 为所有尝试审计耗时之和(秒),无尝试记录时为 null。 */
@@ -253,6 +285,7 @@ public class FlowQueryService {
                                Object summaryJson, String reportPath,
                                LocalDateTime createdAt, LocalDateTime startedAt, LocalDateTime completedAt,
                                Long activeDurationSeconds) {}
+    public record PageDto(List<ExecutionDto> items, int page, int pageSize, long total) {}
 
     /** 节点执行明细返回体(attempts 为每次尝试的审计记录;节点全并行,无依赖)。 */
     public record NodeDto(Long id, String nodeKey, String nodeName, String skillName, String questionTemplateSnapshot,

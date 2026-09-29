@@ -8,7 +8,7 @@ package com.agentscopea2a.v2.hooks;
  * renderable Markdown fenced blocks. The caller decides whether those blocks
  * are cached, replaced with references, or otherwise consumed.
  */
-final class ScriptExecOutputExtractor {
+public final class ScriptExecOutputExtractor {
 
     /** Markers emitted by ScriptExecTool.formatResult(). */
     private static final String STDOUT_MARKER = "─── stdout ";
@@ -25,6 +25,13 @@ final class ScriptExecOutputExtractor {
                     + "|<!doctype\\s+html\\b[^>]*>[\\s\\S]*?</html\\s*>)",
             java.util.regex.Pattern.CASE_INSENSITIVE);
 
+    /** Standard GFM table: header, delimiter, and at least one data row. */
+    static final java.util.regex.Pattern MARKDOWN_TABLE_PATTERN = java.util.regex.Pattern.compile(
+            "^[ \\t]*\\|?[^\\r\\n|]*\\|[^\\r\\n]*\\|?[ \\t]*\\r?\\n"
+                    + "^[ \\t]*\\|?[ \\t]*:?-{3,}:?[ \\t]*(?:\\|[ \\t]*:?-{3,}:?[ \\t]*)+\\|?[ \\t]*"
+                    + "(?:\\r?\\n^[ \\t]*\\|?[^\\r\\n|]*\\|[^\\r\\n]*\\|?[ \\t]*)+",
+            java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.MULTILINE);
+
     /**
      * Matches the successful in-place download block produced by
      * {@code ScriptExecTool.extractDownloads()}: a complete HTML document
@@ -38,7 +45,7 @@ final class ScriptExecOutputExtractor {
     private ScriptExecOutputExtractor() {
     }
 
-    static String extractStdout(String toolOutput) {
+    public static String extractStdout(String toolOutput) {
         if (toolOutput == null || toolOutput.isBlank()) {
             return "";
         }
@@ -79,10 +86,15 @@ final class ScriptExecOutputExtractor {
         String stdout = extractStdout(toolOutput);
         if (stdout.isBlank()) return "";
         java.util.regex.Matcher matcher = RENDERABLE_BLOCK_PATTERN.matcher(stdout);
+        java.util.regex.Matcher tableMatcher = MARKDOWN_TABLE_PATTERN.matcher(stdout);
+        java.util.List<java.util.regex.MatchResult> matches = new java.util.ArrayList<>();
+        while (matcher.find()) matches.add(matcher.toMatchResult());
+        while (tableMatcher.find()) matches.add(tableMatcher.toMatchResult());
+        matches.sort(java.util.Comparator.comparingInt(java.util.regex.MatchResult::start));
         StringBuilder result = new StringBuilder();
-        while (matcher.find()) {
+        for (java.util.regex.MatchResult match : matches) {
             if (result.length() > 0) result.append("\n\n");
-            result.append(matcher.group().trim());
+            result.append(match.group().trim());
         }
         return result.toString();
     }

@@ -2,10 +2,13 @@ package com.agentscopea2a.v2.skillManager.service;
 
 import com.agentscopea2a.v2.skillManager.flowcache.FlowNodeCacheService;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
+import com.agentscopea2a.v2.service.ChatRuntimeConfigService;
+import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.LONG_TASK_NODE_CACHE_ENABLED;
 import com.agentscopea2a.v2.skillManager.config.SkillFlowProperties;
 import com.agentscopea2a.v2.skillManager.entity.*;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.tools.ToolResultRegistry;
+import com.agentscopea2a.v2.hooks.ScriptExecOutputExtractor;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.RuntimeContext;
@@ -82,10 +85,16 @@ public class FlowCoordinator {
     private final FlowNodeClaimService claimService;
     private final NodeAttemptCompletionService attemptCompletionService;
     private final ToolResultRegistry toolResultRegistry;
+    /** Python 节点直接执行注册脚本用(与脚本调试运行同一链路,含 params_schema 校验)。 */
+    private final com.agentscopea2a.v2.tools.ScriptExecTool scriptExecTool;
+    /** 脚本参数取值规则解析:scriptParamsJson 里的 {"$rule": key} 执行时解析成真实值。 */
+    private final ScriptParamRuleService paramRuleService;
     /** 流程执行生命周期服务:scan 周期里兜底补建"指标已就绪但未被推送触发"的每日自动执行。 */
     private final FlowExecutionService flowExecutionService;
     /** 节点结果缓存:同流程同节点同问题同数据日期的长任务结果复用(缓存异常自动降级为 miss)。 */
     private final FlowNodeCacheService nodeCache;
+    private final LongTaskNodeExecutionLogService nodeLogService;
+    private final ChatRuntimeConfigService runtimeConfigService;
     /** 要求绕过缓存重新执行的节点执行 ID(手动重跑单个节点时置入,执行时取出)。 */
     private final Set<Long> refreshRequested = ConcurrentHashMap.newKeySet();
 
@@ -93,7 +102,11 @@ public class FlowCoordinator {
                            FlowCompletionService completionService, FlowNodeClaimService claimService,
                            NodeAttemptCompletionService attemptCompletionService,
                            ToolResultRegistry toolResultRegistry, FlowNodeCacheService nodeCache,
-                           FlowExecutionService flowExecutionService) {
+                           FlowExecutionService flowExecutionService,
+                           com.agentscopea2a.v2.tools.ScriptExecTool scriptExecTool,
+                           ScriptParamRuleService paramRuleService,
+                           LongTaskNodeExecutionLogService nodeLogService,
+                           ChatRuntimeConfigService runtimeConfigService) {
         this.mapper = mapper;
         this.runner = runner;
         this.json = json;
@@ -104,6 +117,10 @@ public class FlowCoordinator {
         this.toolResultRegistry = toolResultRegistry;
         this.nodeCache = nodeCache;
         this.flowExecutionService = flowExecutionService;
+        this.scriptExecTool = scriptExecTool;
+        this.paramRuleService = paramRuleService;
+        this.nodeLogService = nodeLogService;
+        this.runtimeConfigService = runtimeConfigService;
         int workerCount = Math.max(1, SkillFlowProperties.WORKER_COUNT);
         this.workerPermits = new Semaphore(workerCount);
         this.workers = Executors.newFixedThreadPool(workerCount, r -> {
@@ -270,6 +287,8 @@ public class FlowCoordinator {
         int attempt = 0;
         String attemptLeaseOwner = null;
         String requestId = null;
+        Map<String, Object> scriptParams = null;
+        String result = null;
         FlowNodeCacheService.Claim cacheClaim = null;
         String stage = "LOAD_EXECUTION";
         try {
@@ -305,10 +324,11 @@ public class FlowCoordinator {
             if (flow.getStartedAt() == null) flow.setStartedAt(started);
             mapper.updateExecution(flow);
             stage = "BUILD_PROMPT";
+            boolean scriptNode = node.getScriptId() != null && !node.getScriptId().isBlank();
             String template = node.getQuestionTemplateSnapshot();
-            // 老数据节点模板快照可能为空:兜底直接用原始问题提问,不让节点执行报错
+            // Python 节点问题模板选填:空模板用"执行脚本 <scriptId>"做审计展示;Skill 节点沿用原始问题兜底
             String rendered = template == null || template.isBlank()
-                    ? Objects.toString(flow.getOriginalQuestion(), "")
+                    ? (scriptNode ? "执行脚本 " + node.getScriptId() : Objects.toString(flow.getOriginalQuestion(), ""))
                     : templates.render(template,
                     new FlowTemplateEngine.Context(Map.of(
                             // Map.of rejects null values; old flow snapshots may omit optional fields.
@@ -316,19 +336,42 @@ public class FlowCoordinator {
                             "original_question", Objects.toString(flow.getOriginalQuestion(), ""),
                             "flow_name", Objects.toString(flow.getFlowName(), ""),
                             "skill_name", Objects.toString(node.getSkillName(), ""))));
-            String question = buildPrompt(node, rendered);
+            String question = scriptNode ? rendered : buildPrompt(node, rendered);
             node.setRenderedQuestion(question);
+            // Python 节点参数规则解析:scriptParamsJson 里的 {"$rule": key} 按数据日期解析成真实值
+            // (版本/季度/年份类参数随时间自动更新, 不用每次发版改流程定义)。
+            // 解析后的参数参与缓存 key: 改参数后旧缓存自然 miss, 不会命中旧参数的结果。
+            if (scriptNode) {
+                stage = "RESOLVE_SCRIPT_PARAMS";
+                LocalDate anchor = flow.getDataDate() == null ? LocalDate.now(clock) : flow.getDataDate();
+                scriptParams = paramRuleService.resolve(node.getScriptId(), node.getScriptParamsJson(), anchor);
+            }
             stage = "NODE_CACHE_LOOKUP";
-            // 节点结果缓存:缓存 key 维度 = 节点(流程+nodeKey+skill) + skillId(版本) + 渲染后问题(输入) + 数据日期。
+            boolean cacheEnabled = runtimeConfigService.resolve(flow.getTriggerUserId(), "")
+                    .getBooleanOrDefault(LONG_TASK_NODE_CACHE_ENABLED, true);
+            // 节点结果缓存:缓存 key 维度 = 节点(流程+nodeKey+脚本/Skill) + 版本(脚本 id / skillId) + 渲染后问题(输入) + 数据日期。
             // 手动重跑单个节点会置入 refreshRequested,要求绕过缓存重新执行。
-            String cacheNodeId = "flow-" + flow.getFlowId() + "-" + node.getNodeKey() + "-skill-" + node.getSkillId();
-            String cacheVersion = String.valueOf(node.getSkillId());
+            String cacheNodeId = scriptNode
+                    ? "flow-" + flow.getFlowId() + "-" + node.getNodeKey() + "-script-" + node.getScriptId()
+                    : "flow-" + flow.getFlowId() + "-" + node.getNodeKey() + "-skill-" + node.getSkillId();
+            String cacheVersion = scriptNode ? node.getScriptId() : String.valueOf(node.getSkillId());
             boolean forceRefresh = refreshRequested.remove(nodeId);
-            String result = nodeCache.hit(cacheNodeId, cacheVersion, question, null, flow.getDataDate(), forceRefresh)
-                    .orElse(null); // miss/降级均为 null,照常执行
+            result = cacheEnabled
+                    ? nodeCache.hit(cacheNodeId, cacheVersion, question, scriptParams, flow.getDataDate(), forceRefresh).orElse(null)
+                    : null;
             boolean cacheHit = result != null;
             if (!cacheHit) {
-                cacheClaim = nodeCache.claim(cacheNodeId, cacheVersion, question, null, flow.getDataDate(), forceRefresh);
+                if (cacheEnabled) {
+                    cacheClaim = nodeCache.claim(cacheNodeId, cacheVersion, question, scriptParams, flow.getDataDate(), forceRefresh);
+                }
+                if (scriptNode) {
+                    // Python 脚本节点:不走 AI,按脚本注册直接执行,参数已解析(含 $rule 规则值)
+                    stage = "RUN_SCRIPT";
+                    result = runScriptDirect(node, scriptParams);
+                    if (result == null || result.isBlank()) throw new IllegalStateException("Script returned empty result");
+                    // 只有抢占成功的执行才把结果写回缓存;输家照常返回结果但不落库、不覆盖赢家文件。
+                    if (cacheClaim != null && cacheClaim.won()) nodeCache.success(cacheClaim, result);
+                } else {
                 stage = "CREATE_RUNTIME_CONTEXT";
                 String triggerUserId = requireText(flow.getTriggerUserId(), "TriggerUserIdMissing");
                 RuntimeContext context = RuntimeContext.builder()
@@ -347,7 +390,8 @@ public class FlowCoordinator {
                         extract(events), toolResultRegistry.getRequestRefs(requestId));
                 if (result == null || result.isBlank()) throw new IllegalStateException("Skill returned empty result");
                 // 只有抢占成功的执行才把结果写回缓存;输家照常返回结果但不落库、不覆盖赢家文件。
-                if (cacheClaim.won()) nodeCache.success(cacheClaim, result);
+                if (cacheClaim != null && cacheClaim.won()) nodeCache.success(cacheClaim, result);
+                }
             } else {
                 log.info("Skill flow node {} served from node cache", nodeId);
             }
@@ -358,12 +402,14 @@ public class FlowCoordinator {
                     || flow.getStatus() == FlowExecutionStatus.CANCELLED) {
                 completeAudit(audit, FlowNodeAttemptStatus.CANCELLED, false, "CANCELLED",
                         "Flow cancelled before result persisted", started);
+                nodeLogService.record(flow, node, audit, json(scriptParams == null ? Map.of() : scriptParams), result, "Flow cancelled before result persisted");
                 cancel(node, flow);
                 return;
             }
             String resultJson = json(Map.of("text", result));
             stage = "PERSIST_RESULT";
             completeAudit(audit, FlowNodeAttemptStatus.SUCCESS, false, null, null, started);
+            nodeLogService.record(flow, node, audit, json(scriptParams == null ? Map.of() : scriptParams), result, null);
             if (attemptCompletionService.completeSuccess(node, attempt, attemptLeaseOwner,
                     resultJson, LocalDateTime.now(clock))) {
                 stage = "ADVANCE_FLOW";
@@ -396,7 +442,8 @@ public class FlowCoordinator {
             }
             if (audit != null) {
                 try {
-                    completeAudit(audit, FlowNodeAttemptStatus.FAILED, retryable, errorCode, errorMessage, started);
+                completeAudit(audit, FlowNodeAttemptStatus.FAILED, retryable, errorCode, errorMessage, started);
+                    nodeLogService.record(flow, node, audit, json(scriptParams == null ? Map.of() : scriptParams), result, errorMessage);
                 } catch (Exception auditError) {
                     // 错误收尾也可能遇到数据库异常；记录二次故障，但继续尝试回写节点终态。
                     log.error("Failed to persist skill flow attempt failure: nodeId={}, attempt={}",
@@ -693,6 +740,39 @@ public class FlowCoordinator {
             throw new IllegalStateException("SkillNameMissing");
         }
         return "调用" + skillName.trim() + "，" + renderedQuestion;
+    }
+
+    /**
+     * Python 节点直接执行注册脚本:不走 AI,参数为已解析的执行快照 script_params_json
+     * (含 $rule 规则解析结果, 见 {@link ScriptParamRuleService#resolve}),
+     * 校验与执行复用 ScriptExecTool(同脚本调试运行链路);失败(exit!=0/拒绝执行)抛异常走重试分类。
+     */
+    private String runScriptDirect(SkillFlowNodeExecution node, Map<String, Object> params) {
+        String scriptId = node.getScriptId() == null ? "" : node.getScriptId().trim();
+        if (scriptId.isBlank()) {
+            throw new IllegalStateException("ScriptIdMissing");
+        }
+        log.info("skill-flow script execution: nodeId={} scriptId={} params={}",
+                node.getId(), scriptId, params == null ? Map.of() : params);
+        String output = scriptExecTool.executeForDebug(scriptId, params);
+        String text = output == null ? "" : output;
+        // 成败判定与 ScriptDebugService 一致:stdout 带 exit= 非 0,或出现拒绝执行/启动失败字样
+        java.util.regex.Matcher exit = java.util.regex.Pattern.compile("\\bexit=(-?\\d+)").matcher(text);
+        if (exit.find() && Integer.parseInt(exit.group(1)) != 0) {
+            throw new IllegalStateException("ScriptFailed exit=" + exit.group(1) + ": " + abbreviate(text));
+        }
+        if (text.contains("拒绝执行") || text.contains("启动失败")) {
+            throw new IllegalStateException("ScriptRejected: " + abbreviate(text));
+        }
+        // Python 节点写入汇总报告时只保留 stdout 的有效中间内容，去掉
+        // ScriptExecTool 的 stdout/stderr 包络，避免把执行协议和错误尾部拼进报告。
+        String stdout = ScriptExecOutputExtractor.extractStdout(text);
+        return stdout.isBlank() ? text : stdout;
+    }
+
+    /** 错误信息截断:脚本输出可能很长,异常消息里只保留开头部分。 */
+    private static String abbreviate(String text) {
+        return text.length() <= 500 ? text : text.substring(0, 500) + "…(截断)";
     }
 
     /**

@@ -21,6 +21,20 @@ export async function listEntries(datasource?: string, createdBy?: string): Prom
   return res.json();
 }
 
+/** All registered scripts for long-task composition; deliberately unscoped by owner/datasource. */
+export async function listAllEnabledEntries(keyword?: string): Promise<ScriptRegistryListItem[]> {
+  // Deliberately leave datasource/createdBy unset: long-task composition can
+  // select from the complete registry, regardless of ownership or datasource.
+  const res = await fetch(BASE, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`获取列表失败: ${res.status}`);
+  const entries: ScriptRegistryListItem[] = await res.json();
+  const normalized = keyword?.trim().toLowerCase();
+  return entries.filter(entry => entry.enabled === 1 && (!normalized
+    || entry.scriptId.toLowerCase().includes(normalized)
+    || entry.name.toLowerCase().includes(normalized)
+    || (entry.description || '').toLowerCase().includes(normalized)));
+}
+
 /** 详情 (含 params_schema) */
 export async function getEntry(id: number): Promise<ScriptRegistryEntry> {
   const res = await fetch(`${BASE}/get?id=${id}`, { headers: authHeaders() });

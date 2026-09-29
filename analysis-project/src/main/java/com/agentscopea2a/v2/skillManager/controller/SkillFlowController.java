@@ -2,6 +2,9 @@ package com.agentscopea2a.v2.skillManager.controller;
 
 import com.agentscopea2a.v2.skillManager.dto.FlowMetricReadinessDto;
 import com.agentscopea2a.v2.skillManager.dto.FlowValidationDto;
+import com.agentscopea2a.v2.skillManager.dto.NotifySettingsDto;
+import com.agentscopea2a.v2.skillManager.dto.NotifySettingsUpdateRequest;
+import com.agentscopea2a.v2.skillManager.dto.FlowReportUpdateRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillFlowDefinitionRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillFlowDto;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowNotification;
@@ -103,6 +106,21 @@ public class SkillFlowController {
         definitionService.delete(id, userId);
     }
 
+    /** 查询流程通知设置(收件人名单/触发类型范围/通知开关;仅创建人)。 */
+    @GetMapping("/api/skill-flows/{id}/notify-settings")
+    public NotifySettingsDto getNotifySettings(@PathVariable(name = "id") Long id,
+                                               @RequestHeader(name = "X-User-Id") String userId) {
+        return definitionService.getNotifySettings(id, userId);
+    }
+
+    /** 更新流程通知设置(全量替换名单;空列表 = 清空恢复发触发人;收件人须存在于人员表)。 */
+    @PutMapping("/api/skill-flows/{id}/notify-settings")
+    public NotifySettingsDto updateNotifySettings(@PathVariable(name = "id") Long id,
+                                                  @RequestBody NotifySettingsUpdateRequest req,
+                                                  @RequestHeader(name = "X-User-Id") String userId) {
+        return definitionService.updateNotifySettings(id, req, userId);
+    }
+
     /** 完整性预检:启用前编辑器可调用,返回全部校验错误而非直接抛异常。 */
     @PostMapping("/api/skill-flows/{id}/validate")
     public FlowValidationDto validate(@PathVariable(name = "id") Long id,
@@ -135,11 +153,13 @@ public class SkillFlowController {
 
     /** 本人触发的执行记录列表,status/keyword 可选过滤。 */
     @GetMapping("/api/skill-flow-executions")
-    public List<FlowQueryService.ExecutionDto> list(@RequestParam(name = "status", required = false) String status,
+    public FlowQueryService.PageDto list(@RequestParam(name = "status", required = false) String status,
                                                     @RequestParam(name = "createdBy", required = false) String createdBy,
                                                     @RequestParam(name = "scope", defaultValue = "mine") String scope,
-                                                    @RequestHeader(name = "X-User-Id") String userId) {
-        return queryService.list(status, createdBy, userId, "all".equalsIgnoreCase(scope));
+                                                    @RequestHeader(name = "X-User-Id") String userId,
+                                                    @RequestParam(defaultValue = "1") int page,
+                                                    @RequestParam(defaultValue = "20") int pageSize) {
+        return queryService.list(status, createdBy, userId, "all".equalsIgnoreCase(scope), page, pageSize);
     }
 
     /** 执行详情(含汇总结果与报告路径)。 */
@@ -178,9 +198,25 @@ public class SkillFlowController {
         // RFC 5987: 中文文件名用 filename*=UTF-8'' 编码;ASCII 回退名给不识别 filename* 的老客户端
         String encoded = URLEncoder.encode(download.downloadName(), StandardCharsets.UTF_8).replace("+", "%20");
         return ResponseEntity.ok().contentType(MediaType.TEXT_HTML)
+                .cacheControl(org.springframework.http.CacheControl.noStore())
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                         "inline; filename=\"flow-report.html\"; filename*=UTF-8''" + encoded)
                 .body(download.resource());
+    }
+
+    @GetMapping(value = "/api/skill-flow-executions/{id}/report-source", produces = MediaType.TEXT_HTML_VALUE)
+    public ResponseEntity<String> reportSource(@PathVariable(name = "id") Long id,
+                                               @RequestHeader(name = "X-User-Id") String userId) {
+        return ResponseEntity.ok().contentType(MediaType.TEXT_HTML)
+                .cacheControl(org.springframework.http.CacheControl.noStore())
+                .body(queryService.readFlowReportSource(id, userId));
+    }
+
+    @PutMapping(value = "/api/skill-flow-executions/{id}/report-source", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.TEXT_HTML_VALUE)
+    public ResponseEntity<String> updateReportSource(@PathVariable(name = "id") Long id,
+                                                     @RequestHeader(name = "X-User-Id") String userId,
+                                                     @RequestBody FlowReportUpdateRequest request) {
+        return ResponseEntity.ok().contentType(MediaType.TEXT_HTML).body(queryService.updateFlowReportSource(id, userId, request.html()));
     }
 
     /** 按需渲染单个成功 Skill 节点的 HTML 内容，不落盘。 */
@@ -196,9 +232,13 @@ public class SkillFlowController {
     /** 手动重发该次执行完成通知(仅终态执行可用)。 */
     @PostMapping("/api/skill-flow-executions/{id}/notifications/resend")
     public void resend(@PathVariable(name = "id") Long id,
-                       @RequestHeader(name = "X-User-Id") String userId) {
+                       @RequestHeader(name = "X-User-Id") String userId,
+                       @RequestBody(required = false) com.agentscopea2a.v2.skillManager.dto.ManualNotificationSendRequest request) {
+        if (request != null && !Boolean.TRUE.equals(request.confirmed())) {
+            throw new IllegalArgumentException("NotificationConfirmationRequired: 请先确认收件人");
+        }
         queryService.requireOwner(id, userId);
-        completionService.resend(mapper.selectFlowExecutionById(id));
+        completionService.resend(mapper.selectFlowExecutionById(id), request == null ? null : request.notifyReceivers());
     }
 
     @PostMapping("/api/skill-flow-executions/{id}/summary/retry")

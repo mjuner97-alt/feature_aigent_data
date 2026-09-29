@@ -1,12 +1,15 @@
 package com.agentscopea2a.v2.skillManager.notification;
 
 import com.agentscopea2a.v2.service.UrlShortenerService;
+import com.agentscopea2a.v2.skillManager.entity.NotificationConfig;
 import com.agentscopea2a.v2.skillManager.entity.SkillDependencyMetric;
 import com.agentscopea2a.v2.skillManager.entity.SkillJob;
 import com.agentscopea2a.v2.skillManager.entity.SkillJobExecution;
 import com.agentscopea2a.v2.skillManager.entity.SkillJobNotification;
 import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillJobMapper;
+import com.agentscopea2a.v2.skillManager.service.MockOrgService;
+import com.agentscopea2a.v2.skillManager.service.NotificationRecipientService;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,7 +18,9 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -65,6 +70,8 @@ public class NotificationService {
     private final SkillJobMapper jobMapper;
     private final NotificationSender sender;
     private final UrlShortenerService urlShortenerService;
+    private final MockOrgService orgService;
+    private final NotificationRecipientService recipientService;
 
     /**
      * 报告下载链接的 base URL（对应 {@code harness.a2a.skill-job.download-base-url}）。
@@ -82,11 +89,15 @@ public class NotificationService {
 
     public NotificationService(SkillDependencyMetricMapper metricMapper, SkillJobMapper jobMapper,
                                NotificationSender sender,
-                               UrlShortenerService urlShortenerService) {
+                               UrlShortenerService urlShortenerService,
+                               MockOrgService orgService,
+                               NotificationRecipientService recipientService) {
         this.metricMapper = metricMapper;
         this.jobMapper = jobMapper;
         this.sender = sender;
         this.urlShortenerService = urlShortenerService;
+        this.orgService = orgService;
+        this.recipientService = recipientService;
     }
 
     /**
@@ -125,17 +136,28 @@ public class NotificationService {
 
     /** Force a new delivery attempt for an existing successful execution. */
     public SkillJobNotification resend(SkillJob job, SkillJobExecution execution, String filePath) {
+        return resend(job, execution, filePath, null);
+    }
+
+    public SkillJobNotification resend(SkillJob job, SkillJobExecution execution, String filePath,
+                                       List<String> confirmedReceivers) {
         if (job == null || execution == null || filePath == null || filePath.isBlank()) {
             throw new IllegalArgumentException("NotificationResendInvalid: 缺少任务、执行记录或报告文件");
         }
         SkillDependencyMetric metric = job.getMetricId() != null
                 ? metricMapper.selectById(job.getMetricId()) : null;
-        return enqueue(job, metric, execution, filePath, execution.getTriggerType(), "RESEND");
+        return enqueue(job, metric, execution, filePath, execution.getTriggerType(), "RESEND", confirmedReceivers);
     }
 
     private SkillJobNotification enqueue(SkillJob job, SkillDependencyMetric metric,
                                          SkillJobExecution execution, String filePath,
                                          String triggerType, String requestType) {
+        return enqueue(job, metric, execution, filePath, triggerType, requestType, null);
+    }
+
+    private SkillJobNotification enqueue(SkillJob job, SkillDependencyMetric metric,
+                                         SkillJobExecution execution, String filePath,
+                                         String triggerType, String requestType, List<String> confirmedReceivers) {
         String contentType = (metric != null && metric.getNotifyContentType() != null && !metric.getNotifyContentType().isBlank())
                 ? metric.getNotifyContentType().toUpperCase() : "HTML";
         // 模板为空时回退到内置默认模板（HTML 链接式，避免邮件丢图表；TEXT 同理只给地址）。
@@ -143,12 +165,19 @@ public class NotificationService {
         String fileUrl = buildFileUrl(execution.getId());
         String content = render(template, contentType, fileUrl, job, metric, execution, filePath);
         String fileName = fileNameOf(filePath);
+        // 收件人:配置了名单则整名单一次批量发送(toUserList),未配置兜底发创建人
+        List<String> receivers = confirmedReceivers == null || confirmedReceivers.isEmpty()
+                ? receiversOf(job, triggerType)
+                : orgService.filterExistingUserIds(confirmedReceivers);
+        if (confirmedReceivers != null && !confirmedReceivers.isEmpty() && receivers.isEmpty()) {
+            throw new IllegalArgumentException("NotifyReceiverInvalid: 所选收件人均已失效，请重新选择");
+        }
         NotificationPayload payload = new NotificationPayload(
                 contentType, content, filePath, fileName, fileUrl,
                 job.getId(), job.getName(),
                 metric != null ? metric.getCode() : null,
                 metric != null ? metric.getName() : null,
-                execution.getId(), execution.getStatus(), LocalDateTime.now(), Arrays.asList(job.getCreatedBy()),
+                execution.getId(), execution.getStatus(), LocalDateTime.now(), receivers,
                 triggerType);
         SkillJobNotification notification = SkillJobNotification.builder()
                 .jobId(job.getId())
@@ -167,6 +196,34 @@ public class NotificationService {
         jobMapper.insertNotification(notification);
         executor.submit(() -> doSend(notification, payload));
         return notification;
+    }
+
+    /**
+     * 收件人解析(读取优先级,见设计文档「兼容与迁移」):
+     * <ol>
+     *   <li>{@code notification_config} 存在 → 只读 {@code notification_recipient} 关系表
+     *       (剔除人员表已失效的工号);名单为空 = 用户已主动清空,不回退旧字段;</li>
+     *   <li>{@code notification_config} 不存在 → 兼容读取旧 {@code skill_job.notify_receivers}
+     *       逗号字段(记录兼容日志,待旧字段清理后移除)。</li>
+     * </ol>
+     * 创建人始终合并在内并去重,无需加入名单。
+     */
+    private List<String> receiversOf(SkillJob job, String triggerType) {
+        Optional<List<String>> configured = recipientService.findConfiguredUserIds(
+                NotificationConfig.TARGET_TYPE_SKILL_JOB, job.getId(), triggerType);
+        List<String> userIds;
+        if (configured.isPresent()) {
+            userIds = configured.get();
+        } else {
+            log.info("[Notification] notification_config missing for job {}, "
+                    + "fallback to legacy notify_receivers (compat)", job.getId());
+            userIds = NotificationReceivers.parse(job.getNotifyReceivers());
+        }
+        List<String> receivers = new ArrayList<>(orgService.filterExistingUserIds(userIds));
+        if (job.getCreatedBy() != null && !receivers.contains(job.getCreatedBy())) {
+            receivers.add(job.getCreatedBy());
+        }
+        return receivers;
     }
 
     private void recordSkipped(SkillJob job, SkillJobExecution execution, String filePath,

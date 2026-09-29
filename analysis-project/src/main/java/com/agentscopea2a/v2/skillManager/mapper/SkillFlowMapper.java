@@ -65,6 +65,13 @@ public interface SkillFlowMapper {
     /** 只切换启用/停用开关。 */
     void updateFlowEnabled(@Param("id") Long id, @Param("enabled") Boolean enabled);
 
+    /** 只更新通知收件人配置(通知设置抽屉专用):全量替换名单与触发类型范围,空串即清空;
+     *  notifyEnabled 为完成通知开关,null = 保持原值不动。 */
+    void updateFlowNotifySettings(@Param("id") Long id,
+                                  @Param("notifyReceivers") String notifyReceivers,
+                                  @Param("notifyReceiverTriggers") String notifyReceiverTriggers,
+                                  @Param("notifyEnabled") Boolean notifyEnabled);
+
     /** 软删除:置 deleted_at 并同时停用;历史执行记录保留,仅不可再被触发/修改。 */
     void softDeleteFlow(@Param("id") Long id);
 
@@ -167,7 +174,8 @@ public interface SkillFlowMapper {
     SkillFlowExecution selectLatestConversationExecution(@Param("userId") String userId, @Param("conversationId") String conversationId);
 
     /** 执行记录管理列表:按触发用户/状态筛选,最多返回最近 500 条。 */
-    List<SkillFlowExecution> selectExecutions(@Param("status") String status, @Param("createdBy") String createdBy, @Param("userId") String userId);
+    List<SkillFlowExecution> selectExecutions(@Param("status") String status, @Param("createdBy") String createdBy, @Param("userId") String userId, @Param("offset") int offset, @Param("limit") int limit);
+    long countExecutions(@Param("status") String status, @Param("createdBy") String createdBy, @Param("userId") String userId);
 
     /** 扫描仍在等待依赖指标就绪(WAITING_METRICS)的流程实例,供门控重算和跨天超时兜底使用。 */
     List<SkillFlowExecution> selectWaitingExecutions();

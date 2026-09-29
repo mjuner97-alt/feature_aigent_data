@@ -171,6 +171,29 @@ CREATE TABLE IF NOT EXISTS rule_experiment (
   ended_at DATETIME(3)
 );
 
+CREATE TABLE IF NOT EXISTS notification_config (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  target_type VARCHAR(32) NOT NULL,
+  target_id BIGINT NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  created_by VARCHAR(64),
+  created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+  UNIQUE KEY uk_notification_config_target (target_type, target_id)
+);
+CREATE TABLE IF NOT EXISTS notification_recipient (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  config_id BIGINT NOT NULL,
+  user_id VARCHAR(64) NOT NULL,
+  recipient_type VARCHAR(16) NOT NULL DEFAULT 'TO',
+  channel VARCHAR(16) NOT NULL DEFAULT 'EMAIL',
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+  UNIQUE KEY uk_notification_recipient (config_id, user_id, recipient_type, channel),
+  CONSTRAINT fk_notification_recipient_config FOREIGN KEY (config_id) REFERENCES notification_config (id)
+);
+
 -- seeds
 INSERT INTO semantic_metric_contract (metric_id, metric_name, business_definition, formula, unit, direction_higher, aggregation_rule_json, owner, version, status) VALUES
   ('quality_score', '质量评分', '质量缺陷严重程度', 'defect/total', 'score', 'worse', '{"allow":["avg","trend"],"deny":["sum"]}', '质量部', 'v1', 'active'),

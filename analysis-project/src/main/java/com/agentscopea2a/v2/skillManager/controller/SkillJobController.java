@@ -3,6 +3,8 @@ package com.agentscopea2a.v2.skillManager.controller;
 
 import com.agentscopea2a.v2.service.UrlShortenerService;
 import com.agentscopea2a.v2.skillManager.dto.MetricTriggerBatchDto;
+import com.agentscopea2a.v2.skillManager.dto.NotifySettingsDto;
+import com.agentscopea2a.v2.skillManager.dto.NotifySettingsUpdateRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillDependencyMetricDto;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobCreateRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobDto;
@@ -83,6 +85,23 @@ public class SkillJobController {
         service.delete(id, userId);
     }
 
+    // ---- 通知设置 ----
+
+    /** 查询任务通知设置(收件人名单;仅创建人)。 */
+    @GetMapping("/{id}/notify-settings")
+    public NotifySettingsDto getNotifySettings(@PathVariable(name = "id") Long id,
+                                               @RequestHeader("X-User-Id") String userId) {
+        return service.getNotifySettings(id, userId);
+    }
+
+    /** 更新任务通知设置(全量替换收件人名单;空列表 = 清空恢复发创建人;收件人须存在于人员表)。 */
+    @PutMapping("/{id}/notify-settings")
+    public NotifySettingsDto updateNotifySettings(@PathVariable(name = "id") Long id,
+                                                  @RequestBody NotifySettingsUpdateRequest req,
+                                                  @RequestHeader("X-User-Id") String userId) {
+        return service.updateNotifySettings(id, req, userId);
+    }
+
     // ---- 执行 ----
 
     /** 按 ID 触发 Job 执行（排队，不阻塞），仅创建人本人可手动触发 */
@@ -150,8 +169,12 @@ public class SkillJobController {
     @ResponseStatus(HttpStatus.ACCEPTED)
     public SkillJobNotificationDto resendNotification(
             @PathVariable(name = "execId") Long execId,
-            @RequestHeader("X-User-Id") String userId) {
-        return service.resendNotification(execId, userId);
+            @RequestHeader("X-User-Id") String userId,
+            @RequestBody(required = false) com.agentscopea2a.v2.skillManager.dto.ManualNotificationSendRequest request) {
+        if (request != null && !Boolean.TRUE.equals(request.confirmed())) {
+            throw new IllegalArgumentException("NotificationConfirmationRequired: 请先确认收件人");
+        }
+        return service.resendNotification(execId, userId, request == null ? null : request.notifyReceivers());
     }
 
     /**

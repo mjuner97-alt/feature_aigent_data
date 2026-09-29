@@ -45,11 +45,18 @@ public class ScriptParamValidator {
     }
 
     private static boolean matches(String type, Object value) {
+        type = type == null ? "string" : type.trim().toLowerCase();
+        if (type.equals("integer") || type.equals("long")) type = "int";
+        if (type.equals("number") || type.equals("double") || type.equals("decimal")) type = "float";
+        if (type.equals("integer[]") || type.equals("long[]")) type = "int[]";
+        if (type.equals("number[]") || type.equals("double[]") || type.equals("decimal[]")) type = "float[]";
         return switch (type) {
             case "string" -> value instanceof String;
             case "int" -> value instanceof Integer || value instanceof Long || value instanceof Short;
             case "float" -> value instanceof Number;
+            case "float[]" -> value instanceof List<?> list && list.stream().allMatch(v -> v instanceof Number);
             case "boolean" -> value instanceof Boolean;
+            case "boolean[]" -> value instanceof List<?> list && list.stream().allMatch(Boolean.class::isInstance);
             case "date" -> value instanceof String text && validDate(text);
             case "array" -> value instanceof List<?>;
             case "string[]" -> value instanceof List<?> list && list.stream().allMatch(String.class::isInstance);

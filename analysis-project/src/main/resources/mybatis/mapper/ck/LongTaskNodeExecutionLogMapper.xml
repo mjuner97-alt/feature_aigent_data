@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.mapper.ck.LongTaskNodeExecutionLogMapper">
+    <insert id="insert">
+        INSERT INTO long_task_node_execution_log
+        (log_id, flow_execution_id, node_execution_id, attempt_id, attempt_no,
+         user_id, flow_name, node_key, node_name, script_id, status, retryable,
+         error_code, started_at, completed_at, duration_ms, params_json,
+         output_text, error_message, params_truncated, output_truncated,
+         error_truncated, params_bytes, output_bytes, error_bytes)
+        VALUES
+        (#{log.logId}, #{log.flowExecutionId}, #{log.nodeExecutionId}, #{log.attemptId}, #{log.attemptNo},
+         #{log.userId}, #{log.flowName}, #{log.nodeKey}, #{log.nodeName}, #{log.scriptId}, #{log.status}, #{log.retryable},
+         #{log.errorCode}, #{log.startedAt}, #{log.completedAt}, #{log.durationMs}, #{log.paramsJson},
+         #{log.outputText}, #{log.errorMessage}, #{log.paramsTruncated}, #{log.outputTruncated},
+         #{log.errorTruncated}, #{log.paramsBytes}, #{log.outputBytes}, #{log.errorBytes})
+    </insert>
+
+    <sql id="filters">
+        <where>
+            <if test="!all">AND user_id = #{userId}</if>
+            <if test="from != null and from != ''">AND started_at &gt;= parseDateTimeBestEffort(#{from})</if>
+            <if test="to != null and to != ''">AND started_at &lt; parseDateTimeBestEffort(#{to})</if>
+            <if test="status != null and status != ''">AND status = #{status}</if>
+            <if test="flowName != null and flowName != ''">AND flow_name ILIKE concat('%', #{flowName}, '%')</if>
+            <if test="nodeName != null and nodeName != ''">AND node_name ILIKE concat('%', #{nodeName}, '%')</if>
+            <if test="filterUserId != null and filterUserId != ''">AND user_id = #{filterUserId}</if>
+        </where>
+    </sql>
+
+    <select id="detail" resultType="java.util.HashMap">
+        SELECT * FROM long_task_node_execution_log
+        WHERE log_id = #{id}
+        <if test="!all">AND user_id = #{userId}</if>
+        LIMIT 1
+    </select>
+
+    <select id="count" resultType="long">
+        SELECT count() FROM long_task_node_execution_log
+        <include refid="filters"/>
+    </select>
+
+    <select id="page" resultType="java.util.HashMap">
+        SELECT log_id, flow_execution_id, node_execution_id, attempt_no, user_id,
+               flow_name, node_name, script_id, status, retryable, error_code,
+               started_at, completed_at, duration_ms, error_message
+        FROM long_task_node_execution_log
+        <include refid="filters"/>
+        ORDER BY started_at DESC
+        LIMIT #{offset}, #{limit}
+    </select>
+</mapper>

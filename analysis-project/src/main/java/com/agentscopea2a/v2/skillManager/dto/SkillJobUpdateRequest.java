@@ -15,6 +15,8 @@
  */
 package com.agentscopea2a.v2.skillManager.dto;
 
+import java.util.List;
+
 /**
  * 更新 SkillJob 的请求体，所有字段可选，仅更新非 null 字段。
  * skillId / metricId 可修改：前端编辑表单可更换关联 Skill 或依赖指标。
@@ -29,5 +31,7 @@ public record SkillJobUpdateRequest(
         String questionTemplate,
         Boolean enabled,
         /** 按星期配置执行时间；传 null 表示保留原配置 */
-        String scheduleRules
+        String scheduleRules,
+        /** 传 null 保留，传空列表清空，传非空列表替换 */
+        List<String> notifyReceivers
 ) {}

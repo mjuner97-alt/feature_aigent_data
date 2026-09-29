@@ -37,19 +37,19 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/v2': {
-        target: 'http://localhost:8081',
+        target: 'http://localhost:8085',
         changeOrigin: true,
       },
       '/ai': {
-        target: 'http://localhost:8081',
+        target: 'http://localhost:8085',
         changeOrigin: true,
       },
       '/api': {
-        target: 'http://localhost:8081',
+        target: 'http://localhost:8085',
         changeOrigin: true,
       },
       '/redirect': {
-        target: 'http://localhost:8081',
+        target: 'http://localhost:8085',
         changeOrigin: true,
       },
     },

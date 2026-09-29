@@ -14,7 +14,7 @@ import { listMetrics } from '../../api/skillDependencyMetric';
 import type { SkillJob, SkillJobExecution } from '../../types/skillJob';
 import SkillJobExecutionDrawer from '../../components/SkillJobExecutionDrawer.vue';
 import SkillJobNotificationDrawer from '../../components/SkillJobNotificationDrawer.vue';
-import SkillJobReportEditorDrawer from '../../components/SkillJobReportEditorDrawer.vue';
+import ReportEditorDrawer from '../../components/ReportEditorDrawer.vue';
 import SkillFlowList from '../../components/SkillFlowList.vue';
 import SkillFlowExecutionList from '../../components/SkillFlowExecutionList.vue';
 
@@ -99,6 +99,11 @@ const execCanDownload = ref(false);
 const notifyOpen = ref(false);
 const notifyExecId = ref<number | null>(null);
 const notifyCanResend = ref(false);
+
+// 通知设置:独立页面(仅创建人入口)
+function openNotifySettings(jobId: number) {
+  router.push(`/skills/jobs/${jobId}/notify`);
+}
 const viewing = ref<Set<number>>(new Set());
 const previewed = ref<Set<number>>(new Set());
 const downloading = ref<Set<number>>(new Set());
@@ -388,7 +393,7 @@ function metricTitle(job: SkillJob): string {
       <div v-else-if="centerExecutions.length === 0" class="empty"><p>暂无符合条件的执行记录</p></div>
       <div v-else class="job-table-wrap">
         <table class="job-table execution-table">
-          <thead><tr><th>任务名称</th><th>创建人</th><th>Skill</th><th>触发方式</th><th>执行状态</th><th>通知状态</th><th>提交时间</th><th>执行 ID</th><th>操作</th></tr></thead>
+          <thead><tr><th>任务名称</th><th>创建人</th><th>Skill</th><th>触发方式</th><th>执行状态</th><th v-if="false">通知状态</th><th>提交时间</th><th>执行 ID</th><th>操作</th></tr></thead>
           <tbody>
             <tr v-for="exec in pagedCenterExecutions" :key="exec.id">
               <td><span class="col-name">{{ exec.jobName || `任务 #${exec.jobId}` }}</span></td>
@@ -399,7 +404,7 @@ function metricTitle(job: SkillJob): string {
                 <span class="status-badge" :class="executionStatusClass(exec.status)">{{ executionStatus(exec.status) }}</span>
                 <span v-if="exec.status === 'PENDING' && exec.queueAhead != null" class="queue-hint">{{ exec.queueAhead === 0 ? '即将执行' : `前面 ${exec.queueAhead} 个` }}</span>
               </td>
-              <td><span class="notify-badge" :class="notificationStatusClass(exec.latestNotificationStatus)">{{ notificationStatus(exec.latestNotificationStatus) }}</span></td>
+              <td v-if="false"><span class="notify-badge" :class="notificationStatusClass(exec.latestNotificationStatus)">{{ notificationStatus(exec.latestNotificationStatus) }}</span></td>
               <td class="col-time">{{ fmtTime(exec.createdAt) }}</td>
               <td>#{{ exec.id }}</td>
               <td class="col-actions">
@@ -418,7 +423,7 @@ function metricTitle(job: SkillJob): string {
                     <el-icon><Download /></el-icon><span>{{ downloading.has(exec.id) ? '下载中…' : '下载' }}</span>
                   </button>
                 </template>
-                <button class="btn-action" :disabled="exec.createdBy !== me" :title="exec.createdBy === me ? '' : '仅任务创建人可查看通知'" @click="openNotifications(exec)">通知记录</button>
+                <button v-if="exec.createdBy === me" class="btn-action" title="查看通知记录并手动发送" @click="openNotifications(exec)">通知记录</button>
               </td>
             </tr>
           </tbody>
@@ -486,6 +491,7 @@ function metricTitle(job: SkillJob): string {
             <button class="btn-action" @click="openExecutions(job)">记录</button>
             <template v-if="isOwner(job)">
               <button class="btn-action" @click="openEdit(job.id)">编辑</button>
+              <button v-if="false" class="btn-action" title="配置完成通知的收件人名单" @click="openNotifySettings(job.id)">通知</button>
               <button class="btn-action toggle" @click="toggleEnabled(job)">{{ job.enabled ? '禁用' : '启用' }}</button>
               <button class="btn-action danger" @click="remove(job.id)">删除</button>
             </template>
@@ -509,9 +515,10 @@ function metricTitle(job: SkillJob): string {
     <SkillJobExecutionDrawer v-model:open="execOpen" :job-id="execJobId" can-download :can-edit="execCanDownload" />
     </template>
     <SkillJobNotificationDrawer v-model:open="notifyOpen" :exec-id="notifyExecId" :can-resend="notifyCanResend" @changed="loadExecutionCenter(true)" />
-    <SkillJobReportEditorDrawer
+    <ReportEditorDrawer
       v-model:open="reportEditorOpen"
       :execution-id="reportEditorExecutionId"
+      kind="job"
       @saved="loadExecutionCenter(true)"
     />
   </div>
@@ -598,3 +605,5 @@ function metricTitle(job: SkillJob): string {
 }
 
 </style>
+
+

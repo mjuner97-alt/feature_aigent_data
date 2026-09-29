@@ -25,6 +25,10 @@ public class SkillFlowExecution {
     private String renderedSummaryQuestion;
     private Integer maxParallelismSnapshot;
     private Boolean notifyEnabledSnapshot;
+    /** 完成通知收件人名单快照(逗号分隔);空=发给触发人 */
+    private String notifyReceiversSnapshot;
+    /** 发名单的触发类型范围快照(逗号分隔,取值 CHAT/MANUAL/AUTO_METRIC);空=仅 AUTO_METRIC */
+    private String notifyReceiverTriggersSnapshot;
     private FlowTriggerType triggerType;
     private String triggerUserId;
     private String conversationId;
@@ -42,4 +46,8 @@ public class SkillFlowExecution {
     private LocalDateTime completedAt;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+    /** 列表查询的聚合字段，避免逐条加载节点和尝试记录。 */
+    private Integer totalNodeCount;
+    private Integer completedNodeCount;
+    private Long activeDurationSeconds;
 }

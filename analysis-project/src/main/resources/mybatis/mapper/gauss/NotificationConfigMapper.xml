@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.v2.skillManager.mapper.NotificationConfigMapper">
+
+    <resultMap id="ConfigMap" type="com.agentscopea2a.v2.skillManager.entity.NotificationConfig">
+        <id column="id" property="id"/>
+        <result column="target_type" property="targetType"/>
+        <result column="target_id" property="targetId"/>
+        <result column="enabled" property="enabled"/>
+        <result column="created_by" property="createdBy"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <!-- 按 (target_type, target_id) 查配置记录;一个业务对象只有一条(唯一索引 uk_notification_config_target) -->
+    <select id="selectByTarget" resultMap="ConfigMap">
+        SELECT id, target_type, target_id, enabled, created_by, created_at, updated_at
+        FROM notification_config
+        WHERE target_type = #{targetType}
+          AND target_id = #{targetId}
+    </select>
+
+    <!-- 插入配置记录;并发重复由唯一索引兜底,服务层捕获 DuplicateKeyException 后重查 -->
+    <insert id="insertConfig" parameterType="com.agentscopea2a.v2.skillManager.entity.NotificationConfig"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO notification_config (target_type, target_id, enabled, created_by)
+        VALUES (#{targetType}, #{targetId}, #{enabled}, #{createdBy})
+    </insert>
+
+</mapper>

@@ -10,6 +10,7 @@ import { ref, watch, computed } from 'vue';
 import { getJob, createJob, updateJob } from '../api/skillJob';
 import { listMetrics } from '../api/skillDependencyMetric';
 import { getSkill, listSkills } from '../api/skill';
+import { searchSkillUsers } from '../api/skill';
 import type { SkillJobInput, SkillJobUpdateInput } from '../types/skillJob';
 import type { SkillListItem } from '../types/skill';
 import type { SkillDependencyMetric } from '../types/skillJob';
@@ -23,7 +24,7 @@ const emit = defineEmits<{
 
 const isEdit = computed(() => props.editId != null);
 
-const form = ref<SkillJobInput>({ name: '', skillId: 0, questionTemplate: '', metricId: null, scheduleRules: null });
+const form = ref<SkillJobInput>({ name: '', skillId: 0, questionTemplate: '', metricId: null, scheduleRules: null, notifyReceivers: [] });
 const baseline = ref('');
 const isDirty = computed(() => JSON.stringify(form.value) !== baseline.value);
 const formLoading = ref(false);
@@ -33,6 +34,10 @@ const skills = ref<SkillListItem[]>([]);
 const metrics = ref<SkillDependencyMetric[]>([]);
 const skillLoading = ref(false);
 const metricLoading = ref(false);
+const receiverKeyword = ref('');
+const receiverResults = ref<{ userId: string; name: string; department: string | null }[]>([]);
+const receiverNames = ref<Record<string, string>>({});
+const receiverSearching = ref(false);
 let skillSearchSeq = 0;
 let metricSearchSeq = 0;
 
@@ -105,7 +110,7 @@ async function searchMetrics(query: string) {
 }
 
 function resetForm() {
-  form.value = { name: '', skillId: 0, questionTemplate: '', metricId: null, scheduleRules: null };
+  form.value = { name: '', skillId: 0, questionTemplate: '', metricId: null, scheduleRules: null, notifyReceivers: [] };
   baseline.value = JSON.stringify(form.value);
   formError.value = '';
 }
@@ -131,7 +136,10 @@ async function loadForEdit(id: number) {
       enabled: job.enabled,
       metricId: job.metricId ?? null,
       scheduleRules: job.scheduleRules ?? null,
+      notifyReceivers: [],
     };
+    const settings = await import('../api/skillJob').then(api => api.getJobNotifySettings(id));
+    nextForm.notifyReceivers = settings.notifyReceivers ?? [];
     // Resolve the selected option before exposing the loaded form. This avoids
     // the select briefly rendering the numeric skillId while getSkill is in flight.
     await ensureSelectedSkill(nextForm.skillId);
@@ -142,6 +150,29 @@ async function loadForEdit(id: number) {
   } finally {
     formLoading.value = false;
   }
+}
+
+async function searchReceivers() {
+  const keyword = receiverKeyword.value.trim();
+  if (!keyword) { receiverResults.value = []; return; }
+  receiverSearching.value = true;
+  try {
+    receiverResults.value = (await searchSkillUsers(keyword))
+      .filter(item => !(form.value.notifyReceivers ?? []).includes(item.userId));
+  } catch { receiverResults.value = []; }
+  finally { receiverSearching.value = false; }
+}
+
+function addReceiver(item: { userId: string; name: string }) {
+  const receivers = form.value.notifyReceivers ?? [];
+  if (receivers.includes(item.userId)) return;
+  form.value.notifyReceivers = [...receivers, item.userId];
+  receiverNames.value[item.userId] = item.name || item.userId;
+  receiverResults.value = receiverResults.value.filter(row => row.userId !== item.userId);
+}
+
+function removeReceiver(userId: string) {
+  form.value.notifyReceivers = (form.value.notifyReceivers ?? []).filter(id => id !== userId);
 }
 
 async function submit() {
@@ -161,6 +192,7 @@ async function submit() {
         questionTemplate: form.value.questionTemplate,
         enabled: form.value.enabled,
         scheduleRules: form.value.scheduleRules,
+        notifyReceivers: form.value.notifyReceivers,
       };
       await updateJob(props.editId, payload);
     } else {
@@ -230,6 +262,25 @@ defineExpose({ isDirty });
                   <textarea v-model="form.questionTemplate" rows="4" placeholder="分析今日数据质量" />
                   <span class="tip">只需填写核心问题，系统会自动拼接"调用{Skill名称}"前缀和"将结果以Markdown格式写入{输出路径}"后缀</span>
                 </label>
+                <div class="field">
+                  <span class="label">定时通知收件人</span>
+                  <div class="receiver-search">
+                    <input v-model="receiverKeyword" placeholder="输入姓名或统一认证号" @keyup.enter="searchReceivers" />
+                    <button type="button" class="btn ghost" :disabled="receiverSearching" @click="searchReceivers">搜索</button>
+                  </div>
+                  <div v-if="receiverResults.length" class="receiver-results">
+                    <button v-for="item in receiverResults" :key="item.userId" type="button" @click="addReceiver(item)">
+                      {{ item.name || item.userId }} ({{ item.userId }})
+                    </button>
+                  </div>
+                  <div class="receiver-chips">
+                    <span v-for="userId in form.notifyReceivers" :key="userId" class="receiver-chip">
+                      {{ receiverNames[userId] || userId }} ({{ userId }})
+                      <button type="button" @click="removeReceiver(userId)">×</button>
+                    </span>
+                  </div>
+                  <span class="tip">未选择时发送给任务创建人</span>
+                </div>
                 <div v-if="formError" class="error">{{ formError }}</div>
               </form>
             </div>
@@ -258,6 +309,14 @@ defineExpose({ isDirty });
 .drawer-close:hover { background: #f1f5f9; color: #0f172a; }
 .drawer-body { flex: 1; overflow-y: auto; padding: 16px 20px; }
 .drawer-footer { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 20px; border-top: 1px solid #e2e8f0; }
+.receiver-search { display: flex; gap: 8px; }
+.receiver-search input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 4px; }
+.receiver-results { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
+.receiver-results button { padding: 7px 9px; border: 0; background: #f8fafc; color: #1e293b; text-align: left; cursor: pointer; }
+.receiver-results button:hover { background: #dbeafe; }
+.receiver-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.receiver-chip { padding: 4px 7px; border-radius: 4px; background: #dbeafe; color: #1e3a8a; font-size: 12px; }
+.receiver-chip button { margin-left: 4px; border: 0; background: transparent; color: #1e3a8a; cursor: pointer; }
 .loading { color: #94a3b8; font-size: 14px; padding: 24px 0; text-align: center; }
 .form { display: flex; flex-direction: column; gap: 12px; }
 .field { display: flex; flex-direction: column; gap: 4px; }

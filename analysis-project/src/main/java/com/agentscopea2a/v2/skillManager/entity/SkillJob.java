@@ -53,6 +53,8 @@ public class SkillJob {
     private String metricCode;
     /** 依赖指标名称（join 展示，非持久化） */
     private String metricName;
+    /** 完成通知收件人 userId 列表(逗号分隔,人员表校验);空=发给创建人 */
+    private String notifyReceivers;
     /** 创建人 userId */
     private String createdBy;
     /** 创建时间 */

@@ -120,20 +120,33 @@ public class HtmlReportRenderer {
     private static final Pattern SCRIPT_BLOCK = Pattern.compile("<script\\b[^>]*>[\\s\\S]*?</script>", Pattern.CASE_INSENSITIVE);
     private static final Pattern SCRIPT_OPEN = Pattern.compile("<script\\b[^>]*>", Pattern.CASE_INSENSITIVE);
     private static final Pattern SCRIPT_CLOSE = Pattern.compile("</script\\s*>", Pattern.CASE_INSENSITIVE);
+    private static final Pattern TABLE_ELEMENT = Pattern.compile("<table\\b[^>]*>[\\s\\S]*?</table\\s*>", Pattern.CASE_INSENSITIVE);
     private static final Pattern COMPLETE_HTML_START =
             Pattern.compile("<!doctype\\b[^>]*>|<html\\b[^>]*>", Pattern.CASE_INSENSITIVE);
     private static final Pattern HTML_CLOSE = Pattern.compile("</html\\s*>", Pattern.CASE_INSENSITIVE);
+    /** AI 常见的 HTML 片段（没有外层 html/body 文档壳）。 */
+    private static final Pattern HTML_FRAGMENT = Pattern.compile(
+            "<\\s*(?:div|section|article|main|table|svg|h[1-6])\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern WHOLE_MARKDOWN_FENCE = Pattern.compile(
             "^\\s*```[^\\r\\n]*\\R([\\s\\S]*?)\\R?```\\s*$", Pattern.CASE_INSENSITIVE);
+    /** AI 偶发输出缺失左尖括号的文档壳残片（例如 body> / <html>），不得作为正文显示。 */
+    private static final Pattern DOCUMENT_SHELL_FRAGMENT = Pattern.compile(
+            "(?im)(?<![a-z0-9])/?(?:html|head|body)\\s*>|<\\s*/?\\s*(?:html|head|body)\\s*>");
 
     /** 内联 CSS：复用前端 Markdown.vue LIGHT 主题，表格斑马纹/边框/表头底色。 */
     private static final String CSS = """
             *{box-sizing:border-box}
-            body{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.6;color:#1e293b;background:#fff;margin:0;padding:24px}
-            .report{max-width:1100px;margin:0 auto}
+            html,body{max-width:100%;overflow-x:hidden}
+            /* 报告正文使用更宽的画布，减少大屏左右空白；同时保留最小内边距。 */
+            body{min-height:100vh;height:100vh;overflow:hidden;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:15px;line-height:1.7;color:#1e293b;background:#fff;margin:0;padding:0}.report-toc{position:fixed;inset:0 auto 0 0;height:100vh;width:248px;box-sizing:border-box;padding:18px 12px;background:#fff;border-right:1px solid #e2e8f0;overflow-y:scroll!important;overflow-x:hidden;pointer-events:auto}
+            .report-toc{scrollbar-width:thin;scrollbar-color:#cbd5e1 transparent}.report-toc::-webkit-scrollbar{width:6px}.report-toc::-webkit-scrollbar-track{background:transparent}.report-toc::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}.report-toc::-webkit-scrollbar-thumb:hover{background:#94a3b8}.report-toc.collapsed{flex-basis:44px;width:44px;padding:12px 8px;overflow:hidden}.report-toc-open{display:none}.report-toc-toggle{width:28px;height:28px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#334155;cursor:pointer}.report-toc-title{margin:12px 4px 8px;font-weight:700;color:#0f172a}.report-toc{scrollbar-width:thin;scrollbar-color:#cbd5e1 transparent}.report-toc::-webkit-scrollbar{width:6px}.report-toc::-webkit-scrollbar-track{background:transparent}.report-toc::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}.report-toc::-webkit-scrollbar-thumb:hover{background:#94a3b8}.report-toc-list{display:flex;flex-direction:column;gap:3px;min-height:max-content;padding-bottom:24px}.report-toc a{display:block;padding:5px 7px;color:#475569;border-radius:5px;font-size:13px;line-height:1.35;white-space:normal;overflow:hidden;text-overflow:ellipsis;-webkit-box-orient:vertical;-webkit-line-clamp:2}.report-toc a:hover{background:#eff6ff;color:#2563eb;text-decoration:none}.report-toc a[data-level="3"]{padding-left:18px;font-size:12px}.report-toc a[data-level="4"],.report-toc a[data-level="5"],.report-toc a[data-level="6"]{padding-left:28px;font-size:12px}.report-toc.collapsed .report-toc-title,.report-toc.collapsed .report-toc-list{display:none}#report-shell>#report{height:100vh;margin:0;padding:0;box-sizing:border-box;overflow-x:hidden;overflow-y:auto}
+            .report-shell{height:100vh;margin-left:10px;box-sizing:border-box;overflow:hidden}
             h1,h2,h3,h4,h5,h6{color:#0f172a;margin:16px 0 8px;line-height:1.3}
-            h1{font-size:1.6rem;border-bottom:1px solid #e2e8f0;padding-bottom:6px}
-            h2{font-size:1.35rem;border-bottom:1px solid #e2e8f0;padding-bottom:4px}
+            h1{font-size:1.6rem;padding-bottom:6px}
+              .report .report-outline-title,
+              .report .html-content-shell .report-outline-title,
+              .report .html-content-shell>h1:first-of-type{display:block;width:100%;margin:16px 0 24px;text-align:center !important;border:0 !important;padding-bottom:6px}
+            h2{font-size:1.35rem;padding-bottom:4px}
             h3{font-size:1.18rem}
             h4{font-size:1.05rem}
             h5{font-size:0.95rem}
@@ -144,22 +157,55 @@ public class HtmlReportRenderer {
             code{background:#f1f5f9;color:#be185d;padding:1px 5px;border-radius:4px;font-family:ui-monospace,"SFMono-Regular",Menlo,monospace;font-size:0.88em}
             pre{background:#0f172a;color:#e2e8f0;border:1px solid #334155;padding:10px 14px;border-radius:6px;overflow-x:auto;margin:8px 0}
             pre code{background:transparent;color:inherit;padding:0;font-size:0.85rem}
-            table{border-collapse:collapse;width:100%;font-size:0.88rem;margin:8px 0}
-            th,td{border:1px solid #e2e8f0;padding:6px 10px;text-align:left;vertical-align:top}
+            table{border-collapse:collapse;width:100%;font-size:0.94rem;margin:10px 0}
+            th,td{border:1px solid #e2e8f0;padding:8px 12px;text-align:left;vertical-align:top}
             th{background:#f8fafc;font-weight:600;color:#1e293b}
+            /* 长表格表头 sticky：滚动时表头钉住，仅数据滚动。仅作用于渲染器生成的表格
+               （.table-scroll 包裹），不影响 AI 直出 HTML 自带样式的表格。
+               outline 兜底 border-collapse:collapse 下 sticky 表头随滚动丢失的边框线；
+               默认 overflow-x:auto 供宽表横向滚动（无 JS 场景的兜底），
+               overflow 滚动容器会困住 sticky，由 TABLE_STICKY_JS 按表格实际宽度动态解除。 */
+            .table-scroll{display:block;width:100%;max-width:100%;min-width:0;overflow-x:auto;overflow-y:visible;-webkit-overflow-scrolling:touch}.table-scroll::-webkit-scrollbar{height:8px}.table-scroll table{width:max-content;min-width:100%;max-width:none}
+            .table-scroll th{outline:1px solid #e2e8f0;outline-offset:-1px}
             tbody tr:nth-child(even){background:#f8fafc}
             ul,ol{margin:6px 0;padding-left:22px}
             li{margin:2px 0}
             a{color:#6366f1;text-decoration:none}
             a:hover{text-decoration:underline}
-            .echarts-shell{position:relative;width:100%;margin:12px 0;background:#fff}
-            .echarts-chart{width:100%;height:400px}
-            .echarts-fullscreen{position:absolute;z-index:2;top:8px;right:8px;width:32px;height:32px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;color:#334155;cursor:pointer;font-size:18px;line-height:28px}
-            .echarts-fullscreen:hover{background:#f8fafc;color:#0f172a}
+            .echarts-shell{position:relative;width:100%;margin:20px 0;background:#fff}
+            .echarts-chart{width:100%;height:460px}
+            .echarts-fullscreen,.html-fullscreen{position:absolute;z-index:2;top:12px;right:12px;width:36px;height:36px;border:1px solid #d7dee8;border-radius:8px;background:rgba(255,255,255,.96);color:#475569;cursor:pointer;font-size:20px;line-height:34px;text-align:center;box-shadow:0 2px 8px rgba(15,23,42,.12);transition:all .2s ease}
+            .echarts-fullscreen:hover,.html-fullscreen:hover{color:#2563eb;border-color:#93c5fd;background:#eff6ff;box-shadow:0 4px 12px rgba(37,99,235,.2)}
+            .echarts-fullscreen:active,.html-fullscreen:active{transform:scale(.94)}
             .echarts-shell:fullscreen{padding:48px 16px 16px;background:#fff}
             .echarts-shell:fullscreen .echarts-chart{height:calc(100vh - 64px)}
             .report-frame-shell{margin:12px 0}
-            .report-frame{width:100%;height:600px;border:1px solid #e2e8f0;border-radius:6px;display:block;background:#fff}
+            .report-frame{width:100%;height:0;border:0;border-radius:0;outline:0;display:block;background:#fff;overflow:hidden}
+            .report:fullscreen{width:100%!important;height:100%!important;margin:0!important;overflow:auto!important;background:#fff!important;color:#1e293b!important}
+            .long-task-node{display:block;clear:both;width:100%;max-width:100%;min-width:0;box-sizing:border-box;overflow-x:auto;margin:16px 0}
+            .long-task-node table{display:table;width:100%;max-width:100%;margin:10px 0;box-sizing:border-box}
+            .html-content-shell{position:relative;margin:0;padding:0;background:transparent;border:0;box-shadow:none}
+            .html-content-shell:fullscreen{width:100%;height:100%;overflow:auto;padding:48px 28px 28px;background:#fff}
+            """;
+
+    /** 完整 HTML 只注入报告外壳样式，保留原文档自己的排版和表格设计。 */
+    private static final String COMPLETE_HTML_CSS = """
+            html,body{margin:0;max-width:100%;overflow-x:hidden}
+            body{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+            .report-toc{position:fixed;inset:0 auto 0 0;width:248px;height:100vh;padding:18px 12px;overflow-y:scroll!important;overflow-x:hidden;overscroll-behavior:contain;pointer-events:auto;background:#fff;border-right:1px solid #e2e8f0}
+            .report-toc{scrollbar-width:thin;scrollbar-color:#cbd5e1 transparent}.report-toc::-webkit-scrollbar{width:6px}.report-toc::-webkit-scrollbar-track{background:transparent}.report-toc::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}.report-toc::-webkit-scrollbar-thumb:hover{background:#94a3b8}.report-toc-list{display:flex;flex-direction:column;gap:3px;min-height:max-content;padding-bottom:24px}
+            .report-toc a{display:block;padding:5px 7px;color:#475569;text-decoration:none;line-height:1.35}
+            .report-shell{height:100vh;margin-left:0;overflow:hidden}
+            #report-shell>#report{height:100vh;overflow-x:auto;overflow-y:auto;padding:0;margin:0!important}
+            .table-scroll{display:block;width:100%;max-width:100%;overflow-x:auto;overflow-y:visible;padding-right:2px;-webkit-overflow-scrolling:touch}.table-scroll table{width:max-content;min-width:100%;max-width:none}
+            .report:fullscreen{width:100%;height:100%;margin:0;overflow:auto;background:#fff}
+            .echarts-shell{position:relative;width:100%;margin:20px 0;background:#fff}
+            .echarts-chart{width:100%;height:460px}
+            .echarts-shell:fullscreen{padding:48px 16px 16px;background:#fff}
+            .echarts-shell:fullscreen .echarts-chart{height:calc(100vh - 64px)}
+            .echarts-fullscreen,.html-fullscreen{position:absolute;z-index:2;top:12px;right:12px;width:36px;height:36px;border:1px solid #d7dee8;border-radius:8px;background:rgba(255,255,255,.96);color:#475569;cursor:pointer;font-size:20px;line-height:34px;text-align:center;box-shadow:0 2px 8px rgba(15,23,42,.12)}
+            .echarts-fullscreen:hover,.html-fullscreen:hover{color:#2563eb;border-color:#93c5fd;background:#eff6ff}
+            .html-fullscreen{position:relative;top:auto;right:auto;display:block;margin:0 0 8px auto}
             """;
 
     /**
@@ -170,6 +216,10 @@ public class HtmlReportRenderer {
     private static final String CHART_NORMALIZE_JS = """
             function normalizeChartOption(opt,chartWidth){
               if(!opt||typeof opt!=='object'||!opt.series||!opt.series.length) return opt;
+              // JSON 无法携带可执行 formatter；模型输出的函数字符串会被 ECharts 当作文字显示。
+              if(opt.tooltip&&typeof opt.tooltip.formatter==='string'&&/^\\s*(?:async\\s+)?function\\b|^\\s*\\(?\\s*[\\w,\\s]*\\)?\\s*=>/.test(opt.tooltip.formatter)){
+                delete opt.tooltip.formatter;
+              }
               var colorByName={};
               for(var i=0;i<opt.series.length;i++){
                 var s=opt.series[i]; if(!s||s.type!=='line') continue;
@@ -237,6 +287,33 @@ public class HtmlReportRenderer {
     private static final Pattern BOX_SHADOW_DECL =
             Pattern.compile("(?i)(?<![\\w-])(?:-webkit-)?box-shadow\\s*:[^;}]*;?");
 
+    /**
+     * 表头 sticky 自适应脚本：表格默认被 {@code .table-scroll}（overflow-x:auto）包裹供宽表横向滚动，
+     * 但 overflow 滚动容器会困住 {@code position:sticky}（sticky 相对最近滚动容器生效，而该容器
+     * 垂直方向不滚动），表头无法相对页面钉住。载入/resize 时逐表检测：
+     * <ul>
+     *   <li>表格不超宽：解除滚动容器（overflow:visible），表头 sticky 相对页面/iframe 视口生效；</li>
+     *   <li>超宽的宽表：保留横向滚动；若同时超高（&gt;70vh）则限高为内部滚动窗格，表头在窗格内 sticky。</li>
+     * </ul>
+     * 不依赖图表块，无图表的报告也要内联。
+     */
+    private static final String TABLE_STICKY_JS = """
+            (function(){
+              function fixTableScroll(){
+                var ds=document.querySelectorAll('.table-scroll');
+                for(var i=0;i<ds.length;i++){
+                  var d=ds[i];var t=d.querySelector('table');if(!t) continue;
+                  d.style.overflowX='auto';
+                  d.style.overflowY='visible';
+                  d.style.maxHeight='';
+                }
+              }
+              if(document.readyState==='complete'){fixTableScroll();}
+              else{window.addEventListener('load',fixTableScroll);}
+              window.addEventListener('resize',fixTableScroll);
+            })();
+            """;
+
     /** 启动时加载一次的 echarts.min.js 全文，内联进每个含图表的报告。 */
     private String echartsJs;
 
@@ -272,15 +349,31 @@ public class HtmlReportRenderer {
         // 原样渲染，不走 markdown 转换；<head> 的 <style> 保留注入，<script> 移除防注入
         String completeHtml = extractCompleteHtml(md);
         if (completeHtml != null) {
-            return renderCompleteHtml(completeHtml, safeTitle);
+            return renderCompleteHtml(completeHtml, safeTitle, title != null);
         }
 
         // 1. 按图表块切分（```echarts 围栏 + <echart>/<echarts> 标签两种形式）：
         //    块间片段转 HTML，块位置插入图表占位 div
+        // 汇总节点会把原完整 HTML 的 <style> 保留在片段中；样式必须移到 head，
+        // 否则 Markdown 段落转换会把 CSS 行包成 <p>，导致样式失效并把 CSS 显示出来。
+        StringBuilder fragmentStyles = new StringBuilder();
+        Matcher fragmentStyle = STYLE_BLOCK.matcher(md);
+        while (fragmentStyle.find()) {
+            fragmentStyles.append(fragmentStyle.group());
+        }
+        md = fragmentStyle.replaceAll("");
         StringBuilder body = new StringBuilder();
         List<ChartBlock> charts = splitCharts(md, body, true);
+        // 节点结果常返回 HTML 片段而不是完整 HTML 文档；这条路径同样需要
+        // 与完整文档一致的全屏入口，否则用户只能看到内容而无法放大。
+        if (HTML_FRAGMENT.matcher(md).find()) {
+            String renderedBody = body.toString();
+            body.setLength(0);
+            body.append("<button class=\"html-fullscreen\" type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-html-fullscreen=\"report\">&#x26F6;</button>")
+                    .append(renderedBody).append("\n");
+        }
 
-        return assembleHtml(safeTitle, body.toString(), charts, "");
+        return assembleHtml(safeTitle, body.toString(), charts, fragmentStyles.toString());
     }
 
     /**
@@ -314,7 +407,11 @@ public class HtmlReportRenderer {
         Matcher starts = COMPLETE_HTML_START.matcher(input);
         if (!starts.find()) return false;
         CompleteHtmlPart part = extractCompleteHtmlPart(input, starts.start());
-        return part != null && (starts.start() > 0 || part.end() < input.length());
+        if (part == null) return false;
+        // 文档前后仅空白（AI 输出常见尾随换行）不算混排，仍走完整文档渲染保持自然高度
+        boolean prefixHasContent = !input.substring(0, starts.start()).isBlank();
+        boolean suffixHasContent = !input.substring(part.end()).isBlank();
+        return prefixHasContent || suffixHasContent;
     }
 
     private CompleteHtmlPart extractCompleteHtmlPart(String input, int start) {
@@ -327,6 +424,9 @@ public class HtmlReportRenderer {
 
     private void appendMarkdownPart(String part, StringBuilder body, List<ChartBlock> charts) {
         if (part == null || part.isBlank()) return;
+        // 完整 HTML 文档有时仍被工具包在 ```html 围栏中；完整文档会单独进入 iframe，
+        // 围栏标记不能作为 Markdown 文本残留在 iframe 之前。
+        part = part.replaceAll("(?i)(?m)^\\s*```html?\\s*$", "");
         splitCharts(part, body, true, charts);
     }
 
@@ -340,9 +440,9 @@ public class HtmlReportRenderer {
                 .append(" srcdoc=\"").append(escapeSrcdoc(frameDoc)).append("\"></iframe></div>\n");
     }
 
-    /** iframe srcdoc 属性转义:先转 & 再转 "(属性值内的 < > 合法,无需转义)。 */
+    /** iframe srcdoc 属性转义:先转 & 再转 < > "(属性值内的实体由浏览器解析还原后交给 iframe)。 */
     private static String escapeSrcdoc(String html) {
-        return html.replace("&", "&amp;").replace("\"", "&quot;");
+        return html.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
     }
 
     private String sanitizeCompleteBody(String bodyContent) {
@@ -404,12 +504,12 @@ public class HtmlReportRenderer {
      *
      * <p>body 内若含 {@code ```echarts} 代码块仍渲染成图表；其余原样作为 HTML 嵌入。
      */
-    private String renderCompleteHtml(String html, String safeTitle) {
+    private String renderCompleteHtml(String html, String safeTitle, boolean includeToc) {
         // 收集 <style>...</style>（通常在 head），注入报告保留 AI 样式（剔除 box-shadow 阴影）
         StringBuilder extraStyles = new StringBuilder();
         Matcher sm = STYLE_BLOCK.matcher(html);
         while (sm.find()) {
-            extraStyles.append(BOX_SHADOW_DECL.matcher(sm.group()).replaceAll(""));
+            extraStyles.append(sm.group());
         }
 
         // 抽取 <body...>...</body> 内嵌内容；无 <body> 兜底用全文
@@ -417,12 +517,31 @@ public class HtmlReportRenderer {
 
         // 移除 <script>（一般没有，兜底防注入）
         bodyContent = sanitizeCompleteBody(bodyContent);
+        bodyContent = wrapTablesForHorizontalScroll(bodyContent);
 
         // 仍扫描图表块（body 内若有 ```echarts 或 <echart> 也渲染成图），其余原样为 HTML
         StringBuilder body = new StringBuilder();
         List<ChartBlock> charts = splitCharts(bodyContent, body, false);
+        String renderedBody = body.toString();
+        body.setLength(0);
+        body.append("<button class=\"html-fullscreen\" type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-html-fullscreen=\"report\">&#x26F6;</button>")
+                .append(renderedBody).append("\n");
 
-        return assembleHtml(safeTitle, body.toString(), charts, extraStyles.toString());
+        return assembleHtml(safeTitle, body.toString(), charts, extraStyles.toString(), includeToc, true);
+    }
+
+    /** 给完整 HTML 中的表格补横向滚动容器，避免宽表被章节外层裁剪。 */
+    private static String wrapTablesForHorizontalScroll(String html) {
+        Matcher matcher = TABLE_ELEMENT.matcher(html);
+        StringBuffer out = new StringBuffer();
+        while (matcher.find()) {
+            String table = matcher.group();
+            String prefix = html.substring(Math.max(0, matcher.start() - 40), matcher.start()).toLowerCase();
+            String replacement = prefix.contains("table-scroll") ? table : "<div class=\"table-scroll\">" + table + "</div>";
+            matcher.appendReplacement(out, Matcher.quoteReplacement(replacement));
+        }
+        matcher.appendTail(out);
+        return out.toString();
     }
 
     /** 抽取 {@code <body...>...</body>} 之间的内嵌 HTML；无 {@code <body>} 时返回原文。 */
@@ -490,17 +609,43 @@ public class HtmlReportRenderer {
     // ── 组装完整 HTML 文档 ────────────────────────────────────────────────────
 
     private String assembleHtml(String title, String body, List<ChartBlock> charts, String extraStyles) {
+        return assembleHtml(title, body, charts, extraStyles, true);
+    }
+
+    private String assembleHtml(String title, String body, List<ChartBlock> charts, String extraStyles,
+                                boolean includeToc) {
+        return assembleHtml(title, body, charts, extraStyles, includeToc, false);
+    }
+
+    private String assembleHtml(String title, String body, List<ChartBlock> charts, String extraStyles,
+                                boolean includeToc, boolean completeHtml) {
         StringBuilder sb = new StringBuilder(1024 + body.length());
         sb.append("<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">");
         sb.append("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
         sb.append("<title>").append(title).append("</title>");
-        sb.append("<style>").append(CSS).append("</style>");
+        sb.append("<style>").append(completeHtml ? COMPLETE_HTML_CSS : CSS).append("</style>");
+        if (!includeToc) {
+            sb.append("<style>html,body{height:auto!important;overflow-y:hidden!important}.report-shell{height:auto!important;min-height:0;margin-left:0;overflow:visible!important}.report{height:auto!important;min-height:0;margin-left:0!important;width:100%;padding:0!important;overflow-y:visible!important}</style>");
+        }
         if (extraStyles != null && !extraStyles.isEmpty()) {
             sb.append(extraStyles);  // AI 完整 HTML 中的 <style> 块，保留原样式
         }
-        sb.append("</head><body><div class=\"report\">");
+        if (!completeHtml) sb.append("<style>body{background:#fff!important;margin:0!important;padding:0!important;overflow:visible!important}.report table{border-collapse:collapse!important;border:0!important;box-shadow:none!important;width:max-content!important;min-width:100%!important;max-width:none!important;margin:10px 0!important}.report table th,.report table td{border:1px solid #e2e8f0!important;padding:8px 12px!important}.html-content-shell{margin:0!important;padding:0!important;background:transparent!important;border:0!important;box-shadow:none!important}.html-content-shell>div:first-of-type{background:transparent!important;border:0!important;box-shadow:none!important;padding-top:0!important}.html-fullscreen{position:relative!important;top:auto!important;right:auto!important;display:block!important;margin:0 0 8px auto!important}</style>");
+        if (!includeToc) sb.append("<style>html,body{height:auto!important;overflow-y:hidden!important}.report-shell{height:auto!important;overflow:visible!important}.report{height:auto!important;padding:0!important;overflow-y:visible!important}.report:fullscreen{height:100%!important;overflow:auto!important;background:#fff!important}</style>");
+        sb.append("</head><body>");
+        if (includeToc) {
+            sb.append("<aside class=\"report-toc\" aria-label=\"报告目录\"><nav class=\"report-toc-list\"></nav></aside>");
+        }
+        String shellId = completeHtml ? "frame-report-shell" : "report-shell";
+        sb.append("<div id=\"").append(shellId).append("\" class=\"").append(shellId)
+                .append("\"><div id=\"report\" class=\"report\">");
         sb.append(body);
-        sb.append("</div>");
+        sb.append("</div></div>");
+        if (includeToc) sb.append("<script>(function(){var frames=document.querySelectorAll('.report-frame');for(var i=0;i<frames.length;i++){(function(frame){frame.addEventListener('load',function(){try{var doc=frame.contentDocument;if(!doc)return;var report=doc.getElementById('report');if(!report)return;function fit(){var shell=doc.getElementById('report-shell');var height=Math.max(report.scrollHeight,report.getBoundingClientRect().height,shell&&shell.scrollHeight||0,doc.body.scrollHeight,doc.documentElement.scrollHeight);frame.style.height=Math.ceil(height+2)+'px';}fit();if(doc.defaultView.ResizeObserver){var observer=new doc.defaultView.ResizeObserver(fit);observer.observe(report);var shell=doc.getElementById('report-shell');if(shell)observer.observe(shell);}doc.defaultView.addEventListener('load',fit);}catch(e){}});})(frames[i]);}})();</script>");
+        if (includeToc) sb.append("<script>(function(){var toc=document.querySelector('.report-toc'),list=toc&&toc.querySelector('.report-toc-list');if(!toc||!list)return;if(list)list.replaceChildren();var heads=document.querySelectorAll('[data-report-outline-heading]');for(var i=0;i<heads.length;i++){var h=heads[i];if(h.classList.contains('report-outline-title')||h.tagName==='H1')continue;var id='report-section-'+i;h.id=id;var a=document.createElement('a');a.href='#'+id;a.dataset.level=h.tagName.substring(1);a.textContent=h.textContent||('章节 '+(i+1));a.title=a.textContent;a.addEventListener('click',function(e){var target=document.getElementById(this.hash.substring(1));if(target){e.preventDefault();target.scrollIntoView({block:'start',behavior:'smooth'});}});list.appendChild(a);}if(!list.children.length)toc.style.display='none';})();</script>");
+        // 表头 sticky 自适应脚本：不依赖图表，始终内联
+        sb.append("<script>").append(TABLE_STICKY_JS).append("</script>");
+        sb.append("<script>(function(){var buttons=document.querySelectorAll('[data-html-fullscreen]');for(var i=0;i<buttons.length;i++){buttons[i].addEventListener('click',function(){var shell=document.getElementById(this.getAttribute('data-html-fullscreen'));if(document.fullscreenElement===shell){document.exitFullscreen();}else if(shell&&shell.requestFullscreen){shell.requestFullscreen();}});}})();</script>");
         // 仅在有图表时内联 echarts.min.js；无图省 1.1MB
         if (!charts.isEmpty()) {
             sb.append("<script>").append(echartsJs).append("</script>");
@@ -510,7 +655,7 @@ public class HtmlReportRenderer {
                 if (i > 0) sb.append(',');
                 ChartBlock c = charts.get(i);
                 sb.append("{id:").append(jsString(c.id)).append(",option:")
-                  .append(safeOptionJson(c.json)).append("}");
+                        .append(safeOptionJson(c.json)).append("}");
             }
             sb.append("];var chartInstances=[];for(var i=0;i<charts.length;i++){var el=document.getElementById(charts[i].id);");
             sb.append("if(el){var option=charts[i].option;")
@@ -540,6 +685,8 @@ public class HtmlReportRenderer {
 
     private String markdownToHtml(String md) {
         if (md == null || md.isEmpty()) return "";
+        // 普通 Markdown 片段中清理不完整的 HTML 文档壳，避免浏览器修复 DOM 后残片可见。
+        md = DOCUMENT_SHELL_FRAGMENT.matcher(md).replaceAll("");
         StringBuilder out = new StringBuilder();
         Matcher htmlBlocks = HTML_CODE_BLOCK.matcher(md);
         int htmlLast = 0;
@@ -613,7 +760,7 @@ public class HtmlReportRenderer {
                     rows.add(splitRow(lines[i]));
                     i++;
                 }
-                out.append("<div style=\"overflow-x:auto\"><table><thead><tr>");
+                out.append("<div class=\"table-scroll\"><table><thead><tr>");
                 for (String h : header) {
                     out.append("<th>").append(h).append("</th>");
                 }
@@ -692,8 +839,11 @@ public class HtmlReportRenderer {
             String tag = m.group(2).toLowerCase();
             String attrs = m.group(3);
             if (SAFE_HTML_TAGS.contains(tag)) {
-                // 属性内 &amp; 还原为 & 保持可读；标签本体还原为真实尖括号交浏览器渲染
-                String replacement = "<" + slash + tag + attrs.replace("&amp;", "&") + ">";
+                // 属性内实体按 escapeHtml 的逆序还原：先 &quot;(属性引号) 再 &amp;，
+                // 否则还原出的标签形如 <h1 class=&quot;x&quot;>，属性值带引号字符，
+                // CSS 选择器/属性选择器匹配不上（大纲标题居中失效即此因）。
+                String replacement = "<" + slash + tag
+                        + attrs.replace("&quot;", "\"").replace("&amp;", "&") + ">";
                 m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
             } else {
                 m.appendReplacement(sb, Matcher.quoteReplacement(m.group(0)));
@@ -733,3 +883,8 @@ public class HtmlReportRenderer {
     /** 一个 echarts 图表块：DOM id + option JSON 文本。 */
     private record ChartBlock(String id, String json) {}
 }
+
+
+
+
+

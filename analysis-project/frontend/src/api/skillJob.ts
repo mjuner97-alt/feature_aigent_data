@@ -1,4 +1,5 @@
 import type { SkillJob, SkillJobInput, SkillJobUpdateInput, SkillJobExecution, SkillJobNotification } from '../types/skillJob';
+import type { NotifySettings, NotifySettingsUpdateInput } from '../types/notifySettings';
 import { apiErrorDetail } from '../utils/apiError';
 
 const BASE = '/api/skill-jobs';
@@ -63,6 +64,22 @@ export async function deleteJob(id: number): Promise<void> {
   if (!res.ok) throw await jobError(res, '删除失败');
 }
 
+/** 查询任务通知设置(仅创建人) */
+export async function getJobNotifySettings(id: number): Promise<NotifySettings> {
+  const res = await fetch(`${BASE}/${id}/notify-settings`, { headers: authHeaders() });
+  if (!res.ok) throw await jobError(res, '查询通知设置失败');
+  const body = await res.json();
+  return { notifyReceivers: body.notifyReceivers ?? [] };
+}
+
+/** 更新任务通知设置(全量替换;空数组 = 清空恢复发创建人) */
+export async function updateJobNotifySettings(id: number, input: NotifySettingsUpdateInput): Promise<NotifySettings> {
+  const res = await fetch(`${BASE}/${id}/notify-settings`, { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(input) });
+  if (!res.ok) throw await jobError(res, '保存通知设置失败');
+  const body = await res.json();
+  return { notifyReceivers: body.notifyReceivers ?? [] };
+}
+
 /** 触发执行（按 ID） */
 export async function triggerJob(id: number): Promise<SkillJobExecution> {
   const res = await fetch(`${BASE}/${id}/trigger`, { method: 'POST', headers: authHeaders() });
@@ -109,9 +126,10 @@ export async function listExecutionNotifications(execId: number): Promise<SkillJ
   return res.json();
 }
 
-export async function resendExecutionNotification(execId: number): Promise<SkillJobNotification> {
+export async function resendExecutionNotification(execId: number, notifyReceivers: string[]): Promise<SkillJobNotification> {
   const res = await fetch(`${BASE}/executions/${execId}/notifications/resend`, {
-    method: 'POST', headers: authHeaders(),
+    method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmed: true, notifyReceivers }),
   });
   if (!res.ok) throw await jobError(res, '补发失败');
   return res.json();
