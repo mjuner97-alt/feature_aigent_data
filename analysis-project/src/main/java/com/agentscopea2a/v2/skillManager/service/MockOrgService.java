@@ -288,7 +288,7 @@ public class MockOrgService {
             }
             dedup.putIfAbsent(uid, new UserSearchItem(uid, r.getName(), r.getDepartment()));
         }
-        return new ArrayList<>(dedup.values());
+        return new ArrayList<>(dedup.values()).subList(0, Math.min(5, dedup.size()));
     }
 
     // ==================== 内部工具 ====================

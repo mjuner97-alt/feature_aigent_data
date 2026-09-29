@@ -138,7 +138,7 @@ public class HtmlReportRenderer {
             html,body{max-width:100%;overflow-x:hidden}
             /* 报告正文使用更宽的画布，减少大屏左右空白；同时保留最小内边距。 */
             body{min-height:100vh;height:100vh;overflow:hidden;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:15px;line-height:1.7;color:#1e293b;background:#fff;margin:0;padding:0}.report-toc{position:fixed;inset:0 auto 0 0;height:100vh;width:248px;box-sizing:border-box;padding:18px 12px;background:#fff;border-right:1px solid #e2e8f0;overflow-y:scroll!important;overflow-x:hidden;pointer-events:auto}
-            .report-toc.collapsed{flex-basis:44px;width:44px;padding:12px 8px;overflow:hidden}.report-toc-open{display:none}.report-toc-toggle{width:28px;height:28px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#334155;cursor:pointer}.report-toc-title{margin:12px 4px 8px;font-weight:700;color:#0f172a}.report-toc-list{display:flex;flex-direction:column;gap:3px;min-height:max-content;padding-bottom:24px}.report-toc a{display:block;padding:5px 7px;color:#475569;border-radius:5px;font-size:13px;line-height:1.35;white-space:normal;overflow:hidden;text-overflow:ellipsis;-webkit-box-orient:vertical;-webkit-line-clamp:2}.report-toc a:hover{background:#eff6ff;color:#2563eb;text-decoration:none}.report-toc a[data-level="3"]{padding-left:18px;font-size:12px}.report-toc a[data-level="4"],.report-toc a[data-level="5"],.report-toc a[data-level="6"]{padding-left:28px;font-size:12px}.report-toc.collapsed .report-toc-title,.report-toc.collapsed .report-toc-list{display:none}#report-shell>#report{height:100vh;margin:0 0 0 5px;padding:0;box-sizing:border-box;overflow-x:hidden;overflow-y:auto}
+            .report-toc{scrollbar-width:thin;scrollbar-color:#cbd5e1 transparent}.report-toc::-webkit-scrollbar{width:6px}.report-toc::-webkit-scrollbar-track{background:transparent}.report-toc::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}.report-toc::-webkit-scrollbar-thumb:hover{background:#94a3b8}.report-toc.collapsed{flex-basis:44px;width:44px;padding:12px 8px;overflow:hidden}.report-toc-open{display:none}.report-toc-toggle{width:28px;height:28px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#334155;cursor:pointer}.report-toc-title{margin:12px 4px 8px;font-weight:700;color:#0f172a}.report-toc{scrollbar-width:thin;scrollbar-color:#cbd5e1 transparent}.report-toc::-webkit-scrollbar{width:6px}.report-toc::-webkit-scrollbar-track{background:transparent}.report-toc::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}.report-toc::-webkit-scrollbar-thumb:hover{background:#94a3b8}.report-toc-list{display:flex;flex-direction:column;gap:3px;min-height:max-content;padding-bottom:24px}.report-toc a{display:block;padding:5px 7px;color:#475569;border-radius:5px;font-size:13px;line-height:1.35;white-space:normal;overflow:hidden;text-overflow:ellipsis;-webkit-box-orient:vertical;-webkit-line-clamp:2}.report-toc a:hover{background:#eff6ff;color:#2563eb;text-decoration:none}.report-toc a[data-level="3"]{padding-left:18px;font-size:12px}.report-toc a[data-level="4"],.report-toc a[data-level="5"],.report-toc a[data-level="6"]{padding-left:28px;font-size:12px}.report-toc.collapsed .report-toc-title,.report-toc.collapsed .report-toc-list{display:none}#report-shell>#report{height:100vh;margin:0 0 0 5px;padding:0;box-sizing:border-box;overflow-x:hidden;overflow-y:auto}
             .report-shell{height:100vh;margin-left:0;box-sizing:border-box;overflow:hidden}
             h1,h2,h3,h4,h5,h6{color:#0f172a;margin:16px 0 8px;line-height:1.3}
             h1{font-size:1.6rem;padding-bottom:6px}
@@ -192,7 +192,7 @@ public class HtmlReportRenderer {
             html,body{margin:0;max-width:100%;overflow-x:hidden}
             body{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
             .report-toc{position:fixed;inset:0 auto 0 0;width:248px;height:100vh;padding:18px 12px;overflow-y:scroll!important;overflow-x:hidden;overscroll-behavior:contain;pointer-events:auto;background:#fff;border-right:1px solid #e2e8f0}
-            .report-toc-list{display:flex;flex-direction:column;gap:3px;min-height:max-content;padding-bottom:24px}
+            .report-toc{scrollbar-width:thin;scrollbar-color:#cbd5e1 transparent}.report-toc::-webkit-scrollbar{width:6px}.report-toc::-webkit-scrollbar-track{background:transparent}.report-toc::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}.report-toc::-webkit-scrollbar-thumb:hover{background:#94a3b8}.report-toc-list{display:flex;flex-direction:column;gap:3px;min-height:max-content;padding-bottom:24px}
             .report-toc a{display:block;padding:5px 7px;color:#475569;text-decoration:none;line-height:1.35}
             .report-shell{height:100vh;margin-left:0;overflow:hidden}
             #report-shell>#report{height:100vh;overflow-x:auto;overflow-y:auto;padding:0;margin:0 0 0 5px!important}
@@ -301,12 +301,9 @@ public class HtmlReportRenderer {
                 var ds=document.querySelectorAll('.table-scroll');
                 for(var i=0;i<ds.length;i++){
                   var d=ds[i];var t=d.querySelector('table');if(!t) continue;
-                  if(t.scrollWidth<=d.clientWidth+1){
-                    d.style.overflow='visible';d.style.maxHeight='';
-                  }else{
-                    d.style.overflow='auto';
-                    d.style.maxHeight=(t.offsetHeight>window.innerHeight*0.7)?'70vh':'';
-                  }
+                  d.style.overflowX='auto';
+                  d.style.overflowY='visible';
+                  d.style.maxHeight='';
                 }
               }
               if(document.readyState==='complete'){fixTableScroll();}
