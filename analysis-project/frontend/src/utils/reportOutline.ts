@@ -102,7 +102,6 @@ export function outlineHeadings(rows: OutlineRow[], numbering: ReportOutlineNumb
 export function validateOutlineRows(rows: OutlineRow[], nodeKeys: string[]): string[] {
   const errors: string[] = [];
   if (!rows.length) return errors;
-  if (rows.length > 50) errors.push('报告大纲条目不能超过 50 个');
   const ids = new Set<string>();
   const bound = new Set<string>();
   let prevLevel = 0;

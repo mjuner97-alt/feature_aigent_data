@@ -16,8 +16,6 @@ import java.util.Set;
  */
 final class ReportOutlineValidator {
 
-    /** 大纲条目总数上限:报告章节不可能超过这个规模,防异常配置。 */
-    static final int MAX_ITEMS = 50;
 
     private static final Set<String> NUMBERING_STYLES = Set.of("chinese", "arabic", "none");
 
@@ -34,7 +32,6 @@ final class ReportOutlineValidator {
         }
         int[] count = {0};
         walk(outline.items(), 0, nodeKeys, new HashSet<>(), new HashSet<>(), count, errors);
-        if (count[0] > MAX_ITEMS) errors.add("报告大纲条目不能超过 " + MAX_ITEMS + " 个");
         for (String nodeKey : nodeKeys) {
             if (!outlineBinds(outline, nodeKey)) errors.add("节点 " + nodeKey + " 未绑定到报告大纲");
         }
