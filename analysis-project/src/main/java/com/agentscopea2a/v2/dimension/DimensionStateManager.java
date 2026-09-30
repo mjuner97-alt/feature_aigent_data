@@ -292,6 +292,7 @@ public class DimensionStateManager {
                 aliasResolver != null && userQuestion != null && !userQuestion.isBlank()
                         ? aliasResolver.resolve(userQuestion)
                         : AliasResolver.AliasResolution.EMPTY;
+        aliasRes = suppressEmbeddedAliasHits(userQuestion, aliasRes);
         boolean aliasPeerHit = !aliasRes.resolved().isEmpty() || !aliasRes.ambiguous().isEmpty();
         if (!aliasRes.ambiguous().isEmpty()) {
             analysis.setAmbiguousAliases(aliasRes.ambiguous());
@@ -494,6 +495,54 @@ public class DimensionStateManager {
     private static boolean aliasHit(AliasResolver.AliasResolution aliasRes) {
         return aliasRes != null
                 && (!aliasRes.resolved().isEmpty() || !aliasRes.ambiguous().isEmpty());
+    }
+
+    /**
+     * 嵌入小组名内部的 alias 命中抑制："个贷数据开发组"里的"个贷"只是更长小组名的修饰前缀，
+     * 并非独立指代产品线，此类命中整体丢弃，让小组正则接管；否则 alias 命中会抢注错误维度
+     * 且压制小组识别（aliasHit 为 true 时小组正则不跑）。
+     *
+     * <p>判据：alias span 落在某个显式小组 span 内、未延伸到其末尾、且之后还有不止一个"组"字
+     * 的修饰成分（teamEnd - end &gt; 1）。两类命中保留：
+     * <ul>
+     *   <li>尾部对齐（"FMBM应用平台组"里的"应用平台组"）——alias 能给出标准名；</li>
+     *   <li>alias 后紧跟单个"组"字（"军队组"里的"军队"）——"别名+组"的口语写法，
+     *       触发词机制正是为此设计。</li>
+     * </ul>
+     */
+    private static AliasResolver.AliasResolution suppressEmbeddedAliasHits(
+            String q, AliasResolver.AliasResolution res) {
+        if (res.resolved().isEmpty() && res.ambiguous().isEmpty()) {
+            return res;
+        }
+        List<int[]> teamSpans = new ArrayList<>();
+        Matcher teamMatcher = EXPLICIT_TEAM.matcher(q);
+        while (teamMatcher.find()) {
+            teamSpans.add(new int[] {teamMatcher.start(), teamMatcher.end()});
+        }
+        if (teamSpans.isEmpty()) {
+            return res;
+        }
+        List<AliasResolver.ResolvedAlias> keptResolved = res.resolved().stream()
+                .filter(h -> !embeddedInTeamSpan(h.start(), h.end(), teamSpans))
+                .toList();
+        List<AliasResolver.AmbiguousAlias> keptAmbiguous = res.ambiguous().stream()
+                .filter(h -> !embeddedInTeamSpan(h.start(), h.end(), teamSpans))
+                .toList();
+        if (keptResolved.size() == res.resolved().size()
+                && keptAmbiguous.size() == res.ambiguous().size()) {
+            return res;
+        }
+        return new AliasResolver.AliasResolution(keptResolved, keptAmbiguous);
+    }
+
+    private static boolean embeddedInTeamSpan(int start, int end, List<int[]> teamSpans) {
+        for (int[] span : teamSpans) {
+            if (start >= span[0] && end < span[1] && span[1] - end > 1) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
