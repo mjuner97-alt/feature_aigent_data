@@ -27,6 +27,7 @@ import SkillJobListPage from './pages/skill/SkillJobListPage.vue';
 import SkillJobFormPage from './pages/skill/SkillJobFormPage.vue';
 import SkillJobReportEditPage from './pages/skill/SkillJobReportEditPage.vue';
 import SkillFlowFormPage from './pages/skill/SkillFlowFormPage.vue';
+import SkillFlowReportEditPage from './pages/skill/SkillFlowReportEditPage.vue';
 import SkillNotifySettingsPage from './pages/skill/SkillNotifySettingsPage.vue';
 import SkillVirtualGroupPage from './pages/skill/SkillVirtualGroupPage.vue';
 import SqlRegistryPage from './pages/SqlRegistryPage.vue';
@@ -42,6 +43,9 @@ import { isLoggedIn } from './utils/auth';
 
 const routes: RouteRecordRaw[] = [
   { path: '/login', component: LoginPage },
+  // 报告编辑是独立工作页面，不挂在 SkillShell，避免继承主页面侧边导航。
+  { path: '/skills/jobs/executions/:id/report/edit', component: SkillJobReportEditPage },
+  { path: '/skills/jobs/flows/executions/:id/report/edit', component: SkillFlowReportEditPage },
   {
     path: '/',
     component: AppShell,
@@ -60,7 +64,6 @@ const routes: RouteRecordRaw[] = [
           { path: 'jobs', component: SkillJobListPage },
           { path: 'jobs/new', component: SkillJobFormPage },
           { path: 'jobs/:id/edit', component: SkillJobFormPage },
-          { path: 'jobs/executions/:id/report/edit', component: SkillJobReportEditPage },
           { path: 'jobs/:id/notify', component: SkillNotifySettingsPage, props: { type: 'job' } },
           { path: 'jobs/flows/new', component: SkillFlowFormPage },
           { path: 'jobs/flows/:id/edit', component: SkillFlowFormPage },

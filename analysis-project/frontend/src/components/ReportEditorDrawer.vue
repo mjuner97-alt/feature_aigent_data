@@ -27,13 +27,14 @@ const api = computed(() => props.kind === 'flow'
   : { load: getExecutionReportSource, save: saveExecutionReportSource });
 
 const dirty = computed(() => visualDirty.value || source.value !== savedSource.value);
+defineExpose({ dirty });
 const canSave = computed(() =>
   dirty.value && !saving.value && (mode.value === 'visual' || source.value.trim().length > 0));
 
 watch(() => [props.open, props.executionId] as const, ([open, executionId]) => {
   if (open && executionId) load(executionId);
   if (!open) reset();
-});
+}, { immediate: true });
 
 async function load(executionId: number) {
   loading.value = true;
@@ -41,7 +42,8 @@ async function load(executionId: number) {
   mode.value = 'visual';
   visualDirty.value = false;
   try {
-    const html = await api.value.load(executionId);
+    const rawHtml = await api.value.load(executionId);
+    const html = rawHtml;
     source.value = html;
     savedSource.value = html;
     frameKey.value++;
@@ -60,7 +62,7 @@ async function save() {
     const html = mode.value === 'visual' ? serializeVisual() : source.value;
     const persisted = await api.value.save(props.executionId, html);
     source.value = persisted;
-    savedSource.value = persisted;
+    savedSource.value = source.value;
     visualDirty.value = false;
     mode.value = 'visual';
     frameKey.value++; // 用持久化后的内容重载可视化视图
