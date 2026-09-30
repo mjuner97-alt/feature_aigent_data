@@ -165,7 +165,7 @@ public class HtmlReportRenderer {
                outline 兜底 border-collapse:collapse 下 sticky 表头随滚动丢失的边框线；
                默认 overflow-x:auto 供宽表横向滚动（无 JS 场景的兜底），
                overflow 滚动容器会困住 sticky，由 TABLE_STICKY_JS 按表格实际宽度动态解除。 */
-            .table-scroll{display:block;width:100%;max-width:100%;min-width:0;overflow-x:auto;overflow-y:visible;-webkit-overflow-scrolling:touch}.table-scroll::-webkit-scrollbar{height:8px}.table-scroll table{width:max-content;min-width:100%;max-width:none}
+            .table-scroll{display:block;width:100%;max-width:100%;min-width:0;overflow-x:auto;overflow-y:visible;-webkit-overflow-scrolling:touch}.table-scroll::-webkit-scrollbar{height:6px}.table-scroll::-webkit-scrollbar-track{background:transparent}.table-scroll::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}.table-scroll::-webkit-scrollbar-thumb:hover{background:#94a3b8}.table-scroll table{width:max-content;min-width:100%;max-width:none}
             .table-scroll th{outline:1px solid #e2e8f0;outline-offset:-1px}
             tbody tr:nth-child(even){background:#f8fafc}
             ul,ol{margin:6px 0;padding-left:22px}
@@ -181,11 +181,11 @@ public class HtmlReportRenderer {
             .echarts-shell:fullscreen .echarts-chart{height:calc(100vh - 64px)}
             .report-frame-shell{margin:12px 0}
             .report-frame{width:100%;height:0;border:0;border-radius:0;outline:0;display:block;background:#fff;overflow:hidden}
-            .report:fullscreen{width:100%!important;height:100%!important;margin:0!important;overflow:auto!important;background:#fff!important;color:#1e293b!important}
+            .report:fullscreen{width:100%!important;height:100%!important;margin:0!important;box-sizing:border-box!important;overflow:auto!important;overflow-x:auto!important;background:#fff!important;color:#1e293b!important}
             .long-task-node{display:block;clear:both;width:100%;max-width:100%;min-width:0;box-sizing:border-box;overflow-x:auto;margin:16px 0}
             .long-task-node table{display:table;width:100%;max-width:100%;margin:10px 0;box-sizing:border-box}
             .html-content-shell{position:relative;margin:0;padding:0;background:transparent;border:0;box-shadow:none}
-            .html-content-shell:fullscreen{width:100%;height:100%;overflow:auto;padding:48px 28px 28px;background:#fff}
+            .html-content-shell:fullscreen{width:100%;height:100%;box-sizing:border-box;overflow:auto;overflow-x:auto;padding:48px 28px 28px;background:#fff}
             """;
 
     /** 完整 HTML 只注入报告外壳样式，保留原文档自己的排版和表格设计。 */
@@ -198,14 +198,14 @@ public class HtmlReportRenderer {
             .report-shell{height:100vh;margin-left:0;overflow:hidden}
             #report-shell>#report{height:100vh;overflow-x:auto;overflow-y:auto;padding:0;margin:0!important}
             .table-scroll{display:block;width:100%;max-width:100%;overflow-x:auto;overflow-y:visible;padding-right:2px;-webkit-overflow-scrolling:touch}.table-scroll table{width:max-content;min-width:100%;max-width:none}
-            .report:fullscreen{width:100%;height:100%;margin:0;overflow:auto;background:#fff}
+            .report:fullscreen{width:100%;height:100%;margin:0;box-sizing:border-box;overflow:auto;overflow-x:auto;background:#fff}
             .echarts-shell{position:relative;width:100%;margin:20px 0;background:#fff}
             .echarts-chart{width:100%;height:460px}
             .echarts-shell:fullscreen{padding:48px 16px 16px;background:#fff}
             .echarts-shell:fullscreen .echarts-chart{height:calc(100vh - 64px)}
             .echarts-fullscreen,.html-fullscreen{position:absolute;z-index:2;top:12px;right:12px;width:36px;height:36px;border:1px solid #d7dee8;border-radius:8px;background:rgba(255,255,255,.96);color:#475569;cursor:pointer;font-size:20px;line-height:34px;text-align:center;box-shadow:0 2px 8px rgba(15,23,42,.12)}
             .echarts-fullscreen:hover,.html-fullscreen:hover{color:#2563eb;border-color:#93c5fd;background:#eff6ff}
-            .html-fullscreen{position:relative;top:auto;right:auto;display:block;margin:0 0 8px auto}
+            .html-fullscreen{position:absolute;top:12px;right:12px;display:block;margin:0}
             """;
 
     /**
@@ -630,7 +630,7 @@ public class HtmlReportRenderer {
         if (extraStyles != null && !extraStyles.isEmpty()) {
             sb.append(extraStyles);  // AI 完整 HTML 中的 <style> 块，保留原样式
         }
-        if (!completeHtml) sb.append("<style>body{background:#fff!important;margin:0!important;padding:0!important;overflow:visible!important}.report table{border-collapse:collapse!important;border:0!important;box-shadow:none!important;width:max-content!important;min-width:100%!important;max-width:none!important;margin:10px 0!important}.report table th,.report table td{border:1px solid #e2e8f0!important;padding:8px 12px!important}.html-content-shell{margin:0!important;padding:0!important;background:transparent!important;border:0!important;box-shadow:none!important}.html-content-shell>div:first-of-type{background:transparent!important;border:0!important;box-shadow:none!important;padding-top:0!important}.html-fullscreen{position:relative!important;top:auto!important;right:auto!important;display:block!important;margin:0 0 8px auto!important}</style>");
+        if (!completeHtml) sb.append("<style>body{background:#fff!important;margin:0!important;padding:0!important;overflow:visible!important}.report table{border-collapse:collapse!important;border:0!important;box-shadow:none!important;width:max-content!important;min-width:100%!important;max-width:none!important;margin:10px 0!important}.report table th,.report table td{border:1px solid #e2e8f0!important;padding:8px 12px!important}.html-content-shell{margin:0!important;padding:0!important;background:transparent!important;border:0!important;box-shadow:none!important}.html-content-shell>div:first-of-type{background:transparent!important;border:0!important;box-shadow:none!important;padding-top:0!important}.html-fullscreen{position:absolute!important;top:12px!important;right:12px!important;display:block!important;margin:0!important}</style>");
         if (!includeToc) sb.append("<style>html,body{height:auto!important;overflow-y:hidden!important}.report-shell{height:auto!important;overflow:visible!important}.report{height:auto!important;padding:0!important;overflow-y:visible!important}.report:fullscreen{height:100%!important;overflow:auto!important;background:#fff!important}</style>");
         sb.append("</head><body>");
         if (includeToc) {
