@@ -115,8 +115,9 @@ public class FlowCompletionService {
                             "status", n.getStatus() == null ? "UNKNOWN" : n.getStatus().name(),
                             "result", Objects.toString(n.getResultJson(), ""))).toList();
             try {
-                String reportPath = reportStorage.write(flow.getTriggerUserId(), flow.getId(),
-                        renderer.render(text, Objects.toString(flow.getFlowName(), "长任务报告")));
+                String renderedReport = renderer.render(text, Objects.toString(flow.getFlowName(), "长任务报告"))
+                        .replaceAll("(?s)<button\\s+class=\\\"html-fullscreen\\\"[^>]*>.*?</button>", "");
+                String reportPath = reportStorage.write(flow.getTriggerUserId(), flow.getId(), renderedReport);
                 return new Summary(json.writeValueAsString(Map.of("results", results)), reportPath);
             } catch (FlowReportStorage.ReportStorageException e) {
                 // 报告属于收尾附件，磁盘不足不能反向把已经成功的节点和流程改成失败。

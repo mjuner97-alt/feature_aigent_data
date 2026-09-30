@@ -199,7 +199,7 @@ public class HtmlReportRenderer {
             .report-shell{height:100vh;margin-left:0;overflow:hidden}
             .report{height:100vh;margin-left:264px!important;width:calc(100% - 264px);box-sizing:border-box;overflow-y:auto}
             #report-shell>#report{height:100vh;overflow-x:auto;overflow-y:auto;padding:0;margin:0!important}
-            .table-scroll{display:block;width:100%;max-width:100%;overflow-x:auto;overflow-y:visible;padding-right:2px;-webkit-overflow-scrolling:touch}.table-scroll table{width:max-content;min-width:100%;max-width:none}
+            .table-scroll{display:block;width:100%;max-width:100%;overflow-x:auto;overflow-y:visible;padding-right:2px;-webkit-overflow-scrolling:touch;scrollbar-width:thin;scrollbar-color:#cbd5e1 transparent}.table-scroll::-webkit-scrollbar{height:6px}.table-scroll::-webkit-scrollbar-track{background:transparent}.table-scroll::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}.table-scroll::-webkit-scrollbar-thumb:hover{background:#94a3b8}.table-scroll table{width:max-content;min-width:100%;max-width:none}
             .report:fullscreen{width:100%;height:100%;margin:0;box-sizing:border-box;overflow:auto;overflow-x:auto;background:#fff}
             .echarts-shell{position:relative;width:100%;margin:20px 0;background:#fff}
             .echarts-chart{width:100%;height:460px}

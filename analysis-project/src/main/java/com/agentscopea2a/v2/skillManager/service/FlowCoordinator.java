@@ -780,20 +780,21 @@ public class FlowCoordinator {
      * 沿 cause 链逐层检查;汇总收尾重试共用同一分类。
      */
     static boolean retryable(Throwable error) {
-        Throwable current = error;
-        while (current != null) {
-            // 历史数据/框架状态异常可能表现为 NPE。允许一次恢复性重试，
-            // 由 NODE_MAX_ATTEMPTS=2 严格限制总次数，避免无限循环。
-            if (current instanceof NullPointerException) return true;
-            if (current instanceof SocketTimeoutException || current instanceof ConnectException
-                    || current instanceof TimeoutException) return true;
-            String message = current.getMessage() == null ? "" : current.getMessage().toLowerCase();
-            if (message.contains("429") || message.contains("rate limit")
-                    || message.contains("timeout") || message.contains("temporar")
-                    || message.matches(".*\\b5\\d\\d\\b.*")) return true;
-            current = current.getCause();
-        }
-        return false;
+//        Throwable current = error;
+//        while (current != null) {
+//            // 历史数据/框架状态异常可能表现为 NPE。允许一次恢复性重试，
+//            // 由 NODE_MAX_ATTEMPTS=2 严格限制总次数，避免无限循环。
+//            if (current instanceof NullPointerException) return true;
+//            if (current instanceof SocketTimeoutException || current instanceof ConnectException
+//                    || current instanceof TimeoutException) return true;
+//            String message = current.getMessage() == null ? "" : current.getMessage().toLowerCase();
+//            if (message.contains("429") || message.contains("rate limit")
+//                    || message.contains("timeout") || message.contains("temporar")
+//                    || message.matches(".*\\b5\\d\\d\\b.*")) return true;
+//            current = current.getCause();
+//        }
+//        return false;
+        return true;
     }
 
     private String json(Object value) {

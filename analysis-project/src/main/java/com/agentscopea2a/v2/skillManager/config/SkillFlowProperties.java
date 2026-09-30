@@ -20,7 +20,7 @@ public final class SkillFlowProperties {
     public static final int NODE_EXECUTION_TIMEOUT_MINUTES = 30;
 
     /** 后端统一控制单节点最大尝试次数，前端传入值不参与执行策略。 */
-    public static final int NODE_MAX_ATTEMPTS = 2;
+    public static final int NODE_MAX_ATTEMPTS = 3;
 
     /**
      * 节点租约秒数。必须大于单节点执行超时(30 分钟):
