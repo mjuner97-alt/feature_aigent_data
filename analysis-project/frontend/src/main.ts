@@ -28,6 +28,7 @@ import SkillJobFormPage from './pages/skill/SkillJobFormPage.vue';
 import SkillJobReportEditPage from './pages/skill/SkillJobReportEditPage.vue';
 import SkillFlowFormPage from './pages/skill/SkillFlowFormPage.vue';
 import SkillFlowReportEditPage from './pages/skill/SkillFlowReportEditPage.vue';
+import PublicFlowReportPage from './pages/PublicFlowReportPage.vue';
 import SkillNotifySettingsPage from './pages/skill/SkillNotifySettingsPage.vue';
 import SkillVirtualGroupPage from './pages/skill/SkillVirtualGroupPage.vue';
 import SqlRegistryPage from './pages/SqlRegistryPage.vue';
@@ -43,6 +44,7 @@ import { isLoggedIn } from './utils/auth';
 
 const routes: RouteRecordRaw[] = [
   { path: '/login', component: LoginPage },
+  { path: '/report/flows/:id', component: PublicFlowReportPage },
   // 报告编辑是独立工作页面，不挂在 SkillShell，避免继承主页面侧边导航。
   { path: '/skills/jobs/executions/:id/report/edit', component: SkillJobReportEditPage },
   { path: '/skills/jobs/flows/executions/:id/report/edit', component: SkillFlowReportEditPage },
@@ -131,7 +133,7 @@ const router = createRouter({
 
 // 路由守卫:未登录时跳转到 /login
 router.beforeEach((to, _from, next) => {
-  if (to.path === '/login') {
+  if (to.path === '/login' || to.path.startsWith('/report/flows/')) {
     next();
     return;
   }

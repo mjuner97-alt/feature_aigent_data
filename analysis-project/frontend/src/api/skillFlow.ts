@@ -221,6 +221,13 @@ export async function getSkillFlowExecutionReportUrl(id: number): Promise<{ url:
   }
   return { url: URL.createObjectURL(reportBlob), downloadName };
 }
+
+/** 邮件公开报告页使用的原始报告请求，不依赖登录用户。 */
+export async function getPublicSkillFlowReportBlobUrl(id: number): Promise<string> {
+  const res = await fetch(`${EXECUTION_BASE}/${id}/report`, { cache: 'no-store' });
+  if (!res.ok) throw await requestError(res, '打开汇总报告失败');
+  return URL.createObjectURL(await res.blob());
+}
 export async function retrySkillFlowSummary(id: number): Promise<void> { const res = await fetch(`${EXECUTION_BASE}/${id}/summary/retry`, { method: 'POST', headers: authHeaders() }); if (!res.ok) throw await requestError(res, '重新生成汇总失败'); }
 export async function retrySkillFlowNode(executionId: number, nodeId: number): Promise<void> { const res = await fetch(`${EXECUTION_BASE}/${executionId}/nodes/${nodeId}/retry`, { method: 'POST', headers: authHeaders() }); if (!res.ok) throw await requestError(res, '重跑任务失败'); }
 export async function retrySkillFlowFailedNodes(executionId: number): Promise<void> { const res = await fetch(`${EXECUTION_BASE}/${executionId}/nodes/retry-failed`, { method: 'POST', headers: authHeaders() }); if (!res.ok) throw await requestError(res, '批量重跑失败任务失败'); }

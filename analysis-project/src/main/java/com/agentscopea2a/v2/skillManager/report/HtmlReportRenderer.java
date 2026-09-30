@@ -40,6 +40,7 @@ import java.util.regex.Pattern;
  */
 @Component
 public class HtmlReportRenderer {
+    private final ThreadLocal<Boolean> fullscreenDisabled = ThreadLocal.withInitial(() -> false);
 
     private static final Logger log = LoggerFactory.getLogger(HtmlReportRenderer.class);
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -368,7 +369,7 @@ public class HtmlReportRenderer {
         List<ChartBlock> charts = splitCharts(md, body, true);
         // 节点结果常返回 HTML 片段而不是完整 HTML 文档；这条路径同样需要
         // 与完整文档一致的全屏入口，否则用户只能看到内容而无法放大。
-        if (HTML_FRAGMENT.matcher(md).find()) {
+        if (fullscreenEnabled() && HTML_FRAGMENT.matcher(md).find()) {
             String renderedBody = body.toString();
             body.setLength(0);
             body.append("<button class=\"html-fullscreen\" type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-html-fullscreen=\"report\">&#x26F6;</button>")
@@ -377,6 +378,15 @@ public class HtmlReportRenderer {
 
         return assembleHtml(safeTitle, body.toString(), charts, fragmentStyles.toString());
     }
+
+    public String renderWithoutFullscreen(String markdown, String title) {
+        boolean previous = fullscreenDisabled.get();
+        fullscreenDisabled.set(true);
+        try { return render(markdown, title); }
+        finally { fullscreenDisabled.set(previous); }
+    }
+
+    private boolean fullscreenEnabled() { return !Boolean.TRUE.equals(fullscreenDisabled.get()); }
 
     /**
      * 渲染 Markdown 与一份或多份完整 HTML 文档混排的内容:
@@ -526,8 +536,8 @@ public class HtmlReportRenderer {
         List<ChartBlock> charts = splitCharts(bodyContent, body, false);
         String renderedBody = body.toString();
         body.setLength(0);
-        body.append("<button class=\"html-fullscreen\" type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-html-fullscreen=\"report\">&#x26F6;</button>")
-                .append(renderedBody).append("\n");
+        if (fullscreenEnabled()) body.append("<button class=\"html-fullscreen\" type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-html-fullscreen=\"report\">&#x26F6;</button>");
+        body.append(renderedBody).append("\n");
 
         return assembleHtml(safeTitle, body.toString(), charts, extraStyles.toString(), includeToc, true);
     }
@@ -581,10 +591,9 @@ public class HtmlReportRenderer {
             // 围栏块取 g1；标签块取 g3 并去掉标签内容里可能残留的 ``` 围栏
             String json = (m.group(1) != null ? m.group(1) : stripFences(m.group(3))).trim();
             String chartId = "echarts-" + idx;
-            body.append("<div class=\"echarts-shell\" id=\"").append(chartId).append("-shell\">")
-                    .append("<button class=\"echarts-fullscreen\" type=\"button\" title=\"全屏查看\" ")
-                    .append("aria-label=\"全屏查看\" data-chart-fullscreen=\"").append(chartId).append("-shell\">")
-                    .append("&#x26F6;</button><div class=\"echarts-chart\" id=\"")
+            body.append("<div class=\"echarts-shell\" id=\"").append(chartId).append("-shell\">");
+            if (fullscreenEnabled()) body.append("<button class=\"echarts-fullscreen\" type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-chart-fullscreen=\"").append(chartId).append("-shell\">&#x26F6;</button>");
+            body.append("<div class=\"echarts-chart\" id=\"")
                     .append(chartId).append("\"></div></div>\n");
             charts.add(new ChartBlock(chartId, json));
             idx++;

@@ -35,6 +35,11 @@ public class LongTaskReportRenderer {
         return delegate.render(normalized, title);
     }
 
+    public String renderWithoutFullscreen(String content, String title) {
+        String normalized = normalizeCompleteHtml(content == null ? "" : content);
+        return delegate.renderWithoutFullscreen(normalized, title);
+    }
+
     private String normalizeCompleteHtml(String input) {
         // 保留每个完整 HTML 文档的边界，让 HtmlReportRenderer 走 iframe 隔离路径。
         // 不能先把多个文档压成一个 body，否则节点 CSS 会互相覆盖。

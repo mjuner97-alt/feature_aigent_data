@@ -115,8 +115,7 @@ public class FlowCompletionService {
                             "status", n.getStatus() == null ? "UNKNOWN" : n.getStatus().name(),
                             "result", Objects.toString(n.getResultJson(), ""))).toList();
             try {
-                String renderedReport = renderer.render(text, Objects.toString(flow.getFlowName(), "长任务报告"))
-                        .replaceAll("(?s)<button\\s+class=\\\"html-fullscreen\\\"[^>]*>.*?</button>", "");
+                String renderedReport = renderer.renderWithoutFullscreen(text, Objects.toString(flow.getFlowName(), "长任务报告"));
                 String reportPath = reportStorage.write(flow.getTriggerUserId(), flow.getId(), renderedReport);
                 return new Summary(json.writeValueAsString(Map.of("results", results)), reportPath);
             } catch (FlowReportStorage.ReportStorageException e) {
@@ -334,7 +333,7 @@ public class FlowCompletionService {
         if (execution.getId() == null) {
             return "";
         }
-        String path = "/api/skill-flow-executions/" + execution.getId() + "/report";
+        String path = "/report/flows/" + execution.getId();
         if (reportBaseUrl == null || reportBaseUrl.isBlank()) {
             return path;
         }
