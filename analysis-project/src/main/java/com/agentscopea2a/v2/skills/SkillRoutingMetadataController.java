@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import com.agentscopea2a.v2.common.PageResponse;
 
 /** Management API for Skill routing metadata; Skill content is intentionally out of scope. */
 @RestController
@@ -25,15 +26,21 @@ public class SkillRoutingMetadataController {
     }
 
     @GetMapping
-    public List<SkillRoutingMetadataView> list(
+    public PageResponse<SkillRoutingMetadataView> list(
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) Boolean active,
             @RequestParam(defaultValue = "false") boolean mine,
             @RequestParam(defaultValue = "200") int limit,
             @RequestParam(defaultValue = "0") int offset,
             @RequestHeader(value = "X-User-Id", required = false) String userId) {
-        return service.list(keyword, active, mine, userId, limit, offset);
+        int safeSize = Math.max(1, Math.min(pageSize(limit), 100));
+        int safeOffset = Math.max(0, offset);
+        List<SkillRoutingMetadataView> items = service.list(keyword, active, mine, userId, safeSize, safeOffset);
+        int total = service.list(keyword, active, mine, userId, 1000000, 0).size();
+        return new PageResponse<>(items, safeOffset / safeSize + 1, safeSize, total);
     }
+
+    private int pageSize(int requested) { return requested <= 0 ? 20 : requested; }
 
     @GetMapping("/{skillName}")
     public SkillRoutingMetadataView get(@PathVariable String skillName) {

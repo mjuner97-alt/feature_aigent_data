@@ -6,7 +6,7 @@ import { getFlowReportSource, saveFlowReportSource } from '../api/skillFlow';
 
 type ReportKind = 'job' | 'flow';
 
-const props = defineProps<{ open: boolean; executionId: number | null; kind: ReportKind }>();
+const props = withDefaults(defineProps<{ open: boolean; executionId: number | null; kind: ReportKind; page?: boolean }>(), { page: false });
 const emit = defineEmits<{
   (e: 'update:open', value: boolean): void;
   (e: 'saved'): void;
@@ -207,8 +207,8 @@ function serializeVisual(): string {
 </script>
 
 <template>
-  <Teleport to="body">
-    <div v-if="open" class="report-editor-mask" @click.self="close">
+  <Teleport to="body" :disabled="page">
+    <div v-if="open" class="report-editor-mask" :class="{ 'page-mode': page }" @click.self="close">
       <section class="report-editor" aria-label="编辑报告">
         <header>
           <div>
@@ -270,6 +270,8 @@ function serializeVisual(): string {
 
 <style scoped>
 .report-editor-mask { position: fixed; inset: 0; z-index: 1300; display: flex; justify-content: flex-end; background: rgb(15 23 42 / 48%); }
+.report-editor-mask.page-mode { position: static; min-height: 100%; justify-content: stretch; background: #f8fafc; }
+.page-mode .report-editor { width: 100%; max-width: none; min-height: 100vh; box-shadow: none; }
 .report-editor { display: flex; width: min(1080px, 96vw); height: 100%; flex-direction: column; background: #fff; box-shadow: -10px 0 30px rgb(15 23 42 / 18%); }
 header, footer { display: flex; min-height: 58px; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 20px; border-bottom: 1px solid #e2e8f0; }
 header h3 { margin: 0; color: #0f172a; font-size: 18px; }

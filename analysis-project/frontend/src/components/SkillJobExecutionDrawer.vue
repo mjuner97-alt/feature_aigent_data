@@ -5,14 +5,15 @@
  * 展示某个 Job 的执行记录列表，含状态、报告校验、查看报告。
  */
 import { ref, watch, computed, onUnmounted } from 'vue';
+import { useRouter } from 'vue-router';
 import { Download, EditPen, View } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { downloadExecutionFile, listExecutions, retryExecution, viewExecutionFile } from '../api/skillJob';
 import type { SkillJobExecution } from '../types/skillJob';
-import ReportEditorDrawer from './ReportEditorDrawer.vue';
 
 const props = defineProps<{ open: boolean; jobId: number | null; canDownload?: boolean; canEdit?: boolean }>();
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>();
+const router = useRouter();
 
 const executions = ref<SkillJobExecution[]>([]);
 const loading = ref(false);
@@ -147,8 +148,6 @@ function close() { emit('update:open', false); }
 const viewing = ref<Set<number>>(new Set());
 const previewed = ref<Set<number>>(new Set());
 const downloading = ref<Set<number>>(new Set());
-const editorOpen = ref(false);
-const editorExecutionId = ref<number | null>(null);
 
 async function viewFile(execId: number) {
   viewing.value.add(execId);
@@ -174,8 +173,7 @@ async function downloadFile(execId: number) {
 }
 
 function editFile(execId: number) {
-  editorExecutionId.value = execId;
-  editorOpen.value = true;
+  router.push(`/skills/jobs/executions/${execId}/report/edit`);
 }
 
 function showError(exec: SkillJobExecution) {
@@ -301,12 +299,6 @@ async function retry(exec: SkillJobExecution) {
         </div>
       </div>
     </transition>
-    <ReportEditorDrawer
-      v-model:open="editorOpen"
-      :execution-id="editorExecutionId"
-      kind="job"
-      @saved="refresh"
-    />
   </Teleport>
 </template>
 

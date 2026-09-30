@@ -14,7 +14,6 @@ import { listMetrics } from '../../api/skillDependencyMetric';
 import type { SkillJob, SkillJobExecution } from '../../types/skillJob';
 import SkillJobExecutionDrawer from '../../components/SkillJobExecutionDrawer.vue';
 import SkillJobNotificationDrawer from '../../components/SkillJobNotificationDrawer.vue';
-import ReportEditorDrawer from '../../components/ReportEditorDrawer.vue';
 import SkillFlowList from '../../components/SkillFlowList.vue';
 import SkillFlowExecutionList from '../../components/SkillFlowExecutionList.vue';
 
@@ -107,8 +106,6 @@ function openNotifySettings(jobId: number) {
 const viewing = ref<Set<number>>(new Set());
 const previewed = ref<Set<number>>(new Set());
 const downloading = ref<Set<number>>(new Set());
-const reportEditorOpen = ref(false);
-const reportEditorExecutionId = ref<number | null>(null);
 
 // 依赖指标描述缓存 (id -> description), 列表 hover 查看描述
 const metricDescMap = ref<Record<number, string>>({});
@@ -243,8 +240,7 @@ async function downloadCenterReport(exec: SkillJobExecution) {
 }
 
 function editCenterReport(exec: SkillJobExecution) {
-  reportEditorExecutionId.value = exec.id;
-  reportEditorOpen.value = true;
+  router.push(`/skills/jobs/executions/${exec.id}/report/edit`);
 }
 
 function showExecutionError(exec: SkillJobExecution) {
@@ -515,12 +511,6 @@ function metricTitle(job: SkillJob): string {
     <SkillJobExecutionDrawer v-model:open="execOpen" :job-id="execJobId" can-download :can-edit="execCanDownload" />
     </template>
     <SkillJobNotificationDrawer v-model:open="notifyOpen" :exec-id="notifyExecId" :can-resend="notifyCanResend" @changed="loadExecutionCenter(true)" />
-    <ReportEditorDrawer
-      v-model:open="reportEditorOpen"
-      :execution-id="reportEditorExecutionId"
-      kind="job"
-      @saved="loadExecutionCenter(true)"
-    />
   </div>
 </template>
 

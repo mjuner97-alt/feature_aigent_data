@@ -10,6 +10,8 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.RequestHeader;
 
 import java.util.List;
+import org.springframework.web.bind.annotation.RequestParam;
+import com.agentscopea2a.v2.common.PageResponse;
 
 /** Management API for discoverability metadata only; it cannot execute a registered tool. */
 @RestController
@@ -26,8 +28,11 @@ public class ToolRoutingMetadataController {
     }
 
     @GetMapping
-    public List<ToolRoutingMetadata> list() {
-        return service.list();
+    public PageResponse<ToolRoutingMetadata> list(@RequestParam(defaultValue="1") int page, @RequestParam(defaultValue="20") int pageSize) {
+        int size = Math.max(1, Math.min(pageSize, 100)); int p = Math.max(1, page);
+        List<ToolRoutingMetadata> all = service.list(); int from = Math.min((p - 1) * size, all.size());
+        int to = Math.min(from + size, all.size());
+        return new PageResponse<>(all.subList(from, to), p, size, all.size());
     }
 
     @GetMapping("/{toolId}")
@@ -42,8 +47,11 @@ public class ToolRoutingMetadataController {
     }
 
     @GetMapping("/scan")
-    public List<ToolRoutingScanCandidate> scan() {
-        return scanService.scan();
+    public PageResponse<ToolRoutingScanCandidate> scan(@RequestParam(defaultValue="1") int page, @RequestParam(defaultValue="20") int pageSize) {
+        int size = Math.max(1, Math.min(pageSize, 100)); int p = Math.max(1, page);
+        List<ToolRoutingScanCandidate> all = scanService.scan(); int from = Math.min((p - 1) * size, all.size());
+        int to = Math.min(from + size, all.size());
+        return new PageResponse<>(all.subList(from, to), p, size, all.size());
     }
 
     @GetMapping("/status")

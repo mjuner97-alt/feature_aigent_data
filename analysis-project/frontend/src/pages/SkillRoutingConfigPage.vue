@@ -16,6 +16,7 @@ const highOverlap = ref<Record<string, number>>({});
 const loading = ref(false);
 const keyword = ref('');
 const activeFilter = ref<string>('');
+const currentPage = ref(1); const pageSize = ref(20); const total = ref(0);
 // 我的/全部 范围切换: 管理员默认'全部', 普通用户默认'我的', 后端按 creator = 当前用户过滤
 const scope = ref<'mine' | 'all'>(isAdmin() ? 'all' : 'mine');
 const dialogVisible = ref(false);
@@ -69,11 +70,11 @@ async function load() {
     const [skills, domains, topics, overlap] = await Promise.all([
       listSkillRouting(keyword.value || undefined,
       activeFilter.value === '' ? undefined : activeFilter.value === 'true',
-      scope.value === 'mine'),
+      scope.value === 'mine', currentPage.value, pageSize.value),
       listSkillTags('DOMAIN'), listSkillTags('TOPIC'),
       routingOverlapSummary().catch(() => null),
     ]);
-    rows.value = skills;
+    rows.value = skills.items; total.value = skills.total;
     highOverlap.value = overlap?.highBySkill || {};
     domainTags.value = domains;
     topicTags.value = topics;
@@ -81,6 +82,8 @@ async function load() {
   catch (e: any) { ElMessage.error(e.message || '加载失败'); }
   finally { loading.value = false; }
 }
+function changePage(page: number) { currentPage.value = page; load(); }
+function changePageSize(size: number) { pageSize.value = size; currentPage.value = 1; load(); }
 function openTag(type: SkillTagType) {
   tagType.value = type;
   tagName.value = '';
@@ -116,7 +119,7 @@ async function toggle(row: SkillRoutingMetadata) {
   try { const result = await setSkillRoutingActive(row.skillName, next); Object.assign(row, result); ElMessage.success(next ? '已启用' : '已停用'); }
   catch (e: any) { ElMessage.error(e.message || '操作失败'); }
 }
-watch([keyword, activeFilter, scope], load);
+watch([keyword, activeFilter, scope], () => { currentPage.value = 1; load(); });
 load();
 </script>
 
@@ -153,6 +156,7 @@ load();
       <el-table-column label="状态" width="80" align="center"><template #default="{ row }"><el-switch v-if="canEdit(row)" :model-value="row.active" size="small" @change="toggle(row)" /><span v-else>{{ row.active ? '已启用' : '已停用' }}</span></template></el-table-column>
       <el-table-column label="操作" width="150" fixed="right"><template #default="{ row }"><!-- 查看所有人可见; 配置仅本人 --><el-button size="small" @click="openView(row)">查看</el-button><el-button v-if="canEdit(row)" size="small" @click="openEdit(row)">配置</el-button></template></el-table-column>
     </el-table>
+    <el-pagination v-model:current-page="currentPage" v-model:page-size="pageSize" :total="total" :page-sizes="[20,50,100]" layout="total, sizes, prev, pager, next" @current-change="changePage" @size-change="changePageSize" />
       </el-tab-pane>
       <!-- 标签词典仅管理员可见/可新增 (数据加载保留, 配置弹窗下拉依赖词典接口) -->
       <el-tab-pane v-if="isAdmin()" label="标签词典">

@@ -18,11 +18,14 @@ async function ensureOk(res: Response, action: string): Promise<void> {
   }
 }
 
-export async function listSkillRouting(keyword?: string, active?: boolean, mine = false): Promise<SkillRoutingMetadata[]> {
+export interface SkillRoutingPage { items: SkillRoutingMetadata[]; page: number; pageSize: number; total: number; }
+
+export async function listSkillRouting(keyword?: string, active?: boolean, mine = false, page = 1, pageSize = 20): Promise<SkillRoutingPage> {
   const query = new URLSearchParams();
   if (keyword) query.set('keyword', keyword);
   if (active != null) query.set('active', String(active));
   if (mine) query.set('mine', 'true');
+  query.set('limit', String(pageSize)); query.set('offset', String((page - 1) * pageSize));
   const res = await fetch(`${BASE}?${query}`, { headers: headers() });
   await ensureOk(res, '加载 Skill 配置');
   return res.json();

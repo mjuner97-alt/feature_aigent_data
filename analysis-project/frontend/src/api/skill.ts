@@ -54,36 +54,31 @@ export async function listSkills(params: SkillListParams): Promise<SkillListItem
   }
   const res = await fetch(`${BASE}?${qs.toString()}`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`listSkills failed: ${res.status}`);
-  const items = await res.json();
-  return Array.isArray(items) ? items.slice(0, 5) : [];
+  return res.json();
 }
 
 export async function getSkill(id: number): Promise<SkillDetail> {
   const res = await fetch(`${BASE}/get?id=${id}`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`getSkill failed: ${res.status}`);
-  const items = await res.json();
-  return Array.isArray(items) ? items.slice(0, 5) : [];
+  return res.json();
 }
 
 export async function likeSkill(id: number): Promise<LikeStatus> {
   const res = await fetch(`${BASE}/${id}/like`, { method: 'POST', headers: authHeaders() });
   if (!res.ok) throw new Error(`like failed: ${res.status}`);
-  const items = await res.json();
-  return Array.isArray(items) ? items.slice(0, 5) : [];
+  return res.json();
 }
 
 export async function unlikeSkill(id: number): Promise<LikeStatus> {
   const res = await fetch(`${BASE}/${id}/like`, { method: 'DELETE', headers: authHeaders() });
   if (!res.ok) throw new Error(`unlike failed: ${res.status}`);
-  const items = await res.json();
-  return Array.isArray(items) ? items.slice(0, 5) : [];
+  return res.json();
 }
 
 export async function getLikeStatus(id: number): Promise<LikeStatus> {
   const res = await fetch(`${BASE}/${id}/like`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`getLikeStatus failed: ${res.status}`);
-  const items = await res.json();
-  return Array.isArray(items) ? items.slice(0, 5) : [];
+  return res.json();
 }
 
 export async function referenceSkill(id: number): Promise<void> {
@@ -127,16 +122,14 @@ async function skillSaveError(res: Response, fallback: string): Promise<Error> {
 export async function createSkill(input: SkillInput): Promise<SkillDetail> {
   const res = await fetch(BASE, { method: 'POST', headers: jsonHeaders(), body: JSON.stringify(input) });
   if (!res.ok) throw await skillSaveError(res, '创建失败');
-  const items = await res.json();
-  return Array.isArray(items) ? items.slice(0, 5) : [];
+  return res.json();
 }
 
 /** 编辑 Skill(PUT /api/skills?id=)。后端做 owner 校验,非 owner 抛 SkillAccessDenied。 */
 export async function updateSkill(id: number, input: SkillInput): Promise<SkillDetail> {
   const res = await fetch(`${BASE}?id=${id}`, { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(input) });
   if (!res.ok) throw await skillSaveError(res, '保存失败');
-  const items = await res.json();
-  return Array.isArray(items) ? items.slice(0, 5) : [];
+  return res.json();
 }
 
 /** 删除 Skill(DELETE /api/skills?id=,软删除)。后端做 owner 校验。 */
@@ -149,8 +142,7 @@ export async function deleteSkill(id: number): Promise<void> {
 export async function getTags(): Promise<string[]> {
   const res = await fetch(`${BASE}/tags`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`getTags failed: ${res.status}`);
-  const items = await res.json();
-  return Array.isArray(items) ? items.slice(0, 5) : [];
+  return res.json();
 }
 
 // ============ 私有可见性授权 API ============
@@ -194,8 +186,7 @@ export async function batchUserNames(userIds: string[]): Promise<Record<string, 
 export async function getGrants(skillId: number): Promise<SkillGrant[]> {
   const res = await fetch(`${BASE}/${skillId}/grants`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`getGrants failed: ${res.status}`);
-  const items = await res.json();
-  return Array.isArray(items) ? items.slice(0, 5) : [];
+  return res.json();
 }
 
 /** 新增授权(POST /api/skills/{id}/grants)。仅 owner;首个授权自动把 skill 切为 PRIVATE。 */
@@ -232,32 +223,28 @@ export interface SkillUserSearchItem {
 export async function getUserInfo(userId: string): Promise<UserInfo> {
   const res = await fetch(`/api/org/user-info?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`getUserInfo failed: ${res.status}`);
-  const items = await res.json();
-  return Array.isArray(items) ? items.slice(0, 5) : [];
+  return res.json();
 }
 
 /** 获取引用某 Skill 的用户列表(GET /api/skills/{id}/referencers)。 */
 export async function getReferencers(skillId: number): Promise<string[]> {
   const res = await fetch(`${BASE}/${skillId}/referencers`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`getReferencers failed: ${res.status}`);
-  const items = await res.json();
-  return Array.isArray(items) ? items.slice(0, 5) : [];
+  return res.json();
 }
 
 /** 查询 Skill 的发布记录列表(GET /api/skills/{id}/publishes),含 APPROVED 和 PENDING。 */
 export async function getSkillPublishes(id: number): Promise<SkillPublishRecord[]> {
   const res = await fetch(`${BASE}/${id}/publishes`, { headers: authHeaders() });
   if (!res.ok) throw await skillError(res, '获取发布记录失败');
-  const items = await res.json();
-  return Array.isArray(items) ? items.slice(0, 5) : [];
+  return res.json();
 }
 
 /** 查询当前用户可选的发布目标(GET /api/skills/publish-targets),按维度类型分组。 */
 export async function getPublishTargets(): Promise<PublishTargetGroup[]> {
   const res = await fetch(`${BASE}/publish-targets`, { headers: authHeaders() });
   if (!res.ok) throw await skillError(res, '获取发布目标失败');
-  const items = await res.json();
-  return Array.isArray(items) ? items.slice(0, 5) : [];
+  return res.json();
 }
 
 /** 申请发布 Skill(POST /api/skills/{id}/publish),提交后进入审批流。返回新建 publishId。 */
@@ -278,23 +265,20 @@ export async function submitPublish(id: number, targetType: string, targetId: st
 export async function listPendingPublishes(): Promise<PublishPendingItem[]> {
   const res = await fetch('/api/publish/pending', { headers: authHeaders() });
   if (!res.ok) throw await skillError(res, '获取待审批发布列表失败');
-  const items = await res.json();
-  return Array.isArray(items) ? items.slice(0, 5) : [];
+  return res.json();
 }
 
 /** 我已审批的发布列表(GET /api/publish/history),返回 APPROVED/REJECTED 记录。 */
 export async function listApprovedPublishes(): Promise<PublishPendingItem[]> {
   const res = await fetch('/api/publish/history', { headers: authHeaders() });
   if (!res.ok) throw await skillError(res, '获取已审批发布列表失败');
-  const items = await res.json();
-  return Array.isArray(items) ? items.slice(0, 5) : [];
+  return res.json();
 }
 
 export async function getPublishApprovals(id: number): Promise<SkillApprovalRecord[]> {
   const res = await fetch(`/api/publish/${id}/approvals`, { headers: authHeaders() });
   if (!res.ok) throw await skillError(res, '获取审批轨迹失败');
-  const items = await res.json();
-  return Array.isArray(items) ? items.slice(0, 5) : [];
+  return res.json();
 }
 
 /** 通过发布审批(POST /api/publish/{id}/approve)。 */
@@ -344,8 +328,7 @@ export async function uploadFile(file: File, description?: string): Promise<Skil
     if (detail.startsWith('FileReadFailed')) throw new Error('读取文件失败');
     throw new Error(`上传失败(HTTP ${res.status})`);
   }
-  const items = await res.json();
-  return Array.isArray(items) ? items.slice(0, 5) : [];
+  return res.json();
 }
 
 /** 列出当前用户文件(GET /api/files,支持 fileType 筛选) */
@@ -354,8 +337,7 @@ export async function listFiles(fileType?: string): Promise<SkillFileItem[]> {
   if (fileType) qs.set('fileType', fileType);
   const res = await fetch(`${FILE_BASE}?${qs.toString()}`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`获取文件列表失败: ${res.status}`);
-  const items = await res.json();
-  return Array.isArray(items) ? items.slice(0, 5) : [];
+  return res.json();
 }
 
 /**
@@ -393,16 +375,14 @@ export async function updateFileDescription(id: number, description: string): Pr
     body: JSON.stringify({ description }),
   });
   if (!res.ok) throw new Error(`更新描述失败: ${res.status}`);
-  const items = await res.json();
-  return Array.isArray(items) ? items.slice(0, 5) : [];
+  return res.json();
 }
 
 /** 获取 Skill 引用的文件列表(GET /api/skills/{id}/files) */
 export async function getSkillFiles(skillId: number): Promise<SkillFileReferenceItem[]> {
   const res = await fetch(`${BASE}/${skillId}/files`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`获取附件列表失败: ${res.status}`);
-  const items = await res.json();
-  return Array.isArray(items) ? items.slice(0, 5) : [];
+  return res.json();
 }
 
 /** Skill 引用一个文件(POST /api/skills/{id}/files) */

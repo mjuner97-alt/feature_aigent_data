@@ -19,6 +19,7 @@ const dimensions = ref<ToolRoutingTag[]>([]);
 const status = ref<ToolRoutingStatus | null>(null);
 const keyword = ref('');
 const typeFilter = ref('');
+const currentPage = ref(1); const pageSize = ref(20); const total = ref(0);
 // 我的/全部 范围切换: 管理员默认'全部', 普通用户默认'我的', 按创建人字段 (ownerUserId) = 当前用户过滤
 const scope = ref<'mine' | 'all'>(isAdmin() ? 'all' : 'mine');
 const dialogVisible = ref(false);
@@ -46,12 +47,12 @@ async function load() {
   loading.value = true;
   try {
     const [scanned, configured, currentStatus, topicTags, metricTags, dimensionTags, overlap] = await Promise.all([
-      scanToolRouting(), listToolRouting(), getToolRoutingStatus(), listTags('TOPIC'), listTags('METRIC'), listTags('DIMENSION'),
+      scanToolRouting(currentPage.value, pageSize.value), listToolRouting(currentPage.value, pageSize.value), getToolRoutingStatus(), listTags('TOPIC'), listTags('METRIC'), listTags('DIMENSION'),
       routingOverlapSummary().catch(() => null),
     ]);
-    rows.value = scanned;
+    rows.value = scanned.items; total.value = scanned.total;
     highOverlap.value = overlap?.highByTool || {};
-    configurations.value = Object.fromEntries(configured.map(item => [item.toolId, item]));
+    configurations.value = Object.fromEntries(configured.items.map(item => [item.toolId, item]));
     status.value = currentStatus;
     topics.value = topicTags;
     metrics.value = metricTags;
@@ -59,6 +60,8 @@ async function load() {
   } catch (error: any) { ElMessage.error(error.message || '加载失败'); }
   finally { loading.value = false; }
 }
+function changePage(page: number) { currentPage.value = page; load(); }
+function changePageSize(size: number) { pageSize.value = size; currentPage.value = 1; load(); }
 
 async function openConfig(row: ToolRoutingScanCandidate) {
   current.value = row;
@@ -167,6 +170,7 @@ load();
           <el-table-column label="扫描问题" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ issues(row) }}</template></el-table-column>
           <el-table-column label="操作" width="150" fixed="right"><template #default="{ row }"><!-- 查看所有人可见; 配置仅本人 --><el-button size="small" @click="openView(row)">查看</el-button><el-button v-if="canEdit(row)" size="small" @click="openConfig(row)">配置</el-button></template></el-table-column>
         </el-table>
+        <el-pagination v-model:current-page="currentPage" v-model:page-size="pageSize" :total="total" :page-sizes="[20,50,100]" layout="total, sizes, prev, pager, next" @current-change="changePage" @size-change="changePageSize" />
       </el-tab-pane>
       <!-- 标签词典仅管理员可见/可新增 (数据加载保留, 配置弹窗下拉依赖词典接口) -->
       <el-tab-pane v-if="isAdmin()" label="标签词典">
