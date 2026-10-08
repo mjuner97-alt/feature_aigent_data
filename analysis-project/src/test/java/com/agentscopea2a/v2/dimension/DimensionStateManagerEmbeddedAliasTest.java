@@ -94,4 +94,38 @@ class DimensionStateManagerEmbeddedAliasTest {
         assertNull(manager.startClarificationIfAmbiguous(question), "嵌入小组名的命中已抑制，不应触发反问");
         assertEquals(List.of("个贷数据开发组"), analyzePeer(question).getValues());
     }
+
+    @Test
+    void teamAliasAfterDeptPrefixInsideTeamTokenIsKept() {
+        // "杭州开发三部同业客户组" = 部门前缀 + 组名本体；"同业"起就是组名，
+        // alias 提供标准组名"同业客户组"，不能让小组正则把带部门前缀的原文当组名
+        String question = "杭州开发三部同业客户组10月版本和11月版本有几个问题号";
+        QuestionAnalysis analysis = manager.analyzeQuestionRuleBased(question);
+
+        DimensionState.PeerDimension peer = analysis.getExplicitDimensions().getPeerDimension();
+        assertEquals(PeerDimensionType.TEAM, peer.getType());
+        assertEquals(List.of("同业客户组"), peer.getValues());
+
+        assertEquals(1, analysis.getAliasResolution().resolved().size(),
+                "部门前缀后的 TEAM 命中应保留在同义词解析结果里");
+        assertEquals(List.of("杭州开发三部"),
+                analysis.getExplicitDimensions().getDepartments(),
+                "部门前缀应同时归入部门维度");
+    }
+
+    @Test
+    void shortDeptPrefixBeforeTeamAliasIsAlsoKept() {
+        // 部门简称"三部"同样识别为部门前缀
+        DimensionState.PeerDimension peer = analyzePeer("三部同业客户组的缺陷密度");
+        assertEquals(PeerDimensionType.TEAM, peer.getType());
+        assertEquals(List.of("同业客户组"), peer.getValues());
+    }
+
+    @Test
+    void productLineAliasAfterDeptPrefixIsStillSuppressed() {
+        // 非 TEAM 维度命中即使跟在部门名后也保持抑制（"个贷"是产品线别名修饰前缀）
+        DimensionState.PeerDimension peer = analyzePeer("杭州开发三部个贷数据开发组的缺陷密度");
+        assertEquals(PeerDimensionType.TEAM, peer.getType());
+        assertEquals(List.of("杭州开发三部个贷数据开发组"), peer.getValues());
+    }
 }

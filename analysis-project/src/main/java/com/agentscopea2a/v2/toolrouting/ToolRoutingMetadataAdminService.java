@@ -11,6 +11,7 @@ public class ToolRoutingMetadataAdminService {
     private static final Pattern TAG_SEPARATOR = Pattern.compile("[,，、\\r\\n]+");
     private final ToolRoutingMetadataRepository repository;
     private final com.agentscopea2a.v2.governance.SkillToolOverlapService overlapService;
+    private final com.agentscopea2a.v2.governance.ToolToolOverlapService toolToolOverlapService;
     private final com.agentscopea2a.mapper.gauss.SqlRegistryMapper sqlRegistryMapper;
     private final com.agentscopea2a.mapper.gauss.ScriptRegistryMapper scriptRegistryMapper;
     private final com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService;
@@ -20,8 +21,20 @@ public class ToolRoutingMetadataAdminService {
             com.agentscopea2a.mapper.gauss.SqlRegistryMapper sqlRegistryMapper,
             com.agentscopea2a.mapper.gauss.ScriptRegistryMapper scriptRegistryMapper,
             com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService) {
+        this(repository, overlapService, null, sqlRegistryMapper, scriptRegistryMapper, adminRoleService);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ToolRoutingMetadataAdminService(
+            ToolRoutingMetadataRepository repository,
+            com.agentscopea2a.v2.governance.SkillToolOverlapService overlapService,
+            com.agentscopea2a.v2.governance.ToolToolOverlapService toolToolOverlapService,
+            com.agentscopea2a.mapper.gauss.SqlRegistryMapper sqlRegistryMapper,
+            com.agentscopea2a.mapper.gauss.ScriptRegistryMapper scriptRegistryMapper,
+            com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService) {
         this.repository = repository;
         this.overlapService = overlapService;
+        this.toolToolOverlapService = toolToolOverlapService;
         this.sqlRegistryMapper = sqlRegistryMapper;
         this.scriptRegistryMapper = scriptRegistryMapper;
         this.adminRoleService = adminRoleService;
@@ -79,6 +92,7 @@ public class ToolRoutingMetadataAdminService {
             throw new IllegalStateException("ToolRoutingMetadataSaveFailed");
         }
         if (overlapService != null) overlapService.invalidate();
+        if (toolToolOverlapService != null) toolToolOverlapService.invalidate();
         return metadata;
     }
 

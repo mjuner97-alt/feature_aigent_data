@@ -509,6 +509,10 @@ public class DimensionStateManager {
      *   <li>alias 后紧跟单个"组"字（"军队组"里的"军队"）——"别名+组"的口语写法，
      *       触发词机制正是为此设计。</li>
      * </ul>
+     *
+     * <p>第三类保留（2026/10/08）："部门前缀+组名"形态（"杭州开发三部同业客户组"里的"同业"）。
+     * 组 span = 部门名 + 组名本体，alias 起点即组名开头，standardName 就是标准组名；
+     * 仅对 TEAM 维度命中生效——产品线/应用别名作组名修饰前缀（"个贷数据开发组"）仍抑制。
      */
     private static AliasResolver.AliasResolution suppressEmbeddedAliasHits(
             String q, AliasResolver.AliasResolution res) {
@@ -524,10 +528,10 @@ public class DimensionStateManager {
             return res;
         }
         List<AliasResolver.ResolvedAlias> keptResolved = res.resolved().stream()
-                .filter(h -> !embeddedInTeamSpan(h.start(), h.end(), teamSpans))
+                .filter(h -> !embeddedInTeamSpan(q, h.dimension(), h.start(), h.end(), teamSpans))
                 .toList();
         List<AliasResolver.AmbiguousAlias> keptAmbiguous = res.ambiguous().stream()
-                .filter(h -> !embeddedInTeamSpan(h.start(), h.end(), teamSpans))
+                .filter(h -> !embeddedInTeamSpan(q, h.dimension(), h.start(), h.end(), teamSpans))
                 .toList();
         if (keptResolved.size() == res.resolved().size()
                 && keptAmbiguous.size() == res.ambiguous().size()) {
@@ -536,9 +540,18 @@ public class DimensionStateManager {
         return new AliasResolver.AliasResolution(keptResolved, keptAmbiguous);
     }
 
-    private static boolean embeddedInTeamSpan(int start, int end, List<int[]> teamSpans) {
+    private static boolean embeddedInTeamSpan(
+            String q, DimensionState.PeerDimensionType dimension,
+            int start, int end, List<int[]> teamSpans) {
         for (int[] span : teamSpans) {
             if (start >= span[0] && end < span[1] && span[1] - end > 1) {
+                // 保留"部门前缀+组名"形态里的 TEAM 命中："杭州开发三部同业客户组"里
+                // "同业"紧跟部门名，组名本体从 alias 起点开始，standardName 即标准组名；
+                // 若抑制，小组正则会把带部门前缀的原文整体当组名，真实组名查不到数据
+                if (dimension == DimensionState.PeerDimensionType.TEAM
+                        && EXPLICIT_DEPT.matcher(q.substring(span[0], start)).matches()) {
+                    return false;
+                }
                 return true;
             }
         }

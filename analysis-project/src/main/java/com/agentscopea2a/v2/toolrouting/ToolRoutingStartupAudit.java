@@ -19,6 +19,10 @@ import java.util.Set;
  * metadata (enabled route pointing to a missing or disabled object), duplicate tool IDs
  * across registries, invalid topic/metric tags on enabled metadata, and SCRIPT entries whose
  * source file is unavailable.
+ *
+ * <p>Tool-Tool 重复 (block-tool-overlap=true): HIGH 级重叠对 (同一候选集内描述/功能签名
+ * 不可区分, 见 ToolToolOverlapService) 单独走 {@code block-tool-overlap} 开关阻断,
+ * 不依赖 strict-startup; 提示语固定为"与工具 xxx 有重复，请处理"。
  */
 public class ToolRoutingStartupAudit implements ApplicationRunner {
 
@@ -28,22 +32,36 @@ public class ToolRoutingStartupAudit implements ApplicationRunner {
     private final ToolRoutingMetadataRepository metadataRepository;
     private final ToolRoutingMetrics metrics;
     private final boolean strictStartup;
+    private final com.agentscopea2a.v2.governance.ToolToolOverlapService toolToolOverlapService;
+    private final boolean blockToolOverlap;
 
     public ToolRoutingStartupAudit(ToolRoutingScanService scanService,
                                    ToolRoutingMetadataRepository metadataRepository,
                                    ToolRoutingMetrics metrics,
                                    boolean strictStartup) {
+        this(scanService, metadataRepository, metrics, strictStartup, null, false);
+    }
+
+    public ToolRoutingStartupAudit(ToolRoutingScanService scanService,
+                                   ToolRoutingMetadataRepository metadataRepository,
+                                   ToolRoutingMetrics metrics,
+                                   boolean strictStartup,
+                                   com.agentscopea2a.v2.governance.ToolToolOverlapService toolToolOverlapService,
+                                   boolean blockToolOverlap) {
         this.scanService = scanService;
         this.metadataRepository = metadataRepository;
         this.metrics = metrics == null ? ToolRoutingMetrics.noop() : metrics;
         this.strictStartup = strictStartup;
+        this.toolToolOverlapService = toolToolOverlapService;
+        this.blockToolOverlap = blockToolOverlap;
     }
 
     @Override
     public void run(ApplicationArguments args) {
         List<AuditIssue> issues = audit();
         if (issues.isEmpty()) {
-            log.info("ToolRoutingStartupAudit: no consistency issues (strict={})", strictStartup);
+            log.info("ToolRoutingStartupAudit: no consistency issues (strict={}, block-tool-overlap={})",
+                    strictStartup, blockToolOverlap);
             return;
         }
         for (AuditIssue issue : issues) {
@@ -54,8 +72,15 @@ public class ToolRoutingStartupAudit implements ApplicationRunner {
             throw new IllegalStateException("Tool routing startup audit found " + issues.size()
                     + " consistency issue(s); strict-startup=true blocks startup. First: " + issues.get(0));
         }
-        log.warn("ToolRoutingStartupAudit: {} issue(s) recorded; strict-startup=false, continuing with bad records excluded from the catalog",
-                issues.size());
+        List<AuditIssue> overlaps = issues.stream()
+                .filter(issue -> "tool_overlap".equals(issue.kind()))
+                .toList();
+        if (blockToolOverlap && !overlaps.isEmpty()) {
+            throw new IllegalStateException("工具路由启动检测到 " + overlaps.size()
+                    + " 组工具功能重复，block-tool-overlap=true 禁止启动。明细: " + overlaps);
+        }
+        log.warn("ToolRoutingStartupAudit: {} issue(s) recorded; strict-startup={}, block-tool-overlap={}, continuing with bad records excluded from the catalog",
+                issues.size(), strictStartup, blockToolOverlap);
     }
 
     public List<AuditIssue> audit() {
@@ -92,6 +117,24 @@ public class ToolRoutingStartupAudit implements ApplicationRunner {
             if (metadata.topicTags().isEmpty() || metadata.metricTags().isEmpty()) {
                 addIssue(issues, "invalid_tags", metadata.toolId(),
                         "enabled metadata requires at least one topic and one metric tag");
+            }
+        }
+        if (toolToolOverlapService != null) {
+            // block 开启时同步预热工具向量: 启动审计先于后台预热完成, 不预热会因
+            // 向量缺失漏判 cosine 证据 (工具数量小, 逐条 embed 的启动延迟可接受)
+            if (blockToolOverlap) {
+                toolToolOverlapService.ensureToolVectorsWarmed();
+            }
+            // HIGH 对两侧各记一条, detail 即用户可见提示语
+            for (com.agentscopea2a.v2.governance.ToolToolOverlapView pair
+                    : toolToolOverlapService.report().items()) {
+                if (!"HIGH".equals(pair.level())) {
+                    continue;
+                }
+                addIssue(issues, "tool_overlap", pair.toolIdA(),
+                        "与工具 " + pair.toolIdB() + " 有重复，请处理");
+                addIssue(issues, "tool_overlap", pair.toolIdB(),
+                        "与工具 " + pair.toolIdA() + " 有重复，请处理");
             }
         }
         return issues;
