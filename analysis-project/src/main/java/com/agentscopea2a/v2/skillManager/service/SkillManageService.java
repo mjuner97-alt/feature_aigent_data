@@ -35,6 +35,7 @@ import com.agentscopea2a.v2.skillManager.entity.SkillUserDisable;
 import com.agentscopea2a.v2.skillManager.entity.SkillVersionHistory;
 import com.agentscopea2a.v2.skillManager.entity.SkillVisibleGrant;
 import com.agentscopea2a.v2.skillManager.mapper.SkillMapper;
+import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -72,6 +73,7 @@ public class SkillManageService {
     private static final Logger log = LoggerFactory.getLogger(SkillManageService.class);
 
     private final SkillMapper skillMapper;
+    private final SkillDependencyMetricMapper metricMapper;
     private final MockOrgService mockOrgService;
     private final SkillVirtualGroupService virtualGroupService;
     /** 页面 Skill 双写桥接，用 ObjectProvider 避免启动顺序问题 */
@@ -89,12 +91,14 @@ public class SkillManageService {
     private record BodyCacheEntry(String content, long expireAtNanos) {}
 
     public SkillManageService(SkillMapper skillMapper,
+                              SkillDependencyMetricMapper metricMapper,
                               MockOrgService mockOrgService,
                               SkillVirtualGroupService virtualGroupService,
                               ObjectProvider<SkillManageBridge> bridgeProvider,
                               ObjectProvider<com.agentscopea2a.v2.governance.SkillDescriptionSimilarityService> similarityServiceProvider,
                               com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService) {
         this.skillMapper = skillMapper;
+        this.metricMapper = metricMapper;
         this.mockOrgService = mockOrgService;
         this.virtualGroupService = virtualGroupService;
         this.bridgeProvider = bridgeProvider;
@@ -212,6 +216,7 @@ public class SkillManageService {
      */
     @Transactional("gaussCustomerTransactionManager")
     public Skill create(Skill skill, String ownerUserId) {
+        skill.setDefaultMetricIds(defaultMetricIds(skill.getDefaultMetricIds()));
         requireSkillText(skill.getName(), "名称");
         requireSkillText(skill.getDescription(), "描述");
         if (skillMapper.existsByName(skill.getName())) {
@@ -245,6 +250,12 @@ public class SkillManageService {
             skillMapper.updateSkill(saved);
         }
         return saved;
+    }
+
+    private String defaultMetricIds(String value) {
+        if (value != null && !value.isBlank()) return MetricDependencyIds.encode(MetricDependencyIds.parse(value));
+        var metric = metricMapper.selectByCode("default_metric");
+        return metric == null ? null : String.valueOf(metric.getId());
     }
 
     /**
@@ -437,6 +448,8 @@ public class SkillManageService {
         if (patch.getCategory() != null) s.setCategory(patch.getCategory());
         if (patch.getTags() != null) s.setTags(patch.getTags());
         if (patch.getVisibility() != null) s.setVisibility(patch.getVisibility());
+        s.setDefaultMetricIds(defaultMetricIds(
+                patch.getDefaultMetricIds() != null ? patch.getDefaultMetricIds() : s.getDefaultMetricIds()));
         String oldRetrievalName = s.getRetrievalName();
         s.setUpdatedAt(LocalDateTime.now());
         skillMapper.updateSkill(s);

@@ -22,6 +22,8 @@ import {
   getSkillPublishes,
 } from '../api/skill';
 import type { SkillInput, PublishTargetGroup } from '../types/skill';
+import { listMetrics } from '../api/skillDependencyMetric';
+import type { SkillDependencyMetric } from '../types/skillJob';
 
 const props = defineProps<{ open: boolean; editId: number | null }>();
 const emit = defineEmits<{
@@ -32,6 +34,9 @@ const emit = defineEmits<{
 const isEdit = computed(() => props.editId != null);
 
 const form = ref<SkillInput>({ name: '', description: '', content: '' });
+const metrics = ref<SkillDependencyMetric[]>([]);
+const metricLoading = ref(false);
+async function searchMetrics(query = '') { metricLoading.value = true; try { metrics.value = await listMetrics(query); } finally { metricLoading.value = false; } }
 const formLoading = ref(false);
 const saving = ref(false);
 const formError = ref('');
@@ -60,7 +65,7 @@ async function ensurePublishTargets() {
 }
 
 function resetForm() {
-  form.value = { name: '', description: '', content: '' };
+  form.value = { name: '', description: '', content: '', defaultMetricIds: [] };
   formError.value = '';
   publishResult.value = '';
   notOwner.value = false;
@@ -73,6 +78,7 @@ watch(() => props.open, (open) => {
   if (!open) return;
   resetForm();
   ensurePublishTargets();
+  searchMetrics();
   if (props.editId != null) {
     loadForEdit(props.editId);
   }
@@ -87,6 +93,7 @@ async function loadForEdit(id: number) {
       name: s.name ?? '',
       description: s.description ?? '',
       content: s.content ?? '',
+      defaultMetricIds: s.defaultMetricIds || [],
     };
     // 后端 update 做 owner 校验,前端先挡一道:非所有者只读
     if (s.ownerUserId !== currentUserId()) notOwner.value = true;
@@ -204,6 +211,7 @@ function close() {
                   <span class="label">内容</span>
                   <textarea v-model="form.content" :disabled="notOwner" rows="12" class="content" placeholder="SKILL.md 正文(Markdown)" />
                 </label>
+                <label class="field"><span class="label">默认指标依赖</span><el-select v-model="form.defaultMetricIds" multiple filterable remote reserve-keyword :remote-method="searchMetrics" :loading="metricLoading" placeholder="未配置默认指标" clearable><el-option v-for="metric in metrics" :key="metric.id" :value="metric.id" :label="`${metric.name} (${metric.code})`" /></el-select></label>
                 <SkillFileAttachment
                   ref="attachmentRef"
                   :skill-id="editId"

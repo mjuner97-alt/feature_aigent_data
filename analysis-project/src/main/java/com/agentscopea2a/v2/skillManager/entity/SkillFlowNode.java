@@ -27,6 +27,7 @@ public class SkillFlowNode {
     private String scriptId;
     private String scriptParamsJson;
     private String questionTemplate;
+    private Boolean metricOverrideConfigured;
     private String dependsOnJson;
     private Boolean required;
     private Integer maxAttempts;

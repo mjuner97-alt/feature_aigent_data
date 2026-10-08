@@ -25,6 +25,7 @@ import com.agentscopea2a.v2.skillManager.entity.SkillJobExecution;
 import com.agentscopea2a.v2.skillManager.entity.SkillJobNotification;
 import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillJobMapper;
+import com.agentscopea2a.v2.skillManager.mapper.SkillMapper;
 import com.agentscopea2a.v2.skillManager.notification.NotificationReceivers;
 import com.agentscopea2a.v2.skillManager.notification.NotificationService;
 import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
@@ -47,6 +48,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -72,6 +74,8 @@ public class SkillJobService {
     private final SkillJobMapper mapper;
     private final SkillJobScheduler scheduler;
     private final SkillDependencyMetricMapper metricMapper;
+    private final SkillMapper skillMapper;
+    private final SkillJobMetricClaimService metricClaimService;
     private final MockOrgService mockOrgService;
     private final NotificationService notificationService;
     private final HtmlReportRenderer htmlReportRenderer;
@@ -92,7 +96,8 @@ public class SkillJobService {
     private final String backupDir;
 
     public SkillJobService(SkillJobMapper mapper, SkillJobScheduler scheduler,
-                           SkillDependencyMetricMapper metricMapper, MockOrgService mockOrgService,
+                           SkillDependencyMetricMapper metricMapper, SkillMapper skillMapper,
+                           SkillJobMetricClaimService metricClaimService, MockOrgService mockOrgService,
                            NotificationService notificationService,
                            SkillStorageProperties storageProperties,
                            HtmlReportRenderer htmlReportRenderer,
@@ -100,6 +105,8 @@ public class SkillJobService {
         this.mapper = mapper;
         this.scheduler = scheduler;
         this.metricMapper = metricMapper;
+        this.skillMapper = skillMapper;
+        this.metricClaimService = metricClaimService;
         this.mockOrgService = mockOrgService;
         this.notificationService = notificationService;
         this.htmlReportRenderer = htmlReportRenderer;
@@ -121,13 +128,15 @@ public class SkillJobService {
         }
 
         // 校验依赖指标：可选；若传了则须存在且启用（admin 预置，用户只读）
-        if (req.metricId() != null) {
-            SkillDependencyMetric metric = metricMapper.selectById(req.metricId());
+        List<Long> requestedMetricIds = req.metricIds() == null
+                ? (req.metricId() == null ? List.of() : List.of(req.metricId())) : req.metricIds();
+        for (Long metricId : MetricDependencyIds.parse(MetricDependencyIds.encode(requestedMetricIds))) {
+            SkillDependencyMetric metric = metricMapper.selectById(metricId);
             if (metric == null) {
-                throw new IllegalStateException("MetricNotFound: 依赖指标不存在 (id=" + req.metricId() + ")");
+                throw new IllegalStateException("MetricNotFound: 依赖指标不存在 (id=" + metricId + ")");
             }
             if (!Boolean.TRUE.equals(metric.getEnabled())) {
-                throw new IllegalStateException("MetricDisabled: 依赖指标已停用，不可选用 (id=" + req.metricId() + ")");
+                throw new IllegalStateException("MetricDisabled: 依赖指标已停用，不可选用 (id=" + metricId + ")");
             }
         }
 
@@ -141,7 +150,9 @@ public class SkillJobService {
                 .outputPath(outputPath)
                 .enabled(true)
                 .createdBy(userId)
-                .metricId(req.metricId())
+                .metricId(requestedMetricIds.isEmpty() ? null : requestedMetricIds.get(0))
+                .metricIds(MetricDependencyIds.encode(requestedMetricIds))
+                .metricOverrideConfigured(Boolean.TRUE.equals(req.metricOverrideConfigured()) || !requestedMetricIds.isEmpty())
                 .scheduleRules(req.scheduleRules())
                 .build();
         mapper.insertSkillJob(job);
@@ -205,6 +216,20 @@ public class SkillJobService {
                 }
             }
             job.setMetricId(mid);
+            job.setMetricIds(MetricDependencyIds.encode(mid == null ? List.of() : List.of(mid)));
+            job.setMetricOverrideConfigured(true);
+        }
+        if (req.metricIds() != null) {
+            List<Long> ids = MetricDependencyIds.parse(MetricDependencyIds.encode(req.metricIds()));
+            for (Long mid : ids) {
+                SkillDependencyMetric metric = metricMapper.selectById(mid);
+                if (metric == null || !Boolean.TRUE.equals(metric.getEnabled())) {
+                    throw new IllegalStateException("MetricUnavailable: 依赖指标不可用 (id=" + mid + ")");
+                }
+            }
+            job.setMetricIds(MetricDependencyIds.encode(ids));
+            job.setMetricId(ids.isEmpty() ? null : ids.get(0));
+            job.setMetricOverrideConfigured(Boolean.TRUE.equals(req.metricOverrideConfigured()) || !ids.isEmpty());
         }
         if (req.questionTemplate() != null) job.setQuestionTemplate(req.questionTemplate());
         if (req.enabled() != null) job.setEnabled(req.enabled());
@@ -389,16 +414,14 @@ public class SkillJobService {
         }
         // 外部系统调用可不传 X-User-Id；此处仅用于日志追溯，实际执行身份取自每个 job 的 createdBy
         String caller = (userId == null || userId.isBlank()) ? "MANAGER" : userId;
-        //给长任务登记指标 READY。
-        recordFlowReadinessBestEffort(metric);
-        //触发旧的独立
-        List<SkillJob> jobs = mapper.selectEnabledJobsByMetricId(metric.getId());
+        LocalDate dataDate = recordMetricReadiness(metric);
+        List<SkillJob> jobs = mapper.selectJobList(true, null, null);
         List<MetricTriggerItemDto> results = new ArrayList<>();
         for (SkillJob job : jobs) {
-            if (!runsOn(job.getScheduleRules(), java.time.LocalDate.now().getDayOfWeek())) {
-                continue;
-            }
-            results.add(triggerOneForMetric(job, caller));
+            List<Long> required = effectiveMetricIds(job);
+            if (!required.contains(metric.getId()) || !runsOn(job.getScheduleRules(), dataDate.getDayOfWeek())) continue;
+            SkillJobExecution execution = metricClaimService.claim(job, required, dataDate);
+            if (execution != null) results.add(triggerOneForMetric(job, execution, caller));
         }
         log.info("[SkillJob] triggerByMetric: code={}, metricId={}, total={}, caller={}",
                 code, metric.getId(), results.size(), caller);
@@ -426,39 +449,37 @@ public class SkillJobService {
      * READY 登记或门控重算失败都不能阻断旧链路（独立 Job 继续触发）。
      * 两个依赖均为 @Autowired(required=false) 可选注入，未启用 SkillFlow 时直接跳过。
      */
-    private void recordFlowReadinessBestEffort(SkillDependencyMetric metric) {
-        // SkillFlow 功能未启用（未注入就绪登记服务）则整体跳过
-        if (metricReadinessService == null) return;
-        try {
-            // 同步落 READY 记录：流程创建/放行判断都依赖这条记录存在，失败则无需再走后续两步
-            SkillMetricReadiness readiness = metricReadinessService.recordReady(metric);
-            if (flowExecutionService != null) {
-                // 门控重算与流程触发放到异步线程，不占用本次外部触发请求的响应时间
-                CompletableFuture.runAsync(() -> {
-                    try {
-                        // 先放行已等待中的执行，再创建今日新自动执行，顺序不可颠倒
-                        flowExecutionService.metricBecameReady(metric.getId(), readiness.getDataDate());
-                        flowExecutionService.triggerReadyFlows(metric.getId(), readiness.getDataDate());
-                    } catch (RuntimeException e) {
-                        log.error("[SkillFlow] gate recalculation failed: metric={}, date={}",
-                                metric.getCode(), readiness.getDataDate(), e);
-                    }
-                });
-            }
-        } catch (RuntimeException e) {
-            // READY 落库失败仅记录，独立 Job 的批量触发继续执行
-            log.error("[SkillFlow] READY persistence failed; independent jobs continue: metric={}",
-                    metric.getCode(), e);
+    private LocalDate recordMetricReadiness(SkillDependencyMetric metric) {
+        if (metricReadinessService == null) throw new IllegalStateException("MetricReadinessUnavailable");
+        SkillMetricReadiness readiness = metricReadinessService.recordReady(metric);
+        if (flowExecutionService != null) {
+            CompletableFuture.runAsync(() -> {
+                try {
+                    flowExecutionService.metricBecameReady(metric.getId(), readiness.getDataDate());
+                    flowExecutionService.triggerReadyFlows(metric.getId(), readiness.getDataDate());
+                } catch (RuntimeException e) {
+                    log.error("[SkillFlow] gate recalculation failed: metric={}, date={}",
+                            metric.getCode(), readiness.getDataDate(), e);
+                }
+            });
         }
+        return readiness.getDataDate();
     }
 
-    /** 单个 job 在批量触发中的处理：落 PENDING -> submit；已在跑则清孤儿记录并标记 REJECTED */
-    private MetricTriggerItemDto triggerOneForMetric(SkillJob job, String userId) {
-        SkillJobExecution exec = SkillJobExecution.builder()
-                .mdFileWritten(false)
-                .mdFileExists(false)
-                .jobId(job.getId()).triggerType("METRIC").status("PENDING").build();
-        mapper.insertExecution(exec);
+    List<Long> effectiveMetricIds(SkillJob job) {
+        List<Long> selected = MetricDependencyIds.parse(job.getMetricIds());
+        boolean overridden = Boolean.TRUE.equals(job.getMetricOverrideConfigured()) || !selected.isEmpty();
+        if (!overridden && job.getMetricId() != null) {
+            selected = List.of(job.getMetricId());
+            overridden = true;
+        }
+        var skill = skillMapper.selectById(job.getSkillId());
+        List<Long> defaults = skill == null ? List.of() : MetricDependencyIds.parse(skill.getDefaultMetricIds());
+        return MetricDependencyResolver.resolve(overridden, selected, defaults).metricIds();
+    }
+
+    /** Dispatch a transactionally claimed execution after its insert has committed. */
+    private MetricTriggerItemDto triggerOneForMetric(SkillJob job, SkillJobExecution exec, String userId) {
         try {
             if (!scheduler.submit(job.getId(), exec.getId(), "METRIC")) {
                 mapper.deleteExecutionById(exec.getId());

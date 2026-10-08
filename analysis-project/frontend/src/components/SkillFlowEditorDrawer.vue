@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { createSkillFlow, getSkillFlow, updateSkillFlow, validateSkillFlow, getFlowNotifySettings, updateFlowNotifySettings } from '../api/skillFlow';
-import { getSkill, listSkills, searchSkillUsers } from '../api/skill';
+import { createSkillFlow, getSkillFlow, updateSkillFlow, getFlowNotifySettings } from '../api/skillFlow';
+import { getSkill, listSkills, searchSkillUsers, batchUserNames } from '../api/skill';
 import { listAllEnabledEntries, startDebug, cancelDebug, subscribeDebug, getEntry } from '../api/scriptRegistry';
 import type { ParamSchemaItem, ScriptDebugRun, ScriptRegistryListItem } from '../types/scriptRegistry';
 import { listMetrics } from '../api/skillDependencyMetric';
@@ -82,7 +82,7 @@ const validationErrors = computed(() => {
   if (!form.value.name.trim()) errors.push('请填写流程名称');
   const sameName = props.knownFlows.find(flow => flow.id !== props.editId && flow.name.trim() === form.value.name.trim());
   if (sameName) errors.push(`流程名称「${form.value.name.trim()}」已存在`);
-  if (!form.value.nodes.length) errors.push('至少配置一个 Skill 节点');
+  if (!form.value.nodes.length) errors.push('至少配置一个节点');
   const uniqueKeys = new Set<string>();
   form.value.nodes.forEach((node, index) => {
     const key = node.nodeKey.trim();
@@ -92,7 +92,6 @@ const validationErrors = computed(() => {
     if (node.nodeType === 'SKILL' || (!node.nodeType && node.skillId)) { if (!node.skillId) errors.push(`节点 ${key || index + 1} 未选择 Skill`); }
     else if (!node.scriptId?.trim()) errors.push(`节点 ${key || index + 1} 未选择 Python 脚本`);
     if (scriptParamErrors.value[node.nodeKey]) errors.push(`节点 ${key || index + 1} 的脚本参数不是合法 JSON 对象`);
-    if (node.metricIds.length > 1) errors.push(`节点 ${key || index + 1} 只能依赖一个指标`);
   });
   errors.push(...validateOutlineRows(outlineRows.value, form.value.nodes.map(node => node.nodeKey.trim())));
   if (!form.value.triggers.length) errors.push('至少配置一个触发关键词');
@@ -116,8 +115,8 @@ function syncNodeSkillName(node: SkillFlowNode) {
   node.skillName = skills.value.find(skill => skill.id === node.skillId)?.name;
 }
 
-function setNodeMetric(node: SkillFlowNode, value: number | null) {
-  node.metricIds = value ? [value] : [];
+function setNodeMetrics(node: SkillFlowNode, values: number[]) {
+  node.metricIds = Array.from(new Set(values || []));
 }
 
 async function searchSkills(query: string) {
@@ -453,7 +452,7 @@ function normalizeFlow(flow: SkillFlow): SkillFlowInput {
       if (!node.scriptParams && persisted) {
         try { scriptParams = JSON.parse(persisted) || {}; } catch { scriptParams = {}; }
       }
-      return { ...node, nodeType: node.nodeType || (node.scriptId ? 'PYTHON' : 'SKILL'), skillId: node.skillId ?? null, scriptId: node.scriptId ?? null, scriptParams, metricIds: (node.metricIds || []).slice(0, 1), required: node.required !== false, maxAttempts: 2, sortOrder: node.sortOrder || index + 1 };
+      return { ...node, nodeType: node.nodeType || (node.scriptId ? 'PYTHON' : 'SKILL'), skillId: node.skillId ?? null, scriptId: node.scriptId ?? null, scriptParams, metricIds: Array.from(new Set(node.metricIds || [])), required: node.required !== false, maxAttempts: 2, sortOrder: node.sortOrder || index + 1 };
     }),
     reportOutline: flow.reportOutline || { numbering: {}, items: [] },
   };
@@ -495,6 +494,7 @@ async function load() {
   wasPublic.value = false;
   form.value = emptyForm();
   notifyReceivers.value = [];
+  receiverNames.value = {};
   receiverKeyword.value = '';
   receiverResults.value = [];
   scriptParamErrors.value = {};
@@ -510,6 +510,7 @@ async function load() {
       form.value = normalizeFlow(flow);
       const notifySettings = await getFlowNotifySettings(props.editId);
       notifyReceivers.value = [...(notifySettings.notifyReceivers || [])];
+      receiverNames.value = await batchUserNames(notifyReceivers.value);
       await Promise.all((form.value.nodes || []).map(async node => {
         if (!node.scriptId) return;
         const schema = await ensureScriptSchema(node.scriptId);
@@ -580,13 +581,16 @@ async function save() {
     form.value.reportOutline = outlineRows.value.length
       ? buildOutline(outlineRows.value, form.value.reportOutline?.numbering || defaultOutlineNumbering(), reportTitle.value)
       : null;
-    const saved = props.editId == null ? await createSkillFlow(form.value) : await updateSkillFlow(props.editId, form.value);
-    await updateFlowNotifySettings(saved.id, {
-      notifyReceivers: notifyReceivers.value,
-      notifyReceiverTriggers: ['AUTO_METRIC'],
-      notifyReceiversByTrigger: { AUTO_METRIC: notifyReceivers.value },
-    });
-    await validateSkillFlow(saved.id);
+    const payload: SkillFlowInput = {
+      ...form.value,
+      notifySettings: {
+        notifyReceivers: notifyReceivers.value,
+        notifyReceiverTriggers: ['AUTO_METRIC'],
+        notifyReceiversByTrigger: { AUTO_METRIC: notifyReceivers.value },
+      },
+    };
+    if (props.editId == null) await createSkillFlow(payload);
+    else await updateSkillFlow(props.editId, payload);
     baseline.value = JSON.stringify(form.value);
     emit('saved');
     emit('update:open', false);
@@ -670,7 +674,7 @@ defineExpose({ isDirty });
                   <button class="icon-button danger" title="删除本节及子级" @click="removeOutlineRow(row)">×</button>
                 </div>
                 <div class="outline-node-area" :style="{ marginLeft: `${Math.min(row.level, 8) * 22}px` }">
-                  <FlowNodeCard v-for="(node, nodeIndex) in nodesForRow(row)" :key="node.nodeKey" class="chapter-node-card" :node="node" :title="nodeTitle(node)" :schema="schemaFor(node)" :scripts="scripts" :metrics="metrics" :script-loading="scriptLoading" :metric-loading="metricLoading" :debug-disabled="!node.scriptId || debugStarting || debugInProgress()" :dragging="dragNodeKey === node.nodeKey" :sortable="true" :is-first="nodeIndex === 0" :is-last="nodeIndex === nodesForRow(row).length - 1" remove-title="删除节点" @move="moveChapterNode(row, node.nodeKey, $event)" @remove="removeChapterNode(row, node.nodeKey)" @debug="runNodeDebug(node)" @drag-start="chapterDragStart(node.nodeKey, $event)" @drag-over="chapterDragOver(row, node.nodeKey)" @drag-end="finishDrag" @script-change="onScriptSelected(node)" @script-params-change="onScriptParamsChange(node, $event)" @search-scripts="searchScripts" @search-metrics="searchMetrics" @set-metric="setNodeMetric(node, $event)" />
+                  <FlowNodeCard v-for="(node, nodeIndex) in nodesForRow(row)" :key="node.nodeKey" class="chapter-node-card" :node="node" :title="nodeTitle(node)" :schema="schemaFor(node)" :scripts="scripts" :metrics="metrics" :script-loading="scriptLoading" :metric-loading="metricLoading" :debug-disabled="!node.scriptId || debugStarting || debugInProgress()" :dragging="dragNodeKey === node.nodeKey" :sortable="true" :is-first="nodeIndex === 0" :is-last="nodeIndex === nodesForRow(row).length - 1" remove-title="删除节点" @move="moveChapterNode(row, node.nodeKey, $event)" @remove="removeChapterNode(row, node.nodeKey)" @debug="runNodeDebug(node)" @drag-start="chapterDragStart(node.nodeKey, $event)" @drag-over="chapterDragOver(row, node.nodeKey)" @drag-end="finishDrag" @script-change="onScriptSelected(node)" @script-params-change="onScriptParamsChange(node, $event)" @search-scripts="searchScripts" @search-metrics="searchMetrics" @set-metrics="setNodeMetrics(node, $event)" />
                   <div class="chapter-node-actions">
                     <button class="btn" title="新建一个 Python 节点并放到该章节" @click="addOutlineNode(row)">＋ 添加节点</button>
                     <select v-if="unboundNodes.length" :value="''" @change="bindRowNode(row, ($event.target as HTMLSelectElement).value)"><option value="" disabled>绑定已有未绑定节点…</option><option v-for="node in unboundNodes" :key="node.nodeKey" :value="node.nodeKey">{{ nodeTitle(node) }}（{{ node.nodeKey }}）</option></select>

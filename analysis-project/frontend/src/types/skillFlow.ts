@@ -22,6 +22,9 @@ export interface SkillFlowNode {
   questionTemplate: string;
   metricIds: number[];
   metricNames?: string[];
+  effectiveMetricIds?: number[];
+  metricSource?: 'DEFAULT' | 'OVERRIDE' | 'NONE';
+  metricOverrideConfigured?: boolean;
   required: boolean;
   maxAttempts: number;
   sortOrder: number;
@@ -89,6 +92,11 @@ export interface SkillFlowInput {
   triggers: SkillFlowTrigger[];
   nodes: SkillFlowNode[];
   reportOutline?: ReportOutline | null;
+  notifySettings?: {
+    notifyReceivers: string[];
+    notifyReceiverTriggers: string[];
+    notifyReceiversByTrigger: Record<string, string[]>;
+  };
 }
 
 export interface FlowMetricReadiness {

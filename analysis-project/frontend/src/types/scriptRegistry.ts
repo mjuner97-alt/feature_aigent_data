@@ -22,6 +22,7 @@ export interface ScriptRegistryEntry {
   createdBy: string;
   /** 创建人姓名; 人员信息中查不到时为空 */
   createdByName?: string;
+  defaultMetricIds?: number[];
 }
 
 /** 列表视图项 (不含 paramsSchema) */
@@ -39,6 +40,7 @@ export interface ScriptRegistryListItem {
   createdBy: string;
   /** 创建人姓名; 人员信息中查不到时为空 */
   createdByName?: string;
+  defaultMetricIds?: number[];
 }
 
 /** 新增/编辑输入 */
@@ -50,6 +52,7 @@ export interface ScriptRegistryInput {
   paramsSchema: string;
   timeoutSeconds: number;
   enabled?: number;
+  defaultMetricIds?: number[];
 }
 
 /** params_schema 中的单条参数定义 */

@@ -11,6 +11,8 @@ export interface SkillJob {
   notifyReceivers?: string[];
   /** 依赖指标 ID（可选，关联后随指标就绪触发） */
   metricId?: number | null;
+  metricIds?: number[];
+  metricOverrideConfigured?: boolean;
   /** 依赖指标编码（join 展示） */
   metricCode?: string;
   /** 依赖指标名称（join 展示） */
@@ -29,6 +31,8 @@ export interface SkillJobInput {
   questionTemplate: string;
   /** 依赖指标 ID，可选 */
   metricId?: number | null;
+  metricIds?: number[];
+  metricOverrideConfigured?: boolean;
   enabled?: boolean;
   scheduleRules?: string | null;
   notifyReceivers?: string[];
@@ -44,6 +48,8 @@ export interface SkillJobUpdateInput {
   name?: string;
   skillId?: number;
   metricId?: number;
+  metricIds?: number[];
+  metricOverrideConfigured?: boolean;
   questionTemplate?: string;
   enabled?: boolean;
   scheduleRules?: string | null;

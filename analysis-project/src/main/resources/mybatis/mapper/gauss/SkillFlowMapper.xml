@@ -41,6 +41,7 @@
         <result column="script_id" property="scriptId"/>
         <result column="script_params_json" property="scriptParamsJson"/>
         <result column="question_template" property="questionTemplate"/>
+        <result column="metric_override_configured" property="metricOverrideConfigured"/>
         <result column="depends_on_json" property="dependsOnJson"/>
         <result column="required" property="required"/>
         <result column="max_attempts" property="maxAttempts"/>
@@ -246,6 +247,24 @@
           AND f.deleted_at IS NULL
     </select>
 
+    <select id="selectAllEnabledFlows" resultMap="FlowMap">
+        SELECT <include refid="flowColumns"/>
+        FROM skill_flow
+        WHERE enabled = TRUE AND deleted_at IS NULL
+        ORDER BY id
+    </select>
+
+    <select id="lockFlowForAuto" resultType="java.lang.Long">
+        SELECT id FROM skill_flow WHERE id = #{flowId} FOR UPDATE
+    </select>
+
+    <select id="hasAutoMetricExecutionOnDate" resultType="boolean">
+        SELECT EXISTS (
+            SELECT 1 FROM skill_flow_execution
+            WHERE flow_id = #{flowId} AND trigger_type = 'AUTO_METRIC' AND data_date = #{dataDate}
+        )
+    </select>
+
     <!-- 流程管理列表:支持按所有者/启用状态/名称编码关键字筛选,按更新时间倒序,已删除不返回 -->
     <!-- 定时兜底扫描:启用未删、节点挂有依赖指标、当日尚无 AUTO_METRIC 执行、
          且全部依赖指标当日已登记 READY 的流程,由 scanAutoTriggerFlows 补建每日自动执行。 -->
@@ -347,9 +366,9 @@
     <!-- 新建节点:node_key 流程内唯一,depends_on_json 存前置节点 key 数构 DAG,sort_order 决定执行顺序 -->
     <insert id="insertNode" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO skill_flow_node (flow_id, node_key, node_name, node_type, skill_id, script_id, script_params_json, question_template, depends_on_json,
-                                     required, max_attempts, sort_order)
+                                     metric_override_configured, required, max_attempts, sort_order)
         VALUES (#{flowId}, #{nodeKey}, #{nodeName}, #{nodeType}, #{skillId}, #{scriptId}, #{scriptParamsJson}, #{questionTemplate}, #{dependsOnJson},
-                #{required}, #{maxAttempts}, #{sortOrder})
+                #{metricOverrideConfigured}, #{required}, #{maxAttempts}, #{sortOrder})
     </insert>
 
     <!-- 查流程的全部节点,按 sort_order(执行顺序)排列 -->

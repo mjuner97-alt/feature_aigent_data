@@ -92,6 +92,7 @@ public class FlowDefinitionService {
         SkillFlow flow = toFlow(request, userId, null);
         flowMapper.insertFlow(flow);
         replaceChildren(flow.getId(), request, userId);
+        if (request.notifySettings() != null) updateNotifySettings(flow.getId(), request.notifySettings(), userId);
         return get(flow.getId(), userId);
     }
 
@@ -117,6 +118,7 @@ public class FlowDefinitionService {
         updated.setChatPublic(false);
         flowMapper.updateFlow(updated);
         replaceChildren(id, request, userId);
+        if (request.notifySettings() != null) updateNotifySettings(id, request.notifySettings(), userId);
         if (wasPublic) {
             // TODO 通知开发人员:公开流程已被修改并自动退出公开,需审核后重新开通(接入内部通知系统后实现)。
             log.warn("[Flow] public flow auto-exited public on update: flowId={}, name={}, owner={}", id, updated.getName(), userId);
@@ -235,7 +237,8 @@ public class FlowDefinitionService {
         // 指标 -> 受影响节点列表
         Map<Long, List<String>> affected = new LinkedHashMap<>();
         for (SkillFlowNode node : flowMapper.selectNodesByFlowId(flow.getId())) {
-            for (Long metricId : flowMapper.selectMetricIdsByNodeId(node.getId())) {
+            List<Long> selected = flowMapper.selectMetricIdsByNodeId(node.getId());
+            for (Long metricId : resolveNodeMetrics(node, selected).metricIds()) {
                 affected.computeIfAbsent(metricId, k -> new ArrayList<>()).add(node.getNodeKey());
             }
         }
@@ -329,9 +332,8 @@ public class FlowDefinitionService {
             // Python 节点按脚本+参数执行,问题模板选填;只有旧 Skill 节点必须填(它就是 Skill 的输入)
             if (!python && trim(node.questionTemplate()).isEmpty()) errors.add("node question must not be blank: " + nodeKey);
             if (node.maxAttempts() != null && node.maxAttempts() < 1) errors.add("maxAttempts must be positive");
-            // 依赖指标:skill / python 节点均可声明,至多一个,须存在且启用
+            // 依赖指标:skill / python 节点均可声明,支持多个,须存在且启用
             // (执行侧门控/自动触发均按 node_metric 关联表驱动,与节点类型无关)
-            if (node.metricIds().size() > 1) errors.add("a node can depend on at most one metric");
             for (Long metricId : node.metricIds()) {
                 SkillDependencyMetric metric = metricMapper.selectById(metricId);
                 if (metric == null || !Boolean.TRUE.equals(metric.getEnabled())) {
@@ -376,6 +378,7 @@ public class FlowDefinitionService {
             SkillFlowNode node = SkillFlowNode.builder().flowId(flowId).nodeKey(trim(item.nodeKey())).nodeName(trim(item.nodeName()))
                     .nodeType(item.nodeType()).scriptId(trim(item.scriptId())).scriptParamsJson(item.scriptParamsJson())
                     .skillId(item.skillId()).questionTemplate(trim(item.questionTemplate()))
+                    .metricOverrideConfigured(Boolean.TRUE.equals(item.metricOverrideConfigured()) || !item.metricIds().isEmpty())
                     .dependsOnJson("[]")
                     .required(item.required() == null || item.required())
                     .maxAttempts(SkillFlowProperties.NODE_MAX_ATTEMPTS)
@@ -398,14 +401,14 @@ public class FlowDefinitionService {
     private SkillFlowDefinitionRequest toRequest(SkillFlow flow, Long flowId) {
         List<SkillFlowDefinitionRequest.Node> nodes = flowMapper.selectNodesByFlowId(flowId).stream()
                 .map(node -> new SkillFlowDefinitionRequest.Node(node.getNodeKey(), node.getNodeName(), node.getNodeType(), node.getSkillId(), node.getScriptId(), node.getScriptParamsJson(), node.getQuestionTemplate(),
-                        flowMapper.selectMetricIdsByNodeId(node.getId()),
+                        flowMapper.selectMetricIdsByNodeId(node.getId()), node.getMetricOverrideConfigured(),
                         node.getRequired(), node.getMaxAttempts(), node.getSortOrder())).toList();
         List<SkillFlowDefinitionRequest.Trigger> triggers = flowMapper.selectTriggersByFlowId(flowId).stream()
                 .map(trigger -> new SkillFlowDefinitionRequest.Trigger(trigger.getKeyword(), trigger.getPriority(), trigger.getEnabled()))
                 .toList();
         return new SkillFlowDefinitionRequest(flow.getCode(), flow.getName(), flow.getDescription(), flow.getTaskQuestion(),
                 flow.getSummaryQuestionTemplate(), flow.getEnabled(), flow.getScheduleRules(),
-                flow.getMaxParallelism(), flow.getNotifyEnabled(), triggers, nodes, parseStoredOutline(flow));
+                flow.getMaxParallelism(), flow.getNotifyEnabled(), triggers, nodes, parseStoredOutline(flow), null);
     }
 
     /** 组装返回 DTO,附带 skill 名称与指标名称等展示信息。 */
@@ -419,15 +422,33 @@ public class FlowDefinitionService {
                                                                                List<Long> metricIds = flowMapper.selectMetricIdsByNodeId(node.getId());
                                                                                List<String> metricNames = metricIds.stream().map(metricMapper::selectById)
                                                                                        .map(metric -> metric == null ? null : metric.getName()).filter(Objects::nonNull).toList();
+                                                                               MetricDependencyResolver.Resolution resolved = resolveNodeMetrics(node, metricIds);
+                                                                               List<String> effectiveNames = resolved.metricIds().stream().map(metricMapper::selectById)
+                                                                                       .map(metric -> metric == null ? null : metric.getName()).filter(Objects::nonNull).toList();
                                                                                String skillName = skill == null ? null : skill.getName();
                                                                                return new SkillFlowDto.Node(node.getId(), node.getNodeKey(), resolveNodeDisplayName(node.getNodeName(), skillName), node.getNodeType(),
                                                                                        node.getSkillId(), node.getScriptId(), node.getScriptParamsJson(), skillName, node.getQuestionTemplate(), metricIds, metricNames,
+                                                                                       resolved.metricIds(), resolved.source().name(), node.getMetricOverrideConfigured(),
                                                                                        node.getRequired(), node.getMaxAttempts(), node.getSortOrder());
                                                                            }).toList();
         return new SkillFlowDto(flow.getId(), flow.getCode(), flow.getName(), flow.getDescription(), flow.getTaskQuestion(),
                 flow.getSummaryQuestionTemplate(), flow.getEnabled(), flow.getScheduleRules(), flow.getMaxParallelism(),
                 flow.getNotifyEnabled(), Boolean.TRUE.equals(flow.getChatPublic()),
                 triggers, nodes, parseOutlineObject(flow), flow.getCreatedBy(), flow.getCreatedAt(), flow.getUpdatedAt(), flow.getDeletedAt() != null);
+    }
+
+    private MetricDependencyResolver.Resolution resolveNodeMetrics(SkillFlowNode node, List<Long> selected) {
+        List<Long> defaults = List.of();
+        if (!Boolean.TRUE.equals(node.getMetricOverrideConfigured())) {
+            if (node.getScriptId() != null && !node.getScriptId().isBlank()) {
+                ScriptRegistryEntry script = scriptRegistryMapper.selectByScriptId(node.getScriptId().trim());
+                defaults = script == null ? List.of() : MetricDependencyIds.parse(script.getDefaultMetricIds());
+            } else if (node.getSkillId() != null) {
+                Skill skill = skillMapper.selectById(node.getSkillId());
+                defaults = skill == null ? List.of() : MetricDependencyIds.parse(skill.getDefaultMetricIds());
+            }
+        }
+        return MetricDependencyResolver.resolve(Boolean.TRUE.equals(node.getMetricOverrideConfigured()), selected, defaults);
     }
 
     private SkillFlow toFlow(SkillFlowDefinitionRequest request, String createdBy, String existingCode) {

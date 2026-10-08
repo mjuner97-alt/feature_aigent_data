@@ -101,7 +101,7 @@ public class ScriptRegistryController {
         ScriptRegistryEntry entry = mapper.selectById(id);
         if (entry == null) return ResponseEntity.notFound().build();
 //        service.requireOwner(id, userId);
-        var source = sourceService.read(entry);
+        var source = sourceService.readOrEmpty(entry);
         return ResponseEntity.ok(new ScriptSourceResponse(source.scriptId(), source.scriptPath(), source.content(),
                 source.contentHash(), entry.getUpdatedAt() == null ? null : entry.getUpdatedAt().toString()));
     }

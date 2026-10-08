@@ -17,16 +17,17 @@
         <result column="visibility" property="visibility"/>
         <result column="like_count" property="likeCount"/>
         <result column="retrieval_name" property="retrievalName"/>
+        <result column="default_metric_ids" property="defaultMetricIds"/>
         <result column="created_at" property="createdAt"/>
         <result column="updated_at" property="updatedAt"/>
         <result column="deleted_at" property="deletedAt"/>
     </resultMap>
 
-    <sql id="skillCols">id, name, description, content, category, tags, owner_user_id, status, visibility, like_count, retrieval_name, created_at, updated_at, deleted_at</sql>
+    <sql id="skillCols">id, name, description, content, category, tags, owner_user_id, status, visibility, like_count, retrieval_name, default_metric_ids, created_at, updated_at, deleted_at</sql>
 
     <insert id="insertSkill" parameterType="com.agentscopea2a.v2.skillManager.entity.Skill" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO skill_manage (name, description, content, category, tags, owner_user_id, status, visibility, like_count, retrieval_name)
-        VALUES (#{name}, #{description}, #{content}, #{category}, #{tags}, #{ownerUserId}, #{status}, #{visibility}, 0, #{retrievalName})
+        INSERT INTO skill_manage (name, description, content, category, tags, owner_user_id, status, visibility, like_count, retrieval_name, default_metric_ids)
+        VALUES (#{name}, #{description}, #{content}, #{category}, #{tags}, #{ownerUserId}, #{status}, #{visibility}, 0, #{retrievalName}, #{defaultMetricIds})
     </insert>
 
     <select id="selectById" resultMap="SkillResultMap">
@@ -38,7 +39,7 @@
         SET name=#{name}, description=#{description}, content=#{content},
             category=#{category}, tags=#{tags}, status=#{status},
             <if test="visibility != null">visibility=#{visibility},</if>
-            retrieval_name=#{retrievalName}
+            retrieval_name=#{retrievalName}, default_metric_ids=#{defaultMetricIds}
         WHERE id = #{id}
     </update>
 

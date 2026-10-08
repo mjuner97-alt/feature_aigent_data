@@ -19,6 +19,10 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import com.agentscopea2a.v2.json.MetricIdsDeserializer;
+import com.agentscopea2a.v2.json.MetricIdsSerializer;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 
 import java.time.LocalDateTime;
 
@@ -55,6 +59,9 @@ public class Skill {
     private Long likeCount;
     /** 映射到 skill_index.name 的检索名，格式 page_<id>，双写桥接时写入 */
     private String retrievalName;
+    @JsonDeserialize(using = MetricIdsDeserializer.class)
+    @JsonSerialize(using = MetricIdsSerializer.class)
+    private String defaultMetricIds;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private LocalDateTime deletedAt;

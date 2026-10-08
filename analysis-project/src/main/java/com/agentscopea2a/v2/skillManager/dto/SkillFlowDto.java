@@ -48,6 +48,9 @@ public record SkillFlowDto(
             String questionTemplate,
             List<Long> metricIds,
             List<String> metricNames,
+            List<Long> effectiveMetricIds,
+            String metricSource,
+            Boolean metricOverrideConfigured,
             Boolean required,
             Integer maxAttempts,
             Integer sortOrder) {}

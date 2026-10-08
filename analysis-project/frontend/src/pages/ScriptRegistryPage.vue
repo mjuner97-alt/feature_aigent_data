@@ -16,6 +16,8 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { listEntries, getEntry, createEntry, updateEntry, deleteEntry, setEntryEnabled, getSource, saveSource, startDebug, cancelDebug, subscribeDebug } from '../api/scriptRegistry';
 import type { ScriptDebugRun, ScriptRegistryEntry, ScriptRegistryListItem, ScriptRegistryInput } from '../types/scriptRegistry';
 import { isAdmin } from '../utils/auth';
+import { listMetrics } from '../api/skillDependencyMetric';
+import type { SkillDependencyMetric } from '../types/skillJob';
 
 // ==================== 列表 ====================
 const items = ref<ScriptRegistryListItem[]>([]);
@@ -29,6 +31,9 @@ const currentPage = ref(1);
 const pageSize = ref(20);
 const currentUserId = localStorage.getItem('skill-user-id') || 'demo-user';
 const canEdit = (row: ScriptRegistryListItem) => isAdmin() || (!!row.createdBy && row.createdBy === currentUserId);
+const metrics = ref<SkillDependencyMetric[]>([]);
+const metricLoading = ref(false);
+async function loadMetrics(keyword = '') { metricLoading.value = true; try { metrics.value = await listMetrics(keyword); if (formMode.value === 'create' && !form.value.defaultMetricIds?.length) { const fallback = metrics.value.find(m => m.code === 'default_metric'); if (fallback) form.value.defaultMetricIds = [fallback.id]; } } finally { metricLoading.value = false; } }
 
 const filteredItems = computed(() => {
   let list = items.value;
@@ -127,6 +132,7 @@ const dsArr = ref<string[]>(['gauss']);
 const sourceCode = ref('');
 const sourceHash = ref('');
 const sourceLoading = ref(false);
+const sourceMissing = ref(false);
 const debugParamsJson = ref('{}');
 const debugRun = ref<ScriptDebugRun | null>(null);
 let debugEvents: EventSource | undefined;
@@ -137,12 +143,13 @@ function openCreate() {
   editId.value = 0;
   form.value = {
     scriptId: '', name: '', description: '',
-    datasources: '["gauss"]', paramsSchema: '[]', timeoutSeconds: 60,
+    datasources: '["gauss"]', paramsSchema: '[]', timeoutSeconds: 60, defaultMetricIds: [],
   };
   dsArr.value = ['gauss'];
   showSchemaExample.value = false;
   sourceCode.value = '#!/usr/bin/env python3\n\nimport sys\n\nprint(sys.stdin.read())\n';
   sourceHash.value = '';
+  sourceMissing.value = true;
   debugRun.value = null;
   formVisible.value = true;
 }
@@ -154,6 +161,7 @@ async function openEdit(row: ScriptRegistryListItem) {
   showSchemaExample.value = false;
   sourceCode.value = '';
   sourceHash.value = '';
+  sourceMissing.value = false;
   debugRun.value = null;
   formVisible.value = true;
   try {
@@ -162,14 +170,21 @@ async function openEdit(row: ScriptRegistryListItem) {
       scriptId: detail.scriptId, name: detail.name, description: detail.description || '',
       datasources: detail.datasources || '["gauss"]',
       paramsSchema: detail.paramsSchema || '[]', timeoutSeconds: detail.timeoutSeconds ?? 60,
+      defaultMetricIds: detail.defaultMetricIds || [],
       enabled: detail.enabled,
     };
     dsArr.value = parseDatasources(detail.datasources);
     if (dsArr.value.length === 0) dsArr.value = ['gauss'];
     sourceLoading.value = true;
-    const source = await getSource(row.id);
-    sourceCode.value = source.content;
-    sourceHash.value = source.contentHash;
+    try {
+      const source = await getSource(row.id);
+      sourceCode.value = source.content;
+      sourceHash.value = source.contentHash;
+      sourceMissing.value = !source.contentHash;
+    } catch (e) {
+      if (!(e instanceof Error) || !e.message.startsWith('SOURCE_NOT_FOUND')) throw e;
+      sourceMissing.value = true;
+    }
   } catch (e: any) {
     ElMessage.error(e.message || '加载详情失败');
   } finally {
@@ -183,10 +198,15 @@ async function saveCurrentSource() {
     ElMessage.warning('请先保存脚本注册信息，再保存源码');
     return;
   }
+  if (sourceMissing.value && !sourceCode.value.trim()) {
+    ElMessage.warning('请先填写源码');
+    return;
+  }
   try {
     sourceLoading.value = true;
     const saved = await saveSource(editId.value, sourceCode.value, sourceHash.value);
     sourceHash.value = saved.contentHash;
+    sourceMissing.value = false;
     ElMessage.success('源码已保存');
   } catch (e: any) {
     ElMessageBox.alert(e.message || '保存源码失败', '操作失败', { type: 'error' });
@@ -279,20 +299,31 @@ async function saveForm() {
     return;
   }
   form.value.timeoutSeconds = Math.min(Math.floor(t), 300);
+  if (sourceMissing.value && !sourceCode.value.trim()) {
+    ElMessage.warning('请先填写源码');
+    return;
+  }
 
   formLoading.value = true;
+  let metadataSaved = false;
   try {
     if (formMode.value === 'create') {
-      await createEntry(form.value);
-      ElMessage.success('新增成功');
+      const created = await createEntry(form.value);
+      editId.value = created.id;
+      formMode.value = 'edit';
     } else {
       await updateEntry(editId.value, form.value);
-      ElMessage.success('修改成功');
     }
+    metadataSaved = true;
+    const saved = await saveSource(editId.value, sourceCode.value, sourceHash.value);
+    sourceHash.value = saved.contentHash;
+    sourceMissing.value = false;
+    ElMessage.success('脚本和源码已保存');
     formVisible.value = false;
     loadList();
   } catch (e: any) {
-    ElMessageBox.alert(e.message || '保存失败', '操作失败', { type: 'error' });
+    const message = metadataSaved ? `注册信息已保存，源码保存失败：${e.message || '未知错误'}` : (e.message || '保存失败');
+    ElMessageBox.alert(message, '操作失败', { type: 'error' });
   } finally {
     formLoading.value = false;
   }
@@ -338,8 +369,13 @@ async function openView(row: ScriptRegistryListItem) {
   viewSourceCode.value = '';
   try {
     viewEntry.value = await getEntry(row.id);
-    const source = await getSource(row.id);
-    viewSourceCode.value = source.content;
+    try {
+      const source = await getSource(row.id);
+      viewSourceCode.value = source.contentHash ? source.content : '源码尚未保存';
+    } catch (e) {
+      if (!(e instanceof Error) || !e.message.startsWith('SOURCE_NOT_FOUND')) throw e;
+      viewSourceCode.value = '源码尚未保存';
+    }
   } catch (e: any) {
     ElMessage.error(e.message || '加载详情失败');
   } finally {
@@ -456,6 +492,11 @@ const S = {
             <el-option label="ClickHouse" value="clickhouse" />
           </el-select>
         </el-form-item>
+        <el-form-item label="默认指标依赖">
+          <el-select v-model="form.defaultMetricIds" multiple filterable remote reserve-keyword :remote-method="loadMetrics" :loading="metricLoading" placeholder="未配置默认指标" style="width:100%" clearable>
+            <el-option v-for="metric in metrics" :key="metric.id" :value="metric.id" :label="`${metric.name} (${metric.code})`" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="参数定义">
           <div style="width: 100%">
             <el-input v-model="form.paramsSchema" type="textarea" :rows="6" :style="S.jsonEditor"
@@ -485,7 +526,10 @@ const S = {
         <el-row :gutter="16">
           <el-col :span="15">
             <el-form-item label="源码">
-              <el-input v-model="sourceCode" type="textarea" :rows="18" :disabled="sourceLoading" :style="S.jsonEditor" />
+              <div style="width:100%">
+                <el-input v-model="sourceCode" type="textarea" :rows="18" :disabled="sourceLoading" :style="S.jsonEditor" />
+                <span v-if="sourceMissing">源码尚未保存</span>
+              </div>
             </el-form-item>
           </el-col>
           <el-col :span="9">

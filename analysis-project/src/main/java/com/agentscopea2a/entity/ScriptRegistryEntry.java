@@ -6,6 +6,10 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.agentscopea2a.v2.json.MetricIdsDeserializer;
+import com.agentscopea2a.v2.json.MetricIdsSerializer;
 
 /**
  * Python 指标计算脚本注册表实体 - 一条预审过的 Python 脚本记录.
@@ -46,6 +50,9 @@ public class ScriptRegistryEntry {
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private String createdBy;
+    @JsonDeserialize(using = MetricIdsDeserializer.class)
+    @JsonSerialize(using = MetricIdsSerializer.class)
+    private String defaultMetricIds;
     /** 创建人姓名, 仅用于管理接口响应, 不映射 script_registry 表字段. */
     private String createdByName;
 }

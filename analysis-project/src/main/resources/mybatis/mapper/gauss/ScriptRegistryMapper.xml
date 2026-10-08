@@ -16,11 +16,13 @@
         <result column="created_at"      property="createdAt"/>
         <result column="updated_at"      property="updatedAt"/>
         <result column="created_by"      property="createdBy"/>
+        <result column="default_metric_ids" property="defaultMetricIds"/>
+        <result column="default_metric_ids" property="defaultMetricIds"/>
     </resultMap>
 
     <sql id="Base_Column_List">
         id, script_id, name, description, script_path, datasources, params_schema,
-        timeout_seconds, enabled, created_at, updated_at, created_by
+        timeout_seconds, enabled, created_at, updated_at, created_by, default_metric_ids
     </sql>
 
     <!-- 列表视图列 (排除 params_schema, 体积大) -->
@@ -36,11 +38,12 @@
         <result column="created_at"      property="createdAt"/>
         <result column="updated_at"      property="updatedAt"/>
         <result column="created_by"      property="createdBy"/>
+        <result column="default_metric_ids" property="defaultMetricIds"/>
     </resultMap>
 
     <sql id="List_Column_List">
         id, script_id, name, description, script_path, datasources,
-        timeout_seconds, enabled, created_at, updated_at, created_by
+        timeout_seconds, enabled, created_at, updated_at, created_by, default_metric_ids
     </sql>
 
     <!-- 兼容 ScriptExecTool: 按 script_id 查询 (仅启用) -->
@@ -82,9 +85,9 @@
     <!-- 新增: id 由 BIGSERIAL 自动生成, created_at/updated_at 有默认值 -->
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO script_registry (script_id, name, description, script_path, datasources,
-            params_schema, timeout_seconds, enabled, created_by)
+            params_schema, timeout_seconds, enabled, created_by, default_metric_ids)
         VALUES (#{scriptId}, #{name}, #{description}, #{scriptPath}, #{datasources},
-            #{paramsSchema}, #{timeoutSeconds}, #{enabled}, #{createdBy})
+            #{paramsSchema}, #{timeoutSeconds}, #{enabled}, #{createdBy}, #{defaultMetricIds})
     </insert>
 
     <!-- 更新: updated_at 由触发器自动维护, 不显式设置 -->
@@ -97,7 +100,8 @@
             datasources    = #{datasources},
             params_schema  = #{paramsSchema},
             timeout_seconds = #{timeoutSeconds},
-            enabled        = #{enabled}
+            enabled        = #{enabled},
+            default_metric_ids = #{defaultMetricIds}
         WHERE id = #{id}
     </update>
 

@@ -47,7 +47,7 @@ const emit = defineEmits<{
   (e: 'script-params-change', value: { value: Record<string, unknown> | null; error: string }): void;
   (e: 'search-scripts', query: string): void;
   (e: 'search-metrics', query: string): void;
-  (e: 'set-metric', value: number | null): void;
+  (e: 'set-metrics', value: number[]): void;
 }>();
 
 const scriptParamsText = ref('{}');
@@ -194,7 +194,7 @@ function selectedScript(node: SkillFlowNode, scripts: ScriptRegistryListItem[]):
         <small v-if="scriptParamsError" class="param-error">JSON 参数无效：{{ scriptParamsError }}</small>
       </div>
       <label v-if="node.nodeType === 'SKILL'"><span>本流程问题 *</span><textarea v-model="node.questionTemplate" rows="3" placeholder="填写该 Skill 在本流程中要执行的问题" /></label>
-      <label><span>依赖指标</span><el-select :model-value="node.metricIds[0] ?? null" filterable remote reserve-keyword :remote-method="(query: string) => emit('search-metrics', query)" :loading="metricLoading" placeholder="无需依赖指标" clearable style="width: 100%" @change="(value: number | null) => emit('set-metric', value)"><el-option v-for="metric in metrics" :key="metric.id" :value="metric.id" :label="`${metric.name} (${metric.code})`" /></el-select></label>
+      <label><span>指标依赖（可选）</span><el-select :model-value="node.metricIds" multiple filterable remote reserve-keyword :remote-method="(query: string) => emit('search-metrics', query)" :loading="metricLoading" placeholder="未覆盖时继承默认指标" clearable style="width: 100%" @change="(value: number[]) => emit('set-metrics', value)"><el-option v-for="metric in metrics" :key="metric.id" :value="metric.id" :label="`${metric.name} (${metric.code})`" /></el-select><small class="metric-source">当前来源：{{ node.metricOverrideConfigured ? '覆盖' : node.metricSource === 'DEFAULT' ? '默认继承' : '未配置' }}<span v-if="!node.metricOverrideConfigured && node.effectiveMetricIds?.length">（{{ node.effectiveMetricIds.length }} 项生效）</span></small></label>
     </div>
   </div>
 </template>
@@ -202,6 +202,7 @@ function selectedScript(node: SkillFlowNode, scripts: ScriptRegistryListItem[]):
 <style scoped>
 input, select, textarea { box-sizing: border-box; width: 100%; border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 10px; background: #fff; color: #1e293b; font: inherit; font-size: 14px; }
 label { display: grid; gap: 5px; } label > span { color: #475569; font-size: 13px; font-weight: 600; }
+.metric-source { color: #64748b; font-size: 12px; }
 .node-card { display: grid; gap: 14px; padding: 16px; border: 1px solid #dbe4f0; border-radius: 10px; background: #fbfdff; }.node-card.dragging { border-color: #3b82f6; background: #eff6ff; }
 .node-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.node-toolbar strong { color: #0f172a; font-size: 14px; flex: 1; }.node-toolbar > div { display: flex; gap: 4px; }
 .drag-handle { cursor: grab; color: #94a3b8; font-size: 18px; padding: 0 4px; user-select: none; }.drag-handle:active { cursor: grabbing; }

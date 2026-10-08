@@ -27,6 +27,8 @@ public record SkillJobCreateRequest(
         Long skillId,
         String questionTemplate,
         Long metricId,
+        List<Long> metricIds,
+        Boolean metricOverrideConfigured,
         /** 按星期配置执行时间，JSON 格式如 {"WED":["09:00"]} */
         String scheduleRules,
         /** 通知收件人 userId 列表；空列表表示发送给创建人 */

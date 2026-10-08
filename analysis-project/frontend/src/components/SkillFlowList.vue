@@ -29,7 +29,7 @@ let triggerMsgTimer: ReturnType<typeof setTimeout> | undefined;
 const pagedFlows = computed(() => flows.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value));
 
 function formatTime(value?: string) { return value ? value.replace('T', ' ').slice(0, 19) : '-'; }
-function metricCount(flow: SkillFlow) { return new Set(flow.nodes.flatMap(node => node.metricIds || [])).size; }
+function metricCount(flow: SkillFlow) { return new Set(flow.nodes.flatMap(node => node.effectiveMetricIds ?? node.metricIds ?? [])).size; }
 function enabledStatusClass(flow: SkillFlow) { return flow.enabled ? 'st-on' : 'st-off'; }
 function isOwner(flow: SkillFlow) { return flow.createdBy === me; }
 function changePageSize(size: number) { pageSize.value = size; page.value = 1; }

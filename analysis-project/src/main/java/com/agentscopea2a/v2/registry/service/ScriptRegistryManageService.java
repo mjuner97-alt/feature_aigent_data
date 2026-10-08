@@ -4,6 +4,7 @@ import com.agentscopea2a.entity.ScriptRegistryEntry;
 import com.agentscopea2a.mapper.gauss.ScriptRegistryMapper;
 import com.agentscopea2a.v2.auth.entity.DeveloperPlPersonInfo;
 import com.agentscopea2a.v2.auth.mapper.DeveloperPlPersonInfoMapper;
+import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -27,13 +28,16 @@ public class ScriptRegistryManageService {
 
     private final ScriptRegistryMapper mapper;
     private final DeveloperPlPersonInfoMapper personInfoMapper;
+    private final SkillDependencyMetricMapper metricMapper;
     private final com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService;
 
     public ScriptRegistryManageService(ScriptRegistryMapper mapper,
                                        DeveloperPlPersonInfoMapper personInfoMapper,
+                                       SkillDependencyMetricMapper metricMapper,
                                        com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService) {
         this.mapper = mapper;
         this.personInfoMapper = personInfoMapper;
+        this.metricMapper = metricMapper;
         this.adminRoleService = adminRoleService;
     }
 
@@ -97,6 +101,10 @@ public class ScriptRegistryManageService {
 
     @Transactional("gaussCustomerTransactionManager")
     public ScriptRegistryEntry create(ScriptRegistryEntry entry, String userId) {
+        if (entry.getDefaultMetricIds() == null || entry.getDefaultMetricIds().isBlank()) {
+            var metric = metricMapper.selectByCode("default_metric");
+            if (metric != null) entry.setDefaultMetricIds(String.valueOf(metric.getId()));
+        }
         if (userId == null || userId.isBlank()) throw new IllegalStateException("ResourceAccessDenied");
         // 校验 script_id 非空 (拼路径依赖) + 唯一性 (含禁用记录, 防止注册乱象下重复)
         if (entry.getScriptId() == null || entry.getScriptId().isBlank()) {
@@ -151,6 +159,13 @@ public class ScriptRegistryManageService {
         if (patch.getParamsSchema() != null) existing.setParamsSchema(patch.getParamsSchema());
         if (patch.getTimeoutSeconds() != null) existing.setTimeoutSeconds(patch.getTimeoutSeconds());
         if (patch.getEnabled() != null) existing.setEnabled(patch.getEnabled());
+        String defaultMetricIds = patch.getDefaultMetricIds() != null
+                ? patch.getDefaultMetricIds() : existing.getDefaultMetricIds();
+        if (defaultMetricIds == null || defaultMetricIds.isBlank()) {
+            var metric = metricMapper.selectByCode("default_metric");
+            if (metric != null) defaultMetricIds = String.valueOf(metric.getId());
+        }
+        existing.setDefaultMetricIds(defaultMetricIds);
 
         mapper.update(existing);
         return existing;

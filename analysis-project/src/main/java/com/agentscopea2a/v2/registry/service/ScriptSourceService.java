@@ -84,6 +84,15 @@ public class ScriptSourceService {
         throw new IllegalArgumentException("SOURCE_NOT_FOUND: 脚本源码不存在: " + path);
     }
 
+    public Source readOrEmpty(ScriptRegistryEntry entry) {
+        try {
+            return read(entry);
+        } catch (IllegalArgumentException e) {
+            if (e.getMessage() == null || !e.getMessage().startsWith("SOURCE_NOT_FOUND")) throw e;
+            return new Source(entry.getScriptId(), entry.getScriptPath(), "", "");
+        }
+    }
+
     /** Uses the same path safety rules as source reads without exposing the resolved path. */
     public boolean isAvailable(ScriptRegistryEntry entry) {
         boolean localExists;

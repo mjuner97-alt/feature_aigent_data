@@ -16,6 +16,8 @@
 package com.agentscopea2a.v2.skillManager.dto;
 
 import com.agentscopea2a.v2.skillManager.entity.SkillJob;
+import com.agentscopea2a.v2.json.MetricIdsSerializer;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 
 import java.time.LocalDateTime;
 
@@ -32,6 +34,8 @@ public record SkillJobDto(
         /** 按星期配置的执行时间，JSON 格式如 {"WED":["09:00"]} */
         String scheduleRules,
         Long metricId,
+        @JsonSerialize(using = MetricIdsSerializer.class) String metricIds,
+        Boolean metricOverrideConfigured,
         String metricCode,
         String metricName,
         String createdBy,
@@ -50,7 +54,7 @@ public record SkillJobDto(
                 job.getQuestionTemplate(),
                 job.getEnabled(),
                 job.getScheduleRules(),
-                job.getMetricId(), job.getMetricCode(), job.getMetricName(),
+                job.getMetricId(), job.getMetricIds(), job.getMetricOverrideConfigured(), job.getMetricCode(), job.getMetricName(),
                 job.getCreatedBy(), createdByName, job.getCreatedAt(), job.getUpdatedAt());
     }
 }

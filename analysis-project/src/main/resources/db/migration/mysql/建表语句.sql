@@ -2,14 +2,13 @@ create table QualitySupervisor_episodic_memory
 (
     id                bigint auto_increment
         primary key,
-    session_id        varchar(255)                           not null,
-    user_id           varchar(128) default ''                not null,
-    role              varchar(50)                            not null,
-    content           text                                   not null,
-    tool_call_details text                                   null comment '工具调用链路详情JSON,供skill蒸馏使用',
-    embedding         longtext                               null,
-    status            varchar(16)  default 'active'          null,
-    created_at        timestamp    default CURRENT_TIMESTAMP null
+    session_id        varchar(255)                          not null,
+    role              varchar(50)                           not null,
+    content           text                                  not null,
+    embedding         longtext                              null,
+    status            varchar(16) default 'active'          null,
+    tool_call_details longtext                              null,
+    created_at        timestamp   default CURRENT_TIMESTAMP null
 )
     charset = utf8mb4;
 
@@ -21,9 +20,6 @@ create index idx_embedding
 
 create index idx_status
     on QualitySupervisor_episodic_memory (status);
-
-create index idx_user_id
-    on QualitySupervisor_episodic_memory (user_id);
 
 create table agent_memory
 (
@@ -86,30 +82,6 @@ create table agentscope_sessions
     updated_at datetime default CURRENT_TIMESTAMP null on update CURRENT_TIMESTAMP,
     primary key (session_id, state_key, item_index)
 );
-
-create table agui_run_record
-(
-    id                bigint auto_increment comment '主键'
-        primary key,
-    thread_id         varchar(64)                         not null comment '会话ID',
-    user_id           varchar(64)                         null comment '用户ID',
-    agent_name        varchar(128)                        null comment 'Agent名称',
-    status            varchar(32)                         not null comment 'RUNNING/COMPLETED/ERROR',
-    total_duration_ms int                                 null comment '总耗时毫秒',
-    event_count       int                                 null comment '事件总数',
-    events_json       longtext                            null comment '完整事件JSON数组',
-    created_at        timestamp default CURRENT_TIMESTAMP null comment '创建时间'
-)
-    comment 'AG-UI运行记录表' charset = utf8mb4;
-
-create index idx_created_at
-    on agui_run_record (created_at);
-
-create index idx_thread_id
-    on agui_run_record (thread_id);
-
-create index idx_user_id
-    on agui_run_record (user_id);
 
 create table calibration_apply_pending
 (
@@ -350,318 +322,21 @@ create table semantic_metric_contract
 )
     charset = utf8mb4;
 
-create table session_state_list
-(
-    id         bigint auto_increment
-        primary key,
-    session_id varchar(255)                        not null,
-    state_key  varchar(255)                        not null,
-    item_order int                                 not null,
-    item_json  mediumtext                          not null,
-    list_hash  varchar(64)                         null,
-    created_at timestamp default CURRENT_TIMESTAMP null,
-    constraint uk_session_key_order
-        unique (session_id, state_key, item_order)
-)
-    charset = utf8mb4;
-
-create index idx_session_key
-    on session_state_list (session_id, state_key);
-
-create table skill_approval
-(
-    id               bigint auto_increment
-        primary key,
-    publish_id       bigint                              null,
-    draft_id         bigint                              null,
-    action           varchar(32)                         not null,
-    operator         varchar(64)                         not null,
-    comment          text                                null,
-    version_snapshot int                                 not null,
-    created_at       timestamp default CURRENT_TIMESTAMP not null
-)
-    charset = utf8mb4;
-
-create index idx_draft
-    on skill_approval (draft_id);
-
-create index idx_operator
-    on skill_approval (operator);
-
-create index idx_publish
-    on skill_approval (publish_id);
-
-create table skill_candidate
-(
-    fingerprint   varchar(255)                          not null
-        primary key,
-    user_id       varchar(64)                           not null,
-    hit_count     int         default 0                 not null,
-    last_query    text                                  null,
-    last_trace_id varchar(64)                           null,
-    metric_tag    varchar(64)                           null,
-    status        varchar(16) default 'pending'         not null,
-    synth_skill   varchar(128)                          null,
-    updated_at    timestamp   default CURRENT_TIMESTAMP not null on update CURRENT_TIMESTAMP
-)
-    charset = utf8mb4;
-
-create index idx_hit_count
-    on skill_candidate (hit_count desc);
-
-create index idx_metric_tag
-    on skill_candidate (metric_tag);
-
-create index idx_user_status
-    on skill_candidate (user_id, status);
-
-create table skill_draft
-(
-    id              bigint auto_increment
-        primary key,
-    skill_id        bigint                                not null,
-    name            varchar(128)                          null,
-    description     text                                  null,
-    content         text                                  null,
-    category        varchar(64)                           null,
-    tags            varchar(512)                          null,
-    status          varchar(32) default 'PENDING'         not null,
-    submitter       varchar(64)                           not null,
-    approver        varchar(64)                           null,
-    approve_comment text                                  null,
-    submitted_at    timestamp   default CURRENT_TIMESTAMP not null,
-    approved_at     timestamp                             null
-)
-    charset = utf8mb4;
-
-create index idx_skill
-    on skill_draft (skill_id);
-
-create index idx_status
-    on skill_draft (status);
-
-create index idx_submitter
-    on skill_draft (submitter);
-
-create table skill_index
-(
-    name                      varchar(128)                           not null
-        primary key,
-    fingerprint               varchar(255)                           null comment 'PR3 L1 lookup key, NULL until then',
-    description               text                                   null,
-    embedding                 longtext                               null comment 'PR3 reserved; JSON-encoded float[] for MySQL<8.4',
-    version                   int         default 1                  not null,
-    usage_count               int         default 0                  not null,
-    success_count             int         default 0                  not null,
-    failure_count             int         default 0                  not null,
-    last_used                 timestamp                              null,
-    evolving                  tinyint(1)  default 0                  not null comment 'PR4 cross-JVM evolve lock',
-    status                    varchar(16) default 'active'           not null,
-    tool_sequence_fingerprint varchar(255)                           null comment 'Phase 3 offline lookup key (tool-id sequence)',
-    updated_at                timestamp   default CURRENT_TIMESTAMP  not null on update CURRENT_TIMESTAMP,
-    source                    varchar(16) default 'auto_synthesized' not null comment 'skill origin: user_generated | auto_synthesized'
-)
-    charset = utf8mb4;
-
-create index idx_source
-    on skill_index (source);
-
-create index idx_status
-    on skill_index (status);
-
-create index idx_tool_seq_fp
-    on skill_index (tool_sequence_fingerprint);
-
-create table skill_like
-(
-    id         bigint auto_increment
-        primary key,
-    skill_id   bigint                              not null,
-    user_id    varchar(64)                         not null,
-    created_at timestamp default CURRENT_TIMESTAMP not null,
-    constraint uk_user_skill
-        unique (user_id, skill_id)
-)
-    charset = utf8mb4;
-
-create index idx_skill
-    on skill_like (skill_id);
-
-create index idx_user
-    on skill_like (user_id);
-
-create table skill_manage
-(
-    id            bigint auto_increment
-        primary key,
-    name          varchar(128)                          not null,
-    description   text                                  null,
-    content       text                                  null,
-    category      varchar(64)                           null,
-    tags          varchar(512)                          null,
-    owner_user_id varchar(64)                           not null,
-    status        varchar(32) default 'ACTIVE'          not null,
-    like_count    bigint      default 0                 not null,
-    created_at    timestamp   default CURRENT_TIMESTAMP not null,
-    updated_at    timestamp   default CURRENT_TIMESTAMP not null on update CURRENT_TIMESTAMP,
-    deleted_at    timestamp                             null,
-    constraint uk_name
-        unique (name)
-)
-    charset = utf8mb4;
-
-create index idx_like_rank
-    on skill_manage (like_count desc, updated_at desc);
-
-create index idx_owner
-    on skill_manage (owner_user_id);
-
-create index idx_status
-    on skill_manage (status);
-
-create table skill_operation_history
-(
-    id          bigint auto_increment
-        primary key,
-    skill_id    bigint                              null,
-    publish_id  bigint                              null,
-    operator    varchar(64)                         not null,
-    operation   varchar(64)                         not null,
-    before_data text                                null,
-    after_data  text                                null,
-    created_at  timestamp default CURRENT_TIMESTAMP not null
-)
-    charset = utf8mb4;
-
-create index idx_operator_time
-    on skill_operation_history (operator, created_at);
-
-create index idx_publish
-    on skill_operation_history (publish_id);
-
-create index idx_skill
-    on skill_operation_history (skill_id);
-
-create table skill_pending_judgement
-(
-    session_key       varchar(255)                        not null
-        primary key,
-    skills_json       text                                not null,
-    exemplar_question varchar(1024)                       null,
-    created_at        timestamp default CURRENT_TIMESTAMP null
-)
-    charset = utf8mb4;
-
-create table skill_publish
-(
-    id                       bigint auto_increment
-        primary key,
-    skill_id                 bigint                                not null,
-    target_type              varchar(32)                           not null,
-    target_id                varchar(64)                           not null,
-    target_name              varchar(128)                          not null,
-    status                   varchar(32) default 'PENDING'         not null,
-    submitter                varchar(64)                           not null,
-    approver                 varchar(64)                           null,
-    approve_time             timestamp                             null,
-    current_approver_user_id varchar(64)                           null,
-    last_approval_comment    text                                  null,
-    last_approval_at         timestamp                             null,
-    created_at               timestamp   default CURRENT_TIMESTAMP not null
-)
-    charset = utf8mb4;
-
-create index idx_approver_pending
-    on skill_publish (current_approver_user_id, status);
-
-create index idx_skill
-    on skill_publish (skill_id);
-
-create index idx_status
-    on skill_publish (status);
-
-create index idx_submitter
-    on skill_publish (submitter);
-
-create table skill_reference
-(
-    id              bigint auto_increment
-        primary key,
-    source_skill_id bigint                              not null,
-    target_skill_id bigint                              not null,
-    creator         varchar(64)                         not null,
-    created_at      timestamp default CURRENT_TIMESTAMP not null,
-    constraint uk_source_target_creator
-        unique (source_skill_id, target_skill_id, creator)
-)
-    charset = utf8mb4;
-
-create index idx_creator
-    on skill_reference (creator);
-
-create index idx_target
-    on skill_reference (target_skill_id);
-
-create table skill_user_disable
-(
-    id         bigint auto_increment
-        primary key,
-    skill_id   bigint                              not null,
-    user_id    varchar(64)                         not null,
-    created_at timestamp default CURRENT_TIMESTAMP not null,
-    constraint uk_user_skill
-        unique (user_id, skill_id)
-)
-    charset = utf8mb4;
-
-create table skill_version_history
-(
-    id          bigint auto_increment
-        primary key,
-    skill_id    bigint                              not null,
-    version     int                                 not null,
-    name        varchar(128)                        null,
-    description text                                null,
-    content     text                                null,
-    category    varchar(64)                         null,
-    tags        varchar(512)                        null,
-    edited_by   varchar(64)                         not null,
-    edit_reason varchar(256)                        null,
-    created_at  timestamp default CURRENT_TIMESTAMP not null
-)
-    charset = utf8mb4;
-
-create index idx_skill_version
-    on skill_version_history (skill_id asc, version desc);
-
 create table url_shortener
 (
     id           bigint auto_increment
         primary key,
-    short_code   varchar(16)                         not null comment 'Base62短码，如 aB3xK9mP2qR5tY8w',
-    original_url text                                not null comment '原始完整URL',
-    created_at   timestamp default CURRENT_TIMESTAMP not null comment '创建时间',
-    expires_at   timestamp                           null comment '过期时间，NULL表示永不过期',
-    constraint short_code
+    short_code   varchar(32)                         not null,
+    original_url varchar(2048)                       not null,
+    created_at   timestamp default CURRENT_TIMESTAMP not null,
+    expires_at   timestamp                           null,
+    constraint uk_short_code
         unique (short_code)
 )
-    comment 'URL短链映射表';
+    charset = utf8mb4;
 
 create index idx_expires_at
     on url_shortener (expires_at);
-
-create table user_model_config
-(
-    user_id     varchar(32)                        not null comment '用户ID'
-        primary key,
-    provider    varchar(32)                        not null comment '模型提供商（glm/openai/anthropic）',
-    token       varchar(512)                       not null comment '用户的API Key',
-    model_name  varchar(128)                       not null comment '模型名',
-    request_url varchar(512)                       null comment '请求地址',
-    created_at  datetime default CURRENT_TIMESTAMP null comment '创建时间',
-    updated_at  datetime default CURRENT_TIMESTAMP null on update CURRENT_TIMESTAMP comment '更新时间'
-)
-    comment '用户模型配置表' charset = utf8mb4;
 
 create table user_trace_summary
 (

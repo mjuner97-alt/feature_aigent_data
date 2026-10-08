@@ -28,6 +28,8 @@ import { checkSkillSimilarity } from '../../api/routingOverlap';
 import type { SkillSimilarityMatch } from '../../types/routingOverlap';
 import type { SkillInput, SkillGrant, PublishTargetGroup } from '../../types/skill';
 import SkillGrantEditor from '../../components/SkillGrantEditor.vue';
+import { listMetrics } from '../../api/skillDependencyMetric';
+import type { SkillDependencyMetric } from '../../types/skillJob';
 
 const route = useRoute();
 const router = useRouter();
@@ -39,6 +41,9 @@ const editId = computed(() => {
 const isEdit = computed(() => editId.value != null);
 
 const form = ref<SkillInput>({ name: '', description: '', content: '', visibility: 'PERSONAL' });
+const metrics = ref<SkillDependencyMetric[]>([]);
+const metricLoading = ref(false);
+async function loadMetrics(query = '') { metricLoading.value = true; try { metrics.value = await listMetrics(query); if (!editId.value && !form.value.defaultMetricIds?.length) { const fallback = metrics.value.find(m => m.code === 'default_metric'); if (fallback) form.value.defaultMetricIds = [fallback.id]; } } finally { metricLoading.value = false; } }
 const formLoading = ref(false);
 const saving = ref(false);
 const formError = ref('');
@@ -100,6 +105,7 @@ async function loadForEdit(id: number) {
       name: s.name ?? '',
       description: s.description ?? '',
       content: s.content ?? '',
+      defaultMetricIds: s.defaultMetricIds || [],
       visibility: vis,
     };
     visibility.value = vis;
@@ -129,6 +135,7 @@ async function loadForEdit(id: number) {
 
 onMounted(async () => {
   resetForm();
+  loadMetrics();
   ensurePublishTargets();
   if (editId.value != null) {
     await loadForEdit(editId.value);
@@ -278,6 +285,12 @@ function goBack() {
           <label class="field">
             <span class="label">内容</span>
             <textarea v-model="form.content" :disabled="notOwner" rows="16" class="content" placeholder="SKILL.md 正文(Markdown)" />
+          </label>
+          <label class="field">
+            <span class="label">默认指标依赖</span>
+            <el-select v-model="form.defaultMetricIds" multiple filterable remote reserve-keyword :remote-method="loadMetrics" :loading="metricLoading" :disabled="notOwner" placeholder="未配置默认指标" clearable style="width:100%">
+              <el-option v-for="metric in metrics" :key="metric.id" :value="metric.id" :label="`${metric.name} (${metric.code})`" />
+            </el-select>
           </label>
           <SkillFileAttachment
             ref="attachmentRef"

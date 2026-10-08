@@ -93,7 +93,7 @@ public class FlowExecutionService {
     /** 指标到达后，为依赖该指标且全部日指标已就绪的流程创建每日自动执行。 */
     @Transactional("gaussCustomerTransactionManager")
     public void triggerReadyFlows(Long metricId, LocalDate dataDate) {
-        for (SkillFlow flow : mapper.selectEnabledFlowsByMetricId(metricId)) {
+        for (SkillFlow flow : mapper.selectAllEnabledFlows()) {
             if (!SkillJobService.runsOn(flow.getScheduleRules(), dataDate.getDayOfWeek())) continue;
             String conversationId = "auto:" + flow.getId() + ":" + dataDate;
             // 自动指标触发必须等全部依赖指标 READY 后才创建执行。
@@ -111,13 +111,14 @@ public class FlowExecutionService {
      * 当天已有 AUTO_METRIC 执行(含终态)的流程不重复创建——每天最多自动执行一次;
      * 单个流程补建失败只记日志,不影响其余流程。</p>
      */
+    @Transactional("gaussCustomerTransactionManager")
     public void scanAutoTriggerFlows() {
         // 与推模式用同一个 clock 取"今天",保证就绪日期、guard key、扫描判断的日期口径一致
         LocalDate dataDate = LocalDate.now(clock);
         // 候选已在 SQL 里过滤(见 selectAutoTriggerCandidates):启用未删、created_by 非空、
         // 节点挂了指标、当天没有 AUTO_METRIC 执行(含终态)、全部依赖指标当天 READY。
         // 所以这里循环的每一个流程都"该建而未建",直接逐个补建即可。
-        for (SkillFlow flow : mapper.selectAutoTriggerCandidates(dataDate)) {
+        for (SkillFlow flow : mapper.selectAllEnabledFlows()) {
             try {
                 autoTriggerFlow(flow.getId());
             } catch (RuntimeException e) {
@@ -167,6 +168,12 @@ public class FlowExecutionService {
     private TriggerResult createExecution(SkillFlow flow, String userId, String conversationId, String question,
                                           LocalDate dataDate, FlowTriggerType triggerType, String guard,
                                           boolean requireAllMetrics) {
+        if (requireAllMetrics) {
+            mapper.lockFlowForAuto(flow.getId());
+            if (mapper.hasAutoMetricExecutionOnDate(flow.getId(), dataDate)) {
+                return new TriggerResult(null, false);
+            }
+        }
         SkillFlowExecution existing = mapper.selectActiveExecution(guard);
         if (existing != null) {
             // 仅"真正活跃"的执行(排队/运行/等指标/汇总中)防重;
@@ -187,7 +194,8 @@ public class FlowExecutionService {
         // 快照写入 requiredMetricCount / readyMetricCount / missingMetricsJson,供执行详情展示与门控重算。
         List<SkillFlowNode> nodes = mapper.selectNodesByFlowId(flow.getId());
         Set<Long> metrics = new LinkedHashSet<>();
-        nodes.forEach(n -> metrics.addAll(mapper.selectMetricIdsByNodeId(n.getId())));
+        nodes.forEach(n -> metrics.addAll(effectiveMetricIds(n)));
+        if (requireAllMetrics && metrics.isEmpty()) return new TriggerResult(null, false);
         List<Long> missing = metrics.stream().filter(id -> {
             SkillMetricReadiness ready = mapper.selectMetricReadiness(id, dataDate);
             return ready == null || ready.getStatus() != MetricReadinessStatus.READY;
@@ -260,6 +268,22 @@ public class FlowExecutionService {
             events.publishEvent(new FlowQueuedEvent(execution.getId()));
         }
         return new TriggerResult(execution, true);
+    }
+
+    /** Resolves node overrides at execution time so inherited defaults change without rewriting flows. */
+    private List<Long> effectiveMetricIds(SkillFlowNode node) {
+        List<Long> override = mapper.selectMetricIdsByNodeId(node.getId());
+        List<Long> defaults = List.of();
+        if (!Boolean.TRUE.equals(node.getMetricOverrideConfigured())) {
+            if (node.getScriptId() != null && !node.getScriptId().isBlank()) {
+                ScriptRegistryEntry script = scriptRegistryMapper == null ? null : scriptRegistryMapper.selectByScriptId(node.getScriptId().trim());
+                defaults = script == null ? List.of() : MetricDependencyIds.parse(script.getDefaultMetricIds());
+            } else if (node.getSkillId() != null) {
+                Skill skill = skillMapper.selectById(node.getSkillId());
+                defaults = skill == null ? List.of() : MetricDependencyIds.parse(skill.getDefaultMetricIds());
+            }
+        }
+        return MetricDependencyResolver.resolve(Boolean.TRUE.equals(node.getMetricOverrideConfigured()), override, defaults).metricIds();
     }
 
     /**

@@ -19,7 +19,8 @@ public record SkillFlowDefinitionRequest(
         Boolean notifyEnabled,
         List<Trigger> triggers,
         List<Node> nodes,
-        ReportOutline reportOutline) {
+        ReportOutline reportOutline,
+        NotifySettingsUpdateRequest notifySettings) {
 
     public SkillFlowDefinitionRequest {
         triggers = triggers == null ? List.of() : List.copyOf(triggers);
@@ -42,6 +43,7 @@ public record SkillFlowDefinitionRequest(
             String scriptParamsJson,
             String questionTemplate,
             List<Long> metricIds,
+            Boolean metricOverrideConfigured,
             Boolean required,
             Integer maxAttempts,
             Integer sortOrder) {

@@ -27,6 +27,7 @@ export interface SkillDetail {
   ownerUserId: string;
   status: string;
   visibility?: string;      // PUBLIC(公开) / PRIVATE(私有) / PERSONAL(个人;缺失视为 PERSONAL)
+  defaultMetricIds?: number[];
   likeCount: number;
   createdAt: string;
   updatedAt: string;
@@ -45,6 +46,7 @@ export interface SkillInput {
   category?: string;   // 后端保留字段,前端不再使用,可选
   tags?: string;       // 后端保留字段,前端不再使用,可选
   visibility?: string; // 可选:PERSONAL(默认,仅创建者) / PUBLIC(公开,需发布审批) / PRIVATE(私有)
+  defaultMetricIds?: number[];
 }
 
 /** Skill 私有可见性授权项。对应后端 GET /api/skills/{id}/grants 的单条。 */

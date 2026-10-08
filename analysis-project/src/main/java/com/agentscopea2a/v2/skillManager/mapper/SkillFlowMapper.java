@@ -53,6 +53,15 @@ public interface SkillFlowMapper {
      */
     List<SkillFlow> selectEnabledFlowsByMetricId(@Param("metricId") Long metricId);
 
+    /** All enabled flows; runtime dependency resolution filters by effective metrics. */
+    List<SkillFlow> selectAllEnabledFlows();
+
+    /** Serialize concurrent auto-trigger checks for one flow. */
+    Long lockFlowForAuto(@Param("flowId") Long flowId);
+
+    /** Includes completed executions, whose active guard has already been released. */
+    boolean hasAutoMetricExecutionOnDate(@Param("flowId") Long flowId, @Param("dataDate") LocalDate dataDate);
+
     /** 全量更新流程定义(按 id);软删除的流程不允许再改。 */
     /**
      * 定时兜底扫描:当日全部依赖指标已 READY 且尚无 AUTO_METRIC 执行的启用流程。

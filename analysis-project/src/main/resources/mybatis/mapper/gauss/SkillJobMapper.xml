@@ -18,6 +18,8 @@
         <result column="created_at" property="createdAt"/>
         <result column="updated_at" property="updatedAt"/>
         <result column="metric_id" property="metricId"/>
+        <result column="metric_ids" property="metricIds"/>
+        <result column="metric_override_configured" property="metricOverrideConfigured"/>
         <result column="metric_code" property="metricCode"/>
         <result column="metric_name" property="metricName"/>
         <result column="skill_name" property="skillName"/>
@@ -25,14 +27,14 @@
 
     <sql id="skillJobCols">
         j.id, j.name, j.skill_id, j.question_template, j.output_path, j.enabled, j.schedule_rules,
-        j.notify_receivers, j.created_by, j.created_at, j.updated_at, j.metric_id,
+        j.notify_receivers, j.created_by, j.created_at, j.updated_at, j.metric_id, j.metric_ids, j.metric_override_configured,
         m.code AS metric_code, m.name AS metric_name,
         s.name AS skill_name
     </sql>
 
     <insert id="insertSkillJob" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillJob" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO skill_job (name, skill_id, question_template, output_path, enabled, schedule_rules, notify_receivers, created_by, metric_id)
-        VALUES (#{name}, #{skillId}, #{questionTemplate}, #{outputPath}, #{enabled}, #{scheduleRules}, #{notifyReceivers}, #{createdBy}, #{metricId})
+        INSERT INTO skill_job (name, skill_id, question_template, output_path, enabled, schedule_rules, notify_receivers, created_by, metric_id, metric_ids, metric_override_configured)
+        VALUES (#{name}, #{skillId}, #{questionTemplate}, #{outputPath}, #{enabled}, #{scheduleRules}, #{notifyReceivers}, #{createdBy}, #{metricId}, #{metricIds}, COALESCE(#{metricOverrideConfigured}, FALSE))
     </insert>
 
     <select id="selectJobById" resultMap="SkillJobResultMap">
@@ -68,7 +70,7 @@
         UPDATE skill_job
         SET name=#{name}, skill_id=#{skillId}, question_template=#{questionTemplate},
             output_path=#{outputPath}, enabled=#{enabled}, schedule_rules=#{scheduleRules},
-            notify_receivers=#{notifyReceivers}, metric_id=#{metricId}, updated_at=NOW()
+            notify_receivers=#{notifyReceivers}, metric_id=#{metricId}, metric_ids=#{metricIds}, metric_override_configured=COALESCE(#{metricOverrideConfigured}, metric_override_configured), updated_at=NOW()
         WHERE id = #{id}
     </update>
 
@@ -85,6 +87,18 @@
         WHERE j.metric_id = #{metricId}
           AND j.enabled = TRUE
         ORDER BY j.created_at DESC
+    </select>
+
+    <select id="lockJobForMetric" resultType="java.lang.Long">
+        SELECT id FROM skill_job WHERE id = #{jobId} FOR UPDATE
+    </select>
+
+    <select id="hasMetricExecutionOnDate" resultType="boolean">
+        SELECT EXISTS (
+            SELECT 1 FROM skill_job_execution
+            WHERE job_id = #{jobId} AND trigger_type = 'METRIC'
+              AND created_at &gt;= #{dataDate} AND created_at &lt; #{dataDate} + 1
+        )
     </select>
 
     <!-- ==================== skill_job_execution ==================== -->

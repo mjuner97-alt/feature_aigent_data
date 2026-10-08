@@ -10,7 +10,7 @@ import { ref, watch, computed } from 'vue';
 import { getJob, createJob, updateJob } from '../api/skillJob';
 import { listMetrics } from '../api/skillDependencyMetric';
 import { getSkill, listSkills } from '../api/skill';
-import { searchSkillUsers } from '../api/skill';
+import { searchSkillUsers, batchUserNames } from '../api/skill';
 import type { SkillJobInput, SkillJobUpdateInput } from '../types/skillJob';
 import type { SkillListItem } from '../types/skill';
 import type { SkillDependencyMetric } from '../types/skillJob';
@@ -24,13 +24,13 @@ const emit = defineEmits<{
 
 const isEdit = computed(() => props.editId != null);
 
-const form = ref<SkillJobInput>({ name: '', skillId: 0, questionTemplate: '', metricId: null, scheduleRules: null, notifyReceivers: [] });
+const form = ref<SkillJobInput>({ name: '', skillId: 0, questionTemplate: '', metricId: null, metricIds: [], metricOverrideConfigured: false, scheduleRules: null, notifyReceivers: [] });
 const baseline = ref('');
 const isDirty = computed(() => JSON.stringify(form.value) !== baseline.value);
 const formLoading = ref(false);
 const saving = ref(false);
 const formError = ref('');
-const skills = ref<SkillListItem[]>([]);
+const skills = ref<Pick<SkillListItem, 'id' | 'name'>[]>([]);
 const metrics = ref<SkillDependencyMetric[]>([]);
 const skillLoading = ref(false);
 const metricLoading = ref(false);
@@ -43,7 +43,7 @@ let metricSearchSeq = 0;
 
 /** 当前选中的依赖指标 (用于在 select 下方展示描述) */
 const selectedMetric = computed(() =>
-    metrics.value.find(m => m.id === form.value.metricId) ?? null
+    metrics.value.find(m => (form.value.metricIds || []).includes(m.id)) ?? null
 );
 
 /** 是否展开依赖指标描述 (点击「查看指标描述」切换) */
@@ -110,7 +110,8 @@ async function searchMetrics(query: string) {
 }
 
 function resetForm() {
-  form.value = { name: '', skillId: 0, questionTemplate: '', metricId: null, scheduleRules: null, notifyReceivers: [] };
+  receiverNames.value = {};
+  form.value = { name: '', skillId: 0, questionTemplate: '', metricId: null, metricIds: [], metricOverrideConfigured: false, scheduleRules: null, notifyReceivers: [] };
   baseline.value = JSON.stringify(form.value);
   formError.value = '';
 }
@@ -135,11 +136,14 @@ async function loadForEdit(id: number) {
       questionTemplate: job.questionTemplate ?? '',
       enabled: job.enabled,
       metricId: job.metricId ?? null,
+      metricIds: job.metricIds ?? (job.metricId ? [job.metricId] : []),
+      metricOverrideConfigured: job.metricOverrideConfigured ?? !!job.metricId,
       scheduleRules: job.scheduleRules ?? null,
       notifyReceivers: [],
     };
     const settings = await import('../api/skillJob').then(api => api.getJobNotifySettings(id));
     nextForm.notifyReceivers = settings.notifyReceivers ?? [];
+    receiverNames.value = await batchUserNames(nextForm.notifyReceivers);
     // Resolve the selected option before exposing the loaded form. This avoids
     // the select briefly rendering the numeric skillId while getSkill is in flight.
     await ensureSelectedSkill(nextForm.skillId);
@@ -184,11 +188,12 @@ async function submit() {
   saving.value = true;
   try {
     if (props.editId != null) {
-      // 编辑：skillId / metricId 可改。metricId: null -> 0 (清除关联哨兵)，正值 = 关联该指标
+      // 编辑时统一提交指标集合，并标记为显式覆盖。
       const payload: SkillJobUpdateInput = {
         name: form.value.name,
         skillId: form.value.skillId,
-        metricId: form.value.metricId ?? 0,
+        metricIds: Array.from(new Set(form.value.metricIds || [])),
+        metricOverrideConfigured: form.value.metricOverrideConfigured ?? false,
         questionTemplate: form.value.questionTemplate,
         enabled: form.value.enabled,
         scheduleRules: form.value.scheduleRules,
@@ -246,11 +251,11 @@ defineExpose({ isDirty });
                 </label>
                 <label class="field">
                   <span class="label">依赖指标</span>
-                  <el-select v-model="form.metricId" filterable remote reserve-keyword :remote-method="searchMetrics" :loading="metricLoading" placeholder="不关联（可选）" clearable style="width: 100%">
+      <el-select v-model="form.metricIds" multiple filterable remote reserve-keyword :remote-method="searchMetrics" :loading="metricLoading" placeholder="留空继承 Skill 默认指标" clearable style="width: 100%" @change="form.metricIds = Array.from(new Set((form.metricIds || []).slice(0, 20))); form.metricOverrideConfigured = !!form.metricIds.length">
                     <el-option v-for="m in metrics" :key="m.id" :value="m.id" :label="m.name" :title="m.description" />
                   </el-select>
                   <span class="tip">
-                    可选；关联后随指标就绪自动触发该任务
+                    留空时继承 Skill 默认指标；全部依赖指标当天就绪后自动执行，每天最多一次
                     <span v-if="selectedMetric?.description" class="desc-toggle" @click="showMetricDesc = !showMetricDesc">
                       {{ showMetricDesc ? '收起指标描述' : '查看指标描述' }}
                     </span>

@@ -21,13 +21,19 @@ async function requestError(res: Response, fallback: string): Promise<Error> {
   if (/cycle|dag/i.test(detail)) return new Error('前置 Skill 不能形成环');
   if (/access|denied/i.test(detail)) return new Error('无权限执行此操作');
   if (detail.startsWith('NotifyTriggerScopeInvalid')) return new Error('触发类型范围包含非法值');
-  return new Error(detail ? `${fallback}: ${detail}` : `${fallback} (HTTP ${res.status})`);
+  return new Error(detail && /[\u4e00-\u9fff]/.test(detail) && !/[A-Za-z]/.test(detail)
+    ? `${fallback}：${detail}` : `${fallback}，请检查配置后重试`);
 }
 
 function translateFlowError(detail: string): string {
   if (!detail) return '';
   const rules: Array<[RegExp, string | ((m: RegExpMatchArray) => string)]> = [
-    [/FlowKeywordConflict.*?:\s*(?:keyword is already used by another flow:\s*)?(.+)/i, m => `触发关键词“${m[1]}”已被其他长任务使用`],
+    [/FlowNameConflict/i, '流程名称已存在，请更换名称'],
+    [/FlowNotFound/i, '流程不存在或已被删除'],
+    [/FlowAccessDenied/i, '无权限修改此流程'],
+    [/FlowKeywordConflict:\s*keyword is already used by another flow:\s*(.+)/i, m => `触发关键词“${m[1]}”已被其他长任务使用`],
+    [/FlowKeywordConflict:\s*duplicate keyword in flow/i, '触发关键词重复，请修改'],
+    [/FlowKeywordConflict/i, '触发关键词已被其他长任务使用'],
     [/duplicate trigger keyword:\s*(.+)/i, m => `触发关键词“${m[1]}”重复，请修改`],
     [/trigger keyword must not be blank/i, '触发关键词不能为空'],
     [/flow must define at least one node/i, '请至少添加一个执行节点'],
@@ -35,10 +41,15 @@ function translateFlowError(detail: string): string {
     [/duplicate node key:\s*(.+)/i, m => `节点标识“${m[1]}”重复，请修改`],
     [/node key must not be blank/i, '节点标识不能为空'],
     [/node question must not be blank/i, '节点问题不能为空'],
-    [/SkillUnavailable.*?:\s*(.+)/i, m => `所选 Skill 不可用：${m[1]}`],
-    [/ScriptUnavailable.*?:\s*(.+)/i, m => `所选脚本不可用：${m[1]}`],
+    [/SkillUnavailable/i, '所选 Skill 不可用，请检查节点配置'],
+    [/ScriptUnavailable/i, '所选脚本不可用，请检查节点配置'],
     [/MixedNodeTypesUnsupported/i, '暂不支持同时混用 Python 节点和 Skill 节点'],
     [/PythonScriptRequired/i, 'Python 节点必须选择脚本'],
+    [/PythonNodeMustNotBindSkill/i, 'Python 节点不能关联 Skill'],
+    [/MalformedScriptParamsJson/i, '脚本参数格式有误，请检查节点配置'],
+    [/UnsupportedNodeType/i, '节点类型不受支持'],
+    [/MetricUnavailable/i, '所选指标不可用'],
+    [/maxAttempts must be positive/i, '节点最大执行次数必须大于零'],
     [/ReportOutlineInvalid|FlowOutlineInvalid/i, '报告目录配置有误，请检查章节和节点对应关系'],
     [/FlowValidationFailed/i, '长任务配置校验失败，请检查必填项和节点配置'],
   ];

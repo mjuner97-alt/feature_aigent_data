@@ -28,6 +28,8 @@ public record SkillJobUpdateRequest(
         String name,
         Long skillId,
         Long metricId,
+        List<Long> metricIds,
+        Boolean metricOverrideConfigured,
         String questionTemplate,
         Boolean enabled,
         /** 按星期配置执行时间；传 null 表示保留原配置 */

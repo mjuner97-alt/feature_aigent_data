@@ -49,6 +49,8 @@ public class SkillJob {
     private String scheduleRules;
     /** 依赖指标 ID（多对一）；可选，关联后随指标就绪触发（triggerByMetric） */
     private Long metricId;
+    private String metricIds;
+    private Boolean metricOverrideConfigured;
     /** 依赖指标编码（join 展示，非持久化） */
     private String metricCode;
     /** 依赖指标名称（join 展示，非持久化） */
