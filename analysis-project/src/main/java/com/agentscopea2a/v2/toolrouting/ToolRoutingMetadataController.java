@@ -40,6 +40,12 @@ public class ToolRoutingMetadataController {
         return service.get(toolId);
     }
 
+    /** 不分页全量元数据: 前端 configurations 映射必须覆盖扫描页上的所有工具, 分页会错位。 */
+    @GetMapping("/all")
+    public List<ToolRoutingMetadata> all() {
+        return service.list();
+    }
+
     @PutMapping("/{toolId}")
     public ToolRoutingMetadata save(@PathVariable String toolId, @RequestBody ToolRoutingMetadataInput input,
                                     @RequestHeader("X-User-Id") String userId) {

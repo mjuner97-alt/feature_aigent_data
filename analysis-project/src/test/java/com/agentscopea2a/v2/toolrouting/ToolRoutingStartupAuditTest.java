@@ -116,6 +116,54 @@ class ToolRoutingStartupAuditTest {
     }
 
     @Test
+    void blockToolOverlapDegradesToWarnWhenOverMaxTools() {
+        // 5 对重复 = 10 个工具, 超过默认阈值 4 -> 不阻断启动
+        List<com.agentscopea2a.v2.governance.ToolToolOverlapView> pairs = new java.util.ArrayList<>();
+        List<ToolRoutingScanCandidate> scan = new java.util.ArrayList<>();
+        List<ToolRoutingMetadata> metas = new java.util.ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            pairs.add(highPair("t_a" + i, "t_b" + i));
+            scan.add(candidate("t_a" + i, true, true));
+            scan.add(candidate("t_b" + i, true, true));
+            metas.add(metadata("t_a" + i, true));
+            metas.add(metadata("t_b" + i, true));
+        }
+        when(scanService.scan()).thenReturn(scan);
+        when(metadataRepository.findAll()).thenReturn(metas);
+        com.agentscopea2a.v2.governance.ToolToolOverlapService service =
+                mock(com.agentscopea2a.v2.governance.ToolToolOverlapService.class);
+        when(service.report()).thenReturn(new com.agentscopea2a.v2.governance.ToolToolOverlapService.OverlapReport(false, pairs));
+
+        ToolRoutingStartupAudit audit = new ToolRoutingStartupAudit(scanService, metadataRepository,
+                ToolRoutingMetrics.noop(), false, service, true, 4);
+
+        assertDoesNotThrow(() -> audit.run(new DefaultApplicationArguments()));
+    }
+
+    @Test
+    void blockToolOverlapStillBlocksAtMaxToolsBoundary() {
+        // 2 对重复 = 4 个工具, 等于阈值 -> 仍阻断
+        List<com.agentscopea2a.v2.governance.ToolToolOverlapView> pairs = List.of(
+                highPair("t_a1", "t_b1"), highPair("t_a2", "t_b2"));
+        when(scanService.scan()).thenReturn(List.of(
+                candidate("t_a1", true, true), candidate("t_b1", true, true),
+                candidate("t_a2", true, true), candidate("t_b2", true, true)));
+        when(metadataRepository.findAll()).thenReturn(List.of(
+                metadata("t_a1", true), metadata("t_b1", true),
+                metadata("t_a2", true), metadata("t_b2", true)));
+        com.agentscopea2a.v2.governance.ToolToolOverlapService service =
+                mock(com.agentscopea2a.v2.governance.ToolToolOverlapService.class);
+        when(service.report()).thenReturn(new com.agentscopea2a.v2.governance.ToolToolOverlapService.OverlapReport(false, pairs));
+
+        ToolRoutingStartupAudit audit = new ToolRoutingStartupAudit(scanService, metadataRepository,
+                ToolRoutingMetrics.noop(), false, service, true, 4);
+
+        IllegalStateException ex = assertThrows(IllegalStateException.class,
+                () -> audit.run(new DefaultApplicationArguments()));
+        assertTrue(ex.getMessage().contains("工具功能重复"));
+    }
+
+    @Test
     void mediumOverlapDoesNotBlock() {
         when(scanService.scan()).thenReturn(List.of(candidate("t_a", true, true), candidate("t_b", true, true)));
         when(metadataRepository.findAll()).thenReturn(List.of(metadata("t_a", true), metadata("t_b", true)));
@@ -139,12 +187,16 @@ class ToolRoutingStartupAuditTest {
         com.agentscopea2a.v2.governance.ToolToolOverlapService service =
                 mock(com.agentscopea2a.v2.governance.ToolToolOverlapService.class);
         when(service.report()).thenReturn(new com.agentscopea2a.v2.governance.ToolToolOverlapService.OverlapReport(
-                false, List.of(new com.agentscopea2a.v2.governance.ToolToolOverlapView(
-                        toolIdA, "SQL", toolIdB, "SQL", "HIGH",
-                        List.of("QI卡口"), 0.93, false, false,
-                        List.of(), List.of(), List.of(), List.of(), List.of(),
-                        "重复，请处理"))));
+                false, List.of(highPair(toolIdA, toolIdB))));
         return service;
+    }
+
+    private static com.agentscopea2a.v2.governance.ToolToolOverlapView highPair(String toolIdA, String toolIdB) {
+        return new com.agentscopea2a.v2.governance.ToolToolOverlapView(
+                toolIdA, "SQL", toolIdB, "SQL", "HIGH",
+                List.of("QI卡口"), 0.93, false, false,
+                List.of(), List.of(), List.of(), List.of(), List.of(),
+                "重复，请处理");
     }
 
     private static ToolRoutingScanCandidate candidate(String toolId, boolean sourceAvailable, boolean configured) {

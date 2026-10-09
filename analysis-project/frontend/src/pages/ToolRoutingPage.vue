@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { getToolRoutingStatus, listTags, listToolRouting, saveTag, saveToolRouting, scanToolRouting, setToolRoutingEnabled } from '../api/toolRouting';
+import { getToolRoutingStatus, listTags, listToolRoutingAll, saveTag, saveToolRouting, scanToolRouting, setToolRoutingEnabled } from '../api/toolRouting';
 import { routingOverlapSummary } from '../api/routingOverlap';
 import { canEditConfig, isAdmin } from '../utils/auth';
 import { useRouter } from 'vue-router';
@@ -47,7 +47,7 @@ async function load() {
   loading.value = true;
   try {
     const [scanned, configured, currentStatus, topicTags, metricTags, dimensionTags] = await Promise.all([
-      scanToolRouting(currentPage.value, pageSize.value), listToolRouting(currentPage.value, pageSize.value), getToolRoutingStatus(), listTags('TOPIC'), listTags('METRIC'), listTags('DIMENSION'),
+      scanToolRouting(currentPage.value, pageSize.value), listToolRoutingAll(), getToolRoutingStatus(), listTags('TOPIC'), listTags('METRIC'), listTags('DIMENSION'),
     ]);
     rows.value = scanned.items; total.value = scanned.total;
     configurations.value = Object.fromEntries(configured.items.map(item => [item.toolId, item]));

@@ -23,10 +23,15 @@ import java.util.Set;
  * <p>Tool-Tool 重复 (block-tool-overlap=true): HIGH 级重叠对 (同一候选集内描述/功能签名
  * 不可区分, 见 ToolToolOverlapService) 单独走 {@code block-tool-overlap} 开关阻断,
  * 不依赖 strict-startup; 提示语固定为"与工具 xxx 有重复，请处理"。
+ * 防雪崩: 重复工具数超过 block-tool-overlap-max-tools (默认 4) 时视为批量数据问题,
+ * 降级为告警不阻断启动 (拦下来只会让整个服务对所有人不可用)。
  */
 public class ToolRoutingStartupAudit implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(ToolRoutingStartupAudit.class);
+
+    /** block-tool-overlap 允许阻断启动的最大重复工具数, 超过则降级为告警。 */
+    static final int DEFAULT_MAX_BLOCKING_OVERLAP_TOOLS = 4;
 
     private final ToolRoutingScanService scanService;
     private final ToolRoutingMetadataRepository metadataRepository;
@@ -34,12 +39,14 @@ public class ToolRoutingStartupAudit implements ApplicationRunner {
     private final boolean strictStartup;
     private final com.agentscopea2a.v2.governance.ToolToolOverlapService toolToolOverlapService;
     private final boolean blockToolOverlap;
+    private final int blockToolOverlapMaxTools;
 
     public ToolRoutingStartupAudit(ToolRoutingScanService scanService,
                                    ToolRoutingMetadataRepository metadataRepository,
                                    ToolRoutingMetrics metrics,
                                    boolean strictStartup) {
-        this(scanService, metadataRepository, metrics, strictStartup, null, false);
+        this(scanService, metadataRepository, metrics, strictStartup, null, false,
+                DEFAULT_MAX_BLOCKING_OVERLAP_TOOLS);
     }
 
     public ToolRoutingStartupAudit(ToolRoutingScanService scanService,
@@ -48,12 +55,24 @@ public class ToolRoutingStartupAudit implements ApplicationRunner {
                                    boolean strictStartup,
                                    com.agentscopea2a.v2.governance.ToolToolOverlapService toolToolOverlapService,
                                    boolean blockToolOverlap) {
+        this(scanService, metadataRepository, metrics, strictStartup, toolToolOverlapService,
+                blockToolOverlap, DEFAULT_MAX_BLOCKING_OVERLAP_TOOLS);
+    }
+
+    public ToolRoutingStartupAudit(ToolRoutingScanService scanService,
+                                   ToolRoutingMetadataRepository metadataRepository,
+                                   ToolRoutingMetrics metrics,
+                                   boolean strictStartup,
+                                   com.agentscopea2a.v2.governance.ToolToolOverlapService toolToolOverlapService,
+                                   boolean blockToolOverlap,
+                                   int blockToolOverlapMaxTools) {
         this.scanService = scanService;
         this.metadataRepository = metadataRepository;
         this.metrics = metrics == null ? ToolRoutingMetrics.noop() : metrics;
         this.strictStartup = strictStartup;
         this.toolToolOverlapService = toolToolOverlapService;
         this.blockToolOverlap = blockToolOverlap;
+        this.blockToolOverlapMaxTools = blockToolOverlapMaxTools;
     }
 
     @Override
@@ -76,8 +95,14 @@ public class ToolRoutingStartupAudit implements ApplicationRunner {
                 .filter(issue -> "tool_overlap".equals(issue.kind()))
                 .toList();
         if (blockToolOverlap && !overlaps.isEmpty()) {
-            throw new IllegalStateException("工具路由启动检测到 " + overlaps.size()
-                    + " 组工具功能重复，block-tool-overlap=true 禁止启动。明细: " + overlaps);
+            long affectedTools = overlaps.stream().map(AuditIssue::toolId).distinct().count();
+            if (affectedTools <= blockToolOverlapMaxTools) {
+                throw new IllegalStateException("工具路由启动检测到 " + overlaps.size()
+                        + " 组工具功能重复，block-tool-overlap=true 禁止启动。明细: " + overlaps);
+            }
+            log.warn("ToolRoutingStartupAudit: {} 组工具功能重复涉及 {} 个工具, 超过 "
+                            + "block-tool-overlap-max-tools={} 阈值, 视为批量数据问题, 降级为告警不阻断启动",
+                    overlaps.size(), affectedTools, blockToolOverlapMaxTools);
         }
         log.warn("ToolRoutingStartupAudit: {} issue(s) recorded; strict-startup={}, block-tool-overlap={}, continuing with bad records excluded from the catalog",
                 issues.size(), strictStartup, blockToolOverlap);

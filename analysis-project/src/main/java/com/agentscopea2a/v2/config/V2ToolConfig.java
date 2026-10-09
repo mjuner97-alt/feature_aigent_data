@@ -263,12 +263,13 @@ public class V2ToolConfig {
             com.agentscopea2a.v2.toolrouting.ToolRoutingMetrics toolRoutingMetrics,
             @Value("${harness.a2a.tool-routing.strict-startup:false}") boolean strictStartup,
             com.agentscopea2a.v2.governance.ToolToolOverlapService toolToolOverlapService,
-            @Value("${harness.a2a.tool-routing.block-tool-overlap:false}") boolean blockToolOverlap) {
-        log.info("ToolRoutingStartupAudit: wired (strict-startup={}, block-tool-overlap={})",
-                strictStartup, blockToolOverlap);
+            @Value("${harness.a2a.tool-routing.block-tool-overlap:false}") boolean blockToolOverlap,
+            @Value("${harness.a2a.tool-routing.block-tool-overlap-max-tools:4}") int blockToolOverlapMaxTools) {
+        log.info("ToolRoutingStartupAudit: wired (strict-startup={}, block-tool-overlap={}, max-tools={})",
+                strictStartup, blockToolOverlap, blockToolOverlapMaxTools);
         return new com.agentscopea2a.v2.toolrouting.ToolRoutingStartupAudit(scanService,
                 toolRoutingMetadataRepository, toolRoutingMetrics, strictStartup,
-                toolToolOverlapService, blockToolOverlap);
+                toolToolOverlapService, blockToolOverlap, blockToolOverlapMaxTools);
     }
 
     @Bean
