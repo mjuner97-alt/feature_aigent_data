@@ -40,7 +40,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * <li>无 embedding provider (当前 harness.embedding.* 未配置, OpenAiCompatEmbeddingClient
  *     不装配) 时 {@link #semanticAvailable()} 为 false, 调用方降级为纯文本信号。</li>
  * <li>启动后台异步预热, 不阻塞启动; 预热未完成期间 {@link #warm()} 为 false,
- *     调用方按 degraded 处理。单条 embed 失败 (null) 不写缓存, 下次调用重试。</li>
+ *     调用方按 degraded 处理。单条 embed 失败 (null) 进负缓存, TTL 内直接降级不重试
+ *     (避免端点挂起时把调用方的同步计算卡死)。</li>
  * </ul>
  */
 public class GovernanceEmbeddingCache {
@@ -54,10 +55,14 @@ public class GovernanceEmbeddingCache {
 
     private static final int MAX_ENTRIES = 4096;
 
+    /** embed 失败负缓存 TTL: 端点挂起时避免每次 report() 对每个实体重发 30s 超时的 HTTP。 */
+    private static final long FAILURE_TTL_MS = 300_000;
+
     private final EmbeddingClient embeddingClient;
     private final SkillDescriptionSource skillDescriptionSource;
     private final ToolRoutingMetadataRepository toolRoutingMetadataRepository;
     private final ConcurrentHashMap<String, float[]> vectors = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> failures = new ConcurrentHashMap<>();
     private volatile boolean warm;
 
     public GovernanceEmbeddingCache(
@@ -103,10 +108,17 @@ public class GovernanceEmbeddingCache {
         if (cached != null) {
             return cached;
         }
-        float[] vector = embeddingClient.embed(description);
-        if (vector == null) {
+        Long failedAt = failures.get(key);
+        long now = System.currentTimeMillis();
+        if (failedAt != null && now - failedAt < FAILURE_TTL_MS) {
             return null;
         }
+        float[] vector = embeddingClient.embed(description);
+        if (vector == null) {
+            failures.put(key, now);
+            return null;
+        }
+        failures.remove(key);
         if (vectors.size() >= MAX_ENTRIES) {
             vectors.clear();
         }

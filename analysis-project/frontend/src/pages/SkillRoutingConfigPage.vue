@@ -67,20 +67,22 @@ function openView(row: SkillRoutingMetadata) {
 async function load() {
   loading.value = true;
   try {
-    const [skills, domains, topics, overlap] = await Promise.all([
+    const [skills, domains, topics] = await Promise.all([
       listSkillRouting(keyword.value || undefined,
       activeFilter.value === '' ? undefined : activeFilter.value === 'true',
       scope.value === 'mine', currentPage.value, pageSize.value),
       listSkillTags('DOMAIN'), listSkillTags('TOPIC'),
-      routingOverlapSummary().catch(() => null),
     ]);
     rows.value = skills.items; total.value = skills.total;
-    highOverlap.value = overlap?.highBySkill || {};
     domainTags.value = domains;
     topicTags.value = topics;
   }
   catch (e: any) { ElMessage.error(e.message || '加载失败'); }
   finally { loading.value = false; }
+  // 重叠统计是派生数据且可能很慢 (逐对 embedding), 不阻塞列表渲染
+  routingOverlapSummary()
+    .then(overlap => { highOverlap.value = overlap?.highBySkill || {}; })
+    .catch(() => { highOverlap.value = {}; });
 }
 function changePage(page: number) { currentPage.value = page; load(); }
 function changePageSize(size: number) { pageSize.value = size; currentPage.value = 1; load(); }

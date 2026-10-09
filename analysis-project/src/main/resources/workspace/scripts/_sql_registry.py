@@ -83,6 +83,13 @@ def _ensure_limit(sql):
 def _query_sqlalchemy(url, sql, params):
     from sqlalchemy import bindparam, create_engine, text
 
+    # 模板里有 :limit 而调用方没传 (params_schema 中 limit 是可选) 时补默认值,
+    # 否则 SQLAlchemy 报 "A value is required for bind parameter 'limit'".
+    # 与 Java ensureLimit / schema description "默认 10000" 对齐.
+    if ":limit" in sql and "limit" not in (params or {}):
+        params = dict(params or {})
+        params["limit"] = ROW_LIMIT
+
     stmt = text(sql)
     for key, value in (params or {}).items():
         if isinstance(value, list):

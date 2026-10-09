@@ -1,7 +1,7 @@
 # Tool-Tool 重叠检测 + 工具路由启动阻断 方案
 
 日期：2026-10-08
-状态：已实施并 E2E 验证（2026-10-08，开关选 B；详见文末 §5 实施记录）
+状态：v1 已实施并 E2E 验证（2026-10-08，开关选 B）；v2 四层一致性规则已于 2026-10-09 实施并 E2E 验证（判定规则见 §3.1，实施记录见 §6，生产误判反馈驱动）
 关联：`skill-tool-overlap-and-description-similarity-plan.md`（Skill↔Tool 检测，已上线）
 
 ## 1. 背景与目标
@@ -51,6 +51,7 @@ skill (load_skill_through_path)
 
 - **topic_tags 交集是判定前提，不是佐证**。topic 完全不相交的工具永远不会进入同一候选集，Agent 不存在在二者间选型的场景 → 不构成重复（最多 LOW 巡检）。这与 Skill↔Tool 检测中 S1"只佐证"的定位不同：Skill 有独立的工作流层价值，而工具只在候选集里被比较。
 - **名称相似本身不构成功能重复**（`query_data` / `query_data_v2` 同名但描述可区分时 Agent 仍能选对），降级为 LOW 命名卫生信号；"名称相似但描述不可区分"的情形已被 HIGH 覆盖，无需单列。
+- **（v2 补充，2026/10/08 生产反馈）四层一致性规则**：`业务主题 topic_tags / 指标标签 metric_tags / 维度标签 dimension_tags` 三层外加 `描述`，**有不同，即判断两个工具不一致**。反过来说，判 HIGH（重复、阻断）要求四层**全部**无差异。背景：内网生产的 `BacklogIssueNumByApp/ByDept/ByGroup/ByProductLine` 是同功能不同维度的变体——metric_tags 全同（遗留问题）、描述全同（cosine 1.00）、dimension_tags 相交但不同（`应用,版本计划` / `部门,版本计划` / `小组,版本计划` / `产品线,版本计划`）——v1 的"维度不相交豁免"对相交集合不生效，metric_tags 又从未参与比较，导致 4 个变体工具两两被判 HIGH。v2 把"差异"从豁免信号升级为判定主轴。
 
 #### 3.1.1 实现
 
@@ -58,22 +59,35 @@ skill (load_skill_through_path)
 
 判定信号：
 
-- **T0 同候选集（前提）**：两侧 `topicTags` 交集 ≥ 1，否则跳过。
-- **T1 描述不可区分**：两侧 description 的 embedding cosine ≥ `cosineThreshold`（0.80）。向量经 `GovernanceEmbeddingCache.embeddingFor(EntityType.TOOL, toolId, description)`，已有缓存不重复请求。
-- **T2 功能不可区分**：参数签名相似 —— 从 `UnifiedToolMetadataService`（或 `ApiToolMetadataProvider.findApiTool`）取两侧参数表，比较"必填参数名集合"与"全参数名集合"：全参数名 Jaccard ≥ 0.8 且必填集合相同 → 功能签名不可区分。
+- **T0 同候选集（前提）**：两侧 `topicTags` 交集 ≥ 1，否则跳过（完全不相交的工具永远不会进入同一候选集，连 LOW 也不出）。
+- **T1 描述无差异**：两侧 description 的 embedding cosine ≥ `cosineHighThreshold`（0.88）视为"描述无差异"；cosine 介于 `cosineThreshold`（0.80）~0.88 视为"相近但有差异"（Agent 大概率能从措辞区分，人工确认）。向量经 `GovernanceEmbeddingCache.embeddingFor(EntityType.TOOL, toolId, description)`，已有缓存不重复请求。
+- **T2 参数签名**：从 `UnifiedToolMetadataService.find()` 取两侧参数表，比较"必填参数名集合"与"全参数名集合"（全参数名 Jaccard ≥ 0.8 且必填集合相同 → 签名不可区分）。**v2 中 T2 不再参与非 degraded 的分级**（描述无差异即 HIGH，描述有差异即封顶 MEDIUM，签名不影响），只保留两个用途：① degraded 时作为唯一硬证据；② 视图展示信号。
 - **T3 名称相似**：`normalizeName(toolIdA)` vs `normalizeName(toolIdB)` levenshtein ≥ `nameSimilarityThreshold`（仅 LOW 命名卫生用）。
+- **T4 四层一致性（v2 核心，取代 v1 的"维度不相交豁免"）**：逐层比较，任一层"有不同"即为差异层：
 
-分级：
+| 层 | 比较对象 | "无差异"判定 |
+|---|---|---|
+| L1 业务主题 | `topicTags` | 集合相等（前提 T0 已保证交集 ≥ 1；相交但不相等 → 差异） |
+| L2 指标标签 | `metricTags` | 集合相等 |
+| L3 维度标签 | `dimensionTags` | 集合相等（**相交但不同也算差异**，如 `应用,版本计划` vs `部门,版本计划`） |
+| L4 描述 | description | cosine ≥ 0.88（degraded 时 L4 无证据，不单独构成差异，见 §3.3） |
+
+分级（v2）：
 
 | 级别 | 条件 | 含义 |
 |---|---|---|
-| **HIGH** | T0 且（T1 ≥ `cosineHighThreshold` 0.88，或 T1 ≥ 0.80 且 T2 命中） | 叶子选型时描述不可区分；或描述+功能双重不可区分 → **阻断启动** |
-| **MEDIUM** | T0 且 T1 ≥ 0.80 | 描述相近但功能签名可区分，人工确认 |
+| **HIGH** | T0 且 **L1∧L2∧L3∧L4 全部无差异**（cosine ≥ 0.88）；degraded 下 L4 无证据时：L1∧L2∧L3 相等 且 T2 签名完全一致（硬证据） | 四层全部不可区分，Agent 叶子选型必然瞎选 → **阻断启动** |
+| **MEDIUM** | T0 且（T1 cosine ≥ 0.80 或 T2 命中），但存在至少一个差异层 | 同候选集内相近，但 Agent 仍可按差异层（维度/指标/主题/描述措辞）选型，人工确认；**suggestion 点名差异层** |
 | **LOW** | 仅 T3 命中（命名卫生），或 T0 交集 ≥ 2 但 T1/T2 均未命中（巡检） | 供巡检参考，永不阻断 |
 
-T2（参数签名）不依赖 embedding，是硬证据：**degraded（embedding 不可用）时，T0 + T2 完全一致仍可判 HIGH 并阻断**；只有依赖 cosine 的判定在 degraded 下降级为不阻断。
+要点：
 
-视图 record `ToolToolOverlapView`：
+- 差异层的方向是"**豁免 HIGH**"而非"制造记录"：四层全同才 HIGH，任何一层不同就把该对封顶 MEDIUM（前提 T0 与 MEDIUM 信号仍需满足）。
+- L1-L3 用**集合相等**而非交集：生产变体工具的 dimension_tags 相交（都含"版本计划"）但不同，v1 的"不相交才豁免"漏判；metric_tags v1 根本没比。
+- cosine 0.80~0.88 区间不再与 T2 叠加升 HIGH（v1 行为），该区间本身就是 L4 的"有差异"证据。
+- T2（参数签名）不依赖 embedding：degraded（embedding 不可用）时，T0 + L1-L3 相等 + 签名完全一致仍判 HIGH 并阻断；只有依赖 cosine 的判定在 degraded 下降级为不阻断。
+
+视图 record `ToolToolOverlapView`（v2 调整）：
 
 ```java
 record ToolToolOverlapView(
@@ -82,10 +96,17 @@ record ToolToolOverlapView(
         String level, List<String> topicTagOverlap,
         double cosine, boolean signatureSame,
         boolean aliasHit,
+        List<String> differingLayers,      // 新增: 差异层名列表, 如 ["维度标签","描述"], HIGH 时为空
+        List<String> metricTagsA,          // 新增: 展示 L2 两侧取值
+        List<String> metricTagsB,
+        List<String> dimensionTagsA,
+        List<String> dimensionTagsB,
         String suggestion) {}
 ```
 
-`suggestion` 固定句式含"**与工具 xxx 有重复**"，如：`工具 query_data 与工具 wide_table_query 在同一候选集内描述无法区分（cosine=0.93），Agent 叶子选型必然瞎选，请处理后重启`。
+（v1 的 `dimensionDistinguishable` 字段删除，由 `differingLayers` 取代；前端 `toolSignals()` 改为展示"差异层: 维度标签(A: 应用、版本计划 vs B: 部门、版本计划)"式文案。）
+
+`suggestion` 固定句式含"**与工具 xxx 有重复**"（HIGH）；MEDIUM 点名差异层，如：`工具 BacklogIssueNumByApp 与工具 BacklogIssueNumByDept 描述无法区分（cosine=1.00）但维度标签不同（A: 应用、版本计划；B: 部门、版本计划），Agent 可按维度选型，请人工确认`。
 
 ### 3.2 HTTP 端点扩展
 
@@ -115,7 +136,7 @@ record ToolToolOverlapView(
 
 补充规则（两种选项都适用）：
 
-- **degraded（embedding 不可用）时的阻断口径**：依赖 cosine 的判定降级不阻断，只 WARN；但 **T0（同候选集）+ T2（参数签名完全不可区分）不依赖 embedding，属硬证据，degraded 下仍判 HIGH 并阻断**。
+- **degraded（embedding 不可用）时的阻断口径（v2）**：L4 描述无证据，依赖 cosine 的判定降级不阻断，只 WARN；但 **T0（同候选集）+ L1-L3（topic/metric/dimension 三层标签集合相等）+ T2（参数签名完全不可区分）不依赖 embedding，属硬证据，degraded 下仍判 HIGH 并阻断**。签名取不到（SCRIPT/API 解析失败）或签名可区分时，degraded 下不出 HIGH。
 - LOW/MEDIUM 永不阻断，只进页面巡检。
 - issue detail 文案统一为：`与工具 <对方toolId> 有重复，请处理`（3.3 第 2 步已含）。
 
@@ -130,18 +151,22 @@ record ToolToolOverlapView(
 
 ### 3.5 测试
 
-- `ToolToolOverlapServiceTest`（仿 `SkillToolOverlapServiceTest`）：
-  - T0 未命中（topic 不相交）→ 即使描述完全相同也不出记录（前提校验）；
-  - T0 命中 + cosine 0.93 → HIGH；
-  - T0 命中 + cosine 0.82 + 参数签名不可区分 → HIGH；
-  - T0 命中 + cosine 0.82 + 参数签名可区分 → MEDIUM；
+- `ToolToolOverlapServiceTest`（仿 `SkillToolOverlapServiceTest`，v2 用例按四层规则重写）：
+  - T0 未命中（topic 完全不相交）→ 即使描述完全相同也不出记录（前提校验）；
+  - 四层全同（topic/metric/dimension 集合相等 + cosine 0.93）→ HIGH，`differingLayers` 为空；
+  - **生产复现场景**：topic/metric 相等 + 描述全同（cosine 1.00）+ dimension 相交但不同（`应用,版本计划` vs `部门,版本计划`）→ **MEDIUM**，`differingLayers=["维度标签"]`，suggestion 含两侧维度取值（v1 误判 HIGH 的回归用例）；
+  - metric_tags 不等 → MEDIUM，`differingLayers=["指标标签"]`；
+  - topic 相交但不相等 → MEDIUM，`differingLayers=["业务主题"]`；
+  - cosine 0.85（0.80~0.88 区间）+ 四层标签全同 → MEDIUM（描述"相近但有差异"，不再与签名叠加升 HIGH）；
   - 仅 toolId 名称相似（topic 不相交）→ LOW；
-  - degraded：cosine 不可算时 T0+T2 完全一致 → 仍 HIGH；仅 T0 → 无 HIGH。
+  - degraded：L1-L3 相等 + 签名完全一致 → 仍 HIGH；L1-L3 相等 + 签名可区分 → 无 HIGH；L3 不同 + 签名一致 → MEDIUM（差异层豁免在 degraded 同样生效）。
+- `ToolRoutingStartupAuditTest` 补充：注入 mock `ToolToolOverlapService` 返回一对 HIGH → `block-tool-overlap=true` 时抛异常且消息含"与工具 xxx 有重复"；false 时仅 WARN；degraded 且仅 cosine 证据时仅 WARN（既有用例保留，视图字段变化同步更新构造参数）。
 - `ToolRoutingStartupAuditTest` 补充：注入 mock `ToolToolOverlapService` 返回一对 HIGH → `block-tool-overlap=true` 时抛异常且消息含"与工具 xxx 有重复"；false 时仅 WARN；degraded 且仅 cosine 证据时仅 WARN。
 
 ### 3.6 E2E 验收
 
 1. 管理页把某工具描述改成与另一工具同义（topic 有交集）→ 页面 Tool↔Tool 视图出现 HIGH。
+   **v2 追加（生产回归）**：插入两条 topic/metric 相等、描述全同、dimension_tags 相交但不同（`应用,版本计划` / `部门,版本计划`）的元数据 → 必须判 **MEDIUM**（差异层=维度标签），不阻断；再把其中一条 dimension_tags 改成与前条完全相等 → 变 HIGH 且阻断。
 2. `block-tool-overlap=true` 重启 → 启动失败，日志含 `[tool_overlap] 与工具 xxx 有重复，请处理`。
 3. 处理重复（改描述/改 topic 拆开候选集/停用其一）→ 重启成功，页面该对消失。
 4. 停掉 embedding 服务重启 → 若存在参数签名完全一致的对则仍阻断；否则不阻断，页面显示 degraded 标记。
@@ -164,3 +189,32 @@ record ToolToolOverlapView(
 - E2E 三步：① 插入 `t_e2e_dup`（复制 q2_1_metrics_by_dept_version 元数据）→ `/api/routing-overlap/tool-tool` 返回 HIGH（cosine=1.0）+ 2 个真实 MEDIUM 对；② `block-tool-overlap=true` 启动 → ApplicationRunner 阶段抛 `IllegalStateException: 工具路由启动检测到 2 组工具功能重复…与工具 t_e2e_dup 有重复，请处理`，进程退出码 1；③ 删除该行后同开关重启 → 正常启动，HIGH 消失。
 - 注意：阻断发生在 ApplicationRunner 阶段（web 端口已短暂监听后进程退出），运维侧探活需以进程退出码/日志为准，不能只看端口。
 - openGauss 往 DB 写元数据时 `signatureSame` 判定依赖 `UnifiedToolMetadataService.find()`，SCRIPT/API 类型参数解析失败的工具自动跳过 T2，不影响 T1/T3 判定。
+
+## 6. v2 修订记录（2026-10-08，四层一致性规则，**待实施**）
+
+**生产反馈**：内网生产环境 `BacklogIssueNumByApp/ByDept/ByGroup/ByProductLine` 四个变体工具两两被判 HIGH（共 6 对）——实际它们是同功能不同维度的变体，不是重复。生产元数据：metric_tags 全同（遗留问题）、描述全同（cosine 1.00）、dimension_tags **相交但不同**（`应用,版本计划` / `部门,版本计划` / `小组,版本计划` / `产品线,版本计划`）。
+
+**v1 为什么漏**：v1 的 T4 豁免条件是"双方 dimension_tags 均非空且**不相交**"，生产的维度标签都含"版本计划"，交集非空 → 豁免不触发；且 v1 从未比较 metric_tags。
+
+**用户定版的判定规则（原话）**："业务主题 / 指标标签 / 维度标签 这三层外加描述，有不同，即判断两个工具不一致。"
+
+**v2 变更摘要**（详细规则已并入 §3.1，此处只列差异）：
+
+1. 判定主轴从"HIGH 证据 + 豁免信号"改为"**四层一致性**"：L1 topic_tags / L2 metric_tags / L3 dimension_tags 集合相等 + L4 描述 cosine ≥ 0.88，四层全部无差异才 HIGH；任一差异层封顶 MEDIUM 并在 suggestion 点名。
+2. cosine 0.80~0.88 不再与 T2 叠加升 HIGH（该区间即 L4 的"有差异"）。
+3. T2 参数签名降级为：degraded 硬证据 + 展示信号，不参与非 degraded 分级。
+4. `ToolToolOverlapView` 删 `dimensionDistinguishable`，增 `differingLayers` / `metricTagsA` / `metricTagsB`；前端 `toolSignals()` 与 suggestion 文案同步。
+5. 测试重写（§3.5 v2 用例），E2E 增加生产复现场景（§3.6 第 1 步 v2 追加）。
+
+**实施范围**：`ToolToolOverlapService.evaluatePair()` 分级逻辑 + javadoc、`ToolToolOverlapView`、`ToolToolOverlapServiceTest`（12 个用例中 4 个维度相关用例重写）、`RoutingOverlapPage.vue` `toolSignals()`、`routingOverlap.ts` 类型；`ToolRoutingStartupAudit` 无需改（消费的还是 level=HIGH 的对）。**尚未动任何代码，等用户确认方案后实施。**
+
+### 6.1 v2 实施记录（2026-10-09，已实施并 E2E 验证）
+
+- 用户确认方案后实施：`ToolToolOverlapService`（differingLayers 计算 + HIGH/MEDIUM 分级 + layerDiffText 差异层明细文案）、`ToolToolOverlapView`（删 `dimensionDistinguishable`，增 `differingLayers`/`metricTagsA`/`metricTagsB`，15 字段）、`ToolToolOverlapServiceTest`（14 用例，新增 metricTags 差异 / topic 相交不等 / cosine 0.85 不升 HIGH / 生产复现相交维度 4 个用例）、`ToolRoutingStartupAuditTest`（View 构造参数同步）、前端 `routingOverlap.ts` + `RoutingOverlapPage.vue`（信号列改"差异层: …"展示）。
+- 测试：目标两类 23 用例全过，全量 **270 用例 BUILD SUCCESS**；前端 vite build 通过。
+- E2E（dev gauss 库插入 `t_e2e_dim_a`/`t_e2e_dim_b`）：
+  1. **生产复现场景**：topic/metric 全同（遗留问题）、描述全同（cosine=1.00）、dimension_tags 相交但不同（`应用,版本计划` vs `部门,版本计划`）→ 判 **MEDIUM**，`differingLayers=["维度标签"]`，suggestion= "…描述无法区分（cosine=1.00）但维度标签不同（A: 应用、版本计划；B: 部门、版本计划），Agent 仍可按差异选型，请人工确认是否重复"。v1 会误判 HIGH 的对，v2 正确豁免。
+  2. 把 `t_e2e_dim_b` 的 dimension_tags 改成与 A 完全相等 → 四层全同 → HIGH；`block-tool-overlap=true` 重启 → ApplicationRunner 阶段抛 `IllegalStateException: 工具路由启动检测到 2 组工具功能重复…与工具 t_e2e_dim_b 有重复，请处理`，mvn 退出码 1。
+  3. 删除测试行（DELETE 2）→ 默认开关正常启动，HIGH 消失，仅剩真实 MEDIUM 对（q2_1_metrics_by_dept_version vs quality_query_by_department_quarter，差异层=维度标签+描述）。
+- degraded 场景（L1-L3 相等 + 签名一致仍 HIGH / 维度差异豁免在 degraded 同样生效）由单测覆盖（degradedStillBlocksOnIdenticalSignature、dimensionEscapeAppliesToSignatureEvidenceInDegraded），未重复整机 E2E。
+- 顺带确认：生产 4 个 `BacklogIssueNumBy*` 变体在 v2 下均为 MEDIUM（差异层=维度标签），不再阻断；若仍要彻底消除页面噪音，可把描述措辞改得可区分或将 dimension_tags 补全为可区分集合。

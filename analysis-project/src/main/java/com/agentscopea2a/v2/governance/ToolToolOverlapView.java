@@ -28,4 +28,9 @@ public record ToolToolOverlapView(
         double cosine,
         boolean signatureSame,
         boolean aliasHit,
+        List<String> differingLayers,
+        List<String> metricTagsA,
+        List<String> metricTagsB,
+        List<String> dimensionTagsA,
+        List<String> dimensionTagsB,
         String suggestion) {}

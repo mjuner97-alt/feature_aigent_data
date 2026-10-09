@@ -35,6 +35,11 @@ export interface ToolToolOverlapItem {
   cosine: number;
   signatureSame: boolean;
   aliasHit: boolean;
+  differingLayers: string[];
+  metricTagsA: string[];
+  metricTagsB: string[];
+  dimensionTagsA: string[];
+  dimensionTagsB: string[];
   suggestion: string;
 }
 

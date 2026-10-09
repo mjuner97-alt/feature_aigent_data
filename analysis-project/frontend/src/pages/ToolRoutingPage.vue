@@ -46,12 +46,10 @@ const dimensionOptions = computed(() => dimensions.value.map(tag => tag.tagName)
 async function load() {
   loading.value = true;
   try {
-    const [scanned, configured, currentStatus, topicTags, metricTags, dimensionTags, overlap] = await Promise.all([
+    const [scanned, configured, currentStatus, topicTags, metricTags, dimensionTags] = await Promise.all([
       scanToolRouting(currentPage.value, pageSize.value), listToolRouting(currentPage.value, pageSize.value), getToolRoutingStatus(), listTags('TOPIC'), listTags('METRIC'), listTags('DIMENSION'),
-      routingOverlapSummary().catch(() => null),
     ]);
     rows.value = scanned.items; total.value = scanned.total;
-    highOverlap.value = overlap?.highByTool || {};
     configurations.value = Object.fromEntries(configured.items.map(item => [item.toolId, item]));
     status.value = currentStatus;
     topics.value = topicTags;
@@ -59,6 +57,10 @@ async function load() {
     dimensions.value = dimensionTags;
   } catch (error: any) { ElMessage.error(error.message || '加载失败'); }
   finally { loading.value = false; }
+  // 重叠统计是派生数据且可能很慢 (逐对 embedding), 不阻塞列表渲染
+  routingOverlapSummary()
+    .then(overlap => { highOverlap.value = overlap?.highByTool || {}; })
+    .catch(() => { highOverlap.value = {}; });
 }
 function changePage(page: number) { currentPage.value = page; load(); }
 function changePageSize(size: number) { pageSize.value = size; currentPage.value = 1; load(); }

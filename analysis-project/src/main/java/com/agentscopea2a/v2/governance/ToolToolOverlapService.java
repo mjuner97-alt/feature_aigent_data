@@ -31,18 +31,21 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Tool-Tool 功能重复检测 (docs/history/tool-tool-overlap-and-startup-guard-plan.md §3.1)。
+ * Tool-Tool 功能重复检测 (docs/history/tool-tool-overlap-and-startup-guard-plan.md §3.1, v2 四层一致性规则)。
  *
  * <p>判定哲学: Agent 下钻链路 (skill → tool_index 候选集 → 叶子选型 → router_tool) 中,
- * 两工具只有可能出现在 <b>同一候选集</b> (topic_tags 交集非空, T0 前提) 里被二选一;
- * 到叶子层后若 Agent 无法从描述上 (T1 cosine) 或功能上 (T2 参数签名) 区分二者, 即为重复。
+ * 两工具只有可能出现在 <b>同一候选集</b> (topic_tags 交集非空, T0 前提) 里被二选一。
+ * v2 判定主轴是<b>四层一致性</b>: 业务主题 (L1 topic_tags) / 指标标签 (L2 metric_tags) /
+ * 维度标签 (L3 dimension_tags, 均按集合相等比较) 三层外加描述 (L4, cosine ≥ cosineHighThreshold
+ * 视为无差异), <b>任一层有不同即判断两个工具不一致</b>; 四层全部无差异才构成重复 (HIGH)。
  * 名称相似 (T3) 只是命名卫生信号, 单独不构成重复。
+ * 参数签名 (T2) 退居两用: degraded (embedding 不可用) 时作为唯一硬证据
+ * (L1-L3 相等 + 签名完全一致仍判 HIGH), 非 degraded 时仅作展示信号。
  *
  * <p>分级:
  * <ul>
- * <li>HIGH   = T0 且 (T1 ≥ cosineHighThreshold (0.88), 或 T1 ≥ cosineThreshold (0.80) 且 T2 命中,
- *             或 degraded 下仅 T0+T2 完全一致 —— 签名是硬证据, 不依赖 embedding)</li>
- * <li>MEDIUM = T0 且 T1 ≥ cosineThreshold, 但功能签名可区分</li>
+ * <li>HIGH   = T0 且 L1∧L2∧L3∧L4 全部无差异; degraded 下 L4 无证据时: L1-L3 相等 且 T2 签名完全一致</li>
+ * <li>MEDIUM = T0 且 (cosine ≥ cosineThreshold (0.80) 或 T2 命中), 但存在差异层 → 封顶 MEDIUM 并点名差异层</li>
  * <li>LOW    = 仅 T3 命中 (命名卫生), 或 T0 交集 ≥ 2 但 T1/T2 均未命中 (巡检)</li>
  * </ul>
  *
@@ -209,13 +212,33 @@ public class ToolToolOverlapService {
             signatureSame = sigA != null && sigB != null && sigA.sameAs(sigB);
         }
 
+        // v2 四层一致性: L1 topic / L2 metric / L3 dimension (集合相等) + L4 描述 (cosine >= 0.88)。
+        // 任一层"有不同"即差异层; 四层全部无差异才 HIGH。集合相等而非"不相交"豁免:
+        // 生产变体工具的 dimension_tags 相交 (都含"版本计划") 但不同, 必须判差异。
+        List<String> differingLayers = new ArrayList<>();
+        if (!new HashSet<>(a.topicTags()).equals(new HashSet<>(b.topicTags()))) {
+            differingLayers.add("业务主题");
+        }
+        if (!new HashSet<>(a.metricTags()).equals(new HashSet<>(b.metricTags()))) {
+            differingLayers.add("指标标签");
+        }
+        if (!new HashSet<>(a.dimensionTags()).equals(new HashSet<>(b.dimensionTags()))) {
+            differingLayers.add("维度标签");
+        }
+        // degraded 时 L4 无证据, 不单独构成差异 (§3.3), 由签名硬证据兜底
+        boolean descriptionDiffers = cosineKnown && cosine < cosineHighThreshold;
+        if (descriptionDiffers) {
+            differingLayers.add("描述");
+        }
+
+        boolean fourLayersSame = !topicOverlap.isEmpty() && differingLayers.isEmpty();
+        boolean highEvidence = fourLayersSame && (cosineKnown || signatureSame);
+
         String level = null;
-        if (!topicOverlap.isEmpty() && cosineKnown && cosine >= cosineHighThreshold) {
+        if (highEvidence) {
             level = "HIGH";
-        } else if (!topicOverlap.isEmpty() && signatureSame
-                && (!cosineKnown || cosine >= cosineThreshold)) {
-            level = "HIGH";
-        } else if (!topicOverlap.isEmpty() && cosineKnown && cosine >= cosineThreshold) {
+        } else if (!topicOverlap.isEmpty()
+                && ((cosineKnown && cosine >= cosineThreshold) || signatureSame)) {
             level = "MEDIUM";
         } else if (aliasHit || topicOverlap.size() >= 2) {
             level = "LOW";
@@ -226,21 +249,21 @@ public class ToolToolOverlapService {
 
         String topics = String.join("、", topicOverlap);
         String suggestion;
-        if ("HIGH".equals(level) && cosineKnown && cosine >= cosineHighThreshold) {
+        if ("HIGH".equals(level) && cosineKnown) {
             suggestion = "工具 " + a.toolId() + " 与工具 " + b.toolId()
                     + " 在同一候选集（" + topics + "）内描述无法区分（cosine="
                     + String.format(Locale.ROOT, "%.2f", cosine) + "），Agent 叶子选型必然瞎选，请处理后重启";
         } else if ("HIGH".equals(level)) {
             suggestion = "工具 " + a.toolId() + " 与工具 " + b.toolId()
-                    + " 在同一候选集（" + topics + "）内"
-                    + (cosineKnown
-                            ? "描述与参数签名均无法区分（cosine=" + String.format(Locale.ROOT, "%.2f", cosine) + "）"
-                            : "参数签名完全一致（embedding 不可用，仅签名判定）")
-                    + "，请处理后重启";
+                    + " 在同一候选集（" + topics + "）内参数签名完全一致（embedding 不可用，仅签名判定），请处理后重启";
         } else if ("MEDIUM".equals(level)) {
             suggestion = "工具 " + a.toolId() + " 与工具 " + b.toolId()
-                    + " 同候选集（" + topics + "）内描述相近（cosine="
-                    + String.format(Locale.ROOT, "%.2f", cosine) + "）但功能签名可区分，请人工确认是否重复";
+                    + " 同候选集（" + topics + "）内"
+                    + (cosineKnown && !descriptionDiffers
+                            ? "描述无法区分（cosine=" + String.format(Locale.ROOT, "%.2f", cosine) + "）但"
+                            : "")
+                    + layerDiffText(differingLayers, a, b, cosineKnown, cosine)
+                    + "，Agent 仍可按差异选型，请人工确认是否重复";
         } else if (aliasHit) {
             suggestion = "工具 " + a.toolId() + " 与工具 " + b.toolId()
                     + " toolId 名称高度相似（命名卫生），请确认是否迭代版本或重复注册";
@@ -256,7 +279,38 @@ public class ToolToolOverlapService {
                 cosine,
                 signatureSame,
                 aliasHit,
+                List.copyOf(differingLayers),
+                List.copyOf(a.metricTags()),
+                List.copyOf(b.metricTags()),
+                List.copyOf(a.dimensionTags()),
+                List.copyOf(b.dimensionTags()),
                 suggestion);
+    }
+
+    /** 差异层明细文案, 如 "维度标签不同（A: 应用、版本计划；B: 部门、版本计划）、描述相近但有差异（cosine=0.85）"。 */
+    private String layerDiffText(List<String> differingLayers, ToolRoutingMetadata a, ToolRoutingMetadata b,
+                                 boolean cosineKnown, double cosine) {
+        List<String> parts = new ArrayList<>();
+        for (String layer : differingLayers) {
+            switch (layer) {
+                case "业务主题" -> parts.add("业务主题不同（A: " + String.join("、", a.topicTags())
+                        + "；B: " + String.join("、", b.topicTags()) + "）");
+                case "指标标签" -> parts.add("指标标签不同（A: " + String.join("、", a.metricTags())
+                        + "；B: " + String.join("、", b.metricTags()) + "）");
+                case "维度标签" -> parts.add("维度标签不同（A: " + String.join("、", a.dimensionTags())
+                        + "；B: " + String.join("、", b.dimensionTags()) + "）");
+                case "描述" -> {
+                    String formatted = String.format(Locale.ROOT, "%.2f", cosine);
+                    if (cosineKnown && cosine >= cosineThreshold) {
+                        parts.add("描述相近但有差异（cosine=" + formatted + "）");
+                    } else {
+                        parts.add("描述可区分（cosine=" + formatted + "）");
+                    }
+                }
+                default -> parts.add(layer + "不同");
+            }
+        }
+        return String.join("、", parts);
     }
 
     /** 取工具参数签名, 失败 (工具不可用/注册表缺失) 返回 null, 该工具不参与 T2 判定。 */

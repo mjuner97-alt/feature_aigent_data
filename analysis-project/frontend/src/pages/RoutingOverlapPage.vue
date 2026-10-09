@@ -81,6 +81,7 @@ function toolSignals(row: ToolToolOverlapItem): string {
   const parts: string[] = [];
   if (row.aliasHit) parts.push('toolId 名称相似');
   if (row.signatureSame) parts.push('参数签名不可区分');
+  if (row.differingLayers?.length) parts.push(`差异层: ${row.differingLayers.join('、')}`);
   if (row.topicTagOverlap.length) parts.push(`同候选集: ${row.topicTagOverlap.join('、')}`);
   if (row.cosine > 0) parts.push(`语义相似 ${row.cosine.toFixed(2)}`);
   return parts.join('；') || '-';

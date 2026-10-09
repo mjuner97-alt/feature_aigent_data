@@ -70,6 +70,12 @@ class ToolToolOverlapServiceTest {
                 topicTags, List.of("metric"), List.of(), 0, true, null);
     }
 
+    private ToolRoutingMetadata toolWithDims(String toolId, String description,
+                                             List<String> topicTags, List<String> dimensionTags) {
+        return new ToolRoutingMetadata(toolId, ToolRoutingToolType.SQL, description,
+                topicTags, List.of("metric"), dimensionTags, 0, true, null);
+    }
+
     private void stubParams(String toolId, List<ToolParameterMetadata> params) {
         when(unifiedService.find(toolId)).thenReturn(new ToolMetadataResponse(
                 toolId, ToolRoutingToolType.SQL, "desc", List.of("topic"), List.of("metric"),
@@ -92,6 +98,7 @@ class ToolToolOverlapServiceTest {
         List<ToolToolOverlapView> items = report(service);
         assertEquals(1, items.size());
         assertEquals("HIGH", items.get(0).level());
+        assertTrue(items.get(0).differingLayers().isEmpty());
         assertTrue(items.get(0).suggestion().contains("t_alpha"));
         assertTrue(items.get(0).suggestion().contains("与工具"));
     }
@@ -112,10 +119,12 @@ class ToolToolOverlapServiceTest {
         assertEquals(1, items.size());
         assertEquals("MEDIUM", items.get(0).level());
         assertFalse(items.get(0).signatureSame());
+        assertTrue(items.get(0).differingLayers().contains("描述"));
     }
 
     @Test
-    void mediumCosineWithSameSignatureEscalatesToHigh() {
+    void mediumCosineDoesNotEscalateToHighEvenWithSameSignature() {
+        // v2: cosine 0.80~0.88 区间即 L4 "有差异", 不再与签名叠加升 HIGH
         when(toolRoutingRepo.findEnabled()).thenReturn(List.of(
                 tool("t_alpha", "描述甲", List.of("topic")),
                 tool("t_beta", "描述乙", List.of("topic"))));
@@ -127,8 +136,93 @@ class ToolToolOverlapServiceTest {
                 "描述甲", new float[] {1f, 0f},
                 "描述乙", new float[] {0.85f, (float) Math.sqrt(1 - 0.85 * 0.85)}));
 
+        List<ToolToolOverlapView> items = report(service);
+        assertEquals("MEDIUM", items.get(0).level());
+        assertTrue(items.get(0).signatureSame());
+        assertTrue(items.get(0).differingLayers().contains("描述"));
+    }
+
+    @Test
+    void dimensionVariantToolsWithIntersectingDimsAreCappedAtMedium() {
+        // 生产复现 (BacklogIssueNumByApp/ByDept): 描述全同 (cosine=1.0)、topic/metric 全同,
+        // dimension_tags 相交但不同 (都含"版本计划") -> 差异层=维度标签, MEDIUM 不阻断
+        when(toolRoutingRepo.findEnabled()).thenReturn(List.of(
+                toolWithDims("BacklogIssueNumByApp", "统计遗留问题数量", List.of("遗留问题"), List.of("应用", "版本计划")),
+                toolWithDims("BacklogIssueNumByDept", "统计遗留问题数量", List.of("遗留问题"), List.of("部门", "版本计划"))));
+        ToolToolOverlapService service = liveService(Map.of());
+
+        List<ToolToolOverlapView> items = report(service);
+        assertEquals(1, items.size());
+        assertEquals("MEDIUM", items.get(0).level());
+        assertTrue(items.get(0).differingLayers().contains("维度标签"));
+        assertTrue(items.get(0).suggestion().contains("维度标签不同"));
+        assertTrue(items.get(0).suggestion().contains("应用、版本计划"));
+        assertTrue(items.get(0).suggestion().contains("部门、版本计划"));
+    }
+
+    @Test
+    void metricTagDifferenceCapsAtMedium() {
+        // metric_tags 不等 -> 差异层=指标标签
+        when(toolRoutingRepo.findEnabled()).thenReturn(List.of(
+                new ToolRoutingMetadata("t_alpha", ToolRoutingToolType.SQL, "描述甲",
+                        List.of("topic"), List.of("遗留问题"), List.of(), 0, true, null),
+                new ToolRoutingMetadata("t_beta", ToolRoutingToolType.SQL, "描述乙",
+                        List.of("topic"), List.of("缺陷"), List.of(), 0, true, null)));
+        ToolToolOverlapService service = liveService(Map.of(
+                "描述甲", new float[] {1f, 0f},
+                "描述乙", new float[] {1f, 0f}));
+
+        List<ToolToolOverlapView> items = report(service);
+        assertEquals(1, items.size());
+        assertEquals("MEDIUM", items.get(0).level());
+        assertTrue(items.get(0).differingLayers().contains("指标标签"));
+        assertTrue(items.get(0).suggestion().contains("指标标签不同"));
+    }
+
+    @Test
+    void intersectingButUnequalTopicsCapAtMedium() {
+        // topic 相交但不相等 -> 差异层=业务主题
+        when(toolRoutingRepo.findEnabled()).thenReturn(List.of(
+                tool("t_alpha", "描述甲", List.of("topic", "topic_x")),
+                tool("t_beta", "描述乙", List.of("topic", "topic_y"))));
+        ToolToolOverlapService service = liveService(Map.of(
+                "描述甲", new float[] {1f, 0f},
+                "描述乙", new float[] {1f, 0f}));
+
+        List<ToolToolOverlapView> items = report(service);
+        assertEquals(1, items.size());
+        assertEquals("MEDIUM", items.get(0).level());
+        assertTrue(items.get(0).differingLayers().contains("业务主题"));
+    }
+
+    @Test
+    void sameDimensionStillHigh() {
+        // dimension_tags 相同 -> L3 无差异, 描述无差异 -> 四层全同 -> HIGH
+        when(toolRoutingRepo.findEnabled()).thenReturn(List.of(
+                toolWithDims("t_alpha", "描述甲", List.of("topic"), List.of("应用")),
+                toolWithDims("t_beta", "描述乙", List.of("topic"), List.of("应用"))));
+        ToolToolOverlapService service = liveService(Map.of(
+                "描述甲", new float[] {1f, 0f},
+                "描述乙", new float[] {1f, 0f}));
+
         assertEquals("HIGH", report(service).get(0).level());
-        assertTrue(report(service).get(0).signatureSame());
+        assertTrue(report(service).get(0).differingLayers().isEmpty());
+    }
+
+    @Test
+    void dimensionEscapeAppliesToSignatureEvidenceInDegraded() {
+        // degraded 下 T0+T2 命中, 但维度标签相交而不同 -> 差异层豁免同样生效, 封顶 MEDIUM
+        when(toolRoutingRepo.findEnabled()).thenReturn(List.of(
+                toolWithDims("t_alpha", "描述甲", List.of("topic"), List.of("应用", "版本计划")),
+                toolWithDims("t_beta", "描述乙", List.of("topic"), List.of("部门", "版本计划"))));
+        List<ToolParameterMetadata> params = List.of(
+                new ToolParameterMetadata("dept", "string", true, "d"));
+        stubParams("t_alpha", params);
+        stubParams("t_beta", params);
+
+        List<ToolToolOverlapView> items = report(degradedService());
+        assertEquals("MEDIUM", items.get(0).level());
+        assertTrue(items.get(0).differingLayers().contains("维度标签"));
     }
 
     @Test

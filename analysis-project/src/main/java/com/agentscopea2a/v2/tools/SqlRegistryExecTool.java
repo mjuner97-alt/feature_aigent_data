@@ -221,7 +221,7 @@ public class SqlRegistryExecTool {
         // 3. 解析 params_schema, 校验参数名 + 缺失必填参数 + 模板占位符与 schema 对齐
         // (放在 datasource 路由之前, 让参数校验失败时无需真实 DB 连接也能返回明确错误)
         Set<String> declaredParams = parseParamNames(entry.getParamsSchema());
-        Map<String, Object> paramMap = params == null ? Collections.emptyMap() : new LinkedHashMap<>(params);
+        Map<String, Object> paramMap = new LinkedHashMap<>(params == null ? Collections.emptyMap() : params);
 
         for (Map.Entry<String, Object> e : paramMap.entrySet()) {
             if (!declaredParams.contains(e.getKey())) {
@@ -263,6 +263,13 @@ public class SqlRegistryExecTool {
 
         // 6. 强制 LIMIT 兜底
         String sql = ensureLimit(template);
+
+        // 模板含 :limit 而调用方没传 (limit 在 params_schema 中通常是可选) 时补默认值,
+        // 否则 NamedParameterUtils.buildValueArray 抛 "No value supplied for the SQL parameter 'limit'".
+        // 与 python 侧 _sql_registry._query_sqlalchemy 同款防御.
+        if (sql.contains(":limit") && !paramMap.containsKey("limit")) {
+            paramMap.put("limit", ROW_LIMIT);
+        }
 
         // 7. 执行 (NamedParameterUtils 处理 :param -> ?)
         long start = System.currentTimeMillis();

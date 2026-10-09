@@ -60,7 +60,7 @@ class GovernanceEmbeddingCacheTest {
     }
 
     @Test
-    void failedEmbedIsNotCachedAndRetried() {
+    void failedEmbedIsNegativeCachedWithinTtlAndRetriedAfter() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         EmbeddingClient failing = new EmbeddingClient() {
             @Override
@@ -75,9 +75,16 @@ class GovernanceEmbeddingCacheTest {
         };
         GovernanceEmbeddingCache cache = new GovernanceEmbeddingCache(failing, skills(), null);
         assertNull(cache.embeddingFor(GovernanceEmbeddingCache.EntityType.TOOL, "t1", "d"));
-        // mock embeds successfully on the second call -> the earlier null was not cached
+        // TTL 内失败走负缓存, 不再触发 HTTP
+        assertNull(cache.embeddingFor(GovernanceEmbeddingCache.EntityType.TOOL, "t1", "d"));
+        assertEquals(1, calls.get(), "negative cache must suppress retry within TTL");
+
+        // 模拟 TTL 过期 (清空负缓存) -> 恢复重试, 成功后进正向缓存
+        java.lang.reflect.Field failures = GovernanceEmbeddingCache.class.getDeclaredField("failures");
+        failures.setAccessible(true);
+        ((java.util.concurrent.ConcurrentHashMap<?, ?>) failures.get(cache)).clear();
         assertEquals(1f, cache.embeddingFor(GovernanceEmbeddingCache.EntityType.TOOL, "t1", "d")[0]);
-        assertEquals(2, calls.get(), "null result must not be cached");
+        assertEquals(2, calls.get(), "expired negative entry must be retried");
     }
 
     @Test

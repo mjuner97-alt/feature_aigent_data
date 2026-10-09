@@ -124,7 +124,9 @@ class ToolRoutingStartupAuditTest {
         when(mediumOnly.report()).thenReturn(new com.agentscopea2a.v2.governance.ToolToolOverlapService.OverlapReport(
                 false, List.of(new com.agentscopea2a.v2.governance.ToolToolOverlapView(
                         "t_a", "SQL", "t_b", "SQL", "MEDIUM",
-                        List.of("QI卡口"), 0.82, false, false, "描述相近，请人工确认"))));
+                        List.of("QI卡口"), 0.82, false, false,
+                        List.of("描述"), List.of(), List.of(), List.of(), List.of(),
+                        "描述相近，请人工确认"))));
         ToolRoutingStartupAudit audit = new ToolRoutingStartupAudit(scanService, metadataRepository,
                 ToolRoutingMetrics.noop(), false, mediumOnly, true);
 
@@ -139,7 +141,9 @@ class ToolRoutingStartupAuditTest {
         when(service.report()).thenReturn(new com.agentscopea2a.v2.governance.ToolToolOverlapService.OverlapReport(
                 false, List.of(new com.agentscopea2a.v2.governance.ToolToolOverlapView(
                         toolIdA, "SQL", toolIdB, "SQL", "HIGH",
-                        List.of("QI卡口"), 0.93, false, false, "重复，请处理"))));
+                        List.of("QI卡口"), 0.93, false, false,
+                        List.of(), List.of(), List.of(), List.of(), List.of(),
+                        "重复，请处理"))));
         return service;
     }
 
