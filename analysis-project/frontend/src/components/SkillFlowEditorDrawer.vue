@@ -15,6 +15,7 @@ import { inferParamSchema, normalizeScriptParams, paramsFromSchema } from '../ut
 import FlowNodeCard from './FlowNodeCard.vue';
 import ScheduleRulesEditor from './ScheduleRulesEditor.vue';
 import { scrollToEditorSection } from '../utils/editorNavigation.js';
+import { retainSelectedMetrics, setNodeMetricSelection } from '../utils/flowMetrics';
 
 const props = withDefaults(defineProps<{ open: boolean; editId: number | null; knownFlows: SkillFlow[]; page?: boolean }>(), { page: false });
 const emit = defineEmits<{ (e: 'update:open', open: boolean): void; (e: 'saved'): void }>();
@@ -116,7 +117,7 @@ function syncNodeSkillName(node: SkillFlowNode) {
 }
 
 function setNodeMetrics(node: SkillFlowNode, values: number[]) {
-  node.metricIds = Array.from(new Set(values || []));
+  setNodeMetricSelection(node, values);
 }
 
 async function searchSkills(query: string) {
@@ -210,9 +211,9 @@ async function searchMetrics(query: string) {
   metricLoading.value = true;
   try {
     const result = await listMetrics(query);
-    if (seq === metricSearchSeq) metrics.value = result;
+    if (seq === metricSearchSeq) metrics.value = retainSelectedMetrics(result, metrics.value, form.value.nodes);
   } catch {
-    if (seq === metricSearchSeq) metrics.value = [];
+    if (seq === metricSearchSeq) metrics.value = retainSelectedMetrics([], metrics.value, form.value.nodes);
   } finally {
     if (seq === metricSearchSeq) metricLoading.value = false;
   }
@@ -508,6 +509,7 @@ async function load() {
       wasPublic.value = flow.chatPublic === true;
       originalKeywords.value = (flow.triggers || []).map(trigger => trigger.keyword.trim().toLowerCase()).filter(Boolean);
       form.value = normalizeFlow(flow);
+      metrics.value = retainSelectedMetrics(metrics.value, metrics.value, form.value.nodes);
       const notifySettings = await getFlowNotifySettings(props.editId);
       notifyReceivers.value = [...(notifySettings.notifyReceivers || [])];
       receiverNames.value = await batchUserNames(notifyReceivers.value);

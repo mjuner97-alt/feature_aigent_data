@@ -5,6 +5,7 @@ import { deleteSkillFlow, getSkillFlowMetricPrecheck, listSkillFlows, runSkillFl
 import { currentUserId } from '../api/skill';
 import type { SkillFlow, FlowMetricPrecheck } from '../types/skillFlow';
 import { manualTriggerMessage } from './skillFlowExecutionPresentation';
+import { flowMetricCount } from '../utils/flowMetrics';
 
 const emit = defineEmits<{ 'view-records': [flowName: string] }>();
 const props = withDefaults(defineProps<{ scope?: 'mine' | 'all'; createdBy?: string }>(), { scope: 'mine', createdBy: '' });
@@ -29,7 +30,6 @@ let triggerMsgTimer: ReturnType<typeof setTimeout> | undefined;
 const pagedFlows = computed(() => flows.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value));
 
 function formatTime(value?: string) { return value ? value.replace('T', ' ').slice(0, 19) : '-'; }
-function metricCount(flow: SkillFlow) { return new Set(flow.nodes.flatMap(node => node.effectiveMetricIds ?? node.metricIds ?? [])).size; }
 function enabledStatusClass(flow: SkillFlow) { return flow.enabled ? 'st-on' : 'st-off'; }
 function isOwner(flow: SkillFlow) { return flow.createdBy === me; }
 function changePageSize(size: number) { pageSize.value = size; page.value = 1; }
@@ -129,7 +129,7 @@ watch(() => [props.scope, props.createdBy] as const, () => load('', props.create
               <span v-if="flow.description" class="col-description" :title="flow.description">{{ flow.description }}</span>
             </td>
             <td>{{ flow.nodes.length }}</td>
-            <td><button class="metric-link" type="button" @click="showMetrics(flow)">{{ metricCount(flow) }}</button></td>
+            <td><button class="metric-link" type="button" @click="showMetrics(flow)">{{ flowMetricCount(flow) }}</button></td>
             <td>
               <span class="status-badge" :class="enabledStatusClass(flow)">{{ flow.enabled ? '启用' : '禁用' }}</span>
             </td>

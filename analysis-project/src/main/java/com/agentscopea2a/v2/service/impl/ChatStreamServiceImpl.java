@@ -377,23 +377,23 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         // putIfAbsent：若已存在同会话的进行中调用，直接拒绝，防止并发覆盖 / 重复消耗 LLM token
         InFlightCall existing = inFlightCalls.putIfAbsent(callKey, inFlight);
         if (existing != null) {
-            // 宽限期等待：旧调用可能在客户端断连后马上被 cancel 清理（completion 由 cleanup
-            // 在 remove 之后 complete），等它终止就放行本次新提问，而不是立刻拒绝。
-            boolean oldEnded = false;
-            try {
-                existing.completion().get(IN_FLIGHT_GRACE_SECONDS, TimeUnit.SECONDS);
-                oldEnded = true;
-            } catch (TimeoutException te) {
-                // 旧调用确实还在跑 → 走拒绝
-            } catch (Exception e) {
-                log.warn("in-flight completion wait failed for sessionId={}: {}", conversationId, e.getMessage());
-            }
-            // 放行条件：旧调用已终止 且 成功抢到标记（防止宽限期间另一请求先注册）
-            if (!oldEnded || inFlightCalls.putIfAbsent(callKey, inFlight) != null) {
-                strategy.sendInFlight(emitter, req);
-                emitter.complete();
-                return emitter;
-            }
+//            // 宽限期等待：旧调用可能在客户端断连后马上被 cancel 清理（completion 由 cleanup
+//            // 在 remove 之后 complete），等它终止就放行本次新提问，而不是立刻拒绝。
+//            boolean oldEnded = false;
+//            try {
+//                existing.completion().get(IN_FLIGHT_GRACE_SECONDS, TimeUnit.SECONDS);
+//                oldEnded = true;
+//            } catch (TimeoutException te) {
+//                // 旧调用确实还在跑 → 走拒绝
+//            } catch (Exception e) {
+//                log.warn("in-flight completion wait failed for sessionId={}: {}", conversationId, e.getMessage());
+//            }
+//            // 放行条件：旧调用已终止 且 成功抢到标记（防止宽限期间另一请求先注册）
+//            if (!oldEnded || inFlightCalls.putIfAbsent(callKey, inFlight) != null) {
+//                strategy.sendInFlight(emitter, req);
+//                emitter.complete();
+//                return emitter;
+//            }
         }
 
         // 反问确认轮：上一轮若在等用户选候选，本轮回复可能是「1/第二个/候选名」
