@@ -218,3 +218,48 @@ record ToolToolOverlapView(
   3. 删除测试行（DELETE 2）→ 默认开关正常启动，HIGH 消失，仅剩真实 MEDIUM 对（q2_1_metrics_by_dept_version vs quality_query_by_department_quarter，差异层=维度标签+描述）。
 - degraded 场景（L1-L3 相等 + 签名一致仍 HIGH / 维度差异豁免在 degraded 同样生效）由单测覆盖（degradedStillBlocksOnIdenticalSignature、dimensionEscapeAppliesToSignatureEvidenceInDegraded），未重复整机 E2E。
 - 顺带确认：生产 4 个 `BacklogIssueNumBy*` 变体在 v2 下均为 MEDIUM（差异层=维度标签），不再阻断；若仍要彻底消除页面噪音，可把描述措辞改得可区分或将 dimension_tags 补全为可区分集合。
+
+### 6.2 同 toolId 跨类型重复注册纳入检测（2026-10-09，已实施）
+
+**生产反馈**：`q2_1_metrics_by_dept_version` 以 SCRIPT 与 SQL 两种类型重复注册（扫描问题 DUPLICATE_TOOL_ID），但 tool-tool 重叠检测没有任何输出——`scanScope()` 原来按 toolId 去重，两条记录塌缩成一个实体，双重循环里永远配不成对。
+
+**变更**：
+1. `ToolToolOverlapService.scanScope()` 去重键改为 `toolId + "|" + toolType`，同 toolId 跨类型记录全部保留参与配对；`compute()` 的向量缓存键同步改 `scanKey`（同 toolId 两条记录描述不同，按 toolId 键会互相覆盖向错向量）。
+2. `evaluatePair()` 开头（双方未启用排除之后）新增同 toolId 分支：**不经四层证据直接判 HIGH**——Agent 调用层按 toolId 寻址，本身就无法区分，这与"描述不可区分"是更强的重复信号；suggestion 提示重命名独立 toolId 或退役其中一个。
+3. 下游消费不变：启动审计/启用拦截取双方已启用的对（同 toolId 对语义正确：一边启用时另一边被拦）；重叠页/工具路由页角标按 toolId 汇总，同 toolId 对两侧都会亮 HIGH 角标。
+4. 测试：`ToolToolOverlapServiceTest` 16 用例（新增 sameToolIdCrossTypeDuplicateIsHighWithoutLayerEvidence、sameToolIdCrossTypeBothDisabledIsExcluded），47 用例全过。
+
+**边界**：双方均未启用的同 toolId 对仍是纯噪音不报（与既有规则一致）；数据整改路径不变——重命名或退役其一，DUPLICATE_TOOL_ID 扫描问题消失后该对随之消失。
+
+**6.2 补遗（同 toolId 检测仍不出现的真因，2026-10-09）**：`tool_route_metadata` 主键是 `tool_id`，同 toolId 的另一类型注册在元数据表里物理上不存在（后配置的类型直接覆盖 tool_type），所以仅改 scanScope 去重键检不出。追加：`ToolToolOverlapService` 注入 `ToolRoutingScanService`，把扫描候选中带 `DUPLICATE_TOOL_ID` 标记、且元数据表无同 (toolId, tool_type) 行的记录合成进扫描范围（无标签、按已启用处理，仅同 toolId 分支生效；只补冲突 id，不引入全量注册工具）。构造函数 7→8 参，`V2ToolConfig` 装配同步；17 用例全过，全量 280 用例 BUILD SUCCESS。
+
+**6.3 同 toolId HIGH 对不阻断启动/启用（2026-10-09，已实施）**：6.2 上线后同 toolId 对（双方"已启用"）触发 block-tool-overlap 拦死启动。定版策略：同 toolId 跨类型注册冲突只能改注册表（重命名/退役）整改，页面开关处置不了，拦启动/拦启用不成比例且会造成死锁。变更：`ToolRoutingStartupAudit` HIGH 对循环里 `toolIdA==toolIdB` 的对只 log.warn（"请重命名独立 toolId 或退役其一 (不阻断启动)"），不产生 tool_overlap issue（strict-startup 也不会因它拦）；`ToolRoutingMetadataAdminService.assertNotHighOverlap` 同样跳过。页面 HIGH 报告与角标照常可见。282 测试全过。
+
+**6.4 同 toolId 冲突允许启用其中一个（2026-10-09，已实施）**：元数据表一行对应一个 toolId，"启用其中一个" = 把该行指向选定类型，路由目录仍只有一条 q2_1 条目，Agent 选型无风险——此前开关置灰纯属前端把同 toolId 对也算进 highByTool。变更：`OverlapSummary` 拆出 `duplicateByTool`（同 toolId 对不再进 `highByTool`）；工具路由页开关置灰只看 `highByTool`，同 toolId 冲突改亮橙色 "ID重复" 角标（点击跳重叠页），红色 "重叠 N" 角标仍留给四层 HIGH 对。283 测试全过，前端 vite build 通过。
+
+### 6.5 全量"仅可启用其中一个"策略（2026-10-09，已实施）
+
+用户定版：不只同 toolId 冲突，所有 HIGH 重叠对（四层一致）统一执行**同一候选集内至多启用一个**。页面侧本就如此（对侧未启用放行、只拦第二个，assertNotHighOverlap 提示语同步改为"请先停用对方，或在重叠检测页区分描述或标签后再启用"）；本次改的是启动期对"双方已启用"存量数据的处置——**由阻断启动改为自愈**：
+
+- `ToolRoutingStartupAudit`（block-tool-overlap=true 且重复工具数 ≤ block-tool-overlap-max-tools）：每对自动停用低优先级一侧（优先级相同保留 toolId 较小者，确定性规则重启幂等），upsert enabled=false + WARN 日志（含保留侧与换启方法），失效 overlap 报告缓存；upsert 失败的对仍记 tool_overlap 走阻断路径兜底。自愈处置过的对不再产生阻断 issue → **程序不挂**。
+- 超过 max-tools 阈值的批量数据问题：不自动变更元数据，沿用告警降级（静默改几百条太危险）。
+- 同 toolId 冲突对：不参与自愈（元数据只有一行，无"双方"可停），维持只告警。
+- 换保留侧流程：页面停用当前启用侧 → 启用另一侧（assertNotHighOverlap 只拦"第二个"）。
+- 测试：284 全过（新增 bothEnabledHighPairAutoDisablesLoserInsteadOfBlockingStartup），前端提示文案同步，vite build 通过。
+
+**6.4 修正（同 toolId 角标与状态显示，2026-10-09）**：用户反馈两处不对——①同 toolId 对在检测页就是 HIGH，工具路由页却只剩橙色角标丢了红色"重叠"标 → 红色角标恢复（highOverlap 与 duplicateByTool 任一命中都亮红色"重叠 N"，count 取先命中的；橙色"ID重复"保留在其后作注册冲突细别）；②"两条都能启用"是显示误导——tool_route_metadata 主键是 tool_id，两行共享同一条元数据记录，开关是同一个 → 状态列对冲突行追加显示启用记录指向的类型（如"已启用·SQL"），悬停提示说明两侧开关操作同一条元数据。仅前端变更，vite build 通过。
+
+### 6.6 元数据主键改 (tool_id, tool_type)——同 toolId 各类型独立开关（2026-10-09，已实施）
+
+用户定版：同 toolId 的 SCRIPT/SQL 要"一个开一个关"，各自独立配置与启用。数据模型变更：
+
+- **DDL/迁移**：`tool_route_metadata` 主键 `tool_id` → `(tool_id, tool_type)`。新建表直接复合主键；存量表启动时 `migratePrimaryKeyIfNeeded()`——information_schema 检查 PK 是否已含 tool_type，未含则依次尝试 `DROP CONSTRAINT tool_route_metadata_pkey` / `DROP PRIMARY KEY` / `ADD PRIMARY KEY (tool_id, tool_type)`（逐条容错，失败下次启动重试；老 PK 下 (id,type) 天然唯一，无脏数据风险）。
+- **启用互斥**：`AdminService.save` 在 metadata.enabled=true 时调 `repository.disableOtherTypes(toolId, keepType)` 自动停用同 toolId 其他类型（路由目录单条，Agent 按 toolId 寻址不能有歧义）——"启用即换指"，页面开关各自独立但同一时刻只有一个亮着。
+- **防御**：`findByToolId` 加 `ORDER BY enabled DESC, priority DESC, tool_type`（路由寻址偏向启用行）；`ToolRoutingCatalogService.buildSnapshot` 按 toolId 去重取优先级高者（兜直改 DB 的双启用）。
+- **前端**：configurations 映射键改 `toolId|toolType`，openConfig/saveConfig/toggleRoute/查看弹窗/三列标签展示全部按行类型定位；状态列恢复纯"已启用/已停用"（行级独立开关，不再有共享记录误导）；悬停提示"启用本类型会自动停用其他类型"。
+- 不变项：scanScope 复合键/同 toolId HIGH 分支/duplicateByTool 角标/启动自愈均按 (id,type) 语义天然兼容；API 层 PUT body 本就带 toolType 无需改。
+- 测试：286 全过（新增 enablingOneTypeDisablesOtherTypesOfSameToolId、disablingDoesNotTouchOtherTypes），前端 vite build 通过。**重启后端触发 PK 迁移 + 强刷前端**。
+
+**6.6 修复（2026-10-09 内网实测）**：复合主键后 openGauss B-mode 报 "INSERT ON DUPLICATE KEY UPDATE don't allow update on primary key or unique key"（ErrorCode 9504）——upsert 的 UPDATE 子句含 `tool_type=VALUES(tool_type)`，tool_type 已是主键列被禁止更新。去掉该列（冲突行即同 tool_type，本就无需更新），仅前端保存开关报 ToolRoutingMetadataSaveFailed，其余路径不受影响。286 测试过。
+
+**6.6 补遗（2026-10-09 复合主键遗留两处显示/状态错位）**：用户反馈"两个重复 id 的工具还是能同时启用"。后端互斥链（save→disableOtherTypes）本身是对的，错在状态传播：① `ToolRoutingScanService.scan()` 的 configured 映射仍按 toolId 单键——复合主键下同 toolId 两行元数据互相覆盖（last-write-wins），两行扫描行显示同一个启用状态；改键 `toolId|toolType`、按 (toolId, toolType) 取行。② 前端 `toggleRoute` 只更新被切换的行，被 disableOtherTypes 连带停用的另一行要到下次刷新才翻绿→红；启用成功后本地同步同 toolId 其他类型行 routeEnabled=false。新增回归测试 sameToolIdTypesReflectTheirOwnMetadataState（SCRIPT 启用/SQL 停用各自如实显示）。

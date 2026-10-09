@@ -5,6 +5,8 @@ import com.agentscopea2a.v2.toolrouting.ToolMetadataResponse;
 import com.agentscopea2a.v2.toolrouting.ToolParameterMetadata;
 import com.agentscopea2a.v2.toolrouting.ToolRoutingMetadata;
 import com.agentscopea2a.v2.toolrouting.ToolRoutingMetadataRepository;
+import com.agentscopea2a.v2.toolrouting.ToolRoutingScanCandidate;
+import com.agentscopea2a.v2.toolrouting.ToolRoutingScanService;
 import com.agentscopea2a.v2.toolrouting.ToolRoutingToolType;
 import com.agentscopea2a.v2.toolrouting.UnifiedToolMetadataService;
 import org.junit.jupiter.api.BeforeEach;
@@ -24,19 +26,84 @@ class ToolToolOverlapServiceTest {
 
     private ToolRoutingMetadataRepository toolRoutingRepo;
     private UnifiedToolMetadataService unifiedService;
+    private ToolRoutingScanService scanService;
 
     @BeforeEach
     void setUp() {
         toolRoutingRepo = mock(ToolRoutingMetadataRepository.class);
         unifiedService = mock(UnifiedToolMetadataService.class);
+        scanService = mock(ToolRoutingScanService.class);
         when(toolRoutingRepo.findEnabled()).thenReturn(List.of());
+        when(scanService.scan()).thenReturn(List.of());
+    }
+
+    private ToolRoutingMetadata toolOfType(ToolRoutingToolType type, String toolId, String description, List<String> topicTags) {
+        return new ToolRoutingMetadata(toolId, type, description,
+                topicTags, List.of("metric"), List.of(), 0, true, null);
+    }
+
+    @Test
+    void sameToolIdCrossTypeDuplicateIsHighWithoutLayerEvidence() {
+        // 同 toolId 重复注册 (SCRIPT + SQL): 调用层按 toolId 寻址不可区分, 不依赖四层证据直接 HIGH
+        when(toolRoutingRepo.findEnabled()).thenReturn(List.of(
+                toolOfType(ToolRoutingToolType.SCRIPT, "q2_1_dup", "pandas 算聚合数", List.of("QI卡口")),
+                toolOfType(ToolRoutingToolType.SQL, "q2_1_dup", "返回打分字段", List.of("QI卡口"))));
+        ToolToolOverlapService service = degradedService();
+
+        List<ToolToolOverlapView> items = report(service);
+        assertEquals(1, items.size());
+        assertEquals("HIGH", items.get(0).level());
+        assertEquals("SCRIPT", items.get(0).toolTypeA());
+        assertEquals("SQL", items.get(0).toolTypeB());
+        assertEquals("q2_1_dup", items.get(0).toolIdA());
+        assertTrue(items.get(0).suggestion().contains("重复注册"));
+        assertTrue(items.get(0).suggestion().contains("toolId"));
+    }
+
+    @Test
+    void sameToolIdCollisionFromRegistryScanIsDetectedEvenWithoutMetadataRow() {
+        // 元数据表主键是 tool_id, 同 toolId 的另一类型注册在元数据表里不存在;
+        // 由扫描候选 (DUPLICATE_TOOL_ID) 合成记录补进范围, 仍要检出 HIGH
+        when(toolRoutingRepo.findEnabled()).thenReturn(List.of(
+                toolOfType(ToolRoutingToolType.SCRIPT, "q2_1_dup", "pandas 算聚合数", List.of("QI卡口"))));
+        when(scanService.scan()).thenReturn(List.of(
+                scanCandidate(ToolRoutingToolType.SCRIPT, "q2_1_dup", "pandas 算聚合数", true),
+                scanCandidate(ToolRoutingToolType.SQL, "q2_1_dup", "返回打分字段", true),
+                scanCandidate(ToolRoutingToolType.SQL, "normal_tool", "普通工具", false)));
+        ToolToolOverlapService service = degradedService();
+
+        List<ToolToolOverlapView> items = report(service);
+        assertEquals(1, items.size(), "only the duplicate-id pair enters the report");
+        assertEquals("HIGH", items.get(0).level());
+        assertEquals("q2_1_dup", items.get(0).toolIdA());
+        assertEquals("SCRIPT", items.get(0).toolTypeA());
+        assertEquals("SQL", items.get(0).toolTypeB());
+        assertTrue(items.get(0).suggestion().contains("重复注册"));
+    }
+
+    private ToolRoutingScanCandidate scanCandidate(ToolRoutingToolType type, String toolId,
+                                                   String description, boolean duplicate) {
+        return new ToolRoutingScanCandidate(toolId, type, toolId, description, "", "",
+                true, false, false, duplicate ? List.of("DUPLICATE_TOOL_ID") : List.of());
+    }
+
+    @Test
+    void sameToolIdCrossTypeBothDisabledIsExcluded() {
+        ToolRoutingMetadata disabledScript = new ToolRoutingMetadata("q2_1_dup", ToolRoutingToolType.SCRIPT,
+                "pandas", List.of("QI卡口"), List.of(), List.of(), 0, false, null);
+        ToolRoutingMetadata disabledSql = new ToolRoutingMetadata("q2_1_dup", ToolRoutingToolType.SQL,
+                "sql", List.of("QI卡口"), List.of(), List.of(), 0, false, null);
+        when(toolRoutingRepo.findAll()).thenReturn(List.of(disabledScript, disabledSql));
+        ToolToolOverlapService service = degradedService();
+
+        assertTrue(report(service).isEmpty(), "both-disabled same-toolId pair is pure noise");
     }
 
     private ToolToolOverlapService degradedService() {
         // EmbeddingClient=null -> semanticAvailable=false, warm=true -> degraded (cosine 不可算)
         GovernanceEmbeddingCache cache = new GovernanceEmbeddingCache(null, null, toolRoutingRepo);
         cache.startWarmup();
-        return new ToolToolOverlapService(toolRoutingRepo, cache, unifiedService,
+        return new ToolToolOverlapService(toolRoutingRepo, cache, unifiedService, scanService,
                 0.80, 0.88, 0.85, 300000);
     }
 
@@ -48,7 +115,7 @@ class ToolToolOverlapServiceTest {
         GovernanceEmbeddingCache cache = new GovernanceEmbeddingCache(embedding, null, toolRoutingRepo);
         cache.startWarmup();
         awaitWarm(cache);
-        return new ToolToolOverlapService(toolRoutingRepo, cache, unifiedService,
+        return new ToolToolOverlapService(toolRoutingRepo, cache, unifiedService, scanService,
                 0.80, 0.88, 0.85, 300000);
     }
 
@@ -311,5 +378,20 @@ class ToolToolOverlapServiceTest {
         assertEquals(1, summary.high());
         assertEquals(1L, summary.highByTool().get("t_alpha"));
         assertEquals(1L, summary.highByTool().get("t_beta"));
+    }
+
+    @Test
+    void summaryPutsSameToolIdCollisionInDuplicateByToolNotHighByTool() {
+        // 同 toolId 注册冲突: 不进 highByTool (前端据此置灰启用开关), 单独给 duplicateByTool 角标信号
+        when(toolRoutingRepo.findEnabled()).thenReturn(List.of(
+                toolOfType(ToolRoutingToolType.SCRIPT, "q2_1_dup", "pandas", List.of("QI卡口"))));
+        when(scanService.scan()).thenReturn(List.of(
+                scanCandidate(ToolRoutingToolType.SCRIPT, "q2_1_dup", "pandas", true),
+                scanCandidate(ToolRoutingToolType.SQL, "q2_1_dup", "sql", true)));
+
+        ToolToolOverlapService.OverlapSummary summary = degradedService().summary();
+        assertEquals(1, summary.high());
+        assertFalse(summary.highByTool().containsKey("q2_1_dup"));
+        assertEquals(1L, summary.duplicateByTool().get("q2_1_dup"));
     }
 }

@@ -115,6 +115,67 @@ class GovernanceEmbeddingCacheTest {
     }
 
     @Test
+    void consecutiveDistinctFailuresTripCircuitBreaker() {
+        AtomicInteger calls = new AtomicInteger();
+        EmbeddingClient failing = new EmbeddingClient() {
+            @Override
+            public float[] embed(String text) {
+                calls.incrementAndGet();
+                return null;
+            }
+
+            @Override
+            public int dimension() {
+                return 1;
+            }
+        };
+        GovernanceEmbeddingCache cache = new GovernanceEmbeddingCache(failing, skills(), null);
+        assertTrue(cache.semanticAvailable());
+        // 3 个不同实体连续失败 -> 熔断
+        assertNull(cache.embeddingFor(GovernanceEmbeddingCache.EntityType.TOOL, "t1", "d"));
+        assertNull(cache.embeddingFor(GovernanceEmbeddingCache.EntityType.TOOL, "t2", "d"));
+        assertNull(cache.embeddingFor(GovernanceEmbeddingCache.EntityType.TOOL, "t3", "d"));
+        assertEquals(3, calls.get());
+        assertFalse(cache.semanticAvailable(), "outage window must degrade semantic signals");
+        // 熔断期间不再发 HTTP
+        assertNull(cache.embeddingFor(GovernanceEmbeddingCache.EntityType.TOOL, "t4", "d"));
+        assertEquals(3, calls.get(), "no HTTP calls while circuit is open");
+        // 同一实体 TTL 内负缓存也不重试
+        assertNull(cache.embeddingFor(GovernanceEmbeddingCache.EntityType.TOOL, "t1", "d"));
+        assertEquals(3, calls.get());
+    }
+
+    @Test
+    void warmupTotalFailureOpensCircuitBreaker() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        EmbeddingClient failing = new EmbeddingClient() {
+            @Override
+            public float[] embed(String text) {
+                calls.incrementAndGet();
+                return null;
+            }
+
+            @Override
+            public int dimension() {
+                return 1;
+            }
+        };
+        SkillDescriptionSource source = skills(row("page_1", "d1"), row("page_2", "d2"));
+        GovernanceEmbeddingCache cache = new GovernanceEmbeddingCache(failing, source, null);
+        cache.startWarmup();
+        long deadline = System.currentTimeMillis() + 2000;
+        while (!cache.warm() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10);
+        }
+        assertTrue(cache.warm());
+        assertEquals(2, calls.get());
+        assertFalse(cache.semanticAvailable(), "warmup 0 success must open circuit");
+        // 熔断后调用方不再触发 HTTP
+        assertNull(cache.embeddingFor(GovernanceEmbeddingCache.EntityType.SKILL, "page_3", "d3"));
+        assertEquals(2, calls.get());
+    }
+
+    @Test
     void blankOrNullInputsReturnNullWithoutEmbedding() {
         AtomicInteger calls = new AtomicInteger();
         EmbeddingClient client = new EmbeddingClient() {

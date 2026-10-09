@@ -41,6 +41,8 @@ export interface ToolToolOverlapItem {
   dimensionTagsA: string[];
   dimensionTagsB: string[];
   suggestion: string;
+  enabledA: boolean;
+  enabledB: boolean;
 }
 
 export interface ToolToolOverlapListResponse {
@@ -53,6 +55,7 @@ export interface ToolToolOverlapSummary {
   degraded: boolean;
   counts: Record<string, number>;
   highByTool: Record<string, number>;
+  duplicateByTool: Record<string, number>;
 }
 
 export interface SkillSimilarityMatch {

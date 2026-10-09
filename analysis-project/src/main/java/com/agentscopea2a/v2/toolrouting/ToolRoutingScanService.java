@@ -45,9 +45,11 @@ public class ToolRoutingScanService {
     }
 
     public List<ToolRoutingScanCandidate> scan() {
+        // 元数据主键是 (tool_id, tool_type): 键必须带类型, 否则同 toolId 两行互相覆盖,
+        // 扫描页两行都显示同一个启用状态
         Map<String, ToolRoutingMetadata> configured = new HashMap<>();
         for (ToolRoutingMetadata metadata : metadataRepository.findAll()) {
-            configured.put(metadata.toolId(), metadata);
+            configured.put(metadata.toolId() + "|" + metadata.toolType().name(), metadata);
         }
         List<RawCandidate> raw = new ArrayList<>();
         for (SqlRegistryEntry entry : sqlRegistryMapper.listAllEnabled()) {
@@ -69,7 +71,8 @@ public class ToolRoutingScanService {
         }
         Map<String, Long> idCounts = raw.stream().collect(java.util.stream.Collectors.groupingBy(
                 RawCandidate::toolId, java.util.stream.Collectors.counting()));
-        return raw.stream().map(candidate -> toResult(candidate, configured.get(candidate.toolId()), idCounts.get(candidate.toolId())))
+        return raw.stream().map(candidate -> toResult(candidate,
+                configured.get(candidate.toolId() + "|" + candidate.toolType().name()), idCounts.get(candidate.toolId())))
                 .sorted(Comparator.comparing(ToolRoutingScanCandidate::toolId)
                         .thenComparing(candidate -> candidate.toolType().name()))
                 .toList();

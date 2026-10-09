@@ -18,12 +18,15 @@ package com.agentscopea2a.v2.governance;
 import com.agentscopea2a.v2.toolrouting.ToolMetadataResponse;
 import com.agentscopea2a.v2.toolrouting.ToolRoutingMetadata;
 import com.agentscopea2a.v2.toolrouting.ToolRoutingMetadataRepository;
+import com.agentscopea2a.v2.toolrouting.ToolRoutingScanCandidate;
+import com.agentscopea2a.v2.toolrouting.ToolRoutingScanService;
 import com.agentscopea2a.v2.toolrouting.UnifiedToolMetadataService;
 
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -50,6 +53,9 @@ import java.util.Set;
  * </ul>
  *
  * <p>结果为派生数据, 进程内 TTL 缓存; 工具路由元数据保存后主动失效。重叠不落库。
+ * 检测范围含"已配置未启用"工具 (配置期预警, 至少一侧已启用才配对);
+ * 同 toolId 跨类型重复注册 (DUPLICATE_TOOL_ID) 的对不经四层证据直接判 HIGH
+ * (调用层按 toolId 寻址, 本身就不可区分); 启用拦截与启动审计只取双方都已启用的对。
  */
 public class ToolToolOverlapService {
 
@@ -58,6 +64,7 @@ public class ToolToolOverlapService {
     private final ToolRoutingMetadataRepository toolRoutingMetadataRepository;
     private final GovernanceEmbeddingCache embeddingCache;
     private final UnifiedToolMetadataService unifiedToolMetadataService;
+    private final ToolRoutingScanService scanService;
 
     private final double cosineThreshold;
     private final double cosineHighThreshold;
@@ -72,6 +79,7 @@ public class ToolToolOverlapService {
             ToolRoutingMetadataRepository toolRoutingMetadataRepository,
             GovernanceEmbeddingCache embeddingCache,
             UnifiedToolMetadataService unifiedToolMetadataService,
+            ToolRoutingScanService scanService,
             double cosineThreshold,
             double cosineHighThreshold,
             double nameSimilarityThreshold,
@@ -79,6 +87,7 @@ public class ToolToolOverlapService {
         this.toolRoutingMetadataRepository = toolRoutingMetadataRepository;
         this.embeddingCache = embeddingCache;
         this.unifiedToolMetadataService = unifiedToolMetadataService;
+        this.scanService = scanService;
         this.cosineThreshold = cosineThreshold;
         this.cosineHighThreshold = cosineHighThreshold;
         this.nameSimilarityThreshold = nameSimilarityThreshold;
@@ -124,7 +133,8 @@ public class ToolToolOverlapService {
     public record OverlapSummary(
             boolean degraded,
             Map<String, Long> counts,
-            Map<String, Long> highByTool) {
+            Map<String, Long> highByTool,
+            Map<String, Long> duplicateByTool) {
 
         public long high() {
             return counts.getOrDefault("HIGH", 0L);
@@ -135,24 +145,32 @@ public class ToolToolOverlapService {
         OverlapReport report = report();
         Map<String, Long> counts = new HashMap<>();
         Map<String, Long> highByTool = new HashMap<>();
+        Map<String, Long> duplicateByTool = new HashMap<>();
         for (ToolToolOverlapView item : report.items()) {
             counts.merge(item.level(), 1L, Long::sum);
-            if ("HIGH".equals(item.level())) {
+            if (!"HIGH".equals(item.level())) {
+                continue;
+            }
+            if (item.toolIdA().equals(item.toolIdB())) {
+                // 同 toolId 跨类型注册冲突: 不进 highByTool (前端不据此置灰启用开关——
+                // 元数据一行可指向其中一个类型, 启用无选型风险), 单独给角标信号
+                duplicateByTool.merge(item.toolIdA(), 1L, Long::sum);
+            } else {
                 highByTool.merge(item.toolIdA(), 1L, Long::sum);
                 highByTool.merge(item.toolIdB(), 1L, Long::sum);
             }
         }
-        return new OverlapSummary(report.degraded(), counts, highByTool);
+        return new OverlapSummary(report.degraded(), counts, highByTool, duplicateByTool);
     }
 
     private List<ToolToolOverlapView> compute(boolean degraded) {
-        List<ToolRoutingMetadata> tools = toolRoutingMetadataRepository.findEnabled();
+        List<ToolRoutingMetadata> tools = scanScope();
 
         // T1 向量: 非 degraded 时逐工具取向量一次, O(n) 次 embed (命中缓存)。
         Map<String, float[]> vectors = new HashMap<>();
         if (!degraded) {
             for (ToolRoutingMetadata tool : tools) {
-                vectors.put(tool.toolId(), embeddingCache.embeddingFor(
+                vectors.put(scanKey(tool.toolId(), tool.toolType()), embeddingCache.embeddingFor(
                         GovernanceEmbeddingCache.EntityType.TOOL, tool.toolId(), tool.description()));
             }
         }
@@ -176,9 +194,50 @@ public class ToolToolOverlapService {
         return List.copyOf(result);
     }
 
+    /**
+     * 检测范围 = 已启用 + 已配置未启用 (启用侧优先, 同 toolId 去重)。
+     * 未启用工具不在路由目录, 不构成 Agent 瞎选风险, 但配置期就该看到与已启用工具的
+     * 重叠隐患 (启用前整改); 双方都未启用的对是纯噪音, 不参与比较。
+     */
+    private List<ToolRoutingMetadata> scanScope() {
+        Map<String, ToolRoutingMetadata> byId = new LinkedHashMap<>();
+        for (ToolRoutingMetadata tool : toolRoutingMetadataRepository.findEnabled()) {
+            byId.put(scanKey(tool.toolId(), tool.toolType()), tool);
+        }
+        for (ToolRoutingMetadata tool : toolRoutingMetadataRepository.findAll()) {
+            if (!tool.enabled()) {
+                byId.putIfAbsent(scanKey(tool.toolId(), tool.toolType()), tool);
+            }
+        }
+        // 注册表跨类型同 toolId 冲突 (DUPLICATE_TOOL_ID): 元数据表主键是 tool_id, 同 toolId 的
+        // 另一类型注册在元数据表里物理上不存在, 从扫描候选合成记录补进范围参与配对。只补冲突 id,
+        // 不引入全量注册工具 (避免配对数与 embed 量爆炸); 合成记录无标签, 不会与其他工具配对,
+        // 仅在同 toolId 分支生效; 注册表条目是活性注册, 按已启用处理。
+        if (scanService != null) {
+            for (ToolRoutingScanCandidate candidate : scanService.scan()) {
+                if (!candidate.issueCodes().contains("DUPLICATE_TOOL_ID")) {
+                    continue;
+                }
+                byId.putIfAbsent(scanKey(candidate.toolId(), candidate.toolType()),
+                        new ToolRoutingMetadata(candidate.toolId(), candidate.toolType(),
+                                candidate.description(), List.of(), List.of(), List.of(), 0, true, null));
+            }
+        }
+        return new ArrayList<>(byId.values());
+    }
+
+    /** 去重键 = toolId + 类型: 同 toolId 跨类型重复注册 (DUPLICATE_TOOL_ID) 的记录都要保留参与配对。 */
+    private static String scanKey(String toolId, com.agentscopea2a.v2.toolrouting.ToolRoutingToolType toolType) {
+        return toolId + "|" + toolType;
+    }
+
     private ToolToolOverlapView evaluatePair(
             ToolRoutingMetadata a, ToolRoutingMetadata b,
             Map<String, float[]> vectors, Map<String, Signature> signatures, boolean degraded) {
+        // 双方都未启用的对不参与比较 (都不在路由目录, 无选型风险)
+        if (!a.enabled() && !b.enabled()) {
+            return null;
+        }
         // T3 名称相似 (与 T0 无关, 单独命中只给 LOW 命名卫生)
         String normalizedA = TextSimilarityUtil.normalizeName(a.toolId());
         String normalizedB = TextSimilarityUtil.normalizeName(b.toolId());
@@ -192,11 +251,36 @@ public class ToolToolOverlapService {
                 .distinct()
                 .toList();
 
+        // 同 toolId 跨类型重复注册 (扫描问题 DUPLICATE_TOOL_ID): Agent 调用层按 toolId 寻址,
+        // 本身就无法区分, 不依赖四层证据直接判 HIGH; 双方均未启用的对已在上方排除。
+        if (a.toolId().equals(b.toolId())) {
+            String topics = String.join("、", topicOverlap);
+            String suggestion = "工具 " + a.toolId() + " 以 " + a.toolType() + " 与 " + b.toolType()
+                    + " 两种类型重复注册（" + (topics.isEmpty() ? "无共同主题标签" : topics) + "），"
+                    + "Agent 调用层无法区分，请重命名独立 toolId 或退役其中一个";
+            return new ToolToolOverlapView(
+                    a.toolId(), a.toolType().name(),
+                    b.toolId(), b.toolType().name(),
+                    "HIGH",
+                    List.copyOf(topicOverlap),
+                    0,
+                    false,
+                    false,
+                    List.of(),
+                    List.copyOf(a.metricTags()),
+                    List.copyOf(b.metricTags()),
+                    List.copyOf(a.dimensionTags()),
+                    List.copyOf(b.dimensionTags()),
+                    suggestion,
+                    a.enabled(),
+                    b.enabled());
+        }
+
         boolean cosineKnown = false;
         double cosine = 0;
         if (!degraded) {
-            float[] va = vectors.get(a.toolId());
-            float[] vb = vectors.get(b.toolId());
+            float[] va = vectors.get(scanKey(a.toolId(), a.toolType()));
+            float[] vb = vectors.get(scanKey(b.toolId(), b.toolType()));
             if (va != null && vb != null) {
                 cosine = TextSimilarityUtil.cosine(va, vb);
                 cosineKnown = true;
@@ -284,7 +368,9 @@ public class ToolToolOverlapService {
                 List.copyOf(b.metricTags()),
                 List.copyOf(a.dimensionTags()),
                 List.copyOf(b.dimensionTags()),
-                suggestion);
+                suggestion,
+                a.enabled(),
+                b.enabled());
     }
 
     /** 差异层明细文案, 如 "维度标签不同（A: 应用、版本计划；B: 部门、版本计划）、描述相近但有差异（cosine=0.85）"。 */

@@ -33,4 +33,6 @@ public record ToolToolOverlapView(
         List<String> metricTagsB,
         List<String> dimensionTagsA,
         List<String> dimensionTagsB,
-        String suggestion) {}
+        String suggestion,
+        boolean enabledA,
+        boolean enabledB) {}

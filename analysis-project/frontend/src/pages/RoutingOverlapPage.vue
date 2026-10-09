@@ -16,7 +16,7 @@ import type {
 } from '../types/routingOverlap';
 
 const route = useRoute();
-const view = ref<'skill-tool' | 'tool-tool'>('skill-tool');
+const view = ref<'skill-tool' | 'tool-tool'>(route.query.view === 'tool-tool' ? 'tool-tool' : 'skill-tool');
 
 const items = ref<RoutingOverlapItem[]>([]);
 const summary = ref<RoutingOverlapSummary | null>(null);
@@ -105,7 +105,7 @@ onMounted(load);
       <el-input v-model="toolIdFilter" placeholder="工具 ID" clearable size="small" style="width: 220px" @change="load" />
       <el-button size="small" @click="load">刷新</el-button>
       <span v-if="view === 'skill-tool'" class="hint">派生治理视图：Skill 与工具能力声明的重叠对，只提示不自动处置</span>
-      <span v-else class="hint">同候选集内描述/功能签名无法区分的工具对；HIGH 级在 block-tool-overlap=true 时禁止工具路由启动</span>
+      <span v-else class="hint">同候选集内描述/功能签名无法区分的工具对；HIGH 且双方已启用时，启动会自动停用低优先级一方（仅可启用其中一个）；未启用侧为配置期预警，请整改后再启用</span>
     </div>
 
     <div v-if="view === 'skill-tool' && summary" class="stats">
@@ -149,9 +149,13 @@ onMounted(load);
       <el-table-column label="级别" width="90" align="center">
         <template #default="{ row }"><el-tag :type="levelTagType(row.level)" size="small">{{ row.level }}</el-tag></template>
       </el-table-column>
-      <el-table-column prop="toolIdA" label="工具 A" width="220" show-overflow-tooltip />
+      <el-table-column label="工具 A" width="260" show-overflow-tooltip>
+        <template #default="{ row }"><span>{{ row.toolIdA }}</span><el-tag :type="row.enabledA ? 'danger' : 'info'" size="small" style="margin-left: 6px">{{ row.enabledA ? '已启用' : '未启用' }}</el-tag></template>
+      </el-table-column>
       <el-table-column prop="toolTypeA" label="类型 A" width="80" align="center" />
-      <el-table-column prop="toolIdB" label="工具 B" width="220" show-overflow-tooltip />
+      <el-table-column label="工具 B" width="260" show-overflow-tooltip>
+        <template #default="{ row }"><span>{{ row.toolIdB }}</span><el-tag :type="row.enabledB ? 'danger' : 'info'" size="small" style="margin-left: 6px">{{ row.enabledB ? '已启用' : '未启用' }}</el-tag></template>
+      </el-table-column>
       <el-table-column prop="toolTypeB" label="类型 B" width="80" align="center" />
       <el-table-column label="信号" min-width="240" show-overflow-tooltip>
         <template #default="{ row }">{{ toolSignals(row) }}</template>

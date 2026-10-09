@@ -7,9 +7,13 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class ToolRoutingStartupAuditTest {
@@ -174,12 +178,58 @@ class ToolRoutingStartupAuditTest {
                         "t_a", "SQL", "t_b", "SQL", "MEDIUM",
                         List.of("QI卡口"), 0.82, false, false,
                         List.of("描述"), List.of(), List.of(), List.of(), List.of(),
-                        "描述相近，请人工确认"))));
+                        "描述相近，请人工确认", true, true))));
         ToolRoutingStartupAudit audit = new ToolRoutingStartupAudit(scanService, metadataRepository,
                 ToolRoutingMetrics.noop(), false, mediumOnly, true);
 
         assertDoesNotThrow(() -> audit.run(new DefaultApplicationArguments()));
         assertTrue(audit.audit().stream().noneMatch(i -> i.kind().equals("tool_overlap")));
+    }
+
+    @Test
+    void sameToolIdRegistrationCollisionWarnsButNeverBlocksStartup() {
+        // 同 toolId 跨类型重复注册: 只能改注册表整改, 不产生 tool_overlap 阻断 issue
+        com.agentscopea2a.v2.governance.ToolToolOverlapView pair =
+                new com.agentscopea2a.v2.governance.ToolToolOverlapView(
+                        "q2_1_dup", "SCRIPT", "q2_1_dup", "SQL", "HIGH",
+                        List.of("QI卡口"), 0, false, false,
+                        List.of(), List.of(), List.of(), List.of(), List.of(),
+                        "重复注册，请重命名", true, true);
+        com.agentscopea2a.v2.governance.ToolToolOverlapService service =
+                mock(com.agentscopea2a.v2.governance.ToolToolOverlapService.class);
+        when(service.report()).thenReturn(new com.agentscopea2a.v2.governance.ToolToolOverlapService.OverlapReport(false, List.of(pair)));
+        when(scanService.scan()).thenReturn(List.of(candidate("q2_1_dup", true, true)));
+        when(metadataRepository.findAll()).thenReturn(List.of(metadata("q2_1_dup", true)));
+
+        ToolRoutingStartupAudit audit = new ToolRoutingStartupAudit(scanService, metadataRepository,
+                ToolRoutingMetrics.noop(), false, service, true, 4);
+
+        assertDoesNotThrow(() -> audit.run(new DefaultApplicationArguments()));
+        assertTrue(audit.audit().stream().noneMatch(i -> i.kind().equals("tool_overlap")));
+    }
+
+    @Test
+    void bothEnabledHighPairAutoDisablesLoserInsteadOfBlockingStartup() {
+        // 仅可启用其中一个: 双方已启用的 HIGH 对, 启动期自动停用低优先级一侧, 不再阻断
+        when(scanService.scan()).thenReturn(List.of(
+                candidate("t_a", true, true), candidate("t_b", true, true)));
+        when(metadataRepository.findAll()).thenReturn(List.of(
+                new ToolRoutingMetadata("t_a", ToolRoutingToolType.SQL, "desc",
+                        List.of("QI卡口"), List.of("达标率"), List.of("部门"), 5, true, null),
+                new ToolRoutingMetadata("t_b", ToolRoutingToolType.SQL, "desc",
+                        List.of("QI卡口"), List.of("达标率"), List.of("部门"), 0, true, null)));
+        when(metadataRepository.upsert(any())).thenReturn(true);
+        ToolRoutingStartupAudit audit = new ToolRoutingStartupAudit(scanService, metadataRepository,
+                ToolRoutingMetrics.noop(), false, overlapServiceWithHighPair("t_a", "t_b"), true, 4);
+
+        // 若仍有 tool_overlap issue 且 block=true 会抛异常, 不抛即说明自愈后无残留阻断项
+        assertDoesNotThrow(() -> audit.run(new DefaultApplicationArguments()));
+
+        org.mockito.ArgumentCaptor<ToolRoutingMetadata> captor =
+                org.mockito.ArgumentCaptor.forClass(ToolRoutingMetadata.class);
+        verify(metadataRepository, atLeastOnce()).upsert(captor.capture());
+        assertTrue(captor.getAllValues().stream().allMatch(m -> "t_b".equals(m.toolId()) && !m.enabled()),
+                "low-priority side must be auto-disabled, high-priority side kept");
     }
 
     private static com.agentscopea2a.v2.governance.ToolToolOverlapService overlapServiceWithHighPair(
@@ -196,7 +246,7 @@ class ToolRoutingStartupAuditTest {
                 toolIdA, "SQL", toolIdB, "SQL", "HIGH",
                 List.of("QI卡口"), 0.93, false, false,
                 List.of(), List.of(), List.of(), List.of(), List.of(),
-                "重复，请处理");
+                "重复，请处理", true, true);
     }
 
     private static ToolRoutingScanCandidate candidate(String toolId, boolean sourceAvailable, boolean configured) {
