@@ -62,8 +62,8 @@ class ToolToolOverlapServiceTest {
 
     @Test
     void sameToolIdCollisionFromRegistryScanIsDetectedEvenWithoutMetadataRow() {
-        // 元数据表主键是 tool_id, 同 toolId 的另一类型注册在元数据表里不存在;
-        // 由扫描候选 (DUPLICATE_TOOL_ID) 合成记录补进范围, 仍要检出 HIGH
+        // 元数据表无同 (id, type) 行的另一类型注册, 由扫描候选 (DUPLICATE_TOOL_ID) 合成
+        // 记录补进范围, 仍要检出 HIGH; 启用状态如实: 元数据侧已启用, 合成侧未配置=未启用
         when(toolRoutingRepo.findEnabled()).thenReturn(List.of(
                 toolOfType(ToolRoutingToolType.SCRIPT, "q2_1_dup", "pandas 算聚合数", List.of("QI卡口"))));
         when(scanService.scan()).thenReturn(List.of(
@@ -78,7 +78,27 @@ class ToolToolOverlapServiceTest {
         assertEquals("q2_1_dup", items.get(0).toolIdA());
         assertEquals("SCRIPT", items.get(0).toolTypeA());
         assertEquals("SQL", items.get(0).toolTypeB());
+        assertTrue(items.get(0).enabledA());
+        assertFalse(items.get(0).enabledB(), "unconfigured synthetic side must not show as enabled");
         assertTrue(items.get(0).suggestion().contains("重复注册"));
+    }
+
+    @Test
+    void unconfiguredSameToolIdPairIsReportedWithDisabledState() {
+        // 双方都未配置 (无元数据行): 注册冲突是注册层缺陷, 与开关状态无关, 照常报告,
+        // 但两侧都标未启用 (与工具路由页状态一致), 不再硬编码已启用
+        when(toolRoutingRepo.findEnabled()).thenReturn(List.of());
+        when(toolRoutingRepo.findAll()).thenReturn(List.of());
+        when(scanService.scan()).thenReturn(List.of(
+                scanCandidate(ToolRoutingToolType.SCRIPT, "q2_2_dup", "脚本侧", true),
+                scanCandidate(ToolRoutingToolType.SQL, "q2_2_dup", "SQL侧", true)));
+        ToolToolOverlapService service = degradedService();
+
+        List<ToolToolOverlapView> items = report(service);
+        assertEquals(1, items.size());
+        assertEquals("HIGH", items.get(0).level());
+        assertFalse(items.get(0).enabledA());
+        assertFalse(items.get(0).enabledB());
     }
 
     private ToolRoutingScanCandidate scanCandidate(ToolRoutingToolType type, String toolId,
@@ -88,15 +108,22 @@ class ToolToolOverlapServiceTest {
     }
 
     @Test
-    void sameToolIdCrossTypeBothDisabledIsExcluded() {
+    void sameToolIdCrossTypeBothDisabledStillReportedWithTrueState() {
+        // 已配置但双方都停用的同 toolId 对: 注册缺陷与开关无关仍报告 (否则重叠页角标消失,
+        // 整改闭环断在配置期), 但启用标签如实显示未启用; 非 same-toolId 的双禁用对仍被过滤
         ToolRoutingMetadata disabledScript = new ToolRoutingMetadata("q2_1_dup", ToolRoutingToolType.SCRIPT,
                 "pandas", List.of("QI卡口"), List.of(), List.of(), 0, false, null);
         ToolRoutingMetadata disabledSql = new ToolRoutingMetadata("q2_1_dup", ToolRoutingToolType.SQL,
                 "sql", List.of("QI卡口"), List.of(), List.of(), 0, false, null);
-        when(toolRoutingRepo.findAll()).thenReturn(List.of(disabledScript, disabledSql));
+        ToolRoutingMetadata disabledOther = new ToolRoutingMetadata("other_tool", ToolRoutingToolType.SQL,
+                "other", List.of("QI卡口"), List.of(), List.of(), 0, false, null);
+        when(toolRoutingRepo.findAll()).thenReturn(List.of(disabledScript, disabledSql, disabledOther));
         ToolToolOverlapService service = degradedService();
 
-        assertTrue(report(service).isEmpty(), "both-disabled same-toolId pair is pure noise");
+        List<ToolToolOverlapView> items = report(service);
+        assertEquals(1, items.size(), "only the same-toolId pair survives the both-disabled filter");
+        assertFalse(items.get(0).enabledA());
+        assertFalse(items.get(0).enabledB());
     }
 
     private ToolToolOverlapService degradedService() {

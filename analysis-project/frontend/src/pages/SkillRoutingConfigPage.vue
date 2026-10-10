@@ -16,7 +16,7 @@ const highOverlap = ref<Record<string, number>>({});
 const loading = ref(false);
 const keyword = ref('');
 const activeFilter = ref<string>('');
-const currentPage = ref(1); const pageSize = ref(20); const total = ref(0);
+const currentPage = ref(1); const pageSize = ref(100); const total = ref(0);
 // 我的/全部 范围切换: 管理员默认'全部', 普通用户默认'我的', 后端按 creator = 当前用户过滤
 const scope = ref<'mine' | 'all'>(isAdmin() ? 'all' : 'mine');
 const dialogVisible = ref(false);

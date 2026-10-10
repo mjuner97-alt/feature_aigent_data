@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { getToolRoutingStatus, listTags, listToolRoutingAll, saveTag, saveToolRouting, scanToolRouting, setToolRoutingEnabled } from '../api/toolRouting';
 import { routingOverlapSummary, toolToolOverlapSummary } from '../api/routingOverlap';
@@ -24,7 +24,7 @@ const dimensions = ref<ToolRoutingTag[]>([]);
 const status = ref<ToolRoutingStatus | null>(null);
 const keyword = ref('');
 const typeFilter = ref('');
-const currentPage = ref(1); const pageSize = ref(20); const total = ref(0);
+const currentPage = ref(1); const pageSize = ref(100); const total = ref(0);
 // 我的/全部 范围切换: 管理员默认'全部', 普通用户默认'我的', 按创建人字段 (ownerUserId) = 当前用户过滤
 const scope = ref<'mine' | 'all'>(isAdmin() ? 'all' : 'mine');
 const dialogVisible = ref(false);
@@ -41,11 +41,9 @@ const canEdit = (row: ToolRoutingScanCandidate) => canEditConfig() && (!!row.own
 function emptyInput(): ToolRoutingInput { return { toolType: 'SQL', description: '', topicTags: [], metricTags: [], dimensionTags: [], priority: 0, enabled: false }; }
 // 元数据主键是 (tool_id, tool_type): 同 toolId 的 SCRIPT/SQL 是两条独立配置、各自有开关
 function configKey(row: { toolId: string; toolType: string }) { return row.toolId + '|' + row.toolType; }
-const filteredRows = computed(() => rows.value.filter(row => {
-  const matchKeyword = !keyword.value || [row.toolId, row.name, row.description, row.creator].join(' ').toLowerCase().includes(keyword.value.toLowerCase());
-  const mine = scope.value === 'all' || canEdit(row);
-  return matchKeyword && (!typeFilter.value || row.toolType === typeFilter.value) && mine;
-}));
+// keyword/typeFilter 已下沉到后端 /scan 分页前过滤 (搜索要覆盖所有分页); 前端只剩 我的/全部 范围过滤
+const filteredRows = computed(() => rows.value.filter(row => scope.value === 'all' || canEdit(row)));
+watch([keyword, typeFilter], () => { currentPage.value = 1; load(); });
 const topicOptions = computed(() => topics.value.map(tag => tag.tagName));
 const metricOptions = computed(() => metrics.value.map(tag => tag.tagName));
 const dimensionOptions = computed(() => dimensions.value.map(tag => tag.tagName));
@@ -54,7 +52,8 @@ async function load() {
   loading.value = true;
   try {
     const [scanned, configured, currentStatus, topicTags, metricTags, dimensionTags] = await Promise.all([
-      scanToolRouting(currentPage.value, pageSize.value), listToolRoutingAll(), getToolRoutingStatus(), listTags('TOPIC'), listTags('METRIC'), listTags('DIMENSION'),
+      scanToolRouting(currentPage.value, pageSize.value, keyword.value.trim(), typeFilter.value),
+      listToolRoutingAll(), getToolRoutingStatus(), listTags('TOPIC'), listTags('METRIC'), listTags('DIMENSION'),
     ]);
     rows.value = scanned.items; total.value = scanned.total;
     configurations.value = Object.fromEntries(configured.map(item => [item.toolId + '|' + item.toolType, item]));

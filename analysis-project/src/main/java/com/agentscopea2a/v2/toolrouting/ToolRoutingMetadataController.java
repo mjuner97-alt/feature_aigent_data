@@ -52,12 +52,30 @@ public class ToolRoutingMetadataController {
         return service.save(toolId, input, userId);
     }
 
+    /** keyword/type 在分页前过滤: 搜索框要能搜到所有分页的内容, 客户端只过滤当前页。 */
     @GetMapping("/scan")
-    public PageResponse<ToolRoutingScanCandidate> scan(@RequestParam(defaultValue="1") int page, @RequestParam(defaultValue="20") int pageSize) {
+    public PageResponse<ToolRoutingScanCandidate> scan(@RequestParam(defaultValue="1") int page,
+                                                       @RequestParam(defaultValue="20") int pageSize,
+                                                       @RequestParam(required=false) String keyword,
+                                                       @RequestParam(required=false) String type) {
         int size = Math.max(1, Math.min(pageSize, 100)); int p = Math.max(1, page);
-        List<ToolRoutingScanCandidate> all = scanService.scan(); int from = Math.min((p - 1) * size, all.size());
+        List<ToolRoutingScanCandidate> all = filterScan(scanService.scan(), keyword, type);
+        int from = Math.min((p - 1) * size, all.size());
         int to = Math.min(from + size, all.size());
         return new PageResponse<>(all.subList(from, to), p, size, all.size());
+    }
+
+    private static List<ToolRoutingScanCandidate> filterScan(List<ToolRoutingScanCandidate> all, String keyword, String type) {
+        List<ToolRoutingScanCandidate> filtered = all;
+        if (type != null && !type.isBlank()) {
+            filtered = filtered.stream().filter(candidate -> candidate.toolType().name().equalsIgnoreCase(type.trim())).toList();
+        }
+        if (keyword != null && !keyword.isBlank()) {
+            String needle = keyword.trim().toLowerCase();
+            filtered = filtered.stream().filter(candidate -> (candidate.toolId() + " " + candidate.name() + " "
+                    + candidate.description() + " " + candidate.creator()).toLowerCase().contains(needle)).toList();
+        }
+        return filtered;
     }
 
     @GetMapping("/status")

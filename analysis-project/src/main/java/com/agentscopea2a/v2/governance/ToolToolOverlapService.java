@@ -209,10 +209,11 @@ public class ToolToolOverlapService {
                 byId.putIfAbsent(scanKey(tool.toolId(), tool.toolType()), tool);
             }
         }
-        // 注册表跨类型同 toolId 冲突 (DUPLICATE_TOOL_ID): 元数据表主键是 tool_id, 同 toolId 的
-        // 另一类型注册在元数据表里物理上不存在, 从扫描候选合成记录补进范围参与配对。只补冲突 id,
-        // 不引入全量注册工具 (避免配对数与 embed 量爆炸); 合成记录无标签, 不会与其他工具配对,
-        // 仅在同 toolId 分支生效; 注册表条目是活性注册, 按已启用处理。
+        // 注册表跨类型同 toolId 冲突 (DUPLICATE_TOOL_ID): 元数据表里该 (id, type) 无行,
+        // 从扫描候选合成记录补进范围参与配对。只补冲突 id, 不引入全量注册工具 (避免配对数
+        // 与 embed 量爆炸); 合成记录无标签, 不会与其他工具配对, 仅在同 toolId 分支生效;
+        // 启用状态如实取 routeEnabled (configured && enabled), 未配置即未启用,
+        // 否则重叠页会给未配置工具标"已启用"。
         if (scanService != null) {
             for (ToolRoutingScanCandidate candidate : scanService.scan()) {
                 if (!candidate.issueCodes().contains("DUPLICATE_TOOL_ID")) {
@@ -220,7 +221,8 @@ public class ToolToolOverlapService {
                 }
                 byId.putIfAbsent(scanKey(candidate.toolId(), candidate.toolType()),
                         new ToolRoutingMetadata(candidate.toolId(), candidate.toolType(),
-                                candidate.description(), List.of(), List.of(), List.of(), 0, true, null));
+                                candidate.description(), List.of(), List.of(), List.of(), 0,
+                                candidate.routeEnabled(), null));
             }
         }
         return new ArrayList<>(byId.values());
@@ -234,8 +236,10 @@ public class ToolToolOverlapService {
     private ToolToolOverlapView evaluatePair(
             ToolRoutingMetadata a, ToolRoutingMetadata b,
             Map<String, float[]> vectors, Map<String, Signature> signatures, boolean degraded) {
-        // 双方都未启用的对不参与比较 (都不在路由目录, 无选型风险)
-        if (!a.enabled() && !b.enabled()) {
+        // 双方都未启用的对不参与比较 (都不在路由目录, 无选型风险);
+        // 同 toolId 注册冲突例外: 注册缺陷与开关状态无关 (与扫描页 DUPLICATE_TOOL_ID 恒报一致),
+        // 照常报告但标签显示真实启用状态
+        if (!a.enabled() && !b.enabled() && !a.toolId().equals(b.toolId())) {
             return null;
         }
         // T3 名称相似 (与 T0 无关, 单独命中只给 LOW 命名卫生)
