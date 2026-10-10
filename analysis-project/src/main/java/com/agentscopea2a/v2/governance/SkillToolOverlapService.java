@@ -32,16 +32,21 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Skill-Tool 功能重叠检测 (docs/skill-tool-overlap-and-description-similarity-plan.md §1)。
+ * Skill-Tool 功能重叠检测 (docs/skill-tool-overlap-and-description-similarity-plan.md §1, §6.3)。
  *
- * <p>信号与分级 (S1 只佐证不单独定级 —— 两层架构下工作流 Skill 与其编排的工具共享
- * 业务主题 (topic_tags) 是正常现象):
+ * <p>两侧检索链路不同: Skill = 领域标签/keywords/描述, Tool = 主题/指标/维度/描述四层;
+ * 描述层是唯一稳定交汇点, tool 标签不做"层相等"比较 (skill 无对应层且字典不相交),
+ * 只作为 S1' 的佐证匹配面。
+ *
+ * <p>信号与分级 (S1' 只佐证不单独定级; 无佐证的对不出记录, 无 LOW 级):
  * <ul>
  * <li>HIGH   = S3 命中 (名称/keywords 归一化匹配 toolId, 或声明文本含 toolId 字面量)
  *             或 S2 ≥ cosineHighThreshold (0.88)</li>
- * <li>MEDIUM = S2 ≥ cosineThreshold (0.80) 且 S1 ≥ 1</li>
- * <li>LOW    = S2 单独达阈值, 或 S1 ≥ 2 (仅巡检)</li>
+ * <li>MEDIUM = S2 ∈ [cosineThreshold(0.80), 0.88) 且 S1' 命中</li>
  * </ul>
+ *
+ * <p>S1' 词面佐证: ① skill keywords 命中 tool 四层标签/description 任一;
+ * ② skill domainTags 定向命中 tool dimensionTags (域↔维同类轴, 不参与通用匹配)。
  *
  * <p>范围: 路由 active 的 Skill 联合判定存活 (skill_index 黑名单 = 软删标记必须排除;
  * 页面 Skill 以 skill_manage ACTIVE+未删为权威, skill_index 行缺失不算孤儿;
@@ -197,12 +202,42 @@ public class SkillToolOverlapService {
             Set<String> skillAliases,
             ToolRoutingMetadata tool,
             boolean degraded) {
-        // S1: 业务主题交集 (佐证; skill 指标标签已随评分体系简化移除, 佐证改用两侧业务主题)
-        Set<String> toolTopics = new HashSet<>(tool.topicTags());
-        List<String> topicOverlap = skill.topicTags().stream()
-                .filter(toolTopics::contains)
-                .distinct()
-                .toList();
+        // S1': 词面佐证 —— ① keywords 命中 tool 四层标签/description; ② domainTags 定向命中
+        // tool dimensionTags (域↔维同类轴, 不参与通用匹配避免粗粒度域词擦边)。
+        String toolDescriptionLower = tool.description() == null ? "" : tool.description().toLowerCase(Locale.ROOT);
+        List<String> toolTagsLower = new ArrayList<>();
+        for (List<String> tagGroup : List.of(tool.topicTags(), tool.metricTags(), tool.dimensionTags())) {
+            if (tagGroup == null) continue;
+            for (String tag : tagGroup) {
+                if (tag != null && !tag.isBlank()) toolTagsLower.add(tag.trim().toLowerCase(Locale.ROOT));
+            }
+        }
+        List<String> toolDimensionsLower = tool.dimensionTags() == null ? List.of()
+                : tool.dimensionTags().stream()
+                        .filter(tag -> tag != null && !tag.isBlank())
+                        .map(tag -> tag.trim().toLowerCase(Locale.ROOT))
+                        .toList();
+        List<String> keywordEvidence = new ArrayList<>();
+        if (skill.keywords() != null) {
+            for (String kw : skill.keywords()) {
+                if (kw == null || kw.isBlank()) continue;
+                String kwLower = kw.trim().toLowerCase(Locale.ROOT);
+                if (toolDescriptionLower.contains(kwLower)
+                        || toolTagsLower.stream().anyMatch(tag -> tag.contains(kwLower) || kwLower.contains(tag))) {
+                    keywordEvidence.add(kw.trim());
+                }
+            }
+        }
+        if (skill.domainTags() != null) {
+            for (String domain : skill.domainTags()) {
+                if (domain == null || domain.isBlank()) continue;
+                String domainLower = domain.trim().toLowerCase(Locale.ROOT);
+                if (toolDimensionsLower.stream().anyMatch(dim -> dim.contains(domainLower) || domainLower.contains(dim))) {
+                    keywordEvidence.add(domain.trim());
+                }
+            }
+        }
+        List<String> evidence = keywordEvidence.stream().distinct().toList();
 
         // S2: 描述语义相似
         double cosine = 0;
@@ -231,15 +266,14 @@ public class SkillToolOverlapService {
                 && declaration.toLowerCase(Locale.ROOT).contains(tool.toolId().toLowerCase(Locale.ROOT));
 
         boolean s2 = cosine >= cosineThreshold;
-        boolean s1 = !topicOverlap.isEmpty();
+        boolean s1 = !evidence.isEmpty();
         String level = null;
         if (aliasHit || toolIdLiteral || cosine >= cosineHighThreshold) {
             level = "HIGH";
         } else if (s2 && s1) {
             level = "MEDIUM";
-        } else if (s2 || topicOverlap.size() >= 2) {
-            level = "LOW";
         }
+        // 无佐证且 cosine 未达高阈值: 不出记录 (纯措辞相似缺独立证据, 展示只添噪音, §6.3 定版)
         if (level == null) {
             return null;
         }
@@ -251,11 +285,9 @@ public class SkillToolOverlapService {
         } else if ("HIGH".equals(level)) {
             suggestion = "该 Skill 与工具 " + tool.toolId()
                     + " 能力声明高度相似；若 Skill 无独立业务规则，建议上收为工作流编排并修改描述";
-        } else if ("MEDIUM".equals(level)) {
-            suggestion = "该 Skill 与工具 " + tool.toolId() + " 描述相近且业务主题相关（"
-                    + String.join("、", topicOverlap) + "）；请人工确认是否能力重复";
         } else {
-            suggestion = "业务主题相关（" + String.join("、", topicOverlap) + "），供巡检参考";
+            suggestion = "该 Skill 与工具 " + tool.toolId() + " 描述相近且词面相关（"
+                    + String.join("、", evidence) + "）；请人工确认是否能力重复";
         }
 
         return new RoutingOverlapView(
@@ -265,7 +297,7 @@ public class SkillToolOverlapService {
                 tool.toolId(),
                 tool.toolType().name(),
                 level,
-                List.copyOf(topicOverlap),
+                evidence,
                 cosine,
                 aliasHit,
                 toolIdLiteral,

@@ -84,6 +84,15 @@ SQL/API/SCRIPT 原子工具的发现统一走 `<tool_metric_catalog>` 三级协�
 
 ## 给用户提供 CSV 下载链接
 
+**按场景选路径 (第一个匹配就用)**:
+
+| 场景 | 路径 |
+|---|---|
+| 本次执行 SQL + 用户明确要下载 | `sql_registry_exec` 传 `downloadFilename` (推荐, 一步, 落库跨清理安全) |
+| SQL 已在前面轮次跑过 / 数据经 python 二次筛选加工后落盘 | python 导出 CSV 到 artifacts 路径 -> `generate_csv_download_url(agentPath=<该路径>)` |
+| 数据 > 5MB (落库直传会拒) | 只能磁盘路径: `generate_csv_download_url` |
+| 用户只是问数据, 没要下载 | 不生成任何下载链接 |
+
 **推荐: sql_registry_exec 传 downloadFilename (一步到位, 内容落库跨清理安全)**
 
 用户明确要"导出/下载"时, 调 sql_registry_exec 直接传 downloadFilename, 工具跑完 SQL 后内部生成短链附结果末尾:
@@ -97,11 +106,11 @@ SQL/API/SCRIPT 原子工具的发现统一走 `<tool_metric_catalog>` 三级协�
 - 只在用户明确要"导出/下载"时传 downloadFilename, 只问数据不传 (不浪费 DB 空间)
 - downloadFilename 含中文 OK, 后端 UTF-8 编码
 
-**备选: generate_csv_download_url (大数据 > 5MB 或老路径)**
+**备选: generate_csv_download_url (已落盘数据 / 大数据 > 5MB)**
 
-数据超 5MB (新工具会拒) 或已有磁盘 artifact 时用老路径:
+SQL 已在前面轮次跑过 (当时没传 downloadFilename), 或数据经 python 二次筛选/加工后导出了 CSV, 或数据超 5MB (落库直传会拒) 时走本路径:
 
-1. 从上一轮工具结果复制 `📦 路径:` 行后的完整路径
+1. 从上一轮工具结果复制 `📦 路径:` 行后的完整路径 (python 导出时用代码里的 outpath)
 2. `router_tool(paramsJson='{"toolId":"generate_csv_download_url","agentPath":"<复制的路径>"}')`
 3. 把返回的 `/redirect/download?shortCode=xxx` 链接放在回复里给用户点击下载
 4. ⚠️ 任务结束 artifact 目录若被清理, 链接会 404 -- 建议用户表态要下载后再生成

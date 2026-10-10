@@ -4,8 +4,8 @@ export interface RoutingOverlapItem {
   skillSummary: string;
   toolId: string;
   toolType: string;
-  level: 'HIGH' | 'MEDIUM' | 'LOW';
-  topicTagOverlap: string[];
+  level: 'HIGH' | 'MEDIUM';
+  keywordEvidence: string[];
   cosine: number;
   aliasHit: boolean;
   toolIdLiteralInDescription: boolean;
@@ -56,6 +56,37 @@ export interface ToolToolOverlapSummary {
   counts: Record<string, number>;
   highByTool: Record<string, number>;
   duplicateByTool: Record<string, number>;
+}
+
+export interface SkillSkillOverlapItem {
+  skillNameA: string;
+  ownerA: string;
+  skillNameB: string;
+  ownerB: string;
+  level: 'HIGH' | 'MEDIUM' | 'LOW';
+  domainTagsA: string[];
+  domainTagsB: string[];
+  keywordsA: string[];
+  keywordsB: string[];
+  keywordOverlap: string[];
+  cosine: number;
+  cosineKnown: boolean;
+  differingLayers: string[];
+  suggestion: string;
+  activeA: boolean;
+  activeB: boolean;
+}
+
+export interface SkillSkillOverlapListResponse {
+  degraded: boolean;
+  total: number;
+  items: SkillSkillOverlapItem[];
+}
+
+export interface SkillSkillOverlapSummary {
+  degraded: boolean;
+  counts: Record<string, number>;
+  highBySkill: Record<string, number>;
 }
 
 export interface SkillSimilarityMatch {

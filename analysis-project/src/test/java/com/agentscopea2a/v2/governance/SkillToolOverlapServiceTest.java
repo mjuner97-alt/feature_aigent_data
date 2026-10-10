@@ -48,8 +48,14 @@ class SkillToolOverlapServiceTest {
 
     private SkillRoutingMetadata skill(String name, String summary, List<String> keywords,
                                        List<String> topicTags, String description, String status) {
+        return skill(name, summary, keywords, List.of(), topicTags, description, status);
+    }
+
+    private SkillRoutingMetadata skill(String name, String summary, List<String> keywords,
+                                       List<String> domainTags, List<String> topicTags,
+                                       String description, String status) {
         SkillRoutingMetadata metadata = new SkillRoutingMetadata(
-                name, summary, keywords, List.of(), topicTags, "u_skill", true, null);
+                name, summary, keywords, domainTags, topicTags, "u_skill", true, null);
         when(skillRoutingRepo.findActive()).thenReturn(List.of(metadata));
         when(skillIndexRepo.findByName(name)).thenReturn(java.util.Optional.of(new SkillEntry(
                 name, null, description, 1, 0, null, status, "user_generated", "u_skill", null)));
@@ -58,9 +64,40 @@ class SkillToolOverlapServiceTest {
     }
 
     private void tool(String toolId, String description, List<String> topicTags) {
+        tool(toolId, description, topicTags, List.of());
+    }
+
+    private void tool(String toolId, String description, List<String> topicTags, List<String> dimensionTags) {
         when(toolRoutingRepo.findEnabled()).thenReturn(List.of(new ToolRoutingMetadata(
-                toolId, ToolRoutingToolType.SCRIPT, description, topicTags, List.of(), List.of(),
+                toolId, ToolRoutingToolType.SCRIPT, description, topicTags, List.of(), dimensionTags,
                 0, true, null)));
+    }
+
+    /** embedding stub: 声明含"报告"映射 {1,1}, 工具描述不含则映射 {1,4}, cosine ≈ 0.857 (落在 0.80~0.88 区间)。 */
+    private EmbeddingClient mediumCosineStub() {
+        return new EmbeddingClient() {
+            @Override
+            public float[] embed(String text) {
+                if (text != null && text.contains("报告")) return new float[] {1f, 1f};
+                return new float[] {1f, 4f};
+            }
+
+            @Override
+            public int dimension() {
+                return 2;
+            }
+        };
+    }
+
+    private SkillToolOverlapService nonDegradedService(EmbeddingClient client) throws Exception {
+        GovernanceEmbeddingCache cache = new GovernanceEmbeddingCache(client, skillDescriptionSource, null);
+        cache.startWarmup();
+        long deadline = System.currentTimeMillis() + 2000;
+        while (!cache.warm() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10);
+        }
+        return new SkillToolOverlapService(skillRoutingRepo, skillIndexRepo, toolRoutingRepo,
+                cache, skillDescriptionSource, 0.80, 0.88, 0.85, 300000);
     }
 
     @Test
@@ -91,19 +128,58 @@ class SkillToolOverlapServiceTest {
     }
 
     @Test
-    void topicTagOnlyOverlapIsLowAndSingleTagExcluded() {
-        // 共享 2 个业务主题 -> LOW 巡检; 只共享 1 个且无其他信号 -> 不出现
+    void topicTagOverlapNoLongerProducesRecords() {
+        // §6.3 定版: tool 四层标签不参与与 skill 的层比较; skill topicTags 已不参与路由,
+        // 仅共享业务主题且无 keywords/佐证/S3 命中的对不出记录 (原 LOW 巡检级取消)。
         skill("page_1", "按部门统计质量分和达标率", List.of(),
                 List.of("质量分", "达标率"), "按部门统计质量分和达标率", "active");
         tool("t1", "按部门计算质量分和达标率", List.of("质量分", "达标率"));
-        assertEquals(1, degradedService().report().items().size());
-        assertEquals("LOW", degradedService().report().items().get(0).level());
-
-        // 重置: 只共享 1 个标签 -> 排除
-        when(skillRoutingRepo.findActive()).thenReturn(List.of(new SkillRoutingMetadata(
-                "page_1", "按部门统计质量分", List.of(), List.of(), List.of("质量分"),
-                "u_skill", true, null)));
         assertTrue(degradedService().report().items().isEmpty());
+    }
+
+    @Test
+    void keywordEvidenceAloneDoesNotProduceRecord() {
+        // S1' 只佐证: keywords 命中 tool 描述但无 S2 (degraded) 且无 S3 命中 -> 不出记录
+        skill("page_1", "按部门统计缺陷密度完成情况", List.of("缺陷密度"),
+                List.of(), "按部门统计缺陷密度完成情况", "active");
+        tool("t_stat", "按部门计算缺陷密度指标", List.of());
+        assertTrue(degradedService().report().items().isEmpty());
+    }
+
+    @Test
+    void mediumRequiresKeywordCorroboration() throws Exception {
+        // cosine ≈ 0.857 落在 [0.80, 0.88): 有 keywords 佐证 -> MEDIUM; 无任何佐证 -> 不出记录
+        skill("page_1", "按部门统计缺陷密度并生成报告", List.of("缺陷密度"),
+                List.of(), "按部门统计缺陷密度并生成报告", "active");
+        tool("t_medium", "按部门统计缺陷密度工单数据", List.of());
+
+        List<RoutingOverlapView> items = nonDegradedService(mediumCosineStub()).report().items();
+        assertEquals(1, items.size());
+        assertEquals("MEDIUM", items.get(0).level());
+        assertTrue(items.get(0).cosine() >= 0.80 && items.get(0).cosine() < 0.88);
+        assertEquals(List.of("缺陷密度"), items.get(0).keywordEvidence());
+
+        // 无佐证: 同样的 cosine 区间不出记录 (原 LOW 取消)
+        skill("page_1", "按部门统计缺陷密度并生成报告", List.of(),
+                List.of(), "按部门统计缺陷密度并生成报告", "active");
+        assertTrue(nonDegradedService(mediumCosineStub()).report().items().isEmpty());
+    }
+
+    @Test
+    void domainDimensionDirectedPairingCountsAsEvidence() throws Exception {
+        // domain↔dimension 定向配对: skill 领域标签命中 tool 维度标签也算 S1' 命中
+        skill("page_1", "统计各部门维度的完成情况并生成报告", List.of(),
+                List.of("部门"), List.of(), "统计各部门维度的完成情况并生成报告", "active");
+        tool("t_dim", "统计各部门维度的完成情况数据", List.of(), List.of("部门", "版本计划"));
+
+        List<RoutingOverlapView> items = nonDegradedService(mediumCosineStub()).report().items();
+        assertEquals(1, items.size());
+        assertEquals("MEDIUM", items.get(0).level());
+        assertEquals(List.of("部门"), items.get(0).keywordEvidence());
+
+        // 定向配对不通用: 维度标签无交集时不命中, 同 cosine 区间不出记录
+        tool("t_dim", "统计各部门维度的完成情况数据", List.of(), List.of("应用", "版本计划"));
+        assertTrue(nonDegradedService(mediumCosineStub()).report().items().isEmpty());
     }
 
     @Test

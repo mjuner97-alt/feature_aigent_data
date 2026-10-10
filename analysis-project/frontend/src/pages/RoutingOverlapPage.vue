@@ -4,24 +4,33 @@ import { useRoute } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import {
   listRoutingOverlap,
+  listSkillSkillOverlap,
   listToolToolOverlap,
   routingOverlapSummary,
+  skillSkillOverlapSummary,
   toolToolOverlapSummary,
 } from '../api/routingOverlap';
 import type {
   RoutingOverlapItem,
   RoutingOverlapSummary,
+  SkillSkillOverlapItem,
+  SkillSkillOverlapSummary,
   ToolToolOverlapItem,
   ToolToolOverlapSummary,
 } from '../types/routingOverlap';
 
 const route = useRoute();
-const view = ref<'skill-tool' | 'tool-tool'>(route.query.view === 'tool-tool' ? 'tool-tool' : 'skill-tool');
+const view = ref<'skill-tool' | 'tool-tool' | 'skill-skill'>(
+  route.query.view === 'tool-tool' ? 'tool-tool'
+    : route.query.view === 'skill-skill' ? 'skill-skill'
+    : 'skill-tool');
 
 const items = ref<RoutingOverlapItem[]>([]);
 const summary = ref<RoutingOverlapSummary | null>(null);
 const toolItems = ref<ToolToolOverlapItem[]>([]);
 const toolSummary = ref<ToolToolOverlapSummary | null>(null);
+const skillItems = ref<SkillSkillOverlapItem[]>([]);
+const skillSummary = ref<SkillSkillOverlapSummary | null>(null);
 const loading = ref(false);
 const levelFilter = ref('');
 const skillNameFilter = ref(typeof route.query.skillName === 'string' ? route.query.skillName : '');
@@ -41,7 +50,7 @@ async function load() {
       ]);
       items.value = list.items;
       summary.value = sum;
-    } else {
+    } else if (view.value === 'tool-tool') {
       const [list, sum] = await Promise.all([
         listToolToolOverlap({
           level: levelFilter.value || undefined,
@@ -51,6 +60,16 @@ async function load() {
       ]);
       toolItems.value = list.items;
       toolSummary.value = sum;
+    } else {
+      const [list, sum] = await Promise.all([
+        listSkillSkillOverlap({
+          level: levelFilter.value || undefined,
+          skillName: skillNameFilter.value.trim() || undefined,
+        }),
+        skillSkillOverlapSummary(),
+      ]);
+      skillItems.value = list.items;
+      skillSummary.value = sum;
     }
   }
   catch (e: any) { ElMessage.error(e.message || '加载失败'); }
@@ -59,6 +78,7 @@ async function load() {
 
 function switchView() {
   skillNameFilter.value = '';
+  toolIdFilter.value = '';
   load();
 }
 
@@ -72,7 +92,7 @@ function signals(row: RoutingOverlapItem): string {
   const parts: string[] = [];
   if (row.aliasHit) parts.push('名称/关键词命中');
   if (row.toolIdLiteralInDescription) parts.push('描述含 toolId');
-  if (row.topicTagOverlap.length) parts.push(`业务主题重叠: ${row.topicTagOverlap.join('、')}`);
+  if (row.keywordEvidence.length) parts.push(`词面佐证: ${row.keywordEvidence.join('、')}`);
   if (row.cosine > 0) parts.push(`语义相似 ${row.cosine.toFixed(2)}`);
   return parts.join('；') || '-';
 }
@@ -87,6 +107,14 @@ function toolSignals(row: ToolToolOverlapItem): string {
   return parts.join('；') || '-';
 }
 
+function skillSignals(row: SkillSkillOverlapItem): string {
+  const parts: string[] = [];
+  if (row.differingLayers?.length) parts.push(`差异层: ${row.differingLayers.join('、')}`);
+  if (row.keywordOverlap.length) parts.push(`共现词: ${row.keywordOverlap.join('、')}`);
+  if (row.cosineKnown) parts.push(`语义相似 ${row.cosine.toFixed(2)}`);
+  return parts.join('；') || '-';
+}
+
 onMounted(load);
 </script>
 
@@ -97,24 +125,35 @@ onMounted(load);
       <el-radio-group v-model="view" size="small" @change="switchView">
         <el-radio-button value="skill-tool">Skill ↔ Tool</el-radio-button>
         <el-radio-button value="tool-tool">Tool ↔ Tool</el-radio-button>
+        <el-radio-button value="skill-skill">Skill ↔ Skill</el-radio-button>
       </el-radio-group>
       <el-select v-model="levelFilter" placeholder="全部级别" clearable size="small" style="width: 130px" @change="load">
         <el-option label="HIGH" value="HIGH" /><el-option label="MEDIUM" value="MEDIUM" /><el-option label="LOW" value="LOW" />
       </el-select>
-      <el-input v-if="view === 'skill-tool'" v-model="skillNameFilter" placeholder="Skill 名称" clearable size="small" style="width: 220px" @change="load" />
-      <el-input v-model="toolIdFilter" placeholder="工具 ID" clearable size="small" style="width: 220px" @change="load" />
+      <el-input v-if="view !== 'tool-tool'" v-model="skillNameFilter" placeholder="Skill 名称" clearable size="small" style="width: 220px" @change="load" />
+      <el-input v-if="view === 'skill-tool' || view === 'tool-tool'" v-model="toolIdFilter" placeholder="工具 ID" clearable size="small" style="width: 220px" @change="load" />
       <el-button size="small" @click="load">刷新</el-button>
       <span v-if="view === 'skill-tool'" class="hint">派生治理视图：Skill 与工具能力声明的重叠对，只提示不自动处置</span>
-      <span v-else class="hint">同候选集内描述/功能签名无法区分的工具对；HIGH 且双方已启用时，启动会自动停用低优先级一方（仅可启用其中一个）；未启用侧为配置期预警，请整改后再启用</span>
+      <span v-else-if="view === 'tool-tool'" class="hint">同候选集内描述/功能签名无法区分的工具对；HIGH 且双方已启用时，启动会自动停用低优先级一方（仅可启用其中一个）；未启用侧为配置期预警，请整改后再启用</span>
+      <span v-else class="hint">同一候选集内关键词/领域标签/描述无法区分的 Skill 对；HIGH 且双方已启用时，启动会自动停用字典序较大一方（至多启用一个），管理页启用也会被拦截；建议合并为一个 Skill 或拆分关键词/改写描述</span>
+    </div>
+
+    <div v-if="view === 'skill-skill' && skillSummary" class="stats">
+      <el-alert v-if="skillSummary.degraded" type="warning" :closable="false" show-icon
+        title="语义相似信号不可用（无 embedding provider 或预热未完成），HIGH 仅在领域标签/关键词全同且名称高度相近时判定" />
+      <div class="counts">
+        <span class="count high">HIGH {{ skillSummary.counts.HIGH || 0 }}</span>
+        <span class="count medium">MEDIUM {{ skillSummary.counts.MEDIUM || 0 }}</span>
+        <span class="count low">LOW {{ skillSummary.counts.LOW || 0 }}</span>
+      </div>
     </div>
 
     <div v-if="view === 'skill-tool' && summary" class="stats">
       <el-alert v-if="summary.degraded" type="warning" :closable="false" show-icon
-        title="语义相似信号不可用（无 embedding provider 或预热未完成），当前仅展示名称与业务主题命中" />
+        title="语义相似信号不可用（无 embedding provider 或预热未完成），当前仅展示名称/关键词命中" />
       <div class="counts">
         <span class="count high">HIGH {{ summary.counts.HIGH || 0 }}</span>
         <span class="count medium">MEDIUM {{ summary.counts.MEDIUM || 0 }}</span>
-        <span class="count low">LOW {{ summary.counts.LOW || 0 }}</span>
       </div>
     </div>
 
@@ -145,7 +184,7 @@ onMounted(load);
       <el-table-column prop="suggestion" label="治理建议" min-width="260" show-overflow-tooltip />
     </el-table>
 
-    <el-table v-else :data="toolItems" v-loading="loading" stripe border size="small">
+    <el-table v-else-if="view === 'tool-tool'" :data="toolItems" v-loading="loading" stripe border size="small">
       <el-table-column label="级别" width="90" align="center">
         <template #default="{ row }"><el-tag :type="levelTagType(row.level)" size="small">{{ row.level }}</el-tag></template>
       </el-table-column>
@@ -163,7 +202,29 @@ onMounted(load);
       <el-table-column prop="suggestion" label="治理建议" min-width="300" show-overflow-tooltip />
     </el-table>
 
-    <div v-if="!loading && !(view === 'skill-tool' ? items.length : toolItems.length)" class="empty-tip">当前过滤条件下没有重叠对</div>
+    <el-table v-else :data="skillItems" v-loading="loading" stripe border size="small">
+      <el-table-column label="级别" width="90" align="center">
+        <template #default="{ row }"><el-tag :type="levelTagType(row.level)" size="small">{{ row.level }}</el-tag></template>
+      </el-table-column>
+      <el-table-column label="Skill A" width="240" show-overflow-tooltip>
+        <template #default="{ row }"><span>{{ row.skillNameA }}</span><el-tag :type="row.activeA ? 'danger' : 'info'" size="small" style="margin-left: 6px">{{ row.activeA ? '已启用' : '未启用' }}</el-tag></template>
+      </el-table-column>
+      <el-table-column prop="ownerA" label="负责人 A" width="110" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.ownerA || '-' }}</template>
+      </el-table-column>
+      <el-table-column label="Skill B" width="240" show-overflow-tooltip>
+        <template #default="{ row }"><span>{{ row.skillNameB }}</span><el-tag :type="row.activeB ? 'danger' : 'info'" size="small" style="margin-left: 6px">{{ row.activeB ? '已启用' : '未启用' }}</el-tag></template>
+      </el-table-column>
+      <el-table-column prop="ownerB" label="负责人 B" width="110" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.ownerB || '-' }}</template>
+      </el-table-column>
+      <el-table-column label="信号" min-width="240" show-overflow-tooltip>
+        <template #default="{ row }">{{ skillSignals(row) }}</template>
+      </el-table-column>
+      <el-table-column prop="suggestion" label="治理建议" min-width="300" show-overflow-tooltip />
+    </el-table>
+
+    <div v-if="!loading && !(view === 'skill-tool' ? items.length : view === 'tool-tool' ? toolItems.length : skillItems.length)" class="empty-tip">当前过滤条件下没有重叠对</div>
   </div>
 </template>
 

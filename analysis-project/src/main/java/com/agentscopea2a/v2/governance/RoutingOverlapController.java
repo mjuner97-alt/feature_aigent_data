@@ -32,11 +32,14 @@ public class RoutingOverlapController {
 
     private final SkillToolOverlapService overlapService;
     private final ToolToolOverlapService toolToolOverlapService;
+    private final SkillSkillOverlapService skillSkillOverlapService;
 
     public RoutingOverlapController(SkillToolOverlapService overlapService,
-                                    ToolToolOverlapService toolToolOverlapService) {
+                                    ToolToolOverlapService toolToolOverlapService,
+                                    SkillSkillOverlapService skillSkillOverlapService) {
         this.overlapService = overlapService;
         this.toolToolOverlapService = toolToolOverlapService;
+        this.skillSkillOverlapService = skillSkillOverlapService;
     }
 
     public record OverlapListResponse(
@@ -93,5 +96,32 @@ public class RoutingOverlapController {
     @GetMapping("/tool-tool/summary")
     public ToolToolOverlapService.OverlapSummary toolToolSummary() {
         return toolToolOverlapService.summary();
+    }
+
+    public record SkillSkillOverlapListResponse(
+            boolean degraded,
+            int total,
+            List<SkillSkillOverlapView> items) {}
+
+    @GetMapping("/skill-skill")
+    public SkillSkillOverlapListResponse skillSkill(
+            @RequestParam(name = "level", required = false) String level,
+            @RequestParam(name = "skillName", required = false) String skillName,
+            @RequestParam(name = "limit", defaultValue = "200") int limit,
+            @RequestParam(name = "offset", defaultValue = "0") int offset) {
+        SkillSkillOverlapService.OverlapReport report = skillSkillOverlapService.report();
+        List<SkillSkillOverlapView> items = report.items().stream()
+                .filter(item -> level == null || level.isBlank() || item.level().equalsIgnoreCase(level))
+                .filter(item -> skillName == null || skillName.isBlank()
+                        || item.skillNameA().equals(skillName) || item.skillNameB().equals(skillName))
+                .toList();
+        int from = Math.max(0, Math.min(offset, items.size()));
+        int to = Math.min(items.size(), from + Math.max(1, Math.min(limit, 500)));
+        return new SkillSkillOverlapListResponse(report.degraded(), items.size(), items.subList(from, to));
+    }
+
+    @GetMapping("/skill-skill/summary")
+    public SkillSkillOverlapService.OverlapSummary skillSkillSummary() {
+        return skillSkillOverlapService.summary();
     }
 }

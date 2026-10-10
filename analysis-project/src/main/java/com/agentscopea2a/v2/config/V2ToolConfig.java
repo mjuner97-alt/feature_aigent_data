@@ -181,6 +181,37 @@ public class V2ToolConfig {
     }
 
     @Bean
+    public com.agentscopea2a.v2.governance.SkillSkillOverlapService skillSkillOverlapService(
+            SkillRoutingMetadataRepository skillRoutingMetadataRepository,
+            SkillIndexRepository skillIndexRepository,
+            com.agentscopea2a.v2.governance.GovernanceEmbeddingCache governanceEmbeddingCache,
+            SkillDescriptionSource skillDescriptionSource,
+            @Value("${harness.a2a.governance.overlap.cosine-threshold:0.80}") double cosineThreshold,
+            @Value("${harness.a2a.governance.overlap.cosine-high-threshold:0.88}") double cosineHighThreshold,
+            @Value("${harness.a2a.governance.overlap.name-similarity-threshold:0.85}") double nameSimilarityThreshold,
+            @Value("${harness.a2a.governance.overlap.cache-ttl-ms:300000}") long cacheTtlMillis) {
+        log.info("SkillSkillOverlapService: wired (cosine={}, ttl={}ms)", cosineThreshold, cacheTtlMillis);
+        return new com.agentscopea2a.v2.governance.SkillSkillOverlapService(
+                skillRoutingMetadataRepository, skillIndexRepository,
+                governanceEmbeddingCache, skillDescriptionSource,
+                cosineThreshold, cosineHighThreshold, nameSimilarityThreshold, cacheTtlMillis);
+    }
+
+    /** Skill 路由启动期重叠审计: block-skill-overlap=true 时自愈优先、阻断兜底 (默认关闭零开销)。 */
+    @Bean
+    public com.agentscopea2a.v2.skills.SkillRoutingStartupAudit skillRoutingStartupAudit(
+            com.agentscopea2a.v2.governance.SkillSkillOverlapService skillSkillOverlapService,
+            SkillRoutingMetadataRepository skillRoutingMetadataRepository,
+            @Value("${harness.a2a.skill-routing.block-skill-overlap:false}") boolean blockSkillOverlap,
+            @Value("${harness.a2a.skill-routing.block-skill-overlap-max-skills:4}") int blockSkillOverlapMaxSkills) {
+        log.info("SkillRoutingStartupAudit: wired (block-skill-overlap={}, max-skills={})",
+                blockSkillOverlap, blockSkillOverlapMaxSkills);
+        return new com.agentscopea2a.v2.skills.SkillRoutingStartupAudit(
+                skillSkillOverlapService, skillRoutingMetadataRepository,
+                blockSkillOverlap, blockSkillOverlapMaxSkills);
+    }
+
+    @Bean
     public com.agentscopea2a.v2.governance.ToolToolOverlapService toolToolOverlapService(
             ToolRoutingMetadataRepository toolRoutingMetadataRepository,
             com.agentscopea2a.v2.governance.GovernanceEmbeddingCache governanceEmbeddingCache,

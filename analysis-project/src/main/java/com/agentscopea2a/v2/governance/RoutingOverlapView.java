@@ -25,7 +25,7 @@ public record RoutingOverlapView(
         String toolId,
         String toolType,
         String level,
-        List<String> topicTagOverlap,
+        List<String> keywordEvidence,
         double cosine,
         boolean aliasHit,
         boolean toolIdLiteralInDescription,

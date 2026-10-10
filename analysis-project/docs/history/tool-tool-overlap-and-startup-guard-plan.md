@@ -1,7 +1,7 @@
 # Tool-Tool 重叠检测 + 工具路由启动阻断 方案
 
 日期：2026-10-08
-状态：v1 已实施并 E2E 验证（2026-10-08，开关选 B）；v2 四层一致性规则已于 2026-10-09 实施并 E2E 验证（判定规则见 §3.1，实施记录见 §6，生产误判反馈驱动）
+状态：v1 已实施并 E2E 验证（2026-10-08，开关选 B）；v2 四层一致性规则已于 2026-10-09 实施并 E2E 验证（判定规则见 §3.1，实施记录见 §6，生产误判反馈驱动）；同 toolId 检测/启动自愈/元数据复合主键三项后续定版见 §6.2–§6.6（**当前启动期最终行为是"自愈优先、阻断兜底"，不再是纯阻断**）
 关联：`skill-tool-overlap-and-description-similarity-plan.md`（Skill↔Tool 检测，已上线）
 
 ## 1. 背景与目标
@@ -101,7 +101,9 @@ record ToolToolOverlapView(
         List<String> metricTagsB,
         List<String> dimensionTagsA,
         List<String> dimensionTagsB,
-        String suggestion) {}
+        String suggestion,
+        boolean enabledA,                  // §6.6 补遗 2 新增: 两侧真实启用状态 (合成记录取 candidate.routeEnabled())
+        boolean enabledB) {}
 ```
 
 （v1 的 `dimensionDistinguishable` 字段删除，由 `differingLayers` 取代；前端 `toolSignals()` 改为展示"差异层: 维度标签(A: 应用、版本计划 vs B: 部门、版本计划)"式文案。）
@@ -118,6 +120,8 @@ record ToolToolOverlapView(
 `ToolRoutingMetadataAdminService.java:81` 保存后的 `invalidate()` 同时调 `ToolToolOverlapService.invalidate()`（两个工具任一侧元数据变更都失效两个缓存）。
 
 ### 3.3 启动阻断（核心需求）
+
+> **定版注记（§6.3–§6.5，2026-10-09）**：本节描述的"HIGH → 记 issue → 抛异常阻断"是最初设计，最终行为已改为**自愈优先、阻断兜底**：① 同 toolId 冲突对永不阻断（只能改注册表，只 WARN，§6.3）；② block 开启且双方已启用的 HIGH 对规模 ≤ `block-tool-overlap-max-tools`（默认 4）时，启动期自动停用低优先级一侧（确定性规则重启幂等），处置过的对不再产生阻断 issue → **程序不挂**（§6.5）；③ 仅超阈值批量问题或 upsert 失败的对才走下方抛异常兜底路径。阅读本节时以 §6.3–§6.5 为准。
 
 挂载点直接复用 `ToolRoutingStartupAudit`（已是 ApplicationRunner + strict 阻断机制，**不需要新写启动流程代码**）：
 
@@ -151,6 +155,8 @@ record ToolToolOverlapView(
 
 ### 3.5 测试
 
+（本节为 v2 定稿时的用例清单；6.2–6.6 后续又新增同 toolId 跨类型 / 启用互斥 / 自愈 / 状态如实显示等用例，最终全量 **286 用例全过**，演进明细见 §6.2–§6.6 各条。）
+
 - `ToolToolOverlapServiceTest`（仿 `SkillToolOverlapServiceTest`，v2 用例按四层规则重写）：
   - T0 未命中（topic 完全不相交）→ 即使描述完全相同也不出记录（前提校验）；
   - 四层全同（topic/metric/dimension 集合相等 + cosine 0.93）→ HIGH，`differingLayers` 为空；
@@ -168,6 +174,7 @@ record ToolToolOverlapView(
 1. 管理页把某工具描述改成与另一工具同义（topic 有交集）→ 页面 Tool↔Tool 视图出现 HIGH。
    **v2 追加（生产回归）**：插入两条 topic/metric 相等、描述全同、dimension_tags 相交但不同（`应用,版本计划` / `部门,版本计划`）的元数据 → 必须判 **MEDIUM**（差异层=维度标签），不阻断；再把其中一条 dimension_tags 改成与前条完全相等 → 变 HIGH 且阻断。
 2. `block-tool-overlap=true` 重启 → 启动失败，日志含 `[tool_overlap] 与工具 xxx 有重复，请处理`。
+   **§6.5 定版后行为**：双方已启用且规模 ≤ max-tools 的对，重启时**自愈成功**（自动停用低优先级一侧，日志含保留侧说明），不再失败；只有超阈值批量问题或 upsert 失败才走本步的阻断路径。同 toolId 对无论如何只 WARN 不阻断（§6.3）。
 3. 处理重复（改描述/改 topic 拆开候选集/停用其一）→ 重启成功，页面该对消失。
 4. 停掉 embedding 服务重启 → 若存在参数签名完全一致的对则仍阻断；否则不阻断，页面显示 degraded 标记。
 
