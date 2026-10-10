@@ -212,6 +212,31 @@ public class HtmlReportRenderer {
             """;
 
     /**
+     * 报告统一表格主题。该样式在输入 HTML 自带的 style 之后注入，确保表格优先采用报告主题；
+     * 数据单元格的 color 不使用 !important，以保留诸如 style="color:red" 的业务标色。
+     */
+    private static final String TABLE_THEME_CSS = """
+            #report table{border-collapse:collapse!important;width:100%!important;margin:10px 0!important}
+            #report table th,#report table td{border:1px solid #bfbfbf!important;text-align:center!important;vertical-align:middle!important;white-space:nowrap!important}
+            #report table thead th{background-color:rgb(192,0,0)!important;color:#fff!important;font-weight:600!important;padding:8px 14px!important}
+            #report table tbody td{background-color:#fff!important;color:#000;padding:6px 12px!important}
+            #report table tbody tr:nth-child(even) td{background-color:#fafafa!important}
+            #report table tbody tr:hover td{background-color:#fff3e0!important}
+            #report table .red{color:red!important}
+            """;
+
+    /** 完整 HTML 的低优先级表格兜底样式；输入 HTML 的样式可以覆盖对应属性。 */
+    private static final String COMPLETE_HTML_TABLE_DEFAULT_CSS = """
+            table{border-collapse:collapse;width:100%;margin:10px 0}
+            th,td{border:1px solid #bfbfbf;text-align:center;vertical-align:middle;white-space:nowrap}
+            th{background-color:rgb(192,0,0);color:#fff;font-weight:600;padding:8px 14px}
+            td{background-color:#fff;color:#000;padding:6px 12px}
+            tbody tr:nth-child(even) td{background-color:#fafafa}
+            tbody tr:hover td{background-color:#fff3e0}
+            table .red{color:red}
+            """;
+
+    /**
      * 折线图颜色归一化脚本：统一每条 line series 的 lineStyle.color 与 itemStyle.color，
      * 并把 legend 显式 itemStyle.color 对齐到系列色，避免图例图标（线段）与数据点圆圈颜色不一致。
      * AI 产出的 echarts option 常出现 lineStyle/itemStyle 颜色不一致导致图例与圆圈撞色，此处兜底修正。
@@ -638,10 +663,16 @@ public class HtmlReportRenderer {
         if (!includeToc) {
             sb.append("<style>html,body{height:auto!important;overflow-y:hidden!important}.report-shell{height:auto!important;min-height:0;margin-left:0;overflow:visible!important}.report{height:auto!important;min-height:0;margin-left:0!important;width:100%;padding:0!important;overflow-y:visible!important}</style>");
         }
+//        if (completeHtml) {
+//            sb.append("<style>").append(COMPLETE_HTML_TABLE_DEFAULT_CSS).append("</style>");
+//        }
         if (extraStyles != null && !extraStyles.isEmpty()) {
             sb.append(extraStyles);  // AI 完整 HTML 中的 <style> 块，保留原样式
         }
-        if (!completeHtml) sb.append("<style>body{background:#fff!important;margin:0!important;padding:0!important;overflow:visible!important}.report table{border-collapse:collapse!important;border:0!important;box-shadow:none!important;width:max-content!important;min-width:100%!important;max-width:none!important;margin:10px 0!important}.report table th,.report table td{border:1px solid #e2e8f0!important;padding:8px 12px!important}.html-content-shell{margin:0!important;padding:0!important;background:transparent!important;border:0!important;box-shadow:none!important}.html-content-shell>div:first-of-type{background:transparent!important;border:0!important;box-shadow:none!important;padding-top:0!important}.html-fullscreen{position:absolute!important;top:12px!important;right:12px!important;display:block!important;margin:0!important}</style>");
+        if (!completeHtml) sb.append("<style>body{background:#fff!important;margin:0!important;padding:0!important;overflow:visible!important}.report table{border:0!important;box-shadow:none!important;min-width:100%!important;max-width:none!important}.html-content-shell{margin:0!important;padding:0!important;background:transparent!important;border:0!important;box-shadow:none!important}.html-content-shell>div:first-of-type{background:transparent!important;border:0!important;box-shadow:none!important;padding-top:0!important}.html-fullscreen{position:absolute!important;top:12px!important;right:12px!important;display:block!important;margin:0!important}</style>");
+//        if (!completeHtml) {
+            sb.append("<style>").append(TABLE_THEME_CSS).append("</style>");
+//        }
         if (!includeToc) sb.append("<style>html,body{height:auto!important;overflow-y:hidden!important}.report-shell{height:auto!important;overflow:visible!important}.report{height:auto!important;padding:0!important;overflow-y:visible!important}.report:fullscreen{height:100%!important;overflow:auto!important;background:#fff!important}</style>");
         sb.append("</head><body>");
         if (includeToc) {
@@ -771,7 +802,7 @@ public class HtmlReportRenderer {
                     rows.add(splitRow(lines[i]));
                     i++;
                 }
-                out.append("<div class=\"table-scroll\"><table><thead><tr>");
+                out.append("<div class=\"table-scroll\"><table data-report-default-table=\"true\"><thead><tr>");
                 for (String h : header) {
                     out.append("<th>").append(h).append("</th>");
                 }
