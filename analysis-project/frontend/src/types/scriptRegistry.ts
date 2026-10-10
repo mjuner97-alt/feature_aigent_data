@@ -63,6 +63,15 @@ export interface ParamSchemaItem {
   description: string;
 }
 
+/** 长任务脚本参数可选的预设规则。规则文本由后端维护，前端只负责选择。 */
+export interface ScriptParamRule {
+  ruleKey: string;
+  ruleName: string;
+  valueType: 'single' | 'array';
+  periodUnit: 'month' | 'quarter' | 'year';
+  description?: string;
+}
+
 export interface ScriptSourceResponse {
   scriptId: string;
   scriptPath: string;

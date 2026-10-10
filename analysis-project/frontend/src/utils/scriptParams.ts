@@ -1,4 +1,19 @@
-import type { ParamSchemaItem } from '../types/scriptRegistry';
+import type { ParamSchemaItem, ScriptParamRule } from '../types/scriptRegistry';
+
+export type ParamValueMode = 'LITERAL' | 'PRESET_RULE';
+
+export function isArrayParam(type: string): boolean {
+  return normalizedParamType(type).array;
+}
+
+export function rulesForParam(rules: ScriptParamRule[], type: string): ScriptParamRule[] {
+  const arrayParam = isArrayParam(type);
+  return rules.filter(rule => arrayParam || rule.valueType === 'single');
+}
+
+export function ruleMarker(ruleKey: string): Record<string, string> {
+  return { $rule: ruleKey };
+}
 
 /** Build an editable JSON object from a saved script parameter schema. */
 export function paramsFromSchema(schema: ParamSchemaItem[]): Record<string, unknown> {
@@ -55,10 +70,11 @@ export function normalizeScriptParams(params: Record<string, unknown>, schema: P
     let value = result[item.name];
     if (normalizedParamType(item.type).array && !Array.isArray(value)) {
       if (typeof value === 'string') {
+        const text = value;
         try {
-          const parsed: unknown = JSON.parse(value);
-          value = Array.isArray(parsed) ? parsed : value.trim() ? [value] : [];
-        } catch { value = value.trim() ? [value] : []; }
+          const parsed: unknown = JSON.parse(text);
+          value = Array.isArray(parsed) ? parsed : text.trim() ? [text] : [];
+        } catch { value = text.trim() ? [text] : []; }
       } else value = value == null ? [] : [value];
     }
     result[item.name] = coerceParamValue(value, item.type);

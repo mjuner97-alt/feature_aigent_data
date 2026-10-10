@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.v2.skillManager.mapper.ReportProcessMapper">
+  <resultMap id="ReportProcessMap" type="com.agentscopea2a.v2.skillManager.entity.ReportProcess">
+    <id column="id" property="id"/><result column="code" property="code"/>
+    <result column="name" property="name"/><result column="description" property="description"/>
+    <result column="nodes_json" property="nodesJson"/><result column="report_outline_json" property="reportOutlineJson"/>
+    <result column="enabled" property="enabled"/>
+    <result column="copied_from_id" property="copiedFromId"/><result column="copied_from_name" property="copiedFromName"/>
+    <result column="created_by" property="createdBy"/><result column="created_at" property="createdAt"/>
+    <result column="updated_at" property="updatedAt"/><result column="deleted_at" property="deletedAt"/>
+  </resultMap>
+  <sql id="cols">id,code,name,description,nodes_json,report_outline_json,enabled,copied_from_id,copied_from_name,created_by,created_at,updated_at,deleted_at</sql>
+  <select id="selectAllVisible" resultMap="ReportProcessMap">
+    SELECT <include refid="cols"/> FROM report_process WHERE deleted_at IS NULL
+    <if test="mineOnly">AND created_by=#{userId}</if>
+    <if test="!mineOnly">AND (created_by=#{userId} OR enabled=TRUE)</if>
+    ORDER BY updated_at DESC,id DESC
+  </select>
+  <select id="selectById" resultMap="ReportProcessMap">SELECT <include refid="cols"/> FROM report_process WHERE id=#{id} AND deleted_at IS NULL</select>
+  <select id="selectByName" resultMap="ReportProcessMap">SELECT <include refid="cols"/> FROM report_process WHERE name=#{name} AND deleted_at IS NULL</select>
+  <insert id="insert" parameterType="com.agentscopea2a.v2.skillManager.entity.ReportProcess" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO report_process(code,name,description,nodes_json,report_outline_json,enabled,copied_from_id,copied_from_name,created_by)
+    VALUES(#{code},#{name},#{description},#{nodesJson},#{reportOutlineJson},#{enabled},#{copiedFromId},#{copiedFromName},#{createdBy})
+  </insert>
+  <update id="update" parameterType="com.agentscopea2a.v2.skillManager.entity.ReportProcess">
+    UPDATE report_process SET code=#{code},name=#{name},description=#{description},nodes_json=#{nodesJson},report_outline_json=#{reportOutlineJson},enabled=#{enabled},updated_at=NOW() WHERE id=#{id} AND deleted_at IS NULL
+  </update>
+  <update id="updateEnabled">UPDATE report_process SET enabled=#{enabled},updated_at=NOW() WHERE id=#{id} AND deleted_at IS NULL</update>
+  <update id="softDelete">UPDATE report_process SET enabled=FALSE,deleted_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=#{id} AND deleted_at IS NULL</update>
+</mapper>

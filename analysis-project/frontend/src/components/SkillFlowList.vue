@@ -99,7 +99,7 @@ function showTriggerMsg(message: string) {
 
 defineExpose({ load, create });
 onMounted(() => load());
-watch(() => [props.scope, props.createdBy] as const, () => load('', props.createdBy, undefined, props.scope));
+watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.value, props.createdBy, undefined, props.scope));
 </script>
 
 <template>

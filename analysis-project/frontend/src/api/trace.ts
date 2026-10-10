@@ -56,7 +56,7 @@ export async function search(
   page = 0,
   size = 20,
 ): Promise<ConversationListResponse> {
-  const data = await listConversations(undefined, undefined, page, size);
+  const data = await listConversations(undefined, undefined, undefined, page, size);
   if (!keyword.trim()) return data;
   const kw = keyword.toLowerCase();
   const filtered = data.conversations.filter(

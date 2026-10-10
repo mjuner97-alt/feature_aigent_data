@@ -69,8 +69,9 @@ DELETE FROM script_param_rule WHERE rule_key IN (
     'version.current_month', 'version.prev_month', 'version.next_month',
     'version.prev_current_next', 'version.current_next_two',
     'version.recent_3_months', 'version.recent_6_months',
+    'version.next_3_months',
     'quarter.current', 'quarter.prev', 'quarter.next',
-    'quarter.recent_2', 'quarter.recent_4',
+    'quarter.recent_2', 'quarter.recent_3', 'quarter.recent_4',
     'year.current', 'year.prev', 'year.recent_3'
 );
 
@@ -91,7 +92,9 @@ INSERT INTO script_param_rule (rule_key, rule_name, value_type, period_unit, for
 ('version.recent_3_months', '近三个月(含当月往前)', 'array', 'month', '{year}年{month}月份版本', -2, 0, 'asc',
  '三个月窗口: 前两个月、前一月、当月 (时间正序)'),
 ('version.recent_6_months', '近六个月(含当月往前)', 'array', 'month', '{year}年{month}月份版本', -5, 0, 'asc',
- '六个月窗口: 当月往前推共六个月 (时间正序)');
+ '六个月窗口: 当月往前推共六个月 (时间正序)'),
+('version.next_3_months', '后三个月份版本(含当月往后)', 'array', 'month', '{year}年{month}月份版本', 0, 2, 'asc',
+ '三个月窗口: 当月、后一个月、后两个月 (时间正序)');
 
 -- ----------------------------------------------------------------------------
 -- 预置规则: 季度 (format: {year}年{quarter}季度)
@@ -105,6 +108,8 @@ INSERT INTO script_param_rule (rule_key, rule_name, value_type, period_unit, for
  '锚点所在季度的后一个季度'),
 ('quarter.recent_2', '近两个季度(含当季往前)', 'array', 'quarter', '{year}年{quarter}季度', -1, 0, 'asc',
  '两季度窗口: 上季度、当季 (时间正序)'),
+('quarter.recent_3', '近三个季度(含当季往前)', 'array', 'quarter', '{year}年{quarter}季度', -2, 0, 'asc',
+ '三季度窗口: 前两个季度、当季 (时间正序)'),
 ('quarter.recent_4', '近四个季度(含当季往前)', 'array', 'quarter', '{year}年{quarter}季度', -3, 0, 'asc',
  '四季度窗口: 当季往前推共四个季度 (时间正序)');
 

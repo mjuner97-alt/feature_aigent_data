@@ -14,6 +14,7 @@
         <result column="enabled" property="enabled"/>
         <result column="schedule_rules" property="scheduleRules"/>
         <result column="notify_receivers" property="notifyReceivers"/>
+        <result column="report_process_id" property="reportProcessId"/>
         <result column="created_by" property="createdBy"/>
         <result column="created_at" property="createdAt"/>
         <result column="updated_at" property="updatedAt"/>
@@ -27,14 +28,14 @@
 
     <sql id="skillJobCols">
         j.id, j.name, j.skill_id, j.question_template, j.output_path, j.enabled, j.schedule_rules,
-        j.notify_receivers, j.created_by, j.created_at, j.updated_at, j.metric_id, j.metric_ids, j.metric_override_configured,
+        j.notify_receivers, j.report_process_id, j.created_by, j.created_at, j.updated_at, j.metric_id, j.metric_ids, j.metric_override_configured,
         m.code AS metric_code, m.name AS metric_name,
         s.name AS skill_name
     </sql>
 
     <insert id="insertSkillJob" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillJob" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO skill_job (name, skill_id, question_template, output_path, enabled, schedule_rules, notify_receivers, created_by, metric_id, metric_ids, metric_override_configured)
-        VALUES (#{name}, #{skillId}, #{questionTemplate}, #{outputPath}, #{enabled}, #{scheduleRules}, #{notifyReceivers}, #{createdBy}, #{metricId}, #{metricIds}, COALESCE(#{metricOverrideConfigured}, FALSE))
+        INSERT INTO skill_job (name, skill_id, question_template, output_path, enabled, schedule_rules, notify_receivers, report_process_id, created_by, metric_id, metric_ids, metric_override_configured)
+        VALUES (#{name}, #{skillId}, #{questionTemplate}, #{outputPath}, #{enabled}, #{scheduleRules}, #{notifyReceivers}, #{reportProcessId}, #{createdBy}, #{metricId}, #{metricIds}, COALESCE(#{metricOverrideConfigured}, FALSE))
     </insert>
 
     <select id="selectJobById" resultMap="SkillJobResultMap">
@@ -70,7 +71,7 @@
         UPDATE skill_job
         SET name=#{name}, skill_id=#{skillId}, question_template=#{questionTemplate},
             output_path=#{outputPath}, enabled=#{enabled}, schedule_rules=#{scheduleRules},
-            notify_receivers=#{notifyReceivers}, metric_id=#{metricId}, metric_ids=#{metricIds}, metric_override_configured=COALESCE(#{metricOverrideConfigured}, metric_override_configured), updated_at=NOW()
+            notify_receivers=#{notifyReceivers}, report_process_id=#{reportProcessId}, metric_id=#{metricId}, metric_ids=#{metricIds}, metric_override_configured=COALESCE(#{metricOverrideConfigured}, metric_override_configured), updated_at=NOW()
         WHERE id = #{id}
     </update>
 

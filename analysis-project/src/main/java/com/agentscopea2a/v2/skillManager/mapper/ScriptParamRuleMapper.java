@@ -4,6 +4,8 @@ import com.agentscopea2a.v2.skillManager.entity.ScriptParamRule;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
+import java.util.List;
+
 /**
  * 脚本参数取值规则表 (script_param_rule) MyBatis Mapper, GaussDB 数据源.
  *
@@ -19,4 +21,7 @@ public interface ScriptParamRuleMapper {
      * @return 记录; 不存在或已停用返回 null
      */
     ScriptParamRule selectByRuleKey(@Param("ruleKey") String ruleKey);
+
+    /** 查询启用规则供流程编辑器下拉选择。 */
+    List<ScriptParamRule> selectEnabledRules();
 }

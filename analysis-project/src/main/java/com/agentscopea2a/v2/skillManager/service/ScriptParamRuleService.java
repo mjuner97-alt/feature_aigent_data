@@ -72,7 +72,7 @@ public class ScriptParamRuleService {
             ScriptParamRule rule = requireRule(ruleKey);
             Object value = computeValue(rule, dataDate);
             // 数组参数 + 单值规则: 包装成单元素数组
-            if (value instanceof String && ScriptParamRule.VALUE_TYPE_ARRAY.equals(paramTypes.get(entry.getKey()))) {
+            if (value instanceof String && isArrayType(paramTypes.get(entry.getKey()))) {
                 value = List.of(value);
             }
             resolved.put(entry.getKey(), value);
@@ -102,7 +102,7 @@ public class ScriptParamRuleService {
                 errors.add("ParamRuleUnavailable: " + ruleKey);
                 continue;
             }
-            boolean arrayParam = ScriptParamRule.VALUE_TYPE_ARRAY.equals(paramTypes.get(entry.getKey()));
+            boolean arrayParam = isArrayType(paramTypes.get(entry.getKey()));
             if (ScriptParamRule.VALUE_TYPE_ARRAY.equals(rule.getValueType()) && !arrayParam) {
                 errors.add("ParamRuleTypeMismatch: " + entry.getKey() + " <- " + ruleKey);
             }
@@ -213,5 +213,13 @@ public class ScriptParamRuleService {
             log.warn("script params_schema 解析失败, 规则值不做数组包装: scriptId={} err={}", scriptId, e.getMessage());
             return Map.of();
         }
+    }
+
+    /** 兼容 params_schema 中的 array、string[]、array<string> 等历史写法。 */
+    static boolean isArrayType(String type) {
+        if (type == null) return false;
+        String normalized = type.trim().toLowerCase();
+        return "array".equals(normalized) || normalized.endsWith("[]")
+                || (normalized.startsWith("array<") && normalized.endsWith(">"));
     }
 }

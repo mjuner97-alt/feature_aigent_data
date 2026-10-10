@@ -4,11 +4,12 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { createSkillFlow, getSkillFlow, updateSkillFlow, getFlowNotifySettings } from '../api/skillFlow';
 import { getSkill, listSkills, searchSkillUsers, batchUserNames } from '../api/skill';
 import { listAllEnabledEntries, startDebug, cancelDebug, subscribeDebug, getEntry } from '../api/scriptRegistry';
-import type { ParamSchemaItem, ScriptDebugRun, ScriptRegistryListItem } from '../types/scriptRegistry';
+import { listScriptParamRules } from '../api/scriptParamRule';
+import type { ParamSchemaItem, ScriptDebugRun, ScriptRegistryListItem, ScriptParamRule } from '../types/scriptRegistry';
 import { listMetrics } from '../api/skillDependencyMetric';
 import type { SkillListItem } from '../types/skill';
 import type { SkillDependencyMetric } from '../types/skillJob';
-import type { SkillFlow, SkillFlowInput, SkillFlowNode } from '../types/skillFlow';
+import type { SkillFlow, SkillFlowInput, SkillFlowNode, ReportOutline } from '../types/skillFlow';
 import { buildOutline, defaultOutlineNumbering, flattenOutline, outlineNumberingPrefixes, validateOutlineRows, type OutlineRow } from '../utils/reportOutline';
 import { insertOutlineRow } from '../utils/outlineRows';
 import { inferParamSchema, normalizeScriptParams, paramsFromSchema } from '../utils/scriptParams';
@@ -16,6 +17,8 @@ import FlowNodeCard from './FlowNodeCard.vue';
 import ScheduleRulesEditor from './ScheduleRulesEditor.vue';
 import { scrollToEditorSection } from '../utils/editorNavigation.js';
 import { retainSelectedMetrics, setNodeMetricSelection } from '../utils/flowMetrics';
+import { listReportProcesses } from '../api/reportProcess';
+import type { ReportProcess } from '../types/reportProcess';
 
 const props = withDefaults(defineProps<{ open: boolean; editId: number | null; knownFlows: SkillFlow[]; page?: boolean }>(), { page: false });
 const emit = defineEmits<{ (e: 'update:open', open: boolean): void; (e: 'saved'): void }>();
@@ -30,6 +33,7 @@ const error = ref('');
 const skills = ref<SkillListItem[]>([]);
 const scripts = ref<ScriptRegistryListItem[]>([]);
 const metrics = ref<SkillDependencyMetric[]>([]);
+const paramRules = ref<ScriptParamRule[]>([]);
 const skillLoading = ref(false);
 const scriptLoading = ref(false);
 const metricLoading = ref(false);
@@ -46,6 +50,11 @@ const receiverNames = ref<Record<string, string>>({});
 const receiverSearching = ref(false);
 const reportTitle = ref('');
 const editorBody = ref<HTMLElement | null>(null);
+const reportProcesses = ref<ReportProcess[]>([]);
+const reportProcessLoading = ref(false);
+const selectedReportProcessId = ref('');
+const importedReportSnapshot = ref<{ nodes: SkillFlowNode[]; outline: ReportOutline | null; title: string } | null>(null);
+const importedReportName = ref('');
 /** 每行自动编号(与报告渲染同口径):一级 一、二、三;二级 1.1、1.2。 */
 const outlineNumbers = computed(() => outlineNumberingPrefixes(outlineRows.value, form.value.reportOutline?.numbering || defaultOutlineNumbering()));
 const baseline = ref('');
@@ -147,6 +156,10 @@ async function searchScripts(query = '') {
   try { scripts.value = await listAllEnabledEntries(query); }
   catch { scripts.value = []; }
   finally { scriptLoading.value = false; }
+}
+
+async function loadParamRules() {
+  try { paramRules.value = await listScriptParamRules(); } catch { paramRules.value = []; }
 }
 
 /** 脚本参数定义缓存(键=注册表数字 id):选脚本后按 params_schema 渲染参数输入框,不再手写 JSON */
@@ -435,7 +448,41 @@ function removeTrigger(index: number) {
 }
 
 async function loadOptions() {
-  await Promise.all([searchScripts(''), searchMetrics('')]);
+  await Promise.all([searchScripts(''), searchMetrics(''), loadParamRules()]);
+  reportProcessLoading.value = true;
+  try { reportProcesses.value = await listReportProcesses('available'); } catch { reportProcesses.value = []; }
+  finally { reportProcessLoading.value = false; }
+}
+
+function cloneFlowValue<T>(value: T): T { return JSON.parse(JSON.stringify(value)); }
+
+async function importReportProcess(id: number) {
+  const source = reportProcesses.value.find(item => item.id === id);
+  if (!source) return;
+  if (form.value.nodes.length || outlineRows.value.length) {
+    try { await ElMessageBox.confirm('引入报告流程会替换当前编辑中的节点和报告大纲，原内容可通过“撤销引入”恢复。继续吗？', '引入报告流程', { type: 'warning' }); } catch { return; }
+  }
+  // outlineRows 是编辑器的实时草稿；不能只读 form.reportOutline，后者要到保存时才同步。
+  const draftOutline = outlineRows.value.length
+    ? buildOutline(outlineRows.value, form.value.reportOutline?.numbering || defaultOutlineNumbering(), reportTitle.value)
+    : cloneFlowValue(form.value.reportOutline || null);
+  importedReportSnapshot.value = { nodes: cloneFlowValue(form.value.nodes), outline: cloneFlowValue(draftOutline), title: reportTitle.value };
+  const importedNodes = cloneFlowValue((source.nodes || []) as SkillFlowNode[]).map((node, index) => ({ ...node, sortOrder: index + 1 }));
+  form.value.nodes = importedNodes;
+  form.value.reportOutline = cloneFlowValue(source.reportOutline) as SkillFlowInput['reportOutline'];
+  syncOutlineRows();
+  importedReportName.value = source.name;
+}
+
+async function undoReportProcessImport() {
+  if (!importedReportSnapshot.value) return;
+  form.value.nodes = cloneFlowValue(importedReportSnapshot.value.nodes);
+  form.value.reportOutline = cloneFlowValue(importedReportSnapshot.value.outline);
+  reportTitle.value = importedReportSnapshot.value.title;
+  syncOutlineRows();
+  importedReportSnapshot.value = null;
+  importedReportName.value = '';
+  selectedReportProcessId.value = '';
 }
 
 function normalizeFlow(flow: SkillFlow): SkillFlowInput {
@@ -664,7 +711,13 @@ defineExpose({ isDirty });
             </section>
 
             <section id="flow-outline" class="form-section wide section-card">
-              <div class="section-heading"><div><h4>报告输出大纲</h4><p>先写章节，章节下可添加多个执行节点（拖拽 ⇕ 或 ↑↓ 调整章节内顺序）；序号由渲染器自动生成。</p></div><button class="btn primary" @click="addOutlineRow(null)">添加章节</button></div>
+              <div class="template-toolbar">
+                <span class="template-label">报告流程模板</span>
+                <el-select v-model="selectedReportProcessId" filterable clearable :loading="reportProcessLoading" placeholder="搜索并选择报告流程" class="report-process-select"><el-option v-for="item in reportProcesses" :key="item.id" :value="String(item.id)" :label="item.name" /></el-select>
+                <button class="btn primary" :disabled="!selectedReportProcessId || reportProcessLoading" @click="importReportProcess(Number(selectedReportProcessId))">引入报告流程</button>
+              </div>
+              <div v-if="importedReportSnapshot" class="import-status"><span>已引入：<strong>{{ importedReportName }}</strong></span><div><button class="btn" @click="undoReportProcessImport">撤销引入</button></div></div>
+              <div class="section-heading outline-heading"><div><h4>报告输出大纲</h4><p>先写章节，章节下可添加多个执行节点；可拖拽或使用 ↑↓ 调整顺序。</p></div><button class="btn primary" @click="addOutlineRow(null)">＋ 添加章节</button></div>
               <label class="report-title-field"><span>报告总标题</span><input v-model="reportTitle" placeholder="例如：月度经营分析报告" /><small>生成汇总时会作为整份报告的居中标题。</small></label>
               <div v-if="!outlineRows.length" class="subtle-empty">尚未配置大纲，报告将按执行节点顺序输出。</div>
               <template v-for="(row, rowIndex) in outlineRows" :key="row.id">
@@ -677,6 +730,7 @@ defineExpose({ isDirty });
                 </div>
                 <div class="outline-node-area" :style="{ marginLeft: `${Math.min(row.level, 8) * 22}px` }">
                   <FlowNodeCard v-for="(node, nodeIndex) in nodesForRow(row)" :key="node.nodeKey" class="chapter-node-card" :node="node" :title="nodeTitle(node)" :schema="schemaFor(node)" :scripts="scripts" :metrics="metrics" :script-loading="scriptLoading" :metric-loading="metricLoading" :debug-disabled="!node.scriptId || debugStarting || debugInProgress()" :dragging="dragNodeKey === node.nodeKey" :sortable="true" :is-first="nodeIndex === 0" :is-last="nodeIndex === nodesForRow(row).length - 1" remove-title="删除节点" @move="moveChapterNode(row, node.nodeKey, $event)" @remove="removeChapterNode(row, node.nodeKey)" @debug="runNodeDebug(node)" @drag-start="chapterDragStart(node.nodeKey, $event)" @drag-over="chapterDragOver(row, node.nodeKey)" @drag-end="finishDrag" @script-change="onScriptSelected(node)" @script-params-change="onScriptParamsChange(node, $event)" @search-scripts="searchScripts" @search-metrics="searchMetrics" @set-metrics="setNodeMetrics(node, $event)" />
+                  <FlowNodeCard v-for="(node, nodeIndex) in nodesForRow(row)" :key="node.nodeKey" class="chapter-node-card" :node="node" :title="nodeTitle(node)" :schema="schemaFor(node)" :scripts="scripts" :metrics="metrics" :param-rules="paramRules" :script-loading="scriptLoading" :metric-loading="metricLoading" :debug-disabled="!node.scriptId || debugStarting || debugInProgress()" :dragging="dragNodeKey === node.nodeKey" :sortable="true" :is-first="nodeIndex === 0" :is-last="nodeIndex === nodesForRow(row).length - 1" remove-title="删除节点" @move="moveChapterNode(row, node.nodeKey, $event)" @remove="removeChapterNode(row, node.nodeKey)" @debug="runNodeDebug(node)" @drag-start="chapterDragStart(node.nodeKey, $event)" @drag-over="chapterDragOver(row, node.nodeKey)" @drag-end="finishDrag" @script-change="onScriptSelected(node)" @script-params-change="onScriptParamsChange(node, $event)" @search-scripts="searchScripts" @search-metrics="searchMetrics" @set-metric="setNodeMetric(node, $event)" />
                   <div class="chapter-node-actions">
                     <button class="btn" title="新建一个 Python 节点并放到该章节" @click="addOutlineNode(row)">＋ 添加节点</button>
                     <select v-if="unboundNodes.length" :value="''" @change="bindRowNode(row, ($event.target as HTMLSelectElement).value)"><option value="" disabled>绑定已有未绑定节点…</option><option v-for="node in unboundNodes" :key="node.nodeKey" :value="node.nodeKey">{{ nodeTitle(node) }}（{{ node.nodeKey }}）</option></select>
@@ -724,6 +778,8 @@ defineExpose({ isDirty });
 </template>
 
 <style scoped>
+.template-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px}.template-label{font-size:13px;color:#475569;font-weight:600}.template-toolbar .report-process-select{width:300px;max-width:100%}.template-toolbar .btn,.outline-heading .btn{flex:none;white-space:nowrap}.import-status{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:10px 16px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;color:#334155;font-size:13px}.import-status>div{display:flex;gap:8px}.import-status .danger-outline{color:#dc2626;border-color:#fecaca;background:#fff}.template-toolbar .btn:disabled{opacity:.5;cursor:not-allowed}
+
 .mask { position: fixed; inset: 0; z-index: 1000; display: flex; justify-content: flex-end; background: rgb(15 23 42 / 45%); }
 .drawer { width: min(880px, 96vw); height: 100%; display: flex; flex-direction: column; background: #f5f7fb; box-shadow: -8px 0 24px rgb(15 23 42 / 12%); }
 .mask.page-mode { position: static; min-height: 100%; justify-content: stretch; background: #f5f7fb; }
@@ -758,6 +814,8 @@ input, select, textarea { box-sizing: border-box; width: 100%; border: 1px solid
 .debug-footer { display: flex; justify-content: flex-end; gap: 8px; }
 @media (max-width: 760px) { .drawer { width: 100vw; }.basic-row { grid-template-columns: 1fr; flex-direction: column; align-items: stretch; }.trigger-row { grid-template-columns: 1fr auto 30px; }.drawer-body { padding: 14px; } }
 </style>
+
+
 
 
 

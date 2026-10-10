@@ -24,6 +24,7 @@ public class SkillFlow {
     private String summaryQuestionTemplate;
     /** Nullable recursive report outline JSON; null uses legacy summary rendering. */
     private String reportOutline;
+    private Long reportProcessId;
     private Boolean enabled;
     /** JSON weekday to time list shared by scheduled long-task triggers. */
     private String scheduleRules;

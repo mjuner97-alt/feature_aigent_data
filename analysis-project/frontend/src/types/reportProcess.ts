@@ -1,0 +1,2 @@
+export interface ReportProcess { id:number; code:string; name:string; description?:string; nodes:unknown[]; reportOutline:Record<string, unknown>; enabled:boolean; copiedFromId?:number; copiedFromName?:string; createdBy?:string; createdAt?:string; updatedAt?:string }
+export interface ReportProcessInput { code?:string; name:string; description?:string; nodes:unknown[]; reportOutline:Record<string, unknown>; enabled:boolean }

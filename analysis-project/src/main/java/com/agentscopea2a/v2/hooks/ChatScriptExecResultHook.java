@@ -110,6 +110,20 @@ public class ChatScriptExecResultHook implements Hook, RuntimeContextAware {
         ToolUseBlock use = post.getToolUse();
         ToolResultBlock result = post.getToolResult();
         if (use == null || result == null || !"script_exec".equals(use.getName())) return;
+        Object requestedScript = use.getInput() == null ? null : use.getInput().get("scriptId");
+        if (requestedScript instanceof String scriptId && scriptId.startsWith("flowTask:")) {
+            String output = extractText(result.getOutput());
+            String message = extractFlowTaskMessage(output);
+            if (!message.isBlank()) {
+                String ref = registry.register(ctx.getSessionId(), use.getId(), use.getName(), message);
+                Object requestId = ctx.get(REQUEST_ID_CTX_KEY);
+                if (requestId instanceof String id) registry.addRequestRef(id, ref);
+                post.setToolResult(ToolResultBlock.of(use.getId(), use.getName(),
+                        List.of(TextBlock.builder().text(modelVisiblePlaceholder()).build())));
+                post.setToolResultMsg(Msg.builder().role(MsgRole.TOOL).content(post.getToolResult()).build());
+            }
+            return;
+        }
         // 只向用户保留 stdout；执行信封和 stderr 不能混入最终回答。
         String output = extractText(result.getOutput());
         String stdout = ScriptExecOutputExtractor.extractStdout(output);
@@ -152,6 +166,13 @@ public class ChatScriptExecResultHook implements Hook, RuntimeContextAware {
         if (blocks != null) for (Object block : blocks)
             if (block instanceof TextBlock tb && tb.getText() != null) text.append(tb.getText());
         return text.toString();
+    }
+
+    private static String extractFlowTaskMessage(String output) {
+        if (output == null) return "";
+        Matcher matcher = java.util.regex.Pattern.compile("\\\"message\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"").matcher(output);
+        if (!matcher.find()) return "";
+        return matcher.group(1).replace("\\\\\"", "\\\"").replace("\\\\n", "\\n").trim();
     }
 
     /** 去掉 ```html / ```echarts 外层围栏，只把实际内容写入结果池。 */

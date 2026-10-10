@@ -32,4 +32,11 @@
           AND enabled = 1
     </select>
 
+    <select id="selectEnabledRules" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM script_param_rule
+        WHERE enabled = 1
+        ORDER BY period_unit, value_type, rule_name, rule_key
+    </select>
+
 </mapper>

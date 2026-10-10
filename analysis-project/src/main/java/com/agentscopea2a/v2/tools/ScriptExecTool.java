@@ -20,10 +20,13 @@ import com.agentscopea2a.mapper.gauss.ScriptRegistryMapper;
 import com.agentscopea2a.v2.config.V2SandboxConfig.SandboxPropertiesV2;
 import com.agentscopea2a.v2.sandbox.DockerCliRunner;
 import com.agentscopea2a.v2.service.DownloadContentService;
+import com.agentscopea2a.v2.skillManager.service.FlowExecutionService;
 import com.zaxxer.hikari.HikariDataSource;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
+import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.hook.RuntimeContextAware;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URLEncoder;
@@ -88,7 +91,7 @@ import org.slf4j.LoggerFactory;
  * <p><b>Bean wiring:</b> 由 {@link com.agentscopea2a.v2.config.V2ToolConfig} 创建 bean,
  * 注入 mysqlDataSource + gaussDataSource + clickHouseDataSource + ScriptRegistryMapper + workspacePath.
  */
-public class ScriptExecTool {
+public class ScriptExecTool implements RuntimeContextAware {
 
     private static final Logger log = LoggerFactory.getLogger(ScriptExecTool.class);
 
@@ -137,6 +140,10 @@ public class ScriptExecTool {
     private final SandboxPropertiesV2.Sandbox sandbox;
     private final String containerWorkspacePath;
     private final DownloadContentService downloadContentService;
+    private final FlowExecutionService flowExecutionService;
+    private volatile RuntimeContext currentContext;
+
+    static final String FLOW_TASK_PREFIX = "flowTask:";
 
     public ScriptExecTool(DataSource mysqlDs,
                           DataSource gaussDs,
@@ -146,6 +153,19 @@ public class ScriptExecTool {
                           SandboxPropertiesV2 sandboxProps,
                           String containerWorkspacePath,
                           DownloadContentService downloadContentService) {
+        this(mysqlDs, gaussDs, clickHouseDs, registryMapper, workspacePath, sandboxProps,
+                containerWorkspacePath, downloadContentService, null);
+    }
+
+    public ScriptExecTool(DataSource mysqlDs,
+                          DataSource gaussDs,
+                          DataSource clickHouseDs,
+                          ScriptRegistryMapper registryMapper,
+                          String workspacePath,
+                          SandboxPropertiesV2 sandboxProps,
+                          String containerWorkspacePath,
+                          DownloadContentService downloadContentService,
+                          FlowExecutionService flowExecutionService) {
         Map<String, DataSource> m = new LinkedHashMap<>();
         m.put("mysql", mysqlDs);
         m.put("gauss", gaussDs);
@@ -157,6 +177,15 @@ public class ScriptExecTool {
         this.containerWorkspacePath = containerWorkspacePath == null || containerWorkspacePath.isBlank()
                 ? "/workspace" : containerWorkspacePath;
         this.downloadContentService = downloadContentService;
+        this.flowExecutionService = flowExecutionService;
+    }
+
+    @Override
+    public void setRuntimeContext(RuntimeContext context) { this.currentContext = context; }
+
+    static boolean isFlowTaskScriptId(String scriptId) {
+        return scriptId != null && scriptId.startsWith(FLOW_TASK_PREFIX)
+                && !scriptId.substring(FLOW_TASK_PREFIX.length()).trim().isEmpty();
     }
 
     @Tool(
@@ -178,11 +207,21 @@ public class ScriptExecTool {
             return ToolResultBlock.text("script_exec 拒绝执行: scriptId 不能为空。若当前 Skill 已指定 scriptId，"
                     + "请按 Skill 正文原样填写；没有固定 ID 时才通过 tool_index 查询");
         }
+        if (scriptId.startsWith(FLOW_TASK_PREFIX)) {
+            if (params != null && !params.isEmpty()) {
+                return ToolResultBlock.error("flowTask 仅接受 scriptId=flowTask:<长任务名称>，不接受 params");
+            }
+            return submitFlowTask(scriptId.substring(FLOW_TASK_PREFIX.length()).trim());
+        }
         if (WEEKLY_BUSINESS_MOCK_ID.equals(scriptId)) {
             return ToolResultBlock.text(formatWeeklyBusinessMock(params));
         }
         if (EMPTY_HTML_MOCK_ID.equals(scriptId)) {
-            return ToolResultBlock.text("```html\n<!-- intentionally empty html -->\n```");
+            Object demoVersion = params == null ? null : params.get("demo_version");
+            Object demoVersions = params == null ? null : params.get("demo_versions");
+            String suffix = demoVersion == null && demoVersions == null
+                    ? "intentionally empty html" : "empty html demo: version=" + demoVersion + ", versions=" + demoVersions;
+            return ToolResultBlock.text("```html\n<!-- " + suffix + " -->\n```");
         }
         if (MOCK_SCRIPT_IDS.contains(scriptId)) {
             return ToolResultBlock.text(formatMockHtmlReport(scriptId, params));
@@ -338,6 +377,26 @@ public class ScriptExecTool {
                 dsList, timeout, paramMap);
 
         return runProcess(command, env, paramMap, scriptId, timeout);
+    }
+
+    private ToolResultBlock submitFlowTask(String flowName) {
+        if (flowExecutionService == null) {
+            return ToolResultBlock.error("{\"message\":\"长任务入口不可用\"}");
+        }
+        String userId = currentContext == null ? null : currentContext.getUserId();
+        if (userId == null || userId.isBlank()) {
+            return ToolResultBlock.error("{\"message\":\"无法识别当前用户\"}");
+        }
+        try {
+            var flow = flowExecutionService.findEnabledFlowByName(flowName, userId);
+            if (flow == null) return ToolResultBlock.error("{\"message\":\"未找到可执行的长任务\"}");
+            var result = flowExecutionService.triggerManual(flow.getId(), userId);
+            String message = result.created() ? "长任务已提交，完成后通知" : "长任务正在执行，完成后通知";
+            return ToolResultBlock.text("{\"message\":\"" + message + "\"}");
+        } catch (IllegalStateException e) {
+            log.warn("flowTask submission rejected: flowName={}, userId={}, reason={}", flowName, userId, e.getMessage());
+            return ToolResultBlock.error("{\"message\":\"长任务提交失败\"}");
+        }
     }
 
     /** Generates deterministic renderable output entirely in Java for local smoke tests. */

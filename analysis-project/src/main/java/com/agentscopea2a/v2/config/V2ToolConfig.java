@@ -344,10 +344,12 @@ public class V2ToolConfig {
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
             SandboxPropertiesV2 sandboxProperties,
             @Value("${harness.a2a.sandbox.workspace-container-path:/workspace}") String containerWorkspacePath,
-            DownloadContentService downloadContentService) {
+            DownloadContentService downloadContentService,
+            com.agentscopea2a.v2.skillManager.service.FlowExecutionService flowExecutionService) {
         log.info("ScriptExecTool: wired (mysql/gauss/clickhouse env injection + script_registry lookup + stdout download blocks, workspacePath={} containerWorkspacePath={})", workspacePath, containerWorkspacePath);
         ScriptExecTool tool = new ScriptExecTool(mysqlDataSource, gaussDataSource, clickHouseDataSource,
-                scriptRegistryMapper, workspacePath, sandboxProperties, containerWorkspacePath, downloadContentService);
+                scriptRegistryMapper, workspacePath, sandboxProperties, containerWorkspacePath, downloadContentService,
+                flowExecutionService);
         return tool;
     }
 

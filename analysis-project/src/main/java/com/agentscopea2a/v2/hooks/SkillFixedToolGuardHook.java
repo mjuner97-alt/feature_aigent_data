@@ -99,7 +99,7 @@ public class SkillFixedToolGuardHook implements Hook, RuntimeContextAware {
             Pattern.compile("(?:sqlId|sql_id)\\s*[:=]\\s*[\"'`]?([A-Za-z0-9_][A-Za-z0-9_.\\-]*)");
 
     private static final Pattern SCRIPT_ID_PATTERN =
-            Pattern.compile("(?:scriptId|script_id)\\s*[:=]\\s*[\"'`]?([A-Za-z0-9_][A-Za-z0-9_.\\-]*)");
+            Pattern.compile("(?:scriptId|script_id)\\s*[:=]\\s*[\"'`]?([A-Za-z0-9_][A-Za-z0-9_.:：\\-]*)");
 
     private static final Pattern TOOL_ID_PATTERN =
             Pattern.compile("(?:toolId|tool_id)\\s*[:=]\\s*[\"'`]?([A-Za-z0-9_][A-Za-z0-9_.\\-]*)");

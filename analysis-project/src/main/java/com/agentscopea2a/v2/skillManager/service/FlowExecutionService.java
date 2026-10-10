@@ -75,6 +75,14 @@ public class FlowExecutionService {
     /** 触发结果:created=false 表示当日已有同一(用户,会话,流程)的活跃执行,直接复用。 */
     public record TriggerResult(SkillFlowExecution execution, boolean created) {}
 
+    /** Resolve a named flow for the script_exec flowTask: adapter. */
+    public SkillFlow findEnabledFlowByName(String name, String userId) {
+        if (name == null || name.isBlank() || userId == null || userId.isBlank()) return null;
+        SkillFlow flow = mapper.selectFlowByName(name.trim());
+        if (flow == null || !Boolean.TRUE.equals(flow.getEnabled())) return null;
+        return userId.equals(flow.getCreatedBy()) ? flow : null;
+    }
+
     /**
      * 触发一次流程执行:
      * guardKey = 用户:会话:流程:数据日期,唯一索引兜底,同一天同一会话只跑一次;

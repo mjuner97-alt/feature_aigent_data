@@ -155,7 +155,7 @@ function openExecutionCenter() {
 }
 
 function filterFlows() {
-  flowListRef.value?.load('', effectiveCreatedBy.value || '', undefined, visibilityScope.value);
+  flowListRef.value?.load(flowKeyword.value.trim(), effectiveCreatedBy.value || '', undefined, visibilityScope.value);
 }
 
 function createFlow() {
@@ -362,6 +362,7 @@ function metricTitle(job: SkillJob): string {
           <button :class="{ active: visibilityScope === 'all' }" @click="visibilityScope = 'all'; refreshCurrentTab()">全部</button>
         </div>
         <input v-if="visibilityScope === 'all'" v-model="scopeCreatedBy" placeholder="创建人 userId" class="search-input creator-input" @keyup.enter="refreshCurrentTab" />
+        <input v-if="activeTab === 'flows'" v-model="flowKeyword" placeholder="搜索流程名称" class="search-input" @keyup.enter="refreshCurrentTab" />
         <template v-if="activeTab === 'manage'">
           <button class="btn primary" @click="openCreate">+ 创建任务</button>
         </template>

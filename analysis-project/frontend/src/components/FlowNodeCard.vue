@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import type { SkillFlowNode } from '../types/skillFlow';
-import type { ParamSchemaItem, ScriptRegistryListItem } from '../types/scriptRegistry';
+import type { ParamSchemaItem, ScriptRegistryListItem, ScriptParamRule } from '../types/scriptRegistry';
 import type { SkillDependencyMetric } from '../types/skillJob';
-import { coerceParamValue, defaultParamValue, normalizedParamType, paramsFromSchema, validateParamValue } from '../utils/scriptParams';
+import { coerceParamValue, defaultParamValue, normalizedParamType, paramsFromSchema, ruleMarker, rulesForParam, validateParamValue } from '../utils/scriptParams';
 
 /** 流程节点配置卡片:Python 执行节点区和报告输出大纲行内嵌两处复用;排序相关控件仅在 sortable 时显示。 */
 const props = withDefaults(defineProps<{
@@ -14,6 +14,7 @@ const props = withDefaults(defineProps<{
   schema: ParamSchemaItem[] | null;
   scripts: ScriptRegistryListItem[];
   metrics: SkillDependencyMetric[];
+  paramRules?: ScriptParamRule[];
   scriptLoading?: boolean;
   metricLoading?: boolean;
   debugDisabled?: boolean;
@@ -27,6 +28,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   scriptLoading: false,
   metricLoading: false,
+  paramRules: () => [],
   debugDisabled: false,
   dragging: false,
   sortable: true,
@@ -86,6 +88,7 @@ const hasSchema = () => !!props.schema && props.schema.length > 0;
 function schemaValue(item: ParamSchemaItem): unknown {
   if (!(item.name in schemaValues.value)) schemaValues.value[item.name] = defaultParamValue(item.type);
   let value = schemaValues.value[item.name];
+  if (isRuleValue(value)) return defaultParamValue(item.type);
   // 兼容旧流程：数组参数历史上可能保存成单个字符串，不能直接 v-for 字符符号。
   if (normalizedParamType(item.type).array && !Array.isArray(value)) {
     if (typeof value === 'string') {
@@ -98,6 +101,28 @@ function schemaValue(item: ParamSchemaItem): unknown {
   }
   return normalizedParamType(item.type).base === 'date' && typeof value === 'string'
     ? value.replace(/\//g, '-') : value;
+}
+function isRuleValue(value: unknown): value is { $rule: string } {
+  return !!value && typeof value === 'object' && '$rule' in value && typeof (value as { $rule?: unknown }).$rule === 'string';
+}
+function paramMode(item: ParamSchemaItem): 'LITERAL' | 'PRESET_RULE' {
+  return isRuleValue(schemaValues.value[item.name]) ? 'PRESET_RULE' : 'LITERAL';
+}
+function setParamMode(item: ParamSchemaItem, mode: 'LITERAL' | 'PRESET_RULE') {
+  if (mode === 'LITERAL') {
+    setSchemaValue(item, defaultParamValue(item.type));
+    return;
+  }
+  const options = rulesForParam(props.paramRules || [], item.type);
+  if (!options.length) return;
+  schemaValues.value[item.name] = ruleMarker(options[0].ruleKey);
+  scriptParamsText.value = formatScriptParams(schemaValues.value);
+  emit('script-params-change', { value: { ...schemaValues.value }, error: '' });
+}
+function setParamRule(item: ParamSchemaItem, ruleKey: string) {
+  schemaValues.value[item.name] = ruleMarker(ruleKey);
+  scriptParamsText.value = formatScriptParams(schemaValues.value);
+  emit('script-params-change', { value: { ...schemaValues.value }, error: '' });
 }
 function setSchemaValue(item: ParamSchemaItem, value: unknown) {
   const normalized = coerceParamValue(value, item.type);
@@ -172,7 +197,20 @@ function selectedScript(node: SkillFlowNode, scripts: ScriptRegistryListItem[]):
               <span class="param-name">{{ item.name }}<em v-if="item.required"> *</em><small class="param-type">{{ item.type }}</small></span>
               <small v-if="item.description" class="param-desc-inline">{{ item.description }}</small>
             </div>
-            <template v-if="normalizedParamType(item.type).array">
+            <div class="param-mode">
+              <select :value="paramMode(item)" @change="setParamMode(item, ($event.target as HTMLSelectElement).value as 'LITERAL' | 'PRESET_RULE')">
+                <option value="LITERAL">直接填写</option>
+                <!-- 长任务规则参数暂时隐藏，保留底层数据兼容与后续恢复入口。 -->
+                <option v-if="false" value="PRESET_RULE">选择规则</option>
+              </select>
+              <select v-if="false && paramMode(item) === 'PRESET_RULE'" :value="(schemaValues[item.name] as { $rule: string }).$rule" @change="setParamRule(item, ($event.target as HTMLSelectElement).value)">
+                <option v-for="rule in rulesForParam(paramRules || [], item.type)" :key="rule.ruleKey" :value="rule.ruleKey">{{ rule.ruleName }}</option>
+              </select>
+            </div>
+            <template v-if="paramMode(item) === 'PRESET_RULE'">
+              <small v-if="false" class="param-rule-preview">已选择规则，执行时按数据日期自动生成</small>
+            </template>
+            <template v-else-if="normalizedParamType(item.type).array">
               <div class="array-editor">
                 <div v-for="(value, index) in (schemaValue(item) as unknown[] || [])" :key="index" class="array-row">
                   <input :type="inputType(normalizedParamType(item.type).base)" :step="numberStep(item.type)" :placeholder="normalizedParamType(item.type).base === 'date' ? 'YYYY-MM-DD' : normalizedParamType(item.type).base === 'datetime' ? 'YYYY-MM-DD HH:mm' : ''" :value="value as any" @input="updateArrayItem(item, index, ($event.target as HTMLInputElement).value)" />
@@ -216,6 +254,9 @@ label { display: grid; gap: 5px; } label > span { color: #475569; font-size: 13p
 .node-params-title { color: #475569; font-size: 13px; font-weight: 600; }
 .param-list { display: grid; gap: 8px; }
 .param-row { display: grid; grid-template-columns: minmax(120px, 220px) minmax(0, 1fr); gap: 6px 10px; align-items: center; }
+.param-mode { display: flex; gap: 6px; align-items: center; grid-column: 2; }
+.param-mode select { width: auto; min-width: 92px; padding: 5px 7px; font-size: 12px; }
+.param-rule-preview { grid-column: 2; color: #2563eb; font-size: 12px; }
 .param-name { display: block; color: #1e293b; font-size: 13px; font-weight: 600; word-break: break-all; }.param-name em { color: #dc2626; font-style: normal; }
 .param-type { display: inline-block; margin-left: 6px; padding: 0 5px; border: 1px solid #dbe4f0; border-radius: 4px; background: #f1f5f9; color: #64748b; font-size: 11px; font-weight: 400; line-height: 16px; vertical-align: 1px; }
 .param-input input { width: 100%; }

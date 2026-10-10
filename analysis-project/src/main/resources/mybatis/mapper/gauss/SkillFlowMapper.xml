@@ -17,6 +17,7 @@
         <result column="task_question" property="taskQuestion"/>
         <result column="summary_question_template" property="summaryQuestionTemplate"/>
         <result column="report_outline" property="reportOutline"/>
+        <result column="report_process_id" property="reportProcessId"/>
         <result column="enabled" property="enabled"/>
         <result column="schedule_rules" property="scheduleRules"/>
         <result column="max_parallelism" property="maxParallelism"/>
@@ -183,7 +184,7 @@
     <sql id="flowColumns">
         id, code, name, description, task_question, summary_question_template, enabled, schedule_rules,
         max_parallelism, notify_enabled, notify_receivers, notify_receiver_triggers, chat_public,
-        report_outline, created_by, created_at, updated_at, deleted_at
+        report_outline, report_process_id, created_by, created_at, updated_at, deleted_at
     </sql>
     <sql id="nodeColumns">
         id, flow_id, node_key, node_name, node_type, skill_id, script_id, script_params_json, question_template, depends_on_json, required,
@@ -201,11 +202,11 @@
     <!-- 新建流程:保存编码/名称/任务问题/汇总模板/排程星期/并发数/通知开关 -->
     <insert id="insertFlow" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO skill_flow (code, name, description, task_question, summary_question_template, enabled,
-                                schedule_rules, max_parallelism, notify_enabled, notify_receivers, report_outline,
+                                schedule_rules, max_parallelism, notify_enabled, notify_receivers, report_outline, report_process_id,
                                 notify_receiver_triggers, created_by)
                 VALUES (#{code}, #{name}, #{description}, #{taskQuestion}, #{summaryQuestionTemplate}, #{enabled},
                 #{scheduleRules}, #{maxParallelism}, #{notifyEnabled}, #{notifyReceivers},
-                #{reportOutline}, #{notifyReceiverTriggers}, #{createdBy})
+                #{reportOutline}, #{reportProcessId}, #{notifyReceiverTriggers}, #{createdBy})
     </insert>
 
     <!-- 按 id 查流程,已软删除的视为不存在 -->
@@ -317,6 +318,7 @@
             task_question=#{taskQuestion},
             summary_question_template=#{summaryQuestionTemplate},
             report_outline=#{reportOutline},
+            report_process_id=#{reportProcessId},
             enabled=#{enabled},
             schedule_rules=#{scheduleRules},
             max_parallelism=#{maxParallelism},

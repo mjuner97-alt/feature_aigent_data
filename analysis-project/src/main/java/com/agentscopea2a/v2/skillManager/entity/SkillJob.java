@@ -57,6 +57,7 @@ public class SkillJob {
     private String metricName;
     /** 完成通知收件人 userId 列表(逗号分隔,人员表校验);空=发给创建人 */
     private String notifyReceivers;
+    private Long reportProcessId;
     /** 创建人 userId */
     private String createdBy;
     /** 创建时间 */
