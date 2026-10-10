@@ -498,21 +498,21 @@ public class DimensionStateManager {
     }
 
     /**
-     * 嵌入小组名内部的 alias 命中抑制："个贷数据开发组"里的"个贷"只是更长小组名的修饰前缀，
-     * 并非独立指代产品线，此类命中整体丢弃，让小组正则接管；否则 alias 命中会抢注错误维度
-     * 且压制小组识别（aliasHit 为 true 时小组正则不跑）。
+     * 嵌入小组名内部的 alias 命中抑制："个贷数据开发组"里的"个贷"被 alias 解析成产品线
+     * （个人信贷产品线，与该组毫无关系的实体），且压制小组识别（aliasHit 为 true 时小组
+     * 正则不跑），此类命中丢弃，让小组正则接管。
      *
-     * <p>判据：alias span 落在某个显式小组 span 内、未延伸到其末尾、且之后还有不止一个"组"字
-     * 的修饰成分（teamEnd - end &gt; 1）。两类命中保留：
+     * <p>判据（按样例特征归纳）：alias 命中嵌在组名 token 内部（end &lt; teamEnd 且之后
+     * 还有不止一个"组"字的修饰成分）时——
      * <ul>
-     *   <li>尾部对齐（"FMBM应用平台组"里的"应用平台组"）——alias 能给出标准名；</li>
-     *   <li>alias 后紧跟单个"组"字（"军队组"里的"军队"）——"别名+组"的口语写法，
-     *       触发词机制正是为此设计。</li>
+     *   <li>标准名与组名 token <b>互相包含</b> ⇒ alias 指的就是该组，保留并产出标准名+映射行：
+     *       "杭州开发三部同业客户组"里的"同业"→ 同业客户组（标准名是 token 后缀）；
+     *       "杭州服务支持部分行平台服务创新组"里的"分行"→ 归一化出完整标准名；</li>
+     *   <li>互不包含 ⇒ 命中只是组名里的碰巧子串，抑制："个贷数据开发组"里的"个贷"
+     *       （标准名"个人信贷产品线"与 token 无关）、"分行业务组"里的"分行"
+     *       （否则错绑到"杭州服务支持部分行平台服务创新组"）。</li>
      * </ul>
-     *
-     * <p>第三类保留（2026/10/08）："部门前缀+组名"形态（"杭州开发三部同业客户组"里的"同业"）。
-     * 组 span = 部门名 + 组名本体，alias 起点即组名开头，standardName 就是标准组名；
-     * 仅对 TEAM 维度命中生效——产品线/应用别名作组名修饰前缀（"个贷数据开发组"）仍抑制。
+     * 非组维度命中（产品线/应用）一律抑制——组名里嵌的产品线词不是产品线指代。
      */
     private static AliasResolver.AliasResolution suppressEmbeddedAliasHits(
             String q, AliasResolver.AliasResolution res) {
@@ -528,10 +528,12 @@ public class DimensionStateManager {
             return res;
         }
         List<AliasResolver.ResolvedAlias> keptResolved = res.resolved().stream()
-                .filter(h -> !embeddedInTeamSpan(q, h.dimension(), h.start(), h.end(), teamSpans))
+                .filter(h -> !embeddedInTeamSpan(
+                        q, h.dimension(), List.of(h.standardName()), h.start(), h.end(), teamSpans))
                 .toList();
         List<AliasResolver.AmbiguousAlias> keptAmbiguous = res.ambiguous().stream()
-                .filter(h -> !embeddedInTeamSpan(q, h.dimension(), h.start(), h.end(), teamSpans))
+                .filter(h -> !embeddedInTeamSpan(
+                        q, h.dimension(), h.candidates(), h.start(), h.end(), teamSpans))
                 .toList();
         if (keptResolved.size() == res.resolved().size()
                 && keptAmbiguous.size() == res.ambiguous().size()) {
@@ -541,17 +543,23 @@ public class DimensionStateManager {
     }
 
     private static boolean embeddedInTeamSpan(
-            String q, DimensionState.PeerDimensionType dimension,
+            String q, DimensionState.PeerDimensionType dimension, List<String> standards,
             int start, int end, List<int[]> teamSpans) {
         for (int[] span : teamSpans) {
             if (start >= span[0] && end < span[1] && span[1] - end > 1) {
-                // 保留"部门前缀+组名"形态里的 TEAM 命中："杭州开发三部同业客户组"里
-                // "同业"紧跟部门名，组名本体从 alias 起点开始，standardName 即标准组名；
-                // 若抑制，小组正则会把带部门前缀的原文整体当组名，真实组名查不到数据
-                if (dimension == DimensionState.PeerDimensionType.TEAM
-                        && EXPLICIT_DEPT.matcher(q.substring(span[0], start)).matches()) {
-                    return false;
+                if (dimension == DimensionState.PeerDimensionType.TEAM) {
+                    String token = q.substring(span[0], span[1]);
+                    for (String standard : standards) {
+                        if (token.contains(standard) || standard.contains(token)) {
+                            return false;
+                        }
+                    }
                 }
+                // 治理信号：安全网兜住的组名大概率没配全称 alias 行（配了则最长匹配天然解决，
+                // 不会走到这里），运营据此补配置（docs/history/dimension-alias-config-plan.md §12）
+                log.warn("Embedded alias suppressed: alias='{}' dimension={} inside team token='{}'; "
+                                + "consider adding a TEAM alias row for the full token",
+                        q.substring(start, end), dimension, q.substring(span[0], span[1]));
                 return true;
             }
         }
