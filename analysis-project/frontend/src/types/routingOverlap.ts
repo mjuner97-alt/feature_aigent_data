@@ -25,6 +25,39 @@ export interface RoutingOverlapSummary {
   highByTool: Record<string, number>;
 }
 
+export interface ToolToolOverlapItem {
+  toolIdA: string;
+  toolTypeA: string;
+  toolIdB: string;
+  toolTypeB: string;
+  level: 'HIGH' | 'MEDIUM' | 'LOW';
+  topicTagOverlap: string[];
+  cosine: number;
+  signatureSame: boolean;
+  aliasHit: boolean;
+  differingLayers: string[];
+  metricTagsA: string[];
+  metricTagsB: string[];
+  dimensionTagsA: string[];
+  dimensionTagsB: string[];
+  suggestion: string;
+  enabledA: boolean;
+  enabledB: boolean;
+}
+
+export interface ToolToolOverlapListResponse {
+  degraded: boolean;
+  total: number;
+  items: ToolToolOverlapItem[];
+}
+
+export interface ToolToolOverlapSummary {
+  degraded: boolean;
+  counts: Record<string, number>;
+  highByTool: Record<string, number>;
+  duplicateByTool: Record<string, number>;
+}
+
 export interface SkillSimilarityMatch {
   skillId: number;
   name: string;

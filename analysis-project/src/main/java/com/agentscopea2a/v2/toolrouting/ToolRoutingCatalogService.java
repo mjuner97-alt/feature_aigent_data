@@ -49,6 +49,12 @@ public class ToolRoutingCatalogService {
         Map<String, String> dimensions = enabledTagLookup(ToolRoutingTagType.DIMENSION);
         List<ToolRoutingMetadata> tools = metadataRepository.findEnabled().stream()
                 .filter(availabilityResolver::isAvailable)
+                // 防御: 同 toolId 只应有一个启用类型 (启用互斥由保存路径保证), 直改 DB 双启用时
+                // 目录按 toolId 去重取优先级高者, 避免 Agent 寻址歧义
+                .collect(java.util.stream.Collectors.toMap(ToolRoutingMetadata::toolId,
+                        metadata -> metadata, (a, b) -> a.priority() >= b.priority() ? a : b,
+                        java.util.LinkedHashMap::new))
+                .values().stream()
                 .map(metadata -> canonicalize(metadata, topics, metrics, dimensions))
                 .filter(metadata -> !metadata.topicTags().isEmpty() && !metadata.metricTags().isEmpty())
                 .toList();

@@ -11,7 +11,13 @@ async function parse<T>(response: Response, action: string): Promise<T> {
 
 export interface PageResult<T> { items: T[]; page: number; pageSize: number; total: number; }
 export const listToolRouting = (page = 1, pageSize = 20) => fetch(`${BASE}?page=${page}&pageSize=${pageSize}`, { headers: headers() }).then(r => parse<PageResult<ToolRoutingMetadata>>(r, '加载工具路由'));
-export const scanToolRouting = (page = 1, pageSize = 20) => fetch(`${BASE}/scan?page=${page}&pageSize=${pageSize}`, { headers: headers() }).then(r => parse<PageResult<ToolRoutingScanCandidate>>(r, '扫描工具注册表'));
+export const listToolRoutingAll = () => fetch(`${BASE}/all`, { headers: headers() }).then(r => parse<ToolRoutingMetadata[]>(r, '加载工具路由'));
+export const scanToolRouting = (page = 1, pageSize = 20, keyword = '', toolType = '') => {
+  const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+  if (keyword) query.set('keyword', keyword);
+  if (toolType) query.set('type', toolType);
+  return fetch(`${BASE}/scan?${query}`, { headers: headers() }).then(r => parse<PageResult<ToolRoutingScanCandidate>>(r, '扫描工具注册表'));
+};
 export const getToolRoutingStatus = () => fetch(`${BASE}/status`, { headers: headers() }).then(r => parse<ToolRoutingStatus>(r, '加载路由状态'));
 export const saveToolRouting = (toolId: string, input: ToolRoutingInput) => fetch(`${BASE}/${encodeURIComponent(toolId)}`, {
   method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(input),

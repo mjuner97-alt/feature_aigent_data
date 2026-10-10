@@ -31,9 +31,12 @@ import java.util.List;
 public class RoutingOverlapController {
 
     private final SkillToolOverlapService overlapService;
+    private final ToolToolOverlapService toolToolOverlapService;
 
-    public RoutingOverlapController(SkillToolOverlapService overlapService) {
+    public RoutingOverlapController(SkillToolOverlapService overlapService,
+                                    ToolToolOverlapService toolToolOverlapService) {
         this.overlapService = overlapService;
+        this.toolToolOverlapService = toolToolOverlapService;
     }
 
     public record OverlapListResponse(
@@ -63,5 +66,32 @@ public class RoutingOverlapController {
     @GetMapping("/summary")
     public SkillToolOverlapService.OverlapSummary summary() {
         return overlapService.summary();
+    }
+
+    public record ToolToolOverlapListResponse(
+            boolean degraded,
+            int total,
+            List<ToolToolOverlapView> items) {}
+
+    @GetMapping("/tool-tool")
+    public ToolToolOverlapListResponse toolTool(
+            @RequestParam(name = "level", required = false) String level,
+            @RequestParam(name = "toolId", required = false) String toolId,
+            @RequestParam(name = "limit", defaultValue = "200") int limit,
+            @RequestParam(name = "offset", defaultValue = "0") int offset) {
+        ToolToolOverlapService.OverlapReport report = toolToolOverlapService.report();
+        List<ToolToolOverlapView> items = report.items().stream()
+                .filter(item -> level == null || level.isBlank() || item.level().equalsIgnoreCase(level))
+                .filter(item -> toolId == null || toolId.isBlank()
+                        || item.toolIdA().equals(toolId) || item.toolIdB().equals(toolId))
+                .toList();
+        int from = Math.max(0, Math.min(offset, items.size()));
+        int to = Math.min(items.size(), from + Math.max(1, Math.min(limit, 500)));
+        return new ToolToolOverlapListResponse(report.degraded(), items.size(), items.subList(from, to));
+    }
+
+    @GetMapping("/tool-tool/summary")
+    public ToolToolOverlapService.OverlapSummary toolToolSummary() {
+        return toolToolOverlapService.summary();
     }
 }

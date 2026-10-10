@@ -17,6 +17,9 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /** Reads and atomically updates only registered files under workspace/scripts. */
@@ -26,15 +29,18 @@ public class ScriptSourceService {
 
     public static final int DEFAULT_MAX_SOURCE_BYTES = 512 * 1024;
 
-    /** Container existence probe TTL — isAvailable 走 tool_index 每请求链路, 避免每请求都 ssh+docker exec. */
-    private static final long CONTAINER_EXISTENCE_TTL_MS = 30_000;
+    /**
+     * 容器 scripts 目录清单 TTL。一次 find 拿全量文件清单代替逐脚本 test -f
+     * (脚本上百个时逐个 docker exec 会把扫描接口拖到分钟级)。
+     */
+    private static final long CONTAINER_LISTING_TTL_MS = 30_000;
 
     private final Path scriptsDir;
     private final int maxSourceBytes;
     private final SandboxPropertiesV2.Sandbox sandbox;
     private final String containerWorkspacePath;
     private final ContainerCommandRunner containerRunner;
-    private final ConcurrentHashMap<String, CachedExistence> containerExistenceCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, CachedListing> containerListingCache = new ConcurrentHashMap<>();
 
     @Autowired
     public ScriptSourceService(
@@ -115,10 +121,6 @@ public class ScriptSourceService {
         return containerWorkspacePath + "/scripts/" + scriptPath;
     }
 
-    private String containerExistenceCacheKey(String containerPath) {
-        return sandbox.getSharedContainerName() + ":" + containerPath;
-    }
-
     /** 容器写回: stdin 管道传内容 (docker exec -i sh -c 'cat > path'), 避开 Windows CreateProcess 8KB argv 限制. */
     private void writeToContainer(String scriptPath, byte[] bytes) {
         String containerPath = containerScriptPath(scriptPath);
@@ -134,8 +136,7 @@ public class ScriptSourceService {
                         + (r.stderr().isBlank() ? "" : " stderr=" + r.stderr().trim())
                         + " (调试执行仍会使用容器内旧版本)");
             }
-            containerExistenceCache.put(containerExistenceCacheKey(containerPath),
-                    new CachedExistence(true, System.currentTimeMillis()));
+            containerListingCache.remove(containerScriptPath(""));
         } catch (IOException e) {
             throw new IllegalStateException("CONTAINER_WRITEBACK_FAILED: 共享容器写回异常: " + e.getMessage(), e);
         }
@@ -161,23 +162,41 @@ public class ScriptSourceService {
 
     private boolean containerFileExists(String scriptPath) {
         String containerPath = containerScriptPath(scriptPath);
-        String cacheKey = containerExistenceCacheKey(containerPath);
-        CachedExistence cached = containerExistenceCache.get(cacheKey);
+        Set<String> listing = containerScriptListing();
+        return listing.contains(containerPath);
+    }
+
+    /** 一次 find 拿整个 scripts 目录清单, TTL 内复用; 失败按空清单处理 (同样进 TTL, 避免扫描期内反复重试)。 */
+    private Set<String> containerScriptListing() {
+        String scriptsDir = containerScriptPath("");
         long now = System.currentTimeMillis();
-        if (cached != null && now - cached.at() < CONTAINER_EXISTENCE_TTL_MS) {
-            return cached.exists();
+        CachedListing cached = containerListingCache.get(scriptsDir);
+        if (cached != null && now - cached.at() < CONTAINER_LISTING_TTL_MS) {
+            return cached.paths();
         }
         try {
             DockerCliRunner.CommandResult r = containerRunner.run(
                     (int) Math.max(5, sandbox.getRemoteDockerTimeoutSeconds()),
                     null,
-                    "exec", sandbox.getSharedContainerName(), "test", "-f", containerPath);
-            boolean exists = r.exitCode() == 0;
-            containerExistenceCache.put(cacheKey, new CachedExistence(exists, now));
-            return exists;
+                    "exec", sandbox.getSharedContainerName(), "find", scriptsDir, "-type", "f");
+            Set<String> paths;
+            if (r.exitCode() == 0) {
+                paths = new HashSet<>();
+                for (String line : r.stdout().split("\n")) {
+                    String trimmed = line.trim();
+                    if (!trimmed.isEmpty()) paths.add(trimmed);
+                }
+            } else {
+                log.warn("容器内脚本目录清单获取失败 (exit={}): {}:{} - {}",
+                        r.exitCode(), sandbox.getSharedContainerName(), scriptsDir, r.stderr().trim());
+                paths = Set.of();
+            }
+            containerListingCache.put(scriptsDir, new CachedListing(paths, now));
+            return paths;
         } catch (IOException e) {
-            log.warn("容器内脚本存在性检查失败: {}:{} - {}", sandbox.getSharedContainerName(), containerPath, e.getMessage());
-            return false;
+            log.warn("容器内脚本目录清单获取异常: {}:{} - {}", sandbox.getSharedContainerName(), scriptsDir, e.getMessage());
+            containerListingCache.put(scriptsDir, new CachedListing(Set.of(), now));
+            return Set.of();
         }
     }
 
@@ -258,5 +277,5 @@ public class ScriptSourceService {
         DockerCliRunner.CommandResult run(int timeoutSeconds, byte[] stdinData, String... dockerArgs) throws IOException;
     }
 
-    private record CachedExistence(boolean exists, long at) { }
+    private record CachedListing(Set<String> paths, long at) { }
 }

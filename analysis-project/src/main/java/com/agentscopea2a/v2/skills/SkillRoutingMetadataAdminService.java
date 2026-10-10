@@ -31,6 +31,10 @@ public class SkillRoutingMetadataAdminService {
         return repository.findAllWithSkillManage(keyword, active, mine, userId, limit, offset);
     }
 
+    public int count(String keyword, Boolean active, boolean mine, String userId) {
+        return repository.countAllWithSkillManage(keyword, active, mine, userId);
+    }
+
     public SkillRoutingMetadataView get(String skillName) {
         return repository.findOneWithSkillManage(skillName)
                 .orElseThrow(() -> new IllegalArgumentException("SkillNotFound: " + skillName));

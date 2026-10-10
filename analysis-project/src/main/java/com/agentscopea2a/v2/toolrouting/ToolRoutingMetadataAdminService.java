@@ -11,6 +11,7 @@ public class ToolRoutingMetadataAdminService {
     private static final Pattern TAG_SEPARATOR = Pattern.compile("[,，、\\r\\n]+");
     private final ToolRoutingMetadataRepository repository;
     private final com.agentscopea2a.v2.governance.SkillToolOverlapService overlapService;
+    private final com.agentscopea2a.v2.governance.ToolToolOverlapService toolToolOverlapService;
     private final com.agentscopea2a.mapper.gauss.SqlRegistryMapper sqlRegistryMapper;
     private final com.agentscopea2a.mapper.gauss.ScriptRegistryMapper scriptRegistryMapper;
     private final com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService;
@@ -20,8 +21,20 @@ public class ToolRoutingMetadataAdminService {
             com.agentscopea2a.mapper.gauss.SqlRegistryMapper sqlRegistryMapper,
             com.agentscopea2a.mapper.gauss.ScriptRegistryMapper scriptRegistryMapper,
             com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService) {
+        this(repository, overlapService, null, sqlRegistryMapper, scriptRegistryMapper, adminRoleService);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ToolRoutingMetadataAdminService(
+            ToolRoutingMetadataRepository repository,
+            com.agentscopea2a.v2.governance.SkillToolOverlapService overlapService,
+            com.agentscopea2a.v2.governance.ToolToolOverlapService toolToolOverlapService,
+            com.agentscopea2a.mapper.gauss.SqlRegistryMapper sqlRegistryMapper,
+            com.agentscopea2a.mapper.gauss.ScriptRegistryMapper scriptRegistryMapper,
+            com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService) {
         this.repository = repository;
         this.overlapService = overlapService;
+        this.toolToolOverlapService = toolToolOverlapService;
         this.sqlRegistryMapper = sqlRegistryMapper;
         this.scriptRegistryMapper = scriptRegistryMapper;
         this.adminRoleService = adminRoleService;
@@ -30,7 +43,44 @@ public class ToolRoutingMetadataAdminService {
     public ToolRoutingMetadata save(String toolId, ToolRoutingMetadataInput input, String userId) {
         ToolRoutingMetadata metadata = buildMetadata(toolId, input);
         assertOwner(metadata, userId);
-        return saveMetadata(metadata);
+        assertNotHighOverlap(metadata);
+        ToolRoutingMetadata saved = saveMetadata(metadata);
+        // 启用互斥: 同 toolId 的 (tool_id, tool_type) 多行各自有独立开关, 但同一时刻至多一个
+        // 类型启用 (路由目录单条, Agent 按 toolId 寻址)——启用一个类型时自动停用其余类型
+        if (metadata.enabled() && repository.disableOtherTypes(metadata.toolId(), metadata.toolType().name()) > 0) {
+            if (overlapService != null) overlapService.invalidate();
+            if (toolToolOverlapService != null) toolToolOverlapService.invalidate();
+        }
+        return saved;
+    }
+
+    /**
+     * HIGH 重叠 (同候选集内四层无差异) 的工具禁止通过管理页启用——启用了 Agent 叶子选型必然瞎选。
+     * 停用与元数据修改不拦 (那是整改动作); 绕过页面直改 DB 的由启动审计 (block-tool-overlap) 兜底。
+     */
+    private void assertNotHighOverlap(ToolRoutingMetadata metadata) {
+        if (!metadata.enabled() || toolToolOverlapService == null) {
+            return;
+        }
+        for (com.agentscopea2a.v2.governance.ToolToolOverlapView view : toolToolOverlapService.report().items()) {
+            if (!"HIGH".equals(view.level())) {
+                continue;
+            }
+            // 同 toolId 跨类型重复注册: 只能改注册表 (重命名/退役) 整改, 元数据开关处置不了, 不拦启用 (否则死锁)
+            if (view.toolIdA().equals(view.toolIdB())) {
+                continue;
+            }
+            // 只拦与"已启用"工具的重叠: 对侧未启用不构成选型风险 (先启用的一方保留,
+            // 即"仅可启用其中一个"); 想换保留侧需先停用当前启用的一方
+            if (metadata.toolId().equals(view.toolIdA()) && view.enabledB()) {
+                throw new IllegalStateException("ToolOverlapBlocked: 与工具 " + view.toolIdB()
+                        + " 有重复，同一候选集内至多启用一个；请先停用对方，或在重叠检测页区分描述或标签后再启用");
+            }
+            if (metadata.toolId().equals(view.toolIdB()) && view.enabledA()) {
+                throw new IllegalStateException("ToolOverlapBlocked: 与工具 " + view.toolIdA()
+                        + " 有重复，同一候选集内至多启用一个；请先停用对方，或在重叠检测页区分描述或标签后再启用");
+            }
+        }
     }
 
     private void assertOwner(ToolRoutingMetadata metadata, String userId) {
@@ -79,6 +129,7 @@ public class ToolRoutingMetadataAdminService {
             throw new IllegalStateException("ToolRoutingMetadataSaveFailed");
         }
         if (overlapService != null) overlapService.invalidate();
+        if (toolToolOverlapService != null) toolToolOverlapService.invalidate();
         return metadata;
     }
 

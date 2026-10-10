@@ -44,6 +44,7 @@ import com.agentscopea2a.v2.toolrouting.ToolIndexService;
 import com.agentscopea2a.v2.toolrouting.ToolRoutingAvailabilityResolver;
 import com.agentscopea2a.v2.toolrouting.ToolRoutingCatalogService;
 import com.agentscopea2a.v2.toolrouting.ToolRoutingMetadataRepository;
+import com.agentscopea2a.v2.toolrouting.ToolRoutingScanService;
 import com.agentscopea2a.v2.toolrouting.ToolRoutingTagDictionary;
 import com.agentscopea2a.v2.toolrouting.UnifiedToolMetadataService;
 import com.agentscopea2a.v2.governance.GovernanceEmbeddingCache;
@@ -180,6 +181,25 @@ public class V2ToolConfig {
     }
 
     @Bean
+    public com.agentscopea2a.v2.governance.ToolToolOverlapService toolToolOverlapService(
+            ToolRoutingMetadataRepository toolRoutingMetadataRepository,
+            com.agentscopea2a.v2.governance.GovernanceEmbeddingCache governanceEmbeddingCache,
+            org.springframework.beans.factory.ObjectProvider<UnifiedToolMetadataService> unifiedToolMetadataServiceProvider,
+            ToolRoutingScanService toolRoutingScanService,
+            @Value("${harness.a2a.governance.overlap.cosine-threshold:0.80}") double cosineThreshold,
+            @Value("${harness.a2a.governance.overlap.cosine-high-threshold:0.88}") double cosineHighThreshold,
+            @Value("${harness.a2a.governance.overlap.name-similarity-threshold:0.85}") double nameSimilarityThreshold,
+            @Value("${harness.a2a.governance.overlap.cache-ttl-ms:300000}") long cacheTtlMillis) {
+        UnifiedToolMetadataService unifiedToolMetadataService = unifiedToolMetadataServiceProvider.getIfAvailable();
+        log.info("ToolToolOverlapService: wired (cosine={}, ttl={}ms, signatureEvidence={})",
+                cosineThreshold, cacheTtlMillis, unifiedToolMetadataService != null);
+        return new com.agentscopea2a.v2.governance.ToolToolOverlapService(
+                toolRoutingMetadataRepository, governanceEmbeddingCache, unifiedToolMetadataService,
+                toolRoutingScanService,
+                cosineThreshold, cosineHighThreshold, nameSimilarityThreshold, cacheTtlMillis);
+    }
+
+    @Bean
     public com.agentscopea2a.v2.governance.SkillDescriptionSimilarityService skillDescriptionSimilarityService(
             SkillDescriptionSource skillDescriptionSource,
             SkillRoutingMetadataRepository skillRoutingMetadataRepository,
@@ -244,10 +264,15 @@ public class V2ToolConfig {
             com.agentscopea2a.v2.toolrouting.ToolRoutingScanService scanService,
             ToolRoutingMetadataRepository toolRoutingMetadataRepository,
             com.agentscopea2a.v2.toolrouting.ToolRoutingMetrics toolRoutingMetrics,
-            @Value("${harness.a2a.tool-routing.strict-startup:false}") boolean strictStartup) {
-        log.info("ToolRoutingStartupAudit: wired (strict-startup={})", strictStartup);
+            @Value("${harness.a2a.tool-routing.strict-startup:false}") boolean strictStartup,
+            com.agentscopea2a.v2.governance.ToolToolOverlapService toolToolOverlapService,
+            @Value("${harness.a2a.tool-routing.block-tool-overlap:false}") boolean blockToolOverlap,
+            @Value("${harness.a2a.tool-routing.block-tool-overlap-max-tools:4}") int blockToolOverlapMaxTools) {
+        log.info("ToolRoutingStartupAudit: wired (strict-startup={}, block-tool-overlap={}, max-tools={})",
+                strictStartup, blockToolOverlap, blockToolOverlapMaxTools);
         return new com.agentscopea2a.v2.toolrouting.ToolRoutingStartupAudit(scanService,
-                toolRoutingMetadataRepository, toolRoutingMetrics, strictStartup);
+                toolRoutingMetadataRepository, toolRoutingMetrics, strictStartup,
+                toolToolOverlapService, blockToolOverlap, blockToolOverlapMaxTools);
     }
 
     @Bean

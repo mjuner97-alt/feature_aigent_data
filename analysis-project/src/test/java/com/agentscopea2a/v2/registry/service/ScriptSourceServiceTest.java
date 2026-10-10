@@ -49,8 +49,15 @@ class ScriptSourceServiceTest {
         sandbox.setSharedContainerName("test-container");
         sandbox.setRemoteDockerTimeoutSeconds(10);
         ScriptSourceService service = new ScriptSourceService(tempDir, 512 * 1024, sandbox, "/workspace",
-                (timeout, stdin, args) -> new com.agentscopea2a.v2.sandbox.DockerCliRunner.CommandResult(
-                        0, "print('from-container')", ""));
+                (timeout, stdin, args) -> {
+                    // find = 目录清单探测, cat = 源码读取
+                    if (java.util.Arrays.asList(args).contains("find")) {
+                        return new com.agentscopea2a.v2.sandbox.DockerCliRunner.CommandResult(
+                                0, "/workspace/scripts/remote.py\n", "");
+                    }
+                    return new com.agentscopea2a.v2.sandbox.DockerCliRunner.CommandResult(
+                            0, "print('from-container')", "");
+                });
 
         ScriptRegistryEntry entry = ScriptRegistryEntry.builder()
                 .scriptId("remote")

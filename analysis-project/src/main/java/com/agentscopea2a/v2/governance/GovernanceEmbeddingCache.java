@@ -40,7 +40,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * <li>无 embedding provider (当前 harness.embedding.* 未配置, OpenAiCompatEmbeddingClient
  *     不装配) 时 {@link #semanticAvailable()} 为 false, 调用方降级为纯文本信号。</li>
  * <li>启动后台异步预热, 不阻塞启动; 预热未完成期间 {@link #warm()} 为 false,
- *     调用方按 degraded 处理。单条 embed 失败 (null) 不写缓存, 下次调用重试。</li>
+ *     调用方按 degraded 处理。单条 embed 失败 (null) 进负缓存, TTL 内直接降级不重试
+ *     (避免端点挂起时把调用方的同步计算卡死)。</li>
  * </ul>
  */
 public class GovernanceEmbeddingCache {
@@ -54,10 +55,18 @@ public class GovernanceEmbeddingCache {
 
     private static final int MAX_ENTRIES = 4096;
 
+    /** embed 失败负缓存 TTL: 端点挂起时避免每次 report() 对每个实体重发 30s 超时的 HTTP。 */
+    private static final long FAILURE_TTL_MS = 300_000;
+
     private final EmbeddingClient embeddingClient;
     private final SkillDescriptionSource skillDescriptionSource;
     private final ToolRoutingMetadataRepository toolRoutingMetadataRepository;
     private final ConcurrentHashMap<String, float[]> vectors = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> failures = new ConcurrentHashMap<>();
+    /** 连续失败熔断阈值: 不同实体连续失败达到该数即判定端点故障, 熔断期间语义信号降级。 */
+    private static final int OUTAGE_FAILURE_THRESHOLD = 3;
+    private final java.util.concurrent.atomic.AtomicInteger consecutiveFailures = new java.util.concurrent.atomic.AtomicInteger();
+    private volatile long semanticOutageUntil;
     private volatile boolean warm;
 
     public GovernanceEmbeddingCache(
@@ -80,9 +89,9 @@ public class GovernanceEmbeddingCache {
         t.start();
     }
 
-    /** 语义信号当前是否可用 (取决于 embedding provider 是否装配)。 */
+    /** 语义信号当前是否可用 (取决于 embedding provider 是否装配 + 端点是否处于熔断窗口)。 */
     public boolean semanticAvailable() {
-        return embeddingClient != null;
+        return embeddingClient != null && System.currentTimeMillis() >= semanticOutageUntil;
     }
 
     /** 预热是否已完成。无 provider 视为完成 (调用方本就不会走语义路径)。 */
@@ -98,15 +107,32 @@ public class GovernanceEmbeddingCache {
         if (embeddingClient == null || entityId == null || description == null || description.isBlank()) {
             return null;
         }
+        if (System.currentTimeMillis() < semanticOutageUntil) {
+            return null;
+        }
         String key = type + "|" + entityId + "|" + sha256(description);
         float[] cached = vectors.get(key);
         if (cached != null) {
             return cached;
         }
-        float[] vector = embeddingClient.embed(description);
-        if (vector == null) {
+        Long failedAt = failures.get(key);
+        long now = System.currentTimeMillis();
+        if (failedAt != null && now - failedAt < FAILURE_TTL_MS) {
             return null;
         }
+        float[] vector = embeddingClient.embed(description);
+        if (vector == null) {
+            failures.put(key, now);
+            if (consecutiveFailures.incrementAndGet() >= OUTAGE_FAILURE_THRESHOLD) {
+                semanticOutageUntil = now + FAILURE_TTL_MS;
+                consecutiveFailures.set(0);
+                log.warn("Governance embedding endpoint outage: degraded to pure-text signals for {}ms", FAILURE_TTL_MS);
+            }
+            return null;
+        }
+        consecutiveFailures.set(0);
+        semanticOutageUntil = 0;
+        failures.remove(key);
         if (vectors.size() >= MAX_ENTRIES) {
             vectors.clear();
         }
@@ -115,26 +141,33 @@ public class GovernanceEmbeddingCache {
     }
 
     private void warmup() {
+        int attempted = 0;
+        int succeeded = 0;
         try {
-            int skills = 0;
             for (SkillDescriptionSource.SkillDescriptionRow row : skillDescriptionSource.allActiveSkills()) {
+                attempted++;
                 if (embeddingFor(EntityType.SKILL, row.retrievalName(), row.description()) != null) {
-                    skills++;
+                    succeeded++;
                 }
             }
-            int tools = 0;
             if (toolRoutingMetadataRepository != null) {
                 List<ToolRoutingMetadata> enabled = toolRoutingMetadataRepository.findEnabled();
                 for (ToolRoutingMetadata meta : enabled) {
+                    attempted++;
                     if (embeddingFor(EntityType.TOOL, meta.toolId(), meta.description()) != null) {
-                        tools++;
+                        succeeded++;
                     }
                 }
             }
-            log.info("Governance embedding warmup done: {} skills, {} tools", skills, tools);
+            log.info("Governance embedding warmup done: {}/{} embedded", succeeded, attempted);
         } catch (Exception e) {
             log.warn("Governance embedding warmup failed: {}", e.getMessage());
         } finally {
+            // 预热全失败 = 端点大概率故障: 直接熔断, 否则调用方 degraded=false 会同步逐实体发 30s 超时 HTTP 卡死 report() 锁
+            if (attempted > 0 && succeeded == 0 && semanticOutageUntil == 0) {
+                semanticOutageUntil = System.currentTimeMillis() + FAILURE_TTL_MS;
+                log.warn("Governance embedding warmup got 0/{}, circuit-break semantic signals for {}ms", attempted, FAILURE_TTL_MS);
+            }
             warm = true;
         }
     }

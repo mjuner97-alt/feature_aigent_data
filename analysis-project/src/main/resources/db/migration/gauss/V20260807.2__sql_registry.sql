@@ -83,28 +83,31 @@ ON DUPLICATE KEY UPDATE
     params_schema = VALUES(params_schema);
 
 -- ----------------------------------------------------------------------------
--- 示例数据 2: 用户会话统计 (ClickHouse)
--- 演示 GROUP BY + 聚合函数 + sumIf + 时间范围筛选
+-- 示例数据 2: 用户订单统计 (ClickHouse)
+-- 演示 GROUP BY + 聚合函数 + 时间范围筛选
+-- 2026/10/09: 原模板查 default.trace_recent, 但 ClickHouse 服务器无此表 (只有
+-- default.platform_orders), 改指 platform_orders, 中文别名用反引号 (CH 要求)
 -- ----------------------------------------------------------------------------
 INSERT INTO sql_registry (sql_id, name, description, datasource, sql_template, params_schema, created_by) VALUES
 (
   'trace_recent_stats_by_user',
-  '用户会话统计',
-  '按 userId 分组, 取会话数/平均时长/平均事件数/完成数. 支持时间范围筛选.',
+  '用户订单统计 (platform_orders)',
+  '按 userId 汇总 default.platform_orders: 订单数/消费总额/平均客单价/首末单日期, 支持开始日期筛选. LIMIT 由工具内部兜底 10000. 原模板查 default.trace_recent (服务器无此表), 2026/10/09 改指 platform_orders.',
   'clickhouse',
   'SELECT
-     userId,
-     count() AS "会话数",
-     avg(totalDurationMs) AS "平均时长ms",
-     avg(eventCount) AS "平均事件数",
-     sumIf(1, status = ''COMPLETED'') AS "完成数"
-   FROM default.trace_recent
-   WHERE userId = :userId
-     AND createdAt >= :startTime
-   GROUP BY userId',
+     user_id AS `用户ID`,
+     count() AS `订单数`,
+     round(sum(amount), 2) AS `消费总额`,
+     round(avg(amount), 2) AS `平均客单价`,
+     min(order_date) AS `首单日期`,
+     max(order_date) AS `最近订单日期`
+   FROM default.platform_orders
+   WHERE user_id = :userId
+     AND order_date >= :startTime
+   GROUP BY user_id',
   '[
-    {"name":"userId","type":"string","required":true,"description":"用户 ID, 如 alice"},
-    {"name":"startTime","type":"date","required":true,"description":"开始日期 ISO 格式 YYYY-MM-DD, 如 2026-07-01"}
+    {"name":"userId","type":"string","required":true,"description":"用户 ID, 如 1001"},
+    {"name":"startTime","type":"date","required":true,"description":"开始日期 ISO 格式 YYYY-MM-DD, 如 2026-01-01"}
   ]',
   'flyway'
 )
