@@ -50,10 +50,13 @@ public class ChatScriptExecResultHook implements Hook, RuntimeContextAware {
      * Text returned to the model in place of an internal result reference.
      * JSON format so the model treats it as structured metadata, not as prose
      * to paraphrase or continue from (small models would otherwise riff on the sentence).
+     * The model never sees the real stdout, so {@code forbidden} explicitly blocks
+     * the hallucinations observed when it fills the gap with invented content.
      */
     public static String modelVisiblePlaceholder() {
         return "{\"tool\":\"script_exec\",\"status\":\"completed\","
-                + "\"action\":\"reply_user\",\"reply\":\"已完成，script_exec 工具调用\"}";
+                + "\"action\":\"reply_user\",\"reply\":\"已完成，script_exec 工具调用\","
+                + "\"forbidden\":[\"编造或复述图表/HTML内容\",\"编造下载链接\",\"编造执行结果数据\"]}";
     }
 
     /**
