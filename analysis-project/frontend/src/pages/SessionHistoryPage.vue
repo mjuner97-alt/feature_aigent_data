@@ -110,11 +110,12 @@
             <span :style="metaStyle">{{ row.model || '-' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="100" align="center" fixed="right">
+        <el-table-column label="操作" width="180" align="center" fixed="right">
           <template #default="{ row }">
-            <el-button type="primary" link size="small" @click.stop="goDetail(row.conversationId)">
-              查看详情
-            </el-button>
+            <div class="action-buttons">
+              <el-button type="primary" link size="small" @click.stop="goDetail(row.conversationId)">查看详情</el-button>
+              <el-button type="success" link size="small" :loading="caseLoadingId === row.conversationId" @click.stop="setAsCase(row)">设为案例</el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -140,10 +141,12 @@ import { ref, onMounted, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useRouter } from 'vue-router';
 import { listConversations, search } from '../api/trace';
+import { setConversationAsCase } from '../api/skillRecord';
 import type { Conversation, TraceStatus } from '../types/trace';
 import { STATUS_TAG_TYPE } from '../types/trace';
 import dayjs from 'dayjs';
 import { getLoggedInUserId } from '../utils/auth';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import LongTaskNodeLogPanel from '../components/LongTaskNodeLogPanel.vue';
 
 const router = useRouter();
@@ -160,6 +163,28 @@ const searchKeyword = ref('');
 const selectedUserId = ref<string>('');
 const scope = ref<'mine' | 'all'>((route.query.scope as 'mine' | 'all') || 'mine');
 const activeTab = ref<'sessions' | 'nodeLogs'>('sessions');
+const caseLoadingId = ref<string | null>(null);
+
+async function setAsCase(row: Conversation) {
+  const defaultCode = row.agentName || 'conversation-case';
+  try {
+    const result = await ElMessageBox.prompt('请输入案例标准编码（stdCode）', '设为案例', {
+      inputValue: defaultCode,
+      inputPlaceholder: '例如 newTESTCODE1',
+      confirmButtonText: '提交',
+      cancelButtonText: '取消',
+      inputValidator: (value: string) => value.trim() ? true : '标准编码不能为空',
+    });
+    caseLoadingId.value = row.conversationId;
+    await setConversationAsCase(row.conversationId, result.value.trim(), getLoggedInUserId() || row.userId || '');
+    ElMessage.success('已设为案例');
+  } catch (e: any) {
+    if (e === 'cancel' || e === 'close') return;
+    ElMessage.error(e?.message || '设为案例失败');
+  } finally {
+    caseLoadingId.value = null;
+  }
+}
 
 function syncQuery() {
   router.replace({ query: { ...route.query, scope: scope.value, user: selectedUserId.value || undefined, q: searchKeyword.value || undefined, page: currentPage.value > 1 ? String(currentPage.value) : undefined } });
@@ -338,4 +363,6 @@ function durationStyle(ms: number): any {
 .history-nav-item.active { background: #3b82f6; color: #fff; }
 .history-nav-item:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
 .history-content { min-width: 0; flex: 1; }
+.action-buttons { display: flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; }
+.action-buttons :deep(.el-button) { margin-left: 0; }
 </style>
