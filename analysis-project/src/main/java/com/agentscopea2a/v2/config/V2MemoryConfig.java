@@ -111,6 +111,23 @@ public class V2MemoryConfig {
     }
 
     /**
+     * {@code harness.a2a.memory.context-inject.enabled=false} 时装配：在模型调用前从
+     * system 消息剥离框架注入的 {@code <memory_context>} 段（挂 onModelCall，
+     * 见 StripMemoryContextMiddleware javadoc 的时序说明）。缺省（true/未配置）
+     * 不注册任何东西，保持框架默认注入行为。
+     */
+    @Bean
+    @ConditionalOnProperty(
+            prefix = "harness.a2a.memory.context-inject",
+            name = "enabled",
+            havingValue = "false",
+            matchIfMissing = false)
+    public com.agentscopea2a.v2.middleware.StripMemoryContextMiddleware stripMemoryContextMiddleware() {
+        log.info("StripMemoryContextMiddleware: wired (context-inject.enabled=false, <memory_context> will be stripped)");
+        return new com.agentscopea2a.v2.middleware.StripMemoryContextMiddleware();
+    }
+
+    /**
      * Per-user MEMORY.md + ledger persistence. Only wired when the mysql-mirror is enabled;
      * otherwise the legacy file-only memory path is used and DDL never runs.
      *

@@ -36,7 +36,7 @@
 - `script_id VARCHAR(128) NULL` — 该 skill 对应的 script_registry 脚本 ID；**NULL = 该 skill 不参与直接执行**（天然开关）
 - `param_mapping TEXT NULL` — JSON 对象：`{"dept":"deptName","version":"versionPlan"}`，key=脚本参数名，value=维度键
 
-维度键枚举（从 `DimensionState` 取值）：
+维度键枚举（= §2 `DimensionExtraction` 固定 schema，全键必出现、空数组=未提及；值来源 `DimensionState`）：
 `versionPlan`→timeDimension(VERSION) / `vestQuarter`→timeDimension(QUARTER) / `deptName`→departments / `groupName`→peerDimension(TEAM) / `appName`→peerDimension(APPLICATION) / `productLine`→peerDimension(PRODUCT_LINE) / `itemNo`→peerDimension(REQUIREMENT) / `perName`→persons
 
 改动文件：
@@ -55,24 +55,49 @@
 ```java
 /** 纯判定，无副作用；null = 不短路，走 LLM */
 public DirectExecutionPlan plan(String question, String userId);
+
+/**
+ * 标准化「维度+指标」提取体：固定 schema 全键输出（问题未提及的维度 = 空数组）。
+ * 别名/简称/版本缺省补全全部在本层消化（analyzeQuestionRuleBased + getCurrentState 只读预览 + currentVersions），
+ * 下游 param_mapping 只面对这 8+1 个固定键，不接触任何半结构化文本。
+ */
+public record DimensionExtraction(
+        List<String> versionPlan, List<String> vestQuarter,
+        List<String> deptName, List<String> groupName,
+        List<String> appName, List<String> productLine,
+        List<String> itemNo, List<String> perName,
+        List<String> metrics,            // 指标佐证 = top-1 的 L1/L2/L3/叶层真命中词
+        String matchedSkill) {}
+
 public record DirectExecutionPlan(
+        DimensionExtraction extraction,  // 标准中间体：日志/审计/后续扩展的唯一事实源
         String skillName, String scriptId,
-        Map<String, Object> params,          // 已填好的脚本参数
-        Map<String, List<String>> dimensionValues, // 命中的维度快照（日志/审计）
-        List<String> matchedKeywords) {}     // 指标佐证 = top-1 的 L1/L2/L3/叶层命中词
+        Map<String, Object> params) {}   // 由 extraction × param_mapping 派生，非独立提取
 ```
+
+**参数组装两层结构（2026/10/13 定稿）**：
+
+```
+Layer 1  问题 → DimensionExtraction（固定 schema 归一化出口，全键输出、空数组=未提及）
+Layer 2  param_mapping: {"dept":"deptName","version":"versionPlan"}  （脚本参数 → Layer 1 键）
+填参规则（唯一一条）: params[param] = extraction[key]；
+  空数组 + versionPlan/vestQuarter → 补当前在建版本（第一个值），仍空 → 必填缺失 → null 回退 LLM
+  单值 → String，多值 → List<String>；多余参数一律不传（params_schema 白名单）
+```
+
+扩展成本：新脚本接入 = 管理页配 script_id + param_mapping，Java 零改动；新维度（如时间范围「今天/近一周/X月X日-X月X日」，DimensionState 现不解析，本期不做）= 将来 Layer 1 schema 加键 + 提取规则，映射/填参逻辑零改动。
 
 **plan() 判定链（全部确定性）**：
 1. 开关关 / metadata 空 / question 空 → null
 2. `findActive()` + 权限过滤（非 builtin skill 必须在 `findUsableRetrievalNames(userId)` 内；builtin = `skill_index.source` 为 BuiltinSkillRegistrar 注册值，实现时对该常量确认；解析失败 fail-closed → null）
 3. `SkillCandidateSelector` 匹配（见 §3 重载）→ 空则 null；取 **top-1**
 4. top-1 的 `scriptId` 为空 → null（回退 LLM，目录照常）
-5. `ScriptRegistryMapper.selectByScriptId(scriptId)` 查 `params_schema` 必填参数；按 `param_mapping` 从维度值填参（值来源 = 当前 `DimensionState` 继承+本轮解析，见下）：
+5. `ScriptRegistryMapper.selectByScriptId(scriptId)` 查 `params_schema` 必填参数；按上面两层结构填参——先产出 `DimensionExtraction`（固定 schema 全键），再逐条 `param_mapping` 从 extraction 取值：
    - 单值 → String；多值 → List<String>
-   - `versionPlan`/`vestQuarter` 缺失 → `VersionPlanKnowledgeHook.currentVersions()` 补当前在建版本（第一个值）；仍无 → 缺参
+   - 取到空数组且键为 `versionPlan`/`vestQuarter` → `VersionPlanKnowledgeHook.currentVersions()` 补当前在建版本（第一个值）；仍无 → 缺参
    - 其他必填缺失 → null（回退 LLM）
    - 多余参数一律不传（params_schema 白名单）
-6. 返回 plan
+6. 返回 plan（extraction + params）
 
 **参数取值来源**：plan() 内不写状态——先 `analyzeQuestionRuleBased(question)` + `getCurrentState()` 做只读预览填参；**只有 V2ChatStreamServiceImpl 决定短路后才调 `processQuestionInContext(ctx, question)` 正式写状态**（避免回退 LLM 时维度状态被解析两次，特别是 clarifiedPeer 一次性回填被吃掉）。
 
