@@ -30,10 +30,9 @@ import java.util.regex.Pattern;
  * </ol>
  *
  * <p>多份完整 HTML 文档与 Markdown 混排时（如 Skill Flow 汇总报告按节点拼接），
- * 每份 HTML 文档渲染成独立子文档后以固定尺寸 iframe 嵌入（srcdoc，报告仍自包含）：
+ * 每份 HTML 文档渲染成独立子文档后以 iframe 嵌入（srcdoc，报告仍自包含）：
  * 各文档样式/脚本隔离在各自 iframe 内，避免拼接到同一页面时互相覆盖导致图表被挤压；
- * 所有子报告宽高统一（宽 100%、高固定 600px），内容超出时在 iframe 内部滚动，
- * 图表按子文档自然布局渲染不被压缩。</p>
+ * 子报告宽度为 100%，高度由脚本按内容测量；图表按子文档自然布局渲染不被压缩。</p>
  *
  * <p>生成的 HTML 自包含：邮件附件、下载到本地、断网打开均能渲染表格和图表。
  * echarts.min.js 从 classpath {@code report-assets/echarts.min.js} 读取，启动时加载一次缓存。
@@ -41,6 +40,393 @@ import java.util.regex.Pattern;
 @Component
 public class HtmlReportRenderer {
     private final ThreadLocal<Boolean> fullscreenDisabled = ThreadLocal.withInitial(() -> false);
+
+    /** 长任务与普通报告共用唯一的样式配置，避免维护两套相互覆盖的 CSS。 */
+    public String renderLongTask(String content, String title, boolean fullscreen) {
+        return fullscreen ? render(content, title) : renderWithoutFullscreen(content, title);
+    }
+
+    /**
+     * 样式修改入口：通常只需要修改 :root 中的数值。
+     * 每个普通选择器只定义一次，不再在 assembleHtml 中追加覆盖样式。
+     * class 只用于页面内唯一的 div；重复的图表、表格使用 data-* 标记。
+     * 节点输入 HTML 自带的 class 保持原样，这里只管理渲染器生成的元素。
+     */
+    private static final String REPORT_CSS = """
+            :root {
+                /* 正文字号：px 是像素；改大文字就变大，不改变标题字号。 */
+                --report-body-font-size: 16px;
+                /* 段落上下间距：左右间距固定为 0。 */
+                --report-paragraph-gap: 4px;
+                /* 表格上下间距；不包括单元格内部留白。 */
+                --report-table-gap: 4px;
+                /* 图表与上下内容之间的距离。 */
+                --report-chart-gap: 8px;
+                /* 汇总中每个 iframe 与上下章节之间的距离。 */
+                --report-frame-gap: 8px;
+                /* 每个 iframe 整份正文四周的内部留白；不是单独给表格加。 */
+                --report-frame-padding:0 12px;
+                /* 目录宽度以及目录和正文之间的空隙。 */
+                --report-toc-width: 248px;
+                --report-toc-gap: 16px;
+                /* 普通图表高度；图表 option.chartHeight 仍可指定单张图表的高度。 */
+                --report-chart-height: 460px;
+                /* 单元格内部留白：两个数依次是上下、左右。 */
+                --report-header-padding: 8px 14px;
+                --report-cell-padding: 6px 12px;
+                /* 表头背景颜色：rgb 的三个数分别是红、绿、蓝。 */
+                --report-header-background: rgb(192, 0, 0);
+                /* 下列模式参数由 Java 决定：页面滚动，iframe 则按内容撑高。 */
+                --report-content-height: @@HEIGHT@@;
+                --report-content-overflow: @@OVERFLOW@@;
+                --report-content-offset: @@OFFSET@@;
+                --report-content-padding: @@PADDING@@;
+            }
+
+            /* 统一盒子尺寸算法：宽度包含 padding 和边框，不会因留白而撑宽。 */
+            * {
+                box-sizing: border-box;
+            }
+            html {
+                max-width: 100%;
+                overflow-x: hidden; /* 防止整个页面出现横向滚动条。 */
+            }
+            body {
+                margin: 0 !important; /* 清除浏览器默认外边距。 */
+                padding: 0 !important; /* 留白统一交给 .report，避免重复缩进。 */
+                font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+                font-size: var(--report-body-font-size); /* var(...) 读取顶部配置。 */
+                line-height: 1.7; /* 行高为文字大小的 1.7 倍。 */
+                color: #000;
+                background: #fff;
+                overflow-x: hidden;
+            }
+
+            /* 页面外壳：该 class 在每份文档里只绑定到这一个 div。 */
+            .report-shell {
+                height: var(--report-content-height);
+                overflow: var(--report-content-overflow);
+            }
+            /* 正文容器：字号、整体留白、宽度和滚动只在这里定义。 */
+            .report {
+                position: relative; /* 让全屏按钮相对正文定位。 */
+                height: var(--report-content-height);
+                margin-left: var(--report-content-offset);
+                width: calc(100% - var(--report-content-offset));
+                padding: var(--report-content-padding) !important;
+                overflow-x: hidden;
+                overflow-y: var(--report-content-overflow);
+                text-align: left;
+            }
+            /* 全屏是明确的特殊状态：只改变配置变量，不再重写普通布局属性。 */
+            .report:fullscreen {
+                --report-content-height: 100vh;
+                --report-content-offset: 0px;
+                --report-content-padding: 48px 16px 16px;
+                --report-content-overflow: auto;
+                background: #fff;
+            }
+            /* #report 表示 id=report；排除标题及其内部文字、按钮，统一正文大小。
+               !important 只用于需要统一的内容，覆盖节点 HTML 自带的普通样式。 */
+            #report :not(:is(h1, h2, h3, h4, h5, h6, h1 *, h2 *, h3 *, h4 *, h5 *, h6 *, button, button *)) {
+                font-size: var(--report-body-font-size) !important;
+            }
+
+            /* 目录及目录列表都只绑定到一个 div。 */
+            #report-toc {
+                position: fixed; /* 固定在浏览器左侧，正文滚动时目录不移动。 */
+                z-index: 10; /* 目录位于正文外壳上方，确保滚轮和点击能到达目录。 */
+                inset: 0 auto 0 0;
+                width: var(--report-toc-width);
+                height: 100vh !important; /* 固定可视高度，不随目录条数向下撑长。 */
+                max-height: 100vh !important;
+                padding: 18px 12px;
+                background: #fff;
+                border-right: 1px solid #e2e8f0;
+                overflow-y: scroll !important; /* 始终预留纵向滚动条空间，目录超出时可向下滚动。 */
+                overflow-x: hidden !important;
+                overscroll-behavior: contain; /* 滚到目录末尾时不带动正文滚动。 */
+                pointer-events: auto !important; /* 允许鼠标与目录交互。 */
+                /* 不设置 scrollbar-width/color，避免新版 Chrome、Edge 忽略下面的 4px 样式。 */
+            }
+            /* Chrome、Edge 的目录滚动条宽度：数值越小越细。 */
+            #report-toc::-webkit-scrollbar {
+                width: 4px;
+            }
+            #report-toc::-webkit-scrollbar-track {
+                background: transparent; /* 轨道透明，保留滚动条空间。 */
+            }
+            #report-toc::-webkit-scrollbar-thumb {
+                background: #cbd5e1; /* 可拖动滑块的颜色。 */
+                border-radius: 4px;
+            }
+            #report-toc .report-toc-list {
+                display: flex;
+                flex-direction: column; /* 目录条目竖向排列。 */
+                height: auto !important;
+                min-height: max-content !important; /* 列表保持全部条目的高度，外层才有内容可滚动。 */
+                max-height: none !important;
+                gap: 3px; /* 条目之间的距离。 */
+                padding-bottom: 24px;
+            }
+            #report-toc a {
+                display: block;
+                flex-shrink: 0; /* 条目不被压缩，以正常高度撑开目录列表。 */
+                padding: 5px 7px;
+                color: #475569;
+                border-radius: 5px;
+                font-size: 13px;
+                line-height: 1.35;
+                text-decoration: none;
+                overflow-wrap: anywhere;
+            }
+            #report-toc a:hover {
+                background: #eff6ff;
+                color: #2563eb;
+            }
+            #report-toc a[data-level="3"] {
+                padding-left: 18px; /* 三级标题比二级标题多缩进一些。 */
+            }
+            #report-toc a:is([data-level="4"], [data-level="5"], [data-level="6"]) {
+                padding-left: 28px; /* 更深层级的目录缩进。 */
+            }
+
+            /* Markdown 标题保留原来的字号；完整 HTML 标题使用节点自己的样式。 */
+            body[data-report-markdown] :is(h1, h2, h3, h4, h5, h6) {
+                color: #0f172a;
+                margin: 16px 0 8px;
+                line-height: 1.3;
+            }
+            body[data-report-markdown] h1 {
+                font-size: 1.6rem;
+                padding-bottom: 6px;
+            }
+            body[data-report-markdown] h2 {
+                font-size: 1.35rem;
+                padding-bottom: 4px;
+            }
+            body[data-report-markdown] h3 {
+                font-size: 1.18rem;
+            }
+            body[data-report-markdown] h4 {
+                font-size: 1.05rem;
+            }
+            body[data-report-markdown] h5 {
+                font-size: 0.95rem;
+            }
+            body[data-report-markdown] h6 {
+                font-size: 0.9rem;
+            }
+            /* 报告总标题居中，与正文靠左的规则分开。 */
+            #report .report-outline-title {
+                display: block;
+                width: 100%;
+                margin: 16px 0 24px;
+                text-align: center !important;
+                border: 0 !important;
+                padding-bottom: 6px;
+            }
+            #report p {
+                margin: var(--report-paragraph-gap) 0 !important;
+            }
+            #report hr {
+                border: none;
+                border-top: 1px solid #e2e8f0;
+                margin: 12px 0;
+            }
+            #report blockquote {
+                margin: 8px 0;
+                padding: 6px 12px;
+                border-left: 3px solid #cbd5e1;
+                background: #f8fafc;
+                color: #475569;
+            }
+            #report code {
+                background: #f1f5f9;
+                color: #be185d;
+                padding: 1px 5px;
+                border-radius: 4px;
+                font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+            }
+            #report pre {
+                background: #0f172a;
+                color: #e2e8f0;
+                border: 1px solid #334155;
+                padding: 10px 14px;
+                border-radius: 6px;
+                overflow-x: auto;
+                margin: 8px 0;
+            }
+            #report pre code {
+                background: transparent;
+                color: inherit;
+                padding: 0;
+            }
+            #report :is(ul, ol) {
+                margin: 6px 0;
+                padding-left: 22px;
+            }
+            #report li {
+                margin: 2px 0;
+            }
+            #report a {
+                color: #6366f1;
+                text-decoration: none;
+            }
+            #report a:hover {
+                text-decoration: underline;
+            }
+
+            /* 重复表格不用 class；[data-report-table-scroll] 选中表格滚动容器。 */
+            #report [data-report-table-scroll] {
+                display: block;
+                width: 100%;
+                max-width: 100%;
+                min-width: 0;
+                padding: 0; /* 表格不单独缩进，整体留白在顶部 frame-padding 调整。 */
+                margin: 0;
+                overflow-x: auto; /* 宽表可左右滚动。 */
+                overflow-y: visible;
+                scrollbar-width: thin;
+                scrollbar-color: #cbd5e1 transparent;
+            }
+            /* 表格样式唯一入口：不要再在其他 CSS 块里定义 table。 */
+            #report table {
+                border-collapse: collapse !important; /* 相邻单元格共用边框。 */
+                width: max-content !important; /* 按内容宽度显示，不强行铺满页面。 */
+                min-width: 0 !important;
+                max-width: 100% !important;
+                table-layout: auto !important;
+                margin: var(--report-table-gap) 0 !important;
+                box-shadow: none !important;
+            }
+            #report :is(th, td) {
+                border: 1px solid #bfbfbf !important;
+                text-align: center !important; /* 仅单元格文字居中，整个表格仍靠左。 */
+                vertical-align: middle !important;
+                white-space: normal !important;
+                overflow-wrap: anywhere !important;
+                word-break: break-word !important;
+            }
+            #report th {
+                background: var(--report-header-background) !important;
+                color: #fff !important;
+                font-weight: 600 !important;
+                padding: var(--report-header-padding) !important;
+            }
+            #report td {
+                background: var(--report-row-background, #fff) !important;
+                color: #000; /* 不加 important，保留业务数据的红色等标记。 */
+                padding: var(--report-cell-padding) !important;
+            }
+            #report tbody tr:nth-child(even) {
+                --report-row-background: #fafafa; /* 偶数行背景，形成斑马纹。 */
+            }
+            #report tbody tr:hover {
+                --report-row-background: #fff3e0; /* 鼠标移到整行时的背景。 */
+            }
+            #report table .red {
+                color: red !important;
+            }
+
+            /* 重复图表通过 data 属性选中；图表外壳与绘图区域分别只定义一次。 */
+            /* 图表占正文宽度的 80%，随页面宽度自适应，并靠左显示。 */
+            #report [data-report-chart-shell] {
+                /* 让全屏按钮相对图表容器定位。 */
+                position: relative;
+            
+                /* 修改这个百分比即可调整图表宽度。 */
+                width: 80%;
+            
+                /* 上下保留间距，左侧不留空白，剩余空白放右侧。 */
+                margin: var(--report-chart-gap) 0;
+                margin-left: 0;
+                margin-right: auto;
+            
+                /* 保留全屏状态使用的内边距。 */
+                padding: var(--report-chart-padding, 0);
+            
+                /* 白色背景，内部文字默认靠左。 */
+                background: #fff;
+                text-align: left;
+            }
+            #report [data-report-chart] {
+                display: block;
+                width: 100%;
+                height: var(--report-chart-height);
+                margin-left: 0;
+                margin-right: auto;
+            }
+            /* 图表失败时在原位置显示错误，点击即可查看，不必打开浏览器控制台。 */
+            #report [data-report-chart-error] {
+                padding: 12px;
+                border: 1px solid #ef4444;
+                background: #fef2f2;
+                color: #991b1b;
+                overflow-wrap: anywhere;
+            }
+            #report [data-report-chart-shell]:fullscreen {
+                --report-chart-padding: 48px 16px 16px;
+                --report-chart-height: calc(100vh - 64px);
+            }
+            /* 两种全屏按钮共用一个规则，通过现有 data 属性绑定，不重复 class。 */
+            #report :is([data-chart-fullscreen], [data-html-fullscreen]) {
+                position: absolute;
+                z-index: 2;
+                top: 12px;
+                right: 12px;
+                width: 36px;
+                height: 36px;
+                border: 1px solid #d7dee8;
+                border-radius: 8px;
+                background: rgba(255, 255, 255, .96);
+                color: #475569;
+                cursor: pointer;
+                font-size: 20px;
+                line-height: 34px;
+                text-align: center;
+            }
+            #report :is([data-chart-fullscreen], [data-html-fullscreen]):hover {
+                color: #2563eb;
+                border-color: #93c5fd;
+                background: #eff6ff;
+            }
+
+            /* 每份子报告独占一行；同一汇总里多个 iframe 不重复绑定 class。 */
+            #report [data-report-frame-shell] {
+                display: block;
+                clear: both;
+                width: 100%;
+                margin: var(--report-frame-gap) 0;
+            }
+            #report [data-report-frame] {
+                display: block;
+                width: 100%;
+                height: 0; /* 初始高度，载入后由脚本按子文档实际内容计算。 */
+                border: 0;
+                outline: 0;
+                background: #fff;
+                overflow: hidden;
+            }
+            /* iframe 内节点容器取消自动居中；不改变标题自己的对齐样式。 */
+            body[data-report-frame-document] #report :is(div, section, article, main, figure) {
+                margin-left: 0 !important;
+                margin-right: 0 !important;
+                text-align: left;
+                justify-content: flex-start; /* flex 主轴起点：默认横向布局时靠左。 */
+                align-items: flex-start; /* flex 交叉轴起点：竖向布局时靠左。 */
+            }
+            """;
+
+    /** 根据页面类型填充模式参数；每个属性仍只在 REPORT_CSS 中定义一次。 */
+    private String reportCss(boolean includeToc) {
+        return REPORT_CSS
+                .replace("@@HEIGHT@@", includeToc ? "100vh" : "auto")
+                .replace("@@OVERFLOW@@", includeToc ? "auto" : "visible")
+                .replace("@@OFFSET@@", includeToc
+                        ? "calc(var(--report-toc-width) + var(--report-toc-gap))" : "0px")
+                .replace("@@PADDING@@", includeToc ? "0px" : "var(--report-frame-padding)");
+    }
 
     private static final Logger log = LoggerFactory.getLogger(HtmlReportRenderer.class);
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -134,83 +520,6 @@ public class HtmlReportRenderer {
     private static final Pattern DOCUMENT_SHELL_FRAGMENT = Pattern.compile(
             "(?im)(?<![a-z0-9])/?(?:html|head|body)\\s*>|<\\s*/?\\s*(?:html|head|body)\\s*>");
 
-    /** 内联 CSS：复用前端 Markdown.vue LIGHT 主题，表格斑马纹/边框/表头底色。 */
-    private static final String CSS = """
-            *{box-sizing:border-box}
-            html,body{max-width:100%;overflow-x:hidden}
-            /* 报告正文使用更宽的画布，减少大屏左右空白；同时保留最小内边距。 */
-            body{min-height:100vh;height:100vh;overflow:hidden;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:15px;line-height:1.7;color:#1e293b;background:#fff;margin:0;padding:0}.report-toc{position:fixed;inset:0 auto 0 0;height:100vh;width:248px;box-sizing:border-box;padding:18px 12px;background:#fff;border-right:1px solid #e2e8f0;overflow-y:scroll!important;overflow-x:hidden;pointer-events:auto}
-            .report-toc{scrollbar-width:thin;scrollbar-color:#cbd5e1 transparent}.report-toc::-webkit-scrollbar{width:6px}.report-toc::-webkit-scrollbar-track{background:transparent}.report-toc::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}.report-toc::-webkit-scrollbar-thumb:hover{background:#94a3b8}.report-toc.collapsed{flex-basis:44px;width:44px;padding:12px 8px;overflow:hidden}.report-toc-open{display:none}.report-toc-toggle{width:28px;height:28px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#334155;cursor:pointer}.report-toc-title{margin:12px 4px 8px;font-weight:700;color:#0f172a}.report-toc{scrollbar-width:thin;scrollbar-color:#cbd5e1 transparent}.report-toc::-webkit-scrollbar{width:6px}.report-toc::-webkit-scrollbar-track{background:transparent}.report-toc::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}.report-toc::-webkit-scrollbar-thumb:hover{background:#94a3b8}.report-toc-list{display:flex;flex-direction:column;gap:3px;min-height:max-content;padding-bottom:24px}.report-toc a{display:block;padding:5px 7px;color:#475569;border-radius:5px;font-size:13px;line-height:1.35;white-space:normal;overflow:hidden;text-overflow:ellipsis;-webkit-box-orient:vertical;-webkit-line-clamp:2}.report-toc a:hover{background:#eff6ff;color:#2563eb;text-decoration:none}.report-toc a[data-level="3"]{padding-left:18px;font-size:12px}.report-toc a[data-level="4"],.report-toc a[data-level="5"],.report-toc a[data-level="6"]{padding-left:28px;font-size:12px}.report-toc.collapsed .report-toc-title,.report-toc.collapsed .report-toc-list{display:none}#report-shell>#report{height:100vh;margin:0;padding:0;box-sizing:border-box;overflow-x:hidden;overflow-y:auto}
-            .report-shell{height:100vh;margin-left:0;box-sizing:border-box;overflow:hidden}
-            .report{height:100vh;margin-left:264px!important;width:calc(100% - 264px);box-sizing:border-box;overflow-y:auto}
-            h1,h2,h3,h4,h5,h6{color:#0f172a;margin:16px 0 8px;line-height:1.3}
-            h1{font-size:1.6rem;padding-bottom:6px}
-              .report .report-outline-title,
-              .report .html-content-shell .report-outline-title,
-              .report .html-content-shell>h1:first-of-type{display:block;width:100%;margin:16px 0 24px;text-align:center !important;border:0 !important;padding-bottom:6px}
-            h2{font-size:1.35rem;padding-bottom:4px}
-            h3{font-size:1.18rem}
-            h4{font-size:1.05rem}
-            h5{font-size:0.95rem}
-            h6{font-size:0.9rem}
-            p{margin:6px 0}
-            hr{border:none;border-top:1px solid #e2e8f0;margin:12px 0}
-            blockquote{margin:8px 0;padding:6px 12px;border-left:3px solid #cbd5e1;background:#f8fafc;color:#475569}
-            code{background:#f1f5f9;color:#be185d;padding:1px 5px;border-radius:4px;font-family:ui-monospace,"SFMono-Regular",Menlo,monospace;font-size:0.88em}
-            pre{background:#0f172a;color:#e2e8f0;border:1px solid #334155;padding:10px 14px;border-radius:6px;overflow-x:auto;margin:8px 0}
-            pre code{background:transparent;color:inherit;padding:0;font-size:0.85rem}
-            table{border-collapse:collapse;width:100%;font-size:0.94rem;margin:10px 0}
-            th,td{border:1px solid #e2e8f0;padding:8px 12px;text-align:left;vertical-align:top}
-            th{background:#f8fafc;font-weight:600;color:#1e293b}
-            /* 长表格表头 sticky：滚动时表头钉住，仅数据滚动。仅作用于渲染器生成的表格
-               （.table-scroll 包裹），不影响 AI 直出 HTML 自带样式的表格。
-               outline 兜底 border-collapse:collapse 下 sticky 表头随滚动丢失的边框线；
-               默认 overflow-x:auto 供宽表横向滚动（无 JS 场景的兜底），
-               overflow 滚动容器会困住 sticky，由 TABLE_STICKY_JS 按表格实际宽度动态解除。 */
-            .table-scroll{display:block;width:100%;max-width:100%;min-width:0;overflow-x:auto;overflow-y:visible;-webkit-overflow-scrolling:touch}.table-scroll::-webkit-scrollbar{height:6px}.table-scroll::-webkit-scrollbar-track{background:transparent}.table-scroll::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}.table-scroll::-webkit-scrollbar-thumb:hover{background:#94a3b8}.table-scroll table{width:max-content;min-width:100%;max-width:none}
-            .table-scroll th{outline:1px solid #e2e8f0;outline-offset:-1px}
-            tbody tr:nth-child(even){background:#f8fafc}
-            ul,ol{margin:6px 0;padding-left:22px}
-            li{margin:2px 0}
-            a{color:#6366f1;text-decoration:none}
-            a:hover{text-decoration:underline}
-            .echarts-shell{position:relative;width:100%;margin:20px 0;background:#fff}
-            .echarts-chart{width:100%;height:460px}
-            .echarts-fullscreen,.html-fullscreen{position:absolute;z-index:2;top:12px;right:12px;width:36px;height:36px;border:1px solid #d7dee8;border-radius:8px;background:rgba(255,255,255,.96);color:#475569;cursor:pointer;font-size:20px;line-height:34px;text-align:center;box-shadow:0 2px 8px rgba(15,23,42,.12);transition:all .2s ease}
-            .echarts-fullscreen:hover,.html-fullscreen:hover{color:#2563eb;border-color:#93c5fd;background:#eff6ff;box-shadow:0 4px 12px rgba(37,99,235,.2)}
-            .echarts-fullscreen:active,.html-fullscreen:active{transform:scale(.94)}
-            .echarts-shell:fullscreen{padding:48px 16px 16px;background:#fff}
-            .echarts-shell:fullscreen .echarts-chart{height:calc(100vh - 64px)}
-            .report-frame-shell{margin:12px 0}
-            .report-frame{width:100%;height:0;border:0;border-radius:0;outline:0;display:block;background:#fff;overflow:hidden}
-            .report:fullscreen{width:100%!important;height:100%!important;margin:0!important;box-sizing:border-box!important;overflow:auto!important;overflow-x:auto!important;background:#fff!important;color:#1e293b!important}
-            .long-task-node{display:block;clear:both;width:100%;max-width:100%;min-width:0;box-sizing:border-box;overflow-x:auto;margin:16px 0}
-            .long-task-node table{display:table;width:100%;max-width:100%;margin:10px 0;box-sizing:border-box}
-            .html-content-shell{position:relative;margin:0;padding:0;background:transparent;border:0;box-shadow:none}
-            .html-content-shell:fullscreen{width:100%;height:100%;box-sizing:border-box;overflow:auto;overflow-x:auto;padding:48px 28px 28px;background:#fff}
-            """;
-
-    /** 完整 HTML 只注入报告外壳样式，保留原文档自己的排版和表格设计。 */
-    private static final String COMPLETE_HTML_CSS = """
-            html,body{margin:0;max-width:100%;overflow-x:hidden}
-            body{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-            .report-toc{position:fixed;inset:0 auto 0 0;width:248px;height:100vh;padding:18px 12px;overflow-y:scroll!important;overflow-x:hidden;overscroll-behavior:contain;pointer-events:auto;background:#fff;border-right:1px solid #e2e8f0}
-            .report-toc{scrollbar-width:thin;scrollbar-color:#cbd5e1 transparent}.report-toc::-webkit-scrollbar{width:6px}.report-toc::-webkit-scrollbar-track{background:transparent}.report-toc::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}.report-toc::-webkit-scrollbar-thumb:hover{background:#94a3b8}.report-toc-list{display:flex;flex-direction:column;gap:3px;min-height:max-content;padding-bottom:24px}
-            .report-toc a{display:block;padding:5px 7px;color:#475569;text-decoration:none;line-height:1.35}
-            .report-shell{height:100vh;margin-left:0;overflow:hidden}
-            .report{height:100vh;margin-left:264px!important;width:calc(100% - 264px);box-sizing:border-box;overflow-y:auto}
-            #report-shell>#report{height:100vh;overflow-x:auto;overflow-y:auto;padding:0;margin:0!important}
-            .table-scroll{display:block;width:100%;max-width:100%;overflow-x:auto;overflow-y:visible;padding-right:2px;-webkit-overflow-scrolling:touch;scrollbar-width:thin;scrollbar-color:#cbd5e1 transparent}.table-scroll::-webkit-scrollbar{height:6px}.table-scroll::-webkit-scrollbar-track{background:transparent}.table-scroll::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}.table-scroll::-webkit-scrollbar-thumb:hover{background:#94a3b8}.table-scroll table{width:max-content;min-width:100%;max-width:none}
-            .report:fullscreen{width:100%;height:100%;margin:0;box-sizing:border-box;overflow:auto;overflow-x:auto;background:#fff}
-            .echarts-shell{position:relative;width:100%;margin:20px 0;background:#fff}
-            .echarts-chart{width:100%;height:460px}
-            .echarts-shell:fullscreen{padding:48px 16px 16px;background:#fff}
-            .echarts-shell:fullscreen .echarts-chart{height:calc(100vh - 64px)}
-            .echarts-fullscreen,.html-fullscreen{position:absolute;z-index:2;top:12px;right:12px;width:36px;height:36px;border:1px solid #d7dee8;border-radius:8px;background:rgba(255,255,255,.96);color:#475569;cursor:pointer;font-size:20px;line-height:34px;text-align:center;box-shadow:0 2px 8px rgba(15,23,42,.12)}
-            .echarts-fullscreen:hover,.html-fullscreen:hover{color:#2563eb;border-color:#93c5fd;background:#eff6ff}
-            .html-fullscreen{position:absolute;top:12px;right:12px;display:block;margin:0}
-            """;
-
     /**
      * 折线图颜色归一化脚本：统一每条 line series 的 lineStyle.color 与 itemStyle.color，
      * 并把 legend 显式 itemStyle.color 对齐到系列色，避免图例图标（线段）与数据点圆圈颜色不一致。
@@ -218,7 +527,10 @@ public class HtmlReportRenderer {
      */
     private static final String CHART_NORMALIZE_JS = """
             function normalizeChartOption(opt,chartWidth){
-              if(!opt||typeof opt!=='object'||!opt.series||!opt.series.length) return opt;
+              if(!opt||typeof opt!=='object') return opt;
+              // ECharts 的 series 可以是单个对象，也可以是数组，先统一成数组。
+              if(opt.series&&!Array.isArray(opt.series)){ opt.series=[opt.series]; }
+              if(!opt.series||!opt.series.length) return opt;
               // JSON 无法携带可执行 formatter；模型输出的函数字符串会被 ECharts 当作文字显示。
               if(opt.tooltip&&typeof opt.tooltip.formatter==='string'&&/^\\s*(?:async\\s+)?function\\b|^\\s*\\(?\\s*[\\w,\\s]*\\)?\\s*=>/.test(opt.tooltip.formatter)){
                 delete opt.tooltip.formatter;
@@ -279,7 +591,144 @@ public class HtmlReportRenderer {
                   }
                 }
               }
+              // 坐标轴图使用百分比留白，图表容器宽高保持不变。
+              // 多绘图区可能是左右分栏，不统一覆盖它们的位置，避免重叠。
+              if(zoomable&&opt.xAxis&&opt.yAxis){
+                if(!opt.grid){ opt.grid={}; }
+                var layoutGrids=Array.isArray(opt.grid)?opt.grid:[opt.grid];
+                if(layoutGrids.length===1&&layoutGrids[0]&&typeof layoutGrids[0]==='object'){
+                  var layoutGrid=layoutGrids[0];
+                  layoutGrid.left='2%'; // 左侧留白随图表宽度自适应。
+                  layoutGrid.right='2%'; // 右侧留白，避免裁切边缘内容。
+                  layoutGrid.containLabel=true; // 为坐标轴文字预留空间。
+                  delete layoutGrid.width; // 宽度由左右边距计算，避免与固定 width 冲突。
+                }
+              }
               return opt;
+            }
+            """;
+
+    /** 图表初始化与错误提示集中在这里，单张图表失败不会中断后面的图表。 */
+    private static final String CHART_RENDER_JS = """
+            // 柱宽修改入口：原始柱宽乘以 2/3，最终不超过 24 像素。
+            var REPORT_BAR_WIDTH_RATIO = 2 / 3;
+            var REPORT_BAR_MAX_WIDTH = 24;
+
+            function applyReportBarWidths(chart, option) {
+                var series = option.series || [];
+                var baseline = [];
+                var hasBar = false;
+                for (var i = 0; i < series.length; i++) {
+                    var item = series[i];
+                    if (item && item.type === 'bar') {
+                        hasBar = true;
+                        // 每次恢复节点的原始宽度配置，让 ECharts 重新计算自动柱宽。
+                        // null 清除上次缩窄后的设置，避免 resize 时越缩越细。
+                        baseline.push({
+                            barWidth: item.barWidth == null ? null : item.barWidth,
+                            barMinWidth: item.barMinWidth == null ? null : item.barMinWidth,
+                            barMaxWidth: item.barMaxWidth == null ? null : item.barMaxWidth
+                        });
+                    } else {
+                        baseline.push({});
+                    }
+                }
+                if (!hasBar) return;
+                chart.setOption({series: baseline});
+
+                var widths = [];
+                for (var j = 0; j < series.length; j++) {
+                    var model = chart.getModel().getSeriesByIndex(j);
+                    // size 是 ECharts 实际计算的柱宽，兼容自动宽度、百分比和横向柱状图。
+                    var originalWidth = model && model.getData().getLayout('size');
+                    if (series[j] && series[j].type === 'bar'
+                            && Number.isFinite(originalWidth) && originalWidth > 0) {
+                        widths.push({
+                            barWidth: Math.min(originalWidth * REPORT_BAR_WIDTH_RATIO, REPORT_BAR_MAX_WIDTH),
+                            barMaxWidth: REPORT_BAR_MAX_WIDTH,
+                            barMinWidth: 0 // 避免原来的最小柱宽抵消缩窄效果。
+                        });
+                    } else {
+                        widths.push({});
+                    }
+                }
+                chart.setOption({series: widths});
+            }
+
+            function showReportChartError(el, error) {
+                console.error('报告图表渲染失败：' + el.id, error);
+                var panel = el.querySelector('[data-report-chart-error]');
+                if (!panel) {
+                    panel = document.createElement('details');
+                    panel.setAttribute('data-report-chart-error', '');
+                    var summary = document.createElement('summary');
+                    summary.textContent = '图表渲染失败，点击查看错误';
+                    panel.appendChild(summary);
+                    panel.appendChild(document.createElement('pre'));
+                    el.appendChild(panel);
+                }
+                // 使用 textContent，错误信息只作为文字显示，不执行其中的 HTML。
+                panel.querySelector('pre').textContent = error && error.message || String(error);
+            }
+
+            function renderReportCharts(charts) {
+                function start() {
+                    var entries = [];
+                    for (var i = 0; i < charts.length; i++) {
+                        var el = document.getElementById(charts[i].id);
+                        if (!el) continue;
+                        var chart = null;
+                        try {
+                            // 每张图单独解析 JSON：无效配置不会导致整段脚本语法错误。
+                            var option = JSON.parse(charts[i].json);
+                            if (!option || typeof option !== 'object' || Array.isArray(option)) {
+                                throw new Error('图表配置必须是 JSON 对象');
+                            }
+                            var height = parseInt(option.chartHeight, 10);
+                            if (height > 100) el.style.height = height + 'px';
+                            delete option.chartHeight;
+                            option = normalizeChartOption(option, el.clientWidth);
+                            chart = echarts.init(el);
+                            chart.setOption(option);
+                            applyReportBarWidths(chart, option);
+                            entries.push({chart: chart, option: option, el: el});
+                        } catch (error) {
+                            if (chart) chart.dispose();
+                            showReportChartError(el, error);
+                        }
+                    }
+                    function resizeCharts() {
+                        for (var j = 0; j < entries.length; j++) {
+                            var entry = entries[j];
+                            if (entry.chart.isDisposed()) continue;
+                            try {
+                                // 先改变画布尺寸，再更新依赖宽度的标签布局。
+                                entry.chart.resize();
+                                entry.chart.setOption(normalizeChartOption(entry.option, entry.el.clientWidth));
+                                applyReportBarWidths(entry.chart, entry.option);
+                            } catch (error) {
+                                showReportChartError(entry.el, error);
+                            }
+                        }
+                    }
+                    var buttons = document.querySelectorAll('[data-chart-fullscreen]');
+                    for (var b = 0; b < buttons.length; b++) {
+                        buttons[b].addEventListener('click', function () {
+                            var shell = document.getElementById(this.getAttribute('data-chart-fullscreen'));
+                            if (document.fullscreenElement === shell) {
+                                document.exitFullscreen();
+                            } else if (shell && shell.requestFullscreen) {
+                                shell.requestFullscreen();
+                            }
+                        });
+                    }
+                    window.addEventListener('resize', resizeCharts);
+                    document.addEventListener('fullscreenchange', function () {
+                        setTimeout(resizeCharts, 0);
+                    });
+                }
+                if (document.readyState === 'complete') start();
+                else window.addEventListener('load', start);
             }
             """;
 
@@ -289,33 +738,6 @@ public class HtmlReportRenderer {
      */
     private static final Pattern BOX_SHADOW_DECL =
             Pattern.compile("(?i)(?<![\\w-])(?:-webkit-)?box-shadow\\s*:[^;}]*;?");
-
-    /**
-     * 表头 sticky 自适应脚本：表格默认被 {@code .table-scroll}（overflow-x:auto）包裹供宽表横向滚动，
-     * 但 overflow 滚动容器会困住 {@code position:sticky}（sticky 相对最近滚动容器生效，而该容器
-     * 垂直方向不滚动），表头无法相对页面钉住。载入/resize 时逐表检测：
-     * <ul>
-     *   <li>表格不超宽：解除滚动容器（overflow:visible），表头 sticky 相对页面/iframe 视口生效；</li>
-     *   <li>超宽的宽表：保留横向滚动；若同时超高（&gt;70vh）则限高为内部滚动窗格，表头在窗格内 sticky。</li>
-     * </ul>
-     * 不依赖图表块，无图表的报告也要内联。
-     */
-    private static final String TABLE_STICKY_JS = """
-            (function(){
-              function fixTableScroll(){
-                var ds=document.querySelectorAll('.table-scroll');
-                for(var i=0;i<ds.length;i++){
-                  var d=ds[i];var t=d.querySelector('table');if(!t) continue;
-                  d.style.overflowX='auto';
-                  d.style.overflowY='visible';
-                  d.style.maxHeight='';
-                }
-              }
-              if(document.readyState==='complete'){fixTableScroll();}
-              else{window.addEventListener('load',fixTableScroll);}
-              window.addEventListener('resize',fixTableScroll);
-            })();
-            """;
 
     /** 启动时加载一次的 echarts.min.js 全文，内联进每个含图表的报告。 */
     private String echartsJs;
@@ -372,7 +794,7 @@ public class HtmlReportRenderer {
         if (fullscreenEnabled() && HTML_FRAGMENT.matcher(md).find()) {
             String renderedBody = body.toString();
             body.setLength(0);
-            body.append("<button class=\"html-fullscreen\" type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-html-fullscreen=\"report\">&#x26F6;</button>")
+            body.append("<button type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-html-fullscreen=\"report\">&#x26F6;</button>")
                     .append(renderedBody).append("\n");
         }
 
@@ -447,8 +869,8 @@ public class HtmlReportRenderer {
         // 单份完整文档走 renderCompleteHtml:剥离脚本防注入、保留原样式(剔除阴影)、转换 ```echarts 块为图表
         String frameDoc = render(html, null);
         // allowfullscreen:子文档内图表的 ⛶ 全屏按钮需要 iframe 显式授权,否则 requestFullscreen 被浏览器拦截
-        body.append("<div class=\"report-frame-shell\">")
-                .append("<iframe class=\"report-frame\" title=\"节点报告\" allowfullscreen allow=\"fullscreen\"")
+        body.append("<div data-report-frame-shell>")
+                .append("<iframe data-report-frame title=\"节点报告\" allowfullscreen allow=\"fullscreen\"")
                 .append(" srcdoc=\"").append(escapeSrcdoc(frameDoc)).append("\"></iframe></div>\n");
     }
 
@@ -536,7 +958,7 @@ public class HtmlReportRenderer {
         List<ChartBlock> charts = splitCharts(bodyContent, body, false);
         String renderedBody = body.toString();
         body.setLength(0);
-        if (fullscreenEnabled()) body.append("<button class=\"html-fullscreen\" type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-html-fullscreen=\"report\">&#x26F6;</button>");
+        if (fullscreenEnabled()) body.append("<button type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-html-fullscreen=\"report\">&#x26F6;</button>");
         body.append(renderedBody).append("\n");
 
         return assembleHtml(safeTitle, body.toString(), charts, extraStyles.toString(), includeToc, true);
@@ -549,7 +971,7 @@ public class HtmlReportRenderer {
         while (matcher.find()) {
             String table = matcher.group();
             String prefix = html.substring(Math.max(0, matcher.start() - 40), matcher.start()).toLowerCase();
-            String replacement = prefix.contains("table-scroll") ? table : "<div class=\"table-scroll\">" + table + "</div>";
+            String replacement = (prefix.contains("data-report-table-scroll") || prefix.contains("table-scroll")) ? table : "<div data-report-table-scroll>" + table + "</div>";
             matcher.appendReplacement(out, Matcher.quoteReplacement(replacement));
         }
         matcher.appendTail(out);
@@ -591,9 +1013,9 @@ public class HtmlReportRenderer {
             // 围栏块取 g1；标签块取 g3 并去掉标签内容里可能残留的 ``` 围栏
             String json = (m.group(1) != null ? m.group(1) : stripFences(m.group(3))).trim();
             String chartId = "echarts-" + idx;
-            body.append("<div class=\"echarts-shell\" id=\"").append(chartId).append("-shell\">");
-            if (fullscreenEnabled()) body.append("<button class=\"echarts-fullscreen\" type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-chart-fullscreen=\"").append(chartId).append("-shell\">&#x26F6;</button>");
-            body.append("<div class=\"echarts-chart\" id=\"")
+            body.append("<div data-report-chart-shell id=\"").append(chartId).append("-shell\">");
+            if (fullscreenEnabled()) body.append("<button type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-chart-fullscreen=\"").append(chartId).append("-shell\">&#x26F6;</button>");
+            body.append("<div data-report-chart id=\"")
                     .append(chartId).append("\"></div></div>\n");
             charts.add(new ChartBlock(chartId, json));
             idx++;
@@ -634,59 +1056,47 @@ public class HtmlReportRenderer {
         sb.append("<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">");
         sb.append("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
         sb.append("<title>").append(title).append("</title>");
-        sb.append("<style>").append(completeHtml ? COMPLETE_HTML_CSS : CSS).append("</style>");
-        if (!includeToc) {
-            sb.append("<style>html,body{height:auto!important;overflow-y:hidden!important}.report-shell{height:auto!important;min-height:0;margin-left:0;overflow:visible!important}.report{height:auto!important;min-height:0;margin-left:0!important;width:100%;padding:0!important;overflow-y:visible!important}</style>");
-        }
+        // 输入节点的样式先放入同一个 style，报告统一样式随后注入。
+        // 渲染器自身只有 REPORT_CSS 一个入口，不再追加一层层覆盖规则。
+        sb.append("<style>");
         if (extraStyles != null && !extraStyles.isEmpty()) {
-            sb.append(extraStyles);  // AI 完整 HTML 中的 <style> 块，保留原样式
+            Matcher styles = STYLE_BLOCK.matcher(extraStyles);
+            while (styles.find()) {
+                String block = styles.group();
+                sb.append(block.substring(block.indexOf('>') + 1, block.toLowerCase().lastIndexOf("</style")));
+            }
         }
-        if (!completeHtml) sb.append("<style>body{background:#fff!important;margin:0!important;padding:0!important;overflow:visible!important}.report table{border-collapse:collapse!important;border:0!important;box-shadow:none!important;width:max-content!important;min-width:100%!important;max-width:none!important;margin:10px 0!important}.report table th,.report table td{border:1px solid #e2e8f0!important;padding:8px 12px!important}.html-content-shell{margin:0!important;padding:0!important;background:transparent!important;border:0!important;box-shadow:none!important}.html-content-shell>div:first-of-type{background:transparent!important;border:0!important;box-shadow:none!important;padding-top:0!important}.html-fullscreen{position:absolute!important;top:12px!important;right:12px!important;display:block!important;margin:0!important}</style>");
-        if (!includeToc) sb.append("<style>html,body{height:auto!important;overflow-y:hidden!important}.report-shell{height:auto!important;overflow:visible!important}.report{height:auto!important;padding:0!important;overflow-y:visible!important}.report:fullscreen{height:100%!important;overflow:auto!important;background:#fff!important}</style>");
-        sb.append("</head><body>");
+        sb.append(reportCss(includeToc)).append("</style>");
+        sb.append("</head><body");
+        if (!completeHtml) sb.append(" data-report-markdown");
+        if (!includeToc) sb.append(" data-report-frame-document");
+        sb.append(">");
         if (includeToc) {
-            sb.append("<aside class=\"report-toc\" aria-label=\"报告目录\"><nav class=\"report-toc-list\"></nav></aside>");
+            sb.append("<div id=\"report-toc\" class=\"report-toc\" aria-label=\"报告目录\"><div class=\"report-toc-list\"></div></div>");
         }
-        String shellId = completeHtml ? "frame-report-shell" : "report-shell";
-        sb.append("<div id=\"").append(shellId).append("\" class=\"").append(shellId)
-                .append("\"><div id=\"report\" class=\"report\">");
+        // 同一 HTML 文档中，各 class 只绑定一个 div；子文档有自己的独立 DOM。
+        sb.append("<div id=\"report-shell\" class=\"report-shell\"><div id=\"report\" class=\"report\">");
         sb.append(body);
         sb.append("</div></div>");
-        if (includeToc) sb.append("<script>(function(){var frames=document.querySelectorAll('.report-frame');for(var i=0;i<frames.length;i++){(function(frame){frame.addEventListener('load',function(){try{var doc=frame.contentDocument;if(!doc)return;var report=doc.getElementById('report');if(!report)return;function fit(){var shell=doc.getElementById('report-shell');var height=Math.max(report.scrollHeight,report.getBoundingClientRect().height,shell&&shell.scrollHeight||0,doc.body.scrollHeight,doc.documentElement.scrollHeight);frame.style.height=Math.ceil(height+2)+'px';}fit();if(doc.defaultView.ResizeObserver){var observer=new doc.defaultView.ResizeObserver(fit);observer.observe(report);var shell=doc.getElementById('report-shell');if(shell)observer.observe(shell);}doc.defaultView.addEventListener('load',fit);}catch(e){}});})(frames[i]);}})();</script>");
+        // 只测量正文高度；不能把 iframe 视口高度算进去，否则每次测量加 2px 会不断撑高。
+        if (includeToc) sb.append("<script>(function(){var frames=document.querySelectorAll('[data-report-frame]');function bind(frame){if(frame.__reportHeightBound)return;frame.__reportHeightBound=true;var attempts=0,observer=null;function fit(){try{var doc=frame.contentDocument;if(!doc)return false;var report=doc.getElementById('report');if(!report)return false;var shell=doc.getElementById('report-shell');var body=doc.body;var height=Math.max(report.scrollHeight,report.getBoundingClientRect().height);if(height>0)frame.style.height=Math.ceil(height+2)+'px';if(!observer&&doc.defaultView&&doc.defaultView.ResizeObserver){observer=new doc.defaultView.ResizeObserver(fit);observer.observe(report);if(shell)observer.observe(shell);if(body)observer.observe(body);}return height>0;}catch(e){console.warn('报告子文档高度测量失败',e);return false;}}function retry(){if(fit()||attempts++>=8)return;setTimeout(retry,50*(attempts+1));}frame.addEventListener('load',function(){attempts=0;retry();try{var doc=frame.contentDocument;if(doc&&doc.defaultView)doc.defaultView.addEventListener('load',retry);}catch(e){console.warn('报告子文档加载监听失败',e);}});retry();}for(var i=0;i<frames.length;i++)bind(frames[i]);window.addEventListener('load',function(){for(var i=0;i<frames.length;i++)bind(frames[i]);});})();</script>");
         if (includeToc) sb.append("<script>(function(){var toc=document.querySelector('.report-toc'),list=toc&&toc.querySelector('.report-toc-list');if(!toc||!list)return;if(list)list.replaceChildren();var heads=document.querySelectorAll('[data-report-outline-heading]');for(var i=0;i<heads.length;i++){var h=heads[i];if(h.classList.contains('report-outline-title')||h.tagName==='H1')continue;var id='report-section-'+i;h.id=id;var a=document.createElement('a');a.href='#'+id;a.dataset.level=h.tagName.substring(1);a.textContent=h.textContent||('章节 '+(i+1));a.title=a.textContent;a.addEventListener('click',function(e){var target=document.getElementById(this.hash.substring(1));if(target){e.preventDefault();target.scrollIntoView({block:'start',behavior:'smooth'});}});list.appendChild(a);}if(!list.children.length)toc.style.display='none';})();</script>");
-        // 表头 sticky 自适应脚本：不依赖图表，始终内联
-        sb.append("<script>").append(TABLE_STICKY_JS).append("</script>");
+        // 表格的滚动属性全部由 REPORT_CSS 决定，不再用 JS 写行内样式覆盖。
         sb.append("<script>(function(){var buttons=document.querySelectorAll('[data-html-fullscreen]');for(var i=0;i<buttons.length;i++){buttons[i].addEventListener('click',function(){var shell=document.getElementById(this.getAttribute('data-html-fullscreen'));if(document.fullscreenElement===shell){document.exitFullscreen();}else if(shell&&shell.requestFullscreen){shell.requestFullscreen();}});}})();</script>");
         // 仅在有图表时内联 echarts.min.js；无图省 1.1MB
         if (!charts.isEmpty()) {
             sb.append("<script>").append(echartsJs).append("</script>");
             sb.append("<script>").append(CHART_NORMALIZE_JS).append("</script>");
-            sb.append("<script>window.addEventListener('load',function(){var charts=[");
+            sb.append("<script>").append(CHART_RENDER_JS).append("</script>");
+            sb.append("<script>renderReportCharts([");
             for (int i = 0; i < charts.size(); i++) {
                 if (i > 0) sb.append(',');
                 ChartBlock c = charts.get(i);
-                sb.append("{id:").append(jsString(c.id)).append(",option:")
-                        .append(safeOptionJson(c.json)).append("}");
+                sb.append("{id:").append(jsString(c.id)).append(",json:")
+                        // 使用字符串传递配置，尖括号转义防止提前结束 script 标签。
+                        .append(jsString(c.json).replace("<", "\\u003c")).append("}");
             }
-            sb.append("];var chartInstances=[];for(var i=0;i<charts.length;i++){var el=document.getElementById(charts[i].id);");
-            sb.append("if(el){var option=charts[i].option;")
-                    // option.chartHeight 为可选自定义高度(prompt 中约定),设置后再交给 echarts 初始化
-                    .append("var ch=parseInt(option&&option.chartHeight,10);if(ch>100){el.style.height=ch+'px';}")
-                    .append("if(option){delete option.chartHeight;}")
-                    .append("var chart=echarts.init(el);option=normalizeChartOption(option,el.clientWidth);")
-                    .append("chart.setOption(option);chartInstances.push({chart:chart,option:option,el:el});}}")
-                    .append("function applyResponsiveChartLayout(entry){var chart=entry.chart;")
-                    .append("if(chart&&!chart.isDisposed()){var option=normalizeChartOption(entry.option,entry.el.clientWidth);")
-                    .append("chart.setOption(option);chart.resize();}}")
-                    .append("function resizeCharts(){for(var j=0;j<chartInstances.length;j++){applyResponsiveChartLayout(chartInstances[j]);}}")
-                    .append("var buttons=document.querySelectorAll('[data-chart-fullscreen]');")
-                    .append("for(var b=0;b<buttons.length;b++){buttons[b].addEventListener('click',function(){")
-                    .append("var shell=document.getElementById(this.getAttribute('data-chart-fullscreen'));")
-                    .append("if(document.fullscreenElement===shell){document.exitFullscreen();}")
-                    .append("else if(shell&&shell.requestFullscreen){shell.requestFullscreen();}});}")
-                    .append("window.addEventListener('resize',resizeCharts);")
-                    .append("document.addEventListener('fullscreenchange',function(){setTimeout(resizeCharts,0);});")
-                    .append("});</script>");
+            sb.append("]);</script>");
         }
         sb.append("</body></html>");
         return sb.toString();
@@ -771,7 +1181,7 @@ public class HtmlReportRenderer {
                     rows.add(splitRow(lines[i]));
                     i++;
                 }
-                out.append("<div class=\"table-scroll\"><table><thead><tr>");
+                out.append("<div data-report-table-scroll><table data-report-default-table=\"true\"><thead><tr>");
                 for (String h : header) {
                     out.append("<th>").append(h).append("</th>");
                 }
