@@ -60,7 +60,7 @@ class GovernanceEmbeddingCacheTest {
     }
 
     @Test
-    void failedEmbedIsNotCachedAndRetried() {
+    void failedEmbedIsNegativeCachedWithinTtlAndRetriedAfter() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         EmbeddingClient failing = new EmbeddingClient() {
             @Override
@@ -75,9 +75,16 @@ class GovernanceEmbeddingCacheTest {
         };
         GovernanceEmbeddingCache cache = new GovernanceEmbeddingCache(failing, skills(), null);
         assertNull(cache.embeddingFor(GovernanceEmbeddingCache.EntityType.TOOL, "t1", "d"));
-        // mock embeds successfully on the second call -> the earlier null was not cached
+        // TTL 内失败走负缓存, 不再触发 HTTP
+        assertNull(cache.embeddingFor(GovernanceEmbeddingCache.EntityType.TOOL, "t1", "d"));
+        assertEquals(1, calls.get(), "negative cache must suppress retry within TTL");
+
+        // 模拟 TTL 过期 (清空负缓存) -> 恢复重试, 成功后进正向缓存
+        java.lang.reflect.Field failures = GovernanceEmbeddingCache.class.getDeclaredField("failures");
+        failures.setAccessible(true);
+        ((java.util.concurrent.ConcurrentHashMap<?, ?>) failures.get(cache)).clear();
         assertEquals(1f, cache.embeddingFor(GovernanceEmbeddingCache.EntityType.TOOL, "t1", "d")[0]);
-        assertEquals(2, calls.get(), "null result must not be cached");
+        assertEquals(2, calls.get(), "expired negative entry must be retried");
     }
 
     @Test
@@ -105,6 +112,67 @@ class GovernanceEmbeddingCacheTest {
         }
         assertTrue(cache.warm());
         assertEquals(2, embedCalls.get());
+    }
+
+    @Test
+    void consecutiveDistinctFailuresTripCircuitBreaker() {
+        AtomicInteger calls = new AtomicInteger();
+        EmbeddingClient failing = new EmbeddingClient() {
+            @Override
+            public float[] embed(String text) {
+                calls.incrementAndGet();
+                return null;
+            }
+
+            @Override
+            public int dimension() {
+                return 1;
+            }
+        };
+        GovernanceEmbeddingCache cache = new GovernanceEmbeddingCache(failing, skills(), null);
+        assertTrue(cache.semanticAvailable());
+        // 3 个不同实体连续失败 -> 熔断
+        assertNull(cache.embeddingFor(GovernanceEmbeddingCache.EntityType.TOOL, "t1", "d"));
+        assertNull(cache.embeddingFor(GovernanceEmbeddingCache.EntityType.TOOL, "t2", "d"));
+        assertNull(cache.embeddingFor(GovernanceEmbeddingCache.EntityType.TOOL, "t3", "d"));
+        assertEquals(3, calls.get());
+        assertFalse(cache.semanticAvailable(), "outage window must degrade semantic signals");
+        // 熔断期间不再发 HTTP
+        assertNull(cache.embeddingFor(GovernanceEmbeddingCache.EntityType.TOOL, "t4", "d"));
+        assertEquals(3, calls.get(), "no HTTP calls while circuit is open");
+        // 同一实体 TTL 内负缓存也不重试
+        assertNull(cache.embeddingFor(GovernanceEmbeddingCache.EntityType.TOOL, "t1", "d"));
+        assertEquals(3, calls.get());
+    }
+
+    @Test
+    void warmupTotalFailureOpensCircuitBreaker() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        EmbeddingClient failing = new EmbeddingClient() {
+            @Override
+            public float[] embed(String text) {
+                calls.incrementAndGet();
+                return null;
+            }
+
+            @Override
+            public int dimension() {
+                return 1;
+            }
+        };
+        SkillDescriptionSource source = skills(row("page_1", "d1"), row("page_2", "d2"));
+        GovernanceEmbeddingCache cache = new GovernanceEmbeddingCache(failing, source, null);
+        cache.startWarmup();
+        long deadline = System.currentTimeMillis() + 2000;
+        while (!cache.warm() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10);
+        }
+        assertTrue(cache.warm());
+        assertEquals(2, calls.get());
+        assertFalse(cache.semanticAvailable(), "warmup 0 success must open circuit");
+        // 熔断后调用方不再触发 HTTP
+        assertNull(cache.embeddingFor(GovernanceEmbeddingCache.EntityType.SKILL, "page_3", "d3"));
+        assertEquals(2, calls.get());
     }
 
     @Test

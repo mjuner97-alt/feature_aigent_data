@@ -36,7 +36,7 @@ public class SkillRoutingMetadataController {
         int safeSize = Math.max(1, Math.min(pageSize(limit), 100));
         int safeOffset = Math.max(0, offset);
         List<SkillRoutingMetadataView> items = service.list(keyword, active, mine, userId, safeSize, safeOffset);
-        int total = service.list(keyword, active, mine, userId, 1000000, 0).size();
+        int total = service.count(keyword, active, mine, userId);
         return new PageResponse<>(items, safeOffset / safeSize + 1, safeSize, total);
     }
 

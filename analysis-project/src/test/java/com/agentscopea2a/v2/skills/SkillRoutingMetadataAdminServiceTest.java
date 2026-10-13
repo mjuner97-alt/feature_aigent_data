@@ -6,6 +6,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -14,11 +15,22 @@ import static org.mockito.Mockito.eq;
 
 class SkillRoutingMetadataAdminServiceTest {
 
+    @org.junit.jupiter.api.BeforeEach
+    void stubDefaultOverlapReport() {
+        when(skillSkillOverlapService.report()).thenReturn(
+                new com.agentscopea2a.v2.governance.SkillSkillOverlapService.OverlapReport(
+                        false, List.of()));
+    }
+
     private final SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
+    private final com.agentscopea2a.v2.governance.SkillSkillOverlapService skillSkillOverlapService =
+            mock(com.agentscopea2a.v2.governance.SkillSkillOverlapService.class);
     private final SkillRoutingMetadataAdminService service =
-            new SkillRoutingMetadataAdminService(repository, null, new com.agentscopea2a.v2.auth.service.AdminRoleService("", false));
+            new SkillRoutingMetadataAdminService(repository, null, skillSkillOverlapService,
+                    new com.agentscopea2a.v2.auth.service.AdminRoleService("", false));
     private final SkillRoutingMetadataAdminService prodService =
-            new SkillRoutingMetadataAdminService(repository, null, new com.agentscopea2a.v2.auth.service.AdminRoleService("admin:secret1", true));
+            new SkillRoutingMetadataAdminService(repository, null, skillSkillOverlapService,
+                    new com.agentscopea2a.v2.auth.service.AdminRoleService("admin:secret1", true));
 
     @Test
     void saveNormalizesAndDeduplicatesTags() {
@@ -84,5 +96,57 @@ class SkillRoutingMetadataAdminServiceTest {
 
     private static SkillRoutingMetadataInput emptyInput() {
         return new SkillRoutingMetadataInput("summary", List.of(), List.of(), List.of(), true);
+    }
+
+    private static com.agentscopea2a.v2.governance.SkillSkillOverlapView highView(
+            String nameA, boolean activeA, String nameB, boolean activeB) {
+        return new com.agentscopea2a.v2.governance.SkillSkillOverlapView(
+                nameA, "alice", nameB, "bob", "HIGH",
+                List.of("质检"), List.of("质检"), List.of("缺陷"), List.of("缺陷"),
+                List.of("缺陷"), 1.0, true, List.of(), "suggestion", activeA, activeB);
+    }
+
+    @Test
+    void enablingSkillWithHighOverlapAgainstActivePeerIsBlocked() {
+        when(skillSkillOverlapService.report()).thenReturn(
+                new com.agentscopea2a.v2.governance.SkillSkillOverlapService.OverlapReport(
+                        false, List.of(highView("skill_alpha", true, "q2_skill", false))));
+        when(repository.skillExists("q2_skill")).thenReturn(true);
+        when(repository.creatorForSkill("q2_skill")).thenReturn("admin");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> service.save("q2_skill", emptyInput(), "admin"));
+
+        assertTrue(error.getMessage().startsWith("SkillOverlapBlocked: 与 Skill skill_alpha"));
+        assertTrue(error.getMessage().contains("至多启用一个"));
+    }
+
+    @Test
+    void enablingSkillWithHighOverlapAgainstInactivePeerIsAllowed() {
+        when(skillSkillOverlapService.report()).thenReturn(
+                new com.agentscopea2a.v2.governance.SkillSkillOverlapService.OverlapReport(
+                        false, List.of(highView("skill_alpha", false, "q2_skill", false))));
+        when(repository.skillExists("q2_skill")).thenReturn(true);
+        when(repository.creatorForSkill("q2_skill")).thenReturn("admin");
+        when(repository.upsert(any())).thenReturn(true);
+
+        service.save("q2_skill", emptyInput(), "admin");
+
+        verify(repository).upsert(any());
+    }
+
+    @Test
+    void disablingSkillIsNeverBlockedByOverlap() {
+        when(skillSkillOverlapService.report()).thenReturn(
+                new com.agentscopea2a.v2.governance.SkillSkillOverlapService.OverlapReport(
+                        false, List.of(highView("skill_alpha", true, "q2_skill", true))));
+        when(repository.skillExists("q2_skill")).thenReturn(true);
+        when(repository.creatorForSkill("q2_skill")).thenReturn("admin");
+        when(repository.upsert(any())).thenReturn(true);
+
+        service.save("q2_skill", new SkillRoutingMetadataInput(
+                "summary", List.of(), List.of(), List.of(), false), "admin");
+
+        verify(repository).upsert(any());
     }
 }

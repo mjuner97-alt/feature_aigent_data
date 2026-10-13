@@ -46,9 +46,17 @@ public class ChatScriptExecResultHook implements Hook, RuntimeContextAware {
         return String.format(ToolResultRegistry.MARKER_TEMPLATE, ref);
     }
 
-    /** Text returned to the model in place of an internal result reference. */
+    /**
+     * Text returned to the model in place of an internal result reference.
+     * JSON format so the model treats it as structured metadata, not as prose
+     * to paraphrase or continue from (small models would otherwise riff on the sentence).
+     * The model never sees the real stdout, so {@code forbidden} explicitly blocks
+     * the hallucinations observed when it fills the gap with invented content.
+     */
     public static String modelVisiblePlaceholder() {
-        return "[系统内部：已接管可渲染内容。请勿复述该内容、生成代码块或输出内部引用 ID；仅根据其余执行结果回答用户。]";
+        return "{\"tool\":\"script_exec\",\"status\":\"completed\","
+                + "\"action\":\"reply_user\",\"reply\":\"已完成，script_exec 工具调用\","
+                + "\"forbidden\":[\"编造或复述图表/HTML内容\",\"编造下载链接\",\"编造执行结果数据\"]}";
     }
 
     /**

@@ -2,21 +2,17 @@
 import { computed, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { listSkillRouting, listSkillTags, saveSkillRouting, saveSkillTag, setSkillRoutingActive } from '../api/skillRouting';
-import { routingOverlapSummary } from '../api/routingOverlap';
-import { useRouter } from 'vue-router';
 import type { ToolRoutingTag } from '../types/toolRouting';
 import type { SkillRoutingInput, SkillRoutingMetadata } from '../types/skillRouting';
 import { canEditConfig, isAdmin } from '../utils/auth';
 
 type SkillTagType = 'DOMAIN' | 'TOPIC';
 
-const router = useRouter();
 const rows = ref<SkillRoutingMetadata[]>([]);
-const highOverlap = ref<Record<string, number>>({});
 const loading = ref(false);
 const keyword = ref('');
 const activeFilter = ref<string>('');
-const currentPage = ref(1); const pageSize = ref(20); const total = ref(0);
+const currentPage = ref(1); const pageSize = ref(100); const total = ref(0);
 // 我的/全部 范围切换: 管理员默认'全部', 普通用户默认'我的', 后端按 creator = 当前用户过滤
 const scope = ref<'mine' | 'all'>(isAdmin() ? 'all' : 'mine');
 const dialogVisible = ref(false);
@@ -45,9 +41,6 @@ function tags(values: string[]): string { return (values || []).join(', '); }
 function split(value: string): string[] {
   return value.split(/[,，、\r\n]+/).map(v => v.trim()).filter(v => v.length > 0);
 }
-function viewOverlap(skillName: string) {
-  router.push({ path: '/script-registry/overlap', query: { skillName } });
-}
 function openEdit(row: SkillRoutingMetadata) {
   current.value = row;
   form.value = {
@@ -67,15 +60,13 @@ function openView(row: SkillRoutingMetadata) {
 async function load() {
   loading.value = true;
   try {
-    const [skills, domains, topics, overlap] = await Promise.all([
+    const [skills, domains, topics] = await Promise.all([
       listSkillRouting(keyword.value || undefined,
       activeFilter.value === '' ? undefined : activeFilter.value === 'true',
       scope.value === 'mine', currentPage.value, pageSize.value),
       listSkillTags('DOMAIN'), listSkillTags('TOPIC'),
-      routingOverlapSummary().catch(() => null),
     ]);
     rows.value = skills.items; total.value = skills.total;
-    highOverlap.value = overlap?.highBySkill || {};
     domainTags.value = domains;
     topicTags.value = topics;
   }
@@ -140,14 +131,7 @@ load();
     <el-tabs>
       <el-tab-pane label="Skill 配置">
     <el-table :data="rows" v-loading="loading" stripe border size="small">
-      <el-table-column prop="skillName" label="Skill 名称" width="260" show-overflow-tooltip>
-        <template #default="{ row }">
-          <span>{{ row.skillName }}</span>
-          <el-tag v-if="highOverlap[row.skillName]" type="danger" size="small" class="overlap-badge"
-            title="与其他工具存在 HIGH 级别能力重叠，点击查看"
-            @click="viewOverlap(row.skillName)">重叠 {{ highOverlap[row.skillName] }}</el-tag>
-        </template>
-      </el-table-column>
+      <el-table-column prop="skillName" label="Skill 名称" width="260" show-overflow-tooltip />
       <el-table-column prop="description" label="已有描述" min-width="220" show-overflow-tooltip />
       <el-table-column label="领域标签" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ row.domainTags.join('、') || '-' }}</template></el-table-column>
       <el-table-column label="业务主题" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ row.topicTags.join('、') || '-' }}</template></el-table-column>
@@ -207,6 +191,5 @@ h2 { margin: 0; font-size: 1.2rem; }
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .section-head h3 { margin: 0; font-size: 1rem; }
 .tag { margin: 0 8px 8px 0; }
-.overlap-badge { margin-left: 6px; cursor: pointer; }
 .empty { color: #64748b; font-size: 0.8rem; }
 </style>

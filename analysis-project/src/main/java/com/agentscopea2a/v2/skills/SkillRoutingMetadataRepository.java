@@ -177,6 +177,26 @@ public class SkillRoutingMetadataRepository {
         return result;
     }
 
+    /** Same scope/filters as {@link #findAllWithSkillManage}, but counted in the database. */
+    public int countAllWithSkillManage(String keyword, Boolean active, boolean mine, String userId) {
+        ensureTable();
+        String creatorExpr = "CASE WHEN x.owner_user_id IS NULL OR TRIM(x.owner_user_id) = '' THEN '通用' ELSE x.owner_user_id END";
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM (SELECT s.retrieval_name AS name, s.description, s.owner_user_id FROM skill_manage s WHERE s.retrieval_name IS NOT NULL AND s.status='ACTIVE' AND s.deleted_at IS NULL UNION SELECT i.name, i.description, NULL AS owner_user_id FROM skill_index i WHERE i.status='active' AND NOT EXISTS (SELECT 1 FROM skill_manage s2 WHERE s2.retrieval_name=i.name AND s2.status='ACTIVE' AND s2.deleted_at IS NULL)) x LEFT JOIN skill_routing_metadata r ON r.skill_name=x.name WHERE 1=1");
+        if (keyword != null && !keyword.isBlank()) sql.append(" AND (LOWER(x.name) LIKE ? OR LOWER(COALESCE(x.description,'')) LIKE ? OR LOWER(" + creatorExpr + ") LIKE ?)");
+        if (active != null) sql.append(" AND COALESCE(r.active, TRUE)=?");
+        if (mine) {
+            if (userId == null || userId.isBlank()) return 0;
+            sql.append(" AND LOWER(" + creatorExpr + ") = ?");
+        }
+        try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql.toString())) {
+            int p = 1;
+            if (keyword != null && !keyword.isBlank()) { String q = "%" + keyword.trim().toLowerCase() + "%"; ps.setString(p++, q); ps.setString(p++, q); ps.setString(p++, q); }
+            if (active != null) ps.setBoolean(p++, active);
+            if (mine) ps.setString(p++, userId == null ? "" : userId.trim().toLowerCase());
+            try (ResultSet rs = ps.executeQuery()) { return rs.next() ? rs.getInt(1) : 0; }
+        } catch (SQLException e) { log.warn("countAllWithSkillManage failed: {}", e.getMessage()); return 0; }
+    }
+
     /** Loads one configurable Skill from skill_manage with optional routing metadata. */
     public Optional<SkillRoutingMetadataView> findOneWithSkillManage(String skillName) {
         ensureTable();

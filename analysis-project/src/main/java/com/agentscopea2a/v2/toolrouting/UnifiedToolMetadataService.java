@@ -11,6 +11,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /** Resolves parameters from the authoritative registry for each routed tool type. */
 public class UnifiedToolMetadataService {
@@ -55,20 +56,61 @@ public class UnifiedToolMetadataService {
     }
 
     public ToolMetadataResponse find(String toolId) {
-        ToolRoutingMetadata metadata = metadataRepository.findByToolId(toolId)
-                .filter(availabilityResolver::isAvailable)
-                .orElseThrow(() -> {
-                    metrics.metaInfoRequest("UNKNOWN", ToolRoutingMetrics.RESULT_MISS);
-                    return new IllegalArgumentException("工具不存在或不可用");
-                });
-        try {
-            ToolMetadataResponse response = resolveParameters(metadata);
-            metrics.metaInfoRequest(metadata.toolType().name(), ToolRoutingMetrics.RESULT_HIT);
-            return response;
-        } catch (IllegalArgumentException e) {
-            metrics.metaInfoRequest(metadata.toolType().name(), ToolRoutingMetrics.RESULT_INVALID);
-            throw e;
+        Optional<ToolRoutingMetadata> configured = metadataRepository.findByToolId(toolId)
+                .filter(availabilityResolver::isAvailable);
+        if (configured.isPresent()) {
+            try {
+                ToolMetadataResponse response = resolveParameters(configured.get());
+                metrics.metaInfoRequest(configured.get().toolType().name(), ToolRoutingMetrics.RESULT_HIT);
+                return response;
+            } catch (IllegalArgumentException e) {
+                metrics.metaInfoRequest(configured.get().toolType().name(), ToolRoutingMetrics.RESULT_INVALID);
+                throw e;
+            }
         }
+        // 路由决策 (docs/history/tool-metadata-unified-routing-plan.md 当前实现决策):
+        // tool_route_metadata 只控制 tool_index 目录可见性; toolMetaInfo 是按 toolId
+        // 寻址的查询通道, 元数据缺行 (如 generate_csv_download_url 被扫描页作为基础
+        // 设施工具排除) 不得拒绝调用, 回退到权威注册源按真实对象存在性校验。
+        ToolMetadataResponse fallback = findFromAuthoritativeSource(toolId);
+        if (fallback != null) {
+            metrics.metaInfoRequest(fallback.toolType().name(), ToolRoutingMetrics.RESULT_HIT);
+            return fallback;
+        }
+        metrics.metaInfoRequest("UNKNOWN", ToolRoutingMetrics.RESULT_MISS);
+        throw new IllegalArgumentException("工具不存在或不可用");
+    }
+
+    /** Resolves parameters from the real registration when no routing metadata row exists. */
+    private ToolMetadataResponse findFromAuthoritativeSource(String toolId) {
+        ApiToolMetadataProvider provider = apiToolMetadataProvider.getIfAvailable();
+        if (provider != null) {
+            Optional<ApiToolMetadata> api = provider.findApiTool(toolId);
+            if (api.isPresent()) {
+                ApiToolMetadata meta = api.get();
+                return new ToolMetadataResponse(toolId, ToolRoutingToolType.API, meta.description(),
+                        List.of(), List.of(), List.of(), 0, ToolRoutingToolType.API.executeWith(),
+                        meta.parameters(), invocation(ToolRoutingToolType.API));
+            }
+        }
+        SqlRegistryEntry sqlEntry = sqlRegistryMapper.selectBySqlId(toolId);
+        if (sqlEntry != null) {
+            return new ToolMetadataResponse(toolId, ToolRoutingToolType.SQL, sqlEntry.getDescription(),
+                    List.of(), List.of(), List.of(), 0, ToolRoutingToolType.SQL.executeWith(),
+                    sqlParameters(sqlEntry), invocation(ToolRoutingToolType.SQL));
+        }
+        ScriptRegistryEntry scriptEntry = scriptRegistryMapper.selectByScriptId(toolId);
+        if (scriptEntry != null) {
+            // 脚本源可用性 (容器 cat 探测) 封装在 resolver 里, 借合成元数据复用其判定
+            ToolRoutingMetadata synthetic = new ToolRoutingMetadata(toolId, ToolRoutingToolType.SCRIPT,
+                    "", List.of(), List.of(), List.of(), 0, true, null);
+            if (availabilityResolver.isAvailable(synthetic)) {
+                return new ToolMetadataResponse(toolId, ToolRoutingToolType.SCRIPT, scriptEntry.getDescription(),
+                        List.of(), List.of(), List.of(), 0, ToolRoutingToolType.SCRIPT.executeWith(),
+                        parameters(scriptEntry), invocation(ToolRoutingToolType.SCRIPT));
+            }
+        }
+        return null;
     }
 
     private ToolMetadataResponse resolveParameters(ToolRoutingMetadata metadata) {

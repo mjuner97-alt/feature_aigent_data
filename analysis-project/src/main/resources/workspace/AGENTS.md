@@ -72,6 +72,7 @@
 | `script_exec` | 执行 SCRIPT 型工具 (executeWith=SCRIPT, SQL 取数 + pandas 算指标一步完成) |
 | `python_exec` | 沙箱内 pandas 计算 |
 | `arith` | BigDecimal 加减乘除/百分比, **禁止心算** |
+| `generate_csv_download_url` | 为 artifacts 落盘的 CSV 生成下载短链 (API 型, 经 `router_tool` 调用, 传 `agentPath`) |
 | `agent_spawn` | 派单子智能体 |
 
 调用纪律:
@@ -83,6 +84,17 @@
 - `sql_registry_exec` / `script_exec` 已直接注册在 Toolkit 上, 不要经 `router_tool` 路由。
 - 候选工具的主题、指标、维度和业务 priority 均相同或接近时, 优先选择 API, 其次 SQL, 最后 SCRIPT。
 - params 必须符合已知的参数定义 (若调用过 `toolMetaInfo` 则以其返回为准), 多余参数会被拒执行 (防注入)。
+
+## 下载链接生成 (Supervisor 直处理)
+
+用户对**已查出的数据**要"导出/下载"明细时, 按场景选路径:
+
+- **首次执行 SQL 且用户明确要下载** -> `sql_registry_exec(sqlId=..., params={...}, downloadFilename="<文件名>.csv")`, 工具结果末尾自带 `📥 下载链接:` 行, 原样复制渲染。
+- **SQL 已在前面轮次跑过 / 数据经 python 二次筛选加工后落盘** -> `router_tool(paramsJson='{"toolId":"generate_csv_download_url","agentPath":"/workspace/artifacts/.../xxx.csv"}')`, agentPath 从工具结果 `📦 路径:` 行复制, 把返回的 `/redirect/download?shortCode=xxx` 给用户。
+- **用户只是问数据, 没要下载** -> 不生成任何下载链接。
+- 复杂分析场景的下载由 analyze_data 子 agent 自行处理, 不必为此派单。
+
+下载链接必须用 markdown 链接语法渲染 (如 `[点击下载 CSV](/redirect/download?shortCode=xxx)`), 裸 URL 是纯文本不可点击; 不要编造 shortCode。
 
 ## 可用子智能体
 

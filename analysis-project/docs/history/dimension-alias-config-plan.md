@@ -1,19 +1,22 @@
 # 维度别名配置与消解方案（应用 / 产品线 / 小组）
 
-> 状态：设计稿，待评审
+> 状态：P1-P3 已实施（2026-09-21 落地 + E2E；2026-10-10 嵌入裁决补丁）
 > 日期：2026-09-21
+> 修订：2026-10-10 新增 §4.2 步骤 2.5 嵌入裁决、§3.3 个贷行修正、§12 已知缺口（落点=DimensionStateManager 后过滤，定位=配置主力+安全网兜底）；
+>       同日文档-代码一致性核对：§1 产品线正则补全笔误、行号引用刷新、§5 抽取顺序改为实施定版
+>       （APP > alias > 组/产品线正则 > 需求项）、§6.3 补记 clarifiedPeer 一次性回填机制
 > 关联代码：`com.agentscopea2a.v2.dimension.DimensionStateManager`、`v2.middleware.DimensionStateMiddleware`、`v2.service.impl.V2ChatStreamServiceImpl`
 
 ## 1. 背景与现状
 
 多轮对话中的业务同级维度（组 / 应用 / 产品线）目前由
-`DimensionStateManager.extractExplicitDimensions`（DimensionStateManager.java:308）用三段硬编码正则抽取：
+`DimensionStateManager.extractExplicitDimensions`（DimensionStateManager.java:360）用三段硬编码正则抽取：
 
 | 维度 | 正则 | 问题 |
 |---|---|---|
 | 应用 | `(F-[A-Za-z][A-Za-z0-9-]*)` | 只认 F-XXX 标准编码，口语化词（智慧三农、社保、国库）不命中 |
 | 小组 | `([一-龥A-Za-z0-9]{2,}组)` | 只认"…组"后缀，GBC、财政、军队、同业 等口语词不命中；且会把"风险组"误判成小组 |
-| 产品线 | `([一-龥]{2,产品线\|普惠金融\|代理国库…)` | 固定枚举写死在代码里，扩充要改代码重发版 |
+| 产品线 | `([一-龥]{2,}产品线\|普惠金融\|代理国库\|代理财政\|代理同业\|交行输出\|全球市场风险管理应用\|金融市场共享数据服务)` | 固定枚举写死在代码里，扩充要改代码重发版 |
 
 需求：
 
@@ -98,6 +101,7 @@ CREATE TABLE IF NOT EXISTS dimension_alias (
 | 个贷前端 | 个贷对客渠道组 | — | F-WAPB-LOAN | 双维度平，**待业务确认** |
 | 量化 / 量化组 | 量化组→杭州二部量化交易组 | 量化→量化投资及交易 | — | 不同 alias 串，最长匹配自然分开，无冲突 |
 | 个贷 / 个贷XX组 | 个贷消费组…（4 个嵌套 alias） | 个贷→个人信贷产品线 | — | 最长匹配优先，"个贷消费组"整段落小组，裸"个贷"落产品线 |
+| 个贷 嵌在词表外的真实组名里（"个贷数据开发组"） | —（该组名未配 alias 行） | 个贷→个人信贷产品线 | — | ⚠️ 步骤 2.5 嵌入裁决抑制（2026/10/10）：组名正则接管 → 组：个贷数据开发组（原文值，未归一化）；根治靠补配 TEAM 全称行，见 §12 |
 
 ## 4. AliasResolver：别名解析器（新增类）
 
@@ -118,6 +122,19 @@ resolve(question):
      —— alias 总量 ~70，每轮全量 contains 扫描开销可忽略（微秒级）
   2. 跨 span 去重：按 (end-start) 长度降序贪心accept，与已 accept span 重叠的丢弃
      —— "个贷前端"压过"个贷"，"GBC场景创新组"压过"GBC"，"快捷支付产品线"压过"快捷"
+  2.5 嵌入裁决（2026/10/10 修订；落点 = DimensionStateManager 后过滤，
+      suppressEmbeddedAliasHits，设计决策与治理定位见 §12）：
+      命中 span 落在某个显式组名 token（…组，EXPLICIT_TEAM 切出）内部、
+      且 alias 末尾到 token 末尾之间超过一个字符（teamEnd - end > 1，
+      即除"组"字外至少还有 1 个字的修饰成分）时——对 resolved 与 ambiguous
+      命中同样适用：
+      a. TEAM 命中且标准名与组名 token 互相包含（任一方向）⇒ alias 指的就是该组，
+         保留，照常产出标准名+映射行（"杭州开发三部同业客户组"里的"同业"→ 同业客户组）
+      b. 互不包含 ⇒ 命中只是组名里的碰巧子串，抑制，组名正则接管
+         （"个贷数据开发组"里的"个贷"；"分行业务组"里的"分行"防错绑）
+      c. 非组维度（产品线/应用）命中一律抑制——组名里嵌的产品线词不是产品线指代
+      豁免两类：尾部对齐（"FMBM应用平台组"里的"应用平台组"，alias 给标准名）；
+                "别名+组"触发词形态（"军队组"，teamEnd-end=1，触发词机制正是为此设计）
   3. 同 span 定维度（按顺序）：
      a. 关键词触发：带 trigger_keyword 的候选行，仅当问题包含该完整关键词时才在步骤 1 参与收集；
         触发词已命中的行 ⇒ 该行维度直接胜（"军队组"：小组行触发词命中 ⇒ TEAM，
@@ -135,16 +152,16 @@ resolve(question):
 ### 4.3 结果语义
 
 - `ResolvedAlias` 的 standardName **必须是标准名**（"军队"进状态时就是"企业资金管理系统"），保证：
-  - `DimensionState.toCacheKey()` / `FingerprintCalculator` 指纹稳定——用户说"风险组"和"全球市场风险管理应用"落到同一候选，auto-synth 计数能累积（与部门 `normalizeDepartment` 同一先例，DimensionStateManager.java:223）；
+  - `DimensionState.toCacheKey()` / `FingerprintCalculator` 指纹稳定——用户说"风险组"和"全球市场风险管理应用"落到同一候选，auto-synth 计数能累积（与部门 `normalizeDepartment` 同一先例，DimensionStateManager.java:262）；
   - 下游 `query_data` / `wide_table_query` 收到的维度值可直接当过滤条件，不再需要 LLM 翻译。
 - `AmbiguousAlias` 不写维度状态，走 §6 反问。
 
 ## 5. DimensionStateManager 集成改造
 
-改动集中在 `extractExplicitDimensions`（DimensionStateManager.java:308）及其调用方：
+改动集中在 `extractExplicitDimensions`（DimensionStateManager.java:360）及其调用方：
 
-1. **别名解析先行**：入口先调 `AliasResolver.resolve(q)`；
-2. **peer 维度抽取顺序调整为**：alias 命中（已含标准名）→ `EXPLICIT_APP`（F-xxx 正则保留，兜底新应用编码）→ `EXPLICIT_REQUIREMENT`（Ixxx 格式）→ 其他正则兜底；
+1. **别名解析先行**：入口 `analyzeQuestionRuleBased` 先调 `AliasResolver.resolve(q)`（V2ChatStreamServiceImpl 不直接接触 resolver，只走 Manager 的公开 API）；
+2. **peer 维度抽取顺序（实施定版）**：`EXPLICIT_APP`（F-xxx 优先级最高，alias 解析出组/产品线但问题同时含 F-xxx 编码时 alias 让位，保持既有 app > 组/产品线 优先序）→ alias 命中（已含标准名）→ `EXPLICIT_TEAM` / `EXPLICIT_PRODUCT_LINE` 正则兜底 → `EXPLICIT_REQUIREMENT`（Ixxx 格式）；
    - 现有 `EXPLICIT_TEAM` / `EXPLICIT_PRODUCT_LINE` 正则**降级为兜底**：仅当无 alias 命中时才跑，且产出值标记为"非标准形态"（LLM `updateFromAnswer` 提取后同样过一遍 alias 归一）；
    - 这消除了现状 bug："风险组"被小组正则抢注为 TEAM——alias 表优先后，"风险组"正确落产品线反问；
 3. **`QuestionAnalysis` 增字段** `ambiguousAliases`，随 `ProcessResult` 透出，供短路层判断；
@@ -188,12 +205,16 @@ public static class PendingClarification implements State {
 下一轮入口（短路判断之前）：
 
 1. `pendingClarification != null` 时，先拿用户回复做**确定性匹配**：
-   - 序号："1 / 2 / 第一个 / 第二个" → 按下标取候选；
-   - 文本：回复 contains 某候选（或候选的 alias 变体）→ 取该候选；
+   - 序号："1 / 2 / 第一个 / 第二个"（含全角数字 / 中文数字）→ 按下标取候选；
+   - 文本：回复 contains 某候选 → 取该候选（首个命中者；alias 变体不做单独匹配，用户答出候选名即可命中）；
 2. 命中 → `peerDimension = 该维度[选定标准名]`，清除 pending，把**原问题**（alias 位置替换为标准名）作为本轮问题正常跑 agent；
-3. 未命中 →
-   - 回复中出现了新的、可无歧义解析的维度词 → 视为新问题，丢弃 pending，正常走流程；
-   - 否则（闲聊 / 无关内容）→ 丢弃 pending，正常走流程（宁可少问一次也不要死循环反问）；
+   ⚠️ **一次性回填（实施补充，方案原文遗漏）**：替换后的问题会重新走
+   `processQuestionInContext` 的解析/继承链，而确认出的标准名往往不在正则固定词表里
+   （如"金融产品定价与估值系统"），peer 会在二次解析中被丢掉。故 consumeClarification
+   命中时额外记录（问题文本 → 确认的 peer），下一轮 `processQuestionInContext` 按问题文本
+   精确匹配后把 peer 补回状态（只写维度+标准名，不进「同义词解析映射」段），用后即清
+   （DimensionStateManager clarifiedPeerQuestion / clarifiedPeer 字段）；
+3. 未命中 → 丢弃 pending，按普通问题放行（宁可少问一次也不要死循环反问；含新维度词的问题自然走正常流程）；
 4. pending 存在单例 DimensionStateManager 的 currentState 上（内存，JVM 重启丢失）；同一会话新问题覆盖旧 pending。
 
 ### 6.4 与缓存的关系
@@ -228,6 +249,14 @@ public static class PendingClarification implements State {
   - 用户输入已是标准名（`杭州二部量化交易组`）→ 幂等，返回原值。
 - 状态机：反问 → "1" / "第二个" / 直接答标准名 / 无关回复 四条路径；pending 跨轮持久化。
 - 兜底链：无 alias 命中时 F-xxx / Ixxx 正则仍工作；`EXPLICIT_TEAM` 不再抢注"风险组"。
+- 嵌入裁决（§4.2 步骤 2.5，2026/10/10）：
+  - `个贷数据开发组的需求项` → 组/个贷数据开发组（原文值；修复前被"个贷"抢注成产品线：个人信贷产品线）；
+  - `杭州开发三部同业客户组…` → 组/同业客户组 + 映射行（标准名是 token 后缀，保留）；
+  - `分行业务组的需求项` → 组/分行业务组（互不包含抑制，防错绑到"杭州服务支持部分行平台服务创新组"）；
+  - 全称 `杭州服务支持部分行平台服务创新组的需求项` → 归一化标准名（token==标准名）；
+  - `FMBM应用平台组` → 组/杭州二部FMBM应用平台组（尾部对齐豁免）；
+  - `军队组的需求项` → 组/特种业务组（"别名+组"触发词形态豁免）；
+  - 嵌入抑制后不触发歧义反问、抑制时打治理 warn 日志（alias + 组名 token）。
 - 缓存：`风险组(确认后)` 与 `全球市场风险管理应用` 生成相同 toCacheKey。
 
 E2E（沿用现网验证模式）：真实 SSE 会话跑通 反问→确认→分析 全链路 + JVM 重启后 pending 恢复。
@@ -279,6 +308,50 @@ LLM 视野，参数名带 dept 就往里塞，指令拦不住。
 agent 的 question）。配套在 `<dimension_context>` 指令中加一句兜底：
 「任何工具参数禁止使用用户原词口语词」。多命中场景会整句替换（如「比较军队和量化组」→
 「比较企业资金管理系统和杭州二部量化交易组」），对 LLM 是纯收益。
+
+---
+
+## 12. 已知缺口：alias 子串嵌入更长组名（2026/10/10 E2E + 修复）
+
+**现象**：配了 `个贷 = 个人信贷产品线` 后，问「人均适应性问题 3季度 个贷数据开发组」，
+识别成 产品线：个人信贷产品线——"个贷"是组名"个贷数据开发组"的子串，词表命中
+抢注了错误维度；且 aliasHit=true 压制小组正则兜底（§5 第 2 条），真实组名整个丢失。
+
+**设计假设缺陷**：§4.2 步骤 2 的最长匹配只覆盖 alias↔alias 竞争；§3.3"个贷/个贷XX组"行
+的结论（"个贷消费组"整段落小组）隐含假设竞争只发生在词表内部。生产中存在第三类
+竞争者——**不在词表里的真实组名**（EXPLICIT_TEAM 正则可识别，但优先级低于 alias 命中）。
+
+**样例特征归纳（裁决依据）**：
+
+| 样例 | alias→标准名 | 组名 token | 特征 | 裁决 |
+|---|---|---|---|---|
+| 个贷数据开发组 | 个贷→个人信贷产品线 | 个贷数据开发组 | 标准名与 token 互不包含 | 抑制 |
+| 杭州开发三部同业客户组 | 同业→同业客户组 | 杭州开发三部同业客户组 | 标准名是 token 后缀子串 | 保留 |
+| 分行业务组 | 分行→杭州服务支持部分行平台服务创新组 | 分行业务组 | 互不包含 | 抑制（防错绑到别的组） |
+| 杭州服务支持部分行平台服务创新组 | 分行→同标准名 | token==标准名 | 全等 | 保留（归一化出标准名） |
+
+**裁决规则**（= §4.2 步骤 2.5）：alias 命中嵌在组名 token 内部且之后还有修饰成分
+（teamEnd - end > 1）时——标准名与 token 互相包含 ⇒ 保留（a）；互不包含 ⇒ 抑制（b）；
+非组维度命中一律抑制（c）。豁免：尾部对齐、"别名+组"触发词形态（teamEnd-end=1）。
+未配置全称行时的最终效果：维度正确（组），但值是用户原文（未归一化，库里若存
+带部门前缀全称可能查空）——归一化能力只有配置表能给。
+
+**落点决策**：`DimensionStateManager.suppressEmbeddedAliasHits` 后过滤，而非
+AliasResolver 内部。理由：裁决需要 EXPLICIT_TEAM 正则切组名 token（Manager 的领域
+知识），resolver 保持"纯词表、零正则依赖"定位，公开 API 零变化。
+⚠️ 若未来新增 resolve() 调用方（§11 原位替换端点、管理页匹配预览等），
+必须复用同一裁决（届时考虑抽公共静态工具），否则行为漂移。
+
+**机制定位（业务 2026/10/10 确认会持续补配 alias 表）**：
+
+- **主力**：补配全称 alias 行（如 `TEAM, 个贷数据开发组`），最长匹配天然解决，
+  裁决根本不触发；
+- **安全网**：只处理表里没有的组名，保证不出错维度；
+- **治理信号**：抑制发生时打 warn 日志（alias + 组名 token + 建议补配 TEAM 行），
+  运营据此补配置——安全网触发即配置缺口信号。
+
+**单测**：`DimensionStateManagerEmbeddedAliasTest` 覆盖上述四组样例、两类豁免、
+嵌入抑制不触发反问。
 
 ---
 

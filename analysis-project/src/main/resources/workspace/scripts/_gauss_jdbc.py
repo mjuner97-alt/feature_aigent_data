@@ -83,7 +83,7 @@ def query_gauss(sql, params=None):
     import jpype
     from java.sql import DriverManager
 
-    # 从环境变量获取连接信息（示例值）
+    # 从环境变量获取连接信息 (env 由 ScriptExecTool 默认注入, 见 defaultEnv)
     jdbc_url = os.environ.get("GAUSS_JDBC_URL")
     user = os.environ.get("GAUSS_USER")
     password = os.environ.get("GAUSS_PASS")

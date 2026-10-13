@@ -81,20 +81,21 @@ ON DUPLICATE KEY UPDATE
 
 
 -- ----------------------------------------------------------------------------
--- 示例数据: ClickHouse 单库查询 (datasources=["clickhouse"])
--- 按 event_type 分组统计 trace_event 事件数/去重会话/平均最大耗时
+-- 示例数据: ClickHouse 单库查询 + 明细下载 (datasources=["clickhouse"])
+-- 2026/10/09: 原查 default.trace_event (服务器无此表), 改指 default.platform_orders,
+-- 与 q2_1 同范式: 汇总指标 + echarts + 明细 CSV/xlsx 下载块一步完成
 -- ----------------------------------------------------------------------------
 INSERT INTO script_registry (script_id, name, description, script_path, datasources, params_schema, timeout_seconds, created_by) VALUES
 (
   'q_clickhouse_demo_trace_events',
-  'ClickHouse trace_event 事件流分析',
-  '按 event_type 分组统计事件数/去重会话/去重 trace/平均最大耗时, 支持可选 source 过滤. 时间窗口走 event_date 分区裁剪. datasources=["clickhouse"], ScriptExecTool 注入 CLICKHOUSE_DB_URL.',
+  'ClickHouse platform_orders 订单统计 + 明细下载',
+  '按时间窗口 (可选 user_id) 查 default.platform_orders 明细, pandas 算 订单数/消费总额/平均客单价/覆盖用户数, 输出汇总表 + echarts + 明细 CSV/xlsx 下载块. script_id 沿用旧名 (原查 trace_event, 服务器无此表). datasources=["clickhouse"], ScriptExecTool 注入 CLICKHOUSE_DB_URL, Gauss env 由 defaultEnv 默认注入.',
   '555153205/q_clickhouse_demo_trace_events.py',
   '["clickhouse"]',
   '[
-    {"name":"start_date","type":"string","required":true,"description":"开始日期, 如 2026-07-01"},
-    {"name":"end_date","type":"string","required":true,"description":"结束日期, 如 2026-07-31"},
-    {"name":"source","type":"string","required":false,"description":"可选, 按 source 字段过滤"}
+    {"name":"start_date","type":"string","required":true,"description":"开始日期, 如 2026-01-01"},
+    {"name":"end_date","type":"string","required":true,"description":"结束日期, 如 2026-12-31"},
+    {"name":"user_id","type":"string","required":false,"description":"可选, 按 user_id 过滤"}
   ]',
   60,
   'flyway'

@@ -2,6 +2,10 @@ import type {
   RoutingOverlapListResponse,
   RoutingOverlapSummary,
   SkillSimilarityCheckResult,
+  SkillSkillOverlapListResponse,
+  SkillSkillOverlapSummary,
+  ToolToolOverlapListResponse,
+  ToolToolOverlapSummary,
 } from '../types/routingOverlap';
 
 const BASE = '/api/routing-overlap';
@@ -31,6 +35,42 @@ export async function listRoutingOverlap(params: {
 export async function routingOverlapSummary(): Promise<RoutingOverlapSummary> {
   const res = await fetch(`${BASE}/summary`, { headers: headers() });
   if (!res.ok) throw new Error(`加载重叠统计失败 (HTTP ${res.status})`);
+  return res.json();
+}
+
+export async function listToolToolOverlap(params: {
+  level?: string;
+  toolId?: string;
+}): Promise<ToolToolOverlapListResponse> {
+  const query = new URLSearchParams();
+  if (params.level) query.set('level', params.level);
+  if (params.toolId) query.set('toolId', params.toolId);
+  const res = await fetch(`${BASE}/tool-tool?${query}`, { headers: headers() });
+  if (!res.ok) throw new Error(`加载工具重叠检测失败 (HTTP ${res.status})`);
+  return res.json();
+}
+
+export async function toolToolOverlapSummary(): Promise<ToolToolOverlapSummary> {
+  const res = await fetch(`${BASE}/tool-tool/summary`, { headers: headers() });
+  if (!res.ok) throw new Error(`加载工具重叠统计失败 (HTTP ${res.status})`);
+  return res.json();
+}
+
+export async function listSkillSkillOverlap(params: {
+  level?: string;
+  skillName?: string;
+}): Promise<SkillSkillOverlapListResponse> {
+  const query = new URLSearchParams();
+  if (params.level) query.set('level', params.level);
+  if (params.skillName) query.set('skillName', params.skillName);
+  const res = await fetch(`${BASE}/skill-skill?${query}`, { headers: headers() });
+  if (!res.ok) throw new Error(`加载 Skill 重叠检测失败 (HTTP ${res.status})`);
+  return res.json();
+}
+
+export async function skillSkillOverlapSummary(): Promise<SkillSkillOverlapSummary> {
+  const res = await fetch(`${BASE}/skill-skill/summary`, { headers: headers() });
+  if (!res.ok) throw new Error(`加载 Skill 重叠统计失败 (HTTP ${res.status})`);
   return res.json();
 }
 

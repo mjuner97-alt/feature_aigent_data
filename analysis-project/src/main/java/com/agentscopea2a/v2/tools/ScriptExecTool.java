@@ -144,6 +144,12 @@ public class ScriptExecTool implements RuntimeContextAware {
     private volatile RuntimeContext currentContext;
 
     static final String FLOW_TASK_PREFIX = "flowTask:";
+    /**
+     * 启动时从数据源配置算好的默认 env: Gauss 凭据对所有 script_exec 子进程默认可用
+     * (_sql_registry 读 sql_registry 表要过 GaussDB, 不要求脚本 datasources 声明 gauss).
+     * gaussDs 未注入/配置异常时为空 map, 脚本内 Gauss 访问报 env 未设置.
+     */
+    private final Map<String, String> defaultEnv;
 
     public ScriptExecTool(DataSource mysqlDs,
                           DataSource gaussDs,
@@ -186,6 +192,13 @@ public class ScriptExecTool implements RuntimeContextAware {
     static boolean isFlowTaskScriptId(String scriptId) {
         return scriptId != null && scriptId.startsWith(FLOW_TASK_PREFIX)
                 && !scriptId.substring(FLOW_TASK_PREFIX.length()).trim().isEmpty();
+        Map<String, String> de = new LinkedHashMap<>();
+        try {
+            injectGaussJdbcEnv(de, gaussDs);
+        } catch (Exception e) {
+            log.warn("script_exec 启动时计算默认 Gauss env 失败 (脚本内 Gauss 访问将报 env 未设置): {}", e.getMessage());
+        }
+        this.defaultEnv = Collections.unmodifiableMap(de);
     }
 
     @Tool(
@@ -330,6 +343,10 @@ public class ScriptExecTool implements RuntimeContextAware {
         if (sandbox != null && sandbox.isEnabled() && !isBlank(sandbox.getSharedContainerName())) {
             env.put("LC_ALL", "C.UTF-8");
         }
+        // 默认 env (启动时从 gaussDs 配置算好): Gauss 凭据对所有脚本子进程默认可用 ——
+        // _sql_registry 读 sql_registry 表要过 GaussDB, 不要求脚本 datasources 声明 gauss.
+        // 声明了 gauss 的脚本由下方循环注入同值覆盖.
+        env.putAll(defaultEnv);
         for (String ds : dsList) {
             DataSource dataSource = dataSourceMap.get(ds);
             if (dataSource == null) {
