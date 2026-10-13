@@ -15,10 +15,12 @@
  */
 package com.agentscopea2a.v2.config;
 
+import com.agentscopea2a.config.datasource.GaussCommonConfig;
 import com.agentscopea2a.v2.dimension.DimensionStateManager;
 import com.agentscopea2a.v2.hooks.KnowledgeRetrievalHook;
 import com.agentscopea2a.v2.hooks.SkillEvolutionHook;
 import com.agentscopea2a.v2.hooks.SkillSynthesisHook;
+import com.agentscopea2a.v2.hooks.VersionPlanKnowledgeHook;
 import com.agentscopea2a.v2.memory.EpisodicMemory;
 import com.agentscopea2a.v2.skillManager.scheduler.WriteCallback;
 import com.agentscopea2a.v2.skills.BuiltinSkillRegistrar;
@@ -45,9 +47,11 @@ import io.agentscope.harness.agent.tool.SkillManageConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import javax.sql.DataSource;
 import java.nio.file.Path;
@@ -135,6 +139,21 @@ public class V2SkillConfig {
         Path knowledgeDynamicDir = workspace.resolve("knowledge-dynamic");
         log.info("KnowledgeRetrievalHook: enabled={}, knowledgeDynamicDir={}", enabled, knowledgeDynamicDir);
         return new KnowledgeRetrievalHook(knowledgeDynamicDir, enabled);
+    }
+
+    /**
+     * Current in-build version plan hook - queries {@code rdc_train_calendar} on the
+     * gauss-common datasource (TTL cached) and injects the live 当前在建版本 list into the
+     * system prompt, superseding the hardcoded default in KNOWLEDGE.md.
+     * See docs/202610/当前在建版本动态注入方案.md.
+     */
+    @Bean
+    public VersionPlanKnowledgeHook versionPlanKnowledgeHook(
+            @Qualifier(GaussCommonConfig.DS_NAME) DataSource gaussCommonDataSource,
+            @Value("${harness.knowledge.version-plan.enabled:true}") boolean enabled,
+            @Value("${harness.knowledge.version-plan.cache-ttl-seconds:1800}") long cacheTtlSeconds) {
+        log.info("VersionPlanKnowledgeHook: enabled={}, cacheTtlSeconds={}", enabled, cacheTtlSeconds);
+        return new VersionPlanKnowledgeHook(new JdbcTemplate(gaussCommonDataSource), enabled, cacheTtlSeconds);
     }
 
     /**

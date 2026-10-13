@@ -182,8 +182,141 @@ class SkillCandidateSelectorTest {
         assertTrue(selection.skillNames().isEmpty());
     }
 
+    @Test
+    void bothLevelsHitRanksAboveSingleLevelHit() {
+        SkillRoutingMetadata deep = metadataWithLevels("deep", List.of(), List.of("问题"), List.of("未闭环"), List.of());
+        SkillRoutingMetadata shallow = metadataWithLevels("shallow", List.of(), List.of("问题"), List.of(), List.of());
+
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(shallow.skillName()), skill(deep.skillName())),
+                List.of(deep, shallow), "未闭环问题还有多少");
+
+        assertEquals(2, selection.skillNames().size());
+        assertEquals("deep", selection.skillNames().get(0));
+        assertEquals("shallow", selection.skillNames().get(1));
+    }
+
+    @Test
+    void upperLayerHitKeepsSkillVisibleWhenConfiguredDeeperLayerMisses() {
+        SkillRoutingMetadata closedLoop = metadataWithLevels("closed_loop", List.of(), List.of("问题"), List.of("已闭环"), List.of());
+        SkillRoutingMetadata openLoop = metadataWithLevels("open_loop", List.of(), List.of("问题"), List.of("未闭环"), List.of());
+
+        // 问题命中 open_loop 的 L1 (问题) 但未命中其 L2 (未闭环) → L1 保底存活, 排在全链命中的 closed_loop 之后
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(closedLoop.skillName()), skill(openLoop.skillName())),
+                List.of(closedLoop, openLoop), "已闭环问题统计");
+
+        assertEquals(List.of("closed_loop", "open_loop"), selection.skillNames());
+        assertFalse(selection.fallbackExpanded());
+    }
+
+    @Test
+    void deepestLayerHitAloneAdmitsSkill() {
+        SkillRoutingMetadata codeQuality = metadataWithLevels("code_quality", List.of(), List.of("质量"), List.of("代码"), List.of("告警"));
+        SkillRoutingMetadata generic = metadata("generic", List.of("指标"));
+
+        // 问题只含 L3 词 "告警", 不含 L1/L2 → 任一层命中即入围, code_quality 靠 L3 (1500 分) 排最前
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(codeQuality.skillName()), skill(generic.skillName())),
+                List.of(codeQuality, generic), "扫描告警");
+
+        assertEquals(List.of("code_quality"), selection.skillNames());
+        assertFalse(selection.fallbackExpanded());
+    }
+
+    @Test
+    void upperLayerHitKeepsSkillVisibleEvenWhenUnconfiguredSkillsPadThePool() {
+        SkillRoutingMetadata appQuality = metadataWithLevels("app_quality", List.of("质量"), List.of("质量"), List.of("应用"), List.of());
+        SkillRoutingMetadata generic = metadata("generic", List.of("质量"));
+
+        // 关键场景: 池子里存在未配置层级的 generic skill 使每层收窄都"成功",
+        // app_quality 仅命中 L1 (质量) 也必须保底可见, 不能被 L2 淘汰
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(appQuality.skillName()), skill(generic.skillName())),
+                List.of(appQuality, generic), "质量情况");
+
+        assertEquals(List.of("app_quality", "generic"), selection.skillNames());
+    }
+
+    @Test
+    void l1HitAloneAdmitsSkillWhenL2Misses() {
+        SkillRoutingMetadata single = metadataWithLevels("single", List.of(), List.of("问题"), List.of("未闭环"), List.of());
+
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(single.skillName())), List.of(single), "问题总量是多少");
+
+        assertEquals(List.of("single"), selection.skillNames());
+        assertFalse(selection.fallbackExpanded());
+    }
+
+    @Test
+    void upperLevelHitAloneAdmitsSkillWithoutLeafKeywords() {
+        SkillRoutingMetadata levelsOnly = metadataWithLevels("levels_only", List.of(), List.of("问题"), List.of("未闭环"), List.of("严重"));
+
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(levelsOnly.skillName())), List.of(levelsOnly), "严重未闭环问题有多少");
+
+        assertEquals(List.of("levels_only"), selection.skillNames());
+    }
+
+    @Test
+    void regexTermMatchesQuestion() {
+        SkillRoutingMetadata regex = metadataWithLevels("regex_skill", List.of("未闭.{0,2}环"), List.of(), List.of(), List.of());
+
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(regex.skillName())), List.of(regex), "未闭环 的问题还有多少");
+
+        assertEquals(List.of("regex_skill"), selection.skillNames());
+    }
+
+    @Test
+    void invalidRegexFallsBackToLiteralContains() {
+        SkillRoutingMetadata invalid = metadataWithLevels("invalid_regex", List.of("["), List.of(), List.of(), List.of());
+
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(invalid.skillName())), List.of(invalid), "数组[0]取值报错");
+
+        assertEquals(List.of("invalid_regex"), selection.skillNames());
+    }
+
+    @Test
+    void preciseSelectionTruncatesToMaxVisibleSkills() {
+        List<SkillRoutingMetadata> metadata = new java.util.ArrayList<>();
+        for (int i = 0; i < 7; i++) {
+            metadata.add(metadataWithLevels("kw_skill_" + i, List.of("达标率"), List.of(), List.of(), List.of()));
+        }
+
+        SkillCandidateSelection selection = selector.select(
+                metadata.stream().map(m -> skill(m.skillName())).toList(), metadata, "查达标率");
+
+        assertEquals(5, selection.skillNames().size());
+        assertTrue(selection.fallbackExpanded());
+    }
+
+    @Test
+    void fallbackSelectionExpandsToFallbackVisibleSkills() {
+        List<SkillRoutingMetadata> metadata = new java.util.ArrayList<>();
+        for (int i = 0; i < 12; i++) {
+            metadata.add(metadataWithLevels("lv_skill_" + i, List.of(), List.of("问题"), List.of("未闭环"), List.of()));
+        }
+
+        // 问题只命中 L1, 全部候选 L2 未命中 → 命中链不完整 (保底存活), 可信度低 → 放宽到 10 (而非 5)
+        SkillCandidateSelection selection = selector.select(
+                metadata.stream().map(m -> skill(m.skillName())).toList(), metadata, "问题总量是多少");
+
+        assertEquals(10, selection.skillNames().size());
+        assertTrue(selection.fallbackExpanded());
+    }
+
     private static SkillRoutingMetadata metadata(String name, List<String> keywords) {
         return new SkillRoutingMetadata(name, name + " 摘要", keywords, List.of(), List.of(), "", true, null);
+    }
+
+    private static SkillRoutingMetadata metadataWithLevels(String name, List<String> keywords,
+                                                           List<String> level1, List<String> level2,
+                                                           List<String> level3) {
+        return new SkillRoutingMetadata(name, name + " 摘要", keywords, List.of(), List.of(), "", true, null,
+                level1, level2, level3);
     }
 
     private static SkillRoutingMetadata metadataWithDomain(String name, List<String> keywords,

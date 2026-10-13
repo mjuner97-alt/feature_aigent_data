@@ -76,7 +76,7 @@ public class SkillRoutingMetadataRepository {
             return snapshot;
         }
         String sql = "SELECT skill_name, short_summary, keywords, domain_tags, topic_tags, maintainer AS creator, "
-                + "active, updated_at "
+                + "active, updated_at, level1_keywords, level2_keywords, level3_keywords "
                 + "FROM skill_routing_metadata ORDER BY skill_name";
         List<SkillRoutingMetadata> result = new ArrayList<>();
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql);
@@ -100,7 +100,7 @@ public class SkillRoutingMetadataRepository {
     public Optional<SkillRoutingMetadata> findBySkillName(String skillName) {
         ensureTable();
         String sql = "SELECT skill_name, short_summary, keywords, domain_tags, topic_tags, maintainer AS creator, "
-                + "active, updated_at "
+                + "active, updated_at, level1_keywords, level2_keywords, level3_keywords "
                 + "FROM skill_routing_metadata WHERE skill_name = ?";
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, skillName);
@@ -157,6 +157,7 @@ public class SkillRoutingMetadataRepository {
         ensureTable();
         String creatorExpr = "CASE WHEN x.owner_user_id IS NULL OR TRIM(x.owner_user_id) = '' THEN '通用' ELSE x.owner_user_id END";
         StringBuilder sql = new StringBuilder("SELECT x.name, x.description, r.short_summary, r.keywords, r.domain_tags, r.topic_tags, "
+                + "r.level1_keywords, r.level2_keywords, r.level3_keywords, "
                 + creatorExpr + " AS creator, r.active, r.updated_at, r.skill_name IS NOT NULL configured FROM (SELECT s.retrieval_name AS name, s.description, s.owner_user_id FROM skill_manage s WHERE s.retrieval_name IS NOT NULL AND s.status='ACTIVE' AND s.deleted_at IS NULL UNION SELECT i.name, i.description, NULL AS owner_user_id FROM skill_index i WHERE i.status='active' AND NOT EXISTS (SELECT 1 FROM skill_manage s2 WHERE s2.retrieval_name=i.name AND s2.status='ACTIVE' AND s2.deleted_at IS NULL)) x LEFT JOIN skill_routing_metadata r ON r.skill_name=x.name WHERE 1=1");
         if (keyword != null && !keyword.isBlank()) sql.append(" AND (LOWER(x.name) LIKE ? OR LOWER(COALESCE(x.description,'')) LIKE ? OR LOWER(" + creatorExpr + ") LIKE ?)");
         if (active != null) sql.append(" AND COALESCE(r.active, TRUE)=?");
@@ -200,7 +201,9 @@ public class SkillRoutingMetadataRepository {
     /** Loads one configurable Skill from skill_manage with optional routing metadata. */
     public Optional<SkillRoutingMetadataView> findOneWithSkillManage(String skillName) {
         ensureTable();
-        String sql = "SELECT x.name, x.description, r.short_summary, r.keywords, r.domain_tags, r.topic_tags, CASE WHEN x.owner_user_id IS NULL OR TRIM(x.owner_user_id) = '' THEN '通用' ELSE x.owner_user_id END AS creator, r.active, r.updated_at, r.skill_name IS NOT NULL configured FROM (SELECT s.retrieval_name AS name, s.description, s.owner_user_id FROM skill_manage s WHERE s.retrieval_name IS NOT NULL AND s.status='ACTIVE' AND s.deleted_at IS NULL UNION SELECT i.name, i.description, NULL AS owner_user_id FROM skill_index i WHERE i.status='active' AND NOT EXISTS (SELECT 1 FROM skill_manage s2 WHERE s2.retrieval_name=i.name AND s2.status='ACTIVE' AND s2.deleted_at IS NULL)) x LEFT JOIN skill_routing_metadata r ON r.skill_name=x.name WHERE x.name=?";
+        String sql = "SELECT x.name, x.description, r.short_summary, r.keywords, r.domain_tags, r.topic_tags, "
+                + "r.level1_keywords, r.level2_keywords, r.level3_keywords, "
+                + "CASE WHEN x.owner_user_id IS NULL OR TRIM(x.owner_user_id) = '' THEN '通用' ELSE x.owner_user_id END AS creator, r.active, r.updated_at, r.skill_name IS NOT NULL configured FROM (SELECT s.retrieval_name AS name, s.description, s.owner_user_id FROM skill_manage s WHERE s.retrieval_name IS NOT NULL AND s.status='ACTIVE' AND s.deleted_at IS NULL UNION SELECT i.name, i.description, NULL AS owner_user_id FROM skill_index i WHERE i.status='active' AND NOT EXISTS (SELECT 1 FROM skill_manage s2 WHERE s2.retrieval_name=i.name AND s2.status='ACTIVE' AND s2.deleted_at IS NULL)) x LEFT JOIN skill_routing_metadata r ON r.skill_name=x.name WHERE x.name=?";
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, skillName);
             try (ResultSet rs = ps.executeQuery()) { return rs.next() ? Optional.of(mapView(rs)) : Optional.empty(); }
@@ -214,12 +217,15 @@ public class SkillRoutingMetadataRepository {
         }
         ensureTable();
         String sql = "INSERT INTO skill_routing_metadata "
-                + "(skill_name, short_summary, keywords, domain_tags, topic_tags, maintainer, active, updated_at) "
-                + "VALUES (?, ?, ?, ?, ?, ?, ?, now()) "
+                + "(skill_name, short_summary, keywords, domain_tags, topic_tags, maintainer, active, updated_at, "
+                + "level1_keywords, level2_keywords, level3_keywords) "
+                + "VALUES (?, ?, ?, ?, ?, ?, ?, now(), ?, ?, ?) "
                 + "ON DUPLICATE KEY UPDATE short_summary=VALUES(short_summary), "
                 + "keywords=VALUES(keywords), domain_tags=VALUES(domain_tags), topic_tags=VALUES(topic_tags), "
                 + "maintainer=VALUES(maintainer), "
-                + "active=VALUES(active), updated_at=now()";
+                + "active=VALUES(active), updated_at=now(), "
+                + "level1_keywords=VALUES(level1_keywords), level2_keywords=VALUES(level2_keywords), "
+                + "level3_keywords=VALUES(level3_keywords)";
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, metadata.skillName());
             ps.setString(2, nullToEmpty(metadata.shortSummary()));
@@ -228,6 +234,9 @@ public class SkillRoutingMetadataRepository {
             ps.setString(5, json(metadata.topicTags()));
             ps.setString(6, metadata.creator());
             ps.setBoolean(7, metadata.active());
+            ps.setString(8, json(metadata.level1Keywords()));
+            ps.setString(9, json(metadata.level2Keywords()));
+            ps.setString(10, json(metadata.level3Keywords()));
             ps.executeUpdate();
             invalidateCache();
             return true;
@@ -304,6 +313,11 @@ public class SkillRoutingMetadataRepository {
                 // 本实例 openGauss 将空字符串视为 NULL，NOT NULL DEFAULT '' 回填会报 "contains null values"，
                 // 因此 maintainer 用可空列，语义上仅作展示字段。
                 ensureColumn(c, "maintainer VARCHAR(128)");
+                // 分级关键词层层下钻 (2026/10/13): L1 最宽泛 → L3 最具体, keywords 仍为叶层;
+                // 存量行回填 '[]' 后走原单层语义, 行为不变。
+                ensureColumn(c, "level1_keywords TEXT NOT NULL DEFAULT '[]'");
+                ensureColumn(c, "level2_keywords TEXT NOT NULL DEFAULT '[]'");
+                ensureColumn(c, "level3_keywords TEXT NOT NULL DEFAULT '[]'");
                 tableEnsured = true;
             } catch (SQLException e) {
                 log.warn("skill_routing_metadata DDL failed (will retry): {}", e.getMessage());
@@ -332,7 +346,9 @@ public class SkillRoutingMetadataRepository {
                 parse(rs.getString("domain_tags")), parse(rs.getString("topic_tags")),
                 rs.getString("creator"),
                 rs.getBoolean("active"),
-                timestamp(rs.getTimestamp("updated_at")));
+                timestamp(rs.getTimestamp("updated_at")),
+                parse(rs.getString("level1_keywords")), parse(rs.getString("level2_keywords")),
+                parse(rs.getString("level3_keywords")));
     }
 
     private SkillRoutingMetadataView mapView(ResultSet rs) throws SQLException {
@@ -342,7 +358,10 @@ public class SkillRoutingMetadataRepository {
                 configured ? parse(rs.getString("keywords")) : List.of(), configured ? parse(rs.getString("domain_tags")) : List.of(),
                 configured ? parse(rs.getString("topic_tags")) : List.of(),
                 rs.getString("creator"),
-                !configured || rs.getBoolean("active"), timestamp(rs.getTimestamp("updated_at")), configured);
+                !configured || rs.getBoolean("active"), timestamp(rs.getTimestamp("updated_at")), configured,
+                configured ? parse(rs.getString("level1_keywords")) : List.of(),
+                configured ? parse(rs.getString("level2_keywords")) : List.of(),
+                configured ? parse(rs.getString("level3_keywords")) : List.of());
     }
 
     private List<String> parse(String value) {

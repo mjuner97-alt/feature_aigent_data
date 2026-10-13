@@ -156,9 +156,10 @@ class DimensionStateManagerEmbeddedAliasTest {
 
     @Test
     void productLineAliasAfterDeptPrefixIsStillSuppressed() {
-        // 非 TEAM 维度命中即使跟在部门名后也保持抑制（"个贷"是产品线别名修饰前缀）
+        // 非 TEAM 维度命中即使跟在部门名后也保持抑制（"个贷"是产品线别名修饰前缀）；
+        // §13.4 起部门前缀由 span 屏蔽剥离，组名不再携带部门前缀
         DimensionState.PeerDimension peer = analyzePeer("杭州开发三部个贷数据开发组的缺陷密度");
         assertEquals(PeerDimensionType.TEAM, peer.getType());
-        assertEquals(List.of("杭州开发三部个贷数据开发组"), peer.getValues());
+        assertEquals(List.of("个贷数据开发组"), peer.getValues());
     }
 }

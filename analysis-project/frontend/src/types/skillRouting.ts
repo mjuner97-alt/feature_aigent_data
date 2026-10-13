@@ -9,6 +9,9 @@ export interface SkillRoutingMetadata {
   active: boolean;
   updatedAt: string | null;
   configured: boolean;
+  level1Keywords: string[];
+  level2Keywords: string[];
+  level3Keywords: string[];
 }
 
 export interface SkillRoutingInput {
@@ -17,4 +20,7 @@ export interface SkillRoutingInput {
   domainTags: string[];
   topicTags: string[];
   active: boolean;
+  level1Keywords: string[];
+  level2Keywords: string[];
+  level3Keywords: string[];
 }

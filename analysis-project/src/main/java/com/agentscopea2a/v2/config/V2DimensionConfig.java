@@ -21,14 +21,17 @@ import com.agentscopea2a.v2.dimension.DimensionStateManager;
 import com.agentscopea2a.v2.dimension.LlmDimensionService;
 import com.agentscopea2a.v2.dimension.OpenAILlmDimensionService;
 import com.agentscopea2a.v2.middleware.DimensionStateMiddleware;
+import com.agentscopea2a.v2.toolrouting.ToolRoutingCatalogService;
 import io.agentscope.core.model.Model;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import javax.sql.DataSource;
+import java.util.Set;
 
 /**
  * v2 维度状态配置。
@@ -57,8 +60,21 @@ public class V2DimensionConfig {
 
     @Bean
     public DimensionStateManager dimensionStateManager(
-            LlmDimensionService llmService, AliasResolver aliasResolver) {
-        return new DimensionStateManager(llmService, aliasResolver);
+            LlmDimensionService llmService,
+            AliasResolver aliasResolver,
+            ObjectProvider<ToolRoutingCatalogService> catalogProvider) {
+        // §13.4 组名修剪指标词表：目录 bean 缺失或快照失败时降级为空表（只修剪虚词）
+        return new DimensionStateManager(llmService, aliasResolver, () -> {
+            ToolRoutingCatalogService svc = catalogProvider.getIfAvailable();
+            if (svc == null) {
+                return Set.of();
+            }
+            try {
+                return svc.snapshot().metricTags();
+            } catch (RuntimeException e) {
+                return Set.of();
+            }
+        });
     }
 
     /**

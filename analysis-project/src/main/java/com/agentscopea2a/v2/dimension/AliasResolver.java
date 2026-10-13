@@ -156,6 +156,27 @@ public class AliasResolver {
         return java.util.Optional.empty();
     }
 
+    /**
+     * 候选是否是词表已登记的小组标准名或别名（§13.4 组名修剪守卫）：
+     * 整段 token 已知时不修剪，防"质量保障组"这类含指标词的真组名被误剪。
+     */
+    public boolean knowsTeamStandard(String candidate) {
+        if (candidate == null || candidate.isEmpty()) {
+            return false;
+        }
+        for (List<Entry> group : snapshot()) {
+            for (Entry e : group) {
+                if (e.dimension() != PeerDimensionType.TEAM) {
+                    continue;
+                }
+                if (candidate.equals(e.standardName()) || candidate.equals(e.alias())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private void resolveSpan(
             String question, List<Hit> sameSpan,
             List<ResolvedAlias> resolved, List<AmbiguousAlias> ambiguous) {

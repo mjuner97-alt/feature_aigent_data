@@ -57,7 +57,9 @@ public class SkillRoutingMetadataAdminService {
         assertOwner(creator, userId);
         SkillRoutingMetadata metadata = new SkillRoutingMetadata(skillName, summary,
                 cleanTags(input.keywords()), cleanTags(input.domainTags()), cleanTags(input.topicTags()),
-                creator, input.active(), null);
+                creator, input.active(), null,
+                cleanTags(input.level1Keywords()), cleanTags(input.level2Keywords()),
+                cleanTags(input.level3Keywords()));
         assertNotHighSkillOverlap(metadata);
         if (!repository.upsert(metadata)) throw new IllegalStateException("RoutingConfigSaveFailed");
         invalidateOverlapCache();
@@ -94,7 +96,8 @@ public class SkillRoutingMetadataAdminService {
     public SkillRoutingMetadataView setActive(String skillName, boolean active, String userId) {
         SkillRoutingMetadataView current = get(skillName);
         SkillRoutingMetadataInput input = new SkillRoutingMetadataInput(current.shortSummary(), current.keywords(),
-                current.domainTags(), current.topicTags(), active);
+                current.domainTags(), current.topicTags(), active,
+                current.level1Keywords(), current.level2Keywords(), current.level3Keywords());
         save(skillName, input, userId);
         return get(skillName);
     }
@@ -125,9 +128,32 @@ public class SkillRoutingMetadataAdminService {
 
     private static List<String> cleanTags(List<String> values) {
         if (values == null) return List.of();
-        return values.stream().filter(v -> v != null).flatMap(v -> TAG_SEPARATOR.splitAsStream(v))
+        return values.stream().filter(v -> v != null).flatMap(SkillRoutingMetadataAdminService::splitAwareOfRegexBraces)
                 .map(String::trim).filter(v -> !v.isEmpty()).distinct()
                 .peek(v -> { if (v.length() > 128) throw new IllegalArgumentException("TagTooLong: max 128"); })
                 .toList();
+    }
+
+    /**
+     * 括号感知切分: 正则量词 {@code {1,3}} 内的逗号不作为分隔符, 否则
+     * {@code 未闭环.{1,3}问题} 会被切成两段破坏正则语义。
+     */
+    private static java.util.stream.Stream<String> splitAwareOfRegexBraces(String value) {
+        StringBuilder buffer = new StringBuilder();
+        java.util.List<String> parts = new java.util.ArrayList<>();
+        int braceDepth = 0;
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (ch == '{') braceDepth++;
+            if (ch == '}') braceDepth = Math.max(0, braceDepth - 1);
+            if (braceDepth == 0 && TAG_SEPARATOR.matcher(String.valueOf(ch)).matches()) {
+                if (buffer.length() > 0) parts.add(buffer.toString());
+                buffer.setLength(0);
+            } else {
+                buffer.append(ch);
+            }
+        }
+        if (buffer.length() > 0) parts.add(buffer.toString());
+        return parts.stream();
     }
 }
