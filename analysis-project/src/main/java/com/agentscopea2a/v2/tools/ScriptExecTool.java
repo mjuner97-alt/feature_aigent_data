@@ -846,7 +846,7 @@ public class ScriptExecTool {
             try {
                 String shortCode = downloadContentService.create(content, filename, mimeType);
                 String url = downloadContentService.buildDownloadUrl(shortCode);
-                out.add("📥 <!DOCTYPE html>");
+                out.add("<!DOCTYPE html>");
                 out.add("<html>");
                 out.add("<head>");
                 out.add("    <title></title>");

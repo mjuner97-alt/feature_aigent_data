@@ -158,7 +158,21 @@ question
 - param_mapping 用后缀键：`{"startDate": "timeRange.start", "endDate": "timeRange.end"}`；
 - `valuesFor()` 特判前缀 `timeRange.`：解析锚点 → 取**第一个**锚点的 start/end
   （多范围对比不支持，单值 String 传参；多锚点即多值 List 的场景记为边界，先不支持）；
-- `activeKeys()` 透出 `timeRange.start` / `timeRange.end` 后缀形态，供下拉与保存校验。
+- `activeKeys()` 透出 `timeRange.start` / `timeRange.end` 后缀形态，供下拉与保存校验；
+- **裸键 `timeRange`**：传锚点原词（不解析日期）。单锚点 → String，多锚点 → List。
+  适用：脚本自己换算日期（业务口径的"周"）、为 `LAST:{n}V/Q` 预留（锚点透传脚本，
+  口径确定后 param_mapping 不改）、多范围对比场景。两类键可同时配在同一个 skill。
+
+**绑定示例**（param_mapping `{"range":"timeRange"}` vs `{"startDate":"timeRange.start","endDate":"timeRange.end"}`）：
+
+| 问题 | 裸键 `range` 收到 | 后缀键收到 |
+|---|---|---|
+| 本周的缺陷数 | `range="THIS_WEEK"` | `startDate=本周一, endDate=今天` |
+| 10月1日到10月15日的缺陷数 | `range="DATE:2026-10-01~2026-10-15"` | `startDate=2026-10-01, endDate=2026-10-15` |
+| 本周和前一周的对比 | `range=["THIS_WEEK","LAST_WEEK"]` | 第一个范围：`startDate=本周一, endDate=今天` |
+
+选型：脚本参数是日期字段 → 后缀键（Java 算好，推荐默认）；脚本参数是一个时间范围
+字段且愿意自己解析锚点 → 裸键。
 
 #### 6.1.7 改动清单
 
@@ -167,9 +181,11 @@ question
   循环跳过该键）、`valuesFor` 加 `.start/.end` 后缀特判、`activeKeys` 加后缀形态；
 - `DimensionKeyConfigRepository`：seed 补 timeRange 行 + 保留键清单；
 - `DimensionKeyController`/`SkillRoutingMetadataAdminService`：保存期锚点白名单校验；
-- ResponseCache：timeRange 命中绕过或指纹强化（拍板点②）；
-- 前端零改动（非 builtin，下拉/编辑复用现状）；`DIRECT_EXEC_DIMENSION_KEYS` fallback
-  枚举不含 timeRange 可接受（fallback 仅字典库挂掉时兜底）。
+- ResponseCache：timeRange 命中绕过（拍板②，ResponseCacheMiddleware 加
+  DimensionKeyConfigRepository 可选依赖，containsTimeRangePhrase 命中即不读不写）；
+- 前端微改（实施修订）：`SkillRoutingConfigPage.vue` 下拉动态加载后，timeRange 行启用时
+  追加 `timeRange.start/.end` 两个选项（~5 行）；字典接口挂掉时的
+  `DIRECT_EXEC_DIMENSION_KEYS` fallback 枚举不含 timeRange 可接受。
 
 #### 6.1.8 测试要点
 
