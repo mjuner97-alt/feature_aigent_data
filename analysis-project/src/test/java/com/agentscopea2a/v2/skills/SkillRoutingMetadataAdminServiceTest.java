@@ -25,12 +25,15 @@ class SkillRoutingMetadataAdminServiceTest {
     private final SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
     private final com.agentscopea2a.v2.governance.SkillSkillOverlapService skillSkillOverlapService =
             mock(com.agentscopea2a.v2.governance.SkillSkillOverlapService.class);
+    @SuppressWarnings("unchecked")
+    private final org.springframework.beans.factory.ObjectProvider<com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository> dimensionKeyRepoProvider =
+            mock(org.springframework.beans.factory.ObjectProvider.class);
     private final SkillRoutingMetadataAdminService service =
             new SkillRoutingMetadataAdminService(repository, null, skillSkillOverlapService,
-                    new com.agentscopea2a.v2.auth.service.AdminRoleService("", false));
+                    new com.agentscopea2a.v2.auth.service.AdminRoleService("", false), dimensionKeyRepoProvider);
     private final SkillRoutingMetadataAdminService prodService =
             new SkillRoutingMetadataAdminService(repository, null, skillSkillOverlapService,
-                    new com.agentscopea2a.v2.auth.service.AdminRoleService("admin:secret1", true));
+                    new com.agentscopea2a.v2.auth.service.AdminRoleService("admin:secret1", true), dimensionKeyRepoProvider);
 
     @Test
     void saveNormalizesAndDeduplicatesTags() {
@@ -96,6 +99,31 @@ class SkillRoutingMetadataAdminServiceTest {
 
     private static SkillRoutingMetadataInput emptyInput() {
         return new SkillRoutingMetadataInput("summary", List.of(), List.of(), List.of(), true);
+    }
+
+    @Test
+    void saveAcceptsDynamicDimensionKeyFromDictionaryAndRejectsUnknown() {
+        com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository keyRepo =
+                mock(com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository.class);
+        when(keyRepo.findAllEnabled()).thenReturn(List.of(
+                new com.agentscopea2a.v2.dimension.DimensionKeyConfig(9L, "qGate", "卡口",
+                        false, List.of(), true, null)));
+        when(dimensionKeyRepoProvider.getIfAvailable()).thenReturn(keyRepo);
+        when(repository.skillExists("q2_skill")).thenReturn(true);
+        when(repository.creatorForSkill("q2_skill")).thenReturn("admin");
+        when(repository.upsert(any())).thenReturn(true);
+
+        SkillRoutingMetadata result = service.save("q2_skill", new SkillRoutingMetadataInput(
+                "summary", List.of(), List.of(), List.of(), true,
+                List.of(), List.of(), List.of(), "script_a", java.util.Map.of("gate", "qGate")), "admin");
+        org.junit.jupiter.api.Assertions.assertEquals("{\"gate\":\"qGate\"}", result.paramMapping());
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> service.save("q2_skill", new SkillRoutingMetadataInput(
+                        "summary", List.of(), List.of(), List.of(), true,
+                        List.of(), List.of(), List.of(), "script_a", java.util.Map.of("gate", "notAKey")), "admin"));
+        assertTrue(error.getMessage().startsWith("ParamMappingInvalidDimension"));
+        assertTrue(error.getMessage().contains("qGate"));
     }
 
     private static com.agentscopea2a.v2.governance.SkillSkillOverlapView highView(

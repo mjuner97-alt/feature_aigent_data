@@ -48,9 +48,12 @@ public class SkillRoutingMetadataController {
     }
 
     @PutMapping("/{skillName}")
-    public SkillRoutingMetadata save(@PathVariable String skillName, @RequestBody SkillRoutingMetadataInput input,
-                                     @RequestHeader(value = "X-User-Id", required = false) String userId) {
-        return service.save(skillName, input, userId);
+    public SkillRoutingMetadataView save(@PathVariable String skillName, @RequestBody SkillRoutingMetadataInput input,
+                                         @RequestHeader(value = "X-User-Id", required = false) String userId) {
+        // 返回解析后的 View (paramMapping 为 Map): record 的 paramMapping 是原始 JSON 字符串,
+        // 前端把它 spread 回行数据后 Object.entries(字符串) 会按字符下标炸开
+        service.save(skillName, input, userId);
+        return service.get(skillName);
     }
 
     @PatchMapping("/{skillName}/active")

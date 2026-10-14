@@ -13,6 +13,7 @@ const nav = [
   { to: '/script-registry/tool-routing', label: '工具路由' },
   { to: '/script-registry/overlap', label: '重叠检测' },
   { to: '/script-registry/dimension-alias', label: '维度同义词' },
+  { to: '/script-registry/dimension-key', label: '维度键字典' },
 ];
 </script>
 

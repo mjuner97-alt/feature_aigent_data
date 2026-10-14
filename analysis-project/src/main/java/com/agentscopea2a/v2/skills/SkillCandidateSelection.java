@@ -7,9 +7,17 @@ public record SkillCandidateSelection(
         List<String> skillNames,
         boolean explicitNameMatched,
         boolean confident,
-        boolean fallbackExpanded) {
+        boolean fallbackExpanded,
+        List<String> matchedKeywords) {
 
     public SkillCandidateSelection {
         skillNames = skillNames == null ? List.of() : List.copyOf(skillNames);
+        matchedKeywords = matchedKeywords == null ? List.of() : List.copyOf(matchedKeywords);
+    }
+
+    /** Legacy 4-arg shape (no matched keywords) for existing call sites. */
+    public SkillCandidateSelection(List<String> skillNames, boolean explicitNameMatched,
+                                   boolean confident, boolean fallbackExpanded) {
+        this(skillNames, explicitNameMatched, confident, fallbackExpanded, List.of());
     }
 }

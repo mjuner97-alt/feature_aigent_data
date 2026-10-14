@@ -146,7 +146,9 @@ public class SkillRoutingStartupAudit implements ApplicationRunner {
             }
             boolean updated = metadataRepository.upsert(new SkillRoutingMetadata(
                     meta.skillName(), meta.shortSummary(), meta.keywords(), meta.domainTags(),
-                    meta.topicTags(), meta.creator(), false, null));
+                    meta.topicTags(), meta.creator(), false, null,
+                    meta.level1Keywords(), meta.level2Keywords(), meta.level3Keywords(),
+                    meta.scriptId(), meta.paramMapping()));
             if (updated) {
                 deactivated.add(loser);
                 log.warn("SkillRoutingStartupAudit: [skill_overlap] Skill {} 与 {} 功能重复, "

@@ -22,6 +22,7 @@ import {
   getSkillPublishes,
 } from '../api/skill';
 import type { SkillInput, PublishTargetGroup } from '../types/skill';
+import { isAdmin } from '../utils/auth';
 import { listMetrics } from '../api/skillDependencyMetric';
 import type { SkillDependencyMetric } from '../types/skillJob';
 
@@ -95,8 +96,8 @@ async function loadForEdit(id: number) {
       content: s.content ?? '',
       defaultMetricIds: s.defaultMetricIds || [],
     };
-    // 后端 update 做 owner 校验,前端先挡一道:非所有者只读
-    if (s.ownerUserId !== currentUserId()) notOwner.value = true;
+    // 后端 update 做 owner 校验,前端先挡一道:非所有者只读(管理员放行,与后端 assertOwner 口径一致)
+    if (s.ownerUserId !== currentUserId() && !isAdmin()) notOwner.value = true;
     // 加载已有发布记录,展示当前维度
     try {
       const publishes = await getSkillPublishes(id);

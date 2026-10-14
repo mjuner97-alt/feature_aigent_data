@@ -202,6 +202,9 @@ public interface SkillMapper {
 
     List<SkillPublish> selectPendingPublishByApprover(@Param("approverUserId") String approverUserId);
 
+    /** 全部待审发布(管理员审批视图,不按审批人过滤)。 */
+    List<SkillPublish> selectAllPendingPublishes();
+
     /** 查询指定审批人处理过的发布记录(APPROVED/REJECTED,按 approver 字段匹配)。 */
     List<SkillPublish> selectHistoryByApprover(@Param("approverUserId") String approverUserId);
 

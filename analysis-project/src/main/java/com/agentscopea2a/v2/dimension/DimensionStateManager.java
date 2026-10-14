@@ -24,9 +24,11 @@ import reactor.core.publisher.Mono;
 
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -62,6 +64,11 @@ public class DimensionStateManager {
     private final LlmDimensionService llmService;
     /** 同义词表解析器，null 时退化为纯正则（原行为） */
     private final AliasResolver aliasResolver;
+    /**
+     * 指标词表（tool_metric_catalog.metricTags 快照），§13.4 组名候选左侧修剪用；
+     * null 或取词失败时只修剪虚词。
+     */
+    private final Supplier<Set<String>> metricWordsSupplier;
     private DimensionState currentState;
 
     /**
@@ -78,15 +85,26 @@ public class DimensionStateManager {
      * @param llmService LLM 维度分析服务，可为 null（仅 {@link #updateFromAnswer} 需要）
      */
     public DimensionStateManager(LlmDimensionService llmService) {
-        this(llmService, null);
+        this(llmService, null, null);
     }
 
     /**
      * @param aliasResolver 同义词表解析器，可为 null（null 时口语化词识别关闭，仅正则兜底）
      */
     public DimensionStateManager(LlmDimensionService llmService, AliasResolver aliasResolver) {
+        this(llmService, aliasResolver, null);
+    }
+
+    /**
+     * @param metricWordsSupplier 指标词表供给器，可为 null（组名修剪只去虚词）
+     */
+    public DimensionStateManager(
+            LlmDimensionService llmService,
+            AliasResolver aliasResolver,
+            Supplier<Set<String>> metricWordsSupplier) {
         this.llmService = llmService;
         this.aliasResolver = aliasResolver;
+        this.metricWordsSupplier = metricWordsSupplier;
     }
 
     // ==================== v2 状态持久化 ====================
@@ -154,6 +172,16 @@ public class DimensionStateManager {
             String enrichedQuestion,
             DimensionState newState,
             List<AliasResolver.ResolvedAlias> resolvedAliases) {}
+
+    /**
+     * 只读预览: 规则分析 + 从给定上一轮状态继承维度, 不写 ctx 也不碰单例 currentState。
+     * 供 Skill 直接执行的 plan() 判定做参数预填; 是否正式写状态由调用方决定
+     * (决定短路后才调 processQuestionInContext, 避免回退 LLM 时状态被解析两次)。
+     */
+    public DimensionState previewState(String userQuestion, DimensionState previousState) {
+        QuestionAnalysis analysis = analyzeQuestionRuleBased(userQuestion);
+        return inheritDimensions(previousState, analysis);
+    }
 
     // ==================== 核心流程 ====================
 
@@ -283,6 +311,104 @@ public class DimensionStateManager {
                             + "|全球市场风险管理应用|金融市场共享数据服务)");
     // 需求项:之前抽的是"XX需求项"前 2 字,真正的 itemNo 格式如 I20260208-0005 反而没匹配
     private static final Pattern EXPLICIT_REQUIREMENT = Pattern.compile("(I\\d{8}-\\d{4})");
+
+    // ---- §13.4 标准格式感知的分段抽取（docs/history/dimension-alias-config-plan.md）----
+
+    /** 屏蔽占位符：不在小组/产品线正则字符类 [一-龥A-Za-z0-9] 内，等长替换保偏移 */
+    private static final char MASK_CHAR = '';
+
+    /**
+     * 第一遍占位用的时间宽形态（比归一化用的 EXPLICIT_VERSION/QUARTER 宽）：
+     * "26年10月版" / "10月份版本" / "3季度" / "Q1" 都算时间 span，仅屏蔽不产出
+     * （归一化仍由既有正则负责，避免指纹规则变化）。
+     */
+    private static final Pattern TIME_MASK_SPAN = Pattern.compile(
+            "(?:(?:\\d{4}|\\d{2})年)?\\d{1,2}月份?(?:版本?)?|(?:(?:\\d{4}|\\d{2})年)?[一二三四1-4]季度|(?:Q|q)[1-4]");
+
+    /** 组名候选左侧修剪虚词表：仅修剪 token 开头（"的质量xxx组" → "xxx组"） */
+    private static final String TOKEN_LEADING_STOP = "的了是在有和与及为对按等把到从比跟由向着于";
+
+    /**
+     * 第一遍：识别标准格式 span（时间/部门/应用/需求项），等长掩码替换。
+     * 掩码后组名正则不再吞 "10月" 与部门前缀——"杭州三部数据智能组" 的前缀剥离
+     * 由部门 span 占用自然达成，产出 TEAM=数据智能组 + DEPT=杭州开发三部。
+     */
+    private static String buildMaskedQuestion(String q) {
+        List<int[]> spans = new ArrayList<>();
+        collectSpans(q, TIME_MASK_SPAN, spans);
+        collectSpans(q, EXPLICIT_DEPT, spans);
+        collectSpans(q, EXPLICIT_APP, spans);
+        collectSpans(q, EXPLICIT_REQUIREMENT, spans);
+        if (spans.isEmpty()) {
+            return q;
+        }
+        spans.sort(Comparator.comparingInt(s -> s[0]));
+        char[] chars = q.toCharArray();
+        int lastEnd = -1;
+        for (int[] s : spans) {
+            if (s[0] < lastEnd) {
+                continue;
+            }
+            for (int i = s[0]; i < s[1]; i++) {
+                chars[i] = MASK_CHAR;
+            }
+            lastEnd = s[1];
+        }
+        return new String(chars);
+    }
+
+    private static void collectSpans(String q, Pattern p, List<int[]> out) {
+        Matcher m = p.matcher(q);
+        while (m.find()) {
+            out.add(new int[] {m.start(), m.end()});
+        }
+    }
+
+    /**
+     * 第二遍：屏蔽文本上找组名 token；候选左侧修剪（虚词逐字、指标词整词）；
+     * 屏蔽后无命中或修剪失败（剩余 <2 字符）回退原文匹配（拆分失败维持原行为）。
+     */
+    private String findTeamToken(String q, String masked) {
+        Matcher maskedMatcher = EXPLICIT_TEAM.matcher(masked);
+        if (maskedMatcher.find()) {
+            return trimTeamToken(q, maskedMatcher.start(), maskedMatcher.end());
+        }
+        Matcher rawMatcher = EXPLICIT_TEAM.matcher(q);
+        return rawMatcher.find() ? rawMatcher.group(1) : null;
+    }
+
+    /**
+     * 组名候选左侧修剪。整段 token 是词表已知的小组标准名/别名时不修剪，
+     * 防"质量保障组"这类含指标词的真组名被误剪（词表没登记的真组名靠
+     * 工具层 deptGroupCheck 兜底，残余风险见 §13.4 边缘规则）。
+     */
+    private String trimTeamToken(String q, int start, int end) {
+        String token = q.substring(start, end);
+        if (aliasResolver != null && aliasResolver.knowsTeamStandard(token)) {
+            return token;
+        }
+        Set<String> metricWords =
+                metricWordsSupplier != null ? metricWordsSupplier.get() : Set.of();
+        int s = start;
+        boolean progress = true;
+        while (progress && end - s >= 2) {
+            progress = false;
+            if (TOKEN_LEADING_STOP.indexOf(q.charAt(s)) >= 0) {
+                s++;
+                progress = true;
+                continue;
+            }
+            for (String w : metricWords) {
+                if (w != null && w.length() >= 2 && q.startsWith(w, s) && end - (s + w.length()) >= 2) {
+                    s += w.length();
+                    progress = true;
+                    break;
+                }
+            }
+        }
+        String trimmed = q.substring(s, end);
+        return trimmed.length() >= 2 && trimmed.endsWith("组") ? trimmed : token;
+    }
 
     public QuestionAnalysis analyzeQuestionRuleBased(String userQuestion) {
         QuestionAnalysis analysis = new QuestionAnalysis();
@@ -449,31 +575,40 @@ public class DimensionStateManager {
         }
 
         // 组正则兜底（alias 完全未命中时才跑，防止"风险组"这类歧义词被小组正则抢注）
-        // — 排除指代词匹配（"这个组"、"那个组"）
+        // — §13.4 两遍抽取：先屏蔽时间/部门/应用/需求项 span 再找组名，
+        //   部门前缀剥离由 span 占用自然达成（"杭州三部数据智能组"→数据智能组）；
+        //   排除指代词匹配（"这个组"、"那个组"）
         if (explicit.getPeerDimension() == null && !aliasHit(aliasRes)) {
-            Matcher teamMatcher = EXPLICIT_TEAM.matcher(q);
-            if (teamMatcher.find()) {
-                String matched = teamMatcher.group(1);
-                if (!matched.startsWith("这个") && !matched.startsWith("那个")) {
-                    explicit.setPeerDimension(
-                            new DimensionState.PeerDimension(
-                                    DimensionState.PeerDimensionType.TEAM,
-                                    List.of(teamMatcher.group())));
-                }
+            String masked = buildMaskedQuestion(q);
+            String teamToken = findTeamToken(q, masked);
+            if (teamToken != null && !teamToken.startsWith("这个") && !teamToken.startsWith("那个")) {
+                explicit.setPeerDimension(
+                        new DimensionState.PeerDimension(
+                                DimensionState.PeerDimensionType.TEAM,
+                                List.of(teamToken)));
             }
         }
 
-        // 产品线（优先级低于组和应用）— 同上，alias 命中时跳过；排除指代词匹配
+        // 产品线（优先级低于组和应用）— 同上，alias 命中时跳过；屏蔽文本匹配避免
+        // 时间/部门 span 干扰（"三部10月的质量" 不再把"10月"吃进产品线候选），
+        // 屏蔽后无命中回退原文；排除指代词匹配
         if (explicit.getPeerDimension() == null && !aliasHit(aliasRes)) {
-            Matcher plMatcher = EXPLICIT_PRODUCT_LINE.matcher(q);
+            String maskedPl = buildMaskedQuestion(q);
+            Matcher plMatcher = EXPLICIT_PRODUCT_LINE.matcher(maskedPl);
+            String plMatched = null;
             if (plMatcher.find()) {
-                String matched = plMatcher.group(1);
-                if (!matched.startsWith("这个") && !matched.startsWith("那个")) {
-                    explicit.setPeerDimension(
-                            new DimensionState.PeerDimension(
-                                    DimensionState.PeerDimensionType.PRODUCT_LINE,
-                                    List.of(plMatcher.group())));
+                plMatched = plMatcher.group(1);
+            } else {
+                Matcher rawPlMatcher = EXPLICIT_PRODUCT_LINE.matcher(q);
+                if (rawPlMatcher.find()) {
+                    plMatched = rawPlMatcher.group(1);
                 }
+            }
+            if (plMatched != null && !plMatched.startsWith("这个") && !plMatched.startsWith("那个")) {
+                explicit.setPeerDimension(
+                        new DimensionState.PeerDimension(
+                                DimensionState.PeerDimensionType.PRODUCT_LINE,
+                                List.of(plMatched)));
             }
         }
 
