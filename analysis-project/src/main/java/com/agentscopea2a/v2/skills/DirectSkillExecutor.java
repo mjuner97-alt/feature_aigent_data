@@ -14,6 +14,8 @@ import com.agentscopea2a.v2.dimension.DimensionKeyConfig;
 import com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository;
 import com.agentscopea2a.v2.dimension.DimensionState;
 import com.agentscopea2a.v2.dimension.DimensionStateManager;
+import com.agentscopea2a.v2.dimension.TimeRangeExtractor;
+import com.agentscopea2a.v2.dimension.TimeRangeResolver;
 import com.agentscopea2a.v2.hooks.VersionPlanKnowledgeHook;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -263,6 +265,10 @@ public class DirectSkillExecutor {
     /**
      * 动态维度键提取 (§9): dimension_key_config 启用键的词表对问题做 contains 扫描,
      * alias 命中 → 收集标准值 (去重保序)。仅当前问题提取, 不跨轮继承 (§9.1 拍板)。
+     *
+     * <p>例外: {@code timeRange} 保留键走时间范围提取 (L1 绝对区间正则 + L2 词表最长匹配),
+     * 值为语义锚点 (docs/history/dimension-key-dynamic-dimension-plan.md §6.1),
+     * 执行期由 {@code valuesFor} 经 TimeRangeResolver 解析为 start/end。
      */
     private Map<String, List<String>> extractExtraDimensions(String question) {
         DimensionKeyConfigRepository repo = dimensionKeyRepoProvider.getIfAvailable();
@@ -281,6 +287,13 @@ public class DirectSkillExecutor {
             if (config.builtin() || config.aliases().isEmpty()) {
                 continue; // 内置键走结构化规则提取
             }
+            if (TimeRangeResolver.RESERVED_KEY.equals(config.key())) {
+                List<String> anchors = TimeRangeExtractor.extract(question, config.aliases());
+                if (!anchors.isEmpty()) {
+                    extra.put(config.key(), anchors);
+                }
+                continue;
+            }
             List<String> values = new ArrayList<>();
             for (DimensionKeyConfig.AliasMapping alias : config.aliases()) {
                 if (!alias.valid()) continue;
@@ -295,7 +308,8 @@ public class DirectSkillExecutor {
         return extra;
     }
 
-    /** 合法维度键全集 = 内置 8 键 ∪ 字典启用键 (管理页下拉/保存校验同源)。 */
+    /** 合法维度键全集 = 内置 8 键 ∪ 字典启用键 (timeRange 追加 .start/.end 后缀形态),
+     *  管理页下拉/保存校验同源。 */
     public java.util.LinkedHashSet<String> activeKeys() {
         java.util.LinkedHashSet<String> keys = new java.util.LinkedHashSet<>(DIMENSION_KEYS);
         DimensionKeyConfigRepository repo = dimensionKeyRepoProvider.getIfAvailable();
@@ -306,10 +320,12 @@ public class DirectSkillExecutor {
                 log.warn("DirectSkillExecutor: 维度键字典读取失败, 仅内置键可用: {}", e.getMessage());
             }
         }
-        return keys;
+        return TimeRangeResolver.expandKeys(keys);
     }
 
-    /** 维度键 → 提取体取值; vestQuarter 在版本已给出时优先从版本推算 (口径一致)。 */
+    /** 维度键 → 提取体取值; vestQuarter 在版本已给出时优先从版本推算 (口径一致)。
+     *  timeRange 后缀键解析锚点取第一个范围 (多范围对比不支持, §6.1.6);
+     *  不可解析锚点返回空 → 参数不传 → 必填缺失回退 LLM (fail-safe)。 */
     private static List<String> valuesFor(DimensionExtraction extraction, String key) {
         return switch (key == null ? "" : key) {
             case "versionPlan" -> extraction.versionPlan();
@@ -322,8 +338,29 @@ public class DirectSkillExecutor {
             case "productLine" -> extraction.productLine();
             case "itemNo" -> extraction.itemNo();
             case "perName" -> extraction.perName();
+            case TimeRangeResolver.RESERVED_KEY -> extraction.extraDimensions()
+                    .getOrDefault(TimeRangeResolver.RESERVED_KEY, List.of());
+            case TimeRangeResolver.KEY_START, TimeRangeResolver.KEY_END ->
+                    timeRangeEdge(extraction.extraDimensions(),
+                            TimeRangeResolver.KEY_END.equals(key));
             default -> extraction.extraDimensions().getOrDefault(key == null ? "" : key, List.of());
         };
+    }
+
+    /** 解析 timeRange 锚点列表的第一个范围, 取 start 或 end (ISO 日期字符串)。 */
+    private static List<String> timeRangeEdge(Map<String, List<String>> extraDimensions,
+                                              boolean end) {
+        List<String> anchors = extraDimensions.getOrDefault(TimeRangeResolver.RESERVED_KEY, List.of());
+        if (anchors.isEmpty()) {
+            return List.of();
+        }
+        String[] range = anchors.get(0).startsWith("DATE:")
+                ? TimeRangeResolver.resolveDateRange(anchors.get(0))
+                : TimeRangeResolver.resolve(anchors.get(0), java.time.LocalDate.now(TimeRangeResolver.ZONE));
+        if (range == null) {
+            return List.of();
+        }
+        return List.of(end ? range[1] : range[0]);
     }
 
     /** 时间维度缺省补当前在建版本 (拍板); 其他维度无默认 → null。 */

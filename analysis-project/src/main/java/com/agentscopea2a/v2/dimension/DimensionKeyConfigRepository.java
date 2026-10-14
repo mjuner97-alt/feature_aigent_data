@@ -49,6 +49,21 @@ public class DimensionKeyConfigRepository {
         return java.util.Collections.unmodifiableMap(keys);
     }
 
+    /**
+     * timeRange 保留键 seed（docs/history/dimension-key-dynamic-dimension-plan.md §6.1.4）。
+     * 非 builtin（词表须管理员可扩），值为语义锚点，执行期解析 start/end；
+     * DELETE 是软删（行保留 enabled=false），存在性补种只认"完全无行"——软删不会复活。
+     */
+    private static final String RESERVED_TIME_RANGE_KEY = TimeRangeResolver.RESERVED_KEY;
+    private static final String TIME_RANGE_ALIASES_SEED =
+            "[{\"alias\":\"本周\",\"value\":\"THIS_WEEK\"},"
+                    + "{\"alias\":\"上周\",\"value\":\"LAST_WEEK\"},"
+                    + "{\"alias\":\"前一周\",\"value\":\"LAST_WEEK\"},"
+                    + "{\"alias\":\"近一周\",\"value\":\"LAST:7d\"},"
+                    + "{\"alias\":\"最近一周\",\"value\":\"LAST:7d\"},"
+                    + "{\"alias\":\"近7天\",\"value\":\"LAST:7d\"},"
+                    + "{\"alias\":\"近30天\",\"value\":\"LAST:30d\"}]";
+
     private final DataSource dataSource;
     private final ObjectMapper objectMapper;
     private final long cacheTtlMillis;
@@ -219,11 +234,37 @@ public class DimensionKeyConfigRepository {
                     createTable(c);
                     seed(c);
                 }
+                ensureReservedRow(c);
                 tableEnsured = true;
             } catch (SQLException e) {
                 log.warn("dimension_key_config DDL failed (will retry): {}", e.getMessage());
             }
         }
+    }
+
+    /** timeRange 行存在性补种（建表时与存量表都执行）：完全无该 key 的行才插入；
+     *  软删行（enabled=false）视为存在，不复活（删/停用=关功能）。 */
+    private void ensureReservedRow(Connection c) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT 1 FROM dimension_key_config WHERE key=? LIMIT 1")) {
+            ps.setString(1, RESERVED_TIME_RANGE_KEY);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return;
+                }
+            }
+        }
+        String sql = "INSERT INTO dimension_key_config (key, label, builtin, aliases, enabled, remark) "
+                + "VALUES (?, ?, FALSE, ?, TRUE, ?)";
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, RESERVED_TIME_RANGE_KEY);
+            ps.setString(2, "时间范围");
+            ps.setString(3, TIME_RANGE_ALIASES_SEED);
+            ps.setString(4, "时间范围键：绝对区间正则+词表锚点，执行期解析 start/end"
+                    + "（docs/history/dimension-key-dynamic-dimension-plan.md §6.1）");
+            ps.executeUpdate();
+        }
+        log.info("dimension_key_config: seeded reserved key '{}'", RESERVED_TIME_RANGE_KEY);
     }
 
     /** 通过探测查询判存，避免依赖 openGauss 的 information_schema 方言差异。 */

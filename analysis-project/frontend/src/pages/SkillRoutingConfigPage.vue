@@ -33,8 +33,14 @@ onMounted(async () => {
   try {
     const keys = await listDimensionKeys();
     if (keys.length) {
-      dimensionKeyOptions.value = keys.filter(k => k.enabled)
+      const options = keys.filter(k => k.enabled)
         .map(k => ({ key: k.key, label: k.builtin ? k.label : `${k.label} (${k.key})` }));
+      // timeRange 保留键透出 start/end 后缀形态 (后端 valuesFor/保存校验同源支持)
+      if (keys.some(k => k.enabled && k.key === 'timeRange')) {
+        options.push({ key: 'timeRange.start', label: '时间范围-开始 (timeRange.start)' });
+        options.push({ key: 'timeRange.end', label: '时间范围-结束 (timeRange.end)' });
+      }
+      dimensionKeyOptions.value = options;
     }
   } catch { /* 字典接口不可用时回退静态枚举 */ }
 });

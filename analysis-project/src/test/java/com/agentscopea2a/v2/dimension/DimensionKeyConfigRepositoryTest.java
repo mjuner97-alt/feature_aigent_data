@@ -49,10 +49,57 @@ class DimensionKeyConfigRepositoryTest {
         assertTrue(ddl.getAllValues().get(1).contains("CREATE TABLE IF NOT EXISTS dimension_key_config"));
         verify(seedPs, times(8)).addBatch();
         ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
-        verify(seedPs, times(8)).setString(org.mockito.ArgumentMatchers.eq(1), key.capture());
+        // setString(1, ...) 共 9 次: 8 个内置键 seed + timeRange 保留键存在性补种 INSERT
+        verify(seedPs, times(9)).setString(org.mockito.ArgumentMatchers.eq(1), key.capture());
         assertTrue(key.getAllValues().contains("versionPlan"));
         assertTrue(key.getAllValues().contains("perName"));
         assertFalse(key.getAllValues().contains("qGate")); // qGate 是用户新增键, 不在 seed 里
+        assertTrue(key.getAllValues().contains("timeRange")); // timeRange 保留键补种
+    }
+
+    @Test
+    void existingTableWithoutTimeRangeRowGetsReservedSeed() throws Exception {
+        DataSource dataSource = mock(DataSource.class);
+        Connection connection = mock(Connection.class);
+        Statement statement = mock(Statement.class);
+        PreparedStatement ps = mock(PreparedStatement.class);
+        ResultSet rs = mock(ResultSet.class);
+        when(dataSource.getConnection()).thenReturn(connection);
+        when(connection.createStatement()).thenReturn(statement);
+        // 探测查询正常返回 = 表已存在 (存量表), 不走建表/内置键 seed
+        when(statement.execute(org.mockito.ArgumentMatchers.startsWith("SELECT 1"))).thenReturn(true);
+        when(connection.prepareStatement(anyString())).thenReturn(ps);
+        when(ps.executeQuery()).thenReturn(rs);
+        when(rs.next()).thenReturn(false); // 无 timeRange 行 → 补种
+
+        new DimensionKeyConfigRepository(dataSource, new ObjectMapper(), 0L).findAllForAdmin();
+
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(ps, times(2)).setString(org.mockito.ArgumentMatchers.eq(1), sql.capture());
+        assertEquals("timeRange", sql.getAllValues().get(1));
+        verify(ps).setString(org.mockito.ArgumentMatchers.eq(3),
+                org.mockito.ArgumentMatchers.contains("THIS_WEEK"));
+        verify(ps, org.mockito.Mockito.never()).addBatch(); // 内置键 seed 不重跑
+    }
+
+    @Test
+    void existingTableWithSoftDeletedTimeRangeRowDoesNotReseed() throws Exception {
+        DataSource dataSource = mock(DataSource.class);
+        Connection connection = mock(Connection.class);
+        Statement statement = mock(Statement.class);
+        PreparedStatement ps = mock(PreparedStatement.class);
+        ResultSet rs = mock(ResultSet.class);
+        when(dataSource.getConnection()).thenReturn(connection);
+        when(connection.createStatement()).thenReturn(statement);
+        when(statement.execute(org.mockito.ArgumentMatchers.startsWith("SELECT 1"))).thenReturn(true);
+        when(connection.prepareStatement(anyString())).thenReturn(ps);
+        when(ps.executeQuery()).thenReturn(rs);
+        when(rs.next()).thenReturn(true); // 软删行 (enabled=false) 也算存在, 不复活
+
+        new DimensionKeyConfigRepository(dataSource, new ObjectMapper(), 0L).findAllForAdmin();
+
+        verify(ps, org.mockito.Mockito.never()).executeUpdate();
+        verify(ps, org.mockito.Mockito.never()).addBatch();
     }
 
     @Test

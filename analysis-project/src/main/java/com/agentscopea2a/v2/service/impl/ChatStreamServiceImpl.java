@@ -5,7 +5,11 @@ import cn.hutool.core.util.ObjectUtil;
 import com.agentscopea2a.dto.ChatRequest;
 import com.agentscopea2a.dto.QuestionAnswerDto;
 import com.agentscopea2a.dto.response.*;
+import com.agentscopea2a.v2.dimension.DimensionState;
 import com.agentscopea2a.v2.dimension.DimensionStateManager;
+import com.agentscopea2a.v2.hooks.ScriptExecOutputExtractor;
+import com.agentscopea2a.v2.skills.DirectSkillExecutor;
+import com.agentscopea2a.v2.tools.ScriptExecTool;
 import com.agentscopea2a.mapper.gaussCommon.MainAgentMapper;
 import com.agentscopea2a.v2.artifact.ArtifactContext;
 import com.agentscopea2a.v2.artifact.ArtifactStore;
@@ -111,6 +115,8 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     private final ChatRuntimeConfigService chatRuntimeConfigService;
     private final AiChatMonitor aiChatMonitor;
     private final DimensionStateManager dimensionStateManager;
+    private final DirectSkillExecutor directSkillExecutor;
+    private final ScriptExecTool scriptExecTool;
 
     @Autowired
     private MainAgentMapper mainAgentMapper;
@@ -141,7 +147,9 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                                  ToolResultRegistry toolResultRegistry,
                                  ChatRuntimeConfigService chatRuntimeConfigService,
                                  AiChatMonitor aiChatMonitor,
-                                 DimensionStateManager dimensionStateManager) {
+                                 DimensionStateManager dimensionStateManager,
+                                 DirectSkillExecutor directSkillExecutor,
+                                 ScriptExecTool scriptExecTool) {
         this.runner = runner;
         this.artifactStore = artifactStore;
         this.episodicMemory = episodicMemory;
@@ -151,6 +159,8 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         this.chatRuntimeConfigService = chatRuntimeConfigService;
         this.aiChatMonitor = aiChatMonitor;
         this.dimensionStateManager = dimensionStateManager;
+        this.directSkillExecutor = directSkillExecutor;
+        this.scriptExecTool = scriptExecTool;
     }
 
     /**
@@ -483,6 +493,26 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             return emitter;
         }
 
+        // ── Skill 直接执行短路（docs/history/skill-direct-exec-plan.md §6，/ai/chat 同款）──
+        // 命中配置了 script_id 的 top-1 skill 时由 Java 直接调 script_exec 脚本;
+        // plan() 为 null (未命中/未配置/缺参/权限) 则照常走 LLM 链路。
+        if (directSkillExecutor != null) {
+            DimensionState previousState = ctx.get("dimensionState", DimensionState.class);
+            DirectSkillExecutor.DirectExecutionPlan plan =
+                    directSkillExecutor.plan(text, userId, previousState);
+            if (plan != null) {
+                // 正式写维度状态（继承/别名/clarifiedPeer 回填），与 LLM 路径共用;
+                // 只有决定短路后才写，回退路径的解析仍由 DimensionStateMiddleware 独立执行
+                dimensionStateManager.processQuestionInContext(ctx, text);
+                log.info("Direct skill execution short-circuit (/ai/chat): sessionId={} skill={} scriptId={}",
+                        conversationId, plan.skillName(), plan.scriptId());
+                Mono.fromRunnable(() -> runDirectExecution(streamCtx, strategy, plan, cleanup))
+                        .subscribeOn(Schedulers.boundedElastic())
+                        .subscribe();
+                return emitter;
+            }
+        }
+
         // 普通流程先使用 30 分钟档案；真实派单 analyze_data 后由 Hook 把同一个控制器
         // 升级到 60 分钟绝对截止时间。容器超时从一开始就按最长档案创建。
         // 到点时 emitter 尚未 complete、连接仍存活，此刻 send 超时错误
@@ -572,6 +602,77 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     }
 
     // ── Event handling ──────────────────────────────────────────────────────
+
+    /**
+     * 直接执行短路轮（docs/history/skill-direct-exec-plan.md §6，与 V2ChatStreamServiceImpl 同款）：
+     * boundedElastic 上直接调 script_exec 脚本并回发结果，不启 agent（零 token）。
+     * 成功 → done(stdout，前端按 markdown 渲染表格/下载链接)；失败（非 0 退出/超时/拒绝）→
+     * 直接报错，不回退 LLM（拍板口径）。cleanup 显式执行（同歧义短路轮的 complete-before-return 问题）。
+     * 与 v2 的差异：/ai/chat 前端协议无 ActivityFeed 事件，进度用 think 状态行；
+     * 无 ToolCallCollector，失败进 /ai/chat 失败监控。
+     */
+    private void runDirectExecution(StreamContext ctx, ResponseStrategy strategy,
+                                    DirectSkillExecutor.DirectExecutionPlan plan, Runnable cleanup) {
+        AtomicBoolean success = new AtomicBoolean(false);
+        try {
+            ctx.hasSentExecuting.set(true);
+            sendVisibleThinkStatus(ctx, strategy,
+                    "已匹配技能「" + plan.skillName() + "」，直接执行脚本 " + plan.scriptId() + "…\n");
+
+            ScriptExecTool.ScriptExecution execution =
+                    scriptExecTool.executeStructured(plan.scriptId(), plan.params());
+            String stdout = ScriptExecOutputExtractor.extractStdout(execution.fullText());
+            sendVisibleThinkStatus(ctx, strategy, execution.success()
+                    ? "工具执行完成：script_exec\n" : "工具执行失败：script_exec\n");
+
+            if (ctx.hasSentExecuting.get()) {
+                strategy.sendThink(ctx, ThinkPayload.done(AGENT_RETURN_NAME));
+            }
+            if (execution.success()) {
+                success.set(true);
+                ctx.answerContent.append(stdout);
+                strategy.sendText(ctx, TextPayload.chunk(stdout, true));
+            } else {
+                // 拍板: 脚本失败（非 0 退出/超时/拒绝/脚本不存在）直接报错给用户, 不回退 LLM
+                IllegalStateException failure = new IllegalStateException("脚本 " + plan.scriptId()
+                        + " 执行失败 (exit=" + execution.exitCode()
+                        + ")，请核对脚本配置或联系管理员处理。");
+                recordMonitorFailure(ctx, failure);
+                strategy.sendError(ctx, failure);
+            }
+        } catch (Exception e) {
+            log.error("Direct skill execution failed: sessionId={} scriptId={}",
+                    ctx.conversationId, plan.scriptId(), e);
+            if (ctx.hasSentExecuting.get()) {
+                strategy.sendThink(ctx, ThinkPayload.done(AGENT_RETURN_NAME));
+            }
+            try {
+                recordMonitorFailure(ctx, e);
+                strategy.sendError(ctx, e);
+            } catch (Exception se) {
+                log.warn("发送直接执行错误事件失败: sessionId={}", ctx.conversationId, se);
+            }
+        } finally {
+            try {
+                if (ctx.traceCtx != null) {
+                    if (success.get()) {
+                        ctx.traceCtx.markSuccess();
+                    } else {
+                        ctx.traceCtx.markError("direct script_exec failed: " + plan.scriptId());
+                    }
+                }
+            } catch (Exception te) {
+                log.warn("Trace mark failed for direct execution, sessionId={}: {}",
+                        ctx.conversationId, te.getMessage());
+            }
+            try {
+                ctx.emitter.complete();
+            } catch (Exception e) {
+                log.warn("emitter.complete() 失败: sessionId={}", ctx.conversationId, e);
+            }
+            cleanup.run();
+        }
+    }
 
     /**
      * 处理单个流式事件（参考 v1 processChunk 模式）。

@@ -179,6 +179,13 @@ harness.a2a.skill-direct-exec.enabled=false
 > + 前端 `DimensionKeyPage.vue`（/script-registry/dimension-key）+ Skill 配置页下拉动态加载
 > （失败回退静态枚举）。393 单测全过。
 
+> 实施记录（2026/10/14）：直接执行短路覆盖第二条 Chat 链路 `/ai/chat`（内网反馈原方案只作用于
+> `/v2/ai/chat` 前端）。`ChatStreamServiceImpl.stream()` 在歧义反问短路块之后插入同款 plan() 判定 +
+> `runDirectExecution`；与 v2 的差异：① /ai/chat 协议无 ActivityFeed 事件，进度走 think 状态行
+> （sendVisibleThinkStatus）；② 无 ToolCallCollector，脚本失败进 /ai/chat 失败监控
+> （recordMonitorFailure）；③ 成功文本仍 append 进 answerContent 走 cleanup 的 saveAnswerIntoDB 落库。
+> SkillFlowChatRouter 五处 `normalChat.stream()` 出口全部覆盖，插入点唯一。
+
 §2/§8 的 8 个维度键目前硬编码（`DirectSkillExecutor.DIMENSION_KEYS` + 前端
 `DIRECT_EXEC_DIMENSION_KEYS` + 保存期校验），新增第 9 个维度要改多处代码。方案 A
 把「键的配置」动态化：**内置 8 键保留结构化规则提取不变，新增键走词表命中提取**，

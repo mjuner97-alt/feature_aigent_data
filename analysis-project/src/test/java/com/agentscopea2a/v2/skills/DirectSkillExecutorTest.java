@@ -387,6 +387,96 @@ class DirectSkillExecutorTest {
         assertTrue(keys.contains("deptName"));
     }
 
+    // ==================== timeRange 保留键 (dimension-key-dynamic-dimension-plan.md §6.1) ====================
+
+    private static DimensionKeyConfig timeRangeConfig() {
+        return new DimensionKeyConfig(10L, "timeRange", "时间范围", false, List.of(
+                new DimensionKeyConfig.AliasMapping("本周", "THIS_WEEK"),
+                new DimensionKeyConfig.AliasMapping("前一周", "LAST_WEEK"),
+                new DimensionKeyConfig.AliasMapping("近一周", "LAST:7d")), true, null);
+    }
+
+    @Test
+    void timeRangeDateAnchorBoundToStartAndEndParams() {
+        String question = "2026年10月1日到10月15日的缺陷数";
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"startDate\":\"timeRange.start\",\"endDate\":\"timeRange.end\"}", "缺陷数")));
+        enableKeyDictionary(timeRangeConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(question, "alice", null);
+
+        assertEquals(List.of("DATE:2026-10-01~2026-10-15"),
+                plan.extraction().extraDimensions().get("timeRange"));
+        assertEquals("2026-10-01", plan.params().get("startDate"));
+        assertEquals("2026-10-15", plan.params().get("endDate"));
+    }
+
+    @Test
+    void timeRangeWordAnchorBindsResolvedDates() {
+        String question = "本周的缺陷数";
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"startDate\":\"timeRange.start\",\"endDate\":\"timeRange.end\"}", "缺陷数")));
+        enableKeyDictionary(timeRangeConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(question, "alice", null);
+
+        // 锚点原样入 extraDimensions; 日期执行期解析 (拍板①: 本周=周一~今天), 格式 ISO
+        assertEquals(List.of("THIS_WEEK"), plan.extraction().extraDimensions().get("timeRange"));
+        assertTrue(String.valueOf(plan.params().get("startDate")).matches("\\d{4}-\\d{2}-\\d{2}"));
+        assertTrue(String.valueOf(plan.params().get("endDate")).matches("\\d{4}-\\d{2}-\\d{2}"));
+    }
+
+    @Test
+    void timeRangeUnresolvableAnchorOmitsParam() {
+        // 暂缓锚点 (如 LAST:3V) 若被配进词表: 提取照收, 解析失败 → 参数不传 → 必填回退 LLM (fail-safe)
+        String question = "近三个版本的缺陷数";
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"startDate\":\"timeRange.start\"}", "缺陷数")));
+        enableKeyDictionary(new DimensionKeyConfig(11L, "timeRange", "时间范围", false,
+                List.of(new DimensionKeyConfig.AliasMapping("近三个版本", "LAST:3V")), true, null));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"startDate\",\"required\":true}]"));
+
+        assertNull(newExecutor(true).plan(question, "alice", null));
+    }
+
+    @Test
+    void activeKeysWithTimeRangeExpandSuffixForms() {
+        enableKeyDictionary(timeRangeConfig());
+        java.util.Set<String> keys = newExecutor(true).activeKeys();
+        assertEquals(11, keys.size()); // 8 内置 + timeRange + .start/.end
+        assertTrue(keys.contains("timeRange"));
+        assertTrue(keys.contains("timeRange.start"));
+        assertTrue(keys.contains("timeRange.end"));
+    }
+
+    @Test
+    void timeRangeNotMentionedDoesNotAffectOtherKeys() {
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"dept\":\"deptName\",\"startDate\":\"timeRange.start\"}", "达标率")));
+        enableKeyDictionary(timeRangeConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(QUESTION), Mockito.isNull())).thenReturn(
+                state(null, List.of("杭州开发一部")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(QUESTION, "alice", null);
+
+        assertEquals("杭州开发一部", plan.params().get("dept"));
+        assertFalse(plan.params().containsKey("startDate")); // timeRange 未提及 → 不传
+    }
+
     @Test
     void dynamicKeyAliasAsParamMappingValueButKeyNotConfiguredIsDropped() {
         // 字典里有 qGate 但 skill 没配它的映射 → extra 有值也不传参

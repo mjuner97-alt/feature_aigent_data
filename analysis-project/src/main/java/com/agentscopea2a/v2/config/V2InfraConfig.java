@@ -105,9 +105,10 @@ public class V2InfraConfig {
             ResponseCacheService cacheService,
             DimensionStateManager dimManager,
             MeterRegistry meterRegistry,
+            org.springframework.beans.factory.ObjectProvider<com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository> dimensionKeyRepoProvider,
             @Value("${harness.a2a.response-cache.enabled:false}") boolean cacheEnabled) {
         log.info("ResponseCacheMiddleware: enabled={}", cacheEnabled);
-        return new ResponseCacheMiddleware(cacheService, dimManager, meterRegistry, cacheEnabled);
+        return new ResponseCacheMiddleware(cacheService, dimManager, meterRegistry, cacheEnabled, dimensionKeyRepoProvider);
     }
 
     // ── Artifact Store ─────────────────────────────────────────────────────

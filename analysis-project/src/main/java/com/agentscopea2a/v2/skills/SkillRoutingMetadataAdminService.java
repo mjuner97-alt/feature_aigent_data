@@ -111,7 +111,8 @@ public class SkillRoutingMetadataAdminService {
 
     /**
      * Skill 直接执行的脚本参数 → 维度键映射: key = 脚本参数名 (原样透传), value 必须 ∈
-     * 合法维度键全集 (内置 8 键 ∪ dimension_key_config 启用键, §9 动态化)。配错在保存期拒绝。
+     * 合法维度键全集 (内置 8 键 ∪ dimension_key_config 启用键, §9 动态化; timeRange
+     * 追加 .start/.end 后缀形态, §6.1.6)。配错在保存期拒绝。
      */
     private String serializeParamMapping(Map<String, String> paramMapping) {
         if (paramMapping == null || paramMapping.isEmpty()) {
@@ -122,6 +123,7 @@ public class SkillRoutingMetadataAdminService {
             com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository repo = dimensionKeyRepoProvider.getIfAvailable();
             if (repo != null) {
                 repo.findAllEnabled().forEach(k -> validKeys.add(k.key()));
+                com.agentscopea2a.v2.dimension.TimeRangeResolver.expandKeys(validKeys);
             }
         } catch (RuntimeException e) {
             // 字典读失败不拦保存, 退化为仅内置键校验 (与直接执行提取的快照兜底同语义)

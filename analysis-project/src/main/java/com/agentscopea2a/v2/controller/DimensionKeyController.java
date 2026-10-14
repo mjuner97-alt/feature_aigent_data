@@ -69,6 +69,7 @@ public class DimensionKeyController {
         }
         DimensionKeyConfig row = new DimensionKeyConfig(null, body.getKey(), body.getLabel(),
                 false, aliasesOf(body), body.getEnabled() == null || body.getEnabled(), body.getRemark());
+        validateAnchorsIfNeeded(row);
         if (!repository.insert(row)) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "新增失败：维度键 " + row.key() + " 可能已存在");
@@ -101,6 +102,7 @@ public class DimensionKeyController {
                 existing.builtin(), aliasesOf(body),
                 body.getEnabled() == null ? existing.enabled() : body.getEnabled(),
                 body.getRemark() == null ? existing.remark() : body.getRemark());
+        validateAnchorsIfNeeded(row);
         if (!repository.update(row)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "更新失败（内置键不支持整体更新）");
         }
@@ -138,6 +140,25 @@ public class DimensionKeyController {
         return body.getAliases().stream()
                 .filter(a -> a != null && a.valid())
                 .toList();
+    }
+
+    /** timeRange 保留键的词表值必须是锚点白名单内的语义锚点（LAST:{n}V/Q 暂缓期直接拒绝），
+     *  否则执行期 TimeRangeResolver 解析炸雷。其他键不受影响。 */
+    private static void validateAnchorsIfNeeded(DimensionKeyConfig row) {
+        if (!com.agentscopea2a.v2.dimension.TimeRangeResolver.RESERVED_KEY.equals(row.key())) {
+            return;
+        }
+        for (DimensionKeyConfig.AliasMapping alias : row.aliases()) {
+            if (!alias.valid()) {
+                continue;
+            }
+            if (!com.agentscopea2a.v2.dimension.TimeRangeResolver.isValidConfigAnchor(alias.value())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "维度键 timeRange 的词表值必须是锚点白名单内的语义锚点"
+                                + "（THIS_WEEK / LAST_WEEK / LAST:{n}d / THIS_MONTH / THIS_YEAR），"
+                                + "非法值: " + alias.value());
+            }
+        }
     }
 
     /** 维度键字典是全局口径配置, 写操作仅管理员 */
