@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { listSkillRouting, listSkillTags, saveSkillRouting, saveSkillTag, setSkillRoutingActive } from '../api/skillRouting';
 import type { ToolRoutingTag } from '../types/toolRouting';
 import type { SkillRoutingInput, SkillRoutingMetadata } from '../types/skillRouting';
+import { DIRECT_EXEC_DIMENSION_KEYS } from '../types/skillRouting';
+import { listDimensionKeys } from '../api/dimensionKey';
 import { canEditConfig, isAdmin } from '../utils/auth';
 
 type SkillTagType = 'DOMAIN' | 'TOPIC';
@@ -23,6 +25,19 @@ const keywordsText = ref('');
 const level1Text = ref('');
 const level2Text = ref('');
 const level3Text = ref('');
+// 直接执行配置: script_id + param_mapping (key=脚本参数名, value=维度键)
+const paramMappingRows = ref<{ param: string; dimKey: string }[]>([]);
+// 参数映射维度键下拉: 动态加载维度键字典 (内置 8 键 + 用户新增键), 失败回退静态枚举
+const dimensionKeyOptions = ref(DIRECT_EXEC_DIMENSION_KEYS.map(dk => ({ key: dk.key, label: dk.label })));
+onMounted(async () => {
+  try {
+    const keys = await listDimensionKeys();
+    if (keys.length) {
+      dimensionKeyOptions.value = keys.filter(k => k.enabled)
+        .map(k => ({ key: k.key, label: k.builtin ? k.label : `${k.label} (${k.key})` }));
+    }
+  } catch { /* 字典接口不可用时回退静态枚举 */ }
+});
 const domainTags = ref<ToolRoutingTag[]>([]);
 const topicTags = ref<ToolRoutingTag[]>([]);
 const tagDialogVisible = ref(false);
@@ -37,9 +52,16 @@ const canEdit = (row: SkillRoutingMetadata) => canEditConfig() && (!!row.creator
 const domainOptions = computed(() => [...new Set([...domainTags.value.map(tag => tag.tagName), ...form.value.domainTags])]);
 
 function emptyInput(): SkillRoutingInput {
-  return { shortSummary: '', keywords: [], domainTags: [], topicTags: [], active: true, level1Keywords: [], level2Keywords: [], level3Keywords: [] };
+  return { shortSummary: '', keywords: [], domainTags: [], topicTags: [], active: true, level1Keywords: [], level2Keywords: [], level3Keywords: [], scriptId: null, paramMapping: {} };
 }
 function tags(values: string[]): string { return (values || []).join(', '); }
+// param_mapping 兜底: 后端个别路径可能回传 JSON 字符串, Object.entries(字符串) 会按字符下标炸开
+function normalizeParamMapping(value: unknown): Record<string, string> {
+  if (typeof value === 'string') {
+    try { return JSON.parse(value) || {}; } catch { return {}; }
+  }
+  return (value as Record<string, string>) || {};
+}
 // 括号感知切分: 正则量词 {1,3} 内的逗号不作为分隔符
 function split(value: string): string[] {
   const result: string[] = [];
@@ -62,7 +84,10 @@ function openEdit(row: SkillRoutingMetadata) {
     topicTags: [...row.topicTags], active: row.active,
     level1Keywords: [...(row.level1Keywords || [])], level2Keywords: [...(row.level2Keywords || [])],
     level3Keywords: [...(row.level3Keywords || [])],
+    scriptId: row.scriptId || null,
+    paramMapping: { ...normalizeParamMapping(row.paramMapping) },
   };
+  paramMappingRows.value = Object.entries(normalizeParamMapping(row.paramMapping)).map(([param, dimKey]) => ({ param, dimKey }));
   keywordsText.value = tags(form.value.keywords);
   level1Text.value = tags(form.value.level1Keywords);
   level2Text.value = tags(form.value.level2Keywords);
@@ -119,6 +144,11 @@ async function save() {
     form.value.level1Keywords = split(level1Text.value);
     form.value.level2Keywords = split(level2Text.value);
     form.value.level3Keywords = split(level3Text.value);
+    const mapping: Record<string, string> = {};
+    for (const r of paramMappingRows.value) {
+      if (r.param.trim() && r.dimKey) mapping[r.param.trim()] = r.dimKey;
+    }
+    form.value.paramMapping = mapping;
     const result = await saveSkillRouting(current.value.skillName, form.value);
     const index = rows.value.findIndex(r => r.skillName === result.skillName);
     if (index >= 0) rows.value[index] = { ...rows.value[index], ...result, configured: true };
@@ -160,8 +190,10 @@ load();
       <el-table-column label="二级关键词" min-width="150" show-overflow-tooltip><template #default="{ row }">{{ row.level2Keywords?.join('、') || '-' }}</template></el-table-column>
       <el-table-column label="三级关键词" min-width="150" show-overflow-tooltip><template #default="{ row }">{{ row.level3Keywords?.join('、') || '-' }}</template></el-table-column>
       <el-table-column label="关键词" min-width="200" show-overflow-tooltip><template #default="{ row }">{{ row.keywords.join('、') || '-' }}</template></el-table-column>
+      <el-table-column label="脚本 ID" width="160" show-overflow-tooltip><template #default="{ row }">{{ row.scriptId || '-' }}</template></el-table-column>
+      <el-table-column label="参数映射" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ Object.entries(normalizeParamMapping(row.paramMapping)).map(([k, v]) => `${k}→${v}`).join(', ') || '-' }}</template></el-table-column>
       <el-table-column prop="creator" label="创建人" width="130" show-overflow-tooltip><template #default="{ row }">{{ row.creator || '-' }}</template></el-table-column>
-      <el-table-column label="状态" width="80" align="center"><template #default="{ row }"><el-switch v-if="canEdit(row)" :model-value="row.active" size="small" @change="toggle(row)" /><span v-else>{{ row.active ? '已启用' : '已停用' }}</span></template></el-table-column>
+      <el-table-column label="状态" width="80" align="center" fixed="right"><template #default="{ row }"><el-switch v-if="canEdit(row)" :model-value="row.active" size="small" @change="toggle(row)" /><span v-else>{{ row.active ? '已启用' : '已停用' }}</span></template></el-table-column>
       <el-table-column label="操作" width="150" fixed="right"><template #default="{ row }"><!-- 查看所有人可见; 配置仅本人 --><el-button size="small" @click="openView(row)">查看</el-button><el-button v-if="canEdit(row)" size="small" @click="openEdit(row)">配置</el-button></template></el-table-column>
     </el-table>
     <el-pagination v-model:current-page="currentPage" v-model:page-size="pageSize" :total="total" :page-sizes="[20,50,100]" layout="total, sizes, prev, pager, next" @current-change="changePage" @size-change="changePageSize" />
@@ -183,6 +215,21 @@ load();
         <el-form-item label="二级关键词"><el-input v-model="level2Text" placeholder="在一级下钻，如 未闭环；支持正则如 未闭.{0,2}环" /></el-form-item>
         <el-form-item label="三级关键词"><el-input v-model="level3Text" placeholder="最具体一层，如 严重；支持正则" /></el-form-item>
         <el-form-item label="关键词"><el-input v-model="keywordsText" placeholder="叶层精确词，如 达标率、打分率；逗号、顿号或换行分隔，支持正则" /></el-form-item>
+        <el-form-item label="脚本 ID"><el-input v-model="form.scriptId" placeholder="script_registry 脚本 ID，留空 = 不参与直接执行" maxlength="128" /></el-form-item>
+        <el-form-item label="参数映射">
+          <div class="param-mapping">
+            <div v-for="(row, idx) in paramMappingRows" :key="idx" class="param-mapping-row">
+              <el-input v-model="row.param" placeholder="脚本参数名，如 dept" maxlength="128" style="width: 180px" />
+              <span class="arrow">→</span>
+              <el-select v-model="row.dimKey" placeholder="维度键" style="width: 200px">
+                <el-option v-for="dk in dimensionKeyOptions" :key="dk.key" :label="dk.label" :value="dk.key" />
+              </el-select>
+              <el-button size="small" text type="danger" @click="paramMappingRows.splice(idx, 1)">删除</el-button>
+            </div>
+            <el-button size="small" @click="paramMappingRows.push({ param: '', dimKey: '' })">+ 添加映射</el-button>
+            <div class="mapping-hint">配置后问题命中该 Skill 时绕过 LLM 直接执行脚本；参数名需与脚本 params_schema 一致</div>
+          </div>
+        </el-form-item>
         <el-form-item label="启用"><el-switch v-model="form.active" /></el-form-item>
       </el-form>
       <template #footer><el-button @click="dialogVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="save">保存</el-button></template>
@@ -197,6 +244,8 @@ load();
         <el-form-item label="二级关键词"><el-input :model-value="viewRow?.level2Keywords?.join('、') || '-'" /></el-form-item>
         <el-form-item label="三级关键词"><el-input :model-value="viewRow?.level3Keywords?.join('、') || '-'" /></el-form-item>
         <el-form-item label="关键词"><el-input :model-value="viewRow?.keywords.join('、') || '-'" /></el-form-item>
+        <el-form-item label="脚本 ID"><el-input :model-value="viewRow?.scriptId || '-'" /></el-form-item>
+        <el-form-item label="参数映射"><el-input :model-value="Object.entries(normalizeParamMapping(viewRow?.paramMapping)).map(([k, v]) => `${k}→${v}`).join(', ') || '-'" /></el-form-item>
         <el-form-item label="启用"><span>{{ viewRow?.active ? '已启用' : '已停用' }}</span></el-form-item>
       </el-form>
       <template #footer><el-button @click="viewVisible = false">关闭</el-button></template>
@@ -220,4 +269,8 @@ h2 { margin: 0; font-size: 1.2rem; }
 .section-head h3 { margin: 0; font-size: 1rem; }
 .tag { margin: 0 8px 8px 0; }
 .empty { color: #64748b; font-size: 0.8rem; }
+.param-mapping { width: 100%; }
+.param-mapping-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.param-mapping-row .arrow { color: #64748b; }
+.mapping-hint { color: #94a3b8; font-size: 0.75rem; margin-top: 4px; }
 </style>

@@ -1,6 +1,7 @@
 package com.agentscopea2a.v2.skills;
 
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Service;
 
@@ -13,16 +14,19 @@ public class SkillRoutingMetadataAdminService {
     private final com.agentscopea2a.v2.governance.SkillToolOverlapService overlapService;
     private final com.agentscopea2a.v2.governance.SkillSkillOverlapService skillSkillOverlapService;
     private final com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService;
+    private final org.springframework.beans.factory.ObjectProvider<com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository> dimensionKeyRepoProvider;
 
     public SkillRoutingMetadataAdminService(
             SkillRoutingMetadataRepository repository,
             com.agentscopea2a.v2.governance.SkillToolOverlapService overlapService,
             com.agentscopea2a.v2.governance.SkillSkillOverlapService skillSkillOverlapService,
-            com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService) {
+            com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService,
+            org.springframework.beans.factory.ObjectProvider<com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository> dimensionKeyRepoProvider) {
         this.repository = repository;
         this.overlapService = overlapService;
         this.skillSkillOverlapService = skillSkillOverlapService;
         this.adminRoleService = adminRoleService;
+        this.dimensionKeyRepoProvider = dimensionKeyRepoProvider;
     }
 
     public List<SkillRoutingMetadataView> list(String keyword, Boolean active, int limit, int offset) {
@@ -59,7 +63,9 @@ public class SkillRoutingMetadataAdminService {
                 cleanTags(input.keywords()), cleanTags(input.domainTags()), cleanTags(input.topicTags()),
                 creator, input.active(), null,
                 cleanTags(input.level1Keywords()), cleanTags(input.level2Keywords()),
-                cleanTags(input.level3Keywords()));
+                cleanTags(input.level3Keywords()),
+                input.scriptId() == null || input.scriptId().isBlank() ? null : input.scriptId().trim(),
+                serializeParamMapping(input.paramMapping()));
         assertNotHighSkillOverlap(metadata);
         if (!repository.upsert(metadata)) throw new IllegalStateException("RoutingConfigSaveFailed");
         invalidateOverlapCache();
@@ -97,9 +103,53 @@ public class SkillRoutingMetadataAdminService {
         SkillRoutingMetadataView current = get(skillName);
         SkillRoutingMetadataInput input = new SkillRoutingMetadataInput(current.shortSummary(), current.keywords(),
                 current.domainTags(), current.topicTags(), active,
-                current.level1Keywords(), current.level2Keywords(), current.level3Keywords());
+                current.level1Keywords(), current.level2Keywords(), current.level3Keywords(),
+                current.scriptId(), current.paramMapping());
         save(skillName, input, userId);
         return get(skillName);
+    }
+
+    /**
+     * Skill 直接执行的脚本参数 → 维度键映射: key = 脚本参数名 (原样透传), value 必须 ∈
+     * 合法维度键全集 (内置 8 键 ∪ dimension_key_config 启用键, §9 动态化)。配错在保存期拒绝。
+     */
+    private String serializeParamMapping(Map<String, String> paramMapping) {
+        if (paramMapping == null || paramMapping.isEmpty()) {
+            return null;
+        }
+        java.util.LinkedHashSet<String> validKeys = new java.util.LinkedHashSet<>(DirectSkillExecutor.DIMENSION_KEYS);
+        try {
+            com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository repo = dimensionKeyRepoProvider.getIfAvailable();
+            if (repo != null) {
+                repo.findAllEnabled().forEach(k -> validKeys.add(k.key()));
+            }
+        } catch (RuntimeException e) {
+            // 字典读失败不拦保存, 退化为仅内置键校验 (与直接执行提取的快照兜底同语义)
+        }
+        java.util.LinkedHashMap<String, String> cleaned = new java.util.LinkedHashMap<>();
+        for (var entry : paramMapping.entrySet()) {
+            String key = entry.getKey() == null ? "" : entry.getKey().trim();
+            String value = entry.getValue() == null ? "" : entry.getValue().trim();
+            if (key.isEmpty()) {
+                continue;
+            }
+            if (!validKeys.contains(value)) {
+                throw new IllegalArgumentException("ParamMappingInvalidDimension: '" + value
+                        + "' 不是合法维度键, 可选: " + validKeys);
+            }
+            if (key.length() > 128) {
+                throw new IllegalArgumentException("ParamMappingKeyTooLong: max 128");
+            }
+            cleaned.put(key, value);
+        }
+        if (cleaned.isEmpty()) {
+            return null;
+        }
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(cleaned);
+        } catch (Exception e) {
+            throw new IllegalStateException("ParamMappingSerializeFailed", e);
+        }
     }
 
     private void assertOwner(String owner, String userId) {

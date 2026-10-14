@@ -87,6 +87,8 @@ Layer 2  param_mapping: {"dept":"deptName","version":"versionPlan"}  （脚本�
 
 扩展成本：新脚本接入 = 管理页配 script_id + param_mapping，Java 零改动；新维度（如时间范围「今天/近一周/X月X日-X月X日」，DimensionState 现不解析，本期不做）= 将来 Layer 1 schema 加键 + 提取规则，映射/填参逻辑零改动。
 
+**param_mapping 合法性校验（防配错在配置期而非运行期）**：key 必须 ⊆ 该脚本 `params_schema`（否则填了也必被工具白名单拒绝）、value 必须 ∈ 8 维度键枚举。管理页保存时校验拒绝非法配置；`SkillRoutingStartupAudit` 启动时对存量行审计（非法映射 warn + 该行按无 script_id 处理，不参与直接执行，不影响 LLM 链路）。脚本参数名不规则（`devDept`/`planVersion`/中文名等）由映射 key 原样吸收，代码不感知。
+
 **plan() 判定链（全部确定性）**：
 1. 开关关 / metadata 空 / question 空 → null
 2. `findActive()` + 权限过滤（非 builtin skill 必须在 `findUsableRetrievalNames(userId)` 内；builtin = `skill_index.source` 为 BuiltinSkillRegistrar 注册值，实现时对该常量确认；解析失败 fail-closed → null）
@@ -166,8 +168,91 @@ harness.a2a.skill-direct-exec.enabled=false
 ### 8. 管理页（Skill 配置页）
 
 - `frontend/src/types/skillRouting.ts` — 接口加 `scriptId`、`paramMapping`
-- `frontend/src/pages/SkillRoutingConfigPage.vue` — 编辑弹窗加"脚本 ID"输入框 + "参数映射"键值对编辑（或 JSON 文本域，格式 `{"dept":"deptName"}` + 维度键提示文案）；表格加列
+- `frontend/src/pages/SkillRoutingConfigPage.vue` — table 加「脚本 ID」「参数映射」两列（空 = 不参与直接执行）；编辑弹窗加脚本 ID 输入框 + **参数映射两列小表格（可增删行：左列脚本参数名自由输入，右列维度键下拉，选项 = 8 固定维度键）**——下拉交互天然实现「value ∈ 维度键枚举」校验（2026/10/13 用户确认），key ⊆ params_schema 校验由保存时后端校验兜底
 - 后端 PUT API 字段透传（§1）
+
+### 9. 维度键字典动态化（方案 A，2026/10/13 拍板，已实施）
+
+> 实施记录（2026/10/13）：`v2/dimension/DimensionKeyConfig(+Repository)` + `V2DimensionConfig`
+> bean + `DimensionKeyController`（/v2/dimension/key CRUD+reload）+ `DirectSkillExecutor`
+> 动态键提取（`extraDimensions`/`activeKeys()`/词表 contains 扫描）+ AdminService 校验动态化
+> + 前端 `DimensionKeyPage.vue`（/script-registry/dimension-key）+ Skill 配置页下拉动态加载
+> （失败回退静态枚举）。393 单测全过。
+
+§2/§8 的 8 个维度键目前硬编码（`DirectSkillExecutor.DIMENSION_KEYS` + 前端
+`DIRECT_EXEC_DIMENSION_KEYS` + 保存期校验），新增第 9 个维度要改多处代码。方案 A
+把「键的配置」动态化：**内置 8 键保留结构化规则提取不变，新增键走词表命中提取**，
+管理员纯配置即可扩展 `param_mapping` 可用维度键。
+
+#### 9.1 范围拍板
+
+| 决策点 | 结论 |
+|---|---|
+| 内置 8 键 | 提取逻辑不动（`DimensionStateManager` 结构化规则 + AliasResolver），字典表只存展示信息（key/label，内置行只读） |
+| 新增键提取 | **词表命中**：问题中出现 alias（原样/正则，同 dimension_alias 语义）→ 填入对应标准值；多值 = 多个不同 alias 同时命中 |
+| 动态键跨轮继承 | **不做**（后续再说）——动态键只在当前问题提取，不进 `DimensionState`、不跨轮继承；第二轮未提及 → 必填缺失回退 LLM |
+| 触发词条件行 | **不做**（后续再说）——Phase 1 词表直接命中；管理员配置时避免裸短词（如卡口维度配 `Q1卡口→Q1` 而非裸 `Q1`），防短词误命中 |
+| 动态键缺省来源 | 无缺省（内置 version/quarter 的"当前在建版本"缺省不适用于动态键）；脚本配必填且问题未提 → 回退 LLM |
+
+#### 9.2 存储：新表 `dimension_key_config`（gauss 库，照搬 DimensionAliasRepository 模式）
+
+```
+id BIGSERIAL PK
+key        VARCHAR(64)  UNIQUE NOT NULL   -- param_mapping value / param_mapping 下拉取值（camelCase）
+label      VARCHAR(128) NOT NULL           -- 展示名，如 卡口
+builtin    BOOLEAN DEFAULT FALSE           -- 内置 8 键 seed 行，管理页只读（不可删/不可改 key）
+aliases    TEXT                            -- JSON 数组 [{"alias":"Q1卡口","value":"Q1"}, ...]
+enabled    BOOLEAN DEFAULT TRUE
+remark     VARCHAR(255)
+created_at / updated_at
+```
+
+- `ensureTable` 幂等建表 + 首建 seed 内置 8 键（aliases 为空数组，提取不走词表）
+- TTL 快照缓存 + `invalidateCache()`，读失败沿用上次快照（同 `DimensionAliasRepository`）
+
+#### 9.3 后端改动
+
+- 新增 `v2/dimension/DimensionKeyConfig.java`（record）+ `DimensionKeyConfigRepository.java`
+  + `V2DimensionConfig` 注册 bean（同 alias 三件套）
+- 新增 `v2/controller/DimensionKeyController.java`：`GET/POST/PUT/DELETE /v2/dimension/key`
+  + `POST /v2/dimension/key/reload`，写操作仅管理员（照抄 `DimensionAliasController` 的
+  `AdminRoleService` 校验模式）
+- `DirectSkillExecutor`：
+  - 构造注入 `DimensionKeyConfigRepository`（`ObjectProvider` 可选依赖，缺失时退化为纯 8 键）
+  - `DIMENSION_KEYS` 静态 Set 保留（内置键的合法值域），新增 `activeKeys()` =
+    内置 8 键 ∪ 字典启用键（TTL 内缓存）
+  - `DimensionExtraction` 尾部追加 `Map<String, List<String>> extraDimensions`
+    （record 尾部追加 + 旧构造器重载，同 scriptId/paramMapping 兼容策略）
+  - `plan()` 提取动态键：对 question 逐个扫描启用键的 aliases（contains 命中 → 收集
+    value，去重保序）填入 `extraDimensions`
+  - `valuesFor()`：switch 命中内置键走原路；否则查 `extraDimensions`（空 → 参数不传）
+- `SkillRoutingMetadataAdminService.serializeParamMapping`：校验值域从静态
+  `DIMENSION_KEYS` 改为注入的动态键集（`activeKeys()`）；**注意该方法是 static，需改
+  实例方法或传入校验器**
+- `SkillRoutingMetadataController` 如有维度键提示接口可透出 `activeKeys()`
+
+#### 9.4 前端改动
+
+- 新页面 `DimensionKeyPage.vue`（或同义词页加 tab）：键列表（key/label/builtin 标识/
+  启用开关）+ 编辑弹窗维护 aliases 词表行（alias → value 两列，可增删）；路由/菜单入口
+  与维度同义词页并列
+- `SkillRoutingConfigPage.vue` 参数映射下拉：选项从 `DIRECT_EXEC_DIMENSION_KEYS`
+  静态枚举改为 `GET /v2/dimension/key` 动态加载（加载失败回退静态枚举兜底）；
+  `skillRouting.ts` 的静态枚举保留作 fallback
+
+#### 9.5 示例（卡口维度）
+
+配置：键 `qGate`（卡口），aliases `[{"alias":"Q1卡口","value":"Q1"}, ..., {"alias":"二季度卡口","value":"Q2"}]`；
+skill 的 `param_mapping` 配 `{"gate":"qGate"}`。问「Q2卡口的达标率」→ `qGate=[Q2]`
+→ 脚本收到 `gate=Q2`（单值 String）；问「比较Q1卡口和Q2卡口」→ `gate=["Q1","Q2"]`（List）。
+
+#### 9.6 测试要点
+
+1. Repository：ensureTable 幂等 + seed、TTL 快照、findAllForAdmin、insert/update/setEnabled
+2. `DirectSkillExecutor`：动态键命中提取（单值/多值/去重）、aliases 不命中 → 参数不传、
+   字典库挂 → 快照兜底、`ObjectProvider` 缺失 → 纯 8 键不炸
+3. 保存期校验：合法动态键通过、非法键报错文案含可选键列表
+4. 存量：`DirectSkillExecutorTest` 全过（extraDimensions 缺省空 map 行为不变）
 
 ## 关键文件清单
 

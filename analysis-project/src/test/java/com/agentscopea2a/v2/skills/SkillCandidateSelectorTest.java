@@ -197,17 +197,52 @@ class SkillCandidateSelectorTest {
     }
 
     @Test
-    void upperLayerHitKeepsSkillVisibleWhenConfiguredDeeperLayerMisses() {
+    void narrowingDropsSkillsWithConfiguredButUnhitDeeperLayer() {
         SkillRoutingMetadata closedLoop = metadataWithLevels("closed_loop", List.of(), List.of("问题"), List.of("已闭环"), List.of());
-        SkillRoutingMetadata openLoop = metadataWithLevels("open_loop", List.of(), List.of("问题"), List.of("未闭环"), List.of());
+        SkillRoutingMetadata openLoop = metadataWithLevels("open_loop", List.of("问题"), List.of("问题"), List.of("未闭环"), List.of());
 
-        // 问题命中 open_loop 的 L1 (问题) 但未命中其 L2 (未闭环) → L1 保底存活, 排在全链命中的 closed_loop 之后
+        // 预选两者都入池 (closed_loop: L1+L2 命中; open_loop: L1+叶层"问题"命中)。
+        // L1 收窄: 双方命中 → 都留; L2 收窄: closed_loop 的 L2 "已闭环" 命中 →
+        // open_loop 配置了 L2 却未命中, 即使叶层命中也出局 (2026/10/14 命中即逐层收窄定稿)。
         SkillCandidateSelection selection = selector.select(
                 List.of(skill(closedLoop.skillName()), skill(openLoop.skillName())),
                 List.of(closedLoop, openLoop), "已闭环问题统计");
 
-        assertEquals(List.of("closed_loop", "open_loop"), selection.skillNames());
+        assertEquals(List.of("closed_loop"), selection.skillNames());
         assertFalse(selection.fallbackExpanded());
+    }
+
+    @Test
+    void l1HitNarrowsPoolToL1HitAndL1UnconfiguredSkills() {
+        SkillRoutingMetadata skill1 = metadataWithLevels("skill1", List.of("未闭环"), List.of("问题"), List.of(), List.of());
+        SkillRoutingMetadata skill2 = metadataWithLevels("skill2", List.of("未闭环"), List.of("研发问题"), List.of(), List.of());
+        SkillRoutingMetadata skill3 = metadataWithLevels("skill3", List.of("未闭环"), List.of("测试问题"), List.of(), List.of());
+        SkillRoutingMetadata skill4 = metadataWithLevels("skill4", List.of("未闭环"), List.of(), List.of(), List.of());
+
+        // 2026/10/14 定稿案例: 预选 4 个全入池 (skill1 靠 L1"问题", 其余靠叶层"未闭环");
+        // L1 收窄: skill1 命中 → skill2/skill3 (L1 配置了却未命中) 出局, skill4 (L1 空) 直通
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(skill1.skillName()), skill(skill2.skillName()),
+                        skill(skill3.skillName()), skill(skill4.skillName())),
+                List.of(skill1, skill2, skill3, skill4), "三部10月未闭环问题");
+
+        assertEquals(List.of("skill1", "skill4"), selection.skillNames());
+        assertFalse(selection.fallbackExpanded());
+    }
+
+    @Test
+    void explicitNameSurvivesNarrowing() {
+        SkillRoutingMetadata named = metadataWithLevels("named_skill", List.of(), List.of("研发问题"), List.of(), List.of());
+        SkillRoutingMetadata other = metadataWithLevels("other", List.of("未闭环"), List.of("问题"), List.of(), List.of());
+
+        // named_skill 显式点名入池但 L1"研发问题"未命中; other 靠 L1+叶层入池。
+        // L1 收窄由 other 触发, named_skill 配置了 L1 却未命中 —— 显式点名豁免收窄淘汰。
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(named.skillName()), skill(other.skillName())),
+                List.of(named, other), "请使用 named_skill 查询未闭环问题");
+
+        assertEquals("named_skill", selection.skillNames().get(0));
+        assertTrue(selection.skillNames().contains("other"));
     }
 
     @Test
@@ -257,6 +292,19 @@ class SkillCandidateSelectorTest {
                 List.of(skill(levelsOnly.skillName())), List.of(levelsOnly), "严重未闭环问题有多少");
 
         assertEquals(List.of("levels_only"), selection.skillNames());
+    }
+
+    @Test
+    void singleLeafHitOutranksSingleL3HitUnderReversedWeights() {
+        SkillRoutingMetadata leafOnly = metadataWithLevels("leaf_only", List.of("质量"), List.of(), List.of(), List.of());
+        SkillRoutingMetadata l3Only = metadataWithLevels("l3_only", List.of(), List.of(), List.of(), List.of("质量"));
+
+        // 2026/10/14 权重倒序钉死用例: 叶层单命中 2000 > 仅 L3 命中 1500 (旧权重下本用例反向)
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(l3Only.skillName()), skill(leafOnly.skillName())),
+                List.of(leafOnly, l3Only), "质量");
+
+        assertEquals(List.of("leaf_only", "l3_only"), selection.skillNames());
     }
 
     @Test

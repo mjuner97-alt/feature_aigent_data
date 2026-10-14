@@ -16,6 +16,7 @@ import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /** OpenGauss-backed runtime routing metadata repository. */
@@ -76,7 +77,7 @@ public class SkillRoutingMetadataRepository {
             return snapshot;
         }
         String sql = "SELECT skill_name, short_summary, keywords, domain_tags, topic_tags, maintainer AS creator, "
-                + "active, updated_at, level1_keywords, level2_keywords, level3_keywords "
+                + "active, updated_at, level1_keywords, level2_keywords, level3_keywords, script_id, param_mapping "
                 + "FROM skill_routing_metadata ORDER BY skill_name";
         List<SkillRoutingMetadata> result = new ArrayList<>();
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql);
@@ -100,7 +101,7 @@ public class SkillRoutingMetadataRepository {
     public Optional<SkillRoutingMetadata> findBySkillName(String skillName) {
         ensureTable();
         String sql = "SELECT skill_name, short_summary, keywords, domain_tags, topic_tags, maintainer AS creator, "
-                + "active, updated_at, level1_keywords, level2_keywords, level3_keywords "
+                + "active, updated_at, level1_keywords, level2_keywords, level3_keywords, script_id, param_mapping "
                 + "FROM skill_routing_metadata WHERE skill_name = ?";
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, skillName);
@@ -157,7 +158,7 @@ public class SkillRoutingMetadataRepository {
         ensureTable();
         String creatorExpr = "CASE WHEN x.owner_user_id IS NULL OR TRIM(x.owner_user_id) = '' THEN '通用' ELSE x.owner_user_id END";
         StringBuilder sql = new StringBuilder("SELECT x.name, x.description, r.short_summary, r.keywords, r.domain_tags, r.topic_tags, "
-                + "r.level1_keywords, r.level2_keywords, r.level3_keywords, "
+                + "r.level1_keywords, r.level2_keywords, r.level3_keywords, r.script_id, r.param_mapping, "
                 + creatorExpr + " AS creator, r.active, r.updated_at, r.skill_name IS NOT NULL configured FROM (SELECT s.retrieval_name AS name, s.description, s.owner_user_id FROM skill_manage s WHERE s.retrieval_name IS NOT NULL AND s.status='ACTIVE' AND s.deleted_at IS NULL UNION SELECT i.name, i.description, NULL AS owner_user_id FROM skill_index i WHERE i.status='active' AND NOT EXISTS (SELECT 1 FROM skill_manage s2 WHERE s2.retrieval_name=i.name AND s2.status='ACTIVE' AND s2.deleted_at IS NULL)) x LEFT JOIN skill_routing_metadata r ON r.skill_name=x.name WHERE 1=1");
         if (keyword != null && !keyword.isBlank()) sql.append(" AND (LOWER(x.name) LIKE ? OR LOWER(COALESCE(x.description,'')) LIKE ? OR LOWER(" + creatorExpr + ") LIKE ?)");
         if (active != null) sql.append(" AND COALESCE(r.active, TRUE)=?");
@@ -202,7 +203,7 @@ public class SkillRoutingMetadataRepository {
     public Optional<SkillRoutingMetadataView> findOneWithSkillManage(String skillName) {
         ensureTable();
         String sql = "SELECT x.name, x.description, r.short_summary, r.keywords, r.domain_tags, r.topic_tags, "
-                + "r.level1_keywords, r.level2_keywords, r.level3_keywords, "
+                + "r.level1_keywords, r.level2_keywords, r.level3_keywords, r.script_id, r.param_mapping, "
                 + "CASE WHEN x.owner_user_id IS NULL OR TRIM(x.owner_user_id) = '' THEN '通用' ELSE x.owner_user_id END AS creator, r.active, r.updated_at, r.skill_name IS NOT NULL configured FROM (SELECT s.retrieval_name AS name, s.description, s.owner_user_id FROM skill_manage s WHERE s.retrieval_name IS NOT NULL AND s.status='ACTIVE' AND s.deleted_at IS NULL UNION SELECT i.name, i.description, NULL AS owner_user_id FROM skill_index i WHERE i.status='active' AND NOT EXISTS (SELECT 1 FROM skill_manage s2 WHERE s2.retrieval_name=i.name AND s2.status='ACTIVE' AND s2.deleted_at IS NULL)) x LEFT JOIN skill_routing_metadata r ON r.skill_name=x.name WHERE x.name=?";
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, skillName);
@@ -218,14 +219,15 @@ public class SkillRoutingMetadataRepository {
         ensureTable();
         String sql = "INSERT INTO skill_routing_metadata "
                 + "(skill_name, short_summary, keywords, domain_tags, topic_tags, maintainer, active, updated_at, "
-                + "level1_keywords, level2_keywords, level3_keywords) "
-                + "VALUES (?, ?, ?, ?, ?, ?, ?, now(), ?, ?, ?) "
+                + "level1_keywords, level2_keywords, level3_keywords, script_id, param_mapping) "
+                + "VALUES (?, ?, ?, ?, ?, ?, ?, now(), ?, ?, ?, ?, ?) "
                 + "ON DUPLICATE KEY UPDATE short_summary=VALUES(short_summary), "
                 + "keywords=VALUES(keywords), domain_tags=VALUES(domain_tags), topic_tags=VALUES(topic_tags), "
                 + "maintainer=VALUES(maintainer), "
                 + "active=VALUES(active), updated_at=now(), "
                 + "level1_keywords=VALUES(level1_keywords), level2_keywords=VALUES(level2_keywords), "
-                + "level3_keywords=VALUES(level3_keywords)";
+                + "level3_keywords=VALUES(level3_keywords), script_id=VALUES(script_id), "
+                + "param_mapping=VALUES(param_mapping)";
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, metadata.skillName());
             ps.setString(2, nullToEmpty(metadata.shortSummary()));
@@ -237,6 +239,8 @@ public class SkillRoutingMetadataRepository {
             ps.setString(8, json(metadata.level1Keywords()));
             ps.setString(9, json(metadata.level2Keywords()));
             ps.setString(10, json(metadata.level3Keywords()));
+            ps.setString(11, metadata.scriptId());
+            ps.setString(12, metadata.paramMapping());
             ps.executeUpdate();
             invalidateCache();
             return true;
@@ -318,6 +322,10 @@ public class SkillRoutingMetadataRepository {
                 ensureColumn(c, "level1_keywords TEXT NOT NULL DEFAULT '[]'");
                 ensureColumn(c, "level2_keywords TEXT NOT NULL DEFAULT '[]'");
                 ensureColumn(c, "level3_keywords TEXT NOT NULL DEFAULT '[]'");
+                // Skill 直接执行 (2026/10/13): script_id NULL = 不参与直接执行 (天然开关);
+                // param_mapping JSON 对象 key=脚本参数名 value=维度键。两列可空——该库 '' 视为 NULL。
+                ensureColumn(c, "script_id VARCHAR(128)");
+                ensureColumn(c, "param_mapping TEXT");
                 tableEnsured = true;
             } catch (SQLException e) {
                 log.warn("skill_routing_metadata DDL failed (will retry): {}", e.getMessage());
@@ -348,7 +356,8 @@ public class SkillRoutingMetadataRepository {
                 rs.getBoolean("active"),
                 timestamp(rs.getTimestamp("updated_at")),
                 parse(rs.getString("level1_keywords")), parse(rs.getString("level2_keywords")),
-                parse(rs.getString("level3_keywords")));
+                parse(rs.getString("level3_keywords")),
+                rs.getString("script_id"), rs.getString("param_mapping"));
     }
 
     private SkillRoutingMetadataView mapView(ResultSet rs) throws SQLException {
@@ -361,7 +370,22 @@ public class SkillRoutingMetadataRepository {
                 !configured || rs.getBoolean("active"), timestamp(rs.getTimestamp("updated_at")), configured,
                 configured ? parse(rs.getString("level1_keywords")) : List.of(),
                 configured ? parse(rs.getString("level2_keywords")) : List.of(),
-                configured ? parse(rs.getString("level3_keywords")) : List.of());
+                configured ? parse(rs.getString("level3_keywords")) : List.of(),
+                configured ? rs.getString("script_id") : null,
+                configured ? parseParamMapping(rs.getString("param_mapping")) : Map.of());
+    }
+
+    /** param_mapping 存 JSON 对象字符串; 解析失败降级空 map (编辑弹窗可重配, 不炸页面)。 */
+    private Map<String, String> parseParamMapping(String value) {
+        if (value == null || value.isBlank()) return Map.of();
+        try {
+            Map<String, String> parsed = objectMapper.readValue(value,
+                    new TypeReference<Map<String, String>>() {});
+            return parsed == null ? Map.of() : Map.copyOf(parsed);
+        } catch (Exception e) {
+            log.warn("Invalid skill_routing_metadata param_mapping JSON: {}", e.getMessage());
+            return Map.of();
+        }
     }
 
     private List<String> parse(String value) {

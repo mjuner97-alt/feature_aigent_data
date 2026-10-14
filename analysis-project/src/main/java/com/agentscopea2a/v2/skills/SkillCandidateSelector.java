@@ -17,31 +17,37 @@ import java.util.stream.Collectors;
 /**
  * Deterministic, keyword-driven selector for model-visible Skill candidates.
  *
- * <p>匹配语义: 分级关键词加权打分 (level1Keywords → level2Keywords → level3Keywords →
- * keywords 叶层)。**任一层命中即入围** (2026/10/13 定稿, 用户拍板): 问题命中配置的
- * 任何一层 (含最深层) 都让该 skill 入围, 层级只影响排序不过滤 —— 深层命中分更高
- * (问得越具体, 越精确的 skill 排越前), 浅层/叶层命中兜底可见。全部层都未命中才
- * 淘汰 (返回空集合, LLM 直接走工具)。显式点名 skillName 直接入围且排最前。
- * 榜首候选存在配置了却未命中的层 (命中链不完整) → 问题宽泛可信度低, 截断走放宽档。
+ * <p>匹配语义: 分级关键词 (level1Keywords → level2Keywords → level3Keywords →
+ * keywords 叶层) 两阶段处理。**预选**: 显式点名 skillName 或任一层 (含叶层) 至少一个
+ * 词条正则命中问题才入池, 全不命中返回空集合 (LLM 直接走工具)。**收窄** (2026/10/14
+ * 定稿, 用户拍板): 按 L1→L2→L3 逐层检查, 某层在池中有命中时, 配置了该层却未命中的
+ * skill 出局 (即使叶层命中 —— 层配置是承诺不是可选项), 该层未配置 (空) 的 skill 视为
+ * 通用直通; 该层无任何命中则跳过 (保住只说最具体词的深层反向入围)。显式点名的 skill
+ * 豁免收窄淘汰。层级仍参与排序, 四层权重倒序 (2026/10/14 定稿): 叶层 2000/词 cap 4000
+ * &gt; L3=1500 &gt; L2=1000 &gt; L1=500; 同一词条配置在多层且都命中时各层分数都拿
+ * (跨层累加是有意行为, 不按不同词去重)。
  * 词条支持正则语法 (编译失败回退字面包含)。领域标签 {@code domainTags} 仅做互斥域
  * 过滤 (问题命中领域时排除其他领域的 skill, 通用 skill 始终保留) 与排序加成
  * (领域命中的 skill 排在通用 skill 之前); {@code topicTags} 仅内部管理归类,
- * 不参与匹配。层级分 L1=500 / L2=1000 / L3=1500, 叶层 keywords 维持 500/词 cap 1500。
- * 截断两档: 榜首命中链完整 (或显式点名, 问题精确) 截到 maxVisibleSkills; 榜首链不完整
- * (问题宽泛) 放宽到 fallbackVisibleSkills。
+ * 不参与匹配。截断两档: 榜首配置的每层都命中 (或显式点名/层未配置, 问题精确) 截到
+ * maxVisibleSkills; 榜首有配置了却未命中的层 (问题宽泛) 放宽到 fallbackVisibleSkills。
  */
 public class SkillCandidateSelector {
 
     private static final Logger log = LoggerFactory.getLogger(SkillCandidateSelector.class);
 
-    private static final int EXPLICIT_NAME_SCORE = 10_000;
-    /** 高于关键词命中分上限 (1500) + L3 (1500), 保证领域命中的 skill 排在所有通用 skill 之前。 */
-    private static final int DOMAIN_MATCH_SCORE = 3_000;
+    private static final int EXPLICIT_NAME_SCORE = 20_000;
+    /**
+     * 高于通用 skill 得分上限 (三层全空, 只能拿叶层分 cap 4000), 保证领域命中的 skill
+     * 排在所有通用 skill 之前; 同时低于 EXPLICIT_NAME_SCORE, 显式点名恒排最前。
+     */
+    private static final int DOMAIN_MATCH_SCORE = 6_000;
+    /** 四层权重倒序 L4(叶层) > L3 > L2 > L1 (2026/10/14 三次定稿, docs/history/skill-retrieval-logic.md §7.3)。 */
     private static final int LEVEL1_SCORE = 500;
     private static final int LEVEL2_SCORE = 1_000;
     private static final int LEVEL3_SCORE = 1_500;
-    private static final int KEYWORD_SCORE_PER_HIT = 500;
-    private static final int KEYWORD_SCORE_CAP = 1_500;
+    private static final int KEYWORD_SCORE_PER_HIT = 2_000;
+    private static final int KEYWORD_SCORE_CAP = 4_000;
 
     private final int maxVisibleSkills;
     private final int fallbackVisibleSkills;
@@ -60,13 +66,30 @@ public class SkillCandidateSelector {
             return new SkillCandidateSelection(List.of(), false, false, false);
         }
         Set<String> availableNames = allSkills.stream().map(AgentSkill::getName).collect(Collectors.toSet());
+        return selectInternal(metadata, question, availableNames::contains);
+    }
+
+    /**
+     * Metadata-only 入口 (Skill 直接执行路径用, 不加载 AgentSkill): 与 {@link #select}
+     * 共享同一套入围/打分/排序主体, 差别仅在无 availableNames 过滤。
+     * 调用方仍需自行做权限过滤后再传入。
+     */
+    public SkillCandidateSelection selectFromMetadata(List<SkillRoutingMetadata> metadata, String question) {
+        if (metadata == null || metadata.isEmpty()) {
+            return new SkillCandidateSelection(List.of(), false, false, false);
+        }
+        return selectInternal(metadata, question, null);
+    }
+
+    private SkillCandidateSelection selectInternal(List<SkillRoutingMetadata> metadata, String question,
+                                                    java.util.function.Predicate<String> nameFilter) {
         String normalizedQuestion = normalize(question);
         Set<String> requestedDomains = matchedTags(normalizedQuestion, metadata, SkillRoutingMetadata::domainTags);
 
         List<Candidate> pool = new ArrayList<>();
         boolean explicitAny = false;
         for (SkillRoutingMetadata entry : metadata) {
-            if (!entry.active() || !availableNames.contains(entry.skillName())) {
+            if (!entry.active() || (nameFilter != null && !nameFilter.test(entry.skillName()))) {
                 continue;
             }
             boolean explicit = contains(normalizedQuestion, entry.skillName());
@@ -91,7 +114,11 @@ public class SkillCandidateSelector {
             return new SkillCandidateSelection(List.of(), false, false, false);
         }
 
-        // 任一层命中即入围 (层级加权, 不过滤); 全部层都未命中才淘汰。
+        // 命中即逐层收窄 (2026/10/14 定稿): 某层有命中时, 配置了该层却未命中的 skill 出局。
+        int preNarrowSize = pool.size();
+        pool = narrowByLevels(pool);
+
+        // 收窄只淘汰, 不新增; 入池者必已满足预选 (显式点名或任一层命中)。
         List<ScoredSkill> scored = new ArrayList<>();
         for (Candidate c : pool) {
             boolean admitted = c.explicit() || c.keywordHits() > 0 || c.l1Hit() || c.l2Hit() || c.l3Hit();
@@ -104,7 +131,8 @@ public class SkillCandidateSelector {
             int keywordScore = Math.min(KEYWORD_SCORE_CAP, KEYWORD_SCORE_PER_HIT * c.keywordHits());
             scored.add(new ScoredSkill(c.entry().skillName(),
                     (c.explicit() ? EXPLICIT_NAME_SCORE : 0) + c.domainScore() + levelScore + keywordScore,
-                    c.keywordHits(), c.domainScore() > 0, c.explicit(), !c.explicit() && partiallyMatched(c)));
+                    c.keywordHits(), c.domainScore() > 0, c.explicit(), !c.explicit() && partiallyMatched(c),
+                    c.explicit() ? List.of() : matchedTermsOf(normalizedQuestion, c.entry())));
         }
         scored.sort(Comparator.comparing(ScoredSkill::explicit).reversed()
                 .thenComparing(Comparator.comparingInt(ScoredSkill::score).reversed())
@@ -115,9 +143,29 @@ public class SkillCandidateSelector {
         boolean hadFallback = scored.isEmpty() || scored.get(0).partial();
         int limit = hadFallback ? fallbackVisibleSkills : maxVisibleSkills;
         List<String> selected = scored.stream().limit(limit).map(ScoredSkill::name).toList();
-        log.info("SkillCandidateSelector: question='{}', pool={}, fallback={}, limit={}, selected={}",
-                abbreviate(question), pool.size(), hadFallback, limit, selected);
-        return new SkillCandidateSelection(selected, explicitAny, true, scored.size() > limit);
+        List<String> topMatched = scored.isEmpty() ? List.of() : scored.get(0).matchedTerms();
+        log.info("SkillCandidateSelector: question='{}', pool={}, narrowedOut={}, fallback={}, limit={}, selected={}",
+                abbreviate(question), preNarrowSize, preNarrowSize - pool.size(), hadFallback, limit, selected);
+        return new SkillCandidateSelection(selected, explicitAny, true, scored.size() > limit, topMatched);
+    }
+
+    /** 各层真命中词条 (定稿语义下入围者必为某层真命中; 显式点名走空列表)。 */
+    private static List<String> matchedTermsOf(String question, SkillRoutingMetadata entry) {
+        List<String> matched = new ArrayList<>();
+        collectMatched(question, entry.level1Keywords(), matched);
+        collectMatched(question, entry.level2Keywords(), matched);
+        collectMatched(question, entry.level3Keywords(), matched);
+        collectMatched(question, entry.keywords(), matched);
+        return matched;
+    }
+
+    private static void collectMatched(String question, List<String> terms, List<String> into) {
+        if (terms == null) return;
+        for (String term : terms) {
+            if (matches(question, term)) {
+                into.add(term);
+            }
+        }
     }
 
     /** 配置了某层却未命中 (靠其他层命中入围) → 命中链不完整。 */
@@ -127,6 +175,31 @@ public class SkillCandidateSelector {
                 || (!e.level2Keywords().isEmpty() && !c.l2Hit())
                 || (!e.level3Keywords().isEmpty() && !c.l3Hit())
                 || (!e.keywords().isEmpty() && c.keywordHits() == 0);
+    }
+
+    /**
+     * 命中即逐层收窄 (2026/10/14 定稿): 按 L1→L2→L3 逐层检查, 池中 (非显式点名) 存在该层
+     * 命中时, 淘汰"配置了该层却未命中"的 skill; 该层未配置 (空) 的 skill 直通; 该层无命中
+     * 则整层跳过。显式点名的 skill 豁免淘汰 (也不触发收窄 —— 其层级命中位恒为 false)。
+     */
+    private static List<Candidate> narrowByLevels(List<Candidate> pool) {
+        List<Candidate> current = pool;
+        current = narrowAtLevel(current, Candidate::l1Hit, c -> c.entry().level1Keywords().isEmpty());
+        current = narrowAtLevel(current, Candidate::l2Hit, c -> c.entry().level2Keywords().isEmpty());
+        current = narrowAtLevel(current, Candidate::l3Hit, c -> c.entry().level3Keywords().isEmpty());
+        return current;
+    }
+
+    private static List<Candidate> narrowAtLevel(List<Candidate> pool,
+                                                 java.util.function.Predicate<Candidate> hit,
+                                                 java.util.function.Predicate<Candidate> unconfigured) {
+        boolean anyHit = pool.stream().filter(c -> !c.explicit()).anyMatch(hit);
+        if (!anyHit) {
+            return pool;
+        }
+        return pool.stream()
+                .filter(c -> c.explicit() || hit.test(c) || unconfigured.test(c))
+                .collect(Collectors.toList());
     }
 
     private static int matchedTerms(String question, List<String> terms) {
@@ -188,7 +261,7 @@ public class SkillCandidateSelector {
     }
 
     private record ScoredSkill(String name, int score, int keywordHits, boolean domainMatched,
-                               boolean explicit, boolean partial) {}
+                               boolean explicit, boolean partial, List<String> matchedTerms) {}
 
     private record Candidate(SkillRoutingMetadata entry, boolean explicit, int keywordHits,
                              boolean l1Hit, boolean l2Hit, boolean l3Hit, int domainScore) {}

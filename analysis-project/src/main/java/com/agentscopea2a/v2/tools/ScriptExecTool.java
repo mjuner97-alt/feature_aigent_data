@@ -562,6 +562,36 @@ public class ScriptExecTool {
         return text.toString();
     }
 
+    /** 结构化执行结果: exitCode 来自信封解析; -1 = 未执行到子进程 (拒绝/查表失败/超时强杀)。 */
+    public record ScriptExecution(int exitCode, String fullText) {
+        public boolean success() {
+            return exitCode == 0;
+        }
+    }
+
+    private static final java.util.regex.Pattern ENVELOPE_EXIT_PATTERN =
+            java.util.regex.Pattern.compile("\\[script_exec][^\\n]*?exit=(-?\\d+)");
+
+    /**
+     * 结构化执行入口 (Skill 直接执行路径用): 复用 {@link #scriptExec} 全链路 (白名单/容器校验/
+     * 下载块短链替换), 只把结果信封解析成 exitCode。执行成功判定 exitCode==0;
+     * 拒绝/查表失败等没有信封的场景返回 exitCode=-1。
+     */
+    public ScriptExecution executeStructured(String scriptId, Map<String, Object> params) {
+        String text = executeForDebug(scriptId, params);
+        java.util.regex.Matcher m = ENVELOPE_EXIT_PATTERN.matcher(text);
+        if (!m.find()) {
+            return new ScriptExecution(-1, text);
+        }
+        int exit;
+        try {
+            exit = Integer.parseInt(m.group(1));
+        } catch (NumberFormatException e) {
+            exit = -1;
+        }
+        return new ScriptExecution(exit, text);
+    }
+
     // ======================================================================
     // Command building (transport abstraction, 与 PythonExecTool.buildCommand 对齐)
     // ======================================================================

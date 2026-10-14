@@ -563,6 +563,17 @@
         ORDER BY p.created_at DESC
     </select>
 
+    <select id="selectAllPendingPublishes" resultMap="SkillPublishResultMap">
+        SELECT p.id, p.skill_id, p.target_type, p.target_id, p.target_name, p.status,
+               p.submitter, p.approver, p.approve_time, p.current_approver_user_id,
+               p.last_approval_comment, p.last_approval_at, p.created_at,
+               s.name AS skill_name, s.description AS skill_description, s.category AS skill_category
+        FROM skill_publish p
+        LEFT JOIN skill_manage s ON s.id = p.skill_id
+        WHERE p.status IN ('PENDING', 'PENDING_DEVELOPER_REVIEW')
+        ORDER BY p.created_at DESC
+    </select>
+
     <select id="selectHistoryByApprover" resultMap="SkillPublishResultMap">
         SELECT p.id, p.skill_id, p.target_type, p.target_id, p.target_name, p.status,
                p.submitter, p.approver, p.approve_time, p.current_approver_user_id,

@@ -173,6 +173,16 @@ public class DimensionStateManager {
             DimensionState newState,
             List<AliasResolver.ResolvedAlias> resolvedAliases) {}
 
+    /**
+     * 只读预览: 规则分析 + 从给定上一轮状态继承维度, 不写 ctx 也不碰单例 currentState。
+     * 供 Skill 直接执行的 plan() 判定做参数预填; 是否正式写状态由调用方决定
+     * (决定短路后才调 processQuestionInContext, 避免回退 LLM 时状态被解析两次)。
+     */
+    public DimensionState previewState(String userQuestion, DimensionState previousState) {
+        QuestionAnalysis analysis = analyzeQuestionRuleBased(userQuestion);
+        return inheritDimensions(previousState, analysis);
+    }
+
     // ==================== 核心流程 ====================
 
     /**

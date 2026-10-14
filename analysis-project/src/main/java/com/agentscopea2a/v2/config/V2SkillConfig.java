@@ -123,6 +123,38 @@ public class V2SkillConfig {
                 enabled, skillUsageResolver);
     }
 
+    /**
+     * Skill 直接执行判定器 (绕过 LLM, docs/history/skill-direct-exec-plan.md)。
+     * 默认关; 与 routing.enabled 互相独立 (只依赖 metadata 表有 script_id 的行)。
+     * selector 与 visibility filter 同参新实例, 共享同一套打分语义。
+     */
+    @Bean
+    public com.agentscopea2a.v2.skills.DirectSkillExecutor directSkillExecutor(
+            SkillRoutingMetadataRepository routingMetadataRepository,
+            SkillUsageResolver skillUsageResolver,
+            SkillIndexRepository indexRepo,
+            com.agentscopea2a.mapper.gauss.ScriptRegistryMapper scriptRegistryMapper,
+            DimensionStateManager dimensionStateManager,
+            ObjectProvider<VersionPlanKnowledgeHook> versionPlanHookProvider,
+            ObjectProvider<com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository> dimensionKeyRepoProvider,
+            com.fasterxml.jackson.databind.ObjectMapper objectMapper,
+            @Value("${harness.a2a.skill-context.max-visible-skills:5}") int maxVisibleSkills,
+            @Value("${harness.a2a.skill-context.fallback-visible-skills:10}") int fallbackVisibleSkills,
+            @Value("${harness.a2a.skill-direct-exec.enabled:false}") boolean enabled) {
+        log.info("DirectSkillExecutor: directExecEnabled={}", enabled);
+        return new com.agentscopea2a.v2.skills.DirectSkillExecutor(
+                routingMetadataRepository,
+                new SkillCandidateSelector(maxVisibleSkills, fallbackVisibleSkills),
+                skillUsageResolver,
+                indexRepo,
+                scriptRegistryMapper,
+                dimensionStateManager,
+                versionPlanHookProvider,
+                dimensionKeyRepoProvider,
+                objectMapper,
+                enabled);
+    }
+
 
     /**
      * Knowledge dynamic retrieval hook - injects files from {@code knowledge-dynamic/} into the

@@ -4,6 +4,7 @@ import com.agentscopea2a.v2.toolrouting.ToolRoutingTagType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.Mockito;
 
 import javax.sql.DataSource;
 import java.lang.reflect.Field;
@@ -14,6 +15,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -165,6 +167,85 @@ class SkillRoutingMetadataRepositoryTest {
         SkillRoutingMetadataRepository repository = new SkillRoutingMetadataRepository(dataSource, new ObjectMapper());
 
         assertEquals("通用", repository.creatorForSkill("builtin_skill"));
+    }
+
+    @Test
+    void upsertPersistsScriptIdAndParamMappingColumns() throws Exception {
+        DataSource dataSource = mock(DataSource.class);
+        Connection connection = mock(Connection.class);
+        PreparedStatement statement = mock(PreparedStatement.class);
+        when(dataSource.getConnection()).thenReturn(connection);
+        when(connection.prepareStatement(anyString())).thenReturn(statement);
+        when(statement.executeUpdate()).thenReturn(1);
+
+        SkillRoutingMetadataRepository repository = new SkillRoutingMetadataRepository(dataSource, new ObjectMapper());
+        markSchemaReady(repository);
+
+        repository.upsert(new SkillRoutingMetadata("q2_skill", "summary", List.of(), List.of(),
+                List.of(), "admin", true, null, List.of(), List.of(), List.of(),
+                "q2_1_metrics_by_dept_version", "{\"dept\":\"deptName\",\"version\":\"versionPlan\"}"));
+
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(connection).prepareStatement(sql.capture());
+        assertTrue(sql.getValue().contains("script_id"));
+        assertTrue(sql.getValue().contains("param_mapping"));
+        assertTrue(sql.getValue().contains("script_id=VALUES(script_id)"));
+        assertTrue(sql.getValue().contains("param_mapping=VALUES(param_mapping)"));
+        verify(statement).setString(11, "q2_1_metrics_by_dept_version");
+        verify(statement).setString(12, "{\"dept\":\"deptName\",\"version\":\"versionPlan\"}");
+    }
+
+    @Test
+    void findAllReadsScriptIdAndParamMappingWithBlankNormalization() throws Exception {
+        DataSource dataSource = mock(DataSource.class);
+        Connection connection = mock(Connection.class);
+        PreparedStatement statement = mock(PreparedStatement.class);
+        ResultSet rs = mock(ResultSet.class);
+        when(dataSource.getConnection()).thenReturn(connection);
+        when(connection.prepareStatement(anyString())).thenReturn(statement);
+        when(statement.executeQuery()).thenReturn(rs);
+        when(rs.next()).thenReturn(true, true, false);
+        when(rs.getString("skill_name")).thenReturn("with_script", "blank_script");
+        when(rs.getString("short_summary")).thenReturn("s", "s");
+        when(rs.getString("keywords")).thenReturn("[]", "[]");
+        when(rs.getString("domain_tags")).thenReturn("[]", "[]");
+        when(rs.getString("topic_tags")).thenReturn("[]", "[]");
+        when(rs.getString("creator")).thenReturn("", "");
+        when(rs.getBoolean("active")).thenReturn(true, true);
+        when(rs.getString("script_id")).thenReturn("script_a", "  ");
+        when(rs.getString("param_mapping")).thenReturn("{\"dept\":\"deptName\"}", "");
+
+        SkillRoutingMetadataRepository repository =
+                new SkillRoutingMetadataRepository(dataSource, new ObjectMapper(), 60_000L);
+        markSchemaReady(repository);
+
+        List<SkillRoutingMetadata> all = repository.findAll();
+        assertEquals(2, all.size());
+        assertEquals("script_a", all.get(0).scriptId());
+        assertEquals("{\"dept\":\"deptName\"}", all.get(0).paramMapping());
+        assertNull(all.get(1).scriptId());
+        assertNull(all.get(1).paramMapping());
+    }
+
+    @Test
+    void ensureTableAddsDirectExecColumns() throws Exception {
+        DataSource dataSource = mock(DataSource.class);
+        Connection connection = mock(Connection.class);
+        PreparedStatement statement = mock(PreparedStatement.class);
+        ResultSet rs = mock(ResultSet.class);
+        when(dataSource.getConnection()).thenReturn(connection);
+        when(connection.prepareStatement(anyString())).thenReturn(statement);
+        when(statement.executeQuery()).thenReturn(rs);
+        when(rs.next()).thenReturn(false);
+        when(statement.executeUpdate()).thenReturn(1);
+
+        SkillRoutingMetadataRepository repository = new SkillRoutingMetadataRepository(dataSource, new ObjectMapper());
+        repository.findAll();
+
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(connection, Mockito.atLeast(2)).prepareStatement(sql.capture());
+        assertTrue(sql.getAllValues().stream().anyMatch(v -> v.contains("script_id VARCHAR(128)")));
+        assertTrue(sql.getAllValues().stream().anyMatch(v -> v.contains("param_mapping TEXT")));
     }
 
     private static void markSchemaReady(SkillRoutingMetadataRepository repository) throws Exception {

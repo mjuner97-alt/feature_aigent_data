@@ -93,6 +93,18 @@ public class V2DimensionConfig {
         return new AliasResolver(dimensionAliasRepository::findAllEnabled);
     }
 
+    /**
+     * 维度键字典仓储（docs/history/skill-direct-exec-plan.md §9.2）：内置 8 键 seed +
+     * 用户新增键的词表提取配置；TTL 快照同 dimension_alias 模式。
+     */
+    @Bean
+    public com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository dimensionKeyConfigRepository(
+            @Qualifier("gaussCustomerDataSource") DataSource dataSource,
+            com.fasterxml.jackson.databind.ObjectMapper objectMapper,
+            @Value("${harness.a2a.dimension.key-cache-ttl-millis:300000}") long cacheTtlMillis) {
+        return new com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository(dataSource, objectMapper, cacheTtlMillis);
+    }
+
     @Bean
     public DimensionStateMiddleware dimensionStateMiddleware(
             DimensionStateManager dimensionStateManager,

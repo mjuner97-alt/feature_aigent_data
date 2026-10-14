@@ -160,8 +160,8 @@ public class VersionPlanKnowledgeHook implements Hook {
         log.info("VersionPlanKnowledgeHook injected versions: {}, quarters: {}", versions, quarters);
     }
 
-    /** '2026年10月份版本' -> '2026年4季度'; deduped, order-preserving; unparsable values skipped. */
-    static List<String> deriveQuarters(List<String> versions) {
+    /** '2026年10月份版本' -> '2026年4季度'; deduped, order-preserving; unparsable values skipped. 公共工具口: 直接执行路径补 quarter 缺省复用。 */
+    public static List<String> deriveQuarters(List<String> versions) {
         return versions.stream()
                 .map(VersionPlanKnowledgeHook::toQuarter)
                 .filter(Objects::nonNull)
@@ -177,8 +177,8 @@ public class VersionPlanKnowledgeHook implements Hook {
         return m.group(1) + "年" + ((month - 1) / 3 + 1) + "季度";
     }
 
-    /** TTL-cached lookup; single-flight refresh; stale-serves on failure. */
-    List<String> currentVersions() {
+    /** TTL-cached lookup; single-flight refresh; stale-serves on failure. 公共查询口: 直接执行路径补 version 缺省复用。 */
+    public List<String> currentVersions() {
         CachedVersions c = cache;
         long now = System.currentTimeMillis();
         if (c != null && now < c.expireAt()) return c.versions();

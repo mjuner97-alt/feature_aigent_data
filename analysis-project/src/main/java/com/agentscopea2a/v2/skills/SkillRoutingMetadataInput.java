@@ -1,6 +1,7 @@
 package com.agentscopea2a.v2.skills;
 
 import java.util.List;
+import java.util.Map;
 
 /** Editable routing fields; Skill content is intentionally excluded. */
 public record SkillRoutingMetadataInput(
@@ -11,11 +12,23 @@ public record SkillRoutingMetadataInput(
         boolean active,
         List<String> level1Keywords,
         List<String> level2Keywords,
-        List<String> level3Keywords) {
+        List<String> level3Keywords,
+        String scriptId,
+        Map<String, String> paramMapping) {
 
-    /** Legacy 5-arg shape (no level keywords) for existing call sites. */
+    /** Legacy 5-arg shape (no level keywords, no direct-exec fields) for existing call sites. */
     public SkillRoutingMetadataInput(String shortSummary, List<String> keywords,
                                      List<String> domainTags, List<String> topicTags, boolean active) {
-        this(shortSummary, keywords, domainTags, topicTags, active, List.of(), List.of(), List.of());
+        this(shortSummary, keywords, domainTags, topicTags, active, List.of(), List.of(), List.of(),
+                null, null);
+    }
+
+    /** Legacy 8-arg shape (no direct-exec fields) for existing call sites. */
+    public SkillRoutingMetadataInput(String shortSummary, List<String> keywords,
+                                     List<String> domainTags, List<String> topicTags, boolean active,
+                                     List<String> level1Keywords, List<String> level2Keywords,
+                                     List<String> level3Keywords) {
+        this(shortSummary, keywords, domainTags, topicTags, active,
+                level1Keywords, level2Keywords, level3Keywords, null, null);
     }
 }
