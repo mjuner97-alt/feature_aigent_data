@@ -6,132 +6,132 @@
       <button type="button" class="history-nav-item" :class="{ active: activeTab === 'nodeLogs' }" :aria-current="activeTab === 'nodeLogs' ? 'page' : undefined" @click="activeTab = 'nodeLogs'">节点执行日志</button>
     </aside>
     <main class="history-content" :style="rootStyle">
-    <!-- Header -->
-    <div v-show="activeTab === 'sessions'" :style="headerStyle">
-      <div>
-        <div :style="titleStyle">会话历史</div>
-        <div :style="subtitleStyle">Session History</div>
+      <!-- Header -->
+      <div v-show="activeTab === 'sessions'" :style="headerStyle">
+        <div>
+          <div :style="titleStyle">会话历史</div>
+          <div :style="subtitleStyle">Session History</div>
+        </div>
+        <div :style="headerRight">
+          <el-radio-group v-model="scope" size="small" @change="currentPage = 1; syncQuery(); refreshConversations()">
+            <el-radio-button label="mine">我的</el-radio-button>
+            <el-radio-button label="all">全部</el-radio-button>
+          </el-radio-group>
+          <el-input
+              v-model="selectedUserId"
+              placeholder="提问人"
+              :style="{ width: '140px' }"
+              clearable
+              @keyup.enter="handleUserFilter"
+              @clear="handleUserFilter"
+          >
+            <template #prefix>
+              <span style="font-size: 14px">👤</span>
+            </template>
+          </el-input>
+          <el-button size="small" @click="handleUserFilter">查询</el-button>
+          <el-input
+              v-model="searchKeyword"
+              placeholder="搜索会话ID / Agent名称"
+              :style="{ width: '260px' }"
+              clearable
+              @keyup.enter="handleSearch"
+              @clear="handleClearSearch"
+          >
+            <template #prefix>
+              <span style="font-size: 14px">🔍</span>
+            </template>
+          </el-input>
+          <span :style="updateStyle">上次更新: {{ lastUpdated }}</span>
+          <span v-if="error" :style="errorStyle">⚠ {{ error }}</span>
+          <el-button size="small" :loading="loading" @click="refreshConversations">
+            刷新
+          </el-button>
+        </div>
       </div>
-      <div :style="headerRight">
-        <el-radio-group v-model="scope" size="small" @change="currentPage = 1; syncQuery(); refreshConversations()">
-          <el-radio-button label="mine">我的</el-radio-button>
-          <el-radio-button label="all">全部</el-radio-button>
-        </el-radio-group>
-        <el-input
-          v-model="selectedUserId"
-          placeholder="提问人"
-          :style="{ width: '140px' }"
-          clearable
-          @keyup.enter="handleUserFilter"
-          @clear="handleUserFilter"
-        >
-          <template #prefix>
-            <span style="font-size: 14px">👤</span>
-          </template>
-        </el-input>
-        <el-button size="small" @click="handleUserFilter">查询</el-button>
-        <el-input
-          v-model="searchKeyword"
-          placeholder="搜索会话ID / Agent名称"
-          :style="{ width: '260px' }"
-          clearable
-          @keyup.enter="handleSearch"
-          @clear="handleClearSearch"
-        >
-          <template #prefix>
-            <span style="font-size: 14px">🔍</span>
-          </template>
-        </el-input>
-        <span :style="updateStyle">上次更新: {{ lastUpdated }}</span>
-        <span v-if="error" :style="errorStyle">⚠ {{ error }}</span>
-        <el-button size="small" :loading="loading" @click="refreshConversations">
-          刷新
-        </el-button>
-      </div>
-    </div>
 
-    <!-- Table -->
-    <div v-show="activeTab === 'sessions'" :style="tableContainerStyle">
-      <el-table
-        :data="conversations"
-        v-loading="loading"
-        :style="{ width: '100%' }"
-        @row-click="handleRowClick"
-        :row-style="{ cursor: 'pointer' }"
-        stripe
-        border
-      >
-        <el-table-column label="会话ID" min-width="180">
-          <template #default="{ row }">
+      <!-- Table -->
+      <div v-show="activeTab === 'sessions'" :style="tableContainerStyle">
+        <el-table
+            :data="conversations"
+            v-loading="loading"
+            :style="{ width: '100%' }"
+            @row-click="handleRowClick"
+            :row-style="{ cursor: 'pointer' }"
+            stripe
+            border
+        >
+          <el-table-column label="会话ID" min-width="180">
+            <template #default="{ row }">
             <span :style="idStyle" :title="row.conversationId">
               {{ row.conversationId?.slice(0, 12) }}…
             </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="提问人" min-width="120">
-          <template #default="{ row }">
-            <span>{{ row.agentName || row.userId || '-' }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="100" align="center">
-          <template #default="{ row }">
-            <el-tag :type="statusTagType(row.status)" size="small" effect="dark">
-              {{ statusLabel(row.status) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="开始时间" min-width="170">
-          <template #default="{ row }">
-            <span :style="timeStyle">{{ formatTime(row.startTime) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="耗时" width="100" align="right">
-          <template #default="{ row }">
-            <span :style="durationStyle(row.durationMs)">{{ formatDuration(row.durationMs) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="Token In" width="100" align="right">
-          <template #default="{ row }">
-            <span :style="tokenStyle">{{ row.tokenInput ?? 0 }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="Token Out" width="100" align="right">
-          <template #default="{ row }">
-            <span :style="tokenStyle">{{ row.tokenOutput ?? 0 }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="Spans" width="80" align="right">
-          <template #default="{ row }">
-            <span :style="metaStyle">{{ row.eventCount ?? 0 }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="模型" min-width="120">
-          <template #default="{ row }">
-            <span :style="metaStyle">{{ row.model || '-' }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="180" align="center" fixed="right">
-          <template #default="{ row }">
-            <div class="action-buttons">
-              <el-button type="primary" link size="small" @click.stop="goDetail(row.conversationId)">查看详情</el-button>
-              <el-button type="success" link size="small" :loading="caseLoadingId === row.conversationId" @click.stop="setAsCase(row)">设为案例</el-button>
-            </div>
-          </template>
-        </el-table-column>
-      </el-table>
-    </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="提问人" min-width="120">
+            <template #default="{ row }">
+              <span>{{ row.agentName || row.userId || '-' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="100" align="center">
+            <template #default="{ row }">
+              <el-tag :type="statusTagType(row.status)" size="small" effect="dark">
+                {{ statusLabel(row.status) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="开始时间" min-width="170">
+            <template #default="{ row }">
+              <span :style="timeStyle">{{ formatTime(row.startTime) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="耗时" width="100" align="right">
+            <template #default="{ row }">
+              <span :style="durationStyle(row.durationMs)">{{ formatDuration(row.durationMs) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="Token In" width="100" align="right">
+            <template #default="{ row }">
+              <span :style="tokenStyle">{{ row.tokenInput ?? 0 }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="Token Out" width="100" align="right">
+            <template #default="{ row }">
+              <span :style="tokenStyle">{{ row.tokenOutput ?? 0 }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="Spans" width="80" align="right">
+            <template #default="{ row }">
+              <span :style="metaStyle">{{ row.eventCount ?? 0 }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="模型" min-width="120">
+            <template #default="{ row }">
+              <span :style="metaStyle">{{ row.model || '-' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="180" align="center" fixed="right">
+            <template #default="{ row }">
+              <div class="action-buttons">
+                <el-button type="primary" link size="small" @click.stop="goDetail(row.conversationId)">查看详情</el-button>
+                <el-button v-if="caseConversationIds.has(row.conversationId) || row.status === 'SUCCESS'" :type="caseConversationIds.has(row.conversationId) ? 'danger' : 'success'" link size="small" :disabled="caseLoadingId !== null" :loading="caseLoadingId === row.conversationId" @click.stop="caseConversationIds.has(row.conversationId) ? cancelCase(row) : setAsCase(row)">{{ caseConversationIds.has(row.conversationId) ? '取消案例' : '设为案例' }}</el-button>
+              </div>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
 
-    <!-- Pagination -->
-    <div v-show="activeTab === 'sessions'" :style="paginationStyle">
-      <el-pagination
-        v-model:current-page="currentPage"
-        :page-size="pageSize"
-        :total="total"
-        layout="total, prev, pager, next, jumper"
-        @current-change="handlePageChange"
-      />
-    </div>
-    <LongTaskNodeLogPanel v-if="activeTab === 'nodeLogs'" style="flex:1;overflow:auto" />
+      <!-- Pagination -->
+      <div v-show="activeTab === 'sessions'" :style="paginationStyle">
+        <el-pagination
+            v-model:current-page="currentPage"
+            :page-size="pageSize"
+            :total="total"
+            layout="total, prev, pager, next, jumper"
+            @current-change="handlePageChange"
+        />
+      </div>
+      <LongTaskNodeLogPanel v-if="activeTab === 'nodeLogs'" style="flex:1;overflow:auto" />
     </main>
   </div>
 </template>
@@ -141,7 +141,7 @@ import { ref, onMounted, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useRouter } from 'vue-router';
 import { listConversations, search } from '../api/trace';
-import { setConversationAsCase } from '../api/skillRecord';
+import { setConversationAsCase, listConversationCases, deleteConversationCase } from '../api/skillRecord';
 import type { Conversation, TraceStatus } from '../types/trace';
 import { STATUS_TAG_TYPE } from '../types/trace';
 import dayjs from 'dayjs';
@@ -164,8 +164,46 @@ const selectedUserId = ref<string>('');
 const scope = ref<'mine' | 'all'>((route.query.scope as 'mine' | 'all') || 'mine');
 const activeTab = ref<'sessions' | 'nodeLogs'>('sessions');
 const caseLoadingId = ref<string | null>(null);
+const caseConversationIds = ref<Set<string>>(new Set());
+let caseQueryVersion = 0;
+
+
+function caseOwner(row: Conversation): string {
+  return row.userId || getLoggedInUserId() || '';
+}
+
+async function refreshCaseState() {
+  const version = ++caseQueryVersion;
+  try {
+    const owners = [...new Set(conversations.value.map(caseOwner))];
+    if (owners.some(owner => !owner)) throw new Error('缺少案例所属用户，无法查询案例');
+    const lists = await Promise.all(owners.map(listConversationCases));
+    if (version !== caseQueryVersion) return;
+    caseConversationIds.value = new Set(lists.flat().map(item => item.conversationId));
+  } catch (e) {
+    if (version === caseQueryVersion) ElMessage.error(e instanceof Error ? e.message : '查询案例失败');
+    throw e;
+  }
+}
+
+async function cancelCase(row: Conversation) {
+  if (caseLoadingId.value !== null) return;
+  caseLoadingId.value = row.conversationId;
+  try {
+    const message = await deleteConversationCase(row.conversationId);
+    ++caseQueryVersion;
+    caseConversationIds.value = new Set([...caseConversationIds.value].filter(id => id !== row.conversationId));
+    ElMessage.success(message);
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '取消案例失败');
+  } finally {
+    caseLoadingId.value = null;
+  }
+}
 
 async function setAsCase(row: Conversation) {
+  if (row.status !== 'SUCCESS' || caseLoadingId.value !== null) return;
+  caseLoadingId.value = row.conversationId;
   const defaultCode = row.agentName || 'conversation-case';
   try {
     const result = await ElMessageBox.prompt('请输入案例标准编码（stdCode）', '设为案例', {
@@ -176,8 +214,10 @@ async function setAsCase(row: Conversation) {
       inputValidator: (value: string) => value.trim() ? true : '标准编码不能为空',
     });
     caseLoadingId.value = row.conversationId;
-    await setConversationAsCase(row.conversationId, result.value.trim(), getLoggedInUserId() || row.userId || '');
-    ElMessage.success('已设为案例');
+    const message = await setConversationAsCase(row.conversationId, result.value.trim(), caseOwner(row));
+    ++caseQueryVersion;
+    caseConversationIds.value = new Set([...caseConversationIds.value, row.conversationId]);
+    ElMessage.success(message);
   } catch (e: any) {
     if (e === 'cancel' || e === 'close') return;
     ElMessage.error(e?.message || '设为案例失败');
@@ -227,14 +267,15 @@ async function refreshConversations() {
   error.value = null;
   try {
     const data = await listConversations(
-      undefined,
-      scope.value === 'mine' ? (selectedUserId.value || getLoggedInUserId() || undefined) : (selectedUserId.value || undefined),
-      searchKeyword.value.trim() || undefined,
-      currentPage.value - 1,
-      pageSize,
+        undefined,
+        scope.value === 'mine' ? (selectedUserId.value || getLoggedInUserId() || undefined) : (selectedUserId.value || undefined),
+        searchKeyword.value.trim() || undefined,
+        currentPage.value - 1,
+        pageSize,
     );
     conversations.value = data.conversations ?? [];
     total.value = data.total ?? 0;
+    await refreshCaseState().catch(() => undefined);
     lastUpdated.value = new Date().toLocaleTimeString('zh-CN', { hour12: false });
   } catch (e: any) {
     error.value = '会话列表加载失败';
@@ -253,14 +294,15 @@ async function handleSearch() {
   try {
     // 搜索时先拉列表（带 userId 筛选），再客户端按关键字过滤
     const data = await listConversations(
-      undefined,
-      selectedUserId.value || undefined,
-      searchKeyword.value.trim() || undefined,
-      currentPage.value - 1,
-      pageSize,
+        undefined,
+        selectedUserId.value || undefined,
+        searchKeyword.value.trim() || undefined,
+        currentPage.value - 1,
+        pageSize,
     );
     conversations.value = data.conversations ?? [];
     total.value = data.total ?? 0;
+    await refreshCaseState().catch(() => undefined);
     lastUpdated.value = new Date().toLocaleTimeString('zh-CN', { hour12: false });
   } catch {
     error.value = '搜索失败';
@@ -366,3 +408,5 @@ function durationStyle(ms: number): any {
 .action-buttons { display: flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; }
 .action-buttons :deep(.el-button) { margin-left: 0; }
 </style>
+
+
