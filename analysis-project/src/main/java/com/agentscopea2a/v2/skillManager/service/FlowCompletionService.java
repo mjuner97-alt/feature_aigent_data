@@ -290,9 +290,9 @@ public class FlowCompletionService {
             return "<html><body><h3>" + title + "</h3><p>报告地址暂不可用，请登录系统查看。</p></body></html>";
         }
         String escapedUrl = escapeHtml(url);
-        return "<html><body><h3>" + title + "</h3>"
-                + "<p>长任务已完成，请点击以下地址查看完整报告：</p>"
-                + "<p><a href=\"" + escapedUrl + "\">打开长任务报告</a></p></body></html>";
+        return new StringBuilder("<html><body><p>各位：</p>")
+                .append("<p>\u3000\u3000部门研发管理周报详见：<a href=\"").append(escapedUrl).append("\">")
+                .append(title).append("</a></p></body></html>").toString();
     }
 
     private String summaryText(SkillFlowExecution execution) {
