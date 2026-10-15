@@ -268,12 +268,11 @@
             <version>3.0.3</version>
         </dependency>
 
-        <!-- GaussDB 连接使用与 DataGrip 一致的 PostgreSQL JDBC 驱动。
-             openGauss JDBC 含同名 org.postgresql.* 类，不能同时放进应用 classpath。 -->
+        <!-- GaussDB JDBC 驱动 (openGauss) -->
         <dependency>
-            <groupId>org.postgresql</groupId>
-            <artifactId>postgresql</artifactId>
-            <version>42.2.5</version>
+            <groupId>org.opengauss</groupId>
+            <artifactId>opengauss-jdbc</artifactId>
+            <version>5.1.0</version>
         </dependency>
 
         <!-- ClickHouse JDBC 驱动:0.6.5 兼容 JDK17。
