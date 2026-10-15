@@ -69,7 +69,7 @@ public class SkillFlowController {
         return definitionService.list(userId, enabled, keyword, createdBy, "all".equalsIgnoreCase(scope));
     }
 
-    /** 流程详情;仅创建人可查看和编辑。 */
+    /** 流程详情可跨用户查看；写操作由服务层单独校验创建人。 */
     @GetMapping("/api/skill-flows/{id}")
     public SkillFlowDto getFlow(@PathVariable(name = "id") Long id,
                                 @RequestHeader(name = "X-User-Id") String userId) {
@@ -158,8 +158,9 @@ public class SkillFlowController {
                                                     @RequestParam(name = "scope", defaultValue = "mine") String scope,
                                                     @RequestHeader(name = "X-User-Id") String userId,
                                                     @RequestParam(defaultValue = "1") int page,
-                                                    @RequestParam(defaultValue = "20") int pageSize) {
-        return queryService.list(status, createdBy, userId, "all".equalsIgnoreCase(scope), page, pageSize);
+                                                    @RequestParam(defaultValue = "20") int pageSize,
+                                                    @RequestParam(name = "source", required = false) String source) {
+        return queryService.list(status, createdBy, userId, "all".equalsIgnoreCase(scope), page, pageSize, source);
     }
 
     /** 执行详情(含汇总结果与报告路径)。 */

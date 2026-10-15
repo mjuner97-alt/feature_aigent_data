@@ -27,6 +27,8 @@ public class SkillFlowNodeExecution {
     private String scriptId;
     /** Python 脚本参数 JSON 快照 */
     private String scriptParamsJson;
+    /** 首次运行时冻结的实际输入；NULL 表示尚未解析，重试不得清空。 */
+    private String resolvedScriptParamsJson;
     private String questionTemplateSnapshot;
     private String renderedQuestion;
     private String dependsOnJson;

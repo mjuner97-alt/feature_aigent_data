@@ -95,10 +95,10 @@ export async function saveSource(id: number, content: string, expectedContentHas
   return res.json();
 }
 
-export async function startDebug(id: number, params: Record<string, unknown>, timeoutSeconds: number): Promise<ScriptDebugRun> {
+export async function startDebug(id: number, params: Record<string, unknown>, timeoutSeconds: number, dataDate?: string): Promise<ScriptDebugRun> {
   const res = await fetch(`${BASE}/${id}/debug`, {
     method: 'POST', headers: jsonHeaders(),
-    body: JSON.stringify({ params, timeoutSeconds, sourceMode: 'SAVED' }),
+    body: JSON.stringify({ params, timeoutSeconds, sourceMode: 'SAVED', ...(dataDate ? { dataDate } : {}) }),
   });
   if (!res.ok) throw new Error((await apiErrorDetail(res)) || `启动调试失败 (HTTP ${res.status})`);
   return res.json();

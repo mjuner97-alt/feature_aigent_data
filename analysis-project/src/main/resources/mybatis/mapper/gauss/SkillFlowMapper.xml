@@ -85,6 +85,8 @@
         <result column="flow_id" property="flowId"/>
         <result column="flow_code" property="flowCode"/>
         <result column="flow_name" property="flowName"/>
+        <result column="report_process_id" property="reportProcessId"/>
+        <result column="report_outline_snapshot" property="reportOutlineSnapshot"/>
         <result column="summary_question_template_snapshot" property="summaryQuestionTemplateSnapshot"/>
         <result column="rendered_summary_question" property="renderedSummaryQuestion"/>
         <result column="max_parallelism_snapshot" property="maxParallelismSnapshot"/>
@@ -126,6 +128,7 @@
         <result column="skill_retrieval_name" property="skillRetrievalName"/>
         <result column="script_id" property="scriptId"/>
         <result column="script_params_json" property="scriptParamsJson"/>
+        <result column="resolved_script_params_json" property="resolvedScriptParamsJson"/>
         <result column="question_template_snapshot" property="questionTemplateSnapshot"/>
         <result column="rendered_question" property="renderedQuestion"/>
         <result column="depends_on_json" property="dependsOnJson"/>
@@ -493,12 +496,13 @@
         (flow_id, flow_code, flow_name, summary_question_template_snapshot, max_parallelism_snapshot,
          notify_enabled_snapshot, notify_receivers_snapshot, notify_receiver_triggers_snapshot,
          trigger_type, trigger_user_id, conversation_id, original_question, data_date,
-         status, active_guard_key, required_metric_count, ready_metric_count, missing_metrics_json)
+         status, active_guard_key, required_metric_count, ready_metric_count, missing_metrics_json,
+         report_process_id, report_outline_snapshot)
         VALUES (#{flowId}, #{flowCode}, #{flowName}, #{summaryQuestionTemplateSnapshot}, #{maxParallelismSnapshot},
                 #{notifyEnabledSnapshot}, #{notifyReceiversSnapshot}, #{notifyReceiverTriggersSnapshot},
                 #{triggerType}, #{triggerUserId}, #{conversationId},
                 #{originalQuestion}, #{dataDate}, #{status}, #{activeGuardKey}, #{requiredMetricCount},
-                #{readyMetricCount}, #{missingMetricsJson})
+                #{readyMetricCount}, #{missingMetricsJson}, #{reportProcessId}, #{reportOutlineSnapshot})
     </insert>
 
     <!-- 按 id 查执行实例(协调器执行节点/推进流程时的常规读取) -->
@@ -626,6 +630,17 @@
         FROM skill_flow_node_execution
         WHERE id = #{id}
     </select>
+
+    <!-- 首次解析的参数先持久化再使用；重试更新不改此列。 -->
+    <update id="freezeNodeScriptParams">
+        UPDATE skill_flow_node_execution
+        SET resolved_script_params_json = #{paramsJson}, updated_at = NOW()
+        WHERE id = #{id}
+          AND resolved_script_params_json IS NULL
+          AND status = 'RUNNING'
+          AND attempt_count = #{expectedAttempt}
+          AND lease_owner = #{expectedLeaseOwner}
+    </update>
 
     <!-- ==================== 节点调度、worker 租约与并发抢占 ==================== -->
 
@@ -843,4 +858,40 @@
             updated_at=NOW()
         WHERE id = #{id}
     </update>
+
+    <select id="selectExecutionsBySource" resultMap="ExecutionMap">
+        SELECT e.*,
+               CAST((SELECT CASE WHEN COUNT(*) > 0 THEN COUNT(*)
+                                 ELSE (SELECT COUNT(*) FROM skill_flow_node fn WHERE fn.flow_id=e.flow_id)
+                            END
+                       FROM skill_flow_node_execution n WHERE n.flow_execution_id=e.id) AS INTEGER) AS computed_total_node_count,
+               CAST((SELECT COUNT(*) FROM skill_flow_node_execution n WHERE n.flow_execution_id=e.id AND n.status IN ('SUCCESS','FAILED','BLOCKED','CANCELLED')) AS INTEGER) AS computed_completed_node_count,
+               CAST(COALESCE((SELECT SUM(EXTRACT(EPOCH FROM (COALESCE(a.completed_at, NOW()) - a.started_at)))
+                  FROM skill_flow_node_attempt a JOIN skill_flow_node_execution n2 ON n2.id=a.node_execution_id
+                 WHERE n2.flow_execution_id=e.id AND a.started_at IS NOT NULL
+                   AND (a.completed_at IS NULL OR a.completed_at >= a.started_at)), 0) AS BIGINT) AS computed_active_duration_seconds
+        FROM skill_flow_execution e WHERE 1=1
+        <if test="userId != null and userId != ''">AND trigger_user_id=#{userId}</if>
+        <if test="status != null and status != ''">AND status=#{status}</if>
+        <if test="createdBy != null and createdBy != ''">AND trigger_user_id=#{createdBy}</if>
+        <choose>
+            <when test="source == 'report-template'">AND flow_id IS NULL AND report_process_id IS NOT NULL</when>
+            <when test="source == 'long-task'">AND flow_id IS NOT NULL</when>
+            <otherwise>AND 1=0</otherwise>
+        </choose>
+        ORDER BY e.created_at DESC LIMIT #{offset}, #{limit}
+    </select>
+
+    <select id="countExecutionsBySource" resultType="long">
+        SELECT COUNT(*) FROM skill_flow_execution
+        WHERE 1=1
+        <if test="userId != null and userId != ''">AND trigger_user_id=#{userId}</if>
+        <if test="status != null and status != ''">AND status=#{status}</if>
+        <if test="createdBy != null and createdBy != ''">AND trigger_user_id=#{createdBy}</if>
+        <choose>
+            <when test="source == 'report-template'">AND flow_id IS NULL AND report_process_id IS NOT NULL</when>
+            <when test="source == 'long-task'">AND flow_id IS NOT NULL</when>
+            <otherwise>AND 1=0</otherwise>
+        </choose>
+    </select>
 </mapper>

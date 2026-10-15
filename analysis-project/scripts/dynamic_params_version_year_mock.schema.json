@@ -1,0 +1,38 @@
+[
+  {
+    "name": "versions",
+    "type": "string[]",
+    "required": true,
+    "description": "版本数组，默认自动计算最近三个完整月份；可在动态时间中修改周期数量和范围。",
+    "default": {
+      "$dynamic": {
+        "v": 1,
+        "kind": "period_window",
+        "unit": "month",
+        "startOffset": -3,
+        "endOffset": -1,
+        "format": "{year}年{month}月份版本",
+        "order": "asc",
+        "output": "list"
+      }
+    }
+  },
+  {
+    "name": "year",
+    "type": "string",
+    "required": true,
+    "description": "年份单值，默认自动计算当前年，例如 2026年；允许改为直接填写。",
+    "default": {
+      "$dynamic": {
+        "v": 1,
+        "kind": "period_window",
+        "unit": "year",
+        "startOffset": 0,
+        "endOffset": 0,
+        "format": "{year}年",
+        "order": "asc",
+        "output": "single"
+      }
+    }
+  }
+]

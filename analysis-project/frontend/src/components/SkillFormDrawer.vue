@@ -14,11 +14,9 @@ import DimensionCascader from './DimensionCascader.vue';
 import SkillFileAttachment from './SkillFileAttachment.vue';
 import {
   getSkill,
-  createSkill,
-  updateSkill,
+  saveSkillForm,
   currentUserId,
   getPublishTargets,
-  submitPublish,
   getSkillPublishes,
 } from '../api/skill';
 import type { SkillInput, PublishTargetGroup } from '../types/skill';
@@ -134,45 +132,21 @@ async function submit() {
   }
   saving.value = true;
   try {
-    let skillId: number;
-    if (props.editId != null) {
-      await updateSkill(props.editId, form.value);
-      skillId = props.editId;
-    } else {
-      const created = await createSkill(form.value);
-      skillId = created.id;
-      // 创建模式: 将暂存的附件关联到新创建的 skill
-      if (attachmentRef.value) {
-        await attachmentRef.value.attachPendingFiles(skillId);
-      }
-    }
-    // 保存成功后,提交维度发布申请(如有选择)
-    if (selectedTargets.value.size > 0) {
-      const allTargets = publishTargetGroups.value.flatMap(g => g.targets);
-      const targets = allTargets.filter(t => selectedTargets.value.has(`${t.orgType}:${t.orgId}`));
-      const failed: string[] = [];
-      for (const t of targets) {
-        try {
-          // 存储组织显示名称(如"开发一组"),不含维度前缀,展示时再按维度类型拼接
-          await submitPublish(skillId, t.orgType, t.orgId, t.displayName);
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : '失败';
-          failed.push(`${t.displayName}:${msg}`);
-        }
-      }
-      if (failed.length > 0) {
-        publishResult.value = `Skill 已保存,但部分维度申请提交失败:${failed.join('; ')}`;
-      } else {
-        publishResult.value = `Skill 已保存,${targets.length} 条维度发布申请已提交(待审批)。`;
-      }
-    }
-    // 无 publishResult 或无失败时,延迟关闭并通知父组件;有失败反馈时停留让用户看到
-    if (!publishResult.value || !publishResult.value.includes('失败')) {
-      setTimeout(() => {
-        close();
-        emit('saved', skillId);
-      }, 1200);
-    }
+    const targets = publishTargetGroups.value.flatMap(g => g.targets)
+      .filter(t => selectedTargets.value.has(`${t.orgType}:${t.orgId}`))
+      .map(t => ({ targetType: t.orgType, targetId: t.orgId, targetName: t.displayName }));
+    const saved = await saveSkillForm({
+      id: props.editId,
+      skill: form.value,
+      targets,
+      fileIds: props.editId == null ? (attachmentRef.value?.getPendingFileIds() ?? []) : [],
+      grants: [],
+    });
+    const skillId = saved.id;
+    setTimeout(() => {
+      close();
+      emit('saved', skillId);
+    }, 1200);
   } catch (e) {
     formError.value = e instanceof Error ? e.message : '保存失败';
   } finally {

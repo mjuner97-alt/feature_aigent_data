@@ -46,6 +46,7 @@ public class ScriptParamValidator {
 
     private static boolean matches(String type, Object value) {
         type = type == null ? "string" : type.trim().toLowerCase();
+        if (type.startsWith("array<") && type.endsWith(">")) type = type.substring(6, type.length() - 1).trim() + "[]";
         if (type.equals("integer") || type.equals("long")) type = "int";
         if (type.equals("number") || type.equals("double") || type.equals("decimal")) type = "float";
         if (type.equals("integer[]") || type.equals("long[]")) type = "int[]";
@@ -67,6 +68,8 @@ public class ScriptParamValidator {
     }
 
     private static boolean validDate(String text) {
+        // Monthly versions are also valid for legacy date-typed report parameters.
+        if (text.matches("[0-9]{4}年(?:[1-9]|1[0-2])月份版本")) return true;
         try { LocalDate.parse(text); return true; } catch (Exception ignored) { return false; }
     }
 }

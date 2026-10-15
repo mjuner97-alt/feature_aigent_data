@@ -15,6 +15,11 @@ const editId = computed(() => {
   const value = Number(route.params.id);
   return Number.isInteger(value) && value > 0 ? value : null;
 });
+const copyFromId = computed(() => {
+  if (editId.value != null || typeof route.query.copyFrom !== 'string') return null;
+  const value = Number(route.query.copyFrom);
+  return Number.isInteger(value) && value > 0 ? value : null;
+});
 
 function back() {
   router.push({ path: '/skills/jobs', query: { tab: 'flows' } });
@@ -29,5 +34,5 @@ onMounted(async () => {
 </script>
 
 <template>
-  <SkillFlowEditorDrawer ref="editor" v-model:open="open" page :edit-id="editId" :known-flows="knownFlows" @saved="back" @update:open="value => { if (!value) back(); }" />
+  <SkillFlowEditorDrawer ref="editor" v-model:open="open" page :edit-id="editId" :copy-from-id="copyFromId" :known-flows="knownFlows" @saved="back" @update:open="value => { if (!value) back(); }" />
 </template>

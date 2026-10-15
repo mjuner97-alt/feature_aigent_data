@@ -54,7 +54,7 @@ public class SkillIndexRepository {
     private volatile boolean tableEnsured = false;
 
     public SkillIndexRepository(DataSource dataSource) {
-        this.dataSource = dataSource;
+        this.dataSource = new org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy(dataSource);
     }
 
     /**

@@ -48,6 +48,8 @@ public class FlowExecutionService {
     private final Clock clock;
     private final ApplicationEventPublisher events;
     private final NotificationRecipientService recipientService;
+    @Autowired
+    private com.agentscopea2a.v2.skillManager.mapper.ReportProcessMapper reportProcessMapper;
 
     @Autowired
     public FlowExecutionService(SkillFlowMapper mapper, SkillMapper skillMapper,
@@ -75,12 +77,58 @@ public class FlowExecutionService {
     /** 触发结果:created=false 表示当日已有同一(用户,会话,流程)的活跃执行,直接复用。 */
     public record TriggerResult(SkillFlowExecution execution, boolean created) {}
 
-    /** Resolve a named flow for the script_exec flowTask: adapter. */
-    public SkillFlow findEnabledFlowByName(String name, String userId) {
-        if (name == null || name.isBlank() || userId == null || userId.isBlank()) return null;
-        SkillFlow flow = mapper.selectFlowByName(name.trim());
-        if (flow == null || !Boolean.TRUE.equals(flow.getEnabled())) return null;
-        return userId.equals(flow.getCreatedBy()) ? flow : null;
+    /** 按用户可见的模板名称提交执行快照，不创建长任务定义，不回退匹配内部编码。 */
+    @Transactional("gaussCustomerTransactionManager")
+    public TriggerResult triggerReportTemplate(String templateName, String userId, String conversationId) {
+        if (templateName == null || templateName.isBlank() || userId == null || userId.isBlank()
+                || conversationId == null || conversationId.isBlank()) {
+            throw new IllegalStateException("ReportTemplateContextRequired");
+        }
+        ReportProcess template = reportProcessMapper.selectByName(templateName.trim());
+        if (template == null || !Boolean.TRUE.equals(template.getEnabled())) {
+            throw new IllegalStateException("ReportTemplateNotFoundOrDisabled");
+        }
+        List<com.agentscopea2a.v2.skillManager.dto.SkillFlowDefinitionRequest.Node> definitions;
+        try {
+            definitions = objectMapper.readValue(template.getNodesJson(), new TypeReference<>() {});
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("ReportTemplateInvalidNodes", e);
+        }
+        if (definitions == null || definitions.isEmpty()) throw new IllegalStateException("ReportTemplateEmptyNodes");
+        List<SkillFlowNode> nodes = definitions.stream()
+                .sorted(java.util.Comparator.comparing(n -> n.sortOrder() == null ? 0 : n.sortOrder()))
+                .map(n -> SkillFlowNode.builder().nodeKey(n.nodeKey()).nodeName(n.nodeName())
+                        .nodeType(n.nodeType()).skillId(n.skillId()).scriptId(n.scriptId())
+                        .scriptParamsJson(n.scriptParamsJson()).questionTemplate(n.questionTemplate())
+                        .dependsOnJson("[]").required(n.required() == null || n.required()).build()).toList();
+        Set<String> keys = new LinkedHashSet<>();
+        for (SkillFlowNode node : nodes) {
+            if (node.getNodeKey() == null || node.getNodeKey().isBlank() || !keys.add(node.getNodeKey()))
+                throw new IllegalStateException("ReportTemplateInvalidNodeKey");
+            if (node.getScriptId() != null && !node.getScriptId().isBlank()) {
+                if (scriptRegistryMapper == null || scriptRegistryMapper.selectByScriptId(node.getScriptId()) == null)
+                    throw new IllegalStateException("ReportTemplateScriptNotFound");
+            } else if (node.getSkillId() == null || skillMapper.selectById(node.getSkillId()) == null) {
+                throw new IllegalStateException("ReportTemplateSkillNotFound");
+            }
+        }
+        try {
+            var outline = objectMapper.readValue(template.getReportOutlineJson(),
+                    com.agentscopea2a.v2.skillManager.dto.SkillFlowDefinitionRequest.ReportOutline.class);
+            if (!ReportOutlineValidator.validate(outline, keys).isEmpty())
+                throw new IllegalStateException("ReportTemplateInvalidOutline");
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("ReportTemplateInvalidOutline", e);
+        }
+        SkillFlow snapshot = SkillFlow.builder().code(template.getCode()).name(template.getName())
+                .reportProcessId(template.getId()).reportOutline(template.getReportOutlineJson())
+                .maxParallelism(2).notifyEnabled(true).build();
+        LocalDate date = LocalDate.now(clock);
+        String guard = "report-template:" + userId + ":" + conversationId + ":" + template.getId() + ":" + date;
+        TriggerResult result = createExecution(snapshot, userId, conversationId, "", date, FlowTriggerType.CHAT, guard, false, nodes);
+        log.info("Report template submission: templateName={}, executionId={}, userId={}, conversationId={}, created={}",
+                template.getName(), result.execution().getId(), userId, conversationId, result.created());
+        return result;
     }
 
     /**
@@ -176,6 +224,13 @@ public class FlowExecutionService {
     private TriggerResult createExecution(SkillFlow flow, String userId, String conversationId, String question,
                                           LocalDate dataDate, FlowTriggerType triggerType, String guard,
                                           boolean requireAllMetrics) {
+        return createExecution(flow, userId, conversationId, question, dataDate, triggerType, guard,
+                requireAllMetrics, null);
+    }
+
+    private TriggerResult createExecution(SkillFlow flow, String userId, String conversationId, String question,
+                                          LocalDate dataDate, FlowTriggerType triggerType, String guard,
+                                          boolean requireAllMetrics, List<SkillFlowNode> templateNodes) {
         if (requireAllMetrics) {
             mapper.lockFlowForAuto(flow.getId());
             if (mapper.hasAutoMetricExecutionOnDate(flow.getId(), dataDate)) {
@@ -200,9 +255,9 @@ public class FlowExecutionService {
         //    记录不存在或状态 != READY 即计入 missing——全部不在 missing 中 = 所有依赖指标都就绪。
         // 就绪记录由外部指标到达时 upsert(见 MetricReadinessService#recordReady),次日跨天作废。
         // 快照写入 requiredMetricCount / readyMetricCount / missingMetricsJson,供执行详情展示与门控重算。
-        List<SkillFlowNode> nodes = mapper.selectNodesByFlowId(flow.getId());
+        List<SkillFlowNode> nodes = templateNodes == null ? mapper.selectNodesByFlowId(flow.getId()) : templateNodes;
         Set<Long> metrics = new LinkedHashSet<>();
-        nodes.forEach(n -> metrics.addAll(effectiveMetricIds(n)));
+        if (templateNodes == null) nodes.forEach(n -> metrics.addAll(effectiveMetricIds(n)));
         if (requireAllMetrics && metrics.isEmpty()) return new TriggerResult(null, false);
         List<Long> missing = metrics.stream().filter(id -> {
             SkillMetricReadiness ready = mapper.selectMetricReadiness(id, dataDate);
@@ -213,13 +268,14 @@ public class FlowExecutionService {
         SkillFlowExecution execution = SkillFlowExecution.builder()
                 // 关联的流程定义信息(编号 + 名称),便于执行记录自描述展示
                 .flowId(flow.getId()).flowCode(flow.getCode()).flowName(flow.getName())
+                .reportProcessId(flow.getReportProcessId()).reportOutlineSnapshot(flow.getReportOutline())
                 // 快照:把流程定义当时的配置固化到执行记录,
                 // 后续流程定义被修改不影响本次执行(总结问题模板 / 最大并行度)
                 .summaryQuestionTemplateSnapshot(flow.getSummaryQuestionTemplate())
                 .maxParallelismSnapshot(flow.getMaxParallelism())
                 // 通知配置快照:执行期间以快照为准,发通知时不再回读流程定义
                 .notifyEnabledSnapshot(flow.getNotifyEnabled())
-                .notifyReceiversSnapshot(resolveNotifyReceiversSnapshot(flow, triggerType))
+                .notifyReceiversSnapshot(templateNodes == null ? resolveNotifyReceiversSnapshot(flow, triggerType) : null)
                 .notifyReceiverTriggersSnapshot(flow.getNotifyReceiverTriggers())
                 // 触发来源:触发类型(CHAT/MANUAL/METRIC 等)与触发人信息
                 .triggerType(triggerType)
@@ -235,7 +291,12 @@ public class FlowExecutionService {
         // 普通插入 + 捕获唯一索引冲突:openGauss 的 INSERT ... ON DUPLICATE KEY UPDATE
         // 不支持 RETURNING,无法与 useGeneratedKeys 共用拿回自增 id,故并发兜底改为异常路径。
         try {
-            mapper.insertFlowExecution(execution);
+            int inserted = mapper.insertFlowExecution(execution);
+            // A template acknowledgement must correspond to an inserted task with a generated ID.
+            if (templateNodes != null) {
+                if (inserted != 1) throw new IllegalStateException("FlowExecutionInsertFailed");
+                if (execution.getId() == null) throw new IllegalStateException("FlowExecutionIdMissingAfterInsert");
+            }
         } catch (DuplicateKeyException e) {
             // 唯一索引冲突:并发下别人先插入了,复用对方记录
             return new TriggerResult(mapper.selectActiveExecution(guard), false);

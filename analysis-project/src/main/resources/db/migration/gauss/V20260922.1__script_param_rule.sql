@@ -47,8 +47,17 @@ CREATE TABLE IF NOT EXISTS script_param_rule (
     CONSTRAINT ck_script_param_rule_sort CHECK (sort_order IN ('asc', 'desc'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_script_param_rule_enabled
-    ON script_param_rule (enabled);
+-- 当前 GaussDB 不支持 CREATE INDEX IF NOT EXISTS，使用目录检查保证可重复执行。
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_indexes
+        WHERE schemaname = current_schema()
+          AND indexname = 'idx_script_param_rule_enabled'
+    ) THEN
+        CREATE INDEX idx_script_param_rule_enabled ON script_param_rule (enabled);
+    END IF;
+END $$;
 
 COMMENT ON TABLE script_param_rule IS '脚本参数取值规则 (PERIOD 型: 周期 + 格式模板 + 偏移窗口, 从数据日期推导版本/季度/年份等参数值)';
 COMMENT ON COLUMN script_param_rule.rule_key IS '规则标识, scriptParamsJson 中 {"$rule": "rule_key"} 引用';

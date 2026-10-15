@@ -25,6 +25,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 
 import java.util.Map;
 import java.util.UUID;
@@ -86,6 +87,11 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Map<String, String>> handleIllegalArgument(IllegalArgumentException ex) {
         log.warn("Invalid request argument: {}", ex.getMessage());
         return jsonBody(HttpStatus.BAD_REQUEST, ex.getMessage());
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<Map<String, String>> handleUnreadableRequest(HttpMessageNotReadableException ex) {
+        return jsonBody(HttpStatus.BAD_REQUEST, "输入格式有误，请检查日期和参数");
     }
 
     /**
@@ -173,6 +179,11 @@ public class GlobalExceptionHandler {
         // message 为 null 无法解析前缀, 直接按未知异常处理
         if (message == null) {
             return HttpStatus.INTERNAL_SERVER_ERROR;
+        }
+        if (message.startsWith("ScriptParamsInvalid") || message.startsWith("ParamRuleUnavailable")
+                || message.startsWith("ParamRuleTypeMismatch") || message.startsWith("ScriptUnavailable")
+                || message.startsWith("FlowValidationFailed") || message.startsWith("ReportProcessValidationFailed")) {
+            return HttpStatus.BAD_REQUEST;
         }
         // ---- Skill 管理相关前缀 ----
         if (message.startsWith("SkillNotFound")) {

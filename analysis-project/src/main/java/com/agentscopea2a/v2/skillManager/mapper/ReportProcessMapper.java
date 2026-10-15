@@ -7,7 +7,9 @@ import java.util.List;
 
 @Mapper
 public interface ReportProcessMapper {
+    ReportProcess selectByCode(@Param("code") String code);
     List<ReportProcess> selectAllVisible(@Param("userId") String userId, @Param("mineOnly") boolean mineOnly);
+    List<ReportProcess> selectAllForBrowse();
     ReportProcess selectById(@Param("id") Long id);
     ReportProcess selectByName(@Param("name") String name);
     void insert(ReportProcess flow);

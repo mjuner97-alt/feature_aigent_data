@@ -99,7 +99,11 @@ async function load(silent = false) {
     const [metrics, nodes, notifications] = await Promise.all([
       getSkillFlowExecutionMetrics(props.executionId), getSkillFlowExecutionNodes(props.executionId), getSkillFlowExecutionNotifications(props.executionId),
     ]);
-    execution.value = { ...detail, metrics, nodes, notifications, reportUrl: null };
+    execution.value = {
+      ...detail, metrics, nodes, notifications, reportUrl: null,
+      totalNodeCount: nodes.length || detail.totalNodeCount || 0,
+      completedNodeCount: nodes.filter(node => ['SUCCESS', 'FAILED', 'BLOCKED', 'CANCELLED'].includes(node.status)).length,
+    };
   } catch (e) { if (!silent) { error.value = e instanceof Error ? e.message : '加载执行详情失败'; execution.value = null; } }
   finally { if (!silent) loading.value = false; }
 }

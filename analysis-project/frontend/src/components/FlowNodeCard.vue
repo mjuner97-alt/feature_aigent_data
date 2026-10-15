@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
+import DynamicPeriodEditor from './DynamicPeriodEditor.vue';
 import type { SkillFlowNode } from '../types/skillFlow';
-import type { ParamSchemaItem, ScriptRegistryListItem, ScriptParamRule } from '../types/scriptRegistry';
+import type { ParamSchemaItem, ScriptRegistryListItem } from '../types/scriptRegistry';
 import type { SkillDependencyMetric } from '../types/skillJob';
-import { coerceParamValue, defaultParamValue, normalizedParamType, paramsFromSchema, ruleMarker, rulesForParam, validateParamValue } from '../utils/scriptParams';
+import { coerceParamValue, defaultParamValue, defaultPeriodValue, isDynamicValue, supportsPeriodParam, type PeriodValue, type ParamValueMode, isRuleValue, normalizedParamType, paramsFromSchema, validateParamValue } from '../utils/scriptParams';
 
 /** 流程节点配置卡片:Python 执行节点区和报告输出大纲行内嵌两处复用;排序相关控件仅在 sortable 时显示。 */
 const props = withDefaults(defineProps<{
@@ -14,10 +15,11 @@ const props = withDefaults(defineProps<{
   schema: ParamSchemaItem[] | null;
   scripts: ScriptRegistryListItem[];
   metrics: SkillDependencyMetric[];
-  paramRules?: ScriptParamRule[];
   scriptLoading?: boolean;
   metricLoading?: boolean;
   debugDisabled?: boolean;
+  showDebug?: boolean;
+  showMetrics?: boolean;
   dragging?: boolean;
   sortable?: boolean;
   isFirst?: boolean;
@@ -28,8 +30,9 @@ const props = withDefaults(defineProps<{
 }>(), {
   scriptLoading: false,
   metricLoading: false,
-  paramRules: () => [],
   debugDisabled: false,
+  showDebug: true,
+  showMetrics: true,
   dragging: false,
   sortable: true,
   isFirst: false,
@@ -41,7 +44,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (e: 'move', direction: -1 | 1): void;
   (e: 'remove'): void;
-  (e: 'debug'): void;
+  (e: 'debug', dataDate?: string): void;
   (e: 'drag-start', event: DragEvent): void;
   (e: 'drag-over'): void;
   (e: 'drag-end'): void;
@@ -52,6 +55,14 @@ const emit = defineEmits<{
   (e: 'set-metrics', value: number[]): void;
 }>();
 
+const editingPeriod = ref<string | null>(null);
+function periodValue(item: ParamSchemaItem): PeriodValue {
+  const value = schemaValues.value[item.name];
+  if (isDynamicValue(value)) return value;
+  const generated = defaultPeriodValue(item.type);
+  generated.$dynamic.format = '{year}年{month}月份版本';
+  return generated;
+}
 const scriptParamsText = ref('{}');
 const scriptParamsError = ref('');
 const schemaValues = ref<Record<string, unknown>>({});
@@ -79,6 +90,7 @@ watch(() => props.node.scriptParams, value => {
   if (formatted !== scriptParamsText.value) scriptParamsText.value = formatted;
 }, { deep: true, immediate: true });
 watch(() => props.node.scriptId, () => {
+  editingPeriod.value = null;
   scriptParamsError.value = '';
   scriptParamsText.value = formatScriptParams(props.node.scriptParams);
   schemaValues.value = { ...(props.node.scriptParams || {}) };
@@ -88,7 +100,7 @@ const hasSchema = () => !!props.schema && props.schema.length > 0;
 function schemaValue(item: ParamSchemaItem): unknown {
   if (!(item.name in schemaValues.value)) schemaValues.value[item.name] = defaultParamValue(item.type);
   let value = schemaValues.value[item.name];
-  if (isRuleValue(value)) return defaultParamValue(item.type);
+  if (isRuleValue(value) || isDynamicValue(value)) return defaultParamValue(item.type);
   // 兼容旧流程：数组参数历史上可能保存成单个字符串，不能直接 v-for 字符符号。
   if (normalizedParamType(item.type).array && !Array.isArray(value)) {
     if (typeof value === 'string') {
@@ -102,33 +114,26 @@ function schemaValue(item: ParamSchemaItem): unknown {
   return normalizedParamType(item.type).base === 'date' && typeof value === 'string'
     ? value.replace(/\//g, '-') : value;
 }
-function isRuleValue(value: unknown): value is { $rule: string } {
-  return !!value && typeof value === 'object' && '$rule' in value && typeof (value as { $rule?: unknown }).$rule === 'string';
+function paramMode(item: ParamSchemaItem): ParamValueMode {
+  return isDynamicValue(schemaValues.value[item.name]) ? 'DYNAMIC_PERIOD' : 'LITERAL';
 }
-function paramMode(item: ParamSchemaItem): 'LITERAL' | 'PRESET_RULE' {
-  return isRuleValue(schemaValues.value[item.name]) ? 'PRESET_RULE' : 'LITERAL';
-}
-function setParamMode(item: ParamSchemaItem, mode: 'LITERAL' | 'PRESET_RULE') {
+function setParamMode(item: ParamSchemaItem, mode: ParamValueMode) {
   if (mode === 'LITERAL') {
     setSchemaValue(item, defaultParamValue(item.type));
     return;
   }
-  const options = rulesForParam(props.paramRules || [], item.type);
-  if (!options.length) return;
-  schemaValues.value[item.name] = ruleMarker(options[0].ruleKey);
-  scriptParamsText.value = formatScriptParams(schemaValues.value);
-  emit('script-params-change', { value: { ...schemaValues.value }, error: '' });
-}
-function setParamRule(item: ParamSchemaItem, ruleKey: string) {
-  schemaValues.value[item.name] = ruleMarker(ruleKey);
-  scriptParamsText.value = formatScriptParams(schemaValues.value);
-  emit('script-params-change', { value: { ...schemaValues.value }, error: '' });
+  if (mode === 'DYNAMIC_PERIOD') { editingPeriod.value = item.name; return; }
 }
 function setSchemaValue(item: ParamSchemaItem, value: unknown) {
+  editingPeriod.value = null;
   const normalized = coerceParamValue(value, item.type);
   schemaValues.value[item.name] = normalized;
-  const error = validateParamValue(normalized, item.type);
-  scriptParamsError.value = error ? `${item.name}：${error}` : '';
+  const errors = (props.schema || []).map(field => {
+    const message = validateParamValue(schemaValues.value[field.name], field.type);
+    return message ? `${field.name}：${message}` : '';
+  }).filter(Boolean);
+  const error = errors[0] || '';
+  scriptParamsError.value = error;
   if (!error) {
     scriptParamsText.value = formatScriptParams(schemaValues.value);
     emit('script-params-change', { value: { ...schemaValues.value }, error: '' });
@@ -176,7 +181,7 @@ function selectedScript(node: SkillFlowNode, scripts: ScriptRegistryListItem[]):
       <span v-if="sortable" class="drag-handle" draggable="true" title="拖拽排序" aria-label="拖拽排序" @dragstart="emit('drag-start', $event)" @dragend="emit('drag-end')">⇕</span>
       <strong>{{ title }}</strong>
       <div>
-        <button v-if="node.nodeType !== 'SKILL'" class="btn" title="用当前参数真实执行一次脚本，验证参数是否可用" :disabled="debugDisabled" @click="emit('debug')">试跑</button>
+        <button v-if="showDebug && node.nodeType !== 'SKILL'" type="button" class="btn" title="用当前参数真实执行一次脚本，验证参数是否可用" :disabled="debugDisabled || !!scriptParamsError" @click="emit('debug')">试跑</button>
         <template v-if="sortable">
           <button class="icon-button" title="上移" :disabled="isFirst" @click="emit('move', -1)">↑</button>
           <button class="icon-button" title="下移" :disabled="isLast" @click="emit('move', 1)">↓</button>
@@ -198,18 +203,12 @@ function selectedScript(node: SkillFlowNode, scripts: ScriptRegistryListItem[]):
               <small v-if="item.description" class="param-desc-inline">{{ item.description }}</small>
             </div>
             <div class="param-mode">
-              <select :value="paramMode(item)" @change="setParamMode(item, ($event.target as HTMLSelectElement).value as 'LITERAL' | 'PRESET_RULE')">
+              <select :value="paramMode(item)" @change="setParamMode(item, ($event.target as HTMLSelectElement).value as ParamValueMode)">
                 <option value="LITERAL">直接填写</option>
-                <!-- 长任务规则参数暂时隐藏，保留底层数据兼容与后续恢复入口。 -->
-                <option v-if="false" value="PRESET_RULE">选择规则</option>
-              </select>
-              <select v-if="false && paramMode(item) === 'PRESET_RULE'" :value="(schemaValues[item.name] as { $rule: string }).$rule" @change="setParamRule(item, ($event.target as HTMLSelectElement).value)">
-                <option v-for="rule in rulesForParam(paramRules || [], item.type)" :key="rule.ruleKey" :value="rule.ruleKey">{{ rule.ruleName }}</option>
+                <option v-if="supportsPeriodParam(item.type) || paramMode(item) === 'DYNAMIC_PERIOD'" value="DYNAMIC_PERIOD">动态时间</option>
               </select>
             </div>
-            <template v-if="paramMode(item) === 'PRESET_RULE'">
-              <small v-if="false" class="param-rule-preview">已选择规则，执行时按数据日期自动生成</small>
-            </template>
+            <DynamicPeriodEditor v-if="paramMode(item) === 'DYNAMIC_PERIOD' || editingPeriod === item.name" :key="`${node.scriptId}:${item.name}`" :model-value="periodValue(item)" :script-id="node.scriptId" :type="item.type" :param-name="item.name" :editing="editingPeriod === item.name" :pending="paramMode(item) !== 'DYNAMIC_PERIOD'" @close="editingPeriod = null" @change="value => setSchemaValue(item, value)" />
             <template v-else-if="normalizedParamType(item.type).array">
               <div class="array-editor">
                 <div v-for="(value, index) in (schemaValue(item) as unknown[] || [])" :key="index" class="array-row">
@@ -227,12 +226,12 @@ function selectedScript(node: SkillFlowNode, scripts: ScriptRegistryListItem[]):
             </template>
           </div>
         </div>
-        <textarea v-else-if="node.scriptId" class="params-json-input" :value="scriptParamsText" rows="8" spellcheck="false" placeholder="例如：{&#10;  &quot;regions&quot;: [&quot;华东&quot;, &quot;华南&quot;]&#10;}" @input="onScriptParamsInput(($event.target as HTMLTextAreaElement).value)" />
+        <textarea v-else-if="node.scriptId" class="params-json-input" :value="scriptParamsText" rows="3" spellcheck="false" placeholder="例如：{&#10;  &quot;regions&quot;: [&quot;华东&quot;, &quot;华南&quot;]&#10;}" @input="onScriptParamsInput(($event.target as HTMLTextAreaElement).value)" />
         <small v-if="node.scriptId && !hasSchema()" class="param-hint">暂未读取到参数定义，保留 JSON 输入兼容旧脚本。</small>
         <small v-if="scriptParamsError" class="param-error">JSON 参数无效：{{ scriptParamsError }}</small>
       </div>
       <label v-if="node.nodeType === 'SKILL'"><span>本流程问题 *</span><textarea v-model="node.questionTemplate" rows="3" placeholder="填写该 Skill 在本流程中要执行的问题" /></label>
-      <label><span>指标依赖（可选）</span><el-select :model-value="node.metricIds" multiple filterable remote reserve-keyword :remote-method="(query: string) => emit('search-metrics', query)" :loading="metricLoading" placeholder="未覆盖时继承默认指标" clearable style="width: 100%" @change="(value: number[]) => emit('set-metrics', value)"><el-option v-for="metric in metrics" :key="metric.id" :value="metric.id" :label="`${metric.name} (${metric.code})`" /></el-select><small class="metric-source">当前来源：{{ node.metricOverrideConfigured ? '覆盖' : node.metricSource === 'DEFAULT' ? '默认继承' : '未配置' }}<span v-if="!node.metricOverrideConfigured && node.effectiveMetricIds?.length">（{{ node.effectiveMetricIds.length }} 项生效）</span></small></label>
+      <label v-if="showMetrics"><span>指标依赖（可选）</span><el-select :model-value="node.metricIds" multiple filterable remote reserve-keyword :remote-method="(query: string) => emit('search-metrics', query)" :loading="metricLoading" placeholder="未覆盖时继承默认指标" clearable style="width: 100%" @change="(value: number[]) => emit('set-metrics', value)"><el-option v-for="metric in metrics" :key="metric.id" :value="metric.id" :label="`${metric.name} (${metric.code})`" /></el-select><small class="metric-source">当前来源：{{ node.metricOverrideConfigured ? '覆盖' : node.metricSource === 'DEFAULT' ? '默认继承' : '未配置' }}<span v-if="!node.metricOverrideConfigured && node.effectiveMetricIds?.length">（{{ node.effectiveMetricIds.length }} 项生效）</span></small></label>
     </div>
   </div>
 </template>
@@ -250,7 +249,7 @@ label { display: grid; gap: 5px; } label > span { color: #475569; font-size: 13p
 :global(.script-select-dropdown) { min-width: 520px !important; }
 :global(.script-select-dropdown .el-select-dropdown__item) { height: auto !important; min-height: 72px !important; padding: 9px 14px !important; line-height: 1.35 !important; white-space: normal !important; }
 :global(.script-select-dropdown .el-select-dropdown__item .script-option) { width: 100%; }
-.node-params { display: grid; gap: 8px; padding: 10px 12px; border: 1px dashed #cbd5e1; border-radius: 8px; background: #fff; }
+.node-params { grid-column: 1 / -1; display: grid; gap: 8px; padding: 10px 12px; border: 1px dashed #cbd5e1; border-radius: 8px; background: #fff; }
 .node-params-title { color: #475569; font-size: 13px; font-weight: 600; }
 .param-list { display: grid; gap: 8px; }
 .param-row { display: grid; grid-template-columns: minmax(120px, 220px) minmax(0, 1fr); gap: 6px 10px; align-items: center; }
@@ -265,9 +264,9 @@ label { display: grid; gap: 5px; } label > span { color: #475569; font-size: 13p
 .param-desc-inline { display: block; margin-top: 3px; color: #94a3b8; font-size: 11px; line-height: 1.35; }
 .array-editor { display: grid; gap: 6px; }.array-row { display: grid; grid-template-columns: minmax(0, 1fr) 28px; gap: 6px; align-items: center; }.add-array { justify-self: start; padding: 5px 10px; font-size: 12px; }
 .param-empty { color: #94a3b8; font-size: 12px; }
-.params-json-input { min-height: 150px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; line-height: 1.5; }
+.params-json-input { min-height: 76px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; line-height: 1.5; }
 .param-hint { color: #64748b; font-size: 12px; line-height: 1.4; }
 .param-error { color: #dc2626; font-size: 12px; line-height: 1.4; }
 .btn, .icon-button { border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #475569; cursor: pointer; font-size: 13px; }.btn { padding: 7px 14px; }.node-toolbar .btn { border-color: #3b82f6; background: #3b82f6; color: #fff; }.node-toolbar .btn:hover:not(:disabled) { background: #2563eb; border-color: #2563eb; }.btn:disabled, .icon-button:disabled { cursor: not-allowed; opacity: .45; }.icon-button { width: 28px; height: 28px; padding: 0; font-size: 18px; line-height: 1; }.icon-button.danger { color: #dc2626; border-color: #fecaca; }
-@media (max-width: 760px) { .node-grid { grid-template-columns: 1fr; } }
+@media (max-width: 760px) { .node-grid, .param-row { grid-template-columns: 1fr; } .param-mode, .param-rule-preview, .param-desc { grid-column: 1; } }
 </style>

@@ -1,0 +1,2 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {loadModule} from '../../test/loadModule.js';
+test('debug forwards optional preview data date',async()=>{globalThis.localStorage={getItem:()=>null};let body;globalThis.fetch=async(u,o)=>{body=JSON.parse(o.body);return {ok:true,json:async()=>({runId:'r'})}};const api=await loadModule(new URL('./scriptRegistry.ts',import.meta.url));await api.startDebug(1,{period:'x'},60,'2026-01-14');assert.equal(body.dataDate,'2026-01-14');});

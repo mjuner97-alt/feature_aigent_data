@@ -1,10 +1,10 @@
-import type { ScriptParamRule } from '../types/scriptRegistry';
+import { apiErrorDetail } from '../utils/apiError';
 
-const BASE = '/api/script-param-rules';
+const BASE = '/api/script-params';
 
-export async function listScriptParamRules(): Promise<ScriptParamRule[]> {
-  const res = await fetch(BASE, { headers: { 'X-User-Id': localStorage.getItem('skill-user-id') || 'demo-user' } });
-  if (!res.ok) throw new Error(`查询参数规则失败 (HTTP ${res.status})`);
-  const body: unknown = await res.json();
-  return Array.isArray(body) ? body as ScriptParamRule[] : [];
+export interface PeriodPreview { dataDate: string; timeZone: string; resolvedParams: Record<string, unknown>; maxPeriods: number }
+export async function previewScriptParams(scriptId: string, params: Record<string, unknown>, dataDate?: string): Promise<PeriodPreview> {
+ const res = await fetch(`${BASE}/preview`, {method:'POST',headers:{'Content-Type':'application/json','X-User-Id':localStorage.getItem('skill-user-id') || 'demo-user'},body:JSON.stringify({scriptId,params,...(dataDate ? {dataDate}: {})})});
+ if (!res.ok) throw new Error((await apiErrorDetail(res)) || `预览失败 (HTTP ${res.status})`);
+ return res.json();
 }

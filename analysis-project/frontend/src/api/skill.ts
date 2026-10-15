@@ -29,6 +29,7 @@ async function skillError(res: Response, fallback: string): Promise<Error> {
   if (detail.startsWith('SkillNameConflict')) return new Error('名称已存在,请更换 Skill 名称');
   if (detail.startsWith('SkillNotFound')) return new Error('Skill 不存在或已被删除');
   if (detail.startsWith('SkillPendingApproval')) return new Error('审批中的 Skill 不可编辑或删除,请等待审批完成');
+  if (detail.startsWith('NoApproverConfigured')) return new Error('所选维度未配置审批人，本次保存未生效，请更换维度或联系管理员');
   if (detail.startsWith('NoDeveloperReviewerConfigured')) return new Error('尚未配置开发者复核人，请联系管理员');
   if (detail.startsWith('NotApprover')) return new Error('当前用户不是该阶段的审批人');
   if (detail.startsWith('PublishAlreadyApproved')) return new Error('该审批已被处理，请刷新页面查看最新状态');
@@ -402,4 +403,18 @@ export async function removeSkillFile(skillId: number, fileId: number): Promise<
     headers: authHeaders(),
   });
   if (!res.ok) throw new Error(`取消引用失败: ${res.status}`);
+}
+
+
+/** Atomically save skill, relations and all publications. */
+export async function saveSkillForm(input: {
+  id: number | null;
+  skill: SkillInput;
+  targets: { targetType: string; targetId: string; targetName: string }[];
+  fileIds: number[];
+  grants: { grantType: string; targetId: string }[];
+}): Promise<SkillDetail> {
+  const res = await fetch(`${BASE}/save`, { method: 'POST', headers: jsonHeaders(), body: JSON.stringify(input) });
+  if (!res.ok) throw await skillSaveError(res, '保存失败');
+  return res.json();
 }

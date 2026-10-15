@@ -43,7 +43,7 @@ public class SkillRoutingMetadataRepository {
     /** 校验领域/业务主题标签须在 Skill 侧独立词典中登记且启用; 词典为空时退化为自由填写。 */
     public SkillRoutingMetadataRepository(DataSource dataSource, ObjectMapper objectMapper, long cacheTtlMillis,
                                           SkillRoutingTagDictionary tagDictionary) {
-        this.dataSource = dataSource;
+        this.dataSource = new org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy(dataSource);
         this.objectMapper = objectMapper;
         this.cacheTtlMillis = cacheTtlMillis;
         this.tagDictionary = tagDictionary;

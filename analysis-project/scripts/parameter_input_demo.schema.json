@@ -1,0 +1,5 @@
+[
+  {"name":"report_date","type":"date","required":true,"description":"报告日期，可直接填写或使用动态时间"},
+  {"name":"regions","type":"string[]","required":true,"default":["华东","华南"],"description":"模拟地区，可添加多项"},
+  {"name":"quantity","type":"int","required":true,"default":10,"description":"每个地区的模拟数量，1～10000"}
+]

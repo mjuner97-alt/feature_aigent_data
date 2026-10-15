@@ -15,13 +15,11 @@ import SkillFileAttachment from '../../components/SkillFileAttachment.vue';
 import DimensionCascader from '../../components/DimensionCascader.vue';
 import {
   getSkill,
-  createSkill,
-  updateSkill,
+  saveSkillForm,
   currentUserId,
   getSkillPublishes,
   getGrants,
   getPublishTargets,
-  submitPublish,
   SkillSimilarError,
 } from '../../api/skill';
 import { checkSkillSimilarity } from '../../api/routingOverlap';
@@ -194,46 +192,20 @@ async function submit() {
     if (!(await checkNoSimilar())) return; // 命中相近描述, 只能返回修改
     // visibility 作为 SkillInput 传给后端(PERSONAL/PRIVATE/PUBLIC)
     const payload: SkillInput = { ...form.value, visibility: visibility.value };
-    let skillId: number;
-    if (editId.value != null) {
-      await updateSkill(editId.value, payload);
-      // 编辑模式:授权编辑器已即时生效(加/删都直接调后端,首个授权自动切 PRIVATE),
-      // 无需在此二次同步;仅兜底保证 visibility 已按开关更新。
-      skillId = editId.value;
-    } else {
-      const created = await createSkill(payload);
-      skillId = created.id;
-      // 创建模式: 将暂存的附件关联到新创建的 skill
-      if (attachmentRef.value) {
-        await attachmentRef.value.attachPendingFiles(skillId);
-      }
-      // 创建模式: 把表单里加好的授权同步到新 skill(编辑器无 skillId 时只是暂存)
-      await syncGrantsToServer(skillId);
-    }
-    // 公开:保存后提交所选维度的发布申请(走审批,通过后维度内可见)
-    if (visibility.value === 'PUBLIC' && selectedTargets.value.size > 0) {
-      const allTargets = publishTargetGroups.value.flatMap(g => g.targets);
-      const targets = allTargets.filter(t => selectedTargets.value.has(`${t.orgType}:${t.orgId}`));
-      const failed: string[] = [];
-      for (const t of targets) {
-        try {
-          await submitPublish(skillId, t.orgType, t.orgId, t.displayName);
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : '失败';
-          failed.push(`${t.displayName}:${msg}`);
-        }
-      }
-      if (failed.length > 0) {
-        publishResult.value = `Skill 已保存,但部分维度申请提交失败:${failed.join('; ')}`;
-      } else {
-        publishResult.value = `Skill 已保存,${targets.length} 条维度发布申请已提交(待审批)。`;
-      }
-    }
-    if (!publishResult.value || !publishResult.value.includes('失败')) {
-      setTimeout(() => {
-        router.push(`/skills/${skillId}`);
-      }, 1200);
-    }
+    const targets = publishTargetGroups.value.flatMap(g => g.targets)
+      .filter(t => selectedTargets.value.has(`${t.orgType}:${t.orgId}`))
+      .map(t => ({ targetType: t.orgType, targetId: t.orgId, targetName: t.displayName }));
+    const saved = await saveSkillForm({
+      id: editId.value,
+      skill: payload,
+      targets: visibility.value === 'PUBLIC' ? targets : [],
+      fileIds: editId.value == null ? (attachmentRef.value?.getPendingFileIds() ?? []) : [],
+      grants: editId.value == null ? (grantEditorRef.value?.currentGrants() ?? []) : [],
+    });
+    const skillId = saved.id;
+    setTimeout(() => {
+      router.push(`/skills/${skillId}`);
+    }, 1200);
   } catch (e) {
     // 预检与保存之间的竞态: 后端 409 兜底, 同样仅能返回修改
     if (e instanceof SkillSimilarError) {
@@ -243,13 +215,6 @@ async function submit() {
     formError.value = e instanceof Error ? e.message : '保存失败';
   } finally {
     saving.value = false;
-  }
-}
-
-// 创建模式专用:把编辑器暂存的授权提交到新 skill(创建时拿到 skillId 后调用)。首个授权自动切 PRIVATE。
-async function syncGrantsToServer(skillId: number) {
-  if (grantEditorRef.value) {
-    await grantEditorRef.value.commitPending(skillId);
   }
 }
 

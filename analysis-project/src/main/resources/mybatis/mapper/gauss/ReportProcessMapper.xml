@@ -17,6 +17,11 @@
     <if test="!mineOnly">AND (created_by=#{userId} OR enabled=TRUE)</if>
     ORDER BY updated_at DESC,id DESC
   </select>
+  <select id="selectAllForBrowse" resultMap="ReportProcessMap">
+    SELECT <include refid="cols"/> FROM report_process WHERE deleted_at IS NULL
+    ORDER BY updated_at DESC,id DESC
+  </select>
+  <select id="selectByCode" resultMap="ReportProcessMap">SELECT <include refid="cols"/> FROM report_process WHERE code=#{code} AND deleted_at IS NULL</select>
   <select id="selectById" resultMap="ReportProcessMap">SELECT <include refid="cols"/> FROM report_process WHERE id=#{id} AND deleted_at IS NULL</select>
   <select id="selectByName" resultMap="ReportProcessMap">SELECT <include refid="cols"/> FROM report_process WHERE name=#{name} AND deleted_at IS NULL</select>
   <insert id="insert" parameterType="com.agentscopea2a.v2.skillManager.entity.ReportProcess" useGeneratedKeys="true" keyProperty="id">

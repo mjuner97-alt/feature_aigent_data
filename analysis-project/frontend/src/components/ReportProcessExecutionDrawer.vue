@@ -1,0 +1,213 @@
+<script setup lang="ts">
+import { computed, onUnmounted, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
+import { ElMessageBox } from 'element-plus';
+import { getSkillFlowExecution, getSkillFlowExecutionMetrics, getSkillFlowExecutionNodes, getSkillFlowExecutionNotifications, getSkillFlowExecutionReportUrl, getSkillFlowNodeReportUrl, resendSkillFlowExecutionNotification, retrySkillFlowSummary, retrySkillFlowNode, retrySkillFlowFailedNodes, cancelSkillFlowExecution } from '../api/skillFlow';
+import type { SkillFlowExecution, SkillFlowNodeExecution } from '../types/skillFlow';
+import { currentUserId, batchUserNames } from '../api/skill';
+import { formatDuration } from '../utils/flowDuration.js';
+import { canRetryNode, formatNodeErrorDetails, shouldShowMetricReadiness, shouldShowNodeTimes, statusClass, statusText } from './skillFlowExecutionPresentation';
+
+const props = withDefaults(defineProps<{ open: boolean; executionId: number | null; recordLabel?: string }>(), { recordLabel: '长任务' });
+const emit = defineEmits<{ (e: 'update:open', open: boolean): void; (e: 'changed'): void }>();
+const router = useRouter();
+const execution = ref<SkillFlowExecution | null>(null);
+const loading = ref(false);
+const error = ref('');
+const resending = ref(false);
+const retrying = ref<string | null>(null);
+const cancelling = ref(false);
+const isOwner = computed(() => execution.value?.triggerUserId === currentUserId());
+// 可终止 = 本人触发 且 尚未开始收尾(汇总中不再提供终止;取消中/已终态不显示)
+const cancellable = computed(() => isOwner.value && ['WAITING_METRICS', 'QUEUED', 'RUNNING'].includes(execution.value?.status ?? ''));
+const reportError = ref('');
+const summaryActionError = ref('');
+
+const readyMetrics = computed(() => execution.value?.metrics?.filter(metric => metric.status === 'READY') ?? []);
+const waitingMetrics = computed(() => execution.value?.metrics?.filter(metric => metric.status !== 'READY') ?? []);
+const failedNodes = computed(() => execution.value?.nodes?.filter(node => node.status === 'FAILED' || node.status === 'BLOCKED') ?? []);
+const batchRetryable = computed(() =>
+  failedNodes.value.length > 0 && (execution.value?.status === 'FAILED' || execution.value?.status === 'PARTIAL_SUCCESS'));
+const summaryRetryable = computed(() =>
+  !execution.value?.reportPath && ['SUCCESS', 'FAILED', 'PARTIAL_SUCCESS'].includes(execution.value?.status ?? ''));
+const summaryGenerationError = computed(() => {
+  const summary = execution.value?.summaryJson;
+  if (!summary || typeof summary !== 'object' || Array.isArray(summary)) return '';
+  const value = (summary as Record<string, unknown>).summaryError;
+  return typeof value === 'string' ? value : '';
+});
+function formatTime(value?: string | null) { return value ? value.replace('T', ' ').slice(0, 19) : '-'; }
+function elapsedDuration() {
+  if (!execution.value?.createdAt) return '-';
+  const end = execution.value.completedAt ? new Date(execution.value.completedAt).getTime() : Date.now();
+  return formatDuration((end - new Date(execution.value.createdAt).getTime()) / 1000) ?? '-';
+}
+function listText(value?: string[]) { return value?.length ? value.join('、') : '-'; }
+function showNodeError(node: SkillFlowNodeExecution) {
+  const detail = `状态：${statusText(node.status)}\n开始时间：${formatTime(node.startedAt)}\n结束时间：${formatTime(node.completedAt)}\n\n${formatNodeErrorDetails(node)}`;
+  ElMessageBox.alert(detail, `${node.nodeName || node.skillName || node.nodeKey} 错误详情`, {
+    confirmButtonText: '关闭',
+    customClass: 'execution-error-dialog',
+  });
+}
+function latestAttempt(node: SkillFlowNodeExecution) { const list = node.attempts ?? []; return list.length ? list[list.length - 1] : null; }
+function retryStatusText(node: SkillFlowNodeExecution) {
+  if (node.status === 'RETRY_WAIT' && node.attemptCount >= 1) return `等待第 ${node.attemptCount} 次重试`;
+  if (node.status === 'RUNNING' && node.attemptCount >= 2) return `第 ${node.attemptCount - 1} 次重试中`;
+  return '';
+}
+async function openNodeReport(node: SkillFlowNodeExecution) {
+  if (!props.executionId || !node.id) return;
+  const reportWindow = window.open('', '_blank');
+  try {
+    const url = await getSkillFlowNodeReportUrl(props.executionId, node.id);
+    if (reportWindow) reportWindow.location.href = url;
+    else window.open(url, '_blank', 'noopener');
+  } catch (e) {
+    reportWindow?.close();
+    error.value = e instanceof Error ? e.message : '打开 Skill 内容失败';
+  }
+}
+async function openSummaryReport() {
+  if (!props.executionId) return;
+  const reportWindow = window.open('', '_blank');
+  reportError.value = '';
+  try {
+    const { url } = await getSkillFlowExecutionReportUrl(props.executionId);
+    if (reportWindow) reportWindow.location.href = url;
+    else window.open(url, '_blank', 'noopener');
+  } catch (e) {
+    reportWindow?.close();
+    reportError.value = e instanceof Error ? e.message : '汇总文件不存在或无法读取';
+  }
+}
+async function downloadSummaryReport() {
+  if (!props.executionId) return;
+  reportError.value = '';
+  try {
+    const { url, downloadName } = await getSkillFlowExecutionReportUrl(props.executionId);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = downloadName || 'flow-report.html';
+    anchor.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    reportError.value = e instanceof Error ? e.message : '汇总文件不存在或无法下载';
+  }
+}
+
+async function load(silent = false) {
+  if (!props.executionId) return;
+  if (!silent) loading.value = true;
+  if (!silent) error.value = ''; reportError.value = ''; summaryActionError.value = '';
+  try {
+    const detail = await getSkillFlowExecution(props.executionId);
+    if (!detail.triggerUserName && detail.triggerUserId) {
+      const names = await batchUserNames([detail.triggerUserId]);
+      detail.triggerUserName = names[detail.triggerUserId];
+    }
+    const [metrics, nodes, notifications] = await Promise.all([
+      getSkillFlowExecutionMetrics(props.executionId), getSkillFlowExecutionNodes(props.executionId), getSkillFlowExecutionNotifications(props.executionId),
+    ]);
+    // 明细比先前读取的详情更新；进度与当前展示的节点快照保持一致。
+    execution.value = {
+      ...detail, metrics, nodes, notifications, reportUrl: null,
+      totalNodeCount: nodes.length || detail.totalNodeCount || 0,
+      completedNodeCount: nodes.filter(node => ['SUCCESS', 'FAILED', 'BLOCKED', 'CANCELLED'].includes(node.status)).length,
+    };
+  } catch (e) { if (!silent) { error.value = e instanceof Error ? e.message : '加载执行详情失败'; execution.value = null; } }
+  finally { if (!silent) loading.value = false; }
+}
+async function resend() {
+  if (!props.executionId) return;
+  const previous = localStorage.getItem('skill-flow-interactive-receivers')
+    || execution.value?.notifications?.find(n => n.recipientSummary)?.recipientSummary
+    || execution.value?.triggerUserId || '';
+  let input = '';
+  try {
+    const result = await ElMessageBox.prompt('请确认本次收件人。可修改名单，确认后才会发送。', '确认发送通知', {
+      inputValue: previous, confirmButtonText: '确认发送', cancelButtonText: '取消', inputPlaceholder: '输入统一认证号，多个用逗号分隔',
+    });
+    input = result.value;
+  } catch { return; }
+  const notifyReceivers = [...new Set(input.split(/[,;，；\s]+/).map(v => v.trim()).filter(Boolean))];
+  if (!notifyReceivers.length) { error.value = '请至少保留一个收件人'; return; }
+  resending.value = true;
+  try {
+    await resendSkillFlowExecutionNotification(props.executionId, notifyReceivers);
+    localStorage.setItem('skill-flow-interactive-receivers', notifyReceivers.join(','));
+    await load(); emit('changed');
+  }
+  catch (e) { error.value = e instanceof Error ? e.message : '补发通知失败'; }
+  finally { resending.value = false; }
+}
+async function retrySummary() { if (!props.executionId) return; retrying.value = 'summary'; summaryActionError.value = ''; try { await retrySkillFlowSummary(props.executionId); await load(); emit('changed'); } catch (e) { summaryActionError.value = e instanceof Error ? e.message : '重新生成汇总失败'; } finally { retrying.value = null; } }
+async function retryNode(node: SkillFlowNodeExecution) { if (!props.executionId || !node.id) return; retrying.value = `node-${node.id}`; try { await retrySkillFlowNode(props.executionId, node.id); node.errorMessage = null; node.errorCode = null; await load(); emit('changed'); } catch (e) { error.value = e instanceof Error ? e.message : '重试节点失败'; } finally { retrying.value = null; } }
+async function retryFailedNodes() { if (!props.executionId) return; retrying.value = 'failed-nodes'; try { await retrySkillFlowFailedNodes(props.executionId); await load(); emit('changed'); } catch (e) { error.value = e instanceof Error ? e.message : '重试失败节点失败'; } finally { retrying.value = null; } }
+async function cancelExecution() {
+  if (!props.executionId) return;
+  try {
+    await ElMessageBox.confirm(`确定终止该${props.recordLabel}吗？正在执行的节点完成后其结果将被丢弃，后续节点不再执行。`, '终止任务',
+      { confirmButtonText: '终止', cancelButtonText: '继续执行', type: 'warning' });
+  } catch { return; }
+  cancelling.value = true;
+  try { await cancelSkillFlowExecution(props.executionId); await load(); emit('changed'); }
+  catch (e) { error.value = e instanceof Error ? e.message : '终止任务失败'; }
+  finally { cancelling.value = false; }
+}
+// 执行尚未到终态时每 5 秒静默刷新一次(与列表页轮询一致),进入终态或抽屉关闭即停。
+const POLLING_STATUSES = ['WAITING_METRICS', 'QUEUED', 'RUNNING', 'SUMMARIZING', 'CANCEL_REQUESTED'];
+let pollTimer: ReturnType<typeof setInterval> | undefined;
+function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = undefined; } }
+function syncPolling() {
+  const active = props.open && execution.value != null && POLLING_STATUSES.includes(execution.value.status);
+  if (active && !pollTimer) pollTimer = setInterval(() => { if (props.open) load(true); else stopPolling(); }, 5000);
+  if (!active) stopPolling();
+}
+watch(() => props.open, open => { if (open) { load(); } else { stopPolling(); } });
+watch(execution, syncPolling);
+onUnmounted(stopPolling);
+</script>
+
+<template>
+  <Teleport to="body">
+    <div v-if="open" class="mask" @click.self="emit('update:open', false)">
+      <section class="drawer" :aria-label="`${recordLabel}执行详情`">
+        <header><div><h3>{{ recordLabel }}详情</h3><span v-if="execution">#{{ execution.id }} · {{ execution.flowName }}</span></div><button class="icon-button" title="关闭" aria-label="关闭" @click="emit('update:open', false)">×</button></header>
+        <main>
+          <div v-if="loading" class="empty">加载中…</div>
+          <div v-else-if="error" class="error">{{ error }}</div>
+          <template v-else-if="execution">
+            <section class="summary"><div><span>状态</span><strong class="status" :class="statusClass(execution.status)">{{ statusText(execution.status) }}</strong><button v-if="cancellable" class="btn-link cancel-action" :disabled="cancelling" @click="cancelExecution">{{ cancelling ? '终止中…' : '终止任务' }}</button><button v-if="isOwner && execution.reportPath && ['SUCCESS', 'PARTIAL_SUCCESS', 'FAILED'].includes(execution.status)" class="btn-link" :disabled="resending" @click="resend">{{ resending ? '发送中…' : '发送通知' }}</button></div><div v-if="shouldShowMetricReadiness(execution.triggerType)"><span>指标</span><strong>{{ execution.readyMetricCount }} / {{ execution.requiredMetricCount }} 已就绪</strong></div><div><span>节点</span><strong>{{ execution.completedNodeCount ?? 0 }} / {{ execution.totalNodeCount ?? execution.nodes?.length ?? 0 }} 已完成</strong></div></section>
+            <section class="summary">
+              <div><span>触发人</span><strong>{{ execution.triggerUserName && execution.triggerUserId ? `${execution.triggerUserName}(${execution.triggerUserId})` : execution.triggerUserName || execution.triggerUserId || '-' }}</strong></div>
+              <div><span>发起时间</span><strong>{{ formatTime(execution.createdAt) }}</strong></div>
+              <div><span>总历时</span><strong>{{ elapsedDuration() }}</strong></div>
+            </section>
+            <section v-if="shouldShowMetricReadiness(execution.triggerType)"><h4>指标门闩</h4><p class="caption">已就绪 {{ readyMetrics.length }} 项，待处理或已过期 {{ waitingMetrics.length }} 项</p><div class="metric-list"><div v-for="metric in execution.metrics" :key="`${metric.metricId}-${metric.metricCode}`" class="metric-row"><span class="metric-status" :class="metric.status === 'READY' ? 'ready' : 'waiting'">{{ metric.status === 'READY' ? '已就绪' : metric.status === 'EXPIRED' ? '已过期' : '未就绪' }}</span><div><strong>{{ metric.metricCode || metric.metricName || '未知指标' }}</strong><span>{{ metric.metricName }}</span></div><span>{{ formatTime(metric.readyAt) }}</span><span>影响 {{ listText(metric.affectedSkills) }}</span></div></div></section>
+            <section><div class="section-heading"><h4>节点执行时间线</h4><button v-if="isOwner && batchRetryable" class="btn-link" :disabled="!!retrying" @click="retryFailedNodes">{{ retrying === 'failed-nodes' ? '重试中…' : `重试失败节点（${failedNodes.length} 个）` }}</button></div><div class="timeline"><article v-for="node in execution.nodes" :key="node.id || node.nodeKey"><div class="timeline-head"><strong>{{ node.nodeName || node.skillName || node.nodeKey }}</strong><span class="status" :class="statusClass(node.status)">{{ statusText(node.status) }}</span><span v-if="retryStatusText(node)">{{ retryStatusText(node) }}</span><button v-if="node.status === 'SUCCESS' && node.hasResult" class="btn-link" @click="openNodeReport(node)">查看内容</button><button v-if="node.status !== 'SUCCESS' && node.errorMessage" class="btn-link" @click="showNodeError(node)">错误详情</button><button v-if="isOwner && ['FAILED', 'BLOCKED'].includes(node.status) && canRetryNode(execution.status, node.status)" class="btn-link" :disabled="!!retrying" @click="retryNode(node)">{{ retrying === `node-${node.id}` ? '重试中…' : '重试此节点' }}</button></div><div class="node-detail"><span>{{ node.required ? '必需节点' : '可选节点' }}</span><template v-if="shouldShowNodeTimes(node.attempts)"><span>开始时间：{{ formatTime(node.startedAt) }}</span><span>结束时间：{{ formatTime(node.completedAt) }}</span></template></div><template v-if="latestAttempt(node) && node.status !== 'RUNNING' && node.status !== 'QUEUED'"><div class="attempts"><div><strong class="status" :class="statusClass(latestAttempt(node)?.status || '')">第 {{ latestAttempt(node)?.attemptNo }} 次 · {{ latestAttempt(node) ? statusText(latestAttempt(node).status) : '' }}</strong><span>开始时间：{{ formatTime(latestAttempt(node)?.startedAt) }}</span><span>结束时间：{{ formatTime(latestAttempt(node)?.completedAt) }}</span></div></div></template></article></div></section>
+            <section><h4>汇总报告</h4><span v-if="execution.reportPath" class="report-actions"><button class="btn-link" @click="openSummaryReport">预览</button><span class="action-divider">/</span><button class="btn-link" @click="downloadSummaryReport">下载</button><template v-if="isOwner"><span class="action-divider">/</span><button class="btn-link" @click="router.push(`/skills/jobs/flows/executions/${executionId}/report/edit`)">编辑</button></template></span><button v-if="isOwner && summaryRetryable" class="btn-link summary-action" :disabled="!!retrying" @click="retrySummary">{{ retrying === 'summary' ? '生成中…' : '重新生成汇总' }}</button><p v-else-if="!execution.reportPath" class="caption">报告生成中或暂不可用</p><p v-if="summaryActionError || summaryGenerationError || reportError" class="summary-error">{{ summaryActionError || summaryGenerationError || reportError }}</p></section>
+          </template>
+        </main>
+        <footer><button class="btn" @click="emit('update:open', false)">关闭</button></footer>
+      </section>
+    </div>
+  </Teleport>
+          </template>
+
+<style scoped>
+.mask { position: fixed; inset: 0; z-index: 1000; display: flex; justify-content: flex-end; background: rgb(15 23 42 / 45%); }.drawer { display: flex; width: min(860px, 96vw); height: 100%; flex-direction: column; background: #fff; box-shadow: -8px 0 24px rgb(15 23 42 / 12%); }.drawer header, footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 20px; border-bottom: 1px solid #e2e8f0; }.drawer footer { justify-content: flex-end; border-top: 1px solid #e2e8f0; border-bottom: 0; }.drawer h3 { margin: 0; color: #0f172a; font-size: 18px; }.drawer header span { color: #64748b; font-size: 12px; }.drawer main { flex: 1; overflow: auto; padding: 20px; }.drawer section { padding: 14px 0; border-bottom: 1px solid #e2e8f0; }.drawer section:last-child { border-bottom: 0; }.drawer h4 { margin: 0 0 8px; color: #0f172a; font-size: 14px; }.drawer section > p { margin: 8px 0 4px; color: #475569; font-size: 12px; }.drawer section > .summary-error { color: #b91c1c; }.summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }.summary div { display: grid; gap: 3px; }.summary span, .caption { color: #64748b; font-size: 12px; }.summary strong { color: #1e293b; font-size: 13px; }.text-block, pre { margin: 0; color: #334155; font: inherit; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }pre { padding: 10px; background: #f8fafc; }.metric-list, .timeline { display: grid; gap: 8px; }.metric-row { display: grid; grid-template-columns: 68px minmax(120px, 1fr) 145px minmax(150px, 1fr); align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid #f1f5f9; color: #475569; font-size: 12px; }.metric-row div { display: grid; gap: 2px; }.metric-row strong { color: #1e293b; }.metric-status, .status { display: inline-block; width: max-content; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 700; }.metric-status.ready { background: #dcfce7; color: #166534; }.metric-status.waiting { background: #fef3c7; color: #92400e; }.timeline article { padding: 10px 0; border-top: 1px solid #e2e8f0; }.timeline-head, .node-detail, .notification-row, .notification-heading, .section-heading { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }.section-heading, .notification-heading { justify-content: space-between; }.section-heading h4, .notification-heading h4 { margin-bottom: 0; }.timeline-head strong { color: #0f172a; }.timeline-head span, .node-detail, .notification-row { color: #64748b; font-size: 12px; }.status { background: #eff6ff; color: #1d4ed8; }.node-detail { margin: 6px 0; }.timeline details { color: #475569; font-size: 12px; }.timeline summary { cursor: pointer; color: #2563eb; }.timeline details p { margin: 6px 0; white-space: pre-wrap; }.node-error { margin-top: 6px; color: #b91c1c; font-size: 12px; }.attempts { display: grid; gap: 6px; margin-top: 8px; border-left: 2px solid #cbd5e1; padding-left: 8px; color: #64748b; font-size: 12px; }.attempts > div { display: flex; gap: 10px; flex-wrap: wrap; }.notification-row { padding: 7px 0; border-top: 1px solid #f1f5f9; }.btn, .icon-button { border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #475569; cursor: pointer; font-size: 13px; }.btn-link { border: 0; background: none; padding: 0; color: #2563eb; cursor: pointer; font-size: 12px; }.btn { padding: 7px 14px; }.btn:disabled { opacity: .5; cursor: not-allowed; }.icon-button { width: 28px; height: 28px; padding: 0; font-size: 18px; }.error { padding: 10px; border-left: 3px solid #dc2626; background: #fef2f2; color: #b91c1c; font-size: 13px; }.empty { padding: 40px 0; color: #94a3b8; text-align: center; }a { color: #2563eb; font-size: 13px; }@media (max-width: 700px) { .drawer { width: 100vw; }.drawer main { padding: 14px; }.summary { grid-template-columns: repeat(2, 1fr); }.metric-row { grid-template-columns: 68px 1fr; }.metric-row > span:nth-last-child(-n+2) { grid-column: 2; } }
+.status-success { background: #dcfce7; color: #166534 !important; }
+.status-failed { background: #fee2e2; color: #b91c1c !important; }
+.status-running { background: #dbeafe; color: #1d4ed8 !important; }
+.status-waiting { background: #fef3c7; color: #92400e !important; }
+.status-cancelled, .status-neutral { background: #f1f5f9; color: #64748b !important; }
+.summary-action { margin-left: 14px; }
+.cancel-action { margin-left: 8px; color: #b91c1c; }
+.report-actions { display: inline-flex; align-items: center; gap: 8px; }
+.action-divider { color: #cbd5e1; font-size: 12px; }
+</style>
+
+
+
+

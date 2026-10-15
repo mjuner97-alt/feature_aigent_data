@@ -25,8 +25,6 @@ import com.zaxxer.hikari.HikariDataSource;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
-import io.agentscope.core.agent.RuntimeContext;
-import io.agentscope.core.hook.RuntimeContextAware;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URLEncoder;
@@ -91,7 +89,7 @@ import org.slf4j.LoggerFactory;
  * <p><b>Bean wiring:</b> 由 {@link com.agentscopea2a.v2.config.V2ToolConfig} 创建 bean,
  * 注入 mysqlDataSource + gaussDataSource + clickHouseDataSource + ScriptRegistryMapper + workspacePath.
  */
-public class ScriptExecTool implements RuntimeContextAware {
+public class ScriptExecTool {
 
     private static final Logger log = LoggerFactory.getLogger(ScriptExecTool.class);
 
@@ -117,6 +115,8 @@ public class ScriptExecTool implements RuntimeContextAware {
     static final String WEEKLY_BUSINESS_MOCK_ID = "weekly_business_html_brief_mock";
     /** 空 HTML 布局回归演示：命中后只返回空 HTML，不读文件、不启动 Python。 */
     static final String EMPTY_HTML_MOCK_ID = "empty_html_flow_demo";
+    /** 动态时间参数测试：版本数组、年份单值；直接返回模拟数据，不启动 Python。 */
+    static final String DYNAMIC_PARAMS_MOCK_ID = "dynamic_params_version_year_mock";
 
     /**
      * 演示用模拟脚本 id:命中后不查磁盘、不启动 python,直接返回模拟 HTML 报告。
@@ -141,9 +141,11 @@ public class ScriptExecTool implements RuntimeContextAware {
     private final String containerWorkspacePath;
     private final DownloadContentService downloadContentService;
     private final FlowExecutionService flowExecutionService;
-    private volatile RuntimeContext currentContext;
+    /** Bound by the backend for one execution; never supplied by the model or mutated on the shared bean. */
+    private final String triggerUserId;
+    private final String executionSessionId;
 
-    static final String FLOW_TASK_PREFIX = "flowTask:";
+    static final String REPORT_TEMPLATE_PREFIX = "report_template:";
     /**
      * 启动时从数据源配置算好的默认 env: Gauss 凭据对所有 script_exec 子进程默认可用
      * (_sql_registry 读 sql_registry 表要过 GaussDB, 不要求脚本 datasources 声明 gauss).
@@ -184,14 +186,8 @@ public class ScriptExecTool implements RuntimeContextAware {
                 ? "/workspace" : containerWorkspacePath;
         this.downloadContentService = downloadContentService;
         this.flowExecutionService = flowExecutionService;
-    }
-
-    @Override
-    public void setRuntimeContext(RuntimeContext context) { this.currentContext = context; }
-
-    static boolean isFlowTaskScriptId(String scriptId) {
-        return scriptId != null && scriptId.startsWith(FLOW_TASK_PREFIX)
-                && !scriptId.substring(FLOW_TASK_PREFIX.length()).trim().isEmpty();
+        this.triggerUserId = null;
+        this.executionSessionId = null;
         Map<String, String> de = new LinkedHashMap<>();
         try {
             injectGaussJdbcEnv(de, gaussDs);
@@ -201,30 +197,63 @@ public class ScriptExecTool implements RuntimeContextAware {
         this.defaultEnv = Collections.unmodifiableMap(de);
     }
 
+    private ScriptExecTool(ScriptExecTool source, String userId, String sessionId) {
+        this.dataSourceMap = source.dataSourceMap;
+        this.defaultEnv = source.defaultEnv;
+        this.registryMapper = source.registryMapper;
+        this.workspacePath = source.workspacePath;
+        this.sandbox = source.sandbox;
+        this.containerWorkspacePath = source.containerWorkspacePath;
+        this.downloadContentService = source.downloadContentService;
+        this.flowExecutionService = source.flowExecutionService;
+        this.triggerUserId = userId;
+        this.executionSessionId = sessionId == null || sessionId.isBlank()
+                ? "report-template-" + java.util.UUID.randomUUID() : sessionId;
+    }
+
+    /** Create an immutable execution-scoped tool without changing script_exec business parameters. */
+    public ScriptExecTool forExecution(String userId, String sessionId) {
+        return new ScriptExecTool(this, userId, sessionId);
+    }
+
+    static boolean isReportTemplateScriptId(String scriptId) {
+        return scriptId != null && scriptId.startsWith(REPORT_TEMPLATE_PREFIX)
+                && !scriptId.substring(REPORT_TEMPLATE_PREFIX.length()).trim().isEmpty();
+    }
+
     @Tool(
             name = "script_exec",
             description = "执行预注册指标脚本。scriptId 可来自当前 Skill 固定流程或 tool_index；参数以 Skill 或 toolMetaInfo 为准。"
+                    + "提交报告流程时使用 report_template:<模板名称>，params 留空。"
                     + "脚本可自带明细下载块（文件名固化在脚本内），调用方无需传下载参数。")
     public ToolResultBlock scriptExec(
             @ToolParam(
                     name = "scriptId",
-                    description = "当前 Skill 或 tool_index 提供的脚本工具 ID")
+                    description = "当前 Skill 或 tool_index 提供的脚本工具 ID；报告流程使用 report_template:<模板名称>")
                     String scriptId,
             @ToolParam(
                     name = "params",
                     description = "可选；参数以 toolMetaInfo 为准",
                     required = false)
                     Map<String, Object> params) {
+        return executeScript(scriptId, params, false);
+    }
+
+    private ToolResultBlock executeScript(String scriptId, Map<String, Object> params, boolean background) {
 
         if (scriptId == null || scriptId.isBlank()) {
             return ToolResultBlock.text("script_exec 拒绝执行: scriptId 不能为空。若当前 Skill 已指定 scriptId，"
                     + "请按 Skill 正文原样填写；没有固定 ID 时才通过 tool_index 查询");
         }
-        if (scriptId.startsWith(FLOW_TASK_PREFIX)) {
+        if (scriptId.startsWith(REPORT_TEMPLATE_PREFIX)) {
+            if (background) return ToolResultBlock.error("script_exec 拒绝执行：后台脚本节点不允许嵌套提交报告模板");
             if (params != null && !params.isEmpty()) {
-                return ToolResultBlock.error("flowTask 仅接受 scriptId=flowTask:<长任务名称>，不接受 params");
+                return ToolResultBlock.error("报告模板仅接受 scriptId=report_template:<模板名称>，不接受 params");
             }
-            return submitFlowTask(scriptId.substring(FLOW_TASK_PREFIX.length()).trim());
+            return submitReportTemplate(scriptId.substring(REPORT_TEMPLATE_PREFIX.length()).trim());
+        }
+        if (DYNAMIC_PARAMS_MOCK_ID.equals(scriptId)) {
+            return dynamicParamsMock(params);
         }
         if (WEEKLY_BUSINESS_MOCK_ID.equals(scriptId)) {
             return ToolResultBlock.text(formatWeeklyBusinessMock(params));
@@ -384,8 +413,7 @@ public class ScriptExecTool implements RuntimeContextAware {
         env.put("PYTHONPATH", pythonPath);
 
         // 6. 启动子进程
-        int timeout = entry.getTimeoutSeconds() == null || entry.getTimeoutSeconds() <= 0
-                ? 60 : Math.min(entry.getTimeoutSeconds(), MAX_TIMEOUT_SECONDS);
+        int timeout = resolveScriptTimeout(entry.getTimeoutSeconds(), background);
 
         List<String> command = buildCommand(scriptAbsPath.toString(), containerScriptPath, env);
 
@@ -396,23 +424,37 @@ public class ScriptExecTool implements RuntimeContextAware {
         return runProcess(command, env, paramMap, scriptId, timeout);
     }
 
-    private ToolResultBlock submitFlowTask(String flowName) {
+    static int resolveScriptTimeout(Integer configured, boolean background) {
+        int cap = background
+                ? com.agentscopea2a.v2.skillManager.config.SkillFlowProperties.NODE_EXECUTION_TIMEOUT_MINUTES * 60
+                : MAX_TIMEOUT_SECONDS;
+        return configured == null || configured <= 0 ? 60 : Math.min(configured, cap);
+    }
+
+    private ToolResultBlock submitReportTemplate(String templateName) {
         if (flowExecutionService == null) {
-            return ToolResultBlock.error("{\"message\":\"长任务入口不可用\"}");
+            return ToolResultBlock.error("{\"message\":\"报告模板入口不可用\"}");
         }
-        String userId = currentContext == null ? null : currentContext.getUserId();
-        if (userId == null || userId.isBlank()) {
-            return ToolResultBlock.error("{\"message\":\"无法识别当前用户\"}");
+        String userId = triggerUserId;
+        String sessionId = executionSessionId;
+        if (userId == null || userId.isBlank() || "anonymous".equals(userId)) {
+            return ToolResultBlock.error("报告模板提交失败：执行上下文缺少用户身份");
+        }
+        if (sessionId == null || sessionId.isBlank()) {
+            return ToolResultBlock.error("报告模板提交失败：执行上下文缺少会话标识");
         }
         try {
-            var flow = flowExecutionService.findEnabledFlowByName(flowName, userId);
-            if (flow == null) return ToolResultBlock.error("{\"message\":\"未找到可执行的长任务\"}");
-            var result = flowExecutionService.triggerManual(flow.getId(), userId);
-            String message = result.created() ? "长任务已提交，完成后通知" : "长任务正在执行，完成后通知";
-            return ToolResultBlock.text("{\"message\":\"" + message + "\"}");
+            var result = flowExecutionService.triggerReportTemplate(templateName, userId, sessionId);
+            log.info("Report template accepted: templateName={}, executionId={}, userId={}, sessionId={}, created={}",
+                    templateName, result.execution().getId(), userId, sessionId, result.created());
+            String name = result.execution().getFlowName();
+            if (name == null || name.isBlank()) name = templateName;
+            return ToolResultBlock.text(name + (result.created() ? "已提交" : "正在执行")
+                    + "，不要等待结果或调用 wait_async_results。执行结果会通过邮件通知您，请直接告知用户已提交并结束本轮。");
         } catch (IllegalStateException e) {
-            log.warn("flowTask submission rejected: flowName={}, userId={}, reason={}", flowName, userId, e.getMessage());
-            return ToolResultBlock.error("{\"message\":\"长任务提交失败\"}");
+            log.warn("report template submission rejected: templateName={}, userId={}, reason={}", templateName, userId, e.getMessage());
+            String reason = e.getMessage() == null ? "unknown" : e.getMessage().replace("\\", "\\\\").replace("\"", "\\\"");
+            return ToolResultBlock.error("{\"message\":\"报告模板提交失败\",\"reason\":\"" + reason + "\"}");
         }
     }
 
@@ -601,6 +643,48 @@ public class ScriptExecTool implements RuntimeContextAware {
                 + "```";
     }
 
+    private static ToolResultBlock dynamicParamsMock(Map<String, Object> params) {
+        Map<String, Object> values = params == null ? Map.of() : params;
+        if (!Set.of("versions", "year").containsAll(values.keySet())) {
+            return ToolResultBlock.error("script_exec 拒绝执行: 动态参数模拟脚本只接受 versions 和 year");
+        }
+        if (!(values.get("versions") instanceof List<?> versions) || versions.isEmpty()
+                || versions.size() > 120
+                || versions.stream().anyMatch(version -> !(version instanceof String text) || text.isBlank())) {
+            return ToolResultBlock.error("script_exec 拒绝执行: versions 必须是包含 1～120 项的非空字符串数组，请先计算动态时间配置");
+        }
+        if (!(values.get("year") instanceof String year) || year.isBlank()) {
+            return ToolResultBlock.error("script_exec 拒绝执行: year 必须是非空字符串单值，例如 2026年，不能使用数组");
+        }
+        List<Map<String, Object>> rows = new ArrayList<>();
+        long totalSalesAmount = 0;
+        int totalOrderCount = 0;
+        for (int index = 0; index < versions.size(); index++) {
+            int orderCount = 1000 + index * 120;
+            long salesAmount = 100000L + index * 15000L;
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("version", versions.get(index));
+            row.put("year", year);
+            row.put("orderCount", orderCount);
+            row.put("salesAmount", salesAmount);
+            rows.add(row);
+            totalOrderCount += orderCount;
+            totalSalesAmount += salesAmount;
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("scriptId", DYNAMIC_PARAMS_MOCK_ID);
+        result.put("mock", true);
+        result.put("params", Map.of("versions", new ArrayList<>(versions), "year", year));
+        result.put("rows", rows);
+        result.put("summary", Map.of("versionCount", versions.size(), "totalOrderCount", totalOrderCount,
+                "totalSalesAmount", totalSalesAmount));
+        try {
+            return ToolResultBlock.text(JSON_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(result));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException error) {
+            return ToolResultBlock.error("script_exec 拒绝执行: 无法生成动态参数模拟结果");
+        }
+    }
+
     private static String escapeHtml(String text) {
         if (text == null) return "";
         return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -609,7 +693,15 @@ public class ScriptExecTool implements RuntimeContextAware {
 
     /** Adapter used by the HTTP debug service; keeps registry and container validation in one place. */
     public String executeForDebug(String scriptId, Map<String, Object> params) {
-        ToolResultBlock result = scriptExec(scriptId, params);
+        return resultText(executeScript(scriptId, params, false));
+    }
+
+    /** Flow workers already persist ownership and results; use their 30-minute node budget. */
+    public String executeForFlow(String scriptId, Map<String, Object> params) {
+        return resultText(executeScript(scriptId, params, true));
+    }
+
+    private String resultText(ToolResultBlock result) {
         StringBuilder text = new StringBuilder();
         if (result.getOutput() != null) {
             for (Object block : result.getOutput()) {
@@ -786,7 +878,7 @@ public class ScriptExecTool implements RuntimeContextAware {
             return ToolResultBlock.text(
                     formatResult(scriptId, -1, elapsed, stdoutBest, stderrBest,
                             "❌ 超时(" + timeoutSeconds + "s),进程已强制终止. "
-                                    + "如确是大计算, 让开发人员调大 script_registry.timeout_seconds (上限 300s). "
+                                    + "请核对 script_registry.timeout_seconds；同步执行上限 300s，长任务节点上限 1800s。 "
                                     + "如怀疑脚本死循环, 让开发人员修脚本."));
         }
 

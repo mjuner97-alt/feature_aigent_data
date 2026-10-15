@@ -130,7 +130,7 @@ public class ScriptRegistryController {
                 && !"SAVED".equalsIgnoreCase(request.sourceMode())) {
             throw new IllegalArgumentException("仅支持 sourceMode=SAVED");
         }
-        return debugService.start(id, request.params(), request.timeoutSeconds());
+        return debugService.start(id, request.params(), request.timeoutSeconds(), request.dataDate());
     }
 
     @GetMapping(value = "/debug/{runId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)

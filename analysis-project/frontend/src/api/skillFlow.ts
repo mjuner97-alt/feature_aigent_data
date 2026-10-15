@@ -16,13 +16,13 @@ function jsonHeaders(): Record<string, string> {
 async function requestError(res: Response, fallback: string): Promise<Error> {
   const detail = await apiErrorDetail(res);
   const readable = translateFlowError(detail);
-  if (readable) return new Error(readable);
+  // Keep node/script/parameter context supplied after a business error code.
+  if (readable) return new Error(detail.includes(':') ? `${readable}：${detail}` : readable);
   if (/keyword.*(exist|conflict|duplicate)/i.test(detail)) return new Error('触发关键词已被其他流程使用');
   if (/cycle|dag/i.test(detail)) return new Error('前置 Skill 不能形成环');
   if (/access|denied/i.test(detail)) return new Error('无权限执行此操作');
   if (detail.startsWith('NotifyTriggerScopeInvalid')) return new Error('触发类型范围包含非法值');
-  return new Error(detail && /[\u4e00-\u9fff]/.test(detail) && !/[A-Za-z]/.test(detail)
-    ? `${fallback}：${detail}` : `${fallback}，请检查配置后重试`);
+  return new Error(detail ? `${fallback}：${detail}` : `${fallback}（HTTP ${res.status}）`);
 }
 
 function translateFlowError(detail: string): string {
@@ -166,14 +166,15 @@ export async function runSkillFlow(id: number): Promise<SkillFlowRunResult> {
   return res.json();
 }
 
-export async function listSkillFlowExecutions(status?: string, createdBy?: string, scope: 'mine' | 'all' = 'mine', page = 1, pageSize = 20): Promise<{ items: SkillFlowExecution[]; page: number; pageSize: number; total: number }> {
+export async function listSkillFlowExecutions(status?: string, createdBy?: string, scope: 'mine' | 'all' = 'mine', page = 1, pageSize = 20, source?: 'long-task' | 'report-template'): Promise<{ items: SkillFlowExecution[]; page: number; pageSize: number; total: number }> {
   const qs = new URLSearchParams();
   if (status) qs.set('status', status);
   if (createdBy) qs.set('createdBy', createdBy);
   qs.set('scope', scope);
   qs.set('page', String(page)); qs.set('pageSize', String(pageSize));
+  if (source) qs.set('source', source);
   const res = await fetch(`${EXECUTION_BASE}?${qs}`, { headers: authHeaders() });
-  if (!res.ok) throw await requestError(res, '查询长任务执行记录失败');
+  if (!res.ok) throw await requestError(res, '查询执行记录失败');
   const body = await res.json();
   if (Array.isArray(body)) return { items: body, page, pageSize, total: body.length };
   return { items: body.items ?? [], page: body.page ?? page, pageSize: body.pageSize ?? pageSize, total: body.total ?? 0 };

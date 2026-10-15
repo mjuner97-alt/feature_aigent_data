@@ -117,6 +117,7 @@ public class FlowCompletionService {
             try {
                 String renderedReport = renderer.renderWithoutFullscreen(text, Objects.toString(flow.getFlowName(), "长任务报告"));
                 String reportPath = reportStorage.write(flow.getTriggerUserId(), flow.getId(), renderedReport);
+                log.info("Long task HTML report saved: executionId={}, reportPath={}", flow.getId(), reportPath);
                 return new Summary(json.writeValueAsString(Map.of("results", results)), reportPath);
             } catch (FlowReportStorage.ReportStorageException e) {
                 // 报告属于收尾附件，磁盘不足不能反向把已经成功的节点和流程改成失败。
@@ -136,6 +137,11 @@ public class FlowCompletionService {
     }
 
     private String orderedReportText(SkillFlowExecution execution, List<SkillFlowNodeExecution> nodes) {
+        if (execution != null && execution.getReportOutlineSnapshot() != null
+                && !execution.getReportOutlineSnapshot().isBlank()) {
+            String composed = outlineComposer.compose(execution.getReportOutlineSnapshot(), nodes);
+            if (composed != null && !composed.isBlank()) return composed;
+        }
         // Definitions are read lazily so old executions (and old rows without an
         // outline) retain the exact legacy summary behavior.
         if (execution != null && execution.getFlowId() != null) {
@@ -230,6 +236,8 @@ public class FlowCompletionService {
         }
         try {
             String filePath = resolveReportPath(execution);
+            log.info("Long task notification requested: executionId={}, recipients={}, reportPath={}",
+                    execution.getId(), receivers, execution.getReportPath());
             sender.send(new NotificationPayload("HTML", notificationHtml(execution, filePath),
                     filePath, reportFileName(execution),
                     reportUrl(execution), execution.getFlowId(), execution.getFlowName(), null, null,

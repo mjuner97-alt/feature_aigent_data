@@ -1,28 +1,25 @@
-import type { ParamSchemaItem, ScriptParamRule } from '../types/scriptRegistry';
+import type { ParamSchemaItem } from '../types/scriptRegistry';
 
-export type ParamValueMode = 'LITERAL' | 'PRESET_RULE';
+export type ParamValueMode = 'LITERAL' | 'DYNAMIC_PERIOD';
 
 export function isArrayParam(type: string): boolean {
   return normalizedParamType(type).array;
 }
 
-export function rulesForParam(rules: ScriptParamRule[], type: string): ScriptParamRule[] {
-  const arrayParam = isArrayParam(type);
-  return rules.filter(rule => arrayParam || rule.valueType === 'single');
-}
-
-export function ruleMarker(ruleKey: string): Record<string, string> {
-  return { $rule: ruleKey };
+export function isRuleValue(value: unknown): value is { $rule: string } {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+    && '$rule' in value;
 }
 
 /** Build an editable JSON object from a saved script parameter schema. */
 export function paramsFromSchema(schema: ParamSchemaItem[]): Record<string, unknown> {
-  return Object.fromEntries(schema.map(item => [item.name, 'default' in item ? (item as ParamSchemaItem & { default?: unknown }).default : defaultValueForType(item.type)]));
+  return Object.fromEntries(schema.map(item => [item.name, 'default' in item ? (item as ParamSchemaItem & { default?: unknown }).default : defaultParamValue(item.type)]));
 }
 
 /** Show saved legacy parameters as fields when no registry schema is available. */
 export function inferParamSchema(params: Record<string, unknown>): ParamSchemaItem[] {
   return Object.entries(params).map(([name, value]) => {
+    if (isDynamicValue(value)) return { name, type: value.$dynamic?.output === 'list' ? 'string[]' : 'string', required: false, description: '' };
     const sample = Array.isArray(value) ? value.find(item => item !== null && item !== '') : value;
     const type = typeof sample === 'number' ? (Number.isInteger(sample) ? 'int' : 'float')
       : typeof sample === 'boolean' ? 'boolean'
@@ -53,6 +50,7 @@ export function defaultParamValue(type: string): unknown {
 }
 
 export function coerceParamValue(raw: unknown, type: string): unknown {
+  if (isParamMarker(raw)) return raw;
   const t = normalizedParamType(type);
   if (t.array) return Array.isArray(raw) ? raw.map(v => coerceParamValue(v, t.base)) : [];
   if (raw === '' || raw === null || raw === undefined) return t.base === 'string' ? '' : null;
@@ -64,10 +62,12 @@ export function coerceParamValue(raw: unknown, type: string): unknown {
 
 /** Normalize legacy values before both debugging and saving a flow. */
 export function normalizeScriptParams(params: Record<string, unknown>, schema: ParamSchemaItem[]): Record<string, unknown> {
-  const result = { ...params };
+  const result = { ...paramsFromSchema(schema), ...params };
   for (const item of schema) {
     if (!(item.name in result)) continue;
     let value = result[item.name];
+    // 保留动态配置和非法的旧标记，避免转换成字符串后绕过校验。
+    if (isParamMarker(value)) continue;
     if (normalizedParamType(item.type).array && !Array.isArray(value)) {
       if (typeof value === 'string') {
         const text = value;
@@ -83,6 +83,9 @@ export function normalizeScriptParams(params: Record<string, unknown>, schema: P
 }
 
 export function validateParamValue(value: unknown, type: string): string {
+  if (isDynamicValue(value)) return validatePeriodValue(value, type);
+  if (isRuleValue(value)) return '旧预设规则已停用，请重新配置动态时间';
+  if (value && typeof value === 'object' && Object.values(value).some(containsParamMarker)) return '动态时间配置必须直接绑定参数，不能嵌套在数组或对象内';
   const t = normalizedParamType(type);
   if (t.array) {
     if (!Array.isArray(value)) return '必须是数组';
@@ -101,10 +104,32 @@ export function validateParamValue(value: unknown, type: string): string {
   return '';
 }
 
-function defaultValueForType(type: string): unknown {
-  const normalized = type.trim().toLowerCase();
-  if (normalized.endsWith('[]')) return [];
-  if (normalized === 'boolean' || normalized === 'bool') return false;
-  if (normalized === 'int' || normalized === 'integer' || normalized === 'number' || normalized === 'float' || normalized === 'double') return null;
-  return '';
+export interface PeriodWindow { v: 1; kind: 'period_window'; unit: 'month' | 'quarter' | 'year'; startOffset: number; endOffset: number; format: string; order: 'asc' | 'desc'; output: 'list' | 'single' }
+export interface PeriodValue { $dynamic: PeriodWindow }
+export function isParamMarker(value: unknown): boolean { return !!value && typeof value === 'object' && !Array.isArray(value) && ('$rule' in value || '$dynamic' in value); }
+function containsParamMarker(value: unknown): boolean {
+  return isParamMarker(value) || !!value && typeof value === 'object' && Object.values(value).some(containsParamMarker);
+}
+export function isDynamicValue(value: unknown): value is PeriodValue { return !!value && typeof value === 'object' && !Array.isArray(value) && '$dynamic' in value; }
+export function supportsPeriodParam(type: string): boolean {
+ return ['string','date','array','string[]','date[]','array<string>','array<date>'].includes((type || '').trim().toLowerCase());
+}
+export function defaultPeriodValue(type: string): PeriodValue {
+ const t = normalizedParamType(type);
+ return {$dynamic:{v:1,kind:'period_window',unit:'month',startOffset:t.array ? -3 : -1,endOffset:-1,format:t.base === 'date' ? '{year}-{month:02}-01' : '{year}-{month:02}',order:'asc',output:t.array ? 'list' : 'single'}};
+}
+export function validatePeriodValue(value: PeriodValue, type: string, maxPeriods = 120): string {
+ const c = value.$dynamic;
+ if (!c || c.v !== 1 || c.kind !== 'period_window') return '时间配置无效';
+ const fields = ['v','kind','unit','startOffset','endOffset','format','order','output'];
+ if (Object.keys(value).length !== 1 || Object.keys(c).length !== fields.length || Object.keys(c).some(key => !fields.includes(key))) return '时间配置包含未知或缺失字段';
+ if (!supportsPeriodParam(type)) return '此参数不支持时间规则';
+ if (!['month','quarter','year'].includes(c.unit) || !['asc','desc'].includes(c.order)) return '周期或排序无效';
+ const count = c.endOffset - c.startOffset + 1;
+ if (!Number.isInteger(c.startOffset) || !Number.isInteger(c.endOffset) || count < 1 || count > maxPeriods) return `周期数量必须为 1 至 ${maxPeriods} 的整数`;
+ if (!['list','single'].includes(c.output) || (c.output === 'single' && count !== 1)) return '单个周期只能生成一个值';
+ if ((c.output === 'list') !== isArrayParam(type)) return '输出类型与参数不兼容';
+ if (typeof c.format !== 'string' || !c.format || c.format.length > 200 || /[{}]/.test(c.format.replace(/\{(?:year|month(?::02)?|quarter)\}/g,''))) return '格式仅支持 year、month、month:02、quarter 占位符';
+ if (normalizedParamType(type).base === 'date' && !(c.unit === 'month' && c.format === '{year}年{month}月份版本') && !/^(?:\{year\}|\d{4})-(?:\{month:02\}|\d{2})-\d{2}$/.test(c.format)) return '日期格式必须为 YYYY-MM-DD 或 xxxx年x月份版本';
+ return '';
 }

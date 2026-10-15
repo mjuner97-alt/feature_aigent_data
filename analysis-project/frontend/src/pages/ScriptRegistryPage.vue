@@ -298,7 +298,7 @@ async function saveForm() {
     ElMessage.warning('超时秒数必须为正整数');
     return;
   }
-  form.value.timeoutSeconds = Math.min(Math.floor(t), 300);
+  form.value.timeoutSeconds = Math.min(Math.floor(t), 1800);
   if (sourceMissing.value && !sourceCode.value.trim()) {
     ElMessage.warning('请先填写源码');
     return;
@@ -516,7 +516,8 @@ const S = {
           </div>
         </el-form-item>
         <el-form-item label="超时(秒)" required>
-          <el-input-number v-model="form.timeoutSeconds" :min="1" :max="300" controls-position="right" />
+          <el-input-number v-model="form.timeoutSeconds" :min="1" :max="1800" controls-position="right" />
+          <span class="field-hint">长任务节点最多 30 分钟；对话同步执行和调试最多 5 分钟。</span>
           <span style="margin-left: 8px; font-size: 0.75rem; color: #94a3b8">硬上限 300 秒</span>
         </el-form-item>
         <el-form-item label="启用" v-if="formMode === 'edit'">

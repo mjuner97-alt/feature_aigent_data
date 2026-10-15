@@ -74,7 +74,7 @@ public class SkillManageBridge {
                 if (retrievalNameTaken(newRn)) {
                     throw new IllegalStateException("SkillNameConflict: " + skill.getName());
                 }
-                indexRepo.upsertOnSave(newRn, desc, SkillEntry.SOURCE_USER_GENERATED, skill.getOwnerUserId());
+                requireIndexSave(newRn, desc, skill.getOwnerUserId());
                 ensureRoutingMetadata(newRn, desc);
                 log.info("Page skill synced to retrieval index: {} -> {}", skill.getName(), newRn);
                 return newRn;
@@ -82,7 +82,7 @@ public class SkillManageBridge {
 
             // 2. 未改名(sanitize 后相同):原地 upsert 更新 description/version
             if (newRn.equals(previousRn)) {
-                indexRepo.upsertOnSave(previousRn, desc, SkillEntry.SOURCE_USER_GENERATED, skill.getOwnerUserId());
+                requireIndexSave(previousRn, desc, skill.getOwnerUserId());
                 ensureRoutingMetadata(previousRn, desc);
                 log.info("Page skill synced to retrieval index (in-place): {} -> {}", skill.getName(), previousRn);
                 return previousRn;
@@ -104,7 +104,7 @@ public class SkillManageBridge {
             }
             // 旧行不存在(异常情形):回退为新建新名
             log.warn("renameRow({} -> {}) updated 0 rows, fallback to upsert new", previousRn, newRn);
-            indexRepo.upsertOnSave(newRn, desc, SkillEntry.SOURCE_USER_GENERATED, skill.getOwnerUserId());
+            requireIndexSave(newRn, desc, skill.getOwnerUserId());
             ensureRoutingMetadata(newRn, desc);
             return newRn;
         } catch (IllegalStateException ex) {
@@ -113,8 +113,8 @@ public class SkillManageBridge {
         } catch (Exception ex) {
             log.warn("syncToRetrievalIndex failed for page skill '{}' (previousRn={}, newRn={}): {}",
                     skill.getName(), previousRn, newRn, ex.getMessage());
-            // 失败时优先保留旧检索名,与 skill_index 当前实际状态保持一致;首次创建则回退新名
-            return (previousRn != null && !previousRn.isBlank()) ? previousRn : newRn;
+            // Propagate failures so the surrounding save transaction rolls back.
+            throw new IllegalStateException("SkillIndexSyncFailed: " + skill.getName(), ex);
         }
     }
 
@@ -153,9 +153,16 @@ public class SkillManageBridge {
     /** Creates an active (name-derived) routing draft; existing administrator metadata is never overwritten. */
     private void ensureRoutingMetadata(String skillName, String description) {
         if (routingMetadataRepo == null || routingMetadataRepo.findBySkillName(skillName).isPresent()) return;
-        routingMetadataRepo.upsert(new SkillRoutingMetadata(skillName,
+        boolean saved = routingMetadataRepo.upsert(new SkillRoutingMetadata(skillName,
                 limitSummary(description), generatedKeywords(skillName), List.of(), List.of(),
                 "", true, null));
+        if (!saved) throw new IllegalStateException("SkillRoutingSyncFailed: " + skillName);
+    }
+
+    private void requireIndexSave(String name, String description, String owner) {
+        if (indexRepo.upsertOnSave(name, description, SkillEntry.SOURCE_USER_GENERATED, owner) < 0) {
+            throw new IllegalStateException("SkillIndexSyncFailed: " + name);
+        }
     }
 
     private static String limitSummary(String description) {

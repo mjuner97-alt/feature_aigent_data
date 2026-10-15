@@ -59,16 +59,36 @@ public class FlowQueryService {
 
     /** 执行列表(仅本人触发),status/createdBy 可选过滤。 */
     public PageDto list(String status, String createdBy, String userId, boolean all, int page, int pageSize) {
+        return list(status, createdBy, userId, all, page, pageSize, null);
+    }
+
+    public PageDto list(String status, String createdBy, String userId, boolean all, int page, int pageSize, String source) {
+        if (source != null && !java.util.Set.of("long-task", "report-template").contains(source))
+            throw new IllegalArgumentException("Invalid execution source");
         int safePage = Math.max(1, page), safeSize = Math.min(100, Math.max(1, pageSize));
         String scopedUser = all ? null : userId;
-        List<ExecutionDto> items = mapper.selectExecutions(status, createdBy, scopedUser, (safePage - 1) * safeSize, safeSize)
+        List<ExecutionDto> items = (source == null
+                ? mapper.selectExecutions(status, createdBy, scopedUser, (safePage - 1) * safeSize, safeSize)
+                : mapper.selectExecutionsBySource(status, createdBy, scopedUser, (safePage - 1) * safeSize, safeSize, source))
                 .stream().map(this::dto).toList();
-        return new PageDto(items, safePage, safeSize, mapper.countExecutions(status, createdBy, scopedUser));
+        long total = source == null ? mapper.countExecutions(status, createdBy, scopedUser)
+                : mapper.countExecutionsBySource(status, createdBy, scopedUser, source);
+        return new PageDto(items, safePage, safeSize, total);
     }
 
     /** 执行详情。 */
     public ExecutionDto get(Long id, String userId) {
-        return dto(readable(id));
+        SkillFlowExecution execution = readable(id);
+        List<SkillFlowNodeExecution> nodes = mapper.selectNodeExecutions(id);
+        // 按 ID 读取不含列表 SQL 的聚合字段；详情需从执行快照计算相同口径的进度。
+        int total = nodes.size();
+        if (nodes.isEmpty() && execution.getFlowId() != null) {
+            total = mapper.selectNodesByFlowId(execution.getFlowId()).size();
+        }
+        execution.setTotalNodeCount(total);
+        execution.setCompletedNodeCount((int) nodes.stream()
+                .filter(node -> node.getStatus() != null && node.getStatus().terminal()).count());
+        return dto(execution);
     }
 
     /** 节点执行明细(含每次尝试的 audit 记录)。 */

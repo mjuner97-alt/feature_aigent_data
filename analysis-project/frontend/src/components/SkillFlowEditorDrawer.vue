@@ -4,8 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { createSkillFlow, getSkillFlow, updateSkillFlow, getFlowNotifySettings } from '../api/skillFlow';
 import { getSkill, listSkills, searchSkillUsers, batchUserNames } from '../api/skill';
 import { listAllEnabledEntries, startDebug, cancelDebug, subscribeDebug, getEntry } from '../api/scriptRegistry';
-import { listScriptParamRules } from '../api/scriptParamRule';
-import type { ParamSchemaItem, ScriptDebugRun, ScriptRegistryListItem, ScriptParamRule } from '../types/scriptRegistry';
+import type { ParamSchemaItem, ScriptDebugRun, ScriptRegistryListItem } from '../types/scriptRegistry';
 import { listMetrics } from '../api/skillDependencyMetric';
 import type { SkillListItem } from '../types/skill';
 import type { SkillDependencyMetric } from '../types/skillJob';
@@ -19,13 +18,15 @@ import { scrollToEditorSection } from '../utils/editorNavigation.js';
 import { retainSelectedMetrics, setNodeMetricSelection } from '../utils/flowMetrics';
 import { listReportProcesses } from '../api/reportProcess';
 import type { ReportProcess } from '../types/reportProcess';
+import { captureEditorState, restoreEditorState, type LongTaskEditorState } from '../utils/longTaskEditorState';
 
-const props = withDefaults(defineProps<{ open: boolean; editId: number | null; knownFlows: SkillFlow[]; page?: boolean }>(), { page: false });
+const props = withDefaults(defineProps<{ open: boolean; editId: number | null; copyFromId?: number | null; knownFlows: SkillFlow[]; page?: boolean }>(), { page: false, copyFromId: null });
 const emit = defineEmits<{ (e: 'update:open', open: boolean): void; (e: 'saved'): void }>();
 /** 编辑中的流程当前是否为公开状态(公开流程保存修改后会自动退出公开,需重新联系开发人员开通)。 */
 const wasPublic = ref(false);
 /** 加载时的触发关键词快照,保存时对比是否改动过关键词。 */
 const originalKeywords = ref<string[]>([]);
+const copySourceName = ref('');
 
 const loading = ref(false);
 const saving = ref(false);
@@ -33,7 +34,6 @@ const error = ref('');
 const skills = ref<SkillListItem[]>([]);
 const scripts = ref<ScriptRegistryListItem[]>([]);
 const metrics = ref<SkillDependencyMetric[]>([]);
-const paramRules = ref<ScriptParamRule[]>([]);
 const skillLoading = ref(false);
 const scriptLoading = ref(false);
 const metricLoading = ref(false);
@@ -53,12 +53,13 @@ const editorBody = ref<HTMLElement | null>(null);
 const reportProcesses = ref<ReportProcess[]>([]);
 const reportProcessLoading = ref(false);
 const selectedReportProcessId = ref('');
-const importedReportSnapshot = ref<{ nodes: SkillFlowNode[]; outline: ReportOutline | null; title: string } | null>(null);
+const importedReportSnapshot = ref<(LongTaskEditorState<SkillFlowNode, ReportOutline> & { rows: OutlineRow[]; previousTemplateName: string; paramErrors: Record<string, string> }) | null>(null);
 const importedReportName = ref('');
 /** 每行自动编号(与报告渲染同口径):一级 一、二、三;二级 1.1、1.2。 */
 const outlineNumbers = computed(() => outlineNumberingPrefixes(outlineRows.value, form.value.reportOutline?.numbering || defaultOutlineNumbering()));
 const baseline = ref('');
-const isDirty = computed(() => JSON.stringify(form.value) !== baseline.value);
+const editorFingerprint = () => JSON.stringify({ form: form.value, rows: outlineRows.value, title: reportTitle.value });
+const isDirty = computed(() => editorFingerprint() !== baseline.value);
 /** 拖拽排序:正在拖拽的卡片下标;dragover 时实时换位,drop/dragend 收尾。 */
 const dragIndex = ref<number | null>(null);
 function navigateToSection(event: MouseEvent, id: string) {
@@ -87,9 +88,11 @@ function stepLabel(index: number): string {
 }
 
 const isEdit = computed(() => props.editId != null);
+const isCopy = computed(() => !isEdit.value && props.copyFromId != null);
 const validationErrors = computed(() => {
   const errors: string[] = [];
   if (!form.value.name.trim()) errors.push('请填写流程名称');
+  if (isCopy.value && form.value.name.trim() === copySourceName.value.trim()) errors.push('复制流程必须修改流程名称');
   const sameName = props.knownFlows.find(flow => flow.id !== props.editId && flow.name.trim() === form.value.name.trim());
   if (sameName) errors.push(`流程名称「${form.value.name.trim()}」已存在`);
   if (!form.value.nodes.length) errors.push('至少配置一个节点');
@@ -104,6 +107,7 @@ const validationErrors = computed(() => {
     if (scriptParamErrors.value[node.nodeKey]) errors.push(`节点 ${key || index + 1} 的脚本参数不是合法 JSON 对象`);
   });
   errors.push(...validateOutlineRows(outlineRows.value, form.value.nodes.map(node => node.nodeKey.trim())));
+  if (!outlineRows.value.length && form.value.nodes.length) errors.push('请添加章节并绑定已有节点');
   if (!form.value.triggers.length) errors.push('至少配置一个触发关键词');
   const seenKeywords = new Set<string>();
   form.value.triggers.forEach(trigger => {
@@ -158,9 +162,7 @@ async function searchScripts(query = '') {
   finally { scriptLoading.value = false; }
 }
 
-async function loadParamRules() {
-  try { paramRules.value = await listScriptParamRules(); } catch { paramRules.value = []; }
-}
+
 
 /** 脚本参数定义缓存(键=注册表数字 id):选脚本后按 params_schema 渲染参数输入框,不再手写 JSON */
 const scriptSchemas = ref<Record<number, ParamSchemaItem[]>>({});
@@ -375,7 +377,7 @@ function debugInProgress(): boolean {
   return !!debugRun.value && !DEBUG_TERMINAL.includes(debugRun.value.status);
 }
 
-async function runNodeDebug(node: SkillFlowNode) {
+async function runNodeDebug(node: SkillFlowNode, dataDate?: string) {
   if (debugInProgress() || debugStarting.value) { ElMessage.warning('已有试跑在进行中，请先等待完成或停止'); return; }
   if (!node.scriptId?.trim()) { ElMessage.warning('请先选择 Python 脚本'); return; }
   if (scriptParamErrors.value[node.nodeKey]) { ElMessage.warning('请先修正脚本参数 JSON'); return; }
@@ -396,7 +398,7 @@ async function runNodeDebug(node: SkillFlowNode) {
     }
     const schema = await ensureScriptSchema(node.scriptId);
     const params = normalizeScriptParams(node.scriptParams || {}, schema);
-    debugRun.value = await startDebug(script.id, params, script.timeoutSeconds ?? 60);
+    debugRun.value = await startDebug(script.id, params, script.timeoutSeconds ?? 60, dataDate);
     debugEvents?.close();
     debugEvents = subscribeDebug(debugRun.value.runId, {
       event: (event) => {
@@ -448,7 +450,7 @@ function removeTrigger(index: number) {
 }
 
 async function loadOptions() {
-  await Promise.all([searchScripts(''), searchMetrics(''), loadParamRules()]);
+  await Promise.all([searchScripts(''), searchMetrics('')]);
   reportProcessLoading.value = true;
   try { reportProcesses.value = await listReportProcesses('available'); } catch { reportProcesses.value = []; }
   finally { reportProcessLoading.value = false; }
@@ -466,22 +468,25 @@ async function importReportProcess(id: number) {
   const draftOutline = outlineRows.value.length
     ? buildOutline(outlineRows.value, form.value.reportOutline?.numbering || defaultOutlineNumbering(), reportTitle.value)
     : cloneFlowValue(form.value.reportOutline || null);
-  importedReportSnapshot.value = { nodes: cloneFlowValue(form.value.nodes), outline: cloneFlowValue(draftOutline), title: reportTitle.value };
+  importedReportSnapshot.value = { ...captureEditorState(form.value.nodes, draftOutline, reportTitle.value), rows: cloneFlowValue(outlineRows.value), previousTemplateName: importedReportName.value, paramErrors: cloneFlowValue(scriptParamErrors.value) };
   const importedNodes = cloneFlowValue((source.nodes || []) as SkillFlowNode[]).map((node, index) => ({ ...node, sortOrder: index + 1 }));
   form.value.nodes = importedNodes;
-  form.value.reportOutline = cloneFlowValue(source.reportOutline) as SkillFlowInput['reportOutline'];
+  scriptParamErrors.value = {};
+  form.value.reportOutline = cloneFlowValue(source.reportOutline) as unknown as SkillFlowInput['reportOutline'];
   syncOutlineRows();
   importedReportName.value = source.name;
 }
 
 async function undoReportProcessImport() {
   if (!importedReportSnapshot.value) return;
-  form.value.nodes = cloneFlowValue(importedReportSnapshot.value.nodes);
-  form.value.reportOutline = cloneFlowValue(importedReportSnapshot.value.outline);
-  reportTitle.value = importedReportSnapshot.value.title;
-  syncOutlineRows();
+  const restored = restoreEditorState(importedReportSnapshot.value);
+  form.value.nodes = restored.nodes;
+  form.value.reportOutline = restored.outline;
+  reportTitle.value = restored.title;
+  outlineRows.value = cloneFlowValue(importedReportSnapshot.value.rows);
+  scriptParamErrors.value = cloneFlowValue(importedReportSnapshot.value.paramErrors);
+  importedReportName.value = importedReportSnapshot.value.previousTemplateName;
   importedReportSnapshot.value = null;
-  importedReportName.value = '';
   selectedReportProcessId.value = '';
 }
 
@@ -527,19 +532,33 @@ function addOutlineRow(after: OutlineRow | null, asChild = false) {
   outlineRows.value = insertOutlineRow(outlineRows.value, after?.id ?? null, newRow, { afterSubtree: !asChild });
 }
 
-function removeOutlineRow(row: OutlineRow) {
+async function removeOutlineRow(row: OutlineRow) {
   const index = outlineRows.value.indexOf(row);
   if (index < 0) return;
   const level = row.level;
   let end = index + 1;
   while (end < outlineRows.value.length && outlineRows.value[end].level > level) end++;
+  const removedRows = outlineRows.value.slice(index, end);
+  const removedKeys = new Set(removedRows.flatMap(item => item.nodeKeys));
+  let deleteNodes = false;
+  if (removedKeys.size) {
+    try { await ElMessageBox.confirm(`章节中包含 ${removedKeys.size} 个节点。删除章节后节点会保留在未绑定节点区，需要重新绑定。继续吗？`, '删除章节', { type: 'warning', confirmButtonText: '保留节点，删除章节', cancelButtonText: '同时删除节点', distinguishCancelAndClose: true }); } catch (action) { if (action === 'cancel') deleteNodes = true; else return; }
+  }
   outlineRows.value.splice(index, end - index);
+  if (deleteNodes) {
+    form.value.nodes = form.value.nodes.filter(node => !removedKeys.has(node.nodeKey));
+    outlineRows.value.forEach(item => { item.nodeKeys = item.nodeKeys.filter(key => !removedKeys.has(key)); });
+    removedKeys.forEach(key => { delete scriptParamErrors.value[key]; });
+    renumber();
+  }
+  if (removedKeys.size && !deleteNodes) ElMessage.info(`已保留 ${removedKeys.size} 个节点，请重新绑定到章节`);
 }
-
 async function load() {
   loading.value = true;
   error.value = '';
   wasPublic.value = false;
+  copySourceName.value = '';
+  originalKeywords.value = [];
   form.value = emptyForm();
   notifyReceivers.value = [];
   receiverNames.value = {};
@@ -548,18 +567,34 @@ async function load() {
   scriptParamErrors.value = {};
   outlineRows.value = [];
   reportTitle.value = '';
+  importedReportSnapshot.value = null;
+  importedReportName.value = '';
+  selectedReportProcessId.value = '';
   await loadOptions();
-  if (props.editId != null) {
+  const sourceId = props.editId ?? props.copyFromId;
+  if (sourceId != null) {
     try {
-      const flow = await getSkillFlow(props.editId);
+      const flow = await getSkillFlow(sourceId);
       await ensureSelectedSkills((flow.nodes || []).map(node => node.skillId ?? 0));
-      wasPublic.value = flow.chatPublic === true;
+      wasPublic.value = !isCopy.value && flow.chatPublic === true;
       originalKeywords.value = (flow.triggers || []).map(trigger => trigger.keyword.trim().toLowerCase()).filter(Boolean);
-      form.value = normalizeFlow(flow);
+      form.value = normalizeFlow(cloneFlowValue(flow));
+      if (isCopy.value) {
+        copySourceName.value = flow.name;
+        form.value.name = `${flow.name}-副本`;
+        form.value.code = '';
+        form.value.enabled = false;
+        form.value.nodes = form.value.nodes.map(({ id: _id, ...node }) => node);
+        form.value.triggers = form.value.triggers.map(({ id: _id, ...trigger }) => trigger);
+      }
       metrics.value = retainSelectedMetrics(metrics.value, metrics.value, form.value.nodes);
-      const notifySettings = await getFlowNotifySettings(props.editId);
-      notifyReceivers.value = [...(notifySettings.notifyReceivers || [])];
-      receiverNames.value = await batchUserNames(notifyReceivers.value);
+      // Notification recipients are owner-only settings. A copied flow starts
+      // with the new owner's default recipients, even when its source is shared.
+      if (!isCopy.value) {
+        const notifySettings = await getFlowNotifySettings(sourceId);
+        notifyReceivers.value = [...(notifySettings.notifyReceivers || [])];
+        receiverNames.value = await batchUserNames(notifyReceivers.value);
+      }
       await Promise.all((form.value.nodes || []).map(async node => {
         if (!node.scriptId) return;
         const schema = await ensureScriptSchema(node.scriptId);
@@ -570,7 +605,7 @@ async function load() {
     }
   }
   syncOutlineRows();
-  baseline.value = JSON.stringify(form.value);
+  baseline.value = editorFingerprint();
   loading.value = false;
 }
 
@@ -604,6 +639,7 @@ function keywordsChanged(): boolean {
 }
 
 async function save() {
+  if (loading.value || saving.value) return;
   error.value = '';
   if (validationErrors.value.length) {
     error.value = validationErrors.value[0];
@@ -640,7 +676,10 @@ async function save() {
     };
     if (props.editId == null) await createSkillFlow(payload);
     else await updateSkillFlow(props.editId, payload);
-    baseline.value = JSON.stringify(form.value);
+    baseline.value = editorFingerprint();
+    importedReportSnapshot.value = null;
+    importedReportName.value = '';
+    selectedReportProcessId.value = '';
     emit('saved');
     emit('update:open', false);
   } catch (e) {
@@ -652,7 +691,7 @@ async function save() {
   }
 }
 
-watch(() => props.open, open => { if (open) load(); }, { immediate: true });
+watch(() => [props.open, props.editId, props.copyFromId] as const, ([open]) => { if (open) load(); }, { immediate: true });
 defineExpose({ isDirty });
 </script>
 
@@ -660,7 +699,7 @@ defineExpose({ isDirty });
   <Teleport to="body" :disabled="page">
     <div v-if="open" class="mask" :class="{ 'page-mode': page }" @click.self="!page && emit('update:open', false)">
       <section class="drawer" aria-label="长任务流程编辑器">
-        <header class="drawer-header"><div><div class="eyebrow">长任务流程</div><h3>{{ isEdit ? '编辑长任务流程' : '创建长任务流程' }}</h3><p>配置触发条件与执行步骤，生成结构化汇总结果</p></div><button class="icon-button" title="关闭" aria-label="关闭" @click="emit('update:open', false)">×</button></header>
+        <header class="drawer-header"><div><div class="eyebrow">长任务流程</div><h3>{{ isCopy ? '复制长任务流程' : isEdit ? '编辑长任务流程' : '创建长任务流程' }}</h3><p>{{ isCopy ? '请使用新的流程名称和触发关键词保存副本；副本默认禁用。' : '配置触发条件与执行步骤，生成结构化汇总结果' }}</p></div><button class="icon-button" title="关闭" aria-label="关闭" @click="emit('update:open', false)">×</button></header>
         <div class="editor-layout">
         <nav class="editor-toc" aria-label="长任务配置目录">
           <a href="#flow-basic" @click="navigateToSection($event, 'flow-basic')">基本信息</a>
@@ -717,6 +756,7 @@ defineExpose({ isDirty });
                 <button class="btn primary" :disabled="!selectedReportProcessId || reportProcessLoading" @click="importReportProcess(Number(selectedReportProcessId))">引入报告流程</button>
               </div>
               <div v-if="importedReportSnapshot" class="import-status"><span>已引入：<strong>{{ importedReportName }}</strong></span><div><button class="btn" @click="undoReportProcessImport">撤销引入</button></div></div>
+              <div v-if="unboundNodes.length" class="import-status"><span>未绑定节点（{{ unboundNodes.length }}）：{{ unboundNodes.map(nodeTitle).join("、") }}。请添加章节并使用“绑定已有未绑定节点”恢复归属。</span></div>
               <div class="section-heading outline-heading"><div><h4>报告输出大纲</h4><p>先写章节，章节下可添加多个执行节点；可拖拽或使用 ↑↓ 调整顺序。</p></div><button class="btn primary" @click="addOutlineRow(null)">＋ 添加章节</button></div>
               <label class="report-title-field"><span>报告总标题</span><input v-model="reportTitle" placeholder="例如：月度经营分析报告" /><small>生成汇总时会作为整份报告的居中标题。</small></label>
               <div v-if="!outlineRows.length" class="subtle-empty">尚未配置大纲，报告将按执行节点顺序输出。</div>
@@ -729,9 +769,8 @@ defineExpose({ isDirty });
                   <button class="icon-button danger" title="删除本节及子级" @click="removeOutlineRow(row)">×</button>
                 </div>
                 <div class="outline-node-area" :style="{ marginLeft: `${Math.min(row.level, 8) * 22}px` }">
-                  <FlowNodeCard v-for="(node, nodeIndex) in nodesForRow(row)" :key="node.nodeKey" class="chapter-node-card" :node="node" :title="nodeTitle(node)" :schema="schemaFor(node)" :scripts="scripts" :metrics="metrics" :script-loading="scriptLoading" :metric-loading="metricLoading" :debug-disabled="!node.scriptId || debugStarting || debugInProgress()" :dragging="dragNodeKey === node.nodeKey" :sortable="true" :is-first="nodeIndex === 0" :is-last="nodeIndex === nodesForRow(row).length - 1" remove-title="删除节点" @move="moveChapterNode(row, node.nodeKey, $event)" @remove="removeChapterNode(row, node.nodeKey)" @debug="runNodeDebug(node)" @drag-start="chapterDragStart(node.nodeKey, $event)" @drag-over="chapterDragOver(row, node.nodeKey)" @drag-end="finishDrag" @script-change="onScriptSelected(node)" @script-params-change="onScriptParamsChange(node, $event)" @search-scripts="searchScripts" @search-metrics="searchMetrics" @set-metrics="setNodeMetrics(node, $event)" />
-                  <FlowNodeCard v-for="(node, nodeIndex) in nodesForRow(row)" :key="node.nodeKey" class="chapter-node-card" :node="node" :title="nodeTitle(node)" :schema="schemaFor(node)" :scripts="scripts" :metrics="metrics" :param-rules="paramRules" :script-loading="scriptLoading" :metric-loading="metricLoading" :debug-disabled="!node.scriptId || debugStarting || debugInProgress()" :dragging="dragNodeKey === node.nodeKey" :sortable="true" :is-first="nodeIndex === 0" :is-last="nodeIndex === nodesForRow(row).length - 1" remove-title="删除节点" @move="moveChapterNode(row, node.nodeKey, $event)" @remove="removeChapterNode(row, node.nodeKey)" @debug="runNodeDebug(node)" @drag-start="chapterDragStart(node.nodeKey, $event)" @drag-over="chapterDragOver(row, node.nodeKey)" @drag-end="finishDrag" @script-change="onScriptSelected(node)" @script-params-change="onScriptParamsChange(node, $event)" @search-scripts="searchScripts" @search-metrics="searchMetrics" @set-metric="setNodeMetric(node, $event)" />
-                  <div class="chapter-node-actions">
+                  <FlowNodeCard v-for="(node, nodeIndex) in nodesForRow(row)" :key="node.nodeKey" class="chapter-node-card" :node="node" :title="nodeTitle(node)" :schema="schemaFor(node)" :scripts="scripts" :metrics="metrics" :script-loading="scriptLoading" :metric-loading="metricLoading" :debug-disabled="!node.scriptId || debugStarting || debugInProgress()" :dragging="dragNodeKey === node.nodeKey" :sortable="true" :is-first="nodeIndex === 0" :is-last="nodeIndex === nodesForRow(row).length - 1" remove-title="删除节点" @move="moveChapterNode(row, node.nodeKey, $event)" @remove="removeChapterNode(row, node.nodeKey)" @debug="runNodeDebug(node, $event)" @drag-start="chapterDragStart(node.nodeKey, $event)" @drag-over="chapterDragOver(row, node.nodeKey)" @drag-end="finishDrag" @script-change="onScriptSelected(node)" @script-params-change="onScriptParamsChange(node, $event)" @search-scripts="searchScripts" @search-metrics="searchMetrics" @set-metrics="setNodeMetrics(node, $event)" />
+<div class="chapter-node-actions">
                     <button class="btn" title="新建一个 Python 节点并放到该章节" @click="addOutlineNode(row)">＋ 添加节点</button>
                     <select v-if="unboundNodes.length" :value="''" @change="bindRowNode(row, ($event.target as HTMLSelectElement).value)"><option value="" disabled>绑定已有未绑定节点…</option><option v-for="node in unboundNodes" :key="node.nodeKey" :value="node.nodeKey">{{ nodeTitle(node) }}（{{ node.nodeKey }}）</option></select>
                   </div>
@@ -760,6 +799,7 @@ defineExpose({ isDirty });
             <span>退出码：{{ debugRun.exitCode ?? '-' }}</span>
             <span>耗时：{{ debugRun.elapsedMs ?? 0 }} ms</span>
           </div>
+          <p v-if="debugRun.dataDate">基准日期：{{ debugRun.dataDate }} · 时区：{{ debugRun.timeZone }}</p>
           <p v-if="debugRun.status === 'SUCCESS'" class="debug-ok-hint">试跑成功：脚本参数可用，与流程保存的参数一致即可放心保存。</p>
           <div class="debug-output">
             <div class="debug-output-title">stdout</div>
@@ -814,8 +854,3 @@ input, select, textarea { box-sizing: border-box; width: 100%; border: 1px solid
 .debug-footer { display: flex; justify-content: flex-end; gap: 8px; }
 @media (max-width: 760px) { .drawer { width: 100vw; }.basic-row { grid-template-columns: 1fr; flex-direction: column; align-items: stretch; }.trigger-row { grid-template-columns: 1fr auto 30px; }.drawer-body { padding: 14px; } }
 </style>
-
-
-
-
-

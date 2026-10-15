@@ -87,7 +87,7 @@ public class FlowCoordinator {
     private final ToolResultRegistry toolResultRegistry;
     /** Python 节点直接执行注册脚本用(与脚本调试运行同一链路,含 params_schema 校验)。 */
     private final com.agentscopea2a.v2.tools.ScriptExecTool scriptExecTool;
-    /** 脚本参数取值规则解析:scriptParamsJson 里的 {"$rule": key} 执行时解析成真实值。 */
+    /** 脚本参数取值规则解析:scriptParamsJson 里的 {"$dynamic": config} 执行时解析成真实值。 */
     private final ScriptParamRuleService paramRuleService;
     /** 流程执行生命周期服务:scan 周期里兜底补建"指标已就绪但未被推送触发"的每日自动执行。 */
     private final FlowExecutionService flowExecutionService;
@@ -220,6 +220,7 @@ public class FlowCoordinator {
     /** 正常路径：流程事务提交后立即派发；定时 scan 仅作为恢复兜底。 */
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void onFlowQueued(FlowQueuedEvent event) {
+        log.info("Long task dispatch requested: executionId={}", event.flowExecutionId());
         dispatchRunnableNodes();
     }
 
@@ -338,13 +339,13 @@ public class FlowCoordinator {
                             "skill_name", Objects.toString(node.getSkillName(), ""))));
             String question = scriptNode ? rendered : buildPrompt(node, rendered);
             node.setRenderedQuestion(question);
-            // Python 节点参数规则解析:scriptParamsJson 里的 {"$rule": key} 按数据日期解析成真实值
+            // Python 节点参数规则解析:scriptParamsJson 里的 {"$dynamic": config} 按数据日期解析成真实值
             // (版本/季度/年份类参数随时间自动更新, 不用每次发版改流程定义)。
             // 解析后的参数参与缓存 key: 改参数后旧缓存自然 miss, 不会命中旧参数的结果。
             if (scriptNode) {
                 stage = "RESOLVE_SCRIPT_PARAMS";
                 LocalDate anchor = flow.getDataDate() == null ? LocalDate.now(clock) : flow.getDataDate();
-                scriptParams = paramRuleService.resolve(node.getScriptId(), node.getScriptParamsJson(), anchor);
+                scriptParams = ScriptExecutionParamsSnapshot.resolve(mapper, paramRuleService, json, node, anchor);
             }
             stage = "NODE_CACHE_LOOKUP";
             boolean cacheEnabled = runtimeConfigService.resolve(flow.getTriggerUserId(), "")
@@ -354,7 +355,9 @@ public class FlowCoordinator {
             String cacheNodeId = scriptNode
                     ? "flow-" + flow.getFlowId() + "-" + node.getNodeKey() + "-script-" + node.getScriptId()
                     : "flow-" + flow.getFlowId() + "-" + node.getNodeKey() + "-skill-" + node.getSkillId();
-            String cacheVersion = scriptNode ? node.getScriptId() : String.valueOf(node.getSkillId());
+            String cacheVersion = scriptNode
+                    ? ScriptParameterCacheVersion.build(node.getScriptId(), node.getScriptParamsJson(), json)
+                    : String.valueOf(node.getSkillId());
             boolean forceRefresh = refreshRequested.remove(nodeId);
             result = cacheEnabled
                     ? nodeCache.hit(cacheNodeId, cacheVersion, question, scriptParams, flow.getDataDate(), forceRefresh).orElse(null)
@@ -365,7 +368,7 @@ public class FlowCoordinator {
                     cacheClaim = nodeCache.claim(cacheNodeId, cacheVersion, question, scriptParams, flow.getDataDate(), forceRefresh);
                 }
                 if (scriptNode) {
-                    // Python 脚本节点:不走 AI,按脚本注册直接执行,参数已解析(含 $rule 规则值)
+                    // Python 脚本节点:不走 AI,按脚本注册直接执行,参数已解析(含动态时间参数值)
                     stage = "RUN_SCRIPT";
                     result = runScriptDirect(node, scriptParams);
                     if (result == null || result.isBlank()) throw new IllegalStateException("Script returned empty result");
@@ -671,6 +674,7 @@ public class FlowCoordinator {
 
     /** 重置节点为待执行:清空结果/错误/租约,并归零尝试次数,让重跑重新获得完整的重试预算。 */
     private void resetForRetry(SkillFlowNodeExecution node) {
+        // 保留 resolvedScriptParamsJson：同一执行重跑仍使用首次冻结的实际参数。
         node.setStatus(FlowNodeExecutionStatus.QUEUED);
         node.setAttemptCount(0);
         node.setNextRunAt(null); node.setCompletedAt(null);
@@ -744,7 +748,7 @@ public class FlowCoordinator {
 
     /**
      * Python 节点直接执行注册脚本:不走 AI,参数为已解析的执行快照 script_params_json
-     * (含 $rule 规则解析结果, 见 {@link ScriptParamRuleService#resolve}),
+     * (含动态时间配置解析结果, 见 {@link ScriptParamRuleService#resolve}),
      * 校验与执行复用 ScriptExecTool(同脚本调试运行链路);失败(exit!=0/拒绝执行)抛异常走重试分类。
      */
     private String runScriptDirect(SkillFlowNodeExecution node, Map<String, Object> params) {
@@ -754,7 +758,7 @@ public class FlowCoordinator {
         }
         log.info("skill-flow script execution: nodeId={} scriptId={} params={}",
                 node.getId(), scriptId, params == null ? Map.of() : params);
-        String output = scriptExecTool.executeForDebug(scriptId, params);
+        String output = scriptExecTool.executeForFlow(scriptId, params);
         String text = output == null ? "" : output;
         // 成败判定与 ScriptDebugService 一致:stdout 带 exit= 非 0,或出现拒绝执行/启动失败字样
         java.util.regex.Matcher exit = java.util.regex.Pattern.compile("\\bexit=(-?\\d+)").matcher(text);

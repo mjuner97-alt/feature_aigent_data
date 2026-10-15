@@ -370,10 +370,12 @@ public class HarnessA2aRunnerV2 implements AgentRunner {
         // tool groups and the reset_equipped_tools meta-tool for LLM-driven group switching.
         V2ToolGroupAdapter toolGroupAdapter = toolGroupAdapterProvider.getIfAvailable();
         if (toolGroupAdapter != null) {
-            builder.toolkit(toolGroupAdapter.getToolkit());
+            io.agentscope.core.tool.Toolkit executionToolkit = toolGroupAdapter.getToolkitForExecution(
+                    userId, ctx == null ? null : ctx.getSessionId());
+            builder.toolkit(executionToolkit);
             log.debug("HarnessA2aRunnerV2: Toolkit wired ({} tools, groups: {})",
-                    toolGroupAdapter.getToolkit().getToolNames().size(),
-                    toolGroupAdapter.getToolkit().getActiveGroups());
+                    executionToolkit.getToolNames().size(),
+                    executionToolkit.getActiveGroups());
         }
 
         // Subagent registration - manually loads agent-subagents/*.md and registers

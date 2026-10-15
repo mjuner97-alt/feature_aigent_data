@@ -43,9 +43,15 @@ public class V2ToolGroupAdapter {
     private static final Logger log = LoggerFactory.getLogger(V2ToolGroupAdapter.class);
 
     private final Toolkit toolkit;
+    private final ScriptExecTool scriptExecTool;
 
     public V2ToolGroupAdapter(Toolkit toolkit) {
+        this(toolkit, null);
+    }
+
+    private V2ToolGroupAdapter(Toolkit toolkit, ScriptExecTool scriptExecTool) {
         this.toolkit = toolkit;
+        this.scriptExecTool = scriptExecTool;
     }
 
     /**
@@ -53,6 +59,16 @@ public class V2ToolGroupAdapter {
      */
     public Toolkit getToolkit() {
         return toolkit;
+    }
+
+    /** Copy registrations for one execution, binding script submission identity on a private tool instance. */
+    public Toolkit getToolkitForExecution(String userId, String sessionId) {
+        Toolkit copy = toolkit.copy();
+        if (scriptExecTool != null) {
+            copy.removeTool("script_exec");
+            copy.registerTool(scriptExecTool.forExecution(userId, sessionId));
+        }
+        return copy;
     }
 
     /**
@@ -69,6 +85,7 @@ public class V2ToolGroupAdapter {
      */
     public static class Builder {
         private final Toolkit toolkit = new Toolkit();
+        private ScriptExecTool scriptExecTool;
 
         /**
          * Register a tool object (with {@code @Tool}-annotated methods) into a named group.
@@ -96,6 +113,7 @@ public class V2ToolGroupAdapter {
          */
         public Builder tool(Object toolObject) {
             toolkit.registerTool(toolObject);
+            if (toolObject instanceof ScriptExecTool tool) scriptExecTool = tool;
             log.info("V2ToolGroupAdapter: registered {} methods (ungrouped)",
                     toolObject.getClass().getSimpleName());
             return this;
@@ -149,7 +167,7 @@ public class V2ToolGroupAdapter {
         public V2ToolGroupAdapter build() {
             log.info("V2ToolGroupAdapter: built toolkit with {} tools, {} groups",
                     toolkit.getToolNames().size(), toolkit.getActiveGroups().size());
-            return new V2ToolGroupAdapter(toolkit);
+            return new V2ToolGroupAdapter(toolkit, scriptExecTool);
         }
 
         /**

@@ -268,11 +268,12 @@
             <version>3.0.3</version>
         </dependency>
 
-        <!-- GaussDB JDBC 驱动 (openGauss) -->
+        <!-- GaussDB 连接使用与 DataGrip 一致的 PostgreSQL JDBC 驱动。
+             openGauss JDBC 含同名 org.postgresql.* 类，不能同时放进应用 classpath。 -->
         <dependency>
-            <groupId>org.opengauss</groupId>
-            <artifactId>opengauss-jdbc</artifactId>
-            <version>5.1.0</version>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>42.2.5</version>
         </dependency>
 
         <!-- ClickHouse JDBC 驱动:0.6.5 兼容 JDK17。
@@ -302,11 +303,11 @@
         <!-- ClickHouse 0.6.x driver 在静态初始化阶段引用 net.jpountz.lz4.LZ4Factory
              (即使 URL 带 compress=0, 类加载发生在 init 之前, NoClassDefFoundError 抢先抛).
              lz4-java 不是 clickhouse-jdbc 的传递依赖, 必须显式声明. -->
-<!--        <dependency>-->
-<!--            <groupId>org.lz4</groupId>-->
-<!--            <artifactId>lz4-java</artifactId>-->
-<!--            <version>1.8.0</version>-->
-<!--        </dependency>-->
+        <!--        <dependency>-->
+        <!--            <groupId>org.lz4</groupId>-->
+        <!--            <artifactId>lz4-java</artifactId>-->
+        <!--            <version>1.8.0</version>-->
+        <!--        </dependency>-->
 
         <!-- ========== Redis(分布式 / 多副本沙箱协调) ==========
              仅在启用 harness.a2a.distributed.enabled=true 时由 FilesystemConfig 实例化;

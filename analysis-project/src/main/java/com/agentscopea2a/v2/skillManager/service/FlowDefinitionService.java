@@ -16,6 +16,7 @@ import com.agentscopea2a.mapper.gauss.ScriptRegistryMapper;
 import com.agentscopea2a.entity.ScriptRegistryEntry;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -40,7 +41,7 @@ import java.util.UUID;
  *
  * <p>关键规则:</p>
  * <ul>
- *   <li>流程仅创建人(owner)可见、可改;</li>
+ *   <li>流程可跨用户查看，写操作仅允许创建人(owner);</li>
  *   <li>启用前必须通过完整性校验(模板变量、skill/指标可用、触发词全局唯一);</li>
  *   <li>更新采用"整体替换子项":节点、节点指标、触发词全部删掉重插;</li>
  *   <li>触发词做 NFKC 归一化后全局唯一,保证聊天路由不会命中歧义。</li>
@@ -154,7 +155,7 @@ public class FlowDefinitionService {
 
     /** 流程详情。 */
     public SkillFlowDto get(Long id, String userId) {
-        return toDto(requireOwner(id, userId));
+        return toDto(requireReadable(id, userId));
     }
 
     // ==================== 通知设置(通知设置抽屉专用,与流程编排表单解耦) ====================
@@ -232,7 +233,7 @@ public class FlowDefinitionService {
      * 前端据此弹"数据未就绪是否执行"确认,未就绪时执行会挂 WAITING_METRICS。
      */
     public List<FlowMetricReadinessDto> metricReadiness(Long id, String userId) {
-        SkillFlow flow = requireOwner(id, userId);
+        SkillFlow flow = requireReadable(id, userId);
         LocalDate dataDate = LocalDate.now(clock);
         // 指标 -> 受影响节点列表
         Map<Long, List<String>> affected = new LinkedHashMap<>();
@@ -269,6 +270,27 @@ public class FlowDefinitionService {
             throw new IllegalStateException("FlowOutlineInvalid: " + String.join("; ", outlineErrors));
         }
         validateKeywordConflicts(request.triggers(), currentFlowId);
+        // Drafts may remain structurally incomplete, but a saved time window
+        // must already have a valid definition and compatible target type.
+        for (SkillFlowDefinitionRequest.Node node : request.nodes()) {
+            String params = node.scriptParamsJson();
+            if (params == null || params.isBlank()) continue;
+            if (paramRuleService == null) {
+                try {
+                    JsonNode values = objectMapper.readTree(params);
+                    if (values != null && values.isObject()) {
+                        for (JsonNode value : values) {
+                            if (value.isObject() && value.has("$dynamic")) throw new IllegalStateException("FlowValidationFailed: ScriptParamsInvalid: 动态参数校验服务不可用");
+                        }
+                    }
+                } catch (JsonProcessingException e) {
+                    throw new IllegalStateException("FlowValidationFailed: ScriptParamsInvalid: 参数 JSON 格式无效", e);
+                }
+            } else if (paramRuleService.containsDynamic(params)) {
+                List<String> errors = paramRuleService.validateParams(node.scriptId(), params);
+                if (!errors.isEmpty()) throw new IllegalStateException("FlowValidationFailed: 节点 " + node.nodeKey() + "：" + String.join("; ", errors));
+            }
+        }
     }
 
     private static Set<String> nodeKeysOf(SkillFlowDefinitionRequest request) {
@@ -321,8 +343,8 @@ public class FlowDefinitionService {
                 if (node.scriptParamsJson() != null && !node.scriptParamsJson().isBlank()) {
                     try { objectMapper.readTree(node.scriptParamsJson()); }
                     catch (Exception e) { errors.add("MalformedScriptParamsJson: " + nodeKey); }
-                    // 规则引用校验:{"$rule": key} 必须存在于 script_param_rule 且类型与参数声明兼容
-                    errors.addAll(paramRuleService.checkRuleRefs(node.scriptId(), node.scriptParamsJson()));
+                    // 校验节点自带的动态时间配置及其参数类型，拒绝旧预设标记。
+                    errors.addAll(paramRuleService.validateParams(node.scriptId(), node.scriptParamsJson()));
                 }
             } else if (legacy) {
                 if (node.skillId() == null || !skillMapper.selectSkillAvailableForUser(node.skillId(), userId)) {
@@ -376,7 +398,9 @@ public class FlowDefinitionService {
         flowMapper.deleteTriggersByFlowId(flowId);
         for (SkillFlowDefinitionRequest.Node item : request.nodes()) {
             SkillFlowNode node = SkillFlowNode.builder().flowId(flowId).nodeKey(trim(item.nodeKey())).nodeName(trim(item.nodeName()))
-                    .nodeType(item.nodeType()).scriptId(trim(item.scriptId())).scriptParamsJson(item.scriptParamsJson())
+                    .nodeType(item.nodeType()).scriptId(trim(item.scriptId()))
+                    .scriptParamsJson(paramRuleService == null ? item.scriptParamsJson()
+                            : paramRuleService.prepareForSave(trim(item.scriptId()), item.scriptParamsJson()))
                     .skillId(item.skillId()).questionTemplate(trim(item.questionTemplate()))
                     .metricOverrideConfigured(Boolean.TRUE.equals(item.metricOverrideConfigured()) || !item.metricIds().isEmpty())
                     .dependsOnJson("[]")
@@ -508,11 +532,17 @@ public class FlowDefinitionService {
         return request;
     }
 
-    /** 取流程并校验 owner:流程仅创建人可读改。 */
-    private SkillFlow requireOwner(Long id, String userId) {
+    /** Read access requires a user and an existing flow, regardless of its creator. */
+    private SkillFlow requireReadable(Long id, String userId) {
         requireUser(userId);
         SkillFlow flow = flowMapper.selectFlowById(id);
         if (flow == null) throw new IllegalStateException("FlowNotFound: flow does not exist");
+        return flow;
+    }
+
+    /** 写操作仍仅允许创建人。 */
+    private SkillFlow requireOwner(Long id, String userId) {
+        SkillFlow flow = requireReadable(id, userId);
         if (!userId.equals(flow.getCreatedBy())) {
             throw new IllegalStateException("FlowAccessDenied: only the owner may modify this flow");
         }
