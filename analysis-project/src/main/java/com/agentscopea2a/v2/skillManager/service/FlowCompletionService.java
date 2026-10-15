@@ -232,7 +232,7 @@ public class FlowCompletionService {
             String filePath = resolveReportPath(execution);
             sender.send(new NotificationPayload("HTML", notificationHtml(execution, filePath),
                     filePath, reportFileName(execution),
-                    reportUrl(execution), execution.getFlowId(), execution.getFlowName(), null, null,
+                    reportUrl(execution), execution.getFlowId(), FlowReportNaming.datedTitle(execution.getFlowName(), execution), null, null,
                     execution.getId(), execution.getStatus().name(), LocalDateTime.now(clock),
                     receivers, "FLOW"));
             record.setStatus(FlowNotificationStatus.SENT);
@@ -285,14 +285,14 @@ public class FlowCompletionService {
     /** 长任务通知正文只发送报告地址，避免邮件客户端丢失报告中的图片和脚本。 */
     private String notificationHtml(SkillFlowExecution execution, String filePath) {
         String url = reportUrl(execution);
-        String title = escapeHtml(Objects.toString(execution.getFlowName(), "长任务报告"));
+        String title = escapeHtml(Objects.toString(FlowReportNaming.datedTitle(execution.getFlowName(), execution), "长任务报告"));
         if (url.isBlank()) {
             return "<html><body><h3>" + title + "</h3><p>报告地址暂不可用，请登录系统查看。</p></body></html>";
         }
         String escapedUrl = escapeHtml(url);
         return new StringBuilder("<html><body><p>各位：</p>")
                 .append("<p>\u3000\u3000部门研发管理周报详见：<a href=\"").append(escapedUrl).append("\">")
-                .append(title).append("</a></p></body></html>").toString();
+                .append(title).append("</a>，请关注。</p></body></html>").toString();
     }
 
     private String summaryText(SkillFlowExecution execution) {
@@ -325,7 +325,8 @@ public class FlowCompletionService {
     }
 
     private static String reportFileName(SkillFlowExecution execution) {
-        return execution.getReportPath() == null ? "" : Paths.get(execution.getReportPath()).getFileName().toString();
+        return execution.getReportPath() == null ? "" : FlowReportNaming.datedFileName(
+                Paths.get(execution.getReportPath()).getFileName().toString(), execution);
     }
 
     /** 报告查看链接:/api/skill-flow-executions/{id}/report,端点不限制下载人,邮件点击可直接打开。 */
