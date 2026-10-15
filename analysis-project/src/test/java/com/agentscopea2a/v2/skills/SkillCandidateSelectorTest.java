@@ -219,14 +219,14 @@ class SkillCandidateSelectorTest {
         SkillRoutingMetadata skill3 = metadataWithLevels("skill3", List.of("未闭环"), List.of("测试问题"), List.of(), List.of());
         SkillRoutingMetadata skill4 = metadataWithLevels("skill4", List.of("未闭环"), List.of(), List.of(), List.of());
 
-        // 2026/10/14 定稿案例: 预选 4 个全入池 (skill1 靠 L1"问题", 其余靠叶层"未闭环");
-        // L1 收窄: skill1 命中 → skill2/skill3 (L1 配置了却未命中) 出局, skill4 (L1 空) 直通
+        // §8 两阶段 (拍板⑥): skill2/skill3 靠 L1"问题"入阶段一池, skill4 只配叶层 → 阶段一
+        // 命中时出局; L1 收窄: skill1 命中 → skill2/skill3 (L1 配置了却未命中) 出局
         SkillCandidateSelection selection = selector.select(
                 List.of(skill(skill1.skillName()), skill(skill2.skillName()),
                         skill(skill3.skillName()), skill(skill4.skillName())),
                 List.of(skill1, skill2, skill3, skill4), "三部10月未闭环问题");
 
-        assertEquals(List.of("skill1", "skill4"), selection.skillNames());
+        assertEquals(List.of("skill1"), selection.skillNames());
         assertFalse(selection.fallbackExpanded());
     }
 
@@ -265,12 +265,13 @@ class SkillCandidateSelectorTest {
         SkillRoutingMetadata generic = metadata("generic", List.of("质量"));
 
         // 关键场景: 池子里存在未配置层级的 generic skill 使每层收窄都"成功",
-        // app_quality 仅命中 L1 (质量) 也必须保底可见, 不能被 L2 淘汰
+        // app_quality 仅命中 L1 (质量) 也必须保底可见, 不能被 L2 淘汰;
+        // generic 只配叶层 → §8 拍板⑥ 阶段一命中时出局
         SkillCandidateSelection selection = selector.select(
                 List.of(skill(appQuality.skillName()), skill(generic.skillName())),
                 List.of(appQuality, generic), "质量情况");
 
-        assertEquals(List.of("app_quality", "generic"), selection.skillNames());
+        assertEquals(List.of("app_quality"), selection.skillNames());
     }
 
     @Test
@@ -295,16 +296,30 @@ class SkillCandidateSelectorTest {
     }
 
     @Test
-    void singleLeafHitOutranksSingleL3HitUnderReversedWeights() {
+    void leafOnlySkillOutWhenPhaseOneLevelHitExists() {
         SkillRoutingMetadata leafOnly = metadataWithLevels("leaf_only", List.of("质量"), List.of(), List.of(), List.of());
         SkillRoutingMetadata l3Only = metadataWithLevels("l3_only", List.of(), List.of(), List.of(), List.of("质量"));
 
-        // 2026/10/14 权重倒序钉死用例: 叶层单命中 2000 > 仅 L3 命中 1500 (旧权重下本用例反向)
+        // §8 两阶段 (拍板⑥): l3_only 靠 L3 命中入阶段一池 → 阶段一非空, 只配叶层的
+        // leaf_only 出局 (2026/10/14 权重倒序「叶层最高」体系已被 §8 推翻)
         SkillCandidateSelection selection = selector.select(
                 List.of(skill(l3Only.skillName()), skill(leafOnly.skillName())),
                 List.of(leafOnly, l3Only), "质量");
 
-        assertEquals(List.of("leaf_only", "l3_only"), selection.skillNames());
+        assertEquals(List.of("l3_only"), selection.skillNames());
+    }
+
+    @Test
+    void leafOnlySkillsStillWorkWhenNoLevelHitExists() {
+        SkillRoutingMetadata leafOnly = metadataWithLevels("leaf_only", List.of("达标率"), List.of(), List.of(), List.of());
+        SkillRoutingMetadata l3Only = metadataWithLevels("l3_only", List.of(), List.of(), List.of(), List.of("未闭环"));
+
+        // 阶段一空 (无任何层级命中) → 阶段二旧行为: 叶层命中入围, 命中数多者前
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(l3Only.skillName()), skill(leafOnly.skillName())),
+                List.of(leafOnly, l3Only), "查达标率");
+
+        assertEquals(List.of("leaf_only"), selection.skillNames());
     }
 
     @Test
@@ -354,6 +369,65 @@ class SkillCandidateSelectorTest {
 
         assertEquals(10, selection.skillNames().size());
         assertTrue(selection.fallbackExpanded());
+    }
+
+    @Test
+    void phaseOneDeeperLayerWinsOverShallowerRegardlessOfName() {
+        SkillRoutingMetadata a = metadataWithLevels("a_skill", List.of(), List.of("问题"), List.of(), List.of());
+        SkillRoutingMetadata z = metadataWithLevels("z_skill", List.of(), List.of(), List.of("问题"), List.of());
+
+        // 漏斗 (拍板⑧): 同命中 L1 词"问题", z_skill 层深 (L2) > a_skill (L1), name 字典序不干预
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(a.skillName()), skill(z.skillName())),
+                List.of(a, z), "问题总量是多少");
+
+        assertEquals(List.of("z_skill", "a_skill"), selection.skillNames());
+    }
+
+    @Test
+    void globalKeywordPriorityRankBreaksSameLayerTie() {
+        SkillRoutingMetadata openLoop = metadataWithLevels("open_loop", List.of(), List.of(), List.of("未闭环"), List.of());
+        SkillRoutingMetadata longTime = metadataWithLevels("long_time", List.of(), List.of(), List.of("长时效"), List.of());
+        // 拍板⑧ 定稿案例: 未闭环/长时效 同层 (L2), 全局词序 长时效(sort 0) 在 未闭环(sort 1) 前
+        SkillCandidateSelector prioritized = new SkillCandidateSelector(5, 10, () -> List.of(
+                new SkillKeywordPriority(null, 2, "缺陷", "长时效", 0),
+                new SkillKeywordPriority(null, 2, "缺陷", "未闭环", 1)));
+
+        SkillCandidateSelection selection = prioritized.select(
+                List.of(skill(openLoop.skillName()), skill(longTime.skillName())),
+                List.of(openLoop, longTime), "未闭环长时效问题有哪些");
+
+        assertEquals(List.of("long_time", "open_loop"), selection.skillNames());
+    }
+
+    @Test
+    void unconfiguredPriorityTermRanksAfterConfiguredOnes() {
+        SkillRoutingMetadata configured = metadataWithLevels("configured", List.of(), List.of(), List.of("长时效"), List.of());
+        SkillRoutingMetadata unconfigured = metadataWithLevels("unconfigured", List.of(), List.of(), List.of("未闭环"), List.of());
+        SkillCandidateSelector prioritized = new SkillCandidateSelector(5, 10, () -> List.of(
+                new SkillKeywordPriority(null, 2, "缺陷", "长时效", 0)));
+
+        // 未入全局表的词排已配置词之后 (再按 name 兜底)
+        SkillCandidateSelection selection = prioritized.select(
+                List.of(skill(unconfigured.skillName()), skill(configured.skillName())),
+                List.of(unconfigured, configured), "未闭环长时效问题有哪些");
+
+        assertEquals(List.of("configured", "unconfigured"), selection.skillNames());
+    }
+
+    @Test
+    void explicitNameStillBeatsPriorityAndDepth() {
+        SkillRoutingMetadata named = metadataWithLevels("named_skill", List.of(), List.of("问题"), List.of(), List.of());
+        SkillRoutingMetadata deep = metadataWithLevels("z_deep", List.of(), List.of(), List.of("问题"), List.of("未闭环"));
+        SkillCandidateSelector prioritized = new SkillCandidateSelector(5, 10, () -> List.of(
+                new SkillKeywordPriority(null, 1, "", "问题", 0)));
+
+        SkillCandidateSelection selection = prioritized.select(
+                List.of(skill(named.skillName()), skill(deep.skillName())),
+                List.of(named, deep), "请使用 named_skill 查询未闭环问题");
+
+        assertEquals("named_skill", selection.skillNames().get(0));
+        assertTrue(selection.explicitNameMatched());
     }
 
     private static SkillRoutingMetadata metadata(String name, List<String> keywords) {

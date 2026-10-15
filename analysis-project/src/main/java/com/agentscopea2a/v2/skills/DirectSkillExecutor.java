@@ -73,6 +73,7 @@ public class DirectSkillExecutor {
     private final DimensionStateManager dimensionStateManager;
     private final ObjectProvider<VersionPlanKnowledgeHook> versionPlanHookProvider;
     private final ObjectProvider<DimensionKeyConfigRepository> dimensionKeyRepoProvider;
+    private final ObjectProvider<SkillBypassKeywordService> bypassKeywordServiceProvider;
     private final ObjectMapper objectMapper;
     private final boolean enabled;
 
@@ -87,6 +88,23 @@ public class DirectSkillExecutor {
             ObjectProvider<DimensionKeyConfigRepository> dimensionKeyRepoProvider,
             ObjectMapper objectMapper,
             boolean enabled) {
+        this(metadataRepository, candidateSelector, usageResolver, indexRepo, scriptRegistryMapper,
+                dimensionStateManager, versionPlanHookProvider, dimensionKeyRepoProvider,
+                null, objectMapper, enabled);
+    }
+
+    public DirectSkillExecutor(
+            SkillRoutingMetadataRepository metadataRepository,
+            SkillCandidateSelector candidateSelector,
+            SkillUsageResolver usageResolver,
+            SkillIndexRepository indexRepo,
+            ScriptRegistryMapper scriptRegistryMapper,
+            DimensionStateManager dimensionStateManager,
+            ObjectProvider<VersionPlanKnowledgeHook> versionPlanHookProvider,
+            ObjectProvider<DimensionKeyConfigRepository> dimensionKeyRepoProvider,
+            ObjectProvider<SkillBypassKeywordService> bypassKeywordServiceProvider,
+            ObjectMapper objectMapper,
+            boolean enabled) {
         this.metadataRepository = metadataRepository;
         this.candidateSelector = candidateSelector;
         this.usageResolver = usageResolver;
@@ -95,6 +113,7 @@ public class DirectSkillExecutor {
         this.dimensionStateManager = dimensionStateManager;
         this.versionPlanHookProvider = versionPlanHookProvider;
         this.dimensionKeyRepoProvider = dimensionKeyRepoProvider;
+        this.bypassKeywordServiceProvider = bypassKeywordServiceProvider;
         this.objectMapper = objectMapper;
         this.enabled = enabled;
     }
@@ -158,6 +177,13 @@ public class DirectSkillExecutor {
     public DirectExecutionPlan plan(String question, String userId, DimensionState previousState) {
         if (!enabled || question == null || question.isBlank()) {
             return null;
+        }
+        // 检索旁路 (§8 拍板①): 与 SkillVectorIndexVisibilityFilter 同一判定, 必须两处同时拦截。
+        if (bypassKeywordServiceProvider != null) {
+            SkillBypassKeywordService bypass = bypassKeywordServiceProvider.getIfAvailable();
+            if (bypass != null && bypass.bypassed(question)) {
+                return null;
+            }
         }
         List<SkillRoutingMetadata> active = metadataRepository.findActive();
         if (active.isEmpty()) {

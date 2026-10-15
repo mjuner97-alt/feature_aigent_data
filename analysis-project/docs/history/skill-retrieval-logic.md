@@ -211,3 +211,145 @@ Record/Input/View 各加 `level1Keywords/level2Keywords/level3Keywords` 字段�
 ### 7.7 配置入口
 
 管理页（Skill 配置页）编辑弹窗新增一级/二级/三级关键词三个输入框（顿号/换行分隔，支持正则），表格加"层级关键词"列；API `PUT /api/skill-routing/{skillName}` body 增加同名 camelCase 字段。
+
+## 8. 设计方案：检索旁路词 + 两阶段匹配（2026-10-15 拍板，待实施）
+
+### 8.1 拍板记录
+
+| # | 决策点 | 结论 |
+|---|---|---|
+| ① | 旁路生效范围 | **两处同拦**：`SkillVectorIndexVisibilityFilter`（目录置空）+ `DirectSkillExecutor.plan()`（短路放弃回退 LLM）——直接执行短路在 LLM 之前，只拦目录不拦短路则旁路形同虚设 |
+| ② | 质量类 skill | **实质退役**：质量板块（质量/缺陷密度/检出率/研发问题/D号/适应性问题/A号）切到原子工具体系，含旁路词的问题不走任何 quality skill；配套运维动作=管理员停用相关 skill（代码不删） |
+| ③ | 旁路匹配语义 | **平铺 OR + contains**，分组（分析类/表格类/质量板块）仅作归类备注不参与逻辑；表格词用「表格」一词即可 contains 覆盖 制作表格/表格展示/表格列出/表格输出 等全部形态 |
+| ④ | 显式点名 | **旁路让位**：问题包含任一 active skill 名（与 selector explicit 同语义 contains）→ 本轮不旁路，照常检索 |
+| ⑤ | 匹配粒度 | **复用 selector 现有词条机制**（§7.4）：`lowercase+trim` 后可编译成正则的词按正则 `find()` 解释、编译失败回退字面 contains；seed 词均为字面词（行为=contains），管理员未来可用 lookaround 词形排除误伤（如 `(?<!数据)分析`），不用改代码 |
+| ⑥ | 两阶段细节 | 阶段一保留「命中即逐层收窄」（§7.3 不变）；阶段一命中时只配叶层的 skill 出局（即使叶层命中）；domain 互斥过滤只在阶段二；阶段一**无四层打分**，纯按层级命中数/顺序排序（§7.3 三次定稿的 L4>L3>L2>L1 权重体系就此推翻） |
+| ⑦ | 否定语境 | **方案 A：不建否定词表、不加抑制代码**。词条机制（§7.4）已支持正则，个别特殊词条由管理员配 lookaround 词形排除否定误命中，如配 `(?<!不包含)(?<!不)(?<!未)遗漏` 则「不包含遗漏」不命中、「包含遗漏的缺陷」命中；仅有少数特殊词需要这样配，普通词保持字面 |
+| ⑧ | 漏斗优先级 | **层深度漏斗 + 全局关键词优先级页**（2026-10-15 定稿，推翻前稿的 skill 级 priority 分数方案——不打分、不复活 `priority` 列、不逐 skill 配置）。优先级配在**词**上、全局生效：新增表 `skill_keyword_priority(level, parent_keyword, keyword, sort_order)`（gauss 库，照 dimension_key_config 模式）；`level=1` 行 = 一级词全局顺序；`level=2` 行 = 二级词、`parent_keyword` = 所属一级词（**「哪个二级属于哪个一级」的分组关系由该页维护**，skill 词表只管成员资格）；前端独立页：一级一个有序列表可拖曳，二级按一级分组多行 table、**行可拖（组间优先级）、行内词也可拖（组内漏斗）**，三级同理。排序键 = 显式点名 > 层深度 (L3>L2>L1) > 命中词全局位次（skill 取其该层最优命中的 sort_order）> name；未入全局表的词排已配置词之后。匹配/入围逻辑不变（仍看各 skill 自己的词表），该表只参与排序 |
+
+### 8.2 旁路词存储与配置
+
+新表 `skill_bypass_keyword`（gaussCustomerDataSource，照抄 dimension_key_config 模式）：
+
+```
+id BIGSERIAL PK
+group_name  VARCHAR(64)   -- 归类备注：分析类 / 表格类 / 质量板块（不参与匹配）
+keyword     VARCHAR(128)  -- 旁路词，selector 词条语义（可编译即正则, 否则字面 contains）
+enabled     BOOLEAN DEFAULT TRUE
+remark      VARCHAR(255)
+created_at / updated_at
+```
+
+- `ensureTable()` 幂等建表 + seed 三组词：
+  - 分析类：分析、趋势、对比、分布、归因、标准差、分位数、相关系数、同比、环比、改进建议、报告、探索式分析
+  - 表格类：表格（contains 已覆盖「制作表格/表格展示/表格列出/表格输出」等变体）
+  - 质量板块：质量、缺陷密度、检出率、研发问题、D号、适应性问题、A号
+- 存量表存在性补 seed（完全无该 keyword 的行才插入；软删行不复活，同 timeRange 补种语义）
+- TTL 快照（同 dimension_key_config 模式）；管理接口 `SkillBypassKeywordController`：
+  GET/POST/PUT/DELETE `/v2/skill/bypass-keyword` + POST `.../reload`，写仅管理员
+- 前端：Skill 配置页新增「检索旁路词」区块（独立于 skill 行编辑）：分组列表 CRUD +
+  启用开关 + 刷新快照按钮
+
+### 8.3 旁路判定（新组件 SkillBypassKeywordService）
+
+单一判定入口，两处消费：
+
+```java
+boolean bypassed(String question):
+    1. 任一 enabled 旁路词按 selector 词条语义命中 → 继续; 否则 false
+       （可编译为正则 → Pattern.find(); 编译失败 → 字面 contains;
+        lowercase+trim 归一化与 selector 一致, 词条匹配逻辑复用同一实现）
+    2. 问题 contains 任一 active skill 名（explicit 同语义）→ false（拍板④）
+    3. true
+```
+
+词条匹配复用：`SkillCandidateSelector` 的正则词条匹配（`PATTERN_CACHE` + 非法词回退
+字面）抽为公共静态工具或直接暴露静态方法，旁路判定与 selector 消费同一实现——
+两处行为不得漂移（同 §6 已知坑「归一化逻辑两边同步改」的纪律）。
+
+否定语境按拍板⑦（方案 A）走配置不走代码：特殊词条配 lookaround 词形
+（`(?<!不)遗漏`），机制零改动；前端 Skill 配置页词条输入框的提示文案补一句示例
+（「支持正则：`(?<!不)遗漏` 可排除"不遗漏/不包含遗漏"等否定形态」），降低配置门槛。
+
+消费点：
+1. `SkillVectorIndexVisibilityFilter.filter()`：selector 之前调 `bypassed()` → 命中返回
+   空候选集（LLM 直接走工具，现有空候选语义不变）；
+2. `DirectSkillExecutor.plan()`：入口处（metadata 查询之前）调 `bypassed()` → 命中
+   return null（短路放弃，回退 LLM→tool 链路）。
+
+### 8.4 两阶段匹配（SkillCandidateSelector.select 重构）
+
+```
+阶段 0 显式点名（最高优先, 不受旁路影响）:
+    问题 contains skill 名 → 该 skill 直接入池置顶（不变）
+
+阶段 1 层级匹配（新增, 优先于一切叶层/domain 信号）:
+    预选 = L1 ∨ L2 ∨ L3 任一词条命中问题 的 skill（不看 domain、不看叶层）
+    命中即逐层收窄: L1→L2→L3, 语义与 §7.3 完全一致
+    （该层有命中→未命中的配置层 skill 出局; 该层未配置直通; 无命中跳过收窄）
+    非空 → 排序: 显式点名 > 漏斗位置（层深度 L3>L2>L1, 每个 skill
+          取其最深命中层作排序键） > 命中词全局位次（skill 取其该层**最优命中词**
+          的全局 sort_order, 小者前; 词不在全局表 → 排已配置词之后） > name 字典序
+          （无四层打分、无 priority 分数; 只配叶层的 skill 即使叶层命中也不在池中）
+    截断: 榜首命中链完整 → max-visible-skills; 否则 fallback-visible-skills
+
+漏斗语义（拍板⑧）: 收窄不动, 漏斗只影响排序。优先级配在**词**上、全局生效
+    （skill 不单独配分数）: 全局页把二级词按所属一级分行, 拖行 = 组间优先级,
+    行内拖词 = 组内漏斗。「未闭环」(缺陷组) vs「长时效」(A号组) 同层命中时,
+    把 A号 行拖到 缺陷 行上面 → 长时效所在 skill 即赢。
+
+阶段 2 叶层回退（阶段一为空时才走, = 2026/10/13 之前的旧行为）:
+    domain 互斥域过滤 + 叶层 keywords 匹配 + 显式点名
+    （层级词全未命中 → 层级分自然为 0, 原打分只剩 explicit/domain/叶层;
+     §7.3 的层级收窄在此阶段天然不触发）
+```
+
+要点：
+- 叶层 keywords 从「最高权重信号（2000/词）」降级为「层级全空时的兜底」——权重倒序
+  三次定稿（2026/10/14 晚）被本方案推翻，§7.3 的打分描述保留作历史沿革；
+- 质量类 skill 若叶层配「缺陷密度」：含质量词的问题在阶段 0/1 之前已被旁路置空，
+  skill 永远不可见（= 拍板②退役）；不含旁路词的长尾问法仍可走阶段 2 兜底。
+
+### 8.5 改动清单
+
+- 新增 `v2/skills/SkillBypassKeywordService`（判定 + TTL 快照）+
+  `SkillBypassKeywordRepository`（ensureTable + seed + 存在性补种）+
+  `SkillBypassKeywordController`（管理接口）+ `V2SkillConfig` bean 注册；
+- `SkillVectorIndexVisibilityFilter`：selector 前挂旁路判定；
+- `DirectSkillExecutor.plan()`：入口挂旁路判定；
+- `SkillCandidateSelector`：select 重构为两阶段（阶段 0/1/2），删除四层打分权重
+  （L1 500 / L2 1000 / L3 1500 / 叶层 2000）与「叶层权重最高」相关单测；
+  阶段一排序键 = 漏斗层深度 > 命中词全局位次 > name（无 priority 分数，拍板⑧）；
+- 新增 `v2/skills/SkillKeywordPriorityRepository`（ensureTable + TTL 快照，照
+  dimension_key_config 模式）+ Controller（`/v2/skill/keyword-priority` CRUD +
+  reload，仅管理员写）；表结构 `skill_keyword_priority(level, parent_keyword,
+  keyword, sort_order)`，level∈{1,2,3}，level≥2 时 parent_keyword 必填；
+- 词条正则匹配共享化：selector 的 PATTERN_CACHE 词条匹配逻辑抽公共静态工具，
+  旁路词与四层词条共用（旁路词复用 selector 词条语义=拍板⑤，两处行为必须一致）；
+- 前端 `SkillRoutingConfigPage.vue`：「检索旁路词」CRUD 区块；词条输入框旁提示
+  否定 lookaround 写法（拍板⑦）；
+- 前端新增**全局关键词优先级独立页**（Skill 配置页入口跳转，路由挂 /script-registry/
+  下）：一级 = 有序列表拖曳；二级 = 按所属一级分组的多行 table（分组关系在本页
+  维护），**行可拖（组间优先级）、行内词可拖（组内漏斗）**；三级同理。保存写
+  skill_keyword_priority 的 sort_order；不碰 skill_routing_metadata（priority 列
+  继续遗留不读、各 skill 词表成员资格不变）；
+- `application.properties`：无新开关（旁路词空表 = 功能天然关闭）；
+- 文档：本节实施后补记 + §7.3 权重语义标注"已被 §8 两阶段取代"。
+
+### 8.6 测试要点
+
+1. 旁路：三组词各命中（seed 字面词=contains 行为）→ 目录空 + plan null；显式点名
+   skill → 不旁路；旁路词全停用 → 行为与现状一致；TTL 快照与 reload；
+   正则词形：配 `(?<!数据)分析` →「数据分析」不旁路、「分析」旁路；非法正则（如 `[`）
+   回退字面 contains 不炸；lookaround 否定排除（拍板⑦）：四层词条配 `(?<!不包含)遗漏`
+   →「不包含遗漏」不命中、「包含遗漏的缺陷」命中；
+2. 两阶段：阶段一命中（含收窄语义回归 §7.3 全部定稿案例）；阶段一命中时叶层-only
+   skill 出局；阶段一空 → 阶段二旧行为（domain 过滤/叶层打分/explicit）；
+3. 排序（拍板⑧）：漏斗层深度 > 命中词全局位次 > name；L3 命中压过 L2 命中；
+   同层两 skill 各取其最优命中词的 sort_order 比较位次；「未闭环(缺陷组)/长时效
+   (A号组)」案例：A号行拖到缺陷行上面 → 长时效所在 skill 赢；行内拖词同理生效
+   （组内漏斗）；词未入全局表 → 排已配置词之后、再按 name；显式点名恒置顶；
+   全局表空 = 功能天然关闭（行为与仅剩层深度+name 一致）；
+4. 存量： selector 相关 395 单测按新语义修订（打分类断言改排序断言），
+   DirectSkillExecutor / Repository 基线不回归；
+5. 联动：旁路词命中 + DirectSkillExecutor 存量用例（直接执行被旁路回退 LLM）。

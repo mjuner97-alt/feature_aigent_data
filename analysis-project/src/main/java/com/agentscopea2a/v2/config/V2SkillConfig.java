@@ -26,8 +26,11 @@ import com.agentscopea2a.v2.skillManager.scheduler.WriteCallback;
 import com.agentscopea2a.v2.skills.BuiltinSkillRegistrar;
 import com.agentscopea2a.v2.skills.FingerprintCalculator;
 import com.agentscopea2a.v2.skills.MetricClassificationService;
+import com.agentscopea2a.v2.skills.SkillBypassKeywordRepository;
+import com.agentscopea2a.v2.skills.SkillBypassKeywordService;
 import com.agentscopea2a.v2.skills.SkillCandidateRepository;
 import com.agentscopea2a.v2.skills.SkillCandidateSelector;
+import com.agentscopea2a.v2.skills.SkillKeywordPriorityRepository;
 import com.agentscopea2a.v2.skills.SkillDistiller;
 import com.agentscopea2a.v2.skills.SkillEvolutionRunner;
 import com.agentscopea2a.v2.skills.SkillIndexRepository;
@@ -109,18 +112,48 @@ public class V2SkillConfig {
         return new BuiltinSkillRegistrar(workspacePath, indexRepo, routingMetadataRepository, enabled);
     }
 
+    /**
+     * 检索旁路词仓储（表 skill_bypass_keyword, docs/history/skill-retrieval-logic.md §8.2）;
+     * TTL 快照同 dimension_key_config 模式。
+     */
+    @Bean
+    public SkillBypassKeywordRepository skillBypassKeywordRepository(
+            @Qualifier("gaussCustomerDataSource") DataSource dataSource,
+            @Value("${harness.a2a.skill.bypass-keyword-cache-ttl-millis:300000}") long cacheTtlMillis) {
+        return new SkillBypassKeywordRepository(dataSource, cacheTtlMillis);
+    }
+
+    /** 旁路判定: 旁路词命中且未显式点名 skill → 检索置空（filter 与 DirectSkillExecutor.plan 两处消费）。 */
+    @Bean
+    public SkillBypassKeywordService skillBypassKeywordService(
+            SkillBypassKeywordRepository skillBypassKeywordRepository,
+            SkillRoutingMetadataRepository routingMetadataRepository) {
+        return new SkillBypassKeywordService(skillBypassKeywordRepository, routingMetadataRepository);
+    }
+
+    /** 全局关键词优先级仓储（表 skill_keyword_priority, 拍板⑧）; 空表 = 排序退化为层深度+name。 */
+    @Bean
+    public SkillKeywordPriorityRepository skillKeywordPriorityRepository(
+            @Qualifier("gaussCustomerDataSource") DataSource dataSource,
+            @Value("${harness.a2a.skill.keyword-priority-cache-ttl-millis:300000}") long cacheTtlMillis) {
+        return new SkillKeywordPriorityRepository(dataSource, cacheTtlMillis);
+    }
+
     @Bean
     public SkillVisibilityFilter skillVectorIndexVisibilityFilter(
             SkillRoutingMetadataRepository routingMetadataRepository,
             SkillUsageResolver skillUsageResolver,
+            SkillBypassKeywordService skillBypassKeywordService,
+            SkillKeywordPriorityRepository skillKeywordPriorityRepository,
             @Value("${harness.a2a.skill-context.routing.enabled:false}") boolean enabled,
             @Value("${harness.a2a.skill-context.max-visible-skills:5}") int maxVisibleSkills,
             @Value("${harness.a2a.skill-context.fallback-visible-skills:10}") int fallbackVisibleSkills) {
         log.info("SkillVectorIndexVisibilityFilter: routingEnabled={}, maxVisible={}, fallbackVisible={}",
                 enabled, maxVisibleSkills, fallbackVisibleSkills);
         return new SkillVectorIndexVisibilityFilter(routingMetadataRepository,
-                new SkillCandidateSelector(maxVisibleSkills, fallbackVisibleSkills),
-                enabled, skillUsageResolver);
+                new SkillCandidateSelector(maxVisibleSkills, fallbackVisibleSkills,
+                        skillKeywordPriorityRepository::findAllEnabled),
+                enabled, skillUsageResolver, skillBypassKeywordService);
     }
 
     /**
@@ -137,20 +170,24 @@ public class V2SkillConfig {
             DimensionStateManager dimensionStateManager,
             ObjectProvider<VersionPlanKnowledgeHook> versionPlanHookProvider,
             ObjectProvider<com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository> dimensionKeyRepoProvider,
+            ObjectProvider<SkillBypassKeywordService> bypassKeywordServiceProvider,
             com.fasterxml.jackson.databind.ObjectMapper objectMapper,
+            SkillKeywordPriorityRepository skillKeywordPriorityRepository,
             @Value("${harness.a2a.skill-context.max-visible-skills:5}") int maxVisibleSkills,
             @Value("${harness.a2a.skill-context.fallback-visible-skills:10}") int fallbackVisibleSkills,
             @Value("${harness.a2a.skill-direct-exec.enabled:false}") boolean enabled) {
         log.info("DirectSkillExecutor: directExecEnabled={}", enabled);
         return new com.agentscopea2a.v2.skills.DirectSkillExecutor(
                 routingMetadataRepository,
-                new SkillCandidateSelector(maxVisibleSkills, fallbackVisibleSkills),
+                new SkillCandidateSelector(maxVisibleSkills, fallbackVisibleSkills,
+                        skillKeywordPriorityRepository::findAllEnabled),
                 skillUsageResolver,
                 indexRepo,
                 scriptRegistryMapper,
                 dimensionStateManager,
                 versionPlanHookProvider,
                 dimensionKeyRepoProvider,
+                bypassKeywordServiceProvider,
                 objectMapper,
                 enabled);
     }
