@@ -373,7 +373,10 @@
         INSERT INTO skill_flow_node (flow_id, node_key, node_name, node_type, skill_id, script_id, script_params_json, question_template, depends_on_json,
                                      metric_override_configured, required, max_attempts, sort_order)
         VALUES (#{flowId}, #{nodeKey}, #{nodeName}, #{nodeType}, #{skillId}, #{scriptId}, #{scriptParamsJson}, #{questionTemplate}, #{dependsOnJson},
-                #{metricOverrideConfigured}, #{required}, #{maxAttempts}, #{sortOrder})
+                <choose>
+                    <when test="metricOverrideConfigured != null and metricOverrideConfigured">TRUE</when>
+                    <otherwise>FALSE</otherwise>
+                </choose>, #{required}, #{maxAttempts}, #{sortOrder})
     </insert>
 
     <!-- 查流程的全部节点,按 sort_order(执行顺序)排列 -->

@@ -372,10 +372,7 @@ public class SkillManageService {
      */
     @Transactional("gaussCustomerTransactionManager")
     public void addGrant(Long skillId, String grantType, String targetId, String userId) {
-        Skill s = get(skillId);
-        if (!s.getOwnerUserId().equals(userId)) {
-            throw new IllegalStateException("SkillAccessDenied: " + skillId);
-        }
+        Skill s = assertOwner(skillId, userId);
         validateGrantTarget(grantType, targetId);
         if (skillMapper.existsSkillVisibleGrant(skillId, grantType, targetId)) {
             return; // 幂等
@@ -394,10 +391,7 @@ public class SkillManageService {
     /** 删除授权。仅 owner 可操作;删除最后一条授权后 skill 保持 PRIVATE(owner 仍可见)。 */
     @Transactional("gaussCustomerTransactionManager")
     public void removeGrant(Long skillId, String grantType, String targetId, String userId) {
-        Skill s = get(skillId);
-        if (!s.getOwnerUserId().equals(userId)) {
-            throw new IllegalStateException("SkillAccessDenied: " + skillId);
-        }
+        assertOwner(skillId, userId);
         skillMapper.deleteSkillVisibleGrant(skillId, grantType, targetId);
         recordOperation(skillId, null, userId, "REVOKE", null,
                 "{\"grantType\":\"" + grantType + "\",\"targetId\":\"" + targetId + "\"}");
@@ -419,13 +413,10 @@ public class SkillManageService {
         }
     }
 
-    /** 更新 Skill (仅所有者; description/name 变更时做描述相似复检, 排除自身)。 */
+    /** 更新 Skill (仅所有者或管理员; description/name 变更时做描述相似复检, 排除自身)。 */
     @Transactional("gaussCustomerTransactionManager")
     public Skill update(Long id, Skill patch, String userId) {
-        Skill s = get(id);
-        if (!s.getOwnerUserId().equals(userId)) {
-            throw new IllegalStateException("SkillAccessDenied: " + id);
-        }
+        Skill s = assertOwner(id, userId);
         if (hasPendingPublish(id)) {
             throw new IllegalStateException("SkillPendingApproval: " + id);
         }
@@ -496,10 +487,7 @@ public class SkillManageService {
 
     @Transactional("gaussCustomerTransactionManager")
     public void delete(Long id, String userId) {
-        Skill s = get(id);
-        if (!s.getOwnerUserId().equals(userId)) {
-            throw new IllegalStateException("SkillAccessDenied: " + id);
-        }
+        Skill s = assertOwner(id, userId);
         if (hasPendingPublish(id)) {
             throw new IllegalStateException("SkillPendingApproval: " + id);
         }
@@ -754,7 +742,7 @@ public class SkillManageService {
         if (!"PENDING".equals(p.getStatus()) && !"PENDING_DEVELOPER_REVIEW".equals(p.getStatus())) {
             throw new PublishAlreadyApprovedException("PublishAlreadyApproved: " + publishId);
         }
-        if (!approverId.equals(p.getCurrentApproverUserId())) {
+        if (!approverId.equals(p.getCurrentApproverUserId()) && !adminRoleService.isAdminUserId(approverId)) {
             throw new NotApproverException("NotApprover: " + approverId);
         }
         String developerReviewer = mockOrgService.getDeveloperReviewer();
@@ -763,7 +751,9 @@ public class SkillManageService {
         }
         String nextStatus = "PENDING_DEVELOPER_REVIEW";
         if ("PENDING_DEVELOPER_REVIEW".equals(p.getStatus())) {
-            if (!developerReviewer.equals(approverId)) throw new NotApproverException("NotApprover: " + approverId);
+            if (!developerReviewer.equals(approverId) && !adminRoleService.isAdminUserId(approverId)) {
+                throw new NotApproverException("NotApprover: " + approverId);
+            }
             nextStatus = "APPROVED";
         }
         int changed = skillMapper.updatePublishStatus(publishId, nextStatus, approverId, comment,
@@ -801,11 +791,12 @@ public class SkillManageService {
         if (!"PENDING".equals(p.getStatus()) && !"PENDING_DEVELOPER_REVIEW".equals(p.getStatus())) {
             throw new PublishAlreadyApprovedException("PublishAlreadyApproved: " + publishId);
         }
-        if (!approverId.equals(p.getCurrentApproverUserId())) {
+        if (!approverId.equals(p.getCurrentApproverUserId()) && !adminRoleService.isAdminUserId(approverId)) {
             throw new NotApproverException("NotApprover: " + approverId);
         }
         String expected = p.getStatus();
-        if ("PENDING_DEVELOPER_REVIEW".equals(expected) && !approverId.equals(mockOrgService.getDeveloperReviewer())) {
+        if ("PENDING_DEVELOPER_REVIEW".equals(expected) && !approverId.equals(mockOrgService.getDeveloperReviewer())
+                && !adminRoleService.isAdminUserId(approverId)) {
             throw new NotApproverException("NotApprover: " + approverId);
         }
         int changed = skillMapper.updatePublishStatus(publishId, "REJECTED", approverId, comment, approverId, expected);
@@ -822,8 +813,11 @@ public class SkillManageService {
         log.info("publish rejected: publish={} approver={}", publishId, approverId);
     }
 
-    /** 返回指定审批人名下的待审发布列表。 */
+    /** 返回指定审批人名下的待审发布列表(管理员可见全部)。 */
     public List<SkillPublish> pendingPublishesForApprover(String userId) {
+        if (adminRoleService.isAdminUserId(userId)) {
+            return skillMapper.selectAllPendingPublishes();
+        }
         return skillMapper.selectPendingPublishByApprover(userId);
     }
 
@@ -960,6 +954,9 @@ public class SkillManageService {
         if (candidates == null || candidates.isEmpty()) {
             return List.of();
         }
+        if (adminRoleService.isAdminUserId(userId)) {
+            return candidates;
+        }
         List<SkillDraft> result = new ArrayList<>(candidates.size());
         for (SkillDraft draft : candidates) {
             List<SkillPublish> approved = skillMapper.selectApprovedBySkillId(draft.getSkillId());
@@ -1027,6 +1024,9 @@ public class SkillManageService {
      * {@code currentApproverUserId} 等于当前用户即通过。
      */
     private void validateDraftApprover(Long skillId, String approverId) {
+        if (adminRoleService.isAdminUserId(approverId)) {
+            return;
+        }
         List<SkillPublish> approved = skillMapper.selectApprovedBySkillId(skillId);
         if (approved == null || approved.isEmpty()) {
             throw new IllegalStateException("NoApprovedPublish: " + skillId);

@@ -159,6 +159,11 @@ public class SubagentRegistrar {
      * root MEMORY.md fallback in {@code WorkspaceManager.readWithOverride()}.
      */
     private final MysqlMemoryStore mysqlMemoryStore;
+    /**
+     * context-inject.enabled=false 时从 system 消息剥离 &lt;memory_context&gt; 段
+     * （与主 agent 共用单例）；null 表示开关未开、保持框架注入行为。
+     */
+    private final com.agentscopea2a.v2.middleware.StripMemoryContextMiddleware stripMemoryContextMiddleware;
 
     public SubagentRegistrar(
             @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}") String workspacePath,
@@ -181,7 +186,8 @@ public class SubagentRegistrar {
             ObjectProvider<ToolResultTruncationMiddleware> toolResultTruncationMiddlewareProvider,
             ObjectProvider<ContextBudgetMiddleware> contextBudgetMiddlewareProvider,
             ObjectProvider<ToolMetricCatalogMiddleware> toolMetricCatalogMiddlewareProvider,
-            ObjectProvider<com.agentscopea2a.v2.middleware.DiscoveryStreakResetMiddleware> discoveryStreakResetMiddlewareProvider) {
+            ObjectProvider<com.agentscopea2a.v2.middleware.DiscoveryStreakResetMiddleware> discoveryStreakResetMiddlewareProvider,
+            ObjectProvider<com.agentscopea2a.v2.middleware.StripMemoryContextMiddleware> stripMemoryContextMiddlewareProvider) {
 
         // v1-style: subagents hold only meta-tool beans. Business tools (quality_query_* /
         // data_*) are encapsulated inside ToolRoutersIndex and dispatched via
@@ -227,6 +233,7 @@ public class SubagentRegistrar {
         this.contextBudgetMiddleware = contextBudgetMiddlewareProvider.getIfAvailable();
         this.toolMetricCatalogMiddleware = toolMetricCatalogMiddlewareProvider.getIfAvailable();
         this.discoveryStreakResetMiddleware = discoveryStreakResetMiddlewareProvider.getIfAvailable();
+        this.stripMemoryContextMiddleware = stripMemoryContextMiddlewareProvider.getIfAvailable();
         log.info("SubagentRegistrar: toolRegistry built with {} entries: {}; hooks - handoff={} access={} pyGuard={} retry={} l2Collector={} eventForwarding=true toolTracking={} trace={} truncation={}",
                 toolRegistry.size(), toolRegistry.keySet(),
                 artifactHandoffHook != null, artifactAccessMiddleware != null,
@@ -418,6 +425,9 @@ public class SubagentRegistrar {
             // execution would be cut off by the streak cap.
             if (toolNames.contains("tool_index") && discoveryStreakResetMiddleware != null) {
                 subMiddlewares.add(discoveryStreakResetMiddleware);
+            }
+            if (stripMemoryContextMiddleware != null) {
+                subMiddlewares.add(stripMemoryContextMiddleware);
             }
             if (!subMiddlewares.isEmpty()) {
                 sub.middlewares(subMiddlewares);

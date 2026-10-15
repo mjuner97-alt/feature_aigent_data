@@ -25,6 +25,7 @@ import {
 import { checkSkillSimilarity } from '../../api/routingOverlap';
 import type { SkillSimilarityMatch } from '../../types/routingOverlap';
 import type { SkillInput, SkillGrant, PublishTargetGroup } from '../../types/skill';
+import { isAdmin } from '../../utils/auth';
 import SkillGrantEditor from '../../components/SkillGrantEditor.vue';
 import { listMetrics } from '../../api/skillDependencyMetric';
 import type { SkillDependencyMetric } from '../../types/skillJob';
@@ -107,7 +108,7 @@ async function loadForEdit(id: number) {
       visibility: vis,
     };
     visibility.value = vis;
-    if (s.ownerUserId !== currentUserId()) notOwner.value = true;
+    if (s.ownerUserId !== currentUserId() && !isAdmin()) notOwner.value = true;
     try {
       const publishes = await getSkillPublishes(id);
       const approved = publishes.filter(p => p.status === 'APPROVED');

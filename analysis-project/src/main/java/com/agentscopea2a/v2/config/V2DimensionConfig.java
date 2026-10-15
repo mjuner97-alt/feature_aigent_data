@@ -21,14 +21,17 @@ import com.agentscopea2a.v2.dimension.DimensionStateManager;
 import com.agentscopea2a.v2.dimension.LlmDimensionService;
 import com.agentscopea2a.v2.dimension.OpenAILlmDimensionService;
 import com.agentscopea2a.v2.middleware.DimensionStateMiddleware;
+import com.agentscopea2a.v2.toolrouting.ToolRoutingCatalogService;
 import io.agentscope.core.model.Model;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import javax.sql.DataSource;
+import java.util.Set;
 
 /**
  * v2 维度状态配置。
@@ -57,8 +60,21 @@ public class V2DimensionConfig {
 
     @Bean
     public DimensionStateManager dimensionStateManager(
-            LlmDimensionService llmService, AliasResolver aliasResolver) {
-        return new DimensionStateManager(llmService, aliasResolver);
+            LlmDimensionService llmService,
+            AliasResolver aliasResolver,
+            ObjectProvider<ToolRoutingCatalogService> catalogProvider) {
+        // §13.4 组名修剪指标词表：目录 bean 缺失或快照失败时降级为空表（只修剪虚词）
+        return new DimensionStateManager(llmService, aliasResolver, () -> {
+            ToolRoutingCatalogService svc = catalogProvider.getIfAvailable();
+            if (svc == null) {
+                return Set.of();
+            }
+            try {
+                return svc.snapshot().metricTags();
+            } catch (RuntimeException e) {
+                return Set.of();
+            }
+        });
     }
 
     /**
@@ -75,6 +91,18 @@ public class V2DimensionConfig {
     @Bean
     public AliasResolver aliasResolver(DimensionAliasRepository dimensionAliasRepository) {
         return new AliasResolver(dimensionAliasRepository::findAllEnabled);
+    }
+
+    /**
+     * 维度键字典仓储（docs/history/skill-direct-exec-plan.md §9.2）：内置 8 键 seed +
+     * 用户新增键的词表提取配置；TTL 快照同 dimension_alias 模式。
+     */
+    @Bean
+    public com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository dimensionKeyConfigRepository(
+            @Qualifier("gaussCustomerDataSource") DataSource dataSource,
+            com.fasterxml.jackson.databind.ObjectMapper objectMapper,
+            @Value("${harness.a2a.dimension.key-cache-ttl-millis:300000}") long cacheTtlMillis) {
+        return new com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository(dataSource, objectMapper, cacheTtlMillis);
     }
 
     @Bean

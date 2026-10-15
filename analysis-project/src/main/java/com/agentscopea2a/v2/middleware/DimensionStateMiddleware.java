@@ -43,6 +43,9 @@ import java.util.Set;
  */
 public class DimensionStateMiddleware implements MiddlewareBase {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(DimensionStateMiddleware.class);
+
     private static final String STATE_KEY = "dimensionState";
 
     private final DimensionStateManager dimensionStateManager;
@@ -60,31 +63,38 @@ public class DimensionStateMiddleware implements MiddlewareBase {
     @Override
     public Mono<String> onSystemPrompt(Agent agent, RuntimeContext ctx, String systemPrompt) {
         return Mono.fromCallable(() -> {
-            // 提取用户问题：从 RuntimeContext 获取最后一条用户消息
-            String userQuestion = extractUserQuestion(ctx);
+            try {
+                // 提取用户问题：从 RuntimeContext 获取最后一条用户消息
+                String userQuestion = extractUserQuestion(ctx);
 
-            if (userQuestion == null || userQuestion.isBlank()) {
-                return systemPrompt;
-            }
-
-            // 规则分析 + 继承 + 指代消解 + 组装（纯本地，零 LLM）
-            // 用 processQuestionInContext 而非 loadFrom + processQuestion + getCurrentState + saveTo
-            // 序列，避免单例 DimensionStateManager 的 currentState 实例字段被并发请求覆盖（P1-2）
-            DimensionStateManager.ProcessResult result =
-                    dimensionStateManager.processQuestionInContext(ctx, userQuestion);
-            DimensionState state = result.newState();
-
-            if (state != null && state.hasDimensions()) {
-                String dimensionPrefix = formatDimensionContext(state, result.resolvedAliases());
-                if (maxChars == 0) {
+                if (userQuestion == null || userQuestion.isBlank()) {
                     return systemPrompt;
                 }
-                if (dimensionPrefix.length() > maxChars) {
-                    dimensionPrefix = truncateAtLineBoundary(dimensionPrefix, maxChars);
+
+                // 规则分析 + 继承 + 指代消解 + 组装（纯本地，零 LLM）
+                // 用 processQuestionInContext 而非 loadFrom + processQuestion + getCurrentState + saveTo
+                // 序列，避免单例 DimensionStateManager 的 currentState 实例字段被并发请求覆盖（P1-2）
+                DimensionStateManager.ProcessResult result =
+                        dimensionStateManager.processQuestionInContext(ctx, userQuestion);
+                DimensionState state = result.newState();
+
+                if (state != null && state.hasDimensions()) {
+                    String dimensionPrefix = formatDimensionContext(state, result.resolvedAliases());
+                    if (maxChars == 0) {
+                        return systemPrompt;
+                    }
+                    if (dimensionPrefix.length() > maxChars) {
+                        dimensionPrefix = truncateAtLineBoundary(dimensionPrefix, maxChars);
+                    }
+                    log.debug("[dim-mw] injected chars={}", dimensionPrefix.length());
+                    return systemPrompt + "\n\n" + dimensionPrefix;
                 }
-                return systemPrompt + "\n\n" + dimensionPrefix;
+                return systemPrompt;
+            } catch (RuntimeException e) {
+                // 中间件异常不允许打断 chat 链路，降级为无维度上下文注入
+                log.error("[dim-mw] dimension context injection failed", e);
+                return systemPrompt;
             }
-            return systemPrompt;
         });
     }
 

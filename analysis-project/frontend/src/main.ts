@@ -111,6 +111,7 @@ const routes: RouteRecordRaw[] = [
           { path: 'tool-routing', component: ToolRoutingPage, meta: { requiresAuth: true, title: '工具路由' } },
           { path: 'overlap', component: RoutingOverlapPage, meta: { requiresAuth: true, title: '重叠检测' } },
           { path: 'dimension-alias', component: DimensionAliasPage, meta: { requiresAuth: true, title: '维度同义词' } },
+          { path: 'dimension-key', component: () => import('./pages/DimensionKeyPage.vue'), meta: { requiresAuth: true, title: '维度键字典' } },
         ],
       },
       // 兼容旧书签: /sql-registry -> /script-registry

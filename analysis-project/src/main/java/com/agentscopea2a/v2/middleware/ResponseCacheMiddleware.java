@@ -16,6 +16,7 @@
 package com.agentscopea2a.v2.middleware;
 
 import com.agentscopea2a.v2.cache.ResponseCacheService;
+import com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository;
 import com.agentscopea2a.v2.dimension.DimensionState;
 import com.agentscopea2a.v2.dimension.DimensionStateManager;
 import com.agentscopea2a.v2.dimension.QuestionAnalysis;
@@ -60,6 +61,7 @@ public class ResponseCacheMiddleware implements MiddlewareBase {
     private final ResponseCacheService cacheService;
     private final DimensionStateManager dimManager;
     private final boolean enabled;
+    private final org.springframework.beans.factory.ObjectProvider<DimensionKeyConfigRepository> dimensionKeyRepoProvider;
     private final Counter hitCounter;
     private final Counter missCounter;
     private final Counter writeCounter;
@@ -67,10 +69,12 @@ public class ResponseCacheMiddleware implements MiddlewareBase {
     public ResponseCacheMiddleware(ResponseCacheService cacheService,
                                     DimensionStateManager dimManager,
                                     MeterRegistry meterRegistry,
-                                    boolean enabled) {
+                                    boolean enabled,
+                                    org.springframework.beans.factory.ObjectProvider<DimensionKeyConfigRepository> dimensionKeyRepoProvider) {
         this.cacheService = cacheService;
         this.dimManager = dimManager;
         this.enabled = enabled;
+        this.dimensionKeyRepoProvider = dimensionKeyRepoProvider;
         this.hitCounter = meterRegistry.counter("response_cache.hit");
         this.missCounter = meterRegistry.counter("response_cache.miss");
         this.writeCounter = meterRegistry.counter("response_cache.write");
@@ -78,8 +82,15 @@ public class ResponseCacheMiddleware implements MiddlewareBase {
 
     public ResponseCacheMiddleware(ResponseCacheService cacheService,
                                     DimensionStateManager dimManager,
+                                    MeterRegistry meterRegistry,
+                                    boolean enabled) {
+        this(cacheService, dimManager, meterRegistry, enabled, null);
+    }
+
+    public ResponseCacheMiddleware(ResponseCacheService cacheService,
+                                    DimensionStateManager dimManager,
                                     MeterRegistry meterRegistry) {
-        this(cacheService, dimManager, meterRegistry, true);
+        this(cacheService, dimManager, meterRegistry, true, null);
     }
 
     @Override
@@ -91,6 +102,14 @@ public class ResponseCacheMiddleware implements MiddlewareBase {
 
         String question = ResponseCacheService.extractUserQuestion(input.msgs());
         if (question == null || question.isEmpty()) {
+            return next.apply(input);
+        }
+
+        // 拍板② (2026-10-14): 问题含时间范围短语时绕过缓存 (不读不写)——"本周"类锚点
+        // 解析出的日期随提问日漂移, 缓存指纹是原始文本会跨天脏读
+        // (docs/history/dimension-key-dynamic-dimension-plan.md §6.1.5)。
+        if (containsTimeRangePhrase(question)) {
+            log.debug("[cache] bypass: timeRange phrase in question");
             return next.apply(input);
         }
 
@@ -138,6 +157,26 @@ public class ResponseCacheMiddleware implements MiddlewareBase {
     }
 
     // ==================== Helpers ====================
+
+    /** 问题命中 timeRange 提取（L1 正则 + L2 词表）→ true；字典不可用时保守放行（不绕过）。 */
+    private boolean containsTimeRangePhrase(String question) {
+        if (dimensionKeyRepoProvider == null) {
+            return false;
+        }
+        try {
+            DimensionKeyConfigRepository repo = dimensionKeyRepoProvider.getIfAvailable();
+            if (repo == null) {
+                return false;
+            }
+            return repo.findAllEnabled().stream()
+                    .filter(k -> !k.builtin())
+                    .filter(k -> com.agentscopea2a.v2.dimension.TimeRangeResolver.RESERVED_KEY.equals(k.key()))
+                    .anyMatch(k -> !com.agentscopea2a.v2.dimension.TimeRangeExtractor.extract(question, k.aliases()).isEmpty());
+        } catch (RuntimeException e) {
+            log.warn("[cache] timeRange bypass check failed, treat as no phrase: {}", e.getMessage());
+            return false;
+        }
+    }
 
     private static DimensionState buildFromExplicit(QuestionAnalysis analysis) {
         DimensionState state = new DimensionState();

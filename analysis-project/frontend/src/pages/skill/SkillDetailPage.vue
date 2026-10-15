@@ -10,7 +10,7 @@
  */
 import { ref, watch, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import Markdown from '../../components/Markdown.vue';
+import SkillMarkdown from '../../components/SkillMarkdown.vue';
 import {
   getSkill,
   getLikeStatus,
@@ -157,7 +157,7 @@ function approvalActionLabel(action: string): string {
 }
 
 // ============ Markdown 渲染 ============
-// 使用零依赖 Markdown 组件，兼容所有浏览器
+// 使用独立的 Skill Markdown 渲染器，支持 CommonMark / GFM。
 
 // ============ 附件列表 ============
 
@@ -423,7 +423,7 @@ watch(() => route.params.id, () => {
     </section>
     <section class="block">
       <h3 class="block-title"><span class="bar"></span>内容</h3>
-      <Markdown v-if="skill.content" :text="skill.content" theme="dark" />
+      <SkillMarkdown v-if="skill.content" :text="skill.content" theme="dark" />
     </section>
 
     <!-- 附件列表 -->

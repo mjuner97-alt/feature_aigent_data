@@ -1,6 +1,7 @@
 package com.agentscopea2a.v2.skills;
 
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Service;
 
@@ -13,16 +14,19 @@ public class SkillRoutingMetadataAdminService {
     private final com.agentscopea2a.v2.governance.SkillToolOverlapService overlapService;
     private final com.agentscopea2a.v2.governance.SkillSkillOverlapService skillSkillOverlapService;
     private final com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService;
+    private final org.springframework.beans.factory.ObjectProvider<com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository> dimensionKeyRepoProvider;
 
     public SkillRoutingMetadataAdminService(
             SkillRoutingMetadataRepository repository,
             com.agentscopea2a.v2.governance.SkillToolOverlapService overlapService,
             com.agentscopea2a.v2.governance.SkillSkillOverlapService skillSkillOverlapService,
-            com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService) {
+            com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService,
+            org.springframework.beans.factory.ObjectProvider<com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository> dimensionKeyRepoProvider) {
         this.repository = repository;
         this.overlapService = overlapService;
         this.skillSkillOverlapService = skillSkillOverlapService;
         this.adminRoleService = adminRoleService;
+        this.dimensionKeyRepoProvider = dimensionKeyRepoProvider;
     }
 
     public List<SkillRoutingMetadataView> list(String keyword, Boolean active, int limit, int offset) {
@@ -57,7 +61,11 @@ public class SkillRoutingMetadataAdminService {
         assertOwner(creator, userId);
         SkillRoutingMetadata metadata = new SkillRoutingMetadata(skillName, summary,
                 cleanTags(input.keywords()), cleanTags(input.domainTags()), cleanTags(input.topicTags()),
-                creator, input.active(), null);
+                creator, input.active(), null,
+                cleanTags(input.level1Keywords()), cleanTags(input.level2Keywords()),
+                cleanTags(input.level3Keywords()),
+                input.scriptId() == null || input.scriptId().isBlank() ? null : input.scriptId().trim(),
+                serializeParamMapping(input.paramMapping()));
         assertNotHighSkillOverlap(metadata);
         if (!repository.upsert(metadata)) throw new IllegalStateException("RoutingConfigSaveFailed");
         invalidateOverlapCache();
@@ -94,9 +102,56 @@ public class SkillRoutingMetadataAdminService {
     public SkillRoutingMetadataView setActive(String skillName, boolean active, String userId) {
         SkillRoutingMetadataView current = get(skillName);
         SkillRoutingMetadataInput input = new SkillRoutingMetadataInput(current.shortSummary(), current.keywords(),
-                current.domainTags(), current.topicTags(), active);
+                current.domainTags(), current.topicTags(), active,
+                current.level1Keywords(), current.level2Keywords(), current.level3Keywords(),
+                current.scriptId(), current.paramMapping());
         save(skillName, input, userId);
         return get(skillName);
+    }
+
+    /**
+     * Skill 直接执行的脚本参数 → 维度键映射: key = 脚本参数名 (原样透传), value 必须 ∈
+     * 合法维度键全集 (内置 8 键 ∪ dimension_key_config 启用键, §9 动态化; timeRange
+     * 追加 .start/.end 后缀形态, §6.1.6)。配错在保存期拒绝。
+     */
+    private String serializeParamMapping(Map<String, String> paramMapping) {
+        if (paramMapping == null || paramMapping.isEmpty()) {
+            return null;
+        }
+        java.util.LinkedHashSet<String> validKeys = new java.util.LinkedHashSet<>(DirectSkillExecutor.DIMENSION_KEYS);
+        try {
+            com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository repo = dimensionKeyRepoProvider.getIfAvailable();
+            if (repo != null) {
+                repo.findAllEnabled().forEach(k -> validKeys.add(k.key()));
+                com.agentscopea2a.v2.dimension.TimeRangeResolver.expandKeys(validKeys);
+            }
+        } catch (RuntimeException e) {
+            // 字典读失败不拦保存, 退化为仅内置键校验 (与直接执行提取的快照兜底同语义)
+        }
+        java.util.LinkedHashMap<String, String> cleaned = new java.util.LinkedHashMap<>();
+        for (var entry : paramMapping.entrySet()) {
+            String key = entry.getKey() == null ? "" : entry.getKey().trim();
+            String value = entry.getValue() == null ? "" : entry.getValue().trim();
+            if (key.isEmpty()) {
+                continue;
+            }
+            if (!validKeys.contains(value)) {
+                throw new IllegalArgumentException("ParamMappingInvalidDimension: '" + value
+                        + "' 不是合法维度键, 可选: " + validKeys);
+            }
+            if (key.length() > 128) {
+                throw new IllegalArgumentException("ParamMappingKeyTooLong: max 128");
+            }
+            cleaned.put(key, value);
+        }
+        if (cleaned.isEmpty()) {
+            return null;
+        }
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(cleaned);
+        } catch (Exception e) {
+            throw new IllegalStateException("ParamMappingSerializeFailed", e);
+        }
     }
 
     private void assertOwner(String owner, String userId) {
@@ -125,9 +180,32 @@ public class SkillRoutingMetadataAdminService {
 
     private static List<String> cleanTags(List<String> values) {
         if (values == null) return List.of();
-        return values.stream().filter(v -> v != null).flatMap(v -> TAG_SEPARATOR.splitAsStream(v))
+        return values.stream().filter(v -> v != null).flatMap(SkillRoutingMetadataAdminService::splitAwareOfRegexBraces)
                 .map(String::trim).filter(v -> !v.isEmpty()).distinct()
                 .peek(v -> { if (v.length() > 128) throw new IllegalArgumentException("TagTooLong: max 128"); })
                 .toList();
+    }
+
+    /**
+     * 括号感知切分: 正则量词 {@code {1,3}} 内的逗号不作为分隔符, 否则
+     * {@code 未闭环.{1,3}问题} 会被切成两段破坏正则语义。
+     */
+    private static java.util.stream.Stream<String> splitAwareOfRegexBraces(String value) {
+        StringBuilder buffer = new StringBuilder();
+        java.util.List<String> parts = new java.util.ArrayList<>();
+        int braceDepth = 0;
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (ch == '{') braceDepth++;
+            if (ch == '}') braceDepth = Math.max(0, braceDepth - 1);
+            if (braceDepth == 0 && TAG_SEPARATOR.matcher(String.valueOf(ch)).matches()) {
+                if (buffer.length() > 0) parts.add(buffer.toString());
+                buffer.setLength(0);
+            } else {
+                buffer.append(ch);
+            }
+        }
+        if (buffer.length() > 0) parts.add(buffer.toString());
+        return parts.stream();
     }
 }

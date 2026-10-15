@@ -137,6 +137,7 @@ public class HarnessAgentPartsConfig {
             ObjectProvider<SkillSynthesisHook> skillSynthesisHookProvider,
             ObjectProvider<SkillEvolutionHook> skillEvolutionHookProvider,
             ObjectProvider<KnowledgeRetrievalHook> knowledgeRetrievalHookProvider,
+            ObjectProvider<VersionPlanKnowledgeHook> versionPlanKnowledgeHookProvider,
             ObjectProvider<ArithMentalMathDetectorHook> arithMentalMathDetectorProvider,
             ObjectProvider<VerificationHook> verificationHookProvider,
             ObjectProvider<AiChatRestToolCallTrackingToDbHook> traceCollectorHookProvider) {
@@ -197,6 +198,11 @@ public class HarnessAgentPartsConfig {
         if (knowledge != null) {
             hooks.add(knowledge);
             log.info("HarnessAgentPartsConfig: KnowledgeRetrievalHook wired (priority=-40)");
+        }
+        VersionPlanKnowledgeHook versionPlan = versionPlanKnowledgeHookProvider.getIfAvailable();
+        if (versionPlan != null) {
+            hooks.add(versionPlan);
+            log.info("HarnessAgentPartsConfig: VersionPlanKnowledgeHook wired (priority=-45)");
         }
         ArithMentalMathDetectorHook arithDetector = arithMentalMathDetectorProvider.getIfAvailable();
         if (arithDetector != null) {
