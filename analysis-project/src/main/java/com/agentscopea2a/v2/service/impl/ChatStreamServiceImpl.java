@@ -448,8 +448,10 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         StreamContext streamCtx = new StreamContext(emitter, req, ctx, userMsg, episodicSessionId, traceCtx, requestId);
         aiChatMonitor.start();
 
-        // 先发送一条真实的请求状态，避免模型首 token 较慢时前端看起来像卡死。
-        sendVisibleThinkStatus(streamCtx, strategy, "正在调用模型，请稍候...\n");
+        // 澄清短路直接返回最终提示；其余请求先发送状态，避免等待模型首 token 时看起来像卡死。
+        if (clarifyPrompt == null) {
+            sendVisibleThinkStatus(streamCtx, strategy, "正在调用模型，请稍候...\n");
+        }
 
         // 清理逻辑：取消订阅、清理 artifact、持久化 episodic 记忆、移除进行中调用标记
         Runnable cleanup = buildCleanup(streamCtx, callKey, inFlight);
