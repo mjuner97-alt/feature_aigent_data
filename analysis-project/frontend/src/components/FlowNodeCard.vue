@@ -20,6 +20,7 @@ const props = withDefaults(defineProps<{
   debugDisabled?: boolean;
   showDebug?: boolean;
   showMetrics?: boolean;
+  showDynamicParams?: boolean;
   dragging?: boolean;
   sortable?: boolean;
   isFirst?: boolean;
@@ -33,6 +34,7 @@ const props = withDefaults(defineProps<{
   debugDisabled: false,
   showDebug: true,
   showMetrics: true,
+  showDynamicParams: true,
   dragging: false,
   sortable: true,
   isFirst: false,
@@ -202,13 +204,13 @@ function selectedScript(node: SkillFlowNode, scripts: ScriptRegistryListItem[]):
               <span class="param-name">{{ item.name }}<em v-if="item.required"> *</em><small class="param-type">{{ item.type }}</small></span>
               <small v-if="item.description" class="param-desc-inline">{{ item.description }}</small>
             </div>
-            <div class="param-mode">
+            <div v-if="showDynamicParams" class="param-mode">
               <select :value="paramMode(item)" @change="setParamMode(item, ($event.target as HTMLSelectElement).value as ParamValueMode)">
                 <option value="LITERAL">直接填写</option>
                 <option v-if="supportsPeriodParam(item.type) || paramMode(item) === 'DYNAMIC_PERIOD'" value="DYNAMIC_PERIOD">动态时间</option>
               </select>
             </div>
-            <DynamicPeriodEditor v-if="paramMode(item) === 'DYNAMIC_PERIOD' || editingPeriod === item.name" :key="`${node.scriptId}:${item.name}`" :model-value="periodValue(item)" :script-id="node.scriptId" :type="item.type" :param-name="item.name" :editing="editingPeriod === item.name" :pending="paramMode(item) !== 'DYNAMIC_PERIOD'" @close="editingPeriod = null" @change="value => setSchemaValue(item, value)" />
+            <template v-if="paramMode(item) === 'DYNAMIC_PERIOD' || editingPeriod === item.name"><DynamicPeriodEditor v-if="showDynamicParams" :key="`${node.scriptId}:${item.name}`" :model-value="periodValue(item)" :script-id="node.scriptId" :type="item.type" :param-name="item.name" :editing="editingPeriod === item.name" :pending="paramMode(item) !== 'DYNAMIC_PERIOD'" @close="editingPeriod = null" @change="value => setSchemaValue(item, value)" /></template>
             <template v-else-if="normalizedParamType(item.type).array">
               <div class="array-editor">
                 <div v-for="(value, index) in (schemaValue(item) as unknown[] || [])" :key="index" class="array-row">

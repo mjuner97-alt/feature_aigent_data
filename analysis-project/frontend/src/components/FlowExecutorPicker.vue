@@ -48,5 +48,6 @@ function add(item: { userId: string; name: string }) {
   </div>
 </template>
 <style scoped>
+.executor-picker h4 { color: #0f172a; font-size: 15px; font-weight: 600; }
 .executor-picker{display:grid;gap:10px;margin-top:14px;padding:14px;border:1px solid #dbeafe;border-radius:8px}.executor-picker h4,.executor-picker p{margin:0}.executor-picker p,.executor-owner{font-size:12px;color:#64748b;line-height:1.6}.executor-search{display:flex;gap:8px}.executor-search input{flex:1;min-width:0;padding:8px;border:1px solid #cbd5e1;border-radius:6px}.executor-results>div{display:flex;align-items:center;gap:12px;margin:6px 0}.executor-chips{display:flex;gap:6px;flex-wrap:wrap}.executor-chip{padding:5px 8px;background:#dbeafe;border-radius:5px;font-size:12px;color:#1e3a8a}.executor-chip button{margin-left:6px;border:0;background:transparent;cursor:pointer;color:inherit}.btn{border:1px solid #cbd5e1;border-radius:5px;background:#f8fafc;padding:6px 10px;cursor:pointer;white-space:nowrap}.btn:disabled{opacity:.5;cursor:default}
 </style>

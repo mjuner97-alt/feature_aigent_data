@@ -27,7 +27,8 @@ const nav = [
   { to: '/skills/approvals', label: '审批', badge: true },
   { to: '/skills/jobs', label: '定时任务' },
   { to: '/skills/virtual-groups', label: '虚拟组管理' },
-  { to: '/skills/report-processes', label: '报告流程' },
+  // 测试期间临时隐藏，保留路由以便恢复。
+  // { to: '/skills/report-processes', label: '报告流程' },
 ];
 </script>
 

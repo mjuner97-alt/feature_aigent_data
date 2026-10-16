@@ -138,7 +138,7 @@ const bodyTemplatePreview = computed(() => {
 });
 const bodyTemplateHint = computed(() => {
   const text = (form.value.notifyBodyTemplate || '').trim();
-  if (!text) return '留空时使用系统默认文案。';
+  if (!text) return '非必填，留空时使用后台原有的通知邮件拼接模板。';
   return text.includes(LINK_PLACEHOLDER)
     ? `发送时 ${LINK_PLACEHOLDER} 将替换为报告下载链接（${bodyTemplatePreviewLink.value}）。`
     : `正文未包含 ${LINK_PLACEHOLDER}，报告链接将追加在正文末尾。`;
@@ -791,7 +791,7 @@ defineExpose({ isDirty });
                 <small>未配置收件人时通知流程触发人</small>
               </div>
               <div class="notify-contact-config">
-                <h4>通知中的联系信息</h4>
+                <h4>通知中的联系信息（非必填）</h4>
                 <p>展示在任务通知邮件中，方便收件人遇到问题时联系相关人员。手机号仅作为联系信息展示，不用于发送短信。</p>
                 <label><span>联系人姓名</span><input v-model="form.notifyContactName" type="text" placeholder="填写负责解答此任务相关问题的人" /></label>
                 <label><span>联系电话（手机号）</span><input v-model="form.notifyContactPhone" type="text" placeholder="填写 11 位手机号" /></label>
@@ -801,12 +801,12 @@ defineExpose({ isDirty });
                 <p v-if="contactValidationError" class="error" role="status">{{ contactValidationError }}</p>
               </div>
               <div class="notify-body-config">
-                <h4>通知邮件正文</h4>
+                <h4>通知邮件正文（非必填）</h4>
                 <p>任务完成后通知邮件的正文文字在此配置，报告链接由系统自动拼接。可用占位符 <code>{链接}</code>，发送时替换为报告下载链接（显示为 任务名(年月日)，可点击）。</p>
                 <div class="body-template-toolbar">
                   <button type="button" class="btn" @click="insertLinkPlaceholder">插入链接占位符</button>
                 </div>
-                <textarea ref="bodyTemplateInput" v-model="form.notifyBodyTemplate" rows="5" placeholder="各位：&#10;　　部门研发管理周报详见{链接}，请关注。"></textarea>
+                <textarea ref="bodyTemplateInput" v-model="form.notifyBodyTemplate" rows="5" placeholder="非必填，留空时使用后台原有的通知邮件拼接模板。&#10;自定义示例：各位，部门研发管理周报详见{链接}，请关注。"></textarea>
                 <small>{{ bodyTemplateHint }}</small>
                 <div v-if="bodyTemplatePreview" class="body-template-preview" aria-label="邮件正文预览">
                   <span class="preview-label">邮件预览</span>
@@ -817,7 +817,8 @@ defineExpose({ isDirty });
             </section>
 
             <section id="flow-outline" class="form-section wide section-card">
-              <div class="template-toolbar">
+              <!-- 测试期间临时隐藏流程引入入口。 -->
+              <div v-if="false" class="template-toolbar">
                 <span class="template-label">报告流程模板</span>
                 <el-select v-model="selectedReportProcessId" filterable clearable :loading="reportProcessLoading" placeholder="搜索并选择报告流程" class="report-process-select"><el-option v-for="item in reportProcesses" :key="item.id" :value="String(item.id)" :label="item.name" /></el-select>
                 <button class="btn primary" :disabled="!selectedReportProcessId || reportProcessLoading" @click="importReportProcess(Number(selectedReportProcessId))">引入报告流程</button>
@@ -836,7 +837,7 @@ defineExpose({ isDirty });
                   <button class="icon-button danger" title="删除本节及子级" @click="removeOutlineRow(row)">×</button>
                 </div>
                 <div class="outline-node-area" :style="{ marginLeft: `${Math.min(row.level, 8) * 22}px` }">
-                  <FlowNodeCard v-for="(node, nodeIndex) in nodesForRow(row)" :key="node.nodeKey" class="chapter-node-card" :node="node" :title="nodeTitle(node)" :schema="schemaFor(node)" :scripts="scripts" :metrics="metrics" :script-loading="scriptLoading" :metric-loading="metricLoading" :debug-disabled="!node.scriptId || debugStarting || debugInProgress()" :dragging="dragNodeKey === node.nodeKey" :sortable="true" :is-first="nodeIndex === 0" :is-last="nodeIndex === nodesForRow(row).length - 1" remove-title="删除节点" @move="moveChapterNode(row, node.nodeKey, $event)" @remove="removeChapterNode(row, node.nodeKey)" @debug="runNodeDebug(node, $event)" @drag-start="chapterDragStart(node.nodeKey, $event)" @drag-over="chapterDragOver(row, node.nodeKey)" @drag-end="finishDrag" @script-change="onScriptSelected(node)" @script-params-change="onScriptParamsChange(node, $event)" @search-scripts="searchScripts" @search-metrics="searchMetrics" @set-metrics="setNodeMetrics(node, $event)" />
+                  <FlowNodeCard v-for="(node, nodeIndex) in nodesForRow(row)" :key="node.nodeKey" class="chapter-node-card" :node="node" :title="nodeTitle(node)" :schema="schemaFor(node)" :scripts="scripts" :metrics="metrics" :script-loading="scriptLoading" :metric-loading="metricLoading" :debug-disabled="!node.scriptId || debugStarting || debugInProgress()" :dragging="dragNodeKey === node.nodeKey" :sortable="true" :show-dynamic-params="false" :is-first="nodeIndex === 0" :is-last="nodeIndex === nodesForRow(row).length - 1" remove-title="删除节点" @move="moveChapterNode(row, node.nodeKey, $event)" @remove="removeChapterNode(row, node.nodeKey)" @debug="runNodeDebug(node, $event)" @drag-start="chapterDragStart(node.nodeKey, $event)" @drag-over="chapterDragOver(row, node.nodeKey)" @drag-end="finishDrag" @script-change="onScriptSelected(node)" @script-params-change="onScriptParamsChange(node, $event)" @search-scripts="searchScripts" @search-metrics="searchMetrics" @set-metrics="setNodeMetrics(node, $event)" />
 <div class="chapter-node-actions">
                     <button class="btn" title="新建一个 Python 节点并放到该章节" @click="addOutlineNode(row)">＋ 添加节点</button>
                     <select v-if="unboundNodes.length" :value="''" @change="bindRowNode(row, ($event.target as HTMLSelectElement).value)"><option value="" disabled>绑定已有未绑定节点…</option><option v-for="node in unboundNodes" :key="node.nodeKey" :value="node.nodeKey">{{ nodeTitle(node) }}（{{ node.nodeKey }}）</option></select>
@@ -902,6 +903,7 @@ input, select, textarea { box-sizing: border-box; width: 100%; border: 1px solid
 .flow-preview { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; border-left: 3px solid #3b82f6; background: #f8fafc; color: #475569; font-size: 13px; }.preview-nodes { color: #1d4ed8; }
 .outline-row { display: grid; grid-template-columns: 34px minmax(180px, 1fr) auto auto auto; gap: 8px; align-items: center; padding: 8px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fbfdff; }.outline-row + .outline-row { margin-top: 7px; }.outline-level { color: #64748b; font-size: 11px; font-weight: 700; text-align: center; }.outline-row input, .outline-row select { min-width: 0; }
 .section-heading { margin-top: 8px; }
+.notify-contact-config h4, .notify-body-config h4 { color: #0f172a; font-size: 15px; font-weight: 600; }
 .outline-node-area { display: grid; gap: 8px; margin-top: 6px; padding: 8px; border: 1px dashed #dbe4f0; border-radius: 8px; }
 .outline-node-area + .outline-row, .outline-node-area + .outline-node-area { margin-top: 7px; }
 .chapter-node-actions { display: flex; gap: 8px; align-items: center; }.chapter-node-actions select { width: auto; min-width: 200px; }
