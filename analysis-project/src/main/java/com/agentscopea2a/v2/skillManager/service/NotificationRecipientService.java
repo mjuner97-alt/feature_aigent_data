@@ -110,39 +110,42 @@ public class NotificationRecipientService {
     @Transactional("gaussCustomerTransactionManager")
     public int replaceRecipients(String targetType, Long targetId, String triggerType,
                                  List<String> userIds, String createdBy) {
+        return replaceRecipients(targetType, targetId, triggerType, userIds,
+                findConfiguredUserIds(targetType, targetId, triggerType, "CC").orElse(List.of()), createdBy);
+    }
+
+    /** Replace both ordered groups atomically; TO wins cross-group duplicates. */
+    @Transactional("gaussCustomerTransactionManager")
+    public int replaceRecipients(String targetType, Long targetId, String triggerType,
+                                 List<String> toUserIds, List<String> ccUserIds, String createdBy) {
         String scope = normalizeTriggerType(triggerType);
-        // 去空串、去重,保持原顺序
-        Set<String> deduped = new LinkedHashSet<>();
-        if (userIds != null) {
-            for (String userId : userIds) {
-                if (userId != null && !userId.isBlank()) {
-                    deduped.add(userId.trim());
-                }
+        List<String> to = filterValidUserIds(com.agentscopea2a.v2.skillManager.notification.NotificationReceivers.parse(
+                com.agentscopea2a.v2.skillManager.notification.NotificationReceivers.toCsv(toUserIds)));
+        List<String> cc = filterValidUserIds(com.agentscopea2a.v2.skillManager.notification.NotificationReceivers.parse(
+                com.agentscopea2a.v2.skillManager.notification.NotificationReceivers.toCsv(ccUserIds)))
+                .stream().filter(id -> !to.contains(id)).toList();
+        NotificationConfig config = findOrCreateConfig(targetType, targetId, createdBy);
+        recipientMapper.deleteByConfigIdAndTrigger(config.getId(), scope);
+        List<NotificationRecipient> rows = new ArrayList<>();
+        for (String type : List.of("TO", "CC")) {
+            List<String> ids = "TO".equals(type) ? to : cc;
+            for (int index = 0; index < ids.size(); index++) {
+                rows.add(NotificationRecipient.builder().configId(config.getId()).userId(ids.get(index))
+                        .triggerType(scope).recipientType(type).sortOrder(index)
+                        .channel(NotificationRecipient.CHANNEL_EMAIL).enabled(Boolean.TRUE).build());
             }
         }
-        // 通过人员服务批量过滤失效用户(空名单不进人员查询)
-        List<String> validUserIds = filterValidUserIds(new ArrayList<>(deduped));
-
-        NotificationConfig config = findOrCreateConfig(targetType, targetId, createdBy);
-
-        // 先清后建:删除该配置全部旧关系,再批量插入新关系(同一事务)
-        recipientMapper.deleteByConfigIdAndTrigger(config.getId(), scope);
-        if (validUserIds.isEmpty()) {
-            return 0;
-        }
-        List<NotificationRecipient> rows = new ArrayList<>(validUserIds.size());
-        for (String userId : validUserIds) {
-            rows.add(NotificationRecipient.builder()
-                    .configId(config.getId())
-                    .userId(userId)
-                    .triggerType(scope)
-                    .recipientType(NotificationRecipient.RECIPIENT_TYPE_TO)
-                    .channel(NotificationRecipient.CHANNEL_EMAIL)
-                    .enabled(Boolean.TRUE)
-                    .build());
+        int recipients = rows.size();
+        // 名单为空也要留痕:哨兵行标记"该范围已显式清空",使读侧不回退继承 DEFAULT 名单;
+        // 读取 SQL 一律过滤空 user_id,哨兵行不会进入任何收件人解析结果。
+        if (rows.isEmpty()) {
+            rows.add(NotificationRecipient.builder().configId(config.getId())
+                    .userId(NotificationRecipient.SCOPE_MARKER_USER_ID)
+                    .triggerType(scope).recipientType(NotificationRecipient.RECIPIENT_TYPE_TO)
+                    .channel(NotificationRecipient.CHANNEL_EMAIL).enabled(Boolean.TRUE).build());
         }
         recipientMapper.batchInsert(rows);
-        return rows.size();
+        return recipients;
     }
 
     /**
@@ -186,19 +189,23 @@ public class NotificationRecipientService {
     }
 
     public Optional<List<String>> findConfiguredUserIds(String targetType, Long targetId, String triggerType) {
+        return findConfiguredUserIds(targetType, targetId, triggerType, "TO");
+    }
+
+    public Optional<List<String>> findConfiguredUserIds(String targetType, Long targetId,
+                                                         String triggerType, String recipientType) {
         NotificationConfig config = configMapper.selectByTarget(targetType, targetId);
-        if (config == null) {
-            return Optional.empty();
-        }
+        if (config == null) return Optional.empty();
         List<String> userIds = new ArrayList<>();
         String scope = normalizeTriggerType(triggerType);
         List<NotificationRecipient> rows = recipientMapper.selectEnabledByTargetAndTrigger(targetType, targetId, scope);
         // DEFAULT is the compatibility/common list when no trigger-specific list exists.
-        if (rows.isEmpty() && !"DEFAULT".equals(scope)) {
+        if (rows.isEmpty() && !"DEFAULT".equals(scope)
+                && recipientMapper.countScope(config.getId(), scope) == 0) {
             rows = recipientMapper.selectEnabledByTargetAndTrigger(targetType, targetId, "DEFAULT");
         }
         for (NotificationRecipient recipient : rows) {
-            if (recipient.getUserId() != null && !recipient.getUserId().isBlank()) {
+            if (matchesType(recipient, recipientType) && recipient.getUserId() != null && !recipient.getUserId().isBlank()) {
                 userIds.add(recipient.getUserId());
             }
         }
@@ -207,14 +214,26 @@ public class NotificationRecipientService {
 
     /** Returns all configured recipient groups for settings-page round trips. */
     public Map<String, List<String>> findConfiguredUserIdsByTrigger(String targetType, Long targetId) {
+        return findConfiguredUserIdsByTrigger(targetType, targetId, "TO");
+    }
+
+    public Map<String, List<String>> findConfiguredUserIdsByTrigger(String targetType, Long targetId, String recipientType) {
         Map<String, List<String>> result = new java.util.LinkedHashMap<>();
+        NotificationConfig config = configMapper.selectByTarget(targetType, targetId);
+        if (config != null) {
+            for (String scope : recipientMapper.selectScopes(config.getId())) result.put(scope, new ArrayList<>());
+        }
         for (NotificationRecipient row : recipientMapper.selectEnabledByTarget(targetType, targetId)) {
-            if (row.getUserId() == null || row.getUserId().isBlank()) continue;
+            if (!matchesType(row, recipientType) || row.getUserId() == null || row.getUserId().isBlank()) continue;
             String scope = row.getTriggerType() == null || row.getTriggerType().isBlank()
                     ? "DEFAULT" : row.getTriggerType();
             result.computeIfAbsent(scope, ignored -> new ArrayList<>()).add(row.getUserId());
         }
         return result;
+    }
+
+    private boolean matchesType(NotificationRecipient row, String type) {
+        return type.equals(row.getRecipientType()) || ("TO".equals(type) && row.getRecipientType() == null);
     }
 
     /**

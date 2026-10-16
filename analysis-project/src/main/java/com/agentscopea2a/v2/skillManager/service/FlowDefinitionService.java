@@ -12,6 +12,7 @@ import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillMapper;
 import com.agentscopea2a.v2.skillManager.notification.NotificationReceivers;
+import com.agentscopea2a.v2.skillManager.notification.NotificationContact;
 import com.agentscopea2a.mapper.gauss.ScriptRegistryMapper;
 import com.agentscopea2a.entity.ScriptRegistryEntry;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -93,6 +94,7 @@ public class FlowDefinitionService {
         SkillFlow flow = toFlow(request, userId, null);
         flowMapper.insertFlow(flow);
         replaceChildren(flow.getId(), request, userId);
+        replaceExecutors(flow.getId(), request.executors(), userId);
         if (request.notifySettings() != null) updateNotifySettings(flow.getId(), request.notifySettings(), userId);
         return get(flow.getId(), userId);
     }
@@ -119,6 +121,7 @@ public class FlowDefinitionService {
         updated.setChatPublic(false);
         flowMapper.updateFlow(updated);
         replaceChildren(id, request, userId);
+        replaceExecutors(id, request.executors(), existing.getCreatedBy());
         if (request.notifySettings() != null) updateNotifySettings(id, request.notifySettings(), userId);
         if (wasPublic) {
             // TODO 通知开发人员:公开流程已被修改并自动退出公开,需审核后重新开通(接入内部通知系统后实现)。
@@ -144,6 +147,7 @@ public class FlowDefinitionService {
     public void delete(Long id, String userId) {
         requireOwner(id, userId);
         flowMapper.deleteTriggersByFlowId(id);
+        flowMapper.deleteExecutorsByFlowId(id);
         flowMapper.softDeleteFlow(id);
     }
 
@@ -167,7 +171,10 @@ public class FlowDefinitionService {
                 flow.getNotifyReceivers(), "AUTO_METRIC");
         List<String> triggers = NotificationReceivers.parse(flow.getNotifyReceiverTriggers());
         return new NotifySettingsDto(receivers, triggers.isEmpty() ? null : triggers, flow.getNotifyEnabled(),
-                recipientService.findConfiguredUserIdsByTrigger(NotificationConfig.TARGET_TYPE_SKILL_FLOW, id));
+                filterRecipientGroups(recipientService.findConfiguredUserIdsByTrigger(NotificationConfig.TARGET_TYPE_SKILL_FLOW, id)),
+                orgService.filterExistingUserIds(recipientService.findConfiguredUserIds(
+                        NotificationConfig.TARGET_TYPE_SKILL_FLOW, id, "AUTO_METRIC", "CC").orElse(List.of())),
+                filterRecipientGroups(recipientService.findConfiguredUserIdsByTrigger(NotificationConfig.TARGET_TYPE_SKILL_FLOW, id, "CC")));
     }
 
     /**
@@ -175,27 +182,43 @@ public class FlowDefinitionService {
      * 旧逗号字段同步双写(兼容期保留,待旧字段清理后移除);触发类型范围只做值域校验
      * (CHAT/MANUAL/AUTO_METRIC,非人员,不做人员表校验);notifyEnabled 为完成通知开关
      * (null = 不修改),经 updateFlowNotifySettings 落库,保证页面勾选状态保存一致。
-     * 发送侧始终把触发人合并进收件人(触发人默认收到,无需加入名单)。
+     * 发送侧仅在有效 TO 名单为空时使用触发人兜底。
      */
     @Transactional("gaussCustomerTransactionManager")
     public NotifySettingsDto updateNotifySettings(Long id, NotifySettingsUpdateRequest req, String userId) {
         SkillFlow flow = requireOwner(id, userId);
         List<String> receivers = orgService.filterExistingUserIds(req == null ? null : req.notifyReceivers());
-        if (req != null && req.notifyReceiversByTrigger() != null && !req.notifyReceiversByTrigger().isEmpty()) {
-            for (var entry : req.notifyReceiversByTrigger().entrySet()) {
-                String scope = "MANUAL".equalsIgnoreCase(entry.getKey()) || "CHAT".equalsIgnoreCase(entry.getKey())
-                        ? "DEFAULT" : entry.getKey();
-                recipientService.replaceRecipients(NotificationConfig.TARGET_TYPE_SKILL_FLOW, id,
-                        scope, orgService.filterExistingUserIds(entry.getValue()), userId);
-            }
+        Map<String, List<String>> toGroups = req == null ? null : req.notifyReceiversByTrigger();
+        Map<String, List<String>> ccGroups = req == null ? null : req.ccReceiversByTrigger();
+        java.util.Set<String> scopes = new java.util.LinkedHashSet<>();
+        if (toGroups != null) scopes.addAll(toGroups.keySet());
+        if (ccGroups != null) scopes.addAll(ccGroups.keySet());
+        if (scopes.isEmpty()) {
+            recipientService.replaceRecipients(NotificationConfig.TARGET_TYPE_SKILL_FLOW, id, "DEFAULT",
+                    receivers, req == null || req.ccReceivers() == null
+                            ? recipientService.findConfiguredUserIds(NotificationConfig.TARGET_TYPE_SKILL_FLOW, id, "DEFAULT", "CC").orElse(List.of())
+                            : orgService.filterExistingUserIds(req.ccReceivers()), userId);
         } else {
-            recipientService.replaceRecipients(NotificationConfig.TARGET_TYPE_SKILL_FLOW, id, receivers, userId);
+            for (String scope : scopes) {
+                List<String> to = toGroups != null && toGroups.containsKey(scope) ? toGroups.get(scope)
+                        : recipientService.findConfiguredUserIds(NotificationConfig.TARGET_TYPE_SKILL_FLOW, id, scope).orElse(List.of());
+                List<String> cc = ccGroups != null && ccGroups.containsKey(scope) ? ccGroups.get(scope)
+                        : recipientService.findConfiguredUserIds(NotificationConfig.TARGET_TYPE_SKILL_FLOW, id, scope, "CC").orElse(List.of());
+                recipientService.replaceRecipients(NotificationConfig.TARGET_TYPE_SKILL_FLOW, id, scope,
+                        orgService.filterExistingUserIds(to), orgService.filterExistingUserIds(cc), userId);
+            }
         }
         String triggerScope = NotificationReceivers.toCsv(req == null ? null : req.notifyReceiverTriggers());
         validateTriggerScope(NotificationReceivers.parse(triggerScope));
         flowMapper.updateFlowNotifySettings(id, NotificationReceivers.toCsv(receivers), triggerScope,
                 req == null ? null : req.notifyEnabled());
         return getNotifySettings(id, userId);
+    }
+
+    private Map<String, List<String>> filterRecipientGroups(Map<String, List<String>> groups) {
+        Map<String, List<String>> filtered = new LinkedHashMap<>();
+        groups.forEach((scope, ids) -> filtered.put(scope, orgService.filterExistingUserIds(ids)));
+        return filtered;
     }
 
     /**
@@ -264,6 +287,7 @@ public class FlowDefinitionService {
     /** 基础校验(创建/更新都做):名称、触发词冲突、报告大纲结构。 */
     private void validateBasic(SkillFlowDefinitionRequest request, Long currentFlowId) {
         if (request == null) throw new IllegalStateException("FlowValidationFailed: request is required");
+        NotificationContact.validate(request.notifyContactName(), request.notifyContactPhone());
         if (trim(request.name()).isEmpty()) throw new IllegalStateException("FlowValidationFailed: name is required");
         List<String> outlineErrors = ReportOutlineValidator.validate(request.reportOutline(), nodeKeysOf(request));
         if (!outlineErrors.isEmpty()) {
@@ -309,6 +333,11 @@ public class FlowDefinitionService {
     /** 收集全部完整性错误:汇总模板、触发词(skill 可用性/唯一性)、节点(skill/模板/重试次数/指标/nodeKey)。 */
     private List<String> validationErrors(SkillFlowDefinitionRequest request, String userId, Long currentFlowId) {
         List<String> errors = new ArrayList<>();
+        try {
+            NotificationContact.validate(request.notifyContactName(), request.notifyContactPhone());
+        } catch (IllegalStateException e) {
+            errors.add(e.getMessage());
+        }
         if (request.nodes().isEmpty()) errors.add("flow must define at least one node");
         if (request.triggers().isEmpty()) errors.add("flow must define at least one trigger");
 
@@ -432,7 +461,7 @@ public class FlowDefinitionService {
                 .toList();
         return new SkillFlowDefinitionRequest(flow.getCode(), flow.getName(), flow.getDescription(), flow.getTaskQuestion(),
                 flow.getSummaryQuestionTemplate(), flow.getEnabled(), flow.getScheduleRules(),
-                flow.getMaxParallelism(), flow.getNotifyEnabled(), triggers, nodes, parseStoredOutline(flow), null);
+                flow.getMaxParallelism(), flow.getNotifyEnabled(), triggers, nodes, parseStoredOutline(flow), null, flow.getNotifyContactName(), flow.getNotifyContactPhone(), flow.getNotifyBodyTemplate(), null);
     }
 
     /** 组装返回 DTO,附带 skill 名称与指标名称等展示信息。 */
@@ -458,7 +487,26 @@ public class FlowDefinitionService {
         return new SkillFlowDto(flow.getId(), flow.getCode(), flow.getName(), flow.getDescription(), flow.getTaskQuestion(),
                 flow.getSummaryQuestionTemplate(), flow.getEnabled(), flow.getScheduleRules(), flow.getMaxParallelism(),
                 flow.getNotifyEnabled(), Boolean.TRUE.equals(flow.getChatPublic()),
-                triggers, nodes, parseOutlineObject(flow), flow.getCreatedBy(), flow.getCreatedAt(), flow.getUpdatedAt(), flow.getDeletedAt() != null);
+                triggers, nodes, parseOutlineObject(flow), flow.getCreatedBy(), flow.getCreatedAt(), flow.getUpdatedAt(), flow.getDeletedAt() != null, flow.getNotifyContactName(), flow.getNotifyContactPhone(), flow.getNotifyBodyTemplate(), displayExecutors(flow));
+    }
+
+    /** 旧客户端不传名单时保留授权；显式空数组清空授权。创建人天然可执行，不入关系表。 */
+    private void replaceExecutors(Long flowId, List<String> requested, String ownerId) {
+        if (requested == null) return;
+        List<String> normalized = requested.stream().filter(Objects::nonNull).map(String::trim)
+                .filter(id -> !id.isEmpty() && !id.equals(ownerId)).distinct().toList();
+        List<String> valid = orgService.filterExistingUserIds(normalized);
+        flowMapper.deleteExecutorsByFlowId(flowId);
+        for (String id : valid) flowMapper.insertExecutor(flowId, id);
+    }
+
+    /** 人员失效时不继续回显为可执行人；实际执行入口仍会再次校验。 */
+    private List<String> displayExecutors(SkillFlow flow) {
+        if (flow.getId() == null) return List.of();
+        List<String> ids = flowMapper.selectExecutorIdsByFlowId(flow.getId());
+        if (ids == null || ids.isEmpty()) return List.of();
+        return orgService.filterExistingUserIds(ids).stream()
+                .filter(id -> !id.equals(flow.getCreatedBy())).toList();
     }
 
     private MetricDependencyResolver.Resolution resolveNodeMetrics(SkillFlowNode node, List<Long> selected) {
@@ -483,7 +531,10 @@ public class FlowDefinitionService {
                 .reportOutline(serializeOutline(request.reportOutline()))
                 .scheduleRules(request.scheduleRules())
                 .enabled(Boolean.TRUE.equals(request.enabled())).maxParallelism(DEFAULT_MAX_PARALLELISM)
-                .notifyEnabled(request.notifyEnabled() == null || request.notifyEnabled()).createdBy(createdBy).build();
+                .notifyEnabled(request.notifyEnabled() == null || request.notifyEnabled())
+                .notifyContactName(request.notifyContactName()).notifyContactPhone(request.notifyContactPhone())
+                .notifyBodyTemplate(request.notifyBodyTemplate())
+                .createdBy(createdBy).build();
     }
 
     /** 大纲序列化:未配置(空 items)存 null;序列化失败或超长(20000 字符)按配置错误抛出。 */

@@ -20,11 +20,53 @@ public record SkillFlowDefinitionRequest(
         List<Trigger> triggers,
         List<Node> nodes,
         ReportOutline reportOutline,
-        NotifySettingsUpdateRequest notifySettings) {
+        NotifySettingsUpdateRequest notifySettings,
+        String notifyContactName,
+        String notifyContactPhone,
+        String notifyBodyTemplate,
+        /** 可执行人 userId 列表;null = 不修改保持原名单,非 null(含空列表) = 全量替换,空 = 仅创建人。 */
+        List<String> executors) {
 
     public SkillFlowDefinitionRequest {
+        notifyContactName = com.agentscopea2a.v2.skillManager.notification.NotificationContact.trimToNull(notifyContactName);
+        notifyContactPhone = com.agentscopea2a.v2.skillManager.notification.NotificationContact.trimToNull(notifyContactPhone);
+        notifyBodyTemplate = com.agentscopea2a.v2.skillManager.notification.NotificationContact.trimToNull(notifyBodyTemplate);
+        if (notifyBodyTemplate != null && notifyBodyTemplate.length() > 2000) {
+            throw new IllegalStateException("FlowValidationFailed: 通知邮件正文模板超长(上限 2000 字符)");
+        }
         triggers = triggers == null ? List.of() : List.copyOf(triggers);
         nodes = nodes == null ? List.of() : List.copyOf(nodes);
+        executors = executors == null ? null : executors.stream().filter(java.util.Objects::nonNull).toList();
+    }
+
+    /** Compatibility for definition callers predating custom mail contacts. */
+    public SkillFlowDefinitionRequest(String code, String name, String description, String taskQuestion,
+            String summaryQuestionTemplate, Boolean enabled, String scheduleRules, Integer maxParallelism,
+            Boolean notifyEnabled, List<Trigger> triggers, List<Node> nodes, ReportOutline reportOutline,
+            NotifySettingsUpdateRequest notifySettings) {
+        this(code, name, description, taskQuestion, summaryQuestionTemplate, enabled, scheduleRules,
+                maxParallelism, notifyEnabled, triggers, nodes, reportOutline, notifySettings, null, null, null, null);
+    }
+
+    /** Compatibility for definition callers predating the mail body template. */
+    public SkillFlowDefinitionRequest(String code, String name, String description, String taskQuestion,
+            String summaryQuestionTemplate, Boolean enabled, String scheduleRules, Integer maxParallelism,
+            Boolean notifyEnabled, List<Trigger> triggers, List<Node> nodes, ReportOutline reportOutline,
+            NotifySettingsUpdateRequest notifySettings, String notifyContactName, String notifyContactPhone) {
+        this(code, name, description, taskQuestion, summaryQuestionTemplate, enabled, scheduleRules,
+                maxParallelism, notifyEnabled, triggers, nodes, reportOutline, notifySettings,
+                notifyContactName, notifyContactPhone, null, null);
+    }
+
+    /** 兼容增加可执行人之前的完整定义请求；省略名单时不修改已有授权。 */
+    public SkillFlowDefinitionRequest(String code, String name, String description, String taskQuestion,
+            String summaryQuestionTemplate, Boolean enabled, String scheduleRules, Integer maxParallelism,
+            Boolean notifyEnabled, List<Trigger> triggers, List<Node> nodes, ReportOutline reportOutline,
+            NotifySettingsUpdateRequest notifySettings, String notifyContactName, String notifyContactPhone,
+            String notifyBodyTemplate) {
+        this(code, name, description, taskQuestion, summaryQuestionTemplate, enabled, scheduleRules,
+                maxParallelism, notifyEnabled, triggers, nodes, reportOutline, notifySettings,
+                notifyContactName, notifyContactPhone, notifyBodyTemplate, null);
     }
 
     /** 触发词配置。 */

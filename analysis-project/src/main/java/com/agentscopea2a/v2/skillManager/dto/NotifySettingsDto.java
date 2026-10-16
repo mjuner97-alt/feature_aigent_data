@@ -14,9 +14,16 @@ public record NotifySettingsDto(
         List<String> notifyReceiverTriggers,
         /** 仅流程有:完成通知开关;job 侧恒为 null(job 的发送时机由依赖指标的 notify_enabled 控制)。 */
         Boolean notifyEnabled,
-        Map<String, List<String>> notifyReceiversByTrigger) {
+        Map<String, List<String>> notifyReceiversByTrigger,
+        List<String> ccReceivers,
+        Map<String, List<String>> ccReceiversByTrigger) {
     public NotifySettingsDto(List<String> notifyReceivers, List<String> notifyReceiverTriggers,
                              Boolean notifyEnabled) {
         this(notifyReceivers, notifyReceiverTriggers, notifyEnabled, Map.of());
+    }
+
+    public NotifySettingsDto(List<String> notifyReceivers, List<String> notifyReceiverTriggers,
+                             Boolean notifyEnabled, Map<String, List<String>> notifyReceiversByTrigger) {
+        this(notifyReceivers, notifyReceiverTriggers, notifyEnabled, notifyReceiversByTrigger, List.of(), Map.of());
     }
 }

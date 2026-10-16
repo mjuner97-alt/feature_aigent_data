@@ -256,7 +256,7 @@ public class SkillFlowController {
     @PostMapping("/api/skill-flow-executions/{id}/nodes/retry-failed")
     public void retryFailedNodes(@PathVariable(name = "id") Long id,
                                  @RequestHeader(name = "X-User-Id") String userId) {
-        queryService.get(id, userId); coordinator.retryFailedNodes(id);
+        queryService.requireOwner(id, userId); coordinator.retryFailedNodes(id);
     }
 
     /** 终止该次执行(仅触发人本人):正在执行的节点跑完后结果被丢弃,后续节点不再执行,流程落 CANCELLED。 */

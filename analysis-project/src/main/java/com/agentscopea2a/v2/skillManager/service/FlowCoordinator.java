@@ -611,6 +611,9 @@ public class FlowCoordinator {
     public void retryNode(Long flowId, Long nodeId) {
         // 锁定流程记录，串行化同一流程上的重跑、取消等状态修改。
         SkillFlowExecution flow = mapper.selectFlowExecutionForUpdate(flowId);
+        if (flow != null && flow.getTriggerType() == FlowTriggerType.AUTO_METRIC) {
+            throw new IllegalStateException("FlowValidationFailed: 自动执行的长任务不支持单节点重跑");
+        }
         SkillFlowNodeExecution node = mapper.selectNodeExecution(nodeId);
         // 同时校验节点归属，防止拿其他流程的 nodeId 发起重跑。
         if (flow == null || node == null || !Objects.equals(flowId, node.getFlowExecutionId())) throw new IllegalArgumentException("节点不存在");

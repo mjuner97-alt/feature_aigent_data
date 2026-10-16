@@ -48,15 +48,25 @@ public class FlowExecutionService {
     private final Clock clock;
     private final ApplicationEventPublisher events;
     private final NotificationRecipientService recipientService;
+    private final MockOrgService orgService;
     @Autowired
     private com.agentscopea2a.v2.skillManager.mapper.ReportProcessMapper reportProcessMapper;
+
+    public FlowExecutionService(SkillFlowMapper mapper, SkillMapper skillMapper,
+                                ScriptRegistryMapper scriptRegistryMapper,
+                                ObjectMapper objectMapper, Clock skillFlowClock,
+                                ApplicationEventPublisher events,
+                                NotificationRecipientService recipientService) {
+        this(mapper, skillMapper, scriptRegistryMapper, objectMapper, skillFlowClock, events,
+                recipientService, null);
+    }
 
     @Autowired
     public FlowExecutionService(SkillFlowMapper mapper, SkillMapper skillMapper,
                                 ScriptRegistryMapper scriptRegistryMapper,
                                 ObjectMapper objectMapper, Clock skillFlowClock,
                                 ApplicationEventPublisher events,
-                                NotificationRecipientService recipientService) {
+                                NotificationRecipientService recipientService, MockOrgService orgService) {
         this.mapper = mapper;
         this.skillMapper = skillMapper;
         this.scriptRegistryMapper = scriptRegistryMapper;
@@ -64,6 +74,7 @@ public class FlowExecutionService {
         this.clock = skillFlowClock;
         this.events = events;
         this.recipientService = recipientService;
+        this.orgService = orgService;
     }
 
     /** Compatibility constructor for callers created before script metadata was added. */
@@ -205,14 +216,18 @@ public class FlowExecutionService {
     }
 
     /**
-     * 手动触发(流程列表"执行"按钮):仅 owner;conversationId 独立成 manual 域,
+     * 手动触发(流程列表"执行"按钮):创建人及有效的额外可执行人;conversationId 独立成 manual 域,
      * 与聊天会话互不干扰;确认执行后不等待指标就绪。
      */
     @Transactional("gaussCustomerTransactionManager")
     public TriggerResult triggerManual(Long flowId, String userId) {
         SkillFlow flow = mapper.selectFlowById(flowId);
         if (flow == null || !Boolean.TRUE.equals(flow.getEnabled())) throw new IllegalStateException("FlowNotFoundOrDisabled: " + flowId);
-        if (!userId.equals(flow.getCreatedBy())) throw new IllegalStateException("FlowAccessDenied: only the owner may run this flow");
+        if (userId == null || userId.isBlank()) throw new IllegalStateException("FlowAccessDenied: 请先登录后执行");
+        if (!userId.equals(flow.getCreatedBy()) && (!mapper.existsFlowExecutor(flowId, userId)
+                || orgService == null || !orgService.userExists(userId))) {
+            throw new IllegalStateException("FlowAccessDenied: 仅创建人或已授权的有效可执行人可手动执行此流程");
+        }
         LocalDate dataDate = LocalDate.now(clock);
         String conversationId = "manual:" + flowId + ":" + dataDate;
         String guard = userId + ":" + conversationId + ":" + flowId + ":" + dataDate;
@@ -275,7 +290,13 @@ public class FlowExecutionService {
                 .maxParallelismSnapshot(flow.getMaxParallelism())
                 // 通知配置快照:执行期间以快照为准,发通知时不再回读流程定义
                 .notifyEnabledSnapshot(flow.getNotifyEnabled())
+                .notifyContactNameSnapshot(flow.getNotifyContactName())
+                .notifyContactPhoneSnapshot(flow.getNotifyContactPhone())
+                .notifyBodyTemplateSnapshot(flow.getNotifyBodyTemplate())
                 .notifyReceiversSnapshot(templateNodes == null ? resolveNotifyReceiversSnapshot(flow, triggerType) : null)
+                .ccReceiversSnapshot(templateNodes == null ? NotificationReceivers.toCsv(recipientService
+                        .findConfiguredUserIds(NotificationConfig.TARGET_TYPE_SKILL_FLOW, flow.getId(),
+                                triggerType == null ? "DEFAULT" : triggerType.name(), "CC").orElse(List.of())) : null)
                 .notifyReceiverTriggersSnapshot(flow.getNotifyReceiverTriggers())
                 // 触发来源:触发类型(CHAT/MANUAL/METRIC 等)与触发人信息
                 .triggerType(triggerType)

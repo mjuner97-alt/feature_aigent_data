@@ -105,6 +105,70 @@ public final class SshArtifactIo implements ArtifactIo {
     }
 
     /**
+     * 每日兜底清理远端 artifacts 根目录：删掉 mtime 超过 {@code olderThanDays} 天的文件，
+     * 再删掉因此变空的 bucket 目录（user/task 两层）。
+     *
+     * <p><b>Why it exists.</b> 常规 GC 只有请求正常结束时 doFinally 里的
+     * {@link #deleteBucket}；JVM 崩溃 / 客户端断连时不会触发，而本地 {@link ArtifactSweeper}
+     * 只扫本地目录 —— 远端孤儿文件没有兜底路径，会一直涨。本方法补上这条路。
+     *
+     * <p>{@code -mtime +N} 只碰老文件，不影响在跑任务；空目录删除限定 mindepth 2，
+     * 保证 user 根目录本身保留。删除计数在远端 wc -l 后回传，stdout 只有两个数字，
+     * 不受 Windows 管道缓冲区限制（文件清单不跨 SSH 管道）。
+     *
+     * @return 删除的过期文件数；远端根目录不存在时返回 0
+     */
+    public int sweepStale(int olderThanDays) throws IOException {
+        String files =
+                "find " + sh(remoteRoot) + " -type f -mtime +" + olderThanDays + " -print -delete | wc -l";
+        String emptyDirs =
+                "find " + sh(remoteRoot)
+                        + " -mindepth 2 -maxdepth 2 -type d -empty -print -delete | wc -l";
+        // 根目录不存在（刚部署/目录未建）时静默退出，两个 wc 都输出 0
+        String cmd =
+                "test -d " + sh(remoteRoot) + " || { echo 0; echo 0; exit 0; }; "
+                        + files + "; " + emptyDirs;
+
+        java.util.List<String> argv = new java.util.ArrayList<>();
+        argv.add("ssh");
+        argv.add("-o");
+        argv.add("BatchMode=yes");
+        argv.addAll(sshOptions);
+        argv.add(sshTarget);
+        argv.add(cmd);
+
+        ProcessBuilder pb = new ProcessBuilder(argv);
+        pb.redirectErrorStream(true);
+        java.nio.file.Path tmp = java.nio.file.Files.createTempFile("ssh-sweep-", ".out");
+        pb.redirectOutput(tmp.toFile());
+
+        Process p = pb.start();
+        p.getOutputStream().close();
+        try {
+            waitOrKill(p, "sweepStale " + remoteRoot);
+            String out =
+                    new String(java.nio.file.Files.readAllBytes(tmp), StandardCharsets.UTF_8).strip();
+            String[] numbers = out.split("\\s+");
+            int deletedFiles = numbers.length > 0 ? parseNonNegative(numbers[0]) : 0;
+            int removedDirs = numbers.length > 1 ? parseNonNegative(numbers[numbers.length - 1]) : 0;
+            if (removedDirs > 0) {
+                log.info("sweepStale also removed {} empty remote bucket dir(s)", removedDirs);
+            }
+            return deletedFiles;
+        } finally {
+            java.nio.file.Files.deleteIfExists(tmp);
+        }
+    }
+
+    private static int parseNonNegative(String s) {
+        try {
+            return Integer.parseInt(s.trim());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    /**
      * 通过 SSH cat 拉取远端 CSV 原始字节. 用于 CSV 下载短链场景 - dev profile CSV 写在远端
      * docker-host, RedirectController 必须走这条路径才能读到. 用 base64 wrap 保证字节流过
      * Windows ssh.exe stdin/stdout 时不被 code-page 转换污染 (与 writeAtomic 同样套路).

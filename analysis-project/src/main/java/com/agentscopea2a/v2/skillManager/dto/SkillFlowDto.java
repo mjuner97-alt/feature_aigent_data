@@ -27,7 +27,34 @@ public record SkillFlowDto(
         String createdBy,
         LocalDateTime createdAt,
         LocalDateTime updatedAt,
-        Boolean deleted) {
+        Boolean deleted,
+        String notifyContactName,
+        String notifyContactPhone,
+        /** 通知邮件正文模板;{链接} 占位符发送时替换为报告链接,空=系统默认文案。 */
+        String notifyBodyTemplate,
+        /** 可执行人 userId 列表(创建人指定的额外手动执行用户,不含创建人);空 = 仅创建人可执行。 */
+        List<String> executors) {
+
+    public SkillFlowDto(Long id, String code, String name, String description, String taskQuestion,
+            String summaryQuestionTemplate, Boolean enabled, String scheduleRules, Integer maxParallelism,
+            Boolean notifyEnabled, Boolean chatPublic, List<Trigger> triggers, List<Node> nodes,
+            Object reportOutline, String createdBy, LocalDateTime createdAt, LocalDateTime updatedAt,
+            Boolean deleted) {
+        this(id, code, name, description, taskQuestion, summaryQuestionTemplate, enabled, scheduleRules,
+                maxParallelism, notifyEnabled, chatPublic, triggers, nodes, reportOutline, createdBy,
+                createdAt, updatedAt, deleted, null, null, null, List.of());
+    }
+
+    /** 兼容增加可执行人之前的查询调用。 */
+    public SkillFlowDto(Long id, String code, String name, String description, String taskQuestion,
+            String summaryQuestionTemplate, Boolean enabled, String scheduleRules, Integer maxParallelism,
+            Boolean notifyEnabled, Boolean chatPublic, List<Trigger> triggers, List<Node> nodes,
+            Object reportOutline, String createdBy, LocalDateTime createdAt, LocalDateTime updatedAt,
+            Boolean deleted, String notifyContactName, String notifyContactPhone, String notifyBodyTemplate) {
+        this(id, code, name, description, taskQuestion, summaryQuestionTemplate, enabled, scheduleRules,
+                maxParallelism, notifyEnabled, chatPublic, triggers, nodes, reportOutline, createdBy,
+                createdAt, updatedAt, deleted, notifyContactName, notifyContactPhone, notifyBodyTemplate, List.of());
+    }
 
     /** 触发词:用户消息命中 keyword 后该流程进入长任务路由。 */
     public record Trigger(Long id, String keyword, Integer priority, Boolean enabled) {}

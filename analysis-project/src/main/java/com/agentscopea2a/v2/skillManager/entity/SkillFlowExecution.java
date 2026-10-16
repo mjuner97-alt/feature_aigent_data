@@ -37,8 +37,13 @@ public class SkillFlowExecution {
     private Integer maxParallelismSnapshot;
     /** 创建执行时的通知开关快照。 */
     private Boolean notifyEnabledSnapshot;
-    /** 额外通知收件人的用户 ID 快照（逗号分隔）；触发人默认接收通知，无需加入名单。 */
+    private String notifyContactNameSnapshot;
+    private String notifyContactPhoneSnapshot;
+    /** 通知邮件正文模板快照;{链接} 占位符发送时替换为报告链接,空=系统默认文案。 */
+    private String notifyBodyTemplateSnapshot;
+    /** TO 用户 ID 有序快照（逗号分隔）；名单为空时兜底触发人。 */
     private String notifyReceiversSnapshot;
+    private String ccReceiversSnapshot;
     /** 额外名单适用的触发类型快照（逗号分隔）；自动触发未配置时默认 AUTO_METRIC，CHAT/MANUAL 始终允许使用名单。 */
     private String notifyReceiverTriggersSnapshot;
     /** 触发方式：CHAT 对话触发、MANUAL 手动执行、AUTO_METRIC 指标自动触发。 */

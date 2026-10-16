@@ -28,6 +28,24 @@ public record NotificationPayload(
         String status,
         LocalDateTime completedAt,
         List<String> userIdList,
-        String triggerType    // MANUAL | EXTERNAL | METRIC
+        String triggerType,    // MANUAL | EXTERNAL | METRIC
+        List<String> ccUserIdList,
+        String notifyContactName,
+        String notifyContactPhone
 ) {
+    public NotificationPayload(String contentType, String content, String filePath, String fileName,
+                               String fileUrl, Long jobId, String jobName, String metricCode,
+                               String metricName, Long executionId, String status,
+                               LocalDateTime completedAt, List<String> userIdList, String triggerType) {
+        this(contentType, content, filePath, fileName, fileUrl, jobId, jobName, metricCode,
+                metricName, executionId, status, completedAt, userIdList, triggerType, List.of(), null, null);
+    }
+    public NotificationPayload(String contentType, String content, String filePath, String fileName,
+                               String fileUrl, Long jobId, String jobName, String metricCode,
+                               String metricName, Long executionId, String status,
+                               LocalDateTime completedAt, List<String> userIdList, String triggerType,
+                               List<String> ccUserIdList) {
+        this(contentType, content, filePath, fileName, fileUrl, jobId, jobName, metricCode,
+                metricName, executionId, status, completedAt, userIdList, triggerType, ccUserIdList, null, null);
+    }
 }

@@ -37,7 +37,7 @@ public class StubNotificationSender implements NotificationSender {
 
     @Override
     public void send(NotificationPayload p) {
-        send(p.jobName(), p.content(), p.userIdList());
+        send(p.jobName(), p.content(), p.userIdList(), p.ccUserIdList(), p.notifyContactName(), p.notifyContactPhone());
     }
 
     public void send(String userId, String content) {
@@ -49,6 +49,11 @@ public class StubNotificationSender implements NotificationSender {
     }
 
     private void send(String title, String content, List<String> userIds) {
+        send(title, content, userIds, List.of(), null, null);
+    }
+
+    private void send(String title, String content, List<String> userIds, List<String> ccUserIds,
+                      String contactName, String contactPhone) {
         String timeStamp = String.valueOf(System.currentTimeMillis());
         String sign = new SignUtil().generateSign(timeStamp, timeStamp, APP_KEY, APP_SECRET);
         Map<String, String> requestHeader = new HashMap<>();
@@ -59,8 +64,9 @@ public class StubNotificationSender implements NotificationSender {
         requestHeader.put("x-sign", sign);
         Map<String, Object> requestBody = new HashMap<>();
         requestBody.put("title", title);
-        requestBody.put("content", getMailContent(content));
+        requestBody.put("content", getMailContent(content, contactName, contactPhone));
         requestBody.put("toUserList", userIds == null ? List.of() : new ArrayList<>(userIds));
+        requestBody.put("ccUserList", ccUserIds == null ? List.of() : new ArrayList<>(ccUserIds));
         try {
             String response = HttpClientUtil.postWithHeaders(
                     AgentToolConstant.DEFAULT_MAIL_URL, requestBody, requestHeader);
@@ -73,17 +79,9 @@ public class StubNotificationSender implements NotificationSender {
         }
     }
 
-    private String getMailContent(String mailContent) {
-        String contact = notificationContactHtml();
-        String content = String.valueOf(mailContent);
-        if (contact.isBlank()) {
-            return content;
-        }
-        int bodyEnd = content.toLowerCase().lastIndexOf("</body>");
-        if (bodyEnd >= 0) {
-            return content.substring(0, bodyEnd) + contact + content.substring(bodyEnd);
-        }
-        return content + contact;
+    private String getMailContent(String mailContent, String contactName, String contactPhone) {
+        String defaultHtml = NotificationContact.hasCustom(contactName, contactPhone) ? "" : notificationContactHtml();
+        return NotificationContact.append(mailContent, contactName, contactPhone, defaultHtml);
     }
 
     private String notificationContactHtml() {

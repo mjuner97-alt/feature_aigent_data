@@ -30,6 +30,10 @@ public class SkillFlow {
     private String scheduleRules;
     private Integer maxParallelism;
     private Boolean notifyEnabled;
+    private String notifyContactName;
+    private String notifyContactPhone;
+    /** 通知邮件正文模板;{链接} 占位符发送时替换为报告链接,空=系统默认文案 */
+    private String notifyBodyTemplate;
     /** 完成通知收件人 userId 列表(逗号分隔,人员表校验);空=发给触发人 */
     private String notifyReceivers;
     /** 哪些触发类型发收件人名单(逗号分隔,取值 CHAT/MANUAL/AUTO_METRIC);空=仅 AUTO_METRIC */

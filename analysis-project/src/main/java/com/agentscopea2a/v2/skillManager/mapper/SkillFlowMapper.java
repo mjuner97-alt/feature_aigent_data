@@ -124,6 +124,20 @@ public interface SkillFlowMapper {
     /** 删除流程的全部触发词(编辑流程"先清后建")。 */
     void deleteTriggersByFlowId(@Param("flowId") Long flowId);
 
+    // ==================== 可执行人 ====================
+
+    /** 查流程的可执行人 userId 列表(不含创建人;创建人天然可执行,不入表),按插入顺序。 */
+    List<String> selectExecutorIdsByFlowId(@Param("flowId") Long flowId);
+
+    /** 删除流程的全部可执行人(编辑流程全量替换名单 / 删除流程时调用)。 */
+    void deleteExecutorsByFlowId(@Param("flowId") Long flowId);
+
+    /** 新增一条可执行人关系;唯一约束 (flow_id, user_id) 兜底重复。 */
+    void insertExecutor(@Param("flowId") Long flowId, @Param("userId") String userId);
+
+    /** 判断用户是否为该流程的可执行人(手动执行权限校验用)。 */
+    boolean existsFlowExecutor(@Param("flowId") Long flowId, @Param("userId") String userId);
+
     // ==================== 指标就绪状态 ====================
 
     /**

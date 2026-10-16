@@ -45,4 +45,9 @@ public final class NotificationReceivers {
         }
         return distinct.isEmpty() ? null : String.join(",", distinct);
     }
+    /** Explicit TO recipients replace the fallback; preserve order. */
+    public static List<String> withFallback(List<String> to, String triggerUserId) {
+        List<String> normalized = parse(toCsv(to));
+        return normalized.isEmpty() ? parse(triggerUserId) : normalized;
+    }
 }

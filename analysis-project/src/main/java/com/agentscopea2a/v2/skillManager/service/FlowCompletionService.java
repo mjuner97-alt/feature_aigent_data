@@ -7,6 +7,7 @@ import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.skillManager.notification.NotificationPayload;
 import com.agentscopea2a.v2.skillManager.notification.NotificationReceivers;
 import com.agentscopea2a.v2.skillManager.notification.NotificationSender;
+import com.agentscopea2a.v2.skillManager.notification.NotifyBodyTemplate;
 import com.agentscopea2a.v2.skillManager.report.FlowReportStorage;
 import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
 import com.agentscopea2a.v2.skillManager.report.LongTaskReportRenderer;
@@ -223,7 +224,11 @@ public class FlowCompletionService {
         // 收件人:执行时快照的名单 + 触发类型范围;命中范围且名单非空则整名单一次批量发送,
         // 否则维持原语义发触发人(triggerUserId 已按触发类型快照:CHAT/MANUAL=触发人,AUTO_METRIC=流程创建人)。
         List<String> receivers = confirmedReceivers == null || confirmedReceivers.isEmpty()
-                ? receiversFor(execution) : orgService.filterExistingUserIds(confirmedReceivers);
+                ? receiversFor(execution) : NotificationReceivers.withFallback(
+                        orgService.filterExistingUserIds(confirmedReceivers), execution.getTriggerUserId());
+        List<String> ccReceivers = confirmedReceivers == null && inRecipientScope(execution)
+                ? orgService.filterExistingUserIds(NotificationReceivers.parse(execution.getCcReceiversSnapshot()))
+                    .stream().filter(id -> !receivers.contains(id)).toList() : List.of();
         SkillFlowNotification record = SkillFlowNotification.builder()
                 .flowExecutionId(execution.getId()).deliveryKey(key)
                 .status(FlowNotificationStatus.PENDING)
@@ -242,7 +247,7 @@ public class FlowCompletionService {
                     filePath, reportFileName(execution),
                     reportUrl(execution), execution.getFlowId(), FlowReportNaming.datedTitle(execution.getFlowName(), execution), null, null,
                     execution.getId(), execution.getStatus().name(), LocalDateTime.now(clock),
-                    receivers, "FLOW"));
+                    receivers, "FLOW", ccReceivers, execution.getNotifyContactNameSnapshot(), execution.getNotifyContactPhoneSnapshot()));
             record.setStatus(FlowNotificationStatus.SENT);
             record.setSentAt(LocalDateTime.now(clock));
         } catch (Exception e) {
@@ -253,33 +258,23 @@ public class FlowCompletionService {
     }
 
     /**
-     * 解析本次执行的通知收件人:触发人始终合并在内(默认收到,无需加入名单);
-     * 触发类型在快照配置的范围内(未配置默认仅 AUTO_METRIC)时,再并上名单
+     * 解析本次执行的通知收件人:有效 TO 名单为空时才使用触发人兜底;
+     * 触发类型在快照配置的范围内(未配置默认仅 AUTO_METRIC)时,使用快照名单
      * (名单中人员表已失效的工号直接剔除,不报错)。
      */
     private List<String> receiversFor(SkillFlowExecution execution) {
-        List<String> receivers = new ArrayList<>();
-        String triggerUserId = execution.getTriggerUserId();
-        if (triggerUserId != null && !triggerUserId.isBlank()) {
-            receivers.add(triggerUserId);
-        }
-        List<String> configured = NotificationReceivers.parse(execution.getNotifyReceiversSnapshot());
-        if (!configured.isEmpty()) {
-            List<String> triggers = NotificationReceivers.parse(execution.getNotifyReceiverTriggersSnapshot());
-            FlowTriggerType triggerType = execution.getTriggerType();
-            // 未配置触发类型范围时默认仅 AUTO_METRIC 发名单(贴近原语义:定时/指标触达名单,对话不打扰)
-            // 手动与对话触发共用 DEFAULT 名单，始终允许本次执行使用最近选择的名单。
-            boolean interactive = triggerType == FlowTriggerType.MANUAL || triggerType == FlowTriggerType.CHAT;
-            boolean inScope = interactive || (triggers.isEmpty()
-                    ? triggerType == FlowTriggerType.AUTO_METRIC
-                    : triggers.contains(triggerType == null ? "" : triggerType.name()));
-            if (inScope) {
-                for (String uid : orgService.filterExistingUserIds(configured)) {
-                    if (!receivers.contains(uid)) receivers.add(uid);
-                }
-            }
-        }
-        return receivers;
+        List<String> configured = inRecipientScope(execution)
+                ? orgService.filterExistingUserIds(NotificationReceivers.parse(execution.getNotifyReceiversSnapshot()))
+                : List.of();
+        return NotificationReceivers.withFallback(configured, execution.getTriggerUserId());
+    }
+
+    private boolean inRecipientScope(SkillFlowExecution execution) {
+        List<String> triggers = NotificationReceivers.parse(execution.getNotifyReceiverTriggersSnapshot());
+        FlowTriggerType type = execution.getTriggerType();
+        return type == FlowTriggerType.MANUAL || type == FlowTriggerType.CHAT
+                || (triggers.isEmpty() ? type == FlowTriggerType.AUTO_METRIC
+                    : triggers.contains(type == null ? "" : type.name()));
     }
 
     /** 解析报告绝对路径,并限制在报告根目录内(防路径穿越)。 */
@@ -290,17 +285,21 @@ public class FlowCompletionService {
         return path.toString();
     }
 
-    /** 长任务通知正文只发送报告地址，避免邮件客户端丢失报告中的图片和脚本。 */
+    /** 长任务通知正文:优先用执行时快照的正文模板({链接} 占位符替换为报告地址),未配置走默认文案。 */
     private String notificationHtml(SkillFlowExecution execution, String filePath) {
         String url = reportUrl(execution);
         String title = escapeHtml(Objects.toString(FlowReportNaming.datedTitle(execution.getFlowName(), execution), "长任务报告"));
+        String defaultHtml;
         if (url.isBlank()) {
-            return "<html><body><h3>" + title + "</h3><p>报告地址暂不可用，请登录系统查看。</p></body></html>";
+            defaultHtml = "<html><body><h3>" + title + "</h3><p>报告地址暂不可用，请登录系统查看。</p></body></html>";
+        } else {
+            String escapedUrl = escapeHtml(url);
+            defaultHtml = new StringBuilder("<html><body><p>各位：</p>")
+                    .append("<p>\u3000\u3000部门研发管理周报详见：<a href=\"").append(escapedUrl).append("\">")
+                    .append(title).append("</a>，请关注。</p></body></html>").toString();
         }
-        String escapedUrl = escapeHtml(url);
-        return new StringBuilder("<html><body><p>各位：</p>")
-                .append("<p>\u3000\u3000部门研发管理周报详见：<a href=\"").append(escapedUrl).append("\">")
-                .append(title).append("</a>，请关注。</p></body></html>").toString();
+        String linkTitle = Objects.toString(FlowReportNaming.datedTitle(execution.getFlowName(), execution), "长任务报告");
+        return NotifyBodyTemplate.renderHtml(execution.getNotifyBodyTemplateSnapshot(), linkTitle, url, defaultHtml);
     }
 
     private String summaryText(SkillFlowExecution execution) {

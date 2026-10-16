@@ -14,4 +14,11 @@ public record NotifySettingsUpdateRequest(
         List<String> notifyReceiverTriggers,
         Boolean notifyEnabled,
         /** 可选:按触发来源分别配置收件人;键为 AUTO_METRIC/MANUAL/CHAT。 */
-        Map<String, List<String>> notifyReceiversByTrigger) {}
+        Map<String, List<String>> notifyReceiversByTrigger,
+        List<String> ccReceivers,
+        Map<String, List<String>> ccReceiversByTrigger) {
+    public NotifySettingsUpdateRequest(List<String> notifyReceivers, List<String> notifyReceiverTriggers,
+                             Boolean notifyEnabled, Map<String, List<String>> notifyReceiversByTrigger) {
+        this(notifyReceivers, notifyReceiverTriggers, notifyEnabled, notifyReceiversByTrigger, null, null);
+    }
+}

@@ -22,6 +22,9 @@
         <result column="schedule_rules" property="scheduleRules"/>
         <result column="max_parallelism" property="maxParallelism"/>
         <result column="notify_enabled" property="notifyEnabled"/>
+        <result column="notify_contact_name" property="notifyContactName"/>
+        <result column="notify_contact_phone" property="notifyContactPhone"/>
+        <result column="notify_body_template" property="notifyBodyTemplate"/>
         <result column="notify_receivers" property="notifyReceivers"/>
         <result column="notify_receiver_triggers" property="notifyReceiverTriggers"/>
         <result column="chat_public" property="chatPublic"/>
@@ -91,7 +94,11 @@
         <result column="rendered_summary_question" property="renderedSummaryQuestion"/>
         <result column="max_parallelism_snapshot" property="maxParallelismSnapshot"/>
         <result column="notify_enabled_snapshot" property="notifyEnabledSnapshot"/>
+        <result column="notify_contact_name_snapshot" property="notifyContactNameSnapshot"/>
+        <result column="notify_contact_phone_snapshot" property="notifyContactPhoneSnapshot"/>
+        <result column="notify_body_template_snapshot" property="notifyBodyTemplateSnapshot"/>
         <result column="notify_receivers_snapshot" property="notifyReceiversSnapshot"/>
+        <result column="cc_receivers_snapshot" property="ccReceiversSnapshot"/>
         <result column="notify_receiver_triggers_snapshot" property="notifyReceiverTriggersSnapshot"/>
         <result column="trigger_type" property="triggerType"
                 javaType="com.agentscopea2a.v2.skillManager.entity.FlowTriggerType"/>
@@ -186,7 +193,7 @@
     <!-- 各表公共列清单,供查询复用;新增列时记得同步维护 -->
     <sql id="flowColumns">
         id, code, name, description, task_question, summary_question_template, enabled, schedule_rules,
-        max_parallelism, notify_enabled, notify_receivers, notify_receiver_triggers, chat_public,
+        max_parallelism, notify_enabled, notify_contact_name, notify_contact_phone, notify_body_template, notify_receivers, notify_receiver_triggers, chat_public,
         report_outline, report_process_id, created_by, created_at, updated_at, deleted_at
     </sql>
     <sql id="nodeColumns">
@@ -205,10 +212,10 @@
     <!-- 新建流程:保存编码/名称/任务问题/汇总模板/排程星期/并发数/通知开关 -->
     <insert id="insertFlow" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO skill_flow (code, name, description, task_question, summary_question_template, enabled,
-                                schedule_rules, max_parallelism, notify_enabled, notify_receivers, report_outline, report_process_id,
+                                schedule_rules, max_parallelism, notify_enabled, notify_contact_name, notify_contact_phone, notify_body_template, notify_receivers, report_outline, report_process_id,
                                 notify_receiver_triggers, created_by)
                 VALUES (#{code}, #{name}, #{description}, #{taskQuestion}, #{summaryQuestionTemplate}, #{enabled},
-                #{scheduleRules}, #{maxParallelism}, #{notifyEnabled}, #{notifyReceivers},
+                #{scheduleRules}, #{maxParallelism}, #{notifyEnabled}, #{notifyContactName}, #{notifyContactPhone}, #{notifyBodyTemplate}, #{notifyReceivers},
                 #{reportOutline}, #{reportProcessId}, #{notifyReceiverTriggers}, #{createdBy})
     </insert>
 
@@ -296,13 +303,18 @@
                             AND r.status IS DISTINCT FROM 'READY')
     </select>
 
-    <!-- 流程管理列表：支持按所有者、启用状态、名称/编码关键字筛选，已删除数据不返回。 -->
+    <!-- 我的流程包含本人创建及被授权手动执行的流程；编辑权限仍由业务层单独校验。 -->
     <select id="selectFlows" resultMap="FlowMap">
         SELECT
         <include refid="flowColumns"/>
         FROM skill_flow
         WHERE deleted_at IS NULL
-        <if test="ownerUserId != null and ownerUserId != ''">AND created_by = #{ownerUserId}</if>
+        <if test="ownerUserId != null and ownerUserId != ''">
+            AND (created_by = #{ownerUserId} OR EXISTS (
+                SELECT 1 FROM skill_flow_executor e
+                WHERE e.flow_id = skill_flow.id AND e.user_id = #{ownerUserId}
+            ))
+        </if>
         <if test="enabled != null">AND enabled = #{enabled}</if>
         <if test="keyword != null and keyword != ''">
             AND (LOWER(name) LIKE CONCAT('%', LOWER(#{keyword}), '%')
@@ -326,6 +338,9 @@
             schedule_rules=#{scheduleRules},
             max_parallelism=#{maxParallelism},
             notify_enabled=#{notifyEnabled},
+            notify_contact_name=#{notifyContactName},
+            notify_contact_phone=#{notifyContactPhone},
+            notify_body_template=#{notifyBodyTemplate},
             notify_receivers=#{notifyReceivers},
             notify_receiver_triggers=#{notifyReceiverTriggers},
             chat_public=#{chatPublic},
@@ -450,6 +465,39 @@
         WHERE flow_id = #{flowId}
     </delete>
 
+    <!-- ==================== 可执行人 ==================== -->
+
+    <!-- 查流程的可执行人名单(创建人天然可执行,不入表),按插入顺序回显 -->
+    <select id="selectExecutorIdsByFlowId" resultType="java.lang.String">
+        SELECT user_id
+        FROM skill_flow_executor
+        WHERE flow_id = #{flowId}
+        ORDER BY id
+    </select>
+
+    <!-- 删除流程的全部可执行人(编辑流程全量替换名单 / 删除流程时调用) -->
+    <delete id="deleteExecutorsByFlowId">
+        DELETE
+        FROM skill_flow_executor
+        WHERE flow_id = #{flowId}
+    </delete>
+
+    <!-- 新增一条可执行人关系;(flow_id, user_id) 唯一索引兜底重复 -->
+    <insert id="insertExecutor">
+        INSERT INTO skill_flow_executor (flow_id, user_id)
+        VALUES (#{flowId}, #{userId})
+    </insert>
+
+    <!-- 判断用户是否为该流程的可执行人(手动执行权限校验用) -->
+    <select id="existsFlowExecutor" resultType="boolean">
+        SELECT EXISTS (
+            SELECT 1
+            FROM skill_flow_executor
+            WHERE flow_id = #{flowId}
+              AND user_id = #{userId}
+        )
+    </select>
+
     <!-- ==================== 指标就绪状态 ==================== -->
 
     <!-- 就绪记录 upsert 的第一步:删掉同指标同日的旧记录(配合下方 insert 实现"删旧插新"幂等,
@@ -497,12 +545,12 @@
     <insert id="insertFlowExecution" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO skill_flow_execution
         (flow_id, flow_code, flow_name, summary_question_template_snapshot, max_parallelism_snapshot,
-         notify_enabled_snapshot, notify_receivers_snapshot, notify_receiver_triggers_snapshot,
+         notify_enabled_snapshot, notify_contact_name_snapshot, notify_contact_phone_snapshot, notify_body_template_snapshot, notify_receivers_snapshot, cc_receivers_snapshot, notify_receiver_triggers_snapshot,
          trigger_type, trigger_user_id, conversation_id, original_question, data_date,
          status, active_guard_key, required_metric_count, ready_metric_count, missing_metrics_json,
          report_process_id, report_outline_snapshot)
         VALUES (#{flowId}, #{flowCode}, #{flowName}, #{summaryQuestionTemplateSnapshot}, #{maxParallelismSnapshot},
-                #{notifyEnabledSnapshot}, #{notifyReceiversSnapshot}, #{notifyReceiverTriggersSnapshot},
+                #{notifyEnabledSnapshot}, #{notifyContactNameSnapshot}, #{notifyContactPhoneSnapshot}, #{notifyBodyTemplateSnapshot}, #{notifyReceiversSnapshot}, #{ccReceiversSnapshot}, #{notifyReceiverTriggersSnapshot},
                 #{triggerType}, #{triggerUserId}, #{conversationId},
                 #{originalQuestion}, #{dataDate}, #{status}, #{activeGuardKey}, #{requiredMetricCount},
                 #{readyMetricCount}, #{missingMetricsJson}, #{reportProcessId}, #{reportOutlineSnapshot})

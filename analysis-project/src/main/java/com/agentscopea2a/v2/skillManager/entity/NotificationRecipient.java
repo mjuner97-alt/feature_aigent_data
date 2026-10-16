@@ -23,6 +23,12 @@ public class NotificationRecipient {
     /** 通知渠道,第一期固定为 EMAIL。 */
     public static final String CHANNEL_EMAIL = "EMAIL";
 
+    /**
+     * 范围哨兵行的 user_id(空串):保存后名单为空的触发范围写入此标记行,
+     * 使"主动清空名单"与"尚未配置(继承 DEFAULT)"可区分;读取侧一律跳过该行。
+     */
+    public static final String SCOPE_MARKER_USER_ID = "";
+
     /** 收件人关系主键。 */
     private Long id;
 
@@ -37,6 +43,8 @@ public class NotificationRecipient {
 
     /** 收件人类型,第一期固定为 TO,预留 CC/BCC。 */
     private String recipientType;
+
+    private Integer sortOrder;
 
     /** 通知渠道,第一期固定为 EMAIL。 */
     private String channel;
