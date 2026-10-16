@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { listSkillRouting, listSkillTags, saveSkillRouting, saveSkillTag, setSkillRoutingActive } from '../api/skillRouting';
 import type { ToolRoutingTag } from '../types/toolRouting';
 import type { SkillRoutingInput, SkillRoutingMetadata } from '../types/skillRouting';
 import { DIRECT_EXEC_DIMENSION_KEYS } from '../types/skillRouting';
 import { listDimensionKeys } from '../api/dimensionKey';
+import { createBypassKeyword, deleteBypassKeyword, listBypassKeywords, listKeywordPriorities, reloadBypassKeywords, replaceKeywordPriorities, updateBypassKeyword } from '../api/skillRetrieval';
+import type { SkillBypassKeywordRow, SkillKeywordPriorityRow } from '../api/skillRetrieval';
 import { canEditConfig, isAdmin } from '../utils/auth';
 
 type SkillTagType = 'DOMAIN' | 'TOPIC';
@@ -52,8 +55,160 @@ const tagType = ref<SkillTagType>('DOMAIN');
 const tagName = ref('');
 const tagDescription = ref('');
 const currentUserId = localStorage.getItem('skill-user-id') || 'demo-user';
+const router = useRouter();
 // 生产环境 (app.env.production=true) 下非管理员只读, 即使是本人创建的条目
 const canEdit = (row: SkillRoutingMetadata) => canEditConfig() && (!!row.creator && row.creator === currentUserId || isAdmin());
+
+// ==================== 检索配置: 旁路词 (§8.2, 仅管理员) ====================
+const bypassRows = ref<SkillBypassKeywordRow[]>([]);
+const bypassLoading = ref(false);
+const bypassDialogVisible = ref(false);
+const bypassSaving = ref(false);
+const bypassEditingId = ref<number | null>(null);
+const bypassForm = ref({ groupName: '', keyword: '', enabled: true, remark: '' });
+
+async function loadBypass() {
+  bypassLoading.value = true;
+  try { bypassRows.value = await listBypassKeywords(); }
+  catch (e: any) { ElMessage.error(e.message || '加载旁路词失败'); }
+  finally { bypassLoading.value = false; }
+}
+function openBypassCreate() {
+  bypassEditingId.value = null;
+  bypassForm.value = { groupName: '', keyword: '', enabled: true, remark: '' };
+  bypassDialogVisible.value = true;
+}
+function openBypassEdit(row: SkillBypassKeywordRow) {
+  bypassEditingId.value = row.id;
+  bypassForm.value = { groupName: row.groupName, keyword: row.keyword, enabled: row.enabled, remark: row.remark || '' };
+  bypassDialogVisible.value = true;
+}
+async function saveBypass() {
+  if (!bypassForm.value.keyword.trim()) return ElMessage.warning('请输入旁路词');
+  bypassSaving.value = true;
+  try {
+    const input = { ...bypassForm.value, keyword: bypassForm.value.keyword.trim() };
+    if (bypassEditingId.value == null) await createBypassKeyword(input);
+    else await updateBypassKeyword(bypassEditingId.value, input);
+    bypassDialogVisible.value = false;
+    await loadBypass();
+    ElMessage.success('旁路词已保存');
+  } catch (e: any) { ElMessage.error(e.message || '保存失败'); }
+  finally { bypassSaving.value = false; }
+}
+async function removeBypass(row: SkillBypassKeywordRow) {
+  try {
+    await ElMessageBox.confirm(`确认停用旁路词「${row.keyword}」？（软删，可重新启用）`, '删除', { type: 'warning' });
+  } catch { return; }
+  try { await deleteBypassKeyword(row.id); await loadBypass(); ElMessage.success('已停用'); }
+  catch (e: any) { ElMessage.error(e.message || '删除失败'); }
+}
+async function reloadBypass() {
+  try { await reloadBypassKeywords(); ElMessage.success('快照已刷新'); }
+  catch (e: any) { ElMessage.error(e.message || '刷新失败'); }
+}
+
+// ==================== 检索配置: 关键词优先级编辑 (§8.1) ====================
+// 每行 = 一条配置行（一级词组 | 二级词组 | 三级词组, 格内顿号分隔）; ☰ 拖行 = 行优先级。
+// 存储: parent_keyword 存行号 R1/R2…仅用于还原行, 匹配/排序只看 keyword + sort_order。
+interface PriorityRow { l1: string; l2: string; l3: string }
+const priorityRows = ref<PriorityRow[]>([]);
+const priorityLoading = ref(false);
+const prioritySaving = ref(false);
+const dragRowFrom = ref(-1);
+
+function onTabChange(name: string | number) {
+  if (String(name) === 'retrieval') onRetrievalTabEnter();
+}
+function onRetrievalTabEnter() {
+  loadBypass();
+  loadPriorityRows();
+}
+
+async function loadPriorityRows() {
+  priorityLoading.value = true;
+  try {
+    const list: SkillKeywordPriorityRow[] = await listKeywordPriorities();
+    const order: string[] = [];
+    const buckets = new Map<string, { l1: string[]; l2: string[]; l3: string[] }>();
+    const ensure = (gid: string) => {
+      let b = buckets.get(gid);
+      if (!b) {
+        b = { l1: [], l2: [], l3: [] };
+        buckets.set(gid, b);
+        order.push(gid);
+      }
+      return b;
+    };
+    for (const r of list.filter(r => r.level === 1)) {
+      if (r.keyword) ensure(r.parentKeyword || '').l1.push(r.keyword);
+    }
+    for (const r of list.filter(r => r.level === 2)) {
+      if (r.keyword) ensure(r.parentKeyword || '').l2.push(r.keyword);
+    }
+    for (const r of list.filter(r => r.level === 3)) {
+      if (r.keyword) ensure(r.parentKeyword || '').l3.push(r.keyword);
+    }
+    priorityRows.value = order
+      .map(gid => {
+        const b = buckets.get(gid)!;
+        return { l1: b.l1.join('、'), l2: b.l2.join('、'), l3: b.l3.join('、') };
+      })
+      .filter(r => r.l1 || r.l2 || r.l3);
+  } catch (e: any) { ElMessage.error(e.message || '加载关键词优先级失败'); }
+  finally { priorityLoading.value = false; }
+}
+
+function flattenPriority(): SkillKeywordPriorityRow[] {
+  const out: SkillKeywordPriorityRow[] = [];
+  const seen = new Set<string>();
+  const emit = (level: number, gid: string, text: string) => {
+    for (const w of text.split(/[、，,]/).map(s => s.trim()).filter(Boolean)) {
+      const key = `${level}|${gid}|${w}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ id: null, level, parentKeyword: gid, keyword: w, sortOrder: null });
+    }
+  };
+  priorityRows.value.forEach((r, i) => emit(1, `R${i + 1}`, r.l1));
+  priorityRows.value.forEach((r, i) => emit(2, `R${i + 1}`, r.l2));
+  priorityRows.value.forEach((r, i) => emit(3, `R${i + 1}`, r.l3));
+  return out;
+}
+
+function movePriorityRow(from: number, to: number) {
+  if (from === to || from < 0 || to < 0 || from >= priorityRows.value.length || to >= priorityRows.value.length) return;
+  const [item] = priorityRows.value.splice(from, 1);
+  priorityRows.value.splice(to, 0, item);
+}
+function onPriorityRowDrop(to: number) {
+  if (dragRowFrom.value >= 0) movePriorityRow(dragRowFrom.value, to);
+  dragRowFrom.value = -1;
+}
+function addPriorityRow() {
+  priorityRows.value.push({ l1: '', l2: '', l3: '' });
+}
+function addPriorityRowBelow(row: number) {
+  priorityRows.value.splice(row + 1, 0, { l1: '', l2: '', l3: '' });
+}
+async function removePriorityRow(row: number) {
+  try {
+    await ElMessageBox.confirm('确认删除该行？', '删除', { type: 'warning' });
+  } catch { return; }
+  priorityRows.value.splice(row, 1);
+}
+async function savePriority() {
+  if (priorityRows.value.some(r => !r.l1.trim() && !r.l2.trim() && !r.l3.trim())) {
+    return ElMessage.warning('存在空白行，请填写或删除');
+  }
+  prioritySaving.value = true;
+  try {
+    await replaceKeywordPriorities(flattenPriority());
+    ElMessage.success('优先级已保存');
+    await loadPriorityRows();
+  } catch (e: any) { ElMessage.error(e.message || '保存失败'); }
+  finally { prioritySaving.value = false; }
+}
 
 const domainOptions = computed(() => [...new Set([...domainTags.value.map(tag => tag.tagName), ...form.value.domainTags])]);
 
@@ -186,7 +341,8 @@ load();
         <el-radio-button label="all">全部</el-radio-button>
       </el-radio-group>
     </div>
-    <el-tabs>
+    <!-- element-plus tabs 没有 tab-enter 事件, 检索配置的数据加载挂在 el-tabs 的 tab-change 上 -->
+    <el-tabs @tab-change="onTabChange">
       <el-tab-pane label="Skill 配置">
     <el-table :data="rows" v-loading="loading" stripe border size="small">
       <el-table-column prop="skillName" label="Skill 名称" width="260" show-overflow-tooltip />
@@ -210,6 +366,76 @@ load();
           <section><div class="section-head"><h3>领域字典</h3><el-button size="small" @click="openTag('DOMAIN')">新增</el-button></div><el-tag v-for="tag in domainTags" :key="tag.tagName" class="tag" type="success">{{ tag.tagName }}</el-tag><span v-if="!domainTags.length" class="empty">暂无标签</span></section>
           <section><div class="section-head"><h3>主题词典</h3><el-button size="small" @click="openTag('TOPIC')">新增</el-button></div><el-tag v-for="tag in topicTags" :key="tag.tagName" class="tag" type="warning">{{ tag.tagName }}</el-tag><span v-if="!topicTags.length" class="empty">暂无标签</span></section>
         </div>
+      </el-tab-pane>
+      <!-- 检索旁路词 (§8.2): 命中即本轮 skill 检索置空, LLM 直接走工具层; 仅管理员 -->
+      <el-tab-pane v-if="isAdmin()" name="retrieval" label="检索配置" lazy>
+        <div class="section-head">
+          <h3>检索旁路词</h3>
+          <div>
+            <el-button size="small" @click="reloadBypass">刷新快照</el-button>
+            <el-button size="small" type="primary" @click="openBypassCreate">新增旁路词</el-button>
+          </div>
+        </div>
+        <div class="mapping-hint" style="margin-bottom: 8px">
+          问题命中任一启用旁路词 → 本轮 skill 检索置空，LLM 直接走工具层（分析类/表格类/质量板块等偏分析问法不再误入围 skill）。
+          问题显式点名任一启用 skill 名时不旁路。词条支持正则（如 <code>(?&lt;!不包含)(?&lt;!不)(?&lt;!未)遗漏</code> 排除否定语境，
+          <code>(?&lt;!数据)分析</code> 排除「数据分析」）；非法正则按字面包含处理。旁路词命中不影响 skill 直接执行参数提取。
+        </div>
+        <el-table :data="bypassRows" v-loading="bypassLoading" stripe border size="small">
+          <el-table-column prop="groupName" label="分组" width="140" />
+          <el-table-column prop="keyword" label="旁路词" min-width="200" show-overflow-tooltip />
+          <el-table-column label="状态" width="90" align="center"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
+          <el-table-column prop="remark" label="备注" min-width="220" show-overflow-tooltip />
+          <el-table-column label="操作" width="150">
+            <template #default="{ row }">
+              <el-button size="small" @click="openBypassEdit(row)">编辑</el-button>
+              <el-button size="small" type="danger" text @click="removeBypass(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <div class="section-head" style="margin-top: 16px">
+          <h3>关键词检索优先级</h3>
+          <div>
+            <el-button size="small" @click="addPriorityRow">+ 新增行</el-button>
+            <el-button size="small" type="primary" :loading="prioritySaving" @click="savePriority">保存排序</el-button>
+            <el-button size="small" @click="loadPriorityRows">重置</el-button>
+          </div>
+        </div>
+        <div class="mapping-hint">
+          每行 = 一条配置行：一级词组 | 二级词组 | 三级词组（格内多个词用顿号分隔，支持正则词形）。
+          ☰ 拖行 = 行优先级（越上越高）；同一二级组可分多行挂不同三级组。层间漏斗 L3 &gt; L2 &gt; L1，无需给单个 skill 配分数。
+        </div>
+        <el-table :data="priorityRows" v-loading="priorityLoading" border size="small" style="margin-top: 8px" empty-text="暂无配置：点「+ 新增行」开始">
+          <el-table-column label="拖曳" width="56" align="center">
+            <template #default="{ $index }">
+              <span class="grip row-grip" :draggable="true"
+                    @dragstart="dragRowFrom = $index" @dragover.prevent @drop.prevent="onPriorityRowDrop($index)">☰</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="一级关键词" min-width="220">
+            <template #default="{ row }">
+              <el-input v-model="row.l1" size="small" placeholder="如 问题、缺陷、A号（顿号分隔，支持正则）" />
+            </template>
+          </el-table-column>
+          <el-table-column label="二级关键词" min-width="200">
+            <template #default="{ row }">
+              <el-input v-model="row.l2" size="small" placeholder="如 未闭环、开口、在途（顿号分隔）" />
+            </template>
+          </el-table-column>
+          <el-table-column label="三级关键词" min-width="200">
+            <template #default="{ row }">
+              <el-input v-model="row.l3" size="small" placeholder="如 严重、超7天（顿号分隔）" />
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="150" align="center">
+            <template #default="{ $index }">
+              <div class="op-col">
+                <el-button size="small" text type="primary" @click="addPriorityRowBelow($index)">新增行</el-button>
+                <el-button size="small" type="danger" text @click="removePriorityRow($index)">删除行</el-button>
+              </div>
+            </template>
+          </el-table-column>
+        </el-table>
       </el-tab-pane>
     </el-tabs>
     <el-dialog v-model="dialogVisible" :title="`配置 Skill: ${current?.skillName || ''}`" width="680px" destroy-on-close>
@@ -279,4 +505,10 @@ h2 { margin: 0; font-size: 1.2rem; }
 .param-mapping-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .param-mapping-row .arrow { color: #64748b; }
 .mapping-hint { color: #94a3b8; font-size: 0.75rem; margin-top: 4px; }
+.word-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.chip { display: inline-flex; align-items: center; padding: 1px 8px; border: 1px solid #cbd5e1; background: #f8fafc; }
+.grip { color: #94a3b8; cursor: grab; }
+.row-grip { font-size: 1rem; }
+.op-col { display: flex; flex-direction: column; gap: 2px; align-items: center; }
+.chip.l3 { font-size: 0.75rem; background: #f1f5f9; border-color: #e2e8f0; color: #475569; }
 </style>

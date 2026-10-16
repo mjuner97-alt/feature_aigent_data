@@ -49,8 +49,8 @@ class DimensionKeyConfigRepositoryTest {
         assertTrue(ddl.getAllValues().get(1).contains("CREATE TABLE IF NOT EXISTS dimension_key_config"));
         verify(seedPs, times(8)).addBatch();
         ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
-        // setString(1, ...) 共 9 次: 8 个内置键 seed + timeRange 保留键存在性补种 INSERT
-        verify(seedPs, times(9)).setString(org.mockito.ArgumentMatchers.eq(1), key.capture());
+        // setString(1, ...) 共 10 次: 8 个内置键 seed + timeRange 保留键存在性探测 + 补种 INSERT
+        verify(seedPs, times(10)).setString(org.mockito.ArgumentMatchers.eq(1), key.capture());
         assertTrue(key.getAllValues().contains("versionPlan"));
         assertTrue(key.getAllValues().contains("perName"));
         assertFalse(key.getAllValues().contains("qGate")); // qGate 是用户新增键, 不在 seed 里
@@ -94,7 +94,8 @@ class DimensionKeyConfigRepositoryTest {
         when(statement.execute(org.mockito.ArgumentMatchers.startsWith("SELECT 1"))).thenReturn(true);
         when(connection.prepareStatement(anyString())).thenReturn(ps);
         when(ps.executeQuery()).thenReturn(rs);
-        when(rs.next()).thenReturn(true); // 软删行 (enabled=false) 也算存在, 不复活
+        // 第1次: ensureReservedRow 存在性探测 (true = 软删行存在不复活); 第2/3次: findAllForAdmin 读到1行后结束
+        when(rs.next()).thenReturn(true, true, false);
 
         new DimensionKeyConfigRepository(dataSource, new ObjectMapper(), 0L).findAllForAdmin();
 

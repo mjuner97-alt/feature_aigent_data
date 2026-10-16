@@ -35,9 +35,10 @@ class RegisteredPresentationTemplateRendererTest {
                  "records":[{"department":"研发<一部>","value":"93.33%"}]}
                 """).html();
 
+        // 8f52dff 后 chart JSON 以属性内嵌形式输出, 引号转义为 \"
         assertTrue(html.contains("echarts.init"));
-        assertTrue(html.contains("\"data\" : [ \"26年7月版\" ]"));
-        assertTrue(html.contains("\"data\" : [ 93.33 ]"));
+        assertTrue(html.contains("\\\"data\\\" : [ \\\"26年7月版\\\" ]"));
+        assertTrue(html.contains("\\\"data\\\" : [ 93.33 ]"));
         assertTrue(html.contains("研发&lt;一部&gt;"));
         assertTrue(html.contains("background:#c00000"));
     }

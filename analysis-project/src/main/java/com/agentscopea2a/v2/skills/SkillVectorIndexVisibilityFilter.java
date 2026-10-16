@@ -58,12 +58,14 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
     private final SkillCandidateSelector candidateSelector;
     private final boolean enabled;
     private final SkillUsageResolver skillUsageResolver;
+    /** 检索旁路判定（§8.3 拍板①）；null = 功能关闭。 */
+    private final SkillBypassKeywordService bypassKeywordService;
 
     public SkillVectorIndexVisibilityFilter(
             SkillRoutingMetadataRepository routingMetadataRepository,
             SkillCandidateSelector candidateSelector,
             boolean enabled) {
-        this(routingMetadataRepository, candidateSelector, enabled, null);
+        this(routingMetadataRepository, candidateSelector, enabled, null, null);
     }
 
     public SkillVectorIndexVisibilityFilter(
@@ -71,10 +73,20 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
             SkillCandidateSelector candidateSelector,
             boolean enabled,
             SkillUsageResolver skillUsageResolver) {
+        this(routingMetadataRepository, candidateSelector, enabled, skillUsageResolver, null);
+    }
+
+    public SkillVectorIndexVisibilityFilter(
+            SkillRoutingMetadataRepository routingMetadataRepository,
+            SkillCandidateSelector candidateSelector,
+            boolean enabled,
+            SkillUsageResolver skillUsageResolver,
+            SkillBypassKeywordService bypassKeywordService) {
         this.routingMetadataRepository = routingMetadataRepository;
         this.candidateSelector = candidateSelector;
         this.enabled = enabled;
         this.skillUsageResolver = skillUsageResolver;
+        this.bypassKeywordService = bypassKeywordService;
     }
 
     @Override
@@ -104,6 +116,10 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
         String question = ctx.get("lastQuestion", String.class);
         if (question == null || question.isBlank()) {
             return all;
+        }
+        // 检索旁路 (§8 拍板①): 旁路词命中且未显式点名 skill → 目录整体置空, LLM 直接走工具层。
+        if (bypassKeywordService != null && bypassKeywordService.bypassed(question)) {
+            return List.of();
         }
         List<SkillRoutingMetadata> allMetadata = routingMetadataRepository.findAll();
         if (allMetadata.isEmpty()) {

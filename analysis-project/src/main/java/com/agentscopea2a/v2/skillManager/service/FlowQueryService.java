@@ -195,9 +195,9 @@ public class FlowQueryService {
     private static String downloadName(SkillFlowExecution e) {
         String safe = Objects.toString(e.getFlowName(), "")
                 .replaceAll("[\\\\/:*?\"<>|\\r\\n\\t]", "").trim();
-        if (safe.isEmpty()) return "flow-report.html";
+        if (safe.isEmpty()) return FlowReportNaming.datedFileName("flow-report.html", e);
         if (safe.length() > 80) safe = safe.substring(0, 80);
-        return safe + "-flow-report.html";
+        return FlowReportNaming.datedFileName(safe + "-flow-report.html", e);
     }
 
     /** 解析报告路径，并强制限制在当前执行用户目录内，防止路径穿越。 */
