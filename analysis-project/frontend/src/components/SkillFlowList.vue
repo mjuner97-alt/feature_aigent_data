@@ -48,6 +48,7 @@ async function load(searchKeyword?: string, createdBy?: string, enabled?: boolea
 
 function create() { router.push('/skills/jobs/flows/new'); }
 function edit(id: number) { router.push(`/skills/jobs/flows/${id}/edit`); }
+function copy(id: number) { router.push({ path: '/skills/jobs/flows/new', query: { copyFrom: String(id) } }); }
 function viewRecords(flow: SkillFlow) { emit('view-records', flow.name); }
 async function toggle(flow: SkillFlow) {
   try { await setSkillFlowEnabled(flow.id, !flow.enabled); flow.enabled = !flow.enabled; }
@@ -139,6 +140,7 @@ watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.v
             <td class="col-actions">
               <button v-if="canRun(flow)" class="btn-action trigger" :disabled="!flow.enabled" @click="run(flow)">执行</button>
               <button class="btn-action" @click="viewRecords(flow)">记录</button>
+              <button class="btn-action" @click="copy(flow.id)">复制</button>
               <template v-if="isOwner(flow)">
                 <button class="btn-action" @click="edit(flow.id)">编辑</button>
                 <button class="btn-action toggle" @click="toggle(flow)">{{ flow.enabled ? '禁用' : '启用' }}</button>

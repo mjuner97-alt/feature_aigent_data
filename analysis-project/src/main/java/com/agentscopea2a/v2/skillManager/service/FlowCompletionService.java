@@ -302,6 +302,22 @@ public class FlowCompletionService {
         return NotifyBodyTemplate.renderHtml(execution.getNotifyBodyTemplateSnapshot(), linkTitle, url, defaultHtml);
     }
 
+    private static boolean isReportProcess(SkillFlowExecution execution) {
+        return execution.getFlowId() == null && execution.getReportProcessId() != null;
+    }
+
+    private static String reportNotificationTitle(SkillFlowExecution execution) {
+        String name = execution.getFlowName();
+        if (name == null || name.isBlank()) name = "未命名报告";
+        String status = switch (execution.getStatus()) {
+            case SUCCESS -> "生成成功";
+            case PARTIAL_SUCCESS -> "部分成功";
+            case FAILED -> "执行失败";
+            default -> "执行结束";
+        };
+        return "【流程报告】" + name + " · " + status;
+    }
+
     private String summaryText(SkillFlowExecution execution) {
         String summaryJson = execution.getSummaryJson();
         if (summaryJson == null || summaryJson.isBlank()) {

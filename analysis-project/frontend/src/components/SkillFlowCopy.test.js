@@ -31,7 +31,7 @@ function sourceFlow() {
   };
 }
 
-test('long task list retains original actions without report preview or copy', async t => {
+test('long task list allows copying a readable flow without owner-only actions', async t => {
   const navigations = [];
   t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify([sourceFlow()])));
   const { default: List } = await loadModule(new URL('./SkillFlowList.vue', import.meta.url), {
@@ -39,10 +39,12 @@ test('long task list retains original actions without report preview or copy', a
   });
   const { root, app } = mount(List, { scope: 'all' }); t.after(() => app.unmount()); await flush();
   assert.equal(button(root, '编辑'), null);
-  assert.equal(button(root, '复制'), null);
+  assert.ok(button(root, '复制'));
   assert.equal(button(root, '查看'), null);
   assert.ok(button(root, '记录'));
   assert.deepEqual(navigations, []);
+  await button(root, '复制').props.onClick();
+  assert.deepEqual(navigations, [{ path: '/skills/jobs/flows/new', query: { copyFrom: '7' } }]);
 });
 
 test('new-flow page passes copy source to the editor without treating it as an edit', async t => {
