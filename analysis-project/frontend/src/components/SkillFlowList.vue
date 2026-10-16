@@ -32,6 +32,7 @@ const pagedFlows = computed(() => flows.value.slice((page.value - 1) * pageSize.
 function formatTime(value?: string) { return value ? value.replace('T', ' ').slice(0, 19) : '-'; }
 function enabledStatusClass(flow: SkillFlow) { return flow.enabled ? 'st-on' : 'st-off'; }
 function isOwner(flow: SkillFlow) { return flow.createdBy === me; }
+function canRun(flow: SkillFlow) { return isOwner(flow) || !!flow.executors?.includes(me); }
 function changePageSize(size: number) { pageSize.value = size; page.value = 1; }
 
 async function load(searchKeyword?: string, createdBy?: string, enabled?: boolean, scope: 'mine' | 'all' = props.scope) {
@@ -136,14 +137,14 @@ watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.v
             <td class="col-owner">{{ flow.createdBy || '-' }}</td>
             <td class="col-time">{{ formatTime(flow.createdAt) }}</td>
             <td class="col-actions">
-              <button v-if="isOwner(flow)" class="btn-action trigger" :disabled="!flow.enabled" @click="run(flow)">执行</button>
+              <button v-if="canRun(flow)" class="btn-action trigger" :disabled="!flow.enabled" @click="run(flow)">执行</button>
               <button class="btn-action" @click="viewRecords(flow)">记录</button>
               <template v-if="isOwner(flow)">
                 <button class="btn-action" @click="edit(flow.id)">编辑</button>
                 <button class="btn-action toggle" @click="toggle(flow)">{{ flow.enabled ? '禁用' : '启用' }}</button>
                 <button class="btn-action danger" @click="remove(flow)">删除</button>
               </template>
-              <span v-else class="readonly-tag" title="仅创建人可修改/删除/执行">只读</span>
+              <span v-else class="readonly-tag" title="仅创建人可修改或删除">只读</span>
             </td>
           </tr>
         </tbody>

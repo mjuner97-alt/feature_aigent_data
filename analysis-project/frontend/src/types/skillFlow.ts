@@ -68,6 +68,11 @@ export interface SkillFlow {
   scheduleRules?: string | null;
   maxParallelism: number;
   notifyEnabled: boolean;
+  executors?: string[];
+  notifyContactName?: string | null;
+  notifyContactPhone?: string | null;
+  /** 通知邮件正文模板;{链接} 占位符发送时替换为报告链接,空=系统默认文案。 */
+  notifyBodyTemplate?: string | null;
   triggers: SkillFlowTrigger[];
   nodes: SkillFlowNode[];
   reportOutline?: ReportOutline | null;
@@ -89,11 +94,18 @@ export interface SkillFlowInput {
   scheduleRules?: string | null;
   maxParallelism: number;
   notifyEnabled: boolean;
+  executors?: string[];
+  notifyContactName?: string | null;
+  notifyContactPhone?: string | null;
+  /** 通知邮件正文模板;{链接} 占位符发送时替换为报告链接,空=系统默认文案。 */
+  notifyBodyTemplate?: string | null;
   triggers: SkillFlowTrigger[];
   nodes: SkillFlowNode[];
   reportOutline?: ReportOutline | null;
   notifySettings?: {
     notifyReceivers: string[];
+    ccReceivers?: string[];
+    ccReceiversByTrigger?: Record<string, string[]>;
     notifyReceiverTriggers: string[];
     notifyReceiversByTrigger: Record<string, string[]>;
   };

@@ -130,6 +130,9 @@ export async function getFlowNotifySettings(id: number): Promise<NotifySettings>
   const body = await res.json();
   return {
     notifyReceivers: body.notifyReceivers ?? [],
+    ccReceivers: body.ccReceivers ?? [],
+    notifyReceiversByTrigger: body.notifyReceiversByTrigger ?? {},
+    ccReceiversByTrigger: body.ccReceiversByTrigger ?? {},
     notifyReceiverTriggers: body.notifyReceiverTriggers ?? undefined,
     notifyEnabled: body.notifyEnabled ?? undefined,
   };
@@ -142,6 +145,9 @@ export async function updateFlowNotifySettings(id: number, input: NotifySettings
   const body = await res.json();
   return {
     notifyReceivers: body.notifyReceivers ?? [],
+    ccReceivers: body.ccReceivers ?? [],
+    notifyReceiversByTrigger: body.notifyReceiversByTrigger ?? {},
+    ccReceiversByTrigger: body.ccReceiversByTrigger ?? {},
     notifyReceiverTriggers: body.notifyReceiverTriggers ?? undefined,
     notifyEnabled: body.notifyEnabled ?? undefined,
   };

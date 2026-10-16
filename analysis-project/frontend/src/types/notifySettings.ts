@@ -5,6 +5,8 @@
 export interface NotifySettings {
   /** 完成通知收件人名单;空 = 未配置(兜底:任务发创建人,流程发触发人) */
   notifyReceivers: string[];
+  ccReceivers?: string[];
+  ccReceiversByTrigger?: Record<string, string[]>;
   /** 仅流程有:哪些触发类型发名单(CHAT/MANUAL/AUTO_METRIC);undefined = 默认仅 AUTO_METRIC */
   notifyReceiverTriggers?: string[];
   /** 仅流程有:完成通知开关 */
@@ -17,6 +19,8 @@ export interface NotifySettings {
  *  notifyEnabled 仅流程使用(完成通知开关,页面勾选状态必须随保存提交落库) */
 export interface NotifySettingsUpdateInput {
   notifyReceivers: string[];
+  ccReceivers?: string[];
+  ccReceiversByTrigger?: Record<string, string[]>;
   notifyReceiverTriggers?: string[];
   notifyEnabled?: boolean;
   notifyReceiversByTrigger?: Record<string, string[]>;

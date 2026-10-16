@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { createSkillFlow, getSkillFlow, updateSkillFlow, getFlowNotifySettings } from '../api/skillFlow';
-import { getSkill, listSkills, searchSkillUsers, batchUserNames } from '../api/skill';
+import { getSkill, listSkills, batchUserNames } from '../api/skill';
 import { listAllEnabledEntries, startDebug, cancelDebug, subscribeDebug, getEntry } from '../api/scriptRegistry';
 import type { ParamSchemaItem, ScriptDebugRun, ScriptRegistryListItem } from '../types/scriptRegistry';
 import { listMetrics } from '../api/skillDependencyMetric';
@@ -13,6 +13,8 @@ import { buildOutline, defaultOutlineNumbering, flattenOutline, outlineNumbering
 import { insertOutlineRow } from '../utils/outlineRows';
 import { inferParamSchema, normalizeScriptParams, paramsFromSchema } from '../utils/scriptParams';
 import FlowNodeCard from './FlowNodeCard.vue';
+import MailRecipientDialog from './MailRecipientDialog.vue';
+import FlowExecutorPicker from './FlowExecutorPicker.vue';
 import ScheduleRulesEditor from './ScheduleRulesEditor.vue';
 import { scrollToEditorSection } from '../utils/editorNavigation.js';
 import { retainSelectedMetrics, setNodeMetricSelection } from '../utils/flowMetrics';
@@ -24,6 +26,7 @@ const props = withDefaults(defineProps<{ open: boolean; editId: number | null; c
 const emit = defineEmits<{ (e: 'update:open', open: boolean): void; (e: 'saved'): void }>();
 /** 编辑中的流程当前是否为公开状态(公开流程保存修改后会自动退出公开,需重新联系开发人员开通)。 */
 const wasPublic = ref(false);
+const flowOwnerId = ref(localStorage.getItem('skill-user-id') || 'demo-user');
 /** 加载时的触发关键词快照,保存时对比是否改动过关键词。 */
 const originalKeywords = ref<string[]>([]);
 const copySourceName = ref('');
@@ -44,10 +47,9 @@ const scriptParamErrors = ref<Record<string, string>>({});
 const outlineRows = ref<OutlineRow[]>([]);
 
 const notifyReceivers = ref<string[]>([]);
-const receiverKeyword = ref('');
-const receiverResults = ref<{ userId: string; name: string; department: string | null }[]>([]);
+const ccReceivers = ref<string[]>([]);
+const recipientDialogOpen = ref(false);
 const receiverNames = ref<Record<string, string>>({});
-const receiverSearching = ref(false);
 const reportTitle = ref('');
 const editorBody = ref<HTMLElement | null>(null);
 const reportProcesses = ref<ReportProcess[]>([]);
@@ -58,7 +60,7 @@ const importedReportName = ref('');
 /** 每行自动编号(与报告渲染同口径):一级 一、二、三;二级 1.1、1.2。 */
 const outlineNumbers = computed(() => outlineNumberingPrefixes(outlineRows.value, form.value.reportOutline?.numbering || defaultOutlineNumbering()));
 const baseline = ref('');
-const editorFingerprint = () => JSON.stringify({ form: form.value, rows: outlineRows.value, title: reportTitle.value });
+const editorFingerprint = () => JSON.stringify({ form: form.value, rows: outlineRows.value, title: reportTitle.value, to: notifyReceivers.value, cc: ccReceivers.value });
 const isDirty = computed(() => editorFingerprint() !== baseline.value);
 /** 拖拽排序:正在拖拽的卡片下标;dragover 时实时换位,drop/dragend 收尾。 */
 const dragIndex = ref<number | null>(null);
@@ -79,7 +81,7 @@ function emptyNode(nodeKey: string, sortOrder: number): SkillFlowNode {
 }
 
 function emptyForm(): SkillFlowInput {
-  return { name: '', code: '', description: '', taskQuestion: '', summaryQuestionTemplate: '', enabled: true, scheduleRules: null, maxParallelism: 2, notifyEnabled: true, triggers: [], nodes: [], reportOutline: { numbering: {}, items: [] } };
+  return { name: '', code: '', description: '', taskQuestion: '', summaryQuestionTemplate: '', enabled: true, scheduleRules: null, maxParallelism: 2, notifyEnabled: true, executors: [], notifyContactName: '', notifyContactPhone: '', notifyBodyTemplate: '', triggers: [], nodes: [], reportOutline: { numbering: {}, items: [] } };
 }
 
 const chineseStepLabels = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
@@ -89,6 +91,59 @@ function stepLabel(index: number): string {
 
 const isEdit = computed(() => props.editId != null);
 const isCopy = computed(() => !isEdit.value && props.copyFromId != null);
+const contactValidationError = computed(() => {
+  const name = form.value.notifyContactName?.trim() || '';
+  const phone = form.value.notifyContactPhone?.trim() || '';
+  if (name && !phone) return '请填写联系电话，或清空联系人以使用系统默认联系信息';
+  if (!name && phone) return '请填写联系人姓名，或清空手机号以使用系统默认联系信息';
+  if (phone && phone.length !== 11) return '请输入 11 位手机号';
+  return '';
+});
+const usesDefaultContact = computed(() => !form.value.notifyContactName?.trim() && !form.value.notifyContactPhone?.trim());
+
+/** 通知邮件正文模板:正文文字在此配置,后端只拼接 {链接} 占位符对应的报告链接。 */
+const LINK_PLACEHOLDER = '{链接}';
+const bodyTemplateInput = ref<HTMLTextAreaElement | null>(null);
+function insertLinkPlaceholder() {
+  const token = LINK_PLACEHOLDER;
+  const text = form.value.notifyBodyTemplate || '';
+  const el = bodyTemplateInput.value;
+  if (!el) {
+    form.value.notifyBodyTemplate = text + token;
+    return;
+  }
+  const start = el.selectionStart ?? text.length;
+  const end = el.selectionEnd ?? start;
+  form.value.notifyBodyTemplate = text.slice(0, start) + token + text.slice(end);
+  nextTick(() => { el.focus(); el.setSelectionRange(start + token.length, start + token.length); });
+}
+function escapePreviewHtml(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+/** 预览里的链接文案与后端口径一致:任务名(yyyy年MM月dd日)。 */
+const bodyTemplatePreviewLink = computed(() => {
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${form.value.name || '任务名'}(${now.getFullYear()}年${pad(now.getMonth() + 1)}月${pad(now.getDate())}日)`;
+});
+const bodyTemplatePreview = computed(() => {
+  const text = (form.value.notifyBodyTemplate || '').trim();
+  if (!text) return '';
+  const linkHtml = `<span class="preview-link">${escapePreviewHtml(bodyTemplatePreviewLink.value)}</span>`;
+  let html = escapePreviewHtml(text).replace(/\r\n|\n/g, '<br>');
+  const hasLink = html.includes(LINK_PLACEHOLDER);
+  html = html.split(LINK_PLACEHOLDER).join(linkHtml);
+  if (!hasLink) html += `<br>${linkHtml}`;
+  return html;
+});
+const bodyTemplateHint = computed(() => {
+  const text = (form.value.notifyBodyTemplate || '').trim();
+  if (!text) return '留空时使用系统默认文案。';
+  return text.includes(LINK_PLACEHOLDER)
+    ? `发送时 ${LINK_PLACEHOLDER} 将替换为报告下载链接（${bodyTemplatePreviewLink.value}）。`
+    : `正文未包含 ${LINK_PLACEHOLDER}，报告链接将追加在正文末尾。`;
+});
+
 const validationErrors = computed(() => {
   const errors: string[] = [];
   if (!form.value.name.trim()) errors.push('请填写流程名称');
@@ -118,6 +173,8 @@ const validationErrors = computed(() => {
     const owner = props.knownFlows.find(flow => flow.id !== props.editId && flow.triggers.some(item => item.keyword.trim().toLowerCase() === keyword));
     if (owner) errors.push(`关键词 ${trigger.keyword} 已属于流程「${owner.name}」`);
   });
+  if (contactValidationError.value) errors.push(contactValidationError.value);
+  if ((form.value.notifyBodyTemplate || '').trim().length > 2000) errors.push('通知邮件正文模板超长（上限 2000 字符）');
   return errors;
 });
 
@@ -496,6 +553,9 @@ function normalizeFlow(flow: SkillFlow): SkillFlowInput {
     summaryQuestionTemplate: flow.summaryQuestionTemplate || '', enabled: flow.enabled !== false,
     scheduleRules: flow.scheduleRules ?? null,
     maxParallelism: 2, notifyEnabled: flow.notifyEnabled !== false,
+    executors: [...new Set(flow.executors || [])].filter(id => id !== flow.createdBy),
+    notifyContactName: flow.notifyContactName ?? '', notifyContactPhone: flow.notifyContactPhone ?? '',
+    notifyBodyTemplate: flow.notifyBodyTemplate ?? '',
     triggers: (flow.triggers || []).map(trigger => ({ ...trigger, enabled: trigger.enabled !== false })),
     nodes: (flow.nodes || []).map((node, index) => {
       let scriptParams: Record<string, unknown> = node.scriptParams || {};
@@ -560,10 +620,11 @@ async function load() {
   copySourceName.value = '';
   originalKeywords.value = [];
   form.value = emptyForm();
+  flowOwnerId.value = localStorage.getItem('skill-user-id') || 'demo-user';
   notifyReceivers.value = [];
   receiverNames.value = {};
-  receiverKeyword.value = '';
-  receiverResults.value = [];
+  ccReceivers.value = [];
+  recipientDialogOpen.value = false;
   scriptParamErrors.value = {};
   outlineRows.value = [];
   reportTitle.value = '';
@@ -579,10 +640,14 @@ async function load() {
       wasPublic.value = !isCopy.value && flow.chatPublic === true;
       originalKeywords.value = (flow.triggers || []).map(trigger => trigger.keyword.trim().toLowerCase()).filter(Boolean);
       form.value = normalizeFlow(cloneFlowValue(flow));
+      if (!isCopy.value) flowOwnerId.value = flow.createdBy || flowOwnerId.value;
       if (isCopy.value) {
         copySourceName.value = flow.name;
         form.value.name = `${flow.name}-副本`;
         form.value.code = '';
+        form.value.executors = [];
+        form.value.notifyContactName = '';
+        form.value.notifyContactPhone = '';
         form.value.enabled = false;
         form.value.nodes = form.value.nodes.map(({ id: _id, ...node }) => node);
         form.value.triggers = form.value.triggers.map(({ id: _id, ...trigger }) => trigger);
@@ -592,8 +657,9 @@ async function load() {
       // with the new owner's default recipients, even when its source is shared.
       if (!isCopy.value) {
         const notifySettings = await getFlowNotifySettings(sourceId);
-        notifyReceivers.value = [...(notifySettings.notifyReceivers || [])];
-        receiverNames.value = await batchUserNames(notifyReceivers.value);
+        notifyReceivers.value = [...new Set(notifySettings.notifyReceiversByTrigger?.AUTO_METRIC ?? notifySettings.notifyReceivers ?? [])];
+        ccReceivers.value = [...new Set(notifySettings.ccReceiversByTrigger?.AUTO_METRIC ?? notifySettings.ccReceivers ?? [])].filter(id => !notifyReceivers.value.includes(id));
+        receiverNames.value = await batchUserNames([...notifyReceivers.value, ...ccReceivers.value]);
       }
       await Promise.all((form.value.nodes || []).map(async node => {
         if (!node.scriptId) return;
@@ -609,26 +675,10 @@ async function load() {
   loading.value = false;
 }
 
-async function searchReceivers() {
-  const keyword = receiverKeyword.value.trim();
-  if (!keyword) { receiverResults.value = []; return; }
-  receiverSearching.value = true;
-  try {
-    receiverResults.value = (await searchSkillUsers(keyword))
-      .filter(item => !notifyReceivers.value.includes(item.userId));
-  } catch { receiverResults.value = []; }
-  finally { receiverSearching.value = false; }
-}
-
-function addReceiver(item: { userId: string; name: string }) {
-  if (notifyReceivers.value.includes(item.userId)) return;
-  notifyReceivers.value = [...notifyReceivers.value, item.userId];
-  receiverNames.value[item.userId] = item.name || item.userId;
-  receiverResults.value = receiverResults.value.filter(row => row.userId !== item.userId);
-}
-
-function removeReceiver(userId: string) {
-  notifyReceivers.value = notifyReceivers.value.filter(id => id !== userId);
+function confirmRecipients(value: { to: string[]; cc: string[]; names: Record<string, string> }) {
+  notifyReceivers.value = [...value.to];
+  ccReceivers.value = [...value.cc];
+  receiverNames.value = { ...value.names };
 }
 
 /** 关键词集合相对加载时是否发生变化(增删改都算)。 */
@@ -668,10 +718,15 @@ async function save() {
       : null;
     const payload: SkillFlowInput = {
       ...form.value,
+      notifyContactName: form.value.notifyContactName?.trim() || '',
+      notifyContactPhone: form.value.notifyContactPhone?.trim() || '',
+      notifyBodyTemplate: form.value.notifyBodyTemplate?.trim() || '',
       notifySettings: {
         notifyReceivers: notifyReceivers.value,
+        ccReceivers: ccReceivers.value,
         notifyReceiverTriggers: ['AUTO_METRIC'],
         notifyReceiversByTrigger: { AUTO_METRIC: notifyReceivers.value },
+        ccReceiversByTrigger: { AUTO_METRIC: ccReceivers.value },
       },
     };
     if (props.editId == null) await createSkillFlow(payload);
@@ -728,25 +783,37 @@ defineExpose({ isDirty });
               <div v-else class="public-hint">如需将流程设为公开（所有人的聊天都能触发该流程），请联系开发人员开通。</div>
               <div v-if="!form.triggers.length" class="subtle-empty">未配置关键词，聊天不会触发这个流程。</div>
               <div v-for="(trigger, index) in form.triggers" :key="index" class="trigger-row"><input v-model="trigger.keyword" placeholder="输入触发关键词" /><label class="toggle-row"><input v-model="trigger.enabled" type="checkbox" /><span>启用</span></label><button class="icon-button danger" title="删除关键词" @click="removeTrigger(index)">×</button></div>
+              <FlowExecutorPicker :model-value="form.executors || []" :owner-id="flowOwnerId" @update:model-value="form.executors = $event" />
               <label class="toggle-row"><input v-model="form.notifyEnabled" type="checkbox" /><span>汇总完成后发送通知</span></label>
               <div class="notify-config-row">
-                <div class="receiver-search">
-                  <input v-model="receiverKeyword" placeholder="输入姓名或统一认证号" @keyup.enter="searchReceivers" />
-                  <button type="button" class="btn" :disabled="receiverSearching" @click="searchReceivers">搜索</button>
-                </div>
-                <div v-if="receiverResults.length" class="receiver-results">
-                  <button v-for="item in receiverResults" :key="item.userId" type="button" @click="addReceiver(item)">
-                    {{ item.name || item.userId }} ({{ item.userId }})
-                  </button>
-                </div>
-                <div class="receiver-chips">
-                  <span v-for="userId in notifyReceivers" :key="userId" class="receiver-chip">
-                    {{ receiverNames[userId] || userId }} ({{ userId }})
-                    <button type="button" @click="removeReceiver(userId)">×</button>
-                  </span>
-                </div>
-                <small>收件人从人员清单中选择；不选则通知流程触发人</small>
+                <span>收件人 {{ notifyReceivers.length }} 人 · 抄送 {{ ccReceivers.length }} 人</span>
+                <button type="button" class="btn" @click="recipientDialogOpen = true">管理收件人</button>
+                <small>未配置收件人时通知流程触发人</small>
               </div>
+              <div class="notify-contact-config">
+                <h4>通知中的联系信息</h4>
+                <p>展示在任务通知邮件中，方便收件人遇到问题时联系相关人员。手机号仅作为联系信息展示，不用于发送短信。</p>
+                <label><span>联系人姓名</span><input v-model="form.notifyContactName" type="text" placeholder="填写负责解答此任务相关问题的人" /></label>
+                <label><span>联系电话（手机号）</span><input v-model="form.notifyContactPhone" type="text" placeholder="填写 11 位手机号" /></label>
+                <small>两项都留空时，使用系统默认联系信息；如需自定义，请同时填写联系人和手机号。</small>
+                <p v-if="usesDefaultContact" class="contact-mode" role="status">当前使用系统默认联系信息</p>
+                <p v-else-if="!contactValidationError" class="contact-mode" role="status">保存后，任务通知邮件将展示上述联系信息</p>
+                <p v-if="contactValidationError" class="error" role="status">{{ contactValidationError }}</p>
+              </div>
+              <div class="notify-body-config">
+                <h4>通知邮件正文</h4>
+                <p>任务完成后通知邮件的正文文字在此配置，报告链接由系统自动拼接。可用占位符 <code>{链接}</code>，发送时替换为报告下载链接（显示为 任务名(年月日)，可点击）。</p>
+                <div class="body-template-toolbar">
+                  <button type="button" class="btn" @click="insertLinkPlaceholder">插入链接占位符</button>
+                </div>
+                <textarea ref="bodyTemplateInput" v-model="form.notifyBodyTemplate" rows="5" placeholder="各位：&#10;　　部门研发管理周报详见{链接}，请关注。"></textarea>
+                <small>{{ bodyTemplateHint }}</small>
+                <div v-if="bodyTemplatePreview" class="body-template-preview" aria-label="邮件正文预览">
+                  <span class="preview-label">邮件预览</span>
+                  <p v-html="bodyTemplatePreview"></p>
+                </div>
+              </div>
+              <MailRecipientDialog :open="recipientDialogOpen" :to="notifyReceivers" :cc="ccReceivers" :names="receiverNames" @update:open="recipientDialogOpen = $event" @confirm="confirmRecipients" />
             </section>
 
             <section id="flow-outline" class="form-section wide section-card">
@@ -840,7 +907,9 @@ input, select, textarea { box-sizing: border-box; width: 100%; border: 1px solid
 .chapter-node-actions { display: flex; gap: 8px; align-items: center; }.chapter-node-actions select { width: auto; min-width: 200px; }
 .outline-item { display: grid; grid-template-columns: 1fr 220px 30px; gap: 8px; align-items: center; margin-top: 8px; }
 .trigger-row { display: grid; grid-template-columns: minmax(160px, 1fr) auto 30px; align-items: center; gap: 8px; }.public-hint { padding: 8px 12px; border-left: 3px solid #f59e0b; background: #fffbeb; color: #92400e; font-size: 12px; }.public-hint.warning { border-color: #dc2626; background: #fef2f2; color: #b91c1c; }.subtle-empty, .empty { color: #94a3b8; font-size: 13px; padding: 18px 0; }
-.notify-config-row { display: grid; gap: 8px; padding: 12px; border: 1px solid #dbeafe; border-radius: 8px; background: #eff6ff; }.notify-config-row small { color: #64748b; font-size: 12px; }.receiver-search { display: flex; gap: 8px; }.receiver-search input { flex: 1; min-width: 0; }.receiver-results { display: grid; gap: 4px; }.receiver-results button { padding: 7px 9px; border: 1px solid #dbeafe; border-radius: 5px; background: #fff; color: #1e293b; text-align: left; cursor: pointer; }.receiver-results button:hover { background: #dbeafe; }.receiver-chips { display: flex; flex-wrap: wrap; gap: 6px; }.receiver-chip { padding: 5px 8px; border-radius: 5px; background: #dbeafe; color: #1e3a8a; font-size: 12px; }.receiver-chip button { margin-left: 5px; border: 0; background: transparent; color: #1e3a8a; cursor: pointer; }
+.notify-contact-config { display: grid; gap: 10px; margin-top: 14px; padding: 14px; border: 1px solid #dbeafe; border-radius: 8px; }.notify-contact-config h4, .notify-contact-config p { margin: 0; }.notify-contact-config p, .notify-contact-config small { font-size: 12px; color: #64748b; line-height: 1.6; }.notify-contact-config .contact-mode { color: #2563eb; }.notify-contact-config .error { color: #b91c1c; }
+.notify-body-config { display: grid; gap: 10px; margin-top: 14px; padding: 14px; border: 1px solid #dbeafe; border-radius: 8px; }.notify-body-config h4, .notify-body-config p { margin: 0; }.notify-body-config p, .notify-body-config small { font-size: 12px; color: #64748b; line-height: 1.6; }.notify-body-config code { padding: 1px 5px; border-radius: 4px; background: #eff6ff; color: #2563eb; }.notify-body-config textarea { width: 100%; padding: 9px 11px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; line-height: 1.7; font-family: inherit; resize: vertical; box-sizing: border-box; }.notify-body-config .body-template-toolbar { display: flex; align-items: center; gap: 8px; }.body-template-preview { display: grid; gap: 6px; padding: 10px 12px; border: 1px dashed #cbd5e1; border-radius: 6px; background: #f8fafc; }.body-template-preview .preview-label { font-size: 11px; color: #94a3b8; }.body-template-preview p { margin: 0; font-size: 13px; color: #0f172a; line-height: 1.8; }.body-template-preview :deep(.preview-link) { color: #2563eb; text-decoration: underline; }
+.notify-config-row { display: grid; gap: 8px; padding: 12px; border: 1px solid #dbeafe; border-radius: 8px; background: #eff6ff; }.notify-config-row small { color: #64748b; font-size: 12px; }
 .validation, .error { display: grid; gap: 4px; margin-top: 18px; padding: 10px 12px; border-left: 3px solid #f59e0b; background: #fffbeb; color: #92400e; font-size: 13px; }.error { border-color: #dc2626; background: #fef2f2; color: #b91c1c; }
 .btn, .icon-button { border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #475569; cursor: pointer; font-size: 13px; }.btn { padding: 7px 14px; }.btn.primary { border-color: #3b82f6; background: #3b82f6; color: #fff; }.btn.danger { border-color: #fecaca; color: #dc2626; }.btn:disabled, .icon-button:disabled { cursor: not-allowed; opacity: .45; }.icon-button { width: 28px; height: 28px; padding: 0; font-size: 18px; line-height: 1; }.icon-button.danger { color: #dc2626; border-color: #fecaca; }
 .debug-mask { position: fixed; inset: 0; z-index: 1100; display: flex; align-items: center; justify-content: center; background: rgb(15 23 42 / 45%); }
