@@ -26,7 +26,7 @@ const props = withDefaults(defineProps<{
   isFirst?: boolean;
   isLast?: boolean;
   removeDisabled?: boolean;
-  /** 删除按钮文案:节点区为「删除卡片」,大纲章节内为「移出章节」。 */
+  /** 删除按钮文案:节点区为「删除卡片」,大纲章节内为「删除节点」。 */
   removeTitle?: string;
 }>(), {
   scriptLoading: false,

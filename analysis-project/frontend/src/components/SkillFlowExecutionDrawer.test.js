@@ -51,6 +51,19 @@ test('running polls do not consume the terminal notification discovery grace per
 });
 
 for (const [recordLabel, Drawer] of [['长任务', LongTaskDrawer], ['流程报告', ReportDrawer]]) {
+  test(`${recordLabel} hides automatic single-node retry while keeping batch retry`, async t => {
+    t.mock.method(globalThis, 'fetch', async url => new Response(JSON.stringify(
+      String(url).endsWith('/nodes') ? [{ id: 7, nodeKey: 'failed', status: 'FAILED' }]
+        : /\/(metrics|notifications)$/.test(String(url)) ? []
+          : { id: 42, status: 'FAILED', triggerType: 'AUTO_METRIC', triggerUserId: 'u1' })));
+    const open = Vue.ref(false); let drawer;
+    const app = renderer.createApp({ render: () => Vue.h(Drawer, { ref: v => { drawer = v; }, open: open.value, executionId: 42 }) });
+    app.mount(container()); t.after(() => app.unmount());
+    open.value = true; await Vue.nextTick(); await flush(); await flush();
+    const output = text(drawer.$.subTree.target);
+    assert.ok(!output.includes('重跑此任务') && !output.includes('重试此节点'));
+    assert.match(output, /批量重跑失败任务|重试失败节点/);
+  });
   test(`${recordLabel} detail derives progress from loaded node statuses and refreshes after retry`, async t => {
     let statuses = ['SUCCESS', 'FAILED', 'BLOCKED', 'CANCELLED', 'RUNNING', 'QUEUED', 'PENDING', 'RETRY_WAIT'];
     t.mock.method(globalThis, 'fetch', async url => {

@@ -1,49 +1,72 @@
 <script setup lang="ts">
+import { computed, ref } from 'vue';
 import type { SkillFlowNotification } from '../types/skillFlow';
-defineProps<{ notifications: SkillFlowNotification[] }>();
+const props = defineProps<{ notifications: SkillFlowNotification[] }>();
+const expanded = ref(false);
+const contentOpen = ref(new Set<SkillFlowNotification>());
+const bodyOpen = ref(new Set<SkillFlowNotification>());
+const reasonOpen = ref(new Set<SkillFlowNotification>());
+function toggle(set: Set<SkillFlowNotification>, row: SkillFlowNotification) {
+  if (set.has(row)) set.delete(row); else set.add(row);
+}
 function parse(value?: string | null): Record<string, unknown> {
-  try { const result = JSON.parse(value || '{}'); return result && typeof result === 'object' ? result : {}; }
+  try { const result = JSON.parse(value || '{}'); return result && typeof result === 'object' && !Array.isArray(result) ? result : {}; }
   catch { return {}; }
 }
 function request(row: SkillFlowNotification) { return parse(row.requestJson); }
-function result(row: SkillFlowNotification) { return parse(row.responseJson); }
-function people(value: unknown, fallback = '无') {
-  return Array.isArray(value) ? value.join('、') || '无' : fallback;
+function string(value: unknown) { return typeof value === 'string' ? value.trim() : ''; }
+function people(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(string).filter(Boolean) : string(value).split(/[,，、;；]/).map(v => v.trim()).filter(Boolean);
 }
-function status(value: string) {
-  return ({ PENDING: '待发送', SENDING: '发送中', SIMULATED: '模拟完成', ACCEPTED: '网关已接受',
-    FAILED: '发送失败', SENT: '历史记录：发送器已返回' } as Record<string, string>)[value] || value;
+function recipients(row: SkillFlowNotification) {
+  const saved = people(request(row).toUserList);
+  return saved.length ? saved : people(row.recipient || row.recipientSummary);
 }
+function summary(row: SkillFlowNotification) {
+  const list = recipients(row);
+  return list.length > 1 ? `${list[0]}等 ${list.length} 人` : list[0] || '未记录';
+}
+function status(row: SkillFlowNotification) {
+  if (row.status === 'SIMULATED') return '模拟完成';
+  // Legacy SENT only confirms a sender return; it does not prove successful delivery.
+  return ({ PENDING: '待发送', SENDING: '发送中', ACCEPTED: '已提交发送',
+    FAILED: '发送失败', SENT: '历史记录（发送结果未确认）' } as Record<string, string>)[row.status] || '状态未知';
+}
+function time(row: SkillFlowNotification) { return row.sentAt || row.createdAt || ''; }
+function timestamp(row: SkillFlowNotification) { const n = Date.parse(time(row)); return Number.isFinite(n) ? n : 0; }
+const sorted = computed(() => [...props.notifications].sort((a, b) => timestamp(b) - timestamp(a) || (b.id || 0) - (a.id || 0)));
+const visible = computed(() => expanded.value ? sorted.value : sorted.value.slice(0, 3));
 function preview(row: SkillFlowNotification) {
-  // Block scripts, network resources, forms and navigation; keep mail formatting visible.
   return '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:; form-action \'none\'; base-uri \'none\'">'
-    + String(request(row).content || '');
+    + string(request(row).content);
 }
 </script>
 
 <template>
   <section class="notification-history">
-    <h4>通知发送详情</h4>
+    <h4>通知记录（共 {{ notifications.length }} 次）</h4>
     <p v-if="!notifications.length" class="hint">暂无通知记录</p>
-    <article v-for="row in notifications" :key="row.id">
-      <div class="heading"><strong>{{ status(row.status) }}</strong><span>{{ row.channel === 'SIMULATE' ? '模拟模式' : row.channel === 'REAL' ? '真实模式' : '历史记录' }}</span><span>#{{ row.id }} · {{ row.createdAt || '-' }}</span></div>
-      <p v-if="row.channel === 'SIMULATE'" class="hint">仅生成并保存通知请求，未调用真实发送接口。</p>
-      <p>主送：{{ people(request(row).toUserList, row.recipient || row.recipientSummary || '无') }}</p>
-      <p>抄送：{{ people(request(row).ccUserList, '未记录') }}</p>
-      <p v-if="row.errorMessage" class="error">{{ row.errorMessage }}</p>
-      <details>
-        <summary>查看发送内容与结果</summary>
-        <p>标题：{{ request(row).title || '历史记录未保存标题' }}</p>
-        <p>通知 ID：{{ row.id }} · 执行 ID：{{ row.flowExecutionId || '-' }}</p>
-        <p v-if="result(row).reportUrl">报告链接：{{ result(row).reportUrl }}</p>
-        <p>开始：{{ result(row).startedAt || '-' }} · 结束：{{ result(row).completedAt || '-' }}</p>
-        <p>耗时：{{ result(row).durationMs ?? '-' }} ms</p>
-        <iframe v-if="request(row).content" :srcdoc="preview(row)" sandbox="" referrerpolicy="no-referrer" title="通知邮件正文预览"></iframe>
-        <p v-else class="hint">历史记录未保存最终邮件正文。</p>
-        <details><summary>最终请求</summary><pre>{{ row.requestJson || '未记录' }}</pre></details>
-        <details><summary>网关响应与时间记录</summary><pre>{{ row.responseJson || '尚无结果' }}</pre></details>
-      </details>
+    <article v-for="(row, index) in visible" :key="row.id ?? index">
+      <div class="heading">
+        <span>发送时间：{{ time(row).replace('T', ' ').slice(0, 19) || '未记录' }}</span>
+        <span>收件人：{{ summary(row) }}</span>
+        <strong>{{ status(row) }}</strong>
+        <button type="button" :aria-expanded="contentOpen.has(row)" @click="toggle(contentOpen, row)">{{ contentOpen.has(row) ? '收起内容' : '查看内容' }}</button>
+        <button v-if="row.status === 'FAILED'" type="button" :aria-expanded="reasonOpen.has(row)" @click="toggle(reasonOpen, row)">{{ reasonOpen.has(row) ? '收起原因' : '查看原因' }}</button>
+      </div>
+      <p v-if="reasonOpen.has(row)" class="error">发送未成功，请稍后重试；如仍失败，请联系管理员。</p>
+      <div v-if="contentOpen.has(row)" class="content">
+        <p>主送：{{ recipients(row).join('、') || '未记录' }}</p>
+        <p v-if="people(request(row).ccUserList).length">抄送：{{ people(request(row).ccUserList).join('、') }}</p>
+        <p>标题：{{ string(request(row).title) || '历史记录未保存标题' }}</p>
+        <template v-if="string(request(row).content)">
+          <button type="button" :aria-expanded="bodyOpen.has(row)" @click="toggle(bodyOpen, row)">{{ bodyOpen.has(row) ? '收起正文' : '展开正文' }}</button>
+          <iframe v-if="bodyOpen.has(row)" :srcdoc="preview(row)" sandbox="" referrerpolicy="no-referrer" title="通知邮件正文预览"></iframe>
+        </template>
+        <p v-else class="hint">历史记录未保存正文。</p>
+      </div>
     </article>
+    <button v-if="notifications.length > 3" type="button" :aria-expanded="expanded" @click="expanded = !expanded">{{ expanded ? '收起记录' : '查看全部' }}</button>
   </section>
 </template>
 
@@ -53,8 +76,7 @@ article { border-top: 1px solid #e2e8f0; padding: 12px 0; font-size: 12px; color
 .heading { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 .hint, .heading span { color: #64748b; }
 .error { color: #b91c1c; }
-summary, a { color: #2563eb; cursor: pointer; }
-details { margin-top: 8px; }
-pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px; background: #f8fafc; max-height: 280px; overflow: auto; }
+button { border: 0; background: none; padding: 0; color: #2563eb; cursor: pointer; font-size: 12px; }
+.content { margin-top: 8px; }
 iframe { display: block; width: 100%; min-height: 240px; border: 1px solid #e2e8f0; background: white; margin: 12px 0; }
 </style>

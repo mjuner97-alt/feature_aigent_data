@@ -300,7 +300,9 @@ function addNode() {
 }
 
 function removeNode(index: number) {
+  if (index < 0 || index >= form.value.nodes.length) return;
   const [removed] = form.value.nodes.splice(index, 1);
+  if (removed) delete scriptParamErrors.value[removed.nodeKey];
   // 大纲里绑定了该节点的章节一并移除引用,避免残留失效 key
   outlineRows.value.forEach(row => {
     row.nodeKeys = row.nodeKeys.filter(key => key !== removed?.nodeKey);
@@ -824,7 +826,13 @@ defineExpose({ isDirty });
                 <button class="btn primary" :disabled="!selectedReportProcessId || reportProcessLoading" @click="importReportProcess(Number(selectedReportProcessId))">引入报告流程</button>
               </div>
               <div v-if="importedReportSnapshot" class="import-status"><span>已引入：<strong>{{ importedReportName }}</strong></span><div><button class="btn" @click="undoReportProcessImport">撤销引入</button></div></div>
-              <div v-if="unboundNodes.length" class="import-status"><span>未绑定节点（{{ unboundNodes.length }}）：{{ unboundNodes.map(nodeTitle).join("、") }}。请添加章节并使用“绑定已有未绑定节点”恢复归属。</span></div>
+              <div v-if="unboundNodes.length" class="import-status">
+                <span>未绑定节点（{{ unboundNodes.length }}）：请绑定到章节，或删除不再需要的节点后保存。</span>
+                <div v-for="node in unboundNodes" :key="node.nodeKey">
+                  <span>{{ nodeTitle(node) }}（{{ node.nodeKey }}）</span>
+                  <button class="btn danger-outline" :aria-label="`删除未绑定节点 ${node.nodeKey}`" @click="removeNode(form.nodes.indexOf(node))">删除节点</button>
+                </div>
+              </div>
               <div class="section-heading outline-heading"><div><h4>报告输出大纲</h4><p>先写章节，章节下可添加多个执行节点；可拖拽或使用 ↑↓ 调整顺序。</p></div><button class="btn primary" @click="addOutlineRow(null)">＋ 添加章节</button></div>
               <label class="report-title-field"><span>报告总标题</span><input v-model="reportTitle" placeholder="例如：月度经营分析报告" /><small>生成汇总时会作为整份报告的居中标题。</small></label>
               <div v-if="!outlineRows.length" class="subtle-empty">尚未配置大纲，报告将按执行节点顺序输出。</div>
