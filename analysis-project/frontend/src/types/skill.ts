@@ -181,3 +181,50 @@ export interface SkillFileReferenceRequest {
   fileId: number;
   referenceType?: string;
 }
+
+/** Skill 试运行记录(详情页试运行区块的历史列表项) */
+export interface SkillTrialRunRecord {
+  id: number;
+  skillId: number;
+  skillName: string;
+  /** 问数会话ID,可跳转 /chat?session= 复盘 */
+  conversationId: string;
+  question: string;
+  userId: string;
+  createdAt: string;
+}
+
+/** 工具耗时项(由 trace POST_ACTING 事件解析) */
+export interface SkillTrialToolTiming {
+  name: string;
+  /** python=Python脚本执行 / script=注册脚本执行 / tool=普通工具 */
+  category: 'python' | 'script' | 'tool';
+  durationMs: number | null;
+}
+
+/** 试运行结果行 = 落库记录 + trace 汇总(trace 缺失时 traceLoaded=false,展示占位) */
+export interface SkillTrialResultRow {
+  record: SkillTrialRunRecord;
+  traceLoaded: boolean;
+  durationMs: number | null;
+  tokenInput: number | null;
+  tokenOutput: number | null;
+  status: string | null;
+  tools: SkillTrialToolTiming[];
+  /** 调用明细(按调用顺序逐条,仅四类系统工具,解析自 trace POST_ACTING 事件) */
+  calls: SkillTrialCallTraceRow[];
+}
+
+/** 展开行调用明细行(按调用顺序逐条,解析自 trace POST_ACTING 事件,仅四类系统工具) */
+export interface SkillTrialCallTraceRow {
+  /** 系统工具名称(tool_use.name 原值) */
+  systemTool: string;
+  /** 实际执行名称:skill标识/toolId/注册脚本名/注册SQL名 */
+  actualName: string;
+  /** 开始时间(ISO-8601 UTC,Instant.toString()) */
+  startedAt: string | null;
+  /** 结束时间(同上) */
+  endedAt: string | null;
+  /** 耗时(ms) */
+  durationMs: number | null;
+}

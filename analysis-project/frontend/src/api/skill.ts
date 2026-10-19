@@ -1,4 +1,4 @@
-import type { SkillListItem, SkillDetail, LikeStatus, SkillInput, SkillPublishRecord, PublishTargetGroup, PublishPendingItem, SkillApprovalRecord, SkillFileUploadResponse, SkillFileItem, SkillFileReferenceItem, SkillFileReferenceRequest, SkillGrant } from '../types/skill';
+import type { SkillListItem, SkillDetail, LikeStatus, SkillInput, SkillPublishRecord, PublishTargetGroup, PublishPendingItem, SkillApprovalRecord, SkillFileUploadResponse, SkillFileItem, SkillFileReferenceItem, SkillFileReferenceRequest, SkillGrant, SkillTrialRunRecord } from '../types/skill';
 import type { SkillSimilarityMatch } from '../types/routingOverlap';
 import { apiErrorDetail } from '../utils/apiError';
 
@@ -402,4 +402,31 @@ export async function removeSkillFile(skillId: number, fileId: number): Promise<
     headers: authHeaders(),
   });
   if (!res.ok) throw new Error(`取消引用失败: ${res.status}`);
+}
+
+// ============ 试运行 API ============
+
+/**
+ * 记录一次试运行(POST /api/skills/{id}/trial-runs)。
+ * 问数由前端直调 /ai/chat 完成,流结束后调本接口落库;
+ * skillName 由后端按 skillId 回填,不可见/不存在抛 SkillNotFound。
+ */
+export async function recordTrialRun(skillId: number, conversationId: string, question: string): Promise<SkillTrialRunRecord> {
+  const res = await fetch(`${BASE}/${skillId}/trial-runs`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ conversationId, question }),
+  });
+  if (!res.ok) throw await skillError(res, '记录试运行失败');
+  return res.json();
+}
+
+/**
+ * 查询 Skill 的历史试运行记录(GET /api/skills/{id}/trial-runs,倒序限量)。
+ * afterSkillUpdate 为 true 时仅返回 skill 最后修改时间之后的记录(试运行结果查看用)。
+ */
+export async function listTrialRuns(skillId: number, limit = 20, afterSkillUpdate = false): Promise<SkillTrialRunRecord[]> {
+  const res = await fetch(`${BASE}/${skillId}/trial-runs?limit=${limit}&afterSkillUpdate=${afterSkillUpdate}`, { headers: authHeaders() });
+  if (!res.ok) throw await skillError(res, '获取试运行记录失败');
+  return res.json();
 }

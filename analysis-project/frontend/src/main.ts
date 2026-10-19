@@ -23,6 +23,7 @@ import SkillListPage from './pages/skill/SkillListPage.vue';
 import SkillDetailPage from './pages/skill/SkillDetailPage.vue';
 import SkillFormPage from './pages/skill/SkillFormPage.vue';
 import SkillApprovalListPage from './pages/skill/SkillApprovalListPage.vue';
+import SkillTrialResultPage from './pages/skill/SkillTrialResultPage.vue';
 import SkillJobListPage from './pages/skill/SkillJobListPage.vue';
 import SkillJobFormPage from './pages/skill/SkillJobFormPage.vue';
 import SkillJobReportEditPage from './pages/skill/SkillJobReportEditPage.vue';
@@ -73,6 +74,8 @@ const routes: RouteRecordRaw[] = [
           { path: 'virtual-groups', component: SkillVirtualGroupPage },
           { path: 'new', component: SkillFormPage },
           { path: ':id/edit', component: SkillFormPage },
+          // 试运行结果独立页(必须在 ':id' 之前注册)
+          { path: ':id/trial-results', component: SkillTrialResultPage },
           { path: ':id', component: SkillDetailPage },
         ],
       },
