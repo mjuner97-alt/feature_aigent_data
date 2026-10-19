@@ -50,7 +50,7 @@ public class DimensionKeyConfigRepository {
     }
 
     /**
-     * timeRange 保留键 seed（docs/history/dimension-key-dynamic-dimension-plan.md §6.1.4）。
+     * timeRange 保留键 seed（docs/202610/dimension-key-dynamic-dimension-plan.md §6.1.4）。
      * 非 builtin（词表须管理员可扩），值为语义锚点，执行期解析 start/end；
      * DELETE 是软删（行保留 enabled=false），存在性补种只认"完全无行"——软删不会复活。
      */
@@ -261,7 +261,7 @@ public class DimensionKeyConfigRepository {
             ps.setString(2, "时间范围");
             ps.setString(3, TIME_RANGE_ALIASES_SEED);
             ps.setString(4, "时间范围键：绝对区间正则+词表锚点，执行期解析 start/end"
-                    + "（docs/history/dimension-key-dynamic-dimension-plan.md §6.1）");
+                    + "（docs/202610/dimension-key-dynamic-dimension-plan.md §6.1）");
             ps.executeUpdate();
         }
         log.info("dimension_key_config: seeded reserved key '{}'", RESERVED_TIME_RANGE_KEY);

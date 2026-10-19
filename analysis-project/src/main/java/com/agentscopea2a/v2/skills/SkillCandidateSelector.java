@@ -23,6 +23,11 @@ import java.util.stream.Collectors;
  *       命中即逐层收窄（§7.3 语义不变）；非空则按 显式点名 &gt; 漏斗层深度（L3&gt;L2&gt;L1）
  *       &gt; 命中词全局位次（skill 取其该层最优命中词的 sort_order, 未配置全局表的词排后）
  *       &gt; name 排序。只配叶层的 skill 在阶段一命中时出局（拍板⑥）。</li>
+ *   <li><b>分组保底（2026/10/16, docs/202610/Skill检索分组保底方案.md）</b>：skill 分级
+ *       关键词格内的精确词「保底」是保留字，不参与问题文本匹配；L1 真命中时自动视作 L2
+ *       命中，L1+L2 均有命中词时自动视作 L3 命中（链式下钻）——位次取全局表「保底」行的
+ *       组内 row_order（未配则 MAX）。作用：问题命中组 L1 但具体词全未命中（如「问题的
+ *       整体情况」）时，配了保底的 skill 以 depth 压制 + 组内最末位次确定性兜底。</li>
  *   <li><b>阶段 2 叶层回退</b>：阶段一为空时走 2026/10/13 之前的旧行为——domain 互斥域
  *       过滤 + 叶层 keywords 命中打分（2000/词 cap 4000）+ domain 排序加成。</li>
  * </ul>
@@ -39,6 +44,9 @@ public class SkillCandidateSelector {
     private static final int DOMAIN_MATCH_SCORE = 6_000;
     private static final int KEYWORD_SCORE_PER_HIT = 2_000;
     private static final int KEYWORD_SCORE_CAP = 4_000;
+
+    /** 分组保底保留字（skill 二级/三级关键词格内精确等于该词 = 声明自己是组兜底，不参与问题匹配）。 */
+    static final String FALLBACK_MARKER = "保底";
 
     private final int maxVisibleSkills;
     private final int fallbackVisibleSkills;
@@ -100,6 +108,7 @@ public class SkillCandidateSelector {
             List<String> l1Terms = matchedTermsIn(normalizedQuestion, entry.level1Keywords());
             List<String> l2Terms = matchedTermsIn(normalizedQuestion, entry.level2Keywords());
             List<String> l3Terms = matchedTermsIn(normalizedQuestion, entry.level3Keywords());
+            injectFallbackHits(entry, l1Terms, l2Terms, l3Terms);
             Candidate candidate = new Candidate(entry, false, matchedTerms(normalizedQuestion, entry.keywords()),
                     l1Terms, l2Terms, l3Terms);
             if (!l1Terms.isEmpty() || !l2Terms.isEmpty() || !l3Terms.isEmpty()) {
@@ -248,7 +257,6 @@ public class SkillCandidateSelector {
     }
 
     private static List<String> matchedTermsIn(String question, List<String> terms) {
-        if (terms == null) return List.of();
         List<String> matched = new ArrayList<>();
         collectMatched(question, terms, matched);
         return matched;
@@ -257,10 +265,41 @@ public class SkillCandidateSelector {
     private static void collectMatched(String question, List<String> terms, List<String> into) {
         if (terms == null) return;
         for (String term : terms) {
+            if (isFallbackMarker(term)) {
+                continue; // 保留字不参与问题文本匹配（只按注入规则生效）
+            }
             if (SkillTermMatcher.matches(question, term)) {
                 into.add(term);
             }
         }
+    }
+
+    private static boolean isFallbackMarker(String term) {
+        return term != null && FALLBACK_MARKER.equals(term.trim());
+    }
+
+    /**
+     * 分组保底注入（docs/202610/Skill检索分组保底方案.md §4.2）：L2 含保留字且 L1 真命中
+     * → 注入 L2 命中；L3 含保留字且 L1+L2 均有命中词（L2 含注入）→ 注入 L3 命中。
+     * 注入后收窄/深度/位次/截断全部走既有机制。
+     */
+    private static void injectFallbackHits(SkillRoutingMetadata entry, List<String> l1Terms,
+                                           List<String> l2Terms, List<String> l3Terms) {
+        if (l1Terms.isEmpty()) {
+            return;
+        }
+        if (hasFallbackMarker(entry.level2Keywords()) && !l2Terms.contains(FALLBACK_MARKER)) {
+            l2Terms.add(FALLBACK_MARKER);
+        }
+        if (!l2Terms.isEmpty() && hasFallbackMarker(entry.level3Keywords())
+                && !l3Terms.contains(FALLBACK_MARKER)) {
+            l3Terms.add(FALLBACK_MARKER);
+        }
+    }
+
+    private static boolean hasFallbackMarker(List<String> terms) {
+        if (terms == null) return false;
+        return terms.stream().anyMatch(SkillCandidateSelector::isFallbackMarker);
     }
 
     private static int matchedTerms(String question, List<String> terms) {

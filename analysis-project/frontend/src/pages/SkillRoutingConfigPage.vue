@@ -8,7 +8,7 @@ import type { SkillRoutingInput, SkillRoutingMetadata } from '../types/skillRout
 import { DIRECT_EXEC_DIMENSION_KEYS } from '../types/skillRouting';
 import { listDimensionKeys } from '../api/dimensionKey';
 import { createBypassKeyword, deleteBypassKeyword, listBypassKeywords, listKeywordPriorities, reloadBypassKeywords, replaceKeywordPriorities, updateBypassKeyword } from '../api/skillRetrieval';
-import type { SkillBypassKeywordRow, SkillKeywordPriorityRow } from '../api/skillRetrieval';
+import type { SkillBypassKeywordRow, SkillKeywordPriorityLine } from '../api/skillRetrieval';
 import { canEditConfig, isAdmin } from '../utils/auth';
 
 type SkillTagType = 'DOMAIN' | 'TOPIC';
@@ -108,9 +108,9 @@ async function reloadBypass() {
   catch (e: any) { ElMessage.error(e.message || '刷新失败'); }
 }
 
-// ==================== 检索配置: 关键词优先级编辑 (§8.1) ====================
-// 每行 = 一条配置行（一级词组 | 二级词组 | 三级词组, 格内顿号分隔）; ☰ 拖行 = 行优先级。
-// 存储: parent_keyword 存行号 R1/R2…仅用于还原行, 匹配/排序只看 keyword + sort_order。
+// ==================== 检索配置: 关键词优先级 (平铺行模型, docs/202610 v3) ====================
+// 一行 = 一级词集 | 二级词集 | 三级词集（顿号分隔，格内词彼此等价）。
+// 一级词无优先级（仅分组/入围门槛）；行序即该行二/三级词的优先级（越上越高）。
 interface PriorityRow { l1: string; l2: string; l3: string }
 const priorityRows = ref<PriorityRow[]>([]);
 const priorityLoading = ref(false);
@@ -128,82 +128,52 @@ function onRetrievalTabEnter() {
 async function loadPriorityRows() {
   priorityLoading.value = true;
   try {
-    const list: SkillKeywordPriorityRow[] = await listKeywordPriorities();
-    const order: string[] = [];
-    const buckets = new Map<string, { l1: string[]; l2: string[]; l3: string[] }>();
-    const ensure = (gid: string) => {
-      let b = buckets.get(gid);
-      if (!b) {
-        b = { l1: [], l2: [], l3: [] };
-        buckets.set(gid, b);
-        order.push(gid);
-      }
-      return b;
-    };
-    for (const r of list.filter(r => r.level === 1)) {
-      if (r.keyword) ensure(r.parentKeyword || '').l1.push(r.keyword);
-    }
-    for (const r of list.filter(r => r.level === 2)) {
-      if (r.keyword) ensure(r.parentKeyword || '').l2.push(r.keyword);
-    }
-    for (const r of list.filter(r => r.level === 3)) {
-      if (r.keyword) ensure(r.parentKeyword || '').l3.push(r.keyword);
-    }
-    priorityRows.value = order
-      .map(gid => {
-        const b = buckets.get(gid)!;
-        return { l1: b.l1.join('、'), l2: b.l2.join('、'), l3: b.l3.join('、') };
-      })
-      .filter(r => r.l1 || r.l2 || r.l3);
+    const lines: SkillKeywordPriorityLine[] = await listKeywordPriorities();
+    priorityRows.value = lines.map(l => ({
+      l1: l.level1Keywords || '',
+      l2: l.level2Keywords || '',
+      l3: l.level3Keywords || '',
+    }));
   } catch (e: any) { ElMessage.error(e.message || '加载关键词优先级失败'); }
   finally { priorityLoading.value = false; }
 }
 
-function flattenPriority(): SkillKeywordPriorityRow[] {
-  const out: SkillKeywordPriorityRow[] = [];
-  const seen = new Set<string>();
-  const emit = (level: number, gid: string, text: string) => {
-    for (const w of text.split(/[、，,]/).map(s => s.trim()).filter(Boolean)) {
-      const key = `${level}|${gid}|${w}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push({ id: null, level, parentKeyword: gid, keyword: w, sortOrder: null });
-    }
-  };
-  priorityRows.value.forEach((r, i) => emit(1, `R${i + 1}`, r.l1));
-  priorityRows.value.forEach((r, i) => emit(2, `R${i + 1}`, r.l2));
-  priorityRows.value.forEach((r, i) => emit(3, `R${i + 1}`, r.l3));
-  return out;
-}
+const hasWords = (s: string) => s.split(/[、，,]/).map(x => x.trim()).some(Boolean);
 
-function movePriorityRow(from: number, to: number) {
+function onPriorityRowDrop(to: number) {
+  const from = dragRowFrom.value;
+  dragRowFrom.value = -1;
   if (from === to || from < 0 || to < 0 || from >= priorityRows.value.length || to >= priorityRows.value.length) return;
   const [item] = priorityRows.value.splice(from, 1);
   priorityRows.value.splice(to, 0, item);
 }
-function onPriorityRowDrop(to: number) {
-  if (dragRowFrom.value >= 0) movePriorityRow(dragRowFrom.value, to);
-  dragRowFrom.value = -1;
-}
 function addPriorityRow() {
   priorityRows.value.push({ l1: '', l2: '', l3: '' });
 }
-function addPriorityRowBelow(row: number) {
-  priorityRows.value.splice(row + 1, 0, { l1: '', l2: '', l3: '' });
+function addPriorityRowBelow(idx: number) {
+  priorityRows.value.splice(idx + 1, 0, { l1: '', l2: '', l3: '' });
 }
-async function removePriorityRow(row: number) {
+async function removePriorityRow(idx: number) {
   try {
     await ElMessageBox.confirm('确认删除该行？', '删除', { type: 'warning' });
   } catch { return; }
-  priorityRows.value.splice(row, 1);
+  priorityRows.value.splice(idx, 1);
 }
 async function savePriority() {
-  if (priorityRows.value.some(r => !r.l1.trim() && !r.l2.trim() && !r.l3.trim())) {
-    return ElMessage.warning('存在空白行，请填写或删除');
+  if (priorityRows.value.some(r => !hasWords(r.l1))) {
+    return ElMessage.warning('存在一级关键词为空的行，请填写或删除该行');
+  }
+  if (priorityRows.value.some(r => !hasWords(r.l2) && !hasWords(r.l3))) {
+    return ElMessage.warning('存在空白行（二级/三级至少填一格），请填写或删除');
   }
   prioritySaving.value = true;
   try {
-    await replaceKeywordPriorities(flattenPriority());
+    await replaceKeywordPriorities(priorityRows.value.map(r => ({
+      id: null,
+      level1Keywords: r.l1,
+      level2Keywords: r.l2,
+      level3Keywords: r.l3,
+    })));
     ElMessage.success('优先级已保存');
     await loadPriorityRows();
   } catch (e: any) { ElMessage.error(e.message || '保存失败'); }
@@ -397,34 +367,34 @@ load();
           <h3>关键词检索优先级</h3>
           <div>
             <el-button size="small" @click="addPriorityRow">+ 新增行</el-button>
-            <el-button size="small" type="primary" :loading="prioritySaving" @click="savePriority">保存排序</el-button>
+            <el-button size="small" type="primary" :loading="prioritySaving" @click="savePriority">保存</el-button>
             <el-button size="small" @click="loadPriorityRows">重置</el-button>
           </div>
         </div>
         <div class="mapping-hint">
-          每行 = 一条配置行：一级词组 | 二级词组 | 三级词组（格内多个词用顿号分隔，支持正则词形）。
-          ☰ 拖行 = 行优先级（越上越高）；同一二级组可分多行挂不同三级组。层间漏斗 L3 &gt; L2 &gt; L1，无需给单个 skill 配分数。
+          一行 = 一级 | 二级 | 三级关键词集（顿号分隔，格内词彼此等价，支持正则）。一级词无优先级（仅分组/入围门槛）；
+          行序即该行二/三级词的优先级，左侧 ☰ 拖行调整（越上越高）。层间漏斗 L3 &gt; L2 &gt; L1。
         </div>
         <el-table :data="priorityRows" v-loading="priorityLoading" border size="small" style="margin-top: 8px" empty-text="暂无配置：点「+ 新增行」开始">
-          <el-table-column label="拖曳" width="56" align="center">
+          <el-table-column label="行拖" width="56" align="center">
             <template #default="{ $index }">
-              <span class="grip row-grip" :draggable="true"
+              <span class="grip" :draggable="true"
                     @dragstart="dragRowFrom = $index" @dragover.prevent @drop.prevent="onPriorityRowDrop($index)">☰</span>
             </template>
           </el-table-column>
-          <el-table-column label="一级关键词" min-width="220">
-            <template #default="{ row }">
-              <el-input v-model="row.l1" size="small" placeholder="如 问题、缺陷、A号（顿号分隔，支持正则）" />
+          <el-table-column label="一级关键词" min-width="260">
+            <template #default="{ $index }">
+              <el-input v-model="priorityRows[$index].l1" size="small" placeholder="如 问题、缺陷、A号（顿号分隔，支持正则）" />
             </template>
           </el-table-column>
           <el-table-column label="二级关键词" min-width="200">
-            <template #default="{ row }">
-              <el-input v-model="row.l2" size="small" placeholder="如 未闭环、开口、在途（顿号分隔）" />
+            <template #default="{ $index }">
+              <el-input v-model="priorityRows[$index].l2" size="small" placeholder="如 遗留、未闭环（顿号分隔）" />
             </template>
           </el-table-column>
           <el-table-column label="三级关键词" min-width="200">
-            <template #default="{ row }">
-              <el-input v-model="row.l3" size="small" placeholder="如 严重、超7天（顿号分隔）" />
+            <template #default="{ $index }">
+              <el-input v-model="priorityRows[$index].l3" size="small" placeholder="如 严重、超7天（顿号分隔）" />
             </template>
           </el-table-column>
           <el-table-column label="操作" width="150" align="center">
@@ -508,7 +478,6 @@ h2 { margin: 0; font-size: 1.2rem; }
 .word-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .chip { display: inline-flex; align-items: center; padding: 1px 8px; border: 1px solid #cbd5e1; background: #f8fafc; }
 .grip { color: #94a3b8; cursor: grab; }
-.row-grip { font-size: 1rem; }
 .op-col { display: flex; flex-direction: column; gap: 2px; align-items: center; }
 .chip.l3 { font-size: 0.75rem; background: #f1f5f9; border-color: #e2e8f0; color: #475569; }
 </style>

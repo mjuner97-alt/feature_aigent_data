@@ -107,7 +107,7 @@ public class ResponseCacheMiddleware implements MiddlewareBase {
 
         // 拍板② (2026-10-14): 问题含时间范围短语时绕过缓存 (不读不写)——"本周"类锚点
         // 解析出的日期随提问日漂移, 缓存指纹是原始文本会跨天脏读
-        // (docs/history/dimension-key-dynamic-dimension-plan.md §6.1.5)。
+        // (docs/202610/dimension-key-dynamic-dimension-plan.md §6.1.5)。
         if (containsTimeRangePhrase(question)) {
             log.debug("[cache] bypass: timeRange phrase in question");
             return next.apply(input);

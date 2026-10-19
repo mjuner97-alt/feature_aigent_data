@@ -7,7 +7,7 @@ import java.util.Comparator;
 import java.util.List;
 
 /**
- * 时间范围提取（docs/history/dimension-key-dynamic-dimension-plan.md §6.1.3）。
+ * 时间范围提取（docs/202610/dimension-key-dynamic-dimension-plan.md §6.1.3）。
  *
  * <p>两层确定性提取，产出语义锚点列表（去重、按问题中出现顺序）：
  * <ul>
