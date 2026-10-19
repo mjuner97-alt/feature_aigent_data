@@ -224,6 +224,16 @@ export async function resendSkillFlowExecutionNotification(id: number, notifyRec
   });
   if (!res.ok) throw await requestError(res, '补发通知失败');
 }
+// 自包含报告的内联库可能含有 "</body>" 字符串，结束标签应从文档末尾定位。
+// 按原文拼接，保留库源码及嵌套 srcdoc，避免 DOM 序列化改写报告。
+function insertBeforeReportEnd(html: string, tag: 'head' | 'body', content: string): string {
+  const pattern = new RegExp(`</${tag}\\s*>`, 'gi');
+  let lastIndex = -1;
+  for (const match of html.matchAll(pattern)) lastIndex = match.index!;
+  if (lastIndex < 0) return html + content;
+  return html.slice(0, lastIndex) + content + html.slice(lastIndex);
+}
+
 /** 拉取汇总报告 blob;并从 Content-Disposition 解析下载文件名(后端按 {任务名称}-flow-report.html 生成)。 */
 export async function getSkillFlowExecutionReportUrl(id: number): Promise<{ url: string; downloadName?: string }> {
   const res = await fetch(`${EXECUTION_BASE}/${id}/report`, { headers: authHeaders(), cache: 'no-store' });
@@ -240,11 +250,9 @@ export async function getSkillFlowExecutionReportUrl(id: number): Promise<{ url:
     const script = '<script>(function(){var t=document.createElement("aside");t.className="report-toc";t.innerHTML="<nav class=report-toc-list></nav>";document.body.insertBefore(t,document.body.firstChild);var l=t.querySelector(".report-toc-list"),h=document.querySelectorAll(".report [data-report-outline-heading],.report h2,.report h3,.report h4,.report h5,.report h6");h.forEach(function(x,i){if(x.classList.contains("report-outline-title")||x.tagName==="H1")return;var id="report-section-"+i;x.id=id;var a=document.createElement("a");a.href="#"+id;a.dataset.level=x.tagName.substring(1);a.textContent=x.textContent||("章节 "+(i+1));a.title=a.textContent;a.addEventListener("click",function(e){var t=document.getElementById(id);if(t){e.preventDefault();t.scrollIntoView({block:"start",behavior:"smooth"})}});l.appendChild(a)});if(!l.children.length)t.style.display="none";})();</script>';
     // Normalize indentation in existing reports as well as newly generated reports.
     const tocIndentScript = '<script>document.querySelectorAll(".report-toc a[data-level]").forEach(function(a){a.style.paddingLeft=(7+Math.max(0,Number(a.dataset.level)-2)*11)+"px";});</script>';
-    if (html.includes('report-toc')) {
-      reportBlob = new Blob([html.replace('</head>', style + '</head>').replace('</body>', tocIndentScript + '</body>')], { type: 'text/html' });
-    } else {
-      reportBlob = new Blob([html.replace('</head>', style + '</head>').replace('</body>', script + tocIndentScript + '</body>')], { type: 'text/html' });
-    }
+    const styledHtml = insertBeforeReportEnd(html, 'head', style);
+    const scripts = html.includes('report-toc') ? tocIndentScript : script + tocIndentScript;
+    reportBlob = new Blob([insertBeforeReportEnd(styledHtml, 'body', scripts)], { type: 'text/html' });
   }
   return { url: URL.createObjectURL(reportBlob), downloadName };
 }
