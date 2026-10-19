@@ -131,7 +131,7 @@ public class V2SkillConfig {
         return new SkillBypassKeywordService(skillBypassKeywordRepository, routingMetadataRepository);
     }
 
-    /** 全局关键词优先级仓储（表 skill_keyword_priority, 拍板⑧）; 空表 = 排序退化为层深度+name。 */
+    /** 全局关键词优先级仓储(平铺表 skill_keyword_line, docs/202610 行模型方案 v3); 空表 = 排序退化为层深度+name。 */
     @Bean
     public SkillKeywordPriorityRepository skillKeywordPriorityRepository(
             @Qualifier("gaussCustomerDataSource") DataSource dataSource,

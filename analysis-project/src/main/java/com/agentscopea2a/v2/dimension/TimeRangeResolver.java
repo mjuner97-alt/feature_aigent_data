@@ -10,7 +10,7 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
- * 时间范围锚点解析（docs/history/dimension-key-dynamic-dimension-plan.md §6.1）。
+ * 时间范围锚点解析（docs/202610/dimension-key-dynamic-dimension-plan.md §6.1）。
  *
  * <p>提取层产出语义锚点（不是字面量），本类在执行期解析为 [start, end] 闭区间
  * （ISO yyyy-MM-dd，含端点）。解析结果绝不进指纹/缓存——"本周"昨天问和今天问结果不同，

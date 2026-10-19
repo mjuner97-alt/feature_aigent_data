@@ -158,7 +158,7 @@ class DirectSkillExecutorTest {
     }
 
     @Test
-    void missingVersionFilledWithCurrentInBuildVersion() {
+    void missingVersionFilledWithAllCurrentInBuildVersions() {
         when(metadataRepository.findActive()).thenReturn(List.of(
                 meta("dept_skill", "script_a", "{\"dept\":\"deptName\",\"version\":\"versionPlan\"}", "达标率")));
         allowAll("alice");
@@ -171,7 +171,8 @@ class DirectSkillExecutorTest {
 
         DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(QUESTION, "alice", null);
 
-        assertEquals("2026年10月份版本", plan.params().get("version"));
+        // 全量在建版本 (IN 聚合), 只取第一个会漏查其他版本 → 无数据
+        assertEquals(List.of("2026年10月份版本", "2026年11月份版本"), plan.params().get("version"));
     }
 
     @Test
@@ -490,5 +491,205 @@ class DirectSkillExecutorTest {
 
         DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(QUESTION, "alice", null);
         assertEquals(Map.of("dept", "杭州开发一部"), plan.params());
+    }
+
+    // ==================== 缺参反问 (docs/202610/Skill直接执行缺参反问方案.md) ====================
+
+    private static DimensionKeyConfig builtinDeptNameConfig() {
+        return new DimensionKeyConfig(1L, "deptName", "部门", true, List.of(), true, null);
+    }
+
+    @SuppressWarnings("unchecked")
+    private java.util.concurrent.ConcurrentHashMap<String, DirectSkillExecutor.PendingDirectExec> pendingMap(
+            DirectSkillExecutor executor) {
+        try {
+            var field = DirectSkillExecutor.class.getDeclaredField("pending");
+            field.setAccessible(true);
+            return (java.util.concurrent.ConcurrentHashMap<String, DirectSkillExecutor.PendingDirectExec>)
+                    field.get(executor);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Test
+    void missingRequiredInMappingWithSessionKeyReturnsAskPlan() {
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"dept\":\"deptName\",\"version\":\"versionPlan\"}", "达标率")));
+        enableKeyDictionary(builtinDeptNameConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(QUESTION), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true},{\"name\":\"version\",\"required\":true}]"));
+        when(hookProvider.getIfAvailable()).thenReturn(versionPlanHook);
+        when(versionPlanHook.currentVersions()).thenReturn(List.of("2026年10月份版本"));
+
+        DirectSkillExecutor executor = newExecutor(true);
+        DirectSkillExecutor.DirectExecutionPlan plan = executor.plan(QUESTION, "alice", null, "conv-1");
+
+        assertTrue(plan.needsAsk());
+        assertEquals(List.of("部门"), plan.missingAsk());
+        assertEquals("2026年10月份版本", plan.params().get("version"));
+        assertFalse(plan.params().containsKey("dept"));
+        String prompt = DirectSkillExecutor.askPrompt(plan);
+        assertTrue(prompt.contains("dept_skill"));
+        assertTrue(prompt.contains("部门"));
+        assertTrue(prompt.contains("杭州开发一部"));
+        assertEquals(1, pendingMap(executor).size());
+    }
+
+    @Test
+    void missingRequiredOutsideMappingStillFallsBackWithSessionKey() {
+        // dept 必填但不在 param_mapping 内 (语义未知) → 即使有会话键也回退 LLM (口径 1)
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"version\":\"versionPlan\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(QUESTION), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true},{\"name\":\"version\",\"required\":true}]"));
+        when(hookProvider.getIfAvailable()).thenReturn(versionPlanHook);
+        when(versionPlanHook.currentVersions()).thenReturn(List.of("2026年10月份版本"));
+
+        assertNull(newExecutor(true).plan(QUESTION, "alice", null, "conv-1"));
+    }
+
+    @Test
+    void pendingAnswerCompletesExecution() {
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"dept\":\"deptName\",\"version\":\"versionPlan\"}", "达标率")));
+        enableKeyDictionary(builtinDeptNameConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(QUESTION), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(dimensionStateManager.previewState(Mockito.eq("杭州开发二部"), Mockito.isNull())).thenReturn(
+                state(null, List.of("杭州开发二部")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true},{\"name\":\"version\",\"required\":true}]"));
+        when(hookProvider.getIfAvailable()).thenReturn(versionPlanHook);
+        when(versionPlanHook.currentVersions()).thenReturn(List.of("2026年10月份版本"));
+
+        DirectSkillExecutor executor = newExecutor(true);
+        assertTrue(executor.plan(QUESTION, "alice", null, "conv-1").needsAsk());
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                executor.plan("杭州开发二部", "alice", null, "conv-1");
+
+        assertFalse(plan.needsAsk());
+        assertEquals("dept_skill", plan.skillName());
+        assertEquals("script_a", plan.scriptId());
+        assertEquals("杭州开发二部", plan.params().get("dept"));
+        assertEquals("2026年10月份版本", plan.params().get("version"));
+        assertTrue(pendingMap(executor).isEmpty());
+    }
+
+    @Test
+    void pendingAnswerUnparseableDropsPendingAndFallsThrough() {
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"dept\":\"deptName\",\"version\":\"versionPlan\"}", "达标率")));
+        enableKeyDictionary(builtinDeptNameConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(QUESTION), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true},{\"name\":\"version\",\"required\":true}]"));
+        when(hookProvider.getIfAvailable()).thenReturn(versionPlanHook);
+        when(versionPlanHook.currentVersions()).thenReturn(List.of("2026年10月份版本"));
+
+        DirectSkillExecutor executor = newExecutor(true);
+        assertTrue(executor.plan(QUESTION, "alice", null, "conv-1").needsAsk());
+
+        // 回答解析不出部门 → 丢弃 pending 走正常链路 (口径 4)
+        when(dimensionStateManager.previewState(Mockito.eq("帮我写个周报"), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        assertNull(executor.plan("帮我写个周报", "alice", null, "conv-1"));
+        assertTrue(pendingMap(executor).isEmpty());
+    }
+
+    @Test
+    void pendingSecondMissingParameterAsksNextOne() {
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a",
+                        "{\"dept\":\"deptName\",\"gate\":\"qGate\",\"version\":\"versionPlan\"}", "达标率")));
+        enableKeyDictionary(builtinDeptNameConfig(), qGateConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(QUESTION), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(dimensionStateManager.previewState(Mockito.eq("杭州开发二部"), Mockito.isNull())).thenReturn(
+                state(null, List.of("杭州开发二部")));
+        // Q1卡口 的值来自词表扫描 (extraDimensions), preview 不含它
+        when(dimensionStateManager.previewState(Mockito.eq("Q1卡口"), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true},{\"name\":\"gate\",\"required\":true},"
+                        + "{\"name\":\"version\",\"required\":true}]"));
+        when(hookProvider.getIfAvailable()).thenReturn(versionPlanHook);
+        when(versionPlanHook.currentVersions()).thenReturn(List.of("2026年10月份版本"));
+
+        DirectSkillExecutor executor = newExecutor(true);
+        DirectSkillExecutor.DirectExecutionPlan first = executor.plan(QUESTION, "alice", null, "conv-1");
+        assertEquals(List.of("部门"), first.missingAsk());
+
+        DirectSkillExecutor.DirectExecutionPlan second =
+                executor.plan("杭州开发二部", "alice", null, "conv-1");
+        assertTrue(second.needsAsk());
+        assertEquals(List.of("卡口"), second.missingAsk());
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                executor.plan("Q1卡口", "alice", null, "conv-1");
+        assertFalse(plan.needsAsk());
+        assertEquals("杭州开发二部", plan.params().get("dept"));
+        assertEquals("Q1", plan.params().get("gate"));
+        assertEquals("2026年10月份版本", plan.params().get("version"));
+        assertTrue(pendingMap(executor).isEmpty());
+    }
+
+    @Test
+    void pendingTtlExpiryFallsBackToNormalChain() {
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"dept\":\"deptName\",\"version\":\"versionPlan\"}", "达标率")));
+        enableKeyDictionary(builtinDeptNameConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(QUESTION), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(dimensionStateManager.previewState(Mockito.eq("杭州开发二部"), Mockito.isNull())).thenReturn(
+                state(null, List.of("杭州开发二部")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true},{\"name\":\"version\",\"required\":true}]"));
+        when(hookProvider.getIfAvailable()).thenReturn(versionPlanHook);
+        when(versionPlanHook.currentVersions()).thenReturn(List.of("2026年10月份版本"));
+
+        DirectSkillExecutor executor = newExecutor(true);
+        assertTrue(executor.plan(QUESTION, "alice", null, "conv-1").needsAsk());
+
+        var map = pendingMap(executor);
+        map.replaceAll((k, v) -> new DirectSkillExecutor.PendingDirectExec(v.skillName(), v.scriptId(),
+                v.mapping(), v.filledParams(), v.missingKeys(),
+                System.currentTimeMillis() - DirectSkillExecutor.PENDING_TTL_MS - 1));
+
+        // 过期 → 补参回答不再续上; 正常判定链对裸部门名无 skill 命中 → 回退 LLM
+        assertNull(executor.plan("杭州开发二部", "alice", null, "conv-1"));
+        assertTrue(map.isEmpty());
+    }
+
+    @Test
+    void askLabelFallsBackToKeyNameWhenDictionaryUnavailable() {
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"dept\":\"deptName\"}", "达标率")));
+        DimensionKeyConfigRepository keyRepo = mock(DimensionKeyConfigRepository.class);
+        when(keyRepo.findAllEnabled()).thenThrow(new RuntimeException("db down"));
+        when(dimensionKeyRepoProvider.getIfAvailable()).thenReturn(keyRepo);
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(QUESTION), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true}]"));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutor(true).plan(QUESTION, "alice", null, "conv-1");
+
+        assertTrue(plan.needsAsk());
+        assertEquals(List.of("deptName"), plan.missingAsk());
     }
 }

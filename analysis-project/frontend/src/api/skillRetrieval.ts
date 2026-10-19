@@ -55,21 +55,21 @@ export const deleteBypassKeyword = (id: number) =>
 export const reloadBypassKeywords = () =>
   fetch(`${BYPASS_BASE}/reload`, { method: 'POST', headers: headers() }).then(r => parseVoid(r, '刷新快照'));
 
-// ==================== 全局关键词优先级 ====================
+// ==================== 全局关键词优先级 (平铺行模型) ====================
 
-export interface SkillKeywordPriorityRow {
+/** 一行配置: L1 | L2 | L3 词集 (顿号分隔, 格内词彼此等价), 行序即 L2/L3 优先级; L1 无优先级 */
+export interface SkillKeywordPriorityLine {
   id: number | null;
-  level: number;
-  parentKeyword: string;
-  keyword: string;
-  sortOrder: number | null;
+  level1Keywords: string;
+  level2Keywords: string;
+  level3Keywords: string;
 }
 
-/** 全量 (level, sort_order 有序) */
+/** 全量行 (行序有序) */
 export const listKeywordPriorities = () =>
-  fetch(`${PRIORITY_BASE}`, { headers: headers() }).then(r => parse<SkillKeywordPriorityRow[]>(r, '加载关键词优先级'));
+  fetch(`${PRIORITY_BASE}`, { headers: headers() }).then(r => parse<SkillKeywordPriorityLine[]>(r, '加载关键词优先级'));
 
-/** 整表替换保存 (拖曳页全量树提交, 服务端按列表位次生成 sort_order; 行须按 level 升序) */
-export const replaceKeywordPriorities = (rows: SkillKeywordPriorityRow[]) =>
-  fetch(`${PRIORITY_BASE}`, { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(rows) })
-    .then(r => parse<SkillKeywordPriorityRow[]>(r, '保存关键词优先级'));
+/** 整表替换保存 (平铺行全量提交, 服务端按列表位次生成 row_order) */
+export const replaceKeywordPriorities = (lines: SkillKeywordPriorityLine[]) =>
+  fetch(`${PRIORITY_BASE}`, { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(lines) })
+    .then(r => parse<SkillKeywordPriorityLine[]>(r, '保存关键词优先级'));

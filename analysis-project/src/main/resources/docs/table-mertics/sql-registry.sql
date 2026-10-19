@@ -45,8 +45,8 @@ INSERT INTO sql_registry (sql_id, name, description, datasource, sql_template, p
      score_status_2_1 AS "Q2_1打分状态",
      standard_is_2_1 AS "Q2_1是否达标"
    FROM dsqa_dwd_req_item_app_portrait_wide_inf
-   WHERE dev_dept = :dept
-     AND version_plan = :version
+   WHERE dev_dept IN (:dept)
+     AND version_plan IN (:version)
      AND in_date = (SELECT MAX(in_date) FROM dsqa_dwd_req_item_app_portrait_wide_inf)',
   '[
     {"name":"dept","type":"string","required":true,"description":"开发部门, 如 杭州开发二部"},

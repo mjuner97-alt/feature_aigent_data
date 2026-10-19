@@ -1,6 +1,6 @@
 # 维度键字典与动态维度底稿
 
-> 状态：现状已实施（2026-10-13 落地，随 skill-direct-exec-plan.md §9 交付）
+> 状态：现状已实施（2026-10-13 落地，随 skill-direct-exec-plan.md §9 交付）；§6.1 timeRange 已实施（2026-10-14/15）
 > 用途：**后续新增这一块需求的底稿**——先读 §1-§3 现状，再按 §5 改动清单评估波及面；
 > 设计拍板/未做项见 §4，新需求若推翻某条拍板请在 §6 补记。
 > 上游方案：`docs/history/skill-direct-exec-plan.md` §9（原始设计，本文不重复其推导过程）
@@ -18,8 +18,9 @@
 | 值形态 | 单值/多值经状态机 | `Map<key, List<value>>`（`extraDimensions`），多值 = 多 alias 同时命中 |
 
 两轨在 `DirectSkillExecutor.valuesFor()` 汇合：内置键走 switch 命中，动态键走
-`default -> extraction.extraDimensions().getOrDefault(key, List.of())`
-（DirectSkillExecutor.java:313-327）。
+`default -> extraction.extraDimensions().getOrDefault(key, List.of())`，
+timeRange 走裸键锚点透传与 `.start/.end` 后缀特判
+（DirectSkillExecutor.java:513 `valuesFor`）。
 
 ## 2. 配置链路（管理页 → 表 → 快照）
 
@@ -38,15 +39,20 @@
 ## 3. 运行时链路（问题 → 脚本参数）
 
 1. DirectSkillExecutor 命中 skill 直连脚本时（plan()），调
-   `extractExtraDimensions(question)`（DirectSkillExecutor.java:267）：
+   `extractExtraDimensions(question)`（DirectSkillExecutor.java:457）：
    - `repo.findAllEnabled()` 取启用键快照；
    - 跳过 `builtin` 键（内置键走结构化规则，见 §1）；
-   - 逐键逐 alias `question.contains(alias)` → 命中收集 value（去重保序）；
+   - 例外：`timeRange` 保留键走 `TimeRangeExtractor.extract`（L1 绝对区间正则 +
+     L2 词表最长匹配，见 §6.1.3），通用 contains 循环跳过该键；
+   - 其余动态键逐键逐 alias `question.contains(alias)` → 命中收集 value（去重保序）；
    - 产出 `extraDimensions` 塞进 `DimensionExtraction`（record 尾部字段）。
-2. `valuesFor()` 按 param_mapping 的键取值：动态键 → `extraDimensions`；
-   单值 String / 多值 List 由脚本参数 schema 决定。
-3. `activeKeys()`（DirectSkillExecutor.java:299）= 内置 8 键 ∪ 字典启用键，
-   是 param_mapping 下拉与保存期校验的唯一值域来源（`SkillRoutingMetadataAdminService.java:122` 同源读取；
+2. `valuesFor()`（DirectSkillExecutor.java:513）按 param_mapping 的键取值：动态键 → `extraDimensions`；
+   单值 String / 多值 List 由脚本参数 schema 决定；`timeRange.start/.end` 后缀键经
+   `TimeRangeResolver` 解析第一个锚点。
+3. `activeKeys()`（DirectSkillExecutor.java:497，经 `TimeRangeResolver.expandKeys` 追加
+   `.start/.end` 后缀形态）= 内置 8 键 ∪ 字典启用键，
+   是 param_mapping 下拉与保存期校验的唯一值域来源（`SkillRoutingMetadataAdminService.serializeParamMapping`
+   :117-130 同源读取；
    前端 Skill 配置页下拉动态加载，失败回退静态枚举 `DIRECT_EXEC_DIMENSION_KEYS`）。
 4. 动态键必填缺失 → 不传参数 → **回退 LLM**（无缺省来源，内置 version/quarter 的
    "当前在建版本"缺省不适用于动态键，§9.1 拍板）。
@@ -91,7 +97,13 @@
 
 > 新需求在此追加：日期 / 需求描述 / 是否推翻 §4 拍板 / 落地记录。
 
-### 6.1 时间范围维度 `timeRange`（2026-10-14 设计，未实施）
+### 6.1 时间范围维度 `timeRange`（2026-10-14 设计，**已实施 2026-10-14/15**）
+
+> 实施落点：`v2/dimension/TimeRangeExtractor` + `TimeRangeResolver`（含单测）、
+> `DirectSkillExecutor` 提取/取值/值域三处接入、`DimensionKeyConfigRepository.ensureReservedRow`、
+> `DimensionKeyController` 锚点白名单校验、`ResponseCacheMiddleware` 绕过（拍板②）、
+> 前端 `SkillRoutingConfigPage.vue` 下拉透出 `.start/.end`（onMounted 动态加载）。
+> 与设计的差异仅一处：保留行补种语义，见 §6.1.4。
 
 **范围拍板**：本期只做**日历/日期类**范围——本周、前一周、近一周、`X月X日到X月X日` 一类；
 **近 N 个版本 / 近 N 个季度暂缓**（版本/季度→日期区间的取数口径未定，锚点 DSL 预留
@@ -138,7 +150,9 @@ question
 - `dimension_key_config` seed 新增一行 `key=timeRange, label=时间范围, builtin=FALSE`
   （**不做 builtin**：repository `update` 带 `WHERE builtin=FALSE`、管理页内置行全只读，
   而本键词表必须可由管理员扩充「大上周」等；非 builtin 即零页面/仓储改动。
-  ensureTable 补"存在性补 seed"——行被删后重启不复活需明确：**不补**，删=关功能）；
+  **实施修订**：`ensureReservedRow()` 做存在性补种——建表与存量表都探测，**仅当表中完全没有
+  timeRange 行时**才插入（enabled=TRUE）；软删行（enabled=false）视为存在、不复活，
+  「删/停用=关功能」拍板保持成立，补种只兜底"表被手工清空/seed 失败"场景）；
 - `key=timeRange` 加入保留键清单（其他行不得占用，UNIQUE 约束兜底）；
 - 保存期校验（DimensionKeyController/AdminService）：`key=timeRange` 的 aliases.value
   必须匹配锚点白名单正则（`THIS_WEEK|LAST_WEEK|LAST:\d+d|THIS_MONTH|THIS_YEAR`），
@@ -174,18 +188,26 @@ question
 选型：脚本参数是日期字段 → 后缀键（Java 算好，推荐默认）；脚本参数是一个时间范围
 字段且愿意自己解析锚点 → 裸键。
 
-#### 6.1.7 改动清单
+#### 6.1.7 改动清单（已全部落地 2026-10-14/15）
 
-- 新增 `TimeRangeExtractor`（L1 正则 + L2 键内最长匹配）+ `TimeRangeResolver` + 单测；
-- `DirectSkillExecutor`：`extractExtraDimensions` 挂 timeRange 特殊分支（通用 contains
-  循环跳过该键）、`valuesFor` 加 `.start/.end` 后缀特判、`activeKeys` 加后缀形态；
-- `DimensionKeyConfigRepository`：seed 补 timeRange 行 + 保留键清单；
-- `DimensionKeyController`/`SkillRoutingMetadataAdminService`：保存期锚点白名单校验；
-- ResponseCache：timeRange 命中绕过（拍板②，ResponseCacheMiddleware 加
-  DimensionKeyConfigRepository 可选依赖，containsTimeRangePhrase 命中即不读不写）；
-- 前端微改（实施修订）：`SkillRoutingConfigPage.vue` 下拉动态加载后，timeRange 行启用时
-  追加 `timeRange.start/.end` 两个选项（~5 行）；字典接口挂掉时的
-  `DIRECT_EXEC_DIMENSION_KEYS` fallback 枚举不含 timeRange 可接受。
+- ✅ 新增 `v2/dimension/TimeRangeExtractor`（L1 中文/数字区间正则 + L2 键内最长匹配）
+  + `v2/dimension/TimeRangeResolver`（锚点解析/白名单/expandKeys）+ 单测
+  （`TimeRangeExtractorTest` / `TimeRangeResolverTest`）；
+- ✅ `DirectSkillExecutor`：`extractExtraDimensions` 挂 timeRange 特殊分支（通用 contains
+  循环跳过该键）、`valuesFor` 加 `.start/.end` 后缀特判（`timeRangeEdge` 取第一个锚点）、
+  `activeKeys` 经 `expandKeys` 加后缀形态；
+- ✅ `DimensionKeyConfigRepository`：seed 补 timeRange 行（`TIME_RANGE_ALIASES_SEED`）
+  + `ensureReservedRow` 存在性补种（语义见 §6.1.4 实施修订）；
+- ✅ 保存期锚点白名单校验：`DimensionKeyController`（timeRange 行 aliases.value 必须
+  过 `TimeRangeResolver.isValidConfigAnchor`，非法报错）；
+  `SkillRoutingMetadataAdminService.serializeParamMapping` 经 `expandKeys` 校验
+  param_mapping 值域（含 `.start/.end`）；
+- ✅ ResponseCache：timeRange 命中绕过（拍板②，`ResponseCacheMiddleware`
+  加 `DimensionKeyConfigRepository` 可选依赖，`containsTimeRangePhrase` 命中即不读不写，
+  onAgent 入口先于指纹计算判断）；
+- ✅ 前端：`SkillRoutingConfigPage.vue` 下拉动态加载后，timeRange 行启用时追加
+  `timeRange.start/.end` 两个选项；字典接口挂掉时的
+  `DIRECT_EXEC_DIMENSION_KEYS` fallback 枚举不含 timeRange（可接受）。
 
 #### 6.1.8 测试要点
 
@@ -195,7 +217,7 @@ question
    时区固定不受服务器 locale 影响；
 4. 绑定：单值 String、mapping 未配 timeRange 时锚点提取无副作用；
 5. 保存校验：非法锚点拒绝、LAST:3V 暂缓期拒绝；
-6. 存量：393 单测基线不回归（extraDimensions 缺省行为不变）。
+6. 存量：438 单测基线不回归（extraDimensions 缺省行为不变；2026-10-15 全量绿）。
 
 #### 6.1.9 拍板记录（2026-10-14，均取建议默认）
 

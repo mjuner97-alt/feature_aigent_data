@@ -501,11 +501,22 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         if (directSkillExecutor != null) {
             DimensionState previousState = ctx.get("dimensionState", DimensionState.class);
             DirectSkillExecutor.DirectExecutionPlan plan =
-                    directSkillExecutor.plan(text, userId, previousState);
+                    directSkillExecutor.plan(text, userId, previousState, conversationId);
             if (plan != null) {
                 // 正式写维度状态（继承/别名/clarifiedPeer 回填），与 LLM 路径共用;
                 // 只有决定短路后才写，回退路径的解析仍由 DimensionStateMiddleware 独立执行
                 dimensionStateManager.processQuestionInContext(ctx, text);
+                if (plan.needsAsk()) {
+                    // 缺参反问轮 (docs/202610/Skill直接执行缺参反问方案.md): 短路下发反问文本,
+                    // 补参 pending 在 DirectSkillExecutor 内; 下一轮回答由 plan() 消费后执行。
+                    log.info("Direct skill execution missing-params ask (/ai/chat): sessionId={} skill={} missing={}",
+                            conversationId, plan.skillName(), plan.missingAsk());
+                    strategy.sendText(streamCtx, TextPayload.chunk(
+                            DirectSkillExecutor.askPrompt(plan), true));
+                    emitter.complete();
+                    cleanup.run();
+                    return emitter;
+                }
                 log.info("Direct skill execution short-circuit (/ai/chat): sessionId={} skill={} scriptId={}",
                         conversationId, plan.skillName(), plan.scriptId());
                 Mono.fromRunnable(() -> runDirectExecution(streamCtx, strategy, plan, cleanup))

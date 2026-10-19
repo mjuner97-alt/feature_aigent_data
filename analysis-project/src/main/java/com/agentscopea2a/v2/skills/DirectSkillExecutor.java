@@ -47,7 +47,12 @@ import java.util.Set;
  * </ol>
  *
  * <p>拍板口径 (2026/10/13): 候选非空即执行 top-1 (不区分精确/宽泛档); version/quarter
- * 缺失用当前在建版本补默认值, 其他必填缺失回退 LLM; 脚本执行失败直接报错不回退。
+ * 缺失用当前在建版本补默认值; 脚本执行失败直接报错不回退。
+ *
+ * <p>缺参反问 (2026/10/15, docs/202610/Skill直接执行缺参反问方案.md): 必填参数缺失且在
+ * param_mapping 内 (有维度语义) → 反问用户补参 (pending 按 userId:conversationId 存,
+ * 一次只问一个, TTL 5min), 补齐后继续直接执行; 不在 mapping 内 (语义未知) 或调用方未传
+ * 会话键 (3 参旧签名) → 维持回退 LLM。回答解析不出对应维度值 → 丢弃 pending 走正常链路。
  *
  * <p>预览不写状态: {@link #plan} 只读; 是否正式写维度状态 (processQuestionInContext)
  * 由 V2ChatStreamServiceImpl 决定短路后执行, 避免回退 LLM 时状态被解析两次
@@ -160,12 +165,61 @@ public class DirectSkillExecutor {
         }
     }
 
-    /** 直接执行计划; params 已按 param_mapping 填好 (单值 String / 多值 List)。 */
+    /**
+     * 直接执行计划; params 已按 param_mapping 填好 (单值 String / 多值 List)。
+     * missingAsk 非空 = 缺必填参数待反问 (当前只含一个维度键 label, 口径: 一次只问一个),
+     * 调用方短路下发 {@link #askPrompt} 文本; 空 = 正常执行计划。
+     */
     public record DirectExecutionPlan(
             DimensionExtraction extraction,
             String skillName,
             String scriptId,
-            Map<String, Object> params) {}
+            Map<String, Object> params,
+            List<String> missingAsk) {
+
+        public DirectExecutionPlan {
+            missingAsk = missingAsk == null ? List.of() : List.copyOf(missingAsk);
+        }
+
+        /** Legacy 4-arg shape (no missingAsk) for existing call sites/tests. */
+        public DirectExecutionPlan(DimensionExtraction extraction, String skillName,
+                                   String scriptId, Map<String, Object> params) {
+            this(extraction, skillName, scriptId, params, List.of());
+        }
+
+        public boolean needsAsk() { return !missingAsk.isEmpty(); }
+    }
+
+    /** 反问文案 (方案 §4.2): 调用方两链路共用, 集中在这里免漂移; 示例值按维度键 label 给固定提示。 */
+    public static String askPrompt(DirectExecutionPlan plan) {
+        String label = plan.missingAsk().isEmpty() ? "" : plan.missingAsk().get(0);
+        String example = ASK_EXAMPLES.getOrDefault(label, label);
+        return "已匹配技能「" + plan.skillName() + "」，还需要补充：" + label
+                + "。请直接回复，如：" + example;
+    }
+
+    private static final Map<String, String> ASK_EXAMPLES = Map.of(
+            "部门", "杭州开发一部",
+            "组（团队）", "一组",
+            "应用", "xx应用",
+            "产品线", "xx产品线",
+            "需求项", "REQ-1001",
+            "人", "张三");
+
+    /** 缺参反问 pending (方案 §4.1): key=userId:conversationId, TTL 5min, 取值时惰性清理。
+     *  包私有便于单测构造过期条目。 */
+    record PendingDirectExec(String skillName, String scriptId,
+                             Map<String, String> mapping, Map<String, Object> filledParams,
+                             List<String> missingKeys, long createdAt) {}
+
+    private final java.util.concurrent.ConcurrentHashMap<String, PendingDirectExec> pending =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    static final long PENDING_TTL_MS = 5 * 60 * 1000L;
+
+    private static String sessionKey(String userId, String conversationId) {
+        return (userId == null || userId.isBlank() ? "__anon__" : userId) + ":" + conversationId;
+    }
 
     /**
      * 纯判定, 无副作用; null = 不短路, 走 LLM。
@@ -175,6 +229,26 @@ public class DirectSkillExecutor {
      * @param previousState 上一轮维度状态 (调用方从 RuntimeContext 的 dimensionState 键取)
      */
     public DirectExecutionPlan plan(String question, String userId, DimensionState previousState) {
+        // 3 参旧签名: 无会话键 = 不启用 pending, 缺参维持回退 LLM (存量行为不变)
+        return plan(question, userId, previousState, null);
+    }
+
+    /**
+     * 带会话键的判定 (方案 §4.1): conversationId 非空时启用缺参反问 pending。
+     * pending 消费优先于正常判定链 (补参轮不重跑 skill 匹配, skill/scriptId 均来自
+     * pending 原样透传, 首轮已过 canUse)。
+     */
+    public DirectExecutionPlan plan(String question, String userId,
+                                    DimensionState previousState, String conversationId) {
+        if (!enabled || question == null || question.isBlank()) {
+            return null;
+        }
+        if (conversationId != null) {
+            DirectExecutionPlan resumed = consumePending(question, userId, previousState, conversationId);
+            if (resumed != null) {
+                return resumed;
+            }
+        }
         if (!enabled || question == null || question.isBlank()) {
             return null;
         }
@@ -238,24 +312,108 @@ public class DirectSkillExecutor {
             }
             List<String> values = valuesFor(extraction, e.getValue());
             if (values.isEmpty()) {
-                String fallback = defaultTimeValue(e.getValue());
-                if (fallback == null) {
+                List<String> fallback = defaultTimeValues(e.getValue());
+                if (fallback.isEmpty()) {
                     continue;
                 }
-                values = List.of(fallback);
+                values = fallback;
             }
             params.put(param, values.size() == 1 ? values.get(0) : values);
         }
+        // 必填缺失分两类 (2026/10/15 缺参反问方案): 在 param_mapping 内 (有维度语义) →
+        // 反问补参; 不在 mapping 内 (语义未知) 或调用方未传会话键 → 维持回退 LLM
+        List<String> missingKeys = new ArrayList<>();
         for (String req : required) {
-            if (!params.containsKey(req)) {
+            if (params.containsKey(req)) {
+                continue;
+            }
+            String dimKey = mapping.get(req);
+            if (dimKey == null || conversationId == null) {
                 log.info("DirectSkillExecutor: 必填参数 {} 无值 (skill={}, 维度未提及且无默认), 回退 LLM",
                         req, topName);
                 return null;
             }
+            if (!missingKeys.contains(dimKey)) {
+                missingKeys.add(dimKey);
+            }
+        }
+        if (!missingKeys.isEmpty()) {
+            String key = sessionKey(userId, conversationId);
+            pending.put(key, new PendingDirectExec(topName, top.scriptId(), mapping, params,
+                    missingKeys, System.currentTimeMillis()));
+            log.info("DirectSkillExecutor: skill {} 缺必填维度 {} → 反问补参 (pending {})",
+                    topName, missingKeys, key);
+            return new DirectExecutionPlan(extraction, topName, top.scriptId(), params,
+                    List.of(labelFor(missingKeys.get(0))));
         }
         log.info("DirectSkillExecutor: plan hit skill={} scriptId={} params={} extraction={} matched={}",
                 topName, top.scriptId(), params, extraction, extraction.metrics());
         return new DirectExecutionPlan(extraction, topName, top.scriptId(), params);
+    }
+
+    /**
+     * 补参轮: 消费 pending, 用本轮回答解析第一个缺失维度键的值 (previewState 只读 + 词表扫描,
+     * 别名/同义词都在这层消化)。解析不出 → 丢弃 pending 返回 null (口径 4: 用户可能问了别的事);
+     * 还有剩余缺失 → 继续反问下一个 (口径 3); 补齐 → 返回完整执行计划。
+     */
+    private DirectExecutionPlan consumePending(String question, String userId,
+                                               DimensionState previousState, String conversationId) {
+        String key = sessionKey(userId, conversationId);
+        PendingDirectExec p = pending.get(key);
+        if (p == null) {
+            return null;
+        }
+        if (System.currentTimeMillis() - p.createdAt() > PENDING_TTL_MS) {
+            pending.remove(key, p);
+            return null;
+        }
+        DimensionState preview = dimensionStateManager.previewState(question, previousState);
+        DimensionExtraction extraction = extract(preview, List.of(), p.skillName(),
+                extractExtraDimensions(question));
+        String missingKey = p.missingKeys().get(0);
+        List<String> values = valuesFor(extraction, missingKey);
+        if (values.isEmpty()) {
+            log.info("DirectSkillExecutor: 补参回答未解析出 {} (pending {}), 丢弃走正常链路",
+                    missingKey, key);
+            pending.remove(key, p);
+            return null;
+        }
+        Map<String, Object> params = new LinkedHashMap<>(p.filledParams());
+        for (Map.Entry<String, String> e : p.mapping().entrySet()) {
+            if (missingKey.equals(e.getValue())) {
+                params.put(e.getKey(), values.size() == 1 ? values.get(0) : values);
+            }
+        }
+        List<String> remaining = p.missingKeys().subList(1, p.missingKeys().size());
+        if (remaining.isEmpty()) {
+            pending.remove(key, p);
+            log.info("DirectSkillExecutor: plan hit (补参完成) skill={} scriptId={} params={}",
+                    p.skillName(), p.scriptId(), params);
+            return new DirectExecutionPlan(extraction, p.skillName(), p.scriptId(), params);
+        }
+        pending.put(key, new PendingDirectExec(p.skillName(), p.scriptId(), p.mapping(), params,
+                List.copyOf(remaining), System.currentTimeMillis()));
+        log.info("DirectSkillExecutor: 补参 {} 已填, 继续反问 {}", missingKey, remaining.get(0));
+        return new DirectExecutionPlan(extraction, p.skillName(), p.scriptId(), params,
+                List.of(labelFor(remaining.get(0))));
+    }
+
+    /** 维度键 → 中文 label (字典 label 优先, 查不到/字典挂回退键名; timeRange 后缀键剥后缀再查)。 */
+    private String labelFor(String dimKey) {
+        String base = dimKey == null ? "" : dimKey.replaceAll("\\.(start|end)$", "");
+        DimensionKeyConfigRepository repo = dimensionKeyRepoProvider.getIfAvailable();
+        if (repo != null) {
+            try {
+                for (DimensionKeyConfig config : repo.findAllEnabled()) {
+                    if (config.key().equals(base) && config.label() != null && !config.label().isBlank()) {
+                        return config.label();
+                    }
+                }
+            } catch (RuntimeException e) {
+                log.warn("DirectSkillExecutor: 维度键字典读取失败, label 回退键名: {}", e.getMessage());
+            }
+        }
+        return dimKey;
     }
 
     private DimensionExtraction extract(DimensionState state, List<String> metrics, String matchedSkill,
@@ -293,7 +451,7 @@ public class DirectSkillExecutor {
      * alias 命中 → 收集标准值 (去重保序)。仅当前问题提取, 不跨轮继承 (§9.1 拍板)。
      *
      * <p>例外: {@code timeRange} 保留键走时间范围提取 (L1 绝对区间正则 + L2 词表最长匹配),
-     * 值为语义锚点 (docs/history/dimension-key-dynamic-dimension-plan.md §6.1),
+     * 值为语义锚点 (docs/202610/dimension-key-dynamic-dimension-plan.md §6.1),
      * 执行期由 {@code valuesFor} 经 TimeRangeResolver 解析为 start/end。
      */
     private Map<String, List<String>> extractExtraDimensions(String question) {
@@ -389,7 +547,6 @@ public class DirectSkillExecutor {
         return List.of(end ? range[1] : range[0]);
     }
 
-    /** 时间维度缺省补当前在建版本 (拍板); 其他维度无默认 → null。 */
     private List<String> currentVersionsSafe() {
         try {
             VersionPlanKnowledgeHook hook = versionPlanHookProvider.getIfAvailable();
@@ -403,19 +560,22 @@ public class DirectSkillExecutor {
         }
     }
 
-    private String defaultTimeValue(String key) {
+    /** 时间维度缺省补当前在建版本 (拍板): versionPlan/vestQuarter 都补**全量**在建版本列表
+     *  (在建版本可能有多个, 只取第一个会漏查其他版本的行 → 无数据; 脚本侧按 IN 聚合,
+     *  与 LLM 路径注入全部在建版本同语义); 其他维度无默认 → 空列表。 */
+    private List<String> defaultTimeValues(String key) {
         if (!"versionPlan".equals(key) && !"vestQuarter".equals(key)) {
-            return null;
+            return List.of();
         }
         List<String> versions = currentVersionsSafe();
         if (versions.isEmpty()) {
-            return null;
+            return List.of();
         }
         if ("versionPlan".equals(key)) {
-            return versions.get(0);
+            return versions;
         }
         List<String> quarters = VersionPlanKnowledgeHook.deriveQuarters(versions);
-        return quarters.isEmpty() ? null : quarters.get(0);
+        return quarters;
     }
 
     /**
