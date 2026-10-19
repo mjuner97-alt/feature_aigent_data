@@ -80,6 +80,7 @@ function emptyRow(record: SkillTrialRunRecord): SkillTrialResultRow {
     status: null,
     tools: [],
     calls: [],
+    hitSkill: null,
   };
 }
 
@@ -97,6 +98,7 @@ async function loadRow(record: SkillTrialRunRecord): Promise<SkillTrialResultRow
     status: c.status ?? null,
     tools: parsed.tools,
     calls: parsed.calls,
+    hitSkill: hitSkill(parsed.calls, record),
   };
 }
 
@@ -153,6 +155,17 @@ function toolCategory(name: string): SkillTrialToolTiming['category'] {
   if (name === 'script_exec' || name === 'python_exec') return 'python';
   if (name === 'sql_registry' || name === 'sql_registry_exec') return 'script';
   return 'tool';
+}
+
+/**
+ * 是否命中skill:明细中 load_skill_through_path 解析出的 skillId/name 原值,
+ * 与试运行记录的 skillName / skillId(字符串形式)对比,任一相等即命中。
+ */
+function hitSkill(calls: SkillTrialCallTraceRow[], record: SkillTrialRunRecord): boolean {
+  const loadedNames = calls
+    .filter(c => c.systemTool === 'load_skill_through_path')
+    .map(c => c.actualName);
+  return loadedNames.some(v => v === record.skillName || v === String(record.skillId));
 }
 
 /** 聚合条目的展示名:skill 取 skillId/name,router_tool 取 paramsJson.toolId,脚本/SQL 取业务键 */
@@ -343,6 +356,14 @@ watch(() => props.skillId, load);
         <template #default="{ row }">
           <el-tag v-if="row.traceLoaded && row.status" :type="statusTagType(row.status)" size="small">
             {{ statusLabel(row.status) }}
+          </el-tag>
+          <span v-else>—</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="是否命中skill" width="120">
+        <template #default="{ row }">
+          <el-tag v-if="row.traceLoaded && row.hitSkill != null" :type="row.hitSkill ? 'success' : 'info'" size="small">
+            {{ row.hitSkill ? '命中' : '未命中' }}
           </el-tag>
           <span v-else>—</span>
         </template>

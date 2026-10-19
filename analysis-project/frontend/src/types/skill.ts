@@ -213,6 +213,8 @@ export interface SkillTrialResultRow {
   tools: SkillTrialToolTiming[];
   /** 调用明细(按调用顺序逐条,仅四类系统工具,解析自 trace POST_ACTING 事件) */
   calls: SkillTrialCallTraceRow[];
+  /** 是否命中skill:trace 中 load_skill_through_path 解析出的 skillId/name 与本记录 skillId/skillName 对比;trace 缺失为 null */
+  hitSkill: boolean | null;
 }
 
 /** 展开行调用明细行(按调用顺序逐条,解析自 trace POST_ACTING 事件,仅四类系统工具) */
