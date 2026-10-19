@@ -1,10 +1,8 @@
 package com.agentscopea2a.v2.skillManager.notification;
 
 /**
- * 通知发送 SPI。默认由 {@link StubNotificationSender} 提供仅日志实现。
- *
- * <p>接入内部系统时，提供自己的 {@code @Component} 实现本接口即可，
- * 由于 stub 标注了 {@code @ConditionalOnMissingBean}，自定义实现会自动替换 stub。
+ * 通知发送 SPI。默认由 {@link StubNotificationSender} 对接内部 HTTP 邮件网关。
+ * 长任务通过 FlowNotificationDispatcher 控制模拟或真实发送。
  *
  * <p>本接口在通知专用线程被调用；若发送耗时较长，建议实现内部自行异步/超时控制，
  * 避免堆积。实现必须在 HTTP 非 2xx、超时或业务拒绝时抛出异常；正常返回会被记录为 SUCCESS。
@@ -22,4 +20,20 @@ public interface NotificationSender {
      *                triggerType 标识触发来源以便分支处理）
      */
     void send(NotificationPayload payload);
+
+    /** Build the final request once, before persistence; never include authentication headers. */
+    default java.util.Map<String, Object> prepare(NotificationPayload payload) {
+        java.util.Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("title", payload.jobName());
+        body.put("content", payload.content());
+        body.put("toUserList", payload.userIdList() == null ? java.util.List.of() : java.util.List.copyOf(payload.userIdList()));
+        body.put("ccUserList", payload.ccUserIdList() == null ? java.util.List.of() : java.util.List.copyOf(payload.ccUserIdList()));
+        return body;
+    }
+
+    /** Return the gateway response, or null when a legacy adapter provides no receipt. */
+    default String sendPrepared(NotificationPayload payload, java.util.Map<String, Object> request) {
+        send(payload);
+        return null;
+    }
 }

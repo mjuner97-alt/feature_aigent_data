@@ -4,12 +4,12 @@ import com.agentscopea2a.constant.AgentToolConstant;
 import com.agentscopea2a.entity.AiChatRuntimeConfig;
 import com.agentscopea2a.mapper.gauss.AiChatRuntimeConfigMapper;
 import com.agentscopea2a.util.HttpClientUtil;
-import com.agentscopea2a.util.RxyNoticeUtil;
 import com.agentscopea2a.util.SignUtil;
 import com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Value;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -17,12 +17,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * {@link NotificationSender} 默认 stub 实现：仅打印日志，不真正发送。
- *
- * <p>接入内部系统时，提供自己的 {@code @Component} 实现 {@link NotificationSender}，
- * 本 stub 因 {@code @ConditionalOnMissingBean} 自动退让。
+ * Internal HTTP mail gateway adapter (legacy class name retained for compatibility).
  */
-// 接入内部通知系统前先用本 stub：发送仅打日志；提供自定义 @Component 后本 bean 自动退让。
 @Component
 public class StubNotificationSender implements NotificationSender {
     private static final Logger log = LoggerFactory.getLogger(StubNotificationSender.class);
@@ -30,6 +26,10 @@ public class StubNotificationSender implements NotificationSender {
     private static final String APP_KEY = "555147722";
     private static final String DEFAULT_TITLE = "skill job 通知";
     private final AiChatRuntimeConfigMapper runtimeConfigMapper;
+    @Value("${skill.notification.mail.success-codes:0,200}")
+    private String successCodes = "0,200";
+    @Value("${skill.notification.mail.url:}")
+    private String mailUrl;
 
     public StubNotificationSender(AiChatRuntimeConfigMapper runtimeConfigMapper) {
         this.runtimeConfigMapper = runtimeConfigMapper;
@@ -37,7 +37,19 @@ public class StubNotificationSender implements NotificationSender {
 
     @Override
     public void send(NotificationPayload p) {
-        send(p.jobName(), p.content(), p.userIdList(), p.ccUserIdList(), p.notifyContactName(), p.notifyContactPhone());
+        sendPrepared(p, prepare(p));
+    }
+
+    @Override
+    public Map<String, Object> prepare(NotificationPayload payload) {
+        Map<String, Object> request = NotificationSender.super.prepare(payload);
+        request.put("content", getMailContent(payload.content(), payload.notifyContactName(), payload.notifyContactPhone()));
+        return request;
+    }
+
+    @Override
+    public String sendPrepared(NotificationPayload payload, Map<String, Object> request) {
+        return post(request);
     }
 
     public void send(String userId, String content) {
@@ -54,6 +66,15 @@ public class StubNotificationSender implements NotificationSender {
 
     private void send(String title, String content, List<String> userIds, List<String> ccUserIds,
                       String contactName, String contactPhone) {
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("title", title);
+        requestBody.put("content", getMailContent(content, contactName, contactPhone));
+        requestBody.put("toUserList", userIds == null ? List.of() : new ArrayList<>(userIds));
+        requestBody.put("ccUserList", ccUserIds == null ? List.of() : new ArrayList<>(ccUserIds));
+        post(requestBody);
+    }
+
+    private String post(Map<String, Object> requestBody) {
         String timeStamp = String.valueOf(System.currentTimeMillis());
         String sign = new SignUtil().generateSign(timeStamp, timeStamp, APP_KEY, APP_SECRET);
         Map<String, String> requestHeader = new HashMap<>();
@@ -62,20 +83,19 @@ public class StubNotificationSender implements NotificationSender {
         requestHeader.put("x-timestamp", timeStamp);
         requestHeader.put("x-nonce", timeStamp);
         requestHeader.put("x-sign", sign);
-        Map<String, Object> requestBody = new HashMap<>();
-        requestBody.put("title", title);
-        requestBody.put("content", getMailContent(content, contactName, contactPhone));
-        requestBody.put("toUserList", userIds == null ? List.of() : new ArrayList<>(userIds));
-        requestBody.put("ccUserList", ccUserIds == null ? List.of() : new ArrayList<>(ccUserIds));
         try {
             String response = HttpClientUtil.postWithHeaders(
-                    AgentToolConstant.DEFAULT_MAIL_URL, requestBody, requestHeader);
-            log.info("[Notification STUB] sent to {}, response={}", userIds, response);
+                    mailUrl == null || mailUrl.isBlank() ? AgentToolConstant.DEFAULT_MAIL_URL : mailUrl,
+                    requestBody, requestHeader);
+            MailGatewayResponse.requireAccepted(response, successCodes);
+            return response;
+        } catch (MailGatewayResponse.Rejected e) {
+            throw e;
+        } catch (HttpClientUtil.HttpFailure e) {
+            throw new MailGatewayResponse.Rejected(e.getMessage(), e.response());
         } catch (Exception e) {
-            log.warn("[Notification STUB] send failed, falling back to notice", e);
-            if (userIds != null && !userIds.isEmpty() && userIds.get(0) != null) {
-                RxyNoticeUtil.sendNotice(userIds.get(0), "skill job 已经生成, 请去页面查看...");
-            }
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+            throw new IllegalStateException("MailGatewaySendFailed: " + e.getMessage(), e);
         }
     }
 

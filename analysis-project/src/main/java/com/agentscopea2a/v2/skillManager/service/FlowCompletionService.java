@@ -8,6 +8,7 @@ import com.agentscopea2a.v2.skillManager.notification.NotificationPayload;
 import com.agentscopea2a.v2.skillManager.notification.NotificationReceivers;
 import com.agentscopea2a.v2.skillManager.notification.NotificationSender;
 import com.agentscopea2a.v2.skillManager.notification.NotifyBodyTemplate;
+import com.agentscopea2a.v2.skillManager.notification.FlowNotificationDispatcher;
 import com.agentscopea2a.v2.skillManager.report.FlowReportStorage;
 import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
 import com.agentscopea2a.v2.skillManager.report.LongTaskReportRenderer;
@@ -25,7 +26,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 import java.nio.file.Path;
@@ -61,7 +61,12 @@ public class FlowCompletionService {
     private final ObjectMapper json;
     private final LongTaskReportRenderer renderer;
     private final SkillFlowMapper mapper;
-    private final NotificationSender sender;
+    private FlowNotificationDispatcher notificationDispatcher;
+
+    @Autowired
+    public void setNotificationDispatcher(FlowNotificationDispatcher dispatcher) {
+        this.notificationDispatcher = dispatcher;
+    }
     private final MockOrgService orgService;
     private final Clock clock;
     private final FlowSummaryPromptRenderer promptRenderer;
@@ -82,7 +87,6 @@ public class FlowCompletionService {
         this.json = json;
         this.renderer = renderer;
         this.mapper = mapper;
-        this.sender = sender;
         this.orgService = orgService;
         this.clock = skillFlowClock;
         this.promptRenderer = promptRenderer;
@@ -233,28 +237,15 @@ public class FlowCompletionService {
                 .flowExecutionId(execution.getId()).deliveryKey(key)
                 .status(FlowNotificationStatus.PENDING)
                 .recipient(String.join(",", receivers)).channel("DEFAULT")
-                .requestJson(execution.getSummaryJson()).build();
-        try {
-            mapper.insertNotification(record);
-        } catch (DuplicateKeyException ignored) {
-            return;
-        }
-        try {
-            String filePath = resolveReportPath(execution);
-            log.info("Long task notification requested: executionId={}, recipients={}, reportPath={}",
-                    execution.getId(), receivers, execution.getReportPath());
-            sender.send(new NotificationPayload("HTML", notificationHtml(execution, filePath),
-                    filePath, reportFileName(execution),
-                    reportUrl(execution), execution.getFlowId(), FlowReportNaming.datedTitle(execution.getFlowName(), execution), null, null,
-                    execution.getId(), execution.getStatus().name(), LocalDateTime.now(clock),
-                    receivers, "FLOW", ccReceivers, execution.getNotifyContactNameSnapshot(), execution.getNotifyContactPhoneSnapshot()));
-            record.setStatus(FlowNotificationStatus.SENT);
-            record.setSentAt(LocalDateTime.now(clock));
-        } catch (Exception e) {
-            record.setStatus(FlowNotificationStatus.FAILED);
-            record.setErrorMessage(e.getMessage());
-        }
-        mapper.updateNotification(record);
+                .build();
+        String filePath = resolveReportPath(execution);
+        log.info("Long task notification requested: executionId={}, recipients={}, reportPath={}",
+                execution.getId(), receivers, execution.getReportPath());
+        notificationDispatcher.enqueue(record, new NotificationPayload("HTML", notificationHtml(execution, filePath),
+                filePath, reportFileName(execution),
+                reportUrl(execution), execution.getFlowId(), FlowReportNaming.datedTitle(execution.getFlowName(), execution), null, null,
+                execution.getId(), execution.getStatus().name(), LocalDateTime.now(clock),
+                receivers, "FLOW", ccReceivers, execution.getNotifyContactNameSnapshot(), execution.getNotifyContactPhoneSnapshot()));
     }
 
     /**

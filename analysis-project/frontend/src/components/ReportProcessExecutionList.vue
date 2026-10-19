@@ -44,6 +44,7 @@ async function load(status = currentStatus.value, createdBy = props.createdBy, s
     if (!silent) executions.value = [];
   } finally { if (sequence === loadSequence) loading.value = false; }
 }
+function changePage(value: number) { page.value = value; void load(currentStatus.value, currentCreatedBy.value); }
 function showDetail(id: number) { detailId.value = id; detailOpen.value = true; }
 function triggerPerson(item: SkillFlowExecution) {
   const name = item.triggerUserName || userNames.value[item.triggerUserId || ''];
@@ -104,7 +105,7 @@ watch(() => [props.scope, props.createdBy, 'report-template'] as const, () => { 
       </table>
     </div>
     <div v-if="total > pageSize" class="pagination-bar">
-      <el-pagination v-model:current-page="page" :page-size="pageSize" :page-sizes="[10, 20, 50]" :total="total" layout="total, sizes, prev, pager, next" @size-change="(size: number) => { pageSize = size; page = 1; load(currentStatus, currentCreatedBy); }" />
+      <el-pagination v-model:current-page="page" :page-size="pageSize" :page-sizes="[10, 20, 50]" :total="total" layout="total, sizes, prev, pager, next" @current-change="changePage" @size-change="(size: number) => { pageSize = size; page = 1; load(currentStatus, currentCreatedBy); }" />
     </div>
     <ReportProcessExecutionDrawer v-model:open="detailOpen" :execution-id="detailId" :record-label="recordLabel" @changed="() => load(currentStatus, currentCreatedBy, true)" />
   </section>

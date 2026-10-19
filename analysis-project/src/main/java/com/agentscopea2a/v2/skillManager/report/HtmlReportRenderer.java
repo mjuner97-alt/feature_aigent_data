@@ -184,13 +184,6 @@ public class HtmlReportRenderer {
                 background: #eff6ff;
                 color: #2563eb;
             }
-            #report-toc a[data-level="3"] {
-                padding-left: 18px; /* 三级标题比二级标题多缩进一些。 */
-            }
-            #report-toc a:is([data-level="4"], [data-level="5"], [data-level="6"]) {
-                padding-left: 28px; /* 更深层级的目录缩进。 */
-            }
-
             /* Markdown 标题保留原来的字号；完整 HTML 标题使用节点自己的样式。 */
             body[data-report-markdown] :is(h1, h2, h3, h4, h5, h6) {
                 color: #0f172a;
@@ -1080,7 +1073,7 @@ public class HtmlReportRenderer {
         sb.append("</div></div>");
         // 只测量正文高度；不能把 iframe 视口高度算进去，否则每次测量加 2px 会不断撑高。
         if (includeToc) sb.append("<script>(function(){var frames=document.querySelectorAll('[data-report-frame]');function bind(frame){if(frame.__reportHeightBound)return;frame.__reportHeightBound=true;var attempts=0,observer=null;function fit(){try{var doc=frame.contentDocument;if(!doc)return false;var report=doc.getElementById('report');if(!report)return false;var shell=doc.getElementById('report-shell');var body=doc.body;var height=Math.max(report.scrollHeight,report.getBoundingClientRect().height);if(height>0)frame.style.height=Math.ceil(height+2)+'px';if(!observer&&doc.defaultView&&doc.defaultView.ResizeObserver){observer=new doc.defaultView.ResizeObserver(fit);observer.observe(report);if(shell)observer.observe(shell);if(body)observer.observe(body);}return height>0;}catch(e){console.warn('报告子文档高度测量失败',e);return false;}}function retry(){if(fit()||attempts++>=8)return;setTimeout(retry,50*(attempts+1));}frame.addEventListener('load',function(){attempts=0;retry();try{var doc=frame.contentDocument;if(doc&&doc.defaultView)doc.defaultView.addEventListener('load',retry);}catch(e){console.warn('报告子文档加载监听失败',e);}});retry();}for(var i=0;i<frames.length;i++)bind(frames[i]);window.addEventListener('load',function(){for(var i=0;i<frames.length;i++)bind(frames[i]);});})();</script>");
-        if (includeToc) sb.append("<script>(function(){var toc=document.querySelector('.report-toc'),list=toc&&toc.querySelector('.report-toc-list');if(!toc||!list)return;if(list)list.replaceChildren();var heads=document.querySelectorAll('[data-report-outline-heading]');for(var i=0;i<heads.length;i++){var h=heads[i];if(h.classList.contains('report-outline-title')||h.tagName==='H1')continue;var id='report-section-'+i;h.id=id;var a=document.createElement('a');a.href='#'+id;a.dataset.level=h.tagName.substring(1);a.textContent=h.textContent||('章节 '+(i+1));a.title=a.textContent;a.addEventListener('click',function(e){var target=document.getElementById(this.hash.substring(1));if(target){e.preventDefault();target.scrollIntoView({block:'start',behavior:'smooth'});}});list.appendChild(a);}if(!list.children.length)toc.style.display='none';})();</script>");
+        if (includeToc) sb.append("<script>(function(){var toc=document.querySelector('.report-toc'),list=toc&&toc.querySelector('.report-toc-list');if(!toc||!list)return;if(list)list.replaceChildren();var heads=document.querySelectorAll('[data-report-outline-heading]');for(var i=0;i<heads.length;i++){var h=heads[i];if(h.classList.contains('report-outline-title')||h.tagName==='H1')continue;var id='report-section-'+i;h.id=id;var a=document.createElement('a');a.href='#'+id;a.dataset.level=h.tagName.substring(1);a.style.paddingLeft=(7+Math.max(0,Number(a.dataset.level)-2)*11)+'px';a.textContent=h.textContent||('章节 '+(i+1));a.title=a.textContent;a.addEventListener('click',function(e){var target=document.getElementById(this.hash.substring(1));if(target){e.preventDefault();target.scrollIntoView({block:'start',behavior:'smooth'});}});list.appendChild(a);}if(!list.children.length)toc.style.display='none';})();</script>");
         // 表格的滚动属性全部由 REPORT_CSS 决定，不再用 JS 写行内样式覆盖。
         sb.append("<script>(function(){var buttons=document.querySelectorAll('[data-html-fullscreen]');for(var i=0;i<buttons.length;i++){buttons[i].addEventListener('click',function(){var shell=document.getElementById(this.getAttribute('data-html-fullscreen'));if(document.fullscreenElement===shell){document.exitFullscreen();}else if(shell&&shell.requestFullscreen){shell.requestFullscreen();}});}})();</script>");
         // 仅在有图表时内联 echarts.min.js；无图省 1.1MB

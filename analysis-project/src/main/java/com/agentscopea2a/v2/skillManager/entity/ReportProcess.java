@@ -16,6 +16,7 @@ public class ReportProcess {
     private String code;
     private String name;
     private String description;
+    private Integer nodeCount;
     private String nodesJson;
     private String reportOutlineJson;
     private Boolean enabled;

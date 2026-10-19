@@ -8,10 +8,9 @@ import { computed, ref, onMounted, onUnmounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { Download, EditPen, View } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { downloadExecutionFile, listJobs, listExecutionCenter, deleteJob, retryExecution, triggerJob, updateJob, viewExecutionFile } from '../../api/skillJob';
+import { downloadExecutionFile, getExecution, listJobPage, listExecutionCenterPage, deleteJob, retryExecution, triggerJob, updateJob, viewExecutionFile } from '../../api/skillJob';
 import { currentUserId } from '../../api/skill';
-import { listMetrics } from '../../api/skillDependencyMetric';
-import type { SkillJob, SkillJobExecution } from '../../types/skillJob';
+import type { SkillJobSummary, SkillJobExecutionSummary } from '../../types/skillJob';
 import SkillJobExecutionDrawer from '../../components/SkillJobExecutionDrawer.vue';
 import SkillJobNotificationDrawer from '../../components/SkillJobNotificationDrawer.vue';
 import SkillFlowList from '../../components/SkillFlowList.vue';
@@ -20,35 +19,33 @@ import SkillFlowExecutionList from '../../components/SkillFlowExecutionList.vue'
 const me = currentUserId();
 const route = useRoute();
 const router = useRouter();
-function isOwner(job: SkillJob) {
+function isOwner(job: SkillJobSummary) {
   return job.createdBy === me;
 }
 
 // 创建人展示:有姓名时显示"姓名 (userId)",否则仅 userId
-function creatorLabel(job: SkillJob): string {
+function creatorLabel(job: SkillJobSummary): string {
   return job.createdByName ? `${job.createdByName} (${job.createdBy})` : (job.createdBy || '-');
 }
 
-const jobs = ref<SkillJob[]>([]);
+const jobs = ref<SkillJobSummary[]>([]);
 const loading = ref(false);
 const keyword = ref('');
 const enabledFilter = ref<boolean | null>(null);
-const createdBy = ref('');
 // 长任务流程（多 Skill 并行流）：入口已放开
 const showSkillFlow = true;
-const activeTab = ref<'manage' | 'flows' | 'execution' | 'flow-execution'>('manage');
+type JobTab = 'manage' | 'flows' | 'execution' | 'flow-execution';
+const requestedTab = route.query.tab;
+const activeTab = ref<JobTab>(['manage', 'flows', 'execution', 'flow-execution'].includes(String(requestedTab)) ? requestedTab as JobTab : 'manage');
 const visibilityScope = ref<'mine' | 'all'>('mine');
 const scopeCreatedBy = ref('');
 const flowKeyword = ref('');
-const flowCreatedBy = ref('');
-const flowEnabledFilter = ref<boolean | null>(null);
 const flowListRef = ref<InstanceType<typeof SkillFlowList> | null>(null);
 const flowExecutionListRef = ref<InstanceType<typeof SkillFlowExecutionList> | null>(null);
-const centerExecutions = ref<SkillJobExecution[]>([]);
+const centerExecutions = ref<SkillJobExecutionSummary[]>([]);
 const executionLoading = ref(false);
 const executionError = ref('');
 const executionStatusFilter = ref('');
-const executionCreatedBy = ref('');
 const managePage = ref(1);
 const managePageSize = ref(20);
 const executionPage = ref(1);
@@ -57,34 +54,17 @@ const retryingExecutions = ref<Set<number>>(new Set());
 let executionTimer: ReturnType<typeof setInterval> | undefined;
 const effectiveCreatedBy = computed(() => visibilityScope.value === 'mine' ? me : (scopeCreatedBy.value.trim() || undefined));
 
-const pagedJobs = computed(() => {
-  const start = (managePage.value - 1) * managePageSize.value;
-  return jobs.value.slice(start, start + managePageSize.value);
-});
-
-const pagedCenterExecutions = computed(() => {
-  const start = (executionPage.value - 1) * executionPageSize.value;
-  return centerExecutions.value.slice(start, start + executionPageSize.value);
-});
-
-function changeManagePageSize(size: number) {
-  managePageSize.value = size;
-  managePage.value = 1;
-}
-
-function changeExecutionPageSize(size: number) {
-  executionPageSize.value = size;
-  executionPage.value = 1;
-}
-
-watch(() => jobs.value.length, (total) => {
-  const lastPage = Math.max(1, Math.ceil(total / managePageSize.value));
-  if (managePage.value > lastPage) managePage.value = lastPage;
-});
-
-watch(() => centerExecutions.value.length, (total) => {
-  const lastPage = Math.max(1, Math.ceil(total / executionPageSize.value));
-  if (executionPage.value > lastPage) executionPage.value = lastPage;
+const manageTotal = ref(0);
+const executionTotal = ref(0);
+let manageRequest = 0;
+let executionRequest = 0;
+function changeManagePageSize(size: number) { managePageSize.value = size; managePage.value = 1; }
+function changeExecutionPageSize(size: number) { executionPageSize.value = size; executionPage.value = 1; }
+watch([managePage, managePageSize], () => { if (activeTab.value === 'manage') load(); });
+watch([executionPage, executionPageSize], () => { if (activeTab.value === 'execution') loadExecutionCenter(); });
+watch(activeTab, () => {
+  if (activeTab.value === 'manage') load();
+  if (activeTab.value === 'execution') loadExecutionCenter();
 });
 
 // 表单弹窗
@@ -107,20 +87,13 @@ const viewing = ref<Set<number>>(new Set());
 const previewed = ref<Set<number>>(new Set());
 const downloading = ref<Set<number>>(new Set());
 
-// 依赖指标描述缓存 (id -> description), 列表 hover 查看描述
-const metricDescMap = ref<Record<number, string>>({});
-
 // 触发中的 Job
 const triggering = ref<Set<number>>(new Set());
 const triggerMsg = ref('');
 
 onMounted(() => {
-  const requestedTab = route.query.tab;
-  if (requestedTab === 'manage' || requestedTab === 'flows' || requestedTab === 'execution' || requestedTab === 'flow-execution') {
-    activeTab.value = requestedTab;
-  }
-  load();
-  loadExecutionCenter();
+  if (activeTab.value === 'manage') load();
+  if (activeTab.value === 'execution') loadExecutionCenter();
   executionTimer = setInterval(() => {
     if (activeTab.value === 'execution' && centerExecutions.value.some(e => e.status === 'RUNNING' || e.status === 'PENDING')) {
       loadExecutionCenter(true);
@@ -133,25 +106,30 @@ onUnmounted(() => {
 });
 
 async function loadExecutionCenter(silent = false) {
+  if (activeTab.value !== 'execution') return;
+  const request = ++executionRequest;
   if (!silent) executionLoading.value = true;
   executionError.value = '';
   try {
-    centerExecutions.value = await listExecutionCenter(
-      undefined,
-      effectiveCreatedBy.value,
-    );
+    const result = await listExecutionCenterPage({ status: executionStatusFilter.value || undefined,
+      createdBy: effectiveCreatedBy.value, page: executionPage.value, pageSize: executionPageSize.value });
+    if (request !== executionRequest || activeTab.value !== 'execution') return;
+    centerExecutions.value = result.items;
+    executionTotal.value = result.total;
+    const last = Math.max(1, Math.ceil(result.total / executionPageSize.value));
+    if (executionPage.value > last) executionPage.value = last;
   } catch (e) {
+    if (request !== executionRequest) return;
     console.error('加载执行中心失败', e);
     executionError.value = e instanceof Error ? e.message : '加载执行中心失败';
     if (!silent) centerExecutions.value = [];
   } finally {
-    executionLoading.value = false;
+    if (request === executionRequest) executionLoading.value = false;
   }
 }
 
 function openExecutionCenter() {
   activeTab.value = 'execution';
-  loadExecutionCenter();
 }
 
 function filterFlows() {
@@ -167,9 +145,9 @@ function openFlowExecutions() {
 }
 
 function refreshCurrentTab() {
-  if (activeTab.value === 'manage') load();
+  if (activeTab.value === 'manage') filterJobs();
   else if (activeTab.value === 'flows') filterFlows();
-  else if (activeTab.value === 'execution') loadExecutionCenter();
+  else if (activeTab.value === 'execution') filterExecutionCenter();
   else if (activeTab.value === 'flow-execution') flowExecutionListRef.value?.load('', effectiveCreatedBy.value || '', false, visibilityScope.value);
 }
 
@@ -177,8 +155,8 @@ function filterExecutionCenter() {
   if (activeTab.value === 'flow-execution') {
     flowExecutionListRef.value?.load('', effectiveCreatedBy.value || '', false, visibilityScope.value);
   } else {
-    executionPage.value = 1;
-    loadExecutionCenter();
+    if (executionPage.value === 1) loadExecutionCenter();
+    else executionPage.value = 1;
   }
 }
 
@@ -204,17 +182,17 @@ function notificationStatusClass(status?: string | null): string {
   return `nt-${status.toLowerCase()}`;
 }
 
-function executionCreatorLabel(exec: SkillJobExecution): string {
+function executionCreatorLabel(exec: SkillJobExecutionSummary): string {
   return exec.createdByName ? `${exec.createdByName} (${exec.createdBy})` : (exec.createdBy || '-');
 }
 
-function openNotifications(exec: SkillJobExecution) {
+function openNotifications(exec: SkillJobExecutionSummary) {
   notifyExecId.value = exec.id;
   notifyCanResend.value = exec.createdBy === me && exec.status === 'SUCCESS' && !!exec.mdFileExists;
   notifyOpen.value = true;
 }
 
-async function viewCenterReport(exec: SkillJobExecution) {
+async function viewCenterReport(exec: SkillJobExecutionSummary) {
   if (viewing.value.has(exec.id)) return;
   viewing.value.add(exec.id);
   try {
@@ -227,7 +205,7 @@ async function viewCenterReport(exec: SkillJobExecution) {
   }
 }
 
-async function downloadCenterReport(exec: SkillJobExecution) {
+async function downloadCenterReport(exec: SkillJobExecutionSummary) {
   if (downloading.value.has(exec.id)) return;
   downloading.value.add(exec.id);
   try {
@@ -239,18 +217,21 @@ async function downloadCenterReport(exec: SkillJobExecution) {
   }
 }
 
-function editCenterReport(exec: SkillJobExecution) {
+function editCenterReport(exec: SkillJobExecutionSummary) {
   router.push(`/skills/jobs/executions/${exec.id}/report/edit`);
 }
 
-function showExecutionError(exec: SkillJobExecution) {
+async function showExecutionError(row: SkillJobExecutionSummary) {
+  try {
+  const exec = await getExecution(row.id);
   const detail = `状态：${executionStatus(exec.status)}\n开始时间：${fmtTime(exec.startedAt)}\n完成时间：${fmtTime(exec.completedAt)}\n会话 ID：${exec.conversationId || '-'}\n\n错误信息：\n${exec.errorMsg || '暂无错误详情'}`;
   ElMessageBox.alert(detail, `执行 #${exec.id} 错误详情`, {
     confirmButtonText: '关闭', customClass: 'execution-error-dialog',
   });
+  } catch (error) { ElMessage.error(error instanceof Error ? error.message : '加载错误详情失败'); }
 }
 
-async function retryCenterExecution(exec: SkillJobExecution) {
+async function retryCenterExecution(exec: SkillJobExecutionSummary) {
   if (retryingExecutions.value.has(exec.id)) return;
   retryingExecutions.value.add(exec.id);
   try {
@@ -265,28 +246,27 @@ async function retryCenterExecution(exec: SkillJobExecution) {
 }
 
 async function load() {
+  if (activeTab.value !== 'manage') return;
+  const request = ++manageRequest;
   loading.value = true;
   try {
-    jobs.value = await listJobs(undefined, undefined, effectiveCreatedBy.value);
-    // 加载依赖指标描述 (admin 预置只读, 列表 hover 查看描述)
-    try {
-      const metrics = await listMetrics();
-      const descMap: Record<number, string> = {};
-      metrics.forEach(m => { if (m.description) descMap[m.id] = m.description; });
-      metricDescMap.value = descMap;
-    } catch {
-      metricDescMap.value = {};
-    }
+    const result = await listJobPage({ enabled: enabledFilter.value ?? undefined, keyword: keyword.value.trim() || undefined,
+      createdBy: effectiveCreatedBy.value, page: managePage.value, pageSize: managePageSize.value });
+    if (request !== manageRequest || activeTab.value !== 'manage') return;
+    jobs.value = result.items;
+    manageTotal.value = result.total;
+    const last = Math.max(1, Math.ceil(result.total / managePageSize.value));
+    if (managePage.value > last) managePage.value = last;
   } catch (e) {
-    console.error('加载失败', e);
+    if (request === manageRequest) ElMessage.error(e instanceof Error ? e.message : '加载失败');
   } finally {
-    loading.value = false;
+    if (request === manageRequest) loading.value = false;
   }
 }
 
 function filterJobs() {
-  managePage.value = 1;
-  load();
+  if (managePage.value === 1) load();
+  else managePage.value = 1;
 }
 
 function openCreate() {
@@ -297,7 +277,7 @@ function openEdit(id: number) {
   router.push(`/skills/jobs/${id}/edit`);
 }
 
-function openExecutions(job: SkillJob) {
+function openExecutions(job: SkillJobSummary) {
   execJobId.value = job.id;
   execCanDownload.value = isOwner(job);
   execOpen.value = true;
@@ -307,7 +287,7 @@ async function remove(id: number) {
   if (!confirm('确认删除此任务？')) return;
   try {
     await deleteJob(id);
-    jobs.value = jobs.value.filter(j => j.id !== id);
+    await load();
   } catch (e) {
     alert(e instanceof Error ? e.message : '删除失败');
   }
@@ -328,7 +308,7 @@ async function trigger(id: number) {
   }
 }
 
-async function toggleEnabled(job: SkillJob) {
+async function toggleEnabled(job: SkillJobSummary) {
   try {
     await updateJob(job.id, { enabled: !job.enabled });
     job.enabled = !job.enabled;
@@ -343,11 +323,9 @@ function fmtTime(t: string) {
 }
 
 /** 依赖指标单元格 hover title: code + 描述 (若后端已返回/已缓存) */
-function metricTitle(job: SkillJob): string {
+function metricTitle(job: SkillJobSummary): string {
   const parts: string[] = [];
   if (job.metricCode) parts.push(`code: ${job.metricCode}`);
-  const desc = job.metricId ? metricDescMap.value[job.metricId] : '';
-  if (desc) parts.push(desc);
   return parts.join('\n');
 }
 </script>
@@ -363,6 +341,13 @@ function metricTitle(job: SkillJob): string {
         </div>
         <input v-if="visibilityScope === 'all'" v-model="scopeCreatedBy" placeholder="创建人 userId" class="search-input creator-input" @keyup.enter="refreshCurrentTab" />
         <input v-if="activeTab === 'flows'" v-model="flowKeyword" placeholder="搜索流程名称" class="search-input" @keyup.enter="refreshCurrentTab" />
+        <input v-if="activeTab === 'manage'" v-model="keyword" placeholder="搜索任务名称" class="search-input" @keyup.enter="filterJobs" />
+        <select v-if="activeTab === 'manage'" v-model="enabledFilter" class="filter-select" @change="filterJobs">
+          <option :value="null">全部状态</option><option :value="true">启用</option><option :value="false">禁用</option>
+        </select>
+        <select v-if="activeTab === 'execution'" v-model="executionStatusFilter" class="filter-select" @change="filterExecutionCenter">
+          <option value="">全部状态</option><option value="PENDING">排队中</option><option value="RUNNING">运行中</option><option value="SUCCESS">成功</option><option value="FAILED">失败</option><option value="SKIPPED">未执行</option>
+        </select>
         <template v-if="activeTab === 'manage'">
           <button class="btn primary" @click="openCreate">+ 创建任务</button>
         </template>
@@ -390,9 +375,9 @@ function metricTitle(job: SkillJob): string {
       <div v-else-if="centerExecutions.length === 0" class="empty"><p>暂无符合条件的执行记录</p></div>
       <div v-else class="job-table-wrap">
         <table class="job-table execution-table">
-          <thead><tr><th>任务名称</th><th>创建人</th><th>Skill</th><th>触发方式</th><th>执行状态</th><th v-if="false">通知状态</th><th>提交时间</th><th>执行 ID</th><th>操作</th></tr></thead>
+          <thead><tr><th>任务名称</th><th>创建人</th><th>Skill</th><th>触发方式</th><th>执行状态</th><th>提交时间</th><th>执行 ID</th><th>操作</th></tr></thead>
           <tbody>
-            <tr v-for="exec in pagedCenterExecutions" :key="exec.id">
+            <tr v-for="exec in centerExecutions" :key="exec.id">
               <td><span class="col-name">{{ exec.jobName || `任务 #${exec.jobId}` }}</span></td>
               <td class="col-owner execution-owner" :title="executionCreatorLabel(exec)">{{ executionCreatorLabel(exec) }}</td>
               <td>{{ exec.skillName || '-' }}</td>
@@ -401,11 +386,11 @@ function metricTitle(job: SkillJob): string {
                 <span class="status-badge" :class="executionStatusClass(exec.status)">{{ executionStatus(exec.status) }}</span>
                 <span v-if="exec.status === 'PENDING' && exec.queueAhead != null" class="queue-hint">{{ exec.queueAhead === 0 ? '即将执行' : `前面 ${exec.queueAhead} 个` }}</span>
               </td>
-              <td v-if="false"><span class="notify-badge" :class="notificationStatusClass(exec.latestNotificationStatus)">{{ notificationStatus(exec.latestNotificationStatus) }}</span></td>
+              
               <td class="col-time">{{ fmtTime(exec.createdAt) }}</td>
               <td>#{{ exec.id }}</td>
               <td class="col-actions">
-                <button v-if="exec.errorMsg" class="btn-action" @click="showExecutionError(exec)">错误详情</button>
+                <button v-if="exec.hasError" class="btn-action" @click="showExecutionError(exec)">错误详情</button>
                 <button v-if="exec.status === 'FAILED'" class="btn-action trigger" :disabled="exec.createdBy !== me || retryingExecutions.has(exec.id)" :title="exec.createdBy === me ? '重新执行此任务' : '仅任务创建人可重试'" @click="retryCenterExecution(exec)">
                   {{ retryingExecutions.has(exec.id) ? '排队中…' : '重试' }}
                 </button>
@@ -431,7 +416,7 @@ function metricTitle(job: SkillJob): string {
           v-model:current-page="executionPage"
           :page-size="executionPageSize"
           :page-sizes="[10, 20, 50]"
-          :total="centerExecutions.length"
+          :total="executionTotal"
           layout="total, sizes, prev, pager, next, jumper"
           @size-change="changeExecutionPageSize"
         />
@@ -452,7 +437,7 @@ function metricTitle(job: SkillJob): string {
           <th>任务名称</th>
           <th>关联 Skill</th>
           <th>依赖指标</th>
-          <th>提问内容</th>
+          
           <th>状态</th>
           <th>创建人</th>
           <th>创建时间</th>
@@ -460,7 +445,7 @@ function metricTitle(job: SkillJob): string {
         </tr>
       </thead>
       <tbody>
-        <tr v-for="job in pagedJobs" :key="job.id">
+        <tr v-for="job in jobs" :key="job.id">
           <td>
             <span class="col-name selectable" :title="job.name">{{ job.name }}</span>
           </td>
@@ -471,7 +456,7 @@ function metricTitle(job: SkillJob): string {
             </span>
             <span v-else class="muted-cell">未配置</span>
           </td>
-          <td class="col-template selectable" :title="job.questionTemplate">{{ job.questionTemplate || '未配置' }}</td>
+
           <td class="col-status">
             <span class="status-badge" :class="job.enabled ? 'st-on' : 'st-off'">
               {{ job.enabled ? '启用' : '禁用' }}
@@ -503,7 +488,7 @@ function metricTitle(job: SkillJob): string {
         v-model:current-page="managePage"
         :page-size="managePageSize"
         :page-sizes="[10, 20, 50]"
-        :total="jobs.length"
+        :total="manageTotal"
         layout="total, sizes, prev, pager, next, jumper"
         @size-change="changeManagePageSize"
       />

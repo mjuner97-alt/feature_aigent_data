@@ -41,7 +41,7 @@ for (const copy of [false, true]) test(`executor editor ${copy ? 'copy clears gr
   await button(root, '保存流程').props.onClick(); assert.deepEqual(saved[1].executors, []);
 });
 for (const [owner, executors, run, edit] of [['owner', [], true, true], ['someone', ['owner'], true, false], ['someone', [], false, false]]) test(`list permissions owner=${owner} grants=${executors.length}`, async t => {
-  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify([{ ...source, createdBy: owner, executors }])));
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({items:[{ ...source, createdBy: owner, nodeCount:1,metricCount:0,canExecute:run }],page:1,pageSize:20,total:1})));
   const { default: List } = await loadModule(new URL('./SkillFlowList.vue', import.meta.url), { 'vue-router': { useRouter: () => ({ push() {} }) } });
   const { root } = mount(t, List, { scope: 'mine' }); await flush(); await flush();
   assert.equal(!!button(root, '执行'), run); assert.equal(!!button(root, '编辑'), edit); assert.equal(!!button(root, '删除'), edit); assert.equal(!!button(root, '禁用'), edit);

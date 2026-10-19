@@ -41,6 +41,14 @@ public interface SkillJobMapper {
                                 @Param("keyword") String keyword,
                                 @Param("createdBy") String createdBy);
 
+    List<SkillJob> selectJobPage(@Param("enabled") Boolean enabled, @Param("keyword") String keyword,
+            @Param("createdBy") String createdBy, @Param("limit") int limit, @Param("offset") long offset);
+    long countJobs(@Param("enabled") Boolean enabled, @Param("keyword") String keyword, @Param("createdBy") String createdBy);
+    List<SkillJobExecution> selectExecutionCenterPage(@Param("status") String status, @Param("createdBy") String createdBy,
+            @Param("limit") int limit, @Param("offset") long offset);
+    long countExecutionCenter(@Param("status") String status, @Param("createdBy") String createdBy);
+    List<SkillJobExecution> selectInflightQueue();
+
     void updateJobById(SkillJob job);
 
     void deleteJobById(@Param("id") Long id);

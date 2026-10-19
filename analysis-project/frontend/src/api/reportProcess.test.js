@@ -35,3 +35,13 @@ test('retains legacy object parameters when listing templates', async t => {
   const [result] = await api.listReportProcesses();
   assert.deepEqual(result.nodes[0].scriptParams, params);
 });
+
+test('paged report summaries send server filters without restoring definition nodes', async t => {
+  let requested;
+  const body = { items: [{ id: 8, name: 'summary', nodeCount: 3 }], page: 2, pageSize: 10, total: 31 };
+  t.mock.method(globalThis, 'fetch', async url => { requested=String(url); return new Response(JSON.stringify(body)); });
+  assert.deepEqual(await api.listReportProcessPage({scope:'all',keyword:'report',createdBy:'owner',page:2,pageSize:10}), body);
+  const url = new URL(requested, 'http://localhost');
+  assert.equal(url.pathname, '/api/report-processes/page');
+  assert.deepEqual(Object.fromEntries(url.searchParams), {scope:'all',page:'2',pageSize:'10',keyword:'report',createdBy:'owner'});
+});

@@ -178,6 +178,26 @@ public class SkillJobService {
     }
 
     /** 查询详情 */
+    public PageResult<SkillJobSummaryDto> page(Boolean enabled, String keyword, String createdBy, int page, int pageSize) {
+        int current = PageResult.safePage(page), size = PageResult.safeSize(pageSize);
+        List<SkillJob> rows = mapper.selectJobPage(enabled, keyword, createdBy, size, (long) (current - 1) * size);
+        Map<String, String> names = rows.isEmpty() ? Map.of() : mockOrgService.getUserNameMap(rows.stream()
+                .map(SkillJob::getCreatedBy).filter(Objects::nonNull).collect(Collectors.toSet()));
+        return new PageResult<>(rows.stream().map(j -> SkillJobSummaryDto.of(j, names.get(j.getCreatedBy()))).toList(),
+                current, size, mapper.countJobs(enabled, keyword, createdBy));
+    }
+
+    public PageResult<SkillJobExecutionSummaryDto> executionCenterPage(String status, String createdBy, int page, int pageSize) {
+        int current = PageResult.safePage(page), size = PageResult.safeSize(pageSize);
+        List<SkillJobExecution> rows = mapper.selectExecutionCenterPage(status, createdBy, size, (long) (current - 1) * size);
+        Map<String, String> names = rows.isEmpty() ? Map.of() : mockOrgService.getUserNameMap(rows.stream()
+                .map(SkillJobExecution::getCreatedBy).filter(Objects::nonNull).collect(Collectors.toSet()));
+        Map<Long, Integer> ahead = rows.stream().anyMatch(e -> "PENDING".equals(e.getStatus())) ? buildQueueAheadMap(mapper.selectInflightQueue()) : Map.of();
+        return new PageResult<>(rows.stream().map(e -> SkillJobExecutionSummaryDto.of(e,
+                "PENDING".equals(e.getStatus()) ? ahead.getOrDefault(e.getId(), 0) : null, names.get(e.getCreatedBy()))).toList(),
+                current, size, mapper.countExecutionCenter(status, createdBy));
+    }
+
     public SkillJobDto get(Long id) {
         SkillJob job = mapper.selectJobById(id);
         if (job == null) {
@@ -624,7 +644,10 @@ public class SkillJobService {
      * 一次查 inflight + 内存分组计数，避免 N+1。
      */
     private Map<Long, Integer> buildQueueAheadMap() {
-        List<SkillJobExecution> inflight = mapper.selectInflightExecutions();
+        return buildQueueAheadMap(mapper.selectInflightExecutions());
+    }
+
+    private Map<Long, Integer> buildQueueAheadMap(List<SkillJobExecution> inflight) {
         if (inflight.isEmpty()) {
             return Map.of();
         }

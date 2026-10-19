@@ -41,9 +41,17 @@ public final class HttpClientUtil {
         HttpResponse<String> response = CLIENT.send(
                 request.build(), HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            throw new IOException("Notification request failed with HTTP "
-                    + response.statusCode() + ": " + response.body());
+            throw new HttpFailure(response.statusCode(), response.body());
         }
         return response.body();
+    }
+
+    public static final class HttpFailure extends IOException {
+        private final String response;
+        public HttpFailure(int status, String response) {
+            super("Notification request failed with HTTP " + status);
+            this.response = response;
+        }
+        public String response() { return response; }
     }
 }

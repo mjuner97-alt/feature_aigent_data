@@ -5,6 +5,26 @@
      分区:流程定义 → 节点及依赖指标 → 触发词 → 指标就绪 → 流程/节点执行实例
            → 节点调度与租约抢占 → 尝试审计 → 完成通知。 -->
 <mapper namespace="com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper">
+  <resultMap id="FlowSummaryMap" type="com.agentscopea2a.v2.skillManager.dto.SkillFlowSummaryDto">
+    <result column="id" property="id"/>
+    <result column="code" property="code"/>
+    <result column="name" property="name"/>
+    <result column="description" property="description"/>
+    <result column="enabled" property="enabled"/>
+    <result column="chat_public" property="chatPublic"/>
+    <result column="created_by" property="createdBy"/>
+    <result column="created_at" property="createdAt"/>
+    <result column="updated_at" property="updatedAt"/>
+    <result column="can_execute" property="canExecute"/>
+  </resultMap>
+  <resultMap id="FlowMetricSummaryMap" type="com.agentscopea2a.v2.skillManager.dto.FlowMetricSummaryRow">
+    <result column="flow_id" property="flowId"/>
+    <result column="node_id" property="nodeId"/>
+    <result column="override_configured" property="overrideConfigured"/>
+    <result column="default_metric_ids" property="defaultMetricIds"/>
+    <result column="metric_id" property="metricId"/>
+  </resultMap>
+
 
     <!-- ==================== 结果映射:表列 ↔ 实体属性 ==================== -->
 
@@ -324,6 +344,42 @@
         ORDER BY updated_at DESC, id DESC
     </select>
 
+    <sql id="flowPageFilters">
+        WHERE deleted_at IS NULL
+        <if test="ownerUserId != null and ownerUserId != ''">
+            AND (created_by = #{ownerUserId} OR EXISTS (
+                SELECT 1 FROM skill_flow_executor e
+                WHERE e.flow_id = skill_flow.id AND e.user_id = #{ownerUserId}
+            ))
+        </if>
+        <if test="enabled != null">AND enabled = #{enabled}</if>
+        <if test="keyword != null and keyword != ''">
+            AND (LOWER(name) LIKE CONCAT('%', LOWER(#{keyword}), '%')
+            OR LOWER(code) LIKE CONCAT('%', LOWER(#{keyword}), '%'))
+        </if>
+        <if test="createdBy != null and createdBy != ''">AND created_by = #{createdBy}</if>
+    </sql>
+    <select id="countFlowPage" resultType="long">
+        SELECT COUNT(*) FROM skill_flow <include refid="flowPageFilters"/>
+    </select>
+    <select id="selectFlowPage" resultMap="FlowSummaryMap">
+        SELECT id, code, name, description, enabled, chat_public, created_by, created_at, updated_at,
+        (created_by = #{userId} OR EXISTS (SELECT 1 FROM skill_flow_executor e WHERE e.flow_id = skill_flow.id AND e.user_id = #{userId})) AS can_execute
+        FROM skill_flow <include refid="flowPageFilters"/>
+        ORDER BY updated_at DESC, id DESC LIMIT #{limit} OFFSET #{offset}
+    </select>
+    <!-- Page-scoped scalar dependency rows: explicit empty override suppresses defaults. -->
+    <select id="selectPageMetricRows" resultMap="FlowMetricSummaryMap">
+        SELECT n.flow_id, n.id AS node_id, n.metric_override_configured AS override_configured,
+          CASE WHEN TRIM(COALESCE(n.script_id, '')) != '' THEN s.default_metric_ids ELSE k.default_metric_ids END AS default_metric_ids,
+          m.metric_id
+        FROM skill_flow_node n
+        LEFT JOIN script_registry s ON s.script_id = TRIM(n.script_id) AND s.enabled = 1
+        LEFT JOIN skill_manage k ON k.id = n.skill_id
+        LEFT JOIN skill_flow_node_metric m ON m.flow_node_id = n.id
+        WHERE n.flow_id IN <foreach collection="flowIds" item="flowId" open="(" separator="," close=")">#{flowId}</foreach>
+    </select>
+
     <!-- 全量更新流程定义(按 id),软删除的流程不允许再改 -->
     <update id="updateFlow">
         UPDATE skill_flow
@@ -624,22 +680,55 @@
     </select>
 
     <!-- 执行记录管理列表:按触发用户/状态筛选,最多返回最近 500 条,createdBy 参数与 userId 同列过滤 -->
+    <!-- List-only scalar projection; prompts, snapshots, outlines and report bodies belong to detail queries. -->
+    <sql id="executionListColumns">
+        e.id, e.flow_id, e.flow_name, e.flow_code, e.status, e.trigger_type, e.trigger_user_id,
+        e.data_date, e.required_metric_count, e.ready_metric_count, e.report_path,
+        e.created_at, e.started_at, e.completed_at
+    </sql>
+    <sql id="executionListFilters">
+        <if test="userId != null and userId != ''">AND e.trigger_user_id=#{userId}</if>
+        <if test="status != null and status != ''">AND e.status=#{status}</if>
+        <if test="createdBy != null and createdBy != ''">AND e.trigger_user_id=#{createdBy}</if>
+    </sql>
+    <!-- Aggregate only the page's execution IDs, without per-row correlated scans. -->
+    <sql id="executionPageAggregates">
+        , node_stats AS (
+            SELECT n.flow_execution_id, COUNT(*) AS total_node_count,
+                   SUM(CASE WHEN n.status IN ('SUCCESS','FAILED','BLOCKED','CANCELLED') THEN 1 ELSE 0 END) AS completed_node_count
+            FROM skill_flow_node_execution n JOIN execution_page p ON p.id=n.flow_execution_id
+            GROUP BY n.flow_execution_id
+        ), definition_stats AS (
+            SELECT fn.flow_id, COUNT(*) AS total_node_count
+            FROM skill_flow_node fn WHERE fn.flow_id IN (SELECT flow_id FROM execution_page)
+            GROUP BY fn.flow_id
+        ), attempt_stats AS (
+            SELECT n.flow_execution_id,
+                   SUM(EXTRACT(EPOCH FROM (COALESCE(a.completed_at, NOW()) - a.started_at))) AS active_duration_seconds
+            FROM skill_flow_node_attempt a
+            JOIN skill_flow_node_execution n ON n.id=a.node_execution_id
+            JOIN execution_page p ON p.id=n.flow_execution_id
+            WHERE a.started_at IS NOT NULL AND (a.completed_at IS NULL OR a.completed_at &gt;= a.started_at)
+            GROUP BY n.flow_execution_id
+        )
+        SELECT <include refid="executionListColumns"/>,
+               CAST(COALESCE(n.total_node_count, d.total_node_count, 0) AS INTEGER) AS computed_total_node_count,
+               CAST(COALESCE(n.completed_node_count, 0) AS INTEGER) AS computed_completed_node_count,
+               CAST(COALESCE(a.active_duration_seconds, 0) AS BIGINT) AS computed_active_duration_seconds
+        FROM execution_page e
+        LEFT JOIN node_stats n ON n.flow_execution_id=e.id
+        LEFT JOIN definition_stats d ON d.flow_id=e.flow_id
+        LEFT JOIN attempt_stats a ON a.flow_execution_id=e.id
+        ORDER BY e.created_at DESC, e.id DESC
+    </sql>
     <select id="selectExecutions" resultMap="ExecutionMap">
-        SELECT e.*,
-               CAST((SELECT CASE WHEN COUNT(*) > 0 THEN COUNT(*)
-                                 ELSE (SELECT COUNT(*) FROM skill_flow_node fn WHERE fn.flow_id=e.flow_id)
-                            END
-                       FROM skill_flow_node_execution n WHERE n.flow_execution_id=e.id) AS INTEGER) AS computed_total_node_count,
-               CAST((SELECT COUNT(*) FROM skill_flow_node_execution n WHERE n.flow_execution_id=e.id AND n.status IN ('SUCCESS','FAILED','BLOCKED','CANCELLED')) AS INTEGER) AS computed_completed_node_count,
-               CAST(COALESCE((SELECT SUM(EXTRACT(EPOCH FROM (COALESCE(a.completed_at, NOW()) - a.started_at)))
-                  FROM skill_flow_node_attempt a JOIN skill_flow_node_execution n2 ON n2.id=a.node_execution_id
-                 WHERE n2.flow_execution_id=e.id AND a.started_at IS NOT NULL
-                   AND (a.completed_at IS NULL OR a.completed_at >= a.started_at)), 0) AS BIGINT) AS computed_active_duration_seconds
-        FROM skill_flow_execution e WHERE 1=1
-        <if test="userId != null and userId != ''">AND trigger_user_id=#{userId}</if>
-        <if test="status != null and status != ''">AND status=#{status}</if>
-        <if test="createdBy != null and createdBy != ''">AND trigger_user_id=#{createdBy}</if>
-        ORDER BY e.created_at DESC LIMIT #{offset}, #{limit}
+        WITH execution_page AS (
+            SELECT <include refid="executionListColumns"/>
+            FROM skill_flow_execution e WHERE 1=1
+            <include refid="executionListFilters"/>
+            ORDER BY e.created_at DESC, e.id DESC LIMIT #{limit} OFFSET #{offset}
+        )
+        <include refid="executionPageAggregates"/>
     </select>
 
     <select id="countExecutions" resultType="long">
@@ -911,26 +1000,18 @@
     </update>
 
     <select id="selectExecutionsBySource" resultMap="ExecutionMap">
-        SELECT e.*,
-               CAST((SELECT CASE WHEN COUNT(*) > 0 THEN COUNT(*)
-                                 ELSE (SELECT COUNT(*) FROM skill_flow_node fn WHERE fn.flow_id=e.flow_id)
-                            END
-                       FROM skill_flow_node_execution n WHERE n.flow_execution_id=e.id) AS INTEGER) AS computed_total_node_count,
-               CAST((SELECT COUNT(*) FROM skill_flow_node_execution n WHERE n.flow_execution_id=e.id AND n.status IN ('SUCCESS','FAILED','BLOCKED','CANCELLED')) AS INTEGER) AS computed_completed_node_count,
-               CAST(COALESCE((SELECT SUM(EXTRACT(EPOCH FROM (COALESCE(a.completed_at, NOW()) - a.started_at)))
-                  FROM skill_flow_node_attempt a JOIN skill_flow_node_execution n2 ON n2.id=a.node_execution_id
-                 WHERE n2.flow_execution_id=e.id AND a.started_at IS NOT NULL
-                   AND (a.completed_at IS NULL OR a.completed_at >= a.started_at)), 0) AS BIGINT) AS computed_active_duration_seconds
-        FROM skill_flow_execution e WHERE 1=1
-        <if test="userId != null and userId != ''">AND trigger_user_id=#{userId}</if>
-        <if test="status != null and status != ''">AND status=#{status}</if>
-        <if test="createdBy != null and createdBy != ''">AND trigger_user_id=#{createdBy}</if>
-        <choose>
-            <when test="source == 'report-template'">AND flow_id IS NULL AND report_process_id IS NOT NULL</when>
-            <when test="source == 'long-task'">AND flow_id IS NOT NULL</when>
-            <otherwise>AND 1=0</otherwise>
-        </choose>
-        ORDER BY e.created_at DESC LIMIT #{offset}, #{limit}
+        WITH execution_page AS (
+            SELECT <include refid="executionListColumns"/>
+            FROM skill_flow_execution e WHERE 1=1
+            <include refid="executionListFilters"/>
+            <choose>
+                <when test="source == 'report-template'">AND e.flow_id IS NULL AND e.report_process_id IS NOT NULL</when>
+                <when test="source == 'long-task'">AND e.flow_id IS NOT NULL</when>
+                <otherwise>AND 1=0</otherwise>
+            </choose>
+            ORDER BY e.created_at DESC, e.id DESC LIMIT #{limit} OFFSET #{offset}
+        )
+        <include refid="executionPageAggregates"/>
     </select>
 
     <select id="countExecutionsBySource" resultType="long">

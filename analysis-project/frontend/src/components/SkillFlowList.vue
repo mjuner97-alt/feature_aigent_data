@@ -1,24 +1,23 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { deleteSkillFlow, getSkillFlowMetricPrecheck, listSkillFlows, runSkillFlow, setSkillFlowEnabled } from '../api/skillFlow';
+import { deleteSkillFlow, getSkillFlowMetricPrecheck, listSkillFlowPage, runSkillFlow, setSkillFlowEnabled } from '../api/skillFlow';
 import { currentUserId } from '../api/skill';
-import type { SkillFlow, FlowMetricPrecheck } from '../types/skillFlow';
+import type { SkillFlowSummary, FlowMetricPrecheck } from '../types/skillFlow';
 import { manualTriggerMessage } from './skillFlowExecutionPresentation';
-import { flowMetricCount } from '../utils/flowMetrics';
 
 const emit = defineEmits<{ 'view-records': [flowName: string] }>();
 const props = withDefaults(defineProps<{ scope?: 'mine' | 'all'; createdBy?: string }>(), { scope: 'mine', createdBy: '' });
 const me = currentUserId();
 const router = useRouter();
-const flows = ref<SkillFlow[]>([]);
+const flows = ref<SkillFlowSummary[]>([]);
 const currentKeyword = ref('');
 const currentCreatedBy = ref('');
 const currentEnabled = ref<boolean | undefined>();
 const loading = ref(false);
 const error = ref('');
 const metricDialogOpen = ref(false);
-const metricDialogFlow = ref<SkillFlow | null>(null);
+const metricDialogFlow = ref<SkillFlowSummary | null>(null);
 const metricRows = ref<FlowMetricPrecheck[]>([]);
 const metricLoading = ref(false);
 const metricError = ref('');
@@ -27,36 +26,41 @@ const triggerMsg = ref('');
 const page = ref(1);
 const pageSize = ref(20);
 let triggerMsgTimer: ReturnType<typeof setTimeout> | undefined;
-const pagedFlows = computed(() => flows.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value));
+const total = ref(0);
+let loadRequest = 0;
 
 function formatTime(value?: string) { return value ? value.replace('T', ' ').slice(0, 19) : '-'; }
-function enabledStatusClass(flow: SkillFlow) { return flow.enabled ? 'st-on' : 'st-off'; }
-function isOwner(flow: SkillFlow) { return flow.createdBy === me; }
-function canRun(flow: SkillFlow) { return isOwner(flow) || !!flow.executors?.includes(me); }
-function changePageSize(size: number) { pageSize.value = size; page.value = 1; }
+function enabledStatusClass(flow: SkillFlowSummary) { return flow.enabled ? 'st-on' : 'st-off'; }
+function isOwner(flow: SkillFlowSummary) { return flow.createdBy === me; }
+function canRun(flow: SkillFlowSummary) { return flow.canExecute; }
+function changePageSize(size: number) { pageSize.value = size; page.value = 1; void fetchPage(); }
+function changePage(value: number) { page.value = value; void fetchPage(); }
 
 async function load(searchKeyword?: string, createdBy?: string, enabled?: boolean, scope: 'mine' | 'all' = props.scope) {
   if (typeof searchKeyword === 'string') currentKeyword.value = searchKeyword;
   if (typeof createdBy === 'string') currentCreatedBy.value = createdBy;
   currentEnabled.value = enabled;
-  loading.value = true;
-  error.value = '';
-  try { flows.value = await listSkillFlows(currentEnabled.value, currentKeyword.value.trim() || undefined, currentCreatedBy.value.trim() || undefined, scope); page.value = 1; }
-  catch (e) { error.value = e instanceof Error ? e.message : '加载长任务流程失败'; flows.value = []; }
-  finally { loading.value = false; }
+  page.value = 1;
+  await fetchPage(scope);
+}
+async function fetchPage(scope: 'mine' | 'all' = props.scope) {
+ const request=++loadRequest; loading.value=true; error.value='';
+ try { const result=await listSkillFlowPage({enabled:currentEnabled.value,keyword:currentKeyword.value.trim()||undefined,createdBy:currentCreatedBy.value.trim()||undefined,scope,page:page.value,pageSize:pageSize.value});if(request!==loadRequest)return;flows.value=result.items;total.value=result.total;page.value=result.page; if(!result.items.length&&result.total>0&&page.value>1){page.value=Math.max(1,Math.ceil(result.total/pageSize.value));await fetchPage(scope);} }
+ catch(e){if(request!==loadRequest)return;error.value=e instanceof Error?e.message:'加载长任务流程失败';flows.value=[];total.value=0;}
+ finally{if(request===loadRequest)loading.value=false;}
 }
 
 function create() { router.push('/skills/jobs/flows/new'); }
 function edit(id: number) { router.push(`/skills/jobs/flows/${id}/edit`); }
 function copy(id: number) { router.push({ path: '/skills/jobs/flows/new', query: { copyFrom: String(id) } }); }
-function viewRecords(flow: SkillFlow) { emit('view-records', flow.name); }
-async function toggle(flow: SkillFlow) {
+function viewRecords(flow: SkillFlowSummary) { emit('view-records', flow.name); }
+async function toggle(flow: SkillFlowSummary) {
   try { await setSkillFlowEnabled(flow.id, !flow.enabled); flow.enabled = !flow.enabled; }
   catch (e) { alert(e instanceof Error ? e.message : '更新流程状态失败'); }
 }
-async function remove(flow: SkillFlow) {
+async function remove(flow: SkillFlowSummary) {
   if (!confirm(`确认删除流程「${flow.name}」？历史执行记录将保留。`)) return;
-  try { await deleteSkillFlow(flow.id); await load(); }
+  try { await deleteSkillFlow(flow.id); await fetchPage(); }
   catch (e) { alert(e instanceof Error ? e.message : '删除流程失败'); }
 }
 
@@ -66,7 +70,7 @@ function today() {
   const date = new Date();
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
-async function showMetrics(flow: SkillFlow) {
+async function showMetrics(flow: SkillFlowSummary) {
   metricDialogFlow.value = flow; metricDialogOpen.value = true;
   metricLoading.value = true; metricError.value = ''; metricRows.value = [];
   try { metricRows.value = await getSkillFlowMetricPrecheck(flow.id); }
@@ -76,7 +80,7 @@ async function showMetrics(flow: SkillFlow) {
 function metricStatusText(status: string) { return status === 'READY' ? '已就绪' : '未就绪'; }
 
 /** 手动执行:先查指标就绪,有未就绪的弹确认;确认后触发(未就绪时任务挂起等数据)。 */
-async function run(flow: SkillFlow) {
+async function run(flow: SkillFlowSummary) {
   let missing: string[] = [];
   try {
     const metrics = await getSkillFlowMetricPrecheck(flow.id);
@@ -100,7 +104,7 @@ function showTriggerMsg(message: string) {
 }
 
 defineExpose({ load, create });
-onMounted(() => load());
+onMounted(() => load(undefined, props.createdBy));
 watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.value, props.createdBy, undefined, props.scope));
 </script>
 
@@ -124,14 +128,14 @@ watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.v
           </tr>
         </thead>
         <tbody>
-          <tr v-for="flow in pagedFlows" :key="flow.id">
+          <tr v-for="flow in flows" :key="flow.id">
             <td>
               <span class="col-name selectable" :title="flow.name">{{ flow.name }}</span>
               <span v-if="flow.chatPublic" class="public-tag" title="公开流程：所有人的聊天都能触发（由开发人员开通）">公开</span>
               <span v-if="flow.description" class="col-description" :title="flow.description">{{ flow.description }}</span>
             </td>
-            <td>{{ flow.nodes.length }}</td>
-            <td><button class="metric-link" type="button" @click="showMetrics(flow)">{{ flowMetricCount(flow) }}</button></td>
+            <td>{{ flow.nodeCount }}</td>
+            <td><button class="metric-link" type="button" @click="showMetrics(flow)">{{ flow.metricCount }}</button></td>
             <td>
               <span class="status-badge" :class="enabledStatusClass(flow)">{{ flow.enabled ? '启用' : '禁用' }}</span>
             </td>
@@ -166,14 +170,14 @@ watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.v
         </tr></tbody>
       </table>
     </el-dialog>
-    <div v-if="!loading && flows.length > 0" class="pagination-bar">
+    <div v-if="!loading && total > 0" class="pagination-bar">
       <el-pagination
         v-model:current-page="page"
         :page-size="pageSize"
         :page-sizes="[10, 20, 50]"
-        :total="flows.length"
+        :total="total"
         layout="total, sizes, prev, pager, next, jumper"
-        @size-change="changePageSize"
+        @size-change="changePageSize" @current-change="changePage"
       />
     </div>
   </section>

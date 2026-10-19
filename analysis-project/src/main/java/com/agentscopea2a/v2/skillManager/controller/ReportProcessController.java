@@ -17,6 +17,13 @@ public class ReportProcessController {
     @GetMapping
     public List<ReportProcessDto> list(@RequestHeader("X-User-Id") String userId,
                                    @RequestParam(defaultValue = "mine") String scope) { return service.list(userId, scope); }
+    @GetMapping("/page")
+    public com.agentscopea2a.v2.skillManager.dto.PageResult<com.agentscopea2a.v2.skillManager.dto.ReportProcessSummaryDto> page(
+            @RequestHeader("X-User-Id") String userId, @RequestParam(defaultValue = "mine") String scope,
+            @RequestParam(required = false) String keyword, @RequestParam(required = false) String createdBy,
+            @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int pageSize) {
+        return service.page(userId, scope, keyword, createdBy, page, pageSize);
+    }
     @GetMapping("/{id}")
     public ReportProcessDto get(@PathVariable Long id, @RequestHeader("X-User-Id") String userId) { return service.get(id, userId); }
     @PostMapping

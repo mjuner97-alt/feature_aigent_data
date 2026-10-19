@@ -157,6 +157,35 @@ public class FlowDefinitionService {
         return flowMapper.selectFlows(all ? null : userId, enabled, trim(keyword), trim(createdBy)).stream().map(this::toDto).toList();
     }
 
+    public com.agentscopea2a.v2.skillManager.dto.PageResult<com.agentscopea2a.v2.skillManager.dto.SkillFlowSummaryDto> page(
+            String userId, Boolean enabled, String keyword, String createdBy, boolean all, int page, int pageSize) {
+        requireUser(userId);
+        page = com.agentscopea2a.v2.skillManager.dto.PageResult.safePage(page);
+        pageSize = com.agentscopea2a.v2.skillManager.dto.PageResult.safeSize(pageSize);
+        String owner = all ? null : userId;
+        long total = flowMapper.countFlowPage(owner, enabled, trim(keyword), trim(createdBy));
+        var items = flowMapper.selectFlowPage(owner, enabled, trim(keyword), trim(createdBy), userId, (long)(page - 1) * pageSize, pageSize);
+        if (!items.isEmpty()) {
+            var rows = flowMapper.selectPageMetricRows(items.stream().map(com.agentscopea2a.v2.skillManager.dto.SkillFlowSummaryDto::getId).toList());
+            Map<Long, Set<Long>> nodes = new java.util.HashMap<>();
+            Map<Long, Set<Long>> metrics = new java.util.HashMap<>();
+            for (var row : rows) {
+                nodes.computeIfAbsent(row.getFlowId(), ignored -> new HashSet<>()).add(row.getNodeId());
+                var effective = metrics.computeIfAbsent(row.getFlowId(), ignored -> new HashSet<>());
+                if (Boolean.TRUE.equals(row.getOverrideConfigured())) {
+                    if (row.getMetricId() != null && row.getMetricId() > 0) effective.add(row.getMetricId());
+                } else effective.addAll(MetricDependencyIds.parse(row.getDefaultMetricIds()));
+            }
+            boolean validExecutor = orgService != null && orgService.userExists(userId);
+            for (var item : items) {
+                item.setCanExecute(item.isCanExecute() && (userId.equals(item.getCreatedBy()) || validExecutor));
+                item.setNodeCount(nodes.getOrDefault(item.getId(), Set.of()).size());
+                item.setMetricCount(metrics.getOrDefault(item.getId(), Set.of()).size());
+            }
+        }
+        return new com.agentscopea2a.v2.skillManager.dto.PageResult<>(items, page, pageSize, total);
+    }
+
     /** 流程详情。 */
     public SkillFlowDto get(Long id, String userId) {
         return toDto(requireReadable(id, userId));

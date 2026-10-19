@@ -71,6 +71,49 @@
         ORDER BY j.created_at DESC
     </select>
 
+    <sql id="jobPageFilters">
+        <where>
+            <if test="enabled != null">AND j.enabled = #{enabled}</if>
+            <if test="keyword != null and keyword != ''">AND j.name LIKE CONCAT('%', #{keyword}, '%')</if>
+            <if test="createdBy != null and createdBy != ''">AND j.created_by = #{createdBy}</if>
+        </where>
+    </sql>
+    <select id="selectJobPage" resultMap="SkillJobResultMap">
+        SELECT j.id, j.name, j.skill_id, j.enabled, j.metric_id, j.created_by, j.created_at, j.updated_at,
+               m.code AS metric_code, m.name AS metric_name, s.name AS skill_name
+        FROM skill_job j
+        LEFT JOIN skill_dependency_metric m ON m.id = j.metric_id
+        LEFT JOIN skill_manage s ON s.id = j.skill_id
+        <include refid="jobPageFilters"/>
+        ORDER BY j.created_at DESC, j.id DESC LIMIT #{limit} OFFSET #{offset}
+    </select>
+    <select id="countJobs" resultType="long">
+        SELECT COUNT(*) FROM skill_job j <include refid="jobPageFilters"/>
+    </select>
+    <sql id="executionPageFilters">
+        <where>
+            <if test="status != null and status != ''">AND e.status = #{status}</if>
+            <if test="createdBy != null and createdBy != ''">AND j.created_by = #{createdBy}</if>
+        </where>
+    </sql>
+    <select id="selectExecutionCenterPage" resultMap="SkillJobExecutionResultMap">
+        SELECT e.id, e.job_id, e.trigger_type, e.status, e.md_file_exists, e.created_at,
+               CASE WHEN e.error_msg IS NOT NULL AND TRIM(e.error_msg) != '' THEN 'error' ELSE NULL END AS error_msg,
+               j.name AS job_name, s.name AS skill_name, j.created_by
+        FROM skill_job_execution e JOIN skill_job j ON j.id = e.job_id
+        LEFT JOIN skill_manage s ON s.id = j.skill_id
+        <include refid="executionPageFilters"/>
+        ORDER BY e.created_at DESC, e.id DESC LIMIT #{limit} OFFSET #{offset}
+    </select>
+    <select id="countExecutionCenter" resultType="long">
+        SELECT COUNT(*) FROM skill_job_execution e JOIN skill_job j ON j.id = e.job_id
+        <include refid="executionPageFilters"/>
+    </select>
+    <select id="selectInflightQueue" resultMap="SkillJobExecutionResultMap">
+        SELECT id, trigger_type, status FROM skill_job_execution
+        WHERE status IN ('PENDING', 'RUNNING') ORDER BY id
+    </select>
+
     <update id="updateJobById" parameterType="com.agentscopea2a.v2.skillManager.entity.SkillJob">
         UPDATE skill_job
         SET name=#{name}, skill_id=#{skillId}, question_template=#{questionTemplate},

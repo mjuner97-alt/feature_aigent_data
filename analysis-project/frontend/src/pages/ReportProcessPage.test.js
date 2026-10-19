@@ -34,6 +34,10 @@ function mount() {
   app.mount(root);
   return { root, app };
 }
+function reportResponse(url, row) {
+  if(String(url).includes('/page?')) { const {nodes,reportOutline,...summary}=row||{};return new Response(JSON.stringify({items:row?[{...summary,nodeCount:nodes.length}]:[],page:1,pageSize:20,total:row?1:0})); }
+  return new Response(JSON.stringify(row));
+}
 const button = (root, label) => find(root, node => node.type === 'button' && text(node) === label);
 const input = (root, placeholder) => find(root, node => node.type === 'input' && node.props.placeholder === placeholder);
 
@@ -53,7 +57,8 @@ test('copy preserves page-configured dynamic parameters without requesting any l
     if (url === '/api/script-registry') return new Response(JSON.stringify([{ id: 7, scriptId: 'demo', name: '脚本', enabled: 1 }]));
     if (url === '/api/script-registry/get?id=7') return new Response(JSON.stringify({ paramsSchema: '[{"name":"period","type":"string"}]' }));
     if (options?.method === 'POST') { saved = JSON.parse(options.body); return new Response(JSON.stringify({ ...saved, id: 3 })); }
-    if (String(url).startsWith('/api/report-processes')) return new Response(JSON.stringify([original]));
+    if (String(url).startsWith('/api/report-processes')) return reportResponse(url,original);
+    if(String(url).startsWith('/api/report-processes/page'))return reportResponse(url);
     return new Response('[]');
   });
   const { root, app } = mount(); t.after(() => app.unmount()); await flush(); await flush();
@@ -71,7 +76,7 @@ test('report records live inside the report page and request only template execu
   const urls = [];
   t.mock.method(globalThis, 'fetch', async url => {
     urls.push(String(url));
-    return new Response(String(url).startsWith('/api/skill-flow-executions') ? JSON.stringify({items:[],total:0}) : '[]');
+    return new Response(String(url).startsWith('/api/skill-flow-executions') ? JSON.stringify({items:[],total:0}) : JSON.stringify({items:[],page:1,pageSize:20,total:0}));
   });
   const {root,app}=mount();t.after(()=>app.unmount());await flush();
   assert.ok(button(root,'报告流程'));
@@ -92,6 +97,7 @@ test('template editor preserves parameters typed while schema loads and prevents
     if (url === '/api/script-registry') return new Response(JSON.stringify([{ id: 7, scriptId: 'demo', name: '示例脚本', enabled: 1 }]));
     if (url === '/api/script-param-rules') return new Response(JSON.stringify([{ ruleKey: 'current_quarter', ruleName: '当前季度', valueType: 'single' }]));
     if (options?.method === 'POST') { saved = JSON.parse(options.body); return new Response(JSON.stringify({ ...saved, id: 1 })); }
+    if(String(url).startsWith('/api/report-processes/page'))return reportResponse(url);
     return new Response('[]');
   });
   const { root, app } = mount();
@@ -141,7 +147,7 @@ test('editing an old template submits displayed defaults and preserves page-conf
       saved = { ...original, ...JSON.parse(options.body) };
       return new Response(JSON.stringify(saved));
     }
-    if (url.startsWith('/api/report-processes')) return new Response(JSON.stringify([saved || original]));
+    if (url.startsWith('/api/report-processes')) return reportResponse(url,saved || original);
     return new Response('{}');
   });
   const { root, app } = mount();
@@ -193,7 +199,7 @@ test('late initial schema response cannot add old script parameters after switch
     if (url === '/api/script-registry/get?id=8') return new Response(JSON.stringify({ paramsSchema: '[{"name":"new_period","type":"string","default":"new"}]' }));
     if (url === '/api/script-param-rules') return new Response('[]');
     if (options?.method === 'PUT') { saved = { ...original, ...JSON.parse(options.body) }; return new Response(JSON.stringify(saved)); }
-    if (url.startsWith('/api/report-processes')) return new Response(JSON.stringify([original]));
+    if (url.startsWith('/api/report-processes')) return reportResponse(url,original);
     return new Response('{}');
   });
   const { root, app } = mount();
@@ -229,7 +235,7 @@ test('four complete months configured in a dialog survive template save, reopen 
       saved = { ...original, ...JSON.parse(options.body) };
       return new Response(JSON.stringify(saved));
     }
-    if (url.startsWith('/api/report-processes')) return new Response(JSON.stringify([saved || original]));
+    if (url.startsWith('/api/report-processes')) return reportResponse(url,saved || original);
     return new Response('{}');
   });
   const { root, app } = mount();
@@ -266,4 +272,38 @@ test('four complete months configured in a dialog survive template save, reopen 
   await button(root, '保存').props.onClick();
   assert.equal(saved.name, '月报模板-副本');
   assert.deepEqual(JSON.parse(saved.nodes[0].scriptParamsJson), expected);
+});
+
+test('templates request server pages and filters, hydrate only opened details, and leave hidden tab idle', async t => {
+  const urls=[];
+  const original={id:9,name:'分页模板',createdBy:'test-user',enabled:true,nodes:[],reportOutline:{title:'完整目录',items:[]}};
+  t.mock.method(globalThis,'fetch',async url=>{
+    urls.push(String(url));
+    if(String(url).startsWith('/api/report-processes/page')){
+      const query=new URLSearchParams(String(url).split('?')[1]);
+      return new Response(JSON.stringify({items:[{id:9,name:original.name,createdBy:'test-user',enabled:true,nodeCount:0}],page:Number(query.get('page')),pageSize:Number(query.get('pageSize')),total:53}));
+    }
+    if(url==='/api/report-processes/9')return new Response(JSON.stringify(original));
+    if(String(url).startsWith('/api/skill-flow-executions'))return new Response(JSON.stringify({items:[],page:1,pageSize:20,total:0}));
+    return new Response('[]');
+  });
+  const {root,app}=mount();t.after(()=>app.unmount());await flush();await flush();
+  assert.equal(urls.filter(url=>url.startsWith('/api/report-processes/page')).length,1);
+  assert.equal(urls.some(url=>url.startsWith('/api/script-registry')||url.startsWith('/api/skill-flow-executions')||url==='/api/report-processes/9'),false);
+  let pager=find(root,node=>node.props.total===53);
+  assert.ok(pager);
+  pager.props.onCurrentChange(2);await flush();
+  assert.ok(urls.some(url=>url.includes('page=2')));
+  pager=find(root,node=>node.props.total===53);pager.props.onSizeChange(10);await flush();
+  assert.ok(urls.some(url=>url.includes('page=1')&&url.includes('pageSize=10')));
+  input(root,'搜索名称 / 编码').props['onUpdate:modelValue']('季度');await flush();
+  assert.equal(new URLSearchParams(urls.filter(url=>url.startsWith('/api/report-processes/page')).at(-1).split('?')[1]).get('keyword'),'季度');
+  await button(root,'查看').props.onClick();await flush();
+  assert.ok(urls.includes('/api/report-processes/9'));
+  assert.equal(urls.some(url=>url.startsWith('/api/script-registry')),false);
+  button(root,'流程报告记录').props.onClick();await flush();
+  const count=urls.filter(url=>url.startsWith('/api/report-processes/page')).length;
+  const scopeControl=find(root,node=>node.props.modelValue==='mine'&&node.props['onUpdate:modelValue']);
+  scopeControl.props['onUpdate:modelValue']('all');await flush();
+  assert.equal(urls.filter(url=>url.startsWith('/api/report-processes/page')).length,count);
 });

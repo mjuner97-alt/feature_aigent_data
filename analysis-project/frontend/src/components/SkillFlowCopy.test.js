@@ -33,7 +33,7 @@ function sourceFlow() {
 
 test('long task list allows copying a readable flow without owner-only actions', async t => {
   const navigations = [];
-  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify([sourceFlow()])));
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({items:[{...sourceFlow(),nodeCount:1,metricCount:1,canExecute:false}],page:1,pageSize:20,total:1})));
   const { default: List } = await loadModule(new URL('./SkillFlowList.vue', import.meta.url), {
     'vue-router': { useRouter: () => ({ push: route => navigations.push(route) }) },
   });
@@ -50,7 +50,9 @@ test('long task list allows copying a readable flow without owner-only actions',
 test('new-flow page passes copy source to the editor without treating it as an edit', async t => {
   const source = sourceFlow();
   let requested = false;
+  const urls = [];
   t.mock.method(globalThis, 'fetch', async url => {
+    urls.push(String(url));
     if (String(url) === '/api/skill-flows/7') { requested = true; return new Response(JSON.stringify(source)); }
     return new Response('[]');
   });
@@ -60,6 +62,7 @@ test('new-flow page passes copy source to the editor without treating it as an e
   });
   const { root, app } = mount(Page); t.after(() => app.unmount()); await flush(); await flush();
   assert.ok(requested, 'copy source must be loaded through the readable detail API');
+  assert.equal(urls.some(url => url.startsWith('/api/skill-flows?')), false, 'editor must not prefetch all definitions');
   assert.match(text(root), /复制长任务流程/);
   assert.equal(input(root, '如 每日质量综合分析').value, '月报-副本');
 });

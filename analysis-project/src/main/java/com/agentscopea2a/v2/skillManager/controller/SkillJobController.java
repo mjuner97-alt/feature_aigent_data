@@ -8,6 +8,9 @@ import com.agentscopea2a.v2.skillManager.dto.NotifySettingsUpdateRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillDependencyMetricDto;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobCreateRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobDto;
+import com.agentscopea2a.v2.skillManager.dto.PageResult;
+import com.agentscopea2a.v2.skillManager.dto.SkillJobSummaryDto;
+import com.agentscopea2a.v2.skillManager.dto.SkillJobExecutionSummaryDto;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobExecutionDto;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobNotificationDto;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobReportUpdateRequest;
@@ -65,6 +68,25 @@ public class SkillJobController {
                                   @RequestParam(name = "keyword", required = false) String keyword,
                                   @RequestParam(name="createdBy",required = false) String createdBy) {
         return service.list(enabled, keyword, createdBy);
+    }
+
+    @GetMapping("/page")
+    public PageResult<SkillJobSummaryDto> page(
+            @RequestParam(name = "enabled", required = false) Boolean enabled,
+            @RequestParam(name = "keyword", required = false) String keyword,
+            @RequestParam(name = "createdBy", required = false) String createdBy,
+            @RequestParam(name = "page", defaultValue = "1") int page,
+            @RequestParam(name = "pageSize", defaultValue = "20") int pageSize) {
+        return service.page(enabled, keyword, createdBy, page, pageSize);
+    }
+
+    @GetMapping("/executions/page")
+    public PageResult<SkillJobExecutionSummaryDto> executionCenterPage(
+            @RequestParam(name = "status", required = false) String status,
+            @RequestParam(name = "createdBy", required = false) String createdBy,
+            @RequestParam(name = "page", defaultValue = "1") int page,
+            @RequestParam(name = "pageSize", defaultValue = "20") int pageSize) {
+        return service.executionCenterPage(status, createdBy, page, pageSize);
     }
 
     @GetMapping("/{id}")

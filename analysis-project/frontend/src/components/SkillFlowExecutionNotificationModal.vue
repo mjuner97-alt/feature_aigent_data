@@ -31,7 +31,7 @@ async function send() {
   sending.value = true; error.value = '';
   try {
     await resendSkillFlowExecutionNotification(props.executionId, selected.value.map(item => item.userId));
-    successMessage.value = '发送成功';
+    successMessage.value = '通知已提交，请在任务详情查看结果';
     if (successTimer) clearTimeout(successTimer);
     successTimer = setTimeout(() => { successMessage.value = ''; }, 3000);
     emit('sent');

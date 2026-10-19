@@ -41,6 +41,17 @@ public class ReportProcessService {
         return mapper.selectAllVisible(userId, "mine".equalsIgnoreCase(scope)).stream().map(this::toDto).toList();
     }
 
+    public com.agentscopea2a.v2.skillManager.dto.PageResult<com.agentscopea2a.v2.skillManager.dto.ReportProcessSummaryDto> page(String userId, String scope, String keyword, String createdBy, int page, int pageSize) {
+        requireUser(userId);
+        page = com.agentscopea2a.v2.skillManager.dto.PageResult.safePage(page);
+        pageSize = com.agentscopea2a.v2.skillManager.dto.PageResult.safeSize(pageSize);
+        scope = scope == null ? "mine" : scope.toLowerCase(Locale.ROOT);
+        keyword = keyword == null ? null : keyword.trim();
+        createdBy = createdBy == null ? null : createdBy.trim();
+        long total = mapper.countPage(userId, scope, keyword, createdBy);
+        return new com.agentscopea2a.v2.skillManager.dto.PageResult<>(mapper.selectPage(userId, scope, keyword, createdBy, (long)(page - 1) * pageSize, pageSize), page, pageSize, total);
+    }
+
     public ReportProcessDto get(Long id, String userId) {
         ReportProcess flow = requireVisible(id, userId);
         return toDto(flow);
@@ -54,7 +65,7 @@ public class ReportProcessService {
         String code = normalizeCode(request.code(), request.name());
         if (mapper.selectByName(request.name().trim()) != null) throw new IllegalStateException("ReportProcessNameConflict: 报告流程名称已存在");
         ReportProcess flow = ReportProcess.builder().code(code).name(request.name().trim()).description(request.description())
-                .nodesJson(writeCanonicalNodes(request.nodes())).reportOutlineJson(write(request.reportOutline()))
+                .nodeCount(request.nodes().size()).nodesJson(writeCanonicalNodes(request.nodes())).reportOutlineJson(write(request.reportOutline()))
                 .enabled(Boolean.TRUE.equals(request.enabled())).createdBy(userId).build();
         mapper.insert(flow);
         return toDto(flow);
@@ -66,7 +77,7 @@ public class ReportProcessService {
         ReportProcess flow = requireOwner(id, userId);
         ensureNameAvailable(request.name(), id);
         flow.setCode(normalizeCode(request.code(), request.name())); flow.setName(request.name().trim());
-        flow.setDescription(request.description()); flow.setNodesJson(writeCanonicalNodes(request.nodes()));
+        flow.setDescription(request.description()); flow.setNodeCount(request.nodes().size()); flow.setNodesJson(writeCanonicalNodes(request.nodes()));
         flow.setReportOutlineJson(write(request.reportOutline())); flow.setEnabled(Boolean.TRUE.equals(request.enabled()));
         mapper.update(flow); return toDto(flow);
     }
@@ -77,7 +88,7 @@ public class ReportProcessService {
         ReportProcess source = requireVisible(id, userId); ensureNameAvailable(request.name(), null);
         validateJson(source.getNodesJson(), source.getReportOutlineJson());
         ReportProcess copy = ReportProcess.builder().code(normalizeCode(null, request.name())).name(request.name().trim())
-                .description(source.getDescription()).nodesJson(canonicalStoredNodes(source.getNodesJson())).reportOutlineJson(source.getReportOutlineJson())
+                .description(source.getDescription()).nodeCount(countStoredNodes(source.getNodesJson())).nodesJson(canonicalStoredNodes(source.getNodesJson())).reportOutlineJson(source.getReportOutlineJson())
                 .enabled(false).copiedFromId(source.getId()).copiedFromName(source.getName()).createdBy(userId).build();
         mapper.insert(copy); return toDto(copy);
     }
@@ -156,6 +167,11 @@ public class ReportProcessService {
             }
         }
         return write(copy);
+    }
+
+    private int countStoredNodes(String json) {
+        try { return objectMapper.readTree(json).size(); }
+        catch (JsonProcessingException e) { throw new IllegalStateException("ReportProcessDataInvalid", e); }
     }
 
     private String canonicalStoredNodes(String nodesJson) {

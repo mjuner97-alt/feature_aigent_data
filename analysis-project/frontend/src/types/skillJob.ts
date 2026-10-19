@@ -132,3 +132,7 @@ export interface MetricTriggerBatch {
   total: number;
   results: MetricTriggerItem[];
 }
+
+/** Lightweight rows never contain editable templates or report content. */
+export type SkillJobSummary = Pick<SkillJob, 'id' | 'name' | 'skillId' | 'skillName' | 'enabled' | 'metricId' | 'metricCode' | 'metricName' | 'createdBy' | 'createdByName' | 'createdAt' | 'updatedAt'>;
+export type SkillJobExecutionSummary = Pick<SkillJobExecution, 'id' | 'jobId' | 'triggerType' | 'status' | 'mdFileExists' | 'createdAt' | 'queueAhead' | 'jobName' | 'skillName' | 'createdBy' | 'createdByName'> & { hasError: boolean };

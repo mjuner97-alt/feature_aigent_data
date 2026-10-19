@@ -1,3 +1,5 @@
+import type { SkillJobSummary, SkillJobExecutionSummary } from '../types/skillJob';
+interface PageResult<T> { items: T[]; page: number; pageSize: number; total: number; }
 import type { SkillJob, SkillJobInput, SkillJobUpdateInput, SkillJobExecution, SkillJobNotification } from '../types/skillJob';
 import type { NotifySettings, NotifySettingsUpdateInput } from '../types/notifySettings';
 import { apiErrorDetail } from '../utils/apiError';
@@ -225,4 +227,19 @@ export async function viewExecutionFile(execId: number): Promise<void> {
   const url = URL.createObjectURL(blob);
   window.open(url, '_blank');
   setTimeout(() => URL.revokeObjectURL(url), 3 * 60 * 1000);
+}
+
+export async function listJobPage(filters: { enabled?: boolean; keyword?: string; createdBy?: string; page?: number; pageSize?: number } = {}): Promise<PageResult<SkillJobSummary>> {
+  const qs = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => { if (value != null && value !== '') qs.set(key, String(value)); });
+  const res = await fetch(`${BASE}/page?${qs}`, { headers: authHeaders() });
+  if (!res.ok) throw await jobError(res, '查询失败');
+  return res.json();
+}
+export async function listExecutionCenterPage(filters: { status?: string; createdBy?: string; page?: number; pageSize?: number } = {}): Promise<PageResult<SkillJobExecutionSummary>> {
+  const qs = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => { if (value != null && value !== '') qs.set(key, String(value)); });
+  const res = await fetch(`${BASE}/executions/page?${qs}`, { headers: authHeaders() });
+  if (!res.ok) throw await jobError(res, '查询执行中心失败');
+  return res.json();
 }

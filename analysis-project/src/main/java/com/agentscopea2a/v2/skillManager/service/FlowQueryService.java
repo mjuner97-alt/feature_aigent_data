@@ -67,10 +67,10 @@ public class FlowQueryService {
             throw new IllegalArgumentException("Invalid execution source");
         int safePage = Math.max(1, page), safeSize = Math.min(100, Math.max(1, pageSize));
         String scopedUser = all ? null : userId;
-        List<ExecutionDto> items = (source == null
+        List<ExecutionListDto> items = (source == null
                 ? mapper.selectExecutions(status, createdBy, scopedUser, (safePage - 1) * safeSize, safeSize)
                 : mapper.selectExecutionsBySource(status, createdBy, scopedUser, (safePage - 1) * safeSize, safeSize, source))
-                .stream().map(this::dto).toList();
+                .stream().map(this::listDto).toList();
         long total = source == null ? mapper.countExecutions(status, createdBy, scopedUser)
                 : mapper.countExecutionsBySource(status, createdBy, scopedUser, source);
         return new PageDto(items, safePage, safeSize, total);
@@ -233,6 +233,15 @@ public class FlowQueryService {
                 e.getCreatedAt(), e.getStartedAt(), e.getCompletedAt(), e.getActiveDurationSeconds());
     }
 
+    private ExecutionListDto listDto(SkillFlowExecution e) {
+        return new ExecutionListDto(e.getId(), e.getFlowId(), e.getFlowName(), e.getFlowCode(),
+                e.getStatus().name(), e.getTriggerType() == null ? null : e.getTriggerType().name(),
+                e.getTriggerUserId(), e.getDataDate(), e.getRequiredMetricCount(), e.getReadyMetricCount(),
+                e.getTotalNodeCount() == null ? 0 : e.getTotalNodeCount(),
+                e.getCompletedNodeCount() == null ? 0 : e.getCompletedNodeCount(),
+                e.getReportPath(), e.getCreatedAt(), e.getStartedAt(), e.getCompletedAt(), e.getActiveDurationSeconds());
+    }
+
     /**
      * 实际汇总提问:优先取落库值(汇总阶段渲染持久化);
      * 老数据没有落库值时,终态执行按节点结果现场重渲染一次,变量缺失等渲染失败返回 null。
@@ -305,7 +314,13 @@ public class FlowQueryService {
                                Object summaryJson, String reportPath,
                                LocalDateTime createdAt, LocalDateTime startedAt, LocalDateTime completedAt,
                                Long activeDurationSeconds) {}
-    public record PageDto(List<ExecutionDto> items, int page, int pageSize, long total) {}
+    public record ExecutionListDto(Long id, Long flowId, String flowName, String flowCode, String status,
+                                   String triggerType, String triggerUserId, LocalDate dataDate,
+                                   Integer requiredMetricCount, Integer readyMetricCount,
+                                   Integer totalNodeCount, Integer completedNodeCount, String reportPath,
+                                   LocalDateTime createdAt, LocalDateTime startedAt, LocalDateTime completedAt,
+                                   Long activeDurationSeconds) {}
+    public record PageDto(List<ExecutionListDto> items, int page, int pageSize, long total) {}
 
     /** 节点执行明细返回体(attempts 为每次尝试的审计记录;节点全并行,无依赖)。 */
     public record NodeDto(Long id, String nodeKey, String nodeName, String skillName, String questionTemplateSnapshot,

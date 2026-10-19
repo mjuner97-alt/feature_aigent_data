@@ -16,6 +16,40 @@ const { default: ReportDrawer } = await loadModule(new URL('./ReportProcessExecu
 globalThis.localStorage = { getItem: () => 'u1' };
 async function flush() { await new Promise(resolve => setImmediate(resolve)); await Vue.nextTick(); }
 
+test('terminal execution still polls to discover a notification inserted just after completion', async t => {
+  let polls = 0;
+  t.mock.method(globalThis, 'setInterval', () => { polls++; return 123; });
+  t.mock.method(globalThis, 'clearInterval', () => {});
+  t.mock.method(globalThis, 'fetch', async url => new Response(
+    /\/(nodes|metrics|notifications)$/.test(String(url)) ? '[]' : JSON.stringify({ id: 42, status: 'SUCCESS' })));
+  let drawer;
+  const open = Vue.ref(false);
+  const app = renderer.createApp({ render: () => Vue.h(LongTaskDrawer, { ref: value => { drawer = value; }, open: open.value, executionId: 42 }) });
+  app.mount(container()); t.after(() => app.unmount());
+  open.value = true; await Vue.nextTick(); await flush(); await flush();
+  assert.ok(drawer);
+  assert.equal(polls, 1);
+});
+
+test('running polls do not consume the terminal notification discovery grace period', async t => {
+  let tick;
+  let stops = 0;
+  let status = 'RUNNING';
+  t.mock.method(globalThis, 'setInterval', callback => { tick = callback; return 123; });
+  t.mock.method(globalThis, 'clearInterval', () => { stops++; });
+  t.mock.method(globalThis, 'fetch', async url => new Response(
+    /\/(nodes|metrics|notifications)$/.test(String(url)) ? '[]' : JSON.stringify({ id: 42, status })));
+  const open = Vue.ref(false);
+  const app = renderer.createApp({ render: () => Vue.h(LongTaskDrawer, { open: open.value, executionId: 42 }) });
+  app.mount(container()); t.after(() => app.unmount());
+  open.value = true; await Vue.nextTick(); await flush(); await flush();
+  for (let i = 0; i < 7; i++) { tick(); await flush(); await flush(); }
+  status = 'SUCCESS'; tick(); await flush(); await flush();
+  assert.equal(stops, 0);
+  for (let i = 0; i < 6; i++) { tick(); await flush(); await flush(); }
+  assert.equal(stops, 1);
+});
+
 for (const [recordLabel, Drawer] of [['长任务', LongTaskDrawer], ['流程报告', ReportDrawer]]) {
   test(`${recordLabel} detail derives progress from loaded node statuses and refreshes after retry`, async t => {
     let statuses = ['SUCCESS', 'FAILED', 'BLOCKED', 'CANCELLED', 'RUNNING', 'QUEUED', 'PENDING', 'RETRY_WAIT'];

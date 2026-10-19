@@ -7,6 +7,8 @@ import java.util.List;
 
 @Mapper
 public interface ReportProcessMapper {
+    List<com.agentscopea2a.v2.skillManager.dto.ReportProcessSummaryDto> selectPage(@Param("userId") String userId, @Param("scope") String scope, @Param("keyword") String keyword, @Param("createdBy") String createdBy, @Param("offset") long offset, @Param("limit") int limit);
+    long countPage(@Param("userId") String userId, @Param("scope") String scope, @Param("keyword") String keyword, @Param("createdBy") String createdBy);
     ReportProcess selectByCode(@Param("code") String code);
     List<ReportProcess> selectAllVisible(@Param("userId") String userId, @Param("mineOnly") boolean mineOnly);
     List<ReportProcess> selectAllForBrowse();

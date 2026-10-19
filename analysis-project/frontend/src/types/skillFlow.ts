@@ -152,6 +152,14 @@ export interface SkillFlowNodeExecution {
 
 export interface SkillFlowNotification {
   id?: number;
+  flowExecutionId?: number;
+  channel?: string;
+  recipient?: string;
+  requestJson?: string | null;
+  responseJson?: string | null;
+  reportUrl?: string | null;
+  sentAt?: string | null;
+  updatedAt?: string | null;
   status: string;
   requestType?: string;
   recipientSummary?: string;
@@ -206,3 +214,5 @@ export interface SkillFlowRunResult {
   created: boolean;
   status: string;
 }
+
+export interface SkillFlowSummary { id:number; code?:string; name:string; description?:string; enabled:boolean; chatPublic?:boolean; createdBy?:string; createdAt?:string; updatedAt?:string; nodeCount:number; metricCount:number; canExecute:boolean }

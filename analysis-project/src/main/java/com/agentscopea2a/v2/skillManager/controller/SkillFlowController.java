@@ -69,6 +69,15 @@ public class SkillFlowController {
         return definitionService.list(userId, enabled, keyword, createdBy, "all".equalsIgnoreCase(scope));
     }
 
+    @GetMapping("/api/skill-flows/page")
+    public com.agentscopea2a.v2.skillManager.dto.PageResult<com.agentscopea2a.v2.skillManager.dto.SkillFlowSummaryDto> page(
+            @RequestHeader("X-User-Id") String userId,
+            @RequestParam(required = false) Boolean enabled, @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String createdBy, @RequestParam(defaultValue = "mine") String scope,
+            @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int pageSize) {
+        return definitionService.page(userId, enabled, keyword, createdBy, "all".equalsIgnoreCase(scope), page, pageSize);
+    }
+
     /** 流程详情可跨用户查看；写操作由服务层单独校验创建人。 */
     @GetMapping("/api/skill-flows/{id}")
     public SkillFlowDto getFlow(@PathVariable(name = "id") Long id,

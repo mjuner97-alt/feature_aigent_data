@@ -1,4 +1,4 @@
-import type { ReportProcess, ReportProcessInput, ReportProcessNode } from '../types/reportProcess';
+import type { ReportProcessSummary, ReportProcess, ReportProcessInput, ReportProcessNode } from '../types/reportProcess';
 const base='/api/report-processes';
 const headers=()=>({'X-User-Id':localStorage.getItem('skill-user-id')||'demo-user'});
 const jsonHeaders=()=>({...headers(),'Content-Type':'application/json'});
@@ -26,3 +26,11 @@ export async function copyReportProcess(id:number,name:string){return restore(aw
 export async function setReportProcessEnabled(id:number,enabled:boolean){return restore(await parse<ReportProcess>(await fetch(`${base}/${id}/enabled`,{method:'PUT',headers:jsonHeaders(),body:JSON.stringify({enabled})}),'更新报告流程状态失败'))}
 export async function deleteReportProcess(id:number){return parse<void>(await fetch(`${base}/${id}`,{method:'DELETE',headers:headers()}),'删除报告流程失败')}
 
+
+export async function listReportProcessPage(options: { scope?:'mine'|'all'; keyword?:string; createdBy?:string; page?:number; pageSize?:number }={}):Promise<{items:ReportProcessSummary[];page:number;pageSize:number;total:number}> {
+ const qs=new URLSearchParams({scope:options.scope||'mine',page:String(options.page??1),pageSize:String(options.pageSize??20)});
+ if(options.keyword)qs.set('keyword',options.keyword);
+ if(options.createdBy)qs.set('createdBy',options.createdBy);
+ const res=await fetch(`${base}/page?${qs}`,{headers:headers()});
+ return parse(res,'查询报告流程失败');
+}

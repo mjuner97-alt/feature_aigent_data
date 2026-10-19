@@ -29,6 +29,9 @@ import java.util.List;
 @Mapper
 public interface SkillFlowMapper {
 
+    List<com.agentscopea2a.v2.skillManager.dto.SkillFlowSummaryDto> selectFlowPage(@Param("ownerUserId") String ownerUserId, @Param("enabled") Boolean enabled, @Param("keyword") String keyword, @Param("createdBy") String createdBy, @Param("userId") String userId, @Param("offset") long offset, @Param("limit") int limit);
+    long countFlowPage(@Param("ownerUserId") String ownerUserId, @Param("enabled") Boolean enabled, @Param("keyword") String keyword, @Param("createdBy") String createdBy);
+    List<com.agentscopea2a.v2.skillManager.dto.FlowMetricSummaryRow> selectPageMetricRows(@Param("flowIds") List<Long> flowIds);
     // ==================== 流程定义 ====================
 
     /** 新建流程:写入编码/名称/任务问题/汇总模板/排程星期/并发数/通知开关,回填自增 id。 */
