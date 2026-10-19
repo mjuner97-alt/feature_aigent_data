@@ -212,27 +212,42 @@ public class FlowCompletionService {
     }
 
     public void resend(SkillFlowExecution execution, List<String> confirmedReceivers) {
+        resend(execution, confirmedReceivers, null);
+    }
+
+    public void resend(SkillFlowExecution execution, List<String> confirmedReceivers, List<String> confirmedCcReceivers) {
         if (!execution.getStatus().terminal()
                 || execution.getStatus() == FlowExecutionStatus.CANCELLED) {
             throw new IllegalStateException("FlowNotificationResendUnavailable: " + execution.getId());
         }
-        send(execution, "flow:" + execution.getId() + ":RESEND:" + UUID.randomUUID(), confirmedReceivers);
+        send(execution, "flow:" + execution.getId() + ":RESEND:" + UUID.randomUUID(), confirmedReceivers, confirmedCcReceivers);
     }
 
     /** 落通知记录 -> 真正发送 -> 回写结果状态;deliveryKey 重复(首次已发过)则直接跳过。 */
     private void send(SkillFlowExecution execution, String key) {
-        send(execution, key, null);
+        send(execution, key, null, null);
     }
 
-    private void send(SkillFlowExecution execution, String key, List<String> confirmedReceivers) {
-        // 收件人:执行时快照的名单 + 触发类型范围;命中范围且名单非空则整名单一次批量发送,
-        // 否则维持原语义发触发人(triggerUserId 已按触发类型快照:CHAT/MANUAL=触发人,AUTO_METRIC=流程创建人)。
-        List<String> receivers = confirmedReceivers == null || confirmedReceivers.isEmpty()
-                ? receiversFor(execution) : NotificationReceivers.withFallback(
-                        orgService.filterExistingUserIds(confirmedReceivers), execution.getTriggerUserId());
-        List<String> ccReceivers = confirmedReceivers == null && inRecipientScope(execution)
-                ? orgService.filterExistingUserIds(NotificationReceivers.parse(execution.getCcReceiversSnapshot()))
-                    .stream().filter(id -> !receivers.contains(id)).toList() : List.of();
+    private void send(SkillFlowExecution execution, String key, List<String> confirmedReceivers,
+                      List<String> confirmedCcReceivers) {
+        boolean explicit = confirmedReceivers != null || confirmedCcReceivers != null;
+        List<String> receivers;
+        List<String> ccReceivers;
+        if (explicit) {
+            receivers = orgService.filterExistingUserIds(
+                    NotificationReceivers.parse(NotificationReceivers.toCsv(confirmedReceivers)));
+            if (receivers.isEmpty()) {
+                throw new IllegalArgumentException("NotificationRecipientsRequired: 请至少选择一个有效收件人");
+            }
+            ccReceivers = orgService.filterExistingUserIds(
+                    NotificationReceivers.parse(NotificationReceivers.toCsv(confirmedCcReceivers)));
+        } else {
+            receivers = receiversFor(execution);
+            ccReceivers = inRecipientScope(execution)
+                    ? orgService.filterExistingUserIds(NotificationReceivers.parse(execution.getCcReceiversSnapshot()))
+                    : List.of();
+        }
+        ccReceivers = ccReceivers.stream().filter(id -> !receivers.contains(id)).toList();
         SkillFlowNotification record = SkillFlowNotification.builder()
                 .flowExecutionId(execution.getId()).deliveryKey(key)
                 .status(FlowNotificationStatus.PENDING)

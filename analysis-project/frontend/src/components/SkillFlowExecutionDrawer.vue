@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
 import FlowNotificationHistory from './FlowNotificationHistory.vue';
+import SkillFlowExecutionNotificationModal from './SkillFlowExecutionNotificationModal.vue';
 import { useRouter } from 'vue-router';
 import { ElMessageBox } from 'element-plus';
-import { getSkillFlowExecution, getSkillFlowExecutionMetrics, getSkillFlowExecutionNodes, getSkillFlowExecutionNotifications, getSkillFlowExecutionReportUrl, getSkillFlowNodeReportUrl, resendSkillFlowExecutionNotification, retrySkillFlowSummary, retrySkillFlowNode, retrySkillFlowFailedNodes, cancelSkillFlowExecution } from '../api/skillFlow';
+import { getSkillFlowExecution, getSkillFlowExecutionMetrics, getSkillFlowExecutionNodes, getSkillFlowExecutionNotifications, getSkillFlowExecutionReportUrl, getSkillFlowNodeReportUrl, retrySkillFlowSummary, retrySkillFlowNode, retrySkillFlowFailedNodes, cancelSkillFlowExecution } from '../api/skillFlow';
 import type { SkillFlowExecution, SkillFlowNodeExecution } from '../types/skillFlow';
 import { currentUserId } from '../api/skill';
 import { canRetryNode, formatNodeErrorDetails, shouldShowMetricReadiness, shouldShowNodeTimes, statusClass, statusText } from './skillFlowExecutionPresentation';
@@ -14,7 +15,7 @@ const router = useRouter();
 const execution = ref<SkillFlowExecution | null>(null);
 const loading = ref(false);
 const error = ref('');
-const resending = ref(false);
+const notificationOpen = ref(false);
 const retrying = ref<string | null>(null);
 const cancelling = ref(false);
 const isOwner = computed(() => execution.value?.triggerUserId === currentUserId());
@@ -108,29 +109,7 @@ async function load(silent = false) {
   } catch (e) { if (!silent) { error.value = e instanceof Error ? e.message : '加载执行详情失败'; execution.value = null; } }
   finally { if (!silent) loading.value = false; }
 }
-async function resend() {
-  if (!props.executionId) return;
-  const previous = localStorage.getItem('skill-flow-interactive-receivers')
-    || execution.value?.notifications?.find(n => n.recipientSummary)?.recipientSummary
-    || execution.value?.triggerUserId || '';
-  let input = '';
-  try {
-    const result = await ElMessageBox.prompt('请确认本次收件人。可修改名单，确认后才会发送。', '确认发送通知', {
-      inputValue: previous, confirmButtonText: '确认发送', cancelButtonText: '取消', inputPlaceholder: '输入统一认证号，多个用逗号分隔',
-    });
-    input = result.value;
-  } catch { return; }
-  const notifyReceivers = [...new Set(input.split(/[,;，；\s]+/).map(v => v.trim()).filter(Boolean))];
-  if (!notifyReceivers.length) { error.value = '请至少保留一个收件人'; return; }
-  resending.value = true;
-  try {
-    await resendSkillFlowExecutionNotification(props.executionId, notifyReceivers);
-    localStorage.setItem('skill-flow-interactive-receivers', notifyReceivers.join(','));
-    await load(); emit('changed');
-  }
-  catch (e) { error.value = e instanceof Error ? e.message : '补发通知失败'; }
-  finally { resending.value = false; }
-}
+async function notificationSent() { await load(true); emit('changed'); }
 async function retrySummary() { if (!props.executionId) return; retrying.value = 'summary'; summaryActionError.value = ''; try { await retrySkillFlowSummary(props.executionId); await load(); emit('changed'); } catch (e) { summaryActionError.value = e instanceof Error ? e.message : '重新生成汇总失败'; } finally { retrying.value = null; } }
 async function retryNode(node: SkillFlowNodeExecution) { if (!props.executionId || !node.id) return; retrying.value = `node-${node.id}`; try { await retrySkillFlowNode(props.executionId, node.id); node.errorMessage = null; node.errorCode = null; await load(); emit('changed'); } catch (e) { error.value = e instanceof Error ? e.message : '重跑任务失败'; } finally { retrying.value = null; } }
 async function retryFailedNodes() { if (!props.executionId) return; retrying.value = 'failed-nodes'; try { await retrySkillFlowFailedNodes(props.executionId); await load(); emit('changed'); } catch (e) { error.value = e instanceof Error ? e.message : '批量重跑失败任务失败'; } finally { retrying.value = null; } }
@@ -165,7 +144,8 @@ function syncPolling() {
   }, 5000);
   if (!active) stopPolling();
 }
-watch(() => props.open, open => { if (open) { emptyNotificationPolls = 0; load(); } else { stopPolling(); } });
+watch(() => props.open, open => { if (open) { emptyNotificationPolls = 0; load(); } else { notificationOpen.value = false; stopPolling(); } });
+watch(() => props.executionId, () => { notificationOpen.value = false; });
 watch(execution, syncPolling);
 onUnmounted(stopPolling);
 </script>
@@ -179,7 +159,7 @@ onUnmounted(stopPolling);
           <div v-if="loading" class="empty">加载中…</div>
           <div v-else-if="error" class="error">{{ error }}</div>
           <template v-else-if="execution">
-            <section class="summary"><div><span>状态</span><strong class="status" :class="statusClass(execution.status)">{{ statusText(execution.status) }}</strong><button v-if="cancellable" class="btn-link cancel-action" :disabled="cancelling" @click="cancelExecution">{{ cancelling ? '终止中…' : '终止任务' }}</button><button v-if="isOwner && execution.reportPath && ['SUCCESS', 'PARTIAL_SUCCESS', 'FAILED'].includes(execution.status)" class="btn-link" :disabled="resending" @click="resend">{{ resending ? '发送中…' : '发送通知' }}</button></div><div v-if="shouldShowMetricReadiness(execution.triggerType)"><span>指标</span><strong>{{ execution.readyMetricCount }} / {{ execution.requiredMetricCount }} 已就绪</strong></div><div><span>节点</span><strong>{{ execution.completedNodeCount ?? 0 }} / {{ execution.totalNodeCount ?? execution.nodes?.length ?? 0 }} 已完成</strong></div></section>
+            <section class="summary"><div><span>状态</span><strong class="status" :class="statusClass(execution.status)">{{ statusText(execution.status) }}</strong><button v-if="cancellable" class="btn-link cancel-action" :disabled="cancelling" @click="cancelExecution">{{ cancelling ? '终止中…' : '终止任务' }}</button><button v-if="isOwner && execution.reportPath && ['SUCCESS', 'PARTIAL_SUCCESS', 'FAILED'].includes(execution.status)" class="btn-link" @click="notificationOpen = true">发送通知</button></div><div v-if="shouldShowMetricReadiness(execution.triggerType)"><span>指标</span><strong>{{ execution.readyMetricCount }} / {{ execution.requiredMetricCount }} 已就绪</strong></div><div><span>节点</span><strong>{{ execution.completedNodeCount ?? 0 }} / {{ execution.totalNodeCount ?? execution.nodes?.length ?? 0 }} 已完成</strong></div></section>
             <section v-if="shouldShowMetricReadiness(execution.triggerType)"><h4>指标门闩</h4><p class="caption">已就绪 {{ readyMetrics.length }} 项，待处理或已过期 {{ waitingMetrics.length }} 项</p><div class="metric-list"><div v-for="metric in execution.metrics" :key="`${metric.metricId}-${metric.metricCode}`" class="metric-row"><span class="metric-status" :class="metric.status === 'READY' ? 'ready' : 'waiting'">{{ metric.status === 'READY' ? '已就绪' : metric.status === 'EXPIRED' ? '已过期' : '未就绪' }}</span><div><strong>{{ metric.metricCode || metric.metricName || '未知指标' }}</strong><span>{{ metric.metricName }}</span></div><span>{{ formatTime(metric.readyAt) }}</span><span>影响 {{ listText(metric.affectedSkills) }}</span></div></div></section>
             <section><div class="section-heading"><h4>节点执行时间线</h4><button v-if="isOwner && batchRetryable" class="btn-link" :disabled="!!retrying" @click="retryFailedNodes">{{ retrying === 'failed-nodes' ? '批量重跑中…' : `批量重跑失败任务（${failedNodes.length} 个）` }}</button></div><div class="timeline"><article v-for="node in execution.nodes" :key="node.id || node.nodeKey"><div class="timeline-head"><strong>{{ node.nodeName || node.skillName || node.nodeKey }}</strong><span class="status" :class="statusClass(node.status)">{{ statusText(node.status) }}</span><span v-if="retryStatusText(node)">{{ retryStatusText(node) }}</span><button v-if="node.status === 'SUCCESS' && node.hasResult" class="btn-link" @click="openNodeReport(node)">查看内容</button><button v-if="node.status !== 'SUCCESS' && node.errorMessage" class="btn-link" @click="showNodeError(node)">错误详情</button><button v-if="isOwner && execution.triggerType !== 'AUTO_METRIC' && canRetryNode(execution.status, node.status)" class="btn-link" :disabled="!!retrying" @click="retryNode(node)">{{ retrying === `node-${node.id}` ? '重跑中…' : '重跑此任务' }}</button></div><div class="node-detail"><span>{{ node.required ? '必需节点' : '可选节点' }}</span><template v-if="shouldShowNodeTimes(node.attempts)"><span>开始时间：{{ formatTime(node.startedAt) }}</span><span>结束时间：{{ formatTime(node.completedAt) }}</span></template></div><template v-if="latestAttempt(node) && node.status !== 'RUNNING' && node.status !== 'QUEUED'"><div class="attempts"><div><strong class="status" :class="statusClass(latestAttempt(node)?.status || '')">第 {{ latestAttempt(node)?.attemptNo }} 次 · {{ statusText(latestAttempt(node)?.status || '') }}</strong><span>开始时间：{{ formatTime(latestAttempt(node)?.startedAt) }}</span><span>结束时间：{{ formatTime(latestAttempt(node)?.completedAt) }}</span></div></div></template></article></div></section>
             <section><h4>汇总报告</h4><span v-if="execution.reportPath" class="report-actions"><button class="btn-link" @click="openSummaryReport">预览</button><span class="action-divider">/</span><button class="btn-link" @click="downloadSummaryReport">下载</button><template v-if="isOwner"><span class="action-divider">/</span><button class="btn-link" @click="router.push(`/skills/jobs/flows/executions/${executionId}/report/edit`)">编辑</button></template></span><button v-if="isOwner && summaryRetryable" class="btn-link summary-action" :disabled="!!retrying" @click="retrySummary">{{ retrying === 'summary' ? '生成中…' : '重新生成汇总' }}</button><p v-else-if="!execution.reportPath" class="caption">报告生成中或暂不可用</p><p v-if="summaryActionError || summaryGenerationError || reportError" class="summary-error">{{ summaryActionError || summaryGenerationError || reportError }}</p></section>
@@ -189,6 +169,7 @@ onUnmounted(stopPolling);
         <footer><button class="btn" @click="emit('update:open', false)">关闭</button></footer>
       </section>
     </div>
+    <SkillFlowExecutionNotificationModal v-model:open="notificationOpen" :execution-id="executionId" @sent="notificationSent" />
   </Teleport>
           </template>
 

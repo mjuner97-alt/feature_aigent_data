@@ -24,6 +24,29 @@ async function setup(t) {
   const enter = async value => { input.props['onUpdate:modelValue'](value); await nextTick(); };
   return { root, events, lookups, enter };
 }
+
+test('send mode shares picker, supports clear and restore, and confirms without closing', async t => {
+  const events = [];
+  const { default: Dialog } = await loadModule(new URL('./MailRecipientDialog.vue', import.meta.url), {
+    vue: { ...Vue, Teleport: Vue.Fragment },
+    '../api/skill': { batchUserNames: async () => ({}), searchSkillUsers: async () => [] },
+  });
+  const root = container(), app = renderer.createApp(Dialog, {
+    open: true, mode: 'send', to: ['a'], cc: ['b'], names: { a: '甲', b: '乙' },
+    onConfirm: value => events.push(value), 'onUpdate:open': value => events.push(value),
+  });
+  app.mount(root); t.after(() => app.unmount()); await flush();
+  assert.match(text(root), /本次调整仅用于此次通知，不修改长任务配置/);
+  await button(root, '清空收件人').props.onClick(); await flush();
+  assert.ok(find(root, n => n.type === 'button' && text(n).startsWith('确认发送')).props.disabled);
+  assert.doesNotMatch(text(root), /未配置时通知流程触发人/);
+  await button(root, '全部清空').props.onClick(); await flush();
+  assert.match(text(root), /抄送 CC（0）/);
+  await button(root, '恢复已保存名单').props.onClick(); await flush();
+  await button(root, '清空抄送').props.onClick(); await flush();
+  await button(root, '确认发送（收件人 1 人，抄送 0 人）').props.onClick(); await flush();
+  assert.deepEqual(events, [{ to: ['a'], cc: [], names: { a: '甲', b: '乙' } }]);
+});
 test('ordered batch matching preserves successful input order, reports partial failures and moves across groups', async t => {
   const { root, events, lookups, enter } = await setup(t);
   await enter('c，bad; a\nc c');
@@ -46,6 +69,20 @@ test('single search result can be added to either group with name(userId) previe
   assert.match(text(root), /丙\(c\)/);
   await button(root, '确认').props.onClick();
   assert.deepEqual(events[0].to, ['a', 'c']);
+});
+
+test('accidental dismissals keep added recipients until confirmed or explicitly cancelled', async t => {
+  const { root, events, enter } = await setup(t);
+  await enter('c'); await button(root, '批量加入抄送').props.onClick(); await flush();
+  const mask = find(root, n => n.props.class === 'mail-mask');
+  mask.props.onClick({ target: mask, currentTarget: mask }); await flush();
+  const dialog = find(root, n => n.props.role === 'dialog');
+  dialog.props.onKeydown({ key: 'Escape', preventDefault() {} }); await flush();
+  find(root, n => n.type === 'button' && n.props['aria-label'] === '关闭').props.onClick(); await flush();
+  assert.deepEqual(events, []);
+  assert.match(text(root), /名单尚未确认/);
+  await button(root, '确认').props.onClick();
+  assert.deepEqual(events[0].cc, ['b', 'c']);
 });
 
 

@@ -10,20 +10,23 @@ const button = (root, label) => find(root, n => n.type === 'button' && text(n) =
 const flush = async () => { await new Promise(r => setImmediate(r)); await Vue.nextTick(); };
 test('editor roundtrips ordered TO/CC, displays counts and marks only confirmed recipients dirty', async t => {
   const saved = [];
+  let settings = { notifyReceivers: ['legacy'], ccReceivers: [], notifyReceiversByTrigger: { AUTO_METRIC: ['b', 'a'] }, ccReceiversByTrigger: { AUTO_METRIC: ['c'] } };
   t.mock.method(globalThis, 'fetch', async () => new Response('[]'));
   const { default: Editor } = await loadModule(new URL('./SkillFlowEditorDrawer.vue', import.meta.url), {
     vue: { ...Vue, Teleport: Vue.Fragment },
     'element-plus': { ElMessage: { info() {} }, ElMessageBox: { alert: async message => assert.fail(message) } },
     '../api/skillFlow': {
       getSkillFlow: async () => ({ id: 7, name: '测试', enabled: true, notifyEnabled: true, triggers: [{ keyword: '测试', enabled: true }], nodes: [{ nodeKey: 'n1', nodeName: '节点', nodeType: 'PYTHON', scriptId: 'demo', scriptParams: {}, metricIds: [], required: true, sortOrder: 1 }] }),
-      getFlowNotifySettings: async () => ({ notifyReceivers: ['legacy'], ccReceivers: [], notifyReceiversByTrigger: { AUTO_METRIC: ['b', 'a'] }, ccReceiversByTrigger: { AUTO_METRIC: ['c'] } }),
-      updateSkillFlow: async (_, payload) => saved.push(JSON.parse(JSON.stringify(payload))), createSkillFlow: async () => assert.fail(),
+      getFlowNotifySettings: async () => JSON.parse(JSON.stringify(settings)),
+      updateSkillFlow: async (_, payload) => { saved.push(JSON.parse(JSON.stringify(payload))); settings = saved.at(-1).notifySettings; }, createSkillFlow: async () => assert.fail(),
     },
     '../api/skill': { listSkills: async () => [], getSkill: async () => ({}), batchUserNames: async ids => Object.fromEntries(ids.map(id => [id, `姓名${id}`])), searchSkillUsers: async () => [] },
   });
-  const root = container(), app = renderer.createApp(Editor, { open: true, page: true, editId: 7, knownFlows: [] });
+  const props = Vue.reactive({ open: true, page: true, editId: 7, knownFlows: [] });
+  const root = container(), app = renderer.createApp({ setup: () => () => Vue.h(Editor, { ...props, 'onUpdate:open': value => { props.open = value; }, ref: 'editor' }) });
   for (const name of ['el-select', 'el-option', 'el-icon', 'el-button', 'el-dialog']) app.component(name, { setup: (_, { slots }) => () => Vue.h('span', slots.default?.()) });
-  const instance = app.mount(root); t.after(() => app.unmount()); await flush(); await flush();
+  const host = app.mount(root); t.after(() => app.unmount()); await flush(); await flush();
+  const instance = host.$refs.editor;
   assert.equal(instance.isDirty, false);
   assert.match(text(root), /收件人 2 人.*抄送 1 人/);
   assert.doesNotMatch(text(root), /姓名b/);
@@ -35,6 +38,11 @@ test('editor roundtrips ordered TO/CC, displays counts and marks only confirmed 
   assert.equal(instance.isDirty, true);
   await button(root, '保存流程').props.onClick();
   assert.deepEqual(saved[0].notifySettings, { notifyReceivers: ['b', 'a'], ccReceivers: ['c', 'd'], notifyReceiverTriggers: ['AUTO_METRIC'], notifyReceiversByTrigger: { AUTO_METRIC: ['b', 'a'] }, ccReceiversByTrigger: { AUTO_METRIC: ['c', 'd'] } });
+  await flush(); props.open = true; await flush(); await flush();
+  assert.equal(instance.isDirty, false);
+  assert.match(text(root), /收件人 2 人.*抄送 2 人/);
+  await button(root, '管理收件人').props.onClick(); await flush();
+  for (const id of ['b', 'a', 'c', 'd']) assert.ok(text(root).includes(`姓名${id}(${id})`));
 });
 test('notification settings APIs preserve CC and trigger maps in both directions', async t => {
   const body = { notifyReceivers: ['b', 'a'], ccReceivers: ['d', 'c'], notifyReceiversByTrigger: { AUTO_METRIC: ['b', 'a'] }, ccReceiversByTrigger: { AUTO_METRIC: ['d', 'c'] } };

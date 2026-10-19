@@ -137,7 +137,7 @@ public class NotificationRecipientService {
         }
         int recipients = rows.size();
         // 名单为空也要留痕:哨兵行标记"该范围已显式清空",使读侧不回退继承 DEFAULT 名单;
-        // 读取 SQL 一律过滤空 user_id,哨兵行不会进入任何收件人解析结果。
+        // 读取 SQL 一律过滤保留标记及历史空 user_id,哨兵行不会进入任何收件人解析结果。
         if (rows.isEmpty()) {
             rows.add(NotificationRecipient.builder().configId(config.getId())
                     .userId(NotificationRecipient.SCOPE_MARKER_USER_ID)

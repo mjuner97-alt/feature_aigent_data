@@ -47,7 +47,7 @@ public interface NotificationRecipientMapper {
     /** 批量插入收件人关系(全量替换的第二步,须在事务内使用);调用方保证列表非空且无重复。 */
     void batchInsert(@Param("recipients") List<NotificationRecipient> recipients);
 
-    /** 该触发范围下已有行数(含空 user_id 哨兵行);&gt;0 表示该范围已配置过(区别于未配置继承 DEFAULT)。 */
+    /** 该触发范围下已有行数(含范围哨兵行);&gt;0 表示该范围已配置过(区别于未配置继承 DEFAULT)。 */
     int countScope(@Param("configId") Long configId, @Param("triggerType") String triggerType);
 
     /** 查询该配置下所有配置过的触发范围(有名单或有显式清空哨兵行)。 */

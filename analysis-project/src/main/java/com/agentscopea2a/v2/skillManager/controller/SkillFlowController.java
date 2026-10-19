@@ -239,6 +239,17 @@ public class SkillFlowController {
                 .body(queryService.nodeReport(id, nodeId, userId));
     }
 
+    /** Latest saved recipient defaults, restricted to the execution's triggering user. */
+    @GetMapping("/api/skill-flow-executions/{id}/notifications/recipients")
+    public NotifySettingsDto getNotificationRecipients(@PathVariable(name = "id") Long id,
+                                                       @RequestHeader(name = "X-User-Id") String userId) {
+        var execution = queryService.requireOwner(id, userId);
+        var flow = mapper.selectFlowById(execution.getFlowId());
+        if (flow == null || flow.getDeletedAt() != null) {
+            throw new IllegalStateException("FlowNotFound: " + execution.getFlowId());
+        }
+        return definitionService.getNotifySettings(flow.getId(), flow.getCreatedBy());
+    }
     /** 手动重发该次执行完成通知(仅终态执行可用)。 */
     @PostMapping("/api/skill-flow-executions/{id}/notifications/resend")
     public void resend(@PathVariable(name = "id") Long id,
@@ -248,7 +259,8 @@ public class SkillFlowController {
             throw new IllegalArgumentException("NotificationConfirmationRequired: 请先确认收件人");
         }
         queryService.requireOwner(id, userId);
-        completionService.resend(mapper.selectFlowExecutionById(id), request == null ? null : request.notifyReceivers());
+        completionService.resend(mapper.selectFlowExecutionById(id), request == null ? null : request.notifyReceivers(),
+                request == null ? null : request.ccReceivers());
     }
 
     @PostMapping("/api/skill-flow-executions/{id}/summary/retry")

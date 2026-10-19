@@ -16,13 +16,20 @@
         <result column="updated_at" property="updatedAt"/>
     </resultMap>
 
-    <!-- 查某配置下启用的收件人关系;空 user_id 为"范围已显式清空"的哨兵行,不作为收件人返回 -->
+    <!-- 非空标记兼容 GaussDB Oracle 模式；同时排除历史空串/NULL 标记。 -->
+    <sql id="realRecipientFilter">
+        <bind name="scopeMarkerUserId" value="@com.agentscopea2a.v2.skillManager.entity.NotificationRecipient@SCOPE_MARKER_USER_ID"/>
+        AND LENGTH(TRIM(user_id)) &gt; 0
+        AND user_id &lt;&gt; #{scopeMarkerUserId}
+    </sql>
+
+    <!-- 查某配置下启用的收件人关系;范围哨兵行不作为收件人返回 -->
     <select id="selectEnabledByConfigId" resultMap="RecipientMap">
         SELECT id, config_id, user_id, trigger_type, recipient_type, sort_order, channel, enabled, created_at, updated_at
         FROM notification_recipient
         WHERE config_id = #{configId}
           AND enabled = TRUE
-          AND user_id &lt;&gt; ''
+          <include refid="realRecipientFilter"/>
         ORDER BY sort_order, id
     </select>
 
@@ -34,7 +41,7 @@
         WHERE c.target_type = #{targetType}
           AND c.target_id = #{targetId}
           AND r.enabled = TRUE
-          AND r.user_id &lt;&gt; ''
+          <include refid="realRecipientFilter"/>
         ORDER BY r.sort_order, r.id
     </select>
 
@@ -44,7 +51,7 @@
         JOIN notification_config c ON c.id = r.config_id
         WHERE c.target_type = #{targetType} AND c.target_id = #{targetId}
           AND r.trigger_type = #{triggerType} AND r.enabled = TRUE
-          AND r.user_id &lt;&gt; ''
+          <include refid="realRecipientFilter"/>
         ORDER BY r.sort_order, r.id
     </select>
 
@@ -67,7 +74,7 @@
         </foreach>
     </insert>
 
-    <!-- 该触发范围下已有行数(含空 user_id 哨兵行);>0 即"该范围已配置过",
+    <!-- 该触发范围下已有行数(含范围哨兵行);>0 即"该范围已配置过",
          用于区分"主动清空名单"与"尚未配置、继承 DEFAULT",不建独立范围标记表 -->
     <select id="countScope" resultType="int">
         SELECT COUNT(*) FROM notification_recipient
