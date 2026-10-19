@@ -66,6 +66,11 @@ function goDetail(item: PublishPendingItem) {
   router.push(`/skills/${item.skillId}`);
 }
 
+/** 跳转该 Skill 的试运行结果页(审批前查看试运行耗时/token/工具耗时) */
+function goTrialResults(item: PublishPendingItem) {
+  router.push(`/skills/${item.skillId}/trial-results`);
+}
+
 function getComment(id: number): string {
   return commentMap.value[id] ?? '';
 }
@@ -154,6 +159,7 @@ onMounted(load);
             @input="setComment(item.id, ($event.target as HTMLTextAreaElement).value)"
           ></textarea>
           <div class="btns">
+            <button class="goto-detail" @click="goTrialResults(item)">试运行结果</button>
             <button
               class="approve"
               :disabled="actionLoading.has(item.id)"

@@ -8,7 +8,7 @@
  *  - 审批列表已迁移至独立页面 /skills/approvals
  *  - 编辑走 /skills/:id/edit 全页面表单
  */
-import { ref, watch, computed } from 'vue';
+import { ref, watch, computed, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import SkillMarkdown from '../../components/SkillMarkdown.vue';
 import {
@@ -29,7 +29,10 @@ import {
   getPublishApprovals,
   getSkillFiles,
   fetchFileBlob,
+  recordTrialRun,
 } from '../../api/skill';
+import { streamChat } from '../../api/chat';
+import SkillTrialResultPanel from '../../components/SkillTrialResultPanel.vue';
 import type { SkillDetail, LikeStatus, SkillPublishRecord, PublishPendingItem, SkillApprovalRecord, SkillFileReferenceItem } from '../../types/skill';
 import SkillGrantEditor from '../../components/SkillGrantEditor.vue';
 import { isAdmin } from '../../utils/auth';
@@ -204,6 +207,68 @@ async function loadSkillFiles(id: number) {
     filesLoading.value = false;
   }
 }
+
+// ============ 试运行(录入话术 -> 前端直调 /ai/chat 问数 -> 落库记录) ============
+
+const trialQuestion = ref('');
+const trialRunning = ref(false);
+const trialThinking = ref('');
+const trialAnswer = ref('');
+const trialError = ref('');
+let trialAbortCtrl: AbortController | null = null;
+
+/** 中断当前试运行问数(同 ChatPanel 的停止逻辑)。 */
+function stopTrial() {
+  trialAbortCtrl?.abort();
+}
+
+/**
+ * 执行试运行问数:与 /chat 页一致直调 /ai/chat SSE,流式展示 think/text;
+ * 流结束(含出错/中断)后调记录接口落库,question 为发起时快照。
+ */
+async function runTrial() {
+  if (trialRunning.value || !skill.value) return;
+  const question = trialQuestion.value.trim();
+  if (!question) return;
+  // conversationId 前端生成(同 ChatPanel),问数结束后随记录落库
+  const convId = crypto.randomUUID();
+  trialRunning.value = true;
+  trialThinking.value = '';
+  trialAnswer.value = '';
+  trialError.value = '';
+  trialAbortCtrl = new AbortController();
+  try {
+    for await (const evt of streamChat(
+        { question, conversationId: convId, user_id: currentUserId() },
+        trialAbortCtrl.signal)) {
+      if (evt.type === 'think' && evt.chunk) {
+        trialThinking.value += evt.chunk;
+      } else if (evt.type === 'text') {
+        trialAnswer.value += evt.chunk;
+        if (evt.finish) break;
+      } else if (evt.type === 'error') {
+        throw new Error(evt.error);
+      }
+      // process/toolOutputUpdate 事件不展示:试运行区只关心思考与最终回答
+    }
+  } catch (e) {
+    // AbortError 是用户主动停止,静默;其余展示错误
+    if (!(e instanceof DOMException && e.name === 'AbortError')) {
+      trialError.value = e instanceof Error ? e.message : '试运行失败';
+    }
+  } finally {
+    trialRunning.value = false;
+    trialAbortCtrl = null;
+    // 无论正常结束/出错/中断均落库(conversationId 前端必生成);失败静默,不影响结果展示
+    recordTrialRun(skill.value.id, convId, question)
+      .catch(() => {});
+  }
+}
+
+// 离开页面时中断进行中的问数,避免流继续写已卸载组件的状态
+onBeforeUnmount(() => {
+  trialAbortCtrl?.abort();
+});
 
 // ============ 数据加载 ============
 async function load() {
@@ -438,6 +503,38 @@ watch(() => route.params.id, () => {
           <button class="att-download" @click="downloadFile(f.id)" title="下载">⬇ 下载</button>
         </div>
       </div>
+    </section>
+
+    <!-- ============ 试运行(录入话术 -> /ai/chat 问数 -> 落库记录) ============ -->
+    <section class="block trial-section">
+      <h3 class="block-title"><span class="bar"></span>试运行</h3>
+      <div class="trial-input">
+        <textarea v-model="trialQuestion" class="comment-input" rows="2"
+                  placeholder="请在维护Skill领域标签等信息后再输入问数话术, 如: 近三个版本缺陷密度"
+                  :disabled="trialRunning"></textarea>
+        <div class="btns">
+          <button v-if="!trialRunning" class="trial-run" :disabled="!trialQuestion.trim()" @click="runTrial">▶ 试运行</button>
+          <button v-else class="trial-stop" @click="stopTrial">■ 停止</button>
+        </div>
+      </div>
+      <div v-if="trialRunning || trialThinking || trialAnswer || trialError" class="trial-result">
+        <details v-if="trialThinking" class="trial-think">
+          <summary>思考过程</summary>
+          <pre>{{ trialThinking }}</pre>
+        </details>
+        <div v-if="trialAnswer" class="trial-answer">
+          <Markdown :text="trialAnswer" theme="dark" />
+        </div>
+        <div v-if="trialError" class="trial-error">{{ trialError }}</div>
+        <div v-if="trialRunning && !trialAnswer && !trialThinking" class="trial-loading">问数执行中…</div>
+      </div>
+
+    </section>
+
+    <!-- ============ 试运行结果(trace 耗时/token/工具明细;独立页 /skills/:id/trial-results 复用同一组件) ============ -->
+    <section class="block">
+      <h3 class="block-title"><span class="bar"></span>试运行结果</h3>
+      <SkillTrialResultPanel :skill-id="skill.id" :skill-updated-at="skill.updatedAt" />
     </section>
 
     <!-- ============ 审批详情(当前 Skill 的待审/已审记录 + 审批操作) ============ -->
@@ -731,4 +828,50 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 .btns button:disabled { opacity: 0.6; cursor: not-allowed; }
 .action-error { color: #dc2626; font-size: 13px; margin-top: 8px; }
 .action-done { color: #16a34a; font-size: 13px; margin-top: 8px; }
+
+/* ===== 试运行区 ===== */
+.trial-section { margin-top: 20px; }
+.trial-input { display: flex; flex-direction: column; gap: 10px; }
+.trial-run {
+  padding: 8px 24px;
+  border-radius: 6px;
+  border: 1px solid #6366f1;
+  background: #6366f1;
+  color: #fff;
+  cursor: pointer;
+  font-size: 13px;
+}
+.trial-run:hover:not(:disabled) { background: #4f46e5; }
+.trial-stop {
+  padding: 8px 24px;
+  border-radius: 6px;
+  border: 1px solid #dc2626;
+  background: #fff;
+  color: #dc2626;
+  cursor: pointer;
+  font-size: 13px;
+}
+.trial-stop:hover { background: #fef2f2; }
+.trial-result { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+/* 试运行历史样式已随旧"试运行记录"列表移除,结果展示统一走 SkillTrialResultPanel */
+.trial-think {
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #f8fafc;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+.trial-think summary { cursor: pointer; color: #64748b; font-weight: 600; }
+.trial-think pre {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.6;
+  font-family: inherit;
+}
+.trial-answer { border-left: 3px solid #6366f1; padding: 4px 12px; color: #1e293b; }
+.trial-error { color: #dc2626; font-size: 13px; }
+.trial-loading { color: #64748b; font-size: 13px; }
 </style>

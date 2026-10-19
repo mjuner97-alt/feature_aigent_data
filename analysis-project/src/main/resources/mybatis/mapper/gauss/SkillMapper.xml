@@ -39,12 +39,13 @@
         SET name=#{name}, description=#{description}, content=#{content},
             category=#{category}, tags=#{tags}, status=#{status},
             <if test="visibility != null">visibility=#{visibility},</if>
-            retrieval_name=#{retrievalName}, default_metric_ids=#{defaultMetricIds}
+            retrieval_name=#{retrievalName}, default_metric_ids=#{defaultMetricIds},
+            updated_at=NOW()
         WHERE id = #{id}
     </update>
 
     <update id="softDelete">
-        UPDATE skill_manage SET status='DELETED', deleted_at=NOW() WHERE id = #{id}
+        UPDATE skill_manage SET status='DELETED', deleted_at=NOW(), updated_at=NOW() WHERE id = #{id}
     </update>
 
     <select id="existsByName" resultType="boolean">
@@ -135,7 +136,7 @@
     </select>
 
     <update id="softDeleteByRetrievalNameAndOwner">
-        UPDATE skill_manage SET status='DELETED', deleted_at=NOW()
+        UPDATE skill_manage SET status='DELETED', deleted_at=NOW(), updated_at=NOW()
         WHERE retrieval_name = #{retrievalName}
           AND owner_user_id = #{ownerUserId}
           AND status &lt;&gt; 'DELETED'
