@@ -261,6 +261,24 @@ skill 的 `param_mapping` 配 `{"gate":"qGate"}`。问「Q2卡口的达标率」
 3. 保存期校验：合法动态键通过、非法键报错文案含可选键列表
 4. 存量：`DirectSkillExecutorTest` 全过（extraDimensions 缺省空 map 行为不变）
 
+### 10. 缺参反问（2026/10/15 拍板，已实施）
+
+> 拍板口径变更：Context 第 2 条「其他必填参数缺失 → 回退 LLM 链路追问」**改为**
+> 「在 param_mapping 内的缺失必填 → 反问补参后继续直接执行（全程零 LLM）；
+> 不在 mapping 内（语义未知）或调用方未传会话键 → 仍回退 LLM」。
+> 完整方案见 `docs/202610/Skill直接执行缺参反问方案.md`。
+
+> 实施记录（2026/10/15）：`DirectSkillExecutor` 加 `DirectExecutionPlan.missingAsk`
+> （record 尾部追加 + 旧 4 参构造器重载）+ `needsAsk()` + 静态 `askPrompt()`；
+> plan() 加 4 参重载（conversationId），缺参分支收集 `missingKeys`（mapping 内维度键），
+> 存 `pending`（ConcurrentHashMap，key=`userId:conversationId`，TTL 5min 惰性清理）；
+> `consumePending()` 补参轮用 previewState + 词表解析第一个缺失键的值，解析不出丢弃
+> pending 走正常链路，剩余缺失继续反问下一个。两条 Chat 链路（V2ChatStreamServiceImpl +
+> ChatStreamServiceImpl）在短路块内加 needsAsk 分支：sendText(askPrompt) → complete →
+> 显式 cleanup.run()（零 token 短路，与歧义反问轮同款）。`DirectSkillExecutorTest`
+> 35 个全过（新增 7 个：ask 计划/mapping 外回退/补参完成/解析不出丢弃/两轮逐个补齐/
+> TTL 过期/label 回退键名）。E2E 待内网。
+
 ## 关键文件清单
 
 **新增**：
