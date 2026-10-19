@@ -510,7 +510,7 @@ watch(() => route.params.id, () => {
       <h3 class="block-title"><span class="bar"></span>试运行</h3>
       <div class="trial-input">
         <textarea v-model="trialQuestion" class="comment-input" rows="2"
-                  placeholder="输入试运行问数话术,如:近期三个版本缺陷密度"
+                  placeholder="请在维护Skill领域标签等信息后再输入问数话术, 如: 近三个版本缺陷密度"
                   :disabled="trialRunning"></textarea>
         <div class="btns">
           <button v-if="!trialRunning" class="trial-run" :disabled="!trialQuestion.trim()" @click="runTrial">▶ 试运行</button>
