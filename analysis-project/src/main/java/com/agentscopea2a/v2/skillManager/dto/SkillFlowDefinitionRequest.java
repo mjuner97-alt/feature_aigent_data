@@ -30,7 +30,7 @@ public record SkillFlowDefinitionRequest(
     public SkillFlowDefinitionRequest {
         notifyContactName = com.agentscopea2a.v2.skillManager.notification.NotificationContact.trimToNull(notifyContactName);
         notifyContactPhone = com.agentscopea2a.v2.skillManager.notification.NotificationContact.trimToNull(notifyContactPhone);
-        notifyBodyTemplate = com.agentscopea2a.v2.skillManager.notification.NotificationContact.trimToNull(notifyBodyTemplate);
+        notifyBodyTemplate = notifyBodyTemplate == null || notifyBodyTemplate.isBlank() ? null : notifyBodyTemplate;
         if (notifyBodyTemplate != null && notifyBodyTemplate.length() > 2000) {
             throw new IllegalStateException("FlowValidationFailed: 通知邮件正文模板超长(上限 2000 字符)");
         }

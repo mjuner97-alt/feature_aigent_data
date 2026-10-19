@@ -67,8 +67,8 @@ test('new-flow page passes copy source to the editor without treating it as an e
   assert.equal(input(root, '如 每日质量综合分析').value, '月报-副本');
 });
 
-test('copy draft is independent, disabled, and saves a new definition with dynamic params and bindings', async t => {
-  const source = sourceFlow(), snapshot = structuredClone(source), saved = [], alerts = [], requests = [];
+test('copy draft is independent, enabled, and saves a new definition with dynamic params and bindings', async t => {
+  const source = { ...sourceFlow(), enabled: false, notifyBodyTemplate: '  保存正文\n\t{链接}  ' }, snapshot = structuredClone(source), saved = [], alerts = [], requests = [];
   const { default: Editor } = await loadModule(new URL('./SkillFlowEditorDrawer.vue', import.meta.url), {
     '../api/skillFlow': {
       getSkillFlow: async id => { assert.equal(id, 7); return source; },
@@ -88,7 +88,7 @@ test('copy draft is independent, disabled, and saves a new definition with dynam
   assert.match(text(root), /复制长任务流程/);
   assert.equal(input(root, '如 每日质量综合分析').value, '月报-副本');
   const enabled = find(root, node => node.type === 'input' && node.props.type === 'checkbox');
-  assert.equal(enabled.checked, false);
+  assert.equal(enabled.checked, true);
   assert.doesNotMatch(text(root), /该流程当前为公开状态/);
   input(root, '如 每日质量综合分析').props['onUpdate:modelValue']('月报');
   await button(root, '保存流程').props.onClick();
@@ -103,7 +103,8 @@ test('copy draft is independent, disabled, and saves a new definition with dynam
   input(root, '例如：月度经营分析报告').props['onUpdate:modelValue']('副本标题');
   await button(root, '保存流程').props.onClick();
   assert.equal(saved.length, 1, alerts.join('\n'));
-  assert.equal(saved[0].enabled, false);
+  assert.equal(saved[0].enabled, true);
+  assert.equal(saved[0].notifyBodyTemplate, '  保存正文\n\t{链接}  ');
   assert.equal(saved[0].code, '');
   assert.equal(saved[0].id, undefined);
   assert.equal(saved[0].chatPublic, undefined);

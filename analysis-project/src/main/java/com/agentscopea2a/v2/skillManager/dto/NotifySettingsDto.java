@@ -16,7 +16,16 @@ public record NotifySettingsDto(
         Boolean notifyEnabled,
         Map<String, List<String>> notifyReceiversByTrigger,
         List<String> ccReceivers,
-        Map<String, List<String>> ccReceiversByTrigger) {
+        Map<String, List<String>> ccReceiversByTrigger,
+        String notifyBodyTemplate,
+        String flowName,
+        String reportLinkTitle) {
+    public NotifySettingsDto(List<String> notifyReceivers, List<String> notifyReceiverTriggers,
+                             Boolean notifyEnabled, Map<String, List<String>> notifyReceiversByTrigger,
+                             List<String> ccReceivers, Map<String, List<String>> ccReceiversByTrigger) {
+        this(notifyReceivers, notifyReceiverTriggers, notifyEnabled, notifyReceiversByTrigger,
+                ccReceivers, ccReceiversByTrigger, null, null, null);
+    }
     public NotifySettingsDto(List<String> notifyReceivers, List<String> notifyReceiverTriggers,
                              Boolean notifyEnabled) {
         this(notifyReceivers, notifyReceiverTriggers, notifyEnabled, Map.of());

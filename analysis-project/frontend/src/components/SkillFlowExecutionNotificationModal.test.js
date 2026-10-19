@@ -42,7 +42,7 @@ test('loads latest saved ordered TO/CC and sends temporary batch changes without
   await button(root, '批量加入抄送').props.onClick(); await flush();
   assert.match(text(root), /未匹配：bad/);
   await sendButton(root).props.onClick(); await flush();
-  assert.deepEqual(calls, [[42, ['b', 'a'], ['c', 'd', 'e']]]);
+  assert.deepEqual(calls, [[42, ['b', 'a'], ['c', 'd', 'e'], '']]);
   assert.deepEqual(events, ['sent', false]);
   assert.match(text(root), /已提交/); assert.doesNotMatch(text(root), /发送成功/);
 });
@@ -60,7 +60,7 @@ test('clear all blocks send and restore resets both groups; reopen reloads curre
   props.open = true; await flush(); await flush();
   assert.ok(text(root).includes('姓名new(new)')); assert.doesNotMatch(text(root), /姓名b\(b\)/);
   await sendButton(root).props.onClick(); await flush();
-  assert.deepEqual(calls, [[42, ['new'], ['new-cc']]]);
+  assert.deepEqual(calls, [[42, ['new'], ['new-cc'], '']]);
 });
 
 test('defaults failure offers retry and cannot silently send empty or stale lists', async t => {
@@ -84,21 +84,22 @@ test('failed send retains temporary recipients and permits retry; duplicate subm
   assert.deepEqual(events, []); assert.equal(sendButton(root).props.disabled, false);
 });
 
-test('late defaults for previous execution cannot overwrite a newer opened execution', async t => {
+test('late defaults for previous execution cannot overwrite newer recipients or template', async t => {
   let resolve;
-  const { root, props } = await setup(t, { getSkillFlowExecutionNotifySettings: id => id === 42 ? new Promise(r => { resolve = r; }) : Promise.resolve({ notifyReceivers: ['fresh'], ccReceivers: [] }) });
+  const { root, props } = await setup(t, { getSkillFlowExecutionNotifySettings: id => id === 42 ? new Promise(r => { resolve = r; }) : Promise.resolve({ notifyReceivers: ['fresh'], ccReceivers: [], notifyBodyTemplate: '新执行模板' }) });
   assert.match(text(root), /正在加载已保存名单/);
   props.executionId = 43; await flush(); await flush();
   assert.ok(text(root).includes('姓名fresh(fresh)'));
-  resolve(defaults()); await flush(); await flush();
+  resolve({ ...defaults(), notifyBodyTemplate: '过期模板' }); await flush(); await flush();
   assert.ok(text(root).includes('姓名fresh(fresh)')); assert.doesNotMatch(text(root), /姓名b\(b\)/);
+  assert.equal(bodyInput(root).value, '新执行模板');
 });
 
 test('missing names never discard saved recipients', async t => {
   const { root, calls } = await setup(t, {}, { batchUserNames: async () => { throw new Error('姓名查询失败'); } });
   assert.match(text(root), /b\(b\)/);
   await sendButton(root).props.onClick(); await flush();
-  assert.deepEqual(calls, [[42, ['b', 'a'], ['c']]]);
+  assert.deepEqual(calls, [[42, ['b', 'a'], ['c'], '']]);
 });
 
 test('resend API serializes explicit ordered TO and CC including an empty CC', async t => {
@@ -124,4 +125,39 @@ test('execution detail opens the same notification picker instead of a separate 
   app.mount(root); t.after(() => app.unmount()); props.open = true; await flush(); await flush();
   await button(root, '发送通知').props.onClick(); await flush();
   assert.deepEqual(modalProps.at(-1), { open: true, executionId: 42 });
+});
+
+const bodyInput = root => find(root, n => n.type === 'textarea' && n.props['aria-label'] === '通知邮件正文模板');
+test('manual notification loads the latest saved template, sends an exact temporary edit and reloads on reopen', async t => {
+  let settings = { ...defaults(), flowName: '改名后的月报', reportLinkTitle: '原月报 (2026年09月01日)', notifyBodyTemplate: '  已保存\n\t{链接}  ' };
+  const original = structuredClone(settings);
+  const { root, calls, props } = await setup(t, { getSkillFlowExecutionNotifySettings: async () => settings });
+  assert.equal(bodyInput(root)?.value, original.notifyBodyTemplate);
+  assert.match(find(root, n => !!n.props?.innerHTML).props.innerHTML, /原月报 \(2026年09月01日\)/);
+  bodyInput(root).props['onUpdate:modelValue']('  临时   内容\n\t{链接}  '); await flush();
+  await sendButton(root).props.onClick(); await flush();
+  assert.equal(calls[0][3], '  临时   内容\n\t{链接}  ');
+  assert.deepEqual(settings, original);
+  settings = { ...defaults(), notifyBodyTemplate: '最新保存' };
+  props.open = true; await flush(); await flush();
+  assert.equal(bodyInput(root).value, '最新保存');
+});
+test('editing only the template prevents accidental dismissal and failed sends retain it', async t => {
+  const { root, events } = await setup(t, { resendSkillFlowExecutionNotification: async () => { throw new Error('发送失败'); } });
+  bodyInput(root).props['onUpdate:modelValue']('临时正文'); await flush();
+  const close = find(root, n => n.type === 'button' && n.props['aria-label'] === '关闭');
+  close.props.onClick(); await flush();
+  assert.deepEqual(events, []);
+  await sendButton(root).props.onClick(); await flush();
+  assert.equal(bodyInput(root).value, '临时正文');
+  assert.match(text(root), /发送失败/);
+});
+test('resend API preserves template whitespace and sends an explicit empty template', async t => {
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', async (_, options) => { requests.push(JSON.parse(options.body)); return new Response(null, { status: 204 }); });
+  const api = await loadModule(new URL('../api/skillFlow.ts', import.meta.url));
+  await api.resendSkillFlowExecutionNotification(42, ['b'], [], '  正文\n\t{链接}  ');
+  await api.resendSkillFlowExecutionNotification(42, ['b'], [], '');
+  assert.equal(requests[0].notifyBodyTemplate, '  正文\n\t{链接}  ');
+  assert.equal(requests[1].notifyBodyTemplate, '');
 });

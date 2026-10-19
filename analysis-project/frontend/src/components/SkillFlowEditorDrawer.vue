@@ -14,6 +14,7 @@ import { insertOutlineRow } from '../utils/outlineRows';
 import { inferParamSchema, normalizeScriptParams, paramsFromSchema } from '../utils/scriptParams';
 import FlowNodeCard from './FlowNodeCard.vue';
 import MailRecipientDialog from './MailRecipientDialog.vue';
+import NotifyBodyTemplateEditor from './NotifyBodyTemplateEditor.vue';
 import FlowExecutorPicker from './FlowExecutorPicker.vue';
 import ScheduleRulesEditor from './ScheduleRulesEditor.vue';
 import { scrollToEditorSection } from '../utils/editorNavigation.js';
@@ -101,49 +102,6 @@ const contactValidationError = computed(() => {
 });
 const usesDefaultContact = computed(() => !form.value.notifyContactName?.trim() && !form.value.notifyContactPhone?.trim());
 
-/** 通知邮件正文模板:正文文字在此配置,后端只拼接 {链接} 占位符对应的报告链接。 */
-const LINK_PLACEHOLDER = '{链接}';
-const bodyTemplateInput = ref<HTMLTextAreaElement | null>(null);
-function insertLinkPlaceholder() {
-  const token = LINK_PLACEHOLDER;
-  const text = form.value.notifyBodyTemplate || '';
-  const el = bodyTemplateInput.value;
-  if (!el) {
-    form.value.notifyBodyTemplate = text + token;
-    return;
-  }
-  const start = el.selectionStart ?? text.length;
-  const end = el.selectionEnd ?? start;
-  form.value.notifyBodyTemplate = text.slice(0, start) + token + text.slice(end);
-  nextTick(() => { el.focus(); el.setSelectionRange(start + token.length, start + token.length); });
-}
-function escapePreviewHtml(value: string): string {
-  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-/** 预览里的链接文案与后端口径一致:任务名(yyyy年MM月dd日)。 */
-const bodyTemplatePreviewLink = computed(() => {
-  const now = new Date();
-  const pad = (value: number) => String(value).padStart(2, '0');
-  return `${form.value.name || '任务名'}(${now.getFullYear()}年${pad(now.getMonth() + 1)}月${pad(now.getDate())}日)`;
-});
-const bodyTemplatePreview = computed(() => {
-  const text = (form.value.notifyBodyTemplate || '').trim();
-  if (!text) return '';
-  const linkHtml = `<span class="preview-link">${escapePreviewHtml(bodyTemplatePreviewLink.value)}</span>`;
-  let html = escapePreviewHtml(text).replace(/\r\n|\n/g, '<br>');
-  const hasLink = html.includes(LINK_PLACEHOLDER);
-  html = html.split(LINK_PLACEHOLDER).join(linkHtml);
-  if (!hasLink) html += `<br>${linkHtml}`;
-  return html;
-});
-const bodyTemplateHint = computed(() => {
-  const text = (form.value.notifyBodyTemplate || '').trim();
-  if (!text) return '非必填，留空时使用后台原有的通知邮件拼接模板。';
-  return text.includes(LINK_PLACEHOLDER)
-    ? `发送时 ${LINK_PLACEHOLDER} 将替换为报告下载链接（${bodyTemplatePreviewLink.value}）。`
-    : `正文未包含 ${LINK_PLACEHOLDER}，报告链接将追加在正文末尾。`;
-});
-
 const validationErrors = computed(() => {
   const errors: string[] = [];
   if (!form.value.name.trim()) errors.push('请填写流程名称');
@@ -174,7 +132,7 @@ const validationErrors = computed(() => {
     if (owner) errors.push(`关键词 ${trigger.keyword} 已属于流程「${owner.name}」`);
   });
   if (contactValidationError.value) errors.push(contactValidationError.value);
-  if ((form.value.notifyBodyTemplate || '').trim().length > 2000) errors.push('通知邮件正文模板超长（上限 2000 字符）');
+  if ((form.value.notifyBodyTemplate || '').length > 2000) errors.push('通知邮件正文模板超长（上限 2000 字符）');
   return errors;
 });
 
@@ -650,7 +608,7 @@ async function load() {
         form.value.executors = [];
         form.value.notifyContactName = '';
         form.value.notifyContactPhone = '';
-        form.value.enabled = false;
+        form.value.enabled = true;
         form.value.nodes = form.value.nodes.map(({ id: _id, ...node }) => node);
         form.value.triggers = form.value.triggers.map(({ id: _id, ...trigger }) => trigger);
       }
@@ -722,7 +680,7 @@ async function save() {
       ...form.value,
       notifyContactName: form.value.notifyContactName?.trim() || '',
       notifyContactPhone: form.value.notifyContactPhone?.trim() || '',
-      notifyBodyTemplate: form.value.notifyBodyTemplate?.trim() || '',
+      notifyBodyTemplate: form.value.notifyBodyTemplate || '',
       notifySettings: {
         notifyReceivers: notifyReceivers.value,
         ccReceivers: ccReceivers.value,
@@ -756,7 +714,7 @@ defineExpose({ isDirty });
   <Teleport to="body" :disabled="page">
     <div v-if="open" class="mask" :class="{ 'page-mode': page }" @click.self="!page && emit('update:open', false)">
       <section class="drawer" aria-label="长任务流程编辑器">
-        <header class="drawer-header"><div><div class="eyebrow">长任务流程</div><h3>{{ isCopy ? '复制长任务流程' : isEdit ? '编辑长任务流程' : '创建长任务流程' }}</h3><p>{{ isCopy ? '请使用新的流程名称和触发关键词保存副本；副本默认禁用。' : '配置触发条件与执行步骤，生成结构化汇总结果' }}</p></div><button class="icon-button" title="关闭" aria-label="关闭" @click="emit('update:open', false)">×</button></header>
+        <header class="drawer-header"><div><div class="eyebrow">长任务流程</div><h3>{{ isCopy ? '复制长任务流程' : isEdit ? '编辑长任务流程' : '创建长任务流程' }}</h3><p>{{ isCopy ? '请使用新的流程名称和触发关键词保存副本；副本默认启用。' : '配置触发条件与执行步骤，生成结构化汇总结果' }}</p></div><button class="icon-button" title="关闭" aria-label="关闭" @click="emit('update:open', false)">×</button></header>
         <div class="editor-layout">
         <nav class="editor-toc" aria-label="长任务配置目录">
           <a href="#flow-basic" @click="navigateToSection($event, 'flow-basic')">基本信息</a>
@@ -802,19 +760,7 @@ defineExpose({ isDirty });
                 <p v-else-if="!contactValidationError" class="contact-mode" role="status">保存后，任务通知邮件将展示上述联系信息</p>
                 <p v-if="contactValidationError" class="error" role="status">{{ contactValidationError }}</p>
               </div>
-              <div class="notify-body-config">
-                <h4>通知邮件正文（非必填）</h4>
-                <p>任务完成后通知邮件的正文文字在此配置，报告链接由系统自动拼接。可用占位符 <code>{链接}</code>，发送时替换为报告下载链接（显示为 任务名(年月日)，可点击）。</p>
-                <div class="body-template-toolbar">
-                  <button type="button" class="btn" @click="insertLinkPlaceholder">插入链接占位符</button>
-                </div>
-                <textarea ref="bodyTemplateInput" v-model="form.notifyBodyTemplate" rows="5" placeholder="非必填，留空时使用后台原有的通知邮件拼接模板。&#10;自定义示例：各位，部门研发管理周报详见{链接}，请关注。"></textarea>
-                <small>{{ bodyTemplateHint }}</small>
-                <div v-if="bodyTemplatePreview" class="body-template-preview" aria-label="邮件正文预览">
-                  <span class="preview-label">邮件预览</span>
-                  <p v-html="bodyTemplatePreview"></p>
-                </div>
-              </div>
+              <NotifyBodyTemplateEditor :model-value="form.notifyBodyTemplate ?? ''" :flow-name="form.name" @update:model-value="form.notifyBodyTemplate = $event" />
               <MailRecipientDialog :open="recipientDialogOpen" :to="notifyReceivers" :cc="ccReceivers" :names="receiverNames" @update:open="recipientDialogOpen = $event" @confirm="confirmRecipients" />
             </section>
 
@@ -918,7 +864,6 @@ input, select, textarea { box-sizing: border-box; width: 100%; border: 1px solid
 .outline-item { display: grid; grid-template-columns: 1fr 220px 30px; gap: 8px; align-items: center; margin-top: 8px; }
 .trigger-row { display: grid; grid-template-columns: minmax(160px, 1fr) auto 30px; align-items: center; gap: 8px; }.public-hint { padding: 8px 12px; border-left: 3px solid #f59e0b; background: #fffbeb; color: #92400e; font-size: 12px; }.public-hint.warning { border-color: #dc2626; background: #fef2f2; color: #b91c1c; }.subtle-empty, .empty { color: #94a3b8; font-size: 13px; padding: 18px 0; }
 .notify-contact-config { display: grid; gap: 10px; margin-top: 14px; padding: 14px; border: 1px solid #dbeafe; border-radius: 8px; }.notify-contact-config h4, .notify-contact-config p { margin: 0; }.notify-contact-config p, .notify-contact-config small { font-size: 12px; color: #64748b; line-height: 1.6; }.notify-contact-config .contact-mode { color: #2563eb; }.notify-contact-config .error { color: #b91c1c; }
-.notify-body-config { display: grid; gap: 10px; margin-top: 14px; padding: 14px; border: 1px solid #dbeafe; border-radius: 8px; }.notify-body-config h4, .notify-body-config p { margin: 0; }.notify-body-config p, .notify-body-config small { font-size: 12px; color: #64748b; line-height: 1.6; }.notify-body-config code { padding: 1px 5px; border-radius: 4px; background: #eff6ff; color: #2563eb; }.notify-body-config textarea { width: 100%; padding: 9px 11px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; line-height: 1.7; font-family: inherit; resize: vertical; box-sizing: border-box; }.notify-body-config .body-template-toolbar { display: flex; align-items: center; gap: 8px; }.body-template-preview { display: grid; gap: 6px; padding: 10px 12px; border: 1px dashed #cbd5e1; border-radius: 6px; background: #f8fafc; }.body-template-preview .preview-label { font-size: 11px; color: #94a3b8; }.body-template-preview p { margin: 0; font-size: 13px; color: #0f172a; line-height: 1.8; }.body-template-preview :deep(.preview-link) { color: #2563eb; text-decoration: underline; }
 .notify-config-row { display: grid; gap: 8px; padding: 12px; border: 1px solid #dbeafe; border-radius: 8px; background: #eff6ff; }.notify-config-row small { color: #64748b; font-size: 12px; }
 .validation, .error { display: grid; gap: 4px; margin-top: 18px; padding: 10px 12px; border-left: 3px solid #f59e0b; background: #fffbeb; color: #92400e; font-size: 13px; }.error { border-color: #dc2626; background: #fef2f2; color: #b91c1c; }
 .btn, .icon-button { border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #475569; cursor: pointer; font-size: 13px; }.btn { padding: 7px 14px; }.btn.primary { border-color: #3b82f6; background: #3b82f6; color: #fff; }.btn.danger { border-color: #fecaca; color: #dc2626; }.btn:disabled, .icon-button:disabled { cursor: not-allowed; opacity: .45; }.icon-button { width: 28px; height: 28px; padding: 0; font-size: 18px; line-height: 1; }.icon-button.danger { color: #dc2626; border-color: #fecaca; }

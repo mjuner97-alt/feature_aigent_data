@@ -18,7 +18,9 @@ public final class NotifyBodyTemplate {
     public static String renderHtml(String template, String title, String url, String defaultHtml) {
         if (template == null || template.isBlank()) return defaultHtml;
         String anchor = anchor(title, url);
-        String body = escape(template).replace("\r\n", "\n").replace("\n", "<br>");
+        // Encode before adding markup so email clients preserve indentation too.
+        String body = escape(template).replace(" ", "&nbsp;").replace("\t", "&nbsp;".repeat(4))
+                .replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br>");
         if (body.contains(LINK_PLACEHOLDER)) {
             body = body.replace(LINK_PLACEHOLDER, anchor);
         } else {

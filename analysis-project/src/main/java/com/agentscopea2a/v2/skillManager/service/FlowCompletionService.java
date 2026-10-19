@@ -216,20 +216,30 @@ public class FlowCompletionService {
     }
 
     public void resend(SkillFlowExecution execution, List<String> confirmedReceivers, List<String> confirmedCcReceivers) {
+        resend(execution, confirmedReceivers, confirmedCcReceivers, null);
+    }
+
+    /** Null preserves the execution snapshot; an explicit blank selects the system default. */
+    public void resend(SkillFlowExecution execution, List<String> confirmedReceivers, List<String> confirmedCcReceivers,
+                       String notifyBodyTemplate) {
+        if (notifyBodyTemplate != null && notifyBodyTemplate.length() > 2000) {
+            throw new IllegalArgumentException("通知邮件正文模板超长（上限 2000 字符）");
+        }
         if (!execution.getStatus().terminal()
                 || execution.getStatus() == FlowExecutionStatus.CANCELLED) {
             throw new IllegalStateException("FlowNotificationResendUnavailable: " + execution.getId());
         }
-        send(execution, "flow:" + execution.getId() + ":RESEND:" + UUID.randomUUID(), confirmedReceivers, confirmedCcReceivers);
+        send(execution, "flow:" + execution.getId() + ":RESEND:" + UUID.randomUUID(), confirmedReceivers, confirmedCcReceivers,
+                notifyBodyTemplate);
     }
 
     /** 落通知记录 -> 真正发送 -> 回写结果状态;deliveryKey 重复(首次已发过)则直接跳过。 */
     private void send(SkillFlowExecution execution, String key) {
-        send(execution, key, null, null);
+        send(execution, key, null, null, null);
     }
 
     private void send(SkillFlowExecution execution, String key, List<String> confirmedReceivers,
-                      List<String> confirmedCcReceivers) {
+                      List<String> confirmedCcReceivers, String notifyBodyTemplate) {
         boolean explicit = confirmedReceivers != null || confirmedCcReceivers != null;
         List<String> receivers;
         List<String> ccReceivers;
@@ -256,7 +266,7 @@ public class FlowCompletionService {
         String filePath = resolveReportPath(execution);
         log.info("Long task notification requested: executionId={}, recipients={}, reportPath={}",
                 execution.getId(), receivers, execution.getReportPath());
-        notificationDispatcher.enqueue(record, new NotificationPayload("HTML", notificationHtml(execution, filePath),
+        notificationDispatcher.enqueue(record, new NotificationPayload("HTML", notificationHtml(execution, notifyBodyTemplate),
                 filePath, reportFileName(execution),
                 reportUrl(execution), execution.getFlowId(), FlowReportNaming.datedTitle(execution.getFlowName(), execution), null, null,
                 execution.getId(), execution.getStatus().name(), LocalDateTime.now(clock),
@@ -292,7 +302,7 @@ public class FlowCompletionService {
     }
 
     /** 长任务通知正文:优先用执行时快照的正文模板({链接} 占位符替换为报告地址),未配置走默认文案。 */
-    private String notificationHtml(SkillFlowExecution execution, String filePath) {
+    private String notificationHtml(SkillFlowExecution execution, String notifyBodyTemplate) {
         String url = reportUrl(execution);
         String title = escapeHtml(Objects.toString(FlowReportNaming.datedTitle(execution.getFlowName(), execution), "长任务报告"));
         String defaultHtml;
@@ -305,7 +315,8 @@ public class FlowCompletionService {
                     .append(title).append("</a>，请关注。</p></body></html>").toString();
         }
         String linkTitle = Objects.toString(FlowReportNaming.datedTitle(execution.getFlowName(), execution), "长任务报告");
-        return NotifyBodyTemplate.renderHtml(execution.getNotifyBodyTemplateSnapshot(), linkTitle, url, defaultHtml);
+        return NotifyBodyTemplate.renderHtml(notifyBodyTemplate == null ? execution.getNotifyBodyTemplateSnapshot() : notifyBodyTemplate,
+                linkTitle, url, defaultHtml);
     }
 
     private static boolean isReportProcess(SkillFlowExecution execution) {

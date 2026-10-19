@@ -217,10 +217,10 @@ export async function getSkillFlowExecutionNotifySettings(id: number): Promise<N
   return res.json();
 }
 
-export async function resendSkillFlowExecutionNotification(id: number, notifyReceivers: string[], ccReceivers: string[] = []): Promise<void> {
+export async function resendSkillFlowExecutionNotification(id: number, notifyReceivers: string[], ccReceivers: string[] = [], notifyBodyTemplate?: string): Promise<void> {
   const res = await fetch(`${EXECUTION_BASE}/${id}/notifications/resend`, {
     method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ confirmed: true, notifyReceivers, ccReceivers }),
+    body: JSON.stringify({ confirmed: true, notifyReceivers, ccReceivers, notifyBodyTemplate }),
   });
   if (!res.ok) throw await requestError(res, '补发通知失败');
 }

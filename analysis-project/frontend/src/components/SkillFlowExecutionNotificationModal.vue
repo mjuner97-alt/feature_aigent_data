@@ -3,10 +3,13 @@ import { onUnmounted, ref, watch } from 'vue';
 import { getSkillFlowExecutionNotifySettings, resendSkillFlowExecutionNotification } from '../api/skillFlow';
 import { batchUserNames } from '../api/skill';
 import MailRecipientDialog from './MailRecipientDialog.vue';
+import NotifyBodyTemplateEditor from './NotifyBodyTemplateEditor.vue';
 
 const props = defineProps<{ open: boolean; executionId: number | null }>();
 const emit = defineEmits<{ (event: 'update:open', value: boolean): void; (event: 'sent'): void }>();
 const savedTo = ref<string[]>([]), savedCc = ref<string[]>([]), names = ref<Record<string, string>>({});
+const savedTemplate = ref(''), bodyTemplate = ref(''), flowName = ref('');
+const reportLinkTitle = ref<string | undefined>();
 const loading = ref(false), ready = ref(false), sending = ref(false);
 const error = ref(''), successMessage = ref('');
 let generation = 0;
@@ -14,7 +17,7 @@ let successTimer: ReturnType<typeof setTimeout> | undefined;
 
 async function loadDefaults() {
   const version = ++generation, id = props.executionId;
-  ready.value = false; error.value = ''; savedTo.value = []; savedCc.value = []; names.value = {};
+  ready.value = false; error.value = ''; savedTo.value = []; savedCc.value = []; names.value = {}; savedTemplate.value = ''; bodyTemplate.value = ''; flowName.value = ''; reportLinkTitle.value = undefined;
   if (!props.open || id == null) { loading.value = false; return; }
   loading.value = true;
   try {
@@ -25,6 +28,7 @@ async function loadDefaults() {
     // Display failures must never remove saved IDs from the actual recipients.
     const displayNames = await batchUserNames([...to, ...cc]).catch(() => ({}));
     if (version !== generation) return;
+    savedTemplate.value = settings.notifyBodyTemplate ?? ''; bodyTemplate.value = savedTemplate.value; flowName.value = settings.flowName ?? ''; reportLinkTitle.value = settings.reportLinkTitle;
     savedTo.value = to; savedCc.value = cc; names.value = displayNames; ready.value = true;
   } catch (e) {
     if (version === generation) error.value = e instanceof Error ? e.message : '读取已保存名单失败，请重试';
@@ -41,11 +45,12 @@ watch(() => [props.open, props.executionId] as const, () => {
 function close() { if (!sending.value) { generation++; emit('update:open', false); } }
 async function send(value: { to: string[]; cc: string[] }) {
   if (sending.value || loading.value || !ready.value || !props.open || props.executionId == null) return;
+  if (bodyTemplate.value.length > 2000) { error.value = '通知邮件正文模板超长（上限 2000 字符）'; return; }
   if (!value.to.length) { error.value = '请至少选择一位收件人'; return; }
   const version = generation, id = props.executionId;
   sending.value = true; error.value = '';
   try {
-    await resendSkillFlowExecutionNotification(id, [...value.to], [...value.cc]);
+    await resendSkillFlowExecutionNotification(id, [...value.to], [...value.cc], bodyTemplate.value);
     if (version !== generation) return;
     successMessage.value = '通知已提交，请在任务详情查看结果';
     successTimer = setTimeout(() => { successMessage.value = ''; }, 3000);
@@ -59,7 +64,7 @@ onUnmounted(() => { generation++; if (successTimer) clearTimeout(successTimer); 
 </script>
 
 <template>
-  <MailRecipientDialog v-if="open && ready" mode="send" :open="open" :to="savedTo" :cc="savedCc" :names="names" :submitting="sending" :error="error" @update:open="close" @confirm="send" />
+  <MailRecipientDialog v-if="open && ready" mode="send" :open="open" :to="savedTo" :cc="savedCc" :names="names" :submitting="sending" :error="error" :dirty="bodyTemplate !== savedTemplate" @update:open="close" @confirm="send"><NotifyBodyTemplateEditor v-model="bodyTemplate" :flow-name="flowName" :report-link-title="reportLinkTitle" :disabled="sending" /></MailRecipientDialog>
   <Teleport to="body">
     <div v-if="successMessage" class="success-toast" role="status">{{ successMessage }}</div>
     <div v-if="open && !ready" class="loading-mask" @click.self="close">

@@ -4,12 +4,12 @@ import com.agentscopea2a.v2.skillManager.entity.SkillFlowExecution;
 
 import java.time.format.DateTimeFormatter;
 
-final class FlowReportNaming {
+public final class FlowReportNaming {
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy年MM月dd日");
 
     private FlowReportNaming() {}
 
-    static String datedTitle(String title, SkillFlowExecution execution) {
+    public static String datedTitle(String title, SkillFlowExecution execution) {
         return title + dateSuffix(execution);
     }
 

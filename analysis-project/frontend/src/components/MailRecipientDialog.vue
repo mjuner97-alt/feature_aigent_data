@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onUnmounted, ref, watch } from 'vue';
 import { batchUserNames, searchSkillUsers } from '../api/skill';
-const props = withDefaults(defineProps<{ open: boolean; to: string[]; cc: string[]; names: Record<string, string>; mode?: 'edit' | 'send'; submitting?: boolean; error?: string }>(), { mode: 'edit', submitting: false, error: '' });
+const props = withDefaults(defineProps<{ open: boolean; to: string[]; cc: string[]; names: Record<string, string>; mode?: 'edit' | 'send'; submitting?: boolean; error?: string; dirty?: boolean }>(), { mode: 'edit', submitting: false, error: '', dirty: false });
 const emit = defineEmits<{ (e: 'update:open', value: boolean): void; (e: 'confirm', value: { to: string[]; cc: string[]; names: Record<string, string> }): void }>();
 const to = ref<string[]>([]), cc = ref<string[]>([]), names = ref<Record<string, string>>({});
 const keyword = ref(''), busy = ref(false), message = ref('');
@@ -13,9 +13,9 @@ let initialRecipients = '';
 const recipientSnapshot = () => JSON.stringify([to.value, cc.value]);
 function requestClose() {
   if (props.submitting) return;
-  if (busy.value || recipientSnapshot() !== initialRecipients) {
+  if (busy.value || props.dirty || recipientSnapshot() !== initialRecipients) {
     message.value = props.mode === 'send'
-      ? '名单已调整，请点击“确认发送”提交；点击“取消”放弃本次调整。'
+      ? '通知内容或名单已调整，请点击“确认发送”提交；点击“取消”放弃本次调整。'
       : '名单尚未确认，请点击“确认”保留修改，再保存流程；点击“取消”放弃修改。';
     return;
   }
@@ -107,6 +107,7 @@ function confirm() {
           <section><h4>收件人 TO（{{ to.length }}）</h4><button v-if="mode === 'send'" type="button" @click="to = []">清空收件人</button><p v-if="!to.length">{{ mode === 'send' ? '请至少添加一位收件人后发送' : '未配置时通知流程触发人' }}</p><ol><li v-for="(id, index) in to" :key="id"><span>{{ names[id] || id }}({{ id }})</span><button type="button" :aria-label="`将 ${id} 移至抄送`" @click="add([id], 'cc')">移至抄送</button><button type="button" :aria-label="`删除收件人 ${id}`" @click="to.splice(index, 1)">删除</button></li></ol></section>
           <section><h4>抄送 CC（{{ cc.length }}）</h4><button v-if="mode === 'send'" type="button" @click="cc = []">清空抄送</button><p v-if="!cc.length">暂无抄送人</p><ol><li v-for="(id, index) in cc" :key="id"><span>{{ names[id] || id }}({{ id }})</span><button type="button" :aria-label="`将 ${id} 移至收件人`" @click="add([id], 'to')">移至收件人</button><button type="button" :aria-label="`删除抄送人 ${id}`" @click="cc.splice(index, 1)">删除</button></li></ol></section>
         </div>
+        <slot />
         </fieldset>
         <p v-if="error" role="alert">{{ error }}</p>
         <footer><button type="button" :disabled="submitting" @click="close">取消</button><button type="button" :disabled="busy || submitting || (mode === 'send' && !to.length)" @click="confirm">{{ submitting ? '提交中…' : mode === 'send' ? `确认发送（收件人 ${to.length} 人，抄送 ${cc.length} 人）` : '确认' }}</button></footer>

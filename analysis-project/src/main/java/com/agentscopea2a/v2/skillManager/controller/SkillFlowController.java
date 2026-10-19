@@ -10,6 +10,7 @@ import com.agentscopea2a.v2.skillManager.dto.SkillFlowDto;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowNotification;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.skillManager.service.FlowCompletionService;
+import com.agentscopea2a.v2.skillManager.service.FlowReportNaming;
 import com.agentscopea2a.v2.skillManager.service.FlowDefinitionService;
 import com.agentscopea2a.v2.skillManager.service.FlowExecutionService;
 import com.agentscopea2a.v2.skillManager.service.FlowQueryService;
@@ -239,7 +240,7 @@ public class SkillFlowController {
                 .body(queryService.nodeReport(id, nodeId, userId));
     }
 
-    /** Latest saved recipient defaults, restricted to the execution's triggering user. */
+    /** Latest saved notification defaults, restricted to the execution's triggering user. */
     @GetMapping("/api/skill-flow-executions/{id}/notifications/recipients")
     public NotifySettingsDto getNotificationRecipients(@PathVariable(name = "id") Long id,
                                                        @RequestHeader(name = "X-User-Id") String userId) {
@@ -248,7 +249,11 @@ public class SkillFlowController {
         if (flow == null || flow.getDeletedAt() != null) {
             throw new IllegalStateException("FlowNotFound: " + execution.getFlowId());
         }
-        return definitionService.getNotifySettings(flow.getId(), flow.getCreatedBy());
+        var settings = definitionService.getNotifySettings(flow.getId(), flow.getCreatedBy());
+        return new NotifySettingsDto(settings.notifyReceivers(), settings.notifyReceiverTriggers(),
+                settings.notifyEnabled(), settings.notifyReceiversByTrigger(), settings.ccReceivers(),
+                settings.ccReceiversByTrigger(), flow.getNotifyBodyTemplate(), flow.getName(),
+                FlowReportNaming.datedTitle(execution.getFlowName(), execution));
     }
     /** 手动重发该次执行完成通知(仅终态执行可用)。 */
     @PostMapping("/api/skill-flow-executions/{id}/notifications/resend")
@@ -260,7 +265,7 @@ public class SkillFlowController {
         }
         queryService.requireOwner(id, userId);
         completionService.resend(mapper.selectFlowExecutionById(id), request == null ? null : request.notifyReceivers(),
-                request == null ? null : request.ccReceivers());
+                request == null ? null : request.ccReceivers(), request == null ? null : request.notifyBodyTemplate());
     }
 
     @PostMapping("/api/skill-flow-executions/{id}/summary/retry")
