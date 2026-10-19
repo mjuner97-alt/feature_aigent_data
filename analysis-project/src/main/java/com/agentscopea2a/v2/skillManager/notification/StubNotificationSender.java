@@ -70,7 +70,7 @@ public class StubNotificationSender implements NotificationSender {
         requestBody.put("title", title);
         requestBody.put("content", getMailContent(content, contactName, contactPhone));
         requestBody.put("toUserList", userIds == null ? List.of() : new ArrayList<>(userIds));
-        requestBody.put("ccUserList", ccUserIds == null ? List.of() : new ArrayList<>(ccUserIds));
+        requestBody.put("toCCUserList", ccUserIds == null ? List.of() : new ArrayList<>(ccUserIds));
         post(requestBody);
     }
 

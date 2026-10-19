@@ -142,6 +142,8 @@ public class NotificationRecipientService {
             rows.add(NotificationRecipient.builder().configId(config.getId())
                     .userId(NotificationRecipient.SCOPE_MARKER_USER_ID)
                     .triggerType(scope).recipientType(NotificationRecipient.RECIPIENT_TYPE_TO)
+                    // 批量 INSERT 显式写入 sort_order，空名单标记同样需要赋值，不能依赖列默认值。
+                    .sortOrder(0)
                     .channel(NotificationRecipient.CHANNEL_EMAIL).enabled(Boolean.TRUE).build());
         }
         recipientMapper.batchInsert(rows);
