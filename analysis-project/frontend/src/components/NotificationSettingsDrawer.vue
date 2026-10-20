@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import OrderedRecipientList from './OrderedRecipientList.vue';
+import { lookupRecipients, lookupMessage } from '../api/recipientLookup';
 /**
  * 通知收件人设置(定时任务 / 长任务流程共用,方案 A:通知配置独立于任务表单)。
  * 默认右侧抽屉;page=true 时嵌入独立路由页(无遮罩,全屏展开)。
@@ -41,8 +43,7 @@ const fallbackLabel = computed(() => (isFlow.value ? '流程触发人' : '任务
 const me = currentUserId();
 
 /** 收件人上限,与后端 MockOrgService.filterExistingUserIds 的 50 保持一致 */
-/** 标签视图阈值:超过则切换为表格列表 */
-const TAG_THRESHOLD = 8;
+
 
 const loading = ref(false);
 const saving = ref(false);
@@ -65,6 +66,7 @@ const results = ref<{ userId: string; name: string; label: string }[]>([]);
 const searchError = ref('');
 /** 键盘上下选择的高亮行;Enter 确认添加 */
 const activeIndex = ref(0);
+let lookupVersion = 0;
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
 // —— 粘贴批量添加 ——
@@ -154,6 +156,8 @@ function removeUser(uid: string) {
 
 // —— 搜索:输入防抖 350ms 自动搜索,也可点按钮/回车立即搜 ——
 function doSearch() {
+  if (pasteBusy.value) return;
+  const version = ++lookupVersion;
   const kw = keyword.value.trim();
   if (!kw) {
     results.value = [];
@@ -163,25 +167,26 @@ function doSearch() {
   searching.value = true;
   searchError.value = '';
   const kwSnapshot = kw;
-  searchSkillUsers(kwSnapshot).then(found => {
+  lookupRecipients(kwSnapshot, searchSkillUsers).then(lookup => {
+    const found = lookup.items;
     // 关键词已变(更新的搜索已发出):丢弃过期响应,避免旧候选覆盖新结果后被 Enter 误加
-    if (keyword.value.trim() !== kwSnapshot) return;
+    if (version !== lookupVersion || keyword.value.trim() !== kwSnapshot) return;
     // 过滤掉已在名单里的人和自己(自己默认始终收到,无需加入名单)
     results.value = found
       .filter(u => u.userId !== me && !receivers.value.includes(u.userId))
       .map(u => ({
         userId: u.userId,
         name: u.name ?? u.userId,
-        label: u.name ? `${u.name} (${u.userId})` : u.userId,
+        label: [u.name || u.userId, '(' + u.userId + ')', u.department || ''].join(' '),
       }));
-    if (!results.value.length) searchError.value = '未找到人员(或已在名单中)';
+    searchError.value = lookupMessage(lookup) + (!results.value.length && found.length ? '；匹配人员已在名单中或默认接收' : '');
     activeIndex.value = 0;
   }).catch((e: unknown) => {
     if (keyword.value.trim() !== kwSnapshot) return;
     searchError.value = e instanceof Error ? e.message : '搜索失败';
     results.value = [];
   }).finally(() => {
-    if (keyword.value.trim() === kwSnapshot) searching.value = false;
+    if (version === lookupVersion) searching.value = false;
   });
 }
 
@@ -223,11 +228,14 @@ function addUser(opt: { userId: string; name: string }) {
 async function addPasted() {
   const raw = pasteInput.value;
   if (!raw.trim() || pasteBusy.value) return;
+  const version = ++lookupVersion;
+  if (searchTimer) clearTimeout(searchTimer);
+  searching.value = false;
   pasteResult.value = null;
   pasteBusy.value = true;
   error.value = '';
   try {
-    const tokens = raw.split(/[,;，；\s]+/).map(t => t.trim()).filter(Boolean);
+    const tokens = raw.split(/[,;，；、\s]+/).map(t => t.trim()).filter(Boolean);
     const seen = new Set<string>();
     const dupInPaste: string[] = [];
     const unique: string[] = [];
@@ -242,17 +250,21 @@ async function addPasted() {
     // 自己默认始终接收,归入"已在名单"类别并提示
     const alreadyIn = unique.filter(id => id === me || receivers.value.includes(id));
     const toCheck = unique.filter(id => id !== me && !receivers.value.includes(id));
-    // clamp 到 0,防止名单已满时 remaining 为负导致 slice 反向截取、把溢出/可校验工号分错类
     const checkable = toCheck;
-    // 人员表精确匹配校验:查得到 = 有效(顺带拿姓名),查不到 = 无效工号
-    const names = await batchUserNames(checkable);
-    const invalid = checkable.filter(id => !names[id]);
-    const added = checkable.filter(id => !!names[id]);
+    // 精确统一认证号或唯一完整姓名自动加入；其余候选需手动选择。
+    const lookup = await lookupRecipients(checkable.join(' '), searchSkillUsers, true);
+    if (version !== lookupVersion) return;
+    const names = Object.fromEntries(lookup.matched.map(p => [p.userId, p.name || p.userId]));
+    const invalid = lookup.missing;
+    const added = lookup.matched.map(p => p.userId).filter(id => id !== me && !receivers.value.includes(id));
+    results.value = lookup.items.filter(p => p.userId !== me && !receivers.value.includes(p.userId)).map(p => ({ userId: p.userId, name: p.name || p.userId, label: [p.name || p.userId, '(' + p.userId + ')', p.department || ''].join(' ') }));
+    searchError.value = lookupMessage(lookup, true);
+    activeIndex.value = 0;
     for (const uid of added) {
       if (names[uid]) nameMap.value[uid] = names[uid];
     }
     receivers.value = [...receivers.value, ...added];
-    pasteInput.value = '';
+    pasteInput.value = lookup.failed.join('、');
     pasteResult.value = {
       added: added.length,
       dupInPaste,
@@ -260,7 +272,7 @@ async function addPasted() {
       invalid,
     };
   } finally {
-    pasteBusy.value = false;
+    if (version === lookupVersion) pasteBusy.value = false;
   }
 }
 
@@ -311,6 +323,9 @@ function close() { emit('update:open', false); }
 
 // immediate:页面模式(page)挂载时 open 已是 true,不加 immediate 则 watch 永不触发,已保存的名单不回显
 watch(() => props.open, (open) => {
+  lookupVersion++;
+  searching.value = false; pasteBusy.value = false;
+  if (searchTimer) clearTimeout(searchTimer);
   if (open) {
     results.value = [];
     keyword.value = '';
@@ -324,6 +339,7 @@ watch(() => props.open, (open) => {
 }, { immediate: true });
 
 onBeforeUnmount(() => {
+  lookupVersion++;
   if (searchTimer) clearTimeout(searchTimer);
 });
 </script>
@@ -386,35 +402,16 @@ onBeforeUnmount(() => {
                     暂未添加额外收件人 —— 名单为空时,完成通知将发送给{{ fallbackLabel }}
                   </div>
 
-                  <!-- 少量:标签视图 -->
-                  <div v-else-if="receivers.length <= TAG_THRESHOLD" class="chips">
-                    <span v-for="uid in receivers" :key="uid" class="chip">
-                      {{ chipLabel(uid) }}
-                      <button class="chip-remove" aria-label="移除收件人" @click="removeUser(uid)">×</button>
-                    </span>
-                  </div>
-
-                  <!-- 大量:表格列表(姓名 / 用户 ID / 移除) -->
-                  <div v-else class="receiver-table-wrap">
-                    <table class="receiver-table">
-                      <thead>
-                        <tr><th>姓名</th><th>统一认证号</th><th class="th-op">操作</th></tr>
-                      </thead>
-                      <tbody>
-                        <tr v-for="uid in receivers" :key="uid">
-                          <td>{{ nameOf(uid) || '—' }}</td>
-                          <td>{{ uid }}</td>
-                          <td class="th-op"><button class="remove-link" @click="removeUser(uid)">移除</button></td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
+                  <OrderedRecipientList v-else v-model="receivers" label="收件人" :disabled="saving || loading || pasteBusy">
+                    <template #default="{ id }">{{ chipLabel(id) }}</template>
+                    <template #actions="{ id }"><button type="button" :disabled="saving || pasteBusy" :aria-label="`移除收件人 ${id}`" @click="removeUser(id)">移除</button></template>
+                  </OrderedRecipientList>
 
                   <!-- 搜索添加(姓名/统一认证号,防抖 + 键盘确认) -->
                   <div class="search-row">
                     <input
                       v-model="keyword"
-                      placeholder="输入姓名或统一认证号搜索人员"
+                      placeholder="输入多个姓名或统一认证号，逗号、分号或空格分隔"
                       @keydown.down.prevent="moveActive(1)"
                       @keydown.up.prevent="moveActive(-1)"
                       @keydown.enter.prevent="confirmActive"
@@ -441,7 +438,7 @@ onBeforeUnmount(() => {
                   <div class="search-row paste-row">
                     <input
                       v-model="pasteInput"
-                      placeholder="粘贴多个统一认证号批量添加(逗号 / 分号 / 空格 / 换行分隔)"
+                      placeholder="粘贴多个完整姓名或统一认证号(逗号 / 分号 / 空格 / 换行分隔)"
                       @keydown.enter.prevent="addPasted"
                     />
                     <button class="btn mini" :disabled="pasteBusy || !pasteInput.trim()" @click="addPasted">
@@ -451,7 +448,7 @@ onBeforeUnmount(() => {
                   <div v-if="pasteResult" class="paste-result">
                     <span v-if="pasteResult.added" class="pr-added">已添加 {{ pasteResult.added }} 人</span>
                     <span v-if="pasteResult.invalid.length" class="pr-invalid">
-                      无效工号 {{ pasteResult.invalid.length }} 个（人员表中不存在）：{{ pasteResult.invalid.join('、') }}
+                      未匹配 {{ pasteResult.invalid.length }} 项：{{ pasteResult.invalid.join('、') }}
                     </span>
                     <span v-if="pasteResult.alreadyIn.length" class="pr-dup">
                       已存在 {{ pasteResult.alreadyIn.length }} 人（已在名单或默认接收）：{{ pasteResult.alreadyIn.join('、') }}

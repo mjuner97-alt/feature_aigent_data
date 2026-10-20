@@ -8,7 +8,8 @@ import { ref, watch, computed, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { Download, EditPen, View } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { downloadExecutionFile, listExecutions, retryExecution, viewExecutionFile } from '../api/skillJob';
+import { downloadExecutionFile, getExecutionReportContent, listExecutions, retryExecution, viewExecutionFile } from '../api/skillJob';
+import { copyReportContent } from '../utils/reportClipboard';
 import type { SkillJobExecution } from '../types/skillJob';
 
 const props = defineProps<{ open: boolean; jobId: number | null; canDownload?: boolean; canEdit?: boolean }>();
@@ -148,6 +149,18 @@ function close() { emit('update:open', false); }
 const viewing = ref<Set<number>>(new Set());
 const previewed = ref<Set<number>>(new Set());
 const downloading = ref<Set<number>>(new Set());
+const copying = ref<Set<number>>(new Set());
+
+async function copyFile(execId: number) {
+  if (copying.value.has(execId)) return;
+  copying.value.add(execId);
+  try {
+    await copyReportContent(() => getExecutionReportContent(execId));
+    ElMessage.success('内容已复制，可粘贴到 Word / WPS 等支持富文本的编辑器');
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '复制失败');
+  } finally { copying.value.delete(execId); }
+}
 
 async function viewFile(execId: number) {
   viewing.value.add(execId);
@@ -272,6 +285,7 @@ async function retry(exec: SkillJobExecution) {
                       <button class="report-action" :disabled="downloading.has(exec.id)" title="下载 HTML" @click.stop="downloadFile(exec.id)">
                         <el-icon><Download /></el-icon><span>{{ downloading.has(exec.id) ? '下载中…' : '下载' }}</span>
                       </button>
+                      <button class="report-action" :disabled="copying.has(exec.id)" title="复制正文及格式" @click.stop="copyFile(exec.id)">{{ copying.has(exec.id) ? '复制中…' : '复制内容' }}</button>
                     </div>
                   </div>
                   <div v-else-if="exec.mdFileExists" class="detail-row">

@@ -1,6 +1,7 @@
 import type { SkillFlowSummary, SkillFlow, SkillFlowExecution, SkillFlowInput, SkillFlowNodeExecution, FlowMetricReadiness, FlowMetricPrecheck, SkillFlowRunResult, SkillFlowNotification } from '../types/skillFlow';
 import type { NotifySettings, NotifySettingsUpdateInput } from '../types/notifySettings';
 import { apiErrorDetail } from '../utils/apiError';
+import { reportBlobWithSelectionCopy } from '../utils/reportSelectionCopy';
 
 const FLOW_BASE = '/api/skill-flows';
 const EXECUTION_BASE = '/api/skill-flow-executions';
@@ -234,6 +235,13 @@ function insertBeforeReportEnd(html: string, tag: 'head' | 'body', content: stri
   return html.slice(0, lastIndex) + content + html.slice(lastIndex);
 }
 
+/** Read report HTML with the same access checks as preview/download. */
+export async function getSkillFlowExecutionReportContent(id: number): Promise<string> {
+  const res = await fetch(`${EXECUTION_BASE}/${id}/report`, { headers: authHeaders(), cache: 'no-store' });
+  if (!res.ok) throw await requestError(res, '读取汇总报告失败');
+  return res.text();
+}
+
 /** 拉取汇总报告 blob;并从 Content-Disposition 解析下载文件名(后端按 {任务名称}-flow-report.html 生成)。 */
 export async function getSkillFlowExecutionReportUrl(id: number): Promise<{ url: string; downloadName?: string }> {
   const res = await fetch(`${EXECUTION_BASE}/${id}/report`, { headers: authHeaders(), cache: 'no-store' });
@@ -254,14 +262,14 @@ export async function getSkillFlowExecutionReportUrl(id: number): Promise<{ url:
     const scripts = html.includes('report-toc') ? tocIndentScript : script + tocIndentScript;
     reportBlob = new Blob([insertBeforeReportEnd(styledHtml, 'body', scripts)], { type: 'text/html' });
   }
-  return { url: URL.createObjectURL(reportBlob), downloadName };
+  return { url: URL.createObjectURL(await reportBlobWithSelectionCopy(reportBlob)), downloadName };
 }
 
 /** 邮件公开报告页使用的原始报告请求，不依赖登录用户。 */
 export async function getPublicSkillFlowReportBlobUrl(id: number): Promise<string> {
   const res = await fetch(`${EXECUTION_BASE}/${id}/report`, { cache: 'no-store' });
   if (!res.ok) throw await requestError(res, '打开汇总报告失败');
-  return URL.createObjectURL(await res.blob());
+  return URL.createObjectURL(await reportBlobWithSelectionCopy(await res.blob()));
 }
 export async function retrySkillFlowSummary(id: number): Promise<void> { const res = await fetch(`${EXECUTION_BASE}/${id}/summary/retry`, { method: 'POST', headers: authHeaders() }); if (!res.ok) throw await requestError(res, '重新生成汇总失败'); }
 export async function retrySkillFlowNode(executionId: number, nodeId: number): Promise<void> { const res = await fetch(`${EXECUTION_BASE}/${executionId}/nodes/${nodeId}/retry`, { method: 'POST', headers: authHeaders() }); if (!res.ok) throw await requestError(res, '重跑任务失败'); }
@@ -273,7 +281,7 @@ export async function cancelSkillFlowExecution(executionId: number): Promise<voi
 export async function getSkillFlowNodeReportUrl(executionId: number, nodeId: number): Promise<string> {
   const res = await fetch(`${EXECUTION_BASE}/${executionId}/nodes/${nodeId}/report`, { headers: authHeaders() });
   if (!res.ok) throw await requestError(res, '打开 Skill 内容失败');
-  return URL.createObjectURL(await res.blob());
+  return URL.createObjectURL(await reportBlobWithSelectionCopy(await res.blob()));
 }
 
 /** 读取可编辑的汇总报告 HTML 源码(仅触发人本人)。 */

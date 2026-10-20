@@ -3,6 +3,7 @@ interface PageResult<T> { items: T[]; page: number; pageSize: number; total: num
 import type { SkillJob, SkillJobInput, SkillJobUpdateInput, SkillJobExecution, SkillJobNotification } from '../types/skillJob';
 import type { NotifySettings, NotifySettingsUpdateInput } from '../types/notifySettings';
 import { apiErrorDetail } from '../utils/apiError';
+import { reportBlobWithSelectionCopy } from '../utils/reportSelectionCopy';
 
 const BASE = '/api/skill-jobs';
 
@@ -205,7 +206,7 @@ export async function downloadExecutionFile(execId: number): Promise<void> {
     const m = cd.match(/filename="([^"]+)"/);
     if (m) filename = m[1];
   }
-  const url = URL.createObjectURL(blob);
+  const url = URL.createObjectURL(await reportBlobWithSelectionCopy(blob));
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
@@ -215,16 +216,19 @@ export async function downloadExecutionFile(execId: number): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
-/**
- * 在新标签页内渲染执行记录生成的 HTML 报告（表格样式 + echarts 图表）。
- * 带 X-User-Id 鉴权头取 html blob，转 object URL 后 window.open：
- * 浏览器直接渲染，不触发下载。3 分钟后释放 object URL，留够阅读时间。
- */
+/** Read the latest HTML through the same authorized endpoint as preview/download. */
+export async function getExecutionReportContent(execId: number): Promise<string> {
+  const res = await fetch(`${BASE}/executions/${execId}/download`, { headers: authHeaders(), cache: 'no-store' });
+  if (!res.ok) throw await downloadError(res, '读取报告失败');
+  return res.text();
+}
+
+/** Preview the HTML report; release the object URL after three minutes. */
 export async function viewExecutionFile(execId: number): Promise<void> {
   const res = await fetch(`${BASE}/executions/${execId}/download`, { headers: authHeaders() });
   if (!res.ok) throw await downloadError(res, '打开失败');
   const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
+  const url = URL.createObjectURL(await reportBlobWithSelectionCopy(blob));
   window.open(url, '_blank');
   setTimeout(() => URL.revokeObjectURL(url), 3 * 60 * 1000);
 }

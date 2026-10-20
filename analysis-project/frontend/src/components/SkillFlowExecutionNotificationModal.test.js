@@ -22,7 +22,7 @@ async function setup(t, api = {}, people = {}) {
     },
     '../api/skill': {
       batchUserNames: async ids => Object.fromEntries(ids.filter(id => id !== 'bad').map(id => [id, `姓名${id}`])),
-      searchSkillUsers: async () => [{ userId: 'search', name: '搜索人员' }], ...people,
+      searchSkillUsers: async q => q === 'bad' ? [] : [{ userId: q, name: `姓名${q}` }], ...people,
     },
   });
   const root = container(), app = renderer.createApp({ setup: () => () => Vue.h(Modal, {
@@ -111,9 +111,9 @@ test('resend API serializes explicit ordered TO and CC including an empty CC', a
   assert.deepEqual(requests, [{ confirmed: true, notifyReceivers: ['b', 'a'], ccReceivers: ['c'] }, { confirmed: true, notifyReceivers: ['b'], ccReceivers: [] }]);
 });
 
-test('execution detail opens the same notification picker instead of a separate recipient prompt', async t => {
+for (const drawerName of ['SkillFlowExecutionDrawer', 'ReportProcessExecutionDrawer']) test(drawerName + ' opens the shared notification picker instead of a text prompt', async t => {
   const modalProps = [];
-  const { default: Drawer } = await loadModule(new URL('./SkillFlowExecutionDrawer.vue', import.meta.url), {
+  const { default: Drawer } = await loadModule(new URL('./' + drawerName + '.vue', import.meta.url), {
     vue: { ...Vue, Teleport: Vue.Fragment },
     'vue-router': { useRouter: () => ({ push() {} }) },
     'element-plus': { ElMessageBox: { prompt: () => assert.fail('must use shared notification picker') } },
@@ -160,4 +160,11 @@ test('resend API preserves template whitespace and sends an explicit empty templ
   await api.resendSkillFlowExecutionNotification(42, ['b'], [], '');
   assert.equal(requests[0].notifyBodyTemplate, '  正文\n\t{链接}  ');
   assert.equal(requests[1].notifyBodyTemplate, '');
+});
+
+test('manual send submits reordered TO without changing saved defaults',async t=>{
+ const {root,calls}=await setup(t);
+ const up=find(root,n=>n.props['aria-label']==='上移收件人 a');assert.ok(up,'TO order button exists');
+ up.props.onClick();await flush();await sendButton(root).props.onClick();await flush();
+ assert.deepEqual(calls,[[42,['a','b'],['c'],'']]);
 });

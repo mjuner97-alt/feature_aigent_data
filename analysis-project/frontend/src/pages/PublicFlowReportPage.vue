@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
+import { reportBlobWithSelectionCopy } from '../utils/reportSelectionCopy';
 
 const route = useRoute();
 const url = ref('');
@@ -12,7 +13,7 @@ onMounted(async () => {
   try {
     const response = await fetch(`/api/skill-flow-executions/${id}/report`, { cache: 'no-store' });
     if (!response.ok) throw new Error('报告暂不可用');
-    url.value = URL.createObjectURL(await response.blob());
+    url.value = URL.createObjectURL(await reportBlobWithSelectionCopy(await response.blob()));
   } catch (e) {
     error.value = e instanceof Error ? e.message : '报告加载失败';
   }

@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue';
 import { Check, Close, EditPen, View } from '@element-plus/icons-vue';
 import { getExecutionReportSource, saveExecutionReportSource } from '../api/skillJob';
 import { getFlowReportSource, saveFlowReportSource } from '../api/skillFlow';
+import { installReportSelectionCopy } from '../utils/reportSelectionCopy';
 
 type ReportKind = 'job' | 'flow';
 
@@ -172,6 +173,7 @@ function syncFlowToc(doc: Document) {
 function onVisualFrameLoad() {
   const win = visualFrame.value?.contentWindow;
   if (win?.document) {
+    installReportSelectionCopy(win.document);
     enableVisualEditing(win);
     if (props.kind === 'flow') syncFlowToc(win.document);
   }

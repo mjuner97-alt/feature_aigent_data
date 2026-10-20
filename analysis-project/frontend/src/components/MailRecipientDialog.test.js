@@ -8,13 +8,13 @@ import { loadModule } from '../../test/loadModule.js';
 import { renderer, container, find, text } from '../../test/memoryRenderer.js';
 const button = (root, label) => find(root, n => n.type === 'button' && text(n) === label);
 const flush = async () => { await new Promise(r => setImmediate(r)); await nextTick(); };
-async function setup(t) {
+async function setup(t, search) {
   const events = [], lookups = [];
   const { default: Dialog } = await loadModule(new URL('./MailRecipientDialog.vue', import.meta.url), {
     vue: { ...Vue, Teleport: Vue.Fragment },
     '../api/skill': {
       batchUserNames: async ids => { lookups.push(ids); return Object.fromEntries(ids.filter(id => id !== 'bad').reverse().map(id => [id, `姓名${id}`])); },
-      searchSkillUsers: async () => [{ userId: 'c', name: '丙' }],
+      searchSkillUsers: search ?? (async q => { lookups.push(q); return q === 'bad' ? [] : [{ userId: q === '丙' ? 'c' : q, name: q === '丙' ? '丙' : `姓名${q}` }]; }),
     },
   });
   const root = container();
@@ -51,7 +51,7 @@ test('ordered batch matching preserves successful input order, reports partial f
   const { root, events, lookups, enter } = await setup(t);
   await enter('c，bad; a\nc c');
   await button(root, '批量加入抄送').props.onClick(); await flush();
-  assert.deepEqual(lookups, [['c', 'bad', 'a']]);
+  assert.deepEqual(lookups, ['c', 'bad', 'a']);
   assert.match(text(root), /未匹配：bad/);
   await button(root, '确认').props.onClick();
   assert.deepEqual(events[0], { to: [], cc: ['b', 'c', 'a'], names: { a: '姓名a', b: '乙', c: '姓名c' } });
@@ -94,7 +94,7 @@ test('closing and reopening discards draft and ignores a late lookup response', 
   const events = [];
   const { default: Dialog } = await loadModule(new URL('./MailRecipientDialog.vue', import.meta.url), {
     vue: { ...Vue, Teleport: Vue.Fragment },
-    '../api/skill': { batchUserNames: () => new Promise(r => { resolve = r; }), searchSkillUsers: async () => [] },
+    '../api/skill': { batchUserNames: async () => ({}), searchSkillUsers: () => new Promise(r => { resolve = r; }) },
   });
   const root = container(), app = renderer.createApp({ setup: () => () => Vue.h(Dialog, { ...props, 'onUpdate:open': value => { props.open = value; }, onConfirm: value => events.push(value) }) });
   app.mount(root); t.after(() => app.unmount()); await flush();
@@ -114,7 +114,7 @@ test('closing and reopening discards draft and ignores a late lookup response', 
   globalThis.document.activeElement = first;
   dialog.props.onKeydown({ key: 'Tab', shiftKey: true, preventDefault() {} });
   assert.equal(focused, 'last');
-  resolve({ late: '迟到' }); await pending; await flush();
+  resolve([{ userId: 'late', name: '迟到' }]); await pending; await flush();
   assert.doesNotMatch(text(root), /迟到/);
   await button(root, '确认').props.onClick();
   assert.deepEqual(events[0], { to: ['a'], cc: [], names: { a: '甲' } });
@@ -122,3 +122,30 @@ test('closing and reopening discards draft and ignores a late lookup response', 
 });
 
 
+
+test('mixed multi-name search shows candidates and failure feedback; batch adds only unique full names', async t => {
+ const people = [{userId:'1001',name:'张三',department:'研发'}, {userId:'1002',name:'李四',department:'销售'}, {userId:'1003',name:'李四',department:'财务'}];
+ const {root, events, enter} = await setup(t, async q => { if(q === '故障') throw Error('offline'); return people.filter(p=>p.name.includes(q)||p.userId===q); });
+ await enter('张三，李四;1001 不存在 故障');
+ await button(root,'搜索').props.onClick(); await flush();
+ assert.match(text(root), /张三\(1001\) 研发/);
+ assert.match(text(root), /李四\(1003\) 财务/);
+ assert.match(text(root), /未匹配：不存在/); assert.match(text(root), /查询失败，请重试：故障/);
+ await button(root,'批量加入收件人').props.onClick(); await flush();
+ assert.match(text(root), /需从候选中选择.*李四/);
+ await button(root,'确认').props.onClick();
+ assert.deepEqual(events[0].to,['a','1001']);
+});
+
+test('dragging newly added TO into middle and moving CC preserves both groups on confirm',async t=>{
+ const {root,events,enter}=await setup(t);
+ await enter('c d');await button(root,'批量加入收件人').props.onClick();await flush();
+ await enter('e f');await button(root,'批量加入抄送').props.onClick();await flush();
+ const handle=find(root,n=>n.props['aria-label']==='拖动收件人 d');assert.ok(handle,'TO drag handle exists');
+ handle.props.onDragstart({dataTransfer:{setData(){}}});
+ const target=find(root,n=>n.props['data-recipient-id']==='c');target.getBoundingClientRect=()=>({top:0,height:20});
+ target.props.onDrop({currentTarget:target,clientY:1,preventDefault(){}});await flush();
+ find(root,n=>n.props['aria-label']==='上移抄送 f').props.onClick();await flush();
+ await button(root,'确认').props.onClick();
+ assert.deepEqual(events[0].to,['a','d','c']);assert.deepEqual(events[0].cc,['b','f','e']);
+});

@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import OrderedRecipientList from './OrderedRecipientList.vue';
+import { lookupRecipients, lookupMessage } from '../api/recipientLookup';
 /**
  * SkillJob 创建/编辑表单 Drawer
  *
@@ -35,6 +37,8 @@ const metrics = ref<SkillDependencyMetric[]>([]);
 const skillLoading = ref(false);
 const metricLoading = ref(false);
 const receiverKeyword = ref('');
+const receiverMessage = ref('');
+let receiverQuery = 0;
 const receiverResults = ref<{ userId: string; name: string; department: string | null }[]>([]);
 const receiverNames = ref<Record<string, string>>({});
 const receiverSearching = ref(false);
@@ -157,14 +161,17 @@ async function loadForEdit(id: number) {
 }
 
 async function searchReceivers() {
+  const version = ++receiverQuery;
   const keyword = receiverKeyword.value.trim();
-  if (!keyword) { receiverResults.value = []; return; }
+  receiverResults.value = []; receiverMessage.value = '';
+  if (!keyword) { receiverSearching.value = false; return; }
   receiverSearching.value = true;
   try {
-    receiverResults.value = (await searchSkillUsers(keyword))
-      .filter(item => !(form.value.notifyReceivers ?? []).includes(item.userId));
-  } catch { receiverResults.value = []; }
-  finally { receiverSearching.value = false; }
+    const found = await lookupRecipients(keyword, searchSkillUsers);
+    if (version !== receiverQuery || receiverKeyword.value.trim() !== keyword) return;
+    receiverResults.value = found.items.filter(item => !(form.value.notifyReceivers ?? []).includes(item.userId));
+    receiverMessage.value = lookupMessage(found) + (!receiverResults.value.length && found.items.length ? '；匹配人员已在名单中' : '');
+  } finally { if (version === receiverQuery) receiverSearching.value = false; }
 }
 
 function addReceiver(item: { userId: string; name: string }) {
@@ -270,20 +277,19 @@ defineExpose({ isDirty });
                 <div class="field">
                   <span class="label">定时通知收件人</span>
                   <div class="receiver-search">
-                    <input v-model="receiverKeyword" placeholder="输入姓名或统一认证号" @keyup.enter="searchReceivers" />
+                    <input v-model="receiverKeyword" placeholder="输入多个姓名或统一认证号，逗号、分号或空格分隔" @keyup.enter="searchReceivers" />
                     <button type="button" class="btn ghost" :disabled="receiverSearching" @click="searchReceivers">搜索</button>
                   </div>
+                  <p v-if="receiverMessage" role="status">{{ receiverMessage }}</p>
                   <div v-if="receiverResults.length" class="receiver-results">
                     <button v-for="item in receiverResults" :key="item.userId" type="button" @click="addReceiver(item)">
-                      {{ item.name || item.userId }} ({{ item.userId }})
+                      {{ item.name || item.userId }} ({{ item.userId }}) {{ item.department || '' }}
                     </button>
                   </div>
-                  <div class="receiver-chips">
-                    <span v-for="userId in form.notifyReceivers" :key="userId" class="receiver-chip">
-                      {{ receiverNames[userId] || userId }} ({{ userId }})
-                      <button type="button" @click="removeReceiver(userId)">×</button>
-                    </span>
-                  </div>
+              <OrderedRecipientList v-model="form.notifyReceivers" label="收件人" :disabled="saving || formLoading || receiverSearching">
+                <template #default="{ id }">{{ receiverNames[id] || id }} ({{ id }})</template>
+                <template #actions="{ id }"><button type="button" :disabled="saving || formLoading || receiverSearching" :aria-label="`移除收件人 ${id}`" @click="removeReceiver(id)">×</button></template>
+              </OrderedRecipientList>
                   <span class="tip">未选择时发送给任务创建人</span>
                 </div>
                 <div v-if="formError" class="error">{{ formError }}</div>

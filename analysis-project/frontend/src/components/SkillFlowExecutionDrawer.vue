@@ -3,7 +3,9 @@ import { computed, onUnmounted, ref, watch } from 'vue';
 import FlowNotificationHistory from './FlowNotificationHistory.vue';
 import SkillFlowExecutionNotificationModal from './SkillFlowExecutionNotificationModal.vue';
 import { useRouter } from 'vue-router';
-import { ElMessageBox } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import { copyReportContent } from '../utils/reportClipboard';
+import { getSkillFlowExecutionReportContent } from '../api/skillFlow';
 import { getSkillFlowExecution, getSkillFlowExecutionMetrics, getSkillFlowExecutionNodes, getSkillFlowExecutionNotifications, getSkillFlowExecutionReportUrl, getSkillFlowNodeReportUrl, retrySkillFlowSummary, retrySkillFlowNode, retrySkillFlowFailedNodes, cancelSkillFlowExecution } from '../api/skillFlow';
 import type { SkillFlowExecution, SkillFlowNodeExecution } from '../types/skillFlow';
 import { currentUserId } from '../api/skill';
@@ -23,6 +25,19 @@ const isOwner = computed(() => execution.value?.triggerUserId === currentUserId(
 const cancellable = computed(() => isOwner.value && ['WAITING_METRICS', 'QUEUED', 'RUNNING'].includes(execution.value?.status ?? ''));
 const reportError = ref('');
 const summaryActionError = ref('');
+const copying = ref(false);
+
+async function copySummaryReport() {
+  if (!props.executionId || copying.value) return;
+  const id = props.executionId;
+  copying.value = true;
+  try {
+    await copyReportContent(() => getSkillFlowExecutionReportContent(id));
+    ElMessage.success('内容已复制，可粘贴到 Word / WPS 等支持富文本的编辑器');
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '复制失败');
+  } finally { copying.value = false; }
+}
 
 const readyMetrics = computed(() => execution.value?.metrics?.filter(metric => metric.status === 'READY') ?? []);
 const waitingMetrics = computed(() => execution.value?.metrics?.filter(metric => metric.status !== 'READY') ?? []);
@@ -162,7 +177,7 @@ onUnmounted(stopPolling);
             <section class="summary"><div><span>状态</span><strong class="status" :class="statusClass(execution.status)">{{ statusText(execution.status) }}</strong><button v-if="cancellable" class="btn-link cancel-action" :disabled="cancelling" @click="cancelExecution">{{ cancelling ? '终止中…' : '终止任务' }}</button><button v-if="isOwner && execution.reportPath && ['SUCCESS', 'PARTIAL_SUCCESS', 'FAILED'].includes(execution.status)" class="btn-link" @click="notificationOpen = true">发送通知</button></div><div v-if="shouldShowMetricReadiness(execution.triggerType)"><span>指标</span><strong>{{ execution.readyMetricCount }} / {{ execution.requiredMetricCount }} 已就绪</strong></div><div><span>节点</span><strong>{{ execution.completedNodeCount ?? 0 }} / {{ execution.totalNodeCount ?? execution.nodes?.length ?? 0 }} 已完成</strong></div></section>
             <section v-if="shouldShowMetricReadiness(execution.triggerType)"><h4>指标门闩</h4><p class="caption">已就绪 {{ readyMetrics.length }} 项，待处理或已过期 {{ waitingMetrics.length }} 项</p><div class="metric-list"><div v-for="metric in execution.metrics" :key="`${metric.metricId}-${metric.metricCode}`" class="metric-row"><span class="metric-status" :class="metric.status === 'READY' ? 'ready' : 'waiting'">{{ metric.status === 'READY' ? '已就绪' : metric.status === 'EXPIRED' ? '已过期' : '未就绪' }}</span><div><strong>{{ metric.metricCode || metric.metricName || '未知指标' }}</strong><span>{{ metric.metricName }}</span></div><span>{{ formatTime(metric.readyAt) }}</span><span>影响 {{ listText(metric.affectedSkills) }}</span></div></div></section>
             <section><div class="section-heading"><h4>节点执行时间线</h4><button v-if="isOwner && batchRetryable" class="btn-link" :disabled="!!retrying" @click="retryFailedNodes">{{ retrying === 'failed-nodes' ? '批量重跑中…' : `批量重跑失败任务（${failedNodes.length} 个）` }}</button></div><div class="timeline"><article v-for="node in execution.nodes" :key="node.id || node.nodeKey"><div class="timeline-head"><strong>{{ node.nodeName || node.skillName || node.nodeKey }}</strong><span class="status" :class="statusClass(node.status)">{{ statusText(node.status) }}</span><span v-if="retryStatusText(node)">{{ retryStatusText(node) }}</span><button v-if="node.status === 'SUCCESS' && node.hasResult" class="btn-link" @click="openNodeReport(node)">查看内容</button><button v-if="node.status !== 'SUCCESS' && node.errorMessage" class="btn-link" @click="showNodeError(node)">错误详情</button><button v-if="isOwner && execution.triggerType !== 'AUTO_METRIC' && canRetryNode(execution.status, node.status)" class="btn-link" :disabled="!!retrying" @click="retryNode(node)">{{ retrying === `node-${node.id}` ? '重跑中…' : '重跑此任务' }}</button></div><div class="node-detail"><span>{{ node.required ? '必需节点' : '可选节点' }}</span><template v-if="shouldShowNodeTimes(node.attempts)"><span>开始时间：{{ formatTime(node.startedAt) }}</span><span>结束时间：{{ formatTime(node.completedAt) }}</span></template></div><template v-if="latestAttempt(node) && node.status !== 'RUNNING' && node.status !== 'QUEUED'"><div class="attempts"><div><strong class="status" :class="statusClass(latestAttempt(node)?.status || '')">第 {{ latestAttempt(node)?.attemptNo }} 次 · {{ statusText(latestAttempt(node)?.status || '') }}</strong><span>开始时间：{{ formatTime(latestAttempt(node)?.startedAt) }}</span><span>结束时间：{{ formatTime(latestAttempt(node)?.completedAt) }}</span></div></div></template></article></div></section>
-            <section><h4>汇总报告</h4><span v-if="execution.reportPath" class="report-actions"><button class="btn-link" @click="openSummaryReport">预览</button><span class="action-divider">/</span><button class="btn-link" @click="downloadSummaryReport">下载</button><template v-if="isOwner"><span class="action-divider">/</span><button class="btn-link" @click="router.push(`/skills/jobs/flows/executions/${executionId}/report/edit`)">编辑</button></template></span><button v-if="isOwner && summaryRetryable" class="btn-link summary-action" :disabled="!!retrying" @click="retrySummary">{{ retrying === 'summary' ? '生成中…' : '重新生成汇总' }}</button><p v-else-if="!execution.reportPath" class="caption">报告生成中或暂不可用</p><p v-if="summaryActionError || summaryGenerationError || reportError" class="summary-error">{{ summaryActionError || summaryGenerationError || reportError }}</p></section>
+            <section><h4>汇总报告</h4><span v-if="execution.reportPath" class="report-actions"><button class="btn-link" @click="openSummaryReport">预览</button><span class="action-divider">/</span><button class="btn-link" @click="downloadSummaryReport">下载</button><template v-if="isOwner"><span class="action-divider">/</span><button class="btn-link" @click="router.push(`/skills/jobs/flows/executions/${executionId}/report/edit`)">编辑</button></template><span class="action-divider">/</span><button class="btn-link" :disabled="copying" title="复制正文及格式" @click="copySummaryReport">{{ copying ? '复制中…' : '复制内容' }}</button></span><button v-if="isOwner && summaryRetryable" class="btn-link summary-action" :disabled="!!retrying" @click="retrySummary">{{ retrying === 'summary' ? '生成中…' : '重新生成汇总' }}</button><p v-else-if="!execution.reportPath" class="caption">报告生成中或暂不可用</p><p v-if="summaryActionError || summaryGenerationError || reportError" class="summary-error">{{ summaryActionError || summaryGenerationError || reportError }}</p></section>
             <FlowNotificationHistory :notifications="execution.notifications || []" />
           </template>
         </main>

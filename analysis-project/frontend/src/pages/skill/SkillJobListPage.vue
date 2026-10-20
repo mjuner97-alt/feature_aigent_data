@@ -8,7 +8,8 @@ import { computed, ref, onMounted, onUnmounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { Download, EditPen, View } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { downloadExecutionFile, getExecution, listJobPage, listExecutionCenterPage, deleteJob, retryExecution, triggerJob, updateJob, viewExecutionFile } from '../../api/skillJob';
+import { downloadExecutionFile, getExecutionReportContent, getExecution, listJobPage, listExecutionCenterPage, deleteJob, retryExecution, triggerJob, updateJob, viewExecutionFile } from '../../api/skillJob';
+import { copyReportContent } from '../../utils/reportClipboard';
 import { currentUserId } from '../../api/skill';
 import type { SkillJobSummary, SkillJobExecutionSummary } from '../../types/skillJob';
 import SkillJobExecutionDrawer from '../../components/SkillJobExecutionDrawer.vue';
@@ -190,6 +191,18 @@ function openNotifications(exec: SkillJobExecutionSummary) {
   notifyExecId.value = exec.id;
   notifyCanResend.value = exec.createdBy === me && exec.status === 'SUCCESS' && !!exec.mdFileExists;
   notifyOpen.value = true;
+}
+
+const copying = ref<Set<number>>(new Set());
+async function copyCenterReport(exec: SkillJobExecutionSummary) {
+  if (copying.value.has(exec.id)) return;
+  copying.value.add(exec.id);
+  try {
+    await copyReportContent(() => getExecutionReportContent(exec.id));
+    ElMessage.success('内容已复制，可粘贴到 Word / WPS 等支持富文本的编辑器');
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '复制失败');
+  } finally { copying.value.delete(exec.id); }
 }
 
 async function viewCenterReport(exec: SkillJobExecutionSummary) {
@@ -404,6 +417,7 @@ function metricTitle(job: SkillJobSummary): string {
                   <button class="btn-action with-icon" :disabled="downloading.has(exec.id)" title="下载 HTML" @click="downloadCenterReport(exec)">
                     <el-icon><Download /></el-icon><span>{{ downloading.has(exec.id) ? '下载中…' : '下载' }}</span>
                   </button>
+                  <button class="btn-action" :disabled="copying.has(exec.id)" title="复制正文及格式" @click="copyCenterReport(exec)">{{ copying.has(exec.id) ? '复制中…' : '复制内容' }}</button>
                 </template>
                 <button v-if="exec.createdBy === me" class="btn-action" title="查看通知记录并手动发送" @click="openNotifications(exec)">通知记录</button>
               </td>
