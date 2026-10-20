@@ -230,8 +230,10 @@ async function runTrial() {
   if (trialRunning.value || !skill.value) return;
   const question = trialQuestion.value.trim();
   if (!question) return;
-  // conversationId 前端生成(同 ChatPanel),问数结束后随记录落库
-  const convId = crypto.randomUUID();
+  // conversationId 前端生成(同 ChatPanel);Edge 旧版/非安全上下文无 randomUUID,降级为时间戳+随机串
+  const convId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   trialRunning.value = true;
   trialThinking.value = '';
   trialAnswer.value = '';
