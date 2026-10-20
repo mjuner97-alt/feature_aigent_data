@@ -5,11 +5,52 @@ function bindSelectionCopy(doc: Document, properties: string[], omitted: string)
   const boundDoc = doc as Document & { __reportSelectionCopyBound?: boolean };
   if (boundDoc.__reportSelectionCopyBound) return;
   boundDoc.__reportSelectionCopyBound = true;
+  let activeChart: Element | null = null;
+  const findChart = (element: Element | null) => element?.closest?.(omitted) ? null
+    : element?.closest?.('[_echarts_instance_],[data-report-chart]') || element?.closest?.('canvas,svg') || null;
+  doc.addEventListener('pointerdown', event => {
+    activeChart = findChart(event.target as Element);
+  }, true);
+  doc.addEventListener('keydown', event => { if (event.key === 'Escape') activeChart = null; });
+  const chartImage = (element: Element): HTMLImageElement => {
+    const image = doc.createElement('img');
+    const echarts = (doc.defaultView as Window & { echarts?: { getInstanceByDom: (element: Element) => { getDataURL: (options: object) => string } | undefined } }).echarts;
+    const chart = echarts?.getInstanceByDom(element);
+    if (chart) image.src = chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#ffffff', excludeComponents: ['toolbox'] });
+    else if (element.tagName === 'CANVAS') image.src = (element as HTMLCanvasElement).toDataURL('image/png');
+    else if (element.tagName.toLowerCase() === 'svg') {
+      const svg = element.cloneNode(true) as SVGSVGElement;
+      const originalElements = [element, ...Array.from(element.querySelectorAll('*'))];
+      const clonedElements = [svg, ...Array.from(svg.querySelectorAll('*'))];
+      clonedElements.forEach((clone, index) => {
+        for (const attribute of Array.from(clone.attributes)) if (/^on/i.test(attribute.name)) clone.removeAttribute(attribute.name);
+        if (clone.tagName.toLowerCase() === 'script') { clone.remove(); return; }
+        const computed = doc.defaultView!.getComputedStyle(originalElements[index]);
+        for (const property of properties) (clone as SVGElement).style.setProperty(property, computed.getPropertyValue(property));
+      });
+      svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      image.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(new XMLSerializer().serializeToString(svg));
+    } else throw new Error('Chart image unavailable');
+    const bounds = element.getBoundingClientRect();
+    image.width = Math.round(bounds.width); image.height = Math.round(bounds.height);
+    image.alt = '报告图表';
+    return image;
+  };
   doc.addEventListener('copy', event => {
     if (event.defaultPrevented || !event.clipboardData) return;
     if ((event.target as Element)?.closest?.('input,textarea')) return;
     const selection = doc.defaultView?.getSelection();
-    if (!selection || selection.isCollapsed || !selection.rangeCount) return;
+    if (!selection || selection.isCollapsed || !selection.rangeCount) {
+      if (activeChart?.isConnected) {
+        try {
+          const image = chartImage(activeChart);
+          event.clipboardData.setData('text/html', image.outerHTML);
+          event.clipboardData.setData('text/plain', image.alt);
+          event.preventDefault();
+        } catch { /* Retain native copy if a chart cannot be exported. */ }
+      }
+      return;
+    }
     try {
       const result = doc.createElement('div');
       const svgPrefix = 'selection-' + Math.random().toString(36).slice(2) + '-';
@@ -25,6 +66,8 @@ function bindSelectionCopy(doc: Document, properties: string[], omitted: string)
         // A cell selection needs its table/tr/tbody wrappers to paste as a table.
         const table = (root as Element).closest?.('table');
         if (table) root = table;
+        const chartRoot = (root as Element).closest?.('[_echarts_instance_],[data-report-chart]');
+        if (chartRoot) root = chartRoot;
         const copy = (node: Node): Node | null => {
           if (!range.intersectsNode(node)) return null;
           if (node.nodeType === 3) {
@@ -38,12 +81,7 @@ function bindSelectionCopy(doc: Document, properties: string[], omitted: string)
           if (element.matches('iframe,object,embed,video,audio')) throw new Error('Use native copy for unsupported embedded selections');
           const computed = doc.defaultView!.getComputedStyle(element);
           if (computed.display === 'none' || computed.visibility === 'hidden') return null;
-          if (element.tagName === 'CANVAS') {
-            const image = doc.createElement('img');
-            image.src = (element as HTMLCanvasElement).toDataURL('image/png');
-            image.width = element.clientWidth; image.height = element.clientHeight;
-            return image;
-          }
+          if (element.matches('[_echarts_instance_],[data-report-chart],canvas,svg')) return chartImage(element);
           const clone = element.tagName === 'BODY' ? doc.createElement('div') : element.cloneNode(false) as HTMLElement;
           for (const attribute of Array.from(clone.attributes)) {
             if (/^on/i.test(attribute.name) || ['style', 'class', 'contenteditable', 'autofocus'].includes(attribute.name)) clone.removeAttribute(attribute.name);

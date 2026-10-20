@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { createRequire } from 'node:module';
-import { mkdtemp, writeFile, unlink, rmdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, unlink, rmdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -121,4 +121,45 @@ test('downloaded self-contained HTML supports selected-copy offline', async () =
     });
     assert.equal(pasted.text, '离线选中内容'); assert.equal(pasted.color, 'rgb(230, 0, 0)'); assert.equal(pasted.size, '24px');
   } finally { await browser.close(); await unlink(file).catch(() => {}); await rmdir(folder); }
+});
+
+test('clicking an ECharts chart then Ctrl+C copies the whole chart as an image without text selection', async () => {
+  const bundle = await build({ entryPoints: ['src/utils/reportSelectionCopy.ts'], bundle: true, write: false, format: 'iife', minify: true, globalName: 'ReportSelection' });
+  const library = await readFile(require.resolve('echarts/dist/echarts.min.js'), 'utf8');
+  const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH });
+  try {
+    const page = await browser.newPage();
+    await page.route('http://report.test/**', route => route.fulfill({ contentType: 'text/html;charset=utf-8', body: '<iframe id="report" style="width:700px;height:450px"></iframe><div id="paste" contenteditable="true"></div>' }));
+    await page.goto('http://report.test/'); await page.addScriptTag({ content: bundle.outputFiles[0].text });
+    await page.evaluate(library => {
+      const html = `<html><body><p id="before">图表之外不要复制</p><div data-report-chart id="chart" style="width:500px;height:300px"></div><p id="after">图表后正文</p><script>${library}</script><script>echarts.init(document.querySelector('#chart')).setOption({animation:false,xAxis:{data:['一','二']},yAxis:{},series:[{type:'bar',data:[2,5]}]})</script></body></html>`;
+      document.querySelector('#report').srcdoc = ReportSelection.withReportSelectionCopy(html);
+    }, library);
+    const chart = page.frameLocator('#report').locator('#chart'); await chart.locator('canvas').waitFor();
+    await chart.click({ position: { x: 100, y: 100 } });
+    assert.equal(await chart.evaluate(element => element.ownerDocument.getSelection().isCollapsed), true);
+    await page.keyboard.press('Control+C'); await page.locator('#paste').click(); await page.keyboard.press('Control+V');
+    await page.locator('#paste img').waitFor({ timeout: 5000 });
+    const result = await page.locator('#paste').evaluate(async element => {
+      const image = element.querySelector('img'); await image.decode();
+      return { text: element.textContent, src: image.src, width: image.naturalWidth, height: image.naturalHeight };
+    });
+    assert.match(result.src, /^data:image\/png;base64,/); assert.equal(result.width, 1000); assert.equal(result.height, 600);
+    assert.doesNotMatch(result.text, /图表之外/);
+    const mixed = await chart.evaluate(element => {
+      const doc = element.ownerDocument; const range = doc.createRange();
+      range.setStartBefore(doc.querySelector('#before')); range.setEndAfter(doc.querySelector('#after'));
+      const selection = doc.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+      const clipboardData = new DataTransfer(); const event = new ClipboardEvent('copy', { bubbles: true, cancelable: true, clipboardData }); doc.dispatchEvent(event);
+      const parsed = new DOMParser().parseFromString(clipboardData.getData('text/html'), 'text/html');
+      return { prevented: event.defaultPrevented, count: parsed.querySelectorAll('img').length, text: parsed.body.textContent, src: parsed.querySelector('img')?.src };
+    });
+    assert.equal(mixed.prevented, true); assert.equal(mixed.count, 1); assert.match(mixed.text, /图表后正文/); assert.match(mixed.src, /^data:image\/png;base64,/);
+    await chart.evaluate(element => element.ownerDocument.getSelection().removeAllRanges());
+    await page.frameLocator('#report').locator('#before').click();
+    const cleared = await chart.evaluate(element => {
+      const clipboardData = new DataTransfer(); const event = new ClipboardEvent('copy', { cancelable: true, clipboardData }); element.ownerDocument.dispatchEvent(event); return event.defaultPrevented;
+    });
+    assert.equal(cleared, false, 'clicking ordinary text must clear the active chart');
+  } finally { await browser.close(); }
 });
