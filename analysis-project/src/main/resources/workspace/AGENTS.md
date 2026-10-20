@@ -46,12 +46,29 @@
         ```
       - 不在目录内 -> 终局结论, 会话停止, 立即回复「当前不支持该指标查询」。
         禁止再调 tool_index / toolMetaInfo 做验证、下探、试探或兜底: 目录判定不可被工具调用推翻。
-      - 在目录内 -> 按三级协议: topicTags -> availableMetricTags
-      -> (需收窄时) availableDimensionTags -> tool_index 选候选 toolId
-      (默认只传 topicTags/metricTags/dimensionTags; 候选过多或用户明确限定类型时,
-       可追加 toolTypes=["API"|"SQL"|"SCRIPT"] 做 IN 过滤)
-      -> toolMetaInfo 拿参数 -> 按 executeWith 调执行器
-      (API -> router_tool; SQL -> sql_registry_exec; SCRIPT -> script_exec)
+      - 在目录内 -> 按三级协议下探, 整体链路:
+        ```
+        <tool_metric_catalog> (系统提示词)
+           ↓ LLM 选 topicTags
+        tool_index 第1次调用 → 返回 availableMetricTags
+           ↓ LLM 选 metricTags (收窄)
+        tool_index 第2次调用 → 返回 availableDimensionTags
+           ↓ (需收窄时) 选 dimensionTags / toolTypes
+        toolMetaInfo 拿参数 schema → 按 executeWith 调执行器
+           API→router_tool | SQL→sql_registry_exec | SCRIPT→script_exec
+        ```
+        规则:
+        - 默认只传 topicTags/metricTags/dimensionTags; 候选过多或用户明确限定类型时,
+          可追加 toolTypes=["API"|"SQL"|"SCRIPT"] 做 IN 过滤
+        - availableMetricTags / availableDimensionTags 从上一级响应里拿, 逐次收窄, 不凭空猜标签
+        - dimensionTags 只传维度标签名 (如 部门/版本计划/明细下载);
+          具体过滤值 (部门名/版本号/月份) 不进 tool_index, 是执行器 params
+        - 导出/下载明细类任务: dimensionTags 只传 ["明细下载"],
+          不要与业务过滤维度 (部门/版本计划等) 混传 —— 两者常挂在不同的工具上,
+          混传会导致单工具维度无交集而零命中
+        - matchedCount=0 且无 unknown 标签时 (指标在目录内但维度组合过窄):
+          看响应中各候选可用的维度, 减掉非必需维度重试一次 (最多一次);
+          仍为 0 -> 转 ③ 停止发现, 不要再换 topic、猜 toolId 或调 toolMetaInfo 试探
       候选能力相同或业务 priority 接近时, 类型优先级为 API > SQL > SCRIPT
 ③ 两层都未命中 (无匹配 skill 且 tool_index 无候选)?
    -> 回复用户「暂无对应已注册能力, 建议业务方补充注册」,
