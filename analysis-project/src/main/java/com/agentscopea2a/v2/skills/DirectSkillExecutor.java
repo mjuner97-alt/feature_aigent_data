@@ -265,6 +265,86 @@ public class DirectSkillExecutor {
         return (userId == null || userId.isBlank() ? "__anon__" : userId) + ":" + conversationId;
     }
 
+    // ==================== LastDirectExec 快照 (docs/202610/skill-direct-exec-followup-plan.md §3.1) ====================
+    // 追问轮走 LLM (v2 拍板): Java 不做执行决策, 只把「上一轮直接执行了什么、用了什么参数、
+    // 结果摘要」补给给 LLM (hint 块 + 目录并入)。question 原文是 hint 块里唯一带指标语义的字段。
+
+    /** 快照 TTL: 追问的自然间隔比缺参补参长, 30min (拍板点 D3)。 */
+    static final long LAST_EXEC_TTL_MS = 30 * 60 * 1000L;
+
+    /** resultDigest 截断长度 (拍板点 D2b): markdown 表格前缀截断保住表头+前几行。 */
+    static final int RESULT_DIGEST_MAX_LENGTH = 2000;
+
+    /**
+     * 上次直接执行快照: plan() 返回可执行计划时记录 question/skill/params;
+     * runDirectExecution 成功后 {@link #recordResult} 回填 resultDigest 并刷新 createdAt。
+     */
+    public record LastDirectExec(String question, String skillName, String scriptId,
+                                 Map<String, Object> params, String resultDigest, long createdAt) {}
+
+    private final java.util.concurrent.ConcurrentHashMap<String, LastDirectExec> lastExecStore =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** 查询口 (visibility filter / context hook 消费): TTL 过期返回 null 并惰性清理;
+     *  conversationId 为空 → null (与 pending 同规则)。 */
+    public LastDirectExec lastExec(String userId, String conversationId) {
+        if (conversationId == null || conversationId.isBlank()) {
+            return null;
+        }
+        String key = sessionKey(userId, conversationId);
+        LastDirectExec snapshot = lastExecStore.get(key);
+        if (snapshot == null) {
+            return null;
+        }
+        if (System.currentTimeMillis() - snapshot.createdAt() > LAST_EXEC_TTL_MS) {
+            lastExecStore.remove(key, snapshot);
+            return null;
+        }
+        return snapshot;
+    }
+
+    private void recordLastExec(String question, String userId, String conversationId,
+                                String skillName, String scriptId, Map<String, Object> params) {
+        if (conversationId == null || conversationId.isBlank()) {
+            return;
+        }
+        recordLastExec(sessionKey(userId, conversationId), question, skillName, scriptId, params);
+    }
+
+    private void recordLastExec(String sessionKey, String question,
+                                String skillName, String scriptId, Map<String, Object> params) {
+        lastExecStore.put(sessionKey,
+                new LastDirectExec(question, skillName, scriptId,
+                        params == null ? Map.of() : java.util.Collections.unmodifiableMap(
+                                new LinkedHashMap<>(params)),
+                        null, System.currentTimeMillis()));
+    }
+
+    /** runDirectExecution 成功后回填 stdout 摘要并刷新 TTL (§3.1 记录时机第 2 步)。无快照则 no-op。 */
+    public void recordResult(String userId, String conversationId, String stdout) {
+        if (conversationId == null || conversationId.isBlank()) {
+            return;
+        }
+        String key = sessionKey(userId, conversationId);
+        LastDirectExec current = lastExecStore.get(key);
+        if (current == null) {
+            return;
+        }
+        lastExecStore.replace(key, current, new LastDirectExec(current.question(), current.skillName(),
+                current.scriptId(), current.params(), truncateDigest(stdout), System.currentTimeMillis()));
+    }
+
+    static String truncateDigest(String stdout) {
+        if (stdout == null || stdout.isBlank()) {
+            return null;
+        }
+        String trimmed = stdout.strip();
+        if (trimmed.length() <= RESULT_DIGEST_MAX_LENGTH) {
+            return trimmed;
+        }
+        return trimmed.substring(0, RESULT_DIGEST_MAX_LENGTH) + "…(已截断)";
+    }
+
     /**
      * 纯判定, 无副作用; null = 不短路, 走 LLM。
      *
@@ -374,6 +454,21 @@ public class DirectSkillExecutor {
         }
 
         Map<String, Object> params = buildParams(mapping, declared, extraction);
+        // 快照兜底补缺 (followup 方案 §3.5): 同 skill 且必填参数本轮未提及 → 继承上轮直接
+        // 执行的值 (修 G2「时间层追问丢部门」在直接执行交替场景的暴露)。只补缺不覆盖;
+        // 异 skill param 名空间不同不做翻译, 维持反问/回退。
+        if (conversationId != null) {
+            LastDirectExec last = lastExec(userId, conversationId);
+            if (last != null && last.skillName().equals(topName)) {
+                for (String req : required) {
+                    if (!params.containsKey(req) && last.params().containsKey(req)) {
+                        params.put(req, last.params().get(req));
+                        log.info("DirectSkillExecutor: 必填参数 {} 本轮未提及, 快照兜底继承上轮值 (skill={})",
+                                req, topName);
+                    }
+                }
+            }
+        }
         // 必填缺失分两类 (2026/10/15 缺参反问方案): 在 param_mapping 内 (有维度语义) →
         // 反问补参; 不在 mapping 内 (语义未知) 或调用方未传会话键 → 维持回退 LLM
         List<String> missingKeys = new ArrayList<>();
@@ -401,6 +496,7 @@ public class DirectSkillExecutor {
         }
         log.info("DirectSkillExecutor: plan hit skill={} scriptId={} params={} extraction={} matched={}",
                 topName, top.scriptId(), params, extraction, extraction.metrics());
+        recordLastExec(question, userId, conversationId, topName, top.scriptId(), params);
         return new DirectExecutionPlan(extraction, topName, top.scriptId(), params);
     }
 
@@ -494,6 +590,7 @@ public class DirectSkillExecutor {
             pending.remove(key, p);
             log.info("DirectSkillExecutor: plan hit (补参完成) skill={} scriptId={} params={}",
                     p.skillName(), p.scriptId(), params);
+            recordLastExec(question, userId, conversationId, p.skillName(), p.scriptId(), params);
             return new DirectExecutionPlan(extraction, p.skillName(), p.scriptId(), params);
         }
         pending.put(key, new PendingDirectExec(p.skillName(), p.scriptId(), p.mapping(), params,
@@ -543,6 +640,7 @@ public class DirectSkillExecutor {
         }
         log.info("DirectSkillExecutor: 歧义 {} → {} (pending {}), plan hit skill={} scriptId={} params={}",
                 ambiguous, resolved, key, p.skillName(), p.scriptId(), params);
+        recordLastExec(key, question, p.skillName(), p.scriptId(), params);
         return new DirectExecutionPlan(effective, p.skillName(), p.scriptId(), params);
     }
 

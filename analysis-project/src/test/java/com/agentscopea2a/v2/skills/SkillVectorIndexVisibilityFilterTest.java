@@ -171,6 +171,68 @@ class SkillVectorIndexVisibilityFilterTest {
         assertEquals(List.of("builtin"), names(result));
     }
 
+    // ==================== 追问轮快照 skill 并入 (followup 方案 §3.2) ====================
+
+    private static DirectSkillExecutor executorReturning(DirectSkillExecutor.LastDirectExec snapshot) {
+        DirectSkillExecutor executor = mock(DirectSkillExecutor.class);
+        when(executor.lastExec(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString())).thenReturn(snapshot);
+        return executor;
+    }
+
+    @Test
+    void snapshotSkillMergedIntoEmptyCandidateSet() {
+        // 裸追问 (无关键词命中) 候选集为空, 快照 skill 并入, LLM 有 load_skill 可走
+        SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
+        SkillRoutingMetadata meeting = new SkillRoutingMetadata(
+                "meeting", "meeting", List.of("达标率"), List.of("例会材料"), List.of(),
+                "", true, null);
+        when(repository.findAll()).thenReturn(List.of(meeting));
+        DirectSkillExecutor lastExecSource = executorReturning(
+                new DirectSkillExecutor.LastDirectExec("查询达标率", "meeting", "script_a",
+                        java.util.Map.of("dept", "杭州开发一部"), null, System.currentTimeMillis()));
+        SkillVectorIndexVisibilityFilter filter = new SkillVectorIndexVisibilityFilter(
+                repository, new SkillCandidateSelector(5, 10), true, null, null, lastExecSource);
+        RuntimeContext context = RuntimeContext.builder().userId("u1").sessionId("conv-1").build();
+        context.put("lastQuestion", "随便聊聊");
+
+        assertEquals(List.of("meeting"), names(filter.filter(List.of(skill("meeting")), context)));
+    }
+
+    @Test
+    void snapshotSkillAlreadyInCandidatesNotDuplicated() {
+        SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
+        SkillRoutingMetadata meeting = new SkillRoutingMetadata(
+                "meeting", "meeting", List.of("达标率"), List.of("例会材料"), List.of(),
+                "", true, null);
+        when(repository.findAll()).thenReturn(List.of(meeting));
+        DirectSkillExecutor lastExecSource = executorReturning(
+                new DirectSkillExecutor.LastDirectExec("查询达标率", "meeting", "script_a",
+                        java.util.Map.of(), null, System.currentTimeMillis()));
+        SkillVectorIndexVisibilityFilter filter = new SkillVectorIndexVisibilityFilter(
+                repository, new SkillCandidateSelector(5, 10), true, null, null, lastExecSource);
+        RuntimeContext context = RuntimeContext.builder().userId("u1").sessionId("conv-1").build();
+        context.put("lastQuestion", "查询达标率");
+
+        assertEquals(List.of("meeting"), names(filter.filter(List.of(skill("meeting")), context)));
+    }
+
+    @Test
+    void noSnapshotLeavesCatalogUnchanged() {
+        SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
+        SkillRoutingMetadata meeting = new SkillRoutingMetadata(
+                "meeting", "meeting", List.of("达标率"), List.of("例会材料"), List.of(),
+                "", true, null);
+        when(repository.findAll()).thenReturn(List.of(meeting));
+        DirectSkillExecutor lastExecSource = executorReturning(null);
+        SkillVectorIndexVisibilityFilter filter = new SkillVectorIndexVisibilityFilter(
+                repository, new SkillCandidateSelector(5, 10), true, null, null, lastExecSource);
+        RuntimeContext context = RuntimeContext.builder().userId("u1").sessionId("conv-1").build();
+        context.put("lastQuestion", "随便聊聊");
+
+        assertTrue(filter.filter(List.of(skill("meeting")), context).isEmpty());
+    }
+
     private static AgentSkill skill(String name) {
         return AgentSkill.builder().name(name).description(name).skillContent("rules").build();
     }
