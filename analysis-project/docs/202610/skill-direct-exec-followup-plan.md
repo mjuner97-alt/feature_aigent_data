@@ -205,3 +205,31 @@ if (last != null && last.skillName().equals(topName)) {
 | 3 | 链式追问快照不刷新（D5） | 记录在案；实测不够再上观测回调 |
 | 4 | hint 块占用 prompt 长度 | 参数行固定 + result 摘要截断 2000 字符封顶，总量可控（拍板点 D2b） |
 | 5 | 旁路词命中时 hint 仍注入 | 旁路语义是「不走 skill 目录」，不承诺「看不见上下文」；LLM 在工具层自决 |
+
+## 9. 实施记录（2026-10-20）
+
+全部落地，本机全量测试 572/572 过（BUILD SUCCESS）。
+
+### 代码改动（与 §6 清单一致）
+
+| 文件 | 改动 |
+|---|---|
+| `v2/skills/DirectSkillExecutor.java` | `LastDirectExec` record + `lastExecStore`（30min TTL 惰性清理）+ `recordLastExec()`（3 个可执行 return 点：plan 正常返回 / consumePending 完成 / consumeAmbiguousPending）+ `lastExec()` 查询口 + `recordResult()`（digest 回填 + TTL 刷新）+ `truncateDigest()`（2000 前缀 + 「…(已截断)」）+ §3.5 兜底补缺（buildParams 之后、missingKeys 之前，仅同 skill、只补缺不覆盖） |
+| `v2/hooks/LastDirectExecContextHook.java` | 新增，priority=-44，PreCallEvent.appendSystemContent 注入 `<last_direct_exec>` 块（question/skill/script_id/params/result 五行 + 复用指令），异常吞掉不阻塞 |
+| `v2/skills/SkillVectorIndexVisibilityFilter.java` | 6 参构造器（快照源可选）+ filter 末尾并入快照 skill（去重）；旁路路径保持空目录不补 |
+| `v2/config/V2SkillConfig.java` | `lastDirectExecContextHook` bean（开关 `followup-context.enabled`，默认 true）；filter bean 传入 DirectSkillExecutor（无 bean 环：executor 不依赖 filter） |
+| `v2/config/HarnessAgentPartsConfig.java` | harnessHooks 挂 lastDirectExecContextHook（ObjectProvider 可选注入） |
+| `v2/service/impl/V2ChatStreamServiceImpl.java` / `ChatStreamServiceImpl.java` | runDirectExecution 成功分支各 +1 行 `directSkillExecutor.recordResult(ctx.userId, ctx.conversationId, stdout)` |
+| `application.properties` | `harness.a2a.skill-direct-exec.followup-context.enabled=true` |
+
+### 测试结果
+
+- `DirectSkillExecutorTest`：+8 用例（快照记录含会话隔离 / 3 参不记 / 反问轮不记 / recordResult 截断回填刷新 / TTL 惰性清理 / 兜底补缺 / 不覆盖已提及值 / 跨 skill 不兜底），57 全过
+- `SkillVectorIndexVisibilityFilterTest`：+3 用例（空候选并入 / 已在候选不重复 / 无快照不变），11 全过
+- `LastDirectExecContextHookTest`（新增）：7 用例（五行全注入 / digest 换行转义 / digest 空缺 result 行 / 无快照不注入 / 无 RuntimeContext / 开关关 / executor 异常静默），全过
+- 存量 35+ DirectSkillExecutor 用例零改动全过（§7 硬门槛满足）
+
+### 遗留
+
+- E2E（内网，§7 第 4 条）：首轮直接执行 → 「9月的呢」走 LLM 复用参数换版本 → 结果带对比；待内网验证
+- 链式追问快照不刷新（D5 已知取舍）实测不够再上观测回调

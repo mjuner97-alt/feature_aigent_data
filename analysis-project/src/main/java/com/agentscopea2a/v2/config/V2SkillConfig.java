@@ -145,6 +145,7 @@ public class V2SkillConfig {
             SkillUsageResolver skillUsageResolver,
             SkillBypassKeywordService skillBypassKeywordService,
             SkillKeywordPriorityRepository skillKeywordPriorityRepository,
+            com.agentscopea2a.v2.skills.DirectSkillExecutor directSkillExecutor,
             @Value("${harness.a2a.skill-context.routing.enabled:false}") boolean enabled,
             @Value("${harness.a2a.skill-context.max-visible-skills:5}") int maxVisibleSkills,
             @Value("${harness.a2a.skill-context.fallback-visible-skills:10}") int fallbackVisibleSkills) {
@@ -153,7 +154,7 @@ public class V2SkillConfig {
         return new SkillVectorIndexVisibilityFilter(routingMetadataRepository,
                 new SkillCandidateSelector(maxVisibleSkills, fallbackVisibleSkills,
                         skillKeywordPriorityRepository::findAllEnabled),
-                enabled, skillUsageResolver, skillBypassKeywordService);
+                enabled, skillUsageResolver, skillBypassKeywordService, directSkillExecutor);
     }
 
     /**
@@ -194,6 +195,19 @@ public class V2SkillConfig {
                 enabled);
     }
 
+
+    /**
+     * 追问轮上下文注入 hook (docs/202610/skill-direct-exec-followup-plan.md §3.3):
+     * 把上次直接执行快照 (question/skill/script_id/params/result 摘要) 注入 system prompt,
+     * 让 LLM 在追问轮 (「9月的呢」) 复用参数走原链路。无快照不注入, 与现状逐字节一致。
+     */
+    @Bean
+    public com.agentscopea2a.v2.hooks.LastDirectExecContextHook lastDirectExecContextHook(
+            com.agentscopea2a.v2.skills.DirectSkillExecutor directSkillExecutor,
+            @Value("${harness.a2a.skill-direct-exec.followup-context.enabled:true}") boolean enabled) {
+        log.info("LastDirectExecContextHook: enabled={}", enabled);
+        return new com.agentscopea2a.v2.hooks.LastDirectExecContextHook(directSkillExecutor, enabled);
+    }
 
     /**
      * Knowledge dynamic retrieval hook - injects files from {@code knowledge-dynamic/} into the

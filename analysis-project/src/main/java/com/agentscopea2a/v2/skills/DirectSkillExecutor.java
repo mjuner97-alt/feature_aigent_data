@@ -241,18 +241,25 @@ public class DirectSkillExecutor {
             "需求项", "REQ-1001",
             "人", "张三");
 
+    /** params_schema 元素 (direct-exec-param-type-plan.md §2.1): type 仅装配关心 "array",
+     *  其余值/未写视为标量。包私有便于单测构造。 */
+    record ParamSpec(String name, boolean required, String type) {}
+
     /** 缺参反问 pending (方案 §4.1): key=userId:conversationId, TTL 5min, 取值时惰性清理。
      *  包私有便于单测构造过期条目。pendingAnchors 非空 = 歧义反问 (missingKeys[0] 形如
-     *  "timeRange@AMBIGUOUS:..."), 保存原始锚点列表, 补参轮把歧义锚点原位替换成确定性锚点。 */
+     *  "timeRange@AMBIGUOUS:..."), 保存原始锚点列表, 补参轮把歧义锚点原位替换成确定性锚点。
+     *  schema 挂进去避免补参轮重查 registry (direct-exec-param-type-plan.md §2.3)。 */
     record PendingDirectExec(String skillName, String scriptId,
-                             Map<String, String> mapping, Map<String, Object> filledParams,
+                             Map<String, String> mapping, List<ParamSpec> schema,
+                             Map<String, Object> filledParams,
                              List<String> missingKeys, long createdAt,
                              List<String> pendingAnchors) {}
 
     private PendingDirectExec pendingOf(String skillName, String scriptId,
-                                        Map<String, String> mapping, Map<String, Object> filledParams,
+                                        Map<String, String> mapping, List<ParamSpec> schema,
+                                        Map<String, Object> filledParams,
                                         List<String> missingKeys) {
-        return new PendingDirectExec(skillName, scriptId, mapping, filledParams, missingKeys,
+        return new PendingDirectExec(skillName, scriptId, mapping, schema, filledParams, missingKeys,
                 System.currentTimeMillis(), null);
     }
 
@@ -263,6 +270,86 @@ public class DirectSkillExecutor {
 
     private static String sessionKey(String userId, String conversationId) {
         return (userId == null || userId.isBlank() ? "__anon__" : userId) + ":" + conversationId;
+    }
+
+    // ==================== LastDirectExec 快照 (docs/202610/skill-direct-exec-followup-plan.md §3.1) ====================
+    // 追问轮走 LLM (v2 拍板): Java 不做执行决策, 只把「上一轮直接执行了什么、用了什么参数、
+    // 结果摘要」补给给 LLM (hint 块 + 目录并入)。question 原文是 hint 块里唯一带指标语义的字段。
+
+    /** 快照 TTL: 追问的自然间隔比缺参补参长, 30min (拍板点 D3)。 */
+    static final long LAST_EXEC_TTL_MS = 30 * 60 * 1000L;
+
+    /** resultDigest 截断长度 (拍板点 D2b): markdown 表格前缀截断保住表头+前几行。 */
+    static final int RESULT_DIGEST_MAX_LENGTH = 2000;
+
+    /**
+     * 上次直接执行快照: plan() 返回可执行计划时记录 question/skill/params;
+     * runDirectExecution 成功后 {@link #recordResult} 回填 resultDigest 并刷新 createdAt。
+     */
+    public record LastDirectExec(String question, String skillName, String scriptId,
+                                 Map<String, Object> params, String resultDigest, long createdAt) {}
+
+    private final java.util.concurrent.ConcurrentHashMap<String, LastDirectExec> lastExecStore =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** 查询口 (visibility filter / context hook 消费): TTL 过期返回 null 并惰性清理;
+     *  conversationId 为空 → null (与 pending 同规则)。 */
+    public LastDirectExec lastExec(String userId, String conversationId) {
+        if (conversationId == null || conversationId.isBlank()) {
+            return null;
+        }
+        String key = sessionKey(userId, conversationId);
+        LastDirectExec snapshot = lastExecStore.get(key);
+        if (snapshot == null) {
+            return null;
+        }
+        if (System.currentTimeMillis() - snapshot.createdAt() > LAST_EXEC_TTL_MS) {
+            lastExecStore.remove(key, snapshot);
+            return null;
+        }
+        return snapshot;
+    }
+
+    private void recordLastExec(String question, String userId, String conversationId,
+                                String skillName, String scriptId, Map<String, Object> params) {
+        if (conversationId == null || conversationId.isBlank()) {
+            return;
+        }
+        recordLastExec(sessionKey(userId, conversationId), question, skillName, scriptId, params);
+    }
+
+    private void recordLastExec(String sessionKey, String question,
+                                String skillName, String scriptId, Map<String, Object> params) {
+        lastExecStore.put(sessionKey,
+                new LastDirectExec(question, skillName, scriptId,
+                        params == null ? Map.of() : java.util.Collections.unmodifiableMap(
+                                new LinkedHashMap<>(params)),
+                        null, System.currentTimeMillis()));
+    }
+
+    /** runDirectExecution 成功后回填 stdout 摘要并刷新 TTL (§3.1 记录时机第 2 步)。无快照则 no-op。 */
+    public void recordResult(String userId, String conversationId, String stdout) {
+        if (conversationId == null || conversationId.isBlank()) {
+            return;
+        }
+        String key = sessionKey(userId, conversationId);
+        LastDirectExec current = lastExecStore.get(key);
+        if (current == null) {
+            return;
+        }
+        lastExecStore.replace(key, current, new LastDirectExec(current.question(), current.skillName(),
+                current.scriptId(), current.params(), truncateDigest(stdout), System.currentTimeMillis()));
+    }
+
+    static String truncateDigest(String stdout) {
+        if (stdout == null || stdout.isBlank()) {
+            return null;
+        }
+        String trimmed = stdout.strip();
+        if (trimmed.length() <= RESULT_DIGEST_MAX_LENGTH) {
+            return trimmed;
+        }
+        return trimmed.substring(0, RESULT_DIGEST_MAX_LENGTH) + "…(已截断)";
     }
 
     /**
@@ -334,15 +421,15 @@ public class DirectSkillExecutor {
         DimensionExtraction extraction = extract(preview, selection.matchedKeywords(), topName,
                 extractExtraDimensions(question));
 
-        // params_schema 白名单/必填: registry 查不到时按无 schema 处理 (mapping 原样传),
+        // params_schema 白名单/必填/类型: registry 查不到时按无 schema 处理 (mapping 原样传),
         // 白名单拒绝交给 scriptExec 的防注入校验 → 直接报错路径 (拍板: 配错不回退)
-        List<String> declared = null;
+        List<ParamSpec> schema = null;
         List<String> required = List.of();
         try {
             var entry = scriptRegistryMapper.selectByScriptId(top.scriptId());
             if (entry != null && entry.getParamsSchema() != null && !entry.getParamsSchema().isBlank()) {
-                declared = parseNames(entry.getParamsSchema(), false);
-                required = parseNames(entry.getParamsSchema(), true);
+                schema = parseSchema(entry.getParamsSchema());
+                required = schema.stream().filter(ParamSpec::required).map(ParamSpec::name).toList();
             }
         } catch (Exception e) {
             log.warn("DirectSkillExecutor: 查 script_registry 失败 scriptId={}: {}", top.scriptId(), e.getMessage());
@@ -360,9 +447,9 @@ public class DirectSkillExecutor {
                 extraction = withTimeRangeAnchors(extraction, kept);
             } else {
                 String key = sessionKey(userId, conversationId);
-                Map<String, Object> preParams = buildParams(mapping, declared,
+                Map<String, Object> preParams = buildParams(mapping, schema,
                         withTimeRangeAnchors(extraction, kept));
-                pending.put(key, new PendingDirectExec(topName, top.scriptId(), mapping, preParams,
+                pending.put(key, new PendingDirectExec(topName, top.scriptId(), mapping, schema, preParams,
                         List.of(TimeRangeResolver.RESERVED_KEY + "@" + ambiguous),
                         System.currentTimeMillis(), trAnchors));
                 log.info("DirectSkillExecutor: skill {} 时间锚点歧义 {} → 反问 (pending {})",
@@ -373,7 +460,22 @@ public class DirectSkillExecutor {
             }
         }
 
-        Map<String, Object> params = buildParams(mapping, declared, extraction);
+        Map<String, Object> params = buildParams(mapping, schema, extraction);
+        // 快照兜底补缺 (followup 方案 §3.5): 同 skill 且必填参数本轮未提及 → 继承上轮直接
+        // 执行的值 (修 G2「时间层追问丢部门」在直接执行交替场景的暴露)。只补缺不覆盖;
+        // 异 skill param 名空间不同不做翻译, 维持反问/回退。
+        if (conversationId != null) {
+            LastDirectExec last = lastExec(userId, conversationId);
+            if (last != null && last.skillName().equals(topName)) {
+                for (String req : required) {
+                    if (!params.containsKey(req) && last.params().containsKey(req)) {
+                        params.put(req, last.params().get(req));
+                        log.info("DirectSkillExecutor: 必填参数 {} 本轮未提及, 快照兜底继承上轮值 (skill={})",
+                                req, topName);
+                    }
+                }
+            }
+        }
         // 必填缺失分两类 (2026/10/15 缺参反问方案): 在 param_mapping 内 (有维度语义) →
         // 反问补参; 不在 mapping 内 (语义未知) 或调用方未传会话键 → 维持回退 LLM
         List<String> missingKeys = new ArrayList<>();
@@ -393,7 +495,7 @@ public class DirectSkillExecutor {
         }
         if (!missingKeys.isEmpty()) {
             String key = sessionKey(userId, conversationId);
-            pending.put(key, pendingOf(topName, top.scriptId(), mapping, params, missingKeys));
+            pending.put(key, pendingOf(topName, top.scriptId(), mapping, schema, params, missingKeys));
             log.info("DirectSkillExecutor: skill {} 缺必填维度 {} → 反问补参 (pending {})",
                     topName, missingKeys, key);
             return new DirectExecutionPlan(extraction, topName, top.scriptId(), params,
@@ -401,16 +503,18 @@ public class DirectSkillExecutor {
         }
         log.info("DirectSkillExecutor: plan hit skill={} scriptId={} params={} extraction={} matched={}",
                 topName, top.scriptId(), params, extraction, extraction.metrics());
+        recordLastExec(question, userId, conversationId, topName, top.scriptId(), params);
         return new DirectExecutionPlan(extraction, topName, top.scriptId(), params);
     }
 
-    /** param_mapping → params 装配 (plan 与歧义补参轮共用): 白名单外不传, 缺值走 defaultTimeValues。 */
-    private Map<String, Object> buildParams(Map<String, String> mapping, List<String> declared,
+    /** param_mapping → params 装配 (plan 与歧义补参轮共用): 白名单外不传, 缺值走 defaultTimeValues,
+     *  形状按 schema 类型定 (direct-exec-param-type-plan.md §2.2)。 */
+    private Map<String, Object> buildParams(Map<String, String> mapping, List<ParamSpec> schema,
                                             DimensionExtraction extraction) {
         Map<String, Object> params = new LinkedHashMap<>();
         for (Map.Entry<String, String> e : mapping.entrySet()) {
             String param = e.getKey();
-            if (declared != null && !declared.contains(param)) {
+            if (schema != null && schema.stream().noneMatch(s -> param.equals(s.name()))) {
                 continue; // params_schema 白名单外不传
             }
             List<String> values = valuesFor(extraction, e.getValue());
@@ -421,9 +525,17 @@ public class DirectSkillExecutor {
                 }
                 values = fallback;
             }
-            params.put(param, values.size() == 1 ? values.get(0) : values);
+            params.put(param, shapeValue(param, schema, values));
         }
         return params;
+    }
+
+    /** 拍板①② (direct-exec-param-type-plan.md §4): schema 声明 type=array → 恒传 List 含单值,
+     *  其余 (string/未声明/无 schema) 维持单值折叠, 不静默改变存量脚本契约。 */
+    private static Object shapeValue(String param, List<ParamSpec> schema, List<String> values) {
+        boolean isArray = schema != null && schema.stream()
+                .anyMatch(s -> param.equals(s.name()) && "array".equals(s.type()));
+        return isArray ? values : (values.size() == 1 ? values.get(0) : values);
     }
 
     /** timeRange 锚点列表里的第一个歧义锚点 (保序), 无则 null。 */
@@ -486,7 +598,7 @@ public class DirectSkillExecutor {
         Map<String, Object> params = new LinkedHashMap<>(p.filledParams());
         for (Map.Entry<String, String> e : p.mapping().entrySet()) {
             if (missingKey.equals(e.getValue())) {
-                params.put(e.getKey(), values.size() == 1 ? values.get(0) : values);
+                params.put(e.getKey(), shapeValue(e.getKey(), p.schema(), values));
             }
         }
         List<String> remaining = p.missingKeys().subList(1, p.missingKeys().size());
@@ -494,10 +606,11 @@ public class DirectSkillExecutor {
             pending.remove(key, p);
             log.info("DirectSkillExecutor: plan hit (补参完成) skill={} scriptId={} params={}",
                     p.skillName(), p.scriptId(), params);
+            recordLastExec(question, userId, conversationId, p.skillName(), p.scriptId(), params);
             return new DirectExecutionPlan(extraction, p.skillName(), p.scriptId(), params);
         }
-        pending.put(key, new PendingDirectExec(p.skillName(), p.scriptId(), p.mapping(), params,
-                List.copyOf(remaining), System.currentTimeMillis(), null));
+        pending.put(key, new PendingDirectExec(p.skillName(), p.scriptId(), p.mapping(), p.schema(),
+                params, List.copyOf(remaining), System.currentTimeMillis(), null));
         log.info("DirectSkillExecutor: 补参 {} 已填, 继续反问 {}", missingKey, remaining.get(0));
         return new DirectExecutionPlan(extraction, p.skillName(), p.scriptId(), params,
                 List.of(labelFor(remaining.get(0))));
@@ -538,11 +651,12 @@ public class DirectSkillExecutor {
             }
             List<String> values = valuesFor(effective, dimKey);
             if (!values.isEmpty()) {
-                params.put(e.getKey(), values.size() == 1 ? values.get(0) : values);
+                params.put(e.getKey(), shapeValue(e.getKey(), p.schema(), values));
             }
         }
         log.info("DirectSkillExecutor: 歧义 {} → {} (pending {}), plan hit skill={} scriptId={} params={}",
                 ambiguous, resolved, key, p.skillName(), p.scriptId(), params);
+        recordLastExec(key, question, p.skillName(), p.scriptId(), params);
         return new DirectExecutionPlan(effective, p.skillName(), p.scriptId(), params);
     }
 
@@ -857,20 +971,21 @@ public class DirectSkillExecutor {
         }
     }
 
-    /** params_schema 解析 (JSON 数组, 元素 {name, required}); required=true 时取必填名单。 */
-    private List<String> parseNames(String paramsSchemaJson, boolean requiredOnly) {
+    /** params_schema 解析 (JSON 数组, 元素 {name, required, type}); 必填名单由调用方按
+     *  ParamSpec::required 过滤。解析失败返回空表 (非 null: 白名单为空 = 全不传, 维持原语义)。 */
+    private List<ParamSpec> parseSchema(String paramsSchemaJson) {
         try {
             List<?> list = objectMapper.readValue(paramsSchemaJson, List.class);
-            List<String> names = new ArrayList<>();
+            List<ParamSpec> specs = new ArrayList<>();
             for (Object o : list) {
                 if (!(o instanceof Map<?, ?> m)) continue;
-                if (requiredOnly && !Boolean.TRUE.equals(m.get("required"))) continue;
                 Object name = m.get("name");
-                if (name != null) {
-                    names.add(String.valueOf(name));
-                }
+                if (name == null) continue;
+                specs.add(new ParamSpec(String.valueOf(name),
+                        Boolean.TRUE.equals(m.get("required")),
+                        m.get("type") == null ? null : String.valueOf(m.get("type"))));
             }
-            return names;
+            return specs;
         } catch (Exception e) {
             log.warn("DirectSkillExecutor: params_schema 解析失败: {}", e.getMessage());
             return List.of();
