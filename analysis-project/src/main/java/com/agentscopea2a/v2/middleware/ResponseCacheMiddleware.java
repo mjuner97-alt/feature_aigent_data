@@ -16,6 +16,7 @@
 package com.agentscopea2a.v2.middleware;
 
 import com.agentscopea2a.v2.cache.ResponseCacheService;
+import com.agentscopea2a.v2.dimension.DimensionKeyConfig;
 import com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository;
 import com.agentscopea2a.v2.dimension.DimensionState;
 import com.agentscopea2a.v2.dimension.DimensionStateManager;
@@ -37,6 +38,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Function;
@@ -108,8 +110,22 @@ public class ResponseCacheMiddleware implements MiddlewareBase {
         // 拍板② (2026-10-14): 问题含时间范围短语时绕过缓存 (不读不写)——"本周"类锚点
         // 解析出的日期随提问日漂移, 缓存指纹是原始文本会跨天脏读
         // (docs/202610/dimension-key-dynamic-dimension-plan.md §6.1.5)。
-        if (containsTimeRangePhrase(question)) {
-            log.debug("[cache] bypass: timeRange phrase in question");
+        // 口语值方案 §3.5: 版本/季度锚点短语 (今年以来/近N个版本/当季…) 同口径绕过。
+        List<DimensionKeyConfig> keyRows = null;
+        try {
+            DimensionKeyConfigRepository repo = dimensionKeyRepoProvider.getIfAvailable();
+            if (repo != null) {
+                keyRows = repo.findAllEnabled();
+            }
+        } catch (RuntimeException e) {
+            log.warn("[cache] 维度键字典读取失败, 绕过检查退化为 timeRange 正则: {}", e.getMessage());
+            keyRows = null;
+        }
+        boolean bypass = containsTimeRangePhrase(question, keyRows)
+                || com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver
+                        .containsAnchorPhrase(question, keyRows);
+        if (bypass) {
+            log.debug("[cache] bypass: time/anchor phrase in question");
             return next.apply(input);
         }
 
@@ -158,20 +174,21 @@ public class ResponseCacheMiddleware implements MiddlewareBase {
 
     // ==================== Helpers ====================
 
-    /** 问题命中 timeRange 提取（L1 正则 + L2 词表）→ true；字典不可用时保守放行（不绕过）。 */
-    private boolean containsTimeRangePhrase(String question) {
-        if (dimensionKeyRepoProvider == null) {
-            return false;
-        }
+    /** 问题命中 timeRange 提取（L1 正则 + L2 词表）→ true；字典行不可用时仅跑 L1 正则
+     *  （保守放行不绕过词表部分，L1 确定性不受影响）。 */
+    private boolean containsTimeRangePhrase(String question, List<DimensionKeyConfig> keyRows) {
         try {
-            DimensionKeyConfigRepository repo = dimensionKeyRepoProvider.getIfAvailable();
-            if (repo == null) {
-                return false;
-            }
-            return repo.findAllEnabled().stream()
+            boolean vocabHit = keyRows != null && keyRows.stream()
                     .filter(k -> !k.builtin())
                     .filter(k -> com.agentscopea2a.v2.dimension.TimeRangeResolver.RESERVED_KEY.equals(k.key()))
                     .anyMatch(k -> !com.agentscopea2a.v2.dimension.TimeRangeExtractor.extract(question, k.aliases()).isEmpty());
+            if (vocabHit) {
+                return true;
+            }
+            // 字典不可用时 L1 正则仍应绕过：绝对区间/截至（确定性产出，与今天相关）
+            // + 未来N周/近N周（解析值随提问日漂移, 时间维度方案 §5）
+            return !com.agentscopea2a.v2.dimension.TimeRangeExtractor.absoluteDateSpans(question).isEmpty()
+                    || com.agentscopea2a.v2.dimension.TimeRangeExtractor.matchesDriftRegex(question);
         } catch (RuntimeException e) {
             log.warn("[cache] timeRange bypass check failed, treat as no phrase: {}", e.getMessage());
             return false;

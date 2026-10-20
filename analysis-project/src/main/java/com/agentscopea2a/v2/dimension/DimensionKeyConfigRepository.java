@@ -21,9 +21,10 @@ import java.util.Map;
  * 与 dimension_alias 同库），照搬 {@link DimensionAliasRepository} 的
  * ensureTable + TTL 快照缓存模式（docs/history/skill-direct-exec-plan.md §9.2）。
  *
- * <p>表首次创建时自动灌入内置 8 键种子行（builtin=true，aliases 为空数组——内置键
+ * <p>表首次创建时自动灌入内置 9 键种子行（builtin=true，aliases 为空数组——内置键
  * 提取走 DimensionStateManager 结构化规则，不走词表；seed 键集与
  * {@code DirectSkillExecutor.DIMENSION_KEYS} 同源，两处需同步维护）。
+ * 存量表每次启动做内置键存在性补种（新版新增的内置键如 subItemNo 能补进行存量表）。
  * 读失败时沿用上次快照（param_mapping 保存校验与直接执行提取都在热路径上）。
  */
 public class DimensionKeyConfigRepository {
@@ -34,6 +35,7 @@ public class DimensionKeyConfigRepository {
             new TypeReference<>() {};
 
     /** 内置 8 键 seed（key → 展示名），与 DirectSkillExecutor.DIMENSION_KEYS 同源。 */
+    /** 内置 9 键 seed（key → 展示名），与 DirectSkillExecutor.DIMENSION_KEYS 同源。 */
     private static final Map<String, String> BUILTIN_KEYS = buildBuiltinKeys();
 
     private static Map<String, String> buildBuiltinKeys() {
@@ -45,6 +47,7 @@ public class DimensionKeyConfigRepository {
         keys.put("appName", "应用");
         keys.put("productLine", "产品线");
         keys.put("itemNo", "需求项");
+        keys.put("subItemNo", "需求子条目");
         keys.put("perName", "人");
         return java.util.Collections.unmodifiableMap(keys);
     }
@@ -57,12 +60,88 @@ public class DimensionKeyConfigRepository {
     private static final String RESERVED_TIME_RANGE_KEY = TimeRangeResolver.RESERVED_KEY;
     private static final String TIME_RANGE_ALIASES_SEED =
             "[{\"alias\":\"本周\",\"value\":\"THIS_WEEK\"},"
+                    + "{\"alias\":\"当周\",\"value\":\"THIS_WEEK\"},"
                     + "{\"alias\":\"上周\",\"value\":\"LAST_WEEK\"},"
                     + "{\"alias\":\"前一周\",\"value\":\"LAST_WEEK\"},"
-                    + "{\"alias\":\"近一周\",\"value\":\"LAST:7d\"},"
-                    + "{\"alias\":\"最近一周\",\"value\":\"LAST:7d\"},"
+                    + "{\"alias\":\"今天\",\"value\":\"TODAY\"},"
+                    + "{\"alias\":\"今日\",\"value\":\"TODAY\"},"
+                    + "{\"alias\":\"下周\",\"value\":\"NEXT:1w\"},"
                     + "{\"alias\":\"近7天\",\"value\":\"LAST:7d\"},"
-                    + "{\"alias\":\"近30天\",\"value\":\"LAST:30d\"}]";
+                    + "{\"alias\":\"近30天\",\"value\":\"LAST:30d\"},"
+                    + "{\"alias\":\"交付周到投产\",\"value\":\"交付周至投产周\"},"
+                    + "{\"alias\":\"交付周至投产\",\"value\":\"交付周至投产周\"},"
+                    + "{\"alias\":\"交付到投产\",\"value\":\"交付周至投产周\"},"
+                    + "{\"alias\":\"交付至投产\",\"value\":\"交付周至投产周\"},"
+                    + "{\"alias\":\"交付前一周至投产\",\"value\":\"交付周至投产周\"},"
+                    + "{\"alias\":\"交付前一周到投产\",\"value\":\"交付周至投产周\"},"
+                    + "{\"alias\":\"交付前到投产\",\"value\":\"交付周至投产周\"},"
+                    + "{\"alias\":\"交付后\",\"value\":\"交付周至投产周\"},"
+                    + "{\"alias\":\"投产周\",\"value\":\"投产周\"},"
+                    + "{\"alias\":\"投产前一周\",\"value\":\"投产周\"},"
+                    + "{\"alias\":\"投产前\",\"value\":\"AMBIGUOUS:PROD\"}]";
+
+    /** 2026-10-14 首版 seed 的 alias 集合：存量表 timeRange 行若仍是这套（管理员未改过），
+     *  启动时自动升级到新 seed（时间维度方案 §3.2——管理员改过的行不覆盖）。 */
+    private static final java.util.Set<String> LEGACY_TIME_RANGE_ALIAS_NAMES = java.util.Set.of(
+            "本周", "上周", "前一周", "近一周", "最近一周", "近7天", "近30天");
+
+    /**
+     * 口语值方案 §3.6（docs/202610/版本季度部门口语值处理方案.md）：允许页面维护词表的
+     * 内置键白名单（仅 aliases 可编辑，key/label/enabled 仍锁，见 update/setEnabled）。
+     */
+    public static final java.util.Set<String> VOCAB_EDITABLE_BUILTIN_KEYS =
+            java.util.Set.of("versionPlan", "vestQuarter", "deptName");
+
+    /** 内置键默认词表 seed（§3.2）：行 aliases 为空时灌入，管理员改过（非空）不覆盖。 */
+    private static final Map<String, String> BUILTIN_VOCAB_SEEDS = buildBuiltinVocabSeeds();
+
+    private static Map<String, String> buildBuiltinVocabSeeds() {
+        Map<String, String> seeds = new LinkedHashMap<>();
+        StringBuilder dept = new StringBuilder("[");
+        for (int i = 1; i <= 5; i++) {
+            String cn = switch (i) {
+                case 1 -> "一";
+                case 2 -> "二";
+                case 3 -> "三";
+                case 4 -> "四";
+                default -> "五";
+            };
+            if (i > 1) {
+                dept.append(",");
+            }
+            dept.append("{\"alias\":\"杭").append(cn).append("\",\"value\":\"杭州开发")
+                    .append(cn).append("部\"}");
+        }
+        dept.append("]");
+        seeds.put("deptName", dept.toString());
+        seeds.put("versionPlan", "["
+                + "{\"alias\":\"今年以来\",\"value\":\"YEAR_V\"},"
+                + "{\"alias\":\"全年\",\"value\":\"YEAR_V\"},"
+                + "{\"alias\":\"今年\",\"value\":\"YEAR_V\"},"
+                + "{\"alias\":\"各月度版本\",\"value\":\"YEAR_V\"},"
+                + "{\"alias\":\"每个月度版本\",\"value\":\"YEAR_V\"},"
+                + "{\"alias\":\"各个月度版本\",\"value\":\"YEAR_V\"},"
+                + "{\"alias\":\"每月\",\"value\":\"YEAR_V\"},"
+                + "{\"alias\":\"各月\",\"value\":\"YEAR_V\"},"
+                + "{\"alias\":\"各版本\",\"value\":\"YEAR_V\"},"
+                + "{\"alias\":\"上半年\",\"value\":\"HALF_V:1\"},"
+                + "{\"alias\":\"下半年\",\"value\":\"HALF_V:2\"},"
+                + "{\"alias\":\"近半年\",\"value\":\"LAST:6V\"},"
+                + "{\"alias\":\"目前\",\"value\":\"THIS_V\"},"
+                + "{\"alias\":\"当前\",\"value\":\"THIS_V\"},"
+                + "{\"alias\":\"现在\",\"value\":\"THIS_V\"},"
+                + "{\"alias\":\"本月\",\"value\":\"THIS_V\"},"
+                + "{\"alias\":\"当月\",\"value\":\"THIS_V\"},"
+                + "{\"alias\":\"近期\",\"value\":\"THIS_V\"},"
+                + "{\"alias\":\"在建版本\",\"value\":\"THIS_V\"},"
+                + "{\"alias\":\"延后版\",\"value\":\"DELAYED\"}"
+                + "]");
+        seeds.put("vestQuarter", "["
+                + "{\"alias\":\"当季\",\"value\":\"THIS_Q\"},"
+                + "{\"alias\":\"在建季度\",\"value\":\"THIS_Q\"}"
+                + "]");
+        return java.util.Collections.unmodifiableMap(seeds);
+    }
 
     private final DataSource dataSource;
     private final ObjectMapper objectMapper;
@@ -139,8 +218,10 @@ public class DimensionKeyConfigRepository {
 
     public boolean update(DimensionKeyConfig row) {
         ensureTable();
+        // 口语值方案 §3.6: 白名单内置键允许更新（仅 aliases 语义，key/label 保护在 Controller 层；
+        // 白名单外内置键仍拒绝——防止内置键全量放开）
         String sql = "UPDATE dimension_key_config SET key=?, label=?, aliases=?, enabled=?, remark=?, "
-                + "updated_at=now() WHERE id=? AND builtin=FALSE";
+                + "updated_at=now() WHERE id=? AND (builtin=FALSE OR key IN (?, ?, ?))";
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, row.key());
             ps.setString(2, row.label());
@@ -148,6 +229,9 @@ public class DimensionKeyConfigRepository {
             ps.setBoolean(4, row.enabled());
             ps.setString(5, row.remark());
             ps.setLong(6, row.id());
+            ps.setString(7, "versionPlan");
+            ps.setString(8, "vestQuarter");
+            ps.setString(9, "deptName");
             boolean ok = ps.executeUpdate() > 0;
             if (ok) invalidateCache();
             return ok;
@@ -233,8 +317,11 @@ public class DimensionKeyConfigRepository {
                 if (fresh) {
                     createTable(c);
                     seed(c);
+                } else {
+                    ensureBuiltinKeyRows(c);
                 }
                 ensureReservedRow(c);
+                ensureBuiltinVocabSeeds(c);
                 tableEnsured = true;
             } catch (SQLException e) {
                 log.warn("dimension_key_config DDL failed (will retry): {}", e.getMessage());
@@ -242,14 +329,77 @@ public class DimensionKeyConfigRepository {
         }
     }
 
+    /**
+     * 内置键默认词表补种（口语值方案 §3.6）：白名单内置键的 aliases 为空（未被管理员
+     * 改过）时灌入 seed；已有词表内容（含管理员删过词的存量）不覆盖——同 timeRange
+     * "删/停用=关功能"拍板语义，避免重启复活已删词条。
+     */
+    private void ensureBuiltinVocabSeeds(Connection c) throws SQLException {
+        for (Map.Entry<String, String> entry : BUILTIN_VOCAB_SEEDS.entrySet()) {
+            String key = entry.getKey();
+            String current;
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT aliases FROM dimension_key_config WHERE key=? LIMIT 1")) {
+                ps.setString(1, key);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) {
+                        continue; // 行不存在（seed 失败等），等下次启动重试
+                    }
+                    current = rs.getString(1);
+                }
+            }
+            List<DimensionKeyConfig.AliasMapping> parsed = parseAliases(current);
+            if (!parsed.isEmpty()) {
+                continue; // 管理员已维护过，不覆盖
+            }
+            try (PreparedStatement ps = c.prepareStatement(
+                    "UPDATE dimension_key_config SET aliases=?, updated_at=now() WHERE key=?")) {
+                ps.setString(1, entry.getValue());
+                ps.setString(2, key);
+                ps.executeUpdate();
+            }
+            log.info("dimension_key_config: seeded builtin vocab for '{}'", key);
+        }
+        invalidateCache();
+    }
+
+    /** 内置键存在性补种（存量表每次启动执行）：新版本新增的内置键（如 subItemNo）
+     *  在老表里没有行，这里补齐；完全无该 key 的行才插入（软删/手工改键不复活，
+     *  同 timeRange 拍板语义）。建表路径 seed 已含全量内置键，无需重跑。 */
+    private void ensureBuiltinKeyRows(Connection c) throws SQLException {
+        java.util.Set<String> existing = new java.util.HashSet<>();
+        try (PreparedStatement ps = c.prepareStatement("SELECT key FROM dimension_key_config");
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                existing.add(rs.getString(1));
+            }
+        }
+        String sql = "INSERT INTO dimension_key_config (key, label, builtin, aliases, enabled, remark) "
+                + "VALUES (?, ?, TRUE, '[]', TRUE, '内置键（提取走结构化规则，不走词表）')";
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
+            for (Map.Entry<String, String> entry : BUILTIN_KEYS.entrySet()) {
+                if (existing.contains(entry.getKey())) {
+                    continue;
+                }
+                ps.setString(1, entry.getKey());
+                ps.setString(2, entry.getValue());
+                ps.executeUpdate();
+                log.info("dimension_key_config: backfilled builtin key '{}'", entry.getKey());
+            }
+        }
+    }
+
     /** timeRange 行存在性补种（建表时与存量表都执行）：完全无该 key 的行才插入；
-     *  软删行（enabled=false）视为存在，不复活（删/停用=关功能）。 */
+     *  软删行（enabled=false）视为存在，不复活（删/停用=关功能）。
+     *  存量行词表若与 2026-10-14 首版 seed 完全一致（管理员未改过）→ 升级为新 seed；
+     *  管理员改过的行（含软删）不动。 */
     private void ensureReservedRow(Connection c) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement(
-                "SELECT 1 FROM dimension_key_config WHERE key=? LIMIT 1")) {
+                "SELECT aliases FROM dimension_key_config WHERE key=? LIMIT 1")) {
             ps.setString(1, RESERVED_TIME_RANGE_KEY);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
+                    upgradeLegacySeedIfUntouched(c, rs.getString(1));
                     return;
                 }
             }
@@ -265,6 +415,33 @@ public class DimensionKeyConfigRepository {
             ps.executeUpdate();
         }
         log.info("dimension_key_config: seeded reserved key '{}'", RESERVED_TIME_RANGE_KEY);
+    }
+
+    /** 存量行 alias 名集合与首版 seed 完全一致 → 覆盖为新 seed（管理员自定义过则跳过）。 */
+    private void upgradeLegacySeedIfUntouched(Connection c, String aliasesJson) {
+        if (aliasesJson == null || aliasesJson.isBlank()) {
+            return;
+        }
+        try {
+            java.util.Set<String> names = new java.util.HashSet<>();
+            for (DimensionKeyConfig.AliasMapping a : parseAliases(aliasesJson)) {
+                if (a != null) {
+                    names.add(a.alias());
+                }
+            }
+            if (!names.equals(LEGACY_TIME_RANGE_ALIAS_NAMES)) {
+                return;
+            }
+            try (PreparedStatement ps = c.prepareStatement(
+                    "UPDATE dimension_key_config SET aliases=?, updated_at=now() WHERE key=?")) {
+                ps.setString(1, TIME_RANGE_ALIASES_SEED);
+                ps.setString(2, RESERVED_TIME_RANGE_KEY);
+                ps.executeUpdate();
+            }
+            log.info("dimension_key_config: upgraded legacy timeRange seed to current vocabulary");
+        } catch (Exception e) {
+            log.warn("dimension_key_config: timeRange seed 升级检查失败, 保留存量词表: {}", e.getMessage());
+        }
     }
 
     /** 通过探测查询判存，避免依赖 openGauss 的 information_schema 方言差异。 */

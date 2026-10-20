@@ -191,12 +191,14 @@ public class DimensionState implements State {
         VERSION
     }
 
-    /** 业务同级维度类型：组/应用/产品线/需求项 四选一 */
+    /** 业务同级维度类型：组/应用/产品线/需求项/需求子条目 五选一 */
     public enum PeerDimensionType {
         TEAM,
         APPLICATION,
         PRODUCT_LINE,
-        REQUIREMENT
+        REQUIREMENT,
+        /** 需求子条目（S+8位日期-6位数字，如 S20250926-000741） */
+        SUB_REQUIREMENT
     }
 
     /**

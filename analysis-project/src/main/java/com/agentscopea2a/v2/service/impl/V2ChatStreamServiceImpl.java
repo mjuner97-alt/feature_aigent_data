@@ -468,6 +468,7 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
                     // 补参 pending 在 DirectSkillExecutor 内; 下一轮回答由 plan() 消费后执行。
                     log.info("Direct skill execution missing-params ask: sessionId={} skill={} missing={}",
                             conversationId, plan.skillName(), plan.missingAsk());
+                    sendDimensionExtractEvent(streamCtx, plan);
                     strategy.sendText(streamCtx, TextPayload.chunk(
                             DirectSkillExecutor.askPrompt(plan), true));
                     emitter.complete();
@@ -476,6 +477,7 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
                 }
                 log.info("Direct skill execution short-circuit: sessionId={} skill={} scriptId={}",
                         conversationId, plan.skillName(), plan.scriptId());
+                sendDimensionExtractEvent(streamCtx, plan);
                 Mono.fromRunnable(() -> runDirectExecution(streamCtx, strategy, plan, cleanup))
                         .subscribeOn(Schedulers.boundedElastic())
                         .subscribe();
@@ -508,6 +510,41 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
         }).subscribeOn(Schedulers.boundedElastic()).subscribe();
 
         return emitter;
+    }
+
+    /**
+     * 直连执行维度解析事件（调试用，/pm 智能体活动侧边栏首行展示）：
+     * skill/scriptId + Layer1 提取体（含锚点原词，如 THIS_V/LAST:3V）+ 最终 params
+     * （锚点已展开、.start/.end 已解析）+ resolved（activeKeys 全量解析值，含 skill
+     * 未映射的动态键/后缀键）。缺参反问轮与执行轮都发。
+     * 不带 toolCallId —— 避免被 tool_result_end 的按 id 合并策略吞掉该行。
+     */
+    private void sendDimensionExtractEvent(StreamContext ctx,
+                                           DirectSkillExecutor.DirectExecutionPlan plan) {
+        try {
+            java.util.Map<String, Object> payload = new java.util.LinkedHashMap<>();
+            payload.put("skill", plan.skillName());
+            payload.put("scriptId", plan.scriptId());
+            if (plan.needsAsk()) {
+                payload.put("missingAsk", plan.missingAsk());
+            }
+            payload.put("extraction", plan.extraction());
+            payload.put("params", plan.params());
+            if (directSkillExecutor != null) {
+                // 全量维度键解析值 (含 skill 未映射的动态键/后缀键), 调试对比提取是否正确
+                payload.put("resolved", directSkillExecutor.resolvedValues(plan.extraction()));
+            }
+            AiChatResult event = AiChatResult.builder()
+                    .code(0).eventType("dimension_extract")
+                    .lineResult("🔍 维度解析：" + plan.skillName()
+                            + (plan.needsAsk() ? "（缺参反问）" : ""))
+                    .toolInput(EVENT_JSON.writerWithDefaultPrettyPrinter()
+                            .writeValueAsString(payload))
+                    .build();
+            safeSendEvent(ctx.emitter, "dimension_extract", event);
+        } catch (Exception e) {
+            log.warn("dimension_extract 事件发送失败: sessionId={}", ctx.conversationId, e);
+        }
     }
 
     /**

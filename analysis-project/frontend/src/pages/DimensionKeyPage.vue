@@ -1,8 +1,9 @@
 <script setup lang="ts">
 /**
  * 维度键字典 (docs/history/skill-direct-exec-plan.md §9):
- * 内置 8 键只读 (提取走结构化规则); 用户新增键走词表命中提取 (alias contains → value),
+ * 内置 9 键只读 (提取走结构化规则); 用户新增键走词表命中提取 (alias contains → value),
  * 供 Skill 配置页 param_mapping 下拉选择。动态键仅当前问题提取, 不跨轮继承。
+ * 口语值方案 §3.6: versionPlan/vestQuarter/deptName 三个内置键开放词表编辑 (口语值维护)。
  */
 import { computed, onMounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -16,6 +17,34 @@ import {
 } from '../api/dimensionKey';
 import type { DimensionKeyAlias } from '../types/dimensionKey';
 import { isAdmin } from '../utils/auth';
+
+/** 词表可维护的白名单内置键 (与后端 DimensionKeyConfigRepository.VOCAB_EDITABLE_BUILTIN_KEYS 同源) */
+const VOCAB_EDITABLE_BUILTIN_KEYS = ['versionPlan', 'vestQuarter', 'deptName'];
+
+/** 白名单键的 value 分型提示 (后端保存期强校验, 此处仅引导) */
+const VALUE_HINTS: Record<string, string> = {
+  versionPlan: '版本标准值 (2026年10月份版本 / 2026年10月延后版) 或锚点 (THIS_V / YEAR_V / HALF_V:1|2 / LAST:3V / DELAYED)',
+  vestQuarter: '季度标准值 (2026年4季度) 或锚点 THIS_Q',
+  deptName: '部门标准名 (杭州开发一部 / 杭州服务支持部 / 杭州技术部 / 云计算实验室)',
+};
+
+/**
+ * 内置键结构化规则可提取形态 (不走词表, 代码正则/锚点, 仅展示引导)。
+ * 管理员据此了解每个键除词表外还能命中什么口语词 — 这些形态不出现在词表里,
+ * 但 param_mapping 传参时同样生效 (与 DimensionStateManager/各 Resolver 同源维护)。
+ */
+const RULE_HINTS: Record<string, string> = {
+  versionPlan: '标准值 2026年10月份版本、2026年10月延后版；口语 202610版本、十月版、4月、2026年10月；锚点 今年以来/全年/各月(YEAR_V)、上半年/下半年(HALF_V:1|2, 可带年份如 25年上半年→HALF_V:1@2025)、近N个版本/近N个月(LAST:{n}V, 按在建最后一版月序前推)、目前/当前/在建版本(THIS_V)、延后版(DELAYED)',
+  vestQuarter: '标准值 2026年4季度；口语 Q1、一季度；锚点 当季/在建季度(THIS_Q)',
+  deptName: '标准枚举 杭州开发一部~五部、杭州服务支持部、杭州技术部、云计算实验室；口语缩写 杭一/杭二部/杭开一 自动归一',
+  timeRange: '本周/上周/今天/近N天/交付周到投产 等 (词表 + 时间锚点, 口径见时间维度方案)',
+  groupName: '组名结构化识别 (XX组), 指标词表辅助修剪虚词',
+  appName: '应用编号 F-xxx',
+  productLine: '产品线词表识别',
+  itemNo: '需求项编号 I20260208-0005',
+  subItemNo: '子需求项编号',
+  perName: '人员名识别',
+};
 
 const admin = isAdmin();
 const loading = ref(false);
@@ -32,6 +61,15 @@ const aliasRows = ref<DimensionKeyAlias[]>([]);
 function emptyForm() {
   return { key: '', label: '', enabled: true, remark: '' };
 }
+
+/** 词表是否可编辑: 非内置键, 或白名单内置键 (口语值方案 §3.6) */
+const canEditAliases = computed(() =>
+  !editing.value?.builtin || VOCAB_EDITABLE_BUILTIN_KEYS.includes(editing.value.key));
+
+const valueHint = computed(() =>
+  editing.value && VOCAB_EDITABLE_BUILTIN_KEYS.includes(editing.value.key)
+    ? VALUE_HINTS[editing.value.key]
+    : '');
 
 const filteredRows = computed(() => rows.value.filter(row => {
   const matchKeyword = !keyword.value
@@ -164,9 +202,13 @@ onMounted(load);
         </template>
       </el-table-column>
       <el-table-column prop="label" label="展示名" width="140" show-overflow-tooltip />
-      <el-table-column label="词表 (alias → 标准值)" min-width="360" show-overflow-tooltip>
+      <el-table-column label="词表 (alias → 标准值) / 规则形态" min-width="420">
         <template #default="{ row }">
-          {{ row.aliases.map((a: DimensionKeyAlias) => `${a.alias}→${a.value}`).join('、') || (row.builtin ? '结构化规则提取 (不走词表)' : '-') }}
+          <div>{{ row.aliases.map((a: DimensionKeyAlias) => `${a.alias}→${a.value}`).join('、')
+            || (row.builtin
+              ? (VOCAB_EDITABLE_BUILTIN_KEYS.includes(row.key) ? '结构化规则 + 词表 (可维护, 当前未配置)' : '结构化规则提取 (不走词表)')
+              : '-') }}</div>
+          <div v-if="row.builtin && RULE_HINTS[row.key]" class="rule-hint">规则: {{ RULE_HINTS[row.key] }}</div>
         </template>
       </el-table-column>
       <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip>
@@ -195,11 +237,11 @@ onMounted(load);
         <el-form-item label="展示名"><el-input v-model="form.label" placeholder="如 卡口" maxlength="128" /></el-form-item>
         <el-form-item label="词表">
           <div class="alias-editor">
-            <div v-if="!editing?.builtin">
+            <div v-if="canEditAliases">
               <div v-for="(row, idx) in aliasRows" :key="idx" class="alias-row">
-                <el-input v-model="row.alias" placeholder="问题中的词, 如 Q1卡口" maxlength="128" style="width: 220px" />
+                <el-input v-model="row.alias" placeholder="问题中的词, 如 Q1卡口 / 杭一 / 今年以来" maxlength="128" style="width: 220px" />
                 <span class="arrow">→</span>
-                <el-input v-model="row.value" placeholder="标准值, 如 Q1" maxlength="128" style="width: 160px" />
+                <el-input v-model="row.value" :placeholder="valueHint ? `标准值, ${valueHint}` : '标准值, 如 Q1 或正则捕获模板 $1'" maxlength="128" style="width: 300px" />
                 <el-button size="small" text type="danger" @click="aliasRows.splice(idx, 1)">删除</el-button>
               </div>
               <el-button size="small" @click="aliasRows.push({ alias: '', value: '' })">+ 添加词表行</el-button>
@@ -210,7 +252,14 @@ onMounted(load);
               </div>
               <div class="hint">内置键提取走结构化规则, 词表只读</div>
             </template>
-            <div class="hint">避免配置裸短词 (如裸 Q1), 防止在其他语境误命中; 触发词条件行为后续版本规划</div>
+            <div class="hint">
+              避免配置裸短词 (如裸 Q1), 防止在其他语境误命中; 触发词条件行为后续版本规划
+              <template v-if="valueHint">; 锚点值 (THIS_V/YEAR_V 等) 执行期按火车日历动态展开, 具体版本以日历为准</template>
+            </div>
+            <div class="hint">
+              正则捕获: 标准值含 $1~$9 时, 触发词按正则匹配并用捕获组替换产出维度值。
+              例: 触发词 流转次数\s*>\s*(\d+), 标准值 $1 → 「流转次数>3」提取出 3
+            </div>
           </div>
         </el-form-item>
         <el-form-item label="备注"><el-input v-model="form.remark" maxlength="255" /></el-form-item>
@@ -233,4 +282,5 @@ h2 { margin: 0; font-size: 1.2rem; }
 .alias-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .alias-row .arrow { color: #64748b; }
 .hint { color: #94a3b8; font-size: 0.75rem; margin-top: 4px; }
+.rule-hint { color: #94a3b8; font-size: 0.72rem; margin-top: 2px; line-height: 1.5; white-space: normal; }
 </style>

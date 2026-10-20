@@ -152,7 +152,7 @@ public class QuestionAnalysis {
         TIME_RANGE;
 
         /**
-         * LLM 有时返回 APPLICATION/TEAM/PRODUCT_LINE/REQUIREMENT 作为 level，统一映射为 PEER。
+         * LLM 有时返回 APPLICATION/TEAM/PRODUCT_LINE/REQUIREMENT/SUB_REQUIREMENT 作为 level，统一映射为 PEER。
          */
         @JsonCreator
         public static QuestionLevel fromString(String value) {
@@ -160,7 +160,7 @@ public class QuestionAnalysis {
                 return null;
             }
             return switch (value.toUpperCase()) {
-                case "TEAM", "APPLICATION", "PRODUCT_LINE", "REQUIREMENT" -> PEER;
+                case "TEAM", "APPLICATION", "PRODUCT_LINE", "REQUIREMENT", "SUB_REQUIREMENT" -> PEER;
                 default -> valueOf(value.toUpperCase());
             };
         }
@@ -179,7 +179,9 @@ public class QuestionAnalysis {
         /** 产品线 */
         PRODUCT_LINE,
         /** 需求项 */
-        REQUIREMENT
+        REQUIREMENT,
+        /** 需求子条目（"这个需求子条目"/"那个需求子条目"） */
+        SUB_REQUIREMENT
     }
 
     /**

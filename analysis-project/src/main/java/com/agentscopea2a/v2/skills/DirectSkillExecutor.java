@@ -68,7 +68,7 @@ public class DirectSkillExecutor {
     /** Layer 1 固定维度键枚举 (param_mapping value 的合法取值, 管理页保存期校验同源)。 */
     public static final Set<String> DIMENSION_KEYS = Set.of(
             "versionPlan", "vestQuarter", "deptName", "groupName",
-            "appName", "productLine", "itemNo", "perName");
+            "appName", "productLine", "itemNo", "subItemNo", "perName");
 
     private final SkillRoutingMetadataRepository metadataRepository;
     private final SkillCandidateSelector candidateSelector;
@@ -79,6 +79,7 @@ public class DirectSkillExecutor {
     private final ObjectProvider<VersionPlanKnowledgeHook> versionPlanHookProvider;
     private final ObjectProvider<DimensionKeyConfigRepository> dimensionKeyRepoProvider;
     private final ObjectProvider<SkillBypassKeywordService> bypassKeywordServiceProvider;
+    private final ObjectProvider<com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver> anchorResolverProvider;
     private final ObjectMapper objectMapper;
     private final boolean enabled;
 
@@ -95,7 +96,7 @@ public class DirectSkillExecutor {
             boolean enabled) {
         this(metadataRepository, candidateSelector, usageResolver, indexRepo, scriptRegistryMapper,
                 dimensionStateManager, versionPlanHookProvider, dimensionKeyRepoProvider,
-                null, objectMapper, enabled);
+                null, null, objectMapper, enabled);
     }
 
     public DirectSkillExecutor(
@@ -110,6 +111,24 @@ public class DirectSkillExecutor {
             ObjectProvider<SkillBypassKeywordService> bypassKeywordServiceProvider,
             ObjectMapper objectMapper,
             boolean enabled) {
+        this(metadataRepository, candidateSelector, usageResolver, indexRepo, scriptRegistryMapper,
+                dimensionStateManager, versionPlanHookProvider, dimensionKeyRepoProvider,
+                bypassKeywordServiceProvider, null, objectMapper, enabled);
+    }
+
+    public DirectSkillExecutor(
+            SkillRoutingMetadataRepository metadataRepository,
+            SkillCandidateSelector candidateSelector,
+            SkillUsageResolver usageResolver,
+            SkillIndexRepository indexRepo,
+            ScriptRegistryMapper scriptRegistryMapper,
+            DimensionStateManager dimensionStateManager,
+            ObjectProvider<VersionPlanKnowledgeHook> versionPlanHookProvider,
+            ObjectProvider<DimensionKeyConfigRepository> dimensionKeyRepoProvider,
+            ObjectProvider<SkillBypassKeywordService> bypassKeywordServiceProvider,
+            ObjectProvider<com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver> anchorResolverProvider,
+            ObjectMapper objectMapper,
+            boolean enabled) {
         this.metadataRepository = metadataRepository;
         this.candidateSelector = candidateSelector;
         this.usageResolver = usageResolver;
@@ -119,6 +138,7 @@ public class DirectSkillExecutor {
         this.versionPlanHookProvider = versionPlanHookProvider;
         this.dimensionKeyRepoProvider = dimensionKeyRepoProvider;
         this.bypassKeywordServiceProvider = bypassKeywordServiceProvider;
+        this.anchorResolverProvider = anchorResolverProvider;
         this.objectMapper = objectMapper;
         this.enabled = enabled;
     }
@@ -133,6 +153,7 @@ public class DirectSkillExecutor {
             List<String> appName,
             List<String> productLine,
             List<String> itemNo,
+            List<String> subItemNo,
             List<String> perName,
             List<String> metrics,
             String matchedSkill,
@@ -146,6 +167,7 @@ public class DirectSkillExecutor {
             appName = safe(appName);
             productLine = safe(productLine);
             itemNo = safe(itemNo);
+            subItemNo = safe(subItemNo);
             perName = safe(perName);
             metrics = safe(metrics);
             extraDimensions = extraDimensions == null ? Map.of() : Map.copyOf(extraDimensions);
@@ -157,7 +179,7 @@ public class DirectSkillExecutor {
                 List<String> groupName, List<String> appName, List<String> productLine,
                 List<String> itemNo, List<String> perName, List<String> metrics, String matchedSkill) {
             this(versionPlan, vestQuarter, deptName, groupName, appName, productLine,
-                    itemNo, perName, metrics, matchedSkill, Map.of());
+                    itemNo, List.of(), perName, metrics, matchedSkill, Map.of());
         }
 
         private static List<String> safe(List<String> value) {
@@ -169,16 +191,25 @@ public class DirectSkillExecutor {
      * 直接执行计划; params 已按 param_mapping 填好 (单值 String / 多值 List)。
      * missingAsk 非空 = 缺必填参数待反问 (当前只含一个维度键 label, 口径: 一次只问一个),
      * 调用方短路下发 {@link #askPrompt} 文本; 空 = 正常执行计划。
+     * askMessage 非空 = 自定义反问全文 (歧义反问, 时间维度方案 §3.3), askPrompt 优先返回它。
      */
     public record DirectExecutionPlan(
             DimensionExtraction extraction,
             String skillName,
             String scriptId,
             Map<String, Object> params,
-            List<String> missingAsk) {
+            List<String> missingAsk,
+            String askMessage) {
 
         public DirectExecutionPlan {
             missingAsk = missingAsk == null ? List.of() : List.copyOf(missingAsk);
+        }
+
+        /** Legacy 5-arg shape (no custom askMessage) for existing call sites/tests. */
+        public DirectExecutionPlan(DimensionExtraction extraction, String skillName,
+                                   String scriptId, Map<String, Object> params,
+                                   List<String> missingAsk) {
+            this(extraction, skillName, scriptId, params, missingAsk, null);
         }
 
         /** Legacy 4-arg shape (no missingAsk) for existing call sites/tests. */
@@ -190,8 +221,12 @@ public class DirectSkillExecutor {
         public boolean needsAsk() { return !missingAsk.isEmpty(); }
     }
 
-    /** 反问文案 (方案 §4.2): 调用方两链路共用, 集中在这里免漂移; 示例值按维度键 label 给固定提示。 */
+    /** 反问文案 (方案 §4.2): 调用方两链路共用, 集中在这里免漂移; 示例值按维度键 label 给固定提示。
+     *  歧义反问 (时间维度方案 §3.3) 携带自定义 askMessage, 原样下发。 */
     public static String askPrompt(DirectExecutionPlan plan) {
+        if (plan.askMessage() != null && !plan.askMessage().isBlank()) {
+            return plan.askMessage();
+        }
         String label = plan.missingAsk().isEmpty() ? "" : plan.missingAsk().get(0);
         String example = ASK_EXAMPLES.getOrDefault(label, label);
         return "已匹配技能「" + plan.skillName() + "」，还需要补充：" + label
@@ -207,10 +242,19 @@ public class DirectSkillExecutor {
             "人", "张三");
 
     /** 缺参反问 pending (方案 §4.1): key=userId:conversationId, TTL 5min, 取值时惰性清理。
-     *  包私有便于单测构造过期条目。 */
+     *  包私有便于单测构造过期条目。pendingAnchors 非空 = 歧义反问 (missingKeys[0] 形如
+     *  "timeRange@AMBIGUOUS:..."), 保存原始锚点列表, 补参轮把歧义锚点原位替换成确定性锚点。 */
     record PendingDirectExec(String skillName, String scriptId,
                              Map<String, String> mapping, Map<String, Object> filledParams,
-                             List<String> missingKeys, long createdAt) {}
+                             List<String> missingKeys, long createdAt,
+                             List<String> pendingAnchors) {}
+
+    private PendingDirectExec pendingOf(String skillName, String scriptId,
+                                        Map<String, String> mapping, Map<String, Object> filledParams,
+                                        List<String> missingKeys) {
+        return new PendingDirectExec(skillName, scriptId, mapping, filledParams, missingKeys,
+                System.currentTimeMillis(), null);
+    }
 
     private final java.util.concurrent.ConcurrentHashMap<String, PendingDirectExec> pending =
             new java.util.concurrent.ConcurrentHashMap<>();
@@ -304,22 +348,32 @@ public class DirectSkillExecutor {
             log.warn("DirectSkillExecutor: 查 script_registry 失败 scriptId={}: {}", top.scriptId(), e.getMessage());
         }
 
-        Map<String, Object> params = new LinkedHashMap<>();
-        for (Map.Entry<String, String> e : mapping.entrySet()) {
-            String param = e.getKey();
-            if (declared != null && !declared.contains(param)) {
-                continue; // params_schema 白名单外不传
+        // 歧义锚点 (时间维度方案 §3.3): 近X周方向 / 投产前二选一 → 真反问, 不做方向假设。
+        // 无会话键无法挂 pending → 剥离歧义锚点降级继续 (时间部分回退 LLM)。
+        List<String> trAnchors = extraction.extraDimensions()
+                .getOrDefault(TimeRangeResolver.RESERVED_KEY, List.of());
+        String ambiguous = firstAmbiguousAnchor(trAnchors);
+        if (ambiguous != null) {
+            List<String> kept = trAnchors.stream()
+                    .filter(a -> !TimeRangeResolver.isAmbiguousAnchor(a)).toList();
+            if (conversationId == null) {
+                extraction = withTimeRangeAnchors(extraction, kept);
+            } else {
+                String key = sessionKey(userId, conversationId);
+                Map<String, Object> preParams = buildParams(mapping, declared,
+                        withTimeRangeAnchors(extraction, kept));
+                pending.put(key, new PendingDirectExec(topName, top.scriptId(), mapping, preParams,
+                        List.of(TimeRangeResolver.RESERVED_KEY + "@" + ambiguous),
+                        System.currentTimeMillis(), trAnchors));
+                log.info("DirectSkillExecutor: skill {} 时间锚点歧义 {} → 反问 (pending {})",
+                        topName, ambiguous, key);
+                return new DirectExecutionPlan(extraction, topName, top.scriptId(), preParams,
+                        List.of(labelFor(TimeRangeResolver.RESERVED_KEY)),
+                        TimeRangeResolver.ambiguityAskPrompt(ambiguous));
             }
-            List<String> values = valuesFor(extraction, e.getValue());
-            if (values.isEmpty()) {
-                List<String> fallback = defaultTimeValues(e.getValue());
-                if (fallback.isEmpty()) {
-                    continue;
-                }
-                values = fallback;
-            }
-            params.put(param, values.size() == 1 ? values.get(0) : values);
         }
+
+        Map<String, Object> params = buildParams(mapping, declared, extraction);
         // 必填缺失分两类 (2026/10/15 缺参反问方案): 在 param_mapping 内 (有维度语义) →
         // 反问补参; 不在 mapping 内 (语义未知) 或调用方未传会话键 → 维持回退 LLM
         List<String> missingKeys = new ArrayList<>();
@@ -339,8 +393,7 @@ public class DirectSkillExecutor {
         }
         if (!missingKeys.isEmpty()) {
             String key = sessionKey(userId, conversationId);
-            pending.put(key, new PendingDirectExec(topName, top.scriptId(), mapping, params,
-                    missingKeys, System.currentTimeMillis()));
+            pending.put(key, pendingOf(topName, top.scriptId(), mapping, params, missingKeys));
             log.info("DirectSkillExecutor: skill {} 缺必填维度 {} → 反问补参 (pending {})",
                     topName, missingKeys, key);
             return new DirectExecutionPlan(extraction, topName, top.scriptId(), params,
@@ -349,6 +402,53 @@ public class DirectSkillExecutor {
         log.info("DirectSkillExecutor: plan hit skill={} scriptId={} params={} extraction={} matched={}",
                 topName, top.scriptId(), params, extraction, extraction.metrics());
         return new DirectExecutionPlan(extraction, topName, top.scriptId(), params);
+    }
+
+    /** param_mapping → params 装配 (plan 与歧义补参轮共用): 白名单外不传, 缺值走 defaultTimeValues。 */
+    private Map<String, Object> buildParams(Map<String, String> mapping, List<String> declared,
+                                            DimensionExtraction extraction) {
+        Map<String, Object> params = new LinkedHashMap<>();
+        for (Map.Entry<String, String> e : mapping.entrySet()) {
+            String param = e.getKey();
+            if (declared != null && !declared.contains(param)) {
+                continue; // params_schema 白名单外不传
+            }
+            List<String> values = valuesFor(extraction, e.getValue());
+            if (values.isEmpty()) {
+                List<String> fallback = defaultTimeValues(e.getValue());
+                if (fallback.isEmpty()) {
+                    continue;
+                }
+                values = fallback;
+            }
+            params.put(param, values.size() == 1 ? values.get(0) : values);
+        }
+        return params;
+    }
+
+    /** timeRange 锚点列表里的第一个歧义锚点 (保序), 无则 null。 */
+    private static String firstAmbiguousAnchor(List<String> anchors) {
+        if (anchors == null) {
+            return null;
+        }
+        return anchors.stream()
+                .filter(TimeRangeResolver::isAmbiguousAnchor)
+                .findFirst().orElse(null);
+    }
+
+    /** 复制提取体, 仅替换 timeRange 锚点列表 (其余 extraDimensions 键保留)。 */
+    private static DimensionExtraction withTimeRangeAnchors(DimensionExtraction extraction,
+                                                            List<String> anchors) {
+        Map<String, List<String>> extra = new LinkedHashMap<>(extraction.extraDimensions());
+        if (anchors == null || anchors.isEmpty()) {
+            extra.remove(TimeRangeResolver.RESERVED_KEY);
+        } else {
+            extra.put(TimeRangeResolver.RESERVED_KEY, List.copyOf(anchors));
+        }
+        return new DimensionExtraction(extraction.versionPlan(), extraction.vestQuarter(),
+                extraction.deptName(), extraction.groupName(), extraction.appName(),
+                extraction.productLine(), extraction.itemNo(), extraction.subItemNo(),
+                extraction.perName(), extraction.metrics(), extraction.matchedSkill(), extra);
     }
 
     /**
@@ -366,6 +466,11 @@ public class DirectSkillExecutor {
         if (System.currentTimeMillis() - p.createdAt() > PENDING_TTL_MS) {
             pending.remove(key, p);
             return null;
+        }
+        if (p.pendingAnchors() != null && !p.missingKeys().isEmpty()
+                && p.missingKeys().get(0).startsWith(TimeRangeResolver.RESERVED_KEY + "@")) {
+            DimensionState previewForAmbiguous = dimensionStateManager.previewState(question, previousState);
+            return consumeAmbiguousPending(question, key, p, previewForAmbiguous);
         }
         DimensionState preview = dimensionStateManager.previewState(question, previousState);
         DimensionExtraction extraction = extract(preview, List.of(), p.skillName(),
@@ -392,10 +497,53 @@ public class DirectSkillExecutor {
             return new DirectExecutionPlan(extraction, p.skillName(), p.scriptId(), params);
         }
         pending.put(key, new PendingDirectExec(p.skillName(), p.scriptId(), p.mapping(), params,
-                List.copyOf(remaining), System.currentTimeMillis()));
+                List.copyOf(remaining), System.currentTimeMillis(), null));
         log.info("DirectSkillExecutor: 补参 {} 已填, 继续反问 {}", missingKey, remaining.get(0));
         return new DirectExecutionPlan(extraction, p.skillName(), p.scriptId(), params,
                 List.of(labelFor(remaining.get(0))));
+    }
+
+    /**
+     * 歧义补参轮 (时间维度方案 §3.3): 用答复关键词把歧义锚点原位替换成确定性锚点
+     * (近N周→LAST:/NEXT:nw, 投产前→投产周/交付周至投产周), 重算 timeRange 相关参数。
+     * 答非所问 → 丢弃 pending 回退正常链路 (口径同缺参补参轮)。
+     */
+    private DirectExecutionPlan consumeAmbiguousPending(String question, String key,
+                                                        PendingDirectExec p,
+                                                        DimensionState previousState) {
+        String marker = p.missingKeys().get(0);
+        String ambiguous = marker.substring((TimeRangeResolver.RESERVED_KEY + "@").length());
+        String resolved = TimeRangeResolver.resolveAmbiguousReply(question, ambiguous);
+        if (resolved == null) {
+            log.info("DirectSkillExecutor: 歧义答复未识别 {} (pending {}), 丢弃走正常链路",
+                    ambiguous, key);
+            pending.remove(key, p);
+            return null;
+        }
+        List<String> finalAnchors = p.pendingAnchors().stream()
+                .map(a -> a.equals(ambiguous) ? resolved : a)
+                .toList();
+        DimensionState preview = previousState;
+        DimensionExtraction extraction = extract(preview, List.of(), p.skillName(),
+                extractExtraDimensions(question));
+        DimensionExtraction effective = withTimeRangeAnchors(extraction, finalAnchors);
+        pending.remove(key, p);
+        Map<String, Object> params = new LinkedHashMap<>(p.filledParams());
+        for (Map.Entry<String, String> e : p.mapping().entrySet()) {
+            String dimKey = e.getValue();
+            boolean timeRangeBound = TimeRangeResolver.RESERVED_KEY.equals(dimKey)
+                    || dimKey.startsWith(TimeRangeResolver.RESERVED_KEY + ".");
+            if (!timeRangeBound) {
+                continue;
+            }
+            List<String> values = valuesFor(effective, dimKey);
+            if (!values.isEmpty()) {
+                params.put(e.getKey(), values.size() == 1 ? values.get(0) : values);
+            }
+        }
+        log.info("DirectSkillExecutor: 歧义 {} → {} (pending {}), plan hit skill={} scriptId={} params={}",
+                ambiguous, resolved, key, p.skillName(), p.scriptId(), params);
+        return new DirectExecutionPlan(effective, p.skillName(), p.scriptId(), params);
     }
 
     /** 维度键 → 中文 label (字典 label 优先, 查不到/字典挂回退键名; timeRange 后缀键剥后缀再查)。 */
@@ -432,6 +580,7 @@ public class DirectSkillExecutor {
         List<String> appName = List.of();
         List<String> productLine = List.of();
         List<String> itemNo = List.of();
+        List<String> subItemNo = List.of();
         if (state != null && state.getPeerDimension() != null && !state.getPeerDimension().isEmpty()) {
             List<String> values = state.getPeerDimension().getValues();
             switch (state.getPeerDimension().getType()) {
@@ -439,11 +588,13 @@ public class DirectSkillExecutor {
                 case APPLICATION -> appName = values;
                 case PRODUCT_LINE -> productLine = values;
                 case REQUIREMENT -> itemNo = values;
+                case SUB_REQUIREMENT -> subItemNo = values;
             }
         }
         List<String> persons = state == null ? List.of() : safe(state.getPersons());
         return new DimensionExtraction(versionPlan, vestQuarter, departments, groupName,
-                appName, productLine, itemNo, persons, metrics, matchedSkill, extraDimensions);
+                appName, productLine, itemNo, subItemNo, persons, metrics, matchedSkill,
+                extraDimensions);
     }
 
     /**
@@ -481,7 +632,15 @@ public class DirectSkillExecutor {
             List<String> values = new ArrayList<>();
             for (DimensionKeyConfig.AliasMapping alias : config.aliases()) {
                 if (!alias.valid()) continue;
-                if (question.contains(alias.alias()) && !values.contains(alias.value())) {
+                if (com.agentscopea2a.v2.dimension.AliasRegexSupport.isRegexTemplate(alias.value())) {
+                    // 正则捕获模板 ($1~$9): alias 按 regex 匹配, 捕获组替换产出值
+                    for (String v : com.agentscopea2a.v2.dimension.AliasRegexSupport
+                            .extract(question, alias.alias(), alias.value())) {
+                        if (!values.contains(v)) {
+                            values.add(v);
+                        }
+                    }
+                } else if (question.contains(alias.alias()) && !values.contains(alias.value())) {
                     values.add(alias.value());
                 }
             }
@@ -492,8 +651,8 @@ public class DirectSkillExecutor {
         return extra;
     }
 
-    /** 合法维度键全集 = 内置 8 键 ∪ 字典启用键 (timeRange 追加 .start/.end 后缀形态),
-     *  管理页下拉/保存校验同源。 */
+    /** 合法维度键全集 = 内置 9 键 ∪ 字典启用键 (timeRange 与 versionPlan/vestQuarter
+     *  追加 .start/.end 后缀形态), 管理页下拉/保存校验同源。 */
     public java.util.LinkedHashSet<String> activeKeys() {
         java.util.LinkedHashSet<String> keys = new java.util.LinkedHashSet<>(DIMENSION_KEYS);
         DimensionKeyConfigRepository repo = dimensionKeyRepoProvider.getIfAvailable();
@@ -504,24 +663,50 @@ public class DirectSkillExecutor {
                 log.warn("DirectSkillExecutor: 维度键字典读取失败, 仅内置键可用: {}", e.getMessage());
             }
         }
-        return TimeRangeResolver.expandKeys(keys);
+        return com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver.expandKeys(
+                TimeRangeResolver.expandKeys(keys));
+    }
+
+    /** 调试口（/pm 智能体活动 dimension_extract 事件）：activeKeys 逐键 valuesFor 的全量
+     *  解析值（含动态字典键与 .start/.end 后缀键，锚点已展开），仅收非空键。 */
+    public java.util.LinkedHashMap<String, List<String>> resolvedValues(DimensionExtraction extraction) {
+        java.util.LinkedHashMap<String, List<String>> out = new java.util.LinkedHashMap<>();
+        for (String key : activeKeys()) {
+            List<String> values = valuesFor(extraction, key);
+            if (values != null && !values.isEmpty()) {
+                out.put(key, values);
+            }
+        }
+        return out;
     }
 
     /** 维度键 → 提取体取值; vestQuarter 在版本已给出时优先从版本推算 (口径一致)。
-     *  timeRange 后缀键解析锚点取第一个范围 (多范围对比不支持, §6.1.6);
+     *  口语值方案 §3.4: versionPlan/vestQuarter 的锚点值经 VersionPlanAnchorResolver
+     *  执行期展开成版本值/季度值 (锚点原词绝不透传给脚本), .start/.end 后缀键取第一个
+     *  可解析值的聚合时间窗口; timeRange 后缀键解析锚点取第一个范围 (多范围对比不支持, §6.1.6);
      *  不可解析锚点返回空 → 参数不传 → 必填缺失回退 LLM (fail-safe)。 */
-    private static List<String> valuesFor(DimensionExtraction extraction, String key) {
+    private List<String> valuesFor(DimensionExtraction extraction, String key) {
         return switch (key == null ? "" : key) {
-            case "versionPlan" -> extraction.versionPlan();
-            case "vestQuarter" -> !extraction.vestQuarter().isEmpty()
-                    ? extraction.vestQuarter()
-                    : VersionPlanKnowledgeHook.deriveQuarters(extraction.versionPlan());
+            case "versionPlan" -> expandVersionValues(extraction.versionPlan());
+            case "vestQuarter" -> {
+                List<String> quarters = extraction.vestQuarter();
+                if (quarters.isEmpty()) {
+                    quarters = VersionPlanKnowledgeHook.deriveQuarters(
+                            expandVersionValues(extraction.versionPlan()));
+                }
+                yield expandAnchorValues(quarters);
+            }
             case "deptName" -> extraction.deptName();
             case "groupName" -> extraction.groupName();
             case "appName" -> extraction.appName();
             case "productLine" -> extraction.productLine();
             case "itemNo" -> extraction.itemNo();
+            case "subItemNo" -> extraction.subItemNo();
             case "perName" -> extraction.perName();
+            case "versionPlan.start" -> edge(extraction.versionPlan(), false);
+            case "versionPlan.end" -> edge(extraction.versionPlan(), true);
+            case "vestQuarter.start" -> quarterEdge(extraction, false);
+            case "vestQuarter.end" -> quarterEdge(extraction, true);
             case TimeRangeResolver.RESERVED_KEY -> extraction.extraDimensions()
                     .getOrDefault(TimeRangeResolver.RESERVED_KEY, List.of());
             case TimeRangeResolver.KEY_START, TimeRangeResolver.KEY_END ->
@@ -529,6 +714,51 @@ public class DirectSkillExecutor {
                             TimeRangeResolver.KEY_END.equals(key));
             default -> extraction.extraDimensions().getOrDefault(key == null ? "" : key, List.of());
         };
+    }
+
+    private com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver anchorResolver() {
+        return anchorResolverProvider == null ? null : anchorResolverProvider.getIfAvailable();
+    }
+
+    /** 锚点 → 执行期展开 (resolver 缺失时锚点丢弃, 标准值透传)。 */
+    private List<String> expandVersionValues(List<String> raw) {
+        return expandAnchorValues(raw);
+    }
+
+    private List<String> expandAnchorValues(List<String> raw) {
+        if (raw == null || raw.isEmpty()) {
+            return List.of();
+        }
+        com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver resolver = anchorResolver();
+        if (resolver == null) {
+            return raw.stream().filter(v -> !com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver.isAnchor(v))
+                    .toList();
+        }
+        return resolver.expandVersions(raw);
+    }
+
+    /** .start/.end 后缀键: 第一个可解析值的聚合时间窗口 (不可解析 → 空 → 不传参)。 */
+    private List<String> edge(List<String> raw, boolean end) {
+        com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver resolver = anchorResolver();
+        if (raw == null || raw.isEmpty() || resolver == null) {
+            return List.of();
+        }
+        com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver.VersionResolution r =
+                resolver.resolveFirst(raw);
+        if (r == null || r.start() == null || r.end() == null) {
+            return List.of();
+        }
+        return List.of(end ? r.end() : r.start());
+    }
+
+    /** vestQuarter.start/.end: 季度列表为空时从展开后的版本值推算 (vestQuarter 既有口径)。 */
+    private List<String> quarterEdge(DimensionExtraction extraction, boolean end) {
+        List<String> raw = extraction.vestQuarter();
+        if (raw.isEmpty()) {
+            raw = VersionPlanKnowledgeHook.deriveQuarters(
+                    expandVersionValues(extraction.versionPlan()));
+        }
+        return edge(raw, end);
     }
 
     /** 解析 timeRange 锚点列表的第一个范围, 取 start 或 end (ISO 日期字符串)。 */

@@ -126,6 +126,23 @@ class SkillRoutingMetadataAdminServiceTest {
         assertTrue(error.getMessage().contains("qGate"));
     }
 
+    @Test
+    void paramMappingAcceptsBuiltinSuffixKeysEvenWithoutDictionary() {
+        // versionPlan/vestQuarter 是内置键, .start/.end 后缀运行时无条件可用 (activeKeys 同源),
+        // 字典读不到也必须放行
+        when(repository.skillExists("q2_skill")).thenReturn(true);
+        when(repository.creatorForSkill("q2_skill")).thenReturn("admin");
+        when(repository.upsert(any())).thenReturn(true);
+
+        SkillRoutingMetadata result = service.save("q2_skill", new SkillRoutingMetadataInput(
+                "summary", List.of(), List.of(), List.of(), true,
+                List.of(), List.of(), List.of(), "script_a",
+                java.util.Map.of("startDate", "versionPlan.start", "endDate", "versionPlan.end",
+                        "qStart", "vestQuarter.start", "qEnd", "vestQuarter.end",
+                        "trStart", "versionPlan")), "admin");
+        org.junit.jupiter.api.Assertions.assertTrue(result.paramMapping().contains("versionPlan.start"));
+    }
+
     private static com.agentscopea2a.v2.governance.SkillSkillOverlapView highView(
             String nameA, boolean activeA, String nameB, boolean activeB) {
         return new com.agentscopea2a.v2.governance.SkillSkillOverlapView(

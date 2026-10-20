@@ -69,6 +69,11 @@ public class DimensionStateManager {
      * null 或取词失败时只修剪虚词。
      */
     private final Supplier<Set<String>> metricWordsSupplier;
+    /**
+     * 维度键字典启用行快照（口语值方案 §3.2）：versionPlan/vestQuarter/deptName 三个
+     * 白名单内置键的词表 alias 合并进提取结果；null/读失败退化为纯正则。
+     */
+    private final Supplier<List<DimensionKeyConfig>> dimensionKeySupplier;
     private DimensionState currentState;
 
     /**
@@ -85,14 +90,14 @@ public class DimensionStateManager {
      * @param llmService LLM 维度分析服务，可为 null（仅 {@link #updateFromAnswer} 需要）
      */
     public DimensionStateManager(LlmDimensionService llmService) {
-        this(llmService, null, null);
+        this(llmService, null, null, null);
     }
 
     /**
      * @param aliasResolver 同义词表解析器，可为 null（null 时口语化词识别关闭，仅正则兜底）
      */
     public DimensionStateManager(LlmDimensionService llmService, AliasResolver aliasResolver) {
-        this(llmService, aliasResolver, null);
+        this(llmService, aliasResolver, null, null);
     }
 
     /**
@@ -102,9 +107,21 @@ public class DimensionStateManager {
             LlmDimensionService llmService,
             AliasResolver aliasResolver,
             Supplier<Set<String>> metricWordsSupplier) {
+        this(llmService, aliasResolver, metricWordsSupplier, null);
+    }
+
+    /**
+     * @param dimensionKeySupplier 维度键字典启用行供给器，可为 null（内置键词表合并关闭，仅正则）
+     */
+    public DimensionStateManager(
+            LlmDimensionService llmService,
+            AliasResolver aliasResolver,
+            Supplier<Set<String>> metricWordsSupplier,
+            Supplier<List<DimensionKeyConfig>> dimensionKeySupplier) {
         this.llmService = llmService;
         this.aliasResolver = aliasResolver;
         this.metricWordsSupplier = metricWordsSupplier;
+        this.dimensionKeySupplier = dimensionKeySupplier;
     }
 
     // ==================== v2 状态持久化 ====================
@@ -268,32 +285,51 @@ public class DimensionStateManager {
     private static final Pattern REF_APP = Pattern.compile("这个应用|那个应用");
     private static final Pattern REF_PRODUCT = Pattern.compile("这个产品线|那个产品线");
     private static final Pattern REF_REQUIREMENT = Pattern.compile("这个需求项|那个需求项");
+    private static final Pattern REF_SUB_REQUIREMENT = Pattern.compile("这个需求子条目|那个需求子条目");
 
     // 年份前缀可选：无年份时由调用方补当前年（"4月份版本" → "2026年4月份版本"）
-    private static final Pattern EXPLICIT_VERSION = Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})月份版本");
+    // 口语值方案 §3.2：后缀放宽到 月份?版本?（吃 "10月版本"/"10月份版"/"2026年10月份"），
+    // 与 EXPLICIT_MONTH 归一产物相同（Set 去重，指纹不变）；(?!延后) 防把"10月延后"误吃成普通月份版本
+    private static final Pattern EXPLICIT_VERSION =
+            Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})月份?(?!延后)版本?");
     private static final Pattern EXPLICIT_QUARTER = Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})季度");
-    // "9月份"（无"版本"后缀）也算版本计划；(?!版本) 防止与 EXPLICIT_VERSION 重复计数值，
-    // "9月份版本" 会由 MONTH 退回匹配 "9月" 归一出同一值，Set 去重后指纹一致
-    private static final Pattern EXPLICIT_MONTH = Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})月份?(?!版本)");
+    // "9月份"（无"版本"后缀）也算版本计划；(?!版本|延后) 防止与 EXPLICIT_VERSION/DELAYED 重复计数值，
+    // "9月份版本" 会由 MONTH 退回匹配 "9月" 归一出同一值，Set 去重后指纹一致；
+    // "10月延后" 是延后版标准值的前缀，不得按普通月份版本归一
+    private static final Pattern EXPLICIT_MONTH = Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})月份?(?!版本|延后)");
+    // 口语值方案 §3.2：紧凑 YYYYMM（"202610版本"/"202610"）；词边界防误伤数字串/应用编码（F-202610）
+    private static final Pattern COMPACT_VERSION =
+            Pattern.compile("(?<![0-9A-Za-z-])(20\\d{2})(0[1-9]|1[0-2])(?![0-9])");
+    // 口语值方案 §3.2：中文数字月份（"十月版"/"十一月份"/"2026年三月"）
+    private static final Pattern CN_MONTH_VERSION =
+            Pattern.compile("(?:(\\d{4})年)?([一二三四五六七八九十]{1,3})月份?(?:版本?)?");
+    // 口语值方案 §3.2：延后版标准值（"10月延后"/"2026年10月延后版"），与月份版本同级的版本计划
+    private static final Pattern DELAYED_VERSION =
+            Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})月(份)?延后(版本?)?");
+    // 口语值方案 §3.1：近 N 个版本/近 N 个月 → LAST:{n}V 锚点（数字形态走正则不进词表；
+    // 拍板③ 按版本个数推，"近X个月"也归版本键，周/天后缀归 timeRange）
+    private static final Pattern LAST_N_VERSIONS =
+            Pattern.compile("(?:近|最近)(\\d{1,3})个(?:月个)?版本|(?:近|最近)(\\d{1,3})个月");
     // Q1/Q2/Q3/Q4 / 一季度 / 二季度 alias — normalised to "{year}年{n}季度" for fingerprint stability
     private static final Pattern EXPLICIT_QUARTER_ALIAS =
             Pattern.compile("(?:Q|q)([1-4])|([一二三四])季度");
     // KNOWLEDGE.md §部门 标准枚举 — 漏掉非"杭州开发X部"的会让用户连问 N 次也触发不了同指纹。
     // 别名按"长前短后"排列，避免"杭州服务支持部"被"服务支持"截胡；命中后经 normalizeDepartment 映射回标准名
+    // 口语值方案 §3.2：补 杭[一二三四五]部?（"杭一"/"杭二部"极简形，放 [一二三四五]部 之前保整段占用）
     private static final Pattern EXPLICIT_DEPT =
             Pattern.compile(
                     "(杭州开发[一二三四五]部|杭州服务支持部|杭州技术部|云计算实验室"
-                            + "|杭州[一二三四五]部|[一二三四五]部"
+                            + "|杭州[一二三四五]部|杭[一二三四五]部?|[一二三四五]部"
                             + "|服务支持部|服务支持|技术部|云计算|实验室)");
 
     /** 部门简称 → KNOWLEDGE.md 标准名，保证与全称写法生成同一指纹 */
     private static String normalizeDepartment(String matched) {
         return switch (matched) {
-            case "杭州一部", "一部" -> "杭州开发一部";
-            case "杭州二部", "二部" -> "杭州开发二部";
-            case "杭州三部", "三部" -> "杭州开发三部";
-            case "杭州四部", "四部" -> "杭州开发四部";
-            case "杭州五部", "五部" -> "杭州开发五部";
+            case "杭州一部", "一部", "杭一部", "杭一" -> "杭州开发一部";
+            case "杭州二部", "二部", "杭二部", "杭二" -> "杭州开发二部";
+            case "杭州三部", "三部", "杭三部", "杭三" -> "杭州开发三部";
+            case "杭州四部", "四部", "杭四部", "杭四" -> "杭州开发四部";
+            case "杭州五部", "五部", "杭五部", "杭五" -> "杭州开发五部";
             case "技术部" -> "杭州技术部";
             case "服务支持部", "服务支持" -> "杭州服务支持部";
             case "云计算", "实验室" -> "云计算实验室";
@@ -311,6 +347,8 @@ public class DimensionStateManager {
                             + "|全球市场风险管理应用|金融市场共享数据服务)");
     // 需求项:之前抽的是"XX需求项"前 2 字,真正的 itemNo 格式如 I20260208-0005 反而没匹配
     private static final Pattern EXPLICIT_REQUIREMENT = Pattern.compile("(I\\d{8}-\\d{4})");
+    // 需求子条目编号: S+8位日期数字+-+6位数字, 如 S20250926-000741
+    private static final Pattern EXPLICIT_SUB_REQUIREMENT = Pattern.compile("(S\\d{8}-\\d{6})");
 
     // ---- §13.4 标准格式感知的分段抽取（docs/history/dimension-alias-config-plan.md）----
 
@@ -323,7 +361,9 @@ public class DimensionStateManager {
      * （归一化仍由既有正则负责，避免指纹规则变化）。
      */
     private static final Pattern TIME_MASK_SPAN = Pattern.compile(
-            "(?:(?:\\d{4}|\\d{2})年)?\\d{1,2}月份?(?:版本?)?|(?:(?:\\d{4}|\\d{2})年)?[一二三四1-4]季度|(?:Q|q)[1-4]");
+            "(?:(?:\\d{4}|\\d{2})年)?\\d{1,2}月份?(?:延后(?:版本?)?)?(?:版本?)?"
+                    + "|(?:(?:\\d{4}|\\d{2})年)?[一二三四1-4]季度|(?:Q|q)[1-4]"
+                    + "|(?:(?:\\d{4}|\\d{2})年)?[一二三四五六七八九十]{1,3}月份?(?:版本?)?");
 
     /** 组名候选左侧修剪虚词表：仅修剪 token 开头（"的质量xxx组" → "xxx组"） */
     private static final String TOKEN_LEADING_STOP = "的了是在有和与及为对按等把到从比跟由向着于";
@@ -339,6 +379,7 @@ public class DimensionStateManager {
         collectSpans(q, EXPLICIT_DEPT, spans);
         collectSpans(q, EXPLICIT_APP, spans);
         collectSpans(q, EXPLICIT_REQUIREMENT, spans);
+        collectSpans(q, EXPLICIT_SUB_REQUIREMENT, spans);
         if (spans.isEmpty()) {
             return q;
         }
@@ -430,13 +471,17 @@ public class DimensionStateManager {
         analysis.setHasReference(refType != null);
         analysis.setReferenceType(refType);
 
+        // 1.5 内置键字典词表命中（口语值方案 §3.2）：versionPlan/vestQuarter/deptName
+        //     白名单键 alias 合并；timeRange L1 绝对区间 span 不参与（防 "10月1日" 被 "1月" 类词误收）
+        BuiltinVocabHits vocab = collectBuiltinVocabHits(userQuestion);
+
         // 2. detect level
-        QuestionAnalysis.QuestionLevel level = detectLevel(userQuestion, refType, aliasPeerHit);
+        QuestionAnalysis.QuestionLevel level = detectLevel(userQuestion, refType, aliasPeerHit, vocab);
         analysis.setLevel(level);
         analysis.setCauseAnalysis(level == QuestionAnalysis.QuestionLevel.CAUSE);
 
         // 3. extract explicit dimensions
-        QuestionAnalysis.ExplicitDimensions explicit = extractExplicitDimensions(userQuestion, aliasRes);
+        QuestionAnalysis.ExplicitDimensions explicit = extractExplicitDimensions(userQuestion, aliasRes, vocab);
         analysis.setExplicitDimensions(explicit);
         explicit.build();
 
@@ -450,11 +495,14 @@ public class DimensionStateManager {
         if (REF_APP.matcher(q).find()) return QuestionAnalysis.ReferenceType.APPLICATION;
         if (REF_PRODUCT.matcher(q).find()) return QuestionAnalysis.ReferenceType.PRODUCT_LINE;
         if (REF_REQUIREMENT.matcher(q).find()) return QuestionAnalysis.ReferenceType.REQUIREMENT;
+        if (REF_SUB_REQUIREMENT.matcher(q).find())
+            return QuestionAnalysis.ReferenceType.SUB_REQUIREMENT;
         return null;
     }
 
     private QuestionAnalysis.QuestionLevel detectLevel(
-            String q, QuestionAnalysis.ReferenceType refType, boolean aliasPeerHit) {
+            String q, QuestionAnalysis.ReferenceType refType, boolean aliasPeerHit,
+            BuiltinVocabHits vocab) {
         if (q.matches(".*原因.*") || q.matches(".*为什么.*"))
             return QuestionAnalysis.QuestionLevel.CAUSE;
         if (q.matches(".*过去.*") || q.matches(".*趋势.*") || q.matches(".*历史.*"))
@@ -464,19 +512,27 @@ public class DimensionStateManager {
                 || refType == QuestionAnalysis.ReferenceType.APPLICATION
                 || refType == QuestionAnalysis.ReferenceType.PRODUCT_LINE
                 || refType == QuestionAnalysis.ReferenceType.REQUIREMENT
+                || refType == QuestionAnalysis.ReferenceType.SUB_REQUIREMENT
                 || aliasPeerHit
                 || EXPLICIT_APP.matcher(q).find()
                 || EXPLICIT_TEAM.matcher(q).find()
                 || EXPLICIT_PRODUCT_LINE.matcher(q).find()
-                || EXPLICIT_REQUIREMENT.matcher(q).find())
+                || EXPLICIT_REQUIREMENT.matcher(q).find()
+                || EXPLICIT_SUB_REQUIREMENT.matcher(q).find())
             return QuestionAnalysis.QuestionLevel.PEER;
-        if (q.contains("部门") || EXPLICIT_DEPT.matcher(q).find())
+        if (q.contains("部门") || EXPLICIT_DEPT.matcher(q).find()
+                || (vocab != null && !vocab.deptValues().isEmpty()))
             return QuestionAnalysis.QuestionLevel.DEPARTMENT;
         if (refType == QuestionAnalysis.ReferenceType.DEPARTMENT)
             return QuestionAnalysis.QuestionLevel.DEPARTMENT;
         if (EXPLICIT_VERSION.matcher(q).find()
                 || EXPLICIT_MONTH.matcher(q).find()
                 || EXPLICIT_QUARTER.matcher(q).find()
+                || COMPACT_VERSION.matcher(q).find()
+                || CN_MONTH_VERSION.matcher(q).find()
+                || DELAYED_VERSION.matcher(q).find()
+                || LAST_N_VERSIONS.matcher(q).find()
+                || (vocab != null && (!vocab.versionValues().isEmpty() || !vocab.quarterValues().isEmpty()))
                 || refType == QuestionAnalysis.ReferenceType.TIME)
             return QuestionAnalysis.QuestionLevel.TIME;
         // No dimensions detected — non-dimension question (e.g. "数据服务表清单下载")
@@ -484,7 +540,7 @@ public class DimensionStateManager {
     }
 
     private QuestionAnalysis.ExplicitDimensions extractExplicitDimensions(
-            String q, AliasResolver.AliasResolution aliasRes) {
+            String q, AliasResolver.AliasResolution aliasRes, BuiltinVocabHits vocab) {
         QuestionAnalysis.ExplicitDimensions explicit = new QuestionAnalysis.ExplicitDimensions();
         int year = LocalDate.now().getYear();
 
@@ -508,11 +564,45 @@ public class DimensionStateManager {
             quarters.add(y + "年" + quarterMatcher.group(2) + "季度");
         }
 
+        // 延后版标准值（口语值方案 §3.2）：与月份版本同级的独立版本计划，须在 MONTH 之前
+        // （MONTH 已有 (?!延后) 守卫，此处顺序仅保证延后版写法优先归一）
+        Matcher delayedMatcher = DELAYED_VERSION.matcher(q);
+        while (delayedMatcher.find()) {
+            String y = delayedMatcher.group(1) != null ? delayedMatcher.group(1) : currentYear;
+            versions.add(y + "年" + delayedMatcher.group(2) + "月延后版");
+        }
+
+        // 紧凑 YYYYMM（"202610版本"/"202610" → 2026年10月份版本）
+        Matcher compactMatcher = COMPACT_VERSION.matcher(q);
+        while (compactMatcher.find()) {
+            versions.add(compactMatcher.group(1) + "年"
+                    + Integer.parseInt(compactMatcher.group(2)) + "月份版本");
+        }
+
+        // 中文数字月份（"十月版"/"十一月份" → 2026年10月份版本）
+        Matcher cnMonthMatcher = CN_MONTH_VERSION.matcher(q);
+        while (cnMonthMatcher.find()) {
+            Integer m = cnMonthToNumber(cnMonthMatcher.group(2));
+            if (m != null) {
+                String y = cnMonthMatcher.group(1) != null ? cnMonthMatcher.group(1) : currentYear;
+                versions.add(y + "年" + m + "月份版本");
+            }
+        }
+
         // Short month format: "4月" → construct full version（"4月份版本"已被上面吃掉）
         Matcher monthMatcher = EXPLICIT_MONTH.matcher(q);
         while (monthMatcher.find()) {
             String y = monthMatcher.group(1) != null ? monthMatcher.group(1) : currentYear;
             versions.add(y + "年" + monthMatcher.group(2) + "月份版本");
+        }
+
+        // 近 N 个版本/近 N 个月 → LAST:{n}V 锚点（执行期经日历展开，口语值方案 §3.1）
+        Matcher lastNMatcher = LAST_N_VERSIONS.matcher(q);
+        while (lastNMatcher.find()) {
+            String n = lastNMatcher.group(1) != null ? lastNMatcher.group(1) : lastNMatcher.group(2);
+            if (n != null) {
+                versions.add("LAST:" + Integer.parseInt(n) + "V");
+            }
         }
 
         // Quarter aliases: "Q1" / "q1" / "一季度" — normalise so user shorthand maps to the same
@@ -534,6 +624,13 @@ public class DimensionStateManager {
             }
         }
 
+        // 字典词表命中合并（口语值方案 §3.2）：锚点原词（YEAR_V/THIS_V/THIS_Q/近N个版本正则产物）
+        // 与标准值都进 TimeDimension——锚点执行期经 VersionPlanAnchorResolver 展开，绝不进指纹
+        if (vocab != null) {
+            versions.addAll(vocab.versionValues());
+            quarters.addAll(vocab.quarterValues());
+        }
+
         if (!versions.isEmpty()) {
             explicit.setTimeDimension(
                     new DimensionState.TimeDimension(
@@ -551,6 +648,10 @@ public class DimensionStateManager {
         Set<String> departments = new LinkedHashSet<>();
         while (deptMatcher.find()) {
             departments.add(normalizeDepartment(deptMatcher.group()));
+        }
+        // 字典词表命中合并（口语值方案 §3.2）：词表 value 应为部门标准名，直接并入
+        if (vocab != null) {
+            departments.addAll(vocab.deptValues());
         }
         if (!departments.isEmpty()) {
             explicit.setDepartments(new ArrayList<>(departments));
@@ -623,6 +724,17 @@ public class DimensionStateManager {
             }
         }
 
+        // 需求子条目 — subItemNo 格式 S20250926-000741（alias 命中时同样跳过）
+        if (explicit.getPeerDimension() == null && !aliasHit(aliasRes)) {
+            Matcher subReqMatcher = EXPLICIT_SUB_REQUIREMENT.matcher(q);
+            if (subReqMatcher.find()) {
+                explicit.setPeerDimension(
+                        new DimensionState.PeerDimension(
+                                DimensionState.PeerDimensionType.SUB_REQUIREMENT,
+                                List.of(subReqMatcher.group())));
+            }
+        }
+
         return explicit;
     }
 
@@ -630,6 +742,147 @@ public class DimensionStateManager {
     private static boolean aliasHit(AliasResolver.AliasResolution aliasRes) {
         return aliasRes != null
                 && (!aliasRes.resolved().isEmpty() || !aliasRes.ambiguous().isEmpty());
+    }
+
+    // ==================== 内置键字典词表合并（口语值方案 §3.2） ====================
+
+    /** 词表合并白名单：仅这三个内置键的 dimension_key_config alias 行参与合并。 */
+    private static final Set<String> VOCAB_MERGE_KEYS =
+            Set.of("versionPlan", "vestQuarter", "deptName");
+
+    /** 紧邻 alias 命中之前的年份前缀（"25年上半年"的"25年"，窗口 5 字符足够 4 位年+年）。 */
+    private static final java.util.regex.Pattern YEAR_PREFIX_TAIL =
+            java.util.regex.Pattern.compile("(?:20\\d{2}|\\d{2})年$");
+
+    /** 可带 @yyyy 年份限定的锚点：YEAR_V / HALF_V:{1|2}（LAST/THIS_V/DELAYED 无年份语义）。 */
+    private static boolean isYearScalableAnchor(String value) {
+        return "YEAR_V".equals(value) || value != null && value.matches("HALF_V:[12]");
+    }
+
+    /** 内置键词表命中集（各 Set 均非 null，可为空）。 */
+    record BuiltinVocabHits(
+            Set<String> versionValues, Set<String> quarterValues, Set<String> deptValues) {
+
+        static final BuiltinVocabHits EMPTY =
+                new BuiltinVocabHits(Set.of(), Set.of(), Set.of());
+
+        boolean isEmpty() {
+            return versionValues.isEmpty() && quarterValues.isEmpty() && deptValues.isEmpty();
+        }
+    }
+
+    /**
+     * 扫描 dimension_key_config 白名单内置键的词表行：问题 contains alias 即收集 value
+     * （与动态键轨同语义）。timeRange L1 绝对区间 span（"10月1日到10月15日"）不参与，
+     * 防日期区间里的月份数字被词表误收。字典供给器缺失/读失败 → 返回 EMPTY（纯正则降级）。
+     */
+    private BuiltinVocabHits collectBuiltinVocabHits(String q) {
+        if (q == null || q.isBlank() || dimensionKeySupplier == null) {
+            return BuiltinVocabHits.EMPTY;
+        }
+        List<DimensionKeyConfig> rows;
+        try {
+            rows = dimensionKeySupplier.get();
+        } catch (RuntimeException e) {
+            log.warn("DimensionStateManager: 维度键字典读取失败, 内置键词表合并跳过: {}", e.getMessage());
+            return BuiltinVocabHits.EMPTY;
+        }
+        if (rows == null || rows.isEmpty()) {
+            return BuiltinVocabHits.EMPTY;
+        }
+        List<int[]> shielded = TimeRangeExtractor.absoluteDateSpans(q);
+        Set<String> versions = new LinkedHashSet<>();
+        Set<String> quarters = new LinkedHashSet<>();
+        Set<String> depts = new LinkedHashSet<>();
+        for (DimensionKeyConfig row : rows) {
+            if (!VOCAB_MERGE_KEYS.contains(row.key()) || row.aliases().isEmpty()) {
+                continue;
+            }
+            for (DimensionKeyConfig.AliasMapping alias : row.aliases()) {
+                if (!alias.valid()) {
+                    continue;
+                }
+                int from = 0;
+                int idx;
+                while ((idx = q.indexOf(alias.alias(), from)) >= 0) {
+                    int end = idx + alias.alias().length();
+                    int hitStart = idx;
+                    boolean overlaps = shielded.stream()
+                            .anyMatch(s -> hitStart < s[1] && end > s[0]);
+                    if (!overlaps) {
+                        String value = alias.value();
+                        // "25年上半年"/"2025年各月"：alias 紧邻年份前缀时升级为 @yyyy 限定锚点，
+                        // 解析期按限定年展开，否则 HALF_V/YEAR_V 一律落当前年（口语值方案 §3.2 表）
+                        if ("versionPlan".equals(row.key()) && idx > 0 && isYearScalableAnchor(value)) {
+                            java.util.regex.Matcher ym = YEAR_PREFIX_TAIL.matcher(
+                                    q.substring(Math.max(0, idx - 5), idx));
+                            if (ym.find()) {
+                                String y = ym.group().substring(0, ym.group().length() - 1);
+                                value = value + "@"
+                                        + (y.length() == 2 ? 2000 + Integer.parseInt(y) : Integer.parseInt(y));
+                            }
+                        }
+                        switch (row.key()) {
+                            case "versionPlan" -> versions.add(value);
+                            case "vestQuarter" -> quarters.add(alias.value());
+                            case "deptName" -> depts.add(alias.value());
+                            default -> { }
+                        }
+                    }
+                    from = idx + 1;
+                }
+            }
+        }
+        return new BuiltinVocabHits(versions, quarters, depts);
+    }
+
+    /** 中文数字月 → 1~12；超界/无法解析返回 null（整段跳过）。"十一"=11、"二十"=20(拒绝)。 */
+    private static Integer cnMonthToNumber(String cn) {
+        if (cn == null || cn.isEmpty()) {
+            return null;
+        }
+        int tenAt = cn.indexOf('十');
+        if (tenAt < 0) {
+            Integer single = cnDigit(cn);
+            return single != null && single >= 1 && single <= 12 ? single : null;
+        }
+        int tens = 1;
+        if (tenAt > 0) {
+            Integer t = cnDigit(cn.substring(0, tenAt));
+            if (t == null || t < 1 || t > 9) {
+                return null;
+            }
+            tens = t;
+        }
+        int ones = 0;
+        if (tenAt + 1 < cn.length()) {
+            Integer o = cnDigit(cn.substring(tenAt + 1));
+            if (o == null || o < 1 || o > 9) {
+                return null;
+            }
+            ones = o;
+        }
+        int value = tens * 10 + ones;
+        return value >= 1 && value <= 12 ? value : null;
+    }
+
+    private static Integer cnDigit(String cn) {
+        if (cn == null || cn.length() != 1) {
+            return null;
+        }
+        return switch (cn.charAt(0)) {
+            case '一' -> 1;
+            case '二' -> 2;
+            case '三' -> 3;
+            case '四' -> 4;
+            case '五' -> 5;
+            case '六' -> 6;
+            case '七' -> 7;
+            case '八' -> 8;
+            case '九' -> 9;
+            case '十' -> 10;
+            default -> null;
+        };
     }
 
     /**
@@ -947,6 +1200,18 @@ public class DimensionStateManager {
                 }
                 break;
 
+            case SUB_REQUIREMENT:
+                if (state.getPeerDimension() != null
+                        && state.getPeerDimension().getType()
+                                == DimensionState.PeerDimensionType.SUB_REQUIREMENT
+                        && !state.getPeerDimension().isEmpty()) {
+                    resolved =
+                            resolved.replaceAll(
+                                    "这个需求子条目|那个需求子条目",
+                                    String.join("、", state.getPeerDimension().getValues()));
+                }
+                break;
+
             default:
                 break;
         }
@@ -982,6 +1247,7 @@ public class DimensionStateManager {
                         case APPLICATION -> "应用";
                         case PRODUCT_LINE -> "产品线";
                         case REQUIREMENT -> "需求项";
+                        case SUB_REQUIREMENT -> "需求子条目";
                     };
             prefix.append(label)
                     .append("：")
@@ -1246,6 +1512,7 @@ public class DimensionStateManager {
             case APPLICATION -> "应用";
             case PRODUCT_LINE -> "产品线";
             case REQUIREMENT -> "需求项";
+            case SUB_REQUIREMENT -> "需求子条目";
         };
     }
 

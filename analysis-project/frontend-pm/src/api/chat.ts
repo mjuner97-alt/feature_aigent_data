@@ -31,7 +31,8 @@ export type ProcessEventType =
   | 'tool_output'
   | 'script_output'
   | 'subagent_exposed'
-  | 'agent_end';
+  | 'agent_end'
+  | 'dimension_extract';
 
 const PROCESS_EVENTS = new Set<string>([
   'agent_start',
@@ -41,6 +42,7 @@ const PROCESS_EVENTS = new Set<string>([
   'script_output',
   'subagent_exposed',
   'agent_end',
+  'dimension_extract',
 ]);
 
 export interface ProcessEvent {
