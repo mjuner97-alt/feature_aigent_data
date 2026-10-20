@@ -157,14 +157,20 @@ function toolCategory(name: string): SkillTrialToolTiming['category'] {
   return 'tool';
 }
 
+/** load_skill_through_path 的 skillId 带 harness 拼接的来源后缀(_user_generated),匹配前截取掉 */
+function stripSkillSourceSuffix(id: string): string {
+  const SUFFIX = '_user_generated';
+  return id.endsWith(SUFFIX) ? id.slice(0, -SUFFIX.length) : id;
+}
+
 /**
  * 是否命中skill:明细中 load_skill_through_path 解析出的 skillId/name 原值,
- * 与试运行记录的 skillName / skillId(字符串形式)对比,任一相等即命中。
+ * 先截取来源后缀(_user_generated)再与试运行记录的 skillName / skillId(字符串形式)对比,任一相等即命中。
  */
 function hitSkill(calls: SkillTrialCallTraceRow[], record: SkillTrialRunRecord): boolean {
   const loadedNames = calls
     .filter(c => c.systemTool === 'load_skill_through_path')
-    .map(c => c.actualName);
+    .map(c => stripSkillSourceSuffix(c.actualName));
   return loadedNames.some(v => v === record.skillName || v === String(record.skillId));
 }
 
