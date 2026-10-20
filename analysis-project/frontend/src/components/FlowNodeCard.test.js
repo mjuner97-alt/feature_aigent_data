@@ -49,3 +49,21 @@ test('scalar date parameters choose one version and save its version format',asy
  assert.equal(m.node.value.scriptParams.period.$dynamic.output,'single');assert.equal(m.node.value.scriptParams.period.$dynamic.startOffset,0);assert.equal(m.node.value.scriptParams.period.$dynamic.endOffset,0);assert.equal(m.node.value.scriptParams.period.$dynamic.format,'{year}年{month}月份版本');m.app.unmount();
 });
 
+test('building versions selection saves immediately and remains preview only when reopened',async()=>{
+ const m=mount();const select=find(m.root,n=>n.type==='select'&&n.props.value==='LITERAL');
+ assert.ok(find(select,n=>n.type==='option'&&n.props.value==='BUILDING_VERSIONS'));
+ select.props.onChange({target:{value:'BUILDING_VERSIONS'}});await nextTick();
+ assert.deepEqual(m.node.value.scriptParams.period,{$dynamic:{v:1,kind:'building_versions'}});
+ assert.ok(button(m,'预览参数'));assert.equal(button(m,'修改'),null);assert.equal(button(m,'＋ 添加一项'),null);assert.equal(find(m.root,n=>n.type==='dialog'),null);m.app.unmount();
+ const reopened=mount({period:{$dynamic:{v:1,kind:'building_versions'}}});assert.ok(button(reopened,'预览参数'));assert.equal(button(reopened,'修改'),null);reopened.app.unmount();
+});
+test('building versions choice is absent for date arrays and scalars',()=>{
+ for(const type of ['date[]','string','array<object>']) {const m=mount({}, {schema:[{name:'period',type}]});assert.equal(find(m.root,n=>n.type==='option'&&n.props.value==='BUILDING_VERSIONS'),null);m.app.unmount();}
+});
+test('building versions can switch transactionally to dynamic time',async()=>{
+ const fixed={$dynamic:{v:1,kind:'building_versions'}},m=mount({period:fixed});
+ const change=()=>find(m.root,n=>n.type==='select'&&n.props.value==='BUILDING_VERSIONS').props.onChange({target:{value:'DYNAMIC_PERIOD'}});
+ change();await nextTick();assert.ok(find(m.root,n=>n.type==='dialog'));button(m,'取消').props.onClick();await nextTick();assert.deepEqual(m.node.value.scriptParams.period,fixed);
+ change();await nextTick();button(m,'确定').props.onClick();await nextTick();assert.equal(m.node.value.scriptParams.period.$dynamic.kind,'period_window');m.app.unmount();
+});
+test('building versions preview follows dynamic parameter visibility',()=>{const m=mount({period:{$dynamic:{v:1,kind:'building_versions'}}},{showDynamicParams:false});assert.equal(button(m,'预览参数'),null);assert.equal(button(m,'＋ 添加一项'),null);m.app.unmount();});

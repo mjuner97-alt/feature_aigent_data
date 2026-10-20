@@ -374,7 +374,7 @@
           CASE WHEN TRIM(COALESCE(n.script_id, '')) != '' THEN s.default_metric_ids ELSE k.default_metric_ids END AS default_metric_ids,
           m.metric_id
         FROM skill_flow_node n
-        LEFT JOIN script_registry s ON s.script_id = TRIM(n.script_id) AND s.enabled = 1
+        LEFT JOIN script_registry s ON s.script_id = TRIM(n.script_id)
         LEFT JOIN skill_manage k ON k.id = n.skill_id
         LEFT JOIN skill_flow_node_metric m ON m.flow_node_id = n.id
         WHERE n.flow_id IN <foreach collection="flowIds" item="flowId" open="(" separator="," close=")">#{flowId}</foreach>

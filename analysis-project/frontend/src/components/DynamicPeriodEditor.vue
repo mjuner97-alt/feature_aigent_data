@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
 import { previewScriptParams } from '../api/scriptParamRule';
-import { defaultPeriodValue, normalizedParamType, validatePeriodValue, type PeriodValue, type PeriodWindow } from '../utils/scriptParams';
+import { buildingVersionsValue, defaultPeriodValue, isBuildingVersionsValue, normalizedParamType, supportsBuildingVersionsParam, validateBuildingVersionsValue, validatePeriodValue, type BuildingVersionsValue, type PeriodValue, type PeriodWindow } from '../utils/scriptParams';
 
-const props = defineProps<{ modelValue: PeriodValue; type: string; paramName: string; scriptId?: string; editing?: boolean; pending?: boolean }>();
-const emit = defineEmits<{ (e: 'change', value: PeriodValue): void; (e: 'close'): void }>();
+type DynamicValue = PeriodValue | BuildingVersionsValue;
+const props = defineProps<{ modelValue: DynamicValue; type: string; paramName: string; scriptId?: string; editing?: boolean; pending?: boolean }>();
+const emit = defineEmits<{ (e: 'change', value: DynamicValue): void; (e: 'close'): void }>();
 const opened = ref(false);
 const dialog = ref<HTMLDialogElement>();
-const draft = ref<PeriodValue>(copyValue());
+const draft = ref<DynamicValue>(copyValue());
 const advanced = ref(false);
 const customWindow = ref(false);
 const previewText = ref<string>();
@@ -30,18 +31,21 @@ async function showPreview() {
     const result = await previewScriptParams(props.scriptId, { [props.paramName]: draft.value });
     if (token !== previewSequence) return;
     maxPeriods.value = result.maxPeriods;
-    previewText.value = JSON.stringify({ [props.paramName]: result.resolvedParams[props.paramName] }, null, 2);
+    previewText.value = JSON.stringify(result.resolvedParams[props.paramName], null, 2);
   } catch (error) {
     if (token === previewSequence) previewError.value = error instanceof Error ? error.message : '预览失败';
   } finally {
     if (token === previewSequence) previewLoading.value = false;
   }
 }
-const config = computed(() => draft.value.$dynamic);
+const isBuilding = computed(() => isBuildingVersionsValue(draft.value));
+const config = computed(() => draft.value.$dynamic as PeriodWindow);
 const count = computed(() => config.value.endOffset - config.value.startOffset + 1);
 const isDate = computed(() => normalizedParamType(props.type).base === 'date');
 const isList = computed(() => normalizedParamType(props.type).array);
-const validation = computed(() => validatePeriodValue(draft.value, props.type, maxPeriods.value));
+const validation = computed(() => isBuilding.value
+  ? validateBuildingVersionsValue(draft.value, props.type)
+  : validatePeriodValue(draft.value as PeriodValue, props.type, maxPeriods.value));
 const unitLabel = (unit: string) => ({ month: '版本', quarter: '季度', year: '年' }[unit] || unit);
 const formats = computed(() => config.value.unit === 'month'
   ? [{value:'{year}年{month}月份版本',label:'2026年8月份版本'}]
@@ -58,10 +62,11 @@ function describe(value: PeriodValue) {
   if (c.endOffset === -1 || c.endOffset === 0) return `最近 ${n} 个${unit}${c.endOffset === 0 ? '（含当前）' : ''}`;
   return `${unit}周期：${c.startOffset} 至 ${c.endOffset}`;
 }
-const summary = computed(() => describe(props.modelValue));
+const summary = computed(() => isBuildingVersionsValue(props.modelValue) ? '在建版本（字符串数组）' : describe(props.modelValue as PeriodValue));
 const range = computed(() => customWindow.value ? 'custom' : count.value === 1 && config.value.endOffset === 0 ? 'current' : count.value === 1 && config.value.endOffset === -1 ? 'previous' : 'recent');
-function copyValue(): PeriodValue {
-  const value = { $dynamic: { ...(props.modelValue?.$dynamic || defaultPeriodValue(props.type).$dynamic) } };
+function copyValue(): DynamicValue {
+  if (isBuildingVersionsValue(props.modelValue)) return buildingVersionsValue();
+  const value = { $dynamic: { ...(props.modelValue?.$dynamic || defaultPeriodValue(props.type).$dynamic) } } as PeriodValue;
   if (value.$dynamic.unit === 'month') value.$dynamic.format = '{year}年{month}月份版本';
   return value;
 }
@@ -94,12 +99,27 @@ function setRange(value: string) {
   else if (value === 'previous') update({ startOffset: -1, endOffset: -1 });
   else recent(Math.max(2, count.value));
 }
-function setUnit(unit: PeriodWindow['unit']) {
+function setUnit(unit: PeriodWindow['unit'] | 'building_versions') {
+  if (unit === 'building_versions') {
+    draft.value = buildingVersionsValue();
+    clearPreview();
+    emit('change', draft.value);
+    return;
+  }
+  if (isBuilding.value) {
+    const base = defaultPeriodValue(props.type);
+    draft.value = { $dynamic: { ...base.$dynamic } };
+  }
   update({ unit, format: unit === 'month' ? '{year}年{month}月份版本' : isDate.value ? '{year}-{month:02}-01' : unit === 'quarter' ? '{year}年第{quarter}季度' : '{year}年' });
+}
+function toggleCustomWindow(enabled: boolean) {
+  customWindow.value = enabled;
+  if (enabled) update({ startOffset: 0, endOffset: 0 });
+  else recent(isList.value ? Math.max(1, count.value) : 1);
 }
 function confirm() {
   if (validation.value) return;
-  emit('change', { $dynamic: { ...config.value } });
+  emit('change', isBuilding.value ? buildingVersionsValue() : { $dynamic: { ...config.value } });
   close();
 }
 watch(() => props.editing, value => { if (value) void open(); }, { immediate: true });
@@ -112,25 +132,27 @@ watch(draft, clearPreview, { flush: 'sync' });
   <div class="period-editor">
     <div v-if="!pending" class="period-summary">
       <span>{{ summary }}<small>执行时自动计算</small></span>
-      <button type="button" class="edit-button" @click="open">修改</button>
+      <button type="button" class="edit-button" @click="open">{{ isBuilding ? '预览参数' : '修改' }}</button>
     </div>
     <dialog v-if="opened" ref="dialog" class="period-dialog" aria-label="动态时间设置" @cancel.prevent="close" @close="opened && close()">
       <header class="dialog-header"><div><h3>动态时间</h3><p>设置 {{ paramName }} 的时间规则</p></div><button type="button" class="close-button" aria-label="关闭动态时间设置" @click="close">×</button></header>
       <div class="dialog-body">
         <div class="field-row">
-          <label>周期<select aria-label="周期" :value="config.unit" @change="setUnit(($event.target as HTMLSelectElement).value as PeriodWindow['unit'])"><option value="month">版本</option><option value="quarter">季度</option><option value="year">年</option></select></label>
-          <label>时间范围<select aria-label="时间范围" :value="range" @change="setRange(($event.target as HTMLSelectElement).value)"><option value="previous">上个{{ unitLabel(config.unit) }}</option><option value="current">当前{{ unitLabel(config.unit) }}</option><option v-if="isList" value="recent">最近多个周期</option><option v-if="customWindow" value="custom">自定义范围</option></select></label>
+          <label>周期<select aria-label="周期" :value="isBuilding ? 'building_versions' : config.unit" @change="setUnit(($event.target as HTMLSelectElement).value as PeriodWindow['unit'] | 'building_versions')"><option value="month">版本</option><option value="quarter">季度</option><option value="year">年</option><option v-if="supportsBuildingVersionsParam(props.type)" value="building_versions">在建版本</option></select></label>
+          <label v-if="!isBuilding">时间范围<select aria-label="时间范围" :value="range" @change="setRange(($event.target as HTMLSelectElement).value)"><option value="previous">上个{{ unitLabel(config.unit) }}</option><option value="current">当前{{ unitLabel(config.unit) }}</option><option v-if="isList" value="recent">最近多个周期</option><option v-if="customWindow" value="custom">自定义范围</option></select></label>
         </div>
+        <template v-if="!isBuilding">
         <div v-if="range === 'recent'" class="recent-row"><label>周期数量<input aria-label="周期数量" type="number" min="1" :max="maxPeriods" :value="count" @input="recent(Number(($event.target as HTMLInputElement).value))" /></label><label class="check"><input type="checkbox" aria-label="含当前周期" :checked="config.endOffset === 0" @change="recent(count, ($event.target as HTMLInputElement).checked)" />含当前周期</label></div>
         <label v-if="!isDate || config.unit === 'month'">格式<select aria-label="格式" :value="config.format" @change="update({format: ($event.target as HTMLSelectElement).value})"><option v-for="f in formats" :key="f.value" :value="f.value">{{ f.label }}</option><option v-if="legacyFormat" :value="config.format">保留原格式（{{ config.format }}）</option></select></label>
         <button type="button" class="advanced-toggle" :aria-expanded="advanced" @click="advanced = !advanced">{{ advanced ? '收起高级设置' : '高级设置' }}</button>
         <div v-if="advanced" class="advanced-panel">
           <label v-if="isList">顺序<select aria-label="顺序" :value="config.order" @change="update({order: ($event.target as HTMLSelectElement).value as PeriodWindow['order']})"><option value="asc">从旧到新</option><option value="desc">从新到旧</option></select></label>
-          <label class="check"><input aria-label="自定义窗口" type="checkbox" :checked="customWindow" @change="customWindow = ($event.target as HTMLInputElement).checked; !customWindow && recent(isList ? Math.max(1, count) : 1)" />自定义前后周期</label>
+          <label class="check"><input aria-label="自定义窗口" type="checkbox" :checked="customWindow" @change="toggleCustomWindow(($event.target as HTMLInputElement).checked)" />自定义前后周期</label>
           <div v-if="customWindow" class="field-row"><label>起始偏移<input aria-label="起始偏移" type="number" :value="config.startOffset" @input="update({startOffset:Number(($event.target as HTMLInputElement).value)})" /></label><label>结束偏移<input aria-label="结束偏移" type="number" :value="config.endOffset" @input="update({endOffset:Number(($event.target as HTMLInputElement).value)})" /></label></div>
           <small v-if="customWindow">0 为当前周期，负数为之前，正数为之后。</small>
         </div>
         <p class="auto-hint">按执行时的数据日期自动生成{{ isList ? '时间列表' : '时间值' }}。</p>
+        </template>
         <section class="parameter-preview" aria-label="参数预览" aria-live="polite">
           <div class="preview-heading"><span>参数预览</span><button type="button" class="edit-button" :disabled="!scriptId || !!validation || previewLoading" @click="showPreview">{{ previewLoading ? '预览中…' : '预览参数' }}</button></div>
           <pre v-if="previewText !== undefined">{{ previewText }}</pre>
@@ -139,7 +161,7 @@ watch(draft, clearPreview, { flush: 'sync' });
         </section>
         <p v-if="validation" role="alert" class="error">{{ validation }}</p>
       </div>
-      <footer><button type="button" class="cancel-button" @click="close">取消</button><button type="button" class="confirm-button" :disabled="!!validation" @click="confirm">确定</button></footer>
+      <footer v-if="!isBuilding"><button type="button" class="cancel-button" @click="close">取消</button><button type="button" class="confirm-button" :disabled="!!validation" @click="confirm">确定</button></footer>
     </dialog>
   </div>
 </template>

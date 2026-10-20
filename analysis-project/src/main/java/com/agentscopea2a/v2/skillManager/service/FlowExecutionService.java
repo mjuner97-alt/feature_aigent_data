@@ -290,7 +290,8 @@ public class FlowExecutionService {
                 .maxParallelismSnapshot(flow.getMaxParallelism())
                 // 通知配置快照:执行期间以快照为准,发通知时不再回读流程定义
                 .notifyEnabledSnapshot(flow.getNotifyEnabled())
-                .notifyContactNameSnapshot(flow.getNotifyContactName())
+                .notifyContactNameSnapshot(flow.getNotifyContactName() == null || flow.getNotifyContactName().isBlank()
+                        ? flow.getCreatedBy() : flow.getNotifyContactName())
                 .notifyContactPhoneSnapshot(flow.getNotifyContactPhone())
                 .notifyBodyTemplateSnapshot(flow.getNotifyBodyTemplate())
                 .notifyReceiversSnapshot(templateNodes == null ? resolveNotifyReceiversSnapshot(flow, triggerType) : null)

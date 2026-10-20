@@ -13,9 +13,8 @@ public final class NotificationContact {
     public static void validate(String name, String phone) {
         name = trimToNull(name);
         phone = trimToNull(phone);
-        if (name == null && phone == null) return;
-        if (phone == null) throw new IllegalStateException("FlowValidationFailed: 请填写联系电话，或清空联系人以使用系统默认联系信息");
-        if (name == null) throw new IllegalStateException("FlowValidationFailed: 请填写联系人姓名，或清空手机号以使用系统默认联系信息");
+        if (name == null) throw new IllegalStateException("FlowValidationFailed: 请填写联系人姓名");
+        if (phone == null) throw new IllegalStateException("FlowValidationFailed: 请填写联系电话");
         if (phone.length() != 11) throw new IllegalStateException("FlowValidationFailed: 请输入 11 位手机号");
     }
 

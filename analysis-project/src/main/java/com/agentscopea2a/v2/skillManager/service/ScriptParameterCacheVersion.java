@@ -15,12 +15,18 @@ final class ScriptParameterCacheVersion {
         try {
             JsonNode params = json.readTree(paramsJson);
             Set<String> versions = new TreeSet<>();
+            Set<String> buildingVersions = new TreeSet<>();
             if (params != null && params.isObject()) {
                 for (JsonNode value : params) {
-                    if (value.isObject() && value.has("$dynamic")) versions.add(value.path("$dynamic").path("v").asText());
+                    if (value.isObject() && value.has("$dynamic")) {
+                        JsonNode config = value.path("$dynamic");
+                        if ("building_versions".equals(config.path("kind").asText())) buildingVersions.add(config.path("v").asText());
+                        else versions.add(config.path("v").asText());
+                    }
                 }
             }
-            return versions.isEmpty() ? scriptId : scriptId + ":period-window-v" + String.join(",", versions);
+            return scriptId + (versions.isEmpty() ? "" : ":period-window-v" + String.join(",", versions))
+                    + (buildingVersions.isEmpty() ? "" : ":building-versions-v" + String.join(",", buildingVersions));
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("ScriptParamsInvalid: 无法读取参数解析版本", e);
         }

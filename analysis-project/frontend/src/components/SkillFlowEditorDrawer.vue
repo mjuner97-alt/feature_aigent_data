@@ -53,6 +53,8 @@ const recipientDialogOpen = ref(false);
 const receiverNames = ref<Record<string, string>>({});
 const reportTitle = ref('');
 const editorBody = ref<HTMLElement | null>(null);
+// 暂时隐藏报告流程入口，恢复时同时开启列表加载和引入控件。
+const showReportProcesses = false;
 const reportProcesses = ref<ReportProcess[]>([]);
 const reportProcessLoading = ref(false);
 const selectedReportProcessId = ref('');
@@ -82,7 +84,7 @@ function emptyNode(nodeKey: string, sortOrder: number): SkillFlowNode {
 }
 
 function emptyForm(): SkillFlowInput {
-  return { name: '', code: '', description: '', taskQuestion: '', summaryQuestionTemplate: '', enabled: true, scheduleRules: null, maxParallelism: 2, notifyEnabled: true, executors: [], notifyContactName: '', notifyContactPhone: '', notifyBodyTemplate: '', triggers: [], nodes: [], reportOutline: { numbering: {}, items: [] } };
+  return { name: '', code: '', description: '', taskQuestion: '', summaryQuestionTemplate: '', enabled: true, scheduleRules: null, maxParallelism: 2, notifyEnabled: true, executors: [], notifyContactName: '', notifyContactPhone: '', notifyBodyTemplate: '各位：\n\n  部门研发管理周报详见：{链接}，请关注。', triggers: [], nodes: [], reportOutline: { numbering: {}, items: [] } };
 }
 
 const chineseStepLabels = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
@@ -95,8 +97,8 @@ const isCopy = computed(() => !isEdit.value && props.copyFromId != null);
 const contactValidationError = computed(() => {
   const name = form.value.notifyContactName?.trim() || '';
   const phone = form.value.notifyContactPhone?.trim() || '';
-  if (name && !phone) return '请填写联系电话，或清空联系人以使用系统默认联系信息';
-  if (!name && phone) return '请填写联系人姓名，或清空手机号以使用系统默认联系信息';
+  if (!name) return '请填写联系人姓名';
+  if (!phone) return '请填写联系电话';
   if (phone && phone.length !== 11) return '请输入 11 位手机号';
   return '';
 });
@@ -181,12 +183,16 @@ async function searchScripts(query = '') {
 
 /** 脚本参数定义缓存(键=注册表数字 id):选脚本后按 params_schema 渲染参数输入框,不再手写 JSON */
 const scriptSchemas = ref<Record<number, ParamSchemaItem[]>>({});
+const scriptSchemaRequests = new Map<number, Promise<ParamSchemaItem[]>>();
 
 async function ensureScriptSchema(scriptId: string | null | undefined): Promise<ParamSchemaItem[]> {
   if (!scriptId) return [];
   const row = scripts.value.find(item => item.scriptId === scriptId);
   if (!row) return [];
   if (scriptSchemas.value[row.id]) return scriptSchemas.value[row.id];
+  const pending = scriptSchemaRequests.get(row.id);
+  if (pending) return pending;
+  const request = (async () => {
   let items: ParamSchemaItem[] = [];
   try {
     // Some deployments include paramsSchema in the list response; use it first
@@ -197,7 +203,11 @@ async function ensureScriptSchema(scriptId: string | null | undefined): Promise<
     if (Array.isArray(parsed)) items = parsed.filter((item: any) => item && typeof item.name === 'string');
   } catch { /* schema 解析失败按无参数处理,保存/试跑时由后端兜底校验 */ }
   scriptSchemas.value = { ...scriptSchemas.value, [row.id]: items };
+  scriptSchemaRequests.delete(row.id);
   return items;
+  })();
+  scriptSchemaRequests.set(row.id, request);
+  return request;
 }
 
 function schemaFor(node: SkillFlowNode): ParamSchemaItem[] | null {
@@ -468,6 +478,7 @@ function removeTrigger(index: number) {
 
 async function loadOptions() {
   await Promise.all([searchScripts(''), searchMetrics('')]);
+  if (!showReportProcesses) return;
   reportProcessLoading.value = true;
   try { reportProcesses.value = await listReportProcesses('available'); } catch { reportProcesses.value = []; }
   finally { reportProcessLoading.value = false; }
@@ -515,7 +526,7 @@ function normalizeFlow(flow: SkillFlow): SkillFlowInput {
     maxParallelism: 2, notifyEnabled: flow.notifyEnabled !== false,
     executors: [...new Set(flow.executors || [])].filter(id => id !== flow.createdBy),
     notifyContactName: flow.notifyContactName ?? '', notifyContactPhone: flow.notifyContactPhone ?? '',
-    notifyBodyTemplate: flow.notifyBodyTemplate ?? '',
+    notifyBodyTemplate: flow.notifyBodyTemplate?.trim() || '各位：\n\n  部门研发管理周报详见：{链接}，请关注。',
     triggers: (flow.triggers || []).map(trigger => ({ ...trigger, enabled: trigger.enabled !== false })),
     nodes: (flow.nodes || []).map((node, index) => {
       let scriptParams: Record<string, unknown> = node.scriptParams || {};
@@ -600,6 +611,7 @@ async function load() {
       wasPublic.value = !isCopy.value && flow.chatPublic === true;
       originalKeywords.value = (flow.triggers || []).map(trigger => trigger.keyword.trim().toLowerCase()).filter(Boolean);
       form.value = normalizeFlow(cloneFlowValue(flow));
+      if (!form.value.notifyContactName?.trim()) form.value.notifyContactName = flow.createdBy || '';
       if (!isCopy.value) flowOwnerId.value = flow.createdBy || flowOwnerId.value;
       if (isCopy.value) {
         copySourceName.value = flow.name;
@@ -755,7 +767,7 @@ defineExpose({ isDirty });
                 <p>展示在任务通知邮件中，方便收件人遇到问题时联系相关人员。手机号仅作为联系信息展示，不用于发送短信。</p>
                 <label><span>联系人姓名</span><input v-model="form.notifyContactName" type="text" placeholder="填写负责解答此任务相关问题的人" /></label>
                 <label><span>联系电话（手机号）</span><input v-model="form.notifyContactPhone" type="text" placeholder="填写 11 位手机号" /></label>
-                <small>两项都留空时，使用系统默认联系信息；如需自定义，请同时填写联系人和手机号。</small>
+                <small>联系人和联系电话均为必填项；历史任务若未填写联系人，会先使用创建人作为联系人，但仍需补充联系电话。</small>
                 <p v-if="usesDefaultContact" class="contact-mode" role="status">当前使用系统默认联系信息</p>
                 <p v-else-if="!contactValidationError" class="contact-mode" role="status">保存后，任务通知邮件将展示上述联系信息</p>
                 <p v-if="contactValidationError" class="error" role="status">{{ contactValidationError }}</p>
@@ -766,12 +778,12 @@ defineExpose({ isDirty });
 
             <section id="flow-outline" class="form-section wide section-card">
               <!-- 测试期间临时隐藏流程引入入口。 -->
-              <div v-if="false" class="template-toolbar">
+              <div v-if="showReportProcesses" class="template-toolbar">
                 <span class="template-label">报告流程模板</span>
                 <el-select v-model="selectedReportProcessId" filterable clearable :loading="reportProcessLoading" placeholder="搜索并选择报告流程" class="report-process-select"><el-option v-for="item in reportProcesses" :key="item.id" :value="String(item.id)" :label="item.name" /></el-select>
                 <button class="btn primary" :disabled="!selectedReportProcessId || reportProcessLoading" @click="importReportProcess(Number(selectedReportProcessId))">引入报告流程</button>
               </div>
-              <div v-if="importedReportSnapshot" class="import-status"><span>已引入：<strong>{{ importedReportName }}</strong></span><div><button class="btn" @click="undoReportProcessImport">撤销引入</button></div></div>
+              <div v-if="showReportProcesses && importedReportSnapshot" class="import-status"><span>已引入：<strong>{{ importedReportName }}</strong></span><div><button class="btn" @click="undoReportProcessImport">撤销引入</button></div></div>
               <div v-if="unboundNodes.length" class="import-status">
                 <span>未绑定节点（{{ unboundNodes.length }}）：请绑定到章节，或删除不再需要的节点后保存。</span>
                 <div v-for="node in unboundNodes" :key="node.nodeKey">
@@ -791,7 +803,7 @@ defineExpose({ isDirty });
                   <button class="icon-button danger" title="删除本节及子级" @click="removeOutlineRow(row)">×</button>
                 </div>
                 <div class="outline-node-area" :style="{ marginLeft: `${Math.min(row.level, 8) * 22}px` }">
-                  <FlowNodeCard v-for="(node, nodeIndex) in nodesForRow(row)" :key="node.nodeKey" class="chapter-node-card" :node="node" :title="nodeTitle(node)" :schema="schemaFor(node)" :scripts="scripts" :metrics="metrics" :script-loading="scriptLoading" :metric-loading="metricLoading" :debug-disabled="!node.scriptId || debugStarting || debugInProgress()" :dragging="dragNodeKey === node.nodeKey" :sortable="true" :show-dynamic-params="false" :is-first="nodeIndex === 0" :is-last="nodeIndex === nodesForRow(row).length - 1" remove-title="删除节点" @move="moveChapterNode(row, node.nodeKey, $event)" @remove="removeChapterNode(row, node.nodeKey)" @debug="runNodeDebug(node, $event)" @drag-start="chapterDragStart(node.nodeKey, $event)" @drag-over="chapterDragOver(row, node.nodeKey)" @drag-end="finishDrag" @script-change="onScriptSelected(node)" @script-params-change="onScriptParamsChange(node, $event)" @search-scripts="searchScripts" @search-metrics="searchMetrics" @set-metrics="setNodeMetrics(node, $event)" />
+                  <FlowNodeCard v-for="(node, nodeIndex) in nodesForRow(row)" :key="node.nodeKey" class="chapter-node-card" :node="node" :title="nodeTitle(node)" :schema="schemaFor(node)" :scripts="scripts" :metrics="metrics" :script-loading="scriptLoading" :metric-loading="metricLoading" :debug-disabled="!node.scriptId || debugStarting || debugInProgress()" :dragging="dragNodeKey === node.nodeKey" :sortable="true" :is-first="nodeIndex === 0" :is-last="nodeIndex === nodesForRow(row).length - 1" remove-title="删除节点" @move="moveChapterNode(row, node.nodeKey, $event)" @remove="removeChapterNode(row, node.nodeKey)" @debug="runNodeDebug(node, $event)" @drag-start="chapterDragStart(node.nodeKey, $event)" @drag-over="chapterDragOver(row, node.nodeKey)" @drag-end="finishDrag" @script-change="onScriptSelected(node)" @script-params-change="onScriptParamsChange(node, $event)" @search-scripts="searchScripts" @search-metrics="searchMetrics" @set-metrics="setNodeMetrics(node, $event)" />
 <div class="chapter-node-actions">
                     <button class="btn" title="新建一个 Python 节点并放到该章节" @click="addOutlineNode(row)">＋ 添加节点</button>
                     <select v-if="unboundNodes.length" :value="''" @change="bindRowNode(row, ($event.target as HTMLSelectElement).value)"><option value="" disabled>绑定已有未绑定节点…</option><option v-for="node in unboundNodes" :key="node.nodeKey" :value="node.nodeKey">{{ nodeTitle(node) }}（{{ node.nodeKey }}）</option></select>

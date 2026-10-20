@@ -65,3 +65,14 @@ test('dynamic markers must bind the whole parameter rather than an array item or
 });
 
 test('only explicit string and date schema types offer period windows',async()=>{const u=await loadModule(new URL('./scriptParams.ts',import.meta.url));for(const type of ['object','json','array<object>','custom','datetime','int[]']){assert.equal(u.supportsPeriodParam(type),false,type);assert.ok(u.validateParamValue(u.defaultPeriodValue('string'),type),type);}for(const type of ['string','date','array','string[]','date[]','array<string>','array<date>',' STRING[] '])assert.equal(u.supportsPeriodParam(type),true,type);});
+test('building versions preserve a fixed marker and only support string arrays',async()=>{
+ const u=await loadModule(new URL('./scriptParams.ts',import.meta.url));
+ const marker={$dynamic:{v:1,kind:'building_versions'}};
+ for(const type of ['string[]','array<string>','array']) {
+  assert.equal(u.validateParamValue(marker,type),'');
+  assert.deepEqual(u.normalizeScriptParams({versions:marker},[{name:'versions',type}]),{versions:marker});
+ }
+ assert.equal(u.inferParamSchema({versions:marker})[0].type,'string[]');
+ for(const type of ['string','date[]','int[]','array<object>','json']) assert.ok(u.validateParamValue(marker,type),type);
+ for(const value of [{$dynamic:{v:2,kind:'building_versions'}},{$dynamic:{v:1,kind:'building_versions',order:'asc'}}, {...marker,extra:true}]) assert.ok(u.validateParamValue(value,'string[]'));
+});

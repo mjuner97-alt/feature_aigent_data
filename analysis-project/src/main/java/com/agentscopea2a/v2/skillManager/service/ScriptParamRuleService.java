@@ -18,23 +18,36 @@ public class ScriptParamRuleService {
     private final ScriptRegistryMapper scriptRegistryMapper;
     private final ObjectMapper objectMapper;
     private final PeriodWindowResolver periodWindowResolver;
+    private final BuildingVersionsResolver buildingVersionsResolver;
 
     public ScriptParamRuleService(ScriptRegistryMapper scripts, ObjectMapper json) {
         this(scripts, json, new PeriodWindowResolver(120));
     }
 
-    @Autowired
     public ScriptParamRuleService(ScriptRegistryMapper scripts, ObjectMapper json, PeriodWindowResolver resolver) {
+        this(scripts, json, resolver, new BuildingVersionsResolver((com.agentscopea2a.v2.hooks.VersionPlanKnowledgeHook) null));
+    }
+
+    @Autowired
+    public ScriptParamRuleService(ScriptRegistryMapper scripts, ObjectMapper json, PeriodWindowResolver resolver, BuildingVersionsResolver buildingVersionsResolver) {
         this.scriptRegistryMapper = scripts;
         this.objectMapper = json;
         this.periodWindowResolver = resolver;
+        this.buildingVersionsResolver = buildingVersionsResolver;
     }
 
     public Map<String, Object> resolve(String scriptId, String paramsJson, LocalDate dataDate) {
         Map<String, Object> params = parseParams(paramsJson);
         Map<String, String> types = containsDynamic(params) ? loadStrictParamTypes(scriptId, params) : Map.of();
         Map<String, Object> resolved = new LinkedHashMap<>();
+        List<String> buildingVersions = null;
         for (var entry : params.entrySet()) {
+            if (isBuildingVersions(entry.getValue())) {
+                buildingVersionsResolver.validate(entry.getValue(), types.get(entry.getKey()));
+                if (buildingVersions == null) buildingVersions = buildingVersionsResolver.resolve();
+                resolved.put(entry.getKey(), new java.util.ArrayList<>(buildingVersions));
+                continue;
+            }
             resolved.put(entry.getKey(), isDynamic(entry.getValue())
                     ? periodWindowResolver.resolve(entry.getValue(), types.get(entry.getKey()), dataDate)
                     : entry.getValue());
@@ -45,7 +58,12 @@ public class ScriptParamRuleService {
     /** 校验动态配置和参数类型，不在保存时将周期展开成具体月份。 */
     public List<String> validateParams(String scriptId, String paramsJson) {
         try {
-            resolve(scriptId, paramsJson, LocalDate.of(2000, 1, 1));
+            Map<String, Object> params = parseParams(paramsJson);
+            Map<String, String> types = containsDynamic(params) ? loadStrictParamTypes(scriptId, params) : Map.of();
+            for (var entry : params.entrySet()) {
+                if (isBuildingVersions(entry.getValue())) buildingVersionsResolver.validate(entry.getValue(), types.get(entry.getKey()));
+                else if (isDynamic(entry.getValue())) periodWindowResolver.resolve(entry.getValue(), types.get(entry.getKey()), LocalDate.of(2000, 1, 1));
+            }
             return List.of();
         } catch (IllegalStateException error) {
             return List.of(error.getMessage());
@@ -92,6 +110,10 @@ public class ScriptParamRuleService {
     }
     public boolean containsDynamic(String paramsJson) { return containsDynamic(parseParams(paramsJson)); }
     private static boolean isDynamic(Object value) { return value instanceof Map<?, ?> map && map.containsKey("$dynamic"); }
+    private static boolean isBuildingVersions(Object value) {
+        return value instanceof Map<?, ?> outer && outer.get("$dynamic") instanceof Map<?, ?> config
+                && "building_versions".equals(config.get("kind"));
+    }
     private static boolean containsDynamic(Map<String, Object> params) { return params.values().stream().anyMatch(ScriptParamRuleService::isDynamic); }
 
     static String formatPeriod(String pattern, int year, int month) {

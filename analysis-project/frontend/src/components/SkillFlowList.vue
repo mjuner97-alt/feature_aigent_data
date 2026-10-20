@@ -119,7 +119,7 @@ watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.v
         <thead>
           <tr>
             <th>流程名称</th>
-            <th>Skill 数量</th>
+            <th>节点数量</th>
             <th>依赖指标</th>
             <th>状态</th>
             <th>创建人</th>

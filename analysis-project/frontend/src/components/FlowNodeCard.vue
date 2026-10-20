@@ -4,7 +4,7 @@ import DynamicPeriodEditor from './DynamicPeriodEditor.vue';
 import type { SkillFlowNode } from '../types/skillFlow';
 import type { ParamSchemaItem, ScriptRegistryListItem } from '../types/scriptRegistry';
 import type { SkillDependencyMetric } from '../types/skillJob';
-import { coerceParamValue, defaultParamValue, defaultPeriodValue, isDynamicValue, supportsPeriodParam, type PeriodValue, type ParamValueMode, isRuleValue, normalizedParamType, paramsFromSchema, validateParamValue } from '../utils/scriptParams';
+import { coerceParamValue, defaultParamValue, defaultPeriodValue, isDynamicValue, supportsPeriodParam, type BuildingVersionsValue, type PeriodValue, type ParamValueMode, isRuleValue, normalizedParamType, paramsFromSchema, validateParamValue } from '../utils/scriptParams';
 
 /** 流程节点配置卡片:Python 执行节点区和报告输出大纲行内嵌两处复用;排序相关控件仅在 sortable 时显示。 */
 const props = withDefaults(defineProps<{
@@ -58,9 +58,9 @@ const emit = defineEmits<{
 }>();
 
 const editingPeriod = ref<string | null>(null);
-function periodValue(item: ParamSchemaItem): PeriodValue {
+function periodValue(item: ParamSchemaItem): PeriodValue | BuildingVersionsValue {
   const value = schemaValues.value[item.name];
-  if (isDynamicValue(value)) return value;
+  if (isDynamicValue(value) && value.$dynamic?.kind === 'period_window') return value as PeriodValue;
   const generated = defaultPeriodValue(item.type);
   generated.$dynamic.format = '{year}年{month}月份版本';
   return generated;
@@ -117,7 +117,9 @@ function schemaValue(item: ParamSchemaItem): unknown {
     ? value.replace(/\//g, '-') : value;
 }
 function paramMode(item: ParamSchemaItem): ParamValueMode {
-  return isDynamicValue(schemaValues.value[item.name]) ? 'DYNAMIC_PERIOD' : 'LITERAL';
+  const value = schemaValues.value[item.name];
+  if (!isDynamicValue(value)) return 'LITERAL';
+  return 'DYNAMIC_PERIOD';
 }
 function setParamMode(item: ParamSchemaItem, mode: ParamValueMode) {
   if (mode === 'LITERAL') {
@@ -272,3 +274,5 @@ label { display: grid; gap: 5px; } label > span { color: #475569; font-size: 13p
 .btn, .icon-button { border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #475569; cursor: pointer; font-size: 13px; }.btn { padding: 7px 14px; }.node-toolbar .btn { border-color: #3b82f6; background: #3b82f6; color: #fff; }.node-toolbar .btn:hover:not(:disabled) { background: #2563eb; border-color: #2563eb; }.btn:disabled, .icon-button:disabled { cursor: not-allowed; opacity: .45; }.icon-button { width: 28px; height: 28px; padding: 0; font-size: 18px; line-height: 1; }.icon-button.danger { color: #dc2626; border-color: #fecaca; }
 @media (max-width: 760px) { .node-grid, .param-row { grid-template-columns: 1fr; } .param-mode, .param-rule-preview, .param-desc { grid-column: 1; } }
 </style>
+
+

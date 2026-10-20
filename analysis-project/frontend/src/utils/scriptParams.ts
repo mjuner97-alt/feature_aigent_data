@@ -1,6 +1,6 @@
 import type { ParamSchemaItem } from '../types/scriptRegistry';
 
-export type ParamValueMode = 'LITERAL' | 'DYNAMIC_PERIOD';
+export type ParamValueMode = 'LITERAL' | 'DYNAMIC_PERIOD' | 'BUILDING_VERSIONS';
 
 export function isArrayParam(type: string): boolean {
   return normalizedParamType(type).array;
@@ -19,7 +19,7 @@ export function paramsFromSchema(schema: ParamSchemaItem[]): Record<string, unkn
 /** Show saved legacy parameters as fields when no registry schema is available. */
 export function inferParamSchema(params: Record<string, unknown>): ParamSchemaItem[] {
   return Object.entries(params).map(([name, value]) => {
-    if (isDynamicValue(value)) return { name, type: value.$dynamic?.output === 'list' ? 'string[]' : 'string', required: false, description: '' };
+    if (isDynamicValue(value)) return { name, type: value.$dynamic?.kind === 'building_versions' || (value.$dynamic && 'output' in value.$dynamic && value.$dynamic.output === 'list') ? 'string[]' : 'string', required: false, description: '' };
     const sample = Array.isArray(value) ? value.find(item => item !== null && item !== '') : value;
     const type = typeof sample === 'number' ? (Number.isInteger(sample) ? 'int' : 'float')
       : typeof sample === 'boolean' ? 'boolean'
@@ -83,7 +83,7 @@ export function normalizeScriptParams(params: Record<string, unknown>, schema: P
 }
 
 export function validateParamValue(value: unknown, type: string): string {
-  if (isDynamicValue(value)) return validatePeriodValue(value, type);
+  if (isDynamicValue(value)) return value.$dynamic?.kind === 'building_versions' ? validateBuildingVersionsValue(value, type) : validatePeriodValue(value as PeriodValue, type);
   if (isRuleValue(value)) return '旧预设规则已停用，请重新配置动态时间';
   if (value && typeof value === 'object' && Object.values(value).some(containsParamMarker)) return '动态时间配置必须直接绑定参数，不能嵌套在数组或对象内';
   const t = normalizedParamType(type);
@@ -106,11 +106,27 @@ export function validateParamValue(value: unknown, type: string): string {
 
 export interface PeriodWindow { v: 1; kind: 'period_window'; unit: 'month' | 'quarter' | 'year'; startOffset: number; endOffset: number; format: string; order: 'asc' | 'desc'; output: 'list' | 'single' }
 export interface PeriodValue { $dynamic: PeriodWindow }
+export interface BuildingVersionsValue { $dynamic: { v: 1; kind: 'building_versions' } }
+export function buildingVersionsValue(): BuildingVersionsValue { return { $dynamic: { v: 1, kind: 'building_versions' } }; }
+export function isBuildingVersionsValue(value: unknown): value is BuildingVersionsValue {
+ return isDynamicValue(value) && value.$dynamic?.kind === 'building_versions';
+}
+export function supportsBuildingVersionsParam(type: string): boolean {
+  const normalized = normalizedParamType(type);
+  return normalized.array && normalized.base === 'string';
+}
+export function validateBuildingVersionsValue(value: unknown, type: string): string {
+ const marker = value as BuildingVersionsValue;
+ const config = marker?.$dynamic;
+ if (!config || config.v !== 1 || config.kind !== 'building_versions') return '在建版本配置无效';
+ if (Object.keys(marker).length !== 1 || Object.keys(config).length !== 2 || Object.keys(config).some(key => !['v','kind'].includes(key))) return '在建版本配置包含未知或缺失字段';
+ return supportsBuildingVersionsParam(type) ? '' : '在建版本仅支持字符串数组参数';
+}
 export function isParamMarker(value: unknown): boolean { return !!value && typeof value === 'object' && !Array.isArray(value) && ('$rule' in value || '$dynamic' in value); }
 function containsParamMarker(value: unknown): boolean {
   return isParamMarker(value) || !!value && typeof value === 'object' && Object.values(value).some(containsParamMarker);
 }
-export function isDynamicValue(value: unknown): value is PeriodValue { return !!value && typeof value === 'object' && !Array.isArray(value) && '$dynamic' in value; }
+export function isDynamicValue(value: unknown): value is { $dynamic: Partial<PeriodWindow> | BuildingVersionsValue['$dynamic'] | null } { return !!value && typeof value === 'object' && !Array.isArray(value) && '$dynamic' in value; }
 export function supportsPeriodParam(type: string): boolean {
  return ['string','date','array','string[]','date[]','array<string>','array<date>'].includes((type || '').trim().toLowerCase());
 }
