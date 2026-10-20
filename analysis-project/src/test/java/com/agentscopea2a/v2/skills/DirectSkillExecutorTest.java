@@ -704,7 +704,7 @@ class DirectSkillExecutorTest {
 
         var map = pendingMap(executor);
         map.replaceAll((k, v) -> new DirectSkillExecutor.PendingDirectExec(v.skillName(), v.scriptId(),
-                v.mapping(), v.filledParams(), v.missingKeys(),
+                v.mapping(), v.schema(), v.filledParams(), v.missingKeys(),
                 System.currentTimeMillis() - DirectSkillExecutor.PENDING_TTL_MS - 1, null));
 
         // 过期 → 补参回答不再续上; 正常判定链对裸部门名无 skill 命中 → 回退 LLM
@@ -1158,5 +1158,155 @@ class DirectSkillExecutorTest {
 
         DirectSkillExecutor.DirectExecutionPlan t2Plan = executor.plan(t2, "alice", null, "conv-1");
         assertTrue(t2Plan.needsAsk());
+    }
+
+    // ==================== params_schema 类型保形 (direct-exec-param-type-plan.md) ====================
+
+    private static final String ARRAY_VERSION_SCHEMA =
+            "[{\"name\":\"version\",\"required\":true,\"type\":\"array\"}]";
+
+    @Test
+    void arrayTypedSchemaKeepsSingleValueAsList() {
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"version\":\"versionPlan\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(QUESTION), Mockito.isNull())).thenReturn(
+                state(versionTime(List.of("2026年7月份版本")), List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(ARRAY_VERSION_SCHEMA));
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(QUESTION, "alice", null);
+
+        // type=array: 单值也保 List (修 script 侧按数组取值报错)
+        assertEquals(List.of("2026年7月份版本"), plan.params().get("version"));
+    }
+
+    @Test
+    void arrayTypedSchemaMultiValueUnchanged() {
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"version\":\"versionPlan\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(QUESTION), Mockito.isNull())).thenReturn(
+                state(versionTime(List.of("2026年10月份版本", "2026年11月份版本")), List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(ARRAY_VERSION_SCHEMA));
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(QUESTION, "alice", null);
+
+        assertEquals(List.of("2026年10月份版本", "2026年11月份版本"), plan.params().get("version"));
+    }
+
+    @Test
+    void stringTypedSchemaStillCollapsesSingleValue() {
+        // 拍板②: type≠array 维持单值折叠 (start_date/end_date 现状即对)
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"dept\":\"deptName\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(QUESTION), Mockito.isNull())).thenReturn(
+                state(null, List.of("杭州开发一部")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true,\"type\":\"string\"}]"));
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(QUESTION, "alice", null);
+
+        assertInstanceOf(String.class, plan.params().get("dept"));
+        assertEquals("杭州开发一部", plan.params().get("dept"));
+    }
+
+    @Test
+    void noSchemaStillCollapsesSingleValue() {
+        // 拍板①: registry 无 schema 行 → 维持现状, 不静默改存量脚本契约
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"dept\":\"deptName\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(QUESTION), Mockito.isNull())).thenReturn(
+                state(null, List.of("杭州开发一部")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(QUESTION, "alice", null);
+
+        assertInstanceOf(String.class, plan.params().get("dept"));
+    }
+
+    @Test
+    void pendingAnswerCompletesArrayTypedParamAsList() {
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"dept\":\"deptName\",\"version\":\"versionPlan\"}", "达标率")));
+        enableKeyDictionary(builtinDeptNameConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(QUESTION), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(dimensionStateManager.previewState(Mockito.eq("杭州开发二部"), Mockito.isNull())).thenReturn(
+                state(null, List.of("杭州开发二部")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true,\"type\":\"array\"},"
+                        + "{\"name\":\"version\",\"required\":true,\"type\":\"array\"}]"));
+        when(hookProvider.getIfAvailable()).thenReturn(versionPlanHook);
+        when(versionPlanHook.currentVersions()).thenReturn(List.of("2026年10月份版本"));
+
+        DirectSkillExecutor executor = newExecutor(true);
+        assertTrue(executor.plan(QUESTION, "alice", null, "conv-1").needsAsk());
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                executor.plan("杭州开发二部", "alice", null, "conv-1");
+        assertFalse(plan.needsAsk());
+        assertEquals(List.of("杭州开发二部"), plan.params().get("dept")); // 补参回填也保形
+        assertEquals(List.of("2026年10月份版本"), plan.params().get("version")); // 预装配已保形
+        assertTrue(pendingMap(executor).isEmpty());
+    }
+
+    @Test
+    void ambiguousResumeArrayTypedAnchorStaysList() {
+        String question = "近3周的达标率是多少";
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"range\":\"timeRange\"}", "达标率")));
+        enableKeyDictionary(timeRangeConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"range\",\"required\":true,\"type\":\"array\"}]"));
+
+        DirectSkillExecutor executor = newExecutor(true);
+        assertTrue(executor.plan(question, "alice", null, "conv-1").needsAsk());
+
+        DirectSkillExecutor.DirectExecutionPlan done = executor.plan("历史", "alice", null, "conv-1");
+        assertFalse(done.needsAsk());
+        assertEquals(List.of("LAST:3w"), done.params().get("range"));
+    }
+
+    @Test
+    void snapshotFallbackKeepsArrayShapeFromPreviousRound() {
+        // T1 dept 单值已传 (List) → T2 部门未提及快照兜底 → 继承 List 形状
+        String t2 = "2026年9月份版本 达标率多少";
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"dept\":\"deptName\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(QUESTION), Mockito.isNull())).thenReturn(
+                state(null, List.of("杭州开发一部")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true,\"type\":\"array\"}]"));
+
+        DirectSkillExecutor executor = newExecutor(true);
+        executor.plan(QUESTION, "alice", null, "conv-1");
+
+        when(dimensionStateManager.previewState(Mockito.eq(t2), Mockito.isNull())).thenReturn(
+                state(versionTime(List.of("2026年9月份版本")), List.of()));
+        DirectSkillExecutor.DirectExecutionPlan t2Plan = executor.plan(t2, "alice", null, "conv-1");
+        assertFalse(t2Plan.needsAsk());
+        assertEquals(List.of("杭州开发一部"), t2Plan.params().get("dept"));
+    }
+
+    @Test
+    void malformedSchemaJsonDoesNotThrowAndKeepsOriginalSemantics() {
+        // 解析失败 = 白名单空 = 不传参不反问 (原 parseNames 语义), 不抛异常
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"dept\":\"deptName\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(QUESTION), Mockito.isNull())).thenReturn(
+                state(null, List.of("杭州开发一部")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry("{not json"));
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(QUESTION, "alice", null);
+
+        assertFalse(plan.params().containsKey("dept"));
     }
 }
