@@ -142,23 +142,64 @@ public class DimensionKeyController {
                 .toList();
     }
 
-    /** timeRange 保留键的词表值必须是锚点白名单内的语义锚点（LAST:{n}V/Q 暂缓期直接拒绝），
-     *  否则执行期 TimeRangeResolver 解析炸雷。其他键不受影响。 */
+    /** timeRange 保留键的词表值必须是锚点白名单内的语义锚点（LAST:{n}V/Q 不属于日期锚点，
+     *  由 versionPlan/vestQuarter 键承接），否则执行期 TimeRangeResolver 解析炸雷。
+     *  口语值方案 §3.6: 白名单内置键（versionPlan/vestQuarter/deptName）词表 value 按键分型校验。
+     *  其他键不受影响。 */
     private static void validateAnchorsIfNeeded(DimensionKeyConfig row) {
-        if (!com.agentscopea2a.v2.dimension.TimeRangeResolver.RESERVED_KEY.equals(row.key())) {
-            return;
-        }
+        String key = row.key();
+        // 正则捕获模板行 ($1~$9): 所有键通用——alias 必须可编译、引用组号不越界
         for (DimensionKeyConfig.AliasMapping alias : row.aliases()) {
-            if (!alias.valid()) {
+            if (!alias.valid()
+                    || !com.agentscopea2a.v2.dimension.AliasRegexSupport.isRegexTemplate(alias.value())) {
                 continue;
             }
-            if (!com.agentscopea2a.v2.dimension.TimeRangeResolver.isValidConfigAnchor(alias.value())) {
+            String error = com.agentscopea2a.v2.dimension.AliasRegexSupport
+                    .validateRegexRow(alias.alias(), alias.value());
+            if (error != null) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                        "维度键 timeRange 的词表值必须是锚点白名单内的语义锚点"
-                                + "（THIS_WEEK / LAST_WEEK / LAST:{n}d / THIS_MONTH / THIS_YEAR），"
-                                + "非法值: " + alias.value());
+                        "维度键 " + key + " 词表行非法（值含 $n 时 alias 按正则匹配）: " + error
+                                + "，alias: " + alias.alias());
             }
         }
+        if (com.agentscopea2a.v2.dimension.TimeRangeResolver.RESERVED_KEY.equals(key)) {
+            for (DimensionKeyConfig.AliasMapping alias : row.aliases()) {
+                if (!alias.valid()) {
+                    continue;
+                }
+                if (!com.agentscopea2a.v2.dimension.TimeRangeResolver.isValidConfigAnchor(alias.value())) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                            "维度键 timeRange 的词表值必须是锚点白名单内的语义锚点"
+                                    + "（THIS_WEEK / LAST_WEEK / LAST:{n}d / THIS_MONTH / THIS_YEAR），"
+                                    + "非法值: " + alias.value());
+                }
+            }
+            return;
+        }
+        if (com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository
+                .VOCAB_EDITABLE_BUILTIN_KEYS.contains(key)) {
+            for (DimensionKeyConfig.AliasMapping alias : row.aliases()) {
+                if (!alias.valid()) {
+                    continue;
+                }
+                if (!com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver
+                        .isValidConfigValue(key, alias.value())) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                            describeValueRule(key) + "，非法值: " + alias.value());
+                }
+            }
+        }
+    }
+
+    private static String describeValueRule(String key) {
+        return switch (key) {
+            case "versionPlan" -> "维度键 versionPlan 的词表值必须是版本标准值（如 2026年10月份版本 / "
+                    + "2026年10月延后版）或版本锚点（THIS_V / YEAR_V / HALF_V:1|2 / LAST:{n}V / DELAYED）";
+            case "vestQuarter" -> "维度键 vestQuarter 的词表值必须是季度标准值（如 2026年4季度）或 THIS_Q";
+            case "deptName" -> "维度键 deptName 的词表值必须是部门标准名（杭州开发一~五部 / "
+                    + "杭州服务支持部 / 杭州技术部 / 云计算实验室）";
+            default -> "维度键 " + key + " 的词表值非法";
+        };
     }
 
     /** 维度键字典是全局口径配置, 写操作仅管理员 */

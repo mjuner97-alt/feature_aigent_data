@@ -38,5 +38,6 @@ export const DIRECT_EXEC_DIMENSION_KEYS = [
   { key: 'appName', label: '应用 (F-xxxx)' },
   { key: 'productLine', label: '产品线 (xxxx产品线)' },
   { key: 'itemNo', label: '需求项 (Ixxxx)' },
+  { key: 'subItemNo', label: '需求子条目 (Sxxxxxx)' },
   { key: 'perName', label: '人' },
 ] as const;

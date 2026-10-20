@@ -21,11 +21,11 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/** 维度键字典仓储: 首建 seed 内置 8 键 / aliases JSON round-trip / TTL 快照 / 内置键保护。 */
+/** 维度键字典仓储: 首建 seed 内置 9 键 / 存量表补种新内置键 / aliases JSON round-trip / TTL 快照 / 内置键保护。 */
 class DimensionKeyConfigRepositoryTest {
 
     @Test
-    void freshTableSeedsEightBuiltinKeys() throws Exception {
+    void freshTableSeedsNineBuiltinKeys() throws Exception {
         DataSource dataSource = mock(DataSource.class);
         Connection connection = mock(Connection.class);
         Statement statement = mock(Statement.class);
@@ -47,18 +47,21 @@ class DimensionKeyConfigRepositoryTest {
         // execute 调了两次: 探测判存 + 建表 DDL
         verify(statement, times(2)).execute(ddl.capture());
         assertTrue(ddl.getAllValues().get(1).contains("CREATE TABLE IF NOT EXISTS dimension_key_config"));
-        verify(seedPs, times(8)).addBatch();
+        verify(seedPs, times(9)).addBatch();
         ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
-        // setString(1, ...) 共 10 次: 8 个内置键 seed + timeRange 保留键存在性探测 + 补种 INSERT
-        verify(seedPs, times(10)).setString(org.mockito.ArgumentMatchers.eq(1), key.capture());
+        // setString(1, ...) 共 14 次: 9 内置键 seed + timeRange 探测 + 补种 INSERT
+        // + 白名单内置键 (versionPlan/vestQuarter/deptName) 词表 seed 探测
+        verify(seedPs, times(14)).setString(org.mockito.ArgumentMatchers.eq(1), key.capture());
         assertTrue(key.getAllValues().contains("versionPlan"));
+        assertTrue(key.getAllValues().contains("subItemNo"));
+        assertTrue(key.getAllValues().contains("deptName"));
         assertTrue(key.getAllValues().contains("perName"));
         assertFalse(key.getAllValues().contains("qGate")); // qGate 是用户新增键, 不在 seed 里
         assertTrue(key.getAllValues().contains("timeRange")); // timeRange 保留键补种
     }
 
     @Test
-    void existingTableWithoutTimeRangeRowGetsReservedSeed() throws Exception {
+    void existingTableBackfillsMissingBuiltinKeys() throws Exception {
         DataSource dataSource = mock(DataSource.class);
         Connection connection = mock(Connection.class);
         Statement statement = mock(Statement.class);
@@ -66,41 +69,62 @@ class DimensionKeyConfigRepositoryTest {
         ResultSet rs = mock(ResultSet.class);
         when(dataSource.getConnection()).thenReturn(connection);
         when(connection.createStatement()).thenReturn(statement);
-        // 探测查询正常返回 = 表已存在 (存量表), 不走建表/内置键 seed
+        // 探测查询正常返回 = 表已存在 (存量表), 不走建表/内置键 seed, 走存在性补种
         when(statement.execute(org.mockito.ArgumentMatchers.startsWith("SELECT 1"))).thenReturn(true);
         when(connection.prepareStatement(anyString())).thenReturn(ps);
         when(ps.executeQuery()).thenReturn(rs);
-        when(rs.next()).thenReturn(false); // 无 timeRange 行 → 补种
+        when(rs.next()).thenReturn(false); // SELECT key 探测无行 + 无 timeRange 行
 
         new DimensionKeyConfigRepository(dataSource, new ObjectMapper(), 0L).findAllForAdmin();
 
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
-        verify(ps, times(2)).setString(org.mockito.ArgumentMatchers.eq(1), sql.capture());
-        assertEquals("timeRange", sql.getAllValues().get(1));
+        // 14 次 setString(1): 9 内置键补种 INSERT (存量表全缺) + timeRange 探测 + 补种 INSERT
+        // + 3 个白名单内置键词表探测 (探测 rs.next()=false → 行不存在跳过)
+        verify(ps, times(14)).setString(org.mockito.ArgumentMatchers.eq(1), sql.capture());
+        assertEquals("versionPlan", sql.getAllValues().get(0));
+        assertEquals("subItemNo", sql.getAllValues().get(7));
+        assertEquals("perName", sql.getAllValues().get(8));
+        assertEquals("timeRange", sql.getAllValues().get(9));
+        assertTrue(sql.getAllValues().contains("deptName"));
         verify(ps).setString(org.mockito.ArgumentMatchers.eq(3),
                 org.mockito.ArgumentMatchers.contains("THIS_WEEK"));
         verify(ps, org.mockito.Mockito.never()).addBatch(); // 内置键 seed 不重跑
     }
 
     @Test
-    void existingTableWithSoftDeletedTimeRangeRowDoesNotReseed() throws Exception {
+    void existingTableWithAllBuiltinKeysDoesNotBackfill() throws Exception {
         DataSource dataSource = mock(DataSource.class);
         Connection connection = mock(Connection.class);
         Statement statement = mock(Statement.class);
-        PreparedStatement ps = mock(PreparedStatement.class);
-        ResultSet rs = mock(ResultSet.class);
         when(dataSource.getConnection()).thenReturn(connection);
         when(connection.createStatement()).thenReturn(statement);
         when(statement.execute(org.mockito.ArgumentMatchers.startsWith("SELECT 1"))).thenReturn(true);
-        when(connection.prepareStatement(anyString())).thenReturn(ps);
-        when(ps.executeQuery()).thenReturn(rs);
-        // 第1次: ensureReservedRow 存在性探测 (true = 软删行存在不复活); 第2/3次: findAllForAdmin 读到1行后结束
-        when(rs.next()).thenReturn(true, true, false);
+
+        // SELECT key 探测: 9 个内置键全存在 → 不补种 (读到 9 行后 false 结束)
+        PreparedStatement keyPs = mock(PreparedStatement.class);
+        ResultSet keyRs = mock(ResultSet.class);
+        when(keyPs.executeQuery()).thenReturn(keyRs);
+        when(keyRs.next()).thenReturn(true, true, true, true, true, true, true, true, true, false);
+        when(keyRs.getString(1)).thenReturn("versionPlan", "vestQuarter", "deptName",
+                "groupName", "appName", "productLine", "itemNo", "subItemNo", "perName");
+
+        // SELECT aliases 探测: timeRange 软删行存在不复活 + 3 个白名单键词表非空不覆盖
+        PreparedStatement aliasPs = mock(PreparedStatement.class);
+        ResultSet aliasRs = mock(ResultSet.class);
+        when(aliasPs.executeQuery()).thenReturn(aliasRs);
+        when(aliasRs.next()).thenReturn(true, true, true, true, false);
+        when(aliasRs.getString(1)).thenReturn("[{\"alias\":\"x\",\"value\":\"y\"}]");
+
+        when(connection.prepareStatement(org.mockito.ArgumentMatchers.anyString()))
+                .thenAnswer(inv -> inv.getArgument(0, String.class).contains("SELECT key")
+                        ? keyPs : aliasPs);
 
         new DimensionKeyConfigRepository(dataSource, new ObjectMapper(), 0L).findAllForAdmin();
 
-        verify(ps, org.mockito.Mockito.never()).executeUpdate();
-        verify(ps, org.mockito.Mockito.never()).addBatch();
+        verify(keyPs, org.mockito.Mockito.never()).executeUpdate();
+        verify(aliasPs, org.mockito.Mockito.never()).executeUpdate();
+        verify(keyPs, org.mockito.Mockito.never()).addBatch();
+        verify(aliasPs, org.mockito.Mockito.never()).addBatch();
     }
 
     @Test

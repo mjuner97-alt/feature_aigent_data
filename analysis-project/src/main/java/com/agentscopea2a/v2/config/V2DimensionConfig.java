@@ -62,8 +62,14 @@ public class V2DimensionConfig {
     public DimensionStateManager dimensionStateManager(
             LlmDimensionService llmService,
             AliasResolver aliasResolver,
-            ObjectProvider<ToolRoutingCatalogService> catalogProvider) {
+            ObjectProvider<ToolRoutingCatalogService> catalogProvider,
+            org.springframework.beans.factory.ObjectProvider<com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository> dimensionKeyRepoProvider) {
         // §13.4 组名修剪指标词表：目录 bean 缺失或快照失败时降级为空表（只修剪虚词）
+        // 口语值方案 §3.2：内置白名单键词表合并供给器（字典缺失/读失败 → 纯正则降级）
+        java.util.function.Supplier<java.util.List<com.agentscopea2a.v2.dimension.DimensionKeyConfig>>
+                keySupplier = dimensionKeyRepoProvider.getIfAvailable() != null
+                ? dimensionKeyRepoProvider.getObject()::findAllEnabled
+                : null;
         return new DimensionStateManager(llmService, aliasResolver, () -> {
             ToolRoutingCatalogService svc = catalogProvider.getIfAvailable();
             if (svc == null) {
@@ -74,7 +80,7 @@ public class V2DimensionConfig {
             } catch (RuntimeException e) {
                 return Set.of();
             }
-        });
+        }, keySupplier);
     }
 
     /**
@@ -94,7 +100,7 @@ public class V2DimensionConfig {
     }
 
     /**
-     * 维度键字典仓储（docs/history/skill-direct-exec-plan.md §9.2）：内置 8 键 seed +
+     * 维度键字典仓储（docs/history/skill-direct-exec-plan.md §9.2）：内置 9 键 seed +
      * 用户新增键的词表提取配置；TTL 快照同 dimension_alias 模式。
      */
     @Bean
@@ -110,5 +116,33 @@ public class V2DimensionConfig {
             DimensionStateManager dimensionStateManager,
             @Value("${harness.a2a.dimension.max-chars:2000}") int maxChars) {
         return new DimensionStateMiddleware(dimensionStateManager, maxChars);
+    }
+
+    /**
+     * 火车日历快照查询（口语值方案 §3.3）：gauss-common 数据源同 VersionPlanKnowledgeHook，
+     * TTL 30 分钟（版本切换粒度是天级）。
+     */
+    @Bean
+    public com.agentscopea2a.v2.dimension.VersionCalendarRepository versionCalendarRepository(
+            @Qualifier("gaussCommonDataSource") DataSource dataSource,
+            @Value("${harness.a2a.dimension.calendar-cache-ttl-seconds:1800}") long cacheTtlSeconds) {
+        return new com.agentscopea2a.v2.dimension.VersionCalendarRepository(
+                new org.springframework.jdbc.core.JdbcTemplate(dataSource), cacheTtlSeconds);
+    }
+
+    /**
+     * 版本/季度锚点解析（口语值方案 §3.3）：在建版本查询复用 VersionPlanKnowledgeHook
+     * 的 TTL 缓存（hook 缺失时锚点 THIS_V/THIS_Q 降级为空 → 参数不传回退 LLM）。
+     */
+    @Bean
+    public com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver versionPlanAnchorResolver(
+            com.agentscopea2a.v2.dimension.VersionCalendarRepository versionCalendarRepository,
+            ObjectProvider<com.agentscopea2a.v2.hooks.VersionPlanKnowledgeHook> hookProvider) {
+        return new com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver(
+                versionCalendarRepository,
+                () -> {
+                    com.agentscopea2a.v2.hooks.VersionPlanKnowledgeHook hook = hookProvider.getIfAvailable();
+                    return hook == null ? java.util.List.of() : hook.currentVersions();
+                });
     }
 }

@@ -30,7 +30,7 @@ const level2Text = ref('');
 const level3Text = ref('');
 // 直接执行配置: script_id + param_mapping (key=脚本参数名, value=维度键)
 const paramMappingRows = ref<{ param: string; dimKey: string }[]>([]);
-// 参数映射维度键下拉: 动态加载维度键字典 (内置 8 键 + 用户新增键), 失败回退静态枚举
+// 参数映射维度键下拉: 动态加载维度键字典 (内置 9 键 + 用户新增键), 失败回退静态枚举
 const dimensionKeyOptions = ref(DIRECT_EXEC_DIMENSION_KEYS.map(dk => ({ key: dk.key, label: dk.label })));
 onMounted(async () => {
   try {
@@ -42,6 +42,15 @@ onMounted(async () => {
       if (keys.some(k => k.enabled && k.key === 'timeRange')) {
         options.push({ key: 'timeRange.start', label: '时间范围-开始 (timeRange.start)' });
         options.push({ key: 'timeRange.end', label: '时间范围-结束 (timeRange.end)' });
+      }
+      // versionPlan/vestQuarter 内置键同理透出 .start/.end (日历聚合窗口, 口语值方案 §3.4)
+      if (keys.some(k => k.enabled && k.key === 'versionPlan')) {
+        options.push({ key: 'versionPlan.start', label: '版本计划-开始 (versionPlan.start)' });
+        options.push({ key: 'versionPlan.end', label: '版本计划-结束 (versionPlan.end)' });
+      }
+      if (keys.some(k => k.enabled && k.key === 'vestQuarter')) {
+        options.push({ key: 'vestQuarter.start', label: '季度-开始 (vestQuarter.start)' });
+        options.push({ key: 'vestQuarter.end', label: '季度-结束 (vestQuarter.end)' });
       }
       dimensionKeyOptions.value = options;
     }

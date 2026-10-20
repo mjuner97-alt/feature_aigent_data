@@ -9,9 +9,9 @@
 
 维度键分两类，**提取路径完全不同**，新需求先确认改哪条轨：
 
-| | 内置 8 键 | 动态键（用户新增） |
+| | 内置 9 键 | 动态键（用户新增） |
 |---|---|---|
-| 键名 | versionPlan / vestQuarter / deptName / groupName / appName / productLine / itemNo / perName | 管理页任意新增（camelCase，如 qGate） |
+| 键名 | versionPlan / vestQuarter / deptName / groupName / appName / productLine / itemNo / subItemNo / perName | 管理页任意新增（camelCase，如 qGate） |
 | 提取方式 | `DimensionStateManager` 结构化规则（正则 + AliasResolver 词表消解 + §13.4 两遍分段抽取） | 对**当前问题**做纯 contains 扫描（alias 命中 → 收集标准值） |
 | 状态归属 | 进 `DimensionState`，跨轮继承/反问/归一化全链路 | **不进 DimensionState，不跨轮继承**（§9.1 拍板） |
 | 词表 | `dimension_alias` 表（独立体系，见 dimension-alias-config-plan.md） | `dimension_key_config.aliases` JSON 列（键自带词表） |
@@ -226,3 +226,57 @@ question
 | ① | 「本周」区间 | 周一 ~ 今天 |
 | ② | ResponseCache 处理 | timeRange 命中即绕过（不读不写） |
 | ③ | 「近一周」区间 | today-6 ~ today（含今天） |
+
+### 6.2 时间维度口语值补齐（2026-10-19 设计并实施，E2E 待内网）
+
+> 详见 `docs/202610/time-dimension-plan.md`。不改 §4 任何拍板，全部在 timeRange
+> 保留键既有骨架内扩展：L1 正则新增（截至X日/同月省略区间/T-X/R-X/未来X周/近X周）、
+> 锚点 DSL 追加（TODAY/UNTIL/NEXT/LAST:{n}w + 里程碑透传型：交付周至投产周/投产周/T-{n}/R-{n}，
+> 裸键原样透传不解析日期）、歧义反问（近X周方向、投产前二选一，复用缺参反问 pending 基建）。
+> 6 项拍板已定（2026-10-19，该文 §7）：**本周/上周改滚动口径**（本周=today-6~today、
+> 上周=today-13~today-7，推翻本底稿 §6.1.9 拍板①）、下周=未来1周（NEXT:1w，无独立锚点）、
+> 未来X周含今天、截至X日必须带月、歧义真反问、交付后归并交付周至投产周。
+
+### 6.3 需求子条目维度 `subItemNo`（2026-10-20 设计并实施，E2E 待内网）
+
+> 不推翻 §4 拍板，内置键 8→9。需求项编号定为 `I+8位日期数字-4位数字`（如 I20260827-0288，
+> 既有正则未变）；需求子条目编号为 `S+8位日期数字-6位数字`（如 S20250926-000741），
+> **独立建模**不复用 itemNo：
+>
+> - `DimensionState.PeerDimensionType` 新增 `SUB_REQUIREMENT`；`QuestionAnalysis.ReferenceType`
+>   新增 `SUB_REQUIREMENT`（指代词「这个/那个需求子条目」同步支持），level 映射仍归 PEER。
+> - 提取：`DimensionStateManager` 新增 `EXPLICIT_SUB_REQUIREMENT = S\d{8}-\d{6}`，
+>   与 I 编号同优先级链（REQUIREMENT 先命中）；§13.4 span 屏蔽同步覆盖。
+> - 键贯通：`DirectSkillExecutor.DIMENSION_KEYS`/`DimensionExtraction.subItemNo`/
+>   `valuesFor` case、`DimensionKeyConfigRepository` 内置键 seed、
+>   `DimensionStateMiddleware`/`assembleQuestion`/`dimensionLabel` label 三处。
+> - 知识注入：`DimensionPrompts` 五选一、KNOWLEDGE.md 需求子条目标准格式、
+>   data_primitives SKILL.md 维度举例。
+> - 已知限制：PeerDimension 单槽位，I/S 编号同句时 I 优先（先命中先占槽）；
+>   S 编号入 `dimension_alias` 词表不在本期范围（alias 命中仍会压制编号正则兜底，语义不变）。
+> - 测试：`DimensionStateManagerAliasIntegrationTest` +3（S 编号抽取/I 优先/指代词），
+>   `DirectSkillExecutorTest` 键计数 12→13/13→14/15→16 两处；117 相关单测全绿（2026-10-20）。
+
+> **2026-10-20 补充（页面/参数映射可见性修复）**：存量 `dimension_key_config` 表因 seed
+> 只在建表时执行，新增内置键 `subItemNo` 不会出现在维度键字典页与 Skill 参数映射下拉
+> （两页均 API 驱动）。修复：`DimensionKeyConfigRepository.ensureTable` 对存量表新增
+> `ensureBuiltinKeyRows` 存在性补种（无行才插，软删不复活，同 timeRange 拍板语义），
+> 重启后自动补出行；前端 `skillRouting.ts` 静态 fallback 清单同步加 subItemNo
+> （Vue 已重新 build 落 static/）。
+
+### 6.4 动态键正则捕获词表（2026-10-20 设计并实施）
+
+> 场景：数值型口语条件「跨部门流转次数>3」要取**数字本身**作脚本参数——contains 词表
+> 只能映射固定标准值，捕获不了变化量。拍板：**value 含 `$1`~`$9` 即正则捕获模板**，
+> alias 按正则匹配、命中后捕获组替换 `$n` 产出维度值；不含 `$n` 的行维持 contains
+> 语义，存量配置零影响。
+>
+> - 提取：`DirectSkillExecutor.extractExtraDimensions` → `AliasRegexSupport.extract`
+>   （find 循环多命中去重保序、零宽命中终止、编译失败/组缺失跳过不抛）。
+> - 校验：`DimensionKeyController.validateAnchorsIfNeeded` 前置通用段——正则行必须
+>   可编译且引用组号 ≤ groupCount，否则 400。
+> - 配置示例（transferTimes 键）：alias `流转次数\s*>\s*(\d+(?:\.\d+)?)`，value `$1`，
+>   param_mapping `threshold → transferTimes`；「流转次数>3」→ params.threshold="3"。
+> - 测试：`AliasRegexSupportTest` 9 例（模板识别/替换/去重/可选组 null 跳过/零宽终止/
+>   校验）+ DirectSkillExecutor 2 例端到端（命中填参 / 未命中回退 LLM）。
+> - 前端：词表编辑器加正则捕获提示（DimensionKeyPage.vue），已 build 落 static/。

@@ -133,6 +133,7 @@ public class DimensionStateMiddleware implements MiddlewareBase {
                     case APPLICATION -> "应用";
                     case PRODUCT_LINE -> "产品线";
                     case REQUIREMENT -> "需求项";
+                    case SUB_REQUIREMENT -> "需求子条目";
                 };
                 seen.add("- 口语词「" + hit.alias() + "」→ " + label + "维度：" + hit.standardName());
             }
@@ -156,6 +157,7 @@ public class DimensionStateMiddleware implements MiddlewareBase {
                 case APPLICATION -> "应用";
                 case PRODUCT_LINE -> "产品线";
                 case REQUIREMENT -> "需求项";
+                case SUB_REQUIREMENT -> "需求子条目";
             };
             sb.append(label).append("：")
                     .append(String.join("、", state.getPeerDimension().getValues()))

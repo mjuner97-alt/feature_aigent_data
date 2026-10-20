@@ -171,6 +171,7 @@ public class V2SkillConfig {
             ObjectProvider<VersionPlanKnowledgeHook> versionPlanHookProvider,
             ObjectProvider<com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository> dimensionKeyRepoProvider,
             ObjectProvider<SkillBypassKeywordService> bypassKeywordServiceProvider,
+            ObjectProvider<com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver> anchorResolverProvider,
             com.fasterxml.jackson.databind.ObjectMapper objectMapper,
             SkillKeywordPriorityRepository skillKeywordPriorityRepository,
             @Value("${harness.a2a.skill-context.max-visible-skills:5}") int maxVisibleSkills,
@@ -188,6 +189,7 @@ public class V2SkillConfig {
                 versionPlanHookProvider,
                 dimensionKeyRepoProvider,
                 bypassKeywordServiceProvider,
+                anchorResolverProvider,
                 objectMapper,
                 enabled);
     }

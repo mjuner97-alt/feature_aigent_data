@@ -80,6 +80,29 @@ class DimensionStateManagerAliasIntegrationTest {
     }
 
     @Test
+    void subRequirementItemNoExtractedAsSubRequirement() {
+        // S 编号（S+8位日期-6位数字）独立成 SUB_REQUIREMENT，不复用 REQUIREMENT
+        PeerDimension peer = extractPeer("S20250926-000741 的进展怎么样");
+        assertEquals(PeerDimensionType.SUB_REQUIREMENT, peer.getType());
+        assertEquals(java.util.List.of("S20250926-000741"), peer.getValues());
+    }
+
+    @Test
+    void requirementNumberWinsOverSubRequirementWhenCoPresent() {
+        // I/S 编号同句时按既有顺序 REQUIREMENT 先命中
+        PeerDimension peer = extractPeer("I20260208-0005 下的 S20250926-000741 进展");
+        assertEquals(PeerDimensionType.REQUIREMENT, peer.getType());
+        assertEquals(java.util.List.of("I20260208-0005"), peer.getValues());
+    }
+
+    @Test
+    void subRequirementReferenceWordDetected() {
+        // "这个需求子条目" 指代词独立识别，不误判为 REQUIREMENT
+        QuestionAnalysis analysis = manager.analyzeQuestionRuleBased("这个需求子条目的缺陷分布");
+        assertEquals(QuestionAnalysis.ReferenceType.SUB_REQUIREMENT, analysis.getReferenceType());
+    }
+
+    @Test
     void aliasHitSuppressedRequirementRegex() {
         // alias 命中后需求项正则不再兜底（peer 已由 alias 决定）
         PeerDimension peer = extractPeer("军队关于I20260208-0005的缺陷");

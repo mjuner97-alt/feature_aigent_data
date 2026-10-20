@@ -111,23 +111,28 @@ public class SkillRoutingMetadataAdminService {
 
     /**
      * Skill 直接执行的脚本参数 → 维度键映射: key = 脚本参数名 (原样透传), value 必须 ∈
-     * 合法维度键全集 (内置 8 键 ∪ dimension_key_config 启用键, §9 动态化; timeRange
-     * 追加 .start/.end 后缀形态, §6.1.6)。配错在保存期拒绝。
+     * 合法维度键全集 (内置 9 键 ∪ dimension_key_config 启用键, §9 动态化; timeRange 与
+     * versionPlan/vestQuarter 追加 .start/.end 后缀形态, §6.1.6/口语值 §3.4)。配错在保存期拒绝。
      */
     private String serializeParamMapping(Map<String, String> paramMapping) {
         if (paramMapping == null || paramMapping.isEmpty()) {
             return null;
         }
-        java.util.LinkedHashSet<String> validKeys = new java.util.LinkedHashSet<>(DirectSkillExecutor.DIMENSION_KEYS);
+        java.util.LinkedHashSet<String> baseKeys = new java.util.LinkedHashSet<>(DirectSkillExecutor.DIMENSION_KEYS);
         try {
             com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository repo = dimensionKeyRepoProvider.getIfAvailable();
             if (repo != null) {
-                repo.findAllEnabled().forEach(k -> validKeys.add(k.key()));
-                com.agentscopea2a.v2.dimension.TimeRangeResolver.expandKeys(validKeys);
+                repo.findAllEnabled().forEach(k -> baseKeys.add(k.key()));
             }
         } catch (RuntimeException e) {
             // 字典读失败不拦保存, 退化为仅内置键校验 (与直接执行提取的快照兜底同语义)
         }
+        // 后缀形态展开须在字典键并入之后 (timeRange 来自字典); versionPlan/vestQuarter 是
+        // 内置键, 其 .start/.end 运行时无条件可用 (activeKeys 同源)。
+        // expandKeys 返回新集合 (不原地改), 须链式接返回值
+        java.util.Set<String> validKeys =
+                com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver.expandKeys(
+                        com.agentscopea2a.v2.dimension.TimeRangeResolver.expandKeys(baseKeys));
         java.util.LinkedHashMap<String, String> cleaned = new java.util.LinkedHashMap<>();
         for (var entry : paramMapping.entrySet()) {
             String key = entry.getKey() == null ? "" : entry.getKey().trim();

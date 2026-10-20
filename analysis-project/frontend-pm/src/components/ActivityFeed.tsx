@@ -87,12 +87,14 @@ const ActivityRow = React.memo(function ActivityRow({ evt }: { evt: ProcessEvent
   const hasInput = evt.toolInput != null && evt.toolInput.length > 0;
   const hasOutput = evt.toolOutput != null && evt.toolOutput.length > 0;
   const showCollapsible = hasInput || hasOutput;
+  const isDimensionExtract = evt.eventType === 'dimension_extract';
 
   return (
     <div style={{
       ...S.row,
       ...(isSubagent ? S.rowSubagent : {}),
       ...(isFailure ? S.rowFailure : {}),
+      ...(isDimensionExtract ? S.rowDimension : {}),
       flexDirection: 'column',
       alignItems: 'stretch',
     }}>
@@ -106,7 +108,13 @@ const ActivityRow = React.memo(function ActivityRow({ evt }: { evt: ProcessEvent
           {evt.message}
         </span>
       </div>
-      {showCollapsible && (
+      {isDimensionExtract && evt.toolInput != null && evt.toolInput.length > 0 && (
+        <details style={S.ioDetails} open>
+          <summary style={S.ioSummary}>🔍 维度解析参数</summary>
+          <pre style={S.ioPre}>{evt.toolInput}</pre>
+        </details>
+      )}
+      {!isDimensionExtract && showCollapsible && (
         <ToolIODetail input={evt.toolInput} output={evt.toolOutput} />
       )}
     </div>
@@ -215,6 +223,10 @@ const S: Record<string, React.CSSProperties> = {
   rowFailure: {
     background: '#fef2f2',
     border: '1px solid #fecaca',
+  },
+  rowDimension: {
+    background: '#f0fdf4',
+    border: '1px solid #bbf7d0',
   },
   ts: {
     color: '#94a3b8',
