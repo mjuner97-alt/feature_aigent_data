@@ -140,7 +140,9 @@ public class HarnessAgentPartsConfig {
             ObjectProvider<VersionPlanKnowledgeHook> versionPlanKnowledgeHookProvider,
             ObjectProvider<ArithMentalMathDetectorHook> arithMentalMathDetectorProvider,
             ObjectProvider<VerificationHook> verificationHookProvider,
-            ObjectProvider<AiChatRestToolCallTrackingToDbHook> traceCollectorHookProvider) {
+            ObjectProvider<AiChatRestToolCallTrackingToDbHook> traceCollectorHookProvider,
+            ObjectProvider<com.agentscopea2a.v2.hooks.LastDirectExecContextHook>
+                    lastDirectExecContextHookProvider) {
         List<Hook> hooks = new ArrayList<>(10);
         ArtifactHandoffHook handoff = artifactHandoffHookProvider.getIfAvailable();
         if (handoff != null) {
@@ -203,6 +205,12 @@ public class HarnessAgentPartsConfig {
         if (versionPlan != null) {
             hooks.add(versionPlan);
             log.info("HarnessAgentPartsConfig: VersionPlanKnowledgeHook wired (priority=-45)");
+        }
+        com.agentscopea2a.v2.hooks.LastDirectExecContextHook lastDirectExec =
+                lastDirectExecContextHookProvider.getIfAvailable();
+        if (lastDirectExec != null) {
+            hooks.add(lastDirectExec);
+            log.info("HarnessAgentPartsConfig: LastDirectExecContextHook wired (priority=-44)");
         }
         ArithMentalMathDetectorHook arithDetector = arithMentalMathDetectorProvider.getIfAvailable();
         if (arithDetector != null) {

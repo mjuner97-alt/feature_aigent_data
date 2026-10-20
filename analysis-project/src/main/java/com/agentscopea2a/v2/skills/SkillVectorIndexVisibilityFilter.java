@@ -60,12 +60,14 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
     private final SkillUsageResolver skillUsageResolver;
     /** 检索旁路判定（§8.3 拍板①）；null = 功能关闭。 */
     private final SkillBypassKeywordService bypassKeywordService;
+    /** 上次直接执行快照源（followup 方案 §3.2 目录补给）；null = 功能关闭。 */
+    private final DirectSkillExecutor lastExecSource;
 
     public SkillVectorIndexVisibilityFilter(
             SkillRoutingMetadataRepository routingMetadataRepository,
             SkillCandidateSelector candidateSelector,
             boolean enabled) {
-        this(routingMetadataRepository, candidateSelector, enabled, null, null);
+        this(routingMetadataRepository, candidateSelector, enabled, null, null, null);
     }
 
     public SkillVectorIndexVisibilityFilter(
@@ -73,7 +75,7 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
             SkillCandidateSelector candidateSelector,
             boolean enabled,
             SkillUsageResolver skillUsageResolver) {
-        this(routingMetadataRepository, candidateSelector, enabled, skillUsageResolver, null);
+        this(routingMetadataRepository, candidateSelector, enabled, skillUsageResolver, null, null);
     }
 
     public SkillVectorIndexVisibilityFilter(
@@ -82,11 +84,23 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
             boolean enabled,
             SkillUsageResolver skillUsageResolver,
             SkillBypassKeywordService bypassKeywordService) {
+        this(routingMetadataRepository, candidateSelector, enabled, skillUsageResolver,
+                bypassKeywordService, null);
+    }
+
+    public SkillVectorIndexVisibilityFilter(
+            SkillRoutingMetadataRepository routingMetadataRepository,
+            SkillCandidateSelector candidateSelector,
+            boolean enabled,
+            SkillUsageResolver skillUsageResolver,
+            SkillBypassKeywordService bypassKeywordService,
+            DirectSkillExecutor lastExecSource) {
         this.routingMetadataRepository = routingMetadataRepository;
         this.candidateSelector = candidateSelector;
         this.enabled = enabled;
         this.skillUsageResolver = skillUsageResolver;
         this.bypassKeywordService = bypassKeywordService;
+        this.lastExecSource = lastExecSource;
     }
 
     @Override
@@ -153,6 +167,20 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
         for (AgentSkill skill : all) {
             if (!configuredNames.contains(skill.getName())) {
                 result.add(skill);
+            }
+        }
+        // 追问轮目录补给 (docs/202610/skill-direct-exec-followup-plan.md §3.2): 上一轮直接
+        // 执行的快照 skill 并入候选集, 追问轮 (selector 空) 目录不再为空, LLM 有 load_skill 可走。
+        // 旁路轮不受影响 (前置 return List.of() 已短路); 去留由 LLM 判断。
+        if (lastExecSource != null) {
+            DirectSkillExecutor.LastDirectExec last =
+                    lastExecSource.lastExec(ctx.getUserId(), ctx.getSessionId());
+            if (last != null) {
+                AgentSkill snapshotSkill = byName.get(last.skillName());
+                if (snapshotSkill != null
+                        && result.stream().noneMatch(s -> s.getName().equals(last.skillName()))) {
+                    result.add(snapshotSkill);
+                }
             }
         }
         // 纯关键词语义: 配置了路由行的 skill 若无关键词命中 (且未被显式点名) 则不可见,

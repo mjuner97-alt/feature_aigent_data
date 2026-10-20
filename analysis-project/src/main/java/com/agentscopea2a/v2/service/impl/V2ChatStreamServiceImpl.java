@@ -597,6 +597,10 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
             }
             if (execution.success()) {
                 success.set(true);
+                // 快照回填 stdout 摘要 (followup 方案 §3.1): 追问轮 hint 块的 result 数据源
+                if (directSkillExecutor != null) {
+                    directSkillExecutor.recordResult(ctx.userId, ctx.conversationId, stdout);
+                }
                 ctx.answerContent.append(stdout);
                 strategy.sendText(ctx, TextPayload.chunk(stdout, true));
             } else {
