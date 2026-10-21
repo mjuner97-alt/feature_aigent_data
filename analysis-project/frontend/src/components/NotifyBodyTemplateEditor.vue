@@ -43,10 +43,10 @@ const hint = computed(() => !props.modelValue.trim()
 
 <template>
   <section class="notify-body-config">
-    <h4>通知邮件正文（非必填）</h4>
+    <h4>通知邮件正文</h4>
     <p>可用占位符 <code>{链接}</code>，发送时替换为报告下载链接。保留空格和换行，Tab 插入缩进，Shift+Tab 移出输入框。</p>
     <div><button type="button" :disabled="disabled" @click="insert(placeholder)">插入链接占位符</button></div>
-    <textarea ref="input" v-model="body" :disabled="disabled" aria-label="通知邮件正文模板" rows="5" placeholder="非必填，留空时使用后台原有的通知邮件拼接模板。" @keydown="keydown"></textarea>
+    <textarea ref="input" v-model="body" :disabled="disabled" aria-label="通知邮件正文模板" rows="5" placeholder="请输入通知邮件正文，可使用 {链接} 插入报告链接。" @keydown="keydown"></textarea>
     <small>{{ hint }}</small>
     <div v-if="preview" class="body-template-preview" aria-label="邮件正文预览">
       <span>邮件预览</span><p v-html="preview"></p>

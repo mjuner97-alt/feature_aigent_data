@@ -6,6 +6,7 @@ import com.agentscopea2a.v2.skillManager.entity.*;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.skillManager.notification.NotificationPayload;
 import com.agentscopea2a.v2.skillManager.notification.NotificationReceivers;
+import com.agentscopea2a.v2.skillManager.notification.NotificationContact;
 import com.agentscopea2a.v2.skillManager.notification.NotificationSender;
 import com.agentscopea2a.v2.skillManager.notification.NotifyBodyTemplate;
 import com.agentscopea2a.v2.skillManager.notification.FlowNotificationDispatcher;
@@ -266,11 +267,31 @@ public class FlowCompletionService {
         String filePath = resolveReportPath(execution);
         log.info("Long task notification requested: executionId={}, recipients={}, reportPath={}",
                 execution.getId(), receivers, execution.getReportPath());
+        String contactName = execution.getNotifyContactNameSnapshot();
+        String contactPhone = execution.getNotifyContactPhoneSnapshot();
+        String creatorId = null;
+        if (execution.getFlowId() != null) {
+            SkillFlow flow = mapper.selectFlowById(execution.getFlowId());
+            creatorId = flow == null ? null : flow.getCreatedBy();
+        }
+        // 新执行记录为空，历史记录可能保存过创建人 ID；两种情况都必须解析成真实姓名。
+        if (!NotificationContact.hasCustom(contactName, contactPhone)
+                && (NotificationContact.trimToNull(contactName) == null
+                || (creatorId != null && creatorId.equals(contactName)))) {
+            if (creatorId == null) creatorId = execution.getTriggerUserId();
+            if (NotificationContact.trimToNull(creatorId) != null) {
+                // 只有解析出真实姓名才作为联系人;解析失败保持为空,由发送端走配置表兜底,绝不展示数字 ID。
+                String creatorName = orgService.getUserNameMap(List.of(creatorId)).get(creatorId);
+                if (NotificationContact.trimToNull(creatorName) != null) {
+                    contactName = creatorName;
+                }
+            }
+        }
         notificationDispatcher.enqueue(record, new NotificationPayload("HTML", notificationHtml(execution, notifyBodyTemplate),
                 filePath, reportFileName(execution),
                 reportUrl(execution), execution.getFlowId(), FlowReportNaming.datedTitle(execution.getFlowName(), execution), null, null,
                 execution.getId(), execution.getStatus().name(), LocalDateTime.now(clock),
-                receivers, "FLOW", ccReceivers, execution.getNotifyContactNameSnapshot(), execution.getNotifyContactPhoneSnapshot()));
+                receivers, "FLOW", ccReceivers, contactName, contactPhone));
     }
 
     /**

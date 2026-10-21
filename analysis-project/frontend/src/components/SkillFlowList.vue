@@ -142,7 +142,7 @@ watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.v
             <td class="col-owner">{{ flow.createdBy || '-' }}</td>
             <td class="col-time">{{ formatTime(flow.createdAt) }}</td>
             <td class="col-actions">
-              <button v-if="canRun(flow)" class="btn-action trigger" :disabled="!flow.enabled" @click="run(flow)">执行</button>
+              <button v-if="canRun(flow) && flow.enabled" class="btn-action trigger" @click="run(flow)">执行</button>
               <button class="btn-action" @click="viewRecords(flow)">记录</button>
               <button class="btn-action" @click="copy(flow.id)">复制</button>
               <template v-if="isOwner(flow)">
