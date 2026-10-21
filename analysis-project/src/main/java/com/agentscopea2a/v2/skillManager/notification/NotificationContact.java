@@ -24,9 +24,14 @@ public final class NotificationContact {
 
     /** Choose exactly one contact block and append before body end, if present. */
     public static String append(String content, String name, String phone, String defaultHtml) {
-        String contact = hasCustom(name, phone)
-                ? "<p>联系人：" + escape(name.trim()) + "<br>联系电话：" + escape(phone.trim()) + "</p>"
-                : (defaultHtml == null ? "" : defaultHtml);
+        String contact;
+        if (hasCustom(name, phone)) {
+            contact = "<p>联系人：" + escape(name.trim()) + "<br>联系方式：" + escape(phone.trim()) + "</p>";
+        } else if (trimToNull(name) != null) {
+            contact = "<p>联系人：" + escape(name.trim()) + "</p>";
+        } else {
+            contact = defaultHtml == null ? "" : defaultHtml;
+        }
         String html = String.valueOf(content);
         if (contact.isBlank()) return html;
         int bodyEnd = html.toLowerCase(Locale.ROOT).lastIndexOf("</body>");

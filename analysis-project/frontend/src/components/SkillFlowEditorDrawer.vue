@@ -611,7 +611,10 @@ async function load() {
       wasPublic.value = !isCopy.value && flow.chatPublic === true;
       originalKeywords.value = (flow.triggers || []).map(trigger => trigger.keyword.trim().toLowerCase()).filter(Boolean);
       form.value = normalizeFlow(cloneFlowValue(flow));
-      if (!form.value.notifyContactName?.trim()) form.value.notifyContactName = flow.createdBy || '';
+      if (!form.value.notifyContactName?.trim() && flow.createdBy) {
+        const ownerNames = await batchUserNames([flow.createdBy]);
+        form.value.notifyContactName = ownerNames?.[flow.createdBy] || '';
+      }
       if (!isCopy.value) flowOwnerId.value = flow.createdBy || flowOwnerId.value;
       if (isCopy.value) {
         copySourceName.value = flow.name;

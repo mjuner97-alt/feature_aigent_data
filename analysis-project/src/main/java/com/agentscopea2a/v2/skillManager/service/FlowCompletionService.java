@@ -6,6 +6,7 @@ import com.agentscopea2a.v2.skillManager.entity.*;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.skillManager.notification.NotificationPayload;
 import com.agentscopea2a.v2.skillManager.notification.NotificationReceivers;
+import com.agentscopea2a.v2.skillManager.notification.NotificationContact;
 import com.agentscopea2a.v2.skillManager.notification.NotificationSender;
 import com.agentscopea2a.v2.skillManager.notification.NotifyBodyTemplate;
 import com.agentscopea2a.v2.skillManager.notification.FlowNotificationDispatcher;
@@ -266,11 +267,21 @@ public class FlowCompletionService {
         String filePath = resolveReportPath(execution);
         log.info("Long task notification requested: executionId={}, recipients={}, reportPath={}",
                 execution.getId(), receivers, execution.getReportPath());
+        String contactName = execution.getNotifyContactNameSnapshot();
+        String contactPhone = execution.getNotifyContactPhoneSnapshot();
+        if (!NotificationContact.hasCustom(contactName, contactPhone)
+                && NotificationContact.trimToNull(contactName) == null) {
+            SkillFlow flow = execution.getFlowId() == null ? null : mapper.selectFlowById(execution.getFlowId());
+            String creatorId = flow == null ? execution.getTriggerUserId() : flow.getCreatedBy();
+            if (NotificationContact.trimToNull(creatorId) != null) {
+                contactName = orgService.getUserNameMap(List.of(creatorId)).getOrDefault(creatorId, creatorId);
+            }
+        }
         notificationDispatcher.enqueue(record, new NotificationPayload("HTML", notificationHtml(execution, notifyBodyTemplate),
                 filePath, reportFileName(execution),
                 reportUrl(execution), execution.getFlowId(), FlowReportNaming.datedTitle(execution.getFlowName(), execution), null, null,
                 execution.getId(), execution.getStatus().name(), LocalDateTime.now(clock),
-                receivers, "FLOW", ccReceivers, execution.getNotifyContactNameSnapshot(), execution.getNotifyContactPhoneSnapshot()));
+                receivers, "FLOW", ccReceivers, contactName, contactPhone));
     }
 
     /**
