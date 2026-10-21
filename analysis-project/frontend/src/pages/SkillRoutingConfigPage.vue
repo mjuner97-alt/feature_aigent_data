@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { listSkillRouting, listSkillTags, saveSkillRouting, saveSkillTag, setSkillRoutingActive } from '../api/skillRouting';
+import { listSkillRouting, listSkillTags, saveSkillRouting, saveSkillDirectExec, saveSkillTag, setSkillRoutingActive } from '../api/skillRouting';
 import type { ToolRoutingTag } from '../types/toolRouting';
 import type { SkillRoutingInput, SkillRoutingMetadata } from '../types/skillRouting';
 import { DIRECT_EXEC_DIMENSION_KEYS } from '../types/skillRouting';
@@ -28,10 +28,14 @@ const keywordsText = ref('');
 const level1Text = ref('');
 const level2Text = ref('');
 const level3Text = ref('');
-// 直接执行配置: script_id + param_mapping (key=脚本参数名, value=维度键)
-const paramMappingRows = ref<{ param: string; dimKey: string }[]>([]);
+// 直接执行配置: 独立 tab + 弹窗 (权限=属主或管理员, 不含生产收紧; 与主配置分权)
+const directExecVisible = ref(false);
+const directExecSaving = ref(false);
+const directExecRow = ref<SkillRoutingMetadata | null>(null);
+const directExecScriptId = ref('');
+const directExecMappingRows = ref<{ param: string; dimKey: string }[]>([]);
 // 参数映射维度键下拉: 动态加载维度键字典 (内置 9 键 + 用户新增键), 失败回退静态枚举
-const dimensionKeyOptions = ref(DIRECT_EXEC_DIMENSION_KEYS.map(dk => ({ key: dk.key, label: dk.label })));
+const dimensionKeyOptions = ref<{ key: string; label: string }[]>(DIRECT_EXEC_DIMENSION_KEYS.map(dk => ({ key: dk.key, label: dk.label })));
 onMounted(async () => {
   try {
     const keys = await listDimensionKeys();
@@ -227,7 +231,6 @@ function openEdit(row: SkillRoutingMetadata) {
     scriptId: row.scriptId || null,
     paramMapping: { ...normalizeParamMapping(row.paramMapping) },
   };
-  paramMappingRows.value = Object.entries(normalizeParamMapping(row.paramMapping)).map(([param, dimKey]) => ({ param, dimKey }));
   keywordsText.value = tags(form.value.keywords);
   level1Text.value = tags(form.value.level1Keywords);
   level2Text.value = tags(form.value.level2Keywords);
@@ -284,11 +287,7 @@ async function save() {
     form.value.level1Keywords = split(level1Text.value);
     form.value.level2Keywords = split(level2Text.value);
     form.value.level3Keywords = split(level3Text.value);
-    const mapping: Record<string, string> = {};
-    for (const r of paramMappingRows.value) {
-      if (r.param.trim() && r.dimKey) mapping[r.param.trim()] = r.dimKey;
-    }
-    form.value.paramMapping = mapping;
+    // scriptId/paramMapping 保留 openEdit 读入的原值原样回传 (主接口全量 upsert, 漏传会清空直接执行配置)
     const result = await saveSkillRouting(current.value.skillName, form.value);
     const index = rows.value.findIndex(r => r.skillName === result.skillName);
     if (index >= 0) rows.value[index] = { ...rows.value[index], ...result, configured: true };
@@ -301,6 +300,33 @@ async function toggle(row: SkillRoutingMetadata) {
   const next = !row.active;
   try { const result = await setSkillRoutingActive(row.skillName, next); Object.assign(row, result); ElMessage.success(next ? '已启用' : '已停用'); }
   catch (e: any) { ElMessage.error(e.message || '操作失败'); }
+}
+// ==================== 直接执行配置 (脚本 ID + 参数映射, 属主或管理员, 不含生产收紧) ====================
+const isDirectExecEditable = (row: SkillRoutingMetadata) => isAdmin() || (!!row.creator && row.creator === currentUserId);
+function openDirectExec(row: SkillRoutingMetadata) {
+  directExecRow.value = row;
+  directExecScriptId.value = row.scriptId || '';
+  directExecMappingRows.value = Object.entries(normalizeParamMapping(row.paramMapping)).map(([param, dimKey]) => ({ param, dimKey }));
+  directExecVisible.value = true;
+}
+async function saveDirectExecConfig() {
+  if (!directExecRow.value) return;
+  directExecSaving.value = true;
+  try {
+    const mapping: Record<string, string> = {};
+    for (const r of directExecMappingRows.value) {
+      if (r.param.trim() && r.dimKey) mapping[r.param.trim()] = r.dimKey;
+    }
+    const result = await saveSkillDirectExec(directExecRow.value.skillName, {
+      scriptId: directExecScriptId.value.trim() || null,
+      paramMapping: mapping,
+    });
+    const index = rows.value.findIndex(r => r.skillName === result.skillName);
+    if (index >= 0) rows.value[index] = { ...rows.value[index], ...result, configured: true };
+    directExecVisible.value = false;
+    ElMessage.success('直接执行配置已保存');
+  } catch (e: any) { ElMessageBox.alert(e.message || '保存失败', '操作失败', { type: 'error' }); }
+  finally { directExecSaving.value = false; }
 }
 watch([keyword, activeFilter, scope], () => { currentPage.value = 1; load(); });
 load();
@@ -338,6 +364,21 @@ load();
       <el-table-column label="操作" width="150" fixed="right"><template #default="{ row }"><!-- 查看所有人可见; 配置仅本人 --><el-button size="small" @click="openView(row)">查看</el-button><el-button v-if="canEdit(row)" size="small" @click="openEdit(row)">配置</el-button></template></el-table-column>
     </el-table>
     <el-pagination v-model:current-page="currentPage" v-model:page-size="pageSize" :total="total" :page-sizes="[20,50,100]" layout="total, sizes, prev, pager, next" @current-change="changePage" @size-change="changePageSize" />
+      </el-tab-pane>
+      <!-- 直接执行配置: 所有人可见, 属主可配自己的 skill (生产环境不收紧), 管理员可配全部 -->
+      <el-tab-pane label="直接执行配置">
+        <div class="mapping-hint" style="margin-bottom: 8px">
+          配置脚本 ID 与参数映射后，问题命中该 Skill 时绕过 LLM 直接执行脚本；参数名需与脚本 params_schema 一致。
+          仅 Skill 属主与管理员可编辑。
+        </div>
+        <el-table :data="rows" v-loading="loading" stripe border size="small">
+          <el-table-column prop="skillName" label="Skill 名称" width="300" show-overflow-tooltip />
+          <el-table-column label="脚本 ID" width="200" show-overflow-tooltip><template #default="{ row }">{{ row.scriptId || '-' }}</template></el-table-column>
+          <el-table-column label="参数映射" min-width="240" show-overflow-tooltip><template #default="{ row }">{{ Object.entries(normalizeParamMapping(row.paramMapping)).map(([k, v]) => `${k}→${v}`).join(', ') || '-' }}</template></el-table-column>
+          <el-table-column prop="creator" label="创建人" width="130" show-overflow-tooltip><template #default="{ row }">{{ row.creator || '-' }}</template></el-table-column>
+          <el-table-column label="状态" width="90" align="center"><template #default="{ row }"><el-tag :type="row.active ? 'success' : 'info'" size="small">{{ row.active ? '已启用' : '已停用' }}</el-tag></template></el-table-column>
+          <el-table-column label="操作" width="150" fixed="right"><template #default="{ row }"><el-button v-if="isDirectExecEditable(row)" size="small" @click="openDirectExec(row)">配置</el-button><el-button v-else size="small" @click="openView(row)">查看</el-button></template></el-table-column>
+        </el-table>
       </el-tab-pane>
       <!-- 标签词典仅管理员可见/可新增 (数据加载保留, 配置弹窗下拉依赖词典接口) -->
       <el-tab-pane v-if="isAdmin()" label="标签词典">
@@ -426,24 +467,32 @@ load();
         <el-form-item label="二级关键词"><el-input v-model="level2Text" placeholder="在一级下钻，如 未闭环；支持正则如 未闭.{0,2}环" /></el-form-item>
         <el-form-item label="三级关键词"><el-input v-model="level3Text" placeholder="最具体一层，如 严重；支持正则" /></el-form-item>
         <el-form-item label="关键词"><el-input v-model="keywordsText" placeholder="叶层精确词，如 达标率、打分率；逗号、顿号或换行分隔，支持正则" /></el-form-item>
-        <el-form-item label="脚本 ID"><el-input v-model="form.scriptId" placeholder="script_registry 脚本 ID，留空 = 不参与直接执行" maxlength="128" /></el-form-item>
+        <el-form-item label="启用"><el-switch v-model="form.active" /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="dialogVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="save">保存</el-button></template>
+    </el-dialog>
+    <!-- 直接执行配置弹窗 (属主或管理员) -->
+    <el-dialog v-model="directExecVisible" :title="`直接执行配置: ${directExecRow?.skillName || ''}`" width="620px" destroy-on-close>
+      <el-form label-width="110px" size="small">
+        <el-form-item label="Skill 名称"><el-input :model-value="directExecRow?.skillName" disabled /></el-form-item>
+        <el-form-item label="脚本 ID"><el-input v-model="directExecScriptId" placeholder="script_registry 脚本 ID，留空 = 不参与直接执行" maxlength="128" /></el-form-item>
         <el-form-item label="参数映射">
           <div class="param-mapping">
-            <div v-for="(row, idx) in paramMappingRows" :key="idx" class="param-mapping-row">
+            <div v-for="(row, idx) in directExecMappingRows" :key="idx" class="param-mapping-row">
               <el-input v-model="row.param" placeholder="脚本参数名，如 dept" maxlength="128" style="width: 180px" />
               <span class="arrow">→</span>
               <el-select v-model="row.dimKey" placeholder="维度键" style="width: 200px">
                 <el-option v-for="dk in dimensionKeyOptions" :key="dk.key" :label="dk.label" :value="dk.key" />
               </el-select>
-              <el-button size="small" text type="danger" @click="paramMappingRows.splice(idx, 1)">删除</el-button>
+              <el-button size="small" text type="danger" @click="directExecMappingRows.splice(idx, 1)">删除</el-button>
             </div>
-            <el-button size="small" @click="paramMappingRows.push({ param: '', dimKey: '' })">+ 添加映射</el-button>
+            <el-button size="small" @click="directExecMappingRows.push({ param: '', dimKey: '' })">+ 添加映射</el-button>
             <div class="mapping-hint">配置后问题命中该 Skill 时绕过 LLM 直接执行脚本；参数名需与脚本 params_schema 一致</div>
           </div>
         </el-form-item>
-        <el-form-item label="启用"><el-switch v-model="form.active" /></el-form-item>
+        <el-form-item label="启用状态"><span>{{ directExecRow?.active ? '已启用' : '已停用' }}（启停请在 Skill 配置 tab 操作）</span></el-form-item>
       </el-form>
-      <template #footer><el-button @click="dialogVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="save">保存</el-button></template>
+      <template #footer><el-button @click="directExecVisible = false">取消</el-button><el-button type="primary" :loading="directExecSaving" @click="saveDirectExecConfig">保存</el-button></template>
     </el-dialog>
     <!-- 查看弹窗 (只读, 所有人可见) -->
     <el-dialog v-model="viewVisible" :title="`查看 Skill: ${viewRow?.skillName || ''}`" width="680px" destroy-on-close>
