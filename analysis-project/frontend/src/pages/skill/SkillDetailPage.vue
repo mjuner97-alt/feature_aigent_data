@@ -11,6 +11,7 @@
 import { ref, watch, computed, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import SkillMarkdown from '../../components/SkillMarkdown.vue';
+import Markdown from '../../components/Markdown.vue';
 import {
   getSkill,
   getLikeStatus,
@@ -216,6 +217,8 @@ const trialThinking = ref('');
 const trialAnswer = ref('');
 const trialError = ref('');
 let trialAbortCtrl: AbortController | null = null;
+// 试运行结果面板引用:试运行落库成功后触发其 load() 刷新列表
+const trialResultPanelRef = ref<InstanceType<typeof SkillTrialResultPanel> | null>(null);
 
 /** 中断当前试运行问数(同 ChatPanel 的停止逻辑)。 */
 function stopTrial() {
@@ -262,7 +265,9 @@ async function runTrial() {
     trialRunning.value = false;
     trialAbortCtrl = null;
     // 无论正常结束/出错/中断均落库(conversationId 前端必生成);失败静默,不影响结果展示
+    // 落库成功后自动刷新下方"试运行结果"列表(失败不刷新,列表内容不变)
     recordTrialRun(skill.value.id, convId, question)
+      .then(() => trialResultPanelRef.value?.load())
       .catch(() => {});
   }
 }
@@ -522,7 +527,7 @@ watch(() => route.params.id, () => {
       <div v-if="trialRunning || trialThinking || trialAnswer || trialError" class="trial-result">
         <details v-if="trialThinking" class="trial-think">
           <summary>思考过程</summary>
-          <pre>{{ trialThinking }}</pre>
+          <Markdown :text="trialThinking" theme="light" />
         </details>
         <div v-if="trialAnswer" class="trial-answer">
           <Markdown :text="trialAnswer" theme="dark" />
@@ -536,7 +541,7 @@ watch(() => route.params.id, () => {
     <!-- ============ 试运行结果(trace 耗时/token/工具明细;独立页 /skills/:id/trial-results 复用同一组件) ============ -->
     <section class="block">
       <h3 class="block-title"><span class="bar"></span>试运行结果</h3>
-      <SkillTrialResultPanel :skill-id="skill.id" :skill-updated-at="skill.updatedAt" />
+      <SkillTrialResultPanel ref="trialResultPanelRef" :skill-id="skill.id" :skill-updated-at="skill.updatedAt" />
     </section>
 
     <!-- ============ 审批详情(当前 Skill 的待审/已审记录 + 审批操作) ============ -->
@@ -864,15 +869,6 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   font-size: 13px;
 }
 .trial-think summary { cursor: pointer; color: #64748b; font-weight: 600; }
-.trial-think pre {
-  margin: 8px 0 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.6;
-  font-family: inherit;
-}
 .trial-answer { border-left: 3px solid #6366f1; padding: 4px 12px; color: #1e293b; }
 .trial-error { color: #dc2626; font-size: 13px; }
 .trial-loading { color: #64748b; font-size: 13px; }

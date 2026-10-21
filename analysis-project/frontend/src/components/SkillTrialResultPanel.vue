@@ -302,6 +302,8 @@ function shortConvId(id: string): string {
 
 onMounted(load);
 watch(() => props.skillId, load);
+// 供父组件在试运行结束落库后触发刷新(SkillDetailPage.runTrial)
+defineExpose({ load });
 </script>
 
 <template>

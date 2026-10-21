@@ -1,5 +1,5 @@
 <template>
-  <div :style="theme.root">
+  <div :style="rootStyle">
     <button v-if="hasHtmlContent" class="html-expand-button" type="button" aria-label="放大 HTML 内容" @click="expanded = true">⛶ 放大</button>
     <!-- 完整 HTML 文档(<!doctype>/<html>):iframe srcdoc 隔离渲染,自带样式与脚本不污染外层 -->
     <iframe
@@ -9,15 +9,25 @@
       sandbox="allow-scripts allow-same-origin"
       @load="onFrameLoad"
     ></iframe>
-    <!-- Markdown 或 HTML 片段:v-html 渲染,HTML 标签透传不转义 -->
-    <div v-else v-html="renderedHtml"></div>
+    <!-- Markdown/HTML 片段 + echarts 片段:分段渲染,html 片段 v-html,echarts 片段由子组件渲染图表 -->
+    <template v-else>
+      <template v-for="(seg, i) in segments" :key="i">
+        <div v-if="seg.type === 'html'" v-html="seg.html"></div>
+        <EChartsBlock v-else :option="seg.option" :theme="props.theme" />
+      </template>
+    </template>
   </div>
   <Teleport to="body">
     <div v-if="expanded" class="html-overlay" role="dialog" aria-modal="true" aria-label="放大 HTML 内容" @mousedown.self="expanded = false">
       <div class="html-modal">
         <button class="html-close-button" type="button" aria-label="关闭 HTML 放大视图" @click="expanded = false">×</button>
         <iframe v-if="isFullHtmlDoc" :srcdoc="text" class="html-doc-frame html-doc-frame-expanded" sandbox="allow-scripts allow-same-origin" @load="onFrameLoad"></iframe>
-        <div v-else class="html-fragment-expanded" v-html="renderedHtml"></div>
+        <div v-else class="html-fragment-expanded">
+          <template v-for="(seg, i) in segments" :key="i">
+            <div v-if="seg.type === 'html'" v-html="seg.html"></div>
+            <EChartsBlock v-else :option="seg.option" theme="light" />
+          </template>
+        </div>
       </div>
     </div>
   </Teleport>
@@ -25,6 +35,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
+import EChartsBlock from './EChartsBlock.vue';
 
 const props = withDefaults(defineProps<{
   text: string;
@@ -40,6 +51,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeyDown));
 // ── Theme presets ──────────────────────────────────────────────────────────
 
 const LIGHT = {
+  echartsBg: '#ffffff',
   root: { fontSize: '0.95rem', lineHeight: 1.6, color: 'inherit' },
   heading: { color: '#0f172a' },
   hr: '1px solid #e2e8f0',
@@ -61,6 +73,7 @@ const LIGHT = {
 };
 
 const DARK = {
+  echartsBg: '#0f172a',
   root: { fontSize: '0.95rem', lineHeight: 1.6, color: '#e2e8f0', background: '#0f172a', padding: '14px 16px', borderRadius: 8, border: '1px solid #1e293b', overflowX: 'auto' },
   heading: { color: '#f1f5f9' },
   hr: '1px solid #334155',
@@ -83,6 +96,9 @@ const DARK = {
 
 const theme = computed(() => props.theme === 'dark' ? DARK : LIGHT);
 
+// 根节点样式 + echarts 容器背景 CSS 变量(沿 DOM 树继承进 EChartsBlock)
+const rootStyle = computed(() => ({ ...theme.value.root, '--echarts-bg': theme.value.echartsBg }));
+
 // 完整 HTML 文档检测:先剥掉 BOM / 前导空白 / 注释 / <?xml?> 声明,再判断起点。
 // 兼容"生成工具在 <!DOCTYPE html> 前塞了注释或 xml 声明"这类内容,避免漏检掉进 v-html 被拆碎。
 const isFullHtmlDoc = computed(() => {
@@ -95,8 +111,31 @@ const isFullHtmlDoc = computed(() => {
 });
 const hasHtmlContent = computed(() => isFullHtmlDoc.value || /<\/?[a-z][^>]*>/i.test(props.text));
 
-// Markdown / HTML 片段 -> HTML(保留 HTML 标签,仅转义纯文本)
-const renderedHtml = computed(() => markdownToHtml(props.text));
+// ── echarts 片段切分 ──────────────────────────────────────────────────────
+// 4 种形态 = 闭合标签 / 流式未闭合标签(到文末) / 闭合围栏 / 流式未闭合围栏(到文末)。
+// echarts 区域在进入围栏循环/escapePreservingHtml 之前整体切出,
+// 其中的 option JSON 永不经过 HTML 转义管线,由 EChartsBlock 子组件单独渲染。
+// 模块级全局正则,使用前必须重置 lastIndex。
+const ECHARTS_RE = /<echarts>([\s\S]*?)<\/echarts>|<echarts>([\s\S]*)$|```echarts[ \t]*\n([\s\S]*?)```|```echarts[ \t]*\n([\s\S]*)$/gi;
+
+type Segment = { type: 'html'; html: string } | { type: 'echarts'; option: string };
+
+function splitSegments(md: string): Segment[] {
+  const segs: Segment[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  ECHARTS_RE.lastIndex = 0;
+  while ((m = ECHARTS_RE.exec(md)) !== null) {
+    if (m.index > last) segs.push({ type: 'html', html: renderMarkdownSegment(md.slice(last, m.index)) });
+    segs.push({ type: 'echarts', option: (m[1] ?? m[2] ?? m[3] ?? m[4] ?? '').trim() });
+    last = m.index + m[0].length;
+  }
+  if (last < md.length) segs.push({ type: 'html', html: renderMarkdownSegment(md.slice(last)) });
+  return segs;
+}
+
+// Markdown / HTML 片段 + echarts 片段列表(html 片段已转好 HTML,echarts 片段为原始 option 文本)
+const segments = computed<Segment[]>(() => splitSegments(props.text));
 
 // iframe 加载后按内容高度自适应(srcdoc 同源,可读 contentDocument)
 function onFrameLoad(e: Event) {
@@ -116,9 +155,9 @@ function onFrameLoad(e: Event) {
   setTimeout(adjust, 300);
 }
 
-// ── Markdown to HTML converter ────────────────────────────────────────────
+// ── Markdown to HTML converter(单段渲染,不含 echarts 区域) ─────────────────
 
-function markdownToHtml(md: string): string {
+function renderMarkdownSegment(md: string): string {
   const t = theme.value;
   const parts: string[] = [];
   const codeBlockRe = /```(\w*)\n([\s\S]*?)```/g;
