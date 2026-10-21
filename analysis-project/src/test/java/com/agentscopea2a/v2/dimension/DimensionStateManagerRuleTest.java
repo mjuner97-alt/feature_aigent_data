@@ -87,6 +87,15 @@ class DimensionStateManagerRuleTest {
     }
 
     @Test
+    void versionBeatsQuarterWhenBothMentioned() {
+        // 「2026年4季度11月份版本」: 版本/季度并存时版本优先 (互不换算方案 R4 的提取层前提),
+        // 季度不进 TimeDimension → 双时间键脚本只传版本 (2026年11月份版本)
+        DimensionState.TimeDimension time = extractTime("2026年4季度11月份版本 达标率多少");
+        assertEquals(DimensionState.TimeDimensionType.VERSION, time.getType());
+        assertEquals(List.of("2026年11月份版本"), time.getValues());
+    }
+
+    @Test
     void yearPrefixOverridesCurrentYear() {
         DimensionState.TimeDimension time = extractTime("2025年4月的质量怎么样");
         assertEquals(List.of("2025年4月份版本"), time.getValues());

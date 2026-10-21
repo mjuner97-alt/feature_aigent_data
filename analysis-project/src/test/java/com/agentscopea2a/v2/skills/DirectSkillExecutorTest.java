@@ -1309,4 +1309,162 @@ class DirectSkillExecutorTest {
 
         assertFalse(plan.params().containsKey("dept"));
     }
+
+    // ==================== 时间二选一 (双时间键脚本, 2026/10/21 规则) ====================
+
+    private static DimensionState.TimeDimension quarterTime(List<String> values) {
+        return new DimensionState.TimeDimension(DimensionState.TimeDimensionType.QUARTER, values);
+    }
+
+    private static final String BOTH_TIME_MAPPING =
+            "{\"version\":\"versionPlan\",\"quarter\":\"vestQuarter\","
+                    + "\"qStart\":\"vestQuarter.start\",\"qEnd\":\"vestQuarter.end\"}";
+
+    private void stubBothTimeSkill(String question, DimensionState.TimeDimension time) {
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", BOTH_TIME_MAPPING, "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(time, List.of("杭州开发一部")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"version\",\"required\":false},{\"name\":\"quarter\",\"required\":false},"
+                        + "{\"name\":\"qStart\",\"required\":false},{\"name\":\"qEnd\",\"required\":false}]"));
+    }
+
+    @Test
+    void bothTimeKeysVersionMentionedPassesVersionOnly() {
+        // 「12月版」显式提及版本计划 → 只传 version, 季度 (含 .start/.end) 整体抑制不再派生
+        stubBothTimeSkill(QUESTION, versionTime(List.of("2026年12月份版本")));
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(QUESTION, "alice", null);
+
+        assertEquals("2026年12月份版本", plan.params().get("version"));
+        assertFalse(plan.params().containsKey("quarter"));
+        assertFalse(plan.params().containsKey("qStart"));
+        assertFalse(plan.params().containsKey("qEnd"));
+    }
+
+    @Test
+    void bothTimeKeysQuarterMentionedPassesQuarterOnly() {
+        // 显式提及季度 → 只传 quarter, 版本 (含默认在建版本) 不传
+        stubBothTimeSkill("2026年4季度 达标率多少", quarterTime(List.of("2026年4季度")));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutor(true).plan("2026年4季度 达标率多少", "alice", null);
+
+        assertEquals("2026年4季度", plan.params().get("quarter"));
+        assertFalse(plan.params().containsKey("version"));
+    }
+
+    @Test
+    void bothTimeKeysNothingMentionedDefaultsToInBuildVersion() {
+        // 都未提及 → 默认在建版本计划, 只传 version
+        stubBothTimeSkill(QUESTION, null);
+        when(hookProvider.getIfAvailable()).thenReturn(versionPlanHook);
+        when(versionPlanHook.currentVersions()).thenReturn(List.of("2026年10月份版本"));
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(QUESTION, "alice", null);
+
+        assertEquals("2026年10月份版本", plan.params().get("version"));
+        assertFalse(plan.params().containsKey("quarter"));
+        assertFalse(plan.params().containsKey("qStart"));
+    }
+
+    @Test
+    void bothTimeKeysThisVAnchorPassesVersionOnly() {
+        // 变体锚点 (口语值方案): 「在建版本/当前/今年以来」等 → THIS_V/YEAR_V 落 versionPlan,
+        // 判定看 extraction 字段与锚点形态无关 → 版本胜, THIS_V 执行期展开为在建版本
+        stubBothTimeSkill(QUESTION, versionTime(List.of("THIS_V")));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithResolver(stubResolver()).plan(QUESTION, "alice", null);
+
+        assertEquals("2026年10月份版本", plan.params().get("version"));
+        assertFalse(plan.params().containsKey("quarter"));
+    }
+
+    @Test
+    void bothTimeKeysThisQAnchorPassesQuarterOnly() {
+        // 「当季/在建季度」→ THIS_Q 落 vestQuarter → 季度胜, 执行期展开为季度值
+        stubBothTimeSkill(QUESTION, quarterTime(List.of("THIS_Q")));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithResolver(stubResolver()).plan(QUESTION, "alice", null);
+
+        assertFalse(plan.params().containsKey("version"));
+        assertEquals("2026年4季度", plan.params().get("quarter"));
+    }
+
+    // ==================== 需求项/需求子条目特例 (2026/10/21 拍板) ====================
+
+    private static DimensionState stateWithPeer(DimensionState.PeerDimensionType type, List<String> values) {
+        return new DimensionState(null, List.of(), new DimensionState.PeerDimension(type, values), null);
+    }
+
+    private static final String BOTH_TIME_REQ_MAPPING =
+            "{\"version\":\"versionPlan\",\"quarter\":\"vestQuarter\","
+                    + "\"itemNo\":\"itemNo\",\"subItemNo\":\"subItemNo\"}";
+
+    private void stubBothTimeReqSkill(String question, DimensionState state) {
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", BOTH_TIME_REQ_MAPPING, "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(state);
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"version\",\"required\":false},{\"name\":\"quarter\",\"required\":false},"
+                        + "{\"name\":\"itemNo\",\"required\":false},{\"name\":\"subItemNo\",\"required\":false}]"));
+    }
+
+    @Test
+    void requirementWithoutTimePassesNoTimeParams() {
+        // 需求子条目 + 未显式提及时间 → 不补默认在建版本, version/quarter 都不传 (值为空)
+        stubBothTimeReqSkill("S20250926-000741 达标率多少",
+                stateWithPeer(DimensionState.PeerDimensionType.SUB_REQUIREMENT,
+                        List.of("S20250926-000741")));
+        when(hookProvider.getIfAvailable()).thenReturn(versionPlanHook);
+        when(versionPlanHook.currentVersions()).thenReturn(List.of("2026年10月份版本"));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutor(true).plan("S20250926-000741 达标率多少", "alice", null);
+
+        assertEquals("S20250926-000741", plan.params().get("subItemNo"));
+        assertFalse(plan.params().containsKey("version"));
+        assertFalse(plan.params().containsKey("quarter"));
+    }
+
+    @Test
+    void requirementWithExplicitVersionStillPassesVersion() {
+        // 需求项 + 显式「12月版」→ 特例不生效, 只传版本 (互不换算 R1 同口径)
+        DimensionState state = new DimensionState(versionTime(List.of("2026年12月份版本")), List.of(),
+                new DimensionState.PeerDimension(DimensionState.PeerDimensionType.REQUIREMENT,
+                        List.of("R2025-001")), null);
+        stubBothTimeReqSkill("R2025-001 12月版达标率", state);
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutor(true).plan("R2025-001 12月版达标率", "alice", null);
+
+        assertEquals("2026年12月份版本", plan.params().get("version"));
+        assertEquals("R2025-001", plan.params().get("itemNo"));
+        assertFalse(plan.params().containsKey("quarter"));
+    }
+
+    @Test
+    void requirementSingleFamilyVersionSkillSkipsDefaultToo() {
+        // 单家族版本 skill 同样受特例约束: 需求项问题不补默认在建版本 (规则跟问题走, 不跟 skill 走)
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"version\":\"versionPlan\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq("S20250926-000741 达标率多少"), Mockito.isNull()))
+                .thenReturn(stateWithPeer(DimensionState.PeerDimensionType.SUB_REQUIREMENT,
+                        List.of("S20250926-000741")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"version\",\"required\":false}]"));
+        when(hookProvider.getIfAvailable()).thenReturn(versionPlanHook);
+        when(versionPlanHook.currentVersions()).thenReturn(List.of("2026年10月份版本"));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutor(true).plan("S20250926-000741 达标率多少", "alice", null);
+
+        assertFalse(plan.params().containsKey("version"));
+    }
 }
