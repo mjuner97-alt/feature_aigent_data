@@ -290,8 +290,9 @@ public class FlowExecutionService {
                 .maxParallelismSnapshot(flow.getMaxParallelism())
                 // 通知配置快照:执行期间以快照为准,发通知时不再回读流程定义
                 .notifyEnabledSnapshot(flow.getNotifyEnabled())
+                // 缺省联系人不保存创建人 ID；完成通知阶段会按创建人查询真实姓名。
                 .notifyContactNameSnapshot(flow.getNotifyContactName() == null || flow.getNotifyContactName().isBlank()
-                        ? flow.getCreatedBy() : flow.getNotifyContactName())
+                        ? null : flow.getNotifyContactName())
                 .notifyContactPhoneSnapshot(flow.getNotifyContactPhone())
                 .notifyBodyTemplateSnapshot(flow.getNotifyBodyTemplate())
                 .notifyReceiversSnapshot(templateNodes == null ? resolveNotifyReceiversSnapshot(flow, triggerType) : null)

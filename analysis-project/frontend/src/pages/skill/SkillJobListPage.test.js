@@ -44,3 +44,9 @@ test('management keeps enabled-only partial updates without fetching the hidden 
  await button(root,'禁用').props.onClick();await flush();assert.deepEqual(updates,[{enabled:false}]);
  assert.equal(calls.filter(u=>u.includes('/executions')).length,0);
 });
+
+test('disabled task does not render the execute button',async t=>{
+ const row={id:9,name:'disabled',skillId:2,enabled:false,createdBy:'owner',createdAt:'2026-10-17'};
+ const {root}=await mountPage(t,'manage',(url)=>({...empty,items:[row]}));
+ assert.equal(button(root,'触发'),null);
+});

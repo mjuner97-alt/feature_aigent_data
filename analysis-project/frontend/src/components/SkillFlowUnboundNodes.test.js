@@ -13,6 +13,7 @@ test('an orphan left by removing a node from a chapter can be deleted and the fl
   const saved = [], alerts = [];
   const source = {
     id: 7, name: '月报', enabled: true, notifyEnabled: false,
+    notifyContactName: '联系人', notifyContactPhone: 'abcdefghijk',
     triggers: [{ keyword: '月报', enabled: true }],
     nodes: ['keep', 'orphan'].map((key, index) => ({ nodeKey: key, nodeName: key, nodeType: 'PYTHON', scriptId: 'demo', scriptParams: {}, sortOrder: index + 1 })),
     reportOutline: { items: [{ id: 'c1', title: '第一章', level: 1, nodeKeys: ['keep'], children: [] }] },

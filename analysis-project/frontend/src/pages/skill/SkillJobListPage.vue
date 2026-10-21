@@ -481,7 +481,7 @@ function metricTitle(job: SkillJobSummary): string {
           </td>
           <td class="col-time">{{ fmtTime(job.createdAt) }}</td>
           <td class="col-actions">
-            <button class="btn-action trigger" v-if="isOwner(job)" :disabled="triggering.has(job.id) || !job.enabled" @click="trigger(job.id)">
+            <button class="btn-action trigger" v-if="isOwner(job) && job.enabled" :disabled="triggering.has(job.id)" @click="trigger(job.id)">
               {{ triggering.has(job.id) ? '排队中…' : '触发' }}
             </button>
             <button class="btn-action" @click="openExecutions(job)">记录</button>
