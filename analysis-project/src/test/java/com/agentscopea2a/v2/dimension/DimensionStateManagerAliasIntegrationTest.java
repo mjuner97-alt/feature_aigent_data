@@ -63,6 +63,38 @@ class DimensionStateManagerAliasIntegrationTest {
     }
 
     @Test
+    void multipleAppCodesAreAllCollected() {
+        // 应用维度多值："F-GCMS-PSN、F-ATP-INNER" 两个编码都要识别（修复前只取第一个）
+        PeerDimension peer = extractPeer("杭州三部 F-GCMS-PSN、F-ATP-INNER 12月版Q1完成率是多少");
+        assertEquals(PeerDimensionType.APPLICATION, peer.getType());
+        assertEquals(java.util.List.of("F-GCMS-PSN", "F-ATP-INNER"), peer.getValues());
+    }
+
+    @Test
+    void duplicateAppCodesDeduplicate() {
+        PeerDimension peer = extractPeer("F-GCMS-PSN 和 F-GCMS-PSN 的对比");
+        assertEquals(java.util.List.of("F-GCMS-PSN"), peer.getValues());
+    }
+
+    @Test
+    void appCodeStopsBeforeQuarterDigit() {
+        // 应用码纯英文+连字符: "F-FPA4季度" 是 应用F-FPA + 4季度, 修复前贪婪吃成 "F-FPA4"
+        QuestionAnalysis analysis = manager.analyzeQuestionRuleBased("F-FPA4季度需求项的平均生命周期");
+        PeerDimension peer = analysis.getExplicitDimensions().getPeerDimension();
+        assertEquals(PeerDimensionType.APPLICATION, peer.getType());
+        assertEquals(java.util.List.of("F-FPA"), peer.getValues());
+        // 让出的 "4季度" 仍要落进季度维度
+        assertTrue(analysis.getExplicitDimensions().getTimeDimension() != null);
+    }
+
+    @Test
+    void appCodeWithDigitInsideIsNotSplit() {
+        // 应用码本身以字母开头且不含数字; 若业务真出现数字编码需走 alias 词表配置
+        PeerDimension peer = extractPeer("F-ATP-INNER的需求项");
+        assertEquals(java.util.List.of("F-ATP-INNER"), peer.getValues());
+    }
+
+    @Test
     void plainRegexFallbackStillWorksWithoutAliasHit() {
         // 无 alias 命中时，正则兜底仍工作；§13.4 起部门前缀由 span 屏蔽自然剥离
         QuestionAnalysis analysis = manager.analyzeQuestionRuleBased("杭州二部金融市场自营测试组的问题");
