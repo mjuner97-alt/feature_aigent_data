@@ -620,11 +620,11 @@ public class FlowDefinitionService {
         return flow;
     }
 
-    /** 写操作仍仅允许创建人。 */
+    /** 写操作允许创建人或被授权的可执行人。 */
     private SkillFlow requireOwner(Long id, String userId) {
         SkillFlow flow = requireReadable(id, userId);
-        if (!userId.equals(flow.getCreatedBy())) {
-            throw new IllegalStateException("FlowAccessDenied: only the owner may modify this flow");
+        if (!userId.equals(flow.getCreatedBy()) && !flowMapper.selectExecutorIdsByFlowId(id).contains(userId)) {
+            throw new IllegalStateException("FlowAccessDenied: only the owner or an authorized executor may modify this flow");
         }
         return flow;
     }

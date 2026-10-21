@@ -31,7 +31,7 @@ let loadRequest = 0;
 
 function formatTime(value?: string) { return value ? value.replace('T', ' ').slice(0, 19) : '-'; }
 function enabledStatusClass(flow: SkillFlowSummary) { return flow.enabled ? 'st-on' : 'st-off'; }
-function isOwner(flow: SkillFlowSummary) { return flow.createdBy === me; }
+function isOwner(flow: SkillFlowSummary) { return flow.createdBy === me || flow.canExecute; }
 function canRun(flow: SkillFlowSummary) { return flow.canExecute; }
 function changePageSize(size: number) { pageSize.value = size; page.value = 1; void fetchPage(); }
 function changePage(value: number) { page.value = value; void fetchPage(); }
@@ -150,7 +150,7 @@ watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.v
                 <button class="btn-action toggle" @click="toggle(flow)">{{ flow.enabled ? '禁用' : '启用' }}</button>
                 <button class="btn-action danger" @click="remove(flow)">删除</button>
               </template>
-              <span v-else class="readonly-tag" title="仅创建人可修改或删除">只读</span>
+              <span v-else class="readonly-tag" title="仅创建人或授权可执行人可修改或删除">只读</span>
             </td>
           </tr>
         </tbody>

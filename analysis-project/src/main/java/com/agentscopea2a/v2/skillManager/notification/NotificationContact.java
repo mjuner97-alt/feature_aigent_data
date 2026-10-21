@@ -1,6 +1,8 @@
 package com.agentscopea2a.v2.skillManager.notification;
 
 import java.util.Locale;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 
 /** Validation and HTML rendering for optional per-flow notification contacts. */
 public final class NotificationContact {
@@ -24,15 +26,23 @@ public final class NotificationContact {
 
     /** Choose exactly one contact block and append before body end, if present. */
     public static String append(String content, String name, String phone, String defaultHtml) {
+        return append(content, name, phone, defaultHtml, null);
+    }
+
+    public static String append(String content, String name, String phone, String defaultHtml, LocalDate executionDate) {
         String contact;
         if (hasCustom(name, phone)) {
-            contact = "<p>联系人：" + escape(name.trim()) + "<br>联系方式：" + escape(phone.trim()) + "</p>";
+            contact = "<p>联系人：" + escape(name.trim()) + "　联系方式：" + escape(phone.trim()) + "</p>";
         } else if (trimToNull(name) != null) {
             contact = "<p>联系人：" + escape(name.trim()) + "</p>";
         } else {
             contact = defaultHtml == null ? "" : defaultHtml;
         }
         String html = String.valueOf(content);
+        if (executionDate != null) {
+            String date = executionDate.minusDays(1).format(DateTimeFormatter.ofPattern("yyyy年MM月dd日"));
+            contact = "<p>报告数据截至日期：" + date + "</p>" + contact;
+        }
         if (contact.isBlank()) return html;
         int bodyEnd = html.toLowerCase(Locale.ROOT).lastIndexOf("</body>");
         return bodyEnd < 0 ? html + contact

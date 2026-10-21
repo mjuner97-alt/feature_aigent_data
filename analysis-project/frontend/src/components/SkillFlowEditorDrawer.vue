@@ -84,7 +84,7 @@ function emptyNode(nodeKey: string, sortOrder: number): SkillFlowNode {
 }
 
 function emptyForm(): SkillFlowInput {
-  return { name: '', code: '', description: '', taskQuestion: '', summaryQuestionTemplate: '', enabled: true, scheduleRules: null, maxParallelism: 2, notifyEnabled: true, executors: [], notifyContactName: '', notifyContactPhone: '', notifyBodyTemplate: '各位：\n\n  部门研发管理周报详见：{链接}，请关注。', triggers: [], nodes: [], reportOutline: { numbering: {}, items: [] } };
+  return { name: '', code: '', description: '', taskQuestion: '', summaryQuestionTemplate: '', enabled: true, scheduleRules: null, maxParallelism: 2, notifyEnabled: true, executors: [], notifyContactName: '', notifyContactPhone: '', notifyBodyTemplate: '各位：\n    部门研发管理周报详见：{链接}，请关注。', triggers: [], nodes: [], reportOutline: { numbering: {}, items: [] } };
 }
 
 const chineseStepLabels = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
@@ -533,7 +533,7 @@ function normalizeFlow(flow: SkillFlow): SkillFlowInput {
     maxParallelism: 2, notifyEnabled: flow.notifyEnabled !== false,
     executors: [...new Set(flow.executors || [])].filter(id => id !== flow.createdBy),
     notifyContactName: flow.notifyContactName ?? '', notifyContactPhone: flow.notifyContactPhone ?? '',
-    notifyBodyTemplate: flow.notifyBodyTemplate?.trim() || '各位：\n\n  部门研发管理周报详见：{链接}，请关注。',
+    notifyBodyTemplate: flow.notifyBodyTemplate?.trim() || '各位：\n    部门研发管理周报详见：{链接}，请关注。',
     triggers: (flow.triggers || []).map(trigger => ({ ...trigger, enabled: trigger.enabled !== false })),
     nodes: (flow.nodes || []).map((node, index) => {
       let scriptParams: Record<string, unknown> = node.scriptParams || {};
