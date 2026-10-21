@@ -62,5 +62,14 @@ public class SkillRoutingMetadataController {
         return service.setActive(skillName, request != null && request.active(), userId);
     }
 
+    /** 直接执行配置独立保存: 权限=属主或管理员 (不含生产收紧), 与主配置 PUT 分离以便生产环境分权。 */
+    @PutMapping("/{skillName}/direct-exec")
+    public SkillRoutingMetadataView saveDirectExec(@PathVariable String skillName,
+                                                   @RequestBody SkillRoutingMetadataAdminService.DirectExecInput input,
+                                                   @RequestHeader(value = "X-User-Id", required = false) String userId) {
+        service.saveDirectExec(skillName, input, userId);
+        return service.get(skillName);
+    }
+
     public record ActiveRequest(boolean active) {}
 }

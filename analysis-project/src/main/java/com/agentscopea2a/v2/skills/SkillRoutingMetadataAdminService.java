@@ -110,6 +110,44 @@ public class SkillRoutingMetadataAdminService {
     }
 
     /**
+     * 直接执行配置（scriptId/paramMapping）独立保存入口。与 {@link #save} 的权限分叉点：
+     * 只要求属主或管理员，不经过 {@code canEditConfig} 的生产收紧——生产环境 skill
+     * 属主仍可配置自己 skill 的脚本直执行。仅覆盖两个字段，其余路由语义（标签/关键词/
+     * active）原样保留，因此不构成新的重叠选型风险，跳过 HIGH 重叠拦截。
+     */
+    public SkillRoutingMetadata saveDirectExec(String skillName, DirectExecInput input, String userId) {
+        if (skillName == null || skillName.isBlank() || !repository.skillExists(skillName)) {
+            throw new IllegalArgumentException("SkillNotFound: " + skillName);
+        }
+        if (input == null) throw new IllegalArgumentException("RoutingConfigRequired");
+        String creator = repository.creatorForSkill(skillName);
+        assertDirectExecOwner(creator, userId);
+        SkillRoutingMetadata current = repository.findBySkillName(skillName)
+                .orElseThrow(() -> new IllegalArgumentException("SkillNotFound: " + skillName));
+        SkillRoutingMetadata metadata = new SkillRoutingMetadata(current.skillName(), current.shortSummary(),
+                current.keywords(), current.domainTags(), current.topicTags(), current.creator(),
+                current.active(), null, current.level1Keywords(), current.level2Keywords(),
+                current.level3Keywords(),
+                input.scriptId() == null || input.scriptId().isBlank() ? null : input.scriptId().trim(),
+                serializeParamMapping(input.paramMapping()));
+        if (!repository.upsert(metadata)) throw new IllegalStateException("RoutingConfigSaveFailed");
+        invalidateOverlapCache();
+        return metadata;
+    }
+
+    public record DirectExecInput(String scriptId, Map<String, String> paramMapping) {}
+
+    private void assertDirectExecOwner(String owner, String userId) {
+        if (adminRoleService.isAdminUserId(userId)) {
+            return;
+        }
+        if (owner == null || owner.isBlank() || userId == null || userId.isBlank()
+                || !owner.trim().equals(userId.trim())) {
+            throw new IllegalStateException("ResourceAccessDenied");
+        }
+    }
+
+    /**
      * Skill 直接执行的脚本参数 → 维度键映射: key = 脚本参数名 (原样透传), value 必须 ∈
      * 合法维度键全集 (内置 9 键 ∪ dimension_key_config 启用键, §9 动态化; timeRange 与
      * versionPlan/vestQuarter 追加 .start/.end 后缀形态, §6.1.6/口语值 §3.4)。配错在保存期拒绝。
