@@ -28,6 +28,7 @@ const emit = defineEmits<{ (e: 'update:open', open: boolean): void; (e: 'saved')
 /** 编辑中的流程当前是否为公开状态(公开流程保存修改后会自动退出公开,需重新联系开发人员开通)。 */
 const wasPublic = ref(false);
 const flowOwnerId = ref(localStorage.getItem('skill-user-id') || 'demo-user');
+const defaultContactName = ref('');
 /** 加载时的触发关键词快照,保存时对比是否改动过关键词。 */
 const originalKeywords = ref<string[]>([]);
 const copySourceName = ref('');
@@ -611,9 +612,10 @@ async function load() {
       wasPublic.value = !isCopy.value && flow.chatPublic === true;
       originalKeywords.value = (flow.triggers || []).map(trigger => trigger.keyword.trim().toLowerCase()).filter(Boolean);
       form.value = normalizeFlow(cloneFlowValue(flow));
+      defaultContactName.value = '';
       if (!form.value.notifyContactName?.trim() && flow.createdBy) {
         const ownerNames = await batchUserNames([flow.createdBy]);
-        form.value.notifyContactName = ownerNames?.[flow.createdBy] || '';
+        defaultContactName.value = ownerNames?.[flow.createdBy] || '';
       }
       if (!isCopy.value) flowOwnerId.value = flow.createdBy || flowOwnerId.value;
       if (isCopy.value) {
@@ -768,10 +770,10 @@ defineExpose({ isDirty });
               <div class="notify-contact-config">
                 <h4>通知中的联系信息（非必填）</h4>
                 <p>展示在任务通知邮件中，方便收件人遇到问题时联系相关人员。手机号仅作为联系信息展示，不用于发送短信。</p>
-                <label><span>联系人姓名</span><input v-model="form.notifyContactName" type="text" placeholder="填写负责解答此任务相关问题的人" /></label>
+                <label><span>联系人姓名</span><input v-model="form.notifyContactName" type="text" :placeholder="defaultContactName ? `未填写时使用创建人：${defaultContactName}` : '填写负责解答此任务相关问题的人'" /></label>
                 <label><span>联系电话（手机号）</span><input v-model="form.notifyContactPhone" type="text" placeholder="填写 11 位手机号" /></label>
                 <small>联系人和联系电话均为必填项；历史任务若未填写联系人，会先使用创建人作为联系人，但仍需补充联系电话。</small>
-                <p v-if="usesDefaultContact" class="contact-mode" role="status">当前使用系统默认联系信息</p>
+                <p v-if="usesDefaultContact" class="contact-mode" role="status">当前未填写自定义联系人，邮件将显示创建人{{ defaultContactName ? `：${defaultContactName}` : '' }}</p>
                 <p v-else-if="!contactValidationError" class="contact-mode" role="status">保存后，任务通知邮件将展示上述联系信息</p>
                 <p v-if="contactValidationError" class="error" role="status">{{ contactValidationError }}</p>
               </div>
