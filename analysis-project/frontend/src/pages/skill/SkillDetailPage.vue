@@ -8,7 +8,7 @@
  *  - 审批列表已迁移至独立页面 /skills/approvals
  *  - 编辑走 /skills/:id/edit 全页面表单
  */
-import { ref, watch, computed, nextTick, onBeforeUnmount } from 'vue';
+import { ref, watch, computed, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import SkillMarkdown from '../../components/SkillMarkdown.vue';
 import Markdown from '../../components/Markdown.vue';
@@ -214,14 +214,14 @@ async function loadSkillFiles(id: number) {
 const trialQuestion = ref('');
 const trialRunning = ref(false);
 const trialThinking = ref('');
+// 渲染用思考文本:裁掉尾部空白(后端每个文本块/工具调用结束后补发"已执行"空格标记,
+// 流式过程中尾部空白持续累积,原样渲染会让思考过程尾部空白逐渐增大)
+const trialThinkingView = computed(() => trialThinking.value.replace(/\s+$/, ''));
+// 最终输出(text 流)独立展示,不并入思考过程;与 think 内容的重复由后端同源数据决定
+const trialAnswer = ref('');
 const trialError = ref('');
 let trialAbortCtrl: AbortController | null = null;
-// 思考过程 details 引用:试运行产生首个思考内容时自动展开(展开后由用户自由开合)
-const trialThinkEl = ref<HTMLDetailsElement | null>(null);
-watch(trialThinking, (v, ov) => {
-  // details 由 v-if="trialThinking" 挂载,等 DOM 渲染后再展开;每轮 runTrial 会清空重触发
-  if (v && !ov) nextTick(() => { if (trialThinkEl.value) trialThinkEl.value.open = true; });
-});
+// 思考过程 details 默认收起,由用户点击 summary 手工展开
 // 试运行结果面板引用:试运行落库成功后触发其 load() 刷新列表
 const trialResultPanelRef = ref<InstanceType<typeof SkillTrialResultPanel> | null>(null);
 
@@ -231,8 +231,8 @@ function stopTrial() {
 }
 
 /**
- * 执行试运行问数:与 /chat 页一致直调 /ai/chat SSE,流式展示 think;
- * text 事件(最终结果)与 think 流内容同源重复,去重后并入思考过程,不再单独展示;
+ * 执行试运行问数:与 /chat 页一致直调 /ai/chat SSE;
+ * think 流展示为"思考过程",text 流(最终输出)独立累加、单独成块显示在思考过程下方;
  * 流结束(含出错/中断)后调记录接口落库,question 为发起时快照。
  */
 async function runTrial() {
@@ -245,12 +245,9 @@ async function runTrial() {
     : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   trialRunning.value = true;
   trialThinking.value = '';
+  trialAnswer.value = '';
   trialError.value = '';
   trialAbortCtrl = new AbortController();
-  // text 流累积与去重状态:未分歧时 text 尾部与 think 尾部逐字重复则跳过;
-  // 分歧点(script_exec 图表块在后端展开/补齐,仅存在于 text 流)起把新内容追加进思考过程
-  let ansAccum = '';
-  let ansMerged = false;
   try {
     for await (const evt of streamChat(
         { question, conversationId: convId, user_id: currentUserId() },
@@ -258,29 +255,13 @@ async function runTrial() {
       if (evt.type === 'think' && evt.chunk) {
         trialThinking.value += evt.chunk;
       } else if (evt.type === 'text') {
-        ansAccum += evt.chunk;
-        if (ansMerged) {
-          trialThinking.value += evt.chunk;
-        } else {
-          // 去掉尾部空白再比较:每个文本块结束后后端补发"已执行"标记(内容为空格)
-          const thinkTrimmed = trialThinking.value.replace(/\s+$/, '');
-          if (!thinkTrimmed.endsWith(ansAccum)) {
-            // 分歧块内再细分:与前缀仍重叠的部分视为重复,只追加新增部分
-            for (let p = 0; p <= evt.chunk.length; p++) {
-              const keep = ansAccum.length - p;
-              if (keep === 0 || thinkTrimmed.endsWith(ansAccum.slice(0, keep))) {
-                trialThinking.value += ansAccum.slice(keep);
-                break;
-              }
-            }
-            ansMerged = true;
-          }
-        }
+        // 最终输出独立累加,不再与 think 流去重合并
+        trialAnswer.value += evt.chunk;
         if (evt.finish) break;
       } else if (evt.type === 'error') {
         throw new Error(evt.error);
       }
-      // process/toolOutputUpdate 事件不展示:试运行区只关心思考过程
+      // process/toolOutputUpdate 事件不展示:试运行区只关心思考过程与最终输出
     }
   } catch (e) {
     // AbortError 是用户主动停止,静默;其余展示错误
@@ -550,13 +531,18 @@ watch(() => route.params.id, () => {
           <button v-else class="trial-stop" @click="stopTrial">■ 停止</button>
         </div>
       </div>
-      <div v-if="trialRunning || trialThinking || trialError" class="trial-result">
-        <details v-if="trialThinking" ref="trialThinkEl" class="trial-think">
+      <div v-if="trialRunning || trialThinking || trialAnswer || trialError" class="trial-result">
+        <details v-if="trialThinkingView" class="trial-think">
           <summary>思考过程</summary>
-          <Markdown :text="trialThinking" theme="light" />
+          <Markdown :text="trialThinkingView" theme="light" isolate />
+        </details>
+        <!-- 问数结果:整体输出结果,默认展开,可点击标题收起/展开;isolate 使任意内容不影响页面 -->
+        <details v-if="trialAnswer" class="trial-answer" open>
+          <summary>问数结果</summary>
+          <Markdown :text="trialAnswer" theme="light" isolate />
         </details>
         <div v-if="trialError" class="trial-error">{{ trialError }}</div>
-        <div v-if="trialRunning && !trialThinking" class="trial-loading">问数执行中…</div>
+        <div v-if="trialRunning && !trialThinking && !trialAnswer" class="trial-loading">问数执行中…</div>
       </div>
 
     </section>
@@ -890,8 +876,26 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   background: #f8fafc;
   padding: 8px 12px;
   font-size: 13px;
+  /* 兜底:容器不被子内容横向撑破或溢出 */
+  max-width: 100%;
+  overflow: hidden;
+  min-width: 0;
 }
 .trial-think summary { cursor: pointer; color: #64748b; font-weight: 600; }
+/* 问数结果:整体输出结果折叠块,默认展开,显示在思考过程下方,白底渲染 */
+.trial-answer {
+  border: 1px solid #e2e8f0;
+  border-left: 3px solid #6366f1;
+  border-radius: 6px;
+  padding: 8px 12px;
+  background: #fff;
+  color: #1e293b;
+  /* 兜底:容器不被子内容横向撑破或溢出 */
+  max-width: 100%;
+  overflow: hidden;
+  min-width: 0;
+}
+.trial-answer summary { cursor: pointer; color: #64748b; font-weight: 600; }
 .trial-error { color: #dc2626; font-size: 13px; }
 .trial-loading { color: #64748b; font-size: 13px; }
 </style>
