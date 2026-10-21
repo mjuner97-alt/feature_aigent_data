@@ -187,13 +187,18 @@ function splitSegments(md: string): Segment[] {
 // Markdown / HTML 片段 + echarts 片段列表(html 片段已转好 HTML,echarts 片段为原始 option 文本)
 const segments = computed<Segment[]>(() => splitSegments(renderText.value));
 
-// iframe 加载后按内容高度自适应(srcdoc 同源,可读 contentDocument)
+// iframe 加载后按内容高度自适应(srcdoc 同源,可读 contentDocument)。
+// 注意:documentElement.scrollHeight 至少等于视口高度(= iframe 当前元素高度),
+// 若直接测量,每次 adjust 都会把当前高度当作内容下限并再 +24px,
+// 流式反复 reload 时高度无界增长(表现为内容尾部空白持续变大)。
+// 故先归零再测量,同一 JS 任务内同步完成,不产生中间绘制。
 function onFrameLoad(e: Event) {
   const frame = e.target as HTMLIFrameElement;
   const adjust = () => {
     try {
       const doc = frame.contentDocument;
       if (!doc) return;
+      frame.style.height = '0px';
       const h = Math.max(
         doc.documentElement.scrollHeight,
         doc.body ? doc.body.scrollHeight : 0,
