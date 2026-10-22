@@ -1,4 +1,5 @@
 import type { OutlineNumberingStyle, ReportOutline, ReportOutlineItem, ReportOutlineNumbering } from '../types/skillFlow';
+export { getOutlineSubtreeRange, canMoveOutlineRow, moveOutlineRow, moveTopLevelOutlineRow } from './outlineRows.js';
 
 /** 编辑器使用的扁平行:文档顺序即章节顺序,支持任意正整数层级;nodeKeys 为章节绑定的节点(可多个,按序渲染)。 */
 export interface OutlineRow {

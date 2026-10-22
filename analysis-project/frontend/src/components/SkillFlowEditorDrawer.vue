@@ -9,7 +9,7 @@ import { listMetrics } from '../api/skillDependencyMetric';
 import type { SkillListItem } from '../types/skill';
 import type { SkillDependencyMetric } from '../types/skillJob';
 import type { SkillFlow, SkillFlowInput, SkillFlowNode, ReportOutline } from '../types/skillFlow';
-import { buildOutline, defaultOutlineNumbering, flattenOutline, outlineNumberingPrefixes, validateOutlineRows, type OutlineRow } from '../utils/reportOutline';
+import { buildOutline, canMoveOutlineRow, defaultOutlineNumbering, flattenOutline, moveOutlineRow, moveTopLevelOutlineRow, outlineNumberingPrefixes, validateOutlineRows, type OutlineRow } from '../utils/reportOutline';
 import { insertOutlineRow } from '../utils/outlineRows';
 import { inferParamSchema, normalizeScriptParams, paramsFromSchema } from '../utils/scriptParams';
 import FlowNodeCard from './FlowNodeCard.vue';
@@ -67,6 +67,8 @@ const editorFingerprint = () => JSON.stringify({ form: form.value, rows: outline
 const isDirty = computed(() => editorFingerprint() !== baseline.value);
 /** 拖拽排序:正在拖拽的卡片下标;dragover 时实时换位,drop/dragend 收尾。 */
 const dragIndex = ref<number | null>(null);
+const outlineDragId = ref<string | null>(null);
+const outlineDropId = ref<string | null>(null);
 function navigateToSection(event: MouseEvent, id: string) {
   event.preventDefault();
   if (editorBody.value) scrollToEditorSection(editorBody.value, id);
@@ -399,6 +401,35 @@ function finishDrag() {
   dragIndex.value = null;
   dragNodeKey.value = null;
 }
+
+function moveOutlineChapter(row: OutlineRow, direction: -1 | 1) {
+  if (!canMoveOutlineRow(outlineRows.value, row.id, direction)) return;
+  outlineRows.value = moveOutlineRow(outlineRows.value, row.id, direction);
+  syncNodesToOutline();
+}
+
+function outlineDragStart(row: OutlineRow, event: DragEvent) {
+  if (row.level !== 1) return;
+  outlineDragId.value = row.id;
+  if (event.dataTransfer) { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', row.id); }
+}
+
+function outlineDragOver(row: OutlineRow, event: DragEvent) {
+  if (row.level !== 1 || !outlineDragId.value || row.id === outlineDragId.value) return;
+  event.preventDefault();
+  outlineDropId.value = row.id;
+}
+
+function outlineDrop(event: DragEvent) {
+  event.preventDefault();
+  if (outlineDragId.value && outlineDropId.value) {
+    outlineRows.value = moveTopLevelOutlineRow(outlineRows.value, outlineDragId.value, outlineDropId.value);
+    syncNodesToOutline();
+  }
+  finishOutlineDrag();
+}
+
+function finishOutlineDrag() { outlineDragId.value = null; outlineDropId.value = null; }
 
 /** 节点试跑:复用脚本注册页的调试运行接口,按节点选的脚本+参数 JSON 真实执行一次,提前验证参数。 */
 const debugNodeKey = ref<string | null>(null);
@@ -744,7 +775,7 @@ defineExpose({ isDirty });
           <a href="#flow-triggers" @click="navigateToSection($event, 'flow-triggers')">触发与通知</a>
           <a href="#flow-outline" @click="navigateToSection($event, 'flow-outline')">报告大纲与节点</a>
           <template v-for="(row, index) in outlineRows" :key="row.id">
-            <a class="editor-toc-child" :href="`#flow-outline-${row.id}`" @click="navigateToSection($event, `flow-outline-${row.id}`)">{{ outlineNumbers[index] || `章节 ${index + 1}` }} {{ row.title || '未命名章节' }}</a>
+            <a class="editor-toc-child" :class="{ 'outline-drop-target': outlineDropId === row.id }" :href="`#flow-outline-${row.id}`" :draggable="row.level === 1" @click="navigateToSection($event, `flow-outline-${row.id}`)" @dragstart="outlineDragStart(row, $event)" @dragover="outlineDragOver(row, $event)" @drop="outlineDrop($event)" @dragend="finishOutlineDrag">{{ outlineNumbers[index] || `章节 ${index + 1}` }} {{ row.title || '未命名章节' }}</a>
           </template>
         </nav>
         <main ref="editorBody" class="drawer-body">
@@ -805,9 +836,11 @@ defineExpose({ isDirty });
               <label class="report-title-field"><span>报告总标题</span><input v-model="reportTitle" placeholder="例如：月度经营分析报告" /><small>生成汇总时会作为整份报告的居中标题。</small></label>
               <div v-if="!outlineRows.length" class="subtle-empty">尚未配置大纲，报告将按执行节点顺序输出。</div>
               <template v-for="(row, rowIndex) in outlineRows" :key="row.id">
-                <div :id="`flow-outline-${row.id}`" class="outline-row" :style="{ marginLeft: `${Math.min(row.level - 1, 8) * 22}px` }">
+                <div :id="`flow-outline-${row.id}`" class="outline-row" :class="{ 'outline-drop-target': outlineDropId === row.id }" :style="{ marginLeft: `${Math.min(row.level - 1, 8) * 22}px` }" :draggable="row.level === 1" @dragstart="outlineDragStart(row, $event)" @dragover="outlineDragOver(row, $event)" @drop="outlineDrop($event)" @dragend="finishOutlineDrag">
                   <span class="outline-level" :title="`第 ${row.level} 级`">{{ outlineNumbers[rowIndex] || `L${row.level}` }}</span>
                   <input v-model="row.title" placeholder="章节标题" />
+                  <button class="icon-button" title="上移" :disabled="!canMoveOutlineRow(outlineRows, row.id, -1)" @click="moveOutlineChapter(row, -1)">↑</button>
+                  <button class="icon-button" title="下移" :disabled="!canMoveOutlineRow(outlineRows, row.id, 1)" @click="moveOutlineChapter(row, 1)">↓</button>
                   <button class="icon-button" title="添加同级" @click="addOutlineRow(row)">＋</button>
                   <button class="icon-button" title="添加子级" @click="addOutlineRow(row, true)">↳</button>
                   <button class="icon-button danger" title="删除本节及子级" @click="removeOutlineRow(row)">×</button>
@@ -877,7 +910,7 @@ defineExpose({ isDirty });
 .basic-row { display: flex; gap: 20px; align-items: end; flex-wrap: wrap; }.basic-row > label:first-child { width: 180px; }
 input, select, textarea { box-sizing: border-box; width: 100%; border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 10px; background: #fff; color: #1e293b; font: inherit; font-size: 14px; } textarea { resize: vertical; }.toggle-row { display: flex !important; align-items: center; grid-template-columns: none !important; gap: 7px !important; color: #475569; font-size: 13px; }.toggle-row input { width: auto; }
 .flow-preview { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; border-left: 3px solid #3b82f6; background: #f8fafc; color: #475569; font-size: 13px; }.preview-nodes { color: #1d4ed8; }
-.outline-row { display: grid; grid-template-columns: 34px minmax(180px, 1fr) auto auto auto; gap: 8px; align-items: center; padding: 8px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fbfdff; }.outline-row + .outline-row { margin-top: 7px; }.outline-level { color: #64748b; font-size: 11px; font-weight: 700; text-align: center; }.outline-row input, .outline-row select { min-width: 0; }
+.outline-row { display: grid; grid-template-columns: 34px minmax(120px, 1fr) repeat(5, auto); gap: 8px; align-items: center; padding: 8px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fbfdff; }.outline-row + .outline-row { margin-top: 7px; }.outline-level { color: #64748b; font-size: 11px; font-weight: 700; text-align: center; }.outline-row input, .outline-row select { min-width: 0; }.outline-row[draggable="true"], .editor-toc-child[draggable="true"] { cursor: grab; }.outline-drop-target { outline: 2px solid #93c5fd; outline-offset: 1px; }
 .section-heading { margin-top: 8px; }
 .notify-contact-config h4, .notify-body-config h4 { color: #0f172a; font-size: 15px; font-weight: 600; }
 .outline-node-area { display: grid; gap: 8px; margin-top: 6px; padding: 8px; border: 1px dashed #dbe4f0; border-radius: 8px; }
