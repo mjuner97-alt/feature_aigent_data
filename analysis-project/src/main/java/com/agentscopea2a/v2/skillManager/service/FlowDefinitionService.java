@@ -490,7 +490,7 @@ public class FlowDefinitionService {
                 .toList();
         return new SkillFlowDefinitionRequest(flow.getCode(), flow.getName(), flow.getDescription(), flow.getTaskQuestion(),
                 flow.getSummaryQuestionTemplate(), flow.getEnabled(), flow.getScheduleRules(),
-                flow.getMaxParallelism(), flow.getNotifyEnabled(), triggers, nodes, parseStoredOutline(flow), null, flow.getNotifyContactName(), flow.getNotifyContactPhone(), flow.getNotifyBodyTemplate(), null);
+                flow.getMaxParallelism(), flow.getNotifyEnabled(), triggers, nodes, parseStoredOutline(flow), null, flow.getNotifyContactName(), flow.getNotifyContactPhone(), flow.getNotifyBodyTemplate(), null, flow.getAutoTriggerEnabled());
     }
 
     /** 组装返回 DTO,附带 skill 名称与指标名称等展示信息。 */
@@ -499,24 +499,24 @@ public class FlowDefinitionService {
                                                                                  .stream().map(item -> new SkillFlowDto.Trigger(item.getId(), item.getKeyword(), item.getPriority(), item.getEnabled()))
                                                                                  .toList();
         List    <SkillFlowDto.Node> nodes = flow.getId() == null ? List.of() : flowMapper.selectNodesByFlowId(flow.getId()).stream()
-                                                                           .map(node -> {
-                                                                               Skill skill = skillMapper.selectById(node.getSkillId());
-                                                                               List<Long> metricIds = flowMapper.selectMetricIdsByNodeId(node.getId());
-                                                                               List<String> metricNames = metricIds.stream().map(metricMapper::selectById)
-                                                                                       .map(metric -> metric == null ? null : metric.getName()).filter(Objects::nonNull).toList();
-                                                                               MetricDependencyResolver.Resolution resolved = resolveNodeMetrics(node, metricIds);
-                                                                               List<String> effectiveNames = resolved.metricIds().stream().map(metricMapper::selectById)
-                                                                                       .map(metric -> metric == null ? null : metric.getName()).filter(Objects::nonNull).toList();
-                                                                               String skillName = skill == null ? null : skill.getName();
-                                                                               return new SkillFlowDto.Node(node.getId(), node.getNodeKey(), resolveNodeDisplayName(node.getNodeName(), skillName), node.getNodeType(),
-                                                                                       node.getSkillId(), node.getScriptId(), node.getScriptParamsJson(), skillName, node.getQuestionTemplate(), metricIds, metricNames,
-                                                                                       resolved.metricIds(), resolved.source().name(), node.getMetricOverrideConfigured(),
-                                                                                       node.getRequired(), node.getMaxAttempts(), node.getSortOrder());
-                                                                           }).toList();
+                                                                               .map(node -> {
+                                                                                   Skill skill = skillMapper.selectById(node.getSkillId());
+                                                                                   List<Long> metricIds = flowMapper.selectMetricIdsByNodeId(node.getId());
+                                                                                   List<String> metricNames = metricIds.stream().map(metricMapper::selectById)
+                                                                                           .map(metric -> metric == null ? null : metric.getName()).filter(Objects::nonNull).toList();
+                                                                                   MetricDependencyResolver.Resolution resolved = resolveNodeMetrics(node, metricIds);
+                                                                                   List<String> effectiveNames = resolved.metricIds().stream().map(metricMapper::selectById)
+                                                                                           .map(metric -> metric == null ? null : metric.getName()).filter(Objects::nonNull).toList();
+                                                                                   String skillName = skill == null ? null : skill.getName();
+                                                                                   return new SkillFlowDto.Node(node.getId(), node.getNodeKey(), resolveNodeDisplayName(node.getNodeName(), skillName), node.getNodeType(),
+                                                                                           node.getSkillId(), node.getScriptId(), node.getScriptParamsJson(), skillName, node.getQuestionTemplate(), metricIds, metricNames,
+                                                                                           resolved.metricIds(), resolved.source().name(), node.getMetricOverrideConfigured(),
+                                                                                           node.getRequired(), node.getMaxAttempts(), node.getSortOrder());
+                                                                               }).toList();
         return new SkillFlowDto(flow.getId(), flow.getCode(), flow.getName(), flow.getDescription(), flow.getTaskQuestion(),
                 flow.getSummaryQuestionTemplate(), flow.getEnabled(), flow.getScheduleRules(), flow.getMaxParallelism(),
                 flow.getNotifyEnabled(), Boolean.TRUE.equals(flow.getChatPublic()),
-                triggers, nodes, parseOutlineObject(flow), flow.getCreatedBy(), flow.getCreatedAt(), flow.getUpdatedAt(), flow.getDeletedAt() != null, flow.getNotifyContactName(), flow.getNotifyContactPhone(), flow.getNotifyBodyTemplate(), displayExecutors(flow));
+                triggers, nodes, parseOutlineObject(flow), flow.getCreatedBy(), flow.getCreatedAt(), flow.getUpdatedAt(), flow.getDeletedAt() != null, flow.getNotifyContactName(), flow.getNotifyContactPhone(), flow.getNotifyBodyTemplate(), displayExecutors(flow), flow.getAutoTriggerEnabled());
     }
 
     /** 旧客户端不传名单时保留授权；显式空数组清空授权。创建人天然可执行，不入关系表。 */
@@ -559,6 +559,7 @@ public class FlowDefinitionService {
                 .summaryQuestionTemplate(request.summaryQuestionTemplate())
                 .reportOutline(serializeOutline(request.reportOutline()))
                 .scheduleRules(request.scheduleRules())
+                .autoTriggerEnabled(Boolean.TRUE.equals(request.autoTriggerEnabled()))
                 .enabled(Boolean.TRUE.equals(request.enabled())).maxParallelism(DEFAULT_MAX_PARALLELISM)
                 .notifyEnabled(request.notifyEnabled() == null || request.notifyEnabled())
                 .notifyContactName(request.notifyContactName()).notifyContactPhone(request.notifyContactPhone())

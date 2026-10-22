@@ -1,0 +1,1 @@
+ALTER TABLE skill_flow ADD COLUMN IF NOT EXISTS auto_trigger_enabled BOOLEAN DEFAULT FALSE;

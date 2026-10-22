@@ -28,6 +28,7 @@ public class SkillFlow {
     private Boolean enabled;
     /** JSON weekday to time list shared by scheduled long-task triggers. */
     private String scheduleRules;
+    private Boolean autoTriggerEnabled;
     private Integer maxParallelism;
     private Boolean notifyEnabled;
     private String notifyContactName;

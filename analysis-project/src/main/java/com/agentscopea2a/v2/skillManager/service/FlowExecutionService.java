@@ -161,6 +161,7 @@ public class FlowExecutionService {
     @Transactional("gaussCustomerTransactionManager")
     public void triggerReadyFlows(Long metricId, LocalDate dataDate) {
         for (SkillFlow flow : mapper.selectAllEnabledFlows()) {
+            if (!Boolean.TRUE.equals(flow.getAutoTriggerEnabled())) continue;
             if (!SkillJobService.runsOn(flow.getScheduleRules(), dataDate.getDayOfWeek())) continue;
             String conversationId = "auto:" + flow.getId() + ":" + dataDate;
             // 自动指标触发必须等全部依赖指标 READY 后才创建执行。
@@ -186,6 +187,7 @@ public class FlowExecutionService {
         // 节点挂了指标、当天没有 AUTO_METRIC 执行(含终态)、全部依赖指标当天 READY。
         // 所以这里循环的每一个流程都"该建而未建",直接逐个补建即可。
         for (SkillFlow flow : mapper.selectAllEnabledFlows()) {
+            if (!Boolean.TRUE.equals(flow.getAutoTriggerEnabled())) continue;
             try {
                 autoTriggerFlow(flow.getId());
             } catch (RuntimeException e) {
@@ -204,6 +206,7 @@ public class FlowExecutionService {
         // 期间流程可能被停用/删除,过期数据不该再触发
         SkillFlow flow = mapper.selectFlowById(flowId);
         if (flow == null || !Boolean.TRUE.equals(flow.getEnabled())) return;
+        if (!Boolean.TRUE.equals(flow.getAutoTriggerEnabled())) return;
         LocalDate dataDate = LocalDate.now(clock);
         // 星期排程过滤(schedule_rules 为空 = 每天都跑);与推模式 triggerReadyFlows 同一判定
         if (!SkillJobService.runsOn(flow.getScheduleRules(), dataDate.getDayOfWeek())) return;
@@ -534,4 +537,3 @@ public class FlowExecutionService {
         }
     }
 }
-

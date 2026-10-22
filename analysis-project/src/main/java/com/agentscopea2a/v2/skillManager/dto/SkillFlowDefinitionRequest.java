@@ -25,7 +25,8 @@ public record SkillFlowDefinitionRequest(
         String notifyContactPhone,
         String notifyBodyTemplate,
         /** 可执行人 userId 列表;null = 不修改保持原名单,非 null(含空列表) = 全量替换,空 = 仅创建人。 */
-        List<String> executors) {
+        List<String> executors,
+        Boolean autoTriggerEnabled) {
 
     public SkillFlowDefinitionRequest {
         notifyContactName = com.agentscopea2a.v2.skillManager.notification.NotificationContact.trimToNull(notifyContactName);
@@ -41,32 +42,32 @@ public record SkillFlowDefinitionRequest(
 
     /** Compatibility for definition callers predating custom mail contacts. */
     public SkillFlowDefinitionRequest(String code, String name, String description, String taskQuestion,
-            String summaryQuestionTemplate, Boolean enabled, String scheduleRules, Integer maxParallelism,
-            Boolean notifyEnabled, List<Trigger> triggers, List<Node> nodes, ReportOutline reportOutline,
-            NotifySettingsUpdateRequest notifySettings) {
+                                      String summaryQuestionTemplate, Boolean enabled, String scheduleRules, Integer maxParallelism,
+                                      Boolean notifyEnabled, List<Trigger> triggers, List<Node> nodes, ReportOutline reportOutline,
+                                      NotifySettingsUpdateRequest notifySettings) {
         this(code, name, description, taskQuestion, summaryQuestionTemplate, enabled, scheduleRules,
-                maxParallelism, notifyEnabled, triggers, nodes, reportOutline, notifySettings, null, null, null, null);
+                maxParallelism, notifyEnabled, triggers, nodes, reportOutline, notifySettings, null, null, null, null, false);
     }
 
     /** Compatibility for definition callers predating the mail body template. */
     public SkillFlowDefinitionRequest(String code, String name, String description, String taskQuestion,
-            String summaryQuestionTemplate, Boolean enabled, String scheduleRules, Integer maxParallelism,
-            Boolean notifyEnabled, List<Trigger> triggers, List<Node> nodes, ReportOutline reportOutline,
-            NotifySettingsUpdateRequest notifySettings, String notifyContactName, String notifyContactPhone) {
+                                      String summaryQuestionTemplate, Boolean enabled, String scheduleRules, Integer maxParallelism,
+                                      Boolean notifyEnabled, List<Trigger> triggers, List<Node> nodes, ReportOutline reportOutline,
+                                      NotifySettingsUpdateRequest notifySettings, String notifyContactName, String notifyContactPhone) {
         this(code, name, description, taskQuestion, summaryQuestionTemplate, enabled, scheduleRules,
                 maxParallelism, notifyEnabled, triggers, nodes, reportOutline, notifySettings,
-                notifyContactName, notifyContactPhone, null, null);
+                notifyContactName, notifyContactPhone, null, null, null);
     }
 
     /** 兼容增加可执行人之前的完整定义请求；省略名单时不修改已有授权。 */
     public SkillFlowDefinitionRequest(String code, String name, String description, String taskQuestion,
-            String summaryQuestionTemplate, Boolean enabled, String scheduleRules, Integer maxParallelism,
-            Boolean notifyEnabled, List<Trigger> triggers, List<Node> nodes, ReportOutline reportOutline,
-            NotifySettingsUpdateRequest notifySettings, String notifyContactName, String notifyContactPhone,
-            String notifyBodyTemplate) {
+                                      String summaryQuestionTemplate, Boolean enabled, String scheduleRules, Integer maxParallelism,
+                                      Boolean notifyEnabled, List<Trigger> triggers, List<Node> nodes, ReportOutline reportOutline,
+                                      NotifySettingsUpdateRequest notifySettings, String notifyContactName, String notifyContactPhone,
+                                      String notifyBodyTemplate) {
         this(code, name, description, taskQuestion, summaryQuestionTemplate, enabled, scheduleRules,
                 maxParallelism, notifyEnabled, triggers, nodes, reportOutline, notifySettings,
-                notifyContactName, notifyContactPhone, notifyBodyTemplate, null);
+                notifyContactName, notifyContactPhone, notifyBodyTemplate, null, null);
     }
 
     /** 触发词配置。 */
