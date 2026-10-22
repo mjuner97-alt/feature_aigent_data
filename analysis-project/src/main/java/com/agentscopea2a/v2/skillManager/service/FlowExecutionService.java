@@ -297,8 +297,8 @@ public class FlowExecutionService {
                 .notifyBodyTemplateSnapshot(flow.getNotifyBodyTemplate())
                 .notifyReceiversSnapshot(templateNodes == null ? resolveNotifyReceiversSnapshot(flow, triggerType) : null)
                 .ccReceiversSnapshot(templateNodes == null ? NotificationReceivers.toCsv(recipientService
-                        .findConfiguredUserIds(NotificationConfig.TARGET_TYPE_SKILL_FLOW, flow.getId(),
-                                triggerType == null ? "DEFAULT" : triggerType.name(), "CC").orElse(List.of())) : null)
+                                                                                         .findConfiguredUserIds(NotificationConfig.TARGET_TYPE_SKILL_FLOW, flow.getId(),
+                                                                                                 triggerType == null ? "DEFAULT" : triggerType.name(), "CC").orElse(List.of())) : null)
                 .notifyReceiverTriggersSnapshot(flow.getNotifyReceiverTriggers())
                 // 触发来源:触发类型(CHAT/MANUAL/METRIC 等)与触发人信息
                 .triggerType(triggerType)
@@ -534,3 +534,4 @@ public class FlowExecutionService {
         }
     }
 }
+

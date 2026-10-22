@@ -86,7 +86,7 @@ function emptyNode(nodeKey: string, sortOrder: number): SkillFlowNode {
 }
 
 function emptyForm(): SkillFlowInput {
-  return { name: '', code: '', description: '', taskQuestion: '', summaryQuestionTemplate: '', enabled: true, scheduleRules: null, maxParallelism: 2, notifyEnabled: true, executors: [], notifyContactName: '', notifyContactPhone: '', notifyBodyTemplate: '各位：\n    部门研发管理周报详见：{链接}，请关注。', triggers: [], nodes: [], reportOutline: { numbering: {}, items: [] } };
+  return { name: '', code: '', description: '', taskQuestion: '', summaryQuestionTemplate: '', enabled: true, autoTriggerEnabled: false, scheduleRules: null, maxParallelism: 2, notifyEnabled: true, executors: [], notifyContactName: '', notifyContactPhone: '', notifyBodyTemplate: '各位：\n    部门研发管理周报详见：{链接}，请关注。', triggers: [], nodes: [], reportOutline: { numbering: {}, items: [] } };
 }
 
 const chineseStepLabels = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
@@ -202,18 +202,18 @@ async function ensureScriptSchema(scriptId: string | null | undefined): Promise<
   const pending = scriptSchemaRequests.get(row.id);
   if (pending) return pending;
   const request = (async () => {
-  let items: ParamSchemaItem[] = [];
-  try {
-    // Some deployments include paramsSchema in the list response; use it first
-    // so the editor still initializes when the detail endpoint is unavailable.
-    // Otherwise fetch the detail record, which is the authoritative source.
-    const rawSchema = row.paramsSchema?.trim() || (await getEntry(row.id)).paramsSchema || '[]';
-    const parsed = JSON.parse(rawSchema);
-    if (Array.isArray(parsed)) items = parsed.filter((item: any) => item && typeof item.name === 'string');
-  } catch { /* schema 解析失败按无参数处理,保存/试跑时由后端兜底校验 */ }
-  scriptSchemas.value = { ...scriptSchemas.value, [row.id]: items };
-  scriptSchemaRequests.delete(row.id);
-  return items;
+    let items: ParamSchemaItem[] = [];
+    try {
+      // Some deployments include paramsSchema in the list response; use it first
+      // so the editor still initializes when the detail endpoint is unavailable.
+      // Otherwise fetch the detail record, which is the authoritative source.
+      const rawSchema = row.paramsSchema?.trim() || (await getEntry(row.id)).paramsSchema || '[]';
+      const parsed = JSON.parse(rawSchema);
+      if (Array.isArray(parsed)) items = parsed.filter((item: any) => item && typeof item.name === 'string');
+    } catch { /* schema 解析失败按无参数处理,保存/试跑时由后端兜底校验 */ }
+    scriptSchemas.value = { ...scriptSchemas.value, [row.id]: items };
+    scriptSchemaRequests.delete(row.id);
+    return items;
   })();
   scriptSchemaRequests.set(row.id, request);
   return request;
@@ -421,10 +421,10 @@ function autoScrollOutlineDrag(event: DragEvent) {
   const rect = source.getBoundingClientRect();
   const edge = Math.min(72, rect.height / 3);
   const distance = event.clientY < rect.top + edge
-    ? -Math.max(12, Math.round((rect.top + edge - event.clientY) / 2))
-    : event.clientY > rect.bottom - edge
-      ? Math.max(12, Math.round((event.clientY - (rect.bottom - edge)) / 2))
-      : 0;
+      ? -Math.max(12, Math.round((rect.top + edge - event.clientY) / 2))
+      : event.clientY > rect.bottom - edge
+          ? Math.max(12, Math.round((event.clientY - (rect.bottom - edge)) / 2))
+          : 0;
   if (distance) source.scrollBy({ top: distance, behavior: 'auto' });
 }
 
@@ -553,8 +553,8 @@ async function importReportProcess(id: number) {
   }
   // outlineRows 是编辑器的实时草稿；不能只读 form.reportOutline，后者要到保存时才同步。
   const draftOutline = outlineRows.value.length
-    ? buildOutline(outlineRows.value, form.value.reportOutline?.numbering || defaultOutlineNumbering(), reportTitle.value)
-    : cloneFlowValue(form.value.reportOutline || null);
+      ? buildOutline(outlineRows.value, form.value.reportOutline?.numbering || defaultOutlineNumbering(), reportTitle.value)
+      : cloneFlowValue(form.value.reportOutline || null);
   importedReportSnapshot.value = { ...captureEditorState(form.value.nodes, draftOutline, reportTitle.value), rows: cloneFlowValue(outlineRows.value), previousTemplateName: importedReportName.value, paramErrors: cloneFlowValue(scriptParamErrors.value) };
   const importedNodes = cloneFlowValue((source.nodes || []) as SkillFlowNode[]).map((node, index) => ({ ...node, sortOrder: index + 1 }));
   form.value.nodes = importedNodes;
@@ -581,7 +581,7 @@ function normalizeFlow(flow: SkillFlow): SkillFlowInput {
   return {
     code: flow.code || '', name: flow.name || '', description: flow.description || '', taskQuestion: flow.taskQuestion || '',
     summaryQuestionTemplate: flow.summaryQuestionTemplate || '', enabled: flow.enabled !== false,
-    scheduleRules: flow.scheduleRules ?? null,
+    autoTriggerEnabled: flow.autoTriggerEnabled === true, scheduleRules: flow.scheduleRules ?? null,
     maxParallelism: 2, notifyEnabled: flow.notifyEnabled !== false,
     executors: [...new Set(flow.executors || [])].filter(id => id !== flow.createdBy),
     notifyContactName: flow.notifyContactName ?? '', notifyContactPhone: flow.notifyContactPhone ?? '',
@@ -749,8 +749,8 @@ async function save() {
     }
     renumber();
     form.value.reportOutline = outlineRows.value.length
-      ? buildOutline(outlineRows.value, form.value.reportOutline?.numbering || defaultOutlineNumbering(), reportTitle.value)
-      : null;
+        ? buildOutline(outlineRows.value, form.value.reportOutline?.numbering || defaultOutlineNumbering(), reportTitle.value)
+        : null;
     const payload: SkillFlowInput = {
       ...form.value,
       notifyContactName: form.value.notifyContactName?.trim() || '',
@@ -791,99 +791,102 @@ defineExpose({ isDirty });
       <section class="drawer" aria-label="长任务流程编辑器">
         <header class="drawer-header"><div><div class="eyebrow">长任务流程</div><h3>{{ isCopy ? '复制长任务流程' : isEdit ? '编辑长任务流程' : '创建长任务流程' }}</h3><p>{{ isCopy ? '请使用新的流程名称和触发关键词保存副本；副本默认启用。' : '配置触发条件与执行步骤，生成结构化汇总结果' }}</p></div><button class="icon-button" title="关闭" aria-label="关闭" @click="emit('update:open', false)">×</button></header>
         <div class="editor-layout">
-        <nav class="editor-toc" aria-label="长任务配置目录" @dragover="outlineNavDragOver">
-          <a href="#flow-basic" @click="navigateToSection($event, 'flow-basic')">基本信息</a>
-          <a href="#flow-triggers" @click="navigateToSection($event, 'flow-triggers')">触发与通知</a>
-          <a href="#flow-outline" @click="navigateToSection($event, 'flow-outline')">报告大纲与节点</a>
-          <template v-for="(row, index) in outlineRows" :key="row.id">
-            <a class="editor-toc-child" :class="{ 'outline-drop-target': outlineDropId === row.id }" :href="`#flow-outline-${row.id}`" :draggable="row.level === 1" @click="navigateToSection($event, `flow-outline-${row.id}`)" @dragstart="outlineDragStart(row, $event)" @dragover="outlineDragOver(row, $event)" @drop="outlineDrop($event)" @dragend="finishOutlineDrag">{{ outlineNumbers[index] || `章节 ${index + 1}` }} {{ row.title || '未命名章节' }}</a>
-          </template>
-        </nav>
-        <main ref="editorBody" class="drawer-body">
-          <div v-if="loading" class="empty">加载中…</div>
-          <template v-else>
-            <section id="flow-basic" class="form-section wide section-card">
-              <div class="section-heading"><h4>基本信息</h4></div>
-              <label><span>流程名称 *</span><input v-model="form.name" placeholder="如 每日质量综合分析" /></label>
-              <label><span>说明(非必填)</span><textarea v-model="form.description" rows="2" placeholder="说明该流程处理的业务问题" /></label>
-              <div class="basic-row">
-                <label class="toggle-row"><input v-model="form.enabled" type="checkbox" /><span>保存后启用流程</span></label>
-              </div>
-              <label><span>自动触发定时规则</span><ScheduleRulesEditor v-model="form.scheduleRules" /><small>所选星期内，依赖数据准备完成后立即自动触发；不选默认每天都执行</small></label>
-            </section>
+          <nav class="editor-toc" aria-label="长任务配置目录" @dragover="outlineNavDragOver">
+            <a href="#flow-basic" @click="navigateToSection($event, 'flow-basic')">基本信息</a>
+            <a href="#flow-triggers" @click="navigateToSection($event, 'flow-triggers')">触发与通知</a>
+            <a href="#flow-outline" @click="navigateToSection($event, 'flow-outline')">报告大纲与节点</a>
+            <template v-for="(row, index) in outlineRows" :key="row.id">
+              <a class="editor-toc-child" :class="{ 'outline-drop-target': outlineDropId === row.id }" :href="`#flow-outline-${row.id}`" :draggable="row.level === 1" @click="navigateToSection($event, `flow-outline-${row.id}`)" @dragstart="outlineDragStart(row, $event)" @dragover="outlineDragOver(row, $event)" @drop="outlineDrop($event)" @dragend="finishOutlineDrag">{{ outlineNumbers[index] || `章节 ${index + 1}` }} {{ row.title || '未命名章节' }}</a>
+            </template>
+          </nav>
+          <main ref="editorBody" class="drawer-body">
+            <div v-if="loading" class="empty">加载中…</div>
+            <template v-else>
+              <section id="flow-basic" class="form-section wide section-card">
+                <div class="section-heading"><h4>基本信息</h4></div>
+                <label><span>流程名称 *</span><input v-model="form.name" placeholder="如 每日质量综合分析" /></label>
+                <label><span>说明(非必填)</span><textarea v-model="form.description" rows="2" placeholder="说明该流程处理的业务问题" /></label>
+                <div class="basic-row">
+                  <label class="toggle-row"><input v-model="form.enabled" type="checkbox" /><span>保存后启用流程</span></label>
+                </div>
+                <div class="auto-trigger-panel" :class="{ active: form.autoTriggerEnabled }">
+                  <label class="toggle-row auto-trigger-toggle"><input v-model="form.autoTriggerEnabled" type="checkbox" /><span>启用自动触发</span><em>{{ form.autoTriggerEnabled ? '已开启' : '已关闭' }}</em></label>
+                  <label v-if="form.autoTriggerEnabled"><span>自动触发定时规则</span><ScheduleRulesEditor v-model="form.scheduleRules" /><small>所选星期内，依赖数据准备完成后立即自动触发；不选默认每天都执行</small></label>
+                </div>
+              </section>
 
-            <section id="flow-triggers" class="form-section wide section-card">
-              <div class="section-heading"><div><h4>触发关键词</h4><p>关键词在所有长任务流程中唯一；聊天只会触发您自己的流程（公开流程除外）。</p></div><button class="btn primary" @click="addTrigger">添加关键词</button></div>
-              <div v-if="wasPublic" class="public-hint warning">该流程当前为公开状态（所有人的聊天都能触发）。保存修改后将自动退出公开、仅您自己可触发；如需恢复公开请联系开发人员。</div>
-              <div v-else class="public-hint">如需将流程设为公开（所有人的聊天都能触发该流程），请联系开发人员开通。</div>
-              <div v-if="!form.triggers.length" class="subtle-empty">未配置关键词，聊天不会触发这个流程。</div>
-              <div v-for="(trigger, index) in form.triggers" :key="index" class="trigger-row"><input v-model="trigger.keyword" placeholder="输入触发关键词" /><label class="toggle-row"><input v-model="trigger.enabled" type="checkbox" /><span>启用</span></label><button class="icon-button danger" title="删除关键词" @click="removeTrigger(index)">×</button></div>
-              <FlowExecutorPicker :model-value="form.executors || []" :owner-id="flowOwnerId" @update:model-value="form.executors = $event" />
-              <label class="toggle-row"><input v-model="form.notifyEnabled" type="checkbox" /><span>汇总完成后发送通知</span></label>
-              <div class="notify-config-row">
-                <span>收件人 {{ notifyReceivers.length }} 人 · 抄送 {{ ccReceivers.length }} 人</span>
-                <button type="button" class="btn" @click="recipientDialogOpen = true">管理收件人</button>
-                <small>未配置收件人时通知流程触发人</small>
-              </div>
-              <div class="notify-contact-config">
-                <h4>通知中的联系信息（必填）</h4>
-                <p>展示在任务通知邮件中，方便收件人遇到问题时联系相关人员。手机号仅作为联系信息展示，不用于发送短信。</p>
-                <label><span>联系人姓名</span><input v-model="form.notifyContactName" type="text" placeholder="填写负责解答此任务相关问题的人" /></label>
-                <label><span>联系电话（手机号）</span><input v-model="form.notifyContactPhone" type="text" placeholder="填写 11 位手机号" /></label>
-                <small>联系人和联系电话均为必填项；未填写联系人姓名时会自动回填创建人姓名，联系电话请手动补充。</small>
-                <p v-if="!contactValidationError" class="contact-mode" role="status">保存后，任务通知邮件将展示上述联系信息</p>
-                <p v-if="contactValidationError" class="error" role="status">{{ contactValidationError }}</p>
-              </div>
-              <NotifyBodyTemplateEditor :model-value="form.notifyBodyTemplate ?? ''" :flow-name="form.name" @update:model-value="form.notifyBodyTemplate = $event" />
-              <MailRecipientDialog :open="recipientDialogOpen" :to="notifyReceivers" :cc="ccReceivers" :names="receiverNames" @update:open="recipientDialogOpen = $event" @confirm="confirmRecipients" />
-            </section>
+              <section id="flow-triggers" class="form-section wide section-card">
+                <div class="section-heading"><div><h4>触发关键词</h4><p>关键词在所有长任务流程中唯一；聊天只会触发您自己的流程（公开流程除外）。</p></div><button class="btn primary" @click="addTrigger">添加关键词</button></div>
+                <div v-if="wasPublic" class="public-hint warning">该流程当前为公开状态（所有人的聊天都能触发）。保存修改后将自动退出公开、仅您自己可触发；如需恢复公开请联系开发人员。</div>
+                <div v-else class="public-hint">如需将流程设为公开（所有人的聊天都能触发该流程），请联系开发人员开通。</div>
+                <div v-if="!form.triggers.length" class="subtle-empty">未配置关键词，聊天不会触发这个流程。</div>
+                <div v-for="(trigger, index) in form.triggers" :key="index" class="trigger-row"><input v-model="trigger.keyword" placeholder="输入触发关键词" /><label class="toggle-row"><input v-model="trigger.enabled" type="checkbox" /><span>启用</span></label><button class="icon-button danger" title="删除关键词" @click="removeTrigger(index)">×</button></div>
+                <FlowExecutorPicker :model-value="form.executors || []" :owner-id="flowOwnerId" @update:model-value="form.executors = $event" />
+                <label class="toggle-row"><input v-model="form.notifyEnabled" type="checkbox" /><span>汇总完成后发送通知</span></label>
+                <div class="notify-config-row">
+                  <span>收件人 {{ notifyReceivers.length }} 人 · 抄送 {{ ccReceivers.length }} 人</span>
+                  <button type="button" class="btn" @click="recipientDialogOpen = true">管理收件人</button>
+                  <small>未配置收件人时通知流程触发人</small>
+                </div>
+                <div class="notify-contact-config">
+                  <h4>通知中的联系信息（必填）</h4>
+                  <p>展示在任务通知邮件中，方便收件人遇到问题时联系相关人员。手机号仅作为联系信息展示，不用于发送短信。</p>
+                  <label><span>联系人姓名</span><input v-model="form.notifyContactName" type="text" placeholder="填写负责解答此任务相关问题的人" /></label>
+                  <label><span>联系电话（手机号）</span><input v-model="form.notifyContactPhone" type="text" placeholder="填写 11 位手机号" /></label>
+                  <small>联系人和联系电话均为必填项；未填写联系人姓名时会自动回填创建人姓名，联系电话请手动补充。</small>
+                  <p v-if="!contactValidationError" class="contact-mode" role="status">保存后，任务通知邮件将展示上述联系信息</p>
+                  <p v-if="contactValidationError" class="error" role="status">{{ contactValidationError }}</p>
+                </div>
+                <NotifyBodyTemplateEditor :model-value="form.notifyBodyTemplate ?? ''" :flow-name="form.name" @update:model-value="form.notifyBodyTemplate = $event" />
+                <MailRecipientDialog :open="recipientDialogOpen" :to="notifyReceivers" :cc="ccReceivers" :names="receiverNames" @update:open="recipientDialogOpen = $event" @confirm="confirmRecipients" />
+              </section>
 
-            <section id="flow-outline" class="form-section wide section-card">
-              <!-- 测试期间临时隐藏流程引入入口。 -->
-              <div v-if="showReportProcesses" class="template-toolbar">
-                <span class="template-label">报告流程模板</span>
-                <el-select v-model="selectedReportProcessId" filterable clearable :loading="reportProcessLoading" placeholder="搜索并选择报告流程" class="report-process-select"><el-option v-for="item in reportProcesses" :key="item.id" :value="String(item.id)" :label="item.name" /></el-select>
-                <button class="btn primary" :disabled="!selectedReportProcessId || reportProcessLoading" @click="importReportProcess(Number(selectedReportProcessId))">引入报告流程</button>
-              </div>
-              <div v-if="showReportProcesses && importedReportSnapshot" class="import-status"><span>已引入：<strong>{{ importedReportName }}</strong></span><div><button class="btn" @click="undoReportProcessImport">撤销引入</button></div></div>
-              <div v-if="unboundNodes.length" class="import-status">
-                <span>未绑定节点（{{ unboundNodes.length }}）：请绑定到章节，或删除不再需要的节点后保存。</span>
-                <div v-for="node in unboundNodes" :key="node.nodeKey">
-                  <span>{{ nodeTitle(node) }}（{{ node.nodeKey }}）</span>
-                  <button class="btn danger-outline" :aria-label="`删除未绑定节点 ${node.nodeKey}`" @click="removeNode(form.nodes.indexOf(node))">删除节点</button>
+              <section id="flow-outline" class="form-section wide section-card">
+                <!-- 测试期间临时隐藏流程引入入口。 -->
+                <div v-if="showReportProcesses" class="template-toolbar">
+                  <span class="template-label">报告流程模板</span>
+                  <el-select v-model="selectedReportProcessId" filterable clearable :loading="reportProcessLoading" placeholder="搜索并选择报告流程" class="report-process-select"><el-option v-for="item in reportProcesses" :key="item.id" :value="String(item.id)" :label="item.name" /></el-select>
+                  <button class="btn primary" :disabled="!selectedReportProcessId || reportProcessLoading" @click="importReportProcess(Number(selectedReportProcessId))">引入报告流程</button>
                 </div>
-              </div>
-              <div class="section-heading outline-heading"><div><h4>报告输出大纲</h4><p>先写章节，章节下可添加多个执行节点；可拖拽或使用 ↑↓ 调整顺序。</p></div><button class="btn primary" @click="addOutlineRow(null)">＋ 添加章节</button></div>
-              <label class="report-title-field"><span>报告总标题</span><input v-model="reportTitle" placeholder="例如：月度经营分析报告" /><small>生成汇总时会作为整份报告的居中标题。</small></label>
-              <div v-if="!outlineRows.length" class="subtle-empty">尚未配置大纲，报告将按执行节点顺序输出。</div>
-              <template v-for="(row, rowIndex) in outlineRows" :key="row.id">
-                <div :id="`flow-outline-${row.id}`" class="outline-row" :class="{ 'outline-drop-target': outlineDropId === row.id }" :style="{ marginLeft: `${Math.min(row.level - 1, 8) * 22}px` }" :draggable="row.level === 1" @dragstart="outlineDragStart(row, $event)" @dragover="outlineDragOver(row, $event)" @drop="outlineDrop($event)" @dragend="finishOutlineDrag">
-                  <span class="outline-level" :title="`第 ${row.level} 级`">{{ outlineNumbers[rowIndex] || `L${row.level}` }}</span>
-                  <input v-model="row.title" placeholder="章节标题" />
-                  <button class="btn primary outline-description-toggle" title="添加描述" @click="row.description = row.description === undefined ? '' : undefined">{{ row.description === undefined ? '＋ 添加描述' : '移除描述' }}</button>
-                  <button class="icon-button" title="上移" :disabled="!canMoveOutlineRow(outlineRows, row.id, -1)" @click="moveOutlineChapter(row, -1)">↑</button>
-                  <button class="icon-button" title="下移" :disabled="!canMoveOutlineRow(outlineRows, row.id, 1)" @click="moveOutlineChapter(row, 1)">↓</button>
-                  <button class="icon-button" title="添加同级" @click="addOutlineRow(row)">＋</button>
-                  <button class="icon-button" title="添加子级" @click="addOutlineRow(row, true)">↳</button>
-                  <button class="icon-button danger" title="删除本节及子级" @click="removeOutlineRow(row)">×</button>
-                </div>
-                <div v-if="row.description !== undefined" class="outline-description-row" :style="{ marginLeft: `${Math.min(row.level - 1, 8) * 22 + 42}px` }">
-                  <input v-model="row.description" placeholder="添加描述" />
-                </div>
-                <div class="outline-node-area" :style="{ marginLeft: `${Math.min(row.level, 8) * 22}px` }">
-                  <FlowNodeCard v-for="(node, nodeIndex) in nodesForRow(row)" :key="node.nodeKey" class="chapter-node-card" :node="node" :title="nodeTitle(node)" :schema="schemaFor(node)" :scripts="scripts" :metrics="metrics" :script-loading="scriptLoading" :metric-loading="metricLoading" :debug-disabled="!node.scriptId || debugStarting || debugInProgress()" :dragging="dragNodeKey === node.nodeKey" :sortable="true" :is-first="nodeIndex === 0" :is-last="nodeIndex === nodesForRow(row).length - 1" remove-title="删除节点" @move="moveChapterNode(row, node.nodeKey, $event)" @remove="removeChapterNode(row, node.nodeKey)" @debug="runNodeDebug(node, $event)" @drag-start="chapterDragStart(node.nodeKey, $event)" @drag-over="chapterDragOver(row, node.nodeKey)" @drag-end="finishDrag" @script-change="onScriptSelected(node)" @script-params-change="onScriptParamsChange(node, $event)" @search-scripts="searchScripts" @search-metrics="searchMetrics" @set-metrics="setNodeMetrics(node, $event)" />
-<div class="chapter-node-actions">
-                    <button class="btn" title="新建一个 Python 节点并放到该章节" @click="addOutlineNode(row)">＋ 添加节点</button>
-                    <select v-if="unboundNodes.length" :value="''" @change="bindRowNode(row, ($event.target as HTMLSelectElement).value)"><option value="" disabled>绑定已有未绑定节点…</option><option v-for="node in unboundNodes" :key="node.nodeKey" :value="node.nodeKey">{{ nodeTitle(node) }}（{{ node.nodeKey }}）</option></select>
+                <div v-if="showReportProcesses && importedReportSnapshot" class="import-status"><span>已引入：<strong>{{ importedReportName }}</strong></span><div><button class="btn" @click="undoReportProcessImport">撤销引入</button></div></div>
+                <div v-if="unboundNodes.length" class="import-status">
+                  <span>未绑定节点（{{ unboundNodes.length }}）：请绑定到章节，或删除不再需要的节点后保存。</span>
+                  <div v-for="node in unboundNodes" :key="node.nodeKey">
+                    <span>{{ nodeTitle(node) }}（{{ node.nodeKey }}）</span>
+                    <button class="btn danger-outline" :aria-label="`删除未绑定节点 ${node.nodeKey}`" @click="removeNode(form.nodes.indexOf(node))">删除节点</button>
                   </div>
                 </div>
-              </template>
-            </section>
+                <div class="section-heading outline-heading"><div><h4>报告输出大纲</h4><p>先写章节，章节下可添加多个执行节点；可拖拽或使用 ↑↓ 调整顺序。</p></div><button class="btn primary" @click="addOutlineRow(null)">＋ 添加章节</button></div>
+                <label class="report-title-field"><span>报告总标题</span><input v-model="reportTitle" placeholder="例如：月度经营分析报告" /><small>生成汇总时会作为整份报告的居中标题。</small></label>
+                <div v-if="!outlineRows.length" class="subtle-empty">尚未配置大纲，报告将按执行节点顺序输出。</div>
+                <template v-for="(row, rowIndex) in outlineRows" :key="row.id">
+                  <div :id="`flow-outline-${row.id}`" class="outline-row" :class="{ 'outline-drop-target': outlineDropId === row.id }" :style="{ marginLeft: `${Math.min(row.level - 1, 8) * 22}px` }" :draggable="row.level === 1" @dragstart="outlineDragStart(row, $event)" @dragover="outlineDragOver(row, $event)" @drop="outlineDrop($event)" @dragend="finishOutlineDrag">
+                    <span class="outline-level" :title="`第 ${row.level} 级`">{{ outlineNumbers[rowIndex] || `L${row.level}` }}</span>
+                    <input v-model="row.title" placeholder="章节标题" />
+                    <button class="btn primary outline-description-toggle" title="添加描述" @click="row.description = row.description === undefined ? '' : undefined">{{ row.description === undefined ? '＋ 添加描述' : '移除描述' }}</button>
+                    <button class="icon-button" title="上移" :disabled="!canMoveOutlineRow(outlineRows, row.id, -1)" @click="moveOutlineChapter(row, -1)">↑</button>
+                    <button class="icon-button" title="下移" :disabled="!canMoveOutlineRow(outlineRows, row.id, 1)" @click="moveOutlineChapter(row, 1)">↓</button>
+                    <button class="icon-button" title="添加同级" @click="addOutlineRow(row)">＋</button>
+                    <button class="icon-button" title="添加子级" @click="addOutlineRow(row, true)">↳</button>
+                    <button class="icon-button danger" title="删除本节及子级" @click="removeOutlineRow(row)">×</button>
+                  </div>
+                  <div v-if="row.description !== undefined" class="outline-description-row" :style="{ marginLeft: `${Math.min(row.level - 1, 8) * 22 + 42}px` }">
+                    <input v-model="row.description" placeholder="添加描述" />
+                  </div>
+                  <div class="outline-node-area" :style="{ marginLeft: `${Math.min(row.level, 8) * 22}px` }">
+                    <FlowNodeCard v-for="(node, nodeIndex) in nodesForRow(row)" :key="node.nodeKey" class="chapter-node-card" :node="node" :title="nodeTitle(node)" :schema="schemaFor(node)" :scripts="scripts" :metrics="metrics" :script-loading="scriptLoading" :metric-loading="metricLoading" :debug-disabled="!node.scriptId || debugStarting || debugInProgress()" :dragging="dragNodeKey === node.nodeKey" :sortable="true" :is-first="nodeIndex === 0" :is-last="nodeIndex === nodesForRow(row).length - 1" remove-title="删除节点" @move="moveChapterNode(row, node.nodeKey, $event)" @remove="removeChapterNode(row, node.nodeKey)" @debug="runNodeDebug(node, $event)" @drag-start="chapterDragStart(node.nodeKey, $event)" @drag-over="chapterDragOver(row, node.nodeKey)" @drag-end="finishDrag" @script-change="onScriptSelected(node)" @script-params-change="onScriptParamsChange(node, $event)" @search-scripts="searchScripts" @search-metrics="searchMetrics" @set-metrics="setNodeMetrics(node, $event)" />
+                    <div class="chapter-node-actions">
+                      <button class="btn" title="新建一个 Python 节点并放到该章节" @click="addOutlineNode(row)">＋ 添加节点</button>
+                      <select v-if="unboundNodes.length" :value="''" @change="bindRowNode(row, ($event.target as HTMLSelectElement).value)"><option value="" disabled>绑定已有未绑定节点…</option><option v-for="node in unboundNodes" :key="node.nodeKey" :value="node.nodeKey">{{ nodeTitle(node) }}（{{ node.nodeKey }}）</option></select>
+                    </div>
+                  </div>
+                </template>
+              </section>
 
-            <div v-if="validationErrors.length" class="validation"><strong>保存前需处理：</strong><span v-for="item in validationErrors" :key="item">{{ item }}</span></div>
-            <div v-if="error" class="error">{{ error }}</div>
-          </template>
-        </main>
+              <div v-if="validationErrors.length" class="validation"><strong>保存前需处理：</strong><span v-for="item in validationErrors" :key="item">{{ item }}</span></div>
+              <div v-if="error" class="error">{{ error }}</div>
+            </template>
+          </main>
         </div>
         <footer class="drawer-footer"><button class="btn" @click="emit('update:open', false)">取消</button><button class="btn primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存流程' }}</button></footer>
       </section>
@@ -945,6 +948,7 @@ input, select, textarea { box-sizing: border-box; width: 100%; border: 1px solid
 .trigger-row { display: grid; grid-template-columns: minmax(160px, 1fr) auto 30px; align-items: center; gap: 8px; }.public-hint { padding: 8px 12px; border-left: 3px solid #f59e0b; background: #fffbeb; color: #92400e; font-size: 12px; }.public-hint.warning { border-color: #dc2626; background: #fef2f2; color: #b91c1c; }.subtle-empty, .empty { color: #94a3b8; font-size: 13px; padding: 18px 0; }
 .notify-contact-config { display: grid; gap: 10px; margin-top: 14px; padding: 14px; border: 1px solid #dbeafe; border-radius: 8px; }.notify-contact-config h4, .notify-contact-config p { margin: 0; }.notify-contact-config p, .notify-contact-config small { font-size: 12px; color: #64748b; line-height: 1.6; }.notify-contact-config .contact-mode { color: #2563eb; }.notify-contact-config .error { color: #b91c1c; }
 .notify-config-row { display: grid; gap: 8px; padding: 12px; border: 1px solid #dbeafe; border-radius: 8px; background: #eff6ff; }.notify-config-row small { color: #64748b; font-size: 12px; }
+.auto-trigger-panel { padding: 12px 14px; border: 1px solid #cbd5e1; border-radius: 10px; background: #f8fafc; }.auto-trigger-panel.active { border-color: #60a5fa; background: #eff6ff; }.auto-trigger-toggle { padding: 4px 0; }.auto-trigger-toggle input { appearance: none; width: 38px; height: 22px; margin: 0; border-radius: 999px; background: #cbd5e1; position: relative; cursor: pointer; transition: .2s; }.auto-trigger-toggle input::after { content: ''; position: absolute; width: 18px; height: 18px; top: 2px; left: 2px; border-radius: 50%; background: white; box-shadow: 0 1px 3px #64748b; transition: .2s; }.auto-trigger-toggle input:checked { background: #2563eb; }.auto-trigger-toggle input:checked::after { transform: translateX(16px); }.auto-trigger-toggle em { color: #64748b; font-size: 12px; font-style: normal; }.auto-trigger-panel.active .auto-trigger-toggle em { color: #2563eb; font-weight: 600; }
 .validation, .error { display: grid; gap: 4px; margin-top: 18px; padding: 10px 12px; border-left: 3px solid #f59e0b; background: #fffbeb; color: #92400e; font-size: 13px; }.error { border-color: #dc2626; background: #fef2f2; color: #b91c1c; }
 .btn, .icon-button { border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #475569; cursor: pointer; font-size: 13px; }.btn { padding: 7px 14px; }.btn.primary { border-color: #3b82f6; background: #3b82f6; color: #fff; }.btn.danger { border-color: #fecaca; color: #dc2626; }.btn:disabled, .icon-button:disabled { cursor: not-allowed; opacity: .45; }.icon-button { width: 28px; height: 28px; padding: 0; font-size: 18px; line-height: 1; }.icon-button.danger { color: #dc2626; border-color: #fecaca; }
 .debug-mask { position: fixed; inset: 0; z-index: 1100; display: flex; align-items: center; justify-content: center; background: rgb(15 23 42 / 45%); }

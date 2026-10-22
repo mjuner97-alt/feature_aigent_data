@@ -4,6 +4,8 @@ import com.agentscopea2a.v2.config.SkillStorageProperties;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.skillManager.entity.*;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
+import com.agentscopea2a.mapper.gauss.ScriptRegistryMapper;
+import com.agentscopea2a.entity.ScriptRegistryEntry;
 import com.agentscopea2a.v2.skillManager.notification.NotificationPayload;
 import com.agentscopea2a.v2.skillManager.notification.NotificationReceivers;
 import com.agentscopea2a.v2.skillManager.notification.NotificationContact;
@@ -62,11 +64,18 @@ public class FlowCompletionService {
     private final ObjectMapper json;
     private final LongTaskReportRenderer renderer;
     private final SkillFlowMapper mapper;
+    /** 脚本开发人员查询为可选依赖，兼容无脚本注册表的历史测试/部署。 */
+    private ScriptRegistryMapper scriptRegistryMapper;
     private FlowNotificationDispatcher notificationDispatcher;
 
     @Autowired
     public void setNotificationDispatcher(FlowNotificationDispatcher dispatcher) {
         this.notificationDispatcher = dispatcher;
+    }
+
+    @Autowired(required = false)
+    public void setScriptRegistryMapper(ScriptRegistryMapper scriptRegistryMapper) {
+        this.scriptRegistryMapper = scriptRegistryMapper;
     }
     private final MockOrgService orgService;
     private final Clock clock;
@@ -300,10 +309,31 @@ public class FlowCompletionService {
      * (名单中人员表已失效的工号直接剔除,不报错)。
      */
     private List<String> receiversFor(SkillFlowExecution execution) {
+        // 失败通知必须覆盖实际执行人/创建人及失败 Python 指标的开发人员；
+        // 长任务填写的联系人和配置名单只用于展示或成功通知，不作为失败收件人。
+        if (execution.getStatus() == FlowExecutionStatus.FAILED
+                || execution.getStatus() == FlowExecutionStatus.PARTIAL_SUCCESS) {
+            LinkedHashMap<String, Boolean> recipients = new LinkedHashMap<>();
+            addRecipient(recipients, execution.getTriggerUserId());
+            if (scriptRegistryMapper != null) {
+                for (SkillFlowNodeExecution node : mapper.selectNodeExecutions(execution.getId())) {
+                    if (node.getStatus() != FlowNodeExecutionStatus.FAILED
+                            || node.getScriptId() == null || node.getScriptId().isBlank()) continue;
+                    ScriptRegistryEntry script = scriptRegistryMapper.selectByScriptId(node.getScriptId().trim());
+                    if (script != null) addRecipient(recipients, script.getCreatedBy());
+                }
+            }
+            List<String> ids = orgService.filterExistingUserIds(new ArrayList<>(recipients.keySet()));
+            if (!ids.isEmpty()) return ids;
+        }
         List<String> configured = inRecipientScope(execution)
                 ? orgService.filterExistingUserIds(NotificationReceivers.parse(execution.getNotifyReceiversSnapshot()))
                 : List.of();
         return NotificationReceivers.withFallback(configured, execution.getTriggerUserId());
+    }
+
+    private static void addRecipient(Map<String, Boolean> recipients, String userId) {
+        if (userId != null && !userId.isBlank()) recipients.putIfAbsent(userId.trim(), Boolean.TRUE);
     }
 
     private boolean inRecipientScope(SkillFlowExecution execution) {
@@ -311,7 +341,7 @@ public class FlowCompletionService {
         FlowTriggerType type = execution.getTriggerType();
         return type == FlowTriggerType.MANUAL || type == FlowTriggerType.CHAT
                 || (triggers.isEmpty() ? type == FlowTriggerType.AUTO_METRIC
-                    : triggers.contains(type == null ? "" : type.name()));
+                : triggers.contains(type == null ? "" : type.name()));
     }
 
     /** 解析报告绝对路径,并限制在报告根目录内(防路径穿越)。 */

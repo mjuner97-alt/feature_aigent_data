@@ -182,7 +182,7 @@ public class SkillJobService {
         int current = PageResult.safePage(page), size = PageResult.safeSize(pageSize);
         List<SkillJob> rows = mapper.selectJobPage(enabled, keyword, createdBy, size, (long) (current - 1) * size);
         Map<String, String> names = rows.isEmpty() ? Map.of() : mockOrgService.getUserNameMap(rows.stream()
-                .map(SkillJob::getCreatedBy).filter(Objects::nonNull).collect(Collectors.toSet()));
+                                                                                              .map(SkillJob::getCreatedBy).filter(Objects::nonNull).collect(Collectors.toSet()));
         return new PageResult<>(rows.stream().map(j -> SkillJobSummaryDto.of(j, names.get(j.getCreatedBy()))).toList(),
                 current, size, mapper.countJobs(enabled, keyword, createdBy));
     }
@@ -191,7 +191,7 @@ public class SkillJobService {
         int current = PageResult.safePage(page), size = PageResult.safeSize(pageSize);
         List<SkillJobExecution> rows = mapper.selectExecutionCenterPage(status, createdBy, size, (long) (current - 1) * size);
         Map<String, String> names = rows.isEmpty() ? Map.of() : mockOrgService.getUserNameMap(rows.stream()
-                .map(SkillJobExecution::getCreatedBy).filter(Objects::nonNull).collect(Collectors.toSet()));
+                                                                                              .map(SkillJobExecution::getCreatedBy).filter(Objects::nonNull).collect(Collectors.toSet()));
         Map<Long, Integer> ahead = rows.stream().anyMatch(e -> "PENDING".equals(e.getStatus())) ? buildQueueAheadMap(mapper.selectInflightQueue()) : Map.of();
         return new PageResult<>(rows.stream().map(e -> SkillJobExecutionSummaryDto.of(e,
                 "PENDING".equals(e.getStatus()) ? ahead.getOrDefault(e.getId(), 0) : null, names.get(e.getCreatedBy()))).toList(),
@@ -860,3 +860,4 @@ public class SkillJobService {
 
     private record OwnedReport(Path primary, Path backup, String relativePath) {}
 }
+
