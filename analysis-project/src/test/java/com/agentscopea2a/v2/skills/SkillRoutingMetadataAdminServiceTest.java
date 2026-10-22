@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -191,6 +192,109 @@ class SkillRoutingMetadataAdminServiceTest {
 
         service.save("q2_skill", new SkillRoutingMetadataInput(
                 "summary", List.of(), List.of(), List.of(), false), "admin");
+
+        verify(repository).upsert(any());
+    }
+
+    // ==================== saveDirectExec: 直接执行配置独立权限 ====================
+
+    private void stubExistingMetadata(String creator) {
+        SkillRoutingMetadata current = new SkillRoutingMetadata("q2_skill",
+                "existing summary", List.of("达标率"), List.of("质量管理"), List.of(),
+                creator, true, null,
+                List.of("问题"), List.of("未闭环"), List.of("严重"),
+                null, null);
+        when(repository.findBySkillName("q2_skill")).thenReturn(java.util.Optional.of(current));
+    }
+
+    @Test
+    void saveDirectExecAllowsOwnerInProductionMode() {
+        when(repository.skillExists("q2_skill")).thenReturn(true);
+        when(repository.creatorForSkill("q2_skill")).thenReturn("alice");
+        when(repository.upsert(any())).thenReturn(true);
+        stubExistingMetadata("alice");
+
+        SkillRoutingMetadata result = prodService.saveDirectExec("q2_skill",
+                new SkillRoutingMetadataAdminService.DirectExecInput("script_a",
+                        java.util.Map.of("dept", "deptName")), "alice");
+
+        assertEquals("script_a", result.scriptId());
+        verify(repository).upsert(any());
+    }
+
+    @Test
+    void saveDirectExecRejectsNonOwnerEvenInTestMode() {
+        when(repository.skillExists("q2_skill")).thenReturn(true);
+        when(repository.creatorForSkill("q2_skill")).thenReturn("alice");
+
+        IllegalStateException denied = assertThrows(IllegalStateException.class,
+                () -> service.saveDirectExec("q2_skill",
+                        new SkillRoutingMetadataAdminService.DirectExecInput("script_a", java.util.Map.of()), "bob"));
+        assertEquals("ResourceAccessDenied", denied.getMessage());
+    }
+
+    @Test
+    void saveDirectExecAllowsAdminForAnySkillInProductionMode() {
+        when(repository.skillExists("q2_skill")).thenReturn(true);
+        when(repository.creatorForSkill("q2_skill")).thenReturn("alice");
+        when(repository.upsert(any())).thenReturn(true);
+        stubExistingMetadata("alice");
+
+        prodService.saveDirectExec("q2_skill",
+                new SkillRoutingMetadataAdminService.DirectExecInput("script_a", java.util.Map.of()), "admin");
+
+        verify(repository).upsert(any());
+    }
+
+    @Test
+    void saveDirectExecOnlyOverwritesDirectExecFields() {
+        when(repository.skillExists("q2_skill")).thenReturn(true);
+        when(repository.creatorForSkill("q2_skill")).thenReturn("alice");
+        when(repository.upsert(any())).thenReturn(true);
+        stubExistingMetadata("alice");
+
+        service.saveDirectExec("q2_skill",
+                new SkillRoutingMetadataAdminService.DirectExecInput("script_b",
+                        java.util.Map.of("dept", "deptName", "version", "versionPlan")), "alice");
+
+        verify(repository).upsert(argThat((SkillRoutingMetadata m) ->
+                "q2_skill".equals(m.skillName())
+                        && "existing summary".equals(m.shortSummary())
+                        && List.of("达标率").equals(m.keywords())
+                        && List.of("质量管理").equals(m.domainTags())
+                        && "alice".equals(m.creator())
+                        && m.active()
+                        && List.of("问题").equals(m.level1Keywords())
+                        && "script_b".equals(m.scriptId())
+                        && m.paramMapping() != null
+                        && m.paramMapping().contains("versionPlan")));
+    }
+
+    @Test
+    void saveDirectExecValidatesDimensionKeys() {
+        when(repository.skillExists("q2_skill")).thenReturn(true);
+        when(repository.creatorForSkill("q2_skill")).thenReturn("alice");
+        stubExistingMetadata("alice");
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> service.saveDirectExec("q2_skill",
+                        new SkillRoutingMetadataAdminService.DirectExecInput("script_a",
+                                java.util.Map.of("dept", "notAKey")), "alice"));
+        assertTrue(error.getMessage().startsWith("ParamMappingInvalidDimension"));
+    }
+
+    @Test
+    void saveDirectExecSkipsHighOverlapBlock() {
+        when(skillSkillOverlapService.report()).thenReturn(
+                new com.agentscopea2a.v2.governance.SkillSkillOverlapService.OverlapReport(
+                        false, List.of(highView("skill_alpha", true, "q2_skill", true))));
+        when(repository.skillExists("q2_skill")).thenReturn(true);
+        when(repository.creatorForSkill("q2_skill")).thenReturn("alice");
+        when(repository.upsert(any())).thenReturn(true);
+        stubExistingMetadata("alice");
+
+        service.saveDirectExec("q2_skill",
+                new SkillRoutingMetadataAdminService.DirectExecInput("script_a", java.util.Map.of()), "alice");
 
         verify(repository).upsert(any());
     }

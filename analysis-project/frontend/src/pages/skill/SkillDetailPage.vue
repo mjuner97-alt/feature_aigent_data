@@ -11,6 +11,7 @@
 import { ref, watch, computed, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import SkillMarkdown from '../../components/SkillMarkdown.vue';
+import Markdown from '../../components/Markdown.vue';
 import {
   getSkill,
   getLikeStatus,
@@ -213,9 +214,16 @@ async function loadSkillFiles(id: number) {
 const trialQuestion = ref('');
 const trialRunning = ref(false);
 const trialThinking = ref('');
+// 渲染用思考文本:裁掉尾部空白(后端每个文本块/工具调用结束后补发"已执行"空格标记,
+// 流式过程中尾部空白持续累积,原样渲染会让思考过程尾部空白逐渐增大)
+const trialThinkingView = computed(() => trialThinking.value.replace(/\s+$/, ''));
+// 最终输出(text 流)独立展示,不并入思考过程;与 think 内容的重复由后端同源数据决定
 const trialAnswer = ref('');
 const trialError = ref('');
 let trialAbortCtrl: AbortController | null = null;
+// 思考过程 details 默认收起,由用户点击 summary 手工展开
+// 试运行结果面板引用:试运行落库成功后触发其 load() 刷新列表
+const trialResultPanelRef = ref<InstanceType<typeof SkillTrialResultPanel> | null>(null);
 
 /** 中断当前试运行问数(同 ChatPanel 的停止逻辑)。 */
 function stopTrial() {
@@ -223,7 +231,8 @@ function stopTrial() {
 }
 
 /**
- * 执行试运行问数:与 /chat 页一致直调 /ai/chat SSE,流式展示 think/text;
+ * 执行试运行问数:与 /chat 页一致直调 /ai/chat SSE;
+ * think 流展示为"思考过程",text 流(最终输出)独立累加、单独成块显示在思考过程下方;
  * 流结束(含出错/中断)后调记录接口落库,question 为发起时快照。
  */
 async function runTrial() {
@@ -246,12 +255,13 @@ async function runTrial() {
       if (evt.type === 'think' && evt.chunk) {
         trialThinking.value += evt.chunk;
       } else if (evt.type === 'text') {
+        // 最终输出独立累加,不再与 think 流去重合并
         trialAnswer.value += evt.chunk;
         if (evt.finish) break;
       } else if (evt.type === 'error') {
         throw new Error(evt.error);
       }
-      // process/toolOutputUpdate 事件不展示:试运行区只关心思考与最终回答
+      // process/toolOutputUpdate 事件不展示:试运行区只关心思考过程与最终输出
     }
   } catch (e) {
     // AbortError 是用户主动停止,静默;其余展示错误
@@ -262,7 +272,9 @@ async function runTrial() {
     trialRunning.value = false;
     trialAbortCtrl = null;
     // 无论正常结束/出错/中断均落库(conversationId 前端必生成);失败静默,不影响结果展示
+    // 落库成功后自动刷新下方"试运行结果"列表(失败不刷新,列表内容不变)
     recordTrialRun(skill.value.id, convId, question)
+      .then(() => trialResultPanelRef.value?.load())
       .catch(() => {});
   }
 }
@@ -520,15 +532,17 @@ watch(() => route.params.id, () => {
         </div>
       </div>
       <div v-if="trialRunning || trialThinking || trialAnswer || trialError" class="trial-result">
-        <details v-if="trialThinking" class="trial-think">
+        <details v-if="trialThinkingView" class="trial-think">
           <summary>思考过程</summary>
-          <pre>{{ trialThinking }}</pre>
+          <Markdown :text="trialThinkingView" theme="light" isolate />
         </details>
-        <div v-if="trialAnswer" class="trial-answer">
-          <Markdown :text="trialAnswer" theme="dark" />
-        </div>
+        <!-- 问数结果:整体输出结果,默认展开,可点击标题收起/展开;isolate 使任意内容不影响页面 -->
+        <details v-if="trialAnswer" class="trial-answer" open>
+          <summary>问数结果</summary>
+          <Markdown :text="trialAnswer" theme="light" isolate />
+        </details>
         <div v-if="trialError" class="trial-error">{{ trialError }}</div>
-        <div v-if="trialRunning && !trialAnswer && !trialThinking" class="trial-loading">问数执行中…</div>
+        <div v-if="trialRunning && !trialThinking && !trialAnswer" class="trial-loading">问数执行中…</div>
       </div>
 
     </section>
@@ -536,7 +550,7 @@ watch(() => route.params.id, () => {
     <!-- ============ 试运行结果(trace 耗时/token/工具明细;独立页 /skills/:id/trial-results 复用同一组件) ============ -->
     <section class="block">
       <h3 class="block-title"><span class="bar"></span>试运行结果</h3>
-      <SkillTrialResultPanel :skill-id="skill.id" :skill-updated-at="skill.updatedAt" />
+      <SkillTrialResultPanel ref="trialResultPanelRef" :skill-id="skill.id" :skill-updated-at="skill.updatedAt" />
     </section>
 
     <!-- ============ 审批详情(当前 Skill 的待审/已审记录 + 审批操作) ============ -->
@@ -862,18 +876,26 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   background: #f8fafc;
   padding: 8px 12px;
   font-size: 13px;
+  /* 兜底:容器不被子内容横向撑破或溢出 */
+  max-width: 100%;
+  overflow: hidden;
+  min-width: 0;
 }
 .trial-think summary { cursor: pointer; color: #64748b; font-weight: 600; }
-.trial-think pre {
-  margin: 8px 0 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.6;
-  font-family: inherit;
+/* 问数结果:整体输出结果折叠块,默认展开,显示在思考过程下方,白底渲染 */
+.trial-answer {
+  border: 1px solid #e2e8f0;
+  border-left: 3px solid #6366f1;
+  border-radius: 6px;
+  padding: 8px 12px;
+  background: #fff;
+  color: #1e293b;
+  /* 兜底:容器不被子内容横向撑破或溢出 */
+  max-width: 100%;
+  overflow: hidden;
+  min-width: 0;
 }
-.trial-answer { border-left: 3px solid #6366f1; padding: 4px 12px; color: #1e293b; }
+.trial-answer summary { cursor: pointer; color: #64748b; font-weight: 600; }
 .trial-error { color: #dc2626; font-size: 13px; }
 .trial-loading { color: #64748b; font-size: 13px; }
 </style>

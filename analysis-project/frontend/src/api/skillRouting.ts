@@ -47,6 +47,17 @@ export async function setSkillRoutingActive(skillName: string, active: boolean):
   return res.json();
 }
 
+export interface SkillDirectExecInput { scriptId: string | null; paramMapping: Record<string, string>; }
+
+/** 直接执行配置独立保存: 权限=属主或管理员 (不含生产收紧), 与主配置 PUT 分离 */
+export async function saveSkillDirectExec(skillName: string, input: SkillDirectExecInput): Promise<SkillRoutingMetadata> {
+  const res = await fetch(`${BASE}/${encodeURIComponent(skillName)}/direct-exec`, {
+    method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(input),
+  });
+  await ensureOk(res, '保存直接执行配置');
+  return res.json();
+}
+
 export async function listSkillTags(type: TagType): Promise<ToolRoutingTag[]> {
   const res = await fetch(`${BASE}/tags/${type}`, { headers: headers() });
   await ensureOk(res, '加载标签词典');

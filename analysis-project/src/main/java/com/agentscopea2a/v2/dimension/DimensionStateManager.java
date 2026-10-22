@@ -336,8 +336,10 @@ public class DimensionStateManager {
             default -> matched;
         };
     }
-    // 应用 F-XXX / 群组 F-XXX-XXX — 同一正则吃下,后者只是更长
-    private static final Pattern EXPLICIT_APP = Pattern.compile("(F-[A-Za-z][A-Za-z0-9-]*)");
+    // 应用 F-XXX / 群组 F-XXX-XXX — 同一正则吃下,后者只是更长。
+    // 应用码纯英文+连字符 (F-GCMS / F-ATP-INNER), 不含数字: 否则 "F-FPA4季度"
+    // 会贪婪吃进 "4" 把应用名错切成 F-FPA4
+    private static final Pattern EXPLICIT_APP = Pattern.compile("(F-[A-Za-z][A-Za-z-]*)");
     // 小组:KNOWLEDGE.md 举例都 5+ 字(如"金融市场自营测试组"),放宽到 {2,}
     private static final Pattern EXPLICIT_TEAM = Pattern.compile("([一-龥A-Za-z0-9]{2,}组)");
     // 产品线:同上放宽,并补常见非"...产品线"后缀的固定名(普惠金融 / 代理国库等)
@@ -659,12 +661,17 @@ public class DimensionStateManager {
 
         // 应用（F-xxx）— 优先级最高：alias 解析出组/产品线但问题同时含 F-xxx 编码时，
         // 保持既有 app > 组/产品线 的优先序，alias 结果让位（歧义项仍记录，供短路反问）
+        // 多值收集（"F-A、F-B" → 两个应用），与部门的收集口径一致
         Matcher appMatcher = EXPLICIT_APP.matcher(q);
-        if (appMatcher.find()) {
+        Set<String> apps = new LinkedHashSet<>();
+        while (appMatcher.find()) {
+            apps.add(appMatcher.group());
+        }
+        if (!apps.isEmpty()) {
             explicit.setPeerDimension(
                     new DimensionState.PeerDimension(
                             DimensionState.PeerDimensionType.APPLICATION,
-                            List.of(appMatcher.group())));
+                            new ArrayList<>(apps)));
         }
 
         // 同义词表解析结果（标准名直接进状态，保证指纹稳定）— 优先于小组/产品线正则

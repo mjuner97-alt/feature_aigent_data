@@ -511,15 +511,20 @@ public class DirectSkillExecutor {
      *  形状按 schema 类型定 (direct-exec-param-type-plan.md §2.2)。 */
     private Map<String, Object> buildParams(Map<String, String> mapping, List<ParamSpec> schema,
                                             DimensionExtraction extraction) {
+        Set<String> suppressedKeys = timeFamilyLoserKeys(mapping, extraction);
+        boolean skipDefaultTime = requirementWithoutExplicitTime(extraction);
         Map<String, Object> params = new LinkedHashMap<>();
         for (Map.Entry<String, String> e : mapping.entrySet()) {
             String param = e.getKey();
             if (schema != null && schema.stream().noneMatch(s -> param.equals(s.name()))) {
                 continue; // params_schema 白名单外不传
             }
+            if (suppressedKeys.contains(e.getValue())) {
+                continue; // 双时间键脚本的时间二选一败者 (2026/10/21 规则)
+            }
             List<String> values = valuesFor(extraction, e.getValue());
             if (values.isEmpty()) {
-                List<String> fallback = defaultTimeValues(e.getValue());
+                List<String> fallback = skipDefaultTime ? List.of() : defaultTimeValues(e.getValue());
                 if (fallback.isEmpty()) {
                     continue;
                 }
@@ -528,6 +533,50 @@ public class DirectSkillExecutor {
             params.put(param, shapeValue(param, schema, values));
         }
         return params;
+    }
+
+    /**
+     * 特例 (2026/10/21 拍板): 问题包含需求项/需求子条目且未显式提及版本计划/季度时,
+     * 不补默认在建版本 — 两个时间维度传给脚本的值为空 (需求项脚本按需求项全历史口径自查)。
+     * 显式提及任一时间仍正常传该时间 (需求项+「12月版」→ 只传版本)。
+     */
+    private static boolean requirementWithoutExplicitTime(DimensionExtraction extraction) {
+        boolean hasRequirement = (extraction.itemNo() != null && !extraction.itemNo().isEmpty())
+                || (extraction.subItemNo() != null && !extraction.subItemNo().isEmpty());
+        if (!hasRequirement) {
+            return false;
+        }
+        boolean explicitTime =
+                (extraction.versionPlan() != null && !extraction.versionPlan().isEmpty())
+                        || (extraction.vestQuarter() != null && !extraction.vestQuarter().isEmpty());
+        return !explicitTime;
+    }
+
+    /**
+     * 时间二选一 (2026/10/21 拍板): 脚本同时支持版本计划与季度维度 (param_mapping 同时含
+     * versionPlan 家族与 vestQuarter 家族, 含 .start/.end 后缀) 时, 按用户显式提及决定唯一
+     * 胜者 — 显式提及季度 → 只传季度; 显式提及版本计划 (含在建版本锚点) → 只传版本;
+     * 都未提及 → 默认在建版本计划。败者家族整体抑制, 防止「12月版」派生出季度一起传给脚本。
+     * mapping 只映射单侧时间家族时不干预 (季度从版本派生的既有口径不变)。
+     */
+    private static Set<String> timeFamilyLoserKeys(Map<String, String> mapping,
+                                                   DimensionExtraction extraction) {
+        boolean hasVersionFamily = false;
+        boolean hasQuarterFamily = false;
+        for (String dimKey : mapping.values()) {
+            if (dimKey.equals("versionPlan") || dimKey.startsWith("versionPlan.")) {
+                hasVersionFamily = true;
+            } else if (dimKey.equals("vestQuarter") || dimKey.startsWith("vestQuarter.")) {
+                hasQuarterFamily = true;
+            }
+        }
+        if (!hasVersionFamily || !hasQuarterFamily) {
+            return Set.of();
+        }
+        boolean quarterExplicit = extraction.vestQuarter() != null && !extraction.vestQuarter().isEmpty();
+        return quarterExplicit
+                ? Set.of("versionPlan", "versionPlan.start", "versionPlan.end")
+                : Set.of("vestQuarter", "vestQuarter.start", "vestQuarter.end");
     }
 
     /** 拍板①② (direct-exec-param-type-plan.md §4): schema 声明 type=array → 恒传 List 含单值,
