@@ -726,6 +726,7 @@
             SELECT <include refid="executionListColumns"/>
             FROM skill_flow_execution e WHERE 1=1
             <include refid="executionListFilters"/>
+            <if test="keyword != null and keyword != ''">AND LOWER(e.flow_name) LIKE CONCAT('%', LOWER(#{keyword}), '%')</if>
             ORDER BY e.created_at DESC, e.id DESC LIMIT #{limit} OFFSET #{offset}
         )
         <include refid="executionPageAggregates"/>
@@ -737,6 +738,7 @@
         <if test="userId != null and userId != ''">AND trigger_user_id=#{userId}</if>
         <if test="status != null and status != ''">AND status=#{status}</if>
         <if test="createdBy != null and createdBy != ''">AND trigger_user_id=#{createdBy}</if>
+        <if test="keyword != null and keyword != ''">AND LOWER(flow_name) LIKE CONCAT('%', LOWER(#{keyword}), '%')</if>
     </select>
 
     <!-- 扫描仍在等指标(WAITING_METRICS)的执行,供门控重算和跨天超时兜底(expirePreviousDays)使用 -->
@@ -1004,6 +1006,7 @@
             SELECT <include refid="executionListColumns"/>
             FROM skill_flow_execution e WHERE 1=1
             <include refid="executionListFilters"/>
+            <if test="keyword != null and keyword != ''">AND LOWER(e.flow_name) LIKE CONCAT('%', LOWER(#{keyword}), '%')</if>
             <choose>
                 <when test="source == 'report-template'">AND e.flow_id IS NULL AND e.report_process_id IS NOT NULL</when>
                 <when test="source == 'long-task'">AND e.flow_id IS NOT NULL</when>
@@ -1020,6 +1023,7 @@
         <if test="userId != null and userId != ''">AND trigger_user_id=#{userId}</if>
         <if test="status != null and status != ''">AND status=#{status}</if>
         <if test="createdBy != null and createdBy != ''">AND trigger_user_id=#{createdBy}</if>
+        <if test="keyword != null and keyword != ''">AND LOWER(flow_name) LIKE CONCAT('%', LOWER(#{keyword}), '%')</if>
         <choose>
             <when test="source == 'report-template'">AND flow_id IS NULL AND report_process_id IS NOT NULL</when>
             <when test="source == 'long-task'">AND flow_id IS NOT NULL</when>
@@ -1027,3 +1031,4 @@
         </choose>
     </select>
 </mapper>
+
