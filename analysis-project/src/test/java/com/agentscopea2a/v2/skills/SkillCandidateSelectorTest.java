@@ -213,20 +213,21 @@ class SkillCandidateSelectorTest {
     }
 
     @Test
-    void l1HitNarrowsPoolToL1HitAndL1UnconfiguredSkills() {
+    void andSatisfiedLevelSkillLeadsAndLegacyLeafSkillCoexists() {
         SkillRoutingMetadata skill1 = metadataWithLevels("skill1", List.of("未闭环"), List.of("问题"), List.of(), List.of());
         SkillRoutingMetadata skill2 = metadataWithLevels("skill2", List.of("未闭环"), List.of("研发问题"), List.of(), List.of());
         SkillRoutingMetadata skill3 = metadataWithLevels("skill3", List.of("未闭环"), List.of("测试问题"), List.of(), List.of());
         SkillRoutingMetadata skill4 = metadataWithLevels("skill4", List.of("未闭环"), List.of(), List.of(), List.of());
 
-        // §8 两阶段 (拍板⑥): skill2/skill3 靠 L1"问题"入阶段一池, skill4 只配叶层 → 阶段一
-        // 命中时出局; L1 收窄: skill1 命中 → skill2/skill3 (L1 配置了却未命中) 出局
+        // 2026/10/22 四次定稿: skill1 仅配 L1 且"问题"命中 → AND 满足; skill2/skill3
+        // 配置了 L1 却未命中 → 完全出局; skill4 三层全空走存量轨, 叶层"未闭环"命中并存
+        // (双轨并存, 不再被拍板⑥挤出), 层级轨排前
         SkillCandidateSelection selection = selector.select(
                 List.of(skill(skill1.skillName()), skill(skill2.skillName()),
                         skill(skill3.skillName()), skill(skill4.skillName())),
                 List.of(skill1, skill2, skill3, skill4), "三部10月未闭环问题");
 
-        assertEquals(List.of("skill1"), selection.skillNames());
+        assertEquals(List.of("skill1", "skill4"), selection.skillNames());
         assertFalse(selection.fallbackExpanded());
     }
 
@@ -246,43 +247,42 @@ class SkillCandidateSelectorTest {
     }
 
     @Test
-    void deepestLayerHitAloneAdmitsSkill() {
+    void deepLayerWordAloneNoLongerAdmitsSkill() {
         SkillRoutingMetadata codeQuality = metadataWithLevels("code_quality", List.of(), List.of("质量"), List.of("代码"), List.of("告警"));
         SkillRoutingMetadata generic = metadata("generic", List.of("指标"));
 
-        // 问题只含 L3 词 "告警", 不含 L1/L2 → 任一层命中即入围, code_quality 靠 L3 (1500 分) 排最前
+        // 2026/10/22 四次定稿: 问题只含 L3 词 "告警", L1/L2 配置了却未命中 → AND 不满足,
+        // code_quality 完全出局 (深层词单独不再入围); generic 叶层"指标"也未命中 → 空目录
         SkillCandidateSelection selection = selector.select(
                 List.of(skill(codeQuality.skillName()), skill(generic.skillName())),
                 List.of(codeQuality, generic), "扫描告警");
 
-        assertEquals(List.of("code_quality"), selection.skillNames());
-        assertFalse(selection.fallbackExpanded());
+        assertTrue(selection.skillNames().isEmpty());
     }
 
     @Test
-    void upperLayerHitKeepsSkillVisibleEvenWhenUnconfiguredSkillsPadThePool() {
-        SkillRoutingMetadata appQuality = metadataWithLevels("app_quality", List.of("质量"), List.of("质量"), List.of("应用"), List.of());
+    void configuredL3MissDropsSkillAndLegacyLeafSkillSurvives() {
+        SkillRoutingMetadata appQuality = metadataWithLevels("app_quality", List.of("质量"), List.of("质量"), List.of("质量"), List.of("应用"));
         SkillRoutingMetadata generic = metadata("generic", List.of("质量"));
 
-        // 关键场景: 池子里存在未配置层级的 generic skill 使每层收窄都"成功",
-        // app_quality 仅命中 L1 (质量) 也必须保底可见, 不能被 L2 淘汰;
-        // generic 只配叶层 → §8 拍板⑥ 阶段一命中时出局
+        // app_quality 配置了 L3"应用"却未命中 → AND 不满足完全出局;
+        // generic 三层全空走存量轨, 叶层"质量"命中照常入围
         SkillCandidateSelection selection = selector.select(
                 List.of(skill(appQuality.skillName()), skill(generic.skillName())),
                 List.of(appQuality, generic), "质量情况");
 
-        assertEquals(List.of("app_quality"), selection.skillNames());
+        assertEquals(List.of("generic"), selection.skillNames());
     }
 
     @Test
-    void l1HitAloneAdmitsSkillWhenL2Misses() {
+    void configuredL2MissDropsSkill() {
         SkillRoutingMetadata single = metadataWithLevels("single", List.of(), List.of("问题"), List.of("未闭环"), List.of());
 
+        // 仅 L1"问题"命中, 配置了的 L2"未闭环"未命中 → AND 不满足, 完全出局
         SkillCandidateSelection selection = selector.select(
                 List.of(skill(single.skillName())), List.of(single), "问题总量是多少");
 
-        assertEquals(List.of("single"), selection.skillNames());
-        assertFalse(selection.fallbackExpanded());
+        assertTrue(selection.skillNames().isEmpty());
     }
 
     @Test
@@ -296,17 +296,17 @@ class SkillCandidateSelectorTest {
     }
 
     @Test
-    void leafOnlySkillOutWhenPhaseOneLevelHitExists() {
+    void leafOnlySkillCoexistsWhenLevelSkillQualified() {
         SkillRoutingMetadata leafOnly = metadataWithLevels("leaf_only", List.of("质量"), List.of(), List.of(), List.of());
         SkillRoutingMetadata l3Only = metadataWithLevels("l3_only", List.of(), List.of(), List.of(), List.of("质量"));
 
-        // §8 两阶段 (拍板⑥): l3_only 靠 L3 命中入阶段一池 → 阶段一非空, 只配叶层的
-        // leaf_only 出局 (2026/10/14 权重倒序「叶层最高」体系已被 §8 推翻)
+        // 2026/10/22 四次定稿 (双轨并存, 取代拍板⑥): l3_only 仅配 L3 且命中 → AND 满足;
+        // leaf_only 三层全空走存量轨, 叶层"质量"命中并存, 层级轨排前
         SkillCandidateSelection selection = selector.select(
                 List.of(skill(l3Only.skillName()), skill(leafOnly.skillName())),
                 List.of(leafOnly, l3Only), "质量");
 
-        assertEquals(List.of("l3_only"), selection.skillNames());
+        assertEquals(List.of("l3_only", "leaf_only"), selection.skillNames());
     }
 
     @Test
@@ -360,10 +360,10 @@ class SkillCandidateSelectorTest {
     void fallbackSelectionExpandsToFallbackVisibleSkills() {
         List<SkillRoutingMetadata> metadata = new java.util.ArrayList<>();
         for (int i = 0; i < 12; i++) {
-            metadata.add(metadataWithLevels("lv_skill_" + i, List.of(), List.of("问题"), List.of("未闭环"), List.of()));
+            // L1"问题"命中但叶层"未闭环"未命中 → 命中链不完整 (partial), 可信度低 → 放宽到 10
+            metadata.add(metadataWithLevels("lv_skill_" + i, List.of("未闭环"), List.of("问题"), List.of(), List.of()));
         }
 
-        // 问题只命中 L1, 全部候选 L2 未命中 → 命中链不完整 (保底存活), 可信度低 → 放宽到 10 (而非 5)
         SkillCandidateSelection selection = selector.select(
                 metadata.stream().map(m -> skill(m.skillName())).toList(), metadata, "问题总量是多少");
 
@@ -428,6 +428,56 @@ class SkillCandidateSelectorTest {
 
         assertEquals("named_skill", selection.skillNames().get(0));
         assertTrue(selection.explicitNameMatched());
+    }
+
+    @Test
+    void strictAndAllConfiguredLevelsMustHit() {
+        SkillRoutingMetadata qi = metadataWithLevels("wenshu_qi", List.of("wenshu", "dabiaolv"),
+                List.of("Qi", "卡口", "Q1", "Q2"), List.of("达标率", "通过率", "完成率"), List.of());
+
+        // 三层各命中一词 (L1"Qi" + L2"达标率") → AND 满足, 叶层拼音词未命中不拦
+        SkillCandidateSelection hit = selector.select(
+                List.of(skill(qi.skillName())), List.of(qi), "Qi 各阶段达标率怎么样");
+        assertEquals(List.of("wenshu_qi"), hit.skillNames());
+        assertFalse(hit.fallbackExpanded());
+
+        // 配置了的 L2 未命中 → 完全出局 (即使 L1 命中)
+        SkillCandidateSelection l2Miss = selector.select(
+                List.of(skill(qi.skillName())), List.of(qi), "Qi 卡口整体情况怎么样");
+        assertTrue(l2Miss.skillNames().isEmpty());
+    }
+
+    @Test
+    void onlyL1ConfiguredRequiresL1Hit() {
+        SkillRoutingMetadata l1Only = metadataWithLevels("l1_only", List.of(), List.of("部门例会"), List.of(), List.of());
+
+        SkillCandidateSelection hit = selector.select(
+                List.of(skill(l1Only.skillName())), List.of(l1Only), "部门例会材料整理");
+        assertEquals(List.of("l1_only"), hit.skillNames());
+
+        SkillCandidateSelection miss = selector.select(
+                List.of(skill(l1Only.skillName())), List.of(l1Only), "项目周报汇总");
+        assertTrue(miss.skillNames().isEmpty());
+    }
+
+    @Test
+    void legacyDomainKeywordSkillUnaffectedByLevelSkillHits() {
+        // 复刻现网形态: wenshu_qi 配 L1+L2 层级关键词; dept 例会 skill 仅领域标签+叶层关键词
+        SkillRoutingMetadata qi = metadataWithLevels("wenshu_qi", List.of(),
+                List.of("Qi", "卡口", "Q1", "Q2"), List.of("达标率", "通过率", "完成率"), List.of());
+        SkillRoutingMetadata deptQ1 = metadataWithDomain("dept_q1", List.of("Q1", "需求卡口"), List.of("部门例会"));
+
+        // 层级 skill L2 未命中 → 出局; 存量 skill 叶层"Q1/需求卡口"命中, 不被层级命中挤出
+        SkillCandidateSelection legacyAlone = selector.select(
+                List.of(skill(qi.skillName()), skill(deptQ1.skillName())),
+                List.of(qi, deptQ1), "Q1 部门例会需求卡口不达标情况");
+        assertEquals(List.of("dept_q1"), legacyAlone.skillNames());
+
+        // 双轨并存: 层级 skill AND 满足排前, 存量 skill 叶层命中跟随
+        SkillCandidateSelection both = selector.select(
+                List.of(skill(qi.skillName()), skill(deptQ1.skillName())),
+                List.of(qi, deptQ1), "Q1 达标率情况");
+        assertEquals(List.of("wenshu_qi", "dept_q1"), both.skillNames());
     }
 
     private static SkillRoutingMetadata metadata(String name, List<String> keywords) {
