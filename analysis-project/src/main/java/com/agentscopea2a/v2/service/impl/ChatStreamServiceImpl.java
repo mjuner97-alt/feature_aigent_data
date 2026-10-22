@@ -448,11 +448,6 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         StreamContext streamCtx = new StreamContext(emitter, req, ctx, userMsg, episodicSessionId, traceCtx, requestId);
         aiChatMonitor.start();
 
-        // 澄清短路直接返回最终提示；其余请求先发送状态，避免等待模型首 token 时看起来像卡死。
-        if (clarifyPrompt == null) {
-            sendVisibleThinkStatus(streamCtx, strategy, "正在调用模型，请稍候...\n");
-        }
-
         // 清理逻辑：取消订阅、清理 artifact、持久化 episodic 记忆、移除进行中调用标记
         Runnable cleanup = buildCleanup(streamCtx, callKey, inFlight);
 
@@ -525,6 +520,12 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                 return emitter;
             }
         }
+
+        // 反问轮（歧义/缺参）已在上方短路返回；直接执行轮也各自发状态。走到这里才是
+        // LLM 流式链路，先发等待状态，避免等待模型首 token 时看起来像卡死。
+        // 反问轮必须保持纯一次性文本事件（与 SkillFlowChatRouter.completed 同款，
+        // 不发任何 think/done），否则内网前端不渲染反问文本。
+        sendVisibleThinkStatus(streamCtx, strategy, "正在调用模型，请稍候...\n");
 
         // 普通流程先使用 30 分钟档案；真实派单 analyze_data 后由 Hook 把同一个控制器
         // 升级到 60 分钟绝对截止时间。容器超时从一开始就按最长档案创建。
