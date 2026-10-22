@@ -125,7 +125,9 @@ public class ReportOutlineComposer {
             if (item.children() != null && !item.children().isEmpty()) {
                 composeItems(item.children(), numbering, counters, byNodeKey, children, depth + 1);
             }
-            if (section.length() > 0 || children.length() > 0) {
+            // 章节描述属于大纲本身，即使绑定节点没有结果或全部失败，也必须保留在最终报告中。
+            boolean hasDescription = item.description() != null && !item.description().isBlank();
+            if (section.length() > 0 || children.length() > 0 || hasDescription) {
                 report.append("<h").append(level + 1).append(" data-report-outline-heading=\"true\">")
                         .append(escapeHtml(renderNumbering(level, counters, numbering)
                                 + Objects.toString(item.title(), "").trim()))
