@@ -114,8 +114,9 @@ public class V2DimensionConfig {
     @Bean
     public DimensionStateMiddleware dimensionStateMiddleware(
             DimensionStateManager dimensionStateManager,
-            @Value("${harness.a2a.dimension.max-chars:2000}") int maxChars) {
-        return new DimensionStateMiddleware(dimensionStateManager, maxChars);
+            @Value("${harness.a2a.dimension.max-chars:2000}") int maxChars,
+            com.agentscopea2a.v2.dimension.PersonalDimensionResolver personalDimensionResolver) {
+        return new DimensionStateMiddleware(dimensionStateManager, maxChars, personalDimensionResolver);
     }
 
     /**
@@ -128,6 +129,25 @@ public class V2DimensionConfig {
             @Value("${harness.a2a.dimension.calendar-cache-ttl-seconds:1800}") long cacheTtlSeconds) {
         return new com.agentscopea2a.v2.dimension.VersionCalendarRepository(
                 new org.springframework.jdbc.core.JdbcTemplate(dataSource), cacheTtlSeconds);
+    }
+
+    /**
+     * 人员台账数据访问层（人员台账维度方案 §2）：gauss-common 数据源同
+     * VersionCalendarRepository，TTL 30 分钟（台账月度更新，天级粒度足够）。
+     */
+    @Bean
+    public com.agentscopea2a.v2.dimension.PersonLedgerRepository personLedgerRepository(
+            @Qualifier("gaussCommonDataSource") DataSource dataSource,
+            @Value("${harness.a2a.dimension.person-ledger-cache-ttl-seconds:1800}") long cacheTtlSeconds) {
+        return new com.agentscopea2a.v2.dimension.PersonLedgerRepository(
+                new org.springframework.jdbc.core.JdbcTemplate(dataSource), cacheTtlSeconds);
+    }
+
+    /** "我X" 口语维度解析（人员台账维度方案 §3）+ 人名字典扫描（§4.1）。 */
+    @Bean
+    public com.agentscopea2a.v2.dimension.PersonalDimensionResolver personalDimensionResolver(
+            com.agentscopea2a.v2.dimension.PersonLedgerRepository personLedgerRepository) {
+        return new com.agentscopea2a.v2.dimension.PersonalDimensionResolver(personLedgerRepository);
     }
 
     /**

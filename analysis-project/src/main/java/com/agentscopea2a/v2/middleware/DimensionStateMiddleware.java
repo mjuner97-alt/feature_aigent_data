@@ -18,12 +18,15 @@ package com.agentscopea2a.v2.middleware;
 import com.agentscopea2a.v2.dimension.AliasResolver;
 import com.agentscopea2a.v2.dimension.DimensionState;
 import com.agentscopea2a.v2.dimension.DimensionStateManager;
+import com.agentscopea2a.v2.dimension.PersonLedgerRepository;
+import com.agentscopea2a.v2.dimension.PersonalDimensionResolver;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.middleware.MiddlewareBase;
 import reactor.core.publisher.Mono;
 
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -50,14 +53,22 @@ public class DimensionStateMiddleware implements MiddlewareBase {
 
     private final DimensionStateManager dimensionStateManager;
     private final int maxChars;
+    /** 人员台账口语解析（人员台账维度方案 §3.3b/§4.4，LLM 回退路径兜底注入）；null 跳过。 */
+    private final PersonalDimensionResolver personalResolver;
 
     public DimensionStateMiddleware(DimensionStateManager dimensionStateManager) {
-        this(dimensionStateManager, 2000);
+        this(dimensionStateManager, 2000, null);
     }
 
     public DimensionStateMiddleware(DimensionStateManager dimensionStateManager, int maxChars) {
+        this(dimensionStateManager, maxChars, null);
+    }
+
+    public DimensionStateMiddleware(DimensionStateManager dimensionStateManager, int maxChars,
+                                    PersonalDimensionResolver personalResolver) {
         this.dimensionStateManager = dimensionStateManager;
         this.maxChars = Math.max(0, maxChars);
+        this.personalResolver = personalResolver;
     }
 
     @Override
@@ -78,8 +89,14 @@ public class DimensionStateMiddleware implements MiddlewareBase {
                         dimensionStateManager.processQuestionInContext(ctx, userQuestion);
                 DimensionState state = result.newState();
 
-                if (state != null && state.hasDimensions()) {
-                    String dimensionPrefix = formatDimensionContext(state, result.resolvedAliases());
+                // 人员台账 enrich（§3.3b/§4.4，LLM 回退兜底）：我X/人名 → state + 统一认证号注入行，
+                // state 原地变更（ctx 持同引用，跨轮继承自动生效）
+                java.util.List<String> perNoLines = enrichPersonal(state, ctx, userQuestion);
+
+                if (state != null && (state.hasDimensions()
+                        || (perNoLines != null && !perNoLines.isEmpty()))) {
+                    String dimensionPrefix = formatDimensionContext(state, result.resolvedAliases(),
+                            perNoLines);
                     if (maxChars == 0) {
                         return systemPrompt;
                     }
@@ -96,6 +113,83 @@ public class DimensionStateMiddleware implements MiddlewareBase {
                 return systemPrompt;
             }
         });
+    }
+
+    /**
+     * 人员台账 enrich（LLM 回退路径，§3.3b/§4.4）：我X → departments/peerDimension（三选一，
+     * 先命中者胜 + warn）/persons；人名扫描唯一命中 → persons + 统一认证号注入行。
+     * 直接执行路径（参数契约）在 DirectSkillExecutor.plan，这里只是提示性注入。
+     */
+    private java.util.List<String> enrichPersonal(DimensionState state, RuntimeContext ctx,
+                                                  String userQuestion) {
+        if (personalResolver == null || state == null) {
+            return java.util.List.of();
+        }
+        String userId = ctx.getUserId();
+        PersonalDimensionResolver.PersonalResolution res = personalResolver.resolve(userQuestion, userId);
+        if (res.anyHit() && res.ledger() != null) {
+            if (res.myDept() && !res.ledger().depts().isEmpty()) {
+                state.setDepartments(merge(state.getDepartments(), res.ledger().depts()));
+            }
+            if (res.myGroup() && !res.ledger().groups().isEmpty()) {
+                setPeerIfAbsent(state, DimensionState.PeerDimensionType.TEAM, res.ledger().groups());
+            }
+            if (res.myApp() && !res.ledger().apps().isEmpty()) {
+                setPeerIfAbsent(state, DimensionState.PeerDimensionType.APPLICATION, res.ledger().apps());
+            }
+            if (res.myProductLine() && !res.ledger().productLines().isEmpty()) {
+                setPeerIfAbsent(state, DimensionState.PeerDimensionType.PRODUCT_LINE,
+                        res.ledger().productLines());
+            }
+            if (res.myself() && res.ledger().name() != null) {
+                state.setPersons(merge(state.getPersons(), List.of(res.ledger().name())));
+            }
+        }
+        // §4.4 人名扫描（唯一命中直出统一认证号；重名不反问——直接执行轨已覆盖主场景）
+        java.util.List<String> perNoLines = new java.util.ArrayList<>();
+        String masked = DimensionStateManager.maskForPersonScan(userQuestion);
+        for (String name : personalResolver.scanNames(masked)) {
+            java.util.List<PersonLedgerRepository.PersonIdentity> identities =
+                    personalResolver.resolveName(name);
+            if (identities.size() == 1 && identities.get(0).perNo() != null) {
+                PersonLedgerRepository.PersonIdentity identity = identities.get(0);
+                perNoLines.add("「" + name + "」→ 统一认证号 " + identity.perNo()
+                        + (identity.depts().isEmpty() ? "" : "（" + String.join(" / ", identity.depts()) + "）"));
+                state.setPersons(merge(state.getPersons(), List.of(name)));
+            } else if (identities.size() > 1) {
+                perNoLines.add("「" + name + "」存在重名（" + identities.size() + "人），"
+                        + "如用户指具体人员请先向其确认");
+            }
+        }
+        return perNoLines;
+    }
+
+    private static void setPeerIfAbsent(DimensionState state, DimensionState.PeerDimensionType type,
+                                        java.util.List<String> values) {
+        DimensionState.PeerDimension existing = state.getPeerDimension();
+        if (existing != null && !existing.isEmpty()) {
+            log.warn("[dim-mw] peerDimension 已有 {}={}, 我X命中 {} 不覆盖（三选一先命中者胜）",
+                    existing.getType(), existing.getValues(), type);
+            return;
+        }
+        state.setPeerDimension(new DimensionState.PeerDimension(type, values));
+    }
+
+    private static java.util.List<String> merge(java.util.List<String> base, java.util.List<String> additions) {
+        java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<>();
+        if (base != null) {
+            base.forEach(v -> {
+                if (v != null && !v.isBlank()) {
+                    out.add(v);
+                }
+            });
+        }
+        for (String v : additions) {
+            if (v != null && !v.isBlank()) {
+                out.add(v);
+            }
+        }
+        return new java.util.ArrayList<>(out);
     }
 
     /**
@@ -117,7 +211,8 @@ public class DimensionStateMiddleware implements MiddlewareBase {
     }
 
     private String formatDimensionContext(
-            DimensionState state, java.util.List<AliasResolver.ResolvedAlias> resolvedAliases) {
+            DimensionState state, java.util.List<AliasResolver.ResolvedAlias> resolvedAliases,
+            java.util.List<String> perNoLines) {
         StringBuilder sb = new StringBuilder("<dimension_context>\n");
         sb.append("当前对话维度上下文。以下维度值是系统根据用户口语化表述确定性解析出的标准名（非猜测），"
                 + "视为用户本轮提问的确定查询条件：构造查询参数时必须直接采用，"
@@ -165,6 +260,12 @@ public class DimensionStateMiddleware implements MiddlewareBase {
         }
         if (state.getPersons() != null && !state.getPersons().isEmpty()) {
             sb.append("人：").append(String.join("、", state.getPersons())).append("\n");
+        }
+        if (perNoLines != null && !perNoLines.isEmpty()) {
+            sb.append("\n人员解析（确定性结果，非猜测）：\n");
+            perNoLines.forEach(line -> sb.append("- ").append(line).append("\n"));
+            sb.append("涉及上述人员的查询，参数 perNo 直接使用对应统一认证号，"
+                    + "禁止向用户追问或要求确认。\n");
         }
         sb.append("</dimension_context>");
         return sb.toString() + "\n\n";

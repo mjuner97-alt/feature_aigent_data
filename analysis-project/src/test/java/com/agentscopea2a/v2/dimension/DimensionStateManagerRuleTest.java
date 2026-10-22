@@ -6,6 +6,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** 规则提取：部门简称/别名必须归一化到 KNOWLEDGE.md 标准名，否则同指纹积累失效。 */
@@ -74,15 +75,24 @@ class DimensionStateManagerRuleTest {
     @Test
     void multipleQuartersCollectedWithAliases() {
         String y = String.valueOf(currentYear());
-        DimensionState.TimeDimension time = extractTime("Q1和二季度的缺陷情况");
+        DimensionState.TimeDimension time = extractTime("一季度和二季度的缺陷情况");
         assertEquals(DimensionState.TimeDimensionType.QUARTER, time.getType());
         assertEquals(List.of(y + "年1季度", y + "年2季度"), time.getValues());
     }
 
     @Test
+    void bareQTokenIsNotQuarter() {
+        // 裸 Q1-Q4 是 QI卡口 指标值, 季度解析不再认 (2026-10-22), 无词表时不产出季度
+        String y = String.valueOf(currentYear());
+        DimensionState.TimeDimension time = extractTime("Q1和二季度的缺陷情况");
+        assertEquals(DimensionState.TimeDimensionType.QUARTER, time.getType());
+        assertEquals(List.of(y + "年2季度"), time.getValues());
+    }
+
+    @Test
     void quarterShortAndFullDedupe() {
         String y = String.valueOf(currentYear());
-        DimensionState.TimeDimension time = extractTime(y + "年1季度和Q1质量");
+        DimensionState.TimeDimension time = extractTime(y + "年1季度和1季度质量");
         assertEquals(List.of(y + "年1季度"), time.getValues());
     }
 
@@ -282,5 +292,87 @@ class DimensionStateManagerRuleTest {
         var analysis = manager.analyzeQuestionRuleBased("卡口达标率");
         assertTrue(analysis.getExplicitDimensions().getTimeDimension() == null);
         assertTrue(analysis.getExplicitDimensions().getDepartments() == null);
+    }
+
+    // ==================== §5.1 粒度词守卫（人员台账维度方案） ====================
+
+    private DimensionState.PeerDimension extractPeer(String question) {
+        return manager.analyzeQuestionRuleBased(question)
+                .getExplicitDimensions().getPeerDimension();
+    }
+
+    @Test
+    void granularitySuffixAfterDeptAndTimeIsNotTeam() {
+        // 内网实证 (2026-10-22): "杭州三部10月版各组" 曾被原文回退整段吞成组名 → stat_group 查空集
+        var peer = extractPeer("杭州三部10月版各组、各产品线Qi各卡口完成率是多少？");
+        assertTrue(peer == null);
+        // 部门照常提取，层级归 DEPARTMENT 而非 PEER（下钻分组由 drillDown 动态键承接）
+        assertEquals(List.of("杭州开发三部"),
+                extractDepartments("杭州三部10月版各组、各产品线Qi各卡口完成率是多少？"));
+        assertEquals(QuestionAnalysis.QuestionLevel.DEPARTMENT,
+                manager.analyzeQuestionRuleBased("杭州三部10月版各组、各产品线Qi各卡口完成率是多少？")
+                        .getLevel());
+    }
+
+    @Test
+    void bareGranularityTeamWordsProduceNoPeer() {
+        assertTrue(extractPeer("各个组的缺陷密度") == null);
+        assertTrue(extractPeer("每个组的达标率") == null);
+        assertTrue(extractPeer("杭州三部各组的缺陷数") == null);
+        assertEquals(List.of("杭州开发三部"), extractDepartments("杭州三部各组的缺陷数"));
+    }
+
+    @Test
+    void granularityProductLineWordsProduceNoPeer() {
+        assertTrue(extractPeer("各个产品线的达标率") == null);
+        assertTrue(extractPeer("每个产品线的缺陷数") == null);
+        assertTrue(extractPeer("杭州三部10月版各个产品线的达标率") == null);
+    }
+
+    @Test
+    void realTeamNamesStillExtracted() {
+        assertEquals(DimensionState.PeerDimensionType.TEAM, extractPeer("数据智能组的缺陷数").getType());
+        assertEquals(List.of("数据智能组"), extractPeer("数据智能组的缺陷数").getValues());
+        // "个人住房组各人" = 组过滤 + 按人分组（双绑合法），组名不因 "各" 字后缀丢失
+        assertEquals(List.of("个人住房组"), extractPeer("个人住房组各人的缺陷数").getValues());
+        assertEquals(QuestionAnalysis.QuestionLevel.PEER,
+                manager.analyzeQuestionRuleBased("数据智能组的缺陷数").getLevel());
+    }
+
+    @Test
+    void teamWithTimePrefixStillExtracted() {
+        // 真组名含时间片段：时间 span 屏蔽后露出的 "攻关组" 照常产出（非粒度前导字）
+        assertEquals(List.of("攻关组"), extractPeer("10月攻关组的缺陷数").getValues());
+    }
+
+    @Test
+    void rawFallbackStillExtractsTeamWhenMaskedTooShort() {
+        // 屏蔽后 <2 字符无法命中 → 原文回退取 "10月三组"；露出尾部 "三组" 非粒度词，守卫不误伤
+        assertEquals(List.of("10月三组"), extractPeer("10月三组的缺陷数").getValues());
+    }
+
+    @Test
+    void granularityWordBeforeRealTeamStillFindsTeam() {
+        // 粒度词候选跳过后继续找（顿号分隔），真组名不丢
+        assertEquals(List.of("数据智能组"), extractPeer("各个组、数据智能组的缺陷数").getValues());
+    }
+
+    @Test
+    void myDeptPrefixWithGranularityTailIsNotTeam() {
+        // E2E 实证 (2026-10-22, userId=880000035): "我部10月版各组" —— "我部"不被 EXPLICIT_DEPT
+        // 屏蔽，时间屏蔽后原文回退整段吞成组名垃圾值；首字守卫（各/每/按开头）拦不住，
+        // 靠尾缀守卫（紧贴 组/产品线 的字 ∈ {各,每,按}）拒绝。
+        assertTrue(extractPeer("我部10月版各组、Qi各卡口完成率是多少？") == null);
+        assertTrue(extractPeer("我部各组的缺陷数") == null);
+        assertTrue(extractPeer("我部各产品线的达标率") == null);
+        assertTrue(extractPeer("我部每个组的达标率") == null);
+        // "我部" 本身不产出部门维度（需统一认证号 enrich），无垃圾值
+        assertNull(extractDepartments("我部各组的缺陷数"));
+    }
+
+    @Test
+    void realTeamAfterMyDeptStillExtracted() {
+        // 尾缀守卫不误伤："我部" 后（顿号分隔）的真组名照常提取
+        assertEquals(List.of("数据智能组"), extractPeer("我部、数据智能组的缺陷数对比").getValues());
     }
 }

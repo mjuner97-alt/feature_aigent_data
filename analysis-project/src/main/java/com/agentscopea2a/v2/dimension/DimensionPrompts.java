@@ -42,7 +42,9 @@ public final class DimensionPrompts {
 
             规则：
             - departments：结论提到几个部门就提取几个（通常只有1个）
-            - persons：结论提到几个人名就提取几个（通常只有1个）
+            - persons：结论提到几个人名就提取几个（通常只有1个）；人名须为台账中文姓名全名
+              （不含"我/我们"——"我部/我的组/我的应用/我的产品线"按 departments/
+              peerDimension 维度提取，"我"本人不进 persons）
             - peerDimensionValues：结论提到几个组/应用/产品线/需求项/需求子条目就提取几个（通常只有1个）
             - peerDimensionType 同级维度五选一：
               - TEAM(组)：xxx组

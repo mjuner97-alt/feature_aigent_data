@@ -310,9 +310,10 @@ public class DimensionStateManager {
     // 拍板③ 按版本个数推，"近X个月"也归版本键，周/天后缀归 timeRange）
     private static final Pattern LAST_N_VERSIONS =
             Pattern.compile("(?:近|最近)(\\d{1,3})个(?:月个)?版本|(?:近|最近)(\\d{1,3})个月");
-    // Q1/Q2/Q3/Q4 / 一季度 / 二季度 alias — normalised to "{year}年{n}季度" for fingerprint stability
+    // 一季度~四季度 alias — normalised to "{year}年{n}季度" for fingerprint stability.
+    // 裸 Q1-Q4 不算季度口语值 (2026-10-22): QI卡口 指标值就叫 Q1/Q2/Q3/Q4, 撞词后由词表按卡口解析
     private static final Pattern EXPLICIT_QUARTER_ALIAS =
-            Pattern.compile("(?:Q|q)([1-4])|([一二三四])季度");
+            Pattern.compile("([一二三四])季度");
     // KNOWLEDGE.md §部门 标准枚举 — 漏掉非"杭州开发X部"的会让用户连问 N 次也触发不了同指纹。
     // 别名按"长前短后"排列，避免"杭州服务支持部"被"服务支持"截胡；命中后经 normalizeDepartment 映射回标准名
     // 口语值方案 §3.2：补 杭[一二三四五]部?（"杭一"/"杭二部"极简形，放 [一二三四五]部 之前保整段占用）
@@ -352,6 +353,55 @@ public class DimensionStateManager {
     // 需求子条目编号: S+8位日期数字+-+6位数字, 如 S20250926-000741
     private static final Pattern EXPLICIT_SUB_REQUIREMENT = Pattern.compile("(S\\d{8}-\\d{6})");
 
+    // ---- §5.1 粒度词守卫（docs/202610/人员台账维度方案.md）----
+    // drillDown 动态键词表的粒度词（各组/各个组/每个组/各产品线…）会被
+    // EXPLICIT_TEAM/EXPLICIT_PRODUCT_LINE 抢成垃圾 peer 值并经 param_mapping 传给脚本
+    // （内网 2026-10-22 实证："杭州三部10月版各组" → stat_group 查空集）。
+    // 守卫只收 各/每/按：分 开头有真实组名（分行业务组）不能拒，而 分组/分产品线
+    // 裸词仅 1 字前缀、本来就构不成正则命中（拍板点⑧：无以各/每/按开头的真实组名）。
+    private static final String GRANULARITY_LEADING = "各每按";
+
+    private static boolean isGranularityToken(String token) {
+        return token != null && !token.isEmpty()
+                && GRANULARITY_LEADING.indexOf(token.charAt(0)) >= 0;
+    }
+
+    /**
+     * 粒度尾缀守卫（§5.1 第二层，2026-10-22 E2E 补）：候选紧贴后缀（组/产品线）的字
+     * 是粒度前导字即垃圾拼接——"我部10月版各组"/"我部各产品线"："我部"不被
+     * EXPLICIT_DEPT 屏蔽，时间屏蔽后原文回退整段吞入，首字守卫（各/每/按开头）拦不住。
+     * 真组名尾字非粒度前导（分行业务组/个人住房组/10月三组/数据智能组）不受影响。
+     */
+    private static boolean hasGranularityTail(String token, int suffixLen) {
+        if (token == null || token.length() < suffixLen + 1) {
+            return false;
+        }
+        // 回看 2 字覆盖 "各组"/"各个组"/"每个产品线"（"个"字夹在中间）
+        for (int i = 1; i <= 2; i++) {
+            int idx = token.length() - suffixLen - i;
+            if (idx < 0) {
+                break;
+            }
+            if (GRANULARITY_LEADING.indexOf(token.charAt(idx)) >= 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 依次找首个非粒度词候选（粒度词候选跳过继续找，如"各个组、数据智能组"取后者）。 */
+    private static boolean hasNonGranularityMatch(String text, Pattern p, int suffixLen) {
+        Matcher m = p.matcher(text);
+        while (m.find()) {
+            String token = m.group(1);
+            if (token == null || isGranularityToken(token) || hasGranularityTail(token, suffixLen)) {
+                continue;
+            }
+            return true;
+        }
+        return false;
+    }
+
     // ---- §13.4 标准格式感知的分段抽取（docs/history/dimension-alias-config-plan.md）----
 
     /** 屏蔽占位符：不在小组/产品线正则字符类 [一-龥A-Za-z0-9] 内，等长替换保偏移 */
@@ -359,12 +409,12 @@ public class DimensionStateManager {
 
     /**
      * 第一遍占位用的时间宽形态（比归一化用的 EXPLICIT_VERSION/QUARTER 宽）：
-     * "26年10月版" / "10月份版本" / "3季度" / "Q1" 都算时间 span，仅屏蔽不产出
-     * （归一化仍由既有正则负责，避免指纹规则变化）。
+     * "26年10月版" / "10月份版本" / "3季度" 都算时间 span，仅屏蔽不产出
+     * （归一化仍由既有正则负责，避免指纹规则变化）。裸 "Q1" 不算时间 span，留给词表按卡口解析。
      */
     private static final Pattern TIME_MASK_SPAN = Pattern.compile(
             "(?:(?:\\d{4}|\\d{2})年)?\\d{1,2}月份?(?:延后(?:版本?)?)?(?:版本?)?"
-                    + "|(?:(?:\\d{4}|\\d{2})年)?[一二三四1-4]季度|(?:Q|q)[1-4]"
+                    + "|(?:(?:\\d{4}|\\d{2})年)?[一二三四1-4]季度"
                     + "|(?:(?:\\d{4}|\\d{2})年)?[一二三四五六七八九十]{1,3}月份?(?:版本?)?");
 
     /** 组名候选左侧修剪虚词表：仅修剪 token 开头（"的质量xxx组" → "xxx组"） */
@@ -376,12 +426,27 @@ public class DimensionStateManager {
      * 由部门 span 占用自然达成，产出 TEAM=数据智能组 + DEPT=杭州开发三部。
      */
     private static String buildMaskedQuestion(String q) {
+        return maskSpans(q, TIME_MASK_SPAN, EXPLICIT_DEPT, EXPLICIT_APP,
+                EXPLICIT_REQUIREMENT, EXPLICIT_SUB_REQUIREMENT);
+    }
+
+    /**
+     * 人名扫描共用屏蔽文本（人员台账维度方案 §4.1）：在 {@link #buildMaskedQuestion} 的
+     * 屏蔽集（时间/部门/应用/需求项/需求子条目）之上追加 组/产品线候选 span——
+     * "张三组"里的"张三"不得被姓名字典扫描抢走（组名归 EXPLICIT_TEAM）。
+     * 供 {@code DirectSkillExecutor.plan} 的人名 2~4 字窗口扫描消费。
+     */
+    public static String maskForPersonScan(String q) {
+        return maskSpans(q, TIME_MASK_SPAN, EXPLICIT_DEPT, EXPLICIT_APP,
+                EXPLICIT_REQUIREMENT, EXPLICIT_SUB_REQUIREMENT, EXPLICIT_TEAM, EXPLICIT_PRODUCT_LINE);
+    }
+
+    /** 等 len 屏蔽替换（占位符不在各正则字符类内，保偏移）；无 span 原样返回。 */
+    private static String maskSpans(String q, Pattern... patterns) {
         List<int[]> spans = new ArrayList<>();
-        collectSpans(q, TIME_MASK_SPAN, spans);
-        collectSpans(q, EXPLICIT_DEPT, spans);
-        collectSpans(q, EXPLICIT_APP, spans);
-        collectSpans(q, EXPLICIT_REQUIREMENT, spans);
-        collectSpans(q, EXPLICIT_SUB_REQUIREMENT, spans);
+        for (Pattern p : patterns) {
+            collectSpans(q, p, spans);
+        }
         if (spans.isEmpty()) {
             return q;
         }
@@ -410,14 +475,56 @@ public class DimensionStateManager {
     /**
      * 第二遍：屏蔽文本上找组名 token；候选左侧修剪（虚词逐字、指标词整词）；
      * 屏蔽后无命中或修剪失败（剩余 <2 字符）回退原文匹配（拆分失败维持原行为）。
+     * 粒度词候选（§5.1 守卫）跳过继续找，全部为粒度词时不回退原文——
+     * 原文回退会把"杭州三部10月版各组"整段吞成组名。
      */
     private String findTeamToken(String q, String masked) {
         Matcher maskedMatcher = EXPLICIT_TEAM.matcher(masked);
-        if (maskedMatcher.find()) {
-            return trimTeamToken(q, maskedMatcher.start(), maskedMatcher.end());
+        while (maskedMatcher.find()) {
+            String token = trimTeamToken(q, maskedMatcher.start(), maskedMatcher.end());
+            if (!isGranularityToken(token) && !hasGranularityTail(token, 1)) {
+                return token;
+            }
         }
         Matcher rawMatcher = EXPLICIT_TEAM.matcher(q);
-        return rawMatcher.find() ? rawMatcher.group(1) : null;
+        while (rawMatcher.find()) {
+            String token = rawMatcher.group(1);
+            if (isGranularityToken(token) || hasGranularityTail(token, 1)) {
+                continue;
+            }
+            return token;
+        }
+        return null;
+    }
+
+    /**
+     * 产品线候选：屏蔽文本优先，粒度词候选跳过；屏蔽后无命中回退原文（守卫同组名）。
+     */
+    private static String findProductLineToken(String q, String masked) {
+        Matcher maskedMatcher = EXPLICIT_PRODUCT_LINE.matcher(masked);
+        while (maskedMatcher.find()) {
+            String token = maskedMatcher.group(1);
+            if (!isGranularityToken(token) && !hasGranularityTail(token, 3)) {
+                return token;
+            }
+        }
+        Matcher rawMatcher = EXPLICIT_PRODUCT_LINE.matcher(q);
+        while (rawMatcher.find()) {
+            String token = rawMatcher.group(1);
+            if (isGranularityToken(token) || hasGranularityTail(token, 3)) {
+                continue;
+            }
+            return token;
+        }
+        return null;
+    }
+
+    /** detectLevel 的组/产品线命中判定：屏蔽文本上找非粒度词候选（§5.1 守卫），
+     *  "杭州三部10月版各组、各产品线" 不再误判 PEER 层级。 */
+    private boolean hasTeamOrProductLineHit(String q) {
+        String masked = buildMaskedQuestion(q);
+        return hasNonGranularityMatch(masked, EXPLICIT_TEAM, 1)
+                || hasNonGranularityMatch(masked, EXPLICIT_PRODUCT_LINE, 3);
     }
 
     /**
@@ -517,8 +624,7 @@ public class DimensionStateManager {
                 || refType == QuestionAnalysis.ReferenceType.SUB_REQUIREMENT
                 || aliasPeerHit
                 || EXPLICIT_APP.matcher(q).find()
-                || EXPLICIT_TEAM.matcher(q).find()
-                || EXPLICIT_PRODUCT_LINE.matcher(q).find()
+                || hasTeamOrProductLineHit(q)
                 || EXPLICIT_REQUIREMENT.matcher(q).find()
                 || EXPLICIT_SUB_REQUIREMENT.matcher(q).find())
             return QuestionAnalysis.QuestionLevel.PEER;
@@ -607,20 +713,18 @@ public class DimensionStateManager {
             }
         }
 
-        // Quarter aliases: "Q1" / "q1" / "一季度" — normalise so user shorthand maps to the same
-        // fingerprint as "2026年1季度". Without this, "Q1 杭一部" and "1季度 杭一部" are different
-        // candidates and the auto-synth counter never accumulates.
+        // Quarter aliases: "一季度"~"四季度" — normalise so user shorthand maps to the same
+        // fingerprint as "2026年1季度". Without this, "一季度 杭一部" and "1季度 杭一部" are different
+        // candidates and the auto-synth counter never accumulates. 裸 "Q1"~"Q4" 不再算季度 (QI卡口撞词)。
         Matcher aliasMatcher = EXPLICIT_QUARTER_ALIAS.matcher(q);
         while (aliasMatcher.find()) {
-            String qNum = aliasMatcher.group(1) != null
-                    ? aliasMatcher.group(1) // Q1-Q4
-                    : switch (aliasMatcher.group(2)) {
-                        case "一" -> "1";
-                        case "二" -> "2";
-                        case "三" -> "3";
-                        case "四" -> "4";
-                        default -> null;
-                    };
+            String qNum = switch (aliasMatcher.group(1)) {
+                case "一" -> "1";
+                case "二" -> "2";
+                case "三" -> "3";
+                case "四" -> "4";
+                default -> null;
+            };
             if (qNum != null) {
                 quarters.add(currentYear + "年" + qNum + "季度");
             }
@@ -699,19 +803,10 @@ public class DimensionStateManager {
 
         // 产品线（优先级低于组和应用）— 同上，alias 命中时跳过；屏蔽文本匹配避免
         // 时间/部门 span 干扰（"三部10月的质量" 不再把"10月"吃进产品线候选），
-        // 屏蔽后无命中回退原文；排除指代词匹配
+        // 屏蔽后无命中回退原文；排除指代词匹配；粒度词守卫同组名（§5.1）
         if (explicit.getPeerDimension() == null && !aliasHit(aliasRes)) {
             String maskedPl = buildMaskedQuestion(q);
-            Matcher plMatcher = EXPLICIT_PRODUCT_LINE.matcher(maskedPl);
-            String plMatched = null;
-            if (plMatcher.find()) {
-                plMatched = plMatcher.group(1);
-            } else {
-                Matcher rawPlMatcher = EXPLICIT_PRODUCT_LINE.matcher(q);
-                if (rawPlMatcher.find()) {
-                    plMatched = rawPlMatcher.group(1);
-                }
-            }
+            String plMatched = findProductLineToken(q, maskedPl);
             if (plMatched != null && !plMatched.startsWith("这个") && !plMatched.startsWith("那个")) {
                 explicit.setPeerDimension(
                         new DimensionState.PeerDimension(
