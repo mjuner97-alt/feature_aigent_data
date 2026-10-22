@@ -63,16 +63,19 @@ public class FlowQueryService {
     }
 
     public PageDto list(String status, String createdBy, String userId, boolean all, int page, int pageSize, String source) {
+        return list(status, createdBy, null, userId, all, page, pageSize, source);
+    }
+    public PageDto list(String status, String createdBy, String keyword, String userId, boolean all, int page, int pageSize, String source) {
         if (source != null && !java.util.Set.of("long-task", "report-template").contains(source))
             throw new IllegalArgumentException("Invalid execution source");
         int safePage = Math.max(1, page), safeSize = Math.min(100, Math.max(1, pageSize));
         String scopedUser = all ? null : userId;
         List<ExecutionListDto> items = (source == null
                 ? mapper.selectExecutions(status, createdBy, scopedUser, (safePage - 1) * safeSize, safeSize)
-                : mapper.selectExecutionsBySource(status, createdBy, scopedUser, (safePage - 1) * safeSize, safeSize, source))
+                : mapper.selectExecutionsBySource(status, createdBy, keyword, scopedUser, (safePage - 1) * safeSize, safeSize, source))
                 .stream().map(this::listDto).toList();
         long total = source == null ? mapper.countExecutions(status, createdBy, scopedUser)
-                : mapper.countExecutionsBySource(status, createdBy, scopedUser, source);
+                : mapper.countExecutionsBySource(status, createdBy, keyword, scopedUser, source);
         return new PageDto(items, safePage, safeSize, total);
     }
 

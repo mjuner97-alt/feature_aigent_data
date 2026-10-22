@@ -291,7 +291,7 @@ public class FlowCompletionService {
                 filePath, reportFileName(execution),
                 reportUrl(execution), execution.getFlowId(), FlowReportNaming.datedTitle(execution.getFlowName(), execution), null, null,
                 execution.getId(), execution.getStatus().name(), LocalDateTime.now(clock),
-                receivers, "FLOW", ccReceivers, contactName, contactPhone));
+                receivers, "FLOW", ccReceivers, contactName, contactPhone, execution.getDataDate()));
     }
 
     /**

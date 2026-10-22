@@ -169,8 +169,9 @@ public class SkillFlowController {
                                                     @RequestHeader(name = "X-User-Id") String userId,
                                                     @RequestParam(defaultValue = "1") int page,
                                                     @RequestParam(defaultValue = "20") int pageSize,
+                                                    @RequestParam(name = "keyword", required = false) String keyword,
                                                     @RequestParam(name = "source", required = false) String source) {
-        return queryService.list(status, createdBy, userId, "all".equalsIgnoreCase(scope), page, pageSize, source);
+        return queryService.list(status, createdBy, keyword, userId, "all".equalsIgnoreCase(scope), page, pageSize, source);
     }
 
     /** 执行详情(含汇总结果与报告路径)。 */

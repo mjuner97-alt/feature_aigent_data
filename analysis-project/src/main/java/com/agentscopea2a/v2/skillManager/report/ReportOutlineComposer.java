@@ -53,7 +53,7 @@ public class ReportOutlineComposer {
     @JsonIgnoreProperties(ignoreUnknown = true)
     record Numbering(String level1, String level2, String level3) {}
     @JsonIgnoreProperties(ignoreUnknown = true)
-    record Item(String id, String title, Integer level, String nodeKey, List<String> nodeKeys, List<Item> children) {
+    record Item(String id, String title, String description, Integer level, String nodeKey, List<String> nodeKeys, List<Item> children) {
         Item {
             nodeKeys = nodeKeys == null || nodeKeys.isEmpty()
                     ? (nodeKey == null || nodeKey.isBlank() ? List.of() : List.of(nodeKey.trim()))
@@ -129,8 +129,12 @@ public class ReportOutlineComposer {
                 report.append("<h").append(level + 1).append(" data-report-outline-heading=\"true\">")
                         .append(escapeHtml(renderNumbering(level, counters, numbering)
                                 + Objects.toString(item.title(), "").trim()))
-                        .append("</h").append(level + 1).append(">\n")
-                        .append(section).append(children);
+                        .append("</h").append(level + 1).append(">\n");
+                if (item.description() != null && !item.description().isBlank()) {
+                    report.append("<p class=\"report-outline-description\">")
+                            .append(escapeHtml(item.description().trim())).append("</p>\n");
+                }
+                report.append(section).append(children);
             }
         }
     }

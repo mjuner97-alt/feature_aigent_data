@@ -414,7 +414,28 @@ function outlineDragStart(row: OutlineRow, event: DragEvent) {
   if (event.dataTransfer) { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', row.id); }
 }
 
+function autoScrollOutlineDrag(event: DragEvent) {
+  if (!outlineDragId.value) return;
+  const source = (event.currentTarget as HTMLElement | null)?.closest('.editor-toc, .drawer-body') as HTMLElement | null;
+  if (!source) return;
+  const rect = source.getBoundingClientRect();
+  const edge = Math.min(72, rect.height / 3);
+  const distance = event.clientY < rect.top + edge
+    ? -Math.max(12, Math.round((rect.top + edge - event.clientY) / 2))
+    : event.clientY > rect.bottom - edge
+      ? Math.max(12, Math.round((event.clientY - (rect.bottom - edge)) / 2))
+      : 0;
+  if (distance) source.scrollBy({ top: distance, behavior: 'auto' });
+}
+
+function outlineNavDragOver(event: DragEvent) {
+  if (!outlineDragId.value) return;
+  event.preventDefault();
+  autoScrollOutlineDrag(event);
+}
+
 function outlineDragOver(row: OutlineRow, event: DragEvent) {
+  autoScrollOutlineDrag(event);
   if (row.level !== 1 || !outlineDragId.value || row.id === outlineDragId.value) return;
   event.preventDefault();
   outlineDropId.value = row.id;
@@ -770,7 +791,7 @@ defineExpose({ isDirty });
       <section class="drawer" aria-label="长任务流程编辑器">
         <header class="drawer-header"><div><div class="eyebrow">长任务流程</div><h3>{{ isCopy ? '复制长任务流程' : isEdit ? '编辑长任务流程' : '创建长任务流程' }}</h3><p>{{ isCopy ? '请使用新的流程名称和触发关键词保存副本；副本默认启用。' : '配置触发条件与执行步骤，生成结构化汇总结果' }}</p></div><button class="icon-button" title="关闭" aria-label="关闭" @click="emit('update:open', false)">×</button></header>
         <div class="editor-layout">
-        <nav class="editor-toc" aria-label="长任务配置目录">
+        <nav class="editor-toc" aria-label="长任务配置目录" @dragover="outlineNavDragOver">
           <a href="#flow-basic" @click="navigateToSection($event, 'flow-basic')">基本信息</a>
           <a href="#flow-triggers" @click="navigateToSection($event, 'flow-triggers')">触发与通知</a>
           <a href="#flow-outline" @click="navigateToSection($event, 'flow-outline')">报告大纲与节点</a>
@@ -839,11 +860,15 @@ defineExpose({ isDirty });
                 <div :id="`flow-outline-${row.id}`" class="outline-row" :class="{ 'outline-drop-target': outlineDropId === row.id }" :style="{ marginLeft: `${Math.min(row.level - 1, 8) * 22}px` }" :draggable="row.level === 1" @dragstart="outlineDragStart(row, $event)" @dragover="outlineDragOver(row, $event)" @drop="outlineDrop($event)" @dragend="finishOutlineDrag">
                   <span class="outline-level" :title="`第 ${row.level} 级`">{{ outlineNumbers[rowIndex] || `L${row.level}` }}</span>
                   <input v-model="row.title" placeholder="章节标题" />
+                  <button class="btn primary outline-description-toggle" title="添加描述" @click="row.description = row.description === undefined ? '' : undefined">{{ row.description === undefined ? '＋ 添加描述' : '移除描述' }}</button>
                   <button class="icon-button" title="上移" :disabled="!canMoveOutlineRow(outlineRows, row.id, -1)" @click="moveOutlineChapter(row, -1)">↑</button>
                   <button class="icon-button" title="下移" :disabled="!canMoveOutlineRow(outlineRows, row.id, 1)" @click="moveOutlineChapter(row, 1)">↓</button>
                   <button class="icon-button" title="添加同级" @click="addOutlineRow(row)">＋</button>
                   <button class="icon-button" title="添加子级" @click="addOutlineRow(row, true)">↳</button>
                   <button class="icon-button danger" title="删除本节及子级" @click="removeOutlineRow(row)">×</button>
+                </div>
+                <div v-if="row.description !== undefined" class="outline-description-row" :style="{ marginLeft: `${Math.min(row.level - 1, 8) * 22 + 42}px` }">
+                  <input v-model="row.description" placeholder="添加描述" />
                 </div>
                 <div class="outline-node-area" :style="{ marginLeft: `${Math.min(row.level, 8) * 22}px` }">
                   <FlowNodeCard v-for="(node, nodeIndex) in nodesForRow(row)" :key="node.nodeKey" class="chapter-node-card" :node="node" :title="nodeTitle(node)" :schema="schemaFor(node)" :scripts="scripts" :metrics="metrics" :script-loading="scriptLoading" :metric-loading="metricLoading" :debug-disabled="!node.scriptId || debugStarting || debugInProgress()" :dragging="dragNodeKey === node.nodeKey" :sortable="true" :is-first="nodeIndex === 0" :is-last="nodeIndex === nodesForRow(row).length - 1" remove-title="删除节点" @move="moveChapterNode(row, node.nodeKey, $event)" @remove="removeChapterNode(row, node.nodeKey)" @debug="runNodeDebug(node, $event)" @drag-start="chapterDragStart(node.nodeKey, $event)" @drag-over="chapterDragOver(row, node.nodeKey)" @drag-end="finishDrag" @script-change="onScriptSelected(node)" @script-params-change="onScriptParamsChange(node, $event)" @search-scripts="searchScripts" @search-metrics="searchMetrics" @set-metrics="setNodeMetrics(node, $event)" />
@@ -910,7 +935,7 @@ defineExpose({ isDirty });
 .basic-row { display: flex; gap: 20px; align-items: end; flex-wrap: wrap; }.basic-row > label:first-child { width: 180px; }
 input, select, textarea { box-sizing: border-box; width: 100%; border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 10px; background: #fff; color: #1e293b; font: inherit; font-size: 14px; } textarea { resize: vertical; }.toggle-row { display: flex !important; align-items: center; grid-template-columns: none !important; gap: 7px !important; color: #475569; font-size: 13px; }.toggle-row input { width: auto; }
 .flow-preview { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; border-left: 3px solid #3b82f6; background: #f8fafc; color: #475569; font-size: 13px; }.preview-nodes { color: #1d4ed8; }
-.outline-row { display: grid; grid-template-columns: 34px minmax(120px, 1fr) repeat(5, auto); gap: 8px; align-items: center; padding: 8px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fbfdff; }.outline-row + .outline-row { margin-top: 7px; }.outline-level { color: #64748b; font-size: 11px; font-weight: 700; text-align: center; }.outline-row input, .outline-row select { min-width: 0; }.outline-row[draggable="true"], .editor-toc-child[draggable="true"] { cursor: grab; }.outline-drop-target { outline: 2px solid #93c5fd; outline-offset: 1px; }
+.outline-row { display: grid; grid-template-columns: 34px minmax(120px, 1fr) repeat(6, auto); gap: 8px; align-items: center; padding: 8px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fbfdff; }.outline-row + .outline-row { margin-top: 7px; }.outline-level { color: #64748b; font-size: 11px; font-weight: 700; text-align: center; }.outline-row input, .outline-row select { min-width: 0; }.outline-row[draggable="true"], .editor-toc-child[draggable="true"] { cursor: grab; }.outline-drop-target { outline: 2px solid #93c5fd; outline-offset: 1px; }.outline-description-row { display: flex; padding: 6px 8px 2px 0; }.outline-description-row input { flex: 1; min-width: 0; }
 .section-heading { margin-top: 8px; }
 .notify-contact-config h4, .notify-body-config h4 { color: #0f172a; font-size: 15px; font-weight: 600; }
 .outline-node-area { display: grid; gap: 8px; margin-top: 6px; padding: 8px; border: 1px dashed #dbe4f0; border-radius: 8px; }

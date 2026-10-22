@@ -173,13 +173,14 @@ export async function runSkillFlow(id: number): Promise<SkillFlowRunResult> {
   return res.json();
 }
 
-export async function listSkillFlowExecutions(status?: string, createdBy?: string, scope: 'mine' | 'all' = 'mine', page = 1, pageSize = 20, source?: 'long-task' | 'report-template'): Promise<{ items: SkillFlowExecution[]; page: number; pageSize: number; total: number }> {
+export async function listSkillFlowExecutions(status?: string, createdBy?: string, scope: 'mine' | 'all' = 'mine', page = 1, pageSize = 20, source?: 'long-task' | 'report-template', keyword?: string): Promise<{ items: SkillFlowExecution[]; page: number; pageSize: number; total: number }> {
   const qs = new URLSearchParams();
   if (status) qs.set('status', status);
   if (createdBy) qs.set('createdBy', createdBy);
   qs.set('scope', scope);
   qs.set('page', String(page)); qs.set('pageSize', String(pageSize));
   if (source) qs.set('source', source);
+  if (keyword) qs.set('keyword', keyword);
   const res = await fetch(`${EXECUTION_BASE}?${qs}`, { headers: authHeaders() });
   if (!res.ok) throw await requestError(res, '查询执行记录失败');
   const body = await res.json();
@@ -315,3 +316,4 @@ export async function listSkillFlowPage(options: { enabled?:boolean; scope?:'min
  const res=await fetch(`${FLOW_BASE}/page?${qs}`,{headers:authHeaders()});
  if (!res.ok) throw await requestError(res, '查询失败'); return res.json();
 }
+

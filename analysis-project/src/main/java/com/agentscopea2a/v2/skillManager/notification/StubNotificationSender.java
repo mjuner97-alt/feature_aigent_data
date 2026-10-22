@@ -43,7 +43,7 @@ public class StubNotificationSender implements NotificationSender {
     @Override
     public Map<String, Object> prepare(NotificationPayload payload) {
         Map<String, Object> request = NotificationSender.super.prepare(payload);
-        request.put("content", getMailContent(payload.content(), payload.notifyContactName(), payload.notifyContactPhone()));
+        request.put("content", getMailContent(payload.content(), payload.notifyContactName(), payload.notifyContactPhone(), payload.executionDate()));
         return request;
     }
 
@@ -100,8 +100,12 @@ public class StubNotificationSender implements NotificationSender {
     }
 
     private String getMailContent(String mailContent, String contactName, String contactPhone) {
+        return getMailContent(mailContent, contactName, contactPhone, null);
+    }
+
+    private String getMailContent(String mailContent, String contactName, String contactPhone, java.time.LocalDate executionDate) {
         String defaultHtml = NotificationContact.hasCustom(contactName, contactPhone) ? "" : notificationContactHtml();
-        return NotificationContact.append(mailContent, contactName, contactPhone, defaultHtml);
+        return NotificationContact.append(mailContent, contactName, contactPhone, defaultHtml, executionDate);
     }
 
     private String notificationContactHtml() {

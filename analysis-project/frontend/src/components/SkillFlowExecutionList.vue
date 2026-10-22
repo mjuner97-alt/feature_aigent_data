@@ -10,7 +10,7 @@ import { triggerTypeText } from './skillFlowExecutionPresentation';
 import { formatDuration } from '../utils/flowDuration.js';
 import { InfoFilled } from '@element-plus/icons-vue';
 
-const props = withDefaults(defineProps<{ scope?: 'mine' | 'all'; createdBy?: string }>(), { scope: 'mine', createdBy: '' });
+const props = withDefaults(defineProps<{ scope?: 'mine' | 'all'; createdBy?: string; keyword?: string }>(), { scope: 'mine', createdBy: '', keyword: '' });
 
 const executions = ref<SkillFlowExecution[]>([]);
 const loading = ref(false); const error = ref(''); const currentStatus = ref(''); const currentCreatedBy = ref(''); const page = ref(1); const pageSize = ref(20); const detailId = ref<number | null>(null); const detailOpen = ref(false); const notificationId = ref<number | null>(null); const notificationOpen = ref(false);
@@ -30,7 +30,7 @@ async function load(status = currentStatus.value, createdBy = props.createdBy, s
   if (!silent) loading.value = true;
   error.value = '';
   try {
-    const data = await listSkillFlowExecutions(status || undefined, createdBy.trim() || undefined, scope, page.value, pageSize.value, 'long-task');
+    const data = await listSkillFlowExecutions(status || undefined, createdBy.trim() || undefined, scope, page.value, pageSize.value, 'long-task', props.keyword.trim() || undefined);
     if (sequence !== loadSequence) return;
     executions.value = data.items; total.value = data.total;
   } catch (e) {
@@ -58,7 +58,7 @@ async function cancelExecution(item: SkillFlowExecution) {
 }
 defineExpose({ load });
 onMounted(() => { load(); timer = setInterval(() => { if (executions.value.some(item => ['WAITING_METRICS', 'QUEUED', 'RUNNING', 'SUMMARIZING', 'CANCEL_REQUESTED'].includes(item.status))) load(currentStatus.value, currentCreatedBy.value, true); }, 5000); }); onUnmounted(() => { if (timer) clearInterval(timer); });
-watch(() => [props.scope, props.createdBy] as const, () => { page.value = 1; load('', props.createdBy, false, props.scope); });
+watch(() => [props.scope, props.createdBy, props.keyword] as const, () => { page.value = 1; load('', props.createdBy, false, props.scope); });
 </script>
 
 <template>

@@ -5,6 +5,7 @@ export { getOutlineSubtreeRange, canMoveOutlineRow, moveOutlineRow, moveTopLevel
 export interface OutlineRow {
   id: string;
   title: string;
+  description?: string;
   level: number;
   nodeKeys: string[];
 }
@@ -30,6 +31,7 @@ export function flattenOutline(outline: ReportOutline | null | undefined): Outli
       rows.push({
         id: item.id || newRow(1).id,
         title: item.title || '',
+        description: item.description === undefined ? undefined : item.description,
         level: Math.max(1, item.level || 1),
         nodeKeys,
       });
@@ -49,6 +51,7 @@ export function buildOutline(rows: OutlineRow[], numbering: ReportOutlineNumberi
     const item: ReportOutlineItem = {
       id: row.id,
       title: row.title.trim(),
+      description: row.description?.trim() || undefined,
       level: row.level,
       nodeKey: row.nodeKeys[0] ?? null,
       nodeKeys: [...row.nodeKeys],

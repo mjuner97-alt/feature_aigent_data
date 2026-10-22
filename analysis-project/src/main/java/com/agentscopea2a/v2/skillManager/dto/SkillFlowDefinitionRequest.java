@@ -109,6 +109,7 @@ public record SkillFlowDefinitionRequest(
     public record ReportOutlineItem(
             String id,
             String title,
+            String description,
             Integer level,
             String nodeKey,
             List<String> nodeKeys,

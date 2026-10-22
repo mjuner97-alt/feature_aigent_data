@@ -43,6 +43,7 @@ const scopeCreatedBy = ref('');
 const flowKeyword = ref('');
 const flowListRef = ref<InstanceType<typeof SkillFlowList> | null>(null);
 const flowExecutionListRef = ref<InstanceType<typeof SkillFlowExecutionList> | null>(null);
+const flowExecutionKeyword = ref('');
 const centerExecutions = ref<SkillJobExecutionSummary[]>([]);
 const executionLoading = ref(false);
 const executionError = ref('');
@@ -354,6 +355,7 @@ function metricTitle(job: SkillJobSummary): string {
         </div>
         <input v-if="visibilityScope === 'all'" v-model="scopeCreatedBy" placeholder="创建人 userId" class="search-input creator-input" @keyup.enter="refreshCurrentTab" />
         <input v-if="activeTab === 'flows'" v-model="flowKeyword" placeholder="搜索流程名称" class="search-input" @keyup.enter="refreshCurrentTab" />
+        <input v-if="activeTab === 'flow-execution'" v-model="flowExecutionKeyword" placeholder="搜索任务名称" class="search-input" @keyup.enter="flowExecutionListRef?.load('', effectiveCreatedBy || '', false, visibilityScope)" />
         <input v-if="activeTab === 'manage'" v-model="keyword" placeholder="搜索任务名称" class="search-input" @keyup.enter="filterJobs" />
         <select v-if="activeTab === 'manage'" v-model="enabledFilter" class="filter-select" @change="filterJobs">
           <option :value="null">全部状态</option><option :value="true">启用</option><option :value="false">禁用</option>
@@ -380,7 +382,7 @@ function metricTitle(job: SkillJobSummary): string {
     </div>
 
     <SkillFlowList v-if="activeTab === 'flows'" ref="flowListRef" :scope="visibilityScope" :created-by="effectiveCreatedBy || ''" @view-records="openFlowExecutions" />
-    <SkillFlowExecutionList v-else-if="activeTab === 'flow-execution'" ref="flowExecutionListRef" :scope="visibilityScope" :created-by="effectiveCreatedBy || ''" />
+    <SkillFlowExecutionList v-else-if="activeTab === 'flow-execution'" ref="flowExecutionListRef" :scope="visibilityScope" :created-by="effectiveCreatedBy || ''" :keyword="flowExecutionKeyword" />
 
     <template v-else-if="activeTab === 'execution'">
       <div v-if="executionError" class="center-error">{{ executionError }}</div>

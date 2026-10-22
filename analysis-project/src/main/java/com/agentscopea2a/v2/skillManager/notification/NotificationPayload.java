@@ -1,5 +1,6 @@
 package com.agentscopea2a.v2.skillManager.notification;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -31,14 +32,15 @@ public record NotificationPayload(
         String triggerType,    // MANUAL | EXTERNAL | METRIC
         List<String> ccUserIdList,
         String notifyContactName,
-        String notifyContactPhone
+        String notifyContactPhone,
+        LocalDate executionDate
 ) {
     public NotificationPayload(String contentType, String content, String filePath, String fileName,
                                String fileUrl, Long jobId, String jobName, String metricCode,
                                String metricName, Long executionId, String status,
                                LocalDateTime completedAt, List<String> userIdList, String triggerType) {
         this(contentType, content, filePath, fileName, fileUrl, jobId, jobName, metricCode,
-                metricName, executionId, status, completedAt, userIdList, triggerType, List.of(), null, null);
+                metricName, executionId, status, completedAt, userIdList, triggerType, List.of(), null, null, null);
     }
     public NotificationPayload(String contentType, String content, String filePath, String fileName,
                                String fileUrl, Long jobId, String jobName, String metricCode,
@@ -46,6 +48,6 @@ public record NotificationPayload(
                                LocalDateTime completedAt, List<String> userIdList, String triggerType,
                                List<String> ccUserIdList) {
         this(contentType, content, filePath, fileName, fileUrl, jobId, jobName, metricCode,
-                metricName, executionId, status, completedAt, userIdList, triggerType, ccUserIdList, null, null);
+                metricName, executionId, status, completedAt, userIdList, triggerType, ccUserIdList, null, null, null);
     }
 }
