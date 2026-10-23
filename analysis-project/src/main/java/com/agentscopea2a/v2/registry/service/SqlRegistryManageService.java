@@ -5,6 +5,7 @@ import com.agentscopea2a.mapper.gauss.SqlRegistryMapper;
 import com.agentscopea2a.v2.auth.entity.DeveloperPlPersonInfo;
 import com.agentscopea2a.v2.auth.mapper.DeveloperPlPersonInfoMapper;
 import com.agentscopea2a.v2.registry.dto.SqlTestResult;
+import com.agentscopea2a.v2.util.SqlCellValueNormalizer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -459,7 +460,8 @@ public class SqlRegistryManageService {
             if (rows.size() < maxPreviewRows) {
                 Map<String, Object> row = new LinkedHashMap<>();
                 for (int i = 1; i <= colCount; i++) {
-                    row.put(columns.get(i - 1), rs.getObject(i));
+                    // Clob/Blob 等大对象列转 String, 否则 JSON 序列化失败整个测试报 500
+                    row.put(columns.get(i - 1), SqlCellValueNormalizer.normalize(rs.getObject(i)));
                 }
                 rows.add(row);
             }

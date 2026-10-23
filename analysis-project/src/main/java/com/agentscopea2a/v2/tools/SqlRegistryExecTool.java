@@ -20,6 +20,7 @@ import com.agentscopea2a.mapper.gauss.SqlRegistryMapper;
 import com.agentscopea2a.v2.presentation.PresentationDataReferenceStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.agentscopea2a.v2.service.DownloadContentService;
+import com.agentscopea2a.v2.util.SqlCellValueNormalizer;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
@@ -461,7 +462,8 @@ public class SqlRegistryExecTool {
         List<Map<String, Object>> rows = new ArrayList<>();
         while (rs.next()) {
             Map<String, Object> row = new LinkedHashMap<>();
-            for (int i = 1; i <= colCount; i++) row.put(columns.get(i - 1), rs.getObject(i));
+            // Clob/Blob 等大对象列转 String, 否则渲染成 "xxx@1a2b3c" 垃圾串
+            for (int i = 1; i <= colCount; i++) row.put(columns.get(i - 1), SqlCellValueNormalizer.normalize(rs.getObject(i)));
             rows.add(row);
         }
         return new QueryResult(sqlId, Map.copyOf(params), List.copyOf(columns), List.copyOf(rows), elapsedMs);
