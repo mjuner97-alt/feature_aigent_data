@@ -16,6 +16,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -178,7 +179,7 @@ public class NotificationService {
                 metric != null ? metric.getCode() : null,
                 metric != null ? metric.getName() : null,
                 execution.getId(), execution.getStatus(), LocalDateTime.now(), receivers,
-                triggerType);
+                triggerType, executionDateOf(execution));
         SkillJobNotification notification = SkillJobNotification.builder()
                 .jobId(job.getId())
                 .executionId(execution.getId())
@@ -224,6 +225,16 @@ public class NotificationService {
             receivers.add(job.getCreatedBy());
         }
         return receivers;
+    }
+
+    /**
+     * 数据截至日期锚点:跑批实际跑数的那天(开始执行日期);记录异常缺失时
+     * 回退创建日期/当天,由 {@link NotificationContact#append} 统一减一天展示。
+     */
+    private static LocalDate executionDateOf(SkillJobExecution execution) {
+        if (execution.getStartedAt() != null) return execution.getStartedAt().toLocalDate();
+        if (execution.getCreatedAt() != null) return execution.getCreatedAt().toLocalDate();
+        return LocalDate.now();
     }
 
     private void recordSkipped(SkillJob job, SkillJobExecution execution, String filePath,

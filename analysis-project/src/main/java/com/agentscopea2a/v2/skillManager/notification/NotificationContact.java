@@ -45,7 +45,7 @@ public final class NotificationContact {
         String html = String.valueOf(content);
         if (executionDate != null) {
             String date = executionDate.minusDays(1).format(DateTimeFormatter.ofPattern("yyyy年MM月dd日"));
-            contact = "<p>报告数据截至日期：" + date + "</p>" + contact;
+            contact = "<p>报告数据截止日期：" + date + "</p>" + contact;
         }
         if (contact.isBlank()) return html;
         int bodyEnd = html.toLowerCase(Locale.ROOT).lastIndexOf("</body>");

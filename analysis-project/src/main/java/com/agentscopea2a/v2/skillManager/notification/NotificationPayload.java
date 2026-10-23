@@ -42,6 +42,15 @@ public record NotificationPayload(
         this(contentType, content, filePath, fileName, fileUrl, jobId, jobName, metricCode,
                 metricName, executionId, status, completedAt, userIdList, triggerType, List.of(), null, null, null);
     }
+    /** 无抄送/联系人但需要报告数据截止日期的载荷（SkillJob 跑批通知用）。 */
+    public NotificationPayload(String contentType, String content, String filePath, String fileName,
+                               String fileUrl, Long jobId, String jobName, String metricCode,
+                               String metricName, Long executionId, String status,
+                               LocalDateTime completedAt, List<String> userIdList, String triggerType,
+                               LocalDate executionDate) {
+        this(contentType, content, filePath, fileName, fileUrl, jobId, jobName, metricCode,
+                metricName, executionId, status, completedAt, userIdList, triggerType, List.of(), null, null, executionDate);
+    }
     public NotificationPayload(String contentType, String content, String filePath, String fileName,
                                String fileUrl, Long jobId, String jobName, String metricCode,
                                String metricName, Long executionId, String status,
