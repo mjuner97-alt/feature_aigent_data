@@ -65,10 +65,15 @@ public class DirectSkillExecutor {
     private static final TypeReference<Map<String, String>> PARAM_MAPPING_TYPE =
             new TypeReference<>() {};
 
-    /** Layer 1 固定维度键枚举 (param_mapping value 的合法取值, 管理页保存期校验同源)。 */
+    /** Layer 1 固定维度键枚举 (param_mapping value 的合法取值, 管理页保存期校验同源)。
+     *  perNo = 统一认证号 (人员台账维度方案 §3.4, 执行期解析不进指纹)。 */
     public static final Set<String> DIMENSION_KEYS = Set.of(
             "versionPlan", "vestQuarter", "deptName", "groupName",
-            "appName", "productLine", "itemNo", "subItemNo", "perName");
+            "appName", "productLine", "itemNo", "subItemNo", "perName", "perNo");
+
+    /** 上级组织动态键 (2026/10/22): dimension_key_config orgName 行 (杭研/研发部/基地等
+     *  变体 → 标准值「杭研」, 页面可加)。命中时缺部门不反问 (上级组织已是部门的上层口径)。 */
+    public static final String ORG_DIMENSION_KEY = "orgName";
 
     private final SkillRoutingMetadataRepository metadataRepository;
     private final SkillCandidateSelector candidateSelector;
@@ -80,6 +85,7 @@ public class DirectSkillExecutor {
     private final ObjectProvider<DimensionKeyConfigRepository> dimensionKeyRepoProvider;
     private final ObjectProvider<SkillBypassKeywordService> bypassKeywordServiceProvider;
     private final ObjectProvider<com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver> anchorResolverProvider;
+    private final ObjectProvider<com.agentscopea2a.v2.dimension.PersonalDimensionResolver> personalResolverProvider;
     private final ObjectMapper objectMapper;
     private final boolean enabled;
 
@@ -96,7 +102,7 @@ public class DirectSkillExecutor {
             boolean enabled) {
         this(metadataRepository, candidateSelector, usageResolver, indexRepo, scriptRegistryMapper,
                 dimensionStateManager, versionPlanHookProvider, dimensionKeyRepoProvider,
-                null, null, objectMapper, enabled);
+                null, null, null, objectMapper, enabled);
     }
 
     public DirectSkillExecutor(
@@ -113,7 +119,7 @@ public class DirectSkillExecutor {
             boolean enabled) {
         this(metadataRepository, candidateSelector, usageResolver, indexRepo, scriptRegistryMapper,
                 dimensionStateManager, versionPlanHookProvider, dimensionKeyRepoProvider,
-                bypassKeywordServiceProvider, null, objectMapper, enabled);
+                bypassKeywordServiceProvider, null, null, objectMapper, enabled);
     }
 
     public DirectSkillExecutor(
@@ -129,6 +135,25 @@ public class DirectSkillExecutor {
             ObjectProvider<com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver> anchorResolverProvider,
             ObjectMapper objectMapper,
             boolean enabled) {
+        this(metadataRepository, candidateSelector, usageResolver, indexRepo, scriptRegistryMapper,
+                dimensionStateManager, versionPlanHookProvider, dimensionKeyRepoProvider,
+                bypassKeywordServiceProvider, anchorResolverProvider, null, objectMapper, enabled);
+    }
+
+    public DirectSkillExecutor(
+            SkillRoutingMetadataRepository metadataRepository,
+            SkillCandidateSelector candidateSelector,
+            SkillUsageResolver usageResolver,
+            SkillIndexRepository indexRepo,
+            ScriptRegistryMapper scriptRegistryMapper,
+            DimensionStateManager dimensionStateManager,
+            ObjectProvider<VersionPlanKnowledgeHook> versionPlanHookProvider,
+            ObjectProvider<DimensionKeyConfigRepository> dimensionKeyRepoProvider,
+            ObjectProvider<SkillBypassKeywordService> bypassKeywordServiceProvider,
+            ObjectProvider<com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver> anchorResolverProvider,
+            ObjectProvider<com.agentscopea2a.v2.dimension.PersonalDimensionResolver> personalResolverProvider,
+            ObjectMapper objectMapper,
+            boolean enabled) {
         this.metadataRepository = metadataRepository;
         this.candidateSelector = candidateSelector;
         this.usageResolver = usageResolver;
@@ -139,12 +164,15 @@ public class DirectSkillExecutor {
         this.dimensionKeyRepoProvider = dimensionKeyRepoProvider;
         this.bypassKeywordServiceProvider = bypassKeywordServiceProvider;
         this.anchorResolverProvider = anchorResolverProvider;
+        this.personalResolverProvider = personalResolverProvider;
         this.objectMapper = objectMapper;
         this.enabled = enabled;
     }
 
     /** Layer 1 标准化「维度+指标」提取体: 固定 schema 全键输出, 空数组 = 问题未提及。
-     *  extraDimensions = 动态维度键 (dimension_key_config 词表命中, §9), 仅当前问题提取。 */
+     *  extraDimensions = 动态维度键 (dimension_key_config 词表命中, §9), 仅当前问题提取。
+     *  perNo = 统一认证号 (人员台账维度方案 §3.4): "我"→ChatRequest.userId, 人名→Q2 解析;
+     *  执行期解析, 不进 DimensionState 不进指纹。 */
     public record DimensionExtraction(
             List<String> versionPlan,
             List<String> vestQuarter,
@@ -155,6 +183,7 @@ public class DirectSkillExecutor {
             List<String> itemNo,
             List<String> subItemNo,
             List<String> perName,
+            List<String> perNo,
             List<String> metrics,
             String matchedSkill,
             Map<String, List<String>> extraDimensions) {
@@ -169,8 +198,30 @@ public class DirectSkillExecutor {
             itemNo = safe(itemNo);
             subItemNo = safe(subItemNo);
             perName = safe(perName);
+            perNo = safe(perNo);
             metrics = safe(metrics);
             extraDimensions = extraDimensions == null ? Map.of() : Map.copyOf(extraDimensions);
+        }
+
+        /** Legacy 11-arg shape (no perNo/dynamic keys) for existing call sites. */
+        public DimensionExtraction(
+                List<String> versionPlan, List<String> vestQuarter, List<String> deptName,
+                List<String> groupName, List<String> appName, List<String> productLine,
+                List<String> itemNo, List<String> subItemNo, List<String> perName,
+                List<String> metrics, String matchedSkill) {
+            this(versionPlan, vestQuarter, deptName, groupName, appName, productLine,
+                    itemNo, subItemNo, perName, List.of(), metrics, matchedSkill, Map.of());
+        }
+
+        /** Legacy 12-arg shape (no perNo, with dynamic keys) for existing call sites. */
+        public DimensionExtraction(
+                List<String> versionPlan, List<String> vestQuarter, List<String> deptName,
+                List<String> groupName, List<String> appName, List<String> productLine,
+                List<String> itemNo, List<String> subItemNo, List<String> perName,
+                List<String> metrics, String matchedSkill,
+                Map<String, List<String>> extraDimensions) {
+            this(versionPlan, vestQuarter, deptName, groupName, appName, productLine,
+                    itemNo, subItemNo, perName, List.of(), metrics, matchedSkill, extraDimensions);
         }
 
         /** Legacy 10-arg shape (no dynamic keys) for existing call sites. */
@@ -179,7 +230,7 @@ public class DirectSkillExecutor {
                 List<String> groupName, List<String> appName, List<String> productLine,
                 List<String> itemNo, List<String> perName, List<String> metrics, String matchedSkill) {
             this(versionPlan, vestQuarter, deptName, groupName, appName, productLine,
-                    itemNo, List.of(), perName, metrics, matchedSkill, Map.of());
+                    itemNo, List.of(), perName, metrics, matchedSkill);
         }
 
         private static List<String> safe(List<String> value) {
@@ -239,11 +290,16 @@ public class DirectSkillExecutor {
             "应用", "xx应用",
             "产品线", "xx产品线",
             "需求项", "REQ-1001",
-            "人", "张三");
+            "人", "张三",
+            "统一认证号", "统一认证号（工号）");
 
     /** params_schema 元素 (direct-exec-param-type-plan.md §2.1): type 仅装配关心 "array",
      *  其余值/未写视为标量。包私有便于单测构造。 */
     record ParamSpec(String name, boolean required, String type) {}
+
+    /** 人名重名反问 pending 标记前缀 (人员台账维度方案 §4.2): missingKeys[0] 形如
+     *  "perNo@person:张三", 补参轮按序号/部门/统一认证号匹配。 */
+    static final String PERSON_MARKER_PREFIX = "perNo@person:";
 
     /** 缺参反问 pending (方案 §4.1): key=userId:conversationId, TTL 5min, 取值时惰性清理。
      *  包私有便于单测构造过期条目。pendingAnchors 非空 = 歧义反问 (missingKeys[0] 形如
@@ -421,6 +477,12 @@ public class DirectSkillExecutor {
         DimensionExtraction extraction = extract(preview, selection.matchedKeywords(), topName,
                 extractExtraDimensions(question));
 
+        // 人员台账 (人员台账维度方案 §3.3/§4.1): 我X extraction 级 enrich → 人名扫描
+        // (唯一命中直填 perName/perNo, 重名在时间歧义检查之后反问)。
+        // 顺序约束: 我X enrich 必须先于人名扫描/下钻展开 ("我部人员的缺陷数"先有 deptName)
+        PersonScanOutcome personScan = applyPersonalDimensions(extraction, question, userId);
+        extraction = personScan.extraction();
+
         // params_schema 白名单/必填/类型: registry 查不到时按无 schema 处理 (mapping 原样传),
         // 白名单拒绝交给 scriptExec 的防注入校验 → 直接报错路径 (拍板: 配错不回退)
         List<ParamSpec> schema = null;
@@ -460,6 +522,26 @@ public class DirectSkillExecutor {
             }
         }
 
+        // 人名重名反问 (§4.2 直接执行轨): 复用 askMessage + PendingDirectExec (时间歧义锚点
+        // 同构)。放时间歧义之后: 两者同时出现时先答时间, 下一轮 plan 重跑再问人名 (单 pending)。
+        // 无会话键 → 剥离反问降级 (重名人不填值, LLM 路径兜底)。
+        if (personScan.ambiguousName() != null) {
+            if (conversationId == null) {
+                log.info("DirectSkillExecutor: 人名 {} 重名但无会话键, 剥离反问降级", personScan.ambiguousName());
+            } else {
+                String key = sessionKey(userId, conversationId);
+                Map<String, Object> preParams = buildParams(mapping, schema, extraction);
+                pending.put(key, new PendingDirectExec(topName, top.scriptId(), mapping, schema,
+                        preParams, List.of(PERSON_MARKER_PREFIX + personScan.ambiguousName()),
+                        System.currentTimeMillis(), null));
+                log.info("DirectSkillExecutor: skill {} 人名 {} 重名 {} 选 → 反问 (pending {})",
+                        topName, personScan.ambiguousName(), personScan.candidates().size(), key);
+                return new DirectExecutionPlan(extraction, topName, top.scriptId(), preParams,
+                        List.of(labelFor("perNo")),
+                        personAskMessage(personScan.ambiguousName(), personScan.candidates()));
+            }
+        }
+
         Map<String, Object> params = buildParams(mapping, schema, extraction);
         // 快照兜底补缺 (followup 方案 §3.5): 同 skill 且必填参数本轮未提及 → 继承上轮直接
         // 执行的值 (修 G2「时间层追问丢部门」在直接执行交替场景的暴露)。只补缺不覆盖;
@@ -484,6 +566,14 @@ public class DirectSkillExecutor {
                 continue;
             }
             String dimKey = mapping.get(req);
+            // 上级组织口径 (2026/10/22): 问题命中 orgName 动态键 (杭研维度词表) 时,
+            // 缺部门不反问 — 上级组织已是部门的上层口径, 脚本按缺部门自行决定查询范围
+            if ("deptName".equals(dimKey) && !extraction.extraDimensions()
+                    .getOrDefault(ORG_DIMENSION_KEY, List.of()).isEmpty()) {
+                log.info("DirectSkillExecutor: 必填参数 {} 缺失但命中 {} (上级组织口径), 不反问缺部门 (skill={})",
+                        req, ORG_DIMENSION_KEY, topName);
+                continue;
+            }
             if (dimKey == null || conversationId == null) {
                 log.info("DirectSkillExecutor: 必填参数 {} 无值 (skill={}, 维度未提及且无默认), 回退 LLM",
                         req, topName);
@@ -609,7 +699,8 @@ public class DirectSkillExecutor {
         return new DimensionExtraction(extraction.versionPlan(), extraction.vestQuarter(),
                 extraction.deptName(), extraction.groupName(), extraction.appName(),
                 extraction.productLine(), extraction.itemNo(), extraction.subItemNo(),
-                extraction.perName(), extraction.metrics(), extraction.matchedSkill(), extra);
+                extraction.perName(), extraction.perNo(), extraction.metrics(),
+                extraction.matchedSkill(), extra);
     }
 
     /**
@@ -627,6 +718,11 @@ public class DirectSkillExecutor {
         if (System.currentTimeMillis() - p.createdAt() > PENDING_TTL_MS) {
             pending.remove(key, p);
             return null;
+        }
+        String firstMarker = p.missingKeys().isEmpty() ? "" : p.missingKeys().get(0);
+        if (firstMarker.startsWith(PERSON_MARKER_PREFIX)) {
+            return consumePersonPending(question, userId, previousState, conversationId, key, p,
+                    firstMarker.substring(PERSON_MARKER_PREFIX.length()));
         }
         if (p.pendingAnchors() != null && !p.missingKeys().isEmpty()
                 && p.missingKeys().get(0).startsWith(TimeRangeResolver.RESERVED_KEY + "@")) {
@@ -709,6 +805,221 @@ public class DirectSkillExecutor {
         return new DirectExecutionPlan(effective, p.skillName(), p.scriptId(), params);
     }
 
+    // ==================== 人员台账: 我X enrich + 人名扫描 (人员台账维度方案 §3.3/§4) ====================
+
+    /** 人名扫描一轮的产物: enrich/扫描后的提取体 + 首个重名候选 (无则 null)。 */
+    private record PersonScanOutcome(
+            DimensionExtraction extraction,
+            String ambiguousName,
+            List<com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity> candidates) {}
+
+    /**
+     * 我X enrich (§3.3, extraction 级, 不经 PeerDimension) → 人名字典扫描 (§4.1)。
+     * 唯一身份 → perName/perNo 直填; 重名 → 交反问 (调用方挂 pending); 台账不可用/查无 → 不注入。
+     */
+    private PersonScanOutcome applyPersonalDimensions(DimensionExtraction extraction,
+                                                      String question, String userId) {
+        if (personalResolverProvider == null) {
+            return new PersonScanOutcome(extraction, null, List.of());
+        }
+        com.agentscopea2a.v2.dimension.PersonalDimensionResolver resolver =
+                personalResolverProvider.getIfAvailable();
+        if (resolver == null) {
+            return new PersonScanOutcome(extraction, null, List.of());
+        }
+        extraction = enrichPersonal(extraction, resolver.resolve(question, userId), userId);
+
+        String masked = com.agentscopea2a.v2.dimension.DimensionStateManager.maskForPersonScan(question);
+        List<String> perName = new ArrayList<>(extraction.perName());
+        List<String> perNo = new ArrayList<>(extraction.perNo());
+        String ambiguousName = null;
+        List<com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity> candidates = List.of();
+        for (String name : resolver.scanNames(masked)) {
+            List<com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity> identities =
+                    resolver.resolveName(name);
+            if (identities.isEmpty()) {
+                continue; // 字典/快照口径不一致或查询失败, 跳过该名
+            }
+            if (identities.size() == 1) {
+                if (!perName.contains(name)) {
+                    perName.add(name);
+                }
+                String no = identities.get(0).perNo();
+                if (no != null && !perNo.contains(no)) {
+                    perNo.add(no);
+                }
+            } else if (ambiguousName == null) {
+                ambiguousName = name;
+                candidates = identities;
+            }
+        }
+        DimensionExtraction out = new DimensionExtraction(extraction.versionPlan(),
+                extraction.vestQuarter(), extraction.deptName(), extraction.groupName(),
+                extraction.appName(), extraction.productLine(), extraction.itemNo(),
+                extraction.subItemNo(), perName, perNo, extraction.metrics(),
+                extraction.matchedSkill(), extraction.extraDimensions());
+        return new PersonScanOutcome(out, ambiguousName, candidates);
+    }
+
+    /** §3.3 enrich 字段映射: 显式值优先保留, 台账多值追加去重; ledger null (anonymous/
+     *  查无此人/查询失败) 时不注入维度, 仅 myself 且 userId 非空时仍填 perNo (=userId, 不查库)。 */
+    private static DimensionExtraction enrichPersonal(
+            DimensionExtraction extraction,
+            com.agentscopea2a.v2.dimension.PersonalDimensionResolver.PersonalResolution personal,
+            String userId) {
+        if (!personal.anyHit()) {
+            return extraction;
+        }
+        var ledger = personal.ledger();
+        boolean anonymous = userId == null || userId.isBlank();
+        if (ledger == null && (personal.myself() ? anonymous : true)) {
+            log.info("DirectSkillExecutor: 我X命中但台账不可用 (userId={}), 不注入维度",
+                    anonymous ? "空" : userId);
+            return extraction;
+        }
+        List<String> deptName = appendNew(extraction.deptName(),
+                ledger == null ? List.of() : ledger.depts());
+        List<String> groupName = appendNew(extraction.groupName(),
+                ledger == null ? List.of() : ledger.groups());
+        List<String> appName = appendNew(extraction.appName(),
+                ledger == null ? List.of() : ledger.apps());
+        List<String> productLine = appendNew(extraction.productLine(),
+                ledger == null ? List.of() : ledger.productLines());
+        List<String> perName = new ArrayList<>(extraction.perName());
+        List<String> perNo = new ArrayList<>(extraction.perNo());
+        if (personal.myself() && !anonymous) {
+            if (!perNo.contains(userId)) {
+                perNo.add(userId);
+            }
+            if (ledger != null && ledger.name() != null && !perName.contains(ledger.name())) {
+                perName.add(ledger.name());
+            }
+        }
+        return new DimensionExtraction(extraction.versionPlan(), extraction.vestQuarter(),
+                deptName, groupName, appName, productLine, extraction.itemNo(), extraction.subItemNo(),
+                perName, perNo, extraction.metrics(), extraction.matchedSkill(),
+                extraction.extraDimensions());
+    }
+
+    /** 追加不存在的非空值 (保序去重, 显式值已在 base 中优先保留)。 */
+    private static List<String> appendNew(List<String> base, List<String> additions) {
+        if (additions == null || additions.isEmpty()) {
+            return base;
+        }
+        List<String> out = new ArrayList<>(base);
+        for (String v : additions) {
+            if (v != null && !v.isBlank() && !out.contains(v)) {
+                out.add(v);
+            }
+        }
+        return List.copyOf(out);
+    }
+
+    /**
+     * 人名重名补参轮 (§4.2): 答复按序号/统一认证号/部门(组)名匹配 → perNo 落地继续执行;
+     * 匹配不出 → 丢弃 pending 走正常链路 (口径同缺参补参轮)。
+     */
+    private DirectExecutionPlan consumePersonPending(String question, String userId,
+                                                     DimensionState previousState,
+                                                     String conversationId, String key,
+                                                     PendingDirectExec p, String name) {
+        com.agentscopea2a.v2.dimension.PersonalDimensionResolver resolver =
+                personalResolverProvider == null ? null : personalResolverProvider.getIfAvailable();
+        List<com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity> candidates =
+                resolver == null ? List.of() : resolver.resolveName(name);
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity chosen =
+                matchPersonReply(question, candidates);
+        if (chosen == null) {
+            log.info("DirectSkillExecutor: 人名反问答复未匹配 {} (pending {}), 丢弃走正常链路", name, key);
+            pending.remove(key, p);
+            return null;
+        }
+        DimensionState preview = dimensionStateManager.previewState(question, previousState);
+        DimensionExtraction extraction = extract(preview, List.of(), p.skillName(),
+                extractExtraDimensions(question));
+        extraction = withResolvedPerson(extraction, chosen);
+        Map<String, Object> params = new LinkedHashMap<>(p.filledParams());
+        for (Map.Entry<String, String> e : p.mapping().entrySet()) {
+            if ("perNo".equals(e.getValue())) {
+                params.put(e.getKey(), shapeValue(e.getKey(), p.schema(), List.of(chosen.perNo())));
+            }
+        }
+        pending.remove(key, p);
+        log.info("DirectSkillExecutor: 人名 {} → perNo {} (pending {}), plan hit skill={} params={}",
+                name, chosen.perNo(), key, p.skillName(), params);
+        recordLastExec(question, userId, conversationId, p.skillName(), p.scriptId(), params);
+        return new DirectExecutionPlan(extraction, p.skillName(), p.scriptId(), params);
+    }
+
+    private static DimensionExtraction withResolvedPerson(
+            DimensionExtraction extraction,
+            com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity identity) {
+        List<String> perName = new ArrayList<>(extraction.perName());
+        List<String> perNo = new ArrayList<>(extraction.perNo());
+        if (identity.name() != null && !perName.contains(identity.name())) {
+            perName.add(identity.name());
+        }
+        if (identity.perNo() != null && !perNo.contains(identity.perNo())) {
+            perNo.add(identity.perNo());
+        }
+        return new DimensionExtraction(extraction.versionPlan(), extraction.vestQuarter(),
+                extraction.deptName(), extraction.groupName(), extraction.appName(),
+                extraction.productLine(), extraction.itemNo(), extraction.subItemNo(),
+                perName, perNo, extraction.metrics(), extraction.matchedSkill(),
+                extraction.extraDimensions());
+    }
+
+    /** 重名反问答复匹配: 序号 (1~N, 含全角/中文数字? 否——直接执行轮保持简单, 仅阿拉伯数字)
+     *  优先, 其次统一认证号/部门(组)名包含匹配; 全不中 → null。 */
+    private static com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity matchPersonReply(
+            String reply, List<com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity> candidates) {
+        if (reply == null || reply.isBlank() || candidates == null || candidates.isEmpty()) {
+            return null;
+        }
+        String text = reply.trim();
+        java.util.regex.Matcher m = REPLY_INDEX.matcher(text);
+        while (m.find()) {
+            int idx = 0;
+            try {
+                idx = Integer.parseInt(m.group());
+            } catch (NumberFormatException ignore) {
+                continue;
+            }
+            if (idx >= 1 && idx <= candidates.size()) {
+                return candidates.get(idx - 1);
+            }
+        }
+        for (var c : candidates) {
+            if (c.perNo() != null && text.contains(c.perNo())) {
+                return c;
+            }
+        }
+        for (var c : candidates) {
+            List<String> hints = new ArrayList<>(c.depts());
+            hints.addAll(c.groups());
+            for (String hint : hints) {
+                if (hint != null && !hint.isBlank() && text.contains(hint)) {
+                    return c;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static final java.util.regex.Pattern REPLY_INDEX = java.util.regex.Pattern.compile("[1-9]\\d*");
+
+    /** 重名反问文案 (§4.2): 序号 + 部门(组)后缀, 复用直接执行 askMessage 下发。 */
+    static String personAskMessage(
+            String name, List<com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity> candidates) {
+        StringBuilder sb = new StringBuilder("「").append(name)
+                .append("」匹配到多位人员，请回复序号确认：\n");
+        for (int i = 0; i < candidates.size(); i++) {
+            sb.append(i + 1).append(". ").append(candidates.get(i).displaySuffix()).append("\n");
+        }
+        sb.append("（回复序号或部门/组名即可）");
+        return sb.toString();
+    }
+
     /** 维度键 → 中文 label (字典 label 优先, 查不到/字典挂回退键名; timeRange 后缀键剥后缀再查)。 */
     private String labelFor(String dimKey) {
         String base = dimKey == null ? "" : dimKey.replaceAll("\\.(start|end)$", "");
@@ -755,8 +1066,9 @@ public class DirectSkillExecutor {
             }
         }
         List<String> persons = state == null ? List.of() : safe(state.getPersons());
+        // perNo 不进 DimensionState (执行期解析), 由 enrichPersonal/人名扫描在 plan 里填充
         return new DimensionExtraction(versionPlan, vestQuarter, departments, groupName,
-                appName, productLine, itemNo, subItemNo, persons, metrics, matchedSkill,
+                appName, productLine, itemNo, subItemNo, persons, List.of(), metrics, matchedSkill,
                 extraDimensions);
     }
 
@@ -866,6 +1178,7 @@ public class DirectSkillExecutor {
             case "itemNo" -> extraction.itemNo();
             case "subItemNo" -> extraction.subItemNo();
             case "perName" -> extraction.perName();
+            case "perNo" -> extraction.perNo();
             case "versionPlan.start" -> edge(extraction.versionPlan(), false);
             case "versionPlan.end" -> edge(extraction.versionPlan(), true);
             case "vestQuarter.start" -> quarterEdge(extraction, false);

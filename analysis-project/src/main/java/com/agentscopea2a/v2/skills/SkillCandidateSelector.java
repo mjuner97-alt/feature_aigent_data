@@ -16,26 +16,24 @@ import java.util.stream.Collectors;
 /**
  * Deterministic, keyword-driven selector for model-visible Skill candidates.
  *
- * <p>两阶段匹配（2026/10/15 定稿, docs/history/skill-retrieval-logic.md §8.4）：
+ * <p><b>按 skill 自身配置层级的 AND + 双轨并存（2026/10/22 四次定稿）</b>，取代
+ * 2026/10/14 的池级收窄（narrowByLevels）与 §8 拍板⑥（阶段一命中时叶层-only 出局）：
  * <ul>
- *   <li><b>阶段 0 显式点名</b>：问题 contains skill 名 → 直接入池恒置顶，不受旁路影响。</li>
- *   <li><b>阶段 1 层级匹配</b>：预选 = L1∨L2∨L3 任一词条命中（不看 domain、不看叶层）；
- *       命中即逐层收窄（§7.3 语义不变）；非空则按 显式点名 &gt; 漏斗层深度（L3&gt;L2&gt;L1）
- *       &gt; 命中词全局位次（skill 取其该层最优命中词的 sort_order, 未配置全局表的词排后）
- *       &gt; name 排序。只配叶层的 skill 在阶段一命中时出局（拍板⑥）。</li>
- *   <li><b>分组保底（2026/10/16, docs/202610/Skill检索分组保底方案.md）</b>：skill 分级
- *       关键词格内的精确词「保底」是保留字，不参与问题文本匹配；L1 真命中时自动视作 L2
- *       命中，L1+L2 均有命中词时自动视作 L3 命中（链式下钻）——位次取全局表「保底」行的
- *       组内 row_order（未配则 MAX）。作用：问题命中组 L1 但具体词全未命中（如「问题的
- *       整体情况」）时，配了保底的 skill 以 depth 压制 + 组内最末位次确定性兜底。</li>
- *   <li><b>阶段 2 叶层回退</b>：阶段一为空时走 2026/10/13 之前的旧行为——domain 互斥域
- *       过滤 + 叶层 keywords 命中打分（2000/词 cap 4000）+ domain 排序加成。</li>
+ *   <li><b>显式点名</b>：问题 contains skill 名 → 直接入池恒置顶，豁免 AND。</li>
+ *   <li><b>层级轨（配置了 L1/L2/L3 任一层）</b>：每个配置了的层都必须有词条命中问题
+ *       （AND，未配置层不设要求），任一配置层未命中 → 该 skill 本轮完全出局。
+ *       L2/L3 含保留字「保底」且上层命中时由注入机制供给命中（分组保底不变）。</li>
+ *   <li><b>存量轨（三层全空，仅 domain+keywords）</b>：行为与 2026/10/13 之前完全一致
+ *       —— domain 互斥域过滤 + 叶层 keywords 命中打分（2000/词 cap 4000）+ domain
+ *       排序加成；不再被层级 skill 的命中挤出。</li>
+ *   <li><b>合并排序</b>：显式点名 &gt; 层级轨（漏斗层深度 L3&gt;L2&gt;L1 &gt; 命中词全局
+ *       位次）&gt; 存量轨（domain+叶层分）&gt; name。depth 天然分层（层级轨 1-3、存量轨 0）。</li>
  * </ul>
  *
  * <p>词条支持正则语法（编译失败回退字面包含，语义在 {@link SkillTermMatcher}，与旁路词共用）。
  * 全局关键词优先级（拍板⑧）由可选的 {@code prioritySupplier} 提供（表
  * {@code skill_keyword_priority}），空表 = 功能天然关闭。截断两档：榜首命中链完整
- * 截到 maxVisibleSkills，否则放宽到 fallbackVisibleSkills。
+ * （或显式点名）截到 maxVisibleSkills，否则放宽到 fallbackVisibleSkills。
  */
 public class SkillCandidateSelector {
 
@@ -91,17 +89,15 @@ public class SkillCandidateSelector {
         String normalizedQuestion = normalize(question);
         Map<String, Integer> priorityIndex = buildPriorityIndex();
 
-        // ── 阶段 0/1 预选: 显式点名与层级命中分流 ─────────────────────────────
+        // ── 分流: 显式点名 / 层级轨 (AND 判定) / 存量轨 (三层全空) ────────────────
         List<Candidate> explicitPool = new ArrayList<>();
         List<Candidate> levelPool = new ArrayList<>();
         List<Candidate> restPool = new ArrayList<>();
-        boolean explicitAny = false;
         for (SkillRoutingMetadata entry : metadata) {
             if (!entry.active() || (nameFilter != null && !nameFilter.test(entry.skillName()))) {
                 continue;
             }
             if (contains(normalizedQuestion, entry.skillName())) {
-                explicitAny = true;
                 explicitPool.add(new Candidate(entry, true, 0, List.of(), List.of(), List.of()));
                 continue;
             }
@@ -109,45 +105,37 @@ public class SkillCandidateSelector {
             List<String> l2Terms = matchedTermsIn(normalizedQuestion, entry.level2Keywords());
             List<String> l3Terms = matchedTermsIn(normalizedQuestion, entry.level3Keywords());
             injectFallbackHits(entry, l1Terms, l2Terms, l3Terms);
-            Candidate candidate = new Candidate(entry, false, matchedTerms(normalizedQuestion, entry.keywords()),
-                    l1Terms, l2Terms, l3Terms);
-            if (!l1Terms.isEmpty() || !l2Terms.isEmpty() || !l3Terms.isEmpty()) {
-                levelPool.add(candidate);
-            } else {
-                restPool.add(candidate);
+            boolean hasLevelConfig = !entry.level1Keywords().isEmpty() || !entry.level2Keywords().isEmpty()
+                    || !entry.level3Keywords().isEmpty();
+            if (hasLevelConfig) {
+                // AND 语义 (2026/10/22 四次定稿): 每个配置了的层都必须有词条命中问题,
+                // 任一配置层未命中 → 本轮完全出局 (显式点名已在上方豁免; 未配置层不设要求)。
+                if ((entry.level1Keywords().isEmpty() || !l1Terms.isEmpty())
+                        && (entry.level2Keywords().isEmpty() || !l2Terms.isEmpty())
+                        && (entry.level3Keywords().isEmpty() || !l3Terms.isEmpty())) {
+                    levelPool.add(new Candidate(entry, false, matchedTerms(normalizedQuestion, entry.keywords()),
+                            l1Terms, l2Terms, l3Terms));
+                }
+                continue;
             }
+            restPool.add(new Candidate(entry, false, matchedTerms(normalizedQuestion, entry.keywords()),
+                    l1Terms, l2Terms, l3Terms));
         }
         if (explicitPool.isEmpty() && levelPool.isEmpty() && restPool.isEmpty()) {
             return new SkillCandidateSelection(List.of(), false, false, false);
         }
 
-        // ── 阶段 1: 层级池非空 → 收窄 + 漏斗排序 (domain 不参与, 拍板⑥) ──────────
-        if (!levelPool.isEmpty()) {
-            int preNarrowSize = levelPool.size();
-            levelPool = narrowByLevels(levelPool);
-            List<ScoredSkill> scored = new ArrayList<>();
-            for (Candidate c : explicitPool) {
-                scored.add(new ScoredSkill(c.entry().skillName(), true, 4, 0, false,
-                        matchedTermsOf(normalizedQuestion, c.entry())));
-            }
-            for (Candidate c : levelPool) {
-                int depth = c.l3Terms().isEmpty() ? c.l2Terms().isEmpty() ? 1 : 2 : 3;
-                scored.add(new ScoredSkill(c.entry().skillName(), false, depth,
-                        bestGlobalRank(priorityIndex, depth, c), !c.explicit() && partiallyMatched(c),
-                        matchedTermsOf(normalizedQuestion, c.entry())));
-            }
-            scored.sort(Comparator.comparing(ScoredSkill::explicit).reversed()
-                    .thenComparing(Comparator.comparingInt(ScoredSkill::depth).reversed())
-                    .thenComparing(Comparator.comparingInt(ScoredSkill::globalRank))
-                    .thenComparing(ScoredSkill::name));
-            return finish(scored, question, preNarrowSize, levelPool.size());
-        }
-
-        // ── 阶段 2: 叶层回退 (2026/10/13 之前旧行为: domain 互斥域过滤 + 叶层打分) ──
+        // ── 双轨合并打分: 层级轨 depth 1-3 排存量轨 depth 0 前, 单一比较器排序 ─────
         Set<String> requestedDomains = matchedTags(normalizedQuestion, metadata, SkillRoutingMetadata::domainTags);
         List<ScoredSkill> scored = new ArrayList<>();
         for (Candidate c : explicitPool) {
-            scored.add(new ScoredSkill(c.entry().skillName(), true, 0, 0, false,
+            scored.add(new ScoredSkill(c.entry().skillName(), true, 4, 0, false,
+                    matchedTermsOf(normalizedQuestion, c.entry())));
+        }
+        for (Candidate c : levelPool) {
+            int depth = c.l3Terms().isEmpty() ? c.l2Terms().isEmpty() ? 1 : 2 : 3;
+            scored.add(new ScoredSkill(c.entry().skillName(), false, depth,
+                    bestGlobalRank(priorityIndex, depth, c), partiallyMatched(c),
                     matchedTermsOf(normalizedQuestion, c.entry())));
         }
         for (Candidate c : restPool) {
@@ -166,9 +154,10 @@ public class SkillCandidateSelector {
                     matchedTermsOf(normalizedQuestion, c.entry())));
         }
         scored.sort(Comparator.comparing(ScoredSkill::explicit).reversed()
+                .thenComparing(Comparator.comparingInt(ScoredSkill::depth).reversed())
                 .thenComparing(Comparator.comparingInt(ScoredSkill::globalRank))
                 .thenComparing(ScoredSkill::name));
-        return finish(scored, question, explicitPool.size() + restPool.size(), scored.size());
+        return finish(scored, question, explicitPool.size() + levelPool.size() + restPool.size(), scored.size());
     }
 
     private SkillCandidateSelection finish(List<ScoredSkill> scored, String question,
@@ -215,33 +204,6 @@ public class SkillCandidateSelector {
             }
         }
         return best;
-    }
-
-    // ── 收窄 (§7.3 语义不变) ────────────────────────────────────────────────
-
-    /**
-     * 命中即逐层收窄 (2026/10/14 定稿): 按 L1→L2→L3 逐层检查, 池中存在该层
-     * 命中时, 淘汰"配置了该层却未命中"的 skill; 该层未配置 (空) 的 skill 直通; 该层无命中
-     * 则整层跳过。显式点名的 skill 不入层级池, 天然豁免。
-     */
-    private static List<Candidate> narrowByLevels(List<Candidate> pool) {
-        List<Candidate> current = pool;
-        current = narrowAtLevel(current, c -> !c.l1Terms().isEmpty(), c -> c.entry().level1Keywords().isEmpty());
-        current = narrowAtLevel(current, c -> !c.l2Terms().isEmpty(), c -> c.entry().level2Keywords().isEmpty());
-        current = narrowAtLevel(current, c -> !c.l3Terms().isEmpty(), c -> c.entry().level3Keywords().isEmpty());
-        return current;
-    }
-
-    private static List<Candidate> narrowAtLevel(List<Candidate> pool,
-                                                 java.util.function.Predicate<Candidate> hit,
-                                                 java.util.function.Predicate<Candidate> unconfigured) {
-        boolean anyHit = pool.stream().anyMatch(hit);
-        if (!anyHit) {
-            return pool;
-        }
-        return pool.stream()
-                .filter(c -> hit.test(c) || unconfigured.test(c))
-                .collect(Collectors.toList());
     }
 
     // ── 词条/标签工具 ───────────────────────────────────────────────────────
@@ -307,13 +269,10 @@ public class SkillCandidateSelector {
         return (int) terms.stream().filter(term -> SkillTermMatcher.matches(question, term)).count();
     }
 
-    /** 配置了某层却未命中 (靠其他层命中入围) → 命中链不完整。 */
+    /** 配置了叶层 keywords 却零命中 → 命中链不完整 (层级命中已由 AND 在入池前强制)。 */
     private static boolean partiallyMatched(Candidate c) {
         SkillRoutingMetadata e = c.entry();
-        return (!e.level1Keywords().isEmpty() && c.l1Terms().isEmpty())
-                || (!e.level2Keywords().isEmpty() && c.l2Terms().isEmpty())
-                || (!e.level3Keywords().isEmpty() && c.l3Terms().isEmpty())
-                || (!e.keywords().isEmpty() && c.keywordHits() == 0);
+        return !e.keywords().isEmpty() && c.keywordHits() == 0;
     }
 
     private static boolean hasDomainTags(List<String> tags) {

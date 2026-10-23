@@ -4,7 +4,8 @@
 > embedding 路径（SkillVectorIndex、SkillRetrievalHook）已于 2026/07/25 停用、2026/07/30 物理删除；
 > 2026/08/31 起 metadata 路由正式上线（`application.properties:267` `harness.a2a.skill-context.routing.enabled=true`）；
 > 2026/10/13 在单一 keywords 层之上增加三级层级关键词（见 §7）；
-> 2026/10/14 层级语义二次定稿：从"任一层命中即入围（只加权不过滤）"改为**命中即逐层收窄**（§7.3）。
+> 2026/10/14 层级语义二次定稿：从"任一层命中即入围（只加权不过滤）"改为**命中即逐层收窄**（§7.3）；
+> **2026/10/22 四次定稿：池级收窄与拍板⑥废弃，改为按 skill 自身配置层级的 AND + 双轨并存（见 §9，当前生效语义）。**
 
 ## 1. 运行时全流程
 
@@ -136,6 +137,8 @@ keywords         叶层（现状不动，精确词）
 Record/Input/View 各加 `level1Keywords/level2Keywords/level3Keywords` 字段（追加在尾部，旧 8/5/10 参构造器保留为重载，存量调用点零改动）。
 
 ### 7.3 下钻算法（SkillCandidateSelector）— 已实施（2026/10/14，395 单测全过）
+
+> ⚠️ **本节"命中即逐层收窄"（池级收窄）已于 2026/10/22 被四次定稿取代（§9）**：收窄不再跨 skill 联动，改为每个 skill 自身配置层级的 AND；叶层-only 存量 skill 不再被拍板⑥挤出。以下保留作历史沿革。
 
 > **语义沿革**：
 > - 初版（2026/10/13）"层层硬过滤+空层回退"有两个漏洞——(1) pool 里未配置层级的通用 skill 让每层收窄永远"成功"，只命中 L1 的 skill 在 L2 直接出局；(2) 层层下钻要求自上而下进链，真实用户经常只说最具体的词（"扫描告警"只含 L3），精确配置了 L3 的 skill 反而进不来。当日修正为"任一层命中即入围"（层级只加权不过滤）。
@@ -279,6 +282,8 @@ boolean bypassed(String question):
 
 ### 8.4 两阶段匹配（SkillCandidateSelector.select 重构）
 
+> ⚠️ **拍板⑥（阶段一命中时只配叶层的 skill 出局）与阶段一池级收窄已于 2026/10/22 被四次定稿取代（§9）**；拍板⑧漏斗排序（层深度 > 命中词全局位次 > name）在层级轨内保留。以下保留作历史沿革。
+
 ```
 阶段 0 显式点名（最高优先, 不受旁路影响）:
     问题 contains skill 名 → 该 skill 直接入池置顶（不变）
@@ -353,3 +358,37 @@ boolean bypassed(String question):
 4. 存量： selector 相关 395 单测按新语义修订（打分类断言改排序断言），
    DirectSkillExecutor / Repository 基线不回归；
 5. 联动：旁路词命中 + DirectSkillExecutor 存量用例（直接执行被旁路回退 LLM）。
+
+## 9. 四次定稿：按 skill 自身配置层级的 AND + 双轨并存（2026/10/22，已实施）
+
+### 9.1 动机
+
+二次定稿（§7.3）的"命中即逐层收窄"是**池级**语义：某层是否成为过滤器取决于**池里其他 skill** 是否在该层命中，跨 skill 联动、语义反直觉；且 §8 拍板⑥使阶段一一旦有层级命中，只配领域标签+keywords 的存量 skill 全部出局——层级关键词上线后存量检索被殃及。定稿：收窄只看 skill **自身**配置。
+
+### 9.2 语义（SkillCandidateSelector.selectInternal）
+
+- **显式点名**：问题 contains skill 名 → 恒置顶，豁免 AND（不变）。
+- **层级轨**（L1/L2/L3 任一数组非空）：**每个配置了的层都必须有词条命中问题**（AND，未配置层不设要求）：
+  1. 仅配一级 → 一级需命中（其一词）；
+  2. 配一级+二级 → 一级与二级各命中一词（同时满足）；
+  3. 配一级+二级+三级 → 三层各命中一词（同时满足）。
+  任一配置层未命中 → **该 skill 本轮完全出局**（不落叶层回退；显式点名除外）。深层词单独命中（如只说 L3 词）不再入围——§7.3 的"深层反向入围"随之废止。
+- **存量轨**（三层全空，仅领域标签+keywords）：行为与 2026/10/13 之前完全一致——domain 互斥域过滤 + 叶层 keywords 命中打分（2000/词 cap 4000）+ domain 排序加成；**不再被层级 skill 的命中挤出**（拍板⑥废止）。
+- **双轨合并排序**（单一比较器）：显式点名 > 层级轨（层深度 L3>L2>L1 > 命中词全局位次，拍板⑧漏斗保留）> 存量轨（domain+叶层分）> name。depth 天然分层（层级轨 1-3、存量轨 0）。
+- **截断两档**：榜首 partial（配置了叶层 keywords 却零命中；层级命中已由 AND 强制不再构成 partial）→ fallback-visible-skills，否则 max-visible-skills。
+- **分组保底兼容**（docs/202610/Skill检索分组保底方案.md）：保留字「保底」注入机制零改动——L2/L3 含「保底」且上层命中 → 注入命中 → AND 视为满足；保底 9 个单测原样通过。纯保底层（该层只有保留字）无法靠文本命中，AND 下与旧逻辑同样无法自行入池。
+
+### 9.3 现网配置形态对照
+
+| Skill 配置 | 问法 | 结果 |
+|---|---|---|
+| wenshu_qi_wanchenglv_dabiaolv（L1=Qi/卡口/Q1-Q4/准入，L2=达标率/通过率/完成率，叶层=拼音） | "Qi 各阶段达标率" | L1+L2 各命中一词 → AND 满足，层级轨排前 |
+| 同上 | "Qi 卡口整体情况"（L2 未命中） | AND 不满足 → 出局 |
+| dept_Q1 例会 skill（三层全空，叶层=Q1/需求卡口，domain=部门例会） | "Q1 部门例会需求卡口不达标情况" | 存量轨叶层命中照常入围，**不被前者 L1"Q1"命中挤出** |
+| 两者同池 | "Q1 达标率情况" | 双轨并存：层级轨排前，存量轨跟随 |
+
+### 9.4 改动与测试
+
+- `SkillCandidateSelector`：删 `narrowByLevels`/`narrowAtLevel`；selectInternal 改为显式/层级（AND 判定后）/存量三池 + 单池合并排序；`partiallyMatched` 只留叶层子句。消费方（`SkillVectorIndexVisibilityFilter.filter` / `DirectSkillExecutor.plan`）零改动。
+- `SkillCandidateSelectorTest` 33 例（6 个旧语义用例翻转 + 4 个新用例）、`SkillCandidateSelectorFallbackTest` 9 例不动、全量 654 单测通过。
+- 存量行三层全空 → 走存量轨，行为与层级功能上线前完全一致。

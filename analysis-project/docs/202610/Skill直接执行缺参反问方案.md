@@ -200,3 +200,12 @@ if (plan != null) {
   （`defaultTimeValue` → `defaultTimeValues`）。在建版本有多个时只传第一个会漏查其他版本的行
   → 无数据；脚本侧 version 本就支持字符串数组（SQL IN 聚合），与 LLM 路径注入全部在建版本
   同语义。单测 `missingVersionFilledWithCurrentInBuildVersion` 同步改为断言全量列表。
+- 2026/10/22 补充（/ai/chat 内网前端反问格式）：内网特有前端（代码不在本仓库）不渲染
+  反问轮文本——缺参反问轮原先先发「正在调用模型」think 再发反问文本、无「已执行」done
+  收尾，前端卡在执行中状态。修复：反问轮（缺参反问 + 时间歧义反问）完全复刻
+  `SkillFlowChatRouter.completed()` 的一次性风格——**不发任何 think/done，只发一条
+  finish=true 的文本事件**。实现为把 `ChatStreamServiceImpl.stream()` 入口处的
+  「正在调用模型」think 下移到直接执行短路块之后（仅 LLM 流式链路发送）；歧义反问轮
+  本就是纯文本单事件，不变。直接执行执行轮由 `runDirectExecution` 自带
+  「已匹配技能…直接执行脚本…」think，不受影响。DTO 载荷两家本就同款
+  （TextManagerResponseDto/TextResponseDto + finish=true），无需改动。
