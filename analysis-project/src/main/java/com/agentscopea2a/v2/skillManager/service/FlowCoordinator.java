@@ -348,8 +348,9 @@ public class FlowCoordinator {
                 scriptParams = ScriptExecutionParamsSnapshot.resolve(mapper, paramRuleService, json, node, anchor);
             }
             stage = "NODE_CACHE_LOOKUP";
+            // 默认关闭:不走 hit/claim,不再往 node_cache 表写数据;需要时再显式打开
             boolean cacheEnabled = runtimeConfigService.resolve(flow.getTriggerUserId(), "")
-                    .getBooleanOrDefault(LONG_TASK_NODE_CACHE_ENABLED, true);
+                    .getBooleanOrDefault(LONG_TASK_NODE_CACHE_ENABLED, false);
             // 节点结果缓存:缓存 key 维度 = 节点(流程+nodeKey+脚本/Skill) + 版本(脚本 id / skillId) + 渲染后问题(输入) + 数据日期。
             // 手动重跑单个节点会置入 refreshRequested,要求绕过缓存重新执行。
             String cacheNodeId = scriptNode
