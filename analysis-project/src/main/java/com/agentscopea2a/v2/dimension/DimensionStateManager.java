@@ -337,10 +337,68 @@ public class DimensionStateManager {
             default -> matched;
         };
     }
-    // 应用 F-XXX / 群组 F-XXX-XXX — 同一正则吃下,后者只是更长。
-    // 应用码纯英文+连字符 (F-GCMS / F-ATP-INNER), 不含数字: 否则 "F-FPA4季度"
+    // 应用 F-XXX / FS-XXX / 群组 F-XXX-XXX — 同一正则吃下,后者只是更长。
+    // 应用码纯英文+连字符 (F-GCMS / F-ATP-INNER / FS-GBCP-EPL), 不含数字: 否则 "F-FPA4季度"
     // 会贪婪吃进 "4" 把应用名错切成 F-FPA4
-    private static final Pattern EXPLICIT_APP = Pattern.compile("(F-[A-Za-z][A-Za-z-]*)");
+    private static final Pattern EXPLICIT_APP = Pattern.compile("(FS?-[A-Za-z][A-Za-z-]*)");
+    // 裸应用码 (省略 F-/FS- 前缀): 首段三位及以上连续大写字母, 可后接 -两位以上大写段
+    // ("BASE"→F-BASE, "BCP-EPL"→F-BCP-EPL)。仅大写: 小写英文 (sql/csv/api) 是技术词。
+    // 前后环视排除字母/连字符邻接, 防止 F-ATP-INNER 的 "ATP"/"INNER" 内段被二次加前缀;
+    // 语义让路见 bareAppCodes
+    private static final Pattern BARE_APP =
+            Pattern.compile("(?<![A-Za-z-])[A-Z]{3,}(?:-[A-Z]{2,})*(?![A-Za-z-])");
+
+    /**
+     * 裸应用码提取 (用户省略 F-/FS- 前缀): 屏蔽 F- 编码 / 时间 / 部门 / 需求项 / 组 /
+     * 产品线 / 别名命中与歧义 span 后, 剩余文本中的大写连续字母段 (含连字符串) 补 F- 返回。
+     * 让路理由: "GBC" 是组/产品线别名、"FMBM" 内嵌在 "FMBM应用平台组" 组名里,
+     * 都不是应用码; "FPA4季度" 的 FPA 无任何归属 → 应用 F-FPA。
+     */
+    private static List<String> bareAppCodes(String q, AliasResolver.AliasResolution aliasRes) {
+        List<int[]> spans = new ArrayList<>();
+        for (Pattern p : List.of(TIME_MASK_SPAN, EXPLICIT_DEPT, EXPLICIT_APP,
+                EXPLICIT_REQUIREMENT, EXPLICIT_SUB_REQUIREMENT, EXPLICIT_TEAM,
+                EXPLICIT_PRODUCT_LINE)) {
+            collectSpans(q, p, spans);
+        }
+        if (aliasRes != null) {
+            for (AliasResolver.ResolvedAlias r : aliasRes.resolved()) {
+                spans.add(new int[] {r.start(), r.end()});
+            }
+            for (AliasResolver.AmbiguousAlias a : aliasRes.ambiguous()) {
+                spans.add(new int[] {a.start(), a.end()});
+            }
+        }
+        Matcher m = BARE_APP.matcher(maskSpanUnion(q, spans));
+        List<String> codes = new ArrayList<>();
+        while (m.find()) {
+            codes.add("F-" + m.group());
+        }
+        return codes;
+    }
+
+    /** 取 span 并集屏蔽 (重叠合并): 与 {@link #maskSpanList} 的先到先得不同, 排除用途
+     *  要 maximal 屏蔽——TEAM 贪婪 span ("杭州二部FMBM应用平台组") 与 DEPT span 首位重叠,
+     *  先到先得会把整段 TEAM 跳掉漏掉内嵌的 "FMBM"。 */
+    private static String maskSpanUnion(String q, List<int[]> spans) {
+        if (spans.isEmpty()) {
+            return q;
+        }
+        spans.sort(Comparator.comparingInt(s -> s[0]));
+        char[] chars = q.toCharArray();
+        int lastEnd = -1;
+        for (int[] s : spans) {
+            int from = Math.max(s[0], lastEnd);
+            if (from >= s[1]) {
+                continue;
+            }
+            for (int i = from; i < s[1]; i++) {
+                chars[i] = MASK_CHAR;
+            }
+            lastEnd = Math.max(lastEnd, s[1]);
+        }
+        return new String(chars);
+    }
     // 小组:KNOWLEDGE.md 举例都 5+ 字(如"金融市场自营测试组"),放宽到 {2,}
     private static final Pattern EXPLICIT_TEAM = Pattern.compile("([一-龥A-Za-z0-9]{2,}组)");
     // 产品线:同上放宽,并补常见非"...产品线"后缀的固定名(普惠金融 / 代理国库等)
@@ -390,14 +448,78 @@ public class DimensionStateManager {
     }
 
     /** 依次找首个非粒度词候选（粒度词候选跳过继续找，如"各个组、数据智能组"取后者）。 */
-    private static boolean hasNonGranularityMatch(String text, Pattern p, int suffixLen) {
+    private static boolean hasNonGranularityMatch(String text, Pattern p, int suffixLen, Set<String> stems) {
         Matcher m = p.matcher(text);
         while (m.find()) {
             String token = m.group(1);
-            if (token == null || isGranularityToken(token) || hasGranularityTail(token, suffixLen)) {
+            if (token == null || isGranularityToken(token) || hasGranularityTail(token, suffixLen)
+                    || containsAnyStem(token, stems)) {
                 continue;
             }
             return true;
+        }
+        return false;
+    }
+
+    // ---- §5.1 第五层（词表反哺）：drillDown 动态键词表自动成为垃圾屏蔽词源 ----
+    // "具体到各统计组"型粒度字藏在词中间，首字/尾缀守卫靠位置枚举永远追不出变体。
+    // drillDown 词表本就由业务维护粒度说法，alias 原词自动反哺为对应内置键候选值的
+    // contains 屏蔽词：补一条 "统计组→组维度" 即同时生效 ①contains-scan 提取
+    // drill_down=组维度 ②拒绝所有含"统计组"的组名垃圾值——一处配置双向生效，
+    // 覆盖不全由配置自愈，不用发版。
+
+    /** drillDown 词表 alias value → 被垃圾屏蔽的内置键。个人维度不映射（人名走台账
+     *  字典真名匹配，粒度词进不了字典）；杭研维度不映射（deptName 正则只认杭州开发X部）。 */
+    private static String drillValueToBuiltinKey(String value) {
+        if (value == null) {
+            return null;
+        }
+        return switch (value) {
+            case "组维度" -> "groupName";
+            case "应用维度" -> "appName";
+            case "产品线维度" -> "productLine";
+            default -> null;
+        };
+    }
+
+    /** 收集 drillDown 词表中映射到 targetKey 的粒度词词干（alias 原词，contains 判定）。
+     *  字典供给器缺失/读失败 → 空集（位置守卫仍在）。 */
+    private Set<String> granularityStems(String targetKey) {
+        if (dimensionKeySupplier == null) {
+            return Set.of();
+        }
+        List<DimensionKeyConfig> rows;
+        try {
+            rows = dimensionKeySupplier.get();
+        } catch (RuntimeException e) {
+            log.warn("DimensionStateManager: 维度键字典读取失败, 词表反哺垃圾屏蔽跳过: {}", e.getMessage());
+            return Set.of();
+        }
+        if (rows == null) {
+            return Set.of();
+        }
+        Set<String> stems = new LinkedHashSet<>();
+        for (DimensionKeyConfig row : rows) {
+            if (row.builtin() || !"drillDown".equals(row.key()) || row.aliases().isEmpty()) {
+                continue;
+            }
+            for (DimensionKeyConfig.AliasMapping alias : row.aliases()) {
+                if (alias.valid() && targetKey.equals(drillValueToBuiltinKey(alias.value()))) {
+                    stems.add(alias.alias());
+                }
+            }
+        }
+        return stems;
+    }
+
+    private static boolean containsAnyStem(String token, Set<String> stems) {
+        if (token == null || stems.isEmpty()) {
+            return false;
+        }
+        for (String stem : stems) {
+            if (!stem.isEmpty() && token.contains(stem)) {
+                return true;
+            }
         }
         return false;
     }
@@ -447,6 +569,11 @@ public class DimensionStateManager {
         for (Pattern p : patterns) {
             collectSpans(q, p, spans);
         }
+        return maskSpanList(q, spans);
+    }
+
+    /** 屏蔽给定 start/end span (按 start 排序去重叠)。 */
+    private static String maskSpanList(String q, List<int[]> spans) {
         if (spans.isEmpty()) {
             return q;
         }
@@ -479,17 +606,20 @@ public class DimensionStateManager {
      * 原文回退会把"杭州三部10月版各组"整段吞成组名。
      */
     private String findTeamToken(String q, String masked) {
+        Set<String> stems = granularityStems("groupName");
         Matcher maskedMatcher = EXPLICIT_TEAM.matcher(masked);
         while (maskedMatcher.find()) {
             String token = trimTeamToken(q, maskedMatcher.start(), maskedMatcher.end());
-            if (!isGranularityToken(token) && !hasGranularityTail(token, 1)) {
+            if (!isGranularityToken(token) && !hasGranularityTail(token, 1)
+                    && !containsAnyStem(token, stems)) {
                 return token;
             }
         }
         Matcher rawMatcher = EXPLICIT_TEAM.matcher(q);
         while (rawMatcher.find()) {
             String token = rawMatcher.group(1);
-            if (isGranularityToken(token) || hasGranularityTail(token, 1)) {
+            if (isGranularityToken(token) || hasGranularityTail(token, 1)
+                    || containsAnyStem(token, stems)) {
                 continue;
             }
             return token;
@@ -500,18 +630,21 @@ public class DimensionStateManager {
     /**
      * 产品线候选：屏蔽文本优先，粒度词候选跳过；屏蔽后无命中回退原文（守卫同组名）。
      */
-    private static String findProductLineToken(String q, String masked) {
+    private String findProductLineToken(String q, String masked) {
+        Set<String> stems = granularityStems("productLine");
         Matcher maskedMatcher = EXPLICIT_PRODUCT_LINE.matcher(masked);
         while (maskedMatcher.find()) {
             String token = maskedMatcher.group(1);
-            if (!isGranularityToken(token) && !hasGranularityTail(token, 3)) {
+            if (!isGranularityToken(token) && !hasGranularityTail(token, 3)
+                    && !containsAnyStem(token, stems)) {
                 return token;
             }
         }
         Matcher rawMatcher = EXPLICIT_PRODUCT_LINE.matcher(q);
         while (rawMatcher.find()) {
             String token = rawMatcher.group(1);
-            if (isGranularityToken(token) || hasGranularityTail(token, 3)) {
+            if (isGranularityToken(token) || hasGranularityTail(token, 3)
+                    || containsAnyStem(token, stems)) {
                 continue;
             }
             return token;
@@ -523,8 +656,8 @@ public class DimensionStateManager {
      *  "杭州三部10月版各组、各产品线" 不再误判 PEER 层级。 */
     private boolean hasTeamOrProductLineHit(String q) {
         String masked = buildMaskedQuestion(q);
-        return hasNonGranularityMatch(masked, EXPLICIT_TEAM, 1)
-                || hasNonGranularityMatch(masked, EXPLICIT_PRODUCT_LINE, 3);
+        return hasNonGranularityMatch(masked, EXPLICIT_TEAM, 1, granularityStems("groupName"))
+                || hasNonGranularityMatch(masked, EXPLICIT_PRODUCT_LINE, 3, granularityStems("productLine"));
     }
 
     /**
@@ -585,7 +718,7 @@ public class DimensionStateManager {
         BuiltinVocabHits vocab = collectBuiltinVocabHits(userQuestion);
 
         // 2. detect level
-        QuestionAnalysis.QuestionLevel level = detectLevel(userQuestion, refType, aliasPeerHit, vocab);
+        QuestionAnalysis.QuestionLevel level = detectLevel(userQuestion, refType, aliasRes, vocab);
         analysis.setLevel(level);
         analysis.setCauseAnalysis(level == QuestionAnalysis.QuestionLevel.CAUSE);
 
@@ -610,8 +743,10 @@ public class DimensionStateManager {
     }
 
     private QuestionAnalysis.QuestionLevel detectLevel(
-            String q, QuestionAnalysis.ReferenceType refType, boolean aliasPeerHit,
-            BuiltinVocabHits vocab) {
+            String q, QuestionAnalysis.ReferenceType refType,
+            AliasResolver.AliasResolution aliasRes, BuiltinVocabHits vocab) {
+        boolean aliasPeerHit = aliasRes != null
+                && (!aliasRes.resolved().isEmpty() || !aliasRes.ambiguous().isEmpty());
         if (q.matches(".*原因.*") || q.matches(".*为什么.*"))
             return QuestionAnalysis.QuestionLevel.CAUSE;
         if (q.matches(".*过去.*") || q.matches(".*趋势.*") || q.matches(".*历史.*"))
@@ -624,6 +759,7 @@ public class DimensionStateManager {
                 || refType == QuestionAnalysis.ReferenceType.SUB_REQUIREMENT
                 || aliasPeerHit
                 || EXPLICIT_APP.matcher(q).find()
+                || !bareAppCodes(q, aliasRes).isEmpty()
                 || hasTeamOrProductLineHit(q)
                 || EXPLICIT_REQUIREMENT.matcher(q).find()
                 || EXPLICIT_SUB_REQUIREMENT.matcher(q).find())
@@ -771,6 +907,8 @@ public class DimensionStateManager {
         while (appMatcher.find()) {
             apps.add(appMatcher.group());
         }
+        // 裸应用码 ("FPA4季度" → F-FPA): 与 F- 编码同集合去重 ("FPA和F-FPA" → 一个应用)
+        apps.addAll(bareAppCodes(q, aliasRes));
         if (!apps.isEmpty()) {
             explicit.setPeerDimension(
                     new DimensionState.PeerDimension(
@@ -815,25 +953,34 @@ public class DimensionStateManager {
             }
         }
 
-        // 需求项 — 真正的 itemNo 格式 I20260208-0005（alias 命中时同样跳过）
+        // 需求项 — 真正的 itemNo 格式 I20260208-0005（alias 命中时同样跳过）。
+        // 多值收集 ("I-...、I-..." 两个需求项), 口径与部门/应用一致
         if (explicit.getPeerDimension() == null && !aliasHit(aliasRes)) {
             Matcher reqMatcher = EXPLICIT_REQUIREMENT.matcher(q);
-            if (reqMatcher.find()) {
+            Set<String> reqs = new LinkedHashSet<>();
+            while (reqMatcher.find()) {
+                reqs.add(reqMatcher.group());
+            }
+            if (!reqs.isEmpty()) {
                 explicit.setPeerDimension(
                         new DimensionState.PeerDimension(
                                 DimensionState.PeerDimensionType.REQUIREMENT,
-                                List.of(reqMatcher.group())));
+                                new ArrayList<>(reqs)));
             }
         }
 
-        // 需求子条目 — subItemNo 格式 S20250926-000741（alias 命中时同样跳过）
+        // 需求子条目 — subItemNo 格式 S20250926-000741（alias 命中时同样跳过）。多值同上
         if (explicit.getPeerDimension() == null && !aliasHit(aliasRes)) {
             Matcher subReqMatcher = EXPLICIT_SUB_REQUIREMENT.matcher(q);
-            if (subReqMatcher.find()) {
+            Set<String> subReqs = new LinkedHashSet<>();
+            while (subReqMatcher.find()) {
+                subReqs.add(subReqMatcher.group());
+            }
+            if (!subReqs.isEmpty()) {
                 explicit.setPeerDimension(
                         new DimensionState.PeerDimension(
                                 DimensionState.PeerDimensionType.SUB_REQUIREMENT,
-                                List.of(subReqMatcher.group())));
+                                new ArrayList<>(subReqs)));
             }
         }
 

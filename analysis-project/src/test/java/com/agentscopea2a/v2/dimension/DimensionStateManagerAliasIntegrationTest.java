@@ -95,6 +95,84 @@ class DimensionStateManagerAliasIntegrationTest {
     }
 
     @Test
+    void bareThreePlusUpperLettersAutoPrefixedWithF() {
+        // 裸应用码: 三位及以上连续大写字母自动补 F- ("FPA4季度" → 应用F-FPA + 4季度)
+        QuestionAnalysis analysis = manager.analyzeQuestionRuleBased("FPA4季度需求项的平均生命周期");
+        PeerDimension peer = analysis.getExplicitDimensions().getPeerDimension();
+        assertEquals(PeerDimensionType.APPLICATION, peer.getType());
+        assertEquals(java.util.List.of("F-FPA"), peer.getValues());
+        assertTrue(analysis.getExplicitDimensions().getTimeDimension() != null);
+    }
+
+    @Test
+    void bareAndPrefixedSameCodeDeduplicate() {
+        // "FPA和F-FPA" 同一应用, 补前缀后去重
+        PeerDimension peer = extractPeer("FPA和F-FPA的对比");
+        assertEquals(java.util.List.of("F-FPA"), peer.getValues());
+    }
+
+    @Test
+    void innerSegmentOfFCodeNotRePrefixed() {
+        // F-ATP-INNER 的 "ATP"/"INNER" 内段不得被二次加前缀
+        PeerDimension peer = extractPeer("F-ATP-INNER的需求项");
+        assertEquals(java.util.List.of("F-ATP-INNER"), peer.getValues());
+    }
+
+    @Test
+    void fsPrefixAppCodeRecognized() {
+        // FS- 前缀应用 (FS-GBCP-EPL 智慧政法): 完整编码含两段连字符
+        PeerDimension peer = extractPeer("FS-GBCP-EPL的需求项");
+        assertEquals(PeerDimensionType.APPLICATION, peer.getType());
+        assertEquals(java.util.List.of("FS-GBCP-EPL"), peer.getValues());
+    }
+
+    @Test
+    void fsPrefixAndFPrefixCoexist() {
+        PeerDimension peer = extractPeer("比较FS-GBCP-EPL和F-CBST的缺陷");
+        assertEquals(PeerDimensionType.APPLICATION, peer.getType());
+        assertEquals(java.util.List.of("FS-GBCP-EPL", "F-CBST"), peer.getValues());
+    }
+
+    @Test
+    void lowerCaseTechWordsNotRecognizedAsApp() {
+        // 仅大写字母算应用码: 小写技术词 (sql/csv) 不误收
+        assertNull(extractPeer("sql查询的需求项有多少"));
+    }
+
+    @Test
+    void shortTwoLetterTokenNotRecognizedAsApp() {
+        // 不足三位不识别 ("QI卡口" 的 QI、其他双字母缩写)
+        assertNull(extractPeer("QI的需求项有多少"));
+    }
+
+    @Test
+    void bareHyphenatedSegmentsAutoPrefixedWithF() {
+        // "BCP-EPL" 裸段 (FS- 前缀丢失): 连字符串也补 F- → F-BCP-EPL
+        PeerDimension peer = extractPeer("BCP-EPL的需求项有多少");
+        assertEquals(PeerDimensionType.APPLICATION, peer.getType());
+        assertEquals(java.util.List.of("F-BCP-EPL"), peer.getValues());
+    }
+
+    @Test
+    void bareHyphenatedAndPrefixedSameCodeDeduplicate() {
+        // 裸段补 F- 后与显式编码同集合去重; F-/FS- 不同前缀是不同应用不合并
+        PeerDimension peer = extractPeer("BCP-EPL和F-BCP-EPL的对比");
+        assertEquals(PeerDimensionType.APPLICATION, peer.getType());
+        assertEquals(java.util.List.of("F-BCP-EPL"), peer.getValues());
+    }
+
+    @Test
+    void bareCodesSeparatedBySpaceOrCommaAllCollected() {
+        // 空格/顿号/逗号分隔的裸应用码都识别为多值; 时间前缀不干扰
+        assertEquals(java.util.List.of("F-FETA", "F-MMTA"),
+                extractPeer("10月版本，FETA MMTA问题号还有哪些没有关闭").getValues());
+        assertEquals(java.util.List.of("F-FETA", "F-MMTA"),
+                extractPeer("10月版本，FETA、MMTA问题号还有哪些没有关闭").getValues());
+        assertEquals(java.util.List.of("F-FETA", "F-MMTA"),
+                extractPeer("10月版本，FETA，MMTA问题号还有哪些没有关闭").getValues());
+    }
+
+    @Test
     void plainRegexFallbackStillWorksWithoutAliasHit() {
         // 无 alias 命中时，正则兜底仍工作；§13.4 起部门前缀由 span 屏蔽自然剥离
         QuestionAnalysis analysis = manager.analyzeQuestionRuleBased("杭州二部金融市场自营测试组的问题");
@@ -108,6 +186,29 @@ class DimensionStateManagerAliasIntegrationTest {
     void requirementItemNoFallbackStillWorks() {
         PeerDimension peer = extractPeer("I20260208-0005 这个需求项的进展");
         assertEquals(PeerDimensionType.REQUIREMENT, peer.getType());
+        assertEquals(java.util.List.of("I20260208-0005"), peer.getValues());
+    }
+
+    @Test
+    void multipleRequirementItemsAllCollected() {
+        // "I-...、I-..." 两个需求项多值收集 (修复前只传第一个)
+        PeerDimension peer = extractPeer(
+                "I20261008-0044、I20260930-0021 这两个需求项的周期是多少天");
+        assertEquals(PeerDimensionType.REQUIREMENT, peer.getType());
+        assertEquals(java.util.List.of("I20261008-0044", "I20260930-0021"), peer.getValues());
+    }
+
+    @Test
+    void multipleSubRequirementItemsAllCollected() {
+        PeerDimension peer = extractPeer(
+                "S20250926-000741 和 S20250927-000752 的进展对比");
+        assertEquals(PeerDimensionType.SUB_REQUIREMENT, peer.getType());
+        assertEquals(java.util.List.of("S20250926-000741", "S20250927-000752"), peer.getValues());
+    }
+
+    @Test
+    void duplicateRequirementNumbersDeduplicate() {
+        PeerDimension peer = extractPeer("I20260208-0005 和 I20260208-0005 的对比");
         assertEquals(java.util.List.of("I20260208-0005"), peer.getValues());
     }
 

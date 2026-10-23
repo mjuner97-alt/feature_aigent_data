@@ -375,4 +375,34 @@ class DimensionStateManagerRuleTest {
         // 尾缀守卫不误伤："我部" 后（顿号分隔）的真组名照常提取
         assertEquals(List.of("数据智能组"), extractPeer("我部、数据智能组的缺陷数对比").getValues());
     }
+
+    @Test
+    void drillDownVocabStemsBlockGarbageTeamTokens() {
+        // §5.1 第五层（词表反哺）：drillDown 词表粒度词自动成为对应内置键候选值的
+        // contains 屏蔽词——"具体到各统计组"（粒度字在词中间，首字/尾缀守卫拦不住）
+        // 含词干 "统计组" 被拒。E2E 实证 2026-10-22。
+        var drillDown = new DimensionKeyConfig(1L, "drillDown", "下钻维度", false,
+                List.of(new DimensionKeyConfig.AliasMapping("各组", "组维度"),
+                        new DimensionKeyConfig.AliasMapping("统计组", "组维度"),
+                        new DimensionKeyConfig.AliasMapping("各个产品线", "产品线维度"),
+                        new DimensionKeyConfig.AliasMapping("杭研", "杭研维度")),
+                true, null);
+        var m = new DimensionStateManager(null, null, null, () -> List.of(drillDown));
+
+        // 词干反哺拒垃圾组值，层级归 DEPARTMENT（杭州三部照常提取）
+        var analysis = m.analyzeQuestionRuleBased("杭州三部下半年需求项周期数据，具体到各统计组");
+        assertTrue(analysis.getExplicitDimensions().getPeerDimension() == null);
+        assertEquals(List.of("杭州开发三部"), analysis.getExplicitDimensions().getDepartments());
+        assertEquals(QuestionAnalysis.QuestionLevel.DEPARTMENT, analysis.getLevel());
+
+        // 词表里配置的 "各组" 同时屏蔽 "我部10月版各组" 型尾缀拼接（首字"我"守卫拦不住的变体）
+        assertTrue(m.analyzeQuestionRuleBased("我部10月版各组的数据")
+                .getExplicitDimensions().getPeerDimension() == null);
+
+        // "杭研维度" 不映射内置键，词表行存在不误伤真组名
+        assertEquals(List.of("数据智能组"),
+                m.analyzeQuestionRuleBased("数据智能组的缺陷数").getExplicitDimensions().getPeerDimension().getValues());
+        assertEquals(List.of("个人住房组"),
+                m.analyzeQuestionRuleBased("个人住房组各人的缺陷数").getExplicitDimensions().getPeerDimension().getValues());
+    }
 }
