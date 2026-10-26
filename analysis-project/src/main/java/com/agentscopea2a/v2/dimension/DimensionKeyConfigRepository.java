@@ -34,8 +34,8 @@ public class DimensionKeyConfigRepository {
     private static final TypeReference<List<DimensionKeyConfig.AliasMapping>> ALIAS_LIST_TYPE =
             new TypeReference<>() {};
 
-    /** 内置 8 键 seed（key → 展示名），与 DirectSkillExecutor.DIMENSION_KEYS 同源。 */
-    /** 内置 9 键 seed（key → 展示名），与 DirectSkillExecutor.DIMENSION_KEYS 同源。 */
+    /** 内置 10 键 seed（key → 展示名），与 DirectSkillExecutor.DIMENSION_KEYS 同源
+     *  （perNo=统一认证号，人员台账维度方案 §3.4）。 */
     private static final Map<String, String> BUILTIN_KEYS = buildBuiltinKeys();
 
     private static Map<String, String> buildBuiltinKeys() {
@@ -49,6 +49,7 @@ public class DimensionKeyConfigRepository {
         keys.put("itemNo", "需求项");
         keys.put("subItemNo", "需求子条目");
         keys.put("perName", "人");
+        keys.put("perNo", "统一认证号");
         return java.util.Collections.unmodifiableMap(keys);
     }
 
