@@ -327,7 +327,6 @@ public class FlowExecutionService {
             // 唯一索引冲突:并发下别人先插入了,复用对方记录
             return new TriggerResult(mapper.selectActiveExecution(guard), false);
         }
-        boolean firstRunnableNode = true;
         for (SkillFlowNode node : nodes) {
             // Python 脚本节点不绑 Skill:名称取脚本注册表,skillId 留空
             String normalizedScriptId = node.getScriptId() == null ? null : node.getScriptId().trim();
@@ -344,10 +343,10 @@ public class FlowExecutionService {
                 retrievalName = skill == null || skill.getRetrievalName() == null || skill.getRetrievalName().isBlank()
                         ? skillName : skill.getRetrievalName();
             }
+            // 所有节点统一入队；调度器按节点执行记录 id(创建顺序)取候选，
+            // 在 worker 和流程并发额度允许时并行执行。
             FlowNodeExecutionStatus status = !requireAllMetrics || missing.isEmpty()
-                    ? (firstRunnableNode ? FlowNodeExecutionStatus.QUEUED : FlowNodeExecutionStatus.PENDING)
-                    : FlowNodeExecutionStatus.PENDING;
-            if (status == FlowNodeExecutionStatus.QUEUED) firstRunnableNode = false;
+                    ? FlowNodeExecutionStatus.QUEUED : FlowNodeExecutionStatus.PENDING;
             mapper.insertNodeExecution(SkillFlowNodeExecution.builder().flowExecutionId(execution.getId())
                     .nodeKey(node.getNodeKey()).nodeName(FlowDefinitionService.resolveNodeDisplayName(node.getNodeName(), skillName))
                     .skillId(scriptNode ? null : node.getSkillId()).skillName(skillName).skillRetrievalName(retrievalName)
@@ -409,7 +408,7 @@ public class FlowExecutionService {
      * missing 清空(全部依赖指标就绪)且流程仍停在 WAITING_METRICS 时触发放行动作:
      * <ol>
      *   <li>流程状态 WAITING_METRICS -&gt; QUEUED;</li>
-     *   <li>仅把第一个节点 PENDING -&gt; QUEUED(其余节点由依赖推进逐步放行);</li>
+     *   <li>把该执行的所有节点 PENDING -&gt; QUEUED,由调度器按创建顺序并行派发;</li>
      *   <li>发布 {@link FlowQueuedEvent}——FlowCoordinator 在事务提交后
      *       ({@code @TransactionalEventListener(AFTER_COMMIT)}) 收到即调用 dispatchRunnableNodes 立即派发;</li>
      *   <li>落库更新 readyMetricCount / missingMetricsJson 快照。</li>
@@ -430,10 +429,11 @@ public class FlowExecutionService {
         if (missing.isEmpty() && execution.getStatus() == FlowExecutionStatus.WAITING_METRICS) {
             execution.setStatus(FlowExecutionStatus.QUEUED);
             List<SkillFlowNodeExecution> nodes = mapper.selectNodeExecutions(execution.getId());
-            if (!nodes.isEmpty()) {
-                // 仅放行第一个节点,其余节点等依赖关系逐级推进
-                nodes.get(0).setStatus(FlowNodeExecutionStatus.QUEUED);
-                mapper.updateNodeExecution(nodes.get(0));
+            for (SkillFlowNodeExecution node : nodes) {
+                if (node.getStatus() == FlowNodeExecutionStatus.PENDING) {
+                    node.setStatus(FlowNodeExecutionStatus.QUEUED);
+                    mapper.updateNodeExecution(node);
+                }
             }
             // 事务提交后 FlowCoordinator.onFlowQueued 立即派发可运行节点
             events.publishEvent(new FlowQueuedEvent(execution.getId()));

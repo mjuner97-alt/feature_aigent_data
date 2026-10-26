@@ -54,7 +54,9 @@ const executionPage = ref(1);
 const executionPageSize = ref(20);
 const retryingExecutions = ref<Set<number>>(new Set());
 let executionTimer: ReturnType<typeof setInterval> | undefined;
-const effectiveCreatedBy = computed(() => visibilityScope.value === 'mine' ? me : (scopeCreatedBy.value.trim() || undefined));
+// “我的”范围由后端按 owner 或 skill_flow_executor 授权关系计算，不能再叠加 createdBy=当前用户，
+// 否则他人创建但授权给我的流程会被额外条件过滤掉；createdBy 仅用于“全部”范围的手动筛选。
+const effectiveCreatedBy = computed(() => visibilityScope.value === 'all' ? (scopeCreatedBy.value.trim() || undefined) : undefined);
 
 const manageTotal = ref(0);
 const executionTotal = ref(0);

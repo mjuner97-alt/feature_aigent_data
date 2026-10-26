@@ -14,7 +14,7 @@ public final class SkillFlowProperties {
     public static final ZoneId ZONE_ID = ZoneId.of("Asia/Shanghai");
 
     /** 长任务后台同时执行的节点数量上限。每个流程还受自身并发配置限制。 */
-    public static final int WORKER_COUNT = 3;
+    public static final int WORKER_COUNT = 6;
 
     /** 单个 Skill 节点允许执行的最长时间，单位为分钟。 */
     public static final int NODE_EXECUTION_TIMEOUT_MINUTES = 30;

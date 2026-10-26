@@ -40,7 +40,7 @@ for (const copy of [false, true]) test(`executor editor ${copy ? 'copy clears gr
   await find(root, n => n.type === 'button' && n.props['aria-label'] === '移除可执行人 other').props.onClick(); await flush();
   await button(root, '保存流程').props.onClick(); assert.deepEqual(saved[1].executors, []);
 });
-for (const [owner, executors, run, edit] of [['owner', [], true, true], ['someone', ['owner'], true, false], ['someone', [], false, false]]) test(`list permissions owner=${owner} grants=${executors.length}`, async t => {
+for (const [owner, executors, run, edit] of [['owner', [], true, true], ['someone', ['owner'], true, true], ['someone', [], false, false]]) test(`list permissions owner=${owner} grants=${executors.length}`, async t => {
   t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({items:[{ ...source, createdBy: owner, nodeCount:1,metricCount:0,canExecute:run }],page:1,pageSize:20,total:1})));
   const { default: List } = await loadModule(new URL('./SkillFlowList.vue', import.meta.url), { 'vue-router': { useRouter: () => ({ push() {} }) } });
   const { root } = mount(t, List, { scope: 'mine' }); await flush(); await flush();
@@ -67,3 +67,4 @@ test('definition API retains executor grants through actual create/update JSON a
   for (const result of [await api.createSkillFlow(source), await api.updateSkillFlow(7, source), await api.getSkillFlow(7)]) assert.deepEqual(result.executors, ['runner']);
   for (const request of requests) assert.deepEqual(request.executors, ['runner']);
 });
+

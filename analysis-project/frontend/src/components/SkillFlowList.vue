@@ -2,7 +2,7 @@
 import { onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { deleteSkillFlow, getSkillFlowMetricPrecheck, listSkillFlowPage, runSkillFlow, setSkillFlowEnabled } from '../api/skillFlow';
-import { currentUserId } from '../api/skill';
+import { batchUserNames, currentUserId } from '../api/skill';
 import type { SkillFlowSummary, FlowMetricPrecheck } from '../types/skillFlow';
 import { manualTriggerMessage } from './skillFlowExecutionPresentation';
 
@@ -11,6 +11,7 @@ const props = withDefaults(defineProps<{ scope?: 'mine' | 'all'; createdBy?: str
 const me = currentUserId();
 const router = useRouter();
 const flows = ref<SkillFlowSummary[]>([]);
+const userNames = ref<Record<string, string>>({});
 const currentKeyword = ref('');
 const currentCreatedBy = ref('');
 const currentEnabled = ref<boolean | undefined>();
@@ -30,6 +31,18 @@ const total = ref(0);
 let loadRequest = 0;
 
 function formatTime(value?: string) { return value ? value.replace('T', ' ').slice(0, 19) : '-'; }
+// 列表接口只返回创建人 ID,复用人员搜索接口补齐姓名做「姓名(userId)」展示。
+async function loadNames(items: SkillFlowSummary[]) {
+  const ids = [...new Set(items.map(f => f.createdBy || '').filter(id => id && !userNames.value[id]))];
+  if (!ids.length) return;
+  const names = await batchUserNames(ids).catch(() => ({}));
+  userNames.value = { ...userNames.value, ...names };
+}
+function ownerLabel(flow: SkillFlowSummary) {
+  if (!flow.createdBy) return '-';
+  const name = userNames.value[flow.createdBy];
+  return name && name !== flow.createdBy ? `${name}(${flow.createdBy})` : flow.createdBy;
+}
 function enabledStatusClass(flow: SkillFlowSummary) { return flow.enabled ? 'st-on' : 'st-off'; }
 function isOwner(flow: SkillFlowSummary) { return flow.createdBy === me || flow.canExecute; }
 function canRun(flow: SkillFlowSummary) { return flow.canExecute; }
@@ -45,7 +58,7 @@ async function load(searchKeyword?: string, createdBy?: string, enabled?: boolea
 }
 async function fetchPage(scope: 'mine' | 'all' = props.scope) {
  const request=++loadRequest; loading.value=true; error.value='';
- try { const result=await listSkillFlowPage({enabled:currentEnabled.value,keyword:currentKeyword.value.trim()||undefined,createdBy:currentCreatedBy.value.trim()||undefined,scope,page:page.value,pageSize:pageSize.value});if(request!==loadRequest)return;flows.value=result.items;total.value=result.total;page.value=result.page; if(!result.items.length&&result.total>0&&page.value>1){page.value=Math.max(1,Math.ceil(result.total/pageSize.value));await fetchPage(scope);} }
+ try { const result=await listSkillFlowPage({enabled:currentEnabled.value,keyword:currentKeyword.value.trim()||undefined,createdBy:currentCreatedBy.value.trim()||undefined,scope,page:page.value,pageSize:pageSize.value});if(request!==loadRequest)return;flows.value=result.items;total.value=result.total;page.value=result.page;void loadNames(result.items); if(!result.items.length&&result.total>0&&page.value>1){page.value=Math.max(1,Math.ceil(result.total/pageSize.value));await fetchPage(scope);} }
  catch(e){if(request!==loadRequest)return;error.value=e instanceof Error?e.message:'加载长任务流程失败';flows.value=[];total.value=0;}
  finally{if(request===loadRequest)loading.value=false;}
 }
@@ -139,7 +152,7 @@ watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.v
             <td>
               <span class="status-badge" :class="enabledStatusClass(flow)">{{ flow.enabled ? '启用' : '禁用' }}</span>
             </td>
-            <td class="col-owner">{{ flow.createdBy || '-' }}</td>
+            <td class="col-owner" :title="ownerLabel(flow)">{{ ownerLabel(flow) }}</td>
             <td class="col-time">{{ formatTime(flow.createdAt) }}</td>
             <td class="col-actions">
               <button v-if="canRun(flow) && flow.enabled" class="btn-action trigger" @click="run(flow)">执行</button>
