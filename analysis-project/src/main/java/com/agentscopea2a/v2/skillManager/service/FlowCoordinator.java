@@ -95,6 +95,8 @@ public class FlowCoordinator {
     private final FlowNodeCacheService nodeCache;
     private final LongTaskNodeExecutionLogService nodeLogService;
     private final ChatRuntimeConfigService runtimeConfigService;
+    @org.springframework.beans.factory.annotation.Autowired
+    private FlowSchedulerGuard schedulerGuard;
     /** 要求绕过缓存重新执行的节点执行 ID(手动重跑单个节点时置入,执行时取出)。 */
     private final Set<Long> refreshRequested = ConcurrentHashMap.newKeySet();
 
@@ -141,7 +143,7 @@ public class FlowCoordinator {
      */
     @jakarta.annotation.PostConstruct
     void recoverNodesAfterRestart() {
-        int recovered = mapper.recoverAbandonedRunningNodes(workerId, LocalDateTime.now(clock));
+        int recovered = mapper.recoverAbandonedRunningNodes(workerId, LocalDateTime.now(clock), schedulerGuard.isAllowed());
         if (recovered > 0) {
             log.warn("Recovered {} abandoned long-task nodes after worker restart", recovered);
         }
@@ -202,7 +204,7 @@ public class FlowCoordinator {
     private void expireExhaustedNodes(LocalDateTime now) {
         // 查询条件(见 selectExpiredExhaustedNodes):status=RUNNING + attempt_count>=max_attempts
         // + lease_expires_at < now,即"重试预算用完且最后一次尝试也失联"的节点
-        for (SkillFlowNodeExecution node : mapper.selectExpiredExhaustedNodes(now)) {
+        for (SkillFlowNodeExecution node : mapper.selectExpiredExhaustedNodes(now, schedulerGuard.isAllowed())) {
             // 把该节点遗留的 RUNNING 尝试记录(audit 表)统一判失败,保持审计数据一致
             mapper.failRunningAttemptsForNode(node.getId(), now);
             // 节点落终态 FAILED,错误码 LEASE_EXPIRED 标明"不是业务失败,是基础设施失联"
@@ -240,7 +242,7 @@ public class FlowCoordinator {
         // 注意：返回的只是「有资格跑」的候选，还须经 claimService.claim 原子抢占
         // （条件 UPDATE 切 RUNNING + 写租约，谁先执行谁赢）成功才真正提交执行，
         // 多实例部署时由此保证同一节点只被一个 worker 执行。safeNodes 仅过滤 null 元素做防御。
-        List<SkillFlowNodeExecution> runnable = safeNodes(mapper.selectRunnableNodes(now));
+        List<SkillFlowNodeExecution> runnable = safeNodes(mapper.selectRunnableNodes(now, schedulerGuard.isAllowed()));
         log.debug("Skill flow dispatch scan found {} runnable node(s)", runnable.size());
         for (SkillFlowNodeExecution node : runnable) {
             // RUNNING 且租约已过期 = 原执行超时/失联;这类恢复尝试走独立线程池,不占普通池许可
@@ -691,7 +693,7 @@ public class FlowCoordinator {
         LocalDate today = LocalDate.now(clock);
         // 等指标执行的判死只发生在"跨天"时刻:数据日期 < 今天 说明这一天已经过去,
         // 指标再也不会为那个日期就绪(就绪记录按天登记,过期作废)。
-        List<SkillFlowExecution> waiting = mapper.selectWaitingExecutions();
+        List<SkillFlowExecution> waiting = mapper.selectWaitingExecutions(schedulerGuard.isAllowed());
         for (SkillFlowExecution flow : waiting == null ? List.<SkillFlowExecution>of() : waiting) {
             // data_date 为空按今天处理(老数据容错),不误杀
             LocalDate dataDate = flow.getDataDate() == null ? today : flow.getDataDate();

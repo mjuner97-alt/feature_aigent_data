@@ -206,7 +206,7 @@ public interface SkillFlowMapper {
     long countExecutionsBySource(@Param("status") String status, @Param("createdBy") String createdBy, @Param("keyword") String keyword, @Param("userId") String userId, @Param("source") String source);
 
     /** 扫描仍在等待依赖指标就绪(WAITING_METRICS)的流程实例,供门控重算和跨天超时兜底使用。 */
-    List<SkillFlowExecution> selectWaitingExecutions();
+    List<SkillFlowExecution> selectWaitingExecutions(@Param("allowAuto") boolean allowAuto);
 
     /** 全量更新执行实例:状态/guard/指标计数/汇总/报告/取消与起止时间,流程推进的唯一写入口。 */
     void updateExecution(SkillFlowExecution execution);
@@ -227,10 +227,10 @@ public interface SkillFlowMapper {
      * {@link #claimNode(Long, String, LocalDateTime, LocalDateTime)} 原子抢占后才能执行。
      * 每轮最多取 100 个,防止极端积压时单轮扫描刷库。
      */
-    List<SkillFlowNodeExecution> selectRunnableNodes(@Param("now") LocalDateTime now);
+    List<SkillFlowNodeExecution> selectRunnableNodes(@Param("now") LocalDateTime now, @Param("allowAuto") boolean allowAuto);
 
     /** 查询租约已经过期且重试次数耗尽的节点(worker 已失联,不能重试),供兜底扫描判 FAILED 推进流程。 */
-    List<SkillFlowNodeExecution> selectExpiredExhaustedNodes(@Param("now") LocalDateTime now);
+    List<SkillFlowNodeExecution> selectExpiredExhaustedNodes(@Param("now") LocalDateTime now, @Param("allowAuto") boolean allowAuto);
 
     /**
      * 服务重启后回收其他 worker 遗留的 RUNNING 节点，并立即放回重试队列,
@@ -238,7 +238,7 @@ public interface SkillFlowMapper {
      *
      * @return 被回收的节点数量
      */
-    int recoverAbandonedRunningNodes(@Param("owner") String owner, @Param("now") LocalDateTime now);
+    int recoverAbandonedRunningNodes(@Param("owner") String owner, @Param("now") LocalDateTime now, @Param("allowAuto") boolean allowAuto);
 
     /**
      * 原子抢占一个候选节点：切换为 RUNNING、增加尝试次数并写入 worker 租约,

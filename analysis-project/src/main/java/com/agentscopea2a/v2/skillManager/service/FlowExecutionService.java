@@ -51,6 +51,8 @@ public class FlowExecutionService {
     private final MockOrgService orgService;
     @Autowired
     private com.agentscopea2a.v2.skillManager.mapper.ReportProcessMapper reportProcessMapper;
+    @Autowired
+    private FlowSchedulerGuard schedulerGuard;
 
     public FlowExecutionService(SkillFlowMapper mapper, SkillMapper skillMapper,
                                 ScriptRegistryMapper scriptRegistryMapper,
@@ -160,6 +162,7 @@ public class FlowExecutionService {
     /** 指标到达后，为依赖该指标且全部日指标已就绪的流程创建每日自动执行。 */
     @Transactional("gaussCustomerTransactionManager")
     public void triggerReadyFlows(Long metricId, LocalDate dataDate) {
+        if (!schedulerGuard.isAllowed()) return;
         for (SkillFlow flow : mapper.selectAllEnabledFlows()) {
             if (!Boolean.TRUE.equals(flow.getAutoTriggerEnabled())) continue;
             if (!SkillJobService.runsOn(flow.getScheduleRules(), dataDate.getDayOfWeek())) continue;
@@ -181,6 +184,7 @@ public class FlowExecutionService {
      */
     @Transactional("gaussCustomerTransactionManager")
     public void scanAutoTriggerFlows() {
+        if (!schedulerGuard.isAllowed()) return;
         // 与推模式用同一个 clock 取"今天",保证就绪日期、guard key、扫描判断的日期口径一致
         LocalDate dataDate = LocalDate.now(clock);
         // 候选已在 SQL 里过滤(见 selectAutoTriggerCandidates):启用未删、created_by 非空、
@@ -202,6 +206,7 @@ public class FlowExecutionService {
     /** 为单个流程创建当日自动执行(幂等:候选查询已排除当日有 AUTO_METRIC 执行的流程)。 */
     @Transactional("gaussCustomerTransactionManager")
     public void autoTriggerFlow(Long flowId) {
+        if (!schedulerGuard.isAllowed()) return;
         // 重新按 id 查一遍而不是直接用候选行:scan 循环和事务之间可能有几百毫秒间隙,
         // 期间流程可能被停用/删除,过期数据不该再触发
         SkillFlow flow = mapper.selectFlowById(flowId);
@@ -396,7 +401,7 @@ public class FlowExecutionService {
     @Transactional("gaussCustomerTransactionManager")
     public void metricBecameReady(Long metricId, LocalDate dataDate) {
         // 广播式重算:不区分该指标被谁依赖,统一让所有等待中的执行各自复查一遍(简单且不会漏)
-        for (SkillFlowExecution execution : mapper.selectWaitingExecutions()) {
+        for (SkillFlowExecution execution : mapper.selectWaitingExecutions(schedulerGuard.isAllowed())) {
             if (!dataDate.equals(execution.getDataDate())) continue;  // 数据日期不同,与本次就绪无关
             recomputeGate(execution);
         }

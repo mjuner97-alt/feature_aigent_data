@@ -40,6 +40,7 @@
         <result column="report_process_id" property="reportProcessId"/>
         <result column="enabled" property="enabled"/>
         <result column="schedule_rules" property="scheduleRules"/>
+        <result column="auto_trigger_enabled" property="autoTriggerEnabled"/>
         <result column="max_parallelism" property="maxParallelism"/>
         <result column="notify_enabled" property="notifyEnabled"/>
         <result column="notify_contact_name" property="notifyContactName"/>
@@ -212,7 +213,7 @@
 
     <!-- 各表公共列清单,供查询复用;新增列时记得同步维护 -->
     <sql id="flowColumns">
-        id, code, name, description, task_question, summary_question_template, enabled, schedule_rules,
+        id, code, name, description, task_question, summary_question_template, enabled, schedule_rules, auto_trigger_enabled,
         max_parallelism, notify_enabled, notify_contact_name, notify_contact_phone, notify_body_template, notify_receivers, notify_receiver_triggers, chat_public,
         report_outline, report_process_id, created_by, created_at, updated_at, deleted_at
     </sql>
@@ -747,6 +748,9 @@
         SELECT *
         FROM skill_flow_execution
         WHERE status = 'WAITING_METRICS'
+        <if test="!allowAuto">
+          AND (trigger_type IS NULL OR trigger_type &lt;&gt; 'AUTO_METRIC')
+        </if>
         ORDER BY id LIMIT 2000
     </select>
 
@@ -800,6 +804,9 @@
                 n.attempt_count &lt; COALESCE(NULLIF(n.max_attempts, 0), 1)))
           AND (n.next_run_at IS NULL OR n.next_run_at &lt;= #{now})
           AND (n.lease_expires_at IS NULL OR n.lease_expires_at &lt; #{now})
+        <if test="!allowAuto">
+          AND (e.trigger_type IS NULL OR e.trigger_type &lt;&gt; 'AUTO_METRIC')
+        </if>
           AND (SELECT COUNT(*)
                FROM skill_flow_node_execution r
                WHERE r.flow_execution_id = n.flow_execution_id
@@ -834,7 +841,17 @@
         WHERE status = 'RUNNING'
           AND lease_expires_at &lt; #{now}
           AND attempt_count &gt;= max_attempts
+        <include refid="schedulerNodeTriggerFilter"/>
     </select>
+
+    <!-- Filter before LIMIT or UPDATE: only AUTO_METRIC needs scheduler IP authorization. -->
+    <sql id="schedulerNodeTriggerFilter">
+        <if test="!allowAuto">
+          AND EXISTS (SELECT 1 FROM skill_flow_execution scheduler_flow
+                      WHERE scheduler_flow.id = flow_execution_id
+                        AND (scheduler_flow.trigger_type IS NULL OR scheduler_flow.trigger_type &lt;&gt; 'AUTO_METRIC'))
+        </if>
+    </sql>
 
     <!-- 服务重启后回收:本进程(新 owner)启动时把其他 owner 遗留的 RUNNING 节点放回重试队列,
          无需等租约自然过期,避免重启后节点长时间假死 -->
@@ -849,6 +866,7 @@
             updated_at=NOW()
         WHERE status = 'RUNNING'
           AND (lease_owner IS NULL OR lease_owner &lt;&gt; #{owner})
+        <include refid="schedulerNodeTriggerFilter"/>
     </update>
 
     <!-- 统计执行实例下租约仍有效的 RUNNING 节点数,用于流程并行度展示/校验 -->

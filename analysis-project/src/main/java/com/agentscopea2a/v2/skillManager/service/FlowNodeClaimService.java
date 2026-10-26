@@ -29,6 +29,8 @@ public class FlowNodeClaimService {
             EnumSet.of(FlowExecutionStatus.QUEUED, FlowExecutionStatus.RUNNING);
 
     private final SkillFlowMapper mapper;
+    @org.springframework.beans.factory.annotation.Autowired
+    private FlowSchedulerGuard schedulerGuard;
 
     public FlowNodeClaimService(SkillFlowMapper mapper) {
         this.mapper = mapper;
@@ -46,6 +48,10 @@ public class FlowNodeClaimService {
         }
         // 行锁锁流程,保证同一流程的并发计数判断原子
         SkillFlowExecution execution = mapper.selectFlowExecutionForUpdate(node.getFlowExecutionId());
+        // Recheck after candidate selection and before any task mutation. Manual/chat
+        // execution must not depend on scheduler IP configuration availability.
+        if (execution != null && execution.getTriggerType() == com.agentscopea2a.v2.skillManager.entity.FlowTriggerType.AUTO_METRIC
+                && !schedulerGuard.isAllowed()) return false;
         // 兼容旧版本留下的矛盾状态：单节点重跑已入队，但流程仍停留在终态。
         // 发现可运行节点即说明汇总已经失效，先恢复流程再继续认领。
         if (execution != null && execution.getStatus().terminal()) {
