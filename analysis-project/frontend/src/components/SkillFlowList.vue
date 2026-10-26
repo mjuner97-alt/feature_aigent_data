@@ -5,6 +5,7 @@ import { deleteSkillFlow, getSkillFlowMetricPrecheck, listSkillFlowPage, runSkil
 import { batchUserNames, currentUserId } from '../api/skill';
 import type { SkillFlowSummary, FlowMetricPrecheck } from '../types/skillFlow';
 import { manualTriggerMessage } from './skillFlowExecutionPresentation';
+import { parseScheduleRules } from '../utils/scheduleRules';
 
 const emit = defineEmits<{ 'view-records': [flowName: string] }>();
 const props = withDefaults(defineProps<{ scope?: 'mine' | 'all'; createdBy?: string }>(), { scope: 'mine', createdBy: '' });
@@ -44,6 +45,11 @@ function ownerLabel(flow: SkillFlowSummary) {
   return name && name !== flow.createdBy ? `${name}(${flow.createdBy})` : flow.createdBy;
 }
 function enabledStatusClass(flow: SkillFlowSummary) { return flow.enabled ? 'st-on' : 'st-off'; }
+function autoTriggerDays(flow: SkillFlowSummary) {
+  const rules = parseScheduleRules(flow.scheduleRules);
+  const days = [['MON', '周一'], ['TUE', '周二'], ['WED', '周三'], ['THU', '周四'], ['FRI', '周五'], ['SAT', '周六'], ['SUN', '周日']];
+  return days.filter(([day]) => day in rules).map(([, label]) => label).join('、') || '每天';
+}
 function isOwner(flow: SkillFlowSummary) { return flow.createdBy === me || flow.canExecute; }
 function canRun(flow: SkillFlowSummary) { return flow.canExecute; }
 function changePageSize(size: number) { pageSize.value = size; page.value = 1; void fetchPage(); }
@@ -135,6 +141,7 @@ watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.v
             <th>节点数量</th>
             <th>依赖指标</th>
             <th>状态</th>
+            <th>自动触发</th>
             <th>创建人</th>
             <th>创建时间</th>
             <th>操作</th>
@@ -151,6 +158,12 @@ watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.v
             <td><button class="metric-link" type="button" @click="showMetrics(flow)">{{ flow.metricCount }}</button></td>
             <td>
               <span class="status-badge" :class="enabledStatusClass(flow)">{{ flow.enabled ? '启用' : '禁用' }}</span>
+            </td>
+            <td>
+              <el-tooltip v-if="flow.autoTriggerEnabled === true" :content="autoTriggerDays(flow)" placement="top">
+                <span class="status-badge auto-trigger-status st-on" tabindex="0">开启</span>
+              </el-tooltip>
+              <span v-else class="status-badge st-off">关闭</span>
             </td>
             <td class="col-owner" :title="ownerLabel(flow)">{{ ownerLabel(flow) }}</td>
             <td class="col-time">{{ formatTime(flow.createdAt) }}</td>
@@ -213,6 +226,7 @@ watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.v
 .col-actions { display: flex; gap: 4px; white-space: nowrap; align-items: center; }
 .status-badge { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 4px; }
 .st-on { background: #d1fae5; color: #065f46; }
+.auto-trigger-status { cursor: help; }
 .st-off { background: #f1f5f9; color: #64748b; }
 .btn-action { padding: 4px 10px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 12px; cursor: pointer; background: #fff; color: #475569; }
 .btn-action:hover { background: #f1f5f9; }

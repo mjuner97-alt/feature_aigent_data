@@ -11,6 +11,8 @@
         <result column="name" property="name"/>
         <result column="description" property="description"/>
         <result column="enabled" property="enabled"/>
+        <result column="auto_trigger_enabled" property="autoTriggerEnabled"/>
+        <result column="schedule_rules" property="scheduleRules"/>
         <result column="chat_public" property="chatPublic"/>
         <result column="created_by" property="createdBy"/>
         <result column="created_at" property="createdAt"/>
@@ -364,7 +366,7 @@
         SELECT COUNT(*) FROM skill_flow <include refid="flowPageFilters"/>
     </select>
     <select id="selectFlowPage" resultMap="FlowSummaryMap">
-        SELECT id, code, name, description, enabled, chat_public, created_by, created_at, updated_at,
+        SELECT id, code, name, description, enabled, auto_trigger_enabled, schedule_rules, chat_public, created_by, created_at, updated_at,
         (created_by = #{userId} OR EXISTS (SELECT 1 FROM skill_flow_executor e WHERE e.flow_id = skill_flow.id AND e.user_id = #{userId})) AS can_execute
         FROM skill_flow <include refid="flowPageFilters"/>
         ORDER BY updated_at DESC, id DESC LIMIT #{limit} OFFSET #{offset}

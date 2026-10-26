@@ -8,6 +8,8 @@ public class SkillFlowSummaryDto {
     private String name;
     private String description;
     private Boolean enabled;
+    private Boolean autoTriggerEnabled;
+    private String scheduleRules;
     private Boolean chatPublic;
     private String createdBy;
     private LocalDateTime createdAt;

@@ -217,4 +217,4 @@ export interface SkillFlowRunResult {
   status: string;
 }
 
-export interface SkillFlowSummary { id:number; code?:string; name:string; description?:string; enabled:boolean; chatPublic?:boolean; createdBy?:string; createdAt?:string; updatedAt?:string; nodeCount:number; metricCount:number; canExecute:boolean }
+export interface SkillFlowSummary { id:number; code?:string; name:string; description?:string; enabled:boolean; autoTriggerEnabled?:boolean; scheduleRules?:string|null; chatPublic?:boolean; createdBy?:string; createdAt?:string; updatedAt?:string; nodeCount:number; metricCount:number; canExecute:boolean }
