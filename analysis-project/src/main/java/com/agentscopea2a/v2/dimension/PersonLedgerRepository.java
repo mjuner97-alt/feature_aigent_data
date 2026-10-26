@@ -47,21 +47,33 @@ public class PersonLedgerRepository {
             "\"统计月份\" = (SELECT MAX(\"统计月份\") FROM " + TABLE + ")";
 
     private static final String Q1_BY_USER_ID = "SELECT DISTINCT \"部门\", \"统计组\", \"应用\", "
-            + "\"产品线\", \"姓名\", \"统一认证号\" FROM " + TABLE
+            + "\"产品线\", \"姓名\", \"统一认证号\", \"岗位角色\" FROM " + TABLE
             + " WHERE \"统一认证号\" = ? AND " + SNAPSHOT_FILTER;
 
     private static final String Q2_BY_NAME = "SELECT DISTINCT \"部门\", \"统计组\", \"姓名\", "
-            + "\"统一认证号\" FROM " + TABLE + " WHERE \"姓名\" = ? AND " + SNAPSHOT_FILTER;
+            + "\"统一认证号\", \"岗位角色\" FROM " + TABLE + " WHERE \"姓名\" = ? AND " + SNAPSHOT_FILTER;
 
     private static final String Q3_NAME_DICTIONARY = "SELECT DISTINCT \"姓名\" FROM " + TABLE
             + " WHERE " + SNAPSHOT_FILTER + " AND \"姓名\" IS NOT NULL";
 
+    /** Q4 角色字典（岗位角色内置维度方案 §4.1）：值域 = 运行期 DISTINCT，字典即词表永不腐化。 */
+    private static final String Q4_ROLE_DICTIONARY = "SELECT DISTINCT \"岗位角色\" FROM " + TABLE
+            + " WHERE " + SNAPSHOT_FILTER + " AND \"岗位角色\" IS NOT NULL";
+
     /** Q1 结果（多人多行/兼岗 → 各列 distinct 收集为多值，LinkedHashSet 保序去重）。 */
     public record PersonLedgerRow(List<String> depts, List<String> groups, List<String> apps,
-                                  List<String> productLines, String name, String userId) {
+                                  List<String> productLines, List<String> roles,
+                                  String name, String userId) {
+
+        /** Legacy 6-arg shape (no roles) for existing call sites/tests. */
+        public PersonLedgerRow(List<String> depts, List<String> groups, List<String> apps,
+                               List<String> productLines, String name, String userId) {
+            this(depts, groups, apps, productLines, List.of(), name, userId);
+        }
 
         public static PersonLedgerRow empty(String userId) {
-            return new PersonLedgerRow(List.of(), List.of(), List.of(), List.of(), null, userId);
+            return new PersonLedgerRow(List.of(), List.of(), List.of(), List.of(),
+                    List.of(), null, userId);
         }
 
         public boolean isEmpty() {
@@ -69,14 +81,20 @@ public class PersonLedgerRepository {
                     && (groups == null || groups.isEmpty())
                     && (apps == null || apps.isEmpty())
                     && (productLines == null || productLines.isEmpty())
+                    && (roles == null || roles.isEmpty())
                     && (name == null || name.isBlank());
         }
     }
 
-    /** Q2 行按统一认证号去重合并后的身份（兼岗多行 → 同一 perNo 合并部门/组多值）。 */
-    public record PersonIdentity(String name, String perNo, List<String> depts, List<String> groups) {
+    /** Q2 行按统一认证号去重合并后的身份（兼岗多行 → 同一 perNo 合并部门/组/角色多值）。 */
+    public record PersonIdentity(String name, String perNo, List<String> depts, List<String> groups,
+                                 List<String> roles) {
 
-        /** 反问展示后缀：徐三金（杭州开发三部 / 杭州开发二部）。 */
+        public PersonIdentity(String name, String perNo, List<String> depts, List<String> groups) {
+            this(name, perNo, depts, groups, List.of());
+        }
+
+        /** 反问展示后缀：徐三金（杭州开发三部 / 应用开发）——角色列带出辅助消歧（岗位角色方案 §7-2）。 */
         public String displaySuffix() {
             List<String> parts = new ArrayList<>();
             if (depts != null) {
@@ -84,6 +102,9 @@ public class PersonLedgerRepository {
             }
             if (groups != null) {
                 groups.stream().filter(g -> g != null && !g.isBlank()).forEach(parts::add);
+            }
+            if (roles != null) {
+                roles.stream().filter(r -> r != null && !r.isBlank()).forEach(parts::add);
             }
             return parts.isEmpty() ? name : name + "（" + String.join(" / ", parts) + "）";
         }
@@ -101,6 +122,12 @@ public class PersonLedgerRepository {
     private volatile Set<String> nameDictionary;
     private volatile long dictExpireAt;
     private volatile long dictNextRetryAt;
+
+    private final Object roleLock = new Object();
+    // Q4 角色字典（岗位角色内置维度方案 §4.1），同 nameDictionary 的 TTL+退避模式
+    private volatile Set<String> roleDictionary;
+    private volatile long roleDictExpireAt;
+    private volatile long roleDictNextRetryAt;
 
     public PersonLedgerRepository(JdbcTemplate jdbcTemplate, long ttlSeconds) {
         this.jdbcTemplate = jdbcTemplate;
@@ -128,6 +155,7 @@ public class PersonLedgerRepository {
                         distinct(rs.getString("统计组")),
                         distinct(rs.getString("应用")),
                         distinct(rs.getString("产品线")),
+                        distinct(rs.getString("岗位角色")),
                         blankToNull(rs.getString("姓名")),
                         userId));
             }, userId);
@@ -150,6 +178,7 @@ public class PersonLedgerRepository {
         Set<String> groups = new LinkedHashSet<>();
         Set<String> apps = new LinkedHashSet<>();
         Set<String> productLines = new LinkedHashSet<>();
+        Set<String> roles = new LinkedHashSet<>();
         String name = null;
         for (PersonLedgerRow row : rows) {
             if (row == null) {
@@ -159,12 +188,13 @@ public class PersonLedgerRepository {
             groups.addAll(row.groups());
             apps.addAll(row.apps());
             productLines.addAll(row.productLines());
+            roles.addAll(row.roles());
             if (name == null && row.name() != null && !row.name().isBlank()) {
                 name = row.name();
             }
         }
         return new PersonLedgerRow(List.copyOf(depts), List.copyOf(groups), List.copyOf(apps),
-                List.copyOf(productLines), name, userId);
+                List.copyOf(productLines), List.copyOf(roles), name, userId);
     }
 
     /**
@@ -185,13 +215,15 @@ public class PersonLedgerRepository {
                 }
                 String dept = blankToNull(rs.getString("部门"));
                 String group = blankToNull(rs.getString("统计组"));
+                String role = blankToNull(rs.getString("岗位角色"));
                 PersonIdentity existing = uniq.get(perNo);
                 if (existing == null) {
                     uniq.put(perNo, new PersonIdentity(name, perNo,
                             dept == null ? List.of() : List.of(dept),
-                            group == null ? List.of() : List.of(group)));
+                            group == null ? List.of() : List.of(group),
+                            role == null ? List.of() : List.of(role)));
                 } else {
-                    uniq.put(perNo, mergeIdentity(existing, dept, group));
+                    uniq.put(perNo, mergeIdentity(existing, dept, group, role));
                 }
             }, name);
         } catch (Exception ex) {
@@ -202,17 +234,22 @@ public class PersonLedgerRepository {
         return List.copyOf(out);
     }
 
-    private static PersonIdentity mergeIdentity(PersonIdentity existing, String dept, String group) {
+    private static PersonIdentity mergeIdentity(PersonIdentity existing, String dept, String group,
+                                                String role) {
         Set<String> depts = new LinkedHashSet<>(existing.depts());
         Set<String> groups = new LinkedHashSet<>(existing.groups());
+        Set<String> roles = new LinkedHashSet<>(existing.roles());
         if (dept != null) {
             depts.add(dept);
         }
         if (group != null) {
             groups.add(group);
         }
+        if (role != null) {
+            roles.add(role);
+        }
         return new PersonIdentity(existing.name(), existing.perNo(),
-                List.copyOf(depts), List.copyOf(groups));
+                List.copyOf(depts), List.copyOf(groups), List.copyOf(roles));
     }
 
     /**
@@ -258,6 +295,50 @@ public class PersonLedgerRepository {
         }
     }
 
+    /**
+     * Q4 角色字典（岗位角色内置维度方案 §4.1，2026/10/26）：全量 DISTINCT 岗位角色，
+     * TTL 同姓名字典 30min + 60s 失败退避。加载失败/为空 → 空 Set
+     * （角色提取路径A 归一 fail-open / 路径B 字典扫描自然禁用，fail-safe）。
+     */
+    public Set<String> roleDictionary() {
+        Set<String> cached = roleDictionary;
+        long now = System.currentTimeMillis();
+        if (cached != null && now < roleDictExpireAt) {
+            return cached;
+        }
+        if (now < roleDictNextRetryAt) {
+            return cached == null ? Set.of() : cached;
+        }
+        synchronized (roleLock) {
+            cached = roleDictionary;
+            now = System.currentTimeMillis();
+            if (cached != null && now < roleDictExpireAt) {
+                return cached;
+            }
+            if (now < roleDictNextRetryAt) {
+                return cached == null ? Set.of() : cached;
+            }
+            Set<String> fresh = new HashSet<>();
+            try {
+                jdbcTemplate.query(Q4_ROLE_DICTIONARY, rs -> {
+                    String role = blankToNull(rs.getString("岗位角色"));
+                    if (role != null) {
+                        fresh.add(role);
+                    }
+                });
+                roleDictionary = Set.copyOf(fresh);
+                roleDictExpireAt = System.currentTimeMillis() + ttlMillis;
+                log.info("PersonLedgerRepository role dictionary refreshed: {} roles", fresh.size());
+                return roleDictionary;
+            } catch (Exception ex) {
+                roleDictNextRetryAt = System.currentTimeMillis() + 60_000L;
+                log.warn("PersonLedgerRepository role dictionary load failed (path-B disabled): {}",
+                        ex.getMessage());
+                return cached == null ? Set.of() : cached;
+            }
+        }
+    }
+
     /** 测试与运维口：清除缓存强制下次重读。 */
     public void invalidate() {
         userCache.clear();
@@ -265,6 +346,11 @@ public class PersonLedgerRepository {
             nameDictionary = null;
             dictExpireAt = 0;
             dictNextRetryAt = 0;
+        }
+        synchronized (roleLock) {
+            roleDictionary = null;
+            roleDictExpireAt = 0;
+            roleDictNextRetryAt = 0;
         }
     }
 

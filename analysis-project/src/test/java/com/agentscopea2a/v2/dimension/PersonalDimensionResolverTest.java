@@ -180,4 +180,132 @@ class PersonalDimensionResolverTest {
         assertEquals(1, resolver.resolveName("徐三金").size());
         assertEquals("555153289", resolver.resolveName("徐三金").get(0).perNo());
     }
+
+    // ==================== 我X 正则动态配置 (我X方案 §8) + 角色双路径提取 (岗位角色方案 §3.1b/§3.1d) ====================
+
+    @SuppressWarnings("unchecked")
+    private org.springframework.beans.factory.ObjectProvider<DimensionKeyConfigRepository>
+    keyProvider(DimensionKeyConfigRepository repo) {
+        org.springframework.beans.factory.ObjectProvider<DimensionKeyConfigRepository> provider =
+                mock(org.springframework.beans.factory.ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(repo);
+        return provider;
+    }
+
+    private static DimensionKeyConfig.AliasMapping regex(String alias, String value) {
+        return new DimensionKeyConfig.AliasMapping(alias, value, DimensionKeyConfig.AliasMapping.TYPE_REGEX);
+    }
+
+    @Test
+    void configuredRegexOverlaysHardcodedBaseline() {
+        // 配置条目任一命中即成立 (§8.2 叠加判定): "我担任" 是 MYSELF 硬编码盲区, 配置补上
+        DimensionKeyConfigRepository repo = mock(DimensionKeyConfigRepository.class);
+        when(repo.findAllEnabled()).thenReturn(List.of(new DimensionKeyConfig(
+                2L, "perNo", "统一认证号", true, List.of(regex("我担任|我现任|我所担任", "myself")), true, null)));
+        PersonalDimensionResolver configured =
+                new PersonalDimensionResolver(ledger, keyProvider(repo));
+        when(ledger.byUserId("555153289")).thenReturn(row(null, null, null, null, "徐三金"));
+
+        PersonalDimensionResolver.PersonalResolution res =
+                configured.resolve("我担任开发组长的达标率", "555153289");
+
+        assertTrue(res.myself());
+        // 硬编码基线照常生效 (叠加, 非替换)
+        assertTrue(configured.resolve("我部达标率", "555153289").myDept());
+    }
+
+    @Test
+    void configuredMyDeptRegexHitsAndSuppressesMyself() {
+        DimensionKeyConfigRepository repo = mock(DimensionKeyConfigRepository.class);
+        when(repo.findAllEnabled()).thenReturn(List.of(new DimensionKeyConfig(
+                1L, "deptName", "部门", true, List.of(regex("我们科室|本组", "myDept")), true, null)));
+        PersonalDimensionResolver configured =
+                new PersonalDimensionResolver(ledger, keyProvider(repo));
+        when(ledger.byUserId("555153289")).thenReturn(row("杭州三部", null, null, null, "徐三金"));
+
+        PersonalDimensionResolver.PersonalResolution res =
+                configured.resolve("我们科室的达标率", "555153289");
+
+        assertTrue(res.myDept());
+        assertFalse(res.myself()); // 具体维度命中 → MYSELF 抑制 (§3.6)
+    }
+
+    @Test
+    void invalidConfiguredRegexSkippedWithoutBreakingBaseline() {
+        DimensionKeyConfigRepository repo = mock(DimensionKeyConfigRepository.class);
+        when(repo.findAllEnabled()).thenReturn(List.of(new DimensionKeyConfig(
+                2L, "perNo", "统一认证号", true,
+                List.of(regex("[invalid(", "myself"), regex("我担任", "myself")), true, null)));
+        PersonalDimensionResolver configured =
+                new PersonalDimensionResolver(ledger, keyProvider(repo));
+        when(ledger.byUserId("555153289")).thenReturn(row(null, null, null, null, "徐三金"));
+
+        // 非法 regex 跳过 (其余照用), 合法条目仍命中
+        assertTrue(configured.resolve("我担任组长的达标率", "555153289").myself());
+        assertFalse(configured.resolve("普通问题", "555153289").anyHit());
+    }
+
+    @Test
+    void configRepoFailureFallsBackToHardcoded() {
+        DimensionKeyConfigRepository repo = mock(DimensionKeyConfigRepository.class);
+        when(repo.findAllEnabled()).thenThrow(new RuntimeException("db down"));
+        PersonalDimensionResolver configured =
+                new PersonalDimensionResolver(ledger, keyProvider(repo));
+
+        assertTrue(configured.resolve("我部达标率", "555153289").myDept());
+    }
+
+    @Test
+    void configuredExtractRegexReplacesDefault() {
+        // 配置了 extract 正则 → 硬编码 担任... 兜底不再生效 (§8.2 替换语义, 只对该标签)
+        DimensionKeyConfigRepository repo = mock(DimensionKeyConfigRepository.class);
+        when(repo.findAllEnabled()).thenReturn(List.of(new DimensionKeyConfig(
+                11L, "perRole", "岗位角色", true,
+                List.of(regex("出任([一-龥]{2,10}?)(?=[的，。？?！!、]|$)", "extract")), true, null)));
+        PersonalDimensionResolver configured =
+                new PersonalDimensionResolver(ledger, keyProvider(repo));
+        when(ledger.roleDictionary()).thenReturn(Set.of("测试经理"));
+
+        assertEquals(List.of("测试经理"), configured.extractRolesByPattern("我出任测试经理的达标率"));
+        assertTrue(configured.extractRolesByPattern("我担任测试经理的达标率").isEmpty());
+    }
+
+    @Test
+    void extractRolesByPatternNormalizesAgainstRoleDictionary() {
+        // 捕获值 → 字典包含关系归一 (双向包含, 最长字典值优先); 字典无命中原样收
+        when(ledger.roleDictionary()).thenReturn(Set.of("测试经理", "高级测试经理"));
+
+        // 捕获"高级测试经理" 字典直中
+        assertEquals(List.of("高级测试经理"),
+                resolver.extractRolesByPattern("担任高级测试经理的达标率"));
+        // 捕获"测试" → 字典两个值都包含它 → 收最长的
+        assertEquals(List.of("高级测试经理"),
+                resolver.extractRolesByPattern("担任测试的达标率"));
+        // 字典无命中 → 原样收 (fail-open)
+        assertEquals(List.of("架构师"),
+                resolver.extractRolesByPattern("担任架构师的达标率"));
+    }
+
+    @Test
+    void extractRolesByDictionaryLongestFirstAndSpanMask() {
+        when(ledger.roleDictionary()).thenReturn(Set.of("项目经理", "高级项目经理", "经理"));
+
+        // 高级项目经理 最长优先吃掉 span, 不会再命中 经理; 两处命中按问句位置排序
+        assertEquals(List.of("高级项目经理", "项目经理"),
+                resolver.extractRolesByDictionary("高级项目经理和项目经理的达标率", true));
+        assertEquals(List.of("高级项目经理"),
+                resolver.extractRolesByDictionary("高级项目经理的达标率", true));
+    }
+
+    @Test
+    void extractRolesByDictionaryRequiresPersonAnchor() {
+        when(ledger.roleDictionary()).thenReturn(Set.of("项目经理"));
+
+        // 人锚闸门 (§3.1d): 无 myself/人名命中 → 不收 (按角色全量查询边界不破)
+        assertTrue(resolver.extractRolesByDictionary("项目经理的达标率", false).isEmpty());
+        assertTrue(resolver.extractRolesByDictionary(null, true).isEmpty());
+        // 字典不可用 → fail-safe 空
+        when(ledger.roleDictionary()).thenReturn(Set.of());
+        assertTrue(resolver.extractRolesByDictionary("张三项目经理的达标率", true).isEmpty());
+    }
 }

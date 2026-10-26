@@ -292,7 +292,17 @@ public class DimensionStateManager {
     // 与 EXPLICIT_MONTH 归一产物相同（Set 去重，指纹不变）；(?!延后) 防把"10月延后"误吃成普通月份版本
     private static final Pattern EXPLICIT_VERSION =
             Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})月份?(?!延后)版本?");
+    // 共享后缀列举 ("10、11月版" / "10、11月" / "2026年10和11月份版本"): 末段带月份后缀,
+    // 前段裸数字列举, EXPLICIT_VERSION/EXPLICIT_MONTH 只吃得到末段 → 须在本正则先行展开,
+    // 每个数字归一 "{y}年{n}月份版本"; 版后缀可选 (与 TIME_MASK_SPAN 口径一致, 无版也算),
+    // (?!延后) 防把 "10、11月延后" 误吃成普通月份版本
+    private static final Pattern SHARED_SUFFIX_VERSION =
+            Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})((?:[、，,和与]\\s*\\d{1,2})+)\\s*月份?(?!延后)(?:版本?)?");
     private static final Pattern EXPLICIT_QUARTER = Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})季度");
+    // 共享后缀季度列举 ("3、4季度" / "2025年3和4季度"): 与 SHARED_SUFFIX_VERSION 同构,
+    // 须在 EXPLICIT_QUARTER 之前展开, 否则前段裸数字漏收
+    private static final Pattern SHARED_SUFFIX_QUARTER =
+            Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})((?:[、，,和与]\\s*\\d{1,2})+)\\s*季度");
     // "9月份"（无"版本"后缀）也算版本计划；(?!版本|延后) 防止与 EXPLICIT_VERSION/DELAYED 重复计数值，
     // "9月份版本" 会由 MONTH 退回匹配 "9月" 归一出同一值，Set 去重后指纹一致；
     // "10月延后" 是延后版标准值的前缀，不得按普通月份版本归一
@@ -448,12 +458,13 @@ public class DimensionStateManager {
     }
 
     /** 依次找首个非粒度词候选（粒度词候选跳过继续找，如"各个组、数据智能组"取后者）。 */
-    private static boolean hasNonGranularityMatch(String text, Pattern p, int suffixLen, Set<String> stems) {
+    private static boolean hasNonGranularityMatch(String text, Pattern p, int suffixLen, Set<String> stems,
+                                                  List<Pattern> blocks) {
         Matcher m = p.matcher(text);
         while (m.find()) {
             String token = m.group(1);
             if (token == null || isGranularityToken(token) || hasGranularityTail(token, suffixLen)
-                    || containsAnyStem(token, stems)) {
+                    || containsAnyStem(token, stems) || matchesAnyBlock(token, blocks)) {
                 continue;
             }
             return true;
@@ -504,7 +515,8 @@ public class DimensionStateManager {
                 continue;
             }
             for (DimensionKeyConfig.AliasMapping alias : row.aliases()) {
-                if (alias.valid() && targetKey.equals(drillValueToBuiltinKey(alias.value()))) {
+                if (alias.valid() && alias.isSynonym()
+                        && targetKey.equals(drillValueToBuiltinKey(alias.value()))) {
                     stems.add(alias.alias());
                 }
             }
@@ -524,6 +536,59 @@ public class DimensionStateManager {
         return false;
     }
 
+    // ---- §5.1 第六层（block 屏蔽，我X方案 §9）：目标键行 block 型 regex 条目 ----
+    // 候选 token 命中该键 block 正则即拒收——"我的组/我的产品线"等代词短语被
+    // EXPLICIT_TEAM/EXPLICIT_PRODUCT_LINE 抢成垃圾维度值（2026-10-26 E2E 实证
+    // groupName=["我的组","移动展业组"] 双值传参），粒度词守卫的 各/每/按 前导字拦不住。
+    // 配置驱动（基线 seed=裸 `我` 单字），字典缺失/读失败 → 空列表 fail-open（同词表反哺）。
+
+    /** 目标键行的 block 正则快照（findAllEnabled TTL 快照直读，同 granularityStems 无二级缓存）。 */
+    private List<Pattern> blockPatterns(String targetKey) {
+        if (dimensionKeySupplier == null) {
+            return List.of();
+        }
+        List<DimensionKeyConfig> rows;
+        try {
+            rows = dimensionKeySupplier.get();
+        } catch (RuntimeException e) {
+            log.warn("DimensionStateManager: 维度键字典读取失败, block 屏蔽跳过: {}", e.getMessage());
+            return List.of();
+        }
+        if (rows == null) {
+            return List.of();
+        }
+        List<Pattern> out = new ArrayList<>();
+        for (DimensionKeyConfig row : rows) {
+            if (!targetKey.equals(row.key()) || row.aliases().isEmpty()) {
+                continue;
+            }
+            for (DimensionKeyConfig.AliasMapping alias : row.aliases()) {
+                if (!alias.valid() || !alias.isBlock()) {
+                    continue;
+                }
+                try {
+                    out.add(Pattern.compile(alias.alias()));
+                } catch (Exception e) {
+                    log.warn("DimensionStateManager: 非法 block 条目跳过 key={} alias={}: {}",
+                            row.key(), alias.alias(), e.getMessage());
+                }
+            }
+        }
+        return out;
+    }
+
+    private static boolean matchesAnyBlock(String token, List<Pattern> blocks) {
+        if (token == null || blocks.isEmpty()) {
+            return false;
+        }
+        for (Pattern p : blocks) {
+            if (p.matcher(token).find()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // ---- §13.4 标准格式感知的分段抽取（docs/history/dimension-alias-config-plan.md）----
 
     /** 屏蔽占位符：不在小组/产品线正则字符类 [一-龥A-Za-z0-9] 内，等长替换保偏移 */
@@ -535,7 +600,9 @@ public class DimensionStateManager {
      * （归一化仍由既有正则负责，避免指纹规则变化）。裸 "Q1" 不算时间 span，留给词表按卡口解析。
      */
     private static final Pattern TIME_MASK_SPAN = Pattern.compile(
-            "(?:(?:\\d{4}|\\d{2})年)?\\d{1,2}月份?(?:延后(?:版本?)?)?(?:版本?)?"
+            "(?:(?:\\d{4}|\\d{2})年)?\\d{1,2}(?:[、，,和与]\\s*\\d{1,2})+月份?(?:版本?)?"
+                    + "|(?:(?:\\d{4}|\\d{2})年)?\\d{1,2}月份?(?:延后(?:版本?)?)?(?:版本?)?"
+                    + "|(?:(?:\\d{4}|\\d{2})年)?\\d{1,2}(?:[、，,和与]\\s*\\d{1,2})+季度"
                     + "|(?:(?:\\d{4}|\\d{2})年)?[一二三四1-4]季度"
                     + "|(?:(?:\\d{4}|\\d{2})年)?[一二三四五六七八九十]{1,3}月份?(?:版本?)?");
 
@@ -607,11 +674,12 @@ public class DimensionStateManager {
      */
     private String findTeamToken(String q, String masked) {
         Set<String> stems = granularityStems("groupName");
+        List<Pattern> blocks = blockPatterns("groupName");
         Matcher maskedMatcher = EXPLICIT_TEAM.matcher(masked);
         while (maskedMatcher.find()) {
             String token = trimTeamToken(q, maskedMatcher.start(), maskedMatcher.end());
             if (!isGranularityToken(token) && !hasGranularityTail(token, 1)
-                    && !containsAnyStem(token, stems)) {
+                    && !containsAnyStem(token, stems) && !matchesAnyBlock(token, blocks)) {
                 return token;
             }
         }
@@ -619,7 +687,7 @@ public class DimensionStateManager {
         while (rawMatcher.find()) {
             String token = rawMatcher.group(1);
             if (isGranularityToken(token) || hasGranularityTail(token, 1)
-                    || containsAnyStem(token, stems)) {
+                    || containsAnyStem(token, stems) || matchesAnyBlock(token, blocks)) {
                 continue;
             }
             return token;
@@ -632,11 +700,12 @@ public class DimensionStateManager {
      */
     private String findProductLineToken(String q, String masked) {
         Set<String> stems = granularityStems("productLine");
+        List<Pattern> blocks = blockPatterns("productLine");
         Matcher maskedMatcher = EXPLICIT_PRODUCT_LINE.matcher(masked);
         while (maskedMatcher.find()) {
             String token = maskedMatcher.group(1);
             if (!isGranularityToken(token) && !hasGranularityTail(token, 3)
-                    && !containsAnyStem(token, stems)) {
+                    && !containsAnyStem(token, stems) && !matchesAnyBlock(token, blocks)) {
                 return token;
             }
         }
@@ -644,7 +713,7 @@ public class DimensionStateManager {
         while (rawMatcher.find()) {
             String token = rawMatcher.group(1);
             if (isGranularityToken(token) || hasGranularityTail(token, 3)
-                    || containsAnyStem(token, stems)) {
+                    || containsAnyStem(token, stems) || matchesAnyBlock(token, blocks)) {
                 continue;
             }
             return token;
@@ -656,8 +725,25 @@ public class DimensionStateManager {
      *  "杭州三部10月版各组、各产品线" 不再误判 PEER 层级。 */
     private boolean hasTeamOrProductLineHit(String q) {
         String masked = buildMaskedQuestion(q);
-        return hasNonGranularityMatch(masked, EXPLICIT_TEAM, 1, granularityStems("groupName"))
-                || hasNonGranularityMatch(masked, EXPLICIT_PRODUCT_LINE, 3, granularityStems("productLine"));
+        return hasNonGranularityMatch(masked, EXPLICIT_TEAM, 1, granularityStems("groupName"),
+                blockPatterns("groupName"))
+                || hasNonGranularityMatch(masked, EXPLICIT_PRODUCT_LINE, 3, granularityStems("productLine"),
+                        blockPatterns("productLine"));
+    }
+
+    /** 我X按需注入方案 §3.2 重锚抑制的组维度显式命中判定（独立于 peerDimension 单槽位，
+     *  应用占槽时组名显式提及仍可判出；含粒度词守卫与词表反哺 stems + block 屏蔽 §9）。 */
+    public boolean hasExplicitTeamHit(String q) {
+        String masked = buildMaskedQuestion(q);
+        return hasNonGranularityMatch(masked, EXPLICIT_TEAM, 1, granularityStems("groupName"),
+                blockPatterns("groupName"));
+    }
+
+    /** 同上，产品线维度显式命中判定。 */
+    public boolean hasExplicitProductLineHit(String q) {
+        String masked = buildMaskedQuestion(q);
+        return hasNonGranularityMatch(masked, EXPLICIT_PRODUCT_LINE, 3, granularityStems("productLine"),
+                blockPatterns("productLine"));
     }
 
     /**
@@ -796,13 +882,48 @@ public class DimensionStateManager {
         Set<String> quarters = new LinkedHashSet<>();
         String currentYear = String.valueOf(year);
 
-        Matcher versionMatcher = EXPLICIT_VERSION.matcher(q);
+        // 共享后缀列举先跑 ("10、11月版" → 10月+11月两个版本), 否则前段裸数字漏收;
+        // 末段与 EXPLICIT_VERSION 归一产物相同, Set 去重指纹不变
+        List<int[]> sharedTimeSpans = new ArrayList<>();
+        Matcher sharedMatcher = SHARED_SUFFIX_VERSION.matcher(q);
+        while (sharedMatcher.find()) {
+            String y = sharedMatcher.group(1) != null ? sharedMatcher.group(1) : currentYear;
+            versions.add(y + "年" + sharedMatcher.group(2) + "月份版本");
+            for (String part : sharedMatcher.group(3).split("[、，,和与]\\s*")) {
+                if (!part.isBlank()) {
+                    versions.add(y + "年" + part.trim() + "月份版本");
+                }
+            }
+            sharedTimeSpans.add(new int[] {sharedMatcher.start(), sharedMatcher.end()});
+        }
+
+        // 共享 span 屏蔽后再跑单数正则: 显式年份≠当前年时, 末段会被单数正则按
+        // "无年份→补当前年"重复收一遍 (2025年3和4季度 → 多出 2026年4季度)
+        String qTime = sharedTimeSpans.isEmpty() ? q : maskSpanList(q, sharedTimeSpans);
+
+        Matcher versionMatcher = EXPLICIT_VERSION.matcher(qTime);
         while (versionMatcher.find()) {
             String y = versionMatcher.group(1) != null ? versionMatcher.group(1) : currentYear;
             versions.add(y + "年" + versionMatcher.group(2) + "月份版本");
         }
 
-        Matcher quarterMatcher = EXPLICIT_QUARTER.matcher(q);
+        Matcher sharedQuarterMatcher = SHARED_SUFFIX_QUARTER.matcher(q);
+        while (sharedQuarterMatcher.find()) {
+            String y = sharedQuarterMatcher.group(1) != null
+                    ? sharedQuarterMatcher.group(1) : currentYear;
+            quarters.add(y + "年" + sharedQuarterMatcher.group(2) + "季度");
+            for (String part : sharedQuarterMatcher.group(3).split("[、，,和与]\\s*")) {
+                if (!part.isBlank()) {
+                    quarters.add(y + "年" + part.trim() + "季度");
+                }
+            }
+            sharedTimeSpans.add(new int[] {sharedQuarterMatcher.start(), sharedQuarterMatcher.end()});
+        }
+
+        // 共享 span 已在上面的 qTime 屏蔽串中重算覆盖 (含季度共享段)
+        qTime = sharedTimeSpans.isEmpty() ? q : maskSpanList(q, sharedTimeSpans);
+
+        Matcher quarterMatcher = EXPLICIT_QUARTER.matcher(qTime);
         while (quarterMatcher.find()) {
             String y = quarterMatcher.group(1) != null ? quarterMatcher.group(1) : currentYear;
             quarters.add(y + "年" + quarterMatcher.group(2) + "季度");
@@ -834,7 +955,9 @@ public class DimensionStateManager {
         }
 
         // Short month format: "4月" → construct full version（"4月份版本"已被上面吃掉）
-        Matcher monthMatcher = EXPLICIT_MONTH.matcher(q);
+        // 走 qTime: 无版共享段 ("10、11月") 已被共享正则收走, 屏蔽后不再被单数正则
+        // 按 "无年份→补当前年" 重复收末段
+        Matcher monthMatcher = EXPLICIT_MONTH.matcher(qTime);
         while (monthMatcher.find()) {
             String y = monthMatcher.group(1) != null ? monthMatcher.group(1) : currentYear;
             versions.add(y + "年" + monthMatcher.group(2) + "月份版本");
@@ -1048,8 +1171,8 @@ public class DimensionStateManager {
                 continue;
             }
             for (DimensionKeyConfig.AliasMapping alias : row.aliases()) {
-                if (!alias.valid()) {
-                    continue;
+                if (!alias.valid() || !alias.isSynonym()) {
+                    continue; // regex 型条目（我X方案 §8.1）仅供 resolver 正则消费方使用
                 }
                 int from = 0;
                 int idx;

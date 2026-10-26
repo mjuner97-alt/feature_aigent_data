@@ -1,9 +1,10 @@
 <script setup lang="ts">
 /**
  * 维度键字典 (docs/history/skill-direct-exec-plan.md §9):
- * 内置 9 键只读 (提取走结构化规则); 用户新增键走词表命中提取 (alias contains → value),
+ * 内置 11 键只读 (提取走结构化规则); 用户新增键走词表命中提取 (alias contains → value),
  * 供 Skill 配置页 param_mapping 下拉选择。动态键仅当前问题提取, 不跨轮继承。
- * 口语值方案 §3.6: versionPlan/vestQuarter/deptName 三个内置键开放词表编辑 (口语值维护)。
+ * 口语值方案 §3.6 + 我X方案 §8.3: 白名单内置键开放词表编辑;
+ * 词表行 type=regex 为正则条目 (alias=正则, value=用途标签), 供我X/角色提取动态配置。
  */
 import { computed, onMounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -18,8 +19,23 @@ import {
 import type { DimensionKeyAlias } from '../types/dimensionKey';
 import { isAdmin } from '../utils/auth';
 
-/** 词表可维护的白名单内置键 (与后端 DimensionKeyConfigRepository.VOCAB_EDITABLE_BUILTIN_KEYS 同源) */
-const VOCAB_EDITABLE_BUILTIN_KEYS = ['versionPlan', 'vestQuarter', 'deptName'];
+/** 词表可维护的白名单内置键 (与后端 DimensionKeyConfigRepository.VOCAB_EDITABLE_BUILTIN_KEYS 同源,
+ *  我X方案 §8.3: 8 键 — regex 型条目需页面可编辑, 副作用=同义词词表同步解锁) */
+const VOCAB_EDITABLE_BUILTIN_KEYS = [
+  'versionPlan', 'vestQuarter', 'deptName',
+  'groupName', 'appName', 'productLine', 'perNo', 'perRole',
+];
+
+/** regex 型条目的 value 用途标签 (后端 PersonalDimensionResolver/DimensionStateManager 按标签分组编译) */
+const REGEX_TAG_HINTS: Record<string, string> = {
+  myDept: '命中 → 注入台账部门 (我部)',
+  myGroup: '命中 → 注入台账统计组 (我的组)',
+  myApp: '命中 → 注入台账应用 (我的应用)',
+  myProductLine: '命中 → 注入台账产品线 (我的产品线)',
+  myself: '命中 → 触发"我"自身代词解析 (perNo=当前用户)',
+  extract: '第一捕获组 = 岗位角色值 (担任...) → 角色字典归一',
+  block: '候选维度值命中此正则即拒收 (垃圾代词值屏蔽, 基线条目不可删)',
+};
 
 /** 白名单键的 value 分型提示 (后端保存期强校验, 此处仅引导) */
 const VALUE_HINTS: Record<string, string> = {
@@ -44,6 +60,8 @@ const RULE_HINTS: Record<string, string> = {
   itemNo: '需求项编号 I20260208-0005',
   subItemNo: '子需求项编号',
   perName: '人员名识别',
+  perNo: '裸"我"代词 + 我担任/我现任/我所担任 (正则 type=regex, value=myself)',
+  perRole: '担任([一-龥]) 提取 (正则 type=regex, value=extract) + 角色字典扫描 (人锚共存)',
 };
 
 const admin = isAdmin();
@@ -100,7 +118,7 @@ function openCreate() {
 function openEdit(row: DimensionKey) {
   editing.value = row;
   form.value = { key: row.key, label: row.label, enabled: row.enabled, remark: row.remark || '' };
-  aliasRows.value = row.aliases.map(a => ({ alias: a.alias, value: a.value }));
+  aliasRows.value = row.aliases.map(a => ({ alias: a.alias, value: a.value, type: a.type || null }));
   dialogVisible.value = true;
 }
 
@@ -115,7 +133,11 @@ async function save() {
       key: form.value.key.trim(),
       label: form.value.label.trim(),
       aliases: aliasRows.value.filter(a => a.alias.trim() && a.value.trim())
-        .map(a => ({ alias: a.alias.trim(), value: a.value.trim() })),
+        .map(a => ({
+          alias: a.alias.trim(),
+          value: a.value.trim(),
+          type: a.type === 'regex' ? 'regex' : null,
+        })),
       enabled: form.value.enabled,
       remark: form.value.remark.trim() || null,
     };
@@ -204,7 +226,8 @@ onMounted(load);
       <el-table-column prop="label" label="展示名" width="140" show-overflow-tooltip />
       <el-table-column label="词表 (alias → 标准值) / 规则形态" min-width="420">
         <template #default="{ row }">
-          <div>{{ row.aliases.map((a: DimensionKeyAlias) => `${a.alias}→${a.value}`).join('、')
+          <div>{{ row.aliases.map((a: DimensionKeyAlias) =>
+            a.type === 'regex' ? `${a.alias}⇒${a.value}[正则]` : `${a.alias}→${a.value}`).join('、')
             || (row.builtin
               ? (VOCAB_EDITABLE_BUILTIN_KEYS.includes(row.key) ? '结构化规则 + 词表 (可维护, 当前未配置)' : '结构化规则提取 (不走词表)')
               : '-') }}</div>
@@ -229,7 +252,7 @@ onMounted(load);
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="dialogVisible" :title="editing ? `维度键: ${editing.key}` : '新增维度键'" width="640px" destroy-on-close>
+    <el-dialog v-model="dialogVisible" :title="editing ? `维度键: ${editing.key}` : '新增维度键'" width="760px" destroy-on-close>
       <el-form label-width="110px" size="small">
         <el-form-item label="维度键">
           <el-input v-model="form.key" :disabled="!!editing?.builtin" placeholder="字母开头的 camelCase, 如 qGate (内置键不可改)" maxlength="64" />
@@ -239,12 +262,23 @@ onMounted(load);
           <div class="alias-editor">
             <div v-if="canEditAliases">
               <div v-for="(row, idx) in aliasRows" :key="idx" class="alias-row">
-                <el-input v-model="row.alias" placeholder="问题中的词, 如 Q1卡口 / 杭一 / 今年以来" maxlength="128" style="width: 220px" />
-                <span class="arrow">→</span>
-                <el-input v-model="row.value" :placeholder="valueHint ? `标准值, ${valueHint}` : '标准值, 如 Q1 或正则捕获模板 $1'" maxlength="128" style="width: 300px" />
+                <el-select v-model="row.type" size="small" style="width: 96px" placeholder="同义词">
+                  <el-option label="同义词" :value="null" />
+                  <el-option label="正则" value="regex" />
+                </el-select>
+                <el-input v-model="row.alias"
+                  :placeholder="row.type === 'regex' ? '正则表达式, 如 我部|我们部门' : '问题中的词, 如 Q1卡口 / 杭一 / 今年以来'"
+                  maxlength="128" style="width: 200px" />
+                <span class="arrow">{{ row.type === 'regex' ? '⇒' : '→' }}</span>
+                <el-input v-model="row.value"
+                  :placeholder="row.type === 'regex'
+                    ? '用途标签: myDept / myGroup / myApp / myProductLine / myself / extract'
+                    : (valueHint ? `标准值, ${valueHint}` : '标准值, 如 Q1 或正则捕获模板 $1')"
+                  maxlength="128" style="width: 280px" />
+                <span v-if="row.type === 'regex' && REGEX_TAG_HINTS[row.value]" class="tag-hint">{{ REGEX_TAG_HINTS[row.value] }}</span>
                 <el-button size="small" text type="danger" @click="aliasRows.splice(idx, 1)">删除</el-button>
               </div>
-              <el-button size="small" @click="aliasRows.push({ alias: '', value: '' })">+ 添加词表行</el-button>
+              <el-button size="small" @click="aliasRows.push({ alias: '', value: '', type: null })">+ 添加词表行</el-button>
             </div>
             <template v-else>
               <div v-for="(row, idx) in aliasRows" :key="idx" class="alias-row">
@@ -259,6 +293,11 @@ onMounted(load);
             <div class="hint">
               正则捕获: 标准值含 $1~$9 时, 触发词按正则匹配并用捕获组替换产出维度值。
               例: 触发词 流转次数\s*>\s*(\d+), 标准值 $1 → 「流转次数>3」提取出 3
+            </div>
+            <div class="hint">
+              正则条目 (type=正则): alias 必须是合法正则串 (保存时校验), value 是用途标签而非参数值 —
+              myDept/myGroup/myApp/myProductLine 控制我部/我的组等口语词命中, myself 控制自身代词变体,
+              extract 第一捕获组作为岗位角色值。命中即叠加硬编码规则 (§8.2), 删除条目重启会自动补回基线。
             </div>
           </div>
         </el-form-item>
@@ -279,8 +318,9 @@ onMounted(load);
 h2 { margin: 0; font-size: 1.2rem; }
 .subtitle { color: #64748b; font-size: 0.8rem; }
 .alias-editor { width: 100%; }
-.alias-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.alias-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
 .alias-row .arrow { color: #64748b; }
+.tag-hint { color: #94a3b8; font-size: 0.72rem; }
 .hint { color: #94a3b8; font-size: 0.75rem; margin-top: 4px; }
 .rule-hint { color: #94a3b8; font-size: 0.72rem; margin-top: 2px; line-height: 1.5; white-space: normal; }
 </style>

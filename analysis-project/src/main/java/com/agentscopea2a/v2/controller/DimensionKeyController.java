@@ -148,9 +148,23 @@ public class DimensionKeyController {
      *  其他键不受影响。 */
     private static void validateAnchorsIfNeeded(DimensionKeyConfig row) {
         String key = row.key();
+        // regex 型条目（type=regex, 我X方案 §8.1）: alias 必须可编译; value 是用途标签
+        // （myDept/myself/extract...），不参与下方键分型 value 校验
+        for (DimensionKeyConfig.AliasMapping alias : row.aliases()) {
+            if (!alias.valid() || !alias.isRegex()) {
+                continue;
+            }
+            try {
+                Pattern.compile(alias.alias());
+            } catch (Exception e) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "维度键 " + key + " regex 条目非法（type=regex 时 alias 须为合法正则）: "
+                                + e.getMessage() + "，alias: " + alias.alias());
+            }
+        }
         // 正则捕获模板行 ($1~$9): 所有键通用——alias 必须可编译、引用组号不越界
         for (DimensionKeyConfig.AliasMapping alias : row.aliases()) {
-            if (!alias.valid()
+            if (!alias.valid() || alias.isRegex()
                     || !com.agentscopea2a.v2.dimension.AliasRegexSupport.isRegexTemplate(alias.value())) {
                 continue;
             }
@@ -179,8 +193,8 @@ public class DimensionKeyController {
         if (com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository
                 .VOCAB_EDITABLE_BUILTIN_KEYS.contains(key)) {
             for (DimensionKeyConfig.AliasMapping alias : row.aliases()) {
-                if (!alias.valid()) {
-                    continue;
+                if (!alias.valid() || alias.isRegex()) {
+                    continue; // regex 条目已在上方做编译校验, value=标签不走键分型校验
                 }
                 if (!com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver
                         .isValidConfigValue(key, alias.value())) {

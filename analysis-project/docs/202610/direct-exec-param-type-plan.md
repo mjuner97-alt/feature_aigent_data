@@ -145,8 +145,13 @@ params_schema 声明一致。
 ② **type=string 多值时**: 维持现状传 List。理由: start_date/end_date 走 timeRange
 后缀键恒单值, 多值 string 属配置错误, 交给脚本报错暴露, 不做拼接魔法。
 
-③ **其他类型 (integer/boolean/...)**: 本期不转换。理由: 当前注册表只出现 array/string
-两种, 引入数值转换需处理 "10" vs 10 的边界, 无消费方, 不做过度设计。
+③ **其他类型 (integer/boolean/...)**: ~~本期不转换~~ **2026-10-26 解除 (number/integer)**:
+schema 声明 type=number/integer → 值转数值 (整数字符串→Long, 带小数→Double, 转换失败
+保底原字符串 + warn), 单值标量 / 多值逐个转成数值 List。消费方: transferTimes 正则
+捕获词表 ("流转次数>3" → threshold=3 而非 "3")。boolean 仍不转换 (无消费方)。
+理由变更: 当拍板以"注册表只出现 array/string 两种"为由不做数值转换, 现有真实消费方;
+对称扩展 shapeValue, 仍以 params_schema 单一真相源驱动, 维度键配置零改动
+(DirectSkillExecutorTest +5: 整数/小数/多值/integer 同路/失败保底, 710 单测全绿)。
 
 ④ **走模型路径**: 不动。LLM 按工具 schema 自构造数组, 与本次修复无关。
 

@@ -141,7 +141,8 @@ public class VersionPlanAnchorResolver {
                 continue;
             }
             for (DimensionKeyConfig.AliasMapping alias : row.aliases()) {
-                if (alias.valid() && isAnchor(alias.value()) && question.contains(alias.alias())) {
+                if (alias.valid() && alias.isSynonym()
+                        && isAnchor(alias.value()) && question.contains(alias.alias())) {
                     return true;
                 }
             }

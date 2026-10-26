@@ -24,7 +24,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
  *  Q3 字典 TTL + 失败关扫描 / displaySuffix。 */
 class PersonLedgerRepositoryTest {
 
-    /** Q1 行：{部门, 统计组, 应用, 产品线, 姓名, 统一认证号}。 */
+    /** Q1 行：{部门, 统计组, 应用, 产品线, 姓名, 统一认证号, 岗位角色}。 */
     private static void stubQuery(JdbcTemplate jdbc, String sqlFragment, String[][] rows) {
         doAnswer(inv -> {
             RowCallbackHandler handler = inv.getArgument(1);
@@ -36,6 +36,7 @@ class PersonLedgerRepositoryTest {
                 stubCol(rs, "产品线", row[3]);
                 stubCol(rs, "姓名", row[4]);
                 stubCol(rs, "统一认证号", row[5]);
+                stubCol(rs, "岗位角色", row[6]);
                 handler.processRow(rs);
             }
             return null;
@@ -47,7 +48,7 @@ class PersonLedgerRepositoryTest {
         org.mockito.Mockito.doReturn(value).when(rs).getString(col);
     }
 
-    /** Q2 行：{部门, 统计组, 姓名, 统一认证号}。 */
+    /** Q2 行：{部门, 统计组, 姓名, 统一认证号, 岗位角色}。 */
     private static void stubNameQuery(JdbcTemplate jdbc, String[][] rows) {
         doAnswer(inv -> {
             RowCallbackHandler handler = inv.getArgument(1);
@@ -57,6 +58,7 @@ class PersonLedgerRepositoryTest {
                 stubCol(rs, "统计组", row[1]);
                 stubCol(rs, "姓名", row[2]);
                 stubCol(rs, "统一认证号", row[3]);
+                stubCol(rs, "岗位角色", row[4]);
                 handler.processRow(rs);
             }
             return null;
@@ -68,7 +70,7 @@ class PersonLedgerRepositoryTest {
     void byUserIdParsesRowAndTtlCaches() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
         stubQuery(jdbc, "\"统一认证号\" = ? AND", new String[][]{
-                {"杭州开发三部", "数据智能组", "F-demo", " quality产品线", "徐三金", "555153289"}});
+                {"杭州开发三部", "数据智能组", "F-demo", " quality产品线", "徐三金", "555153289", "开发工程师"}});
         PersonLedgerRepository repo = new PersonLedgerRepository(jdbc, 1800);
 
         PersonLedgerRepository.PersonLedgerRow row = repo.byUserId("555153289");
@@ -90,8 +92,8 @@ class PersonLedgerRepositoryTest {
         // 兼岗多行（拍板①）：各列 distinct 多值合并，姓名取第一个非空
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
         stubQuery(jdbc, "\"统一认证号\" = ? AND", new String[][]{
-                {"杭州开发三部", "数据智能组", null, null, "徐三金", "555153289"},
-                {"杭州开发二部", "质量保障组", null, null, null, "555153289"}});
+                {"杭州开发三部", "数据智能组", null, null, "徐三金", "555153289", "开发工程师"},
+                {"杭州开发二部", "质量保障组", null, null, null, "555153289", "测试经理"}});
         PersonLedgerRepository repo = new PersonLedgerRepository(jdbc, 1800);
 
         PersonLedgerRepository.PersonLedgerRow row = repo.byUserId("555153289");
@@ -99,6 +101,7 @@ class PersonLedgerRepositoryTest {
         assertEquals(List.of("杭州开发三部", "杭州开发二部"), row.depts());
         assertEquals(List.of("数据智能组", "质量保障组"), row.groups());
         assertTrue(row.apps().isEmpty());
+        assertEquals(List.of("开发工程师", "测试经理"), row.roles());
         assertEquals("徐三金", row.name());
     }
 
@@ -137,9 +140,9 @@ class PersonLedgerRepositoryTest {
         // 同 perNo 多行 = 兼岗合并；不同 perNo = 重名候选
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
         stubNameQuery(jdbc, new String[][]{
-                {"杭州开发三部", "数据智能组", "张三", "111"},
-                {"杭州开发二部", null, "张三", "111"},
-                {"杭州开发一部", "个人住房组", "张三", "222"}});
+                {"杭州开发三部", "数据智能组", "张三", "111", "开发工程师"},
+                {"杭州开发二部", null, "张三", "111", "测试经理"},
+                {"杭州开发一部", "个人住房组", "张三", "222", null}});
         PersonLedgerRepository repo = new PersonLedgerRepository(jdbc, 1800);
 
         List<PersonLedgerRepository.PersonIdentity> identities = repo.byName("张三");
@@ -149,6 +152,7 @@ class PersonLedgerRepositoryTest {
         assertEquals("111", first.perNo());
         assertEquals(List.of("杭州开发三部", "杭州开发二部"), first.depts());
         assertEquals(List.of("数据智能组"), first.groups());
+        assertEquals(List.of("开发工程师", "测试经理"), first.roles());
         assertEquals("222", identities.get(1).perNo());
     }
 
@@ -156,7 +160,7 @@ class PersonLedgerRepositoryTest {
     void byNameSkipsBlankPerNoAndHandlesFailure() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
         stubNameQuery(jdbc, new String[][]{
-                {null, null, "张三", null}});
+                {null, null, "张三", null, null}});
         PersonLedgerRepository repo = new PersonLedgerRepository(jdbc, 1800);
         assertTrue(repo.byName("张三").isEmpty());
 
@@ -200,5 +204,39 @@ class PersonLedgerRepositoryTest {
         assertEquals("张三",
                 new PersonLedgerRepository.PersonIdentity("张三", "111",
                         List.of(), List.of()).displaySuffix());
+    }
+
+    // ==================== Q4 岗位角色字典 + displaySuffix 角色 (岗位角色内置维度方案 §4.1) ====================
+
+    @Test
+    void roleDictionaryParsesTtlCachesAndFailsSafe() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        doAnswer(inv -> {
+            RowCallbackHandler handler = inv.getArgument(1);
+            for (String role : new String[]{"开发工程师", "测试经理", null, " "}) {
+                ResultSet rs = mock(ResultSet.class);
+                stubCol(rs, "岗位角色", role);
+                handler.processRow(rs);
+            }
+            return null;
+        }).when(jdbc).query(anyString(), any(RowCallbackHandler.class));
+
+        PersonLedgerRepository repo = new PersonLedgerRepository(jdbc, 1800);
+        assertEquals(Set.of("开发工程师", "测试经理"), repo.roleDictionary());
+        repo.roleDictionary();
+        verify(jdbc, times(1)).query(anyString(), any(RowCallbackHandler.class));
+
+        JdbcTemplate broken = mock(JdbcTemplate.class);
+        doThrow(new RuntimeException("db down")).when(broken).query(anyString(),
+                any(RowCallbackHandler.class));
+        // 失败 → 空 Set (路径B 字典扫描自然禁用, fail-safe)
+        assertTrue(new PersonLedgerRepository(broken, 1800).roleDictionary().isEmpty());
+    }
+
+    @Test
+    void identityDisplaySuffixIncludesRoles() {
+        assertEquals("徐三金（杭州开发三部 / 测试经理）",
+                new PersonLedgerRepository.PersonIdentity("徐三金", "111",
+                        List.of("杭州开发三部"), List.of(), List.of("测试经理")).displaySuffix());
     }
 }

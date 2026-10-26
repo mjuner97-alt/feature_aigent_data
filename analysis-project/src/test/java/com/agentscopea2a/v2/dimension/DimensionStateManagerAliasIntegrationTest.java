@@ -244,6 +244,80 @@ class DimensionStateManagerAliasIntegrationTest {
     }
 
     @Test
+    void sharedSuffixVersionEnumeratesAllMonths() {
+        // "10、11月版" 共享后缀: 前段裸数字也收 (修复前只传 11月版)
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("杭州三部10、11月版研发周期是多少天");
+        assertEquals(java.util.List.of("2026年10月份版本", "2026年11月份版本"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
+        assertEquals(java.util.List.of("杭州开发三部"),
+                analysis.getExplicitDimensions().getDepartments());
+    }
+
+    @Test
+    void sharedSuffixVersionWithExplicitYear() {
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("2026年10和11月份版本的达标率");
+        assertEquals(java.util.List.of("2026年10月份版本", "2026年11月份版本"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
+    }
+
+    @Test
+    void individuallySuffixedVersionsUnaffected() {
+        // 回归: 各自带后缀的列举 ("10月版和11月版") 仍各自归一, 不受共享后缀正则影响
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("10月版和11月版的对比");
+        assertEquals(java.util.List.of("2026年10月份版本", "2026年11月份版本"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
+    }
+
+    @Test
+    void sharedSuffixVersionWithoutBanSuffixEnumeratesAllMonths() {
+        // "10、11月" (无"版"后缀): 与带版同构列举 (修复前共享正则的 版本? 要求版必选, 只剩 11月)
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("杭州一部10、11月研发周期");
+        assertEquals(java.util.List.of("2026年10月份版本", "2026年11月份版本"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
+        assertEquals(java.util.List.of("杭州开发一部"),
+                analysis.getExplicitDimensions().getDepartments());
+    }
+
+    @Test
+    void sharedSuffixVersionWithoutBanSuffixExplicitYearNoDoubleCount() {
+        // 显式年份 + 无版后缀: 末段不再被 EXPLICIT_MONTH 按"无年份→补当前年"重复收一遍
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("2025年10、11月研发周期");
+        assertEquals(java.util.List.of("2025年10月份版本", "2025年11月份版本"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
+    }
+
+    @Test
+    void sharedSuffixVersionSkipsDelayedVariant() {
+        // "10、11月延后版": (?!延后) 守卫生效, 共享正则不吃成普通月份版本
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("10、11月延后版本有多少需求项");
+        assertEquals(java.util.List.of("2026年11月延后版"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
+    }
+
+    @Test
+    void sharedSuffixQuarterEnumeratesAllQuarters() {
+        // "3、4季度" 共享后缀: 前段裸数字也收 (与月份版本同构)
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("3、4季度的达标率");
+        assertEquals(java.util.List.of("2026年3季度", "2026年4季度"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
+    }
+
+    @Test
+    void sharedSuffixQuarterWithExplicitYear() {
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("2025年3和4季度的对比");
+        assertEquals(java.util.List.of("2025年3季度", "2025年4季度"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
+    }
+
+    @Test
     void aliasVariantsProduceIdenticalStandardState() {
         // 口语词变体（银企团队 / 银企）归一到同一标准名 → 指纹稳定
         PeerDimension viaTeam = extractPeer("银企团队的需求");

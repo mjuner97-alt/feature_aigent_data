@@ -21,7 +21,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/** 维度键字典仓储: 首建 seed 内置 10 键 / 存量表补种新内置键 / aliases JSON round-trip / TTL 快照 / 内置键保护。 */
+/** 维度键字典仓储: 首建 seed 内置 11 键 / 存量表补种新内置键 / aliases JSON round-trip / TTL 快照 / 内置键保护。 */
 class DimensionKeyConfigRepositoryTest {
 
     @Test
@@ -47,11 +47,12 @@ class DimensionKeyConfigRepositoryTest {
         // execute 调了两次: 探测判存 + 建表 DDL
         verify(statement, times(2)).execute(ddl.capture());
         assertTrue(ddl.getAllValues().get(1).contains("CREATE TABLE IF NOT EXISTS dimension_key_config"));
-        verify(seedPs, times(10)).addBatch();
+        verify(seedPs, times(11)).addBatch();
         ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
-        // setString(1, ...) 共 15 次: 10 内置键 seed + timeRange 探测 + 补种 INSERT
-        // + 白名单内置键 (versionPlan/vestQuarter/deptName) 词表 seed 探测
-        verify(seedPs, times(15)).setString(org.mockito.ArgumentMatchers.eq(1), key.capture());
+        // setString(1, ...) 共 22 次: 11 内置键 seed + timeRange 探测 + 补种 INSERT
+        // + 白名单内置键 (versionPlan/vestQuarter/deptName) 词表 seed 探测 ×3
+        // + regex seed 探测 (deptName/groupName/appName/productLine/perNo/perRole) ×6
+        verify(seedPs, times(22)).setString(org.mockito.ArgumentMatchers.eq(1), key.capture());
         assertTrue(key.getAllValues().contains("versionPlan"));
         assertTrue(key.getAllValues().contains("subItemNo"));
         assertTrue(key.getAllValues().contains("deptName"));
@@ -79,14 +80,15 @@ class DimensionKeyConfigRepositoryTest {
         new DimensionKeyConfigRepository(dataSource, new ObjectMapper(), 0L).findAllForAdmin();
 
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
-        // 15 次 setString(1): 10 内置键补种 INSERT (存量表全缺) + timeRange 探测 + 补种 INSERT
-        // + 3 个白名单内置键词表探测 (探测 rs.next()=false → 行不存在跳过)
-        verify(ps, times(15)).setString(org.mockito.ArgumentMatchers.eq(1), sql.capture());
+        // 22 次 setString(1): 11 内置键补种 INSERT (存量表全缺) + timeRange 探测 + 补种 INSERT
+        // + 3 个白名单内置键词表探测 + 6 个 regex seed 探测 (均 rs.next()=false → 行不存在跳过)
+        verify(ps, times(22)).setString(org.mockito.ArgumentMatchers.eq(1), sql.capture());
         assertEquals("versionPlan", sql.getAllValues().get(0));
         assertEquals("subItemNo", sql.getAllValues().get(7));
         assertEquals("perName", sql.getAllValues().get(8));
         assertEquals("perNo", sql.getAllValues().get(9));
-        assertEquals("timeRange", sql.getAllValues().get(10));
+        assertEquals("perRole", sql.getAllValues().get(10));
+        assertEquals("timeRange", sql.getAllValues().get(11));
         assertTrue(sql.getAllValues().contains("deptName"));
         verify(ps).setString(org.mockito.ArgumentMatchers.eq(3),
                 org.mockito.ArgumentMatchers.contains("THIS_WEEK"));
@@ -102,20 +104,30 @@ class DimensionKeyConfigRepositoryTest {
         when(connection.createStatement()).thenReturn(statement);
         when(statement.execute(org.mockito.ArgumentMatchers.startsWith("SELECT 1"))).thenReturn(true);
 
-        // SELECT key 探测: 10 个内置键全存在 → 不补种 (读到 10 行后 false 结束)
+        // SELECT key 探测: 11 个内置键全存在 → 不补种 (读到 11 行后 false 结束)
         PreparedStatement keyPs = mock(PreparedStatement.class);
         ResultSet keyRs = mock(ResultSet.class);
         when(keyPs.executeQuery()).thenReturn(keyRs);
-        when(keyRs.next()).thenReturn(true, true, true, true, true, true, true, true, true, true, false);
+        when(keyRs.next()).thenReturn(true, true, true, true, true, true, true, true, true, true, true, false);
         when(keyRs.getString(1)).thenReturn("versionPlan", "vestQuarter", "deptName",
-                "groupName", "appName", "productLine", "itemNo", "subItemNo", "perName", "perNo");
+                "groupName", "appName", "productLine", "itemNo", "subItemNo", "perName", "perNo",
+                "perRole");
 
-        // SELECT aliases 探测: timeRange 软删行存在不复活 + 3 个白名单键词表非空不覆盖
+        // SELECT aliases 探测 ×10: timeRange 行存在不复活 + 3 个白名单键词表非空不覆盖
+        // + 6 个 regex seed 目标键已含同标签 regex 条目不重复追加 (含 block 基线, §9)
+        String aliasJson = "[{\"alias\":\"x\",\"value\":\"y\"},"
+                + "{\"alias\":\"我部|我们部门\",\"value\":\"myDept\",\"type\":\"regex\"},"
+                + "{\"alias\":\"我\",\"value\":\"block\",\"type\":\"regex\"},"
+                + "{\"alias\":\"我们组\",\"value\":\"myGroup\",\"type\":\"regex\"},"
+                + "{\"alias\":\"我的应用\",\"value\":\"myApp\",\"type\":\"regex\"},"
+                + "{\"alias\":\"我的产品线\",\"value\":\"myProductLine\",\"type\":\"regex\"},"
+                + "{\"alias\":\"我担任\",\"value\":\"myself\",\"type\":\"regex\"},"
+                + "{\"alias\":\"担任(.+)\",\"value\":\"extract\",\"type\":\"regex\"}]";
         PreparedStatement aliasPs = mock(PreparedStatement.class);
         ResultSet aliasRs = mock(ResultSet.class);
         when(aliasPs.executeQuery()).thenReturn(aliasRs);
-        when(aliasRs.next()).thenReturn(true, true, true, true, false);
-        when(aliasRs.getString(1)).thenReturn("[{\"alias\":\"x\",\"value\":\"y\"}]");
+        when(aliasRs.next()).thenReturn(true, true, true, true, true, true, true, true, true, true, false);
+        when(aliasRs.getString(1)).thenReturn(aliasJson);
 
         when(connection.prepareStatement(org.mockito.ArgumentMatchers.anyString()))
                 .thenAnswer(inv -> inv.getArgument(0, String.class).contains("SELECT key")
@@ -223,6 +235,34 @@ class DimensionKeyConfigRepositoryTest {
         // 序列化: 词表 JSON 落库
         verify(statement).setString(3, "[{\"alias\":\"Q1卡口\",\"value\":\"Q1\"}]");
         assertFalse(updateSql.getAllValues().get(0).contains("ON DUPLICATE"));
+    }
+
+    @Test
+    void updateReappendsBaselineBlockEntryWhenAdminRemovesIt() throws Exception {
+        // §9 拍板①: 基线 block 条目 (我⇒block) 管理员不可删——update 提交缺失时静默补回
+        DataSource dataSource = mock(DataSource.class);
+        Connection connection = mock(Connection.class);
+        PreparedStatement statement = mock(PreparedStatement.class);
+        when(dataSource.getConnection()).thenReturn(connection);
+        when(connection.prepareStatement(anyString())).thenReturn(statement);
+        when(statement.executeUpdate()).thenReturn(1);
+
+        DimensionKeyConfigRepository repository =
+                new DimensionKeyConfigRepository(dataSource, new ObjectMapper(), 60_000L);
+        markSchemaReady(repository);
+
+        // qGate 非内置键无 block 基线 → 提交什么存什么
+        repository.update(new DimensionKeyConfig(1L, "qGate", "卡口", false,
+                List.of(new DimensionKeyConfig.AliasMapping("Q1卡口", "Q1")), true, null));
+        // groupName 有 block 基线 → 提交缺失自动补回
+        repository.update(new DimensionKeyConfig(2L, "groupName", "组（团队）", true,
+                List.of(new DimensionKeyConfig.AliasMapping("移动展业组", "移动展业组")), true, null));
+
+        ArgumentCaptor<String> json = ArgumentCaptor.forClass(String.class);
+        verify(statement, times(2)).setString(org.mockito.ArgumentMatchers.eq(3), json.capture());
+        assertEquals("[{\"alias\":\"Q1卡口\",\"value\":\"Q1\"}]", json.getAllValues().get(0));
+        assertEquals("[{\"alias\":\"移动展业组\",\"value\":\"移动展业组\"},"
+                + "{\"alias\":\"我\",\"value\":\"block\",\"type\":\"regex\"}]", json.getAllValues().get(1));
     }
 
     private static void markSchemaReady(DimensionKeyConfigRepository repository) throws Exception {
