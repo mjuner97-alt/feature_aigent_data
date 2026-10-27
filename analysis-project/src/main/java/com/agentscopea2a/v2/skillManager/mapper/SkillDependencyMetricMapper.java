@@ -30,6 +30,9 @@ public interface SkillDependencyMetricMapper {
     /** 列出启用的指标（前端下拉用） */
     List<SkillDependencyMetric> selectAllEnabled(@Param("keyword") String keyword);
 
+    /** 列出参与每日就绪预警的指标。 */
+    List<SkillDependencyMetric> selectAllAlertEnabled();
+
     /** 按业务编码查询（triggerByMetric 入口用） */
     SkillDependencyMetric selectByCode(@Param("code") String code);
 

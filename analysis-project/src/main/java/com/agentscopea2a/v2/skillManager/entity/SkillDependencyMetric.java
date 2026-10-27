@@ -43,6 +43,8 @@ public class SkillDependencyMetric {
     private String description;
     /** 是否启用：false 后不可被新建 Job 选中且不可被触发 */
     private Boolean enabled;
+    /** 是否参与每日 11 点就绪预警 */
+    private Boolean alertEnabled;
     /** 跑批(METRIC触发)成功后是否发送通知（admin 预置，默认 FALSE） */
     private Boolean notifyEnabled;
     /** 通知内容格式：TEXT 纯文本 / HTML（默认 HTML） */

@@ -245,6 +245,7 @@ public class SqlRegistryExecTool {
                         + "' 的 sql_template 含占位符 :" + p + " 但 params_schema 未声明 (DBA 录入失误, 让 DBA 修正)");
             }
         }
+        fillMissingOptionalParams(entry.getParamsSchema(), templateParams, paramMap);
 
         // 5. 按 datasource 路由
         String datasource = entry.getDatasource();
@@ -403,6 +404,32 @@ public class SqlRegistryExecTool {
         }
     }
 
+    /** 为 SQL 中未传入的可选参数补 null，避免 NamedParameterUtils 将其视为未绑定参数。 */
+    private static void fillMissingOptionalParams(String paramsSchemaJson,
+                                                  List<String> templateParams,
+                                                  Map<String, Object> paramMap) {
+        Set<String> required = new LinkedHashSet<>();
+        try {
+            if (paramsSchemaJson != null && !paramsSchemaJson.isBlank()) {
+                List<?> list = JSON_MAPPER.readValue(paramsSchemaJson, List.class);
+                for (Object o : list) {
+                    if (o instanceof Map<?, ?> m && !Boolean.FALSE.equals(m.get("required"))
+                            && m.get("name") != null) {
+                        required.add(String.valueOf(m.get("name")));
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("fillMissingOptionalParams 解析失败: {}", paramsSchemaJson, e);
+            return;
+        }
+        for (String name : templateParams) {
+            if (!paramMap.containsKey(name) && !required.contains(name)) {
+                paramMap.put(name, null);
+            }
+        }
+    }
+
     /**
      * 提取 sql_template 里所有 :param 占位符的参数名, 用于校验 DBA 录入时占位符与 params_schema 是否对齐.
      */
@@ -452,6 +479,7 @@ public class SqlRegistryExecTool {
         }
         return out.toArray();
     }
+
 
     private QueryResult readResult(String sqlId, Map<String, Object> params,
                                    ResultSet rs, long elapsedMs) throws SQLException {

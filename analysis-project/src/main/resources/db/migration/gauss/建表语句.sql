@@ -568,6 +568,7 @@ create table skill_dependency_metric
     description             text,
     enabled                 boolean   default true  not null,
     notify_enabled          boolean   default false not null,
+    alert_enabled           boolean   default false not null,
     notify_content_type     varchar(16),
     notify_content_template text,
     created_at              timestamp default now() not null,
@@ -582,6 +583,8 @@ comment on column skill_dependency_metric.code is '业务编码（唯一），�
 comment on column skill_dependency_metric.enabled is '是否启用：false 后不可被新建 Job 选中且不可被触发';
 
 comment on column skill_dependency_metric.notify_enabled is '跑批(METRIC触发)成功后是否发通知（admin 预置，默认 FALSE）';
+
+comment on column skill_dependency_metric.alert_enabled is '是否参与每日 11:00 依赖指标就绪预警';
 
 comment on column skill_dependency_metric.notify_content_type is '通知内容格式：TEXT 纯文本 / HTML（默认 HTML）';
 
@@ -1402,4 +1405,8 @@ comment on column ai_chat_runtime_config.updated_at is '更新时间，记录配
 
 alter table ai_chat_runtime_config
     owner to readwriter;
+
+
+
+
 

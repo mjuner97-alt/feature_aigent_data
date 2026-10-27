@@ -59,6 +59,7 @@ SPRING_PROFILES="${SPRING_PROFILES_ACTIVE:-dev,docker}"
 echo "[entrypoint] launching spring boot with profiles=${SPRING_PROFILES}"
 java -jar "$JAR" \
   --spring.profiles.active="${SPRING_PROFILES}" \
+  --scheduler.enabled=true \
   > /var/log/backend.log 2>&1 &
 
 # ============================================================================

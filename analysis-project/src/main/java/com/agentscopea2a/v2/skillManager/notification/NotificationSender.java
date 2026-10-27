@@ -13,6 +13,9 @@ package com.agentscopea2a.v2.skillManager.notification;
  */
 public interface NotificationSender {
 
+    /** Sends a password recovery code using the same default contact block as long-task mail. */
+    default void sendPasswordReset(String userId, String code) { }
+
     /**
      * 发送通知。
      *

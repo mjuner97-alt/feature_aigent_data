@@ -288,6 +288,7 @@ public class SqlRegistryManageService {
                         .build();
             }
         }
+        fillMissingOptionalParams(paramsSchema, templateParams, paramMap);
 
         // 3. 按 datasource 路由
         String dsKey = datasource == null ? null : datasource.toLowerCase();
@@ -429,6 +430,32 @@ public class SqlRegistryManageService {
         }
     }
 
+    /** 为 SQL 中未传入的可选参数补 null，避免 NamedParameterUtils 将其视为未绑定参数。 */
+    private static void fillMissingOptionalParams(String paramsSchemaJson,
+                                                  List<String> templateParams,
+                                                  Map<String, Object> paramMap) {
+        Set<String> required = new LinkedHashSet<>();
+        try {
+            if (paramsSchemaJson != null && !paramsSchemaJson.isBlank()) {
+                List<?> list = JSON_MAPPER.readValue(paramsSchemaJson, List.class);
+                for (Object o : list) {
+                    if (o instanceof Map<?, ?> m && !Boolean.FALSE.equals(m.get("required"))
+                            && m.get("name") != null) {
+                        required.add(String.valueOf(m.get("name")));
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("fillMissingOptionalParams 解析失败: {}", paramsSchemaJson, e);
+            return;
+        }
+        for (String name : templateParams) {
+            if (!paramMap.containsKey(name) && !required.contains(name)) {
+                paramMap.put(name, null);
+            }
+        }
+    }
+
     private static List<String> extractTemplateParams(String sql) {
         List<String> names = new ArrayList<>();
         java.util.regex.Matcher m = NAMED_PARAM_PATTERN.matcher(sql);
@@ -504,4 +531,5 @@ public class SqlRegistryManageService {
         }
         return out.toArray();
     }
+
 }

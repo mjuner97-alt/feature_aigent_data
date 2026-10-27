@@ -13,9 +13,21 @@ import com.agentscopea2a.v2.auth.dto.LoginRequest;
 import com.agentscopea2a.v2.auth.dto.LoginResponse;
 import com.agentscopea2a.v2.auth.entity.DeveloperPlPersonInfo;
 import com.agentscopea2a.v2.auth.mapper.DeveloperPlPersonInfoMapper;
+import com.agentscopea2a.v2.skillManager.notification.NotificationSender;
+import com.agentscopea2a.entity.AiChatRuntimeConfig;
+import com.agentscopea2a.mapper.gauss.AiChatRuntimeConfigMapper;
+import com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.security.MessageDigest;
+import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
+import java.time.Instant;
 import java.util.stream.Collectors;
 
 /**
@@ -27,10 +39,32 @@ public class AuthService {
 
     private final DeveloperPlPersonInfoMapper personInfoMapper;
     private final AdminRoleService adminRoleService;
+    private final NotificationSender notificationSender;
+    private final AiChatRuntimeConfigMapper runtimeConfigMapper;
+    private final Map<String, Credential> credentials = new ConcurrentHashMap<>();
+    private final Map<String, ResetCode> resetCodes = new ConcurrentHashMap<>();
+    private final Map<String, String> resetSessions = new ConcurrentHashMap<>();
+    private final SecureRandom random = new SecureRandom();
+    private static final int MAX_ATTEMPTS = 5;
+    private static final long CODE_TTL_SECONDS = 600;
+    private static final long LOCK_SECONDS = 900;
 
     public AuthService(DeveloperPlPersonInfoMapper personInfoMapper, AdminRoleService adminRoleService) {
+        this(personInfoMapper, adminRoleService, null, null);
+    }
+
+    public AuthService(DeveloperPlPersonInfoMapper personInfoMapper, AdminRoleService adminRoleService,
+                       NotificationSender notificationSender) {
+        this(personInfoMapper, adminRoleService, notificationSender, null);
+    }
+
+    @Autowired
+    public AuthService(DeveloperPlPersonInfoMapper personInfoMapper, AdminRoleService adminRoleService,
+                       NotificationSender notificationSender, AiChatRuntimeConfigMapper runtimeConfigMapper) {
         this.personInfoMapper = personInfoMapper;
         this.adminRoleService = adminRoleService;
+        this.notificationSender = notificationSender;
+        this.runtimeConfigMapper = runtimeConfigMapper;
     }
 
     public LoginResponse login(LoginRequest request) {
@@ -43,12 +77,37 @@ public class AuthService {
             return adminLogin(userId, request.getPassword());
         }
 
-        int count = personInfoMapper.countByUserId(userId);
-        if (count == 0) {
-            throw new IllegalArgumentException("工号不存在,请检查输入");
+        if (!passwordAuthEnabled()) {
+            return normalUserLogin(userId);
+        }
+        Credential credential = credentials.get(userId);
+        if (credential != null) {
+            if (credential.lockedUntil > Instant.now().getEpochSecond()) throw new IllegalArgumentException("账号或密码错误");
+            if (!matches(request.getPassword(), credential.hash)) {
+                credential.failures++;
+                if (credential.failures >= MAX_ATTEMPTS) credential.lockedUntil = Instant.now().getEpochSecond() + LOCK_SECONDS;
+                throw new IllegalArgumentException("账号或密码错误");
+            }
+            credential.failures = 0;
         }
 
+        int count = personInfoMapper.countByUserId(userId);
+        if (count == 0) {
+            throw new IllegalArgumentException("账号不存在,请检查输入");
+        }
+
+        if (credential == null) {
+            throw new IllegalArgumentException("该账号尚未设置密码，请先通过忘记密码设置密码");
+        }
+
+        return normalUserLogin(userId);
+    }
+
+    private LoginResponse normalUserLogin(String userId) {
         List<DeveloperPlPersonInfo> records = personInfoMapper.selectByUserId(userId);
+        if (records == null || records.isEmpty()) {
+            throw new IllegalArgumentException("账号不存在,请检查输入");
+        }
         DeveloperPlPersonInfo first = records.get(0);
 
         List<String> departments = records.stream()
@@ -80,6 +139,52 @@ public class AuthService {
                 adminRoleService.isProductionMode()
         );
     }
+
+    private boolean passwordAuthEnabled() {
+        if (runtimeConfigMapper == null) return true;
+        try {
+            AiChatRuntimeConfig config = runtimeConfigMapper.selectByConfigKey(AiChatRuntimeConfigKeys.PASSWORD_AUTH_ENABLED);
+            return config == null || config.getConfigValue() == null
+                    || !"false".equalsIgnoreCase(config.getConfigValue().trim());
+        } catch (Exception ignored) {
+            return true;
+        }
+    }
+
+    public void setPassword(String userId, String password) { credentials.put(userId, new Credential(hash(password))); }
+
+    public Map<String, Object> requestPasswordReset(String userId) {
+        String code = String.format("%06d", random.nextInt(1_000_000));
+        resetCodes.put(userId, new ResetCode(hash(code), Instant.now().getEpochSecond() + CODE_TTL_SECONDS));
+        if (notificationSender != null && userId != null && !userId.isBlank()) {
+            notificationSender.sendPasswordReset(userId, code);
+        }
+        return Map.of("accepted", true);
+    }
+
+    public Map<String, String> verifyPasswordReset(String userId, String code) {
+        ResetCode reset = resetCodes.get(userId);
+        if (reset == null || reset.used || reset.expiresAt < Instant.now().getEpochSecond() || reset.attempts >= MAX_ATTEMPTS || !matches(code, reset.hash)) {
+            if (reset != null && !reset.used && !matches(code, reset.hash)) reset.attempts++;
+            throw new IllegalArgumentException("验证码无效或已过期");
+        }
+        String session = UUID.randomUUID().toString();
+        resetSessions.put(session, userId);
+        return Map.of("resetSession", session, "expiresIn", "600");
+    }
+
+    public void completePasswordReset(String userId, String session, String newPassword) {
+        if (newPassword == null || newPassword.length() < 8 || !userId.equals(resetSessions.remove(session))) throw new IllegalArgumentException("重置请求无效");
+        ResetCode reset = resetCodes.get(userId);
+        if (reset == null || reset.used || reset.expiresAt < Instant.now().getEpochSecond()) throw new IllegalArgumentException("重置请求无效");
+        reset.used = true;
+        credentials.put(userId, new Credential(hash(newPassword)));
+    }
+
+    private static String hash(String value) { try { return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest((value == null ? "" : value).getBytes(StandardCharsets.UTF_8))); } catch (Exception e) { throw new IllegalStateException(e); } }
+    private static boolean matches(String raw, String expected) { return MessageDigest.isEqual(hash(raw).getBytes(StandardCharsets.UTF_8), expected.getBytes(StandardCharsets.UTF_8)); }
+    private static final class Credential { final String hash; int failures; long lockedUntil; Credential(String hash){this.hash=hash;} }
+    private static final class ResetCode { final String hash; final long expiresAt; int attempts; boolean used; ResetCode(String hash,long expiresAt){this.hash=hash;this.expiresAt=expiresAt;} }
 
     private LoginResponse adminLogin(String userId, String password) {
         if (!adminRoleService.matchesPassword(userId, password)) {

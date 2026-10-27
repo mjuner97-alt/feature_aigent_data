@@ -12,9 +12,10 @@ public final class AiChatRuntimeConfigKeys {
     public static final String RESPONSE_TIMEOUT_SECONDS = "response_timeout_seconds";
     public static final String LONG_TASK_ENABLED = "long_task_enabled";
     public static final String LONG_TASK_NODE_CACHE_ENABLED = "long_task_node_cache_enabled";
-    public static final String LONG_TASK_SCHEDULER_IP = "long_task_scheduler_ip";
     public static final String SCRIPT_EXEC_ENABLED = "script_exec_enabled";
     public static final String NOTIFICATION_CONTACT_HTML = "notification_contact_html";
+    public static final String PASSWORD_AUTH_ENABLED = "password_auth_enabled";
+    public static final String DEPENDENCY_METRIC_ALERT_RECIPIENTS = "dependency_metric_alert_recipients";
     private AiChatRuntimeConfigKeys() {
     }
 }

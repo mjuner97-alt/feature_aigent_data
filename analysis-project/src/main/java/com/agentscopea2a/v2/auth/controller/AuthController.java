@@ -16,6 +16,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
+import com.agentscopea2a.v2.auth.dto.PasswordResetRequest;
+import com.agentscopea2a.v2.auth.dto.PasswordResetVerifyRequest;
+import com.agentscopea2a.v2.auth.dto.PasswordResetCompleteRequest;
 
 /**
  * 认证 REST 接口 - 轻量登录(工号校验)。
@@ -40,5 +43,22 @@ public class AuthController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
+    }
+
+    @PostMapping("/password-reset/request")
+    public ResponseEntity<?> requestReset(@RequestBody PasswordResetRequest request) {
+        return ResponseEntity.accepted().body(authService.requestPasswordReset(request.getUserId()));
+    }
+
+    @PostMapping("/password-reset/verify")
+    public ResponseEntity<?> verifyReset(@RequestBody PasswordResetVerifyRequest request) {
+        try { return ResponseEntity.ok(authService.verifyPasswordReset(request.getUserId(), request.getCode())); }
+        catch (IllegalArgumentException e) { return ResponseEntity.badRequest().body(Map.of("message", e.getMessage())); }
+    }
+
+    @PostMapping("/password-reset/complete")
+    public ResponseEntity<?> completeReset(@RequestBody PasswordResetCompleteRequest request) {
+        try { authService.completePasswordReset(request.getUserId(), request.getResetSession(), request.getNewPassword()); return ResponseEntity.ok(Map.of("message", "密码已重置")); }
+        catch (IllegalArgumentException e) { return ResponseEntity.badRequest().body(Map.of("message", e.getMessage())); }
     }
 }

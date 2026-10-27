@@ -9,6 +9,7 @@
         <result column="name" property="name"/>
         <result column="description" property="description"/>
         <result column="enabled" property="enabled"/>
+        <result column="alert_enabled" property="alertEnabled"/>
         <result column="notify_enabled" property="notifyEnabled"/>
         <result column="notify_content_type" property="notifyContentType"/>
         <result column="notify_content_template" property="notifyContentTemplate"/>
@@ -16,7 +17,7 @@
         <result column="updated_at" property="updatedAt"/>
     </resultMap>
 
-    <sql id="metricCols">id, code, name, description, enabled, notify_enabled, notify_content_type, notify_content_template, created_at, updated_at</sql>
+    <sql id="metricCols">id, code, name, description, enabled, alert_enabled, notify_enabled, notify_content_type, notify_content_template, created_at, updated_at</sql>
 
     <select id="selectAllEnabled" resultMap="MetricResultMap">
         SELECT <include refid="metricCols"/> FROM skill_dependency_metric
@@ -26,6 +27,12 @@
               OR LOWER(code) LIKE CONCAT('%', LOWER(#{keyword}), '%')
               OR LOWER(description) LIKE CONCAT('%', LOWER(#{keyword}), '%'))
         </if>
+        ORDER BY id ASC
+    </select>
+
+    <select id="selectAllAlertEnabled" resultMap="MetricResultMap">
+        SELECT <include refid="metricCols"/> FROM skill_dependency_metric
+        WHERE enabled = TRUE AND alert_enabled = TRUE
         ORDER BY id ASC
     </select>
 

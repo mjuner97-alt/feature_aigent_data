@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { login } from '../api/auth';
+import { login, requestPasswordReset, verifyPasswordResetCode, completePasswordReset } from '../api/auth';
 import { saveLoggedInUser } from '../utils/auth';
 
 const router = useRouter();
@@ -9,6 +9,8 @@ const userId = ref('');
 const password = ref('');
 const loading = ref(false);
 const errorMsg = ref('');
+const mode = ref<'login'|'code'|'password'>('login');
+const code = ref(''); const confirmPassword = ref(''); const resetSession = ref('');
 
 async function handleLogin() {
   const id = userId.value.trim();
@@ -29,6 +31,10 @@ async function handleLogin() {
   }
 }
 
+async function requestCode() { if (!userId.value.trim()) { errorMsg.value='请输入工号'; return; } loading.value=true; errorMsg.value=''; try { await requestPasswordReset(userId.value.trim()); mode.value='code'; } catch (e:any) { errorMsg.value=e.message||'请求失败'; } finally { loading.value=false; } }
+async function verifyCode() { if (!/^\d{6}$/.test(code.value)) { errorMsg.value='请输入6位验证码'; return; } loading.value=true; try { const r=await verifyPasswordResetCode(userId.value.trim(), code.value); resetSession.value=r.resetSession; mode.value='password'; errorMsg.value=''; } catch(e:any){errorMsg.value=e.message||'验证码无效';} finally{loading.value=false;} }
+async function resetPassword() { if (password.value.length<8 || password.value!==confirmPassword.value) { errorMsg.value='密码至少8位且两次输入一致'; return; } loading.value=true; try { await completePasswordReset(userId.value.trim(), resetSession.value, password.value); mode.value='login'; password.value=''; confirmPassword.value=''; code.value=''; errorMsg.value='密码已重置，请登录'; } catch(e:any){errorMsg.value=e.message||'密码重置失败';} finally{loading.value=false;} }
+
 function handleEnter(e: KeyboardEvent) {
   if (e.key === 'Enter' && !loading.value) handleLogin();
 }
@@ -38,8 +44,8 @@ function handleEnter(e: KeyboardEvent) {
   <div class="login-page">
     <div class="login-card">
       <div class="login-title">数字QA</div>
-      <div class="login-subtitle">请输入统一认证号登录</div>
-      <input
+      <div class="login-subtitle">{{ mode === 'login' ? '请输入统一认证号登录' : mode === 'code' ? '请输入系统通知中的验证码' : '设置新密码' }}</div>
+      <input v-if="mode !== 'password'"
         v-model="userId"
         type="text"
         placeholder="统一认证号"
@@ -47,18 +53,21 @@ function handleEnter(e: KeyboardEvent) {
         :disabled="loading"
         @keydown="handleEnter"
       />
-      <input
+      <input v-if="mode === 'login' || mode === 'password'"
         v-model="password"
         type="password"
-        placeholder="管理员密码（普通账号无需填写）"
+        placeholder="密码"
         class="login-input"
         :disabled="loading"
         @keydown="handleEnter"
       />
+      <input v-if="mode === 'code'" v-model="code" inputmode="numeric" maxlength="6" placeholder="6位验证码" class="login-input" :disabled="loading" />
+      <input v-if="mode === 'password'" v-model="confirmPassword" type="password" placeholder="确认新密码" class="login-input" :disabled="loading" />
       <div v-if="errorMsg" class="login-error">{{ errorMsg }}</div>
-      <button class="login-btn" :disabled="loading" @click="handleLogin">
-        {{ loading ? '登录中...' : '登录' }}
-      </button>
+      <button v-if="mode==='login'" class="login-btn" :disabled="loading" @click="handleLogin">{{ loading ? '登录中...' : '登录' }}</button>
+      <button v-if="mode==='login'" class="link-btn" :disabled="loading" @click="requestCode">忘记密码?</button>
+      <button v-if="mode==='code'" class="login-btn" :disabled="loading" @click="verifyCode">验证验证码</button>
+      <button v-if="mode==='password'" class="login-btn" :disabled="loading" @click="resetPassword">保存新密码</button>
     </div>
   </div>
 </template>
@@ -120,4 +129,17 @@ function handleEnter(e: KeyboardEvent) {
 }
 .login-btn:hover:not(:disabled) { background: #5558e3; }
 .login-btn:disabled { background: #c7d2fe; cursor: not-allowed; }
+.link-btn {
+  display: block;
+  margin: 12px 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #3478f6;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.link-btn:hover:not(:disabled) { color: #1d4ed8; text-decoration: underline; }
+.link-btn:disabled { color: #94a3b8; cursor: not-allowed; }
 </style>

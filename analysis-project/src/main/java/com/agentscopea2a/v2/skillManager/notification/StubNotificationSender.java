@@ -60,6 +60,15 @@ public class StubNotificationSender implements NotificationSender {
         send(title, content, List.of(userId));
     }
 
+    @Override
+    public void sendPasswordReset(String userId, String code) {
+        String content = "<html><body>"
+                + "<p>您好，您的密码找回验证码为：<strong>" + code + "</strong>。</p>"
+                + "<p>验证码10分钟内有效，仅可使用一次。</p>"
+                + "</body></html>";
+        send(userId, "密码找回验证码", content);
+    }
+
     private void send(String title, String content, List<String> userIds) {
         send(title, content, userIds, List.of(), null, null);
     }

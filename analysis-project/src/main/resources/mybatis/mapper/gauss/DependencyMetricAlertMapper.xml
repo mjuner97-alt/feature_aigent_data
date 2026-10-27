@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.v2.skillManager.mapper.DependencyMetricAlertMapper">
+  <resultMap id="ReadinessMap" type="com.agentscopea2a.v2.skillManager.entity.SkillMetricReadiness">
+    <id column="id" property="id"/><result column="metric_id" property="metricId"/>
+    <result column="metric_code" property="metricCode"/><result column="data_date" property="dataDate"/>
+    <result column="status" property="status" javaType="com.agentscopea2a.v2.skillManager.entity.MetricReadinessStatus"/>
+    <result column="ready_at" property="readyAt"/><result column="expires_at" property="expiresAt"/>
+    <result column="metadata_json" property="metadataJson"/><result column="created_at" property="createdAt"/>
+    <result column="updated_at" property="updatedAt"/>
+  </resultMap>
+  <select id="selectReadiness" resultMap="ReadinessMap">
+    SELECT id, metric_id, metric_code, data_date, status, ready_at, expires_at, metadata_json, created_at, updated_at
+    FROM skill_metric_readiness WHERE data_date=#{dataDate} AND metric_id IN
+    <foreach collection="metricIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+  </select>
+  <insert id="claim">
+    INSERT INTO dependency_metric_alert_delivery(alert_date,status,recipient_summary,content)
+    VALUES(#{alertDate},'PENDING',#{recipientSummary},#{content})
+    ON CONFLICT (alert_date) DO NOTHING
+  </insert>
+  <update id="update">
+    UPDATE dependency_metric_alert_delivery SET status=#{status}, error_message=#{errorMessage},
+      completed_at=CASE WHEN #{status} IN ('SUCCESS','FAILED','SKIPPED') THEN NOW() ELSE completed_at END
+    WHERE alert_date=#{alertDate}
+  </update>
+</mapper>

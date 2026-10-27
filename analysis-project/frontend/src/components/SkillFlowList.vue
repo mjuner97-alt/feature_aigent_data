@@ -7,7 +7,6 @@ import type { SkillFlowSummary, FlowMetricPrecheck } from '../types/skillFlow';
 import { manualTriggerMessage } from './skillFlowExecutionPresentation';
 import { parseScheduleRules } from '../utils/scheduleRules';
 
-const emit = defineEmits<{ 'view-records': [flowName: string] }>();
 const props = withDefaults(defineProps<{ scope?: 'mine' | 'all'; createdBy?: string }>(), { scope: 'mine', createdBy: '' });
 const me = currentUserId();
 const router = useRouter();
@@ -72,7 +71,6 @@ async function fetchPage(scope: 'mine' | 'all' = props.scope) {
 function create() { router.push('/skills/jobs/flows/new'); }
 function edit(id: number) { router.push(`/skills/jobs/flows/${id}/edit`); }
 function copy(id: number) { router.push({ path: '/skills/jobs/flows/new', query: { copyFrom: String(id) } }); }
-function viewRecords(flow: SkillFlowSummary) { emit('view-records', flow.name); }
 async function toggle(flow: SkillFlowSummary) {
   try { await setSkillFlowEnabled(flow.id, !flow.enabled); flow.enabled = !flow.enabled; }
   catch (e) { alert(e instanceof Error ? e.message : '更新流程状态失败'); }
@@ -139,7 +137,6 @@ watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.v
           <tr>
             <th>流程名称</th>
             <th>节点数量</th>
-            <th>依赖指标</th>
             <th>状态</th>
             <th>自动触发</th>
             <th>创建人</th>
@@ -155,7 +152,6 @@ watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.v
               <span v-if="flow.description" class="col-description" :title="flow.description">{{ flow.description }}</span>
             </td>
             <td>{{ flow.nodeCount }}</td>
-            <td><button class="metric-link" type="button" @click="showMetrics(flow)">{{ flow.metricCount }}</button></td>
             <td>
               <span class="status-badge" :class="enabledStatusClass(flow)">{{ flow.enabled ? '启用' : '禁用' }}</span>
             </td>
@@ -169,14 +165,14 @@ watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.v
             <td class="col-time">{{ formatTime(flow.createdAt) }}</td>
             <td class="col-actions">
               <button v-if="canRun(flow) && flow.enabled" class="btn-action trigger" @click="run(flow)">执行</button>
-              <button class="btn-action" @click="viewRecords(flow)">记录</button>
               <button class="btn-action" @click="copy(flow.id)">复制</button>
               <template v-if="isOwner(flow)">
                 <button class="btn-action" @click="edit(flow.id)">编辑</button>
+                <button class="btn-action" @click="showMetrics(flow)">依赖数据</button>
                 <button class="btn-action toggle" @click="toggle(flow)">{{ flow.enabled ? '禁用' : '启用' }}</button>
                 <button class="btn-action danger" @click="remove(flow)">删除</button>
               </template>
-              <span v-else class="readonly-tag" title="仅创建人或授权可执行人可修改或删除">只读</span>
+              <template v-else><span class="readonly-tag" title="仅创建人或授权可执行人可修改或删除">只读</span><button class="btn-action" @click="showMetrics(flow)">依赖数据</button></template>
             </td>
           </tr>
         </tbody>
@@ -241,9 +237,13 @@ watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.v
 .empty { padding: 48px 0; color: #94a3b8; text-align: center; font-size: 14px; background: #fff; border-radius: 8px; }
 .error { margin-bottom: 12px; padding: 9px 12px; border: 1px solid #fecaca; border-radius: 5px; background: #fef2f2; color: #b91c1c; font-size: 13px; }
 .toast { position: fixed; top: 20px; left: 50%; z-index: 2000; transform: translateX(-50%); padding: 8px 20px; border-radius: 8px; background: #16a34a; box-shadow: 0 4px 12px rgba(0,0,0,0.15); color: #fff; font-size: 14px; }
-.metric-link { border: 0; background: transparent; color: #2563eb; cursor: pointer; font-size: 13px; text-decoration: underline; }
 .metric-date { margin-bottom: 12px; color: #64748b; font-size: 13px; }
 .metric-detail-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .metric-detail-table th, .metric-detail-table td { padding: 10px 8px; border-bottom: 1px solid #e2e8f0; text-align: left; }
 .metric-code { display: block; margin-top: 3px; color: #94a3b8; font-size: 11px; }
 </style>
+
+
+
+
+
