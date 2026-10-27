@@ -27,7 +27,7 @@ public interface NotificationSender {
         body.put("title", payload.jobName());
         body.put("content", payload.content());
         body.put("toUserList", payload.userIdList() == null ? java.util.List.of() : java.util.List.copyOf(payload.userIdList()));
-        body.put("ccUserList", payload.ccUserIdList() == null ? java.util.List.of() : java.util.List.copyOf(payload.ccUserIdList()));
+        body.put("toCCUserList", payload.ccUserIdList() == null ? java.util.List.of() : java.util.List.copyOf(payload.ccUserIdList()));
         return body;
     }
 
