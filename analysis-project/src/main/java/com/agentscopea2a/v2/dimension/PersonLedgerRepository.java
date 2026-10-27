@@ -47,21 +47,40 @@ public class PersonLedgerRepository {
             "\"统计月份\" = (SELECT MAX(\"统计月份\") FROM " + TABLE + ")";
 
     private static final String Q1_BY_USER_ID = "SELECT DISTINCT \"部门\", \"统计组\", \"应用\", "
-            + "\"产品线\", \"姓名\", \"统一认证号\" FROM " + TABLE
+            + "\"产品线\", \"姓名\", \"统一认证号\", \"岗位角色\" FROM " + TABLE
             + " WHERE \"统一认证号\" = ? AND " + SNAPSHOT_FILTER;
 
     private static final String Q2_BY_NAME = "SELECT DISTINCT \"部门\", \"统计组\", \"姓名\", "
-            + "\"统一认证号\" FROM " + TABLE + " WHERE \"姓名\" = ? AND " + SNAPSHOT_FILTER;
+            + "\"统一认证号\", \"岗位角色\" FROM " + TABLE + " WHERE \"姓名\" = ? AND " + SNAPSHOT_FILTER;
 
     private static final String Q3_NAME_DICTIONARY = "SELECT DISTINCT \"姓名\" FROM " + TABLE
             + " WHERE " + SNAPSHOT_FILTER + " AND \"姓名\" IS NOT NULL";
 
+    /** Q4 角色字典（岗位角色内置维度方案 §4.1）：值域 = 运行期 DISTINCT，字典即词表永不腐化。 */
+    private static final String Q4_ROLE_DICTIONARY = "SELECT DISTINCT \"岗位角色\" FROM " + TABLE
+            + " WHERE " + SNAPSHOT_FILTER + " AND \"岗位角色\" IS NOT NULL";
+
+    /** Q8 维度值→部门（2026/10/27 拍板）：问句没提部门但命中统计组/产品线/应用时，
+     *  按维度值反填 deptName。列名拼接进 SQL 前过白名单闸（同 Q5-Q7 TRUTH_COLUMNS）。 */
+    private static final Set<String> DEPT_LOOKUP_COLUMNS = Set.of("统计组", "产品线", "应用");
+
+    /** Q5-Q7 真值列白名单（维度值台账真值校验方案 §4.1）：列名拼接进 SQL 前必须过闸。 */
+    private static final Set<String> TRUTH_COLUMNS = Set.of("统计组", "产品线", "应用");
+
     /** Q1 结果（多人多行/兼岗 → 各列 distinct 收集为多值，LinkedHashSet 保序去重）。 */
     public record PersonLedgerRow(List<String> depts, List<String> groups, List<String> apps,
-                                  List<String> productLines, String name, String userId) {
+                                  List<String> productLines, List<String> roles,
+                                  String name, String userId) {
+
+        /** Legacy 6-arg shape (no roles) for existing call sites/tests. */
+        public PersonLedgerRow(List<String> depts, List<String> groups, List<String> apps,
+                               List<String> productLines, String name, String userId) {
+            this(depts, groups, apps, productLines, List.of(), name, userId);
+        }
 
         public static PersonLedgerRow empty(String userId) {
-            return new PersonLedgerRow(List.of(), List.of(), List.of(), List.of(), null, userId);
+            return new PersonLedgerRow(List.of(), List.of(), List.of(), List.of(),
+                    List.of(), null, userId);
         }
 
         public boolean isEmpty() {
@@ -69,14 +88,20 @@ public class PersonLedgerRepository {
                     && (groups == null || groups.isEmpty())
                     && (apps == null || apps.isEmpty())
                     && (productLines == null || productLines.isEmpty())
+                    && (roles == null || roles.isEmpty())
                     && (name == null || name.isBlank());
         }
     }
 
-    /** Q2 行按统一认证号去重合并后的身份（兼岗多行 → 同一 perNo 合并部门/组多值）。 */
-    public record PersonIdentity(String name, String perNo, List<String> depts, List<String> groups) {
+    /** Q2 行按统一认证号去重合并后的身份（兼岗多行 → 同一 perNo 合并部门/组/角色多值）。 */
+    public record PersonIdentity(String name, String perNo, List<String> depts, List<String> groups,
+                                 List<String> roles) {
 
-        /** 反问展示后缀：徐三金（杭州开发三部 / 杭州开发二部）。 */
+        public PersonIdentity(String name, String perNo, List<String> depts, List<String> groups) {
+            this(name, perNo, depts, groups, List.of());
+        }
+
+        /** 反问展示后缀：徐三金（杭州开发三部 / 应用开发）——角色列带出辅助消歧（岗位角色方案 §7-2）。 */
         public String displaySuffix() {
             List<String> parts = new ArrayList<>();
             if (depts != null) {
@@ -84,6 +109,9 @@ public class PersonLedgerRepository {
             }
             if (groups != null) {
                 groups.stream().filter(g -> g != null && !g.isBlank()).forEach(parts::add);
+            }
+            if (roles != null) {
+                roles.stream().filter(r -> r != null && !r.isBlank()).forEach(parts::add);
             }
             return parts.isEmpty() ? name : name + "（" + String.join(" / ", parts) + "）";
         }
@@ -96,11 +124,29 @@ public class PersonLedgerRepository {
 
     private final Map<String, CachedRow> userCache = new ConcurrentHashMap<>();
 
+    private record CachedDepts(List<String> depts, long at) {}
+
+    // Q8 维度值→部门 per-key TTL 缓存（失败负缓存防反复打库）
+    private final Map<String, CachedDepts> groupDeptCache = new ConcurrentHashMap<>();
+
     private final Object lock = new Object();
     // writes guarded by lock, reads volatile
     private volatile Set<String> nameDictionary;
     private volatile long dictExpireAt;
     private volatile long dictNextRetryAt;
+
+    private final Object roleLock = new Object();
+    // Q4 角色字典（岗位角色内置维度方案 §4.1），同 nameDictionary 的 TTL+退避模式
+    private volatile Set<String> roleDictionary;
+    private volatile long roleDictExpireAt;
+    private volatile long roleDictNextRetryAt;
+
+    private record CachedTruth(Set<String> values, long expireAt) {}
+
+    // Q5-Q7 真值字典（维度值台账真值校验方案 §4.1），per-column TTL；values 可为空集
+    private final Map<String, CachedTruth> truthDictCache = new ConcurrentHashMap<>();
+    private final Map<String, Long> truthDictNextRetryAt = new ConcurrentHashMap<>();
+    private final Object truthLock = new Object();
 
     public PersonLedgerRepository(JdbcTemplate jdbcTemplate, long ttlSeconds) {
         this.jdbcTemplate = jdbcTemplate;
@@ -128,6 +174,7 @@ public class PersonLedgerRepository {
                         distinct(rs.getString("统计组")),
                         distinct(rs.getString("应用")),
                         distinct(rs.getString("产品线")),
+                        distinct(rs.getString("岗位角色")),
                         blankToNull(rs.getString("姓名")),
                         userId));
             }, userId);
@@ -150,6 +197,7 @@ public class PersonLedgerRepository {
         Set<String> groups = new LinkedHashSet<>();
         Set<String> apps = new LinkedHashSet<>();
         Set<String> productLines = new LinkedHashSet<>();
+        Set<String> roles = new LinkedHashSet<>();
         String name = null;
         for (PersonLedgerRow row : rows) {
             if (row == null) {
@@ -159,12 +207,13 @@ public class PersonLedgerRepository {
             groups.addAll(row.groups());
             apps.addAll(row.apps());
             productLines.addAll(row.productLines());
+            roles.addAll(row.roles());
             if (name == null && row.name() != null && !row.name().isBlank()) {
                 name = row.name();
             }
         }
         return new PersonLedgerRow(List.copyOf(depts), List.copyOf(groups), List.copyOf(apps),
-                List.copyOf(productLines), name, userId);
+                List.copyOf(productLines), List.copyOf(roles), name, userId);
     }
 
     /**
@@ -185,13 +234,15 @@ public class PersonLedgerRepository {
                 }
                 String dept = blankToNull(rs.getString("部门"));
                 String group = blankToNull(rs.getString("统计组"));
+                String role = blankToNull(rs.getString("岗位角色"));
                 PersonIdentity existing = uniq.get(perNo);
                 if (existing == null) {
                     uniq.put(perNo, new PersonIdentity(name, perNo,
                             dept == null ? List.of() : List.of(dept),
-                            group == null ? List.of() : List.of(group)));
+                            group == null ? List.of() : List.of(group),
+                            role == null ? List.of() : List.of(role)));
                 } else {
-                    uniq.put(perNo, mergeIdentity(existing, dept, group));
+                    uniq.put(perNo, mergeIdentity(existing, dept, group, role));
                 }
             }, name);
         } catch (Exception ex) {
@@ -202,17 +253,62 @@ public class PersonLedgerRepository {
         return List.copyOf(out);
     }
 
-    private static PersonIdentity mergeIdentity(PersonIdentity existing, String dept, String group) {
+    private static PersonIdentity mergeIdentity(PersonIdentity existing, String dept, String group,
+                                                String role) {
         Set<String> depts = new LinkedHashSet<>(existing.depts());
         Set<String> groups = new LinkedHashSet<>(existing.groups());
+        Set<String> roles = new LinkedHashSet<>(existing.roles());
         if (dept != null) {
             depts.add(dept);
         }
         if (group != null) {
             groups.add(group);
         }
+        if (role != null) {
+            roles.add(role);
+        }
         return new PersonIdentity(existing.name(), existing.perNo(),
-                List.copyOf(depts), List.copyOf(groups));
+                List.copyOf(depts), List.copyOf(groups), List.copyOf(roles));
+    }
+
+    /**
+     * Q8 维度值→部门（2026/10/27 拍板）：问句没提部门但命中统计组/产品线/应用
+     * （车贷/房贷型纯组维度问句）时，DirectSkillExecutor 按维度值反填 deptName。
+     * TTL 同 per-user 归属；失败/查无 → 空列表（fail-open 不反填，负缓存防反复打库）。
+     * column 白名单外抛 IllegalArgumentException（拼接进 SQL 前过闸）。
+     */
+    public List<String> deptsByDimension(String column, String value) {
+        if (column == null || !DEPT_LOOKUP_COLUMNS.contains(column)) {
+            throw new IllegalArgumentException("unsupported dept-lookup column: " + column);
+        }
+        if (value == null || value.isBlank()) {
+            return List.of();
+        }
+        String cacheKey = column + ":" + value;
+        long now = System.currentTimeMillis();
+        CachedDepts cached = groupDeptCache.get(cacheKey);
+        if (cached != null && now - cached.at() < ttlMillis) {
+            return cached.depts();
+        }
+        List<String> out = new ArrayList<>();
+        try {
+            jdbcTemplate.query("SELECT DISTINCT \"部门\" FROM " + TABLE
+                            + " WHERE \"" + column + "\" = ? AND " + SNAPSHOT_FILTER,
+                    rs -> {
+                        String dept = blankToNull(rs.getString("部门"));
+                        if (dept != null && !out.contains(dept)) {
+                            out.add(dept);
+                        }
+                    }, value);
+        } catch (Exception ex) {
+            log.warn("PersonLedgerRepository deptsByDimension({}, {}) failed (no backfill): {}",
+                    column, value, ex.getMessage());
+            groupDeptCache.put(cacheKey, new CachedDepts(List.of(), now));
+            return List.of();
+        }
+        List<String> result = List.copyOf(out);
+        groupDeptCache.put(cacheKey, new CachedDepts(result, now));
+        return result;
     }
 
     /**
@@ -258,13 +354,125 @@ public class PersonLedgerRepository {
         }
     }
 
+    /**
+     * Q4 角色字典（岗位角色内置维度方案 §4.1，2026/10/26）：全量 DISTINCT 岗位角色，
+     * TTL 同姓名字典 30min + 60s 失败退避。加载失败/为空 → 空 Set
+     * （角色提取路径A 归一 fail-open / 路径B 字典扫描自然禁用，fail-safe）。
+     */
+    public Set<String> roleDictionary() {
+        Set<String> cached = roleDictionary;
+        long now = System.currentTimeMillis();
+        if (cached != null && now < roleDictExpireAt) {
+            return cached;
+        }
+        if (now < roleDictNextRetryAt) {
+            return cached == null ? Set.of() : cached;
+        }
+        synchronized (roleLock) {
+            cached = roleDictionary;
+            now = System.currentTimeMillis();
+            if (cached != null && now < roleDictExpireAt) {
+                return cached;
+            }
+            if (now < roleDictNextRetryAt) {
+                return cached == null ? Set.of() : cached;
+            }
+            Set<String> fresh = new HashSet<>();
+            try {
+                jdbcTemplate.query(Q4_ROLE_DICTIONARY, rs -> {
+                    String role = blankToNull(rs.getString("岗位角色"));
+                    if (role != null) {
+                        fresh.add(role);
+                    }
+                });
+                roleDictionary = Set.copyOf(fresh);
+                roleDictExpireAt = System.currentTimeMillis() + ttlMillis;
+                log.info("PersonLedgerRepository role dictionary refreshed: {} roles", fresh.size());
+                return roleDictionary;
+            } catch (Exception ex) {
+                roleDictNextRetryAt = System.currentTimeMillis() + 60_000L;
+                log.warn("PersonLedgerRepository role dictionary load failed (path-B disabled): {}",
+                        ex.getMessage());
+                return cached == null ? Set.of() : cached;
+            }
+        }
+    }
+
+    /**
+     * Q5-Q7 维度真值字典（维度值台账真值校验方案 §4.1，2026/10/27）：全表 DISTINCT
+     * 指定列（统计组/产品线/应用），TTL 30min + 失败 60s 退避，B① 正向扫描与 B③
+     * 终局校验共用的真值域。
+     *
+     * <p>与 Q4 的语义差异（校验用途必须区分「失败」与「真没数据」）：
+     * 返回 <b>null</b> = 查询失败且无历史缓存（调用方<b>跳过</b>该键扫描与校验，fail-open
+     * 防误杀）；非 null Set = 真值域快照（空集 = 成功查出行数为 0，调用方同样跳过——
+     * 空域校验会误杀一切）。
+     */
+    public Set<String> dimensionTruthDictionary(String column) {
+        if (column == null || !TRUTH_COLUMNS.contains(column)) {
+            throw new IllegalArgumentException("unsupported truth column: " + column);
+        }
+        CachedTruth cached = truthDictCache.get(column);
+        long now = System.currentTimeMillis();
+        if (cached != null && now < cached.expireAt()) {
+            return cached.values();
+        }
+        Long nextRetry = truthDictNextRetryAt.get(column);
+        if (nextRetry != null && now < nextRetry) {
+            return cached == null ? null : cached.values();
+        }
+        synchronized (truthLock) {
+            cached = truthDictCache.get(column);
+            now = System.currentTimeMillis();
+            if (cached != null && now < cached.expireAt()) {
+                return cached.values();
+            }
+            nextRetry = truthDictNextRetryAt.get(column);
+            if (nextRetry != null && now < nextRetry) {
+                return cached == null ? null : cached.values();
+            }
+            Set<String> fresh = new HashSet<>();
+            try {
+                jdbcTemplate.query("SELECT DISTINCT \"" + column + "\" FROM " + TABLE
+                                + " WHERE " + SNAPSHOT_FILTER + " AND \"" + column + "\" IS NOT NULL",
+                        rs -> {
+                            String value = blankToNull(rs.getString(column));
+                            if (value != null) {
+                                fresh.add(value);
+                            }
+                        });
+                CachedTruth snapshot = new CachedTruth(Set.copyOf(fresh),
+                        System.currentTimeMillis() + ttlMillis);
+                truthDictCache.put(column, snapshot);
+                log.info("PersonLedgerRepository truth dictionary [{}] refreshed: {} values",
+                        column, fresh.size());
+                return snapshot.values();
+            } catch (Exception ex) {
+                truthDictNextRetryAt.put(column, System.currentTimeMillis() + 60_000L);
+                log.warn("PersonLedgerRepository truth dictionary [{}] load failed (check skipped): {}",
+                        column, ex.getMessage());
+                return cached == null ? null : cached.values();
+            }
+        }
+    }
+
     /** 测试与运维口：清除缓存强制下次重读。 */
     public void invalidate() {
         userCache.clear();
+        groupDeptCache.clear();
         synchronized (lock) {
             nameDictionary = null;
             dictExpireAt = 0;
             dictNextRetryAt = 0;
+        }
+        synchronized (roleLock) {
+            roleDictionary = null;
+            roleDictExpireAt = 0;
+            roleDictNextRetryAt = 0;
+        }
+        synchronized (truthLock) {
+            truthDictCache.clear();
+            truthDictNextRetryAt.clear();
         }
     }
 

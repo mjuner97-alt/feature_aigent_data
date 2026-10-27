@@ -34,8 +34,8 @@ public class DimensionKeyConfigRepository {
     private static final TypeReference<List<DimensionKeyConfig.AliasMapping>> ALIAS_LIST_TYPE =
             new TypeReference<>() {};
 
-    /** 内置 10 键 seed（key → 展示名），与 DirectSkillExecutor.DIMENSION_KEYS 同源
-     *  （perNo=统一认证号，人员台账维度方案 §3.4）。 */
+    /** 内置 11 键 seed（key → 展示名），与 DirectSkillExecutor.DIMENSION_KEYS 同源
+     *  （perNo=统一认证号，人员台账维度方案 §3.4；perRole=岗位角色，岗位角色内置维度方案 §4.2）。 */
     private static final Map<String, String> BUILTIN_KEYS = buildBuiltinKeys();
 
     private static Map<String, String> buildBuiltinKeys() {
@@ -50,6 +50,7 @@ public class DimensionKeyConfigRepository {
         keys.put("subItemNo", "需求子条目");
         keys.put("perName", "人");
         keys.put("perNo", "统一认证号");
+        keys.put("perRole", "岗位角色");
         return java.util.Collections.unmodifiableMap(keys);
     }
 
@@ -89,9 +90,12 @@ public class DimensionKeyConfigRepository {
     /**
      * 口语值方案 §3.6（docs/202610/版本季度部门口语值处理方案.md）：允许页面维护词表的
      * 内置键白名单（仅 aliases 可编辑，key/label/enabled 仍锁，见 update/setEnabled）。
+     * 2026/10/26 我X方案 §8.3 扩至 8：+groupName/appName/productLine/perNo/perRole
+     * （regex 型正则配置条目需页面/API 可编辑；副作用=这五个键的同义词词表同步解锁）。
      */
     public static final java.util.Set<String> VOCAB_EDITABLE_BUILTIN_KEYS =
-            java.util.Set.of("versionPlan", "vestQuarter", "deptName");
+            java.util.Set.of("versionPlan", "vestQuarter", "deptName",
+                    "groupName", "appName", "productLine", "perNo", "perRole");
 
     /** 内置键默认词表 seed（§3.2）：行 aliases 为空时灌入，管理员改过（非空）不覆盖。 */
     private static final Map<String, String> BUILTIN_VOCAB_SEEDS = buildBuiltinVocabSeeds();
@@ -141,6 +145,45 @@ public class DimensionKeyConfigRepository {
                 + "{\"alias\":\"当季\",\"value\":\"THIS_Q\"},"
                 + "{\"alias\":\"在建季度\",\"value\":\"THIS_Q\"}"
                 + "]");
+        return java.util.Collections.unmodifiableMap(seeds);
+    }
+
+    /**
+     * regex 型 seed（我X按需注入方案 §8.1，2026/10/26）：正则放它触发的目标键行，
+     * type=regex、value=用途标签。首版 seed = 现硬编码正则（行为等价基线）。
+     * 启动时按「该行是否已有同标签 regex 条目」append-if-missing——管理员删过条目
+     * 重启会补回（regex 条目是行为基线；运行期删除后 resolver 有硬编码兜底，不会静默失效）。
+     *
+     * <p>block 条目（我X方案 §9，2026/10/26 E2E）：候选 token 命中 alias 正则即拒收，
+     * 拦"我的组/我的产品线"等代词短语被 EXPLICIT_TEAM/EXPLICIT_PRODUCT_LINE 抢成垃圾
+     * 维度值。基线 = 裸 `我` 单字（find 语义，变体全覆盖；真实组名/产品线/应用不含"我"）。
+     * deptName/groupName/appName/productLine 四键（拍板③"一起做"）；update() 对基线
+     * block 条目做删除保护（拍板①：管理员不可删）。
+     */
+    private static final Map<String, List<DimensionKeyConfig.AliasMapping>> REGEX_SEEDS = buildRegexSeeds();
+
+    private static DimensionKeyConfig.AliasMapping blockSeed() {
+        return new DimensionKeyConfig.AliasMapping("我", "block", DimensionKeyConfig.AliasMapping.TYPE_REGEX);
+    }
+
+    private static Map<String, List<DimensionKeyConfig.AliasMapping>> buildRegexSeeds() {
+        Map<String, List<DimensionKeyConfig.AliasMapping>> seeds = new LinkedHashMap<>();
+        seeds.put("deptName", List.of(new DimensionKeyConfig.AliasMapping(
+                "我部|我们部门|我的部门|本部门|我所在部门", "myDept", DimensionKeyConfig.AliasMapping.TYPE_REGEX),
+                blockSeed()));
+        seeds.put("groupName", List.of(new DimensionKeyConfig.AliasMapping(
+                "我的组|我们组|我的团队|我们团队|我的小组|我的统计组", "myGroup", DimensionKeyConfig.AliasMapping.TYPE_REGEX),
+                blockSeed()));
+        seeds.put("appName", List.of(new DimensionKeyConfig.AliasMapping(
+                "我的应用(群组)?", "myApp", DimensionKeyConfig.AliasMapping.TYPE_REGEX),
+                blockSeed()));
+        seeds.put("productLine", List.of(new DimensionKeyConfig.AliasMapping(
+                "我的(产品线|条线|业务线)", "myProductLine", DimensionKeyConfig.AliasMapping.TYPE_REGEX),
+                blockSeed()));
+        seeds.put("perNo", List.of(new DimensionKeyConfig.AliasMapping(
+                "我担任|我现任|我所担任", "myself", DimensionKeyConfig.AliasMapping.TYPE_REGEX)));
+        seeds.put("perRole", List.of(new DimensionKeyConfig.AliasMapping(
+                "担任([一-龥]{2,10}?)(?=[的，。？?！!、\\s]|$)", "extract", DimensionKeyConfig.AliasMapping.TYPE_REGEX)));
         return java.util.Collections.unmodifiableMap(seeds);
     }
 
@@ -220,19 +263,22 @@ public class DimensionKeyConfigRepository {
     public boolean update(DimensionKeyConfig row) {
         ensureTable();
         // 口语值方案 §3.6: 白名单内置键允许更新（仅 aliases 语义，key/label 保护在 Controller 层；
-        // 白名单外内置键仍拒绝——防止内置键全量放开）
+        // 白名单外内置键仍拒绝——防止内置键全量放开）。白名单动态拼占位符（§8.3 扩至 8 键）。
+        String placeholders = String.join(", ", java.util.Collections.nCopies(
+                VOCAB_EDITABLE_BUILTIN_KEYS.size(), "?"));
         String sql = "UPDATE dimension_key_config SET key=?, label=?, aliases=?, enabled=?, remark=?, "
-                + "updated_at=now() WHERE id=? AND (builtin=FALSE OR key IN (?, ?, ?))";
+                + "updated_at=now() WHERE id=? AND (builtin=FALSE OR key IN (" + placeholders + "))";
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, row.key());
             ps.setString(2, row.label());
-            ps.setString(3, serializeAliases(row.aliases()));
+            ps.setString(3, serializeAliases(withBaselineBlockEntries(row.key(), row.aliases())));
             ps.setBoolean(4, row.enabled());
             ps.setString(5, row.remark());
             ps.setLong(6, row.id());
-            ps.setString(7, "versionPlan");
-            ps.setString(8, "vestQuarter");
-            ps.setString(9, "deptName");
+            int i = 7;
+            for (String key : VOCAB_EDITABLE_BUILTIN_KEYS) {
+                ps.setString(i++, key);
+            }
             boolean ok = ps.executeUpdate() > 0;
             if (ok) invalidateCache();
             return ok;
@@ -288,6 +334,30 @@ public class DimensionKeyConfigRepository {
         }
     }
 
+    /**
+     * 基线 block 条目删除保护（我X方案 §9 拍板①）：REGEX_SEEDS 里该键行的 block 基线条目
+     * （如 groupName 行 `我`⇒block）管理员不可删——update 提交的 aliases 缺失时静默补回；
+     * 用户新增的其他 block 条目可自由删改。
+     */
+    private List<DimensionKeyConfig.AliasMapping> withBaselineBlockEntries(
+            String key, List<DimensionKeyConfig.AliasMapping> aliases) {
+        List<DimensionKeyConfig.AliasMapping> baseline = REGEX_SEEDS
+                .getOrDefault(key == null ? "" : key, List.of()).stream()
+                .filter(DimensionKeyConfig.AliasMapping::isBlock)
+                .toList();
+        if (baseline.isEmpty()) {
+            return aliases;
+        }
+        List<DimensionKeyConfig.AliasMapping> merged = new ArrayList<>(
+                aliases == null ? List.<DimensionKeyConfig.AliasMapping>of() : aliases);
+        for (DimensionKeyConfig.AliasMapping b : baseline) {
+            if (merged.stream().noneMatch(a -> a != null && a.isBlock() && b.alias().equals(a.alias()))) {
+                merged.add(b);
+            }
+        }
+        return List.copyOf(merged);
+    }
+
     private DimensionKeyConfig map(ResultSet rs) throws SQLException {
         List<DimensionKeyConfig.AliasMapping> aliases = parseAliases(rs.getString("aliases"));
         return new DimensionKeyConfig(
@@ -323,6 +393,7 @@ public class DimensionKeyConfigRepository {
                 }
                 ensureReservedRow(c);
                 ensureBuiltinVocabSeeds(c);
+                ensureRegexSeeds(c);
                 tableEnsured = true;
             } catch (SQLException e) {
                 log.warn("dimension_key_config DDL failed (will retry): {}", e.getMessage());
@@ -360,6 +431,49 @@ public class DimensionKeyConfigRepository {
                 ps.executeUpdate();
             }
             log.info("dimension_key_config: seeded builtin vocab for '{}'", key);
+        }
+        invalidateCache();
+    }
+
+    /** regex 型条目补种（我X方案 §8.1）：目标键行缺失同标签 regex 条目时追加（保序，
+     *  同义词条目不动）。同义词 seed 的"非空不覆盖"语义不适用于 regex 条目——它们
+     *  常与词表共存一行（如 deptName 的 杭一→杭州开发一部 + myDept 正则）。 */
+    private void ensureRegexSeeds(Connection c) throws SQLException {
+        for (Map.Entry<String, List<DimensionKeyConfig.AliasMapping>> entry : REGEX_SEEDS.entrySet()) {
+            String key = entry.getKey();
+            String current;
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT aliases FROM dimension_key_config WHERE key=? LIMIT 1")) {
+                ps.setString(1, key);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) {
+                        continue; // 行不存在（补种失败等），等下次启动重试
+                    }
+                    current = rs.getString(1);
+                }
+            }
+            List<DimensionKeyConfig.AliasMapping> parsed = parseAliases(current);
+            boolean missing = entry.getValue().stream()
+                    .anyMatch(seed -> parsed.stream()
+                            .noneMatch(a -> a.isRegex() && seed.value().equals(a.value())));
+            if (!missing) {
+                continue;
+            }
+            List<DimensionKeyConfig.AliasMapping> merged = new ArrayList<>(parsed);
+            for (DimensionKeyConfig.AliasMapping seed : entry.getValue()) {
+                boolean present = merged.stream()
+                        .anyMatch(a -> a.isRegex() && seed.value().equals(a.value()));
+                if (!present) {
+                    merged.add(seed);
+                }
+            }
+            try (PreparedStatement ps = c.prepareStatement(
+                    "UPDATE dimension_key_config SET aliases=?, updated_at=now() WHERE key=?")) {
+                ps.setString(1, serializeAliases(merged));
+                ps.setString(2, key);
+                ps.executeUpdate();
+            }
+            log.info("dimension_key_config: seeded regex patterns for '{}'", key);
         }
         invalidateCache();
     }

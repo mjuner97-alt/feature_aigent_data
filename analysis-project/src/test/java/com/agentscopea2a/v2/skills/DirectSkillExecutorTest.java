@@ -6,6 +6,7 @@ import com.agentscopea2a.v2.dimension.DimensionKeyConfig;
 import com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository;
 import com.agentscopea2a.v2.dimension.DimensionState;
 import com.agentscopea2a.v2.dimension.DimensionStateManager;
+import com.agentscopea2a.v2.dimension.QuestionAnalysis;
 import com.agentscopea2a.v2.hooks.VersionPlanKnowledgeHook;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -291,6 +292,8 @@ class DirectSkillExecutorTest {
         newExecutor(true).plan(QUESTION, "alice", null);
 
         Mockito.verify(dimensionStateManager).previewState(QUESTION, null);
+        // 重锚抑制 (我X按需注入方案 §3.2) 只做只读规则分析, 不写状态
+        Mockito.verify(dimensionStateManager).analyzeQuestionRuleBased(QUESTION);
         Mockito.verifyNoMoreInteractions(dimensionStateManager);
     }
 
@@ -379,6 +382,106 @@ class DirectSkillExecutorTest {
         assertNull(newExecutor(true).plan("流转次数很高的怎么办", "alice", null));
     }
 
+    // ==================== params_schema 数值类型转换 (direct-exec-param-type-plan.md 拍板③解除) ====================
+
+    private DimensionKeyConfig transferTimesConfig() {
+        return new DimensionKeyConfig(12L, "transferTimes", "流转次数", false, List.of(
+                new DimensionKeyConfig.AliasMapping("流转次数\\s*>\\s*(\\d+(?:\\.\\d+)?)", "$1"),
+                new DimensionKeyConfig.AliasMapping("流转次数高", "高")),
+                true, null);
+    }
+
+    @Test
+    void numberTypedSchemaConvertsIntegerString() {
+        // type=number: "3" → 3 (Long), 不再以字符串传参
+        String question = "杭州三部 11月份版本未闭环问题数，跨部门流转次数>3";
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_t", "{\"threshold\":\"transferTimes\"}", "未闭环问题数")));
+        enableKeyDictionary(transferTimesConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_t")).thenReturn(registryEntry(
+                "[{\"name\":\"threshold\",\"required\":true,\"type\":\"number\"}]"));
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(question, "alice", null);
+
+        assertInstanceOf(Long.class, plan.params().get("threshold"));
+        assertEquals(3L, plan.params().get("threshold"));
+    }
+
+    @Test
+    void integerTypedSchemaConvertsSameAsNumber() {
+        // type=integer 与 number 同一转换路径
+        String question = "杭州三部 11月份版本未闭环问题数，跨部门流转次数>5";
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_t", "{\"threshold\":\"transferTimes\"}", "未闭环问题数")));
+        enableKeyDictionary(transferTimesConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_t")).thenReturn(registryEntry(
+                "[{\"name\":\"threshold\",\"required\":true,\"type\":\"integer\"}]"));
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(question, "alice", null);
+
+        assertEquals(5L, plan.params().get("threshold"));
+    }
+
+    @Test
+    void numberTypedSchemaDecimalBecomesDouble() {
+        String question = "杭州三部 11月份版本未闭环问题数，跨部门流转次数>3.5";
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_t", "{\"threshold\":\"transferTimes\"}", "未闭环问题数")));
+        enableKeyDictionary(transferTimesConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_t")).thenReturn(registryEntry(
+                "[{\"name\":\"threshold\",\"required\":true,\"type\":\"number\"}]"));
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(question, "alice", null);
+
+        assertInstanceOf(Double.class, plan.params().get("threshold"));
+        assertEquals(3.5, plan.params().get("threshold"));
+    }
+
+    @Test
+    void numberTypedSchemaMultiValueBecomesNumericList() {
+        // 两次正则命中 → ["3","5"] → [3, 5]
+        String question = "杭州三部 11月份版本未闭环问题数，跨部门流转次数>3、流转次数>5";
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_t", "{\"threshold\":\"transferTimes\"}", "未闭环问题数")));
+        enableKeyDictionary(transferTimesConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_t")).thenReturn(registryEntry(
+                "[{\"name\":\"threshold\",\"required\":true,\"type\":\"number\"}]"));
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(question, "alice", null);
+
+        assertEquals(List.of(3L, 5L), plan.params().get("threshold"));
+    }
+
+    @Test
+    void numberConversionFailureKeepsOriginalString() {
+        // contains 行命中非数值 ("流转次数高" → "高"): 转换失败保底原字符串, 不抛异常
+        String question = "杭州三部 11月份版本未闭环问题数，跨部门流转次数高";
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_t", "{\"threshold\":\"transferTimes\"}", "未闭环问题数")));
+        enableKeyDictionary(transferTimesConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_t")).thenReturn(registryEntry(
+                "[{\"name\":\"threshold\",\"required\":true,\"type\":\"number\"}]"));
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(question, "alice", null);
+
+        assertEquals("高", plan.params().get("threshold"));
+    }
+
     @Test
     void dynamicKeyNotMentionedFallsBackWhenRequired() {
         // 词表未命中 → extraDimensions 为空 → 必填 gate 无值 → 回退 LLM
@@ -414,12 +517,13 @@ class DirectSkillExecutorTest {
 
     @Test
     void activeKeysMergeBuiltinAndDictionaryKeys() {
-        // 10 内置含 perNo (人员台账维度方案 §3.4) + versionPlan/vestQuarter .start/.end 后缀
-        assertEquals(14, newExecutor(true).activeKeys().size());
+        // 11 内置含 perNo/perRole (人员台账维度方案 §3.4 + 岗位角色内置维度方案 §4.2)
+        assertEquals(15, newExecutor(true).activeKeys().size());
         assertTrue(newExecutor(true).activeKeys().contains("perNo"));
+        assertTrue(newExecutor(true).activeKeys().contains("perRole"));
         enableKeyDictionary(qGateConfig());
         java.util.Set<String> keys = newExecutor(true).activeKeys();
-        assertEquals(15, keys.size());
+        assertEquals(16, keys.size());
         assertTrue(keys.contains("qGate"));
         assertTrue(keys.contains("deptName"));
         assertTrue(keys.contains("versionPlan.start"));
@@ -493,8 +597,8 @@ class DirectSkillExecutorTest {
     void activeKeysWithTimeRangeExpandSuffixForms() {
         enableKeyDictionary(timeRangeConfig());
         java.util.Set<String> keys = newExecutor(true).activeKeys();
-        // 10 内置 + timeRange + timeRange .start/.end + versionPlan/vestQuarter 各 .start/.end
-        assertEquals(17, keys.size());
+        // 11 内置 + timeRange + timeRange .start/.end + versionPlan/vestQuarter 各 .start/.end
+        assertEquals(18, keys.size());
         assertTrue(keys.contains("timeRange"));
         assertTrue(keys.contains("timeRange.start"));
         assertTrue(keys.contains("timeRange.end"));
@@ -852,8 +956,8 @@ class DirectSkillExecutorTest {
                 new DimensionKeyConfig(2L, "versionPlan", "版本计划", true, List.of(), true, null),
                 new DimensionKeyConfig(3L, "vestQuarter", "季度", true, List.of(), true, null));
         var keys = newExecutor(true).activeKeys();
-        // versionPlan/vestQuarter 本就在内置键里, 字典行去重: 10 内置 + timeRange + 6 后缀
-        assertEquals(17, keys.size());
+        // versionPlan/vestQuarter 本就在内置键里, 字典行去重: 11 内置 + timeRange + 6 后缀
+        assertEquals(18, keys.size());
         assertTrue(keys.contains("timeRange.start"));
         assertTrue(keys.contains("versionPlan.start"));
         assertTrue(keys.contains("versionPlan.end"));
@@ -1486,18 +1590,28 @@ class DirectSkillExecutorTest {
 
     private static com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonLedgerRow ledgerRow(
             String dept, String group, String app, String productLine, String name) {
+        return ledgerRow(dept, group, app, productLine, name, new String[0]);
+    }
+
+    private static com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonLedgerRow ledgerRow(
+            String dept, String group, String app, String productLine, String name, String... roles) {
         return new com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonLedgerRow(
                 dept == null ? List.of() : List.of(dept),
                 group == null ? List.of() : List.of(group),
                 app == null ? List.of() : List.of(app),
                 productLine == null ? List.of() : List.of(productLine),
-                name, "555153289");
+                List.of(roles), name, "555153289");
     }
 
     private static com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity identity(
             String perNo, String dept) {
+        return identity(perNo, dept, new String[0]);
+    }
+
+    private static com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity identity(
+            String perNo, String dept, String... roles) {
         return new com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity(
-                "张三", perNo, dept == null ? List.of() : List.of(dept), List.of());
+                "张三", perNo, dept == null ? List.of() : List.of(dept), List.of(), List.of(roles));
     }
 
     @Test
@@ -1749,6 +1863,360 @@ class DirectSkillExecutorTest {
         org.mockito.Mockito.verify(ledger, org.mockito.Mockito.never()).byName(Mockito.anyString());
     }
 
+    // ==================== perRole 岗位角色 (岗位角色内置维度方案 §3.1b/§3.1d/§4.3) ====================
+
+    @Test
+    void explicitRoleExtractOverridesLedgerIdentityRoles() {
+        // 路径A 显式提取覆盖 identity.roles 兜底 (§3.3: 显式值是行过滤声明, 不并集)
+        String question = "张三担任测试经理的达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.nameDictionary()).thenReturn(Set.of("张三"));
+        when(ledger.byName("张三")).thenReturn(List.of(identity("111", "杭州开发一部", "开发工程师")));
+        when(ledger.roleDictionary()).thenReturn(Set.of("测试经理", "项目经理"));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"role\":\"perRole\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "alice", null);
+
+        assertEquals(List.of("测试经理"), plan.extraction().perRole());
+        assertEquals("测试经理", plan.params().get("role"));
+    }
+
+    @Test
+    void roleDictionaryScanFillsPerRoleWithoutKeyword() {
+        // 路径B 字典扫描 (无"担任"关键字): 人锚 (张三) 共存 → 收角色
+        String question = "张三项目经理的达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.nameDictionary()).thenReturn(Set.of("张三"));
+        when(ledger.byName("张三")).thenReturn(List.of(identity("111", "杭州开发一部")));
+        when(ledger.roleDictionary()).thenReturn(Set.of("项目经理", "测试经理"));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"role\":\"perRole\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "alice", null);
+
+        assertEquals(List.of("项目经理"), plan.extraction().perRole());
+        assertEquals("项目经理", plan.params().get("role"));
+    }
+
+    @Test
+    void roleDictionaryScanSkippedWithoutPersonAnchor() {
+        // 无具体人 (§7-4 边界): "项目经理的达标率" 按角色全量查询不收 → perRole 空
+        String question = "项目经理的达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.nameDictionary()).thenReturn(Set.of("张三"));
+        when(ledger.roleDictionary()).thenReturn(Set.of("项目经理"));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"role\":\"perRole\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "alice", null);
+
+        assertTrue(plan.extraction().perRole().isEmpty());
+        assertFalse(plan.params().containsKey("role"));
+    }
+
+    @Test
+    void myselfFillsPerRoleFromLedgerRoles() {
+        // 裸"我" → 台账岗位角色兜底填充 (§3.3 填充时机表)
+        String question = "对比一下，我 10月的达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.byUserId("555153289")).thenReturn(
+                ledgerRow("杭州开发三部", null, null, null, "徐三金", "开发工程师", "测试经理"));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"role\":\"perRole\"}", "达标率")));
+        allowAll("555153289");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "555153289", null);
+
+        assertEquals(List.of("开发工程师", "测试经理"), plan.extraction().perRole());
+        assertEquals(List.of("开发工程师", "测试经理"), plan.params().get("role"));
+    }
+
+    @Test
+    void explicitRoleSurvivesMyDeptReanchor() {
+        // R2 联动: 我部重锚清继承组/产品线, 但显式提取的角色保留 (人未提及, 显式非空)
+        String question = "我部担任项目经理的达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.byUserId("555153289")).thenReturn(ledgerRow("杭州产品部", null, null, null, "徐三金"));
+        when(metadataRepository.findActive()).thenReturn(List.of(meta("dept_skill", "script_a",
+                "{\"dev_dept\":\"deptName\",\"stat_group\":\"groupName\",\"role\":\"perRole\"}", "达标率")));
+        allowAll("555153289");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                stateWithPeer(DimensionState.PeerDimensionType.TEAM, List.of("集成管理组")));
+        stubAnalysis(question, analysis(null, false));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "555153289", null);
+
+        assertEquals(List.of("项目经理"), plan.extraction().perRole());
+        assertEquals("项目经理", plan.params().get("role"));
+        assertEquals("杭州产品部", plan.params().get("dev_dept"));
+        assertFalse(plan.params().containsKey("stat_group")); // 重锚抑制照常
+    }
+
+    // ==================== 我X按需注入与作用域重锚 (docs/202610/我X按需注入与作用域重锚方案.md) ====================
+
+    private static QuestionAnalysis analysis(QuestionAnalysis.ExplicitDimensions explicit,
+                                             boolean hasReference) {
+        QuestionAnalysis a = new QuestionAnalysis();
+        a.setHasReference(hasReference);
+        a.setExplicitDimensions(explicit);
+        return a;
+    }
+
+    private void stubAnalysis(String question, QuestionAnalysis a) {
+        when(dimensionStateManager.analyzeQuestionRuleBased(question)).thenReturn(a);
+    }
+
+    @Test
+    void myDeptDoesNotInjectLedgerGroupAndProductLine() {
+        // R1 核心场景 (2026-10-23 E2E): "我部4季度需求项" 只注部门, 台账组/产品线不再连带
+        String question = "我部4季度需求项的平均生命周期";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.byUserId("555153289")).thenReturn(
+                ledgerRow("杭州产品部", "集成管理组", null, "集成管理", "徐三金"));
+        when(metadataRepository.findActive()).thenReturn(List.of(meta("dept_skill", "script_a",
+                "{\"dev_dept\":\"deptName\",\"stat_group\":\"groupName\",\"product_line\":\"productLine\"}",
+                "生命周期")));
+        allowAll("555153289");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        stubAnalysis(question, analysis(null, false));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "555153289", null);
+
+        assertEquals(List.of("杭州产品部"), plan.extraction().deptName());
+        assertTrue(plan.extraction().groupName().isEmpty());
+        assertTrue(plan.extraction().productLine().isEmpty());
+        assertEquals("杭州产品部", plan.params().get("dev_dept"));
+        assertFalse(plan.params().containsKey("stat_group"));
+        assertFalse(plan.params().containsKey("product_line"));
+    }
+
+    @Test
+    void myGroupInjectsDeptAndGroupTogether() {
+        // R1 §6-1 拍板: 我组 = deptName + groupName 双注 (组名跨部门可能重名, 连带台账部门)
+        String question = "我的组2026年9月份版本达标率多少";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.byUserId("555153289")).thenReturn(
+                ledgerRow("杭州开发三部", "数据智能组", null, null, "徐三金"));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"dev_dept\":\"deptName\",\"stat_group\":\"groupName\"}", "达标率")));
+        allowAll("555153289");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        stubAnalysis(question, analysis(null, false));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "555153289", null);
+
+        assertEquals(List.of("杭州开发三部"), plan.extraction().deptName());
+        assertEquals(List.of("数据智能组"), plan.extraction().groupName());
+        assertEquals("数据智能组", plan.params().get("stat_group"));
+        assertEquals("杭州开发三部", plan.params().get("dev_dept"));
+    }
+
+    @Test
+    void myAppAndMyProductLineInjectIndependently() {
+        // R1: 命中多个各注各的, 互不连带 (组/部门不跟入)
+        String question = "我的产品线和我的应用对比";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.byUserId("555153289")).thenReturn(
+                ledgerRow("杭州开发三部", "数据智能组", "F-GCS", "集成管理", "徐三金"));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"pl\":\"productLine\",\"app\":\"appName\",\"stat_group\":\"groupName\"}", "对比")));
+        allowAll("555153289");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        stubAnalysis(question, analysis(null, false));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "555153289", null);
+
+        assertEquals(List.of("集成管理"), plan.extraction().productLine());
+        assertEquals(List.of("F-GCS"), plan.extraction().appName());
+        assertTrue(plan.extraction().groupName().isEmpty());
+        assertFalse(plan.params().containsKey("stat_group"));
+    }
+
+    @Test
+    void inheritedPeerClearedByMyDeptReanchor() {
+        // R2: 我部重锚 → 上一轮继承的组过滤值清空 (AND 过度过滤根因②)
+        String question = "我部4季度需求项的平均生命周期";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.byUserId("555153289")).thenReturn(ledgerRow("杭州产品部", null, null, null, "徐三金"));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"dev_dept\":\"deptName\",\"stat_group\":\"groupName\"}", "生命周期")));
+        allowAll("555153289");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                stateWithPeer(DimensionState.PeerDimensionType.TEAM, List.of("集成管理组")));
+        stubAnalysis(question, analysis(null, false));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "555153289", null);
+
+        assertTrue(plan.extraction().groupName().isEmpty());
+        assertEquals("杭州产品部", plan.params().get("dev_dept"));
+        assertFalse(plan.params().containsKey("stat_group"));
+    }
+
+    @Test
+    void referenceExemptKeepsInheritedPeer() {
+        // R3 指代豁免: "那个组呢" 依赖上一轮 state, 整体不抑制
+        String question = "那个组达标率呢";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"dev_dept\":\"deptName\",\"stat_group\":\"groupName\"}", "达标率")));
+        allowAll("555153289");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                stateWithPeer(DimensionState.PeerDimensionType.TEAM, List.of("集成管理组")));
+        stubAnalysis(question, analysis(null, true));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "555153289", null);
+
+        assertEquals(List.of("集成管理组"), plan.extraction().groupName());
+        assertEquals("集成管理组", plan.params().get("stat_group"));
+    }
+
+    @Test
+    void explicitTeamMentionSurvivesReanchor() {
+        // R3: 本轮显式提及组 → 保留; 产品线未提及 → 抑制 (按维度独立)
+        String question = "我部集成管理组4季度达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.byUserId("555153289")).thenReturn(ledgerRow("杭州产品部", null, null, null, "徐三金"));
+        when(metadataRepository.findActive()).thenReturn(List.of(meta("dept_skill", "script_a",
+                "{\"dev_dept\":\"deptName\",\"stat_group\":\"groupName\",\"product_line\":\"productLine\"}", "达标率")));
+        allowAll("555153289");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                stateWithPeer(DimensionState.PeerDimensionType.TEAM, List.of("集成管理组")));
+        stubAnalysis(question, analysis(new QuestionAnalysis.ExplicitDimensions(null, null,
+                new DimensionState.PeerDimension(DimensionState.PeerDimensionType.TEAM,
+                        List.of("集成管理组")), null), false));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "555153289", null);
+
+        assertEquals(List.of("集成管理组"), plan.extraction().groupName());
+        assertEquals("集成管理组", plan.params().get("stat_group"));
+        assertFalse(plan.params().containsKey("product_line"));
+    }
+
+    @Test
+    void explicitDeptTriggersReanchorClearingInheritedPeer() {
+        // R2b §6-2 拍板: 显式部门问句同一重锚语义 ("杭州三部4季度" ≈ "我部4季度")
+        String question = "杭州开发三部4季度达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"dev_dept\":\"deptName\",\"stat_group\":\"groupName\"}", "达标率")));
+        allowAll("555153289");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                new DimensionState(null, List.of("杭州开发三部"),
+                        new DimensionState.PeerDimension(DimensionState.PeerDimensionType.TEAM,
+                                List.of("集成管理组")), null));
+        stubAnalysis(question, analysis(new QuestionAnalysis.ExplicitDimensions(null,
+                List.of("杭州开发三部"), null, null), false));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "555153289", null);
+
+        assertEquals(List.of("杭州开发三部"), plan.extraction().deptName());
+        assertTrue(plan.extraction().groupName().isEmpty());
+        assertFalse(plan.params().containsKey("stat_group"));
+    }
+
+    @Test
+    void drillDownOutputTriggersReanchor() {
+        // R4: "我部各组" 分组输出语义 → 组过滤值抑制, drill_down 照传
+        String question = "杭州三部10月版各组达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(metadataRepository.findActive()).thenReturn(List.of(meta("dept_skill", "script_a",
+                "{\"dev_dept\":\"deptName\",\"stat_group\":\"groupName\",\"drill\":\"drillDown\"}", "达标率")));
+        enableKeyDictionary(new DimensionKeyConfig(1L, "drillDown", "下钻维度", false,
+                List.of(new DimensionKeyConfig.AliasMapping("各组", "组维度")), true, null));
+        allowAll("555153289");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                new DimensionState(null, List.of("杭州开发三部"),
+                        new DimensionState.PeerDimension(DimensionState.PeerDimensionType.TEAM,
+                                List.of("集成管理组")), null));
+        stubAnalysis(question, analysis(new QuestionAnalysis.ExplicitDimensions(null,
+                List.of("杭州开发三部"), null, null), false));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "555153289", null);
+
+        assertEquals("组维度", plan.params().get("drill"));
+        assertEquals("杭州开发三部", plan.params().get("dev_dept"));
+        assertFalse(plan.params().containsKey("stat_group"));
+    }
+
+    @Test
+    void snapshotFallbackSkipsFineGrainedParams() {
+        // L3 §6-3 拍板: 细粒度组织维度 (groupName 等) 快照补缺一律不补, 防止绕过重锚抑制;
+        // 部门/时间补缺保留 (既有 snapshotFallbackFillsMissingRequiredParamFromSameSkill 覆盖)
+        String t1 = "杭州开发一部 2026年7月份版本 达标率多少";
+        String t2 = "2026年9月份版本 达标率多少";
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"stat_group\":\"groupName\",\"version\":\"versionPlan\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(t1), Mockito.isNull())).thenReturn(
+                stateWithPeer(DimensionState.PeerDimensionType.TEAM, List.of("集成管理组")));
+        when(dimensionStateManager.previewState(Mockito.eq(t2), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"stat_group\",\"required\":true},{\"name\":\"version\",\"required\":true}]"));
+
+        DirectSkillExecutor executor = newExecutor(true);
+        executor.plan(t1, "alice", null, "conv-1");
+
+        DirectSkillExecutor.DirectExecutionPlan t2Plan = executor.plan(t2, "alice", null, "conv-1");
+        // stat_group 不补缺 → 必填缺失走反问补参 (而不是把上轮组名悄悄补回来)
+        assertTrue(t2Plan.needsAsk());
+        assertFalse(t2Plan.params().containsKey("stat_group"));
+    }
+
     // ==================== 上级组织动态键 orgName (2026/10/22 拍板) ====================
 
     @Test
@@ -1792,5 +2260,228 @@ class DirectSkillExecutorTest {
         DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(q, "alice", null, "conv-1");
 
         assertTrue(plan.missingAsk().contains("deptName"));
+    }
+
+    // ============ 维度值台账真值校验 (维度值台账真值校验方案 §4, 2026/10/27) ============
+
+    @Test
+    void truthCheckDropsGarbageGroupValueToMissingAsk() {
+        // B③ 终局校验: 正则轨垃圾值「房贷两个组」不在台账真值域 → 丢弃 → 必填缺失走反问
+        String question = "房贷两个组的风险";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.dimensionTruthDictionary("统计组")).thenReturn(Set.of("个贷汽车场景建设组"));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"stat_group\":\"groupName\"}", "风险")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                stateWithPeer(DimensionState.PeerDimensionType.TEAM, List.of("房贷两个组")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"stat_group\",\"required\":true}]"));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "alice", null, "conv-1");
+
+        assertTrue(plan.needsAsk());
+        assertTrue(plan.missingAsk().contains("groupName"));
+        assertTrue(plan.extraction().groupName().isEmpty());
+    }
+
+    @Test
+    void truthScanFillsStandardGroupFromQuestionText() {
+        // B① 正向扫描: 「软负载均衡团队」不合 EXPLICIT_TEAM 组后缀形状, 正则轨提不出;
+        // 台账真值域整名 contains 命中 → groupName 直接落地
+        String question = "软负载均衡团队的达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.dimensionTruthDictionary("统计组")).thenReturn(Set.of("软负载均衡团队"));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"stat_group\":\"groupName\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "alice", null);
+
+        assertEquals(List.of("软负载均衡团队"), plan.extraction().groupName());
+        assertEquals("软负载均衡团队", plan.params().get("stat_group"));
+    }
+
+    @Test
+    void truthCheckFailOpenKeepsLegacyBehavior() {
+        // fail-open: 台账字典查询失败返回 null → 该键扫描与校验全关, 垃圾值照旧透传 (不误杀)
+        String question = "房贷两个组的风险";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.dimensionTruthDictionary("统计组")).thenReturn(null);
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"stat_group\":\"groupName\"}", "风险")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                stateWithPeer(DimensionState.PeerDimensionType.TEAM, List.of("房贷两个组")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "alice", null);
+
+        assertEquals(List.of("房贷两个组"), plan.extraction().groupName());
+        assertEquals("房贷两个组", plan.params().get("stat_group"));
+    }
+
+    @Test
+    void mutexLongestValueWinsAcrossThreeKeys() {
+        // 互斥裁决 (拍板 2026/10/27): 三键互斥, 最长命中值所在键胜 —
+        // 「杭州二部FMBM资金交易组」(12字) 压「数据产品线」(5字) → 产品线丢弃
+        String question = "杭州二部FMBM资金交易组和数据产品线的达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.dimensionTruthDictionary("统计组")).thenReturn(Set.of("杭州二部FMBM资金交易组"));
+        when(ledger.dimensionTruthDictionary("产品线")).thenReturn(Set.of("数据产品线"));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"stat_group\":\"groupName\",\"product_line\":\"productLine\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                stateWithPeer(DimensionState.PeerDimensionType.TEAM, List.of("杭州二部FMBM资金交易组")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "alice", null);
+
+        assertEquals(List.of("杭州二部FMBM资金交易组"), plan.extraction().groupName());
+        assertEquals("杭州二部FMBM资金交易组", plan.params().get("stat_group"));
+        assertTrue(plan.extraction().productLine().isEmpty());
+        assertFalse(plan.params().containsKey("product_line"));
+    }
+
+    @Test
+    void vocabUnionKeepsConfiguredStandardNotInLedger() {
+        // 真值域并集 (§4.2): 词表配置的同义词标准值并入台账 distinct —
+        // 台账暂无该组人员时不被 B③ 误杀
+        String question = "移动展业组的达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.dimensionTruthDictionary("统计组")).thenReturn(Set.of("个贷汽车场景建设组"));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"stat_group\":\"groupName\"}", "达标率")));
+        enableKeyDictionary(new DimensionKeyConfig(2L, "groupName", "组（团队）", true,
+                List.of(new DimensionKeyConfig.AliasMapping("移动展业组", "移动展业组")), true, null));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                stateWithPeer(DimensionState.PeerDimensionType.TEAM, List.of("移动展业组")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "alice", null);
+
+        assertEquals(List.of("移动展业组"), plan.extraction().groupName());
+        assertEquals("移动展业组", plan.params().get("stat_group"));
+    }
+
+    @Test
+    void truthScanHitCountsAsExplicitMentionForReanchorSuppression() {
+        // R2 联动 (§4.3): B① 扫描命中计入显式提及 — 「软负载均衡团队」不合组名正则形状,
+        // hasExplicitTeamHit 探不到, 不计入会被重锚抑制误清
+        String question = "云计算实验室软负载均衡团队的风险";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.dimensionTruthDictionary("统计组")).thenReturn(Set.of("软负载均衡团队"));
+        when(metadataRepository.findActive()).thenReturn(List.of(meta("dept_skill", "script_a",
+                "{\"dev_dept\":\"deptName\",\"stat_group\":\"groupName\"}", "风险")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of("云计算实验室")));
+        stubAnalysis(question, analysis(new QuestionAnalysis.ExplicitDimensions(null,
+                List.of("云计算实验室"), null, null), false));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "alice", null);
+
+        assertEquals(List.of("软负载均衡团队"), plan.extraction().groupName());
+        assertEquals("软负载均衡团队", plan.params().get("stat_group"));
+        assertEquals("云计算实验室", plan.params().get("dev_dept"));
+    }
+
+    // ============ 维度值→部门反填 (2026/10/27 拍板, 台账 Q8 deptsByDimension) ============
+
+    @Test
+    void groupHitBackfillsDeptFromLedgerWhenDeptMissing() {
+        // 车贷/房贷型纯组问句: 组值命中但没提部门 → 台账按组查部门自动填充
+        String question = "个贷汽车场景建设组和个贷住房场景建设组的达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.dimensionTruthDictionary("统计组"))
+                .thenReturn(Set.of("个贷汽车场景建设组", "个贷住房场景建设组"));
+        when(ledger.deptsByDimension("统计组", "个贷汽车场景建设组")).thenReturn(List.of("杭州开发三部"));
+        when(ledger.deptsByDimension("统计组", "个贷住房场景建设组")).thenReturn(List.of("杭州开发二部"));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"dept\":\"deptName\",\"stat_group\":\"groupName\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                stateWithPeer(DimensionState.PeerDimensionType.TEAM,
+                        List.of("个贷汽车场景建设组", "个贷住房场景建设组")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "alice", null);
+
+        assertEquals(List.of("杭州开发三部", "杭州开发二部"), plan.extraction().deptName());
+        assertEquals(List.of("个贷汽车场景建设组", "个贷住房场景建设组"), plan.extraction().groupName());
+        org.mockito.Mockito.verify(ledger, org.mockito.Mockito.times(1))
+                .deptsByDimension("统计组", "个贷汽车场景建设组");
+        org.mockito.Mockito.verify(ledger, org.mockito.Mockito.times(1))
+                .deptsByDimension("统计组", "个贷住房场景建设组");
+        org.mockito.Mockito.verify(ledger, org.mockito.Mockito.never()).deptsByDimension(
+                org.mockito.ArgumentMatchers.eq("产品线"), org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    void productLineHitBackfillsDeptFromLedgerWhenDeptMissing() {
+        // 同机制覆盖产品线: 纯产品线问句 → 按产品线值查部门反填
+        String question = "数据产品线的达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.dimensionTruthDictionary("产品线")).thenReturn(Set.of("数据产品线"));
+        when(ledger.deptsByDimension("产品线", "数据产品线")).thenReturn(List.of("杭州开发二部"));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"dept\":\"deptName\",\"product_line\":\"productLine\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                stateWithPeer(DimensionState.PeerDimensionType.PRODUCT_LINE, List.of("数据产品线")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "alice", null);
+
+        assertEquals(List.of("杭州开发二部"), plan.extraction().deptName());
+        assertEquals("杭州开发二部", plan.params().get("dept"));
+        assertEquals(List.of("数据产品线"), plan.extraction().productLine());
+        org.mockito.Mockito.verify(ledger, org.mockito.Mockito.never()).deptsByDimension(
+                org.mockito.ArgumentMatchers.eq("统计组"), org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    void explicitDeptSkipsLedgerDeptBackfill() {
+        // 显式部门优先: deptName 已填时不打 Q8 (显式优先, 反填只补缺)
+        String question = "杭州开发二部个贷汽车场景建设组的达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"dept\":\"deptName\",\"stat_group\":\"groupName\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                new DimensionState(null, List.of("杭州开发二部"),
+                        new DimensionState.PeerDimension(DimensionState.PeerDimensionType.TEAM,
+                                List.of("个贷汽车场景建设组")), null));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "alice", null);
+
+        assertEquals(List.of("杭州开发二部"), plan.extraction().deptName());
+        org.mockito.Mockito.verify(ledger, org.mockito.Mockito.never()).deptsByDimension(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
     }
 }

@@ -1,7 +1,9 @@
 package com.agentscopea2a.v2.dimension;
 
+import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.time.temporal.TemporalAdjusters;
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashSet;
 import java.util.Set;
@@ -26,9 +28,10 @@ import java.util.regex.Pattern;
  * DATE:a~b / UNTIL:date 仅由 TimeRangeExtractor 正则产出，禁止人工配置；
  * LAST:{n}V / LAST:{n}Q 归版本季度方案（VersionPlanAnchorResolver），此处不解析。
  *
- * <p>口径拍板（time-dimension-plan.md §7①②③）：滚动周——本周=today-6~today（倒推7天
- * 含今天）、上周=today-13~today-7（=本周整体前移7天）；下周=未来1周（NEXT:1w，
- * today~today+7）；未来N周含今天。
+ * <p>口径拍板（time-dimension-plan.md §7②③，2026-10-27 终版）：下周=未来1周（NEXT:1w，
+ * today~today+7）；历史区间**含今天**（起点不变，仅终点由 today-1 放宽为 today）——
+ * 本周/近一周（历史）=today-7~today、近N天=today-N~today、近N周=today-7N~today；
+ * 上周=日历周（上周一~上周日），不随本周滚动。
  */
 public final class TimeRangeResolver {
 
@@ -80,8 +83,9 @@ public final class TimeRangeResolver {
     /**
      * 解析锚点为 [start, end]（ISO，含端点）；不可解析（透传型/歧义型/未实现形态）返回 null。
      *
-     * <p>滚动周口径（2026-10-19 拍板）：本周=today-6~today；上周=today-13~today-7；
-     * 近 n 周=today-7n+1~today（含今天，与 LAST:{n}d 同构）；未来 n 周=today~today+7n（含今天）。
+     * <p>口径（2026-10-27 终版，历史含今天、起点不变）：本周=today-7~today；
+     * 上周=日历周（上周一~上周日）；近 n 天=today-n~today；近 n 周=today-7n~today；
+     * 未来 n 周=today~today+7n（含今天）。
      */
     public static String[] resolve(String anchor, LocalDate today) {
         if (anchor == null || anchor.isBlank()) {
@@ -90,8 +94,8 @@ public final class TimeRangeResolver {
         String a = anchor.trim();
         return switch (a) {
             case "TODAY" -> new String[]{iso(today), iso(today)};
-            case "THIS_WEEK" -> new String[]{iso(today.minusDays(6)), iso(today)};
-            case "LAST_WEEK" -> new String[]{iso(today.minusDays(13)), iso(today.minusDays(7))};
+            case "THIS_WEEK" -> new String[]{iso(today.minusDays(7)), iso(today)};
+            case "LAST_WEEK" -> lastCalendarWeek(today);
             case "THIS_MONTH" -> new String[]{iso(today.withDayOfMonth(1)), iso(today)};
             case "THIS_YEAR" -> new String[]{iso(today.withDayOfYear(1)), iso(today)};
             default -> resolveParametric(a, today);
@@ -107,14 +111,14 @@ public final class TimeRangeResolver {
                 if (tail.endsWith("d")) {
                     int n = Integer.parseInt(tail.substring(0, tail.length() - 1));
                     if (!next && n >= 1) {
-                        return new String[]{iso(today.minusDays(n - 1L)), iso(today)};
+                        return new String[]{iso(today.minusDays(n)), iso(today)};
                     }
                 } else if (tail.endsWith("w")) {
                     int n = Integer.parseInt(tail.substring(0, tail.length() - 1));
                     if (n >= 1) {
                         return next
                                 ? new String[]{iso(today), iso(today.plusWeeks(n))}
-                                : new String[]{iso(today.minusWeeks(n).plusDays(1)), iso(today)};
+                                : new String[]{iso(today.minusWeeks(n)), iso(today)};
                     }
                 }
             } catch (NumberFormatException ignored) {
@@ -209,5 +213,11 @@ public final class TimeRangeResolver {
 
     private static String iso(LocalDate d) {
         return d.format(ISO);
+    }
+
+    /** 上周=日历周（拍板⑦ 2026-10-27）：上周一 ~ 上周日（本周一整体前移一周）。 */
+    private static String[] lastCalendarWeek(LocalDate today) {
+        LocalDate monday = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)).minusDays(7);
+        return new String[]{iso(monday), iso(monday.plusDays(6))};
     }
 }

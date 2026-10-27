@@ -17,11 +17,23 @@ stdout 首行「时间入参回显」即 E2E 观察点: 断言脚本实际收到
     env:   GAUSS_JDBC_URL / GAUSS_USER / GAUSS_PASS / GAUSS_JAR
 
 参数:
-    dept    必填, str 或 [str]
-    version 可选, 版本计划 (str 或 [str]) — 与 quarter 互斥使用
-    quarter 可选, 季度 (str 或 [str]), 形如 "2026年4季度"
-    qStart  可选, 季度窗口起 (yyyy-MM-dd), 仅作回显+区间兜底
-    qEnd    可选, 季度窗口止 (yyyy-MM-dd), 仅作回显+区间兜底
+    dept        可选, str 或 [str] — 未提及时不发 SQL 仅回显维度入参
+    version     可选, 版本计划 (str 或 [str]) — 与 quarter 互斥使用
+    quarter     可选, 季度 (str 或 [str]), 形如 "2026年4季度"
+    qStart      可选, 季度窗口起 (yyyy-MM-dd), 仅作回显+区间兜底
+    qEnd        可选, 季度窗口止 (yyyy-MM-dd), 仅作回显+区间兜底
+    groupName   可选, 统计组 (str 或 [str]) — 我X按需注入/重锚抑制 E2E 观察维
+    appName     可选, 应用 (str 或 [str])
+    productLine 可选, 产品线 (str 或 [str])
+    perName     可选, 姓名 (str 或 [str])
+    perNo       可选, 统一认证号 (str 或 [str])
+
+五个细粒度维度 (我X按需注入方案 R1/R2 的 E2E 观察点): stdout「维度入参回显」行
+原样回显脚本实际收到的值集合 —— 断言 Java 端只传了问句真正提及的维度:
+    "我部4季度需求项"           → groupName/appName/productLine/perName/perNo 全空 (只传 dept)
+    "我的组..." (我的组口径)     → groupName + deptName 双传 (我组连带部门)
+    "我部集成管理组4季度"        → 只传 groupName (产品线抑制)
+底层数据源无这些列时仅回显不过滤; 命中同名列时按 isin 过滤并回显过滤后行数。
 
 季度→月份版本换算 (脚本内, 不依赖 Java): "2026年4季度" → 2026年10/11/12月份版本。
 若只收到 qStart/qEnd 而无 quarter, 按日期区间覆盖的月份展开。
@@ -38,6 +50,15 @@ from _download import print_download_csv, print_download_xlsx
 
 SQL_ID = "q2_1_metrics_by_dept_version"
 DOWNLOAD_FILENAME = "q2_1_双时间demo明细.csv"
+
+# 细粒度维度 → 明细列名的包含匹配关键词 (小写比较); 数据源无同名列时仅回显不过滤
+DIM_COLUMN_KEYWORDS = {
+    "groupName": ("统计组", "组",),
+    "appName": ("应用", "app",),
+    "productLine": ("产品线", "条线",),
+    "perName": ("姓名", "name",),
+    "perNo": ("认证", "工号", "perno",),
+}
 
 
 def _as_str_list(v):
@@ -88,14 +109,16 @@ def main():
     depts = _as_str_list(params.get("dept"))
     versions = _as_str_list(params.get("version"))
     quarters = _as_str_list(params.get("quarter"))
+    fine_dims = {key: _as_str_list(params.get(key)) for key in DIM_COLUMN_KEYWORDS}
     q_start = params.get("qStart")
     q_end = params.get("qEnd")
-    if depts is None or versions is None or quarters is None:
-        print(f"ERROR 参数 dept/version/quarter 必须是字符串或字符串数组, 收到: {params}", file=sys.stderr)
+    if depts is None or versions is None or quarters is None or any(v is None for v in fine_dims.values()):
+        print(f"ERROR 参数必须是字符串或字符串数组, 收到: {params}", file=sys.stderr)
         sys.exit(1)
     if not depts:
-        print(f"ERROR 缺少必填参数 dept, 收到: {params}", file=sys.stderr)
-        sys.exit(1)
+        # 车贷/房贷等纯组维度 E2E 问句没有部门: 不报错, 跳过查询仅回显维度入参
+        # (与下方「空时间口径不发 SQL」同模式)
+        print("NOTE 未提及部门 (dept), 跳过查询仅回显维度入参", file=sys.stderr)
 
     # 1. E2E 观察点: 回显实际收到的时间入参 + 脚本采用的时间家族
     if versions:
@@ -108,6 +131,8 @@ def main():
         time_source = "none"
     print(f"时间入参回显: version={versions} quarter={quarters} "
           f"qStart={q_start or ''} qEnd={q_end or ''} timeSource={time_source}")
+    # 细粒度维度回显 (我X按需注入方案 R1/R2 E2E 断言点): 未提及的维度应为空列表
+    print(f"维度入参回显: " + " ".join(f"{k}={v}" for k, v in fine_dims.items()))
 
     # 2. 时间二选一: 版本优先; 季度→月份版本 (脚本内换算, 只为复用既有 SQL);
     #    都未收到 → 时间维度为空 (需求项/需求子条目场景拍板: 不补默认在建版本),
@@ -129,8 +154,8 @@ def main():
         time_source = "none"
         query_versions = []
 
-    # 3. 调配注册 SQL (复用 q2_1 既有 SQL: dept + version); 空时间口径不发 SQL
-    if query_versions:
+    # 3. 调配注册 SQL (复用 q2_1 既有 SQL: dept + version); 空时间/空部门口径不发 SQL
+    if query_versions and depts:
         try:
             rows = run_registered_sql(SQL_ID, {"dept": depts, "version": query_versions})
             df = pd.DataFrame(rows)
@@ -141,6 +166,20 @@ def main():
             sys.exit(2)
     else:
         df = pd.DataFrame()
+
+    # 3.5 细粒度维度尽力过滤 (数据源有同名列才生效, 否则仅回显)
+    dim_filter_notes = []
+    for key, values in fine_dims.items():
+        if not values:
+            continue
+        col = next((c for c in df.columns
+                    if any(kw in str(c).lower() for kw in DIM_COLUMN_KEYWORDS[key])), None)
+        if col is None:
+            dim_filter_notes.append(f"{key}: 数据源无匹配列, 仅回显")
+            continue
+        before = len(df)
+        df = df[df[col].astype(str).isin(values)]
+        dim_filter_notes.append(f"{key}: 按 {col} ∈ {values} 过滤 {before}→{len(df)} 行")
 
     # 4. 算指标
     total = len(df)
@@ -155,7 +194,9 @@ def main():
 
     # 5. 输出: 汇总表 + 查询口径行 + json 行 + echarts 块 + 下载块
     scope = "、".join(query_versions) if query_versions else "(空·需求项全历史口径)"
-    print(f"查询口径: 部门 {('、'.join(depts))} | 时间来源 {time_source} | 版本 {scope}")
+    print(f"查询口径: 部门 {('、'.join(depts) if depts else '(未提及)')} | 时间来源 {time_source} | 版本 {scope}")
+    for note in dim_filter_notes:
+        print(f"维度过滤: {note}")
     print()
     print(f"| 总数 | 已打分 | 达标数 | 打分率 | 达标率 |")
     print(f"|---:|---:|---:|---:|---:|")
@@ -166,7 +207,8 @@ def main():
     print()
     print(f'json: {{"total":{total},"scored":{scored},"passed":{passed},'
           f'"scored_pct":{scored_pct},"passed_pct":{passed_pct},'
-          f'"time_source":"{time_source}","versions":{json.dumps(query_versions, ensure_ascii=False)}}}')
+          f'"time_source":"{time_source}","versions":{json.dumps(query_versions, ensure_ascii=False)},'
+          f'"fine_dims":{json.dumps(fine_dims, ensure_ascii=False)}}}')
 
     option = {
         "title": {"text": "Q2-1 打分率/达标率 (双时间demo)", "left": "center"},

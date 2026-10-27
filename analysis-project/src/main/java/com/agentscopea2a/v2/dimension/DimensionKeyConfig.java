@@ -27,16 +27,48 @@ public record DimensionKeyConfig(
         boolean enabled,
         String remark) {
 
-    /** 词表行：口语/关键词 alias → 标准值（即脚本收到的参数值）。 */
-    public record AliasMapping(String alias, String value) {
+    /** 词表行：口语/关键词 alias → 标准值（即脚本收到的参数值）。
+     *  type="regex"（2026/10/26 我X方案 §8）：alias 为正则串、value 为用途标签
+     *  （myDept/myGroup/myApp/myProductLine/myself/extract/block），仅供
+     *  {@code PersonalDimensionResolver} 等正则消费方使用；所有同义词匹配路径必须
+     *  isSynonym() 过滤（正则串含 | 等元字符，被字面 contains 会产生垃圾命中）。
+     *  value=block（我X方案 §9）：维度候选 token 命中 alias 正则即拒收（垃圾代词值屏蔽）。 */
+    @com.fasterxml.jackson.annotation.JsonInclude(
+            com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+    public record AliasMapping(String alias, String value, String type) {
+
+        public static final String TYPE_REGEX = "regex";
+        public static final String VALUE_BLOCK = "block";
+
+        public AliasMapping(String alias, String value) {
+            this(alias, value, null);
+        }
 
         public AliasMapping {
             if (alias != null) alias = alias.trim();
             if (value != null) value = value.trim();
+            if (type != null) type = type.trim();
         }
 
         public boolean valid() {
             return alias != null && !alias.isEmpty() && value != null && !value.isEmpty();
+        }
+
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public boolean isRegex() {
+            return TYPE_REGEX.equalsIgnoreCase(type);
+        }
+
+        /** block 条目（我X方案 §9）：regex 型且 value=block，alias 正则命中候选即拒收。 */
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public boolean isBlock() {
+            return isRegex() && VALUE_BLOCK.equalsIgnoreCase(value);
+        }
+
+        /** 同义词条目（存量语义）：词表 contains 匹配 alias 原词收 value。 */
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public boolean isSynonym() {
+            return !isRegex();
         }
     }
 

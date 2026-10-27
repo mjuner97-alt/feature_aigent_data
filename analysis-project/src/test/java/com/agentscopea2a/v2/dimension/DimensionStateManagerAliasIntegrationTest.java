@@ -135,8 +135,43 @@ class DimensionStateManagerAliasIntegrationTest {
 
     @Test
     void lowerCaseTechWordsNotRecognizedAsApp() {
-        // 仅大写字母算应用码: 小写技术词 (sql/csv) 不误收
+        // 技术词表拦截: 小写技术词 (sql/csv) 不误收
         assertNull(extractPeer("sql查询的需求项有多少"));
+    }
+
+    @Test
+    void lowerCaseBareCodeRecognizedAsAppUppercased() {
+        // 小写裸码也识别, 归一大写 ("gcmcs的风险" → F-GCMCS)
+        PeerDimension peer = extractPeer("gcmcs的风险");
+        assertEquals(PeerDimensionType.APPLICATION, peer.getType());
+        assertEquals(java.util.List.of("F-GCMCS"), peer.getValues());
+    }
+
+    @Test
+    void mixedCaseBareCodeNormalizedToUppercase() {
+        PeerDimension peer = extractPeer("Gcmcs的风险");
+        assertEquals(java.util.List.of("F-GCMCS"), peer.getValues());
+    }
+
+    @Test
+    void prefixedLowerCaseCodeNormalizedToUppercase() {
+        // F- 前缀码同样归一大写 ("F-gcmcs的风险" → F-GCMCS)
+        PeerDimension peer = extractPeer("F-gcmcs的风险");
+        assertEquals(PeerDimensionType.APPLICATION, peer.getType());
+        assertEquals(java.util.List.of("F-GCMCS"), peer.getValues());
+    }
+
+    @Test
+    void lowerCaseAndPrefixedSameCodeDeduplicate() {
+        // "gcmcs和F-gcmcs" 大写归一后同串去重 → 一个应用
+        PeerDimension peer = extractPeer("gcmcs和F-gcmcs的风险");
+        assertEquals(java.util.List.of("F-GCMCS"), peer.getValues());
+    }
+
+    @Test
+    void uppercaseTechWordAlsoBlockedByStopList() {
+        // 技术词大小写都拦: 大写 SQL 不误收为 F-SQL (存量行为也如此, 词表显式固化)
+        assertNull(extractPeer("SQL查询的风险"));
     }
 
     @Test
@@ -241,6 +276,80 @@ class DimensionStateManagerAliasIntegrationTest {
         PeerDimension peer = extractPeer("军队关于I20260208-0005的缺陷");
         assertEquals(PeerDimensionType.PRODUCT_LINE, peer.getType());
         assertEquals(java.util.List.of("企业资金管理系统"), peer.getValues());
+    }
+
+    @Test
+    void sharedSuffixVersionEnumeratesAllMonths() {
+        // "10、11月版" 共享后缀: 前段裸数字也收 (修复前只传 11月版)
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("杭州三部10、11月版研发周期是多少天");
+        assertEquals(java.util.List.of("2026年10月份版本", "2026年11月份版本"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
+        assertEquals(java.util.List.of("杭州开发三部"),
+                analysis.getExplicitDimensions().getDepartments());
+    }
+
+    @Test
+    void sharedSuffixVersionWithExplicitYear() {
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("2026年10和11月份版本的达标率");
+        assertEquals(java.util.List.of("2026年10月份版本", "2026年11月份版本"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
+    }
+
+    @Test
+    void individuallySuffixedVersionsUnaffected() {
+        // 回归: 各自带后缀的列举 ("10月版和11月版") 仍各自归一, 不受共享后缀正则影响
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("10月版和11月版的对比");
+        assertEquals(java.util.List.of("2026年10月份版本", "2026年11月份版本"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
+    }
+
+    @Test
+    void sharedSuffixVersionWithoutBanSuffixEnumeratesAllMonths() {
+        // "10、11月" (无"版"后缀): 与带版同构列举 (修复前共享正则的 版本? 要求版必选, 只剩 11月)
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("杭州一部10、11月研发周期");
+        assertEquals(java.util.List.of("2026年10月份版本", "2026年11月份版本"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
+        assertEquals(java.util.List.of("杭州开发一部"),
+                analysis.getExplicitDimensions().getDepartments());
+    }
+
+    @Test
+    void sharedSuffixVersionWithoutBanSuffixExplicitYearNoDoubleCount() {
+        // 显式年份 + 无版后缀: 末段不再被 EXPLICIT_MONTH 按"无年份→补当前年"重复收一遍
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("2025年10、11月研发周期");
+        assertEquals(java.util.List.of("2025年10月份版本", "2025年11月份版本"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
+    }
+
+    @Test
+    void sharedSuffixVersionSkipsDelayedVariant() {
+        // "10、11月延后版": (?!延后) 守卫生效, 共享正则不吃成普通月份版本
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("10、11月延后版本有多少需求项");
+        assertEquals(java.util.List.of("2026年11月延后版"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
+    }
+
+    @Test
+    void sharedSuffixQuarterEnumeratesAllQuarters() {
+        // "3、4季度" 共享后缀: 前段裸数字也收 (与月份版本同构)
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("3、4季度的达标率");
+        assertEquals(java.util.List.of("2026年3季度", "2026年4季度"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
+    }
+
+    @Test
+    void sharedSuffixQuarterWithExplicitYear() {
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("2025年3和4季度的对比");
+        assertEquals(java.util.List.of("2025年3季度", "2025年4季度"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
     }
 
     @Test

@@ -405,4 +405,86 @@ class DimensionStateManagerRuleTest {
         assertEquals(List.of("个人住房组"),
                 m.analyzeQuestionRuleBased("个人住房组各人的缺陷数").getExplicitDimensions().getPeerDimension().getValues());
     }
+
+    // ==================== §5.1 第六层 block 屏蔽（我X方案 §9） ====================
+
+    /** §9 基线 block seed 行（与 DimensionKeyConfigRepository.REGEX_SEEDS 同源: 裸 我 单字）。 */
+    private static DimensionKeyConfig.AliasMapping blockSeed() {
+        return new DimensionKeyConfig.AliasMapping("我", "block",
+                DimensionKeyConfig.AliasMapping.TYPE_REGEX);
+    }
+
+    @Test
+    void blockEntryRejectsPronounTeamTokens() {
+        // E2E 实证 (2026-10-26, userId=88000003): "我的组10月的数据" 曾产出
+        // groupName=["我的组","移动展业组"] 双值 → 脚本 exit=-1; block 正则命中即拒收
+        var m = managerWithVocab(
+                new DimensionKeyConfig(2L, "groupName", "组（团队）", true, List.of(blockSeed()), true, null),
+                new DimensionKeyConfig(4L, "productLine", "产品线", true, List.of(blockSeed()), true, null));
+
+        assertTrue(m.analyzeQuestionRuleBased("我的组10月的数据").getExplicitDimensions().getPeerDimension() == null);
+        assertTrue(m.analyzeQuestionRuleBased("我的小组10月的数据").getExplicitDimensions().getPeerDimension() == null);
+        assertTrue(m.analyzeQuestionRuleBased("我们组10月的数据").getExplicitDimensions().getPeerDimension() == null);
+        assertTrue(m.analyzeQuestionRuleBased("我的产品线10月的数据").getExplicitDimensions().getPeerDimension() == null);
+    }
+
+    @Test
+    void blockEntrySkipsCandidateButKeepsRealTeam() {
+        // 拒收 = skip-and-continue (同粒度词守卫语义): 垃圾候选跳过后真组名照常收
+        var m = managerWithVocab(new DimensionKeyConfig(2L, "groupName", "组（团队）", true,
+                List.of(blockSeed()), true, null));
+
+        assertEquals(List.of("数据智能组"),
+                m.analyzeQuestionRuleBased("我的组、数据智能组的缺陷数")
+                        .getExplicitDimensions().getPeerDimension().getValues());
+        // 真组名不含 我 → 不误伤
+        assertEquals(List.of("移动展业组"),
+                m.analyzeQuestionRuleBased("移动展业组的达标率")
+                        .getExplicitDimensions().getPeerDimension().getValues());
+    }
+
+    @Test
+    void blockEntrySuppressesExplicitHitForReanchorSuppression() {
+        // R2 重锚抑制联动: hasExplicitTeamHit("我的组达标率") 曾为 true → 台账注入的
+        // 组维度被显式命中抑制; block 生效后显式命中归 false, 注入值不再被挤出
+        var m = managerWithVocab(
+                new DimensionKeyConfig(2L, "groupName", "组（团队）", true, List.of(blockSeed()), true, null),
+                new DimensionKeyConfig(4L, "productLine", "产品线", true, List.of(blockSeed()), true, null));
+
+        assertFalse(m.hasExplicitTeamHit("我的组达标率"));
+        assertFalse(m.hasExplicitProductLineHit("我的产品线达标率"));
+        // 真组名/真产品线显式命中不受影响
+        assertTrue(m.hasExplicitTeamHit("数据智能组达标率"));
+        assertTrue(m.hasExplicitProductLineHit("数据产品线达标率"));
+    }
+
+    @Test
+    void noBlockConfigKeepsLegacyBehavior() {
+        // fail-open 基线: 目标键行无 block 条目 (或字典缺失) → 守卫关闭, 行为与历史一致
+        var m = managerWithVocab(new DimensionKeyConfig(2L, "groupName", "组（团队）", true,
+                List.of(new DimensionKeyConfig.AliasMapping("移动展业组", "移动展业组")), true, null));
+
+        var peer = m.analyzeQuestionRuleBased("我的组10月的数据").getExplicitDimensions().getPeerDimension();
+        assertTrue(peer != null && peer.getValues().contains("我的组"));
+    }
+
+    @Test
+    void bareDateNotParsedAsVersion() {
+        // "10月26日"（M月与D日紧接）是截止日，不是 10 月份版本
+        String y = String.valueOf(currentYear());
+        DimensionState.TimeDimension time =
+                extractTime("杭州三部11月版、12月版10月26日到期Q2不达标情况");
+        assertEquals(DimensionState.TimeDimensionType.VERSION, time.getType());
+        assertEquals(List.of(y + "年11月份版本", y + "年12月份版本"), time.getValues());
+    }
+
+    @Test
+    void bareDateAloneYieldsNoVersion() {
+        assertNull(extractTime("10月26日到期的需求有哪些"));
+    }
+
+    @Test
+    void dateRangeNotParsedAsVersion() {
+        assertNull(extractTime("10月1日到10月15日的缺陷数"));
+    }
 }

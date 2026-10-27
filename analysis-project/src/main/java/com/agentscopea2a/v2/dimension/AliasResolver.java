@@ -177,6 +177,25 @@ public class AliasResolver {
         return false;
     }
 
+    /**
+     * 指定维度类型的全部标准名（维度值台账真值校验方案 §4.2）：业务显式配置过的
+     * 标准值并入真值域，即使台账暂无该组人员也不被 B③ 误杀。
+     */
+    public Set<String> standardNames(PeerDimensionType dimension) {
+        if (dimension == null) {
+            return Set.of();
+        }
+        Set<String> out = new LinkedHashSet<>();
+        for (List<Entry> group : snapshot()) {
+            for (Entry e : group) {
+                if (e.dimension() == dimension) {
+                    out.add(e.standardName());
+                }
+            }
+        }
+        return out;
+    }
+
     private void resolveSpan(
             String question, List<Hit> sameSpan,
             List<ResolvedAlias> resolved, List<AmbiguousAlias> ambiguous) {

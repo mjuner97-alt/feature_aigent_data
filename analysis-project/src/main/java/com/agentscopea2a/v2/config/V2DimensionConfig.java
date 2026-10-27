@@ -143,11 +143,14 @@ public class V2DimensionConfig {
                 new org.springframework.jdbc.core.JdbcTemplate(dataSource), cacheTtlSeconds);
     }
 
-    /** "我X" 口语维度解析（人员台账维度方案 §3）+ 人名字典扫描（§4.1）。 */
+    /** "我X" 口语维度解析（人员台账维度方案 §3）+ 人名字典扫描（§4.1）
+     *  + 配置正则加载/角色双路径提取（我X方案 §8 / 岗位角色方案 §3.1b）。 */
     @Bean
     public com.agentscopea2a.v2.dimension.PersonalDimensionResolver personalDimensionResolver(
-            com.agentscopea2a.v2.dimension.PersonLedgerRepository personLedgerRepository) {
-        return new com.agentscopea2a.v2.dimension.PersonalDimensionResolver(personLedgerRepository);
+            com.agentscopea2a.v2.dimension.PersonLedgerRepository personLedgerRepository,
+            org.springframework.beans.factory.ObjectProvider<com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository> dimensionKeyRepoProvider) {
+        return new com.agentscopea2a.v2.dimension.PersonalDimensionResolver(
+                personLedgerRepository, dimensionKeyRepoProvider);
     }
 
     /**

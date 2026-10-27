@@ -162,4 +162,52 @@ class DimensionStateManagerEmbeddedAliasTest {
         assertEquals(PeerDimensionType.TEAM, peer.getType());
         assertEquals(List.of("个贷数据开发组"), peer.getValues());
     }
+
+    @Test
+    void aliasHitBeforeGranularityQuantifierSuffixSurvives() {
+        // 机制A（维度值台账真值校验方案 §3）：「车贷、房贷两个组的风险」EXPLICIT_TEAM 把
+        // 「房贷两个组」抓成组名 token，嵌在内的「房贷」命中互不包含被抑制 → 双值丢一
+        // （E2E 实证 2026-10-26）。token 尾巴是数量粒度短语时豁免抑制，两个 TEAM 命中均保留。
+        AliasResolver resolver = new AliasResolver(() -> List.of(
+                new DimensionAlias(1L, PeerDimensionType.TEAM, "车贷", "个贷汽车场景建设组", null, true, null),
+                new DimensionAlias(2L, PeerDimensionType.TEAM, "房贷", "个贷住房场景建设组", null, true, null)));
+        DimensionStateManager quantifierManager = new DimensionStateManager(null, resolver);
+
+        DimensionState.PeerDimension peer = quantifierManager
+                .analyzeQuestionRuleBased("车贷、房贷两个组的风险")
+                .getExplicitDimensions()
+                .getPeerDimension();
+        assertEquals(PeerDimensionType.TEAM, peer.getType());
+        assertEquals(List.of("个贷汽车场景建设组", "个贷住房场景建设组"), peer.getValues());
+
+        // 回归：数量后缀豁免不放松真嵌入抑制（"个贷数据开发组"的"个贷"仍被抑制，小组正则接管）
+        assertEquals(List.of("个贷数据开发组"), analyzePeer("个贷数据开发组的缺陷密度").getValues());
+    }
+
+    @Test
+    void skillNamePrefixDoesNotHijackAliasPeerWithFakeAppCodes() {
+        // E2E 2026-10-27 实证：「使用 q2_1_dual_time_demo skill 车贷、房贷两个组的风险」
+        // 裸应用码正则把 skill 名拆成 F-DUAL/F-TIME/F-DEMO/F-SKILL 假码, APPLICATION
+        // 单类型槽位把 alias 的 TEAM 双值整个挤掉 → 提取全空。裸码让位 alias 命中 +
+        // 下划线相邻字母段不再是裸码。
+        AliasResolver resolver = new AliasResolver(() -> List.of(
+                new DimensionAlias(1L, PeerDimensionType.TEAM, "车贷", "个贷汽车场景建设组", null, true, null),
+                new DimensionAlias(2L, PeerDimensionType.TEAM, "房贷", "个贷住房场景建设组", null, true, null)));
+        DimensionStateManager prefixedManager = new DimensionStateManager(null, resolver);
+
+        DimensionState.PeerDimension peer = prefixedManager
+                .analyzeQuestionRuleBased("使用 q2_1_dual_time_demo skill 车贷、房贷两个组的风险")
+                .getExplicitDimensions()
+                .getPeerDimension();
+        assertEquals(PeerDimensionType.TEAM, peer.getType());
+        assertEquals(List.of("个贷汽车场景建设组", "个贷住房场景建设组"), peer.getValues());
+    }
+
+    @Test
+    void underscoreJoinedIdentifierSegmentsAreNotBareAppCodes() {
+        // "q2_1_dual_time_demo" 下划线相邻字母段 (dual/time/demo) 不补 F-; "FPA4季度"
+        // 数字紧邻回归不破坏
+        assertNull(analyzePeer("q2_1_dual_time_demo 的达标率"));
+        assertEquals(List.of("F-FPA"), analyzePeer("FPA4季度需求项的平均生命周期").getValues());
+    }
 }
