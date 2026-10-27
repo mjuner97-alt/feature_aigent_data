@@ -211,7 +211,7 @@ public class DimensionKeyController {
                     + "2026年10月延后版）或版本锚点（THIS_V / YEAR_V / HALF_V:1|2 / LAST:{n}V / DELAYED）";
             case "vestQuarter" -> "维度键 vestQuarter 的词表值必须是季度标准值（如 2026年4季度）或 THIS_Q";
             case "deptName" -> "维度键 deptName 的词表值必须是部门标准名（杭州开发一~五部 / "
-                    + "杭州服务支持部 / 杭州技术部 / 云计算实验室）";
+                    + "杭州服务支持部 / 杭州技术部 / 云计算实验室 / 杭州产品赋能团队）";
             default -> "维度键 " + key + " 的词表值非法";
         };
     }

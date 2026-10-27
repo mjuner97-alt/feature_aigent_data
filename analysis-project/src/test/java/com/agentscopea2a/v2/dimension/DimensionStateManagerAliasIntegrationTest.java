@@ -135,8 +135,43 @@ class DimensionStateManagerAliasIntegrationTest {
 
     @Test
     void lowerCaseTechWordsNotRecognizedAsApp() {
-        // 仅大写字母算应用码: 小写技术词 (sql/csv) 不误收
+        // 技术词表拦截: 小写技术词 (sql/csv) 不误收
         assertNull(extractPeer("sql查询的需求项有多少"));
+    }
+
+    @Test
+    void lowerCaseBareCodeRecognizedAsAppUppercased() {
+        // 小写裸码也识别, 归一大写 ("gcmcs的风险" → F-GCMCS)
+        PeerDimension peer = extractPeer("gcmcs的风险");
+        assertEquals(PeerDimensionType.APPLICATION, peer.getType());
+        assertEquals(java.util.List.of("F-GCMCS"), peer.getValues());
+    }
+
+    @Test
+    void mixedCaseBareCodeNormalizedToUppercase() {
+        PeerDimension peer = extractPeer("Gcmcs的风险");
+        assertEquals(java.util.List.of("F-GCMCS"), peer.getValues());
+    }
+
+    @Test
+    void prefixedLowerCaseCodeNormalizedToUppercase() {
+        // F- 前缀码同样归一大写 ("F-gcmcs的风险" → F-GCMCS)
+        PeerDimension peer = extractPeer("F-gcmcs的风险");
+        assertEquals(PeerDimensionType.APPLICATION, peer.getType());
+        assertEquals(java.util.List.of("F-GCMCS"), peer.getValues());
+    }
+
+    @Test
+    void lowerCaseAndPrefixedSameCodeDeduplicate() {
+        // "gcmcs和F-gcmcs" 大写归一后同串去重 → 一个应用
+        PeerDimension peer = extractPeer("gcmcs和F-gcmcs的风险");
+        assertEquals(java.util.List.of("F-GCMCS"), peer.getValues());
+    }
+
+    @Test
+    void uppercaseTechWordAlsoBlockedByStopList() {
+        // 技术词大小写都拦: 大写 SQL 不误收为 F-SQL (存量行为也如此, 词表显式固化)
+        assertNull(extractPeer("SQL查询的风险"));
     }
 
     @Test

@@ -53,7 +53,10 @@ const RULE_HINTS: Record<string, string> = {
   versionPlan: '标准值 2026年10月份版本、2026年10月延后版；口语 202610版本、十月版、4月、2026年10月；锚点 今年以来/全年/各月(YEAR_V)、上半年/下半年(HALF_V:1|2, 可带年份如 25年上半年→HALF_V:1@2025)、近N个版本/近N个月(LAST:{n}V, 按在建最后一版月序前推)、目前/当前/在建版本(THIS_V)、延后版(DELAYED)',
   vestQuarter: '标准值 2026年4季度；口语 Q1、一季度；锚点 当季/在建季度(THIS_Q)',
   deptName: '标准枚举 杭州开发一部~五部、杭州服务支持部、杭州技术部、云计算实验室；口语缩写 杭一/杭二部/杭开一 自动归一',
-  timeRange: '本周/上周/今天/近N天/交付周到投产 等 (词表 + 时间锚点, 口径见时间维度方案)',
+  timeRange: '词表封闭词 (本周/上周/今天/下周/近7天/近30天/交付周到投产 等) + 内置正则 (代码 TimeRangeExtractor, 无需配置): '
+    + '近N天(含近58天)、截至X日、X日到X日、M月A日到B日、未来X周/下X周、近X周(反问历史/未来)、T-X、R-X、临近交付X周内; '
+    + '口径 (2026-10-27 拍板⑦终版): 历史区间含今天、起点不变 — 本周/近一周=today-7~today、近N天=today-N~today、'
+    + '近N周=today-7N~today; 上周=日历周(上周一~上周日); 未来X周含今天',
   groupName: '组名结构化识别 (XX组), 指标词表辅助修剪虚词',
   appName: '应用编号 F-xxx',
   productLine: '产品线词表识别',
@@ -298,6 +301,15 @@ onMounted(load);
               正则条目 (type=正则): alias 必须是合法正则串 (保存时校验), value 是用途标签而非参数值 —
               myDept/myGroup/myApp/myProductLine 控制我部/我的组等口语词命中, myself 控制自身代词变体,
               extract 第一捕获组作为岗位角色值。命中即叠加硬编码规则 (§8.2), 删除条目重启会自动补回基线。
+            </div>
+            <div v-if="editing?.key === 'timeRange'" class="hint">
+              timeRange 内置正则形态 (代码 TimeRangeExtractor, 不在词表、无需也不能配置):
+              近N天 (近7天/近30天之外, 近58天/最近十五天 也命中)→LAST:{n}d、
+              截至X日→UNTIL、X日到X日/M月A日到B日→DATE、未来X周/下X周→NEXT:{n}w、
+              近X周 (含近一周/近两周)→反问历史还是未来、T-X/R-X/临近交付X周内→透传给脚本。
+              口径 (2026-10-27 拍板⑦终版): 历史区间含今天、起点不变 — 本周/近一周(历史)=today-7~today、
+              近N天=today-N~today、近N周=today-7N~today; 上周=日历周(上周一~上周日);
+              下周/未来X周含今天。
             </div>
           </div>
         </el-form-item>

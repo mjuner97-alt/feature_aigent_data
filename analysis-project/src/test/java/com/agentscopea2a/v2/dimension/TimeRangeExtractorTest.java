@@ -201,6 +201,26 @@ class TimeRangeExtractorTest {
     }
 
     @Test
+    void lastDaysRegexBeyondSeedWords() {
+        // 2026-10-27 补: 近N天正则, 词表外的 近58天 也能命中 (业务实测漏识)
+        assertEquals(List.of("LAST:58d"), TimeRangeExtractor.extract("车贷、房贷两个组的风险近58天", SEED_ALIASES));
+        assertEquals(List.of("LAST:90d"), TimeRangeExtractor.extract("近90天的缺陷趋势", SEED_ALIASES));
+        // 中文数字与"最近"前缀
+        assertEquals(List.of("LAST:15d"), TimeRangeExtractor.extract("最近十五天的达标率", SEED_ALIASES));
+        // seed 词表条目被正则遮蔽, 结果同值
+        assertEquals(List.of("LAST:7d"), TimeRangeExtractor.extract("近7天的缺陷数", SEED_ALIASES));
+        // 负例: "近15日" 量词不是"天", 不命中; 零数字跳过
+        assertTrue(TimeRangeExtractor.extract("近15日的交付情况", SEED_ALIASES).isEmpty());
+        assertTrue(TimeRangeExtractor.extract("近0天的缺陷", SEED_ALIASES).isEmpty());
+    }
+
+    @Test
+    void driftRegexCoversLastDays() {
+        assertTrue(TimeRangeExtractor.matchesDriftRegex("车贷组的风险近58天"));
+        assertTrue(TimeRangeExtractor.matchesDriftRegex("近90天的缺陷趋势"));
+    }
+
+    @Test
     void absoluteDateSpansIncludeNewDateRegexes() {
         String year = currentYear();
         // 版本词表屏蔽: 截至/省月形态的日期 span 也要屏蔽月份误收

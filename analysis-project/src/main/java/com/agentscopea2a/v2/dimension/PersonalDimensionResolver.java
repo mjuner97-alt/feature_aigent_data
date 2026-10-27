@@ -233,6 +233,54 @@ public class PersonalDimensionResolver {
         return ledgerRepository.byName(name);
     }
 
+    /** 台账仓储访问（Q5-Q7 维度真值字典的调用方入口，维度值台账真值校验方案 §4）。 */
+    public PersonLedgerRepository ledgerRepository() {
+        return ledgerRepository;
+    }
+
+    /**
+     * B① 真值域正向扫描（维度值台账真值校验方案 §4.3）：真值域值逐个在问题**原文**
+     * indexOf（最长优先 + boolean[] span 消费防重叠，同路径B角色扫描模式），命中即收录
+     * 标准值——不依赖正则形状，「杭州二部FMBM资金交易组」「软负载均衡团队」型不规则
+     * 值域照样命中（§10 案例二/四）。最短 2 字防单字误命中。真值域空 → 空列表。
+     */
+    public List<String> scanTruthValues(String question, Set<String> truthSet) {
+        if (question == null || question.isBlank()
+                || truthSet == null || truthSet.isEmpty()) {
+            return List.of();
+        }
+        List<String> values = truthSet.stream()
+                .filter(v -> v != null && v.length() >= 2)
+                .sorted(Comparator.comparingInt(String::length).reversed())
+                .toList();
+        boolean[] consumed = new boolean[question.length()];
+        List<String> out = new ArrayList<>();
+        for (String value : values) {
+            int from = 0;
+            int idx;
+            while ((idx = question.indexOf(value, from)) >= 0) {
+                boolean free = true;
+                for (int i = idx; i < idx + value.length(); i++) {
+                    if (consumed[i]) {
+                        free = false;
+                        break;
+                    }
+                }
+                if (free) {
+                    for (int i = idx; i < idx + value.length(); i++) {
+                        consumed[i] = true;
+                    }
+                    if (!out.contains(value)) {
+                        out.add(value);
+                    }
+                    break;
+                }
+                from = idx + 1;
+            }
+        }
+        return List.copyOf(out);
+    }
+
     // ==================== 岗位角色双路径提取（岗位角色内置维度方案 §3.1b/§3.1d） ====================
 
     /**

@@ -12,26 +12,33 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 时间范围锚点解析: 白名单校验 / 滚动周区间语义 (2026-10-19 拍板) / expandKeys 后缀透出
+ * 时间范围锚点解析: 白名单校验 / 历史区间语义 (2026-10-27 拍板⑦终版, 历史含今天起点不变)
+ * / expandKeys 后缀透出
  * (dimension-key-dynamic-dimension-plan.md §6.1 + time-dimension-plan.md §2/§4/§7)。
  */
 class TimeRangeResolverTest {
 
-    // 2026-10-14 是周三
+    // 2026-10-14 是周三 (本周=10-12 ~ 10-18, 上周=10-05 ~ 10-11)
     private static final LocalDate WED = LocalDate.of(2026, 10, 14);
 
     @Test
-    void thisWeekIsRollingSevenDays() {
-        // 拍板①: 本周 = today-6 ~ today (倒推7天含今天)
-        assertArrayEquals(new String[]{"2026-10-08", "2026-10-14"},
+    void thisWeekIsSevenDaysEndingToday() {
+        // 拍板⑦终版: 本周 = 一周前的今天 ~ 今天 = today-7 ~ today, 历史含今天 (起点不变)
+        assertArrayEquals(new String[]{"2026-10-07", "2026-10-14"},
                 TimeRangeResolver.resolve("THIS_WEEK", WED));
     }
 
     @Test
-    void lastWeekIsRollingPreviousSevenDays() {
-        // 拍板①连带: 上周 = 本周整体前移7天 (today-13 ~ today-7), 不再是日历周
-        assertArrayEquals(new String[]{"2026-10-01", "2026-10-07"},
+    void lastWeekIsCalendarWeek() {
+        // 拍板⑦: 上周 = 日历周 (上周一 ~ 上周日), 不随本周滚动
+        assertArrayEquals(new String[]{"2026-10-05", "2026-10-11"},
                 TimeRangeResolver.resolve("LAST_WEEK", WED));
+        // 周一当天: 本周一即今天, 上周 = 今天-7 ~ 今天-1
+        assertArrayEquals(new String[]{"2026-10-12", "2026-10-18"},
+                TimeRangeResolver.resolve("LAST_WEEK", LocalDate.of(2026, 10, 19)));
+        // 周日当天: 本周尚未结束, 上周 = 前一个日历周
+        assertArrayEquals(new String[]{"2026-10-05", "2026-10-11"},
+                TimeRangeResolver.resolve("LAST_WEEK", LocalDate.of(2026, 10, 18)));
     }
 
     @Test
@@ -42,11 +49,12 @@ class TimeRangeResolverTest {
 
     @Test
     void recentDaysIncludeToday() {
-        assertArrayEquals(new String[]{"2026-10-08", "2026-10-14"},
+        // 拍板⑦终版: 近N天 = today-N ~ today (起点不变, 历史含今天)
+        assertArrayEquals(new String[]{"2026-10-07", "2026-10-14"},
                 TimeRangeResolver.resolve("LAST:7d", WED));
-        assertArrayEquals(new String[]{"2026-10-14", "2026-10-14"},
+        assertArrayEquals(new String[]{"2026-10-13", "2026-10-14"},
                 TimeRangeResolver.resolve("LAST:1d", WED));
-        assertArrayEquals(new String[]{"2026-09-15", "2026-10-14"},
+        assertArrayEquals(new String[]{"2026-09-14", "2026-10-14"},
                 TimeRangeResolver.resolve("LAST:30d", WED));
     }
 
@@ -57,8 +65,8 @@ class TimeRangeResolverTest {
                 TimeRangeResolver.resolve("NEXT:1w", WED));
         assertArrayEquals(new String[]{"2026-10-14", "2026-11-04"},
                 TimeRangeResolver.resolve("NEXT:3w", WED));
-        // 历史近N周 = today-7n+1 ~ today (含今天, 与 LAST:{n}d 同构)
-        assertArrayEquals(new String[]{"2026-09-24", "2026-10-14"},
+        // 拍板⑦终版: 历史近N周 = today-7n ~ today (含今天, 与 LAST:{n}d 同构)
+        assertArrayEquals(new String[]{"2026-09-23", "2026-10-14"},
                 TimeRangeResolver.resolve("LAST:3w", WED));
     }
 

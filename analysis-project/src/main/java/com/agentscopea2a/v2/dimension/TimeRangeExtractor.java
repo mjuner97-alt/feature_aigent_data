@@ -19,6 +19,7 @@ import java.util.regex.Pattern;
  *   <li>同月省略区间「10月1日到15日」/ 双省月「5日到10日」→ {@code DATE:a~b}</li>
  *   <li>临近交付N周内 → {@code R-n}、T-X → {@code T-n}（里程碑透传锚点，不解析日期）</li>
  *   <li>未来/今后/下N周 → {@code NEXT:nw}；近N周 → {@code AMBIGUOUS:WEEKS:n}（歧义反问，拍板⑤）</li>
+ *   <li>近N天 → {@code LAST:nd}（历史不含今天口径；中文数字/阿拉伯数字均命中，2026-10-27 补）</li>
  * </ol>
  * L2 词表 contains（timeRange 行的 aliases，配置可扩）：锚点值来自配置；
  * 键内按 alias 长度降序 accept、重叠丢弃（「前一周」压更短的词）。
@@ -62,6 +63,10 @@ public final class TimeRangeExtractor {
 
     /** 近 N周 → AMBIGUOUS:WEEKS:{n}（方向歧义，执行链路反问，不做假设；含"近一周"，拍板按业务表追问逻辑）。 */
     private static final Pattern LAST_WEEKS = Pattern.compile("近\\s*(" + CN_NUM + ")\\s*周");
+
+    /** 近 N天 → LAST:{n}d（2026-10-27 新增：词表只配了 近7天/近30天 封闭词，近58天 类漏识；
+     *  历史口径 today-N~today 含今天，"近15日" 因量词"日"≠"天"不误命中）。 */
+    private static final Pattern LAST_DAYS = Pattern.compile("近\\s*(" + CN_NUM + ")\\s*天");
 
     private static final DateTimeFormatter ISO = DateTimeFormatter.ISO_LOCAL_DATE;
 
@@ -124,13 +129,14 @@ public final class TimeRangeExtractor {
 
     /**
      * 缓存兜底判定（ResponseCacheMiddleware，字典不可用时）：问题命中随"今天"漂移的
-     * 周类正则（未来N周/近N周）→ true。透传锚点（T-/R-/临近交付）确定性字面量，不在此列。
+     * 相对时间正则（未来N周/近N周/近N天）→ true。透传锚点（T-/R-/临近交付）确定性字面量，不在此列。
      */
     public static boolean matchesDriftRegex(String question) {
         if (question == null || question.isBlank()) {
             return false;
         }
-        return NEXT_WEEKS.matcher(question).find() || LAST_WEEKS.matcher(question).find();
+        return NEXT_WEEKS.matcher(question).find() || LAST_WEEKS.matcher(question).find()
+                || LAST_DAYS.matcher(question).find();
     }
 
     private static List<Span> collectL1Spans(String question, boolean datesOnly) {
@@ -148,6 +154,8 @@ public final class TimeRangeExtractor {
                     m -> weeks(m.group(1), 1) == null ? null : "NEXT:" + weeks(m.group(1), 1) + "w", spans);
             addRegexSpans(question, LAST_WEEKS,
                     m -> weeks(m.group(1), 1) == null ? null : "AMBIGUOUS:WEEKS:" + weeks(m.group(1), 1), spans);
+            addRegexSpans(question, LAST_DAYS,
+                    m -> weeks(m.group(1), 1) == null ? null : "LAST:" + weeks(m.group(1), 1) + "d", spans);
         }
         return spans;
     }

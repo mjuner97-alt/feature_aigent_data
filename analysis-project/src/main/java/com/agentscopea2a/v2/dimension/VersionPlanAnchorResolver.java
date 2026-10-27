@@ -55,7 +55,7 @@ public class VersionPlanAnchorResolver {
     /** 部门标准枚举（deptName 词表 value 校验，与 normalizeDepartment 目标一致）。 */
     private static final Set<String> DEPT_STANDARD_NAMES = Set.of(
             "杭州开发一部", "杭州开发二部", "杭州开发三部", "杭州开发四部", "杭州开发五部",
-            "杭州服务支持部", "杭州技术部", "云计算实验室");
+            "杭州服务支持部", "杭州技术部", "云计算实验室", "杭州产品赋能团队");
 
     private static final Pattern VERSION_STANDARD =
             Pattern.compile("\\d{4}年\\d{1,2}月份版本");

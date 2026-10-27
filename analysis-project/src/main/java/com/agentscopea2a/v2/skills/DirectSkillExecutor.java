@@ -26,6 +26,7 @@ import org.springframework.beans.factory.ObjectProvider;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -500,16 +501,25 @@ public class DirectSkillExecutor {
         DimensionExtraction extraction = extract(preview, selection.matchedKeywords(), topName,
                 extractExtraDimensions(question));
 
+        // 维度值台账真值校验方案 §4.5: B① 正向扫描/B③ 终局校验/互斥裁决最先做 ——
+        // 垃圾值在此拦下 (反问优于查空集), R1 注入/R2 显式提及在干净值上判定
+        LedgerTruthScan truthScan = applyLedgerTruthScan(extraction, question);
+        extraction = truthScan.extraction();
+
         // 人员台账 (人员台账维度方案 §3.3/§4.1): 我X extraction 级 enrich → 人名扫描
         // (唯一命中直填 perName/perNo, 重名在时间歧义检查之后反问)。
         // 顺序约束: 我X enrich 必须先于人名扫描/下钻展开 ("我部人员的缺陷数"先有 deptName)
         PersonScanOutcome personScan = applyPersonalDimensions(extraction, question, userId);
         extraction = personScan.extraction();
 
+        // 组→部门反填 (2026/10/27 拍板): 问句只命中统计组没提部门 (车贷/房贷型) →
+        // 台账 Q8 按组查部门自动填充, 脚本不用退化为缺部门口径
+        extraction = backfillDeptFromLedger(extraction);
+
         // 我X按需注入方案 §3.2 L2 重锚抑制: 我X/显式部门/drillDown 触发重锚时, 本轮未
         // 重新提及的细粒度维度 (组/应用/产品线/人) 继承值清空; 指代豁免; dept/时间/需求项
         // 不抑制。顺序约束: 在我X enrich/人名扫描之后、下钻展开/buildParams 之前。
-        extraction = applyReanchorSuppression(extraction, question, personScan);
+        extraction = applyReanchorSuppression(extraction, question, personScan, truthScan);
 
         // params_schema 白名单/必填/类型: registry 查不到时按无 schema 处理 (mapping 原样传),
         // 白名单拒绝交给 scriptExec 的防注入校验 → 直接报错路径 (拍板: 配错不回退)
@@ -1033,6 +1043,220 @@ public class DirectSkillExecutor {
         return List.copyOf(out);
     }
 
+    // ============ 维度值台账真值校验（维度值台账真值校验方案 §4, 2026/10/27） ============
+
+    /** 互斥平手兜底序（AliasResolver.FALLBACK_ORDER 同源）：产品线 > 组 > 应用。 */
+    private static final List<String> TRUTH_MUTEX_PRIORITY =
+            List.of("productLine", "groupName", "appName");
+
+    /** B①/B③ 产物：三键清洗后的 extraction + 扫描命中标志（计入 R2 显式提及）。 */
+    private record LedgerTruthScan(DimensionExtraction extraction,
+                                   boolean groupHit, boolean appHit, boolean productLineHit) {}
+
+    private static String truthColumn(String key) {
+        return switch (key) {
+            case "groupName" -> "统计组";
+            case "productLine" -> "产品线";
+            case "appName" -> "应用";
+            default -> null;
+        };
+    }
+
+    private static DimensionState.PeerDimensionType truthType(String key) {
+        return switch (key) {
+            case "groupName" -> DimensionState.PeerDimensionType.TEAM;
+            case "productLine" -> DimensionState.PeerDimensionType.PRODUCT_LINE;
+            case "appName" -> DimensionState.PeerDimensionType.APPLICATION;
+            default -> null;
+        };
+    }
+
+    private static List<String> valuesOf(DimensionExtraction e, String key) {
+        return switch (key) {
+            case "groupName" -> e.groupName();
+            case "productLine" -> e.productLine();
+            case "appName" -> e.appName();
+            default -> List.of();
+        };
+    }
+
+    /**
+     * B① 正向扫描 + B③ 终局校验 + 三键互斥裁决（维度值台账真值校验方案 §4.3-§4.5）：
+     * <ul>
+     *   <li>真值域 = 台账 distinct（Q5-Q7）∪ dimension_key_config 同义词 value ∪ alias 标准名；</li>
+     *   <li>B①：真值域值在问题<b>原文</b> contains 扫描（最长优先+span 消费），整名直接命中
+     *       ——「杭州二部FMBM资金交易组」「软负载均衡团队」型不规则值域不依赖正则形状；</li>
+     *   <li>B③：正则/同义词轨残余候选逐值对照真值域，域外丢弃 + 治理日志；</li>
+     *   <li>互斥裁决：三键同时非空 → 最长命中值所在键胜（平手按 产品线&gt;组&gt;应用）；</li>
+     *   <li>fail-open：resolver 缺失 / 台账字典 null 或空集 / 词表读取失败 → 该键跳过
+     *       （扫描与校验都关，行为与现状一致）。</li>
+     * </ul>
+     * 位置约束：提取之后、我X enrich 之前（R1 注入值天然在台账真值域，R2 显式提及在干净值上判定）。
+     */
+    private LedgerTruthScan applyLedgerTruthScan(DimensionExtraction extraction, String question) {
+        var resolver = personalResolverProvider == null
+                ? null : personalResolverProvider.getIfAvailable();
+        if (resolver == null || extraction == null) {
+            return new LedgerTruthScan(extraction, false, false, false);
+        }
+        Map<String, List<String>> merged = new LinkedHashMap<>();
+        Map<String, Boolean> scanHit = new LinkedHashMap<>();
+        for (String key : TRUTH_MUTEX_PRIORITY) {
+            Set<String> truthSet = truthSetFor(resolver, key);
+            List<String> current = valuesOf(extraction, key);
+            if (truthSet == null || truthSet.isEmpty()) {
+                // fail-open: 真值域不可用（失败/未灌数）→ 跳过该键的扫描与校验
+                merged.put(key, current);
+                scanHit.put(key, false);
+                continue;
+            }
+            List<String> validated = new ArrayList<>();
+            for (String v : current) {
+                if (truthSet.contains(v)) {
+                    validated.add(v);
+                } else {
+                    log.warn("DirectSkillExecutor: Ledger truth-check dropped key={} value={} "
+                            + "(不在台账/词表/alias 真值域, 如为合法值请补词表)", key, v);
+                }
+            }
+            List<String> scanned = resolver.scanTruthValues(question, truthSet);
+            for (String v : scanned) {
+                if (!validated.contains(v)) {
+                    validated.add(v);
+                }
+            }
+            merged.put(key, List.copyOf(validated));
+            scanHit.put(key, !scanned.isEmpty());
+        }
+        // 互斥裁决（拍板 2026/10/27: 最长者胜 + 日志, 平手按 TRUTH_MUTEX_PRIORITY）
+        List<String> nonEmpty = new ArrayList<>();
+        for (String key : TRUTH_MUTEX_PRIORITY) {
+            if (!merged.get(key).isEmpty()) {
+                nonEmpty.add(key);
+            }
+        }
+        if (nonEmpty.size() > 1) {
+            String winner = null;
+            int bestLen = -1;
+            for (String key : TRUTH_MUTEX_PRIORITY) {
+                for (String v : merged.get(key)) {
+                    if (v.length() > bestLen) {
+                        bestLen = v.length();
+                        winner = key;
+                    }
+                }
+            }
+            for (String key : nonEmpty) {
+                if (!key.equals(winner)) {
+                    log.info("DirectSkillExecutor: 真值域互斥裁决 → {} 保留, {} 丢弃 {}",
+                            winner, key, merged.get(key));
+                    merged.put(key, List.of());
+                    scanHit.put(key, false);
+                }
+            }
+        }
+        DimensionExtraction out = new DimensionExtraction(extraction.versionPlan(),
+                extraction.vestQuarter(), extraction.deptName(), merged.get("groupName"),
+                merged.get("appName"), merged.get("productLine"), extraction.itemNo(),
+                extraction.subItemNo(), extraction.perName(), extraction.perNo(),
+                extraction.perRole(), extraction.metrics(), extraction.matchedSkill(),
+                extraction.extraDimensions());
+        return new LedgerTruthScan(out, scanHit.get("groupName"),
+                scanHit.get("appName"), scanHit.get("productLine"));
+    }
+
+    /**
+     * 维度值→部门反填（2026/10/27 拍板）：问句没提部门但命中统计组/产品线/应用
+     * （车贷/房贷型纯维度问句）→ 台账 Q8 {@code deptsByDimension} 按维度值查部门
+     * 并集注入 deptName，脚本不用退化为缺部门口径。三键经互斥裁决后至多一键非空，
+     * 这里遍历 TRUTH_MUTEX_PRIORITY 只是统一入口。显式部门/我部已填时不动（显式
+     * 优先）；台账查不到/失败 → 不填（fail-open，脚本按缺部门口径自决）。
+     */
+    private DimensionExtraction backfillDeptFromLedger(DimensionExtraction extraction) {
+        if (extraction == null || !extraction.deptName().isEmpty()
+                || (extraction.groupName().isEmpty() && extraction.appName().isEmpty()
+                    && extraction.productLine().isEmpty())) {
+            return extraction;
+        }
+        var resolver = personalResolverProvider == null
+                ? null : personalResolverProvider.getIfAvailable();
+        if (resolver == null || resolver.ledgerRepository() == null) {
+            return extraction;
+        }
+        Set<String> depts = new LinkedHashSet<>();
+        List<String> sources = new ArrayList<>();
+        for (String key : TRUTH_MUTEX_PRIORITY) {
+            String column = truthColumn(key);
+            for (String value : valuesOf(extraction, key)) {
+                depts.addAll(resolver.ledgerRepository().deptsByDimension(column, value));
+                sources.add(value);
+            }
+        }
+        if (depts.isEmpty()) {
+            return extraction;
+        }
+        log.info("DirectSkillExecutor: 维度值→部门反填 (台账 Q8) → {} (来源 {})", depts, sources);
+        return new DimensionExtraction(extraction.versionPlan(), extraction.vestQuarter(),
+                List.copyOf(depts), extraction.groupName(), extraction.appName(), extraction.productLine(),
+                extraction.itemNo(), extraction.subItemNo(), extraction.perName(), extraction.perNo(),
+                extraction.perRole(), extraction.metrics(), extraction.matchedSkill(),
+                extraction.extraDimensions());
+    }
+
+    /** 真值域组装（§4.2）：台账 distinct ∪ 词表标准值 ∪ alias 标准名。
+     *  返回 null = 台账字典失败或词表读取失败 → 调用方跳过该键（fail-open）。 */
+    private Set<String> truthSetFor(
+            com.agentscopea2a.v2.dimension.PersonalDimensionResolver resolver, String key) {
+        Set<String> ledgerSet;
+        try {
+            ledgerSet = resolver.ledgerRepository().dimensionTruthDictionary(truthColumn(key));
+        } catch (RuntimeException e) {
+            log.warn("DirectSkillExecutor: 真值字典查询失败 key={}: {}", key, e.getMessage());
+            return null;
+        }
+        if (ledgerSet == null || ledgerSet.isEmpty()) {
+            return ledgerSet;
+        }
+        Set<String> vocab = vocabStandardValues(key);
+        if (vocab == null) {
+            return null; // 词表读取失败 → 整键跳过, 防管理员配置的标准值被误杀
+        }
+        Set<String> out = new LinkedHashSet<>(ledgerSet);
+        out.addAll(vocab);
+        Set<String> aliasNames = dimensionStateManager.aliasStandardNames(truthType(key));
+        if (aliasNames != null) {
+            out.addAll(aliasNames);
+        }
+        return out;
+    }
+
+    /** dimension_key_config 同义词 value（isSynonym）并入真值域（§4.2）。
+     *  读取失败 → null（调用方整键跳过）。 */
+    private Set<String> vocabStandardValues(String key) {
+        var repo = dimensionKeyRepoProvider == null ? null : dimensionKeyRepoProvider.getIfAvailable();
+        if (repo == null) {
+            return Set.of();
+        }
+        try {
+            Set<String> out = new LinkedHashSet<>();
+            for (var row : repo.findAllEnabled()) {
+                if (!key.equals(row.key())) {
+                    continue;
+                }
+                for (var alias : row.aliases()) {
+                    if (alias.valid() && alias.isSynonym()) {
+                        out.add(alias.value());
+                    }
+                }
+            }
+            return out;
+        } catch (RuntimeException e) {
+            log.warn("DirectSkillExecutor: 维度键词表读取失败, 真值校验跳过 key={}: {}",
+                    key, e.getMessage());
+            return null;
+        }
+    }
+
     /**
      * 我X按需注入方案 §3.2 L2 重锚抑制: 本轮触发重锚 (a.我X命中 b.显式部门 c.drillDown)
      * 时, 对 组/应用/产品线/人 按维度独立判定 —— 本轮未显式提及 → 清空 (跨轮继承残留丢弃),
@@ -1042,7 +1266,8 @@ public class DirectSkillExecutor {
      */
     private DimensionExtraction applyReanchorSuppression(DimensionExtraction extraction,
                                                          String question,
-                                                         PersonScanOutcome personScan) {
+                                                         PersonScanOutcome personScan,
+                                                         LedgerTruthScan truthScan) {
         QuestionAnalysis analysis = dimensionStateManager.analyzeQuestionRuleBased(question);
         if (analysis == null || analysis.isHasReference()) {
             return extraction; // null: 规则分析不可用 (单测 mock); 指代豁免: "那个组呢" 照旧
@@ -1057,12 +1282,17 @@ public class DirectSkillExecutor {
             return extraction;
         }
         var peer = explicit == null ? null : explicit.getPeerDimension();
+        // B① 真值域扫描命中计入显式提及（台账真值校验方案 §4.3）: 「软负载均衡团队」型
+        // 值域不合正则形状, hasExplicitTeamHit 探不到, 不计入会被重锚抑制误清
         boolean groupMentioned = personal.myGroup()
+                || (truthScan != null && truthScan.groupHit())
                 || (peer != null && peer.getType() == DimensionState.PeerDimensionType.TEAM)
                 || dimensionStateManager.hasExplicitTeamHit(question);
         boolean appMentioned = personal.myApp()
+                || (truthScan != null && truthScan.appHit())
                 || (peer != null && peer.getType() == DimensionState.PeerDimensionType.APPLICATION);
         boolean productLineMentioned = personal.myProductLine()
+                || (truthScan != null && truthScan.productLineHit())
                 || (peer != null && peer.getType() == DimensionState.PeerDimensionType.PRODUCT_LINE)
                 || dimensionStateManager.hasExplicitProductLineHit(question);
         boolean personMentioned = personal.myself() || !personScan.scannedNames().isEmpty();
@@ -1112,7 +1342,8 @@ public class DirectSkillExecutor {
             explicitRoles = List.copyOf(explicitRoles);
         }
         return applyReanchorSuppression(extraction, question,
-                new PersonScanOutcome(extraction, null, List.of(), personal, List.of(), explicitRoles));
+                new PersonScanOutcome(extraction, null, List.of(), personal, List.of(), explicitRoles),
+                null);
     }
 
     /**

@@ -27,6 +27,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
@@ -122,6 +123,15 @@ public class DimensionStateManager {
         this.aliasResolver = aliasResolver;
         this.metricWordsSupplier = metricWordsSupplier;
         this.dimensionKeySupplier = dimensionKeySupplier;
+    }
+
+    /**
+     * alias 词表标准名导出（维度值台账真值校验方案 §4.2）：指定 peer 维度类型的全部
+     * standardName，并入 B①/B③ 真值域（业务显式配置过的标准值视为合法）。
+     * aliasResolver 缺失 → 空集。
+     */
+    public Set<String> aliasStandardNames(DimensionState.PeerDimensionType type) {
+        return aliasResolver == null ? Set.of() : aliasResolver.standardNames(type);
     }
 
     // ==================== v2 状态持久化 ====================
@@ -316,6 +326,11 @@ public class DimensionStateManager {
     // 口语值方案 §3.2：延后版标准值（"10月延后"/"2026年10月延后版"），与月份版本同级的版本计划
     private static final Pattern DELAYED_VERSION =
             Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})月(份)?延后(版本?)?");
+    // 裸日期 "10月26日"（M月与D日紧接）：截止日/事件日，不是版本——EXPLICIT_VERSION/
+    // EXPLICIT_MONTH 会从中吃出 "10月"（2026-10-27 E2E："杭州三部11月版、12月版10月26日
+    // 到期" 多出 2026年10月份版本）。仅作屏蔽 span，不产出时间维度（到期日≠查询时间范围）
+    private static final Pattern BARE_DATE_SPAN =
+            Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})月(\\d{1,2})[日号]");
     // 口语值方案 §3.1：近 N 个版本/近 N 个月 → LAST:{n}V 锚点（数字形态走正则不进词表；
     // 拍板③ 按版本个数推，"近X个月"也归版本键，周/天后缀归 timeRange）
     private static final Pattern LAST_N_VERSIONS =
@@ -329,7 +344,8 @@ public class DimensionStateManager {
     // 口语值方案 §3.2：补 杭[一二三四五]部?（"杭一"/"杭二部"极简形，放 [一二三四五]部 之前保整段占用）
     private static final Pattern EXPLICIT_DEPT =
             Pattern.compile(
-                    "(杭州开发[一二三四五]部|杭州服务支持部|杭州技术部|云计算实验室"
+                    "(杭州开发[一二三四五]部|杭州服务支持部|杭州技术部|杭州产品赋能团队|云计算实验室"
+                            + "|产品赋能团队|赋能团队"
                             + "|杭州[一二三四五]部|杭[一二三四五]部?|[一二三四五]部"
                             + "|服务支持部|服务支持|技术部|云计算|实验室)");
 
@@ -344,6 +360,7 @@ public class DimensionStateManager {
             case "技术部" -> "杭州技术部";
             case "服务支持部", "服务支持" -> "杭州服务支持部";
             case "云计算", "实验室" -> "云计算实验室";
+            case "产品赋能团队", "赋能团队" -> "杭州产品赋能团队";
             default -> matched;
         };
     }
@@ -351,16 +368,22 @@ public class DimensionStateManager {
     // 应用码纯英文+连字符 (F-GCMS / F-ATP-INNER / FS-GBCP-EPL), 不含数字: 否则 "F-FPA4季度"
     // 会贪婪吃进 "4" 把应用名错切成 F-FPA4
     private static final Pattern EXPLICIT_APP = Pattern.compile("(FS?-[A-Za-z][A-Za-z-]*)");
-    // 裸应用码 (省略 F-/FS- 前缀): 首段三位及以上连续大写字母, 可后接 -两位以上大写段
-    // ("BASE"→F-BASE, "BCP-EPL"→F-BCP-EPL)。仅大写: 小写英文 (sql/csv/api) 是技术词。
+    // 裸应用码 (省略 F-/FS- 前缀): 首段三位及以上连续字母, 可后接 -两位以上字母段
+    // ("BASE"→F-BASE, "BCP-EPL"→F-BCP-EPL, "gcmcs"→F-GCMCS, 大小写归一为大写)。
+    // 技术词 (sql/csv/api, 大小写都算) 由 BARE_APP_STOP 拦截, 见 bareAppCodes。
     // 前后环视排除字母/连字符邻接, 防止 F-ATP-INNER 的 "ATP"/"INNER" 内段被二次加前缀;
     // 语义让路见 bareAppCodes
     private static final Pattern BARE_APP =
-            Pattern.compile("(?<![A-Za-z-])[A-Z]{3,}(?:-[A-Z]{2,})*(?![A-Za-z-])");
+            Pattern.compile("(?<![A-Za-z0-9_-])[A-Za-z]{3,}(?:-[A-Za-z]{2,})*(?![A-Za-z_-])");
+    // 技术词表 (裸码拦截, 命中任一连字符段即跳过): 中文问句里游离的英文多为技术词,
+    // 不补 F- 前缀; 新词按需追加
+    private static final Set<String> BARE_APP_STOP = Set.of(
+            "SQL", "CSV", "API", "HTTP", "HTTPS", "JSON", "HTML", "URL", "XML", "PDF", "PPT", "EXCEL");
 
     /**
      * 裸应用码提取 (用户省略 F-/FS- 前缀): 屏蔽 F- 编码 / 时间 / 部门 / 需求项 / 组 /
-     * 产品线 / 别名命中与歧义 span 后, 剩余文本中的大写连续字母段 (含连字符串) 补 F- 返回。
+     * 产品线 / 别名命中与歧义 span 后, 剩余文本中的连续字母段 (含连字符串, 大小写都收)
+     * 归一大写补 F- 返回; 命中技术词表 (任一段) 跳过。
      * 让路理由: "GBC" 是组/产品线别名、"FMBM" 内嵌在 "FMBM应用平台组" 组名里,
      * 都不是应用码; "FPA4季度" 的 FPA 无任何归属 → 应用 F-FPA。
      */
@@ -382,7 +405,17 @@ public class DimensionStateManager {
         Matcher m = BARE_APP.matcher(maskSpanUnion(q, spans));
         List<String> codes = new ArrayList<>();
         while (m.find()) {
-            codes.add("F-" + m.group());
+            String code = m.group().toUpperCase(Locale.ROOT);
+            boolean stop = false;
+            for (String seg : code.split("-")) {
+                if (BARE_APP_STOP.contains(seg)) {
+                    stop = true;
+                    break;
+                }
+            }
+            if (!stop) {
+                codes.add("F-" + code);
+            }
         }
         return codes;
     }
@@ -428,6 +461,11 @@ public class DimensionStateManager {
     // 守卫只收 各/每/按：分 开头有真实组名（分行业务组）不能拒，而 分组/分产品线
     // 裸词仅 1 字前缀、本来就构不成正则命中（拍板点⑧：无以各/每/按开头的真实组名）。
     private static final String GRANULARITY_LEADING = "各每按";
+
+    /** 数量粒度短语（维度值台账真值校验方案 §3）：「两个组/3个组/几个组」——
+     *  alias 命中嵌在以此结尾的 token 内时不是组名嵌入，抑制守卫豁免。 */
+    private static final Pattern GRANULARITY_QUANTIFIER_SUFFIX =
+            Pattern.compile("[一二两三四五六七八九十\\d]+个?组");
 
     private static boolean isGranularityToken(String token) {
         return token != null && !token.isEmpty()
@@ -639,9 +677,30 @@ public class DimensionStateManager {
         return maskSpanList(q, spans);
     }
 
+    /**
+     * 日期类屏蔽 span 并集（{@link TimeRangeExtractor#absoluteDateSpans} 的区间/截至
+     * + 裸 "M月D日"）：供版本正则提取与内置键词表合并屏蔽——日期里的月份数字不是版本。
+     */
+    private static List<int[]> dateShieldSpans(String q) {
+        List<int[]> spans = new ArrayList<>(TimeRangeExtractor.absoluteDateSpans(q));
+        Matcher m = BARE_DATE_SPAN.matcher(q);
+        while (m.find()) {
+            spans.add(new int[] {m.start(), m.end()});
+        }
+        return spans;
+    }
+
+    /** 多组 span 合并后统一屏蔽（maskSpanList 内部按 start 排序并跳过重叠）。 */
+    private static String maskSpanUnion(String q, List<int[]>... groups) {
+        List<int[]> all = new ArrayList<>();
+        for (List<int[]> g : groups) {
+            all.addAll(g);
+        }
+        return all.isEmpty() ? q : maskSpanList(q, all);
+    }
+
     /** 屏蔽给定 start/end span (按 start 排序去重叠)。 */
-    private static String maskSpanList(String q, List<int[]> spans) {
-        if (spans.isEmpty()) {
+    private static String maskSpanList(String q, List<int[]> spans) {        if (spans.isEmpty()) {
             return q;
         }
         spans.sort(Comparator.comparingInt(s -> s[0]));
@@ -882,6 +941,10 @@ public class DimensionStateManager {
         Set<String> quarters = new LinkedHashSet<>();
         String currentYear = String.valueOf(year);
 
+        // 裸日期/日期区间 span（"10月26日到期"）不是版本：先收集屏蔽，
+        // 防止 EXPLICIT_VERSION/EXPLICIT_MONTH 从日期里吃出 "10月" 版本值
+        List<int[]> dateSpans = dateShieldSpans(q);
+
         // 共享后缀列举先跑 ("10、11月版" → 10月+11月两个版本), 否则前段裸数字漏收;
         // 末段与 EXPLICIT_VERSION 归一产物相同, Set 去重指纹不变
         List<int[]> sharedTimeSpans = new ArrayList<>();
@@ -897,9 +960,9 @@ public class DimensionStateManager {
             sharedTimeSpans.add(new int[] {sharedMatcher.start(), sharedMatcher.end()});
         }
 
-        // 共享 span 屏蔽后再跑单数正则: 显式年份≠当前年时, 末段会被单数正则按
+        // 共享 span + 日期 span 屏蔽后再跑单数正则: 显式年份≠当前年时, 末段会被单数正则按
         // "无年份→补当前年"重复收一遍 (2025年3和4季度 → 多出 2026年4季度)
-        String qTime = sharedTimeSpans.isEmpty() ? q : maskSpanList(q, sharedTimeSpans);
+        String qTime = maskSpanUnion(q, dateSpans, sharedTimeSpans);
 
         Matcher versionMatcher = EXPLICIT_VERSION.matcher(qTime);
         while (versionMatcher.find()) {
@@ -920,8 +983,8 @@ public class DimensionStateManager {
             sharedTimeSpans.add(new int[] {sharedQuarterMatcher.start(), sharedQuarterMatcher.end()});
         }
 
-        // 共享 span 已在上面的 qTime 屏蔽串中重算覆盖 (含季度共享段)
-        qTime = sharedTimeSpans.isEmpty() ? q : maskSpanList(q, sharedTimeSpans);
+        // 共享 span + 日期 span 已在 qTime 屏蔽串中重算覆盖 (含季度共享段)
+        qTime = maskSpanUnion(q, dateSpans, sharedTimeSpans);
 
         Matcher quarterMatcher = EXPLICIT_QUARTER.matcher(qTime);
         while (quarterMatcher.find()) {
@@ -1028,10 +1091,16 @@ public class DimensionStateManager {
         Matcher appMatcher = EXPLICIT_APP.matcher(q);
         Set<String> apps = new LinkedHashSet<>();
         while (appMatcher.find()) {
-            apps.add(appMatcher.group());
+            // 应用码归一大写 ("F-gcmcs"→F-GCMCS), 与裸码大写归一同口径, 保证去重合并
+            apps.add(appMatcher.group().toUpperCase(Locale.ROOT));
         }
-        // 裸应用码 ("FPA4季度" → F-FPA): 与 F- 编码同集合去重 ("FPA和F-FPA" → 一个应用)
-        apps.addAll(bareAppCodes(q, aliasRes));
+        // 裸应用码 ("FPA4季度" → F-FPA): 与 F- 编码同集合去重 ("FPA和F-FPA" → 一个应用)。
+        // 裸码是省略前缀的启发式猜测, 不与配置过的 alias 精确命中争 peer 槽位 ——
+        // E2E 2026-10-27: 「使用 q2_1_dual_time_demo skill 车贷、房贷两个组」skill 名被
+        // 拆成 F-DUAL/F-TIME 假码, APPLICATION 单类型槽位把 alias 的 TEAM 双值整个挤掉
+        if (!aliasHit(aliasRes)) {
+            apps.addAll(bareAppCodes(q, aliasRes));
+        }
         if (!apps.isEmpty()) {
             explicit.setPeerDimension(
                     new DimensionState.PeerDimension(
@@ -1162,7 +1231,7 @@ public class DimensionStateManager {
         if (rows == null || rows.isEmpty()) {
             return BuiltinVocabHits.EMPTY;
         }
-        List<int[]> shielded = TimeRangeExtractor.absoluteDateSpans(q);
+        List<int[]> shielded = dateShieldSpans(q);
         Set<String> versions = new LinkedHashSet<>();
         Set<String> quarters = new LinkedHashSet<>();
         Set<String> depts = new LinkedHashSet<>();
@@ -1307,6 +1376,13 @@ public class DimensionStateManager {
             int start, int end, List<int[]> teamSpans) {
         for (int[] span : teamSpans) {
             if (start >= span[0] && end < span[1] && span[1] - end > 1) {
+                // 数量粒度后缀豁免（维度值台账真值校验方案 §3）：token 尾巴是「两个组/3个组」
+                // 型数量短语 → 该 token 是「alias + N个组」的口语组合而非组名，不抑制。
+                // E2E 实证 2026-10-26: 「车贷、房贷两个组的风险」房贷命中被误杀丢值。
+                String suffix = q.substring(end, span[1]);
+                if (GRANULARITY_QUANTIFIER_SUFFIX.matcher(suffix).matches()) {
+                    continue;
+                }
                 if (dimension == DimensionState.PeerDimensionType.TEAM) {
                     String token = q.substring(span[0], span[1]);
                     for (String standard : standards) {

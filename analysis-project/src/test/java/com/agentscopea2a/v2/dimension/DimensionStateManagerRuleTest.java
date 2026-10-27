@@ -467,4 +467,24 @@ class DimensionStateManagerRuleTest {
         var peer = m.analyzeQuestionRuleBased("我的组10月的数据").getExplicitDimensions().getPeerDimension();
         assertTrue(peer != null && peer.getValues().contains("我的组"));
     }
+
+    @Test
+    void bareDateNotParsedAsVersion() {
+        // "10月26日"（M月与D日紧接）是截止日，不是 10 月份版本
+        String y = String.valueOf(currentYear());
+        DimensionState.TimeDimension time =
+                extractTime("杭州三部11月版、12月版10月26日到期Q2不达标情况");
+        assertEquals(DimensionState.TimeDimensionType.VERSION, time.getType());
+        assertEquals(List.of(y + "年11月份版本", y + "年12月份版本"), time.getValues());
+    }
+
+    @Test
+    void bareDateAloneYieldsNoVersion() {
+        assertNull(extractTime("10月26日到期的需求有哪些"));
+    }
+
+    @Test
+    void dateRangeNotParsedAsVersion() {
+        assertNull(extractTime("10月1日到10月15日的缺陷数"));
+    }
 }

@@ -60,6 +60,13 @@ public class PersonLedgerRepository {
     private static final String Q4_ROLE_DICTIONARY = "SELECT DISTINCT \"岗位角色\" FROM " + TABLE
             + " WHERE " + SNAPSHOT_FILTER + " AND \"岗位角色\" IS NOT NULL";
 
+    /** Q8 维度值→部门（2026/10/27 拍板）：问句没提部门但命中统计组/产品线/应用时，
+     *  按维度值反填 deptName。列名拼接进 SQL 前过白名单闸（同 Q5-Q7 TRUTH_COLUMNS）。 */
+    private static final Set<String> DEPT_LOOKUP_COLUMNS = Set.of("统计组", "产品线", "应用");
+
+    /** Q5-Q7 真值列白名单（维度值台账真值校验方案 §4.1）：列名拼接进 SQL 前必须过闸。 */
+    private static final Set<String> TRUTH_COLUMNS = Set.of("统计组", "产品线", "应用");
+
     /** Q1 结果（多人多行/兼岗 → 各列 distinct 收集为多值，LinkedHashSet 保序去重）。 */
     public record PersonLedgerRow(List<String> depts, List<String> groups, List<String> apps,
                                   List<String> productLines, List<String> roles,
@@ -117,6 +124,11 @@ public class PersonLedgerRepository {
 
     private final Map<String, CachedRow> userCache = new ConcurrentHashMap<>();
 
+    private record CachedDepts(List<String> depts, long at) {}
+
+    // Q8 维度值→部门 per-key TTL 缓存（失败负缓存防反复打库）
+    private final Map<String, CachedDepts> groupDeptCache = new ConcurrentHashMap<>();
+
     private final Object lock = new Object();
     // writes guarded by lock, reads volatile
     private volatile Set<String> nameDictionary;
@@ -128,6 +140,13 @@ public class PersonLedgerRepository {
     private volatile Set<String> roleDictionary;
     private volatile long roleDictExpireAt;
     private volatile long roleDictNextRetryAt;
+
+    private record CachedTruth(Set<String> values, long expireAt) {}
+
+    // Q5-Q7 真值字典（维度值台账真值校验方案 §4.1），per-column TTL；values 可为空集
+    private final Map<String, CachedTruth> truthDictCache = new ConcurrentHashMap<>();
+    private final Map<String, Long> truthDictNextRetryAt = new ConcurrentHashMap<>();
+    private final Object truthLock = new Object();
 
     public PersonLedgerRepository(JdbcTemplate jdbcTemplate, long ttlSeconds) {
         this.jdbcTemplate = jdbcTemplate;
@@ -253,6 +272,46 @@ public class PersonLedgerRepository {
     }
 
     /**
+     * Q8 维度值→部门（2026/10/27 拍板）：问句没提部门但命中统计组/产品线/应用
+     * （车贷/房贷型纯组维度问句）时，DirectSkillExecutor 按维度值反填 deptName。
+     * TTL 同 per-user 归属；失败/查无 → 空列表（fail-open 不反填，负缓存防反复打库）。
+     * column 白名单外抛 IllegalArgumentException（拼接进 SQL 前过闸）。
+     */
+    public List<String> deptsByDimension(String column, String value) {
+        if (column == null || !DEPT_LOOKUP_COLUMNS.contains(column)) {
+            throw new IllegalArgumentException("unsupported dept-lookup column: " + column);
+        }
+        if (value == null || value.isBlank()) {
+            return List.of();
+        }
+        String cacheKey = column + ":" + value;
+        long now = System.currentTimeMillis();
+        CachedDepts cached = groupDeptCache.get(cacheKey);
+        if (cached != null && now - cached.at() < ttlMillis) {
+            return cached.depts();
+        }
+        List<String> out = new ArrayList<>();
+        try {
+            jdbcTemplate.query("SELECT DISTINCT \"部门\" FROM " + TABLE
+                            + " WHERE \"" + column + "\" = ? AND " + SNAPSHOT_FILTER,
+                    rs -> {
+                        String dept = blankToNull(rs.getString("部门"));
+                        if (dept != null && !out.contains(dept)) {
+                            out.add(dept);
+                        }
+                    }, value);
+        } catch (Exception ex) {
+            log.warn("PersonLedgerRepository deptsByDimension({}, {}) failed (no backfill): {}",
+                    column, value, ex.getMessage());
+            groupDeptCache.put(cacheKey, new CachedDepts(List.of(), now));
+            return List.of();
+        }
+        List<String> result = List.copyOf(out);
+        groupDeptCache.put(cacheKey, new CachedDepts(result, now));
+        return result;
+    }
+
+    /**
      * Q3 姓名字典（人名扫描用，全量常驻内存 Set，TTL 30min）。
      * 加载失败 → 空 Set（人名扫描整体关闭，只影响 G4）+ 60s 退避重试。
      */
@@ -339,9 +398,68 @@ public class PersonLedgerRepository {
         }
     }
 
+    /**
+     * Q5-Q7 维度真值字典（维度值台账真值校验方案 §4.1，2026/10/27）：全表 DISTINCT
+     * 指定列（统计组/产品线/应用），TTL 30min + 失败 60s 退避，B① 正向扫描与 B③
+     * 终局校验共用的真值域。
+     *
+     * <p>与 Q4 的语义差异（校验用途必须区分「失败」与「真没数据」）：
+     * 返回 <b>null</b> = 查询失败且无历史缓存（调用方<b>跳过</b>该键扫描与校验，fail-open
+     * 防误杀）；非 null Set = 真值域快照（空集 = 成功查出行数为 0，调用方同样跳过——
+     * 空域校验会误杀一切）。
+     */
+    public Set<String> dimensionTruthDictionary(String column) {
+        if (column == null || !TRUTH_COLUMNS.contains(column)) {
+            throw new IllegalArgumentException("unsupported truth column: " + column);
+        }
+        CachedTruth cached = truthDictCache.get(column);
+        long now = System.currentTimeMillis();
+        if (cached != null && now < cached.expireAt()) {
+            return cached.values();
+        }
+        Long nextRetry = truthDictNextRetryAt.get(column);
+        if (nextRetry != null && now < nextRetry) {
+            return cached == null ? null : cached.values();
+        }
+        synchronized (truthLock) {
+            cached = truthDictCache.get(column);
+            now = System.currentTimeMillis();
+            if (cached != null && now < cached.expireAt()) {
+                return cached.values();
+            }
+            nextRetry = truthDictNextRetryAt.get(column);
+            if (nextRetry != null && now < nextRetry) {
+                return cached == null ? null : cached.values();
+            }
+            Set<String> fresh = new HashSet<>();
+            try {
+                jdbcTemplate.query("SELECT DISTINCT \"" + column + "\" FROM " + TABLE
+                                + " WHERE " + SNAPSHOT_FILTER + " AND \"" + column + "\" IS NOT NULL",
+                        rs -> {
+                            String value = blankToNull(rs.getString(column));
+                            if (value != null) {
+                                fresh.add(value);
+                            }
+                        });
+                CachedTruth snapshot = new CachedTruth(Set.copyOf(fresh),
+                        System.currentTimeMillis() + ttlMillis);
+                truthDictCache.put(column, snapshot);
+                log.info("PersonLedgerRepository truth dictionary [{}] refreshed: {} values",
+                        column, fresh.size());
+                return snapshot.values();
+            } catch (Exception ex) {
+                truthDictNextRetryAt.put(column, System.currentTimeMillis() + 60_000L);
+                log.warn("PersonLedgerRepository truth dictionary [{}] load failed (check skipped): {}",
+                        column, ex.getMessage());
+                return cached == null ? null : cached.values();
+            }
+        }
+    }
+
     /** 测试与运维口：清除缓存强制下次重读。 */
     public void invalidate() {
         userCache.clear();
+        groupDeptCache.clear();
         synchronized (lock) {
             nameDictionary = null;
             dictExpireAt = 0;
@@ -351,6 +469,10 @@ public class PersonLedgerRepository {
             roleDictionary = null;
             roleDictExpireAt = 0;
             roleDictNextRetryAt = 0;
+        }
+        synchronized (truthLock) {
+            truthDictCache.clear();
+            truthDictNextRetryAt.clear();
         }
     }
 

@@ -17,7 +17,7 @@ stdout 首行「时间入参回显」即 E2E 观察点: 断言脚本实际收到
     env:   GAUSS_JDBC_URL / GAUSS_USER / GAUSS_PASS / GAUSS_JAR
 
 参数:
-    dept        必填, str 或 [str]
+    dept        可选, str 或 [str] — 未提及时不发 SQL 仅回显维度入参
     version     可选, 版本计划 (str 或 [str]) — 与 quarter 互斥使用
     quarter     可选, 季度 (str 或 [str]), 形如 "2026年4季度"
     qStart      可选, 季度窗口起 (yyyy-MM-dd), 仅作回显+区间兜底
@@ -116,8 +116,9 @@ def main():
         print(f"ERROR 参数必须是字符串或字符串数组, 收到: {params}", file=sys.stderr)
         sys.exit(1)
     if not depts:
-        print(f"ERROR 缺少必填参数 dept, 收到: {params}", file=sys.stderr)
-        sys.exit(1)
+        # 车贷/房贷等纯组维度 E2E 问句没有部门: 不报错, 跳过查询仅回显维度入参
+        # (与下方「空时间口径不发 SQL」同模式)
+        print("NOTE 未提及部门 (dept), 跳过查询仅回显维度入参", file=sys.stderr)
 
     # 1. E2E 观察点: 回显实际收到的时间入参 + 脚本采用的时间家族
     if versions:
@@ -153,8 +154,8 @@ def main():
         time_source = "none"
         query_versions = []
 
-    # 3. 调配注册 SQL (复用 q2_1 既有 SQL: dept + version); 空时间口径不发 SQL
-    if query_versions:
+    # 3. 调配注册 SQL (复用 q2_1 既有 SQL: dept + version); 空时间/空部门口径不发 SQL
+    if query_versions and depts:
         try:
             rows = run_registered_sql(SQL_ID, {"dept": depts, "version": query_versions})
             df = pd.DataFrame(rows)
@@ -193,7 +194,7 @@ def main():
 
     # 5. 输出: 汇总表 + 查询口径行 + json 行 + echarts 块 + 下载块
     scope = "、".join(query_versions) if query_versions else "(空·需求项全历史口径)"
-    print(f"查询口径: 部门 {('、'.join(depts))} | 时间来源 {time_source} | 版本 {scope}")
+    print(f"查询口径: 部门 {('、'.join(depts) if depts else '(未提及)')} | 时间来源 {time_source} | 版本 {scope}")
     for note in dim_filter_notes:
         print(f"维度过滤: {note}")
     print()
