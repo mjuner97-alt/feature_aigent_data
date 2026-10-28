@@ -199,7 +199,7 @@ async function loadCases() {
   try {
     const owner = getLoggedInUserId() || '';
 
-    const resp = await fetch('http://122.248.61.59:2021/skillRecord/list', {
+    const resp = await fetch('http://122.244.14.11:8081/skillRecord/list', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
