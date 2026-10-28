@@ -516,7 +516,7 @@ public class FlowDefinitionService {
         return new SkillFlowDto(flow.getId(), flow.getCode(), flow.getName(), flow.getDescription(), flow.getTaskQuestion(),
                 flow.getSummaryQuestionTemplate(), flow.getEnabled(), flow.getScheduleRules(), flow.getMaxParallelism(),
                 flow.getNotifyEnabled(), Boolean.TRUE.equals(flow.getChatPublic()),
-                triggers, nodes, parseOutlineObject(flow), flow.getCreatedBy(), flow.getCreatedAt(), flow.getUpdatedAt(), flow.getDeletedAt() != null, flow.getNotifyContactName(), flow.getNotifyContactPhone(), flow.getNotifyBodyTemplate(), displayExecutors(flow), flow.getAutoTriggerEnabled());
+                triggers, nodes, parseOutlineObject(flow), flow.getCreatedBy(), flow.getCreatedAt(), flow.getUpdatedAt(), flow.getDeletedAt() != null, flow.getNotifyContactName(), flow.getNotifyContactPhone(), flow.getNotifyBodyTemplate(), displayExecutors(flow), flow.getAutoTriggerEnabled(), flow.getTypeId(), flow.getPriority());
     }
 
     /** 旧客户端不传名单时保留授权；显式空数组清空授权。创建人天然可执行，不入关系表。 */
@@ -638,3 +638,4 @@ public class FlowDefinitionService {
         return value == null ? "" : value.trim();
     }
 }
+

@@ -34,7 +34,9 @@ public record SkillFlowDto(
         String notifyBodyTemplate,
         /** 可执行人 userId 列表(创建人指定的额外手动执行用户,不含创建人);空 = 仅创建人可执行。 */
         List<String> executors,
-        Boolean autoTriggerEnabled) {
+        Boolean autoTriggerEnabled,
+        Long typeId,
+        Integer priority) {
 
     public SkillFlowDto(Long id, String code, String name, String description, String taskQuestion,
                         String summaryQuestionTemplate, Boolean enabled, String scheduleRules, Integer maxParallelism,
@@ -43,7 +45,7 @@ public record SkillFlowDto(
                         Boolean deleted) {
         this(id, code, name, description, taskQuestion, summaryQuestionTemplate, enabled, scheduleRules,
                 maxParallelism, notifyEnabled, chatPublic, triggers, nodes, reportOutline, createdBy,
-                createdAt, updatedAt, deleted, null, null, null, List.of(), false);
+                createdAt, updatedAt, deleted, null, null, null, List.of(), false, null, 0);
     }
 
     /** 兼容增加可执行人之前的查询调用。 */
@@ -54,7 +56,7 @@ public record SkillFlowDto(
                         Boolean deleted, String notifyContactName, String notifyContactPhone, String notifyBodyTemplate) {
         this(id, code, name, description, taskQuestion, summaryQuestionTemplate, enabled, scheduleRules,
                 maxParallelism, notifyEnabled, chatPublic, triggers, nodes, reportOutline, createdBy,
-                createdAt, updatedAt, deleted, notifyContactName, notifyContactPhone, notifyBodyTemplate, List.of(), false);
+                createdAt, updatedAt, deleted, notifyContactName, notifyContactPhone, notifyBodyTemplate, List.of(), false, null, 0);
     }
 
     /** 触发词:用户消息命中 keyword 后该流程进入长任务路由。 */
@@ -83,3 +85,5 @@ public record SkillFlowDto(
             Integer maxAttempts,
             Integer sortOrder) {}
 }
+
+

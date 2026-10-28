@@ -296,7 +296,10 @@ public class FlowCompletionService {
                 }
             }
         }
-        notificationDispatcher.enqueue(record, new NotificationPayload("HTML", notificationHtml(execution, notifyBodyTemplate),
+        String content = isFailure(execution)
+                ? failureNotificationHtml(execution, mapper.selectNodeExecutions(execution.getId()))
+                : notificationHtml(execution, notifyBodyTemplate);
+        notificationDispatcher.enqueue(record, new NotificationPayload("HTML", content,
                 filePath, reportFileName(execution),
                 reportUrl(execution), execution.getFlowId(), FlowReportNaming.datedTitle(execution.getFlowName(), execution), null, null,
                 execution.getId(), execution.getStatus().name(), LocalDateTime.now(clock),
@@ -316,15 +319,26 @@ public class FlowCompletionService {
             LinkedHashMap<String, Boolean> recipients = new LinkedHashMap<>();
             addRecipient(recipients, execution.getTriggerUserId());
             if (scriptRegistryMapper != null) {
-                for (SkillFlowNodeExecution node : mapper.selectNodeExecutions(execution.getId())) {
+                List<SkillFlowNodeExecution> nodes = mapper.selectNodeExecutions(execution.getId());
+                for (SkillFlowNodeExecution node : nodes == null ? List.<SkillFlowNodeExecution>of() : nodes) {
                     if (node.getStatus() != FlowNodeExecutionStatus.FAILED
                             || node.getScriptId() == null || node.getScriptId().isBlank()) continue;
                     ScriptRegistryEntry script = scriptRegistryMapper.selectByScriptId(node.getScriptId().trim());
-                    if (script != null) addRecipient(recipients, script.getCreatedBy());
+                    if (script == null || script.getCreatedBy() == null || script.getCreatedBy().isBlank()) {
+                        log.warn("Failed Python node creator could not be resolved: executionId={}, nodeKey={}, scriptId={}",
+                                execution.getId(), node.getNodeKey(), node.getScriptId());
+                    } else {
+                        addRecipient(recipients, script.getCreatedBy());
+                    }
                 }
+            } else {
+                log.warn("Failed Python node creators cannot be resolved because script registry is unavailable: executionId={}",
+                        execution.getId());
             }
             List<String> ids = orgService.filterExistingUserIds(new ArrayList<>(recipients.keySet()));
-            if (!ids.isEmpty()) return ids;
+            // Never reintroduce business recipients for a failed execution. If the trigger
+            // user is stale, the dispatcher records the failed delivery for diagnosis.
+            return ids;
         }
         List<String> configured = inRecipientScope(execution)
                 ? orgService.filterExistingUserIds(NotificationReceivers.parse(execution.getNotifyReceiversSnapshot()))
@@ -342,6 +356,31 @@ public class FlowCompletionService {
         return type == FlowTriggerType.MANUAL || type == FlowTriggerType.CHAT
                 || (triggers.isEmpty() ? type == FlowTriggerType.AUTO_METRIC
                 : triggers.contains(type == null ? "" : type.name()));
+    }
+
+    private static boolean isFailure(SkillFlowExecution execution) {
+        return execution.getStatus() == FlowExecutionStatus.FAILED
+                || execution.getStatus() == FlowExecutionStatus.PARTIAL_SUCCESS;
+    }
+
+    /** Failure mail deliberately bypasses the configurable success template. */
+    static String failureNotificationHtml(SkillFlowExecution execution, List<SkillFlowNodeExecution> nodes) {
+        String title = escapeHtml(Objects.toString(execution.getFlowName(), "长任务"));
+        StringBuilder html = new StringBuilder("<html><body>")
+                .append("<h3>长任务执行失败：").append(title).append("</h3>")
+                .append("<p>执行 ID：").append(escapeHtml(Objects.toString(execution.getId(), "")))
+                .append("；状态：").append(escapeHtml(Objects.toString(execution.getStatus(), "UNKNOWN"))).append("</p>")
+                .append("<h4>失败节点与错误摘要</h4><ul>");
+        for (SkillFlowNodeExecution node : nodes == null ? List.<SkillFlowNodeExecution>of() : nodes) {
+            if (node == null || node.getStatus() != FlowNodeExecutionStatus.FAILED) continue;
+            String name = node.getNodeName() == null || node.getNodeName().isBlank()
+                    ? Objects.toString(node.getNodeKey(), "未命名节点") : node.getNodeName();
+            html.append("<li><strong>").append(escapeHtml(name)).append("</strong>")
+                    .append("：").append(escapeHtml(Objects.toString(node.getErrorCode(), "执行失败")))
+                    .append(" - ").append(escapeHtml(Objects.toString(node.getErrorMessage(), "无错误摘要")))
+                    .append("</li>");
+        }
+        return html.append("</ul></body></html>").toString();
     }
 
     /** 解析报告绝对路径,并限制在报告根目录内(防路径穿越)。 */
