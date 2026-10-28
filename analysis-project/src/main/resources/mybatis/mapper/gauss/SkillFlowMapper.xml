@@ -33,6 +33,8 @@
     <!-- 流程定义表 skill_flow -->
     <resultMap id="FlowMap" type="com.agentscopea2a.v2.skillManager.entity.SkillFlow">
         <id column="id" property="id"/>
+        <result column="type_id" property="typeId"/>
+        <result column="priority" property="priority"/>
         <result column="code" property="code"/>
         <result column="name" property="name"/>
         <result column="description" property="description"/>
@@ -215,7 +217,7 @@
 
     <!-- 各表公共列清单,供查询复用;新增列时记得同步维护 -->
     <sql id="flowColumns">
-        id, code, name, description, task_question, summary_question_template, enabled, schedule_rules, auto_trigger_enabled,
+        id, type_id, priority, code, name, description, task_question, summary_question_template, enabled, schedule_rules, auto_trigger_enabled,
         max_parallelism, notify_enabled, notify_contact_name, notify_contact_phone, notify_body_template, notify_receivers, notify_receiver_triggers, chat_public,
         report_outline, report_process_id, created_by, created_at, updated_at, deleted_at
     </sql>
@@ -234,10 +236,10 @@
 
     <!-- 新建流程:保存编码/名称/任务问题/汇总模板/排程星期/并发数/通知开关 -->
     <insert id="insertFlow" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO skill_flow (code, name, description, task_question, summary_question_template, enabled,
+        INSERT INTO skill_flow (type_id, priority, code, name, description, task_question, summary_question_template, enabled,
                                 schedule_rules, auto_trigger_enabled, max_parallelism, notify_enabled, notify_contact_name, notify_contact_phone, notify_body_template, notify_receivers, report_outline, report_process_id,
                                 notify_receiver_triggers, created_by)
-        VALUES (#{code}, #{name}, #{description}, #{taskQuestion}, #{summaryQuestionTemplate}, #{enabled},
+        VALUES (#{typeId}, COALESCE(#{priority}, 0), #{code}, #{name}, #{description}, #{taskQuestion}, #{summaryQuestionTemplate}, #{enabled},
                 #{scheduleRules}, #{autoTriggerEnabled}, #{maxParallelism}, #{notifyEnabled}, #{notifyContactName}, #{notifyContactPhone}, #{notifyBodyTemplate}, #{notifyReceivers},
                 #{reportOutline}, #{reportProcessId}, #{notifyReceiverTriggers}, #{createdBy})
     </insert>
@@ -282,10 +284,11 @@
     </select>
 
     <select id="selectAllEnabledFlows" resultMap="FlowMap">
-        SELECT <include refid="flowColumns"/>
-        FROM skill_flow
-        WHERE enabled = TRUE AND deleted_at IS NULL
-        ORDER BY id
+        SELECT f.*
+        FROM skill_flow f
+        JOIN skill_flow_type t ON t.id = f.type_id AND t.enabled = TRUE
+        WHERE f.enabled = TRUE AND f.deleted_at IS NULL
+        ORDER BY t.sort_order ASC, f.created_at ASC, f.id ASC
     </select>
 
     <select id="lockFlowForAuto" resultType="java.lang.Long">
@@ -386,7 +389,9 @@
     <!-- 全量更新流程定义(按 id),软删除的流程不允许再改 -->
     <update id="updateFlow">
         UPDATE skill_flow
-        SET code=#{code},
+        SET type_id=#{typeId},
+            priority=COALESCE(#{priority}, 0),
+            code=#{code},
             name=#{name},
             description=#{description},
             task_question=#{taskQuestion},
@@ -800,6 +805,8 @@
         SELECT n.*
         FROM skill_flow_node_execution n
                  JOIN skill_flow_execution e ON e.id = n.flow_execution_id
+                 JOIN skill_flow f ON f.id = e.flow_id
+                 JOIN skill_flow_type t ON t.id = f.type_id
         WHERE (n.status IN ('QUEUED', 'RETRY_WAIT') OR
                (n.status = 'RUNNING' AND
                 n.lease_expires_at &lt; #{now} AND
@@ -815,7 +822,7 @@
                  AND r.status = 'RUNNING'
                  AND r.lease_expires_at &gt;= #{now}) &lt;
               GREATEST(COALESCE(e.max_parallelism_snapshot, 1), 1)
-        ORDER BY n.id LIMIT 100
+        ORDER BY t.sort_order ASC, e.created_at ASC, e.id ASC, n.id ASC LIMIT 100
     </select>
 
     <!-- 原子抢占节点:状态/租约条件满足才切 RUNNING、attempt_count+1、写入新租约(谁先 update 谁赢),
@@ -1052,4 +1059,7 @@
         </choose>
     </select>
 </mapper>
+
+
+
 
