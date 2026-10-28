@@ -256,6 +256,142 @@ class DirectSkillExecutorTest {
         assertNull(newExecutor(true).plan(QUESTION, "alice", null));
     }
 
+    // ==================== 旁路词让位层级轨 (docs/202610/直接执行优先于旁路词重排序方案.md §3.3) ====================
+
+    @SuppressWarnings("unchecked")
+    private final ObjectProvider<SkillBypassKeywordService> bypassProvider = mock(ObjectProvider.class);
+
+    private DirectSkillExecutor newExecutorWithBypass(boolean enabled) {
+        return new DirectSkillExecutor(metadataRepository, selector, usageResolver, indexRepo,
+                scriptRegistryMapper, dimensionStateManager, hookProvider, dimensionKeyRepoProvider,
+                bypassProvider, objectMapper, enabled);
+    }
+
+    /** 旁路词表; active metadata supplier 复用 metadataRepository (显式点名豁免与生产同源)。 */
+    private SkillBypassKeywordService bypassService(String... words) {
+        return new SkillBypassKeywordService(
+                () -> java.util.Arrays.stream(words)
+                        .map(w -> new SkillBypassKeyword(1L, "g", w, true, "")).toList(),
+                metadataRepository::findActive);
+    }
+
+    /** 层级轨 metadata (L1+L2 配置, 叶层空)。 */
+    private static SkillRoutingMetadata levelMeta(String name, String scriptId, String mapping,
+                                                  List<String> level1, List<String> level2) {
+        return new SkillRoutingMetadata(name, "summary", List.of(), List.of(), List.of(),
+                "admin", true, LocalDateTime.now(), level1, level2, List.of(), scriptId, mapping);
+    }
+
+    /** 存量轨 metadata (三层全空, 仅叶层 keywords)。 */
+    private static SkillRoutingMetadata legacyMeta(String name, String scriptId, String mapping,
+                                                   String keyword) {
+        return new SkillRoutingMetadata(name, "summary", List.of(keyword), List.of(), List.of(),
+                "admin", true, LocalDateTime.now(), List.of(), List.of(), List.of(), scriptId, mapping);
+    }
+
+    private static final String LEVEL_QUESTION = "三部10月未闭环的A号数据";
+
+    @Test
+    void bypassWordYieldsToLevelTrackDirectExec() {
+        // 拍板①/冲突案例: 「A号」既是旁路词又是 L2 → 层级轨 top-1 接住, 直接执行不放弃
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                levelMeta("dept_skill", "script_a", "{\"dept\":\"deptName\"}",
+                        List.of("未闭环"), List.of("A号"))));
+        when(bypassProvider.getIfAvailable()).thenReturn(bypassService("分析", "A号"));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(LEVEL_QUESTION), Mockito.isNull())).thenReturn(
+                state(null, List.of("杭州开发三部")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true}]"));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithBypass(true).plan(LEVEL_QUESTION, "alice", null);
+
+        assertEquals("dept_skill", plan.skillName());
+        assertEquals("杭州开发三部", plan.params().get("dept"));
+        assertTrue(plan.extraction().metrics().contains("未闭环"));
+    }
+
+    @Test
+    void bypassWordStillBlocksLegacyTrackDirectExec() {
+        // 拍板: 存量轨 (领域标签+叶层) 不让位 —— 旁路词命中照旧放弃短路
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                legacyMeta("dept_skill", "script_a", "{\"dept\":\"deptName\"}", "达标率")));
+        when(bypassProvider.getIfAvailable()).thenReturn(bypassService("分析"));
+        allowAll("alice");
+
+        assertNull(newExecutorWithBypass(true).plan("帮我分析一下达标率", "alice", null));
+    }
+
+    @Test
+    void bypassWordYieldsButTopWithoutScriptIdStillFallsBack() {
+        // 拍板③: 层级命中但未配 script_id → 直接执行未接住 → null (落回旁路 → LLM 走工具)
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                levelMeta("dept_skill", null, null, List.of("未闭环"), List.of("A号"))));
+        when(bypassProvider.getIfAvailable()).thenReturn(bypassService("分析", "A号"));
+        allowAll("alice");
+
+        assertNull(newExecutorWithBypass(true).plan(LEVEL_QUESTION, "alice", null));
+    }
+
+    @Test
+    void bypassWordYieldsToLevelTrackMissingParamAsk() {
+        // 拍板②: 层级命中 + 缺必填部门 + 旁路词 → 反问补参 (needsAsk) 而非丢给工具
+        String question = "未闭环的A号情况";
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                levelMeta("dept_skill", "script_a", "{\"dept\":\"deptName\"}",
+                        List.of("未闭环"), List.of("A号"))));
+        when(bypassProvider.getIfAvailable()).thenReturn(bypassService("分析", "A号"));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true}]"));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithBypass(true).plan(question, "alice", null, "conv1");
+
+        assertTrue(plan.needsAsk());
+        assertEquals("dept_skill", plan.skillName());
+    }
+
+    @Test
+    void explicitNamingStillExemptsFromBypass() {
+        // 拍板④ (§8 原口径不动): 显式点名 skill 名 → bypassed() 自身让位 → 正常判定链
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                legacyMeta("dept_skill", "script_a", "{\"dept\":\"deptName\"}", "达标率")));
+        when(bypassProvider.getIfAvailable()).thenReturn(bypassService("分析"));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.anyString(), Mockito.isNull())).thenReturn(
+                state(null, List.of("杭州开发一部")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true}]"));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithBypass(true).plan("请使用 dept_skill 分析达标率", "alice", null);
+
+        assertEquals("dept_skill", plan.skillName());
+    }
+
+    @Test
+    void noBypassWordBehaviorUnchanged() {
+        // 无旁路词 (bypassed=false) → 判定链与现状逐分支一致
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                levelMeta("dept_skill", "script_a", "{\"dept\":\"deptName\"}",
+                        List.of("未闭环"), List.of("A号"))));
+        when(bypassProvider.getIfAvailable()).thenReturn(bypassService("分析"));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(LEVEL_QUESTION), Mockito.isNull())).thenReturn(
+                state(null, List.of("杭州开发三部")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true}]"));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithBypass(true).plan(LEVEL_QUESTION, "alice", null);
+
+        assertEquals("dept_skill", plan.skillName());
+    }
+
     @Test
     void extractionDefaultsUnmentionedDimensionsToEmptyLists() {
         when(metadataRepository.findActive()).thenReturn(List.of(

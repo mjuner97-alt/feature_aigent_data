@@ -463,13 +463,6 @@ public class DirectSkillExecutor {
         if (!enabled || question == null || question.isBlank()) {
             return null;
         }
-        // 检索旁路 (§8 拍板①): 与 SkillVectorIndexVisibilityFilter 同一判定, 必须两处同时拦截。
-        if (bypassKeywordServiceProvider != null) {
-            SkillBypassKeywordService bypass = bypassKeywordServiceProvider.getIfAvailable();
-            if (bypass != null && bypass.bypassed(question)) {
-                return null;
-            }
-        }
         List<SkillRoutingMetadata> active = metadataRepository.findActive();
         if (active.isEmpty()) {
             return null;
@@ -477,6 +470,17 @@ public class DirectSkillExecutor {
         SkillCandidateSelection selection = candidateSelector.selectFromMetadata(active, question);
         if (selection.skillNames().isEmpty()) {
             return null;
+        }
+        // 检索旁路 (2026/10/27 重排序, docs/202610/直接执行优先于旁路词重排序方案.md §3.3①):
+        // 旁路词命中时仅当 top-1 非层级轨才放弃短路; 层级轨 top-1 (L1/L2/L3 AND 命中) =
+        // 直接执行工程化命中, 优先于旁路词。存量轨 (领域标签+叶层) 不让位 —— 问法带旁路词
+        // 时照旧旁路, 保住 §8 原始动机。判定源仍为 SkillBypassKeywordService.bypassed()
+        // 单一实现 (拍板④显式点名让位等语义原样); 目录侧 (visibility filter) 维持无条件旁路。
+        if (bypassKeywordServiceProvider != null) {
+            SkillBypassKeywordService bypass = bypassKeywordServiceProvider.getIfAvailable();
+            if (bypass != null && bypass.bypassed(question) && !selection.topFromLevelTrack()) {
+                return null;
+            }
         }
         // 拍板口径: 候选非空即执行 top-1
         String topName = selection.skillNames().get(0);

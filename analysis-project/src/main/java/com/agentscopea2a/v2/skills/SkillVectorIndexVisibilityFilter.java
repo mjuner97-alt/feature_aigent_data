@@ -132,6 +132,8 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
             return all;
         }
         // 检索旁路 (§8 拍板①): 旁路词命中且未显式点名 skill → 目录整体置空, LLM 直接走工具层。
+        // 2026/10/27 重排序: 直接执行侧 (DirectSkillExecutor.plan) 层级轨命中让位旁路,
+        // 目录侧维持无条件置空 (漏斗第 3 层旁路 > 第 4 层 LLM 检索)。
         if (bypassKeywordService != null && bypassKeywordService.bypassed(question)) {
             return List.of();
         }

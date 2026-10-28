@@ -45,6 +45,9 @@ import ChatWorkspacePage from './pages/ChatWorkspacePage.vue';
 import SessionHistoryPage from './pages/SessionHistoryPage.vue';
 import { isLoggedIn, isAdmin } from './utils/auth';
 
+// 🌟 新增：引入比对结果详情页
+import CompareResultDetailPage from './pages/skill/CompareResultDetailPage.vue';
+
 const routes: RouteRecordRaw[] = [
   { path: '/login', component: LoginPage },
   { path: '/report/flows/:id', component: PublicFlowReportPage },
@@ -103,6 +106,13 @@ const routes: RouteRecordRaw[] = [
         name: 'SessionDetail',
         component: () => import('./pages/SessionDetailPage.vue'),
         meta: { requiresAuth: true, title: '会话详情' },
+      },
+      // 🌟 新增：比对结果详情页路由
+      {
+        path: 'compare-result/:id',
+        name: 'CompareResultDetail',
+        component: CompareResultDetailPage,
+        meta: { requiresAuth: true, title: '比对结果详情' },
       },
       {
         // SCRIPT 注册表: 侧边栏 shell + 子列表 (SQL注册 / python脚本注册, 后续可扩展)
@@ -164,5 +174,3 @@ const app = createApp(Root);
 app.use(router);
 app.use(ElementPlus, { locale: zhCn });
 app.mount('#root');
-
-
