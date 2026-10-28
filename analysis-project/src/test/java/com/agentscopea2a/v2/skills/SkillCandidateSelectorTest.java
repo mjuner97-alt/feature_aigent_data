@@ -480,6 +480,42 @@ class SkillCandidateSelectorTest {
         assertEquals(List.of("wenshu_qi", "dept_q1"), both.skillNames());
     }
 
+    @Test
+    void topFromLevelTrackTrueWhenHierarchicalCandidateIsTop() {
+        // 层级轨 AND 命中 (未闭环+A号) 与存量轨叶层命中同池: depth 排序保证层级轨 top-1
+        SkillRoutingMetadata level = metadataWithLevels("a_skill", List.of(),
+                List.of("未闭环"), List.of("A号"), List.of());
+        SkillRoutingMetadata legacy = metadata("b_skill", List.of("未闭环"));
+
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(level.skillName()), skill(legacy.skillName())),
+                List.of(level, legacy), "三部10月未闭环的A号数据");
+
+        assertEquals("a_skill", selection.skillNames().get(0));
+        assertTrue(selection.topFromLevelTrack());
+    }
+
+    @Test
+    void topFromLevelTrackFalseForLegacyExplicitAndEmpty() {
+        // 存量轨 top-1
+        SkillRoutingMetadata legacy = metadata("legacy", List.of("达标率"));
+        SkillCandidateSelection legacySel = selector.select(
+                List.of(skill(legacy.skillName())), List.of(legacy), "查询达标率");
+        assertFalse(legacySel.topFromLevelTrack());
+
+        // 显式点名 top-1 (非层级轨)
+        SkillCandidateSelection explicitSel = selector.select(
+                List.of(skill(legacy.skillName())), List.of(legacy), "请使用 legacy 查询");
+        assertTrue(explicitSel.explicitNameMatched());
+        assertFalse(explicitSel.topFromLevelTrack());
+
+        // 空结果
+        SkillCandidateSelection emptySel = selector.select(
+                List.of(skill(legacy.skillName())), List.of(legacy), "完全未知的问题");
+        assertTrue(emptySel.skillNames().isEmpty());
+        assertFalse(emptySel.topFromLevelTrack());
+    }
+
     private static SkillRoutingMetadata metadata(String name, List<String> keywords) {
         return new SkillRoutingMetadata(name, name + " 摘要", keywords, List.of(), List.of(), "", true, null);
     }

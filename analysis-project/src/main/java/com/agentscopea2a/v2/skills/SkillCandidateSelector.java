@@ -130,13 +130,13 @@ public class SkillCandidateSelector {
         List<ScoredSkill> scored = new ArrayList<>();
         for (Candidate c : explicitPool) {
             scored.add(new ScoredSkill(c.entry().skillName(), true, 4, 0, false,
-                    matchedTermsOf(normalizedQuestion, c.entry())));
+                    matchedTermsOf(normalizedQuestion, c.entry()), false));
         }
         for (Candidate c : levelPool) {
             int depth = c.l3Terms().isEmpty() ? c.l2Terms().isEmpty() ? 1 : 2 : 3;
             scored.add(new ScoredSkill(c.entry().skillName(), false, depth,
                     bestGlobalRank(priorityIndex, depth, c), partiallyMatched(c),
-                    matchedTermsOf(normalizedQuestion, c.entry())));
+                    matchedTermsOf(normalizedQuestion, c.entry()), true));
         }
         for (Candidate c : restPool) {
             if (c.keywordHits() == 0) {
@@ -151,7 +151,7 @@ public class SkillCandidateSelector {
             int keywordScore = Math.min(KEYWORD_SCORE_CAP, KEYWORD_SCORE_PER_HIT * c.keywordHits());
             scored.add(new ScoredSkill(c.entry().skillName(), false, 0,
                     -(domainScore + keywordScore), false,
-                    matchedTermsOf(normalizedQuestion, c.entry())));
+                    matchedTermsOf(normalizedQuestion, c.entry()), false));
         }
         scored.sort(Comparator.comparing(ScoredSkill::explicit).reversed()
                 .thenComparing(Comparator.comparingInt(ScoredSkill::depth).reversed())
@@ -168,10 +168,13 @@ public class SkillCandidateSelector {
         int limit = hadFallback ? fallbackVisibleSkills : maxVisibleSkills;
         List<String> selected = scored.stream().limit(limit).map(ScoredSkill::name).toList();
         List<String> topMatched = scored.isEmpty() ? List.of() : scored.get(0).matchedTerms();
-        log.info("SkillCandidateSelector: question='{}', pool={}, narrowedOut={}, fallback={}, limit={}, selected={}",
-                abbreviate(question), prePoolSize, prePoolSize - postPoolSize, hadFallback, limit, selected);
+        boolean topFromLevelTrack = !scored.isEmpty() && scored.get(0).levelTrack();
+        log.info("SkillCandidateSelector: question='{}', pool={}, narrowedOut={}, fallback={}, limit={}, "
+                        + "topFromLevelTrack={}, selected={}",
+                abbreviate(question), prePoolSize, prePoolSize - postPoolSize, hadFallback, limit,
+                topFromLevelTrack, selected);
         return new SkillCandidateSelection(selected, !selected.isEmpty() && scored.get(0).explicit(),
-                true, scored.size() > limit, topMatched);
+                true, scored.size() > limit, topMatched, topFromLevelTrack);
     }
 
     // ── 全局关键词优先级 (拍板⑧) ────────────────────────────────────────────
@@ -310,7 +313,7 @@ public class SkillCandidateSelector {
      * 取负塞进 globalRank 复用同一比较器 (分数大者前 = 取负后小者前)。
      */
     private record ScoredSkill(String name, boolean explicit, int depth, int globalRank,
-                               boolean partial, List<String> matchedTerms) {}
+                               boolean partial, List<String> matchedTerms, boolean levelTrack) {}
 
     private record Candidate(SkillRoutingMetadata entry, boolean explicit, int keywordHits,
                              List<String> l1Terms, List<String> l2Terms, List<String> l3Terms) {}
