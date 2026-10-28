@@ -50,7 +50,7 @@ async function fetchDetail() {
   error.value = '';
   try {
     // 根据开发文档第6条调用接口
-    const response = await fetch('http://122.248.61.59:2021/skillRecord/getCompareResult', {
+    const response = await fetch('http://122.244.14.11:2021/skillRecord/getCompareResult', {
       method: 'POST', // 文档未明确是 GET 还是 POST，通常传参用 POST 或 GET+Query，这里假设为 POST JSON
       headers: {
         'Content-Type': 'application/json',
