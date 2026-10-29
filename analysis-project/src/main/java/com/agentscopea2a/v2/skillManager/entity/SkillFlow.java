@@ -17,6 +17,8 @@ import java.time.LocalDateTime;
 @AllArgsConstructor
 public class SkillFlow {
     private Long id;
+    private Long typeId;
+    private Integer priority;
     private String code;
     private String name;
     private String description;

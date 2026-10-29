@@ -63,6 +63,7 @@ function handleEnter(e: KeyboardEvent) {
       />
       <input v-if="mode === 'code'" v-model="code" inputmode="numeric" maxlength="6" placeholder="6位验证码" class="login-input" :disabled="loading" />
       <input v-if="mode === 'password'" v-model="confirmPassword" type="password" placeholder="确认新密码" class="login-input" :disabled="loading" />
+      <div v-if="mode === 'code'" class="login-code-hint">验证码已发送至邮箱</div>
       <div v-if="errorMsg" class="login-error">{{ errorMsg }}</div>
       <button v-if="mode==='login'" class="login-btn" :disabled="loading" @click="handleLogin">{{ loading ? '登录中...' : '登录' }}</button>
       <button v-if="mode==='login'" class="link-btn" :disabled="loading" @click="requestCode">忘记密码?</button>
@@ -112,6 +113,11 @@ function handleEnter(e: KeyboardEvent) {
 .login-input:focus { border-color: #6366f1; }
 .login-error {
   color: #dc2626;
+  font-size: 0.8rem;
+  margin-top: 8px;
+}
+.login-code-hint {
+  color: #64748b;
   font-size: 0.8rem;
   margin-top: 8px;
 }

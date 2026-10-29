@@ -5,11 +5,13 @@
  * 子列表: SQL 注册 / python 脚本注册 (后续新增列表只需加 nav 项 + 子路由, 不引入字典).
  */
 import { RouterLink, RouterView } from 'vue-router';
+import { isAdmin } from '../utils/auth';
 
 const nav = [
   { to: '/script-registry', label: 'SQL 注册' },
   { to: '/script-registry/python', label: 'python 脚本注册' },
   { to: '/script-registry/skills', label: 'Skill 配置' },
+  { to: '/script-registry/long-task-config', label: '长任务配置', adminOnly: true },
   { to: '/script-registry/tool-routing', label: '工具路由' },
   { to: '/script-registry/overlap', label: '重叠检测' },
   { to: '/script-registry/dimension-alias', label: '维度同义词' },
@@ -21,7 +23,7 @@ const nav = [
   <div class="script-shell">
     <aside class="nav">
       <div class="logo">配置广场</div>
-      <RouterLink v-for="n in nav" :key="n.to" :to="n.to" class="nav-item">
+      <RouterLink v-for="n in nav" v-show="!n.adminOnly || isAdmin()" :key="n.to" :to="n.to" class="nav-item">
         <span>{{ n.label }}</span>
       </RouterLink>
     </aside>
@@ -39,3 +41,4 @@ const nav = [
 .nav-item.router-link-exact-active { background: #3b82f6; color: #fff; }
 .content { flex: 1; padding: 16px; background: #f1f5f9; overflow: auto; }
 </style>
+

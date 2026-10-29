@@ -29,6 +29,7 @@ import SkillJobFormPage from './pages/skill/SkillJobFormPage.vue';
 import SkillJobReportEditPage from './pages/skill/SkillJobReportEditPage.vue';
 import SkillFlowFormPage from './pages/skill/SkillFlowFormPage.vue';
 import SkillFlowReportEditPage from './pages/skill/SkillFlowReportEditPage.vue';
+import LongTaskConfigPage from './pages/skill/LongTaskConfigPage.vue';
 import PublicFlowReportPage from './pages/PublicFlowReportPage.vue';
 import SkillNotifySettingsPage from './pages/skill/SkillNotifySettingsPage.vue';
 import SkillVirtualGroupPage from './pages/skill/SkillVirtualGroupPage.vue';
@@ -42,7 +43,7 @@ import RoutingOverlapPage from './pages/RoutingOverlapPage.vue';
 import DimensionAliasPage from './pages/DimensionAliasPage.vue';
 import ChatWorkspacePage from './pages/ChatWorkspacePage.vue';
 import SessionHistoryPage from './pages/SessionHistoryPage.vue';
-import { isLoggedIn } from './utils/auth';
+import { isLoggedIn, isAdmin } from './utils/auth';
 
 // 🌟 新增：引入比对结果详情页
 import CompareResultDetailPage from './pages/skill/CompareResultDetailPage.vue';
@@ -121,6 +122,7 @@ const routes: RouteRecordRaw[] = [
           { path: '', component: SqlRegistryPage, meta: { requiresAuth: true, title: 'SQL 注册' } },
           { path: 'python', component: ScriptRegistryPage, meta: { requiresAuth: true, title: 'python 脚本注册' } },
           { path: 'skills', component: SkillRoutingConfigPage, meta: { requiresAuth: true, title: 'Skill 配置' } },
+          { path: 'long-task-config', component: LongTaskConfigPage, meta: { requiresAuth: true, requiresAdmin: true, title: '长任务配置' } },
           { path: 'tool-routing', component: ToolRoutingPage, meta: { requiresAuth: true, title: '工具路由' } },
           { path: 'overlap', component: RoutingOverlapPage, meta: { requiresAuth: true, title: '重叠检测' } },
           { path: 'dimension-alias', component: DimensionAliasPage, meta: { requiresAuth: true, title: '维度同义词' } },
@@ -155,6 +157,10 @@ router.beforeEach((to, _from, next) => {
   }
   if (!isLoggedIn()) {
     next('/login');
+    return;
+  }
+  if (to.matched.some(record => record.meta.requiresAdmin) && !isAdmin()) {
+    next('/script-registry');
     return;
   }
   next();

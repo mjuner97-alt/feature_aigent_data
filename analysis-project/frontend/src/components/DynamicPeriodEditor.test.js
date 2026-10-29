@@ -35,6 +35,15 @@ test('monthly editor displays versions and converts saved monthly formats',async
 test('monthly date fields generate version strings without blocking confirmation',async()=>{
  const v=initial();v.$dynamic.format='{year}-{month:02}-01';const m=mount('date[]',v);await open(m);assert.equal(button(m,'确定').props.disabled,false);button(m,'确定').props.onClick();await nextTick();assert.deepEqual(m.value.value,{$dynamic:{...v.$dynamic,format:'{year}年{month}月份版本'}});m.app.unmount();
 });
+test('quarterly editor uses the standard quarter label without 第',async()=>{
+ const m=mount();await open(m);
+ find(m.root,n=>n.props['aria-label']==='周期').props.onChange({target:{value:'quarter'}});await nextTick();
+ const select=find(m.root,n=>n.props['aria-label']==='格式');
+ assert.equal(select.props.value,'{year}年{quarter}季度');
+ assert.match(text(select),/2026年3季度/);
+ assert.doesNotMatch(text(select),/2026年第3季度/);
+ m.app.unmount();
+});
 test('future windows retain their actual offsets and formats on confirmation',async()=>{
  const v=initial();Object.assign(v.$dynamic,{startOffset:0,endOffset:2});const m=mount('string[]',v);await open(m);assert.equal(find(m.root,n=>n.props['aria-label']==='结束偏移').props.value,2);button(m,'确定').props.onClick();await nextTick();assert.deepEqual(m.value.value,{$dynamic:{...v.$dynamic,format:'{year}年{month}月份版本'}});m.app.unmount();
 });

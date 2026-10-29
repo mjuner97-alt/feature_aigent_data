@@ -13,6 +13,8 @@ import com.agentscopea2a.v2.auth.dto.LoginRequest;
 import com.agentscopea2a.v2.auth.dto.LoginResponse;
 import com.agentscopea2a.v2.auth.entity.DeveloperPlPersonInfo;
 import com.agentscopea2a.v2.auth.mapper.DeveloperPlPersonInfoMapper;
+import com.agentscopea2a.v2.auth.mapper.AuthUserCredentialMapper;
+import com.agentscopea2a.v2.auth.entity.AuthUserCredential;
 import com.agentscopea2a.v2.skillManager.notification.NotificationSender;
 import com.agentscopea2a.entity.AiChatRuntimeConfig;
 import com.agentscopea2a.mapper.gauss.AiChatRuntimeConfigMapper;
@@ -23,12 +25,12 @@ import org.springframework.stereotype.Service;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.security.MessageDigest;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.stream.Collectors;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 轻量登录服务 - 校验 user_id 在 developer_pl_person_info 表中存在,
@@ -41,7 +43,8 @@ public class AuthService {
     private final AdminRoleService adminRoleService;
     private final NotificationSender notificationSender;
     private final AiChatRuntimeConfigMapper runtimeConfigMapper;
-    private final Map<String, Credential> credentials = new ConcurrentHashMap<>();
+    private final AuthUserCredentialMapper credentialMapper;
+    private final Map<String, Credential> credentials = new java.util.concurrent.ConcurrentHashMap<>();
     private final Map<String, ResetCode> resetCodes = new ConcurrentHashMap<>();
     private final Map<String, String> resetSessions = new ConcurrentHashMap<>();
     private final SecureRandom random = new SecureRandom();
@@ -50,21 +53,28 @@ public class AuthService {
     private static final long LOCK_SECONDS = 900;
 
     public AuthService(DeveloperPlPersonInfoMapper personInfoMapper, AdminRoleService adminRoleService) {
-        this(personInfoMapper, adminRoleService, null, null);
+        this(personInfoMapper, adminRoleService, null, null, null);
     }
 
     public AuthService(DeveloperPlPersonInfoMapper personInfoMapper, AdminRoleService adminRoleService,
                        NotificationSender notificationSender) {
-        this(personInfoMapper, adminRoleService, notificationSender, null);
+        this(personInfoMapper, adminRoleService, notificationSender, null, null);
+    }
+
+    public AuthService(DeveloperPlPersonInfoMapper personInfoMapper, AdminRoleService adminRoleService,
+                       NotificationSender notificationSender, AiChatRuntimeConfigMapper runtimeConfigMapper) {
+        this(personInfoMapper, adminRoleService, notificationSender, runtimeConfigMapper, null);
     }
 
     @Autowired
     public AuthService(DeveloperPlPersonInfoMapper personInfoMapper, AdminRoleService adminRoleService,
-                       NotificationSender notificationSender, AiChatRuntimeConfigMapper runtimeConfigMapper) {
+                       NotificationSender notificationSender, AiChatRuntimeConfigMapper runtimeConfigMapper,
+                       AuthUserCredentialMapper credentialMapper) {
         this.personInfoMapper = personInfoMapper;
         this.adminRoleService = adminRoleService;
         this.notificationSender = notificationSender;
         this.runtimeConfigMapper = runtimeConfigMapper;
+        this.credentialMapper = credentialMapper;
     }
 
     public LoginResponse login(LoginRequest request) {
@@ -80,15 +90,17 @@ public class AuthService {
         if (!passwordAuthEnabled()) {
             return normalUserLogin(userId);
         }
-        Credential credential = credentials.get(userId);
+        Credential credential = loadCredential(userId);
         if (credential != null) {
             if (credential.lockedUntil > Instant.now().getEpochSecond()) throw new IllegalArgumentException("账号或密码错误");
             if (!matches(request.getPassword(), credential.hash)) {
                 credential.failures++;
                 if (credential.failures >= MAX_ATTEMPTS) credential.lockedUntil = Instant.now().getEpochSecond() + LOCK_SECONDS;
+                saveLoginState(userId, credential);
                 throw new IllegalArgumentException("账号或密码错误");
             }
             credential.failures = 0;
+            saveLoginState(userId, credential);
         }
 
         int count = personInfoMapper.countByUserId(userId);
@@ -151,7 +163,25 @@ public class AuthService {
         }
     }
 
-    public void setPassword(String userId, String password) { credentials.put(userId, new Credential(hash(password))); }
+    public void setPassword(String userId, String password) {
+        String hashed = hash(password);
+        if (credentialMapper != null) credentialMapper.upsertPassword(userId, hashed);
+        else credentials.put(userId, new Credential(hashed));
+    }
+
+    public List<Map<String, Object>> exportCredentials() {
+        List<Map<String, Object>> out = new java.util.ArrayList<>();
+        if (credentialMapper != null) {
+            // Export is intended only for controlled migration; hashes never leave as plaintext.
+            for (String userId : personInfoMapper.selectAllUserIds()) {
+                AuthUserCredential row = credentialMapper.selectByUserId(userId);
+                if (row != null) out.add(Map.of("userId", row.getUserId(), "passwordHash", row.getPasswordHash()));
+            }
+        } else {
+            credentials.forEach((id, c) -> out.add(Map.of("userId", id, "passwordHash", c.hash)));
+        }
+        return out;
+    }
 
     public Map<String, Object> requestPasswordReset(String userId) {
         String code = String.format("%06d", random.nextInt(1_000_000));
@@ -178,7 +208,24 @@ public class AuthService {
         ResetCode reset = resetCodes.get(userId);
         if (reset == null || reset.used || reset.expiresAt < Instant.now().getEpochSecond()) throw new IllegalArgumentException("重置请求无效");
         reset.used = true;
-        credentials.put(userId, new Credential(hash(newPassword)));
+        setPassword(userId, newPassword);
+    }
+
+    private Credential loadCredential(String userId) {
+        if (credentialMapper == null) return credentials.get(userId);
+        AuthUserCredential row = credentialMapper.selectByUserId(userId);
+        if (row == null) return null;
+        Credential c = new Credential(row.getPasswordHash());
+        c.failures = row.getLoginFailures() == null ? 0 : row.getLoginFailures();
+        c.lockedUntil = row.getLockedUntil() == null ? 0 : row.getLockedUntil().atZone(java.time.ZoneId.systemDefault()).toEpochSecond();
+        return c;
+    }
+
+    private void saveLoginState(String userId, Credential credential) {
+        if (credentialMapper != null) {
+            java.time.LocalDateTime locked = credential.lockedUntil <= 0 ? null : java.time.LocalDateTime.ofInstant(Instant.ofEpochSecond(credential.lockedUntil), java.time.ZoneId.systemDefault());
+            credentialMapper.updateLoginState(userId, credential.failures, locked);
+        }
     }
 
     private static String hash(String value) { try { return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest((value == null ? "" : value).getBytes(StandardCharsets.UTF_8))); } catch (Exception e) { throw new IllegalStateException(e); } }

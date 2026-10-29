@@ -50,7 +50,7 @@ const unitLabel = (unit: string) => ({ month: '版本', quarter: '季度', year:
 const formats = computed(() => config.value.unit === 'month'
   ? [{value:'{year}年{month}月份版本',label:'2026年8月份版本'}]
   : config.value.unit === 'quarter'
-    ? [{value:'{year}年第{quarter}季度',label:'2026年第3季度'},{value:'{year}Q{quarter}',label:'2026Q3'}]
+    ? [{value:'{year}年{quarter}季度',label:'2026年3季度'},{value:'{year}Q{quarter}',label:'2026Q3'}]
     : [{value:'{year}年',label:'2026年'},{value:'{year}',label:'2026'}]);
 const legacyFormat = computed(() => !formats.value.some(f => f.value === config.value.format));
 function describe(value: PeriodValue) {
@@ -68,6 +68,7 @@ function copyValue(): DynamicValue {
   if (isBuildingVersionsValue(props.modelValue)) return buildingVersionsValue();
   const value = { $dynamic: { ...(props.modelValue?.$dynamic || defaultPeriodValue(props.type).$dynamic) } } as PeriodValue;
   if (value.$dynamic.unit === 'month') value.$dynamic.format = '{year}年{month}月份版本';
+  if (value.$dynamic.unit === 'quarter' && value.$dynamic.format === '{year}年第{quarter}季度') value.$dynamic.format = '{year}年{quarter}季度';
   return value;
 }
 async function open() {
@@ -110,7 +111,7 @@ function setUnit(unit: PeriodWindow['unit'] | 'building_versions') {
     const base = defaultPeriodValue(props.type);
     draft.value = { $dynamic: { ...base.$dynamic } };
   }
-  update({ unit, format: unit === 'month' ? '{year}年{month}月份版本' : isDate.value ? '{year}-{month:02}-01' : unit === 'quarter' ? '{year}年第{quarter}季度' : '{year}年' });
+  update({ unit, format: unit === 'month' ? '{year}年{month}月份版本' : isDate.value ? '{year}-{month:02}-01' : unit === 'quarter' ? '{year}年{quarter}季度' : '{year}年' });
 }
 function toggleCustomWindow(enabled: boolean) {
   customWindow.value = enabled;

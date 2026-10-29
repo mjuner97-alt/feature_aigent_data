@@ -661,11 +661,24 @@ async function load() {
   importedReportSnapshot.value = null;
   importedReportName.value = '';
   selectedReportProcessId.value = '';
-  await loadOptions();
   const sourceId = props.editId ?? props.copyFromId;
+  // The flow detail is independent of the editor option lists. Fetch both at
+  // once; previously the detail request waited for the complete script and
+  // metric registries, making opening an edit with many nodes feel frozen.
+  const sourcePromise = sourceId != null ? getSkillFlow(sourceId) : Promise.resolve(null);
+  const optionsPromise = loadOptions();
+  const [sourceResult] = await Promise.allSettled([sourcePromise, optionsPromise]);
+  if (sourceResult.status === 'rejected') {
+    error.value = sourceResult.reason instanceof Error ? sourceResult.reason.message : '加载流程失败';
+    syncOutlineRows();
+    baseline.value = editorFingerprint();
+    loading.value = false;
+    return;
+  }
+  const flow = sourceResult.value;
   if (sourceId != null) {
     try {
-      const flow = await getSkillFlow(sourceId);
+      if (!flow) throw new Error('流程详情为空');
       await ensureSelectedSkills((flow.nodes || []).map(node => node.skillId ?? 0));
       wasPublic.value = !isCopy.value && flow.chatPublic === true;
       originalKeywords.value = (flow.triggers || []).map(trigger => trigger.keyword.trim().toLowerCase()).filter(Boolean);
@@ -693,11 +706,10 @@ async function load() {
         ccReceivers.value = [...new Set(notifySettings.ccReceiversByTrigger?.AUTO_METRIC ?? notifySettings.ccReceivers ?? [])].filter(id => !notifyReceivers.value.includes(id));
         receiverNames.value = await batchUserNames([...notifyReceivers.value, ...ccReceivers.value]);
       }
-      await Promise.all((form.value.nodes || []).map(async node => {
-        if (!node.scriptId) return;
-        const schema = await ensureScriptSchema(node.scriptId);
-        if (schema.length) node.scriptParams = normalizeScriptParams(node.scriptParams || {}, schema);
-      }));
+      // Do not fetch one script detail per node while opening the editor.
+      // schemaFor() already renders persisted values via inferParamSchema;
+      // the authoritative schema is fetched lazily when the node is edited or
+      // debugged.
     } catch (e) {
       error.value = e instanceof Error ? e.message : '加载流程失败';
     }

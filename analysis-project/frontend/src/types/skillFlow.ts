@@ -65,6 +65,8 @@ export interface SkillFlow {
   taskQuestion: string;
   summaryQuestionTemplate: string;
   enabled: boolean;
+  typeId?: number;
+  priority?: number;
   scheduleRules?: string | null;
   autoTriggerEnabled?: boolean;
   maxParallelism: number;
@@ -92,6 +94,8 @@ export interface SkillFlowInput {
   taskQuestion: string;
   summaryQuestionTemplate: string;
   enabled: boolean;
+  typeId?: number;
+  priority?: number;
   scheduleRules?: string | null;
   autoTriggerEnabled?: boolean;
   maxParallelism: number;
