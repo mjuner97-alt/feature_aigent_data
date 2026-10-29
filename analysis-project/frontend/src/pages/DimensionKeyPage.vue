@@ -271,7 +271,7 @@ onMounted(load);
                 </el-select>
                 <el-input v-model="row.alias"
                   :placeholder="row.type === 'regex' ? '正则表达式, 如 我部|我们部门' : '问题中的词, 如 Q1卡口 / 杭一 / 今年以来'"
-                  maxlength="128" style="width: 200px" />
+                  maxlength="1000" style="width: 360px" />
                 <span class="arrow">{{ row.type === 'regex' ? '⇒' : '→' }}</span>
                 <el-input v-model="row.value"
                   :placeholder="row.type === 'regex'
