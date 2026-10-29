@@ -183,4 +183,50 @@ class DimensionStateManagerClarificationTest {
         assertFalse(DimensionStateManager.buildClarifyText(
                 "X", PeerDimensionType.TEAM, List.of("甲")).isEmpty());
     }
+
+    // ==================== 反问回环修复（alias 是标准名前缀，2026/10/29） ====================
+
+    /** 复刻线上故障配置：alias『金融市场』是全部候选标准名的前缀（dim_alias id 101-110）。 */
+    private static final List<DimensionAlias> FINANCE_ROWS = List.of(
+            new DimensionAlias(101L, PeerDimensionType.PRODUCT_LINE, "金融市场", "金融市场对客交易", null, true, null),
+            new DimensionAlias(102L, PeerDimensionType.PRODUCT_LINE, "金融市场", "金融市场共享数据服务", null, true, null),
+            new DimensionAlias(105L, PeerDimensionType.PRODUCT_LINE, "金融市场", "金融市场交易管理", null, true, null),
+            new DimensionAlias(108L, PeerDimensionType.PRODUCT_LINE, "金融市场", "金融市场内部询价及交易", null, true, null),
+            new DimensionAlias(109L, PeerDimensionType.PRODUCT_LINE, "金融市场", "金融市场境外对客交易", null, true, null),
+            new DimensionAlias(110L, PeerDimensionType.PRODUCT_LINE, "金融市场", "金融市场后台运营项目", null, true, null));
+
+    private final DimensionStateManager financeManager =
+            new DimensionStateManager(null, new AliasResolver(() -> FINANCE_ROWS));
+
+    @Test
+    void clarificationLoopWhenAliasIsPrefixOfStandardName() {
+        String ask = financeManager.startClarificationIfAmbiguous("金融市场积压");
+        assertNotNull(ask, "首轮应反问");
+        String resolved = financeManager.consumeClarification("1");
+        assertEquals("金融市场对客交易积压", resolved);
+        // 修复点：替换结果仍含别名子串，第二轮不得再次反问（否则死循环）
+        assertNull(financeManager.startClarificationIfAmbiguous(resolved),
+                "确认轮替换后的问题不应再次反问");
+    }
+
+    @Test
+    void directQuestionWithFullStandardNameNotAsked() {
+        // 用户直接输入完整标准名（内嵌歧义别名）也不应反问
+        assertNull(financeManager.startClarificationIfAmbiguous("金融市场后台运营项目积压"));
+    }
+
+    @Test
+    void multipleCandidatesPresentStaysAmbiguous() {
+        assertNotNull(financeManager.startClarificationIfAmbiguous(
+                "金融市场对客交易和金融市场交易管理的积压对比"));
+    }
+
+    @Test
+    void clarifiedPeerResolvedWithoutClarificationRound() {
+        // 直接输入完整标准名：分析结果应把歧义静默落为 resolved，peer 维度可拿到值
+        QuestionAnalysis analysis = financeManager.analyzeQuestionRuleBased("金融市场对客交易积压");
+        assertTrue(analysis.getAmbiguousAliases() == null || analysis.getAmbiguousAliases().isEmpty());
+        assertTrue(analysis.getAliasResolution().resolved().stream()
+                .anyMatch(r -> "金融市场对客交易".equals(r.standardName())));
+    }
 }

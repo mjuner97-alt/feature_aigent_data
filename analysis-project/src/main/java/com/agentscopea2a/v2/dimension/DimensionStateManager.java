@@ -858,6 +858,7 @@ public class DimensionStateManager {
                 aliasResolver != null && userQuestion != null && !userQuestion.isBlank()
                         ? aliasResolver.resolve(userQuestion)
                         : AliasResolver.AliasResolution.EMPTY;
+        aliasRes = resolveEmbeddedCandidates(userQuestion, aliasRes);
         aliasRes = suppressEmbeddedAliasHits(userQuestion, aliasRes);
         boolean aliasPeerHit = !aliasRes.resolved().isEmpty() || !aliasRes.ambiguous().isEmpty();
         if (!aliasRes.ambiguous().isEmpty()) {
@@ -1355,6 +1356,39 @@ public class DimensionStateManager {
      * </ul>
      * 非组维度命中（产品线/应用）一律抑制——组名里嵌的产品线词不是产品线指代。
      */
+    /**
+     * 别名命中是完整标准名前缀时静默消歧（2026/10/29 反问回环修复）：
+     * 问题文本已完整包含某候选标准名（如反问确认轮把『金融市场』替换成『金融市场对客交易』，
+     * 替换结果仍是别名『金融市场』的子串超集）时，该歧义直接落为 resolved，不再反问；
+     * 直接输入完整标准名的问题（"金融市场对客交易积压"）同样受益。多个候选同时出现
+     * 则是真歧义，保留反问。
+     */
+    private static AliasResolver.AliasResolution resolveEmbeddedCandidates(
+            String q, AliasResolver.AliasResolution res) {
+        if (res.ambiguous().isEmpty()) {
+            return res;
+        }
+        List<AliasResolver.ResolvedAlias> resolved = new ArrayList<>(res.resolved());
+        List<AliasResolver.AmbiguousAlias> keptAmbiguous = new ArrayList<>();
+        boolean changed = false;
+        for (AliasResolver.AmbiguousAlias amb : res.ambiguous()) {
+            List<String> present = amb.candidates().stream()
+                    .filter(c -> c != null && q.contains(c))
+                    .toList();
+            if (present.size() == 1) {
+                resolved.add(new AliasResolver.ResolvedAlias(
+                        amb.dimension(), amb.alias(), present.get(0), amb.start(), amb.end()));
+                changed = true;
+            } else {
+                keptAmbiguous.add(amb);
+            }
+        }
+        if (!changed) {
+            return res;
+        }
+        return new AliasResolver.AliasResolution(List.copyOf(resolved), List.copyOf(keptAmbiguous));
+    }
+
     private static AliasResolver.AliasResolution suppressEmbeddedAliasHits(
             String q, AliasResolver.AliasResolution res) {
         if (res.resolved().isEmpty() && res.ambiguous().isEmpty()) {
