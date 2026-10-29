@@ -164,7 +164,8 @@ public class NotificationService {
         // 模板为空时回退到内置默认模板（HTML 链接式，避免邮件丢图表；TEXT 同理只给地址）。
         String template = metric != null ? metric.getNotifyContentTemplate() : null;
         String fileUrl = buildFileUrl(execution.getId());
-        String content = render(template, contentType, fileUrl, job, metric, execution, filePath);
+        String notificationUrl = "/api/skill-jobs/notification-link?executionId=" + execution.getId();
+        String content = render(template, contentType, notificationUrl, job, metric, execution, filePath);
         String fileName = fileNameOf(filePath);
         // 收件人:配置了名单则整名单一次批量发送(toUserList),未配置兜底发创建人
         List<String> receivers = confirmedReceivers == null || confirmedReceivers.isEmpty()
@@ -179,7 +180,7 @@ public class NotificationService {
                 metric != null ? metric.getCode() : null,
                 metric != null ? metric.getName() : null,
                 execution.getId(), execution.getStatus(), LocalDateTime.now(), receivers,
-                triggerType, executionDateOf(execution));
+                triggerType, List.of(), null, null, executionDateOf(execution), java.util.Map.of());
         SkillJobNotification notification = SkillJobNotification.builder()
                 .jobId(job.getId())
                 .executionId(execution.getId())
@@ -400,3 +401,7 @@ public class NotificationService {
         return s != null ? s : "";
     }
 }
+
+
+
+

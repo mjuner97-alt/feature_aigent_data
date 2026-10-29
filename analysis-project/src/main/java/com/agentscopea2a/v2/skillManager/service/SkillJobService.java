@@ -16,6 +16,7 @@
 package com.agentscopea2a.v2.skillManager.service;
 
 import com.agentscopea2a.v2.config.SkillStorageProperties;
+import com.agentscopea2a.v2.auth.service.AdminRoleService;
 import com.agentscopea2a.v2.skillManager.entity.NotificationConfig;
 import com.agentscopea2a.v2.skillManager.entity.SkillMetricReadiness;
 import com.agentscopea2a.v2.skillManager.dto.*;
@@ -80,6 +81,7 @@ public class SkillJobService {
     private final NotificationService notificationService;
     private final HtmlReportRenderer htmlReportRenderer;
     private final NotificationRecipientService recipientService;
+    private final AdminRoleService adminRoleService;
 
     /** 指标就绪登记服务:外部指标到达时记录 READY 状态,Skill Flow 的指标门控以此解锁。 */
     @Autowired(required = false)
@@ -101,7 +103,8 @@ public class SkillJobService {
                            NotificationService notificationService,
                            SkillStorageProperties storageProperties,
                            HtmlReportRenderer htmlReportRenderer,
-                           NotificationRecipientService recipientService) {
+                           NotificationRecipientService recipientService,
+                           AdminRoleService adminRoleService) {
         this.mapper = mapper;
         this.scheduler = scheduler;
         this.metricMapper = metricMapper;
@@ -111,6 +114,7 @@ public class SkillJobService {
         this.notificationService = notificationService;
         this.htmlReportRenderer = htmlReportRenderer;
         this.recipientService = recipientService;
+        this.adminRoleService = adminRoleService;
         this.baseDir = storageProperties.getJobReportDir();
         this.backupDir = storageProperties.getJobBackupDir();
     }
@@ -629,7 +633,7 @@ public class SkillJobService {
         if (job == null) {
             throw new IllegalStateException("JobNotFound: 任务不存在 (id=" + execution.getJobId() + ")");
         }
-        if (userId == null || !userId.equals(job.getCreatedBy())) {
+        if (userId == null || (!userId.equals(job.getCreatedBy()) && !adminRoleService.isAdminUserId(userId))) {
             throw new IllegalStateException("JobAccessDenied: 仅创建人可查看或补发通知 (execId=" + execId + ")");
         }
         return execution;
@@ -805,7 +809,7 @@ public class SkillJobService {
             throw new IllegalStateException("JobNotFound: 执行记录不存在 (id=" + execId + ")");
         }
         SkillJob job = mapper.selectJobById(execution.getJobId());
-        if (job == null || userId == null || !userId.equals(job.getCreatedBy())) {
+        if (job == null || userId == null || (!userId.equals(job.getCreatedBy()) && !adminRoleService.isAdminUserId(userId))) {
             throw new IllegalStateException("JobAccessDenied: 仅创建人可访问报告 (execId=" + execId + ")");
         }
         String relativePath = execution.getResolvedOutputPath();

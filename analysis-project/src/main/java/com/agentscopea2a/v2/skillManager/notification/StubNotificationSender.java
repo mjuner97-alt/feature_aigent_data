@@ -44,6 +44,16 @@ public class StubNotificationSender implements NotificationSender {
     public Map<String, Object> prepare(NotificationPayload payload) {
         Map<String, Object> request = NotificationSender.super.prepare(payload);
         request.put("content", getMailContent(payload.content(), payload.notifyContactName(), payload.notifyContactPhone(), payload.executionDate()));
+        if (payload.recipientLinks() != null && !payload.recipientLinks().isEmpty()) {
+            Map<String, String> recipientContents = new java.util.LinkedHashMap<>();
+            for (Map.Entry<String, String> entry : payload.recipientLinks().entrySet()) {
+                String content = payload.content().replace("{链接}", entry.getValue())
+                        .replace(payload.fileUrl(), entry.getValue());
+                recipientContents.put(entry.getKey(), getMailContent(content, payload.notifyContactName(),
+                        payload.notifyContactPhone(), payload.executionDate()));
+            }
+            request.put("recipientContents", recipientContents);
+        }
         return request;
     }
 
@@ -100,8 +110,6 @@ public class StubNotificationSender implements NotificationSender {
             return response;
         } catch (MailGatewayResponse.Rejected e) {
             throw e;
-        } catch (HttpClientUtil.HttpFailure e) {
-            throw new MailGatewayResponse.Rejected(e.getMessage(), e.response());
         } catch (Exception e) {
             if (e instanceof InterruptedException) Thread.currentThread().interrupt();
             throw new IllegalStateException("MailGatewaySendFailed: " + e.getMessage(), e);

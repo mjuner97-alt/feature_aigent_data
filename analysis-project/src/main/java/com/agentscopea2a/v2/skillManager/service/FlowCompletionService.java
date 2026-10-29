@@ -464,7 +464,7 @@ public class FlowCompletionService {
         if (execution.getId() == null) {
             return "";
         }
-        String path = "/report/flows/" + execution.getId();
+        String path = "/api/skill-flow-executions/notification-link?executionId=" + execution.getId();
         if (reportBaseUrl == null || reportBaseUrl.isBlank()) {
             return path;
         }

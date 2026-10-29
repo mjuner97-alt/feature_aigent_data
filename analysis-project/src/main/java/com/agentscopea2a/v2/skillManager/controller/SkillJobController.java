@@ -16,6 +16,9 @@ import com.agentscopea2a.v2.skillManager.dto.SkillJobNotificationDto;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobReportUpdateRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobUpdateRequest;
 import com.agentscopea2a.v2.skillManager.service.SkillJobService;
+import com.agentscopea2a.v2.skillManager.service.NotificationLinkClickService;
+import com.agentscopea2a.v2.skillManager.dto.NotificationLinkClickFilterRequest;
+import com.agentscopea2a.v2.skillManager.dto.NotificationLinkClickSummaryDto;
 import com.agentscopea2a.v2.util.DownloadErrorPage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,11 +52,14 @@ public class SkillJobController {
 
     private final SkillJobService service;
     private final UrlShortenerService urlShortenerService;
+    private NotificationLinkClickService linkClickService;
 
     public SkillJobController(SkillJobService service, UrlShortenerService urlShortenerService) {
         this.service = service;
         this.urlShortenerService = urlShortenerService;
     }
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setNotificationLinkClickService(NotificationLinkClickService service) { this.linkClickService = service; }
 
     // ---- CRUD ----
 
@@ -87,6 +93,17 @@ public class SkillJobController {
             @RequestParam(name = "page", defaultValue = "1") int page,
             @RequestParam(name = "pageSize", defaultValue = "20") int pageSize) {
         return service.executionCenterPage(status, createdBy, page, pageSize);
+    }
+
+    @GetMapping("/executions/{execId}/link-clicks")
+    public List<NotificationLinkClickSummaryDto> linkClicks(@PathVariable Long execId,
+            @RequestHeader("X-User-Id") String userId, NotificationLinkClickFilterRequest filter) {
+        if (linkClickService == null) return List.of();
+        SkillJobExecutionDto execution = service.getExecution(execId);
+        if (execution.createdBy() != null && !execution.createdBy().equals(userId)) {
+            throw new org.springframework.web.server.ResponseStatusException(HttpStatus.FORBIDDEN, "无权查看该任务访问明细");
+        }
+        return linkClickService.jobSummary(execId, filter);
     }
 
     @GetMapping("/{id}")
@@ -205,9 +222,13 @@ public class SkillJobController {
      */
     @GetMapping("/executions/{execId}/download")
     public ResponseEntity<Resource> downloadExecutionFile(@PathVariable(name = "execId") Long execId,
-                                                          @RequestHeader("X-User-Id") String userId) {
+                                                          @RequestHeader(name = "X-User-Id", required = false, defaultValue = "") String userId) {
         try {
             SkillJobExecutionDto exec = service.getExecution(execId);
+            if (linkClickService != null) {
+                linkClickService.recordJob(null, execId, exec.createdBy(), userId, null,
+                        "PAGE", "CLICK", userId != null && !userId.isBlank(), null, null);
+            }
             if (exec.resolvedOutputPath() == null || exec.resolvedOutputPath().isBlank()) {
                 // 执行记录存在，但尚未生成报告路径，和磁盘文件丢失一样都返回 404 友好页。
                 log.warn("SkillJob download execId={} has no output path", execId);

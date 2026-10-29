@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.mapper.ck.NotificationLinkClickMapper">
+  <resultMap id="ClickMap" type="com.agentscopea2a.v2.skillManager.entity.SkillFlowNotificationLinkClick">
+    <result column="flow_execution_id" property="flowExecutionId"/><result column="job_execution_id" property="jobExecutionId"/><result column="execution_type" property="executionType"/>
+    <result column="actor_user_id" property="actorUserId"/><result column="source" property="source"/>
+    <result column="event_type" property="eventType"/><result column="logged_in" property="loggedIn"/>
+    <result column="first_event_at" property="firstEventAt"/><result column="latest_event_at" property="latestEventAt"/><result column="task_display_name" property="displayName"/>
+    <result column="execution_at" property="executionCreatedAt"/><result column="event_count" property="eventCount"/>
+  </resultMap>
+  <insert id="insertEvent">
+    INSERT INTO skill_flow_notification_link_click
+      (environment, access_token, notification_id, flow_execution_id, job_execution_id, actor_user_id, source, event_type, logged_in, event_at, client_ip, user_agent)
+    VALUES (#{environment},
+      <choose><when test="tokenHash != null and tokenHash != ''">#{tokenHash}</when><otherwise>''</otherwise></choose>,
+      #{notificationId}, #{executionId}, #{jobExecutionId},
+      <choose><when test="actorUserId != null and actorUserId != ''">#{actorUserId}</when><otherwise>''</otherwise></choose>,
+      #{source}, #{eventType}, #{loggedIn}, #{eventAt}, #{clientIp}, #{userAgent})
+  </insert>
+  <update id="completePending">
+    ALTER TABLE skill_flow_notification_link_click UPDATE actor_user_id = #{actorUserId}, event_type = 'LOGIN_VIEW', logged_in = 1, event_at = #{eventAt}
+    WHERE environment = #{environment} AND access_token = #{accessToken} AND event_type = 'CLICK'
+  </update>
+  <select id="findSummary" resultMap="ClickMap">
+    SELECT flow_execution_id, job_execution_id,
+           CASE WHEN flow_execution_id IS NOT NULL THEN 'LONG_TASK' ELSE 'INDEPENDENT_TASK' END AS execution_type,
+           actor_user_id, source, event_type,
+           max(logged_in) AS logged_in,
+           coalesce(nullIf(any(task_display_name), ''), concat('任务 #', toString(ifNull(job_execution_id, flow_execution_id)))) AS task_display_name,
+           any(execution_at) AS execution_at, min(event_at) AS first_event_at,
+           max(event_at) AS latest_event_at, count() AS event_count
+    FROM skill_flow_notification_link_click
+    WHERE (#{filters.environment} IS NULL OR environment = #{filters.environment})
+      AND (#{filters.executionId} IS NULL OR flow_execution_id = #{filters.executionId} OR job_execution_id = #{filters.executionId})
+      AND (#{filters.source} IS NULL OR #{filters.source} = '' OR source = #{filters.source})
+      AND (#{filters.eventType} IS NULL OR #{filters.eventType} = '' OR event_type = #{filters.eventType})
+      AND (#{filters.executionId} IS NULL OR flow_execution_id = #{filters.executionId} OR job_execution_id = #{filters.executionId})
+      AND (#{filters.from} IS NULL OR event_at &gt;= #{filters.from})
+      AND (#{filters.to} IS NULL OR event_at &lt; #{filters.to})
+    GROUP BY flow_execution_id, job_execution_id, actor_user_id, source, event_type
+    ORDER BY latest_event_at DESC
+  </select>
+</mapper>

@@ -30,6 +30,7 @@ import java.util.List;
 public interface SkillFlowMapper {
 
     List<com.agentscopea2a.v2.skillManager.dto.SkillFlowSummaryDto> selectFlowPage(@Param("ownerUserId") String ownerUserId, @Param("enabled") Boolean enabled, @Param("keyword") String keyword, @Param("createdBy") String createdBy, @Param("userId") String userId, @Param("offset") long offset, @Param("limit") int limit);
+    SkillFlowExecution selectFlowExecutionById(@Param("id") Long id);
     long countFlowPage(@Param("ownerUserId") String ownerUserId, @Param("enabled") Boolean enabled, @Param("keyword") String keyword, @Param("createdBy") String createdBy);
     List<com.agentscopea2a.v2.skillManager.dto.FlowMetricSummaryRow> selectPageMetricRows(@Param("flowIds") List<Long> flowIds);
     // ==================== 流程定义 ====================
@@ -171,7 +172,6 @@ public interface SkillFlowMapper {
     int insertFlowExecution(SkillFlowExecution execution);
 
     /** 按 id 查执行实例,协调器执行节点/推进流程时的常规读取。 */
-    SkillFlowExecution selectFlowExecutionById(@Param("id") Long id);
 
     /**
      * 查询流程实例并对数据库行加排他锁。
