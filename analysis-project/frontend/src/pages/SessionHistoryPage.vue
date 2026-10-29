@@ -541,9 +541,12 @@ function durationStyle(ms: number): any {
 .case-panel { flex: 1; overflow: hidden; display: flex; flex-direction: column; padding: 16px 20px; box-sizing: border-box; }
 .case-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-shrink: 0; }
 .access-header { gap: 20px; }
-.access-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.access-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: nowrap; overflow-x: auto; }
 .access-control { width: 150px; }
 .access-user { width: 140px; }
+.access-date { width: 205px; flex: 0 0 205px; }
+.access-date :deep(.el-range-input) { min-width: 0; }
+.access-date :deep(.el-range-separator) { padding: 0 2px; }
 .access-actions :deep(.el-button) { margin-left: 0; }
 .case-title { font-size: 18px; font-weight: 700; color: #0f172a; }
 .case-subtitle { font-size: 11px; color: #94a3b8; margin-top: 2px; }
