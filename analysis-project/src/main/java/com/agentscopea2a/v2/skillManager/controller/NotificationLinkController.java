@@ -5,6 +5,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import java.net.URI;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 
 @RestController
 public class NotificationLinkController {
@@ -22,6 +24,12 @@ public class NotificationLinkController {
         // 无登录身份也必须记录点击，人员字段保持为空，不得拦截到登录页。
         clicks.recordJob(null, executionId, null, loggedIn ? actor : "", null,
                 "NOTIFICATION", returnFromLogin ? "LOGIN_VIEW" : "CLICK", loggedIn, ip, userAgent);
+        if (!loggedIn && !returnFromLogin) {
+            return ResponseEntity.status(HttpStatus.FOUND)
+                    .location(URI.create("/login?returnExecutionId=" + executionId
+                            + (accessToken == null || accessToken.isBlank() ? "" : "&accessToken=" + URLEncoder.encode(accessToken, StandardCharsets.UTF_8))))
+                    .build();
+        }
         return ResponseEntity.status(HttpStatus.FOUND).location(URI.create("/api/skill-jobs/executions/" + executionId + "/download")).build();
     }
 
@@ -35,6 +43,11 @@ public class NotificationLinkController {
         // 匿名访问同样记录埋点，userId 为空；报告本身由公开的查看接口提供。
         clicks.record(null, executionId, null, loggedIn ? actor : "", null, "NOTIFICATION",
                 returnFromLogin ? "LOGIN_VIEW" : "CLICK", loggedIn, ip, userAgent);
+        if (!loggedIn && !returnFromLogin) {
+            return ResponseEntity.status(HttpStatus.FOUND)
+                    .location(URI.create("/login?returnFlowExecutionId=" + executionId))
+                    .build();
+        }
         return ResponseEntity.status(HttpStatus.FOUND).location(URI.create("/report/flows/" + executionId)).build();
     }
 }

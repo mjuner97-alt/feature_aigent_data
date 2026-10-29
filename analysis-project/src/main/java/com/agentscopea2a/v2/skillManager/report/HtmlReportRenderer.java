@@ -295,7 +295,7 @@ public class HtmlReportRenderer {
             }
             #report :is(th, td) {
                 border: 1px solid #bfbfbf !important;
-                text-align: center; /* 未显式指定时单元格文字居中；显式对齐样式可以覆盖。 */
+                text-align: center !important; /* 仅单元格文字居中，整个表格仍靠左。 */
                 vertical-align: middle !important;
                 white-space: normal !important;
                 overflow-wrap: anywhere !important;
