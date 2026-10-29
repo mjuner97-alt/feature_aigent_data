@@ -68,6 +68,7 @@ function copyValue(): DynamicValue {
   if (isBuildingVersionsValue(props.modelValue)) return buildingVersionsValue();
   const value = { $dynamic: { ...(props.modelValue?.$dynamic || defaultPeriodValue(props.type).$dynamic) } } as PeriodValue;
   if (value.$dynamic.unit === 'month') value.$dynamic.format = '{year}年{month}月份版本';
+  if (value.$dynamic.unit === 'quarter' && value.$dynamic.format === '{year}年第{quarter}季度') value.$dynamic.format = '{year}年{quarter}季度';
   return value;
 }
 async function open() {

@@ -23,7 +23,7 @@ public class PeriodWindowResolver {
             throw invalid("invalid $dynamic marker structure");
         if (!c.keySet().equals(FIELDS)) throw invalid("unknown or missing period_window field");
         if (integer(c.get("v")) != 1 || !"period_window".equals(c.get("kind"))) throw invalid("unsupported version or kind");
-        String unit = text(c, "unit"), format = text(c, "format"), order = text(c, "order"), output = text(c, "output");
+        String unit = text(c, "unit"), format = normalizeQuarterFormat(text(c, "format")), order = text(c, "order"), output = text(c, "output");
         if (!Set.of("month", "quarter", "year").contains(unit)) throw invalid("unsupported unit");
         if (!Set.of("asc", "desc").contains(order) || !Set.of("list", "single").contains(output)) throw invalid("unsupported order/output");
         int start = integer(c.get("startOffset")), end = integer(c.get("endOffset"));
@@ -57,6 +57,11 @@ public class PeriodWindowResolver {
     private static String text(Map<?, ?> c, String key) {
         if (!(c.get(key) instanceof String s)) throw invalid(key + " must be a string");
         return s;
+    }
+
+    /** Accept configurations saved before the quarter label was simplified. */
+    private static String normalizeQuarterFormat(String format) {
+        return format.replace("{year}年第{quarter}季度", "{year}年{quarter}季度");
     }
     private static int integer(Object value) {
         if (!(value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long)) throw invalid("integer required");

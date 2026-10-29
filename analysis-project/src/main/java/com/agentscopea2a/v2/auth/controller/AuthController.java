@@ -19,6 +19,7 @@ import java.util.Map;
 import com.agentscopea2a.v2.auth.dto.PasswordResetRequest;
 import com.agentscopea2a.v2.auth.dto.PasswordResetVerifyRequest;
 import com.agentscopea2a.v2.auth.dto.PasswordResetCompleteRequest;
+import org.springframework.beans.factory.annotation.Value;
 
 /**
  * 认证 REST 接口 - 轻量登录(工号校验)。
@@ -30,9 +31,17 @@ import com.agentscopea2a.v2.auth.dto.PasswordResetCompleteRequest;
 public class AuthController {
 
     private final AuthService authService;
+    @Value("${app.auth.migration-secret:}") private String migrationSecret;
 
     public AuthController(AuthService authService) {
         this.authService = authService;
+    }
+
+    @GetMapping("/migration/export")
+    public ResponseEntity<?> export(@RequestHeader(value = "X-Auth-Migration-Secret", required = false) String secret) {
+        if (migrationSecret == null || migrationSecret.isBlank() || !migrationSecret.equals(secret))
+            return ResponseEntity.status(403).body(Map.of("message", "migration secret required"));
+        return ResponseEntity.ok(Map.of("credentials", authService.exportCredentials()));
     }
 
     @PostMapping("/login")
