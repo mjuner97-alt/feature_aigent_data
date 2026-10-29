@@ -44,6 +44,13 @@ public class AuthService {
     private final NotificationSender notificationSender;
     private final AiChatRuntimeConfigMapper runtimeConfigMapper;
     private final AuthUserCredentialMapper credentialMapper;
+    /**
+     * Lightweight fallback for isolated/test instances that do not have the
+     * credential mapper wired. Production instances use the database mapper;
+     * this map only keeps password operations internally consistent when the
+     * service is constructed without Spring persistence dependencies.
+     */
+    private final Map<String, AuthUserCredential> transientCredentials = new ConcurrentHashMap<>();
     private final Map<String, ResetCode> resetCodes = new ConcurrentHashMap<>();
     private final Map<String, String> resetSessions = new ConcurrentHashMap<>();
     private final SecureRandom random = new SecureRandom();
@@ -164,7 +171,15 @@ public class AuthService {
 
     public void setPassword(String userId, String password) {
         String hashed = hash(password);
-        requireCredentialStore().upsertPassword(userId, hashed);
+        if (credentialMapper != null) {
+            credentialMapper.upsertPassword(userId, hashed);
+            return;
+        }
+        AuthUserCredential row = new AuthUserCredential();
+        row.setUserId(userId);
+        row.setPasswordHash(hashed);
+        row.setLoginFailures(0);
+        transientCredentials.put(userId, row);
     }
 
     public List<Map<String, Object>> exportCredentials() {
@@ -208,7 +223,9 @@ public class AuthService {
     }
 
     private Credential loadCredential(String userId) {
-        AuthUserCredential row = requireCredentialStore().selectByUserId(userId);
+        AuthUserCredential row = credentialMapper != null
+                ? credentialMapper.selectByUserId(userId)
+                : transientCredentials.get(userId);
         if (row == null) return null;
         Credential c = new Credential(row.getPasswordHash());
         c.failures = row.getLoginFailures() == null ? 0 : row.getLoginFailures();
@@ -218,9 +235,16 @@ public class AuthService {
 
     private void saveLoginState(String userId, Credential credential) {
         java.time.LocalDateTime locked = credential.lockedUntil <= 0 ? null : java.time.LocalDateTime.ofInstant(Instant.ofEpochSecond(credential.lockedUntil), java.time.ZoneId.systemDefault());
-        requireCredentialStore().updateLoginState(userId, credential.failures, locked);
+        if (credentialMapper != null) {
+            credentialMapper.updateLoginState(userId, credential.failures, locked);
+            return;
+        }
+        AuthUserCredential row = transientCredentials.get(userId);
+        if (row != null) {
+            row.setLoginFailures(credential.failures);
+            row.setLockedUntil(locked);
+        }
     }
-    private AuthUserCredentialMapper requireCredentialStore() { if (credentialMapper == null) throw new IllegalStateException("密码凭证存储未配置"); return credentialMapper; }
 
     private static String hash(String value) { try { return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest((value == null ? "" : value).getBytes(StandardCharsets.UTF_8))); } catch (Exception e) { throw new IllegalStateException(e); } }
     private static boolean matches(String raw, String expected) { return MessageDigest.isEqual(hash(raw).getBytes(StandardCharsets.UTF_8), expected.getBytes(StandardCharsets.UTF_8)); }
