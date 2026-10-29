@@ -511,17 +511,25 @@ public class FlowCoordinator {
             mapper.updateExecution(flow);
             return;
         }
-        // 节点创建时已统一进入 QUEUED；兼容改动前已存在的 PENDING 节点，
-        // 在推进时一次性补入队列，避免历史任务永久停滞。
-        for (SkillFlowNodeExecution node : nodes) {
-            if (node.getStatus() == FlowNodeExecutionStatus.PENDING) {
+        // 严格按配置顺序串行:当前节点未终态(执行中/等待重试/排队)时,后续节点保持 PENDING。
+        boolean activeNode = nodes.stream().anyMatch(n -> n.getStatus() == FlowNodeExecutionStatus.RUNNING
+                || n.getStatus() == FlowNodeExecutionStatus.RETRY_WAIT
+                || n.getStatus() == FlowNodeExecutionStatus.QUEUED);
+        boolean releasedNextNode = false;
+        if (!activeNode) {
+            var nextNode = nodes.stream().filter(n -> n.getStatus() == FlowNodeExecutionStatus.PENDING).findFirst();
+            if (nextNode.isPresent()) {
+                SkillFlowNodeExecution node = nextNode.get();
                 node.setStatus(FlowNodeExecutionStatus.QUEUED);
                 mapper.updateNodeExecution(node);
+                releasedNextNode = true;
             }
         }
-        // 完成节点只需唤醒调度器。
-        // dispatchRunnableNodes 按节点 id 升序取候选，在额度允许时补足多个 worker。
-        dispatchRunnableNodes();
+        // 节点完成后放行的后继节点不能只等定时扫描，否则正常串行流程会额外
+        // 等待一个 scan 周期（当前为 30 秒）；扫描仅作为事件丢失/重启兜底。
+        if (releasedNextNode) {
+            dispatchRunnableNodes();
+        }
         // 全部节点终态:抢占汇总权(claimExecutionForSummary 保证只汇总一次)后收尾
         nodes = safeNodes(mapper.selectNodeExecutions(flow.getId()));
         if (!nodes.isEmpty() && nodes.stream().allMatch(n -> n.getStatus() != null && n.getStatus().terminal())
