@@ -80,7 +80,9 @@ class SkillCandidateSelectorTest {
     }
 
     @Test
-    void domainRequestKeepsDomainAndGenericSkillsExcludingOtherDomains() {
+    void domainRequestKeepsOnlyMatchingDomainSkills() {
+        // 2026/10/29 收紧 (用户拍板): domain 点名时通用(未配领域标签)skill 一并出局,
+        // 即使叶层关键词命中; 其他领域 skill 也出局
         SkillRoutingMetadata meeting = metadataWithDomain("meeting", List.of("达标率"), List.of("例会材料"));
         SkillRoutingMetadata otherDomain = metadataWithDomain("other_domain", List.of("达标率"), List.of("质量管理"));
         SkillRoutingMetadata generic = metadataWithDomain("generic", List.of("达标率"), List.of());
@@ -89,13 +91,12 @@ class SkillCandidateSelectorTest {
                 List.of(skill(meeting.skillName()), skill(otherDomain.skillName()), skill(generic.skillName())),
                 List.of(meeting, otherDomain, generic), "生成例会材料，包含达标率");
 
-        assertTrue(selection.skillNames().contains("meeting"));
-        assertTrue(selection.skillNames().contains("generic"));
-        assertTrue(selection.skillNames().stream().noneMatch("other_domain"::equals));
+        assertEquals(List.of("meeting"), selection.skillNames());
     }
 
     @Test
     void domainMatchedSkillRanksAboveGenericSkills() {
+        // 2026/10/29 收紧: 通用 skill 在 domain 点名时出局, 不再与新语义兼容 (改名保留断言意图)
         SkillRoutingMetadata domain = metadataWithDomain("domain_skill", List.of("达标率"), List.of("例会材料"));
         SkillRoutingMetadata generic = metadataWithDomain("generic", List.of("达标率", "数据", "统计"), List.of());
 
@@ -103,9 +104,7 @@ class SkillCandidateSelectorTest {
                 List.of(skill(generic.skillName()), skill(domain.skillName())),
                 List.of(domain, generic), "生成例会材料，包含达标率");
 
-        assertEquals(2, selection.skillNames().size());
-        assertEquals("domain_skill", selection.skillNames().get(0));
-        assertEquals("generic", selection.skillNames().get(1));
+        assertEquals(List.of("domain_skill"), selection.skillNames());
     }
 
     @Test
@@ -160,14 +159,17 @@ class SkillCandidateSelectorTest {
     }
 
     @Test
-    void domainTagsAloneWithoutKeywordHitStillEmpty() {
+    void domainTagsAloneWithoutKeywordHitAdmitsSkill() {
+        // 2026/10/28 拍板⑥ (取代原「domain 词无叶层命中 → 空」语义): 领域点名 = 归属声明,
+        // domain 命中即免叶层 keyword 要求入围 (零 keyword 配置同样适用)
         SkillRoutingMetadata multiDomain = metadataWithDomain(
                 "multi_domain", List.of(), List.of("质量管理", "QI卡口"));
 
         SkillCandidateSelection selection = selector.select(
                 List.of(skill(multiDomain.skillName())), List.of(multiDomain), "查询质量管理相关数据");
 
-        assertTrue(selection.skillNames().isEmpty());
+        assertEquals(List.of("multi_domain"), selection.skillNames());
+        assertFalse(selection.explicitNameMatched());
     }
 
     @Test
@@ -495,6 +497,82 @@ class SkillCandidateSelectorTest {
         assertTrue(selection.topFromLevelTrack());
     }
 
+    // ════════════ domain 命中优先于直接执行 (docs/202610/domain_tags命中优先于直接执行重排序方案.md §3.3/§3.4) ════════════
+
+    @Test
+    void domainHitAloneAdmitsSkillIntoPool() {
+        // 拍板⑥ (现网形态复刻): 例会 skill 叶层词是窄词「告警」, 「部门例会」domain 命中但
+        // 叶层零命中 —— 原 keywordHits==0 continue 会挡在池外, 现在免叶层要求入围
+        SkillRoutingMetadata meeting = metadataWithDomain("meeting", List.of("告警"),
+                List.of("部门例会", "杭研周例会"));
+
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(meeting.skillName())), List.of(meeting), "部门例会情况怎么样");
+
+        assertEquals(List.of("meeting"), selection.skillNames());
+    }
+
+    @Test
+    void domainHitExcludesUntaggedLevelTrackSkill() {
+        // 2026/10/29 收紧 (用户实证): 「部门例会 三部遗留问题」— 无领域标签的层级轨 skill
+        // 即使 AND 命中也不入池; 目录只留命中领域的 skill
+        SkillRoutingMetadata meeting = metadataWithDomain("meeting", List.of("告警"), List.of("部门例会"));
+        SkillRoutingMetadata level = metadataWithLevels("app_quality", List.of(),
+                List.of("问题"), List.of("未闭环"), List.of());
+
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(meeting.skillName()), skill(level.skillName())),
+                List.of(meeting, level), "部门例会 三部遗留问题");
+
+        assertEquals(List.of("meeting"), selection.skillNames());
+        assertFalse(selection.topFromLevelTrack());
+    }
+
+    @Test
+    void domainTaggedLevelSkillStillEntersOnDomainHit() {
+        // 配了命中领域标签的层级 skill 照常入池, 且按拍板② 排到存量轨领域 skill 之后
+        SkillRoutingMetadata meeting = metadataWithDomain("meeting", List.of("告警"), List.of("部门例会"));
+        SkillRoutingMetadata taggedLevel = metadataWithDomainAndLevels("tagged_level",
+                List.of("部门例会"), List.of("问题"), List.of("未闭环"));
+
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(meeting.skillName()), skill(taggedLevel.skillName())),
+                List.of(meeting, taggedLevel), "部门例会上提到的未闭环问题");
+
+        assertEquals(List.of("meeting", "tagged_level"), selection.skillNames());
+    }
+
+    @Test
+    void noDomainHitKeepsLevelTrackAboveLegacy() {
+        // 回归锚: 无 domain 词 → domainHit 恒 false, 层级轨照旧排存量轨前 (10/27 漏斗零变化);
+        // 例会 skill 叶层「告警」未命中 → 也不入池
+        SkillRoutingMetadata meeting = metadataWithDomain("meeting", List.of("告警"), List.of("部门例会"));
+        SkillRoutingMetadata level = metadataWithLevels("app_quality", List.of(),
+                List.of("问题"), List.of("未闭环"), List.of());
+
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(meeting.skillName()), skill(level.skillName())),
+                List.of(meeting, level), "未闭环问题还有多少");
+
+        assertEquals(List.of("app_quality"), selection.skillNames());
+        assertTrue(selection.topFromLevelTrack());
+    }
+
+    @Test
+    void explicitNameStillBeatsDomainHit() {
+        // 拍板①: 显式点名 > domainHit (豁免 domain 让位的目录侧对齐)
+        SkillRoutingMetadata meeting = metadataWithDomain("meeting", List.of("告警"), List.of("部门例会"));
+        SkillRoutingMetadata level = metadataWithLevels("app_quality", List.of(),
+                List.of("问题"), List.of("未闭环"), List.of());
+
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(meeting.skillName()), skill(level.skillName())),
+                List.of(meeting, level), "请使用 app_quality 查部门例会相关的未闭环问题");
+
+        assertEquals("app_quality", selection.skillNames().get(0));
+        assertTrue(selection.explicitNameMatched());
+    }
+
     @Test
     void topFromLevelTrackFalseForLegacyExplicitAndEmpty() {
         // 存量轨 top-1
@@ -516,11 +594,114 @@ class SkillCandidateSelectorTest {
         assertFalse(emptySel.topFromLevelTrack());
     }
 
-    private static SkillRoutingMetadata metadata(String name, List<String> keywords) {
-        return new SkillRoutingMetadata(name, name + " 摘要", keywords, List.of(), List.of(), "", true, null);
+    // ════════════ 维度实体 span 屏蔽（docs/202610/检索关键词与维度值冲突治理方案.md §4） ════════════
+
+    private static DimensionSpanScanner riskAliasScanner() {
+        return new DimensionSpanScanner(
+                () -> List.of(new com.agentscopea2a.v2.dimension.DimensionAlias(1L,
+                        com.agentscopea2a.v2.dimension.DimensionState.PeerDimensionType.TEAM,
+                        "风险组", "风险资产业务组", null, true, null)),
+                () -> null, 30000);
     }
 
-    private static SkillRoutingMetadata metadataWithLevels(String name, List<String> keywords,
+    @Test
+    void spanShieldSuppressesKeywordHitInsideEntitySpan() {
+        // §1.1 实证 case: 唯一词条"风险"命中"风险组"内部 = 假主题信号 → 出局
+        SkillCandidateSelector shielded = new SkillCandidateSelector(5, 10, null, riskAliasScanner());
+        SkillRoutingMetadata risk = metadata("risk_metrics", List.of("风险"));
+        SkillCandidateSelection selection = shielded.select(
+                List.of(skill(risk.skillName())), List.of(risk),
+                "杭州四部风险组10月版测试问题归属哪个开发经理");
+        assertTrue(selection.skillNames().isEmpty(), "实体 span 内的假主题命中应屏蔽");
+    }
+
+    @Test
+    void spanShieldKeepsStandaloneThemeHit() {
+        // "风险"独立出现（span 外）→ 真主题信号，不误杀
+        SkillCandidateSelector shielded = new SkillCandidateSelector(5, 10, null, riskAliasScanner());
+        SkillRoutingMetadata risk = metadata("risk_metrics", List.of("风险"));
+        SkillCandidateSelection selection = shielded.select(
+                List.of(skill(risk.skillName())), List.of(risk), "风险项的达标率有多少");
+        assertEquals(List.of("risk_metrics"), selection.skillNames());
+    }
+
+    @Test
+    void spanShieldMixedHitsKeepSkill() {
+        // "风险"被"风险组"屏蔽，"缺陷"在 span 外真命中 → 混合场景入围
+        SkillCandidateSelector shielded = new SkillCandidateSelector(5, 10, null, riskAliasScanner());
+        SkillRoutingMetadata mixed = metadata("defect_metrics", List.of("风险", "缺陷"));
+        SkillCandidateSelection selection = shielded.select(
+                List.of(skill(mixed.skillName())), List.of(mixed), "风险组的缺陷");
+        assertEquals(List.of("defect_metrics"), selection.skillNames());
+    }
+
+    @Test
+    void explicitNameSurvivesSpanShield() {
+        SkillCandidateSelector shielded = new SkillCandidateSelector(5, 10, null, riskAliasScanner());
+        SkillRoutingMetadata risk = metadata("risk_metrics", List.of("风险"));
+        SkillCandidateSelection selection = shielded.select(
+                List.of(skill(risk.skillName())), List.of(risk),
+                "请使用 risk_metrics 查询风险组的数据");
+        assertEquals(List.of("risk_metrics"), selection.skillNames());
+        assertTrue(selection.explicitNameMatched());
+    }
+
+    @Test
+    void teamTokenShieldsEvenWithoutAlias() {
+        // P3: 未配 alias 的"XX组"也走 S3 组名 token 兜底
+        DimensionSpanScanner emptyAlias = new DimensionSpanScanner(List::of, () -> null, 30000);
+        SkillCandidateSelector shielded = new SkillCandidateSelector(5, 10, null, emptyAlias);
+        SkillRoutingMetadata risk = metadata("risk_metrics", List.of("风险"));
+        SkillCandidateSelection selection = shielded.select(
+                List.of(skill(risk.skillName())), List.of(risk), "杭州四部风险组的问题项");
+        assertTrue(selection.skillNames().isEmpty(), "组名 token 兜底屏蔽");
+    }
+
+    @Test
+    void levelTrackCollidedLayerCountsAsMiss() {
+        // P4/层级轨: L1"风险"被屏蔽, L2"达标率"真命中 → AND 不满足 → 出局
+        SkillCandidateSelector shielded = new SkillCandidateSelector(5, 10, null, riskAliasScanner());
+        SkillRoutingMetadata lv = metadataWithLevels("lv_metrics", List.of(),
+                List.of("风险"), List.of("达标率"), List.of());
+        SkillCandidateSelection blocked = shielded.select(
+                List.of(skill(lv.skillName())), List.of(lv), "杭州四部风险组10月版达标率");
+        assertTrue(blocked.skillNames().isEmpty(), "碰撞层按未命中计, AND 出局");
+
+        // 两层都真命中 → 照常入围
+        SkillCandidateSelection passed = shielded.select(
+                List.of(skill(lv.skillName())), List.of(lv), "风险项的达标率");
+        assertEquals(List.of("lv_metrics"), passed.skillNames());
+    }
+
+    @Test
+    void timeSpanShieldsKeywordInsideTimeMention() {
+        // S4: "10月版本"是时间 span, 词条"月版"落在其中被屏蔽
+        DimensionSpanScanner scanner = new DimensionSpanScanner(List::of, () -> null, 30000);
+        SkillCandidateSelector shielded = new SkillCandidateSelector(5, 10, null, scanner);
+        SkillRoutingMetadata timeKw = metadata("time_kw", List.of("月版"));
+        SkillCandidateSelection selection = shielded.select(
+                List.of(skill(timeKw.skillName())), List.of(timeKw), "10月版本的达标率");
+        assertTrue(selection.skillNames().isEmpty(), "时间 span 内的命中应屏蔽");
+
+        SkillRoutingMetadata normal = metadata("normal_kw", List.of("达标率"));
+        SkillCandidateSelection kept = shielded.select(
+                List.of(skill(normal.skillName())), List.of(normal), "10月版本的达标率");
+        assertEquals(List.of("normal_kw"), kept.skillNames());
+    }
+
+    @Test
+    void nullScannerBehavesAsBefore() {
+        // 回归锚: 无 scanner = 行为与 2026/10/28 前一致（span 内命中照常计分）
+        SkillRoutingMetadata risk = metadata("risk_metrics", List.of("风险"));
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(risk.skillName())), List.of(risk),
+                "杭州四部风险组10月版测试问题归属哪个开发经理");
+        assertEquals(List.of("risk_metrics"), selection.skillNames());
+    }
+
+    private static SkillRoutingMetadata metadata(String name, List<String> keywords) {
+        return new SkillRoutingMetadata(name, name + " 摘要", keywords, List.of(), List.of(), "", true, null);
+    }    private static SkillRoutingMetadata metadataWithLevels(String name, List<String> keywords,
                                                            List<String> level1, List<String> level2,
                                                            List<String> level3) {
         return new SkillRoutingMetadata(name, name + " 摘要", keywords, List.of(), List.of(), "", true, null,
@@ -530,6 +711,12 @@ class SkillCandidateSelectorTest {
     private static SkillRoutingMetadata metadataWithDomain(String name, List<String> keywords,
                                                            List<String> domainTags) {
         return new SkillRoutingMetadata(name, name + " 摘要", keywords, domainTags, List.of(), "", true, null);
+    }
+
+    private static SkillRoutingMetadata metadataWithDomainAndLevels(String name, List<String> domainTags,
+                                                                    List<String> level1, List<String> level2) {
+        return new SkillRoutingMetadata(name, name + " 摘要", List.of(), domainTags, List.of(), "", true, null,
+                level1, level2, List.of());
     }
 
     private static SkillRoutingMetadata metadataWithTopic(String name, List<String> keywords,

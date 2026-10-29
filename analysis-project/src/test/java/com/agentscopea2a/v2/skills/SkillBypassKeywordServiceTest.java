@@ -21,6 +21,11 @@ class SkillBypassKeywordServiceTest {
                 "", true, LocalDateTime.now());
     }
 
+    private static SkillRoutingMetadata activeSkillWithDomain(String name, String... domainTags) {
+        return new SkillRoutingMetadata(name, name + " 摘要", List.of(), List.of(domainTags), List.of(),
+                "", true, LocalDateTime.now());
+    }
+
     private static SkillBypassKeywordService service(List<SkillBypassKeyword> keywords,
                                                      List<SkillRoutingMetadata> active) {
         return new SkillBypassKeywordService(() -> keywords, () -> active);
@@ -87,5 +92,30 @@ class SkillBypassKeywordServiceTest {
                 () -> { throw new IllegalStateException("db down"); },
                 () -> List.of());
         assertFalse(svc.bypassed("帮我分析达标率"));
+    }
+
+    @Test
+    void domainTagHitExemptsFromBypass() {
+        // 2026/10/28 漏斗: domain 命中 (第 2 层) > 旁路词 (第 4 层), 「分析」命中但「例会」域命中 → 不旁路
+        SkillBypassKeywordService svc = service(SEED_LIKE,
+                List.of(activeSkillWithDomain("context_demo_change_risk", "杭研周例会", "部门例会")));
+        assertFalse(svc.bypassed("分析一下部门例会情况"));
+        assertFalse(svc.bypassed("分析一下杭研周例会材料"));
+    }
+
+    @Test
+    void domainTagNotHitStillBypasses() {
+        SkillBypassKeywordService svc = service(SEED_LIKE,
+                List.of(activeSkillWithDomain("context_demo_change_risk", "杭研周例会")));
+        assertTrue(svc.bypassed("帮我分析一下各部门达标率"));
+        assertTrue(svc.bypassed("分析一下趋势"));
+    }
+
+    @Test
+    void inactiveSkillDomainTagDoesNotExempt() {
+        SkillRoutingMetadata inactive = new SkillRoutingMetadata("retired_skill", "已停用",
+                List.of(), List.of("例会"), List.of(), "", false, LocalDateTime.now());
+        SkillBypassKeywordService svc = service(SEED_LIKE, List.of(inactive, activeSkill("q2_metrics")));
+        assertTrue(svc.bypassed("分析一下例会情况"));
     }
 }

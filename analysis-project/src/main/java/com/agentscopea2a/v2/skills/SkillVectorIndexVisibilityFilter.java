@@ -40,7 +40,9 @@ import java.util.stream.Collectors;
  *       name-derived draft row from the registrar, so they route immediately.</li>
  *   <li>Domain tags are hard gates. Their values are discovered from routing metadata:
  *       a tagged Skill is visible only when the question contains one of its domains,
- *       unless the user explicitly names that Skill.</li>
+ *       unless the user explicitly names that Skill. When a domain IS named, the
+ *       catalogue narrows to domain-matching skills only - untagged (generic) skills
+ *       are hidden too, even if their level keywords hit (2026/10/29 tightening).</li>
  *   <li>Skills explicitly disabled by an administrator ({@code active=false}) stay
  *       hidden - "no row" and "disabled row" are distinguished via
  *       {@link SkillRoutingMetadataRepository#findAll()}.</li>
@@ -134,6 +136,9 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
         // 检索旁路 (§8 拍板①): 旁路词命中且未显式点名 skill → 目录整体置空, LLM 直接走工具层。
         // 2026/10/27 重排序: 直接执行侧 (DirectSkillExecutor.plan) 层级轨命中让位旁路,
         // 目录侧维持无条件置空 (漏斗第 3 层旁路 > 第 4 层 LLM 检索)。
+        // 2026/10/28 domain 豁免: 问题命中任一 active skill 的 domain_tags 时不旁路
+        // (漏斗第 2 层 domain 命中 > 旁路词), 豁免判定在 SkillBypassKeywordService.bypassed()
+        // 单一实现内, filter 侧零改动。
         if (bypassKeywordService != null && bypassKeywordService.bypassed(question)) {
             return List.of();
         }
@@ -148,9 +153,12 @@ public class SkillVectorIndexVisibilityFilter implements SkillVisibilityFilter {
         if (!explicitSkill) {
             Set<String> requestedDomains = matchedDomains(question, activeMetadata);
             if (!requestedDomains.isEmpty()) {
-                // 命中领域时只排除其他领域: 保留该领域 + 无领域标签(通用)的 skill
-                metadata = activeMetadata.stream().filter(m -> !hasAnyDomain(m.domainTags())
-                        || hasAnyDomain(m.domainTags(), requestedDomains)).toList();
+                // 领域点名 (2026/10/28 方案, 2026/10/29 收紧): 目录收窄到命中领域的 skill —
+                // 未配领域标签(通用)的 skill 一并隐藏, 层级关键词命中也不例外 (用户拍板:
+                // 「部门例会 三部遗留问题」不应带出无领域标签的层级轨 skill)。
+                // 与 selector 的 domainActive 收窄同语义双保险, 改一边必须同步另一边。
+                metadata = activeMetadata.stream()
+                        .filter(m -> hasAnyDomain(m.domainTags(), requestedDomains)).toList();
             }
         }
         SkillCandidateSelection selection = candidateSelector.select(all, metadata, question);

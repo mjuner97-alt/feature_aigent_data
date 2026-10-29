@@ -22,12 +22,19 @@ import java.util.stream.Collectors;
  *   <li><b>显式点名</b>：问题 contains skill 名 → 直接入池恒置顶，豁免 AND。</li>
  *   <li><b>层级轨（配置了 L1/L2/L3 任一层）</b>：每个配置了的层都必须有词条命中问题
  *       （AND，未配置层不设要求），任一配置层未命中 → 该 skill 本轮完全出局。
- *       L2/L3 含保留字「保底」且上层命中时由注入机制供给命中（分组保底不变）。</li>
+ *       L2/L3 含保留字「保底」且上层命中时由注入机制供给命中（分组保底不变）。
+ *       <b>domain 点名收紧（2026/10/28 方案 / 10/29 用户拍板）</b>：问题命中任一
+ *       domain_tags 时，两条轨都只保留配了命中领域标签的 skill —— 未配领域标签
+ *       （通用）的 skill 一并出局，层级关键词命中也不例外；显式点名仍豁免。</li>
  *   <li><b>存量轨（三层全空，仅 domain+keywords）</b>：行为与 2026/10/13 之前完全一致
  *       —— domain 互斥域过滤 + 叶层 keywords 命中打分（2000/词 cap 4000）+ domain
- *       排序加成；不再被层级 skill 的命中挤出。</li>
- *   <li><b>合并排序</b>：显式点名 &gt; 层级轨（漏斗层深度 L3&gt;L2&gt;L1 &gt; 命中词全局
- *       位次）&gt; 存量轨（domain+叶层分）&gt; name。depth 天然分层（层级轨 1-3、存量轨 0）。</li>
+ *       排序加成；不再被层级 skill 的命中挤出。2026/10/28 起 domain 命中的 skill
+ *       免叶层 keyword 要求入围（domain 命中即入围 = 领域点名是归属声明）。</li>
+ *   <li><b>合并排序</b>：显式点名 &gt; domainHit（2026/10/28, 漏斗第 2 层 domain 命中
+ *       &gt; 直接执行, 小模型按目录顺序选 skill, 域内 skill 必须排在层级轨前）&gt;
+ *       层级轨（漏斗层深度 L3&gt;L2&gt;L1 &gt; 命中词全局位次）&gt; 存量轨（domain+叶层分）
+ *       &gt; name。depth 天然分层（层级轨 1-3、存量轨 0）。domainHit 仅在
+ *       requestedDomains 非空时可能为 true —— 无 domain 命中时该位比较零变化。</li>
  * </ul>
  *
  * <p>词条支持正则语法（编译失败回退字面包含，语义在 {@link SkillTermMatcher}，与旁路词共用）。
@@ -50,16 +57,28 @@ public class SkillCandidateSelector {
     private final int fallbackVisibleSkills;
     /** 全局关键词优先级快照来源（拍板⑧）；null = 功能关闭。 */
     private final Supplier<List<SkillKeywordPriority>> prioritySupplier;
+    /**
+     * 维度实体 span 扫描器（docs/202610/检索关键词与维度值冲突治理方案.md §4）：
+     * 词条命中落在实体 span 内 = 假主题信号不计分；null = 屏蔽关闭（行为同 2026/10/28 前）。
+     */
+    private final DimensionSpanScanner spanScanner;
 
     public SkillCandidateSelector(int maxVisibleSkills, int fallbackVisibleSkills) {
-        this(maxVisibleSkills, fallbackVisibleSkills, null);
+        this(maxVisibleSkills, fallbackVisibleSkills, null, null);
     }
 
     public SkillCandidateSelector(int maxVisibleSkills, int fallbackVisibleSkills,
                                   Supplier<List<SkillKeywordPriority>> prioritySupplier) {
+        this(maxVisibleSkills, fallbackVisibleSkills, prioritySupplier, null);
+    }
+
+    public SkillCandidateSelector(int maxVisibleSkills, int fallbackVisibleSkills,
+                                  Supplier<List<SkillKeywordPriority>> prioritySupplier,
+                                  DimensionSpanScanner spanScanner) {
         this.maxVisibleSkills = Math.max(1, maxVisibleSkills);
         this.fallbackVisibleSkills = Math.max(this.maxVisibleSkills, fallbackVisibleSkills);
         this.prioritySupplier = prioritySupplier;
+        this.spanScanner = spanScanner;
     }
 
     public SkillCandidateSelection select(List<AgentSkill> allSkills,
@@ -87,9 +106,17 @@ public class SkillCandidateSelector {
     private SkillCandidateSelection selectInternal(List<SkillRoutingMetadata> metadata, String question,
                                                     java.util.function.Predicate<String> nameFilter) {
         String normalizedQuestion = normalize(question);
+        // 维度实体 span 屏蔽（§4）：一次扫描全池共用；scanner 缺席/空 span = 关闭
+        List<int[]> entitySpans = spanScanner == null ? List.of() : spanScanner.scan(normalizedQuestion);
         Map<String, Integer> priorityIndex = buildPriorityIndex();
 
         // ── 分流: 显式点名 / 层级轨 (AND 判定) / 存量轨 (三层全空) ────────────────
+        // domain 点名 (2026/10/28 方案, 2026/10/29 收紧): 问题命中任一 domain_tags →
+        // 目录只保留命中领域的 skill, 未配领域标签(通用)的 skill 一并出局 — 层级关键词
+        // 命中也不例外 (实证: 「部门例会 三部遗留问题」不应带出无领域标签的层级轨 skill)。
+        // requestedDomains 为空时 domainActive=false, 全部既有行为零变化。
+        Set<String> requestedDomains = matchedTags(normalizedQuestion, metadata, SkillRoutingMetadata::domainTags);
+        boolean domainActive = !requestedDomains.isEmpty();
         List<Candidate> explicitPool = new ArrayList<>();
         List<Candidate> levelPool = new ArrayList<>();
         List<Candidate> restPool = new ArrayList<>();
@@ -101,24 +128,28 @@ public class SkillCandidateSelector {
                 explicitPool.add(new Candidate(entry, true, 0, List.of(), List.of(), List.of()));
                 continue;
             }
-            List<String> l1Terms = matchedTermsIn(normalizedQuestion, entry.level1Keywords());
-            List<String> l2Terms = matchedTermsIn(normalizedQuestion, entry.level2Keywords());
-            List<String> l3Terms = matchedTermsIn(normalizedQuestion, entry.level3Keywords());
+            List<String> l1Terms = matchedTermsIn(normalizedQuestion, entry.level1Keywords(), entitySpans);
+            List<String> l2Terms = matchedTermsIn(normalizedQuestion, entry.level2Keywords(), entitySpans);
+            List<String> l3Terms = matchedTermsIn(normalizedQuestion, entry.level3Keywords(), entitySpans);
             injectFallbackHits(entry, l1Terms, l2Terms, l3Terms);
             boolean hasLevelConfig = !entry.level1Keywords().isEmpty() || !entry.level2Keywords().isEmpty()
                     || !entry.level3Keywords().isEmpty();
             if (hasLevelConfig) {
                 // AND 语义 (2026/10/22 四次定稿): 每个配置了的层都必须有词条命中问题,
                 // 任一配置层未命中 → 本轮完全出局 (显式点名已在上方豁免; 未配置层不设要求)。
+                // domain 点名收紧: 命中领域时层级 skill 还须自身配了命中领域标签。
                 if ((entry.level1Keywords().isEmpty() || !l1Terms.isEmpty())
                         && (entry.level2Keywords().isEmpty() || !l2Terms.isEmpty())
-                        && (entry.level3Keywords().isEmpty() || !l3Terms.isEmpty())) {
-                    levelPool.add(new Candidate(entry, false, matchedTerms(normalizedQuestion, entry.keywords()),
+                        && (entry.level3Keywords().isEmpty() || !l3Terms.isEmpty())
+                        && (!domainActive || hasAnyDomain(entry.domainTags(), requestedDomains))) {
+                    levelPool.add(new Candidate(entry, false,
+                            matchedTerms(normalizedQuestion, entry.keywords(), entitySpans),
                             l1Terms, l2Terms, l3Terms));
                 }
                 continue;
             }
-            restPool.add(new Candidate(entry, false, matchedTerms(normalizedQuestion, entry.keywords()),
+            restPool.add(new Candidate(entry, false,
+                    matchedTerms(normalizedQuestion, entry.keywords(), entitySpans),
                     l1Terms, l2Terms, l3Terms));
         }
         if (explicitPool.isEmpty() && levelPool.isEmpty() && restPool.isEmpty()) {
@@ -126,24 +157,28 @@ public class SkillCandidateSelector {
         }
 
         // ── 双轨合并打分: 层级轨 depth 1-3 排存量轨 depth 0 前, 单一比较器排序 ─────
-        Set<String> requestedDomains = matchedTags(normalizedQuestion, metadata, SkillRoutingMetadata::domainTags);
         List<ScoredSkill> scored = new ArrayList<>();
         for (Candidate c : explicitPool) {
             scored.add(new ScoredSkill(c.entry().skillName(), true, 4, 0, false,
-                    matchedTermsOf(normalizedQuestion, c.entry()), false));
+                    matchedTermsOf(normalizedQuestion, c.entry(), entitySpans), false, false));
         }
         for (Candidate c : levelPool) {
             int depth = c.l3Terms().isEmpty() ? c.l2Terms().isEmpty() ? 1 : 2 : 3;
             scored.add(new ScoredSkill(c.entry().skillName(), false, depth,
                     bestGlobalRank(priorityIndex, depth, c), partiallyMatched(c),
-                    matchedTermsOf(normalizedQuestion, c.entry()), true));
+                    matchedTermsOf(normalizedQuestion, c.entry(), entitySpans), true, false));
         }
         for (Candidate c : restPool) {
-            if (c.keywordHits() == 0) {
+            // domain 命中即入围 (2026/10/28 方案 §3.4, 拍板⑥): 领域点名 = 归属声明, 免叶层
+            // keyword 要求 (现网叶层词是窄词如告警/遗留, 不含领域词「例会」, 不豁免则第 2 层落空)。
+            // 2026/10/29 收紧: 命中领域时只保留配了命中领域标签的 skill — 其他领域标签与
+            // 未配领域标签(通用)的 skill 均出局 (取代原「保留通用」的互斥域过滤语义)。
+            // requestedDomains 空 → domainHit 恒 false, 原规则零变化。
+            boolean domainHit = domainActive && hasAnyDomain(c.entry().domainTags(), requestedDomains);
+            if (domainActive && !domainHit) {
                 continue;
             }
-            if (!requestedDomains.isEmpty() && hasDomainTags(c.entry().domainTags())
-                    && !hasAnyDomain(c.entry().domainTags(), requestedDomains)) {
+            if (c.keywordHits() == 0 && !domainHit) {
                 continue;
             }
             int domainScore = requestedDomains.isEmpty() || !hasDomainTags(c.entry().domainTags())
@@ -151,9 +186,10 @@ public class SkillCandidateSelector {
             int keywordScore = Math.min(KEYWORD_SCORE_CAP, KEYWORD_SCORE_PER_HIT * c.keywordHits());
             scored.add(new ScoredSkill(c.entry().skillName(), false, 0,
                     -(domainScore + keywordScore), false,
-                    matchedTermsOf(normalizedQuestion, c.entry()), false));
+                    matchedTermsOf(normalizedQuestion, c.entry(), entitySpans), false, domainHit));
         }
         scored.sort(Comparator.comparing(ScoredSkill::explicit).reversed()
+                .thenComparing(Comparator.comparing(ScoredSkill::domainHit).reversed())
                 .thenComparing(Comparator.comparingInt(ScoredSkill::depth).reversed())
                 .thenComparing(Comparator.comparingInt(ScoredSkill::globalRank))
                 .thenComparing(ScoredSkill::name));
@@ -212,28 +248,48 @@ public class SkillCandidateSelector {
     // ── 词条/标签工具 ───────────────────────────────────────────────────────
 
     /** 各层真命中词条 (含叶层; 显式点名走空列表)。 */
-    private static List<String> matchedTermsOf(String question, SkillRoutingMetadata entry) {
+    private static List<String> matchedTermsOf(String question, SkillRoutingMetadata entry, List<int[]> entitySpans) {
         List<String> matched = new ArrayList<>();
-        collectMatched(question, entry.level1Keywords(), matched);
-        collectMatched(question, entry.level2Keywords(), matched);
-        collectMatched(question, entry.level3Keywords(), matched);
-        collectMatched(question, entry.keywords(), matched);
+        collectMatched(question, entry.level1Keywords(), matched, entitySpans);
+        collectMatched(question, entry.level2Keywords(), matched, entitySpans);
+        collectMatched(question, entry.level3Keywords(), matched, entitySpans);
+        collectMatched(question, entry.keywords(), matched, entitySpans);
         return matched;
     }
 
-    private static List<String> matchedTermsIn(String question, List<String> terms) {
+    private static List<String> matchedTermsIn(String question, List<String> terms, List<int[]> entitySpans) {
         List<String> matched = new ArrayList<>();
-        collectMatched(question, terms, matched);
+        collectMatched(question, terms, matched, entitySpans);
         return matched;
     }
 
-    private static void collectMatched(String question, List<String> terms, List<String> into) {
+    /**
+     * 词条命中收集（span 屏蔽语义，docs/202610/检索关键词与维度值冲突治理方案.md §4.1）：
+     * 每次 [start,end) 命中判实体 span 交集——存在任一 span 外命中即真命中；
+     * 全部命中都落在实体 span 内 = 假主题信号，等同未命中。
+     */
+    private static void collectMatched(String question, List<String> terms, List<String> into,
+                                       List<int[]> entitySpans) {
         if (terms == null) return;
         for (String term : terms) {
             if (isFallbackMarker(term)) {
                 continue; // 保留字不参与问题文本匹配（只按注入规则生效）
             }
-            if (SkillTermMatcher.matches(question, term)) {
+            if (entitySpans.isEmpty()) {
+                if (SkillTermMatcher.matches(question, term)) {
+                    into.add(term);
+                }
+                continue;
+            }
+            List<int[]> positions = SkillTermMatcher.matchPositions(question, term);
+            boolean realHit = false;
+            for (int[] pos : positions) {
+                if (!DimensionSpanScanner.inSpans(pos[0], pos[1], entitySpans)) {
+                    realHit = true;
+                    break;
+                }
+            }
+            if (realHit) {
                 into.add(term);
             }
         }
@@ -267,9 +323,17 @@ public class SkillCandidateSelector {
         return terms.stream().anyMatch(SkillCandidateSelector::isFallbackMarker);
     }
 
-    private static int matchedTerms(String question, List<String> terms) {
+    private static int matchedTerms(String question, List<String> terms, List<int[]> entitySpans) {
         if (terms == null) return 0;
-        return (int) terms.stream().filter(term -> SkillTermMatcher.matches(question, term)).count();
+        int count = 0;
+        for (String term : terms) {
+            List<String> single = new ArrayList<>(1);
+            collectMatched(question, List.of(term), single, entitySpans);
+            if (!single.isEmpty()) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /** 配置了叶层 keywords 却零命中 → 命中链不完整 (层级命中已由 AND 在入池前强制)。 */
@@ -309,11 +373,13 @@ public class SkillCandidateSelector {
     }
 
     /**
-     * 排序视图: 阶段一用 (explicit, depth, globalRank, name); 阶段二把 domain+叶层分
+     * 排序视图: 阶段一用 (explicit, domainHit, depth, globalRank, name); 阶段二把 domain+叶层分
      * 取负塞进 globalRank 复用同一比较器 (分数大者前 = 取负后小者前)。
+     * domainHit 仅存量轨候选且 requestedDomains 非空且自身 domain 命中时为 true (§3.3)。
      */
     private record ScoredSkill(String name, boolean explicit, int depth, int globalRank,
-                               boolean partial, List<String> matchedTerms, boolean levelTrack) {}
+                               boolean partial, List<String> matchedTerms, boolean levelTrack,
+                               boolean domainHit) {}
 
     private record Candidate(SkillRoutingMetadata entry, boolean explicit, int keywordHits,
                              List<String> l1Terms, List<String> l2Terms, List<String> l3Terms) {}

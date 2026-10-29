@@ -221,7 +221,7 @@ Record/Input/View 各加 `level1Keywords/level2Keywords/level3Keywords` 字段�
 
 | # | 决策点 | 结论 |
 |---|---|---|
-| ① | 旁路生效范围 | **两处同拦**：`SkillVectorIndexVisibilityFilter`（目录置空）+ `DirectSkillExecutor.plan()`（短路放弃回退 LLM）——直接执行短路在 LLM 之前，只拦目录不拦短路则旁路形同虚设。⚠️ **2026/10/27 修订**（`docs/202610/直接执行优先于旁路词重排序方案.md`）：plan() 内旁路检查后移到 selector 之后，层级轨 top-1（L1/L2/L3 AND 命中）让位旁路——直接执行优先于旁路词；目录侧维持无条件置空 |
+| ① | 旁路生效范围 | **两处同拦**：`SkillVectorIndexVisibilityFilter`（目录置空）+ `DirectSkillExecutor.plan()`（短路放弃回退 LLM）——直接执行短路在 LLM 之前，只拦目录不拦短路则旁路形同虚设。⚠️ **2026/10/27 修订**（`docs/202610/直接执行优先于旁路词重排序方案.md`）：plan() 内旁路检查后移到 selector 之后，层级轨 top-1（L1/L2/L3 AND 命中）让位旁路——直接执行优先于旁路词；目录侧维持无条件置空。⚠️ **2026/10/28 再修订**（`docs/202610/domain_tags命中优先于直接执行重排序方案.md` §3.1）：问题命中任一 active skill 的 domain_tags → 不旁路（漏斗第 2 层 domain 命中 > 旁路词），豁免判定在 `bypassed()` 单一实现内，两消费点自动生效 |
 | ② | 质量类 skill | **实质退役**：质量板块（质量/缺陷密度/检出率/研发问题/D号/适应性问题/A号）切到原子工具体系，含旁路词的问题不走任何 quality skill；配套运维动作=管理员停用相关 skill（代码不删） |
 | ③ | 旁路匹配语义 | **平铺 OR + contains**，分组（分析类/表格类/质量板块）仅作归类备注不参与逻辑；表格词用「表格」一词即可 contains 覆盖 制作表格/表格展示/表格列出/表格输出 等全部形态 |
 | ④ | 显式点名 | **旁路让位**：问题包含任一 active skill 名（与 selector explicit 同语义 contains）→ 本轮不旁路，照常检索 |
@@ -263,7 +263,9 @@ boolean bypassed(String question):
        （可编译为正则 → Pattern.find(); 编译失败 → 字面 contains;
         lowercase+trim 归一化与 selector 一致, 词条匹配逻辑复用同一实现）
     2. 问题 contains 任一 active skill 名（explicit 同语义）→ false（拍板④）
-    3. true
+    3. 问题 contains 任一 active skill 的 domain_tags 词条 → false
+       （2026/10/28 domain 让位, docs/202610/domain_tags命中优先于直接执行重排序方案.md §3.1）
+    4. true
 ```
 
 词条匹配复用：`SkillCandidateSelector` 的正则词条匹配（`PATTERN_CACHE` + 非法词回退

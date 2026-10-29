@@ -74,7 +74,7 @@ public class VersionPlanKnowledgeHook implements Hook {
                     CAST(常规投产日 AS DATE) - CURRENT_DATE AS diff_sign
                 FROM rdc_train_calendar
                 WHERE
-                    火车类型 IN ('直接发布火车（四周）', '非直接发布火车（四周）（4+4）')
+                    火车类型 IN ('直接发布火车（四周）', '非直接发布火车（四周）')
                     AND CAST(常规投产日 AS DATE) BETWEEN CURRENT_DATE - INTERVAL '3' MONTH
                                                       AND CURRENT_DATE + INTERVAL '3' MONTH
             ),

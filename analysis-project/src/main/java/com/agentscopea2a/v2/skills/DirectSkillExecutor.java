@@ -471,6 +471,15 @@ public class DirectSkillExecutor {
         if (selection.skillNames().isEmpty()) {
             return null;
         }
+        // domain 让位 (2026/10/28, docs/202610/domain_tags命中优先于直接执行重排序方案.md §3.2):
+        // 问题命中任一 active skill 的 domain_tags → LLM 运行领域 skill (漏斗第 2 层),
+        // 直接执行放弃 (第 3 层)。显式点名 skill 名豁免 (拍板①, 与 selector explicit 置顶
+        // 一致)。位于参数组装/反问之前: domain 命中即整体让位, 缺必填回 LLM 不反问 (拍板③);
+        // 补参轮 pending 消费在方法最前, 不受本判定影响 (拍板④)。
+        if (!selection.explicitNameMatched() && hitsAnyDomainTag(active, question)) {
+            log.info("DirectSkillExecutor: question hits a domain tag, direct execution yields to LLM (domain skill)");
+            return null;
+        }
         // 检索旁路 (2026/10/27 重排序, docs/202610/直接执行优先于旁路词重排序方案.md §3.3①):
         // 旁路词命中时仅当 top-1 非层级轨才放弃短路; 层级轨 top-1 (L1/L2/L3 AND 命中) =
         // 直接执行工程化命中, 优先于旁路词。存量轨 (领域标签+叶层) 不让位 —— 问法带旁路词
@@ -643,6 +652,28 @@ public class DirectSkillExecutor {
                 topName, top.scriptId(), params, extraction, extraction.metrics());
         recordLastExec(question, userId, conversationId, topName, top.scriptId(), params);
         return new DirectExecutionPlan(extraction, topName, top.scriptId(), params);
+    }
+
+    /** 问题 contains 任一 active skill 的 domain_tags 词条 (2026/10/28 方案 §3.2)。
+     *  归一化与 SkillVectorIndexVisibilityFilter.matchedDomains / selector.matchedTags 同语义
+     *  (normalize+contains), 改一边必须同步另一边; 只依赖已取出的 active 列表, 零额外查询。 */
+    private static boolean hitsAnyDomainTag(List<SkillRoutingMetadata> active, String question) {
+        String normalized = SkillTermMatcher.normalize(question);
+        if (normalized.isEmpty()) {
+            return false;
+        }
+        for (SkillRoutingMetadata entry : active) {
+            if (entry.domainTags() == null) {
+                continue;
+            }
+            for (String tag : entry.domainTags()) {
+                if (tag != null && !tag.isBlank()
+                        && normalized.contains(SkillTermMatcher.normalize(tag))) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** param_mapping → params 装配 (plan 与歧义补参轮共用): 白名单外不传, 缺值走 defaultTimeValues,

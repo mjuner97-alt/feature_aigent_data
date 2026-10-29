@@ -289,6 +289,12 @@ class DirectSkillExecutorTest {
                 "admin", true, LocalDateTime.now(), List.of(), List.of(), List.of(), scriptId, mapping);
     }
 
+    /** 领域轨 metadata (三层全空, domain_tags 声明领域归属, 2026/10/28 拍板⑥形态)。 */
+    private static SkillRoutingMetadata domainMeta(String name, List<String> domainTags) {
+        return new SkillRoutingMetadata(name, "summary", List.of(), List.copyOf(domainTags), List.of(),
+                "admin", true, LocalDateTime.now(), List.of(), List.of(), List.of(), null, null);
+    }
+
     private static final String LEVEL_QUESTION = "三部10月未闭环的A号数据";
 
     @Test
@@ -390,6 +396,83 @@ class DirectSkillExecutorTest {
                 newExecutorWithBypass(true).plan(LEVEL_QUESTION, "alice", null);
 
         assertEquals("dept_skill", plan.skillName());
+    }
+
+    // ==================== domain 让位直接执行 (docs/202610/domain_tags命中优先于直接执行重排序方案.md §3.2) ====================
+
+    @Test
+    void domainHitYieldsToLlmEvenWhenLevelTrackHits() {
+        // 对照表 1: 「部门例会上提到的未闭环问题」— 层级轨 AND 命中但 domain 命中优先,
+        // 直接执行整体放弃回 LLM (漏斗第 2 层 > 第 3 层)
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                levelMeta("dept_skill", "script_a", "{\"dept\":\"deptName\"}",
+                        List.of("问题"), List.of("未闭环")),
+                domainMeta("meeting_skill", List.of("部门例会", "杭研周例会"))));
+        allowAll("alice");
+
+        assertNull(newExecutor(true).plan("部门例会上提到的未闭环问题", "alice", null));
+    }
+
+    @Test
+    void domainHitWithMissingRequiredReturnsNullNotAsk() {
+        // 拍板③: domain 让位发生在参数组装/反问之前 — 缺必填回 LLM, 不反问
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                levelMeta("dept_skill", "script_a", "{\"dept\":\"deptName\"}",
+                        List.of("问题"), List.of("未闭环")),
+                domainMeta("meeting_skill", List.of("部门例会"))));
+        allowAll("alice");
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true}]"));
+
+        assertNull(newExecutor(true).plan("部门例会上提到的未闭环问题", "alice", null, "conv1"));
+    }
+
+    @Test
+    void domainHitExplicitNameStillPlans() {
+        // 拍板①: 显式点名 skill 名豁免 domain 让位 — 正常出执行计划
+        String question = "请使用 dept_skill 查部门例会的未闭环问题";
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                levelMeta("dept_skill", "script_a", "{\"dept\":\"deptName\"}",
+                        List.of("问题"), List.of("未闭环")),
+                domainMeta("meeting_skill", List.of("部门例会"))));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of("杭州开发一部")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(question, "alice", null);
+
+        assertEquals("dept_skill", plan.skillName());
+        assertEquals("杭州开发一部", plan.params().get("dept"));
+    }
+
+    @Test
+    void pendingRoundNotBlockedByDomainHit() {
+        // 拍板④: 补参轮 pending 消费在最前 — 反问后用户带 domain 词回答, 在途执行照常完成
+        String askRound = "未闭环的A号情况";
+        String reply = "部门例会 杭州开发一部";
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                levelMeta("dept_skill", "script_a", "{\"dept\":\"deptName\"}",
+                        List.of("未闭环"), List.of("A号")),
+                domainMeta("meeting_skill", List.of("部门例会"))));
+        allowAll("alice");
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true}]"));
+        when(dimensionStateManager.previewState(Mockito.eq(askRound), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(dimensionStateManager.previewState(Mockito.eq(reply), Mockito.isNull())).thenReturn(
+                state(null, List.of("杭州开发一部")));
+
+        DirectSkillExecutor executor = newExecutor(true);
+        DirectSkillExecutor.DirectExecutionPlan ask = executor.plan(askRound, "alice", null, "conv1");
+        assertTrue(ask.needsAsk());
+
+        DirectSkillExecutor.DirectExecutionPlan resumed =
+                executor.plan(reply, "alice", null, "conv1");
+
+        assertEquals("dept_skill", resumed.skillName());
+        assertEquals("杭州开发一部", resumed.params().get("dept"));
+        assertFalse(resumed.needsAsk());
     }
 
     @Test

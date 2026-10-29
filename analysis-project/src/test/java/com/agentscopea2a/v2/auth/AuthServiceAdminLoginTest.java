@@ -49,7 +49,9 @@ class AuthServiceAdminLoginTest {
         when(mapper.countByUserId("alice")).thenReturn(1);
         when(mapper.selectByUserId("alice")).thenReturn(List.of(row));
 
-        LoginResponse response = service.login(new LoginRequest("alice"));
+        // 密码认证开启后 (5e4d2b9), 普通用户需先设置密码再凭密码登录
+        service.setPassword("alice", "alice-pw");
+        LoginResponse response = service.login(new LoginRequest("alice", "alice-pw"));
         assertFalse(response.isAdmin());
         assertEquals("Alice", response.getName());
     }

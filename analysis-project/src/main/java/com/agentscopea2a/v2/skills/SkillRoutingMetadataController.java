@@ -20,9 +20,12 @@ import com.agentscopea2a.v2.common.PageResponse;
 @CrossOrigin(origins = "*", maxAge = 3600)
 public class SkillRoutingMetadataController {
     private final SkillRoutingMetadataAdminService service;
+    private final SkillDimensionCollisionService collisionService;
 
-    public SkillRoutingMetadataController(SkillRoutingMetadataAdminService service) {
+    public SkillRoutingMetadataController(SkillRoutingMetadataAdminService service,
+                                          SkillDimensionCollisionService collisionService) {
         this.service = service;
+        this.collisionService = collisionService;
     }
 
     @GetMapping
@@ -53,7 +56,10 @@ public class SkillRoutingMetadataController {
         // 返回解析后的 View (paramMapping 为 Map): record 的 paramMapping 是原始 JSON 字符串,
         // 前端把它 spread 回行数据后 Object.entries(字符串) 会按字符下标炸开
         service.save(skillName, input, userId);
-        return service.get(skillName);
+        SkillRoutingMetadataView view = service.get(skillName);
+        // 撞车审计仅提示不阻断 (方案 §5): 词条 × 维度实体名 HIGH/MED, 运行期由 span 屏蔽兜底
+        return view.withDimensionCollisions(collisionService.auditSkill(skillName,
+                view.keywords(), view.level1Keywords(), view.level2Keywords(), view.level3Keywords()));
     }
 
     @PatchMapping("/{skillName}/active")

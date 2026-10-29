@@ -690,6 +690,18 @@ public class DimensionStateManager {
         return spans;
     }
 
+    /**
+     * 时间 span 公共出口（检索词条 span 屏蔽用，docs/202610/检索关键词与维度值冲突治理方案.md S4）：
+     * 宽时间形态（TIME_MASK_SPAN）+ 日期区间/裸 "M月D日"。入参为原文本（大小写不敏感场景
+     * 由调用方保证），坐标与入参一致。
+     */
+    public static List<int[]> timeShieldSpans(String q) {
+        if (q == null || q.isEmpty()) return List.of();
+        List<int[]> spans = dateShieldSpans(q);
+        collectSpans(q, TIME_MASK_SPAN, spans);
+        return spans;
+    }
+
     /** 多组 span 合并后统一屏蔽（maskSpanList 内部按 start 排序并跳过重叠）。 */
     private static String maskSpanUnion(String q, List<int[]>... groups) {
         List<int[]> all = new ArrayList<>();

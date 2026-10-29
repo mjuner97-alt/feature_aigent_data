@@ -24,12 +24,14 @@ import com.agentscopea2a.v2.hooks.VersionPlanKnowledgeHook;
 import com.agentscopea2a.v2.memory.EpisodicMemory;
 import com.agentscopea2a.v2.skillManager.scheduler.WriteCallback;
 import com.agentscopea2a.v2.skills.BuiltinSkillRegistrar;
+import com.agentscopea2a.v2.skills.DimensionSpanScanner;
 import com.agentscopea2a.v2.skills.FingerprintCalculator;
 import com.agentscopea2a.v2.skills.MetricClassificationService;
 import com.agentscopea2a.v2.skills.SkillBypassKeywordRepository;
 import com.agentscopea2a.v2.skills.SkillBypassKeywordService;
 import com.agentscopea2a.v2.skills.SkillCandidateRepository;
 import com.agentscopea2a.v2.skills.SkillCandidateSelector;
+import com.agentscopea2a.v2.skills.SkillDimensionCollisionService;
 import com.agentscopea2a.v2.skills.SkillKeywordPriorityRepository;
 import com.agentscopea2a.v2.skills.SkillDistiller;
 import com.agentscopea2a.v2.skills.SkillEvolutionRunner;
@@ -59,6 +61,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import javax.sql.DataSource;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.List;
 
 /**
  * v2 SkillCurator pipeline configuration.
@@ -139,12 +142,51 @@ public class V2SkillConfig {
         return new SkillKeywordPriorityRepository(dataSource, cacheTtlMillis);
     }
 
+    /**
+     * 维度实体 span 扫描器（docs/202610/检索关键词与维度值冲突治理方案.md §4）：
+     * selector 把落在实体 span 内的词条命中判为假主题信号。enabled=false 或词表失败
+     * → 空 span 集 = 屏蔽关闭，行为回退现状。
+     */
+    @Bean
+    public DimensionSpanScanner dimensionSpanScanner(
+            com.agentscopea2a.v2.dimension.DimensionAliasRepository dimensionAliasRepository,
+            org.springframework.beans.factory.ObjectProvider<com.agentscopea2a.v2.dimension.PersonLedgerRepository> ledgerProvider,
+            @Value("${harness.a2a.skill.collision-guard.enabled:true}") boolean enabled,
+            @Value("${harness.a2a.skill.collision-span-ttl-millis:30000}") long ttlMillis) {
+        log.info("DimensionSpanScanner: collisionGuardEnabled={}, ttlMillis={}", enabled, ttlMillis);
+        if (!enabled) {
+            // 关闭态: 返回恒空扫描器, selector 行为与 2026/10/28 前完全一致
+            return new DimensionSpanScanner(() -> List.of(), () -> null, ttlMillis) {
+                @Override
+                public java.util.List<int[]> scan(String normalizedQuestion) {
+                    return List.of();
+                }
+            };
+        }
+        return new DimensionSpanScanner(dimensionAliasRepository::findAllEnabled,
+                ledgerProvider::getIfAvailable, ttlMillis);
+    }
+
+    /** 词条 × 维度实体名 撞车审计（方案 §5, 仅提示不阻断; 启动日志 + 保存响应 warning）。 */
+    @Bean
+    public SkillDimensionCollisionService skillDimensionCollisionService(
+            SkillRoutingMetadataRepository routingMetadataRepository,
+            SkillBypassKeywordRepository skillBypassKeywordRepository,
+            com.agentscopea2a.v2.dimension.DimensionAliasRepository dimensionAliasRepository,
+            org.springframework.beans.factory.ObjectProvider<com.agentscopea2a.v2.dimension.PersonLedgerRepository> ledgerProvider) {
+        return new SkillDimensionCollisionService(routingMetadataRepository::findActive,
+                skillBypassKeywordRepository::findAllEnabled,
+                dimensionAliasRepository::findAllEnabled,
+                ledgerProvider::getIfAvailable);
+    }
+
     @Bean
     public SkillVisibilityFilter skillVectorIndexVisibilityFilter(
             SkillRoutingMetadataRepository routingMetadataRepository,
             SkillUsageResolver skillUsageResolver,
             SkillBypassKeywordService skillBypassKeywordService,
             SkillKeywordPriorityRepository skillKeywordPriorityRepository,
+            DimensionSpanScanner dimensionSpanScanner,
             com.agentscopea2a.v2.skills.DirectSkillExecutor directSkillExecutor,
             @Value("${harness.a2a.skill-context.routing.enabled:false}") boolean enabled,
             @Value("${harness.a2a.skill-context.max-visible-skills:5}") int maxVisibleSkills,
@@ -153,7 +195,7 @@ public class V2SkillConfig {
                 enabled, maxVisibleSkills, fallbackVisibleSkills);
         return new SkillVectorIndexVisibilityFilter(routingMetadataRepository,
                 new SkillCandidateSelector(maxVisibleSkills, fallbackVisibleSkills,
-                        skillKeywordPriorityRepository::findAllEnabled),
+                        skillKeywordPriorityRepository::findAllEnabled, dimensionSpanScanner),
                 enabled, skillUsageResolver, skillBypassKeywordService, directSkillExecutor);
     }
 
@@ -176,6 +218,7 @@ public class V2SkillConfig {
             ObjectProvider<com.agentscopea2a.v2.dimension.PersonalDimensionResolver> personalResolverProvider,
             com.fasterxml.jackson.databind.ObjectMapper objectMapper,
             SkillKeywordPriorityRepository skillKeywordPriorityRepository,
+            DimensionSpanScanner dimensionSpanScanner,
             @Value("${harness.a2a.skill-context.max-visible-skills:5}") int maxVisibleSkills,
             @Value("${harness.a2a.skill-context.fallback-visible-skills:10}") int fallbackVisibleSkills,
             @Value("${harness.a2a.skill-direct-exec.enabled:false}") boolean enabled) {
@@ -183,7 +226,7 @@ public class V2SkillConfig {
         return new com.agentscopea2a.v2.skills.DirectSkillExecutor(
                 routingMetadataRepository,
                 new SkillCandidateSelector(maxVisibleSkills, fallbackVisibleSkills,
-                        skillKeywordPriorityRepository::findAllEnabled),
+                        skillKeywordPriorityRepository::findAllEnabled, dimensionSpanScanner),
                 skillUsageResolver,
                 indexRepo,
                 scriptRegistryMapper,

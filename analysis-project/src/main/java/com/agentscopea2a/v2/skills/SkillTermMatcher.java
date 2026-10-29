@@ -3,9 +3,12 @@ package com.agentscopea2a.v2.skills;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -47,6 +50,44 @@ public final class SkillTermMatcher {
     public static boolean containsName(String normalizedQuestion, String name) {
         String normalized = normalize(name);
         return !normalized.isEmpty() && normalizedQuestion.contains(normalized);
+    }
+
+    /**
+     * 词条每次命中的位置（维度实体 span 屏蔽用，docs/202610/检索关键词与维度值冲突治理方案.md §4.1）：
+     * 与 {@link #matches} 同语义（可编译为正则按 CASE_INSENSITIVE find，编译失败回退字面
+     * indexOf），但收集每次命中的 [start,end)。空列表 = 未命中。
+     */
+    public static List<int[]> matchPositions(String normalizedQuestion, String term) {
+        List<int[]> out = new ArrayList<>();
+        if (term == null || normalizedQuestion == null) return out;
+        String trimmed = term.trim();
+        if (trimmed.isEmpty()) return out;
+        Optional<Pattern> compiled = PATTERN_CACHE.computeIfAbsent(trimmed, t -> {
+            try {
+                return Optional.of(Pattern.compile(t, Pattern.CASE_INSENSITIVE));
+            } catch (Exception e) {
+                return Optional.empty();
+            }
+        });
+        if (compiled.isPresent()) {
+            Matcher m = compiled.get().matcher(normalizedQuestion);
+            while (m.find()) {
+                out.add(new int[] {m.start(), m.end()});
+                if (m.end() == m.start()) {
+                    int next = m.end() + 1;
+                    if (next > normalizedQuestion.length()) break; // 末尾零宽命中, region 会越界
+                    m.region(next, normalizedQuestion.length()); // 防零宽死循环
+                }
+            }
+        } else {
+            String literal = normalize(term);
+            int idx = normalizedQuestion.indexOf(literal);
+            while (idx >= 0) {
+                out.add(new int[] {idx, idx + literal.length()});
+                idx = normalizedQuestion.indexOf(literal, idx + 1);
+            }
+        }
+        return out;
     }
 
     public static String normalize(String value) {

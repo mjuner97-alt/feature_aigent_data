@@ -50,7 +50,9 @@ class SkillVectorIndexVisibilityFilterTest {
     }
 
     @Test
-    void domainQuestionKeepsDomainAndGenericSkillsExcludingOtherDomains() {
+    void domainQuestionKeepsOnlyMatchingDomainSkills() {
+        // 2026/10/29 收紧 (用户拍板): domain 点名时通用(未配领域标签)skill 一并隐藏,
+        // 即使叶层关键词命中; 其他领域 skill 也隐藏
         SkillRoutingMetadataRepository repository = mock(SkillRoutingMetadataRepository.class);
         SkillRoutingMetadata weeklyMeeting = new SkillRoutingMetadata(
                 "demo_company_quality", "quality", List.of("Q2-1"), List.of("杭研周例会"), List.of(),
@@ -77,9 +79,7 @@ class SkillVectorIndexVisibilityFilterTest {
         List<AgentSkill> domainResult = filter.filter(
                 List.of(skill("demo_company_quality"), skill("ordinary_quality"), skill("other_domain_quality")),
                 domainContext);
-        assertTrue(names(domainResult).contains("demo_company_quality"));
-        assertTrue(names(domainResult).contains("ordinary_quality"));
-        assertFalse(names(domainResult).contains("other_domain_quality"));
+        assertEquals(List.of("demo_company_quality"), names(domainResult));
     }
 
     @Test
