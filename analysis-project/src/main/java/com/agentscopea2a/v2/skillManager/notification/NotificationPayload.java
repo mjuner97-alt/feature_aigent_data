@@ -3,6 +3,7 @@ package com.agentscopea2a.v2.skillManager.notification;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 通知载荷：跑批执行成功后组装，交给 {@link NotificationSender} 发送。
@@ -33,14 +34,25 @@ public record NotificationPayload(
         List<String> ccUserIdList,
         String notifyContactName,
         String notifyContactPhone,
-        LocalDate executionDate
+        LocalDate executionDate,
+        Map<String, String> recipientLinks
 ) {
+    public NotificationPayload(String contentType, String content, String filePath, String fileName,
+                               String fileUrl, Long jobId, String jobName, String metricCode,
+                               String metricName, Long executionId, String status,
+                               LocalDateTime completedAt, List<String> userIdList, String triggerType,
+                               List<String> ccUserIdList, String notifyContactName,
+                               String notifyContactPhone, LocalDate executionDate) {
+        this(contentType, content, filePath, fileName, fileUrl, jobId, jobName, metricCode,
+                metricName, executionId, status, completedAt, userIdList, triggerType,
+                ccUserIdList, notifyContactName, notifyContactPhone, executionDate, Map.of());
+    }
     public NotificationPayload(String contentType, String content, String filePath, String fileName,
                                String fileUrl, Long jobId, String jobName, String metricCode,
                                String metricName, Long executionId, String status,
                                LocalDateTime completedAt, List<String> userIdList, String triggerType) {
         this(contentType, content, filePath, fileName, fileUrl, jobId, jobName, metricCode,
-                metricName, executionId, status, completedAt, userIdList, triggerType, List.of(), null, null, null);
+                metricName, executionId, status, completedAt, userIdList, triggerType, List.of(), null, null, null, java.util.Map.of());
     }
     /** 无抄送/联系人但需要报告数据截止日期的载荷（SkillJob 跑批通知用）。 */
     public NotificationPayload(String contentType, String content, String filePath, String fileName,
@@ -49,7 +61,7 @@ public record NotificationPayload(
                                LocalDateTime completedAt, List<String> userIdList, String triggerType,
                                LocalDate executionDate) {
         this(contentType, content, filePath, fileName, fileUrl, jobId, jobName, metricCode,
-                metricName, executionId, status, completedAt, userIdList, triggerType, List.of(), null, null, executionDate);
+                metricName, executionId, status, completedAt, userIdList, triggerType, List.of(), null, null, executionDate, java.util.Map.of());
     }
     public NotificationPayload(String contentType, String content, String filePath, String fileName,
                                String fileUrl, Long jobId, String jobName, String metricCode,
@@ -57,6 +69,9 @@ public record NotificationPayload(
                                LocalDateTime completedAt, List<String> userIdList, String triggerType,
                                List<String> ccUserIdList) {
         this(contentType, content, filePath, fileName, fileUrl, jobId, jobName, metricCode,
-                metricName, executionId, status, completedAt, userIdList, triggerType, ccUserIdList, null, null, null);
+                metricName, executionId, status, completedAt, userIdList, triggerType, ccUserIdList, null, null, null, java.util.Map.of());
     }
 }
+
+
+

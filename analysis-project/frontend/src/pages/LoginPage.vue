@@ -23,7 +23,20 @@ async function handleLogin() {
   try {
     const user = await login({ userId: id, password: password.value || undefined });
     saveLoggedInUser(user);
-    router.push('/');
+    const executionId = new URLSearchParams(window.location.search).get('returnExecutionId');
+    const flowExecutionId = new URLSearchParams(window.location.search).get('returnFlowExecutionId');
+    const accessToken = new URLSearchParams(window.location.search).get('accessToken');
+    if (flowExecutionId) {
+      const response = await fetch(`/api/skill-flow-executions/notification-link?executionId=${encodeURIComponent(flowExecutionId)}&returnFromLogin=true`, { headers: { 'X-User-Id': user.userId }, redirect: 'follow' });
+      if (response.ok && response.url) window.location.assign(response.url);
+      else errorMsg.value = '通知报告无权访问或已失效';
+    } else if (executionId) {
+      const response = await fetch(`/api/skill-jobs/notification-link?executionId=${encodeURIComponent(executionId)}&returnFromLogin=true&accessToken=${encodeURIComponent(accessToken || "")}`, {
+        headers: { 'X-User-Id': user.userId }, redirect: 'follow',
+      });
+      if (response.ok && response.url) window.location.assign(response.url);
+      else errorMsg.value = '通知报告无权访问或已失效';
+    } else router.push('/');
   } catch (e: any) {
     errorMsg.value = e.message || '登录失败';
   } finally {
@@ -62,6 +75,7 @@ function handleEnter(e: KeyboardEvent) {
         @keydown="handleEnter"
       />
       <input v-if="mode === 'code'" v-model="code" inputmode="numeric" maxlength="6" placeholder="6位验证码" class="login-input" :disabled="loading" />
+      <div v-if="mode === 'code'" class="code-hint">验证码已发送至邮箱，请前往邮箱获取（请检查垃圾邮件）</div>
       <input v-if="mode === 'password'" v-model="confirmPassword" type="password" placeholder="确认新密码" class="login-input" :disabled="loading" />
       <div v-if="mode === 'code'" class="login-code-hint">验证码已发送至邮箱</div>
       <div v-if="errorMsg" class="login-error">{{ errorMsg }}</div>
@@ -111,6 +125,12 @@ function handleEnter(e: KeyboardEvent) {
   box-sizing: border-box;
 }
 .login-input:focus { border-color: #6366f1; }
+.code-hint {
+  margin-top: 8px;
+  color: #64748b;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
 .login-error {
   color: #dc2626;
   font-size: 0.8rem;
@@ -149,3 +169,5 @@ function handleEnter(e: KeyboardEvent) {
 .link-btn:hover:not(:disabled) { color: #1d4ed8; text-decoration: underline; }
 .link-btn:disabled { color: #94a3b8; cursor: not-allowed; }
 </style>
+
+

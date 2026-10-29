@@ -31,6 +31,7 @@ public interface NotificationSender {
         body.put("content", payload.content());
         body.put("toUserList", payload.userIdList() == null ? java.util.List.of() : java.util.List.copyOf(payload.userIdList()));
         body.put("toCCUserList", payload.ccUserIdList() == null ? java.util.List.of() : java.util.List.copyOf(payload.ccUserIdList()));
+        body.put("recipientLinks", payload.recipientLinks() == null ? java.util.Map.of() : java.util.Map.copyOf(payload.recipientLinks()));
         return body;
     }
 
@@ -40,3 +41,5 @@ public interface NotificationSender {
         return null;
     }
 }
+
+

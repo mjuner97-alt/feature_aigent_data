@@ -5,6 +5,7 @@
       <button type="button" class="history-nav-item" :class="{ active: activeTab === 'sessions' }" @click="activeTab = 'sessions'">会话历史</button>
       <button type="button" class="history-nav-item" :class="{ active: activeTab === 'nodeLogs' }" @click="activeTab = 'nodeLogs'">节点执行日志</button>
       <button type="button" class="history-nav-item" :class="{ active: activeTab === 'cases' }" @click="activeTab = 'cases'">案例信息</button>
+      <button type="button" class="history-nav-item" :class="{ active: activeTab === 'access' }" @click="activeTab = 'access'; loadAccess()">访问埋点</button>
     </aside>
 
     <main class="history-content" :style="rootStyle">
@@ -62,6 +63,10 @@
       </div>
 
       <LongTaskNodeLogPanel v-if="activeTab === 'nodeLogs'" style="flex:1;overflow:auto" />
+      <div v-if="activeTab === 'access'" class="case-panel">
+        <div class="case-header access-header"><div><div class="case-title">访问埋点</div><div class="case-subtitle">页面点击、通知点击与登录后查看</div></div><div class="access-actions"><el-input v-model="accessTask" placeholder="任务" clearable class="access-control" @keyup.enter="loadAccess"/><el-input v-model="accessExecutionId" placeholder="执行ID" clearable class="access-control" @keyup.enter="loadAccess"/><el-input v-model="accessUser" placeholder="人员" clearable class="access-control access-user" @keyup.enter="loadAccess"/><el-date-picker v-model="executionDateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="执行开始" end-placeholder="执行结束" class="access-date"/><el-date-picker v-model="accessDateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="访问开始" end-placeholder="访问结束" class="access-date"/><el-select v-model="accessEnvironment" class="access-control"><el-option label="生产环境" value="prod"/><el-option label="开发环境" value="dev"/><el-option label="全部环境" value="ALL"/></el-select><el-button type="primary" :loading="accessLoading" @click="loadAccess">查询</el-button><el-button :loading="accessLoading" @click="loadAccess">刷新</el-button><el-button @click="exportAccess">导出记录</el-button></div></div>
+        <el-table :data="accessRows" v-loading="accessLoading" stripe border empty-text="暂无访问埋点"><el-table-column label="任务" width="180" show-overflow-tooltip><template #default="s">{{ s.row.taskDisplayName || '-' }}{{ s.row.executionAt ? `（${dayjs(s.row.executionAt).format('YYYY-MM-DD')}）` : '' }}</template></el-table-column><el-table-column prop="executionId" label="执行ID" width="90"/><el-table-column label="执行时间" width="165"><template #default="s">{{ s.row.executionAt ? dayjs(s.row.executionAt).format('YYYY-MM-DD HH:mm:ss') : '-' }}</template></el-table-column><el-table-column label="人员" width="160"><template #default="s">{{ s.row.userName ? `${s.row.userName}(${s.row.userId})` : (s.row.userId || '-') }}</template></el-table-column><el-table-column label="来源" width="120"><template #default="s">{{s.row.source === 'PAGE' ? '页面点击' : '通知点击'}}</template></el-table-column><el-table-column label="状态" width="140"><template #default="s">{{s.row.eventType === 'LOGIN_VIEW' ? '登录后查看' : s.row.loggedIn ? '已登录点击' : '仅点击未登录'}}</template></el-table-column><el-table-column label="访问时间" min-width="190"><template #default="s">{{ s.row.latestEventAt || '-' }}</template></el-table-column></el-table>
+      </div>
 
       <!-- 案例信息面板 -->
       <div v-if="activeTab === 'cases'" class="case-panel">
@@ -155,7 +160,43 @@ const router = useRouter();
 const route = useRoute();
 
 // ==================== 通用状态 ====================
-const activeTab = ref<'sessions' | 'nodeLogs' | 'cases'>('sessions');
+const activeTab = ref<'sessions' | 'nodeLogs' | 'cases' | 'access'>('sessions');
+const accessRows = ref<any[]>([]);
+const accessLoading = ref(false);
+const accessTask = ref('');
+const accessExecutionId = ref('');
+const accessUser = ref('');
+const accessEnvironment = ref('');
+const executionDateRange = ref<string[]>([]);
+const accessDateRange = ref<string[]>([]);
+async function loadAccess() {
+  accessLoading.value = true;
+  try {
+    const params = new URLSearchParams();
+    const userId = accessUser.value || getLoggedInUserId() || '';
+    if (userId) params.set('userId', userId);
+    if (accessTask.value) params.set('taskName', accessTask.value);
+    if (accessExecutionId.value) params.set('executionId', accessExecutionId.value);
+    params.set('environment', accessEnvironment.value); if (executionDateRange.value.length === 2) { params.set('executionFrom', executionDateRange.value[0]); params.set('executionTo', executionDateRange.value[1]); } if (accessDateRange.value.length === 2) { params.set('accessFrom', accessDateRange.value[0]); params.set('accessTo', accessDateRange.value[1]); }
+    const response = await fetch('/api/notification-access/link-clicks?' + params, { headers: { 'X-User-Id': getLoggedInUserId() || '' } });
+    if (!response.ok) throw new Error('查询失败(' + response.status + ')');
+    accessRows.value = await response.json();
+  } catch (e) { ElMessage.error(e instanceof Error ? e.message : '访问埋点查询失败'); }
+  finally { accessLoading.value = false; }
+}
+async function exportAccess() {
+  const params = new URLSearchParams();
+  const userId = accessUser.value || getLoggedInUserId() || '';
+  if (userId) params.set('userId', userId);
+  if (accessTask.value) params.set('taskName', accessTask.value);
+  if (accessExecutionId.value) params.set('executionId', accessExecutionId.value);
+  params.set('environment', accessEnvironment.value); if (executionDateRange.value.length === 2) { params.set('executionFrom', executionDateRange.value[0]); params.set('executionTo', executionDateRange.value[1]); } if (accessDateRange.value.length === 2) { params.set('accessFrom', accessDateRange.value[0]); params.set('accessTo', accessDateRange.value[1]); }
+  const response = await fetch('/api/notification-access/link-clicks/export?' + params, { headers: { 'X-User-Id': getLoggedInUserId() || '' } });
+  if (!response.ok) { ElMessage.error('导出失败'); return; }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a'); anchor.href = url; anchor.download = `长任务访问埋点${dayjs().format('YYYYMMDDHHmmss')}.csv`; anchor.click(); URL.revokeObjectURL(url);
+}
 const loading = ref(false);
 const error = ref<string | null>(null);
 const lastUpdated = ref('--');
@@ -446,9 +487,11 @@ function goDetail(conversationId: string) {
   router.push({ path: `/sessions/${encodeURIComponent(conversationId)}`, query: { ...route.query } });
 }
 
-onMounted(() => {
+onMounted(async () => {
+  try { const response = await fetch('/api/notification-access/environment', { headers: { 'X-User-Id': getLoggedInUserId() || '' } }); if (response.ok) accessEnvironment.value = (await response.json()).environment || 'dev'; } catch { accessEnvironment.value = 'dev'; }
   applyRouteState();
   refreshConversations();
+  if (activeTab.value === 'access') loadAccess();
 });
 
 watch(() => route.query, () => { applyRouteState(); refreshConversations(); });
@@ -493,6 +536,11 @@ function durationStyle(ms: number): any {
 /* 案例信息面板 */
 .case-panel { flex: 1; overflow: hidden; display: flex; flex-direction: column; padding: 16px 20px; box-sizing: border-box; }
 .case-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-shrink: 0; }
+.access-header { gap: 20px; }
+.access-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.access-control { width: 150px; }
+.access-user { width: 140px; }
+.access-actions :deep(.el-button) { margin-left: 0; }
 .case-title { font-size: 18px; font-weight: 700; color: #0f172a; }
 .case-subtitle { font-size: 11px; color: #94a3b8; margin-top: 2px; }
 .case-actions { display: flex; align-items: center; gap: 12px; }
@@ -511,3 +559,7 @@ function durationStyle(ms: number): any {
 .text-success { color: #67c23a; }
 .text-danger { color: #f56c6c; }
 </style>
+
+
+
+

@@ -33,9 +33,9 @@ COMMENT ON COLUMN skill_flow_tag.created_at IS '创建时间';
 COMMENT ON COLUMN skill_flow_tag.updated_at IS '最后更新时间';
 
 ALTER TABLE skill_flow ADD COLUMN IF NOT EXISTS type_id BIGINT;
-ALTER TABLE skill_flow ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0;
-COMMENT ON COLUMN skill_flow.type_id IS '长任务流程类型；必须关联启用的 skill_flow_type';
-COMMENT ON COLUMN skill_flow.priority IS '同一类型内的自动执行优先级；数值越小越优先';
+ALTER TABLE skill_flow ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 999999;
+COMMENT ON COLUMN skill_flow.type_id IS '长任务流程类型；可为空以兼容历史流程，非空时必须关联 skill_flow_type';
+COMMENT ON COLUMN skill_flow.priority IS '同一类型内的自动执行优先级；数值越小越优先，历史流程默认 999999';
 ALTER TABLE skill_flow ADD CONSTRAINT fk_skill_flow_type FOREIGN KEY (type_id) REFERENCES skill_flow_type(id);
 CREATE INDEX IF NOT EXISTS idx_skill_flow_type_priority ON skill_flow(type_id, priority, created_at, id);
 
@@ -50,9 +50,7 @@ COMMENT ON COLUMN skill_flow_tag_rel.flow_id IS '关联 skill_flow.id';
 COMMENT ON COLUMN skill_flow_tag_rel.tag_id IS '关联 skill_flow_tag.id';
 COMMENT ON COLUMN skill_flow_tag_rel.created_at IS '绑定创建时间';
 
--- 幂等兼容迁移：仅为尚未设置类型的历史流程绑定默认类型，不覆盖管理员后续修改。
+-- 幂等兼容迁移：确保默认类型存在，历史流程的 type_id 保持可空，不覆盖既有数据。
 INSERT INTO skill_flow_type(name, description, sort_order, enabled)
 SELECT '其他', '系统迁移默认类型', 999999, TRUE
 WHERE NOT EXISTS (SELECT 1 FROM skill_flow_type WHERE name='其他');
-UPDATE skill_flow SET type_id=(SELECT id FROM skill_flow_type WHERE name='其他') WHERE type_id IS NULL;
-ALTER TABLE skill_flow ALTER COLUMN type_id SET NOT NULL;

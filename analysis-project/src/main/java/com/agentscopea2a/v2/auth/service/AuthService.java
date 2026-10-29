@@ -44,7 +44,6 @@ public class AuthService {
     private final NotificationSender notificationSender;
     private final AiChatRuntimeConfigMapper runtimeConfigMapper;
     private final AuthUserCredentialMapper credentialMapper;
-    private final Map<String, Credential> credentials = new java.util.concurrent.ConcurrentHashMap<>();
     private final Map<String, ResetCode> resetCodes = new ConcurrentHashMap<>();
     private final Map<String, String> resetSessions = new ConcurrentHashMap<>();
     private final SecureRandom random = new SecureRandom();
@@ -165,8 +164,7 @@ public class AuthService {
 
     public void setPassword(String userId, String password) {
         String hashed = hash(password);
-        if (credentialMapper != null) credentialMapper.upsertPassword(userId, hashed);
-        else credentials.put(userId, new Credential(hashed));
+        requireCredentialStore().upsertPassword(userId, hashed);
     }
 
     public List<Map<String, Object>> exportCredentials() {
@@ -177,8 +175,6 @@ public class AuthService {
                 AuthUserCredential row = credentialMapper.selectByUserId(userId);
                 if (row != null) out.add(Map.of("userId", row.getUserId(), "passwordHash", row.getPasswordHash()));
             }
-        } else {
-            credentials.forEach((id, c) -> out.add(Map.of("userId", id, "passwordHash", c.hash)));
         }
         return out;
     }
@@ -212,8 +208,7 @@ public class AuthService {
     }
 
     private Credential loadCredential(String userId) {
-        if (credentialMapper == null) return credentials.get(userId);
-        AuthUserCredential row = credentialMapper.selectByUserId(userId);
+        AuthUserCredential row = requireCredentialStore().selectByUserId(userId);
         if (row == null) return null;
         Credential c = new Credential(row.getPasswordHash());
         c.failures = row.getLoginFailures() == null ? 0 : row.getLoginFailures();
@@ -222,11 +217,10 @@ public class AuthService {
     }
 
     private void saveLoginState(String userId, Credential credential) {
-        if (credentialMapper != null) {
-            java.time.LocalDateTime locked = credential.lockedUntil <= 0 ? null : java.time.LocalDateTime.ofInstant(Instant.ofEpochSecond(credential.lockedUntil), java.time.ZoneId.systemDefault());
-            credentialMapper.updateLoginState(userId, credential.failures, locked);
-        }
+        java.time.LocalDateTime locked = credential.lockedUntil <= 0 ? null : java.time.LocalDateTime.ofInstant(Instant.ofEpochSecond(credential.lockedUntil), java.time.ZoneId.systemDefault());
+        requireCredentialStore().updateLoginState(userId, credential.failures, locked);
     }
+    private AuthUserCredentialMapper requireCredentialStore() { if (credentialMapper == null) throw new IllegalStateException("密码凭证存储未配置"); return credentialMapper; }
 
     private static String hash(String value) { try { return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest((value == null ? "" : value).getBytes(StandardCharsets.UTF_8))); } catch (Exception e) { throw new IllegalStateException(e); } }
     private static boolean matches(String raw, String expected) { return MessageDigest.isEqual(hash(raw).getBytes(StandardCharsets.UTF_8), expected.getBytes(StandardCharsets.UTF_8)); }

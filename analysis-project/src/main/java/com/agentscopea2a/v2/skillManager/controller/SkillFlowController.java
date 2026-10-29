@@ -15,6 +15,9 @@ import com.agentscopea2a.v2.skillManager.service.FlowDefinitionService;
 import com.agentscopea2a.v2.skillManager.service.FlowExecutionService;
 import com.agentscopea2a.v2.skillManager.service.FlowQueryService;
 import com.agentscopea2a.v2.skillManager.service.FlowCoordinator;
+import com.agentscopea2a.v2.skillManager.service.NotificationLinkClickService;
+import com.agentscopea2a.v2.skillManager.dto.NotificationLinkClickFilterRequest;
+import com.agentscopea2a.v2.skillManager.dto.NotificationLinkClickSummaryDto;
 import com.agentscopea2a.v2.skillManager.service.FlowQueryService.ReportDownload;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.io.Resource;
@@ -46,16 +49,19 @@ public class SkillFlowController {
     private final FlowExecutionService executionService;
     private final SkillFlowMapper mapper;
     private final FlowCoordinator coordinator;
+    private final NotificationLinkClickService linkClickService;
 
     public SkillFlowController(FlowDefinitionService definitionService, FlowQueryService queryService,
                                FlowCompletionService completionService, FlowExecutionService executionService,
-                               SkillFlowMapper mapper, FlowCoordinator coordinator) {
+                               SkillFlowMapper mapper, FlowCoordinator coordinator,
+                               NotificationLinkClickService linkClickService) {
         this.definitionService = definitionService;
         this.queryService = queryService;
         this.completionService = completionService;
         this.executionService = executionService;
         this.mapper = mapper;
         this.coordinator = coordinator;
+        this.linkClickService = linkClickService;
     }
 
     // ==================== 流程定义:/api/skill-flows ====================
@@ -202,10 +208,22 @@ public class SkillFlowController {
         return queryService.notifications(id, userId);
     }
 
+    /** Access audit summary, restricted to executions visible to the current user. */
+    @GetMapping("/api/skill-flow-executions/{id}/link-clicks")
+    public List<NotificationLinkClickSummaryDto> linkClicks(@PathVariable Long id,
+            @RequestHeader("X-User-Id") String userId,
+            NotificationLinkClickFilterRequest filter) {
+        queryService.requireOwner(id, userId);
+        return linkClickService.executionSummary(id, filter);
+    }
+
     /** 在线查看 HTML 报告(inline 渲染;不限制下载人,邮件链接可直接打开,X-User-Id 仅用于兼容前端调用)。 */
     @GetMapping("/api/skill-flow-executions/{id}/report")
     public ResponseEntity<Resource> report(@PathVariable(name = "id") Long id,
                                            @RequestHeader(name = "X-User-Id", required = false) String userId) {
+        if (userId != null && !userId.isBlank()) {
+            linkClickService.record(null, id, userId, userId, null, "PAGE", "CLICK", true, null, null);
+        }
         ReportDownload download = queryService.report(id, userId);
         // RFC 5987: 中文文件名用 filename*=UTF-8'' 编码;ASCII 回退名给不识别 filename* 的老客户端
         String encoded = URLEncoder.encode(download.downloadName(), StandardCharsets.UTF_8).replace("+", "%20");
