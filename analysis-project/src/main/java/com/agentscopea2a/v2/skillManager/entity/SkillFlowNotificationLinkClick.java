@@ -17,6 +17,7 @@ public class SkillFlowNotificationLinkClick {
     private Long notificationId;
     private Long flowExecutionId;
     private Long jobExecutionId;
+    private String executionType;
     private String recipientUserId;
     private String actorUserId;
     private String tokenHash;

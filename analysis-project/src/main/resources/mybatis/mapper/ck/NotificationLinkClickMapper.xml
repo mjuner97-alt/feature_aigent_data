@@ -2,7 +2,7 @@
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.agentscopea2a.mapper.ck.NotificationLinkClickMapper">
   <resultMap id="ClickMap" type="com.agentscopea2a.v2.skillManager.entity.SkillFlowNotificationLinkClick">
-    <result column="flow_execution_id" property="flowExecutionId"/><result column="job_execution_id" property="jobExecutionId"/>
+    <result column="flow_execution_id" property="flowExecutionId"/><result column="job_execution_id" property="jobExecutionId"/><result column="execution_type" property="executionType"/>
     <result column="actor_user_id" property="actorUserId"/><result column="source" property="source"/>
     <result column="event_type" property="eventType"/><result column="logged_in" property="loggedIn"/>
     <result column="first_event_at" property="firstEventAt"/><result column="latest_event_at" property="latestEventAt"/><result column="task_display_name" property="displayName"/>
@@ -22,7 +22,9 @@
     WHERE environment = #{environment} AND access_token = #{accessToken} AND event_type = 'CLICK'
   </update>
   <select id="findSummary" resultMap="ClickMap">
-    SELECT flow_execution_id, job_execution_id, actor_user_id, source, event_type,
+    SELECT flow_execution_id, job_execution_id,
+           CASE WHEN flow_execution_id IS NOT NULL THEN 'LONG_TASK' ELSE 'INDEPENDENT_TASK' END AS execution_type,
+           actor_user_id, source, event_type,
            max(logged_in) AS logged_in,
            coalesce(nullIf(any(task_display_name), ''), concat('任务 #', toString(ifNull(job_execution_id, flow_execution_id)))) AS task_display_name,
            any(execution_at) AS execution_at, min(event_at) AS first_event_at,

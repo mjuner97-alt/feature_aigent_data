@@ -19,11 +19,9 @@ import com.agentscopea2a.v2.trace.collector.TraceSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.scheduling.annotation.EnableScheduling;
 
 /** Trace 监控配置类，启用定时调度；TraceProperties 以 @Component 形式注册（硬编码默认值） */
 @Configuration
-@EnableScheduling
 public class TraceConfig {
 
     private static final Logger log = LoggerFactory.getLogger(TraceConfig.class);

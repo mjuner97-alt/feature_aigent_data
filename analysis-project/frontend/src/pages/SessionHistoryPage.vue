@@ -64,8 +64,8 @@
 
       <LongTaskNodeLogPanel v-if="activeTab === 'nodeLogs'" style="flex:1;overflow:auto" />
       <div v-if="activeTab === 'access'" class="case-panel">
-        <div class="case-header access-header"><div><div class="case-title">访问埋点</div><div class="case-subtitle">页面点击、通知点击与登录后查看</div></div><div class="access-actions"><el-input v-model="accessTask" placeholder="任务" clearable class="access-control" @keyup.enter="loadAccess"/><el-input v-model="accessExecutionId" placeholder="执行ID" clearable class="access-control" @keyup.enter="loadAccess"/><el-input v-model="accessUser" placeholder="人员" clearable class="access-control access-user" @keyup.enter="loadAccess"/><el-date-picker v-model="executionDateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="执行开始" end-placeholder="执行结束" class="access-date"/><el-date-picker v-model="accessDateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="访问开始" end-placeholder="访问结束" class="access-date"/><el-select v-model="accessEnvironment" class="access-control"><el-option label="生产环境" value="prod"/><el-option label="开发环境" value="dev"/><el-option label="全部环境" value="ALL"/></el-select><el-button type="primary" :loading="accessLoading" @click="loadAccess">查询</el-button><el-button :loading="accessLoading" @click="loadAccess">刷新</el-button><el-button @click="exportAccess">导出记录</el-button></div></div>
-        <el-table :data="accessRows" v-loading="accessLoading" stripe border empty-text="暂无访问埋点"><el-table-column label="任务" width="180" show-overflow-tooltip><template #default="s">{{ s.row.taskDisplayName || '-' }}{{ s.row.executionAt ? `（${dayjs(s.row.executionAt).format('YYYY-MM-DD')}）` : '' }}</template></el-table-column><el-table-column prop="executionId" label="执行ID" width="90"/><el-table-column label="执行时间" width="165"><template #default="s">{{ s.row.executionAt ? dayjs(s.row.executionAt).format('YYYY-MM-DD HH:mm:ss') : '-' }}</template></el-table-column><el-table-column label="人员" width="160"><template #default="s">{{ s.row.userName ? `${s.row.userName}(${s.row.userId})` : (s.row.userId || '-') }}</template></el-table-column><el-table-column label="来源" width="120"><template #default="s">{{s.row.source === 'PAGE' ? '页面点击' : '通知点击'}}</template></el-table-column><el-table-column label="状态" width="140"><template #default="s">{{s.row.eventType === 'LOGIN_VIEW' ? '登录后查看' : s.row.loggedIn ? '已登录点击' : '仅点击未登录'}}</template></el-table-column><el-table-column label="访问时间" min-width="190"><template #default="s">{{ s.row.latestEventAt || '-' }}</template></el-table-column></el-table>
+        <div class="case-header access-header"><div><div class="case-title">访问埋点</div><div class="case-subtitle">页面点击、通知点击与登录后查看</div></div><div class="access-actions"><el-input v-model="accessTask" placeholder="任务" clearable class="access-control" @keyup.enter="loadAccess"/><el-input v-model="accessExecutionId" placeholder="执行ID" clearable class="access-control" @keyup.enter="loadAccess"/><el-input v-model="accessUser" placeholder="姓名 / 统一号（模糊）" clearable class="access-control access-user" @keyup.enter="loadAccess"/><el-date-picker v-model="executionDateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="执行开始" end-placeholder="执行结束" class="access-date"/><el-date-picker v-model="accessDateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="访问开始" end-placeholder="访问结束" class="access-date"/><el-select v-model="accessEnvironment" class="access-control"><el-option label="生产环境" value="prod"/><el-option label="开发环境" value="dev"/><el-option label="全部环境" value="ALL"/></el-select><el-button type="primary" :loading="accessLoading" @click="loadAccess">查询</el-button><el-button :loading="accessLoading" @click="loadAccess">刷新</el-button><el-button @click="exportAccess">导出记录</el-button></div></div>
+        <el-table :data="accessRows" v-loading="accessLoading" stripe border empty-text="暂无访问埋点"><el-table-column label="任务类型" width="110"><template #default="s">{{ s.row.executionType === 'LONG_TASK' ? '长任务流程' : '独立任务' }}</template></el-table-column><el-table-column label="任务" width="180" show-overflow-tooltip><template #default="s">{{ s.row.taskDisplayName || '-' }}{{ s.row.executionAt ? `（${dayjs(s.row.executionAt).format('YYYY-MM-DD')}）` : '' }}</template></el-table-column><el-table-column prop="executionId" label="执行ID" width="90"/><el-table-column label="执行时间" width="165"><template #default="s">{{ formatAccessDateTime(s.row.executionAt) }}</template></el-table-column><el-table-column label="人员" width="160"><template #default="s">{{ s.row.userName ? `${s.row.userName}(${s.row.userId})` : (s.row.userId || '-') }}</template></el-table-column><el-table-column label="来源" width="120"><template #default="s">{{s.row.source === 'PAGE' ? '页面点击' : '通知点击'}}</template></el-table-column><el-table-column label="状态" width="140"><template #default="s">{{s.row.eventType === 'LOGIN_VIEW' ? '登录后查看' : s.row.loggedIn ? '已登录点击' : '仅点击未登录'}}</template></el-table-column><el-table-column label="访问时间" min-width="190"><template #default="s">{{ formatAccessDateTime(s.row.latestEventAt) }}</template></el-table-column></el-table>
       </div>
 
       <!-- 案例信息面板 -->
@@ -173,11 +173,11 @@ async function loadAccess() {
   accessLoading.value = true;
   try {
     const params = new URLSearchParams();
-    const userId = accessUser.value || getLoggedInUserId() || '';
+    const userId = accessUser.value.trim();
     if (userId) params.set('userId', userId);
-    if (accessTask.value) params.set('taskName', accessTask.value);
-    if (accessExecutionId.value) params.set('executionId', accessExecutionId.value);
-    params.set('environment', accessEnvironment.value); if (executionDateRange.value.length === 2) { params.set('executionFrom', executionDateRange.value[0]); params.set('executionTo', executionDateRange.value[1]); } if (accessDateRange.value.length === 2) { params.set('accessFrom', accessDateRange.value[0]); params.set('accessTo', accessDateRange.value[1]); }
+    if (accessTask.value.trim()) params.set('taskName', accessTask.value.trim());
+    if (accessExecutionId.value.trim()) params.set('executionId', accessExecutionId.value.trim());
+    params.set('environment', accessEnvironment.value.trim()); if (executionDateRange.value.length === 2) { params.set('executionFrom', executionDateRange.value[0]); params.set('executionTo', executionDateRange.value[1]); } if (accessDateRange.value.length === 2) { params.set('accessFrom', accessDateRange.value[0]); params.set('accessTo', accessDateRange.value[1]); }
     const response = await fetch('/api/notification-access/link-clicks?' + params, { headers: { 'X-User-Id': getLoggedInUserId() || '' } });
     if (!response.ok) throw new Error('查询失败(' + response.status + ')');
     accessRows.value = await response.json();
@@ -186,11 +186,11 @@ async function loadAccess() {
 }
 async function exportAccess() {
   const params = new URLSearchParams();
-  const userId = accessUser.value || getLoggedInUserId() || '';
+  const userId = accessUser.value.trim();
   if (userId) params.set('userId', userId);
-  if (accessTask.value) params.set('taskName', accessTask.value);
-  if (accessExecutionId.value) params.set('executionId', accessExecutionId.value);
-  params.set('environment', accessEnvironment.value); if (executionDateRange.value.length === 2) { params.set('executionFrom', executionDateRange.value[0]); params.set('executionTo', executionDateRange.value[1]); } if (accessDateRange.value.length === 2) { params.set('accessFrom', accessDateRange.value[0]); params.set('accessTo', accessDateRange.value[1]); }
+  if (accessTask.value.trim()) params.set('taskName', accessTask.value.trim());
+  if (accessExecutionId.value.trim()) params.set('executionId', accessExecutionId.value.trim());
+  params.set('environment', accessEnvironment.value.trim()); if (executionDateRange.value.length === 2) { params.set('executionFrom', executionDateRange.value[0]); params.set('executionTo', executionDateRange.value[1]); } if (accessDateRange.value.length === 2) { params.set('accessFrom', accessDateRange.value[0]); params.set('accessTo', accessDateRange.value[1]); }
   const response = await fetch('/api/notification-access/link-clicks/export?' + params, { headers: { 'X-User-Id': getLoggedInUserId() || '' } });
   if (!response.ok) { ElMessage.error('导出失败'); return; }
   const blob = await response.blob();
@@ -395,6 +395,10 @@ function statusLabel(status: TraceStatus): string {
 function formatTime(ts: string): string {
   if (!ts) return '-';
   return dayjs(ts).format('YYYY-MM-DD HH:mm:ss');
+}
+
+function formatAccessDateTime(ts?: string): string {
+  return ts ? dayjs(ts).format('YYYY-MM-DD HH:mm:ss') : '-';
 }
 
 function formatCaseTime(ts: string): string {

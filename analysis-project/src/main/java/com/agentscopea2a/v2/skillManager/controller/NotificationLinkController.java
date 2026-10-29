@@ -18,12 +18,10 @@ public class NotificationLinkController {
             @RequestHeader(value="User-Agent", required=false) String userAgent,
             @RequestHeader(value="X-Forwarded-For", required=false) String ip) {
         boolean loggedIn = actor != null && !actor.isBlank();
-        if (!loggedIn) {
-            String token = clicks.recordPendingJob(executionId, ip, userAgent);
-            return ResponseEntity.status(HttpStatus.FOUND).location(URI.create("/login?returnExecutionId=" + executionId + "&accessToken=" + token)).build();
-        }
-        if (returnFromLogin) clicks.completePendingJob(accessToken, actor);
-        else clicks.recordJob(null, executionId, null, actor, null, "NOTIFICATION", "CLICK", true, ip, userAgent);
+        // 邮件/通知链接是普通浏览器导航，无法携带前端 localStorage 中的 X-User-Id。
+        // 无登录身份也必须记录点击，人员字段保持为空，不得拦截到登录页。
+        clicks.recordJob(null, executionId, null, loggedIn ? actor : "", null,
+                "NOTIFICATION", returnFromLogin ? "LOGIN_VIEW" : "CLICK", loggedIn, ip, userAgent);
         return ResponseEntity.status(HttpStatus.FOUND).location(URI.create("/api/skill-jobs/executions/" + executionId + "/download")).build();
     }
 
@@ -34,8 +32,9 @@ public class NotificationLinkController {
             @RequestHeader(value="User-Agent", required=false) String userAgent,
             @RequestHeader(value="X-Forwarded-For", required=false) String ip) {
         boolean loggedIn = actor != null && !actor.isBlank();
-        if (!loggedIn) return ResponseEntity.status(HttpStatus.FOUND).location(URI.create("/login?returnFlowExecutionId=" + executionId)).build();
-        clicks.record(null, executionId, null, actor, null, "NOTIFICATION", returnFromLogin ? "LOGIN_VIEW" : "CLICK", true, ip, userAgent);
+        // 匿名访问同样记录埋点，userId 为空；报告本身由公开的查看接口提供。
+        clicks.record(null, executionId, null, loggedIn ? actor : "", null, "NOTIFICATION",
+                returnFromLogin ? "LOGIN_VIEW" : "CLICK", loggedIn, ip, userAgent);
         return ResponseEntity.status(HttpStatus.FOUND).location(URI.create("/report/flows/" + executionId)).build();
     }
 }

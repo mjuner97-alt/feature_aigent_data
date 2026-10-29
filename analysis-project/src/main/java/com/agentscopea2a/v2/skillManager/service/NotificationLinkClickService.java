@@ -13,6 +13,8 @@ import java.util.*;
 
 @Service
 public class NotificationLinkClickService {
+    private static final java.time.format.DateTimeFormatter DATE_TIME = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final java.time.format.DateTimeFormatter DATE = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd");
     private final NotificationLinkClickMapper mapper;
     private final MockOrgService orgService;
     private final SkillFlowMapper flowMapper;
@@ -84,7 +86,7 @@ public class NotificationLinkClickService {
         NotificationLinkClickFilterRequest effective = request == null ? new NotificationLinkClickFilterRequest() : request;
         List<NotificationLinkClickSummaryDto> rows = new ArrayList<>(summary(null, effective));
         Map<String,Object> f = filters(effective);
-        String requestedEnvironment = effective.getEnvironment();
+        String requestedEnvironment = trimToNull(effective.getEnvironment());
         f.put("environment", "ALL".equalsIgnoreCase(requestedEnvironment) ? null : (blank(requestedEnvironment) ? "prod" : requestedEnvironment.toLowerCase(Locale.ROOT)));
         rows = new ArrayList<>(mapper.findSummary(f).stream().map(NotificationLinkClickSummaryDto::from).toList());
         rows.sort(Comparator.comparing(NotificationLinkClickSummaryDto::latestEventAt, Comparator.nullsLast(Comparator.reverseOrder())));
@@ -92,18 +94,21 @@ public class NotificationLinkClickService {
         List<NotificationLinkClickSummaryDto> enriched = rows.stream().map(r -> {
             String taskName = r.taskDisplayName();
             LocalDateTime executionAt = r.executionAt();
-            if (r.executionId() != null) {
+            if (r.executionId() != null && "LONG_TASK".equals(r.executionType())) {
                 SkillFlowExecution execution = flowMapper.selectFlowExecutionById(r.executionId());
                 if (execution != null) {
                     if ((taskName == null || taskName.startsWith("任务 #")) && execution.getFlowName() != null && !execution.getFlowName().isBlank()) taskName = execution.getFlowName();
                     if (executionAt == null) executionAt = execution.getCreatedAt();
                 }
             }
-            return new NotificationLinkClickSummaryDto(r.executionId(), taskName, executionAt, r.userId(), names.get(r.userId()), r.source(), r.eventType(), r.loggedIn(), r.firstEventAt(), r.latestEventAt(), r.count());
+            return new NotificationLinkClickSummaryDto(r.executionId(), r.executionType(), taskName, executionAt, r.userId(), names.get(r.userId()), r.source(), r.eventType(), r.loggedIn(), r.firstEventAt(), r.latestEventAt(), r.count());
         }).toList();
-        String taskFilter = effective.getTaskName();
+        // 访问埋点页面和统一导出当前只展示长任务流程；独立任务事件继续落库，
+        // 后续开放展示时无需迁移历史数据。独立任务专用 summary 接口不经过此过滤。
+        enriched = enriched.stream().filter(r -> "LONG_TASK".equals(r.executionType())).toList();
+        String taskFilter = trimToNull(effective.getTaskName());
         if (taskFilter != null && !taskFilter.isBlank()) enriched = enriched.stream().filter(r -> r.taskDisplayName() != null && r.taskDisplayName().toLowerCase(Locale.ROOT).contains(taskFilter.toLowerCase(Locale.ROOT))).toList();
-        String personFilter = effective.getUserId();
+        String personFilter = trimToNull(effective.getUserId());
         if (personFilter != null && !personFilter.isBlank()) {
             String needle = personFilter.toLowerCase(Locale.ROOT);
             enriched = enriched.stream().filter(r -> (r.userId() != null && r.userId().toLowerCase(Locale.ROOT).contains(needle)) || (r.userName() != null && r.userName().toLowerCase(Locale.ROOT).contains(needle))).toList();
@@ -112,25 +117,32 @@ public class NotificationLinkClickService {
         return enriched;
     }
     public byte[] exportCsv(String userId, NotificationLinkClickFilterRequest request) {
-        StringBuilder csv = new StringBuilder("任务,执行ID,执行时间,人员,来源,状态,访问时间\n");
+        StringBuilder csv = new StringBuilder("任务类型,任务,执行ID,执行时间,人员,来源,状态,访问时间\n");
         for (NotificationLinkClickSummaryDto row : allSummary(userId, request)) {
-            csv.append(csv(row.taskDisplayName())).append(',').append(row.executionId()).append(',')
-                    .append(csv(String.valueOf(row.executionAt()))).append(',').append(csv(row.userId())).append(',')
+            String task = row.taskDisplayName();
+            if (task != null && row.executionAt() != null) task += "（" + row.executionAt().format(DATE) + "）";
+            String person = row.userName() != null && !row.userName().isBlank()
+                    ? row.userName() + "(" + row.userId() + ")" : row.userId();
+            String type = "LONG_TASK".equals(row.executionType()) ? "长任务流程" : "独立任务";
+            csv.append(csv(type)).append(',').append(csv(task)).append(',').append(row.executionId()).append(',')
+                    .append(csv(formatDateTime(row.executionAt()))).append(',').append(csv(person)).append(',')
                     .append(csv(row.source())).append(',').append(csv(row.eventType())).append(',')
-                    .append(csv(String.valueOf(row.latestEventAt()))).append('\n');
+                    .append(csv(formatDateTime(row.latestEventAt()))).append('\n');
         }
         return csv.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
     }
+    private static String formatDateTime(LocalDateTime value) { return value == null ? "" : value.format(DATE_TIME); }
     private static String csv(String value) { String s = value == null ? "" : value; return "\"" + s.replace("\"", "\"\"") + "\""; }
     private static boolean blank(String s) { return s == null || s.isBlank(); }
+    private static String trimToNull(String s) { if (s == null) return null; String v = s.trim(); return v.isEmpty() ? null : v; }
     private static Map<String,Object> filters(NotificationLinkClickFilterRequest request) {
         Map<String,Object> f = new HashMap<>();
         if (request == null) return f;
-        f.put("userId", blank(request.getUserId()) ? null : request.getUserId());
-        f.put("taskName", blank(request.getTaskName()) ? null : request.getTaskName());
+        f.put("userId", trimToNull(request.getUserId()));
+        f.put("taskName", trimToNull(request.getTaskName()));
         f.put("executionId", request.getExecutionId());
-        f.put("source", blank(request.getSource()) ? null : request.getSource());
-        f.put("eventType", blank(request.getEventType()) ? null : request.getEventType());
+        f.put("source", trimToNull(request.getSource()));
+        f.put("eventType", trimToNull(request.getEventType()));
         f.put("from", request.getAccessFrom() == null ? null : request.getAccessFrom().atStartOfDay());
         f.put("to", request.getAccessTo() == null ? null : request.getAccessTo().plusDays(1).atStartOfDay());
         return f;
