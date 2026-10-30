@@ -28,6 +28,9 @@ import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 
 import java.net.ConnectException;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
 import java.net.SocketTimeoutException;
 import java.time.Clock;
 import java.time.Duration;
@@ -70,6 +73,8 @@ public class FlowCoordinator {
     private final FlowTemplateEngine templates = new FlowTemplateEngine();
     /** 本实例的工作者标识,写入租约字段,多实例部署时用于区分谁认领了节点。 */
     private final String workerId = UUID.randomUUID().toString();
+    /** Stable address of this backend instance, recorded on every node attempt. */
+    private final String executionIp = resolveExecutionIp();
     /** 固定大小工作线程池:同一时刻最多 workerCount 个节点在执行。 */
     private final ExecutorService workers;
     /**
@@ -123,6 +128,7 @@ public class FlowCoordinator {
         this.paramRuleService = paramRuleService;
         this.nodeLogService = nodeLogService;
         this.runtimeConfigService = runtimeConfigService;
+        log.info("Long-task execution host IP: {}", executionIp);
         int workerCount = Math.max(1, SkillFlowProperties.WORKER_COUNT);
         this.workerPermits = new Semaphore(workerCount);
         this.workers = Executors.newFixedThreadPool(workerCount, r -> {
@@ -320,6 +326,7 @@ public class FlowCoordinator {
             int attemptNo = Math.max(attempt, mapper.selectMaxAttemptNo(nodeId) + 1);
             audit = SkillFlowNodeAttempt.builder()
                     .nodeExecutionId(nodeId).attemptNo(attemptNo)
+                    .executionIp(executionIp)
                     .status(FlowNodeAttemptStatus.RUNNING).retryable(false).startedAt(started).build();
             mapper.insertAttempt(audit);
             // 状态流转放 try 内:流转失败(如缺列)时走失败路径留下错误信息,而不是静默把节点卡成僵尸 RUNNING
@@ -871,6 +878,27 @@ public class FlowCoordinator {
     static String requireText(String value, String errorMessage) {
         if (value == null || value.isBlank()) throw new IllegalStateException(errorMessage);
         return value;
+    }
+
+    private static String resolveExecutionIp() {
+        try {
+            var interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface network = interfaces.nextElement();
+                if (!network.isUp() || network.isLoopback() || network.isVirtual()) continue;
+                var addresses = network.getInetAddresses();
+                while (addresses.hasMoreElements()) {
+                    InetAddress address = addresses.nextElement();
+                    if (address instanceof Inet4Address && !address.isLoopbackAddress()) {
+                        return address.getHostAddress();
+                    }
+                }
+            }
+            return InetAddress.getLocalHost().getHostAddress();
+        } catch (Exception e) {
+            log.warn("Unable to resolve execution host IP", e);
+            return "UNKNOWN";
+        }
     }
 
     static String statusName(SkillFlowNodeExecution node) {

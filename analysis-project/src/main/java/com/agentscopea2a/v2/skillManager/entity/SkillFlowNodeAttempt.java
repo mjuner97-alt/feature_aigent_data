@@ -20,6 +20,8 @@ public class SkillFlowNodeAttempt {
     private Integer attemptNo;
     private FlowNodeAttemptStatus status;
     private Boolean retryable;
+    /** Backend host address that executed this attempt. */
+    private String executionIp;
     private String errorCode;
     private String errorMessage;
     private LocalDateTime startedAt;

@@ -5,13 +5,13 @@
     <insert id="insert">
         INSERT INTO long_task_node_execution_log
         (log_id, flow_execution_id, node_execution_id, attempt_id, attempt_no,
-         user_id, flow_name, node_key, node_name, script_id, status, retryable,
+         user_id, flow_name, node_key, node_name, script_id, execution_ip, status, retryable,
          error_code, started_at, completed_at, duration_ms, params_json,
          output_text, error_message, params_truncated, output_truncated,
          error_truncated, params_bytes, output_bytes, error_bytes)
         VALUES
         (#{log.logId}, #{log.flowExecutionId}, #{log.nodeExecutionId}, #{log.attemptId}, #{log.attemptNo},
-         #{log.userId}, #{log.flowName}, #{log.nodeKey}, #{log.nodeName}, #{log.scriptId}, #{log.status}, #{log.retryable},
+        #{log.userId}, #{log.flowName}, #{log.nodeKey}, #{log.nodeName}, #{log.scriptId}, #{log.executionIp}, #{log.status}, #{log.retryable},
          #{log.errorCode}, #{log.startedAt}, #{log.completedAt}, #{log.durationMs}, #{log.paramsJson},
          #{log.outputText}, #{log.errorMessage}, #{log.paramsTruncated}, #{log.outputTruncated},
          #{log.errorTruncated}, #{log.paramsBytes}, #{log.outputBytes}, #{log.errorBytes})
@@ -20,12 +20,19 @@
     <sql id="filters">
         <where>
             <if test="!all">AND user_id = #{userId}</if>
+            <if test="flowExecutionId != null">AND flow_execution_id = #{flowExecutionId}</if>
             <if test="from != null and from != ''">AND started_at &gt;= parseDateTimeBestEffort(#{from})</if>
             <if test="to != null and to != ''">AND started_at &lt; parseDateTimeBestEffort(#{to})</if>
             <if test="status != null and status != ''">AND status = #{status}</if>
             <if test="flowName != null and flowName != ''">AND flow_name ILIKE concat('%', #{flowName}, '%')</if>
             <if test="nodeName != null and nodeName != ''">AND node_name ILIKE concat('%', #{nodeName}, '%')</if>
-            <if test="filterUserId != null and filterUserId != ''">AND user_id = #{filterUserId}</if>
+            <if test="userKeyword != null and userKeyword != ''">
+                AND (user_id ILIKE concat('%', #{userKeyword}, '%')
+                <if test="filterUserIds != null and filterUserIds.size() > 0">
+                    OR user_id IN
+                    <foreach collection="filterUserIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+                </if>)
+            </if>
         </where>
     </sql>
 
@@ -43,7 +50,7 @@
 
     <select id="page" resultType="java.util.HashMap">
         SELECT log_id, flow_execution_id, node_execution_id, attempt_no, user_id,
-               flow_name, node_name, script_id, status, retryable, error_code,
+               flow_name, node_name, script_id, execution_ip, status, retryable, error_code,
                started_at, completed_at, duration_ms, error_message
         FROM long_task_node_execution_log
         <include refid="filters"/>

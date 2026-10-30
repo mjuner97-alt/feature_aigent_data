@@ -190,6 +190,7 @@
         <result column="status" property="status"
                 javaType="com.agentscopea2a.v2.skillManager.entity.FlowNodeAttemptStatus"/>
         <result column="retryable" property="retryable"/>
+        <result column="execution_ip" property="executionIp"/>
         <result column="error_code" property="errorCode"/>
         <result column="error_message" property="errorMessage"/>
         <result column="started_at" property="startedAt"/>
@@ -943,9 +944,9 @@
 
     <!-- 新建一次尝试审计记录(状态 RUNNING),attempt_no 须避开历史记录(与节点联合唯一) -->
     <insert id="insertAttempt" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO skill_flow_node_attempt (node_execution_id, attempt_no, status, retryable,
+        INSERT INTO skill_flow_node_attempt (node_execution_id, attempt_no, status, retryable, execution_ip,
                                              error_code, error_message, started_at, completed_at, duration_ms)
-        VALUES (#{nodeExecutionId}, #{attemptNo}, #{status}, #{retryable}, #{errorCode},
+        VALUES (#{nodeExecutionId}, #{attemptNo}, #{status}, #{retryable}, #{executionIp}, #{errorCode},
                 #{errorMessage}, #{startedAt}, #{completedAt}, #{durationMs})
     </insert>
 
