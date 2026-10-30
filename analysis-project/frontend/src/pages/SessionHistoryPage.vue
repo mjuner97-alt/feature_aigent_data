@@ -63,6 +63,8 @@
       </div>
 
       <LongTaskNodeLogPanel v-if="activeTab === 'nodeLogs'" style="flex:1;overflow:auto" />
+
+      <!-- 访问埋点面板 -->
       <div v-if="activeTab === 'access'" class="case-panel">
         <div class="case-header access-header"><div><div class="case-title">访问埋点</div><div class="case-subtitle">页面点击、通知点击与登录后查看</div></div><div class="access-actions"><el-input v-model="accessTask" placeholder="任务" clearable class="access-control" @keyup.enter="loadAccess"/><el-input v-model="accessExecutionId" placeholder="执行ID" clearable class="access-control" @keyup.enter="loadAccess"/><el-input v-model="accessUser" placeholder="姓名 / 统一号（模糊）" clearable class="access-control access-user" @keyup.enter="loadAccess"/><el-date-picker v-model="executionDateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="执行开始" end-placeholder="执行结束" class="access-date"/><el-date-picker v-model="accessDateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="访问开始" end-placeholder="访问结束" class="access-date"/><el-select v-model="accessEnvironment" class="access-control"><el-option label="生产环境" value="prod"/><el-option label="开发环境" value="dev"/><el-option label="全部环境" value="ALL"/></el-select><el-button type="primary" :loading="accessLoading" @click="loadAccess">查询</el-button><el-button :loading="accessLoading" @click="loadAccess">刷新</el-button><el-button @click="exportAccess">导出记录</el-button></div></div>
         <el-table :data="accessRows" v-loading="accessLoading" stripe border empty-text="暂无访问埋点"><el-table-column label="任务类型" width="110"><template #default="s">{{ s.row.executionType === 'LONG_TASK' ? '长任务流程' : '独立任务' }}</template></el-table-column><el-table-column label="任务" width="180" show-overflow-tooltip><template #default="s">{{ s.row.taskDisplayName || '-' }}{{ s.row.executionAt ? `（${dayjs(s.row.executionAt).format('YYYY-MM-DD')}）` : '' }}</template></el-table-column><el-table-column prop="executionId" label="执行ID" width="90"/><el-table-column label="执行时间" width="165"><template #default="s">{{ formatAccessDateTime(s.row.executionAt) }}</template></el-table-column><el-table-column label="人员" width="160"><template #default="s">{{ s.row.userName ? `${s.row.userName}(${s.row.userId})` : (s.row.userId || '-') }}</template></el-table-column><el-table-column label="来源" width="120"><template #default="s">{{s.row.source === 'PAGE' ? '页面点击' : '通知点击'}}</template></el-table-column><el-table-column label="状态" width="140"><template #default="s">{{s.row.eventType === 'LOGIN_VIEW' ? '登录后查看' : s.row.loggedIn ? '已登录点击' : '仅点击未登录'}}</template></el-table-column><el-table-column label="访问时间" min-width="190"><template #default="s">{{ formatAccessDateTime(s.row.latestEventAt) }}</template></el-table-column></el-table>
@@ -169,6 +171,7 @@ const accessUser = ref('');
 const accessEnvironment = ref('');
 const executionDateRange = ref<string[]>([]);
 const accessDateRange = ref<string[]>([]);
+
 async function loadAccess() {
   accessLoading.value = true;
   try {
@@ -184,6 +187,7 @@ async function loadAccess() {
   } catch (e) { ElMessage.error(e instanceof Error ? e.message : '访问埋点查询失败'); }
   finally { accessLoading.value = false; }
 }
+
 async function exportAccess() {
   const params = new URLSearchParams();
   const userId = accessUser.value.trim();
@@ -197,6 +201,7 @@ async function exportAccess() {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a'); anchor.href = url; anchor.download = `长任务访问埋点${dayjs().format('YYYYMMDDHHmmss')}.csv`; anchor.click(); URL.revokeObjectURL(url);
 }
+
 const loading = ref(false);
 const error = ref<string | null>(null);
 const lastUpdated = ref('--');
@@ -224,7 +229,7 @@ interface CaseItem {
   id: string | number;
   caseName: string;
   createdAt: string;
-  conversationId: string; // 🌟 新增：绑定会话 ID
+  conversationId: string;
   executeRecords?: ExecuteRecord[];
 }
 
@@ -240,20 +245,8 @@ async function loadCases() {
   try {
     const owner = getLoggedInUserId() || '';
 
-    const resp = await fetch('http://122.244.14.11:8081/skillRecord/list', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
-      body: JSON.stringify({ owner: owner })
-    });
-
-    if (!resp.ok) throw new Error(`接口请求失败: ${resp.status}`);
-    const raw = await resp.json();
-
-    // 适配返回结构：{ result: "success", data: [...] }
-    const list = raw.data || [];
+    // 🌟 核心修改：复用封装好的 API，不再手写 fetch，避免绕过动态配置和跨域处理
+    const list = await listConversationCases(owner);
 
     // 解构嵌套的 qaStandard 和 executeRecords
     cases.value = list.map((item: any) => {
@@ -273,12 +266,10 @@ async function loadCases() {
   }
 }
 
-// 删除案例 (修改为使用 conversationId)
 async function removeCase(row: CaseItem) {
   try {
     await ElMessageBox.confirm(`确定删除案例「${row.caseName}」吗？`, '删除确认', { type: 'warning' });
 
-    // 🌟 修改：使用 conversationId 作为入参
     const targetId = String(row.conversationId ?? '');
     if (!targetId) throw new Error('缺少会话 ID，无法删除');
 
@@ -286,6 +277,11 @@ async function removeCase(row: CaseItem) {
 
     ElMessage.success('已删除');
     await loadCases(); // 刷新列表
+
+    // 如果当前会话列表有数据，也同步刷新一下状态
+    if (conversations.value.length > 0) {
+      refreshCaseState().catch(() => undefined);
+    }
   } catch (e: any) {
     if (e !== 'cancel' && e !== 'close') {
       ElMessage.error(e?.message || '删除失败');
@@ -300,7 +296,6 @@ function handleViewExecution(row: CaseItem, record: ExecuteRecord) {
   });
 }
 
-// 结果展示辅助函数
 function getResultTagType(result?: string) {
   if (result === '成功') return 'success';
   if (result === '失败') return 'danger';
@@ -321,9 +316,15 @@ async function refreshCaseState() {
   try {
     const owners = [...new Set(conversations.value.map(caseOwner))];
     if (owners.some(owner => !owner)) throw new Error('缺少案例所属用户，无法查询案例');
+
+    // 复用封装好的 API
     const lists = await Promise.all(owners.map(listConversationCases));
     if (version !== caseQueryVersion) return;
-    caseConversationIds.value = new Set(lists.flat().map(item => item.conversationId));
+
+    // 🌟 关键修复：正确解析 API 返回的结构（兼容后端嵌套 qaStandard 的情况）
+    caseConversationIds.value = new Set(
+        lists.flat().map((item: any) => item.qaStandard?.conversationId || item.conversationId).filter(Boolean)
+    );
   } catch (e) {
     if (version === caseQueryVersion) ElMessage.error(e instanceof Error ? e.message : '查询案例失败');
     throw e;
@@ -357,11 +358,14 @@ async function setAsCase(row: Conversation) {
       cancelButtonText: '取消',
       inputValidator: (value: string) => value.trim() ? true : '标准编码不能为空',
     });
-    caseLoadingId.value = row.conversationId;
+
     const message = await setConversationAsCase(row.conversationId, result.value.trim(), caseOwner(row));
     ++caseQueryVersion;
     caseConversationIds.value = new Set([...caseConversationIds.value, row.conversationId]);
     ElMessage.success(message);
+
+    // 顺便刷新一下后端的案例状态，保证多端数据一致性
+    await refreshCaseState().catch(() => undefined);
   } catch (e: any) {
     if (e === 'cancel' || e === 'close') return;
     ElMessage.error(e?.message || '设为案例失败');
@@ -566,7 +570,3 @@ function durationStyle(ms: number): any {
 .text-success { color: #67c23a; }
 .text-danger { color: #f56c6c; }
 </style>
-
-
-
-
