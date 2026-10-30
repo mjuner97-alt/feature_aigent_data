@@ -287,6 +287,25 @@ public class SkillFlowController {
                 request == null ? null : request.ccReceivers(), request == null ? null : request.notifyBodyTemplate());
     }
 
+    /**
+     * 测试失败通知发送（仅用于联调，要求该执行已处于 FAILED/PARTIAL_SUCCESS 终态）。
+     * 调用：GET /api/skill-flow-executions/{executionId}/notifications/test-failure
+     * 完整 URL：{后端基地址}/api/skill-flow-executions/{executionId}/notifications/test-failure
+     * 例如：http://localhost:8080/api/skill-flow-executions/123/notifications/test-failure。
+     * 需携带 X-User-Id 请求头；复用正式失败通知逻辑，不伪造执行记录。
+     */
+    @GetMapping("/api/skill-flow-executions/{id}/notifications/test-failure")
+    public java.util.Map<String, Object> testFailureNotification(
+            @PathVariable(name = "id") Long id,
+            @RequestHeader(name = "X-User-Id") String userId) {
+        var execution = queryService.requireOwner(id, userId);
+        if (execution.getStatus() != com.agentscopea2a.v2.skillManager.entity.FlowExecutionStatus.FAILED
+                && execution.getStatus() != com.agentscopea2a.v2.skillManager.entity.FlowExecutionStatus.PARTIAL_SUCCESS) {
+            throw new IllegalStateException("FlowFailureNotificationTestRequiresFailedExecution: " + id);
+        }
+        completionService.resend(execution);
+        return java.util.Map.of("executionId", id, "status", "QUEUED", "message", "失败通知已加入发送队列");
+    }
     @PostMapping("/api/skill-flow-executions/{id}/summary/retry")
     public void retrySummary(@PathVariable Long id, @RequestHeader(name = "X-User-Id") String userId) {
         queryService.requireOwner(id, userId); coordinator.retrySummary(id);

@@ -370,17 +370,19 @@ public class FlowCompletionService {
                 .append("<h3>长任务执行失败：").append(title).append("</h3>")
                 .append("<p>执行 ID：").append(escapeHtml(Objects.toString(execution.getId(), "")))
                 .append("；状态：").append(escapeHtml(Objects.toString(execution.getStatus(), "UNKNOWN"))).append("</p>")
-                .append("<h4>失败节点与错误摘要</h4><ul>");
+                .append("<h4>失败节点与脚本信息</h4>")
+                .append("<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\"><thead><tr>")
+                .append("<th>失败节点</th><th>脚本 ID</th></tr></thead><tbody>");
         for (SkillFlowNodeExecution node : nodes == null ? List.<SkillFlowNodeExecution>of() : nodes) {
             if (node == null || node.getStatus() != FlowNodeExecutionStatus.FAILED) continue;
             String name = node.getNodeName() == null || node.getNodeName().isBlank()
                     ? Objects.toString(node.getNodeKey(), "未命名节点") : node.getNodeName();
-            html.append("<li><strong>").append(escapeHtml(name)).append("</strong>")
-                    .append("：").append(escapeHtml(Objects.toString(node.getErrorCode(), "执行失败")))
-                    .append(" - ").append(escapeHtml(Objects.toString(node.getErrorMessage(), "无错误摘要")))
-                    .append("</li>");
+            String scriptId = node.getScriptId() == null || node.getScriptId().isBlank()
+                    ? "-" : node.getScriptId().trim();
+            html.append("<tr><td>").append(escapeHtml(name)).append("</td><td>")
+                    .append(escapeHtml(scriptId)).append("</td></tr>");
         }
-        return html.append("</ul></body></html>").toString();
+        return html.append("</tbody></table></body></html>").toString();
     }
 
     /** 解析报告绝对路径,并限制在报告根目录内(防路径穿越)。 */
