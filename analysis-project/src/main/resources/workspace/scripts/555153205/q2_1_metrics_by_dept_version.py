@@ -13,7 +13,7 @@ q2_1_metrics_by_dept_version - Q2-1 打分状态/达标率指标计算 + 明细�
            GAUSS_USER=...  GAUSS_PASS=...  GAUSS_JAR=/root/.m2/.../opengauss-jdbc-5.1.0.jar
 
 输出约定 (stdout):
-    汇总 markdown 表 + json: {...} 行 + echarts 可渲染块
+    汇总 markdown 表 + json: {...} 行 + echarts 块 + 统一样式 HTML 表格围栏
     + <<<DOWNLOAD_META>>>/<<<DOWNLOAD_CONTENT>>>/<<<DOWNLOAD_END>>> 下载块
     (下载块由 Java ScriptExecTool 剥离落库生成短链, 原位替换成下载链接;
      明细行只进下载块, 不进 LLM 上下文)
@@ -31,6 +31,7 @@ import pandas as pd
 from _gauss_jdbc import query_gauss          # 保留 (_sql_registry 内部依赖)
 from _sql_registry import run_registered_sql
 from _download import print_download_csv, print_download_xlsx
+from _html_table import render_html_table
 
 SQL_ID = "q2_1_metrics_by_dept_version"      # 与 sql_registry 注册的 sqlId 一致
 DOWNLOAD_FILENAME = "q2_1_明细.csv"           # downloadFilename 固化在脚本里, LLM 不传
@@ -80,7 +81,12 @@ def main():
         scored_pct = round(scored / total * 100, 2)
         passed_pct = round(passed / total * 100, 2)
 
-    # 4. 输出 (markdown 表 + JSON 行 + echarts 块 + 下载块)
+    # 4. 输出 (markdown 表 + JSON 行 + echarts 块 + HTML 围栏 + 下载块)
+    summary_df = pd.DataFrame({
+        "指标": ["总数", "已打分", "达标数", "打分率%", "达标率%"],
+        "值": [total, scored, passed, scored_pct, passed_pct],
+    })
+
     # 4.1 汇总表
     print(f"| 总数 | 已打分 | 达标数 | 打分率 | 达标率 |")
     print(f"|---:|---:|---:|---:|---:|")
@@ -115,14 +121,27 @@ def main():
     print(json.dumps(option, ensure_ascii=False))
     print("```")
 
-    # 4.5 明细进下载块: N 行只落库生成短链, 不占 LLM 上下文;
+    # 4.5 统一样式 HTML 表格 (render_html_table 使用示例):
+    #     混排场景用 fragment=True 放 ```html 围栏 (样式统一由 _html_table.py 维护);
+    #     若整次输出只想要一张表, 改用 render_html_table(df) 完整文档模式独占 print
+    show_df = pd.DataFrame({
+        "指标": summary_df["指标"],
+        "值": [str(total), str(scored), str(passed),
+               f"{scored_pct:g}%", f"{passed_pct:g}%"],
+    })
+    print("```html")
+    print(render_html_table(show_df, title="Q2-1 汇总", fragment=True))
+    print("```")
+    # 完整文档模式示例 (最简调用, df 一个参数即可):
+    #   print(render_html_table(show_df))
+    # 注意: 该模式输出 <!DOCTYPE html> 整页, 必须【独占整次 stdout】才能被前端
+    #   Markdown.vue 识别并进 iframe 渲染 — 启用时须删掉本脚本其余所有 print,
+    #   不能与上面 markdown/json/echarts/围栏共存.
+
+    # 4.6 明细进下载块: N 行只落库生成短链, 不占 LLM 上下文;
     #     块 print 在 echarts 块之后 -> 最终展示"图在上、下载链接在下";
     #     两个块 (CSV + xlsx 多sheet) 依次生成两条链接, 顺序 = print 顺序
     if total:
-        summary_df = pd.DataFrame({
-            "指标": ["总数", "已打分", "达标数", "打分率%", "达标率%"],
-            "值": [total, scored, passed, scored_pct, passed_pct],
-        })
         print_download_csv(df, DOWNLOAD_FILENAME)
         print_download_xlsx({"明细": df, "汇总": summary_df}, "q2_1_明细.xlsx")
 
