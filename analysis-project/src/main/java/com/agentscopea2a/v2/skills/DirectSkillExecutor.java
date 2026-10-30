@@ -514,27 +514,8 @@ public class DirectSkillExecutor {
         DimensionExtraction extraction = extract(preview, selection.matchedKeywords(), topName,
                 extractExtraDimensions(question));
 
-        // 维度值台账真值校验方案 §4.5: B① 正向扫描/B③ 终局校验/互斥裁决最先做 ——
-        // 垃圾值在此拦下 (反问优于查空集), R1 注入/R2 显式提及在干净值上判定
-        LedgerTruthScan truthScan = applyLedgerTruthScan(extraction, question);
-        extraction = truthScan.extraction();
-
-        // 人员台账 (人员台账维度方案 §3.3/§4.1): 我X extraction 级 enrich → 人名扫描
-        // (唯一命中直填 perName/perNo, 重名在时间歧义检查之后反问)。
-        // 顺序约束: 我X enrich 必须先于人名扫描/下钻展开 ("我部人员的缺陷数"先有 deptName)
-        PersonScanOutcome personScan = applyPersonalDimensions(extraction, question, userId);
-        extraction = personScan.extraction();
-
-        // 组→部门反填 (2026/10/27 拍板): 问句只命中统计组没提部门 (车贷/房贷型) →
-        // 台账 Q8 按组查部门自动填充, 脚本不用退化为缺部门口径
-        extraction = backfillDeptFromLedger(extraction);
-
-        // 我X按需注入方案 §3.2 L2 重锚抑制: 我X/显式部门/drillDown 触发重锚时, 本轮未
-        // 重新提及的细粒度维度 (组/应用/产品线/人) 继承值清空; 指代豁免; dept/时间/需求项
-        // 不抑制。顺序约束: 在我X enrich/人名扫描之后、下钻展开/buildParams 之前。
-        extraction = applyReanchorSuppression(extraction, question, personScan, truthScan);
-
-        // params_schema 白名单/必填/类型: registry 查不到时按无 schema 处理 (mapping 原样传),
+        // params_schema 白名单/必填/类型 (部门与上级维度带出门控方案 §2.1: 前移到 Q8 反填之前,
+        // 反填需按部门参数 requiredness 门控): registry 查不到时按无 schema 处理 (mapping 原样传),
         // 白名单拒绝交给 scriptExec 的防注入校验 → 直接报错路径 (拍板: 配错不回退)
         List<ParamSpec> schema = null;
         List<String> required = List.of();
@@ -547,6 +528,28 @@ public class DirectSkillExecutor {
         } catch (Exception e) {
             log.warn("DirectSkillExecutor: 查 script_registry 失败 scriptId={}: {}", top.scriptId(), e.getMessage());
         }
+
+        // 维度值台账真值校验方案 §4.5: B① 正向扫描/B③ 终局校验/互斥裁决最先做 ——
+        // 垃圾值在此拦下 (反问优于查空集), R1 注入/R2 显式提及在干净值上判定
+        LedgerTruthScan truthScan = applyLedgerTruthScan(extraction, question);
+        extraction = truthScan.extraction();
+
+        // 人员台账 (人员台账维度方案 §3.3/§4.1): 我X extraction 级 enrich → 人名扫描
+        // (唯一命中直填 perName/perNo, 重名在时间歧义检查之后反问)。
+        // 顺序约束: 我X enrich 必须先于人名扫描/下钻展开 ("我部人员的缺陷数"先有 deptName)
+        PersonScanOutcome personScan = applyPersonalDimensions(extraction, question, userId);
+        extraction = personScan.extraction();
+
+        // 组→部门反填 (2026/10/27 拍板): 问句只命中统计组没提部门 (车贷/房贷型) →
+        // 台账 Q8 按组查部门自动填充, 脚本不用退化为缺部门口径。
+        // 部门与上级维度带出门控方案 §2.1 (2026/10/30): 按脚本部门参数 requiredness 门控
+        // —— 非必输/未绑 deptName 不反填; 无 schema fail-open 维持反填
+        extraction = backfillDeptFromLedger(extraction, mapping, schema, required);
+
+        // 我X按需注入方案 §3.2 L2 重锚抑制: 我X/显式部门/drillDown 触发重锚时, 本轮未
+        // 重新提及的细粒度维度 (组/应用/产品线/人) 继承值清空; 指代豁免; dept/时间/需求项
+        // 不抑制。顺序约束: 在我X enrich/人名扫描之后、下钻展开/buildParams 之前。
+        extraction = applyReanchorSuppression(extraction, question, personScan, truthScan);
 
         // 歧义锚点 (时间维度方案 §3.3): 近X周方向 / 投产前二选一 → 真反问, 不做方向假设。
         // 无会话键无法挂 pending → 剥离歧义锚点降级继续 (时间部分回退 LLM)。
@@ -1012,9 +1015,11 @@ public class DirectSkillExecutor {
                 List.copyOf(explicitRoles));
     }
 
-    /** §3.3 enrich 字段映射 (我X按需注入方案 R1, per-type 按需注入): 命中哪个维度只注哪个,
-     *  不再 anyHit 全量连带 —— 我部→deptName; 我组→deptName+groupName 双注 (§6-1 拍板: 组名
-     *  跨部门可能重名, 连带台账部门); 我的应用→appName; 我的产品线→productLine; 裸我→perNo+perName。
+    /** §3.3 enrich 字段映射 (我X按需注入方案 R1 per-type + 2026/10/30 部门与上级维度带出
+     *  门控方案 §2.3 部门项恢复全量连带): 自身值仍 per-type 注入, 部门一项所有命中都连带 ——
+     *  我部→deptName; 我组→deptName+groupName 双注 (§6-1 拍板: 组名跨部门可能重名, 连带台账
+     *  部门); 我的应用→appName+deptName; 我的产品线→productLine+deptName; 裸我→perNo+perName+
+     *  deptName (我值默认带出部门; peer 三键同级互斥未指定一律不带, 现状固化)。
      *  显式值优先保留, 台账多值追加去重; ledger null (anonymous/查无此人/查询失败) 时不注入
      *  维度, 仅 myself 且 userId 非空时仍填 perNo (=userId, 不查库)。 */
     private static DimensionExtraction enrichPersonal(
@@ -1044,9 +1049,11 @@ public class DirectSkillExecutor {
         }
         if (personal.myApp()) {
             appName = appendNew(appName, ledger == null ? List.of() : ledger.apps());
+            deptName = appendNew(deptName, ledger == null ? List.of() : ledger.depts());
         }
         if (personal.myProductLine()) {
             productLine = appendNew(productLine, ledger == null ? List.of() : ledger.productLines());
+            deptName = appendNew(deptName, ledger == null ? List.of() : ledger.depts());
         }
         List<String> perName = new ArrayList<>(extraction.perName());
         List<String> perNo = new ArrayList<>(extraction.perNo());
@@ -1057,6 +1064,8 @@ public class DirectSkillExecutor {
             if (ledger != null && ledger.name() != null && !perName.contains(ledger.name())) {
                 perName.add(ledger.name());
             }
+            // 我值默认带出部门维度 (2026/10/30 拍板 A): ledger 非空才注入, anonymous 不查库不带
+            deptName = appendNew(deptName, ledger == null ? List.of() : ledger.depts());
         }
         return new DimensionExtraction(extraction.versionPlan(), extraction.vestQuarter(),
                 deptName, groupName, appName, productLine, extraction.itemNo(), extraction.subItemNo(),
@@ -1201,17 +1210,35 @@ public class DirectSkillExecutor {
     }
 
     /**
-     * 维度值→部门反填（2026/10/27 拍板）：问句没提部门但命中统计组/产品线/应用
-     * （车贷/房贷型纯维度问句）→ 台账 Q8 {@code deptsByDimension} 按维度值查部门
-     * 并集注入 deptName，脚本不用退化为缺部门口径。三键经互斥裁决后至多一键非空，
-     * 这里遍历 TRUTH_MUTEX_PRIORITY 只是统一入口。显式部门/我部已填时不动（显式
-     * 优先）；台账查不到/失败 → 不填（fail-open，脚本按缺部门口径自决）。
+     * 维度值→部门反填（2026/10/27 拍板；2026/10/30 部门与上级维度带出门控方案 §2.1 加门控）：
+     * 问句没提部门但命中统计组/产品线/应用（车贷/房贷型纯维度问句）→ 台账 Q8
+     * {@code deptsByDimension} 按维度值查部门并集注入 deptName，脚本不用退化为缺部门口径。
+     * 三键经互斥裁决后至多一键非空，这里遍历 TRUTH_MUTEX_PRIORITY 只是统一入口。显式
+     * 部门/我部已填时不动（显式优先）；台账查不到/失败 → 不填（fail-open，脚本按缺部门
+     * 口径自决）。门控：仅当 mapping 绑了 deptName 且对应参数必输时反填（部门非必输不带出，
+     * 需求拍板 C）；mapping 未绑 deptName 产物无处落地同样跳过；无 schema（查不到/解析失败）
+     * 无法判定必输 → 维持反填（fail-open，同 2026/10/27 行为，拍板①）。
      */
-    private DimensionExtraction backfillDeptFromLedger(DimensionExtraction extraction) {
+    private DimensionExtraction backfillDeptFromLedger(DimensionExtraction extraction,
+                                                       Map<String, String> mapping,
+                                                       List<ParamSpec> schema,
+                                                       List<String> required) {
         if (extraction == null || !extraction.deptName().isEmpty()
                 || (extraction.groupName().isEmpty() && extraction.appName().isEmpty()
                     && extraction.productLine().isEmpty())) {
             return extraction;
+        }
+        boolean deptBound = mapping.containsValue("deptName");
+        if (!deptBound) {
+            return extraction;
+        }
+        if (schema != null) {
+            boolean deptRequired = mapping.entrySet().stream()
+                    .anyMatch(e -> "deptName".equals(e.getValue()) && required.contains(e.getKey()));
+            if (!deptRequired) {
+                log.info("DirectSkillExecutor: 部门参数非必输, 跳过维度值→部门反填 (需求 1 门控)");
+                return extraction;
+            }
         }
         var resolver = personalResolverProvider == null
                 ? null : personalResolverProvider.getIfAvailable();

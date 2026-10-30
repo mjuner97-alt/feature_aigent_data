@@ -117,6 +117,45 @@ class DimensionStateMiddlewareTest {
     }
 
     @Test
+    void myAppAndMyProductLineAlsoBringLedgerDept() {
+        // 2026/10/30 部门与上级维度带出门控方案 §2.3: 部门一项恢复全量连带 (与直执 enrich 同语义)
+        stubQuestion("我的产品和我的应用的缺陷");
+        DimensionState state = new DimensionState(null, List.of(), null, null);
+        stubProcess(state);
+        when(resolver.resolve(anyString(), eq("555153289"))).thenReturn(
+                new PersonalDimensionResolver.PersonalResolution(false, false, true, true, false,
+                        new PersonLedgerRepository.PersonLedgerRow(List.of("杭州开发三部"),
+                                List.of(), List.of("F-demo"), List.of("集成管理"), "徐三金",
+                                "555153289")));
+        when(resolver.scanNames(anyString())).thenReturn(List.of());
+
+        String prompt = middleware.onSystemPrompt(null, ctx, "base").block();
+
+        assertTrue(state.getDepartments().contains("杭州开发三部"));
+        assertEquals(DimensionState.PeerDimensionType.APPLICATION, state.getPeerDimension().getType());
+        assertTrue(prompt.contains("部门：杭州开发三部"));
+    }
+
+    @Test
+    void myselfWritesLedgerDeptAndName() {
+        // 拍板 A: 裸我默认带出台账部门 (persons 照旧注入姓名)
+        stubQuestion("我 的缺陷数");
+        DimensionState state = new DimensionState(null, List.of(), null, null);
+        stubProcess(state);
+        when(resolver.resolve(anyString(), eq("555153289"))).thenReturn(
+                new PersonalDimensionResolver.PersonalResolution(false, false, false, false, true,
+                        new PersonLedgerRepository.PersonLedgerRow(List.of("杭州开发三部"),
+                                List.of(), List.of(), List.of(), "徐三金", "555153289")));
+        when(resolver.scanNames(anyString())).thenReturn(List.of());
+
+        String prompt = middleware.onSystemPrompt(null, ctx, "base").block();
+
+        assertTrue(state.getDepartments().contains("杭州开发三部"));
+        assertTrue(state.getPersons().contains("徐三金"));
+        assertTrue(prompt.contains("部门：杭州开发三部"));
+    }
+
+    @Test
     void blankQuestionSkipsProcessing() {
         when(ctx.get("lastQuestion", String.class)).thenReturn(null);
         when(ctx.getSessionId()).thenReturn("conv-1");
