@@ -27,7 +27,7 @@ test('invalid drafts block confirmation without changing saved parameters',async
  const m=mount();await open(m);find(m.root,n=>n.props['aria-label']==='周期数量').props.onInput({target:{value:'0'}});await nextTick();assert.equal(button(m,'确定').props.disabled,true);assert.match(text(m.root),/周期数量必须/);assert.equal(m.events.length,0);m.app.unmount();
 });
 test('monthly editor displays versions and converts saved monthly formats',async()=>{
- const m=mount();await open(m);const select=find(m.root,n=>n.props['aria-label']==='格式');assert.match(text(select),/2026年8月份版本/);assert.equal(select.children.filter(n=>n.type==='option').length,1);assert.equal(select.props.value,'{year}年{month}月份版本');
+ const m=mount();await open(m);const select=find(m.root,n=>n.props['aria-label']==='格式');assert.match(text(select),/xxxx年xx月份版本（示例：\d{4}年\d+月份版本）/);assert.equal(select.children.filter(n=>n.type==='option').length,1);assert.equal(select.props.value,'{year}年{month}月份版本');
  assert.match(text(find(m.root,n=>n.props['aria-label']==='周期')),/版本/);
  assert.match(text(find(m.root,n=>n.props['aria-label']==='时间范围')),/上个版本当前版本/);
  button(m,'确定').props.onClick();await nextTick();assert.equal(m.value.value.$dynamic.format,'{year}年{month}月份版本');m.app.unmount();
@@ -40,8 +40,9 @@ test('quarterly editor uses the standard quarter label without 第',async()=>{
  find(m.root,n=>n.props['aria-label']==='周期').props.onChange({target:{value:'quarter'}});await nextTick();
  const select=find(m.root,n=>n.props['aria-label']==='格式');
  assert.equal(select.props.value,'{year}年{quarter}季度');
- assert.match(text(select),/2026年3季度/);
- assert.doesNotMatch(text(select),/2026年第3季度/);
+ assert.match(text(select),/xxxx年x季度（示例：\d{4}年\d季度）/);
+ assert.match(text(select),/xxxxQx（示例：\d{4}Q\d）/);
+ assert.doesNotMatch(text(select),/第/);
  m.app.unmount();
 });
 test('future windows retain their actual offsets and formats on confirmation',async()=>{
@@ -49,6 +50,21 @@ test('future windows retain their actual offsets and formats on confirmation',as
 });
 
 
+test('building versions selection can be confirmed and saved as a dynamic value',async()=>{
+ const m=mount();await open(m);
+ find(m.root,n=>n.props['aria-label']==='周期').props.onChange({target:{value:'building_versions'}});await nextTick();
+ assert.equal(m.events.length,0);
+ const dialog=find(m.root,n=>n.type==='dialog');assert.ok(dialog);
+ button(m,'确定').props.onClick();await nextTick();
+ assert.equal(m.events.length,1);assert.deepEqual(m.value.value,{$dynamic:{v:1,kind:'building_versions'}});
+ assert.equal(find(m.root,n=>n.type==='dialog'),null);m.app.unmount();
+});
+test('building versions selection can be cancelled without saving',async()=>{
+ const m=mount();await open(m);
+ find(m.root,n=>n.props['aria-label']==='周期').props.onChange({target:{value:'building_versions'}});await nextTick();
+ button(m,'取消').props.onClick();await nextTick();
+ assert.equal(m.events.length,0);assert.deepEqual(m.value.value,initial());m.app.unmount();
+});
 test('preview shows resolved parameters without saving drafts or sending a baseline date',async t=>{
  globalThis.localStorage={getItem:()=>null};let request;
  t.mock.method(globalThis,'fetch',async(url,options)=>{request=JSON.parse(options.body);return new Response(JSON.stringify({dataDate:'2026-10-14',timeZone:'Asia/Shanghai',maxPeriods:120,resolvedParams:{period:['2026年7月','2026年8月','2026年9月']}}));});

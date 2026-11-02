@@ -47,11 +47,13 @@ const validation = computed(() => isBuilding.value
   ? validateBuildingVersionsValue(draft.value, props.type)
   : validatePeriodValue(draft.value as PeriodValue, props.type, maxPeriods.value));
 const unitLabel = (unit: string) => ({ month: '版本', quarter: '季度', year: '年' }[unit] || unit);
-const formats = computed(() => config.value.unit === 'month'
-  ? [{value:'{year}年{month}月份版本',label:'2026年8月份版本'}]
-  : config.value.unit === 'quarter'
-    ? [{value:'{year}年{quarter}季度',label:'2026年3季度'},{value:'{year}Q{quarter}',label:'2026Q3'}]
-    : [{value:'{year}年',label:'2026年'},{value:'{year}',label:'2026'}]);
+const formats = computed(() => {
+  const now = new Date(), y = now.getFullYear(), m = now.getMonth() + 1, q = Math.floor(now.getMonth() / 3) + 1;
+  const option = (value: string, mask: string, example: string) => ({ value, label: `${mask}（示例：${example}）` });
+  if (config.value.unit === 'month') return [option('{year}年{month}月份版本', 'xxxx年xx月份版本', `${y}年${m}月份版本`)];
+  if (config.value.unit === 'quarter') return [option('{year}年{quarter}季度', 'xxxx年x季度', `${y}年${q}季度`), option('{year}Q{quarter}', 'xxxxQx', `${y}Q${q}`)];
+  return [option('{year}年', 'xxxx年', `${y}年`), option('{year}', 'xxxx', `${y}`)];
+});
 const legacyFormat = computed(() => !formats.value.some(f => f.value === config.value.format));
 function describe(value: PeriodValue) {
   const c = value.$dynamic;
@@ -104,7 +106,6 @@ function setUnit(unit: PeriodWindow['unit'] | 'building_versions') {
   if (unit === 'building_versions') {
     draft.value = buildingVersionsValue();
     clearPreview();
-    emit('change', draft.value);
     return;
   }
   if (isBuilding.value) {
@@ -133,7 +134,7 @@ watch(draft, clearPreview, { flush: 'sync' });
   <div class="period-editor">
     <div v-if="!pending" class="period-summary">
       <span>{{ summary }}<small>执行时自动计算</small></span>
-      <button type="button" class="edit-button" @click="open">{{ isBuilding ? '预览参数' : '修改' }}</button>
+      <button type="button" class="edit-button" @click="open">修改</button>
     </div>
     <dialog v-if="opened" ref="dialog" class="period-dialog" aria-label="动态时间设置" @cancel.prevent="close" @close="opened && close()">
       <header class="dialog-header"><div><h3>动态时间</h3><p>设置 {{ paramName }} 的时间规则</p></div><button type="button" class="close-button" aria-label="关闭动态时间设置" @click="close">×</button></header>
@@ -162,7 +163,7 @@ watch(draft, clearPreview, { flush: 'sync' });
         </section>
         <p v-if="validation" role="alert" class="error">{{ validation }}</p>
       </div>
-      <footer v-if="!isBuilding"><button type="button" class="cancel-button" @click="close">取消</button><button type="button" class="confirm-button" :disabled="!!validation" @click="confirm">确定</button></footer>
+      <footer><button type="button" class="cancel-button" @click="close">取消</button><button type="button" class="confirm-button" :disabled="!!validation" @click="confirm">确定</button></footer>
     </dialog>
   </div>
 </template>
