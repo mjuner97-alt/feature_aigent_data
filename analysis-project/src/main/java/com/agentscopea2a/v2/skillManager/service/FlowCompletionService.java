@@ -296,14 +296,36 @@ public class FlowCompletionService {
                 }
             }
         }
+        List<SkillFlowNodeExecution> failedNodes = isFailure(execution)
+                ? mapper.selectNodeExecutions(execution.getId()) : List.of();
+        Map<String, String> scriptOwnerNames = new LinkedHashMap<>();
+        if (isFailure(execution) && scriptRegistryMapper != null) {
+            List<String> ownerIds = failedNodes.stream()
+                    .filter(n -> n != null && n.getStatus() == FlowNodeExecutionStatus.FAILED)
+                    .map(SkillFlowNodeExecution::getScriptId).filter(Objects::nonNull)
+                    .map(String::trim).filter(s -> !s.isBlank())
+                    .map(id -> scriptRegistryMapper.selectByScriptId(id))
+                    .filter(Objects::nonNull).map(ScriptRegistryEntry::getCreatedBy)
+                    .filter(Objects::nonNull).filter(s -> !s.isBlank()).distinct().toList();
+            Map<String, String> names = orgService.getUserNameMap(ownerIds);
+            for (SkillFlowNodeExecution node : failedNodes) {
+                if (node == null || node.getScriptId() == null || node.getScriptId().isBlank()) continue;
+                ScriptRegistryEntry script = scriptRegistryMapper.selectByScriptId(node.getScriptId().trim());
+                if (script == null || script.getCreatedBy() == null || script.getCreatedBy().isBlank()) continue;
+                String ownerId = script.getCreatedBy().trim();
+                String ownerName = names.get(ownerId);
+                scriptOwnerNames.put(node.getScriptId().trim(), ownerName == null || ownerName.isBlank()
+                        ? ownerId : ownerName + " (" + ownerId + ")");
+            }
+        }
         String content = isFailure(execution)
-                ? failureNotificationHtml(execution, mapper.selectNodeExecutions(execution.getId()))
+                ? failureNotificationHtml(execution, failedNodes, scriptOwnerNames)
                 : notificationHtml(execution, notifyBodyTemplate);
         notificationDispatcher.enqueue(record, new NotificationPayload("HTML", content,
                 filePath, reportFileName(execution),
                 reportUrl(execution), execution.getFlowId(), FlowReportNaming.datedTitle(execution.getFlowName(), execution), null, null,
                 execution.getId(), execution.getStatus().name(), LocalDateTime.now(clock),
-                receivers, "FLOW", ccReceivers, contactName, contactPhone, execution.getDataDate()));
+                receivers, "FLOW", ccReceivers, contactName, contactPhone, isFailure(execution) ? null : execution.getDataDate()));
     }
 
     /**
@@ -364,7 +386,8 @@ public class FlowCompletionService {
     }
 
     /** Failure mail deliberately bypasses the configurable success template. */
-    static String failureNotificationHtml(SkillFlowExecution execution, List<SkillFlowNodeExecution> nodes) {
+    static String failureNotificationHtml(SkillFlowExecution execution, List<SkillFlowNodeExecution> nodes,
+                                           Map<String, String> scriptOwnerNames) {
         String title = escapeHtml(Objects.toString(execution.getFlowName(), "长任务"));
         StringBuilder html = new StringBuilder("<html><body>")
                 .append("<h3>长任务执行失败：").append(title).append("</h3>")
@@ -372,7 +395,7 @@ public class FlowCompletionService {
                 .append("；状态：").append(escapeHtml(Objects.toString(execution.getStatus(), "UNKNOWN"))).append("</p>")
                 .append("<h4>失败节点与脚本信息</h4>")
                 .append("<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\"><thead><tr>")
-                .append("<th>失败节点</th><th>脚本 ID</th></tr></thead><tbody>");
+                .append("<th>失败节点</th><th>脚本 ID</th><th>负责人</th></tr></thead><tbody>");
         for (SkillFlowNodeExecution node : nodes == null ? List.<SkillFlowNodeExecution>of() : nodes) {
             if (node == null || node.getStatus() != FlowNodeExecutionStatus.FAILED) continue;
             String name = node.getNodeName() == null || node.getNodeName().isBlank()
@@ -380,7 +403,8 @@ public class FlowCompletionService {
             String scriptId = node.getScriptId() == null || node.getScriptId().isBlank()
                     ? "-" : node.getScriptId().trim();
             html.append("<tr><td>").append(escapeHtml(name)).append("</td><td>")
-                    .append(escapeHtml(scriptId)).append("</td></tr>");
+                    .append(escapeHtml(scriptId)).append("</td><td>")
+                    .append(escapeHtml(scriptOwnerNames.getOrDefault(scriptId, "-"))).append("</td></tr>");
         }
         return html.append("</tbody></table></body></html>").toString();
     }
@@ -498,3 +522,4 @@ public class FlowCompletionService {
         return b.toString();
     }
 }
+

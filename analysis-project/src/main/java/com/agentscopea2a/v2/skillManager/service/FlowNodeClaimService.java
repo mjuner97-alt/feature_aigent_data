@@ -7,6 +7,8 @@ import com.agentscopea2a.v2.skillManager.entity.SkillFlowNodeExecution;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.LocalDateTime;
 import java.util.EnumSet;
@@ -23,6 +25,8 @@ import java.util.EnumSet;
  */
 @Service
 public class FlowNodeClaimService {
+
+    private static final Logger log = LoggerFactory.getLogger(FlowNodeClaimService.class);
 
     /** 允许认领节点的流程状态。 */
     private static final EnumSet<FlowExecutionStatus> RUNNABLE_EXECUTION_STATUSES =
@@ -43,7 +47,14 @@ public class FlowNodeClaimService {
     @Transactional("gaussCustomerTransactionManager")
     public boolean claim(Long nodeId, String owner, LocalDateTime expiresAt, LocalDateTime now) {
         SkillFlowNodeExecution node = mapper.selectNodeExecution(nodeId);
-        if (node == null || !runnable(node, now)) {
+        if (node == null) {
+            log.warn("Long task claim rejected: node not found, nodeId={}", nodeId);
+            return false;
+        }
+        if (!runnable(node, now)) {
+            log.warn("Long task claim rejected: node not runnable, nodeId={}, status={}, leaseExpiresAt={}, nextRunAt={}, attemptCount={}, maxAttempts={}",
+                    nodeId, node.getStatus(), node.getLeaseExpiresAt(), node.getNextRunAt(),
+                    node.getAttemptCount(), node.getMaxAttempts());
             return false;
         }
         // 行锁锁流程,保证同一流程的并发计数判断原子
@@ -61,15 +72,38 @@ public class FlowNodeClaimService {
             execution.setCompletedAt(null);
             mapper.updateExecution(execution);
         }
-        if (execution == null || !RUNNABLE_EXECUTION_STATUSES.contains(execution.getStatus())) {
+        if (execution == null) {
+            log.warn("Long task claim rejected: execution not found, nodeId={}", nodeId);
+            return false;
+        }
+        if (!RUNNABLE_EXECUTION_STATUSES.contains(execution.getStatus())) {
+            log.warn("Long task claim rejected: execution status={}, executionId={}, nodeId={}",
+                    execution.getStatus(), execution.getId(), nodeId);
             return false;
         }
         int limit = execution.getMaxParallelismSnapshot() == null
                 ? 1 : Math.max(1, execution.getMaxParallelismSnapshot());
         if (mapper.countActiveRunningNodes(execution.getId(), now) >= limit) {
+            log.warn("Long task claim rejected: parallelism limit, executionId={}, nodeId={}, limit={}",
+                    execution.getId(), nodeId, limit);
             return false;
         }
-        return mapper.claimNode(nodeId, owner, expiresAt, now) == 1;
+        int updated = mapper.claimNode(nodeId, owner, expiresAt, now);
+        if (updated != 1) {
+            log.warn("Long task claim rejected: atomic claim updated {} rows, nodeId={}", updated, nodeId);
+            return false;
+        }
+        // Keep the parent execution status in sync with the node claim.  The
+        // worker thread updates the flow as well, but doing it here in the same
+        // transaction closes the window where the UI can show QUEUED while
+        // one or more nodes are already RUNNING (and also covers a worker
+        // crash immediately after claim).
+        if (execution.getStatus() == FlowExecutionStatus.QUEUED) {
+            execution.setStatus(FlowExecutionStatus.RUNNING);
+            if (execution.getStartedAt() == null) execution.setStartedAt(now);
+            mapper.updateExecution(execution);
+        }
+        return true;
     }
 
     /** 节点是否可被认领:状态允许 + 租约已释放/过期 + 重试退避时间已到;租约过期的 RUNNING 重认领还受尝试次数上限约束。 */
@@ -84,3 +118,4 @@ public class FlowNodeClaimService {
         return eligibleStatus && leaseExpired && retryDue;
     }
 }
+

@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Skill Flow 执行生命周期服务:
@@ -40,6 +41,8 @@ import java.util.Set;
 public class FlowExecutionService {
 
     private static final Logger log = LoggerFactory.getLogger(FlowExecutionService.class);
+    /** Prevents rapid double-clicks for the same manual guard from racing the unique index. */
+    private final ConcurrentHashMap<String, Object> manualTriggerLocks = new ConcurrentHashMap<>();
 
     private final SkillFlowMapper mapper;
     private final SkillMapper skillMapper;
@@ -240,8 +243,11 @@ public class FlowExecutionService {
         String conversationId = "manual:" + flowId + ":" + dataDate;
         String guard = userId + ":" + conversationId + ":" + flowId + ":" + dataDate;
         // 用户已确认手动执行,直接入队,不等待指标就绪。
-        return createExecution(flow, userId, conversationId, flow.getTaskQuestion(), dataDate,
-                FlowTriggerType.MANUAL, guard, false);
+        Object lock = manualTriggerLocks.computeIfAbsent(guard, ignored -> new Object());
+        synchronized (lock) {
+            return createExecution(flow, userId, conversationId, flow.getTaskQuestion(), dataDate,
+                    FlowTriggerType.MANUAL, guard, false);
+        }
     }
 
     private TriggerResult createExecution(SkillFlow flow, String userId, String conversationId, String question,

@@ -65,13 +65,9 @@ export function canEditConfig(): boolean {
 }
 
 export function logout(): void {
-  localStorage.removeItem(USERID_KEY);
-  localStorage.removeItem(USERNAME_KEY);
-  localStorage.removeItem(USER_DEPTS_KEY);
-  localStorage.removeItem(USER_GROUPS_KEY);
-  localStorage.removeItem(USER_PRODUCTS_KEY);
-  localStorage.removeItem(USER_ADMIN_KEY);
-  localStorage.removeItem(ENV_PRODUCTION_KEY);
+  // 登录态只存在浏览器 localStorage。清空整个存储，避免旧的身份键或
+  // 其他页面写入的兼容 key 让通知中转页误判为仍然登录。
+  localStorage.clear();
 }
 
 export function isLoggedIn(): boolean {

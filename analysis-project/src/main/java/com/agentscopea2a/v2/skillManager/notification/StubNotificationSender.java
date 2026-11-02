@@ -15,6 +15,12 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 
 /**
  * Internal HTTP mail gateway adapter (legacy class name retained for compatibility).
@@ -26,10 +32,18 @@ public class StubNotificationSender implements NotificationSender {
     private static final String APP_KEY = "555147722";
     private static final String DEFAULT_TITLE = "skill job 通知";
     private final AiChatRuntimeConfigMapper runtimeConfigMapper;
-    @Value("${skill.notification.mail.success-codes:0,200}")
     private String successCodes = "0,200";
     @Value("${skill.notification.mail.url:}")
     private String mailUrl;
+    /**
+     * true 继续调用内部 HTTP 邮件网关；false 将通知内容写成本地 HTML 文件。
+     * 可在 application-*.properties 中通过 skill.notification.mail.http-enabled 调整。
+     */
+    private boolean httpEnabled = false;
+    private String localHtmlDirectory = "src/main/resources/notification-html";
+
+    private static final DateTimeFormatter LOCAL_FILE_TIME =
+            DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS");
 
     public StubNotificationSender(AiChatRuntimeConfigMapper runtimeConfigMapper) {
         this.runtimeConfigMapper = runtimeConfigMapper;
@@ -94,6 +108,9 @@ public class StubNotificationSender implements NotificationSender {
     }
 
     private String post(Map<String, Object> requestBody) {
+        if (!httpEnabled) {
+            return writeLocalHtml(requestBody);
+        }
         String timeStamp = String.valueOf(System.currentTimeMillis());
         String sign = new SignUtil().generateSign(timeStamp, timeStamp, APP_KEY, APP_SECRET);
         Map<String, String> requestHeader = new HashMap<>();
@@ -114,6 +131,37 @@ public class StubNotificationSender implements NotificationSender {
             if (e instanceof InterruptedException) Thread.currentThread().interrupt();
             throw new IllegalStateException("MailGatewaySendFailed: " + e.getMessage(), e);
         }
+    }
+
+    /** 将通知请求写入本地 HTML 文件，返回生成文件的绝对路径。 */
+    private String writeLocalHtml(Map<String, Object> requestBody) {
+        String title = String.valueOf(requestBody.getOrDefault("title", DEFAULT_TITLE));
+        String content = String.valueOf(requestBody.getOrDefault("content", ""));
+        String safeTitle = title.replaceAll("[^\\p{L}\\p{N}._-]", "_");
+        if (safeTitle.isBlank()) {
+            safeTitle = "notification";
+        }
+        Path directory = Paths.get(localHtmlDirectory).toAbsolutePath().normalize();
+        Path file = directory.resolve(safeTitle + "-" +
+                LocalDateTime.now().format(LOCAL_FILE_TIME) + ".html");
+        String html = content.trim().toLowerCase().startsWith("<html")
+                ? content
+                : "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><title>"
+                + escapeHtml(title) + "</title></head><body>"
+                + content.replace("\n", "<br>\n") + "</body></html>";
+        try {
+            Files.createDirectories(directory);
+            Files.writeString(file, html, StandardCharsets.UTF_8);
+            log.info("[Notification STUB] HTTP disabled, notification written to {}", file);
+            return file.toString();
+        } catch (Exception e) {
+            throw new IllegalStateException("LocalNotificationFileWriteFailed: " + e.getMessage(), e);
+        }
+    }
+
+    private String escapeHtml(String value) {
+        return value.replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace("\"", "&quot;");
     }
 
     private String getMailContent(String mailContent, String contactName, String contactPhone) {

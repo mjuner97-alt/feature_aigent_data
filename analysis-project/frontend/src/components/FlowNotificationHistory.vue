@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import { watch } from 'vue';
+import { lookupRecipients } from '../api/recipientLookup';
+import { searchSkillUsers } from '../api/skill';
 import type { SkillFlowNotification } from '../types/skillFlow';
 const props = defineProps<{ notifications: SkillFlowNotification[] }>();
 const expanded = ref(false);
 const contentOpen = ref(new Set<SkillFlowNotification>());
 const bodyOpen = ref(new Set<SkillFlowNotification>());
 const reasonOpen = ref(new Set<SkillFlowNotification>());
+const nameMap = ref<Record<string, string>>({});
 function toggle(set: Set<SkillFlowNotification>, row: SkillFlowNotification) {
   if (set.has(row)) set.delete(row); else set.add(row);
 }
@@ -18,6 +22,27 @@ function string(value: unknown) { return typeof value === 'string' ? value.trim(
 function people(value: unknown): string[] {
   return Array.isArray(value) ? value.map(string).filter(Boolean) : string(value).split(/[,，、;；]/).map(v => v.trim()).filter(Boolean);
 }
+function personLabel(value: string) {
+  if (/[（(].+[）)]/.test(value)) return value;
+  const id = value.trim();
+  return id ? `${nameMap.value[id] || id}（${id}）` : id;
+}
+async function loadNames(rows: SkillFlowNotification[]) {
+  const ids = new Set<string>();
+  rows.forEach(row => {
+    [...recipients(row), ...people(request(row).ccUserList)].forEach(value => {
+      if (value && !/[（(].+[）)]/.test(value)) ids.add(value);
+    });
+  });
+  await Promise.all([...ids].map(async id => {
+    try {
+      const result = await lookupRecipients(id, searchSkillUsers);
+      const match = result.items.find(item => item.userId === id);
+      if (match?.name) nameMap.value[id] = match.name;
+    } catch { /* 保留 userId 作为降级展示 */ }
+  }));
+}
+watch(() => props.notifications, rows => { void loadNames(rows); }, { immediate: true });
 function recipients(row: SkillFlowNotification) {
   const saved = people(request(row).toUserList);
   return saved.length ? saved : people(row.recipient || row.recipientSummary);
@@ -49,15 +74,14 @@ function preview(row: SkillFlowNotification) {
     <article v-for="(row, index) in visible" :key="row.id ?? index">
       <div class="heading">
         <span>发送时间：{{ time(row).replace('T', ' ').slice(0, 19) || '未记录' }}</span>
-        <span>收件人：{{ summary(row) }}</span>
         <strong>{{ status(row) }}</strong>
         <button type="button" :aria-expanded="contentOpen.has(row)" @click="toggle(contentOpen, row)">{{ contentOpen.has(row) ? '收起内容' : '查看内容' }}</button>
         <button v-if="row.status === 'FAILED'" type="button" :aria-expanded="reasonOpen.has(row)" @click="toggle(reasonOpen, row)">{{ reasonOpen.has(row) ? '收起原因' : '查看原因' }}</button>
       </div>
       <p v-if="reasonOpen.has(row)" class="error">发送未成功，请稍后重试；如仍失败，请联系管理员。</p>
       <div v-if="contentOpen.has(row)" class="content">
-        <p>主送：{{ recipients(row).join('、') || '未记录' }}</p>
-        <p v-if="people(request(row).ccUserList).length">抄送：{{ people(request(row).ccUserList).join('、') }}</p>
+        <p>收件人：{{ recipients(row).map(personLabel).join('、') || '未记录' }}</p>
+        <p>抄送人：{{ people(request(row).ccUserList).map(personLabel).join('、') || '未记录' }}</p>
         <p>标题：{{ string(request(row).title) || '历史记录未保存标题' }}</p>
         <template v-if="string(request(row).content)">
           <button type="button" :aria-expanded="bodyOpen.has(row)" @click="toggle(bodyOpen, row)">{{ bodyOpen.has(row) ? '收起正文' : '展开正文' }}</button>
