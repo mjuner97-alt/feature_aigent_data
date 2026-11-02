@@ -32,24 +32,27 @@ public class NotificationLinkClickService {
                        String tokenHash, String source, String eventType, boolean loggedIn,
                        String ip, String userAgent) {
         java.util.concurrent.CompletableFuture.runAsync(() -> mapper.insertEvent(notificationId, executionId, null, actor == null ? "" : actor, tokenHash == null ? "" : tokenHash, source, eventType, loggedIn,
-                LocalDateTime.now(ZoneOffset.UTC), ip, userAgent, environment));
+                // event_at is a ClickHouse DateTime used alongside execution timestamps,
+                // which are stored as local application time. Storing a UTC wall-clock
+                // value here made access time appear eight hours earlier in China.
+                LocalDateTime.now(), ip, userAgent, environment));
     }
 
     public void recordJob(Long notificationId, Long jobExecutionId, String recipient, String actor,
                           String tokenHash, String source, String eventType, boolean loggedIn,
                           String ip, String userAgent) {
         java.util.concurrent.CompletableFuture.runAsync(() -> mapper.insertEvent(notificationId, null, jobExecutionId, actor == null ? "" : actor, tokenHash == null ? "" : tokenHash, source, eventType, loggedIn,
-                LocalDateTime.now(ZoneOffset.UTC), ip, userAgent, environment));
+                LocalDateTime.now(), ip, userAgent, environment));
     }
     public String recordPendingJob(Long jobExecutionId, String ip, String userAgent) {
         String token = UUID.randomUUID().toString();
         java.util.concurrent.CompletableFuture.runAsync(() -> mapper.insertEvent(null, null, jobExecutionId, "", token, "NOTIFICATION", "CLICK", false,
-                LocalDateTime.now(ZoneOffset.UTC), ip, userAgent, environment));
+                LocalDateTime.now(), ip, userAgent, environment));
         return token;
     }
     public void completePendingJob(String token, String actor) {
         if (token != null && !token.isBlank() && actor != null && !actor.isBlank())
-            java.util.concurrent.CompletableFuture.runAsync(() -> mapper.completePending(token, actor, LocalDateTime.now(ZoneOffset.UTC), environment));
+            java.util.concurrent.CompletableFuture.runAsync(() -> mapper.completePending(token, actor, LocalDateTime.now(), environment));
     }
     public List<NotificationLinkClickSummaryDto> summary(Long notificationId, NotificationLinkClickFilterRequest request) {
         Map<String,Object> f = new HashMap<>();

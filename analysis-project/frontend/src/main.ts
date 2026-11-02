@@ -31,6 +31,7 @@ import SkillFlowFormPage from './pages/skill/SkillFlowFormPage.vue';
 import SkillFlowReportEditPage from './pages/skill/SkillFlowReportEditPage.vue';
 import LongTaskConfigPage from './pages/skill/LongTaskConfigPage.vue';
 import PublicFlowReportPage from './pages/PublicFlowReportPage.vue';
+import NotificationLinkPage from './pages/NotificationLinkPage.vue';
 import SkillNotifySettingsPage from './pages/skill/SkillNotifySettingsPage.vue';
 import SkillVirtualGroupPage from './pages/skill/SkillVirtualGroupPage.vue';
 import ReportProcessPage from './pages/ReportProcessPage.vue';
@@ -51,6 +52,7 @@ import CompareResultDetailPage from './pages/skill/CompareResultDetailPage.vue';
 const routes: RouteRecordRaw[] = [
   { path: '/login', component: LoginPage },
   { path: '/report/flows/:id', component: PublicFlowReportPage },
+  { path: '/notification-link', component: NotificationLinkPage },
   // 报告编辑是独立工作页面，不挂在 SkillShell，避免继承主页面侧边导航。
   { path: '/skills/jobs/executions/:id/report/edit', component: SkillJobReportEditPage },
   { path: '/skills/jobs/flows/executions/:id/report/edit', component: SkillFlowReportEditPage },

@@ -1,7 +1,8 @@
 export interface LongTaskType { id:number; name:string; description?:string|null; sortOrder:number; enabled:boolean; createdAt?:string; updatedAt?:string }
 export interface LongTaskTypeInput { name:string; description?:string; sortOrder:number; enabled:boolean }
-export async function listLongTaskTypes(enabled?: boolean): Promise<LongTaskType[]> {
- const qs = enabled == null ? '' : `?enabled=${enabled}`;
+export interface LongTaskTypePage { items:LongTaskType[]; total:number; page:number; pageSize:number }
+export async function listLongTaskTypes(enabled?: boolean, page=1, pageSize=20): Promise<LongTaskTypePage> {
+ const qs = `?page=${page}&pageSize=${pageSize}${enabled == null ? '' : `&enabled=${enabled}`}`;
  const res = await fetch(`/api/long-task-types${qs}`, { headers: { 'X-User-Id': localStorage.getItem('skill-user-id') || 'demo-user' } });
  if (!res.ok) throw new Error('查询长任务类型失败'); return res.json();
 }

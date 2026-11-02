@@ -29,15 +29,14 @@
            coalesce(nullIf(any(task_display_name), ''), concat('任务 #', toString(ifNull(job_execution_id, flow_execution_id)))) AS task_display_name,
            any(execution_at) AS execution_at, min(event_at) AS first_event_at,
            max(event_at) AS latest_event_at, count() AS event_count
-    FROM skill_flow_notification_link_click
-    WHERE (#{filters.environment} IS NULL OR environment = #{filters.environment})
-      AND (#{filters.executionId} IS NULL OR flow_execution_id = #{filters.executionId} OR job_execution_id = #{filters.executionId})
-      AND (#{filters.source} IS NULL OR #{filters.source} = '' OR source = #{filters.source})
-      AND (#{filters.eventType} IS NULL OR #{filters.eventType} = '' OR event_type = #{filters.eventType})
-      AND (#{filters.executionId} IS NULL OR flow_execution_id = #{filters.executionId} OR job_execution_id = #{filters.executionId})
-      AND (#{filters.from} IS NULL OR event_at &gt;= #{filters.from})
-      AND (#{filters.to} IS NULL OR event_at &lt; #{filters.to})
-    GROUP BY flow_execution_id, job_execution_id, actor_user_id, source, event_type
+    FROM skill_flow_notification_link_click AS e
+    WHERE (#{filters.environment} IS NULL OR e.environment = #{filters.environment})
+      AND (#{filters.executionId} IS NULL OR e.flow_execution_id = #{filters.executionId} OR e.job_execution_id = #{filters.executionId})
+      AND (#{filters.source} IS NULL OR #{filters.source} = '' OR e.source = #{filters.source})
+      AND (#{filters.eventType} IS NULL OR #{filters.eventType} = '' OR e.event_type = #{filters.eventType})
+      AND (#{filters.from} IS NULL OR e.event_at &gt;= #{filters.from})
+      AND (#{filters.to} IS NULL OR e.event_at &lt; #{filters.to})
+    GROUP BY e.flow_execution_id, e.job_execution_id, e.actor_user_id, e.source, e.event_type
     ORDER BY latest_event_at DESC
   </select>
 </mapper>

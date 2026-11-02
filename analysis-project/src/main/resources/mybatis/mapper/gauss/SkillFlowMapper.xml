@@ -287,9 +287,12 @@
     <select id="selectAllEnabledFlows" resultMap="FlowMap">
         SELECT f.*
         FROM skill_flow f
-        JOIN skill_flow_type t ON t.id = f.type_id AND t.enabled = TRUE
-        WHERE f.enabled = TRUE AND f.deleted_at IS NULL
-        ORDER BY t.sort_order ASC, f.created_at ASC, f.id ASC
+        LEFT JOIN skill_flow_type t ON t.id = f.type_id
+        WHERE f.enabled = TRUE
+          AND f.deleted_at IS NULL
+          AND (t.id IS NULL OR t.enabled = TRUE)
+        ORDER BY COALESCE(t.sort_order, 2147483647) ASC,
+                 f.created_at ASC, f.id ASC
     </select>
 
     <select id="lockFlowForAuto" resultType="java.lang.Long">
@@ -792,9 +795,6 @@
         SET resolved_script_params_json = #{paramsJson}, updated_at = NOW()
         WHERE id = #{id}
           AND resolved_script_params_json IS NULL
-          AND status = 'RUNNING'
-          AND attempt_count = #{expectedAttempt}
-          AND lease_owner = #{expectedLeaseOwner}
     </update>
 
     <!-- ==================== 节点调度、worker 租约与并发抢占 ==================== -->
@@ -807,7 +807,7 @@
         FROM skill_flow_node_execution n
                  JOIN skill_flow_execution e ON e.id = n.flow_execution_id
                  JOIN skill_flow f ON f.id = e.flow_id
-                 JOIN skill_flow_type t ON t.id = f.type_id
+                 LEFT JOIN skill_flow_type t ON t.id = f.type_id
         WHERE (n.status IN ('QUEUED', 'RETRY_WAIT') OR
                (n.status = 'RUNNING' AND
                 n.lease_expires_at &lt; #{now} AND
@@ -823,7 +823,8 @@
                  AND r.status = 'RUNNING'
                  AND r.lease_expires_at &gt;= #{now}) &lt;
               GREATEST(COALESCE(e.max_parallelism_snapshot, 1), 1)
-        ORDER BY t.sort_order ASC, e.created_at ASC, e.id ASC, n.id ASC LIMIT 100
+        ORDER BY COALESCE(t.sort_order, 2147483647) ASC,
+                 e.created_at ASC, e.id ASC, n.id ASC LIMIT 100
     </select>
 
     <!-- 原子抢占节点:状态/租约条件满足才切 RUNNING、attempt_count+1、写入新租约(谁先 update 谁赢),
@@ -936,8 +937,6 @@
             updated_at=NOW()
         WHERE id = #{node.id}
           AND status = 'RUNNING'
-          AND attempt_count = #{expectedAttempt}
-          AND lease_owner = #{expectedLeaseOwner}
     </update>
 
     <!-- ==================== 节点尝试审计 ==================== -->

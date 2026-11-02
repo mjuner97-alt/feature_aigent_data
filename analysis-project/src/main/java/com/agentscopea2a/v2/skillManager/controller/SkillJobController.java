@@ -222,10 +222,11 @@ public class SkillJobController {
      */
     @GetMapping("/executions/{execId}/download")
     public ResponseEntity<Resource> downloadExecutionFile(@PathVariable(name = "execId") Long execId,
-                                                          @RequestHeader(name = "X-User-Id", required = false, defaultValue = "") String userId) {
+                                                          @RequestHeader(name = "X-User-Id", required = false, defaultValue = "") String userId,
+                                                          @RequestParam(name = "notificationAccess", defaultValue = "false") boolean notificationAccess) {
         try {
             SkillJobExecutionDto exec = service.getExecution(execId);
-            if (linkClickService != null) {
+            if (linkClickService != null && !notificationAccess) {
                 linkClickService.recordJob(null, execId, exec.createdBy(), userId, null,
                         "PAGE", "CLICK", userId != null && !userId.isBlank(), null, null);
             }

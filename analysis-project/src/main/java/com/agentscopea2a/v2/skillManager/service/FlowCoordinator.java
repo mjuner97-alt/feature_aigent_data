@@ -21,6 +21,7 @@ import io.agentscope.core.message.TextBlock;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
@@ -60,6 +61,7 @@ import java.util.concurrent.TimeoutException;
  * 节点级并发用许可信号量(workerPermits)限流,流程级并发上限由执行快照 maxParallelismSnapshot 控制。
  */
 @Component
+@ConditionalOnProperty(prefix = "harness.a2a.skill-flow", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class FlowCoordinator {
 
     private static final Logger log = LoggerFactory.getLogger(FlowCoordinator.class);
@@ -173,6 +175,8 @@ public class FlowCoordinator {
      */
     @Scheduled(fixedDelay = SkillFlowProperties.SCAN_INTERVAL_MS)
     public void scan() {
+        log.info("FlowCoordinator.scan tick: workerId={}, schedulerAllowed={}",
+                workerId, schedulerGuard.isAllowed());
         // 统一取当前时间:租约过期判断、跨天判断都用同一个时刻,避免一轮扫描内时钟漂移
         LocalDateTime now = LocalDateTime.now(clock);
         expirePreviousDays();       // 跨天兜底:仍在等指标(WAITING_METRICS)的执行直接判失败
@@ -247,7 +251,10 @@ public class FlowCoordinator {
         // （条件 UPDATE 切 RUNNING + 写租约，谁先执行谁赢）成功才真正提交执行，
         // 多实例部署时由此保证同一节点只被一个 worker 执行。safeNodes 仅过滤 null 元素做防御。
         List<SkillFlowNodeExecution> runnable = safeNodes(mapper.selectRunnableNodes(now, schedulerGuard.isAllowed()));
-        log.debug("Skill flow dispatch scan found {} runnable node(s)", runnable.size());
+        if (!runnable.isEmpty()) {
+            log.info("Skill flow dispatch scan found {} runnable node(s): {}", runnable.size(),
+                    runnable.stream().map(SkillFlowNodeExecution::getId).toList());
+        }
         for (SkillFlowNodeExecution node : runnable) {
             // RUNNING 且租约已过期 = 原执行超时/失联;这类恢复尝试走独立线程池,不占普通池许可
             boolean expiredAttempt = node.getStatus() == FlowNodeExecutionStatus.RUNNING
@@ -258,14 +265,29 @@ public class FlowCoordinator {
             if (!expiredAttempt && !workerPermits.tryAcquire()) break;
             // 原子抢占:把节点标记为本 worker 认领并写入新租约;失败说明被其他实例/线程抢先,让出许可
             if (claimService.claim(node.getId(), workerId, now.plusSeconds(SkillFlowProperties.LEASE_SECONDS), now)) {
+                // claimNode increments attempt_count in the database. Keep the
+                // object passed to the worker in sync before the parameter
+                // snapshot is frozen; otherwise freezeNodeScriptParams uses
+                // the old attempt number and rejects the update, leaving the
+                // node stuck in RUNNING.
+                node.setAttemptCount((node.getAttemptCount() == null ? 0 : node.getAttemptCount()) + 1);
+                node.setLeaseOwner(workerId);
+                node.setLeaseExpiresAt(now.plusSeconds(SkillFlowProperties.LEASE_SECONDS));
+                log.info("Long task node claimed: nodeId={}, flowExecutionId={}, workerId={}",
+                        node.getId(), node.getFlowExecutionId(), workerId);
                 try {
                     // 失联恢复走 recoveryWorkers(弹性线程池,与普通池隔离),
                     // 否则旧调用占着普通池 worker,恢复任务永远排不上队
                     ExecutorService executor = expiredAttempt ? recoveryWorkers : workers;
+                    log.info("Long task node dispatching: nodeId={}, flowExecutionId={}, workerId={}, executor={}",
+                            node.getId(), node.getFlowExecutionId(), workerId,
+                            expiredAttempt ? "recovery" : "normal");
                     executor.submit(() -> {
                         try {
+                            log.info("Long task node worker started: nodeId={}, flowExecutionId={}, workerId={}",
+                                    node.getId(), node.getFlowExecutionId(), workerId);
                             executeNode(node.getId());
-                        } catch (Exception e) {
+                        } catch (Throwable e) {
                             // executeNode 内部已兜底,这里防御未被捕获的异常逃逸,至少留下日志
                             log.error("Skill flow node {} worker task crashed", node.getId(), e);
                         } finally {
@@ -278,6 +300,8 @@ public class FlowCoordinator {
                     throw e;
                 }
             } else {
+                log.warn("Long task node claim rejected: nodeId={}, flowExecutionId={}, status={}",
+                        node.getId(), node.getFlowExecutionId(), node.getStatus());
                 if (!expiredAttempt) workerPermits.release(); // 认领失败(被别人抢走/并发超限),让出许可
             }
         }
@@ -285,6 +309,7 @@ public class FlowCoordinator {
 
     /** 执行单个节点:渲染模板 -> 调 skill -> 写结果并推进;失败按可重试分类决定重试或终止。 */
     private void executeNode(Long nodeId) {
+        log.info("Long task node execution entered: nodeId={}, workerId={}", nodeId, workerId);
         // 整个方法都包在 try/catch 内:开审计记录前的任何异常(数据库抖动、唯一键冲突等)
         // 也会走失败收尾并留日志,而不是把已认领的节点静默卡成无人处理的 RUNNING 僵尸。
         SkillFlowNodeExecution node = null;
@@ -315,7 +340,10 @@ public class FlowCoordinator {
             started = LocalDateTime.now(clock);
             stage = "PREPARE_ATTEMPT";
             // 历史数据可能没有 attempt_count；避免 Integer 自动拆箱触发 NPE。
-            attempt = node.getAttemptCount() == null ? 0 : node.getAttemptCount();
+            // claimNode has already incremented the persisted attempt count;
+            // protect completion updates from stale mapper snapshots that
+            // still expose zero.
+            attempt = Math.max(1, node.getAttemptCount() == null ? 0 : node.getAttemptCount());
             attemptLeaseOwner = node.getLeaseOwner();
             // 认领成功但可能有上次遗留的 RUNNING 尝试记录,先作废再开新尝试
             mapper.failRunningAttemptsForNode(nodeId, started);
@@ -516,25 +544,16 @@ public class FlowCoordinator {
             mapper.updateExecution(flow);
             return;
         }
-        // 严格按配置顺序串行:当前节点未终态(执行中/等待重试/排队)时,后续节点保持 PENDING。
-        boolean activeNode = nodes.stream().anyMatch(n -> n.getStatus() == FlowNodeExecutionStatus.RUNNING
-                || n.getStatus() == FlowNodeExecutionStatus.RETRY_WAIT
-                || n.getStatus() == FlowNodeExecutionStatus.QUEUED);
-        boolean releasedNextNode = false;
-        if (!activeNode) {
-            var nextNode = nodes.stream().filter(n -> n.getStatus() == FlowNodeExecutionStatus.PENDING).findFirst();
-            if (nextNode.isPresent()) {
-                SkillFlowNodeExecution node = nextNode.get();
+        // 当前流程节点没有依赖关系时，所有 PENDING 节点都应并发入队；流程级
+        // maxParallelism 和 workerPermits 负责限流，不在这里强制串行。
+        for (SkillFlowNodeExecution node : nodes) {
+            if (node.getStatus() == FlowNodeExecutionStatus.PENDING) {
                 node.setStatus(FlowNodeExecutionStatus.QUEUED);
                 mapper.updateNodeExecution(node);
-                releasedNextNode = true;
             }
         }
-        // 节点完成后放行的后继节点不能只等定时扫描，否则正常串行流程会额外
-        // 等待一个 scan 周期（当前为 30 秒）；扫描仅作为事件丢失/重启兜底。
-        if (releasedNextNode) {
-            dispatchRunnableNodes();
-        }
+        // 完成节点后立即尝试调度，避免依赖事件丢失时只能等待下一轮扫描。
+        dispatchRunnableNodes();
         // 全部节点终态:抢占汇总权(claimExecutionForSummary 保证只汇总一次)后收尾
         nodes = safeNodes(mapper.selectNodeExecutions(flow.getId()));
         if (!nodes.isEmpty() && nodes.stream().allMatch(n -> n.getStatus() != null && n.getStatus().terminal())

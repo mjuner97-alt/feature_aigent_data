@@ -666,24 +666,29 @@ async function load() {
   // once; previously the detail request waited for the complete script and
   // metric registries, making opening an edit with many nodes feel frozen.
   const sourcePromise = sourceId != null ? getSkillFlow(sourceId) : Promise.resolve(null);
-  const optionsPromise = loadOptions();
-  const [sourceResult] = await Promise.allSettled([sourcePromise, optionsPromise]);
-  if (sourceResult.status === 'rejected') {
-    error.value = sourceResult.reason instanceof Error ? sourceResult.reason.message : '加载流程失败';
+  // Render the saved flow as soon as its detail arrives. Option registries are
+  // auxiliary data and should not block opening the editor.
+  const sourceResult = await Promise.allSettled([sourcePromise]);
+  if (sourceResult[0].status === 'rejected') {
+    error.value = sourceResult[0].reason instanceof Error ? sourceResult[0].reason.message : '加载流程失败';
     syncOutlineRows();
     baseline.value = editorFingerprint();
     loading.value = false;
     return;
   }
-  const flow = sourceResult.value;
+  const flow = sourceResult[0].value;
   if (sourceId != null) {
     try {
       if (!flow) throw new Error('流程详情为空');
-      await ensureSelectedSkills((flow.nodes || []).map(node => node.skillId ?? 0));
       wasPublic.value = !isCopy.value && flow.chatPublic === true;
       originalKeywords.value = (flow.triggers || []).map(trigger => trigger.keyword.trim().toLowerCase()).filter(Boolean);
       form.value = normalizeFlow(cloneFlowValue(flow));
       if (!isCopy.value) flowOwnerId.value = flow.createdBy || flowOwnerId.value;
+      syncOutlineRows();
+      loading.value = false;
+      // Complete option lists and secondary labels after the editor is visible.
+      void loadOptions().catch(() => {});
+      void ensureSelectedSkills((flow.nodes || []).map(node => node.skillId ?? 0));
       if (isCopy.value) {
         copySourceName.value = flow.name;
         form.value.name = `${flow.name}-副本`;

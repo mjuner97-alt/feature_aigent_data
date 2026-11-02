@@ -27,15 +27,13 @@ async function handleLogin() {
     const flowExecutionId = new URLSearchParams(window.location.search).get('returnFlowExecutionId');
     const accessToken = new URLSearchParams(window.location.search).get('accessToken');
     if (flowExecutionId) {
-      const response = await fetch(`/api/skill-flow-executions/notification-link?executionId=${encodeURIComponent(flowExecutionId)}&returnFromLogin=true`, { headers: { 'X-User-Id': user.userId }, redirect: 'follow' });
-      if (response.ok && response.url) window.location.assign(response.url);
-      else errorMsg.value = '通知报告无权访问或已失效';
+      await fetch(`/api/skill-flow-executions/notification-link?executionId=${encodeURIComponent(flowExecutionId)}&returnFromLogin=true`, { headers: { 'X-User-Id': user.userId }, redirect: 'manual' });
+      window.location.assign(`/report/flows/${encodeURIComponent(flowExecutionId)}`);
     } else if (executionId) {
-      const response = await fetch(`/api/skill-jobs/notification-link?executionId=${encodeURIComponent(executionId)}&returnFromLogin=true&accessToken=${encodeURIComponent(accessToken || "")}`, {
-        headers: { 'X-User-Id': user.userId }, redirect: 'follow',
+      await fetch(`/api/skill-jobs/notification-link?executionId=${encodeURIComponent(executionId)}&returnFromLogin=true&accessToken=${encodeURIComponent(accessToken || "")}`, {
+        headers: { 'X-User-Id': user.userId }, redirect: 'manual',
       });
-      if (response.ok && response.url) window.location.assign(response.url);
-      else errorMsg.value = '通知报告无权访问或已失效';
+      window.location.assign(`/api/skill-jobs/executions/${encodeURIComponent(executionId)}/download?notificationAccess=true`);
     } else router.push('/');
   } catch (e: any) {
     errorMsg.value = e.message || '登录失败';

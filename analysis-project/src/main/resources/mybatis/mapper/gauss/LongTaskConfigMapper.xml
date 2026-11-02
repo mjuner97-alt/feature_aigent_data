@@ -1,21 +1,45 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 长任务流程类型、标签及其关联关系的 SQL。 -->
 <mapper namespace="com.agentscopea2a.v2.skillManager.mapper.LongTaskConfigMapper">
- <resultMap id="TypeMap" type="com.agentscopea2a.v2.skillManager.entity.LongTaskType"><id column="id" property="id"/><result column="name" property="name"/><result column="description" property="description"/><result column="sort_order" property="sortOrder"/><result column="enabled" property="enabled"/><result column="created_at" property="createdAt"/><result column="updated_at" property="updatedAt"/></resultMap>
- <resultMap id="TagMap" type="com.agentscopea2a.v2.skillManager.entity.LongTaskTag"><id column="id" property="id"/><result column="name" property="name"/><result column="created_at" property="createdAt"/><result column="updated_at" property="updatedAt"/></resultMap>
- <select id="selectTypes" resultMap="TypeMap">SELECT * FROM skill_flow_type <where><if test="enabled != null">enabled=#{enabled}</if></where> ORDER BY sort_order,id</select>
- <select id="selectTypeById" resultMap="TypeMap">SELECT * FROM skill_flow_type WHERE id=#{id}</select>
- <select id="selectTypeByName" resultMap="TypeMap">SELECT * FROM skill_flow_type WHERE name=#{name}</select>
- <insert id="insertType" useGeneratedKeys="true" keyProperty="id">INSERT INTO skill_flow_type(name,description,sort_order,enabled) VALUES(#{name},#{description},#{sortOrder},COALESCE(#{enabled},TRUE))</insert>
- <update id="updateType">UPDATE skill_flow_type SET name=#{name},description=#{description},sort_order=#{sortOrder},enabled=#{enabled},updated_at=NOW() WHERE id=#{id}</update>
- <update id="updateTypeEnabled">UPDATE skill_flow_type SET enabled=#{enabled},updated_at=NOW() WHERE id=#{id}</update>
- <delete id="deleteType">DELETE FROM skill_flow_type WHERE id=#{id}</delete>
- <select id="countFlowsByTypeId" resultType="long">SELECT COUNT(*) FROM skill_flow WHERE type_id=#{typeId} AND deleted_at IS NULL</select>
- <select id="selectTags" resultMap="TagMap">SELECT * FROM skill_flow_tag ORDER BY name,id</select>
- <select id="selectTagByName" resultMap="TagMap">SELECT * FROM skill_flow_tag WHERE name=#{name}</select>
- <insert id="insertTag" useGeneratedKeys="true" keyProperty="id">INSERT INTO skill_flow_tag(name) VALUES(#{name})</insert>
- <select id="selectTagsByFlowId" resultMap="TagMap">SELECT t.* FROM skill_flow_tag t JOIN skill_flow_tag_rel r ON r.tag_id=t.id WHERE r.flow_id=#{flowId} ORDER BY t.name,t.id</select>
- <delete id="deleteFlowTags">DELETE FROM skill_flow_tag_rel WHERE flow_id=#{flowId}</delete>
- <insert id="insertFlowTag">INSERT INTO skill_flow_tag_rel(flow_id,tag_id) VALUES(#{flowId},#{tagId})</insert>
+    <!-- 类型表字段映射。 -->
+    <resultMap id="TypeMap" type="com.agentscopea2a.v2.skillManager.entity.LongTaskType">
+        <id column="id" property="id"/><result column="name" property="name"/>
+        <result column="description" property="description"/><result column="sort_order" property="sortOrder"/>
+        <result column="enabled" property="enabled"/><result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+    <!-- 标签表字段映射。 -->
+    <resultMap id="TagMap" type="com.agentscopea2a.v2.skillManager.entity.LongTaskTag">
+        <id column="id" property="id"/><result column="name" property="name"/>
+        <result column="created_at" property="createdAt"/><result column="updated_at" property="updatedAt"/>
+    </resultMap>
+    <!-- 类型列表：enabled 为空时查询全部。 -->
+    <select id="selectTypes" resultMap="TypeMap">SELECT * FROM skill_flow_type <where><if test="enabled != null">enabled=#{enabled}</if></where> ORDER BY sort_order,id</select>
+    <!-- 类型分页：offset 是跳过条数，limit 是本页条数。 -->
+    <select id="selectTypesPage" resultMap="TypeMap">SELECT * FROM skill_flow_type <where><if test="enabled != null">enabled=#{enabled}</if></where> ORDER BY sort_order,id LIMIT #{limit} OFFSET #{offset}</select>
+    <!-- 统计分页总数。 -->
+    <select id="countTypes" resultType="long">SELECT COUNT(*) FROM skill_flow_type <where><if test="enabled != null">enabled=#{enabled}</if></where></select>
+    <!-- 按 ID 或名称查询单个类型。 -->
+    <select id="selectTypeById" resultMap="TypeMap">SELECT * FROM skill_flow_type WHERE id=#{id}</select>
+    <select id="selectTypeByName" resultMap="TypeMap">SELECT * FROM skill_flow_type WHERE name=#{name}</select>
+    <!-- 新增、更新和启用状态更新。 -->
+    <insert id="insertType" useGeneratedKeys="true" keyProperty="id">INSERT INTO skill_flow_type(name,description,sort_order,enabled) VALUES(#{name},#{description},#{sortOrder},COALESCE(#{enabled},TRUE))</insert>
+    <update id="updateType">UPDATE skill_flow_type SET name=#{name},description=#{description},sort_order=#{sortOrder},enabled=#{enabled},updated_at=NOW() WHERE id=#{id}</update>
+    <update id="updateTypeEnabled">UPDATE skill_flow_type SET enabled=#{enabled},updated_at=NOW() WHERE id=#{id}</update>
+    <!-- 删除前由 Service 检查引用关系。 -->
+    <delete id="deleteType">DELETE FROM skill_flow_type WHERE id=#{id}</delete>
+    <!-- 只统计未删除流程，避免误阻止类型删除。 -->
+    <select id="countFlowsByTypeId" resultType="long">SELECT COUNT(*) FROM skill_flow WHERE type_id=#{typeId} AND deleted_at IS NULL</select>
+    <!-- 标签查询和新增。 -->
+    <select id="selectTags" resultMap="TagMap">SELECT * FROM skill_flow_tag ORDER BY name,id</select>
+    <select id="selectTagByName" resultMap="TagMap">SELECT * FROM skill_flow_tag WHERE name=#{name}</select>
+    <insert id="insertTag" useGeneratedKeys="true" keyProperty="id">INSERT INTO skill_flow_tag(name) VALUES(#{name})</insert>
+    <!-- 流程与标签的关联表操作。 -->
+    <select id="selectTagsByFlowId" resultMap="TagMap">SELECT t.* FROM skill_flow_tag t JOIN skill_flow_tag_rel r ON r.tag_id=t.id WHERE r.flow_id=#{flowId} ORDER BY t.name,t.id</select>
+    <delete id="deleteFlowTags">DELETE FROM skill_flow_tag_rel WHERE flow_id=#{flowId}</delete>
+    <insert id="insertFlowTag">INSERT INTO skill_flow_tag_rel(flow_id,tag_id) VALUES(#{flowId},#{tagId})</insert>
 </mapper>
+
+
 
