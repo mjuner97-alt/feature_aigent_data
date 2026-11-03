@@ -138,7 +138,9 @@ public class NotificationLinkClickService {
             String type = "LONG_TASK".equals(row.executionType()) ? "长任务流程" : "独立任务";
             csv.append(csv(type)).append(',').append(csv(task)).append(',').append(row.executionId()).append(',')
                     .append(csv(formatDateTime(row.executionAt()))).append(',').append(csv(person)).append(',')
-                    .append(csv(row.source())).append(',').append(csv(row.eventType())).append(',')
+                    .append(csv("PAGE".equals(row.source()) ? "页面点击" : "通知点击")).append(',')
+                    .append(csv("LOGIN_VIEW".equals(row.eventType()) ? "登录后查看"
+                            : Boolean.TRUE.equals(row.loggedIn()) ? "已登录点击" : "仅点击未登录")).append(',')
                     .append(csv(formatDateTime(row.latestEventAt()))).append('\n');
         }
         return csv.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
