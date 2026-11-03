@@ -118,6 +118,8 @@ public class DimensionStateMiddleware implements MiddlewareBase {
     /**
      * 人员台账 enrich（LLM 回退路径，§3.3b/§4.4）：我X → departments/peerDimension（三选一，
      * 先命中者胜 + warn）/persons；人名扫描唯一命中 → persons + 统一认证号注入行。
+     * 部门一项全量连带（2026/10/30 部门与上级维度带出门控方案 §2.3，与直执 enrichPersonal
+     * 同语义）：我部/我组/我的应用/我的产品线/裸我 均注入台账部门；peer 自身值仍 per-type。
      * 直接执行路径（参数契约）在 DirectSkillExecutor.plan，这里只是提示性注入。
      */
     private java.util.List<String> enrichPersonal(DimensionState state, RuntimeContext ctx,
@@ -133,16 +135,24 @@ public class DimensionStateMiddleware implements MiddlewareBase {
             }
             if (res.myGroup() && !res.ledger().groups().isEmpty()) {
                 setPeerIfAbsent(state, DimensionState.PeerDimensionType.TEAM, res.ledger().groups());
+                state.setDepartments(merge(state.getDepartments(), res.ledger().depts()));
             }
             if (res.myApp() && !res.ledger().apps().isEmpty()) {
                 setPeerIfAbsent(state, DimensionState.PeerDimensionType.APPLICATION, res.ledger().apps());
+                state.setDepartments(merge(state.getDepartments(), res.ledger().depts()));
             }
             if (res.myProductLine() && !res.ledger().productLines().isEmpty()) {
                 setPeerIfAbsent(state, DimensionState.PeerDimensionType.PRODUCT_LINE,
                         res.ledger().productLines());
+                state.setDepartments(merge(state.getDepartments(), res.ledger().depts()));
             }
-            if (res.myself() && res.ledger().name() != null) {
-                state.setPersons(merge(state.getPersons(), List.of(res.ledger().name())));
+            if (res.myself()) {
+                if (res.ledger().name() != null) {
+                    state.setPersons(merge(state.getPersons(), List.of(res.ledger().name())));
+                }
+                if (!res.ledger().depts().isEmpty()) {
+                    state.setDepartments(merge(state.getDepartments(), res.ledger().depts()));
+                }
             }
         }
         // §4.4 人名扫描（唯一命中直出统一认证号；重名不反问——直接执行轨已覆盖主场景）

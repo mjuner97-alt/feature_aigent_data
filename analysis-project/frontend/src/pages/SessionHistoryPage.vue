@@ -281,6 +281,7 @@ const accessUser = ref('');
 const accessEnvironment = ref('');
 const executionDateRange = ref<string[]>([]);
 const accessDateRange = ref<string[]>([]);
+
 async function loadAccess() {
   accessLoading.value = true;
   try {
@@ -296,6 +297,7 @@ async function loadAccess() {
   } catch (e) { ElMessage.error(e instanceof Error ? e.message : '访问埋点查询失败'); }
   finally { accessLoading.value = false; }
 }
+
 async function exportAccess() {
   const params = new URLSearchParams();
   const userId = accessUser.value.trim();
@@ -309,6 +311,7 @@ async function exportAccess() {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a'); anchor.href = url; anchor.download = `长任务访问埋点${dayjs().format('YYYYMMDDHHmmss')}.csv`; anchor.click(); URL.revokeObjectURL(url);
 }
+
 const loading = ref(false);
 const error = ref<string | null>(null);
 const lastUpdated = ref('--');
@@ -336,7 +339,7 @@ interface CaseItem {
   id: string | number;
   caseName: string;
   createdAt: string;
-  conversationId: string; // 🌟 新增：绑定会话 ID
+  conversationId: string;
   executeRecords?: ExecuteRecord[];
 }
 
@@ -352,20 +355,8 @@ async function loadCases() {
   try {
     const owner = getLoggedInUserId() || '';
 
-    const resp = await fetch('http://122.244.14.11:8081/skillRecord/list', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
-      body: JSON.stringify({ owner: owner })
-    });
-
-    if (!resp.ok) throw new Error(`接口请求失败: ${resp.status}`);
-    const raw = await resp.json();
-
-    // 适配返回结构：{ result: "success", data: [...] }
-    const list = raw.data || [];
+    // 🌟 核心修改：复用封装好的 API，不再手写 fetch，避免绕过动态配置和跨域处理
+    const list = await listConversationCases(owner);
 
     // 解构嵌套的 qaStandard 和 executeRecords
     cases.value = list.map((item: any) => {
@@ -385,12 +376,10 @@ async function loadCases() {
   }
 }
 
-// 删除案例 (修改为使用 conversationId)
 async function removeCase(row: CaseItem) {
   try {
     await ElMessageBox.confirm(`确定删除案例「${row.caseName}」吗？`, '删除确认', { type: 'warning' });
 
-    // 🌟 修改：使用 conversationId 作为入参
     const targetId = String(row.conversationId ?? '');
     if (!targetId) throw new Error('缺少会话 ID，无法删除');
 
@@ -398,6 +387,11 @@ async function removeCase(row: CaseItem) {
 
     ElMessage.success('已删除');
     await loadCases(); // 刷新列表
+
+    // 如果当前会话列表有数据，也同步刷新一下状态
+    if (conversations.value.length > 0) {
+      refreshCaseState().catch(() => undefined);
+    }
   } catch (e: any) {
     if (e !== 'cancel' && e !== 'close') {
       ElMessage.error(e?.message || '删除失败');
@@ -412,7 +406,6 @@ function handleViewExecution(row: CaseItem, record: ExecuteRecord) {
   });
 }
 
-// 结果展示辅助函数
 function getResultTagType(result?: string) {
   if (result === '成功') return 'success';
   if (result === '失败') return 'danger';
@@ -433,9 +426,15 @@ async function refreshCaseState() {
   try {
     const owners = [...new Set(conversations.value.map(caseOwner))];
     if (owners.some(owner => !owner)) throw new Error('缺少案例所属用户，无法查询案例');
+
+    // 复用封装好的 API
     const lists = await Promise.all(owners.map(listConversationCases));
     if (version !== caseQueryVersion) return;
-    caseConversationIds.value = new Set(lists.flat().map(item => item.conversationId));
+
+    // 🌟 关键修复：正确解析 API 返回的结构（兼容后端嵌套 qaStandard 的情况）
+    caseConversationIds.value = new Set(
+        lists.flat().map((item: any) => item.qaStandard?.conversationId || item.conversationId).filter(Boolean)
+    );
   } catch (e) {
     if (version === caseQueryVersion) ElMessage.error(e instanceof Error ? e.message : '查询案例失败');
     throw e;
@@ -469,11 +468,14 @@ async function setAsCase(row: Conversation) {
       cancelButtonText: '取消',
       inputValidator: (value: string) => value.trim() ? true : '标准编码不能为空',
     });
-    caseLoadingId.value = row.conversationId;
+
     const message = await setConversationAsCase(row.conversationId, result.value.trim(), caseOwner(row));
     ++caseQueryVersion;
     caseConversationIds.value = new Set([...caseConversationIds.value, row.conversationId]);
     ElMessage.success(message);
+
+    // 顺便刷新一下后端的案例状态，保证多端数据一致性
+    await refreshCaseState().catch(() => undefined);
   } catch (e: any) {
     if (e === 'cancel' || e === 'close') return;
     ElMessage.error(e?.message || '设为案例失败');
@@ -736,8 +738,3 @@ function durationStyle(ms: number): any {
   .filter-buttons :deep(.el-button) { flex: 1; }
 }
 </style>
-
-
-
-
-
