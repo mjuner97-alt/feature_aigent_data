@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import MetricDependencySelect from '../components/MetricDependencySelect.vue';
 /**
  * python 脚本注册表管理页面
  *
@@ -493,9 +494,7 @@ const S = {
           </el-select>
         </el-form-item>
         <el-form-item label="默认指标依赖">
-          <el-select v-model="form.defaultMetricIds" multiple filterable remote reserve-keyword :remote-method="loadMetrics" :loading="metricLoading" placeholder="未配置默认指标" style="width:100%" clearable>
-            <el-option v-for="metric in metrics" :key="metric.id" :value="metric.id" :label="`${metric.name} (${metric.code})`" />
-          </el-select>
+          <MetricDependencySelect v-model="form.defaultMetricIds" :metrics="metrics" :remote-method="loadMetrics" :loading="metricLoading" placeholder="未配置默认指标" />
         </el-form-item>
         <el-form-item label="参数定义">
           <div style="width: 100%">

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import MetricDependencySelect from './MetricDependencySelect.vue';
 /**
  * Skill 创建/编辑表单 Drawer(共享组件)
  *
@@ -186,7 +187,7 @@ function close() {
                   <span class="label">内容</span>
                   <textarea v-model="form.content" :disabled="notOwner" rows="12" class="content" placeholder="SKILL.md 正文(Markdown)" />
                 </label>
-                <label class="field"><span class="label">默认指标依赖</span><el-select v-model="form.defaultMetricIds" multiple filterable remote reserve-keyword :remote-method="searchMetrics" :loading="metricLoading" placeholder="未配置默认指标" clearable><el-option v-for="metric in metrics" :key="metric.id" :value="metric.id" :label="`${metric.name} (${metric.code})`" /></el-select></label>
+                <label class="field"><span class="label">默认指标依赖</span><MetricDependencySelect v-model="form.defaultMetricIds" :metrics="metrics" :remote-method="searchMetrics" :loading="metricLoading" placeholder="未配置默认指标" /></label>
                 <SkillFileAttachment
                   ref="attachmentRef"
                   :skill-id="editId"

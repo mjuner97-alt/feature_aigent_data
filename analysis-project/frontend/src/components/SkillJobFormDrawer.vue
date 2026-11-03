@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import MetricDependencySelect from './MetricDependencySelect.vue';
 import OrderedRecipientList from './OrderedRecipientList.vue';
 import { lookupRecipients, lookupMessage } from '../api/recipientLookup';
 /**
@@ -258,9 +259,7 @@ defineExpose({ isDirty });
                 </label>
                 <label class="field">
                   <span class="label">依赖指标</span>
-      <el-select v-model="form.metricIds" multiple filterable remote reserve-keyword :remote-method="searchMetrics" :loading="metricLoading" placeholder="留空继承 Skill 默认指标" clearable style="width: 100%" @change="form.metricIds = Array.from(new Set((form.metricIds || []).slice(0, 20))); form.metricOverrideConfigured = !!form.metricIds.length">
-                    <el-option v-for="m in metrics" :key="m.id" :value="m.id" :label="m.name" :title="m.description" />
-                  </el-select>
+                  <MetricDependencySelect v-model="form.metricIds" :metrics="metrics" :remote-method="searchMetrics" :loading="metricLoading" placeholder="留空继承 Skill 默认指标" @change="form.metricIds = Array.from(new Set((form.metricIds || []).slice(0, 20))); form.metricOverrideConfigured = !!form.metricIds.length" />
                   <span class="tip">
                     留空时继承 Skill 默认指标；全部依赖指标当天就绪后自动执行，每天最多一次
                     <span v-if="selectedMetric?.description" class="desc-toggle" @click="showMetricDesc = !showMetricDesc">
