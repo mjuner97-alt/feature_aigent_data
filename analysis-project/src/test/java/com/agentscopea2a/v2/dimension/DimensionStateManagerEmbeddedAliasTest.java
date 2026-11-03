@@ -185,6 +185,59 @@ class DimensionStateManagerEmbeddedAliasTest {
     }
 
     @Test
+    void andJoinedGroupEnumerationKeepsBothAliases() {
+        // 「三部车贷组和房贷组的风险」EXPLICIT_TEAM 贪婪吞出整段 token「三部车贷组和房贷组」
+        // （顿号版因"、"不在字符类外天然切两段），首个 alias「车贷」后缀带"组和房贷组"
+        // 被误判嵌入抑制 → 只剩房贷（内网 2026-11-02 实证）。连接词拆子 token 后两值均保留。
+        AliasResolver resolver = new AliasResolver(() -> List.of(
+                new DimensionAlias(1L, PeerDimensionType.TEAM, "车贷", "个贷汽车场景建设组", null, true, null),
+                new DimensionAlias(2L, PeerDimensionType.TEAM, "房贷", "个贷住房场景建设组", null, true, null)));
+        DimensionStateManager andManager = new DimensionStateManager(null, resolver);
+
+        DimensionState.PeerDimension peer = andManager
+                .analyzeQuestionRuleBased("三部车贷组和房贷组的风险")
+                .getExplicitDimensions()
+                .getPeerDimension();
+        assertEquals(PeerDimensionType.TEAM, peer.getType());
+        assertEquals(List.of("个贷汽车场景建设组", "个贷住房场景建设组"), peer.getValues());
+
+        // 反序同构：「房贷组和车贷组」头部命中在整段判定下同样会被误杀
+        DimensionState.PeerDimension reversed = andManager
+                .analyzeQuestionRuleBased("三部房贷组和车贷组的风险")
+                .getExplicitDimensions()
+                .getPeerDimension();
+        assertEquals(List.of("个贷住房场景建设组", "个贷汽车场景建设组"), reversed.getValues());
+    }
+
+    @Test
+    void juxtaposedGroupNamesWithoutConnectorKeepsBothAliases() {
+        // 零连接词紧邻列举：「三部车贷组房贷组的风险」——人眼判据是两个「组」字即两个组；
+        // EXPLICIT_TEAM 同样整段吞成一个 token，首个 alias 触发嵌入抑制误杀（§5.1 待实施项）。
+        // token 含 ≥2 个「组」字按「组」字边界拆子 token，两值均保留。
+        AliasResolver resolver = new AliasResolver(() -> List.of(
+                new DimensionAlias(1L, PeerDimensionType.TEAM, "车贷", "个贷汽车场景建设组", null, true, null),
+                new DimensionAlias(2L, PeerDimensionType.TEAM, "房贷", "个贷住房场景建设组", null, true, null)));
+        DimensionStateManager tightManager = new DimensionStateManager(null, resolver);
+
+        DimensionState.PeerDimension peer = tightManager
+                .analyzeQuestionRuleBased("三部车贷组房贷组的风险")
+                .getExplicitDimensions()
+                .getPeerDimension();
+        assertEquals(PeerDimensionType.TEAM, peer.getType());
+        assertEquals(List.of("个贷汽车场景建设组", "个贷住房场景建设组"), peer.getValues());
+
+        // alias 自带「组」尾（内置词表「车贷组」形态）在紧邻列举下同样保留，不被整段抑制
+        DimensionState.PeerDimension builtinPeer = manager
+                .analyzeQuestionRuleBased("车贷组房贷组的风险")
+                .getExplicitDimensions()
+                .getPeerDimension();
+        assertEquals(List.of("个贷汽车场景建设组"), builtinPeer.getValues());
+
+        // 回归：单「组」token 不拆——「个贷数据开发组」的真嵌入抑制照旧（组正则接管）
+        assertEquals(List.of("个贷数据开发组"), analyzePeer("个贷数据开发组的缺陷密度").getValues());
+    }
+
+    @Test
     void skillNamePrefixDoesNotHijackAliasPeerWithFakeAppCodes() {
         // E2E 2026-10-27 实证：「使用 q2_1_dual_time_demo skill 车贷、房贷两个组的风险」
         // 裸应用码正则把 skill 名拆成 F-DUAL/F-TIME/F-DEMO/F-SKILL 假码, APPLICATION

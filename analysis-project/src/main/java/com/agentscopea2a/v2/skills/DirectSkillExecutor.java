@@ -1565,6 +1565,17 @@ public class DirectSkillExecutor {
                 case SUB_REQUIREMENT -> subItemNo = values;
             }
         }
+        // 精确格式编码合并（盲区修复方案 §3）：专字段与槽位共存，去重保序
+        if (state != null && state.getRequirementNos() != null) {
+            Set<String> merged = new LinkedHashSet<>(itemNo);
+            merged.addAll(state.getRequirementNos());
+            itemNo = List.copyOf(merged);
+        }
+        if (state != null && state.getSubRequirementNos() != null) {
+            Set<String> mergedSub = new LinkedHashSet<>(subItemNo);
+            mergedSub.addAll(state.getSubRequirementNos());
+            subItemNo = List.copyOf(mergedSub);
+        }
         List<String> persons = state == null ? List.of() : safe(state.getPersons());
         // perNo/perRole 不进 DimensionState (执行期解析), 由 plan 人员段/角色提取填充
         return new DimensionExtraction(versionPlan, vestQuarter, departments, groupName,

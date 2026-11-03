@@ -353,6 +353,119 @@ class DimensionStateManagerAliasIntegrationTest {
     }
 
     @Test
+    void sharedSuffixQuarterWithGranularityQuantifier() {
+        // 盲区修复方案 §1：「1、2、3三个季度」量词挡在列举和「季度」之间，
+        // 修复前共享/单数/中文 alias 三条正则全失配 → 全空（内网 10:03 E2E 实证）
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("杭州开发五部 1、2、3三个季度的研发周期");
+        assertEquals(java.util.List.of("2026年1季度", "2026年2季度", "2026年3季度"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
+        assertEquals(java.util.List.of("杭州开发五部"),
+                analysis.getExplicitDimensions().getDepartments());
+    }
+
+    @Test
+    void sharedSuffixVersionWithGranularityQuantifier() {
+        // 月份版本同构：「10、11、12三个月份版本」
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("杭州开发五部 10、11、12三个月份版本的达标率");
+        assertEquals(java.util.List.of("2026年10月份版本", "2026年11月份版本", "2026年12月份版本"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
+    }
+
+    @Test
+    void rangeQuarterExpandsInclusive() {
+        // 盲区修复方案 §2：「1-3季度」区间展开（修复前只收尾季 3季度）
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("杭州开发五部 1-3季度的研发周期");
+        assertEquals(java.util.List.of("2026年1季度", "2026年2季度", "2026年3季度"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
+    }
+
+    @Test
+    void rangeQuarterSeparatorVariants() {
+        assertEquals(java.util.List.of("2026年1季度", "2026年2季度", "2026年3季度"),
+                manager.analyzeQuestionRuleBased("1~3季度的达标率")
+                        .getExplicitDimensions().getTimeDimension().getValues());
+        assertEquals(java.util.List.of("2025年1季度", "2025年2季度", "2025年3季度"),
+                manager.analyzeQuestionRuleBased("2025年1到3季度的对比")
+                        .getExplicitDimensions().getTimeDimension().getValues());
+    }
+
+    @Test
+    void rangeQuarterCoexistsWithSingleQuarter() {
+        // 区间 + 单数并存：「1-3季度和5季度」→ 1/2/3/5（区间 span 屏蔽不吞后面的单数）
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("1-3季度和5季度的缺陷密度");
+        assertEquals(java.util.List.of("2026年1季度", "2026年2季度", "2026年3季度", "2026年5季度"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
+    }
+
+    @Test
+    void rangeQuarterOutOfRangeRejected() {
+        // 越界区间整段弃收且 span 屏蔽：单数正则不再从尾段吃出垃圾值
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("1-9季度的达标率");
+        assertNull(analysis.getExplicitDimensions().getTimeDimension());
+    }
+
+    @Test
+    void rangeVersionExpandsInclusive() {
+        // 月份区间同构：「10-12月份版本」→ 三个月版本；显式年份口径与既有写法一致
+        assertEquals(java.util.List.of("2026年10月份版本", "2026年11月份版本", "2026年12月份版本"),
+                manager.analyzeQuestionRuleBased("10-12月份版本的达标率")
+                        .getExplicitDimensions().getTimeDimension().getValues());
+        assertEquals(java.util.List.of("2025年10月份版本", "2025年11月份版本", "2025年12月份版本"),
+                manager.analyzeQuestionRuleBased("2025年10-12月份版本的对比")
+                        .getExplicitDimensions().getTimeDimension().getValues());
+    }
+
+    @Test
+    void itemNoAndAppCodeCoexistWithoutSlotCompetition() {
+        // 盲区修复方案 §3：应用码占 APPLICATION 槽位后，需求项精确编码不再被
+        // peerDimension==null 门禁挤掉（内网 10:06 E2E 实证 itemNo=[]）
+        String question = "I20260922-0366      F-PFXP 详细设计质检  11月版";
+        QuestionAnalysis analysis = manager.analyzeQuestionRuleBased(question);
+
+        DimensionState.PeerDimension peer = analysis.getExplicitDimensions().getPeerDimension();
+        assertEquals(PeerDimensionType.APPLICATION, peer.getType());
+        assertEquals(java.util.List.of("F-PFXP"), peer.getValues());
+        assertEquals(java.util.List.of("I20260922-0366"),
+                analysis.getExplicitDimensions().getRequirementNos());
+        assertEquals(java.util.List.of("2026年11月份版本"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
+    }
+
+    @Test
+    void requirementNoDedupedWhenSlotAndDedicatedFieldCoPresent() {
+        // 回归：无 app 时 I 编码仍进槽位；专字段与槽位同值由 extract 合并去重（DirectSkillExecutor）
+        String question = "I20260208-0005 的缺陷密度";
+        QuestionAnalysis analysis = manager.analyzeQuestionRuleBased(question);
+        assertEquals(PeerDimensionType.REQUIREMENT,
+                analysis.getExplicitDimensions().getPeerDimension().getType());
+        assertEquals(java.util.List.of("I20260208-0005"),
+                analysis.getExplicitDimensions().getRequirementNos());
+
+        // 部门 + 应用 + 需求项三共存（内网 10:07 变体）
+        QuestionAnalysis withDept = manager.analyzeQuestionRuleBased(
+                "杭州开发二部   I20260922-0366      F-PFXP 详细设计质检  11月版");
+        assertEquals(java.util.List.of("杭州开发二部"),
+                withDept.getExplicitDimensions().getDepartments());
+        assertEquals(PeerDimensionType.APPLICATION,
+                withDept.getExplicitDimensions().getPeerDimension().getType());
+        assertEquals(java.util.List.of("I20260922-0366"),
+                withDept.getExplicitDimensions().getRequirementNos());
+    }
+
+    @Test
+    void previewStateCarriesRequirementNosForParamAssembly() {
+        // plan() 参数预填走 previewState：专字段须落到 DimensionState 才能进 itemNo 参数
+        DimensionState state = manager.previewState(
+                "I20260922-0366 F-PFXP 详细设计质检 11月版", null);
+        assertEquals(java.util.List.of("I20260922-0366"), state.getRequirementNos());
+    }
+
+    @Test
     void aliasVariantsProduceIdenticalStandardState() {
         // 口语词变体（银企团队 / 银企）归一到同一标准名 → 指纹稳定
         PeerDimension viaTeam = extractPeer("银企团队的需求");

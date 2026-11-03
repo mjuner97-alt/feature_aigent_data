@@ -201,6 +201,12 @@ public class QuestionAnalysis {
         private PeerDimension peerDimension;
         private List<String> persons;
 
+        /** 需求项精确编码（盲区修复方案 §3）：不占 peer 槽位，与应用码共存 */
+        private List<String> requirementNos;
+
+        /** 需求子条目精确编码（盲区修复方案 §3）：同 requirementNos 口径 */
+        private List<String> subRequirementNos;
+
         /** 收集扁平格式的未知字段，用于手动组装嵌套对象 */
         private final Map<String, Object> extra = new HashMap<>();
 
@@ -232,6 +238,17 @@ public class QuestionAnalysis {
             if (peerDimension == null) {
                 peerDimension = buildPeerDimension();
             }
+            if (requirementNos == null) {
+                requirementNos = stringList(extra.get("requirementNos"));
+            }
+            if (subRequirementNos == null) {
+                subRequirementNos = stringList(extra.get("subRequirementNos"));
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        private static List<String> stringList(Object v) {
+            return v instanceof List<?> list ? (List<String>) list : null;
         }
 
         @SuppressWarnings("unchecked")
@@ -306,6 +323,22 @@ public class QuestionAnalysis {
 
         public void setPersons(List<String> persons) {
             this.persons = persons;
+        }
+
+        public List<String> getRequirementNos() {
+            return requirementNos;
+        }
+
+        public void setRequirementNos(List<String> requirementNos) {
+            this.requirementNos = requirementNos;
+        }
+
+        public List<String> getSubRequirementNos() {
+            return subRequirementNos;
+        }
+
+        public void setSubRequirementNos(List<String> subRequirementNos) {
+            this.subRequirementNos = subRequirementNos;
         }
     }
 }

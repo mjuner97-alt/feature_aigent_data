@@ -12,12 +12,16 @@ import html as _html
 import pandas as pd
 
 CSS = """
-body  { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; background:#fff; margin:16px; color:#333; }
+*  { box-sizing: border-box; }
+body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; background:#fff; margin:16px; color:#333; }
 .table-wrap { overflow-x:auto; width:100%; }
-table { border-collapse: collapse; background:#ffffff; width:100%; }
-th    { background: rgb(192, 0, 0); color:#fff; font-weight:600; padding:8px 12px; border:1px solid #c00000; text-align:center; }
-td    { background:#ffffff; color:#333; padding:8px 12px; border:1px solid #d9d9d9; max-width:480px; word-break:break-all; }
+table { border-collapse: collapse; background:#ffffff; width:100%; margin:10px 0; }
+th    { background: rgb(192, 0, 0); color:#fff; font-weight:600; padding:8px 14px; border:1px solid #bfbfbf; text-align:center; white-space:nowrap; }
+td    { color:#333; padding:6px 12px; border:1px solid #bfbfbf; text-align:center; max-width:480px; word-break:break-all; }
 tr:nth-child(even) td { background:#fafafa; }
+tr:hover td { background:#fff3e0; }
+td.red, .red { color:red; }
+.section-title-sm { font-size:1rem; margin-top:16px; margin-bottom:6px; color:#000; }
 """
 
 DOC_TEMPLATE = """<!DOCTYPE html>
@@ -46,7 +50,11 @@ def render_html_table(df, title=None, fragment=False):
         lambda col: col.str.replace("\n", " ", regex=False))
     table_html = safe.to_html(index=False, border=0, na_rep="", escape=True)
 
-    title_html = f"<h3>{_html.escape(str(title))}</h3>" if title else ""
+    title_html = (
+        f'<div class="section-title-sm">{_html.escape(str(title))}</div>'
+        if title
+        else ""
+    )
     body = (
         f'<div class="table-wrap">\n{title_html}{table_html}\n</div>'
         if title_html

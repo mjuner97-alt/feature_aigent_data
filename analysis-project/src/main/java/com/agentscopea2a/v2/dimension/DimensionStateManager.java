@@ -307,12 +307,23 @@ public class DimensionStateManager {
     // 每个数字归一 "{y}年{n}月份版本"; 版后缀可选 (与 TIME_MASK_SPAN 口径一致, 无版也算),
     // (?!延后) 防把 "10、11月延后" 误吃成普通月份版本
     private static final Pattern SHARED_SUFFIX_VERSION =
-            Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})((?:[、，,和与]\\s*\\d{1,2})+)\\s*月份?(?!延后)(?:版本?)?");
+            Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})((?:[、，,和与]\\s*\\d{1,2})+)"
+                    + "\\s*(?:[一二两三四五六七八九十\\d]+个)?\\s*月份?(?!延后)(?:版本?)?");
     private static final Pattern EXPLICIT_QUARTER = Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})季度");
     // 共享后缀季度列举 ("3、4季度" / "2025年3和4季度"): 与 SHARED_SUFFIX_VERSION 同构,
-    // 须在 EXPLICIT_QUARTER 之前展开, 否则前段裸数字漏收
+    // 须在 EXPLICIT_QUARTER 之前展开, 否则前段裸数字漏收;
+    // 列举与季度间允许 "N个" 量词 (盲区修复方案 §1: "1、2、3三个季度")
     private static final Pattern SHARED_SUFFIX_QUARTER =
-            Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})((?:[、，,和与]\\s*\\d{1,2})+)\\s*季度");
+            Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})((?:[、，,和与]\\s*\\d{1,2})+)"
+                    + "\\s*(?:[一二两三四五六七八九十\\d]+个)?\\s*季度");
+    // 季度/月份闭区间展开（盲区修复方案 §2）："1-3季度"/"1~3季度"/"1到3季度" → 逐季列表；
+    // "10-12月份版本" → 逐月版本。两端值域校验（季度 1..4 / 月份 1..12），
+    // start>end 或越界整段弃收；命中 span 一律屏蔽，防单数正则重复收尾季。
+    // 月份区间须跑在日期屏蔽之后（"10-12月26日" 型日期不误吃）
+    private static final Pattern RANGE_QUARTER = Pattern.compile(
+            "(?:(\\d{4})年)?(\\d{1,2})\\s*[-~～—至到]\\s*(\\d{1,2})\\s*(?:[一二两三四五六七八九十\\d]+个)?季度");
+    private static final Pattern RANGE_VERSION = Pattern.compile(
+            "(?:(\\d{4})年)?(\\d{1,2})\\s*[-~～—至到]\\s*(\\d{1,2})\\s*月份?(?!延后)(?:版本?)?");
     // "9月份"（无"版本"后缀）也算版本计划；(?!版本|延后) 防止与 EXPLICIT_VERSION/DELAYED 重复计数值，
     // "9月份版本" 会由 MONTH 退回匹配 "9月" 归一出同一值，Set 去重后指纹一致；
     // "10月延后" 是延后版标准值的前缀，不得按普通月份版本归一
@@ -973,6 +984,15 @@ public class DimensionStateManager {
             sharedTimeSpans.add(new int[] {sharedMatcher.start(), sharedMatcher.end()});
         }
 
+        // 月份区间展开（盲区修复方案 §2）：跑在日期屏蔽之后，"10-12月26日" 不误吃；
+        // span 并入共享屏蔽集，防 EXPLICIT_VERSION 从尾段重复收值
+        Matcher rangeVersionMatcher = RANGE_VERSION.matcher(maskSpanUnion(q, dateSpans));
+        while (rangeVersionMatcher.find()) {
+            String y = rangeVersionMatcher.group(1) != null ? rangeVersionMatcher.group(1) : currentYear;
+            addRangeValues(rangeVersionMatcher, y, "月份版本", 12, versions);
+            sharedTimeSpans.add(new int[] {rangeVersionMatcher.start(), rangeVersionMatcher.end()});
+        }
+
         // 共享 span + 日期 span 屏蔽后再跑单数正则: 显式年份≠当前年时, 末段会被单数正则按
         // "无年份→补当前年"重复收一遍 (2025年3和4季度 → 多出 2026年4季度)
         String qTime = maskSpanUnion(q, dateSpans, sharedTimeSpans);
@@ -994,6 +1014,15 @@ public class DimensionStateManager {
                 }
             }
             sharedTimeSpans.add(new int[] {sharedQuarterMatcher.start(), sharedQuarterMatcher.end()});
+        }
+
+        // 季度区间展开（盲区修复方案 §2）："1-3季度" → 1/2/3季度，span 屏蔽防单数重复收尾季；
+        // 与共享列举并存（"1-3季度和5季度" → 区间展开 + 单数并存）
+        Matcher rangeQuarterMatcher = RANGE_QUARTER.matcher(q);
+        while (rangeQuarterMatcher.find()) {
+            String y = rangeQuarterMatcher.group(1) != null ? rangeQuarterMatcher.group(1) : currentYear;
+            addRangeValues(rangeQuarterMatcher, y, "季度", 4, quarters);
+            sharedTimeSpans.add(new int[] {rangeQuarterMatcher.start(), rangeQuarterMatcher.end()});
         }
 
         // 共享 span + 日期 span 已在 qTime 屏蔽串中重算覆盖 (含季度共享段)
@@ -1158,38 +1187,58 @@ public class DimensionStateManager {
             }
         }
 
-        // 需求项 — 真正的 itemNo 格式 I20260208-0005（alias 命中时同样跳过）。
+        // 需求项 — 精确格式编码 I20260208-0005（alias 命中时同样跳过）。
+        // 盲区修复方案 §3：定长高精度编码不与应用码争 peer 槽位——无条件收进专字段；
+        // 槽位逻辑照旧（无 app 时仍进槽位，跨轮继承/指代消解/组装 prefix 不动）。
         // 多值收集 ("I-...、I-..." 两个需求项), 口径与部门/应用一致
-        if (explicit.getPeerDimension() == null && !aliasHit(aliasRes)) {
+        if (!aliasHit(aliasRes)) {
             Matcher reqMatcher = EXPLICIT_REQUIREMENT.matcher(q);
             Set<String> reqs = new LinkedHashSet<>();
             while (reqMatcher.find()) {
                 reqs.add(reqMatcher.group());
             }
             if (!reqs.isEmpty()) {
-                explicit.setPeerDimension(
-                        new DimensionState.PeerDimension(
-                                DimensionState.PeerDimensionType.REQUIREMENT,
-                                new ArrayList<>(reqs)));
+                explicit.setRequirementNos(new ArrayList<>(reqs));
+                if (explicit.getPeerDimension() == null) {
+                    explicit.setPeerDimension(
+                            new DimensionState.PeerDimension(
+                                    DimensionState.PeerDimensionType.REQUIREMENT,
+                                    new ArrayList<>(reqs)));
+                }
             }
         }
 
-        // 需求子条目 — subItemNo 格式 S20250926-000741（alias 命中时同样跳过）。多值同上
-        if (explicit.getPeerDimension() == null && !aliasHit(aliasRes)) {
+        // 需求子条目 — subItemNo 格式 S20250926-000741。与需求项同口径：专字段 + 槽位照旧
+        if (!aliasHit(aliasRes)) {
             Matcher subReqMatcher = EXPLICIT_SUB_REQUIREMENT.matcher(q);
             Set<String> subReqs = new LinkedHashSet<>();
             while (subReqMatcher.find()) {
                 subReqs.add(subReqMatcher.group());
             }
             if (!subReqs.isEmpty()) {
-                explicit.setPeerDimension(
-                        new DimensionState.PeerDimension(
-                                DimensionState.PeerDimensionType.SUB_REQUIREMENT,
-                                new ArrayList<>(subReqs)));
+                explicit.setSubRequirementNos(new ArrayList<>(subReqs));
+                if (explicit.getPeerDimension() == null) {
+                    explicit.setPeerDimension(
+                            new DimensionState.PeerDimension(
+                                    DimensionState.PeerDimensionType.SUB_REQUIREMENT,
+                                    new ArrayList<>(subReqs)));
+                }
             }
         }
 
         return explicit;
+    }
+
+    /** 区间展开（盲区修复方案 §2）：start≤end 且两端 ∈[1,max] 才逐值收；越界/倒序整段弃收（span 仍屏蔽）。 */
+    private static void addRangeValues(Matcher m, String year, String unit, int max, Set<String> out) {
+        int start = Integer.parseInt(m.group(2));
+        int end = Integer.parseInt(m.group(3));
+        if (start < 1 || end > max || start > end) {
+            return;
+        }
+        for (int i = start; i <= end; i++) {
+            out.add(year + "年" + i + unit);
+        }
     }
 
     /** alias 表是否命中过该问题（含歧义命中）——命中即禁用小组/产品线/需求项正则兜底。 */
@@ -1429,6 +1478,16 @@ public class DimensionStateManager {
                 if (GRANULARITY_QUANTIFIER_SUFFIX.matcher(suffix).matches()) {
                     continue;
                 }
+                // 列举连接词拆分："三部车贷组和房贷组"整段被 EXPLICIT_TEAM 贪婪吞成一个 token，
+                // 首个 alias 命中后缀带"组和房贷组"被误判嵌入抑制；顿号写法因"、"在正则字符类外
+                // 天然切成两个 token 双双保留。按连接词拆出子 token 判定，两种写法对齐。
+                int[] subSpan = enumerationSubSpan(q, span, start, end);
+                if (subSpan != null) {
+                    if (subSpan[1] - end <= 1) {
+                        continue;
+                    }
+                    span = subSpan;
+                }
                 if (dimension == DimensionState.PeerDimensionType.TEAM) {
                     String token = q.substring(span[0], span[1]);
                     for (String standard : standards) {
@@ -1446,6 +1505,55 @@ public class DimensionStateManager {
             }
         }
         return false;
+    }
+
+    /** 组名 token 内的列举连接词（与 SHARED_SUFFIX_VERSION 的列举符一致）。 */
+    private static final String LISTING_CONNECTORS = "、，,和与";
+
+    /**
+     * 组名 token 含列举边界时，拆出 alias 命中所处的子 token。两类边界：
+     * <ul>
+     *   <li>列举连接词（、，,和与，与 SHARED_SUFFIX_VERSION 列举符同套）——连接词前后分段；</li>
+     *   <li>「组」字边界——token 含 ≥2 个「组」字即为列举而非单个组名（人眼判据），
+     *       按「组」字分段（零连接词紧邻写法「车贷组房贷组」，顿号/和/空格外的漏网形态）。</li>
+     * </ul>
+     * 取各边界中最紧的子 token（partStart 取最大、partEnd 取最小）；无边界返回 null
+     * （维持整段判定）。真嵌入抑制不受影响：单「组」token 不拆，含连接词/多「组」token
+     * 内仍留 >1 字后缀时互不包含判定照跑。
+     */
+    private static int[] enumerationSubSpan(String q, int[] span, int start, int end) {
+        boolean hasBoundary = false;
+        int zuCount = 0;
+        int partStart = span[0];
+        int partEnd = span[1];
+        for (int i = span[0]; i < span[1]; i++) {
+            char c = q.charAt(i);
+            if (LISTING_CONNECTORS.indexOf(c) >= 0) {
+                hasBoundary = true;
+                if (i < start && i + 1 > partStart) {
+                    partStart = i + 1;
+                }
+                if (i >= end && i < partEnd) {
+                    partEnd = i;
+                }
+            } else if (c == '组') {
+                zuCount++;
+                if (i < start && i + 1 > partStart) {
+                    partStart = i + 1;
+                }
+                // 「组」字终结其所在分段；i+1 >= end 保证子段仍包含命中
+                if (i + 1 >= end && i + 1 < partEnd) {
+                    partEnd = i + 1;
+                }
+            }
+        }
+        if (zuCount >= 2) {
+            hasBoundary = true;
+        }
+        if (!hasBoundary || partEnd < end) {
+            return null;
+        }
+        return new int[] {partStart, partEnd};
     }
 
     /**
@@ -1591,6 +1699,9 @@ public class DimensionStateManager {
             current.setDepartments(null);
             current.setPeerDimension(null);
             current.setPersons(null);
+            // 需求项/子条目精确编码随 peer 槽位同生命周期（盲区修复方案 §3）
+            current.setRequirementNos(null);
+            current.setSubRequirementNos(null);
         }
 
         // 部门：显式指定后，部门以下的维度重置
@@ -1598,12 +1709,17 @@ public class DimensionStateManager {
             current.setDepartments(explicit.getDepartments());
             current.setPeerDimension(null);
             current.setPersons(null);
+            current.setRequirementNos(null);
+            current.setSubRequirementNos(null);
         }
 
         // 业务同级维度：显式指定后，人维度重置
         if (explicit.getPeerDimension() != null && !explicit.getPeerDimension().isEmpty()) {
             current.setPeerDimension(explicit.getPeerDimension());
             current.setPersons(null);
+            // 专字段以本轮显式提取为准（null=本轮无编码 → 清继承残留，防跨轮串值）
+            current.setRequirementNos(explicit.getRequirementNos());
+            current.setSubRequirementNos(explicit.getSubRequirementNos());
         }
 
         // 人：直接覆盖

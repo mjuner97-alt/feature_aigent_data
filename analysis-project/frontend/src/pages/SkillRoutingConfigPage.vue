@@ -463,10 +463,10 @@ load();
         <el-form-item label="Skill 名称"><el-input :model-value="current?.skillName" disabled /></el-form-item>
         <el-form-item label="已有描述"><el-input :model-value="current?.description || '-'" type="textarea" :rows="3" disabled /></el-form-item>
         <el-form-item label="领域标签"><el-select v-model="form.domainTags" multiple filterable style="width: 100%" placeholder="从标签词典选择"><el-option v-for="tag in domainOptions" :key="tag" :label="tag" :value="tag" /></el-select></el-form-item>
-        <el-form-item label="一级关键词"><el-input v-model="level1Text" placeholder="最宽泛的入口词，如 问题；多个用顿号分隔，支持正则" /></el-form-item>
-        <el-form-item label="二级关键词"><el-input v-model="level2Text" placeholder="在一级下钻，如 未闭环；支持正则如 未闭.{0,2}环" /></el-form-item>
-        <el-form-item label="三级关键词"><el-input v-model="level3Text" placeholder="最具体一层，如 严重；支持正则" /></el-form-item>
-        <el-form-item label="关键词"><el-input v-model="keywordsText" placeholder="叶层精确词，如 达标率、打分率；逗号、顿号或换行分隔，支持正则" /></el-form-item>
+        <el-form-item label="一级关键词"><el-input v-model="level1Text" type="textarea" :autosize="{ minRows: 1, maxRows: 4 }" placeholder="最宽泛的入口词，如 问题；逗号、顿号或换行分隔，支持正则" /></el-form-item>
+        <el-form-item label="二级关键词"><el-input v-model="level2Text" type="textarea" :autosize="{ minRows: 1, maxRows: 4 }" placeholder="在一级下钻，如 未闭环；逗号、顿号或换行分隔，支持正则如 未闭.{0,2}环" /></el-form-item>
+        <el-form-item label="三级关键词"><el-input v-model="level3Text" type="textarea" :autosize="{ minRows: 1, maxRows: 4 }" placeholder="最具体一层，如 严重；逗号、顿号或换行分隔，支持正则" /></el-form-item>
+        <el-form-item label="关键词"><el-input v-model="keywordsText" type="textarea" :autosize="{ minRows: 1, maxRows: 4 }" placeholder="叶层精确词，如 达标率、打分率；逗号、顿号或换行分隔，支持正则" /></el-form-item>
         <el-form-item label="启用"><el-switch v-model="form.active" /></el-form-item>
       </el-form>
       <template #footer><el-button @click="dialogVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="save">保存</el-button></template>
