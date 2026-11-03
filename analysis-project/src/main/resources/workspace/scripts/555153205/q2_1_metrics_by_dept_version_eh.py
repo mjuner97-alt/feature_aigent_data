@@ -27,6 +27,7 @@ import json
 from html import escape
 import pandas as pd
 from _gauss_jdbc import query_gauss
+from _html_table import render_html_custom
 
 
 DEPARTMENTS = [
@@ -146,7 +147,7 @@ def render_report(dept, version, total, scored, passed, scored_pct, passed_pct):
             cells = [department, "-", "-", "-", "-", "-", "-"]
         rows.append(
             "<tr>"
-            f'<td style="padding:8px;text-align:left;">{escape(cells[0])}</td>'
+            f'<td class="rowhead">{escape(cells[0])}</td>'
             + "".join(f"<td>{escape(value)}</td>" for value in cells[1:])
             + "</tr>"
         )
@@ -161,23 +162,23 @@ def render_report(dept, version, total, scored, passed, scored_pct, passed_pct):
         f"{passed_pct:.2f}%",
     ]
     rows.append(
-        '<tr style="font-weight:bold;background-color:#FAFAFA;">'
-        f'<td style="padding:8px;text-align:left;">{total_cells[0]}</td>'
+        '<tr class="summary-row">'
+        f'<td class="rowhead">{escape(total_cells[0])}</td>'
         + "".join(f"<td>{escape(value)}</td>" for value in total_cells[1:])
         + "</tr>"
     )
 
-    html_table = """<div style="overflow-x:auto;width:100%;">
-<table border="1" style="border-collapse:collapse;text-align:center;width:100%;min-width:760px;font-family:sans-serif;color:#111827;">
-  <thead style="background-color:#C00000;color:#FFFFFF;font-weight:bold;">
-    <tr><th rowspan="2" style="padding:10px;">开发部门</th><th rowspan="2" style="padding:10px;">版本</th><th colspan="3" style="padding:10px;">Q2-1 统计</th><th colspan="2" style="padding:10px;">比例</th></tr>
-    <tr><th style="padding:8px;">总数</th><th style="padding:8px;">已打分</th><th style="padding:8px;">达标数</th><th style="padding:8px;">打分率</th><th style="padding:8px;">达标率</th></tr>
+    # 表体外壳样式 (表头红/边框/斑马纹/字体) 由 _html_table 统一 CSS 维护,
+    # 这里只保留结构 (rowspan/colspan 双行表头) + 语义类 (summary-row/rowhead)
+    html_table = """<table>
+  <thead>
+    <tr><th rowspan="2">开发部门</th><th rowspan="2">版本</th><th colspan="3">Q2-1 统计</th><th colspan="2">比例</th></tr>
+    <tr><th>总数</th><th>已打分</th><th>达标数</th><th>打分率</th><th>达标率</th></tr>
   </thead>
   <tbody>
     {{REPORT_ROWS}}
   </tbody>
-</table>
-</div>""".replace("{{REPORT_ROWS}}", "\n    ".join(rows))
+</table>""".replace("{{REPORT_ROWS}}", "\n    ".join(rows))
 
     parts = [
         f"{dept} {version} Q2-1 达标率为 **{passed_pct:.2f}%**。",
@@ -191,7 +192,7 @@ def render_report(dept, version, total, scored, passed, scored_pct, passed_pct):
         "```",
         "",
         "```html",
-        html_table,
+        render_html_custom(html_table, fragment=True),
         "```",
         "",
         "数据来源：GaussDB remote_app.dsqa_dwd_req_item_app_portrait_wide_inf。",
