@@ -48,11 +48,14 @@ public final class DependencyMetricAlertRenderer {
         html.append("<p>检查时间：").append(escape(checkedAt.format(TIME))).append("</p>");
         html.append("<p>共检查 ").append(rows.size()).append(" 项，已就绪 ").append(ready)
                 .append(" 项，未就绪 ").append(rows.size() - ready).append(" 项。</p>");
-        html.append("<table border=\"1\" cellspacing=\"0\" cellpadding=\"6\"><thead><tr><th>指标名称</th><th>指标编码</th><th>状态</th><th>就绪时间</th></tr></thead><tbody>");
-        for (DependencyMetricAlertRow row : rows) {
+        // 未就绪指标排在前面，便于收件人优先关注异常项；就绪指标附后。
+        List<DependencyMetricAlertRow> ordered = new ArrayList<>(rows);
+        ordered.sort(Comparator.comparingInt(r -> r.ready() ? 1 : 0));
+        html.append("<table border=\"1\" cellspacing=\"0\" cellpadding=\"6\"><thead><tr><th>指标名称</th><th>状态</th><th>就绪时间</th></tr></thead><tbody>");
+        for (DependencyMetricAlertRow row : ordered) {
             // 未就绪指标使用醒目颜色，便于收件人快速定位异常项。
             if (!row.ready()) html.append("<tr style=\"color:red;background:#fff1f0\">"); else html.append("<tr>");
-            html.append("<td>").append(escape(row.metricName())).append("</td><td>").append(escape(row.metricCode()))
+            html.append("<td>").append(escape(row.metricName()))
                     .append("</td><td>").append(row.ready() ? "已就绪" : "未就绪").append("</td><td>")
                     .append(row.readyAt() == null ? "—" : escape(row.readyAt().format(TIME))).append("</td></tr>");
         }

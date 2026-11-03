@@ -29,9 +29,9 @@ import java.util.List;
 @Mapper
 public interface SkillFlowMapper {
 
-    List<com.agentscopea2a.v2.skillManager.dto.SkillFlowSummaryDto> selectFlowPage(@Param("ownerUserId") String ownerUserId, @Param("enabled") Boolean enabled, @Param("keyword") String keyword, @Param("createdBy") String createdBy, @Param("userId") String userId, @Param("offset") long offset, @Param("limit") int limit);
+    List<com.agentscopea2a.v2.skillManager.dto.SkillFlowSummaryDto> selectFlowPage(@Param("ownerUserId") String ownerUserId, @Param("enabled") Boolean enabled, @Param("keyword") String keyword, @Param("createdBys") java.util.List<String> createdBys, @Param("userId") String userId, @Param("offset") long offset, @Param("limit") int limit);
     SkillFlowExecution selectFlowExecutionById(@Param("id") Long id);
-    long countFlowPage(@Param("ownerUserId") String ownerUserId, @Param("enabled") Boolean enabled, @Param("keyword") String keyword, @Param("createdBy") String createdBy);
+    long countFlowPage(@Param("ownerUserId") String ownerUserId, @Param("enabled") Boolean enabled, @Param("keyword") String keyword, @Param("createdBys") java.util.List<String> createdBys);
     List<com.agentscopea2a.v2.skillManager.dto.FlowMetricSummaryRow> selectPageMetricRows(@Param("flowIds") List<Long> flowIds);
     // ==================== 流程定义 ====================
 

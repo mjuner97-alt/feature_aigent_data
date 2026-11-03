@@ -1,6 +1,7 @@
 package com.agentscopea2a.v2.audit;
 
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -18,6 +19,7 @@ import java.util.concurrent.Executors;
 public class ResourceChangeAuditService {
     private final NamedParameterJdbcTemplate jdbc;
     private final DeveloperPlPersonInfoMapper personMapper;
+    private final String environment;
     /** 审计写入专用单线程：ClickHouse 写入与人员信息查询不阻塞业务线程，单线程保证同一事件顺序写入 */
     private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "resource-audit-write");
@@ -26,9 +28,11 @@ public class ResourceChangeAuditService {
     });
 
     /** 构造审计服务并绑定 ClickHouse 数据源及人员信息查询器。 */
-    public ResourceChangeAuditService(@Qualifier("clickHouseDataSource") DataSource dataSource, DeveloperPlPersonInfoMapper personMapper) {
+    public ResourceChangeAuditService(@Qualifier("clickHouseDataSource") DataSource dataSource, DeveloperPlPersonInfoMapper personMapper,
+                                      @Value("${spring.profiles.active:dev}") String profile) {
         this.jdbc = new NamedParameterJdbcTemplate(dataSource);
         this.personMapper = personMapper;
+        this.environment = profile != null && profile.toLowerCase(Locale.ROOT).contains("prod") ? "prod" : "dev";
     }
 
     /** 记录一次资源变更及其字段明细，实际写入异步执行，调用方立即返回。 */
@@ -66,8 +70,8 @@ public class ResourceChangeAuditService {
                     .addValue("resourceName", resourceName == null ? "" : resourceName)
                     .addValue("operationType", operationType).addValue("summary", summary == null ? "" : summary)
                     .addValue("operatorId", operatorId).addValue("operatorName", safeName)
-                    .addValue("createdAt", now).addValue("detailCount", changes.size());
-            jdbc.update("INSERT INTO digital_qa_resource_change_event(event_id,event_no,resource_type,resource_id,resource_name,operation_type,operation_summary,operator_id,operator_name,created_at,detail_count) VALUES (:eventId,:eventNo,:resourceType,:resourceId,:resourceName,:operationType,:summary,:operatorId,:operatorName,:createdAt,:detailCount)", p);
+                    .addValue("createdAt", now).addValue("detailCount", changes.size()).addValue("environment", environment);
+            jdbc.update("INSERT INTO digital_qa_resource_change_event(event_id,event_no,resource_type,resource_id,resource_name,operation_type,operation_summary,operator_id,operator_name,created_at,detail_count,environment) VALUES (:eventId,:eventNo,:resourceType,:resourceId,:resourceName,:operationType,:summary,:operatorId,:operatorName,:createdAt,:detailCount,:environment)", p);
             // ClickHouse 采用追加写入，主事件成功后逐条写入明细。
             for (int i = 0; i < changes.size(); i++) {
                 Change c = changes.get(i);
@@ -87,9 +91,15 @@ public class ResourceChangeAuditService {
     /** 按筛选条件分页查询资源变更记录。 */
     public Map<String,Object> page(String resourceType, String operationType, String operatorKeyword,
                                    String resourceKeyword, String keyword, String startTime, String endTime,
-                                   int page, int pageSize) {
+                                   String requestedEnvironment, int page, int pageSize) {
         StringBuilder where = new StringBuilder(" WHERE 1=1 ");
         MapSqlParameterSource p = new MapSqlParameterSource();
+        String filterEnvironment = requestedEnvironment == null || requestedEnvironment.isBlank()
+                ? environment : requestedEnvironment.trim();
+        if (!"ALL".equalsIgnoreCase(filterEnvironment)) {
+            where.append(" AND environment=:environment");
+            p.addValue("environment", filterEnvironment.toLowerCase(Locale.ROOT));
+        }
         if (resourceType != null && !resourceType.isBlank() && !"all".equalsIgnoreCase(resourceType)) { where.append(" AND resource_type=:resourceType"); p.addValue("resourceType", resourceType); }
         if (operationType != null && !operationType.isBlank()) { where.append(" AND operation_type=:operationType"); p.addValue("operationType", operationType); }
         if (operatorKeyword != null && !operatorKeyword.isBlank()) { where.append(" AND (operator_id LIKE :operatorKeyword OR operator_name LIKE :operatorKeyword)"); p.addValue("operatorKeyword", "%" + operatorKeyword + "%"); }
@@ -100,7 +110,7 @@ public class ResourceChangeAuditService {
         int safePage = Math.max(1, page), safeSize = Math.min(100, Math.max(1, pageSize));
         long total = jdbc.queryForObject("SELECT count() FROM digital_qa_resource_change_event" + where, p, Long.class);
         p.addValue("limit", safeSize).addValue("offset", (safePage - 1) * safeSize);
-        List<Map<String,Object>> items = jdbc.queryForList("SELECT event_id,event_no,created_at,resource_type,resource_id,resource_name,operation_type,operation_summary,operator_id,operator_name,result,detail_count FROM digital_qa_resource_change_event" + where + " ORDER BY created_at DESC LIMIT :limit OFFSET :offset", p);
+        List<Map<String,Object>> items = jdbc.queryForList("SELECT event_id,event_no,created_at,resource_type,resource_id,resource_name,operation_type,operation_summary,operator_id,operator_name,result,detail_count,environment FROM digital_qa_resource_change_event" + where + " ORDER BY created_at DESC LIMIT :limit OFFSET :offset", p);
         items.forEach(m -> { String n = Objects.toString(m.get("operator_name"), "未知姓名"); String id = Objects.toString(m.get("operator_id"), ""); m.put("operatorDisplayName", (n.isBlank()?"未知姓名":n) + "（" + id + "）"); });
         return Map.of("items", items, "total", total, "page", safePage, "pageSize", safeSize);
     }
@@ -111,7 +121,7 @@ public class ResourceChangeAuditService {
         try { id = UUID.fromString(eventId); }
         catch (IllegalArgumentException ex) { throw new IllegalArgumentException("行为记录不存在"); }
         var p = new MapSqlParameterSource().addValue("eventId", id);
-        var events = jdbc.queryForList("SELECT event_id,event_no,created_at,resource_type,resource_id,resource_name,operation_type,operation_summary,operator_id,operator_name,result,detail_count FROM digital_qa_resource_change_event WHERE event_id=:eventId LIMIT 1", p);
+        var events = jdbc.queryForList("SELECT event_id,event_no,created_at,resource_type,resource_id,resource_name,operation_type,operation_summary,operator_id,operator_name,result,detail_count,environment FROM digital_qa_resource_change_event WHERE event_id=:eventId LIMIT 1", p);
         if (events.isEmpty()) throw new IllegalArgumentException("行为记录不存在");
         var details = jdbc.queryForList("SELECT detail_no,target_type,target_id,target_name,field_name,field_label,change_type,before_value,after_value,created_at FROM digital_qa_resource_change_detail WHERE event_id=:eventId ORDER BY detail_no", p);
         return Map.of("event", events.get(0), "details", details);

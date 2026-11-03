@@ -14,14 +14,15 @@
     FROM skill_metric_readiness WHERE data_date=#{dataDate} AND metric_id IN
     <foreach collection="metricIds" item="id" open="(" separator="," close=")">#{id}</foreach>
   </select>
-  <insert id="claim">
-    INSERT INTO dependency_metric_alert_delivery(alert_date,status,recipient_summary,content)
-    VALUES(#{alertDate},'PENDING',#{recipientSummary},#{content})
-    ON CONFLICT (alert_date) DO NOTHING
+  <insert id="claim" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+    INSERT INTO dependency_metric_alert_delivery
+      (alert_date, status, recipient_summary, content)
+    VALUES
+      (#{alertDate}, 'PENDING', #{recipientSummary}, #{content})
   </insert>
   <update id="update">
     UPDATE dependency_metric_alert_delivery SET status=#{status}, error_message=#{errorMessage},
       completed_at=CASE WHEN #{status} IN ('SUCCESS','FAILED','SKIPPED') THEN NOW() ELSE completed_at END
-    WHERE alert_date=#{alertDate}
+    WHERE id=#{id}
   </update>
 </mapper>

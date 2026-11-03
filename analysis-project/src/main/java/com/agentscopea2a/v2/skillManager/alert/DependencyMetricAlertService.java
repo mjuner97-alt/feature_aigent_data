@@ -4,6 +4,7 @@ import com.agentscopea2a.entity.AiChatRuntimeConfig;
 import com.agentscopea2a.mapper.gauss.AiChatRuntimeConfigMapper;
 import com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys;
 import com.agentscopea2a.v2.skillManager.entity.SkillMetricReadiness;
+import com.agentscopea2a.v2.skillManager.entity.DependencyMetricAlertDelivery;
 import com.agentscopea2a.v2.skillManager.mapper.DependencyMetricAlertMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
 import com.agentscopea2a.v2.skillManager.notification.NotificationPayload;
@@ -65,12 +66,16 @@ public class DependencyMetricAlertService {
         List<String> recipients = orgService.filterExistingUserIds(DependencyMetricAlertRenderer.parseRecipients(raw));
         if (recipients.isEmpty()) return DependencyMetricAlertResult.skipped("未配置收件人或收件人均为无效用户", metrics.size(), (int) readyCount);
         String content = DependencyMetricAlertRenderer.renderHtml(rows, date, now);
-        if (alertMapper.claim(date, String.join(",", recipients), content) == 0)
-            return DependencyMetricAlertResult.skipped("今日(" + date + ")已发送过预警,claim 冲突;如需重测可先清理依赖指标预警表的当日记录", metrics.size(), (int) readyCount);
+        DependencyMetricAlertDelivery delivery = new DependencyMetricAlertDelivery();
+        delivery.setAlertDate(date);
+        delivery.setRecipientSummary(String.join(",", recipients));
+        delivery.setContent(content);
+        if (alertMapper.claim(delivery) != 1 || delivery.getId() == null)
+            throw new IllegalStateException("创建预警投递记录失败");
         NotificationPayload payload = new NotificationPayload("HTML", content, null, null, null, null,
                 "依赖指标就绪预警", null, null, null, "ALERT", now, recipients, "METRIC_ALERT");
-        try { sender.send(payload); alertMapper.update(date, "SUCCESS", null); }
-        catch (Exception e) { alertMapper.update(date, "FAILED", e.getMessage());
+        try { sender.send(payload); alertMapper.update(delivery.getId(), "SUCCESS", null); }
+        catch (Exception e) { alertMapper.update(delivery.getId(), "FAILED", e.getMessage());
             return new DependencyMetricAlertResult(false, "邮件发送失败", metrics.size(), (int) readyCount, recipients, "FAILED", e.getMessage()); }
         return new DependencyMetricAlertResult(true, "预警邮件已发送", metrics.size(), (int) readyCount, recipients, "SUCCESS", null);
     }

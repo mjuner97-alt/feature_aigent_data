@@ -210,8 +210,10 @@ public class FlowDefinitionService {
         page = com.agentscopea2a.v2.skillManager.dto.PageResult.safePage(page);
         pageSize = com.agentscopea2a.v2.skillManager.dto.PageResult.safeSize(pageSize);
         String owner = all ? null : userId;
-        long total = flowMapper.countFlowPage(owner, enabled, trim(keyword), trim(createdBy));
-        var items = flowMapper.selectFlowPage(owner, enabled, trim(keyword), trim(createdBy), userId, (long)(page - 1) * pageSize, pageSize);
+        // 创建人筛选支持逗号分隔多个 ID:前端按姓名搜人后把匹配到的 userId 列表传回。
+        List<String> createdBys = java.util.Arrays.stream(trim(createdBy).split(",")).map(String::trim).filter(s -> !s.isEmpty()).distinct().toList();
+        long total = flowMapper.countFlowPage(owner, enabled, trim(keyword), createdBys);
+        var items = flowMapper.selectFlowPage(owner, enabled, trim(keyword), createdBys, userId, (long)(page - 1) * pageSize, pageSize);
         if (!items.isEmpty()) {
             var rows = flowMapper.selectPageMetricRows(items.stream().map(com.agentscopea2a.v2.skillManager.dto.SkillFlowSummaryDto::getId).toList());
             Map<Long, Set<Long>> nodes = new java.util.HashMap<>();

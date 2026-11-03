@@ -11,6 +11,7 @@ public class SkillFlowSummaryDto {
     private Boolean autoTriggerEnabled;
     private String scheduleRules;
     private Boolean chatPublic;
+    private Long typeId;
     private String createdBy;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

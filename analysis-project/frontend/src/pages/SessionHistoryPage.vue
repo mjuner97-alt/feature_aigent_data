@@ -76,34 +76,37 @@
         </div>
         <template v-if="recordType === 'access'">
           <div class="record-filters">
-            <el-input v-model="accessTask" placeholder="任务" clearable class="access-control" @keyup.enter="loadAccess"/>
-            <el-input v-model="accessExecutionId" placeholder="执行ID" clearable class="access-control" @keyup.enter="loadAccess"/>
-            <el-input v-model="accessUser" placeholder="姓名 / 统一号（模糊）" clearable class="access-control access-user" @keyup.enter="loadAccess"/>
+            <el-input v-model="accessTask" placeholder="任务" clearable class="access-control" @keyup.enter="accessPage = 1; loadAccess()"/>
+            <el-input v-model="accessExecutionId" placeholder="执行ID" clearable class="access-control" @keyup.enter="accessPage = 1; loadAccess()"/>
+            <el-input v-model="accessUser" placeholder="姓名 / 统一号（模糊）" clearable class="access-control access-user" @keyup.enter="accessPage = 1; loadAccess()"/>
             <el-date-picker v-model="executionDateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="执行开始" end-placeholder="执行结束" class="access-date"/>
             <el-date-picker v-model="accessDateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="访问开始" end-placeholder="访问结束" class="access-date"/>
             <el-select v-model="accessEnvironment" class="access-control"><el-option label="生产环境" value="prod"/><el-option label="开发环境" value="dev"/><el-option label="全部环境" value="ALL"/></el-select>
             <div class="filter-buttons">
-              <el-button type="primary" :loading="accessLoading" @click="loadAccess">查询</el-button>
-              <el-button :loading="accessLoading" @click="loadAccess">刷新</el-button>
+              <el-button type="primary" :loading="accessLoading" @click="accessPage = 1; loadAccess()">查询</el-button>
+              <el-button :loading="accessLoading" @click="accessPage = 1; loadAccess()">刷新</el-button>
               <el-button @click="exportAccess">导出记录</el-button>
             </div>
           </div>
-          <el-table class="access-table" :data="accessRows" v-loading="accessLoading" stripe border empty-text="暂无访问埋点"><el-table-column label="任务类型" min-width="120"><template #default="s">{{ s.row.executionType === 'LONG_TASK' ? '长任务流程' : '独立任务' }}</template></el-table-column><el-table-column label="任务" min-width="220" show-overflow-tooltip><template #default="s">{{ s.row.taskDisplayName || '-' }}{{ s.row.executionAt ? `（${dayjs(s.row.executionAt).format('YYYY-MM-DD')}）` : '' }}</template></el-table-column><el-table-column prop="executionId" label="执行ID" min-width="100"/><el-table-column label="执行时间" min-width="185"><template #default="s">{{ formatAccessDateTime(s.row.executionAt) }}</template></el-table-column><el-table-column label="人员" min-width="180"><template #default="s">{{ s.row.userName ? `${s.row.userName}(${s.row.userId})` : (s.row.userId || '-') }}</template></el-table-column><el-table-column label="来源" min-width="130"><template #default="s">{{s.row.source === 'PAGE' ? '页面点击' : '通知点击'}}</template></el-table-column><el-table-column label="状态" min-width="155"><template #default="s"><span :class="['access-status', s.row.loggedIn || s.row.eventType === 'LOGIN_VIEW' ? 'is-success' : 'is-muted']">{{s.row.eventType === 'LOGIN_VIEW' ? '登录后查看' : s.row.loggedIn ? '已登录点击' : '仅点击未登录'}}</span></template></el-table-column><el-table-column label="访问时间" min-width="210"><template #default="s">{{ formatAccessDateTime(s.row.latestEventAt) }}</template></el-table-column></el-table>
+          <div class="operation-table-wrap"><el-table height="100%" class="access-table" :data="accessRows" v-loading="accessLoading" stripe border empty-text="暂无访问埋点"><el-table-column label="任务类型" min-width="120"><template #default="s">{{ s.row.executionType === 'LONG_TASK' ? '长任务流程' : '独立任务' }}</template></el-table-column><el-table-column label="任务" min-width="220" show-overflow-tooltip><template #default="s">{{ s.row.taskDisplayName || '-' }}{{ s.row.executionAt ? `（${dayjs(s.row.executionAt).format('YYYY-MM-DD')}）` : '' }}</template></el-table-column><el-table-column prop="executionId" label="执行ID" min-width="100"/><el-table-column label="执行时间" min-width="185"><template #default="s">{{ formatAccessDateTime(s.row.executionAt) }}</template></el-table-column><el-table-column label="人员" min-width="180"><template #default="s">{{ s.row.userName ? `${s.row.userName}(${s.row.userId})` : (s.row.userId || '-') }}</template></el-table-column><el-table-column label="来源" min-width="130"><template #default="s">{{s.row.source === 'PAGE' ? '页面点击' : '通知点击'}}</template></el-table-column><el-table-column label="状态" min-width="155"><template #default="s"><span :class="['access-status', s.row.loggedIn || s.row.eventType === 'LOGIN_VIEW' ? 'is-success' : 'is-muted']">{{s.row.eventType === 'LOGIN_VIEW' ? '登录后查看' : s.row.loggedIn ? '已登录点击' : '仅点击未登录'}}</span></template></el-table-column><el-table-column label="访问时间" min-width="210"><template #default="s">{{ formatAccessDateTime(s.row.latestEventAt) }}</template></el-table-column></el-table>
+          </div>
+          <div class="behavior-pagination access-pagination"><el-pagination v-model:current-page="accessPage" :page-size="accessPageSize" :total="accessTotal" :page-sizes="[10, 20, 50, 100]" :disabled="accessLoading" layout="total, sizes, prev, pager, next, jumper" @size-change="changeAccessPageSize" @current-change="loadAccess"/></div>
         </template>
         <template v-else>
           <div class="record-filters">
             <el-select v-model="behavior.resourceType" placeholder="资源范围" style="width:150px" @change="behavior.page = 1; loadBehavior()"><el-option label="Python 脚本" value="python_page"/><el-option label="长任务" value="long_task_flow"/></el-select>
             <span class="filter-hint">选择资源范围后可查看对应的变更操作记录</span>
             <el-select v-model="behavior.operationType" clearable placeholder="操作类型" style="width:130px"><el-option label="新增" value="create"/><el-option label="编辑" value="update"/><el-option label="删除" value="delete"/></el-select>
-            <el-input v-model="behavior.operatorKeyword" placeholder="操作人姓名 / userId" clearable style="width:210px" @keyup.enter="loadBehavior"/>
-            <el-input v-model="behavior.resourceKeyword" placeholder="资源名称" clearable style="width:160px" @keyup.enter="loadBehavior"/>
+            <el-input v-model="behavior.operatorKeyword" placeholder="操作人姓名 / userId" clearable style="width:210px" @keyup.enter="behavior.page = 1; loadBehavior()"/>
+            <el-input v-model="behavior.resourceKeyword" placeholder="资源名称" clearable style="width:160px" @keyup.enter="behavior.page = 1; loadBehavior()"/>
+            <el-select v-model="behavior.environment" class="access-control"><el-option label="生产环境" value="prod"/><el-option label="开发环境" value="dev"/><el-option label="全部环境" value="ALL"/></el-select>
             <div class="filter-buttons">
               <el-button type="primary" :loading="behaviorLoading" @click="behavior.page=1; loadBehavior()">查询</el-button>
               <el-button plain :loading="behaviorLoading" @click="behavior.page = 1; loadBehavior()">刷新</el-button>
             </div>
           </div>
-          <div class="behavior-table-wrap"><el-table class="behavior-table" :data="behavior.items" v-loading="behaviorLoading" stripe border empty-text="暂无操作记录"><el-table-column prop="resource_name" label="资源名称" min-width="220" show-overflow-tooltip/><el-table-column label="操作类型" width="90"><template #default="s">{{ operationLabel(s.row.operation_type) }}</template></el-table-column><el-table-column prop="operatorDisplayName" label="操作人" min-width="170" show-overflow-tooltip/><el-table-column label="结果" width="80"><template #default="s">{{ resultLabel(s.row.result) }}</template></el-table-column><el-table-column label="变更详情" width="110" fixed="right"><template #default="s"><el-button link type="primary" @click="openBehaviorDetail(s.row)">查看详情</el-button></template></el-table-column><el-table-column label="事件时间" width="190" fixed="right"><template #default="s">{{ formatBehaviorTime(s.row.created_at) }}</template></el-table-column></el-table></div>
-          <div class="behavior-pagination"><span>共 {{ behavior.total }} 条</span><el-pagination v-model:current-page="behavior.page" :page-size="behavior.pageSize" :total="behavior.total" layout="prev, pager, next" @current-change="loadBehavior"/></div>
+          <div class="behavior-table-wrap"><el-table height="100%" class="behavior-table" :data="behavior.items" v-loading="behaviorLoading" stripe border empty-text="暂无操作记录"><el-table-column prop="resource_name" label="资源名称" min-width="220" show-overflow-tooltip/><el-table-column label="操作类型" width="90"><template #default="s">{{ operationLabel(s.row.operation_type) }}</template></el-table-column><el-table-column prop="operatorDisplayName" label="操作人" min-width="170" show-overflow-tooltip/><el-table-column label="结果" width="80"><template #default="s">{{ resultLabel(s.row.result) }}</template></el-table-column><el-table-column label="变更详情" width="110" fixed="right"><template #default="s"><el-button link type="primary" @click="openBehaviorDetail(s.row)">查看详情</el-button></template></el-table-column><el-table-column label="事件时间" width="190" fixed="right"><template #default="s">{{ formatBehaviorTime(s.row.created_at) }}</template></el-table-column></el-table></div>
+          <div class="behavior-pagination"><el-pagination v-model:current-page="behavior.page" :page-size="behavior.pageSize" :total="behavior.total" :page-sizes="[10, 20, 50, 100]" :disabled="behaviorLoading" layout="total, sizes, prev, pager, next, jumper" @size-change="changeBehaviorPageSize" @current-change="loadBehavior"/></div>
         </template>
         <el-dialog v-model="behaviorDetailVisible" title="变更详情" width="780px" class="behavior-detail-dialog"><div v-loading="behaviorDetailLoading" class="behavior-detail"><template v-if="behaviorDetail.event"><div class="behavior-detail-head"><div class="behavior-detail-resource">{{ behaviorDetail.event.resource_name }}</div><el-tag size="small" :type="operationTagType(behaviorDetail.event.operation_type)">{{ operationLabel(behaviorDetail.event.operation_type) }}</el-tag><span class="behavior-detail-time">{{ formatBehaviorTime(behaviorDetail.event.created_at) }}</span></div><div v-if="behaviorDetail.details?.length" class="behavior-detail-summary">{{ behaviorSummary(behaviorDetail.event, behaviorDetail.details) }}</div><el-empty v-if="!behaviorDetail.details?.length" description="该操作未产生字段级变更" :image-size="70"/><template v-else><div class="behavior-change-list"><div v-for="(item, index) in behaviorDetail.details.filter((x:any) => !isSnapshot(x))" :key="index" class="behavior-change-item"><div class="behavior-change-title"><span class="behavior-change-index">{{ String(Number(index) + 1).padStart(2, '0') }}</span><span>{{ fieldLabel(item) }}</span><span class="behavior-change-type">{{ changeAction(item) }}</span></div><div class="behavior-change-values"><div class="behavior-before"><span class="behavior-change-label">修改前</span><span class="behavior-change-value">{{ displayChangeValue(item.before_value, '空') }}</span></div><div class="behavior-change-arrow">→</div><div class="behavior-after"><span class="behavior-change-label">修改后</span><span class="behavior-change-value">{{ displayChangeValue(item.after_value, '空') }}</span></div></div></div><div v-for="item in behaviorDetail.details.filter((x:any) => isSnapshot(x))" :key="'summary-' + item.detail_no" class="behavior-change-item"><div class="behavior-change-title"><span class="behavior-change-index">配置</span><span>配置变更摘要</span><span class="behavior-change-type">已解析</span></div><div class="behavior-readable-diff"><div v-for="line in snapshotDiff(item)" :key="line">{{ line }}</div><div v-if="!snapshotDiff(item).length">未识别到可读字段变化，请展开完整快照查看。</div></div></div></div><el-collapse v-if="behaviorDetail.details.some((x:any) => isSnapshot(x))" class="behavior-raw-collapse"><el-collapse-item title="查看完整配置快照" name="raw"><div v-for="item in behaviorDetail.details.filter((x:any) => isSnapshot(x))" :key="item.detail_no" class="behavior-raw-snapshot"><div class="behavior-raw-title">{{ item.before_value === '（初始）' ? '修改后完整配置' : '修改前 / 修改后完整配置' }}</div><div class="behavior-change-values"><pre class="behavior-change-value behavior-before">{{ displayChangeValue(item.before_value, '空') }}</pre><div class="behavior-change-arrow">→</div><pre class="behavior-change-value behavior-after">{{ displayChangeValue(item.after_value, '空') }}</pre></div></div></el-collapse-item></el-collapse></template></template></div></el-dialog>
       </div>
@@ -271,9 +274,12 @@ async function openBehaviorDetail(row: any) {
   } catch (e) { ElMessage.error(e instanceof Error ? e.message : '详情加载失败'); }
   finally { behaviorDetailLoading.value = false; }
 }
-const behavior = ref({ resourceType: 'python_page', operationType: '', operatorKeyword: '', resourceKeyword: '', keyword: '', page: 1, pageSize: 20, total: 0, items: [] as any[] });
-async function loadBehavior() { behaviorLoading.value = true; try { const b = behavior.value, q = new URLSearchParams({ resourceType: b.resourceType, page: String(b.page), pageSize: String(b.pageSize) }); if (b.operationType) q.set('operationType', b.operationType); if (b.operatorKeyword) q.set('operatorKeyword', b.operatorKeyword); if (b.resourceKeyword) q.set('resourceKeyword', b.resourceKeyword); if (b.keyword) q.set('keyword', b.keyword); const r = await fetch('/api/session-records/behavior?' + q); if (!r.ok) throw new Error('加载失败'); const d = await r.json(); behavior.value.items = d.items || []; behavior.value.total = d.total || 0; } catch (e) { ElMessage.error(e instanceof Error ? e.message : '操作记录加载失败'); } finally { behaviorLoading.value = false; } }
+const behavior = ref({ resourceType: 'python_page', environment: '', operationType: '', operatorKeyword: '', resourceKeyword: '', keyword: '', page: 1, pageSize: 20, total: 0, items: [] as any[] });
+async function loadBehavior() { behaviorLoading.value = true; try { const b = behavior.value, q = new URLSearchParams({ resourceType: b.resourceType, environment: b.environment, page: String(b.page), pageSize: String(b.pageSize) }); if (b.operationType) q.set('operationType', b.operationType); if (b.operatorKeyword) q.set('operatorKeyword', b.operatorKeyword); if (b.resourceKeyword) q.set('resourceKeyword', b.resourceKeyword); if (b.keyword) q.set('keyword', b.keyword); const r = await fetch('/api/session-records/behavior?' + q); if (!r.ok) throw new Error('加载失败'); const d = await r.json(); behavior.value.items = d.items || []; behavior.value.total = d.total || 0; } catch (e) { ElMessage.error(e instanceof Error ? e.message : '操作记录加载失败'); } finally { behaviorLoading.value = false; } }
 const accessRows = ref<any[]>([]);
+const accessPage = ref(1);
+const accessPageSize = ref(20);
+const accessTotal = ref(0);
 const accessLoading = ref(false);
 const accessTask = ref('');
 const accessExecutionId = ref('');
@@ -282,10 +288,20 @@ const accessEnvironment = ref('');
 const executionDateRange = ref<string[]>([]);
 const accessDateRange = ref<string[]>([]);
 
+function changeAccessPageSize(size: number) {
+  accessPageSize.value = size;
+  accessPage.value = 1;
+  loadAccess();
+}
+function changeBehaviorPageSize(size: number) {
+  behavior.value.pageSize = size;
+  behavior.value.page = 1;
+  loadBehavior();
+}
 async function loadAccess() {
   accessLoading.value = true;
   try {
-    const params = new URLSearchParams();
+    const params = new URLSearchParams({ page: String(accessPage.value), pageSize: String(accessPageSize.value) });
     const userId = accessUser.value.trim();
     if (userId) params.set('userId', userId);
     if (accessTask.value.trim()) params.set('taskName', accessTask.value.trim());
@@ -293,7 +309,9 @@ async function loadAccess() {
     params.set('environment', accessEnvironment.value.trim()); if (executionDateRange.value.length === 2) { params.set('executionFrom', executionDateRange.value[0]); params.set('executionTo', executionDateRange.value[1]); } if (accessDateRange.value.length === 2) { params.set('accessFrom', accessDateRange.value[0]); params.set('accessTo', accessDateRange.value[1]); }
     const response = await fetch('/api/notification-access/link-clicks?' + params, { headers: { 'X-User-Id': getLoggedInUserId() || '' } });
     if (!response.ok) throw new Error('查询失败(' + response.status + ')');
-    accessRows.value = await response.json();
+    const data = await response.json();
+    accessRows.value = data.items || [];
+    accessTotal.value = data.total || 0;
   } catch (e) { ElMessage.error(e instanceof Error ? e.message : '访问埋点查询失败'); }
   finally { accessLoading.value = false; }
 }
@@ -608,6 +626,7 @@ function goDetail(conversationId: string) {
 
 onMounted(async () => {
   try { const response = await fetch('/api/notification-access/environment', { headers: { 'X-User-Id': getLoggedInUserId() || '' } }); if (response.ok) accessEnvironment.value = (await response.json()).environment || 'dev'; } catch { accessEnvironment.value = 'dev'; }
+  behavior.value.environment = accessEnvironment.value || 'dev';
   applyRouteState();
   refreshConversations();
   if (activeTab.value === 'behavior') { loadBehavior(); loadAccess(); }
@@ -668,7 +687,7 @@ function durationStyle(ms: number): any {
 .access-date { width: 205px; flex: 0 0 205px; }
 .access-date :deep(.el-range-input) { min-width: 0; }
 .access-date :deep(.el-range-separator) { padding: 0 2px; }
-.access-table { width: 100%; flex: 1; min-width: 0; border-radius: 8px; overflow: hidden; }
+.access-table { width: 100%; min-height: 240px; flex: 1; min-width: 0; border-radius: 8px; overflow: hidden; }
 .access-table :deep(.el-table__header th) { background: linear-gradient(180deg, #f8fafc 0%, #eef4fb 100%); color: #334155; font-weight: 700; font-size: 13px; letter-spacing: .02em; border-bottom: 2px solid #dbe5f0; }
 .access-table :deep(.el-table__cell) { padding: 13px 0; color: #475569; }
 .access-table :deep(.el-table__row:hover > td) { background: #f0f7ff !important; }
@@ -700,7 +719,9 @@ function durationStyle(ms: number): any {
 .filter-buttons { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .filter-buttons :deep(.el-button) { margin-left: 0; min-width: 76px; }
 .filter-hint { color: #64748b; font-size: 12px; white-space: nowrap; }
-.operation-panel { overflow: auto; }
+.operation-panel { min-height: 0; overflow: auto; }
+.operation-table-wrap { flex: 1; min-height: 240px; overflow: hidden; }
+.operation-panel .record-filters { flex-shrink: 0; }
 .behavior-table-wrap { flex: 1; min-height: 240px; overflow: auto; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; }
 .behavior-table { min-width: 980px; }
 .behavior-table :deep(.el-table__header th) { background: #f8fafc; color: #475569; font-weight: 600; }
@@ -721,8 +742,8 @@ function durationStyle(ms: number): any {
 .behavior-change-value { display: block; min-height: 20px; max-height: 180px; overflow: auto; padding: 8px 10px; background: #fff; border: 1px solid #e2e8f0; border-radius: 6px; color: #0f172a; white-space: pre-wrap; word-break: break-word; font-family: inherit; line-height: 1.55; }
 .behavior-before .behavior-change-value { background: #fff7ed; border-color: #fed7aa; color: #9a3412; }
 .behavior-after .behavior-change-value { background: #f0fdf4; border-color: #bbf7d0; color: #166534; }
-.behavior-pagination { display: flex; align-items: center; justify-content: space-between; padding: 14px 2px 0; color: #64748b; font-size: 13px; }
-.behavior-pagination :deep(.el-pagination) { padding: 0; }
+.behavior-pagination { flex-shrink: 0; display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; padding: 14px 2px 0; color: #64748b; font-size: 13px; }
+.behavior-pagination :deep(.el-pagination) { padding: 0; flex-wrap: wrap; row-gap: 8px; }
 @media (max-width: 900px) {
   .session-header { align-items: flex-start !important; flex-wrap: wrap; }
   .session-header-actions { width: 100%; justify-content: flex-start; }

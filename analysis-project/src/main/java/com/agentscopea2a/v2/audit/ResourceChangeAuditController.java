@@ -23,6 +23,7 @@ public class ResourceChangeAuditController {
     @GetMapping
     public Map<String, Object> page(@RequestParam(required = false) String resourceType,
             @RequestParam(required = false) String operationType,
+            @RequestParam(required = false) String environment,
             @RequestParam(required = false) String operatorKeyword,
             @RequestParam(required = false) String resourceKeyword,
             @RequestParam(required = false) String keyword,
@@ -31,7 +32,7 @@ public class ResourceChangeAuditController {
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int pageSize) {
         return service.page(resourceType, operationType, operatorKeyword, resourceKeyword,
-                keyword, startTime, endTime, page, pageSize);
+                keyword, startTime, endTime, environment, page, pageSize);
     }
 
     @GetMapping("/{eventId}")

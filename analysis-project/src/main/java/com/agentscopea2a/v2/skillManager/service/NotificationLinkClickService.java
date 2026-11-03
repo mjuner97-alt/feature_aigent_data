@@ -119,6 +119,15 @@ public class NotificationLinkClickService {
         if (effective.getExecutionFrom() != null || effective.getExecutionTo() != null) enriched = enriched.stream().filter(r -> r.executionAt() != null && (effective.getExecutionFrom() == null || !r.executionAt().toLocalDate().isBefore(effective.getExecutionFrom())) && (effective.getExecutionTo() == null || !r.executionAt().toLocalDate().isAfter(effective.getExecutionTo()))).toList();
         return enriched;
     }
+    /** 返回访问记录分页结果，筛选与排序沿用统一访问记录查询。 */
+    public Map<String, Object> pageSummary(String userId, NotificationLinkClickFilterRequest request, int page, int pageSize) {
+        List<NotificationLinkClickSummaryDto> rows = allSummary(userId, request);
+        int safePage = Math.max(1, page);
+        int safeSize = Math.min(100, Math.max(1, pageSize));
+        int from = (int) Math.min((long) (safePage - 1) * safeSize, rows.size());
+        int to = Math.min(from + safeSize, rows.size());
+        return Map.of("items", rows.subList(from, to), "total", rows.size(), "page", safePage, "pageSize", safeSize);
+    }
     public byte[] exportCsv(String userId, NotificationLinkClickFilterRequest request) {
         StringBuilder csv = new StringBuilder("任务类型,任务,执行ID,执行时间,人员,来源,状态,访问时间\n");
         for (NotificationLinkClickSummaryDto row : allSummary(userId, request)) {
