@@ -39,7 +39,7 @@ public class StubNotificationSender implements NotificationSender {
      * true 继续调用内部 HTTP 邮件网关；false 将通知内容写成本地 HTML 文件。
      * 可在 application-*.properties 中通过 skill.notification.mail.http-enabled 调整。
      */
-    private boolean httpEnabled = false;
+    private boolean httpEnabled = true;
     private String localHtmlDirectory = "src/main/resources/notification-html";
 
     private static final DateTimeFormatter LOCAL_FILE_TIME =
