@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import DynamicPeriodEditor from './DynamicPeriodEditor.vue';
+import { metricOptionLabel } from '../utils/flowMetrics';
 import type { SkillFlowNode } from '../types/skillFlow';
 import type { ParamSchemaItem, ScriptRegistryListItem } from '../types/scriptRegistry';
 import type { SkillDependencyMetric } from '../types/skillJob';
@@ -235,7 +236,7 @@ function selectedScript(node: SkillFlowNode, scripts: ScriptRegistryListItem[]):
         <small v-if="scriptParamsError" class="param-error">JSON 参数无效：{{ scriptParamsError }}</small>
       </div>
       <label v-if="node.nodeType === 'SKILL'"><span>本流程问题 *</span><textarea v-model="node.questionTemplate" rows="3" placeholder="填写该 Skill 在本流程中要执行的问题" /></label>
-      <label v-if="showMetrics"><span>指标依赖（可选）</span><el-select :model-value="node.metricIds" multiple filterable remote reserve-keyword :remote-method="(query: string) => emit('search-metrics', query)" :loading="metricLoading" placeholder="未覆盖时继承默认指标" clearable style="width: 100%" @change="(value: number[]) => emit('set-metrics', value)"><el-option v-for="metric in metrics" :key="metric.id" :value="metric.id" :label="`${metric.name} (${metric.code})`" /></el-select><small class="metric-source">当前来源：{{ node.metricOverrideConfigured ? '覆盖' : node.metricSource === 'DEFAULT' ? '默认继承' : '未配置' }}<span v-if="!node.metricOverrideConfigured && node.effectiveMetricIds?.length">（{{ node.effectiveMetricIds.length }} 项生效）</span></small></label>
+      <label v-if="showMetrics"><span>指标依赖（可选）</span><el-select :model-value="node.metricIds" multiple filterable remote reserve-keyword :remote-method="(query: string) => emit('search-metrics', query)" :loading="metricLoading" placeholder="未覆盖时继承默认指标" style="width: 100%" @change="(value: number[]) => emit('set-metrics', value)"><el-option v-for="metric in metrics" :key="metric.id" :value="metric.id" :label="metricOptionLabel(metric)" /></el-select><small class="metric-source">当前来源：{{ node.metricOverrideConfigured ? '覆盖' : node.metricSource === 'DEFAULT' ? '默认继承' : '未配置' }}<span v-if="!node.metricOverrideConfigured && node.effectiveMetricIds?.length">（{{ node.effectiveMetricIds.length }} 项生效）</span></small></label>
     </div>
   </div>
 </template>
