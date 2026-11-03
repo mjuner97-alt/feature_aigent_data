@@ -5,17 +5,17 @@
       <button type="button" class="history-nav-item" :class="{ active: activeTab === 'sessions' }" @click="activeTab = 'sessions'">会话历史</button>
       <button type="button" class="history-nav-item" :class="{ active: activeTab === 'nodeLogs' }" @click="activeTab = 'nodeLogs'">节点执行日志</button>
       <button type="button" class="history-nav-item" :class="{ active: activeTab === 'cases' }" @click="activeTab = 'cases'">案例信息</button>
-      <button type="button" class="history-nav-item" :class="{ active: activeTab === 'access' }" @click="activeTab = 'access'; loadAccess()">访问埋点</button>
+      <button type="button" class="history-nav-item" :class="{ active: activeTab === 'behavior' }" @click="activeTab = 'behavior'; loadBehavior(); loadAccess()">操作记录</button>
     </aside>
 
     <main class="history-content" :style="rootStyle">
       <!-- 会话历史 Header -->
-      <div v-show="activeTab === 'sessions'" :style="headerStyle">
+      <div v-show="activeTab === 'sessions'" class="session-header" :style="headerStyle">
         <div>
           <div :style="titleStyle">会话历史</div>
           <div :style="subtitleStyle">Session History</div>
         </div>
-        <div :style="headerRight">
+        <div class="session-header-actions" :style="headerRight">
           <el-radio-group v-model="scope" size="small" @change="currentPage = 1; syncQuery(); refreshConversations()">
             <el-radio-button label="mine">我的</el-radio-button>
             <el-radio-button label="all">全部</el-radio-button>
@@ -63,9 +63,49 @@
       </div>
 
       <LongTaskNodeLogPanel v-if="activeTab === 'nodeLogs'" style="flex:1;overflow:auto" />
-      <div v-if="activeTab === 'access'" class="case-panel">
-        <div class="case-header access-header"><div><div class="case-title">访问埋点</div><div class="case-subtitle">链接点击、链接查看与页面查看</div></div><div class="access-actions"><el-input v-model="accessTask" placeholder="任务" clearable class="access-control" @keyup.enter="loadAccess"/><el-input v-model="accessExecutionId" placeholder="执行ID" clearable class="access-control" @keyup.enter="loadAccess"/><el-input v-model="accessUser" placeholder="姓名 / 统一号（模糊）" clearable class="access-control access-user" @keyup.enter="loadAccess"/><el-date-picker v-model="executionDateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="执行开始" end-placeholder="执行结束" class="access-date"/><el-date-picker v-model="accessDateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="访问开始" end-placeholder="访问结束" class="access-date"/><el-select v-model="accessEnvironment" class="access-control"><el-option label="生产环境" value="prod"/><el-option label="开发环境" value="dev"/><el-option label="全部环境" value="ALL"/></el-select><el-button type="primary" :loading="accessLoading" @click="loadAccess">查询</el-button><el-button :loading="accessLoading" @click="loadAccess">刷新</el-button><el-button @click="exportAccess">导出记录</el-button></div></div>
-        <el-table :data="accessRows" v-loading="accessLoading" stripe border empty-text="暂无访问埋点"><el-table-column label="任务类型" width="110"><template #default="s">{{ s.row.executionType === 'LONG_TASK' ? '长任务流程' : '独立任务' }}</template></el-table-column><el-table-column label="任务" width="180" show-overflow-tooltip><template #default="s">{{ s.row.taskDisplayName || '-' }}{{ s.row.executionAt ? `（${dayjs(s.row.executionAt).format('YYYY-MM-DD')}）` : '' }}</template></el-table-column><el-table-column prop="executionId" label="执行ID" width="90"/><el-table-column label="执行时间" width="165"><template #default="s">{{ formatAccessDateTime(s.row.executionAt) }}</template></el-table-column><el-table-column label="人员" width="160"><template #default="s">{{ s.row.userName ? `${s.row.userName}(${s.row.userId})` : (s.row.userId || '-') }}</template></el-table-column><el-table-column label="来源" width="120"><template #default="s">{{s.row.source === 'PAGE' ? '页面查看' : '通知链接'}}</template></el-table-column><el-table-column label="状态" width="140"><template #default="s">{{s.row.source === 'PAGE' ? '页面查看' : s.row.eventType === 'LOGIN_VIEW' ? '链接查看' : '链接点击'}}</template></el-table-column><el-table-column label="访问时间" min-width="190"><template #default="s">{{ formatAccessDateTime(s.row.latestEventAt) }}</template></el-table-column></el-table>
+      <div v-if="activeTab === 'behavior'" class="case-panel operation-panel">
+        <div class="case-header access-header">
+          <div><div class="case-title">操作记录</div><div class="case-subtitle">访问与配置变更</div></div>
+          <div class="record-type-switch">
+            <span class="filter-hint record-type-hint">{{ recordType === 'access' ? '页面与通知访问' : '脚本与长任务配置变更' }}</span>
+            <el-select v-model="recordType" class="record-type-select" @change="handleRecordTypeChange">
+              <el-option label="访问记录" value="access"/>
+              <el-option label="资源变更" value="behavior"/>
+            </el-select>
+          </div>
+        </div>
+        <template v-if="recordType === 'access'">
+          <div class="record-filters">
+            <el-input v-model="accessTask" placeholder="任务" clearable class="access-control" @keyup.enter="loadAccess"/>
+            <el-input v-model="accessExecutionId" placeholder="执行ID" clearable class="access-control" @keyup.enter="loadAccess"/>
+            <el-input v-model="accessUser" placeholder="姓名 / 统一号（模糊）" clearable class="access-control access-user" @keyup.enter="loadAccess"/>
+            <el-date-picker v-model="executionDateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="执行开始" end-placeholder="执行结束" class="access-date"/>
+            <el-date-picker v-model="accessDateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="访问开始" end-placeholder="访问结束" class="access-date"/>
+            <el-select v-model="accessEnvironment" class="access-control"><el-option label="生产环境" value="prod"/><el-option label="开发环境" value="dev"/><el-option label="全部环境" value="ALL"/></el-select>
+            <div class="filter-buttons">
+              <el-button type="primary" :loading="accessLoading" @click="loadAccess">查询</el-button>
+              <el-button :loading="accessLoading" @click="loadAccess">刷新</el-button>
+              <el-button @click="exportAccess">导出记录</el-button>
+            </div>
+          </div>
+          <el-table class="access-table" :data="accessRows" v-loading="accessLoading" stripe border empty-text="暂无访问埋点"><el-table-column label="任务类型" min-width="120"><template #default="s">{{ s.row.executionType === 'LONG_TASK' ? '长任务流程' : '独立任务' }}</template></el-table-column><el-table-column label="任务" min-width="220" show-overflow-tooltip><template #default="s">{{ s.row.taskDisplayName || '-' }}{{ s.row.executionAt ? `（${dayjs(s.row.executionAt).format('YYYY-MM-DD')}）` : '' }}</template></el-table-column><el-table-column prop="executionId" label="执行ID" min-width="100"/><el-table-column label="执行时间" min-width="185"><template #default="s">{{ formatAccessDateTime(s.row.executionAt) }}</template></el-table-column><el-table-column label="人员" min-width="180"><template #default="s">{{ s.row.userName ? `${s.row.userName}(${s.row.userId})` : (s.row.userId || '-') }}</template></el-table-column><el-table-column label="来源" min-width="130"><template #default="s">{{s.row.source === 'PAGE' ? '页面点击' : '通知点击'}}</template></el-table-column><el-table-column label="状态" min-width="155"><template #default="s"><span :class="['access-status', s.row.loggedIn || s.row.eventType === 'LOGIN_VIEW' ? 'is-success' : 'is-muted']">{{s.row.eventType === 'LOGIN_VIEW' ? '登录后查看' : s.row.loggedIn ? '已登录点击' : '仅点击未登录'}}</span></template></el-table-column><el-table-column label="访问时间" min-width="210"><template #default="s">{{ formatAccessDateTime(s.row.latestEventAt) }}</template></el-table-column></el-table>
+        </template>
+        <template v-else>
+          <div class="record-filters">
+            <el-select v-model="behavior.resourceType" placeholder="资源范围" style="width:150px" @change="behavior.page = 1; loadBehavior()"><el-option label="Python 脚本" value="python_page"/><el-option label="长任务" value="long_task_flow"/></el-select>
+            <span class="filter-hint">选择资源范围后可查看对应的变更操作记录</span>
+            <el-select v-model="behavior.operationType" clearable placeholder="操作类型" style="width:130px"><el-option label="新增" value="create"/><el-option label="编辑" value="update"/><el-option label="删除" value="delete"/></el-select>
+            <el-input v-model="behavior.operatorKeyword" placeholder="操作人姓名 / userId" clearable style="width:210px" @keyup.enter="loadBehavior"/>
+            <el-input v-model="behavior.resourceKeyword" placeholder="资源名称" clearable style="width:160px" @keyup.enter="loadBehavior"/>
+            <div class="filter-buttons">
+              <el-button type="primary" :loading="behaviorLoading" @click="behavior.page=1; loadBehavior()">查询</el-button>
+              <el-button plain :loading="behaviorLoading" @click="behavior.page = 1; loadBehavior()">刷新</el-button>
+            </div>
+          </div>
+          <div class="behavior-table-wrap"><el-table class="behavior-table" :data="behavior.items" v-loading="behaviorLoading" stripe border empty-text="暂无操作记录"><el-table-column prop="resource_name" label="资源名称" min-width="220" show-overflow-tooltip/><el-table-column label="操作类型" width="90"><template #default="s">{{ operationLabel(s.row.operation_type) }}</template></el-table-column><el-table-column prop="operatorDisplayName" label="操作人" min-width="170" show-overflow-tooltip/><el-table-column label="结果" width="80"><template #default="s">{{ resultLabel(s.row.result) }}</template></el-table-column><el-table-column label="变更详情" width="110" fixed="right"><template #default="s"><el-button link type="primary" @click="openBehaviorDetail(s.row)">查看详情</el-button></template></el-table-column><el-table-column label="事件时间" width="190" fixed="right"><template #default="s">{{ formatBehaviorTime(s.row.created_at) }}</template></el-table-column></el-table></div>
+          <div class="behavior-pagination"><span>共 {{ behavior.total }} 条</span><el-pagination v-model:current-page="behavior.page" :page-size="behavior.pageSize" :total="behavior.total" layout="prev, pager, next" @current-change="loadBehavior"/></div>
+        </template>
+        <el-dialog v-model="behaviorDetailVisible" title="变更详情" width="780px" class="behavior-detail-dialog"><div v-loading="behaviorDetailLoading" class="behavior-detail"><template v-if="behaviorDetail.event"><div class="behavior-detail-head"><div class="behavior-detail-resource">{{ behaviorDetail.event.resource_name }}</div><el-tag size="small" :type="operationTagType(behaviorDetail.event.operation_type)">{{ operationLabel(behaviorDetail.event.operation_type) }}</el-tag><span class="behavior-detail-time">{{ formatBehaviorTime(behaviorDetail.event.created_at) }}</span></div><div v-if="behaviorDetail.details?.length" class="behavior-detail-summary">{{ behaviorSummary(behaviorDetail.event, behaviorDetail.details) }}</div><el-empty v-if="!behaviorDetail.details?.length" description="该操作未产生字段级变更" :image-size="70"/><template v-else><div class="behavior-change-list"><div v-for="(item, index) in behaviorDetail.details.filter((x:any) => !isSnapshot(x))" :key="index" class="behavior-change-item"><div class="behavior-change-title"><span class="behavior-change-index">{{ String(Number(index) + 1).padStart(2, '0') }}</span><span>{{ fieldLabel(item) }}</span><span class="behavior-change-type">{{ changeAction(item) }}</span></div><div class="behavior-change-values"><div class="behavior-before"><span class="behavior-change-label">修改前</span><span class="behavior-change-value">{{ displayChangeValue(item.before_value, '空') }}</span></div><div class="behavior-change-arrow">→</div><div class="behavior-after"><span class="behavior-change-label">修改后</span><span class="behavior-change-value">{{ displayChangeValue(item.after_value, '空') }}</span></div></div></div><div v-for="item in behaviorDetail.details.filter((x:any) => isSnapshot(x))" :key="'summary-' + item.detail_no" class="behavior-change-item"><div class="behavior-change-title"><span class="behavior-change-index">配置</span><span>配置变更摘要</span><span class="behavior-change-type">已解析</span></div><div class="behavior-readable-diff"><div v-for="line in snapshotDiff(item)" :key="line">{{ line }}</div><div v-if="!snapshotDiff(item).length">未识别到可读字段变化，请展开完整快照查看。</div></div></div></div><el-collapse v-if="behaviorDetail.details.some((x:any) => isSnapshot(x))" class="behavior-raw-collapse"><el-collapse-item title="查看完整配置快照" name="raw"><div v-for="item in behaviorDetail.details.filter((x:any) => isSnapshot(x))" :key="item.detail_no" class="behavior-raw-snapshot"><div class="behavior-raw-title">{{ item.before_value === '（初始）' ? '修改后完整配置' : '修改前 / 修改后完整配置' }}</div><div class="behavior-change-values"><pre class="behavior-change-value behavior-before">{{ displayChangeValue(item.before_value, '空') }}</pre><div class="behavior-change-arrow">→</div><pre class="behavior-change-value behavior-after">{{ displayChangeValue(item.after_value, '空') }}</pre></div></div></el-collapse-item></el-collapse></template></template></div></el-dialog>
       </div>
 
       <!-- 案例信息面板 -->
@@ -110,7 +150,7 @@
             <el-table-column label="操作" width="260" align="center" fixed="right">
               <template #default="{ row }">
                 <!-- 查看最近执行情况 -->
-                <el-dropdown v-if="row.executeRecords && row.executeRecords.length > 0" trigger="click" @command="(cmd) => handleViewExecution(row, cmd)">
+                <el-dropdown v-if="row.executeRecords && row.executeRecords.length > 0" trigger="click" @command="(cmd: ExecuteRecord) => handleViewExecution(row, cmd)">
                   <el-button type="primary" link size="small">查看最近执行情况<el-icon class="el-icon--right"><arrow-down /></el-icon></el-button>
                   <template #dropdown>
                     <el-dropdown-menu>
@@ -160,7 +200,79 @@ const router = useRouter();
 const route = useRoute();
 
 // ==================== 通用状态 ====================
-const activeTab = ref<'sessions' | 'nodeLogs' | 'cases' | 'access'>('sessions');
+const activeTab = ref<'sessions' | 'nodeLogs' | 'cases' | 'access' | 'behavior'>('sessions');
+const recordType = ref<'access' | 'behavior'>('access');
+const recordTypeHint = ref('记录用户从页面或通知点击进入任务时的来源、登录状态与访问时间');
+function handleRecordTypeChange(type: 'access' | 'behavior') {
+  if (type === 'access') {
+    recordTypeHint.value = '记录用户从页面或通知点击进入任务时的来源、登录状态与访问时间';
+    loadAccess();
+  } else {
+    recordTypeHint.value = '记录 Python 脚本与长任务配置的新增、编辑、删除等变更操作';
+    behavior.value.page = 1;
+    loadBehavior();
+  }
+}
+const behaviorLoading = ref(false);
+const behaviorDetailVisible = ref(false);
+const behaviorDetailLoading = ref(false);
+const behaviorDetail = ref<any>({ event: null, details: [] });
+const operationLabel = (value: string) => ({ create: '新增', update: '编辑', delete: '删除' }[value] || value || '-');
+const resultLabel = (value: string) => ({ success: '成功', failed: '失败' }[value] || value || '-');
+const operationTagType = (value: string) => ({ create: 'success', update: 'warning', delete: 'danger' }[value] || 'info');
+function displayChangeValue(value: unknown, emptyText = '空') {
+  if (value === null || value === undefined || value === '') return emptyText;
+  const raw = String(value);
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed === 'object' ? JSON.stringify(parsed, null, 2) : String(parsed);
+  } catch { return raw; }
+}
+function fieldLabel(item: any) {
+  return ({ name: '流程名称', description: '描述', task_question: '任务问题', triggers: '触发关键词', nodes: '执行节点', enabled: '启用状态', script_content: '脚本内容', script_id: '脚本标识', params_schema: '参数配置', definition: '完整配置' } as Record<string, string>)[item.field_name] || item.field_label || item.field_name;
+}
+function isSnapshot(item: any) { return item.field_name === 'definition' || item.field_name === 'script_content'; }
+function snapshotDiff(item: any): string[] {
+  if (item.field_name === 'script_content') return ['脚本源码已修改（完整内容请展开快照查看）'];
+  let before: any, after: any;
+  try { before = JSON.parse(item.before_value); after = JSON.parse(item.after_value); } catch { return []; }
+  const lines: string[] = [];
+  const labels: Record<string, string> = { name: '流程名称', description: '描述', taskQuestion: '任务问题', enabled: '启用状态', scheduleRules: '调度规则', summaryQuestionTemplate: '汇总问题模板' };
+  Object.keys(labels).forEach(k => { if (JSON.stringify(before?.[k]) !== JSON.stringify(after?.[k])) lines.push(`${labels[k]}：${displayChangeValue(before?.[k], '空')} → ${displayChangeValue(after?.[k], '空')}`); });
+  const nodeMap = (nodes: any[]) => new Map<string, any>(nodes.map((n: any) => [String(n.nodeKey), n] as [string, any]));
+  const bn = nodeMap(before?.nodes || []);
+  const an = nodeMap(after?.nodes || []);
+  an.forEach((n: any, key: string) => { if (!bn.has(key)) lines.push(`新增执行节点：${n.nodeName || key}`); else if (JSON.stringify(bn.get(key)) !== JSON.stringify(n)) lines.push(`修改执行节点：${n.nodeName || key}`); });
+  bn.forEach((n: any, key: string) => { if (!an.has(key)) lines.push(`删除执行节点：${n.nodeName || key}`); });
+  if (JSON.stringify(before?.triggers) !== JSON.stringify(after?.triggers)) lines.push('触发关键词已修改');
+  return lines;
+}
+function changeAction(item: any) {
+  const type = item.change_type;
+  if (type === 'create') return '已新增';
+  if (type === 'delete') return '已删除';
+  return '已修改';
+}
+function behaviorSummary(event: any, details: any[]) {
+  const action = operationLabel(event.operation_type);
+  const names = details.slice(0, 3).map(fieldLabel).join('、');
+  const suffix = details.length > 3 ? `等 ${details.length} 个字段` : `${details.length} 个字段`;
+  return `${action}“${event.resource_name}”，${action === '删除' ? '原记录已移除' : `共${suffix}：${names}`}`;
+}
+const formatBehaviorTime = (value: string) => value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '-';
+async function openBehaviorDetail(row: any) {
+  behaviorDetailVisible.value = true;
+  behaviorDetailLoading.value = true;
+  behaviorDetail.value = { event: row, details: [] };
+  try {
+    const r = await fetch('/api/session-records/behavior/' + encodeURIComponent(row.event_id));
+    if (!r.ok) throw new Error('详情加载失败');
+    behaviorDetail.value = await r.json();
+  } catch (e) { ElMessage.error(e instanceof Error ? e.message : '详情加载失败'); }
+  finally { behaviorDetailLoading.value = false; }
+}
+const behavior = ref({ resourceType: 'python_page', operationType: '', operatorKeyword: '', resourceKeyword: '', keyword: '', page: 1, pageSize: 20, total: 0, items: [] as any[] });
+async function loadBehavior() { behaviorLoading.value = true; try { const b = behavior.value, q = new URLSearchParams({ resourceType: b.resourceType, page: String(b.page), pageSize: String(b.pageSize) }); if (b.operationType) q.set('operationType', b.operationType); if (b.operatorKeyword) q.set('operatorKeyword', b.operatorKeyword); if (b.resourceKeyword) q.set('resourceKeyword', b.resourceKeyword); if (b.keyword) q.set('keyword', b.keyword); const r = await fetch('/api/session-records/behavior?' + q); if (!r.ok) throw new Error('加载失败'); const d = await r.json(); behavior.value.items = d.items || []; behavior.value.total = d.total || 0; } catch (e) { ElMessage.error(e instanceof Error ? e.message : '操作记录加载失败'); } finally { behaviorLoading.value = false; } }
 const accessRows = ref<any[]>([]);
 const accessLoading = ref(false);
 const accessTask = ref('');
@@ -425,7 +537,8 @@ async function refreshConversations() {
     );
     conversations.value = data.conversations ?? [];
     total.value = data.total ?? 0;
-    await refreshCaseState().catch(() => undefined);
+    // 案例状态属于列表的附加信息，后台刷新，避免案例服务变慢时阻塞会话列表首屏。
+    void refreshCaseState().catch(() => undefined);
     lastUpdated.value = new Date().toLocaleTimeString('zh-CN', { hour12: false });
   } catch (e: any) {
     error.value = '会话列表加载失败';
@@ -451,7 +564,7 @@ async function handleSearch() {
     );
     conversations.value = data.conversations ?? [];
     total.value = data.total ?? 0;
-    await refreshCaseState().catch(() => undefined);
+    void refreshCaseState().catch(() => undefined);
     lastUpdated.value = new Date().toLocaleTimeString('zh-CN', { hour12: false });
   } catch {
     error.value = '搜索失败';
@@ -495,7 +608,7 @@ onMounted(async () => {
   try { const response = await fetch('/api/notification-access/environment', { headers: { 'X-User-Id': getLoggedInUserId() || '' } }); if (response.ok) accessEnvironment.value = (await response.json()).environment || 'dev'; } catch { accessEnvironment.value = 'dev'; }
   applyRouteState();
   refreshConversations();
-  if (activeTab.value === 'access') loadAccess();
+  if (activeTab.value === 'behavior') { loadBehavior(); loadAccess(); }
 });
 
 watch(() => route.query, () => { applyRouteState(); refreshConversations(); });
@@ -541,13 +654,25 @@ function durationStyle(ms: number): any {
 .case-panel { flex: 1; overflow: hidden; display: flex; flex-direction: column; padding: 16px 20px; box-sizing: border-box; }
 .case-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-shrink: 0; }
 .access-header { gap: 20px; }
-.access-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: nowrap; overflow-x: auto; }
+.session-header { gap: 16px; }
+.session-header-actions { flex: 1; min-width: 0; justify-content: flex-end; flex-wrap: wrap; row-gap: 8px; }
+.session-header-actions :deep(.el-input) { max-width: 260px; }
+.record-type-switch { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.record-type-select { width: 130px; flex-shrink: 0; }
+.record-type-select :deep(.el-select__wrapper) { font-weight: 600; }
+.record-type-hint { color: #64748b; font-size: 12px; white-space: nowrap; flex-shrink: 0; }
 .access-control { width: 150px; }
 .access-user { width: 140px; }
 .access-date { width: 205px; flex: 0 0 205px; }
 .access-date :deep(.el-range-input) { min-width: 0; }
 .access-date :deep(.el-range-separator) { padding: 0 2px; }
-.access-actions :deep(.el-button) { margin-left: 0; }
+.access-table { width: 100%; flex: 1; min-width: 0; border-radius: 8px; overflow: hidden; }
+.access-table :deep(.el-table__header th) { background: linear-gradient(180deg, #f8fafc 0%, #eef4fb 100%); color: #334155; font-weight: 700; font-size: 13px; letter-spacing: .02em; border-bottom: 2px solid #dbe5f0; }
+.access-table :deep(.el-table__cell) { padding: 13px 0; color: #475569; }
+.access-table :deep(.el-table__row:hover > td) { background: #f0f7ff !important; }
+.access-status { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.access-status.is-success { background: #ecfdf5; color: #047857; }
+.access-status.is-muted { background: #f1f5f9; color: #64748b; }
 .case-title { font-size: 18px; font-weight: 700; color: #0f172a; }
 .case-subtitle { font-size: 11px; color: #94a3b8; margin-top: 2px; }
 .case-actions { display: flex; align-items: center; gap: 12px; }
@@ -565,6 +690,51 @@ function durationStyle(ms: number): any {
 .record-result { font-weight: 600; font-size: 12px; }
 .text-success { color: #67c23a; }
 .text-danger { color: #f56c6c; }
+
+/* 操作记录：标题栏(右侧仅类型切换) + 可换行筛选区 + 表格 + 分页四个区域。 */
+.behavior-panel { padding: 22px 24px 18px; background: #f8fafc; gap: 0; }
+.record-filters { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 14px 16px; margin-bottom: 14px; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; box-shadow: 0 1px 2px rgb(15 23 42 / 4%); }
+.record-filters :deep(.el-input), .record-filters :deep(.el-select) { max-width: 220px; }
+.filter-buttons { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.filter-buttons :deep(.el-button) { margin-left: 0; min-width: 76px; }
+.filter-hint { color: #64748b; font-size: 12px; white-space: nowrap; }
+.operation-panel { overflow: auto; }
+.behavior-table-wrap { flex: 1; min-height: 240px; overflow: auto; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; }
+.behavior-table { min-width: 980px; }
+.behavior-table :deep(.el-table__header th) { background: #f8fafc; color: #475569; font-weight: 600; }
+.behavior-table :deep(.el-table__cell) { padding: 11px 0; }
+.behavior-change-list { display: flex; flex-direction: column; gap: 12px; padding: 4px 2px; }
+.behavior-change-item { padding: 12px 14px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; }
+.behavior-detail-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; margin-bottom: 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
+.behavior-detail-resource { font-size: 15px; font-weight: 650; color: #0f172a; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.behavior-detail-time { color: #64748b; font-size: 12px; white-space: nowrap; }
+.behavior-detail-summary { margin: 0 2px 12px; padding: 11px 14px; border-left: 3px solid #6366f1; border-radius: 6px; background: #eef2ff; color: #3730a3; font-size: 13px; line-height: 1.6; }
+.behavior-change-title { display: flex; align-items: center; gap: 7px; font-weight: 600; color: #334155; margin-bottom: 9px; }
+.behavior-change-index { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 20px; border-radius: 5px; background: #e0e7ff; color: #4338ca; font-size: 11px; font-family: ui-monospace, monospace; }
+.behavior-change-type { color: #64748b; font-weight: 400; font-size: 12px; }
+.behavior-change-values { display: grid; grid-template-columns: 1fr 24px 1fr; gap: 10px; align-items: center; }
+.behavior-change-arrow { color: #94a3b8; text-align: center; font-size: 18px; }
+.behavior-change-values > div { min-width: 0; }
+.behavior-change-label { display: block; color: #64748b; font-size: 12px; margin-bottom: 4px; }
+.behavior-change-value { display: block; min-height: 20px; max-height: 180px; overflow: auto; padding: 8px 10px; background: #fff; border: 1px solid #e2e8f0; border-radius: 6px; color: #0f172a; white-space: pre-wrap; word-break: break-word; font-family: inherit; line-height: 1.55; }
+.behavior-before .behavior-change-value { background: #fff7ed; border-color: #fed7aa; color: #9a3412; }
+.behavior-after .behavior-change-value { background: #f0fdf4; border-color: #bbf7d0; color: #166534; }
+.behavior-pagination { display: flex; align-items: center; justify-content: space-between; padding: 14px 2px 0; color: #64748b; font-size: 13px; }
+.behavior-pagination :deep(.el-pagination) { padding: 0; }
+@media (max-width: 900px) {
+  .session-header { align-items: flex-start !important; flex-wrap: wrap; }
+  .session-header-actions { width: 100%; justify-content: flex-start; }
+  .session-header-actions :deep(.el-input) { flex: 1 1 180px; max-width: none; }
+  .session-header-actions :deep(.el-radio-group) { flex: 0 0 auto; }
+  .access-header { align-items: flex-start; flex-wrap: wrap; }
+  .record-type-switch { width: 100%; justify-content: flex-end; }
+  .record-type-hint { font-size: 11px; }
+  .behavior-panel { padding: 16px; }
+  .record-filters :deep(.el-input), .record-filters :deep(.el-select) { max-width: none; flex: 1 1 180px; }
+  .record-filters .access-date { flex: 1 1 180px; width: auto; }
+  .filter-buttons { margin-left: 0; width: 100%; }
+  .filter-buttons :deep(.el-button) { flex: 1; }
+}
 </style>
 
 

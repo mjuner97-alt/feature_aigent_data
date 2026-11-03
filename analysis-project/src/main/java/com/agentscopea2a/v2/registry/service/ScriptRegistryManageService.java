@@ -7,6 +7,7 @@ import com.agentscopea2a.v2.auth.mapper.DeveloperPlPersonInfoMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillDependencyMetricMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import com.agentscopea2a.v2.audit.ResourceChangeAuditService;
 
 import java.util.HashMap;
 import java.util.List;
@@ -30,15 +31,21 @@ public class ScriptRegistryManageService {
     private final DeveloperPlPersonInfoMapper personInfoMapper;
     private final SkillDependencyMetricMapper metricMapper;
     private final com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService;
+    private final ResourceChangeAuditService auditService;
+    private final ScriptSourceService sourceService;
 
     public ScriptRegistryManageService(ScriptRegistryMapper mapper,
                                        DeveloperPlPersonInfoMapper personInfoMapper,
                                        SkillDependencyMetricMapper metricMapper,
-                                       com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService) {
+                                       com.agentscopea2a.v2.auth.service.AdminRoleService adminRoleService,
+                                       ResourceChangeAuditService auditService,
+                                       ScriptSourceService sourceService) {
         this.mapper = mapper;
         this.personInfoMapper = personInfoMapper;
         this.metricMapper = metricMapper;
         this.adminRoleService = adminRoleService;
+        this.auditService = auditService;
+        this.sourceService = sourceService;
     }
 
     // ======================================================================
@@ -130,6 +137,8 @@ public class ScriptRegistryManageService {
             entry.setParamsSchema("[]");
         }
         mapper.insert(entry);
+        // 业务新增成功后追加一条 Python 脚本行为记录。
+        auditService.record("python_page", String.valueOf(entry.getId()), entry.getName(), "create", "新增 Python 脚本", userId, userId, List.of());
         return entry;
     }
 
@@ -140,6 +149,10 @@ public class ScriptRegistryManageService {
             throw new IllegalArgumentException("记录不存在: id=" + id);
         }
         assertOwner(existing.getCreatedBy(), userId);
+        String oldName = existing.getName();
+        String oldDescription = existing.getDescription();
+        String oldParamsSchema = existing.getParamsSchema();
+        String oldScriptId = existing.getScriptId();
 
         // 如果 script_id 有变更, 检查唯一性 (含禁用记录)
         if (patch.getScriptId() != null && !patch.getScriptId().equals(existing.getScriptId())) {
@@ -168,6 +181,15 @@ public class ScriptRegistryManageService {
         existing.setDefaultMetricIds(defaultMetricIds);
 
         mapper.update(existing);
+        // 根据本次请求实际修改的字段生成审计明细，避免记录未保存的内容。
+        var changes = new java.util.ArrayList<ResourceChangeAuditService.Change>();
+        if (patch.getScriptId() != null && !java.util.Objects.equals(patch.getScriptId(), oldScriptId)) changes.add(new ResourceChangeAuditService.Change("field", "", "", "script_id", "脚本标识", "update", oldScriptId, patch.getScriptId()));
+        if (patch.getName() != null && !java.util.Objects.equals(patch.getName(), oldName)) changes.add(new ResourceChangeAuditService.Change("field", "", "", "name", "脚本名称", "update", oldName, patch.getName()));
+        if (patch.getDescription() != null && !java.util.Objects.equals(patch.getDescription(), oldDescription)) changes.add(new ResourceChangeAuditService.Change("field", "", "", "description", "脚本描述", "update", oldDescription, patch.getDescription()));
+        if (patch.getParamsSchema() != null && !java.util.Objects.equals(patch.getParamsSchema(), oldParamsSchema)) changes.add(new ResourceChangeAuditService.Change("config", "", "", "params_schema", "参数配置", "update", oldParamsSchema, patch.getParamsSchema()));
+        // 无实际字段变更时不写审计事件，避免“打开编辑框直接保存”产生空记录。
+        if (changes.isEmpty()) return existing;
+        auditService.record("python_page", String.valueOf(id), existing.getName(), "update", "编辑 Python 脚本", userId, userId, changes);
         return existing;
     }
 
@@ -179,6 +201,16 @@ public class ScriptRegistryManageService {
         }
         assertOwner(existing.getCreatedBy(), userId);
         mapper.deleteById(id);
+        String source = sourceService.readOrEmpty(existing).content();
+        // 删除完成后保留历史审计记录，便于资源删除后追溯。
+        var changes = List.of(
+                new ResourceChangeAuditService.Change("field", "", "", "script_id", "脚本标识", "delete", existing.getScriptId(), "已删除"),
+                new ResourceChangeAuditService.Change("field", "", "", "description", "脚本描述", "delete", existing.getDescription(), "已删除"),
+                new ResourceChangeAuditService.Change("config", "", "", "params_schema", "参数配置", "delete", existing.getParamsSchema(), "已删除"));
+        changes = new java.util.ArrayList<>(changes);
+        changes.add(new ResourceChangeAuditService.Change("file", existing.getScriptPath(), existing.getScriptId(), "script_content", "脚本内容", "delete",
+                ResourceChangeAuditService.truncateForAudit(source.isBlank() ? "（无历史源码）" : source), "已删除"));
+        auditService.record("python_page", String.valueOf(id), existing.getName(), "delete", "删除 Python 脚本", userId, userId, changes);
     }
 
     public ScriptRegistryEntry requireOwner(Long id, String userId) {

@@ -6,6 +6,7 @@ import { batchUserNames, currentUserId } from '../api/skill';
 import type { SkillFlowSummary, FlowMetricPrecheck } from '../types/skillFlow';
 import { manualTriggerMessage } from './skillFlowExecutionPresentation';
 import { parseScheduleRules } from '../utils/scheduleRules';
+import { isAdmin } from '../utils/auth';
 
 const props = withDefaults(defineProps<{ scope?: 'mine' | 'all'; createdBy?: string }>(), { scope: 'mine', createdBy: '' });
 const me = currentUserId();
@@ -49,7 +50,7 @@ function autoTriggerDays(flow: SkillFlowSummary) {
   const days = [['MON', '周一'], ['TUE', '周二'], ['WED', '周三'], ['THU', '周四'], ['FRI', '周五'], ['SAT', '周六'], ['SUN', '周日']];
   return days.filter(([day]) => day in rules).map(([, label]) => label).join('、') || '每天';
 }
-function isOwner(flow: SkillFlowSummary) { return flow.createdBy === me || flow.canExecute; }
+function isOwner(flow: SkillFlowSummary) { return isAdmin() || flow.createdBy === me || flow.canExecute; }
 function canRun(flow: SkillFlowSummary) { return flow.canExecute; }
 function changePageSize(size: number) { pageSize.value = size; page.value = 1; void fetchPage(); }
 function changePage(value: number) { page.value = value; void fetchPage(); }
@@ -242,6 +243,7 @@ watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.v
 .metric-detail-table th, .metric-detail-table td { padding: 10px 8px; border-bottom: 1px solid #e2e8f0; text-align: left; }
 .metric-code { display: block; margin-top: 3px; color: #94a3b8; font-size: 11px; }
 </style>
+
 
 
 

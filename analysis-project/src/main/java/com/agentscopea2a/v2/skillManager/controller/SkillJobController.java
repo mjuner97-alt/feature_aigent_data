@@ -17,6 +17,7 @@ import com.agentscopea2a.v2.skillManager.dto.SkillJobReportUpdateRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillJobUpdateRequest;
 import com.agentscopea2a.v2.skillManager.service.SkillJobService;
 import com.agentscopea2a.v2.skillManager.service.NotificationLinkClickService;
+import com.agentscopea2a.v2.auth.service.AdminRoleService;
 import com.agentscopea2a.v2.skillManager.dto.NotificationLinkClickFilterRequest;
 import com.agentscopea2a.v2.skillManager.dto.NotificationLinkClickSummaryDto;
 import com.agentscopea2a.v2.util.DownloadErrorPage;
@@ -53,10 +54,12 @@ public class SkillJobController {
     private final SkillJobService service;
     private final UrlShortenerService urlShortenerService;
     private NotificationLinkClickService linkClickService;
+    private final AdminRoleService adminRoleService;
 
-    public SkillJobController(SkillJobService service, UrlShortenerService urlShortenerService) {
+    public SkillJobController(SkillJobService service, UrlShortenerService urlShortenerService, AdminRoleService adminRoleService) {
         this.service = service;
         this.urlShortenerService = urlShortenerService;
+        this.adminRoleService = adminRoleService;
     }
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setNotificationLinkClickService(NotificationLinkClickService service) { this.linkClickService = service; }
@@ -100,7 +103,7 @@ public class SkillJobController {
             @RequestHeader("X-User-Id") String userId, NotificationLinkClickFilterRequest filter) {
         if (linkClickService == null) return List.of();
         SkillJobExecutionDto execution = service.getExecution(execId);
-        if (execution.createdBy() != null && !execution.createdBy().equals(userId)) {
+        if (execution.createdBy() != null && !execution.createdBy().equals(userId) && !adminRoleService.isAdminUserId(userId)) {
             throw new org.springframework.web.server.ResponseStatusException(HttpStatus.FORBIDDEN, "无权查看该任务访问明细");
         }
         return linkClickService.jobSummary(execId, filter);

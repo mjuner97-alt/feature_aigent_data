@@ -31,14 +31,17 @@ public class ScriptRegistryController {
     private final ScriptSourceService sourceService;
     private final ScriptDebugService debugService;
     private final com.agentscopea2a.mapper.gauss.ScriptRegistryMapper mapper;
+    private final com.agentscopea2a.v2.audit.ResourceChangeAuditService auditService;
 
     public ScriptRegistryController(ScriptRegistryManageService service, ScriptSourceService sourceService,
                                     ScriptDebugService debugService,
-                                    com.agentscopea2a.mapper.gauss.ScriptRegistryMapper mapper) {
+                                    com.agentscopea2a.mapper.gauss.ScriptRegistryMapper mapper,
+                                    com.agentscopea2a.v2.audit.ResourceChangeAuditService auditService) {
         this.service = service;
         this.sourceService = sourceService;
         this.debugService = debugService;
         this.mapper = mapper;
+        this.auditService = auditService;
     }
 
     // ==================== CRUD ====================
@@ -112,8 +115,19 @@ public class ScriptRegistryController {
                                                                @RequestHeader("X-User-Id") String userId) {
         ScriptRegistryEntry entry = mapper.selectById(id);
         if (entry == null) return ResponseEntity.notFound().build();
+        // 保存前读取旧内容，内容真正变化时把前后全量源码写入行为记录（ClickHouse String 无长度限制，表有 2 个月 TTL）。
+        String oldContent = sourceService.readOrEmpty(entry).content();
         try {
             var source = sourceService.save(entry, request.content(), request.expectedContentHash());
+            if (!source.content().equals(oldContent)) {
+                var change = new com.agentscopea2a.v2.audit.ResourceChangeAuditService.Change(
+                        "file", entry.getScriptPath(), entry.getScriptId(), "script_content", "脚本内容",
+                        "update",
+                        com.agentscopea2a.v2.audit.ResourceChangeAuditService.truncateForAudit(
+                                oldContent.isBlank() ? "（无历史源码）" : oldContent),
+                        com.agentscopea2a.v2.audit.ResourceChangeAuditService.truncateForAudit(source.content()));
+                auditService.record("python_page", String.valueOf(id), entry.getName(), "update", "编辑 Python 脚本内容", userId, userId, List.of(change));
+            }
             return ResponseEntity.ok(new ScriptSourceResponse(source.scriptId(), source.scriptPath(), source.content(),
                     source.contentHash(), java.time.Instant.now().toString()));
         } catch (ScriptSourceService.SourceHashConflictException e) {
@@ -163,3 +177,4 @@ public class ScriptRegistryController {
         return ResponseEntity.noContent().build();
     }
 }
+

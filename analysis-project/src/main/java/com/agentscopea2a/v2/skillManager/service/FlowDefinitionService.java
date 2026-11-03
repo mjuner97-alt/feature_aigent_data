@@ -13,6 +13,8 @@ import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.skillManager.mapper.SkillMapper;
 import com.agentscopea2a.v2.skillManager.notification.NotificationReceivers;
 import com.agentscopea2a.v2.skillManager.notification.NotificationContact;
+import com.agentscopea2a.v2.auth.service.AdminRoleService;
+import com.agentscopea2a.v2.audit.ResourceChangeAuditService;
 import com.agentscopea2a.mapper.gauss.ScriptRegistryMapper;
 import com.agentscopea2a.entity.ScriptRegistryEntry;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -63,13 +65,17 @@ public class FlowDefinitionService {
     private final ObjectMapper objectMapper;
     private final NotificationRecipientService recipientService;
     private final ScriptParamRuleService paramRuleService;
+    private final AdminRoleService adminRoleService;
+    private final ResourceChangeAuditService auditService;
 
     public FlowDefinitionService(SkillFlowMapper flowMapper, SkillMapper skillMapper,
                                  SkillDependencyMetricMapper metricMapper, MockOrgService orgService,
                                  @Qualifier("skillFlowClock") Clock skillFlowClock,
                                  ScriptRegistryMapper scriptRegistryMapper, ObjectMapper objectMapper,
                                  NotificationRecipientService recipientService,
-                                 ScriptParamRuleService paramRuleService) {
+                                 ScriptParamRuleService paramRuleService,
+                                 AdminRoleService adminRoleService,
+                                 ResourceChangeAuditService auditService) {
         this.flowMapper = flowMapper;
         this.skillMapper = skillMapper;
         this.metricMapper = metricMapper;
@@ -79,6 +85,8 @@ public class FlowDefinitionService {
         this.objectMapper = objectMapper;
         this.recipientService = recipientService;
         this.paramRuleService = paramRuleService;
+        this.adminRoleService = adminRoleService;
+        this.auditService = auditService;
     }
 
     /** 创建流程;code 缺省自动生成,enabled=true 时先做完整性校验。 */
@@ -96,6 +104,8 @@ public class FlowDefinitionService {
         replaceChildren(flow.getId(), request, userId);
         replaceExecutors(flow.getId(), request.executors(), userId);
         if (request.notifySettings() != null) updateNotifySettings(flow.getId(), request.notifySettings(), userId);
+        auditService.record("long_task_flow", String.valueOf(flow.getId()), flow.getName(), "create", "新增长任务编排", userId, userId,
+                flowChanges(null, request));
         return get(flow.getId(), userId);
     }
 
@@ -127,6 +137,8 @@ public class FlowDefinitionService {
             // TODO 通知开发人员:公开流程已被修改并自动退出公开,需审核后重新开通(接入内部通知系统后实现)。
             log.warn("[Flow] public flow auto-exited public on update: flowId={}, name={}, owner={}", id, updated.getName(), userId);
         }
+        List<ResourceChangeAuditService.Change> auditChanges = flowChanges(existing, request);
+        auditService.record("long_task_flow", String.valueOf(id), updated.getName(), "update", "编辑长任务编排", userId, userId, auditChanges);
         return get(id, userId);
     }
 
@@ -139,16 +151,51 @@ public class FlowDefinitionService {
         }
         flowMapper.updateFlowEnabled(id, enabled);
         flow.setEnabled(enabled);
+        auditService.record("long_task_flow", String.valueOf(id), flow.getName(), "update", "更新长任务启用状态", userId, userId,
+                List.of(new ResourceChangeAuditService.Change("field", "", "", "enabled", "启用状态", "update",
+                        Boolean.toString(!enabled), Boolean.toString(enabled))));
         return toDto(flow);
     }
 
     /** 软删除流程。 */
     @Transactional("gaussCustomerTransactionManager")
     public void delete(Long id, String userId) {
-        requireOwner(id, userId);
+        SkillFlow existing = requireOwner(id, userId);
         flowMapper.deleteTriggersByFlowId(id);
         flowMapper.deleteExecutorsByFlowId(id);
         flowMapper.softDeleteFlow(id);
+        auditService.record("long_task_flow", String.valueOf(id), existing.getName(), "delete", "删除长任务编排", userId, userId,
+                List.of(new ResourceChangeAuditService.Change("resource", String.valueOf(id), existing.getName(), "flow", "长任务编排", "delete", existing.getName(), "已删除")));
+    }
+
+    private List<ResourceChangeAuditService.Change> flowChanges(SkillFlow old, SkillFlowDefinitionRequest n) {
+        List<ResourceChangeAuditService.Change> out = new ArrayList<>();
+        String beforeSnapshot = old == null ? null : snapshot(toRequest(old, old.getId()));
+        String afterSnapshot = snapshot(n);
+        out.add(new ResourceChangeAuditService.Change("resource", old == null ? "" : String.valueOf(old.getId()), n.name(), "definition", "长任务完整配置", old == null ? "create" : "update",
+                beforeSnapshot == null ? "（初始）" : beforeSnapshot, afterSnapshot));
+        addFlowChange(out, "name", "流程名称", old == null ? null : old.getName(), n.name());
+        addFlowChange(out, "description", "描述", old == null ? null : old.getDescription(), n.description());
+        addFlowChange(out, "task_question", "任务问题", old == null ? null : old.getTaskQuestion(), n.taskQuestion());
+        addFlowChange(out, "triggers", "触发关键词", old == null ? null : "已配置", n.triggers().isEmpty() ? null : "已配置");
+        addFlowChange(out, "nodes", "执行节点", old == null ? null : "已配置", n.nodes().isEmpty() ? null : "已配置");
+        addFlowChange(out, "enabled", "启用状态", old == null ? null : old.getEnabled(), n.enabled());
+        return out;
+    }
+
+    private String snapshot(Object value) {
+        try {
+            return ResourceChangeAuditService.truncateForAudit(objectMapper.writeValueAsString(value));
+        } catch (JsonProcessingException ex) {
+            return "（配置序列化失败：" + ex.getMessage() + "）";
+        }
+    }
+
+    private static void addFlowChange(List<ResourceChangeAuditService.Change> out, String field, String label, Object old, Object now) {
+        String before = old == null ? null : String.valueOf(old), after = now == null ? null : String.valueOf(now);
+        if (Objects.equals(before, after)) return;
+        out.add(new ResourceChangeAuditService.Change("field", "", "", field, label, old == null ? "create" : now == null ? "delete" : "update",
+                before == null ? "（初始）" : before, after == null ? "已删除" : after));
     }
 
     /** 流程列表;筛选语义与独立任务一致,写操作仍由 owner 校验保护。 */
@@ -554,7 +601,8 @@ public class FlowDefinitionService {
 
     private SkillFlow toFlow(SkillFlowDefinitionRequest request, String createdBy, String existingCode) {
         String code = trim(existingCode).isEmpty() ? "flow-" + UUID.randomUUID() : existingCode;
-        return SkillFlow.builder().code(code).name(trim(request.name())).description(request.description())
+        // 兼容旧版流程编辑器未提交 typeId：迁移默认类型“其他”(id=1)作为兜底，避免新增流程因 type_id 非空约束失败。
+        return SkillFlow.builder().typeId(1L).code(code).name(trim(request.name())).description(request.description())
                 .taskQuestion(trim(request.taskQuestion()))
                 .summaryQuestionTemplate(request.summaryQuestionTemplate())
                 .reportOutline(serializeOutline(request.reportOutline()))
@@ -624,7 +672,7 @@ public class FlowDefinitionService {
     /** 写操作允许创建人或被授权的可执行人。 */
     private SkillFlow requireOwner(Long id, String userId) {
         SkillFlow flow = requireReadable(id, userId);
-        if (!userId.equals(flow.getCreatedBy()) && !flowMapper.selectExecutorIdsByFlowId(id).contains(userId)) {
+        if (!adminRoleService.isAdminUserId(userId) && !userId.equals(flow.getCreatedBy()) && !flowMapper.selectExecutorIdsByFlowId(id).contains(userId)) {
             throw new IllegalStateException("FlowAccessDenied: only the owner or an authorized executor may modify this flow");
         }
         return flow;

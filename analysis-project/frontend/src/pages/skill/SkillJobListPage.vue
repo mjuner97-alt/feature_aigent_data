@@ -11,6 +11,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { downloadExecutionFile, getExecutionReportContent, getExecution, listJobPage, listExecutionCenterPage, deleteJob, retryExecution, triggerJob, updateJob, viewExecutionFile } from '../../api/skillJob';
 import { copyReportContent } from '../../utils/reportClipboard';
 import { currentUserId } from '../../api/skill';
+import { isAdmin } from '../../utils/auth';
 import type { SkillJobSummary, SkillJobExecutionSummary } from '../../types/skillJob';
 import SkillJobExecutionDrawer from '../../components/SkillJobExecutionDrawer.vue';
 import SkillJobNotificationDrawer from '../../components/SkillJobNotificationDrawer.vue';
@@ -21,7 +22,7 @@ const me = currentUserId();
 const route = useRoute();
 const router = useRouter();
 function isOwner(job: SkillJobSummary) {
-  return job.createdBy === me;
+  return job.createdBy === me || isAdmin();
 }
 
 // 创建人展示:有姓名时显示"姓名 (userId)",否则仅 userId
@@ -41,6 +42,7 @@ const activeTab = ref<JobTab>(['manage', 'flows', 'execution', 'flow-execution']
 const visibilityScope = ref<'mine' | 'all'>('mine');
 const scopeCreatedBy = ref('');
 const flowKeyword = ref('');
+const flowEnabledFilter = ref<boolean | null>(null);
 const flowListRef = ref<InstanceType<typeof SkillFlowList> | null>(null);
 const flowExecutionListRef = ref<InstanceType<typeof SkillFlowExecutionList> | null>(null);
 const flowExecutionKeyword = ref('');
@@ -137,7 +139,7 @@ function openExecutionCenter() {
 }
 
 function filterFlows() {
-  flowListRef.value?.load(flowKeyword.value.trim(), effectiveCreatedBy.value || '', undefined, visibilityScope.value);
+  flowListRef.value?.load(flowKeyword.value.trim(), effectiveCreatedBy.value || '', flowEnabledFilter.value ?? undefined, visibilityScope.value);
 }
 
 function createFlow() {
@@ -192,7 +194,7 @@ function executionCreatorLabel(exec: SkillJobExecutionSummary): string {
 
 function openNotifications(exec: SkillJobExecutionSummary) {
   notifyExecId.value = exec.id;
-  notifyCanResend.value = exec.createdBy === me && exec.status === 'SUCCESS' && !!exec.mdFileExists;
+  notifyCanResend.value = (exec.createdBy === me || isAdmin()) && exec.status === 'SUCCESS' && !!exec.mdFileExists;
   notifyOpen.value = true;
 }
 
@@ -357,6 +359,9 @@ function metricTitle(job: SkillJobSummary): string {
         </div>
         <input v-if="visibilityScope === 'all'" v-model="scopeCreatedBy" placeholder="创建人 userId" class="search-input creator-input" @keyup.enter="refreshCurrentTab" />
         <input v-if="activeTab === 'flows'" v-model="flowKeyword" placeholder="搜索流程名称" class="search-input" @keyup.enter="refreshCurrentTab" />
+        <select v-if="activeTab === 'flows'" v-model="flowEnabledFilter" class="filter-select" @change="filterFlows">
+          <option :value="null">全部状态</option><option :value="true">启用</option><option :value="false">禁用</option>
+        </select>
         <input v-if="activeTab === 'flow-execution'" v-model="flowExecutionKeyword" placeholder="搜索任务名称" class="search-input" @keyup.enter="flowExecutionListRef?.load('', effectiveCreatedBy || '', false, visibilityScope)" />
         <input v-if="activeTab === 'manage'" v-model="keyword" placeholder="搜索任务名称" class="search-input" @keyup.enter="filterJobs" />
         <select v-if="activeTab === 'manage'" v-model="enabledFilter" class="filter-select" @change="filterJobs">
@@ -408,14 +413,14 @@ function metricTitle(job: SkillJobSummary): string {
               <td>#{{ exec.id }}</td>
               <td class="col-actions">
                 <button v-if="exec.hasError" class="btn-action" @click="showExecutionError(exec)">错误详情</button>
-                <button v-if="exec.status === 'FAILED'" class="btn-action trigger" :disabled="exec.createdBy !== me || retryingExecutions.has(exec.id)" :title="exec.createdBy === me ? '重新执行此任务' : '仅任务创建人可重试'" @click="retryCenterExecution(exec)">
+                <button v-if="exec.status === 'FAILED'" class="btn-action trigger" :disabled="(!isAdmin() && exec.createdBy !== me) || retryingExecutions.has(exec.id)" :title="exec.createdBy === me ? '重新执行此任务' : '仅任务创建人可重试'" @click="retryCenterExecution(exec)">
                   {{ retryingExecutions.has(exec.id) ? '排队中…' : '重试' }}
                 </button>
                 <template v-if="exec.mdFileExists">
                   <button class="btn-action with-icon" :disabled="viewing.has(exec.id)" title="预览报告" @click="viewCenterReport(exec)">
                     <el-icon><View /></el-icon><span>{{ viewing.has(exec.id) ? '打开中…' : '预览' }}</span>
                   </button>
-                  <button v-if="exec.createdBy === me" class="btn-action with-icon" title="编辑 HTML" @click="editCenterReport(exec)">
+                  <button v-if="(exec.createdBy === me || isAdmin())" class="btn-action with-icon" title="编辑 HTML" @click="editCenterReport(exec)">
                     <el-icon><EditPen /></el-icon><span>编辑</span>
                   </button>
                   <button class="btn-action with-icon" :disabled="downloading.has(exec.id)" title="下载 HTML" @click="downloadCenterReport(exec)">
@@ -423,7 +428,7 @@ function metricTitle(job: SkillJobSummary): string {
                   </button>
                   <button class="btn-action" :disabled="copying.has(exec.id)" title="复制正文及格式" @click="copyCenterReport(exec)">{{ copying.has(exec.id) ? '复制中…' : '复制内容' }}</button>
                 </template>
-                <button v-if="exec.createdBy === me" class="btn-action" title="查看通知记录并手动发送" @click="openNotifications(exec)">通知记录</button>
+                <button v-if="(exec.createdBy === me || isAdmin())" class="btn-action" title="查看通知记录并手动发送" @click="openNotifications(exec)">通知记录</button>
               </td>
             </tr>
           </tbody>
@@ -599,5 +604,3 @@ function metricTitle(job: SkillJobSummary): string {
 }
 
 </style>
-
-

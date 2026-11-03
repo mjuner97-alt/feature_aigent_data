@@ -220,7 +220,7 @@ public class SkillJobService {
             throw new IllegalStateException("JobNotFound: 任务不存在 (id=" + id + ")");
         }
         // 仅 createdBy 本人可修改
-        if (!userId.equals(job.getCreatedBy())) {
+        if (!userId.equals(job.getCreatedBy()) && !adminRoleService.isAdminUserId(userId)) {
             throw new IllegalStateException("JobAccessDenied: 仅创建人可修改此任务 (id=" + id + ")");
         }
         // createdBy 不可变：不再覆盖（此前 update 会把 createdBy 改成当前操作人，属越权改写）
@@ -284,7 +284,7 @@ public class SkillJobService {
         if (job == null) {
             throw new IllegalStateException("JobNotFound: 任务不存在 (id=" + id + ")");
         }
-        if (!userId.equals(job.getCreatedBy())) {
+        if (!userId.equals(job.getCreatedBy()) && !adminRoleService.isAdminUserId(userId)) {
             throw new IllegalStateException("JobAccessDenied: 仅创建人可删除此任务 (id=" + id + ")");
         }
         mapper.deleteJobById(id);
@@ -330,7 +330,7 @@ public class SkillJobService {
         if (job == null) {
             throw new IllegalStateException("JobNotFound: 任务不存在 (id=" + id + ")");
         }
-        if (userId == null || !userId.equals(job.getCreatedBy())) {
+        if (userId == null || !userId.equals(job.getCreatedBy()) && !adminRoleService.isAdminUserId(userId)) {
             throw new IllegalStateException("JobAccessDenied: 仅创建人可管理通知设置 (id=" + id + ")");
         }
         return job;
@@ -349,7 +349,7 @@ public class SkillJobService {
         if (job == null) {
             throw new IllegalStateException("JobNotFound: 任务不存在 (id=" + jobId + ")");
         }
-        if (!userId.equals(job.getCreatedBy())) {
+        if (!userId.equals(job.getCreatedBy()) && !adminRoleService.isAdminUserId(userId)) {
             throw new IllegalStateException("JobAccessDenied: 仅创建人可手动触发此任务 (id=" + jobId + ")");
         }
         SkillJobExecution exec = SkillJobExecution.builder()
@@ -376,7 +376,7 @@ public class SkillJobService {
             throw new IllegalStateException("ExecutionNotRetryable: 仅失败记录可以重试 (id=" + execId + ")");
         }
         SkillJob job = mapper.selectJobById(execution.getJobId());
-        if (job == null || !userId.equals(job.getCreatedBy())) {
+        if (job == null || !userId.equals(job.getCreatedBy()) && !adminRoleService.isAdminUserId(userId)) {
             throw new IllegalStateException("JobAccessDenied: 仅创建人可重试此任务 (id=" + execId + ")");
         }
         java.time.LocalDateTime now = java.time.LocalDateTime.now();
@@ -864,3 +864,5 @@ public class SkillJobService {
 
     private record OwnedReport(Path primary, Path backup, String relativePath) {}
 }
+
+

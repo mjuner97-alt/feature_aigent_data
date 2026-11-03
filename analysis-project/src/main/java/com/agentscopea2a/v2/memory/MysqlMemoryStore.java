@@ -87,14 +87,31 @@ public class MysqlMemoryStore {
                         + "  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,"
                         + "  KEY idx_user_date (user_id, date_key, id)"
                         + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
-        try (Connection c = dataSource.getConnection();
-                Statement st = c.createStatement()) {
-            st.execute(memoryDdl);
-            st.execute(ledgerDdl);
-            log.info("agent_memory + agent_memory_ledger tables ensured");
-        } catch (SQLException e) {
-            throw new RuntimeException("Failed to init memory tables", e);
+        SQLException last = null;
+        for (int attempt = 1; attempt <= 5; attempt++) {
+            try (Connection c = dataSource.getConnection();
+                    Statement st = c.createStatement()) {
+                st.execute(memoryDdl);
+                st.execute(ledgerDdl);
+                log.info("agent_memory + agent_memory_ledger tables ensured");
+                return;
+            } catch (SQLException e) {
+                last = e;
+                if (attempt == 5) {
+                    break;
+                }
+                long delayMs = attempt * 1000L;
+                log.warn("Unable to initialize memory tables (attempt {}/5): {}; retrying in {} ms",
+                        attempt, e.getMessage(), delayMs);
+                try {
+                    Thread.sleep(delayMs);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("Interrupted while initializing memory tables", interrupted);
+                }
+            }
         }
+        throw new RuntimeException("Failed to init memory tables", last);
     }
 
     /**

@@ -7,16 +7,34 @@ const CASE_PATHS = {
   delete: '/skillRecord/delete',
 } as const;
 
+// 配置地址在一次页面生命周期内不会变化，避免每次案例查询都重复读取慢接口。
+let caseBaseUrlPromise: Promise<string> | null = null;
+
 export interface ConversationCase {
   conversationId: string;
 }
 
 async function resolveCaseBaseUrl(): Promise<string> {
-  const response = await fetch(`/api/runtime-config/${CONFIG_KEY}`);
-  if (!response.ok) throw await apiError(response, '读取案例接口配置失败');
-  const data = await response.json() as { configValue?: string };
-  if (!data.configValue) throw new Error('案例接口地址未配置');
-  return data.configValue.trim().replace(/\/+$/, '');
+  if (!caseBaseUrlPromise) {
+    caseBaseUrlPromise = (async () => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 3000);
+      try {
+        const response = await fetch(`/api/runtime-config/${CONFIG_KEY}`, { signal: controller.signal });
+        if (!response.ok) throw await apiError(response, '读取案例接口配置失败');
+        const data = await response.json() as { configValue?: string };
+        if (!data.configValue) throw new Error('案例接口地址未配置');
+        return data.configValue.trim().replace(/\/+$/, '');
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    })().catch(error => {
+      // 配置读取失败时允许后续用户操作再次尝试，而不是永久缓存失败 Promise。
+      caseBaseUrlPromise = null;
+      throw error;
+    });
+  }
+  return caseBaseUrlPromise;
 }
 
 async function postCaseOperation(endpoint: keyof typeof CASE_PATHS, body: object, fallback: string): Promise<Response> {
