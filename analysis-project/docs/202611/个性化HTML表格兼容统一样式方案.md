@@ -172,6 +172,14 @@ print(render_html_custom(format_df_for_html(show_df), title="Q2-1 部门版本�
 4. **th 去 nowrap**，td 改 `word-break:break-word + overflow-wrap:anywhere`
    （对齐 REPORT_CSS 的 `white-space:normal` + `overflow-wrap:anywhere`），
    宽表不横向撑破，滚动容器兜底保留。
+5. **背景透明 + 表格贴内容收缩**（内网二次反馈）：前端 fragment iframe 是透明设计
+   （Markdown.vue `.fragment-frame` + `wrapFragmentDoc` 的 `background:transparent`），
+   统一样式给 `#report` 画白底会在表格右侧显出大片白色空白区。修订：
+   `#report` 去掉 `background:#fff`（透出前端主题底色）；
+   `table` 从 `width:100%` 改为 REPORT_CSS 同款
+   `width:max-content !important; min-width:0 !important; max-width:100% !important`
+   （"按内容宽度显示，不强行铺满页面"），白色只留在实际单元格区域，表格收缩成
+   左侧白色卡片，右侧透出聊天底色。单元格白底保留保证可读性。
 
 **使用约束放宽**：完整文档独占输出仍是最佳实践，但不再是防泄漏的唯一防线
 （`#report` 作用域兜底）；fragment 混排依旧推荐。

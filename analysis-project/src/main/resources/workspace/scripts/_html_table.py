@@ -18,10 +18,14 @@ CSS = """
 #report * { box-sizing: border-box; }
 #report {
   font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
-  background:#fff; color:#333; padding:16px;
+  color:#333; padding:16px; /* 背景透明: 前端 iframe 是透明设计, 白底会在表格右侧显出大片空白 */
 }
 #report .table-wrap { overflow-x:auto; width:100%; }
-#report table { border-collapse: collapse !important; background:#ffffff !important; width:100% !important; max-width:100% !important; margin:10px 0; }
+#report table {
+  border-collapse: collapse !important; background:#ffffff !important;
+  width: max-content !important; /* 贴内容收缩, 不强行铺满 (对齐 HtmlReportRenderer) */
+  min-width: 0 !important; max-width:100% !important; margin:10px 0;
+}
 #report th {
   background: rgb(192, 0, 0) !important; color:#fff !important; font-weight:600 !important;
   padding:8px 14px !important; border:1px solid #bfbfbf !important; text-align:center !important;
