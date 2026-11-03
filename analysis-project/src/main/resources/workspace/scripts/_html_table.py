@@ -12,12 +12,35 @@ import html as _html
 import pandas as pd
 
 CSS = """
-body  { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; background:#fff; margin:16px; color:#333; }
-.table-wrap { overflow-x:auto; width:100%; }
-table { border-collapse: collapse; background:#ffffff; width:100%; }
-th    { background: rgb(192, 0, 0); color:#fff; font-weight:600; padding:8px 12px; border:1px solid #c00000; text-align:center; }
-td    { background:#ffffff; color:#333; padding:8px 12px; border:1px solid #d9d9d9; max-width:480px; word-break:break-all; }
-tr:nth-child(even) td { background:#fafafa; }
+/* 全部规则挂在 #report 作用域 (含 box-sizing): 即使整份 HTML 被误注入其他页面
+   (v-html 路径), 选择器匹配不到元素, 样式零泄漏 — 对齐 HtmlReportRenderer 设计 */
+#report { box-sizing: border-box; }
+#report * { box-sizing: border-box; }
+#report {
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  color:#333; padding:16px; /* 背景透明: 前端 iframe 是透明设计, 白底会在表格右侧显出大片空白 */
+}
+#report .table-wrap { overflow-x:auto; width:100%; }
+#report table {
+  border-collapse: collapse !important; background:#ffffff !important;
+  width: max-content !important; /* 贴内容收缩, 不强行铺满 (对齐 HtmlReportRenderer) */
+  min-width: 0 !important; max-width:100% !important; margin:10px 0;
+}
+#report th {
+  background: rgb(192, 0, 0) !important; color:#fff !important; font-weight:600 !important;
+  padding:8px 14px !important; border:1px solid #bfbfbf !important; text-align:center !important;
+}
+#report td {
+  color:#333; /* 不加 important, 保留业务数据标红等个性标记 */
+  padding:6px 12px !important; border:1px solid #bfbfbf !important; text-align:center !important;
+  word-break:break-word; overflow-wrap:anywhere;
+}
+#report tr:nth-child(even) td { background:#fafafa !important; }
+#report tr:hover td { background:#fff3e0 !important; }
+#report tr.summary-row td { font-weight:600 !important; background:#f0f0f0 !important; }
+#report td.rowhead { text-align:left !important; }
+#report td.red, #report .red { color:red !important; }
+#report .section-title-sm { font-size:1rem; margin-top:16px; margin-bottom:6px; color:#000; }
 """
 
 DOC_TEMPLATE = """<!DOCTYPE html>
@@ -33,6 +56,27 @@ DOC_TEMPLATE = """<!DOCTYPE html>
 </html>"""
 
 
+def _title_html(title):
+    return (
+        f'<div class="section-title-sm">{_html.escape(str(title))}</div>'
+        if title
+        else ""
+    )
+
+
+def _assemble(inner, title, fragment):
+    body = (
+        '<div id="report">\n'
+        f'<div class="table-wrap">\n{_title_html(title)}{inner}\n</div>\n'
+        '</div>'
+    )
+    if fragment:
+        return f"<style>{CSS}</style>\n{body}"
+    return DOC_TEMPLATE.format(
+        title=_html.escape(str(title)) if title else "数据表格", css=CSS, body=body
+    )
+
+
 def render_html_table(df, title=None, fragment=False):
     """df -> 统一样式 HTML 表格.
 
@@ -45,15 +89,17 @@ def render_html_table(df, title=None, fragment=False):
     safe = df.fillna("").astype(str).apply(
         lambda col: col.str.replace("\n", " ", regex=False))
     table_html = safe.to_html(index=False, border=0, na_rep="", escape=True)
+    return _assemble(table_html, title, fragment)
 
-    title_html = f"<h3>{_html.escape(str(title))}</h3>" if title else ""
-    body = (
-        f'<div class="table-wrap">\n{title_html}{table_html}\n</div>'
-        if title_html
-        else f'<div class="table-wrap">\n{table_html}\n</div>'
-    )
-    if fragment:
-        return f"<style>{CSS}</style>\n{body}"
-    return DOC_TEMPLATE.format(
-        title=_html.escape(str(title)) if title else "数据表格", css=CSS, body=body
-    )
+
+def render_html_custom(body_html, title=None, fragment=False):
+    """现成 HTML 表体 -> 统一外壳 (统一 CSS + table-wrap + 文档/片段两档).
+
+    个性化表格的兼容出口: body_html 原样嵌入, 外壳样式由本模块统一维护.
+    统一样式用 !important 压制个性化内联样式 (对齐 HtmlReportRenderer REPORT_CSS,
+    内联红头/灰头都会被强制成统一红头); 个性化只保留在非受管属性 (td color) 和
+    语义类: tr.summary-row / td.rowhead / td.red.
+    全部规则挂在 #report 作用域, 整份 HTML 被误注入其他页面时样式零泄漏.
+    body_html 为信任输入不转义 — 单元格值的 html.escape 由调用方负责.
+    参考 docs/202611/个性化HTML表格兼容统一样式方案.md."""
+    return _assemble(body_html, title, fragment)

@@ -129,11 +129,11 @@ def main():
         "值": [str(total), str(scored), str(passed),
                f"{scored_pct:g}%", f"{passed_pct:g}%"],
     })
-    print("```html")
-    print(render_html_table(show_df, title="Q2-1 汇总", fragment=True))
-    print("```")
+#     print("```html")
+#     print(render_html_table(show_df, title="Q2-1 汇总", fragment=True))
+#     print("```")
     # 完整文档模式示例 (最简调用, df 一个参数即可):
-    #   print(render_html_table(show_df))
+    print(render_html_table(show_df))
     # 注意: 该模式输出 <!DOCTYPE html> 整页, 必须【独占整次 stdout】才能被前端
     #   Markdown.vue 识别并进 iframe 渲染 — 启用时须删掉本脚本其余所有 print,
     #   不能与上面 markdown/json/echarts/围栏共存.

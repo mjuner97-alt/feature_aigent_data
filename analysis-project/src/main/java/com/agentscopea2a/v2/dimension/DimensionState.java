@@ -43,6 +43,12 @@ public class DimensionState implements State {
     /** 人（可有多个） */
     private List<String> persons;
 
+    /** 需求项精确编码（盲区修复方案 §3）：不占 peer 槽位，与应用码共存；生命周期随 peerDimension */
+    private List<String> requirementNos;
+
+    /** 需求子条目精确编码（盲区修复方案 §3）：同 requirementNos 口径 */
+    private List<String> subRequirementNos;
+
     /** 待确认的歧义反问（docs/dimension-alias-config-plan.md §6.3）；流程控制状态，不参与指纹/等值 */
     private PendingClarification pendingClarification;
 
@@ -90,6 +96,22 @@ public class DimensionState implements State {
 
     public void setPersons(List<String> persons) {
         this.persons = persons;
+    }
+
+    public List<String> getRequirementNos() {
+        return requirementNos;
+    }
+
+    public void setRequirementNos(List<String> requirementNos) {
+        this.requirementNos = requirementNos;
+    }
+
+    public List<String> getSubRequirementNos() {
+        return subRequirementNos;
+    }
+
+    public void setSubRequirementNos(List<String> subRequirementNos) {
+        this.subRequirementNos = subRequirementNos;
     }
 
     public PendingClarification getPendingClarification() {
