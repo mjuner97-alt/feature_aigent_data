@@ -173,13 +173,14 @@ export async function runSkillFlow(id: number): Promise<SkillFlowRunResult> {
   return res.json();
 }
 
-export async function listSkillFlowExecutions(status?: string, createdBy?: string, scope: 'mine' | 'all' = 'mine', page = 1, pageSize = 20, source?: 'long-task' | 'report-template', keyword?: string): Promise<{ items: SkillFlowExecution[]; page: number; pageSize: number; total: number }> {
+export async function listSkillFlowExecutions(status?: string, createdBy?: string, scope: 'mine' | 'all' = 'mine', page = 1, pageSize = 20, source?: 'long-task' | 'report-template', keyword?: string, triggerType?: string): Promise<{ items: SkillFlowExecution[]; page: number; pageSize: number; total: number }> {
   const qs = new URLSearchParams();
   if (status) qs.set('status', status);
   if (createdBy) qs.set('createdBy', createdBy);
   qs.set('scope', scope);
   qs.set('page', String(page)); qs.set('pageSize', String(pageSize));
   if (source) qs.set('source', source);
+  if (triggerType) qs.set('triggerType', triggerType);
   if (keyword) qs.set('keyword', keyword);
   const res = await fetch(`${EXECUTION_BASE}?${qs}`, { headers: authHeaders() });
   if (!res.ok) throw await requestError(res, '查询执行记录失败');
@@ -308,8 +309,9 @@ export async function saveFlowReportSource(id: number, html: string): Promise<st
 
 
 
-export async function listSkillFlowPage(options: { enabled?:boolean; scope?:'mine'|'all'; keyword?:string; createdBy?:string; page?:number; pageSize?:number }={}):Promise<{items:SkillFlowSummary[];page:number;pageSize:number;total:number}> {
+export async function listSkillFlowPage(options: { typeId?:number; enabled?:boolean; scope?:'mine'|'all'; keyword?:string; createdBy?:string; page?:number; pageSize?:number }={}):Promise<{items:SkillFlowSummary[];page:number;pageSize:number;total:number}> {
  const qs=new URLSearchParams({scope:options.scope||'mine',page:String(options.page??1),pageSize:String(options.pageSize??20)});
+ if(options.typeId!=null)qs.set('typeId',String(options.typeId));
  if(options.keyword)qs.set('keyword',options.keyword);
  if(options.createdBy)qs.set('createdBy',options.createdBy);
  if(options.enabled!=null)qs.set('enabled',String(options.enabled));

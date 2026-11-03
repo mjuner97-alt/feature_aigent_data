@@ -19,6 +19,7 @@
         <result column="token_input" property="tokenInput"/>
         <result column="token_output" property="tokenOutput"/>
         <result column="model" property="model"/>
+        <result column="environment" property="environment"/>
     </resultMap>
 
     <!-- ==================== 批量写入 ==================== -->
@@ -27,7 +28,7 @@
         INSERT INTO trace_conversation
         (conversation_id, trace_id, user_id, source, agent_id, agent_name,
         start_ts, end_ts, duration_ms, status, error_message,
-        event_count, token_input, token_output, model)
+        event_count, token_input, token_output, model, environment)
         VALUES
         <foreach collection="list" item="item" separator=",">
             (#{item.conversationId}, #{item.traceId}, #{item.userId}, #{item.source},
@@ -35,7 +36,7 @@
             #{item.startTs}, #{item.endTs}, #{item.durationMs},
             #{item.status}, #{item.errorMessage},
             #{item.eventCount}, #{item.tokenInput}, #{item.tokenOutput},
-            #{item.model})
+            #{item.model}, #{item.environment})
         </foreach>
     </insert>
 
@@ -64,12 +65,13 @@
         SELECT t.conversation_id, t.trace_id, t.user_id, t.source,
                t.agent_id, t.agent_name, t.start_ts, t.end_ts,
                t.duration_ms, t.status, t.error_message,
-               t.event_count, t.token_input, t.token_output, t.model
+               t.event_count, t.token_input, t.token_output, t.model, t.environment
         FROM trace_conversation t
         INNER JOIN (
             SELECT conversation_id, max(end_ts) AS max_end_ts
             FROM trace_conversation
             <where>
+            <if test="environment != null and environment != '' and environment != 'ALL'">AND environment = #{environment}</if>
                 <if test="source != null and source != ''">
                     AND source = #{source}
                 </if>
@@ -81,6 +83,9 @@
             GROUP BY conversation_id
         ) latest ON t.conversation_id = latest.conversation_id
                 AND t.end_ts = latest.max_end_ts
+        <where>
+            <if test="environment != null and environment != '' and environment != 'ALL'">AND t.environment = #{environment}</if>
+        </where>
         ORDER BY t.start_ts DESC
         LIMIT #{offset}, #{limit}
     </select>
@@ -90,6 +95,7 @@
         SELECT count(DISTINCT conversation_id)
         FROM trace_conversation
         <where>
+            <if test="environment != null and environment != '' and environment != 'ALL'">AND environment = #{environment}</if>
             <if test="source != null and source != ''">
                 AND source = #{source}
             </if>
@@ -107,7 +113,7 @@
     <select id="getConversation" resultMap="ConversationMap">
         SELECT conversation_id, trace_id, user_id, source, agent_id, agent_name,
         start_ts, end_ts, duration_ms, status, error_message,
-        event_count, token_input, token_output, model
+        event_count, token_input, token_output, model, environment
         FROM trace_conversation
         WHERE conversation_id = #{conversationId}
         ORDER BY end_ts DESC

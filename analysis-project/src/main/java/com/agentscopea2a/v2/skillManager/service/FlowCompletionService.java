@@ -253,7 +253,12 @@ public class FlowCompletionService {
         boolean explicit = confirmedReceivers != null || confirmedCcReceivers != null;
         List<String> receivers;
         List<String> ccReceivers;
-        if (explicit) {
+        if (isFailure(execution) && execution.getTriggerType() == FlowTriggerType.AUTO_METRIC
+                && key.endsWith(":INITIAL")) {
+            // 自动触发的首次失败通知只发触发人及失败脚本创建人。
+            receivers = receiversFor(execution, true);
+            ccReceivers = List.of();
+        } else if (explicit) {
             receivers = orgService.filterExistingUserIds(
                     NotificationReceivers.parse(NotificationReceivers.toCsv(confirmedReceivers)));
             if (receivers.isEmpty()) {
@@ -262,7 +267,7 @@ public class FlowCompletionService {
             ccReceivers = orgService.filterExistingUserIds(
                     NotificationReceivers.parse(NotificationReceivers.toCsv(confirmedCcReceivers)));
         } else {
-            receivers = receiversFor(execution);
+            receivers = receiversFor(execution, false);
             ccReceivers = inRecipientScope(execution)
                     ? orgService.filterExistingUserIds(NotificationReceivers.parse(execution.getCcReceiversSnapshot()))
                     : List.of();
@@ -333,11 +338,10 @@ public class FlowCompletionService {
      * 触发类型在快照配置的范围内(未配置默认仅 AUTO_METRIC)时,使用快照名单
      * (名单中人员表已失效的工号直接剔除,不报错)。
      */
-    private List<String> receiversFor(SkillFlowExecution execution) {
-        // 失败通知必须覆盖实际执行人/创建人及失败 Python 指标的开发人员；
-        // 长任务填写的联系人和配置名单只用于展示或成功通知，不作为失败收件人。
-        if (execution.getStatus() == FlowExecutionStatus.FAILED
-                || execution.getStatus() == FlowExecutionStatus.PARTIAL_SUCCESS) {
+    private List<String> receiversFor(SkillFlowExecution execution, boolean autoFailure) {
+        // 仅自动触发的首次失败通知使用触发人和失败脚本创建人；
+        // 手动发送以及其他触发方式继续使用常规通知配置。
+        if (autoFailure) {
             LinkedHashMap<String, Boolean> recipients = new LinkedHashMap<>();
             addRecipient(recipients, execution.getTriggerUserId());
             if (scriptRegistryMapper != null) {

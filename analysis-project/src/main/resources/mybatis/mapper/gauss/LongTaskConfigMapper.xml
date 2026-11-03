@@ -14,19 +14,20 @@
         <id column="id" property="id"/><result column="name" property="name"/>
         <result column="created_at" property="createdAt"/><result column="updated_at" property="updatedAt"/>
     </resultMap>
+    <sql id="enabledValue"><choose><when test="enabled == false">FALSE</when><otherwise>TRUE</otherwise></choose></sql>
     <!-- 类型列表：enabled 为空时查询全部。 -->
-    <select id="selectTypes" resultMap="TypeMap">SELECT * FROM skill_flow_type <where><if test="enabled != null">enabled=#{enabled}</if></where> ORDER BY sort_order,id</select>
+    <select id="selectTypes" resultMap="TypeMap">SELECT * FROM skill_flow_type <where><if test="enabled != null">enabled=<include refid="enabledValue"/></if></where> ORDER BY sort_order,id</select>
     <!-- 类型分页：offset 是跳过条数，limit 是本页条数。 -->
-    <select id="selectTypesPage" resultMap="TypeMap">SELECT * FROM skill_flow_type <where><if test="enabled != null">enabled=#{enabled}</if></where> ORDER BY sort_order,id LIMIT #{limit} OFFSET #{offset}</select>
+    <select id="selectTypesPage" resultMap="TypeMap">SELECT * FROM skill_flow_type <where><if test="enabled != null">enabled=<include refid="enabledValue"/></if></where> ORDER BY sort_order,id LIMIT #{limit} OFFSET #{offset}</select>
     <!-- 统计分页总数。 -->
-    <select id="countTypes" resultType="long">SELECT COUNT(*) FROM skill_flow_type <where><if test="enabled != null">enabled=#{enabled}</if></where></select>
+    <select id="countTypes" resultType="long">SELECT COUNT(*) FROM skill_flow_type <where><if test="enabled != null">enabled=<include refid="enabledValue"/></if></where></select>
     <!-- 按 ID 或名称查询单个类型。 -->
     <select id="selectTypeById" resultMap="TypeMap">SELECT * FROM skill_flow_type WHERE id=#{id}</select>
     <select id="selectTypeByName" resultMap="TypeMap">SELECT * FROM skill_flow_type WHERE name=#{name}</select>
     <!-- 新增、更新和启用状态更新。 -->
-    <insert id="insertType" useGeneratedKeys="true" keyProperty="id">INSERT INTO skill_flow_type(name,description,sort_order,enabled) VALUES(#{name},#{description},#{sortOrder},COALESCE(#{enabled},TRUE))</insert>
-    <update id="updateType">UPDATE skill_flow_type SET name=#{name},description=#{description},sort_order=#{sortOrder},enabled=#{enabled},updated_at=NOW() WHERE id=#{id}</update>
-    <update id="updateTypeEnabled">UPDATE skill_flow_type SET enabled=#{enabled},updated_at=NOW() WHERE id=#{id}</update>
+    <insert id="insertType" useGeneratedKeys="true" keyProperty="id">INSERT INTO skill_flow_type(name,description,sort_order,enabled) VALUES(#{name},#{description},#{sortOrder},<include refid="enabledValue"/>)</insert>
+    <update id="updateType">UPDATE skill_flow_type SET name=#{name},description=#{description},sort_order=#{sortOrder},enabled=<include refid="enabledValue"/>,updated_at=NOW() WHERE id=#{id}</update>
+    <update id="updateTypeEnabled">UPDATE skill_flow_type SET enabled=<include refid="enabledValue"/>,updated_at=NOW() WHERE id=#{id}</update>
     <!-- 删除前由 Service 检查引用关系。 -->
     <delete id="deleteType">DELETE FROM skill_flow_type WHERE id=#{id}</delete>
     <!-- 只统计未删除流程，避免误阻止类型删除。 -->

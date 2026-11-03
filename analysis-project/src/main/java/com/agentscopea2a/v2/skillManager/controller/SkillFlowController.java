@@ -81,8 +81,9 @@ public class SkillFlowController {
             @RequestHeader("X-User-Id") String userId,
             @RequestParam(required = false) Boolean enabled, @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String createdBy, @RequestParam(defaultValue = "mine") String scope,
-            @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int pageSize) {
-        return definitionService.page(userId, enabled, keyword, createdBy, "all".equalsIgnoreCase(scope), page, pageSize);
+            @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int pageSize,
+            @RequestParam(required = false) Long typeId) {
+        return definitionService.page(userId, enabled, keyword, createdBy, "all".equalsIgnoreCase(scope), page, pageSize, typeId);
     }
 
     /** 流程详情可跨用户查看；写操作由服务层单独校验创建人。 */
@@ -176,8 +177,9 @@ public class SkillFlowController {
                                                     @RequestParam(defaultValue = "1") int page,
                                                     @RequestParam(defaultValue = "20") int pageSize,
                                                     @RequestParam(name = "keyword", required = false) String keyword,
-                                                    @RequestParam(name = "source", required = false) String source) {
-        return queryService.list(status, createdBy, keyword, userId, "all".equalsIgnoreCase(scope), page, pageSize, source);
+                                                    @RequestParam(name = "source", required = false) String source,
+                                                    @RequestParam(name = "triggerType", required = false) String triggerType) {
+        return queryService.list(status, createdBy, keyword, userId, "all".equalsIgnoreCase(scope), page, pageSize, source, triggerType);
     }
 
     /** 执行详情(含汇总结果与报告路径)。 */

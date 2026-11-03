@@ -51,6 +51,9 @@ public class TraceBatchWriter {
     /** 写入失败后重试次数（不含首次尝试） */
     private static final int MAX_RETRIES = 1;
 
+    @org.springframework.beans.factory.annotation.Value("${spring.profiles.active:dev}")
+    private String activeProfile = "dev";
+
     private final TraceCkMapper ckMapper;
 
     public TraceBatchWriter(TraceCkMapper ckMapper) {
@@ -92,6 +95,7 @@ public class TraceBatchWriter {
         List<TraceConversation> conversations = new ArrayList<>(batch.size());
         List<Map<String, Object>> eventRows = new ArrayList<>(batch.size() * 8);
         for (AssembledTrace t : batch) {
+            t.conversation().setEnvironment(activeProfile.toLowerCase(java.util.Locale.ROOT).contains("prod") ? "prod" : "dev");
             conversations.add(t.conversation());
             for (String json : t.eventJsons()) {
                 eventRows.add(toEventRow(t.conversation().getConversationId(),

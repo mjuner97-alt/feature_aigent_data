@@ -609,6 +609,8 @@ public class FlowCoordinator {
 
     public void retrySummary(Long flowId) {
         SkillFlowExecution flow = mapper.selectFlowExecutionForUpdate(flowId);
+        if (flow != null && flow.getTriggerType() == FlowTriggerType.AUTO_METRIC)
+            throw new IllegalStateException("自动触发的长任务不支持手动重跑");
         if (flow == null || flow.getStatus() == null || !(flow.getStatus() == FlowExecutionStatus.SUCCESS
                 || flow.getStatus() == FlowExecutionStatus.FAILED
                 || flow.getStatus() == FlowExecutionStatus.PARTIAL_SUCCESS))
@@ -679,6 +681,8 @@ public class FlowCoordinator {
      */
     public int retryFailedNodes(Long flowId) {
         SkillFlowExecution flow = mapper.selectFlowExecutionForUpdate(flowId);
+        if (flow != null && flow.getTriggerType() == FlowTriggerType.AUTO_METRIC)
+            throw new IllegalStateException("自动触发的长任务不支持手动重跑");
         if (flow == null || (flow.getStatus() != FlowExecutionStatus.FAILED
                 && flow.getStatus() != FlowExecutionStatus.PARTIAL_SUCCESS))
             throw new IllegalStateException("执行当前不可批量重跑");

@@ -138,7 +138,7 @@ public class ScriptRegistryManageService {
         }
         mapper.insert(entry);
         // 业务新增成功后追加一条 Python 脚本行为记录。
-        auditService.record("python_page", String.valueOf(entry.getId()), entry.getName(), "create", "新增 Python 脚本", userId, userId, List.of());
+        auditService.record("python_page", String.valueOf(entry.getId()), entry.getName(), "create", "新增 Python 脚本", userId, userId, initialChanges(entry));
         return entry;
     }
 
@@ -153,6 +153,10 @@ public class ScriptRegistryManageService {
         String oldDescription = existing.getDescription();
         String oldParamsSchema = existing.getParamsSchema();
         String oldScriptId = existing.getScriptId();
+        String oldDatasources = existing.getDatasources();
+        Integer oldTimeoutSeconds = existing.getTimeoutSeconds();
+        Integer oldEnabled = existing.getEnabled();
+        String oldDefaultMetricIds = existing.getDefaultMetricIds();
 
         // 如果 script_id 有变更, 检查唯一性 (含禁用记录)
         if (patch.getScriptId() != null && !patch.getScriptId().equals(existing.getScriptId())) {
@@ -188,6 +192,10 @@ public class ScriptRegistryManageService {
         if (patch.getDescription() != null && !java.util.Objects.equals(patch.getDescription(), oldDescription)) changes.add(new ResourceChangeAuditService.Change("field", "", "", "description", "脚本描述", "update", oldDescription, patch.getDescription()));
         if (patch.getParamsSchema() != null && !java.util.Objects.equals(patch.getParamsSchema(), oldParamsSchema)) changes.add(new ResourceChangeAuditService.Change("config", "", "", "params_schema", "参数配置", "update", oldParamsSchema, patch.getParamsSchema()));
         // 无实际字段变更时不写审计事件，避免“打开编辑框直接保存”产生空记录。
+        addChange(changes, "datasources", "数据源", oldDatasources, existing.getDatasources());
+        addChange(changes, "timeout_seconds", "超时时间（秒）", oldTimeoutSeconds, existing.getTimeoutSeconds());
+        addChange(changes, "enabled", "启用状态", oldEnabled, existing.getEnabled());
+        addChange(changes, "default_metric_ids", "默认指标", oldDefaultMetricIds, existing.getDefaultMetricIds());
         if (changes.isEmpty()) return existing;
         auditService.record("python_page", String.valueOf(id), existing.getName(), "update", "编辑 Python 脚本", userId, userId, changes);
         return existing;
@@ -203,11 +211,9 @@ public class ScriptRegistryManageService {
         mapper.deleteById(id);
         String source = sourceService.readOrEmpty(existing).content();
         // 删除完成后保留历史审计记录，便于资源删除后追溯。
-        var changes = List.of(
-                new ResourceChangeAuditService.Change("field", "", "", "script_id", "脚本标识", "delete", existing.getScriptId(), "已删除"),
-                new ResourceChangeAuditService.Change("field", "", "", "description", "脚本描述", "delete", existing.getDescription(), "已删除"),
-                new ResourceChangeAuditService.Change("config", "", "", "params_schema", "参数配置", "delete", existing.getParamsSchema(), "已删除"));
-        changes = new java.util.ArrayList<>(changes);
+        var changes = initialChanges(existing).stream().map(c -> new ResourceChangeAuditService.Change(
+                c.targetType(), c.targetId(), c.targetName(), c.fieldName(), c.fieldLabel(), "delete", c.afterValue(), "已删除"))
+                .collect(Collectors.toCollection(java.util.ArrayList::new));
         changes.add(new ResourceChangeAuditService.Change("file", existing.getScriptPath(), existing.getScriptId(), "script_content", "脚本内容", "delete",
                 ResourceChangeAuditService.truncateForAudit(source.isBlank() ? "（无历史源码）" : source), "已删除"));
         auditService.record("python_page", String.valueOf(id), existing.getName(), "delete", "删除 Python 脚本", userId, userId, changes);
@@ -233,6 +239,23 @@ public class ScriptRegistryManageService {
         }
         if (owner == null || owner.isBlank() || userId == null || userId.isBlank() || !owner.trim().equals(userId.trim())) {
             throw new IllegalStateException("ResourceAccessDenied");
+        }
+    }
+
+    private static List<ResourceChangeAuditService.Change> initialChanges(ScriptRegistryEntry entry) {
+        var changes = new java.util.ArrayList<ResourceChangeAuditService.Change>();
+        String[] fields = {"script_id", "name", "description", "datasources", "params_schema", "timeout_seconds", "enabled", "default_metric_ids"};
+        String[] labels = {"脚本标识", "脚本名称", "脚本描述", "数据源", "参数配置", "超时时间（秒）", "启用状态", "默认指标"};
+        Object[] values = {entry.getScriptId(), entry.getName(), entry.getDescription(), entry.getDatasources(), entry.getParamsSchema(), entry.getTimeoutSeconds(), entry.getEnabled(), entry.getDefaultMetricIds()};
+        for (int i = 0; i < fields.length; i++) {
+            changes.add(new ResourceChangeAuditService.Change("config", "", "", fields[i], labels[i], "create", "", Objects.toString(values[i], "")));
+        }
+        return changes;
+    }
+
+    private static void addChange(List<ResourceChangeAuditService.Change> changes, String field, String label, Object before, Object after) {
+        if (!Objects.equals(before, after)) {
+            changes.add(new ResourceChangeAuditService.Change("config", "", "", field, label, "update", Objects.toString(before, ""), Objects.toString(after, "")));
         }
     }
 

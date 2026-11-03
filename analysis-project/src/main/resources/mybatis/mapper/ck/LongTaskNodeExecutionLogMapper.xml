@@ -5,13 +5,13 @@
     <insert id="insert">
         INSERT INTO long_task_node_execution_log
         (log_id, flow_execution_id, node_execution_id, attempt_id, attempt_no,
-         user_id, flow_name, node_key, node_name, script_id, execution_ip, status, retryable,
+         user_id, flow_name, node_key, node_name, script_id, execution_ip, environment, status, retryable,
          error_code, started_at, completed_at, duration_ms, params_json,
          output_text, error_message, params_truncated, output_truncated,
          error_truncated, params_bytes, output_bytes, error_bytes)
         VALUES
         (#{log.logId}, #{log.flowExecutionId}, #{log.nodeExecutionId}, #{log.attemptId}, #{log.attemptNo},
-        #{log.userId}, #{log.flowName}, #{log.nodeKey}, #{log.nodeName}, #{log.scriptId}, #{log.executionIp}, #{log.status}, #{log.retryable},
+        #{log.userId}, #{log.flowName}, #{log.nodeKey}, #{log.nodeName}, #{log.scriptId}, #{log.executionIp}, #{log.environment}, #{log.status}, #{log.retryable},
          #{log.errorCode}, #{log.startedAt}, #{log.completedAt}, #{log.durationMs}, #{log.paramsJson},
          #{log.outputText}, #{log.errorMessage}, #{log.paramsTruncated}, #{log.outputTruncated},
          #{log.errorTruncated}, #{log.paramsBytes}, #{log.outputBytes}, #{log.errorBytes})
@@ -19,6 +19,7 @@
 
     <sql id="filters">
         <where>
+            <if test="environment != null and environment != '' and environment != 'ALL'">AND environment = #{environment}</if>
             <if test="!all">AND user_id = #{userId}</if>
             <if test="flowExecutionId != null">AND flow_execution_id = #{flowExecutionId}</if>
             <if test="from != null and from != ''">AND started_at &gt;= parseDateTimeBestEffort(#{from})</if>
@@ -50,7 +51,7 @@
 
     <select id="page" resultType="java.util.HashMap">
         SELECT log_id, flow_execution_id, node_execution_id, attempt_no, user_id,
-               flow_name, node_name, script_id, execution_ip, status, retryable, error_code,
+               flow_name, node_name, script_id, execution_ip, environment, status, retryable, error_code,
                started_at, completed_at, duration_ms, error_message
         FROM long_task_node_execution_log
         <include refid="filters"/>

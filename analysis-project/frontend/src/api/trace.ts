@@ -36,9 +36,10 @@ export function listConversations(
   keyword?: string,
   page = 0,
   size = 20,
+  environment?: string,
 ): Promise<ConversationListResponse> {
   return http<ConversationListResponse>(
-    `${BASE}/conversations${toQuery({ source, userId, keyword, page, size })}`,
+    `${BASE}/conversations${toQuery({ source, userId, keyword, page, size, environment })}`,
   );
 }
 

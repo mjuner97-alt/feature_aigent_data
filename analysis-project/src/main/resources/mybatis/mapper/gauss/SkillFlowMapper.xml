@@ -363,6 +363,7 @@
             WHERE e.flow_id = skill_flow.id AND e.user_id = #{ownerUserId}
             ))
         </if>
+        <if test="typeId != null">AND type_id = #{typeId}</if>
         <if test="enabled != null">AND enabled = #{enabled}</if>
         <if test="keyword != null and keyword != ''">
             AND (LOWER(name) LIKE CONCAT('%', LOWER(#{keyword}), '%')
@@ -377,7 +378,7 @@
         SELECT id, code, name, description, enabled, auto_trigger_enabled, schedule_rules, chat_public, type_id, created_by, created_at, updated_at,
         (created_by = #{userId} OR EXISTS (SELECT 1 FROM skill_flow_executor e WHERE e.flow_id = skill_flow.id AND e.user_id = #{userId})) AS can_execute
         FROM skill_flow <include refid="flowPageFilters"/>
-        ORDER BY updated_at DESC, id DESC LIMIT #{limit} OFFSET #{offset}
+        ORDER BY COALESCE(updated_at, created_at) DESC NULLS LAST, id DESC LIMIT #{limit} OFFSET #{offset}
     </select>
     <!-- Page-scoped scalar dependency rows: explicit empty override suppresses defaults. -->
     <select id="selectPageMetricRows" resultMap="FlowMetricSummaryMap">
@@ -1035,6 +1036,7 @@
         SELECT <include refid="executionListColumns"/>
         FROM skill_flow_execution e WHERE 1=1
         <include refid="executionListFilters"/>
+        <if test="triggerType != null and triggerType != ''">AND e.trigger_type=#{triggerType}</if>
         <if test="keyword != null and keyword != ''">AND LOWER(e.flow_name) LIKE CONCAT('%', LOWER(#{keyword}), '%')</if>
         <choose>
             <when test="source == 'report-template'">AND e.flow_id IS NULL AND e.report_process_id IS NOT NULL</when>
@@ -1049,6 +1051,7 @@
     <select id="countExecutionsBySource" resultType="long">
         SELECT COUNT(*) FROM skill_flow_execution
         WHERE 1=1
+        <if test="triggerType != null and triggerType != ''">AND trigger_type=#{triggerType}</if>
         <if test="userId != null and userId != ''">AND trigger_user_id=#{userId}</if>
         <if test="status != null and status != ''">AND status=#{status}</if>
         <if test="createdBy != null and createdBy != ''">AND trigger_user_id=#{createdBy}</if>

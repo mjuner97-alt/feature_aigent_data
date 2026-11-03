@@ -66,16 +66,23 @@ public class FlowQueryService {
         return list(status, createdBy, null, userId, all, page, pageSize, source);
     }
     public PageDto list(String status, String createdBy, String keyword, String userId, boolean all, int page, int pageSize, String source) {
+        return list(status, createdBy, keyword, userId, all, page, pageSize, source, null);
+    }
+    public PageDto list(String status, String createdBy, String keyword, String userId, boolean all, int page, int pageSize, String source, String triggerType) {
+        if (triggerType != null && triggerType.isBlank()) triggerType = null;
+        if (triggerType != null && !java.util.Set.of("MANUAL", "AUTO_METRIC", "CHAT").contains(triggerType))
+            throw new IllegalArgumentException("Invalid execution trigger type");
+        if (triggerType != null && source == null) source = "long-task";
         if (source != null && !java.util.Set.of("long-task", "report-template").contains(source))
             throw new IllegalArgumentException("Invalid execution source");
         int safePage = Math.max(1, page), safeSize = Math.min(100, Math.max(1, pageSize));
         String scopedUser = all ? null : userId;
         List<ExecutionListDto> items = (source == null
                 ? mapper.selectExecutions(status, createdBy, scopedUser, (safePage - 1) * safeSize, safeSize)
-                : mapper.selectExecutionsBySource(status, createdBy, keyword, scopedUser, (safePage - 1) * safeSize, safeSize, source))
+                : mapper.selectExecutionsBySource(status, createdBy, keyword, scopedUser, (safePage - 1) * safeSize, safeSize, source, triggerType))
                 .stream().map(this::listDto).toList();
         long total = source == null ? mapper.countExecutions(status, createdBy, scopedUser)
-                : mapper.countExecutionsBySource(status, createdBy, keyword, scopedUser, source);
+                : mapper.countExecutionsBySource(status, createdBy, keyword, scopedUser, source, triggerType);
         return new PageDto(items, safePage, safeSize, total);
     }
 

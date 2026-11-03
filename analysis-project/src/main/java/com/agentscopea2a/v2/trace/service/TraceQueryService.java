@@ -36,15 +36,15 @@ public class TraceQueryService {
     }
 
     /** 会话列表（分页）。 */
-    public Map<String, Object> listConversations(String source, String userId, String keyword, int page, int size) {
+    public Map<String, Object> listConversations(String source, String userId, String keyword, int page, int size, String environment) {
         int offset = page * size;
-        List<TraceConversation> rows = traceCkMapper.listConversations(source, userId, keyword, offset, size);
+        List<TraceConversation> rows = traceCkMapper.listConversations(source, userId, keyword, environment, offset, size);
         List<Map<String, Object>> items = rows == null || rows.isEmpty()
                 ? Collections.emptyList()
                 : rows.stream().map(TraceQueryService::toSummary).toList();
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("conversations", items);
-        resp.put("total", traceCkMapper.countConversations(source, userId, keyword));
+        resp.put("total", traceCkMapper.countConversations(source, userId, keyword, environment));
         resp.put("page", page);
         resp.put("size", size);
         return resp;
@@ -68,6 +68,7 @@ public class TraceQueryService {
         m.put("conversationId", nv(c.getConversationId()));
         m.put("traceId", nv(c.getTraceId()));
         m.put("userId", nv(c.getUserId()));
+        m.put("environment", nv(c.getEnvironment()));
         m.put("source", nv(c.getSource()));
         m.put("agentId", nv(c.getAgentId()));
         m.put("agentName", nv(c.getAgentName()));

@@ -10,7 +10,7 @@ import { triggerTypeText } from './skillFlowExecutionPresentation';
 import { formatDuration } from '../utils/flowDuration.js';
 import { InfoFilled } from '@element-plus/icons-vue';
 
-const props = withDefaults(defineProps<{ scope?: 'mine' | 'all'; createdBy?: string; keyword?: string }>(), { scope: 'mine', createdBy: '', keyword: '' });
+const props = withDefaults(defineProps<{ scope?: 'mine' | 'all'; createdBy?: string; keyword?: string; triggerType?: string }>(), { scope: 'mine', createdBy: '', keyword: '', triggerType: '' });
 
 const executions = ref<SkillFlowExecution[]>([]);
 const userNames = ref<Record<string, string>>({});
@@ -35,7 +35,7 @@ async function load(status = currentStatus.value, createdBy = props.createdBy, s
   if (!silent) loading.value = true;
   error.value = '';
   try {
-    const data = await listSkillFlowExecutions(status || undefined, createdBy.trim() || undefined, scope, page.value, pageSize.value, 'long-task', props.keyword.trim() || undefined);
+    const data = await listSkillFlowExecutions(status || undefined, createdBy.trim() || undefined, scope, page.value, pageSize.value, 'long-task', props.keyword.trim() || undefined, props.triggerType || undefined);
     if (sequence !== loadSequence) return;
     executions.value = data.items; total.value = data.total;
     // 执行接口仅返回用户 ID，复用人员查询补齐姓名；缓存已查到的姓名供轮询使用。
@@ -70,7 +70,7 @@ async function cancelExecution(item: SkillFlowExecution) {
 }
 defineExpose({ load });
 onMounted(() => { load(); timer = setInterval(() => { if (executions.value.some(item => ['WAITING_METRICS', 'QUEUED', 'RUNNING', 'SUMMARIZING', 'CANCEL_REQUESTED'].includes(item.status))) load(currentStatus.value, currentCreatedBy.value, true); }, 5000); }); onUnmounted(() => { if (timer) clearInterval(timer); });
-watch(() => [props.scope, props.createdBy, props.keyword] as const, () => { page.value = 1; load('', props.createdBy, false, props.scope); });
+watch(() => [props.scope, props.createdBy, props.keyword, props.triggerType] as const, () => { page.value = 1; load('', props.createdBy, false, props.scope); });
 </script>
 
 <template>

@@ -2,6 +2,7 @@
   <div class="panel">
     <div class="filters">
       <el-radio-group v-model="scope" @change="load"><el-radio-button label="mine">我的</el-radio-button><el-radio-button label="all">全部</el-radio-button></el-radio-group>
+      <el-select v-model="environment" aria-label="环境" @change="page = 1; load()"><el-option label="生产环境" value="prod"/><el-option label="开发环境" value="dev"/><el-option label="全部环境" value="ALL"/></el-select>
       <el-input v-model="flowName" placeholder="流程名称" clearable @keyup.enter="load" />
       <el-input v-model="nodeName" placeholder="节点名称" clearable @keyup.enter="load" />
       <el-input v-model="flowExecutionId" placeholder="长任务执行 ID" clearable @keyup.enter="load" />
@@ -22,12 +23,13 @@
   </div>
 </template>
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'; import { listNodeLogs, getNodeLog } from '../api/longTaskNodeLog';
+import { ref, onMounted, computed } from 'vue'; import { ElMessage } from 'element-plus'; import { listNodeLogs, getNodeLog } from '../api/longTaskNodeLog';
+const environment=ref('');
 const scope=ref('mine'), flowName=ref(''), nodeName=ref(''), flowExecutionId=ref(''), executorKeyword=ref(''), status=ref(''), items=ref<any[]>([]), page=ref(1), pageSize=20, total=ref(0), loading=ref(false), dialog=ref(false), detail=ref<any>(null);
 const statuses=['SUCCESS','FAILED','CANCELLED','RUNNING']; const labels:Record<string,string>={SUCCESS:'成功',FAILED:'失败',CANCELLED:'已取消',RUNNING:'执行中'};
 function prettyJson(v?:string){if(!v)return "（无参数）";try{return JSON.stringify(JSON.parse(v),null,2)}catch{return v}} function statusLabel(s?:string){return labels[s||'']||s||'未知'} function statusType(s?:string){return s==='SUCCESS'?'success':s==='FAILED'?'danger':s==='CANCELLED'?'info':'warning'} function formatTime(v?:string){return v?v.replace('T',' ').slice(0,19):'—'}
 const detailFields=computed(()=>{const d=detail.value||{};return [{label:'流程',value:d.flow_name},{label:'长任务执行 ID',value:d.flow_execution_id},{label:'节点',value:d.node_name},{label:'脚本',value:d.script_id},{label:'执行人',value:d.user_name?`${d.user_name} (${d.user_id})`:d.user_id},{label:'状态',value:statusLabel(d.status)},{label:'开始时间',value:formatTime(d.started_at)},{label:'完成时间',value:formatTime(d.completed_at)},{label:'耗时',value:`${d.duration_ms||0} ms`}];});
-async function load(){loading.value=true;try{const d=await listNodeLogs({scope:scope.value,page:page.value,pageSize,flowName:flowName.value,nodeName:nodeName.value,status:status.value,filterUserId:executorKeyword.value,flowExecutionId:flowExecutionId.value});items.value=d.items||[];total.value=d.total||0}finally{loading.value=false}} async function show(row:any){detail.value=await getNodeLog(row.log_id,scope.value);dialog.value=true} onMounted(load);
+async function load(){loading.value=true;try{const d=await listNodeLogs({environment:environment.value,scope:scope.value,page:page.value,pageSize,flowName:flowName.value,nodeName:nodeName.value,status:status.value,filterUserId:executorKeyword.value,flowExecutionId:flowExecutionId.value});items.value=d.items||[];total.value=d.total||0}finally{loading.value=false}} async function show(row:any){detail.value=await getNodeLog(row.log_id,scope.value);dialog.value=true} onMounted(async()=>{try{const r=await fetch('/api/notification-access/environment');if(!r.ok)throw new Error('环境加载失败');environment.value=(await r.json()).environment;await load()}catch{ElMessage.error('节点执行日志加载失败')}});
 </script>
-<style scoped>.panel{padding:16px}.filters{display:flex;gap:10px;margin-bottom:12px}.filters .el-input{width:170px}.filters .el-select{width:140px}.detail{color:#334155}.detail-section{padding:14px 0;border-bottom:1px solid #e2e8f0}.detail-section:first-child{padding-top:0}.detail-section h3{margin:0 0 12px;font-size:14px;color:#0f172a}.detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 24px}.info-item{display:flex;min-width:0;line-height:22px}.info-label{width:100px;flex:none;color:#64748b}.info-value{min-width:0;color:#1e293b;word-break:break-all}.code-block{margin:0;padding:12px;border-radius:6px;white-space:pre-wrap;word-break:break-word}.error{background:#fef2f2;color:#991b1b}</style>
+<style scoped>.panel{padding:16px}.filters{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px}.filters .el-input{width:170px}.filters .el-select{width:140px}.detail{color:#334155}.detail-section{padding:14px 0;border-bottom:1px solid #e2e8f0}.detail-section:first-child{padding-top:0}.detail-section h3{margin:0 0 12px;font-size:14px;color:#0f172a}.detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 24px}.info-item{display:flex;min-width:0;line-height:22px}.info-label{width:100px;flex:none;color:#64748b}.info-value{min-width:0;color:#1e293b;word-break:break-all}.code-block{margin:0;padding:12px;border-radius:6px;white-space:pre-wrap;word-break:break-word}.error{background:#fef2f2;color:#991b1b}</style>
 

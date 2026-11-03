@@ -46,6 +46,7 @@ const flowEnabledFilter = ref<boolean | null>(null);
 const flowListRef = ref<InstanceType<typeof SkillFlowList> | null>(null);
 const flowExecutionListRef = ref<InstanceType<typeof SkillFlowExecutionList> | null>(null);
 const flowExecutionKeyword = ref('');
+const flowExecutionTriggerType = ref('');
 const centerExecutions = ref<SkillJobExecutionSummary[]>([]);
 const executionLoading = ref(false);
 const executionError = ref('');
@@ -362,6 +363,9 @@ function metricTitle(job: SkillJobSummary): string {
         <select v-if="activeTab === 'flows'" v-model="flowEnabledFilter" class="filter-select" @change="filterFlows">
           <option :value="null">全部状态</option><option :value="true">启用</option><option :value="false">禁用</option>
         </select>
+        <select v-if="activeTab === 'flow-execution'" v-model="flowExecutionTriggerType" class="filter-select" aria-label="触发方式筛选">
+          <option value="">全部</option><option value="AUTO_METRIC">自动</option><option value="MANUAL">手动</option><option value="CHAT">对话</option>
+        </select>
         <input v-if="activeTab === 'flow-execution'" v-model="flowExecutionKeyword" placeholder="搜索任务名称" class="search-input" @keyup.enter="flowExecutionListRef?.load('', effectiveCreatedBy || '', false, visibilityScope)" />
         <input v-if="activeTab === 'manage'" v-model="keyword" placeholder="搜索任务名称" class="search-input" @keyup.enter="filterJobs" />
         <select v-if="activeTab === 'manage'" v-model="enabledFilter" class="filter-select" @change="filterJobs">
@@ -389,7 +393,7 @@ function metricTitle(job: SkillJobSummary): string {
     </div>
 
     <SkillFlowList v-if="activeTab === 'flows'" ref="flowListRef" :scope="visibilityScope" :created-by="effectiveCreatedBy || ''" @view-records="openFlowExecutions" />
-    <SkillFlowExecutionList v-else-if="activeTab === 'flow-execution'" ref="flowExecutionListRef" :scope="visibilityScope" :created-by="effectiveCreatedBy || ''" :keyword="flowExecutionKeyword" />
+    <SkillFlowExecutionList v-else-if="activeTab === 'flow-execution'" ref="flowExecutionListRef" :scope="visibilityScope" :created-by="effectiveCreatedBy || ''" :keyword="flowExecutionKeyword" :trigger-type="flowExecutionTriggerType" />
 
     <template v-else-if="activeTab === 'execution'">
       <div v-if="executionError" class="center-error">{{ executionError }}</div>

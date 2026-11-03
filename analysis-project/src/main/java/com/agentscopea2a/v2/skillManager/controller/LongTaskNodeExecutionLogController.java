@@ -16,9 +16,10 @@ public class LongTaskNodeExecutionLogController {
             @RequestParam(required=false) String to, @RequestParam(required=false) String status,
             @RequestParam(required=false) String flowName, @RequestParam(required=false) String nodeName,
             @RequestParam(required=false) String filterUserId,
-            @RequestParam(required=false) Long flowExecutionId) {
+            @RequestParam(required=false) Long flowExecutionId,
+            @RequestParam(required=false) String environment) {
         int safePage=Math.max(1,page), safeSize=Math.min(100,Math.max(1,pageSize));
-        return service.page(userId, "all".equalsIgnoreCase(scope), safePage-1, safeSize, from,to,status,flowName,nodeName,filterUserId,flowExecutionId);
+        return service.page(userId, "all".equalsIgnoreCase(scope), safePage-1, safeSize, from,to,status,flowName,nodeName,filterUserId,flowExecutionId,environment);
     }
     @GetMapping("/api/long-task-node-execution-logs/{logId}")
     public Map<String,Object> detail(@RequestHeader(name="X-User-Id",required=false,defaultValue="") String userId,

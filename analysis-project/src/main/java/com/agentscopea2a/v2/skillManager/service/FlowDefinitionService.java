@@ -121,8 +121,11 @@ public class FlowDefinitionService {
         } else {
             validateKeywordConflicts(request.triggers(), id);
         }
+        // 子表替换前读取旧配置，避免审计中的修改前节点、关键词已被新数据覆盖。
+        List<ResourceChangeAuditService.Change> auditChanges = flowChanges(existing, request);
         SkillFlow updated = toFlow(request, existing.getCreatedBy(), existing.getCode());
         updated.setId(id);
+        if (request.typeId() == null) updated.setTypeId(existing.getTypeId());
         // 通知收件人配置不在编排表单里(toFlow 不会带),整体替换定义时原样保留,由通知设置抽屉独立维护。
         updated.setNotifyReceivers(existing.getNotifyReceivers());
         updated.setNotifyReceiverTriggers(existing.getNotifyReceiverTriggers());
@@ -137,7 +140,6 @@ public class FlowDefinitionService {
             // TODO 通知开发人员:公开流程已被修改并自动退出公开,需审核后重新开通(接入内部通知系统后实现)。
             log.warn("[Flow] public flow auto-exited public on update: flowId={}, name={}, owner={}", id, updated.getName(), userId);
         }
-        List<ResourceChangeAuditService.Change> auditChanges = flowChanges(existing, request);
         auditService.record("long_task_flow", String.valueOf(id), updated.getName(), "update", "编辑长任务编排", userId, userId, auditChanges);
         return get(id, userId);
     }
@@ -172,13 +174,12 @@ public class FlowDefinitionService {
         List<ResourceChangeAuditService.Change> out = new ArrayList<>();
         String beforeSnapshot = old == null ? null : snapshot(toRequest(old, old.getId()));
         String afterSnapshot = snapshot(n);
-        out.add(new ResourceChangeAuditService.Change("resource", old == null ? "" : String.valueOf(old.getId()), n.name(), "definition", "长任务完整配置", old == null ? "create" : "update",
-                beforeSnapshot == null ? "（初始）" : beforeSnapshot, afterSnapshot));
+        if (!Objects.equals(beforeSnapshot, afterSnapshot)) out.add(new ResourceChangeAuditService.Change("resource", old == null ? "" : String.valueOf(old.getId()), n.name(), "definition", "长任务完整配置", old == null ? "create" : "update",
+                beforeSnapshot == null ? "" : beforeSnapshot, afterSnapshot));
         addFlowChange(out, "name", "流程名称", old == null ? null : old.getName(), n.name());
         addFlowChange(out, "description", "描述", old == null ? null : old.getDescription(), n.description());
         addFlowChange(out, "task_question", "任务问题", old == null ? null : old.getTaskQuestion(), n.taskQuestion());
-        addFlowChange(out, "triggers", "触发关键词", old == null ? null : "已配置", n.triggers().isEmpty() ? null : "已配置");
-        addFlowChange(out, "nodes", "执行节点", old == null ? null : "已配置", n.nodes().isEmpty() ? null : "已配置");
+        if (n.typeId() != null) addFlowChange(out, "type_id", "任务类型", old == null ? null : old.getTypeId(), n.typeId());
         addFlowChange(out, "enabled", "启用状态", old == null ? null : old.getEnabled(), n.enabled());
         return out;
     }
@@ -192,10 +193,11 @@ public class FlowDefinitionService {
     }
 
     private static void addFlowChange(List<ResourceChangeAuditService.Change> out, String field, String label, Object old, Object now) {
-        String before = old == null ? null : String.valueOf(old), after = now == null ? null : String.valueOf(now);
+        String before = old == null ? "" : String.valueOf(old), after = now == null ? "" : String.valueOf(now);
+        if (before.isBlank()) before = "";
+        if (after.isBlank()) after = "";
         if (Objects.equals(before, after)) return;
-        out.add(new ResourceChangeAuditService.Change("field", "", "", field, label, old == null ? "create" : now == null ? "delete" : "update",
-                before == null ? "（初始）" : before, after == null ? "已删除" : after));
+        out.add(new ResourceChangeAuditService.Change("field", "", "", field, label, "update", before, after));
     }
 
     /** 流程列表;筛选语义与独立任务一致,写操作仍由 owner 校验保护。 */
@@ -205,15 +207,15 @@ public class FlowDefinitionService {
     }
 
     public com.agentscopea2a.v2.skillManager.dto.PageResult<com.agentscopea2a.v2.skillManager.dto.SkillFlowSummaryDto> page(
-            String userId, Boolean enabled, String keyword, String createdBy, boolean all, int page, int pageSize) {
+            String userId, Boolean enabled, String keyword, String createdBy, boolean all, int page, int pageSize, Long typeId) {
         requireUser(userId);
         page = com.agentscopea2a.v2.skillManager.dto.PageResult.safePage(page);
         pageSize = com.agentscopea2a.v2.skillManager.dto.PageResult.safeSize(pageSize);
         String owner = all ? null : userId;
         // 创建人筛选支持逗号分隔多个 ID:前端按姓名搜人后把匹配到的 userId 列表传回。
         List<String> createdBys = java.util.Arrays.stream(trim(createdBy).split(",")).map(String::trim).filter(s -> !s.isEmpty()).distinct().toList();
-        long total = flowMapper.countFlowPage(owner, enabled, trim(keyword), createdBys);
-        var items = flowMapper.selectFlowPage(owner, enabled, trim(keyword), createdBys, userId, (long)(page - 1) * pageSize, pageSize);
+        long total = flowMapper.countFlowPage(owner, enabled, trim(keyword), createdBys, typeId);
+        var items = flowMapper.selectFlowPage(owner, enabled, trim(keyword), createdBys, typeId, userId, (long)(page - 1) * pageSize, pageSize);
         if (!items.isEmpty()) {
             var rows = flowMapper.selectPageMetricRows(items.stream().map(com.agentscopea2a.v2.skillManager.dto.SkillFlowSummaryDto::getId).toList());
             Map<Long, Set<Long>> nodes = new java.util.HashMap<>();
@@ -539,7 +541,7 @@ public class FlowDefinitionService {
                 .toList();
         return new SkillFlowDefinitionRequest(flow.getCode(), flow.getName(), flow.getDescription(), flow.getTaskQuestion(),
                 flow.getSummaryQuestionTemplate(), flow.getEnabled(), flow.getScheduleRules(),
-                flow.getMaxParallelism(), flow.getNotifyEnabled(), triggers, nodes, parseStoredOutline(flow), null, flow.getNotifyContactName(), flow.getNotifyContactPhone(), flow.getNotifyBodyTemplate(), null, flow.getAutoTriggerEnabled());
+                flow.getMaxParallelism(), flow.getNotifyEnabled(), triggers, nodes, parseStoredOutline(flow), null, flow.getNotifyContactName(), flow.getNotifyContactPhone(), flow.getNotifyBodyTemplate(), null, flow.getAutoTriggerEnabled(), flow.getTypeId());
     }
 
     /** 组装返回 DTO,附带 skill 名称与指标名称等展示信息。 */
@@ -604,7 +606,7 @@ public class FlowDefinitionService {
     private SkillFlow toFlow(SkillFlowDefinitionRequest request, String createdBy, String existingCode) {
         String code = trim(existingCode).isEmpty() ? "flow-" + UUID.randomUUID() : existingCode;
         // 兼容旧版流程编辑器未提交 typeId：迁移默认类型“其他”(id=1)作为兜底，避免新增流程因 type_id 非空约束失败。
-        return SkillFlow.builder().typeId(1L).code(code).name(trim(request.name())).description(request.description())
+        return SkillFlow.builder().typeId(request.typeId() == null ? 1L : request.typeId()).code(code).name(trim(request.name())).description(request.description())
                 .taskQuestion(trim(request.taskQuestion()))
                 .summaryQuestionTemplate(request.summaryQuestionTemplate())
                 .reportOutline(serializeOutline(request.reportOutline()))

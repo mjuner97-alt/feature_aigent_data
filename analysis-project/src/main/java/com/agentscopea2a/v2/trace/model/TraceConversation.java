@@ -44,6 +44,7 @@ public class TraceConversation {
     private long tokenInput;
     private long tokenOutput;
     private String model;
+    private String environment;
 
     /** 从 {@link TraceSession} 构造汇总（endTs 用 currentTimeMillis 是 cleanup 时点）。 */
     public static TraceConversation from(TraceSession s) {
@@ -64,7 +65,7 @@ public class TraceConversation {
                 s.eventCount(),
                 s.getTokenInput(),
                 s.getTokenOutput(),
-                nz(s.getModelName()));
+                nz(s.getModelName()), "");
     }
 
     private static String nz(String s) {

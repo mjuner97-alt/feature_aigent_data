@@ -107,12 +107,14 @@ public class LongTaskConfigService {
     }
 
     private static void addChange(List<ResourceChangeAuditService.Change> changes, String field, String label, Object before, Object after) {
-        String oldValue = before == null ? null : String.valueOf(before);
-        String newValue = after == null ? null : String.valueOf(after);
+        String oldValue = before == null ? "" : String.valueOf(before);
+        String newValue = after == null ? "" : String.valueOf(after);
+        if (oldValue.isBlank()) oldValue = "";
+        if (newValue.isBlank()) newValue = "";
         if (java.util.Objects.equals(oldValue, newValue)) return;
-        String type = oldValue == null ? "create" : newValue == null ? "delete" : "update";
+        String type = before == null ? "create" : after == null ? "delete" : "update";
         changes.add(new ResourceChangeAuditService.Change("resource", "", "", field, label, type,
-                oldValue == null ? "（初始）" : oldValue, newValue == null ? "已删除" : newValue));
+                oldValue, newValue));
     }
 
     /** 将数据库实体转换成前端响应 DTO。 */

@@ -18,8 +18,9 @@ for (const [label, Component] of [['long task', List], ['report', ReportList]]) 
     return new Response(JSON.stringify({ items: [{ id: 1, flowName: '任务', status: 'SUCCESS' }], total: 100, page: Number(params.get('page')), pageSize: 20 }));
   });
   const owner = Vue.ref('u1');
+  const triggerType = Vue.ref('');
   const root = container();
-  const app = renderer.createApp({ render: () => Vue.h(Component, { createdBy: owner.value }) });
+  const app = renderer.createApp({ render: () => Vue.h(Component, { createdBy: owner.value, triggerType: triggerType.value }) });
   app.component('el-pagination', { emits: ['update:currentPage', 'current-change'], setup: (_, { emit }) =>
     () => Vue.h('button', { onClick: () => { emit('update:currentPage', 3); emit('current-change', 3); } }, '第三页') });
   for (const name of ['el-icon', 'el-tooltip']) app.component(name, { setup: (_, { slots }) => () => Vue.h('span', slots.default?.()) });
@@ -29,6 +30,14 @@ for (const [label, Component] of [['long task', List], ['report', ReportList]]) 
   owner.value = 'u2'; await flush(); await flush();
   assert.equal(requests.at(-1).get('page'), '1');
   assert.equal(requests.at(-1).get('createdBy'), 'u2');
+  if (label === 'long task') {
+    for (const trigger of ['MANUAL', 'AUTO_METRIC', 'CHAT', '']) {
+      triggerType.value = trigger; await flush();
+      assert.equal(requests.at(-1).get('page'), '1');
+      assert.equal(requests.at(-1).get('triggerType'), trigger || null);
+      assert.equal(requests.at(-1).get('createdBy'), 'u2');
+    }
+  }
 });
 
 test('late execution requests cannot overwrite the newly selected filter', async t => {

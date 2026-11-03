@@ -20,6 +20,7 @@
             <el-radio-button label="mine">我的</el-radio-button>
             <el-radio-button label="all">全部</el-radio-button>
           </el-radio-group>
+          <el-select v-model="sessionEnvironment" aria-label="环境" style="width: 130px" @change="handleUserFilter"><el-option label="生产环境" value="prod"/><el-option label="开发环境" value="dev"/><el-option label="全部环境" value="ALL"/></el-select>
           <el-input v-model="selectedUserId" placeholder="提问人" style="width: 140px" clearable @keyup.enter="handleUserFilter" @clear="handleUserFilter" />
           <el-button size="small" @click="handleUserFilter">查询</el-button>
           <el-input v-model="searchKeyword" placeholder="搜索会话ID / Agent名称" style="width: 260px" clearable @keyup.enter="handleSearch" @clear="handleClearSearch" />
@@ -226,6 +227,7 @@ const operationTagType = (value: string) => ({ create: 'success', update: 'warni
 function displayChangeValue(value: unknown, emptyText = '空') {
   if (value === null || value === undefined || value === '') return emptyText;
   const raw = String(value);
+  if (!raw.trim() || raw === '（初始）') return emptyText;
   try {
     const parsed = JSON.parse(raw);
     return typeof parsed === 'object' ? JSON.stringify(parsed, null, 2) : String(parsed);
@@ -235,13 +237,16 @@ function fieldLabel(item: any) {
   return ({ name: '流程名称', description: '描述', task_question: '任务问题', triggers: '触发关键词', nodes: '执行节点', enabled: '启用状态', script_content: '脚本内容', script_id: '脚本标识', params_schema: '参数配置', definition: '完整配置' } as Record<string, string>)[item.field_name] || item.field_label || item.field_name;
 }
 function isSnapshot(item: any) { return item.field_name === 'definition' || item.field_name === 'script_content'; }
+function auditComparable(value: unknown): string {
+  return value == null || (typeof value === 'string' && (!value.trim() || value === '（初始）')) ? '' : JSON.stringify(value);
+}
 function snapshotDiff(item: any): string[] {
   if (item.field_name === 'script_content') return ['脚本源码已修改（完整内容请展开快照查看）'];
   let before: any, after: any;
   try { before = JSON.parse(item.before_value); after = JSON.parse(item.after_value); } catch { return []; }
   const lines: string[] = [];
   const labels: Record<string, string> = { name: '流程名称', description: '描述', taskQuestion: '任务问题', enabled: '启用状态', scheduleRules: '调度规则', summaryQuestionTemplate: '汇总问题模板' };
-  Object.keys(labels).forEach(k => { if (JSON.stringify(before?.[k]) !== JSON.stringify(after?.[k])) lines.push(`${labels[k]}：${displayChangeValue(before?.[k], '空')} → ${displayChangeValue(after?.[k], '空')}`); });
+  Object.keys(labels).forEach(k => { if (auditComparable(before?.[k]) !== auditComparable(after?.[k])) lines.push(`${labels[k]}：${displayChangeValue(before?.[k], '空')} → ${displayChangeValue(after?.[k], '空')}`); });
   const nodeMap = (nodes: any[]) => new Map<string, any>(nodes.map((n: any) => [String(n.nodeKey), n] as [string, any]));
   const bn = nodeMap(before?.nodes || []);
   const an = nodeMap(after?.nodes || []);
@@ -270,7 +275,9 @@ async function openBehaviorDetail(row: any) {
   try {
     const r = await fetch('/api/session-records/behavior/' + encodeURIComponent(row.event_id));
     if (!r.ok) throw new Error('详情加载失败');
-    behaviorDetail.value = await r.json();
+    const detail = await r.json();
+    detail.details = (detail.details || []).filter((item: any) => isSnapshot(item) || auditComparable(item.before_value) !== auditComparable(item.after_value));
+    behaviorDetail.value = detail;
   } catch (e) { ElMessage.error(e instanceof Error ? e.message : '详情加载失败'); }
   finally { behaviorDetailLoading.value = false; }
 }
@@ -335,6 +342,7 @@ const error = ref<string | null>(null);
 const lastUpdated = ref('--');
 
 // ==================== 会话历史状态 ====================
+const sessionEnvironment = ref('');
 const conversations = ref<Conversation[]>([]);
 const total = ref(0);
 const currentPage = ref(1);
@@ -503,10 +511,11 @@ async function setAsCase(row: Conversation) {
 }
 
 function syncQuery() {
-  router.replace({ query: { ...route.query, scope: scope.value, user: selectedUserId.value || undefined, q: searchKeyword.value || undefined, page: currentPage.value > 1 ? String(currentPage.value) : undefined } });
+  router.replace({ query: { ...route.query, scope: scope.value, environment: sessionEnvironment.value || undefined, user: selectedUserId.value || undefined, q: searchKeyword.value || undefined, page: currentPage.value > 1 ? String(currentPage.value) : undefined } });
 }
 
 function applyRouteState() {
+  sessionEnvironment.value = (route.query.environment as string) || accessEnvironment.value || 'dev';
   scope.value = route.query.scope === 'all' ? 'all' : 'mine';
   selectedUserId.value = (route.query.user as string) || '';
   searchKeyword.value = (route.query.q as string) || '';
@@ -554,6 +563,7 @@ async function refreshConversations() {
         searchKeyword.value.trim() || undefined,
         currentPage.value - 1,
         pageSize,
+        sessionEnvironment.value,
     );
     conversations.value = data.conversations ?? [];
     total.value = data.total ?? 0;
@@ -581,6 +591,7 @@ async function handleSearch() {
         searchKeyword.value.trim() || undefined,
         currentPage.value - 1,
         pageSize,
+        sessionEnvironment.value,
     );
     conversations.value = data.conversations ?? [];
     total.value = data.total ?? 0;

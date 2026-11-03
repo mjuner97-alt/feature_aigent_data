@@ -17,6 +17,9 @@ import java.util.HashMap;
 @Service
 public class LongTaskNodeExecutionLogService {
     static final int MAX_BYTES = 256 * 1024;
+    @org.springframework.beans.factory.annotation.Value("${spring.profiles.active:dev}")
+    private String activeProfile = "dev";
+
     private final LongTaskNodeExecutionLogMapper mapper;
     private final MockOrgService orgService;
     private final DeveloperPlPersonInfoMapper personInfoMapper;
@@ -31,6 +34,7 @@ public class LongTaskNodeExecutionLogService {
         Value p = truncate(params), o = truncate(output), e = truncate(error);
         try {
             Map<String, Object> log = new HashMap<>();
+            log.put("environment", activeProfile.toLowerCase(java.util.Locale.ROOT).contains("prod") ? "prod" : "dev");
             log.put("logId", "node-attempt-" + attempt.getId());
             log.put("flowExecutionId", flow.getId());
             log.put("nodeExecutionId", node.getId());
@@ -71,12 +75,12 @@ public class LongTaskNodeExecutionLogService {
         return row;
     }
     public Page page(String userId, boolean all, int page, int size, String from, String to, String status,
-                     String flowName, String nodeName, String userKeyword, Long flowExecutionId) {
+                     String flowName, String nodeName, String userKeyword, Long flowExecutionId, String environment) {
         List<String> filterUserIds = resolveUserIds(userKeyword);
         long total = mapper.count(userId, all, from, to, status, flowName, nodeName, userKeyword,
-                filterUserIds, flowExecutionId);
+                filterUserIds, flowExecutionId, environment);
         List<Map<String,Object>> items = mapper.page(userId, all, from, to, status, flowName, nodeName,
-                userKeyword, filterUserIds, flowExecutionId, page * size, size);
+                userKeyword, filterUserIds, flowExecutionId, environment, page * size, size);
         Map<String, String> names = orgService.getUserNameMap(items.stream().map(row -> String.valueOf(row.get("user_id"))).toList());
         items.forEach(row -> row.put("user_name", names.getOrDefault(String.valueOf(row.get("user_id")), "")));
         return new Page(items, page + 1, size, total);

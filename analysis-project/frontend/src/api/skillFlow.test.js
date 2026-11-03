@@ -7,6 +7,19 @@ import { loadModule } from '../../test/loadModule.js';
 const api = await loadModule(new URL('./skillFlow.ts', import.meta.url));
 globalThis.localStorage = { getItem: () => 'test-user' };
 
+test('flow page forwards task type and omits it when cleared', async t => {
+  const queries = [];
+  t.mock.method(globalThis, 'fetch', async url => {
+    queries.push(new URLSearchParams(String(url).split('?')[1]));
+    return new Response(JSON.stringify({ items: [], total: 0, page: 1, pageSize: 20 }));
+  });
+  await api.listSkillFlowPage({ typeId: 7, page: 2 });
+  await api.listSkillFlowPage({});
+  assert.equal(queries[0].get('typeId'), '7');
+  assert.equal(queries[0].get('page'), '2');
+  assert.equal(queries[1].has('typeId'), false);
+});
+
 for (const existingToc of [true, false]) {
   for (const uppercase of [false, true]) {
     test(`report Blob preserves ECharts and nested reports (toc=${existingToc}, uppercase=${uppercase})`, async t => {

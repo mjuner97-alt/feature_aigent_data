@@ -43,9 +43,9 @@ const readyMetrics = computed(() => execution.value?.metrics?.filter(metric => m
 const waitingMetrics = computed(() => execution.value?.metrics?.filter(metric => metric.status !== 'READY') ?? []);
 const failedNodes = computed(() => execution.value?.nodes?.filter(node => node.status === 'FAILED' || node.status === 'BLOCKED') ?? []);
 const batchRetryable = computed(() =>
-  failedNodes.value.length > 0 && (execution.value?.status === 'FAILED' || execution.value?.status === 'PARTIAL_SUCCESS'));
+  execution.value?.triggerType !== 'AUTO_METRIC' && failedNodes.value.length > 0 && (execution.value?.status === 'FAILED' || execution.value?.status === 'PARTIAL_SUCCESS'));
 const summaryRetryable = computed(() =>
-  !execution.value?.reportPath && ['SUCCESS', 'FAILED', 'PARTIAL_SUCCESS'].includes(execution.value?.status ?? ''));
+  execution.value?.triggerType !== 'AUTO_METRIC' && !execution.value?.reportPath && ['SUCCESS', 'FAILED', 'PARTIAL_SUCCESS'].includes(execution.value?.status ?? ''));
 const summaryGenerationError = computed(() => {
   const summary = execution.value?.summaryJson;
   if (!summary || typeof summary !== 'object' || Array.isArray(summary)) return '';

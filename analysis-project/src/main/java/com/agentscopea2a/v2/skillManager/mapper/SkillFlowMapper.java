@@ -29,9 +29,9 @@ import java.util.List;
 @Mapper
 public interface SkillFlowMapper {
 
-    List<com.agentscopea2a.v2.skillManager.dto.SkillFlowSummaryDto> selectFlowPage(@Param("ownerUserId") String ownerUserId, @Param("enabled") Boolean enabled, @Param("keyword") String keyword, @Param("createdBys") java.util.List<String> createdBys, @Param("userId") String userId, @Param("offset") long offset, @Param("limit") int limit);
+    List<com.agentscopea2a.v2.skillManager.dto.SkillFlowSummaryDto> selectFlowPage(@Param("ownerUserId") String ownerUserId, @Param("enabled") Boolean enabled, @Param("keyword") String keyword, @Param("createdBys") java.util.List<String> createdBys, @Param("typeId") Long typeId, @Param("userId") String userId, @Param("offset") long offset, @Param("limit") int limit);
     SkillFlowExecution selectFlowExecutionById(@Param("id") Long id);
-    long countFlowPage(@Param("ownerUserId") String ownerUserId, @Param("enabled") Boolean enabled, @Param("keyword") String keyword, @Param("createdBys") java.util.List<String> createdBys);
+    long countFlowPage(@Param("ownerUserId") String ownerUserId, @Param("enabled") Boolean enabled, @Param("keyword") String keyword, @Param("createdBys") java.util.List<String> createdBys, @Param("typeId") Long typeId);
     List<com.agentscopea2a.v2.skillManager.dto.FlowMetricSummaryRow> selectPageMetricRows(@Param("flowIds") List<Long> flowIds);
     // ==================== 流程定义 ====================
 
@@ -202,8 +202,8 @@ public interface SkillFlowMapper {
     /** 执行记录管理列表:按触发用户/状态筛选,最多返回最近 500 条。 */
     List<SkillFlowExecution> selectExecutions(@Param("status") String status, @Param("createdBy") String createdBy, @Param("userId") String userId, @Param("offset") int offset, @Param("limit") int limit);
     long countExecutions(@Param("status") String status, @Param("createdBy") String createdBy, @Param("userId") String userId);
-    List<SkillFlowExecution> selectExecutionsBySource(@Param("status") String status, @Param("createdBy") String createdBy, @Param("keyword") String keyword, @Param("userId") String userId, @Param("offset") int offset, @Param("limit") int limit, @Param("source") String source);
-    long countExecutionsBySource(@Param("status") String status, @Param("createdBy") String createdBy, @Param("keyword") String keyword, @Param("userId") String userId, @Param("source") String source);
+    List<SkillFlowExecution> selectExecutionsBySource(@Param("status") String status, @Param("createdBy") String createdBy, @Param("keyword") String keyword, @Param("userId") String userId, @Param("offset") int offset, @Param("limit") int limit, @Param("source") String source, @Param("triggerType") String triggerType);
+    long countExecutionsBySource(@Param("status") String status, @Param("createdBy") String createdBy, @Param("keyword") String keyword, @Param("userId") String userId, @Param("source") String source, @Param("triggerType") String triggerType);
 
     /** 扫描仍在等待依赖指标就绪(WAITING_METRICS)的流程实例,供门控重算和跨天超时兜底使用。 */
     List<SkillFlowExecution> selectWaitingExecutions(@Param("allowAuto") boolean allowAuto);
