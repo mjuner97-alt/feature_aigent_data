@@ -69,7 +69,7 @@ public class HtmlReportRenderer {
                 /* 目录宽度以及目录和正文之间的空隙。 */
                 --report-toc-width: 248px;
                 --report-toc-gap: 16px;
-                /* 普通图表高度；图表 option.chartHeight 仍可指定单张图表的高度。 */
+                /* 普通图表高度；_renderHeight 支持像素数或 auto，兼容 chartHeight。 */
                 --report-chart-height: 460px;
                 /* 单元格内部留白：两个数依次是上下、左右。 */
                 --report-header-padding: 8px 14px;
@@ -664,6 +664,52 @@ public class HtmlReportRenderer {
                 panel.querySelector('pre').textContent = error && error.message || String(error);
             }
 
+            // 单绘图区的热力图、横向条形图按类别行数增高；其他布局保留默认高度。
+            function autoReportChartHeight(option, defaultHeight) {
+                var grids = Array.isArray(option.grid) ? option.grid : [option.grid || {}];
+                if (grids.length !== 1) return NaN;
+                var axes = Array.isArray(option.yAxis) ? option.yAxis : [option.yAxis || {}];
+                var series = Array.isArray(option.series) ? option.series : [option.series];
+                var rows = 0;
+                var rowHeight = 28;
+                for (var i = 0; i < series.length; i++) {
+                    var item = series[i];
+                    if (!item || (item.type !== 'heatmap' && item.type !== 'bar')) continue;
+                    if (item.coordinateSystem && item.coordinateSystem !== 'cartesian2d') continue;
+                    var axis = axes[item.yAxisIndex || 0];
+                    if (!axis || (axis.type !== 'category' && !Array.isArray(axis.data))) continue;
+                    var count = Array.isArray(axis.data) ? axis.data.length : 0;
+                    if (!count && Array.isArray(item.data)) {
+                        if (item.type === 'bar') count = item.data.length;
+                        else for (var j = 0; j < item.data.length; j++) {
+                            var point = item.data[j];
+                            var value = point && point.value !== undefined ? point.value : point;
+                            if (Array.isArray(value) && Number.isInteger(value[1]) && value[1] >= 0) {
+                                count = Math.max(count, value[1] + 1);
+                            }
+                        }
+                    }
+                    rows = Math.max(rows, count);
+                    var labelSize = Number(item.label && item.label.fontSize);
+                    var axisLabelSize = Number(axis.axisLabel && axis.axisLabel.fontSize);
+                    if (Number.isFinite(labelSize)) rowHeight = Math.max(rowHeight, labelSize + 12);
+                    if (Number.isFinite(axisLabelSize)) rowHeight = Math.max(rowHeight, axisLabelSize + 12);
+                }
+                if (!rows) return NaN;
+                var grid = grids[0] || {};
+                var pixels = 0, fraction = 0;
+                var margins = [grid.top === undefined ? 60 : grid.top, grid.bottom === undefined ? 80 : grid.bottom];
+                for (var k = 0; k < margins.length; k++) {
+                    var margin = margins[k];
+                    if (typeof margin === 'string' && margin.trim().endsWith('%')) {
+                        var percent = Number(margin.trim().slice(0, -1));
+                        if (Number.isFinite(percent) && percent >= 0) fraction += percent / 100;
+                    } else if (Number.isFinite(Number(margin)) && Number(margin) >= 0) pixels += Number(margin);
+                }
+                if (fraction >= 1) return NaN;
+                return Math.max(defaultHeight || 460, Math.ceil((rows * rowHeight + pixels) / (1 - fraction)));
+            }
+
             function renderReportCharts(charts) {
                 function start() {
                     var entries = [];
@@ -677,8 +723,17 @@ public class HtmlReportRenderer {
                             if (!option || typeof option !== 'object' || Array.isArray(option)) {
                                 throw new Error('图表配置必须是 JSON 对象');
                             }
-                            var height = parseInt(option.chartHeight, 10);
+                            // 新标志优先；无效时兼容旧标志，否则保留 CSS 默认高度。
+                            var customHeight = option._renderHeight;
+                            var height = (typeof customHeight === 'number' ||
+                                (typeof customHeight === 'string' && customHeight.trim() !== ''))
+                                ? Number(customHeight) : NaN;
+                            if (customHeight === 'auto') height = autoReportChartHeight(option, el.clientHeight);
+                            if (!Number.isFinite(height) || height <= 100) {
+                                height = parseInt(option.chartHeight, 10);
+                            }
                             if (height > 100) el.style.height = height + 'px';
+                            delete option._renderHeight;
                             delete option.chartHeight;
                             option = normalizeChartOption(option, el.clientWidth);
                             chart = echarts.init(el);
