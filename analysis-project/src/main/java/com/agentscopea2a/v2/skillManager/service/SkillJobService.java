@@ -423,6 +423,14 @@ public class SkillJobService {
         return metricMapper.selectAllEnabled(trimmed).stream().map(SkillDependencyMetricDto::of).toList();
     }
 
+    /** 按 ID 回显历史配置；停用指标仍可展示名称，不代表可新建关联或触发。 */
+    public List<SkillDependencyMetricDto> findMetricsByIds(List<Long> ids) {
+        if (ids == null) return List.of();
+        List<Long> selected = ids.stream().filter(Objects::nonNull).filter(id -> id > 0).distinct().toList();
+        if (selected.isEmpty()) return List.of();
+        return metricMapper.selectByIds(selected).stream().map(SkillDependencyMetricDto::of).toList();
+    }
+
     /**
      * 按依赖指标触发（外部系统调用入口）：指标就绪后一把触发所有"启用且关联该指标"的 job。
      * 跨用户触发是预期行为：每个 job 仍以各自 createdBy 身份执行，执行时 skillAvailableToUser 各自校验权限。

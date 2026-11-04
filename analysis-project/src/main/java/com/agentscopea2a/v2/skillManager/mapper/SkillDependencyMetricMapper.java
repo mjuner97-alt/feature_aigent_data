@@ -33,6 +33,9 @@ public interface SkillDependencyMetricMapper {
     /** 列出参与每日就绪预警的指标。 */
     List<SkillDependencyMetric> selectAllAlertEnabled();
 
+    /** 编辑回显已选指标，包括已停用的指标。 */
+    List<SkillDependencyMetric> selectByIds(@Param("ids") List<Long> ids);
+
     /** 按业务编码查询（triggerByMetric 入口用） */
     SkillDependencyMetric selectByCode(@Param("code") String code);
 

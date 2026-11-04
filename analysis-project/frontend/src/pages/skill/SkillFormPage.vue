@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import MetricDependencySelect from '../../components/MetricDependencySelect.vue';
 /**
  * Skill 创建/编辑全页面表单
  *
@@ -255,9 +256,7 @@ function goBack() {
           </label>
           <label class="field">
             <span class="label">默认指标依赖</span>
-            <el-select v-model="form.defaultMetricIds" multiple filterable remote reserve-keyword :remote-method="loadMetrics" :loading="metricLoading" :disabled="notOwner" placeholder="未配置默认指标" clearable style="width:100%">
-              <el-option v-for="metric in metrics" :key="metric.id" :value="metric.id" :label="`${metric.name} (${metric.code})`" />
-            </el-select>
+            <MetricDependencySelect v-model="form.defaultMetricIds" :metrics="metrics" :remote-method="loadMetrics" :loading="metricLoading" placeholder="未配置默认指标" :disabled="notOwner" />
           </label>
           <SkillFileAttachment
             ref="attachmentRef"
