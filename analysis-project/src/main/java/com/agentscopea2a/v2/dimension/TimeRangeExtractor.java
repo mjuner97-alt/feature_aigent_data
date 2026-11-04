@@ -14,7 +14,8 @@ import java.util.regex.Pattern;
  *
  * <p>L1 正则（代码内置，按优先级先占 span，后面的正则与 L2 词表只认剩余文本）：
  * <ol>
- *   <li>中文/数字绝对区间 → {@code DATE:a~b}（缺年补当前年）</li>
+ *   <li>中文/数字绝对区间 → {@code DATE:a~b}（缺年补当前年）；左段省"日"的混合形态
+ *       （"9月28-9月30日"/"9月28-30日"）→ 同上（2026-11-04 补）</li>
  *   <li>截至X日 → {@code UNTIL:date}（缺年补当前年、缺月补当前月，拍板④）</li>
  *   <li>同月省略区间「10月1日到15日」/ 双省月「5日到10日」→ {@code DATE:a~b}</li>
  *   <li>临近交付N周内 → {@code R-n}、T-X → {@code T-n}（里程碑透传锚点，不解析日期）</li>
@@ -30,6 +31,15 @@ public final class TimeRangeExtractor {
     private static final Pattern CN_RANGE = Pattern.compile(
             "(?:(\\d{4})\\s*年\\s*)?(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*日\\s*(?:到|至|~|～|—|–|-)\\s*"
                     + "(?:(\\d{4})\\s*年\\s*)?(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*日");
+
+    /** 混合省略区间（docs/202611/混合省略日期区间解析修复方案.md §3.1）：左段无"日"的
+     *  [年]M月D (到|至|~|～|—|–|-) [年][M月]D[日号]?——右段月份可重复（"9月28-9月30日"）
+     *  可省略（"9月28-30日"），日可省（"9月28-9月30"）。左段带"日"的形态归 CN_RANGE /
+     *  CN_RANGE_TAIL（先跑，优先占 span）。 */
+    private static final Pattern MIXED_RANGE = Pattern.compile(
+            "(?:(\\d{4})\\s*年\\s*)?(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*[日号]?"
+                    + "\\s*(?:到|至|~|～|—|–|-)\\s*"
+                    + "(?:(\\d{4})\\s*年\\s*)?(?:(\\d{1,2})\\s*月\\s*)?(\\d{1,2})\\s*[日号]?");
 
     /** 数字日期区间：yyyy.M.d (分隔符) [yyyy.]M.d，点/横线/斜杠分隔。 */
     private static final Pattern NUM_RANGE = Pattern.compile(
@@ -142,6 +152,7 @@ public final class TimeRangeExtractor {
     private static List<Span> collectL1Spans(String question, boolean datesOnly) {
         List<Span> spans = new ArrayList<>();
         addRegexSpans(question, CN_RANGE, TimeRangeExtractor::rangeAnchor, spans);
+        addRegexSpans(question, MIXED_RANGE, TimeRangeExtractor::mixedRangeAnchor, spans);
         addRegexSpans(question, NUM_RANGE, TimeRangeExtractor::rangeAnchor, spans);
         addRegexSpans(question, UNTIL, TimeRangeExtractor::untilAnchor, spans);
         addRegexSpans(question, CN_RANGE_TAIL, TimeRangeExtractor::tailRangeAnchor, spans);
@@ -248,6 +259,33 @@ public final class TimeRangeExtractor {
         try {
             LocalDate start = LocalDate.of(year1, mo1, d1);
             LocalDate end = LocalDate.of(year2, mo2, d2);
+            if (start.isAfter(end)) {
+                return null;
+            }
+            return "DATE:" + start.format(ISO) + "~" + end.format(ISO);
+        } catch (java.time.DateTimeException e) {
+            return null;
+        }
+    }
+
+    /** MIXED_RANGE 分组：1=起始年(可选) 2=起始月 3=起始日 4=结束年(可选) 5=结束月(可选) 6=结束日；
+     *  右段有月时缺年补起始年（跨年须显式写年），右段省月时年/月全承左段；非法日期整段跳过。 */
+    private static String mixedRangeAnchor(Matcher m) {
+        Integer y1 = groupOrNull(m, 1);
+        Integer mo1 = groupOrNull(m, 2);
+        Integer d1 = groupOrNull(m, 3);
+        Integer y2 = groupOrNull(m, 4);
+        Integer mo2 = groupOrNull(m, 5);
+        Integer d2 = groupOrNull(m, 6);
+        if (mo1 == null || d1 == null || d2 == null) {
+            return null;
+        }
+        int year1 = y1 != null ? y1 : LocalDate.now(TimeRangeResolver.ZONE).getYear();
+        int year2 = y2 != null ? y2 : year1;
+        int month2 = mo2 != null ? mo2 : mo1;
+        try {
+            LocalDate start = LocalDate.of(year1, mo1, d1);
+            LocalDate end = LocalDate.of(year2, month2, d2);
             if (start.isAfter(end)) {
                 return null;
             }

@@ -270,6 +270,89 @@ class DimensionStateManagerAliasIntegrationTest {
         assertEquals(QuestionAnalysis.ReferenceType.SUB_REQUIREMENT, analysis.getReferenceType());
     }
 
+    // ==================== 项目编号 projectNo (docs/202611/内置维度键projectNo项目编号方案.md) ====================
+
+    @Test
+    void projectNoBareCodeExtracted() {
+        // 裸码 KJ/CC+8位数字，槽位 PROJECT
+        PeerDimension peer = extractPeer("KJ20260114 的缺陷数");
+        assertEquals(PeerDimensionType.PROJECT, peer.getType());
+        assertEquals(java.util.List.of("KJ20260114"), peer.getValues());
+        assertEquals(PeerDimensionType.PROJECT, extractPeer("CC20250745 达标率").getType());
+    }
+
+    @Test
+    void projectNoWithSuffixSegmentsExtracted() {
+        // 单段/多段后缀整体收集
+        PeerDimension peer = extractPeer("KJ99990273-412 和 CC99990073-41081-2 的进展对比");
+        assertEquals(PeerDimensionType.PROJECT, peer.getType());
+        assertEquals(java.util.List.of("KJ99990273-412", "CC99990073-41081-2"), peer.getValues());
+    }
+
+    @Test
+    void projectNoAlphanumericSuffixExtracted() {
+        PeerDimension peer = extractPeer("KJ20260190-H01 的完成率");
+        assertEquals(java.util.List.of("KJ20260190-H01"), peer.getValues());
+    }
+
+    @Test
+    void projectNoStopsBeforeChineseChar() {
+        // 中文自然截断: 编号后跟「和」不吞
+        PeerDimension peer = extractPeer("KJ20260114和CC20250745的对比");
+        assertEquals(java.util.List.of("KJ20260114", "CC20250745"), peer.getValues());
+    }
+
+    @Test
+    void projectNoDeduplicates() {
+        PeerDimension peer = extractPeer("KJ20260114 和 KJ20260114 的对比");
+        assertEquals(java.util.List.of("KJ20260114"), peer.getValues());
+    }
+
+    @Test
+    void lowercasePrefixNotExtracted() {
+        // 拍板②: 仅大写 KJ/CC
+        QuestionAnalysis analysis = manager.analyzeQuestionRuleBased("kj20260114 的缺陷数");
+        assertNull(analysis.getExplicitDimensions().getPeerDimension());
+        assertNull(analysis.getExplicitDimensions().getProjectNos());
+    }
+
+    @Test
+    void projectNoGoesToDedicatedFieldAndSlotCoexists() {
+        // 专字段 + 槽位共存（与需求项同口径）
+        QuestionAnalysis analysis = manager.analyzeQuestionRuleBased("KJ20260114 的缺陷数");
+        assertEquals(java.util.List.of("KJ20260114"),
+                analysis.getExplicitDimensions().getProjectNos());
+        assertEquals(PeerDimensionType.PROJECT,
+                analysis.getExplicitDimensions().getPeerDimension().getType());
+    }
+
+    @Test
+    void requirementNumberWinsSlotOverProjectNo() {
+        // I 编号与项目编号同句: 槽位先到先得 REQUIREMENT 胜, projectNos 专字段仍收
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("I20260208-0005 和 KJ20260114 的进展");
+        assertEquals(PeerDimensionType.REQUIREMENT,
+                analysis.getExplicitDimensions().getPeerDimension().getType());
+        assertEquals(java.util.List.of("KJ20260114"),
+                analysis.getExplicitDimensions().getProjectNos());
+    }
+
+    @Test
+    void aliasHitSuppressesProjectNoRegex() {
+        // alias 命中后项目编号正则不再兜底（peer 已由 alias 决定）
+        QuestionAnalysis analysis = manager.analyzeQuestionRuleBased("军队关于KJ20260114的缺陷");
+        assertEquals(PeerDimensionType.PRODUCT_LINE,
+                analysis.getExplicitDimensions().getPeerDimension().getType());
+        assertNull(analysis.getExplicitDimensions().getProjectNos());
+    }
+
+    @Test
+    void projectNoNotHijackedAsBareAppCode() {
+        // span 屏蔽: "KJ" 不得被裸应用码扫描抢成 F-KJ（槽位必须是 PROJECT 而非 APPLICATION）
+        PeerDimension peer = extractPeer("KJ20260114 的缺陷数");
+        assertEquals(PeerDimensionType.PROJECT, peer.getType());
+    }
+
     @Test
     void aliasHitSuppressedRequirementRegex() {
         // alias 命中后需求项正则不再兜底（peer 已由 alias 决定）
@@ -463,6 +546,47 @@ class DimensionStateManagerAliasIntegrationTest {
         DimensionState state = manager.previewState(
                 "I20260922-0366 F-PFXP 详细设计质检 11月版", null);
         assertEquals(java.util.List.of("I20260922-0366"), state.getRequirementNos());
+    }
+
+    @Test
+    void orgVocabPrefixDoesNotKillEnumeratedQuarters() {
+        // 杭研 (orgName 动态键词，不在 deptName 正则/词表白名单) + 「1、2、3三个季度」：
+        // level 检查没覆盖列举时间形态时 level=null，inheritDimensions 曾直接
+        // return previous 把已提取的季度整轮丢掉 (内网 14:45 实证 vestQuarter=[])
+        QuestionAnalysis analysis =
+                manager.analyzeQuestionRuleBased("杭研 1、2、3三个季度的研发周期");
+        assertEquals(QuestionAnalysis.QuestionLevel.TIME, analysis.getLevel());
+        assertEquals(java.util.List.of("2026年1季度", "2026年2季度", "2026年3季度"),
+                analysis.getExplicitDimensions().getTimeDimension().getValues());
+
+        DimensionState preview = manager.previewState("杭研 1、2、3三个季度的研发周期", null);
+        assertEquals(java.util.List.of("2026年1季度", "2026年2季度", "2026年3季度"),
+                preview.getTimeDimension().getValues());
+    }
+
+    @Test
+    void levelNullStillAppliesExplicitDimensionsOverPrevious() {
+        // 第二层兜底：即使 level 漏判为 null，只要本轮提取到显式维度就落地（不回丢继承值）
+        DimensionState previous = new DimensionState();
+        previous.setTimeDimension(new DimensionState.TimeDimension(
+                DimensionState.TimeDimensionType.VERSION, java.util.List.of("2026年10月份版本")));
+        previous.setDepartments(java.util.List.of("杭州开发二部"));
+
+        DimensionState next = manager.previewState("杭研 1、2、3三个季度的研发周期", previous);
+        assertEquals(DimensionState.TimeDimensionType.QUARTER, next.getTimeDimension().getType());
+        assertEquals(java.util.List.of("2026年1季度", "2026年2季度", "2026年3季度"),
+                next.getTimeDimension().getValues());
+        // 显式时间落地时部门按层级规则重置（时间以下全部清空）
+        assertNull(next.getDepartments());
+    }
+
+    @Test
+    void levelNullWithoutDimensionsKeepsGreetingFallback() {
+        // 无显式维度（问候/闲聊）维持老行为：previous 原样保留
+        DimensionState previous = new DimensionState();
+        previous.setDepartments(java.util.List.of("杭州开发二部"));
+        DimensionState next = manager.previewState("你好", previous);
+        assertEquals(java.util.List.of("杭州开发二部"), next.getDepartments());
     }
 
     @Test

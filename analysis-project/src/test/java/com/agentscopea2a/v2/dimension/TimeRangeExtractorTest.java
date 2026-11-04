@@ -247,4 +247,68 @@ class TimeRangeExtractorTest {
         assertTrue(TimeRangeExtractor.extract("", SEED_ALIASES).isEmpty());
         assertTrue(TimeRangeExtractor.extract("本周", null).isEmpty());
     }
+
+    // ==================== 混合省略区间（2026-11-04，左段省"日"） ====================
+
+    @Test
+    void mixedRangeRightRepeatsMonthWithDay() {
+        // 本 bug 主 case：左段"9月28"无"日"，右段重复月带日
+        assertEquals(List.of("DATE:2026-09-28~2026-09-30"),
+                TimeRangeExtractor.extract("9月28-9月30日之间QI卡口到期的", SEED_ALIASES));
+        assertEquals(List.of("DATE:2026-09-28~2026-09-30"),
+                TimeRangeExtractor.extract("杭州开发三部，10、11月版本，9月28-9月30日之间到期的", SEED_ALIASES));
+    }
+
+    @Test
+    void mixedRangeRightOmittedMonth() {
+        assertEquals(List.of("DATE:2026-09-28~2026-09-30"),
+                TimeRangeExtractor.extract("9月28-30日之间到期", SEED_ALIASES));
+        assertEquals(List.of("DATE:2026-12-28~2026-12-30"),
+                TimeRangeExtractor.extract("12月28号-30号的情况", SEED_ALIASES));
+    }
+
+    @Test
+    void mixedRangeRightOmittedDay() {
+        assertEquals(List.of("DATE:2026-09-28~2026-09-30"),
+                TimeRangeExtractor.extract("9月28-9月30到期", SEED_ALIASES));
+        assertEquals(List.of("DATE:2026-09-28~2026-09-30"),
+                TimeRangeExtractor.extract("9月28-30", SEED_ALIASES));
+    }
+
+    @Test
+    void mixedRangeRightMissingYearInheritsStartYear() {
+        assertEquals(List.of("DATE:2025-09-28~2025-10-02"),
+                TimeRangeExtractor.extract("2025年9月28-10月2日到期", SEED_ALIASES));
+    }
+
+    @Test
+    void mixedRangeInvalidSkipped() {
+        // 非法月整段跳过
+        assertTrue(TimeRangeExtractor.extract("9月28-13月5日的数据", SEED_ALIASES).isEmpty());
+        // 跨年混合形态（右段缺年）补起始年后 start>end → 弃收，不做方向猜测
+        assertTrue(TimeRangeExtractor.extract("2025年12月28-1月2日的投产", SEED_ALIASES).isEmpty());
+        // 起止倒置
+        assertTrue(TimeRangeExtractor.extract("9月30-9月28日的数据", SEED_ALIASES).isEmpty());
+    }
+
+    @Test
+    void mixedRangeDoesNotSwallowVersionOrDayRangeForms() {
+        // 版本列举（分隔符 、 不在区间分隔集）不产日期锚点
+        assertTrue(TimeRangeExtractor.extract("10、11月版本", SEED_ALIASES).isEmpty());
+        // 左段带"日"仍归 CN_RANGE / CN_RANGE_TAIL，不因 MIXED 重复产锚点
+        String year = currentYear();
+        assertEquals(List.of("DATE:" + year + "-10-01~" + year + "-10-15"),
+                TimeRangeExtractor.extract("10月1日到10月15日", SEED_ALIASES));
+        assertEquals(List.of("DATE:" + year + "-10-01~" + year + "-10-15"),
+                TimeRangeExtractor.extract("10月1日到15日", SEED_ALIASES));
+        // 裸日期（无区间上下文）不命中
+        assertTrue(TimeRangeExtractor.extract("9月28日到期", SEED_ALIASES).isEmpty());
+    }
+
+    @Test
+    void mixedRangeSpansShieldVersionRegex() {
+        // 屏蔽联动（方案 §3.2）：MIXED span 进 absoluteDateSpans，防 EXPLICIT_VERSION 吃 "9月"
+        assertEquals(1, TimeRangeExtractor.absoluteDateSpans("9月28-9月30日之间到期").size());
+        assertEquals(1, TimeRangeExtractor.absoluteDateSpans("9月28-30日之间到期").size());
+    }
 }

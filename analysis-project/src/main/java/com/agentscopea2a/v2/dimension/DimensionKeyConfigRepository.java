@@ -34,8 +34,9 @@ public class DimensionKeyConfigRepository {
     private static final TypeReference<List<DimensionKeyConfig.AliasMapping>> ALIAS_LIST_TYPE =
             new TypeReference<>() {};
 
-    /** 内置 11 键 seed（key → 展示名），与 DirectSkillExecutor.DIMENSION_KEYS 同源
-     *  （perNo=统一认证号，人员台账维度方案 §3.4；perRole=岗位角色，岗位角色内置维度方案 §4.2）。 */
+    /** 内置 12 键 seed（key → 展示名），与 DirectSkillExecutor.DIMENSION_KEYS 同源
+     *  （perNo=统一认证号，人员台账维度方案 §3.4；perRole=岗位角色，岗位角色内置维度方案 §4.2；
+     *  projectNo=项目编号，docs/202611/内置维度键projectNo项目编号方案.md）。 */
     private static final Map<String, String> BUILTIN_KEYS = buildBuiltinKeys();
 
     private static Map<String, String> buildBuiltinKeys() {
@@ -48,6 +49,7 @@ public class DimensionKeyConfigRepository {
         keys.put("productLine", "产品线");
         keys.put("itemNo", "需求项");
         keys.put("subItemNo", "需求子条目");
+        keys.put("projectNo", "项目编号");
         keys.put("perName", "人");
         keys.put("perNo", "统一认证号");
         keys.put("perRole", "岗位角色");

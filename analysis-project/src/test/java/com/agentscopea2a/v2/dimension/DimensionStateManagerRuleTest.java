@@ -487,4 +487,21 @@ class DimensionStateManagerRuleTest {
     void dateRangeNotParsedAsVersion() {
         assertNull(extractTime("10月1日到10月15日的缺陷数"));
     }
+
+    @Test
+    void mixedOmittedRangeShieldedFromVersion() {
+        // docs/202611/混合省略日期区间解析修复方案.md：左段"9月28"（无日）+ 右段重复月
+        // 须整体进日期屏蔽 span，"9月" 不得被 EXPLICIT_VERSION 吃成 2026年9月份版本
+        String y = String.valueOf(currentYear());
+        DimensionState.TimeDimension time = extractTime(
+                "杭州开发三部，10、11月版本，9月28-9月30日之间QI卡口到期的，但还有指标未达标的");
+        assertEquals(DimensionState.TimeDimensionType.VERSION, time.getType());
+        assertEquals(List.of(y + "年10月份版本", y + "年11月份版本"), time.getValues());
+        assertEquals(List.of("杭州开发三部"), extractDepartments(
+                "杭州开发三部，10、11月版本，9月28-9月30日之间QI卡口到期的"));
+
+        // 右段省月形态同样屏蔽
+        DimensionState.TimeDimension omitMonth = extractTime("10月版各组，9月28-30日之前到期的需求");
+        assertEquals(List.of(y + "年10月份版本"), omitMonth.getValues());
+    }
 }

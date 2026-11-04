@@ -35,7 +35,7 @@ public final class DimensionPrompts {
               "timeDimensionType": "QUARTER|VERSION" 或 null,
               "timeDimensionValues": ["值"] 或 null,
               "departments": ["杭州开发X部"] 或 null,
-              "peerDimensionType": "TEAM|APPLICATION|PRODUCT_LINE|REQUIREMENT|SUB_REQUIREMENT" 或 null,
+              "peerDimensionType": "TEAM|APPLICATION|PRODUCT_LINE|REQUIREMENT|SUB_REQUIREMENT|PROJECT" 或 null,
               "peerDimensionValues": ["值"] 或 null,
               "persons": ["姓名"] 或 null
             }
@@ -45,13 +45,14 @@ public final class DimensionPrompts {
             - persons：结论提到几个人名就提取几个（通常只有1个）；人名须为台账中文姓名全名
               （不含"我/我们"——"我部/我的组/我的应用/我的产品线"按 departments/
               peerDimension 维度提取，"我"本人不进 persons）
-            - peerDimensionValues：结论提到几个组/应用/产品线/需求项/需求子条目就提取几个（通常只有1个）
-            - peerDimensionType 同级维度五选一：
+            - peerDimensionValues：结论提到几个组/应用/产品线/需求项/需求子条目/项目编号就提取几个（通常只有1个）
+            - peerDimensionType 同级维度六选一：
               - TEAM(组)：xxx组
               - APPLICATION(应用)：F-xxx 全英文
               - PRODUCT_LINE(产品线)：xxx产品线
               - REQUIREMENT(需求项)：xxx需求项
               - SUB_REQUIREMENT(需求子条目)：S+8位日期数字-6位数字，如 S20250926-000741
+              - PROJECT(项目编号)：KJ或CC打头+8位数字，可带-字母数字后缀段，如 KJ20260114、CC99990073-41081-2
             - timeDimensionValues：如果结论涉及时间范围（如"过去几个月"），提取所有涉及时间；否则提取结论中提到的那1个
             - 季度="xxx年x季度"(QUARTER)，版本="xxx年x月份版本"(VERSION)
             - 应用以"F-"开头，部门为"杭州开发X部"
