@@ -72,7 +72,8 @@ public class DirectSkillExecutor {
      *  perRole = 岗位角色 (岗位角色内置维度方案 §4.2, 同 perNo 口径不进指纹)。 */
     public static final Set<String> DIMENSION_KEYS = Set.of(
             "versionPlan", "vestQuarter", "deptName", "groupName",
-            "appName", "productLine", "itemNo", "subItemNo", "perName", "perNo", "perRole");
+            "appName", "productLine", "itemNo", "subItemNo", "projectNo",
+            "perName", "perNo", "perRole");
 
     /** 上级组织动态键 (2026/10/22): dimension_key_config orgName 行 (杭研/研发部/基地等
      *  变体 → 标准值「杭研」, 页面可加)。命中时缺部门不反问 (上级组织已是部门的上层口径)。 */
@@ -192,6 +193,7 @@ public class DirectSkillExecutor {
             List<String> productLine,
             List<String> itemNo,
             List<String> subItemNo,
+            List<String> projectNo,
             List<String> perName,
             List<String> perNo,
             List<String> perRole,
@@ -208,6 +210,7 @@ public class DirectSkillExecutor {
             productLine = safe(productLine);
             itemNo = safe(itemNo);
             subItemNo = safe(subItemNo);
+            projectNo = safe(projectNo);
             perName = safe(perName);
             perNo = safe(perNo);
             perRole = safe(perRole);
@@ -223,7 +226,7 @@ public class DirectSkillExecutor {
                 List<String> perNo, List<String> metrics, String matchedSkill,
                 Map<String, List<String>> extraDimensions) {
             this(versionPlan, vestQuarter, deptName, groupName, appName, productLine,
-                    itemNo, subItemNo, perName, perNo, List.of(), metrics, matchedSkill,
+                    itemNo, subItemNo, List.of(), perName, perNo, List.of(), metrics, matchedSkill,
                     extraDimensions);
         }
 
@@ -234,7 +237,8 @@ public class DirectSkillExecutor {
                 List<String> itemNo, List<String> subItemNo, List<String> perName,
                 List<String> metrics, String matchedSkill) {
             this(versionPlan, vestQuarter, deptName, groupName, appName, productLine,
-                    itemNo, subItemNo, perName, List.of(), metrics, matchedSkill, Map.of());
+                    itemNo, subItemNo, List.of(), List.of(), perName, List.of(), metrics,
+                    matchedSkill, Map.of());
         }
 
         /** Legacy 12-arg shape (no perNo, with dynamic keys) for existing call sites. */
@@ -245,7 +249,8 @@ public class DirectSkillExecutor {
                 List<String> metrics, String matchedSkill,
                 Map<String, List<String>> extraDimensions) {
             this(versionPlan, vestQuarter, deptName, groupName, appName, productLine,
-                    itemNo, subItemNo, perName, List.of(), metrics, matchedSkill, extraDimensions);
+                    itemNo, subItemNo, List.of(), List.of(), perName, List.of(), metrics,
+                    matchedSkill, extraDimensions);
         }
 
         /** Legacy 10-arg shape (no dynamic keys) for existing call sites. */
@@ -708,13 +713,14 @@ public class DirectSkillExecutor {
     }
 
     /**
-     * 特例 (2026/10/21 拍板): 问题包含需求项/需求子条目且未显式提及版本计划/季度时,
-     * 不补默认在建版本 — 两个时间维度传给脚本的值为空 (需求项脚本按需求项全历史口径自查)。
-     * 显式提及任一时间仍正常传该时间 (需求项+「12月版」→ 只传版本)。
+     * 特例 (2026/10/21 拍板, 2026/11/03 扩展项目编号): 问题包含需求项/需求子条目/项目编号
+     * 且未显式提及版本计划/季度时, 不补默认在建版本 — 两个时间维度传给脚本的值为空
+     * (精确编号脚本按编号全历史口径自查)。显式提及任一时间仍正常传该时间 (需求项+「12月版」→ 只传版本)。
      */
     private static boolean requirementWithoutExplicitTime(DimensionExtraction extraction) {
         boolean hasRequirement = (extraction.itemNo() != null && !extraction.itemNo().isEmpty())
-                || (extraction.subItemNo() != null && !extraction.subItemNo().isEmpty());
+                || (extraction.subItemNo() != null && !extraction.subItemNo().isEmpty())
+                || (extraction.projectNo() != null && !extraction.projectNo().isEmpty());
         if (!hasRequirement) {
             return false;
         }
@@ -808,8 +814,8 @@ public class DirectSkillExecutor {
         return new DimensionExtraction(extraction.versionPlan(), extraction.vestQuarter(),
                 extraction.deptName(), extraction.groupName(), extraction.appName(),
                 extraction.productLine(), extraction.itemNo(), extraction.subItemNo(),
-                extraction.perName(), extraction.perNo(), extraction.perRole(), extraction.metrics(),
-                extraction.matchedSkill(), extra);
+                extraction.projectNo(), extraction.perName(), extraction.perNo(),
+                extraction.perRole(), extraction.metrics(), extraction.matchedSkill(), extra);
     }
 
     /**
@@ -1009,8 +1015,8 @@ public class DirectSkillExecutor {
         DimensionExtraction out = new DimensionExtraction(extraction.versionPlan(),
                 extraction.vestQuarter(), extraction.deptName(), extraction.groupName(),
                 extraction.appName(), extraction.productLine(), extraction.itemNo(),
-                extraction.subItemNo(), perName, perNo, perRole, extraction.metrics(),
-                extraction.matchedSkill(), extraction.extraDimensions());
+                extraction.subItemNo(), extraction.projectNo(), perName, perNo, perRole,
+                extraction.metrics(), extraction.matchedSkill(), extraction.extraDimensions());
         return new PersonScanOutcome(out, ambiguousName, candidates, personal, scannedNames,
                 List.copyOf(explicitRoles));
     }
@@ -1069,8 +1075,8 @@ public class DirectSkillExecutor {
         }
         return new DimensionExtraction(extraction.versionPlan(), extraction.vestQuarter(),
                 deptName, groupName, appName, productLine, extraction.itemNo(), extraction.subItemNo(),
-                perName, perNo, extraction.metrics(), extraction.matchedSkill(),
-                extraction.extraDimensions());
+                extraction.projectNo(), perName, perNo, List.of(), extraction.metrics(),
+                extraction.matchedSkill(), extraction.extraDimensions());
     }
 
     /** 追加不存在的非空值 (保序去重, 显式值已在 base 中优先保留)。 */
@@ -1202,9 +1208,9 @@ public class DirectSkillExecutor {
         DimensionExtraction out = new DimensionExtraction(extraction.versionPlan(),
                 extraction.vestQuarter(), extraction.deptName(), merged.get("groupName"),
                 merged.get("appName"), merged.get("productLine"), extraction.itemNo(),
-                extraction.subItemNo(), extraction.perName(), extraction.perNo(),
-                extraction.perRole(), extraction.metrics(), extraction.matchedSkill(),
-                extraction.extraDimensions());
+                extraction.subItemNo(), extraction.projectNo(), extraction.perName(),
+                extraction.perNo(), extraction.perRole(), extraction.metrics(),
+                extraction.matchedSkill(), extraction.extraDimensions());
         return new LedgerTruthScan(out, scanHit.get("groupName"),
                 scanHit.get("appName"), scanHit.get("productLine"));
     }
@@ -1260,9 +1266,9 @@ public class DirectSkillExecutor {
         log.info("DirectSkillExecutor: 维度值→部门反填 (台账 Q8) → {} (来源 {})", depts, sources);
         return new DimensionExtraction(extraction.versionPlan(), extraction.vestQuarter(),
                 List.copyOf(depts), extraction.groupName(), extraction.appName(), extraction.productLine(),
-                extraction.itemNo(), extraction.subItemNo(), extraction.perName(), extraction.perNo(),
-                extraction.perRole(), extraction.metrics(), extraction.matchedSkill(),
-                extraction.extraDimensions());
+                extraction.itemNo(), extraction.subItemNo(), extraction.projectNo(),
+                extraction.perName(), extraction.perNo(), extraction.perRole(),
+                extraction.metrics(), extraction.matchedSkill(), extraction.extraDimensions());
     }
 
     /** 真值域组装（§4.2）：台账 distinct ∪ 词表标准值 ∪ alias 标准名。
@@ -1379,8 +1385,8 @@ public class DirectSkillExecutor {
                 groupMentioned, appMentioned, productLineMentioned, perRoleMentioned);
         return new DimensionExtraction(extraction.versionPlan(), extraction.vestQuarter(),
                 extraction.deptName(), groupName, appName, productLine, extraction.itemNo(),
-                extraction.subItemNo(), perName, perNo, perRole, extraction.metrics(),
-                extraction.matchedSkill(), extraction.extraDimensions());
+                extraction.subItemNo(), extraction.projectNo(), perName, perNo, perRole,
+                extraction.metrics(), extraction.matchedSkill(), extraction.extraDimensions());
     }
 
     /** 补参轮统一入口 (§6-4 拍板: 补参轮也跑抑制): extraction 重建后无 personScan 产物,
@@ -1465,8 +1471,8 @@ public class DirectSkillExecutor {
         return new DimensionExtraction(extraction.versionPlan(), extraction.vestQuarter(),
                 extraction.deptName(), extraction.groupName(), extraction.appName(),
                 extraction.productLine(), extraction.itemNo(), extraction.subItemNo(),
-                perName, perNo, perRole, extraction.metrics(), extraction.matchedSkill(),
-                extraction.extraDimensions());
+                extraction.projectNo(), perName, perNo, perRole, extraction.metrics(),
+                extraction.matchedSkill(), extraction.extraDimensions());
     }
 
     /** 重名反问答复匹配: 序号 (1~N, 含全角/中文数字? 否——直接执行轮保持简单, 仅阿拉伯数字)
@@ -1555,6 +1561,7 @@ public class DirectSkillExecutor {
         List<String> productLine = List.of();
         List<String> itemNo = List.of();
         List<String> subItemNo = List.of();
+        List<String> projectNo = List.of();
         if (state != null && state.getPeerDimension() != null && !state.getPeerDimension().isEmpty()) {
             List<String> values = state.getPeerDimension().getValues();
             switch (state.getPeerDimension().getType()) {
@@ -1563,6 +1570,7 @@ public class DirectSkillExecutor {
                 case PRODUCT_LINE -> productLine = values;
                 case REQUIREMENT -> itemNo = values;
                 case SUB_REQUIREMENT -> subItemNo = values;
+                case PROJECT -> projectNo = values;
             }
         }
         // 精确格式编码合并（盲区修复方案 §3）：专字段与槽位共存，去重保序
@@ -1576,11 +1584,16 @@ public class DirectSkillExecutor {
             mergedSub.addAll(state.getSubRequirementNos());
             subItemNo = List.copyOf(mergedSub);
         }
+        if (state != null && state.getProjectNos() != null) {
+            Set<String> mergedProj = new LinkedHashSet<>(projectNo);
+            mergedProj.addAll(state.getProjectNos());
+            projectNo = List.copyOf(mergedProj);
+        }
         List<String> persons = state == null ? List.of() : safe(state.getPersons());
         // perNo/perRole 不进 DimensionState (执行期解析), 由 plan 人员段/角色提取填充
         return new DimensionExtraction(versionPlan, vestQuarter, departments, groupName,
-                appName, productLine, itemNo, subItemNo, persons, List.of(), List.of(),
-                metrics, matchedSkill, extraDimensions);
+                appName, productLine, itemNo, subItemNo, projectNo, persons, List.of(),
+                List.of(), metrics, matchedSkill, extraDimensions);
     }
 
     /**
@@ -1688,6 +1701,7 @@ public class DirectSkillExecutor {
             case "productLine" -> extraction.productLine();
             case "itemNo" -> extraction.itemNo();
             case "subItemNo" -> extraction.subItemNo();
+            case "projectNo" -> extraction.projectNo();
             case "perName" -> extraction.perName();
             case "perNo" -> extraction.perNo();
             case "perRole" -> extraction.perRole();

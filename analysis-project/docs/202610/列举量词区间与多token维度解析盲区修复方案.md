@@ -14,6 +14,7 @@
 | A | 杭州开发五部 1、2、3**三个**季度的研发周期 | vestQuarter 全空 | 1/2/3 三季 |
 | B | 杭州开发五部 1**-**3季度的研发周期 | 只剩 2026年3季度 | 1/2/3 三季 |
 | C | I20260922-0366　F-PFXP 详细设计质检 11月版 | itemNo 空，只有 app | 双值共存 |
+| D | **杭研** 1、2、3三个季度的研发周期 | vestQuarter/deptName 全空（杭州开发五部前缀同问法正常） | 三季落地 |
 
 ## 1. Bug A：「1、2、3三个季度」整组失配
 
@@ -108,14 +109,51 @@ PeerDimension 是**单类型单槽位**。应用码 `F-PFXP` 先把 APPLICATION 
 | 杭州开发二部　I20260922-0366　F-PFXP 详细设计质检　11月版 | 同上（dept 不占 peer 槽，无关） |
 | 需求项I20260922-0366 F-PFXP … / F-PFXP应用I20260922-0366 … | 同上（「需求项」前缀不参与正则） |
 
+## 3.5 Bug D：杭研前缀导致整轮维度丢失（2026-11-04 追加）
+
+### 现象
+
+「杭研 1、2、3三个季度的研发周期」vestQuarter/deptName 全空，只剩
+extraDimensions 侧 drillDown=[杭研维度]/dimension=[部门]；同问法换
+「杭州开发五部」前缀则三季正常。本机复现实证：**提取层正常**（quarters
+三值全收进 explicit.timeDimension），丢在状态落地层。
+
+### 根因（两层叠加）
+
+1. **detectLevel 漏判**：TIME 层级检查只认 EXPLICIT_QUARTER 等单值正则，
+   「1、2、3**三个**季度」中「3三个季度」不匹配 `(\d{1,2})季度`；
+   杭州开发五部靠 `EXPLICIT_DEPT` 抬到 DEPARTMENT 层级，杭研是 orgName
+   动态键词（不在 deptName 正则/词表白名单，刻意不映射，见 §5.1 屏蔽设计），
+   两条路都不命中 ⇒ level=null；
+2. **inheritDimensions 短路**：level==null 分支视作「问候类无维度问题」
+   直接 `return previous`（未 applyExplicitDimensions）⇒ 已提取的显式维度
+   整轮丢弃。
+
+### 修复（双层兜底）
+
+1. `detectLevel` TIME 检查补齐提取层同款形态：SHARED_SUFFIX_VERSION /
+   SHARED_SUFFIX_QUARTER / RANGE_QUARTER / RANGE_VERSION（level 与提取
+   从此同源，新增时间正则须两处同步）；
+2. `inheritDimensions` level==null 分支：`ExplicitDimensions.hasAnyDimension()`
+   （新增 helper，覆盖 7 类显式字段）为 true 时改为
+   `previous.deepCopy() + applyExplicitDimensions` 落地显式值；无显式维度
+   （问候/闲聊）维持原 `return previous` 不变。
+
+### 测试
+
+`orgVocabPrefixDoesNotKillEnumeratedQuarters`（杭研问法 level=TIME + previewState
+三季）、`levelNullStillAppliesExplicitDimensionsOverPrevious`（level=null 时显式
+值覆盖继承、部门按层级规则重置）、`levelNullWithoutDimensionsKeepsGreetingFallback`
+（问候回退回归）。dimension 包 285 + DirectSkillExecutorTest 130 全绿。
+
 ## 4. 改动点清单
 
 | 文件 | 改动 |
 | --- | --- |
-| DimensionStateManager.java | SHARED_SUFFIX_QUARTER / SHARED_SUFFIX_VERSION 量词容忍；新增 RANGE_QUARTER / RANGE_VERSION 展开与屏蔽；需求项/子条目精确编码无条件提取进专字段；applyExplicitDimensions 专字段生命周期对齐 peer 槽位 |
-| QuestionAnalysis.java（ExplicitDimensions）/ DimensionState.java | 新增 requirementNos / subRequirementNos（含 build() 扁平 JSON 回填） |
+| DimensionStateManager.java | SHARED_SUFFIX_QUARTER / SHARED_SUFFIX_VERSION 量词容忍；新增 RANGE_QUARTER / RANGE_VERSION 展开与屏蔽；需求项/子条目精确编码无条件提取进专字段；applyExplicitDimensions 专字段生命周期对齐 peer 槽位；detectLevel TIME 补齐列举/区间形态；inheritDimensions level==null 时显式维度兜底落地 |
+| QuestionAnalysis.java（ExplicitDimensions）/ DimensionState.java | 新增 requirementNos / subRequirementNos（含 build() 扁平 JSON 回填）+ hasAnyDimension() |
 | DirectSkillExecutor.java | extract() 合并专字段到 itemNo / subItemNo（去重保序） |
-| 测试 | DimensionStateManagerAliasIntegrationTest 补 10 用例（A/B/C + previewState 落状态） |
+| 测试 | DimensionStateManagerAliasIntegrationTest 补 13 用例（A/B/C/D + previewState 落状态 + 问候回退回归） |
 
 ## 5. 测试计划（E2E 前置单测）
 

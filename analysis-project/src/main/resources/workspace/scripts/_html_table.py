@@ -18,7 +18,7 @@ CSS = """
 #report * { box-sizing: border-box; }
 #report {
   font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
-  color:#333; padding:16px; /* 背景透明: 前端 iframe 是透明设计, 白底会在表格右侧显出大片空白 */
+  color:#333; /* 背景透明: 前端 iframe 是透明设计, 白底会在表格右侧显出大片空白 */
 }
 #report .table-wrap { overflow-x:auto; width:100%; }
 #report table {
@@ -28,11 +28,11 @@ CSS = """
 }
 #report th {
   background: rgb(192, 0, 0) !important; color:#fff !important; font-weight:600 !important;
-  padding:8px 14px !important; border:1px solid #bfbfbf !important; text-align:center !important;
+  border:1px solid #bfbfbf !important; text-align:center !important;
 }
 #report td {
   color:#333; /* 不加 important, 保留业务数据标红等个性标记 */
-  padding:6px 12px !important; border:1px solid #bfbfbf !important; text-align:center !important;
+  border:1px solid #bfbfbf !important; text-align:center !important;
   word-break:break-word; overflow-wrap:anywhere;
 }
 #report tr:nth-child(even) td { background:#fafafa !important; }

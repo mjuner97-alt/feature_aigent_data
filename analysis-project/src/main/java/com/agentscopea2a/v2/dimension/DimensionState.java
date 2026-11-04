@@ -49,6 +49,9 @@ public class DimensionState implements State {
     /** 需求子条目精确编码（盲区修复方案 §3）：同 requirementNos 口径 */
     private List<String> subRequirementNos;
 
+    /** 项目编号精确编码（docs/202611/内置维度键projectNo项目编号方案.md）：同 requirementNos 口径 */
+    private List<String> projectNos;
+
     /** 待确认的歧义反问（docs/dimension-alias-config-plan.md §6.3）；流程控制状态，不参与指纹/等值 */
     private PendingClarification pendingClarification;
 
@@ -112,6 +115,14 @@ public class DimensionState implements State {
 
     public void setSubRequirementNos(List<String> subRequirementNos) {
         this.subRequirementNos = subRequirementNos;
+    }
+
+    public List<String> getProjectNos() {
+        return projectNos;
+    }
+
+    public void setProjectNos(List<String> projectNos) {
+        this.projectNos = projectNos;
     }
 
     public PendingClarification getPendingClarification() {
@@ -213,14 +224,16 @@ public class DimensionState implements State {
         VERSION
     }
 
-    /** 业务同级维度类型：组/应用/产品线/需求项/需求子条目 五选一 */
+    /** 业务同级维度类型：组/应用/产品线/需求项/需求子条目/项目编号 六选一 */
     public enum PeerDimensionType {
         TEAM,
         APPLICATION,
         PRODUCT_LINE,
         REQUIREMENT,
         /** 需求子条目（S+8位日期-6位数字，如 S20250926-000741） */
-        SUB_REQUIREMENT
+        SUB_REQUIREMENT,
+        /** 项目编号（KJ/CC+8位数字，可带 -字母数字 后缀段，如 KJ20260114、CC99990073-41081-2） */
+        PROJECT
     }
 
     /**

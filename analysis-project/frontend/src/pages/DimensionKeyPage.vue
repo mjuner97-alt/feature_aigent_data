@@ -62,6 +62,7 @@ const RULE_HINTS: Record<string, string> = {
   productLine: '产品线词表识别',
   itemNo: '需求项编号 I20260208-0005',
   subItemNo: '子需求项编号',
+  projectNo: '项目编号 KJ20260114 / KJ99990273-412 / CC99990073-41081-2 (KJ或CC打头+8位数字+可选-字母数字后缀段)',
   perName: '人员名识别',
   perNo: '裸"我"代词 + 我担任/我现任/我所担任 (正则 type=regex, value=myself)',
   perRole: '担任([一-龥]) 提取 (正则 type=regex, value=extract) + 角色字典扫描 (人锚共存)',

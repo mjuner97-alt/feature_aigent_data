@@ -160,7 +160,8 @@ public class QuestionAnalysis {
                 return null;
             }
             return switch (value.toUpperCase()) {
-                case "TEAM", "APPLICATION", "PRODUCT_LINE", "REQUIREMENT", "SUB_REQUIREMENT" -> PEER;
+                case "TEAM", "APPLICATION", "PRODUCT_LINE", "REQUIREMENT", "SUB_REQUIREMENT",
+                        "PROJECT" -> PEER;
                 default -> valueOf(value.toUpperCase());
             };
         }
@@ -207,6 +208,9 @@ public class QuestionAnalysis {
         /** 需求子条目精确编码（盲区修复方案 §3）：同 requirementNos 口径 */
         private List<String> subRequirementNos;
 
+        /** 项目编号精确编码（docs/202611/内置维度键projectNo项目编号方案.md）：同 requirementNos 口径 */
+        private List<String> projectNos;
+
         /** 收集扁平格式的未知字段，用于手动组装嵌套对象 */
         private final Map<String, Object> extra = new HashMap<>();
 
@@ -243,6 +247,9 @@ public class QuestionAnalysis {
             }
             if (subRequirementNos == null) {
                 subRequirementNos = stringList(extra.get("subRequirementNos"));
+            }
+            if (projectNos == null) {
+                projectNos = stringList(extra.get("projectNos"));
             }
         }
 
@@ -339,6 +346,25 @@ public class QuestionAnalysis {
 
         public void setSubRequirementNos(List<String> subRequirementNos) {
             this.subRequirementNos = subRequirementNos;
+        }
+
+        public List<String> getProjectNos() {
+            return projectNos;
+        }
+
+        public void setProjectNos(List<String> projectNos) {
+            this.projectNos = projectNos;
+        }
+
+        /** 本轮是否提取到了任一显式维度（level 漏判时 inheritDimensions 仍需应用显式值） */
+        public boolean hasAnyDimension() {
+            return timeDimension != null && !timeDimension.isEmpty()
+                    || (departments != null && !departments.isEmpty())
+                    || (peerDimension != null && !peerDimension.isEmpty())
+                    || (persons != null && !persons.isEmpty())
+                    || (requirementNos != null && !requirementNos.isEmpty())
+                    || (subRequirementNos != null && !subRequirementNos.isEmpty())
+                    || (projectNos != null && !projectNos.isEmpty());
         }
     }
 }

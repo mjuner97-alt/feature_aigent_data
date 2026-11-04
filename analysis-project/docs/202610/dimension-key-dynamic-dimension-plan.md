@@ -280,3 +280,10 @@ question
 > - 测试：`AliasRegexSupportTest` 9 例（模板识别/替换/去重/可选组 null 跳过/零宽终止/
 >   校验）+ DirectSkillExecutor 2 例端到端（命中填参 / 未命中回退 LLM）。
 > - 前端：词表编辑器加正则捕获提示（DimensionKeyPage.vue），已 build 落 static/。
+
+### 6.5 内置维度键 `projectNo`（2026-11-03 设计并实施）
+
+> 项目编号（KJ/CC+8位数字+可选-字母数字后缀段）不走本页动态键配置，拍板**走内置键**
+> （需要结构化链路：跨轮继承/反问/层级判定/span 屏蔽）。建模同 §6.3 subItemNo
+> 「专字段 + 槽位照旧」，内置键 11→12。方案与实施详见
+> `docs/202611/内置维度键projectNo项目编号方案.md`。

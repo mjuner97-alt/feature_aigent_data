@@ -401,8 +401,8 @@ public class DimensionStateManager {
     private static List<String> bareAppCodes(String q, AliasResolver.AliasResolution aliasRes) {
         List<int[]> spans = new ArrayList<>();
         for (Pattern p : List.of(TIME_MASK_SPAN, EXPLICIT_DEPT, EXPLICIT_APP,
-                EXPLICIT_REQUIREMENT, EXPLICIT_SUB_REQUIREMENT, EXPLICIT_TEAM,
-                EXPLICIT_PRODUCT_LINE)) {
+                EXPLICIT_REQUIREMENT, EXPLICIT_SUB_REQUIREMENT, EXPLICIT_PROJECT_NO,
+                EXPLICIT_TEAM, EXPLICIT_PRODUCT_LINE)) {
             collectSpans(q, p, spans);
         }
         if (aliasRes != null) {
@@ -464,6 +464,9 @@ public class DimensionStateManager {
     private static final Pattern EXPLICIT_REQUIREMENT = Pattern.compile("(I\\d{8}-\\d{4})");
     // 需求子条目编号: S+8位日期数字+-+6位数字, 如 S20250926-000741
     private static final Pattern EXPLICIT_SUB_REQUIREMENT = Pattern.compile("(S\\d{8}-\\d{6})");
+    // 项目编号: KJ/CC打头+8位数字+可选"-字母数字"后缀段(可多段), 如 KJ20260114、CC99990073-41081-2
+    private static final Pattern EXPLICIT_PROJECT_NO =
+            Pattern.compile("((?:KJ|CC)\\d{8}(?:-[A-Za-z0-9]+)*)");
 
     // ---- §5.1 粒度词守卫（docs/202610/人员台账维度方案.md）----
     // drillDown 动态键词表的粒度词（各组/各个组/每个组/各产品线…）会被
@@ -665,7 +668,7 @@ public class DimensionStateManager {
      */
     private static String buildMaskedQuestion(String q) {
         return maskSpans(q, TIME_MASK_SPAN, EXPLICIT_DEPT, EXPLICIT_APP,
-                EXPLICIT_REQUIREMENT, EXPLICIT_SUB_REQUIREMENT);
+                EXPLICIT_REQUIREMENT, EXPLICIT_SUB_REQUIREMENT, EXPLICIT_PROJECT_NO);
     }
 
     /**
@@ -676,7 +679,8 @@ public class DimensionStateManager {
      */
     public static String maskForPersonScan(String q) {
         return maskSpans(q, TIME_MASK_SPAN, EXPLICIT_DEPT, EXPLICIT_APP,
-                EXPLICIT_REQUIREMENT, EXPLICIT_SUB_REQUIREMENT, EXPLICIT_TEAM, EXPLICIT_PRODUCT_LINE);
+                EXPLICIT_REQUIREMENT, EXPLICIT_SUB_REQUIREMENT, EXPLICIT_PROJECT_NO,
+                EXPLICIT_TEAM, EXPLICIT_PRODUCT_LINE);
     }
 
     /** 等 len 屏蔽替换（占位符不在各正则字符类内，保偏移）；无 span 原样返回。 */
@@ -931,7 +935,8 @@ public class DimensionStateManager {
                 || !bareAppCodes(q, aliasRes).isEmpty()
                 || hasTeamOrProductLineHit(q)
                 || EXPLICIT_REQUIREMENT.matcher(q).find()
-                || EXPLICIT_SUB_REQUIREMENT.matcher(q).find())
+                || EXPLICIT_SUB_REQUIREMENT.matcher(q).find()
+                || EXPLICIT_PROJECT_NO.matcher(q).find())
             return QuestionAnalysis.QuestionLevel.PEER;
         if (q.contains("部门") || EXPLICIT_DEPT.matcher(q).find()
                 || (vocab != null && !vocab.deptValues().isEmpty()))
@@ -941,6 +946,10 @@ public class DimensionStateManager {
         if (EXPLICIT_VERSION.matcher(q).find()
                 || EXPLICIT_MONTH.matcher(q).find()
                 || EXPLICIT_QUARTER.matcher(q).find()
+                || SHARED_SUFFIX_VERSION.matcher(q).find()
+                || SHARED_SUFFIX_QUARTER.matcher(q).find()
+                || RANGE_QUARTER.matcher(q).find()
+                || RANGE_VERSION.matcher(q).find()
                 || COMPACT_VERSION.matcher(q).find()
                 || CN_MONTH_VERSION.matcher(q).find()
                 || DELAYED_VERSION.matcher(q).find()
@@ -1222,6 +1231,24 @@ public class DimensionStateManager {
                             new DimensionState.PeerDimension(
                                     DimensionState.PeerDimensionType.SUB_REQUIREMENT,
                                     new ArrayList<>(subReqs)));
+                }
+            }
+        }
+
+        // 项目编号 — projectNo 格式 KJ20260114 / CC99990073-41081-2。与需求项同口径：专字段 + 槽位照旧
+        if (!aliasHit(aliasRes)) {
+            Matcher projMatcher = EXPLICIT_PROJECT_NO.matcher(q);
+            Set<String> projs = new LinkedHashSet<>();
+            while (projMatcher.find()) {
+                projs.add(projMatcher.group());
+            }
+            if (!projs.isEmpty()) {
+                explicit.setProjectNos(new ArrayList<>(projs));
+                if (explicit.getPeerDimension() == null) {
+                    explicit.setPeerDimension(
+                            new DimensionState.PeerDimension(
+                                    DimensionState.PeerDimensionType.PROJECT,
+                                    new ArrayList<>(projs)));
                 }
             }
         }
@@ -1596,9 +1623,18 @@ public class DimensionStateManager {
 
         QuestionAnalysis.QuestionLevel level = analysis.getLevel();
         if (level == null) {
-            // Non-dimension questions (e.g. greetings) — keep previous state unchanged
-            this.currentState = previous;
-            return previous;
+            // Non-dimension questions (e.g. greetings) — keep previous state unchanged.
+            // 例外: level 漏判但本轮确实提取到显式维度时以显式值落地 (杭研+列举季度:
+            // orgName 词不在 deptName 正则、列举时间不在旧版 level 检查 → level=null,
+            // 直接 return previous 会把已提取的季度整轮丢掉)。
+            QuestionAnalysis.ExplicitDimensions explicit = analysis.getExplicitDimensions();
+            if (explicit == null || !explicit.hasAnyDimension()) {
+                this.currentState = previous;
+                return previous;
+            }
+            current = previous.deepCopy();
+            applyExplicitDimensions(current, explicit);
+            return current;
         }
 
         switch (level) {
@@ -1858,6 +1894,7 @@ public class DimensionStateManager {
                         case PRODUCT_LINE -> "产品线";
                         case REQUIREMENT -> "需求项";
                         case SUB_REQUIREMENT -> "需求子条目";
+                        case PROJECT -> "项目编号";
                     };
             prefix.append(label)
                     .append("：")
@@ -2123,6 +2160,7 @@ public class DimensionStateManager {
             case PRODUCT_LINE -> "产品线";
             case REQUIREMENT -> "需求项";
             case SUB_REQUIREMENT -> "需求子条目";
+            case PROJECT -> "项目编号";
         };
     }
 
