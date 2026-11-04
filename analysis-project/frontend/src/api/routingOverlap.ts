@@ -1,3 +1,4 @@
+import { apiError } from '../utils/apiError';
 import type {
   RoutingOverlapListResponse,
   RoutingOverlapSummary,
@@ -84,6 +85,6 @@ export async function checkSkillSimilarity(body: {
     headers: jsonHeaders(),
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`描述相似检查失败 (HTTP ${res.status})`);
+  if (!res.ok) throw await apiError(res, '描述相似检查失败');
   return res.json();
 }

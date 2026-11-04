@@ -54,6 +54,20 @@ public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
+    @ExceptionHandler(org.springframework.dao.DuplicateKeyException.class)
+    public ResponseEntity<Map<String, String>> handleDuplicateKey(
+            org.springframework.dao.DuplicateKeyException ex, HttpServletRequest request) {
+        String errorId = UUID.randomUUID().toString();
+        log.error("Database key conflict: errorId={}, method={}, uri={}",
+                errorId, request.getMethod(), request.getRequestURI(), ex);
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of(
+                        "code", "DatabaseKeyConflict",
+                        "message", "数据库主键或唯一键冲突，本次操作未完成。请联系管理员检查冲突约束及自增序列。",
+                        "errorId", errorId));
+    }
+
     /** 草稿已有待审批单, 重复提交创建/审批 -> 409 CONFLICT。 */
     @ExceptionHandler(DraftAlreadyPendingException.class)
     public ResponseEntity<Map<String, String>> handleDraftAlreadyPending(DraftAlreadyPendingException ex) {

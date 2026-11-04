@@ -2,6 +2,27 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadModule } from '../../test/loadModule.js';
 
+test('save retains rate limit details and request identifiers', async () => {
+  globalThis.localStorage = { getItem: () => 'owner' };
+  globalThis.fetch = async () => new Response(JSON.stringify({ message: 'gateway write quota exceeded' }), {
+    status: 429, headers: { 'content-type': 'application/json', 'retry-after': '30', 'x-request-id': 'save-123' },
+  });
+  const { saveSkillForm } = await loadModule(new URL('./skill.ts', import.meta.url));
+  await assert.rejects(saveSkillForm({}), error => {
+    for (const text of ['gateway write quota exceeded', '429', '30', 'save-123']) assert.ok(error.message.includes(text));
+    return true;
+  });
+});
+
+test('ordinary conflict retains its business error', async () => {
+  globalThis.localStorage = { getItem: () => 'owner' };
+  globalThis.fetch = async () => new Response(JSON.stringify({ message: 'SkillNameConflict: duplicate' }), {
+    status: 409, headers: { 'content-type': 'application/json' },
+  });
+  const { saveSkillForm } = await loadModule(new URL('./skill.ts', import.meta.url));
+  await assert.rejects(saveSkillForm({}), /名称已存在/);
+});
+
 test('form save sends all publications and relations in a single request and can retry', async () => {
   globalThis.localStorage = { getItem: () => 'owner' };
   const requests = [];

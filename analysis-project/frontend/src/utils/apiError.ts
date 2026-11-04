@@ -24,6 +24,7 @@ export async function apiErrorDetail(res: Response): Promise<string> {
       const candidate = body && (body.message || body.detail || body.error || body.reason);
       if (typeof candidate === 'string') detail = candidate;
       else if (candidate != null) detail = JSON.stringify(candidate);
+      if (body?.errorId) detail += `（错误标识：${body.errorId}）`;
     } else {
       const text = (await res.text()).trim();
       // 代理和网关有时把 JSON 错误体标成 text/plain。
@@ -48,8 +49,18 @@ export async function apiErrorDetail(res: Response): Promise<string> {
  * 生成带可读消息的 Error:有 detail 时 `${fallback}:${detail}`,
  * 否则 `${fallback}(HTTP <status>)`,确保调用方总能得到一段可展示文案。
  */
-export async function apiError(res: Response, fallback: string): Promise<Error> {
-  const detail = await apiErrorDetail(res);
-  if (detail) return new Error(`${fallback}:${detail}`);
-  return new Error(`${fallback}(HTTP ${res.status})`);
+export async function apiError(res: Response, fallback: string, parsedDetail?: string): Promise<Error> {
+  const detail = parsedDetail ?? await apiErrorDetail(res);
+  const parts = [detail ? `${fallback}：${detail}` : fallback];
+  if (res.status === 429) {
+    parts.push('请求被限流（HTTP 429）');
+    if (!detail) parts.push('服务端或网关未返回具体原因');
+    const retryAfter = res.headers.get('retry-after');
+    if (retryAfter) parts.push(`可重试时间（Retry-After）：${retryAfter}`);
+  } else if (!detail) {
+    parts.push(`HTTP ${res.status}`);
+  }
+  const requestId = res.headers.get('x-request-id') || res.headers.get('x-correlation-id');
+  if (requestId) parts.push(`请求标识：${requestId}`);
+  return new Error(parts.join('；'));
 }

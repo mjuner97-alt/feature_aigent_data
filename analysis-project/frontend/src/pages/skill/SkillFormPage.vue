@@ -178,6 +178,7 @@ async function checkNoSimilar(): Promise<boolean> {
 }
 
 async function submit() {
+  if (saving.value) return;
   formError.value = '';
   publishResult.value = '';
   if (!form.value.name.trim()) {

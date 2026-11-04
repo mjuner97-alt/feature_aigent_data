@@ -1,6 +1,6 @@
 import type { SkillListItem, SkillDetail, LikeStatus, SkillInput, SkillPublishRecord, PublishTargetGroup, PublishPendingItem, SkillApprovalRecord, SkillFileUploadResponse, SkillFileItem, SkillFileReferenceItem, SkillFileReferenceRequest, SkillGrant, SkillTrialRunRecord } from '../types/skill';
 import type { SkillSimilarityMatch } from '../types/routingOverlap';
-import { apiErrorDetail } from '../utils/apiError';
+import { apiError, apiErrorDetail } from '../utils/apiError';
 
 const BASE = '/api/skills';
 
@@ -33,7 +33,7 @@ async function skillError(res: Response, fallback: string): Promise<Error> {
   if (detail.startsWith('NoDeveloperReviewerConfigured')) return new Error('尚未配置开发者复核人，请联系管理员');
   if (detail.startsWith('NotApprover')) return new Error('当前用户不是该阶段的审批人');
   if (detail.startsWith('PublishAlreadyApproved')) return new Error('该审批已被处理，请刷新页面查看最新状态');
-  return new Error(detail ? `${fallback}:${detail}` : `${fallback}(HTTP ${res.status})`);
+  return apiError(res, fallback, detail);
 }
 
 export interface SkillListParams {
@@ -108,7 +108,7 @@ async function skillSaveError(res: Response, fallback: string): Promise<Error> {
   try {
     const ct = res.headers.get('content-type') || '';
     if (res.status === 409 && ct.includes('application/json')) {
-      const body = await res.json();
+      const body = await res.clone().json();
       if (body && body.code === 'SkillDescriptionSimilar') {
         return new SkillSimilarError(body.matches || [], !!body.degraded);
       }

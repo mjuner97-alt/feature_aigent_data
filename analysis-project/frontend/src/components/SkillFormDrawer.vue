@@ -121,6 +121,7 @@ async function loadForEdit(id: number) {
 }
 
 async function submit() {
+  if (saving.value) return;
   formError.value = '';
   publishResult.value = '';
   if (!form.value.name.trim()) {
