@@ -11,6 +11,8 @@ import com.agentscopea2a.v2.skillManager.notification.NotificationPayload;
 import com.agentscopea2a.v2.skillManager.notification.NotificationSender;
 import com.agentscopea2a.v2.skillManager.service.FlowSchedulerGuard;
 import com.agentscopea2a.v2.skillManager.service.MockOrgService;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import java.time.*;
@@ -27,29 +29,35 @@ public class DependencyMetricAlertService {
     private final NotificationSender sender;
     private final MockOrgService orgService;
     private final Clock clock;
+    private final Environment environment;
 
     public DependencyMetricAlertService(SkillDependencyMetricMapper metricMapper, DependencyMetricAlertMapper alertMapper,
             AiChatRuntimeConfigMapper configMapper, FlowSchedulerGuard schedulerGuard, NotificationSender sender,
-            MockOrgService orgService, Clock clock) {
+            MockOrgService orgService, Clock clock, Environment environment) {
         this.metricMapper = metricMapper; this.alertMapper = alertMapper; this.configMapper = configMapper;
         this.schedulerGuard = schedulerGuard; this.orgService = orgService; this.clock = clock;
         this.sender = sender;
+        this.environment = environment;
     }
 
-    @Scheduled(cron = "0 0 11 * * *")
+    @Scheduled(cron = "0 0 11 * * MON-FRI", zone = "Asia/Shanghai")
     public void scheduledCheck() { checkAndNotify(LocalDateTime.now(clock)); }
 
     public void checkAndNotify(LocalDateTime now) { doCheck(now, false); }
 
     /**
      * 手动触发入口(GET /api/dependency-metric-alert/check 测试用):
-     * 按今天 11:00 复用定时逻辑,日期与定时链路一致;force=true 时跳过调度开关与 11 点时间门控。
+     * 按今天 11:00 复用定时逻辑;force=true 仅跳过调度开关与 11 点时间门控，仍限生产环境及周一至周五。
      */
     public DependencyMetricAlertResult manualCheck(boolean force) {
         return doCheck(LocalDate.now(clock).atTime(11, 0), force);
     }
 
     private DependencyMetricAlertResult doCheck(LocalDateTime now, boolean force) {
+        if (!environment.acceptsProfiles(Profiles.of("prod")))
+            return DependencyMetricAlertResult.skipped("依赖指标预警仅在生产环境(prod)启用", 0, 0);
+        if (now.getDayOfWeek() == DayOfWeek.SATURDAY || now.getDayOfWeek() == DayOfWeek.SUNDAY)
+            return DependencyMetricAlertResult.skipped("依赖指标预警仅在周一至周五发送", 0, 0);
         if (!force && (!schedulerGuard.isAllowed() || now.getHour() != 11 || now.getMinute() != 0))
             return DependencyMetricAlertResult.skipped("调度开关未开启(scheduler.enabled=false)或不在 11:00 时间窗", 0, 0);
         var metrics = Optional.ofNullable(metricMapper.selectAllAlertEnabled()).orElse(List.of());
