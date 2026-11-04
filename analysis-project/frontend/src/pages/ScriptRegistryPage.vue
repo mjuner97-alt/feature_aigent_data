@@ -34,7 +34,20 @@ const currentUserId = localStorage.getItem('skill-user-id') || 'demo-user';
 const canEdit = (row: ScriptRegistryListItem) => isAdmin() || (!!row.createdBy && row.createdBy === currentUserId);
 const metrics = ref<SkillDependencyMetric[]>([]);
 const metricLoading = ref(false);
-async function loadMetrics(keyword = '') { metricLoading.value = true; try { metrics.value = await listMetrics(keyword); if (formMode.value === 'create' && !form.value.defaultMetricIds?.length) { const fallback = metrics.value.find(m => m.code === 'default_metric'); if (fallback) form.value.defaultMetricIds = [fallback.id]; } } finally { metricLoading.value = false; } }
+async function loadMetrics(keyword = '') {
+  metricLoading.value = true;
+  try {
+    metrics.value = await listMetrics(keyword);
+    if (formMode.value === 'create' && !form.value.defaultMetricIds?.length) {
+      const fallback = metrics.value.find(m => m.code === 'default_metric');
+      if (fallback) form.value.defaultMetricIds = [fallback.id];
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '加载依赖指标失败');
+  } finally {
+    metricLoading.value = false;
+  }
+}
 
 const filteredItems = computed(() => {
   let list = items.value;
@@ -153,6 +166,7 @@ function openCreate() {
   sourceMissing.value = true;
   debugRun.value = null;
   formVisible.value = true;
+  void loadMetrics();
 }
 
 async function openEdit(row: ScriptRegistryListItem) {
@@ -165,6 +179,7 @@ async function openEdit(row: ScriptRegistryListItem) {
   sourceMissing.value = false;
   debugRun.value = null;
   formVisible.value = true;
+  void loadMetrics();
   try {
     const detail = await getEntry(row.id);
     form.value = {

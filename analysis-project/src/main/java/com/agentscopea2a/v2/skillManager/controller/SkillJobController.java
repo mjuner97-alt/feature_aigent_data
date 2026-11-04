@@ -360,6 +360,12 @@ public class SkillJobController {
         return service.listMetrics(keyword);
     }
 
+    /** 回显已选指标，包括停用项；不改变启用指标下拉接口的过滤规则。 */
+    @GetMapping("/metrics/by-ids")
+    public List<SkillDependencyMetricDto> findMetricsByIds(@RequestParam(name = "ids") List<Long> ids) {
+        return service.findMetricsByIds(ids);
+    }
+
     /**
      * 按指标编码触发：指标就绪后一把触发所有"启用且关联该指标"的 job。
      * 跨用户触发是预期行为：每个 job 仍以各自 createdBy 身份执行，执行时各自校验 Skill 权限。

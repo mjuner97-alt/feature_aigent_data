@@ -14,7 +14,18 @@ export async function listMetrics(keyword?: string): Promise<SkillDependencyMetr
   const suffix = qs.toString() ? `?${qs.toString()}` : '';
   const res = await fetch(`${BASE}${suffix}`, { headers: authHeaders() });
   if (!res.ok) throw await apiError(res, `查询依赖指标失败 (HTTP ${res.status})`);
-  return res.json();
+  const metrics: SkillDependencyMetric[] = await res.json();
+  return metrics.map(metric => ({ ...metric, id: Number(metric.id) }));
+}
+
+/** Resolve saved selections even when the metric is disabled or absent from a search. */
+export async function getMetricsByIds(ids: number[]): Promise<SkillDependencyMetric[]> {
+  if (!ids.length) return [];
+  const qs = new URLSearchParams({ ids: [...new Set(ids)].join(',') });
+  const res = await fetch(`${BASE}/by-ids?${qs}`, { headers: authHeaders() });
+  if (!res.ok) throw await apiError(res, `查询已选指标失败 (HTTP ${res.status})`);
+  const metrics: SkillDependencyMetric[] = await res.json();
+  return metrics.map(metric => ({ ...metric, id: Number(metric.id) }));
 }
 
 /** 按指标编码批量触发：一次调用触发该指标下所有"启用且参与批量触发"的 job */

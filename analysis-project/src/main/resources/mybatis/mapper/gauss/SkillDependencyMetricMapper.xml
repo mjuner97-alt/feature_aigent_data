@@ -36,6 +36,13 @@
         ORDER BY id ASC
     </select>
 
+    <select id="selectByIds" resultMap="MetricResultMap">
+        SELECT <include refid="metricCols"/> FROM skill_dependency_metric
+        WHERE id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+        ORDER BY id ASC
+    </select>
+
     <select id="selectByCode" resultMap="MetricResultMap">
         SELECT <include refid="metricCols"/> FROM skill_dependency_metric WHERE code = #{code}
     </select>
