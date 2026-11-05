@@ -3,6 +3,7 @@ import { computed, ref } from 'vue';
 import { watch } from 'vue';
 import { lookupRecipients } from '../api/recipientLookup';
 import { searchSkillUsers } from '../api/skill';
+import { notificationPreview } from '../utils/notificationPreview';
 import type { SkillFlowNotification } from '../types/skillFlow';
 const props = defineProps<{ notifications: SkillFlowNotification[] }>();
 const expanded = ref(false);
@@ -62,8 +63,7 @@ function timestamp(row: SkillFlowNotification) { const n = Date.parse(time(row))
 const sorted = computed(() => [...props.notifications].sort((a, b) => timestamp(b) - timestamp(a) || (b.id || 0) - (a.id || 0)));
 const visible = computed(() => expanded.value ? sorted.value : sorted.value.slice(0, 3));
 function preview(row: SkillFlowNotification) {
-  return '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:; form-action \'none\'; base-uri \'none\'">'
-    + string(request(row).content);
+  return notificationPreview(string(request(row).content));
 }
 </script>
 
@@ -85,7 +85,7 @@ function preview(row: SkillFlowNotification) {
         <p>标题：{{ string(request(row).title) || '历史记录未保存标题' }}</p>
         <template v-if="string(request(row).content)">
           <button type="button" :aria-expanded="bodyOpen.has(row)" @click="toggle(bodyOpen, row)">{{ bodyOpen.has(row) ? '收起正文' : '展开正文' }}</button>
-          <iframe v-if="bodyOpen.has(row)" :srcdoc="preview(row)" sandbox="" referrerpolicy="no-referrer" title="通知邮件正文预览"></iframe>
+          <iframe v-if="bodyOpen.has(row)" :srcdoc="preview(row)" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" title="通知邮件正文预览"></iframe>
         </template>
         <p v-else class="hint">历史记录未保存正文。</p>
       </div>
