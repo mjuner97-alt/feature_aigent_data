@@ -844,6 +844,41 @@ public class DirectSkillExecutor {
         Set<String> suppressedParamKeys =
                 suppressedFineGrainedParams(preSuppression, extraction, mapping);
 
+        // 时间家族合并裁决 (bug 2026/11/05): buildParams 只看本轮提取, 追问「三部的呢」会被
+        // 装配成「默认在建版本」—— ①顶掉快照的显式版本 (「10月研发周期」→「三部的呢」变成
+        // 10/11/12月), ②与快照继承的季度同时传给脚本 (破坏 2026/10/21 时间二选一口径)。
+        // 合并视图规则: 快照已带任一时间家族 且 本轮未重新提及时间 → 两个家族 dim 键整体
+        // 不进 round params、不补默认, 由 merge 从快照继承; 本轮显式重锚某家族 → 快照中
+        // 败者家族参数从 merge 结果删除 (口径: 用户重新锚定时间)。
+        boolean roundVersionExplicit = extraction.versionPlan() != null
+                && !extraction.versionPlan().isEmpty();
+        boolean roundQuarterExplicit = extraction.vestQuarter() != null
+                && !extraction.vestQuarter().isEmpty();
+        boolean roundAnchors = !extraction.extraDimensions()
+                .getOrDefault(TimeRangeResolver.RESERVED_KEY, List.of()).isEmpty();
+        Set<String> baseVersionParams = timeFamilyParams(last.params(), mapping, "versionPlan");
+        Set<String> baseQuarterParams = timeFamilyParams(last.params(), mapping, "vestQuarter");
+        Set<String> roundSuppressDims = Set.of();
+        Set<String> timeReanchorDeletes = Set.of();
+        if (!baseVersionParams.isEmpty() || !baseQuarterParams.isEmpty()) {
+            if (!roundVersionExplicit && !roundQuarterExplicit && !roundAnchors) {
+                roundSuppressDims = Set.of("versionPlan", "versionPlan.start", "versionPlan.end",
+                        "vestQuarter", "vestQuarter.start", "vestQuarter.end");
+            } else if (roundVersionExplicit && !roundQuarterExplicit && !roundAnchors
+                    && !baseQuarterParams.isEmpty()) {
+                timeReanchorDeletes = baseQuarterParams;
+            } else if (roundQuarterExplicit && !roundVersionExplicit && !roundAnchors
+                    && !baseVersionParams.isEmpty()) {
+                timeReanchorDeletes = baseVersionParams;
+            } else if (roundAnchors) {
+                Set<String> both = new LinkedHashSet<>(baseVersionParams);
+                both.addAll(baseQuarterParams);
+                timeReanchorDeletes = both;
+            }
+        }
+        suppressedParamKeys = new LinkedHashSet<>(suppressedParamKeys);
+        suppressedParamKeys.addAll(timeReanchorDeletes);
+
         // ② 时间歧义锚点反问 (与原链路同构, 反问优于带错参数执行)
         List<String> trAnchors = extraction.extraDimensions()
                 .getOrDefault(TimeRangeResolver.RESERVED_KEY, List.of());
@@ -852,7 +887,8 @@ public class DirectSkillExecutor {
             List<String> kept = trAnchors.stream()
                     .filter(a -> !TimeRangeResolver.isAmbiguousAnchor(a)).toList();
             Map<String, Object> preParams = mergeSnapshotParams(last.params(),
-                    buildParams(mapping, schema, withTimeRangeAnchors(extraction, kept)),
+                    buildParams(mapping, schema, withTimeRangeAnchors(extraction, kept),
+                            roundSuppressDims),
                     suppressedParamKeys, null);
             String key = sessionKey(userId, conversationId);
             pending.put(key, new PendingDirectExec(last.skillName(), top.scriptId(), mapping,
@@ -866,7 +902,8 @@ public class DirectSkillExecutor {
         }
 
         Map<String, Object> merged = mergeSnapshotParams(last.params(),
-                buildParams(mapping, schema, extraction), suppressedParamKeys, null);
+                buildParams(mapping, schema, extraction, roundSuppressDims),
+                suppressedParamKeys, null);
 
         // 人名重名反问 (与原链路同构, 单 pending 口径: 时间歧义优先)
         if (personScan.ambiguousName() != null) {
@@ -977,6 +1014,20 @@ public class DirectSkillExecutor {
         };
     }
 
+    /** params 中经 mapping 反查属于指定时间家族 (versionPlan/vestQuarter, 含 .start/.end)
+     *  的参数名集合 (追问层时间家族合并裁决用)。 */
+    private static Set<String> timeFamilyParams(Map<String, Object> params,
+                                                Map<String, String> mapping, String family) {
+        Set<String> out = new LinkedHashSet<>();
+        for (String p : params.keySet()) {
+            String dim = mapping.get(p);
+            if (dim != null && (dim.equals(family) || dim.startsWith(family + "."))) {
+                out.add(p);
+            }
+        }
+        return out;
+    }
+
     /** 问题 contains 任一 active skill 的 domain_tags 词条 (2026/10/28 方案 §3.2)。
      *  归一化与 SkillVectorIndexVisibilityFilter.matchedDomains / selector.matchedTags 同语义
      *  (normalize+contains), 改一边必须同步另一边; 只依赖已取出的 active 列表, 零额外查询。 */
@@ -1003,7 +1054,15 @@ public class DirectSkillExecutor {
      *  形状按 schema 类型定 (direct-exec-param-type-plan.md §2.2)。 */
     private Map<String, Object> buildParams(Map<String, String> mapping, List<ParamSpec> schema,
                                             DimensionExtraction extraction) {
-        Set<String> suppressedKeys = timeFamilyLoserKeys(mapping, extraction);
+        return buildParams(mapping, schema, extraction, Set.of());
+    }
+
+    /** 追问层重载: 额外按 dim 键整体抑制 (时间家族合并裁决, 见 planFollowupDirect)。 */
+    private Map<String, Object> buildParams(Map<String, String> mapping, List<ParamSpec> schema,
+                                            DimensionExtraction extraction,
+                                            Set<String> extraSuppressedDims) {
+        Set<String> suppressedKeys = new LinkedHashSet<>(timeFamilyLoserKeys(mapping, extraction));
+        suppressedKeys.addAll(extraSuppressedDims);
         boolean skipDefaultTime = requirementWithoutExplicitTime(extraction);
         Map<String, Object> params = new LinkedHashMap<>();
         for (Map.Entry<String, String> e : mapping.entrySet()) {

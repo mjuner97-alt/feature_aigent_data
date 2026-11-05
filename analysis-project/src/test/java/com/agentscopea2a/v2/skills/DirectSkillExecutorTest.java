@@ -3114,4 +3114,93 @@ class DirectSkillExecutorTest {
 
         assertNull(executor.plan(FOLLOWUP_T2, "alice", null));   // 3 参旧签名: 无会话键不启用
     }
+
+    // ---- 时间家族合并裁决 (bug 2026/11/05: 追问轮默认在建版本顶掉快照显式时间) ----
+
+    /** 双时间家族 skill (quarter+version+dept 全必填) + 在建版本 hook: 复现默认版本补全的前提。 */
+    private void stubFollowupBothTimeFirstRound() {
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a",
+                        "{\"quarter\":\"vestQuarter\",\"version\":\"versionPlan\",\"dept\":\"deptName\"}",
+                        "达标率")));
+        allowAll("alice");
+        when(hookProvider.getIfAvailable()).thenReturn(versionPlanHook);
+        when(versionPlanHook.currentVersions()).thenReturn(
+                List.of("2026年10月份版本", "2026年11月份版本", "2026年12月份版本"));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"quarter\",\"required\":false},{\"name\":\"version\",\"required\":false},"
+                        + "{\"name\":\"dept\",\"required\":true}]"));
+    }
+
+    /** 追问轮只提部门: 提取里两个时间家族都空 (与线上 trace 一致), C3 信号走显式部门。 */
+    private void stubFollowupDeptOnlyRound(String question, List<String> depts) {
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull()))
+                .thenReturn(state(null, depts));
+        when(dimensionStateManager.analyzeQuestionRuleBased(question)).thenReturn(
+                analysisWith(null, depts));
+    }
+
+    @Test
+    void followupNoTimeMentionInheritsSnapshotQuarterWithoutDefaultVersions() {
+        stubFollowupBothTimeFirstRound();
+        String t1 = "杭州开发二部 1、2、3季度达标率";
+        when(dimensionStateManager.previewState(Mockito.eq(t1), Mockito.isNull())).thenReturn(
+                state(quarterTime(List.of("2026年1季度", "2026年2季度", "2026年3季度")),
+                        List.of("杭州开发二部")));
+        DirectSkillExecutor executor = newExecutor(true).setFollowupDirectEnabled(true);
+        DirectSkillExecutor.DirectExecutionPlan first = executor.plan(t1, "alice", null, "conv1");
+        assertEquals(List.of("2026年1季度", "2026年2季度", "2026年3季度"),
+                first.params().get("quarter"));
+        assertFalse(first.params().containsKey("version"));   // 时间二选一: 季度胜, 版本族抑制
+
+        stubFollowupDeptOnlyRound("三部的呢", List.of("杭州开发三部"));
+        DirectSkillExecutor.DirectExecutionPlan followup =
+                executor.plan("三部的呢", "alice", null, "conv1");
+
+        assertEquals(List.of("2026年1季度", "2026年2季度", "2026年3季度"),
+                followup.params().get("quarter"));                    // 快照季度继承
+        assertFalse(followup.params().containsKey("version"));        // 不补默认在建版本
+        assertEquals("杭州开发三部", followup.params().get("dept"));
+    }
+
+    @Test
+    void followupNoTimeMentionKeepsSnapshotExplicitVersionOverDefaults() {
+        stubFollowupFirstRound();
+        when(hookProvider.getIfAvailable()).thenReturn(versionPlanHook);
+        when(versionPlanHook.currentVersions()).thenReturn(
+                List.of("2026年10月份版本", "2026年11月份版本", "2026年12月份版本"));
+        DirectSkillExecutor executor = newExecutor(true).setFollowupDirectEnabled(true);
+        executor.plan(FOLLOWUP_T1, "alice", null, "conv1");   // 快照 version=2026年7月份版本
+
+        stubFollowupDeptOnlyRound("三部呢", List.of("杭州开发三部"));
+        DirectSkillExecutor.DirectExecutionPlan followup =
+                executor.plan("三部呢", "alice", null, "conv1");
+
+        assertEquals("2026年7月份版本", followup.params().get("version")); // 快照显式版本, 不被默认在建版本顶掉
+        assertEquals("杭州开发三部", followup.params().get("dept"));
+    }
+
+    @Test
+    void followupReanchorToVersionDeletesBaseQuarter() {
+        stubFollowupBothTimeFirstRound();
+        String t1 = "杭州开发二部 1、2、3季度达标率";
+        when(dimensionStateManager.previewState(Mockito.eq(t1), Mockito.isNull())).thenReturn(
+                state(quarterTime(List.of("2026年1季度", "2026年2季度", "2026年3季度")),
+                        List.of("杭州开发二部")));
+        DirectSkillExecutor executor = newExecutor(true).setFollowupDirectEnabled(true);
+        executor.plan(t1, "alice", null, "conv1");
+
+        String t2 = "三部 10月呢";
+        when(dimensionStateManager.previewState(Mockito.eq(t2), Mockito.isNull())).thenReturn(
+                state(versionTime(List.of("2026年10月份版本")), List.of("杭州开发三部")));
+        when(dimensionStateManager.analyzeQuestionRuleBased(t2)).thenReturn(
+                analysisWith(versionTime(List.of("2026年10月份版本")), List.of("杭州开发三部")));
+
+        DirectSkillExecutor.DirectExecutionPlan followup =
+                executor.plan(t2, "alice", null, "conv1");
+
+        assertEquals("2026年10月份版本", followup.params().get("version")); // 本轮重锚版本
+        assertFalse(followup.params().containsKey("quarter"));              // 快照季度族随重锚删除 (二选一)
+        assertEquals("杭州开发三部", followup.params().get("dept"));
+    }
 }
