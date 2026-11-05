@@ -8,8 +8,7 @@ import org.springframework.stereotype.Service;
 import com.agentscopea2a.v2.auth.mapper.DeveloperPlPersonInfoMapper;
 
 import javax.sql.DataSource;
-import java.time.OffsetDateTime;
-import java.time.ZoneId;
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -17,6 +16,7 @@ import java.util.concurrent.Executors;
 /** 资源变更审计服务，负责追加写入事件、明细并提供分页查询。写入为异步旁路操作，不阻塞业务主流程。 */
 @Service
 public class ResourceChangeAuditService {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(ResourceChangeAuditService.class);
     private final NamedParameterJdbcTemplate jdbc;
     private final DeveloperPlPersonInfoMapper personMapper;
     private final String environment;
@@ -46,13 +46,18 @@ public class ResourceChangeAuditService {
         executor.execute(() -> doRecord(resourceType, resourceId, resourceName, operationType, summary, operatorId, operatorName, safeChanges));
     }
 
+    @jakarta.annotation.PreDestroy
+    public void shutdownWriter() {
+        executor.shutdown();
+    }
+
     /** 在审计写入线程内完成人员姓名补全、事件及明细的实际写入。 */
     private void doRecord(String resourceType, String resourceId, String resourceName,
                           String operationType, String summary, String operatorId, String operatorName,
                           List<Change> changes) {
         UUID eventId = UUID.randomUUID();
         String eventNo = "AUD-" + eventId.toString().replace("-", "").substring(0, 16).toUpperCase(Locale.ROOT);
-        OffsetDateTime now = OffsetDateTime.now(ZoneId.of("Asia/Shanghai"));
+        long now = Instant.now().getEpochSecond();
         String safeName = operatorName == null || operatorName.isBlank() || operatorName.equals(operatorId) ? "未知姓名" : operatorName;
         try {
             var people = personMapper.selectByUserIds(List.of(operatorId));
@@ -71,7 +76,7 @@ public class ResourceChangeAuditService {
                     .addValue("operationType", operationType).addValue("summary", summary == null ? "" : summary)
                     .addValue("operatorId", operatorId).addValue("operatorName", safeName)
                     .addValue("createdAt", now).addValue("detailCount", changes.size()).addValue("environment", environment);
-            jdbc.update("INSERT INTO digital_qa_resource_change_event(event_id,event_no,resource_type,resource_id,resource_name,operation_type,operation_summary,operator_id,operator_name,created_at,detail_count,environment) VALUES (:eventId,:eventNo,:resourceType,:resourceId,:resourceName,:operationType,:summary,:operatorId,:operatorName,:createdAt,:detailCount,:environment)", p);
+            jdbc.update("INSERT INTO digital_qa_resource_change_event(event_id,event_no,resource_type,resource_id,resource_name,operation_type,operation_summary,operator_id,operator_name,created_at,detail_count,environment) VALUES (:eventId,:eventNo,:resourceType,:resourceId,:resourceName,:operationType,:summary,:operatorId,:operatorName,toDateTime(:createdAt, 'Asia/Shanghai'),:detailCount,:environment)", p);
             // ClickHouse 采用追加写入，主事件成功后逐条写入明细。
             for (int i = 0; i < changes.size(); i++) {
                 Change c = changes.get(i);
@@ -81,10 +86,12 @@ public class ResourceChangeAuditService {
                     .addValue("targetName", c.targetName()).addValue("fieldName", c.fieldName())
                     .addValue("fieldLabel", c.fieldLabel()).addValue("changeType", c.changeType())
                     .addValue("beforeValue", c.beforeValue()).addValue("afterValue", c.afterValue()).addValue("createdAt", now);
-                jdbc.update("INSERT INTO digital_qa_resource_change_detail(event_id,detail_no,resource_type,resource_id,target_type,target_id,target_name,field_name,field_label,change_type,before_value,after_value,created_at) VALUES (:eventId,:detailNo,:resourceType,:resourceId,:targetType,:targetId,:targetName,:fieldName,:fieldLabel,:changeType,:beforeValue,:afterValue,:createdAt)", d);
+                jdbc.update("INSERT INTO digital_qa_resource_change_detail(event_id,detail_no,resource_type,resource_id,target_type,target_id,target_name,field_name,field_label,change_type,before_value,after_value,created_at) VALUES (:eventId,:detailNo,:resourceType,:resourceId,:targetType,:targetId,:targetName,:fieldName,:fieldLabel,:changeType,:beforeValue,:afterValue,toDateTime(:createdAt, 'Asia/Shanghai'))", d);
             }
-        } catch (Exception ignored) {
+        } catch (Exception error) {
             // 审计是旁路能力，写入异常不能覆盖已经成功的业务操作。
+            log.error("Failed to write resource audit: eventId={}, resourceType={}, resourceId={}",
+                    eventId, resourceType, resourceId, error);
         }
     }
 
@@ -105,8 +112,8 @@ public class ResourceChangeAuditService {
         if (operatorKeyword != null && !operatorKeyword.isBlank()) { where.append(" AND (operator_id LIKE :operatorKeyword OR operator_name LIKE :operatorKeyword)"); p.addValue("operatorKeyword", "%" + operatorKeyword + "%"); }
         if (resourceKeyword != null && !resourceKeyword.isBlank()) { where.append(" AND resource_name LIKE :resourceKeyword"); p.addValue("resourceKeyword", "%" + resourceKeyword + "%"); }
         if (keyword != null && !keyword.isBlank()) { where.append(" AND (operation_summary LIKE :keyword OR resource_name LIKE :keyword)"); p.addValue("keyword", "%" + keyword + "%"); }
-        if (startTime != null && !startTime.isBlank()) { where.append(" AND created_at >= parseDateTime64BestEffort(:startTime)"); p.addValue("startTime", startTime); }
-        if (endTime != null && !endTime.isBlank()) { where.append(" AND created_at <= parseDateTime64BestEffort(:endTime)"); p.addValue("endTime", endTime); }
+        if (startTime != null && !startTime.isBlank()) { where.append(" AND created_at >= parseDateTimeBestEffort(:startTime, 'Asia/Shanghai')"); p.addValue("startTime", startTime); }
+        if (endTime != null && !endTime.isBlank()) { where.append(" AND created_at <= parseDateTimeBestEffort(:endTime, 'Asia/Shanghai')"); p.addValue("endTime", endTime); }
         int safePage = Math.max(1, page), safeSize = Math.min(100, Math.max(1, pageSize));
         long total = jdbc.queryForObject("SELECT count() FROM digital_qa_resource_change_event" + where, p, Long.class);
         p.addValue("limit", safeSize).addValue("offset", (safePage - 1) * safeSize);

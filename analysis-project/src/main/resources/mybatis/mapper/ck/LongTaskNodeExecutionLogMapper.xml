@@ -12,7 +12,8 @@
         VALUES
         (#{log.logId}, #{log.flowExecutionId}, #{log.nodeExecutionId}, #{log.attemptId}, #{log.attemptNo},
         #{log.userId}, #{log.flowName}, #{log.nodeKey}, #{log.nodeName}, #{log.scriptId}, #{log.executionIp}, #{log.environment}, #{log.status}, #{log.retryable},
-         #{log.errorCode}, #{log.startedAt}, #{log.completedAt}, #{log.durationMs}, #{log.paramsJson},
+         #{log.errorCode}, toDateTime(#{log.startedAt}, 'Asia/Shanghai'),
+         toDateTime(#{log.completedAt}, 'Asia/Shanghai'), #{log.durationMs}, #{log.paramsJson},
          #{log.outputText}, #{log.errorMessage}, #{log.paramsTruncated}, #{log.outputTruncated},
          #{log.errorTruncated}, #{log.paramsBytes}, #{log.outputBytes}, #{log.errorBytes})
     </insert>

@@ -13,6 +13,14 @@ import java.util.*;
 
 @Service
 public class NotificationLinkClickService {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(NotificationLinkClickService.class);
+    // Preserve pending-click -> login order; the two requests must not race on the common pool.
+    private final java.util.concurrent.ExecutorService writer = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "notification-link-click-write");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
     private static final java.time.format.DateTimeFormatter DATE_TIME = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final java.time.format.DateTimeFormatter DATE = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd");
     private final NotificationLinkClickMapper mapper;
@@ -31,28 +39,40 @@ public class NotificationLinkClickService {
     public void record(Long notificationId, Long executionId, String recipient, String actor,
                        String tokenHash, String source, String eventType, boolean loggedIn,
                        String ip, String userAgent) {
-        java.util.concurrent.CompletableFuture.runAsync(() -> mapper.insertEvent(notificationId, executionId, null, actor == null ? "" : actor, tokenHash == null ? "" : tokenHash, source, eventType, loggedIn,
-                // event_at is a ClickHouse DateTime used alongside execution timestamps,
-                // which are stored as local application time. Storing a UTC wall-clock
-                // value here made access time appear eight hours earlier in China.
-                LocalDateTime.now(), ip, userAgent, environment));
+        LocalDateTime eventAt = LocalDateTime.now(ZONE);
+        writeAsync("record flow access", () -> mapper.insertEvent(notificationId, executionId, null, actor == null ? "" : actor, tokenHash == null ? "" : tokenHash, source, eventType, loggedIn,
+                eventAt, ip, userAgent, environment));
     }
 
     public void recordJob(Long notificationId, Long jobExecutionId, String recipient, String actor,
                           String tokenHash, String source, String eventType, boolean loggedIn,
                           String ip, String userAgent) {
-        java.util.concurrent.CompletableFuture.runAsync(() -> mapper.insertEvent(notificationId, null, jobExecutionId, actor == null ? "" : actor, tokenHash == null ? "" : tokenHash, source, eventType, loggedIn,
-                LocalDateTime.now(), ip, userAgent, environment));
+        LocalDateTime eventAt = LocalDateTime.now(ZONE);
+        writeAsync("record job access", () -> mapper.insertEvent(notificationId, null, jobExecutionId, actor == null ? "" : actor, tokenHash == null ? "" : tokenHash, source, eventType, loggedIn,
+                eventAt, ip, userAgent, environment));
     }
     public String recordPendingJob(Long jobExecutionId, String ip, String userAgent) {
         String token = UUID.randomUUID().toString();
-        java.util.concurrent.CompletableFuture.runAsync(() -> mapper.insertEvent(null, null, jobExecutionId, "", token, "NOTIFICATION", "CLICK", false,
-                LocalDateTime.now(), ip, userAgent, environment));
+        LocalDateTime eventAt = LocalDateTime.now(ZONE);
+        writeAsync("record pending job access", () -> mapper.insertEvent(null, null, jobExecutionId, "", token, "NOTIFICATION", "CLICK", false,
+                eventAt, ip, userAgent, environment));
         return token;
     }
     public void completePendingJob(String token, String actor) {
-        if (token != null && !token.isBlank() && actor != null && !actor.isBlank())
-            java.util.concurrent.CompletableFuture.runAsync(() -> mapper.completePending(token, actor, LocalDateTime.now(), environment));
+        if (token != null && !token.isBlank() && actor != null && !actor.isBlank()) {
+            LocalDateTime eventAt = LocalDateTime.now(ZONE);
+            writeAsync("record login view", () -> mapper.completePending(token, actor, eventAt, environment));
+        }
+    }
+    private void writeAsync(String operation, Runnable action) {
+        writer.execute(() -> {
+            try { action.run(); }
+            catch (Exception error) { log.error("Failed to {} in ClickHouse: environment={}", operation, environment, error); }
+        });
+    }
+    @jakarta.annotation.PreDestroy
+    public void shutdownWriter() {
+        writer.shutdown();
     }
     public List<NotificationLinkClickSummaryDto> summary(Long notificationId, NotificationLinkClickFilterRequest request) {
         Map<String,Object> f = new HashMap<>();

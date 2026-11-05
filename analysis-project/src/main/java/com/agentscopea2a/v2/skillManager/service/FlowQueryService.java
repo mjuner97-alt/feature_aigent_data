@@ -78,10 +78,10 @@ public class FlowQueryService {
         int safePage = Math.max(1, page), safeSize = Math.min(100, Math.max(1, pageSize));
         String scopedUser = all ? null : userId;
         List<ExecutionListDto> items = (source == null
-                ? mapper.selectExecutions(status, createdBy, scopedUser, (safePage - 1) * safeSize, safeSize)
+                ? mapper.selectExecutions(status, createdBy, keyword, scopedUser, (safePage - 1) * safeSize, safeSize)
                 : mapper.selectExecutionsBySource(status, createdBy, keyword, scopedUser, (safePage - 1) * safeSize, safeSize, source, triggerType))
                 .stream().map(this::listDto).toList();
-        long total = source == null ? mapper.countExecutions(status, createdBy, scopedUser)
+        long total = source == null ? mapper.countExecutions(status, createdBy, keyword, scopedUser)
                 : mapper.countExecutionsBySource(status, createdBy, keyword, scopedUser, source, triggerType);
         return new PageDto(items, safePage, safeSize, total);
     }

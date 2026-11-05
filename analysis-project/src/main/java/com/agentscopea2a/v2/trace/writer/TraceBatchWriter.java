@@ -124,7 +124,7 @@ public class TraceBatchWriter {
         row.put("event_type", "");
         row.put("event_name", "");
         row.put("source", "");
-        // DateTime64(3) 列：用 Timestamp 写入，驱动按日期处理；直接写 long 会被当作秒解析
+        // Keep Timestamp in the model; the mapper converts it to epoch seconds for DateTime columns.
         row.put("timestamp", new Timestamp(System.currentTimeMillis()));
         row.put("duration_ms", 0L);
         row.put("event_json", json);

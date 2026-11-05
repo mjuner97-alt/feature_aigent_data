@@ -3,6 +3,7 @@ package com.agentscopea2a.v2.skillManager.service;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowExecution;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowNodeAttempt;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowNodeExecution;
+import com.agentscopea2a.v2.skillManager.config.SkillFlowProperties;
 import com.agentscopea2a.mapper.ck.LongTaskNodeExecutionLogMapper;
 import com.agentscopea2a.v2.auth.entity.DeveloperPlPersonInfo;
 import com.agentscopea2a.v2.auth.mapper.DeveloperPlPersonInfoMapper;
@@ -16,6 +17,7 @@ import java.util.HashMap;
 
 @Service
 public class LongTaskNodeExecutionLogService {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(LongTaskNodeExecutionLogService.class);
     static final int MAX_BYTES = 256 * 1024;
     @org.springframework.beans.factory.annotation.Value("${spring.profiles.active:dev}")
     private String activeProfile = "dev";
@@ -49,8 +51,8 @@ public class LongTaskNodeExecutionLogService {
             log.put("status", attempt.getStatus() == null ? "UNKNOWN" : attempt.getStatus().name());
             log.put("retryable", Boolean.TRUE.equals(attempt.getRetryable()));
             log.put("errorCode", nvl(attempt.getErrorCode()));
-            log.put("startedAt", ts(attempt.getStartedAt()));
-            log.put("completedAt", ts(attempt.getCompletedAt()));
+            log.put("startedAt", epochSeconds(attempt.getStartedAt()));
+            log.put("completedAt", epochSeconds(attempt.getCompletedAt()));
             log.put("durationMs", attempt.getDurationMs() == null ? 0L : attempt.getDurationMs());
             log.put("paramsJson", p.text);
             log.put("outputText", o.text);
@@ -62,9 +64,11 @@ public class LongTaskNodeExecutionLogService {
             log.put("outputBytes", o.bytes);
             log.put("errorBytes", e.bytes);
             mapper.insert(log);
-        } catch (Exception ignored) {
-            ignored.printStackTrace();
-            /* observability must not affect workflow */ }
+        } catch (Exception errorException) {
+            // Observability must not affect workflow, but failures must reach the application logs.
+            log.error("Failed to write long-task node log: flowExecutionId={}, nodeExecutionId={}, attemptId={}",
+                    flow.getId(), node.getId(), attempt.getId(), errorException);
+        }
     }
 
     public Map<String,Object> detail(String userId, boolean all, String id) {
@@ -91,7 +95,11 @@ public class LongTaskNodeExecutionLogService {
         return rows == null ? List.of() : rows.stream().map(DeveloperPlPersonInfo::getUserId)
                 .filter(id -> id != null && !id.isBlank()).distinct().toList();
     }
-    private static String nvl(String s){return s==null?"":s;} private static java.sql.Timestamp ts(LocalDateTime t){return t==null?java.sql.Timestamp.valueOf(LocalDateTime.of(1970,1,1,0,0)):java.sql.Timestamp.valueOf(t);}
+    private static String nvl(String s){return s==null?"":s;}
+    // Bind numeric epoch seconds: ClickHouse 20.12 DateTime rejects fractional Timestamp strings.
+    private static long epochSeconds(LocalDateTime time) {
+        return time == null ? 0L : time.atZone(SkillFlowProperties.ZONE_ID).toEpochSecond();
+    }
     private static Value truncate(String s){ if(s==null)s=""; byte[] b=s.getBytes(StandardCharsets.UTF_8); if(b.length<=MAX_BYTES)return new Value(s,false,b.length); return new Value(new String(b,0,MAX_BYTES,StandardCharsets.UTF_8),true,b.length); }
     private record Value(String text, boolean truncated, long bytes){} public record Page(List<Map<String,Object>> items,int page,int pageSize,long total){}
 }

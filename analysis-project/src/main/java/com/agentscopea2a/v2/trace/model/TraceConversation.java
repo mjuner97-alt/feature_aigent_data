@@ -34,7 +34,7 @@ public class TraceConversation {
     private String source;
     private String agentId;
     private String agentName;
-    /** ClickHouse DateTime64(3)：用 Timestamp 映射，避免 long 在驱动侧被当作秒解析（读时也无法 parse 成 long）。 */
+    /** Retain Timestamp for reads; the ClickHouse insert handler explicitly binds epoch seconds. */
     private Timestamp startTs;
     private Timestamp endTs;
     private long durationMs;
