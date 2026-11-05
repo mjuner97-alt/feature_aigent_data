@@ -30,6 +30,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * Skill 直接执行 (绕过 LLM) 的确定性判定器 (docs/history/skill-direct-exec-plan.md §2)。
@@ -86,6 +87,23 @@ public class DirectSkillExecutor {
     private static final Set<String> FINE_GRAINED_DIM_KEYS =
             Set.of("groupName", "appName", "productLine", "perName", "perNo", "perRole");
 
+    // ==================== 追问层常量 (docs/202611/追问轮维度继承直接执行方案.md §4.1) ====================
+
+    /** C4c: 追问问题长度上限 —— 超长问题大概率是新问题, 保守回退 LLM (拍板 D1)。 */
+    private static final int FOLLOWUP_MAX_QUESTION_LEN = 60;
+    /** C4b: 新任务动词排除词表 (安全网, 拍板 D1)。原链路 skill/旁路词已拦截大部分新任务
+     *  问法, 本表只兜「提取出维度信号但语义是新任务」的长尾 (如「把二部的数据整理成周报」)。 */
+    private static final Set<String> FOLLOWUP_EXCLUDE_WORDS = Set.of(
+            "帮我写", "写个", "写一份", "写一版", "生成", "整理", "总结",
+            "周报", "日报", "月报", "报告", "汇报", "解释", "为什么", "怎么办",
+            "怎么处理", "怎么解决", "不要", "不用", "别按", "举例");
+    /** D5 拍板: 对比类问法回退 LLM —— LLM 手里有 hint result 摘要, 做对比更稳。 */
+    private static final Pattern FOLLOWUP_COMPARE_PATTERN =
+            Pattern.compile("(和|与|跟|同).{0,10}(比|对比|比较)|对比|比较|相比");
+    /** C3 指代词信号 (镜像 DimensionStateManager REF_* 正则族, 那边改这里同步)。 */
+    private static final Pattern FOLLOWUP_REF_PATTERN = Pattern.compile(
+            "(这|那)个(?:季度|月|月版本|版本|部门|组|应用|产品线|需求项|需求子条目)");
+
     private final SkillRoutingMetadataRepository metadataRepository;
     private final SkillCandidateSelector candidateSelector;
     private final SkillUsageResolver usageResolver;
@@ -99,6 +117,8 @@ public class DirectSkillExecutor {
     private final ObjectProvider<com.agentscopea2a.v2.dimension.PersonalDimensionResolver> personalResolverProvider;
     private final ObjectMapper objectMapper;
     private final boolean enabled;
+    /** 追问层开关 (docs/202611/追问轮维度继承直接执行方案.md, 拍板 D6 独立开关)。 */
+    private boolean followupDirectEnabled;
 
     public DirectSkillExecutor(
             SkillRoutingMetadataRepository metadataRepository,
@@ -113,7 +133,7 @@ public class DirectSkillExecutor {
             boolean enabled) {
         this(metadataRepository, candidateSelector, usageResolver, indexRepo, scriptRegistryMapper,
                 dimensionStateManager, versionPlanHookProvider, dimensionKeyRepoProvider,
-                null, null, null, objectMapper, enabled);
+                null, null, null, objectMapper, enabled, false);
     }
 
     public DirectSkillExecutor(
@@ -130,7 +150,7 @@ public class DirectSkillExecutor {
             boolean enabled) {
         this(metadataRepository, candidateSelector, usageResolver, indexRepo, scriptRegistryMapper,
                 dimensionStateManager, versionPlanHookProvider, dimensionKeyRepoProvider,
-                bypassKeywordServiceProvider, null, null, objectMapper, enabled);
+                bypassKeywordServiceProvider, null, null, objectMapper, enabled, false);
     }
 
     public DirectSkillExecutor(
@@ -148,7 +168,28 @@ public class DirectSkillExecutor {
             boolean enabled) {
         this(metadataRepository, candidateSelector, usageResolver, indexRepo, scriptRegistryMapper,
                 dimensionStateManager, versionPlanHookProvider, dimensionKeyRepoProvider,
-                bypassKeywordServiceProvider, anchorResolverProvider, null, objectMapper, enabled);
+                bypassKeywordServiceProvider, anchorResolverProvider, null, objectMapper, enabled, false);
+    }
+
+    /** 便捷重载: 仅人员台账解析器 (单测 newExecutorWithLedger 形态), 追问层默认关。 */
+    public DirectSkillExecutor(
+            SkillRoutingMetadataRepository metadataRepository,
+            SkillCandidateSelector candidateSelector,
+            SkillUsageResolver usageResolver,
+            SkillIndexRepository indexRepo,
+            ScriptRegistryMapper scriptRegistryMapper,
+            DimensionStateManager dimensionStateManager,
+            ObjectProvider<VersionPlanKnowledgeHook> versionPlanHookProvider,
+            ObjectProvider<DimensionKeyConfigRepository> dimensionKeyRepoProvider,
+            ObjectProvider<SkillBypassKeywordService> bypassKeywordServiceProvider,
+            ObjectProvider<com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver> anchorResolverProvider,
+            ObjectProvider<com.agentscopea2a.v2.dimension.PersonalDimensionResolver> personalResolverProvider,
+            ObjectMapper objectMapper,
+            boolean enabled) {
+        this(metadataRepository, candidateSelector, usageResolver, indexRepo, scriptRegistryMapper,
+                dimensionStateManager, versionPlanHookProvider, dimensionKeyRepoProvider,
+                bypassKeywordServiceProvider, anchorResolverProvider, personalResolverProvider,
+                objectMapper, enabled, false);
     }
 
     public DirectSkillExecutor(
@@ -164,7 +205,8 @@ public class DirectSkillExecutor {
             ObjectProvider<com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver> anchorResolverProvider,
             ObjectProvider<com.agentscopea2a.v2.dimension.PersonalDimensionResolver> personalResolverProvider,
             ObjectMapper objectMapper,
-            boolean enabled) {
+            boolean enabled,
+            boolean followupDirectEnabled) {
         this.metadataRepository = metadataRepository;
         this.candidateSelector = candidateSelector;
         this.usageResolver = usageResolver;
@@ -177,7 +219,15 @@ public class DirectSkillExecutor {
         this.anchorResolverProvider = anchorResolverProvider;
         this.personalResolverProvider = personalResolverProvider;
         this.objectMapper = objectMapper;
+        this.followupDirectEnabled = followupDirectEnabled;
         this.enabled = enabled;
+    }
+
+    /** 追问层开关 (拍板 D6 独立开关)。生产经 V2SkillConfig 构造器注入; 便捷构造器默认关,
+     *  存量测试行为不变; 新用例用本 setter 打开 (包内可见)。 */
+    DirectSkillExecutor setFollowupDirectEnabled(boolean followupDirectEnabled) {
+        this.followupDirectEnabled = followupDirectEnabled;
+        return this;
     }
 
     /** Layer 1 标准化「维度+指标」提取体: 固定 schema 全键输出, 空数组 = 问题未提及。
@@ -474,6 +524,15 @@ public class DirectSkillExecutor {
         }
         SkillCandidateSelection selection = candidateSelector.selectFromMetadata(active, question);
         if (selection.skillNames().isEmpty()) {
+            // 追问层 (docs/202611/追问轮维度继承直接执行方案.md, 拍板 D1/D2): 原链路
+            // skill/旁路词都未接住才判追问; domain 命中在 planFollowupDirect 内让位。
+            if (followupDirectEnabled) {
+                DirectExecutionPlan followup =
+                        planFollowupDirect(question, userId, previousState, conversationId, active);
+                if (followup != null) {
+                    return followup;
+                }
+            }
             return null;
         }
         // domain 让位 (2026/10/28, docs/202610/domain_tags命中优先于直接执行重排序方案.md §3.2):
@@ -602,24 +661,24 @@ public class DirectSkillExecutor {
         }
 
         Map<String, Object> params = buildParams(mapping, schema, extraction);
-        // 快照兜底补缺 (followup 方案 §3.5): 同 skill 且必填参数本轮未提及 → 继承上轮直接
-        // 执行的值 (修 G2「时间层追问丢部门」在直接执行交替场景的暴露)。只补缺不覆盖;
-        // 异 skill param 名空间不同不做翻译, 维持反问/回退。
+        // 快照兜底补缺 (followup 方案 §3.5, 原语化见追问方案 D7): 同 skill 且必填参数本轮
+        // 未提及 → 继承上轮直接执行的值 (修 G2「时间层追问丢部门」在直接执行交替场景的暴露)。
+        // 只补缺不覆盖; 细粒度维度一律不补 (我X按需注入方案 L3, 防上轮 product_line 等
+        // 被补回来绕过 L2 重锚抑制); 异 skill param 名空间不同不做翻译, 维持反问/回退。
         if (conversationId != null) {
             LastDirectExec last = lastExec(userId, conversationId);
             if (last != null && last.skillName().equals(topName)) {
+                Set<String> inheritKeys = new LinkedHashSet<>();
                 for (String req : required) {
-                    if (params.containsKey(req)) {
-                        continue;
+                    if (!params.containsKey(req)
+                            && !FINE_GRAINED_DIM_KEYS.contains(mapping.get(req))) {
+                        inheritKeys.add(req);
                     }
-                    // 我X按需注入方案 L3 (§6-3 拍板): 细粒度组织维度一律不补缺, 防止
-                    // 上轮 params 里的 product_line 等被补回来绕过 L2 重锚抑制
-                    if (FINE_GRAINED_DIM_KEYS.contains(mapping.get(req))) {
-                        continue;
-                    }
-                    params.put(req, last.params().get(req));
+                }
+                if (!inheritKeys.isEmpty()) {
+                    params = mergeSnapshotParams(last.params(), params, Set.of(), inheritKeys);
                     log.info("DirectSkillExecutor: 必填参数 {} 本轮未提及, 快照兜底继承上轮值 (skill={})",
-                            req, topName);
+                            inheritKeys, topName);
                 }
             }
         }
@@ -660,6 +719,262 @@ public class DirectSkillExecutor {
                 topName, top.scriptId(), params, extraction, extraction.metrics());
         recordLastExec(question, userId, conversationId, topName, top.scriptId(), params);
         return new DirectExecutionPlan(extraction, topName, top.scriptId(), params);
+    }
+
+    // ==================== 追问层 (docs/202611/追问轮维度继承直接执行方案.md §4) ====================
+
+    /**
+     * 快照参数继承原语 (追问方案 D7 拍板): §3.5 兜底与本追问层共用的唯一内核。
+     * base=上轮快照 params; round=本轮 buildParams 产物, 有值即替换; base 中 round 没有
+     * 的键继承; suppressedKeys (D3 拍板, 重锚抑制清空的细粒度维度对应参数) 从结果删除,
+     * 防上轮细粒度值 smuggle 进本轮 (「三部的车贷组」错账); inheritKeys 非空时仅继承这些
+     * 键 (§3.5 仅必填补缺语义), null = 全量继承 (追问层语义)。
+     */
+    private static Map<String, Object> mergeSnapshotParams(Map<String, Object> base,
+                                                           Map<String, Object> round,
+                                                           Set<String> suppressedKeys,
+                                                           Set<String> inheritKeys) {
+        Map<String, Object> merged = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> e : base.entrySet()) {
+            if (suppressedKeys != null && suppressedKeys.contains(e.getKey())) {
+                continue;
+            }
+            if (round.containsKey(e.getKey())) {
+                continue;
+            }
+            if (inheritKeys != null && !inheritKeys.contains(e.getKey())) {
+                continue;
+            }
+            merged.put(e.getKey(), e.getValue());
+        }
+        merged.putAll(round);
+        return merged;
+    }
+
+    /**
+     * 追问判定层 (追问方案 §4, 拍板 D1-D7): selector 空且快照存在时, 「仅提及维度」的
+     * 追问复用快照 skill 直接执行 —— 本轮有值替换、未提及继承, 保持秒回。判定守卫 C1~C4
+     * 见方案 §4.1; 判定错误的代价边界与风险处置见方案 §8。null = 不是可确定的维度追问,
+     * 原样回退 (旁路置空 / LLM+hint 块), 没有回退悬崖。
+     */
+    private DirectExecutionPlan planFollowupDirect(String question, String userId,
+                                                   DimensionState previousState,
+                                                   String conversationId,
+                                                   List<SkillRoutingMetadata> active) {
+        if (conversationId == null) {
+            return null;
+        }
+        // C1: 快照存在 (TTL 30min, 会话隔离, 复用 v2 查询口)
+        LastDirectExec last = lastExec(userId, conversationId);
+        if (last == null) {
+            return null;
+        }
+        // C4c: 超长问题大概率是新问题, 保守回退
+        if (question.length() > FOLLOWUP_MAX_QUESTION_LEN) {
+            return null;
+        }
+        // D1 拍板: domain 命中 = 领域点名 (漏斗第 2 层), 不是纯维度追问 → LLM
+        if (hitsAnyDomainTag(active, question)) {
+            return null;
+        }
+        // C4a: 显式点名其它 skill → 不是追问 (selector 空说明点的不是快照 skill 或没配词条)
+        String normalized = SkillTermMatcher.normalize(question);
+        for (SkillRoutingMetadata m : active) {
+            String name = m.skillName();
+            if (name != null && !name.isBlank() && !name.equals(last.skillName())
+                    && normalized.contains(SkillTermMatcher.normalize(name))) {
+                return null;
+            }
+        }
+        // C4b: 新任务动词排除 (安全网) + D5 拍板: 对比类回退 LLM
+        for (String word : FOLLOWUP_EXCLUDE_WORDS) {
+            if (normalized.contains(SkillTermMatcher.normalize(word))) {
+                return null;
+            }
+        }
+        if (FOLLOWUP_COMPARE_PATTERN.matcher(normalized).find()) {
+            return null;
+        }
+        // 快照 skill 元数据 + 权限 (与原链路同规)
+        SkillRoutingMetadata top = active.stream()
+                .filter(m -> m.skillName().equals(last.skillName()))
+                .findFirst()
+                .orElse(null);
+        if (top == null || top.scriptId() == null) {
+            return null;
+        }
+        if (!canUse(last.skillName(), userId)) {
+            return null;
+        }
+        Map<String, String> mapping = parseParamMapping(top.paramMapping());
+        if (mapping.isEmpty()) {
+            return null;
+        }
+
+        // ① 本轮提取: 与 plan() 完全同序的管线复用 (方案 §4.2)
+        DimensionState preview = dimensionStateManager.previewState(question, previousState);
+        DimensionExtraction extraction = extract(preview, List.of(), last.skillName(),
+                extractExtraDimensions(question));
+        List<ParamSpec> schema = null;
+        List<String> required = List.of();
+        try {
+            var entry = scriptRegistryMapper.selectByScriptId(top.scriptId());
+            if (entry != null && entry.getParamsSchema() != null && !entry.getParamsSchema().isBlank()) {
+                schema = parseSchema(entry.getParamsSchema());
+                required = schema.stream().filter(ParamSpec::required).map(ParamSpec::name).toList();
+            }
+        } catch (Exception e) {
+            log.warn("DirectSkillExecutor: 追问层查 script_registry 失败 scriptId={}: {}",
+                    top.scriptId(), e.getMessage());
+        }
+        LedgerTruthScan truthScan = applyLedgerTruthScan(extraction, question);
+        extraction = truthScan.extraction();
+        PersonScanOutcome personScan = applyPersonalDimensions(extraction, question, userId);
+        extraction = personScan.extraction();
+        extraction = backfillDeptFromLedger(extraction, mapping, schema, required);
+        DimensionExtraction preSuppression = extraction;
+        extraction = applyReanchorSuppression(extraction, question, personScan, truthScan);
+
+        // C3: 维度信号命中 (本轮提到的是维度) —— 只看问题新提及的信号, 不看 preview 状态
+        // 继承值 (否则任何问题都"有维度"); 提不出信号 → 回退 LLM, 宁可漏不可错 (v1 教训)
+        if (!hasDimensionSignal(question, personScan, truthScan)) {
+            return null;
+        }
+        // D3 拍板: 重锚抑制清空的细粒度维度, merge 时从快照基底删除
+        Set<String> suppressedParamKeys =
+                suppressedFineGrainedParams(preSuppression, extraction, mapping);
+
+        // ② 时间歧义锚点反问 (与原链路同构, 反问优于带错参数执行)
+        List<String> trAnchors = extraction.extraDimensions()
+                .getOrDefault(TimeRangeResolver.RESERVED_KEY, List.of());
+        String ambiguous = firstAmbiguousAnchor(trAnchors);
+        if (ambiguous != null) {
+            List<String> kept = trAnchors.stream()
+                    .filter(a -> !TimeRangeResolver.isAmbiguousAnchor(a)).toList();
+            Map<String, Object> preParams = mergeSnapshotParams(last.params(),
+                    buildParams(mapping, schema, withTimeRangeAnchors(extraction, kept)),
+                    suppressedParamKeys, null);
+            String key = sessionKey(userId, conversationId);
+            pending.put(key, new PendingDirectExec(last.skillName(), top.scriptId(), mapping,
+                    schema, preParams, List.of(TimeRangeResolver.RESERVED_KEY + "@" + ambiguous),
+                    System.currentTimeMillis(), trAnchors));
+            log.info("DirectSkillExecutor: 追问层 skill {} 时间锚点歧义 {} → 反问 (pending {})",
+                    last.skillName(), ambiguous, key);
+            return new DirectExecutionPlan(extraction, last.skillName(), top.scriptId(), preParams,
+                    List.of(labelFor(TimeRangeResolver.RESERVED_KEY)),
+                    TimeRangeResolver.ambiguityAskPrompt(ambiguous));
+        }
+
+        Map<String, Object> merged = mergeSnapshotParams(last.params(),
+                buildParams(mapping, schema, extraction), suppressedParamKeys, null);
+
+        // 人名重名反问 (与原链路同构, 单 pending 口径: 时间歧义优先)
+        if (personScan.ambiguousName() != null) {
+            String key = sessionKey(userId, conversationId);
+            pending.put(key, new PendingDirectExec(last.skillName(), top.scriptId(), mapping,
+                    schema, merged, List.of(PERSON_MARKER_PREFIX + personScan.ambiguousName()),
+                    System.currentTimeMillis(), null));
+            log.info("DirectSkillExecutor: 追问层 skill {} 人名 {} 重名 {} 选 → 反问 (pending {})",
+                    last.skillName(), personScan.ambiguousName(),
+                    personScan.candidates().size(), key);
+            return new DirectExecutionPlan(extraction, last.skillName(), top.scriptId(), merged,
+                    List.of(labelFor("perNo")),
+                    personAskMessage(personScan.ambiguousName(), personScan.candidates()));
+        }
+
+        // ③ 必填缺失: mapping 内 → 反问补参 (与原链路一致); mapping 外 → 回退 LLM
+        List<String> missingKeys = new ArrayList<>();
+        for (String req : required) {
+            if (merged.containsKey(req)) {
+                continue;
+            }
+            String dimKey = mapping.get(req);
+            if ("deptName".equals(dimKey) && !extraction.extraDimensions()
+                    .getOrDefault(ORG_DIMENSION_KEY, List.of()).isEmpty()) {
+                continue;   // 上级组织口径 (2026/10/22), 同 plan()
+            }
+            if (dimKey == null) {
+                log.info("DirectSkillExecutor: 追问层必填参数 {} 无维度语义 (skill={}), 回退 LLM",
+                        req, last.skillName());
+                return null;
+            }
+            if (!missingKeys.contains(dimKey)) {
+                missingKeys.add(dimKey);
+            }
+        }
+        if (!missingKeys.isEmpty()) {
+            String key = sessionKey(userId, conversationId);
+            pending.put(key, pendingOf(last.skillName(), top.scriptId(), mapping, schema,
+                    merged, missingKeys));
+            log.info("DirectSkillExecutor: 追问层 skill {} 缺必填维度 {} → 反问补参 (pending {})",
+                    last.skillName(), missingKeys, key);
+            return new DirectExecutionPlan(extraction, last.skillName(), top.scriptId(), merged,
+                    List.of(labelFor(missingKeys.get(0))));
+        }
+        log.info("DirectSkillExecutor: 追问层直接执行 skill={} scriptId={} params={} (本轮替换+未提及继承, 追问方案 §4)",
+                last.skillName(), top.scriptId(), merged);
+        recordLastExec(question, userId, conversationId, last.skillName(), top.scriptId(), merged);
+        return new DirectExecutionPlan(extraction, last.skillName(), top.scriptId(), merged);
+    }
+
+    /** C3: 问题新提及维度信号 (追问方案 §4.1)。只看问题派生的信号 —— 规则分析显式维度 /
+     *  别名歧义 / 动态键词表 / 指代词 / 人名与角色 / 台账真值扫描; 不看 preview 状态继承值。 */
+    private boolean hasDimensionSignal(String question, PersonScanOutcome personScan,
+                                       LedgerTruthScan truthScan) {
+        QuestionAnalysis analysis = dimensionStateManager.analyzeQuestionRuleBased(question);
+        if (analysis != null) {
+            var explicit = analysis.getExplicitDimensions();
+            if (explicit != null && explicit.hasAnyDimension()) {
+                return true;
+            }
+            if (analysis.getAmbiguousAliases() != null && !analysis.getAmbiguousAliases().isEmpty()) {
+                return true;
+            }
+        }
+        if (FOLLOWUP_REF_PATTERN.matcher(question).find()) {
+            return true;
+        }
+        if (personScan != null && (!personScan.scannedNames().isEmpty()
+                || !personScan.explicitRoles().isEmpty() || personScan.personal().anyHit())) {
+            return true;
+        }
+        return truthScan != null && (truthScan.groupHit() || truthScan.appHit()
+                || truthScan.productLineHit());
+    }
+
+    /** D3: 重锚抑制清空的细粒度维度 → 对应 param 名集合 (merge 时从快照基底删除)。 */
+    private static Set<String> suppressedFineGrainedParams(DimensionExtraction before,
+                                                           DimensionExtraction after,
+                                                           Map<String, String> mapping) {
+        Set<String> clearedDims = new LinkedHashSet<>();
+        for (String dim : FINE_GRAINED_DIM_KEYS) {
+            if (!fineGrainedValues(before, dim).isEmpty()
+                    && fineGrainedValues(after, dim).isEmpty()) {
+                clearedDims.add(dim);
+            }
+        }
+        if (clearedDims.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> params = new LinkedHashSet<>();
+        for (Map.Entry<String, String> e : mapping.entrySet()) {
+            if (clearedDims.contains(e.getValue())) {
+                params.add(e.getKey());
+            }
+        }
+        return params;
+    }
+
+    private static List<String> fineGrainedValues(DimensionExtraction e, String dim) {
+        return switch (dim) {
+            case "groupName" -> e.groupName();
+            case "appName" -> e.appName();
+            case "productLine" -> e.productLine();
+            case "perName" -> e.perName();
+            case "perNo" -> e.perNo();
+            case "perRole" -> e.perRole();
+            default -> List.of();
+        };
     }
 
     /** 问题 contains 任一 active skill 的 domain_tags 词条 (2026/10/28 方案 §3.2)。

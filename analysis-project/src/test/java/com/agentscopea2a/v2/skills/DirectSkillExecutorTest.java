@@ -2884,4 +2884,234 @@ class DirectSkillExecutorTest {
         org.mockito.Mockito.verify(ledger, org.mockito.Mockito.never()).deptsByDimension(
                 org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
     }
+
+    // ==================== 追问层 (docs/202611/追问轮维度继承直接执行方案.md §4, D1-D7 拍板) ====================
+
+    private static final String FOLLOWUP_T1 = "杭州开发二部 2026年7月份版本 达标率多少";
+    private static final String FOLLOWUP_T2 = "9月的呢";
+
+    /** 规则分析产物桩: C3 维度信号 / 重锚抑制的显式提及判定都吃它。 */
+    private static QuestionAnalysis analysisWith(DimensionState.TimeDimension time,
+                                                 List<String> depts) {
+        QuestionAnalysis analysis = new QuestionAnalysis();
+        analysis.setExplicitDimensions(
+                new QuestionAnalysis.ExplicitDimensions(time, depts, null, null));
+        return analysis;
+    }
+
+    /** 首轮直执行环境: selector 命中「达标率」层级词, dept+version 必填全有 → 记快照。 */
+    private void stubFollowupFirstRound() {
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a",
+                        "{\"dept\":\"deptName\",\"version\":\"versionPlan\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(FOLLOWUP_T1), Mockito.isNull()))
+                .thenReturn(state(versionTime(List.of("2026年7月份版本")), List.of("杭州开发二部")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true},{\"name\":\"version\",\"required\":true}]"));
+    }
+
+    /** 追问轮 (selector 空) 的状态桩: preview 继承了时间但丢部门 (G2 场景), 规则分析
+     *  产出时间显式维度 (C3 信号源)。 */
+    private void stubFollowupRound(String question, List<String> depts) {
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull()))
+                .thenReturn(state(versionTime(List.of("2026年9月份版本")), depts));
+        when(dimensionStateManager.analyzeQuestionRuleBased(question)).thenReturn(
+                analysisWith(new DimensionState.TimeDimension(
+                        DimensionState.TimeDimensionType.VERSION, List.of("2026年9月份版本")),
+                        depts));
+    }
+
+    @Test
+    void followupReplacesMentionedAndInheritsRest() {
+        stubFollowupFirstRound();
+        DirectSkillExecutor executor = newExecutor(true).setFollowupDirectEnabled(true);
+        executor.plan(FOLLOWUP_T1, "alice", null, "conv1");
+
+        stubFollowupRound(FOLLOWUP_T2, List.of());
+        DirectSkillExecutor.DirectExecutionPlan followup =
+                executor.plan(FOLLOWUP_T2, "alice", null, "conv1");
+
+        assertEquals("dept_skill", followup.skillName());
+        assertEquals("2026年9月份版本", followup.params().get("version"));   // 本轮提及 → 替换
+        assertEquals("杭州开发二部", followup.params().get("dept"));         // 未提及 → 快照继承
+    }
+
+    @Test
+    void followupReanchorDeletesFineGrainedFromSnapshot() {
+        String t1 = "杭州开发二部车贷组 2026年7月份版本 达标率多少";
+        String t2 = "三部呢";
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a",
+                        "{\"dept\":\"deptName\",\"version\":\"versionPlan\",\"group\":\"groupName\"}",
+                        "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(t1), Mockito.isNull())).thenReturn(
+                new DimensionState(versionTime(List.of("2026年7月份版本")), List.of("杭州开发二部"),
+                        new DimensionState.PeerDimension(DimensionState.PeerDimensionType.TEAM,
+                                List.of("车贷组")), null));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true},{\"name\":\"version\",\"required\":true},"
+                        + "{\"name\":\"group\",\"required\":true}]"));
+        DirectSkillExecutor executor = newExecutor(true).setFollowupDirectEnabled(true);
+        DirectSkillExecutor.DirectExecutionPlan first = executor.plan(t1, "alice", null, "conv1");
+        assertEquals("车贷组", first.params().get("group"));
+
+        // 追问轮: 状态继承了 TEAM 粒度 (模拟状态残留), 本轮显式提及部门 → 重锚抑制清空组
+        when(dimensionStateManager.previewState(Mockito.eq(t2), Mockito.isNull())).thenReturn(
+                new DimensionState(versionTime(List.of("2026年7月份版本")), List.of("杭州开发三部"),
+                        new DimensionState.PeerDimension(DimensionState.PeerDimensionType.TEAM,
+                                List.of("车贷组")), null));
+        when(dimensionStateManager.analyzeQuestionRuleBased(t2)).thenReturn(
+                analysisWith(null, List.of("杭州开发三部")));
+        when(dimensionStateManager.hasExplicitTeamHit(t2)).thenReturn(false);
+        when(dimensionStateManager.hasExplicitProductLineHit(t2)).thenReturn(false);
+
+        DirectSkillExecutor.DirectExecutionPlan followup =
+                executor.plan(t2, "alice", null, "conv1");
+
+        assertEquals("杭州开发三部", followup.params().get("dept"));
+        assertEquals("2026年7月份版本", followup.params().get("version"));
+        // D3 拍板: 重锚抑制清空的细粒度维度, 继承时从快照基底删除 (防「三部的车贷组」错账)
+        assertFalse(followup.params().containsKey("group"));
+    }
+
+    @Test
+    void followupWithoutDimensionSignalFallsBackToLlm() {
+        stubFollowupFirstRound();
+        DirectSkillExecutor executor = newExecutor(true).setFollowupDirectEnabled(true);
+        executor.plan(FOLLOWUP_T1, "alice", null, "conv1");
+
+        // preview 状态带继承维度, 但问题本身无维度信号 → C3 只看问题新提及, 不看状态继承
+        String t2 = "随便聊聊天";
+        when(dimensionStateManager.previewState(Mockito.eq(t2), Mockito.isNull())).thenReturn(
+                state(versionTime(List.of("2026年9月份版本")), List.of()));
+        when(dimensionStateManager.analyzeQuestionRuleBased(t2)).thenReturn(new QuestionAnalysis());
+
+        assertNull(executor.plan(t2, "alice", null, "conv1"));
+    }
+
+    @Test
+    void followupNewTaskVerbsFallBackToLlm() {
+        stubFollowupFirstRound();
+        DirectSkillExecutor executor = newExecutor(true).setFollowupDirectEnabled(true);
+        executor.plan(FOLLOWUP_T1, "alice", null, "conv1");
+
+        // 有维度信号 (C3 过) 但命中新任务动词 → C4b 安全网拦下
+        String t2 = "把二部的数据整理成周报";
+        stubFollowupRound(t2, List.of("杭州开发二部"));
+
+        assertNull(executor.plan(t2, "alice", null, "conv1"));
+    }
+
+    @Test
+    void followupCompareQuestionFallsBackToLlm() {
+        stubFollowupFirstRound();
+        DirectSkillExecutor executor = newExecutor(true).setFollowupDirectEnabled(true);
+        executor.plan(FOLLOWUP_T1, "alice", null, "conv1");
+
+        // D5 拍板: 对比类回退 LLM (hint result 摘要做对比更稳)
+        String t2 = "9月和7月比呢";
+        stubFollowupRound(t2, List.of());
+
+        assertNull(executor.plan(t2, "alice", null, "conv1"));
+    }
+
+    @Test
+    void followupTooLongQuestionFallsBackToLlm() {
+        stubFollowupFirstRound();
+        DirectSkillExecutor executor = newExecutor(true).setFollowupDirectEnabled(true);
+        executor.plan(FOLLOWUP_T1, "alice", null, "conv1");
+
+        String t2 = FOLLOWUP_T2 + "另外还想请帮我看看很多其他的事情".repeat(4);
+        assertTrue(t2.length() > 60);
+        stubFollowupRound(t2, List.of());
+
+        assertNull(executor.plan(t2, "alice", null, "conv1"));
+    }
+
+    @Test
+    void followupDomainHitFallsBackToLlm() {
+        stubFollowupFirstRound();
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a",
+                        "{\"dept\":\"deptName\",\"version\":\"versionPlan\"}", "达标率"),
+                new SkillRoutingMetadata("meeting_skill", "s", List.of(), List.of("部门例会"),
+                        List.of(), "admin", true, LocalDateTime.now(),
+                        List.of(), List.of(), List.of(), null, null)));
+        DirectSkillExecutor executor = newExecutor(true).setFollowupDirectEnabled(true);
+        executor.plan(FOLLOWUP_T1, "alice", null, "conv1");
+
+        // D1 拍板: domain 命中 = 领域点名, 不是纯维度追问 → LLM
+        String t2 = "部门例会 9月的呢";
+        stubFollowupRound(t2, List.of());
+
+        assertNull(executor.plan(t2, "alice", null, "conv1"));
+    }
+
+    @Test
+    void followupWithoutSnapshotFallsBackToLlm() {
+        stubFollowupFirstRound();
+        DirectSkillExecutor executor = newExecutor(true).setFollowupDirectEnabled(true);
+        stubFollowupRound(FOLLOWUP_T2, List.of());
+
+        assertNull(executor.plan(FOLLOWUP_T2, "alice", null, "conv-fresh"));
+    }
+
+    @Test
+    void followupDisabledKeepsLegacyBehavior() {
+        stubFollowupFirstRound();
+        DirectSkillExecutor executor = newExecutor(true);   // 便捷构造器默认关
+        executor.plan(FOLLOWUP_T1, "alice", null, "conv1");
+        stubFollowupRound(FOLLOWUP_T2, List.of());
+
+        assertNull(executor.plan(FOLLOWUP_T2, "alice", null, "conv1"));
+    }
+
+    @Test
+    void followupPermissionFailFailsClosed() {
+        stubFollowupFirstRound();
+        DirectSkillExecutor executor = newExecutor(true).setFollowupDirectEnabled(true);
+        executor.plan(FOLLOWUP_T1, "alice", null, "conv1");
+        stubFollowupRound(FOLLOWUP_T2, List.of());
+        when(usageResolver.findUsableRetrievalNames("alice")).thenReturn(Set.of("other_skill"));
+
+        assertNull(executor.plan(FOLLOWUP_T2, "alice", null, "conv1"));
+    }
+
+    @Test
+    void followupSnapshotSkillDeactivatedFallsBackToLlm() {
+        stubFollowupFirstRound();
+        DirectSkillExecutor executor = newExecutor(true).setFollowupDirectEnabled(true);
+        executor.plan(FOLLOWUP_T1, "alice", null, "conv1");
+        stubFollowupRound(FOLLOWUP_T2, List.of());
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("other_skill", null, "{\"dept\":\"deptName\"}", "遗留")));
+
+        assertNull(executor.plan(FOLLOWUP_T2, "alice", null, "conv1"));
+    }
+
+    @Test
+    void followupSuccessRefreshesSnapshotForChainedRounds() {
+        stubFollowupFirstRound();
+        DirectSkillExecutor executor = newExecutor(true).setFollowupDirectEnabled(true);
+        executor.plan(FOLLOWUP_T1, "alice", null, "conv1");
+
+        stubFollowupRound(FOLLOWUP_T2, List.of());
+        executor.plan(FOLLOWUP_T2, "alice", null, "conv1");
+
+        DirectSkillExecutor.LastDirectExec snapshot = executor.lastExec("alice", "conv1");
+        assertEquals(FOLLOWUP_T2, snapshot.question());
+        assertEquals("2026年9月份版本", snapshot.params().get("version"));
+    }
+
+    @Test
+    void followupSkippedWithoutConversationKey() {
+        stubFollowupFirstRound();
+        DirectSkillExecutor executor = newExecutor(true).setFollowupDirectEnabled(true);
+        executor.plan(FOLLOWUP_T1, "alice", null, "conv1");
+        stubFollowupRound(FOLLOWUP_T2, List.of());
+
+        assertNull(executor.plan(FOLLOWUP_T2, "alice", null));   // 3 参旧签名: 无会话键不启用
+    }
 }
