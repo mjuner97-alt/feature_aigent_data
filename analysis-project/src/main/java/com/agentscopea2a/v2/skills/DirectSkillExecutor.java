@@ -837,7 +837,7 @@ public class DirectSkillExecutor {
 
         // C3: 维度信号命中 (本轮提到的是维度) —— 只看问题新提及的信号, 不看 preview 状态
         // 继承值 (否则任何问题都"有维度"); 提不出信号 → 回退 LLM, 宁可漏不可错 (v1 教训)
-        if (!hasDimensionSignal(question, personScan, truthScan)) {
+        if (!hasDimensionSignal(question, personScan, truthScan, extraction.extraDimensions())) {
             return null;
         }
         // D3 拍板: 重锚抑制清空的细粒度维度, merge 时从快照基底删除
@@ -954,10 +954,37 @@ public class DirectSkillExecutor {
         return new DirectExecutionPlan(extraction, last.skillName(), top.scriptId(), merged);
     }
 
+    /** C3 动态键信号白名单 (2026-11-05 拍板): 仅语义上是「维度形态」的键 —— 默认三个保留键
+     *  (下钻粒度词/上级组织/时间范围锚点)。自定义动态键 (qGate/transferTimes 等传参型)
+     *  不算维度信号, 防止「XX的呢」被拉进追问层后按快照原参数重跑 (问东答西)。
+     *  可经 harness.a2a.skill-direct-exec.followup-signal-keys (逗号分隔) 覆盖, 纯后端配置
+     *  避免业务人员误配 (2026-11-05 选型 B)。 */
+    private Set<String> followupSignalKeys = Set.of(
+            DRILL_DOWN_KEY, ORG_DIMENSION_KEY, TimeRangeResolver.RESERVED_KEY);
+
+    /** 生产经 V2SkillConfig 注入 (逗号分隔配置原样传入); 空白/全空项回退字段默认值 (三个保留键)。 */
+    public DirectSkillExecutor setFollowupSignalKeys(String csv) {
+        if (csv != null && !csv.isBlank()) {
+            Set<String> parsed = new LinkedHashSet<>();
+            for (String token : csv.split(",")) {
+                String key = token.trim();
+                if (!key.isEmpty()) {
+                    parsed.add(key);
+                }
+            }
+            if (!parsed.isEmpty()) {
+                this.followupSignalKeys = Set.copyOf(parsed);
+            }
+        }
+        return this;
+    }
+
     /** C3: 问题新提及维度信号 (追问方案 §4.1)。只看问题派生的信号 —— 规则分析显式维度 /
-     *  别名歧义 / 动态键词表 / 指代词 / 人名与角色 / 台账真值扫描; 不看 preview 状态继承值。 */
+     *  别名歧义 / 动态键词表 (仅白名单: drillDown/orgName/timeRange, 下钻追问「各个组呢」靠它) /
+     *  指代词 / 人名与角色 / 台账真值扫描; 不看 preview 状态继承值。 */
     private boolean hasDimensionSignal(String question, PersonScanOutcome personScan,
-                                       LedgerTruthScan truthScan) {
+                                       LedgerTruthScan truthScan,
+                                       Map<String, List<String>> extraDimensions) {
         QuestionAnalysis analysis = dimensionStateManager.analyzeQuestionRuleBased(question);
         if (analysis != null) {
             var explicit = analysis.getExplicitDimensions();
@@ -966,6 +993,14 @@ public class DirectSkillExecutor {
             }
             if (analysis.getAmbiguousAliases() != null && !analysis.getAmbiguousAliases().isEmpty()) {
                 return true;
+            }
+        }
+        if (extraDimensions != null) {
+            for (String signalKey : followupSignalKeys) {
+                List<String> values = extraDimensions.get(signalKey);
+                if (values != null && !values.isEmpty()) {
+                    return true;
+                }
             }
         }
         if (FOLLOWUP_REF_PATTERN.matcher(question).find()) {

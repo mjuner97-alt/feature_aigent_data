@@ -223,9 +223,11 @@ public class V2SkillConfig {
             @Value("${harness.a2a.skill-context.fallback-visible-skills:10}") int fallbackVisibleSkills,
             @Value("${harness.a2a.skill-direct-exec.enabled:false}") boolean enabled,
             @Value("${harness.a2a.skill-direct-exec.followup-direct-exec.enabled:true}")
-            boolean followupDirectEnabled) {
-        log.info("DirectSkillExecutor: directExecEnabled={}, followupDirectEnabled={}",
-                enabled, followupDirectEnabled);
+            boolean followupDirectEnabled,
+            @Value("${harness.a2a.skill-direct-exec.followup-signal-keys:drillDown,orgName,timeRange}")
+            String followupSignalKeys) {
+        log.info("DirectSkillExecutor: directExecEnabled={}, followupDirectEnabled={}, followupSignalKeys={}",
+                enabled, followupDirectEnabled, followupSignalKeys);
         return new com.agentscopea2a.v2.skills.DirectSkillExecutor(
                 routingMetadataRepository,
                 new SkillCandidateSelector(maxVisibleSkills, fallbackVisibleSkills,
@@ -241,7 +243,8 @@ public class V2SkillConfig {
                 personalResolverProvider,
                 objectMapper,
                 enabled,
-                followupDirectEnabled);
+                followupDirectEnabled)
+                .setFollowupSignalKeys(followupSignalKeys);
     }
 
 

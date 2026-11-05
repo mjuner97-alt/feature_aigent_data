@@ -3203,4 +3203,85 @@ class DirectSkillExecutorTest {
         assertFalse(followup.params().containsKey("quarter"));              // 快照季度族随重锚删除 (二选一)
         assertEquals("杭州开发三部", followup.params().get("dept"));
     }
+
+    @Test
+    void followupDrillDownQuestionExecutesDirectly() {
+        // 追问仅命中 drillDown 词表 (各个组呢) — 规则分析无显式维度 (粒度词被垃圾守卫拒),
+        // C3 信号必须认动态键命中, 否则下钻追问漏回 LLM
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a",
+                        "{\"dept\":\"deptName\",\"version\":\"versionPlan\",\"group_by\":\"drillDown\"}",
+                        "达标率")));
+        enableKeyDictionary(drillDownConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(FOLLOWUP_T1), Mockito.isNull())).thenReturn(
+                state(versionTime(List.of("2026年7月份版本")), List.of("杭州开发二部")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true},{\"name\":\"version\",\"required\":true},"
+                        + "{\"name\":\"group_by\",\"required\":false}]"));
+        DirectSkillExecutor executor = newExecutor(true).setFollowupDirectEnabled(true);
+        executor.plan(FOLLOWUP_T1, "alice", null, "conv1");
+
+        String t2 = "各个组呢";
+        when(dimensionStateManager.previewState(Mockito.eq(t2), Mockito.isNull())).thenReturn(
+                state(versionTime(List.of("2026年7月份版本")), List.of("杭州开发二部")));
+        when(dimensionStateManager.analyzeQuestionRuleBased(t2)).thenReturn(new QuestionAnalysis());
+
+        DirectSkillExecutor.DirectExecutionPlan followup =
+                executor.plan(t2, "alice", null, "conv1");
+
+        assertEquals("dept_skill", followup.skillName());
+        assertEquals("组维度", followup.params().get("group_by"));   // 本轮下钻参数 (单值折叠)
+        assertEquals("杭州开发二部", followup.params().get("dept"));          // 未提及 → 快照继承
+        assertEquals("2026年7月份版本", followup.params().get("version"));    // 未重锚时间 → 快照继承
+    }
+
+    @Test
+    void followupCustomDynamicKeyHitIsNotDimensionSignal() {
+        // 传参型自定义键 (qGate) 命中不算维度信号 (2026-11-05 白名单拍板):
+        // 「Q1卡口的呢」回退 LLM, 不允许按快照原参数重跑 (问东答西)
+        stubFollowupFirstRound();
+        enableKeyDictionary(qGateConfig());
+        DirectSkillExecutor executor = newExecutor(true).setFollowupDirectEnabled(true);
+        executor.plan(FOLLOWUP_T1, "alice", null, "conv1");
+
+        String t2 = "Q1卡口的呢";
+        when(dimensionStateManager.previewState(Mockito.eq(t2), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(dimensionStateManager.analyzeQuestionRuleBased(t2)).thenReturn(new QuestionAnalysis());
+
+        assertNull(executor.plan(t2, "alice", null, "conv1"));
+    }
+
+    @Test
+    void followupSignalKeysConfigurableExtendsWhitelist() {
+        // 选型 B (2026-11-05): 白名单经 followup-signal-keys 配置注入 — qGate 加入后
+        // 传参型追问也走直执行 (纯后端决策, 不开放前端)
+        stubFollowupFirstRound();
+        enableKeyDictionary(qGateConfig());
+        DirectSkillExecutor executor = newExecutor(true).setFollowupDirectEnabled(true)
+                .setFollowupSignalKeys(" qGate , ");
+        executor.plan(FOLLOWUP_T1, "alice", null, "conv1");
+
+        String t2 = "Q1卡口的呢";
+        when(dimensionStateManager.previewState(Mockito.eq(t2), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(dimensionStateManager.analyzeQuestionRuleBased(t2)).thenReturn(new QuestionAnalysis());
+
+        DirectSkillExecutor.DirectExecutionPlan followup =
+                executor.plan(t2, "alice", null, "conv1");
+
+        assertEquals("dept_skill", followup.skillName());
+        assertEquals("杭州开发二部", followup.params().get("dept"));       // 快照继承 (qGate 未绑 param)
+        assertEquals("2026年7月份版本", followup.params().get("version"));
+    }
+
+    /** drillDown 动态键 (粒度词词表, 业务维护): 「各个组→组维度」等。 */
+    private static DimensionKeyConfig drillDownConfig() {
+        return new DimensionKeyConfig(10L, "drillDown", "下钻维度", false, List.of(
+                new DimensionKeyConfig.AliasMapping("各个组", "组维度"),
+                new DimensionKeyConfig.AliasMapping("各个部门", "部门维度"),
+                new DimensionKeyConfig.AliasMapping("各产品线", "产品线维度")),
+                true, null);
+    }
 }
