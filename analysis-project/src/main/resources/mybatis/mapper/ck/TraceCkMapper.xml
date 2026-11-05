@@ -33,7 +33,8 @@
         <foreach collection="list" item="item" separator=",">
             (#{item.conversationId}, #{item.traceId}, #{item.userId}, #{item.source},
             #{item.agentId}, #{item.agentName},
-            #{item.startTs}, #{item.endTs}, #{item.durationMs},
+            toDateTime(#{item.startTs,typeHandler=com.agentscopea2a.mapper.ck.typehandler.ClickHouseTimestampTypeHandler}, 'Asia/Shanghai'),
+            toDateTime(#{item.endTs,typeHandler=com.agentscopea2a.mapper.ck.typehandler.ClickHouseTimestampTypeHandler}, 'Asia/Shanghai'), #{item.durationMs},
             #{item.status}, #{item.errorMessage},
             #{item.eventCount}, #{item.tokenInput}, #{item.tokenOutput},
             #{item.model}, #{item.environment})
@@ -48,28 +49,23 @@
         <foreach collection="list" item="item" separator=",">
             (#{item.event_id}, #{item.conversation_id}, #{item.trace_id},
             #{item.event_type}, #{item.event_name}, #{item.source},
-            #{item.timestamp}, #{item.duration_ms}, #{item.event_json})
+            toDateTime(#{item.timestamp,typeHandler=com.agentscopea2a.mapper.ck.typehandler.ClickHouseTimestampTypeHandler}, 'Asia/Shanghai'), #{item.duration_ms}, #{item.event_json})
         </foreach>
     </insert>
 
     <!-- ==================== 查询 ==================== -->
 
     <!--
-        会话列表（分页）。conversationId 跨多轮复用，每轮写一行，故按 conversation_id
-        去重：先用子查询取每个 conversation_id 的最新一轮（max end_ts），再 JOIN 回主表取对应行，
-        避免使用 argMax 函数（低版本 ClickHouse / GaussDB 可能不支持）。
-        按 start_ts DESC 排序，最近发起的会话排最前。
-        别名与 ConversationMap 列名一致，resultMap 无需调整。
+        One row per conversation. DateTime truncates subsecond end times, so joining on max(end_ts)
+        can select several rounds. LIMIT 1 BY with a trace-id tie-breaker selects one complete row.
     -->
     <select id="listConversations" resultMap="ConversationMap">
         SELECT t.conversation_id, t.trace_id, t.user_id, t.source,
                t.agent_id, t.agent_name, t.start_ts, t.end_ts,
                t.duration_ms, t.status, t.error_message,
                t.event_count, t.token_input, t.token_output, t.model, t.environment
-        FROM trace_conversation t
-        INNER JOIN (
-            SELECT conversation_id, max(end_ts) AS max_end_ts
-            FROM trace_conversation
+        FROM (
+            SELECT * FROM trace_conversation
             <where>
             <if test="environment != null and environment != '' and environment != 'ALL'">AND environment = #{environment}</if>
                 <if test="source != null and source != ''">
@@ -80,13 +76,10 @@
                 </if>
                 <if test="keyword != null and keyword != ''">AND (conversation_id LIKE concat('%', #{keyword}, '%') OR user_id LIKE concat('%', #{keyword}, '%') OR agent_name LIKE concat('%', #{keyword}, '%'))</if>
             </where>
-            GROUP BY conversation_id
-        ) latest ON t.conversation_id = latest.conversation_id
-                AND t.end_ts = latest.max_end_ts
-        <where>
-            <if test="environment != null and environment != '' and environment != 'ALL'">AND t.environment = #{environment}</if>
-        </where>
-        ORDER BY t.start_ts DESC
+            ORDER BY end_ts DESC, trace_id DESC, start_ts DESC
+            LIMIT 1 BY conversation_id
+        ) AS t
+        ORDER BY t.start_ts DESC, t.conversation_id
         LIMIT #{offset}, #{limit}
     </select>
 
@@ -116,7 +109,7 @@
         event_count, token_input, token_output, model, environment
         FROM trace_conversation
         WHERE conversation_id = #{conversationId}
-        ORDER BY end_ts DESC
+        ORDER BY end_ts DESC, trace_id DESC, start_ts DESC
         LIMIT 1
     </select>
 
@@ -125,7 +118,9 @@
         SELECT event_json
         FROM trace_event
         WHERE conversation_id = #{conversationId}
-        ORDER BY timestamp ASC
+        ORDER BY timestamp ASC,
+                 parseDateTime64BestEffortOrNull(JSONExtractString(event_json, 'createdAt'), 9, 'UTC') ASC,
+                 event_id ASC
     </select>
 
 </mapper>
