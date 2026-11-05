@@ -200,8 +200,8 @@ public interface SkillFlowMapper {
     SkillFlowExecution selectLatestConversationExecution(@Param("userId") String userId, @Param("conversationId") String conversationId);
 
     /** 执行记录管理列表:按触发用户/状态筛选,最多返回最近 500 条。 */
-    List<SkillFlowExecution> selectExecutions(@Param("status") String status, @Param("createdBy") String createdBy, @Param("userId") String userId, @Param("offset") int offset, @Param("limit") int limit);
-    long countExecutions(@Param("status") String status, @Param("createdBy") String createdBy, @Param("userId") String userId);
+    List<SkillFlowExecution> selectExecutions(@Param("status") String status, @Param("createdBy") String createdBy, @Param("keyword") String keyword, @Param("userId") String userId, @Param("offset") int offset, @Param("limit") int limit);
+    long countExecutions(@Param("status") String status, @Param("createdBy") String createdBy, @Param("keyword") String keyword, @Param("userId") String userId);
     List<SkillFlowExecution> selectExecutionsBySource(@Param("status") String status, @Param("createdBy") String createdBy, @Param("keyword") String keyword, @Param("userId") String userId, @Param("offset") int offset, @Param("limit") int limit, @Param("source") String source, @Param("triggerType") String triggerType);
     long countExecutionsBySource(@Param("status") String status, @Param("createdBy") String createdBy, @Param("keyword") String keyword, @Param("userId") String userId, @Param("source") String source, @Param("triggerType") String triggerType);
 
