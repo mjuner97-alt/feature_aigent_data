@@ -22,8 +22,8 @@
             <if test="environment != null and environment != '' and environment != 'ALL'">AND environment = #{environment}</if>
             <if test="!all">AND user_id = #{userId}</if>
             <if test="flowExecutionId != null">AND flow_execution_id = #{flowExecutionId}</if>
-            <if test="from != null and from != ''">AND started_at &gt;= parseDateTimeBestEffort(#{from})</if>
-            <if test="to != null and to != ''">AND started_at &lt; parseDateTimeBestEffort(#{to})</if>
+            <if test="from != null and from != ''">AND node_log.started_at &gt;= parseDateTimeBestEffort(#{from}, 'Asia/Shanghai')</if>
+            <if test="to != null and to != ''">AND node_log.started_at &lt; parseDateTimeBestEffort(#{to}, 'Asia/Shanghai')</if>
             <if test="status != null and status != ''">AND status = #{status}</if>
             <if test="flowName != null and flowName != ''">AND flow_name ILIKE concat('%', #{flowName}, '%')</if>
             <if test="nodeName != null and nodeName != ''">AND node_name ILIKE concat('%', #{nodeName}, '%')</if>
@@ -37,25 +37,36 @@
         </where>
     </sql>
 
+    <!-- Return ISO 8601 strings with an explicit offset, independent of JDBC/server time zones. -->
+    <sql id="displayTimes">
+        concat(replaceOne(toString(toTimeZone(node_log.started_at, 'Asia/Shanghai')), ' ', 'T'), '+08:00') AS started_at,
+        concat(replaceOne(toString(toTimeZone(node_log.completed_at, 'Asia/Shanghai')), ' ', 'T'), '+08:00') AS completed_at
+    </sql>
+
     <select id="detail" resultType="java.util.HashMap">
-        SELECT * FROM long_task_node_execution_log
+        SELECT log_id, flow_execution_id, node_execution_id, attempt_id, attempt_no,
+               user_id, flow_name, node_key, node_name, script_id, execution_ip, environment,
+               status, retryable, error_code, <include refid="displayTimes"/>, duration_ms,
+               params_json, output_text, error_message, params_truncated, output_truncated,
+               error_truncated, params_bytes, output_bytes, error_bytes, event_date
+        FROM long_task_node_execution_log AS node_log
         WHERE log_id = #{id}
         <if test="!all">AND user_id = #{userId}</if>
         LIMIT 1
     </select>
 
     <select id="count" resultType="long">
-        SELECT count() FROM long_task_node_execution_log
+        SELECT count() FROM long_task_node_execution_log AS node_log
         <include refid="filters"/>
     </select>
 
     <select id="page" resultType="java.util.HashMap">
         SELECT log_id, flow_execution_id, node_execution_id, attempt_no, user_id,
                flow_name, node_name, script_id, execution_ip, environment, status, retryable, error_code,
-               started_at, completed_at, duration_ms, error_message
-        FROM long_task_node_execution_log
+               <include refid="displayTimes"/>, duration_ms, error_message
+        FROM long_task_node_execution_log AS node_log
         <include refid="filters"/>
-        ORDER BY started_at DESC
+        ORDER BY node_log.started_at DESC
         LIMIT #{offset}, #{limit}
     </select>
 </mapper>
