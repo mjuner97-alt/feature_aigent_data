@@ -21,10 +21,26 @@ public class FlowTemplateEngine {
     private static final Pattern VARIABLE = Pattern.compile("\\{([^{}]+)}");
     /** 节点模板允许的变量集合。 */
     private static final Set<String> NODE_VARIABLES = Set.of(
-            "report_type", "dev_dept", "stat_group", "data_date", "server_date", "original_question", "flow_name", "skill_name");
+        "report_type",
+        "dev_dept",
+        "stat_group",
+        "data_date",
+        "server_date",
+        "original_question",
+        "flow_name",
+        "skill_name"
+    );
     /** 汇总模板允许的变量集合。 */
     private static final Set<String> SUMMARY_VARIABLES = Set.of(
-            "report_type", "dev_dept", "stat_group", "data_date", "server_date", "original_question", "flow_name", "all_results");
+        "report_type",
+        "dev_dept",
+        "stat_group",
+        "data_date",
+        "server_date",
+        "original_question",
+        "flow_name",
+        "all_results"
+    );
 
     /** 模板校验结果:valid=false 时 errors 列出非法变量等原因。 */
     public record Validation(boolean valid, List<String> errors) {
@@ -40,15 +56,28 @@ public class FlowTemplateEngine {
         }
     }
 
-    public static Map<String,String> withPublic(com.agentscopea2a.v2.skillManager.entity.SkillFlowExecution execution,Map<String,String> values) {
-        Map<String,String> result=new java.util.LinkedHashMap<>(values);
-        if(execution.getPublicParamsJson()!=null) {
-            try {new com.fasterxml.jackson.databind.ObjectMapper().readTree(execution.getPublicParamsJson()).fields().forEachRemaining(e->result.put(e.getKey(),e.getValue().asText()));}
-            catch(Exception e){throw new IllegalStateException("TeamReportPublicSnapshotInvalid",e);}
+    public static Map<String, String> withPublic(
+        com.agentscopea2a.v2.skillManager.entity.SkillFlowExecution execution,
+        Map<String, String> values
+    ) {
+        Map<String, String> result = new java.util.LinkedHashMap<>(values);
+        if (execution.getPublicParamsJson() != null) {
+            try {
+                new com.fasterxml.jackson.databind.ObjectMapper()
+                    .readTree(execution.getPublicParamsJson())
+                    .fields()
+                    .forEachRemaining(e -> result.put(e.getKey(), e.getValue().asText()));
+            } catch (Exception e) {
+                throw new IllegalStateException("TeamReportPublicSnapshotInvalid", e);
+            }
         }
-        if(execution.getBatchId()!=null && execution.getDataDate()!=null) result.put("data_date",execution.getDataDate().toString());
+        if (execution.getBatchId() != null && execution.getDataDate() != null) result.put(
+            "data_date",
+            execution.getDataDate().toString()
+        );
         return result;
     }
+
     /** 校验节点问题模板。 */
     public Validation validateNodeTemplate(String template) {
         return validate(template, NODE_VARIABLES);

@@ -2,11 +2,8 @@ package com.agentscopea2a.v2.skillManager.report;
 
 import com.agentscopea2a.v2.skillManager.entity.FlowNodeExecutionStatus;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowNodeExecution;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.stereotype.Component;
-
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
@@ -15,6 +12,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.stereotype.Component;
 
 /**
  * 报告大纲 composer:消费执行记录上的大纲快照(report_outline_snapshot)与节点结果,
@@ -42,22 +41,40 @@ public class ReportOutlineComposer {
     /** Markdown 行首标题(#~######)。 */
     private static final Pattern MD_HEADING_LINE = Pattern.compile("^\\s*(#{1,6})\\s+(.+?)\\s*$");
     /** 行首 HTML 标题(h1~h6,单行)。 */
-    private static final Pattern HTML_HEADING_LINE =
-            Pattern.compile("^\\s*<h([1-6])\\b[^>]*>([\\s\\S]*?)</h\\1>\\s*$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern HTML_HEADING_LINE = Pattern.compile(
+        "^\\s*<h([1-6])\\b[^>]*>([\\s\\S]*?)</h\\1>\\s*$",
+        Pattern.CASE_INSENSITIVE
+    );
     /** 标题前的编号前缀(中文数字/阿拉伯数字 + 、.．:等分隔),比较标题时剥离。 */
-    private static final Pattern NUMBERING_PREFIX =
-            Pattern.compile("^(?:[0-9一二三四五六七八九十百]+[、.．:：]\\s*)+");
+    private static final Pattern NUMBERING_PREFIX = Pattern.compile("^(?:[0-9一二三四五六七八九十百]+[、.．:：]\\s*)+");
 
     /** 大纲快照 JSON 结构(与 SkillFlowDefinitionRequest.ReportOutline 同构,独立定义避免 DTO 耦合)。 */
     record Outline(String title, Numbering numbering, List<Item> items) {}
+
     @JsonIgnoreProperties(ignoreUnknown = true)
     record Numbering(String level1, String level2, String level3) {}
+
     @JsonIgnoreProperties(ignoreUnknown = true)
-    record Item(String id, String title, String description, Integer level, String nodeKey, List<String> nodeKeys, List<Item> children) {
+    record Item(
+        String id,
+        String title,
+        String description,
+        Integer level,
+        String nodeKey,
+        List<String> nodeKeys,
+        List<Item> children
+    ) {
         Item {
-            nodeKeys = nodeKeys == null || nodeKeys.isEmpty()
-                    ? (nodeKey == null || nodeKey.isBlank() ? List.of() : List.of(nodeKey.trim()))
-                    : nodeKeys.stream().filter(key -> key != null && !key.isBlank()).map(String::trim).toList();
+            nodeKeys =
+                nodeKeys == null || nodeKeys.isEmpty()
+                    ? nodeKey == null || nodeKey.isBlank()
+                        ? List.of()
+                        : List.of(nodeKey.trim())
+                    : nodeKeys
+                          .stream()
+                          .filter(key -> key != null && !key.isBlank())
+                          .map(String::trim)
+                          .toList();
         }
     }
 
@@ -78,10 +95,11 @@ public class ReportOutlineComposer {
      * @return 报告正文;快照为空/解析失败/无条目时返回 null(调用方走旧版兼容拼接)。
      */
     public String compose(String outlineJson, List<SkillFlowNodeExecution> nodes) {
-        return compose(outlineJson,nodes,null);
+        return compose(outlineJson, nodes, null);
     }
+
     /** 对象报告使用已包含日期的快照标题，跨天重试时也保持一致。 */
-    public String compose(String outlineJson, List<SkillFlowNodeExecution> nodes,String exactTitle) {
+    public String compose(String outlineJson, List<SkillFlowNodeExecution> nodes, String exactTitle) {
         if (outlineJson == null || outlineJson.isBlank()) return null;
         Outline outline;
         try {
@@ -95,13 +113,16 @@ public class ReportOutlineComposer {
             if (node.getNodeKey() != null) byNodeKey.putIfAbsent(node.getNodeKey(), node);
         }
         StringBuilder report = new StringBuilder();
-        if (exactTitle!=null || (outline.title() != null && !outline.title().isBlank())) {
+        if (exactTitle != null || (outline.title() != null && !outline.title().isBlank())) {
             // 标题尾部拼接报告生成日期,如 "XX报告 (2026年9月23日)"
-            String datedTitle = exactTitle!=null ? exactTitle : outline.title().trim() + " ("
-                    + TITLE_DATE.format(java.time.LocalDate.now(clock)) + ")";
-            report.append("<h1 class=\"report-outline-title\" data-report-outline-heading=\"true\">")
-                    .append(escapeHtml(datedTitle))
-                    .append("</h1>\n\n");
+            String datedTitle =
+                exactTitle != null
+                    ? exactTitle
+                    : outline.title().trim() + " (" + TITLE_DATE.format(java.time.LocalDate.now(clock)) + ")";
+            report
+                .append("<h1 class=\"report-outline-title\" data-report-outline-heading=\"true\">")
+                .append(escapeHtml(datedTitle))
+                .append("</h1>\n\n");
         }
         Numbering numbering = outline.numbering() == null ? new Numbering(null, null, null) : outline.numbering();
         composeItems(outline.items(), numbering, new java.util.ArrayList<>(), byNodeKey, report, 1);
@@ -109,8 +130,14 @@ public class ReportOutlineComposer {
     }
 
     /** 深度优先遍历:counters[0..2] 为各层级当前计数,进入兄弟项自增、更深层清零。 */
-    private void composeItems(List<Item> items, Numbering numbering, List<Integer> counters,
-                              Map<String, SkillFlowNodeExecution> byNodeKey, StringBuilder report, int depth) {
+    private void composeItems(
+        List<Item> items,
+        Numbering numbering,
+        List<Integer> counters,
+        Map<String, SkillFlowNodeExecution> byNodeKey,
+        StringBuilder report,
+        int depth
+    ) {
         for (Item item : items) {
             // The tree is the source of truth.  Ignore stale/legacy level values so
             // arbitrarily deep outlines render consistently and cannot be clamped.
@@ -132,13 +159,23 @@ public class ReportOutlineComposer {
             // 章节描述属于大纲本身，即使绑定节点没有结果或全部失败，也必须保留在最终报告中。
             boolean hasDescription = item.description() != null && !item.description().isBlank();
             if (section.length() > 0 || children.length() > 0 || hasDescription) {
-                report.append("<h").append(level + 1).append(" data-report-outline-heading=\"true\">")
-                        .append(escapeHtml(renderNumbering(level, counters, numbering)
-                                + Objects.toString(item.title(), "").trim()))
-                        .append("</h").append(level + 1).append(">\n");
+                report
+                    .append("<h")
+                    .append(level + 1)
+                    .append(" data-report-outline-heading=\"true\">")
+                    .append(
+                        escapeHtml(
+                            renderNumbering(level, counters, numbering) + Objects.toString(item.title(), "").trim()
+                        )
+                    )
+                    .append("</h")
+                    .append(level + 1)
+                    .append(">\n");
                 if (item.description() != null && !item.description().isBlank()) {
-                    report.append("<p class=\"report-outline-description\">")
-                            .append(escapeHtml(item.description().trim())).append("</p>\n");
+                    report
+                        .append("<p class=\"report-outline-description\">")
+                        .append(escapeHtml(item.description().trim()))
+                        .append("</p>\n");
                 }
                 report.append(section).append(children);
             }
@@ -148,11 +185,13 @@ public class ReportOutlineComposer {
     /** 空 HTML/Markdown 不生成报告节点，避免空章节留下布局高度。 */
     static boolean isEmptyHtml(String value) {
         if (value == null || value.isBlank()) return true;
-        String stripped = value.replaceAll("(?is)<!--.*?-->", "")
-                .replaceAll("(?is)<(script|style)\\b[^>]*>.*?</\\1>", "")
-                .replaceAll("(?s)<[^>]*>", "")
-                .replaceAll("&(?:nbsp|#160);", "")
-                .replaceAll("\\s+", "").trim();
+        String stripped = value
+            .replaceAll("(?is)<!--.*?-->", "")
+            .replaceAll("(?is)<(script|style)\\b[^>]*>.*?</\\1>", "")
+            .replaceAll("(?s)<[^>]*>", "")
+            .replaceAll("&(?:nbsp|#160);", "")
+            .replaceAll("\\s+", "")
+            .trim();
         if (!stripped.isEmpty()) return false;
         return !value.matches("(?is).*<(img|video|iframe|canvas|svg|table|echart|echarts)\\b.*>");
     }
@@ -205,8 +244,12 @@ public class ReportOutlineComposer {
     }
 
     private static String escapeHtml(String value) {
-        return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                .replace("\"", "&quot;").replace("'", "&#39;");
+        return value
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\"", "&quot;")
+            .replace("'", "&#39;");
     }
 
     /** 节点结果以 {"text": "..."} 保存,只渲染 text;无 text 字段时回退原文。 */
@@ -281,7 +324,7 @@ public class ReportOutlineComposer {
     /** 序号转中文数字(一、二、…、十、十一、…、九十九);超出范围回退阿拉伯数字。 */
     public static String chineseNumber(int number) {
         if (number <= 0 || number >= 100) return String.valueOf(number);
-        String[] digits = {"", "一", "二", "三", "四", "五", "六", "七", "八", "九"};
+        String[] digits = { "", "一", "二", "三", "四", "五", "六", "七", "八", "九" };
         if (number < 10) return digits[number];
         String tens = number / 10 == 1 ? "十" : digits[number / 10] + "十";
         return tens + digits[number % 10];

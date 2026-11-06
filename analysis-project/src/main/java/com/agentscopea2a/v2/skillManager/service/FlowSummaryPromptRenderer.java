@@ -4,12 +4,11 @@ import com.agentscopea2a.v2.skillManager.entity.SkillFlowExecution;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowNodeExecution;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.stereotype.Component;
-
-import java.util.List;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import org.springframework.stereotype.Component;
 
 /** Renders the exact question sent to the flow summary model. */
 @Component
@@ -26,21 +25,49 @@ public class FlowSummaryPromptRenderer {
         String template = flow.getSummaryQuestionTemplateSnapshot();
         if (template == null || template.isBlank()) return null; // 老数据没有汇总模板快照,无实际提问可展示
         try {
-            List<SkillFlowNodeExecution> safeNodes = nodes == null ? List.of()
-                    : nodes.stream().filter(Objects::nonNull).toList();
-            String allResults = json.writeValueAsString(safeNodes.stream().map(node -> Map.of(
-                    "nodeKey", Objects.toString(node.getNodeKey(), ""),
-                    "nodeName", node.getNodeName() == null || node.getNodeName().isBlank() ? Objects.toString(node.getSkillName(), "") : node.getNodeName(),
-                    "skill", Objects.toString(node.getSkillName(), ""),
-                    "status", node.getStatus() == null ? "UNKNOWN" : node.getStatus().name(),
-                    "result", Objects.toString(node.getResultJson(), ""),
-                    "error", Objects.toString(node.getErrorMessage(), ""))).toList());
-            return templates.render(template,
-                    new FlowTemplateEngine.Context(FlowTemplateEngine.withPublic(flow, Map.of(
-                            "server_date", Objects.toString(flow.getDataDate(), LocalDate.now().toString()),
-                            "original_question", Objects.toString(flow.getOriginalQuestion(), "-"),
-                            "flow_name", Objects.toString(flow.getFlowName(), "-"),
-                            "all_results", allResults))));
+            List<SkillFlowNodeExecution> safeNodes =
+                nodes == null ? List.of() : nodes.stream().filter(Objects::nonNull).toList();
+            String allResults = json.writeValueAsString(
+                safeNodes
+                    .stream()
+                    .map(node ->
+                        Map.of(
+                            "nodeKey",
+                            Objects.toString(node.getNodeKey(), ""),
+                            "nodeName",
+                            node.getNodeName() == null || node.getNodeName().isBlank()
+                                ? Objects.toString(node.getSkillName(), "")
+                                : node.getNodeName(),
+                            "skill",
+                            Objects.toString(node.getSkillName(), ""),
+                            "status",
+                            node.getStatus() == null ? "UNKNOWN" : node.getStatus().name(),
+                            "result",
+                            Objects.toString(node.getResultJson(), ""),
+                            "error",
+                            Objects.toString(node.getErrorMessage(), "")
+                        )
+                    )
+                    .toList()
+            );
+            return templates.render(
+                template,
+                new FlowTemplateEngine.Context(
+                    FlowTemplateEngine.withPublic(
+                        flow,
+                        Map.of(
+                            "server_date",
+                            Objects.toString(flow.getDataDate(), LocalDate.now().toString()),
+                            "original_question",
+                            Objects.toString(flow.getOriginalQuestion(), "-"),
+                            "flow_name",
+                            Objects.toString(flow.getFlowName(), "-"),
+                            "all_results",
+                            allResults
+                        )
+                    )
+                )
+            );
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("FlowSummaryPromptRenderFailed: " + e.getMessage(), e);
         }

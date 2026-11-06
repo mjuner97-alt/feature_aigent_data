@@ -1,25 +1,24 @@
 package com.agentscopea2a.v2.skillManager.service;
 
+import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.LONG_TASK_ENABLED;
+
 import com.agentscopea2a.dto.ChatRequest;
 import com.agentscopea2a.dto.response.ContentDto;
 import com.agentscopea2a.dto.response.TextManagerResponseDto;
 import com.agentscopea2a.dto.response.TextResponseDto;
+import com.agentscopea2a.v2.service.ChatRuntimeConfigService;
+import com.agentscopea2a.v2.service.ChatStreamService;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowExecution;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowTrigger;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
-import com.agentscopea2a.v2.service.ChatStreamService;
-import com.agentscopea2a.v2.service.ChatRuntimeConfigService;
-import org.springframework.http.MediaType;
-import org.springframework.stereotype.Service;
-import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
-
 import java.io.IOException;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-
-import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.LONG_TASK_ENABLED;
+import org.springframework.http.MediaType;
+import org.springframework.stereotype.Service;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 /**
  * Chat 入口路由器:公开对话请求先经过这里,再决定走哪条链路。
@@ -33,7 +32,9 @@ import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.LONG_TASK_ENAB
 @Service
 public class SkillFlowChatRouter {
 
-    @org.springframework.beans.factory.annotation.Autowired private TeamReportService teamReports;
+    @org.springframework.beans.factory.annotation.Autowired
+    private TeamReportService teamReports;
+
     private final SkillFlowMapper mapper;
     private final FlowExecutionService executions;
     private final ChatStreamService normalChat;
@@ -41,8 +42,12 @@ public class SkillFlowChatRouter {
     private final Map<String, PendingConfirmation> pending = new ConcurrentHashMap<>();
     private static final long CONFIRMATION_TTL_MS = 5 * 60 * 1000L;
 
-    public SkillFlowChatRouter(SkillFlowMapper mapper, FlowExecutionService executions,
-                               ChatStreamService normalChat, ChatRuntimeConfigService chatRuntimeConfigService) {
+    public SkillFlowChatRouter(
+        SkillFlowMapper mapper,
+        FlowExecutionService executions,
+        ChatStreamService normalChat,
+        ChatRuntimeConfigService chatRuntimeConfigService
+    ) {
         this.mapper = mapper;
         this.executions = executions;
         this.normalChat = normalChat;
@@ -50,7 +55,11 @@ public class SkillFlowChatRouter {
     }
 
     /** 路由类型。 */
-    public enum RouteType { DIRECT_ANSWER, LONG_TASK, NORMAL_CHAT }
+    public enum RouteType {
+        DIRECT_ANSWER,
+        LONG_TASK,
+        NORMAL_CHAT,
+    }
 
     private record PendingConfirmation(Long flowId, String question, long createdAt) {}
 
@@ -59,12 +68,14 @@ public class SkillFlowChatRouter {
 
     /** 对外主入口:根据问题内容分流,返回 SSE。 */
     public SseEmitter route(ChatRequest request) {
-        String userId = request.getUserId() == null || request.getUserId().isBlank() ? "anonymous" : request.getUserId();
-        String conversationId = request.getConversationId() == null || request.getConversationId().isBlank()
-                ? UUID.randomUUID().toString() : request.getConversationId();
+        String userId =
+            request.getUserId() == null || request.getUserId().isBlank() ? "anonymous" : request.getUserId();
+        String conversationId =
+            request.getConversationId() == null || request.getConversationId().isBlank()
+                ? UUID.randomUUID().toString()
+                : request.getConversationId();
         request.setConversationId(conversationId);
-        if (!chatRuntimeConfigService.resolve(userId, conversationId).getBooleanOrDefault(
-                        LONG_TASK_ENABLED, false)) {
+        if (!chatRuntimeConfigService.resolve(userId, conversationId).getBooleanOrDefault(LONG_TASK_ENABLED, false)) {
             return normalChat.stream(request);
         }
         String sessionKey = userId + ":" + conversationId;
@@ -79,17 +90,27 @@ public class SkillFlowChatRouter {
                 // 用户回复“1/执行/执行长任务”:消费待确认状态并直接启动长任务。
                 pending.remove(sessionKey, confirmation);
                 FlowExecutionService.TriggerResult result = executions.trigger(
-                        confirmation.flowId(), userId, conversationId, confirmation.question());
+                    confirmation.flowId(),
+                    userId,
+                    conversationId,
+                    confirmation.question()
+                );
                 SkillFlowExecution execution = result.execution();
-                return completed(request, "已确认并开始执行长任务「" + execution.getFlowName() + "」。\n"
-                        + "任务内容：" + confirmation.question() + "\n"
-                        + "Skill 全部内容执行并汇总完成后会通知你。");
+                return completed(
+                    request,
+                    "已确认并开始执行长任务「" +
+                        execution.getFlowName() +
+                        "」。\n" +
+                        "任务内容：" +
+                        confirmation.question() +
+                        "\n" +
+                        "Skill 全部内容执行并汇总完成后会通知你。"
+                );
 
-//                return completed(request, "已确认并开始执行长任务「" +   "」。\n"
-//                        + "任务内容：" + confirmation.question() + "\n"
-//                        + "任务编号：" +  "\n"
-//                        + "内部 Skill 全部执行并汇总完成后会通知你。");
-
+                //                return completed(request, "已确认并开始执行长任务「" +   "」。\n"
+                //                        + "任务内容：" + confirmation.question() + "\n"
+                //                        + "任务编号：" +  "\n"
+                //                        + "内部 Skill 全部执行并汇总完成后会通知你。");
             } else if (isDirectAnswerChoice(request.getQuestion())) {
                 // 用户回复“2/直接回答”:消费待确认状态,将原始问题转交普通 AI 对话。
                 pending.remove(sessionKey, confirmation);
@@ -97,7 +118,7 @@ public class SkillFlowChatRouter {
                 return normalChat.stream(request);
             }
         }
-        Decision decision = decide(request.getQuestion(),userId);
+        Decision decision = decide(request.getQuestion(), userId);
         if (decision.type() == RouteType.NORMAL_CHAT) return normalChat.stream(request);
         if (decision.type() == RouteType.DIRECT_ANSWER) {
             // 取消当前会话里未完成的长任务,用其原始问题改走普通对话
@@ -115,7 +136,10 @@ public class SkillFlowChatRouter {
             return completed(request, "当前没有可取消的长任务，请直接输入需要回答的问题");
         }
         // 首次命中只登记临时待确认状态,此处不创建执行记录,避免普通对话误启动长任务。
-        pending.put(sessionKey, new PendingConfirmation(decision.flowId(), request.getQuestion(), System.currentTimeMillis()));
+        pending.put(
+            sessionKey,
+            new PendingConfirmation(decision.flowId(), request.getQuestion(), System.currentTimeMillis())
+        );
         // 首次命中直接返回确认提示;只有下一轮固定短语确认后才会调用 executions.trigger。
         String flowName = mapper.selectFlowById(decision.flowId()).getName();
         return completed(request, "检测到长任务「" + flowName + "」，请选择：\n1. 执行长任务\n2. 直接回答");
@@ -126,16 +150,22 @@ public class SkillFlowChatRouter {
      * 否则按启用中的触发词(归一化后 contains 匹配,优先级高者先命中)判定长任务;
      * 都不命中走普通对话。
      */
-    private Decision decide(String question,String userId) {
+    private Decision decide(String question, String userId) {
         String text = question == null ? "" : question;
         if (text.contains("直接回答")) return new Decision(RouteType.DIRECT_ANSWER, null);
         String normalized = FlowDefinitionService.normalizeKeyword(text);
         for (SkillFlowTrigger trigger : mapper.selectEnabledTriggers()) {
             if (normalized.contains(trigger.getNormalizedKeyword())) {
-                var candidate=mapper.selectFlowById(trigger.getFlowId());
-                if(candidate!=null && candidate.getTeamReportJson()!=null && !Boolean.TRUE.equals(candidate.getChatPublic())
-                        && (teamReports==null ? !java.util.Objects.equals(userId,candidate.getCreatedBy()) && !mapper.existsFlowExecutor(candidate.getId(),userId)
-                        : !teamReports.mayTriggerKeyword(candidate,trigger.getNormalizedKeyword(),userId))) continue;
+                var candidate = mapper.selectFlowById(trigger.getFlowId());
+                if (
+                    candidate != null &&
+                    candidate.getTeamReportJson() != null &&
+                    !Boolean.TRUE.equals(candidate.getChatPublic()) &&
+                    (teamReports == null
+                        ? !java.util.Objects.equals(userId, candidate.getCreatedBy()) &&
+                          !mapper.existsFlowExecutor(candidate.getId(), userId)
+                        : !teamReports.mayTriggerKeyword(candidate, trigger.getNormalizedKeyword(), userId))
+                ) continue;
                 return new Decision(RouteType.LONG_TASK, trigger.getFlowId());
             }
         }

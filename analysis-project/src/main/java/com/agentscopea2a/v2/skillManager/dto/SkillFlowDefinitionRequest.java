@@ -8,27 +8,28 @@ import java.util.List;
  * 节点全并行执行,无依赖关系;sortOrder 决定兼容报告的拼接顺序,reportOutline 决定自定义报告的章节顺序。</p>
  */
 public record SkillFlowDefinitionRequest(
-        String code,
-        String name,
-        String description,
-        String taskQuestion,
-        String summaryQuestionTemplate,
-        Boolean enabled,
-        String scheduleRules,
-        Integer maxParallelism,
-        Boolean notifyEnabled,
-        List<Trigger> triggers,
-        List<Node> nodes,
-        ReportOutline reportOutline,
-        NotifySettingsUpdateRequest notifySettings,
-        String notifyContactName,
-        String notifyContactPhone,
-        String notifyBodyTemplate,
-        /** 可执行人 userId 列表;null = 不修改保持原名单,非 null(含空列表) = 全量替换,空 = 仅创建人。 */
-        List<String> executors,
-        Boolean autoTriggerEnabled,
-        Long typeId,
-        TeamReportConfig teamReport) {
+    String code,
+    String name,
+    String description,
+    String taskQuestion,
+    String summaryQuestionTemplate,
+    Boolean enabled,
+    String scheduleRules,
+    Integer maxParallelism,
+    Boolean notifyEnabled,
+    List<Trigger> triggers,
+    List<Node> nodes,
+    ReportOutline reportOutline,
+    NotifySettingsUpdateRequest notifySettings,
+    String notifyContactName,
+    String notifyContactPhone,
+    String notifyBodyTemplate,
+    /** 可执行人 userId 列表;null = 不修改保持原名单,非 null(含空列表) = 全量替换,空 = 仅创建人。 */
+    List<String> executors,
+    Boolean autoTriggerEnabled,
+    Long typeId,
+    TeamReportConfig teamReport
+) {
     public SkillFlowDefinitionRequest(
         String code,
         String name,
@@ -46,28 +47,85 @@ public record SkillFlowDefinitionRequest(
         String notifyContactName,
         String notifyContactPhone,
         String notifyBodyTemplate,
-
         List<String> executors,
         Boolean autoTriggerEnabled,
-        Long typeId) {
-        this(code, name, description, taskQuestion, summaryQuestionTemplate, enabled, scheduleRules, maxParallelism, notifyEnabled, triggers, nodes, reportOutline, notifySettings, notifyContactName, notifyContactPhone, notifyBodyTemplate, executors, autoTriggerEnabled, typeId, null);
+        Long typeId
+    ) {
+        this(
+            code,
+            name,
+            description,
+            taskQuestion,
+            summaryQuestionTemplate,
+            enabled,
+            scheduleRules,
+            maxParallelism,
+            notifyEnabled,
+            triggers,
+            nodes,
+            reportOutline,
+            notifySettings,
+            notifyContactName,
+            notifyContactPhone,
+            notifyBodyTemplate,
+            executors,
+            autoTriggerEnabled,
+            typeId,
+            null
+        );
     }
 
-
     /** Compatibility for clients and callers predating task types. */
-    public SkillFlowDefinitionRequest(String code, String name, String description, String taskQuestion,
-            String summaryQuestionTemplate, Boolean enabled, String scheduleRules, Integer maxParallelism,
-            Boolean notifyEnabled, List<Trigger> triggers, List<Node> nodes, ReportOutline reportOutline,
-            NotifySettingsUpdateRequest notifySettings, String notifyContactName, String notifyContactPhone,
-            String notifyBodyTemplate, List<String> executors, Boolean autoTriggerEnabled) {
-        this(code, name, description, taskQuestion, summaryQuestionTemplate, enabled, scheduleRules,
-                maxParallelism, notifyEnabled, triggers, nodes, reportOutline, notifySettings,
-                notifyContactName, notifyContactPhone, notifyBodyTemplate, executors, autoTriggerEnabled, null);
+    public SkillFlowDefinitionRequest(
+        String code,
+        String name,
+        String description,
+        String taskQuestion,
+        String summaryQuestionTemplate,
+        Boolean enabled,
+        String scheduleRules,
+        Integer maxParallelism,
+        Boolean notifyEnabled,
+        List<Trigger> triggers,
+        List<Node> nodes,
+        ReportOutline reportOutline,
+        NotifySettingsUpdateRequest notifySettings,
+        String notifyContactName,
+        String notifyContactPhone,
+        String notifyBodyTemplate,
+        List<String> executors,
+        Boolean autoTriggerEnabled
+    ) {
+        this(
+            code,
+            name,
+            description,
+            taskQuestion,
+            summaryQuestionTemplate,
+            enabled,
+            scheduleRules,
+            maxParallelism,
+            notifyEnabled,
+            triggers,
+            nodes,
+            reportOutline,
+            notifySettings,
+            notifyContactName,
+            notifyContactPhone,
+            notifyBodyTemplate,
+            executors,
+            autoTriggerEnabled,
+            null
+        );
     }
 
     public SkillFlowDefinitionRequest {
-        notifyContactName = com.agentscopea2a.v2.skillManager.notification.NotificationContact.trimToNull(notifyContactName);
-        notifyContactPhone = com.agentscopea2a.v2.skillManager.notification.NotificationContact.trimToNull(notifyContactPhone);
+        notifyContactName = com.agentscopea2a.v2.skillManager.notification.NotificationContact.trimToNull(
+            notifyContactName
+        );
+        notifyContactPhone = com.agentscopea2a.v2.skillManager.notification.NotificationContact.trimToNull(
+            notifyContactPhone
+        );
         notifyBodyTemplate = notifyBodyTemplate == null || notifyBodyTemplate.isBlank() ? null : notifyBodyTemplate;
         if (notifyBodyTemplate != null && notifyBodyTemplate.length() > 2000) {
             throw new IllegalStateException("FlowValidationFailed: 通知邮件正文模板超长(上限 2000 字符)");
@@ -78,33 +136,122 @@ public record SkillFlowDefinitionRequest(
     }
 
     /** Compatibility for definition callers predating custom mail contacts. */
-    public SkillFlowDefinitionRequest(String code, String name, String description, String taskQuestion,
-                                      String summaryQuestionTemplate, Boolean enabled, String scheduleRules, Integer maxParallelism,
-                                      Boolean notifyEnabled, List<Trigger> triggers, List<Node> nodes, ReportOutline reportOutline,
-                                      NotifySettingsUpdateRequest notifySettings) {
-        this(code, name, description, taskQuestion, summaryQuestionTemplate, enabled, scheduleRules,
-                maxParallelism, notifyEnabled, triggers, nodes, reportOutline, notifySettings, null, null, null, null, false);
+    public SkillFlowDefinitionRequest(
+        String code,
+        String name,
+        String description,
+        String taskQuestion,
+        String summaryQuestionTemplate,
+        Boolean enabled,
+        String scheduleRules,
+        Integer maxParallelism,
+        Boolean notifyEnabled,
+        List<Trigger> triggers,
+        List<Node> nodes,
+        ReportOutline reportOutline,
+        NotifySettingsUpdateRequest notifySettings
+    ) {
+        this(
+            code,
+            name,
+            description,
+            taskQuestion,
+            summaryQuestionTemplate,
+            enabled,
+            scheduleRules,
+            maxParallelism,
+            notifyEnabled,
+            triggers,
+            nodes,
+            reportOutline,
+            notifySettings,
+            null,
+            null,
+            null,
+            null,
+            false
+        );
     }
 
     /** Compatibility for definition callers predating the mail body template. */
-    public SkillFlowDefinitionRequest(String code, String name, String description, String taskQuestion,
-                                      String summaryQuestionTemplate, Boolean enabled, String scheduleRules, Integer maxParallelism,
-                                      Boolean notifyEnabled, List<Trigger> triggers, List<Node> nodes, ReportOutline reportOutline,
-                                      NotifySettingsUpdateRequest notifySettings, String notifyContactName, String notifyContactPhone) {
-        this(code, name, description, taskQuestion, summaryQuestionTemplate, enabled, scheduleRules,
-                maxParallelism, notifyEnabled, triggers, nodes, reportOutline, notifySettings,
-                notifyContactName, notifyContactPhone, null, null, null);
+    public SkillFlowDefinitionRequest(
+        String code,
+        String name,
+        String description,
+        String taskQuestion,
+        String summaryQuestionTemplate,
+        Boolean enabled,
+        String scheduleRules,
+        Integer maxParallelism,
+        Boolean notifyEnabled,
+        List<Trigger> triggers,
+        List<Node> nodes,
+        ReportOutline reportOutline,
+        NotifySettingsUpdateRequest notifySettings,
+        String notifyContactName,
+        String notifyContactPhone
+    ) {
+        this(
+            code,
+            name,
+            description,
+            taskQuestion,
+            summaryQuestionTemplate,
+            enabled,
+            scheduleRules,
+            maxParallelism,
+            notifyEnabled,
+            triggers,
+            nodes,
+            reportOutline,
+            notifySettings,
+            notifyContactName,
+            notifyContactPhone,
+            null,
+            null,
+            null
+        );
     }
 
     /** 兼容增加可执行人之前的完整定义请求；省略名单时不修改已有授权。 */
-    public SkillFlowDefinitionRequest(String code, String name, String description, String taskQuestion,
-                                      String summaryQuestionTemplate, Boolean enabled, String scheduleRules, Integer maxParallelism,
-                                      Boolean notifyEnabled, List<Trigger> triggers, List<Node> nodes, ReportOutline reportOutline,
-                                      NotifySettingsUpdateRequest notifySettings, String notifyContactName, String notifyContactPhone,
-                                      String notifyBodyTemplate) {
-        this(code, name, description, taskQuestion, summaryQuestionTemplate, enabled, scheduleRules,
-                maxParallelism, notifyEnabled, triggers, nodes, reportOutline, notifySettings,
-                notifyContactName, notifyContactPhone, notifyBodyTemplate, null, null);
+    public SkillFlowDefinitionRequest(
+        String code,
+        String name,
+        String description,
+        String taskQuestion,
+        String summaryQuestionTemplate,
+        Boolean enabled,
+        String scheduleRules,
+        Integer maxParallelism,
+        Boolean notifyEnabled,
+        List<Trigger> triggers,
+        List<Node> nodes,
+        ReportOutline reportOutline,
+        NotifySettingsUpdateRequest notifySettings,
+        String notifyContactName,
+        String notifyContactPhone,
+        String notifyBodyTemplate
+    ) {
+        this(
+            code,
+            name,
+            description,
+            taskQuestion,
+            summaryQuestionTemplate,
+            enabled,
+            scheduleRules,
+            maxParallelism,
+            notifyEnabled,
+            triggers,
+            nodes,
+            reportOutline,
+            notifySettings,
+            notifyContactName,
+            notifyContactPhone,
+            notifyBodyTemplate,
+            null,
+            null
+        );
     }
 
     /** 触发词配置。 */
@@ -115,19 +262,19 @@ public record SkillFlowDefinitionRequest(
      * metricIds 为就绪门槛指标,sortOrder 决定兼容报告拼接顺序。
      */
     public record Node(
-            String nodeKey,
-            String nodeName,
-            String nodeType,
-            Long skillId,
-            String scriptId,
-            String scriptParamsJson,
-            String questionTemplate,
-            List<Long> metricIds,
-            Boolean metricOverrideConfigured,
-            Boolean required,
-            Integer maxAttempts,
-            Integer sortOrder) {
-
+        String nodeKey,
+        String nodeName,
+        String nodeType,
+        Long skillId,
+        String scriptId,
+        String scriptParamsJson,
+        String questionTemplate,
+        List<Long> metricIds,
+        Boolean metricOverrideConfigured,
+        Boolean required,
+        Integer maxAttempts,
+        Integer sortOrder
+    ) {
         public Node {
             metricIds = metricIds == null ? List.of() : List.copyOf(metricIds);
         }
@@ -145,25 +292,31 @@ public record SkillFlowDefinitionRequest(
      * 兼容旧数据:nodeKeys 为空时回退单个 nodeKey。
      */
     public record ReportOutlineItem(
-            String id,
-            String title,
-            String description,
-            Integer level,
-            String nodeKey,
-            List<String> nodeKeys,
-            List<ReportOutlineItem> children) {
-
+        String id,
+        String title,
+        String description,
+        Integer level,
+        String nodeKey,
+        List<String> nodeKeys,
+        List<ReportOutlineItem> children
+    ) {
         public ReportOutlineItem {
-            nodeKeys = nodeKeys == null || nodeKeys.isEmpty()
-                    ? (nodeKey == null || nodeKey.isBlank() ? List.of() : List.of(nodeKey.trim()))
-                    : nodeKeys.stream().filter(key -> key != null && !key.isBlank()).map(String::trim).toList();
+            nodeKeys =
+                nodeKeys == null || nodeKeys.isEmpty()
+                    ? nodeKey == null || nodeKey.isBlank()
+                        ? List.of()
+                        : List.of(nodeKey.trim())
+                    : nodeKeys
+                          .stream()
+                          .filter(key -> key != null && !key.isBlank())
+                          .map(String::trim)
+                          .toList();
             children = children == null ? List.of() : List.copyOf(children);
         }
     }
 
     /** 报告大纲:items 为空视为未配置,走按节点顺序拼接的兼容逻辑。 */
     public record ReportOutline(String title, Numbering numbering, List<ReportOutlineItem> items) {
-
         public ReportOutline {
             items = items == null ? List.of() : List.copyOf(items);
         }

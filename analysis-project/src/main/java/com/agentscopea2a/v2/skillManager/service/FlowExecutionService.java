@@ -10,14 +10,6 @@ import com.agentscopea2a.v2.skillManager.notification.NotificationReceivers;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Service;
-import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.dao.DuplicateKeyException;
-import org.springframework.transaction.annotation.Transactional;
-
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -27,6 +19,13 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Skill Flow 执行生命周期服务:
@@ -41,7 +40,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class FlowExecutionService {
 
     private static final Logger log = LoggerFactory.getLogger(FlowExecutionService.class);
-    /** Prevents rapid double-clicks for the same manual guard from racing the unique index. */
+    /** 串行处理同一手动触发标识，避免快速双击竞争唯一索引。 */
     private final ConcurrentHashMap<String, Object> manualTriggerLocks = new ConcurrentHashMap<>();
 
     private final SkillFlowMapper mapper;
@@ -52,32 +51,51 @@ public class FlowExecutionService {
     private final ApplicationEventPublisher events;
     private final NotificationRecipientService recipientService;
     private final MockOrgService orgService;
+
     @Autowired
     private com.agentscopea2a.v2.skillManager.mapper.ReportProcessMapper reportProcessMapper;
+
     @Autowired
     private FlowSchedulerGuard schedulerGuard;
-    @Autowired private TeamReportService teamReports;
-    @Autowired private ScriptParamRuleService paramRules;
+
+    @Autowired
+    private TeamReportService teamReports;
+
+    @Autowired
+    private ScriptParamRuleService paramRules;
+
     public record BatchResult(String batchId, List<SkillFlowExecution> executions, boolean created) {}
-    private record ObjectContext(String batchId, com.agentscopea2a.v2.skillManager.dto.TeamReportConfig config,
-        com.agentscopea2a.v2.skillManager.dto.TeamReportConfig.Target target, java.util.Map<String,String> frozenParams) {}
 
+    private record ObjectContext(
+        String batchId,
+        com.agentscopea2a.v2.skillManager.dto.TeamReportConfig config,
+        com.agentscopea2a.v2.skillManager.dto.TeamReportConfig.Target target,
+        java.util.Map<String, String> frozenParams
+    ) {}
 
-    public FlowExecutionService(SkillFlowMapper mapper, SkillMapper skillMapper,
-                                ScriptRegistryMapper scriptRegistryMapper,
-                                ObjectMapper objectMapper, Clock skillFlowClock,
-                                ApplicationEventPublisher events,
-                                NotificationRecipientService recipientService) {
-        this(mapper, skillMapper, scriptRegistryMapper, objectMapper, skillFlowClock, events,
-                recipientService, null);
+    public FlowExecutionService(
+        SkillFlowMapper mapper,
+        SkillMapper skillMapper,
+        ScriptRegistryMapper scriptRegistryMapper,
+        ObjectMapper objectMapper,
+        Clock skillFlowClock,
+        ApplicationEventPublisher events,
+        NotificationRecipientService recipientService
+    ) {
+        this(mapper, skillMapper, scriptRegistryMapper, objectMapper, skillFlowClock, events, recipientService, null);
     }
 
     @Autowired
-    public FlowExecutionService(SkillFlowMapper mapper, SkillMapper skillMapper,
-                                ScriptRegistryMapper scriptRegistryMapper,
-                                ObjectMapper objectMapper, Clock skillFlowClock,
-                                ApplicationEventPublisher events,
-                                NotificationRecipientService recipientService, MockOrgService orgService) {
+    public FlowExecutionService(
+        SkillFlowMapper mapper,
+        SkillMapper skillMapper,
+        ScriptRegistryMapper scriptRegistryMapper,
+        ObjectMapper objectMapper,
+        Clock skillFlowClock,
+        ApplicationEventPublisher events,
+        NotificationRecipientService recipientService,
+        MockOrgService orgService
+    ) {
         this.mapper = mapper;
         this.skillMapper = skillMapper;
         this.scriptRegistryMapper = scriptRegistryMapper;
@@ -89,10 +107,14 @@ public class FlowExecutionService {
     }
 
     /** Compatibility constructor for callers created before script metadata was added. */
-    public FlowExecutionService(SkillFlowMapper mapper, SkillMapper skillMapper,
-                                ObjectMapper objectMapper, Clock skillFlowClock,
-                                ApplicationEventPublisher events,
-                                NotificationRecipientService recipientService) {
+    public FlowExecutionService(
+        SkillFlowMapper mapper,
+        SkillMapper skillMapper,
+        ObjectMapper objectMapper,
+        Clock skillFlowClock,
+        ApplicationEventPublisher events,
+        NotificationRecipientService recipientService
+    ) {
         this(mapper, skillMapper, null, objectMapper, skillFlowClock, events, recipientService);
     }
 
@@ -102,8 +124,14 @@ public class FlowExecutionService {
     /** 按用户可见的模板名称提交执行快照，不创建长任务定义，不回退匹配内部编码。 */
     @Transactional("gaussCustomerTransactionManager")
     public TriggerResult triggerReportTemplate(String templateName, String userId, String conversationId) {
-        if (templateName == null || templateName.isBlank() || userId == null || userId.isBlank()
-                || conversationId == null || conversationId.isBlank()) {
+        if (
+            templateName == null ||
+            templateName.isBlank() ||
+            userId == null ||
+            userId.isBlank() ||
+            conversationId == null ||
+            conversationId.isBlank()
+        ) {
             throw new IllegalStateException("ReportTemplateContextRequired");
         }
         ReportProcess template = reportProcessMapper.selectByName(templateName.trim());
@@ -117,39 +145,76 @@ public class FlowExecutionService {
             throw new IllegalStateException("ReportTemplateInvalidNodes", e);
         }
         if (definitions == null || definitions.isEmpty()) throw new IllegalStateException("ReportTemplateEmptyNodes");
-        List<SkillFlowNode> nodes = definitions.stream()
-                .sorted(java.util.Comparator.comparing(n -> n.sortOrder() == null ? 0 : n.sortOrder()))
-                .map(n -> SkillFlowNode.builder().nodeKey(n.nodeKey()).nodeName(n.nodeName())
-                        .nodeType(n.nodeType()).skillId(n.skillId()).scriptId(n.scriptId())
-                        .scriptParamsJson(n.scriptParamsJson()).questionTemplate(n.questionTemplate())
-                        .dependsOnJson("[]").required(n.required() == null || n.required()).build()).toList();
+        List<SkillFlowNode> nodes = definitions
+            .stream()
+            .sorted(java.util.Comparator.comparing(n -> n.sortOrder() == null ? 0 : n.sortOrder()))
+            .map(n ->
+                SkillFlowNode.builder()
+                    .nodeKey(n.nodeKey())
+                    .nodeName(n.nodeName())
+                    .nodeType(n.nodeType())
+                    .skillId(n.skillId())
+                    .scriptId(n.scriptId())
+                    .scriptParamsJson(n.scriptParamsJson())
+                    .questionTemplate(n.questionTemplate())
+                    .dependsOnJson("[]")
+                    .required(n.required() == null || n.required())
+                    .build()
+            )
+            .toList();
         Set<String> keys = new LinkedHashSet<>();
         for (SkillFlowNode node : nodes) {
-            if (node.getNodeKey() == null || node.getNodeKey().isBlank() || !keys.add(node.getNodeKey()))
-                throw new IllegalStateException("ReportTemplateInvalidNodeKey");
+            if (
+                node.getNodeKey() == null || node.getNodeKey().isBlank() || !keys.add(node.getNodeKey())
+            ) throw new IllegalStateException("ReportTemplateInvalidNodeKey");
             if (node.getScriptId() != null && !node.getScriptId().isBlank()) {
-                if (scriptRegistryMapper == null || scriptRegistryMapper.selectByScriptId(node.getScriptId()) == null)
-                    throw new IllegalStateException("ReportTemplateScriptNotFound");
+                if (
+                    scriptRegistryMapper == null || scriptRegistryMapper.selectByScriptId(node.getScriptId()) == null
+                ) throw new IllegalStateException("ReportTemplateScriptNotFound");
             } else if (node.getSkillId() == null || skillMapper.selectById(node.getSkillId()) == null) {
                 throw new IllegalStateException("ReportTemplateSkillNotFound");
             }
         }
         try {
-            var outline = objectMapper.readValue(template.getReportOutlineJson(),
-                    com.agentscopea2a.v2.skillManager.dto.SkillFlowDefinitionRequest.ReportOutline.class);
-            if (!ReportOutlineValidator.validate(outline, keys).isEmpty())
-                throw new IllegalStateException("ReportTemplateInvalidOutline");
+            var outline = objectMapper.readValue(
+                template.getReportOutlineJson(),
+                com.agentscopea2a.v2.skillManager.dto.SkillFlowDefinitionRequest.ReportOutline.class
+            );
+            if (!ReportOutlineValidator.validate(outline, keys).isEmpty()) throw new IllegalStateException(
+                "ReportTemplateInvalidOutline"
+            );
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("ReportTemplateInvalidOutline", e);
         }
-        SkillFlow snapshot = SkillFlow.builder().code(template.getCode()).name(template.getName())
-                .reportProcessId(template.getId()).reportOutline(template.getReportOutlineJson())
-                .maxParallelism(2).notifyEnabled(true).build();
+        SkillFlow snapshot = SkillFlow.builder()
+            .code(template.getCode())
+            .name(template.getName())
+            .reportProcessId(template.getId())
+            .reportOutline(template.getReportOutlineJson())
+            .maxParallelism(2)
+            .notifyEnabled(true)
+            .build();
         LocalDate date = LocalDate.now(clock);
         String guard = "report-template:" + userId + ":" + conversationId + ":" + template.getId() + ":" + date;
-        TriggerResult result = createExecution(snapshot, userId, conversationId, "", date, FlowTriggerType.CHAT, guard, false, nodes);
-        log.info("Report template submission: templateName={}, executionId={}, userId={}, conversationId={}, created={}",
-                template.getName(), result.execution().getId(), userId, conversationId, result.created());
+        TriggerResult result = createExecution(
+            snapshot,
+            userId,
+            conversationId,
+            "",
+            date,
+            FlowTriggerType.CHAT,
+            guard,
+            false,
+            nodes
+        );
+        log.info(
+            "Report template submission: templateName={}, executionId={}, userId={}, conversationId={}, created={}",
+            template.getName(),
+            result.execution().getId(),
+            userId,
+            conversationId,
+            result.created()
+        );
         return result;
     }
 
@@ -161,17 +226,33 @@ public class FlowExecutionService {
     @Transactional("gaussCustomerTransactionManager")
     public TriggerResult trigger(Long flowId, String userId, String conversationId, String question) {
         SkillFlow flow = mapper.selectFlowById(flowId);
-        if (flow == null || !Boolean.TRUE.equals(flow.getEnabled())) throw new IllegalStateException("FlowNotFoundOrDisabled: " + flowId);
+        if (flow == null || !Boolean.TRUE.equals(flow.getEnabled())) throw new IllegalStateException(
+            "FlowNotFoundOrDisabled: " + flowId
+        );
         LocalDate dataDate = LocalDate.now(clock);
         String guard = userId + ":" + conversationId + ":" + flowId + ":" + dataDate;
         // 对话入口直接执行,不因指标未就绪而阻塞本次请求。
         if (flow.getTeamReportJson() != null) {
-            var config=teamReports.config(flow);
-            String normalized=FlowDefinitionService.normalizeKeyword(question);
-            var matches=config.targets().stream().filter(t->normalized.contains(FlowDefinitionService.normalizeKeyword(t.keyword()))).toList();
-            if(matches.size()!=1) throw new IllegalStateException("TeamReportKeywordAmbiguous: 请明确一个团队关键词");
-            BatchResult batch=createObjectBatch(flow,userId,conversationId,question,dataDate,FlowTriggerType.CHAT,List.of(matches.get(0).teamId()==null ? "department" : matches.get(0).teamId()));
-            return new TriggerResult(batch.executions().get(0),batch.created());
+            var config = teamReports.config(flow);
+            String normalized = FlowDefinitionService.normalizeKeyword(question);
+            var matches = config
+                .targets()
+                .stream()
+                .filter(t -> normalized.contains(FlowDefinitionService.normalizeKeyword(t.keyword())))
+                .toList();
+            if (matches.size() != 1) throw new IllegalStateException(
+                "TeamReportKeywordAmbiguous: 请明确一个团队关键词"
+            );
+            BatchResult batch = createObjectBatch(
+                flow,
+                userId,
+                conversationId,
+                question,
+                dataDate,
+                FlowTriggerType.CHAT,
+                List.of(matches.get(0).teamId() == null ? "department" : matches.get(0).teamId())
+            );
+            return new TriggerResult(batch.executions().get(0), batch.created());
         }
         return createExecution(flow, userId, conversationId, question, dataDate, FlowTriggerType.CHAT, guard, false);
     }
@@ -182,12 +263,20 @@ public class FlowExecutionService {
         if (!schedulerGuard.isAllowed()) return;
         for (SkillFlow flow : mapper.selectAllEnabledFlows()) {
             if (!Boolean.TRUE.equals(flow.getAutoTriggerEnabled())) continue;
-            if(flow.getTeamReportJson()!=null && !LocalDate.now(clock).equals(dataDate)) continue;
+            if (flow.getTeamReportJson() != null && !LocalDate.now(clock).equals(dataDate)) continue;
             if (!SkillJobService.runsOn(flow.getScheduleRules(), dataDate.getDayOfWeek())) continue;
             String conversationId = "auto:" + flow.getId() + ":" + dataDate;
             // 自动指标触发必须等全部依赖指标 READY 后才创建执行。
-            createExecution(flow, flow.getCreatedBy(), conversationId, flow.getTaskQuestion(), dataDate,
-                    FlowTriggerType.AUTO_METRIC, conversationId, true);
+            createExecution(
+                flow,
+                flow.getCreatedBy(),
+                conversationId,
+                flow.getTaskQuestion(),
+                dataDate,
+                FlowTriggerType.AUTO_METRIC,
+                conversationId,
+                true
+            );
         }
     }
 
@@ -215,8 +304,12 @@ public class FlowExecutionService {
             } catch (RuntimeException e) {
                 // 单个流程建失败(数据库抖动、并发冲突等)只记日志,不影响其余流程,
                 // 下一轮扫描(30 秒后)会再次尝试——候选查询的 NOT EXISTS 条件天然支持重试
-                log.error("[SkillFlow] auto trigger scan failed to create execution: flowId={}, code={}",
-                        flow.getId(), flow.getCode(), e);
+                log.error(
+                    "[SkillFlow] auto trigger scan failed to create execution: flowId={}, code={}",
+                    flow.getId(),
+                    flow.getCode(),
+                    e
+                );
             }
         }
     }
@@ -237,8 +330,16 @@ public class FlowExecutionService {
         String conversationId = "auto:" + flow.getId() + ":" + dataDate;
         // requireAllMetrics=true:自动触发必须全部依赖指标 READY 才建执行(缺则静默返回);
         // 建成即 QUEUED 并发 FlowQueuedEvent,事务提交后 FlowCoordinator 立即派发首节点
-        createExecution(flow, flow.getCreatedBy(), conversationId, flow.getTaskQuestion(), dataDate,
-                FlowTriggerType.AUTO_METRIC, conversationId, true);
+        createExecution(
+            flow,
+            flow.getCreatedBy(),
+            conversationId,
+            flow.getTaskQuestion(),
+            dataDate,
+            FlowTriggerType.AUTO_METRIC,
+            conversationId,
+            true
+        );
     }
 
     /**
@@ -248,14 +349,26 @@ public class FlowExecutionService {
     @Transactional("gaussCustomerTransactionManager")
     public TriggerResult triggerManual(Long flowId, String userId) {
         SkillFlow flow = mapper.selectFlowById(flowId);
-        if (flow == null || !Boolean.TRUE.equals(flow.getEnabled())) throw new IllegalStateException("FlowNotFoundOrDisabled: " + flowId);
+        if (flow == null || !Boolean.TRUE.equals(flow.getEnabled())) throw new IllegalStateException(
+            "FlowNotFoundOrDisabled: " + flowId
+        );
         if (userId == null || userId.isBlank()) throw new IllegalStateException("FlowAccessDenied: 请先登录后执行");
-        if(flow.getTeamReportJson()!=null) {
-            BatchResult batch=createObjectBatch(flow,userId,"manual:"+java.util.UUID.randomUUID(),flow.getTaskQuestion(),LocalDate.now(clock),FlowTriggerType.MANUAL,null);
-            return new TriggerResult(batch.executions().get(0),batch.created());
+        if (flow.getTeamReportJson() != null) {
+            BatchResult batch = createObjectBatch(
+                flow,
+                userId,
+                "manual:" + java.util.UUID.randomUUID(),
+                flow.getTaskQuestion(),
+                LocalDate.now(clock),
+                FlowTriggerType.MANUAL,
+                null
+            );
+            return new TriggerResult(batch.executions().get(0), batch.created());
         }
-        if (!userId.equals(flow.getCreatedBy()) && (!mapper.existsFlowExecutor(flowId, userId)
-                || orgService == null || !orgService.userExists(userId))) {
+        if (
+            !userId.equals(flow.getCreatedBy()) &&
+            (!mapper.existsFlowExecutor(flowId, userId) || orgService == null || !orgService.userExists(userId))
+        ) {
             throw new IllegalStateException("FlowAccessDenied: 仅创建人或已授权的有效可执行人可手动执行此流程");
         }
         LocalDate dataDate = LocalDate.now(clock);
@@ -264,103 +377,251 @@ public class FlowExecutionService {
         // 用户已确认手动执行,直接入队,不等待指标就绪。
         Object lock = manualTriggerLocks.computeIfAbsent(guard, ignored -> new Object());
         synchronized (lock) {
-            return createExecution(flow, userId, conversationId, flow.getTaskQuestion(), dataDate,
-                    FlowTriggerType.MANUAL, guard, false);
+            return createExecution(
+                flow,
+                userId,
+                conversationId,
+                flow.getTaskQuestion(),
+                dataDate,
+                FlowTriggerType.MANUAL,
+                guard,
+                false
+            );
         }
     }
 
+    /** 提交所选对象的手动执行批次；请求标识用于重复提交时复用同一批执行。 */
     @Transactional("gaussCustomerTransactionManager")
-    public BatchResult triggerManualBatch(Long flowId,String userId,List<String> teamIds) {
-        return triggerManualBatch(flowId,userId,teamIds,null);
-    }
-    @Transactional("gaussCustomerTransactionManager")
-    public BatchResult triggerManualBatch(Long flowId,String userId,List<String> teamIds,String requestId) {
-        SkillFlow flow=mapper.selectFlowById(flowId);
-        if(flow==null || !Boolean.TRUE.equals(flow.getEnabled())) throw new IllegalStateException("FlowNotFoundOrDisabled");
-        if(userId==null || userId.isBlank()) throw new IllegalStateException("FlowAccessDenied");
-        if(flow.getTeamReportJson()==null) {
-            TriggerResult result=triggerManual(flowId,userId);
-            return new BatchResult(null,List.of(result.execution()),result.created());
-        }
-        return createObjectBatch(flow,userId,"manual:"+java.util.UUID.randomUUID(),flow.getTaskQuestion(),LocalDate.now(clock),FlowTriggerType.MANUAL,teamIds,requestId);
+    public BatchResult triggerManualBatch(Long flowId, String userId, List<String> teamIds) {
+        return triggerManualBatch(flowId, userId, teamIds, null);
     }
 
-    private BatchResult createObjectBatch(SkillFlow flow,String userId,String conversation,String question,
-            LocalDate date,FlowTriggerType type,List<String> requested) {
-        return createObjectBatch(flow,userId,conversation,question,date,type,requested,null);
+    /** 提交所选对象的手动执行批次；请求标识用于重复提交时复用同一批执行。 */
+    @Transactional("gaussCustomerTransactionManager")
+    public BatchResult triggerManualBatch(Long flowId, String userId, List<String> teamIds, String requestId) {
+        SkillFlow flow = mapper.selectFlowById(flowId);
+        if (flow == null || !Boolean.TRUE.equals(flow.getEnabled())) throw new IllegalStateException(
+            "FlowNotFoundOrDisabled"
+        );
+        if (userId == null || userId.isBlank()) throw new IllegalStateException("FlowAccessDenied");
+        if (flow.getTeamReportJson() == null) {
+            TriggerResult result = triggerManual(flowId, userId);
+            return new BatchResult(null, List.of(result.execution()), result.created());
+        }
+        return createObjectBatch(
+            flow,
+            userId,
+            "manual:" + java.util.UUID.randomUUID(),
+            flow.getTaskQuestion(),
+            LocalDate.now(clock),
+            FlowTriggerType.MANUAL,
+            teamIds,
+            requestId
+        );
     }
-    private BatchResult createObjectBatch(SkillFlow flow,String userId,String conversation,String question,
-            LocalDate date,FlowTriggerType type,List<String> requested,String requestId) {
+
+    /** 在任务锁内创建报告批次，校验权限和幂等条件，并冻结各对象的脚本参数。 */
+    private BatchResult createObjectBatch(
+        SkillFlow flow,
+        String userId,
+        String conversation,
+        String question,
+        LocalDate date,
+        FlowTriggerType type,
+        List<String> requested
+    ) {
+        return createObjectBatch(flow, userId, conversation, question, date, type, requested, null);
+    }
+
+    /** 在任务锁内创建报告批次，校验权限和幂等条件，并冻结各对象的脚本参数。 */
+    private BatchResult createObjectBatch(
+        SkillFlow flow,
+        String userId,
+        String conversation,
+        String question,
+        LocalDate date,
+        FlowTriggerType type,
+        List<String> requested,
+        String requestId
+    ) {
         teamReports.lock(flow.getId());
         // 在提交与配置共用的锁内重新读取，并在当前事务中冻结整轮快照。
-        flow=mapper.selectFlowById(flow.getId());
-        if(flow==null || !Boolean.TRUE.equals(flow.getEnabled())) throw new IllegalStateException("FlowNotFoundOrDisabled");
-        if(requestId!=null) {
-            try {java.util.UUID.fromString(requestId);}catch(Exception e){throw new IllegalArgumentException("TeamReportRequestIdInvalid");}
-            var existing=mapper.selectObjectBatch(flow.getId(),requestId);
-            if(!existing.isEmpty()) {
-                if(existing.stream().anyMatch(e->!userId.equals(e.getTriggerUserId()) || e.getTriggerType()!=type)) throw new IllegalStateException("FlowAccessDenied");
-                return new BatchResult(requestId,existing,false);
+        flow = mapper.selectFlowById(flow.getId());
+        if (flow == null || !Boolean.TRUE.equals(flow.getEnabled())) throw new IllegalStateException(
+            "FlowNotFoundOrDisabled"
+        );
+        // 请求标识先于批次互斥校验，重复请求直接返回已创建结果。
+        if (requestId != null) {
+            try {
+                java.util.UUID.fromString(requestId);
+            } catch (Exception e) {
+                throw new IllegalArgumentException("TeamReportRequestIdInvalid");
+            }
+            var existing = mapper.selectObjectBatch(flow.getId(), requestId);
+            if (!existing.isEmpty()) {
+                if (
+                    existing.stream().anyMatch(e -> !userId.equals(e.getTriggerUserId()) || e.getTriggerType() != type)
+                ) throw new IllegalStateException("FlowAccessDenied");
+                return new BatchResult(requestId, existing, false);
             }
         }
-        if(type==FlowTriggerType.MANUAL) teamReports.requireNoManual(flow.getId());
-        if(type==FlowTriggerType.AUTO_METRIC) {
-            if(mapper.hasAutoMetricExecutionOnDate(flow.getId(),date)) return new BatchResult(null,List.of(),false);
-            Set<Long> metrics=new LinkedHashSet<>();definitionNodes(flow).forEach(n->metrics.addAll(effectiveMetricIds(n)));
-            if(metrics.isEmpty() || metrics.stream().anyMatch(id->{var ready=mapper.selectMetricReadiness(id,date);return ready==null || ready.getStatus()!=MetricReadinessStatus.READY;}))
-                return new BatchResult(null,List.of(),false);
+        if (type == FlowTriggerType.MANUAL) teamReports.requireNoManual(flow.getId());
+        if (type == FlowTriggerType.AUTO_METRIC) {
+            if (mapper.hasAutoMetricExecutionOnDate(flow.getId(), date)) return new BatchResult(null, List.of(), false);
+            Set<Long> metrics = new LinkedHashSet<>();
+            definitionNodes(flow).forEach(n -> metrics.addAll(effectiveMetricIds(n)));
+            if (
+                metrics.isEmpty() ||
+                metrics.stream().anyMatch(id -> {
+                    var ready = mapper.selectMetricReadiness(id, date);
+                    return ready == null || ready.getStatus() != MetricReadinessStatus.READY;
+                })
+            ) return new BatchResult(null, List.of(), false);
         }
         teamReports.materialize(flow);
-        var c=teamReports.config(flow);
-        final SkillFlow flowForAccess=flow;
-        var targets=c.targets().stream().filter(t->requested==null ? (type==FlowTriggerType.AUTO_METRIC ? t.selected() : type!=FlowTriggerType.MANUAL || teamReports.mayExecute(flowForAccess,t,userId)) : requested.contains(t.teamId()==null ? "department":t.teamId())).toList();
-        if(targets.isEmpty() || (requested!=null && new java.util.HashSet<>(requested).size()!=targets.size()))
-            throw new IllegalStateException("TeamReportSelectionRequired: 请选择已配置的执行对象");
-        if(type==FlowTriggerType.MANUAL || type==FlowTriggerType.CHAT && !Boolean.TRUE.equals(flow.getChatPublic())) {
-            for(var target:targets) if(!teamReports.mayExecute(flow,target,userId))
-                throw new IllegalStateException("FlowAccessDenied: 未获授权执行团队 "+Objects.toString(target.teamName(),c.departmentName()));
+        var c = teamReports.config(flow);
+        final SkillFlow flowForAccess = flow;
+        var targets = c
+            .targets()
+            .stream()
+            .filter(t ->
+                requested == null
+                    ? type == FlowTriggerType.AUTO_METRIC
+                        ? t.selected()
+                        : type != FlowTriggerType.MANUAL || teamReports.mayExecute(flowForAccess, t, userId)
+                    : requested.contains(t.teamId() == null ? "department" : t.teamId())
+            )
+            .toList();
+        if (
+            targets.isEmpty() || (requested != null && new java.util.HashSet<>(requested).size() != targets.size())
+        ) throw new IllegalStateException("TeamReportSelectionRequired: 请选择已配置的执行对象");
+        if (
+            type == FlowTriggerType.MANUAL ||
+            (type == FlowTriggerType.CHAT && !Boolean.TRUE.equals(flow.getChatPublic()))
+        ) {
+            for (var target : targets)
+                if (!teamReports.mayExecute(flow, target, userId)) throw new IllegalStateException(
+                    "FlowAccessDenied: 未获授权执行团队 " + Objects.toString(target.teamName(), c.departmentName())
+                );
         }
-        if(type==FlowTriggerType.CHAT) {
-            String chatGuard=userId+":"+conversation+":"+flow.getId()+":"+date+":"+targets.get(0).teamId();
-            SkillFlowExecution active=mapper.selectActiveExecution(chatGuard);
-            if(active!=null && !active.getStatus().terminal()) return new BatchResult(active.getBatchId(),List.of(active),false);
+        if (type == FlowTriggerType.CHAT) {
+            String chatGuard =
+                userId + ":" + conversation + ":" + flow.getId() + ":" + date + ":" + targets.get(0).teamId();
+            SkillFlowExecution active = mapper.selectActiveExecution(chatGuard);
+            if (active != null && !active.getStatus().terminal()) return new BatchResult(
+                active.getBatchId(),
+                List.of(active),
+                false
+            );
         }
-        String batch=requestId==null ? java.util.UUID.randomUUID().toString() : requestId;List<SkillFlowExecution> result=new java.util.ArrayList<>();
-        if(definitionNodes(flow).isEmpty()) throw new IllegalStateException("FlowNodesMissing");
-        java.util.Map<String,java.util.Map<String,String>> frozen=new java.util.LinkedHashMap<>();
-        for(var t:targets) {
-            java.util.Map<String,String> params=new java.util.LinkedHashMap<>();
-            for(var node:definitionNodes(flow)) {
-                if(node.getScriptId()!=null && !node.getScriptId().isBlank()) params.put(node.getNodeKey(),json(paramRules.resolve(node.getScriptId(),node.getScriptParamsJson(),date,teamReports.publicParams(c,t,date))));
+        String batch = requestId == null ? java.util.UUID.randomUUID().toString() : requestId;
+        List<SkillFlowExecution> result = new java.util.ArrayList<>();
+        if (definitionNodes(flow).isEmpty()) throw new IllegalStateException("FlowNodesMissing");
+        // 先解析全部对象的参数，再统一创建执行记录，避免后续编辑影响本轮输入。
+        java.util.Map<String, java.util.Map<String, String>> frozen = new java.util.LinkedHashMap<>();
+        for (var t : targets) {
+            java.util.Map<String, String> params = new java.util.LinkedHashMap<>();
+            for (var node : definitionNodes(flow)) {
+                if (node.getScriptId() != null && !node.getScriptId().isBlank()) params.put(
+                    node.getNodeKey(),
+                    json(
+                        paramRules.resolve(
+                            node.getScriptId(),
+                            node.getScriptParamsJson(),
+                            date,
+                            teamReports.publicParams(c, t, date)
+                        )
+                    )
+                );
             }
-            frozen.put(t.teamId(),params);
+            frozen.put(t.teamId(), params);
         }
-        for(var t:targets) {
-            String guard=type==FlowTriggerType.CHAT ? userId+":"+conversation+":"+flow.getId()+":"+date+":"+t.teamId() : batch+":"+result.size();
-            result.add(createExecution(flow,userId,conversation,question,date,type,guard,false,null,new ObjectContext(batch,c,t,frozen.get(t.teamId()))).execution());
+        for (var t : targets) {
+            String guard =
+                type == FlowTriggerType.CHAT
+                    ? userId + ":" + conversation + ":" + flow.getId() + ":" + date + ":" + t.teamId()
+                    : batch + ":" + result.size();
+            result.add(
+                createExecution(
+                    flow,
+                    userId,
+                    conversation,
+                    question,
+                    date,
+                    type,
+                    guard,
+                    false,
+                    null,
+                    new ObjectContext(batch, c, t, frozen.get(t.teamId()))
+                ).execution()
+            );
         }
-        return new BatchResult(batch,result,true);
+        return new BatchResult(batch, result, true);
     }
 
-    private TriggerResult createExecution(SkillFlow flow, String userId, String conversationId, String question,
-                                          LocalDate dataDate, FlowTriggerType triggerType, String guard,
-                                          boolean requireAllMetrics) {
-        return createExecution(flow, userId, conversationId, question, dataDate, triggerType, guard,
-                requireAllMetrics, null);
+    private TriggerResult createExecution(
+        SkillFlow flow,
+        String userId,
+        String conversationId,
+        String question,
+        LocalDate dataDate,
+        FlowTriggerType triggerType,
+        String guard,
+        boolean requireAllMetrics
+    ) {
+        return createExecution(
+            flow,
+            userId,
+            conversationId,
+            question,
+            dataDate,
+            triggerType,
+            guard,
+            requireAllMetrics,
+            null
+        );
     }
 
-    private TriggerResult createExecution(SkillFlow flow, String userId, String conversationId, String question,
-                                          LocalDate dataDate, FlowTriggerType triggerType, String guard,
-                                          boolean requireAllMetrics, List<SkillFlowNode> templateNodes) {
-        return createExecution(flow,userId,conversationId,question,dataDate,triggerType,guard,requireAllMetrics,templateNodes,null);
+    private TriggerResult createExecution(
+        SkillFlow flow,
+        String userId,
+        String conversationId,
+        String question,
+        LocalDate dataDate,
+        FlowTriggerType triggerType,
+        String guard,
+        boolean requireAllMetrics,
+        List<SkillFlowNode> templateNodes
+    ) {
+        return createExecution(
+            flow,
+            userId,
+            conversationId,
+            question,
+            dataDate,
+            triggerType,
+            guard,
+            requireAllMetrics,
+            templateNodes,
+            null
+        );
     }
 
-    private TriggerResult createExecution(SkillFlow flow, String userId, String conversationId, String question,
-            LocalDate dataDate, FlowTriggerType triggerType, String guard, boolean requireAllMetrics,
-            List<SkillFlowNode> templateNodes, ObjectContext context) {
-        if(context==null && templateNodes==null && flow.getTeamReportJson()!=null) {
-            BatchResult batch=createObjectBatch(flow,userId,conversationId,question,dataDate,triggerType,null);
-            return new TriggerResult(batch.executions().isEmpty() ? null : batch.executions().get(0),batch.created());
+    private TriggerResult createExecution(
+        SkillFlow flow,
+        String userId,
+        String conversationId,
+        String question,
+        LocalDate dataDate,
+        FlowTriggerType triggerType,
+        String guard,
+        boolean requireAllMetrics,
+        List<SkillFlowNode> templateNodes,
+        ObjectContext context
+    ) {
+        if (context == null && templateNodes == null && flow.getTeamReportJson() != null) {
+            BatchResult batch = createObjectBatch(flow, userId, conversationId, question, dataDate, triggerType, null);
+            return new TriggerResult(batch.executions().isEmpty() ? null : batch.executions().get(0), batch.created());
         }
         if (requireAllMetrics) {
             mapper.lockFlowForAuto(flow.getId());
@@ -372,8 +633,11 @@ public class FlowExecutionService {
         if (existing != null) {
             // 仅"真正活跃"的执行(排队/运行/等指标/汇总中)防重;
             // "取消中"(CANCEL_REQUESTED)可能因 worker 中断永久滞留且仍持有 guard,放行新执行。
-            if (existing.getStatus() != null && existing.getStatus() != FlowExecutionStatus.CANCEL_REQUESTED
-                    && !existing.getStatus().terminal()) {
+            if (
+                existing.getStatus() != null &&
+                existing.getStatus() != FlowExecutionStatus.CANCEL_REQUESTED &&
+                !existing.getStatus().terminal()
+            ) {
                 return new TriggerResult(existing, false);
             }
             // 陈旧 guard 兜底:终态或取消中的执行不应阻塞新执行,释放其 guard(满足唯一索引)后继续创建。
@@ -390,48 +654,78 @@ public class FlowExecutionService {
         Set<Long> metrics = new LinkedHashSet<>();
         if (templateNodes == null) nodes.forEach(n -> metrics.addAll(effectiveMetricIds(n)));
         if (requireAllMetrics && metrics.isEmpty()) return new TriggerResult(null, false);
-        List<Long> missing = metrics.stream().filter(id -> {
-            SkillMetricReadiness ready = mapper.selectMetricReadiness(id, dataDate);
-            return ready == null || ready.getStatus() != MetricReadinessStatus.READY;
-        }).toList();
+        List<Long> missing = metrics
+            .stream()
+            .filter(id -> {
+                SkillMetricReadiness ready = mapper.selectMetricReadiness(id, dataDate);
+                return ready == null || ready.getStatus() != MetricReadinessStatus.READY;
+            })
+            .toList();
         // 只有自动指标触发开启门控; CHAT/MANUAL 即使有缺失指标也继续创建并排队。
         if (requireAllMetrics && !missing.isEmpty()) return new TriggerResult(null, false);
         SkillFlowExecution execution = SkillFlowExecution.builder()
-                // 关联的流程定义信息(编号 + 名称),便于执行记录自描述展示
-                .flowId(flow.getId()).flowCode(flow.getCode()).flowName(flow.getName())
-                .reportProcessId(flow.getReportProcessId()).reportOutlineSnapshot(flow.getReportOutline())
-                // 快照:把流程定义当时的配置固化到执行记录,
-                // 后续流程定义被修改不影响本次执行(总结问题模板 / 最大并行度)
-                .summaryQuestionTemplateSnapshot(flow.getSummaryQuestionTemplate())
-                .maxParallelismSnapshot(flow.getMaxParallelism())
-                // 通知配置快照:执行期间以快照为准,发通知时不再回读流程定义
-                .notifyEnabledSnapshot(flow.getNotifyEnabled())
-                // 缺省联系人不保存创建人 ID；完成通知阶段会按创建人查询真实姓名。
-                .notifyContactNameSnapshot(flow.getNotifyContactName() == null || flow.getNotifyContactName().isBlank()
-                        ? null : flow.getNotifyContactName())
-                .notifyContactPhoneSnapshot(flow.getNotifyContactPhone())
-                .notifyBodyTemplateSnapshot(flow.getNotifyBodyTemplate())
-                .notifyReceiversSnapshot(templateNodes == null ? resolveNotifyReceiversSnapshot(flow, triggerType) : null)
-                .ccReceiversSnapshot(templateNodes == null ? NotificationReceivers.toCsv(recipientService
-                                                                                         .findConfiguredUserIds(NotificationConfig.TARGET_TYPE_SKILL_FLOW, flow.getId(),
-                                                                                                 triggerType == null ? "DEFAULT" : triggerType.name(), "CC").orElse(List.of())) : null)
-                .notifyReceiverTriggersSnapshot(flow.getNotifyReceiverTriggers())
-                // 触发来源:触发类型(CHAT/MANUAL/METRIC 等)与触发人信息
-                .triggerType(triggerType)
-                // 触发上下文:触发人、会话 id、原始提问、数据日期(用于指标就绪判断)
-                .triggerUserId(userId).conversationId(conversationId).originalQuestion(question).dataDate(dataDate)
-                // 非自动触发直接 QUEUED;自动触发有缺失指标时才进入 WAITING_METRICS。
-                .status(!requireAllMetrics || missing.isEmpty()
-                        ? FlowExecutionStatus.QUEUED : FlowExecutionStatus.WAITING_METRICS)
-                // 指标门控信息:防重 guard key、所需指标总数、当前已就绪数、缺失指标 id 列表(JSON)
-                .activeGuardKey(guard).requiredMetricCount(metrics.size())
-                .readyMetricCount(metrics.size() - missing.size())
-                .missingMetricsJson(json(missing)).build();
+            // 关联的流程定义信息(编号 + 名称),便于执行记录自描述展示
+            .flowId(flow.getId())
+            .flowCode(flow.getCode())
+            .flowName(flow.getName())
+            .reportProcessId(flow.getReportProcessId())
+            .reportOutlineSnapshot(flow.getReportOutline())
+            // 快照:把流程定义当时的配置固化到执行记录,
+            // 后续流程定义被修改不影响本次执行(总结问题模板 / 最大并行度)
+            .summaryQuestionTemplateSnapshot(flow.getSummaryQuestionTemplate())
+            .maxParallelismSnapshot(flow.getMaxParallelism())
+            // 通知配置快照:执行期间以快照为准,发通知时不再回读流程定义
+            .notifyEnabledSnapshot(flow.getNotifyEnabled())
+            // 缺省联系人不保存创建人 ID；完成通知阶段会按创建人查询真实姓名。
+            .notifyContactNameSnapshot(
+                flow.getNotifyContactName() == null || flow.getNotifyContactName().isBlank()
+                    ? null
+                    : flow.getNotifyContactName()
+            )
+            .notifyContactPhoneSnapshot(flow.getNotifyContactPhone())
+            .notifyBodyTemplateSnapshot(flow.getNotifyBodyTemplate())
+            .notifyReceiversSnapshot(templateNodes == null ? resolveNotifyReceiversSnapshot(flow, triggerType) : null)
+            .ccReceiversSnapshot(
+                templateNodes == null
+                    ? NotificationReceivers.toCsv(
+                          recipientService
+                              .findConfiguredUserIds(
+                                  NotificationConfig.TARGET_TYPE_SKILL_FLOW,
+                                  flow.getId(),
+                                  triggerType == null ? "DEFAULT" : triggerType.name(),
+                                  "CC"
+                              )
+                              .orElse(List.of())
+                      )
+                    : null
+            )
+            .notifyReceiverTriggersSnapshot(flow.getNotifyReceiverTriggers())
+            // 触发来源:触发类型(CHAT/MANUAL/METRIC 等)与触发人信息
+            .triggerType(triggerType)
+            // 触发上下文:触发人、会话 id、原始提问、数据日期(用于指标就绪判断)
+            .triggerUserId(userId)
+            .conversationId(conversationId)
+            .originalQuestion(question)
+            .dataDate(dataDate)
+            // 非自动触发直接 QUEUED;自动触发有缺失指标时才进入 WAITING_METRICS。
+            .status(
+                !requireAllMetrics || missing.isEmpty()
+                    ? FlowExecutionStatus.QUEUED
+                    : FlowExecutionStatus.WAITING_METRICS
+            )
+            // 指标门控信息:防重 guard key、所需指标总数、当前已就绪数、缺失指标 id 列表(JSON)
+            .activeGuardKey(guard)
+            .requiredMetricCount(metrics.size())
+            .readyMetricCount(metrics.size() - missing.size())
+            .missingMetricsJson(json(missing))
+            .build();
         execution.setTypeId(flow.getTypeId());
-        if(context!=null) {
-            var c=context.config();var t=context.target();
-            execution.setBatchId(context.batchId());execution.setTeamId(t.teamId());
-            execution.setPublicParamsJson(json(teamReports.snapshotParams(c,t)));
+        if (context != null) {
+            var c = context.config();
+            var t = context.target();
+            execution.setBatchId(context.batchId());
+            execution.setTeamId(t.teamId());
+            execution.setPublicParamsJson(json(teamReports.snapshotParams(c, t)));
             execution.setNotifyReceiversSnapshot(NotificationReceivers.toCsv(t.to()));
             execution.setCcReceiversSnapshot(NotificationReceivers.toCsv(t.cc()));
             execution.setNotifyEnabledSnapshot(t.notifyEnabled());
@@ -464,27 +758,40 @@ public class FlowExecutionService {
             } else {
                 Skill skill = skillMapper.selectById(node.getSkillId());
                 skillName = skill == null ? "Skill #" + node.getSkillId() : skill.getName();
-                retrievalName = skill == null || skill.getRetrievalName() == null || skill.getRetrievalName().isBlank()
-                        ? skillName : skill.getRetrievalName();
+                retrievalName =
+                    skill == null || skill.getRetrievalName() == null || skill.getRetrievalName().isBlank()
+                        ? skillName
+                        : skill.getRetrievalName();
             }
             // 所有节点统一入队；调度器按节点执行记录 id(创建顺序)取候选，
             // 在 worker 和流程并发额度允许时并行执行。
-            FlowNodeExecutionStatus status = !requireAllMetrics || missing.isEmpty()
-                    ? FlowNodeExecutionStatus.QUEUED : FlowNodeExecutionStatus.PENDING;
-            String frozenParams=node.getScriptParamsJson();
-            if(context!=null && scriptNode) {
-                frozenParams=context.frozenParams().get(node.getNodeKey());
+            FlowNodeExecutionStatus status =
+                !requireAllMetrics || missing.isEmpty()
+                    ? FlowNodeExecutionStatus.QUEUED
+                    : FlowNodeExecutionStatus.PENDING;
+            String frozenParams = node.getScriptParamsJson();
+            if (context != null && scriptNode) {
+                frozenParams = context.frozenParams().get(node.getNodeKey());
             }
-            mapper.insertNodeExecution(SkillFlowNodeExecution.builder().flowExecutionId(execution.getId())
-                    .nodeKey(node.getNodeKey()).nodeName(FlowDefinitionService.resolveNodeDisplayName(node.getNodeName(), skillName))
-                    .skillId(scriptNode ? null : node.getSkillId()).skillName(skillName).skillRetrievalName(retrievalName)
+            mapper.insertNodeExecution(
+                SkillFlowNodeExecution.builder()
+                    .flowExecutionId(execution.getId())
+                    .nodeKey(node.getNodeKey())
+                    .nodeName(FlowDefinitionService.resolveNodeDisplayName(node.getNodeName(), skillName))
+                    .skillId(scriptNode ? null : node.getSkillId())
+                    .skillName(skillName)
+                    .skillRetrievalName(retrievalName)
                     .scriptId(scriptNode ? normalizedScriptId : null)
                     .scriptParamsJson(scriptNode ? frozenParams : null)
                     // Python 节点问题模板选填;列 NOT NULL,空值落空串
                     .questionTemplateSnapshot(Objects.toString(node.getQuestionTemplate(), ""))
                     .dependsOnJson(node.getDependsOnJson())
-                    .required(node.getRequired()).status(status).attemptCount(0)
-                    .maxAttempts(SkillFlowProperties.NODE_MAX_ATTEMPTS).build());
+                    .required(node.getRequired())
+                    .status(status)
+                    .attemptCount(0)
+                    .maxAttempts(SkillFlowProperties.NODE_MAX_ATTEMPTS)
+                    .build()
+            );
         }
         if (execution.getStatus() == FlowExecutionStatus.QUEUED) {
             events.publishEvent(new FlowQueuedEvent(execution.getId()));
@@ -498,14 +805,21 @@ public class FlowExecutionService {
         List<Long> defaults = List.of();
         if (!Boolean.TRUE.equals(node.getMetricOverrideConfigured())) {
             if (node.getScriptId() != null && !node.getScriptId().isBlank()) {
-                ScriptRegistryEntry script = scriptRegistryMapper == null ? null : scriptRegistryMapper.selectByScriptId(node.getScriptId().trim());
+                ScriptRegistryEntry script =
+                    scriptRegistryMapper == null
+                        ? null
+                        : scriptRegistryMapper.selectByScriptId(node.getScriptId().trim());
                 defaults = script == null ? List.of() : MetricDependencyIds.parse(script.getDefaultMetricIds());
             } else if (node.getSkillId() != null) {
                 Skill skill = skillMapper.selectById(node.getSkillId());
                 defaults = skill == null ? List.of() : MetricDependencyIds.parse(skill.getDefaultMetricIds());
             }
         }
-        return MetricDependencyResolver.resolve(Boolean.TRUE.equals(node.getMetricOverrideConfigured()), override, defaults).metricIds();
+        return MetricDependencyResolver.resolve(
+            Boolean.TRUE.equals(node.getMetricOverrideConfigured()),
+            override,
+            defaults
+        ).metricIds();
     }
 
     /**
@@ -525,7 +839,7 @@ public class FlowExecutionService {
     public void metricBecameReady(Long metricId, LocalDate dataDate) {
         // 广播式重算:不区分该指标被谁依赖,统一让所有等待中的执行各自复查一遍(简单且不会漏)
         for (SkillFlowExecution execution : mapper.selectWaitingExecutions(schedulerGuard.isAllowed())) {
-            if (!dataDate.equals(execution.getDataDate())) continue;  // 数据日期不同,与本次就绪无关
+            if (!dataDate.equals(execution.getDataDate())) continue; // 数据日期不同,与本次就绪无关
             recomputeGate(execution);
         }
     }
@@ -546,11 +860,13 @@ public class FlowExecutionService {
     @Transactional("gaussCustomerTransactionManager")
     public void recomputeGate(SkillFlowExecution execution) {
         // 只对快照里缺失过的指标重查就绪登记表,已就绪的无需重复检查
-        List<Long> missing = readLongList(execution.getMissingMetricsJson()).stream()
-                .filter(id -> {
-                    SkillMetricReadiness ready = mapper.selectMetricReadiness(id, execution.getDataDate());
-                    return ready == null || ready.getStatus() != MetricReadinessStatus.READY;
-                }).toList();
+        List<Long> missing = readLongList(execution.getMissingMetricsJson())
+            .stream()
+            .filter(id -> {
+                SkillMetricReadiness ready = mapper.selectMetricReadiness(id, execution.getDataDate());
+                return ready == null || ready.getStatus() != MetricReadinessStatus.READY;
+            })
+            .toList();
         execution.setReadyMetricCount(Math.max(0, execution.getRequiredMetricCount() - missing.size()));
         execution.setMissingMetricsJson(json(missing));
         // missing 为空 = 长任务依赖的所有指标都已就绪,执行放行动作(见方法 javadoc)
@@ -574,11 +890,16 @@ public class FlowExecutionService {
     public Optional<SkillFlowExecution> cancelLatest(String userId, String conversationId) {
         SkillFlowExecution execution = mapper.selectLatestConversationExecution(userId, conversationId);
         if (execution == null) return Optional.empty();
-        if(execution.getBatchId()!=null && !execution.getStatus().terminal()) return Optional.of(cancel(execution.getId()));
+        if (execution.getBatchId() != null && !execution.getStatus().terminal()) return Optional.of(
+            cancel(execution.getId())
+        );
         if (!execution.getStatus().terminal()) {
             execution.setCancelRequestedAt(LocalDateTime.now(clock));
-            execution.setStatus(execution.getStatus() == FlowExecutionStatus.RUNNING
-                    ? FlowExecutionStatus.CANCEL_REQUESTED : FlowExecutionStatus.CANCELLED);
+            execution.setStatus(
+                execution.getStatus() == FlowExecutionStatus.RUNNING
+                    ? FlowExecutionStatus.CANCEL_REQUESTED
+                    : FlowExecutionStatus.CANCELLED
+            );
             if (execution.getStatus() == FlowExecutionStatus.CANCELLED) {
                 execution.setActiveGuardKey(null);
                 execution.setCompletedAt(LocalDateTime.now(clock));
@@ -603,29 +924,46 @@ public class FlowExecutionService {
      */
     @Transactional("gaussCustomerTransactionManager")
     public SkillFlowExecution cancel(Long executionId) {
-        var candidate=mapper.selectFlowExecutionById(executionId);
-        if(candidate!=null && candidate.getBatchId()!=null) {
+        var candidate = mapper.selectFlowExecutionById(executionId);
+        if (candidate != null && candidate.getBatchId() != null) {
             teamReports.lock(candidate.getFlowId());
-            candidate=mapper.selectFlowExecutionForUpdate(executionId);
-            if(candidate.getStatus().terminal()) throw new IllegalStateException("执行已结束,无法取消");
-            if(candidate.getStatus()==FlowExecutionStatus.SUMMARIZING) throw new IllegalStateException("汇总中无法取消");
-            LocalDateTime now=LocalDateTime.now(clock);
-            boolean live=mapper.selectNodeExecutions(executionId).stream().anyMatch(n->n.getStatus()==FlowNodeExecutionStatus.RUNNING && n.getLeaseExpiresAt()!=null && n.getLeaseExpiresAt().isAfter(now));
+            candidate = mapper.selectFlowExecutionForUpdate(executionId);
+            if (candidate.getStatus().terminal()) throw new IllegalStateException("执行已结束,无法取消");
+            if (candidate.getStatus() == FlowExecutionStatus.SUMMARIZING) throw new IllegalStateException(
+                "汇总中无法取消"
+            );
+            LocalDateTime now = LocalDateTime.now(clock);
+            boolean live = mapper
+                .selectNodeExecutions(executionId)
+                .stream()
+                .anyMatch(
+                    n ->
+                        n.getStatus() == FlowNodeExecutionStatus.RUNNING &&
+                        n.getLeaseExpiresAt() != null &&
+                        n.getLeaseExpiresAt().isAfter(now)
+                );
             candidate.setCancelRequestedAt(now);
-            candidate.setStatus(live ? FlowExecutionStatus.CANCEL_REQUESTED:FlowExecutionStatus.CANCELLED);
-            if(!live) {candidate.setActiveGuardKey(null);candidate.setCompletedAt(now);}
-            mapper.updateExecution(candidate);
-            for(var n:mapper.selectNodeExecutions(executionId)) if(!n.getStatus().terminal() && (!live || n.getStatus()!=FlowNodeExecutionStatus.RUNNING)) {
-                n.setStatus(FlowNodeExecutionStatus.CANCELLED);n.setCompletedAt(now);mapper.updateNodeExecution(n);
+            candidate.setStatus(live ? FlowExecutionStatus.CANCEL_REQUESTED : FlowExecutionStatus.CANCELLED);
+            if (!live) {
+                candidate.setActiveGuardKey(null);
+                candidate.setCompletedAt(now);
             }
-            if(!live) events.publishEvent(new FlowQueuedEvent(candidate.getId()));
+            mapper.updateExecution(candidate);
+            for (var n : mapper.selectNodeExecutions(executionId))
+                if (!n.getStatus().terminal() && (!live || n.getStatus() != FlowNodeExecutionStatus.RUNNING)) {
+                    n.setStatus(FlowNodeExecutionStatus.CANCELLED);
+                    n.setCompletedAt(now);
+                    mapper.updateNodeExecution(n);
+                }
+            if (!live) events.publishEvent(new FlowQueuedEvent(candidate.getId()));
             return candidate;
         }
         // 锁定流程行,串行化同一执行上的取消/重跑等状态修改(与 FlowCoordinator.retryNode 同款)
         SkillFlowExecution execution = mapper.selectFlowExecutionForUpdate(executionId);
         if (execution == null) throw new IllegalArgumentException("执行不存在: " + executionId);
-        if (execution.getStatus() == null || execution.getStatus().terminal())
-            throw new IllegalStateException("执行已结束,无法取消");
+        if (execution.getStatus() == null || execution.getStatus().terminal()) throw new IllegalStateException(
+            "执行已结束,无法取消"
+        );
         LocalDateTime now = LocalDateTime.now(clock);
         execution.setCancelRequestedAt(now);
         execution.setStatus(FlowExecutionStatus.CANCELLED);
@@ -657,14 +995,23 @@ public class FlowExecutionService {
      */
     private String resolveNotifyReceiversSnapshot(SkillFlow flow, FlowTriggerType triggerType) {
         List<String> userIds = recipientService
-                .findConfiguredUserIds(NotificationConfig.TARGET_TYPE_SKILL_FLOW, flow.getId(),
-                        triggerType == FlowTriggerType.MANUAL || triggerType == FlowTriggerType.CHAT
-                                ? "DEFAULT" : (triggerType == null ? "DEFAULT" : triggerType.name()))
-                .orElseGet(() -> {
-                    log.info("[SkillFlow] notification_config missing for flow {}, "
-                            + "snapshot falls back to legacy notify_receivers (compat)", flow.getId());
-                    return NotificationReceivers.parse(flow.getNotifyReceivers());
-                });
+            .findConfiguredUserIds(
+                NotificationConfig.TARGET_TYPE_SKILL_FLOW,
+                flow.getId(),
+                triggerType == FlowTriggerType.MANUAL || triggerType == FlowTriggerType.CHAT
+                    ? "DEFAULT"
+                    : triggerType == null
+                      ? "DEFAULT"
+                      : triggerType.name()
+            )
+            .orElseGet(() -> {
+                log.info(
+                    "[SkillFlow] notification_config missing for flow {}, " +
+                        "snapshot falls back to legacy notify_receivers (compat)",
+                    flow.getId()
+                );
+                return NotificationReceivers.parse(flow.getNotifyReceivers());
+            });
         return NotificationReceivers.toCsv(userIds);
     }
 
@@ -683,8 +1030,10 @@ public class FlowExecutionService {
             throw new IllegalStateException(e);
         }
     }
-    private List<SkillFlowNode> definitionNodes(SkillFlow flow) {
-        return flow.getTeamReportJson()==null ? mapper.selectNodesByFlowId(flow.getId()) : mapper.selectObjectNodesByFlowId(flow.getId());
-    }
 
+    private List<SkillFlowNode> definitionNodes(SkillFlow flow) {
+        return flow.getTeamReportJson() == null
+            ? mapper.selectNodesByFlowId(flow.getId())
+            : mapper.selectObjectNodesByFlowId(flow.getId());
+    }
 }
