@@ -736,13 +736,15 @@ class DirectSkillExecutorTest {
 
     @Test
     void activeKeysMergeBuiltinAndDictionaryKeys() {
-        // 11 内置含 perNo/perRole (人员台账维度方案 §3.4 + 岗位角色内置维度方案 §4.2)
-        assertEquals(15, newExecutor(true).activeKeys().size());
+        // 12 内置含 perNo/perRole (人员台账维度方案 §3.4 + 岗位角色内置维度方案 §4.2)
+        //    + projectNo (docs/202611/内置维度键projectNo项目编号方案.md)
+        assertEquals(16, newExecutor(true).activeKeys().size());
         assertTrue(newExecutor(true).activeKeys().contains("perNo"));
         assertTrue(newExecutor(true).activeKeys().contains("perRole"));
+        assertTrue(newExecutor(true).activeKeys().contains("projectNo"));
         enableKeyDictionary(qGateConfig());
         java.util.Set<String> keys = newExecutor(true).activeKeys();
-        assertEquals(16, keys.size());
+        assertEquals(17, keys.size());
         assertTrue(keys.contains("qGate"));
         assertTrue(keys.contains("deptName"));
         assertTrue(keys.contains("versionPlan.start"));
@@ -816,8 +818,8 @@ class DirectSkillExecutorTest {
     void activeKeysWithTimeRangeExpandSuffixForms() {
         enableKeyDictionary(timeRangeConfig());
         java.util.Set<String> keys = newExecutor(true).activeKeys();
-        // 11 内置 + timeRange + timeRange .start/.end + versionPlan/vestQuarter 各 .start/.end
-        assertEquals(18, keys.size());
+        // 12 内置 + timeRange + timeRange .start/.end + versionPlan/vestQuarter 各 .start/.end
+        assertEquals(19, keys.size());
         assertTrue(keys.contains("timeRange"));
         assertTrue(keys.contains("timeRange.start"));
         assertTrue(keys.contains("timeRange.end"));
@@ -1175,8 +1177,8 @@ class DirectSkillExecutorTest {
                 new DimensionKeyConfig(2L, "versionPlan", "版本计划", true, List.of(), true, null),
                 new DimensionKeyConfig(3L, "vestQuarter", "季度", true, List.of(), true, null));
         var keys = newExecutor(true).activeKeys();
-        // versionPlan/vestQuarter 本就在内置键里, 字典行去重: 11 内置 + timeRange + 6 后缀
-        assertEquals(18, keys.size());
+        // versionPlan/vestQuarter 本就在内置键里, 字典行去重: 12 内置 + timeRange + 6 后缀
+        assertEquals(19, keys.size());
         assertTrue(keys.contains("timeRange.start"));
         assertTrue(keys.contains("versionPlan.start"));
         assertTrue(keys.contains("versionPlan.end"));
@@ -1790,6 +1792,54 @@ class DirectSkillExecutorTest {
                 newExecutor(true).plan("S20250926-000741 达标率多少", "alice", null);
 
         assertFalse(plan.params().containsKey("version"));
+    }
+
+    @Test
+    void projectWithoutTimePassesNoTimeParams() {
+        // 项目编号 + 未显式提及时间 → 不补默认在建版本 (docs/202611/内置维度键projectNo项目编号方案.md 拍板①)
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a",
+                        "{\"version\":\"versionPlan\",\"quarter\":\"vestQuarter\",\"projectNo\":\"projectNo\"}",
+                        "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq("KJ99990273-412 达标率多少"), Mockito.isNull()))
+                .thenReturn(stateWithPeer(DimensionState.PeerDimensionType.PROJECT,
+                        List.of("KJ99990273-412")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"version\",\"required\":false},{\"name\":\"quarter\",\"required\":false},"
+                        + "{\"name\":\"projectNo\",\"required\":false}]"));
+        when(hookProvider.getIfAvailable()).thenReturn(versionPlanHook);
+        when(versionPlanHook.currentVersions()).thenReturn(List.of("2026年10月份版本"));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutor(true).plan("KJ99990273-412 达标率多少", "alice", null);
+
+        assertEquals("KJ99990273-412", plan.params().get("projectNo"));
+        assertFalse(plan.params().containsKey("version"));
+        assertFalse(plan.params().containsKey("quarter"));
+    }
+
+    @Test
+    void projectWithExplicitVersionStillPassesVersion() {
+        // 项目编号 + 显式版本 → 特例不生效, 只传版本
+        DimensionState state = new DimensionState(versionTime(List.of("2026年12月份版本")), List.of(),
+                new DimensionState.PeerDimension(DimensionState.PeerDimensionType.PROJECT,
+                        List.of("KJ20260114")), null);
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a",
+                        "{\"version\":\"versionPlan\",\"projectNo\":\"projectNo\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq("KJ20260114 12月版达标率"), Mockito.isNull()))
+                .thenReturn(state);
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"version\",\"required\":false},{\"name\":\"projectNo\",\"required\":false}]"));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutor(true).plan("KJ20260114 12月版达标率", "alice", null);
+
+        assertEquals("2026年12月份版本", plan.params().get("version"));
+        assertEquals("KJ20260114", plan.params().get("projectNo"));
+        assertFalse(plan.params().containsKey("quarter"));
     }
 
     // ==================== 人员台账: 我X enrich + 人名扫描 + 重名反问 (人员台账维度方案 §3/§4) ====================
