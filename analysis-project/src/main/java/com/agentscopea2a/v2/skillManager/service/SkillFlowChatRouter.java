@@ -33,6 +33,7 @@ import static com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys.LONG_TASK_ENAB
 @Service
 public class SkillFlowChatRouter {
 
+    @org.springframework.beans.factory.annotation.Autowired private TeamReportService teamReports;
     private final SkillFlowMapper mapper;
     private final FlowExecutionService executions;
     private final ChatStreamService normalChat;
@@ -96,7 +97,7 @@ public class SkillFlowChatRouter {
                 return normalChat.stream(request);
             }
         }
-        Decision decision = decide(request.getQuestion());
+        Decision decision = decide(request.getQuestion(),userId);
         if (decision.type() == RouteType.NORMAL_CHAT) return normalChat.stream(request);
         if (decision.type() == RouteType.DIRECT_ANSWER) {
             // 取消当前会话里未完成的长任务,用其原始问题改走普通对话
@@ -125,12 +126,18 @@ public class SkillFlowChatRouter {
      * 否则按启用中的触发词(归一化后 contains 匹配,优先级高者先命中)判定长任务;
      * 都不命中走普通对话。
      */
-    private Decision decide(String question) {
+    private Decision decide(String question,String userId) {
         String text = question == null ? "" : question;
         if (text.contains("直接回答")) return new Decision(RouteType.DIRECT_ANSWER, null);
-        String normalized = text.toLowerCase(Locale.ROOT);
+        String normalized = FlowDefinitionService.normalizeKeyword(text);
         for (SkillFlowTrigger trigger : mapper.selectEnabledTriggers()) {
-            if (normalized.contains(trigger.getNormalizedKeyword())) return new Decision(RouteType.LONG_TASK, trigger.getFlowId());
+            if (normalized.contains(trigger.getNormalizedKeyword())) {
+                var candidate=mapper.selectFlowById(trigger.getFlowId());
+                if(candidate!=null && candidate.getTeamReportJson()!=null && !Boolean.TRUE.equals(candidate.getChatPublic())
+                        && (teamReports==null ? !java.util.Objects.equals(userId,candidate.getCreatedBy()) && !mapper.existsFlowExecutor(candidate.getId(),userId)
+                        : !teamReports.mayTriggerKeyword(candidate,trigger.getNormalizedKeyword(),userId))) continue;
+                return new Decision(RouteType.LONG_TASK, trigger.getFlowId());
+            }
         }
         return new Decision(RouteType.NORMAL_CHAT, null);
     }

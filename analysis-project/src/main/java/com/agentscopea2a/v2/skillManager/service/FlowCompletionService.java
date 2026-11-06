@@ -67,6 +67,7 @@ public class FlowCompletionService {
     /** 脚本开发人员查询为可选依赖，兼容无脚本注册表的历史测试/部署。 */
     private ScriptRegistryMapper scriptRegistryMapper;
     private FlowNotificationDispatcher notificationDispatcher;
+    @Autowired private TeamReportService teamReports;
 
     @Autowired
     public void setNotificationDispatcher(FlowNotificationDispatcher dispatcher) {
@@ -130,7 +131,7 @@ public class FlowCompletionService {
                             "status", n.getStatus() == null ? "UNKNOWN" : n.getStatus().name(),
                             "result", Objects.toString(n.getResultJson(), ""))).toList();
             try {
-                String renderedReport = renderer.renderWithoutFullscreen(text, Objects.toString(flow.getFlowName(), "长任务报告"));
+                String renderedReport = renderer.renderWithoutFullscreen(text, flow.getBatchId()==null ? Objects.toString(flow.getFlowName(), "长任务报告") : FlowReportNaming.datedTitle(flow.getFlowName(),flow));
                 String reportPath = reportStorage.write(flow.getTriggerUserId(), flow.getId(), renderedReport);
                 log.info("Long task HTML report saved: executionId={}, reportPath={}", flow.getId(), reportPath);
                 return new Summary(json.writeValueAsString(Map.of("results", results)), reportPath);
@@ -154,12 +155,12 @@ public class FlowCompletionService {
     private String orderedReportText(SkillFlowExecution execution, List<SkillFlowNodeExecution> nodes) {
         if (execution != null && execution.getReportOutlineSnapshot() != null
                 && !execution.getReportOutlineSnapshot().isBlank()) {
-            String composed = outlineComposer.compose(execution.getReportOutlineSnapshot(), nodes);
+            String composed = outlineComposer.compose(execution.getReportOutlineSnapshot(), nodes, execution.getBatchId()==null ? null : FlowReportNaming.datedTitle(execution.getFlowName(),execution));
             if (composed != null && !composed.isBlank()) return composed;
         }
         // Definitions are read lazily so old executions (and old rows without an
         // outline) retain the exact legacy summary behavior.
-        if (execution != null && execution.getFlowId() != null) {
+        if (execution != null && execution.getBatchId()==null && execution.getFlowId() != null) {
             try {
                 SkillFlow definition = mapper.selectFlowById(execution.getFlowId());
                 if (definition != null && definition.getReportOutline() != null
@@ -213,6 +214,7 @@ public class FlowCompletionService {
      */
     public void sendInitial(SkillFlowExecution execution) {
         if (execution.getStatus() == FlowExecutionStatus.CANCELLED) return;
+        if(execution.getBatchId()!=null && Boolean.FALSE.equals(execution.getNotifyEnabledSnapshot())) return;
         send(execution, "flow:" + execution.getId() + ":INITIAL");
     }
 
@@ -253,23 +255,23 @@ public class FlowCompletionService {
         boolean explicit = confirmedReceivers != null || confirmedCcReceivers != null;
         List<String> receivers;
         List<String> ccReceivers;
-        if (isFailure(execution) && execution.getTriggerType() == FlowTriggerType.AUTO_METRIC
+        if (execution.getBatchId()==null && isFailure(execution) && execution.getTriggerType() == FlowTriggerType.AUTO_METRIC
                 && key.endsWith(":INITIAL")) {
             // 自动触发的首次失败通知只发触发人及失败脚本创建人。
             receivers = receiversFor(execution, true);
             ccReceivers = List.of();
         } else if (explicit) {
-            receivers = orgService.filterExistingUserIds(
+            receivers = filterRecipients(execution,
                     NotificationReceivers.parse(NotificationReceivers.toCsv(confirmedReceivers)));
             if (receivers.isEmpty()) {
                 throw new IllegalArgumentException("NotificationRecipientsRequired: 请至少选择一个有效收件人");
             }
-            ccReceivers = orgService.filterExistingUserIds(
+            ccReceivers = filterRecipients(execution,
                     NotificationReceivers.parse(NotificationReceivers.toCsv(confirmedCcReceivers)));
         } else {
             receivers = receiversFor(execution, false);
             ccReceivers = inRecipientScope(execution)
-                    ? orgService.filterExistingUserIds(NotificationReceivers.parse(execution.getCcReceiversSnapshot()))
+                    ? filterRecipients(execution,NotificationReceivers.parse(execution.getCcReceiversSnapshot()))
                     : List.of();
         }
         ccReceivers = ccReceivers.stream().filter(id -> !receivers.contains(id)).toList();
@@ -278,6 +280,11 @@ public class FlowCompletionService {
                 .status(FlowNotificationStatus.PENDING)
                 .recipient(String.join(",", receivers)).channel("DEFAULT")
                 .build();
+        if(execution.getBatchId()!=null && receivers.isEmpty()) {
+            record.setStatus(FlowNotificationStatus.FAILED);
+            record.setErrorMessage("通知暂停：该执行对象没有有效 TO 收件人，请维护名单后补发");
+            mapper.insertNotification(record);return;
+        }
         String filePath = resolveReportPath(execution);
         log.info("Long task notification requested: executionId={}, recipients={}, reportPath={}",
                 execution.getId(), receivers, execution.getReportPath());
@@ -328,7 +335,7 @@ public class FlowCompletionService {
                 : notificationHtml(execution, notifyBodyTemplate);
         notificationDispatcher.enqueue(record, new NotificationPayload("HTML", content,
                 filePath, reportFileName(execution),
-                reportUrl(execution), execution.getFlowId(), FlowReportNaming.datedTitle(execution.getFlowName(), execution), null, null,
+                reportUrl(execution), execution.getFlowId(), FlowReportNaming.notificationTitle(execution), null, null,
                 execution.getId(), execution.getStatus().name(), LocalDateTime.now(clock),
                 receivers, "FLOW", ccReceivers, contactName, contactPhone, isFailure(execution) ? null : execution.getDataDate()));
     }
@@ -338,6 +345,11 @@ public class FlowCompletionService {
      * 触发类型在快照配置的范围内(未配置默认仅 AUTO_METRIC)时,使用快照名单
      * (名单中人员表已失效的工号直接剔除,不报错)。
      */
+    private List<String> filterRecipients(SkillFlowExecution execution,List<String> ids) {
+        return execution.getBatchId()!=null && teamReports!=null
+                ? teamReports.filterReportPeople(ids) : orgService.filterExistingUserIds(ids);
+    }
+
     private List<String> receiversFor(SkillFlowExecution execution, boolean autoFailure) {
         // 仅自动触发的首次失败通知使用触发人和失败脚本创建人；
         // 手动发送以及其他触发方式继续使用常规通知配置。
@@ -367,9 +379,9 @@ public class FlowCompletionService {
             return ids;
         }
         List<String> configured = inRecipientScope(execution)
-                ? orgService.filterExistingUserIds(NotificationReceivers.parse(execution.getNotifyReceiversSnapshot()))
+                ? filterRecipients(execution,NotificationReceivers.parse(execution.getNotifyReceiversSnapshot()))
                 : List.of();
-        return NotificationReceivers.withFallback(configured, execution.getTriggerUserId());
+        return execution.getBatchId()!=null ? configured : NotificationReceivers.withFallback(configured, execution.getTriggerUserId());
     }
 
     private static void addRecipient(Map<String, Boolean> recipients, String userId) {
@@ -392,7 +404,7 @@ public class FlowCompletionService {
     /** Failure mail deliberately bypasses the configurable success template. */
     static String failureNotificationHtml(SkillFlowExecution execution, List<SkillFlowNodeExecution> nodes,
                                            Map<String, String> scriptOwnerNames) {
-        String title = escapeHtml(Objects.toString(execution.getFlowName(), "长任务"));
+        String title = escapeHtml(Objects.toString(FlowReportNaming.baseTitle(execution), "长任务"));
         StringBuilder html = new StringBuilder("<html><body>")
                 .append("<h3>长任务执行失败：").append(title).append("</h3>")
                 .append("<p>执行 ID：").append(escapeHtml(Objects.toString(execution.getId(), "")))
@@ -424,17 +436,24 @@ public class FlowCompletionService {
     /** 长任务通知正文:优先用执行时快照的正文模板({链接} 占位符替换为报告地址),未配置走默认文案。 */
     private String notificationHtml(SkillFlowExecution execution, String notifyBodyTemplate) {
         String url = reportUrl(execution);
-        String title = escapeHtml(Objects.toString(FlowReportNaming.datedTitle(execution.getFlowName(), execution), "长任务报告"));
+        String title = escapeHtml(Objects.toString(FlowReportNaming.notificationTitle(execution), "长任务报告"));
         String defaultHtml;
         if (url.isBlank()) {
             defaultHtml = "<html><body><h3>" + title + "</h3><p>报告地址暂不可用，请登录系统查看。</p></body></html>";
         } else {
             String escapedUrl = escapeHtml(url);
+            String reportLabel = "部门研发管理周报";
+            if (execution.getBatchId() != null) {
+                String team = FlowReportNaming.value(execution, "stat_group");
+                reportLabel = team == null
+                        ? Objects.toString(FlowReportNaming.value(execution, "dev_dept"), "本部门") + "的部门报告"
+                        : team + "的团队报告";
+            }
             defaultHtml = new StringBuilder("<html><body><p>各位：</p>")
-                    .append("<p>\u3000\u3000部门研发管理周报详见：<a href=\"").append(escapedUrl).append("\">")
+                    .append("<p>\u3000\u3000").append(escapeHtml(reportLabel)).append("详见：<a href=\"").append(escapedUrl).append("\">")
                     .append(title).append("</a>，请关注。</p></body></html>").toString();
         }
-        String linkTitle = Objects.toString(FlowReportNaming.datedTitle(execution.getFlowName(), execution), "长任务报告");
+        String linkTitle = Objects.toString(FlowReportNaming.notificationTitle(execution), "长任务报告");
         return NotifyBodyTemplate.renderHtml(notifyBodyTemplate == null ? execution.getNotifyBodyTemplateSnapshot() : notifyBodyTemplate,
                 linkTitle, url, defaultHtml);
     }
@@ -444,7 +463,7 @@ public class FlowCompletionService {
     }
 
     private static String reportNotificationTitle(SkillFlowExecution execution) {
-        String name = execution.getFlowName();
+        String name = FlowReportNaming.baseTitle(execution);
         if (name == null || name.isBlank()) name = "未命名报告";
         String status = switch (execution.getStatus()) {
             case SUCCESS -> "生成成功";

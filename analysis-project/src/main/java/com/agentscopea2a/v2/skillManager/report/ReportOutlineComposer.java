@@ -78,6 +78,10 @@ public class ReportOutlineComposer {
      * @return 报告正文;快照为空/解析失败/无条目时返回 null(调用方走旧版兼容拼接)。
      */
     public String compose(String outlineJson, List<SkillFlowNodeExecution> nodes) {
+        return compose(outlineJson,nodes,null);
+    }
+    /** 对象报告使用已包含日期的快照标题，跨天重试时也保持一致。 */
+    public String compose(String outlineJson, List<SkillFlowNodeExecution> nodes,String exactTitle) {
         if (outlineJson == null || outlineJson.isBlank()) return null;
         Outline outline;
         try {
@@ -91,9 +95,9 @@ public class ReportOutlineComposer {
             if (node.getNodeKey() != null) byNodeKey.putIfAbsent(node.getNodeKey(), node);
         }
         StringBuilder report = new StringBuilder();
-        if (outline.title() != null && !outline.title().isBlank()) {
+        if (exactTitle!=null || (outline.title() != null && !outline.title().isBlank())) {
             // 标题尾部拼接报告生成日期,如 "XX报告 (2026年9月23日)"
-            String datedTitle = outline.title().trim() + " ("
+            String datedTitle = exactTitle!=null ? exactTitle : outline.title().trim() + " ("
                     + TITLE_DATE.format(java.time.LocalDate.now(clock)) + ")";
             report.append("<h1 class=\"report-outline-title\" data-report-outline-heading=\"true\">")
                     .append(escapeHtml(datedTitle))

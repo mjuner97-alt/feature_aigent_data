@@ -36,7 +36,41 @@ public record SkillFlowDto(
         List<String> executors,
         Boolean autoTriggerEnabled,
         Long typeId,
+        Integer priority,
+        TeamReportConfig teamReport) {
+    public SkillFlowDto(
+        Long id,
+        String code,
+        String name,
+        String description,
+        String taskQuestion,
+        String summaryQuestionTemplate,
+        Boolean enabled,
+        String scheduleRules,
+        Integer maxParallelism,
+        Boolean notifyEnabled,
+
+        Boolean chatPublic,
+        List<Trigger> triggers,
+        List<Node> nodes,
+
+        Object reportOutline,
+        String createdBy,
+        LocalDateTime createdAt,
+        LocalDateTime updatedAt,
+        Boolean deleted,
+        String notifyContactName,
+        String notifyContactPhone,
+
+        String notifyBodyTemplate,
+
+        List<String> executors,
+        Boolean autoTriggerEnabled,
+        Long typeId,
         Integer priority) {
+        this(id, code, name, description, taskQuestion, summaryQuestionTemplate, enabled, scheduleRules, maxParallelism, notifyEnabled, chatPublic, triggers, nodes, reportOutline, createdBy, createdAt, updatedAt, deleted, notifyContactName, notifyContactPhone, notifyBodyTemplate, executors, autoTriggerEnabled, typeId, priority, null);
+    }
+
 
     public SkillFlowDto(Long id, String code, String name, String description, String taskQuestion,
                         String summaryQuestionTemplate, Boolean enabled, String scheduleRules, Integer maxParallelism,

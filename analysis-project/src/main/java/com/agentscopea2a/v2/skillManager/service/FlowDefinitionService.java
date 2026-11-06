@@ -55,6 +55,9 @@ public class FlowDefinitionService {
 
     private static final Logger log = LoggerFactory.getLogger(FlowDefinitionService.class);
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private TeamReportService teamReports;
+
     static final int DEFAULT_MAX_PARALLELISM = 2;
     private final SkillFlowMapper flowMapper;
     private final SkillMapper skillMapper;
@@ -94,6 +97,8 @@ public class FlowDefinitionService {
     public SkillFlowDto create(SkillFlowDefinitionRequest request, String userId) {
         requireUser(userId);
         request = withBackendDefaults(request);
+        if(request.typeId()==null) throw new IllegalStateException("FlowTypeRequired: 请先选择已配置的任务类型");
+        if (teamReports != null) request = teamReports.prepare(request, null);
         validateBasic(request, null);
         validateNameConflict(request.name(), null);
         if (Boolean.TRUE.equals(request.enabled())) {
@@ -101,6 +106,7 @@ public class FlowDefinitionService {
         }
         SkillFlow flow = toFlow(request, userId, null);
         flowMapper.insertFlow(flow);
+        if(teamReports!=null) teamReports.savePool(flow.getId(),request.teamReport());
         replaceChildren(flow.getId(), request, userId);
         replaceExecutors(flow.getId(), request.executors(), userId);
         if (request.notifySettings() != null) updateNotifySettings(flow.getId(), request.notifySettings(), userId);
@@ -113,7 +119,9 @@ public class FlowDefinitionService {
     @Transactional("gaussCustomerTransactionManager")
     public SkillFlowDto update(Long id, SkillFlowDefinitionRequest request, String userId) {
         SkillFlow existing = requireOwner(id, userId);
+        if(request.typeId()!=null && !Objects.equals(request.typeId(),existing.getTypeId())) throw new IllegalStateException("FlowTypeImmutable: 类型保存后不可修改");
         request = withBackendDefaults(request);
+        if (teamReports != null) { teamReports.lock(id); request = teamReports.prepare(request, existing); }
         validateBasic(request, id);
         validateNameConflict(request.name(), id);
         if (Boolean.TRUE.equals(request.enabled())) {
@@ -126,6 +134,7 @@ public class FlowDefinitionService {
         SkillFlow updated = toFlow(request, existing.getCreatedBy(), existing.getCode());
         updated.setId(id);
         if (request.typeId() == null) updated.setTypeId(existing.getTypeId());
+        if (request.teamReport() == null) updated.setTeamReportJson(existing.getTeamReportJson());
         // 通知收件人配置不在编排表单里(toFlow 不会带),整体替换定义时原样保留,由通知设置抽屉独立维护。
         updated.setNotifyReceivers(existing.getNotifyReceivers());
         updated.setNotifyReceiverTriggers(existing.getNotifyReceiverTriggers());
@@ -133,6 +142,7 @@ public class FlowDefinitionService {
         boolean wasPublic = Boolean.TRUE.equals(existing.getChatPublic());
         updated.setChatPublic(false);
         flowMapper.updateFlow(updated);
+        if(teamReports!=null) teamReports.savePool(id,request.teamReport());
         replaceChildren(id, request, userId);
         replaceExecutors(id, request.executors(), existing.getCreatedBy());
         if (request.notifySettings() != null) updateNotifySettings(id, request.notifySettings(), userId);
@@ -217,6 +227,12 @@ public class FlowDefinitionService {
         long total = flowMapper.countFlowPage(owner, enabled, trim(keyword), createdBys, typeId);
         var items = flowMapper.selectFlowPage(owner, enabled, trim(keyword), createdBys, typeId, userId, (long)(page - 1) * pageSize, pageSize);
         if (!items.isEmpty()) {
+            var batchRows=flowMapper.selectManualBatchSummaries(items.stream().map(com.agentscopea2a.v2.skillManager.dto.SkillFlowSummaryDto::getId).toList());
+            for(var batch:batchRows) for(var item:items) if(item.getId().longValue()==((Number)batch.get("flow_id")).longValue()) {
+                item.setManualBatchId((String)batch.get("batch_id"));
+                item.setManualBatchTotal(((Number)batch.get("batch_total")).intValue());
+                item.setManualBatchCompleted(((Number)batch.get("batch_completed")).intValue());
+            }
             var rows = flowMapper.selectPageMetricRows(items.stream().map(com.agentscopea2a.v2.skillManager.dto.SkillFlowSummaryDto::getId).toList());
             Map<Long, Set<Long>> nodes = new java.util.HashMap<>();
             Map<Long, Set<Long>> metrics = new java.util.HashMap<>();
@@ -340,7 +356,7 @@ public class FlowDefinitionService {
         LocalDate dataDate = LocalDate.now(clock);
         // 指标 -> 受影响节点列表
         Map<Long, List<String>> affected = new LinkedHashMap<>();
-        for (SkillFlowNode node : flowMapper.selectNodesByFlowId(flow.getId())) {
+        for (SkillFlowNode node : definitionNodes(flow)) {
             List<Long> selected = flowMapper.selectMetricIdsByNodeId(node.getId());
             for (Long metricId : resolveNodeMetrics(node, selected).metricIds()) {
                 affected.computeIfAbsent(metricId, k -> new ArrayList<>()).add(node.getNodeKey());
@@ -358,7 +374,7 @@ public class FlowDefinitionService {
     }
 
     /** 触发词归一化:NFKC -> 去首尾空白 -> 压缩连续空白 -> 小写,用于路由匹配与唯一性判断。 */
-    public String normalizeKeyword(String keyword) {
+    public static String normalizeKeyword(String keyword) {
         if (keyword == null) return "";
         return Normalizer.normalize(keyword, Normalizer.Form.NFKC)
                 .trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
@@ -367,7 +383,7 @@ public class FlowDefinitionService {
     /** 基础校验(创建/更新都做):名称、触发词冲突、报告大纲结构。 */
     private void validateBasic(SkillFlowDefinitionRequest request, Long currentFlowId) {
         if (request == null) throw new IllegalStateException("FlowValidationFailed: request is required");
-        NotificationContact.validate(request.notifyContactName(), request.notifyContactPhone());
+        validateNotificationContacts(request);
         if (trim(request.name()).isEmpty()) throw new IllegalStateException("FlowValidationFailed: name is required");
         List<String> outlineErrors = ReportOutlineValidator.validate(request.reportOutline(), nodeKeysOf(request));
         if (!outlineErrors.isEmpty()) {
@@ -379,6 +395,7 @@ public class FlowDefinitionService {
         for (SkillFlowDefinitionRequest.Node node : request.nodes()) {
             String params = node.scriptParamsJson();
             if (params == null || params.isBlank()) continue;
+            if(params.contains("$public") && request.teamReport()==null) throw new IllegalStateException("TeamReportPublicReferenceUnavailable: 历史模式不支持公共参数引用");
             if (paramRuleService == null) {
                 try {
                     JsonNode values = objectMapper.readTree(params);
@@ -390,11 +407,15 @@ public class FlowDefinitionService {
                 } catch (JsonProcessingException e) {
                     throw new IllegalStateException("FlowValidationFailed: ScriptParamsInvalid: 参数 JSON 格式无效", e);
                 }
-            } else if (paramRuleService.containsDynamic(params)) {
+            } else if (paramRuleService.containsDynamic(params) || params.contains("$public")) {
                 List<String> errors = paramRuleService.validateParams(node.scriptId(), params);
                 if (!errors.isEmpty()) throw new IllegalStateException("FlowValidationFailed: 节点 " + node.nodeKey() + "：" + String.join("; ", errors));
             }
         }
+    }
+
+    private static void validateNotificationContacts(SkillFlowDefinitionRequest request) {
+        NotificationContact.validate(request.notifyContactName(),request.notifyContactPhone());
     }
 
     private static Set<String> nodeKeysOf(SkillFlowDefinitionRequest request) {
@@ -414,7 +435,7 @@ public class FlowDefinitionService {
     private List<String> validationErrors(SkillFlowDefinitionRequest request, String userId, Long currentFlowId) {
         List<String> errors = new ArrayList<>();
         try {
-            NotificationContact.validate(request.notifyContactName(), request.notifyContactPhone());
+            validateNotificationContacts(request);
         } catch (IllegalStateException e) {
             errors.add(e.getMessage());
         }
@@ -532,7 +553,7 @@ public class FlowDefinitionService {
 
     /** 把库里的流程定义还原成请求对象(启用校验复用同一套逻辑)。 */
     private SkillFlowDefinitionRequest toRequest(SkillFlow flow, Long flowId) {
-        List<SkillFlowDefinitionRequest.Node> nodes = flowMapper.selectNodesByFlowId(flowId).stream()
+        List<SkillFlowDefinitionRequest.Node> nodes = definitionNodes(flow).stream()
                 .map(node -> new SkillFlowDefinitionRequest.Node(node.getNodeKey(), node.getNodeName(), node.getNodeType(), node.getSkillId(), node.getScriptId(), node.getScriptParamsJson(), node.getQuestionTemplate(),
                         flowMapper.selectMetricIdsByNodeId(node.getId()), node.getMetricOverrideConfigured(),
                         node.getRequired(), node.getMaxAttempts(), node.getSortOrder())).toList();
@@ -541,7 +562,7 @@ public class FlowDefinitionService {
                 .toList();
         return new SkillFlowDefinitionRequest(flow.getCode(), flow.getName(), flow.getDescription(), flow.getTaskQuestion(),
                 flow.getSummaryQuestionTemplate(), flow.getEnabled(), flow.getScheduleRules(),
-                flow.getMaxParallelism(), flow.getNotifyEnabled(), triggers, nodes, parseStoredOutline(flow), null, flow.getNotifyContactName(), flow.getNotifyContactPhone(), flow.getNotifyBodyTemplate(), null, flow.getAutoTriggerEnabled(), flow.getTypeId());
+                flow.getMaxParallelism(), flow.getNotifyEnabled(), triggers, nodes, parseStoredOutline(flow), null, flow.getNotifyContactName(), flow.getNotifyContactPhone(), flow.getNotifyBodyTemplate(), null, flow.getAutoTriggerEnabled(), flow.getTypeId(), teamReports == null ? null : teamReports.config(flow));
     }
 
     /** 组装返回 DTO,附带 skill 名称与指标名称等展示信息。 */
@@ -549,7 +570,7 @@ public class FlowDefinitionService {
         List<SkillFlowDto.Trigger> triggers = flow.getId() == null ? List.of() : flowMapper.selectTriggersByFlowId(flow.getId())
                                                                                  .stream().map(item -> new SkillFlowDto.Trigger(item.getId(), item.getKeyword(), item.getPriority(), item.getEnabled()))
                                                                                  .toList();
-        List    <SkillFlowDto.Node> nodes = flow.getId() == null ? List.of() : flowMapper.selectNodesByFlowId(flow.getId()).stream()
+        List    <SkillFlowDto.Node> nodes = flow.getId() == null ? List.of() : definitionNodes(flow).stream()
                                                                                .map(node -> {
                                                                                    Skill skill = skillMapper.selectById(node.getSkillId());
                                                                                    List<Long> metricIds = flowMapper.selectMetricIdsByNodeId(node.getId());
@@ -567,7 +588,7 @@ public class FlowDefinitionService {
         return new SkillFlowDto(flow.getId(), flow.getCode(), flow.getName(), flow.getDescription(), flow.getTaskQuestion(),
                 flow.getSummaryQuestionTemplate(), flow.getEnabled(), flow.getScheduleRules(), flow.getMaxParallelism(),
                 flow.getNotifyEnabled(), Boolean.TRUE.equals(flow.getChatPublic()),
-                triggers, nodes, parseOutlineObject(flow), flow.getCreatedBy(), flow.getCreatedAt(), flow.getUpdatedAt(), flow.getDeletedAt() != null, flow.getNotifyContactName(), flow.getNotifyContactPhone(), flow.getNotifyBodyTemplate(), displayExecutors(flow), flow.getAutoTriggerEnabled(), flow.getTypeId(), flow.getPriority());
+                triggers, nodes, parseOutlineObject(flow), flow.getCreatedBy(), flow.getCreatedAt(), flow.getUpdatedAt(), flow.getDeletedAt() != null, flow.getNotifyContactName(), flow.getNotifyContactPhone(), flow.getNotifyBodyTemplate(), displayExecutors(flow), flow.getAutoTriggerEnabled(), flow.getTypeId(), flow.getPriority(), teamReports == null ? null : teamReports.config(flow));
     }
 
     /** 旧客户端不传名单时保留授权；显式空数组清空授权。创建人天然可执行，不入关系表。 */
@@ -605,8 +626,8 @@ public class FlowDefinitionService {
 
     private SkillFlow toFlow(SkillFlowDefinitionRequest request, String createdBy, String existingCode) {
         String code = trim(existingCode).isEmpty() ? "flow-" + UUID.randomUUID() : existingCode;
-        // 兼容旧版流程编辑器未提交 typeId：迁移默认类型“其他”(id=1)作为兜底，避免新增流程因 type_id 非空约束失败。
-        return SkillFlow.builder().typeId(request.typeId() == null ? 1L : request.typeId()).code(code).name(trim(request.name())).description(request.description())
+        // 更新时允许省略类型编号；创建时须提前指定已配置的类型。
+        return SkillFlow.builder().teamReportJson(teamReports == null ? null : teamReports.header(request.teamReport())).typeId(request.typeId() == null ? 1L : request.typeId()).code(code).name(trim(request.name())).description(request.description())
                 .taskQuestion(trim(request.taskQuestion()))
                 .summaryQuestionTemplate(request.summaryQuestionTemplate())
                 .reportOutline(serializeOutline(request.reportOutline()))
@@ -689,5 +710,9 @@ public class FlowDefinitionService {
     private String trim(String value) {
         return value == null ? "" : value.trim();
     }
+    private List<SkillFlowNode> definitionNodes(SkillFlow flow) {
+        return flow.getTeamReportJson()==null ? flowMapper.selectNodesByFlowId(flow.getId()) : flowMapper.selectObjectNodesByFlowId(flow.getId());
+    }
+
 }
 

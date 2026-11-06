@@ -66,6 +66,7 @@ public class FlowCoordinator {
 
     private static final Logger log = LoggerFactory.getLogger(FlowCoordinator.class);
 
+    @org.springframework.beans.factory.annotation.Autowired private TeamReportService teamReports;
     private final SkillFlowMapper mapper;
     private final HarnessA2aRunnerV2 runner;
     private final ObjectMapper json;
@@ -180,7 +181,8 @@ public class FlowCoordinator {
         // 统一取当前时间:租约过期判断、跨天判断都用同一个时刻,避免一轮扫描内时钟漂移
         LocalDateTime now = LocalDateTime.now(clock);
         expirePreviousDays();       // 跨天兜底:仍在等指标(WAITING_METRICS)的执行直接判失败
-        expireExhaustedNodes(now);  // 最终超时兜底:已达最大尝试次数且租约到期的节点直接判失败并推进流程
+        expireExhaustedNodes(now);
+        for(var cancelled:mapper.selectCancellingObjectExecutions()) advance(cancelled.getId());  // 最终超时兜底:已达最大尝试次数且租约到期的节点直接判失败并推进流程
         dispatchRunnableNodes();    // 认领并调度可运行节点
 
         // 第 1 步:兜底补建自动触发执行。
@@ -196,6 +198,7 @@ public class FlowCoordinator {
         // 第 3 步:最终超时兜底。节点已到最大尝试次数且租约也过期 = worker 死了或模型调用僵死,
         // 不再重试,直接判节点失败并推进流程(流程才能走到终态/汇总)。
         expireExhaustedNodes(now);
+        for(var cancelled:mapper.selectCancellingObjectExecutions()) advance(cancelled.getId());
 
         // 第 4 步:派发可运行节点。QUEUED(新入队)/RETRY_WAIT(到重试时间)/RUNNING 但租约过期(要恢复)
         // 的节点,在 worker 许可用量允许的前提下抢占认领并提交线程池执行。
@@ -366,12 +369,12 @@ public class FlowCoordinator {
             String rendered = template == null || template.isBlank()
                     ? (scriptNode ? "执行脚本 " + node.getScriptId() : Objects.toString(flow.getOriginalQuestion(), ""))
                     : templates.render(template,
-                    new FlowTemplateEngine.Context(Map.of(
+                    new FlowTemplateEngine.Context(FlowTemplateEngine.withPublic(flow, Map.of(
                             // Map.of rejects null values; old flow snapshots may omit optional fields.
                             "server_date", Objects.toString(flow.getDataDate(), LocalDate.now(clock).toString()),
                             "original_question", Objects.toString(flow.getOriginalQuestion(), ""),
                             "flow_name", Objects.toString(flow.getFlowName(), ""),
-                            "skill_name", Objects.toString(node.getSkillName(), ""))));
+                            "skill_name", Objects.toString(node.getSkillName(), "")))));
             String question = scriptNode ? rendered : buildPrompt(node, rendered);
             node.setRenderedQuestion(question);
             // Python 节点参数规则解析:scriptParamsJson 里的 {"$dynamic": config} 按数据日期解析成真实值
@@ -391,6 +394,7 @@ public class FlowCoordinator {
             String cacheNodeId = scriptNode
                     ? "flow-" + flow.getFlowId() + "-" + node.getNodeKey() + "-script-" + node.getScriptId()
                     : "flow-" + flow.getFlowId() + "-" + node.getNodeKey() + "-skill-" + node.getSkillId();
+            if(flow.getBatchId()!=null) cacheNodeId += "-object-"+flow.getTeamId();
             String cacheVersion = scriptNode
                     ? ScriptParameterCacheVersion.build(node.getScriptId(), node.getScriptParamsJson(), json)
                     : String.valueOf(node.getSkillId());
@@ -529,6 +533,8 @@ public class FlowCoordinator {
         if (nodes.isEmpty()) throw new IllegalStateException("FlowNodesMissing");
         // 取消中:所有未终态节点置 CANCELLED,流程落终态 CANCELLED
         if (flowStatus == FlowExecutionStatus.CANCEL_REQUESTED || flowStatus == FlowExecutionStatus.CANCELLED) {
+            if(flow.getBatchId()!=null && nodes.stream().anyMatch(n->n.getStatus()==FlowNodeExecutionStatus.RUNNING
+                    && n.getLeaseExpiresAt()!=null && n.getLeaseExpiresAt().isAfter(LocalDateTime.now(clock)))) return;
             for (SkillFlowNodeExecution node : nodes) {
                 if (node.getStatus() == null || !node.getStatus().terminal()) {
                     node.setStatus(FlowNodeExecutionStatus.CANCELLED);
@@ -542,6 +548,7 @@ public class FlowCoordinator {
             releaseRepeatableGuard(flow);
             flow.setCompletedAt(LocalDateTime.now(clock));
             mapper.updateExecution(flow);
+            if(flow.getBatchId()!=null) dispatchRunnableNodes();
             return;
         }
         // 当前流程节点没有依赖关系时，所有 PENDING 节点都应并发入队；流程级
@@ -605,11 +612,16 @@ public class FlowCoordinator {
             log.error("Flow notification failed: errorId={}, stage={}, flowId={}",
                     diagnostic.errorId(), diagnostic.stage(), flow.getId(), e);
         }
+        // 当前对象结束后立即推进下一个对象，定时扫描作为恢复兜底。
+        if(flow.getBatchId()!=null) dispatchRunnableNodes();
     }
 
+    @org.springframework.transaction.annotation.Transactional("gaussCustomerTransactionManager")
     public void retrySummary(Long flowId) {
+        SkillFlowExecution retryCandidate=mapper.selectFlowExecutionById(flowId);
+        if(retryCandidate!=null && retryCandidate.getBatchId()!=null) teamReports.checkRetry(retryCandidate);
         SkillFlowExecution flow = mapper.selectFlowExecutionForUpdate(flowId);
-        if (flow != null && flow.getTriggerType() == FlowTriggerType.AUTO_METRIC)
+        if (flow != null && flow.getBatchId()==null && flow.getTriggerType() == FlowTriggerType.AUTO_METRIC)
             throw new IllegalStateException("自动触发的长任务不支持手动重跑");
         if (flow == null || flow.getStatus() == null || !(flow.getStatus() == FlowExecutionStatus.SUCCESS
                 || flow.getStatus() == FlowExecutionStatus.FAILED
@@ -637,10 +649,13 @@ public class FlowCoordinator {
      * @param flowId 节点所属的流程执行 ID
      * @param nodeId 要重跑的节点执行 ID
      */
+    @org.springframework.transaction.annotation.Transactional("gaussCustomerTransactionManager")
     public void retryNode(Long flowId, Long nodeId) {
         // 锁定流程记录，串行化同一流程上的重跑、取消等状态修改。
+        SkillFlowExecution retryCandidate=mapper.selectFlowExecutionById(flowId);
+        if(retryCandidate!=null && retryCandidate.getBatchId()!=null) teamReports.checkRetry(retryCandidate);
         SkillFlowExecution flow = mapper.selectFlowExecutionForUpdate(flowId);
-        if (flow != null && flow.getTriggerType() == FlowTriggerType.AUTO_METRIC) {
+        if (flow != null && flow.getBatchId()==null && flow.getTriggerType() == FlowTriggerType.AUTO_METRIC) {
             throw new IllegalStateException("FlowValidationFailed: 自动执行的长任务不支持单节点重跑");
         }
         SkillFlowNodeExecution node = mapper.selectNodeExecution(nodeId);
@@ -679,9 +694,12 @@ public class FlowCoordinator {
      *
      * @return 本次重跑的节点数
      */
+    @org.springframework.transaction.annotation.Transactional("gaussCustomerTransactionManager")
     public int retryFailedNodes(Long flowId) {
+        SkillFlowExecution retryCandidate=mapper.selectFlowExecutionById(flowId);
+        if(retryCandidate!=null && retryCandidate.getBatchId()!=null) teamReports.checkRetry(retryCandidate);
         SkillFlowExecution flow = mapper.selectFlowExecutionForUpdate(flowId);
-        if (flow != null && flow.getTriggerType() == FlowTriggerType.AUTO_METRIC)
+        if (flow != null && flow.getBatchId()==null && flow.getTriggerType() == FlowTriggerType.AUTO_METRIC)
             throw new IllegalStateException("自动触发的长任务不支持手动重跑");
         if (flow == null || (flow.getStatus() != FlowExecutionStatus.FAILED
                 && flow.getStatus() != FlowExecutionStatus.PARTIAL_SUCCESS))

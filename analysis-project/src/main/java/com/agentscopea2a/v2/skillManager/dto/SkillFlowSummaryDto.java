@@ -18,4 +18,7 @@ public class SkillFlowSummaryDto {
     private int nodeCount;
     private int metricCount;
     private boolean canExecute;
+    private String manualBatchId;
+    private int manualBatchTotal;
+    private int manualBatchCompleted;
 }

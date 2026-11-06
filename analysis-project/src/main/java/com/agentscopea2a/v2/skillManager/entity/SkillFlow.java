@@ -18,6 +18,7 @@ import java.time.LocalDateTime;
 public class SkillFlow {
     private Long id;
     private Long typeId;
+    private String teamReportJson;
     private Integer priority;
     private String code;
     private String name;

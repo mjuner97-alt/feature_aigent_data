@@ -36,11 +36,11 @@ public class FlowSummaryPromptRenderer {
                     "result", Objects.toString(node.getResultJson(), ""),
                     "error", Objects.toString(node.getErrorMessage(), ""))).toList());
             return templates.render(template,
-                    new FlowTemplateEngine.Context(Map.of(
+                    new FlowTemplateEngine.Context(FlowTemplateEngine.withPublic(flow, Map.of(
                             "server_date", Objects.toString(flow.getDataDate(), LocalDate.now().toString()),
                             "original_question", Objects.toString(flow.getOriginalQuestion(), "-"),
                             "flow_name", Objects.toString(flow.getFlowName(), "-"),
-                            "all_results", allResults)));
+                            "all_results", allResults))));
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("FlowSummaryPromptRenderFailed: " + e.getMessage(), e);
         }

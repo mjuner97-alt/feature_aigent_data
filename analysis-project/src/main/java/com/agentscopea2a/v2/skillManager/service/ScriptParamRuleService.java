@@ -55,12 +55,38 @@ public class ScriptParamRuleService {
         return resolved;
     }
 
+    /** 显式引用公共参数，仅允许字符串与单元素字符串数组之间转换。 */
+    public Map<String,Object> resolve(String scriptId,String paramsJson,LocalDate date,Map<String,Object> publicParams) {
+        Map<String,Object> values=new LinkedHashMap<>(resolve(scriptId,paramsJson,date));
+        if(values.values().stream().noneMatch(ScriptParamRuleService::isPublic)) return values;
+        Map<String,String> types=loadStrictParamTypes(scriptId,values);
+        values.replaceAll((name,value)-> {
+            if(!isPublic(value)) return value;
+            String key=String.valueOf(((Map<?,?>)value).get("$public"));
+            if(!publicParams.containsKey(key)) throw new IllegalStateException("TeamReportPublicReferenceUnavailable: "+key);
+            Object actual=publicParams.get(key);String type=types.get(name).toLowerCase(java.util.Locale.ROOT);
+            if(publicCompatible(type,key)) return isArrayType(type) ? List.of(actual) : actual;
+            throw new IllegalStateException("TeamReportPublicTypeIncompatible: "+name+" ("+type+")");
+        });return values;
+    }
+    private static boolean publicCompatible(String type,String key) {
+        return java.util.Set.of("string","str","array","string[]","array<string>").contains(type)
+            || ("data_date".equals(key) && java.util.Set.of("date","date[]","array<date>").contains(type));
+    }
+    private static boolean isPublic(Object value) { return value instanceof Map<?,?> map && map.containsKey("$public"); }
+
     /** 校验动态配置和参数类型，不在保存时将周期展开成具体月份。 */
     public List<String> validateParams(String scriptId, String paramsJson) {
         try {
             Map<String, Object> params = parseParams(paramsJson);
             Map<String, String> types = containsDynamic(params) ? loadStrictParamTypes(scriptId, params) : Map.of();
             for (var entry : params.entrySet()) {
+                if(isPublic(entry.getValue())) {
+                    Map<String,String> publicTypes=loadStrictParamTypes(scriptId,params);
+                    String type=publicTypes.get(entry.getKey()).toLowerCase(java.util.Locale.ROOT);
+                    if(!publicCompatible(type,String.valueOf(((Map<?,?>)entry.getValue()).get("$public"))))
+                        throw new IllegalStateException("TeamReportPublicTypeIncompatible: "+entry.getKey());
+                }
                 if (isBuildingVersions(entry.getValue())) buildingVersionsResolver.validate(entry.getValue(), types.get(entry.getKey()));
                 else if (isDynamic(entry.getValue())) periodWindowResolver.resolve(entry.getValue(), types.get(entry.getKey()), LocalDate.of(2000, 1, 1));
             }
@@ -92,6 +118,10 @@ public class ScriptParamRuleService {
 
     private static void validateMarkers(Object value, int depth) {
         if (value instanceof Map<?, ?> map) {
+            if(map.containsKey("$public")) {
+                if(depth!=1 || map.size()!=1 || !java.util.Set.of("report_type","dev_dept","stat_group","data_date").contains(map.get("$public")))
+                    throw new IllegalStateException("TeamReportPublicReferenceInvalid");
+            }
             if (map.containsKey("$rule")) throw new IllegalStateException("ScriptParamsInvalid: 旧预设规则已停用，请在页面重新配置动态时间");
             if (map.containsKey("$dynamic") && depth != 1)
                 throw new IllegalStateException("ScriptParamsInvalid: 动态时间配置必须直接绑定参数，不能嵌套在数组或对象内");

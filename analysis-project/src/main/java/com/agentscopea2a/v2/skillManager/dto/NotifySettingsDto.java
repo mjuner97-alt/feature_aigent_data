@@ -19,7 +19,14 @@ public record NotifySettingsDto(
         Map<String, List<String>> ccReceiversByTrigger,
         String notifyBodyTemplate,
         String flowName,
-        String reportLinkTitle) {
+        String reportLinkTitle,
+        String recipientDepartment,
+        String recipientTeam) {
+    public NotifySettingsDto(List<String> notifyReceivers,List<String> notifyReceiverTriggers,Boolean notifyEnabled,
+                             Map<String,List<String>> notifyReceiversByTrigger,List<String> ccReceivers,Map<String,List<String>> ccReceiversByTrigger,
+                             String notifyBodyTemplate,String flowName,String reportLinkTitle) {
+        this(notifyReceivers,notifyReceiverTriggers,notifyEnabled,notifyReceiversByTrigger,ccReceivers,ccReceiversByTrigger,notifyBodyTemplate,flowName,reportLinkTitle,null,null);
+    }
     public NotifySettingsDto(List<String> notifyReceivers, List<String> notifyReceiverTriggers,
                              Boolean notifyEnabled, Map<String, List<String>> notifyReceiversByTrigger,
                              List<String> ccReceivers, Map<String, List<String>> ccReceiversByTrigger) {

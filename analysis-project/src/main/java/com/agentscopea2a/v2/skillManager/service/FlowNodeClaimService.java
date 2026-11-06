@@ -35,6 +35,7 @@ public class FlowNodeClaimService {
     private final SkillFlowMapper mapper;
     @org.springframework.beans.factory.annotation.Autowired
     private FlowSchedulerGuard schedulerGuard;
+    @org.springframework.beans.factory.annotation.Autowired private TeamReportService teamReports;
 
     public FlowNodeClaimService(SkillFlowMapper mapper) {
         this.mapper = mapper;
@@ -57,6 +58,10 @@ public class FlowNodeClaimService {
                     node.getAttemptCount(), node.getMaxAttempts());
             return false;
         }
+        SkillFlowExecution candidate=mapper.selectFlowExecutionById(node.getFlowExecutionId());
+        if(candidate!=null && candidate.getBatchId()!=null) {
+            if(candidate.getStatus().terminal() || !teamReports.mayRun(candidate)) return false;
+        }
         // 行锁锁流程,保证同一流程的并发计数判断原子
         SkillFlowExecution execution = mapper.selectFlowExecutionForUpdate(node.getFlowExecutionId());
         // Recheck after candidate selection and before any task mutation. Manual/chat
@@ -65,7 +70,7 @@ public class FlowNodeClaimService {
                 && !schedulerGuard.isAllowed()) return false;
         // 兼容旧版本留下的矛盾状态：单节点重跑已入队，但流程仍停留在终态。
         // 发现可运行节点即说明汇总已经失效，先恢复流程再继续认领。
-        if (execution != null && execution.getStatus().terminal()) {
+        if (execution != null && execution.getBatchId()==null && execution.getStatus().terminal()) {
             execution.setStatus(FlowExecutionStatus.RUNNING);
             execution.setSummaryJson(null);
             execution.setReportPath(null);

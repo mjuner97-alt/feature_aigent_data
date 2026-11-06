@@ -35,6 +35,7 @@
     <resultMap id="FlowMap" type="com.agentscopea2a.v2.skillManager.entity.SkillFlow">
         <id column="id" property="id"/>
         <result column="type_id" property="typeId"/>
+        <result column="team_report_json" property="teamReportJson"/>
         <result column="priority" property="priority"/>
         <result column="code" property="code"/>
         <result column="name" property="name"/>
@@ -111,6 +112,10 @@
     <!-- 流程执行实例表 skill_flow_execution(一次完整运行,含触发信息和流程配置快照) -->
     <resultMap id="ExecutionMap" type="com.agentscopea2a.v2.skillManager.entity.SkillFlowExecution">
         <id column="id" property="id"/>
+        <result column="type_id" property="typeId"/>
+        <result column="batch_id" property="batchId"/>
+        <result column="team_id" property="teamId"/>
+        <result column="public_params_json" property="publicParamsJson"/>
         <result column="flow_id" property="flowId"/>
         <result column="flow_code" property="flowCode"/>
         <result column="flow_name" property="flowName"/>
@@ -219,7 +224,7 @@
 
     <!-- 各表公共列清单,供查询复用;新增列时记得同步维护 -->
     <sql id="flowColumns">
-        id, type_id, priority, code, name, description, task_question, summary_question_template, enabled, schedule_rules, auto_trigger_enabled,
+        id, type_id, team_report_json, priority, code, name, description, task_question, summary_question_template, enabled, schedule_rules, auto_trigger_enabled,
         max_parallelism, notify_enabled, notify_contact_name, notify_contact_phone, notify_body_template, notify_receivers, notify_receiver_triggers, chat_public,
         report_outline, report_process_id, created_by, created_at, updated_at, deleted_at
     </sql>
@@ -238,10 +243,10 @@
 
     <!-- 新建流程:保存编码/名称/任务问题/汇总模板/排程星期/并发数/通知开关 -->
     <insert id="insertFlow" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO skill_flow (type_id, priority, code, name, description, task_question, summary_question_template, enabled,
+        INSERT INTO skill_flow (team_report_json, type_id, priority, code, name, description, task_question, summary_question_template, enabled,
                                 schedule_rules, auto_trigger_enabled, max_parallelism, notify_enabled, notify_contact_name, notify_contact_phone, notify_body_template, notify_receivers, report_outline, report_process_id,
                                 notify_receiver_triggers, created_by)
-        VALUES (#{typeId}, COALESCE(#{priority}, 0), #{code}, #{name}, #{description}, #{taskQuestion}, #{summaryQuestionTemplate}, #{enabled},
+        VALUES (#{teamReportJson}, #{typeId}, COALESCE(#{priority}, 0), #{code}, #{name}, #{description}, #{taskQuestion}, #{summaryQuestionTemplate}, #{enabled},
                 #{scheduleRules}, #{autoTriggerEnabled}, #{maxParallelism}, #{notifyEnabled}, #{notifyContactName}, #{notifyContactPhone}, #{notifyBodyTemplate}, #{notifyReceivers},
                 #{reportOutline}, #{reportProcessId}, #{notifyReceiverTriggers}, #{createdBy})
     </insert>
@@ -288,7 +293,7 @@
     <select id="selectAllEnabledFlows" resultMap="FlowMap">
         SELECT f.*
         FROM skill_flow f
-        LEFT JOIN skill_flow_type t ON t.id = f.type_id
+        LEFT JOIN skill_flow_type t ON t.id = COALESCE(f.legacy_queue_type_id, f.type_id)
         WHERE f.enabled = TRUE
           AND f.deleted_at IS NULL
           AND (t.id IS NULL OR t.enabled = TRUE)
@@ -380,6 +385,14 @@
         FROM skill_flow <include refid="flowPageFilters"/>
         ORDER BY COALESCE(updated_at, created_at) DESC NULLS LAST, id DESC LIMIT #{limit} OFFSET #{offset}
     </select>
+    <select id="selectManualBatchSummaries" resultType="map">
+        SELECT e.flow_id, e.batch_id, COUNT(*) AS batch_total,
+        SUM(CASE WHEN e.status IN ('SUCCESS','PARTIAL_SUCCESS','FAILED','CANCELLED') THEN 1 ELSE 0 END) AS batch_completed
+        FROM skill_flow_execution e JOIN skill_flow_execution latest ON latest.flow_id=e.flow_id AND latest.batch_id=e.batch_id
+        WHERE latest.id IN (SELECT MAX(id) FROM skill_flow_execution WHERE batch_id IS NOT NULL AND trigger_type='MANUAL'
+            AND flow_id IN <foreach collection="flowIds" item="id" open="(" separator="," close=")">#{id}</foreach> GROUP BY flow_id)
+        GROUP BY e.flow_id,e.batch_id
+    </select>
     <!-- Page-scoped scalar dependency rows: explicit empty override suppresses defaults. -->
     <select id="selectPageMetricRows" resultMap="FlowMetricSummaryMap">
         SELECT n.flow_id, n.id AS node_id, n.metric_override_configured AS override_configured,
@@ -395,7 +408,7 @@
     <!-- 全量更新流程定义(按 id),软删除的流程不允许再改 -->
     <update id="updateFlow">
         UPDATE skill_flow
-        SET type_id=#{typeId},
+        SET team_report_json=#{teamReportJson}, type_id=#{typeId},
             priority=COALESCE(#{priority}, 0),
             code=#{code},
             name=#{name},
@@ -474,6 +487,10 @@
         ORDER BY sort_order, id
     </select>
 
+    <!-- 新对象模式读取显式的指标覆盖元数据，保持历史查询字段不变。 -->
+    <select id="selectObjectNodesByFlowId" resultMap="NodeMap">
+        SELECT * FROM skill_flow_node WHERE flow_id=#{flowId} ORDER BY sort_order,id
+    </select>
     <!-- 删除流程下所有节点的指标关联(编辑流程时先清后建的第一步) -->
     <delete id="deleteNodeMetricsByFlowId">
         DELETE
@@ -615,12 +632,12 @@
          而 useGeneratedKeys 会让驱动追加 RETURNING;并发冲突由服务层捕获 DuplicateKeyException 处理 -->
     <insert id="insertFlowExecution" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO skill_flow_execution
-        (flow_id, flow_code, flow_name, summary_question_template_snapshot, max_parallelism_snapshot,
+        (type_id, batch_id, team_id, public_params_json, flow_id, flow_code, flow_name, summary_question_template_snapshot, max_parallelism_snapshot,
          notify_enabled_snapshot, notify_contact_name_snapshot, notify_contact_phone_snapshot, notify_body_template_snapshot, notify_receivers_snapshot, cc_receivers_snapshot, notify_receiver_triggers_snapshot,
          trigger_type, trigger_user_id, conversation_id, original_question, data_date,
          status, active_guard_key, required_metric_count, ready_metric_count, missing_metrics_json,
          report_process_id, report_outline_snapshot)
-        VALUES (#{flowId}, #{flowCode}, #{flowName}, #{summaryQuestionTemplateSnapshot}, #{maxParallelismSnapshot},
+        VALUES (#{typeId}, #{batchId}, #{teamId}, #{publicParamsJson}, #{flowId}, #{flowCode}, #{flowName}, #{summaryQuestionTemplateSnapshot}, #{maxParallelismSnapshot},
                 #{notifyEnabledSnapshot}, #{notifyContactNameSnapshot}, #{notifyContactPhoneSnapshot}, #{notifyBodyTemplateSnapshot}, #{notifyReceiversSnapshot}, #{ccReceiversSnapshot}, #{notifyReceiverTriggersSnapshot},
                 #{triggerType}, #{triggerUserId}, #{conversationId},
                 #{originalQuestion}, #{dataDate}, #{status}, #{activeGuardKey}, #{requiredMetricCount},
@@ -697,7 +714,7 @@
     <!-- 执行记录管理列表:按触发用户/状态筛选,最多返回最近 500 条,createdBy 参数与 userId 同列过滤 -->
     <!-- List-only scalar projection; prompts, snapshots, outlines and report bodies belong to detail queries. -->
     <sql id="executionListColumns">
-        e.id, e.flow_id, e.flow_name, e.flow_code, e.status, e.trigger_type, e.trigger_user_id,
+        e.id, e.type_id, e.batch_id, e.team_id, e.public_params_json, e.flow_id, e.flow_name, e.flow_code, e.status, e.trigger_type, e.trigger_user_id,
         e.data_date, e.required_metric_count, e.ready_metric_count, e.report_path,
         e.created_at, e.started_at, e.completed_at
     </sql>
@@ -741,7 +758,7 @@
         SELECT <include refid="executionListColumns"/>
         FROM skill_flow_execution e WHERE 1=1
         <include refid="executionListFilters"/>
-        <if test="keyword != null and keyword != ''">AND LOWER(e.flow_name) LIKE CONCAT('%', LOWER(#{keyword}), '%')</if>
+        <if test="keyword != null and keyword != ''">AND (LOWER(e.flow_name) LIKE CONCAT('%', LOWER(#{keyword}), '%') OR LOWER(e.public_params_json) LIKE CONCAT('%', LOWER(#{keyword}), '%'))</if>
         ORDER BY e.created_at DESC, e.id DESC LIMIT #{limit} OFFSET #{offset}
         )
         <include refid="executionPageAggregates"/>
@@ -753,7 +770,7 @@
         <if test="userId != null and userId != ''">AND trigger_user_id=#{userId}</if>
         <if test="status != null and status != ''">AND status=#{status}</if>
         <if test="createdBy != null and createdBy != ''">AND trigger_user_id=#{createdBy}</if>
-        <if test="keyword != null and keyword != ''">AND LOWER(flow_name) LIKE CONCAT('%', LOWER(#{keyword}), '%')</if>
+        <if test="keyword != null and keyword != ''">AND (LOWER(flow_name) LIKE CONCAT('%', LOWER(#{keyword}), '%') OR LOWER(public_params_json) LIKE CONCAT('%', LOWER(#{keyword}), '%'))</if>
     </select>
 
     <!-- 扫描仍在等指标(WAITING_METRICS)的执行,供门控重算和跨天超时兜底(expirePreviousDays)使用 -->
@@ -809,11 +826,16 @@
         FROM skill_flow_node_execution n
                  JOIN skill_flow_execution e ON e.id = n.flow_execution_id
                  JOIN skill_flow f ON f.id = e.flow_id
-                 LEFT JOIN skill_flow_type t ON t.id = f.type_id
+                 LEFT JOIN skill_flow_type t ON t.id = COALESCE(f.legacy_queue_type_id, f.type_id)
         WHERE (n.status IN ('QUEUED', 'RETRY_WAIT') OR
                (n.status = 'RUNNING' AND
                 n.lease_expires_at &lt; #{now} AND
                 n.attempt_count &lt; COALESCE(NULLIF(n.max_attempts, 0), 1)))
+          AND (e.batch_id IS NULL OR (e.status IN ('QUEUED','RUNNING') AND NOT EXISTS (
+              SELECT 1 FROM skill_flow_execution predecessor WHERE predecessor.flow_id=e.flow_id
+              AND predecessor.batch_id IS NOT NULL AND predecessor.id &lt;&gt; e.id
+              AND predecessor.status NOT IN ('SUCCESS','PARTIAL_SUCCESS','FAILED','CANCELLED')
+              AND (predecessor.id &lt; e.id OR predecessor.started_at IS NOT NULL))))
           AND (n.next_run_at IS NULL OR n.next_run_at &lt;= #{now})
           AND (n.lease_expires_at IS NULL OR n.lease_expires_at &lt; #{now})
         <if test="!allowAuto">
@@ -879,6 +901,12 @@
             updated_at=NOW()
         WHERE status = 'RUNNING'
           AND (lease_owner IS NULL OR lease_owner &lt;&gt; #{owner})
+          AND (lease_expires_at IS NULL OR lease_expires_at &lt; #{now} OR NOT EXISTS (
+              SELECT 1 FROM skill_flow_execution object_execution
+              WHERE object_execution.id=flow_execution_id AND object_execution.batch_id IS NOT NULL))
+          AND (COALESCE(attempt_count,0) &lt; COALESCE(max_attempts,1) OR NOT EXISTS (
+              SELECT 1 FROM skill_flow_execution object_execution
+              WHERE object_execution.id=flow_execution_id AND object_execution.batch_id IS NOT NULL))
         <include refid="schedulerNodeTriggerFilter"/>
     </update>
 
@@ -1016,8 +1044,8 @@
 
     <!-- 新建通知投递记录(delivery_key 全局唯一防重:初次完成通知为 flow:{executionId}:INITIAL) -->
     <insert id="insertNotification" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO skill_flow_notification (flow_execution_id, delivery_key, status, recipient, channel, request_json)
-        VALUES (#{flowExecutionId}, #{deliveryKey}, #{status}, #{recipient}, #{channel}, #{requestJson})
+        INSERT INTO skill_flow_notification (flow_execution_id, delivery_key, status, recipient, channel, request_json, error_message)
+        VALUES (#{flowExecutionId}, #{deliveryKey}, #{status}, #{recipient}, #{channel}, #{requestJson}, #{errorMessage})
     </insert>
 
     <!-- 回写通知发送结果:状态/响应/错误/发送时间 -->
@@ -1036,8 +1064,9 @@
         SELECT <include refid="executionListColumns"/>
         FROM skill_flow_execution e WHERE 1=1
         <include refid="executionListFilters"/>
+        <if test="typeId != null">AND e.type_id=#{typeId}</if>
         <if test="triggerType != null and triggerType != ''">AND e.trigger_type=#{triggerType}</if>
-        <if test="keyword != null and keyword != ''">AND LOWER(e.flow_name) LIKE CONCAT('%', LOWER(#{keyword}), '%')</if>
+        <if test="keyword != null and keyword != ''">AND (LOWER(e.flow_name) LIKE CONCAT('%', LOWER(#{keyword}), '%') OR LOWER(e.public_params_json) LIKE CONCAT('%', LOWER(#{keyword}), '%'))</if>
         <choose>
             <when test="source == 'report-template'">AND e.flow_id IS NULL AND e.report_process_id IS NOT NULL</when>
             <when test="source == 'long-task'">AND e.flow_id IS NOT NULL</when>
@@ -1051,11 +1080,12 @@
     <select id="countExecutionsBySource" resultType="long">
         SELECT COUNT(*) FROM skill_flow_execution
         WHERE 1=1
+        <if test="typeId != null">AND type_id=#{typeId}</if>
         <if test="triggerType != null and triggerType != ''">AND trigger_type=#{triggerType}</if>
         <if test="userId != null and userId != ''">AND trigger_user_id=#{userId}</if>
         <if test="status != null and status != ''">AND status=#{status}</if>
         <if test="createdBy != null and createdBy != ''">AND trigger_user_id=#{createdBy}</if>
-        <if test="keyword != null and keyword != ''">AND LOWER(flow_name) LIKE CONCAT('%', LOWER(#{keyword}), '%')</if>
+        <if test="keyword != null and keyword != ''">AND (LOWER(flow_name) LIKE CONCAT('%', LOWER(#{keyword}), '%') OR LOWER(public_params_json) LIKE CONCAT('%', LOWER(#{keyword}), '%'))</if>
         <choose>
             <when test="source == 'report-template'">AND flow_id IS NULL AND report_process_id IS NOT NULL</when>
             <when test="source == 'long-task'">AND flow_id IS NOT NULL</when>

@@ -27,7 +27,32 @@ public record SkillFlowDefinitionRequest(
         /** 可执行人 userId 列表;null = 不修改保持原名单,非 null(含空列表) = 全量替换,空 = 仅创建人。 */
         List<String> executors,
         Boolean autoTriggerEnabled,
+        Long typeId,
+        TeamReportConfig teamReport) {
+    public SkillFlowDefinitionRequest(
+        String code,
+        String name,
+        String description,
+        String taskQuestion,
+        String summaryQuestionTemplate,
+        Boolean enabled,
+        String scheduleRules,
+        Integer maxParallelism,
+        Boolean notifyEnabled,
+        List<Trigger> triggers,
+        List<Node> nodes,
+        ReportOutline reportOutline,
+        NotifySettingsUpdateRequest notifySettings,
+        String notifyContactName,
+        String notifyContactPhone,
+        String notifyBodyTemplate,
+
+        List<String> executors,
+        Boolean autoTriggerEnabled,
         Long typeId) {
+        this(code, name, description, taskQuestion, summaryQuestionTemplate, enabled, scheduleRules, maxParallelism, notifyEnabled, triggers, nodes, reportOutline, notifySettings, notifyContactName, notifyContactPhone, notifyBodyTemplate, executors, autoTriggerEnabled, typeId, null);
+    }
+
 
     /** Compatibility for clients and callers predating task types. */
     public SkillFlowDefinitionRequest(String code, String name, String description, String taskQuestion,

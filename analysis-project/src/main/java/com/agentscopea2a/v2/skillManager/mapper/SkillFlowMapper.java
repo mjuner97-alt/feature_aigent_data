@@ -28,6 +28,18 @@ import java.util.List;
  */
 @Mapper
 public interface SkillFlowMapper {
+    List<SkillFlowNode> selectObjectNodesByFlowId(@Param("flowId") Long flowId);
+
+    List<java.util.Map<String,Object>> selectManualBatchSummaries(@Param("flowIds") List<Long> flowIds);
+
+    @org.apache.ibatis.annotations.Select("SELECT * FROM skill_flow_execution WHERE flow_id=#{flowId} AND batch_id=#{batchId} ORDER BY id")
+    @org.apache.ibatis.annotations.ResultMap("ExecutionMap")
+    List<SkillFlowExecution> selectObjectBatch(@Param("flowId") Long flowId,@Param("batchId") String batchId);
+
+    @org.apache.ibatis.annotations.Select("SELECT * FROM skill_flow_execution WHERE batch_id IS NOT NULL AND status='CANCEL_REQUESTED'")
+    @org.apache.ibatis.annotations.ResultMap("ExecutionMap")
+    List<SkillFlowExecution> selectCancellingObjectExecutions();
+
 
     List<com.agentscopea2a.v2.skillManager.dto.SkillFlowSummaryDto> selectFlowPage(@Param("ownerUserId") String ownerUserId, @Param("enabled") Boolean enabled, @Param("keyword") String keyword, @Param("createdBys") java.util.List<String> createdBys, @Param("typeId") Long typeId, @Param("userId") String userId, @Param("offset") long offset, @Param("limit") int limit);
     SkillFlowExecution selectFlowExecutionById(@Param("id") Long id);
@@ -202,8 +214,10 @@ public interface SkillFlowMapper {
     /** 执行记录管理列表:按触发用户/状态筛选,最多返回最近 500 条。 */
     List<SkillFlowExecution> selectExecutions(@Param("status") String status, @Param("createdBy") String createdBy, @Param("keyword") String keyword, @Param("userId") String userId, @Param("offset") int offset, @Param("limit") int limit);
     long countExecutions(@Param("status") String status, @Param("createdBy") String createdBy, @Param("keyword") String keyword, @Param("userId") String userId);
-    List<SkillFlowExecution> selectExecutionsBySource(@Param("status") String status, @Param("createdBy") String createdBy, @Param("keyword") String keyword, @Param("userId") String userId, @Param("offset") int offset, @Param("limit") int limit, @Param("source") String source, @Param("triggerType") String triggerType);
-    long countExecutionsBySource(@Param("status") String status, @Param("createdBy") String createdBy, @Param("keyword") String keyword, @Param("userId") String userId, @Param("source") String source, @Param("triggerType") String triggerType);
+    List<SkillFlowExecution> selectExecutionsBySource(@Param("status") String status, @Param("createdBy") String createdBy, @Param("keyword") String keyword, @Param("userId") String userId, @Param("offset") int offset, @Param("limit") int limit, @Param("source") String source, @Param("triggerType") String triggerType, @Param("typeId") Long typeId);
+    default List<SkillFlowExecution> selectExecutionsBySource(@Param("status") String status, @Param("createdBy") String createdBy, @Param("keyword") String keyword, @Param("userId") String userId, @Param("offset") int offset, @Param("limit") int limit, @Param("source") String source, @Param("triggerType") String triggerType) { return selectExecutionsBySource(status, createdBy, keyword, userId, offset, limit, source, triggerType,null); }
+    long countExecutionsBySource(@Param("status") String status, @Param("createdBy") String createdBy, @Param("keyword") String keyword, @Param("userId") String userId, @Param("source") String source, @Param("triggerType") String triggerType, @Param("typeId") Long typeId);
+    default long countExecutionsBySource(@Param("status") String status, @Param("createdBy") String createdBy, @Param("keyword") String keyword, @Param("userId") String userId, @Param("source") String source, @Param("triggerType") String triggerType) { return countExecutionsBySource(status, createdBy, keyword, userId, source, triggerType,null); }
 
     /** 扫描仍在等待依赖指标就绪(WAITING_METRICS)的流程实例,供门控重算和跨天超时兜底使用。 */
     List<SkillFlowExecution> selectWaitingExecutions(@Param("allowAuto") boolean allowAuto);

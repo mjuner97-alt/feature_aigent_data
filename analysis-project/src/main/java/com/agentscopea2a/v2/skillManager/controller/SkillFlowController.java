@@ -152,6 +152,54 @@ public class SkillFlowController {
         return definitionService.metricReadiness(id, userId);
     }
 
+    @org.springframework.beans.factory.annotation.Autowired private com.agentscopea2a.v2.skillManager.service.TeamReportService teamReports;
+    @GetMapping("/api/skill-flows/report-people")
+    public Object reportPeople(@RequestHeader(name="X-User-Id") String userId,
+            @RequestParam String department,@RequestParam(defaultValue="") String team,@RequestParam(defaultValue="") String keyword) {
+        if(userId==null || userId.isBlank())throw new IllegalStateException("FlowAccessDenied");
+        return teamReports.people(department,team,keyword);
+    }
+    @GetMapping("/api/skill-flows/report-departments")
+    public Object reportDepartments(@RequestHeader(name="X-User-Id") String userId) {
+        if(userId==null || userId.isBlank()) throw new IllegalStateException("FlowAccessDenied");
+        return teamReports.departments();
+    }
+    @GetMapping("/api/skill-flows/report-departments/{deptId}/teams")
+    public Object reportTeams(@PathVariable String deptId,@RequestHeader(name="X-User-Id") String userId) {
+        if(userId==null || userId.isBlank()) throw new IllegalStateException("FlowAccessDenied");
+        return teamReports.candidates(deptId);
+    }
+    @GetMapping("/api/skill-flows/report-departments/{deptId}/defaults")
+    public Object reportDepartmentDefaults(@PathVariable String deptId,@RequestHeader(name="X-User-Id") String userId) {
+        if(userId==null || userId.isBlank()) throw new IllegalStateException("FlowAccessDenied");
+        return teamReports.departmentDefaults(deptId);
+    }
+    @GetMapping("/api/skill-flows/{id}/batch-progress")
+    public Object batchProgress(@PathVariable Long id,@RequestHeader(name="X-User-Id") String userId) {
+        definitionService.get(id,userId);return teamReports.progress(id);
+    }
+    @org.springframework.beans.factory.annotation.Autowired private com.agentscopea2a.v2.skillManager.service.ScriptParamRuleService paramRules;
+    @org.springframework.beans.factory.annotation.Autowired @org.springframework.beans.factory.annotation.Qualifier("skillFlowClock") private java.time.Clock reportClock;
+    public record PreviewParamsRequest(String scriptId,String paramsJson,com.agentscopea2a.v2.skillManager.dto.TeamReportConfig config,String teamId) {}
+    @PostMapping("/api/skill-flows/report-params-preview")
+    public Object previewParams(@RequestHeader(name="X-User-Id") String userId,@RequestBody PreviewParamsRequest request) {
+        if(userId==null || userId.isBlank()) throw new IllegalStateException("FlowAccessDenied");
+        var c=request.config();
+        if(c==null || c.departmentId()==null || c.departmentId().isBlank() || c.reportType()==null
+                || !java.util.Set.of("TEAM","DEPARTMENT").contains(c.reportType()) || c.targets().isEmpty())
+            throw new IllegalArgumentException("TeamReportSelectionRequired: 请先选择类型、部门和执行对象");
+        var t=c.targets().stream().filter(row->java.util.Objects.equals(row.teamId(),request.teamId())).findFirst().orElseThrow(()->new IllegalStateException("TeamReportSelectionRequired"));
+        com.agentscopea2a.v2.skillManager.service.TeamReportService.validateReferences(request.paramsJson(),c.reportType());
+        var date=java.time.LocalDate.now(reportClock);
+        return java.util.Map.of("dataDate",date.toString(),"params",paramRules.resolve(request.scriptId(),request.paramsJson(),date,teamReports.publicParams(c,t,date)));
+    }
+    public record BatchRunRequest(List<String> teamIds,String requestId) {}
+    @PostMapping("/api/skill-flows/{id}/run-batch")
+    public Object runBatch(@PathVariable Long id,@RequestHeader(name="X-User-Id") String userId,
+            @RequestBody(required=false) BatchRunRequest request) {
+        return executionService.triggerManualBatch(id,userId,request==null ? null:request.teamIds(),request==null ? null:request.requestId());
+    }
+
     /** 手动触发一次执行;确认后不等待指标就绪,直接进入执行队列。 */
     @PostMapping("/api/skill-flows/{id}/run")
     public RunResultDto run(@PathVariable(name = "id") Long id,
@@ -178,8 +226,9 @@ public class SkillFlowController {
                                                     @RequestParam(defaultValue = "20") int pageSize,
                                                     @RequestParam(name = "keyword", required = false) String keyword,
                                                     @RequestParam(name = "source", required = false) String source,
-                                                    @RequestParam(name = "triggerType", required = false) String triggerType) {
-        return queryService.list(status, createdBy, keyword, userId, "all".equalsIgnoreCase(scope), page, pageSize, source, triggerType);
+                                                    @RequestParam(name = "triggerType", required = false) String triggerType,
+                                                    @RequestParam(name="typeId",required=false) Long typeId) {
+        return queryService.list(status, createdBy, keyword, userId, "all".equalsIgnoreCase(scope), page, pageSize, source, triggerType, typeId);
     }
 
     /** 执行详情(含汇总结果与报告路径)。 */
@@ -270,11 +319,19 @@ public class SkillFlowController {
         if (flow == null || flow.getDeletedAt() != null) {
             throw new IllegalStateException("FlowNotFound: " + execution.getFlowId());
         }
+        if(execution.getBatchId()!=null) {
+            var config=teamReports.config(flow);
+            var target=config==null ? null : config.targets().stream().filter(t->java.util.Objects.equals(t.teamId(),execution.getTeamId())).findFirst().orElse(null);
+            // 已删除的对象仍保留执行快照，支持单次补发。
+            var to=target==null ? com.agentscopea2a.v2.skillManager.notification.NotificationReceivers.parse(execution.getNotifyReceiversSnapshot()):target.to();
+            var cc=target==null ? com.agentscopea2a.v2.skillManager.notification.NotificationReceivers.parse(execution.getCcReceiversSnapshot()):target.cc();
+            return new NotifySettingsDto(to,List.of("CHAT","MANUAL","AUTO_METRIC"),target==null?execution.getNotifyEnabledSnapshot():target.notifyEnabled(),java.util.Map.of(),cc,java.util.Map.of(),target==null?execution.getNotifyBodyTemplateSnapshot():target.notifyBodyTemplate(),flow.getName(),FlowReportNaming.notificationTitle(execution),FlowReportNaming.value(execution,"dev_dept"),FlowReportNaming.value(execution,"stat_group"));
+        }
         var settings = definitionService.getNotifySettings(flow.getId(), flow.getCreatedBy());
         return new NotifySettingsDto(settings.notifyReceivers(), settings.notifyReceiverTriggers(),
                 settings.notifyEnabled(), settings.notifyReceiversByTrigger(), settings.ccReceivers(),
                 settings.ccReceiversByTrigger(), flow.getNotifyBodyTemplate(), flow.getName(),
-                FlowReportNaming.datedTitle(execution.getFlowName(), execution));
+                FlowReportNaming.notificationTitle(execution));
     }
     /** 手动重发该次执行完成通知(仅终态执行可用)。 */
     @PostMapping("/api/skill-flow-executions/{id}/notifications/resend")

@@ -19,6 +19,11 @@ import java.time.LocalDateTime;
 public class SkillFlowExecution {
     /** 执行实例主键，也是返回给调用方的任务 ID。 */
     private Long id;
+    private Long typeId;
+    private String batchId;
+    private String teamId;
+    private String publicParamsJson;
+
     /** 来源长任务定义 ID；直接执行报告模板时为空。 */
     private Long flowId;
     /** 来源报告流程（模板）ID；未引用报告流程的长任务可为空。 */

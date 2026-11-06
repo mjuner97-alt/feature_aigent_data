@@ -52,6 +52,8 @@ public class LongTaskConfigService {
         var old = mapper.selectTypeById(id);
         if (old == null) throw new IllegalArgumentException("LongTaskTypeNotFound");
         String name = normalizeName(request.name());
+        if(java.util.Set.of("默认类型","部门报告","团队报告").contains(old.getName())
+                && (!old.getName().equals(name) || Boolean.FALSE.equals(request.enabled()))) throw new IllegalStateException("SystemReportTypeImmutable");
         int sort = validSort(request.sortOrder());
         ensureUniqueSort(id, sort);
         var same = mapper.selectTypeByName(name);
@@ -72,6 +74,7 @@ public class LongTaskConfigService {
     public void deleteType(Long id, String user) {
         if (mapper.countFlowsByTypeId(id) > 0) throw new IllegalStateException("LongTaskTypeInUse");
         var old = mapper.selectTypeById(id);
+        if(old!=null && java.util.Set.of("默认类型","部门报告","团队报告").contains(old.getName())) throw new IllegalStateException("SystemReportTypeImmutable");
         if (mapper.deleteType(id) == 0) throw new IllegalArgumentException("LongTaskTypeNotFound");
         auditService.record("long_task_flow", String.valueOf(id), old == null ? "" : old.getName(), "delete",
                 "删除长任务流程", user, user, diff(old, null));
