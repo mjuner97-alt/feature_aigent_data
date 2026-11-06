@@ -130,6 +130,15 @@ public class SkillFlowController {
         return definitionService.update(id, request, userId);
     }
 
+    public record ConfigRequest(Long typeId, Boolean enabled) {}
+
+    @PutMapping("/api/skill-flows/{id}/config")
+    public void updateConfig(@PathVariable(name = "id") Long id,
+                             @RequestBody ConfigRequest request,
+                             @RequestHeader(name = "X-User-Id") String userId) {
+        definitionService.updateConfig(id, request.typeId(), request.enabled(), userId);
+    }
+
     /** 启用/停用流程;启用前强制完整性校验。 */
     @PutMapping("/api/skill-flows/{id}/enabled")
     public SkillFlowDto enabled(

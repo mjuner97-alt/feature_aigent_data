@@ -16,9 +16,9 @@
   </select>
   <insert id="claim" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
     INSERT INTO dependency_metric_alert_delivery
-      (alert_date, status, recipient_summary, content)
+      (alert_date, status, recipient_summary, cc_recipient_summary, content)
     VALUES
-      (#{alertDate}, 'PENDING', #{recipientSummary}, #{content})
+      (#{alertDate}, 'PENDING', #{recipientSummary}, #{ccRecipientSummary}, #{content})
   </insert>
   <update id="update">
     UPDATE dependency_metric_alert_delivery SET status=#{status}, error_message=#{errorMessage},

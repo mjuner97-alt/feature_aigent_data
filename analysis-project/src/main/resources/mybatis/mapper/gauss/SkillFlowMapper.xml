@@ -434,6 +434,12 @@
     </update>
 
     <!-- 只切换启用/停用开关(如软删除时顺带停用) -->
+    <update id="updateFlowConfig">
+        UPDATE skill_flow
+        SET type_id=#{typeId}, enabled=#{enabled}, updated_at=NOW()
+        WHERE id = #{id} AND deleted_at IS NULL
+    </update>
+
     <update id="updateFlowEnabled">
         UPDATE skill_flow
         SET enabled=#{enabled},

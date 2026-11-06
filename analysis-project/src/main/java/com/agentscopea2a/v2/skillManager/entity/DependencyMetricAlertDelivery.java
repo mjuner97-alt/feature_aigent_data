@@ -10,6 +10,7 @@ public class DependencyMetricAlertDelivery {
     private LocalDate alertDate;
     private String status;
     private String recipientSummary;
+    private String ccRecipientSummary;
     private String content;
     private LocalDateTime requestedAt;
     private LocalDateTime completedAt;

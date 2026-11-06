@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { listSkillFlowPage } from '../../api/skillFlow';
+import { listSkillFlowPage, updateSkillFlowConfig } from '../../api/skillFlow';
 import {
   createLongTaskType,
   deleteLongTaskType,
@@ -32,6 +32,7 @@ const activeTab = ref<'configs' | 'types'>('configs');
 const editing = ref<LongTaskType | null>(null),
   dialog = ref(false),
   form = ref({ name: '', description: '', sortOrder: 0, enabled: true });
+const flowSaving = ref(false);
 const flowDialog = ref(false),
   flowEditing = ref<SkillFlowSummary | null>(null),
   flowForm = ref({ typeId: 0, enabled: true });
@@ -175,30 +176,15 @@ async function remove(t: LongTaskType) {
     if (e !== 'cancel') ElMessage.error(e instanceof Error ? e.message : '删除失败');
   }
 }
-async function openFlowEdit(flow: SkillFlowSummary) {
-  flowEditing.value = flow;
-  flowForm.value = { typeId: flow.typeId || allTypes.value[0]?.id || 0, enabled: flow.enabled };
-  flowDialog.value = true;
-}
-async function saveFlow() {
-  if (!flowEditing.value) return;
-  const id = flowEditing.value.id;
-  const base = '/api/skill-flows/' + id;
-  const full = await (
-    await fetch(base, { headers: { 'X-User-Id': localStorage.getItem('skill-user-id') || 'demo-user' } })
-  ).json();
-  full.typeId = flowForm.value.typeId;
-  full.enabled = flowForm.value.enabled;
-  const res = await fetch(base, {
-    method: 'PUT',
-    headers: { 'X-User-Id': localStorage.getItem('skill-user-id') || 'demo-user', 'Content-Type': 'application/json' },
-    body: JSON.stringify(full),
-  });
-  if (!res.ok) throw new Error('保存长任务配置失败');
-  flowDialog.value = false;
-  flowPage.value = 1;
-  await load();
-  ElMessage.success('已保存长任务配置');
+async function openFlowEdit(flow:SkillFlowSummary){flowEditing.value=flow;flowForm.value={typeId:flow.typeId??allTypes.value.find(t=>t.enabled)?.id??0,enabled:flow.enabled};flowDialog.value=true}
+async function saveFlow(){
+  if(!flowEditing.value || flowSaving.value)return;
+  flowSaving.value=true;
+  try{
+    await updateSkillFlowConfig(flowEditing.value.id,{...flowForm.value});
+    flowDialog.value=false;flowPage.value=1;await load();ElMessage.success('已保存长任务配置');
+  }catch(e){ElMessage.error(e instanceof Error?e.message:'保存长任务配置失败')}
+  finally{flowSaving.value=false}
 }
 function fmt(t?: string) {
   return t ? t.replace('T', ' ').slice(0, 19) : '-';
@@ -320,7 +306,7 @@ onMounted(load);
         ><el-form-item label="启用状态"><el-switch v-model="flowForm.enabled" /></el-form-item></el-form
       ><template #footer
         ><button @click="flowDialog = false">取消</button
-        ><button class="primary" @click="saveFlow">保存</button></template
+        ><button class="primary" :disabled="flowSaving" @click="saveFlow">保存</button></template
       ></el-dialog
     ></div
   >

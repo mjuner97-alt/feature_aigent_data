@@ -20,14 +20,14 @@ public final class DependencyMetricAlertRenderer {
     private DependencyMetricAlertRenderer() {}
 
     /**
-     * 将逗号分隔的收件人配置清洗为去重后的用户 ID 列表。
+     * 将中英文逗号、分号或换行分隔的收件人配置清洗为去重后的用户 ID 列表。
      * @param raw 原始收件人配置
      * @return 去除空白、空值并保持原顺序的不可变列表
      */
     public static List<String> parseRecipients(String raw) {
         if (raw == null || raw.isBlank()) return List.of();
         LinkedHashSet<String> out = new LinkedHashSet<>();
-        for (String value : raw.split(",")) {
+        for (String value : raw.split("[,，;；\\r\\n]+")) {
             String v = value.trim();
             if (!v.isEmpty()) out.add(v);
         }
@@ -43,8 +43,7 @@ public final class DependencyMetricAlertRenderer {
      */
     public static String renderHtml(List<DependencyMetricAlertRow> rows, LocalDate date, LocalDateTime checkedAt) {
         int ready = (int) rows.stream().filter(DependencyMetricAlertRow::ready).count();
-        StringBuilder html = new StringBuilder("<html><body><h3>依赖指标就绪预警（")
-                .append(escape(date.format(TITLE_DATE))).append("）</h3>");
+        StringBuilder html = new StringBuilder("<html><body>");
         html.append("<p>检查时间：").append(escape(checkedAt.format(TIME))).append("</p>");
         html.append("<p>共检查 ").append(rows.size()).append(" 项，已就绪 ").append(ready)
                 .append(" 项，未就绪 ").append(rows.size() - ready).append(" 项。</p>");

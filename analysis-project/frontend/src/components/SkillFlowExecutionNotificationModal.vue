@@ -180,61 +180,8 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.loading-mask {
-  box-sizing: border-box;
-  position: fixed;
-  inset: 0;
-  background: #0007;
-  z-index: 2200;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px 24px 24px 248px;
-}
-.loading-dialog {
-  box-sizing: border-box;
-  background: white;
-  border-radius: 12px;
-  padding: 24px;
-  width: min(1320px, 100%);
-  color: #243247;
-  box-shadow: 0 20px 60px #0003;
-}
-.loading-dialog h3 {
-  margin: 0 0 20px;
-}
-.loading-dialog footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 24px;
-}
-.loading-dialog button {
-  border: 1px solid #cbd5e1;
-  border-radius: 5px;
-  background: #f8fafc;
-  padding: 6px 10px;
-  cursor: pointer;
-}
-.loading-dialog [role='alert'] {
-  color: #b91c1c;
-}
-.success-toast {
-  position: fixed;
-  top: 20px;
-  left: 50%;
-  z-index: 2300;
-  transform: translateX(-50%);
-  padding: 8px 20px;
-  border-radius: 8px;
-  background: #16a34a;
-  box-shadow: 0 4px 12px #0003;
-  color: #fff;
-  font-size: 14px;
-}
-@media (max-width: 1100px) {
-  .loading-mask {
-    padding: 16px;
-  }
-}
+.loading-mask{box-sizing:border-box;position:fixed;inset:0;background:rgba(15,23,42,.46);z-index:2200;display:flex;align-items:center;justify-content:center;padding:24px;backdrop-filter:blur(3px)}
+.loading-dialog{box-sizing:border-box;background:white;border:1px solid #e2e8f0;border-radius:16px;padding:28px;width:min(520px,100%);color:#243247;box-shadow:0 20px 60px #0003}.loading-dialog h3{margin:0 0 18px;font-size:20px}.loading-dialog footer{display:flex;justify-content:flex-end;gap:10px;margin-top:24px}.loading-dialog button{border:1px solid #cbd5e1;border-radius:5px;background:#f8fafc;padding:6px 10px;cursor:pointer}.loading-dialog p{font-size:14px;line-height:1.7;color:#64748b;padding:16px;background:#f8fafc;border-radius:8px}.loading-dialog [role="alert"]{color:#b91c1c}
+.success-toast{position:fixed;top:20px;left:50%;z-index:2300;transform:translateX(-50%);padding:8px 20px;border-radius:8px;background:#16a34a;box-shadow:0 4px 12px #0003;color:#fff;font-size:14px}
+@media(max-width:1100px){.loading-mask{padding:16px}}
 </style>

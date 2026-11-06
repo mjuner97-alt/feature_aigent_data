@@ -13,7 +13,16 @@ public record DependencyMetricAlertResult(
         int readyCount,
         List<String> recipients,
         String status,
-        String errorMessage) {
+        String errorMessage,
+        List<String> ccRecipients,
+        List<String> invalidRecipients,
+        List<String> invalidCcRecipients) {
+
+    public DependencyMetricAlertResult(boolean triggered, String reason, int metricCount, int readyCount,
+            List<String> recipients, String status, String errorMessage) {
+        this(triggered, reason, metricCount, readyCount, recipients, status, errorMessage,
+                List.of(), List.of(), List.of());
+    }
 
     static DependencyMetricAlertResult skipped(String reason, int metricCount, int readyCount) {
         return new DependencyMetricAlertResult(false, reason, metricCount, readyCount, List.of(), "SKIPPED", null);
