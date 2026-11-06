@@ -11,41 +11,122 @@ import { formatDuration } from '../utils/flowDuration.js';
 import { listAllLongTaskTypes, type LongTaskType } from '../api/longTaskConfig';
 import { InfoFilled } from '@element-plus/icons-vue';
 
-const props = withDefaults(defineProps<{ scope?: 'mine' | 'all'; createdBy?: string; keyword?: string; triggerType?: string; typeId?: number | null }>(), { scope: 'mine', createdBy: '', keyword: '', triggerType: '', typeId: null });
+const props = withDefaults(
+  defineProps<{
+    scope?: 'mine' | 'all';
+    createdBy?: string;
+    keyword?: string;
+    triggerType?: string;
+    typeId?: number | null;
+  }>(),
+  { scope: 'mine', createdBy: '', keyword: '', triggerType: '', typeId: null }
+);
 
 const executions = ref<SkillFlowExecution[]>([]);
 const userNames = ref<Record<string, string>>({});
-const loading = ref(false); const error = ref(''); const currentStatus = ref(''); const currentCreatedBy = ref(''); const page = ref(1); const pageSize = ref(20); const detailId = ref<number | null>(null); const detailOpen = ref(false); const notificationId = ref<number | null>(null); const notificationOpen = ref(false);
+const loading = ref(false);
+const error = ref('');
+const currentStatus = ref('');
+const currentCreatedBy = ref('');
+const page = ref(1);
+const pageSize = ref(20);
+const detailId = ref<number | null>(null);
+const detailOpen = ref(false);
+const notificationId = ref<number | null>(null);
+const notificationOpen = ref(false);
 const total = ref(0);
-const emit=defineEmits<{(e:'types-loaded',types:LongTaskType[]):void}>();
-const types=ref<LongTaskType[]>([]);
-const typeName=(id?:number)=>types.value.find(t=>t.id===id)?.name||'默认类型';
+const emit = defineEmits<{ (e: 'types-loaded', types: LongTaskType[]): void }>();
+const types = ref<LongTaskType[]>([]);
+const typeName = (id?: number) => types.value.find((t) => t.id === id)?.name || '默认类型';
 const paged = computed(() => executions.value);
-const nodeDurationHelp = '所有节点每次执行耗时的累计值，包含失败、重试和重跑的执行耗时，不包含排队、等指标和等待重试或重跑的时间。并行节点分别累计，因此可能超过总历时。例如：3 个节点同时各执行 10 分钟，累计节点耗时为 30 分钟。执行中的节点计到当前时刻。';
-const elapsedDurationHelp = '从任务首次创建到最终结束实际经过的时间，包含节点执行、汇总、排队、等指标和等待重试或重跑的时间。并行执行的重叠时间只计一次，不能用它减去累计节点耗时来计算等待时间。任务结束前显示为“-”。';
+const nodeDurationHelp =
+  '所有节点每次执行耗时的累计值，包含失败、重试和重跑的执行耗时，不包含排队、等指标和等待重试或重跑的时间。并行节点分别累计，因此可能超过总历时。例如：3 个节点同时各执行 10 分钟，累计节点耗时为 30 分钟。执行中的节点计到当前时刻。';
+const elapsedDurationHelp =
+  '从任务首次创建到最终结束实际经过的时间，包含节点执行、汇总、排队、等指标和等待重试或重跑的时间。并行执行的重叠时间只计一次，不能用它减去累计节点耗时来计算等待时间。任务结束前显示为“-”。';
 let timer: ReturnType<typeof setInterval> | undefined;
-function formatTime(value?: string | null) { return value ? value.replace('T', ' ').slice(0, 19) : '-'; }
-function statusText(value: string) { return ({ WAITING_METRICS: '排队中', QUEUED: '排队中', RUNNING: '执行中', SUMMARIZING: '汇总中', SUCCESS: '成功', PARTIAL_SUCCESS: '部分成功', FAILED: '失败', CANCELLED: '已取消', CANCEL_REQUESTED: '取消中' } as Record<string, string>)[value] || value; }
-function statusClass(value: string) { return ({ WAITING_METRICS: 'st-pending', QUEUED: 'st-pending', RUNNING: 'st-running', SUMMARIZING: 'st-pending', SUCCESS: 'st-success', PARTIAL_SUCCESS: 'st-success', FAILED: 'st-failed', CANCELLED: 'st-off', CANCEL_REQUESTED: 'st-pending' } as Record<string, string>)[value] || ''; }
-function duration(start?: string | null, end?: string | null) { if (!start || !end) return '-'; const seconds = (new Date(end).getTime() - new Date(start).getTime()) / 1000; return formatDuration(seconds) ?? '-'; }
+function formatTime(value?: string | null) {
+  return value ? value.replace('T', ' ').slice(0, 19) : '-';
+}
+function statusText(value: string) {
+  return (
+    (
+      {
+        WAITING_METRICS: '排队中',
+        QUEUED: '排队中',
+        RUNNING: '执行中',
+        SUMMARIZING: '汇总中',
+        SUCCESS: '成功',
+        PARTIAL_SUCCESS: '部分成功',
+        FAILED: '失败',
+        CANCELLED: '已取消',
+        CANCEL_REQUESTED: '取消中',
+      } as Record<string, string>
+    )[value] || value
+  );
+}
+function statusClass(value: string) {
+  return (
+    (
+      {
+        WAITING_METRICS: 'st-pending',
+        QUEUED: 'st-pending',
+        RUNNING: 'st-running',
+        SUMMARIZING: 'st-pending',
+        SUCCESS: 'st-success',
+        PARTIAL_SUCCESS: 'st-success',
+        FAILED: 'st-failed',
+        CANCELLED: 'st-off',
+        CANCEL_REQUESTED: 'st-pending',
+      } as Record<string, string>
+    )[value] || ''
+  );
+}
+function duration(start?: string | null, end?: string | null) {
+  if (!start || !end) return '-';
+  const seconds = (new Date(end).getTime() - new Date(start).getTime()) / 1000;
+  return formatDuration(seconds) ?? '-';
+}
 // 累计节点耗时：按每次尝试的审计记录求和，并行节点分别累计；执行中计到当前时刻。
-function activeDuration(item: SkillFlowExecution) { return formatDuration(item.activeDurationSeconds) ?? '-'; }
+function activeDuration(item: SkillFlowExecution) {
+  return formatDuration(item.activeDurationSeconds) ?? '-';
+}
 function triggerPerson(item: SkillFlowExecution) {
   const name = item.triggerUserName || userNames.value[item.triggerUserId || ''];
-  return name && item.triggerUserId && name !== item.triggerUserId ? `${name}(${item.triggerUserId})` : name || item.triggerUserId || '-';
+  return name && item.triggerUserId && name !== item.triggerUserId
+    ? `${name}(${item.triggerUserId})`
+    : name || item.triggerUserId || '-';
 }
 let loadSequence = 0;
-async function load(status = currentStatus.value, createdBy = props.createdBy, silent = false, scope: 'mine' | 'all' = props.scope) {
+async function load(
+  status = currentStatus.value,
+  createdBy = props.createdBy,
+  silent = false,
+  scope: 'mine' | 'all' = props.scope
+) {
   const sequence = ++loadSequence;
-  currentStatus.value = status; currentCreatedBy.value = createdBy;
+  currentStatus.value = status;
+  currentCreatedBy.value = createdBy;
   if (!silent) loading.value = true;
   error.value = '';
   try {
-    const data = await listSkillFlowExecutions(status || undefined, createdBy.trim() || undefined, scope, page.value, pageSize.value, 'long-task', props.keyword.trim() || undefined, props.triggerType || undefined,props.typeId??undefined);
+    const data = await listSkillFlowExecutions(
+      status || undefined,
+      createdBy.trim() || undefined,
+      scope,
+      page.value,
+      pageSize.value,
+      'long-task',
+      props.keyword.trim() || undefined,
+      props.triggerType || undefined,
+      props.typeId ?? undefined
+    );
     if (sequence !== loadSequence) return;
-    executions.value = data.items; total.value = data.total;
+    executions.value = data.items;
+    total.value = data.total;
     // 执行接口仅返回用户 ID，复用人员查询补齐姓名；缓存已查到的姓名供轮询使用。
-    const missingUserIds = data.items.filter(item => !item.triggerUserName && item.triggerUserId && !userNames.value[item.triggerUserId]).map(item => item.triggerUserId!);
+    const missingUserIds = data.items
+      .filter((item) => !item.triggerUserName && item.triggerUserId && !userNames.value[item.triggerUserId])
+      .map((item) => item.triggerUserId!);
     if (missingUserIds.length) {
       const names = await batchUserNames(missingUserIds);
       if (sequence !== loadSequence) return;
@@ -55,11 +136,22 @@ async function load(status = currentStatus.value, createdBy = props.createdBy, s
     if (sequence !== loadSequence) return;
     error.value = e instanceof Error ? e.message : '加载长任务执行记录失败';
     if (!silent) executions.value = [];
-  } finally { if (sequence === loadSequence) loading.value = false; }
+  } finally {
+    if (sequence === loadSequence) loading.value = false;
+  }
 }
-function changePage(value: number) { page.value = value; void load(currentStatus.value, currentCreatedBy.value); }
-function showDetail(id: number) { detailId.value = id; detailOpen.value = true; }
-function showNotification(id: number) { notificationId.value = id; notificationOpen.value = true; }
+function changePage(value: number) {
+  page.value = value;
+  void load(currentStatus.value, currentCreatedBy.value);
+}
+function showDetail(id: number) {
+  detailId.value = id;
+  detailOpen.value = true;
+}
+function showNotification(id: number) {
+  notificationId.value = id;
+  notificationOpen.value = true;
+}
 // 可终止 = 本人触发 且 尚未开始收尾(汇总中不再提供终止;取消中按钮隐藏靠状态过滤)
 const CANCELLABLE_STATUSES = ['WAITING_METRICS', 'QUEUED', 'RUNNING'];
 const cancelling = ref<number | null>(null);
@@ -67,59 +159,321 @@ async function cancelExecution(item: SkillFlowExecution) {
   try {
     await ElMessageBox.confirm(
       `确定终止长任务「${item.flowName}」#${item.id} 吗？正在执行的节点完成后其结果将被丢弃，后续节点不再执行。`,
-      '终止任务', { confirmButtonText: '终止', cancelButtonText: '继续执行', type: 'warning' });
-  } catch { return; }
+      '终止任务',
+      { confirmButtonText: '终止', cancelButtonText: '继续执行', type: 'warning' }
+    );
+  } catch {
+    return;
+  }
   cancelling.value = item.id;
-  try { await cancelSkillFlowExecution(item.id); await load(currentStatus.value, currentCreatedBy.value, true); }
-  catch (e) { error.value = e instanceof Error ? e.message : '终止任务失败'; }
-  finally { cancelling.value = null; }
+  try {
+    await cancelSkillFlowExecution(item.id);
+    await load(currentStatus.value, currentCreatedBy.value, true);
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : '终止任务失败';
+  } finally {
+    cancelling.value = null;
+  }
 }
 defineExpose({ load });
-onMounted(() => { void listAllLongTaskTypes().then(items=>{types.value=items;emit('types-loaded',items);}).catch(()=>{});load(); timer = setInterval(() => { if (executions.value.some(item => ['WAITING_METRICS', 'QUEUED', 'RUNNING', 'SUMMARIZING', 'CANCEL_REQUESTED'].includes(item.status))) load(currentStatus.value, currentCreatedBy.value, true); }, 5000); }); onUnmounted(() => { if (timer) clearInterval(timer); });
-watch(() => [props.scope, props.createdBy, props.keyword, props.triggerType, props.typeId] as const, () => { page.value = 1; load('', props.createdBy, false, props.scope); });
+onMounted(() => {
+  void listAllLongTaskTypes()
+    .then((items) => {
+      types.value = items;
+      emit('types-loaded', items);
+    })
+    .catch(() => {});
+  load();
+  timer = setInterval(() => {
+    if (
+      executions.value.some((item) =>
+        ['WAITING_METRICS', 'QUEUED', 'RUNNING', 'SUMMARIZING', 'CANCEL_REQUESTED'].includes(item.status)
+      )
+    )
+      load(currentStatus.value, currentCreatedBy.value, true);
+  }, 5000);
+});
+onUnmounted(() => {
+  if (timer) clearInterval(timer);
+});
+watch(
+  () => [props.scope, props.createdBy, props.keyword, props.triggerType, props.typeId] as const,
+  () => {
+    page.value = 1;
+    load('', props.createdBy, false, props.scope);
+  }
+);
 </script>
 
 <template>
-  <section><div v-if="error" class="center-error">{{ error }}</div><div v-if="loading" class="loading">加载中…</div><div v-else-if="!executions.length" class="empty">暂无长任务执行记录</div><div v-else class="job-table-wrap"><table class="job-table execution-table"><thead><tr><th>任务名称</th><th>类型</th><th>状态</th><th>触发方式</th><th>节点 进度</th><th>触发人</th><th>创建时间</th><th><span class="th-with-info" :aria-label="`累计节点耗时：${nodeDurationHelp}`">累计节点耗时<el-tooltip placement="top" effect="dark" popper-class="flow-th-tooltip" :content="nodeDurationHelp"><el-icon class="th-info-icon"><InfoFilled /></el-icon></el-tooltip></span></th><th><span class="th-with-info" :aria-label="`总历时：${elapsedDurationHelp}`">总历时<el-tooltip placement="top" effect="dark" popper-class="flow-th-tooltip" :content="elapsedDurationHelp"><el-icon class="th-info-icon"><InfoFilled /></el-icon></el-tooltip></span></th><th>操作</th></tr></thead><tbody><tr v-for="item in paged" :key="item.id"><td><span class="col-name">{{ item.flowName }}</span><span class="col-time">#{{ item.id }}</span></td><td>{{ typeName(item.typeId) }}</td><td><span class="status-badge" :class="statusClass(item.status)">{{ statusText(item.status) }}</span></td><td>{{ triggerTypeText(item.triggerType) }}</td><td>{{ item.completedNodeCount ?? 0 }} / {{ item.totalNodeCount ?? '-' }}</td><td class="col-owner" :title="triggerPerson(item)">{{ triggerPerson(item) }}</td><td class="col-time">{{ formatTime(item.createdAt) }}</td><td :title="nodeDurationHelp">{{ activeDuration(item) }}</td><td>{{ duration(item.createdAt, item.completedAt) }}</td><td class="col-actions"><button class="btn-action primary" @click="showDetail(item.id)">查看详情</button><button v-if="item.triggerUserId === currentUserId() && ['SUCCESS', 'PARTIAL_SUCCESS', 'FAILED'].includes(item.status)" class="btn-action" title="选择收件人并发送通知" @click="showNotification(item.id)">通知</button><button v-if="item.triggerUserId === currentUserId() && CANCELLABLE_STATUSES.includes(item.status)" class="btn-action btn-cancel" :disabled="cancelling === item.id" @click="cancelExecution(item)">{{ cancelling === item.id ? '终止中…' : '终止' }}</button><a v-if="item.reportUrl" class="btn-action" :href="item.reportUrl" target="_blank" rel="noopener">查看报告</a></td></tr></tbody></table></div><div v-if="total > pageSize" class="pagination-bar"><el-pagination v-model:current-page="page" :page-size="pageSize" :page-sizes="[10, 20, 50]" :total="total" layout="total, sizes, prev, pager, next" @current-change="changePage" @size-change="(size: number) => { pageSize = size; page = 1; load(currentStatus, currentCreatedBy); }" /></div><SkillFlowExecutionDrawer v-model:open="detailOpen" :execution-id="detailId" @changed="() => load(currentStatus, currentCreatedBy, true)" /><SkillFlowExecutionNotificationModal v-model:open="notificationOpen" :execution-id="notificationId" @sent="load(currentStatus, currentCreatedBy, true)" /></section>
+  <section
+    ><div v-if="error" class="center-error">{{ error }}</div
+    ><div v-if="loading" class="loading">加载中…</div
+    ><div v-else-if="!executions.length" class="empty">暂无长任务执行记录</div
+    ><div v-else class="job-table-wrap"
+      ><table class="job-table execution-table"
+        ><thead
+          ><tr
+            ><th>任务名称</th><th>类型</th><th>状态</th><th>触发方式</th><th>节点 进度</th><th>触发人</th
+            ><th>创建时间</th
+            ><th
+              ><span class="th-with-info" :aria-label="`累计节点耗时：${nodeDurationHelp}`"
+                >累计节点耗时<el-tooltip
+                  placement="top"
+                  effect="dark"
+                  popper-class="flow-th-tooltip"
+                  :content="nodeDurationHelp"
+                  ><el-icon class="th-info-icon"><InfoFilled /></el-icon></el-tooltip></span></th
+            ><th
+              ><span class="th-with-info" :aria-label="`总历时：${elapsedDurationHelp}`"
+                >总历时<el-tooltip
+                  placement="top"
+                  effect="dark"
+                  popper-class="flow-th-tooltip"
+                  :content="elapsedDurationHelp"
+                  ><el-icon class="th-info-icon"><InfoFilled /></el-icon></el-tooltip></span></th
+            ><th>操作</th></tr
+          ></thead
+        ><tbody
+          ><tr v-for="item in paged" :key="item.id"
+            ><td
+              ><span class="col-name">{{ item.flowName }}</span
+              ><span class="col-time">#{{ item.id }}</span></td
+            ><td>{{ typeName(item.typeId) }}</td
+            ><td
+              ><span class="status-badge" :class="statusClass(item.status)">{{ statusText(item.status) }}</span></td
+            ><td>{{ triggerTypeText(item.triggerType) }}</td
+            ><td>{{ item.completedNodeCount ?? 0 }} / {{ item.totalNodeCount ?? '-' }}</td
+            ><td class="col-owner" :title="triggerPerson(item)">{{ triggerPerson(item) }}</td
+            ><td class="col-time">{{ formatTime(item.createdAt) }}</td
+            ><td :title="nodeDurationHelp">{{ activeDuration(item) }}</td
+            ><td>{{ duration(item.createdAt, item.completedAt) }}</td
+            ><td class="col-actions"
+              ><button class="btn-action primary" @click="showDetail(item.id)">查看详情</button
+              ><button
+                v-if="
+                  item.triggerUserId === currentUserId() &&
+                  ['SUCCESS', 'PARTIAL_SUCCESS', 'FAILED'].includes(item.status)
+                "
+                class="btn-action"
+                title="选择收件人并发送通知"
+                @click="showNotification(item.id)"
+                >通知</button
+              ><button
+                v-if="item.triggerUserId === currentUserId() && CANCELLABLE_STATUSES.includes(item.status)"
+                class="btn-action btn-cancel"
+                :disabled="cancelling === item.id"
+                @click="cancelExecution(item)"
+                >{{ cancelling === item.id ? '终止中…' : '终止' }}</button
+              ><a v-if="item.reportUrl" class="btn-action" :href="item.reportUrl" target="_blank" rel="noopener"
+                >查看报告</a
+              ></td
+            ></tr
+          ></tbody
+        ></table
+      ></div
+    ><div v-if="total > pageSize" class="pagination-bar"
+      ><el-pagination
+        v-model:current-page="page"
+        :page-size="pageSize"
+        :page-sizes="[10, 20, 50]"
+        :total="total"
+        layout="total, sizes, prev, pager, next"
+        @current-change="changePage"
+        @size-change="
+          (size: number) => {
+            pageSize = size;
+            page = 1;
+            load(currentStatus, currentCreatedBy);
+          }
+        " /></div
+    ><SkillFlowExecutionDrawer
+      v-model:open="detailOpen"
+      :execution-id="detailId"
+      @changed="() => load(currentStatus, currentCreatedBy, true)" /><SkillFlowExecutionNotificationModal
+      v-model:open="notificationOpen"
+      :execution-id="notificationId"
+      @sent="load(currentStatus, currentCreatedBy, true)"
+  /></section>
 </template>
 
 <style scoped>
-.th-with-info { display: inline-flex; align-items: center; gap: 2px; }
-.th-info-icon { color: #94a3b8; cursor: help; font-size: 14px; }
-.th-info-icon:hover { color: #64748b; }
-.center-error { margin-bottom: 12px; padding: 9px 12px; border: 1px solid #fecaca; border-radius: 5px; background: #fef2f2; color: #b91c1c; font-size: 13px; }
-.loading, .empty { padding: 40px 0; border-radius: 8px; background: #fff; color: #94a3b8; text-align: center; font-size: 14px; }
-.job-table-wrap { overflow-x: auto; border-radius: 8px; box-shadow: 0 1px 3px rgb(0 0 0 / 6%); }
-.job-table { width: 100%; min-width: 1080px; border-collapse: collapse; background: #fff; }
-.execution-table { min-width: 1240px; }
-.job-table th { padding: 10px 12px; border-bottom: 1px solid #e2e8f0; background: #f8fafc; color: #475569; text-align: left; font-size: 13px; font-weight: 600; white-space: nowrap; }
-.job-table td { padding: 10px 12px; border-bottom: 1px solid #f1f5f9; color: #1e293b; font-size: 13px; }
-.job-table tr:hover td { background: #f8fafc; }
-.col-name { display: block; font-weight: 600; }
-.col-template { max-width: 260px; overflow: hidden; color: #475569; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.col-time { display: block; color: #94a3b8; font-size: 12px; white-space: nowrap; }
-.col-owner { max-width: 180px; overflow: hidden; color: #64748b; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.col-actions { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
-.status-badge, .notify-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 700; white-space: nowrap; }
-.st-running, .st-success { background: #dcfce7; color: #166534; }
-.st-pending { background: #fef3c7; color: #a16207; }
-.st-failed { background: #fee2e2; color: #991b1b; }
-.st-off, .nt-none, .nt-skipped { background: #f1f5f9; color: #64748b; }
-.nt-success { background: #dcfce7; color: #166534; }
-.nt-failed { background: #fee2e2; color: #991b1b; }
-.nt-pending, .nt-sending { background: #fef3c7; color: #92400e; }
-.btn-action { padding: 4px 10px; border: 1px solid #cbd5e1; border-radius: 4px; background: #fff; color: #475569; cursor: pointer; font-size: 12px; text-decoration: none; }
-.btn-action:hover { background: #f1f5f9; }
-.btn-action.primary { background: #3b82f6; color: #fff; border-color: #3b82f6; }
-.btn-action.primary:hover { background: #2563eb; }
-.btn-cancel { color: #b91c1c; border-color: #fecaca; }
-.btn-cancel:hover { background: #fef2f2; }
-.pagination-bar { display: flex; justify-content: flex-end; padding: 14px 0 2px; }
+.th-with-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.th-info-icon {
+  color: #94a3b8;
+  cursor: help;
+  font-size: 14px;
+}
+.th-info-icon:hover {
+  color: #64748b;
+}
+.center-error {
+  margin-bottom: 12px;
+  padding: 9px 12px;
+  border: 1px solid #fecaca;
+  border-radius: 5px;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 13px;
+}
+.loading,
+.empty {
+  padding: 40px 0;
+  border-radius: 8px;
+  background: #fff;
+  color: #94a3b8;
+  text-align: center;
+  font-size: 14px;
+}
+.job-table-wrap {
+  overflow-x: auto;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 6%);
+}
+.job-table {
+  width: 100%;
+  min-width: 1080px;
+  border-collapse: collapse;
+  background: #fff;
+}
+.execution-table {
+  min-width: 1240px;
+}
+.job-table th {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #475569;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.job-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  color: #1e293b;
+  font-size: 13px;
+}
+.job-table tr:hover td {
+  background: #f8fafc;
+}
+.col-name {
+  display: block;
+  font-weight: 600;
+}
+.col-template {
+  max-width: 260px;
+  overflow: hidden;
+  color: #475569;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.col-time {
+  display: block;
+  color: #94a3b8;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.col-owner {
+  max-width: 180px;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.col-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.status-badge,
+.notify-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.st-running,
+.st-success {
+  background: #dcfce7;
+  color: #166534;
+}
+.st-pending {
+  background: #fef3c7;
+  color: #a16207;
+}
+.st-failed {
+  background: #fee2e2;
+  color: #991b1b;
+}
+.st-off,
+.nt-none,
+.nt-skipped {
+  background: #f1f5f9;
+  color: #64748b;
+}
+.nt-success {
+  background: #dcfce7;
+  color: #166534;
+}
+.nt-failed {
+  background: #fee2e2;
+  color: #991b1b;
+}
+.nt-pending,
+.nt-sending {
+  background: #fef3c7;
+  color: #92400e;
+}
+.btn-action {
+  padding: 4px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  background: #fff;
+  color: #475569;
+  cursor: pointer;
+  font-size: 12px;
+  text-decoration: none;
+}
+.btn-action:hover {
+  background: #f1f5f9;
+}
+.btn-action.primary {
+  background: #3b82f6;
+  color: #fff;
+  border-color: #3b82f6;
+}
+.btn-action.primary:hover {
+  background: #2563eb;
+}
+.btn-cancel {
+  color: #b91c1c;
+  border-color: #fecaca;
+}
+.btn-cancel:hover {
+  background: #fef2f2;
+}
+.pagination-bar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 14px 0 2px;
+}
 </style>
 
 <style>
 /* 列头解释气泡(el-tooltip 渲染在 body 下,scoped 样式作用不到) */
-.flow-th-tooltip { max-width: 300px; line-height: 1.6; }
+.flow-th-tooltip {
+  max-width: 300px;
+  line-height: 1.6;
+}
 </style>
-
-

@@ -1,4 +1,14 @@
-import type { SkillFlowSummary, SkillFlow, SkillFlowExecution, SkillFlowInput, SkillFlowNodeExecution, FlowMetricReadiness, FlowMetricPrecheck, SkillFlowRunResult, SkillFlowNotification } from '../types/skillFlow';
+import type {
+  SkillFlowSummary,
+  SkillFlow,
+  SkillFlowExecution,
+  SkillFlowInput,
+  SkillFlowNodeExecution,
+  FlowMetricReadiness,
+  FlowMetricPrecheck,
+  SkillFlowRunResult,
+  SkillFlowNotification,
+} from '../types/skillFlow';
 import type { NotifySettings, NotifySettingsUpdateInput } from '../types/notifySettings';
 import { apiErrorDetail } from '../utils/apiError';
 import { reportBlobWithSelectionCopy } from '../utils/reportSelectionCopy';
@@ -32,14 +42,17 @@ function translateFlowError(detail: string): string {
     [/FlowNameConflict/i, '流程名称已存在，请更换名称'],
     [/FlowNotFound/i, '流程不存在或已被删除'],
     [/FlowAccessDenied/i, '无权限修改此流程'],
-    [/FlowKeywordConflict:\s*keyword is already used by another flow:\s*(.+)/i, m => `触发关键词“${m[1]}”已被其他长任务使用`],
+    [
+      /FlowKeywordConflict:\s*keyword is already used by another flow:\s*(.+)/i,
+      (m) => `触发关键词“${m[1]}”已被其他长任务使用`,
+    ],
     [/FlowKeywordConflict:\s*duplicate keyword in flow/i, '触发关键词重复，请修改'],
     [/FlowKeywordConflict/i, '触发关键词已被其他长任务使用'],
-    [/duplicate trigger keyword:\s*(.+)/i, m => `触发关键词“${m[1]}”重复，请修改`],
+    [/duplicate trigger keyword:\s*(.+)/i, (m) => `触发关键词“${m[1]}”重复，请修改`],
     [/trigger keyword must not be blank/i, '触发关键词不能为空'],
     [/flow must define at least one node/i, '请至少添加一个执行节点'],
     [/flow must define at least one trigger/i, '请至少添加一个触发关键词'],
-    [/duplicate node key:\s*(.+)/i, m => `节点标识“${m[1]}”重复，请修改`],
+    [/duplicate node key:\s*(.+)/i, (m) => `节点标识“${m[1]}”重复，请修改`],
     [/node key must not be blank/i, '节点标识不能为空'],
     [/node question must not be blank/i, '节点问题不能为空'],
     [/SkillUnavailable/i, '所选 Skill 不可用，请检查节点配置'],
@@ -71,7 +84,12 @@ function listBody<T>(body: unknown): T[] {
   return [];
 }
 
-export async function listSkillFlows(enabled?: boolean, keyword?: string, createdBy?: string, scope: 'mine' | 'all' = 'mine'): Promise<SkillFlow[]> {
+export async function listSkillFlows(
+  enabled?: boolean,
+  keyword?: string,
+  createdBy?: string,
+  scope: 'mine' | 'all' = 'mine'
+): Promise<SkillFlow[]> {
   const qs = new URLSearchParams();
   if (enabled != null) qs.set('enabled', String(enabled));
   if (keyword) qs.set('keyword', keyword);
@@ -89,13 +107,21 @@ export async function getSkillFlow(id: number): Promise<SkillFlow> {
 }
 
 export async function createSkillFlow(input: SkillFlowInput): Promise<SkillFlow> {
-  const res = await fetch(FLOW_BASE, { method: 'POST', headers: jsonHeaders(), body: JSON.stringify(withoutNodeAttemptPolicy(input)) });
+  const res = await fetch(FLOW_BASE, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify(withoutNodeAttemptPolicy(input)),
+  });
   if (!res.ok) throw await requestError(res, '创建流程失败');
   return res.json();
 }
 
 export async function updateSkillFlow(id: number, input: SkillFlowInput): Promise<SkillFlow> {
-  const res = await fetch(`${FLOW_BASE}/${id}`, { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(withoutNodeAttemptPolicy(input)) });
+  const res = await fetch(`${FLOW_BASE}/${id}`, {
+    method: 'PUT',
+    headers: jsonHeaders(),
+    body: JSON.stringify(withoutNodeAttemptPolicy(input)),
+  });
   if (!res.ok) throw await requestError(res, '保存流程失败');
   return res.json();
 }
@@ -114,7 +140,11 @@ function withoutNodeAttemptPolicy(input: SkillFlowInput) {
 }
 
 export async function setSkillFlowEnabled(id: number, enabled: boolean): Promise<SkillFlow> {
-  const res = await fetch(`${FLOW_BASE}/${id}/enabled`, { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify({ enabled }) });
+  const res = await fetch(`${FLOW_BASE}/${id}/enabled`, {
+    method: 'PUT',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ enabled }),
+  });
   if (!res.ok) throw await requestError(res, '更新流程状态失败');
   return res.json();
 }
@@ -141,7 +171,11 @@ export async function getFlowNotifySettings(id: number): Promise<NotifySettings>
 
 /** 更新流程通知设置(全量替换;空数组 = 清空恢复发触发人;触发类型范围空 = 默认仅 AUTO_METRIC 发名单) */
 export async function updateFlowNotifySettings(id: number, input: NotifySettingsUpdateInput): Promise<NotifySettings> {
-  const res = await fetch(`${FLOW_BASE}/${id}/notify-settings`, { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(input) });
+  const res = await fetch(`${FLOW_BASE}/${id}/notify-settings`, {
+    method: 'PUT',
+    headers: jsonHeaders(),
+    body: JSON.stringify(input),
+  });
   if (!res.ok) throw await requestError(res, '保存通知设置失败');
   const body = await res.json();
   return {
@@ -173,21 +207,37 @@ export async function runSkillFlow(id: number): Promise<SkillFlowRunResult> {
   return res.json();
 }
 
-export async function listSkillFlowExecutions(status?: string, createdBy?: string, scope: 'mine' | 'all' = 'mine', page = 1, pageSize = 20, source?: 'long-task' | 'report-template', keyword?: string, triggerType?: string, typeId?: number): Promise<{ items: SkillFlowExecution[]; page: number; pageSize: number; total: number }> {
+export async function listSkillFlowExecutions(
+  status?: string,
+  createdBy?: string,
+  scope: 'mine' | 'all' = 'mine',
+  page = 1,
+  pageSize = 20,
+  source?: 'long-task' | 'report-template',
+  keyword?: string,
+  triggerType?: string,
+  typeId?: number
+): Promise<{ items: SkillFlowExecution[]; page: number; pageSize: number; total: number }> {
   const qs = new URLSearchParams();
   if (status) qs.set('status', status);
   if (createdBy) qs.set('createdBy', createdBy);
   qs.set('scope', scope);
-  qs.set('page', String(page)); qs.set('pageSize', String(pageSize));
+  qs.set('page', String(page));
+  qs.set('pageSize', String(pageSize));
   if (source) qs.set('source', source);
   if (triggerType) qs.set('triggerType', triggerType);
-  if(typeId!=null)qs.set('typeId',String(typeId));
+  if (typeId != null) qs.set('typeId', String(typeId));
   if (keyword) qs.set('keyword', keyword);
   const res = await fetch(`${EXECUTION_BASE}?${qs}`, { headers: authHeaders() });
   if (!res.ok) throw await requestError(res, '查询执行记录失败');
   const body = await res.json();
   if (Array.isArray(body)) return { items: body, page, pageSize, total: body.length };
-  return { items: body.items ?? [], page: body.page ?? page, pageSize: body.pageSize ?? pageSize, total: body.total ?? 0 };
+  return {
+    items: body.items ?? [],
+    page: body.page ?? page,
+    pageSize: body.pageSize ?? pageSize,
+    total: body.total ?? 0,
+  };
 }
 
 export async function getSkillFlowExecution(id: number): Promise<SkillFlowExecution> {
@@ -221,9 +271,15 @@ export async function getSkillFlowExecutionNotifySettings(id: number): Promise<N
   return res.json();
 }
 
-export async function resendSkillFlowExecutionNotification(id: number, notifyReceivers: string[], ccReceivers: string[] = [], notifyBodyTemplate?: string): Promise<void> {
+export async function resendSkillFlowExecutionNotification(
+  id: number,
+  notifyReceivers: string[],
+  ccReceivers: string[] = [],
+  notifyBodyTemplate?: string
+): Promise<void> {
   const res = await fetch(`${EXECUTION_BASE}/${id}/notifications/resend`, {
-    method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify({ confirmed: true, notifyReceivers, ccReceivers, notifyBodyTemplate }),
   });
   if (!res.ok) throw await requestError(res, '补发通知失败');
@@ -252,15 +308,18 @@ export async function getSkillFlowExecutionReportUrl(id: number): Promise<{ url:
   const disposition = res.headers.get('Content-Disposition') || '';
   const utf8 = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
   const ascii = /filename="?([^";]+)"?/i.exec(disposition);
-  const downloadName = utf8 ? decodeURIComponent(utf8[1]) : (ascii ? ascii[1] : undefined);
+  const downloadName = utf8 ? decodeURIComponent(utf8[1]) : ascii ? ascii[1] : undefined;
   const blob = await res.blob();
   let reportBlob = blob;
   if (blob.type.includes('html') || downloadName?.endsWith('.html')) {
     const html = await blob.text();
-    const style = '<style>html,body{height:100%;margin:0;overflow:hidden}body{height:100%;overflow:hidden}.report-toc{position:fixed;inset:0 auto 0 0;height:100vh;width:248px;box-sizing:border-box;padding:18px 12px;background:#fff;border-right:1px solid #e2e8f0;overflow:visible}.report-toc-list{display:flex;flex-direction:column;gap:3px}.table-scroll{display:contents!important;overflow:visible!important;max-height:none!important}body{background:#fff!important;margin:0!important;padding:0!important;overflow:visible!important}.report table{border-collapse:collapse!important;border:0!important;box-shadow:none!important;width:100%!important;margin:10px 0!important}.report table th,.report table td{border:1px solid #e2e8f0!important;padding:8px 12px!important}.html-fullscreen{position:relative!important;top:auto!important;right:auto!important;display:block!important;margin:0 0 8px auto!important}.html-content-shell{margin:0!important;padding:0!important;background:transparent!important;border:0!important;box-shadow:none!important}.html-content-shell>div:first-of-type{background:transparent!important;border:0!important;box-shadow:none!important;padding-top:0!important}.report-toc a{display:block;padding:5px 7px;color:#475569;font-size:13px;line-height:1.35;white-space:normal;overflow:hidden;text-overflow:ellipsis;-webkit-box-orient:vertical;-webkit-line-clamp:2}</style>';
-    const script = '<script>(function(){var t=document.createElement("aside");t.className="report-toc";t.innerHTML="<nav class=report-toc-list></nav>";document.body.insertBefore(t,document.body.firstChild);var l=t.querySelector(".report-toc-list"),h=document.querySelectorAll(".report [data-report-outline-heading],.report h2,.report h3,.report h4,.report h5,.report h6");h.forEach(function(x,i){if(x.classList.contains("report-outline-title")||x.tagName==="H1")return;var id="report-section-"+i;x.id=id;var a=document.createElement("a");a.href="#"+id;a.dataset.level=x.tagName.substring(1);a.textContent=x.textContent||("章节 "+(i+1));a.title=a.textContent;a.addEventListener("click",function(e){var t=document.getElementById(id);if(t){e.preventDefault();t.scrollIntoView({block:"start",behavior:"smooth"})}});l.appendChild(a)});if(!l.children.length)t.style.display="none";})();</script>';
+    const style =
+      '<style>html,body{height:100%;margin:0;overflow:hidden}body{height:100%;overflow:hidden}.report-toc{position:fixed;inset:0 auto 0 0;height:100vh;width:248px;box-sizing:border-box;padding:18px 12px;background:#fff;border-right:1px solid #e2e8f0;overflow:visible}.report-toc-list{display:flex;flex-direction:column;gap:3px}.table-scroll{display:contents!important;overflow:visible!important;max-height:none!important}body{background:#fff!important;margin:0!important;padding:0!important;overflow:visible!important}.report table{border-collapse:collapse!important;border:0!important;box-shadow:none!important;width:100%!important;margin:10px 0!important}.report table th,.report table td{border:1px solid #e2e8f0!important;padding:8px 12px!important}.html-fullscreen{position:relative!important;top:auto!important;right:auto!important;display:block!important;margin:0 0 8px auto!important}.html-content-shell{margin:0!important;padding:0!important;background:transparent!important;border:0!important;box-shadow:none!important}.html-content-shell>div:first-of-type{background:transparent!important;border:0!important;box-shadow:none!important;padding-top:0!important}.report-toc a{display:block;padding:5px 7px;color:#475569;font-size:13px;line-height:1.35;white-space:normal;overflow:hidden;text-overflow:ellipsis;-webkit-box-orient:vertical;-webkit-line-clamp:2}</style>';
+    const script =
+      '<script>(function(){var t=document.createElement("aside");t.className="report-toc";t.innerHTML="<nav class=report-toc-list></nav>";document.body.insertBefore(t,document.body.firstChild);var l=t.querySelector(".report-toc-list"),h=document.querySelectorAll(".report [data-report-outline-heading],.report h2,.report h3,.report h4,.report h5,.report h6");h.forEach(function(x,i){if(x.classList.contains("report-outline-title")||x.tagName==="H1")return;var id="report-section-"+i;x.id=id;var a=document.createElement("a");a.href="#"+id;a.dataset.level=x.tagName.substring(1);a.textContent=x.textContent||("章节 "+(i+1));a.title=a.textContent;a.addEventListener("click",function(e){var t=document.getElementById(id);if(t){e.preventDefault();t.scrollIntoView({block:"start",behavior:"smooth"})}});l.appendChild(a)});if(!l.children.length)t.style.display="none";})();</script>';
     // Normalize indentation in existing reports as well as newly generated reports.
-    const tocIndentScript = '<script>document.querySelectorAll(".report-toc a[data-level]").forEach(function(a){a.style.paddingLeft=(7+Math.max(0,Number(a.dataset.level)-2)*11)+"px";});</script>';
+    const tocIndentScript =
+      '<script>document.querySelectorAll(".report-toc a[data-level]").forEach(function(a){a.style.paddingLeft=(7+Math.max(0,Number(a.dataset.level)-2)*11)+"px";});</script>';
     const styledHtml = insertBeforeReportEnd(html, 'head', style);
     const scripts = html.includes('report-toc') ? tocIndentScript : script + tocIndentScript;
     reportBlob = new Blob([insertBeforeReportEnd(styledHtml, 'body', scripts)], { type: 'text/html' });
@@ -274,12 +333,30 @@ export async function getPublicSkillFlowReportBlobUrl(id: number): Promise<strin
   if (!res.ok) throw await requestError(res, '打开汇总报告失败');
   return URL.createObjectURL(await reportBlobWithSelectionCopy(await res.blob()));
 }
-export async function retrySkillFlowSummary(id: number): Promise<void> { const res = await fetch(`${EXECUTION_BASE}/${id}/summary/retry`, { method: 'POST', headers: authHeaders() }); if (!res.ok) throw await requestError(res, '重新生成汇总失败'); }
-export async function retrySkillFlowNode(executionId: number, nodeId: number): Promise<void> { const res = await fetch(`${EXECUTION_BASE}/${executionId}/nodes/${nodeId}/retry`, { method: 'POST', headers: authHeaders() }); if (!res.ok) throw await requestError(res, '重跑任务失败'); }
-export async function retrySkillFlowFailedNodes(executionId: number): Promise<void> { const res = await fetch(`${EXECUTION_BASE}/${executionId}/nodes/retry-failed`, { method: 'POST', headers: authHeaders() }); if (!res.ok) throw await requestError(res, '批量重跑失败任务失败'); }
+export async function retrySkillFlowSummary(id: number): Promise<void> {
+  const res = await fetch(`${EXECUTION_BASE}/${id}/summary/retry`, { method: 'POST', headers: authHeaders() });
+  if (!res.ok) throw await requestError(res, '重新生成汇总失败');
+}
+export async function retrySkillFlowNode(executionId: number, nodeId: number): Promise<void> {
+  const res = await fetch(`${EXECUTION_BASE}/${executionId}/nodes/${nodeId}/retry`, {
+    method: 'POST',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw await requestError(res, '重跑任务失败');
+}
+export async function retrySkillFlowFailedNodes(executionId: number): Promise<void> {
+  const res = await fetch(`${EXECUTION_BASE}/${executionId}/nodes/retry-failed`, {
+    method: 'POST',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw await requestError(res, '批量重跑失败任务失败');
+}
 
 /** 终止该次长任务执行:当前节点跑完后结果被丢弃,后续节点不再执行,流程落 CANCELLED。 */
-export async function cancelSkillFlowExecution(executionId: number): Promise<void> { const res = await fetch(`${EXECUTION_BASE}/${executionId}/cancel`, { method: 'POST', headers: authHeaders() }); if (!res.ok) throw await requestError(res, '终止任务失败'); }
+export async function cancelSkillFlowExecution(executionId: number): Promise<void> {
+  const res = await fetch(`${EXECUTION_BASE}/${executionId}/cancel`, { method: 'POST', headers: authHeaders() });
+  if (!res.ok) throw await requestError(res, '终止任务失败');
+}
 
 export async function getSkillFlowNodeReportUrl(executionId: number, nodeId: number): Promise<string> {
   const res = await fetch(`${EXECUTION_BASE}/${executionId}/nodes/${nodeId}/report`, { headers: authHeaders() });
@@ -297,57 +374,107 @@ export async function getFlowReportSource(id: number): Promise<string> {
 /** 整体替换汇总报告内容并返回持久化后的全文。 */
 export async function saveFlowReportSource(id: number, html: string): Promise<string> {
   const res = await fetch(`${EXECUTION_BASE}/${id}/report-source`, {
-    method: 'PUT', headers: jsonHeaders(), body: JSON.stringify({ html }),
+    method: 'PUT',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ html }),
   });
   if (!res.ok) throw await requestError(res, '保存汇总报告失败');
   return res.text();
 }
 
-
-
-
-
-
-
-
-export async function listSkillFlowPage(options: { typeId?:number; enabled?:boolean; scope?:'mine'|'all'; keyword?:string; createdBy?:string; page?:number; pageSize?:number }={}):Promise<{items:SkillFlowSummary[];page:number;pageSize:number;total:number}> {
- const qs=new URLSearchParams({scope:options.scope||'mine',page:String(options.page??1),pageSize:String(options.pageSize??20)});
- if(options.typeId!=null)qs.set('typeId',String(options.typeId));
- if(options.keyword)qs.set('keyword',options.keyword);
- if(options.createdBy)qs.set('createdBy',options.createdBy);
- if(options.enabled!=null)qs.set('enabled',String(options.enabled));
- const res=await fetch(`${FLOW_BASE}/page?${qs}`,{headers:authHeaders()});
- if (!res.ok) throw await requestError(res, '查询失败'); return res.json();
+export async function listSkillFlowPage(
+  options: {
+    typeId?: number;
+    enabled?: boolean;
+    scope?: 'mine' | 'all';
+    keyword?: string;
+    createdBy?: string;
+    page?: number;
+    pageSize?: number;
+  } = {}
+): Promise<{ items: SkillFlowSummary[]; page: number; pageSize: number; total: number }> {
+  const qs = new URLSearchParams({
+    scope: options.scope || 'mine',
+    page: String(options.page ?? 1),
+    pageSize: String(options.pageSize ?? 20),
+  });
+  if (options.typeId != null) qs.set('typeId', String(options.typeId));
+  if (options.keyword) qs.set('keyword', options.keyword);
+  if (options.createdBy) qs.set('createdBy', options.createdBy);
+  if (options.enabled != null) qs.set('enabled', String(options.enabled));
+  const res = await fetch(`${FLOW_BASE}/page?${qs}`, { headers: authHeaders() });
+  if (!res.ok) throw await requestError(res, '查询失败');
+  return res.json();
 }
 
+/** 读取报告配置可选部门，候选由后端有效来源人员去重生成。 */
+export async function reportDepartments(): Promise<{ id: string; name: string }[]> {
+  const res = await fetch(`${FLOW_BASE}/report-departments`, { headers: authHeaders() });
+  if (!res.ok) throw await requestError(res, '读取部门失败');
+  return res.json();
+}
+/** 读取指定部门的团队候选及首次添加所需默认设置。 */
+export async function reportTeams(id: string): Promise<import('../types/skillFlow').TeamReportTarget[]> {
+  const res = await fetch(`${FLOW_BASE}/report-departments/${encodeURIComponent(id)}/teams`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw await requestError(res, '读取团队失败');
+  return res.json();
+}
+/** 读取部门报告首次添加时的默认通知配置。 */
+export async function reportDepartmentDefaults(id: string): Promise<import('../types/skillFlow').TeamReportTarget> {
+  const res = await fetch(`${FLOW_BASE}/report-departments/${encodeURIComponent(id)}/defaults`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw await requestError(res, '读取部门名单失败');
+  return res.json();
+}
+/** 提交临时选择的报告对象，并携带请求标识保证重复提交幂等。 */
+export async function runSkillFlowBatch(
+  id: number,
+  teamIds: string[],
+  requestId?: string
+): Promise<{ batchId: string; executions: SkillFlowExecution[]; created: boolean }> {
+  const res = await fetch(`${FLOW_BASE}/${id}/run-batch`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ teamIds, requestId }),
+  });
+  if (!res.ok) throw await requestError(res, '提交批次失败');
+  return res.json();
+}
+/** 读取最近一轮手动批次状态，排队对象也属于未结束执行。 */
+export async function flowBatchProgress(
+  id: number
+): Promise<{ id: number; batch_id: string; status: string; team_name?: string }[]> {
+  const res = await fetch(`${FLOW_BASE}/${id}/batch-progress`, { headers: authHeaders() });
+  if (!res.ok) throw await requestError(res, '读取批次进度失败');
+  return res.json();
+}
 
-export async function reportDepartments(): Promise<{id:string;name:string}[]> {
- const res=await fetch(`${FLOW_BASE}/report-departments`,{headers:authHeaders()});
- if(!res.ok)throw await requestError(res,'读取部门失败');return res.json();
-}
-export async function reportTeams(id:string): Promise<import('../types/skillFlow').TeamReportTarget[]> {
- const res=await fetch(`${FLOW_BASE}/report-departments/${encodeURIComponent(id)}/teams`,{headers:authHeaders()});
- if(!res.ok)throw await requestError(res,'读取团队失败');return res.json();
-}
-export async function reportDepartmentDefaults(id:string): Promise<import('../types/skillFlow').TeamReportTarget> {
- const res=await fetch(`${FLOW_BASE}/report-departments/${encodeURIComponent(id)}/defaults`,{headers:authHeaders()});
- if(!res.ok)throw await requestError(res,'读取部门名单失败');return res.json();
-}
-export async function runSkillFlowBatch(id:number,teamIds:string[],requestId?:string):Promise<{batchId:string;executions:SkillFlowExecution[];created:boolean}> {
- const res=await fetch(`${FLOW_BASE}/${id}/run-batch`,{method:'POST',headers:jsonHeaders(),body:JSON.stringify({teamIds,requestId})});
- if(!res.ok)throw await requestError(res,'提交批次失败');return res.json();
-}
-export async function flowBatchProgress(id:number):Promise<{id:number;batch_id:string;status:string;team_name?:string}[]> {
- const res=await fetch(`${FLOW_BASE}/${id}/batch-progress`,{headers:authHeaders()});
- if(!res.ok)throw await requestError(res,'读取批次进度失败');return res.json();
+/** 预览动态参数与对象公共参数解析后的实际脚本入参。 */
+export async function previewReportParams(
+  scriptId: string,
+  params: Record<string, unknown>,
+  config: import('../types/skillFlow').TeamReportConfig,
+  teamId: string | null
+): Promise<{ params: Record<string, unknown>; dataDate: string }> {
+  const res = await fetch(`${FLOW_BASE}/report-params-preview`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ scriptId, paramsJson: JSON.stringify(params), config, teamId }),
+  });
+  if (!res.ok) throw await requestError(res, '解析实际参数失败');
+  return res.json();
 }
 
-export async function previewReportParams(scriptId:string,params:Record<string,unknown>,config:import('../types/skillFlow').TeamReportConfig,teamId:string|null):Promise<{params:Record<string,unknown>;dataDate:string}> {
- const res=await fetch(`${FLOW_BASE}/report-params-preview`,{method:'POST',headers:jsonHeaders(),body:JSON.stringify({scriptId,paramsJson:JSON.stringify(params),config,teamId})});
- if(!res.ok)throw await requestError(res,'解析实际参数失败');return res.json();
+export interface TeamReportPerson {
+  userId: string;
+  name: string;
+  department: string;
+  positionRole?: string | null;
 }
-
-export interface TeamReportPerson { userId: string; name: string; department: string; positionRole?: string | null }
+/** 搜索对象来源人员，作为全量人员搜索的补充。 */
 export async function reportPeople(department: string, team: string, keyword = ''): Promise<TeamReportPerson[]> {
   const query = new URLSearchParams({ department, team, keyword });
   const res = await fetch(`${FLOW_BASE}/report-people?${query}`, { headers: authHeaders() });

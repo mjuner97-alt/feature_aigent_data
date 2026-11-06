@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { previewReportParams, createSkillFlow, getSkillFlow, updateSkillFlow, getFlowNotifySettings } from '../api/skillFlow';
+import {
+  previewReportParams,
+  createSkillFlow,
+  getSkillFlow,
+  updateSkillFlow,
+  getFlowNotifySettings,
+} from '../api/skillFlow';
 import { getSkill, listSkills, batchUserNames } from '../api/skill';
 import { listAllEnabledEntries, startDebug, cancelDebug, subscribeDebug, getEntry } from '../api/scriptRegistry';
 import type { ParamSchemaItem, ScriptDebugRun, ScriptRegistryListItem } from '../types/scriptRegistry';
@@ -9,7 +15,17 @@ import { listMetrics } from '../api/skillDependencyMetric';
 import type { SkillListItem } from '../types/skill';
 import type { SkillDependencyMetric } from '../types/skillJob';
 import type { SkillFlow, SkillFlowInput, SkillFlowNode, ReportOutline } from '../types/skillFlow';
-import { buildOutline, canMoveOutlineRow, defaultOutlineNumbering, flattenOutline, moveOutlineRow, moveTopLevelOutlineRow, outlineNumberingPrefixes, validateOutlineRows, type OutlineRow } from '../utils/reportOutline';
+import {
+  buildOutline,
+  canMoveOutlineRow,
+  defaultOutlineNumbering,
+  flattenOutline,
+  moveOutlineRow,
+  moveTopLevelOutlineRow,
+  outlineNumberingPrefixes,
+  validateOutlineRows,
+  type OutlineRow,
+} from '../utils/reportOutline';
 import { insertOutlineRow } from '../utils/outlineRows';
 import { inferParamSchema, normalizeScriptParams, paramsFromSchema } from '../utils/scriptParams';
 import FlowNodeCard from './FlowNodeCard.vue';
@@ -26,7 +42,17 @@ import { listReportProcesses } from '../api/reportProcess';
 import type { ReportProcess } from '../types/reportProcess';
 import { captureEditorState, restoreEditorState, type LongTaskEditorState } from '../utils/longTaskEditorState';
 
-const props = withDefaults(defineProps<{ open: boolean; editId: number | null; copyFromId?: number | null; createType?: LongTaskType | null; knownFlows: SkillFlow[]; page?: boolean }>(), { page: false, copyFromId: null, createType: null });
+const props = withDefaults(
+  defineProps<{
+    open: boolean;
+    editId: number | null;
+    copyFromId?: number | null;
+    createType?: LongTaskType | null;
+    knownFlows: SkillFlow[];
+    page?: boolean;
+  }>(),
+  { page: false, copyFromId: null, createType: null }
+);
 const emit = defineEmits<{ (e: 'update:open', open: boolean): void; (e: 'saved'): void }>();
 /** 编辑中的流程当前是否为公开状态(公开流程保存修改后会自动退出公开,需重新联系开发人员开通)。 */
 const wasPublic = ref(false);
@@ -34,8 +60,10 @@ const flowOwnerId = ref(localStorage.getItem('skill-user-id') || 'demo-user');
 /** 加载时的触发关键词快照,保存时对比是否改动过关键词。 */
 const originalKeywords = ref<string[]>([]);
 const copySourceName = ref('');
-const savedTypeName=ref('');
-const taskTypeName=computed(()=>props.createType?.name||savedTypeName.value||(form.value.typeId===1?'默认类型':'未配置类型'));
+const savedTypeName = ref('');
+const taskTypeName = computed(
+  () => props.createType?.name || savedTypeName.value || (form.value.typeId === 1 ? '默认类型' : '未配置类型')
+);
 
 const loading = ref(false);
 const saving = ref(false);
@@ -64,12 +92,28 @@ const showReportProcesses = false;
 const reportProcesses = ref<ReportProcess[]>([]);
 const reportProcessLoading = ref(false);
 const selectedReportProcessId = ref('');
-const importedReportSnapshot = ref<(LongTaskEditorState<SkillFlowNode, ReportOutline> & { rows: OutlineRow[]; previousTemplateName: string; paramErrors: Record<string, string> }) | null>(null);
+const importedReportSnapshot = ref<
+  | (LongTaskEditorState<SkillFlowNode, ReportOutline> & {
+      rows: OutlineRow[];
+      previousTemplateName: string;
+      paramErrors: Record<string, string>;
+    })
+  | null
+>(null);
 const importedReportName = ref('');
 /** 每行自动编号(与报告渲染同口径):一级 一、二、三;二级 1.1、1.2。 */
-const outlineNumbers = computed(() => outlineNumberingPrefixes(outlineRows.value, form.value.reportOutline?.numbering || defaultOutlineNumbering()));
+const outlineNumbers = computed(() =>
+  outlineNumberingPrefixes(outlineRows.value, form.value.reportOutline?.numbering || defaultOutlineNumbering())
+);
 const baseline = ref('');
-const editorFingerprint = () => JSON.stringify({ form: form.value, rows: outlineRows.value, title: reportTitle.value, to: notifyReceivers.value, cc: ccReceivers.value });
+const editorFingerprint = () =>
+  JSON.stringify({
+    form: form.value,
+    rows: outlineRows.value,
+    title: reportTitle.value,
+    to: notifyReceivers.value,
+    cc: ccReceivers.value,
+  });
 const isDirty = computed(() => editorFingerprint() !== baseline.value);
 /** 拖拽排序:正在拖拽的卡片下标;dragover 时实时换位,drop/dragend 收尾。 */
 const dragIndex = ref<number | null>(null);
@@ -81,18 +125,48 @@ function navigateToSection(event: MouseEvent, id: string) {
 }
 
 function nextNodeKey(): string {
-  const used = new Set(form.value.nodes.map(node => node.nodeKey));
+  const used = new Set(form.value.nodes.map((node) => node.nodeKey));
   let index = form.value.nodes.length + 1;
   while (used.has(`node_${index}`)) index++;
   return `node_${index}`;
 }
 
 function emptyNode(nodeKey: string, sortOrder: number): SkillFlowNode {
-  return { nodeKey, nodeName: '', nodeType: 'PYTHON', skillId: null, scriptId: null, scriptParams: {}, questionTemplate: '', metricIds: [], required: true, maxAttempts: 2, sortOrder };
+  return {
+    nodeKey,
+    nodeName: '',
+    nodeType: 'PYTHON',
+    skillId: null,
+    scriptId: null,
+    scriptParams: {},
+    questionTemplate: '',
+    metricIds: [],
+    required: true,
+    maxAttempts: 2,
+    sortOrder,
+  };
 }
 
 function emptyForm(): SkillFlowInput {
-  return { name: '', code: '', description: '', taskQuestion: '', summaryQuestionTemplate: '', enabled: true, autoTriggerEnabled: false, scheduleRules: null, maxParallelism: 2, notifyEnabled: true, executors: [], notifyContactName: '', notifyContactPhone: '', notifyBodyTemplate: '各位：\n    部门研发管理周报详见：{链接}，请关注。', triggers: [], nodes: [], reportOutline: { numbering: {}, items: [] } };
+  return {
+    name: '',
+    code: '',
+    description: '',
+    taskQuestion: '',
+    summaryQuestionTemplate: '',
+    enabled: true,
+    autoTriggerEnabled: false,
+    scheduleRules: null,
+    maxParallelism: 2,
+    notifyEnabled: true,
+    executors: [],
+    notifyContactName: '',
+    notifyContactPhone: '',
+    notifyBodyTemplate: '各位：\n    部门研发管理周报详见：{链接}，请关注。',
+    triggers: [],
+    nodes: [],
+    reportOutline: { numbering: {}, items: [] },
+  };
 }
 
 const chineseStepLabels = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
@@ -116,7 +190,9 @@ async function backfillContactName(creatorId: string) {
   try {
     const name = (await batchUserNames([creatorId]))?.[creatorId] || '';
     if (name && !form.value.notifyContactName?.trim()) form.value.notifyContactName = name;
-  } catch { /* 姓名解析失败不阻塞编辑,由必填校验兜底 */ }
+  } catch {
+    /* 姓名解析失败不阻塞编辑,由必填校验兜底 */
+  }
 }
 
 const validationErrors = computed(() => {
@@ -126,7 +202,9 @@ const validationErrors = computed(() => {
   if (form.value.teamReport && !form.value.teamReport.targets.length) errors.push('请至少维护一个执行对象');
   if (!form.value.name.trim()) errors.push('请填写流程名称');
   if (isCopy.value && form.value.name.trim() === copySourceName.value.trim()) errors.push('复制流程必须修改流程名称');
-  const sameName = props.knownFlows.find(flow => flow.id !== props.editId && flow.name.trim() === form.value.name.trim());
+  const sameName = props.knownFlows.find(
+    (flow) => flow.id !== props.editId && flow.name.trim() === form.value.name.trim()
+  );
   if (sameName) errors.push(`流程名称「${form.value.name.trim()}」已存在`);
   if (!form.value.nodes.length) errors.push('至少配置一个节点');
   const uniqueKeys = new Set<string>();
@@ -135,38 +213,59 @@ const validationErrors = computed(() => {
     if (!key) errors.push(`节点 ${index + 1} 缺少节点标识`);
     else if (uniqueKeys.has(key)) errors.push(`节点标识 ${key} 重复`);
     else uniqueKeys.add(key);
-    if (node.nodeType === 'SKILL' || (!node.nodeType && node.skillId)) { if (!node.skillId) errors.push(`节点 ${key || index + 1} 未选择 Skill`); }
-    else if (!node.scriptId?.trim()) errors.push(`节点 ${key || index + 1} 未选择 Python 脚本`);
+    if (node.nodeType === 'SKILL' || (!node.nodeType && node.skillId)) {
+      if (!node.skillId) errors.push(`节点 ${key || index + 1} 未选择 Skill`);
+    } else if (!node.scriptId?.trim()) errors.push(`节点 ${key || index + 1} 未选择 Python 脚本`);
     if (scriptParamErrors.value[node.nodeKey]) errors.push(`节点 ${key || index + 1} 的脚本参数不是合法 JSON 对象`);
   });
-  errors.push(...validateOutlineRows(outlineRows.value, form.value.nodes.map(node => node.nodeKey.trim())));
+  errors.push(
+    ...validateOutlineRows(
+      outlineRows.value,
+      form.value.nodes.map((node) => node.nodeKey.trim())
+    )
+  );
   if (!outlineRows.value.length && form.value.nodes.length) errors.push('请添加章节并绑定已有节点');
   if (!form.value.triggers.length) errors.push('至少配置一个触发关键词');
   const seenKeywords = new Set<string>();
-  form.value.triggers.forEach(trigger => {
+  form.value.triggers.forEach((trigger) => {
     const keyword = trigger.keyword.trim().toLowerCase();
     if (!keyword) errors.push('触发关键词不能为空');
     else if (seenKeywords.has(keyword)) errors.push(`关键词 ${trigger.keyword} 重复`);
     else seenKeywords.add(keyword);
-    const owner = props.knownFlows.find(flow => flow.id !== props.editId && flow.triggers.some(item => item.keyword.trim().toLowerCase() === keyword));
+    const owner = props.knownFlows.find(
+      (flow) => flow.id !== props.editId && flow.triggers.some((item) => item.keyword.trim().toLowerCase() === keyword)
+    );
     if (owner) errors.push(`关键词 ${trigger.keyword} 已属于流程「${owner.name}」`);
   });
   if (contactValidationError.value) errors.push(contactValidationError.value);
-  if(form.value.teamReport) {
-    for(const target of form.value.teamReport.targets) {
-      if(target.reportName!=null&&!target.reportName.trim())errors.push(`${target.teamName||form.value.teamReport.departmentName}：请填写报告名称`);
-      if((target.notifyBodyTemplate||'').length>2000)errors.push(`${target.teamName||form.value.teamReport.departmentName}：通知邮件正文模板超长（上限 2000 字符）`);
+  if (form.value.teamReport) {
+    for (const target of form.value.teamReport.targets) {
+      if (target.reportName != null && !target.reportName.trim())
+        errors.push(`${target.teamName || form.value.teamReport.departmentName}：请填写报告名称`);
+      if ((target.notifyBodyTemplate || '').length > 2000)
+        errors.push(
+          `${target.teamName || form.value.teamReport.departmentName}：通知邮件正文模板超长（上限 2000 字符）`
+        );
     }
   } else if ((form.value.notifyBodyTemplate || '').length > 2000) errors.push('通知邮件正文模板超长（上限 2000 字符）');
   return errors;
 });
 
-const preview = computed(() => form.value.nodes
-    .map(node => node.nodeName?.trim() || node.scriptName || node.skillName || skills.value.find(item => item.id === node.skillId)?.name || '未配置节点')
-    .join('、'));
+const preview = computed(() =>
+  form.value.nodes
+    .map(
+      (node) =>
+        node.nodeName?.trim() ||
+        node.scriptName ||
+        node.skillName ||
+        skills.value.find((item) => item.id === node.skillId)?.name ||
+        '未配置节点'
+    )
+    .join('、')
+);
 
 function syncNodeSkillName(node: SkillFlowNode) {
-  node.skillName = skills.value.find(skill => skill.id === node.skillId)?.name;
+  node.skillName = skills.value.find((skill) => skill.id === node.skillId)?.name;
 }
 
 function setNodeMetrics(node: SkillFlowNode, values: number[]) {
@@ -179,16 +278,18 @@ async function searchSkills(query: string) {
   try {
     const result = await listSkills({ view: 'used', keyword: query.trim(), limit: 50 });
     if (seq === skillSearchSeq) {
-      const selectedIds = new Set(form.value.nodes.map(node => node.skillId).filter((id): id is number => !!id));
-      const retained = skills.value.filter(skill => selectedIds.has(skill.id) && !result.some(item => item.id === skill.id));
+      const selectedIds = new Set(form.value.nodes.map((node) => node.skillId).filter((id): id is number => !!id));
+      const retained = skills.value.filter(
+        (skill) => selectedIds.has(skill.id) && !result.some((item) => item.id === skill.id)
+      );
       skills.value = [...retained, ...result];
     }
   } catch {
     // Keep already selected options when a remote search fails. Dropping them
     // makes Element Plus fall back to displaying numeric skill IDs.
     if (seq === skillSearchSeq) {
-      const selectedIds = new Set(form.value.nodes.map(node => node.skillId).filter((id): id is number => !!id));
-      skills.value = skills.value.filter(skill => selectedIds.has(skill.id));
+      const selectedIds = new Set(form.value.nodes.map((node) => node.skillId).filter((id): id is number => !!id));
+      skills.value = skills.value.filter((skill) => selectedIds.has(skill.id));
     }
   } finally {
     if (seq === skillSearchSeq) skillLoading.value = false;
@@ -197,12 +298,14 @@ async function searchSkills(query: string) {
 
 async function searchScripts(query = '') {
   scriptLoading.value = true;
-  try { scripts.value = await listAllEnabledEntries(query); }
-  catch { scripts.value = []; }
-  finally { scriptLoading.value = false; }
+  try {
+    scripts.value = await listAllEnabledEntries(query);
+  } catch {
+    scripts.value = [];
+  } finally {
+    scriptLoading.value = false;
+  }
 }
-
-
 
 /** 脚本参数定义缓存(键=注册表数字 id):选脚本后按 params_schema 渲染参数输入框,不再手写 JSON */
 const scriptSchemas = ref<Record<number, ParamSchemaItem[]>>({});
@@ -210,7 +313,7 @@ const scriptSchemaRequests = new Map<number, Promise<ParamSchemaItem[]>>();
 
 async function ensureScriptSchema(scriptId: string | null | undefined): Promise<ParamSchemaItem[]> {
   if (!scriptId) return [];
-  const row = scripts.value.find(item => item.scriptId === scriptId);
+  const row = scripts.value.find((item) => item.scriptId === scriptId);
   if (!row) return [];
   if (scriptSchemas.value[row.id]) return scriptSchemas.value[row.id];
   const pending = scriptSchemaRequests.get(row.id);
@@ -224,7 +327,9 @@ async function ensureScriptSchema(scriptId: string | null | undefined): Promise<
       const rawSchema = row.paramsSchema?.trim() || (await getEntry(row.id)).paramsSchema || '[]';
       const parsed = JSON.parse(rawSchema);
       if (Array.isArray(parsed)) items = parsed.filter((item: any) => item && typeof item.name === 'string');
-    } catch { /* schema 解析失败按无参数处理,保存/试跑时由后端兜底校验 */ }
+    } catch {
+      /* schema 解析失败按无参数处理,保存/试跑时由后端兜底校验 */
+    }
     scriptSchemas.value = { ...scriptSchemas.value, [row.id]: items };
     scriptSchemaRequests.delete(row.id);
     return items;
@@ -234,16 +339,16 @@ async function ensureScriptSchema(scriptId: string | null | undefined): Promise<
 }
 
 function schemaFor(node: SkillFlowNode): ParamSchemaItem[] | null {
-  const row = scripts.value.find(item => item.scriptId === node.scriptId);
+  const row = scripts.value.find((item) => item.scriptId === node.scriptId);
   const saved = node.scriptParams || {};
   const registered = row ? scriptSchemas.value[row.id] : undefined;
   if (!registered?.length) return Object.keys(saved).length ? inferParamSchema(saved) : null;
-  const names = new Set(registered.map(item => item.name));
-  return [...registered, ...inferParamSchema(saved).filter(item => !names.has(item.name))];
+  const names = new Set(registered.map((item) => item.name));
+  return [...registered, ...inferParamSchema(saved).filter((item) => !names.has(item.name))];
 }
 
 async function onScriptSelected(node: SkillFlowNode) {
-  node.scriptName = scripts.value.find(item => item.scriptId === node.scriptId)?.name;
+  node.scriptName = scripts.value.find((item) => item.scriptId === node.scriptId)?.name;
   node.scriptParams = {};
   delete scriptParamErrors.value[node.nodeKey];
   const schema = await ensureScriptSchema(node.scriptId);
@@ -259,14 +364,21 @@ function onScriptParamsChange(node: SkillFlowNode, payload: { value: Record<stri
 }
 
 async function ensureSelectedSkills(skillIds: number[]) {
-  const missing = [...new Set(skillIds)].filter(id => id > 0 && !skills.value.some(skill => skill.id === id));
+  const missing = [...new Set(skillIds)].filter((id) => id > 0 && !skills.value.some((skill) => skill.id === id));
   if (!missing.length) return;
-  const loaded = await Promise.all(missing.map(async id => {
-    // 本组件只用 id/name 做选项展示,Detail 里的多余字段不影响;直接按 ListItem 收敛类型
-    try { return await getSkill(id) as unknown as SkillListItem; } catch { return null; }
-  }));
+  const loaded = await Promise.all(
+    missing.map(async (id) => {
+      // 本组件只用 id/name 做选项展示,Detail 里的多余字段不影响;直接按 ListItem 收敛类型
+      try {
+        return (await getSkill(id)) as unknown as SkillListItem;
+      } catch {
+        return null;
+      }
+    })
+  );
   const additions = loaded.filter((skill): skill is SkillListItem => !!skill);
-  if (additions.length) skills.value = [...additions, ...skills.value.filter(skill => !additions.some(item => item.id === skill.id))];
+  if (additions.length)
+    skills.value = [...additions, ...skills.value.filter((skill) => !additions.some((item) => item.id === skill.id))];
 }
 
 async function searchMetrics(query: string) {
@@ -283,7 +395,9 @@ async function searchMetrics(query: string) {
 }
 
 function renumber() {
-  form.value.nodes.forEach((node, order) => { node.sortOrder = order + 1; });
+  form.value.nodes.forEach((node, order) => {
+    node.sortOrder = order + 1;
+  });
 }
 
 function addNode() {
@@ -295,8 +409,8 @@ function removeNode(index: number) {
   const [removed] = form.value.nodes.splice(index, 1);
   if (removed) delete scriptParamErrors.value[removed.nodeKey];
   // 大纲里绑定了该节点的章节一并移除引用,避免残留失效 key
-  outlineRows.value.forEach(row => {
-    row.nodeKeys = row.nodeKeys.filter(key => key !== removed?.nodeKey);
+  outlineRows.value.forEach((row) => {
+    row.nodeKeys = row.nodeKeys.filter((key) => key !== removed?.nodeKey);
   });
   renumber();
 }
@@ -308,26 +422,28 @@ function nodeTitle(node: SkillFlowNode): string {
 
 /** 未绑定到大纲章节的节点(留在执行节点区,保存前必须全部绑定)。 */
 function isUnbound(node: SkillFlowNode): boolean {
-  return !outlineRows.value.some(row => row.nodeKeys.includes(node.nodeKey));
+  return !outlineRows.value.some((row) => row.nodeKeys.includes(node.nodeKey));
 }
 
-const unboundNodes = computed(() => form.value.nodes.filter(node => isUnbound(node)));
+const unboundNodes = computed(() => form.value.nodes.filter((node) => isUnbound(node)));
 
 /** 章节下内嵌的节点卡片(按章节内绑定顺序,可多个)。 */
 function nodesForRow(row: OutlineRow): SkillFlowNode[] {
   return row.nodeKeys
-      .map(key => form.value.nodes.find(node => node.nodeKey === key))
-      .filter((node): node is SkillFlowNode => !!node);
+    .map((key) => form.value.nodes.find((node) => node.nodeKey === key))
+    .filter((node): node is SkillFlowNode => !!node);
 }
 
 /** 让 form.nodes 执行顺序跟随大纲文档顺序:已绑定节点按大纲序在前,未绑定节点殿后。 */
 function syncNodesToOutline() {
   const bound: SkillFlowNode[] = [];
-  outlineRows.value.forEach(row => row.nodeKeys.forEach(key => {
-    const node = form.value.nodes.find(item => item.nodeKey === key);
-    if (node && !bound.includes(node)) bound.push(node);
-  }));
-  form.value.nodes = [...bound, ...form.value.nodes.filter(node => isUnbound(node))];
+  outlineRows.value.forEach((row) =>
+    row.nodeKeys.forEach((key) => {
+      const node = form.value.nodes.find((item) => item.nodeKey === key);
+      if (node && !bound.includes(node)) bound.push(node);
+    })
+  );
+  form.value.nodes = [...bound, ...form.value.nodes.filter((node) => isUnbound(node))];
   renumber();
 }
 
@@ -349,9 +465,11 @@ function bindRowNode(row: OutlineRow, nodeKey: string) {
 
 /** 删除章节内节点，同时清理大纲绑定，避免删除后仍被校验为未绑定节点。 */
 function removeChapterNode(row: OutlineRow, nodeKey: string) {
-  row.nodeKeys = row.nodeKeys.filter(key => key !== nodeKey);
-  form.value.nodes = form.value.nodes.filter(node => node.nodeKey !== nodeKey);
-  outlineRows.value.forEach(item => { item.nodeKeys = item.nodeKeys.filter(key => key !== nodeKey); });
+  row.nodeKeys = row.nodeKeys.filter((key) => key !== nodeKey);
+  form.value.nodes = form.value.nodes.filter((node) => node.nodeKey !== nodeKey);
+  outlineRows.value.forEach((item) => {
+    item.nodeKeys = item.nodeKeys.filter((key) => key !== nodeKey);
+  });
   renumber();
 }
 
@@ -378,7 +496,7 @@ function chapterDragStart(nodeKey: string, event: DragEvent) {
 function chapterDragOver(row: OutlineRow, targetKey: string) {
   const from = dragNodeKey.value;
   if (!from || from === targetKey || !row.nodeKeys.includes(from)) return;
-  const keys = row.nodeKeys.filter(key => key !== from);
+  const keys = row.nodeKeys.filter((key) => key !== from);
   keys.splice(keys.indexOf(targetKey), 0, from);
   row.nodeKeys = keys;
   syncNodesToOutline();
@@ -425,20 +543,26 @@ function moveOutlineChapter(row: OutlineRow, direction: -1 | 1) {
 function outlineDragStart(row: OutlineRow, event: DragEvent) {
   if (row.level !== 1) return;
   outlineDragId.value = row.id;
-  if (event.dataTransfer) { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', row.id); }
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', row.id);
+  }
 }
 
 function autoScrollOutlineDrag(event: DragEvent) {
   if (!outlineDragId.value) return;
-  const source = (event.currentTarget as HTMLElement | null)?.closest('.editor-toc, .drawer-body') as HTMLElement | null;
+  const source = (event.currentTarget as HTMLElement | null)?.closest(
+    '.editor-toc, .drawer-body'
+  ) as HTMLElement | null;
   if (!source) return;
   const rect = source.getBoundingClientRect();
   const edge = Math.min(72, rect.height / 3);
-  const distance = event.clientY < rect.top + edge
+  const distance =
+    event.clientY < rect.top + edge
       ? -Math.max(12, Math.round((rect.top + edge - event.clientY) / 2))
       : event.clientY > rect.bottom - edge
-          ? Math.max(12, Math.round((event.clientY - (rect.bottom - edge)) / 2))
-          : 0;
+        ? Math.max(12, Math.round((event.clientY - (rect.bottom - edge)) / 2))
+        : 0;
   if (distance) source.scrollBy({ top: distance, behavior: 'auto' });
 }
 
@@ -464,14 +588,19 @@ function outlineDrop(event: DragEvent) {
   finishOutlineDrag();
 }
 
-function finishOutlineDrag() { outlineDragId.value = null; outlineDropId.value = null; }
+function finishOutlineDrag() {
+  outlineDragId.value = null;
+  outlineDropId.value = null;
+}
 
 /** 节点试跑:复用脚本注册页的调试运行接口,按节点选的脚本+参数 JSON 真实执行一次,提前验证参数。 */
 const debugNodeKey = ref<string | null>(null);
 const debugStarting = ref(false);
-const debugTeamId=ref<string|null>(null);
-const debugTarget=computed(()=>form.value.teamReport?.targets.find(target=>target.teamId===debugTeamId.value));
-const debugResolvedParams=ref<Record<string,unknown>|null>(null);
+const debugTeamId = ref<string | null>(null);
+const debugTarget = computed(() =>
+  form.value.teamReport?.targets.find((target) => target.teamId === debugTeamId.value)
+);
+const debugResolvedParams = ref<Record<string, unknown> | null>(null);
 const debugRun = ref<ScriptDebugRun | null>(null);
 let debugEvents: EventSource | null = null;
 const DEBUG_TERMINAL = ['SUCCESS', 'FAILED', 'TIMEOUT', 'CANCELLED'];
@@ -481,15 +610,30 @@ function debugInProgress(): boolean {
 }
 
 async function runNodeDebug(node: SkillFlowNode, dataDate?: string) {
-  if (debugInProgress() || debugStarting.value) { ElMessage.warning('已有试跑在进行中，请先等待完成或停止'); return; }
-  if (form.value.teamReport && !debugTarget.value) { ElMessage.warning('请先在团队报告配置中添加试跑团队'); return; }
-  if (!node.scriptId?.trim()) { ElMessage.warning('请先选择 Python 脚本'); return; }
-  if (scriptParamErrors.value[node.nodeKey]) { ElMessage.warning('请先修正脚本参数 JSON'); return; }
+  if (debugInProgress() || debugStarting.value) {
+    ElMessage.warning('已有试跑在进行中，请先等待完成或停止');
+    return;
+  }
+  if (form.value.teamReport && !debugTarget.value) {
+    ElMessage.warning('请先在团队报告配置中添加试跑团队');
+    return;
+  }
+  if (!node.scriptId?.trim()) {
+    ElMessage.warning('请先选择 Python 脚本');
+    return;
+  }
+  if (scriptParamErrors.value[node.nodeKey]) {
+    ElMessage.warning('请先修正脚本参数 JSON');
+    return;
+  }
   // 与 Python 注册页保持同一口径：试跑前按 scriptId 重新读取注册表详情，
   // 不依赖远程下拉列表缓存，确保使用注册表当前的数字 id、参数定义和超时。
   const normalizedScriptId = node.scriptId.trim();
-  const listed = scripts.value.find(item => item.scriptId.trim() === normalizedScriptId);
-  if (!listed) { ElMessage.warning('脚本信息未加载，请重新选择脚本后再试跑'); return; }
+  const listed = scripts.value.find((item) => item.scriptId.trim() === normalizedScriptId);
+  if (!listed) {
+    ElMessage.warning('脚本信息未加载，请重新选择脚本后再试跑');
+    return;
+  }
   debugNodeKey.value = node.nodeKey;
   debugStarting.value = true;
   try {
@@ -502,11 +646,13 @@ async function runNodeDebug(node: SkillFlowNode, dataDate?: string) {
     }
     const schema = await ensureScriptSchema(node.scriptId);
     let params = normalizeScriptParams(node.scriptParams || {}, schema);
-    if(form.value.teamReport){
-      const target=debugTarget.value;
-      if(!target)throw new Error('请先维护执行对象');
-      const preview=await previewReportParams(node.scriptId!,params,form.value.teamReport,target.teamId);
-      params=preview.params;dataDate=preview.dataDate;debugResolvedParams.value=params;
+    if (form.value.teamReport) {
+      const target = debugTarget.value;
+      if (!target) throw new Error('请先维护执行对象');
+      const preview = await previewReportParams(node.scriptId!, params, form.value.teamReport, target.teamId);
+      params = preview.params;
+      dataDate = preview.dataDate;
+      debugResolvedParams.value = params;
     }
     debugRun.value = await startDebug(script.id, params, script.timeoutSeconds ?? 60, dataDate);
     debugEvents?.close();
@@ -519,7 +665,9 @@ async function runNodeDebug(node: SkillFlowNode, dataDate?: string) {
         if (event.stdout) debugRun.value.stdout = event.stdout;
         if (event.stderr) debugRun.value.stderr = event.stderr;
       },
-      error: () => { /* 终态由最后一个事件提供 */ },
+      error: () => {
+        /* 终态由最后一个事件提供 */
+      },
       complete: () => {},
     });
   } catch (e) {
@@ -543,13 +691,18 @@ async function stopNodeDebug() {
 }
 
 function closeNodeDebug() {
-  if (debugInProgress()) { ElMessage.warning('试跑还在进行中，请先停止'); return; }
+  if (debugInProgress()) {
+    ElMessage.warning('试跑还在进行中，请先停止');
+    return;
+  }
   debugRun.value = null;
   debugNodeKey.value = null;
   debugEvents?.close();
 }
 
-onUnmounted(() => { debugEvents?.close(); });
+onUnmounted(() => {
+  debugEvents?.close();
+});
 
 function addTrigger() {
   form.value.triggers.push({ keyword: '', priority: 100, enabled: true });
@@ -563,24 +716,51 @@ async function loadOptions() {
   await Promise.all([searchScripts(''), searchMetrics('')]);
   if (!showReportProcesses) return;
   reportProcessLoading.value = true;
-  try { reportProcesses.value = await listReportProcesses('available'); } catch { reportProcesses.value = []; }
-  finally { reportProcessLoading.value = false; }
+  try {
+    reportProcesses.value = await listReportProcesses('available');
+  } catch {
+    reportProcesses.value = [];
+  } finally {
+    reportProcessLoading.value = false;
+  }
 }
 
-function cloneFlowValue<T>(value: T): T { return JSON.parse(JSON.stringify(value)); }
+function cloneFlowValue<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value));
+}
 
 async function importReportProcess(id: number) {
-  const source = reportProcesses.value.find(item => item.id === id);
+  const source = reportProcesses.value.find((item) => item.id === id);
   if (!source) return;
   if (form.value.nodes.length || outlineRows.value.length) {
-    try { await ElMessageBox.confirm('引入报告流程会替换当前编辑中的节点和报告大纲，原内容可通过“撤销引入”恢复。继续吗？', '引入报告流程', { type: 'warning' }); } catch { return; }
+    try {
+      await ElMessageBox.confirm(
+        '引入报告流程会替换当前编辑中的节点和报告大纲，原内容可通过“撤销引入”恢复。继续吗？',
+        '引入报告流程',
+        { type: 'warning' }
+      );
+    } catch {
+      return;
+    }
   }
   // outlineRows 是编辑器的实时草稿；不能只读 form.reportOutline，后者要到保存时才同步。
   const draftOutline = outlineRows.value.length
-      ? buildOutline(outlineRows.value, form.value.reportOutline?.numbering || defaultOutlineNumbering(), reportTitle.value)
-      : cloneFlowValue(form.value.reportOutline || null);
-  importedReportSnapshot.value = { ...captureEditorState(form.value.nodes, draftOutline, reportTitle.value), rows: cloneFlowValue(outlineRows.value), previousTemplateName: importedReportName.value, paramErrors: cloneFlowValue(scriptParamErrors.value) };
-  const importedNodes = cloneFlowValue((source.nodes || []) as SkillFlowNode[]).map((node, index) => ({ ...node, sortOrder: index + 1 }));
+    ? buildOutline(
+        outlineRows.value,
+        form.value.reportOutline?.numbering || defaultOutlineNumbering(),
+        reportTitle.value
+      )
+    : cloneFlowValue(form.value.reportOutline || null);
+  importedReportSnapshot.value = {
+    ...captureEditorState(form.value.nodes, draftOutline, reportTitle.value),
+    rows: cloneFlowValue(outlineRows.value),
+    previousTemplateName: importedReportName.value,
+    paramErrors: cloneFlowValue(scriptParamErrors.value),
+  };
+  const importedNodes = cloneFlowValue((source.nodes || []) as SkillFlowNode[]).map((node, index) => ({
+    ...node,
+    sortOrder: index + 1,
+  }));
   form.value.nodes = importedNodes;
   scriptParamErrors.value = {};
   form.value.reportOutline = cloneFlowValue(source.reportOutline) as unknown as SkillFlowInput['reportOutline'];
@@ -603,24 +783,59 @@ async function undoReportProcessImport() {
 
 function normalizeFlow(flow: SkillFlow): SkillFlowInput {
   return {
-    teamReport: flow.teamReport ? { ...flow.teamReport, targets: flow.teamReport.targets.map(target=>initializeReportTarget(JSON.parse(JSON.stringify(target)), flow)) } : null, typeId: flow.typeId,
-    code: flow.code || '', name: flow.name || '', description: flow.description || '', taskQuestion: flow.taskQuestion || '',
-    summaryQuestionTemplate: flow.summaryQuestionTemplate || '', enabled: flow.enabled !== false,
-    autoTriggerEnabled: flow.autoTriggerEnabled === true, scheduleRules: flow.scheduleRules ?? null,
-    maxParallelism: 2, notifyEnabled: flow.notifyEnabled !== false,
-    executors: [...new Set(flow.executors || [])].filter(id => id !== flow.createdBy),
-    notifyContactName: flow.notifyContactName?.trim() || flow.teamReport?.targets.find(target=>target.notifyContactName?.trim())?.notifyContactName || '', notifyContactPhone: flow.notifyContactPhone?.trim() || flow.teamReport?.targets.find(target=>target.notifyContactPhone?.trim())?.notifyContactPhone || '',
+    teamReport: flow.teamReport
+      ? {
+          ...flow.teamReport,
+          targets: flow.teamReport.targets.map((target) =>
+            initializeReportTarget(JSON.parse(JSON.stringify(target)), flow)
+          ),
+        }
+      : null,
+    typeId: flow.typeId,
+    code: flow.code || '',
+    name: flow.name || '',
+    description: flow.description || '',
+    taskQuestion: flow.taskQuestion || '',
+    summaryQuestionTemplate: flow.summaryQuestionTemplate || '',
+    enabled: flow.enabled !== false,
+    autoTriggerEnabled: flow.autoTriggerEnabled === true,
+    scheduleRules: flow.scheduleRules ?? null,
+    maxParallelism: 2,
+    notifyEnabled: flow.notifyEnabled !== false,
+    executors: [...new Set(flow.executors || [])].filter((id) => id !== flow.createdBy),
+    notifyContactName:
+      flow.notifyContactName?.trim() ||
+      flow.teamReport?.targets.find((target) => target.notifyContactName?.trim())?.notifyContactName ||
+      '',
+    notifyContactPhone:
+      flow.notifyContactPhone?.trim() ||
+      flow.teamReport?.targets.find((target) => target.notifyContactPhone?.trim())?.notifyContactPhone ||
+      '',
     notifyBodyTemplate: flow.notifyBodyTemplate?.trim() || '各位：\n    部门研发管理周报详见：{链接}，请关注。',
-    triggers: (flow.triggers || []).map(trigger => ({ ...trigger, enabled: trigger.enabled !== false })),
+    triggers: (flow.triggers || []).map((trigger) => ({ ...trigger, enabled: trigger.enabled !== false })),
     nodes: (flow.nodes || []).map((node, index) => {
       let scriptParams: Record<string, unknown> = node.scriptParams || {};
       // The backend DTO exposes the persisted JSON as scriptParamsJson.
       // Decode it when reopening a flow so saved values are shown again.
       const persisted = (node as SkillFlowNode & { scriptParamsJson?: string }).scriptParamsJson;
       if (!node.scriptParams && persisted) {
-        try { scriptParams = JSON.parse(persisted) || {}; } catch { scriptParams = {}; }
+        try {
+          scriptParams = JSON.parse(persisted) || {};
+        } catch {
+          scriptParams = {};
+        }
       }
-      return { ...node, nodeType: node.nodeType || (node.scriptId ? 'PYTHON' : 'SKILL'), skillId: node.skillId ?? null, scriptId: node.scriptId ?? null, scriptParams, metricIds: Array.from(new Set(node.metricIds || [])), required: node.required !== false, maxAttempts: 2, sortOrder: node.sortOrder || index + 1 };
+      return {
+        ...node,
+        nodeType: node.nodeType || (node.scriptId ? 'PYTHON' : 'SKILL'),
+        skillId: node.skillId ?? null,
+        scriptId: node.scriptId ?? null,
+        scriptParams,
+        metricIds: Array.from(new Set(node.metricIds || [])),
+        required: node.required !== false,
+        maxAttempts: 2,
+        sortOrder: node.sortOrder || index + 1,
+      };
     }),
     reportOutline: flow.reportOutline || { numbering: {}, items: [] },
   };
@@ -631,7 +846,14 @@ function syncOutlineRows() {
   reportTitle.value = form.value.reportOutline?.title || '';
   // 旧流程可能只有节点没有大纲；给它们一个兼容章节，避免节点在新界面中不可见。
   if (!outlineRows.value.length && form.value.nodes.length) {
-    outlineRows.value = [{ id: `outline_legacy_${Date.now()}`, title: '未配置章节', level: 1, nodeKeys: form.value.nodes.map(node => node.nodeKey) }];
+    outlineRows.value = [
+      {
+        id: `outline_legacy_${Date.now()}`,
+        title: '未配置章节',
+        level: 1,
+        nodeKeys: form.value.nodes.map((node) => node.nodeKey),
+      },
+    ];
   }
 }
 
@@ -654,16 +876,34 @@ async function removeOutlineRow(row: OutlineRow) {
   let end = index + 1;
   while (end < outlineRows.value.length && outlineRows.value[end].level > level) end++;
   const removedRows = outlineRows.value.slice(index, end);
-  const removedKeys = new Set(removedRows.flatMap(item => item.nodeKeys));
+  const removedKeys = new Set(removedRows.flatMap((item) => item.nodeKeys));
   let deleteNodes = false;
   if (removedKeys.size) {
-    try { await ElMessageBox.confirm(`章节中包含 ${removedKeys.size} 个节点。删除章节后节点会保留在未绑定节点区，需要重新绑定。继续吗？`, '删除章节', { type: 'warning', confirmButtonText: '保留节点，删除章节', cancelButtonText: '同时删除节点', distinguishCancelAndClose: true }); } catch (action) { if (action === 'cancel') deleteNodes = true; else return; }
+    try {
+      await ElMessageBox.confirm(
+        `章节中包含 ${removedKeys.size} 个节点。删除章节后节点会保留在未绑定节点区，需要重新绑定。继续吗？`,
+        '删除章节',
+        {
+          type: 'warning',
+          confirmButtonText: '保留节点，删除章节',
+          cancelButtonText: '同时删除节点',
+          distinguishCancelAndClose: true,
+        }
+      );
+    } catch (action) {
+      if (action === 'cancel') deleteNodes = true;
+      else return;
+    }
   }
   outlineRows.value.splice(index, end - index);
   if (deleteNodes) {
-    form.value.nodes = form.value.nodes.filter(node => !removedKeys.has(node.nodeKey));
-    outlineRows.value.forEach(item => { item.nodeKeys = item.nodeKeys.filter(key => !removedKeys.has(key)); });
-    removedKeys.forEach(key => { delete scriptParamErrors.value[key]; });
+    form.value.nodes = form.value.nodes.filter((node) => !removedKeys.has(node.nodeKey));
+    outlineRows.value.forEach((item) => {
+      item.nodeKeys = item.nodeKeys.filter((key) => !removedKeys.has(key));
+    });
+    removedKeys.forEach((key) => {
+      delete scriptParamErrors.value[key];
+    });
     renumber();
   }
   if (removedKeys.size && !deleteNodes) ElMessage.info(`已保留 ${removedKeys.size} 个节点，请重新绑定到章节`);
@@ -675,8 +915,11 @@ async function load() {
   copySourceName.value = '';
   originalKeywords.value = [];
   form.value = emptyForm();
-  savedTypeName.value='';
-  if(!isEdit.value){form.value.typeId=props.createType?.id;form.value.teamReport=initialReportConfig(props.createType);}
+  savedTypeName.value = '';
+  if (!isEdit.value) {
+    form.value.typeId = props.createType?.id;
+    form.value.teamReport = initialReportConfig(props.createType);
+  }
   flowOwnerId.value = localStorage.getItem('skill-user-id') || 'demo-user';
   notifyReceivers.value = [];
   receiverNames.value = {};
@@ -708,28 +951,37 @@ async function load() {
     try {
       if (!flow) throw new Error('流程详情为空');
       wasPublic.value = !isCopy.value && flow.chatPublic === true;
-      originalKeywords.value = (flow.triggers || []).map(trigger => trigger.keyword.trim().toLowerCase()).filter(Boolean);
+      originalKeywords.value = (flow.triggers || [])
+        .map((trigger) => trigger.keyword.trim().toLowerCase())
+        .filter(Boolean);
       form.value = normalizeFlow(cloneFlowValue(flow));
-      if(!isCopy.value)void listAllLongTaskTypes().then(types=>{savedTypeName.value=types.find(type=>type.id===flow.typeId)?.name||'';}).catch(()=>{});
-      if(isCopy.value){
-        const mode=reportModeForType(props.createType);
-        if(form.value.typeId!==props.createType?.id || (form.value.teamReport?.reportType??null)!==mode){
-          form.value.teamReport=initialReportConfig(props.createType);form.value.triggers=[];
+      if (!isCopy.value)
+        void listAllLongTaskTypes()
+          .then((types) => {
+            savedTypeName.value = types.find((type) => type.id === flow.typeId)?.name || '';
+          })
+          .catch(() => {});
+      if (isCopy.value) {
+        const mode = reportModeForType(props.createType);
+        if (form.value.typeId !== props.createType?.id || (form.value.teamReport?.reportType ?? null) !== mode) {
+          form.value.teamReport = initialReportConfig(props.createType);
+          form.value.triggers = [];
         }
-        form.value.typeId=props.createType?.id;
+        form.value.typeId = props.createType?.id;
       }
       if (!isCopy.value) flowOwnerId.value = flow.createdBy || flowOwnerId.value;
       syncOutlineRows();
       loading.value = false;
       // Complete option lists and secondary labels after the editor is visible.
       void loadOptions().catch(() => {});
-      void ensureSelectedSkills((flow.nodes || []).map(node => node.skillId ?? 0));
+      void ensureSelectedSkills((flow.nodes || []).map((node) => node.skillId ?? 0));
       if (isCopy.value) {
         copySourceName.value = flow.name;
         form.value.name = `${flow.name}-副本`;
         form.value.code = '';
         form.value.executors = [];
-        if(form.value.teamReport)form.value.teamReport.targets=form.value.teamReport.targets.map(target=>({...target,executors:[]}));
+        if (form.value.teamReport)
+          form.value.teamReport.targets = form.value.teamReport.targets.map((target) => ({ ...target, executors: [] }));
         form.value.notifyContactName = '';
         form.value.notifyContactPhone = '';
         form.value.enabled = true;
@@ -737,14 +989,18 @@ async function load() {
         form.value.triggers = form.value.triggers.map(({ id: _id, ...trigger }) => trigger);
       }
       // 联系人姓名未填写(或复制后被清空)时回填:编辑回填原创建人,新建/复制回填当前用户。
-      await backfillContactName(isCopy.value ? flowOwnerId.value : (flow.createdBy || ''));
+      await backfillContactName(isCopy.value ? flowOwnerId.value : flow.createdBy || '');
       metrics.value = retainSelectedMetrics(metrics.value, metrics.value, form.value.nodes);
       // Notification recipients are owner-only settings. A copied flow starts
       // with the new owner's default recipients, even when its source is shared.
       if (!isCopy.value && !form.value.teamReport) {
         const notifySettings = await getFlowNotifySettings(sourceId);
-        notifyReceivers.value = [...new Set(notifySettings.notifyReceiversByTrigger?.AUTO_METRIC ?? notifySettings.notifyReceivers ?? [])];
-        ccReceivers.value = [...new Set(notifySettings.ccReceiversByTrigger?.AUTO_METRIC ?? notifySettings.ccReceivers ?? [])].filter(id => !notifyReceivers.value.includes(id));
+        notifyReceivers.value = [
+          ...new Set(notifySettings.notifyReceiversByTrigger?.AUTO_METRIC ?? notifySettings.notifyReceivers ?? []),
+        ];
+        ccReceivers.value = [
+          ...new Set(notifySettings.ccReceiversByTrigger?.AUTO_METRIC ?? notifySettings.ccReceivers ?? []),
+        ].filter((id) => !notifyReceivers.value.includes(id));
         receiverNames.value = await batchUserNames([...notifyReceivers.value, ...ccReceivers.value]);
       }
       // Do not fetch one script detail per node while opening the editor.
@@ -771,7 +1027,7 @@ function confirmRecipients(value: { to: string[]; cc: string[]; names: Record<st
 
 /** 关键词集合相对加载时是否发生变化(增删改都算)。 */
 function keywordsChanged(): boolean {
-  const current = form.value.triggers.map(trigger => trigger.keyword.trim().toLowerCase()).filter(Boolean);
+  const current = form.value.triggers.map((trigger) => trigger.keyword.trim().toLowerCase()).filter(Boolean);
   const before = originalKeywords.value;
   return current.length !== before.length || current.some((keyword, index) => keyword !== before[index]);
 }
@@ -787,9 +1043,9 @@ async function save() {
   if (wasPublic.value && keywordsChanged()) {
     try {
       await ElMessageBox.confirm(
-          '触发关键词已修改，保存后流程将自动退出公开状态，仅您自己可通过聊天触发；如需恢复公开请联系开发人员。是否继续保存？',
-          '关键词已修改',
-          { type: 'warning', confirmButtonText: '继续保存', cancelButtonText: '再检查一下' },
+        '触发关键词已修改，保存后流程将自动退出公开状态，仅您自己可通过聊天触发；如需恢复公开请联系开发人员。是否继续保存？',
+        '关键词已修改',
+        { type: 'warning', confirmButtonText: '继续保存', cancelButtonText: '再检查一下' }
       );
     } catch {
       return;
@@ -798,24 +1054,31 @@ async function save() {
   saving.value = true;
   try {
     for (const node of form.value.nodes) {
-      if (node.scriptId) node.scriptParams = normalizeScriptParams(node.scriptParams || {}, await ensureScriptSchema(node.scriptId));
+      if (node.scriptId)
+        node.scriptParams = normalizeScriptParams(node.scriptParams || {}, await ensureScriptSchema(node.scriptId));
     }
     renumber();
     form.value.reportOutline = outlineRows.value.length
-        ? buildOutline(outlineRows.value, form.value.reportOutline?.numbering || defaultOutlineNumbering(), reportTitle.value)
-        : null;
+      ? buildOutline(
+          outlineRows.value,
+          form.value.reportOutline?.numbering || defaultOutlineNumbering(),
+          reportTitle.value
+        )
+      : null;
     const payload: SkillFlowInput = {
       ...form.value,
       notifyContactName: form.value.notifyContactName?.trim() || '',
       notifyContactPhone: form.value.notifyContactPhone?.trim() || '',
       notifyBodyTemplate: form.value.notifyBodyTemplate || '',
-      notifySettings: form.value.teamReport ? undefined : {
-        notifyReceivers: notifyReceivers.value,
-        ccReceivers: ccReceivers.value,
-        notifyReceiverTriggers: ['AUTO_METRIC'],
-        notifyReceiversByTrigger: { AUTO_METRIC: notifyReceivers.value },
-        ccReceiversByTrigger: { AUTO_METRIC: ccReceivers.value },
-      },
+      notifySettings: form.value.teamReport
+        ? undefined
+        : {
+            notifyReceivers: notifyReceivers.value,
+            ccReceivers: ccReceivers.value,
+            notifyReceiverTriggers: ['AUTO_METRIC'],
+            notifyReceiversByTrigger: { AUTO_METRIC: notifyReceivers.value },
+            ccReceiversByTrigger: { AUTO_METRIC: ccReceivers.value },
+          },
     };
     if (props.editId == null) await createSkillFlow(payload);
     else await updateSkillFlow(props.editId, payload);
@@ -834,11 +1097,22 @@ async function save() {
   }
 }
 
-watch(() => form.value.teamReport, config => {
-  if(config) form.value.triggers=config.targets.map(t=>({keyword:t.keyword,priority:0,enabled:true}));
-  if(!config?.targets.some(target=>target.teamId===debugTeamId.value)) debugTeamId.value=config?.targets[0]?.teamId??null;
-}, {deep:true});
-watch(() => [props.open, props.editId, props.copyFromId,props.createType?.id] as const, ([open]) => { if (open) load(); }, { immediate: true });
+watch(
+  () => form.value.teamReport,
+  (config) => {
+    if (config) form.value.triggers = config.targets.map((t) => ({ keyword: t.keyword, priority: 0, enabled: true }));
+    if (!config?.targets.some((target) => target.teamId === debugTeamId.value))
+      debugTeamId.value = config?.targets[0]?.teamId ?? null;
+  },
+  { deep: true }
+);
+watch(
+  () => [props.open, props.editId, props.copyFromId, props.createType?.id] as const,
+  ([open]) => {
+    if (open) load();
+  },
+  { immediate: true }
+);
 defineExpose({ isDirty });
 </script>
 
@@ -846,59 +1120,145 @@ defineExpose({ isDirty });
   <Teleport to="body" :disabled="page">
     <div v-if="open" class="mask" :class="{ 'page-mode': page }" @click.self="!page && emit('update:open', false)">
       <section class="drawer" aria-label="长任务流程编辑器">
-        <header class="drawer-header"><div><div class="eyebrow">长任务流程</div><h3>{{ isCopy ? '复制长任务流程' : isEdit ? '编辑长任务流程' : '创建长任务流程' }}</h3><p>{{ isCopy ? '请使用新的流程名称和触发关键词保存副本；副本默认启用。' : '配置触发条件与执行步骤，生成结构化汇总结果' }}</p></div><button class="icon-button" title="关闭" aria-label="关闭" @click="emit('update:open', false)">×</button></header>
+        <header class="drawer-header"
+          ><div
+            ><div class="eyebrow">长任务流程</div
+            ><h3>{{ isCopy ? '复制长任务流程' : isEdit ? '编辑长任务流程' : '创建长任务流程' }}</h3
+            ><p>{{
+              isCopy
+                ? '请使用新的流程名称和触发关键词保存副本；副本默认启用。'
+                : '配置触发条件与执行步骤，生成结构化汇总结果'
+            }}</p></div
+          ><button class="icon-button" title="关闭" aria-label="关闭" @click="emit('update:open', false)"
+            >×</button
+          ></header
+        >
         <div class="editor-layout">
           <nav class="editor-toc" aria-label="长任务配置目录" @dragover="outlineNavDragOver">
             <a href="#flow-basic" @click="navigateToSection($event, 'flow-basic')">基本信息</a>
-            <a v-if="form.teamReport" href="#flow-team-report" @click="navigateToSection($event, 'flow-team-report')">团队报告配置</a>
-            <a v-if="form.teamReport" href="#flow-people" @click="navigateToSection($event, 'flow-people')">联系人与可执行人</a>
-            <a v-if="!form.teamReport" href="#flow-triggers" @click="navigateToSection($event, 'flow-triggers')">触发与通知</a>
+            <a v-if="form.teamReport" href="#flow-team-report" @click="navigateToSection($event, 'flow-team-report')"
+              >团队报告配置</a
+            >
+            <a v-if="form.teamReport" href="#flow-people" @click="navigateToSection($event, 'flow-people')"
+              >联系人与可执行人</a
+            >
+            <a v-if="!form.teamReport" href="#flow-triggers" @click="navigateToSection($event, 'flow-triggers')"
+              >触发与通知</a
+            >
             <a href="#flow-outline" @click="navigateToSection($event, 'flow-outline')">报告大纲与节点</a>
             <template v-for="(row, index) in outlineRows" :key="row.id">
-              <a class="editor-toc-child" :class="{ 'outline-drop-target': outlineDropId === row.id }" :href="`#flow-outline-${row.id}`" :draggable="row.level === 1" @click="navigateToSection($event, `flow-outline-${row.id}`)" @dragstart="outlineDragStart(row, $event)" @dragover="outlineDragOver(row, $event)" @drop="outlineDrop($event)" @dragend="finishOutlineDrag">{{ outlineNumbers[index] || `章节 ${index + 1}` }} {{ row.title || '未命名章节' }}</a>
+              <a
+                class="editor-toc-child"
+                :class="{ 'outline-drop-target': outlineDropId === row.id }"
+                :href="`#flow-outline-${row.id}`"
+                :draggable="row.level === 1"
+                @click="navigateToSection($event, `flow-outline-${row.id}`)"
+                @dragstart="outlineDragStart(row, $event)"
+                @dragover="outlineDragOver(row, $event)"
+                @drop="outlineDrop($event)"
+                @dragend="finishOutlineDrag"
+                >{{ outlineNumbers[index] || `章节 ${index + 1}` }} {{ row.title || '未命名章节' }}</a
+              >
             </template>
           </nav>
           <main ref="editorBody" class="drawer-body">
             <div v-if="loading" class="empty">加载中…</div>
             <template v-else>
               <section id="flow-basic" class="form-section wide section-card">
-                <div class="section-heading basic-heading"><h4>基本信息</h4><div class="task-type-meta"><span>任务类型</span><strong class="task-type-badge" title="任务类型保存后不可修改">{{ taskTypeName }}</strong></div></div>
+                <div class="section-heading basic-heading"
+                  ><h4>基本信息</h4
+                  ><div class="task-type-meta"
+                    ><span>任务类型</span
+                    ><strong class="task-type-badge" title="任务类型保存后不可修改">{{ taskTypeName }}</strong></div
+                  ></div
+                >
                 <label><span>流程名称 *</span><input v-model="form.name" placeholder="如 每日质量综合分析" /></label>
-                <label><span>说明(非必填)</span><textarea v-model="form.description" rows="2" placeholder="说明该流程处理的业务问题" /></label>
+                <label
+                  ><span>说明(非必填)</span
+                  ><textarea v-model="form.description" rows="2" placeholder="说明该流程处理的业务问题" />
+                </label>
                 <div class="basic-row">
-                  <label class="toggle-row"><input v-model="form.enabled" type="checkbox" /><span>保存后启用流程</span></label>
+                  <label class="toggle-row"
+                    ><input v-model="form.enabled" type="checkbox" /><span>保存后启用流程</span></label
+                  >
                 </div>
                 <div class="auto-trigger-panel" :class="{ active: form.autoTriggerEnabled }">
-                  <label class="toggle-row auto-trigger-toggle"><input v-model="form.autoTriggerEnabled" type="checkbox" /><span>启用自动触发</span><em>{{ form.autoTriggerEnabled ? '已开启' : '已关闭' }}</em></label>
-                  <label v-if="form.autoTriggerEnabled"><span>自动触发定时规则</span><ScheduleRulesEditor v-model="form.scheduleRules" /><small>所选星期内，依赖数据准备完成后立即自动触发；不选默认每天都执行</small></label>
+                  <label class="toggle-row auto-trigger-toggle"
+                    ><input v-model="form.autoTriggerEnabled" type="checkbox" /><span>启用自动触发</span
+                    ><em>{{ form.autoTriggerEnabled ? '已开启' : '已关闭' }}</em></label
+                  >
+                  <label v-if="form.autoTriggerEnabled"
+                    ><span>自动触发定时规则</span><ScheduleRulesEditor v-model="form.scheduleRules" /><small
+                      >所选星期内，依赖数据准备完成后立即自动触发；不选默认每天都执行</small
+                    ></label
+                  >
                 </div>
               </section>
 
               <section v-if="form.teamReport" id="flow-team-report" class="form-section wide section-card">
                 <div class="section-heading">
-                  <div><h4>团队报告配置</h4><p>已配置 {{ form.teamReport.departments?.length || (form.teamReport.departmentId ? 1 : 0) }} 个部门 · {{ form.teamReport.targets.length }} 个团队 · 自动执行 {{ form.teamReport.targets.filter(target => target.selected).length }} 个</p></div>
+                  <div
+                    ><h4>团队报告配置</h4
+                    ><p
+                      >已配置 {{ form.teamReport.departments?.length || (form.teamReport.departmentId ? 1 : 0) }} 个部门
+                      · {{ form.teamReport.targets.length }} 个团队 · 自动执行
+                      {{ form.teamReport.targets.filter((target) => target.selected).length }} 个</p
+                    ></div
+                  >
                   <button type="button" class="btn primary" @click="teamReportDialogOpen = true">配置团队报告</button>
                 </div>
               </section>
 
               <section v-if="form.teamReport" id="flow-people" class="form-section wide section-card">
-                <div class="section-heading"><div><h4>联系人与可执行人</h4><p>整份长任务共用，所有团队统一使用此配置。</p></div></div>
+                <div class="section-heading"
+                  ><div><h4>联系人与可执行人</h4><p>整份长任务共用，所有团队统一使用此配置。</p></div></div
+                >
                 <div class="shared-contact-fields">
-                  <label><span>联系人姓名 *</span><input v-model="form.notifyContactName" placeholder="填写负责解答此任务相关问题的人" /></label>
-                  <label><span>联系电话 *</span><input v-model="form.notifyContactPhone" placeholder="填写 11 位手机号" /></label>
+                  <label
+                    ><span>联系人姓名 *</span
+                    ><input v-model="form.notifyContactName" placeholder="填写负责解答此任务相关问题的人"
+                  /></label>
+                  <label
+                    ><span>联系电话 *</span><input v-model="form.notifyContactPhone" placeholder="填写 11 位手机号"
+                  /></label>
                 </div>
                 <p v-if="contactValidationError" class="error" role="status">{{ contactValidationError }}</p>
-                <FlowExecutorPicker :model-value="form.executors || []" :owner-id="flowOwnerId" @update:model-value="form.executors=$event" />
+                <FlowExecutorPicker
+                  :model-value="form.executors || []"
+                  :owner-id="flowOwnerId"
+                  @update:model-value="form.executors = $event"
+                />
               </section>
 
               <section v-if="!form.teamReport" id="flow-triggers" class="form-section wide section-card">
-                <div class="section-heading"><div><h4>触发关键词</h4><p>关键词在所有长任务流程中唯一；聊天只会触发您自己的流程（公开流程除外）。</p></div><button v-if="!form.teamReport" class="btn primary" @click="addTrigger">添加关键词</button></div>
-                <div v-if="wasPublic" class="public-hint warning">该流程当前为公开状态（所有人的聊天都能触发）。保存修改后将自动退出公开、仅您自己可触发；如需恢复公开请联系开发人员。</div>
-                <div v-else class="public-hint">如需将流程设为公开（所有人的聊天都能触发该流程），请联系开发人员开通。</div>
-                <div v-if="!form.teamReport && !form.triggers.length" class="subtle-empty">未配置关键词，聊天不会触发这个流程。</div>
-                <div v-for="(trigger, index) in (form.teamReport ? [] : form.triggers)" :key="index" class="trigger-row"><input v-model="trigger.keyword" placeholder="输入触发关键词" /><label class="toggle-row"><input v-model="trigger.enabled" type="checkbox" /><span>启用</span></label><button class="icon-button danger" title="删除关键词" @click="removeTrigger(index)">×</button></div>
-                <FlowExecutorPicker :model-value="form.executors || []" :owner-id="flowOwnerId" @update:model-value="form.executors = $event" />
-                <label class="toggle-row"><input v-model="form.notifyEnabled" type="checkbox" /><span>汇总完成后发送通知</span></label>
+                <div class="section-heading"
+                  ><div
+                    ><h4>触发关键词</h4
+                    ><p>关键词在所有长任务流程中唯一；聊天只会触发您自己的流程（公开流程除外）。</p></div
+                  ><button v-if="!form.teamReport" class="btn primary" @click="addTrigger">添加关键词</button></div
+                >
+                <div v-if="wasPublic" class="public-hint warning"
+                  >该流程当前为公开状态（所有人的聊天都能触发）。保存修改后将自动退出公开、仅您自己可触发；如需恢复公开请联系开发人员。</div
+                >
+                <div v-else class="public-hint"
+                  >如需将流程设为公开（所有人的聊天都能触发该流程），请联系开发人员开通。</div
+                >
+                <div v-if="!form.teamReport && !form.triggers.length" class="subtle-empty"
+                  >未配置关键词，聊天不会触发这个流程。</div
+                >
+                <div v-for="(trigger, index) in form.teamReport ? [] : form.triggers" :key="index" class="trigger-row"
+                  ><input v-model="trigger.keyword" placeholder="输入触发关键词" /><label class="toggle-row"
+                    ><input v-model="trigger.enabled" type="checkbox" /><span>启用</span></label
+                  ><button class="icon-button danger" title="删除关键词" @click="removeTrigger(index)">×</button></div
+                >
+                <FlowExecutorPicker
+                  :model-value="form.executors || []"
+                  :owner-id="flowOwnerId"
+                  @update:model-value="form.executors = $event"
+                />
+                <label class="toggle-row"
+                  ><input v-model="form.notifyEnabled" type="checkbox" /><span>汇总完成后发送通知</span></label
+                >
                 <div v-if="!form.teamReport" class="notify-config-row">
                   <span>收件人 {{ notifyReceivers.length }} 人 · 抄送 {{ ccReceivers.length }} 人</span>
                   <button type="button" class="btn" @click="recipientDialogOpen = true">管理收件人</button>
@@ -906,91 +1266,271 @@ defineExpose({ isDirty });
                 </div>
                 <div v-if="!form.teamReport" class="notify-contact-config">
                   <h4>通知中的联系信息（必填）</h4>
-                  <p>展示在任务通知邮件中，方便收件人遇到问题时联系相关人员。手机号仅作为联系信息展示，不用于发送短信。</p>
-                  <label><span>联系人姓名</span><input v-model="form.notifyContactName" type="text" placeholder="填写负责解答此任务相关问题的人" /></label>
-                  <label><span>联系电话（手机号）</span><input v-model="form.notifyContactPhone" type="text" placeholder="填写 11 位手机号" /></label>
-                  <small>联系人和联系电话均为必填项；未填写联系人姓名时会自动回填创建人姓名，联系电话请手动补充。</small>
-                  <p v-if="!contactValidationError" class="contact-mode" role="status">保存后，任务通知邮件将展示上述联系信息</p>
+                  <p
+                    >展示在任务通知邮件中，方便收件人遇到问题时联系相关人员。手机号仅作为联系信息展示，不用于发送短信。</p
+                  >
+                  <label
+                    ><span>联系人姓名</span
+                    ><input v-model="form.notifyContactName" type="text" placeholder="填写负责解答此任务相关问题的人"
+                  /></label>
+                  <label
+                    ><span>联系电话（手机号）</span
+                    ><input v-model="form.notifyContactPhone" type="text" placeholder="填写 11 位手机号"
+                  /></label>
+                  <small
+                    >联系人和联系电话均为必填项；未填写联系人姓名时会自动回填创建人姓名，联系电话请手动补充。</small
+                  >
+                  <p v-if="!contactValidationError" class="contact-mode" role="status"
+                    >保存后，任务通知邮件将展示上述联系信息</p
+                  >
                   <p v-if="contactValidationError" class="error" role="status">{{ contactValidationError }}</p>
                 </div>
-                <NotifyBodyTemplateEditor :model-value="form.notifyBodyTemplate ?? ''" :flow-name="form.name" @update:model-value="form.notifyBodyTemplate = $event" />
-                <MailRecipientDialog :open="recipientDialogOpen" :to="notifyReceivers" :cc="ccReceivers" :names="receiverNames" @update:open="recipientDialogOpen = $event" @confirm="confirmRecipients" />
+                <NotifyBodyTemplateEditor
+                  :model-value="form.notifyBodyTemplate ?? ''"
+                  :flow-name="form.name"
+                  @update:model-value="form.notifyBodyTemplate = $event"
+                />
+                <MailRecipientDialog
+                  :open="recipientDialogOpen"
+                  :to="notifyReceivers"
+                  :cc="ccReceivers"
+                  :names="receiverNames"
+                  @update:open="recipientDialogOpen = $event"
+                  @confirm="confirmRecipients"
+                />
               </section>
 
               <section id="flow-outline" class="form-section wide section-card">
                 <!-- 测试期间临时隐藏流程引入入口。 -->
                 <div v-if="showReportProcesses" class="template-toolbar">
                   <span class="template-label">报告流程模板</span>
-                  <el-select v-model="selectedReportProcessId" filterable clearable :loading="reportProcessLoading" placeholder="搜索并选择报告流程" class="report-process-select"><el-option v-for="item in reportProcesses" :key="item.id" :value="String(item.id)" :label="item.name" /></el-select>
-                  <button class="btn primary" :disabled="!selectedReportProcessId || reportProcessLoading" @click="importReportProcess(Number(selectedReportProcessId))">引入报告流程</button>
+                  <el-select
+                    v-model="selectedReportProcessId"
+                    filterable
+                    clearable
+                    :loading="reportProcessLoading"
+                    placeholder="搜索并选择报告流程"
+                    class="report-process-select"
+                    ><el-option
+                      v-for="item in reportProcesses"
+                      :key="item.id"
+                      :value="String(item.id)"
+                      :label="item.name"
+                  /></el-select>
+                  <button
+                    class="btn primary"
+                    :disabled="!selectedReportProcessId || reportProcessLoading"
+                    @click="importReportProcess(Number(selectedReportProcessId))"
+                    >引入报告流程</button
+                  >
                 </div>
-                <div v-if="showReportProcesses && importedReportSnapshot" class="import-status"><span>已引入：<strong>{{ importedReportName }}</strong></span><div><button class="btn" @click="undoReportProcessImport">撤销引入</button></div></div>
+                <div v-if="showReportProcesses && importedReportSnapshot" class="import-status"
+                  ><span
+                    >已引入：<strong>{{ importedReportName }}</strong></span
+                  ><div><button class="btn" @click="undoReportProcessImport">撤销引入</button></div></div
+                >
                 <div v-if="unboundNodes.length" class="import-status">
                   <span>未绑定节点（{{ unboundNodes.length }}）：请绑定到章节，或删除不再需要的节点后保存。</span>
                   <div v-for="node in unboundNodes" :key="node.nodeKey">
                     <span>{{ nodeTitle(node) }}（{{ node.nodeKey }}）</span>
-                    <button class="btn danger-outline" :aria-label="`删除未绑定节点 ${node.nodeKey}`" @click="removeNode(form.nodes.indexOf(node))">删除节点</button>
+                    <button
+                      class="btn danger-outline"
+                      :aria-label="`删除未绑定节点 ${node.nodeKey}`"
+                      @click="removeNode(form.nodes.indexOf(node))"
+                      >删除节点</button
+                    >
                   </div>
                 </div>
-                <div class="section-heading outline-heading"><div><h4>报告输出大纲</h4><p>先写章节，章节下可添加多个执行节点；可拖拽或使用 ↑↓ 调整顺序。</p></div><button class="btn primary" @click="addOutlineRow(null)">＋ 添加章节</button></div>
-                <label v-if="!form.teamReport" class="report-title-field"><span>报告总标题</span><input v-model="reportTitle" placeholder="例如：月度经营分析报告" /><small>生成汇总时会作为整份报告的居中标题。</small></label>
+                <div class="section-heading outline-heading"
+                  ><div><h4>报告输出大纲</h4><p>先写章节，章节下可添加多个执行节点；可拖拽或使用 ↑↓ 调整顺序。</p></div
+                  ><button class="btn primary" @click="addOutlineRow(null)">＋ 添加章节</button></div
+                >
+                <label v-if="!form.teamReport" class="report-title-field"
+                  ><span>报告总标题</span><input v-model="reportTitle" placeholder="例如：月度经营分析报告" /><small
+                    >生成汇总时会作为整份报告的居中标题。</small
+                  ></label
+                >
                 <div v-if="form.teamReport" class="node-debug-toolbar">
-                  <div class="node-debug-caption"><strong>节点试跑</strong><span>选择本次试跑使用的{{ form.teamReport.reportType==='TEAM'?'团队':'部门' }}</span></div>
-                  <label class="node-debug-select"><span>{{ form.teamReport.reportType==='TEAM'?'试跑团队':'试跑部门' }}</span><select v-model="debugTeamId" aria-label="节点试跑对象" :disabled="!form.teamReport.targets.length || debugStarting || debugInProgress()"><option v-if="!form.teamReport.targets.length" :value="null" disabled>请先添加团队</option><option v-for="target in form.teamReport.targets" :key="target.teamId||'department'" :value="target.teamId">{{ target.departmentName ? target.departmentName + " / " : "" }}{{ target.teamName||form.teamReport.departmentName }}</option></select></label>
-                  <button v-if="!form.teamReport.targets.length" type="button" class="btn" @click="teamReportDialogOpen=true">配置团队</button>
-                  <small>{{ form.teamReport.targets.length ? '选择后，点击节点上的「试跑」；使用当天数据日期。' : '请在团队报告配置中添加团队后试跑。' }}</small>
+                  <div class="node-debug-caption"
+                    ><strong>节点试跑</strong
+                    ><span>选择本次试跑使用的{{ form.teamReport.reportType === 'TEAM' ? '团队' : '部门' }}</span></div
+                  >
+                  <label class="node-debug-select"
+                    ><span>{{ form.teamReport.reportType === 'TEAM' ? '试跑团队' : '试跑部门' }}</span
+                    ><select
+                      v-model="debugTeamId"
+                      aria-label="节点试跑对象"
+                      :disabled="!form.teamReport.targets.length || debugStarting || debugInProgress()"
+                      ><option v-if="!form.teamReport.targets.length" :value="null" disabled>请先添加团队</option
+                      ><option
+                        v-for="target in form.teamReport.targets"
+                        :key="target.teamId || 'department'"
+                        :value="target.teamId"
+                        >{{ target.departmentName ? target.departmentName + ' / ' : ''
+                        }}{{ target.teamName || form.teamReport.departmentName }}</option
+                      ></select
+                    ></label
+                  >
+                  <button
+                    v-if="!form.teamReport.targets.length"
+                    type="button"
+                    class="btn"
+                    @click="teamReportDialogOpen = true"
+                    >配置团队</button
+                  >
+                  <small>{{
+                    form.teamReport.targets.length
+                      ? '选择后，点击节点上的「试跑」；使用当天数据日期。'
+                      : '请在团队报告配置中添加团队后试跑。'
+                  }}</small>
                 </div>
                 <div v-if="!outlineRows.length" class="subtle-empty">尚未配置大纲，报告将按执行节点顺序输出。</div>
                 <template v-for="(row, rowIndex) in outlineRows" :key="row.id">
-                  <div :id="`flow-outline-${row.id}`" class="outline-row" :class="{ 'outline-drop-target': outlineDropId === row.id }" :style="{ marginLeft: `${Math.min(row.level - 1, 8) * 22}px` }" :draggable="row.level === 1" @dragstart="outlineDragStart(row, $event)" @dragover="outlineDragOver(row, $event)" @drop="outlineDrop($event)" @dragend="finishOutlineDrag">
-                    <span class="outline-level" :title="`第 ${row.level} 级`">{{ outlineNumbers[rowIndex] || `L${row.level}` }}</span>
+                  <div
+                    :id="`flow-outline-${row.id}`"
+                    class="outline-row"
+                    :class="{ 'outline-drop-target': outlineDropId === row.id }"
+                    :style="{ marginLeft: `${Math.min(row.level - 1, 8) * 22}px` }"
+                    :draggable="row.level === 1"
+                    @dragstart="outlineDragStart(row, $event)"
+                    @dragover="outlineDragOver(row, $event)"
+                    @drop="outlineDrop($event)"
+                    @dragend="finishOutlineDrag"
+                  >
+                    <span class="outline-level" :title="`第 ${row.level} 级`">{{
+                      outlineNumbers[rowIndex] || `L${row.level}`
+                    }}</span>
                     <input v-model="row.title" placeholder="章节标题" />
-                    <button class="btn primary outline-description-toggle" title="添加描述" @click="row.description = row.description === undefined ? '' : undefined">{{ row.description === undefined ? '＋ 添加描述' : '移除描述' }}</button>
-                    <button class="icon-button" title="上移" :disabled="!canMoveOutlineRow(outlineRows, row.id, -1)" @click="moveOutlineChapter(row, -1)">↑</button>
-                    <button class="icon-button" title="下移" :disabled="!canMoveOutlineRow(outlineRows, row.id, 1)" @click="moveOutlineChapter(row, 1)">↓</button>
+                    <button
+                      class="btn primary outline-description-toggle"
+                      title="添加描述"
+                      @click="row.description = row.description === undefined ? '' : undefined"
+                      >{{ row.description === undefined ? '＋ 添加描述' : '移除描述' }}</button
+                    >
+                    <button
+                      class="icon-button"
+                      title="上移"
+                      :disabled="!canMoveOutlineRow(outlineRows, row.id, -1)"
+                      @click="moveOutlineChapter(row, -1)"
+                      >↑</button
+                    >
+                    <button
+                      class="icon-button"
+                      title="下移"
+                      :disabled="!canMoveOutlineRow(outlineRows, row.id, 1)"
+                      @click="moveOutlineChapter(row, 1)"
+                      >↓</button
+                    >
                     <button class="icon-button" title="添加同级" @click="addOutlineRow(row)">＋</button>
                     <button class="icon-button" title="添加子级" @click="addOutlineRow(row, true)">↳</button>
                     <button class="icon-button danger" title="删除本节及子级" @click="removeOutlineRow(row)">×</button>
                   </div>
-                  <div v-if="row.description !== undefined" class="outline-description-row" :style="{ marginLeft: `${Math.min(row.level - 1, 8) * 22 + 42}px` }">
+                  <div
+                    v-if="row.description !== undefined"
+                    class="outline-description-row"
+                    :style="{ marginLeft: `${Math.min(row.level - 1, 8) * 22 + 42}px` }"
+                  >
                     <input v-model="row.description" placeholder="添加描述" />
                   </div>
                   <div class="outline-node-area" :style="{ marginLeft: `${Math.min(row.level, 8) * 22}px` }">
-                    <FlowNodeCard :public-report-type="form.teamReport?.reportType" v-for="(node, nodeIndex) in nodesForRow(row)" :key="node.nodeKey" class="chapter-node-card" :node="node" :title="nodeTitle(node)" :schema="schemaFor(node)" :scripts="scripts" :metrics="metrics" :script-loading="scriptLoading" :metric-loading="metricLoading" :debug-disabled="!node.scriptId || debugStarting || debugInProgress() || (!!form.teamReport && !debugTarget)" :dragging="dragNodeKey === node.nodeKey" :sortable="true" :is-first="nodeIndex === 0" :is-last="nodeIndex === nodesForRow(row).length - 1" remove-title="删除节点" @move="moveChapterNode(row, node.nodeKey, $event)" @remove="removeChapterNode(row, node.nodeKey)" @debug="runNodeDebug(node, $event)" @drag-start="chapterDragStart(node.nodeKey, $event)" @drag-over="chapterDragOver(row, node.nodeKey)" @drag-end="finishDrag" @script-change="onScriptSelected(node)" @script-params-change="onScriptParamsChange(node, $event)" @search-scripts="searchScripts" @search-metrics="searchMetrics" @set-metrics="setNodeMetrics(node, $event)" />
+                    <FlowNodeCard
+                      :public-report-type="form.teamReport?.reportType"
+                      v-for="(node, nodeIndex) in nodesForRow(row)"
+                      :key="node.nodeKey"
+                      class="chapter-node-card"
+                      :node="node"
+                      :title="nodeTitle(node)"
+                      :schema="schemaFor(node)"
+                      :scripts="scripts"
+                      :metrics="metrics"
+                      :script-loading="scriptLoading"
+                      :metric-loading="metricLoading"
+                      :debug-disabled="
+                        !node.scriptId || debugStarting || debugInProgress() || (!!form.teamReport && !debugTarget)
+                      "
+                      :dragging="dragNodeKey === node.nodeKey"
+                      :sortable="true"
+                      :is-first="nodeIndex === 0"
+                      :is-last="nodeIndex === nodesForRow(row).length - 1"
+                      remove-title="删除节点"
+                      @move="moveChapterNode(row, node.nodeKey, $event)"
+                      @remove="removeChapterNode(row, node.nodeKey)"
+                      @debug="runNodeDebug(node, $event)"
+                      @drag-start="chapterDragStart(node.nodeKey, $event)"
+                      @drag-over="chapterDragOver(row, node.nodeKey)"
+                      @drag-end="finishDrag"
+                      @script-change="onScriptSelected(node)"
+                      @script-params-change="onScriptParamsChange(node, $event)"
+                      @search-scripts="searchScripts"
+                      @search-metrics="searchMetrics"
+                      @set-metrics="setNodeMetrics(node, $event)"
+                    />
                     <div class="chapter-node-actions">
-                      <button class="btn" title="新建一个 Python 节点并放到该章节" @click="addOutlineNode(row)">＋ 添加节点</button>
-                      <select v-if="unboundNodes.length" :value="''" @change="bindRowNode(row, ($event.target as HTMLSelectElement).value)"><option value="" disabled>绑定已有未绑定节点…</option><option v-for="node in unboundNodes" :key="node.nodeKey" :value="node.nodeKey">{{ nodeTitle(node) }}（{{ node.nodeKey }}）</option></select>
+                      <button class="btn" title="新建一个 Python 节点并放到该章节" @click="addOutlineNode(row)"
+                        >＋ 添加节点</button
+                      >
+                      <select
+                        v-if="unboundNodes.length"
+                        :value="''"
+                        @change="bindRowNode(row, ($event.target as HTMLSelectElement).value)"
+                        ><option value="" disabled>绑定已有未绑定节点…</option
+                        ><option v-for="node in unboundNodes" :key="node.nodeKey" :value="node.nodeKey"
+                          >{{ nodeTitle(node) }}（{{ node.nodeKey }}）</option
+                        ></select
+                      >
                     </div>
                   </div>
                 </template>
               </section>
 
-
-              <div v-if="validationErrors.length" class="validation"><strong>保存前需处理：</strong><span v-for="item in validationErrors" :key="item">{{ item }}</span></div>
+              <div v-if="validationErrors.length" class="validation"
+                ><strong>保存前需处理：</strong
+                ><span v-for="item in validationErrors" :key="item">{{ item }}</span></div
+              >
               <div v-if="error" class="error">{{ error }}</div>
             </template>
           </main>
         </div>
-        <footer class="drawer-footer"><button class="btn" @click="emit('update:open', false)">取消</button><button class="btn primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存流程' }}</button></footer>
+        <footer class="drawer-footer"
+          ><button class="btn" @click="emit('update:open', false)">取消</button
+          ><button class="btn primary" :disabled="saving" @click="save">{{
+            saving ? '保存中…' : '保存流程'
+          }}</button></footer
+        >
       </section>
-      <TeamReportConfigDialog v-if="form.teamReport" v-model:open="teamReportDialogOpen" v-model="form.teamReport" :immutable="isEdit" />
+      <TeamReportConfigDialog
+        v-if="form.teamReport"
+        v-model:open="teamReportDialogOpen"
+        v-model="form.teamReport"
+        :immutable="isEdit"
+      />
       <div v-if="debugRun" class="debug-mask" @click.self="closeNodeDebug">
         <section class="debug-panel" aria-label="脚本试跑结果">
           <header class="debug-header">
             <div>
               <h4>脚本试跑</h4>
-              <p>节点 {{ form.nodes.find(node => node.nodeKey === debugNodeKey)?.nodeKey || '' }} · {{ debugRun.scriptId }} · 走脚本注册的 params_schema 校验</p>
+              <p
+                >节点 {{ form.nodes.find((node) => node.nodeKey === debugNodeKey)?.nodeKey || '' }} ·
+                {{ debugRun.scriptId }} · 走脚本注册的 params_schema 校验</p
+              >
             </div>
             <button class="icon-button" title="关闭" aria-label="关闭" @click="closeNodeDebug">×</button>
           </header>
           <div class="debug-meta">
-            <span>状态：<strong :class="{ ok: debugRun.status === 'SUCCESS', bad: ['FAILED', 'TIMEOUT'].includes(debugRun.status) }">{{ debugRun.status }}</strong></span>
+            <span
+              >状态：<strong
+                :class="{ ok: debugRun.status === 'SUCCESS', bad: ['FAILED', 'TIMEOUT'].includes(debugRun.status) }"
+                >{{ debugRun.status }}</strong
+              ></span
+            >
             <span>退出码：{{ debugRun.exitCode ?? '-' }}</span>
             <span>耗时：{{ debugRun.elapsedMs ?? 0 }} ms</span>
           </div>
-          <pre v-if="debugResolvedParams">实际参数：{{ JSON.stringify(debugResolvedParams,null,2) }}</pre>
+          <pre v-if="debugResolvedParams">实际参数：{{ JSON.stringify(debugResolvedParams, null, 2) }}</pre>
           <p v-if="debugRun.dataDate">基准日期：{{ debugRun.dataDate }} · 时区：{{ debugRun.timeZone }}</p>
-          <p v-if="debugRun.status === 'SUCCESS'" class="debug-ok-hint">试跑成功：脚本参数可用，与流程保存的参数一致即可放心保存。</p>
+          <p v-if="debugRun.status === 'SUCCESS'" class="debug-ok-hint"
+            >试跑成功：脚本参数可用，与流程保存的参数一致即可放心保存。</p
+          >
           <div class="debug-output">
             <div class="debug-output-title">stdout</div>
             <pre class="debug-pre">{{ debugRun.stdout || '(空)' }}</pre>
@@ -1008,60 +1548,693 @@ defineExpose({ isDirty });
 </template>
 
 <style scoped>
-.shared-contact-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-#flow-people :deep(.executor-picker) { margin-top: 0; background: #f8fafc; border-color: #e2e8f0; }
-@media (max-width: 700px) { .shared-contact-fields { grid-template-columns: 1fr; } }
+.shared-contact-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+#flow-people :deep(.executor-picker) {
+  margin-top: 0;
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+@media (max-width: 700px) {
+  .shared-contact-fields {
+    grid-template-columns: 1fr;
+  }
+}
 
-.basic-heading { margin-top: 0 !important; padding-bottom: 14px; border-bottom: 1px solid #f1f5f9; }
-.task-type-meta { display: flex; align-items: center; gap: 10px; font-size: 12px; color: #94a3b8; }
-.task-type-badge { padding: 4px 11px; border: 1px solid #bfdbfe; border-radius: 6px; background: #eff6ff; color: #2563eb; font-size: 12px; font-weight: 600; }
-.node-debug-toolbar { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; padding: 16px 18px; border: 1px solid #dbeafe; border-radius: 10px; background: #f8fbff; }
-.node-debug-caption { display: grid; gap: 4px; }
-.node-debug-caption strong { font-size: 13px; color: #334155; }
-.node-debug-caption span, .node-debug-toolbar small { font-size: 12px; color: #64748b; }
-.node-debug-select { display: flex !important; align-items: center; gap: 10px !important; flex: 1; min-width: 200px; max-width: 420px; }
-.node-debug-select > span { white-space: nowrap; font-size: 12px !important; }
-.node-debug-select select { flex: 1; min-width: 0; font-size: 13px; }
-.node-debug-select select:focus { outline: 2px solid #bfdbfe; outline-offset: 1px; border-color: #60a5fa; }
-.node-debug-select select:disabled { background: #f1f5f9; color: #94a3b8; }
-.node-debug-toolbar small { flex-basis: 100%; }
+.basic-heading {
+  margin-top: 0 !important;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #f1f5f9;
+}
+.task-type-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: #94a3b8;
+}
+.task-type-badge {
+  padding: 4px 11px;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  background: #eff6ff;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 600;
+}
+.node-debug-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  padding: 16px 18px;
+  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  background: #f8fbff;
+}
+.node-debug-caption {
+  display: grid;
+  gap: 4px;
+}
+.node-debug-caption strong {
+  font-size: 13px;
+  color: #334155;
+}
+.node-debug-caption span,
+.node-debug-toolbar small {
+  font-size: 12px;
+  color: #64748b;
+}
+.node-debug-select {
+  display: flex !important;
+  align-items: center;
+  gap: 10px !important;
+  flex: 1;
+  min-width: 200px;
+  max-width: 420px;
+}
+.node-debug-select > span {
+  white-space: nowrap;
+  font-size: 12px !important;
+}
+.node-debug-select select {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+}
+.node-debug-select select:focus {
+  outline: 2px solid #bfdbfe;
+  outline-offset: 1px;
+  border-color: #60a5fa;
+}
+.node-debug-select select:disabled {
+  background: #f1f5f9;
+  color: #94a3b8;
+}
+.node-debug-toolbar small {
+  flex-basis: 100%;
+}
 
-.template-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px}.template-label{font-size:13px;color:#475569;font-weight:600}.template-toolbar .report-process-select{width:300px;max-width:100%}.template-toolbar .btn,.outline-heading .btn{flex:none;white-space:nowrap}.import-status{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:10px 16px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;color:#334155;font-size:13px}.import-status>div{display:flex;gap:8px}.import-status .danger-outline{color:#dc2626;border-color:#fecaca;background:#fff}.template-toolbar .btn:disabled{opacity:.5;cursor:not-allowed}
+.template-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+.template-label {
+  font-size: 13px;
+  color: #475569;
+  font-weight: 600;
+}
+.template-toolbar .report-process-select {
+  width: 300px;
+  max-width: 100%;
+}
+.template-toolbar .btn,
+.outline-heading .btn {
+  flex: none;
+  white-space: nowrap;
+}
+.import-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  color: #334155;
+  font-size: 13px;
+}
+.import-status > div {
+  display: flex;
+  gap: 8px;
+}
+.import-status .danger-outline {
+  color: #dc2626;
+  border-color: #fecaca;
+  background: #fff;
+}
+.template-toolbar .btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
-.mask { position: fixed; inset: 0; z-index: 1000; display: flex; justify-content: flex-end; background: rgb(15 23 42 / 45%); }
-.drawer { width: min(880px, 96vw); height: 100%; display: flex; flex-direction: column; background: #f5f7fb; box-shadow: -8px 0 24px rgb(15 23 42 / 12%); }
-.mask.page-mode { position: static; min-height: 100%; justify-content: stretch; background: #f5f7fb; }
-.page-mode .drawer { width: 100%; min-height: 100%; box-shadow: none; }
-.page-mode .drawer-body { width: min(1100px, 100%); margin: 0 auto; box-sizing: border-box; }.page-mode .editor-layout { height: calc(100vh - 140px); flex: 0 0 calc(100vh - 140px); }
-.drawer-header, .drawer-footer, .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.drawer-header { padding: 20px 28px 18px; border-bottom: 1px solid #e2e8f0; background: #fff; }.drawer-header h3 { margin: 2px 0 3px; color: #0f172a; font-size: 20px; }.drawer-header p { margin: 0; color: #64748b; font-size: 12px; }.eyebrow { color: #3b82f6; font-size: 12px; font-weight: 700; letter-spacing: .04em; }
-.drawer-body { flex: 1; overflow: auto; padding: 24px 28px 36px; }.drawer-footer { justify-content: flex-end; padding: 14px 28px; border-top: 1px solid #e2e8f0; background: #fff; }
-.editor-layout { display: flex; flex: 1 1 0; min-height: 0; height: 0; overflow: hidden; }.editor-toc { position: sticky; top: 0; align-self: stretch; flex: 0 0 190px; width: 190px; height: 100%; box-sizing: border-box; padding: 24px 12px; overflow-y: auto; border-right: 1px solid #e2e8f0; background: #fff; }.editor-toc a { display: block; padding: 7px 10px; border-radius: 6px; color: #64748b; font-size: 13px; line-height: 1.4; text-decoration: none; }.editor-toc a:hover { background: #eff6ff; color: #2563eb; }.editor-toc-child { padding-left: 20px !important; font-size: 12px !important; }.editor-layout .drawer-body { flex: 1; min-width: 0; }
-.form-section { display: grid; gap: 14px; max-width: 620px; margin: 0 auto 18px; }.form-section.wide { max-width: none; }.section-card { padding: 20px; border: 1px solid #e2e8f0; border-radius: 12px; background: #fff; box-shadow: 0 2px 8px rgb(15 23 42 / 3%); }.form-section label { display: grid; gap: 5px; }.form-section label > span, .section-heading h4 { color: #475569; font-size: 13px; font-weight: 600; }.section-heading h4 { color: #0f172a; font-size: 15px; margin: 0; }.section-heading p { margin: 3px 0 0; color: #64748b; font-size: 12px; }
-.basic-row { display: flex; gap: 20px; align-items: end; flex-wrap: wrap; }.basic-row > label:first-child { width: 180px; }
-input, select, textarea { box-sizing: border-box; width: 100%; border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 10px; background: #fff; color: #1e293b; font: inherit; font-size: 14px; } textarea { resize: vertical; }.toggle-row { display: flex !important; align-items: center; grid-template-columns: none !important; gap: 7px !important; color: #475569; font-size: 13px; }.toggle-row input { width: auto; }
-.flow-preview { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; border-left: 3px solid #3b82f6; background: #f8fafc; color: #475569; font-size: 13px; }.preview-nodes { color: #1d4ed8; }
-.outline-row { display: grid; grid-template-columns: 34px minmax(120px, 1fr) repeat(6, auto); gap: 8px; align-items: center; padding: 8px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fbfdff; }.outline-row + .outline-row { margin-top: 7px; }.outline-level { color: #64748b; font-size: 11px; font-weight: 700; text-align: center; }.outline-row input, .outline-row select { min-width: 0; }.outline-row[draggable="true"], .editor-toc-child[draggable="true"] { cursor: grab; }.outline-drop-target { outline: 2px solid #93c5fd; outline-offset: 1px; }.outline-description-row { display: flex; padding: 6px 8px 2px 0; }.outline-description-row input { flex: 1; min-width: 0; }
-.section-heading { margin-top: 8px; }
-.notify-contact-config h4, .notify-body-config h4 { color: #0f172a; font-size: 15px; font-weight: 600; }
-.outline-node-area { display: grid; gap: 8px; margin-top: 6px; padding: 8px; border: 1px dashed #dbe4f0; border-radius: 8px; }
-.outline-node-area + .outline-row, .outline-node-area + .outline-node-area { margin-top: 7px; }
-.chapter-node-actions { display: flex; gap: 8px; align-items: center; }.chapter-node-actions select { width: auto; min-width: 200px; }
-.outline-item { display: grid; grid-template-columns: 1fr 220px 30px; gap: 8px; align-items: center; margin-top: 8px; }
-.trigger-row { display: grid; grid-template-columns: minmax(160px, 1fr) auto 30px; align-items: center; gap: 8px; }.public-hint { padding: 8px 12px; border-left: 3px solid #f59e0b; background: #fffbeb; color: #92400e; font-size: 12px; }.public-hint.warning { border-color: #dc2626; background: #fef2f2; color: #b91c1c; }.subtle-empty, .empty { color: #94a3b8; font-size: 13px; padding: 18px 0; }
-.notify-contact-config { display: grid; gap: 10px; margin-top: 14px; padding: 14px; border: 1px solid #dbeafe; border-radius: 8px; }.notify-contact-config h4, .notify-contact-config p { margin: 0; }.notify-contact-config p, .notify-contact-config small { font-size: 12px; color: #64748b; line-height: 1.6; }.notify-contact-config .contact-mode { color: #2563eb; }.notify-contact-config .error { color: #b91c1c; }
-.notify-config-row { display: grid; gap: 8px; padding: 12px; border: 1px solid #dbeafe; border-radius: 8px; background: #eff6ff; }.notify-config-row small { color: #64748b; font-size: 12px; }
-.auto-trigger-panel { padding: 12px 14px; border: 1px solid #cbd5e1; border-radius: 10px; background: #f8fafc; }.auto-trigger-panel.active { border-color: #60a5fa; background: #eff6ff; }.auto-trigger-toggle { padding: 4px 0; }.auto-trigger-toggle input { appearance: none; width: 38px; height: 22px; margin: 0; border-radius: 999px; background: #cbd5e1; position: relative; cursor: pointer; transition: .2s; }.auto-trigger-toggle input::after { content: ''; position: absolute; width: 18px; height: 18px; top: 2px; left: 2px; border-radius: 50%; background: white; box-shadow: 0 1px 3px #64748b; transition: .2s; }.auto-trigger-toggle input:checked { background: #2563eb; }.auto-trigger-toggle input:checked::after { transform: translateX(16px); }.auto-trigger-toggle em { color: #64748b; font-size: 12px; font-style: normal; }.auto-trigger-panel.active .auto-trigger-toggle em { color: #2563eb; font-weight: 600; }
-.validation, .error { display: grid; gap: 4px; margin-top: 18px; padding: 10px 12px; border-left: 3px solid #f59e0b; background: #fffbeb; color: #92400e; font-size: 13px; }.error { border-color: #dc2626; background: #fef2f2; color: #b91c1c; }
-.btn, .icon-button { border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #475569; cursor: pointer; font-size: 13px; }.btn { padding: 7px 14px; }.btn.primary { border-color: #3b82f6; background: #3b82f6; color: #fff; }.btn.danger { border-color: #fecaca; color: #dc2626; }.btn:disabled, .icon-button:disabled { cursor: not-allowed; opacity: .45; }.icon-button { width: 28px; height: 28px; padding: 0; font-size: 18px; line-height: 1; }.icon-button.danger { color: #dc2626; border-color: #fecaca; }
-.debug-mask { position: fixed; inset: 0; z-index: 1100; display: flex; align-items: center; justify-content: center; background: rgb(15 23 42 / 45%); }
-.debug-panel { width: min(760px, 94vw); max-height: 86vh; display: flex; flex-direction: column; gap: 12px; padding: 20px; border-radius: 12px; background: #fff; box-shadow: 0 12px 40px rgb(15 23 42 / 25%); }
-.debug-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.debug-header h4 { margin: 0; color: #0f172a; font-size: 16px; }.debug-header p { margin: 3px 0 0; color: #64748b; font-size: 12px; }
-.debug-meta { display: flex; flex-wrap: wrap; gap: 16px; color: #475569; font-size: 13px; }.debug-meta .ok { color: #16a34a; }.debug-meta .bad { color: #dc2626; }
-.debug-ok-hint { margin: 0; padding: 8px 12px; border-left: 3px solid #16a34a; background: #f0fdf4; color: #15803d; font-size: 13px; }
-.debug-output { flex: 1; min-height: 0; overflow: auto; display: grid; gap: 6px; align-content: start; }
-.debug-output-title { color: #475569; font-size: 12px; font-weight: 600; }
-.debug-pre { margin: 0; padding: 10px; border: 1px solid #e2e8f0; border-radius: 8px; background: #0f172a; color: #e2e8f0; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; }
-.debug-footer { display: flex; justify-content: flex-end; gap: 8px; }
-@media (max-width: 760px) { .drawer { width: 100vw; }.basic-row { grid-template-columns: 1fr; flex-direction: column; align-items: stretch; }.trigger-row { grid-template-columns: 1fr auto 30px; }.drawer-body { padding: 14px; } }
+.mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  justify-content: flex-end;
+  background: rgb(15 23 42 / 45%);
+}
+.drawer {
+  width: min(880px, 96vw);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #f5f7fb;
+  box-shadow: -8px 0 24px rgb(15 23 42 / 12%);
+}
+.mask.page-mode {
+  position: static;
+  min-height: 100%;
+  justify-content: stretch;
+  background: #f5f7fb;
+}
+.page-mode .drawer {
+  width: 100%;
+  min-height: 100%;
+  box-shadow: none;
+}
+.page-mode .drawer-body {
+  width: min(1100px, 100%);
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+.page-mode .editor-layout {
+  height: calc(100vh - 140px);
+  flex: 0 0 calc(100vh - 140px);
+}
+.drawer-header,
+.drawer-footer,
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.drawer-header {
+  padding: 20px 28px 18px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #fff;
+}
+.drawer-header h3 {
+  margin: 2px 0 3px;
+  color: #0f172a;
+  font-size: 20px;
+}
+.drawer-header p {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+}
+.eyebrow {
+  color: #3b82f6;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.drawer-body {
+  flex: 1;
+  overflow: auto;
+  padding: 24px 28px 36px;
+}
+.drawer-footer {
+  justify-content: flex-end;
+  padding: 14px 28px;
+  border-top: 1px solid #e2e8f0;
+  background: #fff;
+}
+.editor-layout {
+  display: flex;
+  flex: 1 1 0;
+  min-height: 0;
+  height: 0;
+  overflow: hidden;
+}
+.editor-toc {
+  position: sticky;
+  top: 0;
+  align-self: stretch;
+  flex: 0 0 190px;
+  width: 190px;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 24px 12px;
+  overflow-y: auto;
+  border-right: 1px solid #e2e8f0;
+  background: #fff;
+}
+.editor-toc a {
+  display: block;
+  padding: 7px 10px;
+  border-radius: 6px;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.4;
+  text-decoration: none;
+}
+.editor-toc a:hover {
+  background: #eff6ff;
+  color: #2563eb;
+}
+.editor-toc-child {
+  padding-left: 20px !important;
+  font-size: 12px !important;
+}
+.editor-layout .drawer-body {
+  flex: 1;
+  min-width: 0;
+}
+.form-section {
+  display: grid;
+  gap: 14px;
+  max-width: 620px;
+  margin: 0 auto 18px;
+}
+.form-section.wide {
+  max-width: none;
+}
+.section-card {
+  padding: 20px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgb(15 23 42 / 3%);
+}
+.form-section label {
+  display: grid;
+  gap: 5px;
+}
+.form-section label > span,
+.section-heading h4 {
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
+}
+.section-heading h4 {
+  color: #0f172a;
+  font-size: 15px;
+  margin: 0;
+}
+.section-heading p {
+  margin: 3px 0 0;
+  color: #64748b;
+  font-size: 12px;
+}
+.basic-row {
+  display: flex;
+  gap: 20px;
+  align-items: end;
+  flex-wrap: wrap;
+}
+.basic-row > label:first-child {
+  width: 180px;
+}
+input,
+select,
+textarea {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #fff;
+  color: #1e293b;
+  font: inherit;
+  font-size: 14px;
+}
+textarea {
+  resize: vertical;
+}
+.toggle-row {
+  display: flex !important;
+  align-items: center;
+  grid-template-columns: none !important;
+  gap: 7px !important;
+  color: #475569;
+  font-size: 13px;
+}
+.toggle-row input {
+  width: auto;
+}
+.flow-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  border-left: 3px solid #3b82f6;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 13px;
+}
+.preview-nodes {
+  color: #1d4ed8;
+}
+.outline-row {
+  display: grid;
+  grid-template-columns: 34px minmax(120px, 1fr) repeat(6, auto);
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fbfdff;
+}
+.outline-row + .outline-row {
+  margin-top: 7px;
+}
+.outline-level {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+}
+.outline-row input,
+.outline-row select {
+  min-width: 0;
+}
+.outline-row[draggable='true'],
+.editor-toc-child[draggable='true'] {
+  cursor: grab;
+}
+.outline-drop-target {
+  outline: 2px solid #93c5fd;
+  outline-offset: 1px;
+}
+.outline-description-row {
+  display: flex;
+  padding: 6px 8px 2px 0;
+}
+.outline-description-row input {
+  flex: 1;
+  min-width: 0;
+}
+.section-heading {
+  margin-top: 8px;
+}
+.notify-contact-config h4,
+.notify-body-config h4 {
+  color: #0f172a;
+  font-size: 15px;
+  font-weight: 600;
+}
+.outline-node-area {
+  display: grid;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 8px;
+  border: 1px dashed #dbe4f0;
+  border-radius: 8px;
+}
+.outline-node-area + .outline-row,
+.outline-node-area + .outline-node-area {
+  margin-top: 7px;
+}
+.chapter-node-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.chapter-node-actions select {
+  width: auto;
+  min-width: 200px;
+}
+.outline-item {
+  display: grid;
+  grid-template-columns: 1fr 220px 30px;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+.trigger-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto 30px;
+  align-items: center;
+  gap: 8px;
+}
+.public-hint {
+  padding: 8px 12px;
+  border-left: 3px solid #f59e0b;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 12px;
+}
+.public-hint.warning {
+  border-color: #dc2626;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+.subtle-empty,
+.empty {
+  color: #94a3b8;
+  font-size: 13px;
+  padding: 18px 0;
+}
+.notify-contact-config {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+}
+.notify-contact-config h4,
+.notify-contact-config p {
+  margin: 0;
+}
+.notify-contact-config p,
+.notify-contact-config small {
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.6;
+}
+.notify-contact-config .contact-mode {
+  color: #2563eb;
+}
+.notify-contact-config .error {
+  color: #b91c1c;
+}
+.notify-config-row {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: #eff6ff;
+}
+.notify-config-row small {
+  color: #64748b;
+  font-size: 12px;
+}
+.auto-trigger-panel {
+  padding: 12px 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+.auto-trigger-panel.active {
+  border-color: #60a5fa;
+  background: #eff6ff;
+}
+.auto-trigger-toggle {
+  padding: 4px 0;
+}
+.auto-trigger-toggle input {
+  appearance: none;
+  width: 38px;
+  height: 22px;
+  margin: 0;
+  border-radius: 999px;
+  background: #cbd5e1;
+  position: relative;
+  cursor: pointer;
+  transition: 0.2s;
+}
+.auto-trigger-toggle input::after {
+  content: '';
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  top: 2px;
+  left: 2px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 1px 3px #64748b;
+  transition: 0.2s;
+}
+.auto-trigger-toggle input:checked {
+  background: #2563eb;
+}
+.auto-trigger-toggle input:checked::after {
+  transform: translateX(16px);
+}
+.auto-trigger-toggle em {
+  color: #64748b;
+  font-size: 12px;
+  font-style: normal;
+}
+.auto-trigger-panel.active .auto-trigger-toggle em {
+  color: #2563eb;
+  font-weight: 600;
+}
+.validation,
+.error {
+  display: grid;
+  gap: 4px;
+  margin-top: 18px;
+  padding: 10px 12px;
+  border-left: 3px solid #f59e0b;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 13px;
+}
+.error {
+  border-color: #dc2626;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+.btn,
+.icon-button {
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: #475569;
+  cursor: pointer;
+  font-size: 13px;
+}
+.btn {
+  padding: 7px 14px;
+}
+.btn.primary {
+  border-color: #3b82f6;
+  background: #3b82f6;
+  color: #fff;
+}
+.btn.danger {
+  border-color: #fecaca;
+  color: #dc2626;
+}
+.btn:disabled,
+.icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.icon-button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+}
+.icon-button.danger {
+  color: #dc2626;
+  border-color: #fecaca;
+}
+.debug-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(15 23 42 / 45%);
+}
+.debug-panel {
+  width: min(760px, 94vw);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 12px 40px rgb(15 23 42 / 25%);
+}
+.debug-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.debug-header h4 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 16px;
+}
+.debug-header p {
+  margin: 3px 0 0;
+  color: #64748b;
+  font-size: 12px;
+}
+.debug-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  color: #475569;
+  font-size: 13px;
+}
+.debug-meta .ok {
+  color: #16a34a;
+}
+.debug-meta .bad {
+  color: #dc2626;
+}
+.debug-ok-hint {
+  margin: 0;
+  padding: 8px 12px;
+  border-left: 3px solid #16a34a;
+  background: #f0fdf4;
+  color: #15803d;
+  font-size: 13px;
+}
+.debug-output {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+.debug-output-title {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+}
+.debug-pre {
+  margin: 0;
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow: auto;
+}
+.debug-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+@media (max-width: 760px) {
+  .drawer {
+    width: 100vw;
+  }
+  .basic-row {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .trigger-row {
+    grid-template-columns: 1fr auto 30px;
+  }
+  .drawer-body {
+    padding: 14px;
+  }
+}
 </style>
