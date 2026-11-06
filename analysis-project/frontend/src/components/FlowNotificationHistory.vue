@@ -23,6 +23,11 @@ function ccRecipients(row: SkillFlowNotification) {
   const saved = request(row);
   return people(saved.toCCUserList ?? saved.ccUserList);
 }
+function ccLabel(row: SkillFlowNotification) {
+  const saved = request(row);
+  return ccRecipients(row).map(personLabel).join('、') ||
+    (Array.isArray(saved.toCCUserList ?? saved.ccUserList) || typeof (saved.toCCUserList ?? saved.ccUserList) === 'string' ? '无' : '未记录');
+}
 function string(value: unknown) { return typeof value === 'string' ? value.trim() : ''; }
 function people(value: unknown): string[] {
   return Array.isArray(value) ? value.map(string).filter(Boolean) : string(value).split(/[,，、;；]/).map(v => v.trim()).filter(Boolean);
@@ -85,7 +90,7 @@ function preview(row: SkillFlowNotification) {
       <p v-if="reasonOpen.has(row)" class="error">发送未成功，请稍后重试；如仍失败，请联系管理员。</p>
       <div v-if="contentOpen.has(row)" class="content">
         <p>收件人：{{ recipients(row).map(personLabel).join('、') || '未记录' }}</p>
-        <p>抄送人：{{ ccRecipients(row).map(personLabel).join('、') || '无' }}</p>
+        <p>抄送人：{{ ccLabel(row) }}</p>
         <p>标题：{{ string(request(row).title) || '历史记录未保存标题' }}</p>
         <template v-if="string(request(row).content)">
           <button type="button" :aria-expanded="bodyOpen.has(row)" @click="toggle(bodyOpen, row)">{{ bodyOpen.has(row) ? '收起正文' : '展开正文' }}</button>
