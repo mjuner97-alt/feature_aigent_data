@@ -43,8 +43,7 @@ public final class DependencyMetricAlertRenderer {
      */
     public static String renderHtml(List<DependencyMetricAlertRow> rows, LocalDate date, LocalDateTime checkedAt) {
         int ready = (int) rows.stream().filter(DependencyMetricAlertRow::ready).count();
-        StringBuilder html = new StringBuilder("<html><body><h3>依赖指标就绪预警（")
-                .append(escape(date.format(TITLE_DATE))).append("）</h3>");
+        StringBuilder html = new StringBuilder("<html><body>");
         html.append("<p>检查时间：").append(escape(checkedAt.format(TIME))).append("</p>");
         html.append("<p>共检查 ").append(rows.size()).append(" 项，已就绪 ").append(ready)
                 .append(" 项，未就绪 ").append(rows.size() - ready).append(" 项。</p>");
