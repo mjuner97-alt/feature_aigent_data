@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { createSkillFlow, getSkillFlow, updateSkillFlow, getFlowNotifySettings } from '../api/skillFlow';
+import { previewReportParams, createSkillFlow, getSkillFlow, updateSkillFlow, getFlowNotifySettings } from '../api/skillFlow';
 import { getSkill, listSkills, batchUserNames } from '../api/skill';
 import { listAllEnabledEntries, startDebug, cancelDebug, subscribeDebug, getEntry } from '../api/scriptRegistry';
 import type { ParamSchemaItem, ScriptDebugRun, ScriptRegistryListItem } from '../types/scriptRegistry';
@@ -13,6 +13,9 @@ import { buildOutline, canMoveOutlineRow, defaultOutlineNumbering, flattenOutlin
 import { insertOutlineRow } from '../utils/outlineRows';
 import { inferParamSchema, normalizeScriptParams, paramsFromSchema } from '../utils/scriptParams';
 import FlowNodeCard from './FlowNodeCard.vue';
+import TeamReportConfigDialog from './TeamReportConfigDialog.vue';
+import { listAllLongTaskTypes, type LongTaskType } from '../api/longTaskConfig';
+import { initialReportConfig, reportModeForType, initializeReportTarget } from '../utils/flowCreation';
 import MailRecipientDialog from './MailRecipientDialog.vue';
 import NotifyBodyTemplateEditor from './NotifyBodyTemplateEditor.vue';
 import FlowExecutorPicker from './FlowExecutorPicker.vue';
@@ -23,7 +26,7 @@ import { listReportProcesses } from '../api/reportProcess';
 import type { ReportProcess } from '../types/reportProcess';
 import { captureEditorState, restoreEditorState, type LongTaskEditorState } from '../utils/longTaskEditorState';
 
-const props = withDefaults(defineProps<{ open: boolean; editId: number | null; copyFromId?: number | null; knownFlows: SkillFlow[]; page?: boolean }>(), { page: false, copyFromId: null });
+const props = withDefaults(defineProps<{ open: boolean; editId: number | null; copyFromId?: number | null; createType?: LongTaskType | null; knownFlows: SkillFlow[]; page?: boolean }>(), { page: false, copyFromId: null, createType: null });
 const emit = defineEmits<{ (e: 'update:open', open: boolean): void; (e: 'saved'): void }>();
 /** 编辑中的流程当前是否为公开状态(公开流程保存修改后会自动退出公开,需重新联系开发人员开通)。 */
 const wasPublic = ref(false);
@@ -31,6 +34,8 @@ const flowOwnerId = ref(localStorage.getItem('skill-user-id') || 'demo-user');
 /** 加载时的触发关键词快照,保存时对比是否改动过关键词。 */
 const originalKeywords = ref<string[]>([]);
 const copySourceName = ref('');
+const savedTypeName=ref('');
+const taskTypeName=computed(()=>props.createType?.name||savedTypeName.value||(form.value.typeId===1?'默认类型':'未配置类型'));
 
 const loading = ref(false);
 const saving = ref(false);
@@ -50,6 +55,7 @@ const outlineRows = ref<OutlineRow[]>([]);
 const notifyReceivers = ref<string[]>([]);
 const ccReceivers = ref<string[]>([]);
 const recipientDialogOpen = ref(false);
+const teamReportDialogOpen = ref(false);
 const receiverNames = ref<Record<string, string>>({});
 const reportTitle = ref('');
 const editorBody = ref<HTMLElement | null>(null);
@@ -115,6 +121,9 @@ async function backfillContactName(creatorId: string) {
 
 const validationErrors = computed(() => {
   const errors: string[] = [];
+  if (!isEdit.value && !props.createType) errors.push('请先选择已配置的任务类型');
+  if (form.value.teamReport && !form.value.teamReport.departmentId) errors.push('请选择部门');
+  if (form.value.teamReport && !form.value.teamReport.targets.length) errors.push('请至少维护一个执行对象');
   if (!form.value.name.trim()) errors.push('请填写流程名称');
   if (isCopy.value && form.value.name.trim() === copySourceName.value.trim()) errors.push('复制流程必须修改流程名称');
   const sameName = props.knownFlows.find(flow => flow.id !== props.editId && flow.name.trim() === form.value.name.trim());
@@ -143,7 +152,12 @@ const validationErrors = computed(() => {
     if (owner) errors.push(`关键词 ${trigger.keyword} 已属于流程「${owner.name}」`);
   });
   if (contactValidationError.value) errors.push(contactValidationError.value);
-  if ((form.value.notifyBodyTemplate || '').length > 2000) errors.push('通知邮件正文模板超长（上限 2000 字符）');
+  if(form.value.teamReport) {
+    for(const target of form.value.teamReport.targets) {
+      if(target.reportName!=null&&!target.reportName.trim())errors.push(`${target.teamName||form.value.teamReport.departmentName}：请填写报告名称`);
+      if((target.notifyBodyTemplate||'').length>2000)errors.push(`${target.teamName||form.value.teamReport.departmentName}：通知邮件正文模板超长（上限 2000 字符）`);
+    }
+  } else if ((form.value.notifyBodyTemplate || '').length > 2000) errors.push('通知邮件正文模板超长（上限 2000 字符）');
   return errors;
 });
 
@@ -455,6 +469,9 @@ function finishOutlineDrag() { outlineDragId.value = null; outlineDropId.value =
 /** 节点试跑:复用脚本注册页的调试运行接口,按节点选的脚本+参数 JSON 真实执行一次,提前验证参数。 */
 const debugNodeKey = ref<string | null>(null);
 const debugStarting = ref(false);
+const debugTeamId=ref<string|null>(null);
+const debugTarget=computed(()=>form.value.teamReport?.targets.find(target=>target.teamId===debugTeamId.value));
+const debugResolvedParams=ref<Record<string,unknown>|null>(null);
 const debugRun = ref<ScriptDebugRun | null>(null);
 let debugEvents: EventSource | null = null;
 const DEBUG_TERMINAL = ['SUCCESS', 'FAILED', 'TIMEOUT', 'CANCELLED'];
@@ -465,6 +482,7 @@ function debugInProgress(): boolean {
 
 async function runNodeDebug(node: SkillFlowNode, dataDate?: string) {
   if (debugInProgress() || debugStarting.value) { ElMessage.warning('已有试跑在进行中，请先等待完成或停止'); return; }
+  if (form.value.teamReport && !debugTarget.value) { ElMessage.warning('请先在团队报告配置中添加试跑团队'); return; }
   if (!node.scriptId?.trim()) { ElMessage.warning('请先选择 Python 脚本'); return; }
   if (scriptParamErrors.value[node.nodeKey]) { ElMessage.warning('请先修正脚本参数 JSON'); return; }
   // 与 Python 注册页保持同一口径：试跑前按 scriptId 重新读取注册表详情，
@@ -483,7 +501,13 @@ async function runNodeDebug(node: SkillFlowNode, dataDate?: string) {
       throw new Error('脚本已停用，请先在 Python 注册页面启用');
     }
     const schema = await ensureScriptSchema(node.scriptId);
-    const params = normalizeScriptParams(node.scriptParams || {}, schema);
+    let params = normalizeScriptParams(node.scriptParams || {}, schema);
+    if(form.value.teamReport){
+      const target=debugTarget.value;
+      if(!target)throw new Error('请先维护执行对象');
+      const preview=await previewReportParams(node.scriptId!,params,form.value.teamReport,target.teamId);
+      params=preview.params;dataDate=preview.dataDate;debugResolvedParams.value=params;
+    }
     debugRun.value = await startDebug(script.id, params, script.timeoutSeconds ?? 60, dataDate);
     debugEvents?.close();
     debugEvents = subscribeDebug(debugRun.value.runId, {
@@ -579,12 +603,13 @@ async function undoReportProcessImport() {
 
 function normalizeFlow(flow: SkillFlow): SkillFlowInput {
   return {
+    teamReport: flow.teamReport ? { ...flow.teamReport, targets: flow.teamReport.targets.map(target=>initializeReportTarget(JSON.parse(JSON.stringify(target)), flow)) } : null, typeId: flow.typeId,
     code: flow.code || '', name: flow.name || '', description: flow.description || '', taskQuestion: flow.taskQuestion || '',
     summaryQuestionTemplate: flow.summaryQuestionTemplate || '', enabled: flow.enabled !== false,
     autoTriggerEnabled: flow.autoTriggerEnabled === true, scheduleRules: flow.scheduleRules ?? null,
     maxParallelism: 2, notifyEnabled: flow.notifyEnabled !== false,
     executors: [...new Set(flow.executors || [])].filter(id => id !== flow.createdBy),
-    notifyContactName: flow.notifyContactName ?? '', notifyContactPhone: flow.notifyContactPhone ?? '',
+    notifyContactName: flow.notifyContactName?.trim() || flow.teamReport?.targets.find(target=>target.notifyContactName?.trim())?.notifyContactName || '', notifyContactPhone: flow.notifyContactPhone?.trim() || flow.teamReport?.targets.find(target=>target.notifyContactPhone?.trim())?.notifyContactPhone || '',
     notifyBodyTemplate: flow.notifyBodyTemplate?.trim() || '各位：\n    部门研发管理周报详见：{链接}，请关注。',
     triggers: (flow.triggers || []).map(trigger => ({ ...trigger, enabled: trigger.enabled !== false })),
     nodes: (flow.nodes || []).map((node, index) => {
@@ -650,6 +675,8 @@ async function load() {
   copySourceName.value = '';
   originalKeywords.value = [];
   form.value = emptyForm();
+  savedTypeName.value='';
+  if(!isEdit.value){form.value.typeId=props.createType?.id;form.value.teamReport=initialReportConfig(props.createType);}
   flowOwnerId.value = localStorage.getItem('skill-user-id') || 'demo-user';
   notifyReceivers.value = [];
   receiverNames.value = {};
@@ -683,6 +710,14 @@ async function load() {
       wasPublic.value = !isCopy.value && flow.chatPublic === true;
       originalKeywords.value = (flow.triggers || []).map(trigger => trigger.keyword.trim().toLowerCase()).filter(Boolean);
       form.value = normalizeFlow(cloneFlowValue(flow));
+      if(!isCopy.value)void listAllLongTaskTypes().then(types=>{savedTypeName.value=types.find(type=>type.id===flow.typeId)?.name||'';}).catch(()=>{});
+      if(isCopy.value){
+        const mode=reportModeForType(props.createType);
+        if(form.value.typeId!==props.createType?.id || (form.value.teamReport?.reportType??null)!==mode){
+          form.value.teamReport=initialReportConfig(props.createType);form.value.triggers=[];
+        }
+        form.value.typeId=props.createType?.id;
+      }
       if (!isCopy.value) flowOwnerId.value = flow.createdBy || flowOwnerId.value;
       syncOutlineRows();
       loading.value = false;
@@ -694,6 +729,7 @@ async function load() {
         form.value.name = `${flow.name}-副本`;
         form.value.code = '';
         form.value.executors = [];
+        if(form.value.teamReport)form.value.teamReport.targets=form.value.teamReport.targets.map(target=>({...target,executors:[]}));
         form.value.notifyContactName = '';
         form.value.notifyContactPhone = '';
         form.value.enabled = true;
@@ -705,7 +741,7 @@ async function load() {
       metrics.value = retainSelectedMetrics(metrics.value, metrics.value, form.value.nodes);
       // Notification recipients are owner-only settings. A copied flow starts
       // with the new owner's default recipients, even when its source is shared.
-      if (!isCopy.value) {
+      if (!isCopy.value && !form.value.teamReport) {
         const notifySettings = await getFlowNotifySettings(sourceId);
         notifyReceivers.value = [...new Set(notifySettings.notifyReceiversByTrigger?.AUTO_METRIC ?? notifySettings.notifyReceivers ?? [])];
         ccReceivers.value = [...new Set(notifySettings.ccReceiversByTrigger?.AUTO_METRIC ?? notifySettings.ccReceivers ?? [])].filter(id => !notifyReceivers.value.includes(id));
@@ -773,7 +809,7 @@ async function save() {
       notifyContactName: form.value.notifyContactName?.trim() || '',
       notifyContactPhone: form.value.notifyContactPhone?.trim() || '',
       notifyBodyTemplate: form.value.notifyBodyTemplate || '',
-      notifySettings: {
+      notifySettings: form.value.teamReport ? undefined : {
         notifyReceivers: notifyReceivers.value,
         ccReceivers: ccReceivers.value,
         notifyReceiverTriggers: ['AUTO_METRIC'],
@@ -798,7 +834,11 @@ async function save() {
   }
 }
 
-watch(() => [props.open, props.editId, props.copyFromId] as const, ([open]) => { if (open) load(); }, { immediate: true });
+watch(() => form.value.teamReport, config => {
+  if(config) form.value.triggers=config.targets.map(t=>({keyword:t.keyword,priority:0,enabled:true}));
+  if(!config?.targets.some(target=>target.teamId===debugTeamId.value)) debugTeamId.value=config?.targets[0]?.teamId??null;
+}, {deep:true});
+watch(() => [props.open, props.editId, props.copyFromId,props.createType?.id] as const, ([open]) => { if (open) load(); }, { immediate: true });
 defineExpose({ isDirty });
 </script>
 
@@ -810,7 +850,9 @@ defineExpose({ isDirty });
         <div class="editor-layout">
           <nav class="editor-toc" aria-label="长任务配置目录" @dragover="outlineNavDragOver">
             <a href="#flow-basic" @click="navigateToSection($event, 'flow-basic')">基本信息</a>
-            <a href="#flow-triggers" @click="navigateToSection($event, 'flow-triggers')">触发与通知</a>
+            <a v-if="form.teamReport" href="#flow-team-report" @click="navigateToSection($event, 'flow-team-report')">团队报告配置</a>
+            <a v-if="form.teamReport" href="#flow-people" @click="navigateToSection($event, 'flow-people')">联系人与可执行人</a>
+            <a v-if="!form.teamReport" href="#flow-triggers" @click="navigateToSection($event, 'flow-triggers')">触发与通知</a>
             <a href="#flow-outline" @click="navigateToSection($event, 'flow-outline')">报告大纲与节点</a>
             <template v-for="(row, index) in outlineRows" :key="row.id">
               <a class="editor-toc-child" :class="{ 'outline-drop-target': outlineDropId === row.id }" :href="`#flow-outline-${row.id}`" :draggable="row.level === 1" @click="navigateToSection($event, `flow-outline-${row.id}`)" @dragstart="outlineDragStart(row, $event)" @dragover="outlineDragOver(row, $event)" @drop="outlineDrop($event)" @dragend="finishOutlineDrag">{{ outlineNumbers[index] || `章节 ${index + 1}` }} {{ row.title || '未命名章节' }}</a>
@@ -820,7 +862,7 @@ defineExpose({ isDirty });
             <div v-if="loading" class="empty">加载中…</div>
             <template v-else>
               <section id="flow-basic" class="form-section wide section-card">
-                <div class="section-heading"><h4>基本信息</h4></div>
+                <div class="section-heading basic-heading"><h4>基本信息</h4><div class="task-type-meta"><span>任务类型</span><strong class="task-type-badge" title="任务类型保存后不可修改">{{ taskTypeName }}</strong></div></div>
                 <label><span>流程名称 *</span><input v-model="form.name" placeholder="如 每日质量综合分析" /></label>
                 <label><span>说明(非必填)</span><textarea v-model="form.description" rows="2" placeholder="说明该流程处理的业务问题" /></label>
                 <div class="basic-row">
@@ -832,20 +874,37 @@ defineExpose({ isDirty });
                 </div>
               </section>
 
-              <section id="flow-triggers" class="form-section wide section-card">
-                <div class="section-heading"><div><h4>触发关键词</h4><p>关键词在所有长任务流程中唯一；聊天只会触发您自己的流程（公开流程除外）。</p></div><button class="btn primary" @click="addTrigger">添加关键词</button></div>
+              <section v-if="form.teamReport" id="flow-team-report" class="form-section wide section-card">
+                <div class="section-heading">
+                  <div><h4>团队报告配置</h4><p>已配置 {{ form.teamReport.departments?.length || (form.teamReport.departmentId ? 1 : 0) }} 个部门 · {{ form.teamReport.targets.length }} 个团队 · 自动执行 {{ form.teamReport.targets.filter(target => target.selected).length }} 个</p></div>
+                  <button type="button" class="btn primary" @click="teamReportDialogOpen = true">配置团队报告</button>
+                </div>
+              </section>
+
+              <section v-if="form.teamReport" id="flow-people" class="form-section wide section-card">
+                <div class="section-heading"><div><h4>联系人与可执行人</h4><p>整份长任务共用，所有团队统一使用此配置。</p></div></div>
+                <div class="shared-contact-fields">
+                  <label><span>联系人姓名 *</span><input v-model="form.notifyContactName" placeholder="填写负责解答此任务相关问题的人" /></label>
+                  <label><span>联系电话 *</span><input v-model="form.notifyContactPhone" placeholder="填写 11 位手机号" /></label>
+                </div>
+                <p v-if="contactValidationError" class="error" role="status">{{ contactValidationError }}</p>
+                <FlowExecutorPicker :model-value="form.executors || []" :owner-id="flowOwnerId" @update:model-value="form.executors=$event" />
+              </section>
+
+              <section v-if="!form.teamReport" id="flow-triggers" class="form-section wide section-card">
+                <div class="section-heading"><div><h4>触发关键词</h4><p>关键词在所有长任务流程中唯一；聊天只会触发您自己的流程（公开流程除外）。</p></div><button v-if="!form.teamReport" class="btn primary" @click="addTrigger">添加关键词</button></div>
                 <div v-if="wasPublic" class="public-hint warning">该流程当前为公开状态（所有人的聊天都能触发）。保存修改后将自动退出公开、仅您自己可触发；如需恢复公开请联系开发人员。</div>
                 <div v-else class="public-hint">如需将流程设为公开（所有人的聊天都能触发该流程），请联系开发人员开通。</div>
-                <div v-if="!form.triggers.length" class="subtle-empty">未配置关键词，聊天不会触发这个流程。</div>
-                <div v-for="(trigger, index) in form.triggers" :key="index" class="trigger-row"><input v-model="trigger.keyword" placeholder="输入触发关键词" /><label class="toggle-row"><input v-model="trigger.enabled" type="checkbox" /><span>启用</span></label><button class="icon-button danger" title="删除关键词" @click="removeTrigger(index)">×</button></div>
+                <div v-if="!form.teamReport && !form.triggers.length" class="subtle-empty">未配置关键词，聊天不会触发这个流程。</div>
+                <div v-for="(trigger, index) in (form.teamReport ? [] : form.triggers)" :key="index" class="trigger-row"><input v-model="trigger.keyword" placeholder="输入触发关键词" /><label class="toggle-row"><input v-model="trigger.enabled" type="checkbox" /><span>启用</span></label><button class="icon-button danger" title="删除关键词" @click="removeTrigger(index)">×</button></div>
                 <FlowExecutorPicker :model-value="form.executors || []" :owner-id="flowOwnerId" @update:model-value="form.executors = $event" />
                 <label class="toggle-row"><input v-model="form.notifyEnabled" type="checkbox" /><span>汇总完成后发送通知</span></label>
-                <div class="notify-config-row">
+                <div v-if="!form.teamReport" class="notify-config-row">
                   <span>收件人 {{ notifyReceivers.length }} 人 · 抄送 {{ ccReceivers.length }} 人</span>
                   <button type="button" class="btn" @click="recipientDialogOpen = true">管理收件人</button>
                   <small>未配置收件人时通知流程触发人</small>
                 </div>
-                <div class="notify-contact-config">
+                <div v-if="!form.teamReport" class="notify-contact-config">
                   <h4>通知中的联系信息（必填）</h4>
                   <p>展示在任务通知邮件中，方便收件人遇到问题时联系相关人员。手机号仅作为联系信息展示，不用于发送短信。</p>
                   <label><span>联系人姓名</span><input v-model="form.notifyContactName" type="text" placeholder="填写负责解答此任务相关问题的人" /></label>
@@ -874,7 +933,13 @@ defineExpose({ isDirty });
                   </div>
                 </div>
                 <div class="section-heading outline-heading"><div><h4>报告输出大纲</h4><p>先写章节，章节下可添加多个执行节点；可拖拽或使用 ↑↓ 调整顺序。</p></div><button class="btn primary" @click="addOutlineRow(null)">＋ 添加章节</button></div>
-                <label class="report-title-field"><span>报告总标题</span><input v-model="reportTitle" placeholder="例如：月度经营分析报告" /><small>生成汇总时会作为整份报告的居中标题。</small></label>
+                <label v-if="!form.teamReport" class="report-title-field"><span>报告总标题</span><input v-model="reportTitle" placeholder="例如：月度经营分析报告" /><small>生成汇总时会作为整份报告的居中标题。</small></label>
+                <div v-if="form.teamReport" class="node-debug-toolbar">
+                  <div class="node-debug-caption"><strong>节点试跑</strong><span>选择本次试跑使用的{{ form.teamReport.reportType==='TEAM'?'团队':'部门' }}</span></div>
+                  <label class="node-debug-select"><span>{{ form.teamReport.reportType==='TEAM'?'试跑团队':'试跑部门' }}</span><select v-model="debugTeamId" aria-label="节点试跑对象" :disabled="!form.teamReport.targets.length || debugStarting || debugInProgress()"><option v-if="!form.teamReport.targets.length" :value="null" disabled>请先添加团队</option><option v-for="target in form.teamReport.targets" :key="target.teamId||'department'" :value="target.teamId">{{ target.departmentName ? target.departmentName + " / " : "" }}{{ target.teamName||form.teamReport.departmentName }}</option></select></label>
+                  <button v-if="!form.teamReport.targets.length" type="button" class="btn" @click="teamReportDialogOpen=true">配置团队</button>
+                  <small>{{ form.teamReport.targets.length ? '选择后，点击节点上的「试跑」；使用当天数据日期。' : '请在团队报告配置中添加团队后试跑。' }}</small>
+                </div>
                 <div v-if="!outlineRows.length" class="subtle-empty">尚未配置大纲，报告将按执行节点顺序输出。</div>
                 <template v-for="(row, rowIndex) in outlineRows" :key="row.id">
                   <div :id="`flow-outline-${row.id}`" class="outline-row" :class="{ 'outline-drop-target': outlineDropId === row.id }" :style="{ marginLeft: `${Math.min(row.level - 1, 8) * 22}px` }" :draggable="row.level === 1" @dragstart="outlineDragStart(row, $event)" @dragover="outlineDragOver(row, $event)" @drop="outlineDrop($event)" @dragend="finishOutlineDrag">
@@ -891,7 +956,7 @@ defineExpose({ isDirty });
                     <input v-model="row.description" placeholder="添加描述" />
                   </div>
                   <div class="outline-node-area" :style="{ marginLeft: `${Math.min(row.level, 8) * 22}px` }">
-                    <FlowNodeCard v-for="(node, nodeIndex) in nodesForRow(row)" :key="node.nodeKey" class="chapter-node-card" :node="node" :title="nodeTitle(node)" :schema="schemaFor(node)" :scripts="scripts" :metrics="metrics" :script-loading="scriptLoading" :metric-loading="metricLoading" :debug-disabled="!node.scriptId || debugStarting || debugInProgress()" :dragging="dragNodeKey === node.nodeKey" :sortable="true" :is-first="nodeIndex === 0" :is-last="nodeIndex === nodesForRow(row).length - 1" remove-title="删除节点" @move="moveChapterNode(row, node.nodeKey, $event)" @remove="removeChapterNode(row, node.nodeKey)" @debug="runNodeDebug(node, $event)" @drag-start="chapterDragStart(node.nodeKey, $event)" @drag-over="chapterDragOver(row, node.nodeKey)" @drag-end="finishDrag" @script-change="onScriptSelected(node)" @script-params-change="onScriptParamsChange(node, $event)" @search-scripts="searchScripts" @search-metrics="searchMetrics" @set-metrics="setNodeMetrics(node, $event)" />
+                    <FlowNodeCard :public-report-type="form.teamReport?.reportType" v-for="(node, nodeIndex) in nodesForRow(row)" :key="node.nodeKey" class="chapter-node-card" :node="node" :title="nodeTitle(node)" :schema="schemaFor(node)" :scripts="scripts" :metrics="metrics" :script-loading="scriptLoading" :metric-loading="metricLoading" :debug-disabled="!node.scriptId || debugStarting || debugInProgress() || (!!form.teamReport && !debugTarget)" :dragging="dragNodeKey === node.nodeKey" :sortable="true" :is-first="nodeIndex === 0" :is-last="nodeIndex === nodesForRow(row).length - 1" remove-title="删除节点" @move="moveChapterNode(row, node.nodeKey, $event)" @remove="removeChapterNode(row, node.nodeKey)" @debug="runNodeDebug(node, $event)" @drag-start="chapterDragStart(node.nodeKey, $event)" @drag-over="chapterDragOver(row, node.nodeKey)" @drag-end="finishDrag" @script-change="onScriptSelected(node)" @script-params-change="onScriptParamsChange(node, $event)" @search-scripts="searchScripts" @search-metrics="searchMetrics" @set-metrics="setNodeMetrics(node, $event)" />
                     <div class="chapter-node-actions">
                       <button class="btn" title="新建一个 Python 节点并放到该章节" @click="addOutlineNode(row)">＋ 添加节点</button>
                       <select v-if="unboundNodes.length" :value="''" @change="bindRowNode(row, ($event.target as HTMLSelectElement).value)"><option value="" disabled>绑定已有未绑定节点…</option><option v-for="node in unboundNodes" :key="node.nodeKey" :value="node.nodeKey">{{ nodeTitle(node) }}（{{ node.nodeKey }}）</option></select>
@@ -900,6 +965,7 @@ defineExpose({ isDirty });
                 </template>
               </section>
 
+
               <div v-if="validationErrors.length" class="validation"><strong>保存前需处理：</strong><span v-for="item in validationErrors" :key="item">{{ item }}</span></div>
               <div v-if="error" class="error">{{ error }}</div>
             </template>
@@ -907,6 +973,7 @@ defineExpose({ isDirty });
         </div>
         <footer class="drawer-footer"><button class="btn" @click="emit('update:open', false)">取消</button><button class="btn primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存流程' }}</button></footer>
       </section>
+      <TeamReportConfigDialog v-if="form.teamReport" v-model:open="teamReportDialogOpen" v-model="form.teamReport" :immutable="isEdit" />
       <div v-if="debugRun" class="debug-mask" @click.self="closeNodeDebug">
         <section class="debug-panel" aria-label="脚本试跑结果">
           <header class="debug-header">
@@ -921,6 +988,7 @@ defineExpose({ isDirty });
             <span>退出码：{{ debugRun.exitCode ?? '-' }}</span>
             <span>耗时：{{ debugRun.elapsedMs ?? 0 }} ms</span>
           </div>
+          <pre v-if="debugResolvedParams">实际参数：{{ JSON.stringify(debugResolvedParams,null,2) }}</pre>
           <p v-if="debugRun.dataDate">基准日期：{{ debugRun.dataDate }} · 时区：{{ debugRun.timeZone }}</p>
           <p v-if="debugRun.status === 'SUCCESS'" class="debug-ok-hint">试跑成功：脚本参数可用，与流程保存的参数一致即可放心保存。</p>
           <div class="debug-output">
@@ -940,6 +1008,24 @@ defineExpose({ isDirty });
 </template>
 
 <style scoped>
+.shared-contact-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+#flow-people :deep(.executor-picker) { margin-top: 0; background: #f8fafc; border-color: #e2e8f0; }
+@media (max-width: 700px) { .shared-contact-fields { grid-template-columns: 1fr; } }
+
+.basic-heading { margin-top: 0 !important; padding-bottom: 14px; border-bottom: 1px solid #f1f5f9; }
+.task-type-meta { display: flex; align-items: center; gap: 10px; font-size: 12px; color: #94a3b8; }
+.task-type-badge { padding: 4px 11px; border: 1px solid #bfdbfe; border-radius: 6px; background: #eff6ff; color: #2563eb; font-size: 12px; font-weight: 600; }
+.node-debug-toolbar { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; padding: 16px 18px; border: 1px solid #dbeafe; border-radius: 10px; background: #f8fbff; }
+.node-debug-caption { display: grid; gap: 4px; }
+.node-debug-caption strong { font-size: 13px; color: #334155; }
+.node-debug-caption span, .node-debug-toolbar small { font-size: 12px; color: #64748b; }
+.node-debug-select { display: flex !important; align-items: center; gap: 10px !important; flex: 1; min-width: 200px; max-width: 420px; }
+.node-debug-select > span { white-space: nowrap; font-size: 12px !important; }
+.node-debug-select select { flex: 1; min-width: 0; font-size: 13px; }
+.node-debug-select select:focus { outline: 2px solid #bfdbfe; outline-offset: 1px; border-color: #60a5fa; }
+.node-debug-select select:disabled { background: #f1f5f9; color: #94a3b8; }
+.node-debug-toolbar small { flex-basis: 100%; }
+
 .template-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px}.template-label{font-size:13px;color:#475569;font-weight:600}.template-toolbar .report-process-select{width:300px;max-width:100%}.template-toolbar .btn,.outline-heading .btn{flex:none;white-space:nowrap}.import-status{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:10px 16px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;color:#334155;font-size:13px}.import-status>div{display:flex;gap:8px}.import-status .danger-outline{color:#dc2626;border-color:#fecaca;background:#fff}.template-toolbar .btn:disabled{opacity:.5;cursor:not-allowed}
 
 .mask { position: fixed; inset: 0; z-index: 1000; display: flex; justify-content: flex-end; background: rgb(15 23 42 / 45%); }

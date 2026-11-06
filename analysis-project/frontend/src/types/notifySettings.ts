@@ -3,6 +3,8 @@
  * 收件人为人员表校验过的 userId(统一认证号);发送时整名单一次批量透传邮件 toUserList。
  */
 export interface NotifySettings {
+  recipientDepartment?: string | null;
+  recipientTeam?: string | null;
   /** 执行通知弹窗使用的最新已保存正文与流程名称。 */
   notifyBodyTemplate?: string | null;
   flowName?: string;

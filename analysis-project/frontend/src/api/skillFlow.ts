@@ -173,7 +173,7 @@ export async function runSkillFlow(id: number): Promise<SkillFlowRunResult> {
   return res.json();
 }
 
-export async function listSkillFlowExecutions(status?: string, createdBy?: string, scope: 'mine' | 'all' = 'mine', page = 1, pageSize = 20, source?: 'long-task' | 'report-template', keyword?: string, triggerType?: string): Promise<{ items: SkillFlowExecution[]; page: number; pageSize: number; total: number }> {
+export async function listSkillFlowExecutions(status?: string, createdBy?: string, scope: 'mine' | 'all' = 'mine', page = 1, pageSize = 20, source?: 'long-task' | 'report-template', keyword?: string, triggerType?: string, typeId?: number): Promise<{ items: SkillFlowExecution[]; page: number; pageSize: number; total: number }> {
   const qs = new URLSearchParams();
   if (status) qs.set('status', status);
   if (createdBy) qs.set('createdBy', createdBy);
@@ -181,6 +181,7 @@ export async function listSkillFlowExecutions(status?: string, createdBy?: strin
   qs.set('page', String(page)); qs.set('pageSize', String(pageSize));
   if (source) qs.set('source', source);
   if (triggerType) qs.set('triggerType', triggerType);
+  if(typeId!=null)qs.set('typeId',String(typeId));
   if (keyword) qs.set('keyword', keyword);
   const res = await fetch(`${EXECUTION_BASE}?${qs}`, { headers: authHeaders() });
   if (!res.ok) throw await requestError(res, '查询执行记录失败');
@@ -319,3 +320,37 @@ export async function listSkillFlowPage(options: { typeId?:number; enabled?:bool
  if (!res.ok) throw await requestError(res, '查询失败'); return res.json();
 }
 
+
+export async function reportDepartments(): Promise<{id:string;name:string}[]> {
+ const res=await fetch(`${FLOW_BASE}/report-departments`,{headers:authHeaders()});
+ if(!res.ok)throw await requestError(res,'读取部门失败');return res.json();
+}
+export async function reportTeams(id:string): Promise<import('../types/skillFlow').TeamReportTarget[]> {
+ const res=await fetch(`${FLOW_BASE}/report-departments/${encodeURIComponent(id)}/teams`,{headers:authHeaders()});
+ if(!res.ok)throw await requestError(res,'读取团队失败');return res.json();
+}
+export async function reportDepartmentDefaults(id:string): Promise<import('../types/skillFlow').TeamReportTarget> {
+ const res=await fetch(`${FLOW_BASE}/report-departments/${encodeURIComponent(id)}/defaults`,{headers:authHeaders()});
+ if(!res.ok)throw await requestError(res,'读取部门名单失败');return res.json();
+}
+export async function runSkillFlowBatch(id:number,teamIds:string[],requestId?:string):Promise<{batchId:string;executions:SkillFlowExecution[];created:boolean}> {
+ const res=await fetch(`${FLOW_BASE}/${id}/run-batch`,{method:'POST',headers:jsonHeaders(),body:JSON.stringify({teamIds,requestId})});
+ if(!res.ok)throw await requestError(res,'提交批次失败');return res.json();
+}
+export async function flowBatchProgress(id:number):Promise<{id:number;batch_id:string;status:string;team_name?:string}[]> {
+ const res=await fetch(`${FLOW_BASE}/${id}/batch-progress`,{headers:authHeaders()});
+ if(!res.ok)throw await requestError(res,'读取批次进度失败');return res.json();
+}
+
+export async function previewReportParams(scriptId:string,params:Record<string,unknown>,config:import('../types/skillFlow').TeamReportConfig,teamId:string|null):Promise<{params:Record<string,unknown>;dataDate:string}> {
+ const res=await fetch(`${FLOW_BASE}/report-params-preview`,{method:'POST',headers:jsonHeaders(),body:JSON.stringify({scriptId,paramsJson:JSON.stringify(params),config,teamId})});
+ if(!res.ok)throw await requestError(res,'解析实际参数失败');return res.json();
+}
+
+export interface TeamReportPerson { userId: string; name: string; department: string; positionRole?: string | null }
+export async function reportPeople(department: string, team: string, keyword = ''): Promise<TeamReportPerson[]> {
+  const query = new URLSearchParams({ department, team, keyword });
+  const res = await fetch(`${FLOW_BASE}/report-people?${query}`, { headers: authHeaders() });
+  if (!res.ok) throw await requestError(res, '读取团队人员失败');
+  return res.json();
+}

@@ -17,6 +17,7 @@ import SkillJobExecutionDrawer from '../../components/SkillJobExecutionDrawer.vu
 import SkillJobNotificationDrawer from '../../components/SkillJobNotificationDrawer.vue';
 import SkillFlowList from '../../components/SkillFlowList.vue';
 import SkillFlowExecutionList from '../../components/SkillFlowExecutionList.vue';
+import type { LongTaskType } from '../../api/longTaskConfig';
 
 const me = currentUserId();
 const route = useRoute();
@@ -43,9 +44,11 @@ const visibilityScope = ref<'mine' | 'all'>('mine');
 const scopeCreatedBy = ref('');
 const flowKeyword = ref('');
 const flowEnabledFilter = ref<boolean | null>(null);
+const flowTypeId=ref<number|null>(null),flowTypes=ref<LongTaskType[]>([]);
 const flowListRef = ref<InstanceType<typeof SkillFlowList> | null>(null);
 const flowExecutionListRef = ref<InstanceType<typeof SkillFlowExecutionList> | null>(null);
 const flowExecutionKeyword = ref('');
+const flowExecutionTypeId = ref<number|null>(null);
 const flowExecutionTriggerType = ref('');
 const centerExecutions = ref<SkillJobExecutionSummary[]>([]);
 const executionLoading = ref(false);
@@ -144,7 +147,7 @@ function filterFlows() {
 }
 
 function createFlow() {
-  router.push('/skills/jobs/flows/new');
+  flowListRef.value?.create();
 }
 
 function openFlowExecutions() {
@@ -360,11 +363,23 @@ function metricTitle(job: SkillJobSummary): string {
         </div>
         <input v-if="visibilityScope === 'all'" v-model="scopeCreatedBy" placeholder="创建人 userId" class="search-input creator-input" @keyup.enter="refreshCurrentTab" />
         <input v-if="activeTab === 'flows'" v-model="flowKeyword" placeholder="搜索流程名称" class="search-input" @keyup.enter="refreshCurrentTab" />
-        <select v-if="activeTab === 'flows'" v-model="flowEnabledFilter" class="filter-select" @change="filterFlows">
+        <label v-if="activeTab === 'flows'" class="task-type-filter">
+          <select v-model="flowTypeId" class="filter-select execution-filter" aria-label="任务类型筛选">
+            <option :value="null">全部任务类型</option>
+            <option v-for="type in flowTypes" :key="type.id" :value="type.id">{{ type.name }}</option>
+          </select>
+        </label>
+        <select v-if="activeTab === 'flows'" v-model="flowEnabledFilter" class="filter-select execution-filter" @change="filterFlows">
           <option :value="null">全部状态</option><option :value="true">启用</option><option :value="false">禁用</option>
         </select>
-        <select v-if="activeTab === 'flow-execution'" v-model="flowExecutionTriggerType" class="filter-select" aria-label="触发方式筛选">
-          <option value="">全部</option><option value="AUTO_METRIC">自动</option><option value="MANUAL">手动</option><option value="CHAT">对话</option>
+        <label v-if="activeTab === 'flow-execution'" class="task-type-filter">
+          <select v-model="flowExecutionTypeId" class="filter-select execution-filter" aria-label="执行记录任务类型筛选">
+            <option :value="null">全部任务类型</option>
+            <option v-for="type in flowTypes" :key="type.id" :value="type.id">{{ type.name }}</option>
+          </select>
+        </label>
+        <select v-if="activeTab === 'flow-execution'" v-model="flowExecutionTriggerType" class="filter-select execution-filter" aria-label="触发方式筛选">
+          <option value="">全部触发方式</option><option value="AUTO_METRIC">自动</option><option value="MANUAL">手动</option><option value="CHAT">对话</option>
         </select>
         <input v-if="activeTab === 'flow-execution'" v-model="flowExecutionKeyword" placeholder="搜索任务名称" class="search-input" @keyup.enter="flowExecutionListRef?.load('', effectiveCreatedBy || '', false, visibilityScope)" />
         <input v-if="activeTab === 'manage'" v-model="keyword" placeholder="搜索任务名称" class="search-input" @keyup.enter="filterJobs" />
@@ -392,8 +407,8 @@ function metricTitle(job: SkillJobSummary): string {
       <button v-if="showSkillFlow" class="job-tab" :class="{ active: activeTab === 'flow-execution' }" @click="activeTab = 'flow-execution'">长任务执行记录</button>
     </div>
 
-    <SkillFlowList v-if="activeTab === 'flows'" ref="flowListRef" :scope="visibilityScope" :created-by="effectiveCreatedBy || ''" @view-records="openFlowExecutions" />
-    <SkillFlowExecutionList v-else-if="activeTab === 'flow-execution'" ref="flowExecutionListRef" :scope="visibilityScope" :created-by="effectiveCreatedBy || ''" :keyword="flowExecutionKeyword" :trigger-type="flowExecutionTriggerType" />
+    <SkillFlowList v-if="activeTab === 'flows'" ref="flowListRef" :scope="visibilityScope" :created-by="effectiveCreatedBy || ''" :type-id="flowTypeId" @types-loaded="flowTypes=$event" @view-records="openFlowExecutions" />
+    <SkillFlowExecutionList v-else-if="activeTab === 'flow-execution'" ref="flowExecutionListRef" :scope="visibilityScope" :created-by="effectiveCreatedBy || ''" :keyword="flowExecutionKeyword" :trigger-type="flowExecutionTriggerType" :type-id="flowExecutionTypeId" @types-loaded="flowTypes=$event" />
 
     <template v-else-if="activeTab === 'execution'">
       <div v-if="executionError" class="center-error">{{ executionError }}</div>
@@ -539,6 +554,10 @@ function metricTitle(job: SkillJobSummary): string {
 .search-input { padding: 7px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; width: 200px; }
 .creator-input { width: 160px; }
 .filter-select { padding: 7px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; background: #fff; }
+.execution-filter { appearance:none;min-height:36px;padding:8px 34px 8px 12px;border:1px solid #d8e0eb;border-radius:8px;color:#334155;cursor:pointer;background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 10px center;transition:border-color .15s,box-shadow .15s; }
+.execution-filter:hover { border-color:#93c5fd; }
+.execution-filter:focus { outline:none;border-color:#60a5fa;box-shadow:0 0 0 3px #eff6ff; }
+.task-type-filter { display: inline-flex; align-items: center; gap: 8px; color: #334155; font-size: 14px; }
 .btn { padding: 7px 16px; border-radius: 6px; border: 1px solid #cbd5e1; cursor: pointer; font-size: 14px; }
 .btn.primary { background: #3b82f6; color: #fff; border-color: #3b82f6; }
 .btn.primary:hover { background: #2563eb; }

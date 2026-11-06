@@ -52,7 +52,7 @@ function move(index: number, delta: number) {
 
 <template>
   <div class="recipient-order">
-    <p v-if="modelValue.length > 1" class="order-help">拖动 ⋮⋮ 调整顺序，也可点击 ↑ / ↓</p>
+    <p v-if="modelValue.length > 1" class="order-help">可拖动排序</p>
     <ol class="recipient-order-list" :aria-label="label" @dragleave.self="insertion = null" @dragend="clearDrag">
       <li v-for="(id, index) in modelValue" :key="id" :data-recipient-id="id"
           :class="['recipient-row', { 'is-dragging': dragged === id, 'insert-before': insertion?.id === id && !insertion.after, 'insert-after': insertion?.id === id && insertion.after }]"

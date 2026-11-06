@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { onUnmounted, ref, watch } from 'vue';
-import { getSkillFlowExecutionNotifySettings, resendSkillFlowExecutionNotification } from '../api/skillFlow';
-import { batchUserNames } from '../api/skill';
+import { computed, onUnmounted, ref, watch } from 'vue';
+import { getSkillFlowExecutionNotifySettings, resendSkillFlowExecutionNotification, reportPeople } from '../api/skillFlow';
+import { batchUserNames, searchSkillUsers } from '../api/skill';
 import MailRecipientDialog from './MailRecipientDialog.vue';
 import NotifyBodyTemplateEditor from './NotifyBodyTemplateEditor.vue';
 
@@ -10,6 +10,8 @@ const emit = defineEmits<{ (event: 'update:open', value: boolean): void; (event:
 const savedTo = ref<string[]>([]), savedCc = ref<string[]>([]), names = ref<Record<string, string>>({});
 const savedTemplate = ref(''), bodyTemplate = ref(''), flowName = ref('');
 const reportLinkTitle = ref<string | undefined>();
+const recipientSource = ref<{department:string;team:string}|null>(null);
+const searchSource = computed(() => recipientSource.value ? async (keyword:string) => {if(!keyword.trim())return [];const found=await searchSkillUsers(keyword);return found.length?found:reportPeople(recipientSource.value!.department,recipientSource.value!.team,keyword);} : undefined);
 const loading = ref(false), ready = ref(false), sending = ref(false);
 const error = ref(''), successMessage = ref('');
 let generation = 0;
@@ -17,7 +19,7 @@ let successTimer: ReturnType<typeof setTimeout> | undefined;
 
 async function loadDefaults() {
   const version = ++generation, id = props.executionId;
-  ready.value = false; error.value = ''; savedTo.value = []; savedCc.value = []; names.value = {}; savedTemplate.value = ''; bodyTemplate.value = ''; flowName.value = ''; reportLinkTitle.value = undefined;
+  ready.value = false; error.value = ''; savedTo.value = []; savedCc.value = []; names.value = {}; savedTemplate.value = ''; bodyTemplate.value = ''; flowName.value = ''; reportLinkTitle.value = undefined; recipientSource.value = null;
   if (!props.open || id == null) { loading.value = false; return; }
   loading.value = true;
   try {
@@ -26,10 +28,12 @@ async function loadDefaults() {
     const to = [...new Set(settings.notifyReceiversByTrigger?.AUTO_METRIC ?? settings.notifyReceivers ?? [])];
     const cc = [...new Set(settings.ccReceiversByTrigger?.AUTO_METRIC ?? settings.ccReceivers ?? [])].filter(uid => !to.includes(uid));
     // Display failures must never remove saved IDs from the actual recipients.
-    const displayNames = await batchUserNames([...to, ...cc]).catch(() => ({}));
+    const source = settings.recipientDepartment ? {department:settings.recipientDepartment,team:settings.recipientTeam||''} : null;
+    const displayNames:Record<string,string> = await batchUserNames([...to, ...cc]).catch(() => ({}));
+    if(source){const people=await reportPeople(source.department,source.team).catch(()=>[]);for(const person of people)if([...to,...cc].includes(person.userId)&&!displayNames[person.userId])displayNames[person.userId]=person.name;}
     if (version !== generation) return;
     savedTemplate.value = settings.notifyBodyTemplate ?? ''; bodyTemplate.value = savedTemplate.value; flowName.value = settings.flowName ?? ''; reportLinkTitle.value = settings.reportLinkTitle;
-    savedTo.value = to; savedCc.value = cc; names.value = displayNames; ready.value = true;
+    recipientSource.value = source; savedTo.value = to; savedCc.value = cc; names.value = displayNames; ready.value = true;
   } catch (e) {
     if (version === generation) error.value = e instanceof Error ? e.message : '读取已保存名单失败，请重试';
   } finally { if (version === generation) loading.value = false; }
@@ -64,7 +68,7 @@ onUnmounted(() => { generation++; if (successTimer) clearTimeout(successTimer); 
 </script>
 
 <template>
-  <MailRecipientDialog v-if="open && ready" mode="send" :open="open" :to="savedTo" :cc="savedCc" :names="names" :submitting="sending" :error="error" :dirty="bodyTemplate !== savedTemplate" @update:open="close" @confirm="send"><NotifyBodyTemplateEditor v-model="bodyTemplate" :flow-name="flowName" :report-link-title="reportLinkTitle" :disabled="sending" /></MailRecipientDialog>
+  <MailRecipientDialog v-if="open && ready" mode="send" :open="open" :to="savedTo" :cc="savedCc" :names="names" :search-users="searchSource" :submitting="sending" :error="error" :dirty="bodyTemplate !== savedTemplate" @update:open="close" @confirm="send"><NotifyBodyTemplateEditor v-model="bodyTemplate" :flow-name="flowName" :report-link-title="reportLinkTitle" :disabled="sending" /></MailRecipientDialog>
   <Teleport to="body">
     <div v-if="successMessage" class="success-toast" role="status">{{ successMessage }}</div>
     <div v-if="open && !ready" class="loading-mask" @click.self="close">

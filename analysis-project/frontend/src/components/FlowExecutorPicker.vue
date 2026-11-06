@@ -39,7 +39,7 @@ function add(item: { userId: string; name: string }) {
 <template>
   <div class="executor-picker">
     <h4>可执行人（非必填）</h4>
-    <p>创建人始终可以执行，不能移除；不添加其他人时，仅创建人可以手动执行。此名单仅用于手动执行授权。</p>
+    <p>创建人始终可以执行，不能移除；不添加其他人时，仅创建人可以手动执行。此名单用于整份长任务的执行授权。</p>
 <!--    <div class="executor-owner">创建人：{{ names[ownerId] || ownerId }}({{ ownerId }})</div>-->
     <div class="executor-search"><input v-model="keyword" placeholder="搜索可执行人姓名或统一认证号" @keyup.enter="search" /><button type="button" class="btn" :disabled="busy || !keyword.trim()" @click="search">搜索可执行人</button></div>
     <p v-if="error" role="status">{{ error }}</p>

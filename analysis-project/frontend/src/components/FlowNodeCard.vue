@@ -5,7 +5,7 @@ import MetricDependencySelect from './MetricDependencySelect.vue';
 import type { SkillFlowNode } from '../types/skillFlow';
 import type { ParamSchemaItem, ScriptRegistryListItem } from '../types/scriptRegistry';
 import type { SkillDependencyMetric } from '../types/skillJob';
-import { coerceParamValue, defaultParamValue, defaultPeriodValue, isDynamicValue, supportsPeriodParam, type BuildingVersionsValue, type PeriodValue, type ParamValueMode, isRuleValue, normalizedParamType, paramsFromSchema, validateParamValue } from '../utils/scriptParams';
+import { coerceParamValue, isPublicValue, defaultParamValue, defaultPeriodValue, isDynamicValue, supportsPeriodParam, type BuildingVersionsValue, type PeriodValue, type ParamValueMode, isRuleValue, normalizedParamType, paramsFromSchema, validateParamValue } from '../utils/scriptParams';
 
 /** 流程节点配置卡片:Python 执行节点区和报告输出大纲行内嵌两处复用;排序相关控件仅在 sortable 时显示。 */
 const props = withDefaults(defineProps<{
@@ -22,6 +22,7 @@ const props = withDefaults(defineProps<{
   showDebug?: boolean;
   showMetrics?: boolean;
   showDynamicParams?: boolean;
+  publicReportType?: string;
   dragging?: boolean;
   sortable?: boolean;
   isFirst?: boolean;
@@ -119,10 +120,12 @@ function schemaValue(item: ParamSchemaItem): unknown {
 }
 function paramMode(item: ParamSchemaItem): ParamValueMode {
   const value = schemaValues.value[item.name];
+  if (isPublicValue(value)) return 'PUBLIC';
   if (!isDynamicValue(value)) return 'LITERAL';
   return 'DYNAMIC_PERIOD';
 }
 function setParamMode(item: ParamSchemaItem, mode: ParamValueMode) {
+  if (mode === 'PUBLIC') { setSchemaValue(item, {$public:'dev_dept'}); return; }
   if (mode === 'LITERAL') {
     setSchemaValue(item, defaultParamValue(item.type));
     return;
@@ -210,10 +213,12 @@ function selectedScript(node: SkillFlowNode, scripts: ScriptRegistryListItem[]):
             <div v-if="showDynamicParams" class="param-mode">
               <select :value="paramMode(item)" @change="setParamMode(item, ($event.target as HTMLSelectElement).value as ParamValueMode)">
                 <option value="LITERAL">直接填写</option>
+                <option v-if="publicReportType && ['string','date'].includes(normalizedParamType(item.type).base)" value="PUBLIC">引用公共参数</option>
                 <option v-if="supportsPeriodParam(item.type) || paramMode(item) === 'DYNAMIC_PERIOD'" value="DYNAMIC_PERIOD">动态时间</option>
               </select>
             </div>
-            <template v-if="paramMode(item) === 'DYNAMIC_PERIOD' || editingPeriod === item.name"><DynamicPeriodEditor v-if="showDynamicParams" :key="`${node.scriptId}:${item.name}`" :model-value="periodValue(item)" :script-id="node.scriptId" :type="item.type" :param-name="item.name" :editing="editingPeriod === item.name" :pending="paramMode(item) !== 'DYNAMIC_PERIOD'" @close="editingPeriod = null" @change="value => setSchemaValue(item, value)" /></template>
+            <template v-if="paramMode(item)==='PUBLIC'"><select :value="(schemaValues[item.name] as any)?.$public" @change="setSchemaValue(item, {$public:($event.target as HTMLSelectElement).value})"><option value="report_type">report_type · 报告类型</option><option value="dev_dept">dev_dept · 部门</option><option v-if="publicReportType==='TEAM'" value="stat_group">stat_group · 团队</option><option value="data_date">data_date · 当天数据日期</option></select><small>字符串原值；字符串数组转换为单元素数组</small></template>
+            <template v-else-if="paramMode(item) === 'DYNAMIC_PERIOD' || editingPeriod === item.name"><DynamicPeriodEditor v-if="showDynamicParams" :key="`${node.scriptId}:${item.name}`" :model-value="periodValue(item)" :script-id="node.scriptId" :type="item.type" :param-name="item.name" :editing="editingPeriod === item.name" :pending="paramMode(item) !== 'DYNAMIC_PERIOD'" @close="editingPeriod = null" @change="value => setSchemaValue(item, value)" /></template>
             <template v-else-if="normalizedParamType(item.type).array">
               <div class="array-editor">
                 <div v-for="(value, index) in (schemaValue(item) as unknown[] || [])" :key="index" class="array-row">

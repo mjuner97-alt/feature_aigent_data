@@ -1,6 +1,6 @@
 import type { ParamSchemaItem } from '../types/scriptRegistry';
 
-export type ParamValueMode = 'LITERAL' | 'DYNAMIC_PERIOD' | 'BUILDING_VERSIONS';
+export type ParamValueMode = 'LITERAL' | 'DYNAMIC_PERIOD' | 'BUILDING_VERSIONS' | 'PUBLIC';
 
 export function isArrayParam(type: string): boolean {
   return normalizedParamType(type).array;
@@ -83,6 +83,10 @@ export function normalizeScriptParams(params: Record<string, unknown>, schema: P
 }
 
 export function validateParamValue(value: unknown, type: string): string {
+  if (isPublicValue(value)) {
+    const typeInfo=normalizedParamType(type);
+    return ['report_type','dev_dept','stat_group','data_date'].includes(value.$public) && (typeInfo.base==='string'||(value.$public==='data_date'&&typeInfo.base==='date')) ? '' : '公共参数引用无效或与参数类型不兼容';
+  }
   if (isDynamicValue(value)) return value.$dynamic?.kind === 'building_versions' ? validateBuildingVersionsValue(value, type) : validatePeriodValue(value as PeriodValue, type);
   if (isRuleValue(value)) return '旧预设规则已停用，请重新配置动态时间';
   if (value && typeof value === 'object' && Object.values(value).some(containsParamMarker)) return '动态时间配置必须直接绑定参数，不能嵌套在数组或对象内';
@@ -122,7 +126,7 @@ export function validateBuildingVersionsValue(value: unknown, type: string): str
  if (Object.keys(marker).length !== 1 || Object.keys(config).length !== 2 || Object.keys(config).some(key => !['v','kind'].includes(key))) return '在建版本配置包含未知或缺失字段';
  return supportsBuildingVersionsParam(type) ? '' : '在建版本仅支持字符串数组参数';
 }
-export function isParamMarker(value: unknown): boolean { return !!value && typeof value === 'object' && !Array.isArray(value) && ('$rule' in value || '$dynamic' in value); }
+export function isParamMarker(value: unknown): boolean { return !!value && typeof value === 'object' && !Array.isArray(value) && ('$rule' in value || '$dynamic' in value || '$public' in value); }
 function containsParamMarker(value: unknown): boolean {
   return isParamMarker(value) || !!value && typeof value === 'object' && Object.values(value).some(containsParamMarker);
 }
@@ -149,3 +153,5 @@ export function validatePeriodValue(value: PeriodValue, type: string, maxPeriods
  if (normalizedParamType(type).base === 'date' && !(c.unit === 'month' && c.format === '{year}年{month}月份版本') && !/^(?:\{year\}|\d{4})-(?:\{month:02\}|\d{2})-\d{2}$/.test(c.format)) return '日期格式必须为 YYYY-MM-DD 或 xxxx年x月份版本';
  return '';
 }
+
+export function isPublicValue(value:unknown): value is {$public:string} { return !!value && typeof value==='object' && !Array.isArray(value) && '$public' in value; }

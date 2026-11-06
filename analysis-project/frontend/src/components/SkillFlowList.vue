@@ -1,14 +1,19 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue';
+import { onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { deleteSkillFlow, getSkillFlowMetricPrecheck, listSkillFlowPage, runSkillFlow, setSkillFlowEnabled } from '../api/skillFlow';
+import { getSkillFlow, deleteSkillFlow, getSkillFlowMetricPrecheck, listSkillFlowPage, runSkillFlow, setSkillFlowEnabled } from '../api/skillFlow';
+import TeamReportRunDialog from './TeamReportRunDialog.vue';
+import SkillFlowTypeDialog from './SkillFlowTypeDialog.vue';
+import { listAllLongTaskTypes, type LongTaskType } from '../api/longTaskConfig';
+import type { SkillFlow } from '../types/skillFlow';
 import { batchUserNames, currentUserId } from '../api/skill';
 import type { SkillFlowSummary, FlowMetricPrecheck } from '../types/skillFlow';
 import { manualTriggerMessage } from './skillFlowExecutionPresentation';
 import { parseScheduleRules } from '../utils/scheduleRules';
 import { isAdmin } from '../utils/auth';
 
-const props = withDefaults(defineProps<{ scope?: 'mine' | 'all'; createdBy?: string }>(), { scope: 'mine', createdBy: '' });
+const props = withDefaults(defineProps<{ scope?: 'mine' | 'all'; createdBy?: string; typeId?: number | null }>(), { scope: 'mine', createdBy: '', typeId: null });
+const emit=defineEmits<{(e:'types-loaded',types:LongTaskType[]):void;(e:'view-records'):void}>();
 const me = currentUserId();
 const router = useRouter();
 const flows = ref<SkillFlowSummary[]>([]);
@@ -17,6 +22,10 @@ const currentKeyword = ref('');
 const currentCreatedBy = ref('');
 const currentEnabled = ref<boolean | undefined>();
 const loading = ref(false);
+const types=ref<LongTaskType[]>([]);
+const createOpen=ref(false),copySourceId=ref<number|null>(null);
+const batchFlow=ref<SkillFlow|null>(null),batchOpen=ref(false),runLoading=ref(false);
+const typeName=(id?:number|null)=>types.value.find(t=>t.id===id)?.name||'默认类型';
 const error = ref('');
 const metricDialogOpen = ref(false);
 const metricDialogFlow = ref<SkillFlowSummary | null>(null);
@@ -30,6 +39,8 @@ const pageSize = ref(20);
 let triggerMsgTimer: ReturnType<typeof setTimeout> | undefined;
 const total = ref(0);
 let loadRequest = 0;
+let progressTimer:ReturnType<typeof setInterval>|undefined;
+const manualActive=(flow:SkillFlowSummary)=>(flow.manualBatchTotal||0)>(flow.manualBatchCompleted||0);
 
 function formatTime(value?: string) { return value ? value.replace('T', ' ').slice(0, 19) : '-'; }
 // 列表接口只返回创建人 ID,复用人员搜索接口补齐姓名做「姓名(userId)」展示。
@@ -62,16 +73,19 @@ async function load(searchKeyword?: string, createdBy?: string, enabled?: boolea
   page.value = 1;
   await fetchPage(scope);
 }
-async function fetchPage(scope: 'mine' | 'all' = props.scope) {
- const request=++loadRequest; loading.value=true; error.value='';
- try { const result=await listSkillFlowPage({enabled:currentEnabled.value,keyword:currentKeyword.value.trim()||undefined,createdBy:currentCreatedBy.value.trim()||undefined,scope,page:page.value,pageSize:pageSize.value});if(request!==loadRequest)return;flows.value=result.items;total.value=result.total;page.value=result.page;void loadNames(result.items); if(!result.items.length&&result.total>0&&page.value>1){page.value=Math.max(1,Math.ceil(result.total/pageSize.value));await fetchPage(scope);} }
+async function fetchPage(scope: 'mine' | 'all' = props.scope,silent=false) {
+ const request=++loadRequest; if(!silent)loading.value=true; error.value='';
+ try { const result=await listSkillFlowPage({typeId:props.typeId??undefined,enabled:currentEnabled.value,keyword:currentKeyword.value.trim()||undefined,createdBy:currentCreatedBy.value.trim()||undefined,scope,page:page.value,pageSize:pageSize.value});if(request!==loadRequest)return;flows.value=result.items;total.value=result.total;page.value=result.page;void loadNames(result.items); if(!result.items.length&&result.total>0&&page.value>1){page.value=Math.max(1,Math.ceil(result.total/pageSize.value));await fetchPage(scope);} }
  catch(e){if(request!==loadRequest)return;error.value=e instanceof Error?e.message:'加载长任务流程失败';flows.value=[];total.value=0;}
  finally{if(request===loadRequest)loading.value=false;}
 }
 
-function create() { router.push('/skills/jobs/flows/new'); }
+function create() { copySourceId.value=null;createOpen.value=true; }
+function selectCreationType(type:LongTaskType) {
+  router.push({path:'/skills/jobs/flows/new',query:{typeId:String(type.id),...(copySourceId.value==null?{}:{copyFrom:String(copySourceId.value)})}});
+}
 function edit(id: number) { router.push(`/skills/jobs/flows/${id}/edit`); }
-function copy(id: number) { router.push({ path: '/skills/jobs/flows/new', query: { copyFrom: String(id) } }); }
+function copy(id: number) { copySourceId.value=id;createOpen.value=true; }
 async function toggle(flow: SkillFlowSummary) {
   try { await setSkillFlowEnabled(flow.id, !flow.enabled); flow.enabled = !flow.enabled; }
   catch (e) { alert(e instanceof Error ? e.message : '更新流程状态失败'); }
@@ -99,6 +113,12 @@ function metricStatusText(status: string) { return status === 'READY' ? '已就�
 
 /** 手动执行:先查指标就绪,有未就绪的弹确认;确认后触发(未就绪时任务挂起等数据)。 */
 async function run(flow: SkillFlowSummary) {
+  if(runLoading.value)return;
+  runLoading.value=true;
+  try{const full=await getSkillFlow(flow.id);if(full.teamReport){batchFlow.value=full;batchOpen.value=true;return;}}
+  catch(e){alert(e instanceof Error?e.message:'读取配置失败');return;}
+  finally{runLoading.value=false;}
+
   let missing: string[] = [];
   try {
     const metrics = await getSkillFlowMetricPrecheck(flow.id);
@@ -122,12 +142,16 @@ function showTriggerMsg(message: string) {
 }
 
 defineExpose({ load, create });
-onMounted(() => load(undefined, props.createdBy));
+onMounted(() => {progressTimer=setInterval(()=>{if(flows.value.some(manualActive))void fetchPage(props.scope,true);},5000);void load(undefined, props.createdBy);void listAllLongTaskTypes().then(items=>{types.value=items;emit('types-loaded',items);}).catch(()=>{});});
+onUnmounted(()=>clearInterval(progressTimer));
 watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.value, props.createdBy, undefined, props.scope));
+watch(() => props.typeId,()=>{page.value=1;void fetchPage();});
 </script>
 
 <template>
   <section class="flow-list">
+    <SkillFlowTypeDialog v-model:open="createOpen" @selected="selectCreationType" />
+    <TeamReportRunDialog v-model:open="batchOpen" :flow="batchFlow" @submitted="emit('view-records')" />
     <div v-if="triggerMsg" class="toast">{{ triggerMsg }}</div>
     <div v-if="error" class="error">{{ error }}</div>
     <div v-if="loading" class="empty">加载中…</div>
@@ -137,7 +161,7 @@ watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.v
         <thead>
           <tr>
             <th>流程名称</th>
-            <th>节点数量</th>
+            <th>类型</th><th>节点数量</th>
             <th>状态</th>
             <th>自动触发</th>
             <th>创建人</th>
@@ -152,7 +176,7 @@ watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.v
               <span v-if="flow.chatPublic" class="public-tag" title="公开流程：所有人的聊天都能触发（由开发人员开通）">公开</span>
               <span v-if="flow.description" class="col-description" :title="flow.description">{{ flow.description }}</span>
             </td>
-            <td>{{ flow.nodeCount }}</td>
+            <td>{{ typeName(flow.typeId) }}</td><td>{{ flow.nodeCount }}</td>
             <td>
               <span class="status-badge" :class="enabledStatusClass(flow)">{{ flow.enabled ? '启用' : '禁用' }}</span>
             </td>
@@ -165,7 +189,7 @@ watch(() => [props.scope, props.createdBy] as const, () => load(currentKeyword.v
             <td class="col-owner" :title="ownerLabel(flow)">{{ ownerLabel(flow) }}</td>
             <td class="col-time">{{ formatTime(flow.createdAt) }}</td>
             <td class="col-actions">
-              <button v-if="canRun(flow) && flow.enabled" class="btn-action trigger" @click="run(flow)">执行</button>
+              <button v-if="canRun(flow) && (flow.enabled || manualActive(flow))" class="btn-action trigger" @click="run(flow)">{{ manualActive(flow) ? `手动执行中 ${flow.manualBatchCompleted||0}/${flow.manualBatchTotal} · 查看本轮` : '执行' }}</button>
               <button class="btn-action" @click="copy(flow.id)">复制</button>
               <template v-if="isOwner(flow)">
                 <button class="btn-action" @click="edit(flow.id)">编辑</button>
