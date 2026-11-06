@@ -366,13 +366,12 @@ public class FlowCompletionService {
         List<String> receivers;
         List<String> ccReceivers;
         if (
-            execution.getBatchId() == null &&
             isFailure(execution) &&
             execution.getTriggerType() == FlowTriggerType.AUTO_METRIC &&
             key.endsWith(":INITIAL")
         ) {
-            // 自动触发的首次失败通知保留批次规则，并按任务类型选择抄送名单。
-            receivers = receiversFor(execution, true);
+            // 批次执行仍使用对象的 TO 名单；所有自动首次失败通知均按任务类型读取默认 CC。
+            receivers = receiversFor(execution, execution.getBatchId() == null);
             ccReceivers = defaultFailureCcRecipients(execution);
         } else if (explicit) {
             receivers = filterRecipients(
