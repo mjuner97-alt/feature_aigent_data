@@ -59,12 +59,18 @@ public class FallbackModelDecorator implements Model {
 
     private final Model primaryModel;
     private final Model fallbackModel;
+    private final String userId;
     private int maxRetries = 3;
     private long retryIntervalMs = 2000L;
 
     public FallbackModelDecorator(Model primaryModel, Model fallbackModel) {
+        this(primaryModel, fallbackModel, null);
+    }
+
+    public FallbackModelDecorator(Model primaryModel, Model fallbackModel, String userId) {
         this.primaryModel = primaryModel;
         this.fallbackModel = fallbackModel;
+        this.userId = userId;
     }
 
     /** Configures retry count on this per-request decorator instance. */
@@ -81,6 +87,11 @@ public class FallbackModelDecorator implements Model {
     @Override
     @Timed(value = "model.fallback.stream", description = "FallbackModelDecorator stream duration (incl. retries + fallback switch)", percentiles = {0.5, 0.9, 0.99})
     public Flux<ChatResponse> stream(List<Msg> messages, List<ToolSchema> tools, GenerateOptions options) {
+        if (userId != null && !userId.isBlank()) {
+            // Keep identity request-scoped; the underlying model instances may be shared.
+            options = GenerateOptions.mergeOptions(
+                    GenerateOptions.builder().additionalHeader("ucid", userId).build(), options);
+        }
         return doStreamWithFallback(messages, tools, options, 0);
     }
 

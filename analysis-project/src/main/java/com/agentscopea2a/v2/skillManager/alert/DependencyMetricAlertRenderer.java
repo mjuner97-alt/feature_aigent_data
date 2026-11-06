@@ -20,14 +20,14 @@ public final class DependencyMetricAlertRenderer {
     private DependencyMetricAlertRenderer() {}
 
     /**
-     * 将逗号分隔的收件人配置清洗为去重后的用户 ID 列表。
+     * 将中英文逗号、分号或换行分隔的收件人配置清洗为去重后的用户 ID 列表。
      * @param raw 原始收件人配置
      * @return 去除空白、空值并保持原顺序的不可变列表
      */
     public static List<String> parseRecipients(String raw) {
         if (raw == null || raw.isBlank()) return List.of();
         LinkedHashSet<String> out = new LinkedHashSet<>();
-        for (String value : raw.split(",")) {
+        for (String value : raw.split("[,，;；\\r\\n]+")) {
             String v = value.trim();
             if (!v.isEmpty()) out.add(v);
         }

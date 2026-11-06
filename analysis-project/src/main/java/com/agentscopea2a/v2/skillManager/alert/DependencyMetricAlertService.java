@@ -11,6 +11,8 @@ import com.agentscopea2a.v2.skillManager.notification.NotificationPayload;
 import com.agentscopea2a.v2.skillManager.notification.NotificationSender;
 import com.agentscopea2a.v2.skillManager.service.FlowSchedulerGuard;
 import com.agentscopea2a.v2.skillManager.service.MockOrgService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.env.Environment;
 import org.springframework.core.env.Profiles;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -22,6 +24,7 @@ import java.util.stream.Collectors;
 
 @Service
 public class DependencyMetricAlertService {
+    private static final Logger log = LoggerFactory.getLogger(DependencyMetricAlertService.class);
     private final SkillDependencyMetricMapper metricMapper;
     private final DependencyMetricAlertMapper alertMapper;
     private final AiChatRuntimeConfigMapper configMapper;
@@ -70,21 +73,40 @@ public class DependencyMetricAlertService {
             return new DependencyMetricAlertRow(m.getName(), m.getCode(), r != null && "READY".equals(r.getStatus().name()), r == null ? null : r.getReadyAt());
         }).toList();
         long readyCount = rows.stream().filter(DependencyMetricAlertRow::ready).count();
-        String raw = Optional.ofNullable(configMapper.selectByConfigKey(AiChatRuntimeConfigKeys.DEPENDENCY_METRIC_ALERT_RECIPIENTS)).map(AiChatRuntimeConfig::getConfigValue).orElse("");
-        List<String> recipients = orgService.filterExistingUserIds(DependencyMetricAlertRenderer.parseRecipients(raw));
-        if (recipients.isEmpty()) return DependencyMetricAlertResult.skipped("未配置收件人或收件人均为无效用户", metrics.size(), (int) readyCount);
+        List<String> configuredRecipients = configuredRecipients(AiChatRuntimeConfigKeys.DEPENDENCY_METRIC_ALERT_RECIPIENTS);
+        List<String> configuredCc = configuredRecipients(AiChatRuntimeConfigKeys.DEPENDENCY_METRIC_ALERT_CC_RECIPIENTS);
+        List<String> recipients = orgService.filterExistingUserIds(configuredRecipients);
+        List<String> validCc = orgService.filterExistingUserIds(configuredCc);
+        List<String> invalidRecipients = configuredRecipients.stream().filter(id -> !recipients.contains(id)).toList();
+        List<String> invalidCc = configuredCc.stream().filter(id -> !validCc.contains(id)).toList();
+        // TO takes precedence when the same person appears in both lists.
+        List<String> ccRecipients = validCc.stream().filter(id -> !recipients.contains(id)).toList();
+        log.info("[DependencyMetricAlert] resolved recipients={}, ccRecipients={}, invalidRecipients={}, invalidCcRecipients={}",
+                recipients, ccRecipients, invalidRecipients, invalidCc);
+        if (recipients.isEmpty()) return new DependencyMetricAlertResult(false,
+                "未配置收件人或收件人均为无效用户", metrics.size(), (int) readyCount, recipients,
+                "SKIPPED", null, ccRecipients, invalidRecipients, invalidCc);
         String content = DependencyMetricAlertRenderer.renderHtml(rows, date, now);
         DependencyMetricAlertDelivery delivery = new DependencyMetricAlertDelivery();
         delivery.setAlertDate(date);
         delivery.setRecipientSummary(String.join(",", recipients));
+        delivery.setCcRecipientSummary(String.join(",", ccRecipients));
         delivery.setContent(content);
         if (alertMapper.claim(delivery) != 1 || delivery.getId() == null)
             throw new IllegalStateException("创建预警投递记录失败");
         NotificationPayload payload = new NotificationPayload("HTML", content, null, null, null, null,
-                "依赖指标就绪预警", null, null, null, "ALERT", now, recipients, "METRIC_ALERT");
+                "依赖指标就绪预警", null, null, null, "ALERT", now, recipients, "METRIC_ALERT", ccRecipients);
         try { sender.send(payload); alertMapper.update(delivery.getId(), "SUCCESS", null); }
         catch (Exception e) { alertMapper.update(delivery.getId(), "FAILED", e.getMessage());
-            return new DependencyMetricAlertResult(false, "邮件发送失败", metrics.size(), (int) readyCount, recipients, "FAILED", e.getMessage()); }
-        return new DependencyMetricAlertResult(true, "预警邮件已发送", metrics.size(), (int) readyCount, recipients, "SUCCESS", null);
+            return new DependencyMetricAlertResult(false, "邮件发送失败", metrics.size(), (int) readyCount,
+                    recipients, "FAILED", e.getMessage(), ccRecipients, invalidRecipients, invalidCc); }
+        return new DependencyMetricAlertResult(true, "预警邮件已发送", metrics.size(), (int) readyCount,
+                recipients, "SUCCESS", null, ccRecipients, invalidRecipients, invalidCc);
+    }
+
+    private List<String> configuredRecipients(String key) {
+        String raw = Optional.ofNullable(configMapper.selectByConfigKey(key))
+                .map(AiChatRuntimeConfig::getConfigValue).orElse("");
+        return DependencyMetricAlertRenderer.parseRecipients(raw);
     }
 }

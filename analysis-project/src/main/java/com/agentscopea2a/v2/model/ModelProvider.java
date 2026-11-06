@@ -129,7 +129,7 @@ public class ModelProvider {
 
         return new FallbackModelDecorator(
                 wrapTextToolCallFallback(primaryModel),
-                wrapTextToolCallFallback(fallbackModel));
+                wrapTextToolCallFallback(fallbackModel), userId);
     }
 
     /**
