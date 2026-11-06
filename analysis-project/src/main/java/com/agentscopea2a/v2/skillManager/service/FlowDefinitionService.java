@@ -67,6 +67,7 @@ public class FlowDefinitionService {
     private final ScriptParamRuleService paramRuleService;
     private final AdminRoleService adminRoleService;
     private final ResourceChangeAuditService auditService;
+    private final com.agentscopea2a.v2.skillManager.mapper.LongTaskConfigMapper configMapper;
 
     public FlowDefinitionService(SkillFlowMapper flowMapper, SkillMapper skillMapper,
                                  SkillDependencyMetricMapper metricMapper, MockOrgService orgService,
@@ -75,7 +76,8 @@ public class FlowDefinitionService {
                                  NotificationRecipientService recipientService,
                                  ScriptParamRuleService paramRuleService,
                                  AdminRoleService adminRoleService,
-                                 ResourceChangeAuditService auditService) {
+                                 ResourceChangeAuditService auditService,
+                                 com.agentscopea2a.v2.skillManager.mapper.LongTaskConfigMapper configMapper) {
         this.flowMapper = flowMapper;
         this.skillMapper = skillMapper;
         this.metricMapper = metricMapper;
@@ -87,6 +89,7 @@ public class FlowDefinitionService {
         this.paramRuleService = paramRuleService;
         this.adminRoleService = adminRoleService;
         this.auditService = auditService;
+        this.configMapper = configMapper;
     }
 
     /** 创建流程;code 缺省自动生成,enabled=true 时先做完整性校验。 */
@@ -142,6 +145,34 @@ public class FlowDefinitionService {
         }
         auditService.record("long_task_flow", String.valueOf(id), updated.getName(), "update", "编辑长任务编排", userId, userId, auditChanges);
         return get(id, userId);
+    }
+
+    /** 配置广场只更新分类和状态，避免全量替换编排及其子表。 */
+    @Transactional("gaussCustomerTransactionManager")
+    public void updateConfig(Long id, Long typeId, Boolean enabled, String userId) {
+        requireUser(userId);
+        if (!adminRoleService.isAdminUserId(userId)) {
+            throw new IllegalStateException("FlowAccessDenied: only admins may modify long task config");
+        }
+        SkillFlow flow = requireReadable(id, userId);
+        if (typeId == null || enabled == null) throw new IllegalArgumentException("LongTaskConfigFieldsRequired");
+        LongTaskType type = configMapper.selectTypeById(typeId);
+        if (type == null) throw new IllegalArgumentException("LongTaskTypeNotFound");
+        if (!Objects.equals(typeId, flow.getTypeId()) && !Boolean.TRUE.equals(type.getEnabled())) {
+            throw new IllegalArgumentException("LongTaskTypeDisabled");
+        }
+        // 分类调整不重新校验；由停用转为启用时仍需以任务创建人检查完整性。
+        if (enabled && !Boolean.TRUE.equals(flow.getEnabled())) {
+            requireComplete(toRequest(flow, id), flow.getCreatedBy(), id);
+        }
+        List<ResourceChangeAuditService.Change> changes = new ArrayList<>();
+        addFlowChange(changes, "type_id", "任务类型", flow.getTypeId(), typeId);
+        addFlowChange(changes, "enabled", "启用状态", flow.getEnabled(), enabled);
+        if (flowMapper.updateFlowConfig(id, typeId, enabled) != 1) {
+            throw new IllegalStateException("FlowNotFound: config was not updated; refresh and retry");
+        }
+        auditService.record("long_task_flow", String.valueOf(id), flow.getName(), "update", "编辑长任务配置",
+                userId, userId, changes);
     }
 
     /** 启用/停用:启用前强制完整性校验(不能启用一个跑不起来的编排)。 */

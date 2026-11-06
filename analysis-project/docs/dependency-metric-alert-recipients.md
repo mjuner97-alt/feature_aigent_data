@@ -45,6 +45,14 @@ mvn -q '-Dtest=DependencyMetricAlertServiceTest' test
 
 每日 11 点预警邮件标题为 `数据依赖指标未就绪预警(yyyy年MM月dd日)`，使用本次预警日期；正文保持原有内容。
 
-自动触发（`AUTO_METRIC`）长任务首次失败通知（包括部分成功）的默认抄送名单使用 `ai_chat_runtime_config` 的 `long_task_failure_cc_recipients` 配置项。例如 `user001,user002;user003`，也支持中文逗号、分号及换行。每次发送时读取，去空白、保序去重、剔除无效人员，与实际收件人重复时保留为收件人。未配置或为空时不额外抄送。
+自动触发（`AUTO_METRIC`）长任务首次失败通知（包括部分成功）按发送时长任务关联的任务类型精确匹配抄送名单，不按任务名称或报告标题猜测：
 
-部署前执行 `src/main/resources/db/migration/gauss/V20261106.2__long_task_failure_cc_recipients.sql` 初始化配置项，再填写实际人员的统一认证号。脚本不会覆盖已有配置。此项不影响成功通知、其他触发方式及手动重发时选择的抄送名单。
+| 任务类型名称 | `ai_chat_runtime_config` 配置项 |
+| --- | --- |
+| 部门报告 | `long_task_department_failure_cc_recipients` |
+| 团队报告 | `long_task_team_failure_cc_recipients` |
+| 其他类型、类型缺失、源任务已删除或直接执行报告模板 | 不抄送 |
+
+两个配置项初始均为空，留空时不抄送。以后填入实际人员的统一认证号，例如 `user001,user002;user003`；也支持中文逗号、分号及换行。每次发送时读取，去空白、保序去重、剔除无效人员，与实际收件人重复时保留为收件人。首次自动失败通知不使用执行快照中的抄送名单。
+
+部署前执行 `src/main/resources/db/migration/gauss/V20261106.3__long_task_failure_cc_by_report_type.sql` 初始化两个配置项；脚本不会覆盖已有配置。旧配置 `long_task_failure_cc_recipients` 不再用于自动失败通知，也不会自动复制到新配置。此项不影响成功通知、其他触发方式及手动重发时选择的抄送名单。

@@ -119,6 +119,17 @@ export async function setSkillFlowEnabled(id: number, enabled: boolean): Promise
   return res.json();
 }
 
+export async function updateSkillFlowConfig(id: number, input: { typeId: number; enabled: boolean }): Promise<void> {
+  const res = await fetch(`${FLOW_BASE}/${id}/config`, { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(input) });
+  if (!res.ok) throw await requestError(res, '保存长任务配置失败');
+  const saved = await fetch(`${FLOW_BASE}/${id}`, { headers: authHeaders(), cache: 'no-store' });
+  if (!saved.ok) throw await requestError(saved, '保存结果确认失败，请刷新后核对');
+  const actual = await saved.json();
+  if (actual.typeId !== input.typeId || actual.enabled !== input.enabled) {
+    throw new Error('保存结果与提交内容不一致，请刷新页面核对后重试');
+  }
+}
+
 export async function deleteSkillFlow(id: number): Promise<void> {
   const res = await fetch(`${FLOW_BASE}/${id}`, { method: 'DELETE', headers: authHeaders() });
   if (!res.ok) throw await requestError(res, '删除流程失败');

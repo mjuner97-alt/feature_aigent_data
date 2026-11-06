@@ -76,3 +76,21 @@ test('known name conflict keeps its readable translation', async t => {
   }));
   await assert.rejects(() => api.createSkillFlow({ nodes: [] }), /流程名称已存在/);
 });
+
+for (const actual of [{ typeId: 7, enabled: true }, { typeId: 1, enabled: true }, { typeId: 7, enabled: false }]) {
+  test(`config verifies persisted values: ${JSON.stringify(actual)}`, async t => {
+    const calls = [];
+    t.mock.method(globalThis, 'fetch', async (url, options) => {
+      calls.push({ url, options });
+      return options.method === 'PUT' ? new Response(null, { status: 204 }) : new Response(JSON.stringify(actual));
+    });
+    const saving = api.updateSkillFlowConfig(9, { typeId: 7, enabled: true });
+    if (actual.typeId === 7 && actual.enabled) await saving;
+    else await assert.rejects(saving, /保存结果与提交内容不一致/);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].url, '/api/skill-flows/9/config');
+    assert.deepEqual(JSON.parse(calls[0].options.body), { typeId: 7, enabled: true });
+    assert.equal(calls[1].url, '/api/skill-flows/9');
+    assert.equal(calls[1].options.cache, 'no-store');
+  });
+}
