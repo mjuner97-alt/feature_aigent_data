@@ -18,6 +18,7 @@ public final class AiChatRuntimeConfigKeys {
     public static final String PASSWORD_AUTH_ENABLED = "password_auth_enabled";
     public static final String DEPENDENCY_METRIC_ALERT_RECIPIENTS = "dependency_metric_alert_recipients";
     public static final String DEPENDENCY_METRIC_ALERT_CC_RECIPIENTS = "dependency_metric_alert_cc_recipients";
+    public static final String LONG_TASK_FAILURE_CC_RECIPIENTS = "long_task_failure_cc_recipients";
     private AiChatRuntimeConfigKeys() {
     }
 }

@@ -18,6 +18,7 @@ import org.springframework.core.env.Profiles;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import java.time.*;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -95,7 +96,8 @@ public class DependencyMetricAlertService {
         if (alertMapper.claim(delivery) != 1 || delivery.getId() == null)
             throw new IllegalStateException("创建预警投递记录失败");
         NotificationPayload payload = new NotificationPayload("HTML", content, null, null, null, null,
-                "依赖指标就绪预警", null, null, null, "ALERT", now, recipients, "METRIC_ALERT", ccRecipients);
+                "数据依赖指标未就绪预警(" + date.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日")) + ")",
+                null, null, null, "ALERT", now, recipients, "METRIC_ALERT", ccRecipients);
         try { sender.send(payload); alertMapper.update(delivery.getId(), "SUCCESS", null); }
         catch (Exception e) { alertMapper.update(delivery.getId(), "FAILED", e.getMessage());
             return new DependencyMetricAlertResult(false, "邮件发送失败", metrics.size(), (int) readyCount,

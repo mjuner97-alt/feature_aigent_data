@@ -1,6 +1,10 @@
 package com.agentscopea2a.v2.skillManager.service;
 
 import com.agentscopea2a.v2.config.SkillStorageProperties;
+import com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys;
+import com.agentscopea2a.mapper.gauss.AiChatRuntimeConfigMapper;
+import com.agentscopea2a.entity.AiChatRuntimeConfig;
+import com.agentscopea2a.v2.skillManager.alert.DependencyMetricAlertRenderer;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.skillManager.entity.*;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
@@ -67,6 +71,12 @@ public class FlowCompletionService {
     /** 脚本开发人员查询为可选依赖，兼容无脚本注册表的历史测试/部署。 */
     private ScriptRegistryMapper scriptRegistryMapper;
     private FlowNotificationDispatcher notificationDispatcher;
+    private AiChatRuntimeConfigMapper runtimeConfigMapper;
+
+    @Autowired
+    public void setRuntimeConfigMapper(AiChatRuntimeConfigMapper runtimeConfigMapper) {
+        this.runtimeConfigMapper = runtimeConfigMapper;
+    }
 
     @Autowired
     public void setNotificationDispatcher(FlowNotificationDispatcher dispatcher) {
@@ -255,9 +265,9 @@ public class FlowCompletionService {
         List<String> ccReceivers;
         if (isFailure(execution) && execution.getTriggerType() == FlowTriggerType.AUTO_METRIC
                 && key.endsWith(":INITIAL")) {
-            // 自动触发的首次失败通知只发触发人及失败脚本创建人。
+            // 自动触发的首次失败通知发给触发人及失败脚本创建人，并抄送运行时配置的默认名单。
             receivers = receiversFor(execution, true);
-            ccReceivers = List.of();
+            ccReceivers = defaultFailureCcRecipients();
         } else if (explicit) {
             receivers = orgService.filterExistingUserIds(
                     NotificationReceivers.parse(NotificationReceivers.toCsv(confirmedReceivers)));
@@ -331,6 +341,15 @@ public class FlowCompletionService {
                 reportUrl(execution), execution.getFlowId(), FlowReportNaming.datedTitle(execution.getFlowName(), execution), null, null,
                 execution.getId(), execution.getStatus().name(), LocalDateTime.now(clock),
                 receivers, "FLOW", ccReceivers, contactName, contactPhone, isFailure(execution) ? null : execution.getDataDate()));
+    }
+
+    /** 每次发送时读取默认抄送配置；空配置沿用无默认抄送的行为。 */
+    private List<String> defaultFailureCcRecipients() {
+        if (runtimeConfigMapper == null) return List.of();
+        AiChatRuntimeConfig config = runtimeConfigMapper.selectByConfigKey(
+                AiChatRuntimeConfigKeys.LONG_TASK_FAILURE_CC_RECIPIENTS);
+        String raw = config == null ? null : config.getConfigValue();
+        return orgService.filterExistingUserIds(DependencyMetricAlertRenderer.parseRecipients(raw));
     }
 
     /**

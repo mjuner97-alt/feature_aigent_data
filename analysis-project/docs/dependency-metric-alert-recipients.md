@@ -40,3 +40,11 @@ mvn -q '-Dtest=DependencyMetricAlertServiceTest' test
 ```
 
 测试覆盖英文逗号多收件人、实际 HTTP 请求的 TO/CC 数组、去重与跨组重复、无效人员回显、无有效收件人跳过发送，以及未配置抄送时的兼容行为。HTTP 请求只发往测试启动的本地服务器。
+
+## 预警标题与长任务失败默认抄送
+
+每日 11 点预警邮件标题为 `数据依赖指标未就绪预警(yyyy年MM月dd日)`，使用本次预警日期；正文保持原有内容。
+
+自动触发（`AUTO_METRIC`）长任务首次失败通知（包括部分成功）的默认抄送名单使用 `ai_chat_runtime_config` 的 `long_task_failure_cc_recipients` 配置项。例如 `user001,user002;user003`，也支持中文逗号、分号及换行。每次发送时读取，去空白、保序去重、剔除无效人员，与实际收件人重复时保留为收件人。未配置或为空时不额外抄送。
+
+部署前执行 `src/main/resources/db/migration/gauss/V20261106.2__long_task_failure_cc_recipients.sql` 初始化配置项，再填写实际人员的统一认证号。脚本不会覆盖已有配置。此项不影响成功通知、其他触发方式及手动重发时选择的抄送名单。
