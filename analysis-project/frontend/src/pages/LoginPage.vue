@@ -19,11 +19,12 @@ const thirdPartyEnabled = ref(false);
 let thirdPartyLoginUrl = '';
 let loginQuery = new URLSearchParams(window.location.search);
 
-async function startThirdPartyLogin() {
+async function startThirdPartyLogin(retried = false) {
   loading.value = true;
   errorMsg.value = '';
   try {
-    sessionStorage.setItem(THIRD_PARTY_CONTEXT, JSON.stringify({ query: loginQuery.toString() }));
+    // Persist the retry limit across the full-page round trip to the provider.
+    sessionStorage.setItem(THIRD_PARTY_CONTEXT, JSON.stringify({ query: loginQuery.toString(), retried }));
     window.location.replace(buildThirdPartyLoginUrl(thirdPartyLoginUrl, window.location.origin));
   } catch (e: any) {
     errorMsg.value = e.message || '无法跳转第三方登录，请重试';
@@ -50,9 +51,9 @@ onMounted(async () => {
     const thirdParty = await getThirdPartyAuthConfig();
     thirdPartyEnabled.value = thirdParty.enabled;
     thirdPartyLoginUrl = thirdParty.loginUrl;
-    if (loginQuery.has('userId')) {
+    const saved = JSON.parse(sessionStorage.getItem(THIRD_PARTY_CONTEXT) || 'null');
+    if (loginQuery.has('userId') || (thirdParty.enabled && saved && loginQuery.get('authMode') !== 'password')) {
       const callback = loginQuery;
-      const saved = JSON.parse(sessionStorage.getItem(THIRD_PARTY_CONTEXT) || 'null');
       loginQuery = new URLSearchParams(saved?.query || '');
       for (const [key, value] of callback) {
         if (key !== 'userId' && key !== 'token' && !loginQuery.has(key)) loginQuery.set(key, value);
@@ -60,7 +61,15 @@ onMounted(async () => {
       sessionStorage.removeItem(THIRD_PARTY_CONTEXT);
       window.history.replaceState(window.history.state, '', '/login');
       if (!thirdParty.enabled) throw new Error('第三方登录未启用');
-      await finishLogin(await thirdPartyLogin((callback.get('userId') || '').trim()));
+      const callbackUserId = (callback.get('userId') || '').trim();
+      if (!callbackUserId) {
+        if (saved?.retried !== true) {
+          await startThirdPartyLogin(true);
+          return;
+        }
+        throw new Error('第三方未返回有效工号');
+      }
+      await finishLogin(await thirdPartyLogin(callbackUserId));
       return;
     }
     if (thirdParty.enabled) {
@@ -168,7 +177,7 @@ function handleEnter(e: KeyboardEvent) {
       <input v-if="mode === 'password'" v-model="confirmPassword" type="password" placeholder="确认新密码" class="login-input" :disabled="loading" />
       <div v-if="mode === 'code'" class="login-code-hint">验证码已发送至邮箱</div>
       <div v-if="errorMsg" class="login-error">{{ errorMsg }}</div>
-      <button v-if="thirdPartyEnabled && mode === 'login'" class="login-btn" :disabled="loading" @click="startThirdPartyLogin">{{ loading ? '正在跳转...' : '第三方登录 / 重试' }}</button>
+      <button v-if="thirdPartyEnabled && mode === 'login'" class="login-btn" :disabled="loading" @click="startThirdPartyLogin()">{{ loading ? '正在跳转...' : '第三方登录 / 重试' }}</button>
       <button v-if="ssoEnabled" class="login-btn" :disabled="loading" @click="startSso">{{ loading ? '正在认证...' : '重试模拟认证' }}</button>
       <button v-if="mode==='login'" class="login-btn" :disabled="loading" @click="handleLogin">{{ loading ? '登录中...' : '登录' }}</button>
       <button v-if="mode==='login'" class="link-btn" :disabled="loading" @click="requestCode">忘记密码?</button>
