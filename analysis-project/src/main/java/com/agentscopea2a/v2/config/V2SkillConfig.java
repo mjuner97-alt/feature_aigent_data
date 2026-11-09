@@ -224,8 +224,9 @@ public class V2SkillConfig {
             @Value("${harness.a2a.skill-direct-exec.enabled:false}") boolean enabled,
             @Value("${harness.a2a.skill-direct-exec.followup-direct-exec.enabled:true}")
             boolean followupDirectEnabled,
-            @Value("${harness.a2a.skill-direct-exec.followup-signal-keys:drillDown,orgName,timeRange}")
-            String followupSignalKeys) {
+            @Value("${harness.a2a.skill-direct-exec.followup-signal-keys:drillDown,dimension,timeRange}")
+            String followupSignalKeys,
+            com.agentscopea2a.v2.dimension.DimensionFamilyConfigRepository dimensionFamilyConfigRepository) {
         log.info("DirectSkillExecutor: directExecEnabled={}, followupDirectEnabled={}, followupSignalKeys={}",
                 enabled, followupDirectEnabled, followupSignalKeys);
         return new com.agentscopea2a.v2.skills.DirectSkillExecutor(
@@ -244,7 +245,8 @@ public class V2SkillConfig {
                 objectMapper,
                 enabled,
                 followupDirectEnabled)
-                .setFollowupSignalKeys(followupSignalKeys);
+                .setFollowupSignalKeys(followupSignalKeys)
+                .setFamilyConfigRepository(dimensionFamilyConfigRepository);
     }
 
 

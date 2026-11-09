@@ -18,6 +18,14 @@ import {
 } from '../api/dimensionKey';
 import type { DimensionKeyAlias } from '../types/dimensionKey';
 import { isAdmin } from '../utils/auth';
+import {
+  createDimensionFamily,
+  deleteDimensionFamily,
+  listDimensionFamilies,
+  reloadDimensionFamilies,
+  updateDimensionFamily,
+  type DimensionFamily,
+} from '../api/dimensionFamily';
 
 /** 词表可维护的白名单内置键 (与后端 DimensionKeyConfigRepository.VOCAB_EDITABLE_BUILTIN_KEYS 同源,
  *  我X方案 §8.3: 8 键 — regex 型条目需页面可编辑, 副作用=同义词词表同步解锁) */
@@ -75,6 +83,29 @@ const rows = ref<DimensionKey[]>([]);
 const keyword = ref('');
 const showDisabled = ref(false);
 
+/** 维度家族映射 (同级维度消解方案 §3.2, D1 拍板): 词表值 → dim 家族,
+ *  追问轮提及维度但无值时按家族删快照参数。family 是代码闭集, 下拉限定。 */
+const FAMILY_OPTIONS = [
+  { value: 'groupName', label: '组（团队）' },
+  { value: 'appName', label: '应用' },
+  { value: 'productLine', label: '产品线' },
+  { value: 'perName', label: '人名' },
+  { value: 'perNo', label: '统一认证号' },
+  { value: 'perRole', label: '岗位角色' },
+  { value: 'deptName', label: '部门' },
+];
+const FAMILY_LABELS: Record<string, string> = Object.fromEntries(
+  FAMILY_OPTIONS.map(o => [o.value, o.label]));
+const familyRows = ref<DimensionFamily[]>([]);
+const familyDialogVisible = ref(false);
+const familyEditing = ref<DimensionFamily | null>(null);
+const familyForm = ref(emptyFamilyForm());
+const familySaving = ref(false);
+
+function emptyFamilyForm() {
+  return { value: '', families: [] as string[], enabled: true, remark: '' };
+}
+
 const dialogVisible = ref(false);
 const editing = ref<DimensionKey | null>(null);
 const form = ref(emptyForm());
@@ -105,10 +136,94 @@ async function load() {
   loading.value = true;
   try {
     rows.value = await listDimensionKeys();
+    familyRows.value = await listDimensionFamilies();
   } catch (error: any) {
     ElMessage.error(error.message || '加载失败');
   } finally {
     loading.value = false;
+  }
+}
+
+function openFamilyCreate() {
+  familyEditing.value = null;
+  familyForm.value = emptyFamilyForm();
+  familyDialogVisible.value = true;
+}
+
+function openFamilyEdit(row: DimensionFamily) {
+  familyEditing.value = row;
+  familyForm.value = {
+    value: row.value,
+    families: row.family.split(',').map((f: string) => f.trim()).filter(Boolean),
+    enabled: row.enabled,
+    remark: row.remark || '',
+  };
+  familyDialogVisible.value = true;
+}
+
+async function saveFamily() {
+  if (!familyForm.value.value.trim() || familyForm.value.families.length === 0) {
+    ElMessage.warning('词表值 / 家族不能为空');
+    return;
+  }
+  familySaving.value = true;
+  try {
+    const input = {
+      value: familyForm.value.value.trim(),
+      family: familyForm.value.families.join(','),
+      enabled: familyForm.value.enabled,
+      remark: familyForm.value.remark.trim() || null,
+    };
+    if (familyEditing.value) {
+      await updateDimensionFamily(familyEditing.value.id, input);
+    } else {
+      await createDimensionFamily(input);
+    }
+    await reloadDimensionFamilies().catch(() => undefined);
+    familyDialogVisible.value = false;
+    await load();
+    ElMessage.success('已保存并刷新解析快照');
+  } catch (error: any) {
+    ElMessageBox.alert(error.message || '保存失败', '操作失败', { type: 'error' });
+  } finally {
+    familySaving.value = false;
+  }
+}
+
+async function toggleFamilyEnabled(row: DimensionFamily) {
+  const enabled = !row.enabled;
+  try {
+    await updateDimensionFamily(row.id, {
+      value: row.value,
+      family: row.family,
+      enabled,
+      remark: row.remark,
+    });
+    await reloadDimensionFamilies().catch(() => undefined);
+    await load();
+    ElMessage.success(enabled ? '已启用' : '已停用');
+  } catch (error: any) {
+    ElMessage.error(error.message || '更新失败');
+  }
+}
+
+async function removeFamily(row: DimensionFamily) {
+  try {
+    await ElMessageBox.confirm(
+      `确认停用家族映射「${row.value} → ${row.family}」? (软删, 停用后该值不再参与消解)`,
+      '删除确认',
+      { type: 'warning' },
+    );
+  } catch {
+    return;
+  }
+  try {
+    await deleteDimensionFamily(row.id);
+    await reloadDimensionFamilies().catch(() => undefined);
+    await load();
+    ElMessage.success('已删除');
+  } catch (error: any) {
+    ElMessage.error(error.message || '删除失败');
   }
 }
 
@@ -220,6 +335,41 @@ onMounted(load);
       <el-button v-if="admin" size="small" type="warning" plain @click="refreshSnapshot">刷新解析快照</el-button>
       <el-button v-if="admin" size="small" type="primary" @click="openCreate">新增维度键</el-button>
     </div>
+    <div class="family-header">
+      <h3>维度家族映射</h3>
+      <div class="subtitle">
+        词表值 → 维度家族 (同级维度消解): 追问轮提及某维度但该家族无值时, 删除快照中该家族参数。
+        family 为固定集 (代码闭集); 查不到的值不参与消解
+      </div>
+      <el-button v-if="admin" size="small" type="primary" plain @click="openFamilyCreate">新增映射</el-button>
+    </div>
+    <el-table :data="familyRows" v-loading="loading" stripe border size="small">
+      <el-table-column prop="value" label="词表值" width="180" show-overflow-tooltip />
+      <el-table-column label="维度家族" min-width="280">
+        <template #default="{ row }">
+          <el-tag v-for="f in row.family.split(',').map((s: string) => s.trim()).filter(Boolean)"
+                  :key="f" size="small" style="margin-right: 6px">
+            {{ FAMILY_LABELS[f] || f }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.remark || '-' }}</template>
+      </el-table-column>
+      <el-table-column label="状态" width="80" align="center">
+        <template #default="{ row }">
+          <el-switch v-if="admin" :model-value="row.enabled" size="small" @change="toggleFamilyEnabled(row)" />
+          <span v-else>{{ row.enabled ? '已启用' : '已停用' }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="150" fixed="right">
+        <template #default="{ row }">
+          <el-button size="small" @click="openFamilyEdit(row)">查看</el-button>
+          <el-button v-if="admin" size="small" type="primary" plain @click="openFamilyEdit(row)">配置</el-button>
+          <el-button v-if="admin" size="small" type="danger" plain @click="removeFamily(row)">删除</el-button>
+        </template>
+      </el-table-column>
+    </el-table>
     <el-table :data="filteredRows" v-loading="loading" stripe border size="small">
       <el-table-column prop="key" label="维度键" width="160" show-overflow-tooltip>
         <template #default="{ row }">
@@ -322,6 +472,29 @@ onMounted(load);
         <el-button v-if="admin" type="primary" :loading="saving" @click="save">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="familyDialogVisible"
+               :title="familyEditing ? `家族映射: ${familyEditing.value}` : '新增家族映射'"
+               width="560px" destroy-on-close>
+      <el-form label-width="110px" size="small">
+        <el-form-item label="词表值">
+          <el-input v-model="familyForm.value" maxlength="64"
+                    placeholder="drillDown / dimension 词表中的标准值, 如 组维度 / 部门" />
+        </el-form-item>
+        <el-form-item label="维度家族">
+          <el-select v-model="familyForm.families" multiple style="width: 100%"
+                     placeholder="固定集, 可多选 (如 个人维度 → 人名+统一认证号+岗位角色)">
+            <el-option v-for="o in FAMILY_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="备注"><el-input v-model="familyForm.remark" maxlength="255" /></el-form-item>
+        <el-form-item label="启用"><el-switch v-model="familyForm.enabled" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="familyDialogVisible = false">取消</el-button>
+        <el-button v-if="admin" type="primary" :loading="familySaving" @click="saveFamily">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -330,6 +503,8 @@ onMounted(load);
 .header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 h2 { margin: 0; font-size: 1.2rem; }
 .subtitle { color: #64748b; font-size: 0.8rem; }
+.family-header { display: flex; align-items: center; gap: 12px; margin: 24px 0 12px; flex-wrap: wrap; }
+.family-header h3 { margin: 0; font-size: 1rem; }
 .alias-editor { width: 100%; }
 .alias-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
 .alias-row .arrow { color: #64748b; }

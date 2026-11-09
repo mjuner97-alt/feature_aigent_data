@@ -111,6 +111,18 @@ public class V2DimensionConfig {
         return new com.agentscopea2a.v2.dimension.DimensionKeyConfigRepository(dataSource, objectMapper, cacheTtlMillis);
     }
 
+    /**
+     * 维度家族映射仓储（同级维度消解方案 §3.2，2026/11/06）：drillDown/dimension
+     * 词表值 → dim 家族（代码闭集），追问层提及无值时按家族删快照参数；TTL 快照同
+     * dimension_key_config 模式。
+     */
+    @Bean
+    public com.agentscopea2a.v2.dimension.DimensionFamilyConfigRepository dimensionFamilyConfigRepository(
+            @Qualifier("gaussCustomerDataSource") DataSource dataSource,
+            @Value("${harness.a2a.dimension.family-cache-ttl-millis:300000}") long cacheTtlMillis) {
+        return new com.agentscopea2a.v2.dimension.DimensionFamilyConfigRepository(dataSource, cacheTtlMillis);
+    }
+
     @Bean
     public DimensionStateMiddleware dimensionStateMiddleware(
             DimensionStateManager dimensionStateManager,
