@@ -18,6 +18,15 @@ import {
 } from '../api/dimensionKey';
 import type { DimensionKeyAlias } from '../types/dimensionKey';
 import { isAdmin } from '../utils/auth';
+import {
+  createDimensionFamily,
+  deleteDimensionFamily,
+  listDimensionFamilies,
+  reloadDimensionFamilies,
+  updateDimensionFamily,
+  type DimensionFamily,
+} from '../api/dimensionFamily';
+import { getSignalKeys, saveSignalKeys, type SignalKeysResponse } from '../api/dimensionSignalKeys';
 
 /** 词表可维护的白名单内置键 (与后端 DimensionKeyConfigRepository.VOCAB_EDITABLE_BUILTIN_KEYS 同源,
  *  我X方案 §8.3: 8 键 — regex 型条目需页面可编辑, 副作用=同义词词表同步解锁) */
@@ -75,6 +84,46 @@ const rows = ref<DimensionKey[]>([]);
 const keyword = ref('');
 const showDisabled = ref(false);
 
+/** 三 Tab 布局 (类似 Skill 配置页): 维度键字典 / 维度家族映射 / 维度信号的动态键白名单 */
+const activeTab = ref('keys');
+const familyLoaded = ref(false);
+const signalKeysLoaded = ref(false);
+
+/** 维度家族映射 (同级维度消解方案 §3.2, D1 拍板): 词表值 → dim 家族,
+ *  追问轮提及维度但无值时按家族删快照参数。family 是代码闭集, 下拉限定。 */
+const FAMILY_OPTIONS = [
+  { value: 'groupName', label: '组（团队）' },
+  { value: 'appName', label: '应用' },
+  { value: 'productLine', label: '产品线' },
+  { value: 'perName', label: '人名' },
+  { value: 'perNo', label: '统一认证号' },
+  { value: 'perRole', label: '岗位角色' },
+  { value: 'deptName', label: '部门' },
+];
+const FAMILY_LABELS: Record<string, string> = Object.fromEntries(
+  FAMILY_OPTIONS.map(o => [o.value, o.label]));
+const familyRows = ref<DimensionFamily[]>([]);
+const familyDialogVisible = ref(false);
+const familyEditing = ref<DimensionFamily | null>(null);
+const familyForm = ref(emptyFamilyForm());
+const familySaving = ref(false);
+
+/** 追问信号动态键白名单 (C3): 保存后运行时立即生效 (setFollowupSignalKeys) 并落库跨重启 */
+const SIGNAL_KEY_DEFAULTS = ['drillDown', 'dimension', 'timeRange'];
+const signalKeysRows = ref<string[]>([]);
+const signalKeysSource = ref<string>('default');
+const signalKeysSaving = ref(false);
+
+const signalKeyOptions = computed(() => {
+  const known = new Set<string>([...SIGNAL_KEY_DEFAULTS, ...signalKeysRows.value]);
+  rows.value.forEach(r => known.add(r.key));
+  return Array.from(known).map(k => ({ value: k, label: k }));
+});
+
+function emptyFamilyForm() {
+  return { value: '', families: [] as string[], enabled: true, remark: '' };
+}
+
 const dialogVisible = ref(false);
 const editing = ref<DimensionKey | null>(null);
 const form = ref(emptyForm());
@@ -105,10 +154,146 @@ async function load() {
   loading.value = true;
   try {
     rows.value = await listDimensionKeys();
+    if (familyLoaded.value) {
+      familyRows.value = await listDimensionFamilies();
+    }
   } catch (error: any) {
     ElMessage.error(error.message || '加载失败');
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadFamily() {
+  loading.value = true;
+  try {
+    familyRows.value = await listDimensionFamilies();
+    familyLoaded.value = true;
+  } catch (error: any) {
+    ElMessage.error(error.message || '加载失败');
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function loadSignalKeys() {
+  loading.value = true;
+  try {
+    const resp: SignalKeysResponse = await getSignalKeys();
+    signalKeysRows.value = resp.keys || [];
+    signalKeysSource.value = resp.source || 'default';
+    signalKeysLoaded.value = true;
+  } catch (error: any) {
+    ElMessage.error(error.message || '加载失败');
+  } finally {
+    loading.value = false;
+  }
+}
+
+/** element-plus 无 tab-enter 事件, 用 tab-change 做首次懒加载 */
+function onTabChange(name: string | number) {
+  if (String(name) === 'family' && !familyLoaded.value) loadFamily();
+  if (String(name) === 'signalKeys' && !signalKeysLoaded.value) loadSignalKeys();
+}
+
+async function saveSignalKeysSetting() {
+  if (!signalKeysRows.value.length) {
+    ElMessage.warning('至少保留一个信号键 (默认 drillDown / dimension / timeRange)');
+    return;
+  }
+  signalKeysSaving.value = true;
+  try {
+    const resp = await saveSignalKeys(signalKeysRows.value);
+    signalKeysRows.value = resp.keys || [];
+    signalKeysSource.value = resp.source || 'database';
+    ElMessage.success('已保存并立即生效 (运行时白名单已更新, 跨重启持久化)');
+  } catch (error: any) {
+    ElMessageBox.alert(error.message || '保存失败', '操作失败', { type: 'error' });
+  } finally {
+    signalKeysSaving.value = false;
+  }
+}
+
+function openFamilyCreate() {
+  familyEditing.value = null;
+  familyForm.value = emptyFamilyForm();
+  familyDialogVisible.value = true;
+}
+
+function openFamilyEdit(row: DimensionFamily) {
+  familyEditing.value = row;
+  familyForm.value = {
+    value: row.value,
+    families: row.family.split(',').map((f: string) => f.trim()).filter(Boolean),
+    enabled: row.enabled,
+    remark: row.remark || '',
+  };
+  familyDialogVisible.value = true;
+}
+
+async function saveFamily() {
+  if (!familyForm.value.value.trim() || familyForm.value.families.length === 0) {
+    ElMessage.warning('词表值 / 家族不能为空');
+    return;
+  }
+  familySaving.value = true;
+  try {
+    const input = {
+      value: familyForm.value.value.trim(),
+      family: familyForm.value.families.join(','),
+      enabled: familyForm.value.enabled,
+      remark: familyForm.value.remark.trim() || null,
+    };
+    if (familyEditing.value) {
+      await updateDimensionFamily(familyEditing.value.id, input);
+    } else {
+      await createDimensionFamily(input);
+    }
+    await reloadDimensionFamilies().catch(() => undefined);
+    familyDialogVisible.value = false;
+    await load();
+    ElMessage.success('已保存并刷新解析快照');
+  } catch (error: any) {
+    ElMessageBox.alert(error.message || '保存失败', '操作失败', { type: 'error' });
+  } finally {
+    familySaving.value = false;
+  }
+}
+
+async function toggleFamilyEnabled(row: DimensionFamily) {
+  const enabled = !row.enabled;
+  try {
+    await updateDimensionFamily(row.id, {
+      value: row.value,
+      family: row.family,
+      enabled,
+      remark: row.remark,
+    });
+    await reloadDimensionFamilies().catch(() => undefined);
+    await load();
+    ElMessage.success(enabled ? '已启用' : '已停用');
+  } catch (error: any) {
+    ElMessage.error(error.message || '更新失败');
+  }
+}
+
+async function removeFamily(row: DimensionFamily) {
+  try {
+    await ElMessageBox.confirm(
+      `确认停用家族映射「${row.value} → ${row.family}」? (软删, 停用后该值不再参与消解)`,
+      '删除确认',
+      { type: 'warning' },
+    );
+  } catch {
+    return;
+  }
+  try {
+    await deleteDimensionFamily(row.id);
+    await reloadDimensionFamilies().catch(() => undefined);
+    await load();
+    ElMessage.success('已删除');
+  } catch (error: any) {
+    ElMessage.error(error.message || '删除失败');
   }
 }
 
@@ -211,9 +396,14 @@ onMounted(load);
   <div class="page">
     <div class="header">
       <div>
-        <h2>维度键字典</h2>
-        <div class="subtitle">Skill 直接执行参数映射的维度键全集; 新增键走词表命中提取 (alias 出现即取标准值), 快照 TTL 5 分钟</div>
+        <h2>维度配置</h2>
+        <div class="subtitle">维度键字典 / 维度家族映射 / 追问信号动态键白名单</div>
       </div>
+    </div>
+    <el-tabs v-model="activeTab" @tab-change="onTabChange">
+    <el-tab-pane label="维度键字典" name="keys">
+    <div class="tab-header">
+      <div class="subtitle">Skill 直接执行参数映射的维度键全集; 新增键走词表命中提取 (alias 出现即取标准值), 快照 TTL 5 分钟</div>
       <el-input v-model="keyword" placeholder="搜索 key / 展示名 / 词表" clearable size="small" style="width: 220px" />
       <el-checkbox v-model="showDisabled" label="显示已停用" size="small" />
       <el-button size="small" :loading="loading" @click="load">刷新</el-button>
@@ -255,6 +445,65 @@ onMounted(load);
         </template>
       </el-table-column>
     </el-table>
+    </el-tab-pane>
+
+    <el-tab-pane label="维度家族映射" name="family">
+    <div class="tab-header">
+      <div class="subtitle">
+        词表值 → 维度家族 (同级维度消解): 追问轮提及某维度但该家族无值时, 删除快照中该家族参数。
+        family 为固定集 (代码闭集); 查不到的值不参与消解
+      </div>
+      <el-button v-if="admin" size="small" type="primary" plain @click="openFamilyCreate">新增映射</el-button>
+    </div>
+    <el-table :data="familyRows" v-loading="loading" stripe border size="small">
+      <el-table-column prop="value" label="词表值" width="180" show-overflow-tooltip />
+      <el-table-column label="维度家族" min-width="280">
+        <template #default="{ row }">
+          <el-tag v-for="f in row.family.split(',').map((s: string) => s.trim()).filter(Boolean)"
+                  :key="f" size="small" style="margin-right: 6px">
+            {{ FAMILY_LABELS[f] || f }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.remark || '-' }}</template>
+      </el-table-column>
+      <el-table-column label="状态" width="80" align="center">
+        <template #default="{ row }">
+          <el-switch v-if="admin" :model-value="row.enabled" size="small" @change="toggleFamilyEnabled(row)" />
+          <span v-else>{{ row.enabled ? '已启用' : '已停用' }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="150" fixed="right">
+        <template #default="{ row }">
+          <el-button size="small" @click="openFamilyEdit(row)">查看</el-button>
+          <el-button v-if="admin" size="small" type="primary" plain @click="openFamilyEdit(row)">配置</el-button>
+          <el-button v-if="admin" size="small" type="danger" plain @click="removeFamily(row)">删除</el-button>
+        </template>
+      </el-table-column>
+    </el-table>
+    </el-tab-pane>
+
+    <el-tab-pane label="维度信号的动态键白名单" name="signalKeys">
+    <div class="tab-header">
+      <div class="subtitle">
+        追问轮 (「…的呢」) 进入直接执行轨时, 允许按新提取值重跑的动态键白名单 (C3)。
+        默认 drillDown (下钻粒度词) / dimension (统计维度词) / timeRange (时间范围锚点);
+        保存后立即生效并跨重启持久化。语义上不是维度形态的传参键 (如 qGate) 不要加入,
+        否则追问轮会按快照原参数重跑
+      </div>
+      <div class="subtitle">
+        当前来源: {{ signalKeysSource === 'database' ? '管理页配置 (数据库)' : '内置默认' }}
+      </div>
+      <el-select v-model="signalKeysRows" multiple filterable allow-create default-first-option
+                 :disabled="!admin" placeholder="添加或选择动态键" style="width: 420px" size="small">
+        <el-option v-for="o in signalKeyOptions" :key="o.value" :label="o.label" :value="o.value" />
+      </el-select>
+      <el-button v-if="admin" size="small" type="primary" :loading="signalKeysSaving"
+                 @click="saveSignalKeysSetting">保存白名单</el-button>
+    </div>
+    </el-tab-pane>
+    </el-tabs>
 
     <el-dialog v-model="dialogVisible" :title="editing ? `维度键: ${editing.key}` : '新增维度键'" width="760px" destroy-on-close>
       <el-form label-width="110px" size="small">
@@ -322,6 +571,29 @@ onMounted(load);
         <el-button v-if="admin" type="primary" :loading="saving" @click="save">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="familyDialogVisible"
+               :title="familyEditing ? `家族映射: ${familyEditing.value}` : '新增家族映射'"
+               width="560px" destroy-on-close>
+      <el-form label-width="110px" size="small">
+        <el-form-item label="词表值">
+          <el-input v-model="familyForm.value" maxlength="64"
+                    placeholder="drillDown / dimension 词表中的标准值, 如 组维度 / 部门" />
+        </el-form-item>
+        <el-form-item label="维度家族">
+          <el-select v-model="familyForm.families" multiple style="width: 100%"
+                     placeholder="固定集, 可多选 (如 个人维度 → 人名+统一认证号+岗位角色)">
+            <el-option v-for="o in FAMILY_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="备注"><el-input v-model="familyForm.remark" maxlength="255" /></el-form-item>
+        <el-form-item label="启用"><el-switch v-model="familyForm.enabled" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="familyDialogVisible = false">取消</el-button>
+        <el-button v-if="admin" type="primary" :loading="familySaving" @click="saveFamily">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -330,6 +602,7 @@ onMounted(load);
 .header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 h2 { margin: 0; font-size: 1.2rem; }
 .subtitle { color: #64748b; font-size: 0.8rem; }
+.tab-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
 .alias-editor { width: 100%; }
 .alias-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
 .alias-row .arrow { color: #64748b; }

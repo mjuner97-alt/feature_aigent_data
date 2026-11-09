@@ -12,35 +12,36 @@ import html as _html
 import pandas as pd
 
 CSS = """
-/* 全部规则挂在 #report 作用域 (含 box-sizing): 即使整份 HTML 被误注入其他页面
-   (v-html 路径), 选择器匹配不到元素, 样式零泄漏 — 对齐 HtmlReportRenderer 设计 */
-#report { box-sizing: border-box; }
-#report * { box-sizing: border-box; }
-#report {
+/* unified-table: 片段 <style> 会被长任务 HtmlReportRenderer 提升到汇总文档 head,
+   独有 class 保证只命中自带 wrapper, 不污染宿主 (id="report" 会与其容器撞名,
+   见 docs/202611/统一样式片段长任务样式污染修复方案.md) */
+.unified-table { box-sizing: border-box; }
+.unified-table * { box-sizing: border-box; }
+.unified-table {
   font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
   color:#333; /* 背景透明: 前端 iframe 是透明设计, 白底会在表格右侧显出大片空白 */
 }
-#report .table-wrap { overflow-x:auto; width:100%; }
-#report table {
+.unified-table .table-wrap { overflow-x:auto; width:100%; }
+.unified-table table {
   border-collapse: collapse !important; background:#ffffff !important;
   width: max-content !important; /* 贴内容收缩, 不强行铺满 (对齐 HtmlReportRenderer) */
   min-width: 0 !important; max-width:100% !important; margin:10px 0;
 }
-#report th {
+.unified-table th {
   background: rgb(192, 0, 0) !important; color:#fff !important; font-weight:600 !important;
   border:1px solid #bfbfbf !important; text-align:center !important;
 }
-#report td {
+.unified-table td {
   color:#333; /* 不加 important, 保留业务数据标红等个性标记 */
   border:1px solid #bfbfbf !important; text-align:center !important;
   word-break:break-word; overflow-wrap:anywhere;
 }
-#report tr:nth-child(even) td { background:#fafafa !important; }
-#report tr:hover td { background:#fff3e0 !important; }
-#report tr.summary-row td { font-weight:600 !important; background:#f0f0f0 !important; }
-#report td.rowhead { text-align:left !important; }
-#report td.red, #report .red { color:red !important; }
-#report .section-title-sm { font-size:1rem; margin-top:16px; margin-bottom:6px; color:#000; }
+.unified-table tr:nth-child(even) td { background:#fafafa !important; }
+.unified-table tr:hover td { background:#fff3e0 !important; }
+.unified-table tr.summary-row td { font-weight:600 !important; background:#f0f0f0 !important; }
+.unified-table td.rowhead { text-align:left !important; }
+.unified-table td.red, .unified-table .red { color:red !important; }
+.unified-table .section-title-sm { font-size:1rem; margin-top:16px; margin-bottom:6px; color:#000; }
 """
 
 DOC_TEMPLATE = """<!DOCTYPE html>
@@ -66,7 +67,7 @@ def _title_html(title):
 
 def _assemble(inner, title, fragment):
     body = (
-        '<div id="report">\n'
+        '<div class="unified-table">\n'
         f'<div class="table-wrap">\n{_title_html(title)}{inner}\n</div>\n'
         '</div>'
     )
@@ -99,7 +100,7 @@ def render_html_custom(body_html, title=None, fragment=False):
     统一样式用 !important 压制个性化内联样式 (对齐 HtmlReportRenderer REPORT_CSS,
     内联红头/灰头都会被强制成统一红头); 个性化只保留在非受管属性 (td color) 和
     语义类: tr.summary-row / td.rowhead / td.red.
-    全部规则挂在 #report 作用域, 整份 HTML 被误注入其他页面时样式零泄漏.
+    全部规则挂在独有 class unified-table 作用域, 整份 HTML 被误注入其他页面时样式零泄漏.
     body_html 为信任输入不转义 — 单元格值的 html.escape 由调用方负责.
     参考 docs/202611/个性化HTML表格兼容统一样式方案.md."""
     return _assemble(body_html, title, fragment)

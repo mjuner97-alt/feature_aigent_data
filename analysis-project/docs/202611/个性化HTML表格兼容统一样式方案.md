@@ -187,3 +187,8 @@ print(render_html_custom(format_df_for_html(show_df), title="Q2-1 部门版本�
 **Tier 1 语义类仍是推荐形态**：内联样式的汇总行（`style="font-weight:bold;background-color:#f9f9f9"`)
 会被斑马纹 `!important` 盖掉底色只留加粗；改用 `tr class="summary-row"` 才有稳定的
 加粗灰底强调。转义要求（§4.1）不变。
+
+> **⚠️ §8.3 作用域已被修订（2026-11-09）**：`#report` 命名空间与长任务
+> HtmlReportRenderer 的容器 `<div id="report">` 撞名，片段串进长任务后样式全局污染
+> 存量表格。已改为独有 class `unified-table` 作用域（Python 单点改 `_html_table.py`），
+> 详见 `docs/202611/统一样式片段长任务样式污染修复方案.md`。
