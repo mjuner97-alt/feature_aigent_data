@@ -31,7 +31,7 @@ http://manager.sdc.cs.icbc/#login?origin=digitalQA&redirect_url=http%3A%2F%2Floc
 
 4. 前端路由守卫在业务页面加载前统一提取身份参数，交给登录页处理。URL 中的第三方 userId/token 被清除，业务查询参数与片段保留。没有本标签页保存的登录上下文时，处理后继续访问第三方返回的业务页面；有上下文时恢复先前发起的原操作。
 5. 前端调用 `POST /api/auth/third-party/login`，仅提交 `{ "userId": "zhangsan001" }`。按当前要求不传递、保存或验证第三方 token。
-6. 后端按 userId 查询人员表，返回姓名、部门、统计组、产品线和环境信息，前端沿用原登录信息保存机制并恢复页面。账号不存在或工号为空时显示错误，允许重试；管理员禁止使用此入口，仍需密码登录。
+6. 后端按 userId 查询人员表，返回姓名、部门、统计组、产品线和环境信息，前端沿用原登录信息保存机制并恢复页面。回调的工号为空或全是空白时，前端先自动重新发起一次第三方登录，等同于点击“第三方登录 / 重试”；本标签页存在登录上下文但回调完全未带 userId 时也按此处理。自动重试状态保存在 sessionStorage 中，第二次仍缺少工号才显示“第三方未返回有效工号”，避免循环跳转。手动点击重试可开始新一轮，原业务跳转和通知参数会继续保留。账号不存在等其他错误直接显示；管理员禁止使用此入口，仍需密码登录。
 
 通知报告、下载继续使用原有通知授权逻辑；业务参数 `accessToken` 与第三方参数 `token` 是两个不同字段，`accessToken` 会保留。
 
@@ -52,7 +52,7 @@ app.auth.third-party.enabled=false
 ```powershell
 mvn '-Dtest=ThirdPartySsoControllerTest,MockSsoControllerTest,AuthServiceAdminLoginTest' test
 cd frontend
-node --test src/pages/LoginPage.test.js src/utils/thirdPartyAuth.test.js
+node --test src/pages/LoginPage.test.js
 ```
 
 测试通过模拟回跳完成，不访问真实内网地址。真实联调需确认第三方按 `redirect_url` 跳回并携带约定的 userId 字段。可直接在本地业务页面 URL 附加 `?userId=人员表存在的工号&token=任意值` 验证前端接收及人员查询。
