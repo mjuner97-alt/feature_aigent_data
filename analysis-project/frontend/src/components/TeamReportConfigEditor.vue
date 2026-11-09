@@ -379,7 +379,7 @@ onMounted(loadDepartments);
             }}</small></div
           >
           <div class="target-fields">
-            <label>匹配关键词 <input v-model="row.keyword" placeholder="输入唯一关键词" /></label>
+            <label>匹配关键词 <input v-model="row.keyword" placeholder="同一任务内不重复，可跨任务复用" /></label>
             <template v-if="value?.reportType === 'DEPARTMENT'">
             <label :for="`report-contact-name-${activeIndex}`"
               >联系人姓名 *

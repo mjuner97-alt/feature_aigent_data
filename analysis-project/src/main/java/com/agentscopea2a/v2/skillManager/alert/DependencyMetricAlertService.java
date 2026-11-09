@@ -44,7 +44,7 @@ public class DependencyMetricAlertService {
         this.environment = environment;
     }
 
-    @Scheduled(cron = "0 0 11 * * MON-FRI", zone = "Asia/Shanghai")
+    @Scheduled(cron = "0 0 10 * * MON-FRI", zone = "Asia/Shanghai")
     public void scheduledCheck() { checkAndNotify(LocalDateTime.now(clock)); }
 
     public void checkAndNotify(LocalDateTime now) { doCheck(now, false); }

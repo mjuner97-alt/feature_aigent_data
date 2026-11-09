@@ -12,7 +12,7 @@ onMounted(async () => {
   if (!executionId) { router.replace('/'); return; }
   const userId = getLoggedInUserId();
   if (!userId) {
-    router.replace({ path: '/login', query: type === 'flow' ? { returnFlowExecutionId: executionId } : { returnExecutionId: executionId } });
+    router.replace({ path: '/login', query: { ...route.query, ...(type === 'flow' ? { returnFlowExecutionId: executionId } : { returnExecutionId: executionId }) } });
     return;
   }
   const endpoint = type === 'flow' ? '/api/skill-flow-executions/notification-link' : '/api/skill-jobs/notification-link';

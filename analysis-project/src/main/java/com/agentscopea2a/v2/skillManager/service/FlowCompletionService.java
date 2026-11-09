@@ -273,7 +273,8 @@ public class FlowCompletionService {
                     )
                     .append('\n');
             }
-            report.append(extractResultText(node.getResultJson())).append("\n\n");
+            report.append(LongTaskReportRenderer.isolateNodeContent(extractResultText(node.getResultJson())))
+                .append("\n\n");
         }
         return report.toString();
     }

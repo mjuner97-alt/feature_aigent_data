@@ -149,7 +149,7 @@ public class ReportOutlineComposer {
             for (String key : item.nodeKeys()) {
                 if (!key.isEmpty()) {
                     String body = sectionBody(byNodeKey.get(key), item.title());
-                    if (!isEmptyHtml(body)) section.append(body).append("\n\n");
+                    if (!isEmptyHtml(body)) section.append(LongTaskReportRenderer.isolateNodeContent(body)).append("\n\n");
                 }
             }
             StringBuilder children = new StringBuilder();

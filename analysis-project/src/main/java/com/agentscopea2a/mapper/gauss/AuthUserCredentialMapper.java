@@ -1,4 +1,4 @@
-package com.agentscopea2a.v2.auth.mapper;
+package com.agentscopea2a.mapper.gauss;
 
 import com.agentscopea2a.v2.auth.entity.AuthUserCredential;
 import org.apache.ibatis.annotations.Mapper;

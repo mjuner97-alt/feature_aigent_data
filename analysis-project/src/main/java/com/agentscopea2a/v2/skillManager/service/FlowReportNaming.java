@@ -14,16 +14,16 @@ public final class FlowReportNaming {
 
     /** 优先使用执行快照中的报告名称，历史执行按原有规则追加日期。 */
     public static String datedTitle(String title, SkillFlowExecution execution) {
-        if (execution.getBatchId() != null) {
+        if (isObjectReport(execution)) {
             String saved = value(execution, "report_name");
             if (saved != null && !saved.isBlank()) return saved;
         }
-        return (execution.getBatchId() == null ? title : baseTitle(execution)) + dateSuffix(execution);
+        return (isObjectReport(execution) ? baseTitle(execution) : title) + dateSuffix(execution);
     }
 
     /** 通知标题附加执行日期，不修改已保存的报告名称。 */
     public static String notificationTitle(SkillFlowExecution execution) {
-        if (execution.getBatchId() == null || !"团队报告".equals(value(execution, "report_type"))) return datedTitle(
+        if (!"团队报告".equals(value(execution, "report_type"))) return datedTitle(
             execution.getFlowName(),
             execution
         );
@@ -44,7 +44,7 @@ public final class FlowReportNaming {
 
     /** 从对象执行快照解析报告基础名称，缺失时回退到部门和团队名称。 */
     public static String baseTitle(SkillFlowExecution execution) {
-        if (execution.getBatchId() == null) return execution.getFlowName();
+        if (!isObjectReport(execution)) return execution.getFlowName();
         String saved = value(execution, "report_name");
         if (saved != null && !saved.isBlank()) return saved;
         String department = value(execution, "dev_dept"),
@@ -55,7 +55,7 @@ public final class FlowReportNaming {
     /** 生成可保存的报告文件名，清理非法字符并保留原扩展名。 */
     static String datedFileName(String fileName, SkillFlowExecution execution) {
         int extensionIndex = fileName.lastIndexOf('.');
-        if (execution.getBatchId() != null) {
+        if (isObjectReport(execution)) {
             String name = datedTitle(execution.getFlowName(), execution)
                 .replaceAll("[\\\\/:*?\"<>|\\r\\n\\t]", "")
                 .trim();
@@ -68,9 +68,16 @@ public final class FlowReportNaming {
     }
 
     private static String dateSuffix(SkillFlowExecution execution) {
-        if (execution.getBatchId() != null) return execution.getDataDate() == null
+        if (isObjectReport(execution)) return execution.getDataDate() == null
             ? ""
             : "（" + execution.getDataDate() + "）";
         return execution.getDataDate() == null ? "" : " (" + execution.getDataDate().format(DATE_FORMAT) + ")";
+    }
+
+    /** 批次号用于执行编组；报告身份以执行快照为准，兼容缺少批次号的历史记录。 */
+    private static boolean isObjectReport(SkillFlowExecution execution) {
+        if (execution.getBatchId() != null) return true;
+        String type = value(execution, "report_type");
+        return "团队报告".equals(type) || "部门报告".equals(type);
     }
 }

@@ -528,7 +528,7 @@
 
     <!-- ==================== 触发词 ==================== -->
 
-    <!-- 新建触发词:normalized_keyword 全局唯一(忽略格式差异后的匹配键),priority 决定多流程命中时的取舍 -->
+    <!-- 新建触发词：normalized_keyword 仅在同流程内唯一，跨流程命中由聊天入口选择 -->
     <insert id="insertTrigger" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO skill_flow_trigger (flow_id, keyword, normalized_keyword, priority, enabled, created_by)
         VALUES (#{flowId}, #{keyword}, #{normalizedKeyword}, #{priority}, #{enabled}, #{createdBy})
@@ -541,15 +541,6 @@
         FROM skill_flow_trigger
         WHERE flow_id = #{flowId}
         ORDER BY priority DESC, id
-    </select>
-
-    <!-- 聊天入口用:按规范化关键词精确匹配触发词,且要求所属流程启用且未删除 -->
-    <select id="selectTriggerByNormalizedKeyword" resultMap="TriggerMap">
-        SELECT t.*
-        FROM skill_flow_trigger t
-                 JOIN skill_flow f ON f.id = t.flow_id
-        WHERE t.normalized_keyword = #{normalizedKeyword}
-          AND f.deleted_at IS NULL
     </select>
 
     <!-- 删除流程的全部触发词(编辑流程时先清后建) -->
@@ -687,7 +678,7 @@
 
     <!-- ==================== 运行态查询与状态维护 ==================== -->
 
-    <!-- 聊天入口候选触发词:触发词和所属流程都须启用且流程未删除,按优先级降序取最高命中 -->
+    <!-- 聊天入口候选触发词：触发词和所属流程均启用且未删除，优先级用于候选排序 -->
     <select id="selectEnabledTriggers" resultMap="TriggerMap">
         SELECT t.*
         FROM skill_flow_trigger t

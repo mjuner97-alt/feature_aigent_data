@@ -12,7 +12,8 @@ import com.agentscopea2a.v2.skillManager.entity.SkillFlowExecution;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowTrigger;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import java.io.IOException;
-import java.util.Locale;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -61,10 +62,10 @@ public class SkillFlowChatRouter {
         NORMAL_CHAT,
     }
 
-    private record PendingConfirmation(Long flowId, String question, long createdAt) {}
+    private record PendingConfirmation(List<Long> flowIds, String question, long createdAt) {}
 
-    /** 路由决策结果;LONG_TASK 时携带命中的 flowId。 */
-    public record Decision(RouteType type, Long flowId) {}
+    /** 路由决策结果；LONG_TASK 时携带去重后的候选流程。 */
+    public record Decision(RouteType type, List<Long> flowIds) {}
 
     /** 对外主入口:根据问题内容分流,返回 SSE。 */
     public SseEmitter route(ChatRequest request) {
@@ -86,11 +87,43 @@ public class SkillFlowChatRouter {
             // 待确认状态只保留 5 分钟,过期后本轮请求按普通新消息处理。
             if (System.currentTimeMillis() - confirmation.createdAt() > CONFIRMATION_TTL_MS) {
                 pending.remove(sessionKey, confirmation);
+            } else if (confirmation.flowIds().size() > 1) {
+                String choice = request.getQuestion() == null ? "" : request.getQuestion().trim();
+                if (choice.equals("0") || choice.equals("直接回答")) {
+                    pending.remove(sessionKey, confirmation);
+                    request.setQuestion(confirmation.question());
+                    return normalChat.stream(request);
+                }
+                int index;
+                try {
+                    index = Integer.parseInt(choice) - 1;
+                } catch (NumberFormatException e) {
+                    index = -1;
+                }
+                if (index >= 0 && index < confirmation.flowIds().size()) {
+                    Long selected = confirmation.flowIds().get(index);
+                    if (!decide(confirmation.question(), userId).flowIds().contains(selected)) {
+                        pending.remove(sessionKey, confirmation);
+                        return completed(request, "该任务已不可用或你已无执行权限，请重新输入问题。");
+                    }
+                    pending.put(sessionKey, new PendingConfirmation(
+                        List.of(selected), confirmation.question(), confirmation.createdAt()));
+                    return completed(request, confirmationPrompt(selected));
+                }
+                if (choice.matches("[0-9]+") || isExecuteChoice(choice)) {
+                    return completed(request, "请回复列表中的任务序号，或回复“0 / 直接回答”。");
+                }
+                // 新问题替换旧的选择状态，避免之后误执行上一次候选。
+                pending.remove(sessionKey, confirmation);
             } else if (isExecuteChoice(request.getQuestion())) {
                 // 用户回复“1/执行/执行长任务”:消费待确认状态并直接启动长任务。
                 pending.remove(sessionKey, confirmation);
+                Long selected = confirmation.flowIds().get(0);
+                if (!decide(confirmation.question(), userId).flowIds().contains(selected)) {
+                    return completed(request, "该任务已不可用或你已无执行权限，请重新输入问题。");
+                }
                 FlowExecutionService.TriggerResult result = executions.trigger(
-                    confirmation.flowId(),
+                    selected,
                     userId,
                     conversationId,
                     confirmation.question()
@@ -116,6 +149,8 @@ public class SkillFlowChatRouter {
                 pending.remove(sessionKey, confirmation);
                 request.setQuestion(confirmation.question());
                 return normalChat.stream(request);
+            } else {
+                pending.remove(sessionKey, confirmation);
             }
         }
         Decision decision = decide(request.getQuestion(), userId);
@@ -138,27 +173,41 @@ public class SkillFlowChatRouter {
         // 首次命中只登记临时待确认状态,此处不创建执行记录,避免普通对话误启动长任务。
         pending.put(
             sessionKey,
-            new PendingConfirmation(decision.flowId(), request.getQuestion(), System.currentTimeMillis())
+            new PendingConfirmation(decision.flowIds(), request.getQuestion(), System.currentTimeMillis())
         );
-        // 首次命中直接返回确认提示;只有下一轮固定短语确认后才会调用 executions.trigger。
-        String flowName = mapper.selectFlowById(decision.flowId()).getName();
-        return completed(request, "检测到长任务「" + flowName + "」，请选择：\n1. 执行长任务\n2. 直接回答");
+        if (decision.flowIds().size() == 1) {
+            return completed(request, confirmationPrompt(decision.flowIds().get(0)));
+        }
+        StringBuilder prompt = new StringBuilder("匹配到多个长任务，请先回复序号选择任务：\n");
+        for (int i = 0; i < decision.flowIds().size(); i++) {
+            var flow = mapper.selectFlowById(decision.flowIds().get(i));
+            prompt.append(i + 1).append(". ").append(flow.getName())
+                .append("（").append(flow.getCode()).append("）\n");
+        }
+        return completed(request, prompt.append("0. 直接回答").toString());
+    }
+
+    private String confirmationPrompt(Long flowId) {
+        return "检测到长任务「" + mapper.selectFlowById(flowId).getName() +
+            "」，请选择：\n1. 执行长任务\n2. 直接回答";
     }
 
     /**
      * 路由决策:包含"直接回答"优先按取消处理;
-     * 否则按启用中的触发词(归一化后 contains 匹配,优先级高者先命中)判定长任务;
+     * 否则收集启用中的触发词(归一化后 contains 匹配)，按权限过滤并对流程去重;
      * 都不命中走普通对话。
      */
     private Decision decide(String question, String userId) {
         String text = question == null ? "" : question;
-        if (text.contains("直接回答")) return new Decision(RouteType.DIRECT_ANSWER, null);
+        if (text.contains("直接回答")) return new Decision(RouteType.DIRECT_ANSWER, List.of());
         String normalized = FlowDefinitionService.normalizeKeyword(text);
+        var matches = new LinkedHashSet<Long>();
         for (SkillFlowTrigger trigger : mapper.selectEnabledTriggers()) {
-            if (normalized.contains(trigger.getNormalizedKeyword())) {
+            if (trigger.getNormalizedKeyword() != null && !trigger.getNormalizedKeyword().isBlank() &&
+                normalized.contains(trigger.getNormalizedKeyword())) {
                 var candidate = mapper.selectFlowById(trigger.getFlowId());
+                if (candidate == null) continue;
                 if (
-                    candidate != null &&
                     candidate.getTeamReportJson() != null &&
                     !Boolean.TRUE.equals(candidate.getChatPublic()) &&
                     (teamReports == null
@@ -166,10 +215,10 @@ public class SkillFlowChatRouter {
                           !mapper.existsFlowExecutor(candidate.getId(), userId)
                         : !teamReports.mayTriggerKeyword(candidate, trigger.getNormalizedKeyword(), userId))
                 ) continue;
-                return new Decision(RouteType.LONG_TASK, trigger.getFlowId());
+                matches.add(trigger.getFlowId());
             }
         }
-        return new Decision(RouteType.NORMAL_CHAT, null);
+        return new Decision(matches.isEmpty() ? RouteType.NORMAL_CHAT : RouteType.LONG_TASK, List.copyOf(matches));
     }
 
     private boolean isExecuteChoice(String question) {

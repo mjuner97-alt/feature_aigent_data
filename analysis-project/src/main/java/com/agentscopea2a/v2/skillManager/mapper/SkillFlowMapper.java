@@ -153,16 +153,13 @@ public interface SkillFlowMapper {
     // ==================== 触发规则 ====================
 
     /**
-     * 新建触发词。normalizedKeyword 是忽略输入格式差异后的全局唯一匹配键,
-     * priority 决定同一条消息命中多个流程时的取舍。
+     * 新建触发词。normalizedKeyword 是忽略输入格式差异后的流程内唯一匹配键，
+     * priority 决定聊天候选列表的排序。
      */
     void insertTrigger(SkillFlowTrigger trigger);
 
     /** 查流程全部触发词,按优先级降序(编辑页回显)。 */
     List<SkillFlowTrigger> selectTriggersByFlowId(@Param("flowId") Long flowId);
-
-    /** 聊天入口用:按规范化关键词精确匹配,且所属流程须未删除。 */
-    SkillFlowTrigger selectTriggerByNormalizedKeyword(@Param("normalizedKeyword") String normalizedKeyword);
 
     /** 删除流程的全部触发词(编辑流程"先清后建")。 */
     void deleteTriggersByFlowId(@Param("flowId") Long flowId);

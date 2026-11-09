@@ -44,9 +44,9 @@ import org.springframework.transaction.annotation.Transactional;
  * <p>关键规则:</p>
  * <ul>
  *   <li>流程可跨用户查看，写操作仅允许创建人(owner);</li>
- *   <li>启用前必须通过完整性校验(模板变量、skill/指标可用、触发词全局唯一);</li>
+ *   <li>启用前必须通过完整性校验(模板变量、skill/指标可用、触发词流程内唯一);</li>
  *   <li>更新采用"整体替换子项":节点、节点指标、触发词全部删掉重插;</li>
- *   <li>触发词做 NFKC 归一化后全局唯一,保证聊天路由不会命中歧义。</li>
+ *   <li>触发词做 NFKC 归一化后流程内唯一，跨流程重复时由聊天入口提供候选选择。</li>
  * </ul>
  */
 @Service
@@ -683,10 +683,6 @@ public class FlowDefinitionService {
             String normalized = normalizeKeyword(trigger.keyword());
             if (normalized.isEmpty()) errors.add("trigger keyword must not be blank");
             if (!normalizedKeywords.add(normalized)) errors.add("duplicate trigger keyword: " + normalized);
-            SkillFlowTrigger owner = flowMapper.selectTriggerByNormalizedKeyword(normalized);
-            if (owner != null && !owner.getFlowId().equals(currentFlowId)) {
-                errors.add("FlowKeywordConflict: keyword is already used by another flow: " + trigger.keyword());
-            }
         }
 
         Set<String> nodeKeys = new HashSet<>();
@@ -748,7 +744,7 @@ public class FlowDefinitionService {
         return errors;
     }
 
-    /** 触发词冲突硬校验:同流程内不允许重复、不允许占用其他流程的归一化关键词。 */
+    /** 触发词冲突硬校验：仅限制同流程内重复，允许不同流程复用关键词。 */
     private void validateKeywordConflicts(List<SkillFlowDefinitionRequest.Trigger> triggers, Long currentFlowId) {
         Set<String> seen = new HashSet<>();
         for (SkillFlowDefinitionRequest.Trigger trigger : triggers) {
@@ -756,10 +752,6 @@ public class FlowDefinitionService {
             if (normalized.isEmpty()) continue;
             if (!seen.add(normalized)) {
                 throw new IllegalStateException("FlowKeywordConflict: duplicate keyword in flow");
-            }
-            SkillFlowTrigger owner = flowMapper.selectTriggerByNormalizedKeyword(normalized);
-            if (owner != null && !owner.getFlowId().equals(currentFlowId)) {
-                throw new IllegalStateException("FlowKeywordConflict: keyword is already used by another flow");
             }
         }
     }

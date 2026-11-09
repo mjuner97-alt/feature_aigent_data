@@ -8,8 +8,8 @@ import lombok.NoArgsConstructor;
 import java.time.LocalDateTime;
 
 /**
- * Skill Flow 触发词表实体:keyword 归一化(normalizedKeyword)后全局唯一,
- * 聊天消息命中即路由到对应流程。
+ * Skill Flow 触发词表实体：keyword 归一化(normalizedKeyword)后流程内唯一，
+ * 跨流程命中时由聊天入口提供候选选择。
  */
 @Data
 @Builder

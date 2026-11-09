@@ -241,19 +241,16 @@ public class TeamReportService {
         );
         for (var r : people) {
             String role = Objects.toString(r.get("position_role"), "").trim(),
-                user = String.valueOf(r.get("user_id")).trim();
+                user = Objects.toString(r.get("user_id"), "").trim();
+            if (user.isEmpty()) continue;
             if (roleDefaults) {
                 if ("项目经理".equals(role)) to.add(user);
                 else if ("分管领导".equals(role)) cc.add(user);
-            } else if (team == null || role.isEmpty()) ("TO".equals(r.get("recipient_type")) ? to : cc).add(user);
+            } else ("TO".equals(r.get("recipient_type")) ? to : cc).add(user);
         }
         to = to.stream().distinct().toList();
         cc = cc.stream().distinct().toList();
-        // 兼容未标记的历史默认值；带角色标记的导入数据直接使用来源表。
-        if (!roleDefaults) {
-            to = org.filterExistingUserIds(to);
-            cc = org.filterExistingUserIds(cc);
-        }
+        // 查询已限定 enabled=TRUE；来源人员允许尚未进入全量台账，不能因缺少岗位而过滤。
         List<String> finalTo = to;
         // 关键词由对象名称生成初始值，用户编辑后随对象参数保存，不读取人员来源表。
         String keyword = team == null ? dept + "部门报告" : team + "团队报告";

@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -39,6 +40,15 @@ import java.util.regex.Pattern;
  */
 @Component
 public class HtmlReportRenderer {
+    // 在汇总前编码节点内容，避免节点中的残缺标签跨越相邻节点的边界。
+    private static final Pattern ISOLATED_NODE = Pattern.compile(
+            "<!--report-node:([A-Za-z0-9+/=]*)-->");
+
+    public static String isolateNodeContent(String content) {
+        return "<!--report-node:" + Base64.getEncoder().encodeToString(
+                (content == null ? "" : content).getBytes(StandardCharsets.UTF_8)) + "-->";
+    }
+
     private final ThreadLocal<Boolean> fullscreenDisabled = ThreadLocal.withInitial(() -> false);
 
     /** 长任务与普通报告共用唯一的样式配置，避免维护两套相互覆盖的 CSS。 */
@@ -811,8 +821,16 @@ public class HtmlReportRenderer {
      * @return 完整 HTML 文档字符串
      */
     public String render(String markdown, String title) {
+        return render(markdown, title, true);
+    }
+
+    private String render(String markdown, String title, boolean decodeNodeEnvelopes) {
         String md = markdown == null ? "" : markdown;
         String safeTitle = escapeHtml(title == null ? "报告" : title);
+
+        if (decodeNodeEnvelopes && ISOLATED_NODE.matcher(md).find()) {
+            return renderIsolatedNodes(md, safeTitle);
+        }
 
         if (containsEmbeddedCompleteHtml(md)) {
             return renderMixedContent(md, safeTitle);
@@ -846,7 +864,7 @@ public class HtmlReportRenderer {
                     .append(renderedBody).append("\n");
         }
 
-        return assembleHtml(safeTitle, body.toString(), charts, fragmentStyles.toString());
+        return assembleHtml(safeTitle, body.toString(), charts, fragmentStyles.toString(), title != null);
     }
 
     public String renderWithoutFullscreen(String markdown, String title) {
@@ -857,6 +875,22 @@ public class HtmlReportRenderer {
     }
 
     private boolean fullscreenEnabled() { return !Boolean.TRUE.equals(fullscreenDisabled.get()); }
+
+    private String renderIsolatedNodes(String input, String safeTitle) {
+        StringBuilder body = new StringBuilder();
+        List<ChartBlock> charts = new ArrayList<>();
+        Matcher nodes = ISOLATED_NODE.matcher(input);
+        int cursor = 0;
+        int index = 0;
+        while (nodes.find()) {
+            appendMarkdownPart(input.substring(cursor, nodes.start()), body, charts);
+            String content = new String(Base64.getDecoder().decode(nodes.group(1)), StandardCharsets.UTF_8);
+            appendFramePart(content, index++, body);
+            cursor = nodes.end();
+        }
+        appendMarkdownPart(input.substring(cursor), body, charts);
+        return assembleHtml(safeTitle, body.toString(), charts, "");
+    }
 
     /**
      * 渲染 Markdown 与一份或多份完整 HTML 文档混排的内容:
@@ -915,7 +949,8 @@ public class HtmlReportRenderer {
     /** 把一份完整 HTML 文档渲染成独立子文档并以固定尺寸 iframe 嵌入(srcdoc 保持报告自包含)。 */
     private void appendFramePart(String html, int index, StringBuilder body) {
         // 单份完整文档走 renderCompleteHtml:剥离脚本防注入、保留原样式(剔除阴影)、转换 ```echarts 块为图表
-        String frameDoc = render(html, null);
+        // 节点原文不再解释汇总层的内部标记，避免普通注释触发二次解码。
+        String frameDoc = render(html, null, false);
         // allowfullscreen:子文档内图表的 ⛶ 全屏按钮需要 iframe 显式授权,否则 requestFullscreen 被浏览器拦截
         body.append("<div data-report-frame-shell>")
                 .append("<iframe data-report-frame title=\"节点报告\" allowfullscreen allow=\"fullscreen\"")

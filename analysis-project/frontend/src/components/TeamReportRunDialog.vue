@@ -35,17 +35,15 @@ const groups = computed(() => {
   return [...grouped.values()];
 });
 const selectedKeys = computed(() => new Set(selected.value));
-const currentDepartment = computed(
-  () => groups.value.find((g) => g.name === department.value)?.name || groups.value[0]?.name || ''
-);
+const currentDepartment = computed(() => groups.value.find((g) => g.name === department.value)?.name || '');
 const query = computed(() => search.value.trim().toLowerCase());
 const visible = computed(() =>
   targets.value.filter((t) =>
     reviewSelected.value
       ? selectedKeys.value.has(key(t))
-      : query.value
-        ? `${departmentName(t)} ${t.teamName || ''}`.toLowerCase().includes(query.value)
-        : departmentName(t) === currentDepartment.value
+      : !!currentDepartment.value &&
+        departmentName(t) === currentDepartment.value &&
+        (!query.value || (t.teamName || departmentName(t)).toLowerCase().includes(query.value))
   )
 );
 const selectedDepartmentCount = computed(
@@ -53,7 +51,7 @@ const selectedDepartmentCount = computed(
 );
 const selectedCount = (items: typeof targets.value) => items.filter((t) => selectedKeys.value.has(key(t))).length;
 const listTitle = computed(() =>
-  reviewSelected.value ? '已选团队' : query.value ? '搜索结果' : currentDepartment.value || '团队'
+  reviewSelected.value ? '已选团队' : currentDepartment.value || '请选择部门'
 );
 function chooseDepartment(name: string) {
   department.value = name;
@@ -131,7 +129,7 @@ watch(
     search.value = '';
     department.value = '';
     reviewSelected.value = false;
-    selected.value = targets.value.map(key);
+    selected.value = [];
     progress.value = [];
     error.value = '';
     await refresh();
@@ -158,6 +156,7 @@ onUnmounted(() => {
   >
     <div class="run-content">
       <p v-if="error" role="alert" class="run-error">{{ error }}</p>
+      <p class="selection-hint">先选择部门，再勾选需要执行的团队；可切换部门继续选择。</p>
       <div class="selection-toolbar">
         <div class="search-field"
           ><svg
@@ -171,7 +170,12 @@ onUnmounted(() => {
           >
             <circle cx="10.5" cy="10.5" r="6.5" />
             <path d="m16 16 4.5 4.5" /></svg
-          ><input v-model="search" placeholder="搜索部门或团队名称" aria-label="搜索部门或团队" /><button
+          ><input
+              v-model="search"
+              :disabled="!currentDepartment || reviewSelected"
+              :placeholder="reviewSelected ? '查看已选团队中' : currentDepartment ? '搜索当前部门的团队' : '请先在下方选择部门'"
+              aria-label="搜索当前部门的团队"
+            /><button
             v-if="search"
             type="button"
             class="clear-search"
@@ -184,7 +188,7 @@ onUnmounted(() => {
       <div class="team-selection" aria-label="选择执行团队">
         <nav class="department-nav" aria-label="部门导航">
           <div class="nav-heading"
-            >部门 <span>{{ groups.length }}</span></div
+            >1. 选择部门 <span>{{ groups.length }}</span></div
           >
           <div class="department-list"
             ><button
@@ -203,14 +207,14 @@ onUnmounted(() => {
         <section class="team-panel" aria-label="团队列表">
           <div class="list-heading"
             ><div
-              ><strong>{{ listTitle }}</strong
+              ><strong>{{ reviewSelected ? listTitle : `2. ${listTitle}` }}</strong
               ><span>{{ visible.length }} 个团队</span></div
             ><div class="selection-actions"
               ><button type="button" :disabled="busy || !visible.length" @click="selectVisible">{{
-                query || reviewSelected ? '全选当前结果' : '全选当前部门'
+                reviewSelected ? '全选当前结果' : query ? '全选搜索结果' : '全选当前部门'
               }}</button
               ><button type="button" :disabled="busy || !selectedCount(visible)" @click="clearVisible">{{
-                query || reviewSelected ? '清空当前结果' : '清空当前部门'
+                reviewSelected ? '清空当前结果' : query ? '清空搜索结果' : '清空当前部门'
               }}</button></div
             ></div
           >
@@ -227,7 +231,13 @@ onUnmounted(() => {
                 >未配置收件人</small
               ></label
             ><div v-if="!visible.length" class="empty-teams">{{
-              !targets.length ? '暂无可执行团队' : reviewSelected ? '尚未选择团队' : '没有匹配的部门或团队'
+              !targets.length
+                ? '暂无可执行团队'
+                : reviewSelected
+                  ? '尚未选择团队'
+                  : !currentDepartment
+                    ? '请先选择左侧部门，再勾选团队'
+                    : '当前部门没有匹配的团队'
             }}</div></div
           >
         </section>
@@ -265,6 +275,12 @@ onUnmounted(() => {
   color: #b91c1c;
   margin: 0 0 16px;
 }
+.selection-hint {
+  margin: 0 0 14px;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.6;
+}
 .selection-toolbar {
   display: flex;
   margin-bottom: 16px;
@@ -296,6 +312,9 @@ onUnmounted(() => {
   color: #334155;
   font: inherit;
   font-size: 14px;
+}
+.search-field input:disabled {
+  cursor: not-allowed;
 }
 .search-field input::placeholder {
   color: #94a3b8;

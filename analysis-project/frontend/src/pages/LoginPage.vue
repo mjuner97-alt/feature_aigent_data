@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { login, requestPasswordReset, verifyPasswordResetCode, completePasswordReset } from '../api/auth';
-import { saveLoggedInUser } from '../utils/auth';
+import { login, requestPasswordReset, verifyPasswordResetCode, completePasswordReset, getMockSsoConfig, exchangeMockSsoTicket, getThirdPartyAuthConfig, thirdPartyLogin } from '../api/auth';
+import { saveLoggedInUser, type AuthUser } from '../utils/auth';
+import { buildThirdPartyLoginUrl } from '../utils/thirdPartyAuth';
 
 const router = useRouter();
 const userId = ref('');
@@ -11,6 +12,108 @@ const loading = ref(false);
 const errorMsg = ref('');
 const mode = ref<'login'|'code'|'password'>('login');
 const code = ref(''); const confirmPassword = ref(''); const resetSession = ref('');
+const ssoEnabled = ref(false);
+const SSO_CONTEXT = 'mock-sso-context';
+const THIRD_PARTY_CONTEXT = 'third-party-login-context';
+const thirdPartyEnabled = ref(false);
+let thirdPartyLoginUrl = '';
+let loginQuery = new URLSearchParams(window.location.search);
+
+async function startThirdPartyLogin() {
+  loading.value = true;
+  errorMsg.value = '';
+  try {
+    sessionStorage.setItem(THIRD_PARTY_CONTEXT, JSON.stringify({ query: loginQuery.toString() }));
+    window.location.replace(buildThirdPartyLoginUrl(thirdPartyLoginUrl, window.location.origin));
+  } catch (e: any) {
+    errorMsg.value = e.message || '无法跳转第三方登录，请重试';
+    loading.value = false;
+  }
+}
+
+async function startSso() {
+  loading.value = true;
+  errorMsg.value = '';
+  try {
+    const state = crypto.randomUUID().replace(/-/g, '');
+    sessionStorage.setItem(SSO_CONTEXT, JSON.stringify({ state, query: loginQuery.toString() }));
+    window.location.replace(`/api/auth/mock-sso/authorize?state=${encodeURIComponent(state)}`);
+  } catch (e: any) {
+    errorMsg.value = e.message || '无法发起认证，请重试';
+    loading.value = false;
+  }
+}
+
+onMounted(async () => {
+  loading.value = true;
+  try {
+    const thirdParty = await getThirdPartyAuthConfig();
+    thirdPartyEnabled.value = thirdParty.enabled;
+    thirdPartyLoginUrl = thirdParty.loginUrl;
+    if (loginQuery.has('userId')) {
+      const callback = loginQuery;
+      const saved = JSON.parse(sessionStorage.getItem(THIRD_PARTY_CONTEXT) || 'null');
+      loginQuery = new URLSearchParams(saved?.query || '');
+      for (const [key, value] of callback) {
+        if (key !== 'userId' && key !== 'token' && !loginQuery.has(key)) loginQuery.set(key, value);
+      }
+      sessionStorage.removeItem(THIRD_PARTY_CONTEXT);
+      window.history.replaceState(window.history.state, '', '/login');
+      if (!thirdParty.enabled) throw new Error('第三方登录未启用');
+      await finishLogin(await thirdPartyLogin((callback.get('userId') || '').trim()));
+      return;
+    }
+    if (thirdParty.enabled) {
+      if (loginQuery.get('authMode') !== 'password') await startThirdPartyLogin();
+      return;
+    }
+    const config = await getMockSsoConfig();
+    ssoEnabled.value = config.enabled;
+    const callback = loginQuery.has('ssoTicket') || loginQuery.has('ssoError');
+    if (callback) {
+      const params = loginQuery;
+      const saved = JSON.parse(sessionStorage.getItem(SSO_CONTEXT) || 'null');
+      // Remove callback credentials from history before any asynchronous exchange.
+      window.history.replaceState(window.history.state, '', '/login');
+      loginQuery = new URLSearchParams(saved?.query || '');
+      sessionStorage.removeItem(SSO_CONTEXT);
+      if (!config.enabled || !saved || saved.state !== params.get('state')) {
+        throw new Error('认证状态无效，请重试');
+      }
+      if (params.has('ssoError')) throw new Error('模拟认证失败，请重试');
+      const user = await exchangeMockSsoTicket(params.get('ssoTicket') || '', saved.state);
+      await finishLogin(user);
+    } else if (config.enabled) {
+      await startSso();
+    }
+  } catch (e: any) {
+    errorMsg.value = e.message || '认证失败，请重试';
+  } finally {
+    loading.value = false;
+  }
+});
+
+async function finishLogin(user: AuthUser) {
+    saveLoggedInUser(user);
+    const executionId = loginQuery.get('returnExecutionId');
+    const flowExecutionId = loginQuery.get('returnFlowExecutionId');
+    const accessToken = loginQuery.get('accessToken');
+    if (flowExecutionId) {
+      await fetch(`/api/skill-flow-executions/notification-link?executionId=${encodeURIComponent(flowExecutionId)}&returnFromLogin=true&accessToken=${encodeURIComponent(accessToken || '')}`, { headers: { 'X-User-Id': user.userId }, redirect: 'manual' });
+      window.location.assign(`/report/flows/${encodeURIComponent(flowExecutionId)}?accessToken=${encodeURIComponent(accessToken || '')}`);
+    } else if (executionId) {
+      await fetch(`/api/skill-jobs/notification-link?executionId=${encodeURIComponent(executionId)}&returnFromLogin=true&accessToken=${encodeURIComponent(accessToken || '')}`, {
+        headers: { 'X-User-Id': user.userId }, redirect: 'manual',
+      });
+      window.location.assign(`/api/skill-jobs/executions/${encodeURIComponent(executionId)}/download?notificationAccess=true&accessToken=${encodeURIComponent(accessToken || '')}`);
+    } else {
+      const returnTo = loginQuery.get('returnTo') || '/';
+      const target = new URL(returnTo, window.location.origin);
+      if (target.origin === window.location.origin && target.pathname !== '/login') {
+        window.location.replace(target.pathname + target.search + target.hash);
+      } else await router.replace('/');
+    }
+}
 
 async function handleLogin() {
   const id = userId.value.trim();
@@ -22,19 +125,7 @@ async function handleLogin() {
   errorMsg.value = '';
   try {
     const user = await login({ userId: id, password: password.value || undefined });
-    saveLoggedInUser(user);
-    const executionId = new URLSearchParams(window.location.search).get('returnExecutionId');
-    const flowExecutionId = new URLSearchParams(window.location.search).get('returnFlowExecutionId');
-    const accessToken = new URLSearchParams(window.location.search).get('accessToken');
-    if (flowExecutionId) {
-      await fetch(`/api/skill-flow-executions/notification-link?executionId=${encodeURIComponent(flowExecutionId)}&returnFromLogin=true`, { headers: { 'X-User-Id': user.userId }, redirect: 'manual' });
-      window.location.assign(`/report/flows/${encodeURIComponent(flowExecutionId)}`);
-    } else if (executionId) {
-      await fetch(`/api/skill-jobs/notification-link?executionId=${encodeURIComponent(executionId)}&returnFromLogin=true&accessToken=${encodeURIComponent(accessToken || "")}`, {
-        headers: { 'X-User-Id': user.userId }, redirect: 'manual',
-      });
-      window.location.assign(`/api/skill-jobs/executions/${encodeURIComponent(executionId)}/download?notificationAccess=true`);
-    } else router.push('/');
+    await finishLogin(user);
   } catch (e: any) {
     errorMsg.value = e.message || '登录失败';
   } finally {
@@ -77,6 +168,8 @@ function handleEnter(e: KeyboardEvent) {
       <input v-if="mode === 'password'" v-model="confirmPassword" type="password" placeholder="确认新密码" class="login-input" :disabled="loading" />
       <div v-if="mode === 'code'" class="login-code-hint">验证码已发送至邮箱</div>
       <div v-if="errorMsg" class="login-error">{{ errorMsg }}</div>
+      <button v-if="thirdPartyEnabled && mode === 'login'" class="login-btn" :disabled="loading" @click="startThirdPartyLogin">{{ loading ? '正在跳转...' : '第三方登录 / 重试' }}</button>
+      <button v-if="ssoEnabled" class="login-btn" :disabled="loading" @click="startSso">{{ loading ? '正在认证...' : '重试模拟认证' }}</button>
       <button v-if="mode==='login'" class="login-btn" :disabled="loading" @click="handleLogin">{{ loading ? '登录中...' : '登录' }}</button>
       <button v-if="mode==='login'" class="link-btn" :disabled="loading" @click="requestCode">忘记密码?</button>
       <button v-if="mode==='code'" class="login-btn" :disabled="loading" @click="verifyCode">验证验证码</button>
