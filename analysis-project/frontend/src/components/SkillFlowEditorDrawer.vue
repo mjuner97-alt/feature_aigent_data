@@ -30,6 +30,7 @@ import { insertOutlineRow } from '../utils/outlineRows';
 import { inferParamSchema, normalizeScriptParams, paramsFromSchema } from '../utils/scriptParams';
 import FlowNodeCard from './FlowNodeCard.vue';
 import TeamReportConfigDialog from './TeamReportConfigDialog.vue';
+import TeamReportDebugPicker from './TeamReportDebugPicker.vue';
 import { listAllLongTaskTypes, type LongTaskType } from '../api/longTaskConfig';
 import {
   configuredFlowTypes,
@@ -1358,22 +1359,11 @@ defineExpose({ isDirty });
                     ><strong>节点试跑</strong
                     ><span>选择本次试跑使用的{{ form.teamReport.reportType === 'TEAM' ? '团队' : '部门' }}</span></div
                   >
-                  <label class="node-debug-select"
-                    ><span>{{ form.teamReport.reportType === 'TEAM' ? '试跑团队' : '试跑部门' }}</span
-                    ><select
-                      v-model="debugTeamId"
-                      aria-label="节点试跑对象"
-                      :disabled="!form.teamReport.targets.length || debugStarting || debugInProgress()"
-                      ><option v-if="!form.teamReport.targets.length" :value="null" disabled>请先添加团队</option
-                      ><option
-                        v-for="target in form.teamReport.targets"
-                        :key="target.teamId || 'department'"
-                        :value="target.teamId"
-                        >{{ target.departmentName ? target.departmentName + ' / ' : ''
-                        }}{{ target.teamName || form.teamReport.departmentName }}</option
-                      ></select
-                    ></label
-                  >
+                  <TeamReportDebugPicker
+                    v-model="debugTeamId"
+                    :config="form.teamReport"
+                    :disabled="debugStarting || debugInProgress()"
+                  />
                   <button
                     v-if="!form.teamReport.targets.length"
                     type="button"
@@ -1610,32 +1600,6 @@ defineExpose({ isDirty });
 .node-debug-toolbar small {
   font-size: 12px;
   color: #64748b;
-}
-.node-debug-select {
-  display: flex !important;
-  align-items: center;
-  gap: 10px !important;
-  flex: 1;
-  min-width: 200px;
-  max-width: 420px;
-}
-.node-debug-select > span {
-  white-space: nowrap;
-  font-size: 12px !important;
-}
-.node-debug-select select {
-  flex: 1;
-  min-width: 0;
-  font-size: 13px;
-}
-.node-debug-select select:focus {
-  outline: 2px solid #bfdbfe;
-  outline-offset: 1px;
-  border-color: #60a5fa;
-}
-.node-debug-select select:disabled {
-  background: #f1f5f9;
-  color: #94a3b8;
 }
 .node-debug-toolbar small {
   flex-basis: 100%;

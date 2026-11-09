@@ -35,6 +35,8 @@ const groups = computed(() => {
   return [...grouped.values()];
 });
 const selectedKeys = computed(() => new Set(selected.value));
+const allSelected = computed(() => targets.value.length > 0 && targets.value.every((target) => selectedKeys.value.has(key(target))));
+const partiallySelected = computed(() => selected.value.length > 0 && !allSelected.value);
 const currentDepartment = computed(() => groups.value.find((g) => g.name === department.value)?.name || '');
 const query = computed(() => search.value.trim().toLowerCase());
 const visible = computed(() =>
@@ -65,6 +67,15 @@ function toggleReview() {
 /** 仅追加当前部门或搜索结果，保留其他部门已选对象。 */
 function selectVisible() {
   selected.value = [...new Set([...selected.value, ...visible.value.map(key)])];
+}
+/** 跨部门全选全部可执行对象，不受当前部门、搜索或查看已选影响。 */
+function selectAll() {
+  selected.value = [...new Set(targets.value.map(key))];
+}
+function toggleAll(event: Event) {
+  if (busy.value) return;
+  if ((event.target as HTMLInputElement).checked) selectAll();
+  else selected.value = [];
 }
 /** 仅移除当前可见对象，避免搜索或切换部门时误清空其他选择。 */
 function clearVisible() {
@@ -156,7 +167,7 @@ onUnmounted(() => {
   >
     <div class="run-content">
       <p v-if="error" role="alert" class="run-error">{{ error }}</p>
-      <p class="selection-hint">先选择部门，再勾选需要执行的团队；可切换部门继续选择。</p>
+      <p class="selection-hint">先选择部门，再勾选需要执行的团队；也可全选所有部门的团队。</p>
       <div class="selection-toolbar">
         <div class="search-field"
           ><svg
@@ -184,6 +195,18 @@ onUnmounted(() => {
             >×</button
           ></div
         >
+      </div>
+      <div class="global-selection" :class="{ complete: allSelected }">
+        <label class="global-select-toggle">
+          <input type="checkbox" aria-label="全选全部部门和团队"
+            :checked="allSelected" :indeterminate="partiallySelected"
+            :aria-checked="partiallySelected ? 'mixed' : allSelected ? 'true' : 'false'"
+            :disabled="busy || !targets.length" @change="toggleAll" />
+          <span>全选全部部门和团队</span>
+        </label>
+        <span class="global-selection-count">共 {{ groups.length }} 个部门、{{ targets.length }} 个团队</span>
+        <strong v-if="allSelected" class="global-selection-status">已全部选择</strong>
+        <span v-else-if="partiallySelected" class="global-selection-status">已选 {{ selected.length }} 个团队</span>
       </div>
       <div class="team-selection" aria-label="选择执行团队">
         <nav class="department-nav" aria-label="部门导航">
@@ -284,6 +307,44 @@ onUnmounted(() => {
 .selection-toolbar {
   display: flex;
   margin-bottom: 16px;
+}
+.global-selection {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #f8fbff;
+  font-size: 13px;
+}
+.global-selection.complete {
+  background: #eff6ff;
+  border-color: #93c5fd;
+}
+.global-select-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #1d4ed8;
+  font-weight: 600;
+  cursor: pointer;
+}
+.global-select-toggle input {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: #2563eb;
+}
+.global-selection-count {
+  color: #64748b;
+}
+.global-selection-status {
+  margin-left: auto;
+  color: #2563eb;
+  font-weight: 500;
 }
 .search-field {
   display: flex;
