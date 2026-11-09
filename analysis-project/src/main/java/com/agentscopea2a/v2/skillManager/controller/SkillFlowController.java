@@ -1,34 +1,33 @@
 package com.agentscopea2a.v2.skillManager.controller;
 
 import com.agentscopea2a.v2.skillManager.dto.FlowMetricReadinessDto;
+import com.agentscopea2a.v2.skillManager.dto.FlowReportUpdateRequest;
 import com.agentscopea2a.v2.skillManager.dto.FlowValidationDto;
+import com.agentscopea2a.v2.skillManager.dto.NotificationLinkClickFilterRequest;
+import com.agentscopea2a.v2.skillManager.dto.NotificationLinkClickSummaryDto;
 import com.agentscopea2a.v2.skillManager.dto.NotifySettingsDto;
 import com.agentscopea2a.v2.skillManager.dto.NotifySettingsUpdateRequest;
-import com.agentscopea2a.v2.skillManager.dto.FlowReportUpdateRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillFlowDefinitionRequest;
 import com.agentscopea2a.v2.skillManager.dto.SkillFlowDto;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowNotification;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.skillManager.service.FlowCompletionService;
-import com.agentscopea2a.v2.skillManager.service.FlowReportNaming;
+import com.agentscopea2a.v2.skillManager.service.FlowCoordinator;
 import com.agentscopea2a.v2.skillManager.service.FlowDefinitionService;
 import com.agentscopea2a.v2.skillManager.service.FlowExecutionService;
 import com.agentscopea2a.v2.skillManager.service.FlowQueryService;
-import com.agentscopea2a.v2.skillManager.service.FlowCoordinator;
-import com.agentscopea2a.v2.skillManager.service.NotificationLinkClickService;
-import com.agentscopea2a.v2.skillManager.dto.NotificationLinkClickFilterRequest;
-import com.agentscopea2a.v2.skillManager.dto.NotificationLinkClickSummaryDto;
 import com.agentscopea2a.v2.skillManager.service.FlowQueryService.ReportDownload;
+import com.agentscopea2a.v2.skillManager.service.FlowReportNaming;
+import com.agentscopea2a.v2.skillManager.service.NotificationLinkClickService;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
-import java.util.List;
 
 /**
  * Skill Flow 前端接口,包含两组路径:
@@ -51,10 +50,15 @@ public class SkillFlowController {
     private final FlowCoordinator coordinator;
     private final NotificationLinkClickService linkClickService;
 
-    public SkillFlowController(FlowDefinitionService definitionService, FlowQueryService queryService,
-                               FlowCompletionService completionService, FlowExecutionService executionService,
-                               SkillFlowMapper mapper, FlowCoordinator coordinator,
-                               NotificationLinkClickService linkClickService) {
+    public SkillFlowController(
+        FlowDefinitionService definitionService,
+        FlowQueryService queryService,
+        FlowCompletionService completionService,
+        FlowExecutionService executionService,
+        SkillFlowMapper mapper,
+        FlowCoordinator coordinator,
+        NotificationLinkClickService linkClickService
+    ) {
         this.definitionService = definitionService;
         this.queryService = queryService;
         this.completionService = completionService;
@@ -68,43 +72,61 @@ public class SkillFlowController {
 
     /** 流程列表;筛选方式与独立任务一致。 */
     @GetMapping("/api/skill-flows")
-    public List<SkillFlowDto> list(@RequestHeader(name = "X-User-Id") String userId,
-                                   @RequestParam(name = "enabled", required = false) Boolean enabled,
-                                   @RequestParam(name = "keyword", required = false) String keyword,
-                                   @RequestParam(name = "createdBy", required = false) String createdBy,
-                                   @RequestParam(name = "scope", defaultValue = "mine") String scope) {
+    public List<SkillFlowDto> list(
+        @RequestHeader(name = "X-User-Id") String userId,
+        @RequestParam(name = "enabled", required = false) Boolean enabled,
+        @RequestParam(name = "keyword", required = false) String keyword,
+        @RequestParam(name = "createdBy", required = false) String createdBy,
+        @RequestParam(name = "scope", defaultValue = "mine") String scope
+    ) {
         return definitionService.list(userId, enabled, keyword, createdBy, "all".equalsIgnoreCase(scope));
     }
 
     @GetMapping("/api/skill-flows/page")
     public com.agentscopea2a.v2.skillManager.dto.PageResult<com.agentscopea2a.v2.skillManager.dto.SkillFlowSummaryDto> page(
-            @RequestHeader("X-User-Id") String userId,
-            @RequestParam(required = false) Boolean enabled, @RequestParam(required = false) String keyword,
-            @RequestParam(required = false) String createdBy, @RequestParam(defaultValue = "mine") String scope,
-            @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int pageSize,
-            @RequestParam(required = false) Long typeId) {
-        return definitionService.page(userId, enabled, keyword, createdBy, "all".equalsIgnoreCase(scope), page, pageSize, typeId);
+        @RequestHeader("X-User-Id") String userId,
+        @RequestParam(required = false) Boolean enabled,
+        @RequestParam(required = false) String keyword,
+        @RequestParam(required = false) String createdBy,
+        @RequestParam(defaultValue = "mine") String scope,
+        @RequestParam(defaultValue = "1") int page,
+        @RequestParam(defaultValue = "20") int pageSize,
+        @RequestParam(required = false) Long typeId
+    ) {
+        return definitionService.page(
+            userId,
+            enabled,
+            keyword,
+            createdBy,
+            "all".equalsIgnoreCase(scope),
+            page,
+            pageSize,
+            typeId
+        );
     }
 
     /** 流程详情可跨用户查看；写操作由服务层单独校验创建人。 */
     @GetMapping("/api/skill-flows/{id}")
-    public SkillFlowDto getFlow(@PathVariable(name = "id") Long id,
-                                @RequestHeader(name = "X-User-Id") String userId) {
+    public SkillFlowDto getFlow(@PathVariable(name = "id") Long id, @RequestHeader(name = "X-User-Id") String userId) {
         return definitionService.get(id, userId);
     }
 
     /** 创建流程;enabled=true 时要求编排完整可执行。 */
     @PostMapping("/api/skill-flows")
-    public SkillFlowDto create(@RequestBody SkillFlowDefinitionRequest request,
-                               @RequestHeader(name = "X-User-Id") String userId) {
+    public SkillFlowDto create(
+        @RequestBody SkillFlowDefinitionRequest request,
+        @RequestHeader(name = "X-User-Id") String userId
+    ) {
         return definitionService.create(request, userId);
     }
 
     /** 更新流程(整体替换触发词与节点编排)。 */
     @PutMapping("/api/skill-flows/{id}")
-    public SkillFlowDto update(@PathVariable(name = "id") Long id,
-                               @RequestBody SkillFlowDefinitionRequest request,
-                               @RequestHeader(name = "X-User-Id") String userId) {
+    public SkillFlowDto update(
+        @PathVariable(name = "id") Long id,
+        @RequestBody SkillFlowDefinitionRequest request,
+        @RequestHeader(name = "X-User-Id") String userId
+    ) {
         return definitionService.update(id, request, userId);
     }
 
@@ -119,52 +141,171 @@ public class SkillFlowController {
 
     /** 启用/停用流程;启用前强制完整性校验。 */
     @PutMapping("/api/skill-flows/{id}/enabled")
-    public SkillFlowDto enabled(@PathVariable(name = "id") Long id,
-                                @RequestBody EnabledRequest request,
-                                @RequestHeader(name = "X-User-Id") String userId) {
+    public SkillFlowDto enabled(
+        @PathVariable(name = "id") Long id,
+        @RequestBody EnabledRequest request,
+        @RequestHeader(name = "X-User-Id") String userId
+    ) {
         return definitionService.setEnabled(id, request.enabled(), userId);
     }
 
     /** 软删除流程(历史执行记录保留)。 */
     @DeleteMapping("/api/skill-flows/{id}")
-    public void delete(@PathVariable(name = "id") Long id,
-                       @RequestHeader(name = "X-User-Id") String userId) {
+    public void delete(@PathVariable(name = "id") Long id, @RequestHeader(name = "X-User-Id") String userId) {
         definitionService.delete(id, userId);
     }
 
     /** 查询流程通知设置(收件人名单/触发类型范围/通知开关;仅创建人)。 */
     @GetMapping("/api/skill-flows/{id}/notify-settings")
-    public NotifySettingsDto getNotifySettings(@PathVariable(name = "id") Long id,
-                                               @RequestHeader(name = "X-User-Id") String userId) {
+    public NotifySettingsDto getNotifySettings(
+        @PathVariable(name = "id") Long id,
+        @RequestHeader(name = "X-User-Id") String userId
+    ) {
         return definitionService.getNotifySettings(id, userId);
     }
 
     /** 更新流程通知设置(全量替换名单;空列表 = 清空恢复发触发人;收件人须存在于人员表)。 */
     @PutMapping("/api/skill-flows/{id}/notify-settings")
-    public NotifySettingsDto updateNotifySettings(@PathVariable(name = "id") Long id,
-                                                  @RequestBody NotifySettingsUpdateRequest req,
-                                                  @RequestHeader(name = "X-User-Id") String userId) {
+    public NotifySettingsDto updateNotifySettings(
+        @PathVariable(name = "id") Long id,
+        @RequestBody NotifySettingsUpdateRequest req,
+        @RequestHeader(name = "X-User-Id") String userId
+    ) {
         return definitionService.updateNotifySettings(id, req, userId);
     }
 
     /** 完整性预检:启用前编辑器可调用,返回全部校验错误而非直接抛异常。 */
     @PostMapping("/api/skill-flows/{id}/validate")
-    public FlowValidationDto validate(@PathVariable(name = "id") Long id,
-                                      @RequestHeader(name = "X-User-Id") String userId) {
+    public FlowValidationDto validate(
+        @PathVariable(name = "id") Long id,
+        @RequestHeader(name = "X-User-Id") String userId
+    ) {
         return definitionService.validate(id, userId);
     }
 
     /** 手动执行预检:流程全部依赖指标今日的就绪状态,前端弹"数据未就绪是否执行"确认用。 */
     @GetMapping("/api/skill-flows/{id}/metrics")
-    public List<FlowMetricReadinessDto> flowMetrics(@PathVariable(name = "id") Long id,
-                                                    @RequestHeader(name = "X-User-Id") String userId) {
+    public List<FlowMetricReadinessDto> flowMetrics(
+        @PathVariable(name = "id") Long id,
+        @RequestHeader(name = "X-User-Id") String userId
+    ) {
         return definitionService.metricReadiness(id, userId);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.agentscopea2a.v2.skillManager.service.TeamReportService teamReports;
+
+    /** 查询报告默认来源人员，供对象通知名单编辑器搜索。 */
+    @GetMapping("/api/skill-flows/report-people")
+    public Object reportPeople(
+        @RequestHeader(name = "X-User-Id") String userId,
+        @RequestParam String department,
+        @RequestParam(defaultValue = "") String team,
+        @RequestParam(defaultValue = "") String keyword
+    ) {
+        if (userId == null || userId.isBlank()) throw new IllegalStateException("FlowAccessDenied");
+        return teamReports.people(department, team, keyword);
+    }
+
+    /** 读取当前可用于新建报告配置的部门列表。 */
+    @GetMapping("/api/skill-flows/report-departments")
+    public Object reportDepartments(@RequestHeader(name = "X-User-Id") String userId) {
+        if (userId == null || userId.isBlank()) throw new IllegalStateException("FlowAccessDenied");
+        return teamReports.departments();
+    }
+
+    /** 读取指定部门下的团队候选及首次添加时的默认配置。 */
+    @GetMapping("/api/skill-flows/report-departments/{deptId}/teams")
+    public Object reportTeams(@PathVariable String deptId, @RequestHeader(name = "X-User-Id") String userId) {
+        if (userId == null || userId.isBlank()) throw new IllegalStateException("FlowAccessDenied");
+        return teamReports.candidates(deptId);
+    }
+
+    /** 读取部门报告首次配置所需的默认通知设置。 */
+    @GetMapping("/api/skill-flows/report-departments/{deptId}/defaults")
+    public Object reportDepartmentDefaults(
+        @PathVariable String deptId,
+        @RequestHeader(name = "X-User-Id") String userId
+    ) {
+        if (userId == null || userId.isBlank()) throw new IllegalStateException("FlowAccessDenied");
+        return teamReports.departmentDefaults(deptId);
+    }
+
+    /** 校验任务访问权限后，查询最近一轮手动执行进度。 */
+    @GetMapping("/api/skill-flows/{id}/batch-progress")
+    public Object batchProgress(@PathVariable Long id, @RequestHeader(name = "X-User-Id") String userId) {
+        definitionService.get(id, userId);
+        return teamReports.progress(id);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.agentscopea2a.v2.skillManager.service.ScriptParamRuleService paramRules;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    @org.springframework.beans.factory.annotation.Qualifier("skillFlowClock")
+    private java.time.Clock reportClock;
+
+    public record PreviewParamsRequest(
+        String scriptId,
+        String paramsJson,
+        com.agentscopea2a.v2.skillManager.dto.TeamReportConfig config,
+        String teamId
+    ) {}
+
+    @PostMapping("/api/skill-flows/report-params-preview")
+    public Object previewParams(
+        @RequestHeader(name = "X-User-Id") String userId,
+        @RequestBody PreviewParamsRequest request
+    ) {
+        if (userId == null || userId.isBlank()) throw new IllegalStateException("FlowAccessDenied");
+        var c = request.config();
+        if (
+            c == null ||
+            c.departmentId() == null ||
+            c.departmentId().isBlank() ||
+            c.reportType() == null ||
+            !java.util.Set.of("TEAM", "DEPARTMENT").contains(c.reportType()) ||
+            c.targets().isEmpty()
+        ) throw new IllegalArgumentException("TeamReportSelectionRequired: 请先选择类型、部门和执行对象");
+        var t = c
+            .targets()
+            .stream()
+            .filter(row -> java.util.Objects.equals(row.teamId(), request.teamId()))
+            .findFirst()
+            .orElseThrow(() -> new IllegalStateException("TeamReportSelectionRequired"));
+        com.agentscopea2a.v2.skillManager.service.TeamReportService.validateReferences(
+            request.paramsJson(),
+            c.reportType()
+        );
+        var date = java.time.LocalDate.now(reportClock);
+        return java.util.Map.of(
+            "dataDate",
+            date.toString(),
+            "params",
+            paramRules.resolve(request.scriptId(), request.paramsJson(), date, teamReports.publicParams(c, t, date))
+        );
+    }
+
+    public record BatchRunRequest(List<String> teamIds, String requestId) {}
+
+    /** 提交前端选中的对象及幂等请求标识，批次执行由后端队列推进。 */
+    @PostMapping("/api/skill-flows/{id}/run-batch")
+    public Object runBatch(
+        @PathVariable Long id,
+        @RequestHeader(name = "X-User-Id") String userId,
+        @RequestBody(required = false) BatchRunRequest request
+    ) {
+        return executionService.triggerManualBatch(
+            id,
+            userId,
+            request == null ? null : request.teamIds(),
+            request == null ? null : request.requestId()
+        );
     }
 
     /** 手动触发一次执行;确认后不等待指标就绪,直接进入执行队列。 */
     @PostMapping("/api/skill-flows/{id}/run")
-    public RunResultDto run(@PathVariable(name = "id") Long id,
-                            @RequestHeader(name = "X-User-Id") String userId) {
+    public RunResultDto run(@PathVariable(name = "id") Long id, @RequestHeader(name = "X-User-Id") String userId) {
         FlowExecutionService.TriggerResult result = executionService.triggerManual(id, userId);
         return new RunResultDto(result.execution().getId(), result.created(), result.execution().getStatus().name());
     }
@@ -179,123 +320,220 @@ public class SkillFlowController {
 
     /** 本人触发的执行记录列表,status/keyword 可选过滤。 */
     @GetMapping("/api/skill-flow-executions")
-    public FlowQueryService.PageDto list(@RequestParam(name = "status", required = false) String status,
-                                                    @RequestParam(name = "createdBy", required = false) String createdBy,
-                                                    @RequestParam(name = "scope", defaultValue = "mine") String scope,
-                                                    @RequestHeader(name = "X-User-Id") String userId,
-                                                    @RequestParam(defaultValue = "1") int page,
-                                                    @RequestParam(defaultValue = "20") int pageSize,
-                                                    @RequestParam(name = "keyword", required = false) String keyword,
-                                                    @RequestParam(name = "source", required = false) String source,
-                                                    @RequestParam(name = "triggerType", required = false) String triggerType) {
-        return queryService.list(status, createdBy, keyword, userId, "all".equalsIgnoreCase(scope), page, pageSize, source, triggerType);
+    public FlowQueryService.PageDto list(
+        @RequestParam(name = "status", required = false) String status,
+        @RequestParam(name = "createdBy", required = false) String createdBy,
+        @RequestParam(name = "scope", defaultValue = "mine") String scope,
+        @RequestHeader(name = "X-User-Id") String userId,
+        @RequestParam(defaultValue = "1") int page,
+        @RequestParam(defaultValue = "20") int pageSize,
+        @RequestParam(name = "keyword", required = false) String keyword,
+        @RequestParam(name = "source", required = false) String source,
+        @RequestParam(name = "triggerType", required = false) String triggerType,
+        @RequestParam(name = "typeId", required = false) Long typeId
+    ) {
+        return queryService.list(
+            status,
+            createdBy,
+            keyword,
+            userId,
+            "all".equalsIgnoreCase(scope),
+            page,
+            pageSize,
+            source,
+            triggerType,
+            typeId
+        );
     }
 
     /** 执行详情(含汇总结果与报告路径)。 */
     @GetMapping("/api/skill-flow-executions/{id}")
-    public FlowQueryService.ExecutionDto getExecution(@PathVariable(name = "id") Long id,
-                                                      @RequestHeader(name = "X-User-Id") String userId) {
+    public FlowQueryService.ExecutionDto getExecution(
+        @PathVariable(name = "id") Long id,
+        @RequestHeader(name = "X-User-Id") String userId
+    ) {
         return queryService.get(id, userId);
     }
 
     /** 节点执行明细(渲染后的问题、状态、尝试记录等)。 */
     @GetMapping("/api/skill-flow-executions/{id}/nodes")
-    public List<FlowQueryService.NodeDto> nodes(@PathVariable(name = "id") Long id,
-                                                @RequestHeader(name = "X-User-Id") String userId) {
+    public List<FlowQueryService.NodeDto> nodes(
+        @PathVariable(name = "id") Long id,
+        @RequestHeader(name = "X-User-Id") String userId
+    ) {
         return queryService.nodes(id, userId);
     }
 
     /** 该次执行依赖的指标就绪情况(哪些指标阻塞、影响哪些节点)。 */
     @GetMapping("/api/skill-flow-executions/{id}/metrics")
-    public List<FlowQueryService.MetricDto> metrics(@PathVariable(name = "id") Long id,
-                                                    @RequestHeader(name = "X-User-Id") String userId) {
+    public List<FlowQueryService.MetricDto> metrics(
+        @PathVariable(name = "id") Long id,
+        @RequestHeader(name = "X-User-Id") String userId
+    ) {
         return queryService.readiness(id, userId);
     }
 
     /** 该次执行的通知发送记录。 */
     @GetMapping("/api/skill-flow-executions/{id}/notifications")
-    public List<SkillFlowNotification> notifications(@PathVariable(name = "id") Long id,
-                                                     @RequestHeader(name = "X-User-Id") String userId) {
+    public List<SkillFlowNotification> notifications(
+        @PathVariable(name = "id") Long id,
+        @RequestHeader(name = "X-User-Id") String userId
+    ) {
         return queryService.notifications(id, userId);
     }
 
     /** Access audit summary, restricted to executions visible to the current user. */
     @GetMapping("/api/skill-flow-executions/{id}/link-clicks")
-    public List<NotificationLinkClickSummaryDto> linkClicks(@PathVariable Long id,
-            @RequestHeader("X-User-Id") String userId,
-            NotificationLinkClickFilterRequest filter) {
+    public List<NotificationLinkClickSummaryDto> linkClicks(
+        @PathVariable Long id,
+        @RequestHeader("X-User-Id") String userId,
+        NotificationLinkClickFilterRequest filter
+    ) {
         queryService.requireOwner(id, userId);
         return linkClickService.executionSummary(id, filter);
     }
 
     /** 在线查看 HTML 报告(inline 渲染;不限制下载人,邮件链接可直接打开,X-User-Id 仅用于兼容前端调用)。 */
     @GetMapping("/api/skill-flow-executions/{id}/report")
-    public ResponseEntity<Resource> report(@PathVariable(name = "id") Long id,
-                                           @RequestHeader(name = "X-User-Id", required = false) String userId) {
+    public ResponseEntity<Resource> report(
+        @PathVariable(name = "id") Long id,
+        @RequestHeader(name = "X-User-Id", required = false) String userId
+    ) {
         if (userId != null && !userId.isBlank()) {
             linkClickService.record(null, id, userId, userId, null, "PAGE", "CLICK", true, null, null);
         }
         ReportDownload download = queryService.report(id, userId);
         // RFC 5987: 中文文件名用 filename*=UTF-8'' 编码;ASCII 回退名给不识别 filename* 的老客户端
         String encoded = URLEncoder.encode(download.downloadName(), StandardCharsets.UTF_8).replace("+", "%20");
-        return ResponseEntity.ok().contentType(MediaType.TEXT_HTML)
-                .cacheControl(org.springframework.http.CacheControl.noStore())
-                .header(HttpHeaders.CONTENT_DISPOSITION,
-                        "inline; filename=\"flow-report.html\"; filename*=UTF-8''" + encoded)
-                .body(download.resource());
+        return ResponseEntity.ok()
+            .contentType(MediaType.TEXT_HTML)
+            .cacheControl(org.springframework.http.CacheControl.noStore())
+            .header(
+                HttpHeaders.CONTENT_DISPOSITION,
+                "inline; filename=\"flow-report.html\"; filename*=UTF-8''" + encoded
+            )
+            .body(download.resource());
     }
 
     @GetMapping(value = "/api/skill-flow-executions/{id}/report-source", produces = MediaType.TEXT_HTML_VALUE)
-    public ResponseEntity<String> reportSource(@PathVariable(name = "id") Long id,
-                                               @RequestHeader(name = "X-User-Id") String userId) {
-        return ResponseEntity.ok().contentType(MediaType.TEXT_HTML)
-                .cacheControl(org.springframework.http.CacheControl.noStore())
-                .body(queryService.readFlowReportSource(id, userId));
+    public ResponseEntity<String> reportSource(
+        @PathVariable(name = "id") Long id,
+        @RequestHeader(name = "X-User-Id") String userId
+    ) {
+        return ResponseEntity.ok()
+            .contentType(MediaType.TEXT_HTML)
+            .cacheControl(org.springframework.http.CacheControl.noStore())
+            .body(queryService.readFlowReportSource(id, userId));
     }
 
-    @PutMapping(value = "/api/skill-flow-executions/{id}/report-source", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.TEXT_HTML_VALUE)
-    public ResponseEntity<String> updateReportSource(@PathVariable(name = "id") Long id,
-                                                     @RequestHeader(name = "X-User-Id") String userId,
-                                                     @RequestBody FlowReportUpdateRequest request) {
-        return ResponseEntity.ok().contentType(MediaType.TEXT_HTML).body(queryService.updateFlowReportSource(id, userId, request.html()));
+    @PutMapping(
+        value = "/api/skill-flow-executions/{id}/report-source",
+        consumes = MediaType.APPLICATION_JSON_VALUE,
+        produces = MediaType.TEXT_HTML_VALUE
+    )
+    public ResponseEntity<String> updateReportSource(
+        @PathVariable(name = "id") Long id,
+        @RequestHeader(name = "X-User-Id") String userId,
+        @RequestBody FlowReportUpdateRequest request
+    ) {
+        return ResponseEntity.ok()
+            .contentType(MediaType.TEXT_HTML)
+            .body(queryService.updateFlowReportSource(id, userId, request.html()));
     }
 
     /** 按需渲染单个成功 Skill 节点的 HTML 内容，不落盘。 */
     @GetMapping(value = "/api/skill-flow-executions/{id}/nodes/{nodeId}/report", produces = MediaType.TEXT_HTML_VALUE)
-    public ResponseEntity<String> nodeReport(@PathVariable(name = "id") Long id,
-                                             @PathVariable(name = "nodeId") Long nodeId,
-                                             @RequestHeader(name = "X-User-Id") String userId) {
-        return ResponseEntity.ok().contentType(MediaType.TEXT_HTML)
-                .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"skill-report.html\"")
-                .body(queryService.nodeReport(id, nodeId, userId));
+    public ResponseEntity<String> nodeReport(
+        @PathVariable(name = "id") Long id,
+        @PathVariable(name = "nodeId") Long nodeId,
+        @RequestHeader(name = "X-User-Id") String userId
+    ) {
+        return ResponseEntity.ok()
+            .contentType(MediaType.TEXT_HTML)
+            .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"skill-report.html\"")
+            .body(queryService.nodeReport(id, nodeId, userId));
     }
 
     /** Latest saved notification defaults, restricted to the execution's triggering user. */
     @GetMapping("/api/skill-flow-executions/{id}/notifications/recipients")
-    public NotifySettingsDto getNotificationRecipients(@PathVariable(name = "id") Long id,
-                                                       @RequestHeader(name = "X-User-Id") String userId) {
+    public NotifySettingsDto getNotificationRecipients(
+        @PathVariable(name = "id") Long id,
+        @RequestHeader(name = "X-User-Id") String userId
+    ) {
         var execution = queryService.requireOwner(id, userId);
         var flow = mapper.selectFlowById(execution.getFlowId());
         if (flow == null || flow.getDeletedAt() != null) {
             throw new IllegalStateException("FlowNotFound: " + execution.getFlowId());
         }
+        if (execution.getBatchId() != null) {
+            var config = teamReports.config(flow);
+            var target =
+                config == null
+                    ? null
+                    : config
+                          .targets()
+                          .stream()
+                          .filter(t -> java.util.Objects.equals(t.teamId(), execution.getTeamId()))
+                          .findFirst()
+                          .orElse(null);
+            // 已删除的对象仍保留执行快照，支持单次补发。
+            var to =
+                target == null
+                    ? com.agentscopea2a.v2.skillManager.notification.NotificationReceivers.parse(
+                          execution.getNotifyReceiversSnapshot()
+                      )
+                    : target.to();
+            var cc =
+                target == null
+                    ? com.agentscopea2a.v2.skillManager.notification.NotificationReceivers.parse(
+                          execution.getCcReceiversSnapshot()
+                      )
+                    : target.cc();
+            return new NotifySettingsDto(
+                to,
+                List.of("CHAT", "MANUAL", "AUTO_METRIC"),
+                target == null ? execution.getNotifyEnabledSnapshot() : target.notifyEnabled(),
+                java.util.Map.of(),
+                cc,
+                java.util.Map.of(),
+                target == null ? execution.getNotifyBodyTemplateSnapshot() : target.notifyBodyTemplate(),
+                flow.getName(),
+                FlowReportNaming.notificationTitle(execution),
+                FlowReportNaming.value(execution, "dev_dept"),
+                FlowReportNaming.value(execution, "stat_group")
+            );
+        }
         var settings = definitionService.getNotifySettings(flow.getId(), flow.getCreatedBy());
-        return new NotifySettingsDto(settings.notifyReceivers(), settings.notifyReceiverTriggers(),
-                settings.notifyEnabled(), settings.notifyReceiversByTrigger(), settings.ccReceivers(),
-                settings.ccReceiversByTrigger(), flow.getNotifyBodyTemplate(), flow.getName(),
-                FlowReportNaming.datedTitle(execution.getFlowName(), execution));
+        return new NotifySettingsDto(
+            settings.notifyReceivers(),
+            settings.notifyReceiverTriggers(),
+            settings.notifyEnabled(),
+            settings.notifyReceiversByTrigger(),
+            settings.ccReceivers(),
+            settings.ccReceiversByTrigger(),
+            flow.getNotifyBodyTemplate(),
+            flow.getName(),
+            FlowReportNaming.notificationTitle(execution)
+        );
     }
+
     /** 手动重发该次执行完成通知(仅终态执行可用)。 */
     @PostMapping("/api/skill-flow-executions/{id}/notifications/resend")
-    public void resend(@PathVariable(name = "id") Long id,
-                       @RequestHeader(name = "X-User-Id") String userId,
-                       @RequestBody(required = false) com.agentscopea2a.v2.skillManager.dto.ManualNotificationSendRequest request) {
+    public void resend(
+        @PathVariable(name = "id") Long id,
+        @RequestHeader(name = "X-User-Id") String userId,
+        @RequestBody(required = false) com.agentscopea2a.v2.skillManager.dto.ManualNotificationSendRequest request
+    ) {
         if (request != null && !Boolean.TRUE.equals(request.confirmed())) {
             throw new IllegalArgumentException("NotificationConfirmationRequired: 请先确认收件人");
         }
         queryService.requireOwner(id, userId);
-        completionService.resend(mapper.selectFlowExecutionById(id), request == null ? null : request.notifyReceivers(),
-                request == null ? null : request.ccReceivers(), request == null ? null : request.notifyBodyTemplate());
+        completionService.resend(
+            mapper.selectFlowExecutionById(id),
+            request == null ? null : request.notifyReceivers(),
+            request == null ? null : request.ccReceivers(),
+            request == null ? null : request.notifyBodyTemplate()
+        );
     }
 
     /**
@@ -307,37 +545,46 @@ public class SkillFlowController {
      */
     @GetMapping("/api/skill-flow-executions/{id}/notifications/test-failure")
     public java.util.Map<String, Object> testFailureNotification(
-            @PathVariable(name = "id") Long id,
-            @RequestHeader(name = "X-User-Id") String userId) {
+        @PathVariable(name = "id") Long id,
+        @RequestHeader(name = "X-User-Id") String userId
+    ) {
         var execution = queryService.requireOwner(id, userId);
-        if (execution.getStatus() != com.agentscopea2a.v2.skillManager.entity.FlowExecutionStatus.FAILED
-                && execution.getStatus() != com.agentscopea2a.v2.skillManager.entity.FlowExecutionStatus.PARTIAL_SUCCESS) {
+        if (
+            execution.getStatus() != com.agentscopea2a.v2.skillManager.entity.FlowExecutionStatus.FAILED &&
+            execution.getStatus() != com.agentscopea2a.v2.skillManager.entity.FlowExecutionStatus.PARTIAL_SUCCESS
+        ) {
             throw new IllegalStateException("FlowFailureNotificationTestRequiresFailedExecution: " + id);
         }
         completionService.resend(execution);
         return java.util.Map.of("executionId", id, "status", "QUEUED", "message", "失败通知已加入发送队列");
     }
+
     @PostMapping("/api/skill-flow-executions/{id}/summary/retry")
     public void retrySummary(@PathVariable Long id, @RequestHeader(name = "X-User-Id") String userId) {
-        queryService.requireOwner(id, userId); coordinator.retrySummary(id);
+        queryService.requireOwner(id, userId);
+        coordinator.retrySummary(id);
     }
 
     @PostMapping("/api/skill-flow-executions/{id}/nodes/{nodeId}/retry")
-    public void retryNode(@PathVariable Long id, @PathVariable Long nodeId, @RequestHeader(name = "X-User-Id") String userId) {
-        queryService.requireOwner(id, userId); coordinator.retryNode(id, nodeId);
+    public void retryNode(
+        @PathVariable Long id,
+        @PathVariable Long nodeId,
+        @RequestHeader(name = "X-User-Id") String userId
+    ) {
+        queryService.requireOwner(id, userId);
+        coordinator.retryNode(id, nodeId);
     }
 
     /** 批量重跑该次执行的全部失败 Skill 节点(FAILED/BLOCKED),按原执行顺序重新执行。 */
     @PostMapping("/api/skill-flow-executions/{id}/nodes/retry-failed")
-    public void retryFailedNodes(@PathVariable(name = "id") Long id,
-                                 @RequestHeader(name = "X-User-Id") String userId) {
-        queryService.requireOwner(id, userId); coordinator.retryFailedNodes(id);
+    public void retryFailedNodes(@PathVariable(name = "id") Long id, @RequestHeader(name = "X-User-Id") String userId) {
+        queryService.requireOwner(id, userId);
+        coordinator.retryFailedNodes(id);
     }
 
     /** 终止该次执行(仅触发人本人):正在执行的节点跑完后结果被丢弃,后续节点不再执行,流程落 CANCELLED。 */
     @PostMapping("/api/skill-flow-executions/{id}/cancel")
-    public void cancel(@PathVariable(name = "id") Long id,
-                       @RequestHeader(name = "X-User-Id") String userId) {
+    public void cancel(@PathVariable(name = "id") Long id, @RequestHeader(name = "X-User-Id") String userId) {
         queryService.requireOwner(id, userId);
         executionService.cancel(id);
     }

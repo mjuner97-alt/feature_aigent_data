@@ -1,11 +1,10 @@
 package com.agentscopea2a.v2.skillManager.entity;
 
+import java.time.LocalDateTime;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-
-import java.time.LocalDateTime;
 
 /**
  * Skill Flow(多 Skill 编排流)定义表实体。
@@ -16,8 +15,10 @@ import java.time.LocalDateTime;
 @NoArgsConstructor
 @AllArgsConstructor
 public class SkillFlow {
+
     private Long id;
     private Long typeId;
+    private String teamReportJson;
     private Integer priority;
     private String code;
     private String name;

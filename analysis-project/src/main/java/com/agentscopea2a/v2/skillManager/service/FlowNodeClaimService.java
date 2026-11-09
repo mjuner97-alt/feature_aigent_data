@@ -5,13 +5,12 @@ import com.agentscopea2a.v2.skillManager.entity.FlowNodeExecutionStatus;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowExecution;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowNodeExecution;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.time.LocalDateTime;
 import java.util.EnumSet;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Skill Flow 节点认领服务:工作线程执行节点前的并发仲裁。
@@ -29,12 +28,18 @@ public class FlowNodeClaimService {
     private static final Logger log = LoggerFactory.getLogger(FlowNodeClaimService.class);
 
     /** 允许认领节点的流程状态。 */
-    private static final EnumSet<FlowExecutionStatus> RUNNABLE_EXECUTION_STATUSES =
-            EnumSet.of(FlowExecutionStatus.QUEUED, FlowExecutionStatus.RUNNING);
+    private static final EnumSet<FlowExecutionStatus> RUNNABLE_EXECUTION_STATUSES = EnumSet.of(
+        FlowExecutionStatus.QUEUED,
+        FlowExecutionStatus.RUNNING
+    );
 
     private final SkillFlowMapper mapper;
+
     @org.springframework.beans.factory.annotation.Autowired
     private FlowSchedulerGuard schedulerGuard;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private TeamReportService teamReports;
 
     public FlowNodeClaimService(SkillFlowMapper mapper) {
         this.mapper = mapper;
@@ -52,20 +57,33 @@ public class FlowNodeClaimService {
             return false;
         }
         if (!runnable(node, now)) {
-            log.warn("Long task claim rejected: node not runnable, nodeId={}, status={}, leaseExpiresAt={}, nextRunAt={}, attemptCount={}, maxAttempts={}",
-                    nodeId, node.getStatus(), node.getLeaseExpiresAt(), node.getNextRunAt(),
-                    node.getAttemptCount(), node.getMaxAttempts());
+            log.warn(
+                "Long task claim rejected: node not runnable, nodeId={}, status={}, leaseExpiresAt={}, nextRunAt={}, attemptCount={}, maxAttempts={}",
+                nodeId,
+                node.getStatus(),
+                node.getLeaseExpiresAt(),
+                node.getNextRunAt(),
+                node.getAttemptCount(),
+                node.getMaxAttempts()
+            );
             return false;
+        }
+        SkillFlowExecution candidate = mapper.selectFlowExecutionById(node.getFlowExecutionId());
+        if (candidate != null && candidate.getBatchId() != null) {
+            if (candidate.getStatus().terminal() || !teamReports.mayRun(candidate)) return false;
         }
         // 行锁锁流程,保证同一流程的并发计数判断原子
         SkillFlowExecution execution = mapper.selectFlowExecutionForUpdate(node.getFlowExecutionId());
         // Recheck after candidate selection and before any task mutation. Manual/chat
         // execution must not depend on scheduler IP configuration availability.
-        if (execution != null && execution.getTriggerType() == com.agentscopea2a.v2.skillManager.entity.FlowTriggerType.AUTO_METRIC
-                && !schedulerGuard.isAllowed()) return false;
+        if (
+            execution != null &&
+            execution.getTriggerType() == com.agentscopea2a.v2.skillManager.entity.FlowTriggerType.AUTO_METRIC &&
+            !schedulerGuard.isAllowed()
+        ) return false;
         // 兼容旧版本留下的矛盾状态：单节点重跑已入队，但流程仍停留在终态。
         // 发现可运行节点即说明汇总已经失效，先恢复流程再继续认领。
-        if (execution != null && execution.getStatus().terminal()) {
+        if (execution != null && execution.getBatchId() == null && execution.getStatus().terminal()) {
             execution.setStatus(FlowExecutionStatus.RUNNING);
             execution.setSummaryJson(null);
             execution.setReportPath(null);
@@ -77,15 +95,23 @@ public class FlowNodeClaimService {
             return false;
         }
         if (!RUNNABLE_EXECUTION_STATUSES.contains(execution.getStatus())) {
-            log.warn("Long task claim rejected: execution status={}, executionId={}, nodeId={}",
-                    execution.getStatus(), execution.getId(), nodeId);
+            log.warn(
+                "Long task claim rejected: execution status={}, executionId={}, nodeId={}",
+                execution.getStatus(),
+                execution.getId(),
+                nodeId
+            );
             return false;
         }
-        int limit = execution.getMaxParallelismSnapshot() == null
-                ? 1 : Math.max(1, execution.getMaxParallelismSnapshot());
+        int limit =
+            execution.getMaxParallelismSnapshot() == null ? 1 : Math.max(1, execution.getMaxParallelismSnapshot());
         if (mapper.countActiveRunningNodes(execution.getId(), now) >= limit) {
-            log.warn("Long task claim rejected: parallelism limit, executionId={}, nodeId={}, limit={}",
-                    execution.getId(), nodeId, limit);
+            log.warn(
+                "Long task claim rejected: parallelism limit, executionId={}, nodeId={}, limit={}",
+                execution.getId(),
+                nodeId,
+                limit
+            );
             return false;
         }
         int updated = mapper.claimNode(nodeId, owner, expiresAt, now);
@@ -108,14 +134,15 @@ public class FlowNodeClaimService {
 
     /** 节点是否可被认领:状态允许 + 租约已释放/过期 + 重试退避时间已到;租约过期的 RUNNING 重认领还受尝试次数上限约束。 */
     private boolean runnable(SkillFlowNodeExecution node, LocalDateTime now) {
-        boolean eligibleStatus = node.getStatus() == FlowNodeExecutionStatus.QUEUED
-                || node.getStatus() == FlowNodeExecutionStatus.RETRY_WAIT
-                || (node.getStatus() == FlowNodeExecutionStatus.RUNNING
-                    && node.getAttemptCount() != null && node.getMaxAttempts() != null
-                    && node.getAttemptCount() < node.getMaxAttempts());
+        boolean eligibleStatus =
+            node.getStatus() == FlowNodeExecutionStatus.QUEUED ||
+            node.getStatus() == FlowNodeExecutionStatus.RETRY_WAIT ||
+            (node.getStatus() == FlowNodeExecutionStatus.RUNNING &&
+                node.getAttemptCount() != null &&
+                node.getMaxAttempts() != null &&
+                node.getAttemptCount() < node.getMaxAttempts());
         boolean leaseExpired = node.getLeaseExpiresAt() == null || node.getLeaseExpiresAt().isBefore(now);
         boolean retryDue = node.getNextRunAt() == null || !node.getNextRunAt().isAfter(now);
         return eligibleStatus && leaseExpired && retryDue;
     }
 }
-

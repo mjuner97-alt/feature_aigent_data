@@ -7,12 +7,11 @@ import com.agentscopea2a.v2.skillManager.entity.SkillFlowNodeExecution;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowNodeMetric;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowTrigger;
 import com.agentscopea2a.v2.skillManager.entity.SkillMetricReadiness;
-import org.apache.ibatis.annotations.Mapper;
-import org.apache.ibatis.annotations.Param;
-
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
 
 /**
  * 技能流程持久化入口。
@@ -28,11 +27,43 @@ import java.util.List;
  */
 @Mapper
 public interface SkillFlowMapper {
+    List<SkillFlowNode> selectObjectNodesByFlowId(@Param("flowId") Long flowId);
 
-    List<com.agentscopea2a.v2.skillManager.dto.SkillFlowSummaryDto> selectFlowPage(@Param("ownerUserId") String ownerUserId, @Param("enabled") Boolean enabled, @Param("keyword") String keyword, @Param("createdBys") java.util.List<String> createdBys, @Param("typeId") Long typeId, @Param("userId") String userId, @Param("offset") long offset, @Param("limit") int limit);
+    List<java.util.Map<String, Object>> selectManualBatchSummaries(@Param("flowIds") List<Long> flowIds);
+
+    @org.apache.ibatis.annotations.Select(
+        "SELECT * FROM skill_flow_execution WHERE flow_id=#{flowId} AND batch_id=#{batchId} ORDER BY id"
+    )
+    @org.apache.ibatis.annotations.ResultMap("ExecutionMap")
+    List<SkillFlowExecution> selectObjectBatch(@Param("flowId") Long flowId, @Param("batchId") String batchId);
+
+    @org.apache.ibatis.annotations.Select(
+        "SELECT * FROM skill_flow_execution WHERE batch_id IS NOT NULL AND status='CANCEL_REQUESTED'"
+    )
+    @org.apache.ibatis.annotations.ResultMap("ExecutionMap")
+    List<SkillFlowExecution> selectCancellingObjectExecutions();
+
+    List<com.agentscopea2a.v2.skillManager.dto.SkillFlowSummaryDto> selectFlowPage(
+        @Param("ownerUserId") String ownerUserId,
+        @Param("enabled") Boolean enabled,
+        @Param("keyword") String keyword,
+        @Param("createdBys") java.util.List<String> createdBys,
+        @Param("typeId") Long typeId,
+        @Param("userId") String userId,
+        @Param("offset") long offset,
+        @Param("limit") int limit
+    );
     SkillFlowExecution selectFlowExecutionById(@Param("id") Long id);
-    long countFlowPage(@Param("ownerUserId") String ownerUserId, @Param("enabled") Boolean enabled, @Param("keyword") String keyword, @Param("createdBys") java.util.List<String> createdBys, @Param("typeId") Long typeId);
-    List<com.agentscopea2a.v2.skillManager.dto.FlowMetricSummaryRow> selectPageMetricRows(@Param("flowIds") List<Long> flowIds);
+    long countFlowPage(
+        @Param("ownerUserId") String ownerUserId,
+        @Param("enabled") Boolean enabled,
+        @Param("keyword") String keyword,
+        @Param("createdBys") java.util.List<String> createdBys,
+        @Param("typeId") Long typeId
+    );
+    List<com.agentscopea2a.v2.skillManager.dto.FlowMetricSummaryRow> selectPageMetricRows(
+        @Param("flowIds") List<Long> flowIds
+    );
     // ==================== 流程定义 ====================
 
     /** 新建流程:写入编码/名称/任务问题/汇总模板/排程星期/并发数/通知开关,回填自增 id。 */
@@ -48,8 +79,12 @@ public interface SkillFlowMapper {
     SkillFlow selectFlowByName(@Param("name") String name);
 
     /** 流程管理列表:按所有者/启用状态/名称编码关键字筛选,更新时间倒序,已删除不返回。 */
-    List<SkillFlow> selectFlows(@Param("ownerUserId") String ownerUserId, @Param("enabled") Boolean enabled,
-                                @Param("keyword") String keyword, @Param("createdBy") String createdBy);
+    List<SkillFlow> selectFlows(
+        @Param("ownerUserId") String ownerUserId,
+        @Param("enabled") Boolean enabled,
+        @Param("keyword") String keyword,
+        @Param("createdBy") String createdBy
+    );
 
     /**
      * 按指标反查启用中的流程(指标 → 节点 → 流程 三表 JOIN 去重)。
@@ -82,10 +117,12 @@ public interface SkillFlowMapper {
 
     /** 只更新通知收件人配置(通知设置抽屉专用):全量替换名单与触发类型范围,空串即清空;
      *  notifyEnabled 为完成通知开关,null = 保持原值不动。 */
-    void updateFlowNotifySettings(@Param("id") Long id,
-                                  @Param("notifyReceivers") String notifyReceivers,
-                                  @Param("notifyReceiverTriggers") String notifyReceiverTriggers,
-                                  @Param("notifyEnabled") Boolean notifyEnabled);
+    void updateFlowNotifySettings(
+        @Param("id") Long id,
+        @Param("notifyReceivers") String notifyReceivers,
+        @Param("notifyReceiverTriggers") String notifyReceiverTriggers,
+        @Param("notifyEnabled") Boolean notifyEnabled
+    );
 
     /** 软删除:置 deleted_at 并同时停用;历史执行记录保留,仅不可再被触发/修改。 */
     void softDeleteFlow(@Param("id") Long id);
@@ -116,16 +153,13 @@ public interface SkillFlowMapper {
     // ==================== 触发规则 ====================
 
     /**
-     * 新建触发词。normalizedKeyword 是忽略输入格式差异后的全局唯一匹配键,
-     * priority 决定同一条消息命中多个流程时的取舍。
+     * 新建触发词。normalizedKeyword 是忽略输入格式差异后的流程内唯一匹配键，
+     * priority 决定聊天候选列表的排序。
      */
     void insertTrigger(SkillFlowTrigger trigger);
 
     /** 查流程全部触发词,按优先级降序(编辑页回显)。 */
     List<SkillFlowTrigger> selectTriggersByFlowId(@Param("flowId") Long flowId);
-
-    /** 聊天入口用:按规范化关键词精确匹配,且所属流程须未删除。 */
-    SkillFlowTrigger selectTriggerByNormalizedKeyword(@Param("normalizedKeyword") String normalizedKeyword);
 
     /** 删除流程的全部触发词(编辑流程"先清后建")。 */
     void deleteTriggersByFlowId(@Param("flowId") Long flowId);
@@ -156,12 +190,13 @@ public interface SkillFlowMapper {
     void insertMetricReadiness(SkillMetricReadiness readiness);
 
     /** 查某指标某数据日的就绪记录;null 或 status != READY 即视为未就绪(门控卡住)。 */
-    SkillMetricReadiness selectMetricReadiness(@Param("metricId") Long metricId,
-                                               @Param("dataDate") LocalDate dataDate);
+    SkillMetricReadiness selectMetricReadiness(@Param("metricId") Long metricId, @Param("dataDate") LocalDate dataDate);
 
     /** 批量查一组指标在指定日期已 READY 的记录,用于就绪进度展示。 */
-    List<SkillMetricReadiness> selectReadyMetrics(@Param("metricIds") List<Long> metricIds,
-                                                  @Param("dataDate") LocalDate dataDate);
+    List<SkillMetricReadiness> selectReadyMetrics(
+        @Param("metricIds") List<Long> metricIds,
+        @Param("dataDate") LocalDate dataDate
+    );
 
     // ==================== 流程实例与节点实例 ====================
 
@@ -199,13 +234,71 @@ public interface SkillFlowMapper {
     SkillFlowExecution selectActiveExecution(@Param("guardKey") String guardKey);
 
     /** 查某次会话最近关联的流程实例，优先返回仍持有防重键的活动实例;用于"直接回答"时取消最近执行。 */
-    SkillFlowExecution selectLatestConversationExecution(@Param("userId") String userId, @Param("conversationId") String conversationId);
+    SkillFlowExecution selectLatestConversationExecution(
+        @Param("userId") String userId,
+        @Param("conversationId") String conversationId
+    );
 
     /** 执行记录管理列表:按触发用户/状态筛选,最多返回最近 500 条。 */
-    List<SkillFlowExecution> selectExecutions(@Param("status") String status, @Param("createdBy") String createdBy, @Param("keyword") String keyword, @Param("userId") String userId, @Param("offset") int offset, @Param("limit") int limit);
-    long countExecutions(@Param("status") String status, @Param("createdBy") String createdBy, @Param("keyword") String keyword, @Param("userId") String userId);
-    List<SkillFlowExecution> selectExecutionsBySource(@Param("status") String status, @Param("createdBy") String createdBy, @Param("keyword") String keyword, @Param("userId") String userId, @Param("offset") int offset, @Param("limit") int limit, @Param("source") String source, @Param("triggerType") String triggerType);
-    long countExecutionsBySource(@Param("status") String status, @Param("createdBy") String createdBy, @Param("keyword") String keyword, @Param("userId") String userId, @Param("source") String source, @Param("triggerType") String triggerType);
+    List<SkillFlowExecution> selectExecutions(
+        @Param("status") String status,
+        @Param("createdBy") String createdBy,
+        @Param("keyword") String keyword,
+        @Param("userId") String userId,
+        @Param("offset") int offset,
+        @Param("limit") int limit
+    );
+    long countExecutions(
+        @Param("status") String status,
+        @Param("createdBy") String createdBy,
+        @Param("keyword") String keyword,
+        @Param("userId") String userId
+    );
+    List<SkillFlowExecution> selectExecutionsBySource(
+        @Param("status") String status,
+        @Param("createdBy") String createdBy,
+        @Param("keyword") String keyword,
+        @Param("userId") String userId,
+        @Param("offset") int offset,
+        @Param("limit") int limit,
+        @Param("source") String source,
+        @Param("triggerType") String triggerType,
+        @Param("typeId") Long typeId
+    );
+
+    default List<SkillFlowExecution> selectExecutionsBySource(
+        @Param("status") String status,
+        @Param("createdBy") String createdBy,
+        @Param("keyword") String keyword,
+        @Param("userId") String userId,
+        @Param("offset") int offset,
+        @Param("limit") int limit,
+        @Param("source") String source,
+        @Param("triggerType") String triggerType
+    ) {
+        return selectExecutionsBySource(status, createdBy, keyword, userId, offset, limit, source, triggerType, null);
+    }
+
+    long countExecutionsBySource(
+        @Param("status") String status,
+        @Param("createdBy") String createdBy,
+        @Param("keyword") String keyword,
+        @Param("userId") String userId,
+        @Param("source") String source,
+        @Param("triggerType") String triggerType,
+        @Param("typeId") Long typeId
+    );
+
+    default long countExecutionsBySource(
+        @Param("status") String status,
+        @Param("createdBy") String createdBy,
+        @Param("keyword") String keyword,
+        @Param("userId") String userId,
+        @Param("source") String source,
+        @Param("triggerType") String triggerType
+    ) {
+        return countExecutionsBySource(status, createdBy, keyword, userId, source, triggerType, null);
+    }
 
     /** 扫描仍在等待依赖指标就绪(WAITING_METRICS)的流程实例,供门控重算和跨天超时兜底使用。 */
     List<SkillFlowExecution> selectWaitingExecutions(@Param("allowAuto") boolean allowAuto);
@@ -217,9 +310,12 @@ public interface SkillFlowMapper {
     SkillFlowNodeExecution selectNodeExecution(@Param("id") Long id);
 
     /** 在首次执行前冻结实际参数；仅当前尝试的租约持有者可写，且只写一次。 */
-    int freezeNodeScriptParams(@Param("id") Long id, @Param("paramsJson") String paramsJson,
-                               @Param("expectedAttempt") int expectedAttempt,
-                               @Param("expectedLeaseOwner") String expectedLeaseOwner);
+    int freezeNodeScriptParams(
+        @Param("id") Long id,
+        @Param("paramsJson") String paramsJson,
+        @Param("expectedAttempt") int expectedAttempt,
+        @Param("expectedLeaseOwner") String expectedLeaseOwner
+    );
 
     // ==================== 节点调度、worker 租约与并发抢占 ====================
 
@@ -229,10 +325,16 @@ public interface SkillFlowMapper {
      * {@link #claimNode(Long, String, LocalDateTime, LocalDateTime)} 原子抢占后才能执行。
      * 每轮最多取 100 个,防止极端积压时单轮扫描刷库。
      */
-    List<SkillFlowNodeExecution> selectRunnableNodes(@Param("now") LocalDateTime now, @Param("allowAuto") boolean allowAuto);
+    List<SkillFlowNodeExecution> selectRunnableNodes(
+        @Param("now") LocalDateTime now,
+        @Param("allowAuto") boolean allowAuto
+    );
 
     /** 查询租约已经过期且重试次数耗尽的节点(worker 已失联,不能重试),供兜底扫描判 FAILED 推进流程。 */
-    List<SkillFlowNodeExecution> selectExpiredExhaustedNodes(@Param("now") LocalDateTime now, @Param("allowAuto") boolean allowAuto);
+    List<SkillFlowNodeExecution> selectExpiredExhaustedNodes(
+        @Param("now") LocalDateTime now,
+        @Param("allowAuto") boolean allowAuto
+    );
 
     /**
      * 服务重启后回收其他 worker 遗留的 RUNNING 节点，并立即放回重试队列,
@@ -240,7 +342,11 @@ public interface SkillFlowMapper {
      *
      * @return 被回收的节点数量
      */
-    int recoverAbandonedRunningNodes(@Param("owner") String owner, @Param("now") LocalDateTime now, @Param("allowAuto") boolean allowAuto);
+    int recoverAbandonedRunningNodes(
+        @Param("owner") String owner,
+        @Param("now") LocalDateTime now,
+        @Param("allowAuto") boolean allowAuto
+    );
 
     /**
      * 原子抢占一个候选节点：切换为 RUNNING、增加尝试次数并写入 worker 租约,
@@ -248,7 +354,12 @@ public interface SkillFlowMapper {
      *
      * @return {@code 1} 表示抢占成功；{@code 0} 表示节点已被其他 worker 抢占或已不可运行
      */
-    int claimNode(@Param("id") Long id, @Param("owner") String owner, @Param("expiresAt") LocalDateTime expiresAt, @Param("now") LocalDateTime now);
+    int claimNode(
+        @Param("id") Long id,
+        @Param("owner") String owner,
+        @Param("expiresAt") LocalDateTime expiresAt,
+        @Param("now") LocalDateTime now
+    );
 
     /** 统计租约仍有效的运行中节点，用于判断流程当前占用的并行度。 */
     int countActiveRunningNodes(@Param("flowExecutionId") Long flowExecutionId, @Param("now") LocalDateTime now);
@@ -275,9 +386,11 @@ public interface SkillFlowMapper {
      *
      * @return {@code 1} 表示提交成功；{@code 0} 表示当前 worker 已失去该节点的更新权,结果应丢弃
      */
-    int completeNodeAttempt(@Param("node") SkillFlowNodeExecution node,
-                            @Param("expectedAttempt") int expectedAttempt,
-                            @Param("expectedLeaseOwner") String expectedLeaseOwner);
+    int completeNodeAttempt(
+        @Param("node") SkillFlowNodeExecution node,
+        @Param("expectedAttempt") int expectedAttempt,
+        @Param("expectedLeaseOwner") String expectedLeaseOwner
+    );
 
     /** 新建一次尝试审计记录(状态 RUNNING);attempt_no 须避开历史记录(与节点联合唯一)。 */
     void insertAttempt(com.agentscopea2a.v2.skillManager.entity.SkillFlowNodeAttempt attempt);
@@ -309,7 +422,9 @@ public interface SkillFlowMapper {
     // ==================== 流程完成通知 ====================
 
     /** 查执行实例的通知投递记录(倒序),详情页展示通知状态/排查发送失败原因。 */
-    List<com.agentscopea2a.v2.skillManager.entity.SkillFlowNotification> selectNotifications(@Param("executionId") Long executionId);
+    List<com.agentscopea2a.v2.skillManager.entity.SkillFlowNotification> selectNotifications(
+        @Param("executionId") Long executionId
+    );
 
     /** 新建通知投递记录,delivery_key 全局唯一防重(初次完成通知为 flow:{executionId}:INITIAL)。 */
     void insertNotification(com.agentscopea2a.v2.skillManager.entity.SkillFlowNotification notification);

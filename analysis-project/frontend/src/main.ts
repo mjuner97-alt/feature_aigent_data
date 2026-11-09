@@ -45,6 +45,7 @@ import DimensionAliasPage from './pages/DimensionAliasPage.vue';
 import ChatWorkspacePage from './pages/ChatWorkspacePage.vue';
 import SessionHistoryPage from './pages/SessionHistoryPage.vue';
 import { isLoggedIn, isAdmin } from './utils/auth';
+import { thirdPartyCallbackLocation } from './utils/thirdPartyAuth';
 
 // 🌟 新增：引入比对结果详情页
 import CompareResultDetailPage from './pages/skill/CompareResultDetailPage.vue';
@@ -153,13 +154,19 @@ const router = createRouter({
 
 // 路由守卫:未登录时跳转到 /login
 router.beforeEach((to, _from, next) => {
+  // A provider may return directly to a business page, including a public report route.
+  const callback = thirdPartyCallbackLocation(to.fullPath);
+  if (callback && (to.path !== '/login' || to.query.userId == null || to.query.token != null)) {
+    next(callback);
+    return;
+  }
   // 中转页负责保留执行编号并处理登录回跳，不能先被通用守卫重定向。
   if (to.path === '/login' || to.path === '/notification-link' || to.path.startsWith('/report/flows/')) {
     next();
     return;
   }
   if (!isLoggedIn()) {
-    next('/login');
+    next({ path: '/login', query: { returnTo: to.fullPath } });
     return;
   }
   if (to.matched.some(record => record.meta.requiresAdmin) && !isAdmin()) {

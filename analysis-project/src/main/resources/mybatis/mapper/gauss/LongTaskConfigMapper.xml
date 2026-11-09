@@ -31,7 +31,7 @@
     <!-- 删除前由 Service 检查引用关系。 -->
     <delete id="deleteType">DELETE FROM skill_flow_type WHERE id=#{id}</delete>
     <!-- 只统计未删除流程，避免误阻止类型删除。 -->
-    <select id="countFlowsByTypeId" resultType="long">SELECT COUNT(*) FROM skill_flow WHERE type_id=#{typeId} AND deleted_at IS NULL</select>
+    <select id="countFlowsByTypeId" resultType="long">SELECT COUNT(*) FROM skill_flow WHERE (type_id=#{typeId} OR legacy_queue_type_id=#{typeId}) AND deleted_at IS NULL</select>
     <!-- 标签查询和新增。 -->
     <select id="selectTags" resultMap="TagMap">SELECT * FROM skill_flow_tag ORDER BY name,id</select>
     <select id="selectTagByName" resultMap="TagMap">SELECT * FROM skill_flow_tag WHERE name=#{name}</select>

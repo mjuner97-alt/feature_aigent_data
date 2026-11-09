@@ -8,7 +8,18 @@ import { computed, ref, onMounted, onUnmounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { Download, EditPen, View } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { downloadExecutionFile, getExecutionReportContent, getExecution, listJobPage, listExecutionCenterPage, deleteJob, retryExecution, triggerJob, updateJob, viewExecutionFile } from '../../api/skillJob';
+import {
+  downloadExecutionFile,
+  getExecutionReportContent,
+  getExecution,
+  listJobPage,
+  listExecutionCenterPage,
+  deleteJob,
+  retryExecution,
+  triggerJob,
+  updateJob,
+  viewExecutionFile,
+} from '../../api/skillJob';
 import { copyReportContent } from '../../utils/reportClipboard';
 import { currentUserId } from '../../api/skill';
 import { isAdmin } from '../../utils/auth';
@@ -17,6 +28,7 @@ import SkillJobExecutionDrawer from '../../components/SkillJobExecutionDrawer.vu
 import SkillJobNotificationDrawer from '../../components/SkillJobNotificationDrawer.vue';
 import SkillFlowList from '../../components/SkillFlowList.vue';
 import SkillFlowExecutionList from '../../components/SkillFlowExecutionList.vue';
+import type { LongTaskType } from '../../api/longTaskConfig';
 
 const me = currentUserId();
 const route = useRoute();
@@ -27,7 +39,7 @@ function isOwner(job: SkillJobSummary) {
 
 // 创建人展示:有姓名时显示"姓名 (userId)",否则仅 userId
 function creatorLabel(job: SkillJobSummary): string {
-  return job.createdByName ? `${job.createdByName} (${job.createdBy})` : (job.createdBy || '-');
+  return job.createdByName ? `${job.createdByName} (${job.createdBy})` : job.createdBy || '-';
 }
 
 const jobs = ref<SkillJobSummary[]>([]);
@@ -38,14 +50,21 @@ const enabledFilter = ref<boolean | null>(null);
 const showSkillFlow = true;
 type JobTab = 'manage' | 'flows' | 'execution' | 'flow-execution';
 const requestedTab = route.query.tab;
-const activeTab = ref<JobTab>(['manage', 'flows', 'execution', 'flow-execution'].includes(String(requestedTab)) ? requestedTab as JobTab : 'manage');
+const activeTab = ref<JobTab>(
+  ['manage', 'flows', 'execution', 'flow-execution'].includes(String(requestedTab))
+    ? (requestedTab as JobTab)
+    : 'manage'
+);
 const visibilityScope = ref<'mine' | 'all'>('mine');
 const scopeCreatedBy = ref('');
 const flowKeyword = ref('');
 const flowEnabledFilter = ref<boolean | null>(null);
+const flowTypeId = ref<number | null>(null),
+  flowTypes = ref<LongTaskType[]>([]);
 const flowListRef = ref<InstanceType<typeof SkillFlowList> | null>(null);
 const flowExecutionListRef = ref<InstanceType<typeof SkillFlowExecutionList> | null>(null);
 const flowExecutionKeyword = ref('');
+const flowExecutionTypeId = ref<number | null>(null);
 const flowExecutionTriggerType = ref('');
 const centerExecutions = ref<SkillJobExecutionSummary[]>([]);
 const executionLoading = ref(false);
@@ -59,16 +78,28 @@ const retryingExecutions = ref<Set<number>>(new Set());
 let executionTimer: ReturnType<typeof setInterval> | undefined;
 // “我的”范围由后端按 owner 或 skill_flow_executor 授权关系计算，不能再叠加 createdBy=当前用户，
 // 否则他人创建但授权给我的流程会被额外条件过滤掉；createdBy 仅用于“全部”范围的手动筛选。
-const effectiveCreatedBy = computed(() => visibilityScope.value === 'all' ? (scopeCreatedBy.value.trim() || undefined) : undefined);
+const effectiveCreatedBy = computed(() =>
+  visibilityScope.value === 'all' ? scopeCreatedBy.value.trim() || undefined : undefined
+);
 
 const manageTotal = ref(0);
 const executionTotal = ref(0);
 let manageRequest = 0;
 let executionRequest = 0;
-function changeManagePageSize(size: number) { managePageSize.value = size; managePage.value = 1; }
-function changeExecutionPageSize(size: number) { executionPageSize.value = size; executionPage.value = 1; }
-watch([managePage, managePageSize], () => { if (activeTab.value === 'manage') load(); });
-watch([executionPage, executionPageSize], () => { if (activeTab.value === 'execution') loadExecutionCenter(); });
+function changeManagePageSize(size: number) {
+  managePageSize.value = size;
+  managePage.value = 1;
+}
+function changeExecutionPageSize(size: number) {
+  executionPageSize.value = size;
+  executionPage.value = 1;
+}
+watch([managePage, managePageSize], () => {
+  if (activeTab.value === 'manage') load();
+});
+watch([executionPage, executionPageSize], () => {
+  if (activeTab.value === 'execution') loadExecutionCenter();
+});
 watch(activeTab, () => {
   if (activeTab.value === 'manage') load();
   if (activeTab.value === 'execution') loadExecutionCenter();
@@ -102,7 +133,10 @@ onMounted(() => {
   if (activeTab.value === 'manage') load();
   if (activeTab.value === 'execution') loadExecutionCenter();
   executionTimer = setInterval(() => {
-    if (activeTab.value === 'execution' && centerExecutions.value.some(e => e.status === 'RUNNING' || e.status === 'PENDING')) {
+    if (
+      activeTab.value === 'execution' &&
+      centerExecutions.value.some((e) => e.status === 'RUNNING' || e.status === 'PENDING')
+    ) {
       loadExecutionCenter(true);
     }
   }, 5000);
@@ -118,8 +152,12 @@ async function loadExecutionCenter(silent = false) {
   if (!silent) executionLoading.value = true;
   executionError.value = '';
   try {
-    const result = await listExecutionCenterPage({ status: executionStatusFilter.value || undefined,
-      createdBy: effectiveCreatedBy.value, page: executionPage.value, pageSize: executionPageSize.value });
+    const result = await listExecutionCenterPage({
+      status: executionStatusFilter.value || undefined,
+      createdBy: effectiveCreatedBy.value,
+      page: executionPage.value,
+      pageSize: executionPageSize.value,
+    });
     if (request !== executionRequest || activeTab.value !== 'execution') return;
     centerExecutions.value = result.items;
     executionTotal.value = result.total;
@@ -140,11 +178,16 @@ function openExecutionCenter() {
 }
 
 function filterFlows() {
-  flowListRef.value?.load(flowKeyword.value.trim(), effectiveCreatedBy.value || '', flowEnabledFilter.value ?? undefined, visibilityScope.value);
+  flowListRef.value?.load(
+    flowKeyword.value.trim(),
+    effectiveCreatedBy.value || '',
+    flowEnabledFilter.value ?? undefined,
+    visibilityScope.value
+  );
 }
 
 function createFlow() {
-  router.push('/skills/jobs/flows/new');
+  flowListRef.value?.create();
 }
 
 function openFlowExecutions() {
@@ -155,7 +198,8 @@ function refreshCurrentTab() {
   if (activeTab.value === 'manage') filterJobs();
   else if (activeTab.value === 'flows') filterFlows();
   else if (activeTab.value === 'execution') filterExecutionCenter();
-  else if (activeTab.value === 'flow-execution') flowExecutionListRef.value?.load('', effectiveCreatedBy.value || '', false, visibilityScope.value);
+  else if (activeTab.value === 'flow-execution')
+    flowExecutionListRef.value?.load('', effectiveCreatedBy.value || '', false, visibilityScope.value);
 }
 
 function filterExecutionCenter() {
@@ -176,12 +220,20 @@ function triggerLabel(triggerType: string): string {
 }
 
 function executionStatusClass(status: string): string {
-  return { RUNNING: 'st-running', PENDING: 'st-pending', SUCCESS: 'st-success', FAILED: 'st-failed', SKIPPED: 'st-off' }[status] || '';
+  return (
+    { RUNNING: 'st-running', PENDING: 'st-pending', SUCCESS: 'st-success', FAILED: 'st-failed', SKIPPED: 'st-off' }[
+      status
+    ] || ''
+  );
 }
 
 function notificationStatus(status?: string | null): string {
   if (!status) return '暂无记录';
-  return { PENDING: '等待发送', SENDING: '发送中', SUCCESS: '已提交通知平台', FAILED: '发送失败', SKIPPED: '通知未启用' }[status] || status;
+  return (
+    { PENDING: '等待发送', SENDING: '发送中', SUCCESS: '已提交通知平台', FAILED: '发送失败', SKIPPED: '通知未启用' }[
+      status
+    ] || status
+  );
 }
 
 function notificationStatusClass(status?: string | null): string {
@@ -190,7 +242,7 @@ function notificationStatusClass(status?: string | null): string {
 }
 
 function executionCreatorLabel(exec: SkillJobExecutionSummary): string {
-  return exec.createdByName ? `${exec.createdByName} (${exec.createdBy})` : (exec.createdBy || '-');
+  return exec.createdByName ? `${exec.createdByName} (${exec.createdBy})` : exec.createdBy || '-';
 }
 
 function openNotifications(exec: SkillJobExecutionSummary) {
@@ -208,7 +260,9 @@ async function copyCenterReport(exec: SkillJobExecutionSummary) {
     ElMessage.success('内容已复制，可粘贴到 Word / WPS 等支持富文本的编辑器');
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : '复制失败');
-  } finally { copying.value.delete(exec.id); }
+  } finally {
+    copying.value.delete(exec.id);
+  }
 }
 
 async function viewCenterReport(exec: SkillJobExecutionSummary) {
@@ -242,12 +296,15 @@ function editCenterReport(exec: SkillJobExecutionSummary) {
 
 async function showExecutionError(row: SkillJobExecutionSummary) {
   try {
-  const exec = await getExecution(row.id);
-  const detail = `状态：${executionStatus(exec.status)}\n开始时间：${fmtTime(exec.startedAt)}\n完成时间：${fmtTime(exec.completedAt)}\n会话 ID：${exec.conversationId || '-'}\n\n错误信息：\n${exec.errorMsg || '暂无错误详情'}`;
-  ElMessageBox.alert(detail, `执行 #${exec.id} 错误详情`, {
-    confirmButtonText: '关闭', customClass: 'execution-error-dialog',
-  });
-  } catch (error) { ElMessage.error(error instanceof Error ? error.message : '加载错误详情失败'); }
+    const exec = await getExecution(row.id);
+    const detail = `状态：${executionStatus(exec.status)}\n开始时间：${fmtTime(exec.startedAt)}\n完成时间：${fmtTime(exec.completedAt)}\n会话 ID：${exec.conversationId || '-'}\n\n错误信息：\n${exec.errorMsg || '暂无错误详情'}`;
+    ElMessageBox.alert(detail, `执行 #${exec.id} 错误详情`, {
+      confirmButtonText: '关闭',
+      customClass: 'execution-error-dialog',
+    });
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '加载错误详情失败');
+  }
 }
 
 async function retryCenterExecution(exec: SkillJobExecutionSummary) {
@@ -269,8 +326,13 @@ async function load() {
   const request = ++manageRequest;
   loading.value = true;
   try {
-    const result = await listJobPage({ enabled: enabledFilter.value ?? undefined, keyword: keyword.value.trim() || undefined,
-      createdBy: effectiveCreatedBy.value, page: managePage.value, pageSize: managePageSize.value });
+    const result = await listJobPage({
+      enabled: enabledFilter.value ?? undefined,
+      keyword: keyword.value.trim() || undefined,
+      createdBy: effectiveCreatedBy.value,
+      page: managePage.value,
+      pageSize: managePageSize.value,
+    });
     if (request !== manageRequest || activeTab.value !== 'manage') return;
     jobs.value = result.items;
     manageTotal.value = result.total;
@@ -319,7 +381,9 @@ async function trigger(id: number) {
     await triggerJob(id);
     triggerMsg.value = '已提交到执行队列';
     await loadExecutionCenter(true);
-    setTimeout(() => { triggerMsg.value = ''; }, 2000);
+    setTimeout(() => {
+      triggerMsg.value = '';
+    }, 2000);
   } catch (e) {
     alert(e instanceof Error ? e.message : '触发失败');
   } finally {
@@ -355,24 +419,106 @@ function metricTitle(job: SkillJobSummary): string {
       <h2>定时任务</h2>
       <div class="header-actions">
         <div class="scope-switch" role="group" aria-label="可见范围">
-          <button :class="{ active: visibilityScope === 'mine' }" @click="visibilityScope = 'mine'; scopeCreatedBy = ''; refreshCurrentTab()">我的</button>
-          <button :class="{ active: visibilityScope === 'all' }" @click="visibilityScope = 'all'; refreshCurrentTab()">全部</button>
+          <button
+            :class="{ active: visibilityScope === 'mine' }"
+            @click="
+              visibilityScope = 'mine';
+              scopeCreatedBy = '';
+              refreshCurrentTab();
+            "
+            >我的</button
+          >
+          <button
+            :class="{ active: visibilityScope === 'all' }"
+            @click="
+              visibilityScope = 'all';
+              refreshCurrentTab();
+            "
+            >全部</button
+          >
         </div>
-        <input v-if="visibilityScope === 'all'" v-model="scopeCreatedBy" placeholder="创建人 userId" class="search-input creator-input" @keyup.enter="refreshCurrentTab" />
-        <input v-if="activeTab === 'flows'" v-model="flowKeyword" placeholder="搜索流程名称" class="search-input" @keyup.enter="refreshCurrentTab" />
-        <select v-if="activeTab === 'flows'" v-model="flowEnabledFilter" class="filter-select" @change="filterFlows">
-          <option :value="null">全部状态</option><option :value="true">启用</option><option :value="false">禁用</option>
+        <input
+          v-if="visibilityScope === 'all'"
+          v-model="scopeCreatedBy"
+          placeholder="创建人 userId"
+          class="search-input creator-input"
+          @keyup.enter="refreshCurrentTab"
+        />
+        <input
+          v-if="activeTab === 'flows'"
+          v-model="flowKeyword"
+          placeholder="搜索流程名称"
+          class="search-input"
+          @keyup.enter="refreshCurrentTab"
+        />
+        <label v-if="activeTab === 'flows'" class="task-type-filter">
+          <select v-model="flowTypeId" class="filter-select execution-filter" aria-label="任务类型筛选">
+            <option :value="null">全部任务类型</option>
+            <option v-for="type in flowTypes" :key="type.id" :value="type.id">{{ type.name }}</option>
+          </select>
+        </label>
+        <select
+          v-if="activeTab === 'flows'"
+          v-model="flowEnabledFilter"
+          class="filter-select execution-filter"
+          @change="filterFlows"
+        >
+          <option :value="null">全部状态</option
+          ><option :value="true">启用</option
+          ><option :value="false">禁用</option>
         </select>
-        <select v-if="activeTab === 'flow-execution'" v-model="flowExecutionTriggerType" class="filter-select" aria-label="触发方式筛选">
-          <option value="">全部</option><option value="AUTO_METRIC">自动</option><option value="MANUAL">手动</option><option value="CHAT">对话</option>
+        <label v-if="activeTab === 'flow-execution'" class="task-type-filter">
+          <select
+            v-model="flowExecutionTypeId"
+            class="filter-select execution-filter"
+            aria-label="执行记录任务类型筛选"
+          >
+            <option :value="null">全部任务类型</option>
+            <option v-for="type in flowTypes" :key="type.id" :value="type.id">{{ type.name }}</option>
+          </select>
+        </label>
+        <select
+          v-if="activeTab === 'flow-execution'"
+          v-model="flowExecutionTriggerType"
+          class="filter-select execution-filter"
+          aria-label="触发方式筛选"
+        >
+          <option value="">全部触发方式</option
+          ><option value="AUTO_METRIC">自动</option
+          ><option value="MANUAL">手动</option
+          ><option value="CHAT">对话</option>
         </select>
-        <input v-if="activeTab === 'flow-execution'" v-model="flowExecutionKeyword" placeholder="搜索任务名称" class="search-input" @keyup.enter="flowExecutionListRef?.load('', effectiveCreatedBy || '', false, visibilityScope)" />
-        <input v-if="activeTab === 'manage'" v-model="keyword" placeholder="搜索任务名称" class="search-input" @keyup.enter="filterJobs" />
+        <input
+          v-if="activeTab === 'flow-execution'"
+          v-model="flowExecutionKeyword"
+          placeholder="搜索任务名称"
+          class="search-input"
+          @keyup.enter="flowExecutionListRef?.load('', effectiveCreatedBy || '', false, visibilityScope)"
+        />
+        <input
+          v-if="activeTab === 'manage'"
+          v-model="keyword"
+          placeholder="搜索任务名称"
+          class="search-input"
+          @keyup.enter="filterJobs"
+        />
         <select v-if="activeTab === 'manage'" v-model="enabledFilter" class="filter-select" @change="filterJobs">
-          <option :value="null">全部状态</option><option :value="true">启用</option><option :value="false">禁用</option>
+          <option :value="null">全部状态</option
+          ><option :value="true">启用</option
+          ><option :value="false">禁用</option>
         </select>
-        <select v-if="activeTab === 'execution'" v-model="executionStatusFilter" class="filter-select" @change="filterExecutionCenter">
-          <option value="">全部状态</option><option value="PENDING">排队中</option><option value="RUNNING">运行中</option><option value="SUCCESS">成功</option><option value="FAILED">失败</option><option value="SKIPPED">未执行</option>
+        <select
+          v-if="activeTab === 'execution'"
+          v-model="executionStatusFilter"
+          class="filter-select"
+          @change="filterExecutionCenter"
+        >
+          <option value="">全部状态</option
+          ><option value="PENDING">排队中</option
+          ><option value="RUNNING">运行中</option
+          ><option value="SUCCESS">成功</option
+          ><option value="FAILED">失败</option
+          ><option value="SKIPPED">未执行</option>
         </select>
         <template v-if="activeTab === 'manage'">
           <button class="btn primary" @click="openCreate">+ 创建任务</button>
@@ -380,20 +526,60 @@ function metricTitle(job: SkillJobSummary): string {
         <template v-else-if="activeTab === 'flows'">
           <button class="btn primary" @click="createFlow">+ 创建流程</button>
         </template>
-        <button v-if="activeTab === 'manage' || activeTab === 'flows'" class="btn ghost" @click="refreshCurrentTab">刷新</button>
-        <button v-else-if="activeTab === 'execution' || activeTab === 'flow-execution'" class="btn ghost" @click="filterExecutionCenter">刷新</button>
+        <button v-if="activeTab === 'manage' || activeTab === 'flows'" class="btn ghost" @click="refreshCurrentTab"
+          >刷新</button
+        >
+        <button
+          v-else-if="activeTab === 'execution' || activeTab === 'flow-execution'"
+          class="btn ghost"
+          @click="filterExecutionCenter"
+          >刷新</button
+        >
       </div>
     </div>
 
     <div class="job-tabs" role="tablist">
-      <button class="job-tab" :class="{ active: activeTab === 'manage' }" @click="activeTab = 'manage'">独立任务</button>
-      <button v-if="showSkillFlow" class="job-tab" :class="{ active: activeTab === 'flows' }" @click="activeTab = 'flows'">长任务流程</button>
-      <button class="job-tab" :class="{ active: activeTab === 'execution' }" @click="openExecutionCenter">执行记录</button>
-      <button v-if="showSkillFlow" class="job-tab" :class="{ active: activeTab === 'flow-execution' }" @click="activeTab = 'flow-execution'">长任务执行记录</button>
+      <button class="job-tab" :class="{ active: activeTab === 'manage' }" @click="activeTab = 'manage'"
+        >独立任务</button
+      >
+      <button
+        v-if="showSkillFlow"
+        class="job-tab"
+        :class="{ active: activeTab === 'flows' }"
+        @click="activeTab = 'flows'"
+        >长任务流程</button
+      >
+      <button class="job-tab" :class="{ active: activeTab === 'execution' }" @click="openExecutionCenter"
+        >执行记录</button
+      >
+      <button
+        v-if="showSkillFlow"
+        class="job-tab"
+        :class="{ active: activeTab === 'flow-execution' }"
+        @click="activeTab = 'flow-execution'"
+        >长任务执行记录</button
+      >
     </div>
 
-    <SkillFlowList v-if="activeTab === 'flows'" ref="flowListRef" :scope="visibilityScope" :created-by="effectiveCreatedBy || ''" @view-records="openFlowExecutions" />
-    <SkillFlowExecutionList v-else-if="activeTab === 'flow-execution'" ref="flowExecutionListRef" :scope="visibilityScope" :created-by="effectiveCreatedBy || ''" :keyword="flowExecutionKeyword" :trigger-type="flowExecutionTriggerType" />
+    <SkillFlowList
+      v-if="activeTab === 'flows'"
+      ref="flowListRef"
+      :scope="visibilityScope"
+      :created-by="effectiveCreatedBy || ''"
+      :type-id="flowTypeId"
+      @types-loaded="flowTypes = $event"
+      @view-records="openFlowExecutions"
+    />
+    <SkillFlowExecutionList
+      v-else-if="activeTab === 'flow-execution'"
+      ref="flowExecutionListRef"
+      :scope="visibilityScope"
+      :created-by="effectiveCreatedBy || ''"
+      :keyword="flowExecutionKeyword"
+      :trigger-type="flowExecutionTriggerType"
+      :type-id="flowExecutionTypeId"
+      @types-loaded="flowTypes = $event"
+    />
 
     <template v-else-if="activeTab === 'execution'">
       <div v-if="executionError" class="center-error">{{ executionError }}</div>
@@ -401,38 +587,84 @@ function metricTitle(job: SkillJobSummary): string {
       <div v-else-if="centerExecutions.length === 0" class="empty"><p>暂无符合条件的执行记录</p></div>
       <div v-else class="job-table-wrap">
         <table class="job-table execution-table">
-          <thead><tr><th>任务名称</th><th>创建人</th><th>Skill</th><th>触发方式</th><th>执行状态</th><th>提交时间</th><th>执行 ID</th><th>操作</th></tr></thead>
+          <thead
+            ><tr
+              ><th>任务名称</th><th>创建人</th><th>Skill</th><th>触发方式</th><th>执行状态</th><th>提交时间</th
+              ><th>执行 ID</th><th>操作</th></tr
+            ></thead
+          >
           <tbody>
             <tr v-for="exec in centerExecutions" :key="exec.id">
-              <td><span class="col-name">{{ exec.jobName || `任务 #${exec.jobId}` }}</span></td>
-              <td class="col-owner execution-owner" :title="executionCreatorLabel(exec)">{{ executionCreatorLabel(exec) }}</td>
+              <td
+                ><span class="col-name">{{ exec.jobName || `任务 #${exec.jobId}` }}</span></td
+              >
+              <td class="col-owner execution-owner" :title="executionCreatorLabel(exec)">{{
+                executionCreatorLabel(exec)
+              }}</td>
               <td>{{ exec.skillName || '-' }}</td>
               <td>{{ triggerLabel(exec.triggerType) }}</td>
               <td>
-                <span class="status-badge" :class="executionStatusClass(exec.status)">{{ executionStatus(exec.status) }}</span>
-                <span v-if="exec.status === 'PENDING' && exec.queueAhead != null" class="queue-hint">{{ exec.queueAhead === 0 ? '即将执行' : `前面 ${exec.queueAhead} 个` }}</span>
+                <span class="status-badge" :class="executionStatusClass(exec.status)">{{
+                  executionStatus(exec.status)
+                }}</span>
+                <span v-if="exec.status === 'PENDING' && exec.queueAhead != null" class="queue-hint">{{
+                  exec.queueAhead === 0 ? '即将执行' : `前面 ${exec.queueAhead} 个`
+                }}</span>
               </td>
-              
+
               <td class="col-time">{{ fmtTime(exec.createdAt) }}</td>
               <td>#{{ exec.id }}</td>
               <td class="col-actions">
                 <button v-if="exec.hasError" class="btn-action" @click="showExecutionError(exec)">错误详情</button>
-                <button v-if="exec.status === 'FAILED'" class="btn-action trigger" :disabled="(!isAdmin() && exec.createdBy !== me) || retryingExecutions.has(exec.id)" :title="exec.createdBy === me ? '重新执行此任务' : '仅任务创建人可重试'" @click="retryCenterExecution(exec)">
+                <button
+                  v-if="exec.status === 'FAILED'"
+                  class="btn-action trigger"
+                  :disabled="(!isAdmin() && exec.createdBy !== me) || retryingExecutions.has(exec.id)"
+                  :title="exec.createdBy === me ? '重新执行此任务' : '仅任务创建人可重试'"
+                  @click="retryCenterExecution(exec)"
+                >
                   {{ retryingExecutions.has(exec.id) ? '排队中…' : '重试' }}
                 </button>
                 <template v-if="exec.mdFileExists">
-                  <button class="btn-action with-icon" :disabled="viewing.has(exec.id)" title="预览报告" @click="viewCenterReport(exec)">
+                  <button
+                    class="btn-action with-icon"
+                    :disabled="viewing.has(exec.id)"
+                    title="预览报告"
+                    @click="viewCenterReport(exec)"
+                  >
                     <el-icon><View /></el-icon><span>{{ viewing.has(exec.id) ? '打开中…' : '预览' }}</span>
                   </button>
-                  <button v-if="(exec.createdBy === me || isAdmin())" class="btn-action with-icon" title="编辑 HTML" @click="editCenterReport(exec)">
+                  <button
+                    v-if="exec.createdBy === me || isAdmin()"
+                    class="btn-action with-icon"
+                    title="编辑 HTML"
+                    @click="editCenterReport(exec)"
+                  >
                     <el-icon><EditPen /></el-icon><span>编辑</span>
                   </button>
-                  <button class="btn-action with-icon" :disabled="downloading.has(exec.id)" title="下载 HTML" @click="downloadCenterReport(exec)">
+                  <button
+                    class="btn-action with-icon"
+                    :disabled="downloading.has(exec.id)"
+                    title="下载 HTML"
+                    @click="downloadCenterReport(exec)"
+                  >
                     <el-icon><Download /></el-icon><span>{{ downloading.has(exec.id) ? '下载中…' : '下载' }}</span>
                   </button>
-                  <button class="btn-action" :disabled="copying.has(exec.id)" title="复制正文及格式" @click="copyCenterReport(exec)">{{ copying.has(exec.id) ? '复制中…' : '复制内容' }}</button>
+                  <button
+                    class="btn-action"
+                    :disabled="copying.has(exec.id)"
+                    title="复制正文及格式"
+                    @click="copyCenterReport(exec)"
+                    >{{ copying.has(exec.id) ? '复制中…' : '复制内容' }}</button
+                  >
                 </template>
-                <button v-if="(exec.createdBy === me || isAdmin())" class="btn-action" title="查看通知记录并手动发送" @click="openNotifications(exec)">通知记录</button>
+                <button
+                  v-if="exec.createdBy === me || isAdmin()"
+                  class="btn-action"
+                  title="查看通知记录并手动发送"
+                  @click="openNotifications(exec)"
+                  >通知记录</button
+                >
               </td>
             </tr>
           </tbody>
@@ -451,160 +683,512 @@ function metricTitle(job: SkillJobSummary): string {
     </template>
 
     <template v-else>
-    <div v-if="triggerMsg" class="toast">{{ triggerMsg }}</div>
+      <div v-if="triggerMsg" class="toast">{{ triggerMsg }}</div>
 
-    <div v-if="loading" class="loading">加载中…</div>
-    <div v-else-if="jobs.length === 0" class="empty">
-      <p>暂无任务，点击「创建任务」新增</p>
-    </div>
-    <div v-else class="job-table-wrap">
-    <table class="job-table">
-      <thead>
-        <tr>
-          <th>任务名称</th>
-          <th>关联 Skill</th>
-          <th>依赖指标</th>
-          
-          <th>状态</th>
-          <th>创建人</th>
-          <th>创建时间</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="job in jobs" :key="job.id">
-          <td>
-            <span class="col-name selectable" :title="job.name">{{ job.name }}</span>
-          </td>
-          <td>{{ job.skillId ? (job.skillName || `#${job.skillId}`) : '未配置' }}</td>
-          <td class="col-metric">
-            <span v-if="job.metricName || job.metricCode" :title="metricTitle(job)">
-              {{ job.metricName || job.metricCode }}
-            </span>
-            <span v-else class="muted-cell">未配置</span>
-          </td>
+      <div v-if="loading" class="loading">加载中…</div>
+      <div v-else-if="jobs.length === 0" class="empty">
+        <p>暂无任务，点击「创建任务」新增</p>
+      </div>
+      <div v-else class="job-table-wrap">
+        <table class="job-table">
+          <thead>
+            <tr>
+              <th>任务名称</th>
+              <th>关联 Skill</th>
+              <th>依赖指标</th>
 
-          <td class="col-status">
-            <span class="status-badge" :class="job.enabled ? 'st-on' : 'st-off'">
-              {{ job.enabled ? '启用' : '禁用' }}
-            </span>
-          </td>
-          <td class="col-owner">
-            <span :class="isOwner(job) ? 'owner-me' : ''" :title="creatorLabel(job)">{{ creatorLabel(job) }}</span>
-          </td>
-          <td class="col-time">{{ fmtTime(job.createdAt) }}</td>
-          <td class="col-actions">
-            <button class="btn-action trigger" v-if="isOwner(job) && job.enabled" :disabled="triggering.has(job.id)" @click="trigger(job.id)">
-              {{ triggering.has(job.id) ? '排队中…' : '触发' }}
-            </button>
-            <button class="btn-action" @click="openExecutions(job)">记录</button>
-            <template v-if="isOwner(job)">
-              <button class="btn-action" @click="openEdit(job.id)">编辑</button>
-              <button v-if="false" class="btn-action" title="配置完成通知的收件人名单" @click="openNotifySettings(job.id)">通知</button>
-              <button class="btn-action toggle" @click="toggleEnabled(job)">{{ job.enabled ? '禁用' : '启用' }}</button>
-              <button class="btn-action danger" @click="remove(job.id)">删除</button>
-            </template>
-            <span v-else class="readonly-tag" title="仅创建人可修改/删除/触发">只读</span>
-          </td>
-        </tr>
-      </tbody>
-    </table>
-    </div>
-    <div v-if="!loading && jobs.length > 0" class="pagination-bar">
-      <el-pagination
-        v-model:current-page="managePage"
-        :page-size="managePageSize"
-        :page-sizes="[10, 20, 50]"
-        :total="manageTotal"
-        layout="total, sizes, prev, pager, next, jumper"
-        @size-change="changeManagePageSize"
-      />
-    </div>
+              <th>状态</th>
+              <th>创建人</th>
+              <th>创建时间</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="job in jobs" :key="job.id">
+              <td>
+                <span class="col-name selectable" :title="job.name">{{ job.name }}</span>
+              </td>
+              <td>{{ job.skillId ? job.skillName || `#${job.skillId}` : '未配置' }}</td>
+              <td class="col-metric">
+                <span v-if="job.metricName || job.metricCode" :title="metricTitle(job)">
+                  {{ job.metricName || job.metricCode }}
+                </span>
+                <span v-else class="muted-cell">未配置</span>
+              </td>
 
-    <SkillJobExecutionDrawer v-model:open="execOpen" :job-id="execJobId" can-download :can-edit="execCanDownload" />
+              <td class="col-status">
+                <span class="status-badge" :class="job.enabled ? 'st-on' : 'st-off'">
+                  {{ job.enabled ? '启用' : '禁用' }}
+                </span>
+              </td>
+              <td class="col-owner">
+                <span :class="isOwner(job) ? 'owner-me' : ''" :title="creatorLabel(job)">{{ creatorLabel(job) }}</span>
+              </td>
+              <td class="col-time">{{ fmtTime(job.createdAt) }}</td>
+              <td class="col-actions">
+                <button
+                  class="btn-action trigger"
+                  v-if="isOwner(job) && job.enabled"
+                  :disabled="triggering.has(job.id)"
+                  @click="trigger(job.id)"
+                >
+                  {{ triggering.has(job.id) ? '排队中…' : '触发' }}
+                </button>
+                <button class="btn-action" @click="openExecutions(job)">记录</button>
+                <template v-if="isOwner(job)">
+                  <button class="btn-action" @click="openEdit(job.id)">编辑</button>
+                  <button
+                    v-if="false"
+                    class="btn-action"
+                    title="配置完成通知的收件人名单"
+                    @click="openNotifySettings(job.id)"
+                    >通知</button
+                  >
+                  <button class="btn-action toggle" @click="toggleEnabled(job)">{{
+                    job.enabled ? '禁用' : '启用'
+                  }}</button>
+                  <button class="btn-action danger" @click="remove(job.id)">删除</button>
+                </template>
+                <span v-else class="readonly-tag" title="仅创建人可修改/删除/触发">只读</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div v-if="!loading && jobs.length > 0" class="pagination-bar">
+        <el-pagination
+          v-model:current-page="managePage"
+          :page-size="managePageSize"
+          :page-sizes="[10, 20, 50]"
+          :total="manageTotal"
+          layout="total, sizes, prev, pager, next, jumper"
+          @size-change="changeManagePageSize"
+        />
+      </div>
+
+      <SkillJobExecutionDrawer v-model:open="execOpen" :job-id="execJobId" can-download :can-edit="execCanDownload" />
     </template>
-    <SkillJobNotificationDrawer v-model:open="notifyOpen" :exec-id="notifyExecId" :can-resend="notifyCanResend" @changed="loadExecutionCenter(true)" />
+    <SkillJobNotificationDrawer
+      v-model:open="notifyOpen"
+      :exec-id="notifyExecId"
+      :can-resend="notifyCanResend"
+      @changed="loadExecutionCenter(true)"
+    />
   </div>
 </template>
 
 <style scoped>
-.job-page { padding: 4px; }
-.page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
-.page-header h2 { margin: 0; font-size: 20px; font-weight: 700; color: #0f172a; }
-.header-actions { display: flex; gap: 8px; align-items: center; }
-.scope-switch { display: inline-flex; overflow: hidden; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; }
-.scope-switch button { min-width: 52px; height: 32px; border: 0; border-right: 1px solid #cbd5e1; background: #fff; color: #475569; cursor: pointer; font-size: 13px; }
-.scope-switch button:last-child { border-right: 0; }
-.scope-switch button.active { background: #2563eb; color: #fff; }
-.search-input { padding: 7px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; width: 200px; }
-.creator-input { width: 160px; }
-.filter-select { padding: 7px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; background: #fff; }
-.btn { padding: 7px 16px; border-radius: 6px; border: 1px solid #cbd5e1; cursor: pointer; font-size: 14px; }
-.btn.primary { background: #3b82f6; color: #fff; border-color: #3b82f6; }
-.btn.primary:hover { background: #2563eb; }
-.btn.ghost { background: #fff; color: #475569; }
-.btn.ghost:hover { background: #f1f5f9; }
-.job-tabs { display: flex; gap: 24px; border-bottom: 1px solid #e2e8f0; margin-bottom: 16px; }
-.pagination-bar { display: flex; justify-content: flex-end; padding: 14px 0 2px; }
-.job-tab { border: 0; border-bottom: 2px solid transparent; background: transparent; color: #64748b; padding: 8px 2px 10px; font-size: 14px; cursor: pointer; }
-.job-tab.active { color: #2563eb; border-bottom-color: #2563eb; font-weight: 600; }
-.tab-count { display: inline-flex; min-width: 18px; height: 18px; align-items: center; justify-content: center; margin-left: 6px; padding: 0 4px; border-radius: 9px; background: #2563eb; color: #fff; font-size: 11px; }
-.st-running { background: #dcfce7; color: #15803d; }
-.st-pending { background: #fef3c7; color: #a16207; }
-.st-success { background: #dcfce7; color: #166534; }
-.st-failed { background: #fee2e2; color: #991b1b; }
-.execution-reason { display: block; max-width: 180px; margin-top: 4px; color: #64748b; font-size: 11px; white-space: normal; }
-.execution-reason.failed { color: #b91c1c; }
-.btn-action.with-icon { display: inline-flex; align-items: center; gap: 3px; }
-
-.toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #16a34a; color: #fff; padding: 8px 20px; border-radius: 8px; font-size: 14px; z-index: 2000; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
-.center-error { margin-bottom: 12px; padding: 9px 12px; border: 1px solid #fecaca; border-radius: 5px; background: #fef2f2; color: #b91c1c; font-size: 13px; }
-
-.loading, .empty { color: #94a3b8; font-size: 14px; padding: 40px 0; text-align: center; background: #fff; border-radius: 8px; }
-
-.job-table-wrap { overflow-x: auto; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
-.job-table { width: 100%; min-width: 1080px; border-collapse: collapse; background: #fff; }
-.execution-table { min-width: 1240px; }
-.job-table th { background: #f8fafc; padding: 10px 12px; text-align: left; font-size: 13px; font-weight: 600; color: #475569; border-bottom: 1px solid #e2e8f0; white-space: nowrap; }
-.job-table td { padding: 10px 12px; font-size: 13px; color: #1e293b; border-bottom: 1px solid #f1f5f9; }
-.job-table tr:hover td { background: #f8fafc; }
-.col-name { font-weight: 600; }
-.col-template { font-size: 12px; color: #475569; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.col-metric { font-size: 12px; color: #475569; white-space: nowrap; }
-.muted-cell { color: #cbd5e1; }
-.selectable { user-select: text; cursor: text; }
-.col-time { color: #94a3b8; font-size: 12px; white-space: nowrap; }
-.col-owner { font-size: 12px; color: #64748b; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.execution-owner { max-width: 180px; }
-.owner-me { color: #1d4ed8; font-weight: 600; }
-.readonly-tag { font-size: 11px; color: #94a3b8; padding: 2px 6px; border: 1px dashed #cbd5e1; border-radius: 4px; }
-.col-status { white-space: nowrap; }
-.col-actions { display: flex; gap: 4px; white-space: nowrap; align-items: center; }
-
-.status-badge { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 4px; }
-.queue-hint { display: block; margin-top: 4px; color: #92400e; font-size: 11px; white-space: nowrap; }
-.notify-badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 700; white-space: nowrap; }
-.nt-success { background: #dcfce7; color: #166534; }
-.nt-failed { background: #fee2e2; color: #991b1b; }
-.nt-pending, .nt-sending { background: #fef3c7; color: #92400e; }
-.nt-skipped, .nt-none { background: #f1f5f9; color: #64748b; }
-.st-on { background: #d1fae5; color: #065f46; }
-.st-off { background: #f1f5f9; color: #64748b; }
-
-.btn-action { padding: 4px 10px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 12px; cursor: pointer; background: #fff; color: #475569; }
-.btn-action:hover { background: #f1f5f9; }
-.btn-action:disabled { opacity: .45; cursor: not-allowed; }
-.btn-action.trigger { background: #3b82f6; color: #fff; border-color: #3b82f6; }
-.btn-action.trigger:hover { background: #2563eb; }
-.btn-action.trigger:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-action.toggle { color: #92400e; border-color: #fcd34d; }
-.btn-action.toggle:hover { background: #fffbeb; }
-.btn-action.danger { color: #dc2626; border-color: #fecaca; }
-.btn-action.danger:hover { background: #fef2f2; }
-
-@media (max-width: 900px) {
-  .header-actions { width: 100%; flex-wrap: wrap; }
-  .search-input, .creator-input { width: min(100%, 220px); }
+.job-page {
+  padding: 4px;
+}
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.page-header h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: #0f172a;
+}
+.header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.scope-switch {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+}
+.scope-switch button {
+  min-width: 52px;
+  height: 32px;
+  border: 0;
+  border-right: 1px solid #cbd5e1;
+  background: #fff;
+  color: #475569;
+  cursor: pointer;
+  font-size: 13px;
+}
+.scope-switch button:last-child {
+  border-right: 0;
+}
+.scope-switch button.active {
+  background: #2563eb;
+  color: #fff;
+}
+.search-input {
+  padding: 7px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 14px;
+  width: 200px;
+}
+.creator-input {
+  width: 160px;
+}
+.filter-select {
+  padding: 7px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 14px;
+  background: #fff;
+}
+.execution-filter {
+  appearance: none;
+  min-height: 36px;
+  padding: 8px 34px 8px 12px;
+  border: 1px solid #d8e0eb;
+  border-radius: 8px;
+  color: #334155;
+  cursor: pointer;
+  background: #fff
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")
+    no-repeat right 10px center;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+.execution-filter:hover {
+  border-color: #93c5fd;
+}
+.execution-filter:focus {
+  outline: none;
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 3px #eff6ff;
+}
+.task-type-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #334155;
+  font-size: 14px;
+}
+.btn {
+  padding: 7px 16px;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  cursor: pointer;
+  font-size: 14px;
+}
+.btn.primary {
+  background: #3b82f6;
+  color: #fff;
+  border-color: #3b82f6;
+}
+.btn.primary:hover {
+  background: #2563eb;
+}
+.btn.ghost {
+  background: #fff;
+  color: #475569;
+}
+.btn.ghost:hover {
+  background: #f1f5f9;
+}
+.job-tabs {
+  display: flex;
+  gap: 24px;
+  border-bottom: 1px solid #e2e8f0;
+  margin-bottom: 16px;
+}
+.pagination-bar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 14px 0 2px;
+}
+.job-tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #64748b;
+  padding: 8px 2px 10px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.job-tab.active {
+  color: #2563eb;
+  border-bottom-color: #2563eb;
+  font-weight: 600;
+}
+.tab-count {
+  display: inline-flex;
+  min-width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 11px;
+}
+.st-running {
+  background: #dcfce7;
+  color: #15803d;
+}
+.st-pending {
+  background: #fef3c7;
+  color: #a16207;
+}
+.st-success {
+  background: #dcfce7;
+  color: #166534;
+}
+.st-failed {
+  background: #fee2e2;
+  color: #991b1b;
+}
+.execution-reason {
+  display: block;
+  max-width: 180px;
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 11px;
+  white-space: normal;
+}
+.execution-reason.failed {
+  color: #b91c1c;
+}
+.btn-action.with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
 
+.toast {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #16a34a;
+  color: #fff;
+  padding: 8px 20px;
+  border-radius: 8px;
+  font-size: 14px;
+  z-index: 2000;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+.center-error {
+  margin-bottom: 12px;
+  padding: 9px 12px;
+  border: 1px solid #fecaca;
+  border-radius: 5px;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 13px;
+}
+
+.loading,
+.empty {
+  color: #94a3b8;
+  font-size: 14px;
+  padding: 40px 0;
+  text-align: center;
+  background: #fff;
+  border-radius: 8px;
+}
+
+.job-table-wrap {
+  overflow-x: auto;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+.job-table {
+  width: 100%;
+  min-width: 1080px;
+  border-collapse: collapse;
+  background: #fff;
+}
+.execution-table {
+  min-width: 1240px;
+}
+.job-table th {
+  background: #f8fafc;
+  padding: 10px 12px;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+  border-bottom: 1px solid #e2e8f0;
+  white-space: nowrap;
+}
+.job-table td {
+  padding: 10px 12px;
+  font-size: 13px;
+  color: #1e293b;
+  border-bottom: 1px solid #f1f5f9;
+}
+.job-table tr:hover td {
+  background: #f8fafc;
+}
+.col-name {
+  font-weight: 600;
+}
+.col-template {
+  font-size: 12px;
+  color: #475569;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.col-metric {
+  font-size: 12px;
+  color: #475569;
+  white-space: nowrap;
+}
+.muted-cell {
+  color: #cbd5e1;
+}
+.selectable {
+  user-select: text;
+  cursor: text;
+}
+.col-time {
+  color: #94a3b8;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.col-owner {
+  font-size: 12px;
+  color: #64748b;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.execution-owner {
+  max-width: 180px;
+}
+.owner-me {
+  color: #1d4ed8;
+  font-weight: 600;
+}
+.readonly-tag {
+  font-size: 11px;
+  color: #94a3b8;
+  padding: 2px 6px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 4px;
+}
+.col-status {
+  white-space: nowrap;
+}
+.col-actions {
+  display: flex;
+  gap: 4px;
+  white-space: nowrap;
+  align-items: center;
+}
+
+.status-badge {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.queue-hint {
+  display: block;
+  margin-top: 4px;
+  color: #92400e;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.notify-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.nt-success {
+  background: #dcfce7;
+  color: #166534;
+}
+.nt-failed {
+  background: #fee2e2;
+  color: #991b1b;
+}
+.nt-pending,
+.nt-sending {
+  background: #fef3c7;
+  color: #92400e;
+}
+.nt-skipped,
+.nt-none {
+  background: #f1f5f9;
+  color: #64748b;
+}
+.st-on {
+  background: #d1fae5;
+  color: #065f46;
+}
+.st-off {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.btn-action {
+  padding: 4px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  background: #fff;
+  color: #475569;
+}
+.btn-action:hover {
+  background: #f1f5f9;
+}
+.btn-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.btn-action.trigger {
+  background: #3b82f6;
+  color: #fff;
+  border-color: #3b82f6;
+}
+.btn-action.trigger:hover {
+  background: #2563eb;
+}
+.btn-action.trigger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-action.toggle {
+  color: #92400e;
+  border-color: #fcd34d;
+}
+.btn-action.toggle:hover {
+  background: #fffbeb;
+}
+.btn-action.danger {
+  color: #dc2626;
+  border-color: #fecaca;
+}
+.btn-action.danger:hover {
+  background: #fef2f2;
+}
+
+@media (max-width: 900px) {
+  .header-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .search-input,
+  .creator-input {
+    width: min(100%, 220px);
+  }
+}
 </style>

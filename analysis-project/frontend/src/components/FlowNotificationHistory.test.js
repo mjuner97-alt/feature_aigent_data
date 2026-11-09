@@ -51,3 +51,13 @@ test('status labels never overstate delivery and unknown values do not leak', as
   assert.ok(!text(root).includes('已发送'));
   assert.ok(!text(root).includes('InternalException'));
 });
+
+for (const key of ['toCCUserList', 'ccUserList']) {
+  for (const recipients of [[], ['u3']]) {
+    test(`CC snapshot ${key} distinguishes empty lists from missing history (${recipients.length})`, async t => {
+      const root = mount(t, [{ status: 'ACCEPTED', requestJson: JSON.stringify({ [key]: recipients }) }]);
+      await click(root, '查看内容');
+      assert.ok(text(root).includes(recipients.length ? '抄送人：u3（u3）' : '抄送人：无'));
+    });
+  }
+}

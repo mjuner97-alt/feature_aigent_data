@@ -55,4 +55,6 @@ mvn -q '-Dtest=DependencyMetricAlertServiceTest' test
 
 两个配置项初始均为空，留空时不抄送。以后填入实际人员的统一认证号，例如 `user001,user002;user003`；也支持中文逗号、分号及换行。每次发送时读取，去空白、保序去重、剔除无效人员，与实际收件人重复时保留为收件人。首次自动失败通知不使用执行快照中的抄送名单。
 
+该规则同样适用于部门／团队报告的批次执行。批次执行保留对象自身的收件人 TO 名单，首次自动失败时的 CC 按上述任务类型配置读取；对象关闭通知时仍不发送。
+
 部署前执行 `src/main/resources/db/migration/gauss/V20261106.3__long_task_failure_cc_by_report_type.sql` 初始化两个配置项；脚本不会覆盖已有配置。旧配置 `long_task_failure_cc_recipients` 不再用于自动失败通知，也不会自动复制到新配置。此项不影响成功通知、其他触发方式及手动重发时选择的抄送名单。

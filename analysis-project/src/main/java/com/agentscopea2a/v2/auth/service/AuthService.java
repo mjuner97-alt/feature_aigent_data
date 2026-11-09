@@ -13,7 +13,7 @@ import com.agentscopea2a.v2.auth.dto.LoginRequest;
 import com.agentscopea2a.v2.auth.dto.LoginResponse;
 import com.agentscopea2a.v2.auth.entity.DeveloperPlPersonInfo;
 import com.agentscopea2a.v2.auth.mapper.DeveloperPlPersonInfoMapper;
-import com.agentscopea2a.v2.auth.mapper.AuthUserCredentialMapper;
+import com.agentscopea2a.mapper.gauss.AuthUserCredentialMapper;
 import com.agentscopea2a.v2.auth.entity.AuthUserCredential;
 import com.agentscopea2a.v2.skillManager.notification.NotificationSender;
 import com.agentscopea2a.entity.AiChatRuntimeConfig;
@@ -119,6 +119,27 @@ public class AuthService {
         }
 
         return normalUserLogin(userId);
+    }
+
+    public LoginResponse mockSsoLogin(String userId) {
+        if (adminRoleService.isProductionMode()) {
+            throw new IllegalArgumentException("生产模式禁止模拟认证");
+        }
+        if (userId == null || userId.isBlank() || adminRoleService.isAdminUserId(userId)) {
+            throw new IllegalArgumentException("模拟认证仅允许普通用户");
+        }
+        return normalUserLogin(userId.trim());
+    }
+
+    /** Transitional integration: the frontend supplies the third-party user ID; no token verification. */
+    public LoginResponse thirdPartyLogin(String userId) {
+        if (userId == null || userId.isBlank()) {
+            throw new IllegalArgumentException("第三方未返回有效工号");
+        }
+        if (adminRoleService.isAdminUserId(userId)) {
+            throw new IllegalArgumentException("管理员请使用密码登录");
+        }
+        return normalUserLogin(userId.trim());
     }
 
     private LoginResponse normalUserLogin(String userId) {

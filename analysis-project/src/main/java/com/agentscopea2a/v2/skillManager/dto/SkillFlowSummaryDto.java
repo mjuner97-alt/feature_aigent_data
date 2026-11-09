@@ -1,8 +1,11 @@
 package com.agentscopea2a.v2.skillManager.dto;
-import lombok.Data;
+
 import java.time.LocalDateTime;
+import lombok.Data;
+
 @Data
 public class SkillFlowSummaryDto {
+
     private Long id;
     private String code;
     private String name;
@@ -18,4 +21,7 @@ public class SkillFlowSummaryDto {
     private int nodeCount;
     private int metricCount;
     private boolean canExecute;
+    private String manualBatchId;
+    private int manualBatchTotal;
+    private int manualBatchCompleted;
 }

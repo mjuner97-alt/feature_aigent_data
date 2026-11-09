@@ -8,6 +8,38 @@ import java.util.List;
  * <p>包含触发词列表({@link Trigger})和编排节点列表({@link Node}),两者均随流程一并返回。</p>
  */
 public record SkillFlowDto(
+    Long id,
+    String code,
+    String name,
+    String description,
+    String taskQuestion,
+    String summaryQuestionTemplate,
+    Boolean enabled,
+    String scheduleRules,
+    Integer maxParallelism,
+    Boolean notifyEnabled,
+    /** 是否公开触发(由开发人员开通,创建人修改后自动退出公开);前端据此展示公开标识与编辑警告。 */
+    Boolean chatPublic,
+    List<Trigger> triggers,
+    List<Node> nodes,
+    /** 报告大纲(解析后的 JSON 对象);null=未配置,报告走按节点顺序拼接的兼容逻辑。 */
+    Object reportOutline,
+    String createdBy,
+    LocalDateTime createdAt,
+    LocalDateTime updatedAt,
+    Boolean deleted,
+    String notifyContactName,
+    String notifyContactPhone,
+    /** 通知邮件正文模板;{链接} 占位符发送时替换为报告链接,空=系统默认文案。 */
+    String notifyBodyTemplate,
+    /** 可执行人 userId 列表(创建人指定的额外手动执行用户,不含创建人);空 = 仅创建人可执行。 */
+    List<String> executors,
+    Boolean autoTriggerEnabled,
+    Long typeId,
+    Integer priority,
+    TeamReportConfig teamReport
+) {
+    public SkillFlowDto(
         Long id,
         String code,
         String name,
@@ -18,11 +50,9 @@ public record SkillFlowDto(
         String scheduleRules,
         Integer maxParallelism,
         Boolean notifyEnabled,
-        /** 是否公开触发(由开发人员开通,创建人修改后自动退出公开);前端据此展示公开标识与编辑警告。 */
         Boolean chatPublic,
         List<Trigger> triggers,
         List<Node> nodes,
-        /** 报告大纲(解析后的 JSON 对象);null=未配置,报告走按节点顺序拼接的兼容逻辑。 */
         Object reportOutline,
         String createdBy,
         LocalDateTime createdAt,
@@ -30,33 +60,142 @@ public record SkillFlowDto(
         Boolean deleted,
         String notifyContactName,
         String notifyContactPhone,
-        /** 通知邮件正文模板;{链接} 占位符发送时替换为报告链接,空=系统默认文案。 */
         String notifyBodyTemplate,
-        /** 可执行人 userId 列表(创建人指定的额外手动执行用户,不含创建人);空 = 仅创建人可执行。 */
         List<String> executors,
         Boolean autoTriggerEnabled,
         Long typeId,
-        Integer priority) {
+        Integer priority
+    ) {
+        this(
+            id,
+            code,
+            name,
+            description,
+            taskQuestion,
+            summaryQuestionTemplate,
+            enabled,
+            scheduleRules,
+            maxParallelism,
+            notifyEnabled,
+            chatPublic,
+            triggers,
+            nodes,
+            reportOutline,
+            createdBy,
+            createdAt,
+            updatedAt,
+            deleted,
+            notifyContactName,
+            notifyContactPhone,
+            notifyBodyTemplate,
+            executors,
+            autoTriggerEnabled,
+            typeId,
+            priority,
+            null
+        );
+    }
 
-    public SkillFlowDto(Long id, String code, String name, String description, String taskQuestion,
-                        String summaryQuestionTemplate, Boolean enabled, String scheduleRules, Integer maxParallelism,
-                        Boolean notifyEnabled, Boolean chatPublic, List<Trigger> triggers, List<Node> nodes,
-                        Object reportOutline, String createdBy, LocalDateTime createdAt, LocalDateTime updatedAt,
-                        Boolean deleted) {
-        this(id, code, name, description, taskQuestion, summaryQuestionTemplate, enabled, scheduleRules,
-                maxParallelism, notifyEnabled, chatPublic, triggers, nodes, reportOutline, createdBy,
-                createdAt, updatedAt, deleted, null, null, null, List.of(), false, null, 0);
+    public SkillFlowDto(
+        Long id,
+        String code,
+        String name,
+        String description,
+        String taskQuestion,
+        String summaryQuestionTemplate,
+        Boolean enabled,
+        String scheduleRules,
+        Integer maxParallelism,
+        Boolean notifyEnabled,
+        Boolean chatPublic,
+        List<Trigger> triggers,
+        List<Node> nodes,
+        Object reportOutline,
+        String createdBy,
+        LocalDateTime createdAt,
+        LocalDateTime updatedAt,
+        Boolean deleted
+    ) {
+        this(
+            id,
+            code,
+            name,
+            description,
+            taskQuestion,
+            summaryQuestionTemplate,
+            enabled,
+            scheduleRules,
+            maxParallelism,
+            notifyEnabled,
+            chatPublic,
+            triggers,
+            nodes,
+            reportOutline,
+            createdBy,
+            createdAt,
+            updatedAt,
+            deleted,
+            null,
+            null,
+            null,
+            List.of(),
+            false,
+            null,
+            0
+        );
     }
 
     /** 兼容增加可执行人之前的查询调用。 */
-    public SkillFlowDto(Long id, String code, String name, String description, String taskQuestion,
-                        String summaryQuestionTemplate, Boolean enabled, String scheduleRules, Integer maxParallelism,
-                        Boolean notifyEnabled, Boolean chatPublic, List<Trigger> triggers, List<Node> nodes,
-                        Object reportOutline, String createdBy, LocalDateTime createdAt, LocalDateTime updatedAt,
-                        Boolean deleted, String notifyContactName, String notifyContactPhone, String notifyBodyTemplate) {
-        this(id, code, name, description, taskQuestion, summaryQuestionTemplate, enabled, scheduleRules,
-                maxParallelism, notifyEnabled, chatPublic, triggers, nodes, reportOutline, createdBy,
-                createdAt, updatedAt, deleted, notifyContactName, notifyContactPhone, notifyBodyTemplate, List.of(), false, null, 0);
+    public SkillFlowDto(
+        Long id,
+        String code,
+        String name,
+        String description,
+        String taskQuestion,
+        String summaryQuestionTemplate,
+        Boolean enabled,
+        String scheduleRules,
+        Integer maxParallelism,
+        Boolean notifyEnabled,
+        Boolean chatPublic,
+        List<Trigger> triggers,
+        List<Node> nodes,
+        Object reportOutline,
+        String createdBy,
+        LocalDateTime createdAt,
+        LocalDateTime updatedAt,
+        Boolean deleted,
+        String notifyContactName,
+        String notifyContactPhone,
+        String notifyBodyTemplate
+    ) {
+        this(
+            id,
+            code,
+            name,
+            description,
+            taskQuestion,
+            summaryQuestionTemplate,
+            enabled,
+            scheduleRules,
+            maxParallelism,
+            notifyEnabled,
+            chatPublic,
+            triggers,
+            nodes,
+            reportOutline,
+            createdBy,
+            createdAt,
+            updatedAt,
+            deleted,
+            notifyContactName,
+            notifyContactPhone,
+            notifyBodyTemplate,
+            List.of(),
+            false,
+            null,
+            0
+        );
     }
 
     /** 触发词:用户消息命中 keyword 后该流程进入长任务路由。 */
@@ -67,23 +206,22 @@ public record SkillFlowDto(
      * 节点全并行执行,sortOrder 决定结果拼接顺序。
      */
     public record Node(
-            Long id,
-            String nodeKey,
-            String nodeName,
-            String nodeType,
-            Long skillId,
-            String scriptId,
-            String scriptParamsJson,
-            String skillName,
-            String questionTemplate,
-            List<Long> metricIds,
-            List<String> metricNames,
-            List<Long> effectiveMetricIds,
-            String metricSource,
-            Boolean metricOverrideConfigured,
-            Boolean required,
-            Integer maxAttempts,
-            Integer sortOrder) {}
+        Long id,
+        String nodeKey,
+        String nodeName,
+        String nodeType,
+        Long skillId,
+        String scriptId,
+        String scriptParamsJson,
+        String skillName,
+        String questionTemplate,
+        List<Long> metricIds,
+        List<String> metricNames,
+        List<Long> effectiveMetricIds,
+        String metricSource,
+        Boolean metricOverrideConfigured,
+        Boolean required,
+        Integer maxAttempts,
+        Integer sortOrder
+    ) {}
 }
-
-

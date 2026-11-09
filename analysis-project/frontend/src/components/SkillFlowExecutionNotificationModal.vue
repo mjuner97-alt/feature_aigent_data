@@ -1,70 +1,168 @@
 <script setup lang="ts">
-import { onUnmounted, ref, watch } from 'vue';
-import { getSkillFlowExecutionNotifySettings, resendSkillFlowExecutionNotification } from '../api/skillFlow';
-import { batchUserNames } from '../api/skill';
+import { computed, onUnmounted, ref, watch } from 'vue';
+import {
+  getSkillFlowExecutionNotifySettings,
+  resendSkillFlowExecutionNotification,
+  reportPeople,
+} from '../api/skillFlow';
+import { batchUserNames, searchSkillUsers } from '../api/skill';
 import MailRecipientDialog from './MailRecipientDialog.vue';
 import NotifyBodyTemplateEditor from './NotifyBodyTemplateEditor.vue';
 
 const props = defineProps<{ open: boolean; executionId: number | null }>();
 const emit = defineEmits<{ (event: 'update:open', value: boolean): void; (event: 'sent'): void }>();
-const savedTo = ref<string[]>([]), savedCc = ref<string[]>([]), names = ref<Record<string, string>>({});
-const savedTemplate = ref(''), bodyTemplate = ref(''), flowName = ref('');
+const savedTo = ref<string[]>([]),
+  savedCc = ref<string[]>([]),
+  names = ref<Record<string, string>>({});
+const savedTemplate = ref(''),
+  bodyTemplate = ref(''),
+  flowName = ref('');
 const reportLinkTitle = ref<string | undefined>();
-const loading = ref(false), ready = ref(false), sending = ref(false);
-const error = ref(''), successMessage = ref('');
+const recipientSource = ref<{ department: string; team: string } | null>(null);
+const searchSource = computed(() =>
+  recipientSource.value
+    ? async (keyword: string) => {
+        if (!keyword.trim()) return [];
+        const found = await searchSkillUsers(keyword);
+        return found.length
+          ? found
+          : reportPeople(recipientSource.value!.department, recipientSource.value!.team, keyword);
+      }
+    : undefined
+);
+const loading = ref(false),
+  ready = ref(false),
+  sending = ref(false);
+const error = ref(''),
+  successMessage = ref('');
 let generation = 0;
 let successTimer: ReturnType<typeof setTimeout> | undefined;
 
 async function loadDefaults() {
-  const version = ++generation, id = props.executionId;
-  ready.value = false; error.value = ''; savedTo.value = []; savedCc.value = []; names.value = {}; savedTemplate.value = ''; bodyTemplate.value = ''; flowName.value = ''; reportLinkTitle.value = undefined;
-  if (!props.open || id == null) { loading.value = false; return; }
+  const version = ++generation,
+    id = props.executionId;
+  ready.value = false;
+  error.value = '';
+  savedTo.value = [];
+  savedCc.value = [];
+  names.value = {};
+  savedTemplate.value = '';
+  bodyTemplate.value = '';
+  flowName.value = '';
+  reportLinkTitle.value = undefined;
+  recipientSource.value = null;
+  if (!props.open || id == null) {
+    loading.value = false;
+    return;
+  }
   loading.value = true;
   try {
     const settings = await getSkillFlowExecutionNotifySettings(id);
     if (version !== generation) return;
     const to = [...new Set(settings.notifyReceiversByTrigger?.AUTO_METRIC ?? settings.notifyReceivers ?? [])];
-    const cc = [...new Set(settings.ccReceiversByTrigger?.AUTO_METRIC ?? settings.ccReceivers ?? [])].filter(uid => !to.includes(uid));
+    const cc = [...new Set(settings.ccReceiversByTrigger?.AUTO_METRIC ?? settings.ccReceivers ?? [])].filter(
+      (uid) => !to.includes(uid)
+    );
     // Display failures must never remove saved IDs from the actual recipients.
-    const displayNames = await batchUserNames([...to, ...cc]).catch(() => ({}));
+    const source = settings.recipientDepartment
+      ? { department: settings.recipientDepartment, team: settings.recipientTeam || '' }
+      : null;
+    const displayNames: Record<string, string> = await batchUserNames([...to, ...cc]).catch(() => ({}));
+    if (source) {
+      const people = await reportPeople(source.department, source.team).catch(() => []);
+      for (const person of people)
+        if ([...to, ...cc].includes(person.userId) && !displayNames[person.userId])
+          displayNames[person.userId] = person.name;
+    }
     if (version !== generation) return;
-    savedTemplate.value = settings.notifyBodyTemplate ?? ''; bodyTemplate.value = savedTemplate.value; flowName.value = settings.flowName ?? ''; reportLinkTitle.value = settings.reportLinkTitle;
-    savedTo.value = to; savedCc.value = cc; names.value = displayNames; ready.value = true;
+    savedTemplate.value = settings.notifyBodyTemplate ?? '';
+    bodyTemplate.value = savedTemplate.value;
+    flowName.value = settings.flowName ?? '';
+    reportLinkTitle.value = settings.reportLinkTitle;
+    recipientSource.value = source;
+    savedTo.value = to;
+    savedCc.value = cc;
+    names.value = displayNames;
+    ready.value = true;
   } catch (e) {
     if (version === generation) error.value = e instanceof Error ? e.message : '读取已保存名单失败，请重试';
-  } finally { if (version === generation) loading.value = false; }
-}
-watch(() => [props.open, props.executionId] as const, () => {
-  sending.value = false;
-  if (props.open) {
-    successMessage.value = '';
-    if (successTimer) clearTimeout(successTimer);
+  } finally {
+    if (version === generation) loading.value = false;
   }
-  void loadDefaults();
-}, { immediate: true });
-function close() { if (!sending.value) { generation++; emit('update:open', false); } }
+}
+watch(
+  () => [props.open, props.executionId] as const,
+  () => {
+    sending.value = false;
+    if (props.open) {
+      successMessage.value = '';
+      if (successTimer) clearTimeout(successTimer);
+    }
+    void loadDefaults();
+  },
+  { immediate: true }
+);
+function close() {
+  if (!sending.value) {
+    generation++;
+    emit('update:open', false);
+  }
+}
 async function send(value: { to: string[]; cc: string[] }) {
   if (sending.value || loading.value || !ready.value || !props.open || props.executionId == null) return;
-  if (bodyTemplate.value.length > 2000) { error.value = '通知邮件正文模板超长（上限 2000 字符）'; return; }
-  if (!value.to.length) { error.value = '请至少选择一位收件人'; return; }
-  const version = generation, id = props.executionId;
-  sending.value = true; error.value = '';
+  if (bodyTemplate.value.length > 2000) {
+    error.value = '通知邮件正文模板超长（上限 2000 字符）';
+    return;
+  }
+  if (!value.to.length) {
+    error.value = '请至少选择一位收件人';
+    return;
+  }
+  const version = generation,
+    id = props.executionId;
+  sending.value = true;
+  error.value = '';
   try {
     await resendSkillFlowExecutionNotification(id, [...value.to], [...value.cc], bodyTemplate.value);
     if (version !== generation) return;
     successMessage.value = '通知已提交，请在任务详情查看结果';
-    successTimer = setTimeout(() => { successMessage.value = ''; }, 3000);
+    successTimer = setTimeout(() => {
+      successMessage.value = '';
+    }, 3000);
     emit('sent');
     emit('update:open', false);
   } catch (e) {
     if (version === generation) error.value = e instanceof Error ? e.message : '发送通知失败';
-  } finally { if (version === generation) sending.value = false; }
+  } finally {
+    if (version === generation) sending.value = false;
+  }
 }
-onUnmounted(() => { generation++; if (successTimer) clearTimeout(successTimer); });
+onUnmounted(() => {
+  generation++;
+  if (successTimer) clearTimeout(successTimer);
+});
 </script>
 
 <template>
-  <MailRecipientDialog v-if="open && ready" mode="send" :open="open" :to="savedTo" :cc="savedCc" :names="names" :submitting="sending" :error="error" :dirty="bodyTemplate !== savedTemplate" @update:open="close" @confirm="send"><NotifyBodyTemplateEditor v-model="bodyTemplate" :flow-name="flowName" :report-link-title="reportLinkTitle" :disabled="sending" /></MailRecipientDialog>
+  <MailRecipientDialog
+    v-if="open && ready"
+    mode="send"
+    :open="open"
+    :to="savedTo"
+    :cc="savedCc"
+    :names="names"
+    :search-users="searchSource"
+    :submitting="sending"
+    :error="error"
+    :dirty="bodyTemplate !== savedTemplate"
+    @update:open="close"
+    @confirm="send"
+    ><NotifyBodyTemplateEditor
+      v-model="bodyTemplate"
+      :flow-name="flowName"
+      :report-link-title="reportLinkTitle"
+      :disabled="sending"
+  /></MailRecipientDialog>
   <Teleport to="body">
     <div v-if="successMessage" class="success-toast" role="status">{{ successMessage }}</div>
     <div v-if="open && !ready" class="loading-mask" @click.self="close">
@@ -72,7 +170,10 @@ onUnmounted(() => { generation++; if (successTimer) clearTimeout(successTimer); 
         <h3>发送通知</h3>
         <p v-if="loading" role="status">正在加载已保存名单…</p>
         <p v-else role="alert">{{ error }}</p>
-        <footer><button type="button" @click="close">取消</button><button v-if="!loading" type="button" @click="loadDefaults">重试</button></footer>
+        <footer
+          ><button type="button" @click="close">取消</button
+          ><button v-if="!loading" type="button" @click="loadDefaults">重试</button></footer
+        >
       </section>
     </div>
   </Teleport>

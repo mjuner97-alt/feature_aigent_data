@@ -8,16 +8,12 @@ import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
 import com.agentscopea2a.v2.skillManager.report.ReportSourceValidator;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.core.io.FileSystemResource;
-import org.springframework.core.io.Resource;
-import org.springframework.stereotype.Service;
-
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
-import java.nio.charset.StandardCharsets;
-import java.io.IOException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -25,6 +21,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
+import org.springframework.stereotype.Service;
 
 /**
  * Skill Flow 执行记录查询服务(读侧):
@@ -44,10 +43,15 @@ public class FlowQueryService {
     /** 报告根目录(${skill.job.base-dir}),用于报告文件定位与越权防护。 */
     private final Path reportRoot;
 
-    public FlowQueryService(SkillFlowMapper mapper, SkillDependencyMetricMapper metrics,
-                            ObjectMapper json, SkillStorageProperties storage,
-                            FlowSummaryPromptRenderer promptRenderer, HtmlReportRenderer reportRenderer,
-                            FlowCompletionService completionService) {
+    public FlowQueryService(
+        SkillFlowMapper mapper,
+        SkillDependencyMetricMapper metrics,
+        ObjectMapper json,
+        SkillStorageProperties storage,
+        FlowSummaryPromptRenderer promptRenderer,
+        HtmlReportRenderer reportRenderer,
+        FlowCompletionService completionService
+    ) {
         this.mapper = mapper;
         this.metrics = metrics;
         this.json = json;
@@ -62,27 +66,91 @@ public class FlowQueryService {
         return list(status, createdBy, userId, all, page, pageSize, null);
     }
 
-    public PageDto list(String status, String createdBy, String userId, boolean all, int page, int pageSize, String source) {
+    public PageDto list(
+        String status,
+        String createdBy,
+        String userId,
+        boolean all,
+        int page,
+        int pageSize,
+        String source
+    ) {
         return list(status, createdBy, null, userId, all, page, pageSize, source);
     }
-    public PageDto list(String status, String createdBy, String keyword, String userId, boolean all, int page, int pageSize, String source) {
+
+    public PageDto list(
+        String status,
+        String createdBy,
+        String keyword,
+        String userId,
+        boolean all,
+        int page,
+        int pageSize,
+        String source
+    ) {
         return list(status, createdBy, keyword, userId, all, page, pageSize, source, null);
     }
-    public PageDto list(String status, String createdBy, String keyword, String userId, boolean all, int page, int pageSize, String source, String triggerType) {
+
+    public PageDto list(
+        String status,
+        String createdBy,
+        String keyword,
+        String userId,
+        boolean all,
+        int page,
+        int pageSize,
+        String source,
+        String triggerType
+    ) {
+        return list(status, createdBy, keyword, userId, all, page, pageSize, source, triggerType, null);
+    }
+
+    public PageDto list(
+        String status,
+        String createdBy,
+        String keyword,
+        String userId,
+        boolean all,
+        int page,
+        int pageSize,
+        String source,
+        String triggerType,
+        Long typeId
+    ) {
+        if (typeId != null && source == null) source = "long-task";
         if (triggerType != null && triggerType.isBlank()) triggerType = null;
-        if (triggerType != null && !java.util.Set.of("MANUAL", "AUTO_METRIC", "CHAT").contains(triggerType))
-            throw new IllegalArgumentException("Invalid execution trigger type");
+        if (
+            triggerType != null && !java.util.Set.of("MANUAL", "AUTO_METRIC", "CHAT").contains(triggerType)
+        ) throw new IllegalArgumentException("Invalid execution trigger type");
         if (triggerType != null && source == null) source = "long-task";
-        if (source != null && !java.util.Set.of("long-task", "report-template").contains(source))
-            throw new IllegalArgumentException("Invalid execution source");
-        int safePage = Math.max(1, page), safeSize = Math.min(100, Math.max(1, pageSize));
+        if (
+            source != null && !java.util.Set.of("long-task", "report-template").contains(source)
+        ) throw new IllegalArgumentException("Invalid execution source");
+        int safePage = Math.max(1, page),
+            safeSize = Math.min(100, Math.max(1, pageSize));
         String scopedUser = all ? null : userId;
-        List<ExecutionListDto> items = (source == null
+        List<ExecutionListDto> items = (
+            source == null
                 ? mapper.selectExecutions(status, createdBy, keyword, scopedUser, (safePage - 1) * safeSize, safeSize)
-                : mapper.selectExecutionsBySource(status, createdBy, keyword, scopedUser, (safePage - 1) * safeSize, safeSize, source, triggerType))
-                .stream().map(this::listDto).toList();
-        long total = source == null ? mapper.countExecutions(status, createdBy, keyword, scopedUser)
-                : mapper.countExecutionsBySource(status, createdBy, keyword, scopedUser, source, triggerType);
+                : mapper.selectExecutionsBySource(
+                      status,
+                      createdBy,
+                      keyword,
+                      scopedUser,
+                      (safePage - 1) * safeSize,
+                      safeSize,
+                      source,
+                      triggerType,
+                      typeId
+                  )
+        )
+            .stream()
+            .map(this::listDto)
+            .toList();
+        long total =
+            source == null
+                ? mapper.countExecutions(status, createdBy, keyword, scopedUser)
+                : mapper.countExecutionsBySource(status, createdBy, keyword, scopedUser, source, triggerType, typeId);
         return new PageDto(items, safePage, safeSize, total);
     }
 
@@ -96,20 +164,42 @@ public class FlowQueryService {
             total = mapper.selectNodesByFlowId(execution.getFlowId()).size();
         }
         execution.setTotalNodeCount(total);
-        execution.setCompletedNodeCount((int) nodes.stream()
-                .filter(node -> node.getStatus() != null && node.getStatus().terminal()).count());
+        execution.setCompletedNodeCount(
+            (int) nodes
+                .stream()
+                .filter(node -> node.getStatus() != null && node.getStatus().terminal())
+                .count()
+        );
         return dto(execution);
     }
 
     /** 节点执行明细(含每次尝试的 audit 记录)。 */
     public List<NodeDto> nodes(Long id, String userId) {
         SkillFlowExecution execution = readable(id);
-        return mapper.selectNodeExecutions(id).stream()
-                .map(n -> new NodeDto(n.getId(), n.getNodeKey(), displayName(n), n.getSkillName(), n.getQuestionTemplateSnapshot(),
-                        renderedQuestion(execution, n), Boolean.TRUE.equals(n.getRequired()),
-                        n.getStatus().name(), n.getAttemptCount(), n.getMaxAttempts(), n.getErrorCode(),
-                        n.getErrorMessage(), hasResult(n), n.getStartedAt(), n.getCompletedAt(), mapper.selectAttempts(n.getId())))
-                .toList();
+        return mapper
+            .selectNodeExecutions(id)
+            .stream()
+            .map(n ->
+                new NodeDto(
+                    n.getId(),
+                    n.getNodeKey(),
+                    displayName(n),
+                    n.getSkillName(),
+                    n.getQuestionTemplateSnapshot(),
+                    renderedQuestion(execution, n),
+                    Boolean.TRUE.equals(n.getRequired()),
+                    n.getStatus().name(),
+                    n.getAttemptCount(),
+                    n.getMaxAttempts(),
+                    n.getErrorCode(),
+                    n.getErrorMessage(),
+                    hasResult(n),
+                    n.getStartedAt(),
+                    n.getCompletedAt(),
+                    mapper.selectAttempts(n.getId())
+                )
+            )
+            .toList();
     }
 
     /** 按需将单个成功节点的结果渲染为 HTML，不生成或保存节点报告文件。 */
@@ -123,7 +213,7 @@ public class FlowQueryService {
         if (node.getStatus() != FlowNodeExecutionStatus.SUCCESS || content == null) {
             throw new IllegalStateException("FlowNodeReportNotFound: " + nodeId);
         }
-        String title = execution.getFlowName() + " - " + displayName(node);
+        String title = FlowReportNaming.baseTitle(execution) + " - " + displayName(node);
         return reportRenderer.render(content, title);
     }
 
@@ -137,14 +227,22 @@ public class FlowQueryService {
                 affected.computeIfAbsent(metricId, k -> new ArrayList<>()).add(node.getNodeKey());
             }
         }
-        return affected.entrySet().stream().map(entry -> {
-            SkillDependencyMetric metric = metrics.selectById(entry.getKey());
-            SkillMetricReadiness ready = mapper.selectMetricReadiness(entry.getKey(), e.getDataDate());
-            return new MetricDto(entry.getKey(), metric == null ? null : metric.getCode(),
+        return affected
+            .entrySet()
+            .stream()
+            .map(entry -> {
+                SkillDependencyMetric metric = metrics.selectById(entry.getKey());
+                SkillMetricReadiness ready = mapper.selectMetricReadiness(entry.getKey(), e.getDataDate());
+                return new MetricDto(
+                    entry.getKey(),
+                    metric == null ? null : metric.getCode(),
                     metric == null ? null : metric.getName(),
                     ready == null ? "NOT_READY" : ready.getStatus().name(),
-                    ready == null ? null : ready.getReadyAt(), entry.getValue());
-        }).toList();
+                    ready == null ? null : ready.getReadyAt(),
+                    entry.getValue()
+                );
+            })
+            .toList();
     }
 
     /** 该次执行的通知发送记录。 */
@@ -165,7 +263,9 @@ public class FlowQueryService {
                 throw new IllegalStateException("FlowReportNotFound: " + id);
             }
             FlowCompletionService.Summary summary = completionService.summarize(
-                    e, mapper.selectNodeExecutions(e.getId()));
+                e,
+                mapper.selectNodeExecutions(e.getId())
+            );
             e.setSummaryJson(summary.summaryJson());
             e.setReportPath(summary.reportPath());
             mapper.updateExecution(e);
@@ -180,31 +280,47 @@ public class FlowQueryService {
     public String readFlowReportSource(Long id, String userId) {
         SkillFlowExecution e = requireOwner(id, userId);
         Path report = resolveReportPath(e);
-        if (report == null || !Files.isRegularFile(report)) throw new IllegalStateException("FlowReportNotFound: " + id);
-        try { return Files.readString(report, StandardCharsets.UTF_8); }
-        catch (IOException ex) { throw new IllegalStateException("ReportReadFailed: 无法读取报告内容", ex); }
+        if (report == null || !Files.isRegularFile(report)) throw new IllegalStateException(
+            "FlowReportNotFound: " + id
+        );
+        try {
+            return Files.readString(report, StandardCharsets.UTF_8);
+        } catch (IOException ex) {
+            throw new IllegalStateException("ReportReadFailed: 无法读取报告内容", ex);
+        }
     }
 
     public String updateFlowReportSource(Long id, String userId, String html) {
         SkillFlowExecution e = requireOwner(id, userId);
         ReportSourceValidator.validate(html);
         Path report = resolveReportPath(e);
-        if (report == null || !Files.isRegularFile(report)) throw new IllegalStateException("FlowReportNotFound: " + id);
+        if (report == null || !Files.isRegularFile(report)) throw new IllegalStateException(
+            "FlowReportNotFound: " + id
+        );
         Path tmp = null;
         try {
             tmp = Files.createTempFile(report.getParent(), report.getFileName().toString() + ".", ".edit.tmp");
             Files.writeString(tmp, html, StandardCharsets.UTF_8);
-            try { Files.move(tmp, report, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING); }
-            catch (java.nio.file.AtomicMoveNotSupportedException ex) { Files.move(tmp, report, StandardCopyOption.REPLACE_EXISTING); }
+            try {
+                Files.move(tmp, report, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException ex) {
+                Files.move(tmp, report, StandardCopyOption.REPLACE_EXISTING);
+            }
             return Files.readString(report, StandardCharsets.UTF_8);
-        } catch (IOException ex) { throw new IllegalStateException("ReportWriteFailed: 无法保存报告", ex); }
-        finally { if (tmp != null) try { Files.deleteIfExists(tmp); } catch (IOException ignored) {} }
+        } catch (IOException ex) {
+            throw new IllegalStateException("ReportWriteFailed: 无法保存报告", ex);
+        } finally {
+            if (tmp != null) try {
+                Files.deleteIfExists(tmp);
+            } catch (IOException ignored) {}
+        }
     }
 
     /** 下载文件名: {流程名称}-flow-report.html; 剔除文件系统非法字符并限长,避免超长响应头。 */
     private static String downloadName(SkillFlowExecution e) {
-        String safe = Objects.toString(e.getFlowName(), "")
-                .replaceAll("[\\\\/:*?\"<>|\\r\\n\\t]", "").trim();
+        String safe = Objects.toString(FlowReportNaming.baseTitle(e), "")
+            .replaceAll("[\\\\/:*?\"<>|\\r\\n\\t]", "")
+            .trim();
         if (safe.isEmpty()) return FlowReportNaming.datedFileName("flow-report.html", e);
         if (safe.length() > 80) safe = safe.substring(0, 80);
         return FlowReportNaming.datedFileName(safe + "-flow-report.html", e);
@@ -233,23 +349,63 @@ public class FlowQueryService {
     }
 
     private ExecutionDto dto(SkillFlowExecution e) {
-        return new ExecutionDto(e.getId(), e.getFlowId(), e.getFlowName(), e.getFlowCode(), e.getStatus().name(),
-                e.getTriggerType() == null ? null : e.getTriggerType().name(),
-                e.getTriggerUserId(), e.getOriginalQuestion(), e.getDataDate(), e.getRequiredMetricCount(),
-                e.getReadyMetricCount(), e.getTotalNodeCount() == null ? 0 : e.getTotalNodeCount(),
-                e.getCompletedNodeCount() == null ? 0 : e.getCompletedNodeCount(),
-                e.getSummaryQuestionTemplateSnapshot(), null,
-                readJson(e.getSummaryJson()), e.getReportPath(),
-                e.getCreatedAt(), e.getStartedAt(), e.getCompletedAt(), e.getActiveDurationSeconds());
+        return new ExecutionDto(
+            e.getId(),
+            e.getFlowId(),
+            FlowReportNaming.baseTitle(e),
+            e.getFlowCode(),
+            e.getStatus().name(),
+            e.getTriggerType() == null ? null : e.getTriggerType().name(),
+            e.getTriggerUserId(),
+            e.getOriginalQuestion(),
+            e.getDataDate(),
+            e.getRequiredMetricCount(),
+            e.getReadyMetricCount(),
+            e.getTotalNodeCount() == null ? 0 : e.getTotalNodeCount(),
+            e.getCompletedNodeCount() == null ? 0 : e.getCompletedNodeCount(),
+            e.getSummaryQuestionTemplateSnapshot(),
+            null,
+            readJson(e.getSummaryJson()),
+            e.getReportPath(),
+            e.getCreatedAt(),
+            e.getStartedAt(),
+            e.getCompletedAt(),
+            e.getActiveDurationSeconds(),
+            e.getTypeId(),
+            e.getBatchId(),
+            FlowReportNaming.value(e, "report_type"),
+            FlowReportNaming.value(e, "dev_dept"),
+            FlowReportNaming.value(e, "stat_group"),
+            e.getBatchId() == null ? null : e.getFlowName()
+        );
     }
 
     private ExecutionListDto listDto(SkillFlowExecution e) {
-        return new ExecutionListDto(e.getId(), e.getFlowId(), e.getFlowName(), e.getFlowCode(),
-                e.getStatus().name(), e.getTriggerType() == null ? null : e.getTriggerType().name(),
-                e.getTriggerUserId(), e.getDataDate(), e.getRequiredMetricCount(), e.getReadyMetricCount(),
-                e.getTotalNodeCount() == null ? 0 : e.getTotalNodeCount(),
-                e.getCompletedNodeCount() == null ? 0 : e.getCompletedNodeCount(),
-                e.getReportPath(), e.getCreatedAt(), e.getStartedAt(), e.getCompletedAt(), e.getActiveDurationSeconds());
+        return new ExecutionListDto(
+            e.getId(),
+            e.getFlowId(),
+            FlowReportNaming.baseTitle(e),
+            e.getFlowCode(),
+            e.getStatus().name(),
+            e.getTriggerType() == null ? null : e.getTriggerType().name(),
+            e.getTriggerUserId(),
+            e.getDataDate(),
+            e.getRequiredMetricCount(),
+            e.getReadyMetricCount(),
+            e.getTotalNodeCount() == null ? 0 : e.getTotalNodeCount(),
+            e.getCompletedNodeCount() == null ? 0 : e.getCompletedNodeCount(),
+            e.getReportPath(),
+            e.getCreatedAt(),
+            e.getStartedAt(),
+            e.getCompletedAt(),
+            e.getActiveDurationSeconds(),
+            e.getTypeId(),
+            e.getBatchId(),
+            FlowReportNaming.value(e, "report_type"),
+            FlowReportNaming.value(e, "dev_dept"),
+            FlowReportNaming.value(e, "stat_group"),
+            e.getBatchId() == null ? null : e.getFlowName()
+        );
     }
 
     /**
@@ -273,12 +429,24 @@ public class FlowQueryService {
     private String renderedQuestion(SkillFlowExecution execution, SkillFlowNodeExecution node) {
         if (node.getRenderedQuestion() != null) return node.getRenderedQuestion();
         try {
-            String rendered = templates.render(node.getQuestionTemplateSnapshot(),
-                    new FlowTemplateEngine.Context(Map.of(
-                            "server_date", execution.getDataDate().toString(),
-                            "original_question", Objects.toString(execution.getOriginalQuestion(), ""),
-                            "flow_name", execution.getFlowName(),
-                            "skill_name", Objects.toString(node.getSkillName(), ""))));
+            String rendered = templates.render(
+                node.getQuestionTemplateSnapshot(),
+                new FlowTemplateEngine.Context(
+                    FlowTemplateEngine.withPublic(
+                        execution,
+                        Map.of(
+                            "server_date",
+                            execution.getDataDate().toString(),
+                            "original_question",
+                            Objects.toString(execution.getOriginalQuestion(), ""),
+                            "flow_name",
+                            execution.getFlowName(),
+                            "skill_name",
+                            Objects.toString(node.getSkillName(), "")
+                        )
+                    )
+                )
+            );
             return FlowCoordinator.buildPrompt(node, rendered);
         } catch (RuntimeException e) {
             return null;
@@ -315,31 +483,191 @@ public class FlowQueryService {
     }
 
     /** 执行记录列表/详情返回体。activeDurationSeconds 为所有尝试审计耗时之和(秒),无尝试记录时为 null。 */
-    public record ExecutionDto(Long id, Long flowId, String flowName, String flowCode, String status,
-                               String triggerType,
-                               String triggerUserId, String originalQuestion, LocalDate dataDate,
-                               Integer requiredMetricCount, Integer readyMetricCount,
-                               Integer totalNodeCount, Integer completedNodeCount,
-                               String summaryQuestionTemplateSnapshot, String renderedSummaryQuestion,
-                               Object summaryJson, String reportPath,
-                               LocalDateTime createdAt, LocalDateTime startedAt, LocalDateTime completedAt,
-                               Long activeDurationSeconds) {}
-    public record ExecutionListDto(Long id, Long flowId, String flowName, String flowCode, String status,
-                                   String triggerType, String triggerUserId, LocalDate dataDate,
-                                   Integer requiredMetricCount, Integer readyMetricCount,
-                                   Integer totalNodeCount, Integer completedNodeCount, String reportPath,
-                                   LocalDateTime createdAt, LocalDateTime startedAt, LocalDateTime completedAt,
-                                   Long activeDurationSeconds) {}
+    public record ExecutionDto(
+        Long id,
+        Long flowId,
+        String flowName,
+        String flowCode,
+        String status,
+        String triggerType,
+        String triggerUserId,
+        String originalQuestion,
+        LocalDate dataDate,
+        Integer requiredMetricCount,
+        Integer readyMetricCount,
+        Integer totalNodeCount,
+        Integer completedNodeCount,
+        String summaryQuestionTemplateSnapshot,
+        String renderedSummaryQuestion,
+        Object summaryJson,
+        String reportPath,
+        LocalDateTime createdAt,
+        LocalDateTime startedAt,
+        LocalDateTime completedAt,
+        Long activeDurationSeconds,
+        Long typeId,
+        String batchId,
+        String reportType,
+        String departmentName,
+        String teamName,
+        String sourceFlowName
+    ) {
+        public ExecutionDto(
+            Long id,
+            Long flowId,
+            String flowName,
+            String flowCode,
+            String status,
+            String triggerType,
+            String triggerUserId,
+            String originalQuestion,
+            LocalDate dataDate,
+            Integer requiredMetricCount,
+            Integer readyMetricCount,
+            Integer totalNodeCount,
+            Integer completedNodeCount,
+            String summaryQuestionTemplateSnapshot,
+            String renderedSummaryQuestion,
+            Object summaryJson,
+            String reportPath,
+            LocalDateTime createdAt,
+            LocalDateTime startedAt,
+            LocalDateTime completedAt,
+            Long activeDurationSeconds
+        ) {
+            this(
+                id,
+                flowId,
+                flowName,
+                flowCode,
+                status,
+                triggerType,
+                triggerUserId,
+                originalQuestion,
+                dataDate,
+                requiredMetricCount,
+                readyMetricCount,
+                totalNodeCount,
+                completedNodeCount,
+                summaryQuestionTemplateSnapshot,
+                renderedSummaryQuestion,
+                summaryJson,
+                reportPath,
+                createdAt,
+                startedAt,
+                completedAt,
+                activeDurationSeconds,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null
+            );
+        }
+    }
+
+    public record ExecutionListDto(
+        Long id,
+        Long flowId,
+        String flowName,
+        String flowCode,
+        String status,
+        String triggerType,
+        String triggerUserId,
+        LocalDate dataDate,
+        Integer requiredMetricCount,
+        Integer readyMetricCount,
+        Integer totalNodeCount,
+        Integer completedNodeCount,
+        String reportPath,
+        LocalDateTime createdAt,
+        LocalDateTime startedAt,
+        LocalDateTime completedAt,
+        Long activeDurationSeconds,
+        Long typeId,
+        String batchId,
+        String reportType,
+        String departmentName,
+        String teamName,
+        String sourceFlowName
+    ) {
+        public ExecutionListDto(
+            Long id,
+            Long flowId,
+            String flowName,
+            String flowCode,
+            String status,
+            String triggerType,
+            String triggerUserId,
+            LocalDate dataDate,
+            Integer requiredMetricCount,
+            Integer readyMetricCount,
+            Integer totalNodeCount,
+            Integer completedNodeCount,
+            String reportPath,
+            LocalDateTime createdAt,
+            LocalDateTime startedAt,
+            LocalDateTime completedAt,
+            Long activeDurationSeconds
+        ) {
+            this(
+                id,
+                flowId,
+                flowName,
+                flowCode,
+                status,
+                triggerType,
+                triggerUserId,
+                dataDate,
+                requiredMetricCount,
+                readyMetricCount,
+                totalNodeCount,
+                completedNodeCount,
+                reportPath,
+                createdAt,
+                startedAt,
+                completedAt,
+                activeDurationSeconds,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null
+            );
+        }
+    }
+
     public record PageDto(List<ExecutionListDto> items, int page, int pageSize, long total) {}
 
     /** 节点执行明细返回体(attempts 为每次尝试的审计记录;节点全并行,无依赖)。 */
-    public record NodeDto(Long id, String nodeKey, String nodeName, String skillName, String questionTemplateSnapshot,
-                          String renderedQuestion, boolean required, String status,
-                          Integer attemptCount, Integer maxAttempts, String errorCode, String errorMessage,
-                          boolean hasResult, LocalDateTime startedAt, LocalDateTime completedAt,
-                          List<SkillFlowNodeAttempt> attempts) {}
+    public record NodeDto(
+        Long id,
+        String nodeKey,
+        String nodeName,
+        String skillName,
+        String questionTemplateSnapshot,
+        String renderedQuestion,
+        boolean required,
+        String status,
+        Integer attemptCount,
+        Integer maxAttempts,
+        String errorCode,
+        String errorMessage,
+        boolean hasResult,
+        LocalDateTime startedAt,
+        LocalDateTime completedAt,
+        List<SkillFlowNodeAttempt> attempts
+    ) {}
 
     /** 指标就绪返回体:affectedSkills 为依赖该指标的节点 key 列表。 */
-    public record MetricDto(Long metricId, String metricCode, String metricName, String status,
-                            LocalDateTime readyAt, List<String> affectedSkills) {}
+    public record MetricDto(
+        Long metricId,
+        String metricCode,
+        String metricName,
+        String status,
+        LocalDateTime readyAt,
+        List<String> affectedSkills
+    ) {}
 }

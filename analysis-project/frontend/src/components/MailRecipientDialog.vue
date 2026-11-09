@@ -1,14 +1,39 @@
 <script setup lang="ts">
 import OrderedRecipientList from './OrderedRecipientList.vue';
 import { nextTick, onUnmounted, ref, watch } from 'vue';
+import type { TooltipInstance } from 'element-plus';
 import { searchSkillUsers } from '../api/skill';
 import { lookupRecipients, lookupMessage } from '../api/recipientLookup';
-const props = withDefaults(defineProps<{ open: boolean; to: string[]; cc: string[]; names: Record<string, string>; mode?: 'edit' | 'send'; submitting?: boolean; error?: string; dirty?: boolean }>(), { mode: 'edit', submitting: false, error: '', dirty: false });
-const emit = defineEmits<{ (e: 'update:open', value: boolean): void; (e: 'confirm', value: { to: string[]; cc: string[]; names: Record<string, string> }): void }>();
-const to = ref<string[]>([]), cc = ref<string[]>([]), names = ref<Record<string, string>>({});
-const keyword = ref(''), busy = ref(false), message = ref('');
-const results = ref<{ userId: string; name: string; department?: string | null }[]>([]);
-const panel = ref<HTMLElement | null>(null), queryInput = ref<HTMLTextAreaElement | null>(null);
+type RecipientPerson = { userId: string; name: string; department?: string | null; positionRole?: string | null };
+const props = withDefaults(
+  defineProps<{
+    open: boolean;
+    to: string[];
+    cc: string[];
+    names: Record<string, string>;
+    mode?: 'edit' | 'send';
+    submitting?: boolean;
+    error?: string;
+    dirty?: boolean;
+    searchUsers?: (keyword: string) => Promise<RecipientPerson[]>;
+  }>(),
+  { mode: 'edit', submitting: false, error: '', dirty: false }
+);
+const emit = defineEmits<{
+  (e: 'update:open', value: boolean): void;
+  (e: 'confirm', value: { to: string[]; cc: string[]; names: Record<string, string> }): void;
+}>();
+const to = ref<string[]>([]),
+  cc = ref<string[]>([]),
+  names = ref<Record<string, string>>({});
+const keyword = ref(''),
+  busy = ref(false),
+  message = ref('');
+const results = ref<RecipientPerson[]>([]);
+const panel = ref<HTMLElement | null>(null),
+  queryInput = ref<HTMLTextAreaElement | null>(null);
+const recipientHint = ref<TooltipInstance>(),
+  queryHint = ref<TooltipInstance>();
 let previousFocus: HTMLElement | null = null;
 let generation = 0;
 let initialRecipients = '';
@@ -16,75 +41,152 @@ const recipientSnapshot = () => JSON.stringify([to.value, cc.value]);
 function requestClose() {
   if (props.submitting) return;
   if (busy.value || props.dirty || recipientSnapshot() !== initialRecipients) {
-    message.value = props.mode === 'send'
-      ? '通知内容或名单已调整，请点击“确认发送”提交；点击“取消”放弃本次调整。'
-      : '名单尚未确认，请点击“确认”保留修改，再保存流程；点击“取消”放弃修改。';
+    message.value =
+      props.mode === 'send'
+        ? '通知内容或名单已调整，请点击“确认发送”提交；点击“取消”放弃本次调整。'
+        : '名单尚未确认，请点击“确认”保留修改，再保存流程；点击“取消”放弃修改。';
     return;
   }
   close();
 }
-function restoreFocus() { previousFocus?.focus?.(); previousFocus = null; }
-onUnmounted(() => { generation++; restoreFocus(); });
-function keydown(event: KeyboardEvent) {
-  if (event.key === 'Escape') { event.preventDefault(); requestClose(); return; }
-  if (event.key !== 'Tab') return;
-  const controls = panel.value?.querySelectorAll<HTMLElement>('button:not(:disabled), textarea:not(:disabled), [tabindex="0"]');
-  if (!controls?.length) return;
-  const first = controls[0], last = controls[controls.length - 1];
-  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+function restoreFocus() {
+  previousFocus?.focus?.();
+  previousFocus = null;
 }
-watch(() => props.open, open => {
+onUnmounted(() => {
   generation++;
-  busy.value = false;
-  if (!open) { restoreFocus(); return; }
-  previousFocus = typeof document === 'undefined' ? null : document.activeElement as HTMLElement;
-  const version = generation;
-  nextTick(() => { if (version === generation) queryInput.value?.focus?.(); });
-  to.value = [...new Set(props.to)];
-  cc.value = [...new Set(props.cc)].filter(id => !to.value.includes(id));
-  initialRecipients = recipientSnapshot();
-  names.value = { ...props.names };
-  keyword.value = ''; results.value = []; message.value = '';
-}, { immediate: true });
+  restoreFocus();
+});
+function keydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    requestClose();
+    return;
+  }
+  if (event.key !== 'Tab') return;
+  const controls = panel.value?.querySelectorAll<HTMLElement>(
+    'button:not(:disabled), textarea:not(:disabled), [tabindex="0"]'
+  );
+  if (!controls?.length) return;
+  const first = controls[0],
+    last = controls[controls.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+watch(
+  () => props.open,
+  (open) => {
+    generation++;
+    busy.value = false;
+    if (!open) {
+      restoreFocus();
+      return;
+    }
+    previousFocus = typeof document === 'undefined' ? null : (document.activeElement as HTMLElement);
+    const version = generation;
+    nextTick(() => {
+      if (version === generation) queryInput.value?.focus?.();
+    });
+    to.value = [...new Set(props.to)];
+    cc.value = [...new Set(props.cc)].filter((id) => !to.value.includes(id));
+    initialRecipients = recipientSnapshot();
+    names.value = { ...props.names };
+    keyword.value = '';
+    results.value = [];
+    message.value = '';
+    if (props.searchUsers) void loadSource(version);
+  },
+  { immediate: true }
+);
+function searchPeople(keyword: string): Promise<RecipientPerson[]> {
+  return props.searchUsers ? props.searchUsers(keyword) : searchSkillUsers(keyword);
+}
+async function loadSource(version: number) {
+  busy.value = true;
+  try {
+    // 仅解析已保存的收件人用于展示；输入查询条件前不加载搜索结果。
+    const ids = [...new Set([...to.value, ...cc.value])].filter((id) => !names.value[id]);
+    const found = await Promise.allSettled(
+      ids.map(async (id) => (await searchPeople(id)).find((person) => person.userId === id))
+    );
+    if (version !== generation) return;
+    for (const result of found)
+      if (result.status === 'fulfilled' && result.value) names.value[result.value.userId] = result.value.name;
+  } catch {
+    if (version === generation) message.value = '读取已选人员姓名失败，请输入姓名或认证号重试';
+  } finally {
+    if (version === generation) busy.value = false;
+  }
+}
 function add(ids: string[], group: 'to' | 'cc') {
-  const target = group === 'to' ? to : cc, other = group === 'to' ? cc : to;
-  other.value = other.value.filter(id => !ids.includes(id));
+  const target = group === 'to' ? to : cc,
+    other = group === 'to' ? cc : to;
+  other.value = other.value.filter((id) => !ids.includes(id));
   target.value = [...new Set([...target.value, ...ids])];
 }
 async function search() {
   if (!keyword.value.trim() || busy.value) return;
   const version = generation;
-  busy.value = true; message.value = ''; results.value = [];
+  busy.value = true;
+  message.value = '';
+  results.value = [];
   try {
-    const found = await lookupRecipients(keyword.value, searchSkillUsers);
-    if (version === generation) { results.value = found.items; message.value = lookupMessage(found); }
-  } catch { if (version === generation) message.value = '搜索失败，请重试'; }
-  finally { if (version === generation) busy.value = false; }
+    const found = await lookupRecipients(keyword.value, searchPeople);
+    if (version === generation) {
+      results.value = found.items;
+      message.value = lookupMessage(found);
+    }
+  } catch {
+    if (version === generation) message.value = '搜索失败，请重试';
+  } finally {
+    if (version === generation) busy.value = false;
+  }
 }
 async function batch(group: 'to' | 'cc') {
   const ids = [...new Set(keyword.value.split(/[\s,，;；、]+/).filter(Boolean))];
   if (!ids.length || busy.value) return;
   const version = generation;
-  busy.value = true; message.value = ''; results.value = [];
+  busy.value = true;
+  message.value = '';
+  results.value = [];
   try {
-    const found = await lookupRecipients(keyword.value, searchSkillUsers, true);
+    const found = await lookupRecipients(keyword.value, searchPeople, true);
     if (version !== generation) return;
     for (const person of found.matched) names.value[person.userId] = person.name || person.userId;
-    add(found.matched.map(person => person.userId), group);
+    add(
+      found.matched.map((person) => person.userId),
+      group
+    );
     results.value = found.items;
     message.value = lookupMessage(found, true);
-  } catch { if (version === generation) message.value = '匹配失败，请重试'; }
-  finally { if (version === generation) busy.value = false; }
+  } catch {
+    if (version === generation) message.value = '匹配失败，请重试';
+  } finally {
+    if (version === generation) busy.value = false;
+  }
 }
-function select(item: { userId: string; name: string }, group: 'to' | 'cc') { names.value[item.userId] = item.name; add([item.userId], group); }
+function select(item: { userId: string; name: string }, group: 'to' | 'cc') {
+  names.value[item.userId] = item.name;
+  add([item.userId], group);
+}
 function restoreDefaults() {
   to.value = [...new Set(props.to)];
-  cc.value = [...new Set(props.cc)].filter(id => !to.value.includes(id));
+  cc.value = [...new Set(props.cc)].filter((id) => !to.value.includes(id));
   names.value = { ...props.names };
-  keyword.value = ''; results.value = []; message.value = '';
+  keyword.value = '';
+  results.value = [];
+  message.value = '';
 }
-function close() { if (props.submitting) return; generation++; emit('update:open', false); }
+function close() {
+  if (props.submitting) return;
+  generation++;
+  emit('update:open', false);
+}
 function confirm() {
   if (busy.value || props.submitting || (props.mode === 'send' && !to.value.length)) return;
   emit('confirm', { to: [...to.value], cc: [...cc.value], names: { ...names.value } });
@@ -104,7 +206,7 @@ function confirm() {
         <small class="mail-help">多个姓名或账号可用逗号、分号、空格或换行分隔；同名人员请搜索后选择。</small><div class="mail-actions"><button class="search-button" type="button" :disabled="busy" @click="search">搜索</button><button type="button" :disabled="busy" @click="batch('to')">批量加入收件人</button><button type="button" :disabled="busy" @click="batch('cc')">批量加入抄送</button></div>
         </div><p class="mail-status" v-if="busy" role="status">正在匹配人员…</p><p class="mail-status" v-if="message" role="status">{{ message }}</p>
         <div v-if="mode === 'send'" class="mail-actions"><button type="button" @click="to = []; cc = []">全部清空</button><button type="button" @click="restoreDefaults">恢复已保存名单</button></div>
-        <div v-if="results.length" class="mail-results"><div v-for="item in results" :key="item.userId"><span class="result-person" :title="`${item.name || item.userId}(${item.userId}) ${item.department || ''}`"><strong>{{ item.name || item.userId }}({{ item.userId }})</strong> <small v-if="item.department">{{ item.department }}</small></span><button type="button" @click="select(item, 'to')">加入收件人</button><button type="button" @click="select(item, 'cc')">加入抄送</button></div></div>
+        <div v-if="results.length" class="mail-results"><div v-for="item in results" :key="item.userId"><span class="result-person" :title="`${item.name || item.userId}(${item.userId}) ${item.department || ''}`"><strong>{{ item.name || item.userId }}({{ item.userId }})</strong> <small v-if="item.department">{{ item.department }}</small><small v-if="item.positionRole" class="role-badge">{{ item.positionRole }}</small></span><button type="button" @click="select(item, 'to')">加入收件人</button><button type="button" @click="select(item, 'cc')">加入抄送</button></div></div>
         <div class="mail-previews">
           <section class="recipient-card"><div class="recipient-card-heading"><h4>收件人 <span>TO</span><b>（{{ to.length }}）</b></h4><button v-if="mode === 'send'" type="button" @click="to = []">清空收件人</button></div><p class="recipient-empty" v-if="!to.length">{{ mode === 'send' ? '请至少添加一位收件人后发送' : '未配置时通知流程触发人' }}</p><OrderedRecipientList v-model="to" label="收件人" :disabled="submitting || busy">
             <template #default="{ id }">{{ names[id] || id }}({{ id }})</template>

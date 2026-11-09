@@ -1,3 +1,28 @@
+export interface TeamReportTarget {
+  departmentId?: string;
+  departmentName?: string;
+  teamId: string | null;
+  teamName: string | null;
+  selected: boolean;
+  keyword: string;
+  to: string[];
+  cc: string[];
+  /** 历史部门对象的联系人；团队报告使用任务级联系人。 */
+  notifyContactName?: string | null;
+  /** 历史部门对象的联系电话；团队报告使用任务级联系电话。 */
+  notifyContactPhone?: string | null;
+  executors?: string[] | null;
+  notifyEnabled?: boolean | null;
+  notifyBodyTemplate?: string | null;
+  reportName?: string | null;
+}
+export interface TeamReportConfig {
+  reportType: 'DEPARTMENT' | 'TEAM';
+  departments?: { id: string; name: string }[];
+  departmentId: string;
+  departmentName: string;
+  targets: TeamReportTarget[];
+}
 import type { ScriptParams } from './scriptRegistry';
 
 export interface SkillFlowTrigger {
@@ -66,6 +91,7 @@ export interface SkillFlow {
   summaryQuestionTemplate: string;
   enabled: boolean;
   typeId?: number;
+  teamReport?: TeamReportConfig | null;
   priority?: number;
   scheduleRules?: string | null;
   autoTriggerEnabled?: boolean;
@@ -95,6 +121,7 @@ export interface SkillFlowInput {
   summaryQuestionTemplate: string;
   enabled: boolean;
   typeId?: number;
+  teamReport?: TeamReportConfig | null;
   priority?: number;
   scheduleRules?: string | null;
   autoTriggerEnabled?: boolean;
@@ -177,6 +204,13 @@ export interface SkillFlowNotification {
 export interface SkillFlowExecution {
   id: number;
   flowId?: number;
+  typeId?: number;
+  batchId?: string;
+  reportType?: string;
+  departmentName?: string;
+  teamName?: string;
+  sourceFlowName?: string;
+
   flowName: string;
   flowCode?: string;
   status: string;
@@ -221,4 +255,23 @@ export interface SkillFlowRunResult {
   status: string;
 }
 
-export interface SkillFlowSummary { id:number; code?:string; name:string; description?:string; enabled:boolean; autoTriggerEnabled?:boolean; scheduleRules?:string|null; chatPublic?:boolean; typeId?:number|null; createdBy?:string; createdAt?:string; updatedAt?:string; nodeCount:number; metricCount:number; canExecute:boolean }
+export interface SkillFlowSummary {
+  manualBatchId?: string;
+  manualBatchTotal?: number;
+  manualBatchCompleted?: number;
+  id: number;
+  code?: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  autoTriggerEnabled?: boolean;
+  scheduleRules?: string | null;
+  chatPublic?: boolean;
+  typeId?: number | null;
+  createdBy?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  nodeCount: number;
+  metricCount: number;
+  canExecute: boolean;
+}

@@ -1,12 +1,11 @@
 package com.agentscopea2a.v2.skillManager.entity;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-
-import java.time.LocalDate;
-import java.time.LocalDateTime;
 
 /**
  * 流程执行记录实体:触发即插入,快照流程当时的模板/并发度/通知开关(改编排不影响在跑的执行)。
@@ -17,8 +16,14 @@ import java.time.LocalDateTime;
 @NoArgsConstructor
 @AllArgsConstructor
 public class SkillFlowExecution {
+
     /** 执行实例主键，也是返回给调用方的任务 ID。 */
     private Long id;
+    private Long typeId;
+    private String batchId;
+    private String teamId;
+    private String publicParamsJson;
+
     /** 来源长任务定义 ID；直接执行报告模板时为空。 */
     private Long flowId;
     /** 来源报告流程（模板）ID；未引用报告流程的长任务可为空。 */

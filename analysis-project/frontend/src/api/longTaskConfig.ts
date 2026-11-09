@@ -1,12 +1,60 @@
-export interface LongTaskType { id:number; name:string; description?:string|null; sortOrder:number; enabled:boolean; createdAt?:string; updatedAt?:string }
-export interface LongTaskTypeInput { name:string; description?:string; sortOrder:number; enabled:boolean }
-export interface LongTaskTypePage { items:LongTaskType[]; total:number; page:number; pageSize:number }
-export async function listLongTaskTypes(enabled?: boolean, page=1, pageSize=20): Promise<LongTaskTypePage> {
- const qs = `?page=${page}&pageSize=${pageSize}${enabled == null ? '' : `&enabled=${enabled}`}`;
- const res = await fetch(`/api/long-task-types${qs}`, { headers: { 'X-User-Id': localStorage.getItem('skill-user-id') || 'demo-user' } });
- if (!res.ok) throw new Error('查询长任务类型失败'); return res.json();
+export interface LongTaskType {
+  id: number;
+  name: string;
+  description?: string | null;
+  sortOrder: number;
+  enabled: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 }
-function headers(){return {'X-User-Id':localStorage.getItem('skill-user-id')||'demo-user','Content-Type':'application/json'};}
-export async function createLongTaskType(input:LongTaskTypeInput){const r=await fetch('/api/long-task-types',{method:'POST',headers:headers(),body:JSON.stringify(input)});if(!r.ok)throw new Error(await r.text()||'创建类型失败');return r.json() as Promise<LongTaskType>}
-export async function updateLongTaskType(id:number,input:LongTaskTypeInput){const r=await fetch(`/api/long-task-types/${id}`,{method:'PUT',headers:headers(),body:JSON.stringify(input)});if(!r.ok)throw new Error(await r.text()||'保存类型失败');return r.json() as Promise<LongTaskType>}
-export async function deleteLongTaskType(id:number){const r=await fetch(`/api/long-task-types/${id}`,{method:'DELETE',headers:headers()});if(!r.ok)throw new Error(await r.text()||'删除类型失败')}
+export interface LongTaskTypeInput {
+  name: string;
+  description?: string;
+  sortOrder: number;
+  enabled: boolean;
+}
+export interface LongTaskTypePage {
+  items: LongTaskType[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+export async function listLongTaskTypes(enabled?: boolean, page = 1, pageSize = 20): Promise<LongTaskTypePage> {
+  const qs = `?page=${page}&pageSize=${pageSize}${enabled == null ? '' : `&enabled=${enabled}`}`;
+  const res = await fetch(`/api/long-task-types${qs}`, {
+    headers: { 'X-User-Id': localStorage.getItem('skill-user-id') || 'demo-user' },
+  });
+  if (!res.ok) throw new Error('查询长任务类型失败');
+  return res.json();
+}
+function headers() {
+  return { 'X-User-Id': localStorage.getItem('skill-user-id') || 'demo-user', 'Content-Type': 'application/json' };
+}
+export async function createLongTaskType(input: LongTaskTypeInput) {
+  const r = await fetch('/api/long-task-types', { method: 'POST', headers: headers(), body: JSON.stringify(input) });
+  if (!r.ok) throw new Error((await r.text()) || '创建类型失败');
+  return r.json() as Promise<LongTaskType>;
+}
+export async function updateLongTaskType(id: number, input: LongTaskTypeInput) {
+  const r = await fetch(`/api/long-task-types/${id}`, {
+    method: 'PUT',
+    headers: headers(),
+    body: JSON.stringify(input),
+  });
+  if (!r.ok) throw new Error((await r.text()) || '保存类型失败');
+  return r.json() as Promise<LongTaskType>;
+}
+export async function deleteLongTaskType(id: number) {
+  const r = await fetch(`/api/long-task-types/${id}`, { method: 'DELETE', headers: headers() });
+  if (!r.ok) throw new Error((await r.text()) || '删除类型失败');
+}
+
+export async function listAllLongTaskTypes(): Promise<LongTaskType[]> {
+  const items: LongTaskType[] = [];
+  for (let page = 1; ; page++) {
+    const result = await listLongTaskTypes(undefined, page, 100);
+    items.push(...result.items);
+    if (items.length >= result.total || result.items.length < 100) break;
+  }
+  return items;
+}

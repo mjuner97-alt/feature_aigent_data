@@ -98,7 +98,7 @@
     </sql>
     <select id="selectExecutionCenterPage" resultMap="SkillJobExecutionResultMap">
         SELECT e.id, e.job_id, e.trigger_type, e.status, e.md_file_exists, e.created_at,
-               CASE WHEN e.error_msg IS NOT NULL AND TRIM(e.error_msg) != '' THEN 'error' ELSE NULL END AS error_msg,
+               CASE WHEN LENGTH(TRIM(e.error_msg)) > 0 THEN 'error' ELSE NULL END AS error_msg,
                j.name AS job_name, s.name AS skill_name, j.created_by
         FROM skill_job_execution e JOIN skill_job j ON j.id = e.job_id
         LEFT JOIN skill_manage s ON s.id = j.skill_id
