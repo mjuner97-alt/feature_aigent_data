@@ -1264,18 +1264,19 @@ public class DirectSkillExecutor {
     /** P5 拍板: 触发词 contains 匹配, 「分布式」误伤接受不加排除词。 */
     static final String DISTRIBUTION_TRIGGER = "分布";
 
-    /** 下钻链默认值 (P1/P2 拍板, 链 部门→应用/组/产品线→人 与 DRILL_CONFLICT_FINE_DIMS 同轴):
+    /** 下钻链默认值 (P1/P2 拍板, 链 部门→应用/组/产品线→人 与 DRILL_CONFLICT_FINE_DIMS 同轴;
+     *  2026/11/09 拍板修订: 部门默认由「应用」改「统计组/groupName」):
      *  链上最深有值 family → 默认粒度值; 人 (perName/perNo/perRole) 是链底不在表内即不补。
      *  值取所属词表标准值 —— drillDown 用「X维度」形态词, dimension (STAT_DIMENSION_KEY)
-     *  用双词表收敛 seed 的「应用/人员」形态词 (同 dimension_family_config seed)。
+     *  用双词表收敛 seed 的「统计组/人员」形态词 (同 dimension_family_config seed)。
      *  杭研不在表内 (P4 拍板: 不特判, 脚本默认逻辑已下钻到部门维度)。 */
     private static final Map<String, String> DRILL_DEFAULT_BY_DRILLDOWN = Map.of(
-            "deptName", "应用维度",
+            "deptName", "组维度",
             "groupName", "个人维度",
             "appName", "个人维度",
             "productLine", "个人维度");
     private static final Map<String, String> DRILL_DEFAULT_BY_DIMENSION = Map.of(
-            "deptName", "应用",
+            "deptName", "统计组",
             "groupName", "人员",
             "appName", "人员",
             "productLine", "人员");

@@ -3578,7 +3578,7 @@ class DirectSkillExecutorTest {
         when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(schema));
     }
 
-    /** 场景2: 问题含「分布」+ 仅部门有值 + 细粒度全无值 → 默认补 drillDown=[应用维度] (P1 单值)。 */
+    /** 场景2: 问题含「分布」+ 仅部门有值 + 细粒度全无值 → 默认补 drillDown=[组维度] (P1 单值; 2026/11/09 拍板由应用改统计组)。 */
     @Test
     void distributionDrillFillsDrillDownForDept() {
         String question = "杭州开发一部 2026年7月份版本 缺陷问题分布情况";
@@ -3589,7 +3589,7 @@ class DirectSkillExecutorTest {
         DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(question, "alice", null);
 
         assertEquals("杭州开发一部", plan.params().get("dept"));
-        assertEquals("应用维度", plan.params().get("drillDown"));
+        assertEquals("组维度", plan.params().get("drillDown"));
     }
 
     /** 场景4/5: 组有值 (dept+组多级同值) → 取链上最深一级 (P2 拍板) → 补 [个人维度]。 */
@@ -3661,8 +3661,8 @@ class DirectSkillExecutorTest {
         assertFalse(plan.params().containsKey("drillDown"));
     }
 
-    /** 场景10: 仅配置 dimension (统计维度) 参数的 skill → 补 dimension 词表值「应用」;
-     *  drillDown/dimension 二选一 (拍板确认), 按 mapping 实际配置的参数补。 */
+    /** 场景10: 仅配置 dimension (统计维度) 参数的 skill → 补 dimension 词表值「统计组」
+     *  (2026/11/09 拍板修订, 原为「应用」); drillDown/dimension 二选一 (拍板确认), 按 mapping 实际配置的参数补。 */
     @Test
     void distributionDrillDimensionParamFillsDimensionVocabValue() {
         String question = "杭州开发一部 2026年7月份版本 缺陷问题分布情况";
@@ -3674,12 +3674,12 @@ class DirectSkillExecutorTest {
         DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(question, "alice", null);
 
         assertFalse(plan.params().containsKey("drillDown"));
-        assertEquals("应用", plan.params().get("dimension"));
+        assertEquals("统计组", plan.params().get("dimension"));
     }
 
     /** E2E bug 回归 (2026-11-09): 「分布情况呢?」零其他维度信号 → hasDimensionSignal
      *  不认 → 回退 LLM 丢快照继承+默认下钻。修复后: 分布触发词构成追问信号,
-     *  追问轨继承 dept/version 并默认补 drillDown=[应用维度]。 */
+     *  追问轨继承 dept/version 并默认补 drillDown=[组维度] (2026/11/09 拍板部门默认改统计组)。 */
     @Test
     void followupDistributionQuestionInheritsAndFillsDefaultDrill() {
         when(metadataRepository.findActive()).thenReturn(List.of(
@@ -3707,6 +3707,6 @@ class DirectSkillExecutorTest {
         assertEquals("dept_skill", r2.skillName());
         assertEquals("杭州开发二部", r2.params().get("dept"));           // 快照继承
         assertEquals("2026年7月份版本", r2.params().get("version"));      // 时间家族继承 (未重锚)
-        assertEquals("应用维度", r2.params().get("drill"));              // 分布默认下钻 (P1/P2)
+        assertEquals("组维度", r2.params().get("drill"));              // 分布默认下钻 (P1/P2; 部门默认=组维度)
     }
 }
