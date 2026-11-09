@@ -27,6 +27,9 @@ stdout 首行「时间入参回显」即 E2E 观察点: 断言脚本实际收到
     productLine 可选, 产品线 (str 或 [str])
     perName     可选, 姓名 (str 或 [str])
     perNo       可选, 统一认证号 (str 或 [str])
+    drillDown   可选, 下钻粒度 (str 或 [str]) — 「分布」触发默认下钻 E2E 观察维
+                (分布触发默认下钻方案 2026-11-09): 部门→应用维度, 组/应用/产品线→个人维度,
+                仅回显不过滤
 
 五个细粒度维度 (我X按需注入方案 R1/R2 的 E2E 观察点): stdout「维度入参回显」行
 原样回显脚本实际收到的值集合 —— 断言 Java 端只传了问句真正提及的维度:
@@ -110,9 +113,11 @@ def main():
     versions = _as_str_list(params.get("version"))
     quarters = _as_str_list(params.get("quarter"))
     fine_dims = {key: _as_str_list(params.get(key)) for key in DIM_COLUMN_KEYWORDS}
+    drill_down = _as_str_list(params.get("drillDown"))
     q_start = params.get("qStart")
     q_end = params.get("qEnd")
-    if depts is None or versions is None or quarters is None or any(v is None for v in fine_dims.values()):
+    if (depts is None or versions is None or quarters is None or drill_down is None
+            or any(v is None for v in fine_dims.values())):
         print(f"ERROR 参数必须是字符串或字符串数组, 收到: {params}", file=sys.stderr)
         sys.exit(1)
     if not depts:
@@ -132,7 +137,8 @@ def main():
     print(f"时间入参回显: version={versions} quarter={quarters} "
           f"qStart={q_start or ''} qEnd={q_end or ''} timeSource={time_source}")
     # 细粒度维度回显 (我X按需注入方案 R1/R2 E2E 断言点): 未提及的维度应为空列表
-    print(f"维度入参回显: " + " ".join(f"{k}={v}" for k, v in fine_dims.items()))
+    print(f"维度入参回显: " + " ".join(f"{k}={v}" for k, v in fine_dims.items())
+          + f" drillDown={drill_down}")
 
     # 2. 时间二选一: 版本优先; 季度→月份版本 (脚本内换算, 只为复用既有 SQL);
     #    都未收到 → 时间维度为空 (需求项/需求子条目场景拍板: 不补默认在建版本),

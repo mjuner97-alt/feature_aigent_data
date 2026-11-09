@@ -3560,4 +3560,153 @@ class DirectSkillExecutorTest {
                 new DimensionKeyConfig.AliasMapping("各产品线", "产品线维度")),
                 true, null);
     }
+
+    // ==================== 「分布」触发默认下钻一级 (docs/202611/分布触发默认下钻一级方案.md) ====================
+
+    private static final String DISTRIBUTION_MAPPING =
+            "{\"dept\":\"deptName\",\"drillDown\":\"drillDown\"}";
+    private static final String DISTRIBUTION_SCHEMA =
+            "[{\"name\":\"dept\",\"required\":true},{\"name\":\"drillDown\",\"required\":false}]";
+
+    private void mockDistributionPlan(String question, DimensionState preview, String mapping,
+                                      String schema) {
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", mapping, "缺陷")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull()))
+                .thenReturn(preview);
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(schema));
+    }
+
+    /** 场景2: 问题含「分布」+ 仅部门有值 + 细粒度全无值 → 默认补 drillDown=[应用维度] (P1 单值)。 */
+    @Test
+    void distributionDrillFillsDrillDownForDept() {
+        String question = "杭州开发一部 2026年7月份版本 缺陷问题分布情况";
+        mockDistributionPlan(question,
+                state(versionTime(List.of("2026年7月份版本")), List.of("杭州开发一部")),
+                DISTRIBUTION_MAPPING, DISTRIBUTION_SCHEMA);
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(question, "alice", null);
+
+        assertEquals("杭州开发一部", plan.params().get("dept"));
+        assertEquals("应用维度", plan.params().get("drillDown"));
+    }
+
+    /** 场景4/5: 组有值 (dept+组多级同值) → 取链上最深一级 (P2 拍板) → 补 [个人维度]。 */
+    @Test
+    void distributionDrillGroupValueFillsPersonDimension() {
+        String question = "信贷核心组 2026年7月份版本 缺陷问题分布情况";
+        DimensionState preview = new DimensionState(versionTime(List.of("2026年7月份版本")),
+                List.of("杭州开发一部"),
+                new DimensionState.PeerDimension(
+                        DimensionState.PeerDimensionType.TEAM, List.of("信贷核心组")), null);
+        mockDistributionPlan(question, preview, DISTRIBUTION_MAPPING, DISTRIBUTION_SCHEMA);
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(question, "alice", null);
+
+        assertEquals("个人维度", plan.params().get("drillDown"));
+    }
+
+    /** 场景3: 人有值 = 链底, 无更下一级 → 不补。 */
+    @Test
+    void distributionDrillPersonValueNoFill() {
+        String question = "张三 2026年7月份版本 缺陷问题分布情况";
+        DimensionState preview = new DimensionState(versionTime(List.of("2026年7月份版本")),
+                List.of("杭州开发一部"), null, List.of("张三"));
+        mockDistributionPlan(question, preview, DISTRIBUTION_MAPPING, DISTRIBUTION_SCHEMA);
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(question, "alice", null);
+
+        assertFalse(plan.params().containsKey("drillDown"));
+    }
+
+    /** 场景1/8: 显式粒度词词表命中优先, 不被默认值覆盖。 */
+    @Test
+    void distributionDrillExplicitGranularityNotOverridden() {
+        String question = "杭州开发一部 缺陷问题分布情况 按组列";
+        mockDistributionPlan(question,
+                state(versionTime(List.of("2026年7月份版本")), List.of("杭州开发一部")),
+                DISTRIBUTION_MAPPING, DISTRIBUTION_SCHEMA);
+        enableKeyDictionary(new DimensionKeyConfig(13L, "drillDown", "下钻维度", false,
+                List.of(new DimensionKeyConfig.AliasMapping("按组列", "组维度")), true, null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(question, "alice", null);
+
+        assertEquals("组维度", plan.params().get("drillDown"));
+    }
+
+    /** P6 拍板: 开关关闭不补。 */
+    @Test
+    void distributionDrillDisabledNoFill() {
+        String question = "杭州开发一部 2026年7月份版本 缺陷问题分布情况";
+        mockDistributionPlan(question,
+                state(versionTime(List.of("2026年7月份版本")), List.of("杭州开发一部")),
+                DISTRIBUTION_MAPPING, DISTRIBUTION_SCHEMA);
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true)
+                .setDistributionDrillEnabled(false).plan(question, "alice", null);
+
+        assertFalse(plan.params().containsKey("drillDown"));
+    }
+
+    /** 场景8: 零维度锚点不补 (无人/组/应用/产品线/部门有值)。 */
+    @Test
+    void distributionDrillNoDimensionAnchorNoFill() {
+        String question = "缺陷问题分布情况";
+        mockDistributionPlan(question, state(versionTime(List.of("2026年7月份版本")), List.of()),
+                DISTRIBUTION_MAPPING, "[{\"name\":\"drillDown\",\"required\":false}]");
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(question, "alice", null);
+
+        assertFalse(plan.params().containsKey("drillDown"));
+    }
+
+    /** 场景10: 仅配置 dimension (统计维度) 参数的 skill → 补 dimension 词表值「应用」;
+     *  drillDown/dimension 二选一 (拍板确认), 按 mapping 实际配置的参数补。 */
+    @Test
+    void distributionDrillDimensionParamFillsDimensionVocabValue() {
+        String question = "杭州开发一部 2026年7月份版本 缺陷问题分布情况";
+        mockDistributionPlan(question,
+                state(versionTime(List.of("2026年7月份版本")), List.of("杭州开发一部")),
+                "{\"dept\":\"deptName\",\"dimension\":\"dimension\"}",
+                "[{\"name\":\"dept\",\"required\":true},{\"name\":\"dimension\",\"required\":false}]");
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutor(true).plan(question, "alice", null);
+
+        assertFalse(plan.params().containsKey("drillDown"));
+        assertEquals("应用", plan.params().get("dimension"));
+    }
+
+    /** E2E bug 回归 (2026-11-09): 「分布情况呢?」零其他维度信号 → hasDimensionSignal
+     *  不认 → 回退 LLM 丢快照继承+默认下钻。修复后: 分布触发词构成追问信号,
+     *  追问轨继承 dept/version 并默认补 drillDown=[应用维度]。 */
+    @Test
+    void followupDistributionQuestionInheritsAndFillsDefaultDrill() {
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a",
+                        "{\"dept\":\"deptName\",\"version\":\"versionPlan\",\"drill\":\"drillDown\"}",
+                        "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(FOLLOWUP_T1), Mockito.isNull())).thenReturn(
+                state(versionTime(List.of("2026年7月份版本")), List.of("杭州开发二部")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true},{\"name\":\"version\",\"required\":true},"
+                        + "{\"name\":\"drill\",\"required\":false}]"));
+        DirectSkillExecutor executor = newExecutor(true).setFollowupDirectEnabled(true);
+        executor.plan(FOLLOWUP_T1, "alice", null, "conv1");
+
+        String t2 = "分布情况呢？";
+        when(dimensionStateManager.previewState(Mockito.eq(t2), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(dimensionStateManager.analyzeQuestionRuleBased(t2)).thenReturn(new QuestionAnalysis());
+        when(dimensionStateManager.hasExplicitTeamHit(t2)).thenReturn(false);
+        when(dimensionStateManager.hasExplicitProductLineHit(t2)).thenReturn(false);
+
+        DirectSkillExecutor.DirectExecutionPlan r2 = executor.plan(t2, "alice", null, "conv1");
+
+        assertEquals("dept_skill", r2.skillName());
+        assertEquals("杭州开发二部", r2.params().get("dept"));           // 快照继承
+        assertEquals("2026年7月份版本", r2.params().get("version"));      // 时间家族继承 (未重锚)
+        assertEquals("应用维度", r2.params().get("drill"));              // 分布默认下钻 (P1/P2)
+    }
 }

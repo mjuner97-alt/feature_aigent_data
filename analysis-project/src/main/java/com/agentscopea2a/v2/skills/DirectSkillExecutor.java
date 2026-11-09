@@ -685,6 +685,8 @@ public class DirectSkillExecutor {
         // 下钻粒度冲突消解 (D2 拍板两端一致): plan() 粒度键恒为本轮显式提及 (动态键不跨轮
         // 继承) 豁免恒成立, 此调用为口径对称 + §3.5 兜底口径变化的防御
         params = stripGranularityConflicts(params, mapping, extraction);
+        // 「分布」触发默认下钻一级 (2026-11-09 方案): 必须在 strip 之后 (方案 §3.4)
+        params = applyDistributionDrillDown(params, mapping, schema, extraction, question);
         // 必填缺失分两类 (2026/10/15 缺参反问方案): 在 param_mapping 内 (有维度语义) →
         // 反问补参; 不在 mapping 内 (语义未知) 或调用方未传会话键 → 维持回退 LLM
         List<String> missingKeys = new ArrayList<>();
@@ -915,6 +917,8 @@ public class DirectSkillExecutor {
                 suppressedParamKeys, null);
         // 下钻粒度冲突消解 (2026/11/06 E2E 拍板): 细粒度家族有值 → 快照继承的粒度参数删除
         merged = stripGranularityConflicts(merged, mapping, extraction);
+        // 「分布」触发默认下钻一级 (2026-11-09 方案): 必须在 strip 之后 (方案 §3.4)
+        merged = applyDistributionDrillDown(merged, mapping, schema, extraction, question);
 
         // 人名重名反问 (与原链路同构, 单 pending 口径: 时间歧义优先)
         if (personScan.ambiguousName() != null) {
@@ -1012,6 +1016,13 @@ public class DirectSkillExecutor {
             }
         }
         if (FOLLOWUP_REF_PATTERN.matcher(question).find()) {
+            return true;
+        }
+        // 「分布」触发词本身构成追问信号 (2026-11-09 分布默认下钻方案, E2E bug:
+        // 「分布情况呢?」零其他信号 → 回退 LLM 丢快照继承+默认下钻)。纯继承追问轮
+        // 语义 = 对上轮口径要分布视图, 入追问轨后由 applyDistributionDrillDown 补默认粒度。
+        // 不入 followupSignalKeys (那是动态键白名单, 分布不是维度键)。
+        if (question != null && question.contains(DISTRIBUTION_TRIGGER)) {
             return true;
         }
         if (personScan != null && (!personScan.scannedNames().isEmpty()
@@ -1245,6 +1256,92 @@ public class DirectSkillExecutor {
         out.keySet().removeAll(remove);
         log.info("DirectSkillExecutor: 下钻粒度冲突消解 删除参数 {} (细粒度值={}, 豁免保留={})",
                 remove, fineValuePresent, exempt);
+        return out;
+    }
+
+    // ==================== 「分布」默认下钻 (docs/202611/分布触发默认下钻一级方案.md) ====================
+
+    /** P5 拍板: 触发词 contains 匹配, 「分布式」误伤接受不加排除词。 */
+    static final String DISTRIBUTION_TRIGGER = "分布";
+
+    /** 下钻链默认值 (P1/P2 拍板, 链 部门→应用/组/产品线→人 与 DRILL_CONFLICT_FINE_DIMS 同轴):
+     *  链上最深有值 family → 默认粒度值; 人 (perName/perNo/perRole) 是链底不在表内即不补。
+     *  值取所属词表标准值 —— drillDown 用「X维度」形态词, dimension (STAT_DIMENSION_KEY)
+     *  用双词表收敛 seed 的「应用/人员」形态词 (同 dimension_family_config seed)。
+     *  杭研不在表内 (P4 拍板: 不特判, 脚本默认逻辑已下钻到部门维度)。 */
+    private static final Map<String, String> DRILL_DEFAULT_BY_DRILLDOWN = Map.of(
+            "deptName", "应用维度",
+            "groupName", "个人维度",
+            "appName", "个人维度",
+            "productLine", "个人维度");
+    private static final Map<String, String> DRILL_DEFAULT_BY_DIMENSION = Map.of(
+            "deptName", "应用",
+            "groupName", "人员",
+            "appName", "人员",
+            "productLine", "人员");
+
+    /** P6 拍板: 「分布」默认下钻开关, 默认 true; 纯后端配置便于内网灰度回退。 */
+    private volatile boolean distributionDrillEnabled = true;
+
+    public DirectSkillExecutor setDistributionDrillEnabled(boolean distributionDrillEnabled) {
+        this.distributionDrillEnabled = distributionDrillEnabled;
+        return this;
+    }
+
+    /** 「分布」触发默认下钻一级 (2026-11-09 方案 §3): 问题含「分布」且该 skill 配置了粒度参数
+     *  (drillDown/dimension 二选一, 拍板确认脚本一般仅用其一) 且该参数无值时, 按链上最深
+     *  有值维度 (P2 拍板) 补默认粒度值 —— dept→应用, 组/应用/产品线→人; 人有值=链底不补;
+     *  零维度锚点不补; 杭研不特判 (P4)。
+     *  调用位置必须在 stripGranularityConflicts 之后: 组/应用/产品线有值时 strip 规则2/3
+     *  会清掉显式/继承粒度参数, 本方法随后补默认人维度是「分布」语义下的有意例外
+     *  (问句焦点已是该细粒度, 分布默认按其下一级展开); 人有值时本方法不补, 口径仍一致。 */
+    private Map<String, Object> applyDistributionDrillDown(Map<String, Object> params,
+            Map<String, String> mapping, List<ParamSpec> schema,
+            DimensionExtraction extraction, String question) {
+        if (!distributionDrillEnabled || params == null || mapping.isEmpty()
+                || question == null || !question.contains(DISTRIBUTION_TRIGGER)) {
+            return params;
+        }
+        String granularityParam = null;
+        String granularityDim = null;
+        for (Map.Entry<String, String> e : mapping.entrySet()) {
+            if (DRILL_DOWN_KEY.equals(e.getValue()) || STAT_DIMENSION_KEY.equals(e.getValue())) {
+                granularityParam = e.getKey();
+                granularityDim = e.getValue();
+                break;
+            }
+        }
+        // 用户显式粒度词词表命中 (或 strip 后仍存活的继承值) 优先, 不覆盖;
+        // params_schema 白名单外不传 (同 buildParams 口径: mapping 配了粒度键但 schema
+        // 未声明 → 脚本不收该参数, 补了也是死参数)
+        final String granularityParamFinal = granularityParam;
+        if (granularityParam == null || hasNonEmptyValue(params.get(granularityParam))
+                || (schema != null && schema.stream()
+                        .noneMatch(s -> granularityParamFinal.equals(s.name())))) {
+            return params;
+        }
+        Map<String, String> defaults = STAT_DIMENSION_KEY.equals(granularityDim)
+                ? DRILL_DEFAULT_BY_DIMENSION : DRILL_DEFAULT_BY_DRILLDOWN;
+        String deepest = null;
+        for (String dim : List.of("perName", "perNo", "perRole",
+                "groupName", "appName", "productLine", "deptName")) {
+            if (dimHasValue(dim, params, mapping, extraction)) {
+                deepest = dim;
+                break;
+            }
+        }
+        if (deepest == null) {
+            return params; // 零维度锚点 (触发条件⑤反面) 不补
+        }
+        String defaultValue = defaults.get(deepest);
+        if (defaultValue == null) {
+            return params;
+        }
+        Map<String, Object> out = new LinkedHashMap<>(params);
+        // params_schema 保形 (array→List, 单值→String, 同 buildParams shapeValue 口径)
+        out.put(granularityParam, shapeValue(granularityParam, schema, List.of(defaultValue)));
+        log.info("DirectSkillExecutor: 「分布」触发默认下钻一级 {}=[{}] (链上最深有值维度={})",
+                granularityParam, defaultValue, deepest);
         return out;
     }
 

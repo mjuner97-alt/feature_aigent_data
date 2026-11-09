@@ -226,9 +226,20 @@ public class V2SkillConfig {
             boolean followupDirectEnabled,
             @Value("${harness.a2a.skill-direct-exec.followup-signal-keys:drillDown,dimension,timeRange}")
             String followupSignalKeys,
-            com.agentscopea2a.v2.dimension.DimensionFamilyConfigRepository dimensionFamilyConfigRepository) {
-        log.info("DirectSkillExecutor: directExecEnabled={}, followupDirectEnabled={}, followupSignalKeys={}",
-                enabled, followupDirectEnabled, followupSignalKeys);
+            @Value("${harness.a2a.skill-direct-exec.distribution-drill.enabled:true}")
+            boolean distributionDrillEnabled,
+            com.agentscopea2a.v2.dimension.DimensionFamilyConfigRepository dimensionFamilyConfigRepository,
+            com.agentscopea2a.v2.dimension.DimensionSignalConfigRepository dimensionSignalConfigRepository) {
+        // DB 持久化白名单（管理页第三 Tab）优先于 application.properties 默认值
+        String signalKeysFromDb = dimensionSignalConfigRepository.loadFollowupSignalKeys();
+        if (signalKeysFromDb != null) {
+            log.info("DirectSkillExecutor: followupSignalKeys overridden from dimension_signal_config: {}",
+                    signalKeysFromDb);
+            followupSignalKeys = signalKeysFromDb;
+        }
+        log.info("DirectSkillExecutor: directExecEnabled={}, followupDirectEnabled={}, followupSignalKeys={}"
+                        + ", distributionDrillEnabled={}",
+                enabled, followupDirectEnabled, followupSignalKeys, distributionDrillEnabled);
         return new com.agentscopea2a.v2.skills.DirectSkillExecutor(
                 routingMetadataRepository,
                 new SkillCandidateSelector(maxVisibleSkills, fallbackVisibleSkills,
@@ -246,6 +257,7 @@ public class V2SkillConfig {
                 enabled,
                 followupDirectEnabled)
                 .setFollowupSignalKeys(followupSignalKeys)
+                .setDistributionDrillEnabled(distributionDrillEnabled)
                 .setFamilyConfigRepository(dimensionFamilyConfigRepository);
     }
 
