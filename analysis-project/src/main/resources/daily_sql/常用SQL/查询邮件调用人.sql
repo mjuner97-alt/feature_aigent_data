@@ -64,6 +64,6 @@ FROM recipient_rows rr
               ON f.id = rr.flow_id
          LEFT JOIN latest_person lp
                    ON lp.user_id = rr.recipient_id
-WHERE rr.recipient_id <> ''
+WHERE LENGTH(TRIM(rr.recipient_id)) > 0
 GROUP BY f.id, f.name
 ORDER BY last_sent_at DESC;

@@ -62,7 +62,7 @@ watch(
     :close-on-click-modal="false"
     @update:model-value="onOpenChange"
   >
-    <p class="type-hint">选择要创建的报告类型</p>
+    <p class="type-hint">选择要创建的任务类型</p>
     <p v-if="loading">正在读取任务类型…</p>
     <p v-else-if="error" role="alert">{{ error }} <button type="button" @click="load">重试</button></p>
     <p v-else-if="!types.length">暂无可创建的任务类型，请先在长任务类型管理中配置并启用。</p>

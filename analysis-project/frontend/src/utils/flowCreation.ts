@@ -1,17 +1,21 @@
 import type { LongTaskType } from '../api/longTaskConfig';
 import type { TeamReportConfig, TeamReportTarget } from '../types/skillFlow';
 
-/** 仅保留允许创建的已启用业务类型，过滤历史默认类型。 */
+/** 完整使用配置列表中的类型及排序，不按名称或 ID 排除。 */
+export function configuredFlowTypes(types: LongTaskType[]): LongTaskType[] {
+  return [...types].sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id);
+}
+/** 创建时仅允许选择已启用的配置类型。 */
 export function creatableFlowTypes(types: LongTaskType[]): LongTaskType[] {
-  return types.filter((type) => type.enabled && type.id !== 1 && !['默认类型', '其他'].includes(type.name));
+  return configuredFlowTypes(types).filter((type) => type.enabled);
 }
 
-/** 从类型名称确定报告模式，普通业务类型不启用报告参数池。 */
-export function reportModeForType(type?: LongTaskType | null): 'TEAM' | 'DEPARTMENT' | null {
-  return type?.name === '团队报告' ? 'TEAM' : type?.name === '部门报告' ? 'DEPARTMENT' : null;
+/** 仅团队报告启用新配置模式，部门及其他报告沿用普通长任务流程。 */
+export function reportModeForType(type?: LongTaskType | null): 'TEAM' | null {
+  return type?.name === '团队报告' ? 'TEAM' : null;
 }
 
-/** 生成新报告配置；部门和团队对象由用户后续维护。 */
+/** 仅为新建或复制的团队报告生成配置，对象由用户后续维护。 */
 export function initialReportConfig(type?: LongTaskType | null): TeamReportConfig | null {
   const reportType = reportModeForType(type);
   return reportType ? { reportType, departmentId: '', departmentName: '', targets: [] } : null;
@@ -28,6 +32,15 @@ export function initializeReportTarget(
     notifyEnabled: target.notifyEnabled ?? defaults.notifyEnabled ?? true,
     notifyBodyTemplate: target.notifyBodyTemplate ?? defaults.notifyBodyTemplate ?? '',
   };
+}
+
+/** 联系方式按报告对象独立校验，前端配置弹层和任务保存共用同一规则。 */
+export function reportTargetContactError(target: TeamReportTarget): string {
+  if (!target.notifyContactName?.trim()) return '请填写联系人姓名';
+  const phone = target.notifyContactPhone?.trim();
+  if (!phone) return '请填写联系电话';
+  if (phone.length !== 11) return '请输入 11 位手机号';
+  return '';
 }
 
 /** 生成对象首次添加时的邮件正文，链接占位符由通知发送时替换。 */

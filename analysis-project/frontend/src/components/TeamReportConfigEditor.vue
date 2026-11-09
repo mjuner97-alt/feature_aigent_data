@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** 按部门维护独立的团队报告配置；来源数据仅用于首次添加对象的默认值。 */
-import { computed, onMounted, ref } from 'vue';
-import { searchSkillUsers } from '../api/skill';
+import { computed, onMounted, ref, watch } from 'vue';
+import { batchUserNames, searchSkillUsers } from '../api/skill';
 import { reportDepartments, reportTeams, reportDepartmentDefaults, reportPeople } from '../api/skillFlow';
 import type { TeamReportConfig, TeamReportTarget } from '../types/skillFlow';
 import MailRecipientDialog from './MailRecipientDialog.vue';
@@ -11,6 +11,7 @@ import {
   defaultReportName,
   initializeReportTarget,
   reportNotificationTitle,
+  reportTargetContactError,
 } from '../utils/flowCreation';
 const props = defineProps<{ modelValue?: TeamReportConfig | null; immutable: boolean }>();
 const emit = defineEmits<{ (e: 'update:modelValue', value: TeamReportConfig): void }>();
@@ -25,7 +26,9 @@ const activeIndex = ref(0),
   activeDepartmentId = ref(props.modelValue?.departmentId || ''),
   recipientIndex = ref<number | null>(null);
 const removeDepartmentId = ref('');
+const removingTeam = ref<TeamReportTarget | null>(null);
 const value = computed(() => props.modelValue);
+const recipientNames = ref<Record<string, string>>({});
 /** 排除部门展示字段，仅比较对象本身的可编辑配置以标记修改状态。 */
 function fingerprint(row: TeamReportTarget) {
   const { departmentId, departmentName, ...settings } = row;
@@ -33,7 +36,7 @@ function fingerprint(row: TeamReportTarget) {
 }
 const original = new Map((props.modelValue?.targets || []).map((t) => [t.teamId, fingerprint(t)]));
 function targetState(row: TeamReportTarget) {
-  return !row.keyword.trim() || !reportName(row).trim()
+  return !row.keyword.trim() || !reportName(row).trim() || (value.value?.reportType === 'DEPARTMENT' && reportTargetContactError(row))
     ? '未完成'
     : original.get(row.teamId) !== fingerprint(row)
       ? '有修改'
@@ -54,6 +57,36 @@ const departmentTargets = computed(() =>
 const activeRows = computed(() =>
   departmentTargets.value[activeIndex.value] ? [departmentTargets.value[activeIndex.value]] : []
 );
+/** 仅补齐当前团队名单的展示姓名，不修改已保存的人员 ID 或来源默认值。 */
+watch(
+  () => activeRows.value.map((row) => ({
+    department: row.departmentName || value.value?.departmentName || '',
+    team: row.teamName || '',
+    ids: [...new Set([...row.to, ...row.cc])],
+  })),
+  async (rows) => {
+    for (const row of rows) {
+      const ids = row.ids.filter((id) => !recipientNames.value[id]);
+      if (!ids.length) continue;
+      const names = await batchUserNames(ids);
+      Object.assign(recipientNames.value, names);
+      const fallback = await Promise.allSettled(
+        ids.filter((id) => !names[id]).map(async (id) =>
+          (await reportPeople(row.department, row.team, id)).find((person) => person.userId === id)
+        )
+      );
+      for (const result of fallback) {
+        if (result.status === 'fulfilled' && result.value?.name)
+          recipientNames.value[result.value.userId] = result.value.name;
+      }
+    }
+  },
+  { immediate: true }
+);
+function recipientLabel(id: string) {
+  const name = recipientNames.value[id];
+  return name && name !== id ? `${name}（${id}）` : id;
+}
 const available = computed(() =>
   candidates.value.filter((t) => !value.value?.targets.some((row) => row.teamId === t.teamId))
 );
@@ -173,9 +206,14 @@ function navigate(index: number) {
   activeIndex.value = index;
   recipientIndex.value = null;
 }
-function remove(row: TeamReportTarget) {
-  patch({ targets: value.value?.targets.filter((t) => t !== row) || [] });
+/** 确认后才移除团队及其报告配置，取消不改动草稿。 */
+function remove() {
+  if (!removingTeam.value) return;
+  const teamId = removingTeam.value.teamId;
+  patch({ targets: value.value?.targets.filter((t) => t.teamId !== teamId) || [] });
   activeIndex.value = 0;
+  recipientIndex.value = null;
+  removingTeam.value = null;
 }
 /** 优先搜索全量人员，无结果时回退到当前报告对象的导入来源。 */
 async function searchTeamPeople(keyword: string) {
@@ -185,7 +223,8 @@ async function searchTeamPeople(keyword: string) {
   const row = recipientIndex.value == null ? null : value.value?.targets[recipientIndex.value];
   return reportPeople(row?.departmentName || value.value?.departmentName || '', row?.teamName || '', keyword);
 }
-function confirm({ to, cc }: { to: string[]; cc: string[] }) {
+function confirm({ to, cc, names }: { to: string[]; cc: string[]; names: Record<string, string> }) {
+  Object.assign(recipientNames.value, names);
   if (recipientIndex.value != null && value.value) {
     const t = value.value.targets[recipientIndex.value];
     t.to = to;
@@ -271,9 +310,11 @@ onMounted(loadDepartments);
     <div v-if="value?.reportType === 'TEAM'" class="team-tabs-panel" aria-label="团队目录">
       <span class="team-tabs-label">团队 <code>(stat_group)</code></span>
       <nav class="team-tabs" aria-label="当前部门团队"
-        ><a
+        ><div
           v-for="(row, index) in departmentTargets"
           :key="row.teamId || 'department'"
+          class="team-tab"
+        ><a
           :href="`#report-team-${index}`"
           :class="{ active: activeIndex === index }"
           :aria-current="activeIndex === index ? 'location' : undefined"
@@ -284,8 +325,15 @@ onMounted(loadDepartments);
             class="status-dot"
             :class="{ enabled: row.selected }"
             :title="row.selected ? '参与自动执行' : '仅手动执行'"
-          ></span></a
-      ></nav>
+          ></span></a>
+          <button
+            type="button"
+            class="close-team"
+            :aria-label="`删除团队 ${row.teamName || activeDepartment?.name}`"
+            :title="`删除${row.teamName || activeDepartment?.name}`"
+            @click="removingTeam = row"
+          >×</button>
+        </div></nav>
       <button
         v-if="value?.reportType === 'TEAM'"
         class="add-team primary"
@@ -309,15 +357,11 @@ onMounted(loadDepartments);
         >
           <div class="target-header">
             <div class="team-title"
-              ><span class="team-number">{{ String(activeIndex + 1).padStart(2, '0') }}</span
               ><strong>{{ row.teamName || activeDepartment?.name }}</strong></div
             >
             <label class="auto-toggle" title="开启后，自动触发任务时为该团队生成报告；关闭后仍可手动选择执行。"
               ><input v-model="row.selected" type="checkbox" role="switch" /><span>参与自动执行</span
               ><span class="help" aria-hidden="true">?</span></label
-            >
-            <button v-if="value?.reportType === 'TEAM'" class="delete-team" type="button" @click="remove(row)"
-              >删除团队</button
             >
           </div>
           <div class="report-name-preview"
@@ -336,6 +380,27 @@ onMounted(loadDepartments);
           >
           <div class="target-fields">
             <label>匹配关键词 <input v-model="row.keyword" placeholder="输入唯一关键词" /></label>
+            <template v-if="value?.reportType === 'DEPARTMENT'">
+            <label :for="`report-contact-name-${activeIndex}`"
+              >联系人姓名 *
+              <input
+                :id="`report-contact-name-${activeIndex}`"
+                v-model="row.notifyContactName"
+                placeholder="填写负责解答本报告相关问题的人"
+              />
+            </label>
+            <label :for="`report-contact-phone-${activeIndex}`"
+              >联系电话 *
+              <input
+                :id="`report-contact-phone-${activeIndex}`"
+                v-model="row.notifyContactPhone"
+                type="tel"
+                maxlength="11"
+                placeholder="填写 11 位手机号"
+              />
+            </label>
+            <p v-if="reportTargetContactError(row)" class="error" role="status">{{ reportTargetContactError(row) }}</p>
+            </template>
           </div>
           <div class="team-notification-config">
             <div class="notification-heading"
@@ -349,20 +414,24 @@ onMounted(loadDepartments);
                 /><span>报告完成后发送通知</span></label
               ></div
             >
+            <div class="recipient-panel" aria-label="当前团队通知名单">
+              <div class="recipient-heading">
+                <div><strong>邮件收件人</strong><small>收件人 {{ row.to.length }} 人 · 抄送 {{ row.cc.length }} 人</small></div>
+                <button class="manage-recipients" type="button" @click="recipientIndex = value!.targets.indexOf(row)">管理收件人</button>
+              </div>
+              <div v-for="group in (['to', 'cc'] as const)" :key="group" class="recipient-group">
+                <span class="recipient-group-label">{{ group === 'to' ? '收件人' : '抄送人' }} <small>{{ group === 'to' ? 'TO' : 'CC' }}</small></span>
+                <div class="recipient-people">
+                  <span v-for="id in row[group]" :key="id" class="recipient-person" :class="{ 'is-cc': group === 'cc' }">{{ recipientLabel(id) }}</span>
+                  <small v-if="!row[group].length">{{ group === 'to' ? '暂无收件人，暂不通知' : '暂无抄送人' }}</small>
+                </div>
+              </div>
+            </div>
             <NotifyBodyTemplateEditor
               :model-value="row.notifyBodyTemplate ?? ''"
               :report-link-title="reportNotificationTitle(value!, row)"
               @update:model-value="row.notifyBodyTemplate = $event"
             />
-          </div>
-          <div class="target-footer">
-            <span class="recipient-count"
-              >收件人 <b>{{ row.to.length }}</b> 人 <i>·</i> 抄送 <b>{{ row.cc.length }}</b> 人</span
-            >
-            <button class="manage-recipients" type="button" @click="recipientIndex = value!.targets.indexOf(row)"
-              >维护名单</button
-            >
-            <small v-if="!row.to.length" class="warning">暂无收件人，暂不通知</small>
           </div>
         </article>
       </div>
@@ -372,12 +441,24 @@ onMounted(loadDepartments);
       :open="true"
       :to="value.targets[recipientIndex].to"
       :cc="value.targets[recipientIndex].cc"
-      :names="{}"
+      :names="recipientNames"
       :search-users="searchTeamPeople"
       @update:open="recipientIndex = null"
       @confirm="confirm"
     />
     <Teleport to="body">
+      <div v-if="removingTeam" class="add-mask" @keydown.esc.stop="removingTeam = null">
+        <section class="add-dialog" role="alertdialog" aria-modal="true" aria-label="删除团队确认">
+          <header><h4>删除团队？</h4></header>
+          <div class="department-confirm-body">
+            <p>确认删除“{{ removingTeam.teamName }}”吗？该团队的报告设置、收件人和抄送人名单将一并移除。</p>
+          </div>
+          <footer>
+            <button type="button" @click="removingTeam = null">取消</button>
+            <button type="button" class="delete-team" @click="remove">确认删除</button>
+          </footer>
+        </section>
+      </div>
       <div v-if="removeDepartmentId" class="add-mask" @keydown.esc.stop="removeDepartmentId = ''">
         <section class="add-dialog" role="alertdialog" aria-modal="true" aria-label="移除部门确认"
           ><header><h4>移除部门？</h4></header
@@ -461,7 +542,8 @@ onMounted(loadDepartments);
   padding: 0 6px;
   font-size: 12px;
 }
-.department-tab .close-department {
+.department-tab .close-department,
+.team-tab .close-team {
   position: absolute;
   right: -7px;
   top: -7px;
@@ -478,7 +560,8 @@ onMounted(loadDepartments);
   font-size: 15px;
   line-height: 1;
 }
-.department-tab .close-department:hover {
+.department-tab .close-department:hover,
+.team-tab .close-team:hover {
   color: #dc2626;
   border-color: #fca5a5;
   background: #fff1f2;
@@ -531,6 +614,12 @@ onMounted(loadDepartments);
   color: #64748b;
   text-decoration: none;
   font-size: 13px;
+}
+.team-tab {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
 }
 .team-tabs a > span:first-child {
   min-width: 0;
@@ -728,18 +817,6 @@ select:focus {
   color: #0f172a;
   overflow-wrap: anywhere;
 }
-.team-number {
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-  width: 30px;
-  height: 30px;
-  background: #eff6ff;
-  color: #2563eb;
-  border-radius: 8px;
-  font-size: 12px;
-  font-weight: 700;
-}
 .auto-toggle {
   display: flex;
   align-items: center;
@@ -801,25 +878,82 @@ select:focus {
   width: 100%;
   font-size: 13px;
 }
-.target-footer {
+.recipient-panel {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+  padding: 18px;
+  border: 1px solid #dce7f5;
+  border-radius: 10px;
+  background: linear-gradient(120deg, #f8fbff, #fff);
+}
+.recipient-panel small {
+  color: #7b8ba1;
+  font-size: 12px;
+}
+.recipient-heading {
   display: flex;
+  justify-content: space-between;
   align-items: center;
   gap: 12px;
-  flex-wrap: wrap;
-  margin-top: 24px;
-  padding-top: 18px;
-  border-top: 1px solid #f1f5f9;
-  font-size: 12px;
-  color: #64748b;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #e7eef7;
 }
-.recipient-count b {
+.recipient-heading > div {
+  display: grid;
+  gap: 4px;
+}
+.recipient-heading strong {
+  font-size: 14px;
+  color: #1e293b;
+}
+.recipient-heading .manage-recipients {
+  flex-shrink: 0;
+  background: #fff;
+}
+.recipient-group {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  min-width: 0;
+}
+.recipient-group-label {
+  font-size: 13px;
   font-weight: 600;
-  color: #334155;
+  color: #475569;
+  line-height: 28px;
 }
-.recipient-count i {
-  font-style: normal;
-  margin: 0 5px;
-  color: #cbd5e1;
+.recipient-group-label small {
+  font-size: 10px;
+  font-weight: 400;
+  margin-left: 4px;
+}
+.recipient-people {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  min-height: 28px;
+  align-items: center;
+}
+.recipient-person {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid #d9e7fc;
+  background: #eaf2ff;
+  color: #315f9c;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.recipient-person.is-cc {
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+  color: #52647d;
 }
 button {
   display: inline-flex;
@@ -969,6 +1103,13 @@ button:disabled {
   }
 }
 @media (max-width: 700px) {
+  .recipient-group {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .recipient-heading {
+    flex-wrap: wrap;
+  }
   .target {
     padding: 18px;
   }

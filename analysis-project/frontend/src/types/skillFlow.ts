@@ -7,7 +7,9 @@ export interface TeamReportTarget {
   keyword: string;
   to: string[];
   cc: string[];
+  /** 历史部门对象的联系人；团队报告使用任务级联系人。 */
   notifyContactName?: string | null;
+  /** 历史部门对象的联系电话；团队报告使用任务级联系电话。 */
   notifyContactPhone?: string | null;
   executors?: string[] | null;
   notifyEnabled?: boolean | null;

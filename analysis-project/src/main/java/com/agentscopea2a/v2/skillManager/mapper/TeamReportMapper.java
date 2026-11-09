@@ -60,7 +60,7 @@ public interface TeamReportMapper {
         """
         SELECT COALESCE(d.id,'dept_' || MD5(p.dev_dept)) AS id,p.dev_dept AS name
         FROM long_task_report_notify_person p LEFT JOIN long_task_report_department d ON d.name=p.dev_dept
-        WHERE p.enabled=TRUE AND TRIM(p.dev_dept)<>''
+        WHERE p.enabled=TRUE AND LENGTH(TRIM(p.dev_dept)) > 0
         GROUP BY d.id,p.dev_dept ORDER BY p.dev_dept
         """
     )
@@ -72,26 +72,12 @@ public interface TeamReportMapper {
         SELECT COALESCE(t.id,'team_' || MD5(p.dev_dept || CHR(31) || p.stat_group)) AS id,p.stat_group AS name
         FROM long_task_report_notify_person p LEFT JOIN long_task_report_department d ON d.name=p.dev_dept
         LEFT JOIN long_task_report_team t ON t.department_id=d.id AND t.name=p.stat_group
-        WHERE p.enabled=TRUE AND TRIM(p.stat_group)<>'' AND COALESCE(d.id,'dept_' || MD5(p.dev_dept))=#{id}
+        WHERE p.enabled=TRUE AND LENGTH(TRIM(p.stat_group)) > 0 AND COALESCE(d.id,'dept_' || MD5(p.dev_dept))=#{id}
         GROUP BY t.id,t.sort_order,p.dev_dept,p.stat_group
         ORDER BY COALESCE(t.sort_order,MIN(p.sort_order)),p.stat_group
         """
     )
     List<Map<String, Object>> teams(@Param("id") String id);
-
-    /** 聚合对象初始默认值并统计冲突，已保存的参数行不依赖本查询。 */
-    @Select(
-        """
-        SELECT MAX(NULLIF(TRIM(report_keyword),'')) AS report_keyword,
-        MAX(NULLIF(TRIM(notify_contact_name),'')) AS notify_contact_name,
-        MAX(NULLIF(TRIM(notify_contact_phone),'')) AS notify_contact_phone,
-        COUNT(DISTINCT NULLIF(TRIM(report_keyword),'')) AS keyword_count,
-        COUNT(DISTINCT NULLIF(TRIM(notify_contact_name),'')) AS contact_count,
-        COUNT(DISTINCT NULLIF(TRIM(notify_contact_phone),'')) AS phone_count
-        FROM long_task_report_notify_person WHERE dev_dept=#{dept} AND stat_group=#{team} AND enabled=TRUE
-        """
-    )
-    Map<String, Object> objectDefaults(@Param("dept") String dept, @Param("team") String team);
 
     /** 按来源顺序读取默认通知人员，首次添加对象时用于初始化名单。 */
     @Select(

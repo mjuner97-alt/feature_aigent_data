@@ -730,6 +730,11 @@ public class FlowExecutionService {
             execution.setCcReceiversSnapshot(NotificationReceivers.toCsv(t.cc()));
             execution.setNotifyEnabledSnapshot(t.notifyEnabled());
             execution.setNotifyBodyTemplateSnapshot(t.notifyBodyTemplate());
+            // 团队报告沿用任务联系人快照；历史部门对象保留原有联系人规则。
+            if (!"TEAM".equals(c.reportType())) {
+                execution.setNotifyContactNameSnapshot(t.notifyContactName());
+                execution.setNotifyContactPhoneSnapshot(t.notifyContactPhone());
+            }
             execution.setNotifyReceiverTriggersSnapshot("CHAT,MANUAL,AUTO_METRIC");
         }
         // 普通插入 + 捕获唯一索引冲突:openGauss 的 INSERT ... ON DUPLICATE KEY UPDATE

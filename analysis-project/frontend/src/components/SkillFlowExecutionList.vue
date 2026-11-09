@@ -9,6 +9,7 @@ import { batchUserNames, currentUserId } from '../api/skill';
 import { triggerTypeText } from './skillFlowExecutionPresentation';
 import { formatDuration } from '../utils/flowDuration.js';
 import { listAllLongTaskTypes, type LongTaskType } from '../api/longTaskConfig';
+import { configuredFlowTypes } from '../utils/flowCreation';
 import { InfoFilled } from '@element-plus/icons-vue';
 
 const props = withDefaults(
@@ -37,7 +38,7 @@ const notificationOpen = ref(false);
 const total = ref(0);
 const emit = defineEmits<{ (e: 'types-loaded', types: LongTaskType[]): void }>();
 const types = ref<LongTaskType[]>([]);
-const typeName = (id?: number) => types.value.find((t) => t.id === id)?.name || '默认类型';
+const typeName = (id?: number) => types.value.find((t) => t.id === id)?.name || '未配置类型';
 const paged = computed(() => executions.value);
 const nodeDurationHelp =
   '所有节点每次执行耗时的累计值，包含失败、重试和重跑的执行耗时，不包含排队、等指标和等待重试或重跑的时间。并行节点分别累计，因此可能超过总历时。例如：3 个节点同时各执行 10 分钟，累计节点耗时为 30 分钟。执行中的节点计到当前时刻。';
@@ -179,8 +180,8 @@ defineExpose({ load });
 onMounted(() => {
   void listAllLongTaskTypes()
     .then((items) => {
-      types.value = items;
-      emit('types-loaded', items);
+      types.value = configuredFlowTypes(items);
+      emit('types-loaded', types.value);
     })
     .catch(() => {});
   load();

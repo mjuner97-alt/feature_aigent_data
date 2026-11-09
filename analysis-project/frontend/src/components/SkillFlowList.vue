@@ -12,6 +12,7 @@ import {
 import TeamReportRunDialog from './TeamReportRunDialog.vue';
 import SkillFlowTypeDialog from './SkillFlowTypeDialog.vue';
 import { listAllLongTaskTypes, type LongTaskType } from '../api/longTaskConfig';
+import { configuredFlowTypes } from '../utils/flowCreation';
 import type { SkillFlow } from '../types/skillFlow';
 import { batchUserNames, currentUserId } from '../api/skill';
 import type { SkillFlowSummary, FlowMetricPrecheck } from '../types/skillFlow';
@@ -39,7 +40,7 @@ const createOpen = ref(false),
 const batchFlow = ref<SkillFlow | null>(null),
   batchOpen = ref(false),
   runLoading = ref(false);
-const typeName = (id?: number | null) => types.value.find((t) => t.id === id)?.name || '默认类型';
+const typeName = (id?: number | null) => types.value.find((t) => t.id === id)?.name || '未配置类型';
 const error = ref('');
 const metricDialogOpen = ref(false);
 const metricDialogFlow = ref<SkillFlowSummary | null>(null);
@@ -277,8 +278,8 @@ onMounted(() => {
   void load(undefined, props.createdBy);
   void listAllLongTaskTypes()
     .then((items) => {
-      types.value = items;
-      emit('types-loaded', items);
+      types.value = configuredFlowTypes(items);
+      emit('types-loaded', types.value);
     })
     .catch(() => {});
 });

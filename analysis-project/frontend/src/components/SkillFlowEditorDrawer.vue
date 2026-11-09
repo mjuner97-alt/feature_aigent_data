@@ -31,7 +31,13 @@ import { inferParamSchema, normalizeScriptParams, paramsFromSchema } from '../ut
 import FlowNodeCard from './FlowNodeCard.vue';
 import TeamReportConfigDialog from './TeamReportConfigDialog.vue';
 import { listAllLongTaskTypes, type LongTaskType } from '../api/longTaskConfig';
-import { initialReportConfig, reportModeForType, initializeReportTarget } from '../utils/flowCreation';
+import {
+  configuredFlowTypes,
+  initialReportConfig,
+  reportModeForType,
+  initializeReportTarget,
+  reportTargetContactError,
+} from '../utils/flowCreation';
 import MailRecipientDialog from './MailRecipientDialog.vue';
 import NotifyBodyTemplateEditor from './NotifyBodyTemplateEditor.vue';
 import FlowExecutorPicker from './FlowExecutorPicker.vue';
@@ -62,7 +68,7 @@ const originalKeywords = ref<string[]>([]);
 const copySourceName = ref('');
 const savedTypeName = ref('');
 const taskTypeName = computed(
-  () => props.createType?.name || savedTypeName.value || (form.value.typeId === 1 ? '默认类型' : '未配置类型')
+  () => props.createType?.name || savedTypeName.value || '未配置类型'
 );
 
 const loading = ref(false);
@@ -177,6 +183,14 @@ function stepLabel(index: number): string {
 const isEdit = computed(() => props.editId != null);
 const isCopy = computed(() => !isEdit.value && props.copyFromId != null);
 const contactValidationError = computed(() => {
+  if (form.value.teamReport?.reportType === 'DEPARTMENT') {
+    for (const target of form.value.teamReport.targets) {
+      const contactError = reportTargetContactError(target);
+      if (contactError)
+        return `${target.teamName || target.departmentName || form.value.teamReport.departmentName}：${contactError}`;
+    }
+    return '';
+  }
   const name = form.value.notifyContactName?.trim() || '';
   const phone = form.value.notifyContactPhone?.trim() || '';
   if (!name) return '请填写联系人姓名';
@@ -186,6 +200,8 @@ const contactValidationError = computed(() => {
 });
 /** 未手动填写联系人姓名时,自动回填创建人真实姓名(查不到则留空,由必填校验兜底)。 */
 async function backfillContactName(creatorId: string) {
+  // 历史部门对象沿用原配置；团队报告与普通任务使用任务级联系人。
+  if (form.value.teamReport?.reportType === 'DEPARTMENT') return;
   if (form.value.notifyContactName?.trim() || !creatorId) return;
   try {
     const name = (await batchUserNames([creatorId]))?.[creatorId] || '';
@@ -803,14 +819,8 @@ function normalizeFlow(flow: SkillFlow): SkillFlowInput {
     maxParallelism: 2,
     notifyEnabled: flow.notifyEnabled !== false,
     executors: [...new Set(flow.executors || [])].filter((id) => id !== flow.createdBy),
-    notifyContactName:
-      flow.notifyContactName?.trim() ||
-      flow.teamReport?.targets.find((target) => target.notifyContactName?.trim())?.notifyContactName ||
-      '',
-    notifyContactPhone:
-      flow.notifyContactPhone?.trim() ||
-      flow.teamReport?.targets.find((target) => target.notifyContactPhone?.trim())?.notifyContactPhone ||
-      '',
+    notifyContactName: flow.notifyContactName?.trim() || '',
+    notifyContactPhone: flow.notifyContactPhone?.trim() || '',
     notifyBodyTemplate: flow.notifyBodyTemplate?.trim() || '各位：\n    部门研发管理周报详见：{链接}，请关注。',
     triggers: (flow.triggers || []).map((trigger) => ({ ...trigger, enabled: trigger.enabled !== false })),
     nodes: (flow.nodes || []).map((node, index) => {
@@ -958,7 +968,7 @@ async function load() {
       if (!isCopy.value)
         void listAllLongTaskTypes()
           .then((types) => {
-            savedTypeName.value = types.find((type) => type.id === flow.typeId)?.name || '';
+            savedTypeName.value = configuredFlowTypes(types).find((type) => type.id === flow.typeId)?.name || '';
           })
           .catch(() => {});
       if (isCopy.value) {
@@ -1139,9 +1149,8 @@ defineExpose({ isDirty });
             <a v-if="form.teamReport" href="#flow-team-report" @click="navigateToSection($event, 'flow-team-report')"
               >团队报告配置</a
             >
-            <a v-if="form.teamReport" href="#flow-people" @click="navigateToSection($event, 'flow-people')"
-              >联系人与可执行人</a
-            >
+            <a v-if="form.teamReport" href="#flow-people" @click="navigateToSection($event, 'flow-people')">可执行人</a>
+            <a v-if="form.teamReport?.reportType !== 'DEPARTMENT'" href="#flow-contact" @click="navigateToSection($event, 'flow-contact')">联系信息</a>
             <a v-if="!form.teamReport" href="#flow-triggers" @click="navigateToSection($event, 'flow-triggers')"
               >触发与通知</a
             >
@@ -1211,23 +1220,37 @@ defineExpose({ isDirty });
 
               <section v-if="form.teamReport" id="flow-people" class="form-section wide section-card">
                 <div class="section-heading"
-                  ><div><h4>联系人与可执行人</h4><p>整份长任务共用，所有团队统一使用此配置。</p></div></div
+                  ><div><h4>可执行人</h4><p>执行权限由整份任务共用。</p></div></div
                 >
-                <div class="shared-contact-fields">
-                  <label
-                    ><span>联系人姓名 *</span
-                    ><input v-model="form.notifyContactName" placeholder="填写负责解答此任务相关问题的人"
-                  /></label>
-                  <label
-                    ><span>联系电话 *</span><input v-model="form.notifyContactPhone" placeholder="填写 11 位手机号"
-                  /></label>
-                </div>
-                <p v-if="contactValidationError" class="error" role="status">{{ contactValidationError }}</p>
                 <FlowExecutorPicker
                   :model-value="form.executors || []"
                   :owner-id="flowOwnerId"
                   @update:model-value="form.executors = $event"
                 />
+              </section>
+
+              <section v-if="form.teamReport?.reportType !== 'DEPARTMENT'" id="flow-contact" class="form-section wide section-card">
+                <div class="notify-contact-config">
+                  <h4>通知中的联系信息（必填）</h4>
+                  <p
+                    >展示在任务通知邮件中，方便收件人遇到问题时联系相关人员。手机号仅作为联系信息展示，不用于发送短信。</p
+                  >
+                  <label
+                    ><span>联系人姓名</span
+                    ><input v-model="form.notifyContactName" type="text" placeholder="填写负责解答此任务相关问题的人"
+                  /></label>
+                  <label
+                    ><span>联系电话（手机号）</span
+                    ><input v-model="form.notifyContactPhone" type="text" placeholder="填写 11 位手机号"
+                  /></label>
+                  <small
+                    >联系人和联系电话均为必填项；未填写联系人姓名时会自动回填创建人姓名，联系电话请手动补充。</small
+                  >
+                  <p v-if="!contactValidationError" class="contact-mode" role="status"
+                    >保存后，任务通知邮件将展示上述联系信息</p
+                  >
+                  <p v-if="contactValidationError" class="error" role="status">{{ contactValidationError }}</p>
+                </div>
               </section>
 
               <section v-if="!form.teamReport" id="flow-triggers" class="form-section wide section-card">
@@ -1264,27 +1287,6 @@ defineExpose({ isDirty });
                   <button type="button" class="btn" @click="recipientDialogOpen = true">管理收件人</button></div>
                   <div class="notify-recipient-group"><span class="notify-group-label">收件人 <small>TO</small></span><div class="notify-person-list"><span v-for="id in notifyReceivers" :key="id" class="notify-person">{{ receiverNames[id] || id }}({{ id }})</span><small v-if="!notifyReceivers.length">未配置收件人时通知流程触发人</small></div></div>
                   <div class="notify-recipient-group"><span class="notify-group-label">抄送人 <small>CC</small></span><div class="notify-person-list"><span v-for="id in ccReceivers" :key="id" class="notify-person is-cc">{{ receiverNames[id] || id }}({{ id }})</span><small v-if="!ccReceivers.length">暂无抄送人</small></div></div>
-                </div>
-                <div v-if="!form.teamReport" class="notify-contact-config">
-                  <h4>通知中的联系信息（必填）</h4>
-                  <p
-                    >展示在任务通知邮件中，方便收件人遇到问题时联系相关人员。手机号仅作为联系信息展示，不用于发送短信。</p
-                  >
-                  <label
-                    ><span>联系人姓名</span
-                    ><input v-model="form.notifyContactName" type="text" placeholder="填写负责解答此任务相关问题的人"
-                  /></label>
-                  <label
-                    ><span>联系电话（手机号）</span
-                    ><input v-model="form.notifyContactPhone" type="text" placeholder="填写 11 位手机号"
-                  /></label>
-                  <small
-                    >联系人和联系电话均为必填项；未填写联系人姓名时会自动回填创建人姓名，联系电话请手动补充。</small
-                  >
-                  <p v-if="!contactValidationError" class="contact-mode" role="status"
-                    >保存后，任务通知邮件将展示上述联系信息</p
-                  >
-                  <p v-if="contactValidationError" class="error" role="status">{{ contactValidationError }}</p>
                 </div>
                 <NotifyBodyTemplateEditor
                   :model-value="form.notifyBodyTemplate ?? ''"

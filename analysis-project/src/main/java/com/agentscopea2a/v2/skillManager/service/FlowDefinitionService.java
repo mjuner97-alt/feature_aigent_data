@@ -631,7 +631,22 @@ public class FlowDefinitionService {
         }
     }
 
+    /** 团队报告和普通长任务使用任务级联系人，历史部门对象沿用原校验。 */
     private static void validateNotificationContacts(SkillFlowDefinitionRequest request) {
+        if (request.teamReport() != null && "DEPARTMENT".equals(request.teamReport().reportType())) {
+            for (var target : request.teamReport().targets()) {
+                try {
+                    NotificationContact.validate(target.notifyContactName(), target.notifyContactPhone());
+                } catch (IllegalStateException e) {
+                    String objectName =
+                        target.teamName() == null
+                            ? Objects.toString(target.departmentName(), request.teamReport().departmentName())
+                            : target.teamName();
+                    throw new IllegalStateException(objectName + "：" + e.getMessage(), e);
+                }
+            }
+            return;
+        }
         NotificationContact.validate(request.notifyContactName(), request.notifyContactPhone());
     }
 

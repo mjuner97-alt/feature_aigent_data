@@ -396,7 +396,7 @@
     <!-- Page-scoped scalar dependency rows: explicit empty override suppresses defaults. -->
     <select id="selectPageMetricRows" resultMap="FlowMetricSummaryMap">
         SELECT n.flow_id, n.id AS node_id, n.metric_override_configured AS override_configured,
-        CASE WHEN TRIM(COALESCE(n.script_id, '')) != '' THEN s.default_metric_ids ELSE k.default_metric_ids END AS default_metric_ids,
+        CASE WHEN LENGTH(TRIM(n.script_id)) > 0 THEN s.default_metric_ids ELSE k.default_metric_ids END AS default_metric_ids,
         m.metric_id
         FROM skill_flow_node n
         LEFT JOIN script_registry s ON s.script_id = TRIM(n.script_id)

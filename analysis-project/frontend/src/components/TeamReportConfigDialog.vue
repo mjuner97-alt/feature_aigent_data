@@ -3,7 +3,7 @@
 import { ref, watch } from 'vue';
 import type { TeamReportConfig } from '../types/skillFlow';
 import TeamReportConfigEditor from './TeamReportConfigEditor.vue';
-import { defaultReportMailBody, defaultReportName } from '../utils/flowCreation';
+import { defaultReportMailBody, defaultReportName, reportTargetContactError } from '../utils/flowCreation';
 
 const props = defineProps<{ open: boolean; modelValue: TeamReportConfig; immutable: boolean }>();
 const emit = defineEmits<{
@@ -42,6 +42,13 @@ function save() {
   if (draft.value.targets.some((target) => !target.reportName?.trim())) {
     error.value = '请填写报告名称';
     return;
+  }
+  for (const target of draft.value.reportType === 'DEPARTMENT' ? draft.value.targets : []) {
+    const contactError = reportTargetContactError(target);
+    if (contactError) {
+      error.value = `${target.teamName || target.departmentName || draft.value.departmentName}：${contactError}`;
+      return;
+    }
   }
   emit('update:modelValue', JSON.parse(JSON.stringify(draft.value)));
   emit('update:open', false);

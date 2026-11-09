@@ -157,8 +157,8 @@ public class TeamReportService {
             row.setSortOrder(order++);
             row.setToReceiversJson(write(target.to()));
             row.setCcReceiversJson(write(target.cc()));
-            row.setNotifyContactName(target.notifyContactName());
-            row.setNotifyContactPhone(target.notifyContactPhone());
+            row.setNotifyContactName("TEAM".equals(config.reportType()) ? null : target.notifyContactName());
+            row.setNotifyContactPhone("TEAM".equals(config.reportType()) ? null : target.notifyContactPhone());
             row.setExecutorsJson(write(target.executors()));
             row.setNotifyEnabled(target.notifyEnabled());
             row.setNotifyBodyTemplate(target.notifyBodyTemplate());
@@ -218,17 +218,8 @@ public class TeamReportService {
         return defaults(dept, null, null);
     }
 
-    /** 合并对象来源记录中的关键词、联系人与默认通知名单。 */
+    /** 初始化对象参数；来源表仅提供默认通知人员，不提供关键词或联系人配置。 */
     private TeamReportConfig.Target defaults(String dept, String id, String team) {
-        var source = mapper.objectDefaults(dept, team == null ? "" : team);
-        for (String key : List.of("keyword_count"))
-            if (((Number) source.get(key)).intValue() > 1) throw new IllegalStateException(
-                "TeamReportDefaultsConflict: " +
-                    dept +
-                    " / " +
-                    Objects.toString(team, "部门报告") +
-                    " 的初始关键词或联系人配置不一致"
-            );
         List<String> to = new ArrayList<>(),
             cc = new ArrayList<>();
         var people = mapper.recipients(dept, team == null ? "" : team);
@@ -264,21 +255,20 @@ public class TeamReportService {
             cc = org.filterExistingUserIds(cc);
         }
         List<String> finalTo = to;
-        String keyword = com.agentscopea2a.v2.skillManager.notification.NotificationContact.trimToNull(
-            (String) source.get("report_keyword")
-        );
+        // 关键词由对象名称生成初始值，用户编辑后随对象参数保存，不读取人员来源表。
+        String keyword = team == null ? dept + "部门报告" : team + "团队报告";
         return new TeamReportConfig.Target(
             id,
             team,
             true,
-            keyword == null ? (team == null ? dept + "部门报告" : team + "团队报告") : keyword,
+            keyword,
             to,
             cc
                 .stream()
                 .filter(u -> !finalTo.contains(u))
                 .toList(),
-            (String) source.get("notify_contact_name"),
-            (String) source.get("notify_contact_phone"),
+            null,
+            null,
             List.of(),
             true,
             ""
@@ -427,12 +417,12 @@ public class TeamReportService {
                         .stream()
                         .filter(u -> !to.contains(u))
                         .toList(),
-                    com.agentscopea2a.v2.skillManager.notification.NotificationContact.trimToNull(
+                    team ? null : com.agentscopea2a.v2.skillManager.notification.NotificationContact.trimToNull(
                         t.notifyContactName() == null && priorTarget != null
                             ? priorTarget.notifyContactName()
                             : t.notifyContactName()
                     ),
-                    com.agentscopea2a.v2.skillManager.notification.NotificationContact.trimToNull(
+                    team ? null : com.agentscopea2a.v2.skillManager.notification.NotificationContact.trimToNull(
                         t.notifyContactPhone() == null && priorTarget != null
                             ? priorTarget.notifyContactPhone()
                             : t.notifyContactPhone()
@@ -543,7 +533,7 @@ public class TeamReportService {
         );
     }
 
-    /** 校验新建任务类型，避免普通长任务和报告模式相互混用。 */
+    /** 仅新建团队报告使用报告配置，部门及其他类型沿用普通长任务流程。 */
     private void validateCreationType(SkillFlowDefinitionRequest r) {
         if (r.typeId() == null) throw new IllegalStateException("FlowTypeRequired: 请先选择已配置的任务类型");
         Map<String, Object> type = mapper.configuredType(r.typeId());
@@ -554,7 +544,7 @@ public class TeamReportService {
             Set.of("其他", "默认类型").contains(Objects.toString(type.get("name"), ""))
         ) throw new IllegalStateException("FlowTypeUnavailable: 请选择长任务配置中已启用的非默认类型");
         String name = Objects.toString(type.get("name"), "");
-        String expected = "团队报告".equals(name) ? "TEAM" : "部门报告".equals(name) ? "DEPARTMENT" : null;
+        String expected = "团队报告".equals(name) ? "TEAM" : null;
         if (
             (expected != null && (r.teamReport() == null || !expected.equals(r.teamReport().reportType()))) ||
             (expected == null && r.teamReport() != null)

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
+import { configuredFlowTypes } from '../../utils/flowCreation';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { listSkillFlowPage, updateSkillFlowConfig } from '../../api/skillFlow';
 import {
@@ -37,8 +38,9 @@ const flowDialog = ref(false),
   flowEditing = ref<SkillFlowSummary | null>(null),
   flowForm = ref({ typeId: 0, enabled: true });
 const creatorLabel = (id?: string) => (id ? (creatorNames.value[id] ? `${creatorNames.value[id]}(${id})` : id) : '-');
+const configuredTypes = computed(() => configuredFlowTypes(allTypes.value));
 const typeName = (id?: number | null) =>
-  allTypes.value.find((t) => t.id === id)?.name || (id === 1 ? '默认类型' : '未配置类型');
+  configuredTypes.value.find((t) => t.id === id)?.name || '未配置类型';
 const typeSortOrder = (id?: number | null) =>
   id == null ? 0 : (allTypes.value.find((t) => t.id === id)?.sortOrder ?? 0);
 const creatorQuery = computed(() => creatorIds.value.join(','));
@@ -206,7 +208,7 @@ onMounted(load);
           aria-label="任务类型筛选"
           @change="resetFlowPageAndLoad"
           ><option :value="undefined">全部任务类型</option
-          ><option v-for="t in allTypes" :key="t.id" :value="t.id">{{ t.name }}</option></select
+          ><option v-for="t in configuredTypes" :key="t.id" :value="t.id">{{ t.name }}</option></select
         ><input v-model="keyword" placeholder="搜索任务名称" @input="onKeywordInput" /><input
           v-model="creator"
           placeholder="按姓名或 userId 筛选"

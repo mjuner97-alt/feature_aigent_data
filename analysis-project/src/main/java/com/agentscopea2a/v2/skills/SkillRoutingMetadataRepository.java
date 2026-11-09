@@ -156,7 +156,7 @@ public class SkillRoutingMetadataRepository {
     public List<SkillRoutingMetadataView> findAllWithSkillManage(String keyword, Boolean active, boolean mine,
                                                                   String userId, int limit, int offset) {
         ensureTable();
-        String creatorExpr = "CASE WHEN x.owner_user_id IS NULL OR TRIM(x.owner_user_id) = '' THEN '通用' ELSE x.owner_user_id END";
+        String creatorExpr = "CASE WHEN LENGTH(TRIM(x.owner_user_id)) > 0 THEN x.owner_user_id ELSE '通用' END";
         StringBuilder sql = new StringBuilder("SELECT x.name, x.description, r.short_summary, r.keywords, r.domain_tags, r.topic_tags, "
                 + "r.level1_keywords, r.level2_keywords, r.level3_keywords, r.script_id, r.param_mapping, "
                 + creatorExpr + " AS creator, r.active, r.updated_at, r.skill_name IS NOT NULL configured FROM (SELECT s.retrieval_name AS name, s.description, s.owner_user_id FROM skill_manage s WHERE s.retrieval_name IS NOT NULL AND s.status='ACTIVE' AND s.deleted_at IS NULL UNION SELECT i.name, i.description, NULL AS owner_user_id FROM skill_index i WHERE i.status='active' AND NOT EXISTS (SELECT 1 FROM skill_manage s2 WHERE s2.retrieval_name=i.name AND s2.status='ACTIVE' AND s2.deleted_at IS NULL)) x LEFT JOIN skill_routing_metadata r ON r.skill_name=x.name WHERE 1=1");
@@ -182,7 +182,7 @@ public class SkillRoutingMetadataRepository {
     /** Same scope/filters as {@link #findAllWithSkillManage}, but counted in the database. */
     public int countAllWithSkillManage(String keyword, Boolean active, boolean mine, String userId) {
         ensureTable();
-        String creatorExpr = "CASE WHEN x.owner_user_id IS NULL OR TRIM(x.owner_user_id) = '' THEN '通用' ELSE x.owner_user_id END";
+        String creatorExpr = "CASE WHEN LENGTH(TRIM(x.owner_user_id)) > 0 THEN x.owner_user_id ELSE '通用' END";
         StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM (SELECT s.retrieval_name AS name, s.description, s.owner_user_id FROM skill_manage s WHERE s.retrieval_name IS NOT NULL AND s.status='ACTIVE' AND s.deleted_at IS NULL UNION SELECT i.name, i.description, NULL AS owner_user_id FROM skill_index i WHERE i.status='active' AND NOT EXISTS (SELECT 1 FROM skill_manage s2 WHERE s2.retrieval_name=i.name AND s2.status='ACTIVE' AND s2.deleted_at IS NULL)) x LEFT JOIN skill_routing_metadata r ON r.skill_name=x.name WHERE 1=1");
         if (keyword != null && !keyword.isBlank()) sql.append(" AND (LOWER(x.name) LIKE ? OR LOWER(COALESCE(x.description,'')) LIKE ? OR LOWER(" + creatorExpr + ") LIKE ?)");
         if (active != null) sql.append(" AND COALESCE(r.active, TRUE)=?");
@@ -204,7 +204,7 @@ public class SkillRoutingMetadataRepository {
         ensureTable();
         String sql = "SELECT x.name, x.description, r.short_summary, r.keywords, r.domain_tags, r.topic_tags, "
                 + "r.level1_keywords, r.level2_keywords, r.level3_keywords, r.script_id, r.param_mapping, "
-                + "CASE WHEN x.owner_user_id IS NULL OR TRIM(x.owner_user_id) = '' THEN '通用' ELSE x.owner_user_id END AS creator, r.active, r.updated_at, r.skill_name IS NOT NULL configured FROM (SELECT s.retrieval_name AS name, s.description, s.owner_user_id FROM skill_manage s WHERE s.retrieval_name IS NOT NULL AND s.status='ACTIVE' AND s.deleted_at IS NULL UNION SELECT i.name, i.description, NULL AS owner_user_id FROM skill_index i WHERE i.status='active' AND NOT EXISTS (SELECT 1 FROM skill_manage s2 WHERE s2.retrieval_name=i.name AND s2.status='ACTIVE' AND s2.deleted_at IS NULL)) x LEFT JOIN skill_routing_metadata r ON r.skill_name=x.name WHERE x.name=?";
+                + "CASE WHEN LENGTH(TRIM(x.owner_user_id)) > 0 THEN x.owner_user_id ELSE '通用' END AS creator, r.active, r.updated_at, r.skill_name IS NOT NULL configured FROM (SELECT s.retrieval_name AS name, s.description, s.owner_user_id FROM skill_manage s WHERE s.retrieval_name IS NOT NULL AND s.status='ACTIVE' AND s.deleted_at IS NULL UNION SELECT i.name, i.description, NULL AS owner_user_id FROM skill_index i WHERE i.status='active' AND NOT EXISTS (SELECT 1 FROM skill_manage s2 WHERE s2.retrieval_name=i.name AND s2.status='ACTIVE' AND s2.deleted_at IS NULL)) x LEFT JOIN skill_routing_metadata r ON r.skill_name=x.name WHERE x.name=?";
         try (Connection c = dataSource.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, skillName);
             try (ResultSet rs = ps.executeQuery()) { return rs.next() ? Optional.of(mapView(rs)) : Optional.empty(); }
