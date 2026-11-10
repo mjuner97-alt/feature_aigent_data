@@ -43,7 +43,15 @@ public class ResourceChangeAuditService {
         if (operatorId == null || operatorId.isBlank()) return;
         List<Change> safeChanges = changes == null ? List.of() : List.copyOf(changes);
         if (safeChanges.isEmpty()) return;
-        executor.execute(() -> doRecord(resourceType, resourceId, resourceName, operationType, summary, operatorId, operatorName, safeChanges));
+        long changedAt = Instant.now().getEpochSecond();
+        Runnable write = () -> executor.execute(() -> doRecord(resourceType, resourceId, resourceName,
+            operationType, summary, operatorId, operatorName, safeChanges, changedAt));
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override public void afterCommit() { write.run(); }
+                });
+        } else write.run();
     }
 
     @jakarta.annotation.PreDestroy
@@ -54,10 +62,9 @@ public class ResourceChangeAuditService {
     /** 在审计写入线程内完成人员姓名补全、事件及明细的实际写入。 */
     private void doRecord(String resourceType, String resourceId, String resourceName,
                           String operationType, String summary, String operatorId, String operatorName,
-                          List<Change> changes) {
+                          List<Change> changes, long now) {
         UUID eventId = UUID.randomUUID();
         String eventNo = "AUD-" + eventId.toString().replace("-", "").substring(0, 16).toUpperCase(Locale.ROOT);
-        long now = Instant.now().getEpochSecond();
         String safeName = operatorName == null || operatorName.isBlank() || operatorName.equals(operatorId) ? "未知姓名" : operatorName;
         try {
             var people = personMapper.selectByUserIds(List.of(operatorId));
@@ -95,31 +102,105 @@ public class ResourceChangeAuditService {
         }
     }
 
-    /** 按筛选条件分页查询资源变更记录。 */
+    // %T 在 ClickHouse 20.12 即支持，避免新版本才支持的分钟占位符 %i。
+    private static final String EVENT_COLUMNS = "event_id,event_no,created_at,resource_type,resource_id,resource_name,operation_type,operation_summary,operator_id,operator_name,result,detail_count,environment,formatDateTime(created_at, '%Y-%m-%d %T', 'Asia/Shanghai') AS modification_time";
+    private static final int MAX_EXPORT_ROWS = 10000;
+
+    /** Page and export share exactly the same filters. */
+    private QueryFilter filter(String resourceType, String operationType, String operatorKeyword,
+                               String resourceKeyword, String keyword, String startTime, String endTime,
+                               String requestedEnvironment) {
+        StringBuilder where = new StringBuilder(" WHERE 1=1 ");
+        MapSqlParameterSource p = new MapSqlParameterSource();
+        String selectedEnvironment = requestedEnvironment == null || requestedEnvironment.isBlank()
+            ? environment : requestedEnvironment.trim();
+        if (!"ALL".equalsIgnoreCase(selectedEnvironment)) {
+            where.append(" AND environment=:environment");
+            p.addValue("environment", selectedEnvironment.toLowerCase(Locale.ROOT));
+        }
+        if ("all".equalsIgnoreCase(resourceType)) {
+            where.append(" AND resource_type IN ('python_page','long_task_flow')");
+        } else if (resourceType != null && !resourceType.isBlank()) {
+            where.append(" AND resource_type=:resourceType"); p.addValue("resourceType", resourceType);
+        }
+        if (operationType != null && !operationType.isBlank()) { where.append(" AND operation_type=:operationType"); p.addValue("operationType", operationType); }
+        if (operatorKeyword != null && !operatorKeyword.isBlank()) { where.append(" AND (operator_id LIKE :operatorKeyword OR operator_name LIKE :operatorKeyword)"); p.addValue("operatorKeyword", "%" + operatorKeyword.trim() + "%"); }
+        if (resourceKeyword != null && !resourceKeyword.isBlank()) { where.append(" AND resource_name LIKE :resourceKeyword"); p.addValue("resourceKeyword", "%" + resourceKeyword.trim() + "%"); }
+        if (keyword != null && !keyword.isBlank()) { where.append(" AND (operation_summary LIKE :keyword OR resource_name LIKE :keyword)"); p.addValue("keyword", "%" + keyword.trim() + "%"); }
+        if (startTime != null && !startTime.isBlank()) {
+            where.append(" AND created_at >= parseDateTimeBestEffort(:startTime, 'Asia/Shanghai')");
+            p.addValue("startTime", startTime.trim());
+        }
+        if (endTime != null && !endTime.isBlank()) {
+            String end = endTime.trim();
+            if (end.matches("\\d{4}-\\d{2}-\\d{2}")) {
+                // Date-only filters include every fractional second of the final day.
+                where.append(" AND created_at < parseDateTimeBestEffort(:endTime, 'Asia/Shanghai')");
+                p.addValue("endTime", java.time.LocalDate.parse(end).plusDays(1).toString());
+            } else {
+                where.append(" AND created_at <= parseDateTimeBestEffort(:endTime, 'Asia/Shanghai')");
+                p.addValue("endTime", end);
+            }
+        }
+        return new QueryFilter(where.toString(), p);
+    }
+
+    private record QueryFilter(String where, MapSqlParameterSource params) {}
+
+    /** 按筛选条件分页查询，并批量补全修改内容，避免逐行请求明细。 */
     public Map<String,Object> page(String resourceType, String operationType, String operatorKeyword,
                                    String resourceKeyword, String keyword, String startTime, String endTime,
                                    String requestedEnvironment, int page, int pageSize) {
-        StringBuilder where = new StringBuilder(" WHERE 1=1 ");
-        MapSqlParameterSource p = new MapSqlParameterSource();
-        String filterEnvironment = requestedEnvironment == null || requestedEnvironment.isBlank()
-                ? environment : requestedEnvironment.trim();
-        if (!"ALL".equalsIgnoreCase(filterEnvironment)) {
-            where.append(" AND environment=:environment");
-            p.addValue("environment", filterEnvironment.toLowerCase(Locale.ROOT));
-        }
-        if (resourceType != null && !resourceType.isBlank() && !"all".equalsIgnoreCase(resourceType)) { where.append(" AND resource_type=:resourceType"); p.addValue("resourceType", resourceType); }
-        if (operationType != null && !operationType.isBlank()) { where.append(" AND operation_type=:operationType"); p.addValue("operationType", operationType); }
-        if (operatorKeyword != null && !operatorKeyword.isBlank()) { where.append(" AND (operator_id LIKE :operatorKeyword OR operator_name LIKE :operatorKeyword)"); p.addValue("operatorKeyword", "%" + operatorKeyword + "%"); }
-        if (resourceKeyword != null && !resourceKeyword.isBlank()) { where.append(" AND resource_name LIKE :resourceKeyword"); p.addValue("resourceKeyword", "%" + resourceKeyword + "%"); }
-        if (keyword != null && !keyword.isBlank()) { where.append(" AND (operation_summary LIKE :keyword OR resource_name LIKE :keyword)"); p.addValue("keyword", "%" + keyword + "%"); }
-        if (startTime != null && !startTime.isBlank()) { where.append(" AND created_at >= parseDateTimeBestEffort(:startTime, 'Asia/Shanghai')"); p.addValue("startTime", startTime); }
-        if (endTime != null && !endTime.isBlank()) { where.append(" AND created_at <= parseDateTimeBestEffort(:endTime, 'Asia/Shanghai')"); p.addValue("endTime", endTime); }
+        QueryFilter f = filter(resourceType, operationType, operatorKeyword, resourceKeyword, keyword, startTime, endTime, requestedEnvironment);
         int safePage = Math.max(1, page), safeSize = Math.min(100, Math.max(1, pageSize));
-        long total = jdbc.queryForObject("SELECT count() FROM digital_qa_resource_change_event" + where, p, Long.class);
-        p.addValue("limit", safeSize).addValue("offset", (safePage - 1) * safeSize);
-        List<Map<String,Object>> items = jdbc.queryForList("SELECT event_id,event_no,created_at,resource_type,resource_id,resource_name,operation_type,operation_summary,operator_id,operator_name,result,detail_count,environment FROM digital_qa_resource_change_event" + where + " ORDER BY created_at DESC LIMIT :limit OFFSET :offset", p);
-        items.forEach(m -> { String n = Objects.toString(m.get("operator_name"), "未知姓名"); String id = Objects.toString(m.get("operator_id"), ""); m.put("operatorDisplayName", (n.isBlank()?"未知姓名":n) + "（" + id + "）"); });
-        return Map.of("items", items, "total", total, "page", safePage, "pageSize", safeSize);
+        Long total = jdbc.queryForObject("SELECT count() FROM digital_qa_resource_change_event" + f.where(), f.params(), Long.class);
+        f.params().addValue("limit", safeSize).addValue("offset", (long) (safePage - 1) * safeSize);
+        List<Map<String,Object>> items = jdbc.queryForList("SELECT " + EVENT_COLUMNS + " FROM digital_qa_resource_change_event" + f.where()
+            + " ORDER BY created_at DESC,event_id DESC LIMIT :limit OFFSET :offset", f.params());
+        enrich(items);
+        return Map.of("items", items, "total", total == null ? 0 : total, "page", safePage, "pageSize", safeSize);
+    }
+
+    private void enrich(List<Map<String,Object>> events) {
+        if (events.isEmpty()) return;
+        var ids = events.stream().map(event -> UUID.fromString(event.get("event_id").toString())).toList();
+        var details = jdbc.queryForList("SELECT event_id,detail_no,target_name,field_name,field_label,before_value,after_value FROM digital_qa_resource_change_detail WHERE event_id IN (:eventIds) ORDER BY event_id,detail_no",
+            new MapSqlParameterSource("eventIds", ids));
+        Map<String, List<Map<String,Object>>> grouped = new HashMap<>();
+        for (var detail : details) grouped.computeIfAbsent(detail.get("event_id").toString(), ignored -> new ArrayList<>()).add(detail);
+        for (var event : events) {
+            String name = Objects.toString(event.get("operator_name"), "未知姓名");
+            event.put("operatorDisplayName", (name.isBlank() ? "未知姓名" : name) + "（" + Objects.toString(event.get("operator_id"), "") + "）");
+            var changes = grouped.getOrDefault(event.get("event_id").toString(), List.of());
+            String fallback = Objects.toString(event.get("operation_summary"), "") + (changes.isEmpty() ? "（明细暂不可用）" : "");
+            event.put("change_summary", ResourceChangeSummary.summarize(changes, fallback));
+        }
+    }
+
+    /** Export all matching events, rather than just the visible page. */
+    public byte[] exportCsv(String resourceType, String operationType, String operatorKeyword,
+                            String resourceKeyword, String keyword, String startTime, String endTime,
+                            String requestedEnvironment) {
+        QueryFilter f = filter(resourceType, operationType, operatorKeyword, resourceKeyword, keyword, startTime, endTime, requestedEnvironment);
+        f.params().addValue("limit", MAX_EXPORT_ROWS + 1);
+        var events = jdbc.queryForList("SELECT " + EVENT_COLUMNS + " FROM digital_qa_resource_change_event" + f.where()
+            + " ORDER BY created_at DESC,event_id DESC LIMIT :limit", f.params());
+        if (events.size() > MAX_EXPORT_ROWS) throw new org.springframework.web.server.ResponseStatusException(
+            org.springframework.http.HttpStatus.BAD_REQUEST, "导出记录超过10000条，请缩小时间或人员范围后重试");
+        StringBuilder csv = new StringBuilder("\uFEFF修改时间,修改人,长任务名称/Python脚本,修改内容\r\n");
+        for (int start = 0; start < events.size(); start += 100) {
+            var batch = events.subList(start, Math.min(start + 100, events.size()));
+            enrich(batch);
+            for (var event : batch) {
+                String resource = ("long_task_flow".equals(event.get("resource_type")) ? "[长任务] " : "[Python脚本] ")
+                    + Objects.toString(event.get("resource_name"), "");
+                csv.append(ResourceChangeSummary.csvCell(event.get("modification_time"))).append(',')
+                    .append(ResourceChangeSummary.csvCell(event.get("operatorDisplayName"))).append(',')
+                    .append(ResourceChangeSummary.csvCell(resource)).append(',')
+                    .append(ResourceChangeSummary.csvCell(event.get("change_summary"))).append("\r\n");
+            }
+        }
+        return csv.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
     }
 
     /** 按需查询单条审计事件及其字段明细，避免列表页加载大量长任务详情。 */
