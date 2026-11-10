@@ -2684,6 +2684,49 @@ class DirectSkillExecutorTest {
         assertEquals("云计算实验室", plan.params().get("dev_dept"));
     }
 
+    // ============ 应用码英文形态豁免 B③ (应用退出台账真值校验方案 v2, 2026/11/10) ============
+
+    @Test
+    void appCodeEnglishShapeBypassesTruthDomainCheck() {
+        // 基地应用 F-GCS 不在台账「应用」真值域 → 豁免不剔, 原样传参
+        String question = "F-GCS的达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.dimensionTruthDictionary("应用")).thenReturn(Set.of("F-ATP"));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"app\":\"appName\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                stateWithPeer(DimensionState.PeerDimensionType.APPLICATION, List.of("F-GCS")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "alice", null);
+
+        assertEquals(List.of("F-GCS"), plan.extraction().appName());
+        assertEquals("F-GCS", plan.params().get("app"));
+    }
+
+    @Test
+    void appCodeExemptionAppliesOnlyToAppNameKey() {
+        // 豁免仅挂 appName 键: groupName 键的同形态值仍对照真值域, 域外照剔
+        String question = "F-GCS的达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.dimensionTruthDictionary("统计组")).thenReturn(Set.of("个贷汽车场景建设组"));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"stat_group\":\"groupName\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                stateWithPeer(DimensionState.PeerDimensionType.TEAM, List.of("F-GCS")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "alice", null);
+
+        assertTrue(plan.extraction().groupName().isEmpty());
+    }
+
     // ============ 维度值→部门反填 (2026/10/27 拍板, 台账 Q8 deptsByDimension) ============
 
     @Test
