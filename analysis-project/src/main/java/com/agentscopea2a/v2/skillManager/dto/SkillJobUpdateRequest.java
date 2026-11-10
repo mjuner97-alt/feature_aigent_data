@@ -19,9 +19,7 @@ import java.util.List;
 
 /**
  * 更新 SkillJob 的请求体，所有字段可选，仅更新非 null 字段。
- * skillId / metricId 可修改：前端编辑表单可更换关联 Skill 或依赖指标。
- *   - metricId 取值约定：正值 = 关联该指标；0 = 清除关联（不关联）；null = 不修改（保留原值）。
- *   - 这样既支持"更换指标"，也支持"取消关联"，又兼容 toggleEnabled 等部分更新（不传 metricId 即保留）。
+ * 依赖指标统一继承关联 Skill；保留的任务级指标字段仅兼容旧请求，不再使用。
  * createdBy 不可变；outputPath 由后端按 userId + baseDir 拼，不暴露。
  */
 public record SkillJobUpdateRequest(

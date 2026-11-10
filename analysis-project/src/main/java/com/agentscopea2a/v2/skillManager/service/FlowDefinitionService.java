@@ -392,9 +392,7 @@ public class FlowDefinitionService {
             for (var row : rows) {
                 nodes.computeIfAbsent(row.getFlowId(), ignored -> new HashSet<>()).add(row.getNodeId());
                 var effective = metrics.computeIfAbsent(row.getFlowId(), ignored -> new HashSet<>());
-                if (Boolean.TRUE.equals(row.getOverrideConfigured())) {
-                    if (row.getMetricId() != null && row.getMetricId() > 0) effective.add(row.getMetricId());
-                } else effective.addAll(MetricDependencyIds.parse(row.getDefaultMetricIds()));
+                effective.addAll(MetricDependencyIds.parse(row.getDefaultMetricIds()));
             }
             boolean validExecutor = orgService != null && orgService.userExists(userId);
             for (var item : items) {
@@ -560,8 +558,7 @@ public class FlowDefinitionService {
         // 指标 -> 受影响节点列表
         Map<Long, List<String>> affected = new LinkedHashMap<>();
         for (SkillFlowNode node : definitionNodes(flow)) {
-            List<Long> selected = flowMapper.selectMetricIdsByNodeId(node.getId());
-            for (Long metricId : resolveNodeMetrics(node, selected).metricIds()) {
+            for (Long metricId : resolveNodeMetrics(node).metricIds()) {
                 affected.computeIfAbsent(metricId, k -> new ArrayList<>()).add(node.getNodeKey());
             }
         }
@@ -728,14 +725,6 @@ public class FlowDefinitionService {
                 "node question must not be blank: " + nodeKey
             );
             if (node.maxAttempts() != null && node.maxAttempts() < 1) errors.add("maxAttempts must be positive");
-            // 依赖指标:skill / python 节点均可声明,支持多个,须存在且启用
-            // (执行侧门控/自动触发均按 node_metric 关联表驱动,与节点类型无关)
-            for (Long metricId : node.metricIds()) {
-                SkillDependencyMetric metric = metricMapper.selectById(metricId);
-                if (metric == null || !Boolean.TRUE.equals(metric.getEnabled())) {
-                    errors.add("MetricUnavailable: metric is not enabled: " + metricId);
-                }
-            }
         }
         if (hasPython && hasLegacy) errors.add(
             "MixedNodeTypesUnsupported: Python and legacy Skill nodes cannot be combined"
@@ -782,20 +771,13 @@ public class FlowDefinitionService {
                 )
                 .skillId(item.skillId())
                 .questionTemplate(trim(item.questionTemplate()))
-                .metricOverrideConfigured(
-                    Boolean.TRUE.equals(item.metricOverrideConfigured()) || !item.metricIds().isEmpty()
-                )
+                .metricOverrideConfigured(false)
                 .dependsOnJson("[]")
                 .required(item.required() == null || item.required())
                 .maxAttempts(SkillFlowProperties.NODE_MAX_ATTEMPTS)
                 .sortOrder(item.sortOrder() == null ? 0 : item.sortOrder())
                 .build();
             flowMapper.insertNode(node);
-            for (Long metricId : item.metricIds()) {
-                flowMapper.insertNodeMetric(
-                    SkillFlowNodeMetric.builder().flowNodeId(node.getId()).metricId(metricId).build()
-                );
-            }
         }
         for (SkillFlowDefinitionRequest.Trigger item : request.triggers()) {
             flowMapper.insertTrigger(
@@ -824,8 +806,8 @@ public class FlowDefinitionService {
                     node.getScriptId(),
                     node.getScriptParamsJson(),
                     node.getQuestionTemplate(),
-                    flowMapper.selectMetricIdsByNodeId(node.getId()),
-                    node.getMetricOverrideConfigured(),
+                    List.of(),
+                    false,
                     node.getRequired(),
                     node.getMaxAttempts(),
                     node.getSortOrder()
@@ -891,14 +873,14 @@ public class FlowDefinitionService {
                       .stream()
                       .map(node -> {
                           Skill skill = skillMapper.selectById(node.getSkillId());
-                          List<Long> metricIds = flowMapper.selectMetricIdsByNodeId(node.getId());
+                          List<Long> metricIds = List.of();
                           List<String> metricNames = metricIds
                               .stream()
                               .map(metricMapper::selectById)
                               .map(metric -> metric == null ? null : metric.getName())
                               .filter(Objects::nonNull)
                               .toList();
-                          MetricDependencyResolver.Resolution resolved = resolveNodeMetrics(node, metricIds);
+                          MetricDependencyResolver.Resolution resolved = resolveNodeMetrics(node);
                           List<String> effectiveNames = resolved
                               .metricIds()
                               .stream()
@@ -921,7 +903,7 @@ public class FlowDefinitionService {
                               metricNames,
                               resolved.metricIds(),
                               resolved.source().name(),
-                              node.getMetricOverrideConfigured(),
+                              false,
                               node.getRequired(),
                               node.getMaxAttempts(),
                               node.getSortOrder()
@@ -985,22 +967,17 @@ public class FlowDefinitionService {
             .toList();
     }
 
-    private MetricDependencyResolver.Resolution resolveNodeMetrics(SkillFlowNode node, List<Long> selected) {
+    private MetricDependencyResolver.Resolution resolveNodeMetrics(SkillFlowNode node) {
         List<Long> defaults = List.of();
-        if (!Boolean.TRUE.equals(node.getMetricOverrideConfigured())) {
-            if (node.getScriptId() != null && !node.getScriptId().isBlank()) {
-                ScriptRegistryEntry script = scriptRegistryMapper.selectByScriptId(node.getScriptId().trim());
-                defaults = script == null ? List.of() : MetricDependencyIds.parse(script.getDefaultMetricIds());
-            } else if (node.getSkillId() != null) {
-                Skill skill = skillMapper.selectById(node.getSkillId());
-                defaults = skill == null ? List.of() : MetricDependencyIds.parse(skill.getDefaultMetricIds());
-            }
+        if (node.getScriptId() != null && !node.getScriptId().isBlank()) {
+            ScriptRegistryEntry script = scriptRegistryMapper.selectByScriptId(node.getScriptId().trim());
+            defaults = script == null ? List.of() : MetricDependencyIds.parse(script.getDefaultMetricIds());
+        } else if (node.getSkillId() != null) {
+            Skill skill = skillMapper.selectById(node.getSkillId());
+            defaults = skill == null ? List.of() : MetricDependencyIds.parse(skill.getDefaultMetricIds());
         }
-        return MetricDependencyResolver.resolve(
-            Boolean.TRUE.equals(node.getMetricOverrideConfigured()),
-            selected,
-            defaults
-        );
+        // Task-level overrides are retired, including historical selections.
+        return MetricDependencyResolver.resolve(false, List.of(), defaults);
     }
 
     private SkillFlow toFlow(SkillFlowDefinitionRequest request, String createdBy, String existingCode) {

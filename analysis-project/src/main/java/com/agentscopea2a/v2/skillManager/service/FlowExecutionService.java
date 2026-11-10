@@ -652,7 +652,7 @@ public class FlowExecutionService {
         // 快照写入 requiredMetricCount / readyMetricCount / missingMetricsJson,供执行详情展示与门控重算。
         List<SkillFlowNode> nodes = templateNodes == null ? definitionNodes(flow) : templateNodes;
         Set<Long> metrics = new LinkedHashSet<>();
-        if (templateNodes == null) nodes.forEach(n -> metrics.addAll(effectiveMetricIds(n)));
+        nodes.forEach(n -> metrics.addAll(effectiveMetricIds(n)));
         if (requireAllMetrics && metrics.isEmpty()) return new TriggerResult(null, false);
         List<Long> missing = metrics
             .stream()
@@ -804,27 +804,15 @@ public class FlowExecutionService {
         return new TriggerResult(execution, true);
     }
 
-    /** Resolves node overrides at execution time so inherited defaults change without rewriting flows. */
+    /** Read dependencies from the bound script/Skill; historical task overrides are ignored. */
     private List<Long> effectiveMetricIds(SkillFlowNode node) {
-        List<Long> override = mapper.selectMetricIdsByNodeId(node.getId());
-        List<Long> defaults = List.of();
-        if (!Boolean.TRUE.equals(node.getMetricOverrideConfigured())) {
-            if (node.getScriptId() != null && !node.getScriptId().isBlank()) {
-                ScriptRegistryEntry script =
-                    scriptRegistryMapper == null
-                        ? null
-                        : scriptRegistryMapper.selectByScriptId(node.getScriptId().trim());
-                defaults = script == null ? List.of() : MetricDependencyIds.parse(script.getDefaultMetricIds());
-            } else if (node.getSkillId() != null) {
-                Skill skill = skillMapper.selectById(node.getSkillId());
-                defaults = skill == null ? List.of() : MetricDependencyIds.parse(skill.getDefaultMetricIds());
-            }
+        if (node.getScriptId() != null && !node.getScriptId().isBlank()) {
+            ScriptRegistryEntry script = scriptRegistryMapper == null
+                ? null : scriptRegistryMapper.selectByScriptId(node.getScriptId().trim());
+            return script == null ? List.of() : MetricDependencyIds.parse(script.getDefaultMetricIds());
         }
-        return MetricDependencyResolver.resolve(
-            Boolean.TRUE.equals(node.getMetricOverrideConfigured()),
-            override,
-            defaults
-        ).metricIds();
+        Skill skill = node.getSkillId() == null ? null : skillMapper.selectById(node.getSkillId());
+        return skill == null ? List.of() : MetricDependencyIds.parse(skill.getDefaultMetricIds());
     }
 
     /**

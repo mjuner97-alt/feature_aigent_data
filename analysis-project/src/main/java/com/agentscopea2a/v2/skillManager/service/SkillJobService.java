@@ -131,19 +131,6 @@ public class SkillJobService {
             throw new IllegalStateException("JobNameConflict: 任务名称 '" + req.name() + "' 已存在");
         }
 
-        // 校验依赖指标：可选；若传了则须存在且启用（admin 预置，用户只读）
-        List<Long> requestedMetricIds = req.metricIds() == null
-                ? (req.metricId() == null ? List.of() : List.of(req.metricId())) : req.metricIds();
-        for (Long metricId : MetricDependencyIds.parse(MetricDependencyIds.encode(requestedMetricIds))) {
-            SkillDependencyMetric metric = metricMapper.selectById(metricId);
-            if (metric == null) {
-                throw new IllegalStateException("MetricNotFound: 依赖指标不存在 (id=" + metricId + ")");
-            }
-            if (!Boolean.TRUE.equals(metric.getEnabled())) {
-                throw new IllegalStateException("MetricDisabled: 依赖指标已停用，不可选用 (id=" + metricId + ")");
-            }
-        }
-
         // 自动生成输出路径(相对 skill.job.base-dir): {userId}/。
         String outputPath = userId + "/";
 
@@ -154,9 +141,9 @@ public class SkillJobService {
                 .outputPath(outputPath)
                 .enabled(true)
                 .createdBy(userId)
-                .metricId(requestedMetricIds.isEmpty() ? null : requestedMetricIds.get(0))
-                .metricIds(MetricDependencyIds.encode(requestedMetricIds))
-                .metricOverrideConfigured(Boolean.TRUE.equals(req.metricOverrideConfigured()) || !requestedMetricIds.isEmpty())
+                .metricId(null)
+                .metricIds(null)
+                .metricOverrideConfigured(false)
                 .scheduleRules(req.scheduleRules())
                 .build();
         mapper.insertSkillJob(job);
@@ -164,7 +151,7 @@ public class SkillJobService {
         saveJobRecipients(job.getId(), req.notifyReceivers(), userId);
 
         log.info("[SkillJob] create OK: id={}, name={}, outputPath={}", job.getId(), job.getName(), outputPath);
-        return SkillJobDto.of(job);
+        return SkillJobDto.of(inheritedMetrics(job));
     }
 
     /** 列表查询 */
@@ -176,7 +163,7 @@ public class SkillJobService {
                 .filter(Objects::nonNull)
                 .collect(Collectors.toSet());
         Map<String, String> creatorNames = mockOrgService.getUserNameMap(creatorIds);
-        return jobs.stream()
+        return inheritedMetrics(jobs).stream()
                 .map(j -> SkillJobDto.of(j, creatorNames.get(j.getCreatedBy())))
                 .toList();
     }
@@ -187,7 +174,7 @@ public class SkillJobService {
         List<SkillJob> rows = mapper.selectJobPage(enabled, keyword, createdBy, size, (long) (current - 1) * size);
         Map<String, String> names = rows.isEmpty() ? Map.of() : mockOrgService.getUserNameMap(rows.stream()
                                                                                               .map(SkillJob::getCreatedBy).filter(Objects::nonNull).collect(Collectors.toSet()));
-        return new PageResult<>(rows.stream().map(j -> SkillJobSummaryDto.of(j, names.get(j.getCreatedBy()))).toList(),
+        return new PageResult<>(inheritedMetrics(rows).stream().map(j -> SkillJobSummaryDto.of(j, names.get(j.getCreatedBy()))).toList(),
                 current, size, mapper.countJobs(enabled, keyword, createdBy));
     }
 
@@ -207,11 +194,11 @@ public class SkillJobService {
         if (job == null) {
             throw new IllegalStateException("JobNotFound: 任务不存在 (id=" + id + ")");
         }
-        return SkillJobDto.of(job);
+        return SkillJobDto.of(inheritedMetrics(job));
     }
 
     /** 更新 Job，仅更新非 null 字段；createdBy 不可变，仅创建人本人可改。
-     *  skillId / metricId 可改：metricId=0 表示清除关联（不关联），null 表示保留原值。
+     *  指标统一继承关联 Skill；旧客户端传入的任务级指标配置不再使用。
      *  更换 skillId 不影响 outputPath（outputPath 按 userId 生成，与 skill 无关）。 */
     @Transactional("gaussCustomerTransactionManager")
     public SkillJobDto update(Long id, SkillJobUpdateRequest req, String userId) {
@@ -227,34 +214,10 @@ public class SkillJobService {
         if (req.name() != null) job.setName(req.name());
         // skillId 可修改：正值才更新（0/负数忽略，避免占位符误写）
         if (req.skillId() != null && req.skillId() > 0) job.setSkillId(req.skillId());
-        // metricId 可修改：0 = 清除关联（不关联）；正值 = 关联该指标（须存在且启用）；null = 保留原值
-        if (req.metricId() != null) {
-            Long mid = req.metricId() == 0L ? null : req.metricId();
-            if (mid != null) {
-                SkillDependencyMetric metric = metricMapper.selectById(mid);
-                if (metric == null) {
-                    throw new IllegalStateException("MetricNotFound: 依赖指标不存在 (id=" + mid + ")");
-                }
-                if (!Boolean.TRUE.equals(metric.getEnabled())) {
-                    throw new IllegalStateException("MetricDisabled: 依赖指标已停用，不可选用 (id=" + mid + ")");
-                }
-            }
-            job.setMetricId(mid);
-            job.setMetricIds(MetricDependencyIds.encode(mid == null ? List.of() : List.of(mid)));
-            job.setMetricOverrideConfigured(true);
-        }
-        if (req.metricIds() != null) {
-            List<Long> ids = MetricDependencyIds.parse(MetricDependencyIds.encode(req.metricIds()));
-            for (Long mid : ids) {
-                SkillDependencyMetric metric = metricMapper.selectById(mid);
-                if (metric == null || !Boolean.TRUE.equals(metric.getEnabled())) {
-                    throw new IllegalStateException("MetricUnavailable: 依赖指标不可用 (id=" + mid + ")");
-                }
-            }
-            job.setMetricIds(MetricDependencyIds.encode(ids));
-            job.setMetricId(ids.isEmpty() ? null : ids.get(0));
-            job.setMetricOverrideConfigured(Boolean.TRUE.equals(req.metricOverrideConfigured()) || !ids.isEmpty());
-        }
+        // Task dependencies are maintained on the bound Skill, never on the job.
+        job.setMetricId(null);
+        job.setMetricIds(null);
+        job.setMetricOverrideConfigured(false);
         if (req.questionTemplate() != null) job.setQuestionTemplate(req.questionTemplate());
         if (req.enabled() != null) job.setEnabled(req.enabled());
         // 编辑表单始终提交定时规则：JSON 原样保存，传 null 表示清空定时配置
@@ -263,7 +226,7 @@ public class SkillJobService {
         if (req.notifyReceivers() != null) {
             saveJobRecipients(id, req.notifyReceivers(), userId);
         }
-        return SkillJobDto.of(job);
+        return SkillJobDto.of(inheritedMetrics(job));
     }
 
     private void saveJobRecipients(Long jobId, List<String> receivers, String userId) {
@@ -499,15 +462,33 @@ public class SkillJobService {
     }
 
     List<Long> effectiveMetricIds(SkillJob job) {
-        List<Long> selected = MetricDependencyIds.parse(job.getMetricIds());
-        boolean overridden = Boolean.TRUE.equals(job.getMetricOverrideConfigured()) || !selected.isEmpty();
-        if (!overridden && job.getMetricId() != null) {
-            selected = List.of(job.getMetricId());
-            overridden = true;
-        }
         var skill = skillMapper.selectById(job.getSkillId());
-        List<Long> defaults = skill == null ? List.of() : MetricDependencyIds.parse(skill.getDefaultMetricIds());
-        return MetricDependencyResolver.resolve(overridden, selected, defaults).metricIds();
+        return skill == null ? List.of() : MetricDependencyIds.parse(skill.getDefaultMetricIds());
+    }
+
+    /** Project live dependencies without writing defaults back into the task. */
+    private SkillJob inheritedMetrics(SkillJob job) {
+        return inheritedMetrics(List.of(job)).get(0);
+    }
+
+    private List<SkillJob> inheritedMetrics(List<SkillJob> jobs) {
+        Map<Long, List<Long>> skillMetrics = new HashMap<>();
+        for (SkillJob job : jobs) skillMetrics.computeIfAbsent(job.getSkillId(), ignored -> effectiveMetricIds(job));
+        List<Long> ids = skillMetrics.values().stream().flatMap(List::stream).distinct().toList();
+        Map<Long, SkillDependencyMetric> metrics = ids.isEmpty() ? Map.of() : metricMapper.selectByIds(ids).stream()
+            .collect(Collectors.toMap(SkillDependencyMetric::getId, metric -> metric));
+        return jobs.stream().map(job -> {
+            SkillJob view = new SkillJob();
+            org.springframework.beans.BeanUtils.copyProperties(job, view);
+            List<Long> required = skillMetrics.get(job.getSkillId());
+            var selected = required.stream().map(metrics::get).filter(Objects::nonNull).toList();
+            view.setMetricId(required.isEmpty() ? null : required.get(0));
+            view.setMetricIds(MetricDependencyIds.encode(required));
+            view.setMetricOverrideConfigured(false);
+            view.setMetricCode(selected.stream().map(SkillDependencyMetric::getCode).filter(Objects::nonNull).collect(Collectors.joining("、")));
+            view.setMetricName(selected.stream().map(SkillDependencyMetric::getName).filter(Objects::nonNull).collect(Collectors.joining("、")));
+            return view;
+        }).toList();
     }
 
     /** Dispatch a transactionally claimed execution after its insert has committed. */

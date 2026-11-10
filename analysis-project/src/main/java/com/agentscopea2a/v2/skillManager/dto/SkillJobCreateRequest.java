@@ -19,8 +19,8 @@ import java.util.List;
 
 /**
  * 创建 SkillJob 的请求体。
- * name/skillId/questionTemplate 为必填，metricId 可选（关联后随指标就绪触发），outputPath 由系统自动生成。
- * 若传 metricId，须为已启用（enabled=true）的预置依赖指标。
+ * name/skillId/questionTemplate 为必填，outputPath 由系统自动生成。
+ * 依赖指标统一继承关联 Skill；保留的任务级指标字段仅兼容旧请求，不再使用。
  */
 public record SkillJobCreateRequest(
         String name,

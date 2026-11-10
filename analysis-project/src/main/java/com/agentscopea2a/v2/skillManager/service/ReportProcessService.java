@@ -156,6 +156,10 @@ public class ReportProcessService {
         JsonNode copy = nodes.deepCopy();
         for (JsonNode value : copy) {
             if (value instanceof ObjectNode node) {
+                // Templates follow the script registry just like long tasks.
+                node.putArray("metricIds");
+                node.put("metricOverrideConfigured", false);
+                node.remove(List.of("metricNames", "effectiveMetricIds", "effectiveMetricNames", "metricSource"));
                 if (node.path("scriptParamsJson").asText("").isBlank() && node.hasNonNull("scriptParams")) {
                     node.put("scriptParamsJson", write(node.get("scriptParams")));
                 }

@@ -67,6 +67,9 @@ public class NotificationService {
             生成时间：{date}
             报告地址：{file_url}""";
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.agentscopea2a.v2.skillManager.mapper.SkillMapper skillMapper;
+
     private final SkillDependencyMetricMapper metricMapper;
     private final SkillJobMapper jobMapper;
     private final NotificationSender sender;
@@ -117,8 +120,7 @@ public class NotificationService {
         }
         String triggerType = execution.getTriggerType();
         boolean manual = "MANUAL".equals(triggerType);
-        SkillDependencyMetric metric = job.getMetricId() != null
-                ? metricMapper.selectById(job.getMetricId()) : null;
+        SkillDependencyMetric metric = inheritedNotificationMetric(job);
         boolean notifyEnabled = metric != null && Boolean.TRUE.equals(metric.getNotifyEnabled());
         // Automatic/external notifications always follow the metric notification switch,
         // regardless of whether execution succeeded or failed.
@@ -145,9 +147,16 @@ public class NotificationService {
         if (job == null || execution == null || filePath == null || filePath.isBlank()) {
             throw new IllegalArgumentException("NotificationResendInvalid: 缺少任务、执行记录或报告文件");
         }
-        SkillDependencyMetric metric = job.getMetricId() != null
-                ? metricMapper.selectById(job.getMetricId()) : null;
+        SkillDependencyMetric metric = inheritedNotificationMetric(job);
         return enqueue(job, metric, execution, filePath, execution.getTriggerType(), "RESEND", confirmedReceivers);
+    }
+
+    /** Notification configuration follows the first dependency on the bound Skill. */
+    private SkillDependencyMetric inheritedNotificationMetric(SkillJob job) {
+        var skill = skillMapper.selectById(job.getSkillId());
+        var ids = skill == null ? java.util.List.<Long>of()
+            : com.agentscopea2a.v2.skillManager.service.MetricDependencyIds.parse(skill.getDefaultMetricIds());
+        return ids.isEmpty() ? null : metricMapper.selectById(ids.get(0));
     }
 
     private SkillJobNotification enqueue(SkillJob job, SkillDependencyMetric metric,

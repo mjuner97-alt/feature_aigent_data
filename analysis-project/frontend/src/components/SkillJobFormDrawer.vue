@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import MetricDependencySelect from './MetricDependencySelect.vue';
 import OrderedRecipientList from './OrderedRecipientList.vue';
 import { lookupRecipients, lookupMessage } from '../api/recipientLookup';
 /**
@@ -10,13 +9,11 @@ import { lookupRecipients, lookupMessage } from '../api/recipientLookup';
  * questionTemplate 只需填核心问题，{skill_name} 和 MD写入指令由后端自动拼接
  */
 import { ref, watch, computed } from 'vue';
-import { getJob, createJob, updateJob } from '../api/skillJob';
-import { listMetrics } from '../api/skillDependencyMetric';
+import { getJob, createJob, updateJob, getJobNotifySettings } from '../api/skillJob';
 import { getSkill, listSkills } from '../api/skill';
 import { searchSkillUsers, batchUserNames } from '../api/skill';
 import type { SkillJobInput, SkillJobUpdateInput } from '../types/skillJob';
 import type { SkillListItem } from '../types/skill';
-import type { SkillDependencyMetric } from '../types/skillJob';
 import ScheduleRulesEditor from './ScheduleRulesEditor.vue';
 
 const props = withDefaults(defineProps<{ open: boolean; editId: number | null; page?: boolean }>(), { page: false });
@@ -27,16 +24,14 @@ const emit = defineEmits<{
 
 const isEdit = computed(() => props.editId != null);
 
-const form = ref<SkillJobInput>({ name: '', skillId: 0, questionTemplate: '', metricId: null, metricIds: [], metricOverrideConfigured: false, scheduleRules: null, notifyReceivers: [] });
+const form = ref<SkillJobInput>({ name: '', skillId: 0, questionTemplate: '', scheduleRules: null, notifyReceivers: [] });
 const baseline = ref('');
 const isDirty = computed(() => JSON.stringify(form.value) !== baseline.value);
 const formLoading = ref(false);
 const saving = ref(false);
 const formError = ref('');
 const skills = ref<Pick<SkillListItem, 'id' | 'name'>[]>([]);
-const metrics = ref<SkillDependencyMetric[]>([]);
 const skillLoading = ref(false);
-const metricLoading = ref(false);
 const receiverKeyword = ref('');
 const receiverMessage = ref('');
 let receiverQuery = 0;
@@ -44,24 +39,10 @@ const receiverResults = ref<{ userId: string; name: string; department: string |
 const receiverNames = ref<Record<string, string>>({});
 const receiverSearching = ref(false);
 let skillSearchSeq = 0;
-let metricSearchSeq = 0;
-
-/** 当前选中的依赖指标 (用于在 select 下方展示描述) */
-const selectedMetric = computed(() =>
-    metrics.value.find(m => (form.value.metricIds || []).includes(m.id)) ?? null
-);
-
-/** 是否展开依赖指标描述 (点击「查看指标描述」切换) */
-const showMetricDesc = ref(false);
 
 /** 加载"我使用的" Skill 列表供选择 */
 async function loadSkills() {
   await searchSkills('');
-}
-
-/** 加载启用的依赖指标(admin 预置只读)供选择 */
-async function loadMetrics() {
-  await searchMetrics('');
 }
 
 async function searchSkills(query: string) {
@@ -101,22 +82,9 @@ async function ensureSelectedSkill(skillId: number) {
   }
 }
 
-async function searchMetrics(query: string) {
-  const seq = ++metricSearchSeq;
-  metricLoading.value = true;
-  try {
-    const result = await listMetrics(query);
-    if (seq === metricSearchSeq) metrics.value = result;
-  } catch {
-    if (seq === metricSearchSeq) metrics.value = [];
-  } finally {
-    if (seq === metricSearchSeq) metricLoading.value = false;
-  }
-}
-
 function resetForm() {
   receiverNames.value = {};
-  form.value = { name: '', skillId: 0, questionTemplate: '', metricId: null, metricIds: [], metricOverrideConfigured: false, scheduleRules: null, notifyReceivers: [] };
+  form.value = { name: '', skillId: 0, questionTemplate: '', scheduleRules: null, notifyReceivers: [] };
   baseline.value = JSON.stringify(form.value);
   formError.value = '';
 }
@@ -125,7 +93,6 @@ watch(() => props.open, (open) => {
   if (!open) return;
   resetForm();
   loadSkills();
-  loadMetrics();
   if (props.editId != null) {
     loadForEdit(props.editId);
   }
@@ -140,13 +107,10 @@ async function loadForEdit(id: number) {
       skillId: job.skillId ?? 0,
       questionTemplate: job.questionTemplate ?? '',
       enabled: job.enabled,
-      metricId: job.metricId ?? null,
-      metricIds: job.metricIds ?? (job.metricId ? [job.metricId] : []),
-      metricOverrideConfigured: job.metricOverrideConfigured ?? !!job.metricId,
       scheduleRules: job.scheduleRules ?? null,
       notifyReceivers: [],
     };
-    const settings = await import('../api/skillJob').then(api => api.getJobNotifySettings(id));
+    const settings = await getJobNotifySettings(id);
     nextForm.notifyReceivers = settings.notifyReceivers ?? [];
     receiverNames.value = await batchUserNames(nextForm.notifyReceivers);
     // Resolve the selected option before exposing the loaded form. This avoids
@@ -196,12 +160,9 @@ async function submit() {
   saving.value = true;
   try {
     if (props.editId != null) {
-      // 编辑时统一提交指标集合，并标记为显式覆盖。
       const payload: SkillJobUpdateInput = {
         name: form.value.name,
         skillId: form.value.skillId,
-        metricIds: Array.from(new Set(form.value.metricIds || [])),
-        metricOverrideConfigured: form.value.metricOverrideConfigured ?? false,
         questionTemplate: form.value.questionTemplate,
         enabled: form.value.enabled,
         scheduleRules: form.value.scheduleRules,
@@ -256,17 +217,6 @@ defineExpose({ isDirty });
                     <el-option v-for="s in skills" :key="s.id" :value="s.id" :label="s.name" />
                   </el-select>
                   <span v-if="isEdit" class="tip">更换后影响后续执行；历史执行记录按当前 Skill 口径展示</span>
-                </label>
-                <label class="field">
-                  <span class="label">依赖指标</span>
-                  <MetricDependencySelect v-model="form.metricIds" :metrics="metrics" :remote-method="searchMetrics" :loading="metricLoading" placeholder="留空继承 Skill 默认指标" @change="form.metricIds = Array.from(new Set((form.metricIds || []).slice(0, 20))); form.metricOverrideConfigured = !!form.metricIds.length" />
-                  <span class="tip">
-                    留空时继承 Skill 默认指标；全部依赖指标当天就绪后自动执行，每天最多一次
-                    <span v-if="selectedMetric?.description" class="desc-toggle" @click="showMetricDesc = !showMetricDesc">
-                      {{ showMetricDesc ? '收起指标描述' : '查看指标描述' }}
-                    </span>
-                  </span>
-                  <div v-if="showMetricDesc && selectedMetric?.description" class="metric-desc">{{ selectedMetric.description }}</div>
                 </label>
                 <label class="field">
                   <span class="label">提问内容 *</span>
@@ -334,9 +284,7 @@ defineExpose({ isDirty });
 .form input, .form select, .form textarea { padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; font-family: inherit; background: #fff; }
 .form textarea { resize: vertical; }
 .tip { font-size: 12px; color: #94a3b8; }
-.desc-toggle { margin-left: 6px; color: #2563eb; cursor: pointer; }
 .desc-toggle:hover { text-decoration: underline; }
-.metric-desc { font-size: 12px; color: #475569; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px; padding: 6px 8px; white-space: pre-wrap; line-height: 1.5; }
 .error { color: #dc2626; font-size: 13px; }
 .btn { padding: 8px 18px; border-radius: 6px; border: 1px solid #cbd5e1; cursor: pointer; font-size: 14px; }
 .btn.primary { background: #3b82f6; color: #fff; border-color: #3b82f6; }
