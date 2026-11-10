@@ -11,9 +11,7 @@ import {
 import { getSkill, listSkills, batchUserNames } from '../api/skill';
 import { listAllEnabledEntries, startDebug, cancelDebug, subscribeDebug, getEntry } from '../api/scriptRegistry';
 import type { ParamSchemaItem, ScriptDebugRun, ScriptRegistryListItem } from '../types/scriptRegistry';
-import { listMetrics } from '../api/skillDependencyMetric';
 import type { SkillListItem } from '../types/skill';
-import type { SkillDependencyMetric } from '../types/skillJob';
 import type { SkillFlow, SkillFlowInput, SkillFlowNode, ReportOutline } from '../types/skillFlow';
 import {
   buildOutline,
@@ -44,7 +42,6 @@ import NotifyBodyTemplateEditor from './NotifyBodyTemplateEditor.vue';
 import FlowExecutorPicker from './FlowExecutorPicker.vue';
 import ScheduleRulesEditor from './ScheduleRulesEditor.vue';
 import { scrollToEditorSection } from '../utils/editorNavigation.js';
-import { retainSelectedMetrics, setNodeMetricSelection } from '../utils/flowMetrics';
 import { listReportProcesses } from '../api/reportProcess';
 import type { ReportProcess } from '../types/reportProcess';
 import { captureEditorState, restoreEditorState, type LongTaskEditorState } from '../utils/longTaskEditorState';
@@ -77,12 +74,9 @@ const saving = ref(false);
 const error = ref('');
 const skills = ref<SkillListItem[]>([]);
 const scripts = ref<ScriptRegistryListItem[]>([]);
-const metrics = ref<SkillDependencyMetric[]>([]);
 const skillLoading = ref(false);
 const scriptLoading = ref(false);
-const metricLoading = ref(false);
 let skillSearchSeq = 0;
-let metricSearchSeq = 0;
 const form = ref<SkillFlowInput>(emptyForm());
 const scriptParamErrors = ref<Record<string, string>>({});
 const outlineRows = ref<OutlineRow[]>([]);
@@ -285,10 +279,6 @@ function syncNodeSkillName(node: SkillFlowNode) {
   node.skillName = skills.value.find((skill) => skill.id === node.skillId)?.name;
 }
 
-function setNodeMetrics(node: SkillFlowNode, values: number[]) {
-  setNodeMetricSelection(node, values);
-}
-
 async function searchSkills(query: string) {
   const seq = ++skillSearchSeq;
   skillLoading.value = true;
@@ -396,19 +386,6 @@ async function ensureSelectedSkills(skillIds: number[]) {
   const additions = loaded.filter((skill): skill is SkillListItem => !!skill);
   if (additions.length)
     skills.value = [...additions, ...skills.value.filter((skill) => !additions.some((item) => item.id === skill.id))];
-}
-
-async function searchMetrics(query: string) {
-  const seq = ++metricSearchSeq;
-  metricLoading.value = true;
-  try {
-    const result = await listMetrics(query);
-    if (seq === metricSearchSeq) metrics.value = retainSelectedMetrics(result, metrics.value, form.value.nodes);
-  } catch {
-    if (seq === metricSearchSeq) metrics.value = retainSelectedMetrics([], metrics.value, form.value.nodes);
-  } finally {
-    if (seq === metricSearchSeq) metricLoading.value = false;
-  }
 }
 
 function renumber() {
@@ -730,7 +707,7 @@ function removeTrigger(index: number) {
 }
 
 async function loadOptions() {
-  await Promise.all([searchScripts(''), searchMetrics('')]);
+  await searchScripts('');
   if (!showReportProcesses) return;
   reportProcessLoading.value = true;
   try {
@@ -842,7 +819,8 @@ function normalizeFlow(flow: SkillFlow): SkillFlowInput {
         skillId: node.skillId ?? null,
         scriptId: node.scriptId ?? null,
         scriptParams,
-        metricIds: Array.from(new Set(node.metricIds || [])),
+        metricIds: [],
+        metricOverrideConfigured: false,
         required: node.required !== false,
         maxAttempts: 2,
         sortOrder: node.sortOrder || index + 1,
@@ -1001,7 +979,6 @@ async function load() {
       }
       // 联系人姓名未填写(或复制后被清空)时回填:编辑回填原创建人,新建/复制回填当前用户。
       await backfillContactName(isCopy.value ? flowOwnerId.value : flow.createdBy || '');
-      metrics.value = retainSelectedMetrics(metrics.value, metrics.value, form.value.nodes);
       // Notification recipients are owner-only settings. A copied flow starts
       // with the new owner's default recipients, even when its source is shared.
       if (!isCopy.value && !form.value.teamReport) {
@@ -1435,9 +1412,7 @@ defineExpose({ isDirty });
                       :title="nodeTitle(node)"
                       :schema="schemaFor(node)"
                       :scripts="scripts"
-                      :metrics="metrics"
                       :script-loading="scriptLoading"
-                      :metric-loading="metricLoading"
                       :debug-disabled="
                         !node.scriptId || debugStarting || debugInProgress() || (!!form.teamReport && !debugTarget)
                       "
@@ -1455,8 +1430,6 @@ defineExpose({ isDirty });
                       @script-change="onScriptSelected(node)"
                       @script-params-change="onScriptParamsChange(node, $event)"
                       @search-scripts="searchScripts"
-                      @search-metrics="searchMetrics"
-                      @set-metrics="setNodeMetrics(node, $event)"
                     />
                     <div class="chapter-node-actions">
                       <button class="btn" title="新建一个 Python 节点并放到该章节" @click="addOutlineNode(row)"

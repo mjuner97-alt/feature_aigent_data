@@ -393,15 +393,14 @@
             AND flow_id IN <foreach collection="flowIds" item="id" open="(" separator="," close=")">#{id}</foreach> GROUP BY flow_id)
         GROUP BY e.flow_id,e.batch_id
     </select>
-    <!-- Page-scoped scalar dependency rows: explicit empty override suppresses defaults. -->
+    <!-- Page-scoped dependencies always follow the bound script/Skill defaults. -->
     <select id="selectPageMetricRows" resultMap="FlowMetricSummaryMap">
-        SELECT n.flow_id, n.id AS node_id, n.metric_override_configured AS override_configured,
+        SELECT n.flow_id, n.id AS node_id, FALSE AS override_configured,
         CASE WHEN LENGTH(TRIM(n.script_id)) > 0 THEN s.default_metric_ids ELSE k.default_metric_ids END AS default_metric_ids,
-        m.metric_id
+        NULL AS metric_id
         FROM skill_flow_node n
         LEFT JOIN script_registry s ON s.script_id = TRIM(n.script_id)
         LEFT JOIN skill_manage k ON k.id = n.skill_id
-        LEFT JOIN skill_flow_node_metric m ON m.flow_node_id = n.id
         WHERE n.flow_id IN <foreach collection="flowIds" item="flowId" open="(" separator="," close=")">#{flowId}</foreach>
     </select>
 

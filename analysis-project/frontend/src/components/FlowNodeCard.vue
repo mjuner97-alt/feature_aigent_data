@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import DynamicPeriodEditor from './DynamicPeriodEditor.vue';
-import MetricDependencySelect from './MetricDependencySelect.vue';
 import type { SkillFlowNode } from '../types/skillFlow';
 import type { ParamSchemaItem, ScriptRegistryListItem } from '../types/scriptRegistry';
 import type { SkillDependencyMetric } from '../types/skillJob';
@@ -30,7 +29,7 @@ const props = withDefaults(
     /** 当前脚本的参数定义(未加载为 null)。 */
     schema: ParamSchemaItem[] | null;
     scripts: ScriptRegistryListItem[];
-    metrics: SkillDependencyMetric[];
+    metrics?: SkillDependencyMetric[];
     scriptLoading?: boolean;
     metricLoading?: boolean;
     debugDisabled?: boolean;
@@ -423,23 +422,6 @@ function selectedScript(node: SkillFlowNode, scripts: ScriptRegistryListItem[]):
         ><span>本流程问题 *</span
         ><textarea v-model="node.questionTemplate" rows="3" placeholder="填写该 Skill 在本流程中要执行的问题" />
       </label>
-      <label v-if="showMetrics"
-        ><span>指标依赖（可选）</span
-        ><MetricDependencySelect
-          :model-value="node.metricIds"
-          :metrics="metrics"
-          :remote-method="(query: string) => emit('search-metrics', query)"
-          :loading="metricLoading"
-          placeholder="未覆盖时继承默认指标"
-          @update:model-value="(value: number[]) => emit('set-metrics', value)"
-        /><small class="metric-source"
-          >当前来源：{{
-            node.metricOverrideConfigured ? '覆盖' : node.metricSource === 'DEFAULT' ? '默认继承' : '未配置'
-          }}<span v-if="!node.metricOverrideConfigured && node.effectiveMetricIds?.length"
-            >（{{ node.effectiveMetricIds.length }} 项生效）</span
-          ></small
-        ></label
-      >
     </div>
   </div>
 </template>

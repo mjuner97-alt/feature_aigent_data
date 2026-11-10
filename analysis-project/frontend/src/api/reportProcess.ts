@@ -15,7 +15,7 @@ function restore(process: ReportProcess): ReportProcess {
 }
 function payload(input: ReportProcessInput) {
   return { ...input, nodes: input.nodes.map(({ scriptParams, ...node }) => ({
-    ...node, scriptParamsJson: JSON.stringify(nodeParams({ ...node, scriptParams })),
+    ...node, metricIds: [], metricOverrideConfigured: false, scriptParamsJson: JSON.stringify(nodeParams({ ...node, scriptParams })),
   })) };
 }
 export async function listReportProcesses(scope:'mine'|'available'|'all'='mine'){return (await parse<ReportProcess[]>(await fetch(`${base}?scope=${scope}`,{headers:headers()}),'查询报告流程失败')).map(restore)}

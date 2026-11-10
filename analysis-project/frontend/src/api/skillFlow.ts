@@ -132,6 +132,8 @@ function withoutNodeAttemptPolicy(input: SkillFlowInput) {
     ...input,
     nodes: input.nodes.map(({ maxAttempts: _ignored, scriptParams, ...node }) => ({
       ...node,
+      metricIds: [],
+      metricOverrideConfigured: false,
       // Java request DTO stores this field as JSON text. Keep the editor state
       // object-shaped for rendering, and serialize only at the API boundary.
       scriptParamsJson: JSON.stringify(scriptParams || {}),
