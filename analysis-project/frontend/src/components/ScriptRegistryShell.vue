@@ -12,6 +12,7 @@ const nav = [
   { to: '/script-registry/python', label: 'python 脚本注册' },
   { to: '/script-registry/skills', label: 'Skill 配置' },
   { to: '/script-registry/long-task-config', label: '长任务配置', adminOnly: true },
+  { to: '/script-registry/team-config', label: '长任务（团队配置）' },
   { to: '/script-registry/tool-routing', label: '工具路由' },
   { to: '/script-registry/overlap', label: '重叠检测' },
   { to: '/script-registry/dimension-alias', label: '维度同义词' },

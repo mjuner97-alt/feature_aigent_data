@@ -1351,7 +1351,7 @@ defineExpose({ isDirty });
                   <small>{{
                     form.teamReport.targets.length
                       ? '选择后，点击节点上的「试跑」；使用当天数据日期。'
-                      : '请在团队报告配置中添加团队后试跑。'
+                      : '请在团队报告配置中选择部门并配置团队后试跑。'
                   }}</small>
                 </div>
                 <div v-if="!outlineRows.length" class="subtle-empty">尚未配置大纲，报告将按执行节点顺序输出。</div>
