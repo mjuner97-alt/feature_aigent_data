@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** 按部门维护独立的团队报告配置；来源数据仅用于首次添加对象的默认值。 */
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { batchUserNames, searchSkillUsers } from '../api/skill';
 import { reportDepartments, reportTeams, reportDepartmentDefaults, reportPeople } from '../api/skillFlow';
 import type { TeamReportConfig, TeamReportTarget } from '../types/skillFlow';
@@ -15,23 +15,25 @@ import {
 } from '../utils/flowCreation';
 const props = defineProps<{ modelValue?: TeamReportConfig | null; immutable: boolean }>();
 const emit = defineEmits<{ (e: 'update:modelValue', value: TeamReportConfig): void }>();
-const departments = ref<{ id: string; name: string }[]>([]),
-  candidates = ref<TeamReportTarget[]>([]);
+const departments = ref<{ id: string; name: string }[]>([]);
 const error = ref(''),
   busy = ref(false),
-  loadingDepartments = ref(false),
-  addOpen = ref(false),
-  addError = ref('');
+  loadingDepartments = ref(false);
 const activeIndex = ref(0),
   activeDepartmentId = ref(props.modelValue?.departmentId || ''),
   recipientIndex = ref<number | null>(null);
 const removeDepartmentId = ref('');
+const departmentSelection = ref<string[]>([]);
+const pendingDepartmentSelection = ref<string[] | null>(null);
+const departmentSelect = ref<{ blur?: () => void } | null>(null);
 const removingTeam = ref<TeamReportTarget | null>(null);
 const value = computed(() => props.modelValue);
 const recipientNames = ref<Record<string, string>>({});
 /** 排除部门展示字段，仅比较对象本身的可编辑配置以标记修改状态。 */
 function fingerprint(row: TeamReportTarget) {
-  const { departmentId, departmentName, ...settings } = row;
+  const settings = { ...row };
+  delete settings.departmentId;
+  delete settings.departmentName;
   return JSON.stringify(settings);
 }
 const original = new Map((props.modelValue?.targets || []).map((t) => [t.teamId, fingerprint(t)]));
@@ -51,11 +53,15 @@ const configuredDepartments = computed(() =>
       : []
 );
 const activeDepartment = computed(() => configuredDepartments.value.find((d) => d.id === activeDepartmentId.value));
-const departmentTargets = computed(() =>
+const listedTargets = computed(() =>
   (value.value?.targets || []).filter((t) => (t.departmentId || value.value?.departmentId) === activeDepartmentId.value)
 );
+watch(() => configuredDepartments.value.map((d) => d.id), (ids) => {
+  departmentSelection.value = [...ids];
+  if (!ids.includes(activeDepartmentId.value)) selectDepartment(ids[0] || '');
+}, { immediate: true });
 const activeRows = computed(() =>
-  departmentTargets.value[activeIndex.value] ? [departmentTargets.value[activeIndex.value]] : []
+  listedTargets.value[activeIndex.value] ? [listedTargets.value[activeIndex.value]] : []
 );
 /** 仅补齐当前团队名单的展示姓名，不修改已保存的人员 ID 或来源默认值。 */
 watch(
@@ -87,9 +93,6 @@ function recipientLabel(id: string) {
   const name = recipientNames.value[id];
   return name && name !== id ? `${name}（${id}）` : id;
 }
-const available = computed(() =>
-  candidates.value.filter((t) => !value.value?.targets.some((row) => row.teamId === t.teamId))
-);
 /** 回写配置前为对象补齐部门归属，兼容旧单部门数据。 */
 function patch(p: Partial<TeamReportConfig>) {
   const targets = (p.targets || value.value?.targets || []).map((t) => ({
@@ -114,96 +117,87 @@ function selectDepartment(id: string) {
   activeIndex.value = 0;
   recipientIndex.value = null;
 }
-async function changeDepartment(event: Event) {
-  const select = event.target as HTMLSelectElement;
-  const id = select.value;
-  select.value = '';
-  await addDepartment(id);
+function openDepartmentSelection(open: boolean) {
+  if (open) departmentSelection.value = configuredDepartments.value.map((d) => d.id);
 }
-/** 添加部门；部门报告同时初始化唯一对象，团队报告由用户继续选择团队。 */
-async function addDepartment(id: string) {
-  const d = departments.value.find((d) => d.id === id);
-  if (!d || busy.value) return;
-  if (configuredDepartments.value.some((d) => d.id === id)) {
-    selectDepartment(id);
+function selectAllDepartments() {
+  departmentSelection.value = [...new Set([...configuredDepartments.value.map((d) => d.id), ...departments.value.map((d) => d.id)])];
+}
+async function applyDepartmentSelection() {
+  await changeDepartments([...departmentSelection.value]);
+  departmentSelect.value?.blur?.();
+}
+/** 一次加载所有新增部门的团队；全部成功后再更新草稿，失败时保留原配置。 */
+async function changeDepartments(ids: string[]) {
+  if (busy.value) return;
+  const removed = configuredDepartments.value.find((d) => !ids.includes(d.id));
+  if (removed) {
+    pendingDepartmentSelection.value = ids;
+    removeDepartmentId.value = removed.id;
     return;
   }
+  await addDepartments(ids);
+}
+async function addDepartments(ids: string[]) {
+  const added = departments.value.filter((d) => ids.includes(d.id) && !configuredDepartments.value.some((c) => c.id === d.id));
+  if (busy.value) return;
   busy.value = true;
   error.value = '';
   try {
-    const targets =
-      value.value?.reportType === 'DEPARTMENT'
-        ? [
-            initializeReportTarget({
-              ...(await reportDepartmentDefaults(id)),
-              departmentId: id,
-              departmentName: d.name,
-            }),
-          ]
-        : [];
-    targets.forEach((t) => {
-      t.reportName = defaultReportName({ ...value.value!, departmentName: d.name }, t);
-      t.notifyBodyTemplate = defaultReportMailBody({ ...value.value!, departmentName: d.name }, t);
-    });
-    const list = [...configuredDepartments.value, d];
+    const groups = await Promise.all(added.map(async (d) => {
+      const rows = value.value?.reportType === 'DEPARTMENT'
+        ? [await reportDepartmentDefaults(d.id)]
+        : await reportTeams(d.id);
+      return rows.map((row) => {
+        const target = initializeReportTarget({
+          ...JSON.parse(JSON.stringify(row)),
+          departmentId: d.id,
+          departmentName: d.name,
+        });
+        const config = { ...value.value!, departmentName: d.name };
+        target.reportName = defaultReportName(config, target);
+        target.notifyBodyTemplate = defaultReportMailBody(config, target);
+        return target;
+      });
+    }));
+    const list = [...configuredDepartments.value.filter((d) => ids.includes(d.id)), ...added];
+    const currentDepartment = activeDepartmentId.value;
     patch({
       departments: list,
-      departmentId: list[0].id,
-      departmentName: list[0].name,
-      targets: [...(value.value?.targets || []), ...targets],
+      departmentId: list[0]?.id || '',
+      departmentName: list[0]?.name || '',
+      targets: [...(value.value?.targets || []).filter((t) => ids.includes(t.departmentId || value.value?.departmentId || '')), ...groups.flat()],
     });
-    selectDepartment(id);
+    await nextTick();
+    selectDepartment(list.some((d) => d.id === currentDepartment) ? currentDepartment : list[0]?.id || '');
+    return true;
   } catch (e) {
     error.value = String(e);
   } finally {
     busy.value = false;
   }
 }
+async function changeDepartment(event: Event) {
+  const select = event.target as HTMLSelectElement;
+  const id = select.value;
+  select.value = '';
+  await addDepartments([...configuredDepartments.value.map((d) => d.id), id]);
+}
 /** 移除部门时同步移除其下所有对象，避免留下无部门归属的配置。 */
-function removeDepartment() {
-  const list = configuredDepartments.value.filter((d) => d.id !== removeDepartmentId.value);
-  patch({
-    departments: list,
-    departmentId: list[0]?.id || '',
-    departmentName: list[0]?.name || '',
-    targets: (value.value?.targets || []).filter(
-      (t) => (t.departmentId || value.value?.departmentId) !== removeDepartmentId.value
-    ),
-  });
-  selectDepartment(list[0]?.id || '');
+async function removeDepartment() {
+  const ids = pendingDepartmentSelection.value || configuredDepartments.value.filter((d) => d.id !== removeDepartmentId.value).map((d) => d.id);
+  if (!await addDepartments(ids)) return;
+  cancelDepartmentRemoval();
+}
+function cancelDepartmentRemoval() {
   removeDepartmentId.value = '';
-}
-/** 按当前部门加载团队候选，已保存对象不重新读取来源默认值。 */
-async function openAdd() {
-  if (!activeDepartment.value) return;
-  addOpen.value = true;
-  busy.value = true;
-  addError.value = '';
-  candidates.value = [];
-  try {
-    candidates.value = await reportTeams(activeDepartment.value.id);
-  } catch (e) {
-    addError.value = String(e);
-  } finally {
-    busy.value = false;
-  }
-}
-/** 复制候选默认配置，确保新增对象不会与来源数据共用可变状态。 */
-function add(row: TeamReportTarget) {
-  if (value.value?.targets.some((t) => t.teamId === row.teamId) || !activeDepartment.value) return;
-  const target = initializeReportTarget({
-    ...JSON.parse(JSON.stringify(row)),
-    departmentId: activeDepartment.value.id,
-    departmentName: activeDepartment.value.name,
-  });
-  target.reportName = defaultReportName(value.value!, target);
-  target.notifyBodyTemplate = defaultReportMailBody(value.value!, target);
-  activeIndex.value = departmentTargets.value.length;
-  patch({ targets: [...(value.value?.targets || []), target] });
-  addOpen.value = false;
+  pendingDepartmentSelection.value = null;
+  departmentSelection.value = configuredDepartments.value.map((d) => d.id);
 }
 function navigate(index: number) {
   activeIndex.value = index;
+  const row = listedTargets.value[index];
+  if (row) activeDepartmentId.value = row.departmentId || value.value?.departmentId || '';
   recipientIndex.value = null;
 }
 /** 确认后才移除团队及其报告配置，取消不改动草稿。 */
@@ -248,12 +242,45 @@ onMounted(loadDepartments);
 <template>
   <section class="team-config">
     <div class="config-heading">
-      <div><h4>团队与接收人</h4><p>每个团队单独生成报告，可分别设置接收人。</p></div>
+      <div><h4>团队与接收人</h4><p>可多选或全选部门，确认后自动添加全部团队；切换部门查看该部门的团队，并分别设置报告和接收人。</p></div>
     </div>
     <div class="department-panel">
       <label for="report-department">部门 <code>(dev_dept)</code></label>
+      <!-- 下拉挂载到 body，层级须高于配置弹层（2100）、低于移除确认弹层（2300）。 -->
+      <el-select
+        v-if="value?.reportType === 'TEAM'"
+        id="report-department"
+        ref="departmentSelect"
+        class="department-select"
+        :popper-style="{ zIndex: 2200 }"
+        v-model="departmentSelection"
+        multiple
+        filterable
+        :disabled="busy || loadingDepartments || !departments.length"
+        :loading="busy || loadingDepartments"
+        placeholder="请选择部门（可多选）"
+        aria-label="选择部门（可多选）"
+        @visible-change="openDepartmentSelection"
+      >
+        <template #header>
+          <div class="department-picker-header">
+            <button type="button" class="department-picker-button select-all-button" :disabled="busy" @click="selectAllDepartments">全选部门</button>
+            <span class="selection-count">已选 {{ departmentSelection.length }} 个部门</span>
+          </div>
+        </template>
+        <el-option v-for="d in departments" :key="d.id" :label="d.name" :value="d.id" />
+        <el-option
+          v-for="d in configuredDepartments.filter((c) => !departments.some((d) => d.id === c.id))"
+          :key="d.id" :label="d.name" :value="d.id"
+        />
+        <template #footer>
+          <div class="department-picker-footer">
+            <button type="button" class="department-picker-button confirm-selection-button" :disabled="busy" @click="applyDepartmentSelection">确认选择</button>
+          </div>
+        </template>
+      </el-select>
       <select
-        v-if="value?.reportType === 'TEAM' || !configuredDepartments.length"
+        v-else-if="!configuredDepartments.length"
         id="report-department"
         :disabled="busy || loadingDepartments || !departments.length"
         value=""
@@ -287,7 +314,8 @@ onMounted(loadDepartments);
             class="close-department"
             :aria-label="`移除部门 ${d.name}`"
             :title="`移除${d.name}`"
-            @click="removeDepartmentId = d.id"
+            :disabled="busy"
+            @click="changeDepartments(configuredDepartments.filter((c) => c.id !== d.id).map((c) => c.id))"
             >×</button
           >
         </div>
@@ -306,12 +334,12 @@ onMounted(loadDepartments);
       @click="loadDepartments"
       >重试读取部门</button
     >
-    <p v-if="busy && !addOpen" role="status">正在读取团队…</p>
+    <p v-if="busy" role="status">正在读取团队…</p>
     <div v-if="value?.reportType === 'TEAM'" class="team-tabs-panel" aria-label="团队目录">
       <span class="team-tabs-label">团队 <code>(stat_group)</code></span>
-      <nav class="team-tabs" aria-label="当前部门团队"
+      <nav class="team-tabs" aria-label="所选部门团队"
         ><div
-          v-for="(row, index) in departmentTargets"
+          v-for="(row, index) in listedTargets"
           :key="row.teamId || 'department'"
           class="team-tab"
         ><a
@@ -334,19 +362,11 @@ onMounted(loadDepartments);
             @click="removingTeam = row"
           >×</button>
         </div></nav>
-      <button
-        v-if="value?.reportType === 'TEAM'"
-        class="add-team primary"
-        type="button"
-        :disabled="!activeDepartment || busy"
-        @click="openAdd"
-        ><span aria-hidden="true">＋</span> 添加团队</button
-      >
     </div>
     <div class="teams-layout">
       <div class="targets">
-        <div v-if="!departmentTargets.length" class="empty">{{
-          activeDepartment ? '暂无团队，点击「添加团队」开始配置。' : '请先选择部门。'
+        <div v-if="!activeRows.length" class="empty">{{
+          configuredDepartments.length ? '当前部门暂无团队，请先维护部门团队关系。' : '请先选择部门（可多选）。'
         }}</div>
         <article
           v-for="row in activeRows"
@@ -417,7 +437,7 @@ onMounted(loadDepartments);
             <div class="recipient-panel" aria-label="当前团队通知名单">
               <div class="recipient-heading">
                 <div><strong>邮件收件人</strong><small>收件人 {{ row.to.length }} 人 · 抄送 {{ row.cc.length }} 人</small></div>
-                <button class="manage-recipients" type="button" @click="recipientIndex = value!.targets.indexOf(row)">管理收件人</button>
+                <button v-if="value?.reportType !== 'TEAM'" class="manage-recipients" type="button" @click="recipientIndex = value!.targets.indexOf(row)">管理收件人</button>
               </div>
               <div v-for="group in (['to', 'cc'] as const)" :key="group" class="recipient-group">
                 <span class="recipient-group-label">{{ group === 'to' ? '收件人' : '抄送人' }} <small>{{ group === 'to' ? 'TO' : 'CC' }}</small></span>
@@ -459,41 +479,15 @@ onMounted(loadDepartments);
           </footer>
         </section>
       </div>
-      <div v-if="removeDepartmentId" class="add-mask" @keydown.esc.stop="removeDepartmentId = ''">
+      <div v-if="removeDepartmentId" class="add-mask" @keydown.esc.stop="cancelDepartmentRemoval">
         <section class="add-dialog" role="alertdialog" aria-modal="true" aria-label="移除部门确认"
           ><header><h4>移除部门？</h4></header
-          ><div class="department-confirm-body"><p>将移除此部门及其下所有团队配置，其他部门保持不变。</p></div
+          ><div class="department-confirm-body"><p>将移除取消选择的部门及其下所有团队配置，其他部门保持不变。</p></div
           ><footer
-            ><button type="button" @click="removeDepartmentId = ''">取消</button
-            ><button type="button" class="delete-team" @click="removeDepartment">确认移除</button></footer
+            ><button type="button" :disabled="busy" @click="cancelDepartmentRemoval">取消</button
+            ><button type="button" class="delete-team" :disabled="busy" @click="removeDepartment">确认移除</button></footer
           ></section
         >
-      </div>
-      <div v-if="addOpen" class="add-mask" @click.self="addOpen = false" @keydown.esc.stop="addOpen = false">
-        <section class="add-dialog" role="dialog" aria-modal="true" aria-label="添加团队">
-          <header
-            ><div
-              ><h4>添加团队</h4><p>{{ activeDepartment?.name }} · 选择需要添加的团队</p></div
-            ><button class="close-add" type="button" aria-label="关闭添加团队" @click="addOpen = false"
-              >×</button
-            ></header
-          >
-          <p v-if="busy" role="status" class="empty">正在读取可添加团队…</p>
-          <div v-else-if="addError" role="alert" class="empty"
-            ><p class="error">{{ addError }}</p
-            ><button type="button" @click="openAdd">重试</button></div
-          >
-          <div v-else-if="!available.length" class="empty">{{
-            candidates.length ? '本部门团队均已添加。' : '本部门暂无可添加团队，请先维护部门团队关系。'
-          }}</div>
-          <div v-else class="candidate-list"
-            ><div v-for="row in available" :key="row.teamId || ''" class="candidate-row"
-              ><strong>{{ row.teamName }}</strong
-              ><button class="primary" type="button" @click="add(row)">添加</button></div
-            ></div
-          >
-          <footer><button type="button" @click="addOpen = false">取消</button></footer>
-        </section>
       </div>
     </Teleport>
   </section>
@@ -505,6 +499,32 @@ onMounted(loadDepartments);
   white-space: nowrap;
   margin-left: auto;
 }
+.department-picker-header,
+.department-picker-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 2px 0;
+}
+.department-picker-header { justify-content: space-between; }
+.department-picker-footer { justify-content: flex-end; }
+.selection-count { color: #94a3b8; font-size: 12px; white-space: nowrap; }
+.department-picker-button {
+  box-sizing: border-box;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  box-shadow: none;
+  transition: background 0.15s, border-color 0.15s;
+}
+.select-all-button { color: #2563eb; background: #eff6ff; border-color: #dbeafe; }
+.select-all-button:hover { background: #dbeafe; border-color: #bfdbfe; }
+.confirm-selection-button { min-width: 88px; color: #fff; background: #2563eb; border-color: #2563eb; }
+.confirm-selection-button:hover { background: #1d4ed8; border-color: #1d4ed8; }
 .department-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -623,10 +643,6 @@ onMounted(loadDepartments);
 }
 .team-tabs a > span:first-child {
   min-width: 0;
-}
-.team-tabs-panel > .add-team {
-  margin-left: auto;
-  flex-shrink: 0;
 }
 .team-tabs a:hover,
 .team-tabs a.active {
@@ -750,8 +766,12 @@ h4 {
   color: #94a3b8;
   margin-left: 4px;
 }
-.department-panel select {
+.department-panel select,
+.department-select {
   min-width: 220px;
+}
+.department-select {
+  flex: 1 1 320px;
 }
 .department-name {
   padding: 7px 14px;
@@ -994,15 +1014,6 @@ button:disabled {
 .primary:hover {
   background: #1d4ed8;
 }
-.add-team {
-  padding: 11px 20px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-.add-team > span {
-  font-size: 20px;
-  line-height: 1;
-}
 .manage-recipients {
   color: #1d4ed8;
   border-color: #bfdbfe;
@@ -1062,27 +1073,6 @@ button:disabled {
   justify-content: space-between;
   padding: 24px;
   border-bottom: 1px solid #f1f5f9;
-}
-.close-add {
-  font-size: 22px;
-  padding: 2px 10px;
-  border: 0;
-}
-.candidate-list {
-  overflow: auto;
-  padding: 8px 24px;
-}
-.candidate-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-  padding: 14px 0;
-  border-bottom: 1px solid #f1f5f9;
-  font-size: 14px;
-}
-.candidate-row strong {
-  font-weight: 500;
 }
 .add-dialog footer {
   display: flex;
