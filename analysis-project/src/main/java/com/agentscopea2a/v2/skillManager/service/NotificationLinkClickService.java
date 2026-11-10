@@ -107,9 +107,28 @@ public class NotificationLinkClickService {
     }
     public List<NotificationLinkClickSummaryDto> allSummary(String userId, NotificationLinkClickFilterRequest request) {
         NotificationLinkClickFilterRequest effective = request == null ? new NotificationLinkClickFilterRequest() : request;
-        Map<String,Object> f = accessFilters(effective);
-        List<NotificationLinkClickSummaryDto> enriched = enrich(
-                mapper.findSummary(f).stream().map(NotificationLinkClickSummaryDto::from).toList());
+        List<NotificationLinkClickSummaryDto> rows = new ArrayList<>(summary(null, effective));
+        Map<String,Object> f = filters(effective);
+        String requestedEnvironment = trimToNull(effective.getEnvironment());
+        f.put("environment", "ALL".equalsIgnoreCase(requestedEnvironment) ? null : (blank(requestedEnvironment) ? "prod" : requestedEnvironment.toLowerCase(Locale.ROOT)));
+        rows = new ArrayList<>(mapper.findSummary(f).stream().map(NotificationLinkClickSummaryDto::from).toList());
+        rows.sort(Comparator.comparing(NotificationLinkClickSummaryDto::latestEventAt, Comparator.nullsLast(Comparator.reverseOrder())));
+        Map<String, String> names = orgService.getUserNameMap(rows.stream().map(NotificationLinkClickSummaryDto::userId).filter(Objects::nonNull).filter(s -> !s.isBlank()).toList());
+        List<NotificationLinkClickSummaryDto> enriched = rows.stream().map(r -> {
+            String taskName = r.taskDisplayName();
+            LocalDateTime executionAt = r.executionAt();
+            if (r.executionId() != null && "LONG_TASK".equals(r.executionType())) {
+                SkillFlowExecution execution = flowMapper.selectFlowExecutionById(r.executionId());
+                if (execution != null) {
+                    if ((taskName == null || taskName.startsWith("任务 #")) && execution.getFlowName() != null && !execution.getFlowName().isBlank()) taskName = execution.getFlowName();
+                    if (executionAt == null) executionAt = execution.getCreatedAt();
+                }
+            }
+            return new NotificationLinkClickSummaryDto(r.executionId(), r.executionType(), taskName, executionAt, r.userId(), names.get(r.userId()), r.source(), r.eventType(), r.loggedIn(), r.firstEventAt(), r.latestEventAt(), r.count());
+        }).toList();
+        // 访问埋点页面和统一导出当前只展示长任务流程；独立任务事件继续落库，
+        // 后续开放展示时无需迁移历史数据。独立任务专用 summary 接口不经过此过滤。
+        enriched = enriched.stream().filter(r -> "LONG_TASK".equals(r.executionType())).toList();
         String taskFilter = trimToNull(effective.getTaskName());
         if (taskFilter != null && !taskFilter.isBlank()) enriched = enriched.stream().filter(r -> r.taskDisplayName() != null && r.taskDisplayName().toLowerCase(Locale.ROOT).contains(taskFilter.toLowerCase(Locale.ROOT))).toList();
         String personFilter = trimToNull(effective.getUserId());
@@ -120,61 +139,12 @@ public class NotificationLinkClickService {
         if (effective.getExecutionFrom() != null || effective.getExecutionTo() != null) enriched = enriched.stream().filter(r -> r.executionAt() != null && (effective.getExecutionFrom() == null || !r.executionAt().toLocalDate().isBefore(effective.getExecutionFrom())) && (effective.getExecutionTo() == null || !r.executionAt().toLocalDate().isAfter(effective.getExecutionTo()))).toList();
         return enriched;
     }
-    private Map<String, Object> accessFilters(NotificationLinkClickFilterRequest request) {
-        Map<String, Object> f = filters(request);
-        String requested = request == null ? null : trimToNull(request.getEnvironment());
-        f.put("environment", "ALL".equalsIgnoreCase(requested) ? null
-                : requested == null ? environment : requested.toLowerCase(Locale.ROOT));
-        f.put("longTaskOnly", true);
-        return f;
-    }
-
-    /** 只读取展示需要的任务元数据，按执行 ID 去重并分批查询，避免逐条读取完整报告。 */
-    private List<NotificationLinkClickSummaryDto> enrich(List<NotificationLinkClickSummaryDto> rows) {
-        if (rows.isEmpty()) return rows;
-        List<Long> ids = rows.stream().filter(r -> "LONG_TASK".equals(r.executionType()))
-                .filter(r -> r.executionAt() == null || r.taskDisplayName() == null || r.taskDisplayName().startsWith("任务 #"))
-                .map(NotificationLinkClickSummaryDto::executionId).filter(Objects::nonNull).distinct().toList();
-        Map<Long, SkillFlowExecution> executions = new HashMap<>();
-        for (int start = 0; start < ids.size(); start += 500) {
-            for (SkillFlowExecution execution : flowMapper.selectFlowExecutionAccessMetadata(ids.subList(start, Math.min(start + 500, ids.size())))) {
-                executions.put(execution.getId(), execution);
-            }
-        }
-        Map<String, String> names = orgService.getUserNameMap(rows.stream()
-                .map(NotificationLinkClickSummaryDto::userId).filter(Objects::nonNull).filter(s -> !s.isBlank()).distinct().toList());
-        return rows.stream().map(r -> {
-            String taskName = r.taskDisplayName();
-            LocalDateTime executionAt = r.executionAt();
-            SkillFlowExecution execution = executions.get(r.executionId());
-            if (execution != null) {
-                if ((taskName == null || taskName.startsWith("任务 #")) && execution.getFlowName() != null && !execution.getFlowName().isBlank()) taskName = execution.getFlowName();
-                if (executionAt == null) executionAt = execution.getCreatedAt();
-            }
-            return new NotificationLinkClickSummaryDto(r.executionId(), r.executionType(), taskName, executionAt,
-                    r.userId(), names.get(r.userId()), r.source(), r.eventType(), r.loggedIn(), r.firstEventAt(), r.latestEventAt(), r.count());
-        }).toList();
-    }
-
-    /** 常规查询在 ClickHouse 分页；跨库姓名、任务名称及执行日期筛选需先补全再分页。 */
+    /** 返回访问记录分页结果，筛选与排序沿用统一访问记录查询。 */
     public Map<String, Object> pageSummary(String userId, NotificationLinkClickFilterRequest request, int page, int pageSize) {
+        List<NotificationLinkClickSummaryDto> rows = allSummary(userId, request);
         int safePage = Math.max(1, page);
         int safeSize = Math.min(100, Math.max(1, pageSize));
-        long offset = (long) (safePage - 1) * safeSize;
-        if (request == null || (blank(request.getTaskName()) && blank(request.getUserId())
-                && request.getExecutionFrom() == null && request.getExecutionTo() == null)) {
-            Map<String, Object> f = accessFilters(request);
-            long total = mapper.countSummary(f);
-            List<NotificationLinkClickSummaryDto> rows = List.of();
-            if (offset < total) {
-                f.put("limit", safeSize);
-                f.put("offset", offset);
-                rows = enrich(mapper.findSummary(f).stream().map(NotificationLinkClickSummaryDto::from).toList());
-            }
-            return Map.of("items", rows, "total", total, "page", safePage, "pageSize", safeSize);
-        }
-        List<NotificationLinkClickSummaryDto> rows = allSummary(userId, request);
-        int from = (int) Math.min(offset, rows.size());
+        int from = (int) Math.min((long) (safePage - 1) * safeSize, rows.size());
         int to = Math.min(from + safeSize, rows.size());
         return Map.of("items", rows.subList(from, to), "total", rows.size(), "page", safePage, "pageSize", safeSize);
     }

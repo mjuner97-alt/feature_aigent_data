@@ -42,7 +42,7 @@
       )
     ORDER BY e.event_at DESC LIMIT 1
   </insert>
-  <sql id="summaryQuery">
+  <select id="findSummary" resultMap="ClickMap">
     SELECT flow_execution_id, job_execution_id,
            CASE WHEN flow_execution_id IS NOT NULL THEN 'LONG_TASK' ELSE 'INDEPENDENT_TASK' END AS execution_type,
            actor_user_id, source, event_type,
@@ -62,19 +62,7 @@
       <if test="filters.to != null">
         AND e.event_at &lt; toDateTime(#{filters.to,typeHandler=com.agentscopea2a.mapper.ck.typehandler.ClickHouseLocalDateTimeTypeHandler}, 'Asia/Shanghai')
       </if>
-      <if test="filters.longTaskOnly == true">
-        AND e.flow_execution_id IS NOT NULL
-      </if>
     GROUP BY e.flow_execution_id, e.job_execution_id, e.actor_user_id, e.source, e.event_type
-  </sql>
-  <select id="countSummary" resultType="long">
-    SELECT count() FROM (<include refid="summaryQuery"/>) AS summary
-  </select>
-  <select id="findSummary" resultMap="ClickMap">
-    <include refid="summaryQuery"/>
-    ORDER BY latest_event_at DESC, flow_execution_id DESC, job_execution_id DESC, actor_user_id, source, event_type
-    <if test="filters.limit != null">
-      LIMIT #{filters.limit} OFFSET #{filters.offset}
-    </if>
+    ORDER BY latest_event_at DESC
   </select>
 </mapper>

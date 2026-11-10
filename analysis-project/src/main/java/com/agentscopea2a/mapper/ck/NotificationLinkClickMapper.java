@@ -17,6 +17,5 @@ public interface NotificationLinkClickMapper {
                      @Param("environment") String environment);
     void completePending(@Param("accessToken") String accessToken, @Param("actorUserId") String actorUserId,
                          @Param("eventAt") LocalDateTime eventAt, @Param("environment") String environment);
-    long countSummary(@Param("filters") Map<String, Object> filters);
     List<SkillFlowNotificationLinkClick> findSummary(@Param("filters") Map<String, Object> filters);
 }

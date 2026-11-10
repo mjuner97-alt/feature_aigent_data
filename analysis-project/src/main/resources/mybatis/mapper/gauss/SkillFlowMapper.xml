@@ -647,13 +647,6 @@
         WHERE id = #{id}
     </select>
 
-    <select id="selectFlowExecutionAccessMetadata" resultMap="ExecutionMap">
-        SELECT id, flow_name, created_at
-        FROM skill_flow_execution
-        WHERE id IN
-        <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
-    </select>
-
     <!-- 按 id 查执行实例并对行加排他锁(FOR UPDATE),须在事务内使用,
          用于串行化同一执行上的重跑/取消/推进等关键状态变更 -->
     <select id="selectFlowExecutionForUpdate" resultMap="ExecutionMap">

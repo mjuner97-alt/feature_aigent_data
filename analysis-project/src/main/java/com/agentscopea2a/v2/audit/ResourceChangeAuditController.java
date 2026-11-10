@@ -39,21 +39,4 @@ public class ResourceChangeAuditController {
     public Map<String, Object> detail(@PathVariable String eventId) {
         return service.detail(eventId);
     }
-
-    @GetMapping(value = "/export", produces = "text/csv")
-    public org.springframework.http.ResponseEntity<byte[]> export(
-            @RequestParam(defaultValue = "all") String resourceType,
-            @RequestParam(required = false) String operationType,
-            @RequestParam(required = false) String environment,
-            @RequestParam(required = false) String operatorKeyword,
-            @RequestParam(required = false) String resourceKeyword,
-            @RequestParam(required = false) String keyword,
-            @RequestParam(required = false) String startTime,
-            @RequestParam(required = false) String endTime) {
-        return org.springframework.http.ResponseEntity.ok()
-            .contentType(new org.springframework.http.MediaType("text", "csv", java.nio.charset.StandardCharsets.UTF_8))
-            .header(org.springframework.http.HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=resource-modifications.csv")
-            .body(service.exportCsv(resourceType, operationType, operatorKeyword, resourceKeyword,
-                keyword, startTime, endTime, environment));
-    }
 }
