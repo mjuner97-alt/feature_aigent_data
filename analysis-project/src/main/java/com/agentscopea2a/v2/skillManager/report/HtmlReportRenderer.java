@@ -40,15 +40,6 @@ import java.util.regex.Pattern;
  */
 @Component
 public class HtmlReportRenderer {
-    // 在汇总前编码节点内容，避免节点中的残缺标签跨越相邻节点的边界。
-    private static final Pattern ISOLATED_NODE = Pattern.compile(
-            "<!--report-node:([A-Za-z0-9+/=]*)-->");
-
-    public static String isolateNodeContent(String content) {
-        return "<!--report-node:" + Base64.getEncoder().encodeToString(
-                (content == null ? "" : content).getBytes(StandardCharsets.UTF_8)) + "-->";
-    }
-
     private final ThreadLocal<Boolean> fullscreenDisabled = ThreadLocal.withInitial(() -> false);
 
     /** 长任务与普通报告共用唯一的样式配置，避免维护两套相互覆盖的 CSS。 */
@@ -674,52 +665,6 @@ public class HtmlReportRenderer {
                 panel.querySelector('pre').textContent = error && error.message || String(error);
             }
 
-            // 单绘图区的热力图、横向条形图按类别行数增高；其他布局保留默认高度。
-            function autoReportChartHeight(option, defaultHeight) {
-                var grids = Array.isArray(option.grid) ? option.grid : [option.grid || {}];
-                if (grids.length !== 1) return NaN;
-                var axes = Array.isArray(option.yAxis) ? option.yAxis : [option.yAxis || {}];
-                var series = Array.isArray(option.series) ? option.series : [option.series];
-                var rows = 0;
-                var rowHeight = 28;
-                for (var i = 0; i < series.length; i++) {
-                    var item = series[i];
-                    if (!item || (item.type !== 'heatmap' && item.type !== 'bar')) continue;
-                    if (item.coordinateSystem && item.coordinateSystem !== 'cartesian2d') continue;
-                    var axis = axes[item.yAxisIndex || 0];
-                    if (!axis || (axis.type !== 'category' && !Array.isArray(axis.data))) continue;
-                    var count = Array.isArray(axis.data) ? axis.data.length : 0;
-                    if (!count && Array.isArray(item.data)) {
-                        if (item.type === 'bar') count = item.data.length;
-                        else for (var j = 0; j < item.data.length; j++) {
-                            var point = item.data[j];
-                            var value = point && point.value !== undefined ? point.value : point;
-                            if (Array.isArray(value) && Number.isInteger(value[1]) && value[1] >= 0) {
-                                count = Math.max(count, value[1] + 1);
-                            }
-                        }
-                    }
-                    rows = Math.max(rows, count);
-                    var labelSize = Number(item.label && item.label.fontSize);
-                    var axisLabelSize = Number(axis.axisLabel && axis.axisLabel.fontSize);
-                    if (Number.isFinite(labelSize)) rowHeight = Math.max(rowHeight, labelSize + 12);
-                    if (Number.isFinite(axisLabelSize)) rowHeight = Math.max(rowHeight, axisLabelSize + 12);
-                }
-                if (!rows) return NaN;
-                var grid = grids[0] || {};
-                var pixels = 0, fraction = 0;
-                var margins = [grid.top === undefined ? 60 : grid.top, grid.bottom === undefined ? 80 : grid.bottom];
-                for (var k = 0; k < margins.length; k++) {
-                    var margin = margins[k];
-                    if (typeof margin === 'string' && margin.trim().endsWith('%')) {
-                        var percent = Number(margin.trim().slice(0, -1));
-                        if (Number.isFinite(percent) && percent >= 0) fraction += percent / 100;
-                    } else if (Number.isFinite(Number(margin)) && Number(margin) >= 0) pixels += Number(margin);
-                }
-                if (fraction >= 1) return NaN;
-                return Math.max(defaultHeight || 460, Math.ceil((rows * rowHeight + pixels) / (1 - fraction)));
-            }
-
             function renderReportCharts(charts) {
                 function start() {
                     var entries = [];
@@ -738,7 +683,6 @@ public class HtmlReportRenderer {
                             var height = (typeof customHeight === 'number' ||
                                 (typeof customHeight === 'string' && customHeight.trim() !== ''))
                                 ? Number(customHeight) : NaN;
-                            if (customHeight === 'auto') height = autoReportChartHeight(option, el.clientHeight);
                             if (!Number.isFinite(height) || height <= 100) {
                                 height = parseInt(option.chartHeight, 10);
                             }
@@ -828,10 +772,6 @@ public class HtmlReportRenderer {
         String md = markdown == null ? "" : markdown;
         String safeTitle = escapeHtml(title == null ? "报告" : title);
 
-        if (decodeNodeEnvelopes && ISOLATED_NODE.matcher(md).find()) {
-            return renderIsolatedNodes(md, safeTitle);
-        }
-
         if (containsEmbeddedCompleteHtml(md)) {
             return renderMixedContent(md, safeTitle);
         }
@@ -857,14 +797,14 @@ public class HtmlReportRenderer {
         List<ChartBlock> charts = splitCharts(md, body, true);
         // 节点结果常返回 HTML 片段而不是完整 HTML 文档；这条路径同样需要
         // 与完整文档一致的全屏入口，否则用户只能看到内容而无法放大。
-        if (fullscreenEnabled() && HTML_FRAGMENT.matcher(md).find()) {
-            String renderedBody = body.toString();
-            body.setLength(0);
-            body.append("<button type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-html-fullscreen=\"report\">&#x26F6;</button>")
-                    .append(renderedBody).append("\n");
-        }
+//        if (fullscreenEnabled() && HTML_FRAGMENT.matcher(md).find()) {
+//            String renderedBody = body.toString();
+//            body.setLength(0);
+//            body.append("<button type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-html-fullscreen=\"report\">&#x26F6;</button>")
+//                    .append(renderedBody).append("\n");
+//        }
 
-        return assembleHtml(safeTitle, body.toString(), charts, fragmentStyles.toString(), title != null);
+        return assembleHtml(safeTitle, body.toString(), charts, fragmentStyles.toString());
     }
 
     public String renderWithoutFullscreen(String markdown, String title) {
@@ -875,22 +815,6 @@ public class HtmlReportRenderer {
     }
 
     private boolean fullscreenEnabled() { return !Boolean.TRUE.equals(fullscreenDisabled.get()); }
-
-    private String renderIsolatedNodes(String input, String safeTitle) {
-        StringBuilder body = new StringBuilder();
-        List<ChartBlock> charts = new ArrayList<>();
-        Matcher nodes = ISOLATED_NODE.matcher(input);
-        int cursor = 0;
-        int index = 0;
-        while (nodes.find()) {
-            appendMarkdownPart(input.substring(cursor, nodes.start()), body, charts);
-            String content = new String(Base64.getDecoder().decode(nodes.group(1)), StandardCharsets.UTF_8);
-            appendFramePart(content, index++, body);
-            cursor = nodes.end();
-        }
-        appendMarkdownPart(input.substring(cursor), body, charts);
-        return assembleHtml(safeTitle, body.toString(), charts, "");
-    }
 
     /**
      * 渲染 Markdown 与一份或多份完整 HTML 文档混排的内容:

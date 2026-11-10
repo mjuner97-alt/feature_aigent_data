@@ -525,11 +525,8 @@ public class TeamReportService {
         if (r.typeId() == null) throw new IllegalStateException("FlowTypeRequired: 请先选择已配置的任务类型");
         Map<String, Object> type = mapper.configuredType(r.typeId());
         if (
-            type == null ||
-            !Boolean.TRUE.equals(type.get("enabled")) ||
-            r.typeId() == 1L ||
-            Set.of("其他", "默认类型").contains(Objects.toString(type.get("name"), ""))
-        ) throw new IllegalStateException("FlowTypeUnavailable: 请选择长任务配置中已启用的非默认类型");
+            type == null || !Boolean.TRUE.equals(type.get("enabled"))
+        ) throw new IllegalStateException("FlowTypeUnavailable: 请选择长任务配置中已启用的类型");
         String name = Objects.toString(type.get("name"), "");
         String expected = "团队报告".equals(name) ? "TEAM" : null;
         if (

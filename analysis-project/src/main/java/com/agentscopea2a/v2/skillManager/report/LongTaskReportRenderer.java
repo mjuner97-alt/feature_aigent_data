@@ -8,8 +8,9 @@ import java.util.regex.Pattern;
 /**
  * 长任务专用报告渲染器。
  *
- * <p>汇总前保留每个节点的内容边界，节点独立进入 iframe，避免片段样式或残缺 HTML
- * 影响其他节点与大纲；Markdown、表格、ECharts 和安全清理逻辑复用 HtmlReportRenderer。
+ * <p>Python 节点通常返回完整 HTML 文档。汇总时只保留 body 内容和安全样式，
+ * 去掉 html/head/body 外壳，避免节点自己的页面尺寸污染汇总布局；其余 Markdown、表格、ECharts
+ * 和安全清理逻辑继续复用 HtmlReportRenderer。
  */
 @Component
 public class LongTaskReportRenderer {
@@ -27,11 +28,6 @@ public class LongTaskReportRenderer {
 
     public LongTaskReportRenderer(HtmlReportRenderer delegate) {
         this.delegate = delegate;
-    }
-
-    public static String isolateNodeContent(String content) {
-        return HtmlReportRenderer.isolateNodeContent(
-                STYPE.matcher(content == null ? "" : content).replaceAll("<style>$1</style>"));
     }
 
     public String render(String content, String title) {
