@@ -54,6 +54,8 @@ public interface SkillFlowMapper {
         @Param("limit") int limit
     );
     SkillFlowExecution selectFlowExecutionById(@Param("id") Long id);
+
+    List<SkillFlowExecution> selectFlowExecutionAccessMetadata(@Param("ids") List<Long> ids);
     long countFlowPage(
         @Param("ownerUserId") String ownerUserId,
         @Param("enabled") Boolean enabled,

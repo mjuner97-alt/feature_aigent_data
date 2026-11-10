@@ -4,6 +4,7 @@ import com.agentscopea2a.v2.auth.service.AdminRoleService;
 import com.agentscopea2a.v2.common.PageResponse;
 import com.agentscopea2a.v2.skillManager.service.TeamConfigService;
 import java.util.Map;
+import java.util.List;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
@@ -20,13 +21,23 @@ public class TeamConfigController {
     }
     @GetMapping
     public PageResponse<Map<String, Object>> list(@RequestParam(defaultValue = "") String keyword,
+            @RequestParam(defaultValue = "") String department, @RequestParam(defaultValue = "") String team,
             @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int pageSize) {
-        return service.list(keyword, page, pageSize);
+        return service.list(keyword, department, team, page, pageSize);
+    }
+    @GetMapping("/options")
+    public List<Map<String, Object>> options() {
+        return service.options();
     }
     @GetMapping("/people")
     public PageResponse<Map<String, Object>> people(@RequestParam(defaultValue = "") String keyword,
+            @RequestParam(defaultValue = "") String department, @RequestParam(defaultValue = "") String team,
             @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int pageSize) {
-        return service.people(keyword, page, pageSize);
+        return service.people(keyword, department, team, page, pageSize);
+    }
+    @GetMapping("/people/options")
+    public List<Map<String, Object>> peopleOptions() {
+        return service.peopleOptions();
     }
     @GetMapping("/{id}")
     public Map<String, Object> get(@PathVariable("id") long id) { return service.get(id); }
@@ -34,6 +45,12 @@ public class TeamConfigController {
     public Map<String, Object> create(@RequestBody TeamConfigService.Input input, @RequestHeader("X-User-Id") String user) {
         checkWrite(user);
         return service.save(null, input);
+    }
+    @PostMapping("/from-ledger")
+    public TeamConfigService.BatchResult addFromLedger(@RequestBody TeamConfigService.BatchInput input,
+                                                       @RequestHeader("X-User-Id") String user) {
+        checkWrite(user);
+        return service.addFromLedger(input);
     }
     @PutMapping("/{id}")
     public Map<String, Object> update(@PathVariable("id") long id, @RequestBody TeamConfigService.Input input,
@@ -46,6 +63,12 @@ public class TeamConfigController {
     public void delete(@PathVariable("id") long id, @RequestHeader("X-User-Id") String user) {
         checkWrite(user);
         service.delete(id);
+    }
+    @PatchMapping("/{id}/recipient-type")
+    public Map<String, Object> updateRecipientType(@PathVariable("id") long id,
+            @RequestBody TeamConfigService.RecipientTypeInput input, @RequestHeader("X-User-Id") String user) {
+        checkWrite(user);
+        return service.updateRecipientType(id, input);
     }
     private void checkWrite(String user) {
         if (user.isBlank() || !roles.canEditConfig(user))

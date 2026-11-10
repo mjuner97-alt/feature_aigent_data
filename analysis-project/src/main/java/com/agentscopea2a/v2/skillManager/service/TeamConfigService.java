@@ -18,8 +18,10 @@ public class TeamConfigService {
     private final JdbcTemplate config;
     private final JdbcTemplate ledger;
     private static final String TABLE = "long_task_report_notify_person";
-    private static final String COLUMNS = "id,dev_dept,stat_group,user_id,user_name,position_role,recipient_type,sort_order,enabled,remark,report_keyword,notify_contact_name,notify_contact_phone,created_at,updated_at";
+    private static final String COLUMNS = "id,dev_dept,stat_group,user_id,user_name,position_role,recipient_type,sort_order,enabled,remark,created_at,updated_at";
     static final String SNAPSHOT = " FROM developer_pl_person_info_t WHERE \"统计月份\"=(SELECT MAX(\"统计月份\") FROM developer_pl_person_info_t) AND \"有效日期截止\"='9999-12-31'";
+    private static final String PEOPLE_SOURCE = " FROM (SELECT id,\"部门\" AS dev_dept,\"统计组\" AS stat_group,\"统一认证号\" AS user_id,\"姓名\" AS user_name,\"岗位角色\" AS position_role,\"统计月份\" AS stat_month,ROW_NUMBER() OVER(PARTITION BY \"统一认证号\" ORDER BY id DESC) AS rn"
+        + SNAPSHOT + " AND LENGTH(TRIM(\"统一认证号\"))>0) p WHERE rn=1";
 
     public TeamConfigService(@Qualifier("gaussCustomerDataSource") DataSource config,
                              @Qualifier("gaussCommonDataSource") DataSource ledger) {
@@ -27,21 +29,47 @@ public class TeamConfigService {
         this.ledger = new JdbcTemplate(ledger);
     }
 
-    public PageResponse<Map<String, Object>> list(String keyword, int page, int pageSize) {
-        String where = " WHERE (dev_dept LIKE ? OR stat_group LIKE ? OR user_name LIKE ? OR user_id LIKE ?)";
+    public PageResponse<Map<String, Object>> list(String keyword, String department, String team, int page, int pageSize) {
+        String where = " WHERE (user_name LIKE ? OR user_id LIKE ?)";
         String term = "%" + Objects.toString(keyword, "").trim() + "%";
+        var args = new ArrayList<Object>(List.of(term, term));
+        if (department != null && !department.isBlank()) {
+            where += " AND dev_dept=?";
+            args.add(department.trim());
+        }
+        if (team != null && !team.isBlank()) {
+            where += " AND stat_group=?";
+            args.add(team.trim());
+        }
         return page(config, "SELECT " + COLUMNS + " FROM " + TABLE + where,
-            "SELECT COUNT(*) FROM " + TABLE + where, List.of(term, term, term, term),
+            "SELECT COUNT(*) FROM " + TABLE + where, args,
             "dev_dept,stat_group,sort_order,id", Objects.toString(keyword, "").trim(), page, pageSize);
     }
 
-    public PageResponse<Map<String, Object>> people(String keyword, int page, int pageSize) {
-        String where = SNAPSHOT + " AND LENGTH(TRIM(\"统一认证号\"))>0 AND (\"姓名\" LIKE ? OR \"统一认证号\" LIKE ? OR \"部门\" LIKE ? OR \"统计组\" LIKE ?)";
+    public List<Map<String, Object>> options() {
+        return config.queryForList("SELECT DISTINCT dev_dept,stat_group FROM " + TABLE
+            + " WHERE dev_dept IS NOT NULL AND LENGTH(TRIM(dev_dept))>0 ORDER BY dev_dept,stat_group");
+    }
+
+    public List<Map<String, Object>> peopleOptions() {
+        return ledger.queryForList("SELECT DISTINCT dev_dept,stat_group" + PEOPLE_SOURCE
+            + " AND dev_dept IS NOT NULL AND LENGTH(TRIM(dev_dept))>0 ORDER BY dev_dept,stat_group");
+    }
+
+    public PageResponse<Map<String, Object>> people(String keyword, String department, String team, int page, int pageSize) {
+        String source = PEOPLE_SOURCE + " AND (user_name LIKE ? OR user_id LIKE ?)";
         String term = "%" + Objects.toString(keyword, "").trim() + "%";
-        // 同一人员的有效记录仍可能重复，稳定取 id 最大的一条，再分页。
-        String source = " FROM (SELECT id,\"部门\" AS dev_dept,\"统计组\" AS stat_group,\"统一认证号\" AS user_id,\"姓名\" AS user_name,\"岗位角色\" AS position_role,\"统计月份\" AS stat_month,ROW_NUMBER() OVER(PARTITION BY \"统一认证号\" ORDER BY id DESC) AS rn" + where + ") p WHERE rn=1";
+        var args = new ArrayList<Object>(List.of(term, term));
+        if (department != null && !department.isBlank()) {
+            source += " AND dev_dept=?";
+            args.add(department.trim());
+        }
+        if (team != null && !team.isBlank()) {
+            source += " AND stat_group=?";
+            args.add(team.trim());
+        }
         return page(ledger, "SELECT id,dev_dept,stat_group,user_id,user_name,position_role,stat_month" + source,
-            "SELECT COUNT(*)" + source, List.of(term, term, term, term), "user_id,id", Objects.toString(keyword, "").trim(), page, pageSize);
+            "SELECT COUNT(*)" + source, args, "user_id,id", Objects.toString(keyword, "").trim(), page, pageSize);
     }
 
     private PageResponse<Map<String, Object>> page(JdbcTemplate jdbc, String select, String count,
@@ -66,6 +94,51 @@ public class TeamConfigService {
                         String position_role, String recipient_type, Integer sort_order, Boolean enabled,
                         String remark, String report_keyword, String notify_contact_name, String notify_contact_phone) {}
 
+    public record BatchInput(List<String> userIds) {}
+    public record BatchResult(int added, int skipped) {}
+    public record RecipientTypeInput(String recipientType) {}
+
+    @Transactional("gaussCustomerTransactionManager")
+    public Map<String, Object> updateRecipientType(long id, RecipientTypeInput input) {
+        String type = required(input == null ? null : input.recipientType(), "通知类型", 2);
+        if (!Set.of("TO", "CC").contains(type))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "通知类型须为 TO 或 CC");
+        int updated = config.update("UPDATE " + TABLE + " SET recipient_type=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", type, id);
+        if (updated == 0) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "团队参数不存在");
+        return get(id);
+    }
+
+    @Transactional("gaussCustomerTransactionManager")
+    public BatchResult addFromLedger(BatchInput input) {
+        if (input == null || input.userIds() == null || input.userIds().isEmpty() || input.userIds().size() > 500)
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择 1 至 500 位人员");
+        var ids = input.userIds().stream().map(id -> required(id, "统一认证号", 128)).distinct().toList();
+        String placeholders = String.join(",", Collections.nCopies(ids.size(), "?"));
+        var people = ledger.queryForList("SELECT dev_dept,stat_group,user_id,user_name,position_role" + PEOPLE_SOURCE
+            + " AND user_id IN (" + placeholders + ") ORDER BY user_id", ids.toArray());
+        if (people.size() != ids.size())
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "部分人员已不在最新有效台账中，请重新查询后选择");
+        // 全部校验通过后再写入，部门与岗位均以台账为准。
+        var inputs = people.stream().map(person -> {
+            String role = limited(Objects.toString(person.get("position_role"), ""), 100);
+            return new Input(required(Objects.toString(person.get("dev_dept"), ""), "部门", 200),
+                limited(Objects.toString(person.get("stat_group"), ""), 200),
+                required(Objects.toString(person.get("user_id"), ""), "统一认证号", 128),
+                required(Objects.toString(person.get("user_name"), ""), "姓名", 200), role,
+                "分管领导".equals(role) ? "CC" : "TO", null, true, "", null, null, null);
+        }).toList();
+        int added = 0;
+        for (var row : inputs) {
+            Integer exists = config.queryForObject("SELECT COUNT(*) FROM " + TABLE
+                + " WHERE dev_dept=? AND stat_group=? AND user_id=?", Integer.class,
+                row.dev_dept(), row.stat_group(), row.user_id());
+            if (exists != null && exists > 0) continue;
+            save(null, row);
+            added++;
+        }
+        return new BatchResult(added, ids.size() - added);
+    }
+
     @Transactional("gaussCustomerTransactionManager")
     public Map<String, Object> save(Long id, Input input) {
         String dept = required(input.dev_dept(), "部门", 200);
@@ -74,13 +147,13 @@ public class TeamConfigService {
         String type = required(input.recipient_type(), "通知类型", 2);
         if (!Set.of("TO", "CC").contains(type)) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "通知类型须为 TO 或 CC");
         Object[] values = {dept, limited(input.stat_group(), 200), user, name, limited(input.position_role(), 100),
-            type, input.sort_order() == null ? 0 : input.sort_order(), !Boolean.FALSE.equals(input.enabled()),
-            input.remark(), limited(input.report_keyword(), 500), limited(input.notify_contact_name(), 200), limited(input.notify_contact_phone(), 32)};
+            type, "分管领导".equals(Objects.toString(input.position_role(), "").trim()) ? 0 : 1, !Boolean.FALSE.equals(input.enabled()),
+            input.remark()};
         try {
             if (id == null) {
                 var keys = new GeneratedKeyHolder();
                 config.update(connection -> {
-                    var statement = connection.prepareStatement("INSERT INTO " + TABLE + "(dev_dept,stat_group,user_id,user_name,position_role,recipient_type,sort_order,enabled,remark,report_keyword,notify_contact_name,notify_contact_phone) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", new String[]{"id"});
+                    var statement = connection.prepareStatement("INSERT INTO " + TABLE + "(dev_dept,stat_group,user_id,user_name,position_role,recipient_type,sort_order,enabled,remark) VALUES(?,?,?,?,?,?,?,?,?)", new String[]{"id"});
                     for (int i = 0; i < values.length; i++) statement.setObject(i + 1, values[i]);
                     return statement;
                 }, keys);
@@ -88,7 +161,7 @@ public class TeamConfigService {
             }
             var args = new ArrayList<>(Arrays.asList(values));
             args.add(id);
-            int updated = config.update("UPDATE " + TABLE + " SET dev_dept=?,stat_group=?,user_id=?,user_name=?,position_role=?,recipient_type=?,sort_order=?,enabled=?,remark=?,report_keyword=?,notify_contact_name=?,notify_contact_phone=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", args.toArray());
+            int updated = config.update("UPDATE " + TABLE + " SET dev_dept=?,stat_group=?,user_id=?,user_name=?,position_role=?,recipient_type=?,sort_order=?,enabled=?,remark=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", args.toArray());
             if (updated == 0) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "团队参数不存在");
             return get(id);
         } catch (DuplicateKeyException ex) {

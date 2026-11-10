@@ -437,7 +437,7 @@ onMounted(loadDepartments);
             <div class="recipient-panel" aria-label="当前团队通知名单">
               <div class="recipient-heading">
                 <div><strong>邮件收件人</strong><small>收件人 {{ row.to.length }} 人 · 抄送 {{ row.cc.length }} 人</small></div>
-                <button v-if="value?.reportType !== 'TEAM'" class="manage-recipients" type="button" @click="recipientIndex = value!.targets.indexOf(row)">管理收件人</button>
+                <button class="manage-recipients" type="button" @click="recipientIndex = value!.targets.indexOf(row)">管理收件人</button>
               </div>
               <div v-for="group in (['to', 'cc'] as const)" :key="group" class="recipient-group">
                 <span class="recipient-group-label">{{ group === 'to' ? '收件人' : '抄送人' }} <small>{{ group === 'to' ? 'TO' : 'CC' }}</small></span>

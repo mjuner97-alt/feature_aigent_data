@@ -223,13 +223,6 @@ public class TeamReportService {
         List<String> to = new ArrayList<>(),
             cc = new ArrayList<>();
         var people = mapper.recipients(dept, team == null ? "" : team);
-        boolean roleDefaults =
-            team != null &&
-            people
-                .stream()
-                .anyMatch(r ->
-                    Set.of("项目经理", "分管领导").contains(Objects.toString(r.get("position_role"), "").trim())
-                );
         long leaders = people
             .stream()
             .filter(r -> "分管领导".equals(Objects.toString(r.get("position_role"), "").trim()))
@@ -240,13 +233,10 @@ public class TeamReportService {
             "TeamReportLeaderConflict: " + dept + " / " + team + " 只能配置一位分管领导"
         );
         for (var r : people) {
-            String role = Objects.toString(r.get("position_role"), "").trim(),
-                user = Objects.toString(r.get("user_id"), "").trim();
+            String user = Objects.toString(r.get("user_id"), "").trim();
             if (user.isEmpty()) continue;
-            if (roleDefaults) {
-                if ("项目经理".equals(role)) to.add(user);
-                else if ("分管领导".equals(role)) cc.add(user);
-            } else ("TO".equals(r.get("recipient_type")) ? to : cc).add(user);
+            // 岗位只决定新增时的初值，显式配置的通知类型优先。
+            ("TO".equals(r.get("recipient_type")) ? to : cc).add(user);
         }
         to = to.stream().distinct().toList();
         cc = cc.stream().distinct().toList();
