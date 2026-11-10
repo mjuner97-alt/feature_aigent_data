@@ -5,7 +5,7 @@
       <button type="button" class="history-nav-item" :class="{ active: activeTab === 'sessions' }" @click="activeTab = 'sessions'">会话历史</button>
       <button type="button" class="history-nav-item" :class="{ active: activeTab === 'nodeLogs' }" @click="activeTab = 'nodeLogs'">节点执行日志</button>
       <button type="button" class="history-nav-item" :class="{ active: activeTab === 'cases' }" @click="activeTab = 'cases'">案例信息</button>
-      <button type="button" class="history-nav-item" :class="{ active: activeTab === 'behavior' }" @click="activeTab = 'behavior'; loadBehavior(); loadAccess()">操作记录</button>
+      <button type="button" class="history-nav-item" :class="{ active: activeTab === 'behavior' }" @click="activeTab = 'behavior'; loadCurrentOperationRecords()">操作记录</button>
     </aside>
 
     <main class="history-content" :style="rootStyle">
@@ -95,18 +95,29 @@
         </template>
         <template v-else>
           <div class="record-filters">
-            <el-select v-model="behavior.resourceType" placeholder="资源范围" style="width:150px" @change="behavior.page = 1; loadBehavior()"><el-option label="Python 脚本" value="python_page"/><el-option label="长任务" value="long_task_flow"/></el-select>
-            <span class="filter-hint">选择资源范围后可查看对应的变更操作记录</span>
+            <el-select v-model="behavior.resourceType" placeholder="资源范围" style="width:150px" @change="behavior.page = 1; loadBehavior()"><el-option label="长任务和Python脚本" value="all"/><el-option label="Python 脚本" value="python_page"/><el-option label="长任务" value="long_task_flow"/></el-select>
+            <span class="filter-hint">按次统计修改记录，历史数据保留两个月；修改内容为摘要，完整前后值可查看详情</span>
             <el-select v-model="behavior.operationType" clearable placeholder="操作类型" style="width:130px"><el-option label="新增" value="create"/><el-option label="编辑" value="update"/><el-option label="删除" value="delete"/></el-select>
-            <el-input v-model="behavior.operatorKeyword" placeholder="操作人姓名 / userId" clearable style="width:210px" @keyup.enter="behavior.page = 1; loadBehavior()"/>
-            <el-input v-model="behavior.resourceKeyword" placeholder="资源名称" clearable style="width:160px" @keyup.enter="behavior.page = 1; loadBehavior()"/>
+            <el-input v-model="behavior.operatorKeyword" placeholder="修改人姓名 / 工号" clearable style="width:210px" @keyup.enter="behavior.page = 1; loadBehavior()"/>
+            <el-input v-model="behavior.resourceKeyword" placeholder="长任务名称 / Python脚本" clearable style="width:160px" @keyup.enter="behavior.page = 1; loadBehavior()"/>
+            <el-date-picker v-model="behaviorDateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="修改开始日期" end-placeholder="修改结束日期" class="access-date"/>
             <el-select v-model="behavior.environment" class="access-control"><el-option label="生产环境" value="prod"/><el-option label="开发环境" value="dev"/><el-option label="全部环境" value="ALL"/></el-select>
             <div class="filter-buttons">
               <el-button type="primary" :loading="behaviorLoading" @click="behavior.page=1; loadBehavior()">查询</el-button>
               <el-button plain :loading="behaviorLoading" @click="behavior.page = 1; loadBehavior()">刷新</el-button>
+              <el-button :loading="behaviorExporting" @click="exportBehavior">导出筛选结果</el-button>
             </div>
           </div>
-          <div class="behavior-table-wrap"><el-table height="100%" class="behavior-table" :data="behavior.items" v-loading="behaviorLoading" stripe border empty-text="暂无操作记录"><el-table-column prop="resource_name" label="资源名称" min-width="220" show-overflow-tooltip/><el-table-column label="操作类型" width="90"><template #default="s">{{ operationLabel(s.row.operation_type) }}</template></el-table-column><el-table-column prop="operatorDisplayName" label="操作人" min-width="170" show-overflow-tooltip/><el-table-column label="结果" width="80"><template #default="s">{{ resultLabel(s.row.result) }}</template></el-table-column><el-table-column label="变更详情" width="110" fixed="right"><template #default="s"><el-button link type="primary" @click="openBehaviorDetail(s.row)">查看详情</el-button></template></el-table-column><el-table-column label="事件时间" width="190" fixed="right"><template #default="s">{{ formatBehaviorTime(s.row.created_at) }}</template></el-table-column></el-table></div>
+          <div class="behavior-table-wrap">
+            <el-table height="100%" class="behavior-table" :data="behavior.items" v-loading="behaviorLoading" stripe border empty-text="暂无修改记录">
+              <el-table-column label="修改时间" width="180"><template #default="s">{{ formatBehaviorTime(s.row.modification_time || s.row.created_at) }}</template></el-table-column>
+              <el-table-column prop="operatorDisplayName" label="修改人" min-width="170" show-overflow-tooltip/>
+              <el-table-column label="长任务名称 / Python脚本" min-width="240"><template #default="s"><span class="behavior-resource-type">{{ s.row.resource_type === 'long_task_flow' ? '长任务' : 'Python脚本' }}</span>{{ s.row.resource_name }}</template></el-table-column>
+              <el-table-column label="修改内容" min-width="420"><template #default="s"><div class="behavior-content-summary">{{ s.row.change_summary || s.row.operation_summary || '-' }}</div></template></el-table-column>
+              <el-table-column label="操作类型" width="90"><template #default="s">{{ operationLabel(s.row.operation_type) }}</template></el-table-column>
+              <el-table-column label="详情" width="100" fixed="right"><template #default="s"><el-button link type="primary" @click="openBehaviorDetail(s.row)">查看详情</el-button></template></el-table-column>
+            </el-table>
+          </div>
           <div class="behavior-pagination"><el-pagination v-model:current-page="behavior.page" :page-size="behavior.pageSize" :total="behavior.total" :page-sizes="[10, 20, 50, 100]" :disabled="behaviorLoading" layout="total, sizes, prev, pager, next, jumper" @size-change="changeBehaviorPageSize" @current-change="loadBehavior"/></div>
         </template>
         <el-dialog v-model="behaviorDetailVisible" title="变更详情" width="780px" class="behavior-detail-dialog"><div v-loading="behaviorDetailLoading" class="behavior-detail"><template v-if="behaviorDetail.event"><div class="behavior-detail-head"><div class="behavior-detail-resource">{{ behaviorDetail.event.resource_name }}</div><el-tag size="small" :type="operationTagType(behaviorDetail.event.operation_type)">{{ operationLabel(behaviorDetail.event.operation_type) }}</el-tag><span class="behavior-detail-time">{{ formatBehaviorTime(behaviorDetail.event.created_at) }}</span></div><div v-if="behaviorDetail.details?.length" class="behavior-detail-summary">{{ behaviorSummary(behaviorDetail.event, behaviorDetail.details) }}</div><el-empty v-if="!behaviorDetail.details?.length" description="该操作未产生字段级变更" :image-size="70"/><template v-else><div class="behavior-change-list"><div v-for="(item, index) in behaviorDetail.details.filter((x:any) => !isSnapshot(x))" :key="index" class="behavior-change-item"><div class="behavior-change-title"><span class="behavior-change-index">{{ String(Number(index) + 1).padStart(2, '0') }}</span><span>{{ fieldLabel(item) }}</span><span class="behavior-change-type">{{ changeAction(item) }}</span></div><div class="behavior-change-values"><div class="behavior-before"><span class="behavior-change-label">修改前</span><span class="behavior-change-value">{{ displayChangeValue(item.before_value, '空') }}</span></div><div class="behavior-change-arrow">→</div><div class="behavior-after"><span class="behavior-change-label">修改后</span><span class="behavior-change-value">{{ displayChangeValue(item.after_value, '空') }}</span></div></div></div><div v-for="item in behaviorDetail.details.filter((x:any) => isSnapshot(x))" :key="'summary-' + item.detail_no" class="behavior-change-item"><div class="behavior-change-title"><span class="behavior-change-index">配置</span><span>配置变更摘要</span><span class="behavior-change-type">已解析</span></div><div class="behavior-readable-diff"><div v-for="line in snapshotDiff(item)" :key="line">{{ line }}</div><div v-if="!snapshotDiff(item).length">未识别到可读字段变化，请展开完整快照查看。</div></div></div></div><el-collapse v-if="behaviorDetail.details.some((x:any) => isSnapshot(x))" class="behavior-raw-collapse"><el-collapse-item title="查看完整配置快照" name="raw"><div v-for="item in behaviorDetail.details.filter((x:any) => isSnapshot(x))" :key="item.detail_no" class="behavior-raw-snapshot"><div class="behavior-raw-title">{{ item.before_value === '（初始）' ? '修改后完整配置' : '修改前 / 修改后完整配置' }}</div><div class="behavior-change-values"><pre class="behavior-change-value behavior-before">{{ displayChangeValue(item.before_value, '空') }}</pre><div class="behavior-change-arrow">→</div><pre class="behavior-change-value behavior-after">{{ displayChangeValue(item.after_value, '空') }}</pre></div></div></el-collapse-item></el-collapse></template></template></div></el-dialog>
@@ -217,6 +228,10 @@ function handleRecordTypeChange(type: 'access' | 'behavior') {
     loadBehavior();
   }
 }
+function loadCurrentOperationRecords() {
+  if (recordType.value === 'access') loadAccess();
+  else loadBehavior();
+}
 const behaviorLoading = ref(false);
 const behaviorDetailVisible = ref(false);
 const behaviorDetailLoading = ref(false);
@@ -281,8 +296,56 @@ async function openBehaviorDetail(row: any) {
   } catch (e) { ElMessage.error(e instanceof Error ? e.message : '详情加载失败'); }
   finally { behaviorDetailLoading.value = false; }
 }
-const behavior = ref({ resourceType: 'python_page', environment: '', operationType: '', operatorKeyword: '', resourceKeyword: '', keyword: '', page: 1, pageSize: 20, total: 0, items: [] as any[] });
-async function loadBehavior() { behaviorLoading.value = true; try { const b = behavior.value, q = new URLSearchParams({ resourceType: b.resourceType, environment: b.environment, page: String(b.page), pageSize: String(b.pageSize) }); if (b.operationType) q.set('operationType', b.operationType); if (b.operatorKeyword) q.set('operatorKeyword', b.operatorKeyword); if (b.resourceKeyword) q.set('resourceKeyword', b.resourceKeyword); if (b.keyword) q.set('keyword', b.keyword); const r = await fetch('/api/session-records/behavior?' + q); if (!r.ok) throw new Error('加载失败'); const d = await r.json(); behavior.value.items = d.items || []; behavior.value.total = d.total || 0; } catch (e) { ElMessage.error(e instanceof Error ? e.message : '操作记录加载失败'); } finally { behaviorLoading.value = false; } }
+const behavior = ref({ resourceType: 'all', environment: '', operationType: 'update', operatorKeyword: '', resourceKeyword: '', keyword: '', page: 1, pageSize: 20, total: 0, items: [] as any[] });
+const behaviorDateRange = ref<string[] | null>([]);
+const behaviorExporting = ref(false);
+let behaviorRequest = 0;
+function behaviorQuery(includePage = true) {
+  const b = behavior.value;
+  const query = new URLSearchParams({ resourceType: b.resourceType, environment: b.environment });
+  if (includePage) { query.set('page', String(b.page)); query.set('pageSize', String(b.pageSize)); }
+  if (b.operationType) query.set('operationType', b.operationType);
+  if (b.operatorKeyword.trim()) query.set('operatorKeyword', b.operatorKeyword.trim());
+  if (b.resourceKeyword.trim()) query.set('resourceKeyword', b.resourceKeyword.trim());
+  if (b.keyword.trim()) query.set('keyword', b.keyword.trim());
+  if (behaviorDateRange.value?.length === 2) {
+    query.set('startTime', behaviorDateRange.value[0]); query.set('endTime', behaviorDateRange.value[1]);
+  }
+  return query;
+}
+async function loadBehavior() {
+  const request = ++behaviorRequest;
+  behaviorLoading.value = true;
+  try {
+    const response = await fetch('/api/session-records/behavior?' + behaviorQuery());
+    if (!response.ok) throw new Error('修改记录加载失败');
+    const data = await response.json();
+    if (request !== behaviorRequest) return;
+    behavior.value.items = data.items || []; behavior.value.total = data.total || 0;
+  } catch (error) {
+    if (request !== behaviorRequest) return;
+    behavior.value.items = []; behavior.value.total = 0;
+    ElMessage.error(error instanceof Error ? error.message : '修改记录加载失败');
+  } finally { if (request === behaviorRequest) behaviorLoading.value = false; }
+}
+async function exportBehavior() {
+  if (behaviorExporting.value) return;
+  behaviorExporting.value = true;
+  try {
+    const response = await fetch('/api/session-records/behavior/export?' + behaviorQuery(false));
+    if (!response.ok) {
+      let message = '导出失败，请重试';
+      try { const detail = await response.json(); message = detail.detail || detail.message || message; } catch {}
+      throw new Error(message);
+    }
+    const url = URL.createObjectURL(await response.blob());
+    const anchor = document.createElement('a');
+    anchor.href = url; anchor.download = `长任务及Python脚本修改统计_${dayjs().format('YYYYMMDDHHmmss')}.csv`;
+    document.body.appendChild(anchor); anchor.click(); anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) { ElMessage.error(error instanceof Error ? error.message : '导出失败'); }
+  finally { behaviorExporting.value = false; }
+}
 const accessRows = ref<any[]>([]);
 const accessPage = ref(1);
 const accessPageSize = ref(20);
@@ -640,7 +703,7 @@ onMounted(async () => {
   behavior.value.environment = accessEnvironment.value || 'dev';
   applyRouteState();
   refreshConversations();
-  if (activeTab.value === 'behavior') { loadBehavior(); loadAccess(); }
+  if (activeTab.value === 'behavior') loadCurrentOperationRecords();
 });
 
 watch(() => route.query, () => { applyRouteState(); refreshConversations(); });
@@ -734,7 +797,9 @@ function durationStyle(ms: number): any {
 .operation-table-wrap { flex: 1; min-height: 240px; overflow: hidden; }
 .operation-panel .record-filters { flex-shrink: 0; }
 .behavior-table-wrap { flex: 1; min-height: 240px; overflow: auto; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; }
-.behavior-table { min-width: 980px; }
+.behavior-table { min-width: 1200px; }
+.behavior-content-summary { white-space: pre-wrap; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; line-height: 1.6; overflow-wrap: anywhere; }
+.behavior-resource-type { display: inline-block; margin-right: 8px; padding: 1px 6px; border-radius: 4px; background: #eef2ff; color: #4338ca; font-size: 12px; }
 .behavior-table :deep(.el-table__header th) { background: #f8fafc; color: #475569; font-weight: 600; }
 .behavior-table :deep(.el-table__cell) { padding: 11px 0; }
 .behavior-change-list { display: flex; flex-direction: column; gap: 12px; padding: 4px 2px; }
