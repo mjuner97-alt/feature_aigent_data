@@ -1434,6 +1434,13 @@ public class DirectSkillExecutor {
             }
             List<String> values = valuesFor(extraction, e.getValue());
             if (values.isEmpty()) {
+                // 锚点展开空 (近N月方案 F3B, 2026-11-11 拍板): 时间锚点解析失败不兜底默认
+                // 在建版本, 留空 → 必填缺失走反问/回退 (未提及时间的问法仍走 defaultTimeValues)
+                if (timeAnchorExpandFailed(extraction, e.getValue())) {
+                    log.warn("DirectSkillExecutor: 时间锚点 {} 展开失败 (param={}), "
+                            + "不兜底默认在建版本, 交由必填缺失反问", e.getValue(), e.getKey());
+                    continue;
+                }
                 List<String> fallback = skipDefaultTime ? List.of() : defaultTimeValues(e.getValue());
                 if (fallback.isEmpty()) {
                     continue;
@@ -1443,6 +1450,26 @@ public class DirectSkillExecutor {
             params.put(param, shapeValue(param, schema, values));
         }
         return params;
+    }
+
+    /**
+     * 时间锚点展开空判定 (近N月方案 F3B): 提取层对 versionPlan/vestQuarter 给过锚点值
+     * (LAST:nV/THIS_V/THIS_Q 等) 但执行期展开结果为空 → 解析失败, 不得用在建版本默认值
+     * 静默顶替 (否则"近N个"的 n 被吞)。vestQuarter 为空时按版本锚点同源判定 (季度派生自版本)。
+     */
+    private static boolean timeAnchorExpandFailed(DimensionExtraction extraction, String key) {
+        if (!"versionPlan".equals(key) && !"vestQuarter".equals(key)) {
+            return false;
+        }
+        List<String> raw = extraction.versionPlan() == null ? List.of() : extraction.versionPlan();
+        boolean hasAnchor = raw.stream()
+                .anyMatch(com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver::isAnchor);
+        if (!hasAnchor && "vestQuarter".equals(key)) {
+            raw = extraction.vestQuarter() == null ? List.of() : extraction.vestQuarter();
+            hasAnchor = raw.stream()
+                    .anyMatch(com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver::isAnchor);
+        }
+        return hasAnchor;
     }
 
     /**
@@ -1832,6 +1859,13 @@ public class DirectSkillExecutor {
     private static final List<String> TRUTH_MUTEX_PRIORITY =
             List.of("productLine", "groupName", "appName");
 
+    /** 应用码英文形态（F-xxx / FS-xxx；裸码已被 BARE_APP 归一补 F- 前缀）。
+     *  2026-11-10 拍板（应用退出台账真值校验方案 v2）：此形态豁免 B③ 真值域对照 ——
+     *  部分基地应用不在台账 developer_pl_person_info_t，域对照会误杀正确值；仅
+     *  appName 键生效，组/产品线校验不变。假应用码透传给脚本查空集（拍板③接受）。 */
+    private static final java.util.regex.Pattern APP_CODE_SHAPE =
+            java.util.regex.Pattern.compile("^FS?-[A-Za-z][A-Za-z-]*$");
+
     /** B①/B③ 产物：三键清洗后的 extraction + 扫描命中标志（计入 R2 显式提及）。 */
     private record LedgerTruthScan(DimensionExtraction extraction,
                                    boolean groupHit, boolean appHit, boolean productLineHit) {}
@@ -1869,7 +1903,9 @@ public class DirectSkillExecutor {
      *   <li>真值域 = 台账 distinct（Q5-Q7）∪ dimension_key_config 同义词 value ∪ alias 标准名；</li>
      *   <li>B①：真值域值在问题<b>原文</b> contains 扫描（最长优先+span 消费），整名直接命中
      *       ——「杭州二部FMBM资金交易组」「软负载均衡团队」型不规则值域不依赖正则形状；</li>
-     *   <li>B③：正则/同义词轨残余候选逐值对照真值域，域外丢弃 + 治理日志；</li>
+     *   <li>B③：正则/同义词轨残余候选逐值对照真值域，域外丢弃 + 治理日志；
+     *       豁免（2026-11-10 拍板）：appName 键的 F-xxx 英文形态应用码不对照真值域
+     *       （基地应用不在台账会被误杀，见 APP_CODE_SHAPE）；</li>
      *   <li>互斥裁决：三键同时非空 → 最长命中值所在键胜（平手按 产品线&gt;组&gt;应用）；</li>
      *   <li>fail-open：resolver 缺失 / 台账字典 null 或空集 / 词表读取失败 → 该键跳过
      *       （扫描与校验都关，行为与现状一致）。</li>
@@ -1895,7 +1931,11 @@ public class DirectSkillExecutor {
             }
             List<String> validated = new ArrayList<>();
             for (String v : current) {
-                if (truthSet.contains(v)) {
+                if ("appName".equals(key) && APP_CODE_SHAPE.matcher(v).matches()) {
+                    // 2026-11-10 拍板: F-xxx 英文形态应用码豁免真值域对照 (基地应用不在台账,
+                    // 域对照误杀正确值); 假应用码透传查空集 (拍板接受)
+                    validated.add(v);
+                } else if (truthSet.contains(v)) {
                     validated.add(v);
                 } else {
                     log.warn("DirectSkillExecutor: Ledger truth-check dropped key={} value={} "

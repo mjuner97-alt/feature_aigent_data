@@ -21,6 +21,8 @@ import java.util.regex.Pattern;
  *   <li>临近交付N周内 → {@code R-n}、T-X → {@code T-n}（里程碑透传锚点，不解析日期）</li>
  *   <li>未来/今后/下N周 → {@code NEXT:nw}；近N周 → {@code AMBIGUOUS:WEEKS:n}（歧义反问，拍板⑤）</li>
  *   <li>近N天 → {@code LAST:nd}（历史不含今天口径；中文数字/阿拉伯数字均命中，2026-10-27 补）</li>
+ *   <li>裸日期 [年]M月D(日|号) → {@code DATE:d~d} 单日（start=end，缺年补当前年，
+ *       后接"投产"让位给投产日参数不出 timeRange，docs/202611/裸日期单日时间范围识别方案.md）</li>
  * </ol>
  * L2 词表 contains（timeRange 行的 aliases，配置可扩）：锚点值来自配置；
  * 键内按 alias 长度降序 accept、重叠丢弃（「前一周」压更短的词）。
@@ -58,6 +60,20 @@ public final class TimeRangeExtractor {
     /** 双省月区间：D日 (到|至|…) D日 → 本月（时间维度方案 §3.1③）。 */
     private static final Pattern DAY_RANGE = Pattern.compile(
             "(\\d{1,2})\\s*日\\s*(?:到|至|~|～|—|–|-)\\s*(\\d{1,2})\\s*[日号]");
+
+    /** 裸日期单日：[年]M月D(日|号) → DATE:{d}~{d}（start=end，裸日期单日方案 §3.1）。
+     *  排在全部日期区间正则之后（span 优先级最低，区间/截至先占 span）；缺年补当前年；
+     *  三个让位护栏：① 后接"投产"→ 投产日属性参数出口，timeRange 不出防双过滤（§8.2 拍板⑦）；
+     *  ② 紧邻区间分隔符（前接/后接 到|至|~|…）→ 区间语义，非法/倒置区间维持整段弃收，
+     *     不让裸日期兜底收走单端点（"到期"的"到"后接非数字，不受影响，拍板①照出单日）。
+     *  注意 lookbehind 必须置于模式开头——零宽断言在当前匹配位置求值，放末尾查的是
+     *  "日/号"前一个字符而非日期起点前的分隔符（2026-11-11 实测踩坑）；数字入类防
+     *  "13月15日" 从中段吃出 "3月15日"。 */
+    private static final Pattern BARE_DATE = Pattern.compile(
+            "(?<![0-9到至~～—–\\-]\\s{0,3})"
+                    + "(?:(\\d{4})\\s*年\\s*)?(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*[日号]"
+                    + "(?!\\s*(?:到|至|~|～|—|–|-)\\s*[0-9一二三四五六七八九十])"
+                    + "(?!\\s*投产)");
 
     /** 周数词：阿拉伯数字或中文数字（含"两"），1-99。 */
     private static final String CN_NUM = "[一两二三四五六七八九十0-9]{1,3}";
@@ -157,6 +173,7 @@ public final class TimeRangeExtractor {
         addRegexSpans(question, UNTIL, TimeRangeExtractor::untilAnchor, spans);
         addRegexSpans(question, CN_RANGE_TAIL, TimeRangeExtractor::tailRangeAnchor, spans);
         addRegexSpans(question, DAY_RANGE, TimeRangeExtractor::dayRangeAnchor, spans);
+        addRegexSpans(question, BARE_DATE, TimeRangeExtractor::bareDateAnchor, spans);
         if (!datesOnly) {
             addRegexSpans(question, NEAR_DELIVERY,
                     m -> weeks(m.group(1), 1) == null ? null : "R-" + weeks(m.group(1), 1), spans);
@@ -351,6 +368,25 @@ public final class TimeRangeExtractor {
                 return null;
             }
             return "DATE:" + start.format(ISO) + "~" + end.format(ISO);
+        } catch (java.time.DateTimeException e) {
+            return null;
+        }
+    }
+
+    /** 裸日期单日分组：1=年(可选) 2=月 3=日；缺年补当前年（同 UNTIL/CN_RANGE 口径）；
+     *  非法日期整段跳过；start=end（裸日期单日方案 §3.1）。 */
+    private static String bareDateAnchor(Matcher m) {
+        LocalDate today = LocalDate.now(TimeRangeResolver.ZONE);
+        Integer y = groupOrNull(m, 1);
+        Integer mo = groupOrNull(m, 2);
+        Integer d = groupOrNull(m, 3);
+        if (mo == null || d == null) {
+            return null;
+        }
+        try {
+            LocalDate date = LocalDate.of(y != null ? y : today.getYear(), mo, d);
+            String iso = date.format(ISO);
+            return "DATE:" + iso + "~" + iso;
         } catch (java.time.DateTimeException e) {
             return null;
         }

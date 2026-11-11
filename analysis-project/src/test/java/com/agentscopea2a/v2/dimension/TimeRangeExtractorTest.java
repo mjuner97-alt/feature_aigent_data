@@ -301,8 +301,7 @@ class TimeRangeExtractorTest {
                 TimeRangeExtractor.extract("10月1日到10月15日", SEED_ALIASES));
         assertEquals(List.of("DATE:" + year + "-10-01~" + year + "-10-15"),
                 TimeRangeExtractor.extract("10月1日到15日", SEED_ALIASES));
-        // 裸日期（无区间上下文）不命中
-        assertTrue(TimeRangeExtractor.extract("9月28日到期", SEED_ALIASES).isEmpty());
+        // 裸日期（无区间上下文）2026-11-10 拍板①起出单日，见 bareDateWithEventWordsStillSingleDay
     }
 
     @Test
@@ -310,5 +309,82 @@ class TimeRangeExtractorTest {
         // 屏蔽联动（方案 §3.2）：MIXED span 进 absoluteDateSpans，防 EXPLICIT_VERSION 吃 "9月"
         assertEquals(1, TimeRangeExtractor.absoluteDateSpans("9月28-9月30日之间到期").size());
         assertEquals(1, TimeRangeExtractor.absoluteDateSpans("9月28-30日之间到期").size());
+    }
+
+    // ==================== 裸日期单日（2026-11-10，裸日期单日时间范围识别方案 §7） ====================
+
+    @Test
+    void bareDateSingleDay() {
+        // 业务例句原话：单独日期 start=end，"日/号"均命中
+        String y = currentYear();
+        assertEquals(List.of("DATE:" + y + "-10-29~" + y + "-10-29"),
+                TimeRangeExtractor.extract("10月29日卡口达标率 11月版", SEED_ALIASES));
+        assertEquals(List.of("DATE:" + y + "-10-29~" + y + "-10-29"),
+                TimeRangeExtractor.extract("10月29号卡口达标率 11月版", SEED_ALIASES));
+    }
+
+    @Test
+    void bareDateWithExplicitYear() {
+        assertEquals(List.of("DATE:2025-10-29~2025-10-29"),
+                TimeRangeExtractor.extract("2025年10月29日卡口达标率", SEED_ALIASES));
+    }
+
+    @Test
+    void bareDateWithEventWordsStillSingleDay() {
+        // 拍板①②：事件词护栏取消，到期/上线/起 照出单日
+        // （原"到期日≠查询时间范围"口径废弃，"12月版10月26日到期"现在同时出版本维度+timeRange 单日）
+        String y = currentYear();
+        assertEquals(List.of("DATE:" + y + "-09-28~" + y + "-09-28"),
+                TimeRangeExtractor.extract("9月28日到期", SEED_ALIASES));
+        assertEquals(List.of("DATE:" + y + "-10-26~" + y + "-10-26"),
+                TimeRangeExtractor.extract("杭州三部11月版、12月版10月26日到期", SEED_ALIASES));
+        assertEquals(List.of("DATE:" + y + "-10-29~" + y + "-10-29"),
+                TimeRangeExtractor.extract("预计10月29日上线", SEED_ALIASES));
+        assertEquals(List.of("DATE:" + y + "-10-29~" + y + "-10-29"),
+                TimeRangeExtractor.extract("10月29日起的安排", SEED_ALIASES));
+    }
+
+    @Test
+    void bareDateYieldsToProdDateSuffix() {
+        // 拍板⑦（方案 §8.2）：后接"投产" → 投产日属性参数出口，timeRange 不出防双过滤
+        assertTrue(TimeRangeExtractor.extract("10月29日投产的应用", SEED_ALIASES).isEmpty());
+        assertTrue(TimeRangeExtractor.extract("预计10月29日投产", SEED_ALIASES).isEmpty());
+    }
+
+    @Test
+    void bareDateSkippedWhenAdjacentToRangeSeparator() {
+        // 倒置/非法区间的端点不让裸日期兜底收走单端点，维持整段弃收
+        assertTrue(TimeRangeExtractor.extract("10月15日到10月1日的数据", SEED_ALIASES).isEmpty());
+        assertTrue(TimeRangeExtractor.extract("2月30日到3月1日的缺陷数", SEED_ALIASES).isEmpty());
+        assertTrue(TimeRangeExtractor.extract("9月30-9月28日的数据", SEED_ALIASES).isEmpty());
+        assertTrue(TimeRangeExtractor.extract("2025年12月28-1月2日的投产", SEED_ALIASES).isEmpty());
+    }
+
+    @Test
+    void bareDateInvalidSkipped() {
+        assertTrue(TimeRangeExtractor.extract("13月32日的缺陷", SEED_ALIASES).isEmpty());
+        assertTrue(TimeRangeExtractor.extract("10月0日的数据", SEED_ALIASES).isEmpty());
+        assertTrue(TimeRangeExtractor.extract("10月39日的数据", SEED_ALIASES).isEmpty());
+    }
+
+    @Test
+    void bareDateDoesNotOverrideRanges() {
+        // 区间/截至正则先占 span，裸日期重叠丢弃
+        String y = currentYear();
+        assertEquals(List.of("DATE:" + y + "-10-29~" + y + "-10-31"),
+                TimeRangeExtractor.extract("10月29日到10月31日的缺陷", SEED_ALIASES));
+        assertEquals(List.of("UNTIL:2026-10-15"),
+                TimeRangeExtractor.extract("截至10月15日的缺陷数", SEED_ALIASES));
+    }
+
+    @Test
+    void bareDateSpansEnterAbsoluteDateSpans() {
+        String y = currentYear();
+        assertEquals(1, TimeRangeExtractor.absoluteDateSpans("10月29日卡口达标率").size());
+        assertEquals(1, TimeRangeExtractor.absoluteDateSpans(
+                "杭州三部11月版、12月版10月26日到期").size());
+        // 投产让位：timeRange/absoluteDateSpans 均不出；"10月"的版本屏蔽由
+        // DimensionStateManager.BARE_DATE_SPAN 独立兜底，不受影响
+        assertTrue(TimeRangeExtractor.absoluteDateSpans("10月29日投产的应用").isEmpty());
     }
 }

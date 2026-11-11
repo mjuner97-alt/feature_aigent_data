@@ -1124,6 +1124,56 @@ class DirectSkillExecutorTest {
     }
 
     @Test
+    void anchorExpandFailureSkipsDefaultAndAsks() {
+        // 近N月方案 F3B (2026-11-11 拍板②选B): LAST:4V 展开空 (日历不可用+无在建版本) 时
+        // 不得用 defaultTimeValues 在建版本默认值静默顶替 → 必填缺失反问
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"version\":\"versionPlan\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(QUESTION), Mockito.isNull())).thenReturn(
+                state(versionTime(List.of("LAST:4V")), List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"version\",\"required\":true}]"));
+        // 在建版本有值: 若误兜底默认, version 会被填成 10月版本并直接执行 — 断言不得发生
+        when(hookProvider.getIfAvailable()).thenReturn(versionPlanHook);
+        when(versionPlanHook.currentVersions()).thenReturn(List.of("2026年10月份版本"));
+        com.agentscopea2a.v2.dimension.VersionCalendarRepository deadCal =
+                mock(com.agentscopea2a.v2.dimension.VersionCalendarRepository.class);
+        when(deadCal.snapshot()).thenReturn(java.util.Map.of());
+        when(deadCal.aggregateWindow(Mockito.anyList())).thenReturn(null);
+        com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver deadResolver =
+                new com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver(deadCal, List::of);
+
+        DirectSkillExecutor executor = newExecutorWithResolver(deadResolver);
+        DirectSkillExecutor.DirectExecutionPlan plan = executor.plan(QUESTION, "alice", null, "conv-1");
+
+        assertTrue(plan.needsAsk());
+        assertFalse(plan.missingAsk().isEmpty());
+        assertFalse(plan.params().containsKey("version"));
+    }
+
+    @Test
+    void noTimeMentionStillFallsBackToDefaultInBuildVersions() {
+        // F3B 回归护栏: 未提及时间的问法 (extraction 无 versionPlan 值) 仍补在建版本默认
+        // (defaultTimeValues 既有拍板), 不得被锚点失败判定误伤
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"version\":\"versionPlan\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(QUESTION), Mockito.isNull())).thenReturn(
+                state(versionTime(List.of()), List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"version\",\"required\":true}]"));
+        when(hookProvider.getIfAvailable()).thenReturn(versionPlanHook);
+        when(versionPlanHook.currentVersions()).thenReturn(List.of("2026年10月份版本"));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutor(true).plan(QUESTION, "alice", null, "conv-1");
+
+        assertFalse(plan.needsAsk());
+        assertEquals("2026年10月份版本", plan.params().get("version"));
+    }
+
+    @Test
     void versionStartEndSuffixKeysBindCalendarWindow() {
         String question = "2026年10月份版本的达标率";
         when(metadataRepository.findActive()).thenReturn(List.of(
@@ -2682,6 +2732,49 @@ class DirectSkillExecutorTest {
         assertEquals(List.of("软负载均衡团队"), plan.extraction().groupName());
         assertEquals("软负载均衡团队", plan.params().get("stat_group"));
         assertEquals("云计算实验室", plan.params().get("dev_dept"));
+    }
+
+    // ============ 应用码英文形态豁免 B③ (应用退出台账真值校验方案 v2, 2026/11/10) ============
+
+    @Test
+    void appCodeEnglishShapeBypassesTruthDomainCheck() {
+        // 基地应用 F-GCS 不在台账「应用」真值域 → 豁免不剔, 原样传参
+        String question = "F-GCS的达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.dimensionTruthDictionary("应用")).thenReturn(Set.of("F-ATP"));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"app\":\"appName\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                stateWithPeer(DimensionState.PeerDimensionType.APPLICATION, List.of("F-GCS")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "alice", null);
+
+        assertEquals(List.of("F-GCS"), plan.extraction().appName());
+        assertEquals("F-GCS", plan.params().get("app"));
+    }
+
+    @Test
+    void appCodeExemptionAppliesOnlyToAppNameKey() {
+        // 豁免仅挂 appName 键: groupName 键的同形态值仍对照真值域, 域外照剔
+        String question = "F-GCS的达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.dimensionTruthDictionary("统计组")).thenReturn(Set.of("个贷汽车场景建设组"));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"stat_group\":\"groupName\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                stateWithPeer(DimensionState.PeerDimensionType.TEAM, List.of("F-GCS")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "alice", null);
+
+        assertTrue(plan.extraction().groupName().isEmpty());
     }
 
     // ============ 维度值→部门反填 (2026/10/27 拍板, 台账 Q8 deptsByDimension) ============
