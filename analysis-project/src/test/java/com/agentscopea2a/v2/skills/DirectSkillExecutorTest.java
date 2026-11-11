@@ -1124,6 +1124,56 @@ class DirectSkillExecutorTest {
     }
 
     @Test
+    void anchorExpandFailureSkipsDefaultAndAsks() {
+        // 近N月方案 F3B (2026-11-11 拍板②选B): LAST:4V 展开空 (日历不可用+无在建版本) 时
+        // 不得用 defaultTimeValues 在建版本默认值静默顶替 → 必填缺失反问
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"version\":\"versionPlan\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(QUESTION), Mockito.isNull())).thenReturn(
+                state(versionTime(List.of("LAST:4V")), List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"version\",\"required\":true}]"));
+        // 在建版本有值: 若误兜底默认, version 会被填成 10月版本并直接执行 — 断言不得发生
+        when(hookProvider.getIfAvailable()).thenReturn(versionPlanHook);
+        when(versionPlanHook.currentVersions()).thenReturn(List.of("2026年10月份版本"));
+        com.agentscopea2a.v2.dimension.VersionCalendarRepository deadCal =
+                mock(com.agentscopea2a.v2.dimension.VersionCalendarRepository.class);
+        when(deadCal.snapshot()).thenReturn(java.util.Map.of());
+        when(deadCal.aggregateWindow(Mockito.anyList())).thenReturn(null);
+        com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver deadResolver =
+                new com.agentscopea2a.v2.dimension.VersionPlanAnchorResolver(deadCal, List::of);
+
+        DirectSkillExecutor executor = newExecutorWithResolver(deadResolver);
+        DirectSkillExecutor.DirectExecutionPlan plan = executor.plan(QUESTION, "alice", null, "conv-1");
+
+        assertTrue(plan.needsAsk());
+        assertFalse(plan.missingAsk().isEmpty());
+        assertFalse(plan.params().containsKey("version"));
+    }
+
+    @Test
+    void noTimeMentionStillFallsBackToDefaultInBuildVersions() {
+        // F3B 回归护栏: 未提及时间的问法 (extraction 无 versionPlan 值) 仍补在建版本默认
+        // (defaultTimeValues 既有拍板), 不得被锚点失败判定误伤
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"version\":\"versionPlan\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(QUESTION), Mockito.isNull())).thenReturn(
+                state(versionTime(List.of()), List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"version\",\"required\":true}]"));
+        when(hookProvider.getIfAvailable()).thenReturn(versionPlanHook);
+        when(versionPlanHook.currentVersions()).thenReturn(List.of("2026年10月份版本"));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutor(true).plan(QUESTION, "alice", null, "conv-1");
+
+        assertFalse(plan.needsAsk());
+        assertEquals("2026年10月份版本", plan.params().get("version"));
+    }
+
+    @Test
     void versionStartEndSuffixKeysBindCalendarWindow() {
         String question = "2026年10月份版本的达标率";
         when(metadataRepository.findActive()).thenReturn(List.of(

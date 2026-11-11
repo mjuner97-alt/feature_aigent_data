@@ -173,7 +173,7 @@ public class VersionCalendarRepository {
             }
         }
         Map<String, VersionWindow> snap = snapshot();
-        return snap.entrySet().stream()
+        List<String> out = snap.entrySet().stream()
                 .sorted(Comparator.comparing(
                                 (Map.Entry<String, VersionWindow> e) -> LocalDate.parse(e.getValue().end()))
                         .reversed())
@@ -182,6 +182,11 @@ public class VersionCalendarRepository {
                         e -> LocalDate.parse(e.getValue().end())))
                 .map(Map.Entry::getKey)
                 .toList();
+        if (out.size() < n) {
+            log.warn("VersionCalendarRepository: LAST:{}V 退化路径(快照按投产日回推)仅得 {} 个版本, "
+                    + "快照版本数={}, 锚点非标准月版名", n, out.size(), snap.size());
+        }
+        return out;
     }
 
     /** 版本是否在日历快照中存在（延后版定位用；日历不可用返回 false）。 */

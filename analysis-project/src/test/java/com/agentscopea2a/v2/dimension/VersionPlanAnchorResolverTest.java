@@ -225,6 +225,41 @@ class VersionPlanAnchorResolverTest {
                 resolver.expandVersions(List.of("LAST:6V")));
     }
 
+    // ==================== 近N月方案 F1 (2026-11-11)：快照 miss 回退月版名最大月 ====================
+
+    @Test
+    void lastNFallsBackToMaxMonthInBuildNameWhenSnapshotMisses() {
+        // 在建版本不在日历快照（快照 SQL 筛火车类型而在建 SQL 不筛的形态）→ 回退在建版本名
+        // 最大月作月序锚点：2027年1月版回推 4 → 2026年10月~2027年1月（跨年自动进位）
+        VersionPlanAnchorResolver resolver = new VersionPlanAnchorResolver(
+                calendar(), () -> List.of("2027年1月份版本"));
+
+        assertEquals(List.of("2026年10月份版本", "2026年11月份版本", "2026年12月份版本",
+                        "2027年1月份版本"),
+                resolver.expandVersions(List.of("LAST:4V")));
+    }
+
+    @Test
+    void lastNMonthSequenceWorksWithCalendarDown() {
+        // gauss 不可用（快照空）+ 在建版本含月版名 → 月序回推不依赖快照，n 永远给 n 个
+        VersionPlanAnchorResolver resolver = new VersionPlanAnchorResolver(
+                failingCalendar(), () -> List.of("2026年12月份版本"));
+
+        assertEquals(List.of("2026年9月份版本", "2026年10月份版本",
+                        "2026年11月份版本", "2026年12月份版本"),
+                resolver.expandVersions(List.of("LAST:4V")));
+    }
+
+    @Test
+    void lastNDegradedToSnapshotOrderWhenNoMonthNameInBuild() {
+        // 在建版本全非标准月版名（如延后版）→ 快照 miss 且月版名兜底不可得 → 走快照按投产日回推
+        VersionPlanAnchorResolver resolver = new VersionPlanAnchorResolver(
+                calendar(), () -> List.of("2026年10月延后版"));
+
+        assertEquals(List.of("2026年11月份版本", "2026年12月份版本"),
+                resolver.expandVersions(List.of("LAST:2V")));
+    }
+
     @Test
     void yearQualifiedHalfAndYearAnchorsExpandByQualifierYear() {
         VersionPlanAnchorResolver resolver = new VersionPlanAnchorResolver(calendar(), () -> List.of());

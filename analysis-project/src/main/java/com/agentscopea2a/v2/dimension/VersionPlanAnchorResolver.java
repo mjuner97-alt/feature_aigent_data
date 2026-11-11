@@ -59,6 +59,9 @@ public class VersionPlanAnchorResolver {
 
     private static final Pattern VERSION_STANDARD =
             Pattern.compile("\\d{4}年\\d{1,2}月份版本");
+    /** 月版名分组形态（lastInBuildAnchor F1 回退取年月用；与 VersionCalendarRepository.MONTH_VERSION_ANCHOR 同构）。 */
+    private static final Pattern MONTH_VERSION_NAME =
+            Pattern.compile("(\\d{4})年(\\d{1,2})月份版本");
     private static final Pattern DELAYED_STANDARD =
             Pattern.compile("\\d{4}年\\d{1,2}月延后版");
     private static final Pattern QUARTER_STANDARD =
@@ -292,7 +295,12 @@ public class VersionPlanAnchorResolver {
         }
     }
 
-    /** 在建锚点 = currentVersions 里日历投产日最大的版本；都不在日历/为空返回 null。 */
+    /**
+     * 在建锚点：优先 = currentVersions 里日历快照投产日最大的版本；
+     * 快照全 miss（在建版本名不在快照/快照为空，近N月方案 F1，2026-11-11 拍板）→
+     * 回退 currentVersions 里标准月版名形态年月最大者，走月序回推（不依赖快照）。
+     * 都不可得返回 null。
+     */
     private String lastInBuildAnchor() {
         List<String> current = safeCurrentVersions();
         if (current.isEmpty()) {
@@ -311,7 +319,28 @@ public class VersionPlanAnchorResolver {
                 bestEnd = w.end();
             }
         }
-        return best;
+        if (best != null) {
+            return best;
+        }
+        log.info("VersionPlanAnchorResolver: 在建版本 {} 均不在日历快照中, 回退月版名最大月作 LAST:nV 锚点",
+                current);
+        String bestMonth = null;
+        int bestKey = -1;
+        for (String v : current) {
+            if (v == null) {
+                continue;
+            }
+            java.util.regex.Matcher m = MONTH_VERSION_NAME.matcher(v.trim());
+            if (!m.matches()) {
+                continue;
+            }
+            int key = Integer.parseInt(m.group(1)) * 12 + Integer.parseInt(m.group(2));
+            if (key > bestKey) {
+                bestKey = key;
+                bestMonth = v.trim();
+            }
+        }
+        return bestMonth;
     }
 
     /** @yyyy 年份限定年；无限定用执行期当前年。 */
