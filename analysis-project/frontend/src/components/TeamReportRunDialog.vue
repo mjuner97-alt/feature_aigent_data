@@ -6,6 +6,17 @@ import { flowBatchProgress, runSkillFlowBatch } from '../api/skillFlow';
 const props = defineProps<{ flow: SkillFlow | null; open: boolean }>();
 const emit = defineEmits<{ (e: 'update:open', value: boolean): void; (e: 'submitted'): void }>();
 const requestId = ref('');
+/** 内网 HTTP 和旧版浏览器可能没有 randomUUID；此标识仅用于提交幂等。 */
+function createRequestId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 const search = ref(''),
   selected = ref<string[]>([]),
   busy = ref(false),
@@ -118,7 +129,6 @@ async function submit() {
   try {
     // 失败重试沿用本次请求标识，避免网络重试重复创建批次。
     await runSkillFlowBatch(props.flow.id, selected.value, requestId.value);
-    requestId.value = globalThis.crypto.randomUUID();
     // 批次已入队即可跳转，不等待所有团队执行结束。
     emit('update:open', false);
     emit('submitted');
@@ -136,7 +146,7 @@ watch(
     clearInterval(timer);
     statusReady.value = false;
     if (!open) return;
-    requestId.value = globalThis.crypto.randomUUID();
+    requestId.value = createRequestId();
     search.value = '';
     department.value = '';
     reviewSelected.value = false;

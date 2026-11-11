@@ -1,6 +1,10 @@
-# 每日 11 点指标预警收件与抄送配置
+# 每日 10 点指标预警收件与抄送配置
 
-预警在生产环境工作日 11:00（Asia/Shanghai）执行。配置存放在 `ai_chat_runtime_config`，与长任务通知名单独立。
+预警在生产环境工作日 10:00（Asia/Shanghai）执行。配置存放在 `ai_chat_runtime_config`，与长任务通知名单独立。
+
+执行时刻统一由定时器控制，内部不再校验小时、分钟。手动检查使用实际检查时间。
+
+当前规则会发送全部参与预警指标的就绪汇总，即使全部指标均已 READY 也会发送；没有启用的预警指标、没有有效收件人、非生产环境、非工作日或调度开关关闭时跳过。定时执行结果会记录在 `[DependencyMetricAlert] scheduled check` 日志中，包括跳过原因、指标总数、就绪数及发送失败信息。
 
 | config_key | 用途 | config_value 示例 |
 | --- | --- | --- |
@@ -31,7 +35,7 @@
 3. 查看 `dependency_metric_alert_delivery` 中本次的 `recipient_summary`、`cc_recipient_summary`、`status` 和 `error_message`。两个 summary 保存实际发送的有效名单。
 4. 如名单完整且网关已接受，但有人未收到，需要凭本次名单和时间排查网关及邮箱投递。网关接受不等同于每个邮箱最终送达。
 
-已有手动检查接口 `GET /api/dependency-metric-alert/check?force=true` **会真实发送邮件**，并返回 `recipients`、`ccRecipients`、`invalidRecipients`、`invalidCcRecipients` 及状态。`force` 仅跳过调度开关与时间窗，仍限生产环境工作日；不要将它当作只读预览接口。
+已有手动检查接口 `GET /api/dependency-metric-alert/check?force=true` **会真实发送邮件**，并返回 `recipients`、`ccRecipients`、`invalidRecipients`、`invalidCcRecipients` 及状态。`force` 仅跳过调度开关，仍限生产环境工作日；不要将它当作只读预览接口。
 
 ## 本地验证
 
@@ -43,7 +47,7 @@ mvn -q '-Dtest=DependencyMetricAlertServiceTest' test
 
 ## 预警标题与长任务失败默认抄送
 
-每日 11 点预警邮件标题为 `数据依赖指标未就绪预警(yyyy年MM月dd日)`，使用本次预警日期；正文保持原有内容。
+每日 10 点预警邮件标题为 `数据依赖指标未就绪预警(yyyy年MM月dd日)`，使用本次预警日期；正文保持原有内容。
 
 自动触发（`AUTO_METRIC`）长任务首次失败通知（包括部分成功）按发送时长任务关联的任务类型精确匹配抄送名单，不按任务名称或报告标题猜测：
 
