@@ -223,19 +223,10 @@ public class TeamReportService {
         List<String> to = new ArrayList<>(),
             cc = new ArrayList<>();
         var people = mapper.recipients(dept, team == null ? "" : team);
-        long leaders = people
-            .stream()
-            .filter(r -> "分管领导".equals(Objects.toString(r.get("position_role"), "").trim()))
-            .map(r -> r.get("user_id"))
-            .distinct()
-            .count();
-        if (team != null && leaders > 1) throw new IllegalStateException(
-            "TeamReportLeaderConflict: " + dept + " / " + team + " 只能配置一位分管领导"
-        );
         for (var r : people) {
             String user = Objects.toString(r.get("user_id"), "").trim();
             if (user.isEmpty()) continue;
-            // 岗位只决定新增时的初值，显式配置的通知类型优先。
+            // 仅按来源表的 TO/CC 分组，不限制岗位或同岗位人数。
             ("TO".equals(r.get("recipient_type")) ? to : cc).add(user);
         }
         to = to.stream().distinct().toList();
