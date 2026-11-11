@@ -422,6 +422,83 @@ public class HtmlReportRenderer {
                 .replace("@@PADDING@@", includeToc ? "0px" : "var(--report-frame-padding)");
     }
 
+    // 嵌入节点的 vh 不能依赖正在自动撑高的 iframe，否则会形成高度反馈循环。
+    private static final Pattern VIEWPORT_HEIGHT_UNIT = Pattern.compile(
+            "(?i)(?<![\\w.-])([+-]?(?:\\d+(?:\\.\\d+)?|\\.\\d+))(?:[sld]?vh)\\b");
+    private static final Pattern INLINE_STYLE = Pattern.compile(
+            "(?is)(\\sstyle\\s*=\\s*)([\"'])(.*?)\\2");
+
+    private static String anchorViewportHeight(String css) {
+        return VIEWPORT_HEIGHT_UNIT.matcher(css).replaceAll(match -> Matcher.quoteReplacement(
+                "calc(var(--report-viewport-height, 100vh) * "
+                        + Double.parseDouble(match.group(1)) / 100.0 + ")"));
+    }
+
+    private static String anchorInlineViewportHeight(String html) {
+        return INLINE_STYLE.matcher(html).replaceAll(match -> Matcher.quoteReplacement(
+                match.group(1) + match.group(2) + anchorViewportHeight(match.group(3)) + match.group(2)));
+    }
+
+    private static final String FRAME_RESIZE_JS = """
+            (function() {
+                var frames = document.querySelectorAll('[data-report-frame]');
+                function bind(frame) {
+                    if (frame.__reportHeightBound) return;
+                    frame.__reportHeightBound = true;
+                    var attempts = 0, observer = null, pending = false;
+                    function fit() {
+                        try {
+                            var doc = frame.contentDocument;
+                            if (!doc) return false;
+                            var report = doc.getElementById('report');
+                            if (!report) return false;
+                            // 多层嵌入时沿用最外层的基准，不能重新取已撑高的子视口。
+                            var viewport = getComputedStyle(document.documentElement)
+                                .getPropertyValue('--report-viewport-height').trim() || window.innerHeight + 'px';
+                            if (doc.documentElement.style.getPropertyValue('--report-viewport-height') !== viewport) {
+                                doc.documentElement.style.setProperty('--report-viewport-height', viewport);
+                            }
+                            var height = Math.max(report.scrollHeight, report.getBoundingClientRect().height);
+                            var next = Math.ceil(height + 2) + 'px';
+                            if (height > 0 && frame.style.height !== next) frame.style.height = next;
+                            if (!observer && doc.defaultView && doc.defaultView.ResizeObserver) {
+                                observer = new doc.defaultView.ResizeObserver(schedule);
+                                observer.observe(report);
+                                var shell = doc.getElementById('report-shell');
+                                if (shell) observer.observe(shell);
+                                if (doc.body) observer.observe(doc.body);
+                            }
+                            return height > 0;
+                        } catch (e) {
+                            console.warn('报告子文档高度测量失败', e);
+                            return false;
+                        }
+                    }
+                    function schedule() {
+                        if (pending) return;
+                        pending = true;
+                        requestAnimationFrame(function() { pending = false; fit(); });
+                    }
+                    function retry() {
+                        if (fit() || attempts++ >= 8) return;
+                        setTimeout(retry, 50 * (attempts + 1));
+                    }
+                    frame.addEventListener('load', function() {
+                        if (observer) observer.disconnect();
+                        observer = null;
+                        attempts = 0;
+                        retry();
+                    });
+                    window.addEventListener('resize', schedule);
+                    retry();
+                }
+                for (var i = 0; i < frames.length; i++) bind(frames[i]);
+                window.addEventListener('load', function() {
+                    for (var i = 0; i < frames.length; i++) bind(frames[i]);
+                });
+            })();
+            """;
+
     private static final Logger log = LoggerFactory.getLogger(HtmlReportRenderer.class);
     private static final ObjectMapper JSON = new ObjectMapper();
 
@@ -1059,6 +1136,10 @@ public class HtmlReportRenderer {
 
     private String assembleHtml(String title, String body, List<ChartBlock> charts, String extraStyles,
                                 boolean includeToc, boolean completeHtml) {
+        if (!includeToc) {
+            if (extraStyles != null) extraStyles = anchorViewportHeight(extraStyles);
+            body = anchorInlineViewportHeight(body);
+        }
         StringBuilder sb = new StringBuilder(1024 + body.length());
         sb.append("<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">");
         sb.append("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
@@ -1086,7 +1167,7 @@ public class HtmlReportRenderer {
         sb.append(body);
         sb.append("</div></div>");
         // 只测量正文高度；不能把 iframe 视口高度算进去，否则每次测量加 2px 会不断撑高。
-        if (includeToc) sb.append("<script>(function(){var frames=document.querySelectorAll('[data-report-frame]');function bind(frame){if(frame.__reportHeightBound)return;frame.__reportHeightBound=true;var attempts=0,observer=null;function fit(){try{var doc=frame.contentDocument;if(!doc)return false;var report=doc.getElementById('report');if(!report)return false;var shell=doc.getElementById('report-shell');var body=doc.body;var height=Math.max(report.scrollHeight,report.getBoundingClientRect().height);if(height>0)frame.style.height=Math.ceil(height+2)+'px';if(!observer&&doc.defaultView&&doc.defaultView.ResizeObserver){observer=new doc.defaultView.ResizeObserver(fit);observer.observe(report);if(shell)observer.observe(shell);if(body)observer.observe(body);}return height>0;}catch(e){console.warn('报告子文档高度测量失败',e);return false;}}function retry(){if(fit()||attempts++>=8)return;setTimeout(retry,50*(attempts+1));}frame.addEventListener('load',function(){attempts=0;retry();try{var doc=frame.contentDocument;if(doc&&doc.defaultView)doc.defaultView.addEventListener('load',retry);}catch(e){console.warn('报告子文档加载监听失败',e);}});retry();}for(var i=0;i<frames.length;i++)bind(frames[i]);window.addEventListener('load',function(){for(var i=0;i<frames.length;i++)bind(frames[i]);});})();</script>");
+        if (includeToc) sb.append("<script>").append(FRAME_RESIZE_JS).append("</script>");
         if (includeToc) sb.append("<script>(function(){var toc=document.querySelector('.report-toc'),list=toc&&toc.querySelector('.report-toc-list');if(!toc||!list)return;if(list)list.replaceChildren();var heads=document.querySelectorAll('[data-report-outline-heading]');for(var i=0;i<heads.length;i++){var h=heads[i];if(h.classList.contains('report-outline-title')||h.tagName==='H1')continue;var id='report-section-'+i;h.id=id;var a=document.createElement('a');a.href='#'+id;a.dataset.level=h.tagName.substring(1);a.style.paddingLeft=(7+Math.max(0,Number(a.dataset.level)-2)*11)+'px';a.textContent=h.textContent||('章节 '+(i+1));a.title=a.textContent;a.addEventListener('click',function(e){var target=document.getElementById(this.hash.substring(1));if(target){e.preventDefault();target.scrollIntoView({block:'start',behavior:'smooth'});}});list.appendChild(a);}if(!list.children.length)toc.style.display='none';})();</script>");
         // 表格的滚动属性全部由 REPORT_CSS 决定，不再用 JS 写行内样式覆盖。
         sb.append("<script>(function(){var buttons=document.querySelectorAll('[data-html-fullscreen]');for(var i=0;i<buttons.length;i++){buttons[i].addEventListener('click',function(){var shell=document.getElementById(this.getAttribute('data-html-fullscreen'));if(document.fullscreenElement===shell){document.exitFullscreen();}else if(shell&&shell.requestFullscreen){shell.requestFullscreen();}});}})();</script>");

@@ -300,14 +300,14 @@ public class FlowCompletionService {
     }
 
     /**
-     * 执行完成后的首次通知:所有触发类型均通知其对应用户。
+     * 执行完成后的首次通知:所有触发类型均遵守执行快照中的完成通知开关。
      * CHAT 通知对话触发人, MANUAL 通知点击执行的人, AUTO_METRIC 通知流程创建人
      * （三类场景的接收人均已在 triggerUserId 中快照）。deliveryKey 固定为
      * flow:{id}:INITIAL,借唯一索引天然幂等(复用执行记录或重试均不重复通知)。
      */
     public void sendInitial(SkillFlowExecution execution) {
         if (execution.getStatus() == FlowExecutionStatus.CANCELLED) return;
-        if (execution.getBatchId() != null && Boolean.FALSE.equals(execution.getNotifyEnabledSnapshot())) return;
+        if (Boolean.FALSE.equals(execution.getNotifyEnabledSnapshot())) return;
         send(execution, "flow:" + execution.getId() + ":INITIAL");
     }
 
