@@ -30,8 +30,11 @@ public class FlowSchedulerGuard {
     }
 
     public boolean isAllowed() {
+        if (!enabled) {
+            return false;
+        }
         boolean databaseEnabled = readDatabaseSwitch();
-        boolean allowed = enabled && databaseEnabled;
+        boolean allowed = databaseEnabled;
         if (!Boolean.valueOf(allowed).equals(lastDecision)) {
             if (allowed) log.info("Long-task scheduler enabled by startup and database switches");
             else log.warn("Long-task scheduler disabled: scheduler.enabled={}, {}={}", enabled,
