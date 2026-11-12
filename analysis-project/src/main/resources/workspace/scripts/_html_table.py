@@ -103,4 +103,4 @@ def render_html_custom(body_html, title=None, fragment=False):
     全部规则挂在独有 class unified-table 作用域, 整份 HTML 被误注入其他页面时样式零泄漏.
     body_html 为信任输入不转义 — 单元格值的 html.escape 由调用方负责.
     参考 docs/202611/个性化HTML表格兼容统一样式方案.md."""
-    return _assemble(body_html, title, fragment)
+    return body_html
