@@ -1,15 +1,15 @@
 WITH recipient_rows AS (
     SELECT
         n.id AS notification_id,
-        e.flow_id,
-        e.trigger_type,
+        n.flow_id,
+        n.flow_name,
+        n.trigger_type,
         n.status,
         n.sent_at,
         TRIM(regexp_split_to_table(COALESCE(n.recipient, ''), ',')) AS recipient_id
-    FROM skill_flow_notification n
-             JOIN skill_flow_execution e
-                  ON e.id = n.flow_execution_id
-    WHERE n.status IN ('ACCEPTED', 'SENT', 'SIMULATED')
+    FROM skill_flow_notification_history n
+    WHERE n.flow_id IS NOT NULL
+      AND n.status IN ('ACCEPTED', 'SENT', 'SIMULATED')
       AND n.sent_at IS NOT NULL
       AND n.sent_at >= CURRENT_TIMESTAMP - INTERVAL '30 days'
     ),
@@ -22,7 +22,7 @@ WHERE "统一认证号" IS NOT NULL
 ORDER BY "统一认证号", "版本月份" DESC
     )
 SELECT
-    f.name AS flow_name,
+    MAX(rr.flow_name) AS flow_name,
 
     COUNT(DISTINCT rr.notification_id) AS total_mail_count,
 
@@ -60,10 +60,8 @@ SELECT
     MAX(rr.sent_at) AS last_sent_at
 
 FROM recipient_rows rr
-         JOIN skill_flow f
-              ON f.id = rr.flow_id
          LEFT JOIN latest_person lp
                    ON lp.user_id = rr.recipient_id
 WHERE LENGTH(TRIM(rr.recipient_id)) > 0
-GROUP BY f.id, f.name
+GROUP BY rr.flow_id
 ORDER BY last_sent_at DESC;

@@ -8,19 +8,33 @@
 - `ACCEPTED`：网关已接受请求；`SENT`：历史兼容状态。两者均不等同于已送达、已阅读。
 - `FAILED`：失败；`SIMULATED`：模拟、未实际发送；`PENDING` / `SENDING`：待处理或处理中。
 - 历史发送明细按实际 `sent_at` 筛选，并限定 ACCEPTED、SENT；状态统计与排查包含所有状态，按 `COALESCE(sent_at, created_at)` 筛选。两种口径行数不同是正常的。
-- 发送次数按 `skill_flow_notification.id` 计数；同一次任务执行可能有多次通知或补发，因此不等于任务执行次数。
+- 发送次数按 `skill_flow_notification_history.id` 计数；同一次任务执行可能有多次通知或补发，因此不等于任务执行次数。
+- 历史统计只查独立历史表。先执行 `V20261112.1__flow_notification_history.sql` 回填和启用同步，再使用本手册和[任务清理脚本](删除指定人员和指定时间的任务.md)。旧脚本已删除的数据需要从备份恢复。
 - “主送”表示收件人 TO，“抄送”表示 CC；这些字段不记录邮件发件人。
 - 人员姓名采用每个统一认证号的最新人员版本；它是查询时可用的姓名，并非发送时姓名快照。
 - 导出前确认数据库会话时区与业务时区一致，业务时间为 Asia/Shanghai。
 
 ## 表关系与数据来源
 
+首次部署时，先在目标 GaussDB 库完整执行迁移脚本，再用下面的查询核对回填。结果应为 0。随后发一封测试通知，确认历史表中同一通知 ID 的状态、发送时间和收件人会随发送结果更新，再使用新版清理 SQL。若迁移账号与应用账号不同，应用账号须能读写历史表（触发器随应用事务执行），统计账号须有历史表的查询权限。
+
+```sql
+SELECT COUNT(*) AS missing_or_stale
+FROM skill_flow_notification n
+LEFT JOIN skill_flow_notification_history h ON h.id = n.id
+WHERE h.id IS NULL
+   OR h.flow_execution_id IS DISTINCT FROM n.flow_execution_id
+   OR h.status IS DISTINCT FROM n.status
+   OR h.sent_at IS DISTINCT FROM n.sent_at
+   OR h.updated_at IS DISTINCT FROM n.updated_at;
+```
+
 | 数据 | 表或字段 | 说明 |
 |---|---|---|
 | 长任务定义 | `skill_flow.id / name` | 当前任务名称、配置 |
-| 执行记录 | `skill_flow_execution.id / flow_id / flow_name` | `flow_name` 是执行记录保存的名称 |
-| 历史通知 | `skill_flow_notification.flow_execution_id` | 关联执行记录 ID |
-| 历史主送 | `skill_flow_notification.recipient` | 当次主送账号，逗号分隔 |
+| 执行快照 | `skill_flow_notification_history.flow_id / flow_name / trigger_type` | 通知入库时保存的任务 ID、名称与触发方式 |
+| 历史通知 | `skill_flow_notification_history.flow_execution_id` | 原执行 ID，父执行清理后仍保留 |
+| 历史主送 | `skill_flow_notification_history.recipient` | 当次主送账号，逗号分隔 |
 | 请求主送、抄送 | `request_json.toUserList / toCCUserList` | 当次保存的最终请求，账号数组 |
 | 当前配置 | `notification_config` | `target_type = 'SKILL_FLOW'` 且 `target_id = skill_flow.id` |
 | 当前配置人员 | `notification_recipient.config_id` | 关联 `notification_config.id`，不是长任务 ID |
@@ -72,14 +86,13 @@ mail_source AS (
         n.id,
         COALESCE(
             NULLIF(CAST(NULLIF(TRIM(n.request_json), '') AS JSON) ->> 'title', ''),
-            e.flow_name
+            n.flow_name
         ) AS report_name,
         n.sent_at,
         n.recipient,
         CAST(NULLIF(TRIM(n.request_json), '') AS JSON) AS request_data
-    FROM skill_flow_notification n
-    JOIN skill_flow_execution e ON e.id = n.flow_execution_id
-    WHERE e.flow_id IS NOT NULL
+    FROM skill_flow_notification_history n
+    WHERE n.flow_id IS NOT NULL
       AND n.status IN ('ACCEPTED', 'SENT')
       AND n.sent_at >= TIMESTAMP '2026-10-12 00:00:00'
       AND n.sent_at <= CURRENT_TIMESTAMP
@@ -144,14 +157,13 @@ mail_source AS (
         n.id,
         COALESCE(
             NULLIF(CAST(NULLIF(TRIM(n.request_json), '') AS JSON) ->> 'title', ''),
-            e.flow_name
+            n.flow_name
         ) AS report_name,
         n.sent_at,
         n.recipient,
         CAST(NULLIF(TRIM(n.request_json), '') AS JSON) AS request_data
-    FROM skill_flow_notification n
-    JOIN skill_flow_execution e ON e.id = n.flow_execution_id
-    WHERE e.flow_id IS NOT NULL
+    FROM skill_flow_notification_history n
+    WHERE n.flow_id IS NOT NULL
       AND n.status IN ('ACCEPTED', 'SENT')
       AND n.sent_at >= TIMESTAMP '2026-10-12 00:00:00'
       AND n.sent_at <= CURRENT_TIMESTAMP
@@ -192,14 +204,13 @@ ORDER BY m.sent_at DESC, m.notification_id, m.recipient_type, m.user_id;
 
 ```sql
 WITH events AS (
-    SELECT n.id AS notification_id, e.id AS execution_id,
-           e.flow_id, e.flow_name, e.trigger_type,
+    SELECT n.id AS notification_id, n.flow_execution_id AS execution_id,
+           n.flow_id, n.flow_name, n.trigger_type,
            n.status, n.channel, n.sent_at, n.created_at,
            n.recipient, n.request_json, n.error_message,
            COALESCE(n.sent_at, n.created_at) AS event_at
-    FROM skill_flow_notification n
-    JOIN skill_flow_execution e ON e.id = n.flow_execution_id
-    WHERE e.flow_id IS NOT NULL
+    FROM skill_flow_notification_history n
+    WHERE n.flow_id IS NOT NULL
       AND COALESCE(n.sent_at, n.created_at) >= TIMESTAMP '2026-10-12 00:00:00'
       AND COALESCE(n.sent_at, n.created_at) <= CURRENT_TIMESTAMP
 )
@@ -221,14 +232,13 @@ ORDER BY notification_id DESC;
 
 ```sql
 WITH events AS (
-    SELECT n.id AS notification_id, e.id AS execution_id,
-           e.flow_id, e.flow_name, e.trigger_type,
+    SELECT n.id AS notification_id, n.flow_execution_id AS execution_id,
+           n.flow_id, n.flow_name, n.trigger_type,
            n.status, n.channel, n.sent_at, n.created_at,
            n.recipient, n.request_json, n.error_message,
            COALESCE(n.sent_at, n.created_at) AS event_at
-    FROM skill_flow_notification n
-    JOIN skill_flow_execution e ON e.id = n.flow_execution_id
-    WHERE e.flow_id IS NOT NULL
+    FROM skill_flow_notification_history n
+    WHERE n.flow_id IS NOT NULL
       AND COALESCE(n.sent_at, n.created_at) >= TIMESTAMP '2026-10-12 00:00:00'
       AND COALESCE(n.sent_at, n.created_at) <= CURRENT_TIMESTAMP
 )
@@ -254,14 +264,13 @@ ORDER BY "实际发送数" DESC, flow_id;
 
 ```sql
 WITH events AS (
-    SELECT n.id AS notification_id, e.id AS execution_id,
-           e.flow_id, e.flow_name, e.trigger_type,
+    SELECT n.id AS notification_id, n.flow_execution_id AS execution_id,
+           n.flow_id, n.flow_name, n.trigger_type,
            n.status, n.channel, n.sent_at, n.created_at,
            n.recipient, n.request_json, n.error_message,
            COALESCE(n.sent_at, n.created_at) AS event_at
-    FROM skill_flow_notification n
-    JOIN skill_flow_execution e ON e.id = n.flow_execution_id
-    WHERE e.flow_id IS NOT NULL
+    FROM skill_flow_notification_history n
+    WHERE n.flow_id IS NOT NULL
       AND COALESCE(n.sent_at, n.created_at) >= TIMESTAMP '2026-10-12 00:00:00'
       AND COALESCE(n.sent_at, n.created_at) <= CURRENT_TIMESTAMP
 )
@@ -295,14 +304,13 @@ mail_source AS (
         n.id,
         COALESCE(
             NULLIF(CAST(NULLIF(TRIM(n.request_json), '') AS JSON) ->> 'title', ''),
-            e.flow_name
+            n.flow_name
         ) AS report_name,
         n.sent_at,
         n.recipient,
         CAST(NULLIF(TRIM(n.request_json), '') AS JSON) AS request_data
-    FROM skill_flow_notification n
-    JOIN skill_flow_execution e ON e.id = n.flow_execution_id
-    WHERE e.flow_id IS NOT NULL
+    FROM skill_flow_notification_history n
+    WHERE n.flow_id IS NOT NULL
       AND n.status IN ('ACCEPTED', 'SENT')
       AND n.sent_at >= TIMESTAMP '2026-10-12 00:00:00'
       AND n.sent_at <= CURRENT_TIMESTAMP
@@ -426,14 +434,13 @@ ORDER BY flow_id, trigger_type;
 
 ```sql
 WITH events AS (
-    SELECT n.id AS notification_id, e.id AS execution_id,
-           e.flow_id, e.flow_name, e.trigger_type,
+    SELECT n.id AS notification_id, n.flow_execution_id AS execution_id,
+           n.flow_id, n.flow_name, n.trigger_type,
            n.status, n.channel, n.sent_at, n.created_at,
            n.recipient, n.request_json, n.error_message,
            COALESCE(n.sent_at, n.created_at) AS event_at
-    FROM skill_flow_notification n
-    JOIN skill_flow_execution e ON e.id = n.flow_execution_id
-    WHERE e.flow_id IS NOT NULL
+    FROM skill_flow_notification_history n
+    WHERE n.flow_id IS NOT NULL
       AND COALESCE(n.sent_at, n.created_at) >= TIMESTAMP '2026-10-12 00:00:00'
       AND COALESCE(n.sent_at, n.created_at) <= CURRENT_TIMESTAMP
 )
@@ -465,14 +472,13 @@ mail_source AS (
         n.id,
         COALESCE(
             NULLIF(CAST(NULLIF(TRIM(n.request_json), '') AS JSON) ->> 'title', ''),
-            e.flow_name
+            n.flow_name
         ) AS report_name,
         n.sent_at,
         n.recipient,
         CAST(NULLIF(TRIM(n.request_json), '') AS JSON) AS request_data
-    FROM skill_flow_notification n
-    JOIN skill_flow_execution e ON e.id = n.flow_execution_id
-    WHERE e.flow_id IS NOT NULL
+    FROM skill_flow_notification_history n
+    WHERE n.flow_id IS NOT NULL
       AND n.status IN ('ACCEPTED', 'SENT')
       AND n.sent_at >= TIMESTAMP '2026-10-12 00:00:00'
       AND n.sent_at <= CURRENT_TIMESTAMP
@@ -541,7 +547,7 @@ ORDER BY f.id, r.trigger_type, r.recipient_type, r.sort_order, r.id;
 
 ### 只看某个长任务
 
-历史统计在关联执行表的 WHERE 中增加 `AND e.flow_id = 具体任务ID`；配置查询在关联长任务表的 WHERE 中增加 `AND f.id = 具体任务ID`。需要保留通知本身时，不要把人员过滤从 LEFT JOIN 的 ON 移到外层 WHERE。
+历史统计在历史表的 WHERE 中增加 `AND n.flow_id = 具体任务ID`；配置查询在关联长任务表的 WHERE 中增加 `AND f.id = 具体任务ID`。需要保留通知本身时，不要把人员过滤从 LEFT JOIN 的 ON 移到外层 WHERE。
 
 ### 怎样限定结束日期
 
