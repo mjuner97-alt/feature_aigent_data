@@ -2777,6 +2777,51 @@ class DirectSkillExecutorTest {
         assertTrue(plan.extraction().groupName().isEmpty());
     }
 
+    // ============ B① 扫描值子串消解 (真值扫描子串误加修复方案, 2026/11/11) ============
+
+    @Test
+    void truthScanSubstringAbsorbedByLongerExtractedValue() {
+        // 扫描值是既有提取值的真子串 → 消解不加: 问句含 F-DTX-OPS (正则提取),
+        // 台账真值 F-DTX 子串命中被吸收, 不再双值
+        String question = "F-DTX-OPS的达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.dimensionTruthDictionary("应用")).thenReturn(Set.of("F-DTX"));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"app\":\"appName\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                stateWithPeer(DimensionState.PeerDimensionType.APPLICATION, List.of("F-DTX-OPS")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "alice", null);
+
+        assertEquals(List.of("F-DTX-OPS"), plan.extraction().appName());
+        assertEquals("F-DTX-OPS", plan.params().get("app"));
+    }
+
+    @Test
+    void truthScanKeepsLegitDualMention() {
+        // 合法双提全保留: 两值都是正则显式提取, 扫描值消解不碰显式值
+        String question = "F-DTX和F-DTX-OPS的达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.dimensionTruthDictionary("应用")).thenReturn(Set.of("F-DTX", "F-DTX-OPS"));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"app\":\"appName\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                stateWithPeer(DimensionState.PeerDimensionType.APPLICATION,
+                        List.of("F-DTX", "F-DTX-OPS")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "alice", null);
+
+        assertEquals(List.of("F-DTX", "F-DTX-OPS"), plan.extraction().appName());
+    }
+
     // ============ 维度值→部门反填 (2026/10/27 拍板, 台账 Q8 deptsByDimension) ============
 
     @Test
