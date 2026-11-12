@@ -756,6 +756,17 @@
         LEFT JOIN attempt_stats a ON a.flow_execution_id=e.id
         ORDER BY e.created_at DESC, e.id DESC
     </sql>
+
+    <!-- 团队报告批次详情：返回每份报告的真实节点进度和累计节点耗时。 -->
+    <select id="selectObjectBatchList" resultMap="ExecutionMap">
+        WITH execution_page AS (
+            SELECT <include refid="executionListColumns"/>
+            FROM skill_flow_execution e
+            WHERE e.flow_id=#{flowId} AND e.batch_id=#{batchId}
+            ORDER BY e.id
+        )
+        <include refid="executionPageAggregates"/>
+    </select>
     <select id="selectExecutions" resultMap="ExecutionMap">
         WITH execution_page AS (
         SELECT <include refid="executionListColumns"/>
@@ -1094,6 +1105,118 @@
             <when test="source == 'long-task'">AND flow_id IS NOT NULL</when>
             <otherwise>AND 1=0</otherwise>
         </choose>
+    </select>
+
+    <!-- 长任务执行中心父列表：团队报告同一 batch_id 聚合为一行，普通/部门执行仍是一行。 -->
+    <sql id="executionGroupBaseFilters">
+        <if test="userId != null and userId != ''">AND e.trigger_user_id=#{userId}</if>
+        <if test="createdBy != null and createdBy != ''">AND e.trigger_user_id=#{createdBy}</if>
+        <if test="typeId != null">AND e.type_id=#{typeId}</if>
+        <if test="triggerType != null and triggerType != ''">AND e.trigger_type=#{triggerType}</if>
+        <if test="keyword != null and keyword != ''">
+            AND (
+                LOWER(e.flow_name) LIKE CONCAT('%', LOWER(#{keyword}), '%')
+                OR LOWER(e.public_params_json) LIKE CONCAT('%', LOWER(#{keyword}), '%')
+                OR (e.batch_id IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM skill_flow_execution keyword_execution
+                    WHERE keyword_execution.flow_id=e.flow_id AND keyword_execution.batch_id=e.batch_id
+                      AND (LOWER(keyword_execution.flow_name) LIKE CONCAT('%', LOWER(#{keyword}), '%')
+                        OR LOWER(keyword_execution.public_params_json) LIKE CONCAT('%', LOWER(#{keyword}), '%'))
+                ))
+            )
+        </if>
+        AND e.flow_id IS NOT NULL
+    </sql>
+
+    <sql id="executionGroupCtes">
+        filtered AS (
+            SELECT e.*,
+                   CASE WHEN e.batch_id IS NULL
+                        THEN CONCAT('E:', CAST(e.id AS VARCHAR(64)))
+                        ELSE CONCAT('B:', CAST(e.flow_id AS VARCHAR(64)), ':', e.batch_id) END AS group_key
+            FROM skill_flow_execution e
+            WHERE 1=1
+            <include refid="executionGroupBaseFilters"/>
+        ), grouped AS (
+            SELECT group_key,
+                   MAX(id) AS representative_id,
+                   MAX(batch_id) AS batch_id,
+                   COUNT(*) AS report_count,
+                   SUM(CASE WHEN status IN ('SUCCESS','PARTIAL_SUCCESS','FAILED','CANCELLED') THEN 1 ELSE 0 END) AS completed_count,
+                   MIN(created_at) AS group_created_at,
+                   MIN(started_at) AS group_started_at,
+                   MAX(completed_at) AS group_completed_at,
+                   CASE
+                     WHEN SUM(CASE WHEN status='CANCEL_REQUESTED' THEN 1 ELSE 0 END) &gt; 0 THEN 'CANCEL_REQUESTED'
+                     WHEN SUM(CASE WHEN status='RUNNING' THEN 1 ELSE 0 END) &gt; 0 THEN 'RUNNING'
+                     WHEN SUM(CASE WHEN status='SUMMARIZING' THEN 1 ELSE 0 END) &gt; 0 THEN 'SUMMARIZING'
+                     WHEN SUM(CASE WHEN status='WAITING_METRICS' THEN 1 ELSE 0 END) &gt; 0 THEN 'WAITING_METRICS'
+                     WHEN SUM(CASE WHEN status='QUEUED' THEN 1 ELSE 0 END) &gt; 0 THEN 'QUEUED'
+                     WHEN SUM(CASE WHEN status='PARTIAL_SUCCESS' THEN 1 ELSE 0 END) &gt; 0 THEN 'PARTIAL_SUCCESS'
+                     WHEN SUM(CASE WHEN status='FAILED' THEN 1 ELSE 0 END) &gt; 0
+                          AND SUM(CASE WHEN status='SUCCESS' THEN 1 ELSE 0 END) &gt; 0 THEN 'PARTIAL_SUCCESS'
+                     WHEN SUM(CASE WHEN status='FAILED' THEN 1 ELSE 0 END) &gt; 0 THEN 'FAILED'
+                     WHEN SUM(CASE WHEN status='CANCELLED' THEN 1 ELSE 0 END)=COUNT(*) THEN 'CANCELLED'
+                     WHEN SUM(CASE WHEN status='CANCELLED' THEN 1 ELSE 0 END) &gt; 0 THEN 'PARTIAL_SUCCESS'
+                     ELSE 'SUCCESS'
+                   END AS group_status
+            FROM filtered
+            GROUP BY group_key
+        )
+    </sql>
+
+    <select id="selectExecutionGroupsBySource" resultMap="ExecutionMap">
+        WITH <include refid="executionGroupCtes"/>, group_page AS (
+            SELECT * FROM grouped g
+            WHERE 1=1
+            <if test="status != null and status != ''">AND g.group_status=#{status}</if>
+            ORDER BY g.group_created_at DESC, g.representative_id DESC
+            LIMIT #{limit} OFFSET #{offset}
+        ), node_stats AS (
+            SELECT f.group_key,
+                   COUNT(n.id) AS total_node_count,
+                   SUM(CASE WHEN n.status IN ('SUCCESS','FAILED','BLOCKED','CANCELLED') THEN 1 ELSE 0 END) AS completed_node_count
+            FROM filtered f JOIN group_page gp ON gp.group_key=f.group_key
+            LEFT JOIN skill_flow_node_execution n ON n.flow_execution_id=f.id
+            GROUP BY f.group_key
+        ), definition_stats AS (
+            SELECT f.group_key, COUNT(fn.id) AS total_node_count
+            FROM filtered f JOIN group_page gp ON gp.group_key=f.group_key
+            LEFT JOIN skill_flow_node fn ON fn.flow_id=f.flow_id
+            GROUP BY f.group_key
+        ), attempt_stats AS (
+            SELECT f.group_key,
+                   SUM(EXTRACT(EPOCH FROM (COALESCE(a.completed_at, NOW()) - a.started_at))) AS active_duration_seconds
+            FROM filtered f JOIN group_page gp ON gp.group_key=f.group_key
+            JOIN skill_flow_node_execution n ON n.flow_execution_id=f.id
+            JOIN skill_flow_node_attempt a ON a.node_execution_id=n.id
+            WHERE a.started_at IS NOT NULL AND (a.completed_at IS NULL OR a.completed_at &gt;= a.started_at)
+            GROUP BY f.group_key
+        )
+        SELECT e.id, e.type_id, gp.batch_id, e.team_id, e.public_params_json, e.flow_id,
+               e.flow_name, e.flow_code, gp.group_status AS status, e.trigger_type, e.trigger_user_id,
+               e.data_date, e.required_metric_count, e.ready_metric_count,
+               CASE WHEN gp.batch_id IS NULL THEN e.report_path ELSE NULL END AS report_path,
+               gp.group_created_at AS created_at, gp.group_started_at AS started_at,
+               gp.group_completed_at AS completed_at,
+               CAST(CASE WHEN gp.batch_id IS NOT NULL THEN gp.report_count
+                         ELSE COALESCE(ns.total_node_count, ds.total_node_count, 0) END AS INTEGER) AS computed_total_node_count,
+               CAST(CASE WHEN gp.batch_id IS NOT NULL THEN gp.completed_count
+                         ELSE COALESCE(ns.completed_node_count, 0) END AS INTEGER) AS computed_completed_node_count,
+               CAST(COALESCE(ast.active_duration_seconds, 0) AS BIGINT) AS computed_active_duration_seconds
+        FROM group_page gp
+        JOIN skill_flow_execution e ON e.id=gp.representative_id
+        LEFT JOIN node_stats ns ON ns.group_key=gp.group_key
+        LEFT JOIN definition_stats ds ON ds.group_key=gp.group_key
+        LEFT JOIN attempt_stats ast ON ast.group_key=gp.group_key
+        ORDER BY gp.group_created_at DESC, gp.representative_id DESC
+    </select>
+
+    <select id="countExecutionGroupsBySource" resultType="long">
+        WITH <include refid="executionGroupCtes"/>
+        SELECT COUNT(*) FROM grouped g
+        WHERE 1=1
+        <if test="status != null and status != ''">AND g.group_status=#{status}</if>
     </select>
 </mapper>
 

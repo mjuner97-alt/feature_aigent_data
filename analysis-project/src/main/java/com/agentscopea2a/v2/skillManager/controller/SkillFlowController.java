@@ -1,6 +1,7 @@
 package com.agentscopea2a.v2.skillManager.controller;
 
 import com.agentscopea2a.v2.skillManager.dto.FlowMetricReadinessDto;
+import com.agentscopea2a.v2.skillManager.dto.BatchNotificationRequest;
 import com.agentscopea2a.v2.skillManager.dto.FlowReportUpdateRequest;
 import com.agentscopea2a.v2.skillManager.dto.FlowValidationDto;
 import com.agentscopea2a.v2.skillManager.dto.NotificationLinkClickFilterRequest;
@@ -12,6 +13,7 @@ import com.agentscopea2a.v2.skillManager.dto.SkillFlowDto;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowNotification;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import com.agentscopea2a.v2.skillManager.service.FlowCompletionService;
+import com.agentscopea2a.v2.skillManager.service.FlowBatchNotificationService;
 import com.agentscopea2a.v2.skillManager.service.FlowCoordinator;
 import com.agentscopea2a.v2.skillManager.service.FlowDefinitionService;
 import com.agentscopea2a.v2.skillManager.service.FlowExecutionService;
@@ -45,6 +47,7 @@ public class SkillFlowController {
     private final FlowDefinitionService definitionService;
     private final FlowQueryService queryService;
     private final FlowCompletionService completionService;
+    private final FlowBatchNotificationService batchNotificationService;
     private final FlowExecutionService executionService;
     private final SkillFlowMapper mapper;
     private final FlowCoordinator coordinator;
@@ -54,6 +57,7 @@ public class SkillFlowController {
         FlowDefinitionService definitionService,
         FlowQueryService queryService,
         FlowCompletionService completionService,
+        FlowBatchNotificationService batchNotificationService,
         FlowExecutionService executionService,
         SkillFlowMapper mapper,
         FlowCoordinator coordinator,
@@ -62,6 +66,7 @@ public class SkillFlowController {
         this.definitionService = definitionService;
         this.queryService = queryService;
         this.completionService = completionService;
+        this.batchNotificationService = batchNotificationService;
         this.executionService = executionService;
         this.mapper = mapper;
         this.coordinator = coordinator;
@@ -346,6 +351,15 @@ public class SkillFlowController {
         );
     }
 
+    @GetMapping("/api/skill-flow-executions/batch")
+    public java.util.List<FlowQueryService.ExecutionListDto> batchExecutions(
+        @RequestParam(name = "flowId") Long flowId,
+        @RequestParam(name = "batchId") String batchId,
+        @RequestHeader(name = "X-User-Id") String userId
+    ) {
+        return queryService.batch(flowId, batchId, userId);
+    }
+
     /** 执行详情(含汇总结果与报告路径)。 */
     @GetMapping("/api/skill-flow-executions/{id}")
     public FlowQueryService.ExecutionDto getExecution(
@@ -534,6 +548,22 @@ public class SkillFlowController {
             request == null ? null : request.ccReceivers(),
             request == null ? null : request.notifyBodyTemplate()
         );
+    }
+
+    @PostMapping("/api/skill-flow-executions/notifications/batch/preview")
+    public FlowBatchNotificationService.BatchPreview previewBatchNotification(
+        @RequestHeader(name = "X-User-Id") String userId,
+        @RequestBody BatchNotificationRequest request
+    ) {
+        return batchNotificationService.preview(request, userId);
+    }
+
+    @PostMapping("/api/skill-flow-executions/notifications/batch/send")
+    public FlowBatchNotificationService.BatchSendResult sendBatchNotification(
+        @RequestHeader(name = "X-User-Id") String userId,
+        @RequestBody BatchNotificationRequest request
+    ) {
+        return batchNotificationService.send(request, userId);
     }
 
     /**

@@ -77,19 +77,33 @@ public class ScriptParamRuleService {
         Map<String, Object> publicParams
     ) {
         Map<String, Object> values = new LinkedHashMap<>(resolve(scriptId, paramsJson, date));
-        if (values.values().stream().noneMatch(ScriptParamRuleService::isPublic)) return values;
+        boolean hasPublicReference = values.values().stream().anyMatch(ScriptParamRuleService::isPublic);
+        boolean maySupplyReportType = publicParams.containsKey("report_type") && !values.containsKey("report_type");
+        if (!hasPublicReference && !maySupplyReportType) return values;
         Map<String, String> types = loadStrictParamTypes(scriptId, values);
-        values.replaceAll((name, value) -> {
-            if (!isPublic(value)) return value;
-            String key = String.valueOf(((Map<?, ?>) value).get("$public"));
-            if (!publicParams.containsKey(key)) throw new IllegalStateException(
-                "TeamReportPublicReferenceUnavailable: " + key
+        if (hasPublicReference) {
+            values.replaceAll((name, value) -> {
+                if (!isPublic(value)) return value;
+                String key = String.valueOf(((Map<?, ?>) value).get("$public"));
+                if (!publicParams.containsKey(key)) throw new IllegalStateException(
+                    "TeamReportPublicReferenceUnavailable: " + key
+                );
+                Object actual = publicParams.get(key);
+                String type = types.get(name).toLowerCase(java.util.Locale.ROOT);
+                if (publicCompatible(type, key)) return isArrayType(type) ? List.of(actual) : actual;
+                throw new IllegalStateException("TeamReportPublicTypeIncompatible: " + name + " (" + type + ")");
+            });
+        }
+        // 团队／部门报告的 Python 脚本只要声明 report_type，节点未显式赋值时自动补入。
+        // 显式参数仍优先，避免改变已有任务的固定配置。
+        if (maySupplyReportType && types.containsKey("report_type")) {
+            String type = types.get("report_type").toLowerCase(java.util.Locale.ROOT);
+            if (!publicCompatible(type, "report_type")) throw new IllegalStateException(
+                "TeamReportPublicTypeIncompatible: report_type (" + type + ")"
             );
-            Object actual = publicParams.get(key);
-            String type = types.get(name).toLowerCase(java.util.Locale.ROOT);
-            if (publicCompatible(type, key)) return isArrayType(type) ? List.of(actual) : actual;
-            throw new IllegalStateException("TeamReportPublicTypeIncompatible: " + name + " (" + type + ")");
-        });
+            Object actual = publicParams.get("report_type");
+            values.put("report_type", isArrayType(type) ? List.of(actual) : actual);
+        }
         return values;
     }
 

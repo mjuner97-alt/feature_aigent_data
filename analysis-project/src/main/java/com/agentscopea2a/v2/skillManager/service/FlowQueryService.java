@@ -129,8 +129,20 @@ public class FlowQueryService {
         int safePage = Math.max(1, page),
             safeSize = Math.min(100, Math.max(1, pageSize));
         String scopedUser = all ? null : userId;
+        boolean groupedLongTask = "long-task".equals(source);
         List<ExecutionListDto> items = (
-            source == null
+            groupedLongTask
+                ? mapper.selectExecutionGroupsBySource(
+                      status,
+                      createdBy,
+                      keyword,
+                      scopedUser,
+                      (safePage - 1) * safeSize,
+                      safeSize,
+                      triggerType,
+                      typeId
+                  )
+                : source == null
                 ? mapper.selectExecutions(status, createdBy, keyword, scopedUser, (safePage - 1) * safeSize, safeSize)
                 : mapper.selectExecutionsBySource(
                       status,
@@ -148,10 +160,22 @@ public class FlowQueryService {
             .map(this::listDto)
             .toList();
         long total =
-            source == null
+            groupedLongTask
+                ? mapper.countExecutionGroupsBySource(status, createdBy, keyword, scopedUser, triggerType, typeId)
+                : source == null
                 ? mapper.countExecutions(status, createdBy, keyword, scopedUser)
                 : mapper.countExecutionsBySource(status, createdBy, keyword, scopedUser, source, triggerType, typeId);
         return new PageDto(items, safePage, safeSize, total);
+    }
+
+    /** 读取一次团队报告批次下的全部子执行，供批次详情内选择和发送。 */
+    public List<ExecutionListDto> batch(Long flowId, String batchId, String userId) {
+        if (flowId == null || batchId == null || batchId.isBlank()) {
+            throw new IllegalArgumentException("ExecutionBatchRequired");
+        }
+        List<SkillFlowExecution> rows = mapper.selectObjectBatchList(flowId, batchId);
+        if (rows.isEmpty()) throw new IllegalStateException("ExecutionBatchNotFound");
+        return rows.stream().map(this::batchListDto).toList();
     }
 
     /** 执行详情。 */
@@ -384,7 +408,9 @@ public class FlowQueryService {
         return new ExecutionListDto(
             e.getId(),
             e.getFlowId(),
-            FlowReportNaming.baseTitle(e),
+            e.getBatchId() != null && "团队报告".equals(FlowReportNaming.value(e, "report_type"))
+                ? e.getFlowName()
+                : FlowReportNaming.baseTitle(e),
             e.getFlowCode(),
             e.getStatus().name(),
             e.getTriggerType() == null ? null : e.getTriggerType().name(),
@@ -405,6 +431,34 @@ public class FlowQueryService {
             FlowReportNaming.value(e, "dev_dept"),
             FlowReportNaming.value(e, "stat_group"),
             e.getBatchId() == null ? null : e.getFlowName()
+        );
+    }
+
+    private ExecutionListDto batchListDto(SkillFlowExecution e) {
+        return new ExecutionListDto(
+            e.getId(),
+            e.getFlowId(),
+            FlowReportNaming.baseTitle(e),
+            e.getFlowCode(),
+            e.getStatus().name(),
+            e.getTriggerType() == null ? null : e.getTriggerType().name(),
+            e.getTriggerUserId(),
+            e.getDataDate(),
+            e.getRequiredMetricCount(),
+            e.getReadyMetricCount(),
+            e.getTotalNodeCount() == null ? 0 : e.getTotalNodeCount(),
+            e.getCompletedNodeCount() == null ? 0 : e.getCompletedNodeCount(),
+            e.getReportPath(),
+            e.getCreatedAt(),
+            e.getStartedAt(),
+            e.getCompletedAt(),
+            e.getActiveDurationSeconds(),
+            e.getTypeId(),
+            e.getBatchId(),
+            FlowReportNaming.value(e, "report_type"),
+            FlowReportNaming.value(e, "dev_dept"),
+            FlowReportNaming.value(e, "stat_group"),
+            e.getFlowName()
         );
     }
 

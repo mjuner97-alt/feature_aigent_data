@@ -14,14 +14,13 @@ mail_source AS (
         n.id,
         COALESCE(
             NULLIF(CAST(NULLIF(TRIM(n.request_json), '') AS JSON) ->> 'title', ''),
-            e.flow_name
+            n.flow_name
         ) AS report_name,
         n.sent_at,
         n.recipient,
         CAST(NULLIF(TRIM(n.request_json), '') AS JSON) AS request_data
-    FROM skill_flow_notification n
-    JOIN skill_flow_execution e ON e.id = n.flow_execution_id
-    WHERE e.flow_id IS NOT NULL
+    FROM skill_flow_notification_history n
+    WHERE n.flow_id IS NOT NULL
       AND n.status IN ('ACCEPTED', 'SENT')
       AND n.sent_at >= TIMESTAMP '2026-10-12 00:00:00'
       AND n.sent_at <= CURRENT_TIMESTAMP

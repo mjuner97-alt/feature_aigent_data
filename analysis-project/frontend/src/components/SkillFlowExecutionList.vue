@@ -5,6 +5,7 @@ import { listSkillFlowExecutions, cancelSkillFlowExecution } from '../api/skillF
 import type { SkillFlowExecution } from '../types/skillFlow';
 import SkillFlowExecutionDrawer from './SkillFlowExecutionDrawer.vue';
 import SkillFlowExecutionNotificationModal from './SkillFlowExecutionNotificationModal.vue';
+import SkillFlowBatchExecutionDrawer from './SkillFlowBatchExecutionDrawer.vue';
 import { batchUserNames, currentUserId } from '../api/skill';
 import { triggerTypeText } from './skillFlowExecutionPresentation';
 import { formatDuration } from '../utils/flowDuration.js';
@@ -35,6 +36,8 @@ const detailId = ref<number | null>(null);
 const detailOpen = ref(false);
 const notificationId = ref<number | null>(null);
 const notificationOpen = ref(false);
+const batchDetailOpen = ref(false);
+const batchDetail = ref<{ flowId: number; batchId: string; flowName: string } | null>(null);
 const total = ref(0);
 const emit = defineEmits<{ (e: 'types-loaded', types: LongTaskType[]): void }>();
 const types = ref<LongTaskType[]>([]);
@@ -145,13 +148,22 @@ function changePage(value: number) {
   page.value = value;
   void load(currentStatus.value, currentCreatedBy.value);
 }
-function showDetail(id: number) {
-  detailId.value = id;
+function showDetail(item: SkillFlowExecution) {
+  if (item.batchId && item.flowId && item.reportType === '团队报告') {
+    batchDetail.value = { flowId: item.flowId, batchId: item.batchId, flowName: item.flowName };
+    batchDetailOpen.value = true;
+    return;
+  }
+  detailId.value = item.id;
   detailOpen.value = true;
 }
 function showNotification(id: number) {
   notificationId.value = id;
   notificationOpen.value = true;
+}
+function openBatchExecution(id: number) {
+  detailId.value = id;
+  detailOpen.value = true;
 }
 // 可终止 = 本人触发 且 尚未开始收尾(汇总中不再提供终止;取消中按钮隐藏靠状态过滤)
 const CANCELLABLE_STATUSES = ['WAITING_METRICS', 'QUEUED', 'RUNNING'];
@@ -200,6 +212,7 @@ onUnmounted(() => {
 watch(
   () => [props.scope, props.createdBy, props.keyword, props.triggerType, props.typeId] as const,
   () => {
+    batchDetailOpen.value = false;
     page.value = 1;
     load('', props.createdBy, false, props.scope);
   }
@@ -211,11 +224,11 @@ watch(
     ><div v-if="error" class="center-error">{{ error }}</div
     ><div v-if="loading" class="loading">加载中…</div
     ><div v-else-if="!executions.length" class="empty">暂无长任务执行记录</div
-    ><div v-else class="job-table-wrap"
+    ><template v-else><div class="job-table-wrap"
       ><table class="job-table execution-table"
         ><thead
           ><tr
-            ><th>任务名称</th><th>类型</th><th>状态</th><th>触发方式</th><th>节点 进度</th><th>触发人</th
+            ><th>任务名称</th><th>类型</th><th>状态</th><th>触发方式</th><th>进度</th><th>触发人</th
             ><th>创建时间</th
             ><th
               ><span class="th-with-info" :aria-label="`累计节点耗时：${nodeDurationHelp}`"
@@ -244,15 +257,16 @@ watch(
             ><td
               ><span class="status-badge" :class="statusClass(item.status)">{{ statusText(item.status) }}</span></td
             ><td>{{ triggerTypeText(item.triggerType) }}</td
-            ><td>{{ item.completedNodeCount ?? 0 }} / {{ item.totalNodeCount ?? '-' }}</td
+            ><td>{{ item.completedNodeCount ?? 0 }} / {{ item.totalNodeCount ?? '-' }}{{ item.batchId && item.reportType === '团队报告' ? ' 份报告' : '' }}</td
             ><td class="col-owner" :title="triggerPerson(item)">{{ triggerPerson(item) }}</td
             ><td class="col-time">{{ formatTime(item.createdAt) }}</td
             ><td :title="nodeDurationHelp">{{ activeDuration(item) }}</td
             ><td>{{ duration(item.createdAt, item.completedAt) }}</td
             ><td class="col-actions"
-              ><button class="btn-action primary" @click="showDetail(item.id)">查看详情</button
+              ><button class="btn-action primary" @click="showDetail(item)">查看详情</button
               ><button
                 v-if="
+                  item.reportType !== '团队报告' &&
                   item.triggerUserId === currentUserId() &&
                   ['SUCCESS', 'PARTIAL_SUCCESS', 'FAILED'].includes(item.status)
                 "
@@ -261,7 +275,7 @@ watch(
                 @click="showNotification(item.id)"
                 >通知</button
               ><button
-                v-if="item.triggerUserId === currentUserId() && CANCELLABLE_STATUSES.includes(item.status)"
+                v-if="item.reportType !== '团队报告' && item.triggerUserId === currentUserId() && CANCELLABLE_STATUSES.includes(item.status)"
                 class="btn-action btn-cancel"
                 :disabled="cancelling === item.id"
                 @click="cancelExecution(item)"
@@ -272,7 +286,7 @@ watch(
             ></tr
           ></tbody
         ></table
-      ></div
+      ></div></template
     ><div v-if="total > pageSize" class="pagination-bar"
       ><el-pagination
         v-model:current-page="page"
@@ -295,6 +309,13 @@ watch(
       v-model:open="notificationOpen"
       :execution-id="notificationId"
       @sent="load(currentStatus, currentCreatedBy, true)"
+  /><SkillFlowBatchExecutionDrawer
+      v-model:open="batchDetailOpen"
+      :flow-id="batchDetail?.flowId || null"
+      :batch-id="batchDetail?.batchId || null"
+      :flow-name="batchDetail?.flowName"
+      @open-execution="openBatchExecution"
+      @changed="load(currentStatus, currentCreatedBy, true)"
   /></section>
 </template>
 

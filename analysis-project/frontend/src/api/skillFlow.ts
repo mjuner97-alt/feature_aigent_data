@@ -253,6 +253,13 @@ export async function listSkillFlowExecutions(
   };
 }
 
+export async function listSkillFlowBatchExecutions(flowId: number, batchId: string): Promise<SkillFlowExecution[]> {
+  const qs = new URLSearchParams({ flowId: String(flowId), batchId });
+  const res = await fetch(`${EXECUTION_BASE}/batch?${qs}`, { headers: authHeaders() });
+  if (!res.ok) throw await requestError(res, '查询团队报告执行记录失败');
+  return listBody<SkillFlowExecution>(await res.json());
+}
+
 export async function getSkillFlowExecution(id: number): Promise<SkillFlowExecution> {
   const res = await fetch(`${EXECUTION_BASE}/${id}`, { headers: authHeaders() });
   if (!res.ok) throw await requestError(res, '查询执行详情失败');
@@ -296,6 +303,53 @@ export async function resendSkillFlowExecutionNotification(
     body: JSON.stringify({ confirmed: true, notifyReceivers, ccReceivers, notifyBodyTemplate }),
   });
   if (!res.ok) throw await requestError(res, '补发通知失败');
+}
+
+export interface BatchNotificationSelection {
+  flowId: number;
+  batchId: string;
+  selectionMode: 'ALL' | 'INCLUDE';
+  includedExecutionIds: number[];
+  excludedExecutionIds: number[];
+  recipientOverrides?: Array<{ executionId: number; to: string[]; cc: string[] }>;
+}
+
+export interface BatchNotificationPreview {
+  items: Array<{
+    executionId: number;
+    reportName: string;
+    to: Array<{ userId: string; name: string; valid: boolean }>;
+    cc: Array<{ userId: string; name: string; valid: boolean }>;
+    sendable: boolean;
+  }>;
+  selectedCount: number;
+  sendableCount: number;
+  recipientCount: number;
+  ccCount: number;
+}
+
+export async function previewSkillFlowBatchNotification(
+  selection: BatchNotificationSelection
+): Promise<BatchNotificationPreview> {
+  const res = await fetch(`${EXECUTION_BASE}/notifications/batch/preview`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify(selection),
+  });
+  if (!res.ok) throw await requestError(res, '预览批量通知失败');
+  return res.json();
+}
+
+export async function sendSkillFlowBatchNotification(
+  selection: BatchNotificationSelection
+): Promise<{ sentExecutionIds: number[]; failedExecutionIds: number[] }> {
+  const res = await fetch(`${EXECUTION_BASE}/notifications/batch/send`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ ...selection, confirmed: true }),
+  });
+  if (!res.ok) throw await requestError(res, '批量发送通知失败');
+  return res.json();
 }
 // 自包含报告的内联库可能含有 "</body>" 字符串，结束标签应从文档末尾定位。
 // 按原文拼接，保留库源码及嵌套 srcdoc，避免 DOM 序列化改写报告。

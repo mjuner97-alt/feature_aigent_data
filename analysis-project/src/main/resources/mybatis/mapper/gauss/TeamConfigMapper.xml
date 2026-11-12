@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.v2.skillManager.mapper.TeamConfigMapper">
+    <!-- 列表与详情共用返回字段。 -->
+    <sql id="columns">id, dev_dept, stat_group, user_id, user_name, position_role, recipient_type, sort_order, enabled, remark, created_at, updated_at</sql>
+    <!-- 列表和总数共用筛选条件，空部门或统计组表示不限。 -->
+    <sql id="filters">
+        <bind name="pattern" value="'%' + keyword + '%'" />
+        AND (user_name LIKE #{pattern} OR user_id LIKE #{pattern})
+        <if test="department != ''">AND dev_dept = #{department}</if>
+        <if test="team != ''">AND stat_group = #{team}</if>
+    </sql>
+    <!-- 认证号完全匹配优先，其余按组织、排序值和主键排列。 -->
+    <select id="list" resultType="map">
+        SELECT <include refid="columns"/> FROM long_task_report_notify_person WHERE 1 = 1
+        <include refid="filters"/>
+        ORDER BY CASE WHEN user_id = #{keyword} THEN 0 ELSE 1 END, dev_dept, stat_group, sort_order, id
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+    <!-- 统计分页前符合条件的配置数。 -->
+    <select id="count" resultType="int">
+        SELECT COUNT(*) FROM long_task_report_notify_person WHERE 1 = 1
+        <include refid="filters"/>
+    </select>
+    <!-- 提取配置表已有的部门和统计组组合。 -->
+    <select id="options" resultType="map">
+        SELECT DISTINCT dev_dept, stat_group FROM long_task_report_notify_person
+        WHERE LENGTH(TRIM(dev_dept)) &gt; 0 ORDER BY dev_dept, stat_group
+    </select>
+    <!-- 按配置主键读取详情。 -->
+    <select id="get" resultType="map">
+        SELECT <include refid="columns"/> FROM long_task_report_notify_person WHERE id = #{id}
+    </select>
+    <!-- 检查该人员在同一组织下是否已存在。 -->
+    <select id="countExisting" resultType="int">
+        SELECT COUNT(*) FROM long_task_report_notify_person
+        WHERE dev_dept = #{department} AND stat_group = #{team} AND user_id = #{userId}
+    </select>
+    <!-- 插入默认通知人员并回填生成的主键。 -->
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO long_task_report_notify_person
+            (dev_dept, stat_group, user_id, user_name, position_role, recipient_type, sort_order, enabled, remark)
+        VALUES (#{dept}, #{team}, #{user}, #{name}, #{role}, #{type}, #{sortOrder}, #{enabled}, #{remark,jdbcType=VARCHAR})
+    </insert>
+    <!-- 保存编辑后的人员、组织和通知设置。 -->
+    <update id="update">
+        UPDATE long_task_report_notify_person
+        SET dev_dept = #{dept}, stat_group = #{team}, user_id = #{user}, user_name = #{name},
+            position_role = #{role}, recipient_type = #{type}, sort_order = #{sortOrder}, enabled = #{enabled},
+            remark = #{remark,jdbcType=VARCHAR}, updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+    </update>
+    <!-- 单独更新主送或抄送类型。 -->
+    <update id="updateRecipientType">
+        UPDATE long_task_report_notify_person SET recipient_type = #{type}, updated_at = CURRENT_TIMESTAMP WHERE id = #{id}
+    </update>
+    <!-- 按主键删除配置。 -->
+    <delete id="delete">DELETE FROM long_task_report_notify_person WHERE id = #{id}</delete>
+</mapper>
