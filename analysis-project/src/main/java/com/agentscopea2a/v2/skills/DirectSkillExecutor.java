@@ -1866,6 +1866,15 @@ public class DirectSkillExecutor {
     private static final java.util.regex.Pattern APP_CODE_SHAPE =
             java.util.regex.Pattern.compile("^FS?-[A-Za-z][A-Za-z-]*$");
 
+    /** 真子串判断（大小写不敏感：F- 码正则轨归一大写，台账值大小写不保证）。
+     *  真值扫描子串误加修复方案（2026-11-11 拍板）：B① 扫描值是同键既有提取值的
+     *  真子串 → 消解不加；单向消解，显式值（正则/alias）永不因推断值被挤掉。 */
+    private static boolean isProperSubstringCI(String shorter, String longer) {
+        return shorter != null && longer != null && longer.length() > shorter.length()
+                && longer.toLowerCase(java.util.Locale.ROOT)
+                        .contains(shorter.toLowerCase(java.util.Locale.ROOT));
+    }
+
     /** B①/B③ 产物：三键清洗后的 extraction + 扫描命中标志（计入 R2 显式提及）。 */
     private record LedgerTruthScan(DimensionExtraction extraction,
                                    boolean groupHit, boolean appHit, boolean productLineHit) {}
@@ -1943,13 +1952,22 @@ public class DirectSkillExecutor {
                 }
             }
             List<String> scanned = resolver.scanTruthValues(question, truthSet);
+            List<String> scannedKept = new ArrayList<>();
             for (String v : scanned) {
+                // 2026-11-11 拍板: 扫描值是同键既有提取值的真子串 → 消解不加
+                // (「F-DTX-OPS」文句中, 台账值 F-DTX 的子串命中被 F-DTX-OPS 吸收)
+                if (validated.stream().anyMatch(u -> isProperSubstringCI(v, u))) {
+                    continue;
+                }
+                scannedKept.add(v);
                 if (!validated.contains(v)) {
                     validated.add(v);
                 }
             }
             merged.put(key, List.copyOf(validated));
-            scanHit.put(key, !scanned.isEmpty());
+            // scanHit 口径 (2026-11-11): 扫描命中且未被子串消解的值非空 —— 「已在结果里」
+            // 仍算命中 (追问轨 R3 信号源依赖 groupHit), 纯子串噪声被吸收不算
+            scanHit.put(key, !scannedKept.isEmpty());
         }
         // 互斥裁决（拍板 2026/10/27: 最长者胜 + 日志, 平手按 TRUTH_MUTEX_PRIORITY）
         List<String> nonEmpty = new ArrayList<>();
