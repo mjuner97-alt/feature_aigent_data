@@ -11,7 +11,7 @@ const props = withDefaults(
     to: string[];
     cc: string[];
     names: Record<string, string>;
-    mode?: 'edit' | 'send';
+    mode?: 'edit' | 'send' | 'batch';
     submitting?: boolean;
     error?: string;
     dirty?: boolean;
@@ -42,7 +42,7 @@ function requestClose() {
   if (props.submitting) return;
   if (busy.value || props.dirty || recipientSnapshot() !== initialRecipients) {
     message.value =
-      props.mode === 'send'
+      props.mode !== 'edit'
         ? '通知内容或名单已调整，请点击“确认发送”提交；点击“取消”放弃本次调整。'
         : '名单尚未确认，请点击“确认”保留修改，再保存流程；点击“取消”放弃修改。';
     return;
@@ -188,7 +188,7 @@ function close() {
   emit('update:open', false);
 }
 function confirm() {
-  if (busy.value || props.submitting || (props.mode === 'send' && !to.value.length)) return;
+  if (busy.value || props.submitting || (props.mode !== 'edit' && !to.value.length)) return;
   emit('confirm', { to: [...to.value], cc: [...cc.value], names: { ...names.value } });
   if (props.mode !== 'send') close();
 }
@@ -196,23 +196,24 @@ function confirm() {
 <template>
   <Teleport to="body">
     <div v-if="open" class="mail-mask" @click.self="requestClose">
-      <section ref="panel" class="mail-dialog" @keydown="keydown" role="dialog" aria-modal="true" :aria-label="mode === 'send' ? '发送通知' : '管理邮件收件人'" :aria-busy="submitting">
-        <header><div class="mail-heading"><span class="mail-eyebrow">邮件通知</span><h3>{{ mode === 'send' ? '发送通知' : '管理邮件收件人' }}</h3></div><button class="mail-close" type="button" aria-label="关闭" :disabled="submitting" @click="requestClose">×</button></header>
+      <section ref="panel" class="mail-dialog" @keydown="keydown" role="dialog" aria-modal="true" :aria-label="mode === 'send' ? '发送通知' : mode === 'batch' ? '调整本次收件人' : '管理邮件收件人'" :aria-busy="submitting">
+        <header><div class="mail-heading"><span class="mail-eyebrow">邮件通知</span><h3>{{ mode === 'send' ? '发送通知' : mode === 'batch' ? '调整本次收件人' : '管理邮件收件人' }}</h3></div><button class="mail-close" type="button" aria-label="关闭" :disabled="submitting" @click="requestClose">×</button></header>
         <div class="mail-content"><p class="mail-description" v-if="mode === 'send'">默认显示长任务最新保存的名单。本次调整仅用于此次通知，不修改长任务配置。</p>
+        <p class="mail-description" v-else-if="mode === 'batch'">本次调整只用于当前选中的团队报告，不修改任务配置。</p>
         <p class="mail-description" v-else>调整名单后请点击“确认”，再点击“保存流程”保存。</p>
         <fieldset :disabled="submitting || busy">
         <div class="mail-search"><label for="mail-recipient-query">搜索或批量加入姓名、统一认证号</label>
         <textarea ref="queryInput" id="mail-recipient-query" v-model="keyword" rows="2" placeholder="输入姓名或统一认证号，支持批量粘贴" />
         <small class="mail-help">多个姓名或账号可用逗号、分号、空格或换行分隔；同名人员请搜索后选择。</small><div class="mail-actions"><button class="search-button" type="button" :disabled="busy" @click="search">搜索</button><button type="button" :disabled="busy" @click="batch('to')">批量加入收件人</button><button type="button" :disabled="busy" @click="batch('cc')">批量加入抄送</button></div>
         </div><p class="mail-status" v-if="busy" role="status">正在匹配人员…</p><p class="mail-status" v-if="message" role="status">{{ message }}</p>
-        <div v-if="mode === 'send'" class="mail-actions"><button type="button" @click="to = []; cc = []">全部清空</button><button type="button" @click="restoreDefaults">恢复已保存名单</button></div>
+        <div v-if="mode !== 'edit'" class="mail-actions"><button type="button" @click="to = []; cc = []">全部清空</button><button type="button" @click="restoreDefaults">恢复默认名单</button></div>
         <div v-if="results.length" class="mail-results"><div v-for="item in results" :key="item.userId"><span class="result-person" :title="`${item.name || item.userId}(${item.userId}) ${item.department || ''}`"><strong>{{ item.name || item.userId }}({{ item.userId }})</strong> <small v-if="item.department">{{ item.department }}</small><small v-if="item.positionRole" class="role-badge">{{ item.positionRole }}</small></span><button type="button" @click="select(item, 'to')">加入收件人</button><button type="button" @click="select(item, 'cc')">加入抄送</button></div></div>
         <div class="mail-previews">
-          <section class="recipient-card"><div class="recipient-card-heading"><h4>收件人 <span>TO</span><b>（{{ to.length }}）</b></h4><button v-if="mode === 'send'" type="button" @click="to = []">清空收件人</button></div><p class="recipient-empty" v-if="!to.length">{{ mode === 'send' ? '请至少添加一位收件人后发送' : '未配置时通知流程触发人' }}</p><OrderedRecipientList v-model="to" label="收件人" :disabled="submitting || busy">
+          <section class="recipient-card"><div class="recipient-card-heading"><h4>收件人 <span>TO</span><b>（{{ to.length }}）</b></h4><button v-if="mode !== 'edit'" type="button" @click="to = []">清空收件人</button></div><p class="recipient-empty" v-if="!to.length">{{ mode !== 'edit' ? '请至少添加一位收件人' : '未配置时通知流程触发人' }}</p><OrderedRecipientList v-model="to" label="收件人" :disabled="submitting || busy">
             <template #default="{ id }">{{ names[id] || id }}({{ id }})</template>
             <template #actions="{ id, index }"><button type="button" :aria-label="`将 ${id} 移至抄送`" @click="add([id], 'cc')">移至抄送</button><button type="button" :aria-label="`删除收件人 ${id}`" @click="to.splice(index, 1)">删除</button></template>
           </OrderedRecipientList></section>
-          <section class="recipient-card"><div class="recipient-card-heading"><h4>抄送 <span>CC</span><b>（{{ cc.length }}）</b></h4><button v-if="mode === 'send'" type="button" @click="cc = []">清空抄送</button></div><p class="recipient-empty" v-if="!cc.length">暂无抄送人</p><OrderedRecipientList v-model="cc" label="抄送" :disabled="submitting || busy">
+          <section class="recipient-card"><div class="recipient-card-heading"><h4>抄送 <span>CC</span><b>（{{ cc.length }}）</b></h4><button v-if="mode !== 'edit'" type="button" @click="cc = []">清空抄送</button></div><p class="recipient-empty" v-if="!cc.length">暂无抄送人</p><OrderedRecipientList v-model="cc" label="抄送" :disabled="submitting || busy">
             <template #default="{ id }">{{ names[id] || id }}({{ id }})</template>
             <template #actions="{ id, index }"><button type="button" :aria-label="`将 ${id} 移至收件人`" @click="add([id], 'to')">移至收件人</button><button type="button" :aria-label="`删除抄送 ${id}`" @click="cc.splice(index, 1)">删除</button></template>
           </OrderedRecipientList></section>
@@ -220,7 +221,7 @@ function confirm() {
         <slot />
         </fieldset>
         <p v-if="error" role="alert">{{ error }}</p></div>
-        <footer><span class="mail-footer-summary">已选收件人 {{ to.length }} 人 · 抄送 {{ cc.length }} 人</span><button type="button" :disabled="submitting" @click="close">取消</button><button type="button" :disabled="busy || submitting || (mode === 'send' && !to.length)" @click="confirm">{{ submitting ? '提交中…' : mode === 'send' ? `确认发送（收件人 ${to.length} 人，抄送 ${cc.length} 人）` : '确认' }}</button></footer>
+        <footer><span class="mail-footer-summary">已选收件人 {{ to.length }} 人 · 抄送 {{ cc.length }} 人</span><button type="button" :disabled="submitting" @click="close">取消</button><button type="button" :disabled="busy || submitting || (mode !== 'edit' && !to.length)" @click="confirm">{{ submitting ? '提交中…' : mode === 'send' ? `确认发送（收件人 ${to.length} 人，抄送 ${cc.length} 人）` : mode === 'batch' ? '确认调整' : '确认' }}</button></footer>
       </section>
     </div>
   </Teleport>

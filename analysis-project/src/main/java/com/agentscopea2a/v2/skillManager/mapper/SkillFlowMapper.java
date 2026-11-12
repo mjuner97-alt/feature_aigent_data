@@ -37,6 +37,12 @@ public interface SkillFlowMapper {
     @org.apache.ibatis.annotations.ResultMap("ExecutionMap")
     List<SkillFlowExecution> selectObjectBatch(@Param("flowId") Long flowId, @Param("batchId") String batchId);
 
+    /** 批次详情列表，附带与执行中心相同口径的节点进度和累计节点耗时。 */
+    List<SkillFlowExecution> selectObjectBatchList(
+        @Param("flowId") Long flowId,
+        @Param("batchId") String batchId
+    );
+
     @org.apache.ibatis.annotations.Select(
         "SELECT * FROM skill_flow_execution WHERE batch_id IS NOT NULL AND status='CANCEL_REQUESTED'"
     )
@@ -287,6 +293,27 @@ public interface SkillFlowMapper {
         @Param("keyword") String keyword,
         @Param("userId") String userId,
         @Param("source") String source,
+        @Param("triggerType") String triggerType,
+        @Param("typeId") Long typeId
+    );
+
+    /** 长任务执行中心按 batch_id 聚合团队报告；无批次记录仍保持一条执行一行。 */
+    List<SkillFlowExecution> selectExecutionGroupsBySource(
+        @Param("status") String status,
+        @Param("createdBy") String createdBy,
+        @Param("keyword") String keyword,
+        @Param("userId") String userId,
+        @Param("offset") int offset,
+        @Param("limit") int limit,
+        @Param("triggerType") String triggerType,
+        @Param("typeId") Long typeId
+    );
+
+    long countExecutionGroupsBySource(
+        @Param("status") String status,
+        @Param("createdBy") String createdBy,
+        @Param("keyword") String keyword,
+        @Param("userId") String userId,
         @Param("triggerType") String triggerType,
         @Param("typeId") Long typeId
     );

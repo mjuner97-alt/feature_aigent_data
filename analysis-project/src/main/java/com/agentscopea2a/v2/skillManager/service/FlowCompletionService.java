@@ -365,7 +365,11 @@ public class FlowCompletionService {
         boolean explicit = confirmedReceivers != null || confirmedCcReceivers != null;
         List<String> receivers;
         List<String> ccReceivers;
-        if (
+        if (execution.getTriggerType() == FlowTriggerType.MANUAL && key.endsWith(":INITIAL")) {
+            // 手动执行只把首次结果交给实际触发人确认，不直接触达配置的业务收件人。
+            receivers = filterRecipients(execution, List.of(execution.getTriggerUserId()));
+            ccReceivers = List.of();
+        } else if (
             isFailure(execution) &&
             execution.getTriggerType() == FlowTriggerType.AUTO_METRIC &&
             key.endsWith(":INITIAL")

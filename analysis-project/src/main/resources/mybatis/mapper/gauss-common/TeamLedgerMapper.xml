@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.agentscopea2a.mapper.gaussCommon.TeamLedgerMapper">
+    <!-- 候选人员列表返回的台账字段。 -->
+    <sql id="columns">id, dev_dept, stat_group, user_id, user_name, position_role, stat_month</sql>
+    <!-- 先限定全表最新统计月份，再按认证号选一条。优先选 9999-12-31，其余按截止日期和主键降序。 -->
+    <sql id="peopleSource">
+        FROM (
+            SELECT id, "部门" AS dev_dept, "统计组" AS stat_group, TRIM("统一认证号") AS user_id,
+                   "姓名" AS user_name, "岗位角色" AS position_role, "统计月份" AS stat_month,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY TRIM("统一认证号")
+                       ORDER BY CASE WHEN TRIM("有效日期截止") = '9999-12-31' THEN 0 ELSE 1 END,
+                                NULLIF(TRIM("有效日期截止"), '') DESC NULLS LAST, id DESC
+                   ) AS rn
+            FROM developer_pl_person_info_t
+            WHERE "统计月份" = (SELECT MAX("统计月份") FROM developer_pl_person_info_t)
+              AND LENGTH(TRIM("统一认证号")) &gt; 0
+        ) p WHERE rn = 1
+    </sql>
+    <!-- 在每人选出一条记录后应用关键词和组织条件，列表与总数共用。 -->
+    <sql id="filters">
+        <if test="keyword != ''">
+            <bind name="pattern" value="'%' + keyword + '%'" />
+            AND (user_name LIKE #{pattern} OR user_id LIKE #{pattern})
+        </if>
+        <if test="department != ''">AND dev_dept = #{department}</if>
+        <if test="team != ''">AND stat_group = #{team}</if>
+    </sql>
+    <!-- 认证号完全匹配优先，随后稳定排序并分页。 -->
+    <select id="list" resultType="map">
+        SELECT <include refid="columns"/> <include refid="peopleSource"/>
+        <include refid="filters"/>
+        ORDER BY CASE WHEN user_id = #{keyword} THEN 0 ELSE 1 END, user_id, id
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+    <!-- 统计筛选后、分页前的候选人数。 -->
+    <select id="count" resultType="int">
+        SELECT COUNT(*) <include refid="peopleSource"/>
+        <include refid="filters"/>
+    </select>
+    <!-- 提取去重后的人员所属部门和统计组。 -->
+    <select id="options" resultType="map">
+        SELECT DISTINCT dev_dept, stat_group <include refid="peopleSource"/>
+        AND LENGTH(TRIM(dev_dept)) &gt; 0 ORDER BY dev_dept, stat_group
+    </select>
+    <!-- 批量导入前按同一去重规则重新读取人员归属。 -->
+    <select id="findByUserIds" resultType="map">
+        SELECT dev_dept, stat_group, user_id, user_name, position_role <include refid="peopleSource"/>
+        AND user_id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+        ORDER BY user_id
+    </select>
+</mapper>
