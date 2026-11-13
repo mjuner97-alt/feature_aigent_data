@@ -914,6 +914,9 @@ public class ScriptExecTool {
 
         String stdout = readTemp(tmpOut);
         stdout = extractDownloads(stdout);
+        // 统一样式上移 Java 层 v3: 剥 <script> + <style> 作用域重写(保留脚本个性化)
+        // + 兜底皮肤 + 包 unified-table 壳 (docs/202611/脚本表格样式上移hooks层统一方案.md §4.1)
+        stdout = ScriptHtmlSanitizer.sanitize(stdout);
         String stderr = readTemp(tmpErr);
         int exit = p.exitValue();
         long elapsed = System.currentTimeMillis() - start;
