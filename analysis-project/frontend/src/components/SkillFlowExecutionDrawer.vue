@@ -11,7 +11,7 @@ import type { SkillFlowExecution, SkillFlowNodeExecution } from '../types/skillF
 import { currentUserId } from '../api/skill';
 import { canRetryNode, formatNodeErrorDetails, shouldShowMetricReadiness, shouldShowNodeTimes, statusClass, statusText } from './skillFlowExecutionPresentation';
 
-const props = defineProps<{ open: boolean; executionId: number | null }>();
+const props = defineProps<{ open: boolean; executionId: number | null; page?: boolean }>();
 const emit = defineEmits<{ (e: 'update:open', open: boolean): void; (e: 'changed'): void }>();
 const router = useRouter();
 const execution = ref<SkillFlowExecution | null>(null);
@@ -159,17 +159,24 @@ function syncPolling() {
   }, 5000);
   if (!active) stopPolling();
 }
-watch(() => props.open, open => { if (open) { emptyNotificationPolls = 0; load(); } else { notificationOpen.value = false; stopPolling(); } });
-watch(() => props.executionId, () => { notificationOpen.value = false; });
+watch(() => [props.open, props.executionId] as const, ([open]) => {
+  notificationOpen.value = false;
+  if (open) {
+    emptyNotificationPolls = 0;
+    void load();
+  } else {
+    stopPolling();
+  }
+}, { immediate: true });
 watch(execution, syncPolling);
 onUnmounted(stopPolling);
 </script>
 
 <template>
-  <Teleport to="body">
-    <div v-if="open" class="mask" @click.self="emit('update:open', false)">
+  <Teleport to="body" :disabled="page">
+    <div v-if="open" :class="page ? 'execution-page' : 'mask'" @click.self="!page && emit('update:open', false)">
       <section class="drawer" aria-label="长任务执行详情">
-        <header><div><h3>长任务详情</h3><span v-if="execution">#{{ execution.id }} · {{ execution.flowName }}</span></div><button class="icon-button" title="关闭" aria-label="关闭" @click="emit('update:open', false)">×</button></header>
+        <header><div><h3>长任务详情</h3><span v-if="execution">#{{ execution.id }} · {{ execution.flowName }}</span></div><RouterLink v-if="page" to="/skills/jobs?tab=flow-execution">长任务执行记录</RouterLink><button v-else class="icon-button" title="关闭" aria-label="关闭" @click="emit('update:open', false)">×</button></header>
         <main>
           <div v-if="loading" class="empty">加载中…</div>
           <div v-else-if="error" class="error">{{ error }}</div>
@@ -181,7 +188,7 @@ onUnmounted(stopPolling);
             <FlowNotificationHistory :notifications="execution.notifications || []" />
           </template>
         </main>
-        <footer><button class="btn" @click="emit('update:open', false)">关闭</button></footer>
+        <footer v-if="!page"><button class="btn" @click="emit('update:open', false)">关闭</button></footer>
       </section>
     </div>
     <SkillFlowExecutionNotificationModal v-model:open="notificationOpen" :execution-id="executionId" @sent="notificationSent" />
@@ -189,6 +196,9 @@ onUnmounted(stopPolling);
           </template>
 
 <style scoped>
+.execution-page { position: fixed; inset: 0; overflow: auto; background: #f1f5f9; }
+.execution-page .drawer { width: 100%; max-width: 1200px; min-height: 100%; height: auto; margin: 0 auto; box-shadow: none; }
+.execution-page .drawer main { overflow: visible; }
 .mask { position: fixed; inset: 0; z-index: 1000; display: flex; justify-content: flex-end; background: rgb(15 23 42 / 45%); }.drawer { display: flex; width: min(860px, 96vw); height: 100%; flex-direction: column; background: #fff; box-shadow: -8px 0 24px rgb(15 23 42 / 12%); }.drawer header, footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 20px; border-bottom: 1px solid #e2e8f0; }.drawer footer { justify-content: flex-end; border-top: 1px solid #e2e8f0; border-bottom: 0; }.drawer h3 { margin: 0; color: #0f172a; font-size: 18px; }.drawer header span { color: #64748b; font-size: 12px; }.drawer main { flex: 1; overflow: auto; padding: 20px; }.drawer section { padding: 14px 0; border-bottom: 1px solid #e2e8f0; }.drawer section:last-child { border-bottom: 0; }.drawer h4 { margin: 0 0 8px; color: #0f172a; font-size: 14px; }.drawer section > p { margin: 8px 0 4px; color: #475569; font-size: 12px; }.drawer section > .summary-error { color: #b91c1c; }.summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }.summary div { display: grid; gap: 3px; }.summary span, .caption { color: #64748b; font-size: 12px; }.summary strong { color: #1e293b; font-size: 13px; }.text-block, pre { margin: 0; color: #334155; font: inherit; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }pre { padding: 10px; background: #f8fafc; }.metric-list, .timeline { display: grid; gap: 8px; }.metric-row { display: grid; grid-template-columns: 68px minmax(120px, 1fr) 145px minmax(150px, 1fr); align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid #f1f5f9; color: #475569; font-size: 12px; }.metric-row div { display: grid; gap: 2px; }.metric-row strong { color: #1e293b; }.metric-status, .status { display: inline-block; width: max-content; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 700; }.metric-status.ready { background: #dcfce7; color: #166534; }.metric-status.waiting { background: #fef3c7; color: #92400e; }.timeline article { padding: 10px 0; border-top: 1px solid #e2e8f0; }.timeline-head, .node-detail, .notification-row, .notification-heading, .section-heading { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }.section-heading, .notification-heading { justify-content: space-between; }.section-heading h4, .notification-heading h4 { margin-bottom: 0; }.timeline-head strong { color: #0f172a; }.timeline-head span, .node-detail, .notification-row { color: #64748b; font-size: 12px; }.status { background: #eff6ff; color: #1d4ed8; }.node-detail { margin: 6px 0; }.timeline details { color: #475569; font-size: 12px; }.timeline summary { cursor: pointer; color: #2563eb; }.timeline details p { margin: 6px 0; white-space: pre-wrap; }.node-error { margin-top: 6px; color: #b91c1c; font-size: 12px; }.attempts { display: grid; gap: 6px; margin-top: 8px; border-left: 2px solid #cbd5e1; padding-left: 8px; color: #64748b; font-size: 12px; }.attempts > div { display: flex; gap: 10px; flex-wrap: wrap; }.notification-row { padding: 7px 0; border-top: 1px solid #f1f5f9; }.btn, .icon-button { border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #475569; cursor: pointer; font-size: 13px; }.btn-link { border: 0; background: none; padding: 0; color: #2563eb; cursor: pointer; font-size: 12px; }.btn { padding: 7px 14px; }.btn:disabled { opacity: .5; cursor: not-allowed; }.icon-button { width: 28px; height: 28px; padding: 0; font-size: 18px; }.error { padding: 10px; border-left: 3px solid #dc2626; background: #fef2f2; color: #b91c1c; font-size: 13px; }.empty { padding: 40px 0; color: #94a3b8; text-align: center; }a { color: #2563eb; font-size: 13px; }@media (max-width: 700px) { .drawer { width: 100vw; }.drawer main { padding: 14px; }.summary { grid-template-columns: repeat(2, 1fr); }.metric-row { grid-template-columns: 68px 1fr; }.metric-row > span:nth-last-child(-n+2) { grid-column: 2; } }
 .status-success { background: #dcfce7; color: #166534 !important; }
 .status-failed { background: #fee2e2; color: #b91c1c !important; }

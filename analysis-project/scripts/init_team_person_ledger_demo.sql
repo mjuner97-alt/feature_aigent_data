@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS developer_pl_person_info_t (
     "分管领导姓名" VARCHAR(1000),
     "分管领导统一认证号" VARCHAR(1000)
 );
-COMMENT ON TABLE developer_pl_person_info_t IS '人员台账：团队配置使用最新统计月份、有效日期截止为9999-12-31的记录';
+COMMENT ON TABLE developer_pl_person_info_t IS '人员台账：团队配置在最新统计月份按认证号去重，优先选择截止日期为9999-12-31的记录';
 COMMENT ON COLUMN developer_pl_person_info_t."产品部测试人员对应开发部门" IS '测试/产品经理对口开发部门';
 COMMENT ON COLUMN developer_pl_person_info_t."产品部测试人员对应统计组" IS '测试/产品经理对口开发部门统计组';
 COMMENT ON COLUMN developer_pl_person_info_t."办公场地" IS '园区';
@@ -114,5 +114,25 @@ FROM (VALUES
     ('202610','质量保障部','质量保障部-历史团队','模拟历史人员','codex_demo_history_only','2026-10-01','9999-12-31','只存在于上月，不应在候选列表出现','codex_demo_ledger_history_only')
 ) AS x(month,dept,team,name,user_id,start_date,end_date,remark,fixture_id)
 WHERE NOT EXISTS (SELECT 1 FROM developer_pl_person_info_t old WHERE old.linked_id=x.fixture_id);
+
+-- 120 人各有普通日期和 9999 日期，另 60 人各有两条普通日期。
+-- 本批共 360 条原始记录，去重后应为 180 人。
+INSERT INTO developer_pl_person_info_t (
+    "类型","统计月份","部门","统计组","姓名","统一认证号","岗位角色",
+    "版本月份","有效日期截止",linked_id
+)
+SELECT '模拟数据', '202611', '模拟有效期核对部',
+       CASE WHEN n <= 120 THEN '模拟混合截止组' ELSE '模拟普通截止组' END,
+       '模拟有效期人员' || n, 'codex_demo_expiry_' || n, '开发工程师',
+       '202611',
+       CASE WHEN variant = 1 AND n <= 120 THEN '9999-12-31'
+            WHEN variant = 1 THEN '2026-11-30' ELSE '2026-11-12' END,
+       'codex_demo_ledger_expiry_' || n || '_' || variant
+FROM generate_series(1, 180) AS people(n)
+CROSS JOIN (VALUES (1), (2)) AS variants(variant)
+WHERE NOT EXISTS (
+    SELECT 1 FROM developer_pl_person_info_t old
+    WHERE old.linked_id = 'codex_demo_ledger_expiry_' || n || '_' || variant
+);
 
 COMMIT;

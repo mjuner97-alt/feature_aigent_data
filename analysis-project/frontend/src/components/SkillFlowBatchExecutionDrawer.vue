@@ -12,17 +12,16 @@ import { triggerTypeText } from './skillFlowExecutionPresentation';
 import { formatDuration } from '../utils/flowDuration.js';
 import SkillFlowBatchNotificationModal from './SkillFlowBatchNotificationModal.vue';
 import SkillFlowExecutionNotificationModal from './SkillFlowExecutionNotificationModal.vue';
+import SkillFlowExecutionDrawer from './SkillFlowExecutionDrawer.vue';
 
 const props = defineProps<{
-  open: boolean;
   flowId: number | null;
   batchId: string | null;
   flowName?: string;
 }>();
 const emit = defineEmits<{
-  (event: 'update:open', value: boolean): void;
-  (event: 'open-execution', id: number): void;
   (event: 'changed'): void;
+  (event: 'back'): void;
 }>();
 
 const rows = ref<SkillFlowExecution[]>([]);
@@ -33,6 +32,8 @@ const selected = ref<Set<number>>(new Set());
 const previewOpen = ref(false);
 const notificationOpen = ref(false);
 const notificationId = ref<number | null>(null);
+const detailOpen = ref(false);
+const detailId = ref<number | null>(null);
 const reportKeyword = ref('');
 const page = ref(1);
 const pageSize = ref(10);
@@ -78,7 +79,7 @@ async function load() {
   reportKeyword.value = '';
   page.value = 1;
   error.value = '';
-  if (!props.open || !props.flowId || !props.batchId) return;
+  if (!props.flowId || !props.batchId) return;
   loading.value = true;
   try {
     const result = await listSkillFlowBatchExecutions(props.flowId, props.batchId);
@@ -92,7 +93,7 @@ async function load() {
     if (current === generation) loading.value = false;
   }
 }
-watch(() => [props.open, props.flowId, props.batchId] as const, () => void load(), { immediate: true });
+watch(() => [props.flowId, props.batchId] as const, () => void load(), { immediate: true });
 watch(reportKeyword, () => { page.value = 1; });
 watch(pageSize, () => { page.value = 1; });
 watch(
@@ -113,7 +114,7 @@ function toggleAll() {
   else filteredEligible.value.forEach((row) => next.add(row.id));
   selected.value = next;
 }
-function close() { emit('update:open', false); }
+function close() { emit('back'); }
 function formatTime(value?: string | null) { return value ? value.replace('T', ' ').slice(0, 19) : '-'; }
 function duration(start?: string | null, end?: string | null) {
   if (!start || !end) return '-';
@@ -136,6 +137,10 @@ function showNotification(row: SkillFlowExecution) {
   notificationId.value = row.id;
   notificationOpen.value = true;
 }
+function showDetail(row: SkillFlowExecution) {
+  detailId.value = row.id;
+  detailOpen.value = true;
+}
 async function sent(result: { sentExecutionIds: number[]; failedExecutionIds: number[] }) {
   if (result.failedExecutionIds.length) ElMessage.warning(`成功 ${result.sentExecutionIds.length} 份，失败 ${result.failedExecutionIds.length} 份`);
   else ElMessage.success(`已提交 ${result.sentExecutionIds.length} 份报告通知`);
@@ -145,12 +150,12 @@ async function sent(result: { sentExecutionIds: number[]; failedExecutionIds: nu
 </script>
 
 <template>
-  <Teleport to="body">
-    <div v-if="open" class="batch-drawer-mask" @click.self="close">
-      <section class="batch-drawer" aria-label="团队报告执行记录">
-        <header class="drawer-header">
-          <h3>{{ flowName || '团队报告执行记录' }}</h3>
-          <button type="button" class="close-button" aria-label="关闭" @click="close">×</button>
+  <section class="batch-page" aria-label="团队报告执行记录">
+        <header class="batch-header">
+          <div class="batch-heading">
+            <h2>{{ flowName || '团队报告' }}</h2>
+          </div>
+          <button type="button" class="back-button" @click="close">返回长任务执行记录</button>
         </header>
         <div class="batch-toolbar">
           <input v-model="reportKeyword" type="search" aria-label="搜索报告名称" placeholder="搜索报告名称" />
@@ -168,7 +173,7 @@ async function sent(result: { sentExecutionIds: number[]; failedExecutionIds: nu
             <table class="job-table execution-table">
               <thead><tr>
                 <th class="check-column"><input type="checkbox" aria-label="全选筛选结果中的可发送团队报告" :checked="allSelected" :indeterminate.prop="partlySelected" :disabled="!filteredEligible.length" @change="toggleAll" /></th>
-                <th>任务名称</th><th>类型</th><th>状态</th><th>触发方式</th><th>进度</th><th>触发人</th><th>创建时间</th>
+                <th>报告名称</th><th>类型</th><th>状态</th><th>触发方式</th><th>进度</th><th>触发人</th><th>创建时间</th>
                 <th><span class="th-with-info">累计节点耗时<el-tooltip placement="top" effect="dark" :content="nodeDurationHelp"><el-icon class="th-info-icon"><InfoFilled /></el-icon></el-tooltip></span></th>
                 <th><span class="th-with-info">总历时<el-tooltip placement="top" effect="dark" :content="elapsedDurationHelp"><el-icon class="th-info-icon"><InfoFilled /></el-icon></el-tooltip></span></th>
                 <th>操作</th>
@@ -184,7 +189,7 @@ async function sent(result: { sentExecutionIds: number[]; failedExecutionIds: nu
                 <td class="col-time">{{ formatTime(row.createdAt) }}</td>
                 <td :title="nodeDurationHelp">{{ activeDuration(row) }}</td>
                 <td>{{ duration(row.createdAt, row.completedAt) }}</td>
-                <td class="col-actions"><button type="button" class="btn-action primary" @click="emit('open-execution', row.id)">查看详情</button><button v-if="selectable(row)" type="button" class="btn-action" @click="showNotification(row)">通知</button></td>
+                <td class="col-actions"><button type="button" class="btn-action primary" @click="showDetail(row)">查看详情</button><button v-if="selectable(row)" type="button" class="btn-action" @click="showNotification(row)">通知</button></td>
               </tr></tbody>
             </table>
           </div>
@@ -192,25 +197,27 @@ async function sent(result: { sentExecutionIds: number[]; failedExecutionIds: nu
         <footer>
           <el-pagination v-if="filteredRows.length" v-model:current-page="page" v-model:page-size="pageSize" :page-sizes="[10, 20, 50]" :total="filteredRows.length" layout="total, sizes, prev, pager, next" />
         </footer>
-      </section>
-    </div>
     <SkillFlowBatchNotificationModal v-model:open="previewOpen" :selection="selection" @sent="sent" />
     <SkillFlowExecutionNotificationModal v-model:open="notificationOpen" :execution-id="notificationId" @sent="emit('changed')" />
-  </Teleport>
+    <SkillFlowExecutionDrawer v-model:open="detailOpen" :execution-id="detailId" />
+  </section>
 </template>
 
 <style scoped>
-.batch-drawer-mask{position:fixed;inset:0;z-index:900;display:flex;justify-content:flex-end;background:rgb(15 23 42 / 42%)}
-.batch-drawer{display:flex;flex-direction:column;width:min(1500px,calc(100vw - 48px));height:100%;background:#f1f5f9;box-shadow:-8px 0 24px rgb(15 23 42 / 12%)}
-.drawer-header{display:flex;align-items:center;justify-content:space-between;padding:18px 24px;border-bottom:1px solid #e2e8f0;background:#fff}
-.drawer-header h3{margin:0;color:#0f172a;font-size:20px}
-.close-button{border:0;background:transparent;color:#475569;cursor:pointer;font-size:24px;line-height:1}
-.batch-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 24px 0}
-.batch-toolbar input{width:min(320px,100%);padding:7px 11px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#1e293b;font:inherit;outline:none}
+.batch-page{display:flex;flex-direction:column;min-width:0;background:#f1f5f9}
+.batch-header{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 24px 16px;border-bottom:1px solid #e2e8f0;background:#fff}
+.batch-heading{min-width:0}
+.batch-heading h2{margin:0;color:#0f172a;font-size:20px;font-weight:700}
+.batch-heading p{max-width:min(760px,70vw);margin:5px 0 0;overflow:hidden;color:#64748b;font-size:13px;text-overflow:ellipsis;white-space:nowrap}
+.back-button{flex:none;padding:7px 13px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#475569;cursor:pointer;font-size:13px}
+.back-button:hover{border-color:#93c5fd;background:#eff6ff;color:#2563eb}
+.batch-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 24px 12px}
+.batch-toolbar input{width:min(320px,100%);padding:8px 11px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;color:#1e293b;font:inherit;outline:none}
 .batch-toolbar input:focus{border-color:#3b82f6;box-shadow:0 0 0 3px rgb(59 130 246 / 12%)}
+.col-actions a{text-decoration:none}
 .batch-actions{display:flex;flex:none;gap:8px}
-.batch-drawer main{flex:1;min-height:0;overflow:auto;padding:14px 24px 20px}
-.batch-drawer footer{display:flex;justify-content:flex-end;min-height:32px;padding:0 24px 18px}
+.batch-page main{flex:1;min-height:0;overflow:auto;padding:0 24px 20px}
+.batch-page footer{display:flex;justify-content:flex-end;min-height:32px;padding:0 24px 18px}
 .state{padding:60px 0;border-radius:8px;background:#fff;color:#94a3b8;text-align:center}.state.error{color:#b91c1c}
 .job-table-wrap{overflow:auto;border-radius:8px;box-shadow:0 1px 3px rgb(0 0 0 / 6%)}
 .job-table{width:100%;min-width:1370px;border-collapse:collapse;background:#fff}
@@ -226,5 +233,5 @@ async function sent(result: { sentExecutionIds: number[]; failedExecutionIds: nu
 .btn-action{padding:4px 10px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;color:#475569;cursor:pointer;font-size:12px}.btn-action:hover{background:#f1f5f9}.btn-action:disabled{cursor:default;opacity:.45}
 .btn-action.primary{border-color:#3b82f6;background:#3b82f6;color:#fff}.btn-action.primary:hover{background:#2563eb}.btn-action.primary:disabled{background:#3b82f6}
 .th-with-info{display:inline-flex;align-items:center;gap:2px}.th-info-icon{color:#94a3b8;cursor:help;font-size:14px}
-@media(max-width:700px){.batch-drawer{width:100vw}.batch-drawer main{padding-right:12px;padding-left:12px}.drawer-header{padding-right:16px;padding-left:16px}.batch-toolbar{align-items:stretch;padding-right:12px;padding-left:12px;flex-direction:column}.batch-toolbar input{width:100%}.batch-actions{justify-content:flex-end}}
+@media(max-width:700px){.batch-header{align-items:flex-start;padding-right:16px;padding-left:16px;flex-direction:column}.batch-heading p{max-width:100%}.batch-page main{padding-right:12px;padding-left:12px}.batch-toolbar{align-items:stretch;padding-right:12px;padding-left:12px;flex-direction:column}.batch-toolbar input{width:100%}.batch-actions{justify-content:flex-end}}
 </style>
