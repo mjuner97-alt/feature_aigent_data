@@ -8,7 +8,8 @@ import java.util.regex.Pattern;
  * 见 docs/202611/脚本表格样式上移hooks层统一方案.md §4.1 与 v3 修订记录）。
  *
  * <p>所有脚本产物（chat 工具调用 / 直接问数 executeStructured / skill-flow
- * executeForFlow / 调试页 executeForDebug）的唯一必经点，不依赖 hooks 与 LLM：</p>
+ * executeForFlow / 调试页 executeForDebug）的唯一必经点，不依赖 hooks 与 LLM，
+ * 覆盖三类 HTML 形态（v3.2 起补齐裸片段）：</p>
  * <ul>
  *   <li><b>剥 script</b>：{@code <script>} 仍全部剥除（安全边界不变）；</li>
  *   <li><b>作用域重写（v2 全剥 → v3 重写）</b>：脚本 {@code <style>} <b>保留</b>，
@@ -23,8 +24,10 @@ import java.util.regex.Pattern;
  *       （render_html_custom 透传后 Python 不再包壳）。</li>
  * </ul>
  *
- * <p>调用点在 {@code extractDownloads} 之后、{@code formatResult} 之前——
- * 下载块/json/markdown/exit 信封不经过本类。全部变换幂等，重复调用结果不变。</p>
+ * <p>三类形态 = ```html 围栏块 / &lt;!DOCTYPE&gt; 完整文档 / 裸片段（json 信封 +
+ * style + div + 裸 to_html 表，v3.2 新增 pass）。调用点在 {@code extractDownloads}
+ * 之后、{@code formatResult} 之前——下载块/json/markdown/exit 信封不经过本类。
+ * 全部变换幂等，重复调用结果不变。</p>
  */
 public final class ScriptHtmlSanitizer {
 
@@ -46,6 +49,12 @@ public final class ScriptHtmlSanitizer {
     /** 脚本自带 wrapper 的 id="report"（_html_table 旧版外壳）：report 是 HtmlReportRenderer
      *  保留名，串进长任务会形成嵌套重复 id；样式已重写作用域，外壳统一改名 unified-table。 */
     private static final Pattern ID_REPORT = Pattern.compile("\\sid=[\"']report[\"']");
+    /** 裸片段起点（非 ```html 围栏、非完整文档的散装 HTML，如 json 信封+style+div+裸 to_html 表）。 */
+    private static final Pattern BARE_REGION_START = Pattern.compile(
+            "(?i)<(style|table|div)\\b");
+    /** 裸片段终点：围栏标记或下一个完整文档开头，二者截断防越界包裹。 */
+    private static final Pattern BARE_REGION_STOP = Pattern.compile(
+            "(?i)```|<!doctype");
     /** 统一壳标记：用于判断"已包壳"。不能全文搜 unified-table——v3 起脚本 CSS
      *  经作用域重写后到处都是 .unified-table 选择器文本。 */
     private static final Pattern WRAPPER_MARK = Pattern.compile(
@@ -58,6 +67,11 @@ public final class ScriptHtmlSanitizer {
     /** @keyframes 步进选择器，加前缀会破坏动画，原样保留。 */
     private static final Pattern KEYFRAME_STEP = Pattern.compile(
             "^(?i)(from|to|\\d+(?:\\.\\d+)?%)$");
+    /** 双重前缀塌缩：#report 替换产物已有统一壳时不能再加前缀（内网 wenshu_chadui_all
+     *  bug：.unified-table .unified-table th 匹配不到单层壳 → 皮肤全失效）；
+     *  同时自愈已产出的历史脏 stdout（幂等重放即修复）。 */
+    private static final Pattern DOUBLED_SCOPE = Pattern.compile(
+            "(?i)(\\.unified-table[\\s>+~]+)+\\.unified-table");
     /** 统一皮肤识别标记（_html_table 红头表色）：自带皮肤的脚本不再注入兜底。 */
     static final Pattern SKIN_MARK = Pattern.compile(
             "rgb\\(\\s*192\\s*,\\s*0\\s*,\\s*0\\s*\\)");
@@ -106,7 +120,7 @@ public final class ScriptHtmlSanitizer {
 
     public static String sanitize(String stdout) {
         if (stdout == null || stdout.isBlank()) return stdout;
-        return sanitizeBareDoc(sanitizeFences(stdout));
+        return sanitizeBareFragments(sanitizeBareDoc(sanitizeFences(stdout)));
     }
 
     /** 净化 ```html 围栏块内部，围栏标记原样保留（前端按围栏路由到片段 iframe）。 */
@@ -141,6 +155,36 @@ public final class ScriptHtmlSanitizer {
                 .append(stdout, 0, doc.start()).append(cleaned)
                 .append(stdout, doc.end(), stdout.length())
                 .toString();
+    }
+
+    /**
+     * 裸片段 pass（v3.2）：围栏块/完整文档之外的散装 HTML（json 信封 + style +
+     * div + 裸 to_html 表）。区域内必须含 &lt;table&gt; 才处理（无表纯说明片段不动，
+     * 个性化 CSS 保持全局生效）；处理与围栏路径同一套变换，对已包壳/已 scope
+     * 的内容幂等旁路。下载链接文档（无表格）不满足起点条件，原样保留。
+     */
+    private static String sanitizeBareFragments(String stdout) {
+        Matcher start = BARE_REGION_START.matcher(stdout);
+        if (!start.find()) return stdout;
+        StringBuffer out = new StringBuffer(stdout.length());
+        int pos = 0;
+        do {
+            int from = start.start();
+            if (from < pos) continue;
+            Matcher stop = BARE_REGION_STOP.matcher(stdout);
+            int end = stop.find(from) ? stop.start() : stdout.length();
+            if (end <= from) continue;
+            String region = stdout.substring(from, end);
+            if (!region.toLowerCase().contains("<table")) continue;
+            String cleaned = stripScripts(region);
+            cleaned = scopeCss(cleaned);
+            cleaned = ensureSkin(cleaned, false);
+            cleaned = wrapFragment(cleaned);
+            out.append(stdout, pos, from).append(cleaned);
+            pos = end;
+        } while (start.find());
+        out.append(stdout.substring(pos));
+        return out.toString();
     }
 
     static String stripScripts(String html) {
@@ -188,12 +232,14 @@ public final class ScriptHtmlSanitizer {
         String sel = selector.trim();
         if (sel.isEmpty()) return sel;
         String lower = sel.toLowerCase();
-        if (lower.contains("unified-table")) return sel;
         if (sel.startsWith("@")) return sel;
         if (KEYFRAME_STEP.matcher(lower).matches()) return sel;
         if (ROOTISH.matcher(lower).matches()) return ".unified-table";
+        // 塌缩须先于幂等守卫: 守卫只看 contains, 会把双重前缀的脏输入原样放行
+        sel = DOUBLED_SCOPE.matcher(sel).replaceAll(".unified-table");
+        if (lower.contains("unified-table")) return sel;
         sel = sel.replaceAll("(?i)#report\\b", ".unified-table");
-        return ".unified-table " + sel;
+        return sel.toLowerCase().contains("unified-table") ? sel : ".unified-table " + sel;
     }
 
     /**

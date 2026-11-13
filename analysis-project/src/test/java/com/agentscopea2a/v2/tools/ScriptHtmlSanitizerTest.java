@@ -22,6 +22,7 @@ class ScriptHtmlSanitizerTest {
         assertTrue(out.contains("<style"), "样式保留: v3 作用域重写而非剥除");
         assertFalse(out.contains("#report"), "保留名 #report 选择器必须重写");
         assertTrue(out.contains(".unified-table th"), "选择器重写到 unified-table 作用域");
+        assertFalse(out.contains(".unified-table .unified-table"), "#report 重写产物不得再加前缀(内网双重前缀bug)");
         assertEquals(1, count(out, "rgb(192, 0, 0)"), "自带皮肤 → 不注入兜底");
         assertTrue(out.contains("```html"), "围栏标记必须保留");
         assertTrue(out.contains("<div class=\"unified-table\">"));
@@ -124,10 +125,83 @@ class ScriptHtmlSanitizerTest {
         String out = ScriptHtmlSanitizer.sanitize(stdout);
         assertFalse(out.contains("id=\"report\""), "保留名 id 必须改名");
         assertFalse(out.contains("#report"));
+        assertFalse(out.contains(".unified-table .unified-table"), "不得双重前缀");
+        assertEquals(1, count(out, ".unified-table th"), "选择器精确重写一次");
         assertTrue(out.contains("<div class=\"unified-table\">"), "外壳挂靠点就位");
         assertEquals(1, count(out, "table-wrap"), "不得出现双重滚动壳");
         String twice = ScriptHtmlSanitizer.sanitize(out);
         assertEquals(out, twice, "归一幂等");
+    }
+
+    @Test
+    void bareFragmentWrappedSkinnedAndScoped() {
+        // 还原内网 wenshu_chadui_all 裸片段 stdout: json 信封 + guize/desc 样式 + 裸 to_html 表 + 下载文档
+        String stdout = "{\"metricsChadui\":[\"chadui\"]}\n"
+                + "<style>\n.guize { color: #999; margin: 10px 0; }\n"
+                + ".desc { font-weight: bold; color: #333; }\n</style>\n"
+                + "<div class=\"desc\"></div><div class=\"guize\">插队统计规则</div>"
+                + "<table class='dataframe table table-bordered table-striped'>"
+                + "<thead><tr><th>版本计划</th></tr></thead>"
+                + "<tbody><tr><td>2026年12月份版本</td></tr></tbody></table>\n"
+                + "<!DOCTYPE html>\n<html><head><title></title></head><body>\n"
+                + "<a href=\"http://x/redirect/download?shortCode=abc\">明细.xlsx</a>\n"
+                + "</body></html>";
+        String out = ScriptHtmlSanitizer.sanitize(stdout);
+        assertTrue(out.contains("<div class=\"unified-table\">"), "裸表包壳");
+        assertTrue(out.contains("<div class=\"table-wrap\">"));
+        assertTrue(out.contains("rgb(192, 0, 0)"), "无自带皮肤 → 注入兜底皮肤");
+        assertTrue(out.contains(".unified-table .guize"), "个性化样式作用域重写且包壳后仍命中");
+        assertTrue(out.contains("font-weight: bold"), "个性化声明保留");
+        assertTrue(out.contains("{\"metricsChadui\":[\"chadui\"]}"), "json 信封不动");
+        int jsonEnd = out.indexOf("{\"metricsChadui\"");
+        int wrapper = out.indexOf("class=\"unified-table\"");
+        assertTrue(jsonEnd < wrapper, "json 行在壳外");
+        assertTrue(out.contains("redirect/download?shortCode=abc"), "下载链接原样");
+        assertFalse(out.contains("<script"));
+    }
+
+    @Test
+    void bareFragmentWithoutTableUntouched() {
+        String stdout = "{\"total\":1}\n<style>.guize { color: #999; }</style>"
+                + "<div class=\"guize\">说明文字</div>";
+        assertEquals(stdout, ScriptHtmlSanitizer.sanitize(stdout));
+    }
+
+    @Test
+    void bareFragmentIdempotent() {
+        String stdout = "{\"metricsChadui\":[\"chadui\"]}\n"
+                + "<style>.guize { color: #999; }</style>"
+                + "<div class=\"guize\">规则</div>"
+                + "<table class='dataframe'><tr><td>1</td></tr></table>";
+        String once = ScriptHtmlSanitizer.sanitize(stdout);
+        assertEquals(once, ScriptHtmlSanitizer.sanitize(once), "裸片段幂等");
+        assertEquals(1, count(once, "class=\"unified-table\""), "不产生双层壳");
+        assertEquals(1, count(once, "rgb(192, 0, 0)"), "皮肤不重复注入");
+    }
+
+    @Test
+    void doubleScopeSelectorSelfHeal() {
+        // 模拟内网已产出的脏 stdout (.unified-table .unified-table 双重前缀) 再过一遍 → 塌缩自愈
+        String stdout = "```html\n<style>.unified-table .unified-table th"
+                + "{ background: rgb(192, 0, 0) !important; }</style>"
+                + "<div class=\"unified-table\"><table><tr><th>指标</th></tr></table></div>\n```";
+        String out = ScriptHtmlSanitizer.sanitize(stdout);
+        assertFalse(out.contains(".unified-table .unified-table"), "双重前缀塌缩为单前缀");
+        assertTrue(out.contains(".unified-table th{"), "选择器自愈");
+        String twice = ScriptHtmlSanitizer.sanitize(out);
+        assertEquals(out, twice, "自愈后幂等");
+    }
+
+    @Test
+    void reportSelectorExactRewrite() {
+        String css = "<style>\n#report { padding:16px; }\n#report .table-wrap { overflow-x:auto; }\n"
+                + "#report td.red, #report .red { color:red !important; }\n</style>";
+        String out = ScriptHtmlSanitizer.rewriteRules(css);
+        assertTrue(out.contains(".unified-table{ padding:16px; }"), out);
+        assertTrue(out.contains(".unified-table .table-wrap{ overflow-x:auto; }"), out);
+        assertTrue(out.contains(".unified-table td.red, .unified-table .red{ color:red !important; }"), out);
+        assertFalse(out.contains("#report"));
+        assertFalse(out.contains(".unified-table .unified-table"));
     }
 
     private static int count(String s, String needle) {

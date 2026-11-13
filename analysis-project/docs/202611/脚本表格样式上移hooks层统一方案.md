@@ -257,3 +257,28 @@ CSS 重写细节: 先剥 `/* */` 注释 → 平面规则正则 `([^{}]+)\{([^{}]
 
 落地文件: `ScriptHtmlSanitizer.java`（v3 重写）、`ScriptHtmlSanitizerTest.java`
 （10 测试: 作用域重写/个性化保留/兜底注入/幂等/id 归一/script 剥除/下载链接/空值）。
+
+## 11. v3.1 修订：#report 重写双重前缀 bug（2026-11-13）
+
+内网 wenshu_chadui_all 验证发现表格无红头——stdout 显示脚本 CSS（旧 #report
+作用域版）被重写成 `.unified-table .unified-table th` 双重前缀，命中不了单层壳，
+皮肤全失效。根因: `rewriteOne` 把 `#report` 替换成 `.unified-table` 后又无条件
+加前缀；本地单测用的是 substring 包含断言（`.unified-table .unified-table th`
+包含 `.unified-table th`）恒真没抓住。详见
+`docs/202611/统一样式#report重写双重前缀bug修复方案.md`。
+
+修复: ① #report 替换后判重再加前缀；② `DOUBLED_SCOPE` 塌缩
+`(?i)(\.unified-table[\s>+~]+)+\.unified-table` → `.unified-table`，**塌缩先于
+幂等守卫**（守卫只看 contains，会放行双重前缀脏输入），内网存量脏 stdout
+重放即自愈。测试增至 12 个（反双重前缀断言 + 精确计数 + 自愈用例）。
+
+## 12. v3.2 修订：裸片段 pass（2026-11-13）
+
+双重前缀修复后同脚本复测，stdout 形态变为**裸片段**（json 信封 + `<style>` +
+div + 裸 pandas to_html 表 + 尾部下载 doc）——不走围栏也不走完整文档，
+v3 的两条路径全部不触发：不包壳、无皮肤、CSS 不作用域重写。脚本输出形态
+不可依赖，sanitizer 补第三条路径 `sanitizeBareFragments`（区域 = `<(style|table|div)`
+起点到下一个 ``` / `<!doctype`；含 `<table>` 才处理；stripScripts→scopeCss→
+ensureSkin→wrapFragment 同款变换，对已包壳/已 scope 内容幂等旁路；下载 doc
+无表格不满足起点，原样保留）。详见
+`docs/202611/统一样式裸片段无壳无皮肤修复方案.md`。测试增至 15 个。
