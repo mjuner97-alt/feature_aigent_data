@@ -20,6 +20,7 @@ import com.agentscopea2a.v2.service.ChatRuntimeConfig;
 import com.agentscopea2a.v2.service.ChatRuntimeConfigService;
 import com.agentscopea2a.v2.service.ChatStreamTimeouts;
 import com.agentscopea2a.v2.service.ChatStreamTimeoutWatchdog;
+import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
 import com.agentscopea2a.v2.tools.ToolResultRegistry;
 import com.agentscopea2a.v2.hooks.ChatScriptExecResultHook;
 import com.agentscopea2a.v2.trace.collector.TraceSession;
@@ -648,6 +649,8 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                 if (directSkillExecutor != null) {
                     directSkillExecutor.recordResult(ctx.userId, ctx.conversationId, stdout);
                 }
+                // 直接执行短路轮绕过 resolveAndAppend, 展示边界注入在此补 (§4.3)
+                stdout = HtmlReportRenderer.injectScriptTableCss(stdout);
                 ctx.answerContent.append(stdout);
                 strategy.sendText(ctx, TextPayload.chunk(stdout, true));
             } else {
@@ -865,6 +868,10 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             // 即使模型未输出 marker，本轮 HTML/ECharts 也会在末尾补齐。
             List<String> currentRefs = toolResultRegistry.getRequestRefs(ctx.requestId);
             finalAnswer = toolResultRegistry.resolveAndAppendCurrentResults(finalAnswer, currentRefs);
+            // chat 展示边界注入统一样式 (scriptTableCss, 与报告 REPORT_CSS 同源):
+            // 脚本 <style> 已在 ScriptExecTool 出口剥净, 这里补回 chat 宿主的表格皮肤
+            // (docs/202611/脚本表格样式上移hooks层统一方案.md §4.3)
+            finalAnswer = HtmlReportRenderer.injectScriptTableCss(finalAnswer);
             // 保存与前端展示相同的最终答案，刷新历史时也能看到本轮图表。
             ctx.answerContent.setLength(0);
             ctx.answerContent.append(finalAnswer == null ? "" : finalAnswer);
