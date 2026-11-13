@@ -49,6 +49,9 @@ import { thirdPartyCallbackLocation } from './utils/thirdPartyAuth';
 
 // 🌟 新增：引入比对结果详情页
 import CompareResultDetailPage from './pages/skill/CompareResultDetailPage.vue';
+import PptBatchPage from './pages/ppt/PptBatchPage.vue';
+import PptAnomalyOverviewPage from './pages/ppt/PptAnomalyOverviewPage.vue';
+import PptDetailLinkPage from './pages/ppt/PptDetailLinkPage.vue';
 
 const routes: RouteRecordRaw[] = [
   { path: '/login', component: LoginPage },
@@ -150,6 +153,9 @@ const routes: RouteRecordRaw[] = [
         meta: { requiresAuth: true, title: '用户模型配置' },
       },
       { path: 'trace', redirect: '/sessions' },
+      { path: 'ppt-anomaly', component: PptBatchPage, meta: { requiresAuth: true, title: 'PPT 材料批次' } },
+      { path: 'ppt-anomaly/overview', component: PptAnomalyOverviewPage, meta: { requiresAuth: true, title: 'PPT 异常总览' } },
+      { path: 'ppt-anomaly/detail-links', component: PptDetailLinkPage, meta: { requiresAuth: true, title: 'PPT 明细链接' } },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/' },

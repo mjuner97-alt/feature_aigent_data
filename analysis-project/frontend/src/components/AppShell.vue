@@ -5,6 +5,7 @@
         <router-link to="/skills" :style="navStyle('/skills')"><el-icon><Grid /></el-icon> Skill 广场</router-link>
         <router-link to="/script-registry" :style="navStyle('/script-registry')"><el-icon><Files /></el-icon> 配置广场</router-link>
         <router-link to="/sessions" :style="navStyle('/sessions')"><el-icon><Clock /></el-icon> 对话记录</router-link>
+        <router-link to="/ppt-anomaly" :style="navStyle('/ppt-anomaly')"><el-icon><Document /></el-icon> 例会材料识别</router-link>
         <router-link to="/model-config" :style="navStyle('/model-config')"><el-icon><Setting /></el-icon> 模型配置</router-link>
         <div :style="S.navRight">
           <span v-if="user" :style="S.userName">{{ user.name }} ({{ user.userId }})</span>
@@ -21,7 +22,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { Clock, Files, Grid, Setting } from '@element-plus/icons-vue';
+import { Clock, Document, Files, Grid, Setting } from '@element-plus/icons-vue';
 import { getLoggedInUser, logout } from '../utils/auth';
 
 const route = useRoute();
