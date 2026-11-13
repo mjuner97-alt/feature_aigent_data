@@ -5,7 +5,6 @@ import { listSkillFlowExecutions, cancelSkillFlowExecution } from '../api/skillF
 import type { SkillFlowExecution } from '../types/skillFlow';
 import SkillFlowExecutionDrawer from './SkillFlowExecutionDrawer.vue';
 import SkillFlowExecutionNotificationModal from './SkillFlowExecutionNotificationModal.vue';
-import SkillFlowBatchExecutionDrawer from './SkillFlowBatchExecutionDrawer.vue';
 import { batchUserNames, currentUserId } from '../api/skill';
 import { triggerTypeText } from './skillFlowExecutionPresentation';
 import { formatDuration } from '../utils/flowDuration.js';
@@ -36,10 +35,11 @@ const detailId = ref<number | null>(null);
 const detailOpen = ref(false);
 const notificationId = ref<number | null>(null);
 const notificationOpen = ref(false);
-const batchDetailOpen = ref(false);
-const batchDetail = ref<{ flowId: number; batchId: string; flowName: string } | null>(null);
 const total = ref(0);
-const emit = defineEmits<{ (e: 'types-loaded', types: LongTaskType[]): void }>();
+const emit = defineEmits<{
+  (e: 'types-loaded', types: LongTaskType[]): void;
+  (e: 'batch-detail', detail: { flowId: number; batchId: string; flowName: string }): void;
+}>();
 const types = ref<LongTaskType[]>([]);
 const typeName = (id?: number) => types.value.find((t) => t.id === id)?.name || '未配置类型';
 const paged = computed(() => executions.value);
@@ -150,8 +150,7 @@ function changePage(value: number) {
 }
 function showDetail(item: SkillFlowExecution) {
   if (item.batchId && item.flowId && item.reportType === '团队报告') {
-    batchDetail.value = { flowId: item.flowId, batchId: item.batchId, flowName: item.flowName };
-    batchDetailOpen.value = true;
+    emit('batch-detail', { flowId: item.flowId, batchId: item.batchId, flowName: item.flowName });
     return;
   }
   detailId.value = item.id;
@@ -160,10 +159,6 @@ function showDetail(item: SkillFlowExecution) {
 function showNotification(id: number) {
   notificationId.value = id;
   notificationOpen.value = true;
-}
-function openBatchExecution(id: number) {
-  detailId.value = id;
-  detailOpen.value = true;
 }
 // 可终止 = 本人触发 且 尚未开始收尾(汇总中不再提供终止;取消中按钮隐藏靠状态过滤)
 const CANCELLABLE_STATUSES = ['WAITING_METRICS', 'QUEUED', 'RUNNING'];
@@ -212,7 +207,6 @@ onUnmounted(() => {
 watch(
   () => [props.scope, props.createdBy, props.keyword, props.triggerType, props.typeId] as const,
   () => {
-    batchDetailOpen.value = false;
     page.value = 1;
     load('', props.createdBy, false, props.scope);
   }
@@ -309,13 +303,6 @@ watch(
       v-model:open="notificationOpen"
       :execution-id="notificationId"
       @sent="load(currentStatus, currentCreatedBy, true)"
-  /><SkillFlowBatchExecutionDrawer
-      v-model:open="batchDetailOpen"
-      :flow-id="batchDetail?.flowId || null"
-      :batch-id="batchDetail?.batchId || null"
-      :flow-name="batchDetail?.flowName"
-      @open-execution="openBatchExecution"
-      @changed="load(currentStatus, currentCreatedBy, true)"
   /></section>
 </template>
 

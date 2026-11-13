@@ -58,6 +58,13 @@ const routes: RouteRecordRaw[] = [
   { path: '/skills/jobs/executions/:id/report/edit', component: SkillJobReportEditPage },
   { path: '/skills/jobs/flows/executions/:id/report/edit', component: SkillFlowReportEditPage },
   {
+    path: '/skills/jobs/flows/executions/:id',
+    name: 'SkillFlowExecutionDetail',
+    component: () => import('./components/SkillFlowExecutionDrawer.vue'),
+    props: route => ({ open: true, executionId: Number(route.params.id), page: true }),
+    meta: { requiresAuth: true, title: '长任务详情' },
+  },
+  {
     path: '/',
     component: AppShell,
     children: [

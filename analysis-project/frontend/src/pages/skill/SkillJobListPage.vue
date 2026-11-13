@@ -28,11 +28,14 @@ import SkillJobExecutionDrawer from '../../components/SkillJobExecutionDrawer.vu
 import SkillJobNotificationDrawer from '../../components/SkillJobNotificationDrawer.vue';
 import SkillFlowList from '../../components/SkillFlowList.vue';
 import SkillFlowExecutionList from '../../components/SkillFlowExecutionList.vue';
+import SkillFlowBatchExecutionDrawer from '../../components/SkillFlowBatchExecutionDrawer.vue';
 import type { LongTaskType } from '../../api/longTaskConfig';
 
 const me = currentUserId();
 const route = useRoute();
 const router = useRouter();
+const batchDetail = ref<{ flowId: number; batchId: string; flowName: string } | null>(null);
+const showingTeamReportBatch = computed(() => !!batchDetail.value);
 function isOwner(job: SkillJobSummary) {
   return job.createdBy === me || isAdmin();
 }
@@ -192,6 +195,15 @@ function createFlow() {
 
 function openFlowExecutions() {
   activeTab.value = 'flow-execution';
+}
+
+function backToFlowExecutions() {
+  batchDetail.value = null;
+}
+
+function openTeamReportBatch(detail: { flowId: number; batchId: string; flowName: string }) {
+  activeTab.value = 'flow-execution';
+  batchDetail.value = detail;
 }
 
 function refreshCurrentTab() {
@@ -550,7 +562,7 @@ function metricTitle(job: SkillJobSummary): string {
         >长任务流程</button
       >
       <button class="job-tab" :class="{ active: activeTab === 'execution' }" @click="openExecutionCenter"
-        >执行记录</button
+        >独立任务执行记录</button
       >
       <button
         v-if="showSkillFlow"
@@ -561,8 +573,16 @@ function metricTitle(job: SkillJobSummary): string {
       >
     </div>
 
+    <SkillFlowBatchExecutionDrawer
+      v-if="showingTeamReportBatch"
+      :flow-id="batchDetail?.flowId || null"
+      :batch-id="batchDetail?.batchId || null"
+      :flow-name="batchDetail?.flowName"
+      @back="backToFlowExecutions"
+      @changed="flowExecutionListRef?.load('', effectiveCreatedBy || '', true, visibilityScope)"
+    />
     <SkillFlowList
-      v-if="activeTab === 'flows'"
+      v-else-if="activeTab === 'flows'"
       ref="flowListRef"
       :scope="visibilityScope"
       :created-by="effectiveCreatedBy || ''"
@@ -579,6 +599,7 @@ function metricTitle(job: SkillJobSummary): string {
       :trigger-type="flowExecutionTriggerType"
       :type-id="flowExecutionTypeId"
       @types-loaded="flowTypes = $event"
+      @batch-detail="openTeamReportBatch"
     />
 
     <template v-else-if="activeTab === 'execution'">
