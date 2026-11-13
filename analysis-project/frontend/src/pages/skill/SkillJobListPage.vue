@@ -176,8 +176,9 @@ async function loadExecutionCenter(silent = false) {
   }
 }
 
-function openExecutionCenter() {
-  activeTab.value = 'execution';
+function selectTab(tab: JobTab) {
+  batchDetail.value = null;
+  activeTab.value = tab;
 }
 
 function filterFlows() {
@@ -194,11 +195,7 @@ function createFlow() {
 }
 
 function openFlowExecutions() {
-  activeTab.value = 'flow-execution';
-}
-
-function backToFlowExecutions() {
-  batchDetail.value = null;
+  selectTab('flow-execution');
 }
 
 function openTeamReportBatch(detail: { flowId: number; batchId: string; flowName: string }) {
@@ -551,24 +548,24 @@ function metricTitle(job: SkillJobSummary): string {
     </div>
 
     <div class="job-tabs" role="tablist">
-      <button class="job-tab" :class="{ active: activeTab === 'manage' }" @click="activeTab = 'manage'"
+      <button class="job-tab" :class="{ active: activeTab === 'manage' }" @click="selectTab('manage')"
         >独立任务</button
       >
       <button
         v-if="showSkillFlow"
         class="job-tab"
         :class="{ active: activeTab === 'flows' }"
-        @click="activeTab = 'flows'"
+        @click="selectTab('flows')"
         >长任务流程</button
       >
-      <button class="job-tab" :class="{ active: activeTab === 'execution' }" @click="openExecutionCenter"
+      <button class="job-tab" :class="{ active: activeTab === 'execution' }" @click="selectTab('execution')"
         >独立任务执行记录</button
       >
       <button
         v-if="showSkillFlow"
         class="job-tab"
         :class="{ active: activeTab === 'flow-execution' }"
-        @click="activeTab = 'flow-execution'"
+        @click="openFlowExecutions"
         >长任务执行记录</button
       >
     </div>
@@ -578,7 +575,7 @@ function metricTitle(job: SkillJobSummary): string {
       :flow-id="batchDetail?.flowId || null"
       :batch-id="batchDetail?.batchId || null"
       :flow-name="batchDetail?.flowName"
-      @back="backToFlowExecutions"
+      @back="openFlowExecutions"
       @changed="flowExecutionListRef?.load('', effectiveCreatedBy || '', true, visibilityScope)"
     />
     <SkillFlowList
