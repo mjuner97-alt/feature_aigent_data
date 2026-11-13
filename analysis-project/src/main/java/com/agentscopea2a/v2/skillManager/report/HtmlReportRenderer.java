@@ -48,83 +48,6 @@ public class HtmlReportRenderer {
     }
 
     /**
-     * 表格族规则：报告与脚本片段（{@link #scriptTableCss()}）共用的唯一表格样式来源。
-     * 修改表格样式只改这里，两宿主自动同步。
-     * 见 docs/202611/脚本表格样式上移hooks层统一方案.md §4.2。
-     */
-    static final String TABLE_CSS = """
-            /* 重复表格不用 class；[data-report-table-scroll] 选中表格滚动容器。 */
-            #report [data-report-table-scroll] {
-                display: block;
-                width: 100%;
-                max-width: 100%;
-                min-width: 0;
-                padding: 0; /* 表格不单独缩进，整体留白在顶部 frame-padding 调整。 */
-                margin: 0;
-                overflow-x: auto; /* 宽表可左右滚动。 */
-                overflow-y: visible;
-                scrollbar-width: thin;
-                scrollbar-color: #cbd5e1 transparent;
-            }
-            /* 表格样式唯一入口：不要再在其他 CSS 块里定义 table。 */
-            #report table {
-                border-collapse: collapse !important; /* 相邻单元格共用边框。 */
-                width: max-content !important; /* 按内容宽度显示，不强行铺满页面。 */
-                min-width: 0 !important;
-                max-width: 100% !important;
-                table-layout: auto !important;
-                margin: var(--report-table-gap) 0 !important;
-                box-shadow: none !important;
-            }
-            #report :is(th, td) {
-                border: 1px solid #bfbfbf !important;
-                text-align: center !important; /* 仅单元格文字居中，整个表格仍靠左。 */
-                vertical-align: middle !important;
-                white-space: normal !important;
-                overflow-wrap: anywhere !important;
-                word-break: break-word !important;
-            }
-            #report th {
-                background: var(--report-header-background) !important;
-                color: #fff !important;
-                font-weight: 600 !important;
-                padding: var(--report-header-padding) !important;
-            }
-            #report td {
-                background: var(--report-row-background, #fff) !important;
-                color: #000; /* 不加 important，保留业务数据的红色等标记。 */
-                padding: var(--report-cell-padding) !important;
-            }
-            #report tbody tr:nth-child(even) {
-                --report-row-background: #fafafa; /* 偶数行背景，形成斑马纹。 */
-            }
-            #report tbody tr:hover {
-                --report-row-background: #fff3e0; /* 鼠标移到整行时的背景。 */
-            }
-            #report table .red {
-                color: red !important;
-            }
-
-            /* 语义类：脚本个性化表格的行级标记（见 docs/202611/个性化HTML表格兼容统一样式方案.md §4）。
-               汇总行定义在斑马纹/hover 之后（同特异性后者胜），灰底不被覆盖。 */
-            #report tbody tr.summary-row {
-                --report-row-background: #f0f0f0; /* 汇总行灰底。 */
-            }
-            #report tbody tr.summary-row td {
-                font-weight: 600 !important;
-            }
-            #report td.rowhead {
-                text-align: left !important;
-            }
-            #report .section-title-sm {
-                font-size: 1rem;
-                margin-top: 16px;
-                margin-bottom: 6px;
-                color: #000;
-            }
-            """;
-
-    /**
      * 样式修改入口：通常只需要修改 :root 中的数值。
      * 每个普通选择器只定义一次，不再在 assembleHtml 中追加覆盖样式。
      * class 只用于页面内唯一的 div；重复的图表、表格使用 data-* 标记。
@@ -347,7 +270,59 @@ public class HtmlReportRenderer {
             #report a:hover {
                 text-decoration: underline;
             }
-            """ + TABLE_CSS + """
+
+            /* 重复表格不用 class；[data-report-table-scroll] 选中表格滚动容器。 */
+            #report [data-report-table-scroll] {
+                display: block;
+                width: 100%;
+                max-width: 100%;
+                min-width: 0;
+                padding: 0; /* 表格不单独缩进，整体留白在顶部 frame-padding 调整。 */
+                margin: 0;
+                overflow-x: auto; /* 宽表可左右滚动。 */
+                overflow-y: visible;
+                scrollbar-width: thin;
+                scrollbar-color: #cbd5e1 transparent;
+            }
+            /* 表格样式唯一入口：不要再在其他 CSS 块里定义 table。 */
+            #report table {
+                border-collapse: collapse !important; /* 相邻单元格共用边框。 */
+                width: max-content !important; /* 按内容宽度显示，不强行铺满页面。 */
+                min-width: 0 !important;
+                max-width: 100% !important;
+                table-layout: auto !important;
+                margin: var(--report-table-gap) 0 !important;
+                box-shadow: none !important;
+            }
+            #report :is(th, td) {
+                border: 1px solid #bfbfbf !important;
+                text-align: center !important; /* 仅单元格文字居中，整个表格仍靠左。 */
+                vertical-align: middle !important;
+                white-space: normal !important;
+                overflow-wrap: anywhere !important;
+                word-break: break-word !important;
+            }
+            #report th {
+                background: var(--report-header-background) !important;
+                color: #fff !important;
+                font-weight: 600 !important;
+                padding: var(--report-header-padding) !important;
+            }
+            #report td {
+                background: var(--report-row-background, #fff) !important;
+                color: #000; /* 不加 important，保留业务数据的红色等标记。 */
+                padding: var(--report-cell-padding) !important;
+            }
+            #report tbody tr:nth-child(even) {
+                --report-row-background: #fafafa; /* 偶数行背景，形成斑马纹。 */
+            }
+            #report tbody tr:hover {
+                --report-row-background: #fff3e0; /* 鼠标移到整行时的背景。 */
+            }
+            #report table .red {
+                color: red !important;
+            }
+
             /* 重复图表通过 data 属性选中；图表外壳与绘图区域分别只定义一次。 */
             /* 图表占正文宽度的 80%，随页面宽度自适应，并靠左显示。 */
             #report [data-report-chart-shell] {
@@ -445,91 +420,6 @@ public class HtmlReportRenderer {
                 .replace("@@OFFSET@@", includeToc
                         ? "calc(var(--report-toc-width) + var(--report-toc-gap))" : "0px")
                 .replace("@@PADDING@@", includeToc ? "0px" : "var(--report-frame-padding)");
-    }
-
-    /**
-     * 脚本 HTML 片段的表格皮肤：以 {@link #TABLE_CSS}（REPORT_CSS 表格族，单一真相源）派生，
-     * 作用域 {@code #report} → {@code .unified-table}，供 chat 片段/完整文档 iframe 注入。
-     * 前端 Markdown.vue 零改动；v-html 误注入时页面无 .unified-table 元素 → 样式零泄漏。
-     * 禁止在 Python 侧维护第二份表格 CSS（见 docs/202611/脚本表格样式上移hooks层统一方案.md §4.2）。
-     */
-    public static String scriptTableCss() {
-        return """
-                /* unified-table 表格皮肤, 由 TABLE_CSS(REPORT_CSS 表格族)派生, 勿在此手改规则 */
-                .unified-table {
-                    box-sizing: border-box;
-                    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-                    color: #000;
-                    background: transparent; /* 前端片段 iframe 透明设计, 不画白底 */
-                }
-                .unified-table * { box-sizing: border-box; }
-                .unified-table .table-wrap { overflow-x: auto; width: 100%; }
-                :root {
-                    --report-table-gap: 4px;
-                    --report-header-padding: 8px 14px;
-                    --report-cell-padding: 6px 12px;
-                    --report-header-background: rgb(192, 0, 0);
-                    --report-row-background: #fff;
-                }
-                """ + TABLE_CSS.replace("#report ", ".unified-table ");
-    }
-
-    /** chat 展示边界注入的去重标记：CSS 里出现即视为已注入。 */
-    private static final String SCRIPT_CSS_MARKER = "/* scriptTableCss";
-
-    private static final Pattern SCRIPT_HTML_FENCE = Pattern.compile(
-            "(?i)(```\\s*html?\\s*\\n)([\\s\\S]*?)(```)");
-    private static final Pattern SCRIPT_COMPLETE_DOC = Pattern.compile(
-            "(?i)<!doctype\\s+html\\b[\\s\\S]*?</html\\s*>");
-
-    /**
-     * chat 最终展示边界注入（见方案 §4.3）：对最终回答文本中的每个 ```html 围栏块
-     * 与完整文档注入 {@link #scriptTableCss()}。扫描文本而非依赖 hook 的 refs 登记，
-     * hook 禁用/不走 LLM 的入口同样生效；对每个块注入（围栏各自进独立 iframe）。
-     * 长任务报告路径【禁止】调用本方法——报告由 REPORT_CSS 唯一上色。
-     */
-    public static String injectScriptTableCss(String answer) {
-        if (answer == null || answer.isBlank()) return answer;
-        String css = "<style>" + SCRIPT_CSS_MARKER + "\n" + scriptTableCss() + "</style>\n";
-        // 1. ```html 围栏块：CSS 注在围栏开标记之后（每块独立 iframe，需各注一份）
-        StringBuffer out = new StringBuffer(answer.length() + 1024);
-        Matcher fence = SCRIPT_HTML_FENCE.matcher(answer);
-        int cursor = 0;
-        while (fence.find()) {
-            String inner = fence.group(2);
-            out.append(answer, cursor, fence.start()).append(fence.group(1));
-            if (!inner.contains(SCRIPT_CSS_MARKER)) out.append(css);
-            out.append(inner).append(fence.group(3));
-            cursor = fence.end();
-        }
-        out.append(answer, cursor, answer.length());
-        String result = out.toString();
-        // 2. 裸完整文档（独占 stdout 模式）：注入 <head>；围栏内已注过的含 marker 跳过
-        if (result.toLowerCase().contains("<!doctype")) {
-            Matcher doc = SCRIPT_COMPLETE_DOC.matcher(result);
-            StringBuilder docOut = new StringBuilder(result.length() + 1024);
-            cursor = 0;
-            while (doc.find()) {
-                String docText = doc.group();
-                docOut.append(result, cursor, doc.start());
-                if (!docText.contains(SCRIPT_CSS_MARKER)) {
-                    String lower = docText.toLowerCase();
-                    int headEnd = lower.indexOf("<head>");
-                    int insertAt = headEnd >= 0 ? headEnd + "<head>".length() : -1;
-                    if (insertAt < 0) {
-                        int doctypeEnd = lower.indexOf('>');
-                        insertAt = doctypeEnd >= 0 ? doctypeEnd + 1 : docText.length();
-                    }
-                    docOut.append(docText, 0, insertAt).append(css).append(docText, insertAt, docText.length());
-                } else {
-                    docOut.append(docText);
-                }
-                cursor = doc.end();
-            }
-            docOut.append(result, cursor, result.length());
-            result = docOut.toString();
-        }
-        return result;
     }
 
     // 嵌入节点的 vh 不能依赖正在自动撑高的 iframe，否则会形成高度反馈循环。

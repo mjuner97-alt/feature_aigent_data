@@ -1,16 +1,7 @@
 # 脚本表格样式上移展示层统一方案（复用 HtmlReportRenderer，不依赖 hooks）
 
 日期: 2026-11-12
-状态: 已实施（2026-11-12，本机 915 单测全过；内网 E2E 待验）
-实施落地: `ScriptHtmlSanitizer.java`（新增）、`ScriptExecTool.java`（:918 出口接净化）、
-`HtmlReportRenderer.java`（TABLE_CSS 抽取 + 语义类 + scriptTableCss() + injectScriptTableCss()）、
-`ChatStreamServiceImpl.java` / `V2ChatStreamServiceImpl.java`（各 2 处注入点）、
-测试 `ScriptHtmlSanitizerTest` / `HtmlReportRendererScriptTableCssTest`。
-实施修订: ① §4.4 兜底注入取消——混排完整文档 iframe 的 srcdoc 本身就是
-renderCompleteHtml→assembleHtml 产物，自带 REPORT_CSS；② sanitizer 增加
-`id="report"`→`class="unified-table"` 外壳归一（_html_table.py 现版 wrapper 是
-`<div id="report">`，不归一会造成长任务 DOM 嵌套重复 id）；③ chat 注入点为 4 处
-（v1/v2 各自的 resolveAndAppend 后 + 直接执行短路轮 sendText 前）。
+状态: 方案 v2（待拍板；v1「ScriptHtmlStyleHook」方案废弃，差异见 §9）
 前作: `docs/202610/DataFrame通用HTML表格导出方案.md`、`docs/202611/个性化HTML表格兼容统一样式方案.md`、
 `docs/202611/统一样式片段长任务样式污染修复方案.md`
 
@@ -147,32 +138,6 @@ public static String scriptTableCss() {
 `!important` 压制；在 chat 被 scriptTableCss 的 `!important` 压制 ——
 **两宿主终于同一份 CSS**，"统一赢" 语义双端成立。
 
-### 5.1 对报告路径（#3/#4）的影响：减法而非加法
-
-本方案对 1/2（chat）是换法（脚本自带 CSS 换成报告同源 CSS），对 3/4（报告）是
-**减法**——删掉一份本不该在报告里的 CSS，全部收敛到 REPORT_CSS 单一来源：
-
-| | 改前（现状） | 改后 |
-|---|---|---|
-| 报告 head 里的 CSS | REPORT_CSS **+ 提升进来的脚本 `.unified-table` 样式块**（java:1147-1157 hoist） | **只剩 REPORT_CSS**（脚本 `<style>` 在工具出口已被剥） |
-| 存量 markdown 表 | 只被 REPORT_CSS 命中（脚本 CSS 是 `.unified-table` 作用域，命中不了它们） | **零变化**（仍只被 REPORT_CSS 命中） |
-| 脚本表（q2_1/个性化） | 被**两份 CSS 竞争**：重叠属性 REPORT_CSS 赢，**不重叠属性（margin 10px、td color #333、hover 色、标题字号）被脚本 CSS 带偏**——即长任务里的漂移现象 | 只被 REPORT_CSS 命中，**与报告其他表完全一致** |
-
-三个易担心点逐一排除：
-
-1. **包壳不影响报告布局**：wrapper 是普通 `<div>`，报告 CSS 无任何规则指向
-   `.unified-table`/`.table-wrap`（scriptTableCss 只注给 chat，不进报告），
-   在报告里是透明空壳；REPORT_CSS 对报告内所有 `#report table` 生效，不依赖壳。
-2. **语义类剥样式后仍生效**：`tr.summary-row` / `td.rowhead` / `td.red` 在
-   REPORT_CSS 里有同名规则（个性化方案即按它对齐设计）；剥的只是 `<style>`
-   文本，class 属性保留，汇总行灰底加粗照常。
-3. **报告侧代码改动仅一处**：`renderMixedContent` 对"head 无 `<style>` 的完整
-   文档 iframe"兜底注入 scriptTableCss（完整文档模式串进长任务的展示路径）；
-   混排 fragment 节点、REPORT_CSS 本身、报告渲染主链路一行不动。
-
-边界：若希望脚本表在报告里保留某些"漂移项"（如 margin 10px），正确做法是改
-REPORT_CSS 本身——它从此是唯一改样式的地方。
-
 ## 6. 影响面
 
 | 文件 | 改动 |
@@ -184,7 +149,6 @@ REPORT_CSS 本身——它从此是唯一改样式的地方。
 | `ChatStreamServiceImpl.java` | resolveAndAppendCurrentResults 之后注入 scriptTableCss |
 | 前端 Markdown.vue | **零改动** |
 | 存量脚本（q2_1 系列/eh/_q2_1_display） | **零改动** |
-| 脚本调试页（ScriptDebugService / executeForDebug） | **不处理（拍板 2026-11-12）**：stdout 被剥后调试预览表格为裸表，接受——调试页只看数据结构，样式无关紧要 |
 | 文档 | 前作三篇加修订注记；`_q2_1_display.py` docstring 提到的外壳职责改为 Java 层 |
 
 回归风险点：fragment iframe 透明底（scriptTableCss 必须 body 透明）；
@@ -207,8 +171,7 @@ sanitizer 不得误伤 ```html 围栏外的普通文本与下载块。
    脚本表由 REPORT_CSS 上色与报告其他表完全一致；
 6. **skill-flow**：Python 节点（runScriptDirect 直连，无 hook）产出的完整文档
    隔离 iframe 有表格样式；混排节点无双重样式；
-7. **回归**：/ai/chat 非 script 消息、echarts 块、下载链接均不受影响；
-   脚本调试页 stdout 展示正常（表格裸表为拍板预期，不处理）。
+7. **回归**：/ai/chat 非 script 消息、echarts 块、下载链接均不受影响。
 
 ## 8. 备选方案（否决理由存档）
 

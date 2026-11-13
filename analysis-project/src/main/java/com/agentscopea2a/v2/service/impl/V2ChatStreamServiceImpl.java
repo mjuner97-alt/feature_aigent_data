@@ -34,7 +34,6 @@ import com.agentscopea2a.v2.hooks.ToolCallTrackingHook;
 import com.agentscopea2a.v2.memory.EpisodicMemory;
 import com.agentscopea2a.v2.runner.HarnessA2aRunnerV2;
 import com.agentscopea2a.v2.service.V2ChatStreamService;
-import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
 import com.agentscopea2a.v2.skills.DirectSkillExecutor;
 import com.agentscopea2a.v2.tools.ScriptExecTool;
 import com.agentscopea2a.v2.tools.ToolCallCollector;
@@ -602,8 +601,6 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
                 if (directSkillExecutor != null) {
                     directSkillExecutor.recordResult(ctx.userId, ctx.conversationId, stdout);
                 }
-                // 直接执行短路轮绕过最终回答展开, 展示边界注入在此补 (方案 §4.3)
-                stdout = HtmlReportRenderer.injectScriptTableCss(stdout);
                 ctx.answerContent.append(stdout);
                 strategy.sendText(ctx, TextPayload.chunk(stdout, true));
             } else {
@@ -893,9 +890,7 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
             // 之前分5字符片段发送会导致前端只取最后一个片段覆盖，丢失大部分内容。
             String finalAnswer = ctx.answerContent.toString();
             if (StringUtils.isNotBlank(finalAnswer)) {
-                // chat 展示边界注入统一样式 (scriptTableCss, 与报告 REPORT_CSS 同源, §4.3)
-                strategy.sendText(ctx, TextPayload.chunk(
-                        HtmlReportRenderer.injectScriptTableCss(finalAnswer), true));
+                strategy.sendText(ctx, TextPayload.chunk(finalAnswer, true));
             }
         } catch (Exception e) {
             log.warn("发送最终结果失败: sessionId={}", ctx.conversationId, e);
