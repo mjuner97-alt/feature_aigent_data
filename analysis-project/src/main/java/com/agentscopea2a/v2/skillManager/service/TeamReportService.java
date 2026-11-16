@@ -344,20 +344,25 @@ public class TeamReportService {
             if (!seen.add(Objects.toString(id, "department"))) throw new IllegalStateException(
                 "TeamReportDuplicateTeam"
             );
-            List<String> to = validReportPeople(t.to()),
-                cc = validReportPeople(t.cc());
-            if (t.keyword() == null || t.keyword().isBlank()) throw new IllegalStateException(
-                "TeamReportKeywordRequired"
-            );
             var priorTarget =
                 prior == null
                     ? null
                     : prior
                           .targets()
                           .stream()
-                          .filter(p -> Objects.equals(p.teamId(), id))
+                          .filter(p -> Objects.equals(p.teamId(), id) && Objects.equals(p.departmentId(), targetDept))
                           .findFirst()
                           .orElse(null);
+            var savedRecipients = new ArrayList<String>();
+            if (priorTarget != null) {
+                savedRecipients.addAll(priorTarget.to());
+                savedRecipients.addAll(priorTarget.cc());
+            }
+            List<String> to = validReportPeople(t.to(), savedRecipients),
+                cc = validReportPeople(t.cc(), savedRecipients);
+            if (t.keyword() == null || t.keyword().isBlank()) throw new IllegalStateException(
+                "TeamReportKeywordRequired"
+            );
             List<String> executors =
                 t.executors() != null ? t.executors() : priorTarget == null ? List.of() : priorTarget.executors();
             Boolean notify =
@@ -571,8 +576,20 @@ public class TeamReportService {
         return normalized.stream().filter(active::contains).toList();
     }
 
-    /** 校验报告通知名单，避免保存无效用户标识。 */
-    private List<String> validReportPeople(List<String> ids) {
+    /** 已保存对象或执行快照中的名单独立于默认来源，新增人员仍须校验。 */
+    public List<String> filterReportPeople(Collection<String> ids, Collection<String> savedRecipients) {
+        var saved = new HashSet<String>();
+        savedRecipients.stream().filter(Objects::nonNull).map(String::trim).filter(id -> !id.isEmpty())
+            .forEach(saved::add);
+        var normalized = ids.stream().filter(Objects::nonNull).map(String::trim).filter(id -> !id.isEmpty())
+            .distinct().toList();
+        var newIds = normalized.stream().filter(id -> !saved.contains(id)).toList();
+        if (!newIds.isEmpty()) saved.addAll(filterReportPeople(newIds));
+        return normalized.stream().filter(saved::contains).toList();
+    }
+
+    /** 校验报告通知名单，保留当前对象已保存人员并拒绝无效的新用户标识。 */
+    private List<String> validReportPeople(List<String> ids, Collection<String> savedRecipients) {
         List<String> normalized = ids
             .stream()
             .filter(Objects::nonNull)
@@ -580,7 +597,7 @@ public class TeamReportService {
             .filter(id -> !id.isBlank())
             .distinct()
             .toList();
-        List<String> valid = filterReportPeople(normalized);
+        List<String> valid = filterReportPeople(normalized, savedRecipients);
         if (valid.size() != normalized.size()) throw new IllegalStateException(
             "TeamReportRecipientInvalid: 请选择有效人员，可按姓名或统一认证号搜索"
         );

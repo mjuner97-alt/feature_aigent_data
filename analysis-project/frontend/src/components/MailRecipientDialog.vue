@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import OrderedRecipientList from './OrderedRecipientList.vue';
-import { nextTick, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import type { TooltipInstance } from 'element-plus';
 import { searchSkillUsers } from '../api/skill';
 import { lookupRecipients, lookupMessage } from '../api/recipientLookup';
@@ -15,9 +15,12 @@ const props = withDefaults(
     submitting?: boolean;
     error?: string;
     dirty?: boolean;
+    saveLabel?: string;
+    emptyToHint?: string;
+    teleportDisabled?: boolean;
     searchUsers?: (keyword: string) => Promise<RecipientPerson[]>;
   }>(),
-  { mode: 'edit', submitting: false, error: '', dirty: false }
+  { mode: 'edit', submitting: false, error: '', dirty: false, saveLabel: '保存流程', emptyToHint: '未配置时通知流程触发人', teleportDisabled: false }
 );
 const emit = defineEmits<{
   (e: 'update:open', value: boolean): void;
@@ -30,6 +33,11 @@ const keyword = ref(''),
   busy = ref(false),
   message = ref('');
 const results = ref<RecipientPerson[]>([]);
+const searchedKeyword = ref<string | null>(null);
+const availableResults = computed(() => {
+  const selected = new Set([...to.value, ...cc.value]);
+  return results.value.filter(person => !selected.has(person.userId));
+});
 const panel = ref<HTMLElement | null>(null),
   queryInput = ref<HTMLTextAreaElement | null>(null);
 const recipientHint = ref<TooltipInstance>(),
@@ -44,7 +52,7 @@ function requestClose() {
     message.value =
       props.mode !== 'edit'
         ? '通知内容或名单已调整，请点击“确认发送”提交；点击“取消”放弃本次调整。'
-        : '名单尚未确认，请点击“确认”保留修改，再保存流程；点击“取消”放弃修改。';
+        : `名单尚未确认，请点击“确认”保留修改，再点击“${props.saveLabel}”；点击“取消”放弃修改。`;
     return;
   }
   close();
@@ -98,6 +106,7 @@ watch(
     names.value = { ...props.names };
     keyword.value = '';
     results.value = [];
+    searchedKeyword.value = null;
     message.value = '';
     if (props.searchUsers) void loadSource(version);
   },
@@ -130,15 +139,18 @@ function add(ids: string[], group: 'to' | 'cc') {
   target.value = [...new Set([...target.value, ...ids])];
 }
 async function search() {
-  if (!keyword.value.trim() || busy.value) return;
+  const query = keyword.value.trim();
+  if (!query || busy.value) return;
   const version = generation;
   busy.value = true;
   message.value = '';
   results.value = [];
+  searchedKeyword.value = null;
   try {
-    const found = await lookupRecipients(keyword.value, searchPeople);
+    const found = await lookupRecipients(query, searchPeople);
     if (version === generation) {
       results.value = found.items;
+      searchedKeyword.value = query;
       message.value = lookupMessage(found);
     }
   } catch {
@@ -148,14 +160,23 @@ async function search() {
   }
 }
 async function batch(group: 'to' | 'cc') {
-  const ids = [...new Set(keyword.value.split(/[\s,，;；、]+/).filter(Boolean))];
-  if (!ids.length || busy.value) return;
+  const query = keyword.value.trim();
+  if (!query || busy.value || props.submitting) return;
+  if (searchedKeyword.value === query && results.value.length) {
+    const people = availableResults.value;
+    if (!people.length) return;
+    for (const person of people) names.value[person.userId] = person.name || person.userId;
+    add(people.map(person => person.userId), group);
+    message.value = `已加入${group === 'to' ? '收件人' : '抄送'} ${people.length} 人`;
+    return;
+  }
   const version = generation;
   busy.value = true;
   message.value = '';
   results.value = [];
+  searchedKeyword.value = null;
   try {
-    const found = await lookupRecipients(keyword.value, searchPeople, true);
+    const found = await lookupRecipients(query, searchPeople, true);
     if (version !== generation) return;
     for (const person of found.matched) names.value[person.userId] = person.name || person.userId;
     add(
@@ -180,6 +201,7 @@ function restoreDefaults() {
   names.value = { ...props.names };
   keyword.value = '';
   results.value = [];
+  searchedKeyword.value = null;
   message.value = '';
 }
 function close() {
@@ -194,22 +216,23 @@ function confirm() {
 }
 </script>
 <template>
-  <Teleport to="body">
+  <Teleport to="body" :disabled="teleportDisabled">
     <div v-if="open" class="mail-mask" @click.self="requestClose">
       <section ref="panel" class="mail-dialog" @keydown="keydown" role="dialog" aria-modal="true" :aria-label="mode === 'send' ? '发送通知' : mode === 'batch' ? '调整本次收件人' : '管理邮件收件人'" :aria-busy="submitting">
         <header><div class="mail-heading"><span class="mail-eyebrow">邮件通知</span><h3>{{ mode === 'send' ? '发送通知' : mode === 'batch' ? '调整本次收件人' : '管理邮件收件人' }}</h3></div><button class="mail-close" type="button" aria-label="关闭" :disabled="submitting" @click="requestClose">×</button></header>
         <div class="mail-content"><p class="mail-description" v-if="mode === 'send'">默认显示长任务最新保存的名单。本次调整仅用于此次通知，不修改长任务配置。</p>
         <p class="mail-description" v-else-if="mode === 'batch'">本次调整只用于当前选中的团队报告，不修改任务配置。</p>
-        <p class="mail-description" v-else>调整名单后请点击“确认”，再点击“保存流程”保存。</p>
+        <p class="mail-description" v-else>调整名单后请点击“确认”，再点击“{{ saveLabel }}”保存。</p>
         <fieldset :disabled="submitting || busy">
         <div class="mail-search"><label for="mail-recipient-query">搜索或批量加入姓名、统一认证号</label>
         <textarea ref="queryInput" id="mail-recipient-query" v-model="keyword" rows="2" placeholder="输入姓名或统一认证号，支持批量粘贴" />
         <small class="mail-help">多个姓名或账号可用逗号、分号、空格或换行分隔；同名人员请搜索后选择。</small><div class="mail-actions"><button class="search-button" type="button" :disabled="busy" @click="search">搜索</button><button type="button" :disabled="busy" @click="batch('to')">批量加入收件人</button><button type="button" :disabled="busy" @click="batch('cc')">批量加入抄送</button></div>
         </div><p class="mail-status" v-if="busy" role="status">正在匹配人员…</p><p class="mail-status" v-if="message" role="status">{{ message }}</p>
         <div v-if="mode !== 'edit'" class="mail-actions"><button type="button" @click="to = []; cc = []">全部清空</button><button type="button" @click="restoreDefaults">恢复默认名单</button></div>
-        <div v-if="results.length" class="mail-results"><div v-for="item in results" :key="item.userId"><span class="result-person" :title="`${item.name || item.userId}(${item.userId}) ${item.department || ''}`"><strong>{{ item.name || item.userId }}({{ item.userId }})</strong> <small v-if="item.department">{{ item.department }}</small><small v-if="item.positionRole" class="role-badge">{{ item.positionRole }}</small></span><button type="button" @click="select(item, 'to')">加入收件人</button><button type="button" @click="select(item, 'cc')">加入抄送</button></div></div>
+        <div v-if="availableResults.length" class="mail-results"><div v-for="item in availableResults" :key="item.userId"><span class="result-person" :title="`${item.name || item.userId}(${item.userId}) ${item.department || ''}`"><strong>{{ item.name || item.userId }}({{ item.userId }})</strong> <small v-if="item.department">{{ item.department }}</small><small v-if="item.positionRole" class="role-badge">{{ item.positionRole }}</small></span><button type="button" @click="select(item, 'to')">加入收件人</button><button type="button" @click="select(item, 'cc')">加入抄送</button></div></div>
+        <p v-else-if="results.length" class="mail-status" role="status">当前搜索结果均已加入通知名单</p>
         <div class="mail-previews">
-          <section class="recipient-card"><div class="recipient-card-heading"><h4>收件人 <span>TO</span><b>（{{ to.length }}）</b></h4><button v-if="mode !== 'edit'" type="button" @click="to = []">清空收件人</button></div><p class="recipient-empty" v-if="!to.length">{{ mode !== 'edit' ? '请至少添加一位收件人' : '未配置时通知流程触发人' }}</p><OrderedRecipientList v-model="to" label="收件人" :disabled="submitting || busy">
+          <section class="recipient-card"><div class="recipient-card-heading"><h4>收件人 <span>TO</span><b>（{{ to.length }}）</b></h4><button v-if="mode !== 'edit'" type="button" @click="to = []">清空收件人</button></div><p class="recipient-empty" v-if="!to.length">{{ mode !== 'edit' ? '请至少添加一位收件人' : emptyToHint }}</p><OrderedRecipientList v-model="to" label="收件人" :disabled="submitting || busy">
             <template #default="{ id }">{{ names[id] || id }}({{ id }})</template>
             <template #actions="{ id, index }"><button type="button" :aria-label="`将 ${id} 移至抄送`" @click="add([id], 'cc')">移至抄送</button><button type="button" :aria-label="`删除收件人 ${id}`" @click="to.splice(index, 1)">删除</button></template>
           </OrderedRecipientList></section>

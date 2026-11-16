@@ -78,6 +78,7 @@ public class TeamConfigService {
         String type = required(input == null ? null : input.recipientType(), "通知类型", 2);
         if (!Set.of("TO", "CC").contains(type))
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "通知类型须为 TO 或 CC");
+        touchPersonGroup(id);
         int updated = config.updateRecipientType(id, type);
         if (updated == 0) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "团队参数不存在");
         return get(id);
@@ -130,6 +131,15 @@ public class TeamConfigService {
         row.put("sortOrder", "分管领导".equals(row.get("role")) ? 0 : 1);
         row.put("enabled", !Boolean.FALSE.equals(input.enabled()));
         row.put("remark", input.remark());
+        // 旧人员接口也维护团队主记录，并与团队批量编辑使用相同的锁。
+        var target = Map.<String, Object>of("dev_dept", dept, "stat_group", row.get("team"));
+        var affected = new ArrayList<Map<String, Object>>();
+        affected.add(target);
+        var previous = id == null ? null : get(id);
+        if (previous != null) affected.add(previous);
+        affected.stream().sorted(Comparator.comparing((Map<String, Object> org) -> Objects.toString(org.get("dev_dept"), ""))
+            .thenComparing(org -> Objects.toString(org.get("stat_group"), ""))).forEach(this::touchGroup);
+        if (previous != null) checkPersonGroup(previous, get(id));
         try {
             if (id == null) {
                 config.insert(row);
@@ -158,8 +168,35 @@ public class TeamConfigService {
     }
 
     /** 按主键删除配置，记录不存在时返回 404。 */
+    @Transactional("gaussCustomerTransactionManager")
     public void delete(long id) {
+        touchPersonGroup(id);
         if (config.delete(id) == 0)
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "团队参数不存在");
+    }
+
+    private void touchGroup(Map<String, Object> person) {
+        String dept = Objects.toString(person.get("dev_dept"), "");
+        String team = Objects.toString(person.get("stat_group"), "");
+        try {
+            config.ensureGroup(dept, team);
+        } catch (DuplicateKeyException ex) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "团队配置刚被新增，请刷新后重试");
+        }
+        var group = config.lockGroupByOrg(dept, team);
+        if (group == null) throw new ResponseStatusException(HttpStatus.CONFLICT, "团队配置已被删除，请刷新后重试");
+        config.bumpGroupVersion(((Number) group.get("id")).longValue());
+    }
+
+    private void touchPersonGroup(long id) {
+        var previous = get(id);
+        touchGroup(previous);
+        checkPersonGroup(previous, get(id));
+    }
+
+    private void checkPersonGroup(Map<String, Object> previous, Map<String, Object> current) {
+        if (!Objects.equals(previous.get("dev_dept"), current.get("dev_dept"))
+                || !Objects.equals(previous.get("stat_group"), current.get("stat_group")))
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "人员配置归属已变更，请刷新后重试");
     }
 }

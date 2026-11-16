@@ -20,7 +20,7 @@ export interface LedgerPerson {
 export interface TeamConfigOption { dev_dept: string; stat_group: string | null }
 interface Page<T> { items: T[]; total: number; page: number; pageSize: number }
 const base = '/api/long-task-team-config';
-async function request<T>(path: string, method = 'GET', body?: TeamConfig | { userIds: string[] } | { recipientType: string }): Promise<T> {
+async function request<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
   const response = await fetch(base + path, {
     method,
     headers: { 'X-User-Id': localStorage.getItem('skill-user-id') || 'demo-user', 'Content-Type': 'application/json' },
@@ -53,3 +53,27 @@ export const addTeamConfigFromLedger = (userIds: string[]) => request<{ added: n
 export const saveTeamConfig = (row: TeamConfig) => request<TeamConfig>(row.id == null ? '' : `/${row.id}`, row.id == null ? 'POST' : 'PUT', row);
 export const deleteTeamConfig = (id: number) => request<void>(`/${id}`, 'DELETE');
 export const updateTeamConfigRecipientType = (id: number, recipientType: string) => request<TeamConfig>(`/${id}/recipient-type`, 'PATCH', { recipientType });
+
+export interface TeamRecipient {
+  userId: string;
+  name: string;
+  positionRole?: string;
+  enabled?: boolean;
+  remark?: string;
+}
+export interface TeamConfigGroup {
+  id?: number;
+  version?: number;
+  department: string;
+  team: string;
+  to: TeamRecipient[];
+  cc: TeamRecipient[];
+}
+export const listTeamConfigGroups = (keyword: string, page: number, size: number, department = '', team = '') => {
+  const params = query(keyword, page, size);
+  if (department) params.set('department', department);
+  if (team) params.set('team', team);
+  return request<Page<TeamConfigGroup>>(`/groups?${params}`);
+};
+export const saveTeamConfigGroups = (groups: TeamConfigGroup[]) => request<void>('/groups', 'POST', groups);
+export const deleteTeamConfigGroup = (id: number, version: number) => request<void>(`/groups/${id}?version=${version}`, 'DELETE');

@@ -522,12 +522,15 @@ public class FlowCompletionService {
     /**
      * 解析本次执行的通知收件人:有效 TO 名单为空时才使用触发人兜底;
      * 触发类型在快照配置的范围内(未配置默认仅 AUTO_METRIC)时,使用快照名单
-     * (名单中人员表已失效的工号直接剔除,不报错)。
+     * 批次报告保留执行快照中已经校验的名单，临时新增人员继续校验。
      */
     private List<String> filterRecipients(SkillFlowExecution execution, List<String> ids) {
-        return execution.getBatchId() != null && teamReports != null
-            ? teamReports.filterReportPeople(ids)
-            : orgService.filterExistingUserIds(ids);
+        if (execution.getBatchId() != null && teamReports != null) {
+            var saved = new ArrayList<>(NotificationReceivers.parse(execution.getNotifyReceiversSnapshot()));
+            saved.addAll(NotificationReceivers.parse(execution.getCcReceiversSnapshot()));
+            return teamReports.filterReportPeople(ids, saved);
+        }
+        return orgService.filterExistingUserIds(ids);
     }
 
     private List<String> receiversFor(SkillFlowExecution execution, boolean autoFailure) {

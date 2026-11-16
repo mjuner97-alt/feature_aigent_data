@@ -59,8 +59,10 @@ public interface TeamReportMapper {
     @Select(
         """
         SELECT COALESCE(d.id,'dept_' || MD5(p.dev_dept)) AS id,p.dev_dept AS name
-        FROM long_task_report_notify_person p LEFT JOIN long_task_report_department d ON d.name=p.dev_dept
-        WHERE p.enabled=TRUE AND LENGTH(TRIM(p.dev_dept)) > 0
+        FROM long_task_report_notify_person p
+        LEFT JOIN long_task_report_department d ON d.name=p.dev_dept
+        WHERE (p.record_kind='TEAM' OR (p.record_kind='PERSON' AND p.enabled=TRUE))
+              AND LENGTH(TRIM(p.dev_dept)) > 0
         GROUP BY d.id,p.dev_dept ORDER BY p.dev_dept
         """
     )
@@ -70,9 +72,11 @@ public interface TeamReportMapper {
     @Select(
         """
         SELECT COALESCE(t.id,'team_' || MD5(p.dev_dept || CHR(31) || p.stat_group)) AS id,p.stat_group AS name
-        FROM long_task_report_notify_person p LEFT JOIN long_task_report_department d ON d.name=p.dev_dept
+        FROM long_task_report_notify_person p
+        LEFT JOIN long_task_report_department d ON d.name=p.dev_dept
         LEFT JOIN long_task_report_team t ON t.department_id=d.id AND t.name=p.stat_group
-        WHERE p.enabled=TRUE AND LENGTH(TRIM(p.stat_group)) > 0 AND COALESCE(d.id,'dept_' || MD5(p.dev_dept))=#{id}
+        WHERE (p.record_kind='TEAM' OR (p.record_kind='PERSON' AND p.enabled=TRUE))
+              AND LENGTH(TRIM(p.stat_group)) > 0 AND COALESCE(d.id,'dept_' || MD5(p.dev_dept))=#{id}
         GROUP BY t.id,t.sort_order,p.dev_dept,p.stat_group
         ORDER BY COALESCE(t.sort_order,MIN(p.sort_order)),p.stat_group
         """
@@ -81,12 +85,12 @@ public interface TeamReportMapper {
 
     /** 按来源顺序读取默认通知人员，首次添加对象时用于初始化名单。 */
     @Select(
-        "SELECT user_id,user_name,position_role,recipient_type FROM long_task_report_notify_person WHERE dev_dept=#{dept} AND stat_group=#{team} AND enabled=TRUE ORDER BY sort_order,id"
+        "SELECT user_id,user_name,position_role,recipient_type FROM long_task_report_notify_person WHERE record_kind='PERSON' AND dev_dept=#{dept} AND stat_group=#{team} AND enabled=TRUE ORDER BY sort_order,id"
     )
     List<Map<String, Object>> recipients(@Param("dept") String dept, @Param("team") String team);
 
     /** 读取有效来源用户，兼容尚未进入人员台账的导入名单。 */
-    @Select("SELECT DISTINCT user_id FROM long_task_report_notify_person WHERE enabled=TRUE")
+    @Select("SELECT DISTINCT user_id FROM long_task_report_notify_person WHERE record_kind='PERSON' AND enabled=TRUE")
     List<String> activePersonIds();
 
     /** 锁定任务行，并关闭查询缓存，保证等待锁后能读取最新配置。 */

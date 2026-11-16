@@ -2,6 +2,7 @@ package com.agentscopea2a.v2.skillManager.controller;
 
 import com.agentscopea2a.v2.common.PageResponse;
 import com.agentscopea2a.v2.skillManager.service.TeamConfigService;
+import com.agentscopea2a.v2.skillManager.service.TeamConfigGroupService;
 import java.util.Map;
 import java.util.List;
 import org.springframework.http.HttpStatus;
@@ -13,8 +14,32 @@ import org.springframework.web.server.ResponseStatusException;
 @RequestMapping("/api/long-task-team-config")
 public class TeamConfigController {
     private final TeamConfigService service;
-    public TeamConfigController(TeamConfigService service) {
+    private final TeamConfigGroupService groups;
+    public TeamConfigController(TeamConfigService service, TeamConfigGroupService groups) {
         this.service = service;
+        this.groups = groups;
+    }
+    @GetMapping("/groups")
+    public PageResponse<TeamConfigGroupService.Group> groups(@RequestParam(defaultValue = "") String keyword,
+            @RequestParam(defaultValue = "") String department, @RequestParam(defaultValue = "") String team,
+            @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int pageSize) {
+        return groups.list(keyword, department, team, page, pageSize);
+    }
+
+    @PostMapping("/groups")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void saveGroups(@RequestBody List<TeamConfigGroupService.GroupInput> input,
+                           @RequestHeader("X-User-Id") String user) {
+        checkWrite(user);
+        groups.saveGroups(input);
+    }
+
+    @DeleteMapping("/groups/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteGroup(@PathVariable long id, @RequestParam long version,
+                            @RequestHeader("X-User-Id") String user) {
+        checkWrite(user);
+        groups.deleteGroup(id, version);
     }
     /** 分页返回已保存的团队通知人员。 */
     @GetMapping

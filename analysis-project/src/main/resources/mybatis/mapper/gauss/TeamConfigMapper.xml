@@ -1,6 +1,73 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.agentscopea2a.v2.skillManager.mapper.TeamConfigMapper">
+    <sql id="groupFilters">
+        <where>
+            g.record_kind = 'TEAM'
+            <if test="department != ''">AND g.dev_dept = #{department}</if>
+            <if test="team != ''">AND g.stat_group = #{team}</if>
+            <if test="keyword != ''">
+                <bind name="groupPattern" value="'%' + keyword + '%'" />
+                AND (g.dev_dept LIKE #{groupPattern} OR g.stat_group LIKE #{groupPattern} OR EXISTS (
+                    SELECT 1 FROM long_task_report_notify_person p
+                    WHERE p.dev_dept=g.dev_dept AND p.stat_group=g.stat_group
+                    AND p.record_kind = 'PERSON'
+                    AND (p.user_name LIKE #{groupPattern} OR p.user_id LIKE #{groupPattern})
+                ))
+            </if>
+        </where>
+    </sql>
+    <select id="listGroups" resultType="map">
+        SELECT g.id,g.dev_dept,g.stat_group,g.version FROM long_task_report_notify_person g
+        <include refid="groupFilters"/>
+        ORDER BY g.dev_dept,g.stat_group,g.id LIMIT #{limit} OFFSET #{offset}
+    </select>
+    <select id="countGroups" resultType="int">
+        SELECT COUNT(*) FROM long_task_report_notify_person g <include refid="groupFilters"/>
+    </select>
+    <select id="groupPeople" resultType="map">
+        SELECT <include refid="columns"/> FROM long_task_report_notify_person
+        WHERE record_kind='PERSON' AND dev_dept=#{department} AND stat_group=#{team} ORDER BY sort_order,id
+    </select>
+    <select id="lockGroup" resultType="map" flushCache="true" useCache="false">
+        SELECT id,dev_dept,stat_group,version FROM long_task_report_notify_person
+        WHERE record_kind='TEAM' AND id=#{id} FOR UPDATE
+    </select>
+    <select id="lockGroupByOrg" resultType="map" flushCache="true" useCache="false">
+        SELECT id,dev_dept,stat_group,version FROM long_task_report_notify_person
+        WHERE record_kind='TEAM' AND dev_dept=#{department} AND stat_group=#{team} FOR UPDATE
+    </select>
+    <insert id="insertGroup" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO long_task_report_notify_person(dev_dept,stat_group,record_kind,enabled)
+        VALUES(#{department},#{team},'TEAM',FALSE)
+    </insert>
+    <insert id="ensureGroup">
+        INSERT INTO long_task_report_notify_person(dev_dept,stat_group,record_kind,enabled)
+        SELECT #{department},#{team},'TEAM',FALSE WHERE NOT EXISTS (
+            SELECT 1 FROM long_task_report_notify_person
+            WHERE record_kind='TEAM' AND dev_dept=#{department} AND stat_group=#{team}
+        )
+    </insert>
+    <update id="bumpGroupVersion">
+        UPDATE long_task_report_notify_person SET version=version+1,updated_at=CURRENT_TIMESTAMP
+        WHERE record_kind='TEAM' AND id=#{id}
+    </update>
+    <delete id="deleteGroup">
+        DELETE FROM long_task_report_notify_person WHERE record_kind='TEAM' AND id=#{id}
+    </delete>
+    <delete id="deleteGroupPeople">
+        DELETE FROM long_task_report_notify_person WHERE record_kind='PERSON' AND dev_dept=#{department} AND stat_group=#{team}
+    </delete>
+    <delete id="deleteRemovedPeople">
+        DELETE FROM long_task_report_notify_person WHERE record_kind='PERSON' AND dev_dept=#{department} AND stat_group=#{team}
+        AND user_id NOT IN <foreach collection="ids" item="userId" open="(" separator="," close=")">#{userId}</foreach>
+    </delete>
+    <update id="updateGroupPerson">
+        UPDATE long_task_report_notify_person
+        SET user_name=#{name},position_role=#{role},recipient_type=#{type},sort_order=#{sortOrder},
+            enabled=#{enabled},remark=#{remark,jdbcType=VARCHAR},updated_at=CURRENT_TIMESTAMP
+        WHERE record_kind='PERSON' AND dev_dept=#{dept} AND stat_group=#{team} AND user_id=#{user}
+    </update>
     <!-- 列表与详情共用返回字段。 -->
     <sql id="columns">id, dev_dept, stat_group, user_id, user_name, position_role, recipient_type, sort_order, enabled, remark, created_at, updated_at</sql>
     <!-- 列表和总数共用筛选条件，空部门或统计组表示不限。 -->
@@ -12,29 +79,29 @@
     </sql>
     <!-- 认证号完全匹配优先，其余按组织、排序值和主键排列。 -->
     <select id="list" resultType="map">
-        SELECT <include refid="columns"/> FROM long_task_report_notify_person WHERE 1 = 1
+        SELECT <include refid="columns"/> FROM long_task_report_notify_person WHERE record_kind='PERSON'
         <include refid="filters"/>
         ORDER BY CASE WHEN user_id = #{keyword} THEN 0 ELSE 1 END, dev_dept, stat_group, sort_order, id
         LIMIT #{limit} OFFSET #{offset}
     </select>
     <!-- 统计分页前符合条件的配置数。 -->
     <select id="count" resultType="int">
-        SELECT COUNT(*) FROM long_task_report_notify_person WHERE 1 = 1
+        SELECT COUNT(*) FROM long_task_report_notify_person WHERE record_kind='PERSON'
         <include refid="filters"/>
     </select>
     <!-- 提取配置表已有的部门和统计组组合。 -->
     <select id="options" resultType="map">
         SELECT DISTINCT dev_dept, stat_group FROM long_task_report_notify_person
-        WHERE LENGTH(TRIM(dev_dept)) &gt; 0 ORDER BY dev_dept, stat_group
+        WHERE record_kind='TEAM' AND LENGTH(TRIM(dev_dept)) &gt; 0 ORDER BY dev_dept, stat_group
     </select>
     <!-- 按配置主键读取详情。 -->
     <select id="get" resultType="map">
-        SELECT <include refid="columns"/> FROM long_task_report_notify_person WHERE id = #{id}
+        SELECT <include refid="columns"/> FROM long_task_report_notify_person WHERE record_kind='PERSON' AND id = #{id}
     </select>
     <!-- 检查该人员在同一组织下是否已存在。 -->
     <select id="countExisting" resultType="int">
         SELECT COUNT(*) FROM long_task_report_notify_person
-        WHERE dev_dept = #{department} AND stat_group = #{team} AND user_id = #{userId}
+        WHERE record_kind='PERSON' AND dev_dept = #{department} AND stat_group = #{team} AND user_id = #{userId}
     </select>
     <!-- 插入默认通知人员并回填生成的主键。 -->
     <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
@@ -48,12 +115,13 @@
         SET dev_dept = #{dept}, stat_group = #{team}, user_id = #{user}, user_name = #{name},
             position_role = #{role}, recipient_type = #{type}, sort_order = #{sortOrder}, enabled = #{enabled},
             remark = #{remark,jdbcType=VARCHAR}, updated_at = CURRENT_TIMESTAMP
-        WHERE id = #{id}
+        WHERE record_kind='PERSON' AND id = #{id}
     </update>
     <!-- 单独更新主送或抄送类型。 -->
     <update id="updateRecipientType">
-        UPDATE long_task_report_notify_person SET recipient_type = #{type}, updated_at = CURRENT_TIMESTAMP WHERE id = #{id}
+        UPDATE long_task_report_notify_person SET recipient_type = #{type}, updated_at = CURRENT_TIMESTAMP
+        WHERE record_kind='PERSON' AND id = #{id}
     </update>
     <!-- 按主键删除配置。 -->
-    <delete id="delete">DELETE FROM long_task_report_notify_person WHERE id = #{id}</delete>
+    <delete id="delete">DELETE FROM long_task_report_notify_person WHERE record_kind='PERSON' AND id = #{id}</delete>
 </mapper>

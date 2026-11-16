@@ -6,6 +6,19 @@ import org.apache.ibatis.annotations.Param;
 
 /** 业务库团队配置 Mapper，维护长任务报告的默认通知人员。 */
 public interface TeamConfigMapper {
+    List<Map<String, Object>> listGroups(@Param("keyword") String keyword, @Param("department") String department,
+        @Param("team") String team, @Param("limit") int limit, @Param("offset") long offset);
+    int countGroups(@Param("keyword") String keyword, @Param("department") String department, @Param("team") String team);
+    List<Map<String, Object>> groupPeople(@Param("department") String department, @Param("team") String team);
+    Map<String, Object> lockGroup(long id);
+    Map<String, Object> lockGroupByOrg(@Param("department") String department, @Param("team") String team);
+    int insertGroup(Map<String, Object> row);
+    int ensureGroup(@Param("department") String department, @Param("team") String team);
+    int bumpGroupVersion(long id);
+    int deleteGroup(long id);
+    int deleteGroupPeople(@Param("department") String department, @Param("team") String team);
+    int deleteRemovedPeople(@Param("department") String department, @Param("team") String team, @Param("ids") List<String> ids);
+    int updateGroupPerson(Map<String, Object> row);
     /** 按组织和关键词分页查询已保存配置。 */
     List<Map<String, Object>> list(@Param("keyword") String keyword, @Param("department") String department, @Param("team") String team, @Param("limit") int limit, @Param("offset") long offset);
     /** 统计与列表使用相同筛选条件的配置条数。 */
