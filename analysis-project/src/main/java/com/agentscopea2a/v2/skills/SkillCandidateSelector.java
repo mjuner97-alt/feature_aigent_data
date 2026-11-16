@@ -193,11 +193,23 @@ public class SkillCandidateSelector {
                 .thenComparing(Comparator.comparingInt(ScoredSkill::depth).reversed())
                 .thenComparing(Comparator.comparingInt(ScoredSkill::globalRank))
                 .thenComparing(ScoredSkill::name));
-        return finish(scored, question, explicitPool.size() + levelPool.size() + restPool.size(), scored.size());
+        // per-skill 真命中词 + 最早提及位置 (多 skill 直接执行方案 §5①/§4.2): 层级轨候选专属
+        Map<String, List<String>> termsByName = new HashMap<>();
+        Map<String, Integer> mentionPosByName = new HashMap<>();
+        for (Candidate c : levelPool) {
+            List<String> terms = matchedTermsOf(normalizedQuestion, c.entry(), entitySpans);
+            termsByName.put(c.entry().skillName(), terms);
+            mentionPosByName.put(c.entry().skillName(),
+                    earliestMentionPos(normalizedQuestion, terms, entitySpans));
+        }
+        return finish(scored, question, explicitPool.size() + levelPool.size() + restPool.size(), scored.size(),
+                termsByName, mentionPosByName);
     }
 
     private SkillCandidateSelection finish(List<ScoredSkill> scored, String question,
-                                           int prePoolSize, int postPoolSize) {
+                                           int prePoolSize, int postPoolSize,
+                                           Map<String, List<String>> termsByName,
+                                           Map<String, Integer> mentionPosByName) {
         // 两档截断看榜首: 排第一的候选命中链完整 (或显式点名) → 问题精确, 截到 maxVisibleSkills;
         // 榜首有配置了却未命中的层 (如只说了深层词) → 问题宽泛 (可信度低), 放宽到 fallbackVisibleSkills。
         boolean hadFallback = scored.isEmpty() || scored.get(0).partial();
@@ -209,8 +221,47 @@ public class SkillCandidateSelector {
                         + "topFromLevelTrack={}, selected={}",
                 abbreviate(question), prePoolSize, prePoolSize - postPoolSize, hadFallback, limit,
                 topFromLevelTrack, selected);
+        // ── 多 skill 直接执行扩展字段 (docs/202611/多skill命中全部直接执行方案.md §5①) ──
+        List<SkillCandidateSelection.LevelTrackHit> levelTrackHits = new ArrayList<>();
+        boolean priorityDecisive = false;
+        boolean onlyLevelTrack = true;
+        Map<Integer, Integer> depthGroupMinRank = new HashMap<>();
+        Map<Integer, Integer> depthGroupSize = new HashMap<>();
+        for (ScoredSkill s : scored) {
+            if (!s.levelTrack()) {
+                onlyLevelTrack = false;
+                continue;
+            }
+            levelTrackHits.add(new SkillCandidateSelection.LevelTrackHit(s.name(), s.depth(), s.partial(),
+                    termsByName.getOrDefault(s.name(), List.of()),
+                    mentionPosByName.getOrDefault(s.name(), Integer.MAX_VALUE)));
+            depthGroupSize.merge(s.depth(), 1, Integer::sum);
+            depthGroupMinRank.merge(s.depth(), s.globalRank(), Math::min);
+        }
+        // G4 (拍板⑥): 同深度并列 ≥2 且该深度存在配置了 sort_order 的命中词 = 优先级真正在分胜负
+        for (Map.Entry<Integer, Integer> e : depthGroupSize.entrySet()) {
+            if (e.getValue() >= 2 && depthGroupMinRank.get(e.getKey()) != Integer.MAX_VALUE) {
+                priorityDecisive = true;
+                break;
+            }
+        }
         return new SkillCandidateSelection(selected, !selected.isEmpty() && scored.get(0).explicit(),
-                true, scored.size() > limit, topMatched, topFromLevelTrack);
+                true, scored.size() > limit, topMatched, topFromLevelTrack,
+                levelTrackHits, priorityDecisive, onlyLevelTrack);
+    }
+
+    /** skill 全部真命中词在问题文本中的最早出现位置 (§4.2 问题提及序): 取各词首个 span 外
+     *  命中的起始位; 无真命中 (全靠保底注入) = Integer.MAX_VALUE 排最后。 */
+    private static int earliestMentionPos(String question, List<String> terms, List<int[]> entitySpans) {
+        int best = Integer.MAX_VALUE;
+        for (String term : terms) {
+            for (int[] pos : SkillTermMatcher.matchPositions(question, term)) {
+                if (!DimensionSpanScanner.inSpans(pos[0], pos[1], entitySpans) && pos[0] < best) {
+                    best = pos[0];
+                }
+            }
+        }
+        return best;
     }
 
     // ── 全局关键词优先级 (拍板⑧) ────────────────────────────────────────────

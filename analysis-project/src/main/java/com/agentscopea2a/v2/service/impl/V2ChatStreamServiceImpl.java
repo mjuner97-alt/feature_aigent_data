@@ -454,31 +454,46 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
 
         // ── Skill 直接执行短路（docs/history/skill-direct-exec-plan.md §6）──
         // 内网 LLM 基本不可用: 命中配置了 script_id 的 top-1 skill 时由 Java 直接调
-        // script_exec 脚本; plan() 为 null (未命中/未配置/缺参/权限) 则照常走 LLM 链路。
+        // script_exec 脚本; planAll 为空 (未命中/未配置/缺参/权限) 则照常走 LLM 链路。
         if (directSkillExecutor != null) {
             DimensionState previousState = ctx.get("dimensionState", DimensionState.class);
-            DirectSkillExecutor.DirectExecutionPlan plan =
-                    directSkillExecutor.plan(text, userId, previousState, conversationId);
-            if (plan != null) {
+            java.util.List<DirectSkillExecutor.DirectExecutionPlan> plans =
+                    directSkillExecutor.planAll(text, userId, previousState, conversationId);
+            if (!plans.isEmpty()) {
                 // 正式写维度状态（继承/别名/clarifiedPeer 回填），与 LLM 路径共用;
                 // 只有决定短路后才写，回退路径的解析仍由 DimensionStateMiddleware 独立执行
                 dimensionStateManager.processQuestionInContext(ctx, text);
-                if (plan.needsAsk()) {
-                    // 缺参反问轮 (docs/202610/Skill直接执行缺参反问方案.md): 短路下发反问文本,
-                    // 补参 pending 在 DirectSkillExecutor 内; 下一轮回答由 plan() 消费后执行。
-                    log.info("Direct skill execution missing-params ask: sessionId={} skill={} missing={}",
-                            conversationId, plan.skillName(), plan.missingAsk());
+                if (plans.size() == 1) {
+                    DirectSkillExecutor.DirectExecutionPlan plan = plans.get(0);
+                    if (plan.needsAsk()) {
+                        // 缺参反问轮 (docs/202610/Skill直接执行缺参反问方案.md): 短路下发反问文本,
+                        // 补参 pending 在 DirectSkillExecutor 内; 下一轮回答由 plan() 消费后执行。
+                        log.info("Direct skill execution missing-params ask: sessionId={} skill={} missing={}",
+                                conversationId, plan.skillName(), plan.missingAsk());
+                        sendDimensionExtractEvent(streamCtx, plan);
+                        strategy.sendText(streamCtx, TextPayload.chunk(
+                                DirectSkillExecutor.askPrompt(plan), true));
+                        emitter.complete();
+                        cleanup.run();
+                        return emitter;
+                    }
+                    log.info("Direct skill execution short-circuit: sessionId={} skill={} scriptId={}",
+                            conversationId, plan.skillName(), plan.scriptId());
                     sendDimensionExtractEvent(streamCtx, plan);
-                    strategy.sendText(streamCtx, TextPayload.chunk(
-                            DirectSkillExecutor.askPrompt(plan), true));
-                    emitter.complete();
-                    cleanup.run();
+                    Mono.fromRunnable(() -> runDirectExecution(streamCtx, strategy, plan, cleanup))
+                            .subscribeOn(Schedulers.boundedElastic())
+                            .subscribe();
                     return emitter;
                 }
-                log.info("Direct skill execution short-circuit: sessionId={} skill={} scriptId={}",
-                        conversationId, plan.skillName(), plan.scriptId());
-                sendDimensionExtractEvent(streamCtx, plan);
-                Mono.fromRunnable(() -> runDirectExecution(streamCtx, strategy, plan, cleanup))
+                // 多 skill 命中混合轮 (多skill命中全部直接执行方案.md §4.5): exec 段按提及序
+                // 串行执行, ask 段在全部结果后反问 (拍板①方案B, 混排契约待前端确认, 开关默认关)。
+                log.info("Direct skill multi-execution short-circuit: sessionId={} plans={}",
+                        conversationId,
+                        plans.stream().map(DirectSkillExecutor.DirectExecutionPlan::skillName).toList());
+                for (DirectSkillExecutor.DirectExecutionPlan p : plans) {
+                    sendDimensionExtractEvent(streamCtx, p);
+                }
+                Mono.fromRunnable(() -> runDirectExecutionMulti(streamCtx, strategy, plans, cleanup))
                         .subscribeOn(Schedulers.boundedElastic())
                         .subscribe();
                 return emitter;
@@ -640,6 +655,127 @@ public class V2ChatStreamServiceImpl implements V2ChatStreamService {
             }
             cleanup.run();
         }
+    }
+
+    /**
+     * 多 skill 命中混合执行轮 (多skill命中全部直接执行方案.md §4.5, 拍板②③⑤):
+     * boundedElastic 上按提及序串行执行 exec plan; 单脚本失败发 ERROR tool_result_end
+     * + 报错文案继续下一个 (不中断、不回退 LLM); 全部结果渲染完后对 ask plan 逐一下发
+     * 反问文本 (混排轮末尾, 拍板①方案B); 每段 stdout 前插入空行+【short_summary】标题行;
+     * recordResult 用 skill-aware 回填 (快照记最后一个执行的 skill)。
+     */
+    private void runDirectExecutionMulti(StreamContext ctx, ResponseStrategy strategy,
+                                         java.util.List<DirectSkillExecutor.DirectExecutionPlan> plans,
+                                         Runnable cleanup) {
+        boolean anySuccess = false;
+        boolean anyFailure = false;
+        try {
+            ctx.hasSentExecuting.set(true);
+            for (DirectSkillExecutor.DirectExecutionPlan plan : plans) {
+                if (plan.needsAsk()) {
+                    continue;
+                }
+                String toolCallId = UUID.randomUUID().toString();
+                String inputJson;
+                try {
+                    inputJson = EVENT_JSON.writeValueAsString(plan.params());
+                } catch (Exception e) {
+                    inputJson = String.valueOf(plan.params());
+                }
+                try {
+                    strategy.sendThink(ctx, ThinkPayload.progress(
+                            "已匹配技能「" + plan.skillName() + "」，直接执行脚本 " + plan.scriptId() + "…"));
+
+                    // 与 LLM 路径 UX 一致：ActivityFeed 工具事件 + collector 记录（episodic/trace 有据）
+                    ctx.collector.recordByToolCallId(toolCallId, "script_exec", inputJson);
+                    AiChatResult start = AiChatResult.builder()
+                            .code(0).eventType("tool_call_start")
+                            .lineResult("🔧 调用工具：script_exec")
+                            .toolCallId(toolCallId).toolCallName("script_exec")
+                            .toolInput(inputJson)
+                            .build();
+                    safeSendEvent(ctx.emitter, "tool_call_start", start);
+
+                    ScriptExecTool.ScriptExecution execution =
+                            scriptExecTool.executeStructured(plan.scriptId(), plan.params());
+                    String stdout = ScriptExecOutputExtractor.extractStdout(execution.fullText());
+                    ctx.collector.updateOutputByToolCallId(toolCallId, stdout);
+                    AiChatResult end = AiChatResult.builder()
+                            .code(0).eventType("tool_result_end")
+                            .lineResult(execution.success() ? "✅ 完成：script_exec" : "❌ 失败：script_exec")
+                            .toolCallId(toolCallId).toolCallName("script_exec")
+                            .toolCallState(execution.success() ? "SUCCESS" : "ERROR")
+                            .toolInput(inputJson)
+                            .toolOutput(stdout)
+                            .build();
+                    safeSendEvent(ctx.emitter, "tool_result_end", end);
+
+                    if (execution.success()) {
+                        anySuccess = true;
+                        // 快照回填 stdout 摘要 (拍板⑤): skill-aware, 只匹配最后执行的 skill
+                        if (directSkillExecutor != null) {
+                            directSkillExecutor.recordResult(ctx.userId, ctx.conversationId,
+                                    plan.skillName(), stdout);
+                        }
+                        ctx.answerContent.append(multiSegmentTitle(plan)).append(stdout);
+                        strategy.sendText(ctx, TextPayload.chunk(multiSegmentTitle(plan) + stdout, true));
+                    } else {
+                        // 拍板②: 单脚本失败不中断, ERROR tool_result_end 已发, 报错文案继续下一个
+                        anyFailure = true;
+                        String message = "脚本 " + plan.scriptId() + " 执行失败 (exit=" + execution.exitCode()
+                                + ")，请核对脚本配置或联系管理员处理。";
+                        ctx.answerContent.append(multiSegmentTitle(plan)).append(message).append('\n');
+                        strategy.sendText(ctx, TextPayload.chunk(multiSegmentTitle(plan) + message + "\n", true));
+                    }
+                } catch (Exception e) {
+                    anyFailure = true;
+                    log.error("Direct skill multi-execution failed: sessionId={} scriptId={}",
+                            ctx.conversationId, plan.scriptId(), e);
+                    try {
+                        String message = "脚本 " + plan.scriptId() + " 执行失败，请核对脚本配置或联系管理员处理。\n";
+                        ctx.answerContent.append(multiSegmentTitle(plan)).append(message);
+                        strategy.sendText(ctx, TextPayload.chunk(multiSegmentTitle(plan) + message, true));
+                    } catch (Exception se) {
+                        log.warn("发送直接执行错误事件失败: sessionId={}", ctx.conversationId, se);
+                    }
+                }
+            }
+            if (ctx.hasSentExecuting.get()) {
+                strategy.sendThink(ctx, ThinkPayload.done("分析智能体"));
+            }
+            // 混排轮末尾反问 (拍板①方案B): 全部结果渲染完之后, 缺参候选逐一下发
+            for (DirectSkillExecutor.DirectExecutionPlan plan : plans) {
+                if (plan.needsAsk()) {
+                    strategy.sendText(ctx, TextPayload.chunk(DirectSkillExecutor.askPrompt(plan), true));
+                }
+            }
+        } finally {
+            try {
+                if (ctx.traceCtx != null) {
+                    if (anyFailure) {
+                        ctx.traceCtx.markError("direct script_exec multi-exec partial failure");
+                    } else {
+                        ctx.traceCtx.markSuccess();
+                    }
+                }
+            } catch (Exception te) {
+                log.warn("Trace mark failed for direct multi-execution, sessionId={}: {}",
+                        ctx.conversationId, te.getMessage());
+            }
+            try {
+                ctx.emitter.complete();
+            } catch (Exception e) {
+                log.warn("emitter.complete() 失败: sessionId={}", ctx.conversationId, e);
+            }
+            cleanup.run();
+        }
+    }
+
+    /** 混排轮 stdout 段分隔 (拍板③): 空行 + 【short_summary】标题行, 首段同样加保持一致。 */
+    private static String multiSegmentTitle(DirectSkillExecutor.DirectExecutionPlan plan) {
+        String title = plan.displayTitle() == null || plan.displayTitle().isBlank()
+                ? plan.skillName() : plan.displayTitle();
+        return "\n\n" + title + "\n";
     }
 
     // ── Event handling ──────────────────────────────────────────────────────

@@ -228,6 +228,8 @@ public class V2SkillConfig {
             String followupSignalKeys,
             @Value("${harness.a2a.skill-direct-exec.distribution-drill.enabled:true}")
             boolean distributionDrillEnabled,
+            @Value("${harness.a2a.skill-direct-exec.multi.enabled:false}")
+            boolean multiExecEnabled,
             com.agentscopea2a.v2.dimension.DimensionFamilyConfigRepository dimensionFamilyConfigRepository,
             com.agentscopea2a.v2.dimension.DimensionSignalConfigRepository dimensionSignalConfigRepository) {
         // DB 持久化白名单（管理页第三 Tab）优先于 application.properties 默认值
@@ -238,8 +240,8 @@ public class V2SkillConfig {
             followupSignalKeys = signalKeysFromDb;
         }
         log.info("DirectSkillExecutor: directExecEnabled={}, followupDirectEnabled={}, followupSignalKeys={}"
-                        + ", distributionDrillEnabled={}",
-                enabled, followupDirectEnabled, followupSignalKeys, distributionDrillEnabled);
+                        + ", distributionDrillEnabled={}, multiExecEnabled={}",
+                enabled, followupDirectEnabled, followupSignalKeys, distributionDrillEnabled, multiExecEnabled);
         return new com.agentscopea2a.v2.skills.DirectSkillExecutor(
                 routingMetadataRepository,
                 new SkillCandidateSelector(maxVisibleSkills, fallbackVisibleSkills,
@@ -258,6 +260,7 @@ public class V2SkillConfig {
                 followupDirectEnabled)
                 .setFollowupSignalKeys(followupSignalKeys)
                 .setDistributionDrillEnabled(distributionDrillEnabled)
+                .setMultiExecEnabled(multiExecEnabled)
                 .setFamilyConfigRepository(dimensionFamilyConfigRepository);
     }
 
