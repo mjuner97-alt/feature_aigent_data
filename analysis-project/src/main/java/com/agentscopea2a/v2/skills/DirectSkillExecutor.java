@@ -657,14 +657,22 @@ public class DirectSkillExecutor {
             log.info("DirectSkillExecutor: multi-exec gated by G4 (keyword priority decisive), keep top-1");
             return null;
         }
-        // G6: 参与候选须全部来自层级轨 (存量轨语义模糊, 不参与多执行)
+        // G6 (方案①收窄, 2026/11/16 拍板): 存量轨候选不参与多执行, 但不再整轮阻断层级轨
+        // 之间的多执行 —— hits 本来就只含层级轨, 存量轨混入时直接剔除即可。原"整轮退
+        // top-1"会把双层级轨诉求一起吞掉 (实证: 质量+风险双 L1 命中仅执行风险, 见
+        // docs/202611/双标签命中仅执行一个skill_内网问题分析与方案.md)。
+        // 例外: 显式点名 skill 恒单执行 (explicit 候选 levelTrack=false 会使 onlyLevelTrack
+        // =false, 点名优先于多执行, 与点名置顶语义一致)。
         if (!selection.onlyLevelTrack()) {
-            log.info("DirectSkillExecutor: multi-exec gated by G6 (non-level-track candidates present)");
-            return null;
+            if (selection.explicitNameMatched()) {
+                log.info("DirectSkillExecutor: multi-exec skipped (explicit skill name match keeps single exec)");
+                return null;
+            }
+            log.info("DirectSkillExecutor: multi-exec G6 narrowed: non-level-track candidates excluded, level-track multi-exec proceeds");
         }
         List<SkillCandidateSelection.LevelTrackHit> hits = selection.levelTrackHits();
-        // G5: 榜首命中链完整 (G6 已保证榜首 ∈ hits)。只看榜首 partial —— fallbackExpanded
-        // (候选数 > maxVisible) 在拍板⑦"不设上限"下与多执行天然共存, 不构成降级信号
+        // G5: 榜首命中链完整。只看榜首 partial —— fallbackExpanded (候选数 > maxVisible)
+        // 在拍板⑦"不设上限"下与多执行天然共存, 不构成降级信号
         if (hits.isEmpty() || hits.get(0).partial()) {
             log.info("DirectSkillExecutor: multi-exec gated by G5 (top hit chain incomplete/partial)");
             return null;

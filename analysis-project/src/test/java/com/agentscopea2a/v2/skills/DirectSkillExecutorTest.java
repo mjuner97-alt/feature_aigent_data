@@ -4011,13 +4011,37 @@ class DirectSkillExecutorTest {
     }
 
     @Test
-    void legacyTrackCandidateGatesMultiExec() {
-        // G6: 存量轨候选不参与 —— 混池整轮降级旧 top-1
+    void legacyTrackCandidateExcludedNotBlockingMultiExec() {
+        // G6 方案①收窄 (2026/11/16 拍板): 存量轨候选剔除出多执行集合, 不再整轮阻断;
+        // 双层级轨 + 存量轨混池 → 2 plan (仅层级轨, 提及序), 存量轨不执行
         when(metadataRepository.findActive()).thenReturn(List.of(
                 multiMeta("density_skill", "script_a", "{\"dept\":\"deptName\"}", List.of("缺陷密度"), "缺陷密度总览"),
+                multiMeta("weibi_skill", "script_b", "{\"dept\":\"deptName\"}", List.of("未闭环"), "未闭环问题自由问数"),
                 legacyMeta("legacy_skill", "script_c", "{\"dept\":\"deptName\"}", "达标率")));
-        allowAll("alice", "density_skill", "legacy_skill");
-        String q = "缺陷密度和达标率统计";
+        allowAll("alice", "density_skill", "weibi_skill", "legacy_skill");
+        String q = "缺陷密度、未闭环问题和达标率统计";
+        mockDeptPreview(q);
+        when(scriptRegistryMapper.selectByScriptId(Mockito.anyString())).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true}]"));
+
+        List<DirectSkillExecutor.DirectExecutionPlan> plans =
+                newMultiExecutor(selector, true).planAll(q, "alice", null, "conv-1");
+
+        assertEquals(2, plans.size());
+        assertEquals("density_skill", plans.get(0).skillName());
+        assertEquals("weibi_skill", plans.get(1).skillName());
+        assertTrue(plans.stream().noneMatch(p -> p.skillName().equals("legacy_skill")));
+    }
+
+    @Test
+    void explicitLegacySkillMentionKeepsSingleExec() {
+        // 方案①例外: 显式点名 skill 恒单执行 (点名存量轨 skill 也不例外, 点名优先于多执行)
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                multiMeta("density_skill", "script_a", "{\"dept\":\"deptName\"}", List.of("缺陷密度"), "缺陷密度总览"),
+                multiMeta("weibi_skill", "script_b", "{\"dept\":\"deptName\"}", List.of("未闭环"), "未闭环问题自由问数"),
+                legacyMeta("legacy_skill", "script_c", "{\"dept\":\"deptName\"}", "达标率")));
+        allowAll("alice", "density_skill", "weibi_skill", "legacy_skill");
+        String q = "请用 legacy_skill 查缺陷密度和未闭环问题";
         mockDeptPreview(q);
         when(scriptRegistryMapper.selectByScriptId(Mockito.anyString())).thenReturn(registryEntry(
                 "[{\"name\":\"dept\",\"required\":true}]"));
@@ -4026,7 +4050,7 @@ class DirectSkillExecutorTest {
                 newMultiExecutor(selector, true).planAll(q, "alice", null, "conv-1");
 
         assertEquals(1, plans.size());
-        assertEquals("density_skill", plans.get(0).skillName());
+        assertEquals("legacy_skill", plans.get(0).skillName());
     }
 
     @Test
