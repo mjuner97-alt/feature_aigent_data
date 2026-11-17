@@ -33,7 +33,7 @@ const nav = [
 </script>
 
 <template>
-  <div class="skill-shell">
+  <div class="section-shell">
     <aside class="nav">
       <div class="logo">Skill 广场</div>
       <RouterLink v-for="n in nav" :key="n.to" :to="n.to" class="nav-item">
@@ -47,12 +47,8 @@ const nav = [
   </div>
 </template>
 
+<style scoped src="./section-shell.css"></style>
 <style scoped>
-.skill-shell { display: flex; height: 100%; }
-.nav { width: 200px; background: #0f172a; color: #cbd5e1; padding: 12px; display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
-.logo { font-weight: bold; color: #fff; margin-bottom: 12px; }
-.nav-item { padding: 8px 10px; border-radius: 6px; text-decoration: none; color: #cbd5e1; display: flex; align-items: center; justify-content: space-between; }
-.nav-item.router-link-exact-active { background: #3b82f6; color: #fff; }
 .nav-badge {
   min-width: 18px;
   padding: 0 6px;
@@ -65,5 +61,4 @@ const nav = [
   line-height: 18px;
 }
 .nav-item.router-link-exact-active .nav-badge { background: #fff; color: #dc2626; }
-.content { flex: 1; padding: 16px; background: #f1f5f9; overflow: auto; }
 </style>

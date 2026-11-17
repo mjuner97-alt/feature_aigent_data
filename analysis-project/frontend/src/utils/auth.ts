@@ -65,8 +65,7 @@ export function canEditConfig(): boolean {
 }
 
 export function logout(): void {
-  // 登录态只存在浏览器 localStorage。清空整个存储，避免旧的身份键或
-  // 其他页面写入的兼容 key 让通知中转页误判为仍然登录。
+  void fetch('/api/auth/logout', { method: 'POST', keepalive: true }).catch(() => {});
   localStorage.clear();
 }
 

@@ -1,0 +1,77 @@
+<script setup lang="ts">
+/** PPT 原页预览组件，处理图片加载、失败提示及重试。 */
+
+import { computed, ref, watch } from 'vue';
+import { FullScreen } from '@element-plus/icons-vue';
+import type { PptSlide } from '../../types/pptAnomaly';
+
+const props = defineProps<{ pageNo: number; slide?: PptSlide; unavailable: boolean; plain?: boolean }>();
+const failed = ref(false);
+const loaded = ref(false);
+const attempt = ref(0);
+const previewUrl = computed(() => {
+  const url = props.slide?.imageUrl;
+  if (!url || url.startsWith('blob:')) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}attempt=${attempt.value}`;
+});
+watch(() => props.slide?.imageUrl, () => {
+  failed.value = false;
+  loaded.value = false;
+  attempt.value = 0;
+});
+/** 清除预览错误状态并重新请求 PPT 页面图片。 */
+function retry() {
+  failed.value = false;
+  loaded.value = false;
+  attempt.value++;
+}
+</script>
+
+<template>
+  <component :is="plain ? 'div' : 'details'" class="preview" :class="{ plain }" :open="plain ? undefined : true">
+    <summary v-if="!plain">核对 PPT 原页 · P{{ pageNo }}</summary>
+    <div class="preview-body">
+      <p v-if="!slide" role="status">{{ unavailable ? '暂无可用预览' : '正在读取预览…' }}</p>
+      <p v-else-if="!slide.imageUrl">暂无可用预览</p>
+      <div v-else-if="failed">
+        预览暂时无法加载
+        <el-button link type="primary" @click="retry">重试</el-button>
+      </div>
+      <template v-else>
+        <p v-if="!loaded" role="status">正在加载预览…</p>
+        <img v-show="loaded" :src="previewUrl" :alt="`原始 PPT P${pageNo}`"
+          @load="loaded = true" @error="failed = true" />
+        <a v-if="loaded" class="preview-link" :href="previewUrl"
+          target="_blank" rel="noopener" aria-label="查看大图（新窗口）">
+          <el-icon aria-hidden="true"><FullScreen /></el-icon>
+          查看大图
+        </a>
+      </template>
+    </div>
+  </component>
+</template>
+
+<style scoped>
+.preview { border: 1px solid #e3e9f2; border-radius: 8px; background: #f8fafc; color: #475467; font-size: 13px; }
+summary { padding: 9px 12px; cursor: pointer; }
+.preview-body { display: grid; justify-items: start; gap: 8px; padding: 0 12px 12px; }
+.preview.plain { border: 0; border-radius: 0; background: transparent; }
+.plain .preview-body { padding: 0; }
+.preview-body p { margin: 0; }
+.preview-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid #cbdcf8;
+  border-radius: 8px;
+  background: #edf4ff;
+  color: #1757b8;
+  font-weight: 600;
+  text-decoration: none;
+}
+.preview-link:hover { background: #dceaff; border-color: #adc8f3; }
+.preview-link:focus-visible { outline: 2px solid #1757b8; outline-offset: 2px; }
+img { display: block; max-width: 100%; max-height: 160px; object-fit: contain; }
+</style>

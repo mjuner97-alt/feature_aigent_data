@@ -44,11 +44,17 @@ import RoutingOverlapPage from './pages/RoutingOverlapPage.vue';
 import DimensionAliasPage from './pages/DimensionAliasPage.vue';
 import ChatWorkspacePage from './pages/ChatWorkspacePage.vue';
 import SessionHistoryPage from './pages/SessionHistoryPage.vue';
-import { isLoggedIn, isAdmin } from './utils/auth';
+import { getLoggedInUserId, isAdmin } from './utils/auth';
+import { hasAuthSession } from './api/auth';
+import { pptAnomalyPermissions } from './api/pptAnomaly';
 import { thirdPartyCallbackLocation } from './utils/thirdPartyAuth';
 
 // 🌟 新增：引入比对结果详情页
 import CompareResultDetailPage from './pages/skill/CompareResultDetailPage.vue';
+import PptBatchPage from './pages/ppt/PptBatchPage.vue';
+import PptAnomalyShell from './components/ppt/PptAnomalyShell.vue';
+import PptAnomalyOverviewPage from './pages/ppt/PptAnomalyOverviewPage.vue';
+import PptDetailLinkPage from './pages/ppt/PptDetailLinkPage.vue';
 
 const routes: RouteRecordRaw[] = [
   { path: '/login', component: LoginPage },
@@ -150,6 +156,21 @@ const routes: RouteRecordRaw[] = [
         meta: { requiresAuth: true, title: '用户模型配置' },
       },
       { path: 'trace', redirect: '/sessions' },
+      {
+        path: 'ppt-anomaly',
+        component: PptAnomalyShell,
+        meta: { requiresAuth: true },
+        children: [
+          { path: '', redirect: '/ppt-anomaly/materials' },
+          { path: 'materials', component: PptBatchPage, meta: { title: 'PPT 材料批次', requiresPptProductDepartment: true } },
+          { path: 'materials/:batchId/result', component: () => import('./pages/ppt/PptResultPage.vue'), meta: { title: '生成结果', requiresPptProductDepartment: true } },
+          { path: 'feedback-records', component: () => import('./pages/ppt/PptFeedbackRecordsPage.vue'), meta: { title: '反馈记录' } },
+          { path: 'keyword-config', component: () => import('./pages/ppt/PptKeywordConfigPage.vue'), meta: { title: '例会材料配置' } },
+          { path: 'keyword-config/title-handlers', component: () => import('./pages/ppt/PptTitleHandlersPage.vue'), meta: { title: '设置经办人', requiresPptProductDepartment: true } },
+          { path: 'overview', component: PptAnomalyOverviewPage, meta: { title: 'PPT 异常总览' } },
+          { path: 'detail-links', component: PptDetailLinkPage, meta: { title: 'PPT 明细链接', requiresPptProductDepartment: true } },
+        ],
+      },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/' },
@@ -161,7 +182,7 @@ const router = createRouter({
 });
 
 // 路由守卫:未登录时跳转到 /login
-router.beforeEach((to, _from, next) => {
+router.beforeEach(async (to, from, next) => {
   // A provider may return directly to a business page, including a public report route.
   const callback = thirdPartyCallbackLocation(to.fullPath);
   if (callback && (to.path !== '/login' || to.query.userId == null || to.query.token != null)) {
@@ -173,12 +194,51 @@ router.beforeEach((to, _from, next) => {
     next();
     return;
   }
-  if (!isLoggedIn()) {
+  const userId = getLoggedInUserId();
+  if (!userId) {
     next({ path: '/login', query: { returnTo: to.fullPath } });
     return;
   }
   if (to.matched.some(record => record.meta.requiresAdmin) && !isAdmin()) {
     next('/script-registry');
+    return;
+  }
+  if (to.path.startsWith('/ppt-anomaly/') && to.path !== from.path) {
+    const valid = await hasAuthSession(userId).catch(() => undefined);
+    if (valid === false) {
+      next({ path: '/login', query: { returnTo: to.fullPath } });
+      return;
+    }
+  }
+  if (to.meta.requiresPptProductDepartment) {
+    const permissions = await pptAnomalyPermissions().catch(() => undefined);
+    if (!permissions?.canManageMaterials) {
+      next('/ppt-anomaly/feedback-records');
+      return;
+    }
+  }
+  if (to.path === '/ppt-anomaly/overview' && to.hash) {
+    const params = new URLSearchParams(to.hash.slice(1));
+    const { department, ...query } = to.query;
+    if (typeof department === 'string') params.set('department', department);
+    const keys = ['version', 'recordOwner', 'finding', 'scope', 'mode', 'department', 'history'];
+    if (keys.some(key => params.has(key))) {
+      const pptFeedbackContext = Object.fromEntries(keys.flatMap(key => {
+        const value = params.get(key);
+        return value === null ? [] : [[key, value]];
+      }));
+      next({ path: to.path, query, state: { pptFeedbackContext }, replace: true, force: true });
+      return;
+    }
+  }
+  if (to.path === '/ppt-anomaly/feedback-records' && ('batch' in to.query || 'version' in to.query)) {
+    const { batch, version, ...query } = to.query;
+    next({ path: to.path, query, hash: to.hash, state: { pptFeedbackFilter: { batch, version } }, replace: true, force: true });
+    return;
+  }
+  if (to.path === '/ppt-anomaly/keyword-config/title-handlers' && typeof to.query.title === 'string') {
+    const { title, ...query } = to.query;
+    next({ path: to.path, query, hash: to.hash, state: { pptHandlerTitle: title }, replace: true, force: true });
     return;
   }
   next();

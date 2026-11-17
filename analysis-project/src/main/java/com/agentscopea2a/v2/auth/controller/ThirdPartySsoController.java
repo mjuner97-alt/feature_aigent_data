@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import java.util.Map;
+import jakarta.servlet.http.HttpServletRequest;
 
 /** Receives the frontend's third-party user ID under the existing trusted-intranet identity model. */
 @RestController
@@ -29,11 +30,11 @@ public class ThirdPartySsoController {
     public record LoginRequest(String userId) {}
 
     @PostMapping("/login")
-    public ResponseEntity<?> login(@RequestBody LoginRequest request) {
+    public ResponseEntity<?> login(@RequestBody LoginRequest request, HttpServletRequest servletRequest) {
         if (!enabled) return ResponseEntity.status(403).body(Map.of("message", "第三方登录未启用"));
         try {
             return ResponseEntity.ok().header("Cache-Control", "no-store")
-                    .body(authService.thirdPartyLogin(request.userId()));
+                    .body(AuthController.establishSession(servletRequest, authService.thirdPartyLogin(request.userId())));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }

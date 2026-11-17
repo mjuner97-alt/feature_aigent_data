@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { login, requestPasswordReset, verifyPasswordResetCode, completePasswordReset, getMockSsoConfig, exchangeMockSsoTicket, getThirdPartyAuthConfig, thirdPartyLogin } from '../api/auth';
+import { login, requestPasswordReset, verifyPasswordResetCode, completePasswordReset, getThirdPartyAuthConfig, thirdPartyLogin, hasAuthSession } from '../api/auth';
 import { saveLoggedInUser, type AuthUser } from '../utils/auth';
 import { buildThirdPartyLoginUrl } from '../utils/thirdPartyAuth';
 
@@ -12,8 +12,6 @@ const loading = ref(false);
 const errorMsg = ref('');
 const mode = ref<'login'|'code'|'password'>('login');
 const code = ref(''); const confirmPassword = ref(''); const resetSession = ref('');
-const ssoEnabled = ref(false);
-const SSO_CONTEXT = 'mock-sso-context';
 const THIRD_PARTY_CONTEXT = 'third-party-login-context';
 const thirdPartyEnabled = ref(false);
 let thirdPartyLoginUrl = '';
@@ -28,19 +26,6 @@ async function startThirdPartyLogin(retried = false) {
     window.location.replace(buildThirdPartyLoginUrl(thirdPartyLoginUrl, window.location.origin));
   } catch (e: any) {
     errorMsg.value = e.message || '无法跳转第三方登录，请重试';
-    loading.value = false;
-  }
-}
-
-async function startSso() {
-  loading.value = true;
-  errorMsg.value = '';
-  try {
-    const state = crypto.randomUUID().replace(/-/g, '');
-    sessionStorage.setItem(SSO_CONTEXT, JSON.stringify({ state, query: loginQuery.toString() }));
-    window.location.replace(`/api/auth/mock-sso/authorize?state=${encodeURIComponent(state)}`);
-  } catch (e: any) {
-    errorMsg.value = e.message || '无法发起认证，请重试';
     loading.value = false;
   }
 }
@@ -76,25 +61,6 @@ onMounted(async () => {
       if (loginQuery.get('authMode') !== 'password') await startThirdPartyLogin();
       return;
     }
-    const config = await getMockSsoConfig();
-    ssoEnabled.value = config.enabled;
-    const callback = loginQuery.has('ssoTicket') || loginQuery.has('ssoError');
-    if (callback) {
-      const params = loginQuery;
-      const saved = JSON.parse(sessionStorage.getItem(SSO_CONTEXT) || 'null');
-      // Remove callback credentials from history before any asynchronous exchange.
-      window.history.replaceState(window.history.state, '', '/login');
-      loginQuery = new URLSearchParams(saved?.query || '');
-      sessionStorage.removeItem(SSO_CONTEXT);
-      if (!config.enabled || !saved || saved.state !== params.get('state')) {
-        throw new Error('认证状态无效，请重试');
-      }
-      if (params.has('ssoError')) throw new Error('模拟认证失败，请重试');
-      const user = await exchangeMockSsoTicket(params.get('ssoTicket') || '', saved.state);
-      await finishLogin(user);
-    } else if (config.enabled) {
-      await startSso();
-    }
   } catch (e: any) {
     errorMsg.value = e.message || '认证失败，请重试';
   } finally {
@@ -103,6 +69,11 @@ onMounted(async () => {
 });
 
 async function finishLogin(user: AuthUser) {
+    const target = new URL(loginQuery.get('returnTo') || '/', window.location.origin);
+    if (target.origin === window.location.origin && target.pathname.startsWith('/ppt-anomaly')
+      && !await hasAuthSession(user.userId)) {
+      throw new Error('服务端未能保持登录会话，请重试登录。');
+    }
     saveLoggedInUser(user);
     const executionId = loginQuery.get('returnExecutionId');
     const flowExecutionId = loginQuery.get('returnFlowExecutionId');
@@ -116,8 +87,6 @@ async function finishLogin(user: AuthUser) {
       });
       window.location.assign(`/api/skill-jobs/executions/${encodeURIComponent(executionId)}/download?notificationAccess=true&accessToken=${encodeURIComponent(accessToken || '')}`);
     } else {
-      const returnTo = loginQuery.get('returnTo') || '/';
-      const target = new URL(returnTo, window.location.origin);
       if (target.origin === window.location.origin && target.pathname !== '/login') {
         window.location.replace(target.pathname + target.search + target.hash);
       } else await router.replace('/');
@@ -178,7 +147,6 @@ function handleEnter(e: KeyboardEvent) {
       <div v-if="mode === 'code'" class="login-code-hint">验证码已发送至邮箱</div>
       <div v-if="errorMsg" class="login-error">{{ errorMsg }}</div>
       <button v-if="thirdPartyEnabled && mode === 'login'" class="login-btn" :disabled="loading" @click="startThirdPartyLogin()">{{ loading ? '正在跳转...' : '第三方登录 / 重试' }}</button>
-      <button v-if="ssoEnabled" class="login-btn" :disabled="loading" @click="startSso">{{ loading ? '正在认证...' : '重试模拟认证' }}</button>
       <button v-if="mode==='login'" class="login-btn" :disabled="loading" @click="handleLogin">{{ loading ? '登录中...' : '登录' }}</button>
       <button v-if="mode==='login'" class="link-btn" :disabled="loading" @click="requestCode">忘记密码?</button>
       <button v-if="mode==='code'" class="login-btn" :disabled="loading" @click="verifyCode">验证验证码</button>

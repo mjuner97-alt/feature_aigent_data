@@ -16,6 +16,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
+import jakarta.servlet.http.HttpServletRequest;
 import com.agentscopea2a.v2.auth.dto.PasswordResetRequest;
 import com.agentscopea2a.v2.auth.dto.PasswordResetVerifyRequest;
 import com.agentscopea2a.v2.auth.dto.PasswordResetCompleteRequest;
@@ -29,6 +30,13 @@ import org.springframework.beans.factory.annotation.Value;
 @RequestMapping("/api/auth")
 @CrossOrigin(origins = "*", maxAge = 3600)
 public class AuthController {
+    public static final String SESSION_USER = "com.agentscopea2a.auth.userId";
+
+    static LoginResponse establishSession(HttpServletRequest request, LoginResponse response) {
+        request.getSession().setAttribute(SESSION_USER, response.getUserId());
+        request.changeSessionId();
+        return response;
+    }
 
     private final AuthService authService;
     @Value("${app.auth.migration-secret:}") private String migrationSecret;
@@ -45,13 +53,28 @@ public class AuthController {
     }
 
     @PostMapping("/login")
-    public ResponseEntity<?> login(@RequestBody LoginRequest request) {
+    public ResponseEntity<?> login(@RequestBody LoginRequest request, HttpServletRequest servletRequest) {
         try {
             LoginResponse response = authService.login(request);
-            return ResponseEntity.ok(response);
+            return ResponseEntity.ok(establishSession(servletRequest, response));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
+    }
+
+    @PostMapping("/logout")
+    public ResponseEntity<Void> logout(HttpServletRequest request) {
+        var session = request.getSession(false);
+        if (session != null) session.invalidate();
+        return ResponseEntity.noContent().build();
+    }
+
+    @GetMapping("/session")
+    public ResponseEntity<?> currentSession(@SessionAttribute(name = SESSION_USER, required = false) String userId) {
+        if (userId == null || userId.isBlank()) {
+            return ResponseEntity.status(401).header("Cache-Control", "no-store").build();
+        }
+        return ResponseEntity.ok().header("Cache-Control", "no-store").body(Map.of("userId", userId));
     }
 
     @PostMapping("/password-reset/request")
