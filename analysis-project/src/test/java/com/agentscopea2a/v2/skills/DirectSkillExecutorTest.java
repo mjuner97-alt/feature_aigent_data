@@ -1317,6 +1317,72 @@ class DirectSkillExecutorTest {
     }
 
     @Test
+    void ambiguousMonthsAnchorTriggersAskAndResumeResolvesDirection() {
+        // 2026-11-17 近N月换轨: 裸"近3个月"走 L1 正则 (无需词表配置) → MONTHS 反问 → 历史/未来
+        String question = "近3个月的达标率是多少";
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"range\":\"timeRange\"}", "达标率")));
+        enableKeyDictionary(timeRangeConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor executor = newExecutor(true);
+        DirectSkillExecutor.DirectExecutionPlan plan = executor.plan(question, "alice", null, "conv-1");
+
+        assertTrue(plan.needsAsk());
+        assertTrue(plan.askMessage().contains("历史"));
+        assertTrue(plan.askMessage().contains("未来"));
+        var map = pendingMap(executor);
+        assertEquals(1, map.size());
+        assertTrue(map.values().iterator().next().pendingAnchors().contains("AMBIGUOUS:MONTHS:3"));
+
+        // 答"历史" → LAST:3M 透传裸键, pending 消费
+        DirectSkillExecutor.DirectExecutionPlan done =
+                executor.plan("历史", "alice", null, "conv-1");
+        assertFalse(done.needsAsk());
+        assertEquals("LAST:3M", done.params().get("range"));
+        assertTrue(map.isEmpty());
+    }
+
+    @Test
+    void ambiguousMonthsFutureAnswerResolvesNext() {
+        String question = "近2个月的达标率如何";
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"range\":\"timeRange\"}", "达标率")));
+        enableKeyDictionary(timeRangeConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor executor = newExecutor(true);
+        assertTrue(executor.plan(question, "alice", null, "conv-1").needsAsk());
+
+        DirectSkillExecutor.DirectExecutionPlan done =
+                executor.plan("未来", "alice", null, "conv-1");
+        assertEquals("NEXT:2M", done.params().get("range"));
+    }
+
+    @Test
+    void nearNMonthsVersionPhraseSkipsAmbiguityAsk() {
+        // 拍板⑷: "近3个月版本"连写归版本键 LAST:3V (在日历可展开时不反问, 不进 MONTHS 反问链)
+        String question = "近3个月版本的达标率";
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"range\":\"timeRange\"}", "达标率")));
+        enableKeyDictionary(timeRangeConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor executor = newExecutor(true);
+        DirectSkillExecutor.DirectExecutionPlan plan = executor.plan(question, "alice", null, "conv-1");
+        assertFalse(plan.needsAsk());
+    }
+
+    @Test
     void ambiguousProdAnchorAskAndResume() {
         String question = "投产前的达标率";
         when(metadataRepository.findActive()).thenReturn(List.of(

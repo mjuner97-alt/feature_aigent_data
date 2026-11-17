@@ -19,7 +19,8 @@ import java.util.regex.Pattern;
  *   <li>截至X日 → {@code UNTIL:date}（缺年补当前年、缺月补当前月，拍板④）</li>
  *   <li>同月省略区间「10月1日到15日」/ 双省月「5日到10日」→ {@code DATE:a~b}</li>
  *   <li>临近交付N周内 → {@code R-n}、T-X → {@code T-n}（里程碑透传锚点，不解析日期）</li>
- *   <li>未来/今后/下N周 → {@code NEXT:nw}；近N周 → {@code AMBIGUOUS:WEEKS:n}（歧义反问，拍板⑤）</li>
+ *   <li>未来/今后/下N周 → {@code NEXT:nw}；近N周 → {@code AMBIGUOUS:WEEKS:n}、
+ *       近N个月 → {@code AMBIGUOUS:MONTHS:n}（歧义反问，拍板⑤；2026-11-17 近N月换轨）</li>
  *   <li>近N天 → {@code LAST:nd}（历史不含今天口径；中文数字/阿拉伯数字均命中，2026-10-27 补）</li>
  *   <li>裸日期 [年]M月D(日|号) → {@code DATE:d~d} 单日（start=end，缺年补当前年，
  *       后接"投产"让位给投产日参数不出 timeRange，docs/202611/裸日期单日时间范围识别方案.md）</li>
@@ -29,19 +30,22 @@ import java.util.regex.Pattern;
  */
 public final class TimeRangeExtractor {
 
+    /** 年份前缀分组（可选）：4位年或2位缩写（"27年"→2027，与词表锚点口径一致）。 */
+    private static final String YEAR_G = "(\\d{4}|\\d{2})";
+
     /** 中文日期区间：[可选年]M月D日 (到|至|~|～|—|–|-) [可选年]M月D日。 */
     private static final Pattern CN_RANGE = Pattern.compile(
-            "(?:(\\d{4})\\s*年\\s*)?(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*日\\s*(?:到|至|~|～|—|–|-)\\s*"
-                    + "(?:(\\d{4})\\s*年\\s*)?(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*日");
+            "(?:" + YEAR_G + "\\s*年\\s*)?(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*日\\s*(?:到|至|~|～|—|–|-)\\s*"
+                    + "(?:" + YEAR_G + "\\s*年\\s*)?(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*日");
 
     /** 混合省略区间（docs/202611/混合省略日期区间解析修复方案.md §3.1）：左段无"日"的
      *  [年]M月D (到|至|~|～|—|–|-) [年][M月]D[日号]?——右段月份可重复（"9月28-9月30日"）
      *  可省略（"9月28-30日"），日可省（"9月28-9月30"）。左段带"日"的形态归 CN_RANGE /
      *  CN_RANGE_TAIL（先跑，优先占 span）。 */
     private static final Pattern MIXED_RANGE = Pattern.compile(
-            "(?:(\\d{4})\\s*年\\s*)?(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*[日号]?"
+            "(?:" + YEAR_G + "\\s*年\\s*)?(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*[日号]?"
                     + "\\s*(?:到|至|~|～|—|–|-)\\s*"
-                    + "(?:(\\d{4})\\s*年\\s*)?(?:(\\d{1,2})\\s*月\\s*)?(\\d{1,2})\\s*[日号]?");
+                    + "(?:" + YEAR_G + "\\s*年\\s*)?(?:(\\d{1,2})\\s*月\\s*)?(\\d{1,2})\\s*[日号]?");
 
     /** 数字日期区间：yyyy.M.d (分隔符) [yyyy.]M.d，点/横线/斜杠分隔。 */
     private static final Pattern NUM_RANGE = Pattern.compile(
@@ -50,11 +54,11 @@ public final class TimeRangeExtractor {
 
     /** 截至X日：(截止|截至) [年][M月]D日；缺年补当前年、缺月补当前月（时间维度方案拍板④）。 */
     private static final Pattern UNTIL = Pattern.compile(
-            "(?:截止|截至)\\s*(?:(\\d{4})\\s*年\\s*)?(?:(\\d{1,2})\\s*月\\s*)?(\\d{1,2})\\s*[日号]");
+            "(?:截止|截至)\\s*(?:" + YEAR_G + "\\s*年\\s*)?(?:(\\d{1,2})\\s*月\\s*)?(\\d{1,2})\\s*[日号]");
 
     /** 同月省略区间：[年]M月D日 (到|至|…) D日（第二段无"月"，补起始月）。 */
     private static final Pattern CN_RANGE_TAIL = Pattern.compile(
-            "(?:(\\d{4})\\s*年\\s*)?(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*日\\s*(?:到|至|~|～|—|–|-)\\s*"
+            "(?:" + YEAR_G + "\\s*年\\s*)?(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*日\\s*(?:到|至|~|～|—|–|-)\\s*"
                     + "(\\d{1,2})\\s*[日号]");
 
     /** 双省月区间：D日 (到|至|…) D日 → 本月（时间维度方案 §3.1③）。 */
@@ -63,15 +67,21 @@ public final class TimeRangeExtractor {
 
     /** 裸日期单日：[年]M月D(日|号) → DATE:{d}~{d}（start=end，裸日期单日方案 §3.1）。
      *  排在全部日期区间正则之后（span 优先级最低，区间/截至先占 span）；缺年补当前年；
-     *  三个让位护栏：① 后接"投产"→ 投产日属性参数出口，timeRange 不出防双过滤（§8.2 拍板⑦）；
+     *  四个让位护栏：① 后接"投产"→ 投产日属性参数出口，timeRange 不出防双过滤（§8.2 拍板⑦）；
      *  ② 紧邻区间分隔符（前接/后接 到|至|~|…）→ 区间语义，非法/倒置区间维持整段弃收，
-     *     不让裸日期兜底收走单端点（"到期"的"到"后接非数字，不受影响，拍板①照出单日）。
+     *     不让裸日期兜底收走单端点（"到期"的"到"后接非数字，不受影响，拍板①照出单日）；
+     *  ③ 前接"投产日(期)?[为是:：]"（2026-11-17 投产日期动态维度，拍板⑨前置形态）→
+     *     同属投产日出口，timeRange 不出——两支备选：含年支（投产日为2026年10月26日
+     *     在"2026年…"起点被压后，引擎内移重试到"10月26日"，须由含年支再压一次）与
+     *     裸前缀支；Java lookbehind 要求定长，空白用 \s{0,3}。
      *  注意 lookbehind 必须置于模式开头——零宽断言在当前匹配位置求值，放末尾查的是
      *  "日/号"前一个字符而非日期起点前的分隔符（2026-11-11 实测踩坑）；数字入类防
      *  "13月15日" 从中段吃出 "3月15日"。 */
     private static final Pattern BARE_DATE = Pattern.compile(
-            "(?<![0-9到至~～—–\\-]\\s{0,3})"
-                    + "(?:(\\d{4})\\s*年\\s*)?(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*[日号]"
+            "(?<!投产日[期]?[为是：:]?\\s{0,3}(?:\\d{4}|\\d{2})年\\s{0,3}"
+                    + "|投产日[期]?[为是：:]?\\s{0,3})"
+            + "(?<![0-9到至~～—–\\-]\\s{0,3})"
+                    + "(?:" + YEAR_G + "\\s*年\\s*)?(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*[日号]"
                     + "(?!\\s*(?:到|至|~|～|—|–|-)\\s*[0-9一二三四五六七八九十])"
                     + "(?!\\s*投产)");
 
@@ -93,6 +103,12 @@ public final class TimeRangeExtractor {
     /** 近 N天 → LAST:{n}d（2026-10-27 新增：词表只配了 近7天/近30天 封闭词，近58天 类漏识；
      *  历史口径 today-N~today 含今天，"近15日" 因量词"日"≠"天"不误命中）。 */
     private static final Pattern LAST_DAYS = Pattern.compile("近\\s*(" + CN_NUM + ")\\s*天");
+
+    /** 近 N个月 → AMBIGUOUS:MONTHS:{n}（方向歧义反问，2026-11-17 换轨：原归版本键
+     *  LAST:nV 按版本个数推，现归 timeRange，历史/未来执行链路反问；(?!\s*个?版) 让位
+     *  "近x个月版本/近x个月个版本"连写形态归版本键（拍板⑷）。 */
+    private static final Pattern LAST_MONTHS =
+            Pattern.compile("近\\s*(" + CN_NUM + ")\\s*个月(?!\\s*个?版)");
 
     private static final DateTimeFormatter ISO = DateTimeFormatter.ISO_LOCAL_DATE;
 
@@ -162,7 +178,7 @@ public final class TimeRangeExtractor {
             return false;
         }
         return NEXT_WEEKS.matcher(question).find() || LAST_WEEKS.matcher(question).find()
-                || LAST_DAYS.matcher(question).find();
+                || LAST_DAYS.matcher(question).find() || LAST_MONTHS.matcher(question).find();
     }
 
     private static List<Span> collectL1Spans(String question, boolean datesOnly) {
@@ -184,6 +200,8 @@ public final class TimeRangeExtractor {
                     m -> weeks(m.group(1), 1) == null ? null : "AMBIGUOUS:WEEKS:" + weeks(m.group(1), 1), spans);
             addRegexSpans(question, LAST_DAYS,
                     m -> weeks(m.group(1), 1) == null ? null : "LAST:" + weeks(m.group(1), 1) + "d", spans);
+            addRegexSpans(question, LAST_MONTHS,
+                    m -> weeks(m.group(1), 1) == null ? null : "AMBIGUOUS:MONTHS:" + weeks(m.group(1), 1), spans);
         }
         return spans;
     }
@@ -262,10 +280,10 @@ public final class TimeRangeExtractor {
     /** CN_RANGE / NUM_RANGE 共用分组布局：1=起始年(可选) 2=起始月 3=起始日 4=结束年(可选) 5=结束月 6=结束日。 */
     private static String rangeAnchor(Matcher m) {
         LocalDate today = LocalDate.now(TimeRangeResolver.ZONE);
-        Integer y1 = groupOrNull(m, 1);
+        Integer y1 = yearOrNull(m, 1);
         Integer mo1 = groupOrNull(m, 2);
         Integer d1 = groupOrNull(m, 3);
-        Integer y2 = groupOrNull(m, 4);
+        Integer y2 = yearOrNull(m, 4);
         Integer mo2 = groupOrNull(m, 5);
         Integer d2 = groupOrNull(m, 6);
         if (mo1 == null || d1 == null || mo2 == null || d2 == null) {
@@ -288,10 +306,10 @@ public final class TimeRangeExtractor {
     /** MIXED_RANGE 分组：1=起始年(可选) 2=起始月 3=起始日 4=结束年(可选) 5=结束月(可选) 6=结束日；
      *  右段有月时缺年补起始年（跨年须显式写年），右段省月时年/月全承左段；非法日期整段跳过。 */
     private static String mixedRangeAnchor(Matcher m) {
-        Integer y1 = groupOrNull(m, 1);
+        Integer y1 = yearOrNull(m, 1);
         Integer mo1 = groupOrNull(m, 2);
         Integer d1 = groupOrNull(m, 3);
-        Integer y2 = groupOrNull(m, 4);
+        Integer y2 = yearOrNull(m, 4);
         Integer mo2 = groupOrNull(m, 5);
         Integer d2 = groupOrNull(m, 6);
         if (mo1 == null || d1 == null || d2 == null) {
@@ -315,7 +333,7 @@ public final class TimeRangeExtractor {
     /** UNTIL 分组：1=年(可选) 2=月(可选) 3=日；缺年补当前年、缺月补当前月；非法日期整段跳过。 */
     private static String untilAnchor(Matcher m) {
         LocalDate today = LocalDate.now(TimeRangeResolver.ZONE);
-        Integer y = groupOrNull(m, 1);
+        Integer y = yearOrNull(m, 1);
         Integer mo = groupOrNull(m, 2);
         Integer d = groupOrNull(m, 3);
         if (d == null) {
@@ -333,7 +351,7 @@ public final class TimeRangeExtractor {
     /** 同月省略区间分组：1=年(可选) 2=月 3=起始日 4=结束日；结束段补起始月。 */
     private static String tailRangeAnchor(Matcher m) {
         LocalDate today = LocalDate.now(TimeRangeResolver.ZONE);
-        Integer y = groupOrNull(m, 1);
+        Integer y = yearOrNull(m, 1);
         Integer mo = groupOrNull(m, 2);
         Integer d1 = groupOrNull(m, 3);
         Integer d2 = groupOrNull(m, 4);
@@ -377,7 +395,7 @@ public final class TimeRangeExtractor {
      *  非法日期整段跳过；start=end（裸日期单日方案 §3.1）。 */
     private static String bareDateAnchor(Matcher m) {
         LocalDate today = LocalDate.now(TimeRangeResolver.ZONE);
-        Integer y = groupOrNull(m, 1);
+        Integer y = yearOrNull(m, 1);
         Integer mo = groupOrNull(m, 2);
         Integer d = groupOrNull(m, 3);
         if (mo == null || d == null) {
@@ -395,6 +413,15 @@ public final class TimeRangeExtractor {
     private static Integer groupOrNull(Matcher m, int group) {
         String v = m.group(group);
         return v == null ? null : Integer.valueOf(v);
+    }
+
+    /** 年分组解析：2位缩写补 "20"（"27年"→2027）；缺省 null（调用方补当前年）。 */
+    private static Integer yearOrNull(Matcher m, int group) {
+        String v = m.group(group);
+        if (v == null) {
+            return null;
+        }
+        return Integer.valueOf(v.length() == 2 ? "20" + v : v);
     }
 
     private record Span(int start, int end, String anchor) {

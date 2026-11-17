@@ -24,6 +24,7 @@ level 判定 → 状态继承 → 参数装配」的串行管道，任何一环�
 | 「**杭研** 1、2、3三个季度」整轮全空 | ②level 判定+③继承 | 杭研是 orgName 动态键词（刻意不进 deptName 词表）；detectLevel TIME 检查不含量词列举形态 → level=null；inheritDimensions level==null 直接 return previous 丢弃已提取维度 | detectLevel TIME 补齐 SHARED_*/RANGE_*；inheritDimensions level==null 但 hasAnyDimension() 时仍落地显式值 | 同上 §3.5 |
 | 「10月26日到期」被吃成 10月版本 | ①提取 | 日期 span 未屏蔽，EXPLICIT_MONTH 从日期里吃值 | dateShieldSpans 先收集屏蔽再跑版本正则 | （既有） |
 | 「F-FPA4季度」应用码贪婪吃成 F-FPA4 | ①提取 | 应用码正则吞数字 | 应用码让位规则：数字前截断，让出的「4季度」回流季度维度 | （既有） |
+| 「杭州三部**27年**1季度积压」「产赋**27年**1月版」→2026（临近跨年，2026-11-17） | ①提取 | 10 个时间正则年份前缀只认 4 位年 `(\d{4})年`，2 位缩写年吃不到，「1季度/1月版」落入"无年份→补当前年"；词表锚点路径（YEAR_PREFIX_TAIL）与 TIME_MASK_SPAN 均已支持 2 位年，仅正则轨落后 | 统一 `YEAR_PREFIX = (?:(\d{4}|\d{2})年)?` + yearOf() 归一（2位→20YY）；TimeRangeExtractor 5 个日期正则同修 + yearOrNull | （本节 §3-E） |
 
 ## 2. 五环排查表（诊断顺序）
 
@@ -98,13 +99,20 @@ detectLevel 漏判 → inheritDimensions 短路。兜底层（hasAnyDimension �
 互斥判定（后缀>1 字符且互不包含才抑制）。改动前先看
 DimensionStateManagerEmbeddedAliasTest 的既有边界。
 
+**E. 时间写法多轨口径不一致** → 时间维度有四条轨：EXPLICIT_* 正则、
+TIME_MASK_SPAN 屏蔽、YEAR_PREFIX_TAIL 词表锚点限定年、TimeRangeExtractor
+日期轨。新增时间写法（如 2 位缩写年）时四条轨必须同步支持，否则出现
+"屏蔽轨认了、提取轨丢了" 的半支持状态（值落入"无年份→补当前年"）。
+年分组归一统一走 yearOf()/yearOrNull()（2位→20YY），别在用点手写条件。
+
 ## 4. 回归测试资产
 
 | 测试类 | 覆盖 |
 | --- | --- |
 | DimensionStateManagerAliasIntegrationTest（77 用例） | alias 解析优先/正则兜底/列举量词区间/专字段共存/杭研 level 兜底/§13.4 分段抽取 |
 | DimensionStateManagerEmbeddedAliasTest（19 用例） | alias 嵌入抑制边界、连接词/连写拆分 |
-| DimensionStateManagerRuleTest（44 用例） | 纯正则老行为回归 |
+| DimensionStateManagerRuleTest（48 用例） | 纯正则老行为回归（含 2 位缩写年 27年1季度/27年1月版） |
+| TimeRangeExtractorTest（42 用例） | 日期区间/截至/裸日期/周类（含 2 位缩写年 27年1月2日） |
 | DimensionStateManagerClarificationTest（18 用例） | 歧义反问短路 |
 | DirectSkillExecutorTest（130 用例） | 直接执行链/真值校验/重锚抑制/参数装配 |
 

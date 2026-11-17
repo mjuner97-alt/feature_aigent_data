@@ -112,6 +112,32 @@ class DimensionStateManagerRuleTest {
     }
 
     @Test
+    void twoDigitYearQuarterOverridesCurrentYear() {
+        // 2026-11-17 bug："杭州三部27年1季度积压" 年份前缀只认4位年，"1季度" 落入
+        // "无年份→补当前年" 变 2026年1季度；2位缩写归一 20YY（同词表锚点口径）
+        DimensionState.TimeDimension time = extractTime("杭州三部27年1季度积压");
+        assertEquals(DimensionState.TimeDimensionType.QUARTER, time.getType());
+        assertEquals(List.of("2027年1季度"), time.getValues());
+    }
+
+    @Test
+    void twoDigitYearVersionOverridesCurrentYear() {
+        DimensionState.TimeDimension time = extractTime("产赋卡口不达标27年1月版");
+        assertEquals(DimensionState.TimeDimensionType.VERSION, time.getType());
+        assertEquals(List.of("2027年1月份版本"), time.getValues());
+    }
+
+    @Test
+    void twoDigitYearSharedSuffixAndRange() {
+        DimensionState.TimeDimension shared = extractTime("27年3和4季度缺陷对比");
+        assertEquals(List.of("2027年3季度", "2027年4季度"), shared.getValues());
+        DimensionState.TimeDimension range = extractTime("27年1-2季度达标率");
+        assertEquals(List.of("2027年1季度", "2027年2季度"), range.getValues());
+        DimensionState.TimeDimension delayed = extractTime("27年10月延后版的积压");
+        assertEquals(List.of("2027年10月延后版"), delayed.getValues());
+    }
+
+    @Test
     void versionWithoutYearPrefixFallsBackToCurrentYear() {
         String y = String.valueOf(currentYear());
         DimensionState.TimeDimension time = extractTime("4月份版本的质量");
@@ -180,9 +206,22 @@ class DimensionStateManagerRuleTest {
 
     @Test
     void lastNVersionsProduceAnchor() {
-        // 近 N 个版本/近 N 个月 → LAST:{n}V 锚点（执行期经日历展开）
+        // 近 N 个版本 → LAST:{n}V 锚点（执行期经日历展开）；
+        // 2026-11-17 换轨：裸"近N个月"归 timeRange（AMBIGUOUS:MONTHS），不再产版本锚点
         assertEquals(List.of("LAST:3V"), extractTime("近3个版本的达标率").getValues());
-        assertEquals(List.of("LAST:6V"), extractTime("最近6个月的缺陷").getValues());
+        assertNull(extractTime("最近6个月的缺陷"));
+        // 连写形态仍归版本键（拍板⑷）
+        assertEquals(List.of("LAST:3V"), extractTime("近3个月版本的达标率").getValues());
+        assertEquals(List.of("LAST:3V"), extractTime("近3个月个版本的达标率").getValues());
+    }
+
+    @Test
+    void nearNMonthsKeepsTimeLevel() {
+        // 套路C 防回归：裸"近3个月"已归 timeRange 轨，detectLevel 须认 LAST_N_MONTHS，
+        // 否则 level 漏判 → inheritDimensions 短路整轮维度丢失
+        assertNull(extractTime("近3个月的缺陷"));
+        assertEquals(QuestionAnalysis.QuestionLevel.TIME,
+                new DimensionStateManager(null).analyzeQuestionRuleBased("近3个月的缺陷").getLevel());
     }
 
     @Test
