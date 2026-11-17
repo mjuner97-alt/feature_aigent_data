@@ -58,7 +58,7 @@ import org.springframework.transaction.event.TransactionalEventListener;
  *   <li>{@link #advance} 推进:放行等待节点、处理取消、全部终态后触发汇总与通知;</li>
  *   <li>{@link #expirePreviousDays} 跨天兜底:仍在等指标(WAITING_METRICS)的执行直接判失败。</li>
  * </ol>
- * 节点级并发用许可信号量(workerPermits)限流,流程级并发上限由执行快照 maxParallelismSnapshot 控制。
+ * 所有长任务共享 workerPermits 执行名额，名额数量统一由 SkillFlowProperties.WORKER_COUNT 控制。
  */
 @Component
 @ConditionalOnProperty(prefix = "harness.a2a.skill-flow", name = "enabled", havingValue = "true", matchIfMissing = true)
@@ -254,16 +254,14 @@ public class FlowCoordinator {
     private void dispatchRunnableNodes() {
         LocalDateTime now = LocalDateTime.now(clock);
         // 候选集 = QUEUED / 到重试时间的 RETRY_WAIT / 租约过期的 RUNNING(可恢复重试),
-        // 且受 next_run_at(退避时间)、租约有效期、流程级 maxParallelism 三重过滤。
+        // 并检查 next_run_at(退避时间)、租约有效期和报告对象执行顺序。
         // 候选只是"有资格跑",还必须 claim 原子抢占成功才真正执行。
         // selectRunnableNodes SQL 逻辑(mybatis/mapper/gauss/SkillFlowMapper.xml)：
         // 1) 状态候选：QUEUED / RETRY_WAIT；或「RUNNING 但租约已过期且 attempt_count < max_attempts」
         //    （原执行超时/失联，尝试次数未用尽仍可重试恢复）；
         // 2) 退避到期：next_run_at 为 NULL 或 <= now（失败重试的退避间隔未到不捞）；
         // 3) 租约空闲：lease_expires_at 为 NULL 或 < now（不捞走仍被其他 worker 持租执行中的节点）；
-        // 4) 并行度门控：同一流程内「RUNNING 且租约未过期」的活跃节点数
-        //    < max_parallelism_snapshot（流程执行记录上的快照，NULL 兜底 1）；
-        // 5) 按 id 升序 LIMIT 100，防止单轮扫描刷库。
+        // 4) 按类型优先级及执行顺序 LIMIT 100，防止单轮扫描刷库。
         // 注意：返回的只是「有资格跑」的候选，还须经 claimService.claim 原子抢占
         // （条件 UPDATE 切 RUNNING + 写租约，谁先执行谁赢）成功才真正提交执行，
         // 多实例部署时由此保证同一节点只被一个 worker 执行。safeNodes 仅过滤 null 元素做防御。
@@ -339,7 +337,7 @@ public class FlowCoordinator {
                     node.getFlowExecutionId(),
                     node.getStatus()
                 );
-                if (!expiredAttempt) workerPermits.release(); // 认领失败(被别人抢走/并发超限),让出许可
+                if (!expiredAttempt) workerPermits.release(); // 认领失败时让出执行名额
             }
         }
     }
@@ -708,7 +706,7 @@ public class FlowCoordinator {
             return;
         }
         // 当前流程节点没有依赖关系时，所有 PENDING 节点都应并发入队；流程级
-        // maxParallelism 和 workerPermits 负责限流，不在这里强制串行。
+        // workerPermits 统一分配执行名额。
         for (SkillFlowNodeExecution node : nodes) {
             if (node.getStatus() == FlowNodeExecutionStatus.PENDING) {
                 node.setStatus(FlowNodeExecutionStatus.QUEUED);

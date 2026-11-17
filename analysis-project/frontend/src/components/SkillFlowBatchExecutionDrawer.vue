@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { InfoFilled } from '@element-plus/icons-vue';
 import {
@@ -38,6 +38,14 @@ const reportKeyword = ref('');
 const page = ref(1);
 const pageSize = ref(10);
 let generation = 0;
+let pollTimer: ReturnType<typeof setTimeout> | undefined;
+
+function stopPolling() {
+  if (pollTimer !== undefined) {
+    clearTimeout(pollTimer);
+    pollTimer = undefined;
+  }
+}
 
 const nodeDurationHelp = '所有节点每次执行耗时的累计值，包含失败、重试和重跑的执行耗时，不包含排队、等指标和等待重试或重跑的时间。';
 const elapsedDurationHelp = '从任务首次创建到最终结束实际经过的时间，包含节点执行、汇总、排队、等指标和等待重试或重跑的时间。';
@@ -73,27 +81,48 @@ const selection = computed<BatchNotificationSelection | null>(() =>
     : null
 );
 
-async function load() {
+async function load(silent = false) {
+  stopPolling();
   const current = ++generation;
-  selected.value = new Set();
-  reportKeyword.value = '';
-  page.value = 1;
+  if (!silent) {
+    selected.value = new Set();
+    reportKeyword.value = '';
+    page.value = 1;
+    rows.value = [];
+  }
   error.value = '';
-  if (!props.flowId || !props.batchId) return;
-  loading.value = true;
+  if (!props.flowId || !props.batchId) {
+    loading.value = false;
+    return;
+  }
+  if (!silent) loading.value = true;
   try {
     const result = await listSkillFlowBatchExecutions(props.flowId, props.batchId);
     if (current !== generation) return;
     rows.value = result;
-    const ids = [...new Set(result.map((row) => row.triggerUserId).filter((id): id is string => !!id))];
-    userNames.value = ids.length ? await batchUserNames(ids) : {};
+    const ids = [...new Set(result.map((row) => row.triggerUserId).filter(
+      (id): id is string => !!id && !userNames.value[id]
+    ))];
+    if (ids.length) {
+      const names = await batchUserNames(ids).catch(() => ({}));
+      if (current !== generation) return;
+      userNames.value = { ...userNames.value, ...names };
+    }
   } catch (e) {
     if (current === generation) error.value = e instanceof Error ? e.message : '加载团队报告失败';
   } finally {
-    if (current === generation) loading.value = false;
+    if (current === generation) {
+      loading.value = false;
+      pollTimer = setTimeout(() => void load(true), 5000);
+    }
   }
 }
 watch(() => [props.flowId, props.batchId] as const, () => void load(), { immediate: true });
+watch(detailOpen, (open) => { if (!open) void load(true); });
+onUnmounted(() => {
+  ++generation;
+  stopPolling();
+});
 watch(reportKeyword, () => { page.value = 1; });
 watch(pageSize, () => { page.value = 1; });
 watch(

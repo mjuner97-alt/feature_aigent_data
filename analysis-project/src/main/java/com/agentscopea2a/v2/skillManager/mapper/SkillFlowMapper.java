@@ -390,9 +390,6 @@ public interface SkillFlowMapper {
         @Param("now") LocalDateTime now
     );
 
-    /** 统计租约仍有效的运行中节点，用于判断流程当前占用的并行度。 */
-    int countActiveRunningNodes(@Param("flowExecutionId") Long flowExecutionId, @Param("now") LocalDateTime now);
-
     /**
      * 原子取得流程汇总权，仅允许 QUEUED 或 RUNNING 状态进入 SUMMARIZING,
      * 保证"全部节点终态后的汇总+通知"只执行一次。

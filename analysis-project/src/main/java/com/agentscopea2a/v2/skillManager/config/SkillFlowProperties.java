@@ -13,7 +13,7 @@ public final class SkillFlowProperties {
     /** Skill Flow 使用的业务时区，用于计算数据日期和每日幂等键。 */
     public static final ZoneId ZONE_ID = ZoneId.of("Asia/Shanghai");
 
-    /** 长任务后台同时执行的节点数量上限。每个流程还受自身并发配置限制。 */
+    /** 当前服务实例所有长任务共享的节点并发上限，由调度器统一分配执行名额。 */
     public static final int WORKER_COUNT = 6;
 
     /** 单个 Skill 节点允许执行的最长时间，单位为分钟。 */

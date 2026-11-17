@@ -833,7 +833,7 @@
     <!-- ==================== 节点调度、worker 租约与并发抢占 ==================== -->
 
     <!-- 找出当前可调度的节点候选(QUEUED / 到重试时间的 RETRY_WAIT / 租约过期且仍可重试的 RUNNING):
-         三重限制 = next_run_at 退避到期、租约已过期(或无租约)、该流程活跃 RUNNING 节点数 < maxParallelism。
+         检查 next_run_at 退避到期、租约已过期(或无租约)及报告对象执行顺序。
          候选只是"有资格跑",必须经 claimNode 原子抢占成功才真正执行;每轮最多取 100 个防刷库 -->
     <select id="selectRunnableNodes" resultMap="NodeExecutionMap">
         SELECT n.*
@@ -855,12 +855,6 @@
         <if test="!allowAuto">
           AND (e.trigger_type IS NULL OR e.trigger_type &lt;&gt; 'AUTO_METRIC')
         </if>
-          AND (SELECT COUNT(*)
-               FROM skill_flow_node_execution r
-               WHERE r.flow_execution_id = n.flow_execution_id
-                 AND r.status = 'RUNNING'
-                 AND r.lease_expires_at &gt;= #{now}) &lt;
-              GREATEST(COALESCE(e.max_parallelism_snapshot, 1), 1)
         ORDER BY COALESCE(t.sort_order, 2147483647) ASC,
                  e.created_at ASC, e.id ASC, n.id ASC LIMIT 100
     </select>
@@ -923,15 +917,6 @@
               WHERE object_execution.id=flow_execution_id AND object_execution.batch_id IS NOT NULL))
         <include refid="schedulerNodeTriggerFilter"/>
     </update>
-
-    <!-- 统计执行实例下租约仍有效的 RUNNING 节点数,用于流程并行度展示/校验 -->
-    <select id="countActiveRunningNodes" resultType="int">
-        SELECT COUNT(*)
-        FROM skill_flow_node_execution
-        WHERE flow_execution_id = #{flowExecutionId}
-          AND status = 'RUNNING'
-          AND lease_expires_at &gt;= #{now}
-    </select>
 
     <!-- 抢占汇总权:仅 QUEUED/RUNNING 可转 SUMMARIZING,update 成功(=1)者才有权收尾,
          保证"全部节点终态后的汇总+通知"只执行一次 -->

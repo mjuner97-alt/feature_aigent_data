@@ -125,7 +125,7 @@ export interface SkillFlowInput {
   priority?: number;
   scheduleRules?: string | null;
   autoTriggerEnabled?: boolean;
-  maxParallelism: number;
+  maxParallelism?: number;
   notifyEnabled: boolean;
   executors?: string[];
   notifyContactName?: string | null;

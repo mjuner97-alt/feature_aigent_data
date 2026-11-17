@@ -662,7 +662,7 @@ public class FlowCompletionService {
                 reportLabel =
                     team == null
                         ? Objects.toString(FlowReportNaming.value(execution, "dev_dept"), "本部门") + "的部门报告"
-                        : team + "的团队报告";
+                        : team + "团队报告";
             }
             defaultHtml = new StringBuilder("<html><body><p>各位：</p>")
                 .append("<p>\u3000\u3000")

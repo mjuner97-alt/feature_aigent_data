@@ -57,7 +57,6 @@ public class FlowDefinitionService {
     @org.springframework.beans.factory.annotation.Autowired
     private TeamReportService teamReports;
 
-    static final int DEFAULT_MAX_PARALLELISM = 2;
     private final SkillFlowMapper flowMapper;
     private final SkillMapper skillMapper;
     private final SkillDependencyMetricMapper metricMapper;
@@ -833,7 +832,7 @@ public class FlowDefinitionService {
             flow.getSummaryQuestionTemplate(),
             flow.getEnabled(),
             flow.getScheduleRules(),
-            flow.getMaxParallelism(),
+            SkillFlowProperties.WORKER_COUNT,
             flow.getNotifyEnabled(),
             triggers,
             nodes,
@@ -928,7 +927,7 @@ public class FlowDefinitionService {
             flow.getSummaryQuestionTemplate(),
             flow.getEnabled(),
             flow.getScheduleRules(),
-            flow.getMaxParallelism(),
+            SkillFlowProperties.WORKER_COUNT,
             flow.getNotifyEnabled(),
             Boolean.TRUE.equals(flow.getChatPublic()),
             triggers,
@@ -1004,7 +1003,7 @@ public class FlowDefinitionService {
             .scheduleRules(request.scheduleRules())
             .autoTriggerEnabled(Boolean.TRUE.equals(request.autoTriggerEnabled()))
             .enabled(Boolean.TRUE.equals(request.enabled()))
-            .maxParallelism(DEFAULT_MAX_PARALLELISM)
+            .maxParallelism(SkillFlowProperties.WORKER_COUNT)
             .notifyEnabled(request.notifyEnabled() == null || request.notifyEnabled())
             .notifyContactName(request.notifyContactName())
             .notifyContactPhone(request.notifyContactPhone())

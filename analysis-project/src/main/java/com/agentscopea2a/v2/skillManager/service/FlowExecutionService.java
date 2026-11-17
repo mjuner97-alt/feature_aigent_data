@@ -671,9 +671,9 @@ public class FlowExecutionService {
             .reportProcessId(flow.getReportProcessId())
             .reportOutlineSnapshot(flow.getReportOutline())
             // 快照:把流程定义当时的配置固化到执行记录,
-            // 后续流程定义被修改不影响本次执行(总结问题模板 / 最大并行度)
+            // 后续流程定义被修改不影响本次执行的总结问题模板。
             .summaryQuestionTemplateSnapshot(flow.getSummaryQuestionTemplate())
-            .maxParallelismSnapshot(flow.getMaxParallelism())
+            .maxParallelismSnapshot(SkillFlowProperties.WORKER_COUNT)
             // 通知配置快照:执行期间以快照为准,发通知时不再回读流程定义
             .notifyEnabledSnapshot(flow.getNotifyEnabled())
             // 缺省联系人不保存创建人 ID；完成通知阶段会按创建人查询真实姓名。

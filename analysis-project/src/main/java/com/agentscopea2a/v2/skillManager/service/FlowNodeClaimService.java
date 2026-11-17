@@ -20,7 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
  * 必须经由 Spring 事务代理生效;若内联到 Coordinator 里以 this 调用会绕开代理。</p>
  *
  * <p>认领成功需同时满足:节点可运行(QUEUED/RETRY_WAIT/租约过期的 RUNNING,且退避时间已到)、
- * 流程在跑(QUEUED/RUNNING)、流程级并发未超执行快照的 maxParallelismSnapshot。</p>
+ * 流程在跑(QUEUED/RUNNING)、报告对象已轮到执行。节点并发名额由调度器统一管理。</p>
  */
 @Service
 public class FlowNodeClaimService {
@@ -100,17 +100,6 @@ public class FlowNodeClaimService {
                 execution.getStatus(),
                 execution.getId(),
                 nodeId
-            );
-            return false;
-        }
-        int limit =
-            execution.getMaxParallelismSnapshot() == null ? 1 : Math.max(1, execution.getMaxParallelismSnapshot());
-        if (mapper.countActiveRunningNodes(execution.getId(), now) >= limit) {
-            log.warn(
-                "Long task claim rejected: parallelism limit, executionId={}, nodeId={}, limit={}",
-                execution.getId(),
-                nodeId,
-                limit
             );
             return false;
         }
