@@ -83,7 +83,7 @@ public class PythonExecTool {
     /** Default wall-clock cap when the LLM doesn't pass {@code timeoutSeconds}. */
     private static final int DEFAULT_TIMEOUT_SECONDS_FALLBACK = 60;
     /** Hard upper bound when no config injected — prevents an LLM "timeoutSeconds=99999" exploit. */
-    private static final int MAX_TIMEOUT_SECONDS_FALLBACK = 300;
+    private static final int MAX_TIMEOUT_SECONDS_FALLBACK = 600;
 
     /** Max bytes returned per stream. Protect the LLM context — large stdout gets truncated. */
     private static final int MAX_OUTPUT_BYTES = 64_000;

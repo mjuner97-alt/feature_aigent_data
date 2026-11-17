@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import DynamicPeriodEditor from './DynamicPeriodEditor.vue';
 import type { SkillFlowNode } from '../types/skillFlow';
 import type { ParamSchemaItem, ScriptRegistryListItem } from '../types/scriptRegistry';
@@ -17,6 +17,7 @@ import {
   isRuleValue,
   normalizedParamType,
   paramsFromSchema,
+  publicParamKeys,
   validateParamValue,
 } from '../utils/scriptParams';
 
@@ -158,7 +159,9 @@ function paramMode(item: ParamSchemaItem): ParamValueMode {
 }
 function setParamMode(item: ParamSchemaItem, mode: ParamValueMode) {
   if (mode === 'PUBLIC') {
-    setSchemaValue(item, { $public: 'dev_dept' });
+    const keys = publicParamKeys(item.type, props.publicReportType);
+    const key = keys.includes(item.name) ? item.name : keys.includes('dev_dept') ? 'dev_dept' : keys[0];
+    if (key) setSchemaValue(item, { $public: key });
     return;
   }
   if (mode === 'LITERAL') {
@@ -211,11 +214,16 @@ function numberStep(type: string): string {
 }
 function syncSchemaValues() {
   if (!hasSchema()) return;
-  const generated = paramsFromSchema(props.schema || []);
+  const generated = paramsFromSchema(props.schema || [], props.publicReportType);
   schemaValues.value = { ...generated, ...(props.node.scriptParams || {}) };
   scriptParamsText.value = formatScriptParams(schemaValues.value);
+  // 默认引用同步给父表单，使试跑、保存与回显使用相同参数。
+  const missingPublic = Object.keys(generated).some(
+    (name) => !(name in (props.node.scriptParams || {})) && isPublicValue(generated[name])
+  );
+  if (missingPublic) emit('script-params-change', { value: { ...schemaValues.value }, error: '' });
 }
-watch(() => props.schema, syncSchemaValues, { deep: true, immediate: true });
+watch([() => props.schema, () => props.publicReportType, () => props.node.scriptId], syncSchemaValues, { deep: true, immediate: true });
 watch(
   () => props.node.scriptParams,
   (value) => {
@@ -224,9 +232,11 @@ watch(
   { deep: true }
 );
 
-function selectedScript(node: SkillFlowNode, scripts: ScriptRegistryListItem[]): ScriptRegistryListItem | undefined {
-  return scripts.find((script) => script.scriptId === node.scriptId);
-}
+const scriptOptionsOpen = ref(false);
+const selectedScript = computed(() => props.scripts.find((script) => script.scriptId === props.node.scriptId));
+const scriptOptions = computed(() =>
+  scriptOptionsOpen.value ? props.scripts : selectedScript.value ? [selectedScript.value] : []
+);
 </script>
 
 <template>
@@ -278,7 +288,8 @@ function selectedScript(node: SkillFlowNode, scripts: ScriptRegistryListItem[]):
           clearable
           style="width: 100%"
           @change="emit('script-change')"
-          ><el-option v-for="script in scripts" :key="script.scriptId" :value="script.scriptId" :label="script.name"
+          @visible-change="scriptOptionsOpen = $event"
+          ><el-option v-for="script in scriptOptions" :key="script.scriptId" :value="script.scriptId" :label="script.name"
             ><template #default
               ><div class="script-option"
                 ><strong>{{ script.name }}</strong
@@ -286,12 +297,16 @@ function selectedScript(node: SkillFlowNode, scripts: ScriptRegistryListItem[]):
                 ><small>脚本 ID：{{ script.scriptId }}</small></div
               ></template
             ></el-option
-          ></el-select
-        ><div v-if="selectedScript(node, scripts)" class="script-detail"
+          >
+          <template #empty>
+            <span class="el-select-dropdown__empty">{{ scriptLoading ? '加载中…' : '暂无匹配脚本' }}</span>
+          </template>
+          </el-select
+        ><div v-if="selectedScript" class="script-detail"
           ><div class="script-detail-title">脚本说明</div
-          ><p>{{ selectedScript(node, scripts)?.description || '暂无用途描述' }}</p
+          ><p>{{ selectedScript.description || '暂无用途描述' }}</p
           ><div class="script-detail-meta"
-            ><span>脚本 ID：{{ selectedScript(node, scripts)?.scriptId }}</span></div
+            ><span>脚本 ID：{{ selectedScript.scriptId }}</span></div
           ></div
         ></label
       >
@@ -316,7 +331,7 @@ function selectedScript(node: SkillFlowNode, scripts: ScriptRegistryListItem[]):
               >
                 <option value="LITERAL">直接填写</option>
                 <option
-                  v-if="publicReportType && ['string', 'date'].includes(normalizedParamType(item.type).base)"
+                  v-if="publicParamKeys(item.type, publicReportType).length"
                   value="PUBLIC"
                   >引用公共参数</option
                 >
@@ -331,11 +346,10 @@ function selectedScript(node: SkillFlowNode, scripts: ScriptRegistryListItem[]):
               ><select
                 :value="(schemaValues[item.name] as any)?.$public"
                 @change="setSchemaValue(item, { $public: ($event.target as HTMLSelectElement).value })"
-                ><option value="report_type">report_type · 报告类型</option
-                ><option value="dev_dept">dev_dept · 部门</option
-                ><option v-if="publicReportType === 'TEAM'" value="stat_group">stat_group · 团队</option
-                ><option value="data_date">data_date · 当天数据日期</option></select
-              ><small>字符串原值；字符串数组转换为单元素数组</small></template
+                ><option v-for="key in publicParamKeys(item.type, publicReportType)" :key="key" :value="key">{{
+                  { report_type: 'report_type · 报告类型', dev_dept: 'dev_dept · 部门', stat_group: 'stat_group · 团队', data_date: 'data_date · 当天数据日期' }[key]
+                }}</option></select
+              ></template
             >
             <template v-else-if="paramMode(item) === 'DYNAMIC_PERIOD' || editingPeriod === item.name"
               ><DynamicPeriodEditor

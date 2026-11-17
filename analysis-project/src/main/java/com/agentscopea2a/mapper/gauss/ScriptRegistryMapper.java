@@ -25,6 +25,9 @@ public interface ScriptRegistryMapper {
      */
     ScriptRegistryEntry selectByScriptId(@Param("scriptId") String scriptId);
 
+    /** 批量查询指定业务 ID 的启用脚本，空集合返回空结果。 */
+    List<ScriptRegistryEntry> selectByScriptIds(@Param("scriptIds") List<String> scriptIds);
+
     /**
      * 统计指定 script_id 的记录数 (含禁用记录, 用于唯一性校验).
      * 与 {@link #selectByScriptId} 的区别: 后者带 enabled=1 过滤 (Agent 工具执行用),

@@ -12,8 +12,14 @@ public final class FlowReportNaming {
 
     private FlowReportNaming() {}
 
-    /** 优先使用执行快照中的报告名称，历史执行按原有规则追加日期。 */
+    /** 优先使用执行快照中的报告名称，团队报告统一附加执行日期。 */
     public static String datedTitle(String title, SkillFlowExecution execution) {
+        if ("团队报告".equals(value(execution, "report_type"))) {
+            String name = baseTitle(execution);
+            if (name == null || name.isBlank()) name = "团队报告";
+            if (execution.getDataDate() == null || name.matches(".*[（(]\\d{4}-\\d{2}-\\d{2}[）)]$")) return name;
+            return name + "（" + execution.getDataDate() + "）";
+        }
         if (isObjectReport(execution)) {
             String saved = value(execution, "report_name");
             if (saved != null && !saved.isBlank()) return saved;
@@ -23,14 +29,7 @@ public final class FlowReportNaming {
 
     /** 通知标题附加执行日期，不修改已保存的报告名称。 */
     public static String notificationTitle(SkillFlowExecution execution) {
-        if (!"团队报告".equals(value(execution, "report_type"))) return datedTitle(
-            execution.getFlowName(),
-            execution
-        );
-        String name = baseTitle(execution);
-        if (name == null || name.isBlank()) name = "团队报告";
-        if (execution.getDataDate() == null || name.matches(".*[（(]\\d{4}-\\d{2}-\\d{2}[）)]$")) return name;
-        return name + "（" + execution.getDataDate() + "）";
+        return datedTitle(execution.getFlowName(), execution);
     }
 
     public static String value(SkillFlowExecution execution, String key) {

@@ -866,28 +866,37 @@ public class FlowDefinitionService {
                           )
                       )
                       .toList();
-        List<SkillFlowDto.Node> nodes =
-            flow.getId() == null
-                ? List.of()
-                : definitionNodes(flow)
+        List<SkillFlowNode> definitionNodes = flow.getId() == null ? List.of() : definitionNodes(flow);
+        List<Long> skillIds = definitionNodes.stream().map(SkillFlowNode::getSkillId)
+            .filter(Objects::nonNull).distinct().toList();
+        Map<Long, Skill> skillsById = new LinkedHashMap<>();
+        if (!skillIds.isEmpty()) {
+            for (Skill skill : skillMapper.selectByIds(skillIds)) skillsById.put(skill.getId(), skill);
+        }
+        List<String> scriptIds = definitionNodes.stream().map(SkillFlowNode::getScriptId)
+            .filter(Objects::nonNull).filter(id -> !id.isBlank()).map(String::trim).distinct().toList();
+        Map<String, ScriptRegistryEntry> scriptsById = new LinkedHashMap<>();
+        if (!scriptIds.isEmpty()) {
+            for (ScriptRegistryEntry script : scriptRegistryMapper.selectByScriptIds(scriptIds)) {
+                scriptsById.put(script.getScriptId(), script);
+            }
+        }
+        List<SkillFlowDto.Node> nodes = definitionNodes
                       .stream()
                       .map(node -> {
-                          Skill skill = skillMapper.selectById(node.getSkillId());
+                          Skill skill = skillsById.get(node.getSkillId());
                           List<Long> metricIds = List.of();
-                          List<String> metricNames = metricIds
-                              .stream()
-                              .map(metricMapper::selectById)
-                              .map(metric -> metric == null ? null : metric.getName())
-                              .filter(Objects::nonNull)
-                              .toList();
-                          MetricDependencyResolver.Resolution resolved = resolveNodeMetrics(node);
-                          List<String> effectiveNames = resolved
-                              .metricIds()
-                              .stream()
-                              .map(metricMapper::selectById)
-                              .map(metric -> metric == null ? null : metric.getName())
-                              .filter(Objects::nonNull)
-                              .toList();
+                          List<String> metricNames = List.of();
+                          String defaultMetricIds;
+                          if (node.getScriptId() != null && !node.getScriptId().isBlank()) {
+                              ScriptRegistryEntry script = scriptsById.get(node.getScriptId().trim());
+                              defaultMetricIds = script == null ? null : script.getDefaultMetricIds();
+                          } else {
+                              defaultMetricIds = skill == null ? null : skill.getDefaultMetricIds();
+                          }
+                          MetricDependencyResolver.Resolution resolved = MetricDependencyResolver.resolve(
+                              false, List.of(), MetricDependencyIds.parse(defaultMetricIds)
+                          );
                           String skillName = skill == null ? null : skill.getName();
                           return new SkillFlowDto.Node(
                               node.getId(),

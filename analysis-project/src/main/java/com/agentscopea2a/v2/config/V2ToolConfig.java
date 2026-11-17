@@ -93,7 +93,7 @@ public class V2ToolConfig {
      */
     public static class PythonExecPropertiesV2 {
         private int defaultTimeoutSeconds = 60;
-        private int maxTimeoutSeconds = 300;
+        private int maxTimeoutSeconds = 600;
 
         public int getDefaultTimeoutSeconds() { return defaultTimeoutSeconds; }
         public void setDefaultTimeoutSeconds(int defaultTimeoutSeconds) {

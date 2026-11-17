@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** 按部门维护独立的团队报告配置；来源数据仅用于首次添加对象的默认值。 */
+/** 按部门维护团队报告草稿，刷新来源候选并按需同步默认通知名单。 */
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { batchUserNames, searchSkillUsers } from '../api/skill';
 import { reportDepartments, reportTeams, reportDepartmentDefaults, reportPeople } from '../api/skillFlow';
@@ -29,6 +29,12 @@ const departmentSelect = ref<{ blur?: () => void } | null>(null);
 const removingTeam = ref<TeamReportTarget | null>(null);
 const value = computed(() => props.modelValue);
 const recipientNames = ref<Record<string, string>>({});
+const removedTeams = new Set<string>();
+const syncingRecipients = ref(false);
+const recipientSync = ref<{
+  departmentId: string; teamId: string | null; name: string;
+  previousTo: string[]; previousCc: string[]; to: string[]; cc: string[];
+} | null>(null);
 /** 排除部门展示字段，仅比较对象本身的可编辑配置以标记修改状态。 */
 function fingerprint(row: TeamReportTarget) {
   const settings = { ...row };
@@ -118,16 +124,17 @@ function selectDepartment(id: string) {
   recipientIndex.value = null;
 }
 function openDepartmentSelection(open: boolean) {
-  if (open) departmentSelection.value = configuredDepartments.value.map((d) => d.id);
+  if (!open) return;
+  departmentSelection.value = configuredDepartments.value.map((d) => d.id);
+  void loadDepartments();
 }
 function selectAllDepartments() {
   departmentSelection.value = [...new Set([...configuredDepartments.value.map((d) => d.id), ...departments.value.map((d) => d.id)])];
 }
 async function applyDepartmentSelection() {
-  await changeDepartments([...departmentSelection.value]);
-  departmentSelect.value?.blur?.();
+  if (await changeDepartments([...departmentSelection.value])) departmentSelect.value?.blur?.();
 }
-/** 一次加载所有新增部门的团队；全部成功后再更新草稿，失败时保留原配置。 */
+/** 重新读取所选部门的团队，合并新增对象并保留已有报告设置。 */
 async function changeDepartments(ids: string[]) {
   if (busy.value) return;
   const removed = configuredDepartments.value.find((d) => !ids.includes(d.id));
@@ -136,19 +143,24 @@ async function changeDepartments(ids: string[]) {
     removeDepartmentId.value = removed.id;
     return;
   }
-  await addDepartments(ids);
+  return addDepartments(ids);
 }
 async function addDepartments(ids: string[]) {
-  const added = departments.value.filter((d) => ids.includes(d.id) && !configuredDepartments.value.some((c) => c.id === d.id));
+  const list = [...configuredDepartments.value.filter((d) => ids.includes(d.id)),
+    ...departments.value.filter((d) => ids.includes(d.id) && !configuredDepartments.value.some((c) => c.id === d.id))];
   if (busy.value) return;
   busy.value = true;
   error.value = '';
   try {
-    const groups = await Promise.all(added.map(async (d) => {
+    const groups = await Promise.all(list.map(async (d) => {
+      if (value.value?.reportType === 'DEPARTMENT' &&
+        value.value.targets.some((t) => (t.departmentId || value.value?.departmentId) === d.id)) return [];
       const rows = value.value?.reportType === 'DEPARTMENT'
         ? [await reportDepartmentDefaults(d.id)]
         : await reportTeams(d.id);
-      return rows.map((row) => {
+      return rows.filter((row) => !removedTeams.has(JSON.stringify([d.id, row.teamId])) &&
+        !value.value?.targets.some((t) => (t.departmentId || value.value?.departmentId) === d.id && t.teamId === row.teamId)
+      ).map((row) => {
         const target = initializeReportTarget({
           ...JSON.parse(JSON.stringify(row)),
           departmentId: d.id,
@@ -160,8 +172,8 @@ async function addDepartments(ids: string[]) {
         return target;
       });
     }));
-    const list = [...configuredDepartments.value.filter((d) => ids.includes(d.id)), ...added];
     const currentDepartment = activeDepartmentId.value;
+    const currentTeam = listedTargets.value[activeIndex.value]?.teamId;
     patch({
       departments: list,
       departmentId: list[0]?.id || '',
@@ -170,6 +182,7 @@ async function addDepartments(ids: string[]) {
     });
     await nextTick();
     selectDepartment(list.some((d) => d.id === currentDepartment) ? currentDepartment : list[0]?.id || '');
+    activeIndex.value = Math.max(0, listedTargets.value.findIndex((t) => t.teamId === currentTeam));
     return true;
   } catch (e) {
     error.value = String(e);
@@ -204,18 +217,56 @@ function navigate(index: number) {
 function remove() {
   if (!removingTeam.value) return;
   const teamId = removingTeam.value.teamId;
+  removedTeams.add(JSON.stringify([removingTeam.value.departmentId || value.value?.departmentId, teamId]));
   patch({ targets: value.value?.targets.filter((t) => t.teamId !== teamId) || [] });
   activeIndex.value = 0;
   recipientIndex.value = null;
   removingTeam.value = null;
 }
-/** 优先搜索全量人员，无结果时回退到当前报告对象的导入来源。 */
+/** 每次搜索合并全量人员及当前对象来源人员，按认证号去重。 */
 async function searchTeamPeople(keyword: string) {
   if (!keyword.trim()) return [];
-  const found = await searchSkillUsers(keyword);
-  if (found.length) return found;
   const row = recipientIndex.value == null ? null : value.value?.targets[recipientIndex.value];
-  return reportPeople(row?.departmentName || value.value?.departmentName || '', row?.teamName || '', keyword);
+  const results = await Promise.allSettled([
+    searchSkillUsers(keyword),
+    reportPeople(row?.departmentName || value.value?.departmentName || '', row?.teamName || '', keyword),
+  ]);
+  const people = results.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
+  if (results.every((result) => result.status === 'rejected')) throw new Error('人员搜索失败，请重试');
+  return [...new Map(people.map((person) => [person.userId, person])).values()];
+}
+
+/** 显示最新默认名单与当前名单，确认后只替换该对象的通知人员。 */
+async function previewRecipientSync(row: TeamReportTarget) {
+  if (syncingRecipients.value || busy.value) return;
+  syncingRecipients.value = true;
+  error.value = '';
+  try {
+    const departmentId = row.departmentId || value.value!.departmentId;
+    const source = value.value?.reportType === 'DEPARTMENT'
+      ? await reportDepartmentDefaults(departmentId)
+      : (await reportTeams(departmentId)).find((t) => t.teamId === row.teamId);
+    if (!source) throw new Error('当前团队来源已移除，请先维护团队人员管理');
+    const to = [...new Set(source.to)];
+    const cc = [...new Set(source.cc)].filter((id) => !to.includes(id));
+    const names = await batchUserNames([...new Set([...row.to, ...row.cc, ...to, ...cc])]);
+    Object.assign(recipientNames.value, names);
+    recipientSync.value = { departmentId, teamId: row.teamId,
+      name: row.teamName || row.departmentName || value.value!.departmentName,
+      previousTo: [...row.to], previousCc: [...row.cc], to, cc };
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    syncingRecipients.value = false;
+  }
+}
+function applyRecipientSync() {
+  const pending = recipientSync.value;
+  if (!pending) return;
+  const row = value.value?.targets.find((t) =>
+    (t.departmentId || value.value?.departmentId) === pending.departmentId && t.teamId === pending.teamId);
+  if (row) { row.to = [...pending.to]; row.cc = [...pending.cc]; }
+  recipientSync.value = null;
 }
 function confirm({ to, cc, names }: { to: string[]; cc: string[]; names: Record<string, string> }) {
   Object.assign(recipientNames.value, names);
@@ -227,6 +278,7 @@ function confirm({ to, cc, names }: { to: string[]; cc: string[]; names: Record<
   recipientIndex.value = null;
 }
 async function loadDepartments() {
+  if (loadingDepartments.value) return;
   loadingDepartments.value = true;
   error.value = '';
   try {
@@ -256,7 +308,7 @@ onMounted(loadDepartments);
         v-model="departmentSelection"
         multiple
         filterable
-        :disabled="busy || loadingDepartments || !departments.length"
+        :disabled="busy || syncingRecipients"
         :loading="busy || loadingDepartments"
         placeholder="请选择部门（可多选）"
         aria-label="选择部门（可多选）"
@@ -275,15 +327,17 @@ onMounted(loadDepartments);
         />
         <template #footer>
           <div class="department-picker-footer">
-            <button type="button" class="department-picker-button confirm-selection-button" :disabled="busy" @click="applyDepartmentSelection">确认选择</button>
+            <button type="button" class="department-picker-button confirm-selection-button" :disabled="busy || loadingDepartments || syncingRecipients" @click="applyDepartmentSelection">确认选择</button>
           </div>
         </template>
       </el-select>
       <select
         v-else-if="!configuredDepartments.length"
         id="report-department"
-        :disabled="busy || loadingDepartments || !departments.length"
+        :disabled="busy || syncingRecipients"
         value=""
+        @mousedown="loadDepartments"
+        @focus="loadDepartments"
         @change="changeDepartment($event)"
         ><option value="" disabled>{{
           loadingDepartments ? '正在读取部门…' : departments.length ? '＋ 添加部门' : '暂无已启用部门'
@@ -305,7 +359,7 @@ onMounted(loadDepartments);
           <button type="button" role="tab" :aria-selected="activeDepartmentId === d.id" @click="selectDepartment(d.id)"
             >{{ d.name }}
             <span>{{
-              value?.targets.filter((t) => (t.departmentId || value.departmentId) === d.id).length
+              value?.targets.filter((t) => (t.departmentId || value?.departmentId) === d.id).length
             }}</span></button
           >
           <button
@@ -329,7 +383,7 @@ onMounted(loadDepartments);
       >首次通知人员表尚未初始化或没有已启用记录，请维护其中的部门、团队和通知人员。</p
     >
     <button
-      v-if="!configuredDepartments.length && !loadingDepartments && (!departments.length || error)"
+      v-if="!loadingDepartments && (!departments.length || error)"
       type="button"
       @click="loadDepartments"
       >重试读取部门</button
@@ -437,7 +491,8 @@ onMounted(loadDepartments);
             <div class="recipient-panel" aria-label="当前团队通知名单">
               <div class="recipient-heading">
                 <div><strong>邮件收件人</strong><small>收件人 {{ row.to.length }} 人 · 抄送 {{ row.cc.length }} 人</small></div>
-                <button class="manage-recipients" type="button" @click="recipientIndex = value!.targets.indexOf(row)">管理收件人</button>
+                <button type="button" :disabled="busy || syncingRecipients" @click="previewRecipientSync(row)">{{ syncingRecipients ? '正在读取名单…' : '同步默认名单' }}</button>
+                <button class="manage-recipients" type="button" :disabled="syncingRecipients" @click="recipientIndex = value!.targets.indexOf(row)">管理收件人</button>
               </div>
               <div v-for="group in (['to', 'cc'] as const)" :key="group" class="recipient-group">
                 <span class="recipient-group-label">{{ group === 'to' ? '收件人' : '抄送人' }} <small>{{ group === 'to' ? 'TO' : 'CC' }}</small></span>
@@ -467,6 +522,22 @@ onMounted(loadDepartments);
       @confirm="confirm"
     />
     <Teleport to="body">
+      <div v-if="recipientSync" class="add-mask" @keydown.esc.stop="recipientSync = null">
+        <section class="add-dialog" role="dialog" aria-modal="true" aria-label="同步默认名单">
+          <header><h4>{{ recipientSync.name }} · 同步默认名单</h4></header>
+          <div class="department-confirm-body recipient-sync-body">
+            <p>应用后将替换当前报告对象的收件人和抄送人，随保存流程一起提交。</p>
+            <p>当前收件人 {{ recipientSync.previousTo.map(recipientLabel).join('、') || '无' }}</p>
+            <p>默认收件人 {{ recipientSync.to.map(recipientLabel).join('、') || '无' }}</p>
+            <p>当前抄送人 {{ recipientSync.previousCc.map(recipientLabel).join('、') || '无' }}</p>
+            <p>默认抄送人 {{ recipientSync.cc.map(recipientLabel).join('、') || '无' }}</p>
+          </div>
+          <footer>
+            <button type="button" @click="recipientSync = null">取消</button>
+            <button type="button" class="primary" @click="applyRecipientSync">应用默认名单</button>
+          </footer>
+        </section>
+      </div>
       <div v-if="removingTeam" class="add-mask" @keydown.esc.stop="removingTeam = null">
         <section class="add-dialog" role="alertdialog" aria-modal="true" aria-label="删除团队确认">
           <header><h4>删除团队？</h4></header>
@@ -493,6 +564,11 @@ onMounted(loadDepartments);
   </section>
 </template>
 <style scoped>
+.recipient-sync-body {
+  min-height: 0;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
 .draft-status {
   font-size: 10px;
   color: #b45309;

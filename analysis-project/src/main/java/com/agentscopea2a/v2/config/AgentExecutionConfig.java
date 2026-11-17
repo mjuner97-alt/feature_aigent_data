@@ -93,9 +93,12 @@ public final class AgentExecutionConfig {
     /**
      * 工具执行默认配置。
      *
-     * <p>使用框架提供的默认配置，适用于大多数工具调用场景。
+     * <p>工具调用允许执行十分钟，以覆盖 Python 脚本的同步执行预算。
      */
-    public static final ExecutionConfig TOOL_DEFAULTS = ExecutionConfig.TOOL_DEFAULTS;
+    public static final ExecutionConfig TOOL_DEFAULTS =
+            ExecutionConfig.mergeConfigs(
+                    ExecutionConfig.builder().timeout(Duration.ofMinutes(10)).build(),
+                    ExecutionConfig.TOOL_DEFAULTS);
 
     /**
      * 工具执行短超时配置。

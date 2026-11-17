@@ -54,6 +54,21 @@
           AND enabled = 1
     </select>
 
+    <select id="selectByScriptIds" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM script_registry
+        WHERE enabled = 1
+        <choose>
+            <when test="scriptIds != null and scriptIds.size() > 0">
+                AND script_id IN
+                <foreach collection="scriptIds" item="scriptId" open="(" separator="," close=")">
+                    #{scriptId}
+                </foreach>
+            </when>
+            <otherwise>AND 1 = 0</otherwise>
+        </choose>
+    </select>
+
     <!-- 唯一性校验: 按 script_id 计数 (含禁用记录), 不区分 enabled -->
     <select id="countByScriptId" resultType="int">
         SELECT COUNT(*) FROM script_registry WHERE script_id = #{scriptId}

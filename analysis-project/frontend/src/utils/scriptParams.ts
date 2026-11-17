@@ -11,13 +11,26 @@ export function isRuleValue(value: unknown): value is { $rule: string } {
 }
 
 /** Build an editable JSON object from a saved script parameter schema. */
-export function paramsFromSchema(schema: ParamSchemaItem[]): Record<string, unknown> {
+export function paramsFromSchema(schema: ParamSchemaItem[], reportType?: string): Record<string, unknown> {
   return Object.fromEntries(
     schema.map((item) => [
       item.name,
-      'default' in item ? (item as ParamSchemaItem & { default?: unknown }).default : defaultParamValue(item.type),
+      publicParamKeys(item.type, reportType).includes(item.name)
+        ? { $public: item.name }
+        : 'default' in item ? (item as ParamSchemaItem & { default?: unknown }).default : defaultParamValue(item.type),
     ])
   );
+}
+
+/** 公共参数候选与后端支持的类型一致，部门报告不提供团队参数。 */
+export function publicParamKeys(type: string, reportType?: string): string[] {
+  if (!['TEAM', 'DEPARTMENT'].includes(reportType || '')) return [];
+  const normalized = (type || '').trim().toLowerCase();
+  if (['string', 'str', 'array', 'string[]', 'array<string>'].includes(normalized))
+    return reportType === 'TEAM'
+      ? ['report_type', 'dev_dept', 'stat_group', 'data_date']
+      : ['report_type', 'dev_dept', 'data_date'];
+  return ['date', 'date[]', 'array<date>'].includes(normalized) ? ['data_date'] : [];
 }
 
 /** Show saved legacy parameters as fields when no registry schema is available. */
@@ -83,9 +96,10 @@ export function coerceParamValue(raw: unknown, type: string): unknown {
 /** Normalize legacy values before both debugging and saving a flow. */
 export function normalizeScriptParams(
   params: Record<string, unknown>,
-  schema: ParamSchemaItem[]
+  schema: ParamSchemaItem[],
+  reportType?: string
 ): Record<string, unknown> {
-  const result = { ...paramsFromSchema(schema), ...params };
+  const result = { ...paramsFromSchema(schema, reportType), ...params };
   for (const item of schema) {
     if (!(item.name in result)) continue;
     let value = result[item.name];
@@ -109,9 +123,7 @@ export function normalizeScriptParams(
 
 export function validateParamValue(value: unknown, type: string): string {
   if (isPublicValue(value)) {
-    const typeInfo = normalizedParamType(type);
-    return ['report_type', 'dev_dept', 'stat_group', 'data_date'].includes(value.$public) &&
-      (typeInfo.base === 'string' || (value.$public === 'data_date' && typeInfo.base === 'date'))
+    return Object.keys(value).length === 1 && publicParamKeys(type, 'TEAM').includes(value.$public)
       ? ''
       : '公共参数引用无效或与参数类型不兼容';
   }

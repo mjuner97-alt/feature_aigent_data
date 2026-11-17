@@ -317,10 +317,11 @@ async function searchScripts(query = '') {
 /** 脚本参数定义缓存(键=注册表数字 id):选脚本后按 params_schema 渲染参数输入框,不再手写 JSON */
 const scriptSchemas = ref<Record<number, ParamSchemaItem[]>>({});
 const scriptSchemaRequests = new Map<number, Promise<ParamSchemaItem[]>>();
+const scriptsById = computed(() => new Map(scripts.value.map((script) => [script.scriptId, script])));
 
 async function ensureScriptSchema(scriptId: string | null | undefined): Promise<ParamSchemaItem[]> {
   if (!scriptId) return [];
-  const row = scripts.value.find((item) => item.scriptId === scriptId);
+  const row = scriptsById.value.get(scriptId);
   if (!row) return [];
   if (scriptSchemas.value[row.id]) return scriptSchemas.value[row.id];
   const pending = scriptSchemaRequests.get(row.id);
@@ -345,13 +346,19 @@ async function ensureScriptSchema(scriptId: string | null | undefined): Promise<
   return request;
 }
 
+const nodeSchemas = computed(() => new Map<SkillFlowNode, ParamSchemaItem[] | null>(
+  form.value.nodes.map((node) => {
+    const row = node.scriptId ? scriptsById.value.get(node.scriptId) : undefined;
+    const saved = node.scriptParams || {};
+    const registered = row ? scriptSchemas.value[row.id] : undefined;
+    if (!registered?.length) return [node, Object.keys(saved).length ? inferParamSchema(saved) : null];
+    const names = new Set(registered.map((item) => item.name));
+    return [node, [...registered, ...inferParamSchema(saved).filter((item) => !names.has(item.name))]];
+  })
+));
+
 function schemaFor(node: SkillFlowNode): ParamSchemaItem[] | null {
-  const row = scripts.value.find((item) => item.scriptId === node.scriptId);
-  const saved = node.scriptParams || {};
-  const registered = row ? scriptSchemas.value[row.id] : undefined;
-  if (!registered?.length) return Object.keys(saved).length ? inferParamSchema(saved) : null;
-  const names = new Set(registered.map((item) => item.name));
-  return [...registered, ...inferParamSchema(saved).filter((item) => !names.has(item.name))];
+  return nodeSchemas.value.get(node) || null;
 }
 
 async function onScriptSelected(node: SkillFlowNode) {
@@ -361,7 +368,8 @@ async function onScriptSelected(node: SkillFlowNode) {
   const schema = await ensureScriptSchema(node.scriptId);
   // Keep the JSON editor, but make the saved parameter names visible immediately.
   // Values remain ordinary JSON so debug uses the same payload as before.
-  if (!Object.keys(node.scriptParams).length && schema.length) node.scriptParams = paramsFromSchema(schema);
+  if (!Object.keys(node.scriptParams).length && schema.length)
+    node.scriptParams = paramsFromSchema(schema, form.value.teamReport?.reportType);
 }
 
 function onScriptParamsChange(node: SkillFlowNode, payload: { value: Record<string, unknown> | null; error: string }) {
@@ -415,17 +423,23 @@ function nodeTitle(node: SkillFlowNode): string {
 }
 
 /** 未绑定到大纲章节的节点(留在执行节点区,保存前必须全部绑定)。 */
+const boundNodeKeys = computed(() => new Set(outlineRows.value.flatMap((row) => row.nodeKeys)));
+const nodesByKey = computed(() => new Map(form.value.nodes.map((node) => [node.nodeKey, node])));
+
 function isUnbound(node: SkillFlowNode): boolean {
-  return !outlineRows.value.some((row) => row.nodeKeys.includes(node.nodeKey));
+  return !boundNodeKeys.value.has(node.nodeKey);
 }
 
 const unboundNodes = computed(() => form.value.nodes.filter((node) => isUnbound(node)));
 
 /** 章节下内嵌的节点卡片(按章节内绑定顺序,可多个)。 */
+const chapterNodes = computed(() => new Map(outlineRows.value.map((row) => [
+  row.id,
+  row.nodeKeys.map((key) => nodesByKey.value.get(key)).filter((node): node is SkillFlowNode => !!node),
+])));
+
 function nodesForRow(row: OutlineRow): SkillFlowNode[] {
-  return row.nodeKeys
-    .map((key) => form.value.nodes.find((node) => node.nodeKey === key))
-    .filter((node): node is SkillFlowNode => !!node);
+  return chapterNodes.value.get(row.id) || [];
 }
 
 /** 让 form.nodes 执行顺序跟随大纲文档顺序:已绑定节点按大纲序在前,未绑定节点殿后。 */
@@ -639,7 +653,7 @@ async function runNodeDebug(node: SkillFlowNode, dataDate?: string) {
       throw new Error('脚本已停用，请先在 Python 注册页面启用');
     }
     const schema = await ensureScriptSchema(node.scriptId);
-    let params = normalizeScriptParams(node.scriptParams || {}, schema);
+    let params = normalizeScriptParams(node.scriptParams || {}, schema, form.value.teamReport?.reportType);
     if (form.value.teamReport) {
       const target = debugTarget.value;
       if (!target) throw new Error('请先维护执行对象');
@@ -1043,7 +1057,7 @@ async function save() {
   try {
     for (const node of form.value.nodes) {
       if (node.scriptId)
-        node.scriptParams = normalizeScriptParams(node.scriptParams || {}, await ensureScriptSchema(node.scriptId));
+        node.scriptParams = normalizeScriptParams(node.scriptParams || {}, await ensureScriptSchema(node.scriptId), form.value.teamReport?.reportType);
     }
     renumber();
     form.value.reportOutline = outlineRows.value.length

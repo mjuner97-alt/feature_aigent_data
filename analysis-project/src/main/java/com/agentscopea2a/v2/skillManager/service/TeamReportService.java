@@ -6,6 +6,7 @@ import com.agentscopea2a.v2.skillManager.mapper.TeamReportMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
 import java.util.*;
+import java.util.function.Supplier;
 import org.springframework.stereotype.Service;
 
 /**
@@ -50,6 +51,10 @@ public class TeamReportService {
         TeamReportConfig header = read(flow.getTeamReportJson());
         if (header == null) return null;
         List<ReportParameter> rows = mapper.parameters(flow.getId());
+        Map<Long, List<String>> legacyExecutorCache = new HashMap<>();
+        Supplier<List<String>> legacyExecutors = () -> legacyExecutorCache.computeIfAbsent(
+            flow.getId(), mapper::legacyExecutors
+        );
         if (rows.isEmpty() && !header.targets().isEmpty()) return new TeamReportConfig(
             header.reportType(),
             header.departmentId(),
@@ -57,7 +62,7 @@ public class TeamReportService {
             header
                 .targets()
                 .stream()
-                .map(t -> legacyContact(t, flow))
+                .map(t -> legacyContact(t, flow, legacyExecutors))
                 .toList(),
             header.departments()
         );
@@ -108,7 +113,8 @@ public class TeamReportService {
                             row.getNotifyBodyTemplate(),
                             p.path("report_name").asText(null)
                         ),
-                        flow
+                        flow,
+                        legacyExecutors
                     ).inDepartment(p.path("department_id").asText(header.departmentId()), p.path("dev_dept").asText());
                 } catch (Exception e) {
                     throw new IllegalStateException("ReportParameterPoolInvalid: 参数池数据无法解析", e);
@@ -476,6 +482,12 @@ public class TeamReportService {
 
     /** 补齐历史对象缺失的通知设置，已保存的对象配置优先。 */
     private TeamReportConfig.Target legacyContact(TeamReportConfig.Target t, SkillFlow flow) {
+        return legacyContact(t, flow, () -> mapper.legacyExecutors(flow.getId()));
+    }
+
+    private TeamReportConfig.Target legacyContact(
+        TeamReportConfig.Target t, SkillFlow flow, Supplier<List<String>> legacyExecutors
+    ) {
         return new TeamReportConfig.Target(
             t.teamId(),
             t.teamName(),
@@ -485,7 +497,7 @@ public class TeamReportService {
             t.cc(),
             t.notifyContactName() == null ? flow.getNotifyContactName() : t.notifyContactName(),
             t.notifyContactPhone() == null ? flow.getNotifyContactPhone() : t.notifyContactPhone(),
-            t.executors() == null ? mapper.legacyExecutors(flow.getId()) : t.executors(),
+            t.executors() == null ? legacyExecutors.get() : t.executors(),
             t.notifyEnabled() == null ? !Boolean.FALSE.equals(flow.getNotifyEnabled()) : t.notifyEnabled(),
             t.notifyBodyTemplate() == null
                 ? Objects.toString(flow.getNotifyBodyTemplate(), "")
