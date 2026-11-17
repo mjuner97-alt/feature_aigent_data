@@ -738,14 +738,14 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                             directSkillExecutor.recordResult(ctx.userId, ctx.conversationId,
                                     plan.skillName(), stdout);
                         }
-                        ctx.answerContent.append(multiSegmentTitle(plan)).append(fenceStdout(stdout));
+                        ctx.answerContent.append(multiSegmentTitle(plan, ctx.answerContent.length() > 0)).append(fenceStdout(stdout));
                     } else {
                         // 拍板②: 单脚本失败不中断, 报错文案继续下一个
                         anyFailure = true;
                         String message = "脚本 " + plan.scriptId() + " 执行失败 (exit=" + execution.exitCode()
                                 + ")，请核对脚本配置或联系管理员处理。";
                         recordMonitorFailure(ctx, new IllegalStateException(message));
-                        ctx.answerContent.append(multiSegmentTitle(plan)).append(message).append('\n');
+                        ctx.answerContent.append(multiSegmentTitle(plan, ctx.answerContent.length() > 0)).append(message).append('\n');
                     }
                 } catch (Exception e) {
                     anyFailure = true;
@@ -753,7 +753,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                             ctx.conversationId, plan.scriptId(), e);
                     recordMonitorFailure(ctx, e);
                     String message = "脚本 " + plan.scriptId() + " 执行失败，请核对脚本配置或联系管理员处理。\n";
-                    ctx.answerContent.append(multiSegmentTitle(plan)).append(message);
+                    ctx.answerContent.append(multiSegmentTitle(plan, ctx.answerContent.length() > 0)).append(message);
                 }
             }
             if (ctx.hasSentExecuting.get()) {
@@ -789,11 +789,11 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         }
     }
 
-    /** 混排轮 stdout 段分隔 (拍板③): 空行 + 【short_summary】标题行, 首段同样加保持一致。 */
-    private static String multiSegmentTitle(DirectSkillExecutor.DirectExecutionPlan plan) {
+    /** 混排轮 stdout 段分隔 (拍板③): 后续段前加 <br><br> 与上一块分隔 (内网前端换行/###不生效, <br>生效), 首段不加。 */
+    private static String multiSegmentTitle(DirectSkillExecutor.DirectExecutionPlan plan, boolean needSeparator) {
         String title = plan.displayTitle() == null || plan.displayTitle().isBlank()
                 ? plan.skillName() : plan.displayTitle();
-        return "\n\n" + title + "\n";
+        return (needSeparator ? "<br><br>" : "") + title + "\n";
     }
 
     /** stdout 中的完整 HTML 文档 (对齐 HtmlReportRenderer COMPLETE_HTML_START / 下载链接文档形态)。 */
@@ -822,7 +822,8 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             if (!between.isEmpty()) {
                 sb.append(between).append('\n');
             }
-            sb.append("\n```html\n").append(m.group()).append("\n```\n");
+//            sb.append("\n```html\n").append(m.group()).append("\n```\n");
+            sb.append(m.group()).append("\n");
             last = m.end();
         }
         String tail = stdout.substring(last).strip();

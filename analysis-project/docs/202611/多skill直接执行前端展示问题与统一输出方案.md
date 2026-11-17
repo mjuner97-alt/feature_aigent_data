@@ -74,7 +74,8 @@ pm 的 done 处理器用 fullText 整体替换回复（:439），一次 done 带
 ### 3.2 问题②：最终结果统一输出（拍板选型）
 
 **方案A（2026/11/16 拍板选定）**
-最终 answer = 逐段 `【short_summary】标题 + 空行 + ` ```html ` 围栏包裹的该段 stdout`，段间空行分隔；失败段为标题 + 报错文案（纯文本）。
+最终 answer = 逐段 `【short_summary】标题 + ` ```html ` 围栏包裹的该段 stdout`，段间用 `<br><br>` 分隔；失败段为标题 + 报错文案（纯文本）。
+段分隔格式（2026/11/17 定稿，内网前端实测）：`\n\n` 空行与 `###` 标题在内网前端均不渲染（粘连不可分），`<br>` 生效 → 标题行格式定为 `"<br><br>" + title + "\n"`，**首段不加 `<br><br>`**（`answerContent.length() > 0` 判断，success/失败/异常三分支统一），后续段每段前加。
 
 段标题来源（现有实现，无需改动）：`DirectExecutionPlan.displayTitle()` ← `DirectSkillExecutor.displayTitleOf(meta)`（DirectSkillExecutor.java:632-637）= `"【" + skill_routing_metadata.short_summary + "】"`，即**直接取对应 skill 配置的 short_summary**（配置广场维护）；空/blank 回退 skill 英文名。metadata 行未配置时 Repository 层另有 description 兜底（SkillRoutingMetadataRepository.java:365）；内置 skill 的 short_summary 由 BuiltinSkillRegistrar 从 SKILL.md frontmatter description 自动生成。
 
