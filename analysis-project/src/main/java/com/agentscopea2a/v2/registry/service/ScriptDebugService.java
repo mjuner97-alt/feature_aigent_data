@@ -84,7 +84,7 @@ public class ScriptDebugService implements AutoCloseable {
         LocalDate anchor = dataDate == null ? LocalDate.now(clock) : dataDate;
         Map<String, Object> resolvedParams = resolveParams(entry.getScriptId(), params, anchor);
         validator.validate(entry.getParamsSchema(), resolvedParams);
-        int timeout = Math.max(1, Math.min(600, Math.min(requestedTimeoutSeconds <= 0 ? 60 : requestedTimeoutSeconds,
+        int timeout = Math.max(1, Math.min(300, Math.min(requestedTimeoutSeconds <= 0 ? 60 : requestedTimeoutSeconds,
                 entry.getTimeoutSeconds() == null ? 60 : entry.getTimeoutSeconds())));
         long active = runs.values().stream().filter(r -> !r.isTerminal()).count();
         if (active >= maxConcurrent) throw new IllegalStateException("DEBUG_CONCURRENCY_LIMIT: 当前调试任务已达上限");

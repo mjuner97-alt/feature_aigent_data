@@ -149,7 +149,7 @@ public class ScriptRegistryController {
 
     @GetMapping(value = "/debug/{runId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter debugEvents(@PathVariable String runId) {
-        SseEmitter emitter = new SseEmitter(600_000L);
+        SseEmitter emitter = new SseEmitter(300_000L);
         CompletableFuture.runAsync(() -> {
             int sent = 0;
             try {

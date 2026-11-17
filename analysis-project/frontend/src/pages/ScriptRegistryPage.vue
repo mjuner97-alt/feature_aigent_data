@@ -531,7 +531,7 @@ const S = {
         </el-form-item>
         <el-form-item label="超时(秒)" required>
           <el-input-number v-model="form.timeoutSeconds" :min="1" :max="1800" controls-position="right" />
-          <span class="field-hint">长任务节点最多 30 分钟；对话同步执行和调试最多 10 分钟。</span>
+          <span class="field-hint">长任务节点最多 30 分钟；对话同步执行和调试最多 5 分钟。</span>
         </el-form-item>
         <el-form-item label="启用" v-if="formMode === 'edit'">
           <el-switch v-model="form.enabled" :active-value="1" :inactive-value="0" />

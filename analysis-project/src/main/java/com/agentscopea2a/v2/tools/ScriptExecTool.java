@@ -82,7 +82,7 @@ import org.slf4j.LoggerFactory;
  *   <li>路径限制: script_path 正则 {@code ^[a-zA-Z0-9_/.]+\.py$}, 禁 {@code ..}, 必须在
  *       {@code <workspace>/scripts/} 下</li>
  *   <li>DB 账号只读: 由 application-*.properties 配置的账号权限决定, 脚本内 DDL 也执行不了</li>
- *   <li>同步执行超时硬上限 600s: 防死循环占满容器资源</li>
+ *   <li>超时硬上限 300s: 防死循环占满容器资源</li>
  *   <li>stdout/stderr 完整返回；注册脚本必须自行控制输出规模</li>
  * </ul>
  *
@@ -102,7 +102,7 @@ public class ScriptExecTool {
             new com.fasterxml.jackson.databind.ObjectMapper();
 
     /** 超时硬上限, 防 LLM 通过 entry.timeoutSeconds 传 99999. */
-    private static final int MAX_TIMEOUT_SECONDS = 600;
+    private static final int MAX_TIMEOUT_SECONDS = 300;
 
     // ── stdout 下载块协议 (方案 A: 脚本声明下载内容, Java 剥离后落库生成短链) ──
     // 标记必须行首出现, 防业务数据偶然出现同名字符串误触发. 见 docs/script-exec-sql-dispatch-and-download-plan.md §4.1
@@ -908,7 +908,7 @@ public class ScriptExecTool {
             return ToolResultBlock.text(
                     formatResult(scriptId, -1, elapsed, stdoutBest, stderrBest,
                             "❌ 超时(" + timeoutSeconds + "s),进程已强制终止. "
-                                    + "请核对 script_registry.timeout_seconds；同步执行上限 600s，长任务节点上限 1800s。 "
+                                    + "请核对 script_registry.timeout_seconds；同步执行上限 300s，长任务节点上限 1800s。 "
                                     + "如怀疑脚本死循环, 让开发人员修脚本."));
         }
 
