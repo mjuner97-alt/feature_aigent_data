@@ -30,8 +30,11 @@ import java.util.regex.Pattern;
  *
  * <p>口径拍板（time-dimension-plan.md §7②③，2026-10-27 终版）：下周=未来1周（NEXT:1w，
  * today~today+7）；历史区间**含今天**（起点不变，仅终点由 today-1 放宽为 today）——
- * 本周/近一周（历史）=today-7~today、近N天=today-N~today、近N周=today-7N~today；
- * 上周=日历周（上周一~上周日），不随本周滚动。
+ * 近N天=today-N~today、近N周=today-7N~today；上周=日历周（上周一~上周日），不随本周滚动。
+ * <p>2026-11-17 口径变更（近N月时间范围与本周口径调整方案.md 拍板⑴，推翻 2026-10-27
+ * 拍板②）：本周=自然周至今（恒返回 [本周一, today] 两端点时间范围，start/end 都传，
+ * 周一当天 start=end=周一，不设单日特例）；近N月=today-N月~today、
+ * 未来N月=today~today+N月（滚动，与天/周同构）。
  */
 public final class TimeRangeResolver {
 
@@ -53,9 +56,9 @@ public final class TimeRangeResolver {
 
     /** 配置期锚点白名单（DATE:/UNTIL: 与暂缓的 LAST:{n}V/Q 不在其中）。 */
     private static final Pattern CONFIG_ANCHOR_PATTERN =
-            Pattern.compile("THIS_WEEK|LAST_WEEK|LAST:[1-9][0-9]*d|LAST:[1-9][0-9]*w"
-                    + "|NEXT:[1-9][0-9]*w|TODAY|THIS_MONTH|THIS_YEAR"
-                    + "|AMBIGUOUS:WEEKS:[1-9][0-9]*|AMBIGUOUS:PROD"
+            Pattern.compile("THIS_WEEK|LAST_WEEK|LAST:[1-9][0-9]*d|LAST:[1-9][0-9]*w|LAST:[1-9][0-9]*M"
+                    + "|NEXT:[1-9][0-9]*w|NEXT:[1-9][0-9]*M|TODAY|THIS_MONTH|THIS_YEAR"
+                    + "|AMBIGUOUS:WEEKS:[1-9][0-9]*|AMBIGUOUS:MONTHS:[1-9][0-9]*|AMBIGUOUS:PROD"
                     + "|" + DELIV_TO_PROD + "|" + PROD_WEEK
                     + "|T-[1-9][0-9]*|R-[1-9][0-9]*");
 
@@ -83,9 +86,9 @@ public final class TimeRangeResolver {
     /**
      * 解析锚点为 [start, end]（ISO，含端点）；不可解析（透传型/歧义型/未实现形态）返回 null。
      *
-     * <p>口径（2026-10-27 终版，历史含今天、起点不变）：本周=today-7~today；
-     * 上周=日历周（上周一~上周日）；近 n 天=today-n~today；近 n 周=today-7n~today；
-     * 未来 n 周=today~today+7n（含今天）。
+     * <p>口径（2026-11-17 变更）：本周=本周一~today；上周=日历周（上周一~上周日）；
+     * 近 n 天=today-n~today；近 n 周=today-7n~today；未来 n 周=today~today+7n（含今天）；
+     * 近 n 月=today-N月~today；未来 n 月=today~today+N月（滚动，均含今天）。
      */
     public static String[] resolve(String anchor, LocalDate today) {
         if (anchor == null || anchor.isBlank()) {
@@ -94,7 +97,7 @@ public final class TimeRangeResolver {
         String a = anchor.trim();
         return switch (a) {
             case "TODAY" -> new String[]{iso(today), iso(today)};
-            case "THIS_WEEK" -> new String[]{iso(today.minusDays(7)), iso(today)};
+            case "THIS_WEEK" -> new String[]{iso(today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))), iso(today)};
             case "LAST_WEEK" -> lastCalendarWeek(today);
             case "THIS_MONTH" -> new String[]{iso(today.withDayOfMonth(1)), iso(today)};
             case "THIS_YEAR" -> new String[]{iso(today.withDayOfYear(1)), iso(today)};
@@ -119,6 +122,13 @@ public final class TimeRangeResolver {
                         return next
                                 ? new String[]{iso(today), iso(today.plusWeeks(n))}
                                 : new String[]{iso(today.minusWeeks(n)), iso(today)};
+                    }
+                } else if (tail.endsWith("M")) {
+                    int n = Integer.parseInt(tail.substring(0, tail.length() - 1));
+                    if (n >= 1) {
+                        return next
+                                ? new String[]{iso(today), iso(today.plusMonths(n))}
+                                : new String[]{iso(today.minusMonths(n)), iso(today)};
                     }
                 }
             } catch (NumberFormatException ignored) {
@@ -160,10 +170,12 @@ public final class TimeRangeResolver {
 
     // ==================== 歧义反问（time-dimension-plan.md §3.3） ====================
 
-    /** 歧义锚点判定：AMBIGUOUS:WEEKS:{n}（近N周方向）/ AMBIGUOUS:PROD（投产前二选一）。 */
+    /** 歧义锚点判定：AMBIGUOUS:WEEKS:{n}（近N周方向）/ AMBIGUOUS:MONTHS:{n}（近N月方向）/
+     *  AMBIGUOUS:PROD（投产前二选一）。 */
     public static boolean isAmbiguousAnchor(String anchor) {
         return anchor != null && (anchor.equals("AMBIGUOUS:PROD")
-                || anchor.startsWith("AMBIGUOUS:WEEKS:"));
+                || anchor.startsWith("AMBIGUOUS:WEEKS:")
+                || anchor.startsWith("AMBIGUOUS:MONTHS:"));
     }
 
     /** 歧义锚点的反问文案（DirectSkillExecutor 短路下发）。 */
@@ -171,6 +183,10 @@ public final class TimeRangeResolver {
         if (anchor != null && anchor.startsWith("AMBIGUOUS:WEEKS:")) {
             return "您说的「近" + anchor.substring("AMBIGUOUS:WEEKS:".length())
                     + "周」是指历史近N周（往前推），还是未来近N周？请回复：历史 / 未来";
+        }
+        if (anchor != null && anchor.startsWith("AMBIGUOUS:MONTHS:")) {
+            return "您说的「近" + anchor.substring("AMBIGUOUS:MONTHS:".length())
+                    + "个月」是指历史近N个月（往前推），还是未来近N个月？请回复：历史 / 未来";
         }
         if ("AMBIGUOUS:PROD".equals(anchor)) {
             return "您说的「投产前」是指投产周，还是交付周至投产周？请回复：投产周 / 交付周至投产周";
@@ -196,6 +212,18 @@ public final class TimeRangeResolver {
             if (r.contains("历史") || r.contains("往前") || r.contains("之前") || r.contains("过去")
                     || r.contains("前面") || r.contains("先前")) {
                 return "LAST:" + n + "w";
+            }
+            return null;
+        }
+        if (anchor.startsWith("AMBIGUOUS:MONTHS:")) {
+            String n = anchor.substring("AMBIGUOUS:MONTHS:".length());
+            if (r.contains("未来") || r.contains("往后") || r.contains("接下来") || r.contains("今后")
+                    || r.contains("以后")) {
+                return "NEXT:" + n + "M";
+            }
+            if (r.contains("历史") || r.contains("往前") || r.contains("之前") || r.contains("过去")
+                    || r.contains("前面") || r.contains("先前")) {
+                return "LAST:" + n + "M";
             }
             return null;
         }

@@ -82,4 +82,38 @@ class AliasRegexSupportTest {
         String badRegex = AliasRegexSupport.validateRegexRow("[", "$1");
         assertTrue(badRegex.contains("不是合法正则"));
     }
+
+    @Test
+    void yearTokenUsesCapturedYearWhenPresent() {
+        // 2026-11-17 投产日期动态维度: {year:$n} 补年令牌, 组命中取捕获值
+        assertTrue(AliasRegexSupport.isRegexTemplate("{year:$1}-$2-$3"));
+        assertEquals(3, AliasRegexSupport.maxCaptureGroup("{year:$1}-$2-$3"));
+        List<String> withYear = AliasRegexSupport.extract(
+                "2026年10月26日投产的情况如何",
+                "(?:(\\d{4})年)?(\\d{1,2})月(\\d{1,2})[日号]",
+                "{year:$1}-$2-$3");
+        assertEquals(List.of("2026-10-26"), withYear);
+    }
+
+    @Test
+    void yearTokenDefaultsToCurrentYearWhenGroupAbsent() {
+        // 年前缀可省: 组为空 → 当前年 (Asia/Shanghai, 同 TimeRangeResolver.ZONE);
+        // 令牌使年前缀可选 (组 null 不再令整次命中无效, 与裸 $n 语义不同)
+        String currentYear = String.valueOf(java.time.LocalDate.now(TimeRangeResolver.ZONE).getYear());
+        List<String> values = AliasRegexSupport.extract(
+                "10月26日投产的情况如何",
+                "(?:(\\d{4}|\\d{2})年)?(\\d{1,2})月(\\d{1,2})[日号]",
+                "{year:$1}-$2-$3");
+        assertEquals(List.of(currentYear + "-10-26"), values);
+    }
+
+    @Test
+    void yearTokenExpandsTwoDigitYear() {
+        // 2位年补 20 前缀 (与 DimensionStateManager.yearOf 同口径)
+        List<String> values = AliasRegexSupport.extract(
+                "26年10月26日投产的情况如何",
+                "(?:(\\d{4}|\\d{2})年)?(\\d{1,2})月(\\d{1,2})[日号]",
+                "{year:$1}-$2-$3");
+        assertEquals(List.of("2026-10-26"), values);
+    }
 }

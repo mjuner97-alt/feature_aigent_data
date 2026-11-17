@@ -90,6 +90,19 @@ class TimeRangeExtractorTest {
     }
 
     @Test
+    void twoDigitYearPrefixExpandsTo20YY() {
+        // 2026-11-17 bug："27年" 2位缩写年 4 位年正则吃不到，缺年补当前年错成 2026
+        assertEquals(List.of("DATE:2027-01-02~2027-01-02"),
+                TimeRangeExtractor.extract("27年1月2日的缺陷数", SEED_ALIASES));
+        assertEquals(List.of("DATE:2027-10-01~2027-10-15"),
+                TimeRangeExtractor.extract("27年10月1日到10月15日的缺陷数", SEED_ALIASES));
+        assertEquals(List.of("UNTIL:2027-03-01"),
+                TimeRangeExtractor.extract("截止27年3月1日的投产情况", SEED_ALIASES));
+        assertEquals(List.of("DATE:2027-12-28~2028-01-03"),
+                TimeRangeExtractor.extract("27年12月28日至28年1月3日的投产情况", SEED_ALIASES));
+    }
+
+    @Test
     void numericDateRangeVariants() {
         assertEquals(List.of("DATE:2026-10-01~2026-10-15"),
                 TimeRangeExtractor.extract("2026-10-01~10-15 的缺陷数", SEED_ALIASES));
@@ -218,6 +231,22 @@ class TimeRangeExtractorTest {
     void driftRegexCoversLastDays() {
         assertTrue(TimeRangeExtractor.matchesDriftRegex("车贷组的风险近58天"));
         assertTrue(TimeRangeExtractor.matchesDriftRegex("近90天的缺陷趋势"));
+        assertTrue(TimeRangeExtractor.matchesDriftRegex("近3个月的缺陷趋势"));
+    }
+
+    @Test
+    void lastMonthsIsAmbiguous() {
+        // 2026-11-17 换轨：裸"近N个月" → AMBIGUOUS:MONTHS:{n}（历史/未来反问），不再归版本键
+        assertEquals(List.of("AMBIGUOUS:MONTHS:3"), TimeRangeExtractor.extract("近3个月的缺陷趋势", SEED_ALIASES));
+        assertEquals(List.of("AMBIGUOUS:MONTHS:1"), TimeRangeExtractor.extract("近一个月的工时", SEED_ALIASES));
+        assertEquals(List.of("AMBIGUOUS:MONTHS:12"), TimeRangeExtractor.extract("最近十二个月的投产情况", SEED_ALIASES));
+    }
+
+    @Test
+    void nearNMonthsVersionPhraseYieldsToVersionKey() {
+        // 拍板⑷："近N个月版本/近N个月个版本" 连写归版本键 LAST:nV，MONTHS 负向断言让位
+        assertTrue(TimeRangeExtractor.extract("近3个月版本的达标率", SEED_ALIASES).isEmpty());
+        assertTrue(TimeRangeExtractor.extract("近3个月个版本的达标率", SEED_ALIASES).isEmpty());
     }
 
     @Test
@@ -349,6 +378,20 @@ class TimeRangeExtractorTest {
         // 拍板⑦（方案 §8.2）：后接"投产" → 投产日属性参数出口，timeRange 不出防双过滤
         assertTrue(TimeRangeExtractor.extract("10月29日投产的应用", SEED_ALIASES).isEmpty());
         assertTrue(TimeRangeExtractor.extract("预计10月29日投产", SEED_ALIASES).isEmpty());
+    }
+
+    @Test
+    void bareDateYieldsToProdDatePrefix() {
+        // 2026-11-17 投产日期动态维度（拍板⑨前置形态）：前接"投产日(期)?[为是:：]" →
+        // 投产日参数出口，timeRange 不出；含年形态须由含年支 lookbehind 压住引擎内移重试
+        assertTrue(TimeRangeExtractor.extract("投产日为10月26日的缺陷", SEED_ALIASES).isEmpty());
+        assertTrue(TimeRangeExtractor.extract("投产日为2026年10月26日的缺陷", SEED_ALIASES).isEmpty());
+        assertTrue(TimeRangeExtractor.extract("投产日期是10月26日的应用", SEED_ALIASES).isEmpty());
+        assertTrue(TimeRangeExtractor.extract("投产日:2026年10月26日的缺陷", SEED_ALIASES).isEmpty());
+        // 无投产前缀照出单日
+        String y = currentYear();
+        assertEquals(List.of("DATE:" + y + "-10-26~" + y + "-10-26"),
+                TimeRangeExtractor.extract("10月26日到期的应用", SEED_ALIASES));
     }
 
     @Test

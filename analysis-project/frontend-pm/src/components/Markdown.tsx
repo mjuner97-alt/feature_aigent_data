@@ -140,6 +140,9 @@ function sanitizeHtml(source: string, allowInlineScripts = false): string {
 
 function markdownToHtml(md: string): string {
   let html = escapeHtml(md);
+  // Backend multi-segment separator (<br><br> before each 【short_summary】 title) —
+  // pass through as a real line break; intranet/Vue already render it natively.
+  html = html.replace(/&lt;br\s*\/?&gt;/gi, '<br>');
   html = html.replace(/^---+\s*$/gm, '<hr style="border:none;border-top:1px solid #e2e8f0;margin:12px 0">');
   html = html.replace(/^######\s+(.+)$/gm, '<div style="font-size:0.9rem;font-weight:700;margin:4px 0">$1</div>');
   html = html.replace(/^#####\s+(.+)$/gm, '<div style="font-size:0.95rem;font-weight:700;margin:4px 0">$1</div>');
