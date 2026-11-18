@@ -4,7 +4,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { pptAnomalyPermissions, type PptDemoPerson } from '../../api/pptAnomaly';
+import { pptAnomalyPermissions, type PptPerson } from '../../api/pptAnomaly';
 import PptReportNotificationConfig from '../../components/ppt/PptReportNotificationConfig.vue';
 
 /** 关键词或解析范围配置的编辑数据。 */
@@ -57,7 +57,7 @@ const total = ref(0);
 const rows = ref<Entry[]>([]);
 const titleRows = ref<TitleRow[]>([]);
 const loading = ref(false);
-const people = ref<PptDemoPerson[]>([]);
+const people = ref<PptPerson[]>([]);
 const ownerName = ref('');
 const peopleLoading = ref(false);
 const sections = ref<BoardRow[]>([]);
@@ -170,9 +170,23 @@ watch(active, () => {
 watch([page, size], () => void load());
 
 const titleForm = ref({ originalName: undefined as string | undefined, name: '', section: '',
+  handlerUserIds: [] as string[],
   scope: 'FULL', upperLimitRatio: undefined as number | undefined,
   firstRow: undefined as number | undefined, lastRow: undefined as number | undefined });
 const selectedBoard = computed(() => sections.value.find(board => board.name === titleForm.value.section));
+const knownTitleHandlers = ref(new Map<string, string>());
+const titleHandlerOptions = computed(() => {
+  const options = new Map(titleForm.value.handlerUserIds.map(id => [id, knownTitleHandlers.value.get(id) ?? id]));
+  for (const person of people.value) {
+    options.set(person.userId, [contactLabel(person.userId, person.name), person.department].filter(Boolean).join(' · '));
+  }
+  return [...options];
+});
+
+function rememberTitleHandlers(ids: string[]) {
+  const options = new Map(titleHandlerOptions.value);
+  knownTitleHandlers.value = new Map(ids.map(id => [id, options.get(id) ?? id]));
+}
 
 /** 格式化材料或配置的维护时间。 */
 function dateText(value?: string) {
@@ -202,11 +216,16 @@ async function editTitle(row?: TitleRow) {
   editKind.value = 'section';
   titleForm.value = {
     originalName: row?.name, name: row?.name ?? '', section: row?.section?.target ?? '',
+    handlerUserIds: [],
     scope: row?.scope?.target && modes[row.scope.target] ? row.scope.target : 'FULL',
     upperLimitRatio: row?.scope?.upperLimitRatio, firstRow: row?.scope?.firstRow, lastRow: row?.scope?.lastRow,
   };
   editorOpen.value = true;
   sectionsReady.value = false;
+  if (!row) {
+    knownTitleHandlers.value.clear();
+    void searchPeople('');
+  }
   await loadSections();
 }
 
@@ -239,9 +258,14 @@ async function loadSections() {
 
 /** 提交关键词、标题或板块编辑表单并刷新对应列表。 */
 async function save() {
+  if (saving.value) return;
   const entry = form.value;
   const isTitle = editKind.value === 'section';
   const isBoard = editKind.value === 'board';
+  if (isBoard && !boardForm.value.owner?.trim()) {
+    ElMessage.warning('请选择板块联系人');
+    return;
+  }
   const valid = isTitle ? titleForm.value.name.trim() && titleForm.value.section.trim()
     : isBoard ? boardForm.value.name.trim() : entry.name.trim() && entry.target.trim();
   if (!valid) {
@@ -266,7 +290,7 @@ async function save() {
 }
 
 /** 确认并删除所选配置或标题。 */
-async function remove(entry: Entry | TitleRow) {
+async function remove(entry: Entry | TitleRow | BoardRow) {
   const kind = active.value;
   try {
     await ElMessageBox.confirm(`删除「${entry.name}」？`, '删除配置', { type: 'warning', customClass: 'ppt-confirm-box' });
@@ -274,10 +298,11 @@ async function remove(entry: Entry | TitleRow) {
     return;
   }
   try {
-    await request(kind === 'section' ? '/titles?' + new URLSearchParams({ name: entry.name })
+    await request(kind === 'board' ? '/boards?' + new URLSearchParams({ name: entry.name })
+      : kind === 'section' ? '/titles?' + new URLSearchParams({ name: entry.name })
       : `/department/${(entry as Entry).id}`, { method: 'DELETE' });
     if (active.value !== kind) return;
-    if ((kind === 'section' ? titleRows.value.length : rows.value.length) === 1 && page.value > 1) page.value--;
+    if ((kind === 'board' ? boardRows.value.length : kind === 'section' ? titleRows.value.length : rows.value.length) === 1 && page.value > 1) page.value--;
     else await load();
   } catch (error) {
     ElMessage.error(String(error));
@@ -344,7 +369,12 @@ async function remove(entry: Entry | TitleRow) {
           </el-table-column>
           <el-table-column prop="titleCount" label="关联标题数" width="120" />
           <el-table-column label="操作" width="110">
-            <template #default="{ row }"><el-button link type="primary" @click="editBoard(row)">编辑</el-button></template>
+            <template #default="{ row }">
+              <div class="row-actions">
+                <el-button link type="primary" @click="editBoard(row)">编辑</el-button>
+                <el-button link type="danger" @click="remove(row)">删除</el-button>
+              </div>
+            </template>
           </el-table-column>
         </el-table>
         <el-table v-else v-loading="loading" :data="rows" row-key="id">
@@ -397,20 +427,26 @@ async function remove(entry: Entry | TitleRow) {
             </el-select>
             <el-button v-else @click="loadSections">重新加载板块</el-button>
           </el-form-item>
-          <el-form-item v-if="sectionsReady && titleForm.section" label="板块负责人">
+          <el-form-item v-if="sectionsReady && titleForm.section" label="板块联系人">
             <span aria-live="polite">{{ selectedBoard?.owner ? contactLabel(selectedBoard.owner, selectedBoard.ownerName ?? undefined) : '—' }}</span>
+          </el-form-item>
+          <el-form-item v-if="titleForm.originalName === undefined" label="标题经办人">
+            <el-select v-model="titleForm.handlerUserIds" multiple filterable remote :remote-method="searchPeople"
+              :loading="peopleLoading" placeholder="搜索姓名或用户 ID，可稍后补充" @change="rememberTitleHandlers">
+              <el-option v-for="[id, label] in titleHandlerOptions" :key="id" :value="id" :label="label" />
+            </el-select>
           </el-form-item>
           <el-button v-if="sectionsReady && !sections.length" link type="primary" @click="editorOpen = false; active = 'board'">前往板块配置</el-button>
         </template>
         <template v-else-if="editKind === 'board'">
           <el-form-item label="板块名称" required><el-input v-model="boardForm.name" :disabled="!boardForm.create" maxlength="512" /></el-form-item>
-          <el-form-item label="板块联系人">
+          <el-form-item label="板块联系人" required>
             <el-select v-model="boardForm.owner" filterable remote clearable :remote-method="searchPeople" :loading="peopleLoading"
               placeholder="输入姓名或用户 ID 搜索" @change="selectOwner" @visible-change="(open: boolean) => { if (!open) searchPeople(''); }">
               <template #label="{ value }">{{ contactLabel(value, ownerName) }}</template>
               <el-option v-for="person in people" :key="person.userId" :value="person.userId" :label="contactLabel(person.userId, person.name)" />
             </el-select>
-            <small>供内部查看。通知和反馈权限由标题下的经办人决定。</small>
+            <small>材料内容的咨询对象。</small>
           </el-form-item>
         </template>
         <template v-else>

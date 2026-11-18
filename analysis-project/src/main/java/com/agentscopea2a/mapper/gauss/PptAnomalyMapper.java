@@ -21,14 +21,23 @@ public interface PptAnomalyMapper {
                           long linkVersion, int versionNo, String department, int page, String keyword,
                           int assignmentRevision) {}
 
-    /** 查询尚未记录通知的待反馈及已消除事项，传空版本号时扫描全部版本。 */
-    List<FeedbackNotice> feedbackNotices(@Param("versionId") Long versionId);
+    /** 查询指定版本尚未记录通知的待反馈及已消除事项。 */
+    List<FeedbackNotice> feedbackNotices(@Param("versionId") long versionId);
     /** 幂等登记事项与接收人的通知记录，并校验待反馈状态及当前经办关系。 */
     int recordSimulatedNotice(@Param("notice") FeedbackNotice notice, @Param("subject") String subject,
-                              @Param("body") String body);
+                              @Param("body") String body, @Param("notifiedAt") java.time.LocalDateTime notifiedAt);
+    record RecipientNoticeTime(String recipient, java.time.LocalDateTime notifiedAt) {}
+    record SentFeedbackMail(String toUsers, String ccUsers, java.time.LocalDateTime sentAt) {}
+    List<RecipientNoticeTime> previousFeedbackNoticeTimes(@Param("versionId") long versionId, @Param("subject") String subject);
+    List<SentFeedbackMail> sentFeedbackMails(@Param("versionId") long versionId, @Param("department") String department,
+                                             @Param("subject") String subject);
+    int recordFeedbackMail(@Param("versionId") long versionId, @Param("department") String department,
+                           @Param("subject") String subject, @Param("body") String body, @Param("toUsers") String toUsers,
+                           @Param("ccUsers") String ccUsers, @Param("sender") String sender);
     /** 反馈任务、通知及反馈时间关联查询的持久化结果。 */
     record FeedbackRecordRow(long batchId, String batchName, long versionId, int versionNo, String fileName,
-                             String recipient, long findingId, int pageNo, String title, String section,
+                             String recipient, Long findingId, Integer pageNo, String title, String section,
+                             String findingDepartments,
                              String status, String noticeKind, java.time.LocalDateTime notifiedAt,
                              java.time.LocalDateTime feedbackAt) {}
     /** 读取通知表实际列名，兼容历史表结构中的通知时间字段。 */
@@ -47,7 +56,7 @@ public interface PptAnomalyMapper {
     /** 规则识别所需的页面文本和板块归属。 */
     record AnalysisSlide(long id, String title, String texts, String section, String defaultOwner) {}
     /** 导入页面的标题、板块归属和跳过状态。 */
-    record PageAssignment(int page, String title, String section, boolean skipped) {}
+    record PageAssignment(int page, String title, String section, boolean skipped, String mode, boolean excluded) {}
     /** 正文匹配关键词及其目标部门。 */
     record DepartmentMapping(String keyword, String department) {}
 
@@ -59,6 +68,18 @@ public interface PptAnomalyMapper {
     List<com.agentscopea2a.v2.pptanomaly.PptAnomalyModels.BatchSummary> batchSummaries();
     /** 锁定批次记录，串行分配该批次的新版本号。 */
     Long lockBatch(@Param("id") long id);
+
+    List<Long> lockBatchVersions(@Param("id") long id);
+    List<Long> lockBatchFindings(@Param("id") long id);
+    void deleteBatchFeedbackNotices(@Param("id") long id);
+    void deleteBatchFindingFeedback(@Param("id") long id);
+    void deleteBatchAssignmentChanges(@Param("id") long id);
+    void deleteBatchFindings(@Param("id") long id);
+    void deleteBatchSlides(@Param("id") long id);
+    void deleteBatchMailRecords(@Param("id") long id);
+    void deleteBatchDetailLinks(@Param("id") long id);
+    void deleteBatchVersions(@Param("id") long id);
+    void deleteBatch(@Param("id") long id);
     /** 查询同一批次已有的最大版本号。 */
     int maxVersion(@Param("id") long id);
     /** 保存材料版本元数据及原件相对存储路径，并回填版本主键。 */
@@ -226,8 +247,11 @@ public interface PptAnomalyMapper {
     /** 保存当前版本页面的板块、联系人和跳过标记。 */
     int setPageAssignment(@Param("id") long id, @Param("page") int page,
                           @Param("section") String section, @Param("owner") String owner, @Param("skip") boolean skip);
+    int updatePageRecognition(@Param("id") long id, @Param("page") int page, @Param("title") String title,
+                              @Param("texts") String texts, @Param("mode") String mode);
     /** 首次保存标题的默认板块归属，已有映射保留原值。 */
     int rememberSection(@Param("title") String title, @Param("section") String section);
+    int rememberScope(@Param("title") String title, @Param("mode") String mode);
     /** 读取标题已保存的默认板块归属。 */
     String rememberedSection(@Param("title") String title);
     /** 确保正式板块配置存在。 */
@@ -244,6 +268,8 @@ public interface PptAnomalyMapper {
     List<DepartmentMapping> departments();
     /** 将材料版本标记为已完成识别。 */
     int markAnalyzed(@Param("id") long id);
+    /** 标记导入确认快照已生成，后续发布只读取本版本事项。 */
+    int markImportConfirmed(@Param("id") long id);
     /** 读取同一批次中版本号紧邻的上一版本。 */
     Long previous(@Param("id") long id);
     /** 读取当前版本之前最近一次已完成识别的版本。 */

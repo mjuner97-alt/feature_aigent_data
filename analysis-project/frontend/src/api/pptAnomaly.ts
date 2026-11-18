@@ -18,9 +18,10 @@ export async function overviewContext() {
 export interface PptFeedbackRecord {
   recipientName: string | null;
   departments: string[];
+  configurableTitle: string | null;
   page: {
     batchId: number; batchName: string; versionId: number; versionNo: number; fileName: string;
-    recipient: string; findingId: number; pageNo: number; title: string | null; section: string | null;
+    recipient: string | null; findingId: number | null; pageNo: number | null; title: string | null; section: string | null;
     status: string | null; noticeKind: string | null; notifiedAt: string | null; feedbackAt: string | null;
   };
 }
@@ -33,7 +34,8 @@ export async function versionSections(id: number) {
   return parse<PptSectionWork[]>(await fetch(`${base}/versions/${id}/sections`, { headers: headers() }));
 }
 /** 可选经办人的认证号、姓名及部门。 */
-export interface PptDemoPerson { userId: string; name: string; department: string }
+export interface PptPerson { userId: string; name: string; department: string }
+export interface PptTitleHandlerPerson { userId: string; name: string; depts: string[] }
 
 const reportNotification = `${base}/report-notification`;
 export interface PptReportRecipients {
@@ -63,7 +65,7 @@ export async function savePptReportRecipients(department: string, { to, cc }: Pp
 
 export async function searchPptReportPeople(department: string, keyword: string) {
   const query = new URLSearchParams({ department, keyword });
-  return parse<PptDemoPerson[]>(await fetch(`${reportNotification}/people?${query}`, { headers: headers() }));
+  return parse<PptPerson[]>(await fetch(`${reportNotification}/people?${query}`, { headers: headers() }));
 }
 /** 标题明细的一条展示链接。 */
 export interface PptTitleDetail { name: string; url: string }
@@ -93,23 +95,23 @@ export async function savePptTitleDetails(title: string, details: PptTitleDetail
 /** 读取标题对应的部门经办人配置。 */
 export async function listPptTitleHandlers(title: string) {
   const query = new URLSearchParams({ title });
-  return parse<PptDemoPerson[]>(await fetch(`${base}/keyword-config/title-handlers?${query}`, { headers: headers() }));
+  return parse<PptPerson[]>(await fetch(`${base}/keyword-config/title-handlers?${query}`, { headers: headers() }));
 }
 /** 通过新增或删除接口维护标题经办人。 */
 export async function updatePptTitleHandler(title: string, userId: string, method: 'POST' | 'DELETE') {
   const query = new URLSearchParams({ title, userId });
-  return parse<PptDemoPerson[]>(await fetch(`${base}/keyword-config/title-handlers?${query}`, {
+  return parse<PptPerson[]>(await fetch(`${base}/keyword-config/title-handlers?${query}`, {
     method, headers: headers(),
   }));
 }
-/** 读取当前可选择的演示人员列表。 */
-export async function listPptDemoPeople() {
-  return parse<PptDemoPerson[]>(await fetch(`${base}/keyword-config/people`, { headers: headers() }));
+/** 读取当前人员台账中的默认候选项。 */
+export async function listPptPeople() {
+  return parse<PptPerson[]>(await fetch(`${base}/keyword-config/people`, { headers: headers() }));
 }
-/** 按名称、部门或认证号查询可选人员。 */
-export async function searchPptPeople(keyword: string) {
-  const query = new URLSearchParams({ keyword });
-  return parse<PptDemoPerson[]>(await fetch(`${base}/keyword-config/people/search?${query}`, { headers: headers() }));
+/** 按姓名或认证号查询可选人员，可限定部门。 */
+export async function searchPptPeople(keyword: string, department = '') {
+  const query = new URLSearchParams({ keyword, department });
+  return parse<PptPerson[]>(await fetch(`${base}/keyword-config/people/search?${query}`, { headers: headers() }));
 }
 /** 为指定版本的板块保存负责人。 */
 export async function assignVersionSection(id: number, section: string, userId: string) {
@@ -128,7 +130,7 @@ export async function feedbackDirectory(versionId: number, recordOwner?: string,
   if (recordOwner) query.set('recordOwner', recordOwner);
   if (department) query.set('department', department);
   return parse<{
-    fileName: string; departments: string[]; assigned: PptFinding[]; departmentFindings: PptFinding[];
+    fileName: string; departments: string[]; assigned: PptFinding[]; departmentFindings: PptFinding[]; myPending: PptFinding[];
     contacts: Partial<Record<number, { name: string | null; userId: string }>>;
     handlers: Partial<Record<number, { name: string | null; userId: string }[]>>;
   }>(
@@ -146,7 +148,7 @@ export async function sendPptFeedbackNotification(versionId: number, recordOwner
   if (!response.ok) await parse(response);
 }
 
-export async function downloadFeedbackDirectory(versionId: number, scope: 'mine' | 'all', recordOwner?: string, department?: string) {
+export async function downloadFeedbackDirectory(versionId: number, scope: 'pending' | 'all', recordOwner?: string, department?: string) {
   const query = new URLSearchParams({ scope });
   if (department) query.set('department', department);
   if (recordOwner) query.set('recordOwner', recordOwner);
@@ -182,13 +184,14 @@ export async function feedbackEdits(findingId: number) {
 }
 
 export async function assignmentOptions(versionId: number) {
-  return parse<{ pages: { page: number; title: string | null }[]; departments: string[] }>(
+  return parse<{ pages: { page: number; title: string | null; section: string | null; skipped: boolean }[];
+    departments: string[] }>(
     await fetch(`${base}/versions/${versionId}/assignment-options`, { headers: headers() }),
   );
 }
 
 export async function saveFindingAssignment(versionId: number, payload:
-  { findingId?: number; page: number; department: string; handlers: string[] }) {
+  { findingId?: number; page: number; department: string; handlers: string[]; expectedHandlers?: string[] }) {
   return parse<{ status: string }>(await fetch(`${base}/versions/${versionId}/finding-assignment`, {
     method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(payload),
   }));
@@ -212,6 +215,13 @@ async function parse<T>(response: Response): Promise<T> {
 }
 /** 创建一次例会的材料批次。 */
 export async function createBatch(name:string){return parse<{id:number;name:string}>(await fetch(`${base}/batches`,{method:'POST',headers:jsonHeaders(),body:JSON.stringify({name})}))}
+export async function deleteBatch(batchId: number) {
+  return parse<{ deleted: boolean }>(await fetch(`${base}/batches/${batchId}`, {
+    method: 'DELETE',
+    headers: headers(),
+  }));
+}
+
 /** 读取可选择的材料批次。 */
 export async function listBatches() {
   return parse<PptBatch[]>(await fetch(`${base}/batches`, { headers: headers() }));
@@ -289,7 +299,10 @@ export interface PptImportPage {
   title: string;
   section: string | null;
   skipped: boolean;
+  mode: PptRecognitionMode | 'OUT_OF_SCOPE' | 'SKIP' | 'REVIEW';
+  excluded: boolean;
 }
+export type PptRecognitionMode = 'FULL' | 'TEXT_ONLY' | 'UPPER_TABLE_ONLY';
 /** 提交给后端的页面板块和联系人分派结果。 */
 export interface PptImportAssignment {
   page: number;
@@ -300,12 +313,18 @@ export interface PptImportAssignment {
   createBoard?: boolean;
   rememberOwner?: boolean;
   deferOwner?: boolean;
+  title?: string;
+  recognitionMode?: PptRecognitionMode;
+  handlers?: string[];
 }
 /** 材料导入预览的页面、板块及联系人数据。 */
 type PptImportReview = {
   pages: PptImportPage[];
   boards: string[];
   contacts: Record<string, string>;
+  contactNames?: Record<string, string>;
+  titleHandlers: Record<string, PptTitleHandlerPerson[]>;
+  thumbnails: Record<number, string>;
 };
 
 /** 上传 PPT 进行页面解析预览，供用户确认板块归属。 */

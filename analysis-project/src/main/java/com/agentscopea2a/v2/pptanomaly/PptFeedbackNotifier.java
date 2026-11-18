@@ -4,6 +4,9 @@ import com.agentscopea2a.config.datasource.GaussConfig;
 import com.agentscopea2a.mapper.gauss.PptAnomalyMapper;
 import com.agentscopea2a.v2.skillManager.notification.NotificationPayload;
 import com.agentscopea2a.v2.skillManager.notification.NotificationSender;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -17,7 +20,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -30,21 +32,16 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 import org.springframework.web.util.UriComponentsBuilder;
 
-/** 例会材料异步通知服务，按版本及部门汇总通知并通过事务记录实现补漏去重。 */
+/** 例会材料异步通知服务，按版本及部门汇总通知并通过事务记录去重。 */
 @Component
 @ConditionalOnProperty(prefix = "spring.datasource.hikari.gauss-customer", name = "enabled", havingValue = "true")
 public class PptFeedbackNotifier {
-    // true：上传确认并完成识别后，事务提交时排队发送通知，定时任务负责补漏。
-    // false：识别完成时不生成通知，统一由定时任务按计划处理。
-    @Value("${app.ppt-feedback.notify-immediately:false}")
-    private boolean sendImmediately;
-
     private static final Logger log = LoggerFactory.getLogger(PptFeedbackNotifier.class);
     private final PptAnomalyMapper persistence;
     private final NotificationSender sender;
+    private final ObjectMapper json;
     private final TransactionTemplate transaction;
-    // 缓存最近一次业务请求的访问地址，供无 HTTP 请求上下文的定时补漏使用。
-    private volatile String baseUrl;
+    private final String baseUrl;
     // 通知一律异步发送：识别接口的事务提交后只排队，不阻塞请求线程。
     private final ExecutorService dispatcher = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "ppt-feedback-notifier");
@@ -53,11 +50,12 @@ public class PptFeedbackNotifier {
     });
 
     /** 装配统一发送器及独立事务模板，初始化通知访问地址。 */
-    public PptFeedbackNotifier(PptAnomalyMapper persistence, NotificationSender sender,
+    public PptFeedbackNotifier(PptAnomalyMapper persistence, NotificationSender sender, ObjectMapper json,
                                @Qualifier(GaussConfig.TX_NAME) PlatformTransactionManager transactionManager,
                                @Value("${harness.a2a.csv-download.base-url:http://localhost:${server.port:8080}${server.servlet.context-path:}}") String baseUrl) {
         this.persistence = persistence;
         this.sender = sender;
+        this.json = json;
         this.transaction = new TransactionTemplate(transactionManager);
         this.transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.baseUrl = baseUrl.strip().replaceAll("/+$", "");
@@ -69,17 +67,10 @@ public class PptFeedbackNotifier {
         dispatcher.shutdownNow();
     }
 
-    /** 按代码默认时间计划异步补发尚未记录的部门通知。 */
-    @Scheduled(cron = "0 0 * * * *", zone = "Asia/Shanghai")
-    public void sendFeedbackNotices() {
-        queue(null, baseUrl);
-    }
-
-    /** 在导入事务提交后排队发送指定版本通知，并保留本次请求地址。 */
-    void recordVersionNoticesIfImmediate(long versionId) {
+    /** 在业务事务提交后排队发送指定版本通知，并保留本次请求地址。 */
+    void notifyVersionAfterCommit(long versionId) {
         // 在请求线程获取地址快照，异步线程及事务提交回调使用同一地址。
         String notificationBaseUrl = requestBaseUrl();
-        if (!sendImmediately) return;
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 /** 在业务事务提交后将通知加入异步队列。 */
@@ -93,7 +84,7 @@ public class PptFeedbackNotifier {
         queue(versionId, notificationBaseUrl);
     }
 
-    /** 优先采用浏览器访问来源及上下文路径，保存地址供后续补漏复用。 */
+    /** 优先采用当前请求的浏览器访问来源及上下文路径。 */
     private String requestBaseUrl() {
         if (RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes attributes) {
             var request = attributes.getRequest();
@@ -104,20 +95,18 @@ public class PptFeedbackNotifier {
             if (origin != null && (origin.startsWith("http://") || origin.startsWith("https://"))) {
                 address = UriComponentsBuilder.fromOriginHeader(origin).path(request.getContextPath());
             }
-            String requestAddress = address.build().toUriString().replaceAll("/+$", "");
-            baseUrl = requestAddress;
-            return requestAddress;
+            return address.build().toUriString().replaceAll("/+$", "");
         }
         return baseUrl;
     }
 
     /** 将版本和访问地址快照提交到通知执行器。 */
-    private void queue(Long versionId, String notificationBaseUrl) {
+    private void queue(long versionId, String notificationBaseUrl) {
         dispatcher.execute(() -> dispatch(versionId, notificationBaseUrl));
     }
 
     /** 查询未发送事项并按版本及部门分组处理。 */
-    private void dispatch(Long versionId, String notificationBaseUrl) {
+    private void dispatch(long versionId, String notificationBaseUrl) {
         List<PptAnomalyMapper.FeedbackNotice> notices;
         try {
             notices = persistence.feedbackNotices(versionId);
@@ -153,15 +142,49 @@ public class PptFeedbackNotifier {
                 if (current.isEmpty()) return;
                 String subject = subject(first);
                 String body = body(first, notificationBaseUrl);
-                int recorded = 0;
-                // 逐项登记反馈任务便于查询通知时间，实际发送按当前部门合并为一次。
-                for (var notice : current) recorded += persistence.recordSimulatedNotice(notice, subject, body);
-                // 已全部发送过则跳过；发送失败时回滚占用的通知记录，后续检查可重试。
-                if (recorded > 0) send(current, subject, body, notificationBaseUrl);
+                String department = departmentOf(first);
+                var previous = previousMailTimes(first.versionId(), department, subject);
+                List<PptAnomalyMapper.FeedbackNotice> firstTime = new ArrayList<>();
+                for (var notice : current) {
+                    LocalDateTime notifiedAt = previous.get(notice.recipient());
+                    if (persistence.recordSimulatedNotice(notice, subject, body, notifiedAt) > 0 && notifiedAt == null) {
+                        firstTime.add(notice);
+                    }
+                }
+                if (!firstTime.isEmpty()) send(firstTime, subject, body, notificationBaseUrl);
             });
         } catch (RuntimeException e) {
             log.warn("例会材料通知发送失败，版本 {}，部门 {}",
                     first.versionId(), departmentOf(first), e);
+        }
+    }
+
+    private Map<String, LocalDateTime> previousMailTimes(long versionId, String department, String subject) {
+        var times = new LinkedHashMap<String, LocalDateTime>();
+        for (var notice : persistence.previousFeedbackNoticeTimes(versionId, subject)) {
+            times.put(notice.recipient(), notice.notifiedAt());
+        }
+        for (var mail : persistence.sentFeedbackMails(versionId, department, subject)) {
+            addMailTimes(times, mail.toUsers(), mail.sentAt());
+            addMailTimes(times, mail.ccUsers(), mail.sentAt());
+        }
+        return times;
+    }
+
+    private void addMailTimes(Map<String, LocalDateTime> times, String recipients, LocalDateTime sentAt) {
+        try {
+            List<String> ids = json.readValue(recipients, new TypeReference<>() {});
+            for (String id : ids) times.merge(id, sentAt, (old, current) -> current.isAfter(old) ? current : old);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("无法读取邮件收件人记录", e);
+        }
+    }
+
+    private String recipientJson(List<String> recipients) {
+        try {
+            return json.writeValueAsString(recipients);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("无法保存邮件收件人记录", e);
         }
     }
 
@@ -174,11 +197,13 @@ public class PptFeedbackNotifier {
                 null, null, first.versionId(), "SUCCESS", LocalDateTime.now(), recipients, "METRIC");
         var request = sender.prepare(payload);
         sender.sendPrepared(payload, request);
+        persistence.recordFeedbackMail(first.versionId(), departmentOf(first), subject, body,
+                recipientJson(recipients), "[]", "SYSTEM");
     }
 
-    void sendManual(long versionId, String fileName, String department, List<String> to, List<String> cc) {
+    void sendManual(long versionId, String fileName, String department, List<String> to, List<String> cc, String operator) {
         String url = link(versionId, department, requestBaseUrl());
-        String subject = department + "-例会材料反馈通知";
+        String subject = department + "-例会材料反馈结果通知";
         String body = "<p>请查看例会材料「" + HtmlUtils.htmlEscape(fileName)
                 + "」的最新反馈事项。</p><p><a href=\"" + HtmlUtils.htmlEscape(url) + "\">查看最新反馈事项</a></p>";
         var payload = new NotificationPayload("HTML", body, null, null, url, null, subject,
@@ -187,12 +212,10 @@ public class PptFeedbackNotifier {
             if (!"ANALYZED".equals(persistence.lockVersion(versionId))) {
                 throw new IllegalStateException("材料未完成识别");
             }
-            for (var notice : persistence.feedbackNotices(versionId)) {
-                if (department.equals(departmentOf(notice))) {
-                    persistence.recordSimulatedNotice(notice, subject, body);
-                }
-            }
+            // 结果通知独立记录，不能充当待反馈通知的送达凭据。
             sender.send(payload);
+            persistence.recordFeedbackMail(versionId, department, subject, body,
+                    recipientJson(to), recipientJson(cc), operator);
         });
     }
 

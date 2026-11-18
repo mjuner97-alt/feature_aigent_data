@@ -72,6 +72,9 @@ public interface DeveloperPlPersonInfoMapper {
      */
     List<DeveloperPlPersonInfo> selectByKeyword(@Param("keyword") String keyword);
 
+    List<DeveloperPlPersonInfo> searchPptPeople(@Param("keyword") String keyword,
+                                              @Param("department") String department);
+
     List<DeveloperPlPersonInfo> searchDepartmentPeople(@Param("department") String department,
                                                      @Param("keyword") String keyword);
 }

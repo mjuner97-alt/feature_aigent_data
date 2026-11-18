@@ -11,14 +11,14 @@ import com.agentscopea2a.v2.pptanomaly.PptAnomalyModels.Slide;
 import com.agentscopea2a.v2.pptanomaly.PptAnomalyModels.Version;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.agentscopea2a.v2.dimension.PersonLedgerRepository;
-import com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonLedgerRow;
+import com.agentscopea2a.v2.auth.mapper.DeveloperPlPersonInfoMapper;
+import com.agentscopea2a.v2.auth.entity.DeveloperPlPersonInfo;
 import org.apache.poi.xslf.usermodel.XMLSlideShow;
 import org.apache.poi.xslf.usermodel.XSLFShape;
+import org.apache.poi.xslf.usermodel.XSLFGroupShape;
 import org.apache.poi.xslf.usermodel.XSLFSlide;
 import org.apache.poi.xslf.usermodel.XSLFTable;
 import org.apache.poi.xslf.usermodel.XSLFTextShape;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.dao.EmptyResultDataAccessException;
@@ -47,6 +47,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -65,7 +66,7 @@ public class PptAnomalyService {
     }
     private final PptAnomalyMapper persistence;
     private final ObjectMapper mapper;
-    private final ObjectProvider<PersonLedgerRepository> personLedger;
+    private final DeveloperPlPersonInfoMapper people;
     // 带此版本标记的说明保存为 JSON，内容同时包含用户说明和附件文件名索引。
     private static final String ATTACHMENT_PREFIX = "ppt-feedback-files:v1\n";
     private static final int MAX_FEEDBACK_BYTES = 16 * 1024;
@@ -76,11 +77,11 @@ public class PptAnomalyService {
     private final Path storageDir;
     private final Semaphore previewRenderer = new Semaphore(1, true);
     /** 装配持久化和 JSON 依赖，解析通用 workspace 下的材料存储目录。 */
-    public PptAnomalyService(PptAnomalyMapper persistence, ObjectMapper mapper, ObjectProvider<PersonLedgerRepository> personLedger,
+    public PptAnomalyService(PptAnomalyMapper persistence, ObjectMapper mapper, DeveloperPlPersonInfoMapper people,
                              @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}/ppt-anomaly") String storageDir) {
         this.persistence = persistence;
         this.mapper = mapper;
-        this.personLedger = personLedger;
+        this.people = people;
         this.storageDir = Path.of(storageDir).toAbsolutePath().normalize();
     }
 
@@ -101,6 +102,24 @@ public class PptAnomalyService {
     /** 读取例会材料批次列表。 */
     public List<Batch> listBatches() {
         return persistence.batches();
+    }
+
+    @Transactional(GaussConfig.TX_NAME)
+    public void deleteBatch(long batchId) {
+        if (persistence.lockBatch(batchId) == null) {
+            return;
+        }
+        persistence.lockBatchVersions(batchId);
+        persistence.lockBatchFindings(batchId);
+        persistence.deleteBatchFeedbackNotices(batchId);
+        persistence.deleteBatchFindingFeedback(batchId);
+        persistence.deleteBatchAssignmentChanges(batchId);
+        persistence.deleteBatchFindings(batchId);
+        persistence.deleteBatchSlides(batchId);
+        persistence.deleteBatchMailRecords(batchId);
+        persistence.deleteBatchDetailLinks(batchId);
+        persistence.deleteBatchVersions(batchId);
+        persistence.deleteBatch(batchId);
     }
 
     /** 保存 PPT 原件并创建独立版本，事务失败时清理本次写入文件。 */
@@ -168,16 +187,24 @@ public class PptAnomalyService {
     }
 
     /** 反馈记录及接收人的姓名与部门展示信息。 */
-    public record FeedbackRecord(PptAnomalyMapper.FeedbackRecordRow page, String recipientName, List<String> departments) {}
+    public record FeedbackRecord(PptAnomalyMapper.FeedbackRecordRow page, String recipientName, List<String> departments,
+                                 String configurableTitle) {}
 
     /** 按当前用户权限查询反馈任务、通知时间和反馈时间。 */
     public List<FeedbackRecord> feedbackRecords(String userId, boolean admin) {
         var noticeColumns = persistence.feedbackNoticeColumns();
         return persistence.feedbackRecords(userId, admin, !noticeColumns.isEmpty(), noticeColumns.contains("notified_at"))
                 .stream().map(row -> {
-                    var person = ledgerPerson(row.recipient());
-                    return new FeedbackRecord(row, person == null ? null : person.name(),
-                            person == null ? List.of() : person.depts());
+                    var person = row.recipient() == null ? null : ledgerPerson(row.recipient());
+                    var departments = readList(row.findingDepartments());
+                    if (departments.isEmpty() && person != null) {
+                        departments = person.depts();
+                    }
+                    String title = row.title() == null ? "" : row.title().strip();
+                    // 分派入口属于版本事项，不依赖标题是否仍存在于全局配置中。
+                    String configurableTitle = admin && row.findingId() != null
+                            ? (title.isBlank() ? "未命名页面" : title) : null;
+                    return new FeedbackRecord(row, person == null ? null : person.name(), departments, configurableTitle);
                 }).toList();
     }
 
@@ -194,10 +221,19 @@ public class PptAnomalyService {
     }
 
     /** 从当前人员目录查找用户姓名和部门。 */
-    PersonLedgerRow ledgerPerson(String userId) {
-        var ledger = personLedger.getIfAvailable();
-        var person = ledger == null ? null : ledger.byUserId(userId);
-        return person == null ? PptDemoPeople.find(userId) : person;
+    record DirectoryPerson(String userId, String name, List<String> depts) {}
+
+    /** 从当前人员台账读取姓名和所有归属部门。 */
+    DirectoryPerson ledgerPerson(String userId) {
+        if (userId == null || userId.isBlank()) return null;
+        var rows = people.selectByUserId(userId.strip());
+        if (rows.isEmpty()) return null;
+        var departments = rows.stream().map(DeveloperPlPersonInfo::getDepartment)
+                .filter(department -> department != null && !department.isBlank())
+                .map(String::strip).distinct().toList();
+        var name = rows.stream().map(DeveloperPlPersonInfo::getName)
+                .filter(value -> value != null && !value.isBlank()).findFirst().orElse(userId.strip());
+        return new DirectoryPerson(userId.strip(), name, departments);
     }
 
     PptAnomalyController.FeedbackNotification reportRecipients(String department) {
@@ -218,13 +254,14 @@ public class PptAnomalyService {
             if (row.department() != null && !row.department().isBlank()) departments.add(row.department());
         }
         for (var row : persistence.findings(versionId)) departments.addAll(readList(row.departments()));
-        for (var person : PptDemoPeople.options()) departments.add(person.get("department"));
+        people.selectAllDepartments().stream().map(String::strip).filter(department -> !department.isEmpty())
+                .forEach(departments::add);
         return new AssignmentOptions(persistence.pageAssignments(versionId), List.copyOf(departments));
     }
 
     @Transactional(GaussConfig.TX_NAME)
     public void adjustAssignment(long versionId, Long findingId, int page, String department,
-                                 List<String> handlers, String editor) {
+                                 List<String> handlers, List<String> expectedHandlers, String editor) {
         var status = persistence.lockVersion(versionId);
         if (status == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "版本不存在");
         if (!"ANALYZED".equals(status)) {
@@ -236,7 +273,7 @@ public class PptAnomalyService {
         String target = department.strip();
         var selected = handlers == null ? List.<String>of() : handlers.stream()
                 .filter(Objects::nonNull).map(String::strip).filter(id -> !id.isEmpty()).distinct().sorted().toList();
-        if (selected.isEmpty() || selected.stream().anyMatch(id -> !inDepartment(List.of(target), id))) {
+        if (selected.stream().anyMatch(id -> !inDepartment(List.of(target), id))) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择属于目标部门的经办人");
         }
         var existing = findingId == null ? null : persistence.findingAssignment(versionId, findingId);
@@ -251,6 +288,11 @@ public class PptAnomalyService {
             previousDepartment = previousDepartments.get(0);
         }
         boolean transferred = !target.equals(previousDepartment);
+        List<String> previousHandlers = existing == null ? List.of() : persistence.assignmentHandlers(existing.id());
+        if (expectedHandlers != null && (transferred || page != targetPage
+                || !new HashSet<>(expectedHandlers).equals(new HashSet<>(previousHandlers)))) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "事项归属或经办人已变化，请重新打开后调整");
+        }
         if (transferred && persistence.assignmentExists(versionId, targetPage, target, departments,
                 findingId == null ? 0 : findingId)) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "该页已有目标部门的事项，请处理现有事项");
@@ -258,7 +300,6 @@ public class PptAnomalyService {
 
         long id;
         int revision;
-        List<String> previousHandlers = List.of();
         if (existing == null) {
             if (persistence.slide(versionId, targetPage) == null) {
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "当前版本中没有该页面");
@@ -267,13 +308,15 @@ public class PptAnomalyService {
             revision = 0;
         } else {
             id = existing.id();
-            previousHandlers = persistence.assignmentHandlers(id);
             if (!transferred && previousHandlers.equals(selected)) return;
             revision = existing.revision() + (transferred ? 1 : 0);
-            String updatedStatus = transferred || "UNASSIGNED".equals(existing.status())
-                    ? "PENDING_FEEDBACK" : existing.status();
+            String updatedStatus = transferred || "UNASSIGNED".equals(existing.status()) || "PENDING_FEEDBACK".equals(existing.status())
+                    ? (selected.isEmpty() ? "UNASSIGNED" : "PENDING_FEEDBACK") : existing.status();
             persistence.updateFindingAssignment(id, target, departments, revision, updatedStatus);
             persistence.deleteAssignmentHandlers(id);
+        }
+        if (existing == null && selected.isEmpty()) {
+            persistence.updateFindingAssignment(id, target, departments, revision, "UNASSIGNED");
         }
         for (String handler : selected) persistence.addAssignmentHandler(id, handler);
         persistence.recordAssignmentChange(id, revision, previousDepartment, target,
@@ -281,16 +324,11 @@ public class PptAnomalyService {
     }
 
     /** 按事项板块匹配联系人，兼容历史事项的空板块记录。 */
-    Map<Long, BoardContact> feedbackContacts(List<Finding> assigned, List<Finding> departmentFindings) {
+    Map<Long, BoardContact> feedbackContacts(long versionId, List<Finding> assigned, List<Finding> departmentFindings) {
         var findings = java.util.stream.Stream.concat(assigned.stream(), departmentFindings.stream())
                 .distinct().toList();
         if (findings.isEmpty()) return Map.of();
-        var contacts = new java.util.HashMap<String, BoardContact>();
-        for (var row : persistence.boardOwners()) {
-            if (row.owner() == null || row.owner().isBlank()) continue;
-            var person = ledgerPerson(row.owner());
-            contacts.put(row.name(), new BoardContact(person == null ? null : person.name(), row.owner()));
-        }
+        var contacts = importContacts(persistence.boardOwners(), Map.of(), persistence.importOwners(versionId));
         var sections = new java.util.HashMap<String, String>();
         for (var row : persistence.titleSections()) sections.put(row.title(), row.section());
         var result = new java.util.HashMap<Long, BoardContact>();
@@ -300,7 +338,7 @@ public class PptAnomalyService {
                 section = sections.getOrDefault(finding.title(), sections.get(unnumberedTitle(finding.title())));
             }
             var contact = contacts.get(section);
-            if (contact != null) result.put(finding.id(), contact);
+            if (contact != null) result.put(finding.id(), new BoardContact(contact.name(), contact.userId()));
         }
         return result;
     }
@@ -348,7 +386,7 @@ public class PptAnomalyService {
         }
         var person = ledgerPerson(userId);
         if (person == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择示例联系人");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择人员台账中的联系人");
         }
         if (!"ANALYZED".equals(persistence.lockVersion(versionId))) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "已识别的版本不存在");
@@ -483,33 +521,59 @@ public class PptAnomalyService {
     public record ImportReview(List<PptAnomalyMapper.PageAssignment> pages, List<String> sections,
                                List<String> boards, List<PptAnomalyMapper.BoardOwner> boardOwners,
                                List<PptAnomalyMapper.SectionWork> versionOwners,
-                               Map<String, String> previousOwners, Map<String, String> contacts) {}
+                               Map<String, String> previousOwners, Map<String, String> contacts,
+                               Map<String, String> contactNames, Map<Integer, String> thumbnails,
+                               Map<String, List<DirectoryPerson>> titleHandlers) {}
     /** 导入时对单页板块和联系人的分派选择。 */
     public record ImportAssignment(int page, String section, String owner, boolean skip, boolean remember,
-                                   boolean createBoard, boolean rememberOwner, boolean deferOwner) {
+                                   boolean createBoard, boolean rememberOwner, boolean deferOwner,
+                                   String title, String recognitionMode, List<String> handlers) {
+        public ImportAssignment(int page, String section, String owner, boolean skip, boolean remember,
+                                boolean createBoard, boolean rememberOwner, boolean deferOwner,
+                                String title, String recognitionMode) {
+            this(page, section, owner, skip, remember, createBoard, rememberOwner, deferOwner, title, recognitionMode, null);
+        }
+        public ImportAssignment(int page, String section, String owner, boolean skip, boolean remember,
+                                boolean createBoard, boolean rememberOwner, boolean deferOwner) {
+            this(page, section, owner, skip, remember, createBoard, rememberOwner, deferOwner, null, null);
+        }
         /** 构造页面分派请求，兼容简化的归属及联系人输入。 */
         public ImportAssignment(int page, String section, String owner, boolean skip, boolean remember) {
             this(page, section, owner, skip, remember, false, false, false);
         }
     }
 
+    private record ConfirmedTitleRule(String section, String mode) {}
+
     /** 解析上传的 PPT 并返回页面归属预览。 */
     public ImportReview previewImport(Long batchId, MultipartFile file) {
         pptFileName(file);
+        Long previous = batchId == null ? null : persistence.versions(batchId).stream()
+                .filter(version -> "ANALYZED".equals(version.status()))
+                .findFirst().map(Version::id).orElse(null);
+        var previousPages = previousTitlePages(previous);
         var titles = new java.util.HashMap<String, String>();
+        previousPages.forEach(page -> titles.putIfAbsent(page.title(), page.section()));
         for (var mapping : persistence.titleSections()) titles.put(mapping.title(), mapping.section());
         var pages = new ArrayList<PptAnomalyMapper.PageAssignment>();
+        Map<Integer, String> thumbnails = new LinkedHashMap<>();
         try (InputStream input = file.getInputStream()) {
-            parseSlides(input, (page, title, texts, mode) -> pages.add(new PptAnomalyMapper.PageAssignment(
-                    page, title, titles.getOrDefault(title, titles.get(unnumberedTitle(title))), false)));
+            parseSlides(input, previousPages, Map.of(), thumbnails, (page, title, texts, mode) -> pages.add(new PptAnomalyMapper.PageAssignment(
+                    page, title, mode == PageMode.OUT_OF_SCOPE ? null
+                            : titles.getOrDefault(title, titles.get(unnumberedTitle(title))),
+                    mode == PageMode.OUT_OF_SCOPE, mode.name(), false)));
         } catch (IOException | org.apache.poi.ooxml.POIXMLException e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "无法解析 PPT，请检查文件格式", e);
         }
         if (pages.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "PPT 没有页面");
-        Long previous = batchId == null ? null : persistence.versions(batchId).stream()
-                .filter(version -> "ANALYZED".equals(version.status()))
-                .findFirst().map(Version::id).orElse(null);
-        return importReview(pages, List.of(), List.of(), previous);
+        return importReview(pages, List.of(), List.of(), previous, thumbnails);
+    }
+
+    private List<PptAnomalyMapper.PageAssignment> previousTitlePages(Long previousId) {
+        if (previousId == null) return List.of();
+        return persistence.pageAssignments(previousId).stream()
+                .filter(page -> !page.skipped() && page.title() != null && !page.title().isBlank())
+                .toList();
     }
 
     /** 读取已上传版本的页面归属及联系人配置，供导入确认。 */
@@ -518,23 +582,58 @@ public class PptAnomalyService {
         lockImport(versionId, userId);
         prepareSlides(versionId);
         persistence.snapshotSections(versionId);
-        return importReview(persistence.pageAssignments(versionId), persistence.importSections(versionId),
-                persistence.importOwners(versionId), persistence.previousAnalyzed(versionId));
+        Map<Integer, String> thumbnails = new LinkedHashMap<>();
+        try (InputStream input = originalFile(versionId).resource().getInputStream()) {
+            parseSlides(input, List.of(), Map.of(), thumbnails, (page, title, texts, mode) -> {});
+        } catch (IOException e) {
+            throw new IllegalStateException("读取 PPT 预览失败", e);
+        }
+        Long previous = persistence.previousAnalyzed(versionId);
+        Map<String, String> previousSections = new java.util.HashMap<>();
+        previousTitlePages(previous).forEach(page -> previousSections.putIfAbsent(page.title(), page.section()));
+        var pages = persistence.pageAssignments(versionId).stream().map(page -> {
+            if (page.skipped() || page.section() != null) return page;
+            return new PptAnomalyMapper.PageAssignment(page.page(), page.title(), previousSections.get(page.title()),
+                    false, page.mode(), page.excluded());
+        }).toList();
+        return importReview(pages, persistence.importSections(versionId),
+                persistence.importOwners(versionId), previous, thumbnails);
     }
 
     /** 组合页面、板块和联系人信息，生成导入确认数据。 */
     private ImportReview importReview(List<PptAnomalyMapper.PageAssignment> pages, List<String> sections,
-                                      List<PptAnomalyMapper.SectionWork> versionOwners, Long previousId) {
+                                      List<PptAnomalyMapper.SectionWork> versionOwners, Long previousId,
+                                      Map<Integer, String> thumbnails) {
         var boardOwners = persistence.boardOwners();
         var priorOwners = previousOwners(persistence, previousId);
+        Map<String, String> contacts = new LinkedHashMap<>();
+        Map<String, String> contactNames = new LinkedHashMap<>();
+        importContacts(boardOwners, priorOwners, versionOwners).forEach((section, person) -> {
+            contacts.put(section, person.userId());
+            contactNames.put(person.userId(), person.name());
+        });
         return new ImportReview(pages, sections, persistence.sections(), boardOwners, versionOwners, priorOwners,
-                importContacts(boardOwners, priorOwners, versionOwners));
+                contacts, contactNames, thumbnails, configuredTitleHandlers());
+    }
+
+    Map<String, List<DirectoryPerson>> configuredTitleHandlers() {
+        var byTitle = new LinkedHashMap<String, Map<String, DirectoryPerson>>();
+        var directory = new java.util.HashMap<String, java.util.Optional<DirectoryPerson>>();
+        for (var handler : persistence.titleHandlers()) {
+            var person = directory.computeIfAbsent(handler.userId(), id -> java.util.Optional.ofNullable(ledgerPerson(id)));
+            if (person.isEmpty() || !person.get().depts().contains(handler.department())) continue;
+            byTitle.computeIfAbsent(unnumberedTitle(handler.title()), key -> new LinkedHashMap<>())
+                    .putIfAbsent(handler.userId(), person.get());
+        }
+        Map<String, List<DirectoryPerson>> result = new LinkedHashMap<>();
+        byTitle.forEach((title, people) -> result.put(title, List.copyOf(people.values())));
+        return result;
     }
 
     /** 合并默认、历史及当前版本联系人，按后续来源覆盖已有值。 */
-    private Map<String, String> importContacts(List<PptAnomalyMapper.BoardOwner> defaults, Map<String, String> prior,
+    private Map<String, DirectoryPerson> importContacts(List<PptAnomalyMapper.BoardOwner> defaults, Map<String, String> prior,
                                                List<PptAnomalyMapper.SectionWork> version) {
-        var contacts = new java.util.HashMap<String, String>();
+        var contacts = new java.util.HashMap<String, DirectoryPerson>();
         defaults.forEach(row -> addImportContact(contacts, row.name(), row.owner()));
         prior.forEach((section, owner) -> addImportContact(contacts, section, owner));
         version.forEach(row -> addImportContact(contacts, row.section(), row.ownerUserId()));
@@ -542,9 +641,9 @@ public class PptAnomalyService {
     }
 
     /** 将人员目录中有效的联系人加入板块映射。 */
-    private void addImportContact(Map<String, String> contacts, String section, String userId) {
+    private void addImportContact(Map<String, DirectoryPerson> contacts, String section, String userId) {
         var person = ledgerPerson(userId);
-        if (person != null) contacts.put(section, person.userId());
+        if (person != null) contacts.put(section, person);
     }
 
     /** 汇总上一已识别版本的板块负责人，排除存在歧义的归属。 */
@@ -590,70 +689,126 @@ public class PptAnomalyService {
         for (var page : pages) {
             if (!page.skipped()) pending.put(page.page(), page);
         }
+        var pagesByNumber = new java.util.HashMap<Integer, PptAnomalyMapper.PageAssignment>();
+        pages.forEach(page -> pagesByNumber.put(page.page(), page));
+        var corrections = new LinkedHashMap<Integer, ImportAssignment>();
         var owners = new java.util.HashMap<String, String>();
-        Map<String, String> contacts = configuredImport
-                ? importContacts(persistence.boardOwners(), previousOwners(persistence, persistence.previousAnalyzed(versionId)),
+        var boardOwners = configuredImport ? persistence.boardOwners() : List.<PptAnomalyMapper.BoardOwner>of();
+        Map<String, DirectoryPerson> contacts = configuredImport
+                ? importContacts(boardOwners, previousOwners(persistence, persistence.previousAnalyzed(versionId)),
                         persistence.importOwners(versionId))
                 : Map.of();
         var boards = new java.util.HashSet<>(persistence.sections());
         var newBoards = new java.util.HashSet<String>();
         var defaultOwners = new java.util.HashSet<String>();
+        Map<String, ConfirmedTitleRule> confirmedTitles = new LinkedHashMap<>();
+        Set<String> conflictingTitles = new HashSet<>();
+        Map<String, Set<String>> handlerUpdates = new java.util.TreeMap<>();
+        Set<String> usedTitles = new java.util.TreeSet<>();
+        Set<String> usedSections = new HashSet<>();
         for (var assignment : assignments) {
             if (assignment != null && !assignment.skip() && assignment.createBoard() && assignment.section() != null) {
                 newBoards.add(assignment.section().trim());
             }
         }
         for (var assignment : assignments) {
-            var page = assignment == null ? null : pending.remove(assignment.page());
+            boolean corrected = configuredImport && assignment != null && assignment.recognitionMode() != null;
+            var page = assignment == null ? null : corrected
+                    ? pagesByNumber.get(assignment.page()) : pending.get(assignment.page());
+            if (assignment != null && page != null) {
+                pagesByNumber.remove(assignment.page());
+                pending.remove(assignment.page());
+            }
             if (page == null) throw new ResponseStatusException(HttpStatus.CONFLICT, "页面归属已变化，请刷新后确认");
+            if (corrected) {
+                if (assignment.title() == null || assignment.title().strip().length() > 512
+                        || !Set.of("FULL", "TEXT_ONLY", "UPPER_TABLE_ONLY").contains(assignment.recognitionMode())) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "页面标题或识别范围无效");
+                }
+                if (!assignment.skip() && (page.skipped()
+                        || !Objects.equals(page.title(), assignment.title().strip())
+                        || !Objects.equals(page.mode(), assignment.recognitionMode()))) {
+                    corrections.put(page.page(), assignment);
+                }
+            }
             String section = assignment.skip() || assignment.section() == null ? null : assignment.section().trim();
             String owner = assignment.skip() ? null : assignment.deferOwner() ? "" : assignment.owner();
             if (configuredImport) {
-                if (page.section() != null) {
+                if (!corrected && page.section() != null) {
                     throw new ResponseStatusException(HttpStatus.CONFLICT, "已匹配页面的板块与联系人不能修改，请重新打开配置");
                 }
                 if (assignment.createBoard() && boards.contains(section)) {
                     throw new ResponseStatusException(HttpStatus.CONFLICT, "板块已存在，请选择已有板块");
                 }
-                String contact = section == null ? null : contacts.get(section);
+                var contact = section == null ? null : contacts.get(section);
                 if (contact != null) {
-                    if (owner != null && !contact.equals(owner)) {
+                    if (owner != null && !contact.userId().equals(owner)) {
                         throw new ResponseStatusException(HttpStatus.CONFLICT, "板块已有联系人，请重新打开配置");
                     }
-                    owner = contact;
+                    owner = contact.userId();
                 }
             }
-            if (configuredImport && assignment.skip()) {
+            if (configuredImport && assignment.skip() && !corrected) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请为每个待识别页面配置板块");
             }
             if (!assignment.skip() && (section == null || section.isBlank() || section.length() > 512)) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择板块或填写新板块名称");
             }
-            if (configuredImport && page.section() == null && !boards.contains(section) && !newBoards.contains(section)) {
+            if (configuredImport && !assignment.skip() && (owner == null || owner.isBlank())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择板块联系人：" + section);
+            }
+            if (configuredImport && !assignment.skip()) {
+                usedSections.add(section);
+                String pageTitle = corrected ? assignment.title() : page.title();
+                String title = pageTitle == null ? "" : unnumberedTitle(pageTitle);
+                if (!title.isBlank()) {
+                    usedTitles.add(title);
+                    if (assignment.handlers() != null) {
+                        var ids = handlerUpdates.computeIfAbsent(title, key -> new java.util.TreeSet<>());
+                        assignment.handlers().stream().filter(Objects::nonNull)
+                                .map(String::strip).filter(id -> !id.isEmpty()).forEach(ids::add);
+                    }
+                }
+            }
+            if (configuredImport && !assignment.skip() && (corrected || page.section() == null)
+                    && !boards.contains(section) && !newBoards.contains(section) && !Objects.equals(page.section(), section)) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择已有板块或新建板块");
             }
-            if (page.section() != null && (!page.section().equals(section) || assignment.remember())) {
+            if (!corrected && page.section() != null && (!page.section().equals(section) || assignment.remember())) {
                 throw new ResponseStatusException(HttpStatus.CONFLICT, "页面归属已变化，请刷新后确认");
             }
-            if (assignment.rememberOwner()) {
+            if (assignment.rememberOwner() || (!assignment.skip() && assignment.createBoard())) {
                 if (owner == null || owner.isBlank() || !(boards.contains(section) || newBoards.contains(section))) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择正式板块和板块联系人");
                 }
                 defaultOwners.add(section);
             }
             if (owner != null) {
-                if (!assignment.deferOwner() && ledgerPerson(owner) == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择示例联系人");
+                if (!assignment.deferOwner() && ledgerPerson(owner) == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择人员台账中的联系人");
                 String existing = owners.putIfAbsent(section, owner);
                 if (existing != null && !existing.equals(owner)) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "同一板块只能指定一位负责人");
                 }
             }
             persistence.setPageAssignment(versionId, page.page(), section, owner, assignment.skip());
+            if (corrected && !assignment.skip() && (boards.contains(section) || newBoards.contains(section))) {
+                String title = unnumberedTitle(assignment.title());
+                if (!title.isBlank()) {
+                    var rule = new ConfirmedTitleRule(section, assignment.recognitionMode());
+                    var previousRule = confirmedTitles.putIfAbsent(title, rule);
+                    if (previousRule != null && !previousRule.equals(rule)) conflictingTitles.add(title);
+                }
+            }
+            if (corrected && assignment.skip()) {
+                persistence.updatePageRecognition(versionId, page.page(), assignment.title().strip(),
+                        write(List.of()), assignment.recognitionMode());
+            }
             if (!assignment.skip() && assignment.remember()) {
                 if (!boards.contains(section) && !newBoards.contains(section)) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "只有正式板块可以保存默认标题归属");
                 }
-                String title = page.title() == null ? "" : unnumberedTitle(page.title());
+                String selectedTitle = corrected ? assignment.title() : page.title();
+                String title = selectedTitle == null ? "" : unnumberedTitle(selectedTitle);
                 if (title.isBlank()) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "无标题页面不能设为默认映射");
                 }
@@ -663,18 +818,70 @@ public class PptAnomalyService {
                 }
             }
         }
+        if (!corrections.isEmpty()) {
+            try (InputStream input = originalFile(versionId).resource().getInputStream()) {
+                parseSlides(input, previousTitlePages(persistence.previousAnalyzed(versionId)), corrections, null, (page, title, texts, mode) ->
+                        persistence.updatePageRecognition(versionId, page, title, write(texts), mode.name()));
+            } catch (IOException e) {
+                throw new IllegalStateException("重新提取 PPT 页面失败", e);
+            }
+        }
         if (pending.values().stream().anyMatch(page -> page.section() == null)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请确认所有待归属页面");
         }
         if (configuredImport) {
             for (var page : pending.values()) {
-                String owner = owners.getOrDefault(page.section(), contacts.getOrDefault(page.section(), ""));
+                usedSections.add(page.section());
+                if (page.title() != null && !unnumberedTitle(page.title()).isBlank()) {
+                    usedTitles.add(unnumberedTitle(page.title()));
+                }
+                var contact = contacts.get(page.section());
+                String owner = owners.getOrDefault(page.section(), contact == null ? "" : contact.userId());
+                if (owner.isBlank()) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择板块联系人：" + page.section());
+                }
+                owners.putIfAbsent(page.section(), owner);
                 persistence.setPageAssignment(versionId, page.page(), page.section(), owner, false);
+            }
+        }
+        if (configuredImport) {
+            var configuredOwners = new HashSet<String>();
+            for (var boardOwner : boardOwners) {
+                if (ledgerPerson(boardOwner.owner()) != null) configuredOwners.add(boardOwner.name());
+            }
+            for (String section : usedSections) {
+                if (!configuredOwners.contains(section)) defaultOwners.add(section);
             }
         }
         for (String board : newBoards) persistence.ensureBoard(board);
         for (String board : defaultOwners) {
             persistence.rememberBoardOwner(board, owners.get(board));
+        }
+        for (var entry : confirmedTitles.entrySet()) {
+            String title = entry.getKey();
+            if (conflictingTitles.contains(title)) continue;
+            persistence.rememberSection(title, entry.getValue().section());
+            persistence.rememberScope(title, entry.getValue().mode());
+        }
+        for (var entry : handlerUpdates.entrySet()) {
+            for (String id : entry.getValue()) {
+                var person = ledgerPerson(id);
+                if (person == null || person.depts().isEmpty()) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择有所属部门的标题经办人：" + entry.getKey());
+                }
+                // 导入选择仅用于本版本；默认经办人由配置接口独立维护。
+            }
+        }
+        if (configuredImport) {
+            // 请求中的经办人为用户在导入页确认的完整名单，不能再由全局配置追加人员。
+            var effectiveHandlers = new LinkedHashMap<>(configuredTitleHandlers());
+            for (var entry : handlerUpdates.entrySet()) {
+                effectiveHandlers.put(entry.getKey(), entry.getValue().stream().map(this::ledgerPerson).toList());
+            }
+            var snapshotHandlers = new ArrayList<PptAnomalyMapper.TitleHandler>();
+            effectiveHandlers.forEach((title, members) -> members.forEach(person -> person.depts().forEach(department ->
+                    snapshotHandlers.add(new PptAnomalyMapper.TitleHandler(title, department, person.userId())))));
+            new PptImportSnapshotWriter(persistence, mapper).save(versionId, snapshotHandlers);
         }
     }
 
@@ -792,20 +999,7 @@ public class PptAnomalyService {
             if (pageNo < 1 || pageNo > show.getSlides().size()) {
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "页面不存在");
             }
-            var size = show.getPageSize();
-            double scale = Math.min(1440d / size.width, 1000d / size.height);
-            BufferedImage image = new BufferedImage(Math.max(1, (int) Math.ceil(size.width * scale)),
-                    Math.max(1, (int) Math.ceil(size.height * scale)), BufferedImage.TYPE_INT_RGB);
-            var graphics = image.createGraphics();
-            try {
-                graphics.setColor(Color.WHITE);
-                graphics.fillRect(0, 0, image.getWidth(), image.getHeight());
-                graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                graphics.scale(scale, scale);
-                show.getSlides().get(pageNo - 1).draw(graphics);
-            } finally {
-                graphics.dispose();
-            }
+            var image = renderSlide(show.getSlides().get(pageNo - 1), show.getPageSize(), 1440, 1000);
             Files.createDirectories(target.getParent());
             Path temp = Files.createTempFile(target.getParent(), "preview-", ".tmp");
             try {
@@ -815,6 +1009,29 @@ public class PptAnomalyService {
                 Files.deleteIfExists(temp);
             }
         }
+    }
+
+    private static BufferedImage renderSlide(XSLFSlide slide, java.awt.Dimension size, int width, int height) {
+        double scale = Math.min((double) width / size.width, (double) height / size.height);
+        var image = new BufferedImage(Math.max(1, (int) Math.ceil(size.width * scale)),
+                Math.max(1, (int) Math.ceil(size.height * scale)), BufferedImage.TYPE_INT_RGB);
+        var graphics = image.createGraphics();
+        try {
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(0, 0, image.getWidth(), image.getHeight());
+            graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            graphics.scale(scale, scale);
+            slide.draw(graphics);
+        } finally {
+            graphics.dispose();
+        }
+        return image;
+    }
+
+    private static String importThumbnail(XSLFSlide slide, java.awt.Dimension size) throws IOException {
+        var output = new java.io.ByteArrayOutputStream();
+        ImageIO.write(renderSlide(slide, size, 600, 400), "jpeg", output);
+        return "data:image/jpeg;base64," + java.util.Base64.getEncoder().encodeToString(output.toByteArray());
     }
 
     /** 读取指定版本和页码的页面元数据。 */
@@ -982,7 +1199,7 @@ public class PptAnomalyService {
 
     /** 按数据库配置提取页面正文及指定表格内容。 */
     private void parseSlides(long versionId, InputStream input) throws IOException {
-        parseSlides(input, (page, title, texts, mode) ->
+        parseSlides(input, previousTitlePages(persistence.previousAnalyzed(versionId)), Map.of(), null, (page, title, texts, mode) ->
                 persistence.createSlide(versionId, page, title, write(texts), "UNAVAILABLE", mode.name()));
     }
 
@@ -994,34 +1211,79 @@ public class PptAnomalyService {
     }
 
     /** 按数据库配置提取页面正文及指定表格内容。 */
-    private void parseSlides(InputStream input, ParsedPageConsumer consumer) throws IOException {
-        // 页面解析规则来自数据库配置，未匹配标题时使用 FULL 全量解析。
-        var configuredRules = persistence.scopes().stream()
-                .map(entry -> new PageRule(entry.name(), null,
-                        PageMode.fromConfig(entry.target()),
-                        entry.upperLimitRatio(), entry.firstRow(), entry.lastRow())).toList();
+    private void parseSlides(InputStream input, List<PptAnomalyMapper.PageAssignment> previousPages,
+                             Map<Integer, ImportAssignment> corrections,
+                             Map<Integer, String> thumbnails, ParsedPageConsumer consumer) throws IOException {
+        var configuredTitles = new HashSet<String>();
+        List<PageRule> configuredRules = new ArrayList<>();
+        for (var entry : persistence.scopes()) {
+            configuredTitles.add(entry.name());
+            configuredRules.add(new PageRule(entry.name(), null, PageMode.fromConfig(entry.target()),
+                    entry.upperLimitRatio(), entry.firstRow(), entry.lastRow()));
+        }
+        for (var page : previousPages) {
+            if (matchingTitle(page.title(), configuredTitles) == null) {
+                configuredTitles.add(page.title());
+                configuredRules.add(new PageRule(page.title(), null, PageMode.fromConfig(page.mode()), null, null, null));
+            }
+        }
+        Map<String, String> titlesByKeyword = new LinkedHashMap<>();
+        configuredRules.forEach(rule -> {
+            String keyword = normalizedTitle(rule.title());
+            if (!keyword.isEmpty()) titlesByKeyword.putIfAbsent(keyword, rule.title());
+        });
+        var dictionary = new PageDictionary(PageMode.OUT_OF_SCOPE, configuredRules);
         try (XMLSlideShow show = new XMLSlideShow(input)) {
             int page = 0;
             for (XSLFSlide slide : show.getSlides()) {
                 page++;
-                String title = slide.getTitle();
-                if (title == null || title.isBlank()) {
-                    title = slide.getShapes().stream()
-                            .filter(XSLFTextShape.class::isInstance)
-                            .map(XSLFTextShape.class::cast)
-                            .map(XSLFTextShape::getText)
-                            .filter(text -> text != null && !text.isBlank())
-                            .findFirst().orElse("");
+                var correction = corrections.get(page);
+                if (!corrections.isEmpty() && correction == null) continue;
+                if (thumbnails != null) {
+                    try {
+                        thumbnails.put(page, importThumbnail(slide, show.getPageSize()));
+                    } catch (IOException | RuntimeException e) {
+                        // 单页渲染失败时仍允许校正页面内容。
+                    }
                 }
-                title = title.trim();
-                PageRule rule = new PageDictionary(PageMode.FULL, configuredRules).ruleFor(title, page);
+                String title = slide.getTitle();
+                Set<String> contentsLabels = new HashSet<>();
+                if (correction == null) collectContentsLabels(slide.getShapes(), contentsLabels);
+                if (correction == null && (contentsLabels.size() == 2 || (title != null && contentsLabel(title) != null)
+                        || ((title == null || title.isBlank()) && !contentsLabels.isEmpty()))) {
+                    consumer.accept(page, "目录", List.of(), PageMode.OUT_OF_SCOPE);
+                    continue;
+                }
+                String placeholder = title == null ? "" : title.strip();
+                String titleText = correction != null ? correction.title().strip()
+                        : matchingTitle(placeholder, configuredTitles) != null ? placeholder
+                        : inferSlideTitle(slide, show.getPageSize().getHeight(), configuredTitles);
+                String matchedTitle = matchingTitle(titleText, configuredTitles);
+                if (correction == null && matchedTitle == null) {
+                    matchedTitle = findTitleInBody(slide, titlesByKeyword);
+                }
+                title = correction != null ? titleText : matchedTitle == null ? placeholder : matchedTitle;
+                PageRule rule = dictionary.ruleFor(title, page);
+                if (correction != null) {
+                    PageMode selectedMode = PageMode.valueOf(correction.recognitionMode());
+                    PageRule configuredRule = matchedTitle == null ? rule : dictionary.ruleFor(matchedTitle, page);
+                    rule = configuredRule.mode() == selectedMode ? configuredRule
+                            : new PageRule(title, page, selectedMode, null, null, null);
+                }
+                if (rule.mode() == PageMode.OUT_OF_SCOPE) {
+                    consumer.accept(page, title, List.of(), rule.mode());
+                    continue;
+                }
                 List<String> texts = new ArrayList<>();
                 boolean titleConsumed = false;
                 for (XSLFShape shape : slide.getShapes()) {
+                    if (shape instanceof XSLFGroupShape group && rule.mode() != PageMode.UPPER_TABLE_ONLY) {
+                        collectGroupedPageText(group.getShapes(), texts, rule.mode() == PageMode.FULL);
+                    }
                     if (shape instanceof XSLFTextShape textShape && rule.mode() != PageMode.UPPER_TABLE_ONLY) {
                         String text = textShape.getText();
                         if (text == null || text.isBlank()) continue;
-                        if (!titleConsumed && title.equals(text.trim())) {
+                        if (!titleConsumed && titleText.equals(text.strip())) {
                             titleConsumed = true;
                             continue;
                         }
@@ -1042,9 +1304,120 @@ public class PptAnomalyService {
         }
     }
 
+    private static String findTitleInBody(XSLFSlide slide, Map<String, String> titlesByKeyword) {
+        if (titlesByKeyword.isEmpty()) return null;
+        List<String> texts = new ArrayList<>();
+        collectBodyText(slide.getShapes(), texts);
+        var matches = titlesByKeyword.entrySet().stream()
+                .filter(entry -> texts.stream().anyMatch(text -> text.contains(entry.getKey())))
+                .limit(2).toList();
+        return matches.size() == 1 ? matches.get(0).getValue() : null;
+    }
+
+    /** 全页扫描包含组合形状中的文本和表格，保留原文用于反馈事项溯源。 */
+    private static void collectGroupedPageText(List<XSLFShape> shapes, List<String> texts, boolean includeTables) {
+        for (var shape : shapes) {
+            if (shape instanceof XSLFGroupShape group) {
+                collectGroupedPageText(group.getShapes(), texts, includeTables);
+            } else if (shape instanceof XSLFTextShape text && text.getText() != null && !text.getText().isBlank()) {
+                texts.add(text.getText().trim());
+            } else if (includeTables && shape instanceof XSLFTable table) {
+                for (var row : table.getRows()) {
+                    texts.add(row.getCells().stream().map(cell -> cell.getText() == null ? "" : cell.getText().trim())
+                            .collect(java.util.stream.Collectors.joining(" | ")));
+                }
+            }
+        }
+    }
+
+    private static void collectBodyText(List<XSLFShape> shapes, List<String> texts) {
+        for (XSLFShape shape : shapes) {
+            if (shape instanceof XSLFGroupShape group) {
+                collectBodyText(group.getShapes(), texts);
+            } else if (shape instanceof XSLFTextShape textShape && textShape.getText() != null) {
+                texts.add(normalizedTitle(textShape.getText()));
+            } else if (shape instanceof XSLFTable table) {
+                for (var row : table.getRows()) {
+                    for (var cell : row.getCells()) {
+                        if (cell.getText() != null) texts.add(normalizedTitle(cell.getText()));
+                    }
+                }
+            }
+        }
+    }
+
+    private static void collectContentsLabels(List<XSLFShape> shapes, Set<String> labels) {
+        for (XSLFShape shape : shapes) {
+            if (shape instanceof XSLFGroupShape group) {
+                collectContentsLabels(group.getShapes(), labels);
+            } else if (shape instanceof XSLFTextShape textShape && textShape.getText() != null) {
+                for (String line : textShape.getText().split("\\R")) {
+                    String label = contentsLabel(line);
+                    if (label != null) labels.add(label);
+                }
+            }
+        }
+    }
+
+    private static String contentsLabel(String text) {
+        String compact = text.replaceAll("[\\p{javaWhitespace}\\p{Zs}]", "");
+        if ("目录".equals(compact)) return "目录";
+        return "CONTENTS".equalsIgnoreCase(compact) ? "CONTENTS" : null;
+    }
+
+    /** 优先采用页首匹配项，页首没有匹配时再查看页面上半部。 */
+    static String inferSlideTitle(XSLFSlide slide, double slideHeight, Set<String> configuredTitles) {
+        Map<String, String> top = new LinkedHashMap<>();
+        Map<String, String> upperHalf = new LinkedHashMap<>();
+        collectTitleCandidates(slide.getShapes(), 0, 1, slideHeight, configuredTitles, top, upperHalf);
+        Map<String, String> candidates = top.isEmpty() ? upperHalf : top;
+        return candidates.size() == 1 ? candidates.values().iterator().next() : "";
+    }
+
+    private static void collectTitleCandidates(List<XSLFShape> shapes, double offset, double scale,
+                                               double slideHeight, Set<String> configuredTitles,
+                                               Map<String, String> top, Map<String, String> upperHalf) {
+        for (XSLFShape shape : shapes) {
+            if (shape instanceof XSLFGroupShape group) {
+                var outer = group.getAnchor();
+                var inner = group.getInteriorAnchor();
+                if (inner.getHeight() <= 0) continue;
+                double childScale = scale * outer.getHeight() / inner.getHeight();
+                double childOffset = offset + scale * outer.getY() - childScale * inner.getY();
+                collectTitleCandidates(group.getShapes(), childOffset, childScale, slideHeight,
+                        configuredTitles, top, upperHalf);
+            } else if (shape instanceof XSLFTextShape textShape && textShape.getText() != null) {
+                double y = offset + scale * textShape.getAnchor().getY();
+                if (y < 0 || y >= slideHeight / 2) continue;
+                String text = textShape.getText().strip();
+                String match = matchingTitle(text, configuredTitles);
+                if (match == null) continue;
+                String key = configuredTitles.contains(match) ? match : unnumberedTitle(match);
+                (y < slideHeight / 3 ? top : upperHalf).putIfAbsent(key, text);
+            }
+        }
+    }
+
+    /** 原样匹配优先，版式写法不同则使用唯一匹配的配置标题。 */
+    private static String matchingTitle(String text, Set<String> configuredTitles) {
+        if (text.isBlank()) return null;
+        if (configuredTitles.contains(text) || configuredTitles.contains(unnumberedTitle(text))) return text;
+        String key = normalizedTitle(text);
+        if (key.isEmpty()) return null;
+        var matches = configuredTitles.stream().filter(title -> normalizedTitle(title).equals(key)).limit(2).toList();
+        return matches.size() == 1 ? matches.get(0) : null;
+    }
+
+    private static String normalizedTitle(String text) {
+        String normalized = java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFKC).strip();
+        return unnumberedTitle(normalized)
+                .replaceFirst("^[一二三四五六七八九十百零]+[.、]\\s*", "")
+                .replaceAll("[\\p{javaWhitespace}\\p{Zs}]", "");
+    }
+
     /** 材料页面支持的全文、文字和上部表格解析模式。 */
     private enum PageMode {
-        FULL, TEXT_ONLY, UPPER_TABLE_ONLY;
+        FULL, TEXT_ONLY, UPPER_TABLE_ONLY, OUT_OF_SCOPE;
 
         /** 将配置模式转换为解析枚举，兼容历史跳过及人工复核模式。 */
         static PageMode fromConfig(String mode) {
@@ -1055,7 +1428,7 @@ public class PptAnomalyService {
     /** 去除标题前的数字层级序号及首尾空白，供配置和版本匹配。 */
     static String unnumberedTitle(String title) {
         return title.replaceFirst(
-                "^[\\p{javaWhitespace}　]*[0-9]+(([.．][0-9]+)+[.．、\\p{javaWhitespace}　]*|[.．、\\p{javaWhitespace}　]+)", "")
+                "^[\\p{javaWhitespace}　]*(?:[一二三四五六七八九十百零]+[.．、]\\s*|[0-9]+(([.．][0-9]+)+[.．、\\p{javaWhitespace}　]*|[.．、\\p{javaWhitespace}　]+))", "")
                 .strip();
     }
 

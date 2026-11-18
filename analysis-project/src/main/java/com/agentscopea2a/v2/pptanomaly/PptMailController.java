@@ -39,6 +39,7 @@ public class PptMailController {
     }
     /** 保存部门邮件发送记录并返回登记状态。 */
     @PostMapping("/send") public Map<String,String> send(@PathVariable long versionId,@RequestParam String department,@SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId){
-        Map<String,Object> preview=preview(versionId,department); persistence.recordMail(versionId, department, preview, userId); return Map.of("status","SENT");
+        throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.GONE,
+                "旧邮件登记接口已停用，请使用反馈通知接口选择收件人并发送");
     }
 }

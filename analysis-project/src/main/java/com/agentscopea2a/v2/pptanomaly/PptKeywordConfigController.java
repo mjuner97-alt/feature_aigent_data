@@ -30,12 +30,15 @@ public class PptKeywordConfigController {
     private final PptAnomalyMapper persistence;
     private final DeveloperPlPersonInfoMapper people;
     private final PptFeedbackNotifier notifier;
+    private final PptAnomalyService service;
 
     /** 装配标题配置、部门权限及通知补发依赖。 */
-    public PptKeywordConfigController(PptAnomalyMapper persistence, DeveloperPlPersonInfoMapper people, PptFeedbackNotifier notifier) {
+    public PptKeywordConfigController(PptAnomalyMapper persistence, DeveloperPlPersonInfoMapper people,
+                                      PptFeedbackNotifier notifier, PptAnomalyService service) {
         this.persistence = persistence;
         this.people = people;
         this.notifier = notifier;
+        this.service = service;
     }
 
     /** 校验已登录用户的产品部操作权限。 */
@@ -62,7 +65,7 @@ public class PptKeywordConfigController {
     public record TitlePage(List<TitleRow> items, long total) {}
     /** 标题名称、板块、解析规则及联系人维护请求。 */
     public record TitleEdit(String originalName, String name, String section, String scope, String owner,
-                            Double upperLimitRatio, Integer firstRow, Integer lastRow) {}
+                            Double upperLimitRatio, Integer firstRow, Integer lastRow, List<String> handlerUserIds) {}
     /** 经办人的部门、姓名及认证号展示数据。 */
     public record Handler(String department, String name, String userId) {}
     /** 一个标题明细分组及其链接集合。 */
@@ -121,43 +124,45 @@ public class PptKeywordConfigController {
     private List<Handler> readTitleHandlers(String title) {
         return persistence.titleHandlers().stream().filter(handler -> title.equals(handler.title()))
                 .map(handler -> {
-                    var person = PptDemoPeople.find(handler.userId());
+                    var person = service.ledgerPerson(handler.userId());
                     return new Handler(handler.department(), person == null ? handler.userId() : person.name(), handler.userId());
                 }).toList();
     }
 
-    /** 整体替换标题经办人，并补齐最新版本中待分派事项。 */
+    /** 整体替换默认标题经办人，仅影响后续导入。 */
     @PutMapping("/title-handlers")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Transactional(GaussConfig.TX_NAME)
     public void saveTitleHandlers(@RequestParam String title, @RequestBody List<String> userIds) {
         requireRow(persistence.lockConfiguredTitle(title).size());
-        var people = userIds.stream().distinct().map(PptDemoPeople::find).toList();
+        replaceTitleHandlers(title, userIds);
+    }
+
+    private void replaceTitleHandlers(String title, List<String> userIds) {
+        var people = userIds.stream().distinct().map(service::ledgerPerson).toList();
         if (people.stream().anyMatch(person -> person == null || person.depts().isEmpty())) {
             throw bad("请选择带有部门的经办人");
         }
-        // 整体替换标题配置后只补齐待分派事项，已有事项保留经办关系快照。
+        // 默认配置与版本快照隔离，历史事项只能通过版本分派入口调整。
         persistence.deleteTitleHandlers(title);
         for (var person : people) {
             for (String department : person.depts()) {
                 persistence.insertTitleHandler(title, department, person.userId());
             }
         }
-        assignPendingFindings(title);
     }
 
-    /** 为标题新增经办人并尝试分派历史待分派事项。 */
+    /** 为默认标题新增经办人，仅影响后续导入。 */
     @PostMapping("/title-handlers")
     @Transactional(GaussConfig.TX_NAME)
     public List<Handler> addTitleHandler(@RequestParam String title, @RequestParam String userId) {
         requireRow(persistence.lockConfiguredTitle(title).size());
-        var person = PptDemoPeople.find(userId);
+        var person = service.ledgerPerson(userId);
         if (person == null || person.depts().isEmpty()) throw bad("请选择带有部门的经办人");
         persistence.deleteTitleHandler(title, person.userId());
         for (String department : person.depts()) {
             persistence.insertTitleHandler(title, department, person.userId());
         }
-        assignPendingFindings(title);
         return readTitleHandlers(title);
     }
 
@@ -168,17 +173,6 @@ public class PptKeywordConfigController {
         requireRow(persistence.lockConfiguredTitle(title).size());
         persistence.deleteTitleHandler(title, required(userId, 255));
         return readTitleHandlers(title);
-    }
-
-    /** 为最新已识别版本补齐经办关系并触发部门通知。 */
-    private void assignPendingFindings(String title) {
-        for (long version : persistence.unassignedTitleVersions(title)) {
-            if ("ANALYZED".equals(persistence.lockVersion(version))
-                    && persistence.assignUnassignedTitleFindings(version, title) > 0) {
-                persistence.markAssignedTitleFindingsPending(version);
-                notifier.recordVersionNoticesIfImmediate(version);
-            }
-        }
     }
 
     /** 校验标题存在于标题归属或解析范围配置中。 */
@@ -205,7 +199,9 @@ public class PptKeywordConfigController {
         save("section", oldSection == null ? null : oldSection.id(), new Entry(null, name, section, null, null, null));
         save("scope", oldScope == null ? null : oldScope.id(),
                 new Entry(null, name, body.scope(), body.upperLimitRatio(), body.firstRow(), body.lastRow()));
-        if (original != null && !name.equals(original)) {
+        if (original == null) {
+            replaceTitleHandlers(name, body.handlerUserIds() == null ? List.of() : body.handlerUserIds());
+        } else if (!name.equals(original)) {
             persistence.renameTitleHandlers(original, name);
             persistence.renameTitleDetailLinks(original, name);
         }
@@ -242,7 +238,7 @@ public class PptKeywordConfigController {
         var matches = names.stream().map(name -> {
             Entry section = sections.get(name);
             Entry contact = section == null ? null : contacts.get(section.target());
-            var owner = contact == null ? null : PptDemoPeople.find(contact.target());
+            var owner = contact == null ? null : service.ledgerPerson(contact.target());
             return new TitleRow(name, section, scopes.get(name), contact, owner == null ? null : owner.name());
         }).filter(row -> row.name().toLowerCase(Locale.ROOT).contains(term)
                 || row.section() != null && row.section().target().toLowerCase(Locale.ROOT).contains(term))
@@ -290,7 +286,7 @@ public class PptKeywordConfigController {
         return sections().stream().map(name -> {
             var contact = contacts.get(name);
             String owner = contact == null ? null : contact.target();
-            var person = owner == null ? null : PptDemoPeople.find(owner);
+            var person = owner == null ? null : service.ledgerPerson(owner);
             return new SectionOption(name, owner, person == null ? null : person.name(), titleCounts.getOrDefault(name, 0L));
         }).toList();
     }
@@ -301,6 +297,7 @@ public class PptKeywordConfigController {
     @Transactional(GaussConfig.TX_NAME)
     public void saveBoard(@RequestBody BoardEdit body) {
         String name = required(body.name(), 512);
+        if (body.owner() == null || body.owner().isBlank()) throw bad("请选择板块联系人");
         boolean exists = sections().contains(name);
         if (body.create() && exists) throw new ResponseStatusException(HttpStatus.CONFLICT, "板块已存在");
         if (!body.create() && !exists) requireRow(0);
@@ -314,29 +311,39 @@ public class PptKeywordConfigController {
         } else {
             persistence.ensureBoard(name);
         }
-        if (body.owner() == null || body.owner().isBlank()) {
-            if (contact != null) requireRow(persistence.deleteConfig("contact", contact.id()));
-        } else {
-            save("contact", contact == null ? null : contact.id(), new Entry(null, name, body.owner(), null, null, null));
-        }
+        save("contact", contact == null ? null : contact.id(), new Entry(null, name, body.owner(), null, null, null));
     }
 
-    /** 返回当前可选择的演示人员列表。 */
+    /** 删除未关联标题的板块及其默认联系人配置。 */
+    @DeleteMapping("/boards")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @Transactional(GaussConfig.TX_NAME)
+    public void deleteBoard(@RequestParam String name) {
+        String boardName = required(name, 512);
+        if (!sections().contains(boardName)) requireRow(0);
+        if (entriesByName("section").values().stream().anyMatch(entry -> boardName.equals(entry.target()))) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "该板块仍有关联标题，请先调整标题所属板块后再删除");
+        }
+        var board = entriesByName("board").get(boardName);
+        var contact = entriesByName("contact").get(boardName);
+        if (board != null) requireRow(persistence.deleteConfig("board", board.id()));
+        if (contact != null) requireRow(persistence.deleteConfig("contact", contact.id()));
+    }
+
+    /** 返回人员台账中的默认候选项。 */
     @GetMapping("/people")
     public List<Map<String, String>> people() {
-        return PptDemoPeople.options();
+        return searchPeople("", "");
     }
 
-    /** 按姓名、部门或认证号筛选当前人员目录。 */
+    /** 从当前人员台账按姓名、认证号和可选部门查询联系人。 */
     @GetMapping("/people/search")
-    public List<Map<String, String>> searchPeople(@RequestParam String keyword) {
-        String term = keyword.trim().toLowerCase(Locale.ROOT);
-        if (term.isEmpty()) return List.of();
-        return PptDemoPeople.options().stream()
-                .filter(person -> person.get("userId").toLowerCase(Locale.ROOT).contains(term)
-                        || person.get("name").toLowerCase(Locale.ROOT).contains(term))
-                .limit(5)
-                .toList();
+    public List<Map<String, String>> searchPeople(@RequestParam(defaultValue = "") String keyword,
+                                                  @RequestParam(defaultValue = "") String department) {
+        return people.searchPptPeople(keyword.strip(), department.strip()).stream().map(person -> Map.of(
+                "userId", person.getUserId(),
+                "name", person.getName() == null || person.getName().isBlank() ? person.getUserId() : person.getName(),
+                "department", person.getDepartment() == null ? "" : person.getDepartment())).toList();
     }
 
     /** 校验并新增当前类别的配置。 */
@@ -358,6 +365,7 @@ public class PptKeywordConfigController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable String kind, @PathVariable long id) {
         checkKind(kind);
+        if ("contact".equals(kind)) throw bad("板块联系人必须保留，请更换联系人");
         requireRow(persistence.deleteConfig(kind, id));
     }
 
@@ -369,7 +377,11 @@ public class PptKeywordConfigController {
         if ("scope".equals(kind) && !MODES.contains(target)) throw bad("识别范围无效");
         if ("contact".equals(kind)) {
             if (!sections().contains(name)) throw bad("请选择已有板块");
-            if (PptDemoPeople.find(target) == null) throw bad("请选择示例联系人");
+            if (id != null) {
+                var contact = entriesByName(kind).get(name);
+                if (contact == null || !id.equals(contact.id())) throw bad("联系人只能在原板块内更换");
+            }
+            if (service.ledgerPerson(target) == null) throw bad("请选择人员台账中的联系人");
         }
         boolean upper = "scope".equals(kind) && "UPPER_TABLE_ONLY".equals(target);
         Double ratio = upper ? body.upperLimitRatio() : null;

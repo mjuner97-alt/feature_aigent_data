@@ -148,7 +148,8 @@ public class PptAnomalyController {
         return service.feedbackEdits(findingId, userId, canViewAllFeedback(userId));
     }
 
-    public record FindingAssignmentRequest(Long findingId, int page, String department, List<String> handlers) {}
+    public record FindingAssignmentRequest(Long findingId, int page, String department, List<String> handlers,
+            List<String> expectedHandlers) {}
 
     @GetMapping("/versions/{versionId}/assignment-options")
     public PptAnomalyService.AssignmentOptions assignmentOptions(@PathVariable long versionId,
@@ -161,9 +162,10 @@ public class PptAnomalyController {
     public Map<String, String> adjustFinding(@PathVariable long versionId, @RequestBody FindingAssignmentRequest request,
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
         requireProductDepartment(userId, people);
-        service.adjustAssignment(versionId, request.findingId(), request.page(), request.department(), request.handlers(), userId);
+        service.adjustAssignment(versionId, request.findingId(), request.page(), request.department(),
+                request.handlers(), request.expectedHandlers(), userId);
         // 等事务提交后再按新的经办关系检查待反馈通知。
-        notifier.recordVersionNoticesIfImmediate(versionId);
+        notifier.notifyVersionAfterCommit(versionId);
         return Map.of("status", "SAVED");
     }
 
@@ -185,10 +187,11 @@ public class PptAnomalyController {
     /** 反馈详情页的本人事项、部门事项和板块联系人目录。 */
     public record FeedbackDirectory(String fileName, List<String> departments,
             List<PptAnomalyModels.Finding> assigned, List<PptAnomalyModels.Finding> departmentFindings,
+            List<PptAnomalyModels.Finding> myPending,
             Map<Long, PptAnomalyService.BoardContact> contacts,
             Map<Long, List<PptAnomalyService.FeedbackHandler>> handlers) {}
 
-    /** 汇总本人事项、部门可见事项及板块联系人，供详情页展示。 */
+    /** 汇总反馈记录事项、可见事项、登录人的待反馈事项及板块联系人。 */
     @GetMapping("/versions/{versionId}/feedback-directory")
     public FeedbackDirectory feedbackDirectory(@PathVariable long versionId,
             @RequestParam(required = false) String recordOwner,
@@ -203,11 +206,13 @@ public class PptAnomalyController {
         var person = service.ledgerPerson(recordOwner == null ? userId : recordOwner);
         List<String> departments = person == null ? List.of() : person.depts();
         var visible = service.overview(versionId, null, userId, canViewAll);
-        // “我的”只取经办关系，部门成员的编辑权限由各事项单独计算。
-        var assigned = service.recordFindings(versionId, recordOwner == null ? userId : recordOwner, userId);
+        String ownerId = recordOwner == null ? userId : recordOwner;
+        var assigned = service.recordFindings(versionId, ownerId, userId);
+        var assignedIds = assigned.stream().map(PptAnomalyModels.Finding::id).collect(Collectors.toSet());
         var departmentFindings = recordOwner == null && canViewAll ? visible
                 : departments.isEmpty() ? assigned : visible.stream()
-                .filter(finding -> finding.departments().stream().anyMatch(departments::contains)).toList();
+                .filter(finding -> assignedIds.contains(finding.id())
+                        || finding.departments().stream().anyMatch(departments::contains)).toList();
         if (department != null) {
             if (!canViewAll && !departments.contains(department)) {
                 throw new ResponseStatusException(HttpStatus.FORBIDDEN, "没有查看该部门反馈的权限");
@@ -215,8 +220,14 @@ public class PptAnomalyController {
             assigned = assigned.stream().filter(item -> item.departments().contains(department)).toList();
             departmentFindings = departmentFindings.stream().filter(item -> item.departments().contains(department)).toList();
         }
+        var myAssignmentIds = userId.equals(ownerId) ? assignedIds
+                : service.recordFindings(versionId, userId, userId).stream()
+                .map(PptAnomalyModels.Finding::id).collect(Collectors.toSet());
+        var myPending = departmentFindings.stream()
+                .filter(item -> "PENDING_FEEDBACK".equals(item.status()) && myAssignmentIds.contains(item.id())).toList();
         return new FeedbackDirectory(fileName, department == null ? departments : List.of(department), assigned, departmentFindings,
-                service.feedbackContacts(assigned, departmentFindings),
+                myPending,
+                service.feedbackContacts(versionId, assigned, departmentFindings),
                 service.feedbackHandlers(versionId, assigned, departmentFindings));
     }
 
@@ -229,6 +240,7 @@ public class PptAnomalyController {
         var directory = feedbackDirectory(versionId, recordOwner, department, userId);
         var items = switch (scope) {
             case "mine" -> directory.assigned();
+            case "pending" -> directory.myPending();
             case "all" -> directory.departmentFindings();
             default -> throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "无效的导出范围");
         };
@@ -260,8 +272,10 @@ public class PptAnomalyController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "名单中有无法识别的人员");
         }
         try {
-            notifier.sendManual(versionId, directory.fileName(), department, to, cc);
+            notifier.sendManual(versionId, directory.fileName(), department, to, cc, userId);
         } catch (RuntimeException failure) {
+            org.slf4j.LoggerFactory.getLogger(PptAnomalyController.class)
+                    .error("反馈结果通知失败，版本 {}，部门 {}", versionId, department, failure);
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "通知发送失败，请重试", failure);
         }
     }
@@ -278,6 +292,14 @@ public class PptAnomalyController {
                              @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
         requireProductDepartment(userId, people);
         return service.createBatch(body.get("name"), userId);
+    }
+
+    @DeleteMapping("/batches/{batchId}")
+    public Map<String, Boolean> deleteBatch(@PathVariable long batchId,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
+        requireProductDepartment(userId, people);
+        service.deleteBatch(batchId);
+        return Map.of("deleted", true);
     }
 
     /** 查询材料批次列表。 */

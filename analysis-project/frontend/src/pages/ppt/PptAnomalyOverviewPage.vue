@@ -27,11 +27,12 @@ const linkedDepartment = computed(() => linkParams.value.get('department') || un
 const historical = computed(() => linkParams.value.get('history') === '1');
 const departmentView = computed(() => !!linkedDepartment.value || (!recordOwner.value && linkParams.value.get('scope') === 'mine'));
 const readOnly = computed(() => historical.value || (!!recordOwner.value && recordMode.value !== 'edit'));
-const linkedScope = computed(() => linkParams.value.get('scope') === 'all' ? 'all' : 'mine');
-const scope = ref<'mine' | 'all'>(linkedScope.value);
+const linkedScope = computed(() => linkParams.value.get('scope') === 'all' ? 'all' : 'pending');
+const scope = ref<'pending' | 'all'>(linkedScope.value);
 const versions = ref<PptVersionWork[]>([]);
 const directory = ref<Awaited<ReturnType<typeof feedbackDirectory>>>();
 const assigned = computed(() => directory.value?.assigned ?? []);
+const myPending = computed(() => directory.value?.myPending ?? []);
 const departmentFindings = computed(() => directory.value?.departmentFindings ?? []);
 const records = computed(() => [...new Map(
   [...departmentFindings.value, ...assigned.value].map(item => [item.id, item]),
@@ -148,7 +149,7 @@ const feedbackStatuses: Record<string, string> = {
 };
 const findings = computed(() => departmentView.value ? departmentFindings.value.filter(item => linkedDepartment.value ||
   item.departments.some(name => directory.value?.departments.includes(name))) :
-  scope.value === 'all' ? departmentFindings.value : assigned.value);
+  scope.value === 'all' ? departmentFindings.value : myPending.value);
 const notifyDepartments = computed(() => {
   if (linkedDepartment.value) return [linkedDepartment.value];
   const own = (directory.value?.departments ?? []).map(name => name.trim()).filter(Boolean);
@@ -348,11 +349,12 @@ async function reload() {
     }
     const result = await feedbackDirectory(targetVersion, recordOwner.value, linkedDepartment.value);
     if (id === loadId) {
-      directory.value = result;
-      // 普通反馈页没有个人任务时展示可见事项。部门通知始终按部门展示。
-      if (!departmentView.value && !recordOwner.value && scope.value === 'mine' && !result.assigned.length) {
+      const openingLinkedFinding = !directory.value && resolvedFindingId.value !== undefined;
+      if (!departmentView.value && (!result.myPending?.length || (openingLinkedFinding &&
+          !result.myPending.some(item => item.id === resolvedFindingId.value)))) {
         scope.value = 'all';
       }
+      directory.value = result;
     }
   } catch {
     if (id === loadId) error.value = '异常列表加载失败，请重试';
@@ -360,9 +362,9 @@ async function reload() {
     if (id === loadId) loading.value = false;
   }
 }
-watch([linkedVersionId, linkedScope], () => { scope.value = linkedScope.value; });
 // 切换版本或反馈记录时清空旧目录与草稿，使用请求序号屏蔽过期响应。
 watch([requestedVersionId, linkedFindingId, linkedScope, linkedDepartment, historical, recordOwner, recordMode], () => {
+  scope.value = linkedScope.value;
   directory.value = undefined;
   drafts.value.clear();
   conflicts.value.clear();
@@ -408,8 +410,6 @@ onMounted(async () => {
         <h2>{{ pageTitle }}</h2>
       </div>
       <div class="page-actions">
-        <el-button v-if="canManage && versionId && !readOnly && !error" :disabled="loading || saving"
-          @click="assignmentDialog = {}">补建事项</el-button>
         <el-button v-if="!readOnly" type="primary" :loading="saving"
           :disabled="loading || !feedbackChanges.length" @click="submitFeedback()">
           提交反馈{{ feedbackChanges.length ? `（${feedbackChanges.length} 项）` : '' }}
@@ -432,7 +432,7 @@ onMounted(async () => {
       <PptSidebarIndex :pages="findings" :selected-id="selected?.id" @select="select">
         <template v-if="!departmentView" #filters>
           <el-radio-group v-model="scope" size="small" aria-label="异常筛选">
-            <el-radio-button value="mine">经办人是我的（共{{ assigned.length }}项）</el-radio-button>
+            <el-radio-button v-if="myPending.length" value="pending">待我关注（共{{ myPending.length }}项）</el-radio-button>
             <el-radio-button value="all">全部</el-radio-button>
           </el-radio-group>
         </template>
@@ -473,7 +473,7 @@ onMounted(async () => {
         </article>
       </section>
       <section v-else-if="!loading" class="content">
-        <el-empty :description="scope === 'mine' ? '暂无待办人负责的事项' : '暂无部门事项'" />
+        <el-empty description="暂无反馈事项" />
       </section>
     </main>
     <PptAssignmentDialog v-if="assignmentDialog" :version-id="versionId" :finding="assignmentDialog.finding"

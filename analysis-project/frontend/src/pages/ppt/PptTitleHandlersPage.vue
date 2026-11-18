@@ -5,19 +5,21 @@ import { computed, ref, watch } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { Plus } from '@element-plus/icons-vue';
-import { listPptTitleHandlers, searchPptPeople, updatePptTitleHandler, type PptDemoPerson } from '../../api/pptAnomaly';
+import { listPptTitleHandlers, updatePptTitleHandler, type PptPerson } from '../../api/pptAnomaly';
+import { searchSkillUsers, type SkillUserSearchItem } from '../../api/skill';
 
 const router = useRouter();
 const title = computed(() => router.currentRoute.value.path === '/ppt-anomaly/keyword-config/title-handlers'
   ? String(window.history.state?.pptHandlerTitle ?? '') : '');
-const handlers = ref<PptDemoPerson[]>([]);
+const fromFeedback = computed(() => !!title.value && window.history.state?.pptHandlerFromFeedback === true);
+const handlers = ref<PptPerson[]>([]);
 const loading = ref(false);
 const saving = ref(false);
 const ready = ref(false);
 const error = ref('');
 const addOpen = ref(false);
 const keyword = ref('');
-const results = ref<PptDemoPerson[]>([]);
+const results = ref<SkillUserSearchItem[]>([]);
 const searched = ref(false);
 const searching = ref(false);
 const searchError = ref('');
@@ -67,7 +69,7 @@ async function search() {
   results.value = [];
   searchError.value = '';
   try {
-    const matches = await searchPptPeople(term);
+    const matches = await searchSkillUsers(term);
     if (id === searchRequestId) results.value = matches;
   } catch {
     if (id === searchRequestId) searchError.value = '人员搜索失败，请重试。';
@@ -102,7 +104,8 @@ async function updateHandler(userId: string, method: 'POST' | 'DELETE') {
   <section class="handlers-page" v-loading="loading">
     <header class="handlers-header">
       <div>
-        <RouterLink class="back-link" :to="{ path: '/ppt-anomaly/keyword-config', query: { tab: 'section' } }">返回标题配置</RouterLink>
+        <el-button v-if="fromFeedback" class="back-link" link type="primary" @click="router.back()">返回反馈记录</el-button>
+        <RouterLink v-else class="back-link" :to="{ path: '/ppt-anomaly/keyword-config', query: { tab: 'section' } }">返回标题配置</RouterLink>
         <h2>{{ title || '设置经办人' }}</h2>
       </div>
       <el-button v-if="ready" class="add-handler" type="primary" :icon="Plus" :disabled="saving" @click="openAdd">
