@@ -556,9 +556,8 @@ public class PptAnomalyService {
         previousPages.forEach(page -> titles.putIfAbsent(page.title(), page.section()));
         for (var mapping : persistence.titleSections()) titles.put(mapping.title(), mapping.section());
         var pages = new ArrayList<PptAnomalyMapper.PageAssignment>();
-        Map<Integer, String> thumbnails = new LinkedHashMap<>();
         try (InputStream input = file.getInputStream()) {
-            parseSlides(input, previousPages, Map.of(), thumbnails, (page, title, texts, mode) -> pages.add(new PptAnomalyMapper.PageAssignment(
+            parseSlides(input, previousPages, Map.of(), (page, title, texts, mode) -> pages.add(new PptAnomalyMapper.PageAssignment(
                     page, title, mode == PageMode.OUT_OF_SCOPE ? null
                             : titles.getOrDefault(title, titles.get(unnumberedTitle(title))),
                     mode == PageMode.OUT_OF_SCOPE, mode.name(), false)));
@@ -566,7 +565,7 @@ public class PptAnomalyService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "无法解析 PPT，请检查文件格式", e);
         }
         if (pages.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "PPT 没有页面");
-        return importReview(pages, List.of(), List.of(), previous, thumbnails);
+        return importReview(pages, List.of(), List.of(), previous);
     }
 
     private List<PptAnomalyMapper.PageAssignment> previousTitlePages(Long previousId) {
@@ -582,12 +581,6 @@ public class PptAnomalyService {
         lockImport(versionId, userId);
         prepareSlides(versionId);
         persistence.snapshotSections(versionId);
-        Map<Integer, String> thumbnails = new LinkedHashMap<>();
-        try (InputStream input = originalFile(versionId).resource().getInputStream()) {
-            parseSlides(input, List.of(), Map.of(), thumbnails, (page, title, texts, mode) -> {});
-        } catch (IOException e) {
-            throw new IllegalStateException("读取 PPT 预览失败", e);
-        }
         Long previous = persistence.previousAnalyzed(versionId);
         Map<String, String> previousSections = new java.util.HashMap<>();
         previousTitlePages(previous).forEach(page -> previousSections.putIfAbsent(page.title(), page.section()));
@@ -597,13 +590,12 @@ public class PptAnomalyService {
                     false, page.mode(), page.excluded());
         }).toList();
         return importReview(pages, persistence.importSections(versionId),
-                persistence.importOwners(versionId), previous, thumbnails);
+                persistence.importOwners(versionId), previous);
     }
 
     /** 组合页面、板块和联系人信息，生成导入确认数据。 */
     private ImportReview importReview(List<PptAnomalyMapper.PageAssignment> pages, List<String> sections,
-                                      List<PptAnomalyMapper.SectionWork> versionOwners, Long previousId,
-                                      Map<Integer, String> thumbnails) {
+                                      List<PptAnomalyMapper.SectionWork> versionOwners, Long previousId) {
         var boardOwners = persistence.boardOwners();
         var priorOwners = previousOwners(persistence, previousId);
         Map<String, String> contacts = new LinkedHashMap<>();
@@ -613,7 +605,7 @@ public class PptAnomalyService {
             contactNames.put(person.userId(), person.name());
         });
         return new ImportReview(pages, sections, persistence.sections(), boardOwners, versionOwners, priorOwners,
-                contacts, contactNames, thumbnails, configuredTitleHandlers());
+                contacts, contactNames, Map.of(), configuredTitleHandlers());
     }
 
     Map<String, List<DirectoryPerson>> configuredTitleHandlers() {
@@ -820,7 +812,7 @@ public class PptAnomalyService {
         }
         if (!corrections.isEmpty()) {
             try (InputStream input = originalFile(versionId).resource().getInputStream()) {
-                parseSlides(input, previousTitlePages(persistence.previousAnalyzed(versionId)), corrections, null, (page, title, texts, mode) ->
+                parseSlides(input, previousTitlePages(persistence.previousAnalyzed(versionId)), corrections, (page, title, texts, mode) ->
                         persistence.updatePageRecognition(versionId, page, title, write(texts), mode.name()));
             } catch (IOException e) {
                 throw new IllegalStateException("重新提取 PPT 页面失败", e);
@@ -989,6 +981,8 @@ public class PptAnomalyService {
         try {
             if (!Files.isRegularFile(target)) renderPreview(versionId, pageNo, target);
             return new FileSystemResource(target);
+        } catch (LinkageError e) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "原页预览暂时不可用", e);
         } catch (IOException | RuntimeException e) {
             if (e instanceof ResponseStatusException status) throw status;
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "无法生成 PPT 预览", e);
@@ -1033,13 +1027,7 @@ public class PptAnomalyService {
         return image;
     }
 
-    private static String importThumbnail(XSLFSlide slide, java.awt.Dimension size) throws IOException {
-        var output = new java.io.ByteArrayOutputStream();
-        ImageIO.write(renderSlide(slide, size, 600, 400), "jpeg", output);
-        return "data:image/jpeg;base64," + java.util.Base64.getEncoder().encodeToString(output.toByteArray());
-    }
-
-    /** 用户放大时才渲染高清 PNG，避免全部高清页拖慢导入。 */
+    /** 导入确认按需渲染当前页，清晰原图同时用于页面展示和查看大图。 */
     public byte[] previewImportImage(MultipartFile file, Long versionId, int pageNo, String userId) {
         if ((file == null) == (versionId == null) || pageNo < 1) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择一个 PPT 来源和有效页码");
@@ -1054,12 +1042,14 @@ public class PptAnomalyService {
             if (pageNo > show.getSlides().size()) {
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "PPT 页面不存在");
             }
-            var image = renderSlide(show.getSlides().get(pageNo - 1), show.getPageSize(), 2560, 1920);
+            var image = renderSlide(show.getSlides().get(pageNo - 1), show.getPageSize(), 1440, 1000);
             var output = new java.io.ByteArrayOutputStream();
             if (!ImageIO.write(image, "png", output)) throw new IOException("PNG encoder unavailable");
             return output.toByteArray();
+        } catch (LinkageError e) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "原页预览暂时不可用，可继续确认并识别", e);
         } catch (IOException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "无法生成高清预览，请检查 PPT 文件", e);
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "无法生成原页预览，请检查 PPT 文件", e);
         } finally {
             previewRenderer.release();
         }
@@ -1230,7 +1220,7 @@ public class PptAnomalyService {
 
     /** 按数据库配置提取页面正文及指定表格内容。 */
     private void parseSlides(long versionId, InputStream input) throws IOException {
-        parseSlides(input, previousTitlePages(persistence.previousAnalyzed(versionId)), Map.of(), null, (page, title, texts, mode) ->
+        parseSlides(input, previousTitlePages(persistence.previousAnalyzed(versionId)), Map.of(), (page, title, texts, mode) ->
                 persistence.createSlide(versionId, page, title, write(texts), "UNAVAILABLE", mode.name()));
     }
 
@@ -1244,7 +1234,7 @@ public class PptAnomalyService {
     /** 按数据库配置提取页面正文及指定表格内容。 */
     private void parseSlides(InputStream input, List<PptAnomalyMapper.PageAssignment> previousPages,
                              Map<Integer, ImportAssignment> corrections,
-                             Map<Integer, String> thumbnails, ParsedPageConsumer consumer) throws IOException {
+                             ParsedPageConsumer consumer) throws IOException {
         var configuredTitles = new HashSet<String>();
         List<PageRule> configuredRules = new ArrayList<>();
         for (var entry : persistence.scopes()) {
@@ -1270,13 +1260,6 @@ public class PptAnomalyService {
                 page++;
                 var correction = corrections.get(page);
                 if (!corrections.isEmpty() && correction == null) continue;
-                if (thumbnails != null) {
-                    try {
-                        thumbnails.put(page, importThumbnail(slide, show.getPageSize()));
-                    } catch (IOException | RuntimeException e) {
-                        // 单页渲染失败时仍允许校正页面内容。
-                    }
-                }
                 String title = slide.getTitle();
                 Set<String> contentsLabels = new HashSet<>();
                 if (correction == null) collectContentsLabels(slide.getShapes(), contentsLabels);

@@ -3,11 +3,12 @@
 
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { Plus, Search, UploadFilled, ZoomIn } from '@element-plus/icons-vue';
+import { Plus, Search, UploadFilled } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { confirmPptImport, deleteBatch, downloadVersion, listBatchSummaries, listPptPeople, listVersions, previewPptImport, previewPptImportImage, reviewPptImport, savePptImport, searchPptPeople } from '../../api/pptAnomaly';
 import type { PptPerson, PptImportAssignment, PptRecognitionMode } from '../../api/pptAnomaly';
 import type { PptBatchSummary, PptVersion } from '../../types/pptAnomaly';
+import PptSlideViewer from '../../components/ppt/PptSlideViewer.vue';
 import PptVersionAssignmentsDialog from '../../components/ppt/PptVersionAssignmentsDialog.vue';
 import { getLoggedInUser } from '../../utils/auth';
 
@@ -50,37 +51,50 @@ type ReviewRow = {
   section: string;
   recognitionMode: PptRecognitionMode;
   skip: boolean;
-  thumbnail?: string;
 };
 const reviewRows = ref<ReviewRow[]>([]);
 const reviewPreviewUrl = ref('');
 const reviewPreviewLoading = ref(false);
+const reviewPreviewError = ref('');
+const reviewPreviewCache = new Map<number, string>();
 let reviewPreviewRequest: AbortController | undefined;
-function closeReviewPreview() {
+function resetReviewPreviews() {
   reviewPreviewRequest?.abort();
   reviewPreviewRequest = undefined;
   reviewPreviewLoading.value = false;
-  if (reviewPreviewUrl.value) URL.revokeObjectURL(reviewPreviewUrl.value);
+  reviewPreviewError.value = '';
   reviewPreviewUrl.value = '';
+  for (const url of reviewPreviewCache.values()) URL.revokeObjectURL(url);
+  reviewPreviewCache.clear();
 }
-async function openReviewPreview(row: ReviewRow) {
-  if (reviewPreviewLoading.value) return;
-  closeReviewPreview();
+/** 当前页只请求一次清晰原图，页面内展示和查看大图复用同一图片。 */
+async function loadReviewPreview(row?: ReviewRow) {
+  reviewPreviewRequest?.abort();
+  reviewPreviewRequest = undefined;
+  reviewPreviewLoading.value = false;
+  reviewPreviewError.value = '';
+  reviewPreviewUrl.value = row ? reviewPreviewCache.get(row.page) ?? '' : '';
+  if (!row || !dialog.value || !reviewLoaded.value || reviewPreviewUrl.value) return;
   const request = new AbortController();
   reviewPreviewRequest = request;
   reviewPreviewLoading.value = true;
   try {
     const image = await previewPptImportImage({ file: reviewTarget.value ? undefined : file.value,
       versionId: reviewTarget.value, pageNo: row.page }, request.signal);
-    if (!request.signal.aborted) reviewPreviewUrl.value = URL.createObjectURL(image);
-  } catch (cause) {
-    if (!request.signal.aborted) ElMessage.error(cause instanceof Error ? cause.message : '高清预览加载失败，请重试');
+    if (!request.signal.aborted) {
+      const url = URL.createObjectURL(image);
+      reviewPreviewCache.set(row.page, url);
+      reviewPreviewUrl.value = url;
+    }
+  } catch {
+    if (!request.signal.aborted) reviewPreviewError.value = '原页预览暂时不可用，可继续确认并识别。';
   } finally {
     if (reviewPreviewRequest === request) reviewPreviewLoading.value = false;
   }
 }
-watch([dialog, file, reviewTarget], closeReviewPreview);
-onBeforeUnmount(closeReviewPreview);
+watch([dialog, file, reviewTarget], resetReviewPreviews);
+onBeforeUnmount(resetReviewPreviews);
+
 type ReviewFilter = 'all' | 'pending' | 'ready' | 'untitled' | 'skipped';
 const reviewFilter = ref<ReviewFilter>('all');
 const reviewSearch = ref('');
@@ -197,6 +211,9 @@ const visibleReviewRows = computed(() => {
   });
 });
 const selectedReviewRow = computed(() => reviewRows.value.find(row => row.page === selectedPage.value));
+watch([dialog, file, reviewTarget, reviewLoaded, () => selectedReviewRow.value?.page], () => {
+  void loadReviewPreview(selectedReviewRow.value);
+});
 const previousReviewRow = computed(() => {
   const preceding = visibleReviewRows.value.filter(row => row.page < (selectedPage.value ?? 0));
   return preceding[preceding.length - 1];
@@ -347,7 +364,6 @@ async function loadReview(load: () => ReturnType<typeof reviewPptImport>) {
       section: page.section ?? '',
       recognitionMode: page.mode === 'TEXT_ONLY' || page.mode === 'UPPER_TABLE_ONLY' ? page.mode : 'FULL',
       skip: page.excluded || (page.skipped && page.title === '目录'),
-      thumbnail: review.thumbnails?.[page.page],
     }));
     ownerChoices.value = new Map();
     reviewSearch.value = '';
@@ -539,8 +555,6 @@ onMounted(refresh);
         </el-table>
       </template>
     </el-drawer>
-    <el-image-viewer v-if="reviewPreviewUrl" :url-list="[reviewPreviewUrl]" teleported
-      :z-index="4000" @close="closeReviewPreview" />
     <PptVersionAssignmentsDialog v-if="assignmentVersion" :key="assignmentVersion.id"
       :version-id="assignmentVersion.id" :version-no="assignmentVersion.versionNo"
       @close="assignmentVersion = undefined" />
@@ -644,13 +658,14 @@ onMounted(refresh);
               </header>
               <div class="review-page-content">
                 <div class="review-preview">
-                  <el-button class="review-zoom" :icon="ZoomIn" :loading="reviewPreviewLoading"
-                    @click="openReviewPreview(selectedReviewRow)">放大查看</el-button>
-                  <el-image v-if="selectedReviewRow.thumbnail" :key="selectedReviewRow.page"
-                    class="review-image" :src="selectedReviewRow.thumbnail" fit="contain"
-                    :alt="`PPT 第 ${selectedReviewRow.page} 页原页`"
-                    @click="openReviewPreview(selectedReviewRow)" />
-                  <span v-else>暂无原页预览</span>
+                  <p v-if="reviewPreviewLoading" role="status">正在加载原页预览…</p>
+                  <div v-else-if="reviewPreviewError" role="status">
+                    {{ reviewPreviewError }}
+                    <el-button link type="primary" @click="loadReviewPreview(selectedReviewRow)">重试预览</el-button>
+                  </div>
+                  <PptSlideViewer v-else plain :page-no="selectedReviewRow.page" :unavailable="true"
+                    :slide="reviewPreviewUrl ? { id: selectedReviewRow.page, pageNo: selectedReviewRow.page,
+                      imageUrl: reviewPreviewUrl, renderStatus: 'READY' } : undefined" />
                 </div>
                 <div class="review-fields">
                   <label class="review-field" for="ppt-review-title">
@@ -843,8 +858,8 @@ onMounted(refresh);
 }
 .review-page-content { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(260px, 1fr); gap: 16px; }
 .review-preview { position: relative; min-height: 200px; border: 1px solid #e5ebf4; border-radius: 8px; background: #f3f6fb; }
-.review-zoom { position: absolute; top: 8px; right: 8px; z-index: 1; }
-.review-image { position: absolute; inset: 6px 0; width: min(calc(100% - 12px), 720px); margin-inline: auto; }
+
+.review-preview :deep(img) { max-height: 400px; }
 .review-fields { display: grid; align-content: start; gap: 14px; padding: 16px; border: 1px solid #e5ebf4; border-radius: 8px; }
 .review-field { display: grid; align-content: start; gap: 6px; min-width: 0; }
 .review-field > span, .review-field > label, .review-field-heading { color: #243651; font-size: 13px; font-weight: 600; }
