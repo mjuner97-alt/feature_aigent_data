@@ -22,10 +22,13 @@ class TimeRangeResolverTest {
     private static final LocalDate WED = LocalDate.of(2026, 10, 14);
 
     @Test
-    void thisWeekIsSevenDaysEndingToday() {
-        // 拍板⑦终版: 本周 = 一周前的今天 ~ 今天 = today-7 ~ today, 历史含今天 (起点不变)
-        assertArrayEquals(new String[]{"2026-10-07", "2026-10-14"},
+    void thisWeekIsCalendarWeekToToday() {
+        // 2026-11-17 拍板⑴ (推翻 2026-10-27 拍板②): 本周 = 本周一 ~ 今天
+        assertArrayEquals(new String[]{"2026-10-12", "2026-10-14"},
                 TimeRangeResolver.resolve("THIS_WEEK", WED));
+        // 周一当天: 仍是 [周一, today] 时间范围 (start=end=周一), 不设单日特例
+        assertArrayEquals(new String[]{"2026-10-12", "2026-10-12"},
+                TimeRangeResolver.resolve("THIS_WEEK", LocalDate.of(2026, 10, 12)));
     }
 
     @Test
@@ -71,6 +74,18 @@ class TimeRangeResolverTest {
     }
 
     @Test
+    void monthAnchorsRolling() {
+        // 2026-11-17 拍板⑵: 近N月 = today-N月 ~ today; 未来N月 = today ~ today+N月 (滚动, 均含今天)
+        assertArrayEquals(new String[]{"2026-08-14", "2026-10-14"},
+                TimeRangeResolver.resolve("LAST:2M", WED));
+        assertArrayEquals(new String[]{"2026-10-14", "2026-12-14"},
+                TimeRangeResolver.resolve("NEXT:2M", WED));
+        // 年底跨年
+        assertArrayEquals(new String[]{"2026-11-17", "2027-02-17"},
+                TimeRangeResolver.resolve("NEXT:3M", LocalDate.of(2026, 11, 17)));
+    }
+
+    @Test
     void untilAnchorIsYearStartToDate() {
         assertArrayEquals(new String[]{"2026-01-01", "2026-10-15"},
                 TimeRangeResolver.resolve("UNTIL:2026-10-15", WED));
@@ -94,6 +109,7 @@ class TimeRangeResolverTest {
         assertNull(TimeRangeResolver.resolve("交付周至投产周", WED));
         assertNull(TimeRangeResolver.resolve("投产周", WED));
         assertNull(TimeRangeResolver.resolve("AMBIGUOUS:WEEKS:3", WED));
+        assertNull(TimeRangeResolver.resolve("AMBIGUOUS:MONTHS:3", WED));
         assertNull(TimeRangeResolver.resolve("AMBIGUOUS:PROD", WED));
         assertNull(TimeRangeResolver.resolve("LAST:3V", WED));
         assertNull(TimeRangeResolver.resolve("LAST:3Q", WED));
@@ -112,6 +128,9 @@ class TimeRangeResolverTest {
         assertTrue(TimeRangeResolver.isValidConfigAnchor("THIS_MONTH"));
         assertTrue(TimeRangeResolver.isValidConfigAnchor("THIS_YEAR"));
         assertTrue(TimeRangeResolver.isValidConfigAnchor("AMBIGUOUS:WEEKS:3"));
+        assertTrue(TimeRangeResolver.isValidConfigAnchor("AMBIGUOUS:MONTHS:3"));
+        assertTrue(TimeRangeResolver.isValidConfigAnchor("LAST:2M"));
+        assertTrue(TimeRangeResolver.isValidConfigAnchor("NEXT:2M"));
         assertTrue(TimeRangeResolver.isValidConfigAnchor("AMBIGUOUS:PROD"));
         assertTrue(TimeRangeResolver.isValidConfigAnchor("交付周至投产周"));
         assertTrue(TimeRangeResolver.isValidConfigAnchor("投产周"));
@@ -151,6 +170,7 @@ class TimeRangeResolverTest {
     @Test
     void ambiguousAnchorClassification() {
         assertTrue(TimeRangeResolver.isAmbiguousAnchor("AMBIGUOUS:WEEKS:3"));
+        assertTrue(TimeRangeResolver.isAmbiguousAnchor("AMBIGUOUS:MONTHS:3"));
         assertTrue(TimeRangeResolver.isAmbiguousAnchor("AMBIGUOUS:PROD"));
         assertFalse(TimeRangeResolver.isAmbiguousAnchor("LAST:3w"));
         assertFalse(TimeRangeResolver.isAmbiguousAnchor(null));
@@ -174,6 +194,24 @@ class TimeRangeResolverTest {
         assertEquals("NEXT:3w", TimeRangeResolver.resolveAmbiguousReply("接下来3周", "AMBIGUOUS:WEEKS:3"));
         assertNull(TimeRangeResolver.resolveAmbiguousReply("今天天气不错", "AMBIGUOUS:WEEKS:3"));
         assertNull(TimeRangeResolver.resolveAmbiguousReply(null, "AMBIGUOUS:WEEKS:3"));
+    }
+
+    @Test
+    void ambiguityAskPromptMonths() {
+        // 2026-11-17 近N月换轨: 反问/答复与 WEEKS 同构 (拍板⑶)
+        assertEquals("您说的「近3个月」是指历史近N个月（往前推），还是未来近N个月？请回复：历史 / 未来",
+                TimeRangeResolver.ambiguityAskPrompt("AMBIGUOUS:MONTHS:3"));
+        assertNull(TimeRangeResolver.ambiguityAskPrompt("AMBIGUOUS:MONTHS"));
+    }
+
+    @Test
+    void ambiguousMonthsReplyResolution() {
+        assertEquals("LAST:3M", TimeRangeResolver.resolveAmbiguousReply("历史", "AMBIGUOUS:MONTHS:3"));
+        assertEquals("LAST:3M", TimeRangeResolver.resolveAmbiguousReply("往前推的", "AMBIGUOUS:MONTHS:3"));
+        assertEquals("NEXT:3M", TimeRangeResolver.resolveAmbiguousReply("未来", "AMBIGUOUS:MONTHS:3"));
+        assertEquals("NEXT:3M", TimeRangeResolver.resolveAmbiguousReply("接下来3个月", "AMBIGUOUS:MONTHS:3"));
+        assertNull(TimeRangeResolver.resolveAmbiguousReply("今天天气不错", "AMBIGUOUS:MONTHS:3"));
+        assertNull(TimeRangeResolver.resolveAmbiguousReply(null, "AMBIGUOUS:MONTHS:3"));
     }
 
     @Test

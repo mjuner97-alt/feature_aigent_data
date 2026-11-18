@@ -699,6 +699,104 @@ class SkillCandidateSelectorTest {
         assertEquals(List.of("risk_metrics"), selection.skillNames());
     }
 
+    // ==================== 多 skill 命中全部直接执行方案 §5① (2026/11/13 拍板) ====================
+
+    @Test
+    void preTruncationLevelTrackSetExposed() {
+        // 拍板⑦ 数据源: 截断 (maxVisible=2) 不影响 levelTrackHits 全集暴露
+        SkillCandidateSelector narrow = new SkillCandidateSelector(2, 3);
+        SkillRoutingMetadata a = metadataWithLevels("a_skill", List.of(), List.of("达标率"), List.of(), List.of());
+        SkillRoutingMetadata b = metadataWithLevels("b_skill", List.of(), List.of("达标率"), List.of(), List.of());
+        SkillRoutingMetadata c = metadataWithLevels("c_skill", List.of(), List.of("达标率"), List.of(), List.of());
+        SkillRoutingMetadata d = metadataWithLevels("d_skill", List.of(), List.of("达标率"), List.of(), List.of());
+
+        SkillCandidateSelection selection = narrow.select(
+                List.of(skill(a.skillName()), skill(b.skillName()), skill(c.skillName()), skill(d.skillName())),
+                List.of(a, b, c, d), "查询达标率");
+
+        assertEquals(2, selection.skillNames().size());
+        assertEquals(4, selection.levelTrackHits().size());
+        assertTrue(selection.onlyLevelTrack());
+        assertFalse(selection.priorityDecisive());
+    }
+
+    @Test
+    void priorityDecisiveFlagOnSameDepthConfiguredRank() {
+        // G4: 同深度并列且命中词配置了 sort_order = 优先级真正在分胜负
+        SkillCandidateSelector withPriority = new SkillCandidateSelector(5, 10,
+                () -> List.of(new SkillKeywordPriority(1L, 2, "未闭环", "问题", 1),
+                              new SkillKeywordPriority(2L, 2, "未闭环", "缺陷", 2)));
+        SkillRoutingMetadata p = metadataWithLevels("p_skill", List.of(), List.of("未闭环"), List.of("问题"), List.of());
+        SkillRoutingMetadata q = metadataWithLevels("q_skill", List.of(), List.of("未闭环"), List.of("缺陷"), List.of());
+
+        SkillCandidateSelection selection = withPriority.select(
+                List.of(skill(p.skillName()), skill(q.skillName())), List.of(p, q), "未闭环问题和缺陷统计");
+
+        assertTrue(selection.priorityDecisive());
+        assertEquals(2, selection.levelTrackHits().size());
+    }
+
+    @Test
+    void priorityNotDecisiveWhenDepthDiffersOrRankMissing() {
+        // depth 已分出先后 (L1 vs L1+L2), 个别词碰巧配了 sort_order 也不降级 (拍板⑥精确化)
+        SkillCandidateSelector withPriority = new SkillCandidateSelector(5, 10,
+                () -> List.of(new SkillKeywordPriority(1L, 2, "未闭环", "问题", 1)));
+        SkillRoutingMetadata shallow = metadataWithLevels("shallow_skill", List.of(), List.of("缺陷密度"), List.of(), List.of());
+        SkillRoutingMetadata deep = metadataWithLevels("deep_skill", List.of(), List.of("未闭环"), List.of("问题"), List.of());
+
+        SkillCandidateSelection depthDiff = withPriority.select(
+                List.of(skill(shallow.skillName()), skill(deep.skillName())), List.of(shallow, deep),
+                "缺陷密度与未闭环问题统计");
+        assertFalse(depthDiff.priorityDecisive());
+
+        // 同深度并列但都未配置 sort_order → 优先级未参与决胜
+        SkillRoutingMetadata p2 = metadataWithLevels("p2_skill", List.of(), List.of("未闭环"), List.of("问题"), List.of());
+        SkillRoutingMetadata q2 = metadataWithLevels("q2_skill", List.of(), List.of("未闭环"), List.of("缺陷"), List.of());
+        SkillCandidateSelection noPriority = selector.select(
+                List.of(skill(p2.skillName()), skill(q2.skillName())), List.of(p2, q2), "未闭环问题和缺陷统计");
+        assertFalse(noPriority.priorityDecisive());
+    }
+
+    @Test
+    void earliestMentionPosPerSkillExposed() {
+        // §4.2 问题提及序数据源: "缺陷密度" 位置 < "未闭环" 位置 (与 name 序 weibi<density 无关)
+        SkillRoutingMetadata density = metadataWithLevels("density_skill", List.of(), List.of("缺陷密度"), List.of(), List.of());
+        SkillRoutingMetadata weibi = metadataWithLevels("weibi_skill", List.of(), List.of("未闭环"), List.of(), List.of());
+
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(density.skillName()), skill(weibi.skillName())), List.of(weibi, density),
+                "杭二11月的整体缺陷密度情况，及未闭环问题明细");
+
+        int densityPos = hitOf(selection, "density_skill").firstMentionPos();
+        int weibiPos = hitOf(selection, "weibi_skill").firstMentionPos();
+        assertTrue(densityPos < weibiPos);
+        assertEquals(List.of("缺陷密度"), hitOf(selection, "density_skill").matchedTerms());
+        assertEquals(List.of("未闭环"), hitOf(selection, "weibi_skill").matchedTerms());
+    }
+
+    @Test
+    void fallbackInjectedWordHasNoMentionPosition() {
+        // 保底注入词无文本位置: 位置只来自其余真命中词 (L1), 注入的「保底」不进 matchedTerms
+        SkillRoutingMetadata holder = metadataWithLevels("holder_skill", List.of(),
+                List.of("达标率"), List.of("保底"), List.of());
+
+        SkillCandidateSelection selection = selector.select(
+                List.of(skill(holder.skillName())), List.of(holder), "查达标率");
+
+        assertEquals(1, selection.levelTrackHits().size());
+        SkillCandidateSelection.LevelTrackHit hit = selection.levelTrackHits().get(0);
+        assertFalse(hit.matchedTerms().contains(SkillCandidateSelector.FALLBACK_MARKER));
+        assertEquals(List.of("达标率"), hit.matchedTerms());
+        assertTrue(hit.firstMentionPos() != Integer.MAX_VALUE);
+    }
+
+    private static SkillCandidateSelection.LevelTrackHit hitOf(SkillCandidateSelection selection, String name) {
+        return selection.levelTrackHits().stream()
+                .filter(h -> h.skillName().equals(name))
+                .findFirst()
+                .orElseThrow();
+    }
+
     private static SkillRoutingMetadata metadata(String name, List<String> keywords) {
         return new SkillRoutingMetadata(name, name + " 摘要", keywords, List.of(), List.of(), "", true, null);
     }    private static SkillRoutingMetadata metadataWithLevels(String name, List<String> keywords,

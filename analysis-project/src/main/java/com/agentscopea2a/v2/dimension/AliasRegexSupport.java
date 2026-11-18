@@ -1,5 +1,6 @@
 package com.agentscopea2a.v2.dimension;
 
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -14,11 +15,19 @@ import java.util.regex.PatternSyntaxException;
  *
  * <p>保存期校验（DimensionKeyController）已保证正则可编译、组号存在；这里对
  * 手工改库等绕过路径做运行时防御：编译失败/组缺失的行跳过不产出，不抛异常。
+ *
+ * <p>补年令牌 {@code {year:$n}}（2026-11-17 投产日期动态维度）：value 中先替换
+ * {@code {year:$n}} 再走 {@code $n} 替换——命中组非空取捕获值（2位年补 20 前缀），
+ * 组为空（alias 年前缀可省）取当前年（Asia/Shanghai，同 TimeRangeResolver 时区口径）。
+ * 裸日期"原词形态补不了年"（裸日期单日方案 拍板⑧）由此在配置层解决。
  */
 public final class AliasRegexSupport {
 
     /** value 模板中的捕获组引用（$1~$9）。 */
     private static final Pattern CAPTURE_REF = Pattern.compile("\\$(\\d)");
+
+    /** 补年令牌：{year:$n} —— $n 为年前缀捕获组，组为空取当前年。 */
+    private static final Pattern YEAR_TOKEN = Pattern.compile("\\{year:\\$(\\d)}");
 
     private AliasRegexSupport() {
     }
@@ -69,9 +78,13 @@ public final class AliasRegexSupport {
         return out;
     }
 
-    /** $n → group(n)；任一引用组为 null 或越界返回 null（该次命中无效）。 */
+    /**
+     * 模板替换：先解 {year:$n} 补年令牌（组空→当前年，2位年→20YY），
+     * 再走 $n → group(n)；$n 任一引用组为 null 或越界返回 null（该次命中无效）。
+     */
     private static String substitute(String valueTemplate, Matcher m) {
-        Matcher ref = CAPTURE_REF.matcher(valueTemplate);
+        String template = replaceYearTokens(valueTemplate, m);
+        Matcher ref = CAPTURE_REF.matcher(template);
         StringBuilder sb = new StringBuilder();
         int last = 0;
         while (ref.find()) {
@@ -79,8 +92,33 @@ public final class AliasRegexSupport {
             if (group > m.groupCount() || m.group(group) == null) {
                 return null;
             }
-            sb.append(valueTemplate, last, ref.start()).append(m.group(group));
+            sb.append(template, last, ref.start()).append(m.group(group));
             last = ref.end();
+        }
+        sb.append(template, last, template.length());
+        return sb.toString();
+    }
+
+    /** {year:$n} → 捕获年（2位补 20 前缀）；组为空/越界 → 当前年（Asia/Shanghai）。 */
+    private static String replaceYearTokens(String valueTemplate, Matcher m) {
+        if (!YEAR_TOKEN.matcher(valueTemplate).find()) {
+            return valueTemplate;
+        }
+        String currentYear = String.valueOf(LocalDate.now(TimeRangeResolver.ZONE).getYear());
+        Matcher t = YEAR_TOKEN.matcher(valueTemplate);
+        StringBuilder sb = new StringBuilder();
+        int last = 0;
+        while (t.find()) {
+            int group = Integer.parseInt(t.group(1));
+            String year = currentYear;
+            if (group <= m.groupCount() && m.group(group) != null) {
+                year = m.group(group);
+                if (year.length() == 2) {
+                    year = "20" + year;
+                }
+            }
+            sb.append(valueTemplate, last, t.start()).append(year);
+            last = t.end();
         }
         sb.append(valueTemplate, last, valueTemplate.length());
         return sb.toString();

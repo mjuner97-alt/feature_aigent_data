@@ -1317,6 +1317,72 @@ class DirectSkillExecutorTest {
     }
 
     @Test
+    void ambiguousMonthsAnchorTriggersAskAndResumeResolvesDirection() {
+        // 2026-11-17 近N月换轨: 裸"近3个月"走 L1 正则 (无需词表配置) → MONTHS 反问 → 历史/未来
+        String question = "近3个月的达标率是多少";
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"range\":\"timeRange\"}", "达标率")));
+        enableKeyDictionary(timeRangeConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor executor = newExecutor(true);
+        DirectSkillExecutor.DirectExecutionPlan plan = executor.plan(question, "alice", null, "conv-1");
+
+        assertTrue(plan.needsAsk());
+        assertTrue(plan.askMessage().contains("历史"));
+        assertTrue(plan.askMessage().contains("未来"));
+        var map = pendingMap(executor);
+        assertEquals(1, map.size());
+        assertTrue(map.values().iterator().next().pendingAnchors().contains("AMBIGUOUS:MONTHS:3"));
+
+        // 答"历史" → LAST:3M 透传裸键, pending 消费
+        DirectSkillExecutor.DirectExecutionPlan done =
+                executor.plan("历史", "alice", null, "conv-1");
+        assertFalse(done.needsAsk());
+        assertEquals("LAST:3M", done.params().get("range"));
+        assertTrue(map.isEmpty());
+    }
+
+    @Test
+    void ambiguousMonthsFutureAnswerResolvesNext() {
+        String question = "近2个月的达标率如何";
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"range\":\"timeRange\"}", "达标率")));
+        enableKeyDictionary(timeRangeConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor executor = newExecutor(true);
+        assertTrue(executor.plan(question, "alice", null, "conv-1").needsAsk());
+
+        DirectSkillExecutor.DirectExecutionPlan done =
+                executor.plan("未来", "alice", null, "conv-1");
+        assertEquals("NEXT:2M", done.params().get("range"));
+    }
+
+    @Test
+    void nearNMonthsVersionPhraseSkipsAmbiguityAsk() {
+        // 拍板⑷: "近3个月版本"连写归版本键 LAST:3V (在日历可展开时不反问, 不进 MONTHS 反问链)
+        String question = "近3个月版本的达标率";
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"range\":\"timeRange\"}", "达标率")));
+        enableKeyDictionary(timeRangeConfig());
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor executor = newExecutor(true);
+        DirectSkillExecutor.DirectExecutionPlan plan = executor.plan(question, "alice", null, "conv-1");
+        assertFalse(plan.needsAsk());
+    }
+
+    @Test
     void ambiguousProdAnchorAskAndResume() {
         String question = "投产前的达标率";
         when(metadataRepository.findActive()).thenReturn(List.of(
@@ -3846,5 +3912,292 @@ class DirectSkillExecutorTest {
         assertEquals("杭州开发二部", r2.params().get("dept"));           // 快照继承
         assertEquals("2026年7月份版本", r2.params().get("version"));      // 时间家族继承 (未重锚)
         assertEquals("组维度", r2.params().get("drill"));              // 分布默认下钻 (P1/P2; 部门默认=组维度)
+    }
+
+    // ==================== 多 skill 命中全部直接执行 (docs/202611/多skill命中全部直接执行方案.md, 2026/11/13 拍板) ====================
+
+    private static final String MULTI_QUESTION = "杭二11月的整体缺陷密度情况，及未闭环问题明细";
+
+    /** 层级轨 L1 metadata, 自带 short_summary (混排轮展示标题断言用)。 */
+    private static SkillRoutingMetadata multiMeta(String name, String scriptId, String mapping,
+                                                  List<String> level1, String shortSummary) {
+        return new SkillRoutingMetadata(name, shortSummary, List.of(), List.of(), List.of(),
+                "admin", true, LocalDateTime.now(), level1, List.of(), List.of(), scriptId, mapping);
+    }
+
+    private DirectSkillExecutor newMultiExecutor(SkillCandidateSelector selector, boolean multiEnabled) {
+        return new DirectSkillExecutor(metadataRepository, selector, usageResolver, indexRepo,
+                scriptRegistryMapper, dimensionStateManager, hookProvider, dimensionKeyRepoProvider,
+                objectMapper, true).setMultiExecEnabled(multiEnabled);
+    }
+
+    private void allowAll(String userId, String... skills) {
+        when(indexRepo.findByName(Mockito.anyString())).thenReturn(Optional.empty());
+        when(usageResolver.findUsableRetrievalNames(userId)).thenReturn(Set.of(skills));
+    }
+
+    private void mockDeptPreview(String question) {
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of("杭州开发二部")));
+    }
+
+    @Test
+    void multiHitPlansAllSkillsInMentionOrder() {
+        // §1 场景: 缺陷密度 (L1) + 未闭环 (L1) 双命中 → 两个 exec plan, 提及序排序 (拍板④)
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                multiMeta("weibi_skill", "script_b", "{\"dept\":\"deptName\"}", List.of("未闭环"), "未闭环问题自由问数"),
+                multiMeta("density_skill", "script_a", "{\"dept\":\"deptName\"}", List.of("缺陷密度"), "缺陷密度总览")));
+        allowAll("alice", "density_skill", "weibi_skill");
+        mockDeptPreview(MULTI_QUESTION);
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true}]"));
+        when(scriptRegistryMapper.selectByScriptId("script_b")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true}]"));
+
+        DirectSkillExecutor executor = newMultiExecutor(selector, true);
+        List<DirectSkillExecutor.DirectExecutionPlan> plans =
+                executor.planAll(MULTI_QUESTION, "alice", null, "conv-1");
+
+        assertEquals(2, plans.size());
+        assertEquals("density_skill", plans.get(0).skillName());   // "缺陷密度" 在问题中先提及
+        assertEquals("weibi_skill", plans.get(1).skillName());
+        assertFalse(plans.get(0).needsAsk());
+        assertEquals("杭州开发二部", plans.get(0).params().get("dept"));
+        assertEquals("杭州开发二部", plans.get(1).params().get("dept"));
+        // 拍板③: 展示标题取 short_summary 的【】形态
+        assertEquals("【缺陷密度总览】", plans.get(0).displayTitle());
+        assertEquals("【未闭环问题自由问数】", plans.get(1).displayTitle());
+        // 拍板⑤: 快照记最后一个执行的 skill
+        assertEquals("weibi_skill", executor.lastExec("alice", "conv-1").skillName());
+    }
+
+    @Test
+    void multiExecDisabledKeepsTop1SinglePlan() {
+        // 开关关闭 (默认): 全部旧行为, top-1 (depth 同层并列 → name 序 density 在前)
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                multiMeta("weibi_skill", "script_b", "{\"dept\":\"deptName\"}", List.of("未闭环"), "未闭环问题自由问数"),
+                multiMeta("density_skill", "script_a", "{\"dept\":\"deptName\"}", List.of("缺陷密度"), "缺陷密度总览")));
+        allowAll("alice", "density_skill", "weibi_skill");
+        mockDeptPreview(MULTI_QUESTION);
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true}]"));
+        when(scriptRegistryMapper.selectByScriptId("script_b")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true}]"));
+
+        List<DirectSkillExecutor.DirectExecutionPlan> plans =
+                newMultiExecutor(selector, false).planAll(MULTI_QUESTION, "alice", null, "conv-1");
+
+        assertEquals(1, plans.size());
+        assertEquals("density_skill", plans.get(0).skillName());
+    }
+
+    @Test
+    void priorityDecisiveDowngradesToSinglePlan() {
+        // G4 (拍板⑥): 同一 L1 下多个 L2 词配置了位次 (优先级真正在分胜负) → 整轮降级旧 top-1
+        SkillCandidateSelector withPriority = new SkillCandidateSelector(5, 10,
+                () -> List.of(new SkillKeywordPriority(1L, 2, "未闭环", "问题", 1),
+                              new SkillKeywordPriority(2L, 2, "未闭环", "缺陷", 2)));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                levelMeta("q_skill", "script_b", "{\"dept\":\"deptName\"}", List.of("未闭环"), List.of("缺陷")),
+                levelMeta("p_skill", "script_a", "{\"dept\":\"deptName\"}", List.of("未闭环"), List.of("问题"))));
+        allowAll("alice", "p_skill", "q_skill");
+        String q = "未闭环问题和缺陷统计";
+        mockDeptPreview(q);
+        when(scriptRegistryMapper.selectByScriptId(Mockito.anyString())).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true}]"));
+
+        List<DirectSkillExecutor.DirectExecutionPlan> plans =
+                newMultiExecutor(withPriority, true).planAll(q, "alice", null, "conv-1");
+
+        assertEquals(1, plans.size());
+        assertEquals("p_skill", plans.get(0).skillName());  // 位次 1 < 2, 「问题」skill 胜出
+    }
+
+    @Test
+    void depthDifferenceKeepsMultiExecEvenWithPriorityRows() {
+        // G4 精确化 (拍板⑥): depth 已分出先后的不降级, 即使个别命中词碰巧配了 sort_order;
+        // 提及序压过 depth (缺陷密度 depth1 先执行, 未闭环+问题 depth2 后执行)
+        SkillCandidateSelector withPriority = new SkillCandidateSelector(5, 10,
+                () -> List.of(new SkillKeywordPriority(1L, 2, "未闭环", "问题", 1)));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                levelMeta("weibi_skill", "script_b", "{\"dept\":\"deptName\"}", List.of("未闭环"), List.of("问题")),
+                multiMeta("density_skill", "script_a", "{\"dept\":\"deptName\"}", List.of("缺陷密度"), "缺陷密度总览")));
+        allowAll("alice", "density_skill", "weibi_skill");
+        mockDeptPreview(MULTI_QUESTION);
+        when(scriptRegistryMapper.selectByScriptId(Mockito.anyString())).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true}]"));
+
+        List<DirectSkillExecutor.DirectExecutionPlan> plans =
+                newMultiExecutor(withPriority, true).planAll(MULTI_QUESTION, "alice", null, "conv-1");
+
+        assertEquals(2, plans.size());
+        assertEquals("density_skill", plans.get(0).skillName());
+        assertEquals("weibi_skill", plans.get(1).skillName());
+    }
+
+    @Test
+    void explicitNameMentionGatesMultiExec() {
+        // G1: 显式点名意图单一 → 点名即 top-1 (经 G6: 显式候选混池 → 不多执行)
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                multiMeta("weibi_skill", "script_b", "{\"dept\":\"deptName\"}", List.of("未闭环"), "未闭环问题自由问数"),
+                multiMeta("density_skill", "script_a", "{\"dept\":\"deptName\"}", List.of("缺陷密度"), "缺陷密度总览")));
+        allowAll("alice", "density_skill", "weibi_skill");
+        String q = "请用 density_skill 查未闭环明细";
+        mockDeptPreview(q);
+        when(scriptRegistryMapper.selectByScriptId(Mockito.anyString())).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true}]"));
+
+        List<DirectSkillExecutor.DirectExecutionPlan> plans =
+                newMultiExecutor(selector, true).planAll(q, "alice", null, "conv-1");
+
+        assertEquals(1, plans.size());
+        assertEquals("density_skill", plans.get(0).skillName());
+    }
+
+    @Test
+    void partialTopDowngradesMultiExec() {
+        // G5: 榜首配置了叶层词却零命中 (partial) = 问法宽泛, 多执行放大误命中
+        SkillRoutingMetadata weibi = new SkillRoutingMetadata("weibi_skill", "summary", List.of("明细"),
+                List.of(), List.of(), "admin", true, LocalDateTime.now(),
+                List.of("未闭环"), List.of("问题"), List.of(), "script_b", "{\"dept\":\"deptName\"}");
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                weibi,
+                multiMeta("density_skill", "script_a", "{\"dept\":\"deptName\"}", List.of("缺陷密度"), "缺陷密度总览")));
+        allowAll("alice", "density_skill", "weibi_skill");
+        String q = "缺陷密度与未闭环问题的分布";
+        mockDeptPreview(q);
+        when(scriptRegistryMapper.selectByScriptId(Mockito.anyString())).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true}]"));
+
+        List<DirectSkillExecutor.DirectExecutionPlan> plans =
+                newMultiExecutor(selector, true).planAll(q, "alice", null, "conv-1");
+
+        assertEquals(1, plans.size());
+        assertEquals("weibi_skill", plans.get(0).skillName());  // depth2 榜首 (partial) 旧 top-1
+    }
+
+    @Test
+    void legacyTrackCandidateExcludedNotBlockingMultiExec() {
+        // G6 方案①收窄 (2026/11/16 拍板): 存量轨候选剔除出多执行集合, 不再整轮阻断;
+        // 双层级轨 + 存量轨混池 → 2 plan (仅层级轨, 提及序), 存量轨不执行
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                multiMeta("density_skill", "script_a", "{\"dept\":\"deptName\"}", List.of("缺陷密度"), "缺陷密度总览"),
+                multiMeta("weibi_skill", "script_b", "{\"dept\":\"deptName\"}", List.of("未闭环"), "未闭环问题自由问数"),
+                legacyMeta("legacy_skill", "script_c", "{\"dept\":\"deptName\"}", "达标率")));
+        allowAll("alice", "density_skill", "weibi_skill", "legacy_skill");
+        String q = "缺陷密度、未闭环问题和达标率统计";
+        mockDeptPreview(q);
+        when(scriptRegistryMapper.selectByScriptId(Mockito.anyString())).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true}]"));
+
+        List<DirectSkillExecutor.DirectExecutionPlan> plans =
+                newMultiExecutor(selector, true).planAll(q, "alice", null, "conv-1");
+
+        assertEquals(2, plans.size());
+        assertEquals("density_skill", plans.get(0).skillName());
+        assertEquals("weibi_skill", plans.get(1).skillName());
+        assertTrue(plans.stream().noneMatch(p -> p.skillName().equals("legacy_skill")));
+    }
+
+    @Test
+    void explicitLegacySkillMentionKeepsSingleExec() {
+        // 方案①例外: 显式点名 skill 恒单执行 (点名存量轨 skill 也不例外, 点名优先于多执行)
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                multiMeta("density_skill", "script_a", "{\"dept\":\"deptName\"}", List.of("缺陷密度"), "缺陷密度总览"),
+                multiMeta("weibi_skill", "script_b", "{\"dept\":\"deptName\"}", List.of("未闭环"), "未闭环问题自由问数"),
+                legacyMeta("legacy_skill", "script_c", "{\"dept\":\"deptName\"}", "达标率")));
+        allowAll("alice", "density_skill", "weibi_skill", "legacy_skill");
+        String q = "请用 legacy_skill 查缺陷密度和未闭环问题";
+        mockDeptPreview(q);
+        when(scriptRegistryMapper.selectByScriptId(Mockito.anyString())).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true}]"));
+
+        List<DirectSkillExecutor.DirectExecutionPlan> plans =
+                newMultiExecutor(selector, true).planAll(q, "alice", null, "conv-1");
+
+        assertEquals(1, plans.size());
+        assertEquals("legacy_skill", plans.get(0).skillName());
+    }
+
+    @Test
+    void missingParamsSkillBecomesAskPlanInMixedRound() {
+        // 拍板① 方案B: 齐参候选执行, 缺参候选不执行、同轮末尾反问; pending 单槽挂缺参 skill,
+        // 补参轮消费后按旧单 plan 语义只执行该 skill
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                multiMeta("density_skill", "script_a", "{\"dept\":\"deptName\"}", List.of("缺陷密度"), "缺陷密度总览"),
+                multiMeta("group_skill", "script_b", "{\"group\":\"groupName\"}", List.of("缺陷密度"), "按组缺陷统计")));
+        allowAll("alice", "density_skill", "group_skill");
+        mockDeptPreview(MULTI_QUESTION);
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true}]"));
+        when(scriptRegistryMapper.selectByScriptId("script_b")).thenReturn(registryEntry(
+                "[{\"name\":\"group\",\"required\":true}]"));
+
+        DirectSkillExecutor executor = newMultiExecutor(selector, true);
+        List<DirectSkillExecutor.DirectExecutionPlan> plans =
+                executor.planAll(MULTI_QUESTION, "alice", null, "conv-1");
+
+        assertEquals(2, plans.size());
+        assertEquals("density_skill", plans.get(0).skillName());
+        assertFalse(plans.get(0).needsAsk());
+        assertEquals("group_skill", plans.get(1).skillName());
+        assertTrue(plans.get(1).needsAsk());
+        // 快照不受 ask plan 影响: 记最后执行的 exec skill
+        assertEquals("density_skill", executor.lastExec("alice", "conv-1").skillName());
+
+        // 补参轮: pending 消费短路, 只执行缺参 skill
+        when(dimensionStateManager.previewState(Mockito.eq("杭州开发一组"), Mockito.isNull())).thenReturn(
+                new DimensionState(null, List.of(),
+                        new DimensionState.PeerDimension(DimensionState.PeerDimensionType.TEAM,
+                                List.of("杭州开发一组")), List.of()));
+        DirectSkillExecutor.DirectExecutionPlan followup =
+                executor.plan("杭州开发一组", "alice", null, "conv-1");
+        assertEquals("group_skill", followup.skillName());
+        assertEquals("杭州开发一组", followup.params().get("group"));
+        assertFalse(followup.needsAsk());
+    }
+
+    @Test
+    void fourPlusHitsNotTruncatedInMultiExec() {
+        // 拍板⑦: 不设数量上限 —— selector 截断 (maxVisible=2) 后仍取完整层级轨命中集
+        SkillCandidateSelector narrow = new SkillCandidateSelector(2, 3);
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                multiMeta("a_skill", "script_a", "{\"dept\":\"deptName\"}", List.of("达标率"), "A"),
+                multiMeta("b_skill", "script_b", "{\"dept\":\"deptName\"}", List.of("达标率"), "B"),
+                multiMeta("c_skill", "script_c", "{\"dept\":\"deptName\"}", List.of("达标率"), "C"),
+                multiMeta("d_skill", "script_d", "{\"dept\":\"deptName\"}", List.of("达标率"), "D")));
+        allowAll("alice", "a_skill", "b_skill", "c_skill", "d_skill");
+        String q = "查询达标率";
+        mockDeptPreview(q);
+        when(scriptRegistryMapper.selectByScriptId(Mockito.anyString())).thenReturn(registryEntry(
+                "[{\"name\":\"dept\",\"required\":true}]"));
+
+        List<DirectSkillExecutor.DirectExecutionPlan> plans =
+                newMultiExecutor(narrow, true).planAll(q, "alice", null, "conv-1");
+
+        assertEquals(4, plans.size());
+    }
+
+    @Test
+    void multiExecAllMissingParamsStillAsks() {
+        // 双候选全部缺参 → 全部出 ask plan (无 exec), 反问逐一下发, pending 挂第一个 (提及序兜底 name 序)
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                multiMeta("group_skill", "script_b", "{\"group\":\"groupName\"}", List.of("缺陷密度"), "按组缺陷统计"),
+                multiMeta("line_skill", "script_c", "{\"line\":\"productLine\"}", List.of("缺陷密度"), "按产品线缺陷统计")));
+        allowAll("alice", "group_skill", "line_skill");
+        mockDeptPreview(MULTI_QUESTION);
+        when(scriptRegistryMapper.selectByScriptId("script_b")).thenReturn(registryEntry(
+                "[{\"name\":\"group\",\"required\":true}]"));
+        when(scriptRegistryMapper.selectByScriptId("script_c")).thenReturn(registryEntry(
+                "[{\"name\":\"line\",\"required\":true}]"));
+
+        DirectSkillExecutor executor = newMultiExecutor(selector, true);
+        List<DirectSkillExecutor.DirectExecutionPlan> plans =
+                executor.planAll(MULTI_QUESTION, "alice", null, "conv-1");
+
+        assertEquals(2, plans.size());
+        assertTrue(plans.get(0).needsAsk());
+        assertTrue(plans.get(1).needsAsk());
+        assertNull(executor.lastExec("alice", "conv-1"));  // 无 exec → 无快照
     }
 }

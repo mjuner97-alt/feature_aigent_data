@@ -119,6 +119,8 @@ public class DirectSkillExecutor {
     private final boolean enabled;
     /** 追问层开关 (docs/202611/追问轮维度继承直接执行方案.md, 拍板 D6 独立开关)。 */
     private boolean followupDirectEnabled;
+    /** 多 skill 命中全部直接执行开关 (多skill命中全部直接执行方案.md §5⑥), 默认 false。 */
+    private volatile boolean multiExecEnabled = false;
 
     public DirectSkillExecutor(
             SkillRoutingMetadataRepository metadataRepository,
@@ -230,6 +232,12 @@ public class DirectSkillExecutor {
         return this;
     }
 
+    /** 多 skill 命中全部直接执行开关 (方案 §5⑥, 仿 setDistributionDrillEnabled 注入模式)。 */
+    public DirectSkillExecutor setMultiExecEnabled(boolean multiExecEnabled) {
+        this.multiExecEnabled = multiExecEnabled;
+        return this;
+    }
+
     /** Layer 1 标准化「维度+指标」提取体: 固定 schema 全键输出, 空数组 = 问题未提及。
      *  extraDimensions = 动态维度键 (dimension_key_config 词表命中, §9), 仅当前问题提取。
      *  perNo = 统一认证号 (人员台账维度方案 §3.4): "我"→ChatRequest.userId, 人名→Q2 解析;
@@ -322,6 +330,8 @@ public class DirectSkillExecutor {
      * missingAsk 非空 = 缺必填参数待反问 (当前只含一个维度键 label, 口径: 一次只问一个),
      * 调用方短路下发 {@link #askPrompt} 文本; 空 = 正常执行计划。
      * askMessage 非空 = 自定义反问全文 (歧义反问, 时间维度方案 §3.3), askPrompt 优先返回它。
+     * displayTitle = 多 skill 混排轮的展示标题 (拍板③: 取 skill short_summary 的【】形态,
+     * 多 skill 命中全部直接执行方案 §5③); 单 plan 轮不使用 (null)。
      */
     public record DirectExecutionPlan(
             DimensionExtraction extraction,
@@ -329,10 +339,18 @@ public class DirectSkillExecutor {
             String scriptId,
             Map<String, Object> params,
             List<String> missingAsk,
-            String askMessage) {
+            String askMessage,
+            String displayTitle) {
 
         public DirectExecutionPlan {
             missingAsk = missingAsk == null ? List.of() : List.copyOf(missingAsk);
+        }
+
+        /** Legacy 6-arg shape (no display title) for existing call sites/tests. */
+        public DirectExecutionPlan(DimensionExtraction extraction, String skillName,
+                                   String scriptId, Map<String, Object> params,
+                                   List<String> missingAsk, String askMessage) {
+            this(extraction, skillName, scriptId, params, missingAsk, askMessage, null);
         }
 
         /** Legacy 5-arg shape (no custom askMessage) for existing call sites/tests. */
@@ -464,12 +482,21 @@ public class DirectSkillExecutor {
 
     /** runDirectExecution 成功后回填 stdout 摘要并刷新 TTL (§3.1 记录时机第 2 步)。无快照则 no-op。 */
     public void recordResult(String userId, String conversationId, String stdout) {
+        recordResult(userId, conversationId, null, stdout);
+    }
+
+    /** 多执行轮 skill-aware 回填 (拍板⑤): 仅当快照 skill 与回填来源一致才更新 —— 防
+     *  失败尾段把先前成功脚本的 stdout 错挂到最后执行的 skill 上。skillName null = 不校验 (旧语义)。 */
+    public void recordResult(String userId, String conversationId, String skillName, String stdout) {
         if (conversationId == null || conversationId.isBlank()) {
             return;
         }
         String key = sessionKey(userId, conversationId);
         LastDirectExec current = lastExecStore.get(key);
         if (current == null) {
+            return;
+        }
+        if (skillName != null && !skillName.equals(current.skillName())) {
             return;
         }
         lastExecStore.replace(key, current, new LastDirectExec(current.question(), current.skillName(),
@@ -503,46 +530,58 @@ public class DirectSkillExecutor {
      * 带会话键的判定 (方案 §4.1): conversationId 非空时启用缺参反问 pending。
      * pending 消费优先于正常判定链 (补参轮不重跑 skill 匹配, skill/scriptId 均来自
      * pending 原样透传, 首轮已过 canUse)。
+     * 旧单 plan 语义入口: 委托 {@link #planAll} 取首元素 (多执行轮首元素即第一个执行计划)。
      */
     public DirectExecutionPlan plan(String question, String userId,
                                     DimensionState previousState, String conversationId) {
+        List<DirectExecutionPlan> plans = planAll(question, userId, previousState, conversationId);
+        return plans.isEmpty() ? null : plans.get(0);
+    }
+
+    /**
+     * 多 skill 命中全部直接执行判定 (docs/202611/多skill命中全部直接执行方案.md §4/§5②):
+     * 门控 (§4.1 G1-G7) 不满足 → 单元素 (旧 top-1 语义) 或空列表 (不短路);
+     * 满足 → 公共段一次 + per-skill 循环组装, 按问题提及序排序 (§4.2),
+     * 齐参候选出 exec plan, 缺参候选出 ask plan (混排轮末尾反问, 拍板①方案B)。
+     * 空列表 = 不短路走 LLM。
+     */
+    public List<DirectExecutionPlan> planAll(String question, String userId,
+                                             DimensionState previousState, String conversationId) {
         if (!enabled || question == null || question.isBlank()) {
-            return null;
+            return List.of();
         }
         if (conversationId != null) {
             DirectExecutionPlan resumed = consumePending(question, userId, previousState, conversationId);
             if (resumed != null) {
-                return resumed;
+                return List.of(resumed);
             }
-        }
-        if (!enabled || question == null || question.isBlank()) {
-            return null;
         }
         List<SkillRoutingMetadata> active = metadataRepository.findActive();
         if (active.isEmpty()) {
-            return null;
+            return List.of();
         }
         SkillCandidateSelection selection = candidateSelector.selectFromMetadata(active, question);
         if (selection.skillNames().isEmpty()) {
             // 追问层 (docs/202611/追问轮维度继承直接执行方案.md, 拍板 D1/D2): 原链路
             // skill/旁路词都未接住才判追问; domain 命中在 planFollowupDirect 内让位。
+            // 位于 planAll 最前: 命中即原样返回单 plan, 不参与多执行 (方案 §4.6)。
             if (followupDirectEnabled) {
                 DirectExecutionPlan followup =
                         planFollowupDirect(question, userId, previousState, conversationId, active);
                 if (followup != null) {
-                    return followup;
+                    return List.of(followup);
                 }
             }
-            return null;
+            return List.of();
         }
         // domain 让位 (2026/10/28, docs/202610/domain_tags命中优先于直接执行重排序方案.md §3.2):
         // 问题命中任一 active skill 的 domain_tags → LLM 运行领域 skill (漏斗第 2 层),
         // 直接执行放弃 (第 3 层)。显式点名 skill 名豁免 (拍板①, 与 selector explicit 置顶
         // 一致)。位于参数组装/反问之前: domain 命中即整体让位, 缺必填回 LLM 不反问 (拍板③);
-        // 补参轮 pending 消费在方法最前, 不受本判定影响 (拍板④)。
+        // 补参轮 pending 消费在方法最前, 不受本判定影响 (拍板④)。G2: 多执行在整体让位之后。
         if (!selection.explicitNameMatched() && hitsAnyDomainTag(active, question)) {
             log.info("DirectSkillExecutor: question hits a domain tag, direct execution yields to LLM (domain skill)");
-            return null;
+            return List.of();
         }
         // 检索旁路 (2026/10/27 重排序, docs/202610/直接执行优先于旁路词重排序方案.md §3.3①):
         // 旁路词命中时仅当 top-1 非层级轨才放弃短路; 层级轨 top-1 (L1/L2/L3 AND 命中) =
@@ -552,11 +591,292 @@ public class DirectSkillExecutor {
         if (bypassKeywordServiceProvider != null) {
             SkillBypassKeywordService bypass = bypassKeywordServiceProvider.getIfAvailable();
             if (bypass != null && bypass.bypassed(question) && !selection.topFromLevelTrack()) {
-                return null;
+                return List.of();
             }
         }
         // 拍板口径: 候选非空即执行 top-1
         String topName = selection.skillNames().get(0);
+        if (multiExecEnabled) {
+            List<DirectExecutionPlan> multi = planMulti(selection, active, question, userId,
+                    previousState, conversationId, topName);
+            if (multi != null) {
+                return multi;
+            }
+        }
+        DirectExecutionPlan single = planSingle(selection, active, question, userId, previousState,
+                conversationId, topName);
+        return single == null ? List.of() : List.of(single);
+    }
+
+    /** planMulti 内部排序载体: plan + 该 skill 命中词最早提及位置 (§4.2)。 */
+    private record MultiPlan(DirectExecutionPlan plan, int mentionPos) {}
+
+    /** script_registry params_schema 解析结果 (mapping 查询同源兜底口径)。 */
+    private record SchemaInfo(List<ParamSpec> schema, List<String> required) {}
+
+    private SchemaInfo schemaFor(String scriptId) {
+        List<ParamSpec> schema = null;
+        List<String> required = List.of();
+        try {
+            var entry = scriptRegistryMapper.selectByScriptId(scriptId);
+            if (entry != null && entry.getParamsSchema() != null && !entry.getParamsSchema().isBlank()) {
+                schema = parseSchema(entry.getParamsSchema());
+                required = schema.stream().filter(ParamSpec::required).map(ParamSpec::name).toList();
+            }
+        } catch (Exception e) {
+            log.warn("DirectSkillExecutor: 查 script_registry 失败 scriptId={}: {}", scriptId, e.getMessage());
+        }
+        return new SchemaInfo(schema, required);
+    }
+
+    /** 混排轮展示标题 (拍板③): 【short_summary】, 空 summary 回退 skill 英文名。 */
+    private static String displayTitleOf(SkillRoutingMetadata meta) {
+        String shortSummary = meta.shortSummary();
+        String title = shortSummary == null || shortSummary.isBlank() ? meta.skillName() : shortSummary.trim();
+        return "【" + title + "】";
+    }
+
+    /** 公共 extraction 的 matchedSkill/metrics 替换为 per-skill 值 (方案 §4.3), 其余维度共享。 */
+    private static DimensionExtraction withMatch(DimensionExtraction e, String skillName, List<String> metrics) {
+        return new DimensionExtraction(e.versionPlan(), e.vestQuarter(), e.deptName(), e.groupName(),
+                e.appName(), e.productLine(), e.itemNo(), e.subItemNo(), e.projectNo(), e.perName(),
+                e.perNo(), e.perRole(), metrics, skillName, e.extraDimensions());
+    }
+
+    /**
+     * 多执行门控 + per-skill 组装 (方案 §4.1-§4.4, §5②)。null = 门控未过/不可多执行,
+     * 回退 planSingle 旧链路; 非 null = exec plan (提及序) + ask plan (混排末尾, §4.4)。
+     */
+    private List<DirectExecutionPlan> planMulti(SkillCandidateSelection selection,
+                                                List<SkillRoutingMetadata> active,
+                                                String question, String userId,
+                                                DimensionState previousState, String conversationId,
+                                                String topName) {
+        // G4 (拍板⑥): 排序进入 globalRank 位次决胜 (同深度并列且命中词配了 sort_order) → 整轮降级
+        if (selection.priorityDecisive()) {
+            log.info("DirectSkillExecutor: multi-exec gated by G4 (keyword priority decisive), keep top-1");
+            return null;
+        }
+        // G6 (方案①收窄, 2026/11/16 拍板): 存量轨候选不参与多执行, 但不再整轮阻断层级轨
+        // 之间的多执行 —— hits 本来就只含层级轨, 存量轨混入时直接剔除即可。原"整轮退
+        // top-1"会把双层级轨诉求一起吞掉 (实证: 质量+风险双 L1 命中仅执行风险, 见
+        // docs/202611/双标签命中仅执行一个skill_内网问题分析与方案.md)。
+        // 例外: 显式点名 skill 恒单执行 (explicit 候选 levelTrack=false 会使 onlyLevelTrack
+        // =false, 点名优先于多执行, 与点名置顶语义一致)。
+        if (!selection.onlyLevelTrack()) {
+            if (selection.explicitNameMatched()) {
+                log.info("DirectSkillExecutor: multi-exec skipped (explicit skill name match keeps single exec)");
+                return null;
+            }
+            log.info("DirectSkillExecutor: multi-exec G6 narrowed: non-level-track candidates excluded, level-track multi-exec proceeds");
+        }
+        List<SkillCandidateSelection.LevelTrackHit> hits = selection.levelTrackHits();
+        // G5: 榜首命中链完整。只看榜首 partial —— fallbackExpanded (候选数 > maxVisible)
+        // 在拍板⑦"不设上限"下与多执行天然共存, 不构成降级信号
+        if (hits.isEmpty() || hits.get(0).partial()) {
+            log.info("DirectSkillExecutor: multi-exec gated by G5 (top hit chain incomplete/partial)");
+            return null;
+        }
+        // G7 (拍板⑦): 候选数 ≥2, 不设上限 —— hits 为截断前完整层级轨命中集
+        if (hits.size() < 2) {
+            return null;
+        }
+        // top-1 可执行性预检 (与 planSingle 同规): 任一不满足直接回退旧链路
+        SkillRoutingMetadata top = active.stream()
+                .filter(m -> m.skillName().equals(topName))
+                .findFirst()
+                .orElse(null);
+        if (top == null || top.scriptId() == null) {
+            return null;
+        }
+        if (!canUse(topName, userId)) {
+            return null;
+        }
+        Map<String, String> topMapping = parseParamMapping(top.paramMapping());
+        if (topMapping.isEmpty()) {
+            log.info("DirectSkillExecutor: skill {} 配了 script_id={} 但 param_mapping 为空/非法, 回退 LLM",
+                    topName, top.scriptId());
+            return null;
+        }
+
+        // ── 公共段 (一次, §4.3): preview → extract → 台账真值校验 → 人员扫描 → 重锚抑制 ──
+        DimensionState preview = dimensionStateManager.previewState(question, previousState);
+        DimensionExtraction base = extract(preview, selection.matchedKeywords(), topName,
+                extractExtraDimensions(question));
+        // 维度值台账真值校验方案 §4.5: B①/B③/互斥裁决最先做, 消解结果对全部候选一致生效 (§6)
+        LedgerTruthScan truthScan = applyLedgerTruthScan(base, question);
+        base = truthScan.extraction();
+        // 人员台账: 我X enrich → 人名扫描 (重名整轮反问, 见下)
+        PersonScanOutcome personScan = applyPersonalDimensions(base, question, userId);
+        base = personScan.extraction();
+        // 我X按需注入方案 §3.2 L2 重锚抑制 (extraction 级一次, §6)
+        base = applyReanchorSuppression(base, question, personScan, truthScan);
+
+        // ── extraction 级反问信号: 整轮反问, pending 挂 top-1, 维持单 plan 语义 (§4.4) ──
+        List<String> trAnchors = base.extraDimensions()
+                .getOrDefault(TimeRangeResolver.RESERVED_KEY, List.of());
+        String ambiguous = firstAmbiguousAnchor(trAnchors);
+        if (ambiguous != null) {
+            List<String> kept = trAnchors.stream()
+                    .filter(a -> !TimeRangeResolver.isAmbiguousAnchor(a)).toList();
+            if (conversationId == null) {
+                base = withTimeRangeAnchors(base, kept);
+            } else {
+                String key = sessionKey(userId, conversationId);
+                SchemaInfo topSchema = schemaFor(top.scriptId());
+                Map<String, Object> preParams = buildParams(topMapping, topSchema.schema(),
+                        withTimeRangeAnchors(base, kept));
+                pending.put(key, new PendingDirectExec(topName, top.scriptId(), topMapping, topSchema.schema(),
+                        preParams, List.of(TimeRangeResolver.RESERVED_KEY + "@" + ambiguous),
+                        System.currentTimeMillis(), trAnchors));
+                log.info("DirectSkillExecutor: skill {} 时间锚点歧义 {} → 反问 (pending {})",
+                        topName, ambiguous, key);
+                return List.of(new DirectExecutionPlan(base, topName, top.scriptId(), preParams,
+                        List.of(labelFor(TimeRangeResolver.RESERVED_KEY)),
+                        TimeRangeResolver.ambiguityAskPrompt(ambiguous), displayTitleOf(top)));
+            }
+        }
+        if (personScan.ambiguousName() != null) {
+            if (conversationId == null) {
+                log.info("DirectSkillExecutor: 人名 {} 重名但无会话键, 剥离反问降级", personScan.ambiguousName());
+            } else {
+                String key = sessionKey(userId, conversationId);
+                SchemaInfo topSchema = schemaFor(top.scriptId());
+                Map<String, Object> preParams = buildParams(topMapping, topSchema.schema(), base);
+                pending.put(key, new PendingDirectExec(topName, top.scriptId(), topMapping, topSchema.schema(),
+                        preParams, List.of(PERSON_MARKER_PREFIX + personScan.ambiguousName()),
+                        System.currentTimeMillis(), null));
+                log.info("DirectSkillExecutor: skill {} 人名 {} 重名 {} 选 → 反问 (pending {})",
+                        topName, personScan.ambiguousName(), personScan.candidates().size(), key);
+                return List.of(new DirectExecutionPlan(base, topName, top.scriptId(), preParams,
+                        List.of(labelFor("perNo")),
+                        personAskMessage(personScan.ambiguousName(), personScan.candidates()),
+                        displayTitleOf(top)));
+            }
+        }
+
+        // ── per-skill 循环 (§4.3): 反填/buildParams/下钻/缺参判定全部按各 skill schema 门控 ──
+        List<MultiPlan> execs = new ArrayList<>();
+        List<MultiPlan> asks = new ArrayList<>();
+        boolean pendingAssigned = false;
+        LastDirectExec last = conversationId == null ? null : lastExec(userId, conversationId);
+        for (SkillCandidateSelection.LevelTrackHit hit : hits) {
+            String name = hit.skillName();
+            SkillRoutingMetadata meta = active.stream()
+                    .filter(m -> m.skillName().equals(name))
+                    .findFirst()
+                    .orElse(null);
+            if (meta == null || meta.scriptId() == null) {
+                log.info("DirectSkillExecutor: multi-exec skip {} (no script_id)", name);
+                continue;
+            }
+            if (!canUse(name, userId)) {
+                log.info("DirectSkillExecutor: multi-exec skip {} (permission)", name);
+                continue;
+            }
+            Map<String, String> mapping = parseParamMapping(meta.paramMapping());
+            if (mapping.isEmpty()) {
+                log.info("DirectSkillExecutor: multi-exec skip {} (param_mapping 空/非法)", name);
+                continue;
+            }
+            SchemaInfo schemaInfo = schemaFor(meta.scriptId());
+            List<ParamSpec> schema = schemaInfo.schema();
+            List<String> required = schemaInfo.required();
+            DimensionExtraction extraction = withMatch(base, name, hit.matchedTerms());
+            // 组→部门反填 (2026/10/27 拍板): 按该 skill 部门参数 requiredness 门控, 必须循环内
+            extraction = backfillDeptFromLedger(extraction, mapping, schema, required);
+            Map<String, Object> params = buildParams(mapping, schema, extraction);
+            // 快照兜底补缺 (followup 方案 §3.5): last.skillName().equals(本 skill) 比较逻辑不变 (§4.6)
+            if (last != null && last.skillName().equals(name)) {
+                Set<String> inheritKeys = new LinkedHashSet<>();
+                for (String req : required) {
+                    if (!params.containsKey(req)
+                            && !FINE_GRAINED_DIM_KEYS.contains(mapping.get(req))) {
+                        inheritKeys.add(req);
+                    }
+                }
+                if (!inheritKeys.isEmpty()) {
+                    params = mergeSnapshotParams(last.params(), params, Set.of(), inheritKeys);
+                    log.info("DirectSkillExecutor: skill {} 必填参数 {} 本轮未提及, 快照兜底继承上轮值",
+                            name, inheritKeys);
+                }
+            }
+            // 下钻粒度冲突消解 + 分布默认下钻 (2026/11/09 方案): per-skill mapping/schema 独立
+            params = stripGranularityConflicts(params, mapping, extraction);
+            params = applyDistributionDrillDown(params, mapping, schema, extraction, question);
+            // 缺必填判定 per-skill (§4.4 拍板方案B): 齐参执行, 缺参不执行、混排末尾反问;
+            // 语义未知 (不在 mapping 内) 或无会话键 → 该候选出局 (单 plan 语义是回退 LLM, 多执行轮让位其余候选)
+            List<String> missingDims = new ArrayList<>();
+            boolean unknownMissing = false;
+            for (String req : required) {
+                if (params.containsKey(req)) {
+                    continue;
+                }
+                String dimKey = mapping.get(req);
+                if (dimKey == null || conversationId == null) {
+                    unknownMissing = true;
+                    break;
+                }
+                if (!missingDims.contains(dimKey)) {
+                    missingDims.add(dimKey);
+                }
+            }
+            if (unknownMissing) {
+                log.info("DirectSkillExecutor: multi-exec skip {} (必填参数无维度语义或无会话键)", name);
+                continue;
+            }
+            if (!missingDims.isEmpty()) {
+                asks.add(new MultiPlan(new DirectExecutionPlan(extraction, name, meta.scriptId(), params,
+                        List.of(labelFor(missingDims.get(0))), null, displayTitleOf(meta)),
+                        hit.firstMentionPos()));
+                // pending 单槽: 挂提及序第一个缺参 skill, 补参轮按旧单 plan 语义执行 (拍板①)
+                if (!pendingAssigned) {
+                    String key = sessionKey(userId, conversationId);
+                    pending.put(key, pendingOf(name, meta.scriptId(), mapping, schema, params, missingDims));
+                    pendingAssigned = true;
+                    log.info("DirectSkillExecutor: multi-exec 缺参 skill {} 挂 pending {} (缺 {})",
+                            name, key, missingDims);
+                }
+                continue;
+            }
+            log.info("DirectSkillExecutor: multi-exec plan hit skill={} scriptId={} params={} matched={}",
+                    name, meta.scriptId(), params, hit.matchedTerms());
+            execs.add(new MultiPlan(new DirectExecutionPlan(extraction, name, meta.scriptId(), params,
+                    List.of(), null, displayTitleOf(meta)), hit.firstMentionPos()));
+        }
+        if (execs.isEmpty() && asks.isEmpty()) {
+            return null; // 防御: top-1 已预检, 理论不可达; 回退旧单 plan 链路
+        }
+        // §4.2 问题提及序 (保底注入 MAX_VALUE 排最后, 稳定排序保持比较器兜底序); ask 段统一在末尾 (§4.4)
+        execs.sort(java.util.Comparator.comparingInt(MultiPlan::mentionPos));
+        asks.sort(java.util.Comparator.comparingInt(MultiPlan::mentionPos));
+        List<DirectExecutionPlan> ordered = new ArrayList<>();
+        for (MultiPlan p : execs) {
+            ordered.add(p.plan());
+        }
+        for (MultiPlan p : asks) {
+            ordered.add(p.plan());
+        }
+        // 拍板⑤: 快照记最后一个执行的 skill (plan 期记 skill/params, recordResult 回填 stdout)
+        if (!execs.isEmpty()) {
+            DirectExecutionPlan lastPlan = execs.get(execs.size() - 1).plan();
+            recordLastExec(question, userId, conversationId, lastPlan.skillName(),
+                    lastPlan.scriptId(), lastPlan.params());
+        }
+        log.info("DirectSkillExecutor: planAll multi-exec skills={} asks={}",
+                execs.stream().map(p -> p.plan().skillName()).toList(),
+                asks.stream().map(p -> p.plan().skillName()).toList());
+        return ordered;
+    }
+
+    /**
+     * 旧单 plan 链路 (多执行门控未过或开关关闭时的唯一路径, 行为与多执行方案立项前一致)。
+     */
+    private DirectExecutionPlan planSingle(SkillCandidateSelection selection,
+                                           List<SkillRoutingMetadata> active,
+                                           String question, String userId,
+                                           DimensionState previousState, String conversationId,
+                                           String topName) {
         SkillRoutingMetadata top = active.stream()
                 .filter(m -> m.skillName().equals(topName))
                 .findFirst()

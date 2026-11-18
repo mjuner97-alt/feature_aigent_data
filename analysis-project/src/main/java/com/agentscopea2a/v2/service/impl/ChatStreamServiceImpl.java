@@ -492,29 +492,41 @@ public class ChatStreamServiceImpl implements ChatStreamService {
 
         // ── Skill 直接执行短路（docs/history/skill-direct-exec-plan.md §6，/ai/chat 同款）──
         // 命中配置了 script_id 的 top-1 skill 时由 Java 直接调 script_exec 脚本;
-        // plan() 为 null (未命中/未配置/缺参/权限) 则照常走 LLM 链路。
+        // planAll 为空 (未命中/未配置/缺参/权限) 则照常走 LLM 链路。
         if (directSkillExecutor != null) {
             DimensionState previousState = ctx.get("dimensionState", DimensionState.class);
-            DirectSkillExecutor.DirectExecutionPlan plan =
-                    directSkillExecutor.plan(text, userId, previousState, conversationId);
-            if (plan != null) {
+            java.util.List<DirectSkillExecutor.DirectExecutionPlan> plans =
+                    directSkillExecutor.planAll(text, userId, previousState, conversationId);
+            if (!plans.isEmpty()) {
                 // 正式写维度状态（继承/别名/clarifiedPeer 回填），与 LLM 路径共用;
                 // 只有决定短路后才写，回退路径的解析仍由 DimensionStateMiddleware 独立执行
                 dimensionStateManager.processQuestionInContext(ctx, text);
-                if (plan.needsAsk()) {
-                    // 缺参反问轮 (docs/202610/Skill直接执行缺参反问方案.md): 短路下发反问文本,
-                    // 补参 pending 在 DirectSkillExecutor 内; 下一轮回答由 plan() 消费后执行。
-                    log.info("Direct skill execution missing-params ask (/ai/chat): sessionId={} skill={} missing={}",
-                            conversationId, plan.skillName(), plan.missingAsk());
-                    strategy.sendText(streamCtx, TextPayload.chunk(
-                            DirectSkillExecutor.askPrompt(plan), true));
-                    emitter.complete();
-                    cleanup.run();
+                if (plans.size() == 1) {
+                    DirectSkillExecutor.DirectExecutionPlan plan = plans.get(0);
+                    if (plan.needsAsk()) {
+                        // 缺参反问轮 (docs/202610/Skill直接执行缺参反问方案.md): 短路下发反问文本,
+                        // 补参 pending 在 DirectSkillExecutor 内; 下一轮回答由 plan() 消费后执行。
+                        log.info("Direct skill execution missing-params ask (/ai/chat): sessionId={} skill={} missing={}",
+                                conversationId, plan.skillName(), plan.missingAsk());
+                        strategy.sendText(streamCtx, TextPayload.chunk(
+                                DirectSkillExecutor.askPrompt(plan), true));
+                        emitter.complete();
+                        cleanup.run();
+                        return emitter;
+                    }
+                    log.info("Direct skill execution short-circuit (/ai/chat): sessionId={} skill={} scriptId={}",
+                            conversationId, plan.skillName(), plan.scriptId());
+                    Mono.fromRunnable(() -> runDirectExecution(streamCtx, strategy, plan, cleanup))
+                            .subscribeOn(Schedulers.boundedElastic())
+                            .subscribe();
                     return emitter;
                 }
-                log.info("Direct skill execution short-circuit (/ai/chat): sessionId={} skill={} scriptId={}",
-                        conversationId, plan.skillName(), plan.scriptId());
-                Mono.fromRunnable(() -> runDirectExecution(streamCtx, strategy, plan, cleanup))
+                // 多 skill 命中混合轮 (多skill命中全部直接执行方案.md §4.5): /ai/chat 与 /v2/ai/chat
+                // 双路径一致 (§5⑤); ask 段末尾反问, 混排契约待前端确认, 开关默认关。
+                log.info("Direct skill multi-execution short-circuit (/ai/chat): sessionId={} plans={}",
+                        conversationId,
+                        plans.stream().map(DirectSkillExecutor.DirectExecutionPlan::skillName).toList());
+                Mono.fromRunnable(() -> runDirectExecutionMulti(streamCtx, strategy, plans, cleanup))
                         .subscribeOn(Schedulers.boundedElastic())
                         .subscribe();
                 return emitter;
@@ -690,6 +702,135 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             }
             cleanup.run();
         }
+    }
+
+    /**
+     * 多 skill 命中混合执行轮 (多skill命中全部直接执行方案.md §4.5, 拍板②③⑤, /ai/chat 同款):
+     * 按提及序串行执行 exec plan; 单脚本失败发报错文案继续下一个 (不中断、不回退 LLM);
+     * 反问文本并入完整答案 (拍板①方案B); 每段 stdout 前插入空行+【short_summary】标题行、
+     * HTML 文档逐个包 ```html 围栏 (统一输出方案.md 方案A); recordResult skill-aware 回填。
+     * 终态事件整轮只发一次: 循环内逐段 sendText(…, true) 的 finish=true 会令前端提前
+     * break 丢弃后续进度; 事件时序 N×(think 状态行) → think done → 1×text(全文)。
+     * 与 v2 的差异：无 ActivityFeed 事件，进度用 think 状态行；失败进 /ai/chat 失败监控。
+     */
+    private void runDirectExecutionMulti(StreamContext ctx, ResponseStrategy strategy,
+                                         java.util.List<DirectSkillExecutor.DirectExecutionPlan> plans,
+                                         Runnable cleanup) {
+        boolean anySuccess = false;
+        boolean anyFailure = false;
+        try {
+            ctx.hasSentExecuting.set(true);
+            for (DirectSkillExecutor.DirectExecutionPlan plan : plans) {
+                if (plan.needsAsk()) {
+                    continue;
+                }
+                try {
+                    sendVisibleThinkStatus(ctx, strategy,
+                            "已匹配技能「" + plan.skillName() + "」，直接执行脚本 " + plan.scriptId() + "…\n");
+                    ScriptExecTool.ScriptExecution execution =
+                            scriptExecTool.executeStructured(plan.scriptId(), plan.params());
+                    String stdout = ScriptExecOutputExtractor.extractStdout(execution.fullText());
+                    sendVisibleThinkStatus(ctx, strategy, execution.success()
+                            ? "工具执行完成：script_exec\n" : "工具执行失败：script_exec\n");
+                    if (execution.success()) {
+                        anySuccess = true;
+                        if (directSkillExecutor != null) {
+                            directSkillExecutor.recordResult(ctx.userId, ctx.conversationId,
+                                    plan.skillName(), stdout);
+                        }
+                        ctx.answerContent.append(multiSegmentTitle(plan, ctx.answerContent.length() > 0)).append(fenceStdout(stdout));
+                    } else {
+                        // 拍板②: 单脚本失败不中断, 报错文案继续下一个
+                        anyFailure = true;
+                        String message = "脚本 " + plan.scriptId() + " 执行失败 (exit=" + execution.exitCode()
+                                + ")，请核对脚本配置或联系管理员处理。";
+                        recordMonitorFailure(ctx, new IllegalStateException(message));
+                        ctx.answerContent.append(multiSegmentTitle(plan, ctx.answerContent.length() > 0)).append(message).append('\n');
+                    }
+                } catch (Exception e) {
+                    anyFailure = true;
+                    log.error("Direct skill multi-execution failed: sessionId={} scriptId={}",
+                            ctx.conversationId, plan.scriptId(), e);
+                    recordMonitorFailure(ctx, e);
+                    String message = "脚本 " + plan.scriptId() + " 执行失败，请核对脚本配置或联系管理员处理。\n";
+                    ctx.answerContent.append(multiSegmentTitle(plan, ctx.answerContent.length() > 0)).append(message);
+                }
+            }
+            if (ctx.hasSentExecuting.get()) {
+                strategy.sendThink(ctx, ThinkPayload.done(AGENT_RETURN_NAME));
+            }
+            // 混排轮末尾反问 (拍板①方案B): 并入完整答案, 随终态一次下发
+            for (DirectSkillExecutor.DirectExecutionPlan plan : plans) {
+                if (plan.needsAsk()) {
+                    ctx.answerContent.append("\n\n").append(DirectSkillExecutor.askPrompt(plan));
+                }
+            }
+            // 整轮唯一一次终态事件
+            strategy.sendText(ctx, TextPayload.chunk(ctx.answerContent.toString().stripLeading(), true));
+        } finally {
+            try {
+                if (ctx.traceCtx != null) {
+                    if (anyFailure) {
+                        ctx.traceCtx.markError("direct script_exec multi-exec partial failure");
+                    } else {
+                        ctx.traceCtx.markSuccess();
+                    }
+                }
+            } catch (Exception te) {
+                log.warn("Trace mark failed for direct multi-execution, sessionId={}: {}",
+                        ctx.conversationId, te.getMessage());
+            }
+            try {
+                ctx.emitter.complete();
+            } catch (Exception e) {
+                log.warn("emitter.complete() 失败: sessionId={}", ctx.conversationId, e);
+            }
+            cleanup.run();
+        }
+    }
+
+    /** 混排轮 stdout 段分隔 (拍板③): 后续段前加 <br><br> 与上一块分隔 (内网前端换行/###不生效, <br>生效), 首段不加。 */
+    private static String multiSegmentTitle(DirectSkillExecutor.DirectExecutionPlan plan, boolean needSeparator) {
+        String title = plan.displayTitle() == null || plan.displayTitle().isBlank()
+                ? plan.skillName() : plan.displayTitle();
+        return (needSeparator ? "<br><br>" : "") + title + "\n";
+    }
+
+    /** stdout 中的完整 HTML 文档 (对齐 HtmlReportRenderer COMPLETE_HTML_START / 下载链接文档形态)。 */
+    private static final java.util.regex.Pattern COMPLETE_HTML_DOC = java.util.regex.Pattern.compile(
+            "<!doctype\\s+html\\b[^>]*>[\\s\\S]*?</html\\s*>|<html\\b[^>]*>[\\s\\S]*?</html\\s*>",
+            java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    /**
+     * 方案A 段围栏: stdout 里的每个完整 HTML 文档各自包 ```html 围栏 (pm→独立沙箱 iframe,
+     * Vue/内网→inline v-html); 文档之间的纯文本 (下载块 📥 前缀/失败文案/plain stdout)
+     * 保持 markdown 原样。已含 ``` 的输出原样返回, 避免嵌套围栏。
+     */
+    private static String fenceStdout(String stdout) {
+        if (stdout == null || stdout.isBlank() || stdout.contains("```")) {
+            return stdout;
+        }
+        java.util.regex.Matcher m = COMPLETE_HTML_DOC.matcher(stdout);
+        if (!m.find()) {
+            return stdout;
+        }
+        StringBuilder sb = new StringBuilder();
+        int last = 0;
+        m.reset();
+        while (m.find()) {
+            String between = stdout.substring(last, m.start()).strip();
+            if (!between.isEmpty()) {
+                sb.append(between).append('\n');
+            }
+//            sb.append("\n```html\n").append(m.group()).append("\n```\n");
+            sb.append(m.group()).append("\n");
+            last = m.end();
+        }
+        String tail = stdout.substring(last).strip();
+        if (!tail.isEmpty()) {
+            sb.append(tail);
+        }
+        return sb.toString();
     }
 
     /**

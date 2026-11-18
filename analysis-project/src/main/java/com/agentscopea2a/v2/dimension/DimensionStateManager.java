@@ -298,54 +298,66 @@ public class DimensionStateManager {
     private static final Pattern REF_SUB_REQUIREMENT = Pattern.compile("这个需求子条目|那个需求子条目");
 
     // 年份前缀可选：无年份时由调用方补当前年（"4月份版本" → "2026年4月份版本"）
+    // 2位年缩写（"27年1季度"→2027）归一为 20YY：词表锚点路径 collectBuiltinVocabHits 已是此口径，
+    // 2027 年将近时 "27年" 写法不再被吞成 "1季度→补当前年"（2026-11-17 bug）
+    private static final String YEAR_PREFIX = "(?:(\\d{4}|\\d{2})年)?";
     // 口语值方案 §3.2：后缀放宽到 月份?版本?（吃 "10月版本"/"10月份版"/"2026年10月份"），
     // 与 EXPLICIT_MONTH 归一产物相同（Set 去重，指纹不变）；(?!延后) 防把"10月延后"误吃成普通月份版本
     private static final Pattern EXPLICIT_VERSION =
-            Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})月份?(?!延后)版本?");
+            Pattern.compile(YEAR_PREFIX + "(\\d{1,2})月份?(?!延后)版本?");
     // 共享后缀列举 ("10、11月版" / "10、11月" / "2026年10和11月份版本"): 末段带月份后缀,
     // 前段裸数字列举, EXPLICIT_VERSION/EXPLICIT_MONTH 只吃得到末段 → 须在本正则先行展开,
     // 每个数字归一 "{y}年{n}月份版本"; 版后缀可选 (与 TIME_MASK_SPAN 口径一致, 无版也算),
     // (?!延后) 防把 "10、11月延后" 误吃成普通月份版本
     private static final Pattern SHARED_SUFFIX_VERSION =
-            Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})((?:[、，,和与]\\s*\\d{1,2})+)"
+            Pattern.compile(YEAR_PREFIX + "(\\d{1,2})((?:[、，,和与]\\s*\\d{1,2})+)"
                     + "\\s*(?:[一二两三四五六七八九十\\d]+个)?\\s*月份?(?!延后)(?:版本?)?");
-    private static final Pattern EXPLICIT_QUARTER = Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})季度");
+    private static final Pattern EXPLICIT_QUARTER = Pattern.compile(YEAR_PREFIX + "(\\d{1,2})季度");
     // 共享后缀季度列举 ("3、4季度" / "2025年3和4季度"): 与 SHARED_SUFFIX_VERSION 同构,
     // 须在 EXPLICIT_QUARTER 之前展开, 否则前段裸数字漏收;
     // 列举与季度间允许 "N个" 量词 (盲区修复方案 §1: "1、2、3三个季度")
     private static final Pattern SHARED_SUFFIX_QUARTER =
-            Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})((?:[、，,和与]\\s*\\d{1,2})+)"
+            Pattern.compile(YEAR_PREFIX + "(\\d{1,2})((?:[、，,和与]\\s*\\d{1,2})+)"
                     + "\\s*(?:[一二两三四五六七八九十\\d]+个)?\\s*季度");
     // 季度/月份闭区间展开（盲区修复方案 §2）："1-3季度"/"1~3季度"/"1到3季度" → 逐季列表；
     // "10-12月份版本" → 逐月版本。两端值域校验（季度 1..4 / 月份 1..12），
     // start>end 或越界整段弃收；命中 span 一律屏蔽，防单数正则重复收尾季。
     // 月份区间须跑在日期屏蔽之后（"10-12月26日" 型日期不误吃）
     private static final Pattern RANGE_QUARTER = Pattern.compile(
-            "(?:(\\d{4})年)?(\\d{1,2})\\s*[-~～—至到]\\s*(\\d{1,2})\\s*(?:[一二两三四五六七八九十\\d]+个)?季度");
+            YEAR_PREFIX + "(\\d{1,2})\\s*[-~～—至到]\\s*(\\d{1,2})\\s*(?:[一二两三四五六七八九十\\d]+个)?季度");
     private static final Pattern RANGE_VERSION = Pattern.compile(
-            "(?:(\\d{4})年)?(\\d{1,2})\\s*[-~～—至到]\\s*(\\d{1,2})\\s*月份?(?!延后)(?:版本?)?");
+            YEAR_PREFIX + "(\\d{1,2})\\s*[-~～—至到]\\s*(\\d{1,2})\\s*月份?(?!延后)(?:版本?)?");
     // "9月份"（无"版本"后缀）也算版本计划；(?!版本|延后) 防止与 EXPLICIT_VERSION/DELAYED 重复计数值，
     // "9月份版本" 会由 MONTH 退回匹配 "9月" 归一出同一值，Set 去重后指纹一致；
     // "10月延后" 是延后版标准值的前缀，不得按普通月份版本归一
-    private static final Pattern EXPLICIT_MONTH = Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})月份?(?!版本|延后)");
+    private static final Pattern EXPLICIT_MONTH = Pattern.compile(YEAR_PREFIX + "(\\d{1,2})月份?(?!版本|延后)");
     // 口语值方案 §3.2：紧凑 YYYYMM（"202610版本"/"202610"）；词边界防误伤数字串/应用编码（F-202610）
     private static final Pattern COMPACT_VERSION =
             Pattern.compile("(?<![0-9A-Za-z-])(20\\d{2})(0[1-9]|1[0-2])(?![0-9])");
     // 口语值方案 §3.2：中文数字月份（"十月版"/"十一月份"/"2026年三月"）
     private static final Pattern CN_MONTH_VERSION =
-            Pattern.compile("(?:(\\d{4})年)?([一二三四五六七八九十]{1,3})月份?(?:版本?)?");
+            Pattern.compile(YEAR_PREFIX + "([一二三四五六七八九十]{1,3})月份?(?:版本?)?");
     // 口语值方案 §3.2：延后版标准值（"10月延后"/"2026年10月延后版"），与月份版本同级的版本计划
     private static final Pattern DELAYED_VERSION =
-            Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})月(份)?延后(版本?)?");
+            Pattern.compile(YEAR_PREFIX + "(\\d{1,2})月(份)?延后(版本?)?");
     // 裸日期 "10月26日"（M月与D日紧接）：截止日/事件日，不是版本——EXPLICIT_VERSION/
     // EXPLICIT_MONTH 会从中吃出 "10月"（2026-10-27 E2E："杭州三部11月版、12月版10月26日
     // 到期" 多出 2026年10月份版本）。仅作屏蔽 span，不产出时间维度（到期日≠查询时间范围）
     private static final Pattern BARE_DATE_SPAN =
-            Pattern.compile("(?:(\\d{4})年)?(\\d{1,2})月(\\d{1,2})[日号]");
-    // 口语值方案 §3.1：近 N 个版本/近 N 个月 → LAST:{n}V 锚点（数字形态走正则不进词表；
-    // 拍板③ 按版本个数推，"近X个月"也归版本键，周/天后缀归 timeRange）
+            Pattern.compile(YEAR_PREFIX + "(\\d{1,2})月(\\d{1,2})[日号]");
+    // 口语值方案 §3.1：近 N 个版本 → LAST:{n}V 锚点（数字形态走正则不进词表）。
+    // 2026-11-17 换轨（近N月时间范围与本周口径调整方案.md）：裸"近X个月"不再归版本键，
+    // 改由 TimeRangeExtractor 产 AMBIGUOUS:MONTHS:{n} 进 timeRange（方向反问）；
+    // 连写形态仍归版本键（拍板⑷）：(?:月个?|个)? 覆盖 "月版本"(近3个月版本) /
+    // "月个版本"(近3个月个版本) / 无中缀(近3个版本) —— 旧"月版本"由被删的"个月"分支兜底，
+    // 拆分后须由中缀组接住
     private static final Pattern LAST_N_VERSIONS =
-            Pattern.compile("(?:近|最近)(\\d{1,3})个(?:月个)?版本|(?:近|最近)(\\d{1,3})个月");
+            Pattern.compile("(?:近|最近)(\\d{1,3})个(?:月个?|个)?版本");
+    // detectLevel 判定用：裸"近X个月"已归 timeRange 轨（TimeRangeExtractor.LAST_MONTHS），
+    // level 判定须同步认它，否则 timeRange 命中但 level 漏判 → 整轮维度丢失（套路C）；
+    // (?!\\s*个?版) 与提取层同口径，连写"近X个月版本"由 LAST_N_VERSIONS 归版本键
+    private static final Pattern LAST_N_MONTHS =
+            Pattern.compile("(?:近|最近)\\s*[一两二三四五六七八九十0-9]{1,3}\\s*个月(?!\\s*个?版)");
     // 一季度~四季度 alias — normalised to "{year}年{n}季度" for fingerprint stability.
     // 裸 Q1-Q4 不算季度口语值 (2026-10-22): QI卡口 指标值就叫 Q1/Q2/Q3/Q4, 撞词后由词表按卡口解析
     private static final Pattern EXPLICIT_QUARTER_ALIAS =
@@ -954,11 +966,21 @@ public class DimensionStateManager {
                 || CN_MONTH_VERSION.matcher(q).find()
                 || DELAYED_VERSION.matcher(q).find()
                 || LAST_N_VERSIONS.matcher(q).find()
+                || LAST_N_MONTHS.matcher(q).find()
                 || (vocab != null && (!vocab.versionValues().isEmpty() || !vocab.quarterValues().isEmpty()))
                 || refType == QuestionAnalysis.ReferenceType.TIME)
             return QuestionAnalysis.QuestionLevel.TIME;
         // No dimensions detected — non-dimension question (e.g. "数据服务表清单下载")
         return null;
+    }
+
+    /** 年份前缀组归一：2位缩写补 "20"（"27年"→2027）；无前缀回退 fallback（当前年）。 */
+    private static String yearOf(Matcher m, String fallback) {
+        String y = m.group(1);
+        if (y == null) {
+            return fallback;
+        }
+        return y.length() == 2 ? "20" + y : y;
     }
 
     private QuestionAnalysis.ExplicitDimensions extractExplicitDimensions(
@@ -983,7 +1005,7 @@ public class DimensionStateManager {
         List<int[]> sharedTimeSpans = new ArrayList<>();
         Matcher sharedMatcher = SHARED_SUFFIX_VERSION.matcher(q);
         while (sharedMatcher.find()) {
-            String y = sharedMatcher.group(1) != null ? sharedMatcher.group(1) : currentYear;
+            String y = yearOf(sharedMatcher, currentYear);
             versions.add(y + "年" + sharedMatcher.group(2) + "月份版本");
             for (String part : sharedMatcher.group(3).split("[、，,和与]\\s*")) {
                 if (!part.isBlank()) {
@@ -997,7 +1019,7 @@ public class DimensionStateManager {
         // span 并入共享屏蔽集，防 EXPLICIT_VERSION 从尾段重复收值
         Matcher rangeVersionMatcher = RANGE_VERSION.matcher(maskSpanUnion(q, dateSpans));
         while (rangeVersionMatcher.find()) {
-            String y = rangeVersionMatcher.group(1) != null ? rangeVersionMatcher.group(1) : currentYear;
+            String y = yearOf(rangeVersionMatcher, currentYear);
             addRangeValues(rangeVersionMatcher, y, "月份版本", 12, versions);
             sharedTimeSpans.add(new int[] {rangeVersionMatcher.start(), rangeVersionMatcher.end()});
         }
@@ -1008,14 +1030,13 @@ public class DimensionStateManager {
 
         Matcher versionMatcher = EXPLICIT_VERSION.matcher(qTime);
         while (versionMatcher.find()) {
-            String y = versionMatcher.group(1) != null ? versionMatcher.group(1) : currentYear;
+            String y = yearOf(versionMatcher, currentYear);
             versions.add(y + "年" + versionMatcher.group(2) + "月份版本");
         }
 
         Matcher sharedQuarterMatcher = SHARED_SUFFIX_QUARTER.matcher(q);
         while (sharedQuarterMatcher.find()) {
-            String y = sharedQuarterMatcher.group(1) != null
-                    ? sharedQuarterMatcher.group(1) : currentYear;
+            String y = yearOf(sharedQuarterMatcher, currentYear);
             quarters.add(y + "年" + sharedQuarterMatcher.group(2) + "季度");
             for (String part : sharedQuarterMatcher.group(3).split("[、，,和与]\\s*")) {
                 if (!part.isBlank()) {
@@ -1029,7 +1050,7 @@ public class DimensionStateManager {
         // 与共享列举并存（"1-3季度和5季度" → 区间展开 + 单数并存）
         Matcher rangeQuarterMatcher = RANGE_QUARTER.matcher(q);
         while (rangeQuarterMatcher.find()) {
-            String y = rangeQuarterMatcher.group(1) != null ? rangeQuarterMatcher.group(1) : currentYear;
+            String y = yearOf(rangeQuarterMatcher, currentYear);
             addRangeValues(rangeQuarterMatcher, y, "季度", 4, quarters);
             sharedTimeSpans.add(new int[] {rangeQuarterMatcher.start(), rangeQuarterMatcher.end()});
         }
@@ -1039,7 +1060,7 @@ public class DimensionStateManager {
 
         Matcher quarterMatcher = EXPLICIT_QUARTER.matcher(qTime);
         while (quarterMatcher.find()) {
-            String y = quarterMatcher.group(1) != null ? quarterMatcher.group(1) : currentYear;
+            String y = yearOf(quarterMatcher, currentYear);
             quarters.add(y + "年" + quarterMatcher.group(2) + "季度");
         }
 
@@ -1047,7 +1068,7 @@ public class DimensionStateManager {
         // （MONTH 已有 (?!延后) 守卫，此处顺序仅保证延后版写法优先归一）
         Matcher delayedMatcher = DELAYED_VERSION.matcher(q);
         while (delayedMatcher.find()) {
-            String y = delayedMatcher.group(1) != null ? delayedMatcher.group(1) : currentYear;
+            String y = yearOf(delayedMatcher, currentYear);
             versions.add(y + "年" + delayedMatcher.group(2) + "月延后版");
         }
 
@@ -1063,7 +1084,7 @@ public class DimensionStateManager {
         while (cnMonthMatcher.find()) {
             Integer m = cnMonthToNumber(cnMonthMatcher.group(2));
             if (m != null) {
-                String y = cnMonthMatcher.group(1) != null ? cnMonthMatcher.group(1) : currentYear;
+                String y = yearOf(cnMonthMatcher, currentYear);
                 versions.add(y + "年" + m + "月份版本");
             }
         }
@@ -1073,17 +1094,15 @@ public class DimensionStateManager {
         // 按 "无年份→补当前年" 重复收末段
         Matcher monthMatcher = EXPLICIT_MONTH.matcher(qTime);
         while (monthMatcher.find()) {
-            String y = monthMatcher.group(1) != null ? monthMatcher.group(1) : currentYear;
+            String y = yearOf(monthMatcher, currentYear);
             versions.add(y + "年" + monthMatcher.group(2) + "月份版本");
         }
 
-        // 近 N 个版本/近 N 个月 → LAST:{n}V 锚点（执行期经日历展开，口语值方案 §3.1）
+        // 近 N 个版本 → LAST:{n}V 锚点（执行期经日历展开，口语值方案 §3.1；
+        // 2026-11-17 裸"近N个月"已换轨 timeRange，不再产版本锚点）
         Matcher lastNMatcher = LAST_N_VERSIONS.matcher(q);
         while (lastNMatcher.find()) {
-            String n = lastNMatcher.group(1) != null ? lastNMatcher.group(1) : lastNMatcher.group(2);
-            if (n != null) {
-                versions.add("LAST:" + Integer.parseInt(n) + "V");
-            }
+            versions.add("LAST:" + Integer.parseInt(lastNMatcher.group(1)) + "V");
         }
 
         // Quarter aliases: "一季度"~"四季度" — normalise so user shorthand maps to the same
