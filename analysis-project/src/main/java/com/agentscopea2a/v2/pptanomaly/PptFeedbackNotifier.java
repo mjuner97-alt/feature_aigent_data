@@ -9,13 +9,6 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
-import java.io.IOException;
-import java.util.UUID;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -44,10 +37,9 @@ import org.springframework.web.util.UriComponentsBuilder;
 @ConditionalOnProperty(prefix = "spring.datasource.hikari.gauss-customer", name = "enabled", havingValue = "true")
 public class PptFeedbackNotifier {
     private static final Logger log = LoggerFactory.getLogger(PptFeedbackNotifier.class);
-    /** 例会通知独立控制：true 调用邮件网关，false 仅保存本地 HTML 供联调。 */
-    private static final boolean HTTP_ENABLED = true;
-    private static final Path LOCAL_HTML_DIRECTORY = Path.of("data/ppt-anomaly/notification-html");
-    private static final DateTimeFormatter LOCAL_FILE_TIME = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS");
+    /** 与长任务报告一样保存在 workspace 下，由业务模块指定目录。 */
+    private static final java.nio.file.Path LOCAL_HTML_DIRECTORY =
+            java.nio.file.Path.of("/workspace/ppt-anomaly/notification-html");
     private final PptAnomalyMapper persistence;
     private final NotificationSender sender;
     private final ObjectMapper json;
@@ -207,7 +199,7 @@ public class PptFeedbackNotifier {
         var payload = new NotificationPayload("HTML", body, null, null, link(first, notificationBaseUrl), null, subject,
                 null, null, first.versionId(), "SUCCESS", LocalDateTime.now(), recipients, "METRIC");
         var request = sender.prepare(payload);
-        deliver(payload, request);
+        sender.sendPrepared(payload, request, LOCAL_HTML_DIRECTORY);
         persistence.recordFeedbackMail(first.versionId(), departmentOf(first), subject, body,
                 recipientJson(recipients), "[]", "SYSTEM");
     }
@@ -224,34 +216,10 @@ public class PptFeedbackNotifier {
                 throw new IllegalStateException("材料未完成识别");
             }
             // 结果通知独立记录，不能充当待反馈通知的送达凭据。
-            deliver(payload, sender.prepare(payload));
+            sender.sendPrepared(payload, sender.prepare(payload), LOCAL_HTML_DIRECTORY);
             persistence.recordFeedbackMail(versionId, department, subject, body,
                     recipientJson(to), recipientJson(cc), operator);
         });
-    }
-
-    /** 与长任务一样，由业务通知服务决定是否调用统一 HTTP 发送器。 */
-    private void deliver(NotificationPayload payload, Map<String, Object> request) {
-        if (HTTP_ENABLED) {
-            sender.sendPrepared(payload, request);
-            return;
-        }
-        String title = String.valueOf(request.getOrDefault("title", "例会材料通知"));
-        String content = String.valueOf(request.getOrDefault("content", ""));
-        String safeTitle = title.replaceAll("[^\\p{L}\\p{N}._-]", "_");
-        if (safeTitle.isBlank()) safeTitle = "notification";
-        Path directory = LOCAL_HTML_DIRECTORY.toAbsolutePath().normalize();
-        Path file = directory.resolve(safeTitle + "-" + LocalDateTime.now().format(LOCAL_FILE_TIME)
-                + "-" + UUID.randomUUID() + ".html");
-        String html = "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><title>"
-                + HtmlUtils.htmlEscape(title) + "</title></head><body>" + content + "</body></html>";
-        try {
-            Files.createDirectories(directory);
-            Files.writeString(file, html, StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW);
-            log.info("例会通知模拟发送，本地 HTML：{}", file);
-        } catch (IOException e) {
-            throw new IllegalStateException("保存例会通知预览失败", e);
-        }
     }
 
     /** 生成带部门名称的通知标题，供邮件和本地 HTML 文件命名。 */

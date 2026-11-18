@@ -446,6 +446,18 @@ public class PptAnomalyController {
         return service.previewImport(batchId, file);
     }
 
+    /** 导入确认时按需生成高清原页，不保存版本或触发通知。 */
+    @PostMapping(value = "/imports/preview-image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE,
+            produces = MediaType.IMAGE_PNG_VALUE)
+    public ResponseEntity<byte[]> previewImportImage(@RequestPart(value = "file", required = false) MultipartFile file,
+            @RequestParam(value = "versionId", required = false) Long versionId,
+            @RequestParam("pageNo") int pageNo,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
+        requireProductDepartment(userId, people);
+        return ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore())
+                .body(service.previewImportImage(file, versionId, pageNo, userId));
+    }
+
     /** 保存上传原件、确认页面分派并完成识别。 */
     @PostMapping(value = "/imports", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @Transactional(GaussConfig.TX_NAME)

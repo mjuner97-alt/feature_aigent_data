@@ -4,7 +4,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { pptAnomalyPermissions, type PptPerson } from '../../api/pptAnomaly';
+import { pptAnomalyPermissions, searchPptPeople, type PptPerson } from '../../api/pptAnomaly';
 import PptReportNotificationConfig from '../../components/ppt/PptReportNotificationConfig.vue';
 
 /** 关键词或解析范围配置的编辑数据。 */
@@ -85,7 +85,7 @@ async function searchPeople(keyword: string) {
   peopleLoading.value = !!term;
   if (!term) return;
   try {
-    const result = await (await request('/people/search?' + new URLSearchParams({ keyword: term }))).json();
+    const result = await searchPptPeople(term);
     if (id === peopleRequestId && editorOpen.value) people.value = result;
   } catch (error) {
     if (id === peopleRequestId && editorOpen.value) ElMessage.error(String(error));

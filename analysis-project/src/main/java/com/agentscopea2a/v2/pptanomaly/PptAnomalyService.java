@@ -864,12 +864,17 @@ public class PptAnomalyService {
             persistence.rememberScope(title, entry.getValue().mode());
         }
         for (var entry : handlerUpdates.entrySet()) {
+            // 与配置页的经办人维护共用标题锁；只补充默认名单，不删除已有配置。
+            persistence.lockConfiguredTitle(entry.getKey());
             for (String id : entry.getValue()) {
                 var person = ledgerPerson(id);
                 if (person == null || person.depts().isEmpty()) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择有所属部门的标题经办人：" + entry.getKey());
                 }
-                // 导入选择仅用于本版本；默认经办人由配置接口独立维护。
+                // 即使本次没有命中该部门，也记住上传时确认的标题经办人。
+                for (String department : person.depts()) {
+                    persistence.insertTitleHandler(entry.getKey(), department, person.userId());
+                }
             }
         }
         if (configuredImport) {
@@ -1032,6 +1037,32 @@ public class PptAnomalyService {
         var output = new java.io.ByteArrayOutputStream();
         ImageIO.write(renderSlide(slide, size, 600, 400), "jpeg", output);
         return "data:image/jpeg;base64," + java.util.Base64.getEncoder().encodeToString(output.toByteArray());
+    }
+
+    /** 用户放大时才渲染高清 PNG，避免全部高清页拖慢导入。 */
+    public byte[] previewImportImage(MultipartFile file, Long versionId, int pageNo, String userId) {
+        if ((file == null) == (versionId == null) || pageNo < 1) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择一个 PPT 来源和有效页码");
+        }
+        if (file != null) pptFileName(file);
+        else requireUploader(versionId, userId);
+        if (!previewRenderer.tryAcquire()) {
+            throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "正在生成预览，请稍后重试");
+        }
+        try (InputStream input = file != null ? file.getInputStream() : originalFile(versionId).resource().getInputStream();
+                XMLSlideShow show = new XMLSlideShow(input)) {
+            if (pageNo > show.getSlides().size()) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "PPT 页面不存在");
+            }
+            var image = renderSlide(show.getSlides().get(pageNo - 1), show.getPageSize(), 2560, 1920);
+            var output = new java.io.ByteArrayOutputStream();
+            if (!ImageIO.write(image, "png", output)) throw new IOException("PNG encoder unavailable");
+            return output.toByteArray();
+        } catch (IOException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "无法生成高清预览，请检查 PPT 文件", e);
+        } finally {
+            previewRenderer.release();
+        }
     }
 
     /** 读取指定版本和页码的页面元数据。 */

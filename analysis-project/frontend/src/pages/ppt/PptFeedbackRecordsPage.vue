@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** 例会反馈记录页，按批次、版本、部门和接收人展示反馈进度。 */
+/** 例会反馈记录页，同一材料版本的每个部门只展示一条反馈记录。 */
 
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
@@ -8,8 +8,8 @@ import { getLoggedInUserId } from '../../utils/auth';
 import PptVersionAssignmentsDialog from '../../components/ppt/PptVersionAssignmentsDialog.vue';
 
 /** 反馈列表中的一条原始事项记录。 */
-type Page = PptFeedbackRecord['page'] & { configurableTitle: string | null };
-/** 按经办人聚合的反馈任务及通知进度。 */
+type Page = PptFeedbackRecord['page'] & { configurableTitle: string | null; recipientNames: string[]; recipientIds: string[] };
+/** 按版本和责任部门聚合，人员只作为通知对象，不拆分反馈任务。 */
 type Recipient = {
   key: string; batchId: number; batchName: string; versionId: number; versionNo: number; fileName: string;
   departments: string[]; pages: Page[];
@@ -45,23 +45,44 @@ const departments = computed(() => [...new Set(records.value.flatMap(record => r
 
 const recipients = computed(() => {
   const groups = new Map<string, Recipient>();
-  for (const { page: recordPage, departments, configurableTitle } of records.value) {
-    const page = { ...recordPage, configurableTitle };
-    const key = JSON.stringify([page.versionId, page.recipient]);
-    const group = groups.get(key);
-    if (group) {
-      group.pages.push(page);
-      group.departments = [...new Set([...group.departments, ...departments])];
-    } else groups.set(key, {
-      key, batchId: page.batchId, batchName: page.batchName, versionId: page.versionId, versionNo: page.versionNo,
-      fileName: page.fileName, departments, pages: page.findingId === null ? [] : [page],
-    });
+  for (const { page: recordPage, departments, configurableTitle, recipientName } of records.value) {
+    const page = { ...recordPage, configurableTitle,
+      recipientIds: recordPage.recipient ? [recordPage.recipient] : [],
+      recipientNames: recordPage.recipient ? [recipientName && recipientName !== recordPage.recipient
+        ? `${recipientName}（${recordPage.recipient}）` : recordPage.recipient] : [] };
+    const departmentNames = [...new Set(departments.map(name => name.trim()).filter(Boolean))];
+    for (const departmentName of departmentNames.length ? departmentNames : ['']) {
+      const key = JSON.stringify([page.versionId, departmentName]);
+      const group = groups.get(key);
+      if (group) group.pages.push(page);
+      else groups.set(key, {
+        key, batchId: page.batchId, batchName: page.batchName, versionId: page.versionId, versionNo: page.versionNo,
+        fileName: page.fileName, departments: departmentName ? [departmentName] : [],
+        pages: page.findingId === null ? [] : [page],
+      });
+    }
   }
   return [...groups.values()].map(group => {
-    const assigned = new Map(group.pages.filter(page => page.status).map(page => [page.findingId, page.status]));
+    const pages = new Map<number, Page>();
+    for (const page of group.pages) {
+      if (page.findingId === null) continue;
+      const previous = pages.get(page.findingId);
+      if (!previous) pages.set(page.findingId, { ...page });
+      else pages.set(page.findingId, {
+        ...previous, status: page.status ?? previous.status,
+        recipientNames: [...new Set([...previous.recipientNames, ...page.recipientNames])],
+        recipientIds: [...new Set([...previous.recipientIds, ...page.recipientIds])],
+        notifiedAt: latest([previous.notifiedAt, page.notifiedAt]),
+        feedbackAt: latest([previous.feedbackAt, page.feedbackAt]),
+        noticeKind: previous.noticeKind ?? page.noticeKind,
+      });
+    }
+    const assigned = new Map([...pages.values()].filter(page => page.status).map(page => [page.findingId, page.status]));
     const completed = [...assigned.values()].filter(status => status === 'CONFIRMED' || status === 'ADJUSTED').length;
     return {
-      ...group, total: assigned.size, completed, hasNotice: group.pages.some(page => page.noticeKind),
+      ...group, pages: [...pages.values()], total: assigned.size, completed,
+      recipientNames: [...new Set(group.pages.flatMap(page => page.recipientNames))],
+      hasNotice: group.pages.some(page => page.noticeKind),
       unassigned: group.pages.some(page => page.recipient === null),
       unassignedTitles: [...new Set(group.pages
         .filter(page => page.recipient === null && page.configurableTitle)
@@ -96,21 +117,21 @@ function date(value: string | null) {
   return value ? value.replace('T', ' ').slice(0, 16) : '—';
 }
 
-/** 组合通知类型和通知时间的展示标签。 */
-function notice(kind: string | null, time: string | null) {
-  if (!kind) return '暂无通知记录';
-  const label = kind === 'RESOLVED' ? '版本变更通知' : '反馈通知';
-  return time ? `${date(time)} · ${label}` : `${label} · 时间未记录`;
+/** 通知时间统一展示到秒，不附加通知类型。 */
+function notificationTime(value: string | null) {
+  return value ? value.replace('T', ' ').slice(0, 19) : '—';
 }
 
-/** 通过路由状态打开指定经办人的反馈记录详情。 */
-function openDetail(row: Recipient, mode: 'view' | 'edit') {
+/** 统一打开反馈详情，实际编辑权限由详情接口决定，正文通过内部编辑按钮修改。 */
+function openDetail(row: Recipient) {
   const pages = row.pages.filter(page => page.status && page.findingId !== null);
-  if (!pages.length || (mode === 'edit' && pages[0].recipient !== userId)) return;
-  const page = (mode === 'edit' ? pages.find(item => item.status === 'PENDING_FEEDBACK') : undefined) ?? pages[0];
+  const ownPages = pages.filter(page => userId && page.recipientIds.includes(userId));
+  if (!pages.length) return;
+  const page = ownPages.find(item => item.status === 'PENDING_FEEDBACK') ?? ownPages[0] ?? pages[0];
   void router.push({
     path: '/ppt-anomaly/overview',
-    state: { pptFeedbackContext: { version: String(page.versionId), recordOwner: page.recipient, finding: String(page.findingId), mode } },
+    state: { pptFeedbackContext: { version: String(page.versionId), recordOwner: ownPages.length ? userId : page.recipient,
+      finding: String(page.findingId), mode: 'edit' } },
   });
 }
 
@@ -171,7 +192,7 @@ onMounted(load);
             </el-table-column>
             <el-table-column prop="section" label="板块" min-width="100" />
             <el-table-column label="通知时间" min-width="175">
-              <template #default="{ row: item }">{{ notice(item.noticeKind, item.notifiedAt) }}</template>
+              <template #default="{ row: item }">{{ notificationTime(item.notifiedAt) }}</template>
             </el-table-column>
             <el-table-column label="反馈状态" width="100">
               <template #default="{ row: item }">
@@ -197,7 +218,10 @@ onMounted(load);
         <template #default="{ row }">{{ row.departments.join('、') || '—' }}</template>
       </el-table-column>
       <el-table-column label="通知时间" min-width="175">
-        <template #default="{ row }">{{ notice(row.hasNotice ? 'PENDING' : null, row.notifiedAt) }}</template>
+        <template #default="{ row }">{{ notificationTime(row.notifiedAt) }}</template>
+      </el-table-column>
+      <el-table-column label="经办人" min-width="180" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.recipientNames.join('、') || '待分派' }}</template>
       </el-table-column>
       <el-table-column label="反馈进度" width="125">
         <template #default="{ row }">{{ row.unassigned ? '待分派' : row.total ? `${row.completed}/${row.total}` : row.pages.length ? '—' : '暂无反馈任务' }}</template>
@@ -205,13 +229,11 @@ onMounted(load);
       <el-table-column label="反馈时间" min-width="135">
         <template #default="{ row }">{{ date(row.feedbackAt) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="115">
+      <el-table-column label="操作" width="130" fixed="right">
         <template #default="{ row }">
-          <el-button v-if="row.total && row.pages[0].recipient === userId" link type="primary" @click="openDetail(row, 'edit')">编辑</el-button>
-          <el-button v-if="row.total" link type="primary" @click="openDetail(row, 'view')">查看</el-button>
-          <el-button v-if="row.pages.some((item: Page) => item.configurableTitle)" link type="primary" @click="openVersionAssignments(row)">
-            调整分派
-          </el-button>
+          <div class="record-actions">
+            <el-button v-if="row.total" link type="primary" @click="openDetail(row)">查看 / 编辑</el-button>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -228,5 +250,7 @@ h2 { margin: 0 0 16px; color: #142441; font-size: 24px; }
 .filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .filters .el-select { width: min(100%, 205px); }
 .page-details { padding-inline: 12px; box-sizing: border-box; }
+.record-actions { display: flex; align-items: center; gap: 16px; flex-wrap: nowrap; white-space: nowrap; }
+.record-actions :deep(.el-button) { margin-left: 0; flex-shrink: 0; }
 .el-pagination { margin-top: 12px; justify-content: flex-end; }
 </style>

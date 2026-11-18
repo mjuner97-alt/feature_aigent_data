@@ -6,6 +6,12 @@ import com.agentscopea2a.mapper.gauss.AiChatRuntimeConfigMapper;
 import com.agentscopea2a.util.HttpClientUtil;
 import com.agentscopea2a.util.SignUtil;
 import com.agentscopea2a.v2.config.AiChatRuntimeConfigKeys;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -30,6 +36,14 @@ public class StubNotificationSender implements NotificationSender {
 
     @Value("${skill.notification.mail.url:}")
     private String mailUrl;
+
+    /**
+     * true 继续调用内部 HTTP 邮件网关；false 将通知内容写成本地 HTML 文件。
+     * 所有使用本发送器的通知统一由此代码开关控制。
+     */
+    private boolean httpEnabled = true;
+
+    private static final DateTimeFormatter LOCAL_FILE_TIME = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS");
 
     public StubNotificationSender(AiChatRuntimeConfigMapper runtimeConfigMapper) {
         this.runtimeConfigMapper = runtimeConfigMapper;
@@ -76,7 +90,14 @@ public class StubNotificationSender implements NotificationSender {
 
     @Override
     public String sendPrepared(NotificationPayload payload, Map<String, Object> request) {
-        return post(request);
+        Path directory = payload.filePath() == null || payload.filePath().isBlank()
+            ? null : Paths.get(payload.filePath()).toAbsolutePath().normalize().getParent();
+        return sendPrepared(payload, request, directory);
+    }
+
+    @Override
+    public String sendPrepared(NotificationPayload payload, Map<String, Object> request, Path localDirectory) {
+        return post(request, localDirectory);
     }
 
     public void send(String userId, String content) {
@@ -120,6 +141,15 @@ public class StubNotificationSender implements NotificationSender {
     }
 
     private String post(Map<String, Object> requestBody) {
+        return post(requestBody, null);
+    }
+
+    private String post(Map<String, Object> requestBody, Path localDirectory) {
+        if (!httpEnabled) {
+            if (localDirectory != null) return writeLocalHtml(requestBody, localDirectory);
+            log.info("[Notification STUB] HTTP disabled, no local preview directory, title={}", requestBody.get("title"));
+            return "SIMULATED";
+        }
         String timeStamp = String.valueOf(System.currentTimeMillis());
         String sign = new SignUtil().generateSign(timeStamp, timeStamp, APP_KEY, APP_SECRET);
         Map<String, String> requestHeader = new HashMap<>();
@@ -142,6 +172,37 @@ public class StubNotificationSender implements NotificationSender {
             if (e instanceof InterruptedException) Thread.currentThread().interrupt();
             throw new IllegalStateException("MailGatewaySendFailed: " + e.getMessage(), e);
         }
+    }
+
+    /** 将通知请求写入本地 HTML 文件，返回生成文件的绝对路径。 */
+    private String writeLocalHtml(Map<String, Object> requestBody, Path localDirectory) {
+        String title = String.valueOf(requestBody.getOrDefault("title", DEFAULT_TITLE));
+        String content = String.valueOf(requestBody.getOrDefault("content", ""));
+        String safeTitle = title.replaceAll("[^\\p{L}\\p{N}._-]", "_");
+        if (safeTitle.isBlank()) {
+            safeTitle = "notification";
+        }
+        Path directory = localDirectory.toAbsolutePath().normalize();
+        Path file = directory.resolve(safeTitle + "-" + LocalDateTime.now().format(LOCAL_FILE_TIME) + ".html");
+        String html = content.trim().toLowerCase().startsWith("<html")
+            ? content
+            : "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><title>" +
+              escapeHtml(title) +
+              "</title></head><body>" +
+              content.replace("\n", "<br>\n") +
+              "</body></html>";
+        try {
+            Files.createDirectories(directory);
+            Files.writeString(file, html, StandardCharsets.UTF_8);
+            log.info("[Notification STUB] HTTP disabled, notification written to {}", file);
+            return file.toString();
+        } catch (Exception e) {
+            throw new IllegalStateException("LocalNotificationFileWriteFailed: " + e.getMessage(), e);
+        }
+    }
+
+    private String escapeHtml(String value) {
+        return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
     }
 
     private String getMailContent(String mailContent, String contactName, String contactPhone) {

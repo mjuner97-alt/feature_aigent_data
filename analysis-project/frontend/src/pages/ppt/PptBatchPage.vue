@@ -1,11 +1,11 @@
 <script setup lang="ts">
 /** 例会材料管理页，负责批次版本、上传解析、板块确认及原件下载。 */
 
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { Plus, Search, UploadFilled } from '@element-plus/icons-vue';
+import { Plus, Search, UploadFilled, ZoomIn } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { confirmPptImport, deleteBatch, downloadVersion, listBatchSummaries, listPptPeople, listVersions, previewPptImport, reviewPptImport, savePptImport, searchPptPeople } from '../../api/pptAnomaly';
+import { confirmPptImport, deleteBatch, downloadVersion, listBatchSummaries, listPptPeople, listVersions, previewPptImport, previewPptImportImage, reviewPptImport, savePptImport, searchPptPeople } from '../../api/pptAnomaly';
 import type { PptPerson, PptImportAssignment, PptRecognitionMode } from '../../api/pptAnomaly';
 import type { PptBatchSummary, PptVersion } from '../../types/pptAnomaly';
 import PptVersionAssignmentsDialog from '../../components/ppt/PptVersionAssignmentsDialog.vue';
@@ -53,6 +53,34 @@ type ReviewRow = {
   thumbnail?: string;
 };
 const reviewRows = ref<ReviewRow[]>([]);
+const reviewPreviewUrl = ref('');
+const reviewPreviewLoading = ref(false);
+let reviewPreviewRequest: AbortController | undefined;
+function closeReviewPreview() {
+  reviewPreviewRequest?.abort();
+  reviewPreviewRequest = undefined;
+  reviewPreviewLoading.value = false;
+  if (reviewPreviewUrl.value) URL.revokeObjectURL(reviewPreviewUrl.value);
+  reviewPreviewUrl.value = '';
+}
+async function openReviewPreview(row: ReviewRow) {
+  if (reviewPreviewLoading.value) return;
+  closeReviewPreview();
+  const request = new AbortController();
+  reviewPreviewRequest = request;
+  reviewPreviewLoading.value = true;
+  try {
+    const image = await previewPptImportImage({ file: reviewTarget.value ? undefined : file.value,
+      versionId: reviewTarget.value, pageNo: row.page }, request.signal);
+    if (!request.signal.aborted) reviewPreviewUrl.value = URL.createObjectURL(image);
+  } catch (cause) {
+    if (!request.signal.aborted) ElMessage.error(cause instanceof Error ? cause.message : '高清预览加载失败，请重试');
+  } finally {
+    if (reviewPreviewRequest === request) reviewPreviewLoading.value = false;
+  }
+}
+watch([dialog, file, reviewTarget], closeReviewPreview);
+onBeforeUnmount(closeReviewPreview);
 type ReviewFilter = 'all' | 'pending' | 'ready' | 'untitled' | 'skipped';
 const reviewFilter = ref<ReviewFilter>('all');
 const reviewSearch = ref('');
@@ -69,34 +97,41 @@ const boardMode = ref<'existing' | 'board'>('existing');
 const existingBoard = ref('');
 const boardName = ref('');
 const boardContact = ref('');
-const boardContactResults = ref<PptPerson[]>();
-const boardContactLoading = ref(false);
-const boardContactSearchFailed = ref(false);
-let boardContactRequestId = 0;
-const matchingBoardContacts = computed(() => boardContactResults.value ?? reviewPeople.value.slice(0, 5));
-
-/** 搜索板块可选联系人并处理搜索状态。 */
-async function searchBoardContacts(keyword: string) {
-  const id = ++boardContactRequestId;
-  const term = keyword.trim();
-  boardContactResults.value = term ? [] : undefined;
-  boardContactLoading.value = !!term;
-  boardContactSearchFailed.value = false;
-  if (!term) return;
-  try {
-    const people = await searchPptPeople(term);
-    if (id === boardContactRequestId) {
-      boardContactResults.value = people;
+/** 每个选人控件独立管理请求，避免关闭另一个下拉框时清空正在搜索的结果。 */
+function createPersonSearch() {
+  const results = ref<PptPerson[]>();
+  const loading = ref(false);
+  const failed = ref(false);
+  let requestId = 0;
+  const options = computed(() => results.value ?? reviewPeople.value.slice(0, 5));
+  async function search(keyword: string) {
+    const id = ++requestId;
+    const term = keyword.trim();
+    results.value = term ? [] : undefined;
+    loading.value = !!term;
+    failed.value = false;
+    if (!term) return;
+    try {
+      const people = await searchPptPeople(term);
+      if (id !== requestId) return;
+      results.value = people;
       const known = new Map(reviewPeople.value.map(person => [person.userId, person]));
       for (const person of people) known.set(person.userId, person);
       reviewPeople.value = [...known.values()];
+    } catch {
+      if (id === requestId) failed.value = true;
+    } finally {
+      if (id === requestId) loading.value = false;
     }
-  } catch {
-    if (id === boardContactRequestId) boardContactSearchFailed.value = true;
-  } finally {
-    if (id === boardContactRequestId) boardContactLoading.value = false;
   }
+  return { options, loading, failed, search };
 }
+const { options: matchingBoardContacts, loading: boardContactLoading,
+  failed: boardContactSearchFailed, search: searchBoardContacts } = createPersonSearch();
+const { options: matchingHandlers, loading: handlerLoading,
+  failed: handlerSearchFailed, search: searchHandlers } = createPersonSearch();
+const { options: matchingEditorContacts, loading: editorContactLoading,
+  failed: editorContactSearchFailed, search: searchEditorContacts } = createPersonSearch();
 const boardOptions = computed(() => [...new Set([
   ...reviewSections.value, ...reviewRows.value.map(row => row.section).filter(Boolean),
 ])]);
@@ -122,7 +157,7 @@ function titleHandlerIds(title: string) {
 }
 
 function handlerOptions(ids: string[]) {
-  const options = new Map(matchingBoardContacts.value.map(person => [person.userId, person]));
+  const options = new Map(matchingHandlers.value.map(person => [person.userId, person]));
   for (const id of ids) {
     const person = reviewPeople.value.find(item => item.userId === id);
     if (person && !options.has(id)) options.set(id, person);
@@ -195,7 +230,7 @@ function openBoardEditor(row: ReviewRow, assignUnassigned = false, createBoard =
   existingBoard.value = exists ? section : '';
   boardName.value = !createBoard && boardMode.value === 'board' ? row.section : '';
   boardContact.value = createBoard ? '' : ownerChoices.value.get(section) ?? '';
-  void searchBoardContacts('');
+  void searchEditorContacts('');
   boardEditorOpen.value = true;
 }
 
@@ -504,6 +539,8 @@ onMounted(refresh);
         </el-table>
       </template>
     </el-drawer>
+    <el-image-viewer v-if="reviewPreviewUrl" :url-list="[reviewPreviewUrl]" teleported
+      :z-index="4000" @close="closeReviewPreview" />
     <PptVersionAssignmentsDialog v-if="assignmentVersion" :key="assignmentVersion.id"
       :version-id="assignmentVersion.id" :version-no="assignmentVersion.versionNo"
       @close="assignmentVersion = undefined" />
@@ -607,10 +644,12 @@ onMounted(refresh);
               </header>
               <div class="review-page-content">
                 <div class="review-preview">
+                  <el-button class="review-zoom" :icon="ZoomIn" :loading="reviewPreviewLoading"
+                    @click="openReviewPreview(selectedReviewRow)">放大查看</el-button>
                   <el-image v-if="selectedReviewRow.thumbnail" :key="selectedReviewRow.page"
                     class="review-image" :src="selectedReviewRow.thumbnail" fit="contain"
                     :alt="`PPT 第 ${selectedReviewRow.page} 页原页`"
-                    :preview-src-list="[selectedReviewRow.thumbnail]" preview-teleported />
+                    @click="openReviewPreview(selectedReviewRow)" />
                   <span v-else>暂无原页预览</span>
                 </div>
                 <div class="review-fields">
@@ -667,10 +706,10 @@ onMounted(refresh);
                     </div>
                     <el-select :model-value="handlerChoices.get(titleKey(selectedReviewRow.title)) ?? []" multiple filterable remote
                       aria-labelledby="ppt-review-handlers-label" placeholder="搜索并补充经办人，可多选"
-                      :disabled="busy" :remote-method="searchBoardContacts" :loading="boardContactLoading"
-                      :no-data-text="boardContactSearchFailed ? '搜索失败，请重试' : '未找到经办人'"
+                      :disabled="busy" :remote-method="searchHandlers" :loading="handlerLoading"
+                      :no-data-text="handlerSearchFailed ? '搜索失败，请重试' : '未找到经办人'"
                       @update:model-value="handlerChoices.set(titleKey(selectedReviewRow.title), $event)"
-                      @visible-change="(open: boolean) => { if (!open) searchBoardContacts(''); }">
+                      @visible-change="(open: boolean) => { if (!open) searchHandlers(''); }">
                       <el-option v-for="person in handlerOptions(titleHandlerIds(selectedReviewRow.title))" :key="person.userId"
                         :label="[boardContactLabel(person.userId), person.department].filter(Boolean).join(' · ')"
                         :value="person.userId" :disabled="!person.department" />
@@ -727,13 +766,13 @@ onMounted(refresh);
         <el-form-item v-if="draftSection && !duplicateBoard" label="板块联系人" required>
           <span v-if="draftContact">{{ contactLabel(draftSection) }}</span>
           <el-select v-else v-model="boardContact" placeholder="搜索姓名或 userID" filterable remote
-            :remote-method="searchBoardContacts" :loading="boardContactLoading"
-            :no-data-text="boardContactSearchFailed ? '搜索失败，请重试' : '未找到联系人'"
-            @visible-change="(open: boolean) => { if (!open) searchBoardContacts(''); }">
+            :remote-method="searchEditorContacts" :loading="editorContactLoading"
+            :no-data-text="editorContactSearchFailed ? '搜索失败，请重试' : '未找到联系人'"
+            @visible-change="(open: boolean) => { if (!open) searchEditorContacts(''); }">
             <template #label="{ value }">
               {{ boardContactLabel(value) }}
             </template>
-            <el-option v-for="person in matchingBoardContacts" :key="person.userId"
+            <el-option v-for="person in matchingEditorContacts" :key="person.userId"
               :label="`${person.name}（${person.userId}）`" :value="person.userId" />
           </el-select>
         </el-form-item>
@@ -804,6 +843,7 @@ onMounted(refresh);
 }
 .review-page-content { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(260px, 1fr); gap: 16px; }
 .review-preview { position: relative; min-height: 200px; border: 1px solid #e5ebf4; border-radius: 8px; background: #f3f6fb; }
+.review-zoom { position: absolute; top: 8px; right: 8px; z-index: 1; }
 .review-image { position: absolute; inset: 6px 0; width: min(calc(100% - 12px), 720px); margin-inline: auto; }
 .review-fields { display: grid; align-content: start; gap: 14px; padding: 16px; border: 1px solid #e5ebf4; border-radius: 8px; }
 .review-field { display: grid; align-content: start; gap: 6px; min-width: 0; }

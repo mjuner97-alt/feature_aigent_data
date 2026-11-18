@@ -134,7 +134,7 @@
         SELECT MIN(id) AS id, "统一认证号", MIN("姓名") AS "姓名"
         FROM developer_pl_person_info
         WHERE TRIM("部门") = #{department}
-          AND "统一认证号" IS NOT NULL AND "统一认证号" != ''
+          AND "统一认证号" IS NOT NULL
           AND (STRPOS(LOWER("姓名"), LOWER(#{keyword})) > 0
             OR STRPOS(LOWER("统一认证号"), LOWER(#{keyword})) > 0)
         <include refid="currentVersionFilter"/>
@@ -146,7 +146,7 @@
     <select id="searchPptPeople" resultMap="personInfoMap">
         SELECT MIN(id) AS id, "统一认证号", MIN("姓名") AS "姓名", MIN(TRIM("部门")) AS "部门"
         FROM developer_pl_person_info
-        WHERE "统一认证号" IS NOT NULL AND TRIM("统一认证号") != ''
+        WHERE "统一认证号" IS NOT NULL
         <include refid="currentVersionFilter"/>
         <if test="department != ''">AND TRIM("部门") = #{department}</if>
         <if test="keyword != ''">

@@ -1,6 +1,7 @@
 
 /** 例会材料接口层，统一处理材料导入、配置、反馈、附件及结果导出请求。 */
 import type { PptBatch, PptBatchSummary, PptFinding, PptSectionWork, PptSlide, PptVersion, PptVersionWork } from '../types/pptAnomaly';
+import { searchSkillUsers } from './skill';
 const base='/api/ppt-anomaly';
 /** 为接口请求补充本地保存的用户标识，缺少标识时使用历史演示默认值。 */
 const headers=()=>({'X-User-Id':localStorage.getItem('skill-user-id')||'demo-user'});
@@ -110,7 +111,13 @@ export async function listPptPeople() {
 }
 /** 按姓名或认证号查询可选人员，可限定部门。 */
 export async function searchPptPeople(keyword: string, department = '') {
-  const query = new URLSearchParams({ keyword, department });
+  const term = keyword.trim();
+  // 导入选人与配置页新增经办人共用搜索入口；指定部门时保留服务端部门筛选。
+  if (term && !department.trim()) {
+    const people = await searchSkillUsers(term);
+    return people.map(person => ({ ...person, name: person.name || person.userId, department: person.department ?? '' }));
+  }
+  const query = new URLSearchParams({ keyword: term, department: department.trim() });
   return parse<PptPerson[]>(await fetch(`${base}/keyword-config/people/search?${query}`, { headers: headers() }));
 }
 /** 为指定版本的板块保存负责人。 */
@@ -335,6 +342,17 @@ export async function previewPptImport(file: File, batchId?: number) {
   return parse<PptImportReview>(await fetch(`${base}/imports/preview`, {
     method: 'POST', headers: headers(), body,
   }));
+}
+
+/** 按需渲染高清原页；待上传文件与已保存版本二选一。 */
+export async function previewPptImportImage(source: { file?: File; versionId?: number; pageNo: number }, signal?: AbortSignal) {
+  const body = new FormData();
+  if (source.file) body.append('file', source.file);
+  if (source.versionId !== undefined) body.append('versionId', String(source.versionId));
+  body.append('pageNo', String(source.pageNo));
+  const response = await fetch(`${base}/imports/preview-image`, { method: 'POST', headers: headers(), body, signal });
+  if (!response.ok) await parse<never>(response);
+  return response.blob();
 }
 
 /** 提交原件、批次选择及页面分派结果并执行识别。 */
