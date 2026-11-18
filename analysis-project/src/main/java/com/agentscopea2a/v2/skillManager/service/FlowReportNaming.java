@@ -17,14 +17,20 @@ public final class FlowReportNaming {
         if ("团队报告".equals(value(execution, "report_type"))) {
             String name = baseTitle(execution);
             if (name == null || name.isBlank()) name = "团队报告";
-            if (execution.getDataDate() == null || name.matches(".*[（(]\\d{4}-\\d{2}-\\d{2}[）)]$")) return name;
-            return name + "（" + execution.getDataDate() + "）";
+            name = normalizeTitleDate(name);
+            if (execution.getDataDate() == null || name.matches(".*[（(]\\d{4}年\\d{2}月\\d{2}日[）)]$")) return name;
+            return name + dateSuffix(execution);
         }
         if (isObjectReport(execution)) {
             String saved = value(execution, "report_name");
-            if (saved != null && !saved.isBlank()) return saved;
+            if (saved != null && !saved.isBlank()) return normalizeTitleDate(saved);
         }
         return (isObjectReport(execution) ? baseTitle(execution) : title) + dateSuffix(execution);
+    }
+
+    /** 兼容已有名称中的日期后缀，保留快照日期且不重复追加。 */
+    private static String normalizeTitleDate(String title) {
+        return title.replaceFirst("([（(])(\\d{4})-(\\d{2})-(\\d{2})([）)])$", "$1$2年$3月$4日$5");
     }
 
     /** 通知标题附加执行日期，不修改已保存的报告名称。 */
@@ -69,7 +75,7 @@ public final class FlowReportNaming {
     private static String dateSuffix(SkillFlowExecution execution) {
         if (isObjectReport(execution)) return execution.getDataDate() == null
             ? ""
-            : "（" + execution.getDataDate() + "）";
+            : "（" + execution.getDataDate().format(DATE_FORMAT) + "）";
         return execution.getDataDate() == null ? "" : " (" + execution.getDataDate().format(DATE_FORMAT) + ")";
     }
 

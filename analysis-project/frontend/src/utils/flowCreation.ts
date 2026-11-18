@@ -70,7 +70,7 @@ export function defaultReportName(
     day: '2-digit',
   }).formatToParts(now);
   const part = (type: string) => parts.find((item) => item.type === type)?.value;
-  const date = `${part('year')}-${part('month')}-${part('day')}`;
+  const date = `${part('year')}年${part('month')}月${part('day')}日`;
   return `${target.departmentName || config.departmentName || '部门名'}（${date}）`;
 }
 
@@ -80,8 +80,9 @@ export function reportNotificationTitle(
   target: TeamReportTarget,
   now = new Date()
 ): string {
-  const name = target.reportName?.trim() || defaultReportName(config, target, now);
-  if (config.reportType !== 'TEAM' || /[（(]\d{4}-\d{2}-\d{2}[）)]$/.test(name)) return name;
+  const name = (target.reportName?.trim() || defaultReportName(config, target, now))
+    .replace(/([（(])(\d{4})-(\d{2})-(\d{2})([）)])$/, '$1$2年$3月$4日$5');
+  if (config.reportType !== 'TEAM' || /[（(]\d{4}年\d{2}月\d{2}日[）)]$/.test(name)) return name;
   const parts = new Intl.DateTimeFormat('en', {
     timeZone: 'Asia/Shanghai',
     year: 'numeric',
@@ -89,5 +90,5 @@ export function reportNotificationTitle(
     day: '2-digit',
   }).formatToParts(now);
   const part = (type: string) => parts.find((item) => item.type === type)?.value;
-  return `${name}（${part('year')}-${part('month')}-${part('day')}）`;
+  return `${name}（${part('year')}年${part('month')}月${part('day')}日）`;
 }
