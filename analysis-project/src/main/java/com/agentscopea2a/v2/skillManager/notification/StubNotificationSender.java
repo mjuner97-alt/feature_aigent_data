@@ -39,10 +39,9 @@ public class StubNotificationSender implements NotificationSender {
 
     /**
      * true 继续调用内部 HTTP 邮件网关；false 将通知内容写成本地 HTML 文件。
-     * 可在 application-*.properties 中通过 skill.notification.mail.http-enabled 调整。
+     * 所有使用本发送器的通知统一由此代码开关控制。
      */
     private boolean httpEnabled = true;
-    private String localHtmlDirectory = "src/main/resources/notification-html";
 
     private static final DateTimeFormatter LOCAL_FILE_TIME = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS");
 
@@ -91,7 +90,14 @@ public class StubNotificationSender implements NotificationSender {
 
     @Override
     public String sendPrepared(NotificationPayload payload, Map<String, Object> request) {
-        return post(request);
+        Path directory = payload.filePath() == null || payload.filePath().isBlank()
+            ? null : Paths.get(payload.filePath()).toAbsolutePath().normalize().getParent();
+        return sendPrepared(payload, request, directory);
+    }
+
+    @Override
+    public String sendPrepared(NotificationPayload payload, Map<String, Object> request, Path localDirectory) {
+        return post(request, localDirectory);
     }
 
     public void send(String userId, String content) {
@@ -135,8 +141,14 @@ public class StubNotificationSender implements NotificationSender {
     }
 
     private String post(Map<String, Object> requestBody) {
+        return post(requestBody, null);
+    }
+
+    private String post(Map<String, Object> requestBody, Path localDirectory) {
         if (!httpEnabled) {
-            return writeLocalHtml(requestBody);
+            if (localDirectory != null) return writeLocalHtml(requestBody, localDirectory);
+            log.info("[Notification STUB] HTTP disabled, no local preview directory, title={}", requestBody.get("title"));
+            return "SIMULATED";
         }
         String timeStamp = String.valueOf(System.currentTimeMillis());
         String sign = new SignUtil().generateSign(timeStamp, timeStamp, APP_KEY, APP_SECRET);
@@ -163,14 +175,14 @@ public class StubNotificationSender implements NotificationSender {
     }
 
     /** 将通知请求写入本地 HTML 文件，返回生成文件的绝对路径。 */
-    private String writeLocalHtml(Map<String, Object> requestBody) {
+    private String writeLocalHtml(Map<String, Object> requestBody, Path localDirectory) {
         String title = String.valueOf(requestBody.getOrDefault("title", DEFAULT_TITLE));
         String content = String.valueOf(requestBody.getOrDefault("content", ""));
         String safeTitle = title.replaceAll("[^\\p{L}\\p{N}._-]", "_");
         if (safeTitle.isBlank()) {
             safeTitle = "notification";
         }
-        Path directory = Paths.get(localHtmlDirectory).toAbsolutePath().normalize();
+        Path directory = localDirectory.toAbsolutePath().normalize();
         Path file = directory.resolve(safeTitle + "-" + LocalDateTime.now().format(LOCAL_FILE_TIME) + ".html");
         String html = content.trim().toLowerCase().startsWith("<html")
             ? content

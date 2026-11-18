@@ -1,0 +1,895 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 例会材料持久化映射，与 PptAnomalyMapper 接口方法逐项对应。 -->
+<mapper namespace="com.agentscopea2a.mapper.gauss.PptAnomalyMapper">
+    <!-- 匹配标题开头的数字层级序号，供标题归一化复用。 -->
+    <sql id="titlePrefix"> '^[[:space:]　]*([一二三四五六七八九十百零]+[.．、][[:space:]　]*|[0-9]+(([.．][0-9]+)+[.．、[:space:]　]*|[.．、[:space:]　]+))' </sql>
+    <!-- 去除标题数字序号和首尾空白，统一新旧版本及标题配置的匹配口径。 -->
+    <sql id="normalizedTitle">
+        regexp_replace(
+            regexp_replace(COALESCE(${title}, ''),
+                replace('^[~s　]*([一二三四五六七八九十百零]+[.．、][~s　]*|[0-9]+(([.．][0-9]+)+[.．、~s　]*|[.．、~s　]+))?', '~', chr(92)), ''),
+            replace('[~s　]+$', '~', chr(92)), ''
+        )
+    </sql>
+    <!-- 查询指定版本尚未记录通知的待反馈及已消除事项。 -->
+    <select id="feedbackNotices" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackNotice">
+        WITH candidates AS (
+            SELECT v.id AS version_id, f.id AS finding_id, handler.user_id AS recipient,
+                   'PENDING' AS kind, f.title, v.id AS link_version, v.version_no, f.feedback_department AS department,
+                   s.page_no, f.anomaly_keyword, f.assignment_revision
+            FROM digital_qa_ppt_material_version v
+            JOIN digital_qa_ppt_finding f ON f.version_id=v.id
+            JOIN digital_qa_ppt_finding_recipient handler ON handler.finding_id=f.id
+            JOIN digital_qa_ppt_slide s ON s.id=f.slide_id
+            WHERE v.status='ANALYZED' AND f.status='PENDING_FEEDBACK'
+              AND (NOT EXISTS (
+                  SELECT 1 FROM digital_qa_ppt_material_version newer
+                  WHERE newer.batch_id=v.batch_id AND newer.version_no &gt; v.version_no
+                    AND newer.status='ANALYZED'
+              ) OR EXISTS (SELECT 1 FROM digital_qa_ppt_assignment_change change WHERE change.finding_id=f.id))
+            UNION ALL
+            SELECT v.id, f.id, handler.user_id, 'RESOLVED', f.title, p.id, v.version_no, f.feedback_department,
+                   s.page_no, f.anomaly_keyword, 0
+            FROM digital_qa_ppt_material_version v
+            JOIN digital_qa_ppt_material_version p ON p.batch_id=v.batch_id AND p.version_no=v.version_no-1
+            JOIN digital_qa_ppt_finding f ON f.version_id=p.id
+            JOIN digital_qa_ppt_finding_recipient handler ON handler.finding_id=f.id
+            JOIN digital_qa_ppt_slide s ON s.id=f.slide_id
+            WHERE v.status='ANALYZED' AND p.status='ANALYZED'
+              AND <include refid="normalizedTitle"><property name="title" value="f.title"/></include> &lt;&gt; ''
+              AND NOT EXISTS (
+                  SELECT 1 FROM digital_qa_ppt_finding current
+                  WHERE current.version_id=v.id
+                    AND (f.feedback_department IS NULL OR current.feedback_department=f.feedback_department)
+                    AND <include refid="normalizedTitle"><property name="title" value="current.title"/></include> =
+                        <include refid="normalizedTitle"><property name="title" value="f.title"/></include>
+              )
+        )
+        SELECT c.version_id,c.finding_id,c.recipient,c.kind,c.title,c.link_version,c.version_no,c.department,
+               c.page_no AS page,c.anomaly_keyword AS keyword,c.assignment_revision
+        FROM candidates c
+        WHERE c.recipient IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM digital_qa_ppt_feedback_notice n
+            WHERE n.version_id=c.version_id AND n.finding_id=c.finding_id
+              AND n.recipient=c.recipient AND n.kind=c.kind AND n.assignment_revision=c.assignment_revision
+        )
+        AND c.version_id=#{versionId}
+        ORDER BY c.version_id,c.finding_id,c.kind
+    </select>
+
+    <!-- 幂等登记事项与接收人的通知记录，并校验待反馈状态及当前经办关系。 -->
+    <insert id="recordSimulatedNotice">
+        INSERT INTO digital_qa_ppt_feedback_notice(version_id,finding_id,recipient,kind,subject,body,assignment_revision,notified_at)
+        SELECT #{notice.versionId},#{notice.findingId},#{notice.recipient},#{notice.kind},#{subject},#{body},#{notice.assignmentRevision},
+               COALESCE(#{notifiedAt,jdbcType=TIMESTAMP}, CURRENT_TIMESTAMP)
+        WHERE NOT EXISTS (
+            SELECT 1 FROM digital_qa_ppt_feedback_notice
+            WHERE version_id=#{notice.versionId} AND finding_id=#{notice.findingId}
+              AND recipient=#{notice.recipient} AND kind=#{notice.kind} AND assignment_revision=#{notice.assignmentRevision}
+        )
+        AND (#{notice.kind} &lt;&gt; 'PENDING' OR EXISTS (
+            SELECT 1 FROM digital_qa_ppt_finding
+            WHERE id=#{notice.findingId} AND status='PENDING_FEEDBACK' AND assignment_revision=#{notice.assignmentRevision}
+              AND EXISTS (SELECT 1 FROM digital_qa_ppt_finding_recipient h
+                          WHERE h.finding_id=#{notice.findingId} AND h.user_id=#{notice.recipient})
+            FOR UPDATE
+        ))
+    </insert>
+    <!-- 已有的事项通知也可用于识别历史邮件收件人。 -->
+    <select id="previousFeedbackNoticeTimes" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$RecipientNoticeTime">
+        SELECT recipient,MAX(notified_at) AS notified_at FROM digital_qa_ppt_feedback_notice
+        WHERE version_id=#{versionId} AND subject=#{subject} AND notified_at IS NOT NULL
+        GROUP BY recipient
+    </select>
+    <select id="sentFeedbackMails" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$SentFeedbackMail">
+        SELECT to_users,cc_users,sent_at FROM digital_qa_ppt_mail_record
+        WHERE version_id=#{versionId} AND department=#{department} AND subject=#{subject}
+          AND status='SENT' AND sent_at IS NOT NULL
+    </select>
+    <insert id="recordFeedbackMail">
+        INSERT INTO digital_qa_ppt_mail_record(version_id,department,subject,body,to_users,cc_users,sent_by,status,sent_at)
+        VALUES (#{versionId},#{department},#{subject},#{body},#{toUsers},#{ccUsers},#{sender},'SENT',CURRENT_TIMESTAMP)
+    </insert>
+    <!-- 读取通知表实际列名，兼容历史表结构中的通知时间字段。 -->
+    <select id="feedbackNoticeColumns" resultType="string">
+        SELECT lower(column_name) FROM information_schema.columns
+        WHERE lower(table_name)='digital_qa_ppt_feedback_notice' AND table_schema=CURRENT_SCHEMA
+    </select>
+    <!-- 按当前用户权限查询反馈任务、通知时间和反馈时间。 -->
+    <select id="feedbackRecords" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackRecordRow">
+        WITH recipients AS (
+            SELECT f.version_id, f.id AS finding_id, handler.user_id AS recipient
+            FROM digital_qa_ppt_finding f
+            JOIN digital_qa_ppt_finding_recipient handler ON handler.finding_id=f.id
+            <if test="admin">
+                UNION ALL
+                SELECT f.version_id, f.id, NULL AS recipient
+                FROM digital_qa_ppt_finding f
+                WHERE f.status='UNASSIGNED' AND NOT EXISTS (
+                    SELECT 1 FROM digital_qa_ppt_finding_recipient handler WHERE handler.finding_id=f.id
+                )
+            </if>
+            <if test="notices">
+                UNION SELECT n.version_id, n.finding_id, n.recipient FROM digital_qa_ppt_feedback_notice n
+                WHERE n.kind='RESOLVED'
+            </if>
+        )
+        SELECT b.id AS batch_id, b.name AS batch_name, v.id AS version_id, v.version_no, v.file_name,
+               r.recipient, f.id AS finding_id, s.page_no, f.title, f.chapter AS section, f.auto_departments AS finding_departments,
+               CASE WHEN v.id=f.version_id AND assigned.user_id IS NOT NULL THEN f.status END AS status,
+               <choose>
+                   <when test="notices">n.kind</when>
+                   <otherwise>CAST(NULL AS VARCHAR)</otherwise>
+               </choose> AS notice_kind,
+               <choose>
+                   <when test="notices and hasNoticeTime">n.notified_at</when>
+                   <otherwise>CAST(NULL AS TIMESTAMP)</otherwise>
+               </choose> AS notified_at,
+               CASE WHEN v.id=f.version_id THEN (
+                   SELECT MAX(note.created_at) FROM digital_qa_ppt_finding_feedback note
+                   WHERE note.finding_id=f.id AND note.assignment_revision=f.assignment_revision AND (note.user_id=r.recipient
+                       OR (assigned.user_id IS NOT NULL AND f.status IN ('CONFIRMED','ADJUSTED')))
+               ) END AS feedback_at
+        FROM digital_qa_ppt_material_version v
+        JOIN digital_qa_ppt_material_batch b ON b.id=v.batch_id
+        LEFT JOIN recipients r ON r.version_id=v.id
+        LEFT JOIN digital_qa_ppt_finding f ON f.id=r.finding_id
+        LEFT JOIN digital_qa_ppt_slide s ON s.id=f.slide_id
+        LEFT JOIN digital_qa_ppt_finding_recipient assigned ON assigned.finding_id=f.id AND assigned.user_id=r.recipient
+        <if test="notices">
+            LEFT JOIN digital_qa_ppt_feedback_notice n ON n.version_id=r.version_id
+                AND n.finding_id=r.finding_id AND n.recipient=r.recipient
+                AND ((n.kind='PENDING' AND v.id=f.version_id AND assigned.user_id IS NOT NULL
+                      AND n.assignment_revision=f.assignment_revision)
+                     OR (n.kind='RESOLVED' AND n.assignment_revision=0))
+        </if>
+        WHERE v.status='ANALYZED'
+          AND NOT EXISTS (
+              SELECT 1 FROM digital_qa_ppt_material_version newer
+              WHERE newer.batch_id=v.batch_id AND newer.status='ANALYZED' AND newer.version_no &gt; v.version_no
+          )
+        <if test="!admin">AND r.recipient=#{user}</if>
+        ORDER BY b.id DESC,v.version_no DESC,r.recipient,s.page_no
+    </select>
+    <!-- 汇总各批次最新版本、文件名称及识别状态。 -->
+    <select id="batchSummaries" resultType="com.agentscopea2a.v2.pptanomaly.PptAnomalyModels$BatchSummary">
+        SELECT b.id, b.name, v.id AS version_id, v.version_no, v.file_name, v.status, v.uploaded_at, summary.file_names, v.uploaded_by
+        FROM digital_qa_ppt_material_batch b
+        LEFT JOIN (
+            SELECT batch_id, MAX(version_no) AS latest, string_agg(file_name, chr(10)) AS file_names
+            FROM digital_qa_ppt_material_version GROUP BY batch_id
+        ) summary ON summary.batch_id = b.id
+        LEFT JOIN digital_qa_ppt_material_version v ON v.batch_id = b.id AND v.version_no = summary.latest
+        ORDER BY v.uploaded_at DESC NULLS LAST, b.id DESC
+    </select>
+    <!-- 复用配置类别、名称关键词及目标值的筛选条件。 -->
+    <sql id="configFilter">
+        FROM digital_qa_ppt_keyword_config WHERE kind=#{kind}
+        <if test="keyword != ''">AND (POSITION(#{keyword} IN name)>0 OR POSITION(#{keyword} IN target)>0)</if>
+        <if test="target != ''">AND target=#{target}</if>
+    </sql>
+
+    <!-- 创建例会材料批次并记录上传用户。 -->
+    <insert id="createBatch" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO digital_qa_ppt_material_batch(name,created_by) VALUES (#{name},#{user})
+    </insert>
+
+    <!-- 查询材料批次列表。 -->
+    <select id="batches" resultType="com.agentscopea2a.v2.pptanomaly.PptAnomalyModels$Batch">
+        SELECT id,name,created_by,created_at FROM digital_qa_ppt_material_batch ORDER BY id DESC
+    </select>
+
+    <!-- 锁定批次记录，串行分配该批次的新版本号。 -->
+    <select id="lockBatch" resultType="long">
+        SELECT id FROM digital_qa_ppt_material_batch WHERE id=#{id} FOR UPDATE
+    </select>
+
+    <select id="lockBatchVersions" resultType="long">
+        SELECT id FROM digital_qa_ppt_material_version WHERE batch_id=#{id} ORDER BY id FOR UPDATE
+    </select>
+    <select id="lockBatchFindings" resultType="long">
+        SELECT id FROM digital_qa_ppt_finding WHERE version_id IN (SELECT id FROM digital_qa_ppt_material_version WHERE batch_id=#{id})
+        ORDER BY id FOR UPDATE
+    </select>
+    <delete id="deleteBatchFeedbackNotices">
+        DELETE FROM digital_qa_ppt_feedback_notice
+        WHERE version_id IN (SELECT id FROM digital_qa_ppt_material_version WHERE batch_id=#{id})
+    </delete>
+    <delete id="deleteBatchFindingFeedback">
+        DELETE FROM digital_qa_ppt_finding_feedback
+        WHERE finding_id IN (SELECT id FROM digital_qa_ppt_finding WHERE version_id IN (SELECT id FROM digital_qa_ppt_material_version WHERE batch_id=#{id}))
+    </delete>
+    <delete id="deleteBatchAssignmentChanges">
+        DELETE FROM digital_qa_ppt_assignment_change
+        WHERE finding_id IN (SELECT id FROM digital_qa_ppt_finding WHERE version_id IN (SELECT id FROM digital_qa_ppt_material_version WHERE batch_id=#{id}))
+    </delete>
+    <delete id="deleteBatchFindings">
+        DELETE FROM digital_qa_ppt_finding
+        WHERE version_id IN (SELECT id FROM digital_qa_ppt_material_version WHERE batch_id=#{id})
+    </delete>
+    <delete id="deleteBatchSlides">
+        DELETE FROM digital_qa_ppt_slide
+        WHERE version_id IN (SELECT id FROM digital_qa_ppt_material_version WHERE batch_id=#{id})
+    </delete>
+    <delete id="deleteBatchMailRecords">
+        DELETE FROM digital_qa_ppt_mail_record
+        WHERE version_id IN (SELECT id FROM digital_qa_ppt_material_version WHERE batch_id=#{id})
+    </delete>
+    <delete id="deleteBatchDetailLinks">
+        DELETE FROM digital_qa_ppt_detail_link
+        WHERE batch_id=#{id}
+    </delete>
+    <delete id="deleteBatchVersions">
+        DELETE FROM digital_qa_ppt_material_version
+        WHERE batch_id=#{id}
+    </delete>
+    <delete id="deleteBatch">
+        DELETE FROM digital_qa_ppt_material_batch
+        WHERE id=#{id}
+    </delete>
+
+    <!-- 查询同一批次已有的最大版本号。 -->
+    <select id="maxVersion" resultType="int">
+        SELECT COALESCE(MAX(version_no),0) FROM digital_qa_ppt_material_version WHERE batch_id=#{id}
+    </select>
+
+    <!-- 保存材料版本元数据及原件相对存储路径，并回填版本主键。 -->
+    <insert id="createVersion" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO digital_qa_ppt_material_version(batch_id,version_no,version_name,file_name,file_path,file_sha256,uploaded_by) VALUES (#{batch},#{number},#{name},#{file},#{path},#{hash},#{user})
+    </insert>
+
+    <!-- 按版本号倒序查询批次中的材料版本。 -->
+    <select id="versions" resultType="com.agentscopea2a.v2.pptanomaly.PptAnomalyModels$Version">
+        SELECT id,batch_id,version_no,version_name,file_name,status,uploaded_at,uploaded_by FROM digital_qa_ppt_material_version WHERE batch_id=#{id} ORDER BY version_no DESC
+    </select>
+
+    <!-- 按当前用户汇总各版本的本人事项及待反馈数量。 -->
+    <select id="versionWork" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$VersionWork">
+        SELECT v.id,v.batch_id,v.version_no,v.version_name,v.file_name,b.name AS batch_name,
+               COUNT(f.id) AS total, COUNT(CASE WHEN handler.user_id IS NOT NULL THEN 1 END) AS mine,
+               COUNT(CASE WHEN handler.user_id IS NOT NULL AND f.status='PENDING_FEEDBACK' THEN 1 END) AS my_pending
+        FROM digital_qa_ppt_material_version v JOIN digital_qa_ppt_material_batch b ON b.id=v.batch_id
+        LEFT JOIN digital_qa_ppt_finding f ON f.version_id=v.id
+        LEFT JOIN digital_qa_ppt_finding_recipient handler ON handler.finding_id=f.id AND handler.user_id=#{user}
+        WHERE v.status='ANALYZED'
+          AND NOT EXISTS (
+              SELECT 1 FROM digital_qa_ppt_material_version newer
+              WHERE newer.batch_id=v.batch_id AND newer.status='ANALYZED' AND newer.version_no &gt; v.version_no
+          )
+        GROUP BY v.id,v.batch_id,v.version_no,v.version_name,v.file_name,b.name
+        ORDER BY v.batch_id DESC,v.version_no DESC
+    </select>
+
+    <!-- 解析通知所指事项在最新已识别版本中的对应位置。 -->
+    <select id="latestFeedbackLink" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$LatestFeedbackLink">
+        SELECT latest.id AS version_id, latest.version_no,
+               CASE WHEN latest.id=original.id THEN f.id ELSE (
+                   SELECT CASE WHEN COUNT(CASE WHEN m.chapter=f.chapter THEN 1 END)=1
+                               THEN MAX(CASE WHEN m.chapter=f.chapter
+                                   AND (EXISTS (SELECT 1 FROM digital_qa_ppt_finding_recipient h WHERE h.finding_id=m.id AND h.user_id=#{user}) OR latest.uploaded_by=#{user}) THEN m.id END)
+                               WHEN COUNT(*)=1 THEN MAX(CASE WHEN EXISTS (SELECT 1 FROM digital_qa_ppt_finding_recipient h WHERE h.finding_id=m.id AND h.user_id=#{user})
+                                   OR latest.uploaded_by=#{user} THEN m.id END) END
+                   FROM digital_qa_ppt_finding m
+                   WHERE m.version_id=latest.id
+                     AND (f.feedback_department IS NULL OR m.feedback_department=f.feedback_department)
+                     AND <include refid="normalizedTitle"><property name="title" value="f.title"/></include> &lt;&gt; ''
+                     AND <include refid="normalizedTitle"><property name="title" value="m.title"/></include> =
+                         <include refid="normalizedTitle"><property name="title" value="f.title"/></include>
+               ) END AS finding_id,
+               (latest.id=original.id OR f.id IS NULL OR EXISTS (
+                   SELECT 1 FROM digital_qa_ppt_slide s WHERE s.version_id=latest.id
+                     AND <include refid="normalizedTitle"><property name="title" value="f.title"/></include> &lt;&gt; ''
+                     AND <include refid="normalizedTitle"><property name="title" value="s.title"/></include> =
+                         <include refid="normalizedTitle"><property name="title" value="f.title"/></include>
+               )) AS title_present
+        FROM digital_qa_ppt_material_version original
+        JOIN digital_qa_ppt_material_version latest ON latest.batch_id=original.batch_id AND latest.status='ANALYZED'
+        LEFT JOIN digital_qa_ppt_finding f ON f.id=#{finding,jdbcType=BIGINT} AND f.version_id=original.id
+        WHERE original.id=#{version}
+          AND (#{finding,jdbcType=BIGINT} IS NULL OR f.id IS NOT NULL)
+          AND (latest.id=original.id OR NOT EXISTS (
+              SELECT 1 FROM digital_qa_ppt_assignment_change change WHERE change.finding_id=f.id
+          ))
+          AND (#{finding,jdbcType=BIGINT} IS NULL OR original.uploaded_by=#{user}
+               OR EXISTS (SELECT 1 FROM digital_qa_ppt_finding_recipient h WHERE h.finding_id=f.id AND h.user_id=#{user}))
+        ORDER BY latest.version_no DESC LIMIT 1
+    </select>
+
+    <!-- 统计指定版本各板块的负责人和事项数量。 -->
+    <select id="sectionWork" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$SectionWork">
+        SELECT assigned_section AS section,assigned_owner AS owner_user_id,COUNT(*) AS total
+        FROM digital_qa_ppt_slide WHERE version_id=#{id} AND assigned_section IS NOT NULL
+        GROUP BY assigned_section,assigned_owner ORDER BY assigned_section,assigned_owner
+    </select>
+
+    <!-- 读取版本上传用户，用于上传人权限校验。 -->
+    <select id="versionUploader" resultType="string">
+        SELECT uploaded_by FROM digital_qa_ppt_material_version WHERE id=#{id}
+    </select>
+
+    <!-- 查找同标题与部门的历史反馈记录。 -->
+    <select id="previousFeedback" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackNote">
+        SELECT r.judgement,r.explanation,r.user_id
+        FROM digital_qa_ppt_finding f
+        JOIN digital_qa_ppt_material_version v ON v.id=f.version_id
+        JOIN digital_qa_ppt_material_version prior ON prior.batch_id=v.batch_id
+            AND prior.version_no &lt; v.version_no AND prior.status='ANALYZED'
+        JOIN digital_qa_ppt_finding_feedback r ON r.finding_id=(
+            SELECT CASE WHEN COUNT(CASE WHEN p.chapter=f.chapter THEN 1 END)=1
+                        THEN MAX(CASE WHEN p.chapter=f.chapter THEN p.id END)
+                        WHEN COUNT(*)=1 THEN MAX(p.id) END
+            FROM digital_qa_ppt_finding p
+            WHERE p.version_id=prior.id
+              AND (f.feedback_department=p.feedback_department OR (f.feedback_department IS NULL
+                   AND p.feedback_department IS NULL AND f.auto_departments=p.auto_departments))
+              AND <include refid="normalizedTitle"><property name="title" value="p.title"/></include> =
+                  <include refid="normalizedTitle"><property name="title" value="f.title"/></include>
+        )
+        JOIN digital_qa_ppt_finding previous_finding ON previous_finding.id=r.finding_id
+        WHERE f.id=#{id} AND r.assignment_revision=previous_finding.assignment_revision
+          AND <include refid="normalizedTitle"><property name="title" value="f.title"/></include> &lt;&gt; ''
+          AND NOT EXISTS (
+            SELECT 1 FROM digital_qa_ppt_material_version newer
+            WHERE newer.batch_id=v.batch_id AND newer.status='ANALYZED'
+              AND newer.version_no &gt; prior.version_no AND newer.version_no &lt; v.version_no
+        )
+        ORDER BY r.id DESC LIMIT 1
+    </select>
+    <!-- 匹配历史版本同标题与部门的明确对应事项并继承反馈。 -->
+    <insert id="carryFeedback">
+        WITH inherit_findings AS (
+            SELECT f.id, f.version_id, v.batch_id, v.version_no, v.status AS version_status,
+                   f.chapter, f.feedback_department,
+                   <include refid="normalizedTitle"><property name="title" value="f.title"/></include> AS title_key
+            FROM digital_qa_ppt_finding f
+            JOIN digital_qa_ppt_material_version v ON v.id=f.version_id
+        ), inherit_matches AS (
+            SELECT f.id AS finding_id, f.version_id, p.id AS prior_id, p.version_id AS prior_version_id, p.version_no,
+                   DENSE_RANK() OVER (PARTITION BY f.id, p.version_id
+                       ORDER BY CASE WHEN f.chapter=p.chapter THEN 0 ELSE 1 END) AS preference
+            FROM inherit_findings f
+            JOIN inherit_findings p ON p.batch_id=f.batch_id AND p.version_no&lt;f.version_no
+                AND p.version_status='ANALYZED' AND p.title_key=f.title_key
+                AND (f.feedback_department=p.feedback_department OR (f.feedback_department IS NULL AND p.feedback_department IS NULL)
+                     OR (p.feedback_department IS NULL AND EXISTS (
+                         SELECT 1 FROM digital_qa_ppt_finding_recipient prior_recipient
+                         JOIN digital_qa_ppt_finding_recipient current_recipient ON current_recipient.user_id=prior_recipient.user_id
+                         WHERE prior_recipient.finding_id=p.id AND current_recipient.finding_id=f.id
+                     )))
+            WHERE f.version_id=#{id} AND f.title_key &lt;&gt; ''
+        ), inherit_candidates AS (
+            SELECT inherit_matches.*,
+                   COUNT(*) OVER (PARTITION BY finding_id, prior_version_id) AS candidate_count,
+                   COUNT(*) OVER (PARTITION BY prior_id, version_id) AS destination_count
+            FROM inherit_matches WHERE preference=1
+        ), inherit_notes AS (
+            SELECT c.finding_id, c.version_id, r.judgement, r.adjusted_departments, r.explanation, r.user_id, r.created_at,
+                   ROW_NUMBER() OVER (PARTITION BY c.finding_id ORDER BY c.version_no DESC, r.id DESC) AS priority
+            FROM inherit_candidates c
+            JOIN digital_qa_ppt_finding_feedback r ON r.finding_id=c.prior_id
+            WHERE c.candidate_count=1 AND c.destination_count=1
+              AND EXISTS (SELECT 1 FROM digital_qa_ppt_finding_recipient h WHERE h.finding_id=c.finding_id)
+              AND NOT EXISTS (SELECT 1 FROM digital_qa_ppt_finding_feedback own WHERE own.finding_id=c.finding_id)
+        )
+        INSERT INTO digital_qa_ppt_finding_feedback(finding_id,judgement,adjusted_departments,explanation,user_id,created_at)
+        SELECT finding_id,judgement,adjusted_departments,explanation,user_id,created_at
+        FROM inherit_notes WHERE priority=1
+    </insert>
+    <!-- 依据继承的反馈判断更新当前事项处理状态。 -->
+    <update id="markCarriedFeedbackComplete">
+        UPDATE digital_qa_ppt_finding f SET status=(
+            SELECT CASE WHEN r.judgement='NON_ANOMALY' THEN 'ADJUSTED' ELSE 'CONFIRMED' END
+            FROM digital_qa_ppt_finding_feedback r WHERE r.finding_id=f.id ORDER BY r.id DESC LIMIT 1
+        )
+        WHERE f.version_id=#{id} AND f.status='PENDING_FEEDBACK'
+          AND f.id IN (SELECT finding_id FROM digital_qa_ppt_finding_feedback)
+    </update>
+
+    <!-- 读取指定事项最新提交的一次反馈。 -->
+    <select id="latestFeedback" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackNote">
+        SELECT r.judgement,r.explanation,r.user_id FROM digital_qa_ppt_finding_feedback r
+        JOIN digital_qa_ppt_finding f ON f.id=r.finding_id AND f.assignment_revision=r.assignment_revision
+        WHERE f.id=#{id} ORDER BY r.id DESC LIMIT 1
+    </select>
+
+    <select id="feedbackState" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackState">
+        SELECT f.assignment_revision,r.id,r.judgement,r.explanation,r.user_id
+        FROM digital_qa_ppt_finding f
+        LEFT JOIN digital_qa_ppt_finding_feedback r ON r.finding_id=f.id AND r.assignment_revision=f.assignment_revision
+        WHERE f.id=#{id} ORDER BY r.id DESC LIMIT 1
+    </select>
+
+    <select id="feedbackRevisions" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackRevision">
+        SELECT r.id,r.assignment_revision,r.judgement,r.explanation,r.user_id,r.created_at,
+               change.previous_department AS department,
+               (r.assignment_revision=f.assignment_revision) AS active
+        FROM digital_qa_ppt_finding_feedback r
+        JOIN digital_qa_ppt_finding f ON f.id=r.finding_id
+        LEFT JOIN digital_qa_ppt_assignment_change change ON change.finding_id=f.id
+            AND change.assignment_revision=r.assignment_revision+1
+            AND COALESCE(change.previous_department,'') &lt;&gt; change.department
+        WHERE f.id=#{id}
+        ORDER BY r.id DESC
+    </select>
+
+    <select id="findingAssignment" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FindingAssignment">
+        SELECT f.id,s.page_no,f.feedback_department,f.auto_departments,f.assignment_revision,f.status
+        FROM digital_qa_ppt_finding f JOIN digital_qa_ppt_slide s ON s.id=f.slide_id
+        WHERE f.id=#{id} AND f.version_id=#{version} FOR UPDATE OF f
+    </select>
+
+    <select id="assignmentHandlers" resultType="string">
+        SELECT user_id FROM digital_qa_ppt_finding_recipient WHERE finding_id=#{id} ORDER BY user_id
+    </select>
+
+    <delete id="deleteAssignmentHandlers">
+        DELETE FROM digital_qa_ppt_finding_handler WHERE finding_id=#{id}
+    </delete>
+
+    <update id="updateFindingAssignment">
+        UPDATE digital_qa_ppt_finding
+        SET feedback_department=#{department},auto_departments=#{departments},assignment_revision=#{revision},
+            status=#{status},owner_user_id=NULL
+        WHERE id=#{id}
+    </update>
+
+    <insert id="recordAssignmentChange">
+        INSERT INTO digital_qa_ppt_assignment_change
+            (finding_id,assignment_revision,previous_department,department,previous_handlers,handlers,changed_by)
+        VALUES (#{id},#{revision},#{previousDepartment,jdbcType=VARCHAR},#{department},#{previousHandlers},#{handlers},#{user})
+    </insert>
+
+    <select id="assignmentExists" resultType="boolean">
+        SELECT EXISTS (
+            SELECT 1 FROM digital_qa_ppt_finding f JOIN digital_qa_ppt_slide s ON s.id=f.slide_id
+            WHERE f.version_id=#{version} AND s.page_no=#{page} AND f.id &lt;&gt; #{exclude}
+                AND (f.feedback_department=#{department} OR
+                     (f.feedback_department IS NULL AND f.auto_departments=#{departments}))
+        )
+    </select>
+
+    <insert id="addAssignmentHandler">
+        INSERT INTO digital_qa_ppt_finding_handler(finding_id,user_id) VALUES (#{id},#{user})
+    </insert>
+
+    <select id="createManualFinding" resultType="long" affectData="true" flushCache="true">
+        INSERT INTO digital_qa_ppt_finding(version_id,slide_id,sequence_no,title,chapter,source_text,
+            auto_departments,status,content_fingerprint,feedback_department)
+        SELECT s.version_id,s.id,
+            (SELECT COALESCE(MAX(f.sequence_no),0)+1 FROM digital_qa_ppt_finding f WHERE f.version_id=s.version_id),
+            s.title,s.assigned_section,'',#{departments},'PENDING_FEEDBACK',
+            'manual:' || CAST(s.id AS VARCHAR),#{department}
+        FROM digital_qa_ppt_slide s WHERE s.version_id=#{version} AND s.page_no=#{page}
+        RETURNING id
+    </select>
+
+    <!-- 为指定版本的板块分配负责人。 -->
+    <update id="assignSection">
+        UPDATE digital_qa_ppt_slide SET assigned_owner=#{user}
+        WHERE version_id=#{id} AND assigned_section=#{section} AND NOT assignment_skipped
+    </update>
+
+    <!-- 读取 PPT 原件的原始文件名及存储路径。 -->
+    <select id="file" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$StoredFile">
+        SELECT file_name,file_path FROM digital_qa_ppt_material_version WHERE id=#{id}
+    </select>
+
+    <!-- 统计版本中已解析的页面数量。 -->
+    <select id="slideCount" resultType="long">
+        SELECT COUNT(*) FROM digital_qa_ppt_slide WHERE version_id=#{id}
+    </select>
+
+    <!-- 将版本标记为识别失败。 -->
+    <update id="markFailed">
+        UPDATE digital_qa_ppt_material_version SET status='FAILED' WHERE id=#{id} AND status='UPLOADED'
+    </update>
+
+    <!-- 查询结果汇总中各事项对应的经办人。 -->
+    <select id="versionBatchId" resultType="java.lang.Long">
+        SELECT batch_id FROM digital_qa_ppt_material_version WHERE id=#{id}
+    </select>
+
+    <select id="resultHandlers" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$ResultHandler">
+        SELECT r.finding_id, r.user_id
+        FROM digital_qa_ppt_finding_recipient r
+        JOIN digital_qa_ppt_finding f ON f.id=r.finding_id
+        WHERE f.version_id=#{id}
+        ORDER BY r.finding_id, r.user_id
+    </select>
+
+    <!-- 按识别序号查询指定版本的事项。 -->
+    <select id="findings" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FindingRow">
+        SELECT f.id,f.sequence_no,s.page_no,f.title,f.chapter,f.source_text,f.anomaly_keyword,f.auto_departments,f.owner_user_id,f.status,f.version_relation FROM digital_qa_ppt_finding f JOIN digital_qa_ppt_slide s ON s.id=f.slide_id WHERE f.version_id=#{id} ORDER BY f.sequence_no
+    </select>
+
+    <!-- 读取指定版本和页码的页面元数据。 -->
+    <select id="slide" resultType="com.agentscopea2a.v2.pptanomaly.PptAnomalyModels$Slide">
+        SELECT id,page_no,title,image_path,render_status,recognition_type FROM digital_qa_ppt_slide WHERE version_id=#{id} AND page_no=#{page}
+    </select>
+
+    <!-- 查询事项及其负责人，供反馈写入权限校验。 -->
+    <select id="owner" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$Owner">
+        SELECT id,owner_user_id FROM digital_qa_ppt_finding WHERE id=#{id} FOR UPDATE
+    </select>
+    <!-- 读取事项所属版本和负责人，供反馈历史访问校验。 -->
+    <select id="findingOwner" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$Owner">
+        SELECT id,owner_user_id FROM digital_qa_ppt_finding WHERE id=#{id}
+    </select>
+
+    <!-- 新增一次事项反馈，保存判断、说明及反馈用户。 -->
+    <insert id="feedback">
+        INSERT INTO digital_qa_ppt_finding_feedback(finding_id,judgement,adjusted_departments,explanation,user_id,assignment_revision)
+        SELECT id,#{judgement},#{departments},#{explanation},#{user},assignment_revision
+        FROM digital_qa_ppt_finding WHERE id=#{id}
+    </insert>
+
+    <!-- 更新事项的反馈处理状态。 -->
+    <update id="findingStatus">
+        UPDATE digital_qa_ppt_finding SET status=#{status} WHERE id=#{id}
+    </update>
+
+    <!-- 读取数据库中的标题解析模式及表格行范围配置。 -->
+    <select id="scopes" resultType="com.agentscopea2a.v2.pptanomaly.PptKeywordConfigController$Entry">
+        SELECT id,name,target,upper_limit_ratio,first_row,last_row,created_at,updated_at FROM digital_qa_ppt_keyword_config WHERE kind='scope'
+    </select>
+
+    <!-- 保存解析页面，兼容更新历史跳过页面的提取结果。 -->
+    <insert id="createSlide">
+        INSERT INTO digital_qa_ppt_slide(version_id,page_no,title,extracted_json,render_status,recognition_type) VALUES (#{id},#{page},#{title},#{texts},#{render},#{mode})
+        ON DUPLICATE KEY UPDATE
+            title=CASE WHEN digital_qa_ppt_slide.recognition_type IN ('SKIP','REVIEW') THEN #{title} ELSE digital_qa_ppt_slide.title END,
+            extracted_json=CASE WHEN digital_qa_ppt_slide.recognition_type IN ('SKIP','REVIEW') THEN #{texts} ELSE digital_qa_ppt_slide.extracted_json END,
+            assignment_skipped=CASE WHEN digital_qa_ppt_slide.recognition_type IN ('SKIP','REVIEW') THEN FALSE ELSE digital_qa_ppt_slide.assignment_skipped END,
+            recognition_type=CASE WHEN digital_qa_ppt_slide.recognition_type IN ('SKIP','REVIEW') THEN #{mode} ELSE digital_qa_ppt_slide.recognition_type END
+    </insert>
+
+    <!-- 判断版本是否存在待重新解析的历史跳过页面。 -->
+    <select id="hasSkippedSlides" resultType="boolean">
+        SELECT EXISTS (SELECT 1 FROM digital_qa_ppt_slide
+                       WHERE version_id=#{id} AND recognition_type IN ('SKIP','REVIEW'))
+    </select>
+
+    <!-- 锁定材料版本并读取状态，协调识别、分派和通知操作。 -->
+    <select id="lockVersion" resultType="string">
+        SELECT status FROM digital_qa_ppt_material_version WHERE id=#{id} FOR UPDATE
+    </select>
+
+    <!-- 统计指定版本的识别事项数量。 -->
+    <select id="findingCount" resultType="int">
+        SELECT COUNT(*) FROM digital_qa_ppt_finding WHERE version_id=#{id}
+    </select>
+
+    <!-- 清除版本已有事项，供识别重建使用。 -->
+    <delete id="deleteFindings">
+        DELETE FROM digital_qa_ppt_finding WHERE version_id=#{id}
+    </delete>
+
+    <!-- 读取参与识别的页面文本、板块和默认联系人。 -->
+    <sql id="slideInRecognitionScope">
+        COALESCE(s.recognition_type,'FULL') NOT IN ('SKIP','OUT_OF_SCOPE')
+        AND (s.assigned_section IS NOT NULL
+             OR EXISTS (SELECT 1 FROM digital_qa_ppt_keyword_config c WHERE c.kind='scope'
+                        AND c.name IN (s.title, trim(regexp_replace(s.title, <include refid="titlePrefix"/>, '')))))
+    </sql>
+
+    <select id="analysisSlides" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$AnalysisSlide">
+        SELECT s.id,s.title,s.extracted_json,s.assigned_section AS section,contact.target AS default_owner
+        FROM digital_qa_ppt_slide s
+        LEFT JOIN digital_qa_ppt_keyword_config contact ON contact.kind='contact' AND contact.name=s.assigned_section
+        WHERE s.version_id=#{id} AND NOT s.assignment_skipped AND (<include refid="slideInRecognitionScope"/>)
+        ORDER BY s.page_no
+    </select>
+
+    <!-- 按页码查询页面标题、板块归属及跳过标记。 -->
+    <select id="pageAssignments" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$PageAssignment">
+        SELECT s.page_no AS page,s.title,s.assigned_section AS section,
+               (s.assignment_skipped OR NOT (<include refid="slideInRecognitionScope"/>)) AS skipped,
+               COALESCE(s.recognition_type,'FULL') AS mode, s.assignment_skipped AS excluded
+        FROM digital_qa_ppt_slide s
+        WHERE s.version_id=#{id} ORDER BY s.page_no
+    </select>
+
+    <update id="updatePageRecognition">
+        UPDATE digital_qa_ppt_slide SET title=#{title}, extracted_json=#{texts}, recognition_type=#{mode}
+        WHERE version_id=#{id} AND page_no=#{page}
+    </update>
+
+    <!-- 读取标题到板块的默认映射。 -->
+    <select id="titleSections" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$TitleSection">
+        SELECT name AS title,target AS section FROM digital_qa_ppt_keyword_config WHERE kind='section'
+    </select>
+
+    <!-- 将匹配到的标题板块映射固化到当前版本页面。 -->
+    <update id="snapshotSections">
+        UPDATE digital_qa_ppt_slide s SET assigned_section=(
+            SELECT c.target FROM digital_qa_ppt_keyword_config c
+            WHERE c.kind='section' AND c.name IN (
+                s.title, trim(regexp_replace(s.title, <include refid="titlePrefix"/>, ''))
+            )
+            ORDER BY CASE WHEN c.name=s.title THEN 0 ELSE 1 END LIMIT 1
+        )
+        WHERE s.version_id=#{id} AND s.assigned_section IS NULL AND NOT s.assignment_skipped
+          AND (<include refid="slideInRecognitionScope"/>)
+    </update>
+
+    <!-- 合并配置及历史版本中的板块，供导入确认选择。 -->
+    <select id="importSections" resultType="string">
+        SELECT target FROM digital_qa_ppt_keyword_config WHERE kind='section'
+        UNION
+        SELECT name FROM digital_qa_ppt_keyword_config WHERE kind IN ('board','contact')
+        UNION
+        SELECT s.assigned_section FROM digital_qa_ppt_slide s
+        JOIN digital_qa_ppt_material_version prior ON prior.id=s.version_id AND prior.status='ANALYZED'
+        JOIN digital_qa_ppt_material_version current ON current.batch_id=prior.batch_id AND prior.version_no &lt; current.version_no
+        WHERE current.id=#{id} AND s.assigned_section IS NOT NULL
+        UNION
+        SELECT f.chapter FROM digital_qa_ppt_finding f
+        JOIN digital_qa_ppt_material_version prior ON prior.id=f.version_id AND prior.status='ANALYZED'
+        JOIN digital_qa_ppt_material_version current ON current.batch_id=prior.batch_id AND prior.version_no &lt; current.version_no
+        WHERE current.id=#{id} AND f.chapter IS NOT NULL
+        ORDER BY 1
+    </select>
+
+    <!-- 保存当前版本页面的板块、联系人和跳过标记。 -->
+    <update id="setPageAssignment">
+        UPDATE digital_qa_ppt_slide SET assigned_section=#{section},assigned_owner=#{owner},assignment_skipped=#{skip}
+        WHERE version_id=#{id} AND page_no=#{page}
+    </update>
+
+    <!-- 首次保存标题的默认板块归属，已有映射保留原值。 -->
+    <insert id="rememberSection">
+        INSERT INTO digital_qa_ppt_keyword_config(kind,name,target,updated_at) VALUES ('section',#{title},#{section},CURRENT_TIMESTAMP)
+        ON DUPLICATE KEY UPDATE target=digital_qa_ppt_keyword_config.target
+    </insert>
+
+    <!-- 首次保存上传确认的识别范围，保留已有的范围和表格参数。 -->
+    <insert id="rememberScope">
+        INSERT INTO digital_qa_ppt_keyword_config(kind,name,target,updated_at) VALUES ('scope',#{title},#{mode},CURRENT_TIMESTAMP)
+        ON DUPLICATE KEY UPDATE target=digital_qa_ppt_keyword_config.target
+    </insert>
+
+    <!-- 读取标题已保存的默认板块归属。 -->
+    <select id="rememberedSection" resultType="string">
+        SELECT target FROM digital_qa_ppt_keyword_config WHERE kind='section' AND name=#{title}
+    </select>
+
+    <!-- 确保正式板块配置存在。 -->
+    <insert id="ensureBoard">
+        INSERT INTO digital_qa_ppt_keyword_config(kind,name,target,updated_at) VALUES ('board',#{section},#{section},CURRENT_TIMESTAMP)
+        ON DUPLICATE KEY UPDATE target=digital_qa_ppt_keyword_config.target
+    </insert>
+
+    <!-- 保存或更新板块默认联系人。 -->
+    <insert id="rememberBoardOwner">
+        INSERT INTO digital_qa_ppt_keyword_config(kind,name,target,updated_at) VALUES ('contact',#{section},#{owner},CURRENT_TIMESTAMP)
+        ON DUPLICATE KEY UPDATE target=#{owner}, updated_at=CURRENT_TIMESTAMP
+    </insert>
+
+    <!-- 查询板块默认联系人配置。 -->
+    <select id="boardOwners" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$BoardOwner">
+        SELECT name,target AS owner FROM digital_qa_ppt_keyword_config WHERE kind='contact'
+    </select>
+
+    <!-- 按板块和联系人统计当前版本的导入分派结果。 -->
+    <select id="importOwners" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$SectionWork">
+        SELECT assigned_section AS section,assigned_owner AS owner_user_id,COUNT(*) AS total
+        FROM digital_qa_ppt_slide WHERE version_id=#{id} AND assigned_owner IS NOT NULL
+        GROUP BY assigned_section,assigned_owner
+    </select>
+
+    <!-- 读取部门关键词及其目标部门配置。 -->
+    <select id="departments" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$DepartmentMapping">
+        SELECT name,target FROM digital_qa_ppt_keyword_config WHERE kind='department' ORDER BY id
+    </select>
+
+
+    <!-- 读取标题、部门与经办人的配置关系。 -->
+    <select id="titleHandlers" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$TitleHandler">
+        SELECT title, department, user_id FROM digital_qa_ppt_title_handler ORDER BY title, department, user_id
+    </select>
+    <!-- 按明细和链接顺序读取标题的明细链接配置。 -->
+    <select id="titleDetailLinks" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$TitleDetailLink">
+        SELECT detail_no, detail_name, link_name, url FROM digital_qa_ppt_title_detail_link
+        WHERE title=#{title} ORDER BY detail_no, link_no
+    </select>
+    <!-- 通过事项标题匹配明细链接，优先采用完整标题配置。 -->
+    <select id="findingDetailLinks" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$TitleDetailLink">
+        SELECT detail_no, detail_name, link_name, url FROM digital_qa_ppt_title_detail_link
+        WHERE title=(
+            SELECT c.name FROM digital_qa_ppt_finding f
+            JOIN digital_qa_ppt_keyword_config c ON c.kind IN ('section', 'scope')
+                AND c.name IN (f.title, <include refid="normalizedTitle"><property name="title" value="f.title"/></include>)
+            WHERE f.id=#{id}
+            ORDER BY CASE WHEN c.name=f.title THEN 0 ELSE 1 END LIMIT 1
+        )
+        ORDER BY detail_no, link_no
+    </select>
+    <!-- 删除指定标题下的全部明细链接。 -->
+    <delete id="deleteTitleDetailLinks">
+        DELETE FROM digital_qa_ppt_title_detail_link WHERE title=#{title}
+    </delete>
+    <!-- 在标题改名时同步更新明细链接所属标题。 -->
+    <update id="renameTitleDetailLinks">
+        UPDATE digital_qa_ppt_title_detail_link SET title=#{title} WHERE title=#{original}
+    </update>
+    <!-- 保存标题下指定明细分组的一条链接。 -->
+    <insert id="insertTitleDetailLink">
+        INSERT INTO digital_qa_ppt_title_detail_link(title, detail_no, link_no, detail_name, link_name, url)
+        VALUES (#{title}, #{link.detailNo}, #{linkNo}, #{link.detailName}, #{link.linkName}, #{link.url})
+    </insert>
+    <!-- 锁定标题配置记录，协调标题及经办人配置的并发修改。 -->
+    <select id="lockConfiguredTitle" resultType="long">
+        SELECT id FROM digital_qa_ppt_keyword_config WHERE kind IN ('section','scope') AND name=#{title}
+        ORDER BY id FOR UPDATE
+    </select>
+    <!-- 保存标题经办人，复合主键冲突时保留已有关系。 -->
+    <insert id="insertTitleHandler">
+        INSERT INTO digital_qa_ppt_title_handler(title,department,user_id) VALUES (#{title},#{department},#{user})
+        ON DUPLICATE KEY UPDATE NOTHING
+    </insert>
+    <!-- 清除指定标题的全部经办人配置。 -->
+    <delete id="deleteTitleHandlers">
+        DELETE FROM digital_qa_ppt_title_handler WHERE title=#{title}
+    </delete>
+    <!-- 删除指定标题与用户的经办关系。 -->
+    <delete id="deleteTitleHandler">
+        DELETE FROM digital_qa_ppt_title_handler WHERE title=#{title} AND user_id=#{user}
+    </delete>
+    <!-- 在标题改名时同步更新经办人配置。 -->
+    <update id="renameTitleHandlers">
+        UPDATE digital_qa_ppt_title_handler SET title=#{title} WHERE title=#{original}
+    </update>
+    <!-- 按识别出的部门创建事项并记录内容指纹及反馈状态。 -->
+    <insert id="createDepartmentFinding">
+        INSERT INTO digital_qa_ppt_finding(version_id,slide_id,sequence_no,title,chapter,source_text,anomaly_keyword,auto_departments,status,content_fingerprint,feedback_department)
+        VALUES (#{version},#{slide},#{sequence},#{title},#{section},#{text},#{keyword},#{departments},#{status},#{fingerprint},#{department})
+    </insert>
+    <!-- 为版本中的指定事项保存经办人快照。 -->
+    <insert id="addFindingHandler">
+        INSERT INTO digital_qa_ppt_finding_handler(finding_id,user_id)
+        SELECT id,#{user} FROM digital_qa_ppt_finding WHERE version_id=#{version} AND sequence_no=#{sequence}
+    </insert>
+    <!-- 查找最新已识别版本中可按标题配置补充分派的版本。 -->
+    <select id="unassignedTitleVersions" resultType="long">
+        SELECT DISTINCT v.id FROM digital_qa_ppt_material_version v
+        JOIN digital_qa_ppt_finding f ON f.version_id=v.id
+        JOIN digital_qa_ppt_title_handler h ON h.title=#{title} AND h.department=f.feedback_department
+        WHERE f.status='UNASSIGNED' AND v.status='ANALYZED'
+          AND trim(regexp_replace(COALESCE(f.title,''), <include refid="titlePrefix"/>, '')) =
+              trim(regexp_replace(h.title, <include refid="titlePrefix"/>, ''))
+          AND NOT EXISTS (SELECT 1 FROM digital_qa_ppt_material_version newer
+              WHERE newer.batch_id=v.batch_id AND newer.status='ANALYZED' AND newer.version_no &gt; v.version_no)
+        ORDER BY v.id
+    </select>
+    <!-- 按标题和部门将经办人分配给指定版本的待分派事项。 -->
+    <insert id="assignUnassignedTitleFindings">
+        INSERT INTO digital_qa_ppt_finding_handler(finding_id,user_id)
+        SELECT f.id,h.user_id FROM digital_qa_ppt_finding f
+        JOIN digital_qa_ppt_title_handler h ON h.title=#{title} AND h.department=f.feedback_department
+        WHERE f.version_id=#{version} AND f.status='UNASSIGNED'
+          AND trim(regexp_replace(COALESCE(f.title,''), <include refid="titlePrefix"/>, '')) =
+              trim(regexp_replace(h.title, <include refid="titlePrefix"/>, ''))
+    </insert>
+    <!-- 将已补齐经办人的待分派事项改为待反馈。 -->
+    <update id="markAssignedTitleFindingsPending">
+        UPDATE digital_qa_ppt_finding f SET status='PENDING_FEEDBACK'
+        WHERE f.version_id=#{version} AND f.status='UNASSIGNED'
+          AND EXISTS (SELECT 1 FROM digital_qa_ppt_finding_handler h WHERE h.finding_id=f.id)
+    </update>
+    <!-- 查询指定用户在版本中负责的事项主键。 -->
+    <select id="recipientFindingIds" resultType="long">
+        SELECT f.id FROM digital_qa_ppt_finding f
+        JOIN digital_qa_ppt_finding_recipient h ON h.finding_id=f.id
+        WHERE f.version_id=#{version} AND h.user_id=#{user}
+    </select>
+    <!-- 判断用户是否属于当前事项的反馈接收人。 -->
+    <select id="isFindingRecipient" resultType="boolean">
+        SELECT EXISTS (SELECT 1 FROM digital_qa_ppt_finding_recipient WHERE finding_id=#{id} AND user_id=#{user})
+    </select>
+    <!-- 读取事项自动识别的部门 JSON。 -->
+    <select id="findingDepartments" resultType="string">
+        SELECT auto_departments FROM digital_qa_ppt_finding WHERE id=#{id}
+    </select>
+
+    <!-- 将材料版本标记为已完成识别。 -->
+    <update id="markImportConfirmed">
+        UPDATE digital_qa_ppt_material_version SET status='IMPORT_CONFIRMED' WHERE id=#{id}
+    </update>
+    <update id="markAnalyzed">
+        UPDATE digital_qa_ppt_material_version SET status='ANALYZED' WHERE id=#{id}
+    </update>
+
+    <!-- 读取同一批次中版本号紧邻的上一版本。 -->
+    <select id="previous" resultType="long">
+        SELECT previous.id FROM digital_qa_ppt_material_version current JOIN digital_qa_ppt_material_version previous ON previous.batch_id=current.batch_id AND previous.version_no=current.version_no-1 WHERE current.id=#{id}
+    </select>
+
+    <!-- 读取当前版本之前最近一次已完成识别的版本。 -->
+    <select id="previousAnalyzed" resultType="long">
+        SELECT prior.id FROM digital_qa_ppt_material_version current
+        JOIN digital_qa_ppt_material_version prior ON prior.batch_id=current.batch_id AND prior.version_no &lt; current.version_no
+        WHERE current.id=#{id} AND prior.status='ANALYZED'
+        ORDER BY prior.version_no DESC LIMIT 1
+    </select>
+
+    <!-- 按归一化标题关联上一版本，标记延续事项。 -->
+    <update id="reconcile">
+        UPDATE digital_qa_ppt_finding current SET version_relation='CONTINUED'
+        WHERE current.version_id=#{id} AND EXISTS (
+            SELECT 1 FROM digital_qa_ppt_finding prior
+            WHERE prior.version_id=#{previous}
+              AND trim(regexp_replace(prior.title, <include refid="titlePrefix"/>, '')) =
+                  trim(regexp_replace(current.title, <include refid="titlePrefix"/>, ''))
+              AND trim(regexp_replace(current.title, <include refid="titlePrefix"/>, '')) &lt;&gt; ''
+        )
+    </update>
+
+    <!-- 统计指定类别及筛选条件下的配置数量。 -->
+    <select id="configCount" resultType="long">
+        SELECT COUNT(*) <include refid="configFilter"/>
+    </select>
+
+    <!-- 按类别、名称和目标值分页查询关键词配置。 -->
+    <select id="configs" resultType="com.agentscopea2a.v2.pptanomaly.PptKeywordConfigController$Entry">
+        SELECT id,name,target,upper_limit_ratio,first_row,last_row,created_at,updated_at <include refid="configFilter"/> ORDER BY id DESC LIMIT #{size} OFFSET #{offset}
+    </select>
+
+    <!-- 查询可选择的正式板块名称。 -->
+    <select id="sections" resultType="string">
+        SELECT target FROM digital_qa_ppt_keyword_config WHERE kind='section'
+        UNION
+        SELECT name FROM digital_qa_ppt_keyword_config WHERE kind IN ('board','contact')
+        ORDER BY 1
+    </select>
+
+    <!-- 删除指定类别的单条关键词配置。 -->
+    <delete id="deleteConfig">
+        DELETE FROM digital_qa_ppt_keyword_config WHERE kind=#{kind} AND id=#{id}
+    </delete>
+
+    <!-- 新增一条关键词、标题范围或板块相关配置。 -->
+    <insert id="createConfig">
+        INSERT INTO digital_qa_ppt_keyword_config(kind,name,target,upper_limit_ratio,first_row,last_row,updated_at) VALUES (#{kind},#{entry.name},#{entry.target},#{entry.upperLimitRatio},#{entry.firstRow},#{entry.lastRow},CURRENT_TIMESTAMP)
+    </insert>
+
+    <!-- 更新指定类别的配置内容及编辑时间。 -->
+    <update id="updateConfig">
+        UPDATE digital_qa_ppt_keyword_config SET name=#{entry.name},target=#{entry.target},upper_limit_ratio=#{entry.upperLimitRatio},first_row=#{entry.firstRow},last_row=#{entry.lastRow},updated_at=CURRENT_TIMESTAMP WHERE kind=#{kind} AND id=#{entry.id}
+    </update>
+
+    <!-- 查询材料批次下的历史明细链接配置。 -->
+    <select id="links" resultType="map">
+        SELECT id,alias_name AS "aliasName",target_url AS "targetUrl",ppt_title AS "pptTitle",chapter,page_no AS "pageNo",enabled FROM digital_qa_ppt_detail_link WHERE batch_id=#{id} ORDER BY id
+    </select>
+
+    <!-- 为材料批次保存一条明细跳转链接。 -->
+    <insert id="createLink">
+        INSERT INTO digital_qa_ppt_detail_link(batch_id,alias_name,target_url,ppt_title,chapter,page_no,created_by) VALUES (#{id},#{body.aliasName},#{body.targetUrl},#{body.pptTitle},#{body.chapter},#{body.pageNo},#{user})
+    </insert>
+
+    <!-- 读取指定版本的部门邮件预览标题。 -->
+    <select id="mailSubject" resultType="string">
+        SELECT 'PPT 异常分拣 - ' || version_name FROM digital_qa_ppt_material_version WHERE id=#{id}
+    </select>
+
+    <!-- 查询指定部门对应的事项，供历史邮件预览使用。 -->
+    <select id="mailFindings" resultType="map">
+        SELECT sequence_no AS "sequenceNo",title,source_text AS "sourceText",anomaly_keyword AS "anomalyKeyword",status FROM digital_qa_ppt_finding WHERE version_id=#{id} AND auto_departments LIKE #{department} ORDER BY sequence_no
+    </select>
+
+    <!-- 登记部门邮件发送记录及操作用户。 -->
+    <insert id="recordMail">
+        INSERT INTO digital_qa_ppt_mail_record(version_id,department,subject,body,sent_by,status,sent_at) VALUES (#{id},#{department},#{preview.subject},#{preview.body},#{user},'SENT',CURRENT_TIMESTAMP)
+    </insert>
+    <select id="reportRecipients" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$ReportRecipientsRow">
+        SELECT recipients_to AS to_json, recipients_cc AS cc_json
+        FROM digital_qa_ppt_report_notification WHERE department = #{department}
+    </select>
+
+    <insert id="saveReportRecipients">
+        INSERT INTO digital_qa_ppt_report_notification (department, recipients_to, recipients_cc)
+        VALUES (#{department}, #{toJson}, #{ccJson})
+        ON DUPLICATE KEY UPDATE recipients_to = #{toJson}, recipients_cc = #{ccJson}
+    </insert>
+</mapper>

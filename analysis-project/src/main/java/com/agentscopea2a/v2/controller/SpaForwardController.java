@@ -42,7 +42,8 @@ public class SpaForwardController {
         return "forward:/pm/index.html";
     }
 
-    @GetMapping({ "/", "/login", "/chat", "/dashboard", "/skills", "/skills/**", "/sessions", "/sessions/**", "/trace", "/sql-registry", "/sql-registry/**", "/script-registry", "/script-registry/**", "/model-config", "/report/flows/**", "/notification-link" })
+    @GetMapping({ "/", "/login", "/chat", "/dashboard", "/skills", "/skills/**", "/sessions", "/sessions/**", "/trace", "/sql-registry", "/sql-registry/**", "/script-registry", "/script-registry/**", "/model-config", "/report/flows/**", "/notification-link",
+            "/ppt-anomaly", "/ppt-anomaly/**" })
     public String forward() {
         return "forward:/index.html";
     }

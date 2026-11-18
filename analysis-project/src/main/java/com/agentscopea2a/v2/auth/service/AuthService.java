@@ -121,16 +121,6 @@ public class AuthService {
         return normalUserLogin(userId);
     }
 
-    public LoginResponse mockSsoLogin(String userId) {
-        if (adminRoleService.isProductionMode()) {
-            throw new IllegalArgumentException("生产模式禁止模拟认证");
-        }
-        if (userId == null || userId.isBlank() || adminRoleService.isAdminUserId(userId)) {
-            throw new IllegalArgumentException("模拟认证仅允许普通用户");
-        }
-        return normalUserLogin(userId.trim());
-    }
-
     /** Transitional integration: the frontend supplies the third-party user ID; no token verification. */
     public LoginResponse thirdPartyLogin(String userId) {
         if (userId == null || userId.isBlank()) {

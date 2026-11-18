@@ -1,0 +1,79 @@
+/* 例会材料模块公共样式，统一表格、配置弹窗及确认框的展示。 */
+.ppt-anomaly-shell,
+.ppt-dialog.el-dialog,
+.ppt-confirm-box.el-message-box {
+  --el-color-primary: #2855c4;
+}
+
+.ppt-anomaly-shell .el-table,
+.ppt-dialog .el-table {
+  --el-table-header-bg-color: #edf3fc;
+  --el-table-header-text-color: #243b5d;
+  --el-table-border-color: #e3eaf4;
+  --el-table-row-hover-bg-color: #f4f8ff;
+  --el-table-text-color: #273953;
+}
+
+.ppt-anomaly-shell .el-table th.el-table__cell,
+.ppt-dialog .el-table th.el-table__cell,
+.ppt-anomaly-shell table th {
+  padding-block: 12px;
+  background: #edf3fc;
+  color: #243b5d;
+  font-weight: 650;
+}
+
+.ppt-dialog.el-dialog {
+  --ppt-dialog-gutter: clamp(16px, 3vw, 30px);
+  --el-dialog-padding-primary: 0px;
+  --el-dialog-border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+  max-height: 92dvh;
+  overflow: hidden;
+  border: 1px solid #dfe6f0;
+  box-shadow: 0 24px 64px #11234340;
+}
+
+.ppt-dialog .el-dialog__header {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 18px 54px 18px var(--ppt-dialog-gutter);
+  border-bottom: 1px solid #e3eaf4;
+  background: #f5f8fd;
+}
+
+.ppt-dialog .el-dialog__title {
+  color: #142441;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.ppt-dialog .el-dialog__body {
+  min-height: 0;
+  padding: 20px var(--ppt-dialog-gutter);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.ppt-dialog .el-form-item__label {
+  color: #344663;
+  font-weight: 600;
+}
+
+.ppt-dialog .el-input__wrapper,
+.ppt-dialog .el-select__wrapper {
+  min-height: 36px;
+  border-radius: 8px;
+}
+
+.ppt-dialog .el-button,
+.ppt-confirm-box .el-button {
+  border-radius: 8px;
+}
+
+.ppt-confirm-box.el-message-box {
+  max-width: 94vw;
+  padding: 20px;
+  border-radius: 14px;
+}

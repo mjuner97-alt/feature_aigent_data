@@ -71,4 +71,10 @@ public interface DeveloperPlPersonInfoMapper {
      * 只取当前(最大)"版本月份";一个 userId 可能多条记录(多部门/多统计组),调用方按 userId 去重。
      */
     List<DeveloperPlPersonInfo> selectByKeyword(@Param("keyword") String keyword);
+
+    List<DeveloperPlPersonInfo> searchPptPeople(@Param("keyword") String keyword,
+                                              @Param("department") String department);
+
+    List<DeveloperPlPersonInfo> searchDepartmentPeople(@Param("department") String department,
+                                                     @Param("keyword") String keyword);
 }

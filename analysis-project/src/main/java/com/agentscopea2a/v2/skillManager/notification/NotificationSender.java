@@ -40,6 +40,12 @@ public interface NotificationSender {
         send(payload);
         return null;
     }
+
+    /** 业务方指定本地预览目录；HTTP 发送器可忽略此目录。 */
+    default String sendPrepared(NotificationPayload payload, java.util.Map<String, Object> request,
+                                java.nio.file.Path localDirectory) {
+        return sendPrepared(payload, request);
+    }
 }
 
 
