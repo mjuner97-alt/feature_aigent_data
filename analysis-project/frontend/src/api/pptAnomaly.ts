@@ -3,6 +3,13 @@
 import type { PptBatch, PptBatchSummary, PptFinding, PptSectionWork, PptSlide, PptVersion, PptVersionWork } from '../types/pptAnomaly';
 import { searchSkillUsers } from './skill';
 const base='/api/ppt-anomaly';
+export interface PptMailRecord {
+  id: number; versionId: number; department: string; subject: string; body: string;
+  toUsers: string | null; ccUsers: string | null; sentBy: string; status: string; sentAt: string | null;
+}
+export async function listPptNotifications(versionId: number) {
+  return parse<PptMailRecord[]>(await fetch(`${base}/versions/${versionId}/notifications`, { headers: headers() }));
+}
 /** 为接口请求补充本地保存的用户标识，缺少标识时使用历史演示默认值。 */
 const headers=()=>({'X-User-Id':localStorage.getItem('skill-user-id')||'demo-user'});
 /** 在认证请求头中声明 JSON 请求正文类型。 */

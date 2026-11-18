@@ -181,6 +181,10 @@ public class PptAnomalyService {
         return persistence.versions(batchId);
     }
 
+    List<PptAnomalyMapper.FeedbackMailRecord> notificationRecords(long versionId) {
+        return persistence.feedbackMailRecords(versionId);
+    }
+
     /** 按当前用户汇总各版本的本人事项及待反馈数量。 */
     public List<PptAnomalyMapper.VersionWork> versionWork(String userId) {
         return persistence.versionWork(userId);
@@ -210,7 +214,7 @@ public class PptAnomalyService {
 
     /** 解析通知所指事项在最新已识别版本中的对应位置。 */
     public PptAnomalyMapper.LatestFeedbackLink latestFeedbackLink(long versionId, Long findingId, String userId) {
-        var link = persistence.latestFeedbackLink(versionId, findingId, userId);
+        var link = persistence.latestFeedbackLink(versionId, findingId, userId, isFeedbackManager(userId));
         if (link == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "反馈链接不可用");
         return link;
     }
@@ -918,6 +922,7 @@ public class PptAnomalyService {
 
     /** 依据事项经办关系及部门可见范围判断反馈读取权限。 */
     private boolean canReadFeedback(long findingId, String owner, String userId) {
+        if (isFeedbackManager(userId)) return true;
         List<String> departments = readList(persistence.findingDepartments(findingId));
         return departments.isEmpty()
                 ? canView(owner, userId) || (userId != null && persistence.isFindingRecipient(findingId, userId))
@@ -940,6 +945,14 @@ public class PptAnomalyService {
     private boolean inDepartment(List<String> departments, String userId) {
         var person = ledgerPerson(userId);
         return person != null && departments.stream().anyMatch(person.depts()::contains);
+    }
+
+    private boolean isFeedbackManager(String userId) {
+        return userId != null && PptAnomalyController.isProductDepartmentUser(userId, people);
+    }
+
+    private boolean canEditFeedback(List<String> departments, String userId) {
+        return isFeedbackManager(userId) || inDepartment(departments, userId);
     }
 
     /** 判断当前用户与负责人是否为同一人或属于相同部门。 */
@@ -1120,8 +1133,8 @@ public class PptAnomalyService {
     public void saveFeedback(long findingId, FeedbackRequest request, List<MultipartFile> attachments, String userId) {
         var ownerRow = persistence.owner(findingId);
         if (ownerRow == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "异常不存在");
-        if (!inDepartment(readList(persistence.findingDepartments(findingId)), userId)) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "仅反馈部门成员可以编辑反馈");
+        if (!canEditFeedback(readList(persistence.findingDepartments(findingId)), userId)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "仅产品部或反馈部门成员可以编辑反馈");
         }
         var state = persistence.feedbackState(findingId);
         if (request.baseRevision() != null && !feedbackRevision(state).equals(request.baseRevision())) {
@@ -1262,7 +1275,7 @@ public class PptAnomalyService {
         String owner = row.owner();
         var departments = readList(row.departments());
         return new Finding(row.id(), row.sequence(), row.page(), row.title(), row.chapter(), row.text(), row.keyword(),
-                departments, owner, row.status(), row.relation(), inDepartment(departments, userId));
+                departments, owner, row.status(), row.relation(), canEditFeedback(departments, userId));
     }
 
     /** 按数据库配置提取页面正文及指定表格内容。 */
@@ -1383,18 +1396,20 @@ public class PptAnomalyService {
     private static final java.util.regex.Pattern NUMBERED_HEADING = java.util.regex.Pattern.compile(
             "^[0-9]+(?:[\\p{javaWhitespace}\\p{Zs}]*[-－–—.．][\\p{javaWhitespace}\\p{Zs}]*[0-9]+)+[\\p{javaWhitespace}\\p{Zs}]*[^\\d\\s].*$");
 
-    /** 优先采用页首的数字层级标题，再按占位符、位置和字号兜底，支持组合形状。 */
+    /** 按视觉位置优先提取页首第一行，同一行内再优先编号标题及标题占位符。 */
     static String inferSlideTitle(XSLFSlide slide, double slideHeight, Set<String> configuredTitles) {
         List<TitleCandidate> candidates = new ArrayList<>();
         collectTitleCandidates(slide.getShapes(), 0, 1, slideHeight, candidates);
         if (candidates.isEmpty()) return "";
-        var numbered = candidates.stream()
+        double firstY = candidates.stream().mapToDouble(TitleCandidate::y).min().orElse(0);
+        // 编号可能与标题分框，不能让位置更低的大字号正文抢走页首标题。
+        double rowTolerance = Math.max(3, slideHeight * 0.015);
+        var firstRow = candidates.stream().filter(candidate -> candidate.y() <= firstY + rowTolerance).toList();
+        var numbered = firstRow.stream()
                 .filter(candidate -> NUMBERED_HEADING.matcher(candidate.text()).matches())
                 .min(java.util.Comparator.comparingDouble(TitleCandidate::y));
         if (numbered.isPresent()) return numbered.get().text();
-        boolean hasTop = candidates.stream().anyMatch(candidate -> candidate.y() < slideHeight / 3);
-        return candidates.stream()
-                .filter(candidate -> !hasTop || candidate.y() < slideHeight / 3)
+        return firstRow.stream()
                 .max(java.util.Comparator.comparingDouble((TitleCandidate candidate) -> candidate.score(slideHeight))
                         .thenComparingDouble(candidate -> -candidate.y()))
                 .map(TitleCandidate::text).orElse("");
@@ -1416,8 +1431,8 @@ public class PptAnomalyService {
                 String text = textShape.getText().replaceFirst("^[\\p{javaWhitespace}\\p{Zs}\\ufeff]+", "");
                 String firstLine = text.split("\\R", 2)[0].strip();
                 boolean numbered = NUMBERED_HEADING.matcher(firstLine).matches();
-                if (numbered) text = firstLine;
-                if (text.isBlank() || (!numbered && (text.length() > 160 || text.lines().count() > 3))
+                text = firstLine;
+                if (text.isBlank() || (!numbered && text.length() > 160)
                         || text.matches("[\\d\\s./年月日-]+")) continue;
                 var type = textShape.getTextType();
                 boolean placeholder = type == org.apache.poi.sl.usermodel.Placeholder.TITLE

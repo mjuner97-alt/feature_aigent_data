@@ -62,7 +62,7 @@ const ownerName = ref('');
 const peopleLoading = ref(false);
 const sections = ref<BoardRow[]>([]);
 const boardRows = ref<BoardRow[]>([]);
-const boardForm = ref({ name: '', owner: '', create: true });
+const boardForm = ref({ originalName: '', name: '', owner: '', create: true });
 const sectionsLoading = ref(false);
 const sectionsReady = ref(false);
 let peopleRequestId = 0;
@@ -232,7 +232,7 @@ async function editTitle(row?: TitleRow) {
 /** 打开正式板块及默认联系人的编辑窗口。 */
 function editBoard(row?: BoardRow) {
   editKind.value = 'board';
-  boardForm.value = { name: row?.name ?? '', owner: row?.owner ?? '', create: !row };
+  boardForm.value = { originalName: row?.name ?? '', name: row?.name ?? '', owner: row?.owner ?? '', create: !row };
   ownerName.value = row?.ownerName ?? '';
   editorOpen.value = true;
   void searchPeople('');
@@ -439,7 +439,7 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
           <el-button v-if="sectionsReady && !sections.length" link type="primary" @click="editorOpen = false; active = 'board'">前往板块配置</el-button>
         </template>
         <template v-else-if="editKind === 'board'">
-          <el-form-item label="板块名称" required><el-input v-model="boardForm.name" :disabled="!boardForm.create" maxlength="512" /></el-form-item>
+          <el-form-item label="板块名称" required><el-input v-model="boardForm.name" maxlength="512" /></el-form-item>
           <el-form-item label="板块联系人" required>
             <el-select v-model="boardForm.owner" filterable remote clearable :remote-method="searchPeople" :loading="peopleLoading"
               placeholder="输入姓名或用户 ID 搜索" @change="selectOwner" @visible-change="(open: boolean) => { if (!open) searchPeople(''); }">

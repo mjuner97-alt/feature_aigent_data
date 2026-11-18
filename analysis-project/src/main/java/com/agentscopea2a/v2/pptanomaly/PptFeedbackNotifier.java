@@ -5,7 +5,6 @@ import com.agentscopea2a.mapper.gauss.PptAnomalyMapper;
 import com.agentscopea2a.v2.skillManager.notification.NotificationPayload;
 import com.agentscopea2a.v2.skillManager.notification.NotificationSender;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import java.time.LocalDateTime;
@@ -122,11 +121,11 @@ public class PptFeedbackNotifier {
         }
     }
 
-    /** 同一版本的待反馈和已消除事项按部门汇总。 */
+    /** 同一版本的待反馈事项按部门汇总。 */
     private Map<String, List<PptAnomalyMapper.FeedbackNotice>> groupByDepartment(List<PptAnomalyMapper.FeedbackNotice> notices) {
         var groups = new LinkedHashMap<String, List<PptAnomalyMapper.FeedbackNotice>>();
         for (var notice : notices) {
-            // 部门汇总键包含版本，待反馈与已消除事项共用一份部门通知。
+            // 部门汇总键包含版本，每个部门独立生成通知。
             String key = notice.versionId() + "|" + departmentOf(notice);
             groups.computeIfAbsent(key, ignored -> new ArrayList<>()).add(notice);
         }
@@ -141,45 +140,26 @@ public class PptFeedbackNotifier {
                 if (!"ANALYZED".equals(persistence.lockVersion(first.versionId()))) return;
                 // 取得版本锁后重新查询，避免并发检查使用已发送的候选记录。
                 var current = persistence.feedbackNotices(first.versionId()).stream()
+                        .filter(notice -> "PENDING".equals(notice.kind()))
                         .filter(notice -> departmentOf(first).equals(departmentOf(notice))).toList();
                 if (current.isEmpty()) return;
-                String subject = subject(first);
-                String body = body(first, notificationBaseUrl);
-                String department = departmentOf(first);
-                var previous = previousMailTimes(first.versionId(), department, subject);
+                var material = persistence.noticeMaterial(first.versionId());
+                String subject = subject(material);
+                String body = body(current, material, notificationBaseUrl);
                 List<PptAnomalyMapper.FeedbackNotice> firstTime = new ArrayList<>();
                 for (var notice : current) {
-                    LocalDateTime notifiedAt = previous.get(notice.recipient());
-                    if (persistence.recordSimulatedNotice(notice, subject, body, notifiedAt) > 0 && notifiedAt == null) {
+                    if (persistence.recordSimulatedNotice(notice, subject, body, null) > 0) {
                         firstTime.add(notice);
                     }
                 }
-                if (!firstTime.isEmpty()) send(firstTime, subject, body, notificationBaseUrl);
+                if (!firstTime.isEmpty()) {
+                    String actualBody = body(firstTime, material, notificationBaseUrl);
+                    send(firstTime, subject, actualBody, notificationBaseUrl);
+                }
             });
         } catch (RuntimeException e) {
             log.warn("例会材料通知发送失败，版本 {}，部门 {}",
                     first.versionId(), departmentOf(first), e);
-        }
-    }
-
-    private Map<String, LocalDateTime> previousMailTimes(long versionId, String department, String subject) {
-        var times = new LinkedHashMap<String, LocalDateTime>();
-        for (var notice : persistence.previousFeedbackNoticeTimes(versionId, subject)) {
-            times.put(notice.recipient(), notice.notifiedAt());
-        }
-        for (var mail : persistence.sentFeedbackMails(versionId, department, subject)) {
-            addMailTimes(times, mail.toUsers(), mail.sentAt());
-            addMailTimes(times, mail.ccUsers(), mail.sentAt());
-        }
-        return times;
-    }
-
-    private void addMailTimes(Map<String, LocalDateTime> times, String recipients, LocalDateTime sentAt) {
-        try {
-            List<String> ids = json.readValue(recipients, new TypeReference<>() {});
-            for (String id : ids) times.merge(id, sentAt, (old, current) -> current.isAfter(old) ? current : old);
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("无法读取邮件收件人记录", e);
         }
     }
 
@@ -193,15 +173,49 @@ public class PptFeedbackNotifier {
 
     /** 准备通知请求并调用统一发送器执行发送。 */
     private void send(List<PptAnomalyMapper.FeedbackNotice> group, String subject, String body, String notificationBaseUrl) {
+        group = group.stream().filter(notice -> "PENDING".equals(notice.kind())).toList();
+        if (group.isEmpty()) return;
         var first = group.get(0);
         // 同一经办人可能负责多条事项，发送前将接收人认证号去重。
         List<String> recipients = group.stream().map(PptAnomalyMapper.FeedbackNotice::recipient).distinct().toList();
+        List<String> cc = boardContacts(group, recipients);
         var payload = new NotificationPayload("HTML", body, null, null, link(first, notificationBaseUrl), null, subject,
-                null, null, first.versionId(), "SUCCESS", LocalDateTime.now(), recipients, "METRIC");
+                null, null, first.versionId(), "SUCCESS", LocalDateTime.now(), recipients, "METRIC", cc);
         var request = sender.prepare(payload);
         sender.sendPrepared(payload, request, LOCAL_HTML_DIRECTORY);
         persistence.recordFeedbackMail(first.versionId(), departmentOf(first), subject, body,
-                recipientJson(recipients), "[]", "SYSTEM");
+                recipientJson(recipients), recipientJson(cc), "SYSTEM");
+    }
+
+    /** 优先使用版本内的板块联系人，缺配时沿用默认配置，仅抄送本次事项涉及的板块。 */
+    private List<String> boardContacts(List<PptAnomalyMapper.FeedbackNotice> group, List<String> recipients) {
+        long versionId = group.get(0).versionId();
+        var owners = new LinkedHashMap<String, String>();
+        for (var row : persistence.boardOwners()) {
+            if (row.owner() != null && !row.owner().isBlank()) owners.put(row.name(), row.owner().strip());
+        }
+        for (var row : persistence.importOwners(versionId)) {
+            if (row.ownerUserId() != null && !row.ownerUserId().isBlank()) {
+                owners.put(row.section(), row.ownerUserId().strip());
+            }
+        }
+        var sections = new LinkedHashMap<String, String>();
+        for (var row : persistence.titleSections()) sections.put(row.title(), row.section());
+        var findingIds = group.stream().map(PptAnomalyMapper.FeedbackNotice::findingId)
+                .collect(java.util.stream.Collectors.toSet());
+        var cc = new java.util.LinkedHashSet<String>();
+        for (var finding : persistence.findings(versionId)) {
+            if (!findingIds.contains(finding.id())) continue;
+            String section = finding.chapter();
+            // 历史事项可能保留改名前的板块，无法找到联系人时按标题当前归属回退。
+            if (!owners.containsKey(section) && finding.title() != null) {
+                section = sections.getOrDefault(finding.title(),
+                        sections.get(PptAnomalyService.unnumberedTitle(finding.title())));
+            }
+            String owner = owners.get(section);
+            if (owner != null && !recipients.contains(owner)) cc.add(owner);
+        }
+        return List.copyOf(cc);
     }
 
     void sendManual(long versionId, String fileName, String department, List<String> to, List<String> cc, String operator) {
@@ -222,15 +236,23 @@ public class PptFeedbackNotifier {
         });
     }
 
-    /** 生成带部门名称的通知标题，供邮件和本地 HTML 文件命名。 */
-    private String subject(PptAnomalyMapper.FeedbackNotice first) {
-        return departmentOf(first) + "-例会材料反馈通知";
+    /** 材料名称仅去除末尾的 PPTX 扩展名，V1 为通知模板中的固定稿次。 */
+    private String subject(PptAnomalyMapper.NoticeMaterial material) {
+        return "《" + material.fileName().replaceFirst("(?i)\\.pptx$", "") + "》V1稿待分析事项的通知";
     }
 
-    /** 生成简短提醒正文和反馈详情页链接。 */
-    private String body(PptAnomalyMapper.FeedbackNotice notice, String notificationBaseUrl) {
-        return "<p>你有待关注的例会材料事项，请反馈。</p><p><a href=\""
-                + HtmlUtils.htmlEscape(link(notice, notificationBaseUrl)) + "\">查看最新反馈事项</a></p>";
+    /** 同一事项有多名经办人时只计一项，截止时间以导入时间为准。 */
+    private String body(List<PptAnomalyMapper.FeedbackNotice> notices,
+                        PptAnomalyMapper.NoticeMaterial material, String notificationBaseUrl) {
+        var first = notices.get(0);
+        long count = notices.stream().filter(notice -> "PENDING".equals(notice.kind()))
+                .map(PptAnomalyMapper.FeedbackNotice::findingId).distinct().count();
+        String deadline = material.uploadedAt().plusHours(1)
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy年MM月dd日 HH:mm"));
+        return "<p>各位：</p><p style=\"text-indent:2em\">本期材料涉及到"
+                + HtmlUtils.htmlEscape(departmentOf(first)) + "共" + count + "项，请于" + deadline
+                + "前<a href=\"" + HtmlUtils.htmlEscape(link(first, notificationBaseUrl))
+                + "\">点击链接</a>分析反馈。</p>";
     }
 
     /** 链接保留来源版本及收件部门，详情页定位到同批次最新已识别版本。 */

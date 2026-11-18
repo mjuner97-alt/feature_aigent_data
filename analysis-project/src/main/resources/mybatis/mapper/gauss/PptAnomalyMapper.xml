@@ -12,7 +12,11 @@
             replace('[~s　]+$', '~', chr(92)), ''
         )
     </sql>
-    <!-- 查询指定版本尚未记录通知的待反馈及已消除事项。 -->
+    <!-- 查询指定版本尚未记录通知的当前待反馈事项。 -->
+    <select id="noticeMaterial" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$NoticeMaterial">
+        SELECT file_name, uploaded_at FROM digital_qa_ppt_material_version WHERE id=#{versionId}
+    </select>
+
     <select id="feedbackNotices" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackNotice">
         WITH candidates AS (
             SELECT v.id AS version_id, f.id AS finding_id, handler.user_id AS recipient,
@@ -28,23 +32,7 @@
                   WHERE newer.batch_id=v.batch_id AND newer.version_no &gt; v.version_no
                     AND newer.status='ANALYZED'
               ) OR EXISTS (SELECT 1 FROM digital_qa_ppt_assignment_change change WHERE change.finding_id=f.id))
-            UNION ALL
-            SELECT v.id, f.id, handler.user_id, 'RESOLVED', f.title, p.id, v.version_no, f.feedback_department,
-                   s.page_no, f.anomaly_keyword, 0
-            FROM digital_qa_ppt_material_version v
-            JOIN digital_qa_ppt_material_version p ON p.batch_id=v.batch_id AND p.version_no=v.version_no-1
-            JOIN digital_qa_ppt_finding f ON f.version_id=p.id
-            JOIN digital_qa_ppt_finding_recipient handler ON handler.finding_id=f.id
-            JOIN digital_qa_ppt_slide s ON s.id=f.slide_id
-            WHERE v.status='ANALYZED' AND p.status='ANALYZED'
-              AND <include refid="normalizedTitle"><property name="title" value="f.title"/></include> &lt;&gt; ''
-              AND NOT EXISTS (
-                  SELECT 1 FROM digital_qa_ppt_finding current
-                  WHERE current.version_id=v.id
-                    AND (f.feedback_department IS NULL OR current.feedback_department=f.feedback_department)
-                    AND <include refid="normalizedTitle"><property name="title" value="current.title"/></include> =
-                        <include refid="normalizedTitle"><property name="title" value="f.title"/></include>
-              )
+
         )
         SELECT c.version_id,c.finding_id,c.recipient,c.kind,c.title,c.link_version,c.version_no,c.department,
                c.page_no AS page,c.anomaly_keyword AS keyword,c.assignment_revision
@@ -87,6 +75,11 @@
         WHERE version_id=#{versionId} AND department=#{department} AND subject=#{subject}
           AND status='SENT' AND sent_at IS NOT NULL
     </select>
+    <select id="feedbackMailRecords" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackMailRecord">
+        SELECT id,version_id,department,subject,body,to_users,cc_users,sent_by,status,sent_at
+        FROM digital_qa_ppt_mail_record WHERE version_id=#{versionId}
+        ORDER BY sent_at DESC,id DESC
+    </select>
     <insert id="recordFeedbackMail">
         INSERT INTO digital_qa_ppt_mail_record(version_id,department,subject,body,to_users,cc_users,sent_by,status,sent_at)
         VALUES (#{versionId},#{department},#{subject},#{body},#{toUsers},#{ccUsers},#{sender},'SENT',CURRENT_TIMESTAMP)
@@ -110,14 +103,11 @@
                     SELECT 1 FROM digital_qa_ppt_finding_recipient handler WHERE handler.finding_id=f.id
                 )
             </if>
-            <if test="notices">
-                UNION SELECT n.version_id, n.finding_id, n.recipient FROM digital_qa_ppt_feedback_notice n
-                WHERE n.kind='RESOLVED'
-            </if>
+
         )
         SELECT b.id AS batch_id, b.name AS batch_name, v.id AS version_id, v.version_no, v.file_name,
                r.recipient, f.id AS finding_id, s.page_no, f.title, f.chapter AS section, f.auto_departments AS finding_departments,
-               CASE WHEN v.id=f.version_id AND assigned.user_id IS NOT NULL THEN f.status END AS status,
+               CASE WHEN v.id=f.version_id THEN f.status END AS status,
                <choose>
                    <when test="notices">n.kind</when>
                    <otherwise>CAST(NULL AS VARCHAR)</otherwise>
@@ -267,9 +257,9 @@
                CASE WHEN latest.id=original.id THEN f.id ELSE (
                    SELECT CASE WHEN COUNT(CASE WHEN m.chapter=f.chapter THEN 1 END)=1
                                THEN MAX(CASE WHEN m.chapter=f.chapter
-                                   AND (EXISTS (SELECT 1 FROM digital_qa_ppt_finding_recipient h WHERE h.finding_id=m.id AND h.user_id=#{user}) OR latest.uploaded_by=#{user}) THEN m.id END)
+                                   AND (EXISTS (SELECT 1 FROM digital_qa_ppt_finding_recipient h WHERE h.finding_id=m.id AND h.user_id=#{user}) OR #{admin} OR latest.uploaded_by=#{user}) THEN m.id END)
                                WHEN COUNT(*)=1 THEN MAX(CASE WHEN EXISTS (SELECT 1 FROM digital_qa_ppt_finding_recipient h WHERE h.finding_id=m.id AND h.user_id=#{user})
-                                   OR latest.uploaded_by=#{user} THEN m.id END) END
+                                   OR #{admin} OR latest.uploaded_by=#{user} THEN m.id END) END
                    FROM digital_qa_ppt_finding m
                    WHERE m.version_id=latest.id
                      AND (f.feedback_department IS NULL OR m.feedback_department=f.feedback_department)
@@ -291,7 +281,7 @@
           AND (latest.id=original.id OR NOT EXISTS (
               SELECT 1 FROM digital_qa_ppt_assignment_change change WHERE change.finding_id=f.id
           ))
-          AND (#{finding,jdbcType=BIGINT} IS NULL OR original.uploaded_by=#{user}
+          AND (#{finding,jdbcType=BIGINT} IS NULL OR #{admin} OR original.uploaded_by=#{user}
                OR EXISTS (SELECT 1 FROM digital_qa_ppt_finding_recipient h WHERE h.finding_id=f.id AND h.user_id=#{user}))
         ORDER BY latest.version_no DESC LIMIT 1
     </select>
