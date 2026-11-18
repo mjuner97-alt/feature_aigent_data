@@ -973,7 +973,7 @@ public class PptAnomalyService {
     public Resource slidePreview(long versionId, int pageNo, String userId, boolean admin) {
         feedbackSlide(versionId, pageNo, userId, admin);
         // 预览图片按版本及页码缓存，首次访问时才渲染原始 PPT。
-        Path target = storageDir.resolve("previews").resolve(Long.toString(versionId)).resolve(pageNo + ".png");
+        Path target = storageDir.resolve("previews-v2").resolve(Long.toString(versionId)).resolve(pageNo + ".png");
         if (Files.isRegularFile(target)) return new FileSystemResource(target);
         if (!previewRenderer.tryAcquire()) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "预览正在生成，请稍后重试");
@@ -1010,7 +1010,51 @@ public class PptAnomalyService {
         }
     }
 
-    private static BufferedImage renderSlide(XSLFSlide slide, java.awt.Dimension size, int width, int height) {
+    /** POI 默认回退到原字体，Arial 等字体缺少中文字形时需明确指定备用字体。 */
+    static String previewFallbackFont() {
+        return PreviewFont.FAMILY;
+    }
+
+    private static class PreviewFont {
+        static final String FAMILY = findFamily();
+
+        private static String findFamily() {
+            var available = java.util.Set.of(java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment()
+                    .getAvailableFontFamilyNames());
+            for (String family : List.of("Noto Sans CJK SC", "Microsoft YaHei", "SimSun", "WenQuanYi Zen Hei")) {
+                if (available.contains(family) && new java.awt.Font(family, java.awt.Font.PLAIN, 12)
+                        .canDisplayUpTo("中文例会材料") == -1) return family;
+            }
+            for (String family : available) {
+                if (new java.awt.Font(family, java.awt.Font.PLAIN, 12).canDisplayUpTo("中文例会材料") == -1)
+                    return family;
+            }
+            return java.awt.Font.SANS_SERIF;
+        }
+    }
+
+    private static void applyPreviewFonts(List<XSLFShape> shapes) {
+        for (var shape : shapes) {
+            if (shape instanceof XSLFGroupShape group) applyPreviewFonts(group.getShapes());
+            if (shape instanceof XSLFTable table) {
+                for (var row : table.getRows()) for (var cell : row.getCells()) applyPreviewTextFont(cell);
+            } else if (shape instanceof XSLFTextShape text) applyPreviewTextFont(text);
+        }
+    }
+
+    private static void applyPreviewTextFont(XSLFTextShape text) {
+        for (var paragraph : text.getTextParagraphs()) for (var run : paragraph.getTextRuns()) {
+            String content = run.getRawText();
+            if (content == null || content.isBlank()) continue;
+            for (var group : org.apache.poi.common.usermodel.fonts.FontGroup.values()) {
+                String family = run.getFontFamily(group);
+                if (family == null || new java.awt.Font(family, 0, 12).canDisplayUpTo(content) != -1)
+                    run.setFontFamily(previewFallbackFont(), group);
+            }
+        }
+    }
+
+    static BufferedImage renderSlide(XSLFSlide slide, java.awt.Dimension size, int width, int height) {
         double scale = Math.min((double) width / size.width, (double) height / size.height);
         var image = new BufferedImage(Math.max(1, (int) Math.ceil(size.width * scale)),
                 Math.max(1, (int) Math.ceil(size.height * scale)), BufferedImage.TYPE_INT_RGB);
@@ -1019,7 +1063,10 @@ public class PptAnomalyService {
             graphics.setColor(Color.WHITE);
             graphics.fillRect(0, 0, image.getWidth(), image.getHeight());
             graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            graphics.setRenderingHint(org.apache.poi.sl.draw.Drawable.FONT_FALLBACK,
+                    Map.of("*", previewFallbackFont()));
             graphics.scale(scale, scale);
+            applyPreviewFonts(slide.getShapes());
             slide.draw(graphics);
         } finally {
             graphics.dispose();
@@ -1248,11 +1295,6 @@ public class PptAnomalyService {
                 configuredRules.add(new PageRule(page.title(), null, PageMode.fromConfig(page.mode()), null, null, null));
             }
         }
-        Map<String, String> titlesByKeyword = new LinkedHashMap<>();
-        configuredRules.forEach(rule -> {
-            String keyword = normalizedTitle(rule.title());
-            if (!keyword.isEmpty()) titlesByKeyword.putIfAbsent(keyword, rule.title());
-        });
         var dictionary = new PageDictionary(PageMode.OUT_OF_SCOPE, configuredRules);
         try (XMLSlideShow show = new XMLSlideShow(input)) {
             int page = 0;
@@ -1260,23 +1302,15 @@ public class PptAnomalyService {
                 page++;
                 var correction = corrections.get(page);
                 if (!corrections.isEmpty() && correction == null) continue;
-                String title = slide.getTitle();
-                Set<String> contentsLabels = new HashSet<>();
-                if (correction == null) collectContentsLabels(slide.getShapes(), contentsLabels);
-                if (correction == null && (contentsLabels.size() == 2 || (title != null && contentsLabel(title) != null)
-                        || ((title == null || title.isBlank()) && !contentsLabels.isEmpty()))) {
+                // 页面标题先按版式提取，配置仅用于确定识别范围，不能改写成正文关键词。
+                String titleText = correction != null ? correction.title().strip()
+                        : inferSlideTitle(slide, show.getPageSize().getHeight(), configuredTitles);
+                if (correction == null && contentsLabel(titleText) != null) {
                     consumer.accept(page, "目录", List.of(), PageMode.OUT_OF_SCOPE);
                     continue;
                 }
-                String placeholder = title == null ? "" : title.strip();
-                String titleText = correction != null ? correction.title().strip()
-                        : matchingTitle(placeholder, configuredTitles) != null ? placeholder
-                        : inferSlideTitle(slide, show.getPageSize().getHeight(), configuredTitles);
                 String matchedTitle = matchingTitle(titleText, configuredTitles);
-                if (correction == null && matchedTitle == null) {
-                    matchedTitle = findTitleInBody(slide, titlesByKeyword);
-                }
-                title = correction != null ? titleText : matchedTitle == null ? placeholder : matchedTitle;
+                String title = unnumberedTitle(correction != null || matchedTitle == null ? titleText : matchedTitle);
                 PageRule rule = dictionary.ruleFor(title, page);
                 if (correction != null) {
                     PageMode selectedMode = PageMode.valueOf(correction.recognitionMode());
@@ -1318,16 +1352,6 @@ public class PptAnomalyService {
         }
     }
 
-    private static String findTitleInBody(XSLFSlide slide, Map<String, String> titlesByKeyword) {
-        if (titlesByKeyword.isEmpty()) return null;
-        List<String> texts = new ArrayList<>();
-        collectBodyText(slide.getShapes(), texts);
-        var matches = titlesByKeyword.entrySet().stream()
-                .filter(entry -> texts.stream().anyMatch(text -> text.contains(entry.getKey())))
-                .limit(2).toList();
-        return matches.size() == 1 ? matches.get(0).getValue() : null;
-    }
-
     /** 全页扫描包含组合形状中的文本和表格，保留原文用于反馈事项溯源。 */
     private static void collectGroupedPageText(List<XSLFShape> shapes, List<String> texts, boolean includeTables) {
         for (var shape : shapes) {
@@ -1344,53 +1368,40 @@ public class PptAnomalyService {
         }
     }
 
-    private static void collectBodyText(List<XSLFShape> shapes, List<String> texts) {
-        for (XSLFShape shape : shapes) {
-            if (shape instanceof XSLFGroupShape group) {
-                collectBodyText(group.getShapes(), texts);
-            } else if (shape instanceof XSLFTextShape textShape && textShape.getText() != null) {
-                texts.add(normalizedTitle(textShape.getText()));
-            } else if (shape instanceof XSLFTable table) {
-                for (var row : table.getRows()) {
-                    for (var cell : row.getCells()) {
-                        if (cell.getText() != null) texts.add(normalizedTitle(cell.getText()));
-                    }
-                }
-            }
-        }
-    }
-
-    private static void collectContentsLabels(List<XSLFShape> shapes, Set<String> labels) {
-        for (XSLFShape shape : shapes) {
-            if (shape instanceof XSLFGroupShape group) {
-                collectContentsLabels(group.getShapes(), labels);
-            } else if (shape instanceof XSLFTextShape textShape && textShape.getText() != null) {
-                for (String line : textShape.getText().split("\\R")) {
-                    String label = contentsLabel(line);
-                    if (label != null) labels.add(label);
-                }
-            }
-        }
-    }
-
     private static String contentsLabel(String text) {
         String compact = text.replaceAll("[\\p{javaWhitespace}\\p{Zs}]", "");
         if ("目录".equals(compact)) return "目录";
         return "CONTENTS".equalsIgnoreCase(compact) ? "CONTENTS" : null;
     }
 
-    /** 优先采用页首匹配项，页首没有匹配时再查看页面上半部。 */
+    private record TitleCandidate(String text, double y, double fontSize, boolean placeholder) {
+        double score(double slideHeight) {
+            return fontSize - y / slideHeight * 30 + (placeholder ? 30 : 0);
+        }
+    }
+
+    private static final java.util.regex.Pattern NUMBERED_HEADING = java.util.regex.Pattern.compile(
+            "^[0-9]+(?:[\\p{javaWhitespace}\\p{Zs}]*[-－–—.．][\\p{javaWhitespace}\\p{Zs}]*[0-9]+)+[\\p{javaWhitespace}\\p{Zs}]*[^\\d\\s].*$");
+
+    /** 优先采用页首的数字层级标题，再按占位符、位置和字号兜底，支持组合形状。 */
     static String inferSlideTitle(XSLFSlide slide, double slideHeight, Set<String> configuredTitles) {
-        Map<String, String> top = new LinkedHashMap<>();
-        Map<String, String> upperHalf = new LinkedHashMap<>();
-        collectTitleCandidates(slide.getShapes(), 0, 1, slideHeight, configuredTitles, top, upperHalf);
-        Map<String, String> candidates = top.isEmpty() ? upperHalf : top;
-        return candidates.size() == 1 ? candidates.values().iterator().next() : "";
+        List<TitleCandidate> candidates = new ArrayList<>();
+        collectTitleCandidates(slide.getShapes(), 0, 1, slideHeight, candidates);
+        if (candidates.isEmpty()) return "";
+        var numbered = candidates.stream()
+                .filter(candidate -> NUMBERED_HEADING.matcher(candidate.text()).matches())
+                .min(java.util.Comparator.comparingDouble(TitleCandidate::y));
+        if (numbered.isPresent()) return numbered.get().text();
+        boolean hasTop = candidates.stream().anyMatch(candidate -> candidate.y() < slideHeight / 3);
+        return candidates.stream()
+                .filter(candidate -> !hasTop || candidate.y() < slideHeight / 3)
+                .max(java.util.Comparator.comparingDouble((TitleCandidate candidate) -> candidate.score(slideHeight))
+                        .thenComparingDouble(candidate -> -candidate.y()))
+                .map(TitleCandidate::text).orElse("");
     }
 
     private static void collectTitleCandidates(List<XSLFShape> shapes, double offset, double scale,
-                                               double slideHeight, Set<String> configuredTitles,
-                                               Map<String, String> top, Map<String, String> upperHalf) {
+                                               double slideHeight, List<TitleCandidate> candidates) {
         for (XSLFShape shape : shapes) {
             if (shape instanceof XSLFGroupShape group) {
                 var outer = group.getAnchor();
@@ -1398,24 +1409,36 @@ public class PptAnomalyService {
                 if (inner.getHeight() <= 0) continue;
                 double childScale = scale * outer.getHeight() / inner.getHeight();
                 double childOffset = offset + scale * outer.getY() - childScale * inner.getY();
-                collectTitleCandidates(group.getShapes(), childOffset, childScale, slideHeight,
-                        configuredTitles, top, upperHalf);
+                collectTitleCandidates(group.getShapes(), childOffset, childScale, slideHeight, candidates);
             } else if (shape instanceof XSLFTextShape textShape && textShape.getText() != null) {
                 double y = offset + scale * textShape.getAnchor().getY();
                 if (y < 0 || y >= slideHeight / 2) continue;
-                String text = textShape.getText().strip();
-                String match = matchingTitle(text, configuredTitles);
-                if (match == null) continue;
-                String key = configuredTitles.contains(match) ? match : unnumberedTitle(match);
-                (y < slideHeight / 3 ? top : upperHalf).putIfAbsent(key, text);
+                String text = textShape.getText().replaceFirst("^[\\p{javaWhitespace}\\p{Zs}\\ufeff]+", "");
+                String firstLine = text.split("\\R", 2)[0].strip();
+                boolean numbered = NUMBERED_HEADING.matcher(firstLine).matches();
+                if (numbered) text = firstLine;
+                if (text.isBlank() || (!numbered && (text.length() > 160 || text.lines().count() > 3))
+                        || text.matches("[\\d\\s./年月日-]+")) continue;
+                var type = textShape.getTextType();
+                boolean placeholder = type == org.apache.poi.sl.usermodel.Placeholder.TITLE
+                        || type == org.apache.poi.sl.usermodel.Placeholder.CENTERED_TITLE;
+                double fontSize = 0;
+                for (var paragraph : textShape.getTextParagraphs()) {
+                    for (var run : paragraph.getTextRuns()) {
+                        Double size = run.getFontSize();
+                        if (size != null) fontSize = Math.max(fontSize, size * Math.abs(scale));
+                    }
+                }
+                candidates.add(new TitleCandidate(text, y, fontSize == 0 ? 18 : fontSize, placeholder));
             }
         }
     }
 
     /** 原样匹配优先，版式写法不同则使用唯一匹配的配置标题。 */
     private static String matchingTitle(String text, Set<String> configuredTitles) {
-        if (text.isBlank()) return null;
-        if (configuredTitles.contains(text) || configuredTitles.contains(unnumberedTitle(text))) return text;
+        if (text == null || text.isBlank()) return null;
+        if (configuredTitles.contains(text)) return text;
+        if (configuredTitles.contains(unnumberedTitle(text))) return unnumberedTitle(text);
         String key = normalizedTitle(text);
         if (key.isEmpty()) return null;
         var matches = configuredTitles.stream().filter(title -> normalizedTitle(title).equals(key)).limit(2).toList();
@@ -1442,7 +1465,7 @@ public class PptAnomalyService {
     /** 去除标题前的数字层级序号及首尾空白，供配置和版本匹配。 */
     static String unnumberedTitle(String title) {
         return title.replaceFirst(
-                "^[\\p{javaWhitespace}　]*(?:[一二三四五六七八九十百零]+[.．、]\\s*|[0-9]+(([.．][0-9]+)+[.．、\\p{javaWhitespace}　]*|[.．、\\p{javaWhitespace}　]+))", "")
+                "^[\\p{javaWhitespace}\\p{Zs}\\ufeff]*(?:[一二三四五六七八九十百零]+[.．、]\\s*|[0-9]+(([-－–—.．][\\p{javaWhitespace}\\p{Zs}]*[0-9]+)+[.．、\\p{javaWhitespace}　]*|[.．、\\p{javaWhitespace}　]+))", "")
                 .strip();
     }
 

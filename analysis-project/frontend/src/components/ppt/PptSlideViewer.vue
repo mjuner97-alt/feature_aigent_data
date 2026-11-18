@@ -6,6 +6,7 @@ import { FullScreen } from '@element-plus/icons-vue';
 import type { PptSlide } from '../../types/pptAnomaly';
 
 const props = defineProps<{ pageNo: number; slide?: PptSlide; unavailable: boolean; plain?: boolean }>();
+const enlarged = ref(false);
 const failed = ref(false);
 const loaded = ref(false);
 const attempt = ref(0);
@@ -15,6 +16,7 @@ const previewUrl = computed(() => {
   return `${url}${url.includes('?') ? '&' : '?'}attempt=${attempt.value}`;
 });
 watch(() => props.slide?.imageUrl, () => {
+  enlarged.value = false;
   failed.value = false;
   loaded.value = false;
   attempt.value = 0;
@@ -40,12 +42,14 @@ function retry() {
       <template v-else>
         <p v-if="!loaded" role="status">正在加载预览…</p>
         <img v-show="loaded" :src="previewUrl" :alt="`原始 PPT P${pageNo}`"
-          @load="loaded = true" @error="failed = true" />
-        <a v-if="loaded" class="preview-link" :href="previewUrl"
-          target="_blank" rel="noopener" aria-label="查看大图（新窗口）">
+          @load="loaded = true" @error="failed = true" @click="enlarged = true" />
+        <button v-if="loaded" type="button" class="preview-link" @click="enlarged = true"
+          aria-label="放大查看 PPT 原页">
           <el-icon aria-hidden="true"><FullScreen /></el-icon>
-          查看大图
-        </a>
+          放大查看
+        </button>
+        <el-image-viewer v-if="enlarged && previewUrl" :url-list="[previewUrl]" teleported
+          :z-index="5000" @close="enlarged = false" />
       </template>
     </div>
   </component>
@@ -70,8 +74,10 @@ summary { padding: 9px 12px; cursor: pointer; }
   color: #1757b8;
   font-weight: 600;
   text-decoration: none;
+  cursor: pointer;
+  font: inherit;
 }
 .preview-link:hover { background: #dceaff; border-color: #adc8f3; }
 .preview-link:focus-visible { outline: 2px solid #1757b8; outline-offset: 2px; }
-img { display: block; max-width: 100%; max-height: 160px; object-fit: contain; }
+img { display: block; max-width: 100%; max-height: 160px; object-fit: contain; cursor: zoom-in; }
 </style>
