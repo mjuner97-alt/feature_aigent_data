@@ -211,6 +211,12 @@ public class QuestionAnalysis {
         /** 项目编号精确编码（docs/202611/内置维度键projectNo项目编号方案.md）：同 requirementNos 口径 */
         private List<String> projectNos;
 
+        /**
+         * 时间范围语义锚点（dimension_context 方案 §12，运行时由 TimeRangeExtractor 填充，
+         * 不参与 LLM JSON 反序列化语义）：只存锚点不存日期值，落 DimensionState.timeRangeAnchors。
+         */
+        private List<String> timeRangeAnchors;
+
         /** 收集扁平格式的未知字段，用于手动组装嵌套对象 */
         private final Map<String, Object> extra = new HashMap<>();
 
@@ -356,6 +362,14 @@ public class QuestionAnalysis {
             this.projectNos = projectNos;
         }
 
+        public List<String> getTimeRangeAnchors() {
+            return timeRangeAnchors;
+        }
+
+        public void setTimeRangeAnchors(List<String> timeRangeAnchors) {
+            this.timeRangeAnchors = timeRangeAnchors;
+        }
+
         /** 本轮是否提取到了任一显式维度（level 漏判时 inheritDimensions 仍需应用显式值） */
         public boolean hasAnyDimension() {
             return timeDimension != null && !timeDimension.isEmpty()
@@ -364,7 +378,8 @@ public class QuestionAnalysis {
                     || (persons != null && !persons.isEmpty())
                     || (requirementNos != null && !requirementNos.isEmpty())
                     || (subRequirementNos != null && !subRequirementNos.isEmpty())
-                    || (projectNos != null && !projectNos.isEmpty());
+                    || (projectNos != null && !projectNos.isEmpty())
+                    || (timeRangeAnchors != null && !timeRangeAnchors.isEmpty());
         }
     }
 }

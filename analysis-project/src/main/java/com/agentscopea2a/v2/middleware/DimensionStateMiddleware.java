@@ -20,11 +20,13 @@ import com.agentscopea2a.v2.dimension.DimensionState;
 import com.agentscopea2a.v2.dimension.DimensionStateManager;
 import com.agentscopea2a.v2.dimension.PersonLedgerRepository;
 import com.agentscopea2a.v2.dimension.PersonalDimensionResolver;
+import com.agentscopea2a.v2.dimension.TimeRangeResolver;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.middleware.MiddlewareBase;
 import reactor.core.publisher.Mono;
 
+import java.time.LocalDate;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -247,15 +249,16 @@ public class DimensionStateMiddleware implements MiddlewareBase {
             sb.append("\n");
         }
 
+        // 维度值统一为 "- 标签：值" 列表（时间范围段独立置后，不插在维度值中间）
         if (state.getTimeDimension() != null && !state.getTimeDimension().isEmpty()) {
             String label = state.getTimeDimension().getType()
                     == DimensionState.TimeDimensionType.QUARTER ? "季度" : "版本计划";
-            sb.append(label).append("：")
+            sb.append("- ").append(label).append("：")
                     .append(String.join("、", state.getTimeDimension().getValues()))
                     .append("\n");
         }
         if (state.getDepartments() != null && !state.getDepartments().isEmpty()) {
-            sb.append("部门：").append(String.join("、", state.getDepartments())).append("\n");
+            sb.append("- 部门：").append(String.join("、", state.getDepartments())).append("\n");
         }
         if (state.getPeerDimension() != null && !state.getPeerDimension().isEmpty()) {
             String label = switch (state.getPeerDimension().getType()) {
@@ -266,13 +269,14 @@ public class DimensionStateMiddleware implements MiddlewareBase {
                 case SUB_REQUIREMENT -> "需求子条目";
                 case PROJECT -> "项目编号";
             };
-            sb.append(label).append("：")
+            sb.append("- ").append(label).append("：")
                     .append(String.join("、", state.getPeerDimension().getValues()))
                     .append("\n");
         }
         if (state.getPersons() != null && !state.getPersons().isEmpty()) {
-            sb.append("人：").append(String.join("、", state.getPersons())).append("\n");
+            sb.append("- 人：").append(String.join("、", state.getPersons())).append("\n");
         }
+        appendTimeRangeSection(sb, state.getTimeRangeAnchors());
         if (perNoLines != null && !perNoLines.isEmpty()) {
             sb.append("\n人员解析（确定性结果，非猜测）：\n");
             perNoLines.forEach(line -> sb.append("- ").append(line).append("\n"));
@@ -281,6 +285,91 @@ public class DimensionStateMiddleware implements MiddlewareBase {
         }
         sb.append("</dimension_context>");
         return sb.toString() + "\n\n";
+    }
+
+    /**
+     * 时间范围段（dimension_context 方案 §12，拍板③ 全渲染+标注）：锚点渲染期实时
+     * {@link TimeRangeResolver#resolve} 出 [start, end]——日期随"今天"漂移，绝不落状态；
+     * 段内统一标注"脚本仅支持单范围，落参只取第一个范围"（模型可见完整上下文但明确知道
+     * 第二个范围不会落参，避免自传参/自拼对比）。
+     */
+    private static void appendTimeRangeSection(StringBuilder sb, List<String> anchors) {
+        if (anchors == null || anchors.isEmpty()) {
+            return;
+        }
+        sb.append("\n时间范围（执行期确定性解析，直接使用无需自行换算日期；"
+                + "脚本仅支持单范围，落参只取第一个范围）：\n");
+        LocalDate today = LocalDate.now(TimeRangeResolver.ZONE);
+        for (String anchor : anchors) {
+            if (anchor == null || anchor.isBlank()) {
+                continue;
+            }
+            if (TimeRangeResolver.isAmbiguousAnchor(anchor)) {
+                // 正常应由系统短路反问（拍板①），此处为锚点漏进状态时的兜底提示行
+                sb.append("- ").append(describeAnchor(anchor))
+                        .append("——方向待确认（历史/未来），请先向用户反问\n");
+                continue;
+            }
+            String[] range = anchor.startsWith("DATE:")
+                    ? TimeRangeResolver.resolveDateRange(anchor)
+                    : TimeRangeResolver.resolve(anchor, today);
+            if (range != null) {
+                sb.append("- ").append(describeAnchor(anchor)).append(" → ")
+                        .append(range[0]).append(" ~ ").append(range[1]).append("\n");
+            } else {
+                // 里程碑透传型（T-n/R-n/投产周/交付周至投产周）：锚点字面量即脚本收到的值
+                sb.append("- ").append(describeAnchor(anchor))
+                        .append("（执行期由脚本语义解释，勿自行换算日期）\n");
+            }
+        }
+    }
+
+    /** 锚点 → 口语描述（确定性映射，与 TimeRangeResolver 锚点白名单同口径）。 */
+    private static String describeAnchor(String anchor) {
+        return switch (anchor) {
+            case "THIS_WEEK" -> "本周";
+            case "LAST_WEEK" -> "上周";
+            case "TODAY" -> "今天";
+            case "THIS_MONTH" -> "本月";
+            case "THIS_YEAR" -> "今年";
+            case TimeRangeResolver.PROD_WEEK -> "投产周";
+            case TimeRangeResolver.DELIV_TO_PROD -> "交付周至投产周";
+            default -> describeParametricAnchor(anchor);
+        };
+    }
+
+    private static String describeParametricAnchor(String anchor) {
+        if (anchor.startsWith("LAST:")) {
+            String tail = anchor.substring("LAST:".length());
+            if (tail.endsWith("d")) return "近" + trimNum(tail) + "天（历史）";
+            if (tail.endsWith("w")) return "近" + trimNum(tail) + "周（历史）";
+            if (tail.endsWith("M")) return "近" + trimNum(tail) + "个月（历史）";
+        }
+        if (anchor.startsWith("NEXT:")) {
+            String tail = anchor.substring("NEXT:".length());
+            if (tail.endsWith("w")) return "未来" + trimNum(tail) + "周";
+            if (tail.endsWith("M")) return "未来" + trimNum(tail) + "个月";
+        }
+        if (anchor.startsWith("UNTIL:")) {
+            return "截至 " + anchor.substring("UNTIL:".length());
+        }
+        if (anchor.startsWith("DATE:")) {
+            return "日期区间";
+        }
+        if (anchor.startsWith("AMBIGUOUS:WEEKS:")) {
+            return "「近" + anchor.substring("AMBIGUOUS:WEEKS:".length()) + "周」";
+        }
+        if (anchor.startsWith("AMBIGUOUS:MONTHS:")) {
+            return "「近" + anchor.substring("AMBIGUOUS:MONTHS:".length()) + "个月」";
+        }
+        if ("AMBIGUOUS:PROD".equals(anchor)) {
+            return "「投产前」（口径待确认）";
+        }
+        return anchor;
+    }
+
+    private static String trimNum(String tailWithUnit) {
+        return tailWithUnit.substring(0, tailWithUnit.length() - 1);
     }
 
     private static String truncateAtLineBoundary(String value, int maxChars) {

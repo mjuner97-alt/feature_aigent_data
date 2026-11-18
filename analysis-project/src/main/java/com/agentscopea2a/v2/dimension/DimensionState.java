@@ -52,6 +52,14 @@ public class DimensionState implements State {
     /** 项目编号精确编码（docs/202611/内置维度键projectNo项目编号方案.md）：同 requirementNos 口径 */
     private List<String> projectNos;
 
+    /**
+     * 时间范围语义锚点（docs/202611/dimension_context维度上下文机制解析.md §12，LLM 路径注入）：
+     * 只存锚点（THIS_WEEK/LAST:nM/DATE:a~b/T-2…）不存日期值——渲染期与执行期实时
+     * {@link TimeRangeResolver#resolve}，日期随"今天"漂移绝不进 equals/hashCode/toCacheKey
+     * （与 TimeRangeResolver 铁律同口径）。
+     */
+    private List<String> timeRangeAnchors;
+
     /** 待确认的歧义反问（docs/dimension-alias-config-plan.md §6.3）；流程控制状态，不参与指纹/等值 */
     private PendingClarification pendingClarification;
 
@@ -125,6 +133,14 @@ public class DimensionState implements State {
         this.projectNos = projectNos;
     }
 
+    public List<String> getTimeRangeAnchors() {
+        return timeRangeAnchors;
+    }
+
+    public void setTimeRangeAnchors(List<String> timeRangeAnchors) {
+        this.timeRangeAnchors = timeRangeAnchors;
+    }
+
     public PendingClarification getPendingClarification() {
         return pendingClarification;
     }
@@ -142,6 +158,7 @@ public class DimensionState implements State {
         copy.setDepartments(this.departments != null ? new ArrayList<>(this.departments) : null);
         copy.setPeerDimension(this.peerDimension != null ? this.peerDimension.deepCopy() : null);
         copy.setPersons(this.persons != null ? new ArrayList<>(this.persons) : null);
+        copy.setTimeRangeAnchors(this.timeRangeAnchors != null ? new ArrayList<>(this.timeRangeAnchors) : null);
         return copy;
     }
 
@@ -199,7 +216,8 @@ public class DimensionState implements State {
         return (timeDimension != null && !timeDimension.isEmpty())
                 || (departments != null && !departments.isEmpty())
                 || (peerDimension != null && !peerDimension.isEmpty())
-                || (persons != null && !persons.isEmpty());
+                || (persons != null && !persons.isEmpty())
+                || (timeRangeAnchors != null && !timeRangeAnchors.isEmpty());
     }
 
     @Override
@@ -213,6 +231,8 @@ public class DimensionState implements State {
                 + peerDimension
                 + ", persons="
                 + persons
+                + ", timeRangeAnchors="
+                + timeRangeAnchors
                 + '}';
     }
 

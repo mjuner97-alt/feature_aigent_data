@@ -172,4 +172,53 @@ class DimensionStateMiddlewareTest {
 
         assertEquals("base", middleware.onSystemPrompt(null, ctx, "base").block());
     }
+
+    // ==================== 时间范围段渲染（dimension_context 方案 §12，拍板③） ====================
+
+    private String promptWithAnchors(List<String> anchors) {
+        stubQuestion("本周的缺陷数");
+        DimensionState state = new DimensionState(null, List.of(), null, null);
+        state.setTimeRangeAnchors(anchors);
+        stubProcess(state);
+        when(resolver.resolve(anyString(), anyString())).thenReturn(PersonalDimensionResolver.none());
+        when(resolver.scanNames(anyString())).thenReturn(List.of());
+        return middleware.onSystemPrompt(null, ctx, "base").block();
+    }
+
+    @Test
+    void timeRangeAnchorsRenderResolvedRangesWithAnnotation() {
+        java.time.LocalDate today = java.time.LocalDate.now(
+                com.agentscopea2a.v2.dimension.TimeRangeResolver.ZONE);
+        String[] week = com.agentscopea2a.v2.dimension.TimeRangeResolver.resolve("THIS_WEEK", today);
+        String[] last1m = com.agentscopea2a.v2.dimension.TimeRangeResolver.resolve("LAST:1M", today);
+
+        String prompt = promptWithAnchors(List.of("THIS_WEEK", "LAST:1M"));
+
+        assertTrue(prompt.contains("时间范围（执行期确定性解析，直接使用无需自行换算日期；"
+                + "脚本仅支持单范围，落参只取第一个范围）"), "段头标注（拍板③）");
+        assertTrue(prompt.contains("本周 → " + week[0] + " ~ " + week[1]));
+        assertTrue(prompt.contains("近1个月（历史） → " + last1m[0] + " ~ " + last1m[1]));
+    }
+
+    @Test
+    void passthroughAndDateAndAmbiguousAnchorsRender() {
+        String prompt = promptWithAnchors(List.of(
+                "DATE:2026-10-01~2026-10-15", "T-2", "AMBIGUOUS:MONTHS:3"));
+
+        assertTrue(prompt.contains("日期区间 → 2026-10-01 ~ 2026-10-15"));
+        assertTrue(prompt.contains("T-2（执行期由脚本语义解释，勿自行换算日期）"), "透传锚点渲染字面量");
+        assertTrue(prompt.contains("「近3个月」——方向待确认（历史/未来），请先向用户反问"), "歧义锚点兜底提示行");
+    }
+
+    @Test
+    void noAnchorsNoTimeRangeSection() {
+        stubQuestion("我部的缺陷数");
+        DimensionState state = new DimensionState(null, List.of(), null, null);
+        stubProcess(state);
+        when(resolver.resolve(anyString(), anyString())).thenReturn(PersonalDimensionResolver.none());
+        when(resolver.scanNames(anyString())).thenReturn(List.of());
+
+        String prompt = middleware.onSystemPrompt(null, ctx, "base").block();
+        assertFalse(prompt.contains("时间范围"));
+    }
 }

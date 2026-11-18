@@ -86,6 +86,22 @@ public class DimensionStateManager {
     private volatile DimensionState.PeerDimension clarifiedPeer;
 
     /**
+     * 时间范围歧义反问 pending（dimension_context 方案 §12.6 拍板①，LLM 路径短路）：
+     * AMBIGUOUS:* 锚点 → Java 零 token 下发 ambiguityAskPrompt，本轮不启 agent。
+     * 流程控制状态，不进 DimensionState。
+     */
+    private volatile String pendingTimeRangeAnchor;
+    private volatile String pendingTimeRangeQuestion;
+
+    /**
+     * 时间歧义确认轮的一次性回填：consumeClarification 命中后记录（原问题 → 确定性锚点）。
+     * 确认后的原问题重新提取仍会产出歧义锚点（如「近3个月」→ AMBIGUOUS:MONTHS:3），
+     * 本轮 processQuestionInContext 按问题文本精确匹配后用确定性锚点覆盖（防反问回环），用后即清。
+     */
+    private volatile String clarifiedTimeRangeQuestion;
+    private volatile List<String> clarifiedTimeRangeAnchors;
+
+    /**
      * 创建维度状态管理器。
      *
      * @param llmService LLM 维度分析服务，可为 null（仅 {@link #updateFromAnswer} 需要）
@@ -187,6 +203,15 @@ public class DimensionStateManager {
                     clarifiedPeer.getType(), clarifiedPeer.getValues());
             clarifiedPeerQuestion = null;
             clarifiedPeer = null;
+        }
+        // 时间歧义确认轮一次性回填（dimension_context 方案 §12 拍板①）：覆盖本轮重新提取出的
+        // 歧义锚点，确定性锚点直接生效（渲染期 resolve 出具体区间）
+        if (clarifiedTimeRangeQuestion != null && clarifiedTimeRangeQuestion.equals(userQuestion)
+                && clarifiedTimeRangeAnchors != null && inherited != null) {
+            inherited.setTimeRangeAnchors(new ArrayList<>(clarifiedTimeRangeAnchors));
+            log.info("Clarified timeRange re-applied to context: anchors={}", clarifiedTimeRangeAnchors);
+            clarifiedTimeRangeQuestion = null;
+            clarifiedTimeRangeAnchors = null;
         }
         if (inherited != null && ctx != null) {
             ctx.put(STATE_KEY, DimensionState.class, inherited);
@@ -912,7 +937,36 @@ public class DimensionStateManager {
         analysis.setExplicitDimensions(explicit);
         explicit.build();
 
+        // 4. timeRange 锚点提取（dimension_context 方案 §12，LLM 路径注入）：与直接执行
+        //    extractExtraDimensions 的 timeRange 分支同源同口径（TimeRangeExtractor.extract +
+        //    timeRange 词表行）；两条路径暂时各提各的（拍板④，重复提取但口径一致）
+        explicit.setTimeRangeAnchors(extractTimeRangeAnchors(userQuestion));
+
         return analysis;
+    }
+
+    /**
+     * timeRange 锚点提取（dimension_context 方案 §12）：dimension_key_config(timeRange) 词表行
+     * + TimeRangeExtractor 内置正则。字典读取失败退化为纯正则（fail-open，不阻断注入）。
+     */
+    private List<String> extractTimeRangeAnchors(String q) {
+        if (q == null || q.isBlank()) {
+            return List.of();
+        }
+        List<DimensionKeyConfig.AliasMapping> aliases = null;
+        if (dimensionKeySupplier != null) {
+            try {
+                aliases = dimensionKeySupplier.get().stream()
+                        .filter(row -> TimeRangeResolver.RESERVED_KEY.equals(row.key())
+                                && !row.aliases().isEmpty())
+                        .findFirst()
+                        .map(DimensionKeyConfig::aliases)
+                        .orElse(null);
+            } catch (RuntimeException e) {
+                log.warn("DimensionStateManager: timeRange 词表读取失败, 退化为纯正则提取: {}", e.getMessage());
+            }
+        }
+        return TimeRangeExtractor.extract(q, aliases);
     }
 
     private QuestionAnalysis.ReferenceType detectReferenceType(String q) {
@@ -1663,17 +1717,20 @@ public class DimensionStateManager {
 
             case DEPARTMENT:
                 current.setTimeDimension(previous.getTimeDimension());
+                current.setTimeRangeAnchors(previous.getTimeRangeAnchors());
                 // departments 由 LLM 回答后提取
                 break;
 
             case PEER:
                 current.setTimeDimension(previous.getTimeDimension());
+                current.setTimeRangeAnchors(previous.getTimeRangeAnchors());
                 current.setDepartments(previous.getDepartments());
                 // peerDimension 由 LLM 回答后提取
                 break;
 
             case PERSON:
                 current.setTimeDimension(previous.getTimeDimension());
+                current.setTimeRangeAnchors(previous.getTimeRangeAnchors());
                 current.setDepartments(previous.getDepartments());
                 current.setPeerDimension(previous.getPeerDimension());
                 // persons 由 LLM 回答后提取
@@ -1689,6 +1746,7 @@ public class DimensionStateManager {
 
             case TIME_RANGE:
                 current.setTimeDimension(previous.getTimeDimension());
+                current.setTimeRangeAnchors(previous.getTimeRangeAnchors());
                 current.setDepartments(previous.getDepartments());
                 current.setPeerDimension(previous.getPeerDimension());
                 break;
@@ -1757,6 +1815,9 @@ public class DimensionStateManager {
             // 需求项/子条目精确编码随 peer 槽位同生命周期（盲区修复方案 §3）
             current.setRequirementNos(null);
             current.setSubRequirementNos(null);
+            // timeRange 锚点同属时间层：显式新时间清掉继承的旧区间（拍板② 跨轮清掉，
+            // 防「本周…」→ 次轮「11月版本的呢」旧区间串值）；本轮提取的锚点在方法末尾回填
+            current.setTimeRangeAnchors(null);
         }
 
         // 部门：显式指定后，部门以下的维度重置
@@ -1780,6 +1841,13 @@ public class DimensionStateManager {
         // 人：直接覆盖
         if (explicit.getPersons() != null && !explicit.getPersons().isEmpty()) {
             current.setPersons(explicit.getPersons());
+        }
+
+        // 时间范围锚点最后回填（dimension_context 方案 §12 拍板② 同轮并存）：与显式 timeDimension
+        // 同轮提取的锚点（「本周…和10月版本的完成率对比」）在上方时间重置后仍生效，两槽各自传参互不抑制；
+        // 无显式 timeDimension 时直接落本轮锚点（非空才覆盖，空列表保持继承值不动）
+        if (explicit.getTimeRangeAnchors() != null && !explicit.getTimeRangeAnchors().isEmpty()) {
+            current.setTimeRangeAnchors(new ArrayList<>(explicit.getTimeRangeAnchors()));
         }
     }
 
@@ -2097,42 +2165,89 @@ public class DimensionStateManager {
     private static final String CN_NUMERALS = "一二三四五六七八九十";
 
     /**
-     * 短路层入口：问题含同维度一对多歧义时登记 pendingClarification 并返回反问文本；
-     * 无歧义（或 alias 关闭）返回 null，调用方按普通问题继续。
+     * 短路层入口：问题含同维度一对多歧义（peer alias）或时间范围歧义（AMBIGUOUS:* 锚点）时
+     * 登记 pending 并返回反问文本；无歧义返回 null，调用方按普通问题继续。
      *
      * <p>由 V2ChatStreamServiceImpl 在 agent 启动前调用；反问文本作为最终回答经
      * SSE "done" 事件下发，本轮不启 agent（零 token）。
      */
     public synchronized String startClarificationIfAmbiguous(String question) {
-        if (aliasResolver == null || question == null || question.isBlank()) {
+        if (question == null || question.isBlank()) {
+            return null;
+        }
+        // 时间歧义确认轮还原的原问题：本轮 processQuestionInContext 会回填确定性锚点，
+        // 再短路反问就成回环（拍板① 短路 + 一次性回填配套）
+        if (question.equals(clarifiedTimeRangeQuestion)) {
             return null;
         }
         QuestionAnalysis analysis = analyzeQuestionRuleBased(question);
-        List<AliasResolver.AmbiguousAlias> ambiguous = analysis.getAmbiguousAliases();
-        if (ambiguous == null || ambiguous.isEmpty()) {
-            return null;
+        if (aliasResolver != null) {
+            List<AliasResolver.AmbiguousAlias> ambiguous = analysis.getAmbiguousAliases();
+            if (ambiguous != null && !ambiguous.isEmpty()) {
+                AliasResolver.AmbiguousAlias amb = ambiguous.get(0);
+                if (currentState == null) {
+                    currentState = new DimensionState();
+                }
+                currentState.setPendingClarification(new DimensionState.PendingClarification(
+                        amb.dimension(), amb.alias(), List.copyOf(amb.candidates()), question));
+                log.info("Clarification pending registered: alias={} dimension={} candidates={}",
+                        amb.alias(), amb.dimension(), amb.candidates());
+                return buildClarifyText(amb.alias(), amb.dimension(), amb.candidates());
+            }
         }
-        AliasResolver.AmbiguousAlias amb = ambiguous.get(0);
-        if (currentState == null) {
-            currentState = new DimensionState();
-        }
-        currentState.setPendingClarification(new DimensionState.PendingClarification(
-                amb.dimension(), amb.alias(), List.copyOf(amb.candidates()), question));
-        log.info("Clarification pending registered: alias={} dimension={} candidates={}",
-                amb.alias(), amb.dimension(), amb.candidates());
-        return buildClarifyText(amb.alias(), amb.dimension(), amb.candidates());
+        return startTimeRangeClarificationIfAmbiguous(analysis, question);
     }
 
     /**
-     * 下一轮入口：存在待确认歧义时对用户回复做确定性匹配（方案 §6.3）。
+     * 时间范围歧义短路（dimension_context 方案 §12.6 拍板①）：AMBIGUOUS:* 锚点与"判定终局化"
+     * 同哲学——确定性环节不交 LLM，Java 零 token 下发 ambiguityAskPrompt（同直接执行轨）。
+     */
+    private String startTimeRangeClarificationIfAmbiguous(
+            QuestionAnalysis analysis, String question) {
+        QuestionAnalysis.ExplicitDimensions explicit = analysis.getExplicitDimensions();
+        if (explicit == null || explicit.getTimeRangeAnchors() == null) {
+            return null;
+        }
+        String ambiguous = explicit.getTimeRangeAnchors().stream()
+                .filter(TimeRangeResolver::isAmbiguousAnchor)
+                .findFirst()
+                .orElse(null);
+        if (ambiguous == null) {
+            return null;
+        }
+        pendingTimeRangeAnchor = ambiguous;
+        pendingTimeRangeQuestion = question;
+        log.info("TimeRange ambiguity pending registered: anchor={} question={}", ambiguous, question);
+        return TimeRangeResolver.ambiguityAskPrompt(ambiguous);
+    }
+
+    /**
+     * 下一轮入口：存在待确认歧义（时间范围优先，其次 peer alias）时对用户回复做确定性匹配。
      *
      * <ul>
-     *   <li>命中（序号或回复包含候选名）→ peerDimension 写入选定标准名、清除 pending，
+     *   <li>时间范围：命中（历史/未来/投产周…）→ 记录一次性回填（原问题 → 确定性锚点），
+     *       返回原问题（本轮拿它正常跑 agent，回填覆盖重提取的歧义锚点）；</li>
+     *   <li>peer：命中（序号或回复包含候选名）→ peerDimension 写入选定标准名、清除 pending，
      *       返回 alias 位置替换为标准名后的原问题（本轮拿它正常跑 agent）；</li>
      *   <li>未命中 → 丢弃 pending 返回 null（宁可少问一次也不死循环反问）。</li>
      * </ul>
      */
     public synchronized String consumeClarification(String reply) {
+        if (pendingTimeRangeAnchor != null) {
+            String ambiguous = pendingTimeRangeAnchor;
+            String original = pendingTimeRangeQuestion;
+            pendingTimeRangeAnchor = null;
+            pendingTimeRangeQuestion = null;
+            String resolved = TimeRangeResolver.resolveAmbiguousReply(reply, ambiguous);
+            if (resolved == null || original == null) {
+                log.info("TimeRange ambiguity reply not matched, pending dropped: reply={}", reply);
+                return null;
+            }
+            clarifiedTimeRangeQuestion = original;
+            clarifiedTimeRangeAnchors = List.of(resolved);
+            log.info("TimeRange ambiguity resolved: {} -> {}", ambiguous, resolved);
+            return original;
+        }
         DimensionState.PendingClarification pending =
                 currentState != null ? currentState.getPendingClarification() : null;
         if (pending == null || pending.getCandidates() == null || pending.getCandidates().isEmpty()) {

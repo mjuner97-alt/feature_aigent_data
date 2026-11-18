@@ -268,10 +268,9 @@ public class V2ToolConfig {
     @Bean
     public ToolRoutingCatalogService toolRoutingCatalogService(
             ToolRoutingMetadataRepository toolRoutingMetadataRepository,
-            ToolRoutingTagDictionary toolRoutingTagDictionary,
             ToolRoutingAvailabilityResolver toolRoutingAvailabilityResolver,
             com.agentscopea2a.v2.toolrouting.ToolRoutingMetrics toolRoutingMetrics) {
-        return new ToolRoutingCatalogService(toolRoutingMetadataRepository, toolRoutingTagDictionary,
+        return new ToolRoutingCatalogService(toolRoutingMetadataRepository,
                 toolRoutingAvailabilityResolver, toolRoutingMetrics);
     }
 

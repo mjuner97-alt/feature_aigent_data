@@ -6,28 +6,24 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-/** Builds the shared executable snapshot used by prompt rendering and tool discovery. */
+/** Builds the shared executable catalog used by prompt rendering and tool discovery. */
 public class ToolRoutingCatalogService {
 
     private final ToolRoutingMetadataRepository metadataRepository;
-    private final ToolRoutingTagDictionary tagDictionary;
     private final ToolRoutingAvailabilityResolver availabilityResolver;
     private final ToolRoutingMetrics metrics;
 
     public ToolRoutingCatalogService(ToolRoutingMetadataRepository metadataRepository,
-                                     ToolRoutingTagDictionary tagDictionary,
-                                     ToolRoutingAvailabilityResolver availabilityResolver,
-                                     ToolRoutingMetrics metrics) {
-        this.metadataRepository = metadataRepository;
-        this.tagDictionary = tagDictionary;
-        this.availabilityResolver = availabilityResolver;
-        this.metrics = metrics == null ? ToolRoutingMetrics.noop() : metrics;
+                                     ToolRoutingAvailabilityResolver availabilityResolver) {
+        this(metadataRepository, availabilityResolver, ToolRoutingMetrics.noop());
     }
 
     public ToolRoutingCatalogService(ToolRoutingMetadataRepository metadataRepository,
-                                     ToolRoutingTagDictionary tagDictionary,
-                                     ToolRoutingAvailabilityResolver availabilityResolver) {
-        this(metadataRepository, tagDictionary, availabilityResolver, ToolRoutingMetrics.noop());
+                                     ToolRoutingAvailabilityResolver availabilityResolver,
+                                     ToolRoutingMetrics metrics) {
+        this.metadataRepository = metadataRepository;
+        this.availabilityResolver = availabilityResolver;
+        this.metrics = metrics == null ? ToolRoutingMetrics.noop() : metrics;
     }
 
     public ToolRoutingCatalog snapshot() {
@@ -44,9 +40,6 @@ public class ToolRoutingCatalogService {
     }
 
     private ToolRoutingCatalog buildSnapshot() {
-        Map<String, String> topics = enabledTagLookup(ToolRoutingTagType.TOPIC);
-        Map<String, String> metrics = enabledTagLookup(ToolRoutingTagType.METRIC);
-        Map<String, String> dimensions = enabledTagLookup(ToolRoutingTagType.DIMENSION);
         List<ToolRoutingMetadata> tools = metadataRepository.findEnabled().stream()
                 .filter(availabilityResolver::isAvailable)
                 // 防御: 同 toolId 只应有一个启用类型 (启用互斥由保存路径保证), 直改 DB 双启用时
@@ -55,7 +48,7 @@ public class ToolRoutingCatalogService {
                         metadata -> metadata, (a, b) -> a.priority() >= b.priority() ? a : b,
                         java.util.LinkedHashMap::new))
                 .values().stream()
-                .map(metadata -> canonicalize(metadata, topics, metrics, dimensions))
+                .map(ToolRoutingCatalogService::canonicalize)
                 .filter(metadata -> !metadata.topicTags().isEmpty() && !metadata.metricTags().isEmpty())
                 .toList();
         Set<String> visibleTopics = tools.stream().flatMap(metadata -> metadata.topicTags().stream())
@@ -67,27 +60,26 @@ public class ToolRoutingCatalogService {
         return new ToolRoutingCatalog(tools, visibleTopics, visibleMetrics, visibleDimensions);
     }
 
-    private Map<String, String> enabledTagLookup(ToolRoutingTagType type) {
-        Map<String, String> values = new LinkedHashMap<>();
-        for (ToolRoutingTag tag : tagDictionary.findEnabled(type)) {
-            values.putIfAbsent(normalize(tag.tagName()), tag.tagName());
-        }
-        return values;
-    }
-
-    private static ToolRoutingMetadata canonicalize(ToolRoutingMetadata metadata,
-                                                    Map<String, String> topics,
-                                                    Map<String, String> metrics,
-                                                    Map<String, String> dimensions) {
+    private static ToolRoutingMetadata canonicalize(ToolRoutingMetadata metadata) {
         return new ToolRoutingMetadata(metadata.toolId(), metadata.toolType(), metadata.description(),
-                canonicalTags(metadata.topicTags(), topics), canonicalTags(metadata.metricTags(), metrics),
-                canonicalTags(metadata.dimensionTags(), dimensions),
+                canonicalTags(metadata.topicTags()), canonicalTags(metadata.metricTags()),
+                canonicalTags(metadata.dimensionTags()),
                 metadata.priority(), metadata.enabled(), metadata.updatedAt());
     }
 
-    private static List<String> canonicalTags(List<String> tags, Map<String, String> dictionary) {
-        return tags.stream().map(ToolRoutingCatalogService::normalize).distinct()
-                .filter(dictionary::containsKey).map(dictionary::get).toList();
+    // 标签真源是 tool_route_metadata (后端导入可绕过词袋), 这里只做去重归一, 不做词袋过滤
+    private static List<String> canonicalTags(List<String> tags) {
+        Map<String, String> values = new LinkedHashMap<>();
+        for (String tag : tags) {
+            if (tag == null) {
+                continue;
+            }
+            String trimmed = tag.trim();
+            if (!trimmed.isEmpty()) {
+                values.putIfAbsent(normalize(trimmed), trimmed);
+            }
+        }
+        return List.copyOf(values.values());
     }
 
     private static String normalize(String value) {
