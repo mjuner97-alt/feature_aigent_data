@@ -5,7 +5,7 @@ import { computed, ref, watch } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { Plus } from '@element-plus/icons-vue';
-import { listPptTitleHandlers, updatePptTitleHandler, type PptPerson } from '../../api/pptAnomaly';
+import { listPptTitleHandlers, updatePptTitleHandler, listPptTitleHandlerSources, reusePptTitleHandlers, type PptPerson } from '../../api/pptAnomaly';
 import { searchSkillUsers, type SkillUserSearchItem } from '../../api/skill';
 
 const router = useRouter();
@@ -24,6 +24,59 @@ const searched = ref(false);
 const searching = ref(false);
 const searchError = ref('');
 const handlerIds = computed(() => new Set(handlers.value.map(person => person.userId)));
+const reuseOpen = ref(false);
+const reuseLoading = ref(false);
+const sourceTitle = ref('');
+const sources = ref<string[]>([]);
+const sourceHandlers = ref<PptPerson[]>([]);
+const sourceReady = ref(false);
+const reuseError = ref('');
+let sourceRequest = 0;
+const newHandlerCount = computed(() => new Set(sourceHandlers.value.filter(person => !handlerIds.value.has(person.userId)).map(person => person.userId)).size);
+async function openReuse() {
+  reuseOpen.value = true;
+  reuseLoading.value = true;
+  sourceTitle.value = '';
+  sources.value = [];
+  sourceHandlers.value = [];
+  sourceReady.value = false;
+  reuseError.value = '';
+  const target = title.value;
+  try {
+    const result = await listPptTitleHandlerSources();
+    if (title.value === target) sources.value = result.filter(name => name !== target);
+  } catch { reuseError.value = '来源标题加载失败，请重新打开重试。'; }
+  finally { reuseLoading.value = false; }
+}
+watch(sourceTitle, async name => {
+  const request = ++sourceRequest;
+  sourceHandlers.value = [];
+  sourceReady.value = false;
+  reuseError.value = '';
+  if (!name) return;
+  reuseLoading.value = true;
+  try {
+    const result = await listPptTitleHandlers(name);
+    if (request !== sourceRequest) return;
+    sourceHandlers.value = result;
+    sourceReady.value = true;
+  } catch { if (request === sourceRequest) reuseError.value = '来源经办人加载失败，请重新选择标题。'; }
+  finally { if (request === sourceRequest) reuseLoading.value = false; }
+});
+async function applyReuse() {
+  if (saving.value || !sourceReady.value || !sourceHandlers.value.length) return;
+  const target = title.value;
+  saving.value = true;
+  reuseError.value = '';
+  try {
+    const updated = await reusePptTitleHandlers(target, sourceTitle.value);
+    if (title.value !== target) return;
+    handlers.value = updated;
+    reuseOpen.value = false;
+    ElMessage.success('已追加复用经办人，已有人员自动去重');
+  } catch (cause) { reuseError.value = cause instanceof Error ? cause.message : '复用失败，请重试。'; }
+  finally { saving.value = false; }
+}
 let searchRequestId = 0;
 
 // 标题变化后读取相应经办人，清理回调阻止旧标题响应覆盖当前页面。
@@ -34,6 +87,8 @@ watch(title, async (name, _, onCleanup) => {
   loading.value = !!name;
   handlers.value = [];
   addOpen.value = false;
+  reuseOpen.value = false;
+  sourceRequest++;
   error.value = '';
   if (!name) return;
   try {
@@ -108,9 +163,12 @@ async function updateHandler(userId: string, method: 'POST' | 'DELETE') {
         <RouterLink v-else class="back-link" :to="{ path: '/ppt-anomaly/keyword-config', query: { tab: 'section' } }">返回标题配置</RouterLink>
         <h2>{{ title || '设置经办人' }}</h2>
       </div>
-      <el-button v-if="ready" class="add-handler" type="primary" :icon="Plus" :disabled="saving" @click="openAdd">
+      <div v-if="ready" class="handler-actions">
+      <el-button :disabled="saving" @click="openReuse">复用其他标题经办人</el-button>
+      <el-button class="add-handler" type="primary" :icon="Plus" :disabled="saving" @click="openAdd">
         新增经办人
       </el-button>
+      </div>
     </header>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
     <el-table v-if="title" :data="handlers" empty-text="暂无经办人">
@@ -125,6 +183,26 @@ async function updateHandler(userId: string, method: 'POST' | 'DELETE') {
       </el-table-column>
     </el-table>
     <el-empty v-else description="请从标题配置选择一个标题" />
+    <el-dialog v-model="reuseOpen" title="复用其他标题经办人" width="min(680px, 94vw)" append-to-body
+      :close-on-click-modal="false" :show-close="!saving" :close-on-press-escape="!saving">
+      <p>选择来源标题，将其经办人追加到当前标题；保留当前人员，重复人员自动去重。仅影响后续导入。</p>
+      <el-select v-model="sourceTitle" filterable placeholder="搜索并选择来源标题" :disabled="saving || reuseLoading"
+        :loading="reuseLoading" style="width:100%" no-data-text="暂无其他已配置经办人的标题">
+        <el-option v-for="name in sources" :key="name" :label="name" :value="name" />
+      </el-select>
+      <el-alert v-if="reuseError" :title="reuseError" type="error" :closable="false" />
+      <el-table v-if="sourceTitle" v-loading="reuseLoading" :data="sourceHandlers" empty-text="来源标题暂无经办人">
+        <el-table-column prop="department" label="部门" />
+        <el-table-column label="姓名（认证号）"><template #default="{ row }">{{ row.name }}（{{ row.userId }}）</template></el-table-column>
+        <el-table-column label="处理"><template #default="{ row }">{{ handlerIds.has(row.userId) ? '已存在' : '将追加' }}</template></el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button :disabled="saving" @click="reuseOpen = false">取消</el-button>
+        <el-button type="primary" :loading="saving" :disabled="reuseLoading || !sourceReady || !newHandlerCount" @click="applyReuse">
+          追加 {{ newHandlerCount }} 位经办人
+        </el-button>
+      </template>
+    </el-dialog>
     <el-dialog v-model="addOpen" title="新增经办人" width="min(600px, 94vw)" destroy-on-close
       :close-on-click-modal="false" :show-close="!saving" :close-on-press-escape="!saving">
       <form class="person-search" @submit.prevent="search">
@@ -156,5 +234,6 @@ async function updateHandler(userId: string, method: 'POST' | 'DELETE') {
 .handlers-header h2 { margin: 8px 0 0; overflow-wrap: anywhere; }
 .back-link { color: #2855c4; font-size: 14px; }
 .add-handler { flex-shrink: 0; padding: 0 16px; height: 38px; border-radius: 8px; font-weight: 600; }
+.handler-actions { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 .person-search { display: flex; gap: 8px; margin-bottom: 12px; }
 </style>

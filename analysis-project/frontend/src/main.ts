@@ -222,7 +222,7 @@ router.beforeEach(async (to, from, next) => {
     const params = new URLSearchParams(to.hash.slice(1));
     const { department, ...query } = to.query;
     if (typeof department === 'string') params.set('department', department);
-    const keys = ['version', 'recordOwner', 'finding', 'scope', 'mode', 'department', 'history'];
+    const keys = ['version', 'recordOwner', 'finding', 'scope', 'mode', 'department', 'history', 'exact'];
     if (keys.some(key => params.has(key))) {
       const pptFeedbackContext = Object.fromEntries(keys.flatMap(key => {
         const value = params.get(key);

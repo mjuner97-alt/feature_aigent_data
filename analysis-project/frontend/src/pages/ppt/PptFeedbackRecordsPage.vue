@@ -4,7 +4,6 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { listFeedbackRecords, type PptFeedbackRecord } from '../../api/pptAnomaly';
-import { getLoggedInUserId } from '../../utils/auth';
 import PptListFilterBar from '../../components/ppt/PptListFilterBar.vue';
 import PptVersionAssignmentsDialog from '../../components/ppt/PptVersionAssignmentsDialog.vue';
 
@@ -18,7 +17,6 @@ type Recipient = {
 
 const router = useRouter();
 const versionAssignments = ref<{ versionId: number; versionNo: number }>();
-const userId = getLoggedInUserId();
 const records = ref<PptFeedbackRecord[]>([]);
 const loading = ref(false);
 const error = ref('');
@@ -126,14 +124,14 @@ function notificationTime(value: string | null) {
 /** 统一打开反馈详情，实际编辑权限由详情接口决定，正文通过内部编辑按钮修改。 */
 function openDetail(row: Recipient) {
   const pages = row.pages.filter(page => page.status && page.findingId !== null);
-  const ownPages = pages.filter(page => userId && page.recipientIds.includes(userId));
   if (!pages.length) return;
-  const page = ownPages.find(item => item.status === 'PENDING_FEEDBACK') ?? ownPages[0] ?? pages[0];
-  void router.push({
-    path: '/ppt-anomaly/overview',
-    state: { pptFeedbackContext: { version: String(page.versionId), recordOwner: ownPages.length ? userId : page.recipient,
-      finding: String(page.findingId), mode: 'edit' } },
-  });
+  const page = pages.find(item => item.status === 'PENDING_FEEDBACK') ?? pages[0];
+  const department = row.departments[0];
+  const context: Record<string, string> = {
+    version: String(row.versionId), finding: String(page.findingId), mode: 'edit', scope: 'all', exact: '1',
+  };
+  if (department) context.department = department;
+  void router.push({ path: '/ppt-anomaly/overview', state: { pptFeedbackContext: context } });
 }
 
 function openVersionAssignments(row: { versionId: number; versionNo: number }) {

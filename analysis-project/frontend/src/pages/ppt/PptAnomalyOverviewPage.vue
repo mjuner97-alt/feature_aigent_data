@@ -21,7 +21,11 @@ const linkParams = computed(() => {
   if (router.currentRoute.value.path !== '/ppt-anomaly/overview') return new URLSearchParams();
   return new URLSearchParams(window.history.state?.pptFeedbackContext);
 });
-const recordOwner = computed(() => linkParams.value.get('recordOwner') || undefined);
+const recordOwner = computed(() => {
+  const owner = linkParams.value.get('recordOwner');
+  return owner && owner !== 'null' && owner !== 'undefined' ? owner : undefined;
+});
+const exactVersion = computed(() => linkParams.value.get('exact') === '1');
 const recordMode = computed(() => linkParams.value.get('mode'));
 const linkedDepartment = computed(() => linkParams.value.get('department') || undefined);
 const historical = computed(() => linkParams.value.get('history') === '1');
@@ -43,7 +47,9 @@ function handlersFor(id: number) {
 }
 function contactLabel(id: number) {
   const contact = directory.value?.contacts?.[id];
-  return contact?.name ? `${contact.name}（${contact.userId}）` : contact?.userId;
+  if (!contact) return undefined;
+  const names = contact.name?.split('、') ?? [];
+  return contact.userId.split(',').map((id, index) => names[index] ? `${names[index]}（${id}）` : id).join('、');
 }
 const content = ref<HTMLElement>();
 // undefined 表示正在加载，null 表示没有可用预览。
@@ -341,7 +347,7 @@ async function reload() {
   linkNotice.value = '';
   try {
     let targetVersion = requestedVersionId.value;
-    if (recordOwner.value || historical.value) {
+    if (recordOwner.value || historical.value || exactVersion.value) {
       resolvedFindingId.value = linkedFindingId.value || undefined;
     } else if (!historical.value && targetVersion === linkedVersionId.value && linkedFindingId.value > 0) {
       const link = await resolveFeedbackLink(targetVersion, linkedFindingId.value);
@@ -356,7 +362,7 @@ async function reload() {
           : `此页面已从 v${link.versionNo} 移除，当前版本无需填写此项。`;
       }
     }
-    if (!historical.value && !recordOwner.value && departmentView.value && !linkedFindingId.value) {
+    if (!historical.value && !exactVersion.value && !recordOwner.value && departmentView.value && !linkedFindingId.value) {
       const link = await resolveFeedbackLink(targetVersion, 0, linkedDepartment.value);
       if (id !== loadId) return;
       targetVersion = link.versionId;
@@ -379,7 +385,7 @@ async function reload() {
   }
 }
 // 切换版本或反馈记录时清空旧目录与草稿，使用请求序号屏蔽过期响应。
-watch([requestedVersionId, linkedFindingId, linkedScope, linkedDepartment, historical, recordOwner, recordMode], () => {
+watch([requestedVersionId, linkedFindingId, linkedScope, linkedDepartment, historical, exactVersion, recordOwner, recordMode], () => {
   scope.value = linkedScope.value;
   directory.value = undefined;
   drafts.value.clear();

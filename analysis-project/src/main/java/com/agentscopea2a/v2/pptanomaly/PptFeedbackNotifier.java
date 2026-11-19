@@ -1,6 +1,7 @@
 package com.agentscopea2a.v2.pptanomaly;
 
 import com.agentscopea2a.config.datasource.GaussConfig;
+import com.agentscopea2a.v2.auth.mapper.DeveloperPlPersonInfoMapper;
 import com.agentscopea2a.mapper.gauss.PptAnomalyMapper;
 import com.agentscopea2a.v2.skillManager.notification.NotificationPayload;
 import com.agentscopea2a.v2.skillManager.notification.NotificationSender;
@@ -51,6 +52,7 @@ public class PptFeedbackNotifier {
     private final PptAnomalyMapper persistence;
     private final NotificationSender sender;
     private final ObjectMapper json;
+    private final DeveloperPlPersonInfoMapper people;
     private final TransactionTemplate transaction;
     private final String baseUrl;
     private final AtomicBoolean reminderScanQueued = new AtomicBoolean();
@@ -62,12 +64,13 @@ public class PptFeedbackNotifier {
     });
 
     /** 装配统一发送器及独立事务模板，初始化通知访问地址。 */
-    public PptFeedbackNotifier(PptAnomalyMapper persistence, NotificationSender sender, ObjectMapper json,
+    public PptFeedbackNotifier(PptAnomalyMapper persistence, NotificationSender sender, ObjectMapper json, DeveloperPlPersonInfoMapper people,
                                @Qualifier(GaussConfig.TX_NAME) PlatformTransactionManager transactionManager,
                                @Value("${harness.a2a.csv-download.base-url:http://localhost:${server.port:8080}${server.servlet.context-path:}}") String baseUrl) {
         this.persistence = persistence;
         this.sender = sender;
         this.json = json;
+        this.people = people;
         this.transaction = new TransactionTemplate(transactionManager);
         this.transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.baseUrl = baseUrl.strip().replaceAll("/+$", "");
@@ -315,12 +318,7 @@ public class PptFeedbackNotifier {
         var cc = supervisors(to);
         String url = link(version, department, baseUrl);
         String subject = "【反馈逾期提醒】" + fileName;
-        String items = findings.values().stream().map(item -> "<li>P" + item.page() + " "
-                + HtmlUtils.htmlEscape(item.title() == null ? "未命名事项" : item.title()) + "</li>")
-                .collect(Collectors.joining());
-        String body = "<p>" + HtmlUtils.htmlEscape(department) + "有 " + ids.size()
-                + " 项待反馈事项已逾期，请尽快提交反馈。</p><ul>" + items
-                + "</ul><p><a href=\"" + HtmlUtils.htmlEscape(url) + "\">点击查看</a></p>";
+        String body = reminderBody(version, fileName, department, ids.size(), url);
         var payload = new NotificationPayload("HTML", body, null, null, url, null, subject,
                 null, null, version, "SUCCESS", LocalDateTime.now(CHINA), to, "METRIC", cc);
         LocalDateTime sentAt = null;
@@ -339,7 +337,7 @@ public class PptFeedbackNotifier {
         String url = link(versionId, department, requestBaseUrl());
         String subject = department + "-例会材料反馈结果通知";
         String body = "<p>请查看例会材料「" + HtmlUtils.htmlEscape(fileName)
-                + "」的最新反馈事项。</p><p><a href=\"" + HtmlUtils.htmlEscape(url) + "\">查看最新反馈事项</a></p>";
+                + "」的反馈事项。</p>" + analysisTable(versionId, department) + "<p><a href=\"" + HtmlUtils.htmlEscape(url) + "\">查看最新反馈事项</a></p>";
         var payload = new NotificationPayload("HTML", body, null, null, url, null, subject,
                 null, null, versionId, "SUCCESS", LocalDateTime.now(), to, "MANUAL", cc);
         transaction.executeWithoutResult(status -> {
@@ -358,17 +356,49 @@ public class PptFeedbackNotifier {
         return "《" + material.fileName().replaceFirst("(?i)\\.pptx$", "") + "》V1稿待分析事项的通知";
     }
 
-    /** 同一事项有多名经办人时只计一项。 */
-    private String body(List<PptAnomalyMapper.FeedbackNotice> notices, String notificationBaseUrl) {
+    /** 首次通知展示完整部门进度，避免把本次发送范围误认为部门总数。 */
+    String body(List<PptAnomalyMapper.FeedbackNotice> notices, String notificationBaseUrl) {
         var first = notices.get(0);
-        long count = notices.stream().filter(notice -> "PENDING".equals(notice.kind()))
-                .map(PptAnomalyMapper.FeedbackNotice::findingId).distinct().count();
-        return "<p>各位：</p><p style=\"text-indent:2em\">本期材料涉及到"
-                + HtmlUtils.htmlEscape(departmentOf(first)) + "共" + count + "项，请在收到本通知后 1 小时内<a href=\"" + HtmlUtils.htmlEscape(link(first, notificationBaseUrl))
-                + "\">点击链接</a>分析反馈。</p>";
+        return "<p>各位：</p><p>以下为" + HtmlUtils.htmlEscape(departmentOf(first))
+                + "的分析反馈进度，请在收到本通知后 1 小时内完成分析反馈。</p>"
+                + analysisTable(first.versionId(), departmentOf(first))
+                + "<p><a href=\"" + HtmlUtils.htmlEscape(link(first, notificationBaseUrl)) + "\">点击查看并分析反馈</a></p>";
     }
 
-    /** 链接保留来源版本及收件部门，详情页定位到同批次最新已识别版本。 */
+    String reminderBody(long version, String fileName, String department, int overdue, String url) {
+        return "<p>各位：</p><p>材料「" + HtmlUtils.htmlEscape(fileName) + "」中，"
+                + HtmlUtils.htmlEscape(department) + "有 " + overdue + " 项待分析事项已逾期，请尽快分析反馈。</p>"
+                + analysisTable(version, department)
+                + "<p><a href=\"" + HtmlUtils.htmlEscape(url) + "\">点击查看并分析反馈</a></p>";
+    }
+
+    private String analysisTable(long version, String department) {
+        var findings = persistence.findings(version).stream()
+                .filter(item -> belongsToDepartment(item.departments(), department)).toList();
+        var ids = findings.stream().map(PptAnomalyMapper.FindingRow::id).collect(Collectors.toSet());
+        var handlers = persistence.resultHandlers(version).stream().filter(item -> ids.contains(item.findingId())).toList();
+        var userIds = handlers.stream().map(PptAnomalyMapper.ResultHandler::userId)
+                .filter(id -> id != null && !id.isBlank()).distinct().toList();
+        var names = new LinkedHashMap<String, String>();
+        if (!userIds.isEmpty()) {
+            for (var person : people.selectByUserIds(userIds)) {
+                if (person.getName() != null && !person.getName().isBlank()) names.putIfAbsent(person.getUserId(), person.getName());
+            }
+        }
+        return PptFeedbackMailTable.render(findings, handlers, names);
+    }
+
+    private boolean belongsToDepartment(String departments, String department) {
+        if (departments == null) return false;
+        try {
+            return json.readValue(departments, new com.fasterxml.jackson.core.type.TypeReference<List<String>>() {})
+                    .contains(department);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("无法读取事项部门，不能生成通知数量", e);
+        }
+    }
+
+    /** 链接保留来源版本及收件部门，详情页固定到通知对应版本，避免新版本改变事项数量。 */
     private String link(PptAnomalyMapper.FeedbackNotice first, String notificationBaseUrl) {
         return link(first.versionId(), departmentOf(first), notificationBaseUrl);
     }
@@ -376,7 +406,7 @@ public class PptFeedbackNotifier {
     private String link(long versionId, String department, String notificationBaseUrl) {
         return notificationBaseUrl + "/ppt-anomaly/overview?department="
                 + java.net.URLEncoder.encode(department, java.nio.charset.StandardCharsets.UTF_8)
-                + "#version=" + versionId;
+                + "#version=" + versionId + "&exact=1&scope=all";
     }
 
     /** 规范化通知部门名称，历史空归属使用默认名称。 */

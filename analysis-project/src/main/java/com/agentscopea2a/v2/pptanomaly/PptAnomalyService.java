@@ -216,8 +216,14 @@ public class PptAnomalyService {
     /** 按当前用户权限查询反馈任务、通知时间和反馈时间。 */
     public List<FeedbackRecord> feedbackRecords(String userId, boolean admin) {
         var noticeColumns = persistence.feedbackNoticeColumns();
-        return persistence.feedbackRecords(userId, admin, !noticeColumns.isEmpty(), noticeColumns.contains("notified_at"))
-                .stream().map(row -> {
+        var viewer = admin ? null : ledgerPerson(userId);
+        var visibleDepartments = viewer == null ? List.<String>of() : viewer.depts();
+        // 列表和详情均按责任部门展示；先读取部门任务，再在服务端严格过滤可见范围。
+        return persistence.feedbackRecords(userId, true, !noticeColumns.isEmpty(), noticeColumns.contains("notified_at"))
+                .stream().filter(row -> row.findingId() != null)
+                .filter(row -> admin || Objects.equals(userId, row.recipient())
+                        || readList(row.findingDepartments()).stream().anyMatch(visibleDepartments::contains))
+                .map(row -> {
                     var person = row.recipient() == null ? null : ledgerPerson(row.recipient());
                     var departments = readList(row.findingDepartments());
                     if (departments.isEmpty() && person != null) {
@@ -257,6 +263,30 @@ public class PptAnomalyService {
         var name = rows.stream().map(DeveloperPlPersonInfo::getName)
                 .filter(value -> value != null && !value.isBlank()).findFirst().orElse(userId.strip());
         return new DirectoryPerson(userId.strip(), name, departments);
+    }
+
+    /** 联系人组保持规范顺序，兼容历史单人认证号。 */
+    static List<String> contactIds(String value) {
+        if (value == null) return List.of();
+        return java.util.Arrays.stream(value.split(",")).map(String::strip).filter(id -> !id.isEmpty())
+                .distinct().sorted().toList();
+    }
+
+    DirectoryPerson contactGroup(String value) {
+        var members = contactIds(value).stream().map(this::ledgerPerson).filter(Objects::nonNull).toList();
+        if (members.isEmpty()) return null;
+        return new DirectoryPerson(members.stream().map(DirectoryPerson::userId).collect(java.util.stream.Collectors.joining(",")),
+                members.stream().map(DirectoryPerson::name).collect(java.util.stream.Collectors.joining("、")),
+                members.stream().flatMap(member -> member.depts().stream()).distinct().toList());
+    }
+
+    String requireContactGroup(String value) {
+        var ids = contactIds(value);
+        String normalized = String.join(",", ids);
+        if (ids.isEmpty() || normalized.length() > 2048 || ids.stream().anyMatch(id -> ledgerPerson(id) == null)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择人员台账中的联系人，联系人总长度不能超过 2048");
+        }
+        return normalized;
     }
 
     public record FeedbackSupervisor(String userId, String name, List<String> departments, boolean available, boolean enabled) {}
@@ -505,10 +535,7 @@ public class PptAnomalyService {
         if (section == null || section.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择异常板块");
         }
-        var person = ledgerPerson(userId);
-        if (person == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择人员台账中的联系人");
-        }
+        var person = contactGroup(requireContactGroup(userId));
         if (!"ANALYZED".equals(persistence.lockVersion(versionId))) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "已识别的版本不存在");
         }
@@ -747,15 +774,15 @@ public class PptAnomalyService {
     private Map<String, DirectoryPerson> importContacts(List<PptAnomalyMapper.BoardOwner> defaults, Map<String, String> prior,
                                                List<PptAnomalyMapper.SectionWork> version) {
         var contacts = new java.util.HashMap<String, DirectoryPerson>();
-        defaults.forEach(row -> addImportContact(contacts, row.name(), row.owner()));
         prior.forEach((section, owner) -> addImportContact(contacts, section, owner));
+        defaults.forEach(row -> addImportContact(contacts, row.name(), row.owner()));
         version.forEach(row -> addImportContact(contacts, row.section(), row.ownerUserId()));
         return contacts;
     }
 
     /** 将人员目录中有效的联系人加入板块映射。 */
     private void addImportContact(Map<String, DirectoryPerson> contacts, String section, String userId) {
-        var person = ledgerPerson(userId);
+        var person = contactGroup(userId);
         if (person != null) contacts.put(section, person);
     }
 
@@ -804,6 +831,14 @@ public class PptAnomalyService {
         }
         var pagesByNumber = new java.util.HashMap<Integer, PptAnomalyMapper.PageAssignment>();
         pages.forEach(page -> pagesByNumber.put(page.page(), page));
+        for (var conflicted : pages) {
+            if (!"RULE_CONFLICT".equals(conflicted.mode())) continue;
+            boolean resolved = configuredImport && assignments.stream().anyMatch(a -> a != null
+                    && a.page() == conflicted.page() && (a.skip() || a.recognitionMode() != null
+                    && Set.of("FULL", "TEXT_ONLY", "UPPER_TABLE_ONLY", "NO_SCAN").contains(a.recognitionMode())));
+            if (!resolved) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "第 " + conflicted.page() + " 页命中多条扫描规则，请选择识别范围或跳过");
+        }
         var corrections = new LinkedHashMap<Integer, ImportAssignment>();
         var owners = new java.util.HashMap<String, String>();
         var boardOwners = configuredImport ? persistence.boardOwners() : List.<PptAnomalyMapper.BoardOwner>of();
@@ -835,7 +870,7 @@ public class PptAnomalyService {
             if (page == null) throw new ResponseStatusException(HttpStatus.CONFLICT, "页面归属已变化，请刷新后确认");
             if (corrected) {
                 if (assignment.title() == null || assignment.title().strip().length() > 512
-                        || !Set.of("FULL", "TEXT_ONLY", "UPPER_TABLE_ONLY").contains(assignment.recognitionMode())) {
+                        || !Set.of("FULL", "TEXT_ONLY", "UPPER_TABLE_ONLY", "NO_SCAN").contains(assignment.recognitionMode())) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "页面标题或识别范围无效");
                 }
                 if (!assignment.skip() && (page.skipped()
@@ -846,6 +881,7 @@ public class PptAnomalyService {
             }
             String section = assignment.skip() || assignment.section() == null ? null : assignment.section().trim();
             String owner = assignment.skip() ? null : assignment.deferOwner() ? "" : assignment.owner();
+            if (owner != null && !owner.isBlank()) owner = String.join(",", contactIds(owner));
             if (configuredImport) {
                 if (!corrected && page.section() != null) {
                     throw new ResponseStatusException(HttpStatus.CONFLICT, "已匹配页面的板块与联系人不能修改，请重新打开配置");
@@ -897,10 +933,10 @@ public class PptAnomalyService {
                 defaultOwners.add(section);
             }
             if (owner != null) {
-                if (!assignment.deferOwner() && ledgerPerson(owner) == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择人员台账中的联系人");
+                if (!assignment.deferOwner()) owner = requireContactGroup(owner);
                 String existing = owners.putIfAbsent(section, owner);
                 if (existing != null && !existing.equals(owner)) {
-                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "同一板块只能指定一位负责人");
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "同一板块的联系人名单必须一致");
                 }
             }
             persistence.setPageAssignment(versionId, page.page(), section, owner, assignment.skip());
@@ -960,7 +996,7 @@ public class PptAnomalyService {
         if (configuredImport) {
             var configuredOwners = new HashSet<String>();
             for (var boardOwner : boardOwners) {
-                if (ledgerPerson(boardOwner.owner()) != null) configuredOwners.add(boardOwner.name());
+                if (contactGroup(boardOwner.owner()) != null) configuredOwners.add(boardOwner.name());
             }
             for (String section : usedSections) {
                 if (!configuredOwners.contains(section)) defaultOwners.add(section);
@@ -974,7 +1010,9 @@ public class PptAnomalyService {
             String title = entry.getKey();
             if (conflictingTitles.contains(title)) continue;
             persistence.rememberSection(title, entry.getValue().section());
-            persistence.rememberScope(title, entry.getValue().mode());
+            if (persistence.scanRules().stream().noneMatch(r -> unnumberedTitle(r.title()).equals(title))) {
+                persistence.rememberScope(title, entry.getValue().mode());
+            }
         }
         for (var entry : handlerUpdates.entrySet()) {
             // 与配置页的经办人维护共用标题锁；只补充默认名单，不删除已有配置。
@@ -1412,6 +1450,7 @@ public class PptAnomalyService {
     private void parseSlides(InputStream input, List<PptAnomalyMapper.PageAssignment> previousPages,
                              Map<Integer, ImportAssignment> corrections,
                              ParsedPageConsumer consumer) throws IOException {
+        var scanRules = persistence.scanRules();
         var configuredTitles = new HashSet<String>();
         List<PageRule> configuredRules = new ArrayList<>();
         for (var entry : persistence.scopes()) {
@@ -1442,13 +1481,24 @@ public class PptAnomalyService {
                 String matchedTitle = matchingTitle(titleText, configuredTitles);
                 String title = unnumberedTitle(correction != null || matchedTitle == null ? titleText : matchedTitle);
                 PageRule rule = dictionary.ruleFor(title, page);
+                var features = new ArrayList<String>();
+                collectGroupedPageText(slide.getShapes(), features, true);
+                var matches = PptScanRule.matching(scanRules, title, String.join("\n", features));
+                if (matches.size() == 1) {
+                    var selected = matches.get(0);
+                    rule = new PageRule(title, null, PageMode.fromConfig(selected.mode()), selected.upperLimitRatio(),
+                            selected.firstRow(), selected.lastRow());
+                } else if (matches.size() > 1) {
+                    rule = new PageRule(title, null, PageMode.RULE_CONFLICT, null, null, null);
+                }
                 if (correction != null) {
                     PageMode selectedMode = PageMode.valueOf(correction.recognitionMode());
-                    PageRule configuredRule = matchedTitle == null ? rule : dictionary.ruleFor(matchedTitle, page);
+                    PageRule configuredRule = rule;
                     rule = configuredRule.mode() == selectedMode ? configuredRule
                             : new PageRule(title, page, selectedMode, null, null, null);
                 }
-                if (rule.mode() == PageMode.OUT_OF_SCOPE) {
+                if (rule.mode() == PageMode.OUT_OF_SCOPE || rule.mode() == PageMode.NO_SCAN
+                        || rule.mode() == PageMode.RULE_CONFLICT) {
                     consumer.accept(page, title, List.of(), rule.mode());
                     continue;
                 }
@@ -1586,7 +1636,7 @@ public class PptAnomalyService {
 
     /** 材料页面支持的全文、文字和上部表格解析模式。 */
     private enum PageMode {
-        FULL, TEXT_ONLY, UPPER_TABLE_ONLY, OUT_OF_SCOPE;
+        FULL, TEXT_ONLY, UPPER_TABLE_ONLY, OUT_OF_SCOPE, NO_SCAN, RULE_CONFLICT;
 
         /** 将配置模式转换为解析枚举，兼容历史跳过及人工复核模式。 */
         static PageMode fromConfig(String mode) {

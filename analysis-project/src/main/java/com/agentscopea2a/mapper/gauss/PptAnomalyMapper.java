@@ -266,6 +266,10 @@ public interface PptAnomalyMapper {
     int findingStatus(@Param("id") long id, @Param("status") String status);
     /** 读取数据库中的标题解析模式及表格行范围配置。 */
     List<Entry> scopes();
+    List<com.agentscopea2a.v2.pptanomaly.PptScanRule> scanRules();
+    int deleteScanRules(@Param("title") String title);
+    int insertScanRule(@Param("rule") com.agentscopea2a.v2.pptanomaly.PptScanRule rule);
+    int renameScanRules(@Param("original") String original, @Param("title") String title);
     /** 保存解析页面，兼容更新历史跳过页面的提取结果。 */
     int createSlide(@Param("id") long id, @Param("page") int page, @Param("title") String title, @Param("texts") String texts, @Param("render") String render, @Param("mode") String mode);
     /** 锁定材料版本并读取状态，协调识别、分派和通知操作。 */

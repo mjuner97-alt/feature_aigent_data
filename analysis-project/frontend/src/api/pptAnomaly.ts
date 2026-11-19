@@ -149,6 +149,14 @@ export async function updatePptTitleHandler(title: string, userId: string, metho
     method, headers: headers(),
   }));
 }
+export async function listPptTitleHandlerSources() {
+  return parse<string[]>(await fetch(`${base}/keyword-config/title-handler-sources`, { headers: headers() }));
+}
+export async function reusePptTitleHandlers(title: string, sourceTitle: string) {
+  return parse<PptPerson[]>(await fetch(`${base}/keyword-config/title-handlers/reuse?${new URLSearchParams({ title })}`, {
+    method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ sourceTitle }),
+  }));
+}
 /** 读取当前人员台账中的默认候选项。 */
 export async function listPptPeople() {
   return parse<PptPerson[]>(await fetch(`${base}/keyword-config/people`, { headers: headers() }));
@@ -355,10 +363,10 @@ export interface PptImportPage {
   title: string;
   section: string | null;
   skipped: boolean;
-  mode: PptRecognitionMode | 'OUT_OF_SCOPE' | 'SKIP' | 'REVIEW';
+  mode: PptRecognitionMode | 'OUT_OF_SCOPE' | 'SKIP' | 'REVIEW' | 'RULE_CONFLICT';
   excluded: boolean;
 }
-export type PptRecognitionMode = 'FULL' | 'TEXT_ONLY' | 'UPPER_TABLE_ONLY';
+export type PptRecognitionMode = 'FULL' | 'TEXT_ONLY' | 'UPPER_TABLE_ONLY' | 'NO_SCAN';
 /** 提交给后端的页面板块和联系人分派结果。 */
 export interface PptImportAssignment {
   page: number;

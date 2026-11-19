@@ -34,8 +34,38 @@ const tabs = [
   { key: 'board', label: '板块配置', name: '板块', target: '用户 ID' },
 ] as const;
 const modes: Record<string, string> = {
-  FULL: '全量识别', TEXT_ONLY: '仅文字', UPPER_TABLE_ONLY: '仅上方表格',
+  FULL: '全量识别', TEXT_ONLY: '仅文字', UPPER_TABLE_ONLY: '仅上方表格', NO_SCAN: '全不扫',
 };
+type ScanRule = { name: string; keywords: string; mode: string; upperLimitRatio?: number; firstRow?: number; lastRow?: number };
+const rulesOpen = ref(false);
+const rulesTitle = ref('');
+const scanRules = ref<ScanRule[]>([]);
+const rulesLoading = ref(false);
+const rulesReady = ref(false);
+async function openScanRules(title: string) {
+  rulesTitle.value = title;
+  scanRules.value = [];
+  rulesReady.value = false;
+  rulesOpen.value = true;
+  rulesLoading.value = true;
+  try {
+    scanRules.value = await (await request('/scan-rules?' + new URLSearchParams({ title }))).json();
+    rulesReady.value = true;
+  } catch (error) { ElMessage.error(String(error)); }
+  finally { rulesLoading.value = false; }
+}
+async function saveScanRules() {
+  if (rulesLoading.value || !rulesReady.value) return;
+  rulesLoading.value = true;
+  try {
+    await request('/scan-rules?' + new URLSearchParams({ title: rulesTitle.value }), {
+      method: 'PUT', body: JSON.stringify(scanRules.value),
+    });
+    rulesOpen.value = false;
+    ElMessage.success('扫描规则已保存，仅影响后续导入');
+  } catch (error) { ElMessage.error(String(error)); }
+  finally { rulesLoading.value = false; }
+}
 const route = useRoute();
 const router = useRouter();
 const requestedTab = () => route.query.tab === 'section' ? 'section'
@@ -62,7 +92,7 @@ const rows = ref<Entry[]>([]);
 const titleRows = ref<TitleRow[]>([]);
 const loading = ref(false);
 const people = ref<PptPerson[]>([]);
-const ownerName = ref('');
+const knownBoardContacts = ref(new Map<string, string>());
 const peopleLoading = ref(false);
 const sections = ref<BoardRow[]>([]);
 const boardRows = ref<BoardRow[]>([]);
@@ -73,12 +103,19 @@ let peopleRequestId = 0;
 
 /** 生成联系人姓名及认证号的展示文字。 */
 function contactLabel(userId: string, name?: string) {
-  return name ? `${name}（${userId}）` : userId;
+  const ids = userId.split(',').filter(Boolean);
+  const names = name?.split('、') ?? [];
+  return ids.map((id, index) => names[index] && names[index] !== id ? `${names[index]}（${id}）` : id).join('、');
 }
-
-/** 将选中的人员写入当前联系人配置。 */
-function selectOwner(userId: string) {
-  ownerName.value = people.value.find(person => person.userId === userId)?.name ?? '';
+const boardOwnerOptions = computed(() => {
+  const options = new Map(knownBoardContacts.value);
+  for (const person of people.value) options.set(person.userId, person.name);
+  return [...options];
+});
+function selectBoardOwners(ids: string[]) {
+  const options = new Map(boardOwnerOptions.value);
+  knownBoardContacts.value = new Map(ids.map(id => [id, options.get(id) ?? id]));
+  boardForm.value.owner = ids.join(',');
 }
 
 /** 远程搜索可选联系人并处理加载状态。 */
@@ -237,7 +274,9 @@ async function editTitle(row?: TitleRow) {
 function editBoard(row?: BoardRow) {
   editKind.value = 'board';
   boardForm.value = { originalName: row?.name ?? '', name: row?.name ?? '', owner: row?.owner ?? '', create: !row };
-  ownerName.value = row?.ownerName ?? '';
+  const ids = row?.owner?.split(',') ?? [];
+  const names = row?.ownerName?.split('、') ?? [];
+  knownBoardContacts.value = new Map(ids.map((id, index) => [id, names[index] ?? id]));
   editorOpen.value = true;
   void searchPeople('');
 }
@@ -354,7 +393,7 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
           <el-table-column label="所属板块" min-width="76" show-overflow-tooltip>
             <template #default="{ row }">{{ row.section?.target }}</template>
           </el-table-column>
-          <el-table-column label="板块负责人" min-width="112" show-overflow-tooltip>
+          <el-table-column label="板块联系人" min-width="112" show-overflow-tooltip>
             <template #default="{ row }">{{ row.contact ? contactLabel(row.contact.target, row.ownerName) : '—' }}</template>
           </el-table-column>
           <el-table-column label="新增时间" width="168" class-name="config-date">
@@ -363,10 +402,11 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
           <el-table-column label="编辑时间" width="168" class-name="config-date">
             <template #default="{ row }">{{ dateText(titleUpdated(row) ?? titleCreated(row)) }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="156" fixed="right">
+          <el-table-column label="操作" width="224" fixed="right">
             <template #default="{ row }">
               <div class="row-actions">
                 <el-button link type="primary" @click="editTitle(row)">编辑</el-button>
+                <el-button link type="primary" @click="openScanRules(row.name)">扫描规则</el-button>
                 <el-button link type="primary" @click="openHandlers(row.name)">设置经办人</el-button>
                 <el-button link type="danger" @click="remove(row)">删除</el-button>
               </div>
@@ -410,6 +450,35 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
           :page-sizes="[10, 20, 50, 100]" layout="total, sizes, prev, pager, next" />
       </el-config-provider>
     </el-card>
+    <el-dialog v-model="rulesOpen" :title="`${rulesTitle} · 关键词扫描规则`" width="min(760px, 94vw)"
+      append-to-body :close-on-click-modal="false" :show-close="!rulesLoading" :close-on-press-escape="!rulesLoading">
+      <p>从整页正文和表格中匹配关键词，不依赖页码。每行一个关键词，全部包含才命中；未命中使用标题默认范围，多条命中需在上传时确认。</p>
+      <div v-loading="rulesLoading">
+        <el-card v-for="(rule, index) in scanRules" :key="index" shadow="never" style="margin-bottom: 12px">
+          <el-form label-position="top" :disabled="rulesLoading">
+            <el-form-item label="规则名称" required><el-input v-model="rule.name" maxlength="255" /></el-form-item>
+            <el-form-item label="特征关键词（每行一个，全部命中）" required>
+              <el-input v-model="rule.keywords" type="textarea" :rows="3" maxlength="8192" />
+            </el-form-item>
+            <el-form-item label="扫描方式" required><el-select v-model="rule.mode">
+              <el-option v-for="(label, key) in modes" :key="key" :label="label" :value="key" />
+            </el-select></el-form-item>
+            <template v-if="rule.mode === 'UPPER_TABLE_ONLY'">
+              <el-form-item label="表格顶边分界线比例（默认 0.5）"><el-input-number v-model="rule.upperLimitRatio" :min="0.01" :max="1" :step="0.05" /></el-form-item>
+              <el-form-item label="起始行（默认 1）"><el-input-number v-model="rule.firstRow" :min="1" /></el-form-item>
+              <el-form-item label="结束行（留空到末行）"><el-input-number v-model="rule.lastRow" :min="1" /></el-form-item>
+            </template>
+            <el-button type="danger" link @click="scanRules.splice(index, 1)">删除规则</el-button>
+          </el-form>
+        </el-card>
+        <el-button :disabled="rulesLoading || !rulesReady || scanRules.length >= 50"
+          @click="scanRules.push({ name: '', keywords: '', mode: 'FULL' })">新增规则</el-button>
+      </div>
+      <template #footer>
+        <el-button :disabled="rulesLoading" @click="rulesOpen = false">取消</el-button>
+        <el-button type="primary" :loading="rulesLoading" :disabled="!rulesReady" @click="saveScanRules">保存</el-button>
+      </template>
+    </el-dialog>
     <el-dialog
       v-model="editorOpen"
       :title="`${(isTitleEditor ? titleForm.originalName !== undefined : editKind === 'board' ? !boardForm.create : form.id) ? '编辑' : '新增'}${tab.label}`"
@@ -421,7 +490,7 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
       <el-form label-position="top" @submit.prevent="save">
         <template v-if="editKind === 'section'">
           <el-form-item label="页面标题" required><el-input v-model="titleForm.name" maxlength="512" /></el-form-item>
-          <el-form-item label="识别范围" required>
+          <el-form-item label="默认识别范围（关键词规则未命中时使用）" required>
             <el-select v-model="titleForm.scope">
               <el-option v-for="(label, key) in modes" :key="key" :label="label" :value="key" />
             </el-select>
@@ -452,10 +521,10 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
         <template v-else-if="editKind === 'board'">
           <el-form-item label="板块名称" required><el-input v-model="boardForm.name" maxlength="512" /></el-form-item>
           <el-form-item label="板块联系人" required>
-            <el-select v-model="boardForm.owner" filterable remote clearable :remote-method="searchPeople" :loading="peopleLoading"
-              placeholder="输入姓名或用户 ID 搜索" @change="selectOwner" @visible-change="(open: boolean) => { if (!open) searchPeople(''); }">
-              <template #label="{ value }">{{ contactLabel(value, ownerName) }}</template>
-              <el-option v-for="person in people" :key="person.userId" :value="person.userId" :label="contactLabel(person.userId, person.name)" />
+            <el-select :model-value="boardForm.owner ? boardForm.owner.split(',') : []" multiple filterable remote clearable
+              :remote-method="searchPeople" :loading="peopleLoading" placeholder="搜索并选择一位或多位联系人"
+              @update:model-value="selectBoardOwners">
+              <el-option v-for="[id, name] in boardOwnerOptions" :key="id" :value="id" :label="contactLabel(id, name)" />
             </el-select>
             <small>材料内容的咨询对象。</small>
           </el-form-item>

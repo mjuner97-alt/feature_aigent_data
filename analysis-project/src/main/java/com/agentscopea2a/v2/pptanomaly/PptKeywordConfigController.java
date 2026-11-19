@@ -26,7 +26,7 @@ import java.util.Set;
 @ConditionalOnProperty(prefix = "spring.datasource.hikari.gauss-customer", name = "enabled", havingValue = "true")
 public class PptKeywordConfigController {
     private static final Set<String> KINDS = Set.of("department", "scope", "section", "contact");
-    private static final Set<String> MODES = Set.of("FULL", "TEXT_ONLY", "UPPER_TABLE_ONLY");
+    private static final Set<String> MODES = Set.of("FULL", "TEXT_ONLY", "UPPER_TABLE_ONLY", "NO_SCAN");
     private final PptAnomalyMapper persistence;
     private final DeveloperPlPersonInfoMapper people;
     private final PptFeedbackNotifier notifier;
@@ -72,6 +72,42 @@ public class PptKeywordConfigController {
     public record Detail(String name, List<DetailLink> links) {}
     /** 标题明细下的一条链接名称及 HTTP 地址。 */
     public record DetailLink(String name, String url) {}
+
+    @GetMapping("/scan-rules")
+    public List<PptScanRule> scanRules(@RequestParam String title) {
+        requireConfiguredTitle(title);
+        return persistence.scanRules().stream().filter(rule -> title.equals(rule.title())).toList();
+    }
+
+    @PutMapping("/scan-rules")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @Transactional(GaussConfig.TX_NAME)
+    public void saveScanRules(@RequestParam String title, @RequestBody List<PptScanRule> rules) {
+        requireRow(persistence.lockConfiguredTitle(title).size());
+        if (rules == null || rules.size() > 50) throw bad("每个标题最多配置 50 条规则");
+        var names = new java.util.HashSet<String>();
+        var conditions = new java.util.HashSet<String>();
+        persistence.deleteScanRules(title);
+        for (var rule : rules) {
+            if (rule == null || rule.mode() == null || !MODES.contains(rule.mode())) throw bad("扫描方式无效");
+            String name = required(rule.name(), 255);
+            String keywords = required(rule.keywords(), 8192);
+            if (!names.add(name)) throw bad("规则名称不能重复");
+            String key = keywords.lines().map(String::strip).filter(v -> !v.isEmpty())
+                    .map(v -> v.replaceAll("[\\p{javaWhitespace}\\p{Zs}]+", "").toLowerCase(Locale.ROOT))
+                    .distinct().sorted().collect(java.util.stream.Collectors.joining("\n"));
+            if (key.isEmpty() || !conditions.add(key)) throw bad("关键词条件为空或重复");
+            boolean upper = "UPPER_TABLE_ONLY".equals(rule.mode());
+            Double ratio = upper ? rule.upperLimitRatio() : null;
+            Integer first = upper ? rule.firstRow() : null;
+            Integer last = upper ? rule.lastRow() : null;
+            if (ratio != null && (!Double.isFinite(ratio) || ratio <= 0 || ratio > 1)
+                    || first != null && first < 1 || last != null && last < (first == null ? 1 : first)) {
+                throw bad("表格范围无效");
+            }
+            persistence.insertScanRule(new PptScanRule(title, name, keywords, rule.mode(), ratio, first, last));
+        }
+    }
 
     /** 查询指定标题下配置的明细分组及链接。 */
     @GetMapping("/title-details")
@@ -166,6 +202,34 @@ public class PptKeywordConfigController {
         return readTitleHandlers(title);
     }
 
+    @GetMapping("/title-handler-sources")
+    public List<String> titleHandlerSources() {
+        var titles = new java.util.HashSet<>(entriesByName("section").keySet());
+        titles.addAll(entriesByName("scope").keySet());
+        return persistence.titleHandlers().stream().map(PptAnomalyMapper.TitleHandler::title)
+                .filter(titles::contains).distinct().sorted().toList();
+    }
+
+    public record ReuseHandlers(String sourceTitle) {}
+
+    /** 追加复用来源标题的经办人，保留当前标题已有配置。 */
+    @PostMapping("/title-handlers/reuse")
+    @Transactional(GaussConfig.TX_NAME)
+    public List<Handler> reuseTitleHandlers(@RequestParam String title, @RequestBody ReuseHandlers body) {
+        String source = required(body.sourceTitle(), 512);
+        if (title.equals(source)) throw bad("请选择其他标题");
+        java.util.stream.Stream.of(title, source).sorted().forEach(name -> requireRow(persistence.lockConfiguredTitle(name).size()));
+        var ids = persistence.titleHandlers().stream().filter(handler -> source.equals(handler.title()))
+                .map(PptAnomalyMapper.TitleHandler::userId).distinct().toList();
+        if (ids.isEmpty()) throw bad("来源标题尚未配置经办人");
+        for (String id : ids) {
+            var person = service.ledgerPerson(id);
+            if (person == null || person.depts().isEmpty()) throw bad("来源标题包含无效经办人，请先更新来源配置");
+            for (String department : person.depts()) persistence.insertTitleHandler(title, department, person.userId());
+        }
+        return readTitleHandlers(title);
+    }
+
     /** 删除指定标题下的经办人配置。 */
     @DeleteMapping("/title-handlers")
     @Transactional(GaussConfig.TX_NAME)
@@ -204,6 +268,7 @@ public class PptKeywordConfigController {
         } else if (!name.equals(original)) {
             persistence.renameTitleHandlers(original, name);
             persistence.renameTitleDetailLinks(original, name);
+            persistence.renameScanRules(original, name);
         }
     }
 
@@ -220,6 +285,7 @@ public class PptKeywordConfigController {
         if (scope != null) requireRow(persistence.deleteConfig("scope", scope.id()));
         persistence.deleteTitleHandlers(name);
         persistence.deleteTitleDetailLinks(name);
+        persistence.deleteScanRules(name);
     }
 
     /** 分页组合标题归属、解析规则及联系人信息。 */
@@ -238,7 +304,7 @@ public class PptKeywordConfigController {
         var matches = names.stream().map(name -> {
             Entry section = sections.get(name);
             Entry contact = section == null ? null : contacts.get(section.target());
-            var owner = contact == null ? null : service.ledgerPerson(contact.target());
+            var owner = contact == null ? null : service.contactGroup(contact.target());
             return new TitleRow(name, section, scopes.get(name), contact, owner == null ? null : owner.name());
         }).filter(row -> row.name().toLowerCase(Locale.ROOT).contains(term)
                 || row.section() != null && row.section().target().toLowerCase(Locale.ROOT).contains(term))
@@ -286,7 +352,7 @@ public class PptKeywordConfigController {
         return sections().stream().map(name -> {
             var contact = contacts.get(name);
             String owner = contact == null ? null : contact.target();
-            var person = owner == null ? null : service.ledgerPerson(owner);
+            var person = owner == null ? null : service.contactGroup(owner);
             return new SectionOption(name, owner, person == null ? null : person.name(), titleCounts.getOrDefault(name, 0L));
         }).toList();
     }
@@ -304,7 +370,7 @@ public class PptKeywordConfigController {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "板块已存在");
         }
         if (!body.create() && !names.contains(original)) requireRow(0);
-        if (service.ledgerPerson(body.owner().trim()) == null) throw bad("请选择人员台账中的联系人");
+        String owners = service.requireContactGroup(body.owner());
         var contact = entriesByName("contact").get(original);
         if (body.create()) {
             try {
@@ -324,11 +390,11 @@ public class PptKeywordConfigController {
                     }
                 }
                 if (contact != null) {
-                    requireRow(persistence.updateConfig("contact", new Entry(contact.id(), name, body.owner().trim(), null, null, null)));
+                    requireRow(persistence.updateConfig("contact", new Entry(contact.id(), name, owners, null, null, null)));
                 }
             }
         }
-        save("contact", contact == null ? null : contact.id(), new Entry(null, name, body.owner(), null, null, null));
+        save("contact", contact == null ? null : contact.id(), new Entry(null, name, owners, null, null, null));
     }
 
     /** 删除未关联标题的板块及其默认联系人配置。 */
@@ -398,7 +464,7 @@ public class PptKeywordConfigController {
                 var contact = entriesByName(kind).get(name);
                 if (contact == null || !id.equals(contact.id())) throw bad("联系人只能在原板块内更换");
             }
-            if (service.ledgerPerson(target) == null) throw bad("请选择人员台账中的联系人");
+            target = service.requireContactGroup(target);
         }
         boolean upper = "scope".equals(kind) && "UPPER_TABLE_ONLY".equals(target);
         Double ratio = upper ? body.upperLimitRatio() : null;

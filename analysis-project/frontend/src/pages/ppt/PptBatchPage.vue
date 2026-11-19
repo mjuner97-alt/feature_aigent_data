@@ -50,7 +50,8 @@ type ReviewRow = {
   page: number;
   title: string;
   section: string;
-  recognitionMode: PptRecognitionMode;
+  recognitionMode: PptRecognitionMode | '';
+  ruleConflict: boolean;
   skip: boolean;
 };
 const reviewRows = ref<ReviewRow[]>([]);
@@ -182,6 +183,7 @@ function handlerOptions(ids: string[]) {
 
 function pageStatus(row: ReviewRow) {
   if (row.skip) return { key: 'skipped', label: '已跳过' };
+  if (!row.recognitionMode) return { key: 'pending', label: '待确认扫描规则' };
   if (!row.section) return { key: 'pending', label: '待分配板块' };
   if (!boardContactId(row.section)) return { key: 'pending', label: '待补联系人' };
   return { key: 'ready', label: '可识别' };
@@ -269,8 +271,16 @@ function applyBoard() {
 
 /** 将板块联系人认证号转换为可读姓名。 */
 function boardContactLabel(userId: string) {
-  const name = contactNames.value.get(userId) || reviewPeople.value.find(person => person.userId === userId)?.name;
-  return name && name !== userId ? `${name}（${userId}）` : userId;
+  const groupNames = contactNames.value.get(userId)?.split('、') ?? [];
+  return userId.split(',').map((id, index) => {
+    const name = groupNames[index] || contactNames.value.get(id) || reviewPeople.value.find(person => person.userId === id)?.name;
+    return name && name !== id ? `${name}（${id}）` : id;
+  }).join('、');
+}
+
+function selectReviewContacts(ids: string[]) {
+  const row = selectedReviewRow.value;
+  if (row) ownerChoices.value.set(row.section, ids.join(','));
 }
 
 /** 生成联系人姓名及认证号的展示文字。 */
@@ -363,8 +373,9 @@ async function loadReview(load: () => ReturnType<typeof reviewPptImport>) {
       page: page.page,
       title: page.title ?? '',
       section: page.section ?? '',
-      recognitionMode: page.mode === 'TEXT_ONLY' || page.mode === 'UPPER_TABLE_ONLY' ? page.mode : 'FULL',
-      skip: page.excluded || (page.skipped && page.title === '目录'),
+      recognitionMode: page.mode === 'RULE_CONFLICT' ? '' : page.mode === 'TEXT_ONLY' || page.mode === 'UPPER_TABLE_ONLY' || page.mode === 'NO_SCAN' ? page.mode : 'FULL',
+      ruleConflict: page.mode === 'RULE_CONFLICT',
+      skip: page.excluded || page.mode === 'NO_SCAN' || (page.skipped && page.title === '目录'),
     }));
     ownerChoices.value = new Map();
     reviewSearch.value = '';
@@ -389,7 +400,7 @@ async function confirmReview() {
     const assignments: PptImportAssignment[] = reviewRows.value.map(row => {
       const section = row.section.trim();
       const owner = row.skip || configuredContacts.value.has(section) ? null : ownerChoices.value.get(section) || null;
-      return { page: row.page, title: row.title, recognitionMode: row.recognitionMode,
+      return { page: row.page, title: row.title, recognitionMode: row.recognitionMode || undefined,
         section, owner, rememberOwner: !!owner, skip: row.skip, remember: false,
         handlers: row.skip ? undefined : titleHandlerIds(row.title),
         createBoard: !row.skip && !reviewSections.value.includes(section) };
@@ -678,8 +689,10 @@ onMounted(refresh);
                   </label>
                   <div class="review-field">
                     <span>识别范围</span>
+                    <small v-if="selectedReviewRow.ruleConflict">该页命中多条关键词规则，请明确选择扫描范围或跳过。</small>
                     <el-select v-model="selectedReviewRow.recognitionMode" :disabled="busy || selectedReviewRow.skip"
-                      aria-label="识别范围">
+                      aria-label="识别范围" @change="selectedReviewRow.skip = selectedReviewRow.recognitionMode === 'NO_SCAN'">
+                      <el-option label="全不扫" value="NO_SCAN" />
                       <el-option label="全量识别" value="FULL" />
                       <el-option label="仅文字" value="TEXT_ONLY" />
                       <el-option label="仅上方表格" value="UPPER_TABLE_ONLY" />
@@ -703,11 +716,11 @@ onMounted(refresh);
                       {{ contactLabel(selectedReviewRow.section) }}
                     </div>
                     <template v-else>
-                      <el-select :model-value="ownerChoices.get(selectedReviewRow.section)" filterable remote
+                      <el-select :model-value="ownerChoices.get(selectedReviewRow.section)?.split(',') ?? []" multiple filterable remote
                         aria-labelledby="ppt-review-contact-label" placeholder="搜索姓名或用户 ID" :disabled="busy"
                         :remote-method="searchBoardContacts" :loading="boardContactLoading"
                         :no-data-text="boardContactSearchFailed ? '搜索失败，请重试' : '未找到联系人'"
-                        @update:model-value="ownerChoices.set(selectedReviewRow.section, $event)"
+                        @update:model-value="selectReviewContacts"
                         @visible-change="(open: boolean) => { if (!open) searchBoardContacts(''); }">
                         <template #label="{ value }">{{ boardContactLabel(value) }}</template>
                         <el-option v-for="person in matchingBoardContacts" :key="person.userId"
@@ -783,7 +796,8 @@ onMounted(refresh);
         </el-form-item>
         <el-form-item v-if="draftSection && !duplicateBoard" label="板块联系人" required>
           <span v-if="draftContact">{{ contactLabel(draftSection) }}</span>
-          <el-select v-else v-model="boardContact" placeholder="搜索姓名或 userID" filterable remote
+          <el-select v-else :model-value="boardContact ? boardContact.split(',') : []" multiple
+            @update:model-value="(ids: string[]) => boardContact = ids.join(',')" placeholder="搜索并选择联系人" filterable remote
             :remote-method="searchEditorContacts" :loading="editorContactLoading"
             :no-data-text="editorContactSearchFailed ? '搜索失败，请重试' : '未找到联系人'"
             @visible-change="(open: boolean) => { if (!open) searchEditorContacts(''); }">

@@ -276,13 +276,18 @@ public class PptAnomalyController {
         String ownerId = recordOwner == null ? userId : recordOwner;
         var assigned = service.recordFindings(versionId, ownerId, userId);
         var assignedIds = assigned.stream().map(PptAnomalyModels.Finding::id).collect(Collectors.toSet());
-        var departmentFindings = recordOwner == null && canViewAll ? visible
+        var departmentFindings = (recordOwner == null || department != null) && canViewAll ? visible
                 : departments.isEmpty() ? assigned : visible.stream()
                 .filter(finding -> assignedIds.contains(finding.id())
                         || finding.departments().stream().anyMatch(departments::contains)).toList();
         if (department != null) {
             if (!canViewAll && !departments.contains(department)) {
-                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "没有查看该部门反馈的权限");
+                // 经办人可能已调整部门，只允许其查看仍分派给本人的事项。
+                var ownDepartmentItems = assigned.stream().filter(item -> item.departments().contains(department)).toList();
+                if (ownDepartmentItems.isEmpty()) {
+                    throw new ResponseStatusException(HttpStatus.FORBIDDEN, "没有查看该部门反馈的权限");
+                }
+                departmentFindings = ownDepartmentItems;
             }
             assigned = assigned.stream().filter(item -> item.departments().contains(department)).toList();
             departmentFindings = departmentFindings.stream().filter(item -> item.departments().contains(department)).toList();

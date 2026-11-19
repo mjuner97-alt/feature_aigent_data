@@ -20,7 +20,7 @@
         f.status='PENDING_FEEDBACK'
         AND f.first_feedback_notified_at &lt;= CAST(#{now} AS TIMESTAMP) - INTERVAL '1 hour'
         AND (f.last_feedback_reminded_at IS NULL OR
-             f.last_feedback_reminded_at &lt;= CAST(#{now} AS TIMESTAMP) - INTERVAL '30 minutes')
+             f.last_feedback_reminded_at &lt;= CAST(#{now} AS TIMESTAMP) - INTERVAL '1 hour')
         AND v.status='ANALYZED'
         AND NOT EXISTS (
             SELECT 1 FROM digital_qa_ppt_material_version newer
@@ -628,6 +628,16 @@
         SELECT id,name,target,upper_limit_ratio,first_row,last_row,created_at,updated_at FROM digital_qa_ppt_keyword_config WHERE kind='scope'
     </select>
 
+    <select id="scanRules" resultType="com.agentscopea2a.v2.pptanomaly.PptScanRule">
+        SELECT title,name,keywords,mode,upper_limit_ratio,first_row,last_row FROM digital_qa_ppt_scan_rule ORDER BY title,name
+    </select>
+    <delete id="deleteScanRules">DELETE FROM digital_qa_ppt_scan_rule WHERE title=#{title}</delete>
+    <insert id="insertScanRule">
+        INSERT INTO digital_qa_ppt_scan_rule(title,name,keywords,mode,upper_limit_ratio,first_row,last_row)
+        VALUES (#{rule.title},#{rule.name},#{rule.keywords},#{rule.mode},#{rule.upperLimitRatio},#{rule.firstRow},#{rule.lastRow})
+    </insert>
+    <update id="renameScanRules">UPDATE digital_qa_ppt_scan_rule SET title=#{title} WHERE title=#{original}</update>
+
     <!-- 保存解析页面，兼容更新历史跳过页面的提取结果。 -->
     <insert id="createSlide">
         INSERT INTO digital_qa_ppt_slide(version_id,page_no,title,extracted_json,render_status,recognition_type) VALUES (#{id},#{page},#{title},#{texts},#{render},#{mode})
@@ -661,7 +671,7 @@
 
     <!-- 读取参与识别的页面文本、板块和默认联系人。 -->
     <sql id="slideInRecognitionScope">
-        COALESCE(s.recognition_type,'FULL') NOT IN ('SKIP','OUT_OF_SCOPE')
+        COALESCE(s.recognition_type,'FULL') NOT IN ('SKIP','OUT_OF_SCOPE','NO_SCAN','RULE_CONFLICT')
         AND (s.assigned_section IS NOT NULL
              OR EXISTS (SELECT 1 FROM digital_qa_ppt_keyword_config c WHERE c.kind='scope'
                         AND c.name IN (s.title, trim(regexp_replace(s.title, <include refid="titlePrefix"/>, '')))))
