@@ -8,9 +8,9 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { confirmPptImport, deleteBatch, downloadVersion, listBatchSummaries, listPptPeople, listVersions, previewPptImport, previewPptImportImage, reviewPptImport, savePptImport, searchPptPeople } from '../../api/pptAnomaly';
 import type { PptPerson, PptImportAssignment, PptRecognitionMode } from '../../api/pptAnomaly';
 import type { PptBatchSummary, PptVersion } from '../../types/pptAnomaly';
+import PptListFilterBar from '../../components/ppt/PptListFilterBar.vue';
 import PptSlideViewer from '../../components/ppt/PptSlideViewer.vue';
 import PptVersionAssignmentsDialog from '../../components/ppt/PptVersionAssignmentsDialog.vue';
-import PptNotificationDrawer from '../../components/ppt/PptNotificationDrawer.vue';
 import { getLoggedInUser } from '../../utils/auth';
 
 const router = useRouter();
@@ -21,7 +21,6 @@ const historyLoading = ref<Record<number, boolean>>({});
 const historyErrors = ref<Record<number, boolean>>({});
 const historyBatch = ref<PptBatchSummary>();
 const assignmentVersion = ref<{ id: number; versionNo: number | null }>();
-const notificationVersion = ref<{ id: number; versionNo: number | null }>();
 const loading = ref(false);
 const busy = ref(false);
 const deletingBatchId = ref<number>();
@@ -482,21 +481,21 @@ onMounted(refresh);
 </script>
 
 <template>
-  <div class="batch-page">
-    <header v-if="!reviewing" class="page-header">
+  <div class="batch-page" :class="{ 'is-reviewing': reviewing }">
+    <header v-if="!reviewing" class="page-header upload-header">
       <div>
         <h2>材料上传</h2>
         <p>按批次上传例会材料和查看历史版本。</p>
       </div>
-      <el-button class="add-material" type="primary" :icon="Plus" :disabled="busy" @click="openUpload()">新增材料</el-button>
+      <PptListFilterBar class="upload-header-actions">
+        <el-button v-if="error" :loading="loading" @click="error = ''; refresh()">刷新列表</el-button>
+        <el-input v-model="query" class="ppt-filter-search" :prefix-icon="Search" clearable
+          placeholder="搜索批次名称或文件名" aria-label="搜索批次名称或文件名" />
+        <el-button class="add-material" type="primary" :icon="Plus" :disabled="busy" @click="openUpload()">新增材料</el-button>
+      </PptListFilterBar>
     </header>
     <el-alert v-if="!reviewing && error" :title="error" type="error" class="notice" @close="error = ''" />
-    <section v-if="!reviewing" class="material-list" aria-labelledby="material-list-title">
-      <div class="filters">
-        <h3 id="material-list-title">材料批次</h3>
-        <el-input v-model="query" :prefix-icon="Search" clearable placeholder="搜索批次名称或文件名" aria-label="搜索批次名称或文件名" />
-        <el-button v-if="error" :loading="loading" @click="error = ''; refresh()">刷新列表</el-button>
-      </div>
+    <section v-if="!reviewing" class="material-list" aria-label="材料批次">
       <el-table v-loading="loading" :data="visible" row-key="id"
         :empty-text="batches.length ? '没有匹配的材料' : '暂无材料，点击新增材料开始上传'">
         <el-table-column prop="name" label="批次名称" min-width="155" show-overflow-tooltip />
@@ -551,7 +550,8 @@ onMounted(refresh);
                 <el-button v-if="row.status === 'ANALYZED'" link type="primary"
                   @click="openVersionAssignments(row.id, row.versionNo)">调整经办人</el-button> -->
                 <el-button link type="primary" @click="download(row)">下载原件</el-button>
-                <el-button link type="primary" @click="notificationVersion = { id: row.id, versionNo: row.versionNo }">通知记录</el-button>
+                <el-button link type="primary"
+                  @click="router.push({ path: '/ppt-anomaly/notifications', query: { batchId: String(row.batchId) } })">通知记录</el-button>
               </div>
             </template>
           </el-table-column>
@@ -561,9 +561,6 @@ onMounted(refresh);
     <PptVersionAssignmentsDialog v-if="assignmentVersion" :key="assignmentVersion.id"
       :version-id="assignmentVersion.id" :version-no="assignmentVersion.versionNo"
       @close="assignmentVersion = undefined" />
-    <PptNotificationDrawer v-if="notificationVersion" :key="notificationVersion.id"
-      :version-id="notificationVersion.id" :version-no="notificationVersion.versionNo"
-      @close="notificationVersion = undefined" />
 
     <el-dialog v-if="!reviewing" v-model="dialog" class="ppt-dialog" title="新增材料"
       width="min(640px, 94vw)" align-center append-to-body
@@ -891,18 +888,18 @@ onMounted(refresh);
 }
 .board-editor-title { margin: 0 0 16px; color: #243651; font-weight: 600; overflow-wrap: anywhere; }
 .batch-page { --el-color-primary: #2855c4; padding: clamp(16px, 3vw, 36px); min-height: 100%; box-sizing: border-box; background: #f3f6fb; }
+.batch-page:not(.is-reviewing) { padding: clamp(12px, 1.5vw, 20px); }
 .page-header, .dialog-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .page-header { margin-bottom: 24px; flex-wrap: wrap; }
 .page-header h2 { margin: 0; font-size: 28px; color: #142441; }
 .page-header p { margin: 6px 0 0; color: #52627a; font-size: 14px; line-height: 1.6; }
-.add-material { min-height: 40px; padding-inline: 16px; font-weight: 600; }
-.add-material:not(:disabled) { box-shadow: 0 4px 10px #2855c42b; }
+.page-header.upload-header { margin-bottom: 14px; gap: 8px 12px; }
+.page-header.upload-header h2 { font-size: 22px; line-height: 1.35; }
+.page-header.upload-header p { margin-top: 3px; font-size: 13px; line-height: 1.4; }
+.upload-header-actions { margin-inline-start: auto; max-width: 100%; }
+.add-material { min-height: 32px; padding-inline: 12px; }
 .batch-page :deep(.el-button) { border-radius: 8px; }
 .material-list { background: #fff; border: 1px solid #dfe6f0; border-radius: 14px; overflow: hidden; box-shadow: 0 4px 16px #22375c0a; }
-.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 16px 20px; }
-.filters h3 { margin: 0 auto 0 0; color: #243651; font-size: 16px; }
-.filters .el-input { width: min(100%, 270px); }
-.filters :deep(.el-input__wrapper) { border-radius: 8px; min-height: 36px; }
 .material-list :deep(.el-table__cell) { padding-block: 11px; }
 .material-list :deep(.el-button.is-link) { padding: 5px 7px; }
 .material-list :deep(.el-button.is-link + .el-button.is-link) { margin-left: 2px; }
@@ -922,8 +919,6 @@ onMounted(refresh);
 .file-picker input:disabled::file-selector-button { cursor: not-allowed; opacity: .65; }
 .file-hint { margin-top: 4px; color: #52627a; font-size: 12px; line-height: 1.5; }
 @media (max-width: 640px) {
-  .filters h3 { flex-basis: 100%; }
-  .filters .el-input { width: 100%; }
   .page-header h2 { font-size: 24px; }
 }
 </style>

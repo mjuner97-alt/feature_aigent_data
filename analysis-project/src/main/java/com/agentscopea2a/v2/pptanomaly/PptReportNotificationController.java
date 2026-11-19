@@ -32,6 +32,26 @@ public class PptReportNotificationController {
     public record Person(String userId, String name, String department) {}
     public record Recipients(List<String> to, List<String> cc, Map<String, String> names) {}
 
+    public record Configuration(String department, boolean editable, Recipients recipients) {}
+
+    @GetMapping("/configurations")
+    public List<Configuration> configurations(
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
+        var visible = departments(userId);
+        var saved = service.reportRecipientsForDepartments(visible.stream().map(Department::name).toList());
+        var names = namesFor(saved.values().stream().flatMap(value -> Stream.concat(value.to().stream(), value.cc().stream()))
+                .distinct().toList());
+        return visible.stream().map(department -> {
+            var value = saved.getOrDefault(department.name(), new FeedbackNotification(List.of(), List.of()));
+            var departmentNames = new HashMap<String, String>();
+            Stream.concat(value.to().stream(), value.cc().stream()).forEach(id -> {
+                if (names.containsKey(id)) departmentNames.put(id, names.get(id));
+            });
+            return new Configuration(department.name(), department.editable(),
+                    new Recipients(value.to(), value.cc(), departmentNames));
+        }).toList();
+    }
+
     @GetMapping("/departments")
     public List<Department> departments(
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
@@ -48,11 +68,7 @@ public class PptReportNotificationController {
         if (!ownDepartments(userId).contains(department) && !isProductDepartment(userId)) throw forbidden();
         var saved = service.reportRecipients(department);
         var ids = Stream.concat(saved.to().stream(), saved.cc().stream()).distinct().toList();
-        var names = new HashMap<String, String>();
-        if (!ids.isEmpty()) {
-            people.selectByUserIds(ids).forEach(person -> names.putIfAbsent(person.getUserId(), displayName(person)));
-        }
-        return new Recipients(saved.to(), saved.cc(), names);
+        return new Recipients(saved.to(), saved.cc(), namesFor(ids));
     }
 
     @GetMapping("/people")
@@ -61,8 +77,8 @@ public class PptReportNotificationController {
         var name = department.strip();
         requireOwnDepartment(name, userId);
         if (keyword.isBlank()) return List.of();
-        return people.searchDepartmentPeople(name, keyword.strip()).stream()
-                .map(person -> new Person(person.getUserId(), displayName(person), name)).toList();
+        return people.searchPptPeople(keyword.strip(), "").stream()
+                .map(person -> new Person(person.getUserId(), displayName(person), person.getDepartment())).toList();
     }
 
     @PutMapping
@@ -75,14 +91,21 @@ public class PptReportNotificationController {
         var cc = PptAnomalyController.recipientIds(body.cc()).stream().filter(id -> !to.contains(id)).toList();
         var ids = Stream.concat(to.stream(), cc.stream()).toList();
         if (!ids.isEmpty()) {
-            var members = people.selectByUserIds(ids).stream()
-                    .filter(person -> person.getDepartment() != null && name.equals(person.getDepartment().strip()))
+            var known = people.selectByUserIds(ids).stream()
                     .map(DeveloperPlPersonInfo::getUserId).collect(Collectors.toSet());
-            if (!members.containsAll(ids)) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "默认名单只能包含所选部门的人员");
+            if (!known.containsAll(ids)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "默认名单中有人员台账无法识别的账号");
             }
         }
         service.saveReportRecipients(name, to, cc);
+    }
+
+    private Map<String, String> namesFor(List<String> ids) {
+        var names = new HashMap<String, String>();
+        if (!ids.isEmpty()) {
+            people.selectByUserIds(ids).forEach(person -> names.putIfAbsent(person.getUserId(), displayName(person)));
+        }
+        return names;
     }
 
     private List<String> ownDepartments(String userId) {

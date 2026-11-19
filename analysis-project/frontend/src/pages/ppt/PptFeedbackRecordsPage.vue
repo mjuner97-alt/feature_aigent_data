@@ -5,6 +5,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { listFeedbackRecords, type PptFeedbackRecord } from '../../api/pptAnomaly';
 import { getLoggedInUserId } from '../../utils/auth';
+import PptListFilterBar from '../../components/ppt/PptListFilterBar.vue';
 import PptVersionAssignmentsDialog from '../../components/ppt/PptVersionAssignmentsDialog.vue';
 
 /** 反馈列表中的一条原始事项记录。 */
@@ -162,24 +163,24 @@ onMounted(load);
 
 <template>
   <section class="records-page">
-    <h2>反馈记录</h2>
-    <div class="filters">
-      <el-select v-model="batch" clearable placeholder="全部批次" aria-label="批次" @change="version = undefined">
+    <PptListFilterBar class="records-filters">
+      <template #leading><h2>反馈记录</h2></template>
+      <el-select class="ppt-filter-select" filterable v-model="batch" clearable placeholder="全部批次" aria-label="批次" @change="version = undefined">
         <el-option v-for="[id, name] in batches" :key="id" :label="name" :value="id" />
         <el-option v-if="batch && !hasSelectedBatch" label="当前批次" :value="batch" />
       </el-select>
-      <el-select v-model="version" clearable placeholder="全部版本" aria-label="版本">
+      <el-select class="ppt-filter-select" filterable v-model="version" clearable placeholder="全部版本" aria-label="版本">
         <el-option v-for="[id, label] in versions" :key="id" :label="label" :value="id" />
       </el-select>
-      <el-select v-model="department" clearable placeholder="全部部门" aria-label="部门">
+      <el-select class="ppt-filter-select" filterable v-model="department" clearable placeholder="全部部门" aria-label="部门">
         <el-option v-for="name in departments" :key="name" :label="name" :value="name" />
       </el-select>
-      <el-select v-model="progress" clearable placeholder="全部反馈状态" aria-label="反馈状态">
+      <el-select class="ppt-filter-select" filterable v-model="progress" clearable placeholder="全部反馈状态" aria-label="反馈状态">
         <el-option label="未完成" value="pending" />
         <el-option label="已完成" value="done" />
         <el-option label="待分派" value="unassigned" />
       </el-select>
-    </div>
+    </PptListFilterBar>
     <el-alert v-if="error" :title="error" type="error" :closable="false">
       <el-button link type="primary" @click="load">重试</el-button>
     </el-alert>
@@ -246,9 +247,8 @@ onMounted(load);
 
 <style scoped>
 .records-page { padding: clamp(12px, 2vw, 24px); }
-h2 { margin: 0 0 16px; color: #142441; font-size: 24px; }
-.filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
-.filters .el-select { width: min(100%, 205px); }
+h2 { margin: 0; color: #142441; font-size: 24px; }
+.records-filters { --ppt-filter-width: 156px; margin-bottom: 12px; }
 .page-details { padding-inline: 12px; box-sizing: border-box; }
 .record-actions { display: flex; align-items: center; gap: 16px; flex-wrap: nowrap; white-space: nowrap; }
 .record-actions :deep(.el-button) { margin-left: 0; flex-shrink: 0; }

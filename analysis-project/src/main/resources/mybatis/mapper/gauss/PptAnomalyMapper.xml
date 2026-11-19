@@ -2,6 +2,91 @@
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <!-- 例会材料持久化映射，与 PptAnomalyMapper 接口方法逐项对应。 -->
 <mapper namespace="com.agentscopea2a.mapper.gauss.PptAnomalyMapper">
+    <select id="feedbackSupervisorConfig" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackSupervisorConfig">
+        SELECT user_ids,disabled_user_ids FROM digital_qa_ppt_feedback_supervisors WHERE config_id=1
+        <if test="lock">FOR UPDATE</if>
+    </select>
+    <update id="saveFeedbackSupervisors">
+        UPDATE digital_qa_ppt_feedback_supervisors
+        SET user_ids=#{ids},disabled_user_ids=#{disabledIds},updated_by=#{user},updated_at=CURRENT_TIMESTAMP
+        WHERE config_id=1
+    </update>
+    <update id="markFeedbackNotified">
+        UPDATE digital_qa_ppt_finding SET first_feedback_notified_at=#{sentAt}
+        WHERE first_feedback_notified_at IS NULL AND status='PENDING_FEEDBACK' AND id IN
+        <foreach collection="ids" item="id" open="(" close=")" separator=",">#{id}</foreach>
+    </update>
+    <sql id="dueFeedbackReminder">
+        f.status='PENDING_FEEDBACK'
+        AND f.first_feedback_notified_at &lt;= CAST(#{now} AS TIMESTAMP) - INTERVAL '1 hour'
+        AND (f.last_feedback_reminded_at IS NULL OR
+             f.last_feedback_reminded_at &lt;= CAST(#{now} AS TIMESTAMP) - INTERVAL '30 minutes')
+        AND v.status='ANALYZED'
+        AND NOT EXISTS (
+            SELECT 1 FROM digital_qa_ppt_material_version newer
+            WHERE newer.batch_id=v.batch_id AND newer.version_no &gt; v.version_no AND newer.status='ANALYZED'
+        )
+    </sql>
+    <sql id="reminderDepartment">COALESCE(NULLIF(TRIM(f.feedback_department),''),'未分配部门')</sql>
+    <select id="dueFeedbackReminderScopes" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$ReminderScope">
+        SELECT DISTINCT v.id AS version_id, <include refid="reminderDepartment"/> AS department
+        FROM digital_qa_ppt_finding f
+        JOIN digital_qa_ppt_material_version v ON v.id=f.version_id
+        WHERE <include refid="dueFeedbackReminder"/>
+        AND EXISTS (SELECT 1 FROM digital_qa_ppt_finding_recipient r WHERE r.finding_id=f.id)
+        ORDER BY version_id,department
+    </select>
+    <select id="dueFeedbackReminders" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackReminder">
+        SELECT f.id AS finding_id,r.user_id AS recipient,s.page_no AS page,f.title
+        FROM digital_qa_ppt_finding f
+        JOIN digital_qa_ppt_material_version v ON v.id=f.version_id
+        JOIN digital_qa_ppt_finding_recipient r ON r.finding_id=f.id
+        JOIN digital_qa_ppt_slide s ON s.id=f.slide_id
+        WHERE v.id=#{scope.versionId} AND <include refid="reminderDepartment"/>=#{scope.department}
+            AND <include refid="dueFeedbackReminder"/>
+        ORDER BY f.id,r.user_id FOR UPDATE OF f
+    </select>
+    <update id="markFeedbackReminded">
+        UPDATE digital_qa_ppt_finding SET last_feedback_reminded_at=#{sentAt}
+        WHERE id IN <foreach collection="ids" item="id" open="(" close=")" separator=",">#{id}</foreach>
+    </update>
+    <insert id="recordFeedbackReminder">
+        INSERT INTO digital_qa_ppt_mail_record(version_id,department,subject,body,to_users,cc_users,
+            sent_by,status,sent_at,reminder_finding_ids)
+        VALUES (#{version},#{department},#{subject},#{body},#{to},#{cc},'SYSTEM',#{status},
+            #{sentAt,jdbcType=TIMESTAMP},#{ids})
+    </insert>
+    <insert id="enqueueAssignmentNotice">
+        INSERT INTO digital_qa_ppt_assignment_notice(event_id,version_id,finding_id,recipient)
+        VALUES (#{event},#{version},#{finding},#{recipient})
+    </insert>
+    <select id="pendingAssignmentNotices" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$AssignmentNotice">
+        SELECT n.event_id,n.version_id,n.finding_id,n.recipient,f.feedback_department AS department,v.file_name,n.attempts
+        FROM digital_qa_ppt_assignment_notice n
+        JOIN digital_qa_ppt_finding f ON f.id=n.finding_id
+        JOIN digital_qa_ppt_material_version v ON v.id=n.version_id
+        WHERE n.status IN ('PENDING','FAILED')
+          AND (n.attempted_at IS NULL OR n.attempted_at &lt; CURRENT_TIMESTAMP - INTERVAL '1 minute')
+        ORDER BY n.created_at LIMIT 100
+    </select>
+    <select id="lockAssignmentNotice" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$AssignmentNotice">
+        SELECT n.event_id,n.version_id,n.finding_id,n.recipient,f.feedback_department AS department,v.file_name,n.attempts
+        FROM digital_qa_ppt_assignment_notice n
+        JOIN digital_qa_ppt_finding f ON f.id=n.finding_id
+        JOIN digital_qa_ppt_material_version v ON v.id=n.version_id
+        WHERE n.event_id=#{event} AND n.recipient=#{recipient} AND n.status IN ('PENDING','FAILED')
+        FOR UPDATE OF n
+    </select>
+    <update id="finishAssignmentNotice">
+        UPDATE digital_qa_ppt_assignment_notice SET status=#{status},attempts=attempts+1,
+            attempted_at=CURRENT_TIMESTAMP,
+            sent_at=CASE WHEN #{status}='SENT' THEN CURRENT_TIMESTAMP ELSE NULL END
+        WHERE event_id=#{event} AND recipient=#{recipient}
+    </update>
+    <update id="deleteFinding">
+        UPDATE digital_qa_ppt_finding SET deleted_previous_status=status,status='DELETED',deleted_by=#{user},deleted_at=CURRENT_TIMESTAMP
+        WHERE id=#{id} AND status &lt;&gt; 'DELETED'
+    </update>
     <!-- 匹配标题开头的数字层级序号，供标题归一化复用。 -->
     <sql id="titlePrefix"> '^[[:space:]　]*([一二三四五六七八九十百零]+[.．、][[:space:]　]*|[0-9]+(([.．][0-9]+)+[.．、[:space:]　]*|[.．、[:space:]　]+))' </sql>
     <!-- 去除标题数字序号和首尾空白，统一新旧版本及标题配置的匹配口径。 -->
@@ -23,10 +108,11 @@
                    'PENDING' AS kind, f.title, v.id AS link_version, v.version_no, f.feedback_department AS department,
                    s.page_no, f.anomaly_keyword, f.assignment_revision
             FROM digital_qa_ppt_material_version v
-            JOIN digital_qa_ppt_finding f ON f.version_id=v.id
+            JOIN digital_qa_ppt_finding f ON f.version_id=v.id AND f.status &lt;&gt; 'DELETED'
             JOIN digital_qa_ppt_finding_recipient handler ON handler.finding_id=f.id
             JOIN digital_qa_ppt_slide s ON s.id=f.slide_id
             WHERE v.status='ANALYZED' AND f.status='PENDING_FEEDBACK'
+              AND NOT EXISTS (SELECT 1 FROM digital_qa_ppt_assignment_change changed WHERE changed.finding_id=f.id)
               AND (NOT EXISTS (
                   SELECT 1 FROM digital_qa_ppt_material_version newer
                   WHERE newer.batch_id=v.batch_id AND newer.version_no &gt; v.version_no
@@ -75,6 +161,22 @@
         WHERE version_id=#{versionId} AND department=#{department} AND subject=#{subject}
           AND status='SENT' AND sent_at IS NOT NULL
     </select>
+    <sql id="sentMailHistory">
+        FROM digital_qa_ppt_mail_record m
+        JOIN digital_qa_ppt_material_version v ON v.id=m.version_id
+        JOIN digital_qa_ppt_material_batch b ON b.id=v.batch_id
+        WHERE m.status='SENT' AND m.sent_at IS NOT NULL
+        <if test="batchId != null">AND b.id=#{batchId}</if>
+        <if test="versionId != null">AND m.version_id=#{versionId}</if>
+    </sql>
+    <select id="sentMailPage" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$SentMailRow">
+        SELECT m.id,b.name AS batch_name,v.version_no,v.file_name,m.department,m.subject,m.to_users,m.cc_users,m.sent_at
+        <include refid="sentMailHistory"/>
+        ORDER BY m.sent_at DESC,m.id DESC LIMIT #{size} OFFSET #{offset}
+    </select>
+    <select id="countSentMails" resultType="long">
+        SELECT COUNT(*) <include refid="sentMailHistory"/>
+    </select>
     <select id="feedbackMailRecords" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackMailRecord">
         SELECT id,version_id,department,subject,body,to_users,cc_users,sent_by,status,sent_at
         FROM digital_qa_ppt_mail_record WHERE version_id=#{versionId}
@@ -95,6 +197,7 @@
             SELECT f.version_id, f.id AS finding_id, handler.user_id AS recipient
             FROM digital_qa_ppt_finding f
             JOIN digital_qa_ppt_finding_recipient handler ON handler.finding_id=f.id
+            WHERE f.status &lt;&gt; 'DELETED'
             <if test="admin">
                 UNION ALL
                 SELECT f.version_id, f.id, NULL AS recipient
@@ -240,7 +343,7 @@
                COUNT(f.id) AS total, COUNT(CASE WHEN handler.user_id IS NOT NULL THEN 1 END) AS mine,
                COUNT(CASE WHEN handler.user_id IS NOT NULL AND f.status='PENDING_FEEDBACK' THEN 1 END) AS my_pending
         FROM digital_qa_ppt_material_version v JOIN digital_qa_ppt_material_batch b ON b.id=v.batch_id
-        LEFT JOIN digital_qa_ppt_finding f ON f.version_id=v.id
+        LEFT JOIN digital_qa_ppt_finding f ON f.version_id=v.id AND f.status &lt;&gt; 'DELETED'
         LEFT JOIN digital_qa_ppt_finding_recipient handler ON handler.finding_id=f.id AND handler.user_id=#{user}
         WHERE v.status='ANALYZED'
           AND NOT EXISTS (
@@ -261,7 +364,7 @@
                                WHEN COUNT(*)=1 THEN MAX(CASE WHEN EXISTS (SELECT 1 FROM digital_qa_ppt_finding_recipient h WHERE h.finding_id=m.id AND h.user_id=#{user})
                                    OR #{admin} OR latest.uploaded_by=#{user} THEN m.id END) END
                    FROM digital_qa_ppt_finding m
-                   WHERE m.version_id=latest.id
+                   WHERE m.version_id=latest.id AND m.status &lt;&gt; 'DELETED'
                      AND (f.feedback_department IS NULL OR m.feedback_department=f.feedback_department)
                      AND <include refid="normalizedTitle"><property name="title" value="f.title"/></include> &lt;&gt; ''
                      AND <include refid="normalizedTitle"><property name="title" value="m.title"/></include> =
@@ -275,7 +378,7 @@
                )) AS title_present
         FROM digital_qa_ppt_material_version original
         JOIN digital_qa_ppt_material_version latest ON latest.batch_id=original.batch_id AND latest.status='ANALYZED'
-        LEFT JOIN digital_qa_ppt_finding f ON f.id=#{finding,jdbcType=BIGINT} AND f.version_id=original.id
+        LEFT JOIN digital_qa_ppt_finding f ON f.id=#{finding,jdbcType=BIGINT} AND f.version_id=original.id AND f.status &lt;&gt; 'DELETED'
         WHERE original.id=#{version}
           AND (#{finding,jdbcType=BIGINT} IS NULL OR f.id IS NOT NULL)
           AND (latest.id=original.id OR NOT EXISTS (
@@ -310,14 +413,14 @@
                         THEN MAX(CASE WHEN p.chapter=f.chapter THEN p.id END)
                         WHEN COUNT(*)=1 THEN MAX(p.id) END
             FROM digital_qa_ppt_finding p
-            WHERE p.version_id=prior.id
+            WHERE p.version_id=prior.id AND p.status &lt;&gt; 'DELETED'
               AND (f.feedback_department=p.feedback_department OR (f.feedback_department IS NULL
                    AND p.feedback_department IS NULL AND f.auto_departments=p.auto_departments))
               AND <include refid="normalizedTitle"><property name="title" value="p.title"/></include> =
                   <include refid="normalizedTitle"><property name="title" value="f.title"/></include>
         )
         JOIN digital_qa_ppt_finding previous_finding ON previous_finding.id=r.finding_id
-        WHERE f.id=#{id} AND r.assignment_revision=previous_finding.assignment_revision
+        WHERE f.id=#{id} AND f.status &lt;&gt; 'DELETED' AND r.assignment_revision=previous_finding.assignment_revision
           AND <include refid="normalizedTitle"><property name="title" value="f.title"/></include> &lt;&gt; ''
           AND NOT EXISTS (
             SELECT 1 FROM digital_qa_ppt_material_version newer
@@ -334,6 +437,7 @@
                    <include refid="normalizedTitle"><property name="title" value="f.title"/></include> AS title_key
             FROM digital_qa_ppt_finding f
             JOIN digital_qa_ppt_material_version v ON v.id=f.version_id
+            WHERE f.status &lt;&gt; 'DELETED'
         ), inherit_matches AS (
             SELECT f.id AS finding_id, f.version_id, p.id AS prior_id, p.version_id AS prior_version_id, p.version_no,
                    DENSE_RANK() OVER (PARTITION BY f.id, p.version_id
@@ -372,7 +476,7 @@
             SELECT CASE WHEN r.judgement='NON_ANOMALY' THEN 'ADJUSTED' ELSE 'CONFIRMED' END
             FROM digital_qa_ppt_finding_feedback r WHERE r.finding_id=f.id ORDER BY r.id DESC LIMIT 1
         )
-        WHERE f.version_id=#{id} AND f.status='PENDING_FEEDBACK'
+        WHERE f.version_id=#{id} AND f.status &lt;&gt; 'DELETED' AND f.status='PENDING_FEEDBACK'
           AND f.id IN (SELECT finding_id FROM digital_qa_ppt_finding_feedback)
     </update>
 
@@ -380,14 +484,14 @@
     <select id="latestFeedback" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackNote">
         SELECT r.judgement,r.explanation,r.user_id FROM digital_qa_ppt_finding_feedback r
         JOIN digital_qa_ppt_finding f ON f.id=r.finding_id AND f.assignment_revision=r.assignment_revision
-        WHERE f.id=#{id} ORDER BY r.id DESC LIMIT 1
+        WHERE f.id=#{id} AND f.status &lt;&gt; 'DELETED' ORDER BY r.id DESC LIMIT 1
     </select>
 
     <select id="feedbackState" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackState">
         SELECT f.assignment_revision,r.id,r.judgement,r.explanation,r.user_id
         FROM digital_qa_ppt_finding f
         LEFT JOIN digital_qa_ppt_finding_feedback r ON r.finding_id=f.id AND r.assignment_revision=f.assignment_revision
-        WHERE f.id=#{id} ORDER BY r.id DESC LIMIT 1
+        WHERE f.id=#{id} AND f.status &lt;&gt; 'DELETED' ORDER BY r.id DESC LIMIT 1
     </select>
 
     <select id="feedbackRevisions" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackRevision">
@@ -399,14 +503,14 @@
         LEFT JOIN digital_qa_ppt_assignment_change change ON change.finding_id=f.id
             AND change.assignment_revision=r.assignment_revision+1
             AND COALESCE(change.previous_department,'') &lt;&gt; change.department
-        WHERE f.id=#{id}
+        WHERE f.id=#{id} AND f.status &lt;&gt; 'DELETED'
         ORDER BY r.id DESC
     </select>
 
     <select id="findingAssignment" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FindingAssignment">
         SELECT f.id,s.page_no,f.feedback_department,f.auto_departments,f.assignment_revision,f.status
         FROM digital_qa_ppt_finding f JOIN digital_qa_ppt_slide s ON s.id=f.slide_id
-        WHERE f.id=#{id} AND f.version_id=#{version} FOR UPDATE OF f
+        WHERE f.id=#{id} AND f.status &lt;&gt; 'DELETED' AND f.version_id=#{version} FOR UPDATE OF f
     </select>
 
     <select id="assignmentHandlers" resultType="string">
@@ -433,7 +537,7 @@
     <select id="assignmentExists" resultType="boolean">
         SELECT EXISTS (
             SELECT 1 FROM digital_qa_ppt_finding f JOIN digital_qa_ppt_slide s ON s.id=f.slide_id
-            WHERE f.version_id=#{version} AND s.page_no=#{page} AND f.id &lt;&gt; #{exclude}
+            WHERE f.version_id=#{version} AND f.status &lt;&gt; 'DELETED' AND s.page_no=#{page} AND f.id &lt;&gt; #{exclude}
                 AND (f.feedback_department=#{department} OR
                      (f.feedback_department IS NULL AND f.auto_departments=#{departments}))
         )
@@ -484,13 +588,13 @@
         SELECT r.finding_id, r.user_id
         FROM digital_qa_ppt_finding_recipient r
         JOIN digital_qa_ppt_finding f ON f.id=r.finding_id
-        WHERE f.version_id=#{id}
+        WHERE f.version_id=#{id} AND f.status &lt;&gt; 'DELETED'
         ORDER BY r.finding_id, r.user_id
     </select>
 
     <!-- 按识别序号查询指定版本的事项。 -->
     <select id="findings" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FindingRow">
-        SELECT f.id,f.sequence_no,s.page_no,f.title,f.chapter,f.source_text,f.anomaly_keyword,f.auto_departments,f.owner_user_id,f.status,f.version_relation FROM digital_qa_ppt_finding f JOIN digital_qa_ppt_slide s ON s.id=f.slide_id WHERE f.version_id=#{id} ORDER BY f.sequence_no
+        SELECT f.id,f.sequence_no,s.page_no,f.title,f.chapter,f.source_text,f.anomaly_keyword,f.auto_departments,f.owner_user_id,f.status,f.version_relation FROM digital_qa_ppt_finding f JOIN digital_qa_ppt_slide s ON s.id=f.slide_id WHERE f.version_id=#{id} AND f.status &lt;&gt; 'DELETED' ORDER BY f.sequence_no
     </select>
 
     <!-- 读取指定版本和页码的页面元数据。 -->
@@ -500,11 +604,11 @@
 
     <!-- 查询事项及其负责人，供反馈写入权限校验。 -->
     <select id="owner" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$Owner">
-        SELECT id,owner_user_id FROM digital_qa_ppt_finding WHERE id=#{id} FOR UPDATE
+        SELECT id,owner_user_id FROM digital_qa_ppt_finding WHERE id=#{id} AND status &lt;&gt; 'DELETED' FOR UPDATE
     </select>
     <!-- 读取事项所属版本和负责人，供反馈历史访问校验。 -->
     <select id="findingOwner" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$Owner">
-        SELECT id,owner_user_id FROM digital_qa_ppt_finding WHERE id=#{id}
+        SELECT id,owner_user_id FROM digital_qa_ppt_finding WHERE id=#{id} AND status &lt;&gt; 'DELETED'
     </select>
 
     <!-- 新增一次事项反馈，保存判断、说明及反馈用户。 -->
@@ -547,7 +651,7 @@
 
     <!-- 统计指定版本的识别事项数量。 -->
     <select id="findingCount" resultType="int">
-        SELECT COUNT(*) FROM digital_qa_ppt_finding WHERE version_id=#{id}
+        SELECT COUNT(*) FROM digital_qa_ppt_finding WHERE version_id=#{id} AND status &lt;&gt; 'DELETED'
     </select>
 
     <!-- 清除版本已有事项，供识别重建使用。 -->
@@ -690,7 +794,7 @@
             SELECT c.name FROM digital_qa_ppt_finding f
             JOIN digital_qa_ppt_keyword_config c ON c.kind IN ('section', 'scope')
                 AND c.name IN (f.title, <include refid="normalizedTitle"><property name="title" value="f.title"/></include>)
-            WHERE f.id=#{id}
+            WHERE f.id=#{id} AND f.status &lt;&gt; 'DELETED'
             ORDER BY CASE WHEN c.name=f.title THEN 0 ELSE 1 END LIMIT 1
         )
         ORDER BY detail_no, link_no
@@ -743,7 +847,7 @@
     <!-- 查找最新已识别版本中可按标题配置补充分派的版本。 -->
     <select id="unassignedTitleVersions" resultType="long">
         SELECT DISTINCT v.id FROM digital_qa_ppt_material_version v
-        JOIN digital_qa_ppt_finding f ON f.version_id=v.id
+        JOIN digital_qa_ppt_finding f ON f.version_id=v.id AND f.status &lt;&gt; 'DELETED'
         JOIN digital_qa_ppt_title_handler h ON h.title=#{title} AND h.department=f.feedback_department
         WHERE f.status='UNASSIGNED' AND v.status='ANALYZED'
           AND trim(regexp_replace(COALESCE(f.title,''), <include refid="titlePrefix"/>, '')) =
@@ -757,21 +861,21 @@
         INSERT INTO digital_qa_ppt_finding_handler(finding_id,user_id)
         SELECT f.id,h.user_id FROM digital_qa_ppt_finding f
         JOIN digital_qa_ppt_title_handler h ON h.title=#{title} AND h.department=f.feedback_department
-        WHERE f.version_id=#{version} AND f.status='UNASSIGNED'
+        WHERE f.version_id=#{version} AND f.status &lt;&gt; 'DELETED' AND f.status='UNASSIGNED'
           AND trim(regexp_replace(COALESCE(f.title,''), <include refid="titlePrefix"/>, '')) =
               trim(regexp_replace(h.title, <include refid="titlePrefix"/>, ''))
     </insert>
     <!-- 将已补齐经办人的待分派事项改为待反馈。 -->
     <update id="markAssignedTitleFindingsPending">
         UPDATE digital_qa_ppt_finding f SET status='PENDING_FEEDBACK'
-        WHERE f.version_id=#{version} AND f.status='UNASSIGNED'
+        WHERE f.version_id=#{version} AND f.status &lt;&gt; 'DELETED' AND f.status='UNASSIGNED'
           AND EXISTS (SELECT 1 FROM digital_qa_ppt_finding_handler h WHERE h.finding_id=f.id)
     </update>
     <!-- 查询指定用户在版本中负责的事项主键。 -->
     <select id="recipientFindingIds" resultType="long">
         SELECT f.id FROM digital_qa_ppt_finding f
         JOIN digital_qa_ppt_finding_recipient h ON h.finding_id=f.id
-        WHERE f.version_id=#{version} AND h.user_id=#{user}
+        WHERE f.version_id=#{version} AND f.status &lt;&gt; 'DELETED' AND h.user_id=#{user}
     </select>
     <!-- 判断用户是否属于当前事项的反馈接收人。 -->
     <select id="isFindingRecipient" resultType="boolean">
@@ -779,7 +883,7 @@
     </select>
     <!-- 读取事项自动识别的部门 JSON。 -->
     <select id="findingDepartments" resultType="string">
-        SELECT auto_departments FROM digital_qa_ppt_finding WHERE id=#{id}
+        SELECT auto_departments FROM digital_qa_ppt_finding WHERE id=#{id} AND status &lt;&gt; 'DELETED'
     </select>
 
     <!-- 将材料版本标记为已完成识别。 -->
@@ -865,13 +969,18 @@
 
     <!-- 查询指定部门对应的事项，供历史邮件预览使用。 -->
     <select id="mailFindings" resultType="map">
-        SELECT sequence_no AS "sequenceNo",title,source_text AS "sourceText",anomaly_keyword AS "anomalyKeyword",status FROM digital_qa_ppt_finding WHERE version_id=#{id} AND auto_departments LIKE #{department} ORDER BY sequence_no
+        SELECT sequence_no AS "sequenceNo",title,source_text AS "sourceText",anomaly_keyword AS "anomalyKeyword",status FROM digital_qa_ppt_finding WHERE version_id=#{id} AND status &lt;&gt; 'DELETED' AND auto_departments LIKE #{department} ORDER BY sequence_no
     </select>
 
     <!-- 登记部门邮件发送记录及操作用户。 -->
     <insert id="recordMail">
         INSERT INTO digital_qa_ppt_mail_record(version_id,department,subject,body,sent_by,status,sent_at) VALUES (#{id},#{department},#{preview.subject},#{preview.body},#{user},'SENT',CURRENT_TIMESTAMP)
     </insert>
+    <select id="reportRecipientsForDepartments" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$DepartmentReportRecipients">
+        SELECT department,recipients_to AS to_json,recipients_cc AS cc_json
+        FROM digital_qa_ppt_report_notification WHERE department IN
+        <foreach collection="departments" item="department" open="(" close=")" separator=",">#{department}</foreach>
+    </select>
     <select id="reportRecipients" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$ReportRecipientsRow">
         SELECT recipients_to AS to_json, recipients_cc AS cc_json
         FROM digital_qa_ppt_report_notification WHERE department = #{department}

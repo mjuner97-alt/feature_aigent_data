@@ -3,7 +3,7 @@
 
 import { RouterLink, RouterView } from 'vue-router';
 import { computed, onMounted, ref } from 'vue';
-import { Document, FolderOpened, List, Setting } from '@element-plus/icons-vue';
+import { Document, FolderOpened, List, Message, Setting } from '@element-plus/icons-vue';
 import { pptAnomalyPermissions } from '../../api/pptAnomaly';
 import './ppt-anomaly.css';
 
@@ -11,6 +11,7 @@ const nav = [
   { to: '/ppt-anomaly/keyword-config', label: '例会材料配置', icon: Setting },
   { to: '/ppt-anomaly/materials', label: '材料上传', icon: FolderOpened, productDepartmentOnly: true },
   { to: { path: '/ppt-anomaly/feedback-records', force: true }, label: '反馈记录', icon: List },
+  { to: '/ppt-anomaly/notifications', label: '通知记录', icon: Message, productDepartmentOnly: true },
 ] as const;
 const permissions = ref<Awaited<ReturnType<typeof pptAnomalyPermissions>>>();
 const visibleNav = computed(() => nav.filter(item => !('productDepartmentOnly' in item) || permissions.value?.canManageMaterials));
