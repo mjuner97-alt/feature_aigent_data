@@ -185,6 +185,25 @@ public class PptAnomalyService {
         return persistence.feedbackMailRecords(versionId);
     }
 
+    public record SentMail(long id, String batchName, int versionNo, String fileName, String department,
+                           String subject, List<String> to, List<String> cc, LocalDateTime sentAt) {}
+    public record SentMailPage(List<SentMail> rows, long total, Map<String, String> names) {}
+
+    SentMailPage sentMailPage(Long batchId, Long versionId, int page, int size) {
+        var rows = persistence.sentMailPage(batchId, versionId, size, (long) (page - 1) * size).stream()
+                .map(row -> new SentMail(row.id(), row.batchName(), row.versionNo(), row.fileName(), row.department(),
+                        row.subject(), readList(row.toUsers()), readList(row.ccUsers()), row.sentAt()))
+                .toList();
+        var ids = rows.stream().flatMap(row -> java.util.stream.Stream.concat(row.to().stream(), row.cc().stream()))
+                .filter(Objects::nonNull).distinct().toList();
+        var names = new LinkedHashMap<String, String>();
+        if (!ids.isEmpty()) {
+            people.selectByUserIds(ids).stream().filter(person -> person.getName() != null && !person.getName().isBlank())
+                    .forEach(person -> names.putIfAbsent(person.getUserId(), person.getName()));
+        }
+        return new SentMailPage(rows, persistence.countSentMails(batchId, versionId), names);
+    }
+
     /** 按当前用户汇总各版本的本人事项及待反馈数量。 */
     public List<PptAnomalyMapper.VersionWork> versionWork(String userId) {
         return persistence.versionWork(userId);
@@ -238,6 +257,90 @@ public class PptAnomalyService {
         var name = rows.stream().map(DeveloperPlPersonInfo::getName)
                 .filter(value -> value != null && !value.isBlank()).findFirst().orElse(userId.strip());
         return new DirectoryPerson(userId.strip(), name, departments);
+    }
+
+    public record FeedbackSupervisor(String userId, String name, List<String> departments, boolean available, boolean enabled) {}
+
+    List<FeedbackSupervisor> feedbackSupervisors() {
+        var config = persistence.feedbackSupervisorConfig(false);
+        if (config == null) return List.of();
+        var ids = readList(config.userIds());
+        var disabled = new HashSet<>(readList(config.disabledUserIds()));
+        var directory = supervisorDirectory(ids);
+        return ids.stream().map(id -> {
+            var rows = directory.getOrDefault(id, List.of());
+            var name = rows.stream().map(DeveloperPlPersonInfo::getName)
+                    .filter(value -> value != null && !value.isBlank()).findFirst().orElse(id);
+            var departments = rows.stream().map(DeveloperPlPersonInfo::getDepartment)
+                    .filter(value -> value != null && !value.isBlank()).map(String::strip).distinct().sorted().toList();
+            return new FeedbackSupervisor(id, name, departments, !rows.isEmpty(), !disabled.contains(id));
+        }).toList();
+    }
+
+    private Map<String, List<DeveloperPlPersonInfo>> supervisorDirectory(List<String> ids) {
+        if (ids.isEmpty()) return Map.of();
+        return people.selectByUserIds(ids).stream().filter(person -> ids.contains(person.getUserId()))
+                .collect(java.util.stream.Collectors.groupingBy(DeveloperPlPersonInfo::getUserId));
+    }
+
+    @Transactional(GaussConfig.TX_NAME)
+    public void saveFeedbackSupervisors(List<String> ids, String editor) {
+        var selected = PptAnomalyController.recipientIds(ids);
+        requireSupervisorAccounts(selected);
+        var config = lockSupervisorConfig();
+        var disabled = readList(config.disabledUserIds()).stream().filter(selected::contains).toList();
+        updateSupervisorConfig(selected, disabled, editor);
+    }
+
+    @Transactional(GaussConfig.TX_NAME)
+    public void addFeedbackSupervisors(List<String> ids, String editor) {
+        var selected = PptAnomalyController.recipientIds(ids);
+        if (selected.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择要新增的反馈督办人");
+        requireSupervisorAccounts(selected);
+        var config = lockSupervisorConfig();
+        var merged = new LinkedHashSet<>(readList(config.userIds()));
+        if (merged.addAll(selected)) {
+            updateSupervisorConfig(List.copyOf(merged), readList(config.disabledUserIds()), editor);
+        }
+    }
+
+    @Transactional(GaussConfig.TX_NAME)
+    public void setFeedbackSupervisorEnabled(String id, boolean enabled, String editor) {
+        var config = lockSupervisorConfig();
+        var selected = readList(config.userIds());
+        if (!selected.contains(id)) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "反馈督办人不存在");
+        if (enabled) requireSupervisorAccounts(List.of(id));
+        var disabled = new LinkedHashSet<>(readList(config.disabledUserIds()));
+        if (enabled ? disabled.remove(id) : disabled.add(id)) {
+            updateSupervisorConfig(selected, List.copyOf(disabled), editor);
+        }
+    }
+
+    private void requireSupervisorAccounts(List<String> selected) {
+        var directory = supervisorDirectory(selected);
+        var missing = selected.stream().filter(id -> !directory.containsKey(id)).toList();
+        if (!missing.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "人员台账中找不到以下督办人：" + String.join("、", missing));
+        }
+    }
+
+    private PptAnomalyMapper.FeedbackSupervisorConfig lockSupervisorConfig() {
+        var config = persistence.feedbackSupervisorConfig(true);
+        if (config == null) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "督办人配置未初始化，请联系管理员");
+        }
+        return config;
+    }
+
+    private void updateSupervisorConfig(List<String> ids, List<String> disabled, String editor) {
+        persistence.saveFeedbackSupervisors(write(ids), write(disabled), editor);
+    }
+
+    Map<String, PptAnomalyController.FeedbackNotification> reportRecipientsForDepartments(List<String> departments) {
+        if (departments.isEmpty()) return Map.of();
+        return persistence.reportRecipientsForDepartments(departments).stream()
+                .collect(java.util.stream.Collectors.toMap(PptAnomalyMapper.DepartmentReportRecipients::department,
+                        row -> new PptAnomalyController.FeedbackNotification(readList(row.toJson()), readList(row.ccJson()))));
     }
 
     PptAnomalyController.FeedbackNotification reportRecipients(String department) {
@@ -312,7 +415,7 @@ public class PptAnomalyService {
             revision = 0;
         } else {
             id = existing.id();
-            if (!transferred && previousHandlers.equals(selected)) return;
+            if (!transferred && new HashSet<>(previousHandlers).equals(new HashSet<>(selected))) return;
             revision = existing.revision() + (transferred ? 1 : 0);
             String updatedStatus = transferred || "UNASSIGNED".equals(existing.status()) || "PENDING_FEEDBACK".equals(existing.status())
                     ? (selected.isEmpty() ? "UNASSIGNED" : "PENDING_FEEDBACK") : existing.status();
@@ -325,6 +428,20 @@ public class PptAnomalyService {
         for (String handler : selected) persistence.addAssignmentHandler(id, handler);
         persistence.recordAssignmentChange(id, revision, previousDepartment, target,
                 write(previousHandlers), write(selected), editor);
+        String event = UUID.randomUUID().toString();
+        for (String handler : selected) {
+            if (!previousHandlers.contains(handler)) persistence.enqueueAssignmentNotice(event, versionId, id, handler);
+        }
+    }
+
+    @Transactional(GaussConfig.TX_NAME)
+    public void deleteFinding(long versionId, long findingId, String editor) {
+        if (!"ANALYZED".equals(persistence.lockVersion(versionId))) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "请先完成材料识别");
+        }
+        var finding = persistence.findingAssignment(versionId, findingId);
+        if (finding == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "事项不存在或已删除");
+        persistence.deleteFinding(findingId, editor);
     }
 
     /** 按事项板块匹配联系人，兼容历史事项的空板块记录。 */

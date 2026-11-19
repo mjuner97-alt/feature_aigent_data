@@ -68,6 +68,20 @@ public class PptAnomalyController {
         return service.notificationRecords(versionId);
     }
 
+    /** 按批次查询已保存的发信名单，仅产品部可查看。 */
+    @GetMapping("/notifications")
+    public PptAnomalyService.SentMailPage sentMailPage(@RequestParam(required = false) Long batchId,
+            @RequestParam(required = false) Long versionId,
+            @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int size,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
+        requireProductDepartment(userId, people);
+        if (page < 1 || size < 1 || size > 100 || (batchId != null && batchId < 1)
+                || (versionId != null && (batchId == null || versionId < 1))) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "无效的通知记录查询参数");
+        }
+        return service.sentMailPage(batchId, versionId, page, size);
+    }
+
     /** 当前版本的板块负责人分派请求。 */
     public record SectionAssignment(String section, String userId) {}
 
@@ -156,6 +170,44 @@ public class PptAnomalyController {
         return service.feedbackEdits(findingId, userId, canViewAllFeedback(userId));
     }
 
+    public record FeedbackSupervisorsRequest(List<String> userIds) {}
+
+    @GetMapping("/feedback-supervisors")
+    public List<PptAnomalyService.FeedbackSupervisor> feedbackSupervisors(
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
+        requireProductDepartment(userId, people);
+        return service.feedbackSupervisors();
+    }
+
+    @PutMapping("/feedback-supervisors")
+    public List<PptAnomalyService.FeedbackSupervisor> saveFeedbackSupervisors(@RequestBody FeedbackSupervisorsRequest body,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
+        requireProductDepartment(userId, people);
+        service.saveFeedbackSupervisors(body.userIds(), userId);
+        return service.feedbackSupervisors();
+    }
+
+    @PostMapping("/feedback-supervisors")
+    public List<PptAnomalyService.FeedbackSupervisor> addFeedbackSupervisors(@RequestBody FeedbackSupervisorsRequest body,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
+        requireProductDepartment(userId, people);
+        service.addFeedbackSupervisors(body.userIds(), userId);
+        return service.feedbackSupervisors();
+    }
+
+    public record SupervisorStatusRequest(String userId, Boolean enabled) {}
+
+    @PutMapping("/feedback-supervisors/status")
+    public List<PptAnomalyService.FeedbackSupervisor> setFeedbackSupervisorStatus(@RequestBody SupervisorStatusRequest body,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
+        requireProductDepartment(userId, people);
+        if (body.userId() == null || body.userId().isBlank() || body.enabled() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请指定督办人和启用状态");
+        }
+        service.setFeedbackSupervisorEnabled(body.userId().strip(), body.enabled(), userId);
+        return service.feedbackSupervisors();
+    }
+
     public record FindingAssignmentRequest(Long findingId, int page, String department, List<String> handlers,
             List<String> expectedHandlers) {}
 
@@ -172,9 +224,16 @@ public class PptAnomalyController {
         requireProductDepartment(userId, people);
         service.adjustAssignment(versionId, request.findingId(), request.page(), request.department(),
                 request.handlers(), request.expectedHandlers(), userId);
-        // 等事务提交后再按新的经办关系检查待反馈通知。
-        notifier.notifyVersionAfterCommit(versionId);
+        notifier.queueAssignmentNotices();
         return Map.of("status", "SAVED");
+    }
+
+    @DeleteMapping("/versions/{versionId}/findings/{findingId}")
+    public Map<String, String> deleteFinding(@PathVariable long versionId, @PathVariable long findingId,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
+        requireProductDepartment(userId, people);
+        service.deleteFinding(versionId, findingId, userId);
+        return Map.of("status", "DELETED");
     }
 
     /** 按识别序号查询指定版本的事项。 */

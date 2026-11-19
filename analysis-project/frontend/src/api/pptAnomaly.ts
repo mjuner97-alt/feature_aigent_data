@@ -3,12 +3,19 @@
 import type { PptBatch, PptBatchSummary, PptFinding, PptSectionWork, PptSlide, PptVersion, PptVersionWork } from '../types/pptAnomaly';
 import { searchSkillUsers } from './skill';
 const base='/api/ppt-anomaly';
-export interface PptMailRecord {
-  id: number; versionId: number; department: string; subject: string; body: string;
-  toUsers: string | null; ccUsers: string | null; sentBy: string; status: string; sentAt: string | null;
+export interface PptSentMail {
+  id: number; batchName: string; versionNo: number; fileName: string; department: string;
+  subject: string; to: string[]; cc: string[]; sentAt: string;
 }
-export async function listPptNotifications(versionId: number) {
-  return parse<PptMailRecord[]>(await fetch(`${base}/versions/${versionId}/notifications`, { headers: headers() }));
+export interface PptSentMailPage { rows: PptSentMail[]; total: number; names: Record<string, string> }
+
+export async function getPptSentMailPage(page: number, batchId?: number, versionId?: number) {
+  const query = new URLSearchParams({ page: String(page) });
+  if (batchId !== undefined) query.set('batchId', String(batchId));
+  if (versionId !== undefined) query.set('versionId', String(versionId));
+  return parse<PptSentMailPage>(await fetch(`${base}/notifications?${query}`, {
+    headers: headers(), cache: 'no-store',
+  }));
 }
 /** 为接口请求补充本地保存的用户标识，缺少标识时使用历史演示默认值。 */
 const headers=()=>({'X-User-Id':localStorage.getItem('skill-user-id')||'demo-user'});
@@ -18,6 +25,26 @@ const jsonHeaders=()=>({...headers(),'Content-Type':'application/json'});
 export async function pptAnomalyPermissions() {
   return parse<{ canManageMaterials: boolean }>(await fetch(`${base}/permissions`, { headers: headers() }));
 }
+export interface PptFeedbackSupervisor { userId: string; name: string; departments: string[]; available: boolean; enabled: boolean }
+
+export async function getPptFeedbackSupervisors() {
+  return parse<PptFeedbackSupervisor[]>(await fetch(`${base}/feedback-supervisors`, {
+    headers: headers(), cache: 'no-store',
+  }));
+}
+
+export async function addPptFeedbackSupervisors(userIds: string[]) {
+  return parse<PptFeedbackSupervisor[]>(await fetch(`${base}/feedback-supervisors`, {
+    method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ userIds }),
+  }));
+}
+
+export async function setPptFeedbackSupervisorEnabled(userId: string, enabled: boolean) {
+  return parse<PptFeedbackSupervisor[]>(await fetch(`${base}/feedback-supervisors/status`, {
+    method: 'PUT', headers: jsonHeaders(), body: JSON.stringify({ userId, enabled }),
+  }));
+}
+
 /** 读取反馈页面初始化所需的版本及当前用户部门。 */
 export async function overviewContext() {
   return parse<{ departments: string[]; versions: PptVersionWork[] }>(await fetch(`${base}/overview-context`, { headers: headers() }));
@@ -50,6 +77,16 @@ export interface PptReportRecipients {
   to: string[];
   cc: string[];
   names: Record<string, string>;
+}
+
+export interface PptReportConfiguration {
+  department: string; editable: boolean; recipients: PptReportRecipients;
+}
+
+export async function listPptReportConfigurations() {
+  return parse<PptReportConfiguration[]>(await fetch(`${reportNotification}/configurations`, {
+    headers: headers(), cache: 'no-store',
+  }));
 }
 
 export async function listPptReportDepartments() {
@@ -124,7 +161,12 @@ export async function searchPptPeople(keyword: string, department = '') {
     const people = await searchSkillUsers(term);
     return people.map(person => ({ ...person, name: person.name || person.userId, department: person.department ?? '' }));
   }
-  const query = new URLSearchParams({ keyword: term, department: department.trim() });
+  return searchPptDirectoryPeople(term, department);
+}
+
+/** 查询当前人员台账，与督办人保存校验使用同一数据源。 */
+export async function searchPptDirectoryPeople(keyword: string, department = '') {
+  const query = new URLSearchParams({ keyword: keyword.trim(), department: department.trim() });
   return parse<PptPerson[]>(await fetch(`${base}/keyword-config/people/search?${query}`, { headers: headers() }));
 }
 /** 为指定版本的板块保存负责人。 */
@@ -416,4 +458,9 @@ export async function saveFeedback(id: number, payload: { judgement: string; exp
   // 截图以重复的 attachments 表单字段上传，说明中的图片占位对应该文件顺序。
   files.forEach(file => body.append('attachments', file));
   return parse<{ status: string }>(await fetch(url, { method: 'PUT', headers: headers(), body }));
+}
+
+/** 删除单条事项，历史记录保留。 */
+export async function deletePptFinding(versionId: number, findingId: number) {
+  return parse(await fetch(`${base}/versions/${versionId}/findings/${findingId}`, { method: 'DELETE', headers: headers() }));
 }

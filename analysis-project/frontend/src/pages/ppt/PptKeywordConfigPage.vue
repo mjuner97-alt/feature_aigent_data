@@ -5,6 +5,9 @@ import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { pptAnomalyPermissions, searchPptPeople, type PptPerson } from '../../api/pptAnomaly';
+import { Search } from '@element-plus/icons-vue';
+import PptListFilterBar from '../../components/ppt/PptListFilterBar.vue';
+import PptFeedbackSupervisorConfig from '../../components/ppt/PptFeedbackSupervisorConfig.vue';
 import PptReportNotificationConfig from '../../components/ppt/PptReportNotificationConfig.vue';
 
 /** 关键词或解析范围配置的编辑数据。 */
@@ -36,7 +39,8 @@ const modes: Record<string, string> = {
 const route = useRoute();
 const router = useRouter();
 const requestedTab = () => route.query.tab === 'section' ? 'section'
-  : route.query.tab === 'report-notification' ? 'report-notification' : 'department';
+  : route.query.tab === 'report-notification' ? 'report-notification'
+    : route.query.tab === 'feedback-supervisors' ? 'feedback-supervisors' : 'department';
 const canManageKeywords = ref(false);
 const active = ref<string>('report-notification');
 onMounted(async () => {
@@ -116,7 +120,7 @@ async function request(path: string, init?: RequestInit) {
 /** 读取当前配置分类及分页筛选结果。 */
 async function load() {
   const id = ++requestId;
-  if (!canManageKeywords.value || active.value === 'report-notification') {
+  if (!canManageKeywords.value || active.value === 'report-notification' || active.value === 'feedback-supervisors') {
     loading.value = false;
     return;
   }
@@ -318,26 +322,33 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
         <template v-if="canManageKeywords">
           <el-tab-pane v-for="item in tabs" :key="item.key" :name="item.key" :label="item.label" />
         </template>
+        <el-tab-pane v-if="canManageKeywords" name="feedback-supervisors" label="反馈督办人配置" />
         <el-tab-pane name="report-notification" label="报告通知配置" />
       </el-tabs>
       <PptReportNotificationConfig v-if="active === 'report-notification'" />
+      <PptFeedbackSupervisorConfig v-else-if="canManageKeywords && active === 'feedback-supervisors'" />
       <el-config-provider v-else-if="canManageKeywords" size="small">
-        <form class="filters" @submit.prevent="search">
-          <el-input v-model="keyword" clearable :placeholder="active === 'section' ? '搜索页面标题或所属板块' : active === 'board' ? '搜索板块或负责人' : '搜索匹配关键词或部门'" />
-          <el-select v-if="active === 'section'" v-model="mode" clearable placeholder="全部识别范围">
-            <el-option v-for="(label, key) in modes" :key="key" :label="label" :value="key" />
-          </el-select>
-          <el-button native-type="submit">筛选</el-button>
-          <el-button class="add" type="primary" @click="active === 'section' ? editTitle() : active === 'board' ? editBoard() : edit()">新增</el-button>
+        <form class="config-filters" @submit.prevent="search">
+          <PptListFilterBar>
+            <el-input v-model="keyword" class="ppt-filter-search" :prefix-icon="Search" clearable aria-label="搜索配置"
+              :placeholder="active === 'section' ? '搜索页面标题或所属板块' : active === 'board' ? '搜索板块或负责人' : '搜索匹配关键词或部门'" />
+            <el-select v-if="active === 'section'" v-model="mode" class="ppt-filter-select" clearable
+              placeholder="全部识别范围" aria-label="识别范围">
+              <el-option v-for="(label, key) in modes" :key="key" :label="label" :value="key" />
+            </el-select>
+            <el-button native-type="submit">筛选</el-button>
+            <el-button type="primary" @click="active === 'section' ? editTitle() : active === 'board' ? editBoard() : edit()">新增</el-button>
+          </PptListFilterBar>
         </form>
         <el-table v-if="active === 'section'" v-loading="loading" :data="titleRows" row-key="name">
           <el-table-column prop="name" label="页面标题" min-width="124" show-overflow-tooltip />
           <el-table-column label="识别范围" min-width="80">
             <template #default="{ row }">{{ modes[row.scope?.target ?? 'FULL'] ?? modes.FULL }}</template>
           </el-table-column>
-          <el-table-column label="区域限制" width="108">
+          <el-table-column label="区域限制" width="108" align="center">
             <template #default="{ row }">
               <span v-if="row.scope?.target === 'UPPER_TABLE_ONLY'">页高前 {{ (row.scope.upperLimitRatio ?? 0.5) * 100 }}% · 第 {{ row.scope.firstRow ?? 1 }} 行至 {{ row.scope.lastRow ?? '末行' }}</span>
+              <span v-else aria-label="无区域限制">—</span>
             </template>
           </el-table-column>
           <el-table-column label="所属板块" min-width="76" show-overflow-tooltip>
@@ -472,11 +483,7 @@ h2 { margin: 0 0 14px; font-size: 22px; color: #142441; }
 .config-page :deep(.el-table .el-table__cell) { padding-block: 6px; }
 .config-page :deep(.el-table .cell) { padding-inline: 8px; }
 .config-page :deep(.config-date .cell) { white-space: nowrap; font-variant-numeric: tabular-nums; }
-.filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
-.filters .el-input { width: min(220px, 100%); }
-.filters .el-select { width: min(132px, 100%); }
-.filters .el-button { margin: 0; }
-.filters .add { margin-left: auto; }
+.config-filters { --ppt-filter-width: 144px; margin-bottom: 10px; }
 .row-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .row-actions .el-button { flex-shrink: 0; margin: 0; }
 .el-pagination { margin-top: 10px; justify-content: flex-end; flex-wrap: wrap; }

@@ -10,7 +10,37 @@ import org.apache.ibatis.annotations.Param;
 
 /** 例会材料 Gauss 持久化接口，对应 PptAnomalyMapper.xml 中的批次、识别、分派和反馈 SQL。 */
 public interface PptAnomalyMapper {
+    record FeedbackSupervisorConfig(String userIds, String disabledUserIds) {}
+    FeedbackSupervisorConfig feedbackSupervisorConfig(@Param("lock") boolean lock);
+    int saveFeedbackSupervisors(@Param("ids") String ids, @Param("disabledIds") String disabledIds,
+                                @Param("user") String user);
+    int markFeedbackNotified(@Param("ids") List<Long> ids, @Param("sentAt") java.time.LocalDateTime sentAt);
+
+    record ReminderScope(long versionId, String department) {}
+    record FeedbackReminder(long findingId, String recipient, int page, String title) {}
+    List<ReminderScope> dueFeedbackReminderScopes(@Param("now") java.time.LocalDateTime now);
+    List<FeedbackReminder> dueFeedbackReminders(@Param("scope") ReminderScope scope,
+                                               @Param("now") java.time.LocalDateTime now);
+    int markFeedbackReminded(@Param("ids") List<Long> ids, @Param("sentAt") java.time.LocalDateTime sentAt);
+    int recordFeedbackReminder(@Param("version") long version, @Param("department") String department,
+            @Param("subject") String subject, @Param("body") String body, @Param("to") String to,
+            @Param("cc") String cc, @Param("ids") String ids, @Param("status") String status,
+            @Param("sentAt") java.time.LocalDateTime sentAt);
+
+    record AssignmentNotice(String eventId, long versionId, long findingId, String recipient,
+                            String department, String fileName, int attempts) {}
+    int enqueueAssignmentNotice(@Param("event") String event, @Param("version") long version,
+            @Param("finding") long finding, @Param("recipient") String recipient);
+    List<AssignmentNotice> pendingAssignmentNotices();
+    AssignmentNotice lockAssignmentNotice(@Param("event") String event, @Param("recipient") String recipient);
+    int finishAssignmentNotice(@Param("event") String event, @Param("recipient") String recipient,
+                              @Param("status") String status);
+    int deleteFinding(@Param("id") long id, @Param("user") String user);
+
     record ReportRecipientsRow(String toJson, String ccJson) {}
+
+    record DepartmentReportRecipients(String department, String toJson, String ccJson) {}
+    List<DepartmentReportRecipients> reportRecipientsForDepartments(@Param("departments") List<String> departments);
 
     ReportRecipientsRow reportRecipients(@Param("department") String department);
     int saveReportRecipients(@Param("department") String department, @Param("toJson") String toJson,
@@ -34,6 +64,11 @@ public interface PptAnomalyMapper {
     record FeedbackMailRecord(long id, long versionId, String department, String subject, String body,
                               String toUsers, String ccUsers, String sentBy, String status,
                               java.time.LocalDateTime sentAt) {}
+    record SentMailRow(long id, String batchName, int versionNo, String fileName, String department,
+                       String subject, String toUsers, String ccUsers, java.time.LocalDateTime sentAt) {}
+    List<SentMailRow> sentMailPage(@Param("batchId") Long batchId, @Param("versionId") Long versionId,
+                                   @Param("size") int size, @Param("offset") long offset);
+    long countSentMails(@Param("batchId") Long batchId, @Param("versionId") Long versionId);
     List<FeedbackMailRecord> feedbackMailRecords(@Param("versionId") long versionId);
     List<RecipientNoticeTime> previousFeedbackNoticeTimes(@Param("versionId") long versionId, @Param("subject") String subject);
     List<SentFeedbackMail> sentFeedbackMails(@Param("versionId") long versionId, @Param("department") String department,

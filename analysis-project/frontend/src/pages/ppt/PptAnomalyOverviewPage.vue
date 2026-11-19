@@ -4,7 +4,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { downloadFeedbackDirectory, downloadVersion, feedbackDirectory, overviewContext, resolveFeedbackLink,
+import { deletePptFinding, downloadFeedbackDirectory, downloadVersion, feedbackDirectory, overviewContext, resolveFeedbackLink,
   searchPptPeople, sendPptFeedbackNotification, slide, slidePreviewUrl, saveFeedback, pptAnomalyPermissions, PptApiError,
   getPptReportRecipients, type PptReportRecipients } from '../../api/pptAnomaly';
 import { searchSkillUsers } from '../../api/skill';
@@ -270,6 +270,22 @@ async function assignmentSaved() {
 }
 
 
+async function removeFinding(item: PptFinding) {
+  try {
+    await ElMessageBox.confirm('删除后，该事项将不再计入汇总和导出，操作历史仍会保留。', '删除事项', { type: 'warning' });
+  } catch { return; }
+  saving.value = true;
+  try {
+    await deletePptFinding(versionId.value, item.id);
+    drafts.value.delete(item.id);
+    conflicts.value.delete(item.id);
+    await reload();
+    ElMessage.success('事项已删除');
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '删除失败，请重试');
+  } finally { saving.value = false; }
+}
+
 /** 离开页面前确认尚未提交的反馈草稿。 */
 async function allowNavigation() {
   if (saving.value) return false;
@@ -456,6 +472,8 @@ onMounted(async () => {
               <span class="feedback-status">{{ feedbackStatuses[item.status] || '-' }}</span>
               <el-button v-if="canManage && !readOnly" link type="primary" :disabled="saving || drafts.has(item.id)"
                 @click="assignmentDialog = { finding: item }">调整归属</el-button>
+              <el-button v-if="canManage && !readOnly" link type="danger" :disabled="saving || loading"
+                @click="removeFinding(item)">删除事项</el-button>
             </div>
           </header>
           <PptSlideViewer :page-no="item.pageNo" :slide="previews.get(item.pageNo) ?? undefined"

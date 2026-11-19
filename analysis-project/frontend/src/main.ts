@@ -164,6 +164,7 @@ const routes: RouteRecordRaw[] = [
           { path: '', redirect: '/ppt-anomaly/materials' },
           { path: 'materials', component: PptBatchPage, meta: { title: 'PPT 材料批次', requiresPptProductDepartment: true } },
           { path: 'materials/:batchId/result', component: () => import('./pages/ppt/PptResultPage.vue'), meta: { title: '生成结果', requiresPptProductDepartment: true } },
+          { path: 'notifications', component: () => import('./pages/ppt/PptNotificationRecordsPage.vue'), meta: { title: '通知记录', requiresPptProductDepartment: true } },
           { path: 'feedback-records', component: () => import('./pages/ppt/PptFeedbackRecordsPage.vue'), meta: { title: '反馈记录' } },
           { path: 'keyword-config', component: () => import('./pages/ppt/PptKeywordConfigPage.vue'), meta: { title: '例会材料配置' } },
           { path: 'keyword-config/title-handlers', component: () => import('./pages/ppt/PptTitleHandlersPage.vue'), meta: { title: '设置经办人', requiresPptProductDepartment: true } },
