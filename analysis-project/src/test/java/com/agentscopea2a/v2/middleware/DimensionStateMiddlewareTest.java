@@ -49,7 +49,8 @@ class DimensionStateMiddlewareTest {
         when(resolver.resolve(anyString(), eq("555153289"))).thenReturn(
                 new PersonalDimensionResolver.PersonalResolution(true, false, false, false, false,
                         new PersonLedgerRepository.PersonLedgerRow(List.of("杭州开发三部"),
-                                List.of(), List.of(), List.of(), "徐三金", "555153289")));
+                                List.of(), List.of(), List.of(), List.of("后端开发"), "徐三金",
+                                "555153289")));
         when(resolver.scanNames(anyString())).thenReturn(List.of());
 
         String prompt = middleware.onSystemPrompt(null, ctx, "base").block();
@@ -57,6 +58,9 @@ class DimensionStateMiddlewareTest {
         assertTrue(prompt.startsWith("base"));
         assertTrue(state.getDepartments().contains("杭州开发三部"));
         assertTrue(prompt.contains("部门：杭州开发三部"));
+        // 拍板 §13.6-1 A：我部命中不出人属性行（仅裸我/人名扫描唯一命中出）
+        assertFalse(prompt.contains("姓名："));
+        assertFalse(prompt.contains("统一认证号："));
     }
 
     @Test
@@ -68,12 +72,17 @@ class DimensionStateMiddlewareTest {
         when(resolver.scanNames(anyString())).thenReturn(List.of("徐三金"));
         when(resolver.resolveName("徐三金")).thenReturn(List.of(
                 new PersonLedgerRepository.PersonIdentity("徐三金", "555153289",
-                        List.of("杭州开发三部"), List.of())));
+                        List.of("杭州开发三部"), List.of(), List.of("后端开发"))));
 
         String prompt = middleware.onSystemPrompt(null, ctx, "base").block();
 
-        assertTrue(prompt.contains("「徐三金」→ 统一认证号 555153289（杭州开发三部）"));
-        assertTrue(prompt.contains("参数 perNo 直接使用对应统一认证号"));
+        // 三行属性式（三行属性式渲染方案 §13.2 拍板③ B）
+        assertTrue(prompt.contains("- 姓名：徐三金"));
+        assertTrue(prompt.contains("- 统一认证号：555153289"));
+        assertTrue(prompt.contains("- 岗位角色：后端开发"));
+        assertFalse(prompt.contains("人员解析"));
+        // 拍板 §13.6-4 B：契约句整句删除
+        assertFalse(prompt.contains("参数 perNo 直接使用对应统一认证号"));
         assertTrue(state.getPersons().contains("徐三金"));
     }
 
@@ -91,7 +100,10 @@ class DimensionStateMiddlewareTest {
         String prompt = middleware.onSystemPrompt(null, ctx, "base").block();
 
         assertTrue(prompt.contains("「张三」存在重名（2人）"));
-        assertFalse(prompt.contains("统一认证号 111"));
+        assertFalse(prompt.contains("统一认证号"));
+        assertFalse(prompt.contains("姓名："));
+        // 重名轮不执行查询，契约句无所指（拍板 §13.6-4 B）
+        assertFalse(prompt.contains("参数 perNo 直接使用对应统一认证号"));
         // 重名不写 persons (§4.4: 唯一命中才落 state)
         assertTrue(state.getPersons() == null || state.getPersons().isEmpty());
     }
@@ -145,7 +157,8 @@ class DimensionStateMiddlewareTest {
         when(resolver.resolve(anyString(), eq("555153289"))).thenReturn(
                 new PersonalDimensionResolver.PersonalResolution(false, false, false, false, true,
                         new PersonLedgerRepository.PersonLedgerRow(List.of("杭州开发三部"),
-                                List.of(), List.of(), List.of(), "徐三金", "555153289")));
+                                List.of(), List.of(), List.of(), List.of("后端开发", "架构师"),
+                                "徐三金", "555153289")));
         when(resolver.scanNames(anyString())).thenReturn(List.of());
 
         String prompt = middleware.onSystemPrompt(null, ctx, "base").block();
@@ -153,6 +166,29 @@ class DimensionStateMiddlewareTest {
         assertTrue(state.getDepartments().contains("杭州开发三部"));
         assertTrue(state.getPersons().contains("徐三金"));
         assertTrue(prompt.contains("部门：杭州开发三部"));
+        // 三行属性式（拍板 §13.6-3 B）：裸我 userId 即认证号，三行恒齐；多角色、连接
+        assertTrue(prompt.contains("- 姓名：徐三金"));
+        assertTrue(prompt.contains("- 统一认证号：555153289"));
+        assertTrue(prompt.contains("- 岗位角色：后端开发、架构师"));
+        assertFalse(prompt.contains("- 人：徐三金"));
+        assertFalse(prompt.contains("人员解析"));
+    }
+
+    @Test
+    void personsWithoutIdentityFallBackToSingleLine() {
+        // 降级路径：无 resolver 身份解析（台账查不到/兜底）→ 退回单行 - 人：x，人维度不丢
+        stubQuestion("王五的缺陷数");
+        DimensionState state = new DimensionState(null, List.of(), null, null);
+        state.setPersons(List.of("王五"));
+        stubProcess(state);
+        when(resolver.resolve(anyString(), anyString())).thenReturn(PersonalDimensionResolver.none());
+        when(resolver.scanNames(anyString())).thenReturn(List.of());
+
+        String prompt = middleware.onSystemPrompt(null, ctx, "base").block();
+
+        assertTrue(prompt.contains("- 人：王五"));
+        assertFalse(prompt.contains("姓名："));
+        assertFalse(prompt.contains("统一认证号："));
     }
 
     @Test

@@ -91,14 +91,14 @@ public class DimensionStateMiddleware implements MiddlewareBase {
                         dimensionStateManager.processQuestionInContext(ctx, userQuestion);
                 DimensionState state = result.newState();
 
-                // 人员台账 enrich（§3.3b/§4.4，LLM 回退兜底）：我X/人名 → state + 统一认证号注入行，
+                // 人员台账 enrich（§3.3b/§4.4，LLM 回退兜底）：我X/人名 → state + 确定性身份，
                 // state 原地变更（ctx 持同引用，跨轮继承自动生效）
-                java.util.List<String> perNoLines = enrichPersonal(state, ctx, userQuestion);
+                PersonalEnrich enrich = enrichPersonal(state, ctx, userQuestion);
 
                 if (state != null && (state.hasDimensions()
-                        || (perNoLines != null && !perNoLines.isEmpty()))) {
+                        || !enrich.identities().isEmpty() || !enrich.ambiguityHints().isEmpty())) {
                     String dimensionPrefix = formatDimensionContext(state, result.resolvedAliases(),
-                            perNoLines);
+                            enrich);
                     if (maxChars == 0) {
                         return systemPrompt;
                     }
@@ -117,20 +117,31 @@ public class DimensionStateMiddleware implements MiddlewareBase {
         });
     }
 
+    /** 人员 enrich 结构化结果（三行属性式渲染方案 §13.4）：身份解析记录供属性行渲染，重名提示行独立。 */
+    record PersonalEnrich(java.util.List<PersonLedgerRepository.PersonIdentity> identities,
+                          java.util.List<String> ambiguityHints) {
+        static final PersonalEnrich EMPTY = new PersonalEnrich(List.of(), List.of());
+    }
+
     /**
      * 人员台账 enrich（LLM 回退路径，§3.3b/§4.4）：我X → departments/peerDimension（三选一，
-     * 先命中者胜 + warn）/persons；人名扫描唯一命中 → persons + 统一认证号注入行。
+     * 先命中者胜 + warn）/persons；人名扫描唯一命中 → persons + 确定性身份。
      * 部门一项全量连带（2026/10/30 部门与上级维度带出门控方案 §2.3，与直执 enrichPersonal
      * 同语义）：我部/我组/我的应用/我的产品线/裸我 均注入台账部门；peer 自身值仍 per-type。
+     * 身份记录仅两处产出（拍板 §13.6-1 A）：裸我（userId 即认证号）+ 人名扫描唯一命中；
+     * 我部/我组/我的应用/我的产品线命中不出人属性行。
      * 直接执行路径（参数契约）在 DirectSkillExecutor.plan，这里只是提示性注入。
      */
-    private java.util.List<String> enrichPersonal(DimensionState state, RuntimeContext ctx,
-                                                  String userQuestion) {
+    private PersonalEnrich enrichPersonal(DimensionState state, RuntimeContext ctx,
+                                          String userQuestion) {
         if (personalResolver == null || state == null) {
-            return java.util.List.of();
+            return PersonalEnrich.EMPTY;
         }
         String userId = ctx.getUserId();
         PersonalDimensionResolver.PersonalResolution res = personalResolver.resolve(userQuestion, userId);
+        java.util.LinkedHashMap<String, PersonLedgerRepository.PersonIdentity> identities =
+                new java.util.LinkedHashMap<>();
+        java.util.List<String> ambiguityHints = new java.util.ArrayList<>();
         if (res.anyHit() && res.ledger() != null) {
             if (res.myDept() && !res.ledger().depts().isEmpty()) {
                 state.setDepartments(merge(state.getDepartments(), res.ledger().depts()));
@@ -149,8 +160,12 @@ public class DimensionStateMiddleware implements MiddlewareBase {
                 state.setDepartments(merge(state.getDepartments(), res.ledger().depts()));
             }
             if (res.myself()) {
-                if (res.ledger().name() != null) {
+                if (res.ledger().name() != null && !res.ledger().name().isBlank()) {
                     state.setPersons(merge(state.getPersons(), List.of(res.ledger().name())));
+                    identities.putIfAbsent(res.ledger().name(),
+                            new PersonLedgerRepository.PersonIdentity(res.ledger().name(),
+                                    res.ledger().userId(), res.ledger().depts(),
+                                    res.ledger().groups(), res.ledger().roles()));
                 }
                 if (!res.ledger().depts().isEmpty()) {
                     state.setDepartments(merge(state.getDepartments(), res.ledger().depts()));
@@ -158,22 +173,21 @@ public class DimensionStateMiddleware implements MiddlewareBase {
             }
         }
         // §4.4 人名扫描（唯一命中直出统一认证号；重名不反问——直接执行轨已覆盖主场景）
-        java.util.List<String> perNoLines = new java.util.ArrayList<>();
         String masked = DimensionStateManager.maskForPersonScan(userQuestion);
         for (String name : personalResolver.scanNames(masked)) {
-            java.util.List<PersonLedgerRepository.PersonIdentity> identities =
+            java.util.List<PersonLedgerRepository.PersonIdentity> identities0 =
                     personalResolver.resolveName(name);
-            if (identities.size() == 1 && identities.get(0).perNo() != null) {
-                PersonLedgerRepository.PersonIdentity identity = identities.get(0);
-                perNoLines.add("「" + name + "」→ 统一认证号 " + identity.perNo()
-                        + (identity.depts().isEmpty() ? "" : "（" + String.join(" / ", identity.depts()) + "）"));
+            if (identities0.size() == 1 && identities0.get(0).perNo() != null) {
+                PersonLedgerRepository.PersonIdentity identity = identities0.get(0);
+                identities.putIfAbsent(name, identity);
                 state.setPersons(merge(state.getPersons(), List.of(name)));
-            } else if (identities.size() > 1) {
-                perNoLines.add("「" + name + "」存在重名（" + identities.size() + "人），"
+            } else if (identities0.size() > 1) {
+                ambiguityHints.add("「" + name + "」存在重名（" + identities0.size() + "人），"
                         + "如用户指具体人员请先向其确认");
             }
         }
-        return perNoLines;
+        return new PersonalEnrich(java.util.List.copyOf(identities.values()),
+                java.util.List.copyOf(ambiguityHints));
     }
 
     private static void setPeerIfAbsent(DimensionState state, DimensionState.PeerDimensionType type,
@@ -224,7 +238,7 @@ public class DimensionStateMiddleware implements MiddlewareBase {
 
     private String formatDimensionContext(
             DimensionState state, java.util.List<AliasResolver.ResolvedAlias> resolvedAliases,
-            java.util.List<String> perNoLines) {
+            PersonalEnrich enrich) {
         StringBuilder sb = new StringBuilder("<dimension_context>\n");
         sb.append("当前对话维度上下文。以下维度值是系统根据用户口语化表述确定性解析出的标准名（非猜测），"
                 + "视为用户本轮提问的确定查询条件：构造查询参数时必须直接采用，"
@@ -273,18 +287,49 @@ public class DimensionStateMiddleware implements MiddlewareBase {
                     .append(String.join("、", state.getPeerDimension().getValues()))
                     .append("\n");
         }
-        if (state.getPersons() != null && !state.getPersons().isEmpty()) {
-            sb.append("- 人：").append(String.join("、", state.getPersons())).append("\n");
-        }
+        // 人维度三行属性式（三行属性式渲染方案 §13.2，拍板③ B）：身份解析出的确定性身份
+        // （裸我/人名扫描唯一命中）渲染 姓名/统一认证号/岗位角色；无身份的 persons 退回单行
+        appendPersonSection(sb, state.getPersons(), enrich.identities());
         appendTimeRangeSection(sb, state.getTimeRangeAnchors());
-        if (perNoLines != null && !perNoLines.isEmpty()) {
+        if (enrich.ambiguityHints() != null && !enrich.ambiguityHints().isEmpty()) {
             sb.append("\n人员解析（确定性结果，非猜测）：\n");
-            perNoLines.forEach(line -> sb.append("- ").append(line).append("\n"));
-            sb.append("涉及上述人员的查询，参数 perNo 直接使用对应统一认证号，"
-                    + "禁止向用户追问或要求确认。\n");
+            enrich.ambiguityHints().forEach(line -> sb.append("- ").append(line).append("\n"));
         }
         sb.append("</dimension_context>");
         return sb.toString() + "\n\n";
+    }
+
+    /**
+     * 人维度渲染（三行属性式渲染方案 §13.2，拍板③ B + 拍板④ B）：身份解析出结果的 persons
+     * 渲染 姓名/统一认证号/岗位角色 三行属性行（角色空省略岗位角色行）；无身份解析结果的
+     * persons（resolver 缺失/台账查不到/兜底降级）退回单行 "- 人：x"，人维度不丢。
+     */
+    private static void appendPersonSection(StringBuilder sb, java.util.List<String> persons,
+                                            java.util.List<PersonLedgerRepository.PersonIdentity> identities) {
+        java.util.Set<String> identified = new LinkedHashSet<>();
+        if (identities != null) {
+            for (PersonLedgerRepository.PersonIdentity identity : identities) {
+                if (identity.name() == null || identity.name().isBlank()) {
+                    continue;
+                }
+                identified.add(identity.name());
+                sb.append("- 姓名：").append(identity.name()).append("\n");
+                if (identity.perNo() != null && !identity.perNo().isBlank()) {
+                    sb.append("- 统一认证号：").append(identity.perNo()).append("\n");
+                }
+                if (identity.roles() != null && !identity.roles().isEmpty()) {
+                    sb.append("- 岗位角色：").append(String.join("、", identity.roles())).append("\n");
+                }
+            }
+        }
+        if (persons != null && !persons.isEmpty()) {
+            java.util.List<String> unidentified = persons.stream()
+                    .filter(p -> p != null && !p.isBlank() && !identified.contains(p))
+                    .toList();
+            if (!unidentified.isEmpty()) {
+                sb.append("- 人：").append(String.join("、", unidentified)).append("\n");
+            }
+        }
     }
 
     /**
