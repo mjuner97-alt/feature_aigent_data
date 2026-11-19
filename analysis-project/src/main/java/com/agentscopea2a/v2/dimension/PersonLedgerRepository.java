@@ -64,6 +64,18 @@ public class PersonLedgerRepository {
      *  按维度值反填 deptName。列名拼接进 SQL 前过白名单闸（同 Q5-Q7 TRUTH_COLUMNS）。 */
     private static final Set<String> DEPT_LOOKUP_COLUMNS = Set.of("统计组", "产品线", "应用");
 
+    /** Q9 部门×产品线 → 统计组全集（2026/11/19 产品线下钻展开方案 §4.1）：产品线有值 +
+     *  统计组粒度词同时出现时，DirectSkillExecutor 按此展开 group 清单。
+     *  部门/产品线均支持多值 IN（与逐组合查询并集集合语义等价）；部门缺省走无部门变体；
+     *  固定排除 '离场'（需求给定）。值全 PreparedStatement 绑定，只拼接占位符。 */
+    private static final String Q9_GROUPS_WITH_DEPT = "SELECT DISTINCT \"统计组\" FROM " + TABLE
+            + " WHERE \"部门\" IN (%s) AND \"产品线\" IN (%s)"
+            + " AND \"统计组\" IS NOT NULL AND \"统计组\" != '离场' AND " + SNAPSHOT_FILTER;
+
+    private static final String Q9_GROUPS_NO_DEPT = "SELECT DISTINCT \"统计组\" FROM " + TABLE
+            + " WHERE \"产品线\" IN (%s)"
+            + " AND \"统计组\" IS NOT NULL AND \"统计组\" != '离场' AND " + SNAPSHOT_FILTER;
+
     /** Q5-Q7 真值列白名单（维度值台账真值校验方案 §4.1）：列名拼接进 SQL 前必须过闸。 */
     private static final Set<String> TRUTH_COLUMNS = Set.of("统计组", "产品线", "应用");
 
@@ -309,6 +321,68 @@ public class PersonLedgerRepository {
         List<String> result = List.copyOf(out);
         groupDeptCache.put(cacheKey, new CachedDepts(result, now));
         return result;
+    }
+
+    /**
+     * Q9 部门×产品线 → 统计组全集（2026/11/19 产品线下钻展开方案 §4.1）：产品线有值 +
+     * 统计组粒度词（dimension=统计组 / drillDown=组维度）同时出现时，DirectSkillExecutor
+     * 把该部门×产品线下全部统计组展开进 group 参数。部门/产品线均支持多值 IN；
+     * depts 为空集合 → 无部门变体（按产品线全量展开）。
+     * TTL 同 per-user 归属；失败/查无 → 空列表（调用方保留原参数 fail-open，负缓存防反复打库）。
+     */
+    public List<String> groupsByDeptAndProductLine(List<String> depts, List<String> productLines) {
+        List<String> pls = normalize(productLines);
+        if (pls.isEmpty()) {
+            return List.of();
+        }
+        List<String> ds = normalize(depts);
+        String cacheKey = (ds.isEmpty() ? "*:" : String.join("|", ds) + ":")
+                + String.join("|", pls);
+        long now = System.currentTimeMillis();
+        CachedDepts cached = groupDeptCache.get(cacheKey);
+        if (cached != null && now - cached.at() < ttlMillis) {
+            return cached.depts();
+        }
+        List<Object> args = new ArrayList<>(ds);
+        args.addAll(pls);
+        String sql = ds.isEmpty()
+                ? Q9_GROUPS_NO_DEPT.formatted(placeholders(pls.size()))
+                : Q9_GROUPS_WITH_DEPT.formatted(placeholders(ds.size()), placeholders(pls.size()));
+        List<String> out = new ArrayList<>();
+        try {
+            jdbcTemplate.query(sql, rs -> {
+                String group = blankToNull(rs.getString("统计组"));
+                if (group != null && !out.contains(group)) {
+                    out.add(group);
+                }
+            }, args.toArray());
+        } catch (Exception ex) {
+            log.warn("PersonLedgerRepository groupsByDeptAndProductLine(depts={}, productLines={}) "
+                    + "failed (no expansion): {}", ds, pls, ex.getMessage());
+            groupDeptCache.put(cacheKey, new CachedDepts(List.of(), now));
+            return List.of();
+        }
+        List<String> result = List.copyOf(out);
+        groupDeptCache.put(cacheKey, new CachedDepts(result, now));
+        return result;
+    }
+
+    private static String placeholders(int n) {
+        return String.join(", ", java.util.Collections.nCopies(n, "?"));
+    }
+
+    private static List<String> normalize(List<String> values) {
+        if (values == null) {
+            return List.of();
+        }
+        Set<String> uniq = new LinkedHashSet<>();
+        for (String v : values) {
+            String trimmed = v == null ? null : v.trim();
+            if (trimmed != null && !trimmed.isEmpty()) {
+                uniq.add(trimmed);
+            }
+        }
+        return List.copyOf(uniq);
     }
 
     /**

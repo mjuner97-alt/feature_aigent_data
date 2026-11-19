@@ -3914,6 +3914,255 @@ class DirectSkillExecutorTest {
         assertEquals("组维度", r2.params().get("drill"));              // 分布默认下钻 (P1/P2; 部门默认=组维度)
     }
 
+    // ==================== 产品线×统计组下钻展开 (docs/202611/产品线统计组下钻展开方案.md) ====================
+
+    private static final String EXPAND_MAPPING =
+            "{\"dept\":\"deptName\",\"pl\":\"productLine\",\"group\":\"groupName\",\"dim\":\"dimension\"}";
+    private static final String EXPAND_DRILL_MAPPING =
+            "{\"dept\":\"deptName\",\"pl\":\"productLine\",\"group\":\"groupName\",\"group_by\":\"drillDown\"}";
+    /** pl 非必输: 展开后 productLine 被移除 (方案 §1.2), 必输会导致展开后必填判定反问 */
+    private static final String EXPAND_SCHEMA =
+            "[{\"name\":\"dept\",\"required\":true},{\"name\":\"pl\",\"required\":false},"
+                    + "{\"name\":\"group\",\"required\":true},{\"name\":\"dim\",\"required\":false}]";
+    private static final String EXPAND_DRILL_SCHEMA =
+            "[{\"name\":\"dept\",\"required\":true},{\"name\":\"pl\",\"required\":false},"
+                    + "{\"name\":\"group\",\"required\":true},{\"name\":\"group_by\",\"required\":false}]";
+
+    private com.agentscopea2a.v2.dimension.PersonLedgerRepository mockExpandLedger() {
+        return mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+    }
+
+    private static DimensionState deptAndProductLineState(List<String> depts,
+                                                          List<String> productLines) {
+        return new DimensionState(versionTime(List.of("2026年11月份版本")), depts,
+                new DimensionState.PeerDimension(DimensionState.PeerDimensionType.PRODUCT_LINE,
+                        productLines), null);
+    }
+
+    private DimensionKeyConfig dimensionGroupWordConfig() {
+        return new DimensionKeyConfig(23L, "dimension", "统计维度", false,
+                List.of(new DimensionKeyConfig.AliasMapping("各组", "统计组")), true, null);
+    }
+
+    private void mockExpandPlan(String question, DimensionState preview,
+                                String mapping, String schema,
+                                com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger) {
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", mapping, "缺陷")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull()))
+                .thenReturn(preview);
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(schema));
+    }
+
+    /** 主案例 (方案 §1.1 trace): 部门+产品线+各组 → group 展开全集, pl/dim 键删除。 */
+    @Test
+    void productLineGroupExpandFillsGroupsAndRemovesParams() {
+        String question = "杭州开发五部 普惠金融 各组的缺陷密度";
+        var ledger = mockExpandLedger();
+        when(ledger.groupsByDeptAndProductLine(List.of("杭州开发五部"), List.of("普惠金融")))
+                .thenReturn(List.of("技术组", "产品组"));
+        mockExpandPlan(question,
+                deptAndProductLineState(List.of("杭州开发五部"), List.of("普惠金融")),
+                EXPAND_MAPPING, EXPAND_SCHEMA, ledger);
+        enableKeyDictionary(dimensionGroupWordConfig());
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutorWithLedger(ledger)
+                .setProductLineGroupExpandEnabled(true).plan(question, "alice", null);
+
+        assertEquals(List.of("技术组", "产品组"), plan.params().get("group"));
+        assertFalse(plan.params().containsKey("pl"));
+        assertFalse(plan.params().containsKey("dim"));
+        assertEquals("杭州开发五部", plan.params().get("dept"));
+        assertFalse(plan.needsAsk());
+    }
+
+    /** drillDown 形态词 (组维度) 同样触发 (方案 §4.2 条件2)。 */
+    @Test
+    void productLineGroupExpandDrillDownWordForm() {
+        String question = "杭州开发五部 普惠金融 各个组的缺陷密度";
+        var ledger = mockExpandLedger();
+        when(ledger.groupsByDeptAndProductLine(List.of("杭州开发五部"), List.of("普惠金融")))
+                .thenReturn(List.of("技术组"));
+        mockExpandPlan(question,
+                deptAndProductLineState(List.of("杭州开发五部"), List.of("普惠金融")),
+                EXPAND_DRILL_MAPPING, EXPAND_DRILL_SCHEMA, ledger);
+        enableKeyDictionary(new DimensionKeyConfig(10L, "drillDown", "下钻维度", false,
+                List.of(new DimensionKeyConfig.AliasMapping("各个组", "组维度")), true, null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutorWithLedger(ledger)
+                .setProductLineGroupExpandEnabled(true).plan(question, "alice", null);
+
+        assertEquals("技术组", plan.params().get("group"));   // 单值保形 → String (shapeValue 口径)
+        assertFalse(plan.params().containsKey("pl"));
+        assertFalse(plan.params().containsKey("group_by"));
+    }
+
+    /** 无组级词 (对照组问句) → 原参数直传, 不打台账; group 必输缺失 → 反问。 */
+    @Test
+    void productLineGroupExpandNoGroupWordKeepsParams() {
+        String question = "杭州开发五部 普惠金融的缺陷密度";
+        var ledger = mockExpandLedger();
+        mockExpandPlan(question,
+                deptAndProductLineState(List.of("杭州开发五部"), List.of("普惠金融")),
+                EXPAND_MAPPING, EXPAND_SCHEMA, ledger);
+        enableKeyDictionary(dimensionGroupWordConfig());
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutorWithLedger(ledger)
+                .setProductLineGroupExpandEnabled(true).plan(question, "alice", null, "conv1");
+
+        assertFalse(plan.params().containsKey("group"));
+        assertEquals("普惠金融", plan.params().get("pl"));   // 单值保形 → String
+        assertTrue(plan.needsAsk());
+        org.mockito.Mockito.verify(ledger, org.mockito.Mockito.never())
+                .groupsByDeptAndProductLine(org.mockito.ArgumentMatchers.anyList(),
+                        org.mockito.ArgumentMatchers.anyList());
+    }
+
+    /** 台账查无 (拍板④ fail-open) → 保留原参数; group 必输缺失 → 反问补参。 */
+    @Test
+    void productLineGroupExpandLedgerEmptyKeepsParamsAndAsks() {
+        String question = "杭州开发五部 普惠金融 各组的缺陷密度";
+        var ledger = mockExpandLedger();
+        when(ledger.groupsByDeptAndProductLine(List.of("杭州开发五部"), List.of("普惠金融")))
+                .thenReturn(List.of());
+        mockExpandPlan(question,
+                deptAndProductLineState(List.of("杭州开发五部"), List.of("普惠金融")),
+                EXPAND_MAPPING, EXPAND_SCHEMA, ledger);
+        enableKeyDictionary(dimensionGroupWordConfig());
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutorWithLedger(ledger)
+                .setProductLineGroupExpandEnabled(true).plan(question, "alice", null, "conv1");
+
+        assertTrue(plan.params().containsKey("pl"));
+        assertTrue(plan.params().containsKey("dim"));
+        assertFalse(plan.params().containsKey("group"));
+        assertTrue(plan.needsAsk());
+    }
+
+    /** 多部门×多产品线 (拍板②修订): Q9 IN 并集展开。 */
+    @Test
+    void productLineGroupExpandMultiDeptAndProductLineUnion() {
+        String question = "杭州开发四部 杭州开发五部 普惠金融 房贷 各组的缺陷密度";
+        var ledger = mockExpandLedger();
+        when(ledger.groupsByDeptAndProductLine(
+                List.of("杭州开发四部", "杭州开发五部"), List.of("普惠金融", "房贷")))
+                .thenReturn(List.of("技术组", "产品组", "房贷一组"));
+        mockExpandPlan(question,
+                deptAndProductLineState(List.of("杭州开发四部", "杭州开发五部"),
+                        List.of("普惠金融", "房贷")),
+                EXPAND_MAPPING, EXPAND_SCHEMA, ledger);
+        enableKeyDictionary(dimensionGroupWordConfig());
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutorWithLedger(ledger)
+                .setProductLineGroupExpandEnabled(true).plan(question, "alice", null);
+
+        assertEquals(List.of("技术组", "产品组", "房贷一组"), plan.params().get("group"));
+        assertFalse(plan.params().containsKey("pl"));
+        assertFalse(plan.params().containsKey("dim"));
+    }
+
+    /** 开关关 (默认) → 不展开。 */
+    @Test
+    void productLineGroupExpandDisabledNoExpand() {
+        String question = "杭州开发五部 普惠金融 各组的缺陷密度";
+        var ledger = mockExpandLedger();
+        mockExpandPlan(question,
+                deptAndProductLineState(List.of("杭州开发五部"), List.of("普惠金融")),
+                EXPAND_MAPPING, EXPAND_SCHEMA, ledger);
+        enableKeyDictionary(dimensionGroupWordConfig());
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutorWithLedger(ledger)
+                .plan(question, "alice", null, "conv1");
+
+        assertFalse(plan.params().containsKey("group"));
+        assertEquals("普惠金融", plan.params().get("pl"));   // 单值保形 → String
+        assertTrue(plan.needsAsk());
+        org.mockito.Mockito.verify(ledger, org.mockito.Mockito.never())
+                .groupsByDeptAndProductLine(org.mockito.ArgumentMatchers.anyList(),
+                        org.mockito.ArgumentMatchers.anyList());
+    }
+
+    /** 部门必输且缺席 → 跳过展开等补参轮重算 (方案 §4.2), Q8 反填查无 fail-open 不反填。 */
+    @Test
+    void productLineGroupExpandDeptRequiredMissingDefersToAskRound() {
+        String question = "普惠金融 各组的缺陷密度";
+        var ledger = mockExpandLedger();
+        when(ledger.deptsByDimension("产品线", "普惠金融")).thenReturn(List.of());
+        mockExpandPlan(question, deptAndProductLineState(List.of(), List.of("普惠金融")),
+                EXPAND_MAPPING, EXPAND_SCHEMA, ledger);
+        enableKeyDictionary(dimensionGroupWordConfig());
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutorWithLedger(ledger)
+                .setProductLineGroupExpandEnabled(true).plan(question, "alice", null, "conv1");
+
+        assertTrue(plan.needsAsk());
+        assertEquals(List.of("deptName"), plan.missingAsk());
+        org.mockito.Mockito.verify(ledger, org.mockito.Mockito.never())
+                .groupsByDeptAndProductLine(org.mockito.ArgumentMatchers.anyList(),
+                        org.mockito.ArgumentMatchers.anyList());
+    }
+
+    /** 「各组+分布」组合 (方案 §5.4): 分布下钻先补的粒度被展开清理, 粒度停在组级不叠加人级。 */
+    @Test
+    void productLineGroupExpandWithDistributionStopsAtGroupLevel() {
+        String question = "杭州开发五部 普惠金融 各组缺陷分布";
+        var ledger = mockExpandLedger();
+        when(ledger.groupsByDeptAndProductLine(List.of("杭州开发五部"), List.of("普惠金融")))
+                .thenReturn(List.of("技术组", "产品组"));
+        mockExpandPlan(question,
+                deptAndProductLineState(List.of("杭州开发五部"), List.of("普惠金融")),
+                "{\"dept\":\"deptName\",\"pl\":\"productLine\",\"group\":\"groupName\","
+                        + "\"group_by\":\"drillDown\",\"dim\":\"dimension\"}",
+                "[{\"name\":\"dept\",\"required\":true},{\"name\":\"pl\",\"required\":false},"
+                        + "{\"name\":\"group\",\"required\":true},{\"name\":\"group_by\",\"required\":false},"
+                        + "{\"name\":\"dim\",\"required\":false}]",
+                ledger);
+        enableKeyDictionary(dimensionGroupWordConfig());
+
+        DirectSkillExecutor.DirectExecutionPlan plan = newExecutorWithLedger(ledger)
+                .setProductLineGroupExpandEnabled(true).plan(question, "alice", null);
+
+        assertEquals(List.of("技术组", "产品组"), plan.params().get("group"));
+        assertFalse(plan.params().containsKey("pl"));
+        assertFalse(plan.params().containsKey("dim"));
+        assertFalse(plan.params().containsKey("group_by"));
+    }
+
+    /** 追问轮方案 A (方案 §6): R1 展开后 R2 产品线重提 → 重算覆盖继承的脏 group。 */
+    @Test
+    void followupProductLineReMentionRecomputesGroups() {
+        var ledger = mockExpandLedger();
+        when(ledger.dimensionTruthDictionary("产品线")).thenReturn(Set.of("普惠金融", "房贷"));
+        when(ledger.groupsByDeptAndProductLine(List.of("杭州开发五部"), List.of("普惠金融")))
+                .thenReturn(List.of("技术组", "产品组"));
+        when(ledger.groupsByDeptAndProductLine(List.of("杭州开发五部"), List.of("房贷")))
+                .thenReturn(List.of("房贷一组"));
+        String t1 = "杭州开发五部 普惠金融 各组的缺陷密度";
+        mockExpandPlan(t1,
+                deptAndProductLineState(List.of("杭州开发五部"), List.of("普惠金融")),
+                EXPAND_MAPPING, EXPAND_SCHEMA, ledger);
+        enableKeyDictionary(dimensionGroupWordConfig());
+        DirectSkillExecutor executor = newExecutorWithLedger(ledger)
+                .setProductLineGroupExpandEnabled(true).setFollowupDirectEnabled(true);
+        DirectSkillExecutor.DirectExecutionPlan r1 = executor.plan(t1, "alice", null, "conv1");
+        assertEquals(List.of("技术组", "产品组"), r1.params().get("group"));
+
+        String t2 = "那房贷的呢";
+        when(dimensionStateManager.previewState(Mockito.eq(t2), Mockito.isNull())).thenReturn(
+                deptAndProductLineState(List.of("杭州开发五部"), List.of("房贷")));
+        when(dimensionStateManager.analyzeQuestionRuleBased(t2)).thenReturn(new QuestionAnalysis());
+        when(dimensionStateManager.hasExplicitTeamHit(t2)).thenReturn(false);
+        when(dimensionStateManager.hasExplicitProductLineHit(t2)).thenReturn(false);
+
+        DirectSkillExecutor.DirectExecutionPlan r2 = executor.plan(t2, "alice", null, "conv1");
+
+        assertEquals("dept_skill", r2.skillName());
+        assertEquals("房贷一组", r2.params().get("group"));   // 方案 A 重算覆盖 (单值保形 String)
+        assertFalse(r2.params().containsKey("pl"));
+        assertFalse(r2.params().containsKey("dim"));
+    }
+
     // ==================== 多 skill 命中全部直接执行 (docs/202611/多skill命中全部直接执行方案.md, 2026/11/13 拍板) ====================
 
     private static final String MULTI_QUESTION = "杭二11月的整体缺陷密度情况，及未闭环问题明细";

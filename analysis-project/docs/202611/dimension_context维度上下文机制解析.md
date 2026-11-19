@@ -132,7 +132,7 @@ LLM 回退兜底路径（直接执行主场景在 `DirectSkillExecutor.plan` 参
 - **"我X"**（我部/我组/我的应用/我的产品线/裸我）：`PersonalDimensionResolver.resolve` 查人员台账（gauss-common，TTL 30min）→ peer 槽位（三选一先命中者胜，已有值不覆盖并 warn）+ 部门一项**全量连带**注入；
 - **人名扫描**（2~4 字窗口，先经 `maskForPersonScan` 屏蔽时间/部门/应用/组/产品线 span 防抢）：唯一命中 → persons + 统一认证号注入行；重名 → 注入"存在重名，请先确认"行。
 
-**perNo/perRole 的键位语义（直接执行侧独立键，不回写状态）**：`DimensionExtraction` 里 `perNo`（统一认证号）执行期解析——"我"→`ChatRequest.userId`、人名→台账 Q2 解析——**不进 DimensionState、不进指纹**（注释 `DirectSkillExecutor.java:243`），纯执行期参数；`perRole`（岗位角色）由配置正则加载/角色双路径提取（我X方案 §8 / 岗位角色方案 §3.1b），同样是独立键位。dimension_context 侧 perNo 只以"人员解析"文本行呈现，perRole 不出现。
+**perNo/perRole 的键位语义（直接执行侧独立键，不回写状态）**：`DimensionExtraction` 里 `perNo`（统一认证号）执行期解析——"我"→`ChatRequest.userId`、人名→台账 Q2 解析——**不进 DimensionState、不进指纹**（注释 `DirectSkillExecutor.java:243`），纯执行期参数；`perRole`（岗位角色）由配置正则加载/角色双路径提取（我X方案 §8 / 岗位角色方案 §3.1b），同样是独立键位。dimension_context 侧 perNo 只以"人员解析"文本行呈现，perRole 不出现（三属性渲染扩展方案见 §13，待实施）。
 
 **直接执行侧独有的台账后处理链**（LLM 路径没有这一层）：台账真值扫描 `applyLedgerTruthScan`（抽出的维度值须在台账/alias 标准名真值域内）、`backfillDeptFromLedger`（缺部门必填时从台账反填，实测样例的 `deptName=杭州服务支持部` 即可能来自此）、重锚抑制 `applyReanchorSuppression`（我X 命中后抑制显式重锚冲突）。
 
@@ -289,7 +289,79 @@ dimension_context 新增**时间范围段**，渲染执行期解析出的具体�
 | 4 | **本期范围**："路径渲染"=LLM 路径（dimension_context 注入）与直接执行路径（extraction→脚本参数）两条消费链。12.4 第 4 条想把两边 timeRange 提取同源化，但直接执行链路 E2E 已过、内网待验，动它有回归风险 | A. 本期只加 LLM 路径渲染（dimension_context 多出时间范围段），直接执行侧一行不动，两路径暂时各提各的（口径相同、重复提取），内网验证后再同源化；B. 一步到位共享提取 | ✅ 已拍板（2026/11/18）：**A 本期只加 LLM 路径渲染**——只改 DimensionStateMiddleware，直接执行侧一行不动；两条路径暂时各提各的（口径相同、重复提取），内网验证通过后再做同源化（12.4 第 4 条延后） |
 | 5 | **词表 seed 维护**："当周"等常用口语是否预置进 dimension_key_config(timeRange) 种子 | A. 补种子；B. 纯业务自配 | ✅ 已拍板（2026/11/18）：业务会配词表，**不预置种子、不用管** |
 
-## 13. 相关方案文档
+## 13. 人员三属性（姓名/统一认证号/岗位角色）渲染方案（2026/11/19 已实施，E2E 待验）
+
+### 13.1 现状与动机
+
+人有三个属性：**姓名 / 统一认证号 / 岗位角色**（台账 Q1 三列都有）。dimension_context 现状只展示姓名：
+
+- `- 人：张三` —— persons 槽位只写名字（myself 分支 / 人名扫描唯一命中两处写入）；
+- **人员解析段覆盖不全**：
+  - 人名扫描唯一命中行 `「张三」→ 统一认证号 xxx（杭州开发三部）` —— 带了认证号+部门，但 `PersonIdentity.roles` 字段**已有却不渲染**；
+  - **裸我/我X 分支完全不出人员解析行** —— 问题「我的 本周 11月的问题情况」走 `enrichPersonal` myself 命中台账，只写 `state.persons += ledger.name()`，统一认证号（即 `ledger.userId()`）与岗位角色（`ledger.roles()`）都不出现，LLM 拿不到人身份信息；
+- 直接执行侧无此问题：`perNo`/`perRole` 是独立键（内置键，结构化规则提取），脚本参数照常落——本方案只补 LLM 路径渲染面（同 §12 拍板④口径：直接执行侧一行不动）。
+
+### 13.2 目标（拍板样式：三行属性式并入维度值列表）
+
+「我的 本周 11月的问题情况」渲染为（2026/11/19 用户拍板样式）：
+
+```
+<dimension_context>
+当前对话维度上下文。...
+- 版本计划：2026年11月份版本
+- 部门：杭州产品部
+- 姓名：张三
+- 统一认证号：xxx
+- 岗位角色：xxx
+
+时间范围（执行期确定性解析，直接使用无需自行换算日期；脚本仅支持单范围，落参只取第一个范围）：
+- 本周 → 2026-11-16 ~ 2026-11-18
+</dimension_context>
+```
+
+要点：persons 不再渲染单行 `- 人：张三`，改为**姓名/统一认证号/岗位角色三行属性式**并入维度值 bullet 列表（与其他维度标签同构）。统一认证号/岗位角色照旧**只进提示词渲染、不进 DimensionState、不进指纹**（§7 键位语义不变）；不另起一套解析通道——身份解析仍复用 `enrichPersonal` 现有台账查询（myself 命中 → `PersonLedgerRow`）+ 人名扫描（唯一命中 → `PersonIdentity`）。
+
+### 13.3 设计要点
+
+1. **渲染改造点**：`formatDimensionContext` persons 段——有身份解析结果（认证号可用）时渲染三行 `- 姓名：x` / `- 统一认证号：x` / `- 岗位角色：x`（角色空 → 省略岗位角色行，姓名/认证号行必有）；**无身份解析结果**（personalResolver 未配置 / 台账查不到 / 兜底降级）时退回现状单行 `- 人：x`，保证降级路径不丢人维度。
+2. **数据传递**：`enrichPersonal` 现返回 `List<String> perNoLines`（纯字符串），改携带结构化身份（唯一命中/myself 解析出的 name+perNo+roles）供渲染层拼三行；重名提示行保留字符串形态。
+3. **"人员解析"段收窄**：三行属性式落地后，该段仅承载**重名提示行**（"存在重名（n人），请先确认"）——无重名时整段不出现（13.2 样例即无此段）；"参数 perNo 直接使用对应统一认证号"契约句整句删除（拍板④ B）。
+4. **perRole 口径边界**：直接执行侧 perRole 有"配置正则（担任xxx⇒extract）+ 角色字典扫描"双路径（内置键 perRole 规则）。LLM 路径本期**只渲染台账 roles**，不做问题文本角色再提取——避免在 middleware 里另起一套正则解析（与 §12 拍板④"两路径暂时各提各的"同精神）。
+5. **重名行为不变**：人名扫描多命中仍只出重名提示行，无认证号无角色（不渲染三行）。
+6. **多值角色**：兼岗多行 roles 多值时 `、` 连接单行渲染（`- 岗位角色：项目经理、架构师`）。
+7. **预算**：新增两行计入 `harness.a2a.dimension.max-chars`（2000）现有截断，无单独预算。
+
+### 13.4 改动点清单（2026/11/19 已实施）
+
+1. ✅ `DimensionStateMiddleware.enrichPersonal`：返回类型从 `List<String> perNoLines` 改为结构化 `PersonalEnrich(identities, ambiguityHints)`——裸我产出 `PersonIdentity(name, userId, depts, groups, roles)`（userId 即认证号，拍板④口径）、人名扫描唯一命中产出 `PersonIdentity`（含 roles），按 name 去重；重名仍为字符串提示行；
+2. ✅ `formatDimensionContext`：persons 渲染改三行属性式（`appendPersonSection`：`- 姓名：x` / `- 统一认证号：x` / `- 岗位角色：x`，角色空省略），无身份退回 `- 人：x` 单行；重名提示段仅在有重名提示行时输出；契约句整句删除（拍板④ B）；
+3. ✅ 单测：`myselfWritesLedgerDeptAndName` 7 参 `PersonLedgerRow` 带 roles + 三行断言（多角色 `、` 连接）；`personScanUniqueIdentityInjectsPerNoLine` 改三行断言；`personScanAmbiguousInjectsHintNotPerNo` 加无属性行/无契约句断言；新增 `personsWithoutIdentityFallBackToSingleLine` 降级退回断言；`myDeptWritesLedgerDepartmentsIntoState` 加我部命中不出属性行断言（拍板① A）。
+
+### 13.5 E2E 验证点（实施后）
+
+1. 「我的 本周 11月的问题情况」→ 维度值列表出 `- 姓名：张三` + `- 统一认证号：xxx` + `- 岗位角色：xxx`（13.2 样例），无 `- 人：` 行、无"人员解析"段；
+2. 台账角色为空 → 只有姓名+统一认证号两行，无"岗位角色"行；
+3. 人名扫描唯一命中（「徐三金的缺陷数」）→ 同样三行属性式；
+4. 重名（「张三的缺陷数」）→ 仍出"存在重名"提示行，无认证号无角色（不回归）；
+5. resolver 缺失/降级 → 退回 `- 人：x` 单行，人维度不丢；
+6. 直接执行侧 perNo/perRole 落参回归不动（拍板④）。
+
+### 13.6 拍板清单
+
+| # | 待拍板点 | 选项 | 结论 |
+|---|---|---|---|
+| 1 | **出行范围**：三行属性行只在身份解析出结果时出（myself 命中 / 人名扫描唯一命中），还是 `myDept/myGroup/myApp/myProductLine` 任一命中也出？ | A. 仅身份解析出结果时出（persons 写入者对齐；我部/我组等场景 persons 未写、不出人属性行）；B. anyHit 即出（提问人身份任何我X场景都带出） | ✅ 已拍板（2026/11/19）：**A 仅身份解析出结果时出**——我部/我组/我的应用/我的产品线命中不出人属性行 |
+| 2 | **岗位角色来源**：LLM 路径角色从哪来？ | A. 仅台账 roles（零额外解析，数据现成）；B. 叠加问题文本正则提取（与直接执行 perRole 的"担任xxx⇒extract+角色字典"同口径，但 middleware 要再跑一遍提取） | ✅ 已拍板（2026/11/19）：**A 仅台账 roles**，middleware 不做问题文本角色再提取 |
+| 3 | **行格式与落点**： | A. 现有"人员解析"段单行扩展 `「name」→ 统一认证号 xxx（depts）；岗位角色：r`；B. 三行属性式（姓名/统一认证号/岗位角色 各一行）并入维度值 bullet 列表，替换 `- 人：` 行 | ✅ 已拍板（2026/11/19）：**B 三行属性式并入维度值列表**（用户给样例定稿，见 13.2） |
+| 4 | **重名提示契约句**：三行属性式落地后，"涉及上述人员的查询，参数 perNo 直接使用对应统一认证号"契约句还留不留？ | A. 保留（属性行场景随段附带，重申落参用法）；B. 整句删除（认证号已在属性行明示，重名场景无 perNo 可言） | ✅ 已拍板（2026/11/19）：**B 整句删除**。口径依据：裸我场景登录 userId 即统一认证号（必有、无重名）；人名解析唯一命中必有认证号；重名仅人名扫描会出现且必然反问确认（本轮不执行查询，契约句悬空无所指）。属性行的认证号被块头总契约覆盖。实测小模型漏用 perNo 再回补 |
+
+### 13.7 场景口径补充（拍板④ 依据）
+
+- **裸我**（「我的 …」）：`ChatRequest.userId` 即统一认证号，台账按其查询——认证号必有、无重名可能；
+- **人名扫描唯一命中**（「李四 本周 …」）：认证号由台账 Q2 解析，必有；重名（多行）时不出属性行，注入"存在重名（n人），请先确认"提示行走反问轮；
+- **重名轮不执行查询**：LLM 路径由提示行驱动 LLM 反问确认，直接执行侧 fail-safe 不出参数——契约句在重名轮无落参对象。
+
+## 14. 相关方案文档
 
 - `docs/202611/tool_metric_catalog目录机制解析.md`（tool 目录标签真源与词袋收窄，§11.2 方案的前置）
 - `docs/history/dimension-alias-config-plan.md`（§13.4 两遍分段抽取）
