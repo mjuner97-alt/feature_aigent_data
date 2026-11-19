@@ -5,6 +5,7 @@ import { onBeforeRouteLeave } from 'vue-router';
 import SkillFlowEditorDrawer from '../../components/SkillFlowEditorDrawer.vue';
 import SkillFlowTypeDialog from '../../components/SkillFlowTypeDialog.vue';
 import { listAllLongTaskTypes, type LongTaskType } from '../../api/longTaskConfig';
+import { getSkillFlow } from '../../api/skillFlow';
 import { creatableFlowTypes } from '../../utils/flowCreation';
 
 const route = useRoute();
@@ -26,8 +27,8 @@ const copyFromId = computed(() => {
 });
 let typeRequest = 0;
 watch(
-  () => [editId.value, route.query.typeId] as const,
-  async ([id, typeId]) => {
+  () => [editId.value, route.query.typeId, copyFromId.value] as const,
+  async ([id, typeId, sourceId]) => {
     const request = ++typeRequest;
     createType.value = null;
     typeDialogOpen.value = false;
@@ -38,7 +39,12 @@ watch(
     }
     resolvingType.value = true;
     try {
-      if (typeof typeId === 'string') {
+      if (sourceId != null) {
+        const [source, types] = await Promise.all([getSkillFlow(sourceId), listAllLongTaskTypes()]);
+        if (request !== typeRequest) return;
+        createType.value = types.find((type) => type.id === source.typeId) || null;
+        if (!createType.value) throw new Error('原任务类型不存在，无法复制');
+      } else if (typeof typeId === 'string') {
         const types = creatableFlowTypes(await listAllLongTaskTypes());
         if (request !== typeRequest) return;
         createType.value = types.find((type) => String(type.id) === typeId) || null;
@@ -48,7 +54,7 @@ watch(
     } finally {
       if (request === typeRequest) {
         resolvingType.value = false;
-        typeDialogOpen.value = !createType.value;
+        typeDialogOpen.value = sourceId == null && !createType.value;
       }
     }
   },

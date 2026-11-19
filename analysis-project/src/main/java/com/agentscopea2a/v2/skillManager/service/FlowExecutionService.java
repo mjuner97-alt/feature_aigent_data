@@ -728,7 +728,9 @@ public class FlowExecutionService {
             execution.setPublicParamsJson(json(teamReports.snapshotParams(c, t)));
             execution.setNotifyReceiversSnapshot(NotificationReceivers.toCsv(t.to()));
             execution.setCcReceiversSnapshot(NotificationReceivers.toCsv(t.cc()));
-            execution.setNotifyEnabledSnapshot(t.notifyEnabled());
+            execution.setNotifyEnabledSnapshot(
+                !Boolean.FALSE.equals(flow.getNotifyEnabled()) && !Boolean.FALSE.equals(t.notifyEnabled())
+            );
             execution.setNotifyBodyTemplateSnapshot(t.notifyBodyTemplate());
             // 团队报告沿用任务联系人快照；历史部门对象保留原有联系人规则。
             if (!"TEAM".equals(c.reportType())) {
