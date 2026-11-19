@@ -228,6 +228,8 @@ public class V2SkillConfig {
             String followupSignalKeys,
             @Value("${harness.a2a.skill-direct-exec.distribution-drill.enabled:true}")
             boolean distributionDrillEnabled,
+            @Value("${harness.a2a.skill-direct-exec.product-line-group-expand.enabled:false}")
+            boolean productLineGroupExpandEnabled,
             @Value("${harness.a2a.skill-direct-exec.multi.enabled:false}")
             boolean multiExecEnabled,
             com.agentscopea2a.v2.dimension.DimensionFamilyConfigRepository dimensionFamilyConfigRepository,
@@ -240,8 +242,9 @@ public class V2SkillConfig {
             followupSignalKeys = signalKeysFromDb;
         }
         log.info("DirectSkillExecutor: directExecEnabled={}, followupDirectEnabled={}, followupSignalKeys={}"
-                        + ", distributionDrillEnabled={}, multiExecEnabled={}",
-                enabled, followupDirectEnabled, followupSignalKeys, distributionDrillEnabled, multiExecEnabled);
+                        + ", distributionDrillEnabled={}, multiExecEnabled={}, productLineGroupExpandEnabled={}",
+                enabled, followupDirectEnabled, followupSignalKeys, distributionDrillEnabled,
+                multiExecEnabled, productLineGroupExpandEnabled);
         return new com.agentscopea2a.v2.skills.DirectSkillExecutor(
                 routingMetadataRepository,
                 new SkillCandidateSelector(maxVisibleSkills, fallbackVisibleSkills,
@@ -260,6 +263,7 @@ public class V2SkillConfig {
                 followupDirectEnabled)
                 .setFollowupSignalKeys(followupSignalKeys)
                 .setDistributionDrillEnabled(distributionDrillEnabled)
+                .setProductLineGroupExpandEnabled(productLineGroupExpandEnabled)
                 .setMultiExecEnabled(multiExecEnabled)
                 .setFamilyConfigRepository(dimensionFamilyConfigRepository);
     }

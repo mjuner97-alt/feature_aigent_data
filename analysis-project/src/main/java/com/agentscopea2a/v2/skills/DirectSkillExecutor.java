@@ -804,6 +804,8 @@ public class DirectSkillExecutor {
             // 下钻粒度冲突消解 + 分布默认下钻 (2026/11/09 方案): per-skill mapping/schema 独立
             params = stripGranularityConflicts(params, mapping, extraction);
             params = applyDistributionDrillDown(params, mapping, schema, extraction, question);
+            // 产品线×统计组下钻展开 (2026/11/19 方案 §4.3): 必须在分布下钻之后
+            params = expandProductLineToGroups(params, mapping, schema, required, extraction);
             // 缺必填判定 per-skill (§4.4 拍板方案B): 齐参执行, 缺参不执行、混排末尾反问;
             // 语义未知 (不在 mapping 内) 或无会话键 → 该候选出局 (单 plan 语义是回退 LLM, 多执行轮让位其余候选)
             List<String> missingDims = new ArrayList<>();
@@ -1007,6 +1009,8 @@ public class DirectSkillExecutor {
         params = stripGranularityConflicts(params, mapping, extraction);
         // 「分布」触发默认下钻一级 (2026-11-09 方案): 必须在 strip 之后 (方案 §3.4)
         params = applyDistributionDrillDown(params, mapping, schema, extraction, question);
+        // 产品线×统计组下钻展开 (2026/11/19 方案 §4.3): 必须在分布下钻之后
+        params = expandProductLineToGroups(params, mapping, schema, required, extraction);
         // 必填缺失分两类 (2026/10/15 缺参反问方案): 在 param_mapping 内 (有维度语义) →
         // 反问补参; 不在 mapping 内 (语义未知) 或调用方未传会话键 → 维持回退 LLM
         List<String> missingKeys = new ArrayList<>();
@@ -1239,6 +1243,9 @@ public class DirectSkillExecutor {
         merged = stripGranularityConflicts(merged, mapping, extraction);
         // 「分布」触发默认下钻一级 (2026-11-09 方案): 必须在 strip 之后 (方案 §3.4)
         merged = applyDistributionDrillDown(merged, mapping, schema, extraction, question);
+        // 产品线×统计组下钻展开 (2026/11/19 方案 §4.3): 必须在分布下钻之后; 次级触发 (方案 A)
+        // 在此兜住追问轮 productLine 重提时继承的脏 group 清单
+        merged = expandProductLineToGroups(merged, mapping, schema, required, extraction);
 
         // 人名重名反问 (与原链路同构, 单 pending 口径: 时间歧义优先)
         if (personScan.ambiguousName() != null) {
@@ -1666,6 +1673,138 @@ public class DirectSkillExecutor {
         return out;
     }
 
+    // ==================== 产品线×统计组下钻展开 (docs/202611/产品线统计组下钻展开方案.md) ====================
+
+    /** 组级形态词 (词表收敛 seed 标准值, 2026/11/19 方案 §4.2): dimension 键的「统计组」与
+     *  drillDown 键的「组维度」, 词表收敛保证命中值必为标准形态, 字面匹配即可。 */
+    static final String GROUP_DIMENSION_WORD = "统计组";
+    static final String GROUP_DRILLDOWN_WORD = "组维度";
+
+    /** 灰度开关 (2026/11/19 方案 §4.4), 默认关; 纯后端配置便于内网灰度回退。 */
+    private volatile boolean productLineGroupExpandEnabled = false;
+
+    public DirectSkillExecutor setProductLineGroupExpandEnabled(boolean productLineGroupExpandEnabled) {
+        this.productLineGroupExpandEnabled = productLineGroupExpandEnabled;
+        return this;
+    }
+
+    /** 产品线×统计组下钻展开 (2026/11/19 方案 §4.2): 产品线有具体值且粒度参数值为组级形态词
+     *  (dimension=统计组 / drillDown=组维度) 时, 查台账 Q9 把部门×产品线下全部统计组展开进
+     *  group 参数, 并移除粒度参数与 productLine 参数 (§1.2: productLine/dimension 应为空)。
+     *  次级触发 (方案 A, 追问轮): 本轮重提产品线、未提组名/粒度词, 且 group 值来自快照继承 →
+     *  同样展开并覆盖, 防「普惠金融各组→那房贷的呢」脏继承。
+     *  调用位置必须在 applyDistributionDrillDown 之后 (方案 §4.3, 否则组级+人级双重下钻);
+     *  deptName 必输且缺席时不展开 (等补参轮带部门重算, consumePending 补参完成处再调本方法);
+     *  任何前置不满足/台账失败/查无 → 原参数返回 (宁漏勿错, fail-open)。 */
+    private Map<String, Object> expandProductLineToGroups(Map<String, Object> params,
+            Map<String, String> mapping, List<ParamSpec> schema, List<String> required,
+            DimensionExtraction extraction) {
+        if (!productLineGroupExpandEnabled || params == null || params.isEmpty() || mapping.isEmpty()) {
+            return params;
+        }
+        String groupParam = null;
+        for (Map.Entry<String, String> e : mapping.entrySet()) {
+            if ("groupName".equals(e.getValue())) {
+                groupParam = e.getKey();
+                break;
+            }
+        }
+        if (groupParam == null) {
+            return params;
+        }
+        final String groupParamFinal = groupParam;
+        if (schema != null && schema.stream()
+                .noneMatch(s -> groupParamFinal.equals(s.name()))) {
+            return params;
+        }
+        List<String> productLines = dimensionValues("productLine", params, mapping, extraction);
+        if (productLines.isEmpty()) {
+            return params;
+        }
+        if (deptRequiredAndMissing(mapping, required, params)) {
+            log.info("DirectSkillExecutor: 产品线下钻展开跳过 (部门必输且缺席, 等补参轮重算)");
+            return params;
+        }
+        boolean groupValuePresent = hasNonEmptyValue(params.get(groupParam));
+        boolean groupWord = false;
+        for (Map.Entry<String, String> e : mapping.entrySet()) {
+            if (DRILL_DOWN_KEY.equals(e.getValue()) || STAT_DIMENSION_KEY.equals(e.getValue())) {
+                List<String> vals = valueList(params.get(e.getKey()));
+                if (vals.contains(GROUP_DIMENSION_WORD) || vals.contains(GROUP_DRILLDOWN_WORD)) {
+                    groupWord = true;
+                    break;
+                }
+            }
+        }
+        boolean granularityTypedThisRound =
+                !extraction.extraDimensions().getOrDefault(DRILL_DOWN_KEY, List.of()).isEmpty()
+                || !extraction.extraDimensions().getOrDefault(STAT_DIMENSION_KEY, List.of()).isEmpty();
+        boolean primary = groupWord && !groupValuePresent;
+        boolean secondary = !groupWord && !granularityTypedThisRound && groupValuePresent
+                && !extraction.productLine().isEmpty() && extraction.groupName().isEmpty();
+        if (!primary && !secondary) {
+            return params;
+        }
+        var resolver = personalResolverProvider == null ? null
+                : personalResolverProvider.getIfAvailable();
+        var ledger = resolver == null ? null : resolver.ledgerRepository();
+        if (ledger == null) {
+            return params;
+        }
+        List<String> depts = dimensionValues("deptName", params, mapping, extraction);
+        List<String> groups = ledger.groupsByDeptAndProductLine(depts, productLines);
+        if (groups.isEmpty()) {
+            log.info("DirectSkillExecutor: 产品线下钻展开跳过 (台账查无/失败, depts={}, productLines={})",
+                    depts, productLines);
+            return params;
+        }
+        Map<String, Object> out = new LinkedHashMap<>(params);
+        for (Map.Entry<String, String> e : mapping.entrySet()) {
+            if (DRILL_DOWN_KEY.equals(e.getValue()) || STAT_DIMENSION_KEY.equals(e.getValue())
+                    || "productLine".equals(e.getValue())) {
+                out.remove(e.getKey());
+            }
+        }
+        out.put(groupParam, shapeValue(groupParam, schema, groups));
+        log.info("DirectSkillExecutor: 产品线下钻展开 group={} 个 (depts={}, productLines={}, 主触发={})",
+                groups.size(), depts, productLines, primary);
+        return out;
+    }
+
+    /** 维度在合并视图 (extraction 本轮值 + params 映射参数) 上的全部值, 保序去重。 */
+    private static List<String> dimensionValues(String dim, Map<String, Object> params,
+                                                Map<String, String> mapping,
+                                                DimensionExtraction extraction) {
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        if ("deptName".equals(dim)) {
+            out.addAll(extraction.deptName());
+        } else {
+            out.addAll(fineGrainedValues(extraction, dim));
+        }
+        for (Map.Entry<String, String> e : mapping.entrySet()) {
+            if (dim.equals(e.getValue())) {
+                out.addAll(valueList(params.get(e.getKey())));
+            }
+        }
+        return List.copyOf(out);
+    }
+
+    /** deptName 参数必输 (required 含 mapping 参数名) 且当前无值 → true; required 为 null
+     *  (补参轮完成路径, 必填已齐) 不约束。 */
+    private static boolean deptRequiredAndMissing(Map<String, String> mapping,
+                                                  List<String> required,
+                                                  Map<String, Object> params) {
+        if (required == null) {
+            return false;
+        }
+        for (Map.Entry<String, String> e : mapping.entrySet()) {
+            if ("deptName".equals(e.getValue()) && required.contains(e.getKey())) {
+                return !hasNonEmptyValue(params.get(e.getKey()));
+            }
+        }
+        return false;
+    }
+
     /** 维度在合并视图上是否有值: extraction 本轮值 或 params 内映射到该维度的参数非空。 */
     private static boolean dimHasValue(String dim, Map<String, Object> params,
                                        Map<String, String> mapping, DimensionExtraction extraction) {
@@ -1945,6 +2084,9 @@ public class DirectSkillExecutor {
         List<String> remaining = p.missingKeys().subList(1, p.missingKeys().size());
         if (remaining.isEmpty()) {
             pending.remove(key, p);
+            // 产品线×统计组下钻展开 (2026/11/19 方案 §4.3): 部门等必填补齐后重算
+            // (required 传 null 不再约束); 主/次触发都不满足则原参数返回
+            params = expandProductLineToGroups(params, p.mapping(), p.schema(), null, extraction);
             log.info("DirectSkillExecutor: plan hit (补参完成) skill={} scriptId={} params={}",
                     p.skillName(), p.scriptId(), params);
             recordLastExec(question, userId, conversationId, p.skillName(), p.scriptId(), params);

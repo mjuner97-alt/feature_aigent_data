@@ -324,4 +324,58 @@ class PersonLedgerRepositoryTest {
         assertTrue(repo.deptsByDimension("统计组", "个贷汽车场景建设组").isEmpty());
         verify(jdbc, times(1)).query(anyString(), any(RowCallbackHandler.class), any(Object[].class));
     }
+
+    @Test
+    void groupsByDeptAndProductLineParsesRowsAndTtlCaches() {
+        // Q9 (2026/11/19 产品线下钻展开方案 §4.1): 多部门 IN, 去重保序 + TTL
+        // (NULL/离场过滤在 SQL 层, 单测桩无法覆盖, 由 E2E 验证)
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        stubQuery(jdbc, "\"部门\" IN (?, ?) AND \"产品线\" IN (?)", new String[][]{
+                {null, "技术组", null, null, null, null, null},
+                {null, "产品组", null, null, null, null, null},
+                {null, "技术组", null, null, null, null, null}});
+        PersonLedgerRepository repo = new PersonLedgerRepository(jdbc, 1800);
+
+        assertEquals(List.of("技术组", "产品组"), repo.groupsByDeptAndProductLine(
+                List.of("杭州开发五部", "杭州开发四部"), List.of("普惠金融")));
+        repo.groupsByDeptAndProductLine(List.of("杭州开发五部", "杭州开发四部"), List.of("普惠金融"));
+        verify(jdbc, times(1)).query(anyString(), any(RowCallbackHandler.class), any(Object[].class));
+    }
+
+    @Test
+    void groupsByDeptAndProductLineNoDeptUsesNoDeptSql() {
+        // 部门缺席 → 无部门变体, 仅按产品线 IN 过滤 (方案 §4.1 变体 2)
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        stubQuery(jdbc, "WHERE \"产品线\" IN (?) AND", new String[][]{
+                {null, "房贷一组", null, null, null, null, null}});
+        PersonLedgerRepository repo = new PersonLedgerRepository(jdbc, 1800);
+
+        assertEquals(List.of("房贷一组"),
+                repo.groupsByDeptAndProductLine(List.of(), List.of("房贷")));
+    }
+
+    @Test
+    void groupsByDeptAndProductLineFailureNegativeCaches() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        doThrow(new RuntimeException("db down")).when(jdbc).query(anyString(),
+                any(RowCallbackHandler.class), any(Object[].class));
+        PersonLedgerRepository repo = new PersonLedgerRepository(jdbc, 1800);
+
+        assertTrue(repo.groupsByDeptAndProductLine(
+                List.of("杭州开发五部"), List.of("普惠金融")).isEmpty());
+        assertTrue(repo.groupsByDeptAndProductLine(
+                List.of("杭州开发五部"), List.of("普惠金融")).isEmpty());
+        verify(jdbc, times(1)).query(anyString(), any(RowCallbackHandler.class), any(Object[].class));
+    }
+
+    @Test
+    void groupsByDeptAndProductLineBlankInputsShortCircuit() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        PersonLedgerRepository repo = new PersonLedgerRepository(jdbc, 1800);
+
+        assertTrue(repo.groupsByDeptAndProductLine(List.of("d"), List.of()).isEmpty());
+        assertTrue(repo.groupsByDeptAndProductLine(List.of("d"), List.of("  ")).isEmpty());
+        assertTrue(repo.groupsByDeptAndProductLine(List.of("d"), null).isEmpty());
+        verifyNoInteractions(jdbc);
+    }
 }
