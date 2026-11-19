@@ -33,7 +33,6 @@ import { listAllLongTaskTypes, type LongTaskType } from '../api/longTaskConfig';
 import {
   configuredFlowTypes,
   initialReportConfig,
-  reportModeForType,
   initializeReportTarget,
   reportTargetContactError,
 } from '../utils/flowCreation';
@@ -962,14 +961,6 @@ async function load() {
             savedTypeName.value = configuredFlowTypes(types).find((type) => type.id === flow.typeId)?.name || '';
           })
           .catch(() => {});
-      if (isCopy.value) {
-        const mode = reportModeForType(props.createType);
-        if (form.value.typeId !== props.createType?.id || (form.value.teamReport?.reportType ?? null) !== mode) {
-          form.value.teamReport = initialReportConfig(props.createType);
-          form.value.triggers = [];
-        }
-        form.value.typeId = props.createType?.id;
-      }
       if (!isCopy.value) flowOwnerId.value = flow.createdBy || flowOwnerId.value;
       syncOutlineRows();
       loading.value = false;
@@ -1205,6 +1196,14 @@ defineExpose({ isDirty });
                     ></div
                   >
                   <button type="button" class="btn primary" @click="teamReportDialogOpen = true">配置团队报告</button>
+                </div>
+                <div class="auto-trigger-panel team-mail-panel" :class="{ active: form.notifyEnabled }">
+                  <label class="toggle-row auto-trigger-toggle">
+                    <input v-model="form.notifyEnabled" type="checkbox" role="switch" :aria-checked="form.notifyEnabled" />
+                    <span>报告完成后自动发送邮件</span>
+                    <em>{{ form.notifyEnabled ? '已开启' : '已关闭' }}</em>
+                  </label>
+                  <p class="team-mail-hint">任务级总开关：关闭后，所有团队报告均不自动发送邮件；开启后，按各报告的邮件设置发送。</p>
                 </div>
               </section>
 
@@ -2224,5 +2223,11 @@ input, select, textarea { box-sizing: border-box; width: 100%; border: 1px solid
 .debug-output-title { color: #475569; font-size: 12px; font-weight: 600; }
 .debug-pre { margin: 0; padding: 10px; border: 1px solid #e2e8f0; border-radius: 8px; background: #0f172a; color: #e2e8f0; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; }
 .debug-footer { display: flex; justify-content: flex-end; gap: 8px; }
+.team-mail-panel .auto-trigger-toggle { flex-wrap: wrap; }
+.team-mail-panel .auto-trigger-toggle input { flex: 0 0 38px; }
+.team-mail-panel .auto-trigger-toggle input:focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
+.team-mail-hint { margin: 6px 0 0; color: #64748b; font-size: 12px; line-height: 1.7; }
+#flow-team-report .section-heading { flex-wrap: wrap; }
+#flow-team-report .section-heading > .btn { flex-shrink: 0; white-space: nowrap; }
 @media (max-width: 760px) { .drawer { width: 100vw; }.basic-row { grid-template-columns: 1fr; flex-direction: column; align-items: stretch; }.trigger-row { grid-template-columns: 1fr auto 30px; }.drawer-body { padding: 14px; } }
 </style>

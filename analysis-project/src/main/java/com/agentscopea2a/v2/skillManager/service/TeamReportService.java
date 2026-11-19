@@ -10,7 +10,7 @@ import java.util.function.Supplier;
 import org.springframework.stereotype.Service;
 
 /**
- * 部门及团队报告配置服务，负责来源默认值、独立参数池、执行权限和批次顺序校验。
+ * 部门及团队报告配置服务，负责来源默认值、独立参数池、执行权限和批次执行校验。
  * 配置保存与批次提交共用任务行锁，执行时使用冻结的对象快照。
  */
 @Service
@@ -710,14 +710,13 @@ public class TeamReportService {
         );
     }
 
-    /** 同一报告任务按执行顺序串行推进，避免对象之间并发抢占。 */
+    /** 各报告对象可独立认领，共享调度器的并发额度。 */
     public boolean mayRun(SkillFlowExecution e) {
         if (e.getBatchId() == null) return true;
-        mapper.lock(e.getFlowId());
-        return mapper.predecessors(e.getFlowId(), e.getId()) == 0;
+        return e.getStatus() == FlowExecutionStatus.QUEUED || e.getStatus() == FlowExecutionStatus.RUNNING;
     }
 
-    /** 重试前检查同任务其他对象，保持手动批次的串行约束。 */
+    /** 重试终态对象前检查同任务活动批次，避免重复执行。 */
     public void checkRetry(SkillFlowExecution e) {
         if (e == null || e.getBatchId() == null) return;
         mapper.lock(e.getFlowId());
@@ -727,8 +726,5 @@ public class TeamReportService {
                 "TeamReportQueueBusy: 同任务还有排队或执行中的对象，请等待结束再重跑"
             );
         }
-        if (mapper.predecessors(e.getFlowId(), e.getId()) > 0) throw new IllegalStateException(
-            "TeamReportQueueBusy: 同任务还有排队或执行中的对象，请等待结束再重跑"
-        );
     }
 }

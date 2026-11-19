@@ -10,6 +10,7 @@ import type { PptPerson, PptImportAssignment, PptRecognitionMode } from '../../a
 import type { PptBatchSummary, PptVersion } from '../../types/pptAnomaly';
 import PptSlideViewer from '../../components/ppt/PptSlideViewer.vue';
 import PptVersionAssignmentsDialog from '../../components/ppt/PptVersionAssignmentsDialog.vue';
+import PptNotificationDrawer from '../../components/ppt/PptNotificationDrawer.vue';
 import { getLoggedInUser } from '../../utils/auth';
 
 const router = useRouter();
@@ -20,6 +21,7 @@ const historyLoading = ref<Record<number, boolean>>({});
 const historyErrors = ref<Record<number, boolean>>({});
 const historyBatch = ref<PptBatchSummary>();
 const assignmentVersion = ref<{ id: number; versionNo: number | null }>();
+const notificationVersion = ref<{ id: number; versionNo: number | null }>();
 const loading = ref(false);
 const busy = ref(false);
 const deletingBatchId = ref<number>();
@@ -549,6 +551,7 @@ onMounted(refresh);
                 <el-button v-if="row.status === 'ANALYZED'" link type="primary"
                   @click="openVersionAssignments(row.id, row.versionNo)">调整经办人</el-button> -->
                 <el-button link type="primary" @click="download(row)">下载原件</el-button>
+                <el-button link type="primary" @click="notificationVersion = { id: row.id, versionNo: row.versionNo }">通知记录</el-button>
               </div>
             </template>
           </el-table-column>
@@ -558,6 +561,9 @@ onMounted(refresh);
     <PptVersionAssignmentsDialog v-if="assignmentVersion" :key="assignmentVersion.id"
       :version-id="assignmentVersion.id" :version-no="assignmentVersion.versionNo"
       @close="assignmentVersion = undefined" />
+    <PptNotificationDrawer v-if="notificationVersion" :key="notificationVersion.id"
+      :version-id="notificationVersion.id" :version-no="notificationVersion.versionNo"
+      @close="notificationVersion = undefined" />
 
     <el-dialog v-if="!reviewing" v-model="dialog" class="ppt-dialog" title="新增材料"
       width="min(640px, 94vw)" align-center append-to-body

@@ -833,7 +833,7 @@
     <!-- ==================== 节点调度、worker 租约与并发抢占 ==================== -->
 
     <!-- 找出当前可调度的节点候选(QUEUED / 到重试时间的 RETRY_WAIT / 租约过期且仍可重试的 RUNNING):
-         检查 next_run_at 退避到期、租约已过期(或无租约)及报告对象执行顺序。
+         检查 next_run_at 退避到期、租约已过期(或无租约)及报告对象执行状态。
          候选只是"有资格跑",必须经 claimNode 原子抢占成功才真正执行;每轮最多取 100 个防刷库 -->
     <select id="selectRunnableNodes" resultMap="NodeExecutionMap">
         SELECT n.*
@@ -845,11 +845,7 @@
                (n.status = 'RUNNING' AND
                 n.lease_expires_at &lt; #{now} AND
                 n.attempt_count &lt; COALESCE(NULLIF(n.max_attempts, 0), 1)))
-          AND (e.batch_id IS NULL OR (e.status IN ('QUEUED','RUNNING') AND NOT EXISTS (
-              SELECT 1 FROM skill_flow_execution predecessor WHERE predecessor.flow_id=e.flow_id
-              AND predecessor.batch_id IS NOT NULL AND predecessor.id &lt;&gt; e.id
-              AND predecessor.status NOT IN ('SUCCESS','PARTIAL_SUCCESS','FAILED','CANCELLED')
-              AND (predecessor.id &lt; e.id OR predecessor.started_at IS NOT NULL))))
+          AND (e.batch_id IS NULL OR e.status IN ('QUEUED','RUNNING'))
           AND (n.next_run_at IS NULL OR n.next_run_at &lt;= #{now})
           AND (n.lease_expires_at IS NULL OR n.lease_expires_at &lt; #{now})
         <if test="!allowAuto">

@@ -21,13 +21,20 @@ public interface PptAnomalyMapper {
                           long linkVersion, int versionNo, String department, int page, String keyword,
                           int assignmentRevision) {}
 
-    /** 查询指定版本尚未记录通知的待反馈及已消除事项。 */
+    /** 查询指定版本尚未记录通知的当前待反馈事项。 */
     List<FeedbackNotice> feedbackNotices(@Param("versionId") long versionId);
+    /** 自动通知使用原始文件名和导入时间。 */
+    record NoticeMaterial(String fileName, java.time.LocalDateTime uploadedAt) {}
+    NoticeMaterial noticeMaterial(@Param("versionId") long versionId);
     /** 幂等登记事项与接收人的通知记录，并校验待反馈状态及当前经办关系。 */
     int recordSimulatedNotice(@Param("notice") FeedbackNotice notice, @Param("subject") String subject,
                               @Param("body") String body, @Param("notifiedAt") java.time.LocalDateTime notifiedAt);
     record RecipientNoticeTime(String recipient, java.time.LocalDateTime notifiedAt) {}
     record SentFeedbackMail(String toUsers, String ccUsers, java.time.LocalDateTime sentAt) {}
+    record FeedbackMailRecord(long id, long versionId, String department, String subject, String body,
+                              String toUsers, String ccUsers, String sentBy, String status,
+                              java.time.LocalDateTime sentAt) {}
+    List<FeedbackMailRecord> feedbackMailRecords(@Param("versionId") long versionId);
     List<RecipientNoticeTime> previousFeedbackNoticeTimes(@Param("versionId") long versionId, @Param("subject") String subject);
     List<SentFeedbackMail> sentFeedbackMails(@Param("versionId") long versionId, @Param("department") String department,
                                              @Param("subject") String subject);
@@ -97,7 +104,7 @@ public interface PptAnomalyMapper {
     record LatestFeedbackLink(long versionId, int versionNo, Long findingId, boolean titlePresent) {}
     /** 解析通知所指事项在最新已识别版本中的对应位置。 */
     LatestFeedbackLink latestFeedbackLink(@Param("version") long version, @Param("finding") Long finding,
-                                         @Param("user") String user);
+                                         @Param("user") String user, @Param("admin") boolean admin);
     /** 统计指定版本各板块的负责人和事项数量。 */
     List<SectionWork> sectionWork(@Param("id") long id);
     /** 读取版本上传用户，用于上传人权限校验。 */

@@ -275,7 +275,7 @@ public class PptKeywordConfigController {
     /** 可选板块、默认联系人及关联标题数量。 */
     public record SectionOption(String name, String owner, String ownerName, long titleCount) {}
     /** 板块名称、联系人及新增标记。 */
-    public record BoardEdit(String name, String owner, boolean create) {}
+    public record BoardEdit(String name, String owner, boolean create, String originalName) {}
 
     /** 汇总板块联系人及关联标题数量，供板块配置页面使用。 */
     @GetMapping("/section-options")
@@ -298,10 +298,14 @@ public class PptKeywordConfigController {
     public void saveBoard(@RequestBody BoardEdit body) {
         String name = required(body.name(), 512);
         if (body.owner() == null || body.owner().isBlank()) throw bad("请选择板块联系人");
-        boolean exists = sections().contains(name);
-        if (body.create() && exists) throw new ResponseStatusException(HttpStatus.CONFLICT, "板块已存在");
-        if (!body.create() && !exists) requireRow(0);
-        var contact = entriesByName("contact").get(name);
+        String original = body.create() || body.originalName() == null ? name : required(body.originalName(), 512);
+        var names = sections();
+        if ((body.create() || !original.equals(name)) && names.contains(name)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "板块已存在");
+        }
+        if (!body.create() && !names.contains(original)) requireRow(0);
+        if (service.ledgerPerson(body.owner().trim()) == null) throw bad("请选择人员台账中的联系人");
+        var contact = entriesByName("contact").get(original);
         if (body.create()) {
             try {
                 persistence.createConfig("board", new Entry(null, name, name, null, null, null));
@@ -309,7 +313,20 @@ public class PptKeywordConfigController {
                 throw new ResponseStatusException(HttpStatus.CONFLICT, "板块已存在");
             }
         } else {
-            persistence.ensureBoard(name);
+            persistence.ensureBoard(original);
+            if (!original.equals(name)) {
+                var board = entriesByName("board").get(original);
+                requireRow(persistence.updateConfig("board", new Entry(board.id(), name, name, null, null, null)));
+                for (var entry : entriesByName("section").values()) {
+                    if (original.equals(entry.target())) {
+                        requireRow(persistence.updateConfig("section", new Entry(entry.id(), entry.name(), name,
+                                entry.upperLimitRatio(), entry.firstRow(), entry.lastRow())));
+                    }
+                }
+                if (contact != null) {
+                    requireRow(persistence.updateConfig("contact", new Entry(contact.id(), name, body.owner().trim(), null, null, null)));
+                }
+            }
         }
         save("contact", contact == null ? null : contact.id(), new Entry(null, name, body.owner(), null, null, null));
     }

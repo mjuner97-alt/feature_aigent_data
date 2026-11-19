@@ -60,6 +60,14 @@ public class PptAnomalyController {
         return Map.of("departments", person == null ? List.of() : person.depts(), "versions", service.versionWork(userId));
     }
 
+    /** 材料管理人员按版本查看实际保存的邮件通知记录。 */
+    @GetMapping("/versions/{versionId}/notifications")
+    public List<PptAnomalyMapper.FeedbackMailRecord> notifications(@PathVariable long versionId,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
+        requireProductDepartment(userId, people);
+        return service.notificationRecords(versionId);
+    }
+
     /** 当前版本的板块负责人分派请求。 */
     public record SectionAssignment(String section, String userId) {}
 
