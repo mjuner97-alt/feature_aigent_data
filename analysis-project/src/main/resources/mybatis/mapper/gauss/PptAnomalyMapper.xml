@@ -551,12 +551,13 @@
         INSERT INTO digital_qa_ppt_finding_handler(finding_id,user_id) VALUES (#{id},#{user})
     </insert>
 
+    <!-- 无原文时用一个空格保留 source_text 的非空约束。 -->
     <select id="createManualFinding" resultType="long" affectData="true" flushCache="true">
         INSERT INTO digital_qa_ppt_finding(version_id,slide_id,sequence_no,title,chapter,source_text,
             auto_departments,status,content_fingerprint,feedback_department)
         SELECT s.version_id,s.id,
             (SELECT COALESCE(MAX(f.sequence_no),0)+1 FROM digital_qa_ppt_finding f WHERE f.version_id=s.version_id),
-            s.title,s.assigned_section,'',#{departments},'PENDING_FEEDBACK',
+            s.title,s.assigned_section,' ',#{departments},'PENDING_FEEDBACK',
             'manual:' || CAST(s.id AS VARCHAR),#{department}
         FROM digital_qa_ppt_slide s WHERE s.version_id=#{version} AND s.page_no=#{page}
         RETURNING id
@@ -851,7 +852,9 @@
     <!-- 按识别出的部门创建事项并记录内容指纹及反馈状态。 -->
     <insert id="createDepartmentFinding">
         INSERT INTO digital_qa_ppt_finding(version_id,slide_id,sequence_no,title,chapter,source_text,anomaly_keyword,auto_departments,status,content_fingerprint,feedback_department)
-        VALUES (#{version},#{slide},#{sequence},#{title},#{section},#{text},#{keyword},#{departments},#{status},#{fingerprint},#{department})
+        VALUES (#{version},#{slide},#{sequence},#{title},#{section},
+            CASE WHEN LENGTH(#{text,jdbcType=VARCHAR}) > 0 THEN #{text,jdbcType=VARCHAR} ELSE ' ' END,
+            #{keyword},#{departments},#{status},#{fingerprint},#{department})
     </insert>
     <!-- 为版本中的指定事项保存经办人快照。 -->
     <insert id="addFindingHandler">

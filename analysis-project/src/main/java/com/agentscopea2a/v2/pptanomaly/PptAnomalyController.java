@@ -151,7 +151,7 @@ public class PptAnomalyController {
         return service.sectionWork(versionId);
     }
 
-    /** 校验上传人身份并更新当前版本的板块负责人。 */
+    /** 由产品部更新当前版本的板块负责人。 */
     @PutMapping("/versions/{versionId}/sections")
     public List<PptAnomalyMapper.SectionWork> assign(@PathVariable long versionId, @RequestBody SectionAssignment body,
                                                      @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
@@ -582,7 +582,7 @@ public class PptAnomalyController {
     public Map<String, Object> analyze(@PathVariable long versionId,
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
         requireProductDepartment(userId, people);
-        service.requireUploader(versionId, userId);
+        service.requireVersionManager(versionId, userId);
         try {
             return Map.of("status", "ANALYZED", "findingCount", ruleEngine.analyze(versionId));
         } catch (ResponseStatusException e) {

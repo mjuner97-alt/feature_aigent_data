@@ -302,15 +302,16 @@ public class PptAnomalyService {
     public record FeedbackSupervisor(String userId, String name, List<String> departments,
                                      List<String> supervisorDepartments) {}
 
-    /** 复用长任务等模块的系统管理员身份，授予例会材料全部配置维护权限。 */
+    /** 系统管理员和产品部人员可维护全部例会材料配置。 */
     boolean canManageAllConfigurations(String userId) {
-        return adminRoleService.isAdminUserId(userId);
+        return adminRoleService.isAdminUserId(userId)
+                || (userId != null && !userId.isBlank() && PptAnomalyController.isProductDepartmentUser(userId.strip(), people));
     }
 
     /** 系统管理员和产品部人员可维护板块与标题。 */
     boolean canManageBoardsAndTitles(String userId) {
         PptAnomalyController.requireUser(userId);
-        return canManageAllConfigurations(userId) || PptAnomalyController.isProductDepartmentUser(userId.strip(), people);
+        return canManageAllConfigurations(userId);
     }
 
     /** 校验已登录用户能否写入全局板块和标题配置。 */
@@ -653,18 +654,18 @@ public class PptAnomalyService {
         if (!"ANALYZED".equals(persistence.lockVersion(versionId))) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "已识别的版本不存在");
         }
-        requireUploader(versionId, editor);
+        requireVersionManager(versionId, editor);
         if (persistence.assignSection(versionId, section, person.userId()) == 0) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "版本板块不存在");
         }
     }
 
-    /** 确认当前用户为指定版本的上传人。 */
-    void requireUploader(long versionId, String userId) {
+    /** 校验版本存在，并允许上传人及产品部管理版本。 */
+    void requireVersionManager(long versionId, String userId) {
         String uploader = persistence.versionUploader(versionId);
         if (uploader == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "版本不存在");
-        if (!Objects.equals(userId, uploader)) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "请由本版本上传人操作");
+        if (!Objects.equals(userId, uploader) && !PptAnomalyController.isProductDepartmentUser(userId, people)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "仅本版本上传人或产品部用户可操作");
         }
     }
 
@@ -861,7 +862,7 @@ public class PptAnomalyService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择一个 PPT 来源并提供有效的标题和页码");
         }
         if (file != null) pptFileName(file);
-        else requireUploader(versionId, userId);
+        else requireVersionManager(versionId, userId);
         try (InputStream input = file != null ? file.getInputStream() : originalFile(versionId).resource().getInputStream();
              XMLSlideShow show = new XMLSlideShow(input)) {
             if (pageNo > show.getSlides().size()) {
@@ -1258,11 +1259,11 @@ public class PptAnomalyService {
         return configuredTitles.contains(value) ? value : unnumberedTitle(value);
     }
 
-    /** 锁定未完成识别的版本并校验上传人身份。 */
+    /** 锁定未完成识别的版本并校验版本管理权限。 */
     private void lockImport(long versionId, String userId) {
         String status = persistence.lockVersion(versionId);
         if (status == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "版本不存在");
-        requireUploader(versionId, userId);
+        requireVersionManager(versionId, userId);
         if ("ANALYZED".equals(status)) throw new ResponseStatusException(HttpStatus.CONFLICT, "版本已识别");
     }
 
@@ -1391,7 +1392,11 @@ public class PptAnomalyService {
 
     /** 给已保存版本关联配套 PDF；只更改预览来源，不重新识别或通知。 */
     public int savePreviewPdf(long versionId, MultipartFile pdf, String userId) {
-        requireUploader(versionId, userId);
+        String uploader = persistence.versionUploader(versionId);
+        if (uploader == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "版本不存在");
+        if (!Objects.equals(userId, uploader)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "请由本版本上传人操作");
+        }
         if (!previewRenderer.tryAcquire())
             throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "正在生成预览，请稍后重试");
         try {
@@ -1535,7 +1540,7 @@ public class PptAnomalyService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择一个 PPT 来源和有效页码");
         }
         if (file != null) pptFileName(file);
-        else requireUploader(versionId, userId);
+        else requireVersionManager(versionId, userId);
         if (!previewRenderer.tryAcquire()) {
             throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "正在生成预览，请稍后重试");
         }

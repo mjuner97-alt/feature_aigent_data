@@ -359,7 +359,7 @@ const visibleReviewRows = computed(() => {
         || row.titleMatch?.originalTitle.toLowerCase().includes(term)));
   });
 });
-const selectedReviewRow = computed(() => reviewRows.value.find(row => row.page === selectedPage.value));
+const selectedReviewRow = computed(() => visibleReviewRows.value.find(row => row.page === selectedPage.value));
 const selectedBoardContacts = computed(() => configuredContacts.value.get(selectedReviewRow.value?.section ?? ''));
 const selectedContactIds = computed(() => ownerChoices.value.get(selectedReviewRow.value?.section ?? '')?.split(',') ?? []);
 watch([dialog, file, previewPdf, reviewTarget, reviewLoaded, () => selectedReviewRow.value?.page], () => {
@@ -385,10 +385,15 @@ function setReviewSkip(row: ReviewRow, skip: boolean) {
   selectedPage.value = adjacent?.page ?? (stillVisible ? row.page : undefined);
 }
 
-watch([reviewFilter, reviewSearch], () => {
-  if (!visibleReviewRows.value.some(row => row.page === selectedPage.value)) {
-    selectedPage.value = visibleReviewRows.value[0]?.page;
+watch([visibleReviewRows, reviewFilter, reviewSearch], ([rows, filter, search], [, previousFilter, previousSearch]) => {
+  const page = selectedPage.value;
+  if (rows.some(row => row.page === page)) return;
+  if (page === undefined || filter !== previousFilter || search !== previousSearch) {
+    selectedPage.value = rows[0]?.page;
+    return;
   }
+  // 当前页因配置变更离开目录时，优先接着处理后面的页面。
+  selectedPage.value = rows.find(row => row.page > page)?.page ?? rows[rows.length - 1]?.page;
 });
 
 watch([selectedPage, reviewList, reviewFilter, reviewSearch], () => {
@@ -705,7 +710,7 @@ onMounted(async () => {
         </el-table-column>
         <el-table-column label="操作" min-width="350">
           <template #default="{ row }">
-            <el-button v-if="row.versionId && row.status !== 'ANALYZED' && row.uploadedBy === getLoggedInUser()?.userId"
+            <el-button v-if="row.versionId && row.status !== 'ANALYZED'"
               link type="primary" :disabled="busy" @click="openPendingVersion(row.versionId)">配置并识别</el-button>
             <el-button v-if="row.versionId" link type="primary" @click="openHistory(row)">查看历史版本</el-button>
             <!-- 暂时隐藏批次列表中的调整经办人入口。

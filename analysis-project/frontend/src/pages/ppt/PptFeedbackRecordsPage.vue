@@ -17,6 +17,7 @@ type Recipient = {
 
 const router = useRouter();
 const versionAssignments = ref<{ versionId: number; versionNo: number }>();
+const emptyVersion = ref<Recipient>();
 const records = ref<PptFeedbackRecord[]>([]);
 const loading = ref(false);
 const error = ref('');
@@ -123,12 +124,14 @@ function notificationTime(value: string | null) {
 
 /** 统一打开反馈详情，实际编辑权限由详情接口决定，正文通过内部编辑按钮修改。 */
 function openDetail(row: Recipient) {
-  const pages = row.pages.filter(page => page.status && page.findingId !== null);
-  if (!pages.length) return;
-  const page = pages.find(item => item.status === 'PENDING_FEEDBACK') ?? pages[0];
-  const department = row.departments[0];
+  const page = row.pages.find(item => item.status === 'PENDING_FEEDBACK') ?? row.pages[0];
+  if (page) openPage(page, row.departments[0]);
+  else emptyVersion.value = row;
+}
+
+function openPage(page: Page, department?: string) {
   const context: Record<string, string> = {
-    version: String(row.versionId), finding: String(page.findingId), mode: 'edit', scope: 'all', exact: '1',
+    version: String(page.versionId), finding: String(page.findingId), mode: 'edit', scope: 'all', exact: '1',
   };
   if (department) context.department = department;
   void router.push({ path: '/ppt-anomaly/overview', state: { pptFeedbackContext: context } });
@@ -201,8 +204,9 @@ onMounted(load);
             <el-table-column label="反馈时间" min-width="135">
               <template #default="{ row: item }">{{ date(item.feedbackAt) }}</template>
             </el-table-column>
-            <el-table-column v-if="row.pages.some((item: Page) => item.configurableTitle)" label="操作" width="115">
+            <el-table-column label="操作" width="150">
               <template #default="{ row: item }">
+                <el-button link type="primary" @click="openPage(item, row.departments[0])">查看</el-button>
                 <el-button v-if="item.configurableTitle" link type="primary" @click="openVersionAssignments(item)">
                   调整分派
                 </el-button>
@@ -231,13 +235,21 @@ onMounted(load);
       <el-table-column label="操作" width="130" fixed="right">
         <template #default="{ row }">
           <div class="record-actions">
-            <el-button v-if="row.total" link type="primary" @click="openDetail(row)">查看 / 编辑</el-button>
+            <el-button link type="primary" @click="openDetail(row)">查看</el-button>
           </div>
         </template>
       </el-table-column>
     </el-table>
     <el-pagination v-if="filtered.length > pageSize" v-model:current-page="pageNumber"
       :page-size="pageSize" :total="filtered.length" layout="prev, pager, next" />
+    <el-dialog :model-value="!!emptyVersion" title="版本反馈详情" width="min(480px, 94vw)"
+      @update:model-value="open => { if (!open) emptyVersion = undefined }">
+      <template v-if="emptyVersion">
+        <p>{{ emptyVersion.batchName }} · v{{ emptyVersion.versionNo }}</p>
+        <p>{{ emptyVersion.fileName }}</p>
+        <el-empty description="此版本暂无反馈任务" />
+      </template>
+    </el-dialog>
     <PptVersionAssignmentsDialog v-if="versionAssignments" :version-id="versionAssignments.versionId"
       :version-no="versionAssignments.versionNo" @close="closeVersionAssignments" />
   </section>
