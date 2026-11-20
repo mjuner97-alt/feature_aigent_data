@@ -1,19 +1,24 @@
 <script setup lang="ts">
-/** 例会材料管理页，负责批次版本、上传解析、板块确认及原件下载。 */
+/** 例会材料管理页，提供批次、上传确认、全局默认配置维护和原件下载。 */
 
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { Plus, Search, UploadFilled } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { confirmPptImport, deleteBatch, downloadVersion, listBatchSummaries, listPptPeople, listVersions, previewPptImport, previewPptImportImage, reviewPptImport, savePptImport, searchPptPeople } from '../../api/pptAnomaly';
-import type { PptPerson, PptImportAssignment, PptRecognitionMode } from '../../api/pptAnomaly';
+import type { PptPerson, PptImportAssignment, PptImportRecognition, PptImportTitleMatch, PptRecognitionMode } from '../../api/pptAnomaly';
+import { isPptRecognitionMode, pptAnomalyPermissions, pptManualRecognitionOptions, pptRecognitionModes } from '../../api/pptAnomaly';
 import type { PptBatchSummary, PptVersion } from '../../types/pptAnomaly';
 import PptListFilterBar from '../../components/ppt/PptListFilterBar.vue';
 import PptSlideViewer from '../../components/ppt/PptSlideViewer.vue';
+import PptBoardContactList from '../../components/ppt/PptBoardContactList.vue';
+import PptPreviewPdfDialog from '../../components/ppt/PptPreviewPdfDialog.vue';
 import PptVersionAssignmentsDialog from '../../components/ppt/PptVersionAssignmentsDialog.vue';
 import { getLoggedInUser } from '../../utils/auth';
 
 const router = useRouter();
+// 全局默认配置和当前版本分派使用各自的权限判断。
+const canMaintainDefaults = ref(false);
 const titlePrefix = /^\s*(?:[一二三四五六七八九十百零]+[.．、]\s*|[0-9]+(?:(?:[.．][0-9]+)+[.．、\s]*|[.．、\s]+))/;
 const batches = ref<PptBatchSummary[]>([]);
 const histories = ref<Record<number, PptVersion[]>>({});
@@ -21,6 +26,8 @@ const historyLoading = ref<Record<number, boolean>>({});
 const historyErrors = ref<Record<number, boolean>>({});
 const historyBatch = ref<PptBatchSummary>();
 const assignmentVersion = ref<{ id: number; versionNo: number | null }>();
+const notificationVersion = ref<{ id: number; versionNo: number | null }>();
+const pdfVersion = ref<PptVersion>();
 const loading = ref(false);
 const busy = ref(false);
 const deletingBatchId = ref<number>();
@@ -34,6 +41,12 @@ const batchId = ref<number>();
 const batchName = ref('');
 const batchSearch = ref('');
 const file = ref<File>();
+const previewPdf = ref<File>();
+const previewPdfInput = ref<HTMLInputElement>();
+function clearPreviewPdf() {
+  previewPdf.value = undefined;
+  if (previewPdfInput.value) previewPdfInput.value.value = '';
+}
 const reviewTarget = ref<number>();
 const reviewError = ref('');
 const reviewLoaded = ref(false);
@@ -46,13 +59,17 @@ const reviewSections = ref<string[]>([]);
 const configuredContacts = ref(new Map<string, string>());
 const contactNames = ref(new Map<string, string>());
 const reviewPeople = ref<PptPerson[]>([]);
+type RecognitionMethod = 'default' | 'rules';
 type ReviewRow = {
   page: number;
   title: string;
   section: string;
-  recognitionMode: PptRecognitionMode | '';
-  ruleConflict: boolean;
+  defaultRecognitionMode: PptRecognitionMode | '';
+  recognitionMethod: RecognitionMethod;
+  recognition?: PptImportRecognition | null;
   skip: boolean;
+  titleMatch?: PptImportTitleMatch;
+  titleCandidateIndex: number;
 };
 const reviewRows = ref<ReviewRow[]>([]);
 const reviewPreviewUrl = ref('');
@@ -82,6 +99,7 @@ async function loadReviewPreview(row?: ReviewRow) {
   reviewPreviewLoading.value = true;
   try {
     const image = await previewPptImportImage({ file: reviewTarget.value ? undefined : file.value,
+      previewPdf: reviewTarget.value ? undefined : previewPdf.value,
       versionId: reviewTarget.value, pageNo: row.page }, request.signal);
     if (!request.signal.aborted) {
       const url = URL.createObjectURL(image);
@@ -94,7 +112,7 @@ async function loadReviewPreview(row?: ReviewRow) {
     if (reviewPreviewRequest === request) reviewPreviewLoading.value = false;
   }
 }
-watch([dialog, file, reviewTarget], resetReviewPreviews);
+watch([dialog, file, previewPdf, reviewTarget], resetReviewPreviews);
 onBeforeUnmount(resetReviewPreviews);
 
 type ReviewFilter = 'all' | 'pending' | 'ready' | 'untitled' | 'skipped';
@@ -112,7 +130,7 @@ const assigningUnassigned = ref(false);
 const boardMode = ref<'existing' | 'board'>('existing');
 const existingBoard = ref('');
 const boardName = ref('');
-const boardContact = ref('');
+const boardContactIds = ref<string[]>([]);
 /** 每个选人控件独立管理请求，避免关闭另一个下拉框时清空正在搜索的结果。 */
 function createPersonSearch() {
   const results = ref<PptPerson[]>();
@@ -158,13 +176,14 @@ const draftContact = computed(() => configuredContacts.value.get(draftSection.va
     ? ownerChoices.value.get(draftSection.value) : undefined));
 const canApplyBoard = computed(() => !!draftSection.value && !duplicateBoard.value
   && (boardMode.value === 'board' || boardOptions.value.includes(draftSection.value))
-  && !!(draftContact.value || boardContact.value));
+  && (!!draftContact.value || boardContactIds.value.length > 0));
 function boardContactId(section: string) {
   return configuredContacts.value.get(section) || ownerChoices.value.get(section);
 }
 
 function titleKey(title: string) {
-  return title.replace(titlePrefix, '').trim();
+  const value = title.trim();
+  return savedTitleHandlers.value.has(value) ? value : value.replace(titlePrefix, '').trim();
 }
 
 function titleHandlerIds(title: string) {
@@ -183,10 +202,46 @@ function handlerOptions(ids: string[]) {
 
 function pageStatus(row: ReviewRow) {
   if (row.skip) return { key: 'skipped', label: '已跳过' };
-  if (!row.recognitionMode) return { key: 'pending', label: '待确认扫描规则' };
+  if (!reviewRecognitionMode(row)) return { key: 'pending', label: '待确认扫描规则' };
   if (!row.section) return { key: 'pending', label: '待分配板块' };
   if (!boardContactId(row.section)) return { key: 'pending', label: '待补联系人' };
   return { key: 'ready', label: '可识别' };
+}
+
+function selectableRecognitionMode(mode: string): PptRecognitionMode | '' {
+  return isPptRecognitionMode(mode) ? mode : mode === 'RULE_CONFLICT' ? '' : 'FULL';
+}
+
+function reviewRecognitionMode(row: ReviewRow) {
+  return row.recognitionMethod === 'rules' && row.recognition
+    ? selectableRecognitionMode(row.recognition.ruleMode) : row.defaultRecognitionMode;
+}
+
+function setRecognitionMethod(row: ReviewRow, method: RecognitionMethod) {
+  row.recognitionMethod = method;
+  setReviewSkip(row, reviewRecognitionMode(row) === 'NO_SCAN');
+}
+
+function changeReviewTitle(row: ReviewRow, title: string) {
+  if (row.title.trim() !== title.trim() && row.recognition) {
+    row.recognition = undefined;
+    row.recognitionMethod = 'default';
+    row.defaultRecognitionMode = 'FULL';
+    setReviewSkip(row, false);
+  }
+  row.title = title;
+}
+
+function selectTitleCandidate(row: ReviewRow, index: number) {
+  const match = row.titleMatch;
+  if (!match) return;
+  const candidate = match.candidates[index];
+  row.titleCandidateIndex = index;
+  row.title = candidate?.title ?? match.originalTitle;
+  row.section = candidate?.section ?? '';
+  row.recognition = candidate?.recognition;
+  row.defaultRecognitionMode = selectableRecognitionMode(row.recognition?.defaultMode ?? candidate?.mode ?? 'FULL');
+  setRecognitionMethod(row, row.recognition ? 'rules' : 'default');
 }
 
 const pendingRows = computed(() => reviewRows.value.filter(row => pageStatus(row).key === 'pending'));
@@ -210,11 +265,14 @@ const visibleReviewRows = computed(() => {
     const included = reviewFilter.value === 'untitled' ? !row.skip && !row.title.trim()
       : reviewFilter.value === 'all' || reviewFilter.value === pageStatus(row).key;
     return included && (!term || (pageNumber ? row.page === Number(pageNumber[1])
-      : row.title.toLowerCase().includes(term) || row.section.toLowerCase().includes(term)));
+      : row.title.toLowerCase().includes(term) || row.section.toLowerCase().includes(term)
+        || row.titleMatch?.originalTitle.toLowerCase().includes(term)));
   });
 });
 const selectedReviewRow = computed(() => reviewRows.value.find(row => row.page === selectedPage.value));
-watch([dialog, file, reviewTarget, reviewLoaded, () => selectedReviewRow.value?.page], () => {
+const selectedBoardContacts = computed(() => configuredContacts.value.get(selectedReviewRow.value?.section ?? ''));
+const selectedContactIds = computed(() => ownerChoices.value.get(selectedReviewRow.value?.section ?? '')?.split(',') ?? []);
+watch([dialog, file, previewPdf, reviewTarget, reviewLoaded, () => selectedReviewRow.value?.page], () => {
   void loadReviewPreview(selectedReviewRow.value);
 });
 const previousReviewRow = computed(() => {
@@ -222,6 +280,20 @@ const previousReviewRow = computed(() => {
   return preceding[preceding.length - 1];
 });
 const nextReviewRow = computed(() => visibleReviewRows.value.find(row => row.page > (selectedPage.value ?? 0)));
+
+/** 跳过当前页后，优先预览下一张符合当前筛选且未跳过的页面。 */
+function setReviewSkip(row: ReviewRow, skip: boolean) {
+  if (row.skip === skip) return;
+  row.skip = skip;
+  if (!reviewLoaded.value || selectedPage.value !== row.page) return;
+
+  const visible = visibleReviewRows.value;
+  const stillVisible = visible.some(item => item.page === row.page);
+  if (!skip && stillVisible) return;
+  const candidates = skip ? visible.filter(item => !item.skip) : visible;
+  const adjacent = candidates.find(item => item.page > row.page) ?? candidates[candidates.length - 1];
+  selectedPage.value = adjacent?.page ?? (stillVisible ? row.page : undefined);
+}
 
 watch([reviewFilter, reviewSearch], () => {
   if (!visibleReviewRows.value.some(row => row.page === selectedPage.value)) {
@@ -239,17 +311,18 @@ watch([selectedPage, reviewList, reviewFilter, reviewSearch], () => {
   if (row.bottom > viewport.bottom) list.scrollTop += row.bottom - viewport.bottom;
 }, { flush: 'post' });
 
-/** 打开待归属页面的板块和联系人选择窗口。 */
+/** 打开板块和联系人选择窗口，具备全局维护权限时可新建板块。 */
 function openBoardEditor(row: ReviewRow, assignUnassigned = false, createBoard = false) {
+  if (createBoard && !canMaintainDefaults.value) return;
   editingRow.value = row;
   assigningUnassigned.value = assignUnassigned;
   const title = row.title.replace(titlePrefix, '').trim();
   const section = row.section || title;
   const exists = boardOptions.value.includes(section);
-  boardMode.value = createBoard || (row.section && !exists) ? 'board' : 'existing';
+  boardMode.value = canMaintainDefaults.value && (createBoard || (row.section && !exists)) ? 'board' : 'existing';
   existingBoard.value = exists ? section : '';
   boardName.value = !createBoard && boardMode.value === 'board' ? row.section : '';
-  boardContact.value = createBoard ? '' : ownerChoices.value.get(section) ?? '';
+  boardContactIds.value = createBoard ? [] : ownerChoices.value.get(section)?.split(',') ?? [];
   void searchEditorContacts('');
   boardEditorOpen.value = true;
 }
@@ -260,7 +333,7 @@ function applyBoard() {
   if (!row || !canApplyBoard.value) return;
   const previousSection = row.section;
   const section = draftSection.value;
-  if (!draftContact.value) ownerChoices.value.set(section, boardContact.value);
+  if (!draftContact.value) ownerChoices.value.set(section, boardContactIds.value.join(','));
   const rows = assigningUnassigned.value ? unassignedRows.value : [row];
   for (const item of rows) item.section = section;
   if (previousSection !== section && !reviewRows.value.some(item => item.section === previousSection)) {
@@ -270,25 +343,25 @@ function applyBoard() {
 }
 
 /** 将板块联系人认证号转换为可读姓名。 */
+function boardContactName(userId: string) {
+  return contactNames.value.get(userId) || reviewPeople.value.find(person => person.userId === userId)?.name || userId;
+}
+
 function boardContactLabel(userId: string) {
-  const groupNames = contactNames.value.get(userId)?.split('、') ?? [];
-  return userId.split(',').map((id, index) => {
-    const name = groupNames[index] || contactNames.value.get(id) || reviewPeople.value.find(person => person.userId === id)?.name;
-    return name && name !== id ? `${name}（${id}）` : id;
-  }).join('、');
+  const name = boardContactName(userId);
+  return name === userId ? userId : `${name}（${userId}）`;
 }
 
 function selectReviewContacts(ids: string[]) {
   const row = selectedReviewRow.value;
-  if (row) ownerChoices.value.set(row.section, ids.join(','));
+  if (!row) return;
+  if (ids.length) ownerChoices.value.set(row.section, ids.join(','));
+  else ownerChoices.value.delete(row.section);
 }
 
-/** 生成联系人姓名及认证号的展示文字。 */
-function contactLabel(section: string | null) {
-  if (!section) return '—';
-  const id = boardContactId(section);
-  if (!id) return '—';
-  return boardContactLabel(id);
+/** 已保存的名单来自接口，本次导入中新选的人员来自搜索结果。 */
+function boardContactNames(userIds: string) {
+  return contactNames.value.get(userIds) ?? userIds.split(',').map(boardContactName).join('、');
 }
 
 const selectedBatch = computed(() => batches.value.find(batch => batch.id === batchId.value));
@@ -341,6 +414,7 @@ function openUpload(batch?: PptBatchSummary) {
   reviewLoaded.value = false;
   uploadError.value = '';
   file.value = undefined;
+  previewPdf.value = undefined;
   batchName.value = '';
   batchSearch.value = '';
   batchId.value = batch?.id;
@@ -369,14 +443,28 @@ async function loadReview(load: () => ReturnType<typeof reviewPptImport>) {
     configuredContacts.value = new Map(Object.entries(review.contacts));
     contactNames.value = new Map(Object.entries(review.contactNames ?? {}));
     reviewSections.value = review.boards;
-    reviewRows.value = review.pages.map(page => ({
-      page: page.page,
-      title: page.title ?? '',
-      section: page.section ?? '',
-      recognitionMode: page.mode === 'RULE_CONFLICT' ? '' : page.mode === 'TEXT_ONLY' || page.mode === 'UPPER_TABLE_ONLY' || page.mode === 'NO_SCAN' ? page.mode : 'FULL',
-      ruleConflict: page.mode === 'RULE_CONFLICT',
-      skip: page.excluded || page.mode === 'NO_SCAN' || (page.skipped && page.title === '目录'),
-    }));
+    reviewRows.value = review.pages.map(page => {
+      const titleMatch = review.titleMatches?.[page.page];
+      const titleCandidateIndex = titleMatch?.candidates.findIndex(candidate => candidate.title === page.title) ?? -1;
+      const recognition = review.recognitionByPage?.[page.page] ?? titleMatch?.candidates[titleCandidateIndex]?.recognition;
+      const useRules = recognition != null && recognition.ruleMode === page.mode;
+      const row: ReviewRow = {
+        page: page.page,
+        title: page.title ?? '',
+        section: page.section ?? '',
+        defaultRecognitionMode: selectableRecognitionMode((useRules ? recognition?.defaultMode : page.mode) ?? 'FULL'),
+        recognitionMethod: useRules ? 'rules' : 'default',
+        recognition,
+        skip: page.excluded || page.mode === 'NO_SCAN' || (page.skipped && page.title === '目录'),
+        titleMatch,
+        titleCandidateIndex,
+      };
+      if (titleMatch && !page.excluded) {
+        if (page.mode === 'OUT_OF_SCOPE') selectTitleCandidate(row, 0);
+        else if (titleCandidateIndex >= 0) row.title = titleMatch.candidates[titleCandidateIndex].title;
+      }
+      return row;
+    });
     ownerChoices.value = new Map();
     reviewSearch.value = '';
     reviewFilter.value = pendingRows.value.length ? 'pending' : 'all';
@@ -388,7 +476,7 @@ async function loadReview(load: () => ReturnType<typeof reviewPptImport>) {
   }
 }
 
-/** 保存已确认的页面归属并识别材料，成功后刷新批次列表。 */
+/** 保存当前版本分派及有权限维护的全局配置，完成识别后刷新批次列表。 */
 async function confirmReview() {
   if (busy.value || !canConfirm.value) return;
   const target = reviewTarget.value;
@@ -400,16 +488,18 @@ async function confirmReview() {
     const assignments: PptImportAssignment[] = reviewRows.value.map(row => {
       const section = row.section.trim();
       const owner = row.skip || configuredContacts.value.has(section) ? null : ownerChoices.value.get(section) || null;
-      return { page: row.page, title: row.title, recognitionMode: row.recognitionMode || undefined,
-        section, owner, rememberOwner: !!owner, skip: row.skip, remember: false,
+      // 页面归属随版本保存，新建板块和记住默认联系人需要全局维护权限。
+      return { page: row.page, title: row.title, recognitionMode: reviewRecognitionMode(row) || (row.skip ? 'NO_SCAN' : undefined),
+        useDefaultRecognition: row.recognition && row.recognitionMethod === 'default' ? true : undefined,
+        section, owner, rememberOwner: canMaintainDefaults.value && !!owner, skip: row.skip, remember: false,
         handlers: row.skip ? undefined : titleHandlerIds(row.title),
-        createBoard: !row.skip && !reviewSections.value.includes(section) };
+        createBoard: canMaintainDefaults.value && !row.skip && !reviewSections.value.includes(section) };
     });
     if (target) {
       await confirmPptImport(target, assignments);
     } else if (selectedFile && (mode.value === 'new' || selectedBatchId !== undefined)) {
       const batch = mode.value === 'new' ? { batchName: batchName.value.trim() } : { batchId: selectedBatchId! };
-      await savePptImport(selectedFile, batch, assignments);
+      await savePptImport(selectedFile, batch, assignments, previewPdf.value);
     } else {
       return;
     }
@@ -431,7 +521,7 @@ async function submit() {
   busy.value = true;
   uploadError.value = '';
   try {
-    await loadReview(() => previewPptImport(selectedFile, mode.value === 'existing' ? batchId.value : undefined));
+    await loadReview(() => previewPptImport(selectedFile, mode.value === 'existing' ? batchId.value : undefined, previewPdf.value));
     if (!reviewLoaded.value) uploadError.value = reviewError.value;
   } finally {
     busy.value = false;
@@ -442,6 +532,8 @@ async function submit() {
 async function openPendingVersion(id: number) {
   if (busy.value) return;
   reviewTarget.value = id;
+  file.value = undefined;
+  previewPdf.value = undefined;
   dialog.value = true;
   busy.value = true;
   try {
@@ -489,6 +581,10 @@ async function confirmDeleteBatch(batch: PptBatchSummary) {
 }
 
 onMounted(refresh);
+/** 从配置权限接口获取导入中的全局维护权限。 */
+onMounted(async () => {
+  canMaintainDefaults.value = (await pptAnomalyPermissions().catch(() => undefined))?.canManageBoardsAndTitles === true;
+});
 </script>
 
 <template>
@@ -561,6 +657,9 @@ onMounted(refresh);
                 <el-button v-if="row.status === 'ANALYZED'" link type="primary"
                   @click="openVersionAssignments(row.id, row.versionNo)">调整经办人</el-button> -->
                 <el-button link type="primary" @click="download(row)">下载原件</el-button>
+                <el-button v-if="row.uploadedBy === getLoggedInUser()?.userId" link type="primary"
+                  @click="pdfVersion = row">上传预览 PDF</el-button>
+                <el-button link type="primary" @click="notificationVersion = { id: row.id, versionNo: row.versionNo }">通知记录</el-button>
                 <el-button link type="primary"
                   @click="router.push({ path: '/ppt-anomaly/notifications', query: { batchId: String(row.batchId) } })">通知记录</el-button>
               </div>
@@ -569,6 +668,7 @@ onMounted(refresh);
         </el-table>
       </template>
     </el-drawer>
+    <PptPreviewPdfDialog v-if="pdfVersion" :key="pdfVersion.id" :version="pdfVersion" @close="pdfVersion = undefined" />
     <PptVersionAssignmentsDialog v-if="assignmentVersion" :key="assignmentVersion.id"
       :version-id="assignmentVersion.id" :version-no="assignmentVersion.versionNo"
       @close="assignmentVersion = undefined" />
@@ -609,17 +709,26 @@ onMounted(refresh);
             </div>
           </div>
         </el-form-item>
+        <el-form-item label="预览 PDF（可选）">
+          <div>
+            <input ref="previewPdfInput" type="file" accept=".pdf,application/pdf" aria-label="预览 PDF（可选）" :disabled="busy"
+              @change="previewPdf = ($event.target as HTMLInputElement).files?.[0]" />
+            <p class="file-hint">请从同一份 PPT 导出完整 PDF，页数和顺序须一致，最大 50 MB。PDF 用于预览，PPT 用于识别。</p>
+            <el-button v-if="previewPdf" link type="primary" :disabled="busy" @click="clearPreviewPdf">取消 PDF，使用 PPT 预览</el-button>
+          </div>
+        </el-form-item>
         <div class="dialog-actions">
           <el-button :disabled="busy" @click="dialog = false">取消</el-button>
           <el-button type="primary" native-type="submit" :loading="busy" :disabled="!canSubmit">解析 PPT</el-button>
         </div>
       </el-form>
     </el-dialog>
-    <section v-if="reviewing" aria-labelledby="ppt-review-heading">
+    <section v-if="reviewing" class="review-screen" aria-labelledby="ppt-review-heading">
       <header class="page-header">
         <div>
           <h2 id="ppt-review-heading" ref="reviewHeading" tabindex="-1">核对页面</h2>
           <p v-if="file">{{ file.name }}</p>
+          <p v-if="previewPdf">预览来源：{{ previewPdf.name }}</p>
         </div>
       </header>
         <el-alert v-if="reviewError" :title="reviewError" type="error" :closable="false" class="review-error" />
@@ -663,7 +772,7 @@ onMounted(refresh);
                 </el-button>
               </div>
             </section>
-            <section v-if="selectedReviewRow" class="review-detail" aria-label="当前页设置">
+            <section v-if="selectedReviewRow" :key="selectedReviewRow.page" class="review-detail" aria-label="当前页设置">
               <header class="review-detail-header">
                 <h3>第 {{ selectedReviewRow.page }} 页 <small>/ {{ reviewRows.length }}</small></h3>
                 <span class="review-status" :data-status="pageStatus(selectedReviewRow).key">
@@ -682,26 +791,54 @@ onMounted(refresh);
                       imageUrl: reviewPreviewUrl, renderStatus: 'READY' } : undefined" />
                 </div>
                 <div class="review-fields">
-                  <label class="review-field" for="ppt-review-title">
+                  <div v-if="selectedReviewRow.titleMatch" class="review-field">
+                    <label id="ppt-review-title-match-label">匹配标题</label>
+                    <small>原始标题：{{ selectedReviewRow.titleMatch.originalTitle }}</small>
+                    <el-select :model-value="selectedReviewRow.titleCandidateIndex" :disabled="busy"
+                      aria-labelledby="ppt-review-title-match-label"
+                      @update:model-value="(index: number) => selectTitleCandidate(selectedReviewRow!, index)">
+                      <el-option v-for="(candidate, index) in selectedReviewRow.titleMatch.candidates" :key="candidate.title"
+                        :label="[candidate.title, candidate.section].filter(Boolean).join(' · ')" :value="index" />
+                      <el-option label="保留原始标题，手动配置" :value="-1" />
+                    </el-select>
+                  </div>
+                  <label v-if="selectedReviewRow.titleCandidateIndex < 0" class="review-field" for="ppt-review-title">
                     <span>页面标题</span>
-                    <el-input id="ppt-review-title" v-model="selectedReviewRow.title" maxlength="512" placeholder="无标题，可留空"
-                      :disabled="busy" />
+                    <el-input id="ppt-review-title" :model-value="selectedReviewRow.title" maxlength="512" placeholder="无标题，可留空"
+                      :disabled="busy" @update:model-value="changeReviewTitle(selectedReviewRow, $event)" />
                   </label>
                   <div class="review-field">
-                    <span>识别范围</span>
-                    <small v-if="selectedReviewRow.ruleConflict">该页命中多条关键词规则，请明确选择扫描范围或跳过。</small>
-                    <el-select v-model="selectedReviewRow.recognitionMode" :disabled="busy || selectedReviewRow.skip"
-                      aria-label="识别范围" @change="selectedReviewRow.skip = selectedReviewRow.recognitionMode === 'NO_SCAN'">
-                      <el-option label="全不扫" value="NO_SCAN" />
-                      <el-option label="全量识别" value="FULL" />
-                      <el-option label="仅文字" value="TEXT_ONLY" />
-                      <el-option label="仅上方表格" value="UPPER_TABLE_ONLY" />
+                    <span>识别方式</span>
+                    <el-radio-group :model-value="selectedReviewRow.recognitionMethod" :disabled="busy" aria-label="识别方式"
+                      @update:model-value="setRecognitionMethod(selectedReviewRow, $event as RecognitionMethod)">
+                      <el-radio-button value="default">默认识别</el-radio-button>
+                      <el-radio-button value="rules" :disabled="!selectedReviewRow.recognition">规则识别</el-radio-button>
+                    </el-radio-group>
+                    <p v-if="!selectedReviewRow.recognition" class="review-field-hint">当前标题没有可用的关键词规则。</p>
+                  </div>
+                  <div v-if="selectedReviewRow.recognitionMethod === 'default'" class="review-field">
+                    <span class="review-required">默认识别范围</span>
+                    <el-select v-model="selectedReviewRow.defaultRecognitionMode" :disabled="busy || selectedReviewRow.skip"
+                      aria-label="默认识别范围" @change="setReviewSkip(selectedReviewRow, selectedReviewRow.defaultRecognitionMode === 'NO_SCAN')">
+                      <el-option v-for="[value, label] in pptManualRecognitionOptions" :key="value" :label="label" :value="value" />
+                      <template #label>{{ selectedReviewRow.defaultRecognitionMode && pptRecognitionModes[selectedReviewRow.defaultRecognitionMode] }}</template>
                     </el-select>
+                    <p class="review-field-hint">{{ selectedReviewRow.defaultRecognitionMode
+                      ? '当前页使用所选范围识别。' : '请选择当前页的识别范围。' }}</p>
+                  </div>
+                  <div v-else-if="selectedReviewRow.recognition" class="review-field">
+                    <span>规则识别范围</span>
+                    <template v-if="reviewRecognitionMode(selectedReviewRow)">
+                      <div class="review-contact-name">{{ pptRecognitionModes[reviewRecognitionMode(selectedReviewRow) as PptRecognitionMode] }}</div>
+                      <p class="review-field-hint">{{ selectedReviewRow.recognition.ruleName
+                        ? `命中规则：${selectedReviewRow.recognition.ruleName}` : '未命中关键词规则，使用默认识别范围。' }}</p>
+                    </template>
+                    <p v-else class="review-field-hint">该页命中多条关键词规则，请切换到默认识别后选择范围，或跳过本页。</p>
                   </div>
                   <div class="review-field">
                     <div class="review-field-heading">
                       <label id="ppt-review-board-label">所属板块</label>
-                      <el-button link type="primary" :disabled="busy || selectedReviewRow.skip"
+                      <el-button v-if="canMaintainDefaults" link type="primary" :disabled="busy || selectedReviewRow.skip"
                         @click="openBoardEditor(selectedReviewRow, false, true)">新建板块</el-button>
                     </div>
                     <el-select v-model="selectedReviewRow.section" filterable placeholder="选择已有板块"
@@ -712,12 +849,12 @@ onMounted(refresh);
                   <div v-if="selectedReviewRow.section && !selectedReviewRow.skip" :key="selectedReviewRow.section"
                     class="review-field review-contact">
                     <label id="ppt-review-contact-label">板块联系人</label>
-                    <div v-if="configuredContacts.has(selectedReviewRow.section)" class="review-contact-name">
-                      {{ contactLabel(selectedReviewRow.section) }}
-                    </div>
+                    <PptBoardContactList v-if="selectedBoardContacts" :user-ids="selectedBoardContacts"
+                      :names="boardContactNames(selectedBoardContacts)" />
                     <template v-else>
-                      <el-select :model-value="ownerChoices.get(selectedReviewRow.section)?.split(',') ?? []" multiple filterable remote
-                        aria-labelledby="ppt-review-contact-label" placeholder="搜索姓名或用户 ID" :disabled="busy"
+                      <el-select :model-value="selectedContactIds" class="board-contact-picker" multiple filterable remote
+                        :reserve-keyword="false"
+                        aria-labelledby="ppt-review-contact-label" placeholder="搜索姓名或认证号，可多选" :disabled="busy"
                         :remote-method="searchBoardContacts" :loading="boardContactLoading"
                         :no-data-text="boardContactSearchFailed ? '搜索失败，请重试' : '未找到联系人'"
                         @update:model-value="selectReviewContacts"
@@ -726,7 +863,8 @@ onMounted(refresh);
                         <el-option v-for="person in matchingBoardContacts" :key="person.userId"
                           :label="boardContactLabel(person.userId)" :value="person.userId" />
                       </el-select>
-                      <small v-if="!boardContactId(selectedReviewRow.section)">该板块缺少联系人，请先选择一位。</small>
+                      <p v-if="selectedContactIds.length" class="review-field-hint" aria-live="polite">已选择 {{ selectedContactIds.length }} 位联系人</p>
+                      <small v-else>请至少选择一位板块联系人。</small>
                     </template>
                   </div>
                   <div v-if="titleKey(selectedReviewRow.title) && !selectedReviewRow.skip" :key="`handlers-${titleKey(selectedReviewRow.title)}`"
@@ -736,6 +874,7 @@ onMounted(refresh);
                       {{ savedTitleHandlers.get(titleKey(selectedReviewRow.title))?.map(boardContactLabel).join('、') }}
                     </div>
                     <el-select :model-value="handlerChoices.get(titleKey(selectedReviewRow.title)) ?? []" multiple filterable remote
+                      :reserve-keyword="false"
                       aria-labelledby="ppt-review-handlers-label" placeholder="搜索并补充经办人，可多选"
                       :disabled="busy" :remote-method="searchHandlers" :loading="handlerLoading"
                       :no-data-text="handlerSearchFailed ? '搜索失败，请重试' : '未找到经办人'"
@@ -751,7 +890,8 @@ onMounted(refresh);
                 </div>
               </div>
               <footer class="review-detail-footer">
-                <el-checkbox v-model="selectedReviewRow.skip" :disabled="busy">跳过本页</el-checkbox>
+                <el-checkbox :model-value="selectedReviewRow.skip" :disabled="busy"
+                  @update:model-value="setReviewSkip(selectedReviewRow, $event === true)">跳过本页</el-checkbox>
                 <div class="review-navigation">
                   <el-button size="small" :disabled="!previousReviewRow"
                     @click="selectedPage = previousReviewRow?.page">上一页</el-button>
@@ -781,23 +921,24 @@ onMounted(refresh);
       <p class="board-editor-title">{{ assigningUnassigned ? '为未归属页面指定同一板块' : editingRow?.title || '无标题' }}</p>
       <el-form label-position="top" @submit.prevent="applyBoard">
         <el-form-item label="板块归属">
-          <el-radio-group v-model="boardMode" @change="boardContact = ''">
+          <el-radio-group v-model="boardMode" @change="boardContactIds = []">
             <el-radio-button value="existing">选择已有板块</el-radio-button>
-            <el-radio-button value="board">新建板块</el-radio-button>
+            <el-radio-button v-if="canMaintainDefaults" value="board">新建板块</el-radio-button>
           </el-radio-group>
         </el-form-item>
         <el-form-item v-if="boardMode === 'existing'" label="已有板块">
-          <el-select v-model="existingBoard" placeholder="选择板块" no-data-text="暂无已有板块" filterable @change="boardContact = ''">
+          <el-select v-model="existingBoard" placeholder="选择板块" no-data-text="暂无已有板块" filterable @change="boardContactIds = []">
             <el-option v-for="section in boardOptions" :key="section" :value="section" :label="section" />
           </el-select>
         </el-form-item>
         <el-form-item v-else label="新板块名称" :error="duplicateBoard ? '板块已存在，请选择已有板块' : undefined">
-          <el-input v-model="boardName" maxlength="512" placeholder="输入板块名称" @input="boardContact = ''" />
+          <el-input v-model="boardName" maxlength="512" placeholder="输入板块名称" />
         </el-form-item>
         <el-form-item v-if="draftSection && !duplicateBoard" label="板块联系人" required>
-          <span v-if="draftContact">{{ contactLabel(draftSection) }}</span>
-          <el-select v-else :model-value="boardContact ? boardContact.split(',') : []" multiple
-            @update:model-value="(ids: string[]) => boardContact = ids.join(',')" placeholder="搜索并选择联系人" filterable remote
+          <PptBoardContactList v-if="draftContact" :user-ids="draftContact" :names="boardContactNames(draftContact)" />
+          <el-select v-else v-model="boardContactIds" class="board-contact-picker" multiple
+            :reserve-keyword="false"
+            placeholder="搜索姓名或认证号，可多选" filterable remote
             :remote-method="searchEditorContacts" :loading="editorContactLoading"
             :no-data-text="editorContactSearchFailed ? '搜索失败，请重试' : '未找到联系人'"
             @visible-change="(open: boolean) => { if (!open) searchEditorContacts(''); }">
@@ -805,8 +946,11 @@ onMounted(refresh);
               {{ boardContactLabel(value) }}
             </template>
             <el-option v-for="person in matchingEditorContacts" :key="person.userId"
-              :label="`${person.name}（${person.userId}）`" :value="person.userId" />
+              :label="boardContactLabel(person.userId)" :value="person.userId" />
           </el-select>
+          <p v-if="!draftContact" class="board-contact-hint" aria-live="polite">
+            {{ boardContactIds.length ? `已选择 ${boardContactIds.length} 位联系人` : '至少选择一位联系人。' }}
+          </p>
         </el-form-item>
         <div class="dialog-actions">
           <el-button @click="boardEditorOpen = false">取消</el-button>
@@ -837,12 +981,14 @@ onMounted(refresh);
 .review-filter[aria-pressed='true'] { border-color: #cbdaf7; color: #234ba9; background: #eaf1ff; font-weight: 600; }
 .review-workspace {
   display: grid; grid-template-columns: clamp(220px, 18vw, 290px) minmax(0, 1fr);
-  height: clamp(420px, 62dvh, 580px); border: 1px solid #dfe6f0; border-radius: 12px;
-  background: #fff; overflow: hidden;
+  border: 1px solid #dfe6f0; border-radius: 12px; background: #fff; overflow: hidden;
 }
 .review-index { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; border-right: 1px solid #dfe6f0; }
 .review-search { padding: 10px; border-bottom: 1px solid #e9eef6; }
-.review-list { min-height: 0; margin: 0; padding: 0; list-style: none; overflow: auto; scrollbar-gutter: stable; }
+.review-list {
+  min-height: 0; margin: 0; padding: 0; list-style: none; overflow: auto;
+  overscroll-behavior-y: contain; scrollbar-gutter: stable;
+}
 .review-list li + li { border-top: 1px solid #ebeff5; }
 .review-page {
   display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; gap: 8px; align-items: center; width: 100%;
@@ -880,10 +1026,14 @@ onMounted(refresh);
 .review-fields { display: grid; align-content: start; gap: 14px; padding: 16px; border: 1px solid #e5ebf4; border-radius: 8px; }
 .review-field { display: grid; align-content: start; gap: 6px; min-width: 0; }
 .review-field > span, .review-field > label, .review-field-heading { color: #243651; font-size: 13px; font-weight: 600; }
+.review-required::before { content: '*'; color: var(--el-color-danger); margin-right: 4px; }
 .review-field-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .review-field :deep(.el-input__wrapper), .review-field :deep(.el-select__wrapper) { min-height: 36px; box-sizing: border-box; }
 .review-contact-name { padding: 8px 11px; color: #243651; background: #f3f6fb; border-radius: 6px; overflow-wrap: anywhere; }
 .review-contact small { color: #805016; font-size: 12px; }
+.board-contact-picker :deep(.el-tag) { max-width: 100%; height: auto; min-height: 24px; padding-block: 3px; }
+.board-contact-picker :deep(.el-tag__content) { white-space: normal; overflow-wrap: anywhere; }
+.board-contact-hint { width: 100%; margin: 5px 0 0; color: #52627a; font-size: 12px; line-height: 1.5; }
 .review-field-hint { margin: 0; color: #52627a; font-size: 12px; line-height: 1.5; }
 .review-detail-footer { border-top: 1px solid #e9eef6; padding-top: 8px; }
 .review-navigation { display: flex; gap: 6px; }
@@ -894,8 +1044,17 @@ onMounted(refresh);
   .review-page-content { grid-template-columns: minmax(0, 1fr); }
   .review-preview { min-height: 175px; }
 }
+@media (width > 700px) {
+  .batch-page.is-reviewing, .review-screen { height: 100%; }
+  .review-screen { display: flex; flex-direction: column; }
+  .review-screen > :not(.review-workspace) { flex: none; }
+  .review-workspace {
+    flex: 1 1 0; grid-template-rows: minmax(0, 1fr);
+    min-height: 160px; max-height: min(62dvh, 580px);
+  }
+}
 @media (max-width: 700px) {
-  .review-workspace { grid-template-columns: minmax(0, 1fr); height: auto; }
+  .review-workspace { grid-template-columns: minmax(0, 1fr); }
   .review-index { height: 215px; border-right: 0; border-bottom: 1px solid #dfe6f0; }
   .review-detail { padding-inline: 10px; }
   .review-blockers { flex-basis: 100%; }

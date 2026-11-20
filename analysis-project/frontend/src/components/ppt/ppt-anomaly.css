@@ -73,7 +73,7 @@
 }
 
 .ppt-confirm-box.el-message-box {
-  max-width: 94vw;
+  max-width: min(var(--el-messagebox-width), calc(100vw - 32px));
   padding: 20px;
   border-radius: 14px;
 }

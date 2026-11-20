@@ -1,11 +1,11 @@
 <script setup lang="ts">
-/** 例会识别配置页，维护部门关键词、标题规则及板块联系人。 */
+/** 例会材料配置页，展示全部配置标签，并按权限提供维护入口。 */
 
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { pptAnomalyPermissions, searchPptPeople, type PptPerson } from '../../api/pptAnomaly';
-import { Search } from '@element-plus/icons-vue';
+import { isPptRecognitionMode, pptAnomalyPermissions, pptManualRecognitionOptions, pptRecognitionModes as modes, searchPptPeople, type PptPerson, type PptRecognitionMode } from '../../api/pptAnomaly';
+import { Document, Download, Plus, Search, UploadFilled } from '@element-plus/icons-vue';
 import PptListFilterBar from '../../components/ppt/PptListFilterBar.vue';
 import PptFeedbackSupervisorConfig from '../../components/ppt/PptFeedbackSupervisorConfig.vue';
 import PptReportNotificationConfig from '../../components/ppt/PptReportNotificationConfig.vue';
@@ -28,59 +28,112 @@ type TitleRow = { name: string; section?: Entry; scope?: Entry; contact?: Entry;
 /** 板块默认联系人及关联标题数量。 */
 type BoardRow = { name: string; owner: string | null; ownerName: string | null; titleCount: number };
 
+// 标签顺序对所有登录用户一致。
 const tabs = [
-  { key: 'department', label: '部门关键词', name: '匹配关键词', target: '部门' },
-  { key: 'section', label: '标题配置', name: '匹配标题', target: '所属板块' },
-  { key: 'board', label: '板块配置', name: '板块', target: '用户 ID' },
+  { key: 'material-type', label: '材料类型配置' },
+  { key: 'board', label: '板块配置' },
+  { key: 'section', label: '标题配置' },
+  { key: 'department', label: '部门关键字配置' },
+  { key: 'report-notification', label: '报告通知配置' },
+  { key: 'feedback-supervisors', label: '组织督办人配置' },
 ] as const;
-const modes: Record<string, string> = {
-  FULL: '全量识别', TEXT_ONLY: '仅文字', UPPER_TABLE_ONLY: '仅上方表格', NO_SCAN: '全不扫',
-};
-type ScanRule = { name: string; keywords: string; mode: string; upperLimitRatio?: number; firstRow?: number; lastRow?: number };
-const rulesOpen = ref(false);
-const rulesTitle = ref('');
-const scanRules = ref<ScanRule[]>([]);
+const visibleTabs = tabs.filter(item => item.key !== 'material-type');
+type ScanRule = { name: string; keywords: string; mode: PptRecognitionMode; upperLimitRatio?: number; firstRow?: number; lastRow?: number };
+type ScanRuleDraft = Omit<ScanRule, 'keywords'> & { keywords: string[] };
+const maxKeywordLength = 8192;
+const recognitionMethod = ref<'default' | 'rules'>('default');
+const scanRules = ref<ScanRuleDraft[]>([]);
 const rulesLoading = ref(false);
 const rulesReady = ref(false);
-async function openScanRules(title: string) {
-  rulesTitle.value = title;
-  scanRules.value = [];
-  rulesReady.value = false;
-  rulesOpen.value = true;
-  rulesLoading.value = true;
-  try {
-    scanRules.value = await (await request('/scan-rules?' + new URLSearchParams({ title }))).json();
-    rulesReady.value = true;
-  } catch (error) { ElMessage.error(String(error)); }
-  finally { rulesLoading.value = false; }
+const rulesLoadError = ref('');
+const rulesValidationError = ref('');
+const originalRules = ref('[]');
+
+function serializeScanRules(): ScanRule[] {
+  return scanRules.value.map(rule => ({
+    ...rule,
+    keywords: rule.keywords.map(keyword => keyword.trim()).filter(Boolean).join('\n'),
+  }));
 }
-async function saveScanRules() {
-  if (rulesLoading.value || !rulesReady.value) return;
+
+function addScanRule() {
+  const names = new Set(scanRules.value.map(rule => rule.name));
+  let number = 1;
+  const ruleName = (value: number) => `规则 ${String(value).padStart(2, '0')}`;
+  while (names.has(ruleName(number))) number += 1;
+  scanRules.value.push({ name: ruleName(number), keywords: [''], mode: 'FULL' });
+}
+
+async function loadScanRules() {
+  const form = titleForm.value;
+  if (!form.originalName || rulesLoading.value || rulesReady.value) return;
   rulesLoading.value = true;
+  rulesLoadError.value = '';
   try {
-    await request('/scan-rules?' + new URLSearchParams({ title: rulesTitle.value }), {
-      method: 'PUT', body: JSON.stringify(scanRules.value),
-    });
-    rulesOpen.value = false;
-    ElMessage.success('扫描规则已保存，仅影响后续导入');
-  } catch (error) { ElMessage.error(String(error)); }
-  finally { rulesLoading.value = false; }
+    const result: ScanRule[] = await (await request('/scan-rules?' + new URLSearchParams({ title: form.originalName }))).json();
+    if (titleForm.value !== form || !editorOpen.value) return;
+    scanRules.value = result.map(rule => ({ ...rule, keywords: rule.keywords.split(/\r\n?|\n/) }));
+    originalRules.value = JSON.stringify(serializeScanRules());
+    recognitionMethod.value = result.length ? 'rules' : 'default';
+    rulesReady.value = true;
+  } catch (error) {
+    if (titleForm.value === form && editorOpen.value) rulesLoadError.value = String(error);
+  } finally {
+    if (titleForm.value === form) rulesLoading.value = false;
+  }
+}
+
+function scanRuleError(rules: ScanRule[]) {
+  const conditions = new Set<string>();
+  for (const [index, rule] of rules.entries()) {
+    const prefix = `第 ${index + 1} 条规则`;
+    const terms = rule.keywords.split('\n').map(term => term.replace(/[\s\p{Zs}]/gu, '').toLowerCase()).filter(Boolean);
+    const condition = [...new Set(terms)].sort().join('\n');
+    if (!condition) return `${prefix}请至少填写一个关键词`;
+    if (rule.keywords.length > maxKeywordLength) return `${prefix}的关键词总长度不能超过 ${maxKeywordLength} 个字符`;
+    if (conditions.has(condition)) return `${prefix}的关键词条件已存在`;
+    if (rule.mode === 'UPPER_TABLE_ONLY' && rule.lastRow != null && rule.lastRow < (rule.firstRow ?? 1)) {
+      return `${prefix}的结束行不能小于起始行`;
+    }
+    conditions.add(condition);
+  }
+  return '';
+}
+
+function titleScopeLabel(scope?: Entry) {
+  return scope && isPptRecognitionMode(scope.target) ? modes[scope.target] : modes.FULL;
 }
 const route = useRoute();
 const router = useRouter();
-const requestedTab = () => route.query.tab === 'section' ? 'section'
-  : route.query.tab === 'report-notification' ? 'report-notification'
-    : route.query.tab === 'feedback-supervisors' ? 'feedback-supervisors' : 'department';
-const canManageKeywords = ref(false);
-const active = ref<string>('report-notification');
-onMounted(async () => {
-  canManageKeywords.value = (await pptAnomalyPermissions().catch(() => undefined))?.canManageMaterials === true;
-  if (canManageKeywords.value) active.value = requestedTab();
-});
-watch(() => route.query.tab, () => {
-  if (canManageKeywords.value) active.value = requestedTab();
-});
+/** 从查询参数打开可见标签，无匹配项时显示首个可见标签。 */
+const requestedTab = () => visibleTabs.find(item => item.key === route.query.tab)?.key ?? visibleTabs[0].key;
+const active = ref<string>(requestedTab());
+const permissions = ref<Awaited<ReturnType<typeof pptAnomalyPermissions>>>();
 const editKind = ref('department');
+const editableDepartments = computed(() => permissions.value?.editableDepartments ?? []);
+// 将后端的管理员配置权限用于页面操作入口。
+const canManageAllConfigurations = computed(() => permissions.value?.canManageAllConfigurations === true);
+/** 判断当前用户能否维护指定配置类别或某一部门的关键字记录。 */
+function canMaintain(kind: string, department?: string) {
+  if (kind === 'material-type') return canManageAllConfigurations.value || permissions.value?.canManageMaterials === true;
+  // 部门关键字的新增入口以是否有可维护部门为准，已有记录按归属部门判断。
+  if (kind === 'department') {
+    if (department === undefined) return canManageAllConfigurations.value || editableDepartments.value.length > 0;
+    const target = department.trim();
+    return !!target && (canManageAllConfigurations.value || editableDepartments.value.includes(target));
+  }
+  return permissions.value?.canManageBoardsAndTitles === true;
+}
+const canMaintainActive = computed(() => canMaintain(active.value));
+const canMaintainEditor = computed(() => canMaintain(editKind.value));
+/** 获取最新维护权限，督办关系变更时重新查询。 */
+async function loadPermissions() {
+  permissions.value = await pptAnomalyPermissions().catch(() => undefined);
+}
+onMounted(loadPermissions);
+watch(() => route.query.tab, () => {
+  active.value = requestedTab();
+});
 const isTitleEditor = computed(() => editKind.value === 'section');
 const tab = computed(() => tabs.find(item => item.key === editKind.value) ?? tabs[0]);
 const keyword = ref('');
@@ -89,6 +142,12 @@ const page = ref(1);
 const size = ref(20);
 const total = ref(0);
 const rows = ref<Entry[]>([]);
+/** 管理员编辑已有的关键字时，可保留该记录的历史部门。 */
+const keywordDepartmentOptions = computed(() => {
+  if (!canManageAllConfigurations.value) return editableDepartments.value;
+  const configured = rows.value.map(row => row.target.trim()).filter(Boolean);
+  return [...new Set([...editableDepartments.value, ...configured])];
+});
 const titleRows = ref<TitleRow[]>([]);
 const loading = ref(false);
 const people = ref<PptPerson[]>([]);
@@ -139,13 +198,21 @@ const editorOpen = ref(false);
 const form = ref<Entry>({ name: '', target: '' });
 const applied = reactive({ keyword: '', target: '' });
 let requestId = 0;
+let titleSearchTimer: ReturnType<typeof setTimeout> | undefined;
 const base = '/api/ppt-anomaly/keyword-config';
+const importOpen = ref(false);
+const importing = ref(false);
+const importFile = ref<File>();
+const importError = ref('');
 
 /** 为配置请求补充认证信息并统一处理响应错误。 */
 async function request(path: string, init?: RequestInit) {
+  const headers = new Headers(init?.headers);
+  headers.set('X-User-Id', localStorage.getItem('skill-user-id') || '');
+  if (typeof init?.body === 'string') headers.set('Content-Type', 'application/json');
   const response = await fetch(base + path, {
     ...init,
-    headers: { 'Content-Type': 'application/json', 'X-User-Id': localStorage.getItem('skill-user-id') || '' },
+    headers,
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
@@ -154,10 +221,50 @@ async function request(path: string, init?: RequestInit) {
   return response;
 }
 
+/** 打开部门关键字导入窗口并清空上一次文件。 */
+function openDepartmentImport() {
+  importFile.value = undefined;
+  importError.value = '';
+  importOpen.value = true;
+}
+
+function selectDepartmentFile(event: Event) {
+  const input = event.target as HTMLInputElement;
+  importFile.value = input.files?.[0];
+  importError.value = '';
+}
+
+/** 上传部门关键字工作表，由服务器校验并写入整批数据。 */
+async function importDepartmentKeywords() {
+  const file = importFile.value;
+  if (!file || importing.value) return;
+  if (!/\.xlsx?$/i.test(file.name) || !file.size) {
+    importError.value = '请选择非空的 .xlsx 或 .xls 文件';
+    return;
+  }
+  const body = new FormData();
+  body.append('file', file);
+  importing.value = true;
+  importError.value = '';
+  try {
+    const response = await request('/department/import', { method: 'POST', body });
+    const result: { imported: number } = await response.json();
+    importOpen.value = false;
+    ElMessage.success(`成功导入 ${result.imported} 条部门关键词`);
+    if (page.value === 1) await load();
+    else page.value = 1;
+  } catch (error) {
+    importError.value = error instanceof Error ? error.message : '导入失败，请重试';
+  } finally {
+    importing.value = false;
+  }
+}
+
 /** 读取当前配置分类及分页筛选结果。 */
 async function load() {
   const id = ++requestId;
-  if (!canManageKeywords.value || active.value === 'report-notification' || active.value === 'feedback-supervisors') {
+  // 报告通知和组织督办人由各自组件加载数据。
+  if (active.value === 'report-notification' || active.value === 'feedback-supervisors') {
     loading.value = false;
     return;
   }
@@ -193,11 +300,20 @@ async function load() {
 
 /** 按当前筛选条件查询页面数据。 */
 function search() {
+  clearTimeout(titleSearchTimer);
   applied.keyword = keyword.value.trim();
-  applied.target = mode.value;
+  applied.target = mode.value || '';
   if (page.value === 1) void load();
   else page.value = 1;
 }
+
+function scheduleTitleSearch() {
+  if (active.value !== 'section') return;
+  clearTimeout(titleSearchTimer);
+  titleSearchTimer = setTimeout(search, 250);
+}
+
+onUnmounted(() => clearTimeout(titleSearchTimer));
 
 watch(active, () => {
   keyword.value = '';
@@ -212,7 +328,7 @@ watch([page, size], () => void load());
 
 const titleForm = ref({ originalName: undefined as string | undefined, name: '', section: '',
   handlerUserIds: [] as string[],
-  scope: 'FULL', upperLimitRatio: undefined as number | undefined,
+  scope: 'FULL' as PptRecognitionMode, upperLimitRatio: undefined as number | undefined,
   firstRow: undefined as number | undefined, lastRow: undefined as number | undefined });
 const selectedBoard = computed(() => sections.value.find(board => board.name === titleForm.value.section));
 const knownTitleHandlers = ref(new Map<string, string>());
@@ -247,27 +363,35 @@ function titleUpdated(row: TitleRow) {
 
 /** 打开配置编辑窗口并初始化表单。 */
 function edit(entry?: Entry) {
-  editKind.value = 'department';
+  if (!canMaintain(active.value, active.value === 'department' ? entry?.target : undefined)) return;
+  editKind.value = active.value;
   form.value = entry ? { ...entry } : { name: '', target: '' };
   editorOpen.value = true;
 }
 
-/** 加载并编辑标题的板块、解析范围及联系人。 */
+/** 初始化标题配置弹窗，供查看或维护板块、解析范围和经办人。 */
 async function editTitle(row?: TitleRow) {
   editKind.value = 'section';
   titleForm.value = {
     originalName: row?.name, name: row?.name ?? '', section: row?.section?.target ?? '',
     handlerUserIds: [],
-    scope: row?.scope?.target && modes[row.scope.target] ? row.scope.target : 'FULL',
+    scope: row?.scope?.target && isPptRecognitionMode(row.scope.target) ? row.scope.target : 'FULL',
     upperLimitRatio: row?.scope?.upperLimitRatio, firstRow: row?.scope?.firstRow, lastRow: row?.scope?.lastRow,
   };
+  recognitionMethod.value = 'default';
+  scanRules.value = [];
+  rulesLoading.value = false;
+  rulesReady.value = !row;
+  rulesLoadError.value = '';
+  rulesValidationError.value = '';
+  originalRules.value = '[]';
   editorOpen.value = true;
   sectionsReady.value = false;
   if (!row) {
     knownTitleHandlers.value.clear();
     void searchPeople('');
   }
-  await loadSections();
+  await Promise.all([loadSections(), loadScanRules()]);
 }
 
 /** 打开正式板块及默认联系人的编辑窗口。 */
@@ -281,7 +405,7 @@ function editBoard(row?: BoardRow) {
   void searchPeople('');
 }
 
-/** 跳转到指定标题的经办人维护页面。 */
+/** 打开指定标题的经办人列表，列表页根据权限提供维护操作。 */
 function openHandlers(title: string) {
   void router.push({ path: '/ppt-anomaly/keyword-config/title-handlers', state: { pptHandlerTitle: title } });
 }
@@ -299,26 +423,39 @@ async function loadSections() {
   }
 }
 
-/** 提交关键词、标题或板块编辑表单并刷新对应列表。 */
+/** 提交当前材料类型、关键字、标题或板块的表单，并刷新对应列表。 */
 async function save() {
-  if (saving.value) return;
+  if (saving.value || !canMaintainEditor.value) return;
   const entry = form.value;
   const isTitle = editKind.value === 'section';
+  if (isTitle && rulesLoading.value) return;
   const isBoard = editKind.value === 'board';
+  const isMaterialType = editKind.value === 'material-type';
   if (isBoard && !boardForm.value.owner?.trim()) {
     ElMessage.warning('请选择板块联系人');
     return;
   }
+  // 材料类型只要求名称，部门关键字还需选中有权维护的目标部门。
   const valid = isTitle ? titleForm.value.name.trim() && titleForm.value.section.trim()
-    : isBoard ? boardForm.value.name.trim() : entry.name.trim() && entry.target.trim();
+    : isBoard ? boardForm.value.name.trim() : entry.name.trim() && (isMaterialType || canMaintain('department', entry.target));
   if (!valid) {
     ElMessage.warning('请填写完整配置');
     return;
   }
-  const payload = isTitle ? titleForm.value : isBoard ? boardForm.value : entry;
+  const rules = isTitle && rulesReady.value ? (recognitionMethod.value === 'rules' ? serializeScanRules() : []) : undefined;
+  if (recognitionMethod.value === 'rules' && rules?.length === 0) {
+    rulesValidationError.value = '请至少添加一条关键词规则';
+    return;
+  }
+  const changedRules = rules && JSON.stringify(rules) !== originalRules.value ? rules : undefined;
+  if (changedRules) {
+    rulesValidationError.value = scanRuleError(changedRules);
+    if (rulesValidationError.value) return;
+  }
+  const payload = isTitle ? { ...titleForm.value, scanRules: changedRules } : isBoard ? boardForm.value : entry;
   saving.value = true;
   try {
-    const path = isTitle ? '/titles' : isBoard ? '/boards' : '/department' + (entry.id ? '/' + entry.id : '');
+    const path = isTitle ? '/titles' : isBoard ? '/boards' : `/${editKind.value}` + (entry.id ? '/' + entry.id : '');
     await request(path, {
       method: !isTitle && !isBoard && entry.id ? 'PUT' : 'POST', body: JSON.stringify(payload),
     });
@@ -335,6 +472,8 @@ async function save() {
 /** 确认并删除所选配置或标题。 */
 async function remove(entry: Entry | TitleRow | BoardRow) {
   const kind = active.value;
+  // 部门关键字使用被删除记录的归属部门校验操作入口。
+  if (!canMaintain(kind, kind === 'department' ? (entry as Entry).target : undefined)) return;
   try {
     await ElMessageBox.confirm(`删除「${entry.name}」？`, '删除配置', { type: 'warning', customClass: 'ppt-confirm-box' });
   } catch {
@@ -343,7 +482,7 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
   try {
     await request(kind === 'board' ? '/boards?' + new URLSearchParams({ name: entry.name })
       : kind === 'section' ? '/titles?' + new URLSearchParams({ name: entry.name })
-      : `/department/${(entry as Entry).id}`, { method: 'DELETE' });
+      : `/${kind}/${(entry as Entry).id}`, { method: 'DELETE' });
     if (active.value !== kind) return;
     if ((kind === 'board' ? boardRows.value.length : kind === 'section' ? titleRows.value.length : rows.value.length) === 1 && page.value > 1) page.value--;
     else await load();
@@ -358,31 +497,32 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
     <h2>例会材料配置</h2>
     <el-card shadow="never" body-class="config-card-body">
       <el-tabs v-model="active">
-        <template v-if="canManageKeywords">
-          <el-tab-pane v-for="item in tabs" :key="item.key" :name="item.key" :label="item.label" />
-        </template>
-        <el-tab-pane v-if="canManageKeywords" name="feedback-supervisors" label="反馈督办人配置" />
-        <el-tab-pane name="report-notification" label="报告通知配置" />
+        <el-tab-pane v-for="item in visibleTabs" :key="item.key" :name="item.key" :label="item.label" />
       </el-tabs>
+      <!-- 督办关系增减可能改变当前账号的可维护部门。 -->
       <PptReportNotificationConfig v-if="active === 'report-notification'" />
-      <PptFeedbackSupervisorConfig v-else-if="canManageKeywords && active === 'feedback-supervisors'" />
-      <el-config-provider v-else-if="canManageKeywords" size="small">
+      <PptFeedbackSupervisorConfig v-else-if="active === 'feedback-supervisors'"
+        :can-manage-all-configurations="canManageAllConfigurations" @changed="loadPermissions" />
+      <el-config-provider v-else size="small">
         <form class="config-filters" @submit.prevent="search">
           <PptListFilterBar>
             <el-input v-model="keyword" class="ppt-filter-search" :prefix-icon="Search" clearable aria-label="搜索配置"
-              :placeholder="active === 'section' ? '搜索页面标题或所属板块' : active === 'board' ? '搜索板块或负责人' : '搜索匹配关键词或部门'" />
+              @input="scheduleTitleSearch"
+              :placeholder="active === 'section' ? '搜索页面标题或所属板块' : active === 'board' ? '搜索板块或负责人'
+                : active === 'material-type' ? '搜索材料类型' : '搜索匹配关键词或部门'" />
             <el-select v-if="active === 'section'" v-model="mode" class="ppt-filter-select" clearable
-              placeholder="全部识别范围" aria-label="识别范围">
+              placeholder="全部识别范围" aria-label="识别范围" @change="search">
               <el-option v-for="(label, key) in modes" :key="key" :label="label" :value="key" />
             </el-select>
-            <el-button native-type="submit">筛选</el-button>
-            <el-button type="primary" @click="active === 'section' ? editTitle() : active === 'board' ? editBoard() : edit()">新增</el-button>
+            <el-button v-if="active !== 'section'" native-type="submit">筛选</el-button>
+            <el-button v-if="active === 'department' && canMaintainActive" @click="openDepartmentImport">导入</el-button>
+            <el-button v-if="canMaintainActive" type="primary" @click="active === 'section' ? editTitle() : active === 'board' ? editBoard() : edit()">新增</el-button>
           </PptListFilterBar>
         </form>
         <el-table v-if="active === 'section'" v-loading="loading" :data="titleRows" row-key="name">
           <el-table-column prop="name" label="页面标题" min-width="124" show-overflow-tooltip />
-          <el-table-column label="识别范围" min-width="80">
-            <template #default="{ row }">{{ modes[row.scope?.target ?? 'FULL'] ?? modes.FULL }}</template>
+          <el-table-column label="识别范围" min-width="140">
+            <template #default="{ row }">{{ titleScopeLabel(row.scope) }}</template>
           </el-table-column>
           <el-table-column label="区域限制" width="108" align="center">
             <template #default="{ row }">
@@ -402,13 +542,12 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
           <el-table-column label="编辑时间" width="168" class-name="config-date">
             <template #default="{ row }">{{ dateText(titleUpdated(row) ?? titleCreated(row)) }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="224" fixed="right">
+          <el-table-column label="操作" width="168" fixed="right">
             <template #default="{ row }">
               <div class="row-actions">
-                <el-button link type="primary" @click="editTitle(row)">编辑</el-button>
-                <el-button link type="primary" @click="openScanRules(row.name)">扫描规则</el-button>
-                <el-button link type="primary" @click="openHandlers(row.name)">设置经办人</el-button>
-                <el-button link type="danger" @click="remove(row)">删除</el-button>
+                <el-button link type="primary" @click="editTitle(row)">{{ canMaintainActive ? '编辑' : '查看' }}</el-button>
+                <el-button link type="primary" @click="openHandlers(row.name)">{{ canMaintainActive ? '设置经办人' : '查看经办人' }}</el-button>
+                <el-button v-if="canMaintainActive" link type="danger" @click="remove(row)">删除</el-button>
               </div>
             </template>
           </el-table-column>
@@ -419,7 +558,7 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
             <template #default="{ row }">{{ row.owner ? contactLabel(row.owner, row.ownerName) : '—' }}</template>
           </el-table-column>
           <el-table-column prop="titleCount" label="关联标题数" width="120" />
-          <el-table-column label="操作" width="110">
+          <el-table-column v-if="canMaintainActive" label="操作" width="110">
             <template #default="{ row }">
               <div class="row-actions">
                 <el-button link type="primary" @click="editBoard(row)">编辑</el-button>
@@ -429,17 +568,17 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
           </el-table-column>
         </el-table>
         <el-table v-else v-loading="loading" :data="rows" row-key="id">
-          <el-table-column prop="name" label="匹配关键词" min-width="180" />
-          <el-table-column prop="target" label="部门" min-width="160" />
+          <el-table-column prop="name" :label="active === 'material-type' ? '材料类型' : '匹配关键词'" min-width="180" />
+          <el-table-column v-if="active === 'department'" prop="target" label="部门" min-width="160" />
           <el-table-column label="新增时间" width="168" class-name="config-date">
             <template #default="{ row }">{{ dateText(row.createdAt) }}</template>
           </el-table-column>
           <el-table-column label="编辑时间" width="168" class-name="config-date">
             <template #default="{ row }">{{ dateText(row.updatedAt) }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="96" fixed="right">
+          <el-table-column v-if="canMaintainActive" label="操作" width="96" fixed="right">
             <template #default="{ row }">
-              <div class="row-actions">
+              <div v-if="active !== 'department' || canMaintain('department', row.target)" class="row-actions">
                 <el-button link type="primary" @click="edit(row)">编辑</el-button>
                 <el-button link type="danger" @click="remove(row)">删除</el-button>
               </div>
@@ -450,56 +589,102 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
           :page-sizes="[10, 20, 50, 100]" layout="total, sizes, prev, pager, next" />
       </el-config-provider>
     </el-card>
-    <el-dialog v-model="rulesOpen" :title="`${rulesTitle} · 关键词扫描规则`" width="min(760px, 94vw)"
-      append-to-body :close-on-click-modal="false" :show-close="!rulesLoading" :close-on-press-escape="!rulesLoading">
-      <p>从整页正文和表格中匹配关键词，不依赖页码。每行一个关键词，全部包含才命中；未命中使用标题默认范围，多条命中需在上传时确认。</p>
-      <div v-loading="rulesLoading">
-        <el-card v-for="(rule, index) in scanRules" :key="index" shadow="never" style="margin-bottom: 12px">
-          <el-form label-position="top" :disabled="rulesLoading">
-            <el-form-item label="规则名称" required><el-input v-model="rule.name" maxlength="255" /></el-form-item>
-            <el-form-item label="特征关键词（每行一个，全部命中）" required>
-              <el-input v-model="rule.keywords" type="textarea" :rows="3" maxlength="8192" />
-            </el-form-item>
-            <el-form-item label="扫描方式" required><el-select v-model="rule.mode">
-              <el-option v-for="(label, key) in modes" :key="key" :label="label" :value="key" />
-            </el-select></el-form-item>
-            <template v-if="rule.mode === 'UPPER_TABLE_ONLY'">
-              <el-form-item label="表格顶边分界线比例（默认 0.5）"><el-input-number v-model="rule.upperLimitRatio" :min="0.01" :max="1" :step="0.05" /></el-form-item>
-              <el-form-item label="起始行（默认 1）"><el-input-number v-model="rule.firstRow" :min="1" /></el-form-item>
-              <el-form-item label="结束行（留空到末行）"><el-input-number v-model="rule.lastRow" :min="1" /></el-form-item>
-            </template>
-            <el-button type="danger" link @click="scanRules.splice(index, 1)">删除规则</el-button>
-          </el-form>
-        </el-card>
-        <el-button :disabled="rulesLoading || !rulesReady || scanRules.length >= 50"
-          @click="scanRules.push({ name: '', keywords: '', mode: 'FULL' })">新增规则</el-button>
+    <el-dialog v-model="importOpen" title="导入部门关键词" width="min(540px, 94vw)"
+      class="ppt-dialog department-import-dialog"
+      align-center append-to-body destroy-on-close :close-on-click-modal="false"
+      :show-close="!importing" :close-on-press-escape="!importing">
+      <div class="department-import-content">
+        <div class="department-import-template">
+          <el-link :href="`${base}/department/template`" :icon="Download" type="primary">下载 Excel 模板</el-link>
+          <p>在第一个工作表填写「匹配关键词」和「部门」，每行一条。已有关键词会提示冲突。</p>
+        </div>
+        <label class="department-file-picker"
+          :class="{ 'is-selected': importFile, 'is-importing': importing }">
+          <input type="file" accept=".xlsx,.xls"
+            :aria-label="importFile ? '更换部门关键词 Excel 文件' : '选择部门关键词 Excel 文件'"
+            aria-describedby="department-import-file-detail" :disabled="importing" @change="selectDepartmentFile" />
+          <el-icon class="department-file-icon" aria-hidden="true">
+            <Document v-if="importFile" />
+            <UploadFilled v-else />
+          </el-icon>
+          <strong>{{ importFile ? '更换文件' : '选择 Excel 文件' }}</strong>
+          <span id="department-import-file-detail" class="department-file-detail" aria-live="polite">
+            {{ importFile?.name || '支持 .xlsx 和 .xls 格式' }}
+          </span>
+        </label>
+        <el-alert v-if="importError" :title="importError" type="error" :closable="false" />
       </div>
       <template #footer>
-        <el-button :disabled="rulesLoading" @click="rulesOpen = false">取消</el-button>
-        <el-button type="primary" :loading="rulesLoading" :disabled="!rulesReady" @click="saveScanRules">保存</el-button>
+        <el-button :disabled="importing" @click="importOpen = false">取消</el-button>
+        <el-button type="primary" :disabled="!importFile" :loading="importing" @click="importDepartmentKeywords">确认导入</el-button>
       </template>
     </el-dialog>
     <el-dialog
       v-model="editorOpen"
-      :title="`${(isTitleEditor ? titleForm.originalName !== undefined : editKind === 'board' ? !boardForm.create : form.id) ? '编辑' : '新增'}${tab.label}`"
+      :title="`${!canMaintainEditor ? '查看' : (isTitleEditor ? titleForm.originalName !== undefined : editKind === 'board' ? !boardForm.create : form.id) ? '编辑' : '新增'}${tab.label}`"
       class="ppt-dialog"
       :width="isTitleEditor ? 'min(680px, 94vw)' : 'min(540px, 94vw)'"
       align-center append-to-body destroy-on-close
       :show-close="!saving" :close-on-press-escape="!saving" :close-on-click-modal="false"
     >
-      <el-form label-position="top" @submit.prevent="save">
+      <el-form label-position="top" :disabled="saving || !canMaintainEditor" @submit.prevent="save">
         <template v-if="editKind === 'section'">
           <el-form-item label="页面标题" required><el-input v-model="titleForm.name" maxlength="512" /></el-form-item>
-          <el-form-item label="默认识别范围（关键词规则未命中时使用）" required>
-            <el-select v-model="titleForm.scope">
-              <el-option v-for="(label, key) in modes" :key="key" :label="label" :value="key" />
-            </el-select>
+          <el-form-item label="识别方式">
+            <el-radio-group v-if="rulesReady" v-model="recognitionMethod" aria-label="识别方式" @change="rulesValidationError = ''">
+              <el-radio-button value="default">默认识别</el-radio-button>
+              <el-radio-button value="rules">规则识别</el-radio-button>
+            </el-radio-group>
+            <span v-else-if="rulesLoading" role="status">正在加载识别设置…</span>
+            <template v-else-if="rulesLoadError">
+              <el-alert :title="rulesLoadError" type="error" :closable="false" />
+              <el-button link type="primary" @click="loadScanRules">重新加载识别设置</el-button>
+            </template>
           </el-form-item>
-          <template v-if="titleForm.scope === 'UPPER_TABLE_ONLY'">
-            <el-form-item label="表格顶边分界线比例（默认 0.5）"><el-input-number v-model="titleForm.upperLimitRatio" :min="0.01" :max="1" :step="0.05" /></el-form-item>
-            <el-form-item label="起始行（默认第 1 行）"><el-input-number v-model="titleForm.firstRow" :min="1" /></el-form-item>
-            <el-form-item label="结束行（留空读到末行）"><el-input-number v-model="titleForm.lastRow" :min="1" /></el-form-item>
+          <template v-if="rulesReady && recognitionMethod === 'default'">
+            <el-form-item label="默认识别范围" required>
+              <el-select v-model="titleForm.scope">
+                <el-option v-for="[value, label] in pptManualRecognitionOptions" :key="value" :label="label" :value="value" />
+                <template #label>{{ modes[titleForm.scope] }}</template>
+              </el-select>
+              <p class="scan-scope-hint">该标题下的所有页面都使用这个范围。</p>
+              <el-alert v-if="originalRules !== '[]'" title="保存后将清除现有关键词规则。" type="warning" :closable="false" />
+            </el-form-item>
+            <template v-if="titleForm.scope === 'UPPER_TABLE_ONLY'">
+              <el-form-item label="表格顶边分界线比例（默认 0.5）"><el-input-number v-model="titleForm.upperLimitRatio" :min="0.01" :max="1" :step="0.05" /></el-form-item>
+              <el-form-item label="起始行（默认第 1 行）"><el-input-number v-model="titleForm.firstRow" :min="1" /></el-form-item>
+              <el-form-item label="结束行（留空读到末行）"><el-input-number v-model="titleForm.lastRow" :min="1" /></el-form-item>
+            </template>
           </template>
+          <section v-else-if="rulesReady" class="scan-settings-body" aria-label="关键词规则" @input="rulesValidationError = ''">
+            <p class="scan-settings-hint">所有已填写的关键词都出现时，才应用该规则。未命中时使用{{ modes[titleForm.scope] }}。命中多条规则时，在上传确认页选择识别范围。</p>
+            <el-alert v-if="rulesValidationError" :title="rulesValidationError" type="error" :closable="false" />
+            <fieldset v-for="(rule, index) in scanRules" :key="rule.name" class="scan-rule">
+              <legend>规则 {{ index + 1 }}</legend>
+              <el-form-item label="命中规则时的识别范围" required>
+                <el-select v-model="rule.mode">
+                  <el-option v-for="(label, key) in modes" :key="key" :label="label" :value="key" />
+                </el-select>
+              </el-form-item>
+              <el-form-item v-for="(_, keywordIndex) in rule.keywords" :key="keywordIndex" :label="`关键词 ${keywordIndex + 1}`">
+                <div class="scan-keyword-input">
+                  <el-input v-model="rule.keywords[keywordIndex]" :maxlength="maxKeywordLength"
+                    :aria-label="`关键词 ${keywordIndex + 1}`" placeholder="输入关键词或短语" />
+                  <el-button v-if="canMaintainEditor && rule.keywords.length > 1" link type="danger"
+                    :aria-label="`删除关键词 ${keywordIndex + 1}`" @click="rule.keywords.splice(keywordIndex, 1); rulesValidationError = ''">删除</el-button>
+                </div>
+              </el-form-item>
+              <el-button v-if="canMaintainEditor" link type="primary" :icon="Plus" @click="rule.keywords.push('')">添加关键词</el-button>
+              <div v-if="rule.mode === 'UPPER_TABLE_ONLY'" class="scan-rule-limits">
+                <el-form-item label="分界线比例"><el-input-number v-model="rule.upperLimitRatio" :min="0.01" :max="1" :step="0.05" placeholder="0.5" /></el-form-item>
+                <el-form-item label="起始行"><el-input-number v-model="rule.firstRow" :min="1" :precision="0" placeholder="第 1 行" /></el-form-item>
+                <el-form-item label="结束行"><el-input-number v-model="rule.lastRow" :min="1" :precision="0" placeholder="末行" /></el-form-item>
+              </div>
+              <el-button v-if="canMaintainEditor" type="danger" link @click="scanRules.splice(index, 1); rulesValidationError = ''">删除规则</el-button>
+            </fieldset>
+            <el-button class="scan-add-rule" :icon="Plus" :disabled="scanRules.length >= 50"
+              v-if="canMaintainEditor" @click="addScanRule">新增例外规则</el-button>
+          </section>
           <el-form-item label="所属板块" required>
             <el-select v-if="sectionsReady || sectionsLoading" v-model="titleForm.section" filterable
               :disabled="sectionsLoading" :loading="sectionsLoading" placeholder="搜索或选择已有板块">
@@ -511,17 +696,17 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
             <span aria-live="polite">{{ selectedBoard?.owner ? contactLabel(selectedBoard.owner, selectedBoard.ownerName ?? undefined) : '—' }}</span>
           </el-form-item>
           <el-form-item v-if="titleForm.originalName === undefined" label="标题经办人">
-            <el-select v-model="titleForm.handlerUserIds" multiple filterable remote :remote-method="searchPeople"
+            <el-select v-model="titleForm.handlerUserIds" multiple filterable remote :reserve-keyword="false" :remote-method="searchPeople"
               :loading="peopleLoading" placeholder="搜索姓名或用户 ID，可稍后补充" @change="rememberTitleHandlers">
               <el-option v-for="[id, label] in titleHandlerOptions" :key="id" :value="id" :label="label" />
             </el-select>
           </el-form-item>
-          <el-button v-if="sectionsReady && !sections.length" link type="primary" @click="editorOpen = false; active = 'board'">前往板块配置</el-button>
+          <el-button v-if="canMaintainEditor && sectionsReady && !sections.length" link type="primary" @click="editorOpen = false; active = 'board'">前往板块配置</el-button>
         </template>
         <template v-else-if="editKind === 'board'">
           <el-form-item label="板块名称" required><el-input v-model="boardForm.name" maxlength="512" /></el-form-item>
           <el-form-item label="板块联系人" required>
-            <el-select :model-value="boardForm.owner ? boardForm.owner.split(',') : []" multiple filterable remote clearable
+            <el-select :model-value="boardForm.owner ? boardForm.owner.split(',') : []" multiple filterable remote clearable :reserve-keyword="false"
               :remote-method="searchPeople" :loading="peopleLoading" placeholder="搜索并选择一位或多位联系人"
               @update:model-value="selectBoardOwners">
               <el-option v-for="[id, name] in boardOwnerOptions" :key="id" :value="id" :label="contactLabel(id, name)" />
@@ -530,12 +715,18 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
           </el-form-item>
         </template>
         <template v-else>
-          <el-form-item label="匹配关键词" required><el-input v-model="form.name" maxlength="512" /></el-form-item>
-          <el-form-item label="部门" required><el-input v-model="form.target" maxlength="2048" /></el-form-item>
+          <el-form-item :label="editKind === 'material-type' ? '材料类型名称' : '匹配关键词'" required>
+            <el-input v-model="form.name" maxlength="512" />
+          </el-form-item>
+          <el-form-item v-if="editKind === 'department'" label="部门" required>
+            <el-select v-model="form.target" filterable placeholder="选择可维护的部门">
+              <el-option v-for="name in keywordDepartmentOptions" :key="name" :label="name" :value="name" />
+            </el-select>
+          </el-form-item>
         </template>
-        <div class="editor-actions">
-          <el-button :disabled="saving" @click="editorOpen = false">取消</el-button>
-          <el-button native-type="submit" type="primary" :loading="saving">保存</el-button>
+        <div class="editor-actions" :class="{ 'title-editor-actions': isTitleEditor }">
+          <el-button :disabled="saving" @click="editorOpen = false">{{ canMaintainEditor ? '取消' : '关闭' }}</el-button>
+          <el-button v-if="canMaintainEditor" native-type="submit" type="primary" :loading="saving" :disabled="isTitleEditor && rulesLoading">保存</el-button>
         </div>
       </el-form>
     </el-dialog>
@@ -552,9 +743,78 @@ h2 { margin: 0 0 14px; font-size: 22px; color: #142441; }
 .config-page :deep(.el-table .el-table__cell) { padding-block: 6px; }
 .config-page :deep(.el-table .cell) { padding-inline: 8px; }
 .config-page :deep(.config-date .cell) { white-space: nowrap; font-variant-numeric: tabular-nums; }
-.config-filters { --ppt-filter-width: 144px; margin-bottom: 10px; }
+.config-filters { --ppt-filter-width: 186px; margin-bottom: 10px; }
 .row-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .row-actions .el-button { flex-shrink: 0; margin: 0; }
 .el-pagination { margin-top: 10px; justify-content: flex-end; flex-wrap: wrap; }
 .editor-actions { display: flex; justify-content: flex-end; padding-top: 16px; border-top: 1px solid #e3eaf4; }
+.title-editor-actions { position: sticky; bottom: -20px; z-index: 1; padding-bottom: 10px; background: var(--el-dialog-bg-color, #fff); }
+.scan-settings-body {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 20px;
+  padding: 12px 14px 14px;
+  border: 1px solid #dce5f3;
+  border-radius: 12px;
+  background: #f8faff;
+}
+.scan-scope-hint { margin: 6px 0 0; color: #586b86; font-size: 12px; line-height: 1.6; }
+.scan-settings-hint { margin: 0; color: #586b86; line-height: 1.6; }
+.scan-rule { min-width: 0; margin: 0; padding: 10px 12px; border: 1px solid #dce5f3; border-radius: 9px; background: #fff; }
+.scan-rule legend { padding-inline: 5px; font-weight: 600; color: #283e62; }
+.scan-keyword-input { display: flex; align-items: center; gap: 10px; width: 100%; }
+.scan-rule-limits { display: grid; gap: 0 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.scan-rule-limits :deep(.el-input-number) { width: 100%; }
+.scan-add-rule { justify-self: start; border-style: dashed; color: #315db5; }
+@media (max-width: 560px) {
+  .scan-rule-limits { grid-template-columns: minmax(0, 1fr); }
+}
+.department-import-content { display: grid; gap: 16px; }
+.department-import-template {
+  padding: 12px 14px;
+  border: 1px solid #e3eaf4;
+  border-radius: 10px;
+  background: #f5f8fd;
+}
+.department-import-template .el-link { font-weight: 600; }
+.department-import-template p { margin: 6px 0 0; color: #52647c; line-height: 1.6; }
+.department-file-picker {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  gap: 6px;
+  padding: 18px 14px;
+  border: 1px dashed #a6b8d3;
+  border-radius: 10px;
+  text-align: center;
+  color: var(--el-color-primary);
+  background: #fafcff;
+}
+.department-file-picker input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.department-file-picker:focus-within { outline: 2px solid var(--el-color-primary); outline-offset: 2px; }
+.department-file-picker:not(.is-importing):hover,
+.department-file-picker.is-selected { border-color: var(--el-color-primary); background: #eff5ff; }
+.department-file-picker.is-importing input { cursor: wait; }
+.department-file-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  background: #e6eeff;
+  font-size: 21px;
+}
+.department-file-detail { min-width: 0; max-width: 100%; color: #52647c; overflow-wrap: anywhere; }
+:global(.department-import-dialog .el-dialog__footer) {
+  flex-shrink: 0;
+  padding: 12px var(--ppt-dialog-gutter) 16px;
+  border-top: 1px solid #e3eaf4;
+}
 </style>

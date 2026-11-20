@@ -27,7 +27,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
-/** 例会材料业务接口，负责登录权限、材料导入、反馈查看及附件下载入口。 */
+/** 例会材料业务接口，提供权限查询、材料导入、督办人配置、反馈查看及附件下载。 */
 @RestController
 @RequestMapping("/api/ppt-anomaly")
 @CrossOrigin(origins = "*", maxAge = 3600)
@@ -106,11 +106,16 @@ public class PptAnomalyController {
                 .anyMatch(department -> department.strip().endsWith("产品部"));
     }
 
-    /** 返回当前用户管理材料和配置的权限。 */
+    /** 返回当前用户的材料管理权限、全量配置权限、板块与标题维护权限及可选部门。 */
     @GetMapping("/permissions")
-    public Map<String, Boolean> permissions(@SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
+    public Map<String, Object> permissions(@SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
         requireUser(userId);
-        return Map.of("canManageMaterials", isProductDepartmentUser(userId, people));
+        var access = service.configDepartmentAccess(userId);
+        // 页面用这些权限展示操作入口，写入接口仍单独校验。
+        return Map.of("canManageMaterials", isProductDepartmentUser(userId, people),
+                "canManageAllConfigurations", access.allDepartments(),
+                "canManageBoardsAndTitles", service.canManageBoardsAndTitles(userId),
+                "editableDepartments", access.allDepartments() ? service.configDirectoryDepartments() : access.departments());
     }
 
     /** 校验已登录用户的产品部操作权限。 */
@@ -170,41 +175,37 @@ public class PptAnomalyController {
         return service.feedbackEdits(findingId, userId, canViewAllFeedback(userId));
     }
 
-    public record FeedbackSupervisorsRequest(List<String> userIds) {}
+    /** 批量新增的督办人账号与各账号要负责的部门。 */
+    public record FeedbackSupervisorsRequest(List<String> userIds, List<String> supervisorDepartments) {}
 
+    /** 供已登录用户查看各部门的督办人及督办范围。 */
     @GetMapping("/feedback-supervisors")
     public List<PptAnomalyService.FeedbackSupervisor> feedbackSupervisors(
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
-        requireProductDepartment(userId, people);
+        requireUser(userId);
         return service.feedbackSupervisors();
     }
 
-    @PutMapping("/feedback-supervisors")
-    public List<PptAnomalyService.FeedbackSupervisor> saveFeedbackSupervisors(@RequestBody FeedbackSupervisorsRequest body,
-            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
-        requireProductDepartment(userId, people);
-        service.saveFeedbackSupervisors(body.userIds(), userId);
-        return service.feedbackSupervisors();
-    }
-
+    /** 在操作者可维护的部门下添加督办关系，并返回更新后的列表。 */
     @PostMapping("/feedback-supervisors")
     public List<PptAnomalyService.FeedbackSupervisor> addFeedbackSupervisors(@RequestBody FeedbackSupervisorsRequest body,
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
-        requireProductDepartment(userId, people);
-        service.addFeedbackSupervisors(body.userIds(), userId);
+        requireUser(userId);
+        service.addFeedbackSupervisors(body.userIds(), body.supervisorDepartments(), userId);
         return service.feedbackSupervisors();
     }
 
-    public record SupervisorStatusRequest(String userId, Boolean enabled) {}
-
-    @PutMapping("/feedback-supervisors/status")
-    public List<PptAnomalyService.FeedbackSupervisor> setFeedbackSupervisorStatus(@RequestBody SupervisorStatusRequest body,
+    /** 按部门移除督办关系，系统管理员可直接移除未分配部门的旧配置。 */
+    @DeleteMapping("/feedback-supervisors")
+    public List<PptAnomalyService.FeedbackSupervisor> deleteFeedbackSupervisor(@RequestParam("userId") String supervisorId,
+            @RequestParam(required = false) String department,
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
-        requireProductDepartment(userId, people);
-        if (body.userId() == null || body.userId().isBlank() || body.enabled() == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请指定督办人和启用状态");
+        requireUser(userId);
+        if (supervisorId.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请指定要删除的反馈督办人");
         }
-        service.setFeedbackSupervisorEnabled(body.userId().strip(), body.enabled(), userId);
+        // 省略部门时由服务校验系统管理员身份和待移除记录的分配状态。
+        service.deleteFeedbackSupervisor(supervisorId.strip(), department == null ? null : department.strip(), userId);
         return service.feedbackSupervisors();
     }
 
@@ -513,21 +514,32 @@ public class PptAnomalyController {
     @PostMapping(value = "/imports/preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public PptAnomalyService.ImportReview previewImport(@RequestParam(required = false) Long batchId,
             @RequestPart("file") MultipartFile file,
+            @RequestPart(value = "previewPdf", required = false) MultipartFile previewPdf,
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
         requireProductDepartment(userId, people);
-        return service.previewImport(batchId, file);
+        return service.previewImport(batchId, file, previewPdf);
     }
 
     /** 导入确认时按需生成高清原页，不保存版本或触发通知。 */
     @PostMapping(value = "/imports/preview-image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE,
             produces = MediaType.IMAGE_PNG_VALUE)
     public ResponseEntity<byte[]> previewImportImage(@RequestPart(value = "file", required = false) MultipartFile file,
+            @RequestPart(value = "previewPdf", required = false) MultipartFile previewPdf,
             @RequestParam(value = "versionId", required = false) Long versionId,
             @RequestParam("pageNo") int pageNo,
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
         requireProductDepartment(userId, people);
         return ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore())
-                .body(service.previewImportImage(file, versionId, pageNo, userId));
+                .body(service.previewImportImage(file, previewPdf, versionId, pageNo, userId));
+    }
+
+    /** 材料上传人补传或替换同页数 PDF，立即用于各处页面预览。 */
+    @PostMapping(value = "/versions/{versionId}/preview-pdf", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public Map<String, Object> uploadPreviewPdf(@PathVariable long versionId,
+            @RequestPart("previewPdf") MultipartFile previewPdf,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
+        requireProductDepartment(userId, people);
+        return Map.of("status", "SAVED", "pageCount", service.savePreviewPdf(versionId, previewPdf, userId));
     }
 
     /** 保存上传原件、确认页面分派并完成识别。 */
@@ -536,6 +548,7 @@ public class PptAnomalyController {
     public Version saveImport(@RequestParam(required = false) Long batchId,
             @RequestParam(required = false) String batchName,
             @RequestPart("file") MultipartFile file,
+            @RequestPart(value = "previewPdf", required = false) MultipartFile previewPdf,
             @RequestPart("assignments") List<PptAnomalyService.ImportAssignment> assignments,
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
         requireProductDepartment(userId, people);
@@ -546,6 +559,7 @@ public class PptAnomalyController {
             batchId = service.createBatch(batchName.strip(), userId).id();
         }
         Version version = service.uploadVersion(batchId, file, null, userId);
+        if (previewPdf != null) service.savePreviewPdf(version.id(), previewPdf, userId);
         service.confirmConfiguredImport(version.id(), userId, assignments);
         ruleEngine.analyze(version.id());
         return new Version(version.id(), version.batchId(), version.versionNo(), version.versionName(),

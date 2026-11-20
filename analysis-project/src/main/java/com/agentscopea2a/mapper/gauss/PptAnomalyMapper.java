@@ -8,11 +8,17 @@ import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.Param;
 
-/** 例会材料 Gauss 持久化接口，对应 PptAnomalyMapper.xml 中的批次、识别、分派和反馈 SQL。 */
+/** 例会材料持久化接口，对应 PptAnomalyMapper.xml 中的配置、批次、识别、分派、反馈和通知 SQL。 */
 public interface PptAnomalyMapper {
-    record FeedbackSupervisorConfig(String userIds, String disabledUserIds) {}
+    /** 督办人配置的账号名单、停用名单及账号到督办部门的 JSON 映射。 */
+    record FeedbackSupervisorConfig(String userIds, String disabledUserIds, String departmentAssignments) {}
+
+    /** 查询督办人配置，维护事务传入 lock=true 锁定配置行。 */
     FeedbackSupervisorConfig feedbackSupervisorConfig(@Param("lock") boolean lock);
+
+    /** 同步保存督办名单和部门关系，并记录操作人。 */
     int saveFeedbackSupervisors(@Param("ids") String ids, @Param("disabledIds") String disabledIds,
+                                @Param("assignments") String assignments,
                                 @Param("user") String user);
     int markFeedbackNotified(@Param("ids") List<Long> ids, @Param("sentAt") java.time.LocalDateTime sentAt);
 
@@ -37,12 +43,19 @@ public interface PptAnomalyMapper {
                               @Param("status") String status);
     int deleteFinding(@Param("id") long id, @Param("user") String user);
 
+    /** 单个部门的默认收件人和抄送人名单，均为 JSON 数组。 */
     record ReportRecipientsRow(String toJson, String ccJson) {}
 
+    /** 综合列表中的通知配置记录，携带名单所属部门。 */
     record DepartmentReportRecipients(String department, String toJson, String ccJson) {}
-    List<DepartmentReportRecipients> reportRecipientsForDepartments(@Param("departments") List<String> departments);
 
+    /** 查询所有已保存的报告通知配置，供配置页统一展示。 */
+    List<DepartmentReportRecipients> allReportRecipients();
+
+    /** 按部门名称读取报告通知的默认名单。 */
     ReportRecipientsRow reportRecipients(@Param("department") String department);
+
+    /** 新增或更新指定部门的默认收件人和抄送人。 */
     int saveReportRecipients(@Param("department") String department, @Param("toJson") String toJson,
                              @Param("ccJson") String ccJson);
 
@@ -328,13 +341,17 @@ public interface PptAnomalyMapper {
     int markCarriedFeedbackComplete(@Param("id") long id);
     /** 统计指定类别及筛选条件下的配置数量。 */
     long configCount(@Param("kind") String kind, @Param("keyword") String keyword, @Param("target") String target);
-    /** 按类别、名称和目标值分页查询关键词配置。 */
+    /** 按类别、名称和目标值分页查询材料类型、部门关键字及标题板块相关配置。 */
     List<Entry> configs(@Param("kind") String kind, @Param("keyword") String keyword, @Param("target") String target, @Param("size") int size, @Param("offset") long offset);
     /** 查询可选择的正式板块名称。 */
     List<String> sections();
-    /** 删除指定类别的单条关键词配置。 */
+    /** 删除指定类别下匹配主键的单条配置。 */
     int deleteConfig(@Param("kind") String kind, @Param("id") long id);
-    /** 新增一条关键词、标题范围或板块相关配置。 */
+
+    /** 在写入事务中锁定部门关键字并返回其原归属部门，供更新和删除校验。 */
+    String lockDepartmentKeywordTarget(@Param("id") long id);
+
+    /** 新增材料类型、部门关键字、标题或板块相关配置。 */
     int createConfig(@Param("kind") String kind, @Param("entry") Entry entry);
     /** 更新指定类别的配置内容及编辑时间。 */
     int updateConfig(@Param("kind") String kind, @Param("entry") Entry entry);

@@ -21,27 +21,46 @@ export async function getPptSentMailPage(page: number, batchId?: number, version
 const headers=()=>({'X-User-Id':localStorage.getItem('skill-user-id')||'demo-user'});
 /** 在认证请求头中声明 JSON 请求正文类型。 */
 const jsonHeaders=()=>({...headers(),'Content-Type':'application/json'});
-/** 读取当前用户管理例会材料和配置的权限。 */
+/** 读取服务端判定的材料管理、全量配置、板块与标题以及部门维护权限。 */
 export async function pptAnomalyPermissions() {
-  return parse<{ canManageMaterials: boolean }>(await fetch(`${base}/permissions`, { headers: headers() }));
+  // 督办关系调整会影响部门权限，每次查询均读取最新结果。
+  return parse<{
+    canManageMaterials: boolean;
+    canManageAllConfigurations: boolean;
+    canManageBoardsAndTitles: boolean;
+    editableDepartments: string[];
+  }>(
+    await fetch(`${base}/permissions`, { headers: headers(), cache: 'no-store' }));
 }
-export interface PptFeedbackSupervisor { userId: string; name: string; departments: string[]; available: boolean; enabled: boolean }
 
+/** 组织督办人的身份、台账归属和配置的督办部门。 */
+export interface PptFeedbackSupervisor {
+  userId: string;
+  name: string;
+  departments: string[];
+  supervisorDepartments: string[];
+}
+
+/** 读取各部门的督办关系，供配置页查看。 */
 export async function getPptFeedbackSupervisors() {
   return parse<PptFeedbackSupervisor[]>(await fetch(`${base}/feedback-supervisors`, {
     headers: headers(), cache: 'no-store',
   }));
 }
 
-export async function addPptFeedbackSupervisors(userIds: string[]) {
+/** 为选中人员追加指定部门的督办关系。 */
+export async function addPptFeedbackSupervisors(userIds: string[], supervisorDepartments: string[]) {
   return parse<PptFeedbackSupervisor[]>(await fetch(`${base}/feedback-supervisors`, {
-    method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ userIds }),
+    method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ userIds, supervisorDepartments }),
   }));
 }
 
-export async function setPptFeedbackSupervisorEnabled(userId: string, enabled: boolean) {
-  return parse<PptFeedbackSupervisor[]>(await fetch(`${base}/feedback-supervisors/status`, {
-    method: 'PUT', headers: jsonHeaders(), body: JSON.stringify({ userId, enabled }),
+/** 按部门移除督办关系，管理员可省略部门以清理未分配的旧配置。 */
+export async function deletePptFeedbackSupervisor(userId: string, department?: string) {
+  const query = new URLSearchParams({ userId });
+  if (department !== undefined) query.set('department', department);
+  return parse<PptFeedbackSupervisor[]>(await fetch(`${base}/feedback-supervisors?${query}`, {
+    method: 'DELETE', headers: headers(),
   }));
 }
 
@@ -366,7 +385,36 @@ export interface PptImportPage {
   mode: PptRecognitionMode | 'OUT_OF_SCOPE' | 'SKIP' | 'REVIEW' | 'RULE_CONFLICT';
   excluded: boolean;
 }
-export type PptRecognitionMode = 'FULL' | 'TEXT_ONLY' | 'UPPER_TABLE_ONLY' | 'NO_SCAN';
+export const pptRecognitionModes = {
+  FULL: '整页识别',
+  TEXT_ONLY: '仅正文文字',
+  TEXT_AND_FIRST_TABLE: '正文文字+第一个表格',
+  UPPER_TABLE_ONLY: '仅上方表格',
+  NO_SCAN: '整页不识别',
+} as const;
+
+export type PptRecognitionMode = keyof typeof pptRecognitionModes;
+
+// 关键词规则和历史配置仍可应用仅上方表格，手动下拉框只提供通用范围。
+export const pptManualRecognitionOptions = Object.entries(pptRecognitionModes)
+  .filter(([mode]) => mode !== 'UPPER_TABLE_ONLY');
+
+export function isPptRecognitionMode(mode: string): mode is PptRecognitionMode {
+  return Object.prototype.hasOwnProperty.call(pptRecognitionModes, mode);
+}
+
+type PptImportScope = PptRecognitionMode | 'RULE_CONFLICT' | 'OUT_OF_SCOPE';
+
+export interface PptImportRecognition {
+  defaultMode: PptRecognitionMode | 'OUT_OF_SCOPE';
+  ruleMode: PptImportScope;
+  ruleName?: string | null;
+}
+
+export interface PptImportTitleMatch {
+  originalTitle: string;
+  candidates: { title: string; section: string | null; mode: PptImportScope; recognition?: PptImportRecognition | null }[];
+}
 /** 提交给后端的页面板块和联系人分派结果。 */
 export interface PptImportAssignment {
   page: number;
@@ -379,6 +427,7 @@ export interface PptImportAssignment {
   deferOwner?: boolean;
   title?: string;
   recognitionMode?: PptRecognitionMode;
+  useDefaultRecognition?: boolean;
   handlers?: string[];
 }
 /** 材料导入预览的页面、板块及联系人数据。 */
@@ -389,12 +438,15 @@ type PptImportReview = {
   contactNames?: Record<string, string>;
   titleHandlers: Record<string, PptTitleHandlerPerson[]>;
   thumbnails: Record<number, string>;
+  titleMatches?: Record<number, PptImportTitleMatch>;
+  recognitionByPage?: Record<number, PptImportRecognition>;
 };
 
 /** 上传 PPT 进行页面解析预览，供用户确认板块归属。 */
-export async function previewPptImport(file: File, batchId?: number) {
+export async function previewPptImport(file: File, batchId?: number, previewPdf?: File) {
   const body = new FormData();
   body.append('file', file);
+  if (previewPdf) body.append('previewPdf', previewPdf);
   if (batchId !== undefined) body.append('batchId', String(batchId));
   return parse<PptImportReview>(await fetch(`${base}/imports/preview`, {
     method: 'POST', headers: headers(), body,
@@ -402,9 +454,10 @@ export async function previewPptImport(file: File, batchId?: number) {
 }
 
 /** 按需渲染高清原页；待上传文件与已保存版本二选一。 */
-export async function previewPptImportImage(source: { file?: File; versionId?: number; pageNo: number }, signal?: AbortSignal) {
+export async function previewPptImportImage(source: { file?: File; previewPdf?: File; versionId?: number; pageNo: number }, signal?: AbortSignal) {
   const body = new FormData();
   if (source.file) body.append('file', source.file);
+  if (source.previewPdf) body.append('previewPdf', source.previewPdf);
   if (source.versionId !== undefined) body.append('versionId', String(source.versionId));
   body.append('pageNo', String(source.pageNo));
   const response = await fetch(`${base}/imports/preview-image`, { method: 'POST', headers: headers(), body, signal });
@@ -413,14 +466,24 @@ export async function previewPptImportImage(source: { file?: File; versionId?: n
 }
 
 /** 提交原件、批次选择及页面分派结果并执行识别。 */
-export async function savePptImport(file: File, batch: { batchId: number } | { batchName: string }, assignments: PptImportAssignment[]) {
+export async function savePptImport(file: File, batch: { batchId: number } | { batchName: string }, assignments: PptImportAssignment[], previewPdf?: File) {
   const body = new FormData();
   body.append('file', file);
+  if (previewPdf) body.append('previewPdf', previewPdf);
   if ('batchId' in batch) body.append('batchId', String(batch.batchId));
   else body.append('batchName', batch.batchName);
   // 页面归属作为 JSON 表单分段，与 PPT 文件在同一导入请求中提交。
   body.append('assignments', new Blob([JSON.stringify(assignments)], { type: 'application/json' }));
   return parse<PptVersion>(await fetch(`${base}/imports`, { method: 'POST', headers: headers(), body }));
+}
+
+/** 上传人补传或替换版本的配套 PDF，仅用于页面预览。 */
+export async function uploadPptPreviewPdf(versionId: number, previewPdf: File) {
+  const body = new FormData();
+  body.append('previewPdf', previewPdf);
+  return parse<{ status: string; pageCount: number }>(await fetch(`${base}/versions/${versionId}/preview-pdf`, {
+    method: 'POST', headers: headers(), body,
+  }));
 }
 
 /** 读取已上传版本的导入归属确认信息。 */

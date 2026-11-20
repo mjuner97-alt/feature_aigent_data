@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** 创建与复制共用的类型选择器，先确认任务模式再进入编辑页。 */
+/** 新建长任务时先确认任务类型，再进入编辑页。 */
 import { computed, ref, watch } from 'vue';
 import { listAllLongTaskTypes, type LongTaskType } from '../api/longTaskConfig';
 import { creatableFlowTypes } from '../utils/flowCreation';
@@ -39,7 +39,7 @@ function cancel() {
 function onOpenChange(value: boolean) {
   if (!value) cancel();
 }
-/** 确认已启用的类型，交由父组件进入对应创建或复制流程。 */
+/** 确认已启用的类型，交由父组件进入创建流程。 */
 function confirm() {
   if (!selected.value || loading.value) return;
   emit('selected', selected.value);

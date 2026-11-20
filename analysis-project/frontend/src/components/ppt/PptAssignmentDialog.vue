@@ -116,7 +116,7 @@ async function save() {
         </el-select>
       </el-form-item>
       <el-form-item label="经办人">
-        <el-select v-model="handlers" multiple filterable remote :remote-method="searchPeople" :loading="searching"
+        <el-select v-model="handlers" multiple filterable remote :reserve-keyword="false" :remote-method="searchPeople" :loading="searching"
           :disabled="!department" placeholder="输入姓名或统一认证号" style="width: 100%">
           <el-option v-for="person in people" :key="person.id" :value="person.id" :label="person.label" />
         </el-select>

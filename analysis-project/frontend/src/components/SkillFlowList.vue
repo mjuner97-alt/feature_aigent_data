@@ -35,8 +35,7 @@ const currentCreatedBy = ref('');
 const currentEnabled = ref<boolean | undefined>();
 const loading = ref(false);
 const types = ref<LongTaskType[]>([]);
-const createOpen = ref(false),
-  copySourceId = ref<number | null>(null);
+const createOpen = ref(false);
 const batchFlow = ref<SkillFlow | null>(null),
   batchOpen = ref(false),
   runLoading = ref(false);
@@ -155,21 +154,19 @@ async function fetchPage(scope: 'mine' | 'all' = props.scope, silent = false) {
 }
 
 function create() {
-  copySourceId.value = null;
   createOpen.value = true;
 }
 function selectCreationType(type: LongTaskType) {
   router.push({
     path: '/skills/jobs/flows/new',
-    query: { typeId: String(type.id), ...(copySourceId.value == null ? {} : { copyFrom: String(copySourceId.value) }) },
+    query: { typeId: String(type.id) },
   });
 }
 function edit(id: number) {
   router.push(`/skills/jobs/flows/${id}/edit`);
 }
 function copy(id: number) {
-  copySourceId.value = id;
-  createOpen.value = true;
+  router.push({ path: '/skills/jobs/flows/new', query: { copyFrom: String(id) } });
 }
 async function toggle(flow: SkillFlowSummary) {
   try {

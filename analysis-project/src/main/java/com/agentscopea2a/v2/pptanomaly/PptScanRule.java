@@ -19,9 +19,9 @@ public record PptScanRule(String title, String name, String keywords, String mod
         return text.replaceAll("[\\p{javaWhitespace}\\p{Zs}]+", "").toLowerCase(Locale.ROOT);
     }
 
-    /** 多条命中必须由用户确认，不能依赖数据库返回顺序。 */
-    public static List<PptScanRule> matching(List<PptScanRule> rules, String title, String text) {
-        return rules.stream().filter(rule -> PptAnomalyService.unnumberedTitle(rule.title())
-                .equals(PptAnomalyService.unnumberedTitle(title)) && rule.matches(text)).toList();
+    static List<PptScanRule> forTitle(List<PptScanRule> rules, String title, boolean exact) {
+        String key = exact ? title : PptAnomalyService.unnumberedTitle(title);
+        return rules.stream().filter(rule -> key.equals(exact ? rule.title()
+                : PptAnomalyService.unnumberedTitle(rule.title()))).toList();
     }
 }

@@ -1,20 +1,25 @@
 <script setup lang="ts">
+/** 组织督办人配置，支持查看全部关系和维护有权限的部门。 */
+
 import { computed, onMounted, ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import PptListFilterBar from './PptListFilterBar.vue';
-import { addPptFeedbackSupervisors, getPptFeedbackSupervisors, listPptReportDepartments,
-  searchPptDirectoryPeople, setPptFeedbackSupervisorEnabled,
+import { addPptFeedbackSupervisors, deletePptFeedbackSupervisor, getPptFeedbackSupervisors, listPptReportDepartments,
+  searchPptDirectoryPeople,
   type PptFeedbackSupervisor, type PptPerson } from '../../api/pptAnomaly';
 
 const saved = ref<PptFeedbackSupervisor[]>([]);
 const departments = ref<string[]>([]);
+const editableDepartments = ref<string[]>([]);
+const props = defineProps<{ canManageAllConfigurations: boolean }>();
+const emit = defineEmits<{ changed: [] }>();
 const department = ref('');
 const visiblePeople = computed(() => saved.value.filter(person =>
-  !department.value || person.departments.includes(department.value)));
-const existingIds = computed(() => new Set(saved.value.map(person => person.userId)));
+  !department.value || person.supervisorDepartments.includes(department.value)));
 
 const addOpen = ref(false);
 const selected = ref<string[]>([]);
+const selectedDepartments = ref<string[]>([]);
 const choices = ref(new Map<string, PptPerson>());
 const results = ref<PptPerson[]>([]);
 const loading = ref(true);
@@ -35,12 +40,18 @@ const options = computed(() => {
   return [...people.values()];
 });
 
+/** 加载督办人、全部部门筛选项和可维护部门。 */
 async function load() {
   loading.value = true;
   loadError.value = '';
   try {
     const [people, options] = await Promise.all([getPptFeedbackSupervisors(), listPptReportDepartments()]);
-    departments.value = options.map(item => item.name);
+    // 历史督办关系中的部门也可作为筛选项。
+    const listedDepartments = options.map(item => item.name);
+    const assignedDepartments = people.flatMap(person => person.supervisorDepartments);
+    departments.value = [...new Set([...listedDepartments, ...assignedDepartments])].sort();
+    // 部门筛选显示全部选项，新增和移除使用有维护权限的部门。
+    editableDepartments.value = options.filter(item => item.editable).map(item => item.name);
     saved.value = people;
   } catch (cause) {
     loadError.value = cause instanceof Error ? cause.message : '督办人配置加载失败';
@@ -49,9 +60,11 @@ async function load() {
   }
 }
 
+/** 重置人员搜索和部门选项，打开新增督办关系弹窗。 */
 function openAdd() {
   searchId++;
   selected.value = [];
+  selectedDepartments.value = [];
   choices.value.clear();
   results.value = [];
   searching.value = false;
@@ -60,6 +73,7 @@ function openAdd() {
   addOpen.value = true;
 }
 
+/** 按姓名或认证号搜索督办人候选，保留当前选中人员。 */
 async function search(keyword: string) {
   const id = ++searchId;
   results.value = [];
@@ -78,15 +92,18 @@ async function search(keyword: string) {
   }
 }
 
+/** 追加所选部门的督办关系，并刷新列表和维护权限。 */
 async function add() {
-  if (!selected.value.length || saving.value) return;
+  if (!selected.value.length || !selectedDepartments.value.length || saving.value) return;
   saving.value = true;
   saveError.value = '';
   try {
-    saved.value = await addPptFeedbackSupervisors(selected.value);
-    department.value = '';
+    saved.value = await addPptFeedbackSupervisors(selected.value, selectedDepartments.value);
     addOpen.value = false;
-    ElMessage.success('反馈督办人已新增');
+    // 操作人如果新增了自己的督办关系，父页面也需要更新授权范围。
+    emit('changed');
+    await load();
+    ElMessage.success('反馈督办部门已保存');
   } catch (cause) {
     saveError.value = cause instanceof Error ? cause.message : '督办人新增失败';
   } finally {
@@ -94,14 +111,37 @@ async function add() {
   }
 }
 
-async function toggle(person: PptFeedbackSupervisor) {
-  if (changingId.value || (!person.enabled && !person.available)) return;
+/** 统一显示人员姓名和认证号。 */
+function personLabel(person: Pick<PptPerson, 'userId' | 'name'>) {
+  return person.name && person.name !== person.userId ? `${person.name}（${person.userId}）` : person.userId;
+}
+
+/** 计算当前筛选下可移除的督办部门。 */
+function removableDepartments(person: PptFeedbackSupervisor) {
+  return person.supervisorDepartments.filter(name => (props.canManageAllConfigurations || editableDepartments.value.includes(name))
+    && (!department.value || department.value === name));
+}
+
+/** 确认后移除指定督办关系或未分配部门的旧配置。 */
+async function remove(person: PptFeedbackSupervisor, name?: string) {
+  if (changingId.value) return;
   changingId.value = person.userId;
   try {
-    saved.value = await setPptFeedbackSupervisorEnabled(person.userId, !person.enabled);
-    ElMessage.success(person.enabled ? '反馈督办人已禁用' : '反馈督办人已启用');
+    const message = name === undefined
+      ? `移除「${personLabel(person)}」未分配部门的督办人配置？`
+      : `移除「${personLabel(person)}」对「${name}」的督办关系？`;
+    await ElMessageBox.confirm(message, '移除组织督办人', {
+      type: 'warning', customClass: 'ppt-confirm-box', confirmButtonText: '删除', cancelButtonText: '取消',
+    });
+    saved.value = await deletePptFeedbackSupervisor(person.userId, name);
+    // 移除自身的督办关系也可能收回相应部门的维护权限。
+    emit('changed');
+    await load();
+    ElMessage.success('督办关系已移除');
   } catch (cause) {
-    ElMessage.error(cause instanceof Error ? cause.message : '状态更新失败');
+    if (cause !== 'cancel' && cause !== 'close') {
+      ElMessage.error(cause instanceof Error ? cause.message : '督办人删除失败');
+    }
   } finally {
     changingId.value = undefined;
   }
@@ -113,62 +153,65 @@ onMounted(load);
 <template>
   <section v-loading="loading" class="supervisor-settings">
     <PptListFilterBar>
-      <template #leading><p class="supervisor-note">首次待反馈通知和逾期提醒会抄送已启用的督办人。</p></template>
-      <el-select v-model="department" filterable clearable aria-label="筛选部门"
-        placeholder="全部部门" class="ppt-filter-select" :disabled="loading || !!loadError">
+      <template #leading><p class="supervisor-note">首次待反馈通知和逾期提醒按事项责任部门抄送对应的督办人。</p></template>
+      <el-select v-model="department" filterable clearable aria-label="筛选督办部门"
+        placeholder="全部督办部门" class="ppt-filter-select" :disabled="loading || !!loadError">
         <el-option v-for="name in departments" :key="name" :label="name" :value="name" />
       </el-select>
-      <el-button type="primary" :disabled="loading || !!loadError || !!changingId" @click="openAdd">新增</el-button>
+      <el-button v-if="editableDepartments.length" type="primary" :disabled="loading || !!loadError || !!changingId" @click="openAdd">新增</el-button>
     </PptListFilterBar>
     <el-alert v-if="loadError" :title="loadError" type="error" :closable="false">
       <el-button link type="primary" @click="load">重新加载</el-button>
     </el-alert>
     <el-table v-else :data="visiblePeople" row-key="userId"
       :empty-text="department ? '该部门暂无反馈督办人' : '暂无反馈督办人'">
-      <el-table-column label="姓名" min-width="120">
-        <template #default="{ row }">{{ row.available ? row.name : '—' }}</template>
+      <el-table-column label="姓名（统一认证号）" min-width="230">
+        <template #default="{ row }">{{ personLabel(row) }}</template>
       </el-table-column>
-      <el-table-column prop="userId" label="统一认证号" min-width="170" />
-      <el-table-column label="部门" min-width="180">
+      <el-table-column label="人员所属部门" min-width="160">
         <template #default="{ row }">{{ row.departments.join('、') || '—' }}</template>
       </el-table-column>
-      <el-table-column label="台账状态" width="120">
-        <template #default="{ row }">
-          <span v-if="row.available">有效</span>
-          <el-tag v-else type="warning">台账无此人</el-tag>
-        </template>
+      <el-table-column label="督办部门" min-width="160">
+        <template #default="{ row }">{{ row.supervisorDepartments.join('、') || '未配置' }}</template>
       </el-table-column>
-      <el-table-column label="督办状态" width="105">
+      <el-table-column v-if="canManageAllConfigurations || editableDepartments.length" label="操作" width="125" fixed="right">
         <template #default="{ row }">
-          <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '已启用' : '已禁用' }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="90" fixed="right">
-        <template #default="{ row }">
-          <el-button link :type="row.enabled ? 'danger' : 'primary'" :loading="changingId === row.userId"
-            :disabled="!!changingId || (!row.enabled && !row.available)" @click="toggle(row)">
-            {{ row.enabled ? '禁用' : '启用' }}
-          </el-button>
+          <el-dropdown v-if="removableDepartments(row).length" trigger="click" :disabled="!!changingId"
+            @command="(name: string) => remove(row, name)">
+            <el-button link type="danger" :loading="changingId === row.userId">移除督办部门</el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item v-for="name in removableDepartments(row)" :key="name" :command="name">{{ name }}</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+          <el-button v-else-if="canManageAllConfigurations && !row.supervisorDepartments.length" link type="danger"
+            :loading="changingId === row.userId" :disabled="!!changingId" @click="remove(row)">移除</el-button>
         </template>
       </el-table-column>
     </el-table>
 
     <el-dialog v-model="addOpen" title="新增反馈督办人" width="min(520px, 94vw)" append-to-body
-      :show-close="!saving" :close-on-click-modal="!saving" :close-on-press-escape="!saving">
+      :show-close="!saving" :close-on-click-modal="false" :close-on-press-escape="!saving">
       <el-alert v-if="saveError" :title="saveError" type="error" :closable="false" />
       <el-form label-position="top" @submit.prevent="add">
-        <el-form-item label="反馈督办人" :error="searchError">
-          <el-select v-model="selected" multiple filterable remote :remote-method="search"
+        <el-form-item label="反馈督办人" required :error="searchError">
+          <el-select v-model="selected" multiple filterable remote :reserve-keyword="false" :remote-method="search"
             :loading="searching" :disabled="saving" placeholder="输入姓名或统一认证号搜索" style="width: 100%">
             <el-option v-for="person in options" :key="person.userId" :value="person.userId"
-              :disabled="existingIds.has(person.userId)"
-              :label="`${person.name}（${person.userId}）${existingIds.has(person.userId) ? ' · 已配置' : ''}`" />
+              :label="personLabel(person)" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="督办部门" required>
+          <el-select v-model="selectedDepartments" multiple filterable :disabled="saving"
+            placeholder="选择督办部门" style="width: 100%">
+            <el-option v-for="name in editableDepartments" :key="name" :label="name" :value="name" />
           </el-select>
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button :disabled="saving" @click="addOpen = false">取消</el-button>
-        <el-button type="primary" :loading="saving" :disabled="!selected.length" @click="add">新增</el-button>
+        <el-button type="primary" :loading="saving" :disabled="!selected.length || !selectedDepartments.length" @click="add">保存</el-button>
       </template>
     </el-dialog>
   </section>

@@ -245,7 +245,7 @@ public class PptFeedbackNotifier {
         var first = group.get(0);
         // 同一经办人可能负责多条事项，发送前将接收人认证号去重。
         List<String> recipients = group.stream().map(PptAnomalyMapper.FeedbackNotice::recipient).distinct().toList();
-        List<String> cc = supervisors(recipients);
+        List<String> cc = supervisors(departmentOf(first), recipients);
         var payload = new NotificationPayload("HTML", body, null, null, link(first, notificationBaseUrl), null, subject,
                 null, null, first.versionId(), "SUCCESS", LocalDateTime.now(), recipients, "METRIC", cc);
         var request = sender.prepare(payload);
@@ -256,16 +256,16 @@ public class PptFeedbackNotifier {
                 recipientJson(recipients), recipientJson(cc), "SYSTEM");
     }
 
-    private List<String> supervisors(List<String> recipients) {
+    private List<String> supervisors(String department, List<String> recipients) {
         var config = persistence.feedbackSupervisorConfig(false);
         if (config == null) return List.of();
         try {
-            var idsType = new com.fasterxml.jackson.core.type.TypeReference<List<String>>() {};
-            var disabled = new java.util.HashSet<>(json.readValue(config.disabledUserIds(), idsType));
-            return json.readValue(config.userIds(), idsType).stream()
-                    .filter(id -> !disabled.contains(id) && !recipients.contains(id)).distinct().toList();
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("无法读取反馈督办人配置", e);
+            return PptAnomalyService.readSupervisorDepartments(json, config.departmentAssignments()).entrySet().stream()
+                    .filter(entry -> entry.getValue().contains(department) && !recipients.contains(entry.getKey()))
+                    .map(Map.Entry::getKey).toList();
+        } catch (IllegalStateException e) {
+            log.warn("无法读取反馈督办部门，邮件仅发送给经办人", e);
+            return List.of();
         }
     }
 
@@ -315,7 +315,7 @@ public class PptFeedbackNotifier {
         group.forEach(item -> findings.putIfAbsent(item.findingId(), item));
         List<Long> ids = List.copyOf(findings.keySet());
         var to = group.stream().map(PptAnomalyMapper.FeedbackReminder::recipient).distinct().toList();
-        var cc = supervisors(to);
+        var cc = supervisors(department, to);
         String url = link(version, department, baseUrl);
         String subject = "【反馈逾期提醒】" + fileName;
         String body = reminderBody(version, fileName, department, ids.size(), url);

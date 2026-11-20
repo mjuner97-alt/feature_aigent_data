@@ -1,8 +1,18 @@
 package com.agentscopea2a.v2.pptanomaly;
 
+import org.apache.poi.ss.usermodel.CellType;
+import org.apache.poi.ss.usermodel.DataFormatter;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.WorkbookFactory;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.agentscopea2a.mapper.gauss.PptAnomalyMapper;
@@ -10,6 +20,10 @@ import com.agentscopea2a.v2.auth.controller.AuthController;
 import com.agentscopea2a.v2.auth.mapper.DeveloperPlPersonInfoMapper;
 import org.springframework.dao.DuplicateKeyException;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.LinkedHashMap;
@@ -20,13 +34,17 @@ import org.springframework.transaction.annotation.Transactional;
 import org.apache.ibatis.annotations.AutomapConstructor;
 import java.util.Set;
 
-/** 例会材料配置接口，维护部门关键词、标题板块、解析范围、经办人及明细链接。 */
+/** 例会材料配置接口，提供材料类型、板块、标题和部门关键字的查询及维护。查询要求登录，写入按配置类别校验。 */
 @RestController
 @RequestMapping("/api/ppt-anomaly/keyword-config")
 @ConditionalOnProperty(prefix = "spring.datasource.hikari.gauss-customer", name = "enabled", havingValue = "true")
 public class PptKeywordConfigController {
-    private static final Set<String> KINDS = Set.of("department", "scope", "section", "contact");
-    private static final Set<String> MODES = Set.of("FULL", "TEXT_ONLY", "UPPER_TABLE_ONLY", "NO_SCAN");
+    private static final Set<String> KINDS = Set.of("material-type", "department", "scope", "section", "contact");
+    private static final Set<String> MODES = PptAnomalyService.CONFIGURABLE_PAGE_MODES;
+    private static final String KEYWORD_HEADER = "匹配关键词";
+    private static final String DEPARTMENT_HEADER = "部门";
+    private static final int CONFIG_NAME_LIMIT = 512;
+    private static final int CONFIG_TARGET_LIMIT = 2048;
     private final PptAnomalyMapper persistence;
     private final DeveloperPlPersonInfoMapper people;
     private final PptFeedbackNotifier notifier;
@@ -41,13 +59,13 @@ public class PptKeywordConfigController {
         this.service = service;
     }
 
-    /** 校验已登录用户的产品部操作权限。 */
+    /** 配置读取对所有登录用户开放。 */
     @ModelAttribute
-    public void requireProductDepartment(@SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
-        PptAnomalyController.requireProductDepartment(userId, people);
+    public void requireUser(@SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
+        PptAnomalyController.requireUser(userId);
     }
 
-    /** 关键词配置及其解析范围参数和维护时间。 */
+    /** 配置记录及其识别范围参数和维护时间。 */
     public record Entry(Long id, String name, String target, Double upperLimitRatio, Integer firstRow, Integer lastRow,
                         LocalDateTime createdAt, LocalDateTime updatedAt) {
         /** 构造配置记录，兼容包含或省略维护时间的输入。 */
@@ -65,7 +83,8 @@ public class PptKeywordConfigController {
     public record TitlePage(List<TitleRow> items, long total) {}
     /** 标题名称、板块、解析规则及联系人维护请求。 */
     public record TitleEdit(String originalName, String name, String section, String scope, String owner,
-                            Double upperLimitRatio, Integer firstRow, Integer lastRow, List<String> handlerUserIds) {}
+                            Double upperLimitRatio, Integer firstRow, Integer lastRow, List<String> handlerUserIds,
+                            List<PptScanRule> scanRules) {}
     /** 经办人的部门、姓名及认证号展示数据。 */
     public record Handler(String department, String name, String userId) {}
     /** 一个标题明细分组及其链接集合。 */
@@ -73,21 +92,35 @@ public class PptKeywordConfigController {
     /** 标题明细下的一条链接名称及 HTTP 地址。 */
     public record DetailLink(String name, String url) {}
 
+    /** 读取已配置标题的扫描规则，供查看和编辑页面使用。 */
     @GetMapping("/scan-rules")
     public List<PptScanRule> scanRules(@RequestParam String title) {
         requireConfiguredTitle(title);
         return persistence.scanRules().stream().filter(rule -> title.equals(rule.title())).toList();
     }
 
+    /** 校验维护权限并整体替换标题的扫描规则。 */
     @PutMapping("/scan-rules")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Transactional(GaussConfig.TX_NAME)
-    public void saveScanRules(@RequestParam String title, @RequestBody List<PptScanRule> rules) {
+    public void saveScanRules(@RequestParam String title, @RequestBody List<PptScanRule> rules,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
+        service.requireBoardAndTitleMaintenance(editor);
+        // 锁住标题后再替换规则，使校验和保存对应同一条标题配置。
         requireRow(persistence.lockConfiguredTitle(title).size());
+        replaceScanRules(title, validateScanRules(title, rules));
+    }
+
+    private void replaceScanRules(String title, List<PptScanRule> rules) {
+        persistence.deleteScanRules(title);
+        rules.forEach(persistence::insertScanRule);
+    }
+
+    private static List<PptScanRule> validateScanRules(String title, List<PptScanRule> rules) {
         if (rules == null || rules.size() > 50) throw bad("每个标题最多配置 50 条规则");
         var names = new java.util.HashSet<String>();
         var conditions = new java.util.HashSet<String>();
-        persistence.deleteScanRules(title);
+        var validated = new java.util.ArrayList<PptScanRule>();
         for (var rule : rules) {
             if (rule == null || rule.mode() == null || !MODES.contains(rule.mode())) throw bad("扫描方式无效");
             String name = required(rule.name(), 255);
@@ -105,8 +138,9 @@ public class PptKeywordConfigController {
                     || first != null && first < 1 || last != null && last < (first == null ? 1 : first)) {
                 throw bad("表格范围无效");
             }
-            persistence.insertScanRule(new PptScanRule(title, name, keywords, rule.mode(), ratio, first, last));
+            validated.add(new PptScanRule(title, name, keywords, rule.mode(), ratio, first, last));
         }
+        return validated;
     }
 
     /** 查询指定标题下配置的明细分组及链接。 */
@@ -116,11 +150,13 @@ public class PptKeywordConfigController {
         return persistence.titleDetailLinks(title);
     }
 
-    /** 校验明细名称和 HTTP 链接后整体保存标题明细配置。 */
+    /** 校验维护权限、明细名称和 HTTP 链接后整体保存标题明细配置。 */
     @PutMapping("/title-details")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Transactional(GaussConfig.TX_NAME)
-    public void saveTitleDetails(@RequestParam String title, @RequestBody List<Detail> details) {
+    public void saveTitleDetails(@RequestParam String title, @RequestBody List<Detail> details,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
+        service.requireBoardAndTitleMaintenance(editor);
         requireRow(persistence.lockConfiguredTitle(title).size());
         persistence.deleteTitleDetailLinks(title);
         for (int detailNo = 0; detailNo < details.size(); detailNo++) {
@@ -165,11 +201,13 @@ public class PptKeywordConfigController {
                 }).toList();
     }
 
-    /** 整体替换默认标题经办人，仅影响后续导入。 */
+    /** 整体替换默认标题经办人，新名单用于后续导入。 */
     @PutMapping("/title-handlers")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Transactional(GaussConfig.TX_NAME)
-    public void saveTitleHandlers(@RequestParam String title, @RequestBody List<String> userIds) {
+    public void saveTitleHandlers(@RequestParam String title, @RequestBody List<String> userIds,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
+        service.requireBoardAndTitleMaintenance(editor);
         requireRow(persistence.lockConfiguredTitle(title).size());
         replaceTitleHandlers(title, userIds);
     }
@@ -188,10 +226,12 @@ public class PptKeywordConfigController {
         }
     }
 
-    /** 为默认标题新增经办人，仅影响后续导入。 */
+    /** 为标题补充默认经办人，新名单用于后续导入。 */
     @PostMapping("/title-handlers")
     @Transactional(GaussConfig.TX_NAME)
-    public List<Handler> addTitleHandler(@RequestParam String title, @RequestParam String userId) {
+    public List<Handler> addTitleHandler(@RequestParam String title, @RequestParam String userId,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
+        service.requireBoardAndTitleMaintenance(editor);
         requireRow(persistence.lockConfiguredTitle(title).size());
         var person = service.ledgerPerson(userId);
         if (person == null || person.depts().isEmpty()) throw bad("请选择带有部门的经办人");
@@ -212,10 +252,12 @@ public class PptKeywordConfigController {
 
     public record ReuseHandlers(String sourceTitle) {}
 
-    /** 追加复用来源标题的经办人，保留当前标题已有配置。 */
+    /** 将来源标题的默认经办人追加到当前标题。 */
     @PostMapping("/title-handlers/reuse")
     @Transactional(GaussConfig.TX_NAME)
-    public List<Handler> reuseTitleHandlers(@RequestParam String title, @RequestBody ReuseHandlers body) {
+    public List<Handler> reuseTitleHandlers(@RequestParam String title, @RequestBody ReuseHandlers body,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
+        service.requireBoardAndTitleMaintenance(editor);
         String source = required(body.sourceTitle(), 512);
         if (title.equals(source)) throw bad("请选择其他标题");
         java.util.stream.Stream.of(title, source).sorted().forEach(name -> requireRow(persistence.lockConfiguredTitle(name).size()));
@@ -230,10 +272,12 @@ public class PptKeywordConfigController {
         return readTitleHandlers(title);
     }
 
-    /** 删除指定标题下的经办人配置。 */
+    /** 移除指定标题下的默认经办人关系。 */
     @DeleteMapping("/title-handlers")
     @Transactional(GaussConfig.TX_NAME)
-    public List<Handler> removeTitleHandler(@RequestParam String title, @RequestParam String userId) {
+    public List<Handler> removeTitleHandler(@RequestParam String title, @RequestParam String userId,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
+        service.requireBoardAndTitleMaintenance(editor);
         requireRow(persistence.lockConfiguredTitle(title).size());
         persistence.deleteTitleHandler(title, required(userId, 255));
         return readTitleHandlers(title);
@@ -248,9 +292,12 @@ public class PptKeywordConfigController {
     @PostMapping("/titles")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Transactional(GaussConfig.TX_NAME)
-    public void saveTitle(@RequestBody TitleEdit body) {
+    public void saveTitle(@RequestBody TitleEdit body,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
+        service.requireBoardAndTitleMaintenance(editor);
         String name = required(body.name(), 512);
         String section = required(body.section(), 512);
+        var rules = body.scanRules() == null ? null : validateScanRules(name, body.scanRules());
         if (!sections().contains(section)) throw bad("请选择已配置的板块");
         String original = body.originalName();
         if (original != null) requireRow(persistence.lockConfiguredTitle(original).size());
@@ -268,15 +315,19 @@ public class PptKeywordConfigController {
         } else if (!name.equals(original)) {
             persistence.renameTitleHandlers(original, name);
             persistence.renameTitleDetailLinks(original, name);
-            persistence.renameScanRules(original, name);
+            if (rules == null) persistence.renameScanRules(original, name);
+            else persistence.deleteScanRules(original);
         }
+        if (rules != null) replaceScanRules(name, rules);
     }
 
     /** 删除标题及其解析、经办人和明细链接配置。 */
     @DeleteMapping("/titles")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Transactional(GaussConfig.TX_NAME)
-    public void deleteTitle(@RequestParam String name) {
+    public void deleteTitle(@RequestParam String name,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
+        service.requireBoardAndTitleMaintenance(editor);
         requireRow(persistence.lockConfiguredTitle(name).size());
         Entry section = entriesByName("section").get(name);
         Entry scope = entriesByName("scope").get(name);
@@ -361,7 +412,9 @@ public class PptKeywordConfigController {
     @PostMapping("/boards")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Transactional(GaussConfig.TX_NAME)
-    public void saveBoard(@RequestBody BoardEdit body) {
+    public void saveBoard(@RequestBody BoardEdit body,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
+        service.requireBoardAndTitleMaintenance(editor);
         String name = required(body.name(), 512);
         if (body.owner() == null || body.owner().isBlank()) throw bad("请选择板块联系人");
         String original = body.create() || body.originalName() == null ? name : required(body.originalName(), 512);
@@ -401,7 +454,9 @@ public class PptKeywordConfigController {
     @DeleteMapping("/boards")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Transactional(GaussConfig.TX_NAME)
-    public void deleteBoard(@RequestParam String name) {
+    public void deleteBoard(@RequestParam String name,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
+        service.requireBoardAndTitleMaintenance(editor);
         String boardName = required(name, 512);
         if (!sections().contains(boardName)) requireRow(0);
         if (entriesByName("section").values().stream().anyMatch(entry -> boardName.equals(entry.target()))) {
@@ -429,34 +484,158 @@ public class PptKeywordConfigController {
                 "department", person.getDepartment() == null ? "" : person.getDepartment())).toList();
     }
 
-    /** 校验并新增当前类别的配置。 */
+    @GetMapping("/department/template")
+    public ResponseEntity<byte[]> departmentTemplate() throws IOException {
+        try (var workbook = new XSSFWorkbook(); var output = new ByteArrayOutputStream()) {
+            var sheet = workbook.createSheet("部门关键词");
+            var textStyle = workbook.createCellStyle();
+            textStyle.setDataFormat(workbook.createDataFormat().getFormat("@"));
+            for (int column = 0; column < 2; column++) {
+                sheet.setDefaultColumnStyle(column, textStyle);
+                sheet.setColumnWidth(column, 28 * 256);
+            }
+            var header = sheet.createRow(0);
+            header.createCell(0).setCellValue(KEYWORD_HEADER);
+            header.createCell(1).setCellValue(DEPARTMENT_HEADER);
+            workbook.write(output);
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                    .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                            .filename("部门关键词导入模板.xlsx", StandardCharsets.UTF_8).build().toString())
+                    .body(output.toByteArray());
+        }
+    }
+
+    /** 整表校验关键字及各行部门权限后批量新增，关键词冲突时回滚本次导入。 */
+    @PostMapping(value = "/department/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @Transactional(GaussConfig.TX_NAME)
+    public Map<String, Integer> importDepartmentKeywords(@RequestParam(value = "file", required = false) MultipartFile file,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
+        Map<Integer, Entry> entries = readDepartmentKeywords(file);
+        var access = service.configDepartmentAccess(editor);
+        // 任一行越权时拒绝整批导入，确保后续插入只涉及授权部门。
+        entries.values().forEach(entry -> access.requireMaintenance(entry.target()));
+        for (var row : entries.entrySet()) {
+            try {
+                persistence.createConfig("department", row.getValue());
+            } catch (DuplicateKeyException e) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "第 " + row.getKey() + " 行：匹配关键词已存在");
+            }
+        }
+        return Map.of("imported", entries.size());
+    }
+
+    private static Map<Integer, Entry> readDepartmentKeywords(MultipartFile file) {
+        if (file == null || file.isEmpty()) throw bad("请选择包含部门关键词的 Excel 文件");
+        String filename = file.getOriginalFilename();
+        if (filename == null || !filename.toLowerCase(Locale.ROOT).matches(".*\\.xlsx?")) {
+            throw bad("请选择 .xlsx 或 .xls 文件");
+        }
+        Map<Integer, Entry> entries = new LinkedHashMap<>();
+        Map<String, Integer> keywordRows = new HashMap<>();
+        var formatter = new DataFormatter(Locale.ROOT);
+        try (var input = file.getInputStream(); var workbook = WorkbookFactory.create(input)) {
+            if (workbook.getNumberOfSheets() == 0) throw bad("Excel 中没有工作表");
+            var sheet = workbook.getSheetAt(0);
+            var header = sheet.getRow(0);
+            if (header == null || !KEYWORD_HEADER.equals(importCell(header, 0, formatter))
+                    || !DEPARTMENT_HEADER.equals(importCell(header, 1, formatter))) {
+                throw bad("第 1 行：请使用模板表头「匹配关键词」「部门」");
+            }
+            for (Row row : sheet) {
+                int rowNumber = row.getRowNum() + 1;
+                if (rowNumber == 1) continue;
+                String keyword = importCell(row, 0, formatter);
+                String department = importCell(row, 1, formatter);
+                if (keyword.isBlank() && department.isBlank()) continue;
+                requireImportValue(keyword, KEYWORD_HEADER, CONFIG_NAME_LIMIT, rowNumber);
+                requireImportValue(department, DEPARTMENT_HEADER, CONFIG_TARGET_LIMIT, rowNumber);
+                Integer firstRow = keywordRows.putIfAbsent(keyword, rowNumber);
+                if (firstRow != null) throw bad("第 " + rowNumber + " 行：匹配关键词与第 " + firstRow + " 行重复");
+                entries.put(rowNumber, new Entry(null, keyword, department, null, null, null));
+            }
+        } catch (ResponseStatusException e) {
+            throw e;
+        } catch (IOException | RuntimeException e) {
+            throw bad("无法读取 Excel，请检查文件格式、文件是否损坏或加密");
+        }
+        if (entries.isEmpty()) throw bad("Excel 中没有可导入的部门关键词");
+        return entries;
+    }
+
+    private static String importCell(Row row, int column, DataFormatter formatter) {
+        var cell = row.getCell(column);
+        if (cell != null && (cell.getCellType() == CellType.FORMULA || cell.getCellType() == CellType.ERROR)) {
+            String label = column == 0 ? KEYWORD_HEADER : DEPARTMENT_HEADER;
+            throw bad("第 " + (row.getRowNum() + 1) + " 行：" + label + "请填写值，单元格中有公式或错误");
+        }
+        return formatter.formatCellValue(cell).trim();
+    }
+
+    private static void requireImportValue(String value, String label, int limit, int row) {
+        if (value.isBlank()) throw bad("第 " + row + " 行：请填写" + label);
+        if (value.length() > limit) throw bad("第 " + row + " 行：" + label + "不能超过 " + limit + " 个字符");
+    }
+
+    /** 按目标部门或配置类别校验权限并新增记录。 */
     @PostMapping("/{kind}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void create(@PathVariable String kind, @RequestBody Entry body) {
+    public void create(@PathVariable String kind, @RequestBody Entry body,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
+        requireConfigWrite(kind, null, body, editor);
         save(kind, null, body);
     }
 
-    /** 校验并更新指定配置记录。 */
+    /** 校验写入权限并更新记录，部门关键字换部门时校验新旧归属。 */
     @PutMapping("/{kind}/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void update(@PathVariable String kind, @PathVariable long id, @RequestBody Entry body) {
+    @Transactional(GaussConfig.TX_NAME)
+    public void update(@PathVariable String kind, @PathVariable long id, @RequestBody Entry body,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
+        requireConfigWrite(kind, id, body, editor);
         save(kind, id, body);
     }
 
-    /** 校验类别后删除指定配置记录。 */
+    /** 按已有记录的归属或类别校验权限后删除配置。 */
     @DeleteMapping("/{kind}/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void delete(@PathVariable String kind, @PathVariable long id) {
-        checkKind(kind);
+    @Transactional(GaussConfig.TX_NAME)
+    public void delete(@PathVariable String kind, @PathVariable long id,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
+        requireConfigWrite(kind, id, null, editor);
         if ("contact".equals(kind)) throw bad("板块联系人必须保留，请更换联系人");
         requireRow(persistence.deleteConfig(kind, id));
+    }
+
+    /** 集中校验通用新增、更新和删除入口的权限。 */
+    private void requireConfigWrite(String kind, Long id, Entry body, String editor) {
+        checkKind(kind);
+        switch (kind) {
+            case "material-type" -> {
+                // 材料类型是共享配置，系统管理员也有全量维护权限。
+                if (!service.canManageAllConfigurations(editor)) PptAnomalyController.requireProductDepartment(editor, people);
+            }
+            case "department" -> {
+                var access = service.configDepartmentAccess(editor);
+                if (id != null) {
+                    // 更新和删除均以数据库归属为准，并在写入事务中锁定该记录。
+                    String currentDepartment = persistence.lockDepartmentKeywordTarget(id);
+                    requireRow(currentDepartment == null ? 0 : 1);
+                    access.requireMaintenance(currentDepartment);
+                }
+                // 新增及更新均校验提交的目标部门，覆盖跨部门调整归属的场景。
+                if (body != null) access.requireMaintenance(required(body.target(), CONFIG_TARGET_LIMIT));
+            }
+            default -> service.requireBoardAndTitleMaintenance(editor);
+        }
     }
 
     /** 统一校验配置名称、目标值和解析范围后写入数据库。 */
     private void save(String kind, Long id, Entry body) {
         checkKind(kind);
-        String name = required(body.name(), 512);
-        String target = required(body.target(), 2048);
+        String name = required(body.name(), CONFIG_NAME_LIMIT);
+        // 材料类型只维护名称，复用配置表的必填目标字段保存同一名称。
+        String target = "material-type".equals(kind) ? name : required(body.target(), CONFIG_TARGET_LIMIT);
         if ("scope".equals(kind) && !MODES.contains(target)) throw bad("识别范围无效");
         if ("contact".equals(kind)) {
             if (!sections().contains(name)) throw bad("请选择已有板块");

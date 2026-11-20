@@ -1,14 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<!-- 例会材料持久化映射，与 PptAnomalyMapper 接口方法逐项对应。 -->
+<!-- 例会材料配置、批次、识别、反馈和通知的持久化映射，对应 PptAnomalyMapper 接口。 -->
 <mapper namespace="com.agentscopea2a.mapper.gauss.PptAnomalyMapper">
+    <!-- 读取督办账号及其部门关系，维护时以锁定后的数据计算可维护范围。 -->
     <select id="feedbackSupervisorConfig" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackSupervisorConfig">
-        SELECT user_ids,disabled_user_ids FROM digital_qa_ppt_feedback_supervisors WHERE config_id=1
+        SELECT user_ids,disabled_user_ids,department_assignments FROM digital_qa_ppt_feedback_supervisors WHERE config_id=1
+        <!-- 串行化督办关系的权限校验与写入，防止并发覆盖其他部门的改动。 -->
         <if test="lock">FOR UPDATE</if>
     </select>
+    <!-- 更新督办名单和各账号的部门关系，同时记录变更人及变更时间。 -->
     <update id="saveFeedbackSupervisors">
         UPDATE digital_qa_ppt_feedback_supervisors
-        SET user_ids=#{ids},disabled_user_ids=#{disabledIds},updated_by=#{user},updated_at=CURRENT_TIMESTAMP
+        SET user_ids=#{ids},disabled_user_ids=#{disabledIds},department_assignments=#{assignments},
+            updated_by=#{user},updated_at=CURRENT_TIMESTAMP
         WHERE config_id=1
     </update>
     <update id="markFeedbackNotified">
@@ -934,7 +938,7 @@
         SELECT COUNT(*) <include refid="configFilter"/>
     </select>
 
-    <!-- 按类别、名称和目标值分页查询关键词配置。 -->
+    <!-- 按类别、名称和目标值分页查询材料类型、关键字及标题板块相关配置。 -->
     <select id="configs" resultType="com.agentscopea2a.v2.pptanomaly.PptKeywordConfigController$Entry">
         SELECT id,name,target,upper_limit_ratio,first_row,last_row,created_at,updated_at <include refid="configFilter"/> ORDER BY id DESC LIMIT #{size} OFFSET #{offset}
     </select>
@@ -947,12 +951,20 @@
         ORDER BY 1
     </select>
 
-    <!-- 删除指定类别的单条关键词配置。 -->
+    <!-- 删除指定类别下匹配主键的单条配置。 -->
     <delete id="deleteConfig">
         DELETE FROM digital_qa_ppt_keyword_config WHERE kind=#{kind} AND id=#{id}
     </delete>
 
-    <!-- 新增一条关键词、标题范围或板块相关配置。 -->
+    <!-- 取得待维护关键字的原归属部门，供更新和删除时校验。 -->
+    <select id="lockDepartmentKeywordTarget" resultType="string">
+        SELECT target FROM digital_qa_ppt_keyword_config
+        WHERE kind='department' AND id=#{id}
+        <!-- 在同一事务中锁定当前归属，防止校验后被并发改动。 -->
+        FOR UPDATE
+    </select>
+
+    <!-- 新增一条配置，并记录首次保存时间。 -->
     <insert id="createConfig">
         INSERT INTO digital_qa_ppt_keyword_config(kind,name,target,upper_limit_ratio,first_row,last_row,updated_at) VALUES (#{kind},#{entry.name},#{entry.target},#{entry.upperLimitRatio},#{entry.firstRow},#{entry.lastRow},CURRENT_TIMESTAMP)
     </insert>
@@ -986,16 +998,19 @@
     <insert id="recordMail">
         INSERT INTO digital_qa_ppt_mail_record(version_id,department,subject,body,sent_by,status,sent_at) VALUES (#{id},#{department},#{preview.subject},#{preview.body},#{user},'SENT',CURRENT_TIMESTAMP)
     </insert>
-    <select id="reportRecipientsForDepartments" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$DepartmentReportRecipients">
+    <!-- 查询所有已保存的报告通知名单，覆盖人员台账中已移除的历史部门。 -->
+    <select id="allReportRecipients" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$DepartmentReportRecipients">
+        <!-- 以部门为键返回默认收件人和抄送人，维护权限由服务层计算。 -->
         SELECT department,recipients_to AS to_json,recipients_cc AS cc_json
-        FROM digital_qa_ppt_report_notification WHERE department IN
-        <foreach collection="departments" item="department" open="(" close=")" separator=",">#{department}</foreach>
+        FROM digital_qa_ppt_report_notification
     </select>
+    <!-- 查询指定部门的默认收件人和抄送人。 -->
     <select id="reportRecipients" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$ReportRecipientsRow">
         SELECT recipients_to AS to_json, recipients_cc AS cc_json
         FROM digital_qa_ppt_report_notification WHERE department = #{department}
     </select>
 
+    <!-- 按部门写入或替换默认收件人和抄送人名单。 -->
     <insert id="saveReportRecipients">
         INSERT INTO digital_qa_ppt_report_notification (department, recipients_to, recipients_cc)
         VALUES (#{department}, #{toJson}, #{ccJson})

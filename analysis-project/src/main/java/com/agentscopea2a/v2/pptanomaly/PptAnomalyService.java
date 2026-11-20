@@ -13,6 +13,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.agentscopea2a.v2.auth.mapper.DeveloperPlPersonInfoMapper;
 import com.agentscopea2a.v2.auth.entity.DeveloperPlPersonInfo;
+import com.agentscopea2a.v2.auth.service.AdminRoleService;
 import org.apache.poi.xslf.usermodel.XMLSlideShow;
 import org.apache.poi.xslf.usermodel.XSLFShape;
 import org.apache.poi.xslf.usermodel.XSLFGroupShape;
@@ -34,6 +35,8 @@ import org.springframework.core.io.FileSystemResource;
 import javax.imageio.ImageIO;
 import java.awt.Color;
 import java.awt.RenderingHints;
+import java.awt.geom.AffineTransform;
+import java.awt.geom.Point2D;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.io.InputStream;
@@ -46,6 +49,8 @@ import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -56,7 +61,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.Locale;
 
-/** 例会材料核心服务，协调批次版本、页面解析、经办权限、反馈说明及文件存储。 */
+/** 例会材料服务，处理配置权限、部门督办关系、批次导入、页面解析和反馈。 */
 @Service
 @ConditionalOnProperty(prefix = "spring.datasource.hikari.gauss-customer", name = "enabled", havingValue = "true")
 public class PptAnomalyService {
@@ -67,6 +72,7 @@ public class PptAnomalyService {
     private final PptAnomalyMapper persistence;
     private final ObjectMapper mapper;
     private final DeveloperPlPersonInfoMapper people;
+    private final AdminRoleService adminRoleService;
     // 带此版本标记的说明保存为 JSON，内容同时包含用户说明和附件文件名索引。
     private static final String ATTACHMENT_PREFIX = "ppt-feedback-files:v1\n";
     private static final int MAX_FEEDBACK_BYTES = 16 * 1024;
@@ -76,12 +82,15 @@ public class PptAnomalyService {
     // 统一存储根目录来自通用 workspace，原件、预览和反馈截图使用不同子目录。
     private final Path storageDir;
     private final Semaphore previewRenderer = new Semaphore(1, true);
-    /** 装配持久化和 JSON 依赖，解析通用 workspace 下的材料存储目录。 */
+    private final PptPdfPreview pdfPreviews = new PptPdfPreview();
+    /** 注入配置持久化、人员台账及系统角色服务，解析材料存储目录。 */
     public PptAnomalyService(PptAnomalyMapper persistence, ObjectMapper mapper, DeveloperPlPersonInfoMapper people,
+                             AdminRoleService adminRoleService,
                              @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}/ppt-anomaly") String storageDir) {
         this.persistence = persistence;
         this.mapper = mapper;
         this.people = people;
+        this.adminRoleService = adminRoleService;
         this.storageDir = Path.of(storageDir).toAbsolutePath().normalize();
     }
 
@@ -289,13 +298,77 @@ public class PptAnomalyService {
         return normalized;
     }
 
-    public record FeedbackSupervisor(String userId, String name, List<String> departments, boolean available, boolean enabled) {}
+    /** 督办人的账号、姓名、所属部门及被分配的督办部门。 */
+    public record FeedbackSupervisor(String userId, String name, List<String> departments,
+                                     List<String> supervisorDepartments) {}
 
+    /** 复用长任务等模块的系统管理员身份，授予例会材料全部配置维护权限。 */
+    boolean canManageAllConfigurations(String userId) {
+        return adminRoleService.isAdminUserId(userId);
+    }
+
+    /** 系统管理员和产品部人员可维护板块与标题。 */
+    boolean canManageBoardsAndTitles(String userId) {
+        PptAnomalyController.requireUser(userId);
+        return canManageAllConfigurations(userId) || PptAnomalyController.isProductDepartmentUser(userId.strip(), people);
+    }
+
+    /** 校验已登录用户能否写入全局板块和标题配置。 */
+    void requireBoardAndTitleMaintenance(String userId) {
+        if (!canManageBoardsAndTitles(userId)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "仅系统管理员或产品部人员可维护板块和标题配置");
+        }
+    }
+
+    /** 当前用户的部门配置维护权限，管理员的权限覆盖现有的历史部门配置。 */
+    record ConfigDepartmentAccess(boolean allDepartments, Set<String> departments) {
+        /** 判断非空部门是否在当前用户的维护范围内。 */
+        boolean canMaintain(String department) {
+            return department != null && !department.isBlank()
+                    && (allDepartments || departments.contains(department.strip()));
+        }
+
+        /** 拒绝写入当前用户授权范围之外的部门。 */
+        void requireMaintenance(String department) {
+            if (!canMaintain(department)) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "没有维护该部门配置的权限");
+            }
+        }
+    }
+
+    /** 读取台账中的可选部门，供全量配置页面选择目标部门。 */
+    List<String> configDirectoryDepartments() {
+        return people.selectAllDepartments().stream().filter(Objects::nonNull)
+                .map(String::strip).filter(name -> !name.isEmpty()).distinct().sorted().toList();
+    }
+
+    /** 读取当前用户的部门配置权限，供页面和写入校验统一使用。 */
+    ConfigDepartmentAccess configDepartmentAccess(String userId) {
+        PptAnomalyController.requireUser(userId);
+        return configDepartmentAccess(userId, persistence.feedbackSupervisorConfig(false));
+    }
+
+    /** 合并人员台账归属和督办部门，可直接使用维护事务中已锁定的配置。 */
+    private ConfigDepartmentAccess configDepartmentAccess(String userId, PptAnomalyMapper.FeedbackSupervisorConfig config) {
+        // 全量授权也覆盖从台账移除但仍有配置记录的部门。
+        if (canManageAllConfigurations(userId)) return new ConfigDepartmentAccess(true, Set.of());
+        var departments = new LinkedHashSet<String>();
+        var person = ledgerPerson(userId);
+        if (person != null) departments.addAll(person.depts());
+        // 配置名单中的账号才具有映射内各部门的督办维护权限。
+        if (config != null && readList(config.userIds()).contains(userId.strip())) {
+            departments.addAll(readSupervisorDepartments(mapper, config.departmentAssignments())
+                    .getOrDefault(userId.strip(), List.of()));
+        }
+        return new ConfigDepartmentAccess(false, departments);
+    }
+
+    /** 查询全量督办人配置，并补充人员台账中的姓名及归属部门。 */
     List<FeedbackSupervisor> feedbackSupervisors() {
         var config = persistence.feedbackSupervisorConfig(false);
         if (config == null) return List.of();
         var ids = readList(config.userIds());
-        var disabled = new HashSet<>(readList(config.disabledUserIds()));
+        var assignments = readSupervisorDepartments(mapper, config.departmentAssignments());
         var directory = supervisorDirectory(ids);
         return ids.stream().map(id -> {
             var rows = directory.getOrDefault(id, List.of());
@@ -303,49 +376,75 @@ public class PptAnomalyService {
                     .filter(value -> value != null && !value.isBlank()).findFirst().orElse(id);
             var departments = rows.stream().map(DeveloperPlPersonInfo::getDepartment)
                     .filter(value -> value != null && !value.isBlank()).map(String::strip).distinct().sorted().toList();
-            return new FeedbackSupervisor(id, name, departments, !rows.isEmpty(), !disabled.contains(id));
+            return new FeedbackSupervisor(id, name, departments, assignments.getOrDefault(id, List.of()));
         }).toList();
     }
 
+    /** 批量读取督办账号的台账记录，保留一人多部门的记录。 */
     private Map<String, List<DeveloperPlPersonInfo>> supervisorDirectory(List<String> ids) {
         if (ids.isEmpty()) return Map.of();
         return people.selectByUserIds(ids).stream().filter(person -> ids.contains(person.getUserId()))
                 .collect(java.util.stream.Collectors.groupingBy(DeveloperPlPersonInfo::getUserId));
     }
 
+    /** 为选中账号追加授权部门的督办关系。 */
     @Transactional(GaussConfig.TX_NAME)
-    public void saveFeedbackSupervisors(List<String> ids, String editor) {
-        var selected = PptAnomalyController.recipientIds(ids);
-        requireSupervisorAccounts(selected);
-        var config = lockSupervisorConfig();
-        var disabled = readList(config.disabledUserIds()).stream().filter(selected::contains).toList();
-        updateSupervisorConfig(selected, disabled, editor);
-    }
-
-    @Transactional(GaussConfig.TX_NAME)
-    public void addFeedbackSupervisors(List<String> ids, String editor) {
+    public void addFeedbackSupervisors(List<String> ids, List<String> departments, String editor) {
         var selected = PptAnomalyController.recipientIds(ids);
         if (selected.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择要新增的反馈督办人");
+        var scopes = PptAnomalyController.recipientIds(departments);
+        if (scopes.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择督办部门");
+        if (!configDirectoryDepartments().containsAll(scopes)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "督办部门必须是人员台账中的部门");
+        }
+        var config = lockSupervisorConfig();
+        // 使用锁定后的督办关系逐部门授权，再合并名单。
+        var access = configDepartmentAccess(editor, config);
+        scopes.forEach(access::requireMaintenance);
         requireSupervisorAccounts(selected);
-        var config = lockSupervisorConfig();
         var merged = new LinkedHashSet<>(readList(config.userIds()));
-        if (merged.addAll(selected)) {
-            updateSupervisorConfig(List.copyOf(merged), readList(config.disabledUserIds()), editor);
+        merged.addAll(selected);
+        var assignments = new LinkedHashMap<>(readSupervisorDepartments(mapper, config.departmentAssignments()));
+        for (String id : selected) {
+            var personDepartments = new LinkedHashSet<>(assignments.getOrDefault(id, List.of()));
+            personDepartments.addAll(scopes);
+            assignments.put(id, List.copyOf(personDepartments));
         }
+        var disabled = readList(config.disabledUserIds()).stream().filter(id -> !selected.contains(id)).toList();
+        updateSupervisorConfig(List.copyOf(merged), disabled, assignments, editor);
     }
 
+    /** 删除单个部门的督办关系，或由系统管理员清理未分配部门的旧督办人配置。 */
     @Transactional(GaussConfig.TX_NAME)
-    public void setFeedbackSupervisorEnabled(String id, boolean enabled, String editor) {
+    public void deleteFeedbackSupervisor(String id, String department, String editor) {
         var config = lockSupervisorConfig();
-        var selected = readList(config.userIds());
-        if (!selected.contains(id)) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "反馈督办人不存在");
-        if (enabled) requireSupervisorAccounts(List.of(id));
-        var disabled = new LinkedHashSet<>(readList(config.disabledUserIds()));
-        if (enabled ? disabled.remove(id) : disabled.add(id)) {
-            updateSupervisorConfig(selected, List.copyOf(disabled), editor);
+        var access = configDepartmentAccess(editor, config);
+        var selected = new ArrayList<>(readList(config.userIds()));
+        var assignments = new LinkedHashMap<>(readSupervisorDepartments(mapper, config.departmentAssignments()));
+        var remaining = new ArrayList<>(assignments.getOrDefault(id, List.of()));
+        if (department == null) {
+            // 未指定部门时只有管理员能移除未分配的旧记录。
+            if (!access.allDepartments() || !remaining.isEmpty()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择要移除的督办部门");
+            }
+            if (!selected.contains(id)) return;
+        } else {
+            access.requireMaintenance(department);
+            if (!remaining.remove(department)) return;
         }
+        var disabled = readList(config.disabledUserIds());
+        // 当前账号的最后一项督办关系被删除时，同步清理名单记录。
+        if (remaining.isEmpty()) {
+            assignments.remove(id);
+            selected.remove(id);
+            disabled = disabled.stream().filter(value -> !id.equals(value)).toList();
+        } else {
+            assignments.put(id, remaining);
+        }
+        updateSupervisorConfig(selected, disabled, assignments, editor);
     }
 
+    /** 验证选中的督办账号存在于当前人员台账。 */
     private void requireSupervisorAccounts(List<String> selected) {
         var directory = supervisorDirectory(selected);
         var missing = selected.stream().filter(id -> !directory.containsKey(id)).toList();
@@ -354,6 +453,7 @@ public class PptAnomalyService {
         }
     }
 
+    /** 锁定单条督办配置，供事务内的授权校验和关系更新共用。 */
     private PptAnomalyMapper.FeedbackSupervisorConfig lockSupervisorConfig() {
         var config = persistence.feedbackSupervisorConfig(true);
         if (config == null) {
@@ -362,23 +462,37 @@ public class PptAnomalyService {
         return config;
     }
 
-    private void updateSupervisorConfig(List<String> ids, List<String> disabled, String editor) {
-        persistence.saveFeedbackSupervisors(write(ids), write(disabled), editor);
+    /** 原子保存督办名单、停用名单及账号和部门的对应关系。 */
+    private void updateSupervisorConfig(List<String> ids, List<String> disabled,
+                                        Map<String, List<String>> assignments, String editor) {
+        persistence.saveFeedbackSupervisors(write(ids), write(disabled), write(assignments), editor);
     }
 
-    Map<String, PptAnomalyController.FeedbackNotification> reportRecipientsForDepartments(List<String> departments) {
-        if (departments.isEmpty()) return Map.of();
-        return persistence.reportRecipientsForDepartments(departments).stream()
+    /** 将持久化的督办关系读取为账号到部门列表的映射。 */
+    static Map<String, List<String>> readSupervisorDepartments(ObjectMapper mapper, String value) {
+        if (value == null || value.isBlank()) return Map.of();
+        try {
+            return mapper.readValue(value, new TypeReference<>() {});
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new IllegalStateException("无法读取反馈督办部门配置", e);
+        }
+    }
+
+    /** 读取全部已保存部门的默认收件名单，供报告通知配置页展示。 */
+    Map<String, PptAnomalyController.FeedbackNotification> allReportRecipients() {
+        return persistence.allReportRecipients().stream()
                 .collect(java.util.stream.Collectors.toMap(PptAnomalyMapper.DepartmentReportRecipients::department,
                         row -> new PptAnomalyController.FeedbackNotification(readList(row.toJson()), readList(row.ccJson()))));
     }
 
+    /** 读取单部门的默认收件名单，未配置时返回空名单。 */
     PptAnomalyController.FeedbackNotification reportRecipients(String department) {
         var row = persistence.reportRecipients(department);
         return row == null ? new PptAnomalyController.FeedbackNotification(List.of(), List.of())
                 : new PptAnomalyController.FeedbackNotification(readList(row.toJson()), readList(row.ccJson()));
     }
 
+    /** 保存已通过权限校验的部门通知配置。 */
     void saveReportRecipients(String department, List<String> to, List<String> cc) {
         persistence.saveReportRecipients(department, write(to), write(cc));
     }
@@ -671,11 +785,23 @@ public class PptAnomalyService {
                                List<PptAnomalyMapper.SectionWork> versionOwners,
                                Map<String, String> previousOwners, Map<String, String> contacts,
                                Map<String, String> contactNames, Map<Integer, String> thumbnails,
-                               Map<String, List<DirectoryPerson>> titleHandlers) {}
+                               Map<String, List<DirectoryPerson>> titleHandlers,
+                               Map<Integer, ImportTitleMatch> titleMatches,
+                               Map<Integer, ImportRecognition> recognitionByPage) {}
+
+    public record ImportRecognition(String defaultMode, String ruleMode, String ruleName) {}
+    public record ImportTitleCandidate(String title, String section, String mode, ImportRecognition recognition) {}
+    public record ImportTitleMatch(String originalTitle, List<ImportTitleCandidate> candidates) {}
     /** 导入时对单页板块和联系人的分派选择。 */
     public record ImportAssignment(int page, String section, String owner, boolean skip, boolean remember,
                                    boolean createBoard, boolean rememberOwner, boolean deferOwner,
-                                   String title, String recognitionMode, List<String> handlers) {
+                                   String title, String recognitionMode, List<String> handlers, boolean useDefaultRecognition) {
+        public ImportAssignment(int page, String section, String owner, boolean skip, boolean remember,
+                                boolean createBoard, boolean rememberOwner, boolean deferOwner,
+                                String title, String recognitionMode, List<String> handlers) {
+            this(page, section, owner, skip, remember, createBoard, rememberOwner, deferOwner,
+                    title, recognitionMode, handlers, false);
+        }
         public ImportAssignment(int page, String section, String owner, boolean skip, boolean remember,
                                 boolean createBoard, boolean rememberOwner, boolean deferOwner,
                                 String title, String recognitionMode) {
@@ -700,20 +826,45 @@ public class PptAnomalyService {
                 .filter(version -> "ANALYZED".equals(version.status()))
                 .findFirst().map(Version::id).orElse(null);
         var previousPages = previousTitlePages(previous);
-        var titles = new java.util.HashMap<String, String>();
-        previousPages.forEach(page -> titles.putIfAbsent(page.title(), page.section()));
-        for (var mapping : persistence.titleSections()) titles.put(mapping.title(), mapping.section());
+        var titles = importTitleSections(previousPages);
         var pages = new ArrayList<PptAnomalyMapper.PageAssignment>();
+        var titleMatches = new LinkedHashMap<Integer, ImportTitleMatch>();
+        var recognitionByPage = new LinkedHashMap<Integer, ImportRecognition>();
         try (InputStream input = file.getInputStream()) {
-            parseSlides(input, previousPages, Map.of(), (page, title, texts, mode) -> pages.add(new PptAnomalyMapper.PageAssignment(
-                    page, title, mode == PageMode.OUT_OF_SCOPE ? null
-                            : titles.getOrDefault(title, titles.get(unnumberedTitle(title))),
-                    mode == PageMode.OUT_OF_SCOPE, mode.name(), false)));
+            parseSlides(input, previousPages, Map.of(), false, (page, title, texts, mode, match, recognition) -> {
+                if (match != null) titleMatches.put(page, withTitleSections(match, titles));
+                if (recognition != null) recognitionByPage.put(page, recognition);
+                String section = match == null ? titles.getOrDefault(title, titles.get(unnumberedTitle(title)))
+                        : titleMatches.get(page).candidates().get(0).section();
+                pages.add(new PptAnomalyMapper.PageAssignment(page, title,
+                        mode == PageMode.OUT_OF_SCOPE ? null : section, mode == PageMode.OUT_OF_SCOPE, mode.name(), false));
+            });
         } catch (IOException | org.apache.poi.ooxml.POIXMLException e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "无法解析 PPT，请检查文件格式", e);
         }
         if (pages.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "PPT 没有页面");
-        return importReview(pages, List.of(), List.of(), previous);
+        return importReview(pages, List.of(), List.of(), previous, titleMatches, recognitionByPage);
+    }
+
+    private Map<String, String> importTitleSections(List<PptAnomalyMapper.PageAssignment> previousPages) {
+        var titles = new java.util.HashMap<String, String>();
+        previousPages.forEach(page -> titles.putIfAbsent(page.title(), page.section()));
+        for (var mapping : persistence.titleSections()) titles.put(mapping.title(), mapping.section());
+        return titles;
+    }
+
+    private Set<String> configuredTitleNames() {
+        var names = new HashSet<String>();
+        persistence.scopes().forEach(scope -> names.add(scope.name()));
+        persistence.titleSections().forEach(mapping -> names.add(mapping.title()));
+        return names;
+    }
+
+    private static ImportTitleMatch withTitleSections(ImportTitleMatch match, Map<String, String> sections) {
+        return new ImportTitleMatch(match.originalTitle(), match.candidates().stream()
+                .map(candidate -> new ImportTitleCandidate(candidate.title(),
+                        sections.getOrDefault(candidate.title(), sections.get(unnumberedTitle(candidate.title()))),
+                        candidate.mode(), candidate.recognition())).toList());
     }
 
     private List<PptAnomalyMapper.PageAssignment> previousTitlePages(Long previousId) {
@@ -731,19 +882,36 @@ public class PptAnomalyService {
         persistence.snapshotSections(versionId);
         Long previous = persistence.previousAnalyzed(versionId);
         Map<String, String> previousSections = new java.util.HashMap<>();
-        previousTitlePages(previous).forEach(page -> previousSections.putIfAbsent(page.title(), page.section()));
+        var previousPages = previousTitlePages(previous);
+        previousPages.forEach(page -> previousSections.putIfAbsent(page.title(), page.section()));
         var pages = persistence.pageAssignments(versionId).stream().map(page -> {
             if (page.skipped() || page.section() != null) return page;
             return new PptAnomalyMapper.PageAssignment(page.page(), page.title(), previousSections.get(page.title()),
                     false, page.mode(), page.excluded());
         }).toList();
+        var titleMatches = new LinkedHashMap<Integer, ImportTitleMatch>();
+        var recognitionByPage = new LinkedHashMap<Integer, ImportRecognition>();
+        var savedTitles = new HashMap<Integer, String>();
+        pages.forEach(page -> savedTitles.put(page.page(), page.title()));
+        var titles = importTitleSections(previousPages);
+        try (InputStream input = originalFile(versionId).resource().getInputStream()) {
+            parseSlides(input, previousPages, Map.of(), false, (page, title, texts, mode, match, recognition) -> {
+                if (match != null) titleMatches.put(page, withTitleSections(match, titles));
+                if (recognition != null && title.equals(savedTitles.get(page))) recognitionByPage.put(page, recognition);
+            });
+        } catch (ResponseStatusException e) {
+            if (e.getStatusCode() != HttpStatus.NOT_FOUND) throw e;
+        } catch (IOException e) {
+            throw new IllegalStateException("读取 PPT 标题候选失败", e);
+        }
         return importReview(pages, persistence.importSections(versionId),
-                persistence.importOwners(versionId), previous);
+                persistence.importOwners(versionId), previous, titleMatches, recognitionByPage);
     }
 
     /** 组合页面、板块和联系人信息，生成导入确认数据。 */
     private ImportReview importReview(List<PptAnomalyMapper.PageAssignment> pages, List<String> sections,
-                                      List<PptAnomalyMapper.SectionWork> versionOwners, Long previousId) {
+                                      List<PptAnomalyMapper.SectionWork> versionOwners, Long previousId,
+                                      Map<Integer, ImportTitleMatch> titleMatches, Map<Integer, ImportRecognition> recognitionByPage) {
         var boardOwners = persistence.boardOwners();
         var priorOwners = previousOwners(persistence, previousId);
         Map<String, String> contacts = new LinkedHashMap<>();
@@ -753,16 +921,19 @@ public class PptAnomalyService {
             contactNames.put(person.userId(), person.name());
         });
         return new ImportReview(pages, sections, persistence.sections(), boardOwners, versionOwners, priorOwners,
-                contacts, contactNames, Map.of(), configuredTitleHandlers());
+                contacts, contactNames, Map.of(), configuredTitleHandlers(), titleMatches, recognitionByPage);
     }
 
     Map<String, List<DirectoryPerson>> configuredTitleHandlers() {
         var byTitle = new LinkedHashMap<String, Map<String, DirectoryPerson>>();
+        // 即使没有经办人也保留配置标题，避免去序号后混用其他标题的经办人。
+        for (String title : configuredTitleNames()) byTitle.put(title, new LinkedHashMap<>());
         var directory = new java.util.HashMap<String, java.util.Optional<DirectoryPerson>>();
         for (var handler : persistence.titleHandlers()) {
             var person = directory.computeIfAbsent(handler.userId(), id -> java.util.Optional.ofNullable(ledgerPerson(id)));
             if (person.isEmpty() || !person.get().depts().contains(handler.department())) continue;
-            byTitle.computeIfAbsent(unnumberedTitle(handler.title()), key -> new LinkedHashMap<>())
+            String title = byTitle.containsKey(handler.title()) ? handler.title() : unnumberedTitle(handler.title());
+            byTitle.computeIfAbsent(title, key -> new LinkedHashMap<>())
                     .putIfAbsent(handler.userId(), person.get());
         }
         Map<String, List<DirectoryPerson>> result = new LinkedHashMap<>();
@@ -816,9 +987,15 @@ public class PptAnomalyService {
         confirmImport(versionId, userId, assignments, true);
     }
 
-    /** 校验并保存导入页面归属和联系人分配。 */
+    /** 校验导入权限并保存本次页面归属、人员快照及可维护的全局默认配置。 */
     private void confirmImport(long versionId, String userId, List<ImportAssignment> assignments, boolean configuredImport) {
         lockImport(versionId, userId);
+        // 导入与配置页对全局默认板块和标题使用同一权限。
+        boolean maintainDefaults = canManageBoardsAndTitles(userId);
+        if (!maintainDefaults && assignments.stream().filter(Objects::nonNull)
+                .anyMatch(a -> a.createBoard() || a.remember() || a.rememberOwner())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "没有权限保存默认板块和标题配置");
+        }
         prepareSlides(versionId);
         persistence.snapshotSections(versionId);
         var pending = new java.util.LinkedHashMap<Integer, PptAnomalyMapper.PageAssignment>();
@@ -835,7 +1012,7 @@ public class PptAnomalyService {
             if (!"RULE_CONFLICT".equals(conflicted.mode())) continue;
             boolean resolved = configuredImport && assignments.stream().anyMatch(a -> a != null
                     && a.page() == conflicted.page() && (a.skip() || a.recognitionMode() != null
-                    && Set.of("FULL", "TEXT_ONLY", "UPPER_TABLE_ONLY", "NO_SCAN").contains(a.recognitionMode())));
+                    && CONFIGURABLE_PAGE_MODES.contains(a.recognitionMode())));
             if (!resolved) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "第 " + conflicted.page() + " 页命中多条扫描规则，请选择识别范围或跳过");
         }
@@ -853,6 +1030,7 @@ public class PptAnomalyService {
         Set<String> conflictingTitles = new HashSet<>();
         Map<String, Set<String>> handlerUpdates = new java.util.TreeMap<>();
         Set<String> usedTitles = new java.util.TreeSet<>();
+        var configuredTitles = configuredImport ? configuredTitleNames() : Set.<String>of();
         Set<String> usedSections = new HashSet<>();
         for (var assignment : assignments) {
             if (assignment != null && !assignment.skip() && assignment.createBoard() && assignment.section() != null) {
@@ -870,10 +1048,10 @@ public class PptAnomalyService {
             if (page == null) throw new ResponseStatusException(HttpStatus.CONFLICT, "页面归属已变化，请刷新后确认");
             if (corrected) {
                 if (assignment.title() == null || assignment.title().strip().length() > 512
-                        || !Set.of("FULL", "TEXT_ONLY", "UPPER_TABLE_ONLY", "NO_SCAN").contains(assignment.recognitionMode())) {
+                        || !CONFIGURABLE_PAGE_MODES.contains(assignment.recognitionMode())) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "页面标题或识别范围无效");
                 }
-                if (!assignment.skip() && (page.skipped()
+                if (!assignment.skip() && (page.skipped() || assignment.useDefaultRecognition()
                         || !Objects.equals(page.title(), assignment.title().strip())
                         || !Objects.equals(page.mode(), assignment.recognitionMode()))) {
                     corrections.put(page.page(), assignment);
@@ -909,7 +1087,7 @@ public class PptAnomalyService {
             if (configuredImport && !assignment.skip()) {
                 usedSections.add(section);
                 String pageTitle = corrected ? assignment.title() : page.title();
-                String title = pageTitle == null ? "" : unnumberedTitle(pageTitle);
+                String title = importTitleKey(pageTitle, configuredTitles);
                 if (!title.isBlank()) {
                     usedTitles.add(title);
                     if (assignment.handlers() != null) {
@@ -940,8 +1118,9 @@ public class PptAnomalyService {
                 }
             }
             persistence.setPageAssignment(versionId, page.page(), section, owner, assignment.skip());
-            if (corrected && !assignment.skip() && (boards.contains(section) || newBoards.contains(section))) {
-                String title = unnumberedTitle(assignment.title());
+            // 版本内分派已保存，只有具备维护权限时才收集全局默认标题设置。
+            if (maintainDefaults && corrected && !assignment.skip() && (boards.contains(section) || newBoards.contains(section))) {
+                String title = importTitleKey(assignment.title(), configuredTitles);
                 if (!title.isBlank()) {
                     var rule = new ConfirmedTitleRule(section, assignment.recognitionMode());
                     var previousRule = confirmedTitles.putIfAbsent(title, rule);
@@ -957,7 +1136,7 @@ public class PptAnomalyService {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "只有正式板块可以保存默认标题归属");
                 }
                 String selectedTitle = corrected ? assignment.title() : page.title();
-                String title = selectedTitle == null ? "" : unnumberedTitle(selectedTitle);
+                String title = importTitleKey(selectedTitle, configuredTitles);
                 if (title.isBlank()) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "无标题页面不能设为默认映射");
                 }
@@ -969,7 +1148,7 @@ public class PptAnomalyService {
         }
         if (!corrections.isEmpty()) {
             try (InputStream input = originalFile(versionId).resource().getInputStream()) {
-                parseSlides(input, previousTitlePages(persistence.previousAnalyzed(versionId)), corrections, (page, title, texts, mode) ->
+                parseSlides(input, previousTitlePages(persistence.previousAnalyzed(versionId)), corrections, true, (page, title, texts, mode, match, recognition) ->
                         persistence.updatePageRecognition(versionId, page, title, write(texts), mode.name()));
             } catch (IOException e) {
                 throw new IllegalStateException("重新提取 PPT 页面失败", e);
@@ -982,7 +1161,7 @@ public class PptAnomalyService {
             for (var page : pending.values()) {
                 usedSections.add(page.section());
                 if (page.title() != null && !unnumberedTitle(page.title()).isBlank()) {
-                    usedTitles.add(unnumberedTitle(page.title()));
+                    usedTitles.add(importTitleKey(page.title(), configuredTitles));
                 }
                 var contact = contacts.get(page.section());
                 String owner = owners.getOrDefault(page.section(), contact == null ? "" : contact.userId());
@@ -993,7 +1172,8 @@ public class PptAnomalyService {
                 persistence.setPageAssignment(versionId, page.page(), page.section(), owner, false);
             }
         }
-        if (configuredImport) {
+        // 自动补全缺失的默认板块联系人也属于全局配置维护。
+        if (configuredImport && maintainDefaults) {
             var configuredOwners = new HashSet<String>();
             for (var boardOwner : boardOwners) {
                 if (contactGroup(boardOwner.owner()) != null) configuredOwners.add(boardOwner.name());
@@ -1010,21 +1190,23 @@ public class PptAnomalyService {
             String title = entry.getKey();
             if (conflictingTitles.contains(title)) continue;
             persistence.rememberSection(title, entry.getValue().section());
-            if (persistence.scanRules().stream().noneMatch(r -> unnumberedTitle(r.title()).equals(title))) {
+            if (persistence.scanRules().stream().noneMatch(r -> importTitleKey(r.title(), configuredTitles).equals(title))) {
                 persistence.rememberScope(title, entry.getValue().mode());
             }
         }
         for (var entry : handlerUpdates.entrySet()) {
-            // 与配置页的经办人维护共用标题锁；只补充默认名单，不删除已有配置。
-            persistence.lockConfiguredTitle(entry.getKey());
+            // 写入默认经办人时与配置页共用标题锁。
+            if (maintainDefaults) persistence.lockConfiguredTitle(entry.getKey());
             for (String id : entry.getValue()) {
                 var person = ledgerPerson(id);
                 if (person == null || person.depts().isEmpty()) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择有所属部门的标题经办人：" + entry.getKey());
                 }
-                // 即使本次没有命中该部门，也记住上传时确认的标题经办人。
-                for (String department : person.depts()) {
-                    persistence.insertTitleHandler(entry.getKey(), department, person.userId());
+                if (maintainDefaults) {
+                    // 即使本次没有命中该部门，也记住上传时确认的标题经办人。
+                    for (String department : person.depts()) {
+                        persistence.insertTitleHandler(entry.getKey(), department, person.userId());
+                    }
                 }
             }
         }
@@ -1034,11 +1216,14 @@ public class PptAnomalyService {
             for (var entry : handlerUpdates.entrySet()) {
                 effectiveHandlers.put(entry.getKey(), entry.getValue().stream().map(this::ledgerPerson).toList());
             }
-            var snapshotHandlers = new ArrayList<PptAnomalyMapper.TitleHandler>();
-            effectiveHandlers.forEach((title, members) -> members.forEach(person -> person.depts().forEach(department ->
-                    snapshotHandlers.add(new PptAnomalyMapper.TitleHandler(title, department, person.userId())))));
-            new PptImportSnapshotWriter(persistence, mapper).save(versionId, snapshotHandlers);
+            new PptImportSnapshotWriter(persistence, mapper).save(versionId, effectiveHandlers);
         }
+    }
+
+    private static String importTitleKey(String title, Set<String> configuredTitles) {
+        if (title == null) return "";
+        String value = title.strip();
+        return configuredTitles.contains(value) ? value : unnumberedTitle(value);
     }
 
     /** 锁定未完成识别的版本并校验上传人身份。 */
@@ -1140,13 +1325,17 @@ public class PptAnomalyService {
     /** 校验预览权限并按需生成和缓存 PPT 页面图片。 */
     public Resource slidePreview(long versionId, int pageNo, String userId, boolean admin) {
         feedbackSlide(versionId, pageNo, userId, admin);
+        Path original = originalPptPath(versionId);
         // 预览图片按版本及页码缓存，首次访问时才渲染原始 PPT。
         Path target = storageDir.resolve("previews-v2").resolve(Long.toString(versionId)).resolve(pageNo + ".png");
-        if (Files.isRegularFile(target)) return new FileSystemResource(target);
+        if (!Files.isRegularFile(pdfPreviews.pdfPath(original)) && Files.isRegularFile(target))
+            return new FileSystemResource(target);
         if (!previewRenderer.tryAcquire()) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "预览正在生成，请稍后重试");
         }
         try {
+            Path pdfPreview = pdfPreviews.cachedPreview(original, pageNo);
+            if (pdfPreview != null) return new FileSystemResource(pdfPreview);
             if (!Files.isRegularFile(target)) renderPreview(versionId, pageNo, target);
             return new FileSystemResource(target);
         } catch (LinkageError e) {
@@ -1157,6 +1346,67 @@ public class PptAnomalyService {
         } finally {
             previewRenderer.release();
         }
+    }
+
+    /** 原件路径已由 originalFile 校验存储范围。 */
+    private Path originalPptPath(long versionId) {
+        try {
+            return originalFile(versionId).resource().getFile().toPath();
+        } catch (IOException e) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "原文件不存在", e);
+        }
+    }
+
+    /** 给已保存版本关联配套 PDF；只更改预览来源，不重新识别或通知。 */
+    public int savePreviewPdf(long versionId, MultipartFile pdf, String userId) {
+        requireUploader(versionId, userId);
+        if (!previewRenderer.tryAcquire())
+            throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "正在生成预览，请稍后重试");
+        try {
+            Path original = originalPptPath(versionId);
+            int pages;
+            try (var input = Files.newInputStream(original); var show = new XMLSlideShow(input)) {
+                pages = show.getSlides().size();
+            }
+            byte[] bytes = pdfPreviews.validate(pdf, pages);
+            Path source = pdfPreviews.pdfPath(original);
+            boolean created = !Files.exists(source);
+            pdfPreviews.save(original, bytes);
+            if (created && TransactionSynchronizationManager.isSynchronizationActive()) {
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override public void afterCompletion(int status) {
+                        if (status == STATUS_ROLLED_BACK) {
+                            try {
+                                Files.deleteIfExists(source);
+                            } catch (IOException e) {
+                                org.slf4j.LoggerFactory.getLogger(PptAnomalyService.class)
+                                        .warn("无法清理导入失败的预览 PDF {}", source, e);
+                            }
+                        }
+                    }
+                });
+            }
+            return pages;
+        } catch (IOException e) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "无法保存预览 PDF", e);
+        } finally {
+            previewRenderer.release();
+        }
+    }
+
+    /** 导入前验证配套 PDF 与所解析的 PPT 页数一致。 */
+    public ImportReview previewImport(Long batchId, MultipartFile file, MultipartFile pdf) {
+        var review = previewImport(batchId, file);
+        if (pdf != null) {
+            if (!previewRenderer.tryAcquire())
+                throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "正在生成预览，请稍后重试");
+            try {
+                pdfPreviews.validate(pdf, review.pages().size());
+            } finally {
+                previewRenderer.release();
+            }
+        }
+        return review;
     }
 
     /** 使用 PPT 原件渲染指定页并保存 PNG 预览。 */
@@ -1244,6 +1494,11 @@ public class PptAnomalyService {
 
     /** 导入确认按需渲染当前页，清晰原图同时用于页面展示和查看大图。 */
     public byte[] previewImportImage(MultipartFile file, Long versionId, int pageNo, String userId) {
+        return previewImportImage(file, null, versionId, pageNo, userId);
+    }
+
+    /** 有配套 PDF 时优先渲染 PDF；无 PDF 时兼容原有 POI 预览。 */
+    public byte[] previewImportImage(MultipartFile file, MultipartFile pdf, Long versionId, int pageNo, String userId) {
         if ((file == null) == (versionId == null) || pageNo < 1) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择一个 PPT 来源和有效页码");
         }
@@ -1256,6 +1511,11 @@ public class PptAnomalyService {
                 XMLSlideShow show = new XMLSlideShow(input)) {
             if (pageNo > show.getSlides().size()) {
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "PPT 页面不存在");
+            }
+            if (pdf != null) return pdfPreviews.renderPng(pdfPreviews.validate(pdf, show.getSlides().size()), pageNo);
+            if (versionId != null) {
+                Path cached = pdfPreviews.cachedPreview(originalPptPath(versionId), pageNo);
+                if (cached != null) return Files.readAllBytes(cached);
             }
             var image = renderSlide(show.getSlides().get(pageNo - 1), show.getPageSize(), 1440, 1000);
             var output = new java.io.ByteArrayOutputStream();
@@ -1435,7 +1695,7 @@ public class PptAnomalyService {
 
     /** 按数据库配置提取页面正文及指定表格内容。 */
     private void parseSlides(long versionId, InputStream input) throws IOException {
-        parseSlides(input, previousTitlePages(persistence.previousAnalyzed(versionId)), Map.of(), (page, title, texts, mode) ->
+        parseSlides(input, previousTitlePages(persistence.previousAnalyzed(versionId)), Map.of(), true, (page, title, texts, mode, match, recognition) ->
                 persistence.createSlide(versionId, page, title, write(texts), "UNAVAILABLE", mode.name()));
     }
 
@@ -1443,12 +1703,13 @@ public class PptAnomalyService {
     @FunctionalInterface
     private interface ParsedPageConsumer {
         /** 接收单页解析结果，交由调用方保存或构造导入预览。 */
-        void accept(int page, String title, List<String> texts, PageMode mode);
+        void accept(int page, String title, List<String> texts, PageMode mode, ImportTitleMatch titleMatch,
+                    ImportRecognition recognition);
     }
 
     /** 按数据库配置提取页面正文及指定表格内容。 */
     private void parseSlides(InputStream input, List<PptAnomalyMapper.PageAssignment> previousPages,
-                             Map<Integer, ImportAssignment> corrections,
+                             Map<Integer, ImportAssignment> corrections, boolean extractTexts,
                              ParsedPageConsumer consumer) throws IOException {
         var scanRules = persistence.scanRules();
         var configuredTitles = new HashSet<String>();
@@ -1458,6 +1719,12 @@ public class PptAnomalyService {
             configuredRules.add(new PageRule(entry.name(), null, PageMode.fromConfig(entry.target()),
                     entry.upperLimitRatio(), entry.firstRow(), entry.lastRow()));
         }
+        for (var mapping : persistence.titleSections()) {
+            if (configuredTitles.add(mapping.title())) {
+                configuredRules.add(new PageRule(mapping.title(), null, PageMode.FULL, null, null, null));
+            }
+        }
+        var titlesForContainment = Set.copyOf(configuredTitles);
         for (var page : previousPages) {
             if (matchingTitle(page.title(), configuredTitles) == null) {
                 configuredTitles.add(page.title());
@@ -1471,38 +1738,66 @@ public class PptAnomalyService {
                 page++;
                 var correction = corrections.get(page);
                 if (!corrections.isEmpty() && correction == null) continue;
-                // 页面标题先按版式提取，配置仅用于确定识别范围，不能改写成正文关键词。
-                String titleText = correction != null ? correction.title().strip()
-                        : inferSlideTitle(slide, show.getPageSize().getHeight(), configuredTitles);
-                if (correction == null && contentsLabel(titleText) != null) {
-                    consumer.accept(page, "目录", List.of(), PageMode.OUT_OF_SCOPE);
+                String originalTitle = inferSlideTitle(slide, show.getPageSize().getHeight(), configuredTitles);
+                if (correction == null && contentsLabel(originalTitle) != null) {
+                    consumer.accept(page, "目录", List.of(), PageMode.OUT_OF_SCOPE, null, null);
                     continue;
                 }
+                String titleText = correction == null ? originalTitle : correction.title().strip();
                 String matchedTitle = matchingTitle(titleText, configuredTitles);
-                String title = unnumberedTitle(correction != null || matchedTitle == null ? titleText : matchedTitle);
-                PageRule rule = dictionary.ruleFor(title, page);
+                var fuzzyTitles = correction == null && matchedTitle == null
+                        ? containingTitles(originalTitle, titlesForContainment) : List.<String>of();
+                String ruleTitle = matchedTitle != null ? matchedTitle
+                        : fuzzyTitles.isEmpty() ? titleText : fuzzyTitles.get(0);
+                String title = importTitleKey(correction == null ? ruleTitle : titleText, titlesForContainment);
                 var features = new ArrayList<String>();
                 collectGroupedPageText(slide.getShapes(), features, true);
-                var matches = PptScanRule.matching(scanRules, title, String.join("\n", features));
-                if (matches.size() == 1) {
-                    var selected = matches.get(0);
-                    rule = new PageRule(title, null, PageMode.fromConfig(selected.mode()), selected.upperLimitRatio(),
-                            selected.firstRow(), selected.lastRow());
-                } else if (matches.size() > 1) {
-                    rule = new PageRule(title, null, PageMode.RULE_CONFLICT, null, null, null);
+                String pageText = String.join("\n", features);
+                var resolution = resolvePageRule(dictionary, scanRules, ruleTitle, page, pageText,
+                        titlesForContainment.contains(ruleTitle));
+                PageRule rule = resolution.rule();
+                ImportRecognition recognition = resolution.recognition();
+                ImportTitleMatch titleMatch = null;
+                if (!fuzzyTitles.isEmpty()) {
+                    var candidates = new ArrayList<ImportTitleCandidate>();
+                    candidates.add(new ImportTitleCandidate(ruleTitle, null, rule.mode().name(), recognition));
+                    for (String alternate : fuzzyTitles.subList(1, fuzzyTitles.size())) {
+                        var result = resolvePageRule(dictionary, scanRules, alternate, page, pageText, true);
+                        candidates.add(new ImportTitleCandidate(alternate, null, result.rule().mode().name(), result.recognition()));
+                    }
+                    titleMatch = new ImportTitleMatch(originalTitle, candidates);
                 }
                 if (correction != null) {
                     PageMode selectedMode = PageMode.valueOf(correction.recognitionMode());
-                    PageRule configuredRule = rule;
+                    PageRule configuredRule = correction.useDefaultRecognition() ? resolution.defaultRule() : rule;
                     rule = configuredRule.mode() == selectedMode ? configuredRule
                             : new PageRule(title, page, selectedMode, null, null, null);
                 }
-                if (rule.mode() == PageMode.OUT_OF_SCOPE || rule.mode() == PageMode.NO_SCAN
+                if (!extractTexts || rule.mode() == PageMode.OUT_OF_SCOPE || rule.mode() == PageMode.NO_SCAN
                         || rule.mode() == PageMode.RULE_CONFLICT) {
-                    consumer.accept(page, title, List.of(), rule.mode());
+                    consumer.accept(page, title, List.of(), rule.mode(), titleMatch, recognition);
                     continue;
                 }
                 List<String> texts = new ArrayList<>();
+                // 用配置标题分派经办人，同时保留原始标题中的部门关键词。
+                String normalizedOriginal = normalizedTitle(originalTitle);
+                String normalizedMatch = normalizedTitle(title);
+                boolean preserveOriginal = !normalizedMatch.isEmpty() && !normalizedOriginal.equals(normalizedMatch)
+                        && normalizedOriginal.contains(normalizedMatch);
+                if (rule.mode() == PageMode.TEXT_ONLY || rule.mode() == PageMode.TEXT_AND_FIRST_TABLE) {
+                    collectGroupedPageText(slide.getShapes(), texts, false);
+                    removeBodyTitle(texts, originalTitle);
+                    if (rule.mode() == PageMode.TEXT_AND_FIRST_TABLE) {
+                        var tables = new ArrayList<PositionedTable>();
+                        collectTables(slide.getShapes(), new AffineTransform(), tables);
+                        tables.stream().min(Comparator.comparingDouble(PositionedTable::y)
+                                        .thenComparingDouble(PositionedTable::x))
+                                .ifPresent(first -> appendTableRows(first.table(), 1, Integer.MAX_VALUE, texts));
+                    }
+                    if (preserveOriginal) texts.add(0, originalTitle);
+                    consumer.accept(page, title, texts, rule.mode(), titleMatch, recognition);
+                    continue;
+                }
                 boolean titleConsumed = false;
                 for (XSLFShape shape : slide.getShapes()) {
                     if (shape instanceof XSLFGroupShape group && rule.mode() != PageMode.UPPER_TABLE_ONLY) {
@@ -1511,23 +1806,21 @@ public class PptAnomalyService {
                     if (shape instanceof XSLFTextShape textShape && rule.mode() != PageMode.UPPER_TABLE_ONLY) {
                         String text = textShape.getText();
                         if (text == null || text.isBlank()) continue;
-                        if (!titleConsumed && titleText.equals(text.strip())) {
+                        if (!titleConsumed && originalTitle.equals(text.strip())) {
                             titleConsumed = true;
                             continue;
                         }
                         texts.add(text.trim());
                     }
-                    if (shape instanceof XSLFTable table && rule.mode() != PageMode.TEXT_ONLY) {
+                    if (shape instanceof XSLFTable table) {
                         // 表格顶部位置决定是否落入识别区域，起止行配置决定提取其中哪些行。
                         if (rule.mode() == PageMode.UPPER_TABLE_ONLY
                                 && table.getAnchor().getY() >= show.getPageSize().getHeight() * rule.upperLimitRatio()) continue;
-                        var rows = table.getRows();
-                        for (int row = rule.firstRow() - 1; row < Math.min(rows.size(), rule.lastRow()); row++) {
-                            texts.add(rows.get(row).getCells().stream().map(cell -> cell.getText() == null ? "" : cell.getText().trim()).reduce((a,b) -> a + " | " + b).orElse(""));
-                        }
+                        appendTableRows(table, rule.firstRow(), rule.lastRow(), texts);
                     }
                 }
-                consumer.accept(page, title, texts, rule.mode());
+                if (preserveOriginal && !texts.contains(originalTitle)) texts.add(0, originalTitle);
+                consumer.accept(page, title, texts, rule.mode(), titleMatch, recognition);
             }
         }
     }
@@ -1540,10 +1833,49 @@ public class PptAnomalyService {
             } else if (shape instanceof XSLFTextShape text && text.getText() != null && !text.getText().isBlank()) {
                 texts.add(text.getText().trim());
             } else if (includeTables && shape instanceof XSLFTable table) {
-                for (var row : table.getRows()) {
-                    texts.add(row.getCells().stream().map(cell -> cell.getText() == null ? "" : cell.getText().trim())
-                            .collect(java.util.stream.Collectors.joining(" | ")));
-                }
+                appendTableRows(table, 1, Integer.MAX_VALUE, texts);
+            }
+        }
+    }
+
+    private static void appendTableRows(XSLFTable table, int firstRow, int lastRow, List<String> texts) {
+        var rows = table.getRows();
+        for (int row = firstRow - 1; row < Math.min(rows.size(), lastRow); row++) {
+            texts.add(rows.get(row).getCells().stream().map(cell -> cell.getText() == null ? "" : cell.getText().trim())
+                    .collect(java.util.stream.Collectors.joining(" | ")));
+        }
+    }
+
+    /** 排除标题行，同时保留与标题共用文本框的正文。 */
+    private static void removeBodyTitle(List<String> texts, String title) {
+        if (title.isBlank()) return;
+        for (int index = 0; index < texts.size(); index++) {
+            String[] lines = texts.get(index).split("\\R", 2);
+            if (!title.equals(lines[0].replaceFirst("^[\\p{javaWhitespace}\\p{Zs}\\ufeff]+", "").strip())) continue;
+            if (lines.length == 1 || lines[1].isBlank()) texts.remove(index);
+            else texts.set(index, lines[1].strip());
+            return;
+        }
+    }
+
+    private record PositionedTable(XSLFTable table, double x, double y) {}
+
+    /** 将组合形状内表格的坐标转换到页面坐标系，按位置选择第一个表格。 */
+    private static void collectTables(List<XSLFShape> shapes, AffineTransform toSlide, List<PositionedTable> tables) {
+        for (var shape : shapes) {
+            if (shape instanceof XSLFGroupShape group) {
+                var outer = group.getAnchor();
+                var inner = group.getInteriorAnchor();
+                var childToSlide = new AffineTransform(toSlide);
+                childToSlide.translate(outer.getX(), outer.getY());
+                childToSlide.scale(inner.getWidth() > 0 ? outer.getWidth() / inner.getWidth() : 1,
+                        inner.getHeight() > 0 ? outer.getHeight() / inner.getHeight() : 1);
+                childToSlide.translate(-inner.getX(), -inner.getY());
+                collectTables(group.getShapes(), childToSlide, tables);
+            } else if (shape instanceof XSLFTable table) {
+                var anchor = table.getAnchor();
+                var topLeft = toSlide.transform(new Point2D.Double(anchor.getX(), anchor.getY()), null);
+                tables.add(new PositionedTable(table, topLeft.getX(), topLeft.getY()));
             }
         }
     }
@@ -1627,6 +1959,39 @@ public class PptAnomalyService {
         return matches.size() == 1 ? matches.get(0) : null;
     }
 
+    /** 只按已配置的标题查找包含匹配，优先展示更具体的标题。 */
+    private static List<String> containingTitles(String text, Set<String> configuredTitles) {
+        String key = normalizedTitle(text);
+        if (key.isEmpty()) return List.of();
+        return configuredTitles.stream().map(title -> Map.entry(title, normalizedTitle(title)))
+                .filter(entry -> !entry.getValue().isEmpty() && key.contains(entry.getValue()))
+                .sorted(Comparator.<Map.Entry<String, String>>comparingInt(entry -> entry.getValue().length())
+                        .reversed().thenComparing(Map.Entry::getKey))
+                .map(Map.Entry::getKey).toList();
+    }
+
+    private record PageRecognition(PageRule defaultRule, PageRule rule, ImportRecognition recognition) {}
+
+    private static PageRecognition resolvePageRule(PageDictionary dictionary, List<PptScanRule> scanRules,
+                                                   String title, int page, String pageText, boolean configured) {
+        var defaultRule = dictionary.ruleFor(title, page);
+        var titleRules = PptScanRule.forTitle(scanRules, title, configured);
+        if (titleRules.isEmpty()) return new PageRecognition(defaultRule, defaultRule, null);
+        var matches = titleRules.stream().filter(rule -> rule.matches(pageText)).toList();
+        PageRule rule = defaultRule;
+        String ruleName = null;
+        if (matches.size() > 1) {
+            rule = new PageRule(title, null, PageMode.RULE_CONFLICT, null, null, null);
+        } else if (!matches.isEmpty()) {
+            var selected = matches.get(0);
+            rule = new PageRule(title, null, PageMode.fromConfig(selected.mode()), selected.upperLimitRatio(),
+                    selected.firstRow(), selected.lastRow());
+            ruleName = selected.name();
+        }
+        return new PageRecognition(defaultRule, rule, new ImportRecognition(defaultRule.mode().name(),
+                rule.mode().name(), ruleName));
+    }
+
     private static String normalizedTitle(String text) {
         String normalized = java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFKC).strip();
         return unnumberedTitle(normalized)
@@ -1634,9 +1999,12 @@ public class PptAnomalyService {
                 .replaceAll("[\\p{javaWhitespace}\\p{Zs}]", "");
     }
 
-    /** 材料页面支持的全文、文字和上部表格解析模式。 */
+    static final Set<String> CONFIGURABLE_PAGE_MODES = Set.of(
+            "FULL", "TEXT_ONLY", "TEXT_AND_FIRST_TABLE", "UPPER_TABLE_ONLY", "NO_SCAN");
+
+    /** 材料页面支持的识别范围及导入状态。 */
     private enum PageMode {
-        FULL, TEXT_ONLY, UPPER_TABLE_ONLY, OUT_OF_SCOPE, NO_SCAN, RULE_CONFLICT;
+        FULL, TEXT_ONLY, TEXT_AND_FIRST_TABLE, UPPER_TABLE_ONLY, OUT_OF_SCOPE, NO_SCAN, RULE_CONFLICT;
 
         /** 将配置模式转换为解析枚举，兼容历史跳过及人工复核模式。 */
         static PageMode fromConfig(String mode) {

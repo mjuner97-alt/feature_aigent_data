@@ -186,7 +186,6 @@ onMounted(loadBatches);
 <style scoped>
 .notification-records { padding: clamp(12px, 1.5vw, 20px); }
 .notification-filters { --ppt-filter-width: 220px; margin-bottom: 12px; }
-.notification-filters :deep(.toolbar-controls) { flex: 1 1 410px; min-width: 0; }
 .version-filter { --ppt-filter-width: 128px; }
 h2 { margin: 0; color: #142441; font-size: 22px; }
 .el-alert { margin-bottom: 10px; }

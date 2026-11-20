@@ -10,6 +10,7 @@ import { deletePptFinding, downloadFeedbackDirectory, downloadVersion, feedbackD
 import { searchSkillUsers } from '../../api/skill';
 import type { PptFinding, PptSlide, PptVersionWork } from '../../types/pptAnomaly';
 import PptSidebarIndex from '../../components/ppt/PptSidebarIndex.vue';
+import PptBoardContactList from '../../components/ppt/PptBoardContactList.vue';
 import PptSlideViewer from '../../components/ppt/PptSlideViewer.vue';
 import PptFeedbackForm from '../../components/ppt/PptFeedbackForm.vue';
 import PptAssignmentDialog from '../../components/ppt/PptAssignmentDialog.vue';
@@ -45,12 +46,7 @@ const selected = ref<PptFinding>();
 function handlersFor(id: number) {
   return directory.value?.handlers?.[id] ?? [];
 }
-function contactLabel(id: number) {
-  const contact = directory.value?.contacts?.[id];
-  if (!contact) return undefined;
-  const names = contact.name?.split('、') ?? [];
-  return contact.userId.split(',').map((id, index) => names[index] ? `${names[index]}（${id}）` : id).join('、');
-}
+const boardContacts = computed(() => directory.value?.contacts ?? {});
 const content = ref<HTMLElement>();
 // undefined 表示正在加载，null 表示没有可用预览。
 const previews = ref(new Map<number, PptSlide | null | undefined>());
@@ -488,12 +484,13 @@ onMounted(async () => {
             :finding="item" :draft="drafts.get(item.id)" :saving="saving"
             :compact="readOnly" :read-only="readOnly" :conflict="conflicts.has(item.id)"
             @draft="setDraft(item.id, $event)" @save="submitFeedback(item.id)" @retry="retryFeedback(item.id, $event)" />
-          <p class="board-contact">
-            <template v-if="contactLabel(item.id)">
-              如对材料内容有疑问，请联系板块负责人：<strong>{{ contactLabel(item.id) }}</strong>。
+          <div class="board-contact">
+            <template v-if="boardContacts[item.id]?.userId">
+              <p>如对材料内容有疑问，请联系以下板块联系人。</p>
+              <PptBoardContactList :user-ids="boardContacts[item.id]!.userId" :names="boardContacts[item.id]?.name" />
             </template>
-            <template v-else>当前板块暂无联系人配置。</template>
-          </p>
+            <p v-else>当前板块暂无联系人配置。</p>
+          </div>
         </article>
       </section>
       <section v-else-if="!loading" class="content">
@@ -559,8 +556,7 @@ onMounted(async () => {
 .content { min-width: 0; flex: 1; overflow: auto; padding: clamp(12px, 1.8vw, 22px); }
 .feedback-column { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
 .feedback-column + .feedback-column { margin-top: 24px; padding-top: 20px; border-top: 1px solid #dfe6f0; }
-.board-contact { padding: 0 4px; overflow-wrap: anywhere; }
-.board-contact strong { color: #253b60; font-weight: 600; }
+.board-contact { display: grid; gap: 8px; padding: 0 4px; overflow-wrap: anywhere; }
 .finding-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
 .finding-title { min-width: 0; }
 .finding-title h3 { margin: 3px 0 0; font-size: 20px; color: #142441; overflow-wrap: anywhere; }

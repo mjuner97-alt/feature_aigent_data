@@ -1,11 +1,11 @@
 <script setup lang="ts">
-/** 标题经办人维护页，按人员所属部门保存经办关系。 */
+/** 标题经办人列表，供登录用户查看，系统管理员和产品部人员可维护。 */
 
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { Plus } from '@element-plus/icons-vue';
-import { listPptTitleHandlers, updatePptTitleHandler, listPptTitleHandlerSources, reusePptTitleHandlers, type PptPerson } from '../../api/pptAnomaly';
+import { listPptTitleHandlers, updatePptTitleHandler, listPptTitleHandlerSources, reusePptTitleHandlers, pptAnomalyPermissions, type PptPerson } from '../../api/pptAnomaly';
 import { searchSkillUsers, type SkillUserSearchItem } from '../../api/skill';
 
 const router = useRouter();
@@ -16,6 +16,11 @@ const handlers = ref<PptPerson[]>([]);
 const loading = ref(false);
 const saving = ref(false);
 const ready = ref(false);
+const canMaintain = ref(false);
+/** 获取全局标题维护权限，用于控制维护入口。 */
+onMounted(async () => {
+  canMaintain.value = (await pptAnomalyPermissions().catch(() => undefined))?.canManageBoardsAndTitles === true;
+});
 const error = ref('');
 const addOpen = ref(false);
 const keyword = ref('');
@@ -63,8 +68,10 @@ watch(sourceTitle, async name => {
   } catch { if (request === sourceRequest) reuseError.value = '来源经办人加载失败，请重新选择标题。'; }
   finally { if (request === sourceRequest) reuseLoading.value = false; }
 });
+/** 将来源标题的经办人追加到当前标题。 */
 async function applyReuse() {
-  if (saving.value || !sourceReady.value || !sourceHandlers.value.length) return;
+  // 列表可查看时仍需单独确认维护权限。
+  if (!canMaintain.value || saving.value || !sourceReady.value || !sourceHandlers.value.length) return;
   const target = title.value;
   saving.value = true;
   reuseError.value = '';
@@ -137,7 +144,7 @@ async function search() {
 async function updateHandler(userId: string, method: 'POST' | 'DELETE') {
   const name = title.value;
   const adding = method === 'POST';
-  if (!name || !ready.value || saving.value) return;
+  if (!canMaintain.value || !name || !ready.value || saving.value) return;
   saving.value = true;
   const message = adding ? searchError : error;
   message.value = '';
@@ -163,7 +170,7 @@ async function updateHandler(userId: string, method: 'POST' | 'DELETE') {
         <RouterLink v-else class="back-link" :to="{ path: '/ppt-anomaly/keyword-config', query: { tab: 'section' } }">返回标题配置</RouterLink>
         <h2>{{ title || '设置经办人' }}</h2>
       </div>
-      <div v-if="ready" class="handler-actions">
+      <div v-if="ready && canMaintain" class="handler-actions">
       <el-button :disabled="saving" @click="openReuse">复用其他标题经办人</el-button>
       <el-button class="add-handler" type="primary" :icon="Plus" :disabled="saving" @click="openAdd">
         新增经办人
@@ -176,7 +183,7 @@ async function updateHandler(userId: string, method: 'POST' | 'DELETE') {
       <el-table-column label="姓名（userID）" min-width="200">
         <template #default="{ row }">{{ row.name }}（{{ row.userId }}）</template>
       </el-table-column>
-      <el-table-column label="操作" width="88">
+      <el-table-column v-if="canMaintain" label="操作" width="88">
         <template #default="{ row }">
           <el-button link type="danger" :disabled="saving" @click="updateHandler(row.userId, 'DELETE')">移除</el-button>
         </template>

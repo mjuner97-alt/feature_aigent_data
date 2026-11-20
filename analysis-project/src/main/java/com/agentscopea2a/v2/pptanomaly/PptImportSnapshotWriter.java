@@ -9,7 +9,6 @@ import java.util.List;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.stream.Collectors;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -23,7 +22,7 @@ final class PptImportSnapshotWriter {
         this.mapper = mapper;
     }
 
-    int save(long versionId, List<PptAnomalyMapper.TitleHandler> confirmedHandlers) {
+    int save(long versionId, Map<String, List<PptAnomalyService.DirectoryPerson>> confirmedHandlers) {
         persistence.deleteFindings(versionId);
         var slides = persistence.analysisSlides(versionId);
         // 先按关键词长度排序，再将识别来源中的命中按目标部门合并。
@@ -32,14 +31,12 @@ final class PptImportSnapshotWriter {
                 .sorted(Comparator.comparingInt((PptAnomalyMapper.DepartmentMapping mapping) -> mapping.keyword().length())
                         .reversed().thenComparing(PptAnomalyMapper.DepartmentMapping::keyword))
                 .toList();
-        // 标题去除数字序号后分组，命中的部门决定采用哪些标题经办人。
-        var handlersByTitle = confirmedHandlers.stream()
-                .collect(Collectors.groupingBy(handler -> PptAnomalyService.unnumberedTitle(handler.title())));
         int sequence = 0;
         for (var slide : slides) {
             String section = slide.section() == null ? slide.title() : slide.section();
-            String title = PptAnomalyService.unnumberedTitle(slide.title() == null ? "" : slide.title());
-            var titleHandlers = handlersByTitle.getOrDefault(title, List.of());
+            String title = slide.title() == null ? "" : slide.title();
+            var titleHandlers = confirmedHandlers.getOrDefault(title,
+                    confirmedHandlers.getOrDefault(PptAnomalyService.unnumberedTitle(title), List.of()));
             Map<String, Match> matchesByDepartment = new LinkedHashMap<>();
             // 标题用于定位经办配置；部门关键词扫描整页，不能因存在标题而跳过正文和表格。
             var matchTexts = new java.util.ArrayList<String>();
@@ -55,8 +52,8 @@ final class PptImportSnapshotWriter {
             for (var entry : matchesByDepartment.entrySet()) {
                 String department = entry.getKey();
                 Match match = entry.getValue();
-                var handlers = titleHandlers.stream().filter(handler -> department.equals(handler.department()))
-                        .map(PptAnomalyMapper.TitleHandler::userId).distinct().toList();
+                var handlers = titleHandlers.stream().filter(handler -> handler.depts().contains(department))
+                        .map(PptAnomalyService.DirectoryPerson::userId).distinct().toList();
                 String fingerprint = fingerprint(slide.title() + "|" + department + "|" + match.keyword() + "|" + match.text());
                 int findingSequence = ++sequence;
                 // 每页每个命中部门生成一条事项，没有匹配经办人的部门保留待分派事项。
