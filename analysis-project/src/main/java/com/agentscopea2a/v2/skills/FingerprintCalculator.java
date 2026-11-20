@@ -114,7 +114,9 @@ public class FingerprintCalculator {
     public String computeMetric(String tenant, String intent, String question) {
         Objects.requireNonNull(tenant, "tenant");
         Objects.requireNonNull(intent, "intent");
-        String metricTag = metricClassifier.ruleBasedTag(question);
+        // metric-classification bean 已随自进化整链条件化 (2026/11/19), 缺失时 tag 恒为
+        // "general" — 指纹仅被废弃链路 (auto-synth 计数 / L1 / digestion) 消费。
+        String metricTag = metricClassifier == null ? "general" : metricClassifier.ruleBasedTag(question);
         if (metricTag == null || metricTag.isBlank()) {
             log.debug("[FINGERPRINT] ruleBasedTag returned null/blank for question (length={}): '{}'",
                     question != null ? question.length() : 0, question);
