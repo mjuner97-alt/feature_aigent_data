@@ -78,7 +78,7 @@ async function search(keyword: string) {
   const id = ++searchId;
   results.value = [];
   searchError.value = '';
-  searching.value = Boolean(keyword.trim());
+  searching.value = Boolean(selectedDepartments.value.length && keyword.trim());
   if (!searching.value) return;
   try {
     const people = await searchPptDirectoryPeople(keyword.trim());
@@ -164,7 +164,7 @@ onMounted(load);
       <el-button link type="primary" @click="load">重新加载</el-button>
     </el-alert>
     <el-table v-else :data="visiblePeople" row-key="userId"
-      :empty-text="department ? '该部门暂无反馈督办人' : '暂无反馈督办人'">
+      :empty-text="department ? '该部门暂无组织督办人' : '暂无组织督办人'">
       <el-table-column label="姓名（统一认证号）" min-width="230">
         <template #default="{ row }">{{ personLabel(row) }}</template>
       </el-table-column>
@@ -191,21 +191,22 @@ onMounted(load);
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="addOpen" title="新增反馈督办人" width="min(520px, 94vw)" append-to-body
+    <el-dialog v-model="addOpen" title="新增组织督办人" width="min(520px, 94vw)" append-to-body
       :show-close="!saving" :close-on-click-modal="false" :close-on-press-escape="!saving">
       <el-alert v-if="saveError" :title="saveError" type="error" :closable="false" />
       <el-form label-position="top" @submit.prevent="add">
-        <el-form-item label="反馈督办人" required :error="searchError">
-          <el-select v-model="selected" multiple filterable remote :reserve-keyword="false" :remote-method="search"
-            :loading="searching" :disabled="saving" placeholder="输入姓名或统一认证号搜索" style="width: 100%">
-            <el-option v-for="person in options" :key="person.userId" :value="person.userId"
-              :label="personLabel(person)" />
-          </el-select>
-        </el-form-item>
         <el-form-item label="督办部门" required>
           <el-select v-model="selectedDepartments" multiple filterable :disabled="saving"
             placeholder="选择督办部门" style="width: 100%">
             <el-option v-for="name in editableDepartments" :key="name" :label="name" :value="name" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="组织督办人" required :error="searchError">
+          <el-select v-model="selected" multiple filterable remote :reserve-keyword="false" :remote-method="search"
+            :loading="searching" :disabled="saving || !selectedDepartments.length"
+            :placeholder="selectedDepartments.length ? '输入姓名或统一认证号搜索' : '请先选择督办部门'" style="width: 100%">
+            <el-option v-for="person in options" :key="person.userId" :value="person.userId"
+              :label="personLabel(person)" />
           </el-select>
         </el-form-item>
       </el-form>
