@@ -520,6 +520,17 @@ public class PptAnomalyController {
         return service.previewImport(batchId, file, previewPdf);
     }
 
+    /** 按核对页当前标题重新计算指定页的规则命中。 */
+    @PostMapping(value = "/imports/preview-recognition", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public PptAnomalyService.ImportRecognitionPreview previewImportRecognition(
+            @RequestPart(value = "file", required = false) MultipartFile file,
+            @RequestParam(value = "versionId", required = false) Long versionId,
+            @RequestParam("pageNo") int pageNo, @RequestParam("title") String title,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
+        requireProductDepartment(userId, people);
+        return service.previewImportRecognition(file, versionId, pageNo, title, userId);
+    }
+
     /** 导入确认时按需生成高清原页，不保存版本或触发通知。 */
     @PostMapping(value = "/imports/preview-image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE,
             produces = MediaType.IMAGE_PNG_VALUE)

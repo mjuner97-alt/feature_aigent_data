@@ -85,6 +85,8 @@ public class PptKeywordConfigController {
     public record TitleEdit(String originalName, String name, String section, String scope, String owner,
                             Double upperLimitRatio, Integer firstRow, Integer lastRow, List<String> handlerUserIds,
                             List<PptScanRule> scanRules) {}
+    public record RecognitionSettings(String scope, Double upperLimitRatio, Integer firstRow, Integer lastRow,
+                                      List<PptScanRule> scanRules) {}
     /** 经办人的部门、姓名及认证号展示数据。 */
     public record Handler(String department, String name, String userId) {}
     /** 一个标题明细分组及其链接集合。 */
@@ -96,7 +98,37 @@ public class PptKeywordConfigController {
     @GetMapping("/scan-rules")
     public List<PptScanRule> scanRules(@RequestParam String title) {
         requireConfiguredTitle(title);
-        return persistence.scanRules().stream().filter(rule -> title.equals(rule.title())).toList();
+        return rulesForTitle(title);
+    }
+
+    /** 读取核对页标题的识别设置，未配置的标题从整页识别开始。 */
+    @GetMapping("/recognition-settings")
+    public RecognitionSettings recognitionSettings(@RequestParam String title) {
+        String name = required(title, CONFIG_NAME_LIMIT);
+        Entry scope = entriesByName("scope").get(name);
+        var rules = rulesForTitle(name);
+        return scope == null || !MODES.contains(scope.target()) ? new RecognitionSettings("FULL", null, null, null, rules)
+                : new RecognitionSettings(scope.target(), scope.upperLimitRatio(), scope.firstRow(), scope.lastRow(), rules);
+    }
+
+    /** 保存标题的识别设置，板块及经办人仍由各自的维护入口处理。 */
+    @PutMapping("/recognition-settings")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @Transactional(GaussConfig.TX_NAME)
+    public void saveRecognitionSettings(@RequestParam String title, @RequestBody RecognitionSettings body,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
+        service.requireBoardAndTitleMaintenance(editor);
+        String name = required(title, CONFIG_NAME_LIMIT);
+        var rules = validateScanRules(name, body.scanRules());
+        persistence.lockConfiguredTitle(name);
+        Entry scope = entriesByName("scope").get(name);
+        save("scope", scope == null ? null : scope.id(), new Entry(null, name, body.scope(),
+                body.upperLimitRatio(), body.firstRow(), body.lastRow()));
+        replaceScanRules(name, rules);
+    }
+
+    private List<PptScanRule> rulesForTitle(String title) {
+        return PptScanRule.forTitle(persistence.scanRules(), title, true);
     }
 
     /** 校验维护权限并整体替换标题的扫描规则。 */

@@ -411,6 +411,53 @@ export interface PptImportRecognition {
   ruleName?: string | null;
 }
 
+export interface PptImportRecognitionPreview {
+  defaultMode: PptImportScope;
+  recognition: PptImportRecognition | null;
+}
+
+export interface PptRecognitionScope {
+  scope: PptRecognitionMode;
+  upperLimitRatio?: number;
+  firstRow?: number;
+  lastRow?: number;
+}
+
+export interface PptTitleScanRule {
+  name: string;
+  keywords: string;
+  mode: PptRecognitionMode;
+  upperLimitRatio?: number;
+  firstRow?: number;
+  lastRow?: number;
+}
+
+export interface PptTitleRecognitionSettings extends PptRecognitionScope {
+  scanRules: PptTitleScanRule[];
+}
+
+const recognitionSettingsUrl = (title: string) =>
+  `${base}/keyword-config/recognition-settings?${new URLSearchParams({ title })}`;
+
+export async function listPptTitleScanRules(title: string) {
+  return parse<PptTitleScanRule[]>(await fetch(`${base}/keyword-config/scan-rules?${new URLSearchParams({ title })}`, {
+    headers: headers(), cache: 'no-store',
+  }));
+}
+
+export async function getPptTitleRecognitionSettings(title: string) {
+  return parse<PptTitleRecognitionSettings>(await fetch(recognitionSettingsUrl(title), {
+    headers: headers(), cache: 'no-store',
+  }));
+}
+
+export async function savePptTitleRecognitionSettings(title: string, settings: PptTitleRecognitionSettings) {
+  const response = await fetch(recognitionSettingsUrl(title), {
+    method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(settings),
+  });
+  if (!response.ok) await parse<never>(response);
+}
+
 export interface PptImportTitleMatch {
   originalTitle: string;
   candidates: { title: string; section: string | null; mode: PptImportScope; recognition?: PptImportRecognition | null }[];
@@ -428,6 +475,7 @@ export interface PptImportAssignment {
   title?: string;
   recognitionMode?: PptRecognitionMode;
   useDefaultRecognition?: boolean;
+  refreshRecognition?: boolean;
   handlers?: string[];
 }
 /** 材料导入预览的页面、板块及联系人数据。 */
@@ -463,6 +511,18 @@ export async function previewPptImportImage(source: { file?: File; previewPdf?: 
   const response = await fetch(`${base}/imports/preview-image`, { method: 'POST', headers: headers(), body, signal });
   if (!response.ok) await parse<never>(response);
   return response.blob();
+}
+
+/** 用核对页当前填写的标题重新匹配指定页。 */
+export async function previewPptImportRecognition(source: { file?: File; versionId?: number; pageNo: number; title: string }) {
+  const body = new FormData();
+  if (source.file) body.append('file', source.file);
+  if (source.versionId !== undefined) body.append('versionId', String(source.versionId));
+  body.append('pageNo', String(source.pageNo));
+  body.append('title', source.title);
+  return parse<PptImportRecognitionPreview>(
+    await fetch(`${base}/imports/preview-recognition`, { method: 'POST', headers: headers(), body }),
+  );
 }
 
 /** 提交原件、批次选择及页面分派结果并执行识别。 */

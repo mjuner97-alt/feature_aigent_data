@@ -790,12 +790,20 @@ public class PptAnomalyService {
                                Map<Integer, ImportRecognition> recognitionByPage) {}
 
     public record ImportRecognition(String defaultMode, String ruleMode, String ruleName) {}
+    public record ImportRecognitionPreview(String defaultMode, ImportRecognition recognition) {}
     public record ImportTitleCandidate(String title, String section, String mode, ImportRecognition recognition) {}
     public record ImportTitleMatch(String originalTitle, List<ImportTitleCandidate> candidates) {}
     /** 导入时对单页板块和联系人的分派选择。 */
     public record ImportAssignment(int page, String section, String owner, boolean skip, boolean remember,
                                    boolean createBoard, boolean rememberOwner, boolean deferOwner,
-                                   String title, String recognitionMode, List<String> handlers, boolean useDefaultRecognition) {
+                                   String title, String recognitionMode, List<String> handlers,
+                                   boolean useDefaultRecognition, boolean refreshRecognition) {
+        public ImportAssignment(int page, String section, String owner, boolean skip, boolean remember,
+                                boolean createBoard, boolean rememberOwner, boolean deferOwner,
+                                String title, String recognitionMode, List<String> handlers, boolean useDefaultRecognition) {
+            this(page, section, owner, skip, remember, createBoard, rememberOwner, deferOwner,
+                    title, recognitionMode, handlers, useDefaultRecognition, false);
+        }
         public ImportAssignment(int page, String section, String owner, boolean skip, boolean remember,
                                 boolean createBoard, boolean rememberOwner, boolean deferOwner,
                                 String title, String recognitionMode, List<String> handlers) {
@@ -844,6 +852,30 @@ public class PptAnomalyService {
         }
         if (pages.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "PPT 没有页面");
         return importReview(pages, List.of(), List.of(), previous, titleMatches, recognitionByPage);
+    }
+
+    /** 使用核对页填写的标题和原始页内容，重新计算单页的规则命中。 */
+    public ImportRecognitionPreview previewImportRecognition(MultipartFile file, Long versionId,
+                                                              int pageNo, String title, String userId) {
+        if ((file == null) == (versionId == null) || pageNo < 1 || title == null || title.isBlank() || title.strip().length() > 512) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择一个 PPT 来源并提供有效的标题和页码");
+        }
+        if (file != null) pptFileName(file);
+        else requireUploader(versionId, userId);
+        try (InputStream input = file != null ? file.getInputStream() : originalFile(versionId).resource().getInputStream();
+             XMLSlideShow show = new XMLSlideShow(input)) {
+            if (pageNo > show.getSlides().size()) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "PPT 页面不存在");
+            }
+            var configuredTitles = new HashSet<String>();
+            var dictionary = new PageDictionary(PageMode.OUT_OF_SCOPE, configuredPageRules(configuredTitles));
+            String name = title.strip();
+            var result = resolvePageRule(dictionary, persistence.scanRules(), name, pageNo,
+                    pageFeatureText(show.getSlides().get(pageNo - 1)), configuredTitles.contains(name));
+            return new ImportRecognitionPreview(result.defaultRule().mode().name(), result.recognition());
+        } catch (IOException | org.apache.poi.ooxml.POIXMLException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "无法解析 PPT，请检查文件格式", e);
+        }
     }
 
     private Map<String, String> importTitleSections(List<PptAnomalyMapper.PageAssignment> previousPages) {
@@ -1051,7 +1083,7 @@ public class PptAnomalyService {
                         || !CONFIGURABLE_PAGE_MODES.contains(assignment.recognitionMode())) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "页面标题或识别范围无效");
                 }
-                if (!assignment.skip() && (page.skipped() || assignment.useDefaultRecognition()
+                if (!assignment.skip() && (page.skipped() || assignment.useDefaultRecognition() || assignment.refreshRecognition()
                         || !Objects.equals(page.title(), assignment.title().strip())
                         || !Objects.equals(page.mode(), assignment.recognitionMode()))) {
                     corrections.put(page.page(), assignment);
@@ -1707,12 +1739,7 @@ public class PptAnomalyService {
                     ImportRecognition recognition);
     }
 
-    /** 按数据库配置提取页面正文及指定表格内容。 */
-    private void parseSlides(InputStream input, List<PptAnomalyMapper.PageAssignment> previousPages,
-                             Map<Integer, ImportAssignment> corrections, boolean extractTexts,
-                             ParsedPageConsumer consumer) throws IOException {
-        var scanRules = persistence.scanRules();
-        var configuredTitles = new HashSet<String>();
+    private List<PageRule> configuredPageRules(Set<String> configuredTitles) {
         List<PageRule> configuredRules = new ArrayList<>();
         for (var entry : persistence.scopes()) {
             configuredTitles.add(entry.name());
@@ -1724,6 +1751,22 @@ public class PptAnomalyService {
                 configuredRules.add(new PageRule(mapping.title(), null, PageMode.FULL, null, null, null));
             }
         }
+        return configuredRules;
+    }
+
+    private static String pageFeatureText(XSLFSlide slide) {
+        var features = new ArrayList<String>();
+        collectGroupedPageText(slide.getShapes(), features, true);
+        return String.join("\n", features);
+    }
+
+    /** 按数据库配置提取页面正文及指定表格内容。 */
+    private void parseSlides(InputStream input, List<PptAnomalyMapper.PageAssignment> previousPages,
+                             Map<Integer, ImportAssignment> corrections, boolean extractTexts,
+                             ParsedPageConsumer consumer) throws IOException {
+        var scanRules = persistence.scanRules();
+        var configuredTitles = new HashSet<String>();
+        var configuredRules = configuredPageRules(configuredTitles);
         var titlesForContainment = Set.copyOf(configuredTitles);
         for (var page : previousPages) {
             if (matchingTitle(page.title(), configuredTitles) == null) {
@@ -1750,9 +1793,7 @@ public class PptAnomalyService {
                 String ruleTitle = matchedTitle != null ? matchedTitle
                         : fuzzyTitles.isEmpty() ? titleText : fuzzyTitles.get(0);
                 String title = importTitleKey(correction == null ? ruleTitle : titleText, titlesForContainment);
-                var features = new ArrayList<String>();
-                collectGroupedPageText(slide.getShapes(), features, true);
-                String pageText = String.join("\n", features);
+                String pageText = pageFeatureText(slide);
                 var resolution = resolvePageRule(dictionary, scanRules, ruleTitle, page, pageText,
                         titlesForContainment.contains(ruleTitle));
                 PageRule rule = resolution.rule();

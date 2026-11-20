@@ -1,18 +1,19 @@
 <script setup lang="ts">
 /** 例会材料管理页，提供批次、上传确认、全局默认配置维护和原件下载。 */
 
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { Plus, Search, UploadFilled } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { confirmPptImport, deleteBatch, downloadVersion, listBatchSummaries, listPptPeople, listVersions, previewPptImport, previewPptImportImage, reviewPptImport, savePptImport, searchPptPeople } from '../../api/pptAnomaly';
-import type { PptPerson, PptImportAssignment, PptImportRecognition, PptImportTitleMatch, PptRecognitionMode } from '../../api/pptAnomaly';
+import { confirmPptImport, deleteBatch, downloadVersion, getPptTitleRecognitionSettings, listBatchSummaries, listPptPeople, listVersions, previewPptImport, previewPptImportImage, previewPptImportRecognition, reviewPptImport, savePptImport, savePptTitleRecognitionSettings, searchPptPeople } from '../../api/pptAnomaly';
+import type { PptPerson, PptImportAssignment, PptImportRecognition, PptImportRecognitionPreview, PptImportTitleMatch, PptRecognitionMode, PptRecognitionScope, PptTitleScanRule } from '../../api/pptAnomaly';
 import { isPptRecognitionMode, pptAnomalyPermissions, pptManualRecognitionOptions, pptRecognitionModes } from '../../api/pptAnomaly';
 import type { PptBatchSummary, PptVersion } from '../../types/pptAnomaly';
 import PptListFilterBar from '../../components/ppt/PptListFilterBar.vue';
 import PptSlideViewer from '../../components/ppt/PptSlideViewer.vue';
 import PptBoardContactList from '../../components/ppt/PptBoardContactList.vue';
 import PptPreviewPdfDialog from '../../components/ppt/PptPreviewPdfDialog.vue';
+import PptRecognitionSettings from '../../components/ppt/PptRecognitionSettings.vue';
 import PptVersionAssignmentsDialog from '../../components/ppt/PptVersionAssignmentsDialog.vue';
 import { getLoggedInUser } from '../../utils/auth';
 
@@ -67,6 +68,8 @@ type ReviewRow = {
   defaultRecognitionMode: PptRecognitionMode | '';
   recognitionMethod: RecognitionMethod;
   recognition?: PptImportRecognition | null;
+  refreshedRecognition?: Map<string, PptImportRecognitionPreview>;
+  pendingRecognition?: Set<string>;
   skip: boolean;
   titleMatch?: PptImportTitleMatch;
   titleCandidateIndex: number;
@@ -201,6 +204,7 @@ function handlerOptions(ids: string[]) {
 }
 
 function pageStatus(row: ReviewRow) {
+  if (row.pendingRecognition?.has(row.title.trim())) return { key: 'pending', label: '待重新匹配规则' };
   if (row.skip) return { key: 'skipped', label: '已跳过' };
   if (!reviewRecognitionMode(row)) return { key: 'pending', label: '待确认扫描规则' };
   if (!row.section) return { key: 'pending', label: '待分配板块' };
@@ -223,11 +227,16 @@ function setRecognitionMethod(row: ReviewRow, method: RecognitionMethod) {
 }
 
 function changeReviewTitle(row: ReviewRow, title: string) {
-  if (row.title.trim() !== title.trim() && row.recognition) {
-    row.recognition = undefined;
-    row.recognitionMethod = 'default';
-    row.defaultRecognitionMode = 'FULL';
-    setReviewSkip(row, false);
+  if (row.title.trim() !== title.trim()) {
+    const refreshed = row.refreshedRecognition?.get(title.trim());
+    if (refreshed) {
+      applyRefreshedRecognition(row, refreshed);
+    } else if (row.recognition) {
+      row.recognition = undefined;
+      row.recognitionMethod = 'default';
+      row.defaultRecognitionMode = 'FULL';
+      setReviewSkip(row, false);
+    }
   }
   row.title = title;
 }
@@ -239,9 +248,90 @@ function selectTitleCandidate(row: ReviewRow, index: number) {
   row.titleCandidateIndex = index;
   row.title = candidate?.title ?? match.originalTitle;
   row.section = candidate?.section ?? '';
+  const refreshed = row.refreshedRecognition?.get(row.title.trim());
+  if (refreshed) {
+    applyRefreshedRecognition(row, refreshed);
+    return;
+  }
   row.recognition = candidate?.recognition;
   row.defaultRecognitionMode = selectableRecognitionMode(row.recognition?.defaultMode ?? candidate?.mode ?? 'FULL');
   setRecognitionMethod(row, row.recognition ? 'rules' : 'default');
+}
+
+const recognitionEditorOpen = ref(false);
+const recognitionTarget = shallowRef<{ row: ReviewRow; title: string }>();
+const recognitionEditor = ref<InstanceType<typeof PptRecognitionSettings>>();
+const recognitionScope = ref<PptRecognitionScope>({ scope: 'FULL' });
+const initialScanRules = ref<PptTitleScanRule[]>();
+const recognitionLoading = ref(false);
+const recognitionError = ref('');
+const recognitionSaved = ref(false);
+
+function applyRefreshedRecognition(row: ReviewRow, result: PptImportRecognitionPreview) {
+  row.recognition = result.recognition;
+  row.defaultRecognitionMode = selectableRecognitionMode(result.defaultMode);
+  row.recognitionMethod = result.recognition ? 'rules' : 'default';
+  row.skip = reviewRecognitionMode(row) === 'NO_SCAN';
+}
+
+function openRecognitionEditor(row: ReviewRow) {
+  const title = row.title.trim();
+  if (!canMaintainDefaults.value || !title || busy.value) return;
+  recognitionTarget.value = { row, title };
+  recognitionSaved.value = row.pendingRecognition?.has(title) === true;
+  initialScanRules.value = undefined;
+  recognitionLoading.value = false;
+  recognitionError.value = '';
+  recognitionEditorOpen.value = true;
+  if (!recognitionSaved.value) void loadRecognitionSettings();
+}
+
+async function loadRecognitionSettings() {
+  const target = recognitionTarget.value;
+  if (!target) return;
+  initialScanRules.value = undefined;
+  recognitionError.value = '';
+  recognitionLoading.value = true;
+  try {
+    const { scanRules, ...scope } = await getPptTitleRecognitionSettings(target.title);
+    if (recognitionTarget.value !== target || !recognitionEditorOpen.value) return;
+    recognitionScope.value = scope;
+    initialScanRules.value = scanRules;
+  } catch (cause) {
+    if (recognitionTarget.value === target) recognitionError.value = cause instanceof Error ? cause.message : '无法加载识别规则';
+  } finally {
+    if (recognitionTarget.value === target) recognitionLoading.value = false;
+  }
+}
+
+async function saveRecognitionSettings() {
+  const target = recognitionTarget.value;
+  if (!target || busy.value) return;
+  const rules = recognitionSaved.value ? undefined : recognitionEditor.value?.prepareSave()?.rules;
+  if (!recognitionSaved.value && !rules) return;
+  busy.value = true;
+  recognitionError.value = '';
+  try {
+    if (rules) {
+      await savePptTitleRecognitionSettings(target.title, { ...recognitionScope.value, scanRules: rules });
+      recognitionSaved.value = true;
+      (target.row.pendingRecognition ??= new Set()).add(target.title);
+    }
+    const result = await previewPptImportRecognition({
+      file: reviewTarget.value ? undefined : file.value, versionId: reviewTarget.value,
+      pageNo: target.row.page, title: target.title,
+    });
+    target.row.pendingRecognition?.delete(target.title);
+    (target.row.refreshedRecognition ??= new Map()).set(target.title, result);
+    applyRefreshedRecognition(target.row, result);
+    recognitionEditorOpen.value = false;
+    ElMessage.success('识别设置已保存，当前页已重新匹配');
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message : '请重试';
+    recognitionError.value = recognitionSaved.value ? `设置已保存，当前页刷新失败：${detail}` : detail;
+  } finally {
+    busy.value = false;
+  }
 }
 
 const pendingRows = computed(() => reviewRows.value.filter(row => pageStatus(row).key === 'pending'));
@@ -491,6 +581,7 @@ async function confirmReview() {
       // 页面归属随版本保存，新建板块和记住默认联系人需要全局维护权限。
       return { page: row.page, title: row.title, recognitionMode: reviewRecognitionMode(row) || (row.skip ? 'NO_SCAN' : undefined),
         useDefaultRecognition: row.recognition && row.recognitionMethod === 'default' ? true : undefined,
+        refreshRecognition: reviewTarget.value && row.refreshedRecognition?.has(row.title.trim()) ? true : undefined,
         section, owner, rememberOwner: canMaintainDefaults.value && !!owner, skip: row.skip, remember: false,
         handlers: row.skip ? undefined : titleHandlerIds(row.title),
         createBoard: canMaintainDefaults.value && !row.skip && !reviewSections.value.includes(section) };
@@ -808,13 +899,22 @@ onMounted(async () => {
                       :disabled="busy" @update:model-value="changeReviewTitle(selectedReviewRow, $event)" />
                   </label>
                   <div class="review-field">
-                    <span>识别方式</span>
+                    <div class="review-field-heading">
+                      <span>识别方式</span>
+                      <el-button v-if="canMaintainDefaults" link type="primary" :disabled="busy || !selectedReviewRow.title.trim()"
+                        @click="openRecognitionEditor(selectedReviewRow)">
+                        {{ selectedReviewRow.pendingRecognition?.has(selectedReviewRow.title.trim()) ? '重新匹配规则' : '新增／编辑规则' }}
+                      </el-button>
+                    </div>
                     <el-radio-group :model-value="selectedReviewRow.recognitionMethod" :disabled="busy" aria-label="识别方式"
                       @update:model-value="setRecognitionMethod(selectedReviewRow, $event as RecognitionMethod)">
                       <el-radio-button value="default">默认识别</el-radio-button>
                       <el-radio-button value="rules" :disabled="!selectedReviewRow.recognition">规则识别</el-radio-button>
                     </el-radio-group>
-                    <p v-if="!selectedReviewRow.recognition" class="review-field-hint">当前标题没有可用的关键词规则。</p>
+                    <p v-if="selectedReviewRow.pendingRecognition?.has(selectedReviewRow.title.trim())" class="review-field-hint">
+                      设置已保存，请重新匹配当前页。
+                    </p>
+                    <p v-else-if="!selectedReviewRow.recognition" class="review-field-hint">当前标题没有可用的关键词规则。</p>
                   </div>
                   <div v-if="selectedReviewRow.recognitionMethod === 'default'" class="review-field">
                     <span class="review-required">默认识别范围</span>
@@ -916,6 +1016,24 @@ onMounted(async () => {
           </el-button>
         </div>
     </section>
+    <el-dialog v-model="recognitionEditorOpen" title="编辑标题识别设置" class="ppt-dialog" width="min(680px, 94vw)"
+      align-center append-to-body destroy-on-close :close-on-click-modal="false" :show-close="!busy" :close-on-press-escape="!busy">
+      <el-form label-position="top" :disabled="busy || recognitionSaved" @submit.prevent="saveRecognitionSettings">
+        <el-form-item label="页面标题">{{ recognitionTarget?.title }}</el-form-item>
+        <p class="review-field-hint">保存后，当前页会重新匹配，同标题的后续导入也会使用这组设置。</p>
+        <p v-if="recognitionLoading" role="status">正在加载识别设置…</p>
+        <el-alert v-if="recognitionError" :title="recognitionError" type="error" :closable="false" />
+        <el-button v-if="recognitionError && !initialScanRules && !recognitionSaved" link type="primary" @click="loadRecognitionSettings">重新加载识别设置</el-button>
+        <PptRecognitionSettings v-if="recognitionEditorOpen && initialScanRules" ref="recognitionEditor"
+          v-model="recognitionScope" :initial-rules="initialScanRules" :editable="!recognitionSaved" />
+      </el-form>
+      <template #footer>
+        <el-button :disabled="busy" @click="recognitionEditorOpen = false">{{ recognitionSaved ? '关闭' : '取消' }}</el-button>
+        <el-button type="primary" :disabled="!initialScanRules && !recognitionSaved" :loading="busy" @click="saveRecognitionSettings">
+          {{ recognitionSaved ? '重新匹配当前页' : '保存并匹配当前页' }}
+        </el-button>
+      </template>
+    </el-dialog>
     <el-dialog v-model="boardEditorOpen" :title="boardMode === 'board' ? '新建板块' : '分配板块'" class="ppt-dialog" width="min(480px, 92vw)"
       align-center append-to-body destroy-on-close :close-on-click-modal="false">
       <p class="board-editor-title">{{ assigningUnassigned ? '为未归属页面指定同一板块' : editingRow?.title || '无标题' }}</p>

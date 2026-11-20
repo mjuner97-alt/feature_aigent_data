@@ -4,10 +4,11 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { isPptRecognitionMode, pptAnomalyPermissions, pptManualRecognitionOptions, pptRecognitionModes as modes, searchPptPeople, type PptPerson, type PptRecognitionMode } from '../../api/pptAnomaly';
-import { Document, Download, Plus, Search, UploadFilled } from '@element-plus/icons-vue';
+import { isPptRecognitionMode, pptAnomalyPermissions, pptRecognitionModes as modes, searchPptPeople, type PptPerson, type PptRecognitionScope } from '../../api/pptAnomaly';
+import { Document, Download, Search, UploadFilled } from '@element-plus/icons-vue';
 import PptListFilterBar from '../../components/ppt/PptListFilterBar.vue';
 import PptFeedbackSupervisorConfig from '../../components/ppt/PptFeedbackSupervisorConfig.vue';
+import PptRecognitionSettings from '../../components/ppt/PptRecognitionSettings.vue';
 import PptReportNotificationConfig from '../../components/ppt/PptReportNotificationConfig.vue';
 
 /** 关键词或解析范围配置的编辑数据。 */
@@ -38,68 +39,6 @@ const tabs = [
   { key: 'feedback-supervisors', label: '组织督办人配置' },
 ] as const;
 const visibleTabs = tabs.filter(item => item.key !== 'material-type');
-type ScanRule = { name: string; keywords: string; mode: PptRecognitionMode; upperLimitRatio?: number; firstRow?: number; lastRow?: number };
-type ScanRuleDraft = Omit<ScanRule, 'keywords'> & { keywords: string[] };
-const maxKeywordLength = 8192;
-const recognitionMethod = ref<'default' | 'rules'>('default');
-const scanRules = ref<ScanRuleDraft[]>([]);
-const rulesLoading = ref(false);
-const rulesReady = ref(false);
-const rulesLoadError = ref('');
-const rulesValidationError = ref('');
-const originalRules = ref('[]');
-
-function serializeScanRules(): ScanRule[] {
-  return scanRules.value.map(rule => ({
-    ...rule,
-    keywords: rule.keywords.map(keyword => keyword.trim()).filter(Boolean).join('\n'),
-  }));
-}
-
-function addScanRule() {
-  const names = new Set(scanRules.value.map(rule => rule.name));
-  let number = 1;
-  const ruleName = (value: number) => `规则 ${String(value).padStart(2, '0')}`;
-  while (names.has(ruleName(number))) number += 1;
-  scanRules.value.push({ name: ruleName(number), keywords: [''], mode: 'FULL' });
-}
-
-async function loadScanRules() {
-  const form = titleForm.value;
-  if (!form.originalName || rulesLoading.value || rulesReady.value) return;
-  rulesLoading.value = true;
-  rulesLoadError.value = '';
-  try {
-    const result: ScanRule[] = await (await request('/scan-rules?' + new URLSearchParams({ title: form.originalName }))).json();
-    if (titleForm.value !== form || !editorOpen.value) return;
-    scanRules.value = result.map(rule => ({ ...rule, keywords: rule.keywords.split(/\r\n?|\n/) }));
-    originalRules.value = JSON.stringify(serializeScanRules());
-    recognitionMethod.value = result.length ? 'rules' : 'default';
-    rulesReady.value = true;
-  } catch (error) {
-    if (titleForm.value === form && editorOpen.value) rulesLoadError.value = String(error);
-  } finally {
-    if (titleForm.value === form) rulesLoading.value = false;
-  }
-}
-
-function scanRuleError(rules: ScanRule[]) {
-  const conditions = new Set<string>();
-  for (const [index, rule] of rules.entries()) {
-    const prefix = `第 ${index + 1} 条规则`;
-    const terms = rule.keywords.split('\n').map(term => term.replace(/[\s\p{Zs}]/gu, '').toLowerCase()).filter(Boolean);
-    const condition = [...new Set(terms)].sort().join('\n');
-    if (!condition) return `${prefix}请至少填写一个关键词`;
-    if (rule.keywords.length > maxKeywordLength) return `${prefix}的关键词总长度不能超过 ${maxKeywordLength} 个字符`;
-    if (conditions.has(condition)) return `${prefix}的关键词条件已存在`;
-    if (rule.mode === 'UPPER_TABLE_ONLY' && rule.lastRow != null && rule.lastRow < (rule.firstRow ?? 1)) {
-      return `${prefix}的结束行不能小于起始行`;
-    }
-    conditions.add(condition);
-  }
-  return '';
-}
-
 function titleScopeLabel(scope?: Entry) {
   return scope && isPptRecognitionMode(scope.target) ? modes[scope.target] : modes.FULL;
 }
@@ -327,9 +266,9 @@ watch(active, () => {
 watch([page, size], () => void load());
 
 const titleForm = ref({ originalName: undefined as string | undefined, name: '', section: '',
-  handlerUserIds: [] as string[],
-  scope: 'FULL' as PptRecognitionMode, upperLimitRatio: undefined as number | undefined,
-  firstRow: undefined as number | undefined, lastRow: undefined as number | undefined });
+  handlerUserIds: [] as string[] });
+const recognitionScope = ref<PptRecognitionScope>({ scope: 'FULL' });
+const recognitionEditor = ref<InstanceType<typeof PptRecognitionSettings>>();
 const selectedBoard = computed(() => sections.value.find(board => board.name === titleForm.value.section));
 const knownTitleHandlers = ref(new Map<string, string>());
 const titleHandlerOptions = computed(() => {
@@ -375,23 +314,18 @@ async function editTitle(row?: TitleRow) {
   titleForm.value = {
     originalName: row?.name, name: row?.name ?? '', section: row?.section?.target ?? '',
     handlerUserIds: [],
+  };
+  recognitionScope.value = {
     scope: row?.scope?.target && isPptRecognitionMode(row.scope.target) ? row.scope.target : 'FULL',
     upperLimitRatio: row?.scope?.upperLimitRatio, firstRow: row?.scope?.firstRow, lastRow: row?.scope?.lastRow,
   };
-  recognitionMethod.value = 'default';
-  scanRules.value = [];
-  rulesLoading.value = false;
-  rulesReady.value = !row;
-  rulesLoadError.value = '';
-  rulesValidationError.value = '';
-  originalRules.value = '[]';
   editorOpen.value = true;
   sectionsReady.value = false;
   if (!row) {
     knownTitleHandlers.value.clear();
     void searchPeople('');
   }
-  await Promise.all([loadSections(), loadScanRules()]);
+  await loadSections();
 }
 
 /** 打开正式板块及默认联系人的编辑窗口。 */
@@ -428,7 +362,6 @@ async function save() {
   if (saving.value || !canMaintainEditor.value) return;
   const entry = form.value;
   const isTitle = editKind.value === 'section';
-  if (isTitle && rulesLoading.value) return;
   const isBoard = editKind.value === 'board';
   const isMaterialType = editKind.value === 'material-type';
   if (isBoard && !boardForm.value.owner?.trim()) {
@@ -442,17 +375,10 @@ async function save() {
     ElMessage.warning('请填写完整配置');
     return;
   }
-  const rules = isTitle && rulesReady.value ? (recognitionMethod.value === 'rules' ? serializeScanRules() : []) : undefined;
-  if (recognitionMethod.value === 'rules' && rules?.length === 0) {
-    rulesValidationError.value = '请至少添加一条关键词规则';
-    return;
-  }
-  const changedRules = rules && JSON.stringify(rules) !== originalRules.value ? rules : undefined;
-  if (changedRules) {
-    rulesValidationError.value = scanRuleError(changedRules);
-    if (rulesValidationError.value) return;
-  }
-  const payload = isTitle ? { ...titleForm.value, scanRules: changedRules } : isBoard ? boardForm.value : entry;
+  const recognition = isTitle ? recognitionEditor.value?.prepareSave() : undefined;
+  if (isTitle && !recognition) return;
+  const payload = isTitle ? { ...titleForm.value, ...recognitionScope.value, scanRules: recognition?.changedRules }
+    : isBoard ? boardForm.value : entry;
   saving.value = true;
   try {
     const path = isTitle ? '/titles' : isBoard ? '/boards' : `/${editKind.value}` + (entry.id ? '/' + entry.id : '');
@@ -630,61 +556,8 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
       <el-form label-position="top" :disabled="saving || !canMaintainEditor" @submit.prevent="save">
         <template v-if="editKind === 'section'">
           <el-form-item label="页面标题" required><el-input v-model="titleForm.name" maxlength="512" /></el-form-item>
-          <el-form-item label="识别方式">
-            <el-radio-group v-if="rulesReady" v-model="recognitionMethod" aria-label="识别方式" @change="rulesValidationError = ''">
-              <el-radio-button value="default">默认识别</el-radio-button>
-              <el-radio-button value="rules">规则识别</el-radio-button>
-            </el-radio-group>
-            <span v-else-if="rulesLoading" role="status">正在加载识别设置…</span>
-            <template v-else-if="rulesLoadError">
-              <el-alert :title="rulesLoadError" type="error" :closable="false" />
-              <el-button link type="primary" @click="loadScanRules">重新加载识别设置</el-button>
-            </template>
-          </el-form-item>
-          <template v-if="rulesReady && recognitionMethod === 'default'">
-            <el-form-item label="默认识别范围" required>
-              <el-select v-model="titleForm.scope">
-                <el-option v-for="[value, label] in pptManualRecognitionOptions" :key="value" :label="label" :value="value" />
-                <template #label>{{ modes[titleForm.scope] }}</template>
-              </el-select>
-              <p class="scan-scope-hint">该标题下的所有页面都使用这个范围。</p>
-              <el-alert v-if="originalRules !== '[]'" title="保存后将清除现有关键词规则。" type="warning" :closable="false" />
-            </el-form-item>
-            <template v-if="titleForm.scope === 'UPPER_TABLE_ONLY'">
-              <el-form-item label="表格顶边分界线比例（默认 0.5）"><el-input-number v-model="titleForm.upperLimitRatio" :min="0.01" :max="1" :step="0.05" /></el-form-item>
-              <el-form-item label="起始行（默认第 1 行）"><el-input-number v-model="titleForm.firstRow" :min="1" /></el-form-item>
-              <el-form-item label="结束行（留空读到末行）"><el-input-number v-model="titleForm.lastRow" :min="1" /></el-form-item>
-            </template>
-          </template>
-          <section v-else-if="rulesReady" class="scan-settings-body" aria-label="关键词规则" @input="rulesValidationError = ''">
-            <p class="scan-settings-hint">所有已填写的关键词都出现时，才应用该规则。未命中时使用{{ modes[titleForm.scope] }}。命中多条规则时，在上传确认页选择识别范围。</p>
-            <el-alert v-if="rulesValidationError" :title="rulesValidationError" type="error" :closable="false" />
-            <fieldset v-for="(rule, index) in scanRules" :key="rule.name" class="scan-rule">
-              <legend>规则 {{ index + 1 }}</legend>
-              <el-form-item label="命中规则时的识别范围" required>
-                <el-select v-model="rule.mode">
-                  <el-option v-for="(label, key) in modes" :key="key" :label="label" :value="key" />
-                </el-select>
-              </el-form-item>
-              <el-form-item v-for="(_, keywordIndex) in rule.keywords" :key="keywordIndex" :label="`关键词 ${keywordIndex + 1}`">
-                <div class="scan-keyword-input">
-                  <el-input v-model="rule.keywords[keywordIndex]" :maxlength="maxKeywordLength"
-                    :aria-label="`关键词 ${keywordIndex + 1}`" placeholder="输入关键词或短语" />
-                  <el-button v-if="canMaintainEditor && rule.keywords.length > 1" link type="danger"
-                    :aria-label="`删除关键词 ${keywordIndex + 1}`" @click="rule.keywords.splice(keywordIndex, 1); rulesValidationError = ''">删除</el-button>
-                </div>
-              </el-form-item>
-              <el-button v-if="canMaintainEditor" link type="primary" :icon="Plus" @click="rule.keywords.push('')">添加关键词</el-button>
-              <div v-if="rule.mode === 'UPPER_TABLE_ONLY'" class="scan-rule-limits">
-                <el-form-item label="分界线比例"><el-input-number v-model="rule.upperLimitRatio" :min="0.01" :max="1" :step="0.05" placeholder="0.5" /></el-form-item>
-                <el-form-item label="起始行"><el-input-number v-model="rule.firstRow" :min="1" :precision="0" placeholder="第 1 行" /></el-form-item>
-                <el-form-item label="结束行"><el-input-number v-model="rule.lastRow" :min="1" :precision="0" placeholder="末行" /></el-form-item>
-              </div>
-              <el-button v-if="canMaintainEditor" type="danger" link @click="scanRules.splice(index, 1); rulesValidationError = ''">删除规则</el-button>
-            </fieldset>
-            <el-button class="scan-add-rule" :icon="Plus" :disabled="scanRules.length >= 50"
-              v-if="canMaintainEditor" @click="addScanRule">新增例外规则</el-button>
-          </section>
+          <PptRecognitionSettings v-if="editorOpen" ref="recognitionEditor" v-model="recognitionScope"
+            :original-title="titleForm.originalName" :editable="canMaintainEditor" />
           <el-form-item label="所属板块" required>
             <el-select v-if="sectionsReady || sectionsLoading" v-model="titleForm.section" filterable
               :disabled="sectionsLoading" :loading="sectionsLoading" placeholder="搜索或选择已有板块">
@@ -726,7 +599,7 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
         </template>
         <div class="editor-actions" :class="{ 'title-editor-actions': isTitleEditor }">
           <el-button :disabled="saving" @click="editorOpen = false">{{ canMaintainEditor ? '取消' : '关闭' }}</el-button>
-          <el-button v-if="canMaintainEditor" native-type="submit" type="primary" :loading="saving" :disabled="isTitleEditor && rulesLoading">保存</el-button>
+          <el-button v-if="canMaintainEditor" native-type="submit" type="primary" :loading="saving" :disabled="isTitleEditor && recognitionEditor?.loading">保存</el-button>
         </div>
       </el-form>
     </el-dialog>
@@ -749,26 +622,6 @@ h2 { margin: 0 0 14px; font-size: 22px; color: #142441; }
 .el-pagination { margin-top: 10px; justify-content: flex-end; flex-wrap: wrap; }
 .editor-actions { display: flex; justify-content: flex-end; padding-top: 16px; border-top: 1px solid #e3eaf4; }
 .title-editor-actions { position: sticky; bottom: -20px; z-index: 1; padding-bottom: 10px; background: var(--el-dialog-bg-color, #fff); }
-.scan-settings-body {
-  display: grid;
-  gap: 12px;
-  margin-bottom: 20px;
-  padding: 12px 14px 14px;
-  border: 1px solid #dce5f3;
-  border-radius: 12px;
-  background: #f8faff;
-}
-.scan-scope-hint { margin: 6px 0 0; color: #586b86; font-size: 12px; line-height: 1.6; }
-.scan-settings-hint { margin: 0; color: #586b86; line-height: 1.6; }
-.scan-rule { min-width: 0; margin: 0; padding: 10px 12px; border: 1px solid #dce5f3; border-radius: 9px; background: #fff; }
-.scan-rule legend { padding-inline: 5px; font-weight: 600; color: #283e62; }
-.scan-keyword-input { display: flex; align-items: center; gap: 10px; width: 100%; }
-.scan-rule-limits { display: grid; gap: 0 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.scan-rule-limits :deep(.el-input-number) { width: 100%; }
-.scan-add-rule { justify-self: start; border-style: dashed; color: #315db5; }
-@media (max-width: 560px) {
-  .scan-rule-limits { grid-template-columns: minmax(0, 1fr); }
-}
 .department-import-content { display: grid; gap: 16px; }
 .department-import-template {
   padding: 12px 14px;
