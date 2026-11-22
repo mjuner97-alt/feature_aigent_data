@@ -5,8 +5,9 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { Plus } from '@element-plus/icons-vue';
-import { listPptTitleHandlers, updatePptTitleHandler, listPptTitleHandlerSources, reusePptTitleHandlers, pptAnomalyPermissions, type PptPerson } from '../../api/pptAnomaly';
+import { listPptTitleHandlers, updatePptTitleHandler, reusePptTitleHandlers, pptAnomalyPermissions, type PptPerson } from '../../api/pptAnomaly';
 import { searchSkillUsers, type SkillUserSearchItem } from '../../api/skill';
+import PptTitleHandlerReuseDialog from '../../components/ppt/PptTitleHandlerReuseDialog.vue';
 
 const router = useRouter();
 const title = computed(() => router.currentRoute.value.path === '/ppt-anomaly/keyword-config/title-handlers'
@@ -30,53 +31,20 @@ const searching = ref(false);
 const searchError = ref('');
 const handlerIds = computed(() => new Set(handlers.value.map(person => person.userId)));
 const reuseOpen = ref(false);
-const reuseLoading = ref(false);
-const sourceTitle = ref('');
-const sources = ref<string[]>([]);
-const sourceHandlers = ref<PptPerson[]>([]);
-const sourceReady = ref(false);
 const reuseError = ref('');
-let sourceRequest = 0;
-const newHandlerCount = computed(() => new Set(sourceHandlers.value.filter(person => !handlerIds.value.has(person.userId)).map(person => person.userId)).size);
-async function openReuse() {
+function openReuse() {
+  reuseError.value = '';
   reuseOpen.value = true;
-  reuseLoading.value = true;
-  sourceTitle.value = '';
-  sources.value = [];
-  sourceHandlers.value = [];
-  sourceReady.value = false;
-  reuseError.value = '';
-  const target = title.value;
-  try {
-    const result = await listPptTitleHandlerSources();
-    if (title.value === target) sources.value = result.filter(name => name !== target);
-  } catch { reuseError.value = '来源标题加载失败，请重新打开重试。'; }
-  finally { reuseLoading.value = false; }
 }
-watch(sourceTitle, async name => {
-  const request = ++sourceRequest;
-  sourceHandlers.value = [];
-  sourceReady.value = false;
-  reuseError.value = '';
-  if (!name) return;
-  reuseLoading.value = true;
-  try {
-    const result = await listPptTitleHandlers(name);
-    if (request !== sourceRequest) return;
-    sourceHandlers.value = result;
-    sourceReady.value = true;
-  } catch { if (request === sourceRequest) reuseError.value = '来源经办人加载失败，请重新选择标题。'; }
-  finally { if (request === sourceRequest) reuseLoading.value = false; }
-});
 /** 将来源标题的经办人追加到当前标题。 */
-async function applyReuse() {
+async function applyReuse(sourceTitle: string) {
   // 列表可查看时仍需单独确认维护权限。
-  if (!canMaintain.value || saving.value || !sourceReady.value || !sourceHandlers.value.length) return;
+  if (!canMaintain.value || saving.value || !sourceTitle) return;
   const target = title.value;
   saving.value = true;
   reuseError.value = '';
   try {
-    const updated = await reusePptTitleHandlers(target, sourceTitle.value);
+    const updated = await reusePptTitleHandlers(target, sourceTitle);
     if (title.value !== target) return;
     handlers.value = updated;
     reuseOpen.value = false;
@@ -95,7 +63,6 @@ watch(title, async (name, _, onCleanup) => {
   handlers.value = [];
   addOpen.value = false;
   reuseOpen.value = false;
-  sourceRequest++;
   error.value = '';
   if (!name) return;
   try {
@@ -190,26 +157,9 @@ async function updateHandler(userId: string, method: 'POST' | 'DELETE') {
       </el-table-column>
     </el-table>
     <el-empty v-else description="请从标题配置选择一个标题" />
-    <el-dialog v-model="reuseOpen" title="复用其他标题经办人" width="min(680px, 94vw)" append-to-body
-      :close-on-click-modal="false" :show-close="!saving" :close-on-press-escape="!saving">
-      <p>选择来源标题，将其经办人追加到当前标题；保留当前人员，重复人员自动去重。仅影响后续导入。</p>
-      <el-select v-model="sourceTitle" filterable placeholder="搜索并选择来源标题" :disabled="saving || reuseLoading"
-        :loading="reuseLoading" style="width:100%" no-data-text="暂无其他已配置经办人的标题">
-        <el-option v-for="name in sources" :key="name" :label="name" :value="name" />
-      </el-select>
-      <el-alert v-if="reuseError" :title="reuseError" type="error" :closable="false" />
-      <el-table v-if="sourceTitle" v-loading="reuseLoading" :data="sourceHandlers" empty-text="来源标题暂无经办人">
-        <el-table-column prop="department" label="部门" />
-        <el-table-column label="姓名（认证号）"><template #default="{ row }">{{ row.name }}（{{ row.userId }}）</template></el-table-column>
-        <el-table-column label="处理"><template #default="{ row }">{{ handlerIds.has(row.userId) ? '已存在' : '将追加' }}</template></el-table-column>
-      </el-table>
-      <template #footer>
-        <el-button :disabled="saving" @click="reuseOpen = false">取消</el-button>
-        <el-button type="primary" :loading="saving" :disabled="reuseLoading || !sourceReady || !newHandlerCount" @click="applyReuse">
-          追加 {{ newHandlerCount }} 位经办人
-        </el-button>
-      </template>
-    </el-dialog>
+    <PptTitleHandlerReuseDialog v-model="reuseOpen" :title="title" :existing-ids="handlerIds"
+      :saving="saving" :error="reuseError" note="将来源标题的经办人追加到当前标题，已有人员自动去重。仅影响后续导入。"
+      @apply="applyReuse" @select="reuseError = ''" />
     <el-dialog v-model="addOpen" title="新增经办人" width="min(600px, 94vw)" destroy-on-close
       :close-on-click-modal="false" :show-close="!saving" :close-on-press-escape="!saving">
       <form class="person-search" @submit.prevent="search">

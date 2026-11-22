@@ -49,7 +49,7 @@ function retry() {
           放大查看
         </button>
         <el-image-viewer v-if="enlarged && previewUrl" :url-list="[previewUrl]" teleported
-          :z-index="5000" @close="enlarged = false" />
+          :scale="0.8" :z-index="5000" @close="enlarged = false" />
       </template>
     </div>
   </component>

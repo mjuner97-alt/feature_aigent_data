@@ -5,6 +5,7 @@ import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vu
 import { useRouter } from 'vue-router';
 import { Plus, Search, UploadFilled } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import type { Options } from '@popperjs/core';
 import { confirmPptImport, deleteBatch, downloadVersion, getPptTitleRecognitionSettings, listBatchSummaries, listPptPeople, listVersions, previewPptImport, previewPptImportImage, previewPptImportRecognition, reviewPptImport, savePptImport, savePptTitleRecognitionSettings, searchPptPeople } from '../../api/pptAnomaly';
 import type { PptPerson, PptImportAssignment, PptImportRecognition, PptImportRecognitionPreview, PptImportTitleMatch, PptRecognitionMode, PptRecognitionScope, PptTitleScanRule } from '../../api/pptAnomaly';
 import { isPptRecognitionMode, pptAnomalyPermissions, pptManualRecognitionOptions, pptRecognitionModes } from '../../api/pptAnomaly';
@@ -14,6 +15,7 @@ import PptSlideViewer from '../../components/ppt/PptSlideViewer.vue';
 import PptBoardContactList from '../../components/ppt/PptBoardContactList.vue';
 import PptPreviewPdfDialog from '../../components/ppt/PptPreviewPdfDialog.vue';
 import PptRecognitionSettings from '../../components/ppt/PptRecognitionSettings.vue';
+import PptTitleHandlerReuseDialog from '../../components/ppt/PptTitleHandlerReuseDialog.vue';
 import PptVersionAssignmentsDialog from '../../components/ppt/PptVersionAssignmentsDialog.vue';
 import { getLoggedInUser } from '../../utils/auth';
 
@@ -40,6 +42,7 @@ const mode = ref<'new' | 'existing'>('new');
 const fixedBatch = ref(false);
 const batchId = ref<number>();
 const batchName = ref('');
+const versionName = ref<'初稿' | '终稿'>('初稿');
 const batchSearch = ref('');
 const file = ref<File>();
 const previewPdf = ref<File>();
@@ -126,6 +129,14 @@ const reviewList = ref<HTMLUListElement>();
 const ownerChoices = ref(new Map<string, string>());
 const savedTitleHandlers = ref(new Map<string, string[]>());
 const handlerChoices = ref(new Map<string, string[]>());
+const handlerListOpen = ref(false);
+const handlerListTitle = ref('');
+const handlerListKey = computed(() => titleKey(handlerListTitle.value));
+const handlerListIds = computed(() => titleHandlerIds(handlerListTitle.value));
+const handlerListDepartments = computed(() => new Map(reviewPeople.value.map(person => [person.userId, person.department])));
+const reuseHandlersOpen = ref(false);
+const reuseHandlerTitle = ref('');
+const reuseExistingIds = computed(() => new Set(titleHandlerIds(reuseHandlerTitle.value)));
 const boardEditorOpen = ref(false);
 const editingRow = ref<ReviewRow>();
 const unassignedRows = computed(() => reviewRows.value.filter(row => !row.skip && !row.section));
@@ -194,6 +205,73 @@ function titleHandlerIds(title: string) {
   return [...new Set([...(savedTitleHandlers.value.get(key) ?? []), ...(handlerChoices.value.get(key) ?? [])])];
 }
 
+function openHandlerList(title: string) {
+  handlerListTitle.value = title;
+  handlerListOpen.value = true;
+}
+
+function removeDraftHandler(userId: string) {
+  if (busy.value) return;
+  const title = handlerListKey.value;
+  handlerChoices.value.set(title, (handlerChoices.value.get(title) ?? []).filter(id => id !== userId));
+}
+
+const handlerDropdownOffset = 6;
+const handlerDropdownMaxHeight = 224;
+const handlerDropdownOptions: Partial<Options> = {
+  modifiers: [
+    { name: 'flip', enabled: false },
+    {
+      name: 'fitHandlerDropdown',
+      enabled: true,
+      phase: 'beforeMain',
+      fn({ state }) {
+        const reference = state.elements.reference;
+        const anchor = reference.getBoundingClientRect();
+        const panel = 'closest' in reference ? reference.closest('.review-detail')?.getBoundingClientRect() : undefined;
+        const top = Math.max(0, panel?.top ?? 0);
+        const bottom = Math.min(document.documentElement.clientHeight, panel?.bottom ?? Infinity);
+        const gutter = handlerDropdownOffset + 6;
+        const above = anchor.top - top - gutter;
+        const below = bottom - anchor.bottom - gutter;
+        const list = state.elements.popper.querySelector('.el-select-dropdown__wrap');
+        const desiredHeight = Math.min(handlerDropdownMaxHeight, list?.scrollHeight ?? state.rects.popper.height);
+        const openAbove = below < desiredHeight && above > below;
+        const placement = openAbove ? 'top-start' : 'bottom-start';
+        if (state.placement !== placement) {
+          state.placement = placement;
+          state.reset = true;
+          return;
+        }
+        state.elements.popper.style.setProperty('--handler-dropdown-height',
+          `${Math.max(0, Math.floor(Math.min(handlerDropdownMaxHeight, openAbove ? above : below)))}px`);
+      },
+    },
+  ],
+};
+
+function openHandlerReuse(title: string) {
+  if (busy.value) return;
+  reuseHandlerTitle.value = titleKey(title);
+  reuseHandlersOpen.value = true;
+}
+
+function addReusedHandlers(_sourceTitle: string, people: PptPerson[]) {
+  const title = reuseHandlerTitle.value;
+  if (!title || busy.value) return;
+  const existing = reuseExistingIds.value;
+  const known = new Map(reviewPeople.value.map(person => [person.userId, person]));
+  const additions = new Set<string>();
+  for (const person of people) {
+    if (existing.has(person.userId)) continue;
+    additions.add(person.userId);
+    known.set(person.userId, person);
+  }
+  reviewPeople.value = [...known.values()];
+  handlerChoices.value.set(title, [...(handlerChoices.value.get(title) ?? []), ...additions]);
+  reuseHandlersOpen.value = false;
+}
+
 function handlerOptions(ids: string[]) {
   const options = new Map(matchingHandlers.value.map(person => [person.userId, person]));
   for (const id of ids) {
@@ -219,6 +297,13 @@ function selectableRecognitionMode(mode: string): PptRecognitionMode | '' {
 function reviewRecognitionMode(row: ReviewRow) {
   return row.recognitionMethod === 'rules' && row.recognition
     ? selectableRecognitionMode(row.recognition.ruleMode) : row.defaultRecognitionMode;
+}
+
+function reviewRecognitionSummary(row: ReviewRow) {
+  if (row.pendingRecognition?.has(row.title.trim())) return '待重新匹配当前页';
+  const mode = reviewRecognitionMode(row);
+  const method = row.recognitionMethod === 'rules' ? '规则识别' : '默认识别';
+  return `${method} · ${mode ? pptRecognitionModes[mode] : '待确认范围'}`;
 }
 
 function setRecognitionMethod(row: ReviewRow, method: RecognitionMethod) {
@@ -259,7 +344,7 @@ function selectTitleCandidate(row: ReviewRow, index: number) {
 }
 
 const recognitionEditorOpen = ref(false);
-const recognitionTarget = shallowRef<{ row: ReviewRow; title: string }>();
+const recognitionTarget = shallowRef<{ title: string }>();
 const recognitionEditor = ref<InstanceType<typeof PptRecognitionSettings>>();
 const recognitionScope = ref<PptRecognitionScope>({ scope: 'FULL' });
 const initialScanRules = ref<PptTitleScanRule[]>();
@@ -268,22 +353,29 @@ const recognitionError = ref('');
 const recognitionSaved = ref(false);
 
 function applyRefreshedRecognition(row: ReviewRow, result: PptImportRecognitionPreview) {
+  const keepSkipped = row.skip && reviewRecognitionMode(row) !== 'NO_SCAN';
   row.recognition = result.recognition;
   row.defaultRecognitionMode = selectableRecognitionMode(result.defaultMode);
   row.recognitionMethod = result.recognition ? 'rules' : 'default';
-  row.skip = reviewRecognitionMode(row) === 'NO_SCAN';
+  row.skip = keepSkipped || reviewRecognitionMode(row) === 'NO_SCAN';
 }
 
 function openRecognitionEditor(row: ReviewRow) {
   const title = row.title.trim();
-  if (!canMaintainDefaults.value || !title || busy.value) return;
-  recognitionTarget.value = { row, title };
+  if (busy.value || !title || !canMaintainDefaults.value) return;
+  recognitionTarget.value = { title };
   recognitionSaved.value = row.pendingRecognition?.has(title) === true;
   initialScanRules.value = undefined;
   recognitionLoading.value = false;
   recognitionError.value = '';
   recognitionEditorOpen.value = true;
   if (!recognitionSaved.value) void loadRecognitionSettings();
+}
+
+function resolveRecognitionConflict(row: ReviewRow, mode: unknown) {
+  if (typeof mode !== 'string' || !isPptRecognitionMode(mode)) return;
+  row.defaultRecognitionMode = mode;
+  setRecognitionMethod(row, 'default');
 }
 
 async function loadRecognitionSettings() {
@@ -304,6 +396,29 @@ async function loadRecognitionSettings() {
   }
 }
 
+async function refreshPageRecognition(row: ReviewRow, title: string) {
+  const result = await previewPptImportRecognition({
+    file: reviewTarget.value ? undefined : file.value, versionId: reviewTarget.value,
+    pageNo: row.page, title,
+  });
+  row.pendingRecognition?.delete(title);
+  (row.refreshedRecognition ??= new Map()).set(title, result);
+  applyRefreshedRecognition(row, result);
+}
+
+async function refreshTitleRecognition(title: string) {
+  const failedPages: number[] = [];
+  for (const row of reviewRows.value) {
+    if (row.title.trim() !== title || !row.pendingRecognition?.has(title)) continue;
+    try {
+      await refreshPageRecognition(row, title);
+    } catch {
+      failedPages.push(row.page);
+    }
+  }
+  return failedPages;
+}
+
 async function saveRecognitionSettings() {
   const target = recognitionTarget.value;
   if (!target || busy.value) return;
@@ -315,20 +430,21 @@ async function saveRecognitionSettings() {
     if (rules) {
       await savePptTitleRecognitionSettings(target.title, { ...recognitionScope.value, scanRules: rules });
       recognitionSaved.value = true;
-      (target.row.pendingRecognition ??= new Set()).add(target.title);
+      // 标题配置变更后，该标题的旧匹配结果需要重新计算。
+      for (const row of reviewRows.value) {
+        row.refreshedRecognition?.delete(target.title);
+        (row.pendingRecognition ??= new Set()).add(target.title);
+      }
     }
-    const result = await previewPptImportRecognition({
-      file: reviewTarget.value ? undefined : file.value, versionId: reviewTarget.value,
-      pageNo: target.row.page, title: target.title,
-    });
-    target.row.pendingRecognition?.delete(target.title);
-    (target.row.refreshedRecognition ??= new Map()).set(target.title, result);
-    applyRefreshedRecognition(target.row, result);
+    const failedPages = await refreshTitleRecognition(target.title);
+    if (failedPages.length) {
+      recognitionError.value = `全局设置已保存，第 ${failedPages.join('、')} 页匹配失败，请重试。`;
+      return;
+    }
     recognitionEditorOpen.value = false;
-    ElMessage.success('识别设置已保存，当前页已重新匹配');
+    ElMessage.success('全局标题识别设置已保存，同标题页面已重新匹配');
   } catch (cause) {
-    const detail = cause instanceof Error ? cause.message : '请重试';
-    recognitionError.value = recognitionSaved.value ? `设置已保存，当前页刷新失败：${detail}` : detail;
+    recognitionError.value = cause instanceof Error ? cause.message : '无法保存识别设置，请重试';
   } finally {
     busy.value = false;
   }
@@ -360,6 +476,9 @@ const visibleReviewRows = computed(() => {
   });
 });
 const selectedReviewRow = computed(() => visibleReviewRows.value.find(row => row.page === selectedPage.value));
+const selectedHandlerTitle = computed(() => titleKey(selectedReviewRow.value?.title ?? ''));
+const savedHandlersForReview = computed(() => savedTitleHandlers.value.get(selectedHandlerTitle.value) ?? []);
+const draftHandlersForReview = computed(() => handlerChoices.value.get(selectedHandlerTitle.value) ?? []);
 const selectedBoardContacts = computed(() => configuredContacts.value.get(selectedReviewRow.value?.section ?? ''));
 const selectedContactIds = computed(() => ownerChoices.value.get(selectedReviewRow.value?.section ?? '')?.split(',') ?? []);
 watch([dialog, file, previewPdf, reviewTarget, reviewLoaded, () => selectedReviewRow.value?.page], () => {
@@ -511,6 +630,7 @@ function openUpload(batch?: PptBatchSummary) {
   file.value = undefined;
   previewPdf.value = undefined;
   batchName.value = '';
+  versionName.value = '初稿';
   batchSearch.value = '';
   batchId.value = batch?.id;
   fixedBatch.value = !!batch;
@@ -595,7 +715,7 @@ async function confirmReview() {
       await confirmPptImport(target, assignments);
     } else if (selectedFile && (mode.value === 'new' || selectedBatchId !== undefined)) {
       const batch = mode.value === 'new' ? { batchName: batchName.value.trim() } : { batchId: selectedBatchId! };
-      await savePptImport(selectedFile, batch, assignments, previewPdf.value);
+      await savePptImport(selectedFile, batch, assignments, previewPdf.value, versionName.value);
     } else {
       return;
     }
@@ -646,10 +766,6 @@ async function download(version: PptVersion) {
   } catch {
     error.value = '原文件下载失败';
   }
-}
-
-function openVersionAssignments(id: number, versionNo: number | null) {
-  assignmentVersion.value = { id, versionNo };
 }
 
 async function confirmDeleteBatch(batch: PptBatchSummary) {
@@ -703,7 +819,7 @@ onMounted(async () => {
         :empty-text="batches.length ? '没有匹配的材料' : '暂无材料，点击新增材料开始上传'">
         <el-table-column prop="name" label="批次名称" min-width="155" show-overflow-tooltip />
         <el-table-column label="最新文件" min-width="215" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.fileName || '—' }}</template>
+          <template #default="{ row }">{{ [row.fileName, row.versionName].filter(Boolean).join(' · ') || '—' }}</template>
         </el-table-column>
         <el-table-column label="上传时间" width="155">
           <template #default="{ row }">{{ dateText(row.uploadedAt) }}</template>
@@ -736,9 +852,9 @@ onMounted(async () => {
         <el-button v-if="historyErrors[historyBatch.id]" @click="loadHistory(historyBatch.id)">重新加载历史版本</el-button>
         <el-table v-else v-loading="historyLoading[historyBatch.id]"
           :data="histories[historyBatch.id] || []" row-key="id" empty-text="暂无上传版本">
-          <el-table-column label="版本" width="110">
+          <el-table-column label="版本" width="150">
             <template #default="{ row, $index }">
-              v{{ row.versionNo }}
+              v{{ row.versionNo }} · {{ row.versionName }}
               <el-tag v-if="$index === 0" size="small" effect="plain">最新</el-tag>
             </template>
           </el-table-column>
@@ -794,6 +910,12 @@ onMounted(async () => {
             <el-option v-for="batch in matchingBatches" :key="batch.id" :label="batch.name" :value="batch.id" />
           </el-select>
           <div v-if="selectedBatch?.fileName" class="last-upload">最近上传 {{ selectedBatch.fileName }} · {{ dateText(selectedBatch.uploadedAt) }}</div>
+        </el-form-item>
+        <el-form-item label="稿件类型">
+          <el-radio-group v-model="versionName" aria-label="稿件类型">
+            <el-radio-button value="初稿">初稿</el-radio-button>
+            <el-radio-button value="终稿">终稿</el-radio-button>
+          </el-radio-group>
         </el-form-item>
         <el-form-item label="PPT 文件">
           <div class="file-picker" :class="{ 'has-file': file }">
@@ -906,39 +1028,19 @@ onMounted(async () => {
                   <div class="review-field">
                     <div class="review-field-heading">
                       <span>识别方式</span>
-                      <el-button v-if="canMaintainDefaults" link type="primary" :disabled="busy || !selectedReviewRow.title.trim()"
+                      <el-button v-if="canMaintainDefaults" size="small" :disabled="busy || !selectedReviewRow.title.trim()"
                         @click="openRecognitionEditor(selectedReviewRow)">
-                        {{ selectedReviewRow.pendingRecognition?.has(selectedReviewRow.title.trim()) ? '重新匹配规则' : '新增／编辑规则' }}
+                        {{ selectedReviewRow.pendingRecognition?.has(selectedReviewRow.title.trim()) ? '重新匹配规则' : '配置识别方式' }}
                       </el-button>
                     </div>
-                    <el-radio-group :model-value="selectedReviewRow.recognitionMethod" :disabled="busy" aria-label="识别方式"
-                      @update:model-value="setRecognitionMethod(selectedReviewRow, $event as RecognitionMethod)">
-                      <el-radio-button value="default">默认识别</el-radio-button>
-                      <el-radio-button value="rules" :disabled="!selectedReviewRow.recognition">规则识别</el-radio-button>
-                    </el-radio-group>
-                    <p v-if="selectedReviewRow.pendingRecognition?.has(selectedReviewRow.title.trim())" class="review-field-hint">
-                      设置已保存，请重新匹配当前页。
-                    </p>
-                    <p v-else-if="!selectedReviewRow.recognition" class="review-field-hint">当前标题没有可用的关键词规则。</p>
-                  </div>
-                  <div v-if="selectedReviewRow.recognitionMethod === 'default'" class="review-field">
-                    <span class="review-required">默认识别范围</span>
-                    <el-select v-model="selectedReviewRow.defaultRecognitionMode" :disabled="busy || selectedReviewRow.skip"
-                      aria-label="默认识别范围" @change="setReviewSkip(selectedReviewRow, selectedReviewRow.defaultRecognitionMode === 'NO_SCAN')">
+                    <p class="review-field-hint">{{ reviewRecognitionSummary(selectedReviewRow) }}</p>
+                    <el-select v-if="selectedReviewRow.recognition?.ruleMode === 'RULE_CONFLICT' && !selectedReviewRow.skip
+                      && !selectedReviewRow.pendingRecognition?.has(selectedReviewRow.title.trim())"
+                      :model-value="selectedReviewRow.recognitionMethod === 'default' ? selectedReviewRow.defaultRecognitionMode : ''"
+                      :disabled="busy" placeholder="多条规则命中，请选择本页识别范围" aria-label="规则冲突时的识别范围"
+                      @update:model-value="resolveRecognitionConflict(selectedReviewRow, $event)">
                       <el-option v-for="[value, label] in pptManualRecognitionOptions" :key="value" :label="label" :value="value" />
-                      <template #label>{{ selectedReviewRow.defaultRecognitionMode && pptRecognitionModes[selectedReviewRow.defaultRecognitionMode] }}</template>
                     </el-select>
-                    <p class="review-field-hint">{{ selectedReviewRow.defaultRecognitionMode
-                      ? '当前页使用所选范围识别。' : '请选择当前页的识别范围。' }}</p>
-                  </div>
-                  <div v-else-if="selectedReviewRow.recognition" class="review-field">
-                    <span>规则识别范围</span>
-                    <template v-if="reviewRecognitionMode(selectedReviewRow)">
-                      <div class="review-contact-name">{{ pptRecognitionModes[reviewRecognitionMode(selectedReviewRow) as PptRecognitionMode] }}</div>
-                      <p class="review-field-hint">{{ selectedReviewRow.recognition.ruleName
-                        ? `命中规则：${selectedReviewRow.recognition.ruleName}` : '未命中关键词规则，使用默认识别范围。' }}</p>
-                    </template>
-                    <p v-else class="review-field-hint">该页命中多条关键词规则，请切换到默认识别后选择范围，或跳过本页。</p>
                   </div>
                   <div class="review-field">
                     <div class="review-field-heading">
@@ -973,21 +1075,48 @@ onMounted(async () => {
                     </template>
                   </div>
                   <div v-if="titleKey(selectedReviewRow.title) && !selectedReviewRow.skip" :key="`handlers-${titleKey(selectedReviewRow.title)}`"
-                    class="review-field review-contact">
-                    <label id="ppt-review-handlers-label">标题经办人</label>
-                    <div v-if="savedTitleHandlers.get(titleKey(selectedReviewRow.title))?.length" class="review-contact-name">
-                      {{ savedTitleHandlers.get(titleKey(selectedReviewRow.title))?.map(boardContactLabel).join('、') }}
+                    class="review-field review-contact review-title-handlers">
+                    <div class="review-field-heading">
+                      <label id="ppt-review-handlers-label">标题经办人</label>
+                      <el-button link type="primary" :disabled="busy" @click="openHandlerReuse(selectedReviewRow.title)">
+                        复用其他标题经办人
+                      </el-button>
                     </div>
-                    <el-select :model-value="handlerChoices.get(titleKey(selectedReviewRow.title)) ?? []" multiple filterable remote
-                      :reserve-keyword="false"
+                    <div v-if="savedHandlersForReview.length" class="review-saved-handlers">
+                      <span>已配置</span>
+                      <strong :title="boardContactLabel(savedHandlersForReview[0])">{{ boardContactName(savedHandlersForReview[0]) }}</strong>
+                      <button v-if="savedHandlersForReview.length > 1" type="button" class="review-handler-count"
+                        :aria-label="`查看全部 ${savedHandlersForReview.length} 位已配置经办人`" aria-haspopup="dialog"
+                        @click="openHandlerList(selectedReviewRow.title)">+{{ savedHandlersForReview.length - 1 }}</button>
+                    </div>
+                    <el-select :model-value="draftHandlersForReview" class="review-handler-picker" multiple filterable remote remote-show-suffix
+                      fit-input-width :reserve-keyword="false" :offset="handlerDropdownOffset"
+                      popper-class="ppt-review-handler-dropdown" :popper-options="handlerDropdownOptions"
                       aria-labelledby="ppt-review-handlers-label" placeholder="搜索并补充经办人，可多选"
                       :disabled="busy" :remote-method="searchHandlers" :loading="handlerLoading"
                       :no-data-text="handlerSearchFailed ? '搜索失败，请重试' : '未找到经办人'"
-                      @update:model-value="handlerChoices.set(titleKey(selectedReviewRow.title), $event)"
+                      @update:model-value="handlerChoices.set(selectedHandlerTitle, $event)"
                       @visible-change="(open: boolean) => { if (!open) searchHandlers(''); }">
+                      <template #tag>
+                        <div v-if="draftHandlersForReview.length" class="review-handler-selection">
+                          <button type="button" class="review-handler-count review-handler-first" aria-haspopup="dialog"
+                            :title="boardContactLabel(draftHandlersForReview[0])"
+                            :aria-label="`查看全部 ${draftHandlersForReview.length} 位补选经办人`" :disabled="busy"
+                            @click.stop="openHandlerList(selectedReviewRow.title)">{{ boardContactName(draftHandlersForReview[0]) }}</button>
+                          <button v-if="draftHandlersForReview.length > 1" type="button" class="review-handler-count"
+                            :aria-label="`还有 ${draftHandlersForReview.length - 1} 位补选经办人，查看完整名单`"
+                            aria-haspopup="dialog" :disabled="busy"
+                            @click.stop="openHandlerList(selectedReviewRow.title)">+{{ draftHandlersForReview.length - 1 }}</button>
+                        </div>
+                      </template>
                       <el-option v-for="person in handlerOptions(titleHandlerIds(selectedReviewRow.title))" :key="person.userId"
-                        :label="[boardContactLabel(person.userId), person.department].filter(Boolean).join(' · ')"
-                        :value="person.userId" :disabled="!person.department" />
+                        :label="person.name || person.userId" :value="person.userId"
+                        :disabled="!person.department || savedHandlersForReview.includes(person.userId)">
+                        <div class="review-handler-option" :title="[boardContactLabel(person.userId), person.department].filter(Boolean).join(' · ')">
+                          <strong>{{ person.name || person.userId }}</strong>
+                          <span>{{ [person.department, person.userId].filter(Boolean).join(' · ') }}</span>
+                        </div>
+                      </el-option>
                     </el-select>
                     <small v-if="!titleHandlerIds(selectedReviewRow.title).length">暂未配置经办人，部门事项将保留为待分派。</small>
                     <p class="review-field-hint">按标题和部门分派。缺少同部门经办人的事项会保留为待分派。</p>
@@ -1021,11 +1150,33 @@ onMounted(async () => {
           </el-button>
         </div>
     </section>
-    <el-dialog v-model="recognitionEditorOpen" title="编辑标题识别设置" class="ppt-dialog" width="min(680px, 94vw)"
+    <el-dialog v-model="handlerListOpen" title="标题经办人" class="ppt-dialog" width="min(520px, 94vw)"
+      align-center append-to-body :close-on-click-modal="false">
+      <div class="review-handler-list-content">
+        <ul v-if="handlerListIds.length" class="review-handler-list">
+          <li v-for="id in handlerListIds" :key="id">
+            <div class="review-handler-list-person">
+              <span>{{ boardContactLabel(id) }}</span>
+              <span class="review-handler-list-department">{{ handlerListDepartments.get(id) || '部门未登记' }}</span>
+            </div>
+            <span v-if="savedTitleHandlers.get(handlerListKey)?.includes(id)" class="review-handler-list-status">已配置</span>
+            <el-button v-else link type="danger" :disabled="busy" :aria-label="`移除 ${boardContactName(id)}`"
+              @click="removeDraftHandler(id)">移除</el-button>
+          </li>
+        </ul>
+        <p v-else role="status">暂无经办人。</p>
+      </div>
+      <template #footer><el-button @click="handlerListOpen = false">关闭</el-button></template>
+    </el-dialog>
+    <PptTitleHandlerReuseDialog v-model="reuseHandlersOpen" :title="reuseHandlerTitle" :existing-ids="reuseExistingIds"
+      :saving="busy" note="将来源标题的经办人追加到当前标题，已有人员自动去重。名单随导入一起提交。"
+      @apply="addReusedHandlers" />
+    <el-dialog v-model="recognitionEditorOpen" title="配置识别方式" class="ppt-dialog" width="min(680px, 94vw)"
       align-center append-to-body destroy-on-close :close-on-click-modal="false" :show-close="!busy" :close-on-press-escape="!busy">
       <el-form label-position="top" :disabled="busy || recognitionSaved" @submit.prevent="saveRecognitionSettings">
         <el-form-item label="页面标题">{{ recognitionTarget?.title }}</el-form-item>
-        <p class="review-field-hint">保存后，当前页会重新匹配，同标题的后续导入也会使用这组设置。</p>
+        <p v-if="!recognitionSaved" class="review-field-hint">设置对该标题全局生效，保存后会重新匹配本次导入中的同标题页面。</p>
+        <p v-else-if="!recognitionError" class="review-field-hint">全局设置已保存，可以重新匹配尚未刷新的页面。</p>
         <p v-if="recognitionLoading" role="status">正在加载识别设置…</p>
         <el-alert v-if="recognitionError" :title="recognitionError" type="error" :closable="false" />
         <el-button v-if="recognitionError && !initialScanRules && !recognitionSaved" link type="primary" @click="loadRecognitionSettings">重新加载识别设置</el-button>
@@ -1035,7 +1186,7 @@ onMounted(async () => {
       <template #footer>
         <el-button :disabled="busy" @click="recognitionEditorOpen = false">{{ recognitionSaved ? '关闭' : '取消' }}</el-button>
         <el-button type="primary" :disabled="!initialScanRules && !recognitionSaved" :loading="busy" @click="saveRecognitionSettings">
-          {{ recognitionSaved ? '重新匹配当前页' : '保存并匹配当前页' }}
+          {{ recognitionSaved ? '重新匹配同标题页面' : '保存全局设置' }}
         </el-button>
       </template>
     </el-dialog>
@@ -1154,6 +1305,47 @@ onMounted(async () => {
 .review-field :deep(.el-input__wrapper), .review-field :deep(.el-select__wrapper) { min-height: 36px; box-sizing: border-box; }
 .review-contact-name { padding: 8px 11px; color: #243651; background: #f3f6fb; border-radius: 6px; overflow-wrap: anywhere; }
 .review-contact small { color: #805016; font-size: 12px; }
+.review-title-handlers { grid-template-columns: minmax(0, 1fr); }
+.review-title-handlers .review-field-heading { flex-wrap: wrap; }
+.review-saved-handlers, .review-handler-selection {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+}
+.review-saved-handlers { padding: 5px 9px; border-radius: 6px; background: #f3f6fb; color: #52627a; }
+.review-saved-handlers > span { flex-shrink: 0; }
+.review-saved-handlers strong, .review-handler-first { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.review-handler-count {
+  padding: 2px 6px; border: 0; border-radius: 4px; color: #234ba9;
+  background: #eaf1ff; cursor: pointer; font: inherit; white-space: nowrap;
+}
+.review-handler-count:not(.review-handler-first) { flex-shrink: 0; }
+.review-handler-count:hover, .review-handler-count:focus-visible { background: #dce8ff; }
+.review-handler-count:disabled { cursor: default; }
+.review-handler-picker :deep(.el-select__selection) { flex-wrap: nowrap; }
+.review-handler-picker :deep(.el-select__input-wrapper) { flex: 1; min-width: 48px; }
+.review-handler-picker :deep(.review-handler-selection + .el-select__input-wrapper.is-hidden) {
+  position: static; opacity: 1; z-index: auto;
+}
+.review-handler-selection { max-width: calc(100% - 54px); }
+:global(.ppt-review-handler-dropdown .el-select-dropdown__wrap) {
+  max-height: var(--handler-dropdown-height, 224px);
+}
+:global(.ppt-review-handler-dropdown .el-select-dropdown__item) {
+  display: flex; align-items: center; height: 44px; padding: 0 36px 0 12px; line-height: normal;
+}
+:global(.ppt-review-handler-dropdown .el-select-dropdown__item.is-selected::after) { right: 12px; }
+.review-handler-option { display: grid; gap: 2px; min-width: 0; }
+.review-handler-option > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.review-handler-option span, .review-handler-list-status, .review-handler-list-department { color: #52627a; font-size: 12px; }
+.review-handler-list-content > p { margin: 0; color: #52627a; }
+.review-handler-list {
+  max-height: min(320px, 48dvh); overflow: auto; margin: 0; padding: 0; list-style: none;
+}
+.review-handler-list li {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  min-height: 36px; padding: 6px 8px; border-bottom: 1px solid #e9eef6;
+}
+.review-handler-list-person { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.review-handler-list-status { flex-shrink: 0; }
 .board-contact-picker :deep(.el-tag) { max-width: 100%; height: auto; min-height: 24px; padding-block: 3px; }
 .board-contact-picker :deep(.el-tag__content) { white-space: normal; overflow-wrap: anywhere; }
 .board-contact-hint { width: 100%; margin: 5px 0 0; color: #52627a; font-size: 12px; line-height: 1.5; }

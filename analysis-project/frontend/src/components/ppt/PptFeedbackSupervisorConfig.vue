@@ -76,12 +76,13 @@ function openAdd() {
 /** 按姓名或认证号搜索督办人候选，保留当前选中人员。 */
 async function search(keyword: string) {
   const id = ++searchId;
+  const term = keyword.trim();
   results.value = [];
   searchError.value = '';
-  searching.value = Boolean(selectedDepartments.value.length && keyword.trim());
-  if (!searching.value) return;
+  searching.value = Boolean(term);
+  if (!term) return;
   try {
-    const people = await searchPptDirectoryPeople(keyword.trim());
+    const people = await searchPptDirectoryPeople(term);
     if (id !== searchId) return;
     people.forEach(person => choices.value.set(person.userId, person));
     results.value = people;
@@ -197,14 +198,14 @@ onMounted(load);
       <el-form label-position="top" @submit.prevent="add">
         <el-form-item label="督办部门" required>
           <el-select v-model="selectedDepartments" multiple filterable :disabled="saving"
-            placeholder="选择督办部门" style="width: 100%">
+            placeholder="选择被督办的部门" style="width: 100%">
             <el-option v-for="name in editableDepartments" :key="name" :label="name" :value="name" />
           </el-select>
         </el-form-item>
         <el-form-item label="组织督办人" required :error="searchError">
           <el-select v-model="selected" multiple filterable remote :reserve-keyword="false" :remote-method="search"
-            :loading="searching" :disabled="saving || !selectedDepartments.length"
-            :placeholder="selectedDepartments.length ? '输入姓名或统一认证号搜索' : '请先选择督办部门'" style="width: 100%">
+            :loading="searching" :disabled="saving"
+            placeholder="输入姓名或统一认证号搜索" style="width: 100%">
             <el-option v-for="person in options" :key="person.userId" :value="person.userId"
               :label="personLabel(person)" />
           </el-select>
