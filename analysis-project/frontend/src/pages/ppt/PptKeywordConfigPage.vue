@@ -95,6 +95,7 @@ const peopleLoading = ref(false);
 const sections = ref<BoardRow[]>([]);
 const boardRows = ref<BoardRow[]>([]);
 const boardForm = ref({ originalName: '', name: '', owner: '', create: true });
+const boardOwnerIds = ref<string[]>([]);
 const sectionsLoading = ref(false);
 const sectionsReady = ref(false);
 let peopleRequestId = 0;
@@ -112,6 +113,7 @@ const boardOwnerOptions = computed(() => {
 });
 function selectBoardOwners(ids: string[]) {
   const options = new Map(boardOwnerOptions.value);
+  boardOwnerIds.value = [...ids];
   knownBoardContacts.value = new Map(ids.map(id => [id, options.get(id) ?? id]));
   boardForm.value.owner = ids.join(',');
 }
@@ -365,6 +367,7 @@ function editBoard(row?: BoardRow) {
   editKind.value = 'board';
   boardForm.value = { originalName: row?.name ?? '', name: row?.name ?? '', owner: row?.owner ?? '', create: !row };
   const ids = row?.owner?.split(',') ?? [];
+  boardOwnerIds.value = ids;
   const names = row?.ownerName?.split('、') ?? [];
   knownBoardContacts.value = new Map(ids.map((id, index) => [id, names[index] ?? id]));
   editorOpen.value = true;
@@ -637,7 +640,7 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
         <template v-else-if="editKind === 'board'">
           <el-form-item label="板块名称" required><el-input v-model="boardForm.name" maxlength="512" /></el-form-item>
           <el-form-item label="板块联系人" required>
-            <el-select :model-value="boardForm.owner ? boardForm.owner.split(',') : []" multiple filterable remote clearable :reserve-keyword="true"
+            <el-select :model-value="boardOwnerIds" multiple filterable remote clearable :reserve-keyword="false"
               :remote-method="searchPeople" :loading="peopleLoading" placeholder="搜索并选择一位或多位联系人"
               @update:model-value="selectBoardOwners">
               <el-option v-for="[id, name] in boardOwnerOptions" :key="id" :value="id" :label="contactLabel(id, name)" />
