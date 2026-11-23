@@ -515,9 +515,10 @@ public class PptAnomalyController {
     public PptAnomalyService.ImportReview previewImport(@RequestParam(required = false) Long batchId,
             @RequestPart("file") MultipartFile file,
             @RequestPart(value = "previewPdf", required = false) MultipartFile previewPdf,
+            @RequestParam(value = "materialType", required = false) String materialType,
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
         requireProductDepartment(userId, people);
-        return service.previewImport(batchId, file, previewPdf);
+        return service.previewImport(batchId, file, previewPdf, materialType);
     }
 
     /** 按核对页当前标题重新计算指定页的规则命中。 */
@@ -558,6 +559,8 @@ public class PptAnomalyController {
     @Transactional(GaussConfig.TX_NAME)
     public Version saveImport(@RequestParam(required = false) Long batchId,
             @RequestParam(required = false) String batchName,
+            @RequestParam(required = false) String materialType,
+            @RequestParam(required = false) String versionName,
             @RequestPart("file") MultipartFile file,
             @RequestPart(value = "previewPdf", required = false) MultipartFile previewPdf,
             @RequestPart("assignments") List<PptAnomalyService.ImportAssignment> assignments,
@@ -567,9 +570,12 @@ public class PptAnomalyController {
             if (batchName == null || batchName.isBlank() || batchName.length() > 255) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请输入批次名称");
             }
-            batchId = service.createBatch(batchName.strip(), userId).id();
+            batchId = service.createBatch(batchName.strip(), userId, materialType).id();
+        } else if (materialType != null && !materialType.isBlank()) {
+            // A selected type on a later version becomes the batch's current type.
+            service.updateBatchMaterialType(batchId, materialType.strip());
         }
-        Version version = service.uploadVersion(batchId, file, null, userId);
+        Version version = service.uploadVersion(batchId, file, versionName, userId);
         if (previewPdf != null) service.savePreviewPdf(version.id(), previewPdf, userId);
         service.confirmConfiguredImport(version.id(), userId, assignments);
         ruleEngine.analyze(version.id());

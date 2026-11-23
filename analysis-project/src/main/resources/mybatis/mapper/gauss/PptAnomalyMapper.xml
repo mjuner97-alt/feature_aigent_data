@@ -251,7 +251,7 @@
     </select>
     <!-- 汇总各批次最新版本、文件名称及识别状态。 -->
     <select id="batchSummaries" resultType="com.agentscopea2a.v2.pptanomaly.PptAnomalyModels$BatchSummary">
-        SELECT b.id, b.name, v.id AS version_id, v.version_no, v.file_name, v.status, v.uploaded_at, summary.file_names, v.uploaded_by
+        SELECT b.id, b.name, b.material_type, v.id AS version_id, v.version_no, v.version_name, v.file_name, v.status, v.uploaded_at, summary.file_names, v.uploaded_by
         FROM digital_qa_ppt_material_batch b
         LEFT JOIN (
             SELECT batch_id, MAX(version_no) AS latest, string_agg(file_name, chr(10)) AS file_names
@@ -260,6 +260,20 @@
         LEFT JOIN digital_qa_ppt_material_version v ON v.batch_id = b.id AND v.version_no = summary.latest
         ORDER BY v.uploaded_at DESC NULLS LAST, b.id DESC
     </select>
+    <select id="batchMaterialType" resultType="string">
+        SELECT material_type FROM digital_qa_ppt_material_batch WHERE id=#{id}
+    </select>
+    <select id="materialIgnoreRules" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$MaterialIgnoreRule">
+        SELECT id, material_type, rule_type, rule_value, rule_scope, enabled
+        FROM digital_qa_ppt_material_ignore_rule WHERE material_type=#{materialType} AND enabled=TRUE ORDER BY id
+    </select>
+    <insert id="insertMaterialIgnoreRule">
+        INSERT INTO digital_qa_ppt_material_ignore_rule(material_type,rule_type,rule_value,rule_scope,enabled,updated_at)
+        VALUES(#{rule.materialType},#{rule.ruleType},#{rule.ruleValue},#{rule.ruleScope},#{rule.enabled},CURRENT_TIMESTAMP)
+    </insert>
+    <delete id="deleteMaterialIgnoreRules">
+        DELETE FROM digital_qa_ppt_material_ignore_rule WHERE material_type=#{materialType}
+    </delete>
     <!-- 复用配置类别、名称关键词及目标值的筛选条件。 -->
     <sql id="configFilter">
         FROM digital_qa_ppt_keyword_config WHERE kind=#{kind}
@@ -269,8 +283,9 @@
 
     <!-- 创建例会材料批次并记录上传用户。 -->
     <insert id="createBatch" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
-        INSERT INTO digital_qa_ppt_material_batch(name,created_by) VALUES (#{name},#{user})
+        INSERT INTO digital_qa_ppt_material_batch(name,created_by,material_type) VALUES (#{name},#{user},#{materialType})
     </insert>
+    <update id="updateBatchMaterialType">UPDATE digital_qa_ppt_material_batch SET material_type=#{materialType} WHERE id=#{id}</update>
 
     <!-- 查询材料批次列表。 -->
     <select id="batches" resultType="com.agentscopea2a.v2.pptanomaly.PptAnomalyModels$Batch">

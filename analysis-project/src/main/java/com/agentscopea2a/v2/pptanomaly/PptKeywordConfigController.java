@@ -101,6 +101,20 @@ public class PptKeywordConfigController {
         return rulesForTitle(title);
     }
 
+    @GetMapping("/material-types/{materialType}/ignore-rules")
+    public List<PptAnomalyMapper.MaterialIgnoreRule> materialIgnoreRules(@PathVariable String materialType) {
+        return service.materialIgnoreRules(materialType);
+    }
+
+    @PutMapping("/material-types/{materialType}/ignore-rules")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void saveMaterialIgnoreRules(@PathVariable String materialType,
+            @RequestBody List<PptAnomalyMapper.MaterialIgnoreRule> rules,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
+        if (!service.canManageAllConfigurations(editor)) PptAnomalyController.requireProductDepartment(editor, people);
+        service.replaceMaterialIgnoreRules(materialType, rules);
+    }
+
     /** 读取核对页标题的识别设置，未配置的标题从整页识别开始。 */
     @GetMapping("/recognition-settings")
     public RecognitionSettings recognitionSettings(@RequestParam String title) {

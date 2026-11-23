@@ -6,7 +6,7 @@ import { useRouter } from 'vue-router';
 import { Plus, Search, UploadFilled } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { Options } from '@popperjs/core';
-import { confirmPptImport, deleteBatch, downloadVersion, getPptTitleRecognitionSettings, listBatchSummaries, listPptPeople, listVersions, previewPptImport, previewPptImportImage, previewPptImportRecognition, reviewPptImport, savePptImport, savePptTitleRecognitionSettings, searchPptPeople } from '../../api/pptAnomaly';
+import { confirmPptImport, deleteBatch, downloadVersion, getPptTitleRecognitionSettings, listBatchSummaries, listPptMaterialTypes, listPptPeople, listVersions, previewPptImport, previewPptImportImage, previewPptImportRecognition, reviewPptImport, savePptImport, savePptTitleRecognitionSettings, searchPptPeople } from '../../api/pptAnomaly';
 import type { PptPerson, PptImportAssignment, PptImportRecognition, PptImportRecognitionPreview, PptImportTitleMatch, PptRecognitionMode, PptRecognitionScope, PptTitleScanRule } from '../../api/pptAnomaly';
 import { isPptRecognitionMode, pptAnomalyPermissions, pptManualRecognitionOptions, pptRecognitionModes } from '../../api/pptAnomaly';
 import type { PptBatchSummary, PptVersion } from '../../types/pptAnomaly';
@@ -42,8 +42,11 @@ const mode = ref<'new' | 'existing'>('new');
 const fixedBatch = ref(false);
 const batchId = ref<number>();
 const batchName = ref('');
+const materialTypes = ref<{ name: string }[]>([]);
+const materialType = ref('');
 const versionName = ref<'初稿' | '终稿'>('初稿');
 const batchSearch = ref('');
+const materialTypeFilter = ref('');
 const file = ref<File>();
 const previewPdf = ref<File>();
 const previewPdfInput = ref<HTMLInputElement>();
@@ -579,16 +582,31 @@ function boardContactNames(userIds: string) {
 }
 
 const selectedBatch = computed(() => batches.value.find(batch => batch.id === batchId.value));
+/** 选择已有批次时，导入类型必须跟随批次保存的材料类型。 */
+watch([mode, batchId], () => {
+  if (mode.value === 'existing') {
+    materialType.value = selectedBatch.value?.materialType || '';
+  } else {
+    materialType.value = '';
+  }
+});
 /** 按批次名称和文件信息判断是否符合搜索条件。 */
 function matches(batch: PptBatchSummary, search: string) {
   const term = search.trim().toLowerCase();
   return batch.name.toLowerCase().includes(term) || !!batch.fileNames?.toLowerCase().includes(term);
 }
 const matchingBatches = computed(() => batches.value.filter(batch => matches(batch, batchSearch.value)));
-const visible = computed(() => batches.value.filter(batch => matches(batch, query.value)));
-const canSubmit = computed(() => !!file.value && (mode.value === 'new' ? !!batchName.value.trim() : batchId.value !== undefined));
+const visible = computed(() => batches.value.filter(batch => matches(batch, query.value)
+  && (!materialTypeFilter.value || batch.materialType === materialTypeFilter.value)));
+const canSubmit = computed(() => !!file.value && !!materialType.value && (mode.value === 'new' ? !!batchName.value.trim() : batchId.value !== undefined));
 /** 将材料上传时间格式化为分钟精度，空时间显示占位符。 */
 const dateText = (value?: string | null) => value?.replace('T', ' ').slice(0, 16) || '—';
+/** 兼容历史数据中将默认稿件类型保存为 v1 的记录。 */
+function versionTypeLabel(versionNo: number | null | undefined, versionName?: string | null) {
+  const name = versionName?.trim();
+  if (name && name !== `v${versionNo}`) return name;
+  return versionNo === 1 ? '初稿' : '';
+}
 
 /** 刷新材料批次摘要并更新页面加载状态。 */
 async function refresh() {
@@ -600,6 +618,9 @@ async function refresh() {
   } finally {
     loading.value = false;
   }
+}
+async function loadMaterialTypes() {
+  materialTypes.value = await listPptMaterialTypes().catch(() => []);
 }
 
 /** 加载指定批次的历史版本。 */
@@ -633,6 +654,7 @@ function openUpload(batch?: PptBatchSummary) {
   versionName.value = '初稿';
   batchSearch.value = '';
   batchId.value = batch?.id;
+  materialType.value = batch?.materialType || '';
   fixedBatch.value = !!batch;
   mode.value = batch ? 'existing' : 'new';
   dialog.value = true;
@@ -715,7 +737,7 @@ async function confirmReview() {
       await confirmPptImport(target, assignments);
     } else if (selectedFile && (mode.value === 'new' || selectedBatchId !== undefined)) {
       const batch = mode.value === 'new' ? { batchName: batchName.value.trim() } : { batchId: selectedBatchId! };
-      await savePptImport(selectedFile, batch, assignments, previewPdf.value, versionName.value);
+      await savePptImport(selectedFile, batch, assignments, previewPdf.value, versionName.value, materialType.value);
     } else {
       return;
     }
@@ -737,7 +759,7 @@ async function submit() {
   busy.value = true;
   uploadError.value = '';
   try {
-    await loadReview(() => previewPptImport(selectedFile, mode.value === 'existing' ? batchId.value : undefined, previewPdf.value));
+    await loadReview(() => previewPptImport(selectedFile, mode.value === 'existing' ? batchId.value : undefined, previewPdf.value, materialType.value));
     if (!reviewLoaded.value) uploadError.value = reviewError.value;
   } finally {
     busy.value = false;
@@ -793,6 +815,7 @@ async function confirmDeleteBatch(batch: PptBatchSummary) {
 }
 
 onMounted(refresh);
+onMounted(loadMaterialTypes);
 /** 从配置权限接口获取导入中的全局维护权限。 */
 onMounted(async () => {
   canMaintainDefaults.value = (await pptAnomalyPermissions().catch(() => undefined))?.canManageBoardsAndTitles === true;
@@ -810,6 +833,9 @@ onMounted(async () => {
         <el-button v-if="error" :loading="loading" @click="error = ''; refresh()">刷新列表</el-button>
         <el-input v-model="query" class="ppt-filter-search" :prefix-icon="Search" clearable
           placeholder="搜索批次名称或文件名" aria-label="搜索批次名称或文件名" />
+      <el-select v-model="materialTypeFilter" clearable placeholder="材料类型" class="ppt-filter-select">
+        <el-option v-for="item in materialTypes" :key="item.name" :label="item.name" :value="item.name" />
+      </el-select>
         <el-button class="add-material" type="primary" :icon="Plus" :disabled="busy" @click="openUpload()">新增材料</el-button>
       </PptListFilterBar>
     </header>
@@ -818,8 +844,11 @@ onMounted(async () => {
       <el-table v-loading="loading" :data="visible" row-key="id"
         :empty-text="batches.length ? '没有匹配的材料' : '暂无材料，点击新增材料开始上传'">
         <el-table-column prop="name" label="批次名称" min-width="155" show-overflow-tooltip />
+        <el-table-column prop="materialType" label="材料类型" min-width="130" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.materialType || '—' }}</template>
+        </el-table-column>
         <el-table-column label="最新文件" min-width="215" show-overflow-tooltip>
-          <template #default="{ row }">{{ [row.fileName, row.versionName].filter(Boolean).join(' · ') || '—' }}</template>
+          <template #default="{ row }">{{ [row.fileName, versionTypeLabel(row.versionNo, row.versionName)].filter(Boolean).join(' · ') || '—' }}</template>
         </el-table-column>
         <el-table-column label="上传时间" width="155">
           <template #default="{ row }">{{ dateText(row.uploadedAt) }}</template>
@@ -854,7 +883,7 @@ onMounted(async () => {
           :data="histories[historyBatch.id] || []" row-key="id" empty-text="暂无上传版本">
           <el-table-column label="版本" width="150">
             <template #default="{ row, $index }">
-              v{{ row.versionNo }} · {{ row.versionName }}
+              {{ versionTypeLabel(row.versionNo, row.versionName) }}<span v-if="versionTypeLabel(row.versionNo, row.versionName)"> </span>v{{ row.versionNo }}
               <el-tag v-if="$index === 0" size="small" effect="plain">最新</el-tag>
             </template>
           </el-table-column>
@@ -899,6 +928,12 @@ onMounted(async () => {
             <el-radio-button value="new">新建批次</el-radio-button>
             <el-radio-button value="existing" :disabled="!batches.length">加入已有批次</el-radio-button>
           </el-radio-group>
+        </el-form-item>
+        <el-form-item label="材料类型" required>
+          <el-select v-model="materialType" filterable clearable
+            :disabled="mode === 'existing' && !!selectedBatch?.materialType" placeholder="选择材料类型">
+            <el-option v-for="item in materialTypes" :key="item.name" :label="item.name" :value="item.name" />
+          </el-select>
         </el-form-item>
         <el-form-item v-if="mode === 'new'" label="批次名称">
           <el-input v-model="batchName" placeholder="例如 11 月第 2 周例会" maxlength="255" />

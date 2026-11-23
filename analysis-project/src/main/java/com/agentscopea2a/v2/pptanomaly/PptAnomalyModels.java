@@ -11,8 +11,8 @@ public final class PptAnomalyModels {
     /** 材料批次及其创建用户和创建时间。 */
     public record Batch(long id, String name, String createdBy, LocalDateTime createdAt) {}
     /** 批次最新版本、文件及识别状态的列表摘要。 */
-    public record BatchSummary(long id, String name, Long versionId, Integer versionNo,
-                               String fileName, String status, LocalDateTime uploadedAt, String fileNames,
+    public record BatchSummary(long id, String name, String materialType, Long versionId, Integer versionNo,
+                               String versionName, String fileName, String status, LocalDateTime uploadedAt, String fileNames,
                                String uploadedBy) {}
     /** 同一批次下的一次独立上传版本。 */
     public record Version(long id, long batchId, int versionNo, String versionName, String fileName,

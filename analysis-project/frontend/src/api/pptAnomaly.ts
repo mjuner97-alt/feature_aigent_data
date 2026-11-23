@@ -1,7 +1,6 @@
 
 /** 例会材料接口层，统一处理材料导入、配置、反馈、附件及结果导出请求。 */
 import type { PptBatch, PptBatchSummary, PptFinding, PptSectionWork, PptSlide, PptVersion, PptVersionWork } from '../types/pptAnomaly';
-import { searchSkillUsers } from './skill';
 const base='/api/ppt-anomaly';
 export interface PptSentMail {
   id: number; batchName: string; versionNo: number; fileName: string; department: string;
@@ -182,13 +181,7 @@ export async function listPptPeople() {
 }
 /** 按姓名或认证号查询可选人员，可限定部门。 */
 export async function searchPptPeople(keyword: string, department = '') {
-  const term = keyword.trim();
-  // 导入选人与配置页新增经办人共用搜索入口；指定部门时保留服务端部门筛选。
-  if (term && !department.trim()) {
-    const people = await searchSkillUsers(term);
-    return people.map(person => ({ ...person, name: person.name || person.userId, department: person.department ?? '' }));
-  }
-  return searchPptDirectoryPeople(term, department);
+  return searchPptDirectoryPeople(keyword, department);
 }
 
 /** 查询当前人员台账，与督办人保存校验使用同一数据源。 */
@@ -312,6 +305,18 @@ export async function listBatches() {
 /** 读取批次最新版本及文件摘要。 */
 export async function listBatchSummaries() {
   return parse<PptBatchSummary[]>(await fetch(`${base}/batch-summaries`, { headers: headers() }));
+}
+export interface PptMaterialIgnoreRule { id?: number; materialType?: string; ruleType: 'KEYWORD' | 'CHAPTER'; ruleValue: string; ruleScope: 'PAGE' | 'SECTION'; enabled: boolean }
+export async function listPptMaterialTypes() {
+  const page = await parse<{ items: { id?: number; name: string; target: string }[] }>(await fetch(`${base}/keyword-config/material-type?size=100`, { headers: headers() }));
+  return page.items;
+}
+export async function listPptMaterialIgnoreRules(materialType: string) {
+  return parse<PptMaterialIgnoreRule[]>(await fetch(`${base}/keyword-config/material-types/${encodeURIComponent(materialType)}/ignore-rules`, { headers: headers() }));
+}
+export async function savePptMaterialIgnoreRules(materialType: string, rules: PptMaterialIgnoreRule[]) {
+  const response = await fetch(`${base}/keyword-config/material-types/${encodeURIComponent(materialType)}/ignore-rules`, { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(rules) });
+  if (!response.ok) await parse(response);
 }
 /** 反馈汇总中展示的经办人信息。 */
 export interface PptResultHandler { userId: string; name: string; departments?: string[] }
@@ -491,11 +496,12 @@ type PptImportReview = {
 };
 
 /** 上传 PPT 进行页面解析预览，供用户确认板块归属。 */
-export async function previewPptImport(file: File, batchId?: number, previewPdf?: File) {
+export async function previewPptImport(file: File, batchId?: number, previewPdf?: File, materialType?: string) {
   const body = new FormData();
   body.append('file', file);
   if (previewPdf) body.append('previewPdf', previewPdf);
   if (batchId !== undefined) body.append('batchId', String(batchId));
+  if (materialType) body.append('materialType', materialType);
   return parse<PptImportReview>(await fetch(`${base}/imports/preview`, {
     method: 'POST', headers: headers(), body,
   }));
@@ -526,12 +532,14 @@ export async function previewPptImportRecognition(source: { file?: File; version
 }
 
 /** 提交原件、批次选择及页面分派结果并执行识别。 */
-export async function savePptImport(file: File, batch: { batchId: number } | { batchName: string }, assignments: PptImportAssignment[], previewPdf?: File) {
+export async function savePptImport(file: File, batch: { batchId: number } | { batchName: string }, assignments: PptImportAssignment[], previewPdf?: File, versionName?: string, materialType?: string) {
   const body = new FormData();
   body.append('file', file);
   if (previewPdf) body.append('previewPdf', previewPdf);
   if ('batchId' in batch) body.append('batchId', String(batch.batchId));
   else body.append('batchName', batch.batchName);
+  if (materialType) body.append('materialType', materialType);
+  if (versionName) body.append('versionName', versionName);
   // 页面归属作为 JSON 表单分段，与 PPT 文件在同一导入请求中提交。
   body.append('assignments', new Blob([JSON.stringify(assignments)], { type: 'application/json' }));
   return parse<PptVersion>(await fetch(`${base}/imports`, { method: 'POST', headers: headers(), body }));

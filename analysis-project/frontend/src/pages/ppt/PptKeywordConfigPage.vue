@@ -4,7 +4,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { isPptRecognitionMode, pptAnomalyPermissions, pptRecognitionModes as modes, searchPptPeople, type PptPerson, type PptRecognitionScope } from '../../api/pptAnomaly';
+import { isPptRecognitionMode, listPptMaterialIgnoreRules, savePptMaterialIgnoreRules, pptAnomalyPermissions, pptRecognitionModes as modes, searchPptPeople, type PptMaterialIgnoreRule, type PptPerson, type PptRecognitionScope } from '../../api/pptAnomaly';
 import { Document, Download, Search, UploadFilled } from '@element-plus/icons-vue';
 import PptListFilterBar from '../../components/ppt/PptListFilterBar.vue';
 import PptFeedbackSupervisorConfig from '../../components/ppt/PptFeedbackSupervisorConfig.vue';
@@ -38,7 +38,7 @@ const tabs = [
   { key: 'report-notification', label: '报告通知配置' },
   { key: 'feedback-supervisors', label: '组织督办人配置' },
 ] as const;
-const visibleTabs = tabs.filter(item => item.key !== 'material-type');
+const visibleTabs = tabs;
 function titleScopeLabel(scope?: Entry) {
   return scope && isPptRecognitionMode(scope.target) ? modes[scope.target] : modes.FULL;
 }
@@ -143,6 +143,33 @@ const importOpen = ref(false);
 const importing = ref(false);
 const importFile = ref<File>();
 const importError = ref('');
+const ruleOpen = ref(false);
+const ruleMaterialType = ref('');
+const ignoreRules = ref<PptMaterialIgnoreRule[]>([]);
+const newRule = ref<PptMaterialIgnoreRule>({ ruleType: 'KEYWORD', ruleValue: '', ruleScope: 'PAGE', enabled: true });
+const materialEditorRules = ref<PptMaterialIgnoreRule[]>([]);
+const materialEditorNewRule = ref<PptMaterialIgnoreRule>({ ruleType: 'KEYWORD', ruleValue: '', ruleScope: 'PAGE', enabled: true });
+async function openIgnoreRules(row: Entry) {
+  ruleMaterialType.value = row.name;
+  ignoreRules.value = await listPptMaterialIgnoreRules(row.name).catch(() => []);
+  newRule.value = { ruleType: 'KEYWORD', ruleValue: '', ruleScope: 'PAGE', enabled: true };
+  ruleOpen.value = true;
+}
+function addIgnoreRule() {
+  if (!newRule.value.ruleValue.trim()) return;
+  ignoreRules.value.push({ ...newRule.value, ruleValue: newRule.value.ruleValue.trim(), ruleScope: newRule.value.ruleType === 'CHAPTER' ? 'SECTION' : 'PAGE' });
+  newRule.value = { ruleType: 'KEYWORD', ruleValue: '', ruleScope: 'PAGE', enabled: true };
+}
+async function saveIgnoreRules() {
+  await savePptMaterialIgnoreRules(ruleMaterialType.value, ignoreRules.value);
+  ElMessage.success('忽略规则已保存');
+  ruleOpen.value = false;
+}
+function addMaterialEditorRule() {
+  if (!materialEditorNewRule.value.ruleValue.trim()) return;
+  materialEditorRules.value.push({ ...materialEditorNewRule.value, ruleValue: materialEditorNewRule.value.ruleValue.trim(), ruleScope: materialEditorNewRule.value.ruleType === 'CHAPTER' ? 'SECTION' : 'PAGE' });
+  materialEditorNewRule.value = { ruleType: 'KEYWORD', ruleValue: '', ruleScope: 'PAGE', enabled: true };
+}
 
 /** 为配置请求补充认证信息并统一处理响应错误。 */
 async function request(path: string, init?: RequestInit) {
@@ -305,6 +332,11 @@ function edit(entry?: Entry) {
   if (!canMaintain(active.value, active.value === 'department' ? entry?.target : undefined)) return;
   editKind.value = active.value;
   form.value = entry ? { ...entry } : { name: '', target: '' };
+  materialEditorRules.value = [];
+  materialEditorNewRule.value = { ruleType: 'KEYWORD', ruleValue: '', ruleScope: 'PAGE', enabled: true };
+  if (active.value === 'material-type' && entry) {
+    void listPptMaterialIgnoreRules(entry.name).then(rules => { materialEditorRules.value = rules; }).catch(() => { materialEditorRules.value = []; });
+  }
   editorOpen.value = true;
 }
 
@@ -385,6 +417,7 @@ async function save() {
     await request(path, {
       method: !isTitle && !isBoard && entry.id ? 'PUT' : 'POST', body: JSON.stringify(payload),
     });
+    if (isMaterialType) await savePptMaterialIgnoreRules(entry.name.trim(), materialEditorRules.value);
     editorOpen.value = false;
     ElMessage.success('已保存');
     await load();
@@ -502,10 +535,14 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
           <el-table-column label="编辑时间" width="168" class-name="config-date">
             <template #default="{ row }">{{ dateText(row.updatedAt) }}</template>
           </el-table-column>
-          <el-table-column v-if="canMaintainActive" label="操作" width="96" fixed="right">
+          <el-table-column v-if="canMaintainActive" label="操作" :width="active === 'material-type' ? 180 : 96" fixed="right">
             <template #default="{ row }">
               <div v-if="active !== 'department' || canMaintain('department', row.target)" class="row-actions">
                 <el-button link type="primary" @click="edit(row)">编辑</el-button>
+                <el-button v-if="active === 'material-type'" class="ignore-rule-button" type="primary" plain @click="openIgnoreRules(row)">
+                  <el-icon><Document /></el-icon>
+                  <span>忽略规则</span>
+                </el-button>
                 <el-button link type="danger" @click="remove(row)">删除</el-button>
               </div>
             </template>
@@ -544,6 +581,27 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
         <el-button :disabled="importing" @click="importOpen = false">取消</el-button>
         <el-button type="primary" :disabled="!importFile" :loading="importing" @click="importDepartmentKeywords">确认导入</el-button>
       </template>
+    </el-dialog>
+    <el-dialog v-model="ruleOpen" title="材料忽略规则" class="ignore-rule-dialog" width="min(760px, 94vw)" append-to-body destroy-on-close>
+      <div class="rule-dialog-intro">
+        <div class="rule-dialog-title">{{ ruleMaterialType }}</div>
+        <p>章节规则从匹配到的章节标题开始，持续忽略到下一章节。关键词规则只忽略命中的页面。</p>
+      </div>
+      <div class="rule-add-row">
+        <el-select v-model="newRule.ruleType" style="width: 150px">
+          <el-option label="关键词" value="KEYWORD" />
+          <el-option label="章节编号" value="CHAPTER" />
+        </el-select>
+        <el-input v-model="newRule.ruleValue" :placeholder="newRule.ruleType === 'CHAPTER' ? '例如 2 或 3' : '例如 目录'" />
+        <el-button type="primary" @click="addIgnoreRule">添加</el-button>
+      </div>
+      <el-table class="ignore-rule-table" :data="ignoreRules" row-key="id" empty-text="暂无忽略规则">
+        <el-table-column label="规则类型" width="120"><template #default="{ row }">{{ row.ruleType === 'CHAPTER' ? '章节编号' : '关键词' }}</template></el-table-column>
+        <el-table-column prop="ruleValue" label="匹配内容" />
+        <el-table-column label="忽略范围" width="150"><template #default="{ row }">{{ row.ruleScope === 'SECTION' ? '整个章节' : '当前页' }}</template></el-table-column>
+        <el-table-column label="操作" width="88"><template #default="{ $index }"><el-button class="ignore-rule-delete" link type="danger" @click="ignoreRules.splice($index, 1)">删除</el-button></template></el-table-column>
+      </el-table>
+      <template #footer><el-button @click="ruleOpen = false">取消</el-button><el-button type="primary" @click="saveIgnoreRules">保存</el-button></template>
     </el-dialog>
     <el-dialog
       v-model="editorOpen"
@@ -591,6 +649,34 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
           <el-form-item :label="editKind === 'material-type' ? '材料类型名称' : '匹配关键词'" required>
             <el-input v-model="form.name" maxlength="512" />
           </el-form-item>
+          <template v-if="editKind === 'material-type'">
+            <div class="inline-rule-header">
+              <div>
+                <strong>忽略规则</strong>
+                <span>可选，创建后也可以单独维护</span>
+              </div>
+              <el-tag size="small" type="info">{{ materialEditorRules.length }} 条</el-tag>
+            </div>
+            <div class="inline-rule-add">
+              <el-select v-model="materialEditorNewRule.ruleType" aria-label="规则类型">
+                <el-option label="关键词" value="KEYWORD" />
+                <el-option label="章节编号" value="CHAPTER" />
+              </el-select>
+              <el-input v-model="materialEditorNewRule.ruleValue"
+                :placeholder="materialEditorNewRule.ruleType === 'CHAPTER' ? '例如 2 或 3' : '例如 目录'"
+                @keyup.enter="addMaterialEditorRule" />
+              <el-button type="primary" plain @click="addMaterialEditorRule">添加</el-button>
+            </div>
+            <div v-if="materialEditorRules.length" class="inline-rule-list">
+              <div v-for="(rule, index) in materialEditorRules" :key="`${rule.ruleType}-${rule.ruleValue}-${index}`" class="inline-rule-item">
+                <el-tag size="small" effect="plain">{{ rule.ruleType === 'CHAPTER' ? '章节' : '关键词' }}</el-tag>
+                <span class="inline-rule-value">{{ rule.ruleValue }}</span>
+                <span class="inline-rule-scope">{{ rule.ruleScope === 'SECTION' ? '整个章节' : '当前页' }}</span>
+                <el-button link type="danger" @click="materialEditorRules.splice(index, 1)">删除</el-button>
+              </div>
+            </div>
+            <div v-else class="inline-rule-empty">暂未设置忽略规则，上传时会完整识别。</div>
+          </template>
           <el-form-item v-if="editKind === 'department'" label="部门" required>
             <el-select v-model="form.target" filterable placeholder="选择可维护的部门">
               <el-option v-for="name in keywordDepartmentOptions" :key="name" :label="name" :value="name" />
@@ -619,6 +705,28 @@ h2 { margin: 0 0 14px; font-size: 22px; color: #142441; }
 .config-filters { --ppt-filter-width: 186px; margin-bottom: 10px; }
 .row-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .row-actions .el-button { flex-shrink: 0; margin: 0; }
+.inline-rule-header { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 10px; padding-top: 14px; border-top: 1px solid #edf1f7; color: #253858; }
+.inline-rule-header > div { display: flex; flex-direction: column; gap: 3px; }
+.inline-rule-header span { color: #8a96a8; font-size: 12px; font-weight: 400; }
+.inline-rule-add { display: grid; grid-template-columns: 118px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.inline-rule-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; max-height: 150px; overflow-y: auto; }
+.inline-rule-item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 8px; align-items: center; min-height: 34px; padding: 5px 8px; border: 1px solid #e7ecf4; border-radius: 7px; background: #f8faff; }
+.inline-rule-value { overflow: hidden; color: #2f405e; text-overflow: ellipsis; white-space: nowrap; }
+.inline-rule-scope { color: #7b8799; font-size: 12px; }
+.inline-rule-empty { margin-top: 10px; padding: 10px 12px; border: 1px dashed #d8e0ed; border-radius: 7px; color: #8a96a8; font-size: 12px; text-align: center; background: #fbfcfe; }
+.rule-hint { margin: -4px 0 14px; color: #7b8799; font-size: 13px; line-height: 1.6; }
+.ignore-rule-button { display: inline-flex; align-items: center; gap: 5px; border-radius: 6px; font-weight: 600; }
+.ignore-rule-button:hover { background: #eff6ff; }
+.ignore-rule-dialog :deep(.el-dialog__body) { padding-top: 8px; }
+.rule-dialog-intro { padding: 12px 14px; margin-bottom: 16px; border: 1px solid #dbeafe; border-radius: 8px; background: linear-gradient(135deg, #f8fbff, #eff6ff); }
+.rule-dialog-title { color: #1e3a8a; font-size: 14px; font-weight: 700; }
+.rule-dialog-intro p { margin: 5px 0 0; color: #64748b; font-size: 13px; line-height: 1.55; }
+.rule-add-row { display: grid; grid-template-columns: 140px minmax(0, 1fr) auto; gap: 10px; align-items: center; margin-bottom: 16px; }
+.ignore-rule-table { border: 1px solid #e5eaf2; border-radius: 8px; overflow: hidden; }
+.ignore-rule-table :deep(.el-table__header th) { background: #f7f9fc; color: #52627a; font-weight: 700; }
+.ignore-rule-table :deep(.el-table__row:hover > td) { background: #f8fbff; }
+.ignore-rule-delete { font-weight: 600; }
+@media (max-width: 560px) { .inline-rule-add, .rule-add-row { grid-template-columns: 1fr; } .inline-rule-item { grid-template-columns: auto minmax(0, 1fr) auto; } .inline-rule-item .el-button { grid-column: 3; } }
 .el-pagination { margin-top: 10px; justify-content: flex-end; flex-wrap: wrap; }
 .editor-actions { display: flex; justify-content: flex-end; padding-top: 16px; border-top: 1px solid #e3eaf4; }
 .title-editor-actions { position: sticky; bottom: -20px; z-index: 1; padding-bottom: 10px; background: var(--el-dialog-bg-color, #fff); }

@@ -69,6 +69,17 @@ public class PptAnomalyService {
     public List<PptAnomalyModels.BatchSummary> batchSummaries() {
         return persistence.batchSummaries();
     }
+    public List<PptAnomalyMapper.MaterialIgnoreRule> materialIgnoreRules(String materialType) {
+        return materialType == null || materialType.isBlank() ? List.of() : persistence.materialIgnoreRules(materialType.strip());
+    }
+    @Transactional(GaussConfig.TX_NAME)
+    public void replaceMaterialIgnoreRules(String materialType, List<PptAnomalyMapper.MaterialIgnoreRule> rules) {
+        if (materialType == null || materialType.isBlank()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "材料类型不能为空");
+        persistence.deleteMaterialIgnoreRules(materialType.strip());
+        if (rules == null) return;
+        for (var rule : rules) if (rule.ruleValue() != null && !rule.ruleValue().isBlank())
+            persistence.insertMaterialIgnoreRule(new PptAnomalyMapper.MaterialIgnoreRule(0, materialType.strip(), rule.ruleType(), rule.ruleValue().strip(), rule.ruleScope(), rule.enabled()));
+    }
     private final PptAnomalyMapper persistence;
     private final ObjectMapper mapper;
     private final DeveloperPlPersonInfoMapper people;
@@ -97,13 +108,18 @@ public class PptAnomalyService {
     /** 创建例会材料批次并记录上传用户。 */
     @Transactional(GaussConfig.TX_NAME)
     public Batch createBatch(String name, String userId) {
-        long id = createBatchKey(name, userId);
+        return createBatch(name, userId, null);
+    }
+    @Transactional(GaussConfig.TX_NAME)
+    public Batch createBatch(String name, String userId, String materialType) {
+        long id = createBatchKey(name, userId, materialType);
         return new Batch(id, name, userId, LocalDateTime.now());
     }
 
     /** 写入批次记录并读取数据库生成的主键。 */
-    private long createBatchKey(String name, String userId) {
-        var row = new java.util.HashMap<String,Object>(Map.of("name", name, "user", userId));
+    private long createBatchKey(String name, String userId, String materialType) {
+        var row = new java.util.HashMap<String,Object>();
+        row.put("name", name); row.put("user", userId); row.put("materialType", materialType);
         persistence.createBatch(row);
         return ((Number) row.get("id")).longValue();
     }
@@ -111,6 +127,15 @@ public class PptAnomalyService {
     /** 读取例会材料批次列表。 */
     public List<Batch> listBatches() {
         return persistence.batches();
+    }
+    public void updateBatchMaterialType(long batchId, String materialType) {
+        persistence.updateBatchMaterialType(batchId, materialType);
+    }
+
+    /** 读取批次已保存的材料类型，供导入预览缺少类型参数时兜底。 */
+    private String resolveMaterialType(Long batchId, String materialType) {
+        if (materialType != null && !materialType.isBlank()) return materialType.strip();
+        return batchId == null ? null : persistence.batchMaterialType(batchId);
     }
 
     @Transactional(GaussConfig.TX_NAME)
@@ -830,7 +855,12 @@ public class PptAnomalyService {
 
     /** 解析上传的 PPT 并返回页面归属预览。 */
     public ImportReview previewImport(Long batchId, MultipartFile file) {
+        return previewImport(batchId, file, (String) null);
+    }
+
+    public ImportReview previewImport(Long batchId, MultipartFile file, String materialType) {
         pptFileName(file);
+        materialType = resolveMaterialType(batchId, materialType);
         Long previous = batchId == null ? null : persistence.versions(batchId).stream()
                 .filter(version -> "ANALYZED".equals(version.status()))
                 .findFirst().map(Version::id).orElse(null);
@@ -852,7 +882,7 @@ public class PptAnomalyService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "无法解析 PPT，请检查文件格式", e);
         }
         if (pages.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "PPT 没有页面");
-        return importReview(pages, List.of(), List.of(), previous, titleMatches, recognitionByPage);
+        return importReview(PptMaterialIgnoreRule.apply(pages, materialIgnoreRules(materialType)), List.of(), List.of(), previous, titleMatches, recognitionByPage);
     }
 
     /** 使用核对页填写的标题和原始页内容，重新计算单页的规则命中。 */
@@ -1433,7 +1463,11 @@ public class PptAnomalyService {
 
     /** 导入前验证配套 PDF 与所解析的 PPT 页数一致。 */
     public ImportReview previewImport(Long batchId, MultipartFile file, MultipartFile pdf) {
-        var review = previewImport(batchId, file);
+        return previewImport(batchId, file, pdf, null);
+    }
+
+    public ImportReview previewImport(Long batchId, MultipartFile file, MultipartFile pdf, String materialType) {
+        var review = previewImport(batchId, file, materialType);
         if (pdf != null) {
             if (!previewRenderer.tryAcquire())
                 throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "正在生成预览，请稍后重试");

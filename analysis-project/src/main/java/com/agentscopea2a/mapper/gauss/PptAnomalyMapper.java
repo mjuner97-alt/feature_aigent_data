@@ -112,15 +112,21 @@ public interface PptAnomalyMapper {
     record AnalysisSlide(long id, String title, String texts, String section, String defaultOwner) {}
     /** 导入页面的标题、板块归属和跳过状态。 */
     record PageAssignment(int page, String title, String section, boolean skipped, String mode, boolean excluded) {}
+    record MaterialIgnoreRule(long id, String materialType, String ruleType, String ruleValue, String ruleScope, boolean enabled) {}
     /** 正文匹配关键词及其目标部门。 */
     record DepartmentMapping(String keyword, String department) {}
 
     /** 创建例会材料批次并记录上传用户。 */
     int createBatch(Map<String,Object> row);
+    int updateBatchMaterialType(@Param("id") long id, @Param("materialType") String materialType);
     /** 查询材料批次列表。 */
     List<Batch> batches();
     /** 汇总各批次最新版本、文件名称及识别状态。 */
     List<com.agentscopea2a.v2.pptanomaly.PptAnomalyModels.BatchSummary> batchSummaries();
+    String batchMaterialType(@Param("id") long batchId);
+    List<MaterialIgnoreRule> materialIgnoreRules(@Param("materialType") String materialType);
+    int insertMaterialIgnoreRule(@Param("rule") MaterialIgnoreRule rule);
+    int deleteMaterialIgnoreRules(@Param("materialType") String materialType);
     /** 锁定批次记录，串行分配该批次的新版本号。 */
     Long lockBatch(@Param("id") long id);
 

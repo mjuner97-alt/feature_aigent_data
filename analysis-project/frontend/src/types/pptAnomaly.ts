@@ -4,8 +4,10 @@
 export interface PptBatch { id: number; name: string }
 /** 批次最新版本及文件摘要。 */
 export interface PptBatchSummary extends PptBatch {
+  materialType: string | null;
   versionId: number | null;
   versionNo: number | null;
+  versionName: string | null;
   fileName: string | null;
   status: string | null;
   uploadedAt: string | null;
