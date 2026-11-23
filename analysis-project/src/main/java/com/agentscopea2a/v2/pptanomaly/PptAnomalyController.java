@@ -253,7 +253,7 @@ public class PptAnomalyController {
     }
 
     /** 反馈详情页的本人事项、部门事项和板块联系人目录。 */
-    public record FeedbackDirectory(String fileName, List<String> departments,
+    public record FeedbackDirectory(String fileName, String materialMailLabel, List<String> departments,
             List<PptAnomalyModels.Finding> assigned, List<PptAnomalyModels.Finding> departmentFindings,
             List<PptAnomalyModels.Finding> myPending,
             Map<Long, PptAnomalyService.BoardContact> contacts,
@@ -298,7 +298,8 @@ public class PptAnomalyController {
                 .map(PptAnomalyModels.Finding::id).collect(Collectors.toSet());
         var myPending = departmentFindings.stream()
                 .filter(item -> "PENDING_FEEDBACK".equals(item.status()) && myAssignmentIds.contains(item.id())).toList();
-        return new FeedbackDirectory(fileName, department == null ? departments : List.of(department), assigned, departmentFindings,
+        return new FeedbackDirectory(fileName, service.versionMailLabel(versionId),
+                department == null ? departments : List.of(department), assigned, departmentFindings,
                 myPending,
                 service.feedbackContacts(versionId, assigned, departmentFindings),
                 service.feedbackHandlers(versionId, assigned, departmentFindings));
@@ -345,7 +346,7 @@ public class PptAnomalyController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "名单中有无法识别的人员");
         }
         try {
-            notifier.sendManual(versionId, directory.fileName(), department, to, cc, userId);
+            notifier.sendManual(versionId, directory.materialMailLabel(), department, to, cc, userId);
         } catch (RuntimeException failure) {
             org.slf4j.LoggerFactory.getLogger(PptAnomalyController.class)
                     .error("反馈结果通知失败，版本 {}，部门 {}", versionId, department, failure);

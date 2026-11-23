@@ -206,7 +206,7 @@ export async function feedbackDirectory(versionId: number, recordOwner?: string,
   if (recordOwner) query.set('recordOwner', recordOwner);
   if (department) query.set('department', department);
   return parse<{
-    fileName: string; departments: string[]; assigned: PptFinding[]; departmentFindings: PptFinding[]; myPending: PptFinding[];
+    fileName: string; materialMailLabel: string; departments: string[]; assigned: PptFinding[]; departmentFindings: PptFinding[]; myPending: PptFinding[];
     contacts: Partial<Record<number, { name: string | null; userId: string }>>;
     handlers: Partial<Record<number, { name: string | null; userId: string }[]>>;
   }>(
@@ -311,6 +311,27 @@ export async function listPptMaterialTypes() {
   const page = await parse<{ items: { id?: number; name: string; target: string }[] }>(await fetch(`${base}/keyword-config/material-type?size=100`, { headers: headers() }));
   return page.items;
 }
+export interface PptFeedbackReminderSettings {
+  enabled: boolean;
+  cutoff: string;
+  intervalMinutes: number;
+  weeklyStartMinute: number | null;
+  weeklyEndMinute: number | null;
+}
+
+export async function getPptFeedbackReminderSettings(id: number) {
+  return parse<PptFeedbackReminderSettings>(
+    await fetch(`${base}/keyword-config/material-types/${id}/feedback-reminder-settings`, { headers: headers() }),
+  );
+}
+
+export async function savePptFeedbackReminderSettings(id: number, settings: PptFeedbackReminderSettings) {
+  const response = await fetch(`${base}/keyword-config/material-types/${id}/feedback-reminder-settings`, {
+    method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(settings),
+  });
+  if (!response.ok) await parse(response);
+}
+
 export async function listPptMaterialIgnoreRules(materialType: string) {
   return parse<PptMaterialIgnoreRule[]>(await fetch(`${base}/keyword-config/material-types/${encodeURIComponent(materialType)}/ignore-rules`, { headers: headers() }));
 }

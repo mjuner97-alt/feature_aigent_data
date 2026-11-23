@@ -3,6 +3,7 @@ package com.agentscopea2a.v2.pptanomaly;
 import com.agentscopea2a.mapper.gauss.PptAnomalyMapper;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 /** Applies material-type page ignore rules to an import preview. */
@@ -12,31 +13,30 @@ final class PptMaterialIgnoreRule {
     private PptMaterialIgnoreRule() {}
 
     static List<PptAnomalyMapper.PageAssignment> apply(List<PptAnomalyMapper.PageAssignment> pages,
+                                                    Map<Integer, String> originalTitles,
                                                          List<PptAnomalyMapper.MaterialIgnoreRule> rules) {
         if (rules == null || rules.isEmpty()) return pages;
         var result = new ArrayList<PptAnomalyMapper.PageAssignment>(pages.size());
         boolean skipSection = false;
         for (var page : pages) {
-            Integer chapter = chapterNumber(page.title());
-            if (chapter != null) skipSection = false;
-            boolean sectionWasActive = skipSection;
-            boolean ignored = rules.stream().anyMatch(rule -> matchesPage(rule, page.title(), chapter, sectionWasActive));
-            if (ignored) skipSection = skipSection || rules.stream().anyMatch(rule -> "CHAPTER".equals(rule.ruleType())
-                    && "SECTION".equals(rule.ruleScope()) && matchesChapter(rule.ruleValue(), chapter));
+            Integer chapter = chapterNumber(originalTitles.get(page.page()));
+            if (chapter != null) {
+                skipSection = rules.stream().anyMatch(rule -> rule.enabled() && "CHAPTER".equals(rule.ruleType())
+                        && "SECTION".equals(rule.ruleScope()) && matchesChapter(rule.ruleValue(), chapter));
+            }
+            boolean ignored = skipSection || rules.stream().anyMatch(rule -> matchesPage(rule, page.title(), chapter));
             result.add(ignored ? new PptAnomalyMapper.PageAssignment(page.page(), page.title(), page.section(), true,
                     "NO_SCAN", page.excluded()) : page);
         }
         return result;
     }
 
-    private static boolean matchesPage(PptAnomalyMapper.MaterialIgnoreRule rule, String title, Integer chapter,
-                                       boolean sectionActive) {
+    private static boolean matchesPage(PptAnomalyMapper.MaterialIgnoreRule rule, String title, Integer chapter) {
         if (!rule.enabled()) return false;
         if ("KEYWORD".equals(rule.ruleType())) return "PAGE".equals(rule.ruleScope())
                 && title != null && title.contains(rule.ruleValue());
         if (!"CHAPTER".equals(rule.ruleType())) return false;
-        return ("SECTION".equals(rule.ruleScope()) && (sectionActive || matchesChapter(rule.ruleValue(), chapter)))
-                || ("PAGE".equals(rule.ruleScope()) && matchesChapter(rule.ruleValue(), chapter));
+        return "PAGE".equals(rule.ruleScope()) && matchesChapter(rule.ruleValue(), chapter);
     }
 
     private static boolean matchesChapter(String value, Integer chapter) {

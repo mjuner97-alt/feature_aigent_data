@@ -600,7 +600,9 @@ public class PptAnomalyService {
                 write(previousHandlers), write(selected), editor);
         String event = UUID.randomUUID().toString();
         for (String handler : selected) {
-            if (!previousHandlers.contains(handler)) persistence.enqueueAssignmentNotice(event, versionId, id, handler);
+            if (!previousHandlers.contains(handler)) {
+                persistence.enqueueAssignmentNotice(event, versionId, id, handler, previousDepartment, write(previousHandlers));
+            }
         }
     }
 
@@ -764,6 +766,10 @@ public class PptAnomalyService {
         return file.name();
     }
 
+    String versionMailLabel(long versionId) {
+        return persistence.noticeMaterial(versionId).mailLabel();
+    }
+
     /** 判断当前用户在指定版本中是否具有经办事项。 */
     public boolean isVersionRecipient(long versionId, String userId) {
         return !persistence.recipientFindingIds(versionId, userId).isEmpty();
@@ -867,10 +873,12 @@ public class PptAnomalyService {
         var previousPages = previousTitlePages(previous);
         var titles = importTitleSections(previousPages);
         var pages = new ArrayList<PptAnomalyMapper.PageAssignment>();
+        var originalTitles = new LinkedHashMap<Integer, String>();
         var titleMatches = new LinkedHashMap<Integer, ImportTitleMatch>();
         var recognitionByPage = new LinkedHashMap<Integer, ImportRecognition>();
         try (InputStream input = file.getInputStream()) {
-            parseSlides(input, previousPages, Map.of(), false, (page, title, texts, mode, match, recognition) -> {
+            parseSlides(input, previousPages, Map.of(), false, (page, title, texts, mode, match, recognition, originalTitle) -> {
+                originalTitles.put(page, originalTitle);
                 if (match != null) titleMatches.put(page, withTitleSections(match, titles));
                 if (recognition != null) recognitionByPage.put(page, recognition);
                 String section = match == null ? titles.getOrDefault(title, titles.get(unnumberedTitle(title)))
@@ -882,7 +890,7 @@ public class PptAnomalyService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "无法解析 PPT，请检查文件格式", e);
         }
         if (pages.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "PPT 没有页面");
-        return importReview(PptMaterialIgnoreRule.apply(pages, materialIgnoreRules(materialType)), List.of(), List.of(), previous, titleMatches, recognitionByPage);
+        return importReview(PptMaterialIgnoreRule.apply(pages, originalTitles, materialIgnoreRules(materialType)), List.of(), List.of(), previous, titleMatches, recognitionByPage);
     }
 
     /** 使用核对页填写的标题和原始页内容，重新计算单页的规则命中。 */
@@ -958,7 +966,7 @@ public class PptAnomalyService {
         pages.forEach(page -> savedTitles.put(page.page(), page.title()));
         var titles = importTitleSections(previousPages);
         try (InputStream input = originalFile(versionId).resource().getInputStream()) {
-            parseSlides(input, previousPages, Map.of(), false, (page, title, texts, mode, match, recognition) -> {
+            parseSlides(input, previousPages, Map.of(), false, (page, title, texts, mode, match, recognition, originalTitle) -> {
                 if (match != null) titleMatches.put(page, withTitleSections(match, titles));
                 if (recognition != null && title.equals(savedTitles.get(page))) recognitionByPage.put(page, recognition);
             });
@@ -1211,7 +1219,7 @@ public class PptAnomalyService {
         }
         if (!corrections.isEmpty()) {
             try (InputStream input = originalFile(versionId).resource().getInputStream()) {
-                parseSlides(input, previousTitlePages(persistence.previousAnalyzed(versionId)), corrections, true, (page, title, texts, mode, match, recognition) ->
+                parseSlides(input, previousTitlePages(persistence.previousAnalyzed(versionId)), corrections, true, (page, title, texts, mode, match, recognition, originalTitle) ->
                         persistence.updatePageRecognition(versionId, page, title, write(texts), mode.name()));
             } catch (IOException e) {
                 throw new IllegalStateException("重新提取 PPT 页面失败", e);
@@ -1766,7 +1774,7 @@ public class PptAnomalyService {
 
     /** 按数据库配置提取页面正文及指定表格内容。 */
     private void parseSlides(long versionId, InputStream input) throws IOException {
-        parseSlides(input, previousTitlePages(persistence.previousAnalyzed(versionId)), Map.of(), true, (page, title, texts, mode, match, recognition) ->
+        parseSlides(input, previousTitlePages(persistence.previousAnalyzed(versionId)), Map.of(), true, (page, title, texts, mode, match, recognition, originalTitle) ->
                 persistence.createSlide(versionId, page, title, write(texts), "UNAVAILABLE", mode.name()));
     }
 
@@ -1775,7 +1783,7 @@ public class PptAnomalyService {
     private interface ParsedPageConsumer {
         /** 接收单页解析结果，交由调用方保存或构造导入预览。 */
         void accept(int page, String title, List<String> texts, PageMode mode, ImportTitleMatch titleMatch,
-                    ImportRecognition recognition);
+                    ImportRecognition recognition, String originalTitle);
     }
 
     private List<PageRule> configuredPageRules(Set<String> configuredTitles) {
@@ -1822,7 +1830,7 @@ public class PptAnomalyService {
                 if (!corrections.isEmpty() && correction == null) continue;
                 String originalTitle = inferSlideTitle(slide, show.getPageSize().getHeight(), configuredTitles);
                 if (correction == null && contentsLabel(originalTitle) != null) {
-                    consumer.accept(page, "目录", List.of(), PageMode.OUT_OF_SCOPE, null, null);
+                    consumer.accept(page, "目录", List.of(), PageMode.OUT_OF_SCOPE, null, null, originalTitle);
                     continue;
                 }
                 String titleText = correction == null ? originalTitle : correction.title().strip();
@@ -1855,7 +1863,7 @@ public class PptAnomalyService {
                 }
                 if (!extractTexts || rule.mode() == PageMode.OUT_OF_SCOPE || rule.mode() == PageMode.NO_SCAN
                         || rule.mode() == PageMode.RULE_CONFLICT) {
-                    consumer.accept(page, title, List.of(), rule.mode(), titleMatch, recognition);
+                    consumer.accept(page, title, List.of(), rule.mode(), titleMatch, recognition, originalTitle);
                     continue;
                 }
                 List<String> texts = new ArrayList<>();
@@ -1875,7 +1883,7 @@ public class PptAnomalyService {
                                 .ifPresent(first -> appendTableRows(first.table(), 1, Integer.MAX_VALUE, texts));
                     }
                     if (preserveOriginal) texts.add(0, originalTitle);
-                    consumer.accept(page, title, texts, rule.mode(), titleMatch, recognition);
+                    consumer.accept(page, title, texts, rule.mode(), titleMatch, recognition, originalTitle);
                     continue;
                 }
                 boolean titleConsumed = false;
@@ -1900,7 +1908,7 @@ public class PptAnomalyService {
                     }
                 }
                 if (preserveOriginal && !texts.contains(originalTitle)) texts.add(0, originalTitle);
-                consumer.accept(page, title, texts, rule.mode(), titleMatch, recognition);
+                consumer.accept(page, title, texts, rule.mode(), titleMatch, recognition, originalTitle);
             }
         }
     }

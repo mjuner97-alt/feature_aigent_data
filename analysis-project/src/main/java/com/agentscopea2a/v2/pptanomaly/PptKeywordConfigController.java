@@ -76,7 +76,7 @@ public class PptKeywordConfigController {
         }
     }
     /** 配置记录的分页结果。 */
-    public record Page(List<Entry> items, long total) {}
+    public record Page(List<Entry> items, long total, List<PptAnomalyMapper.MaterialReminderSettings> reminderSettings) {}
     /** 标题及其板块、解析模式和联系人组合信息。 */
     public record TitleRow(String name, Entry section, Entry scope, Entry contact, String ownerName) {}
     /** 标题配置的分页查询结果。 */
@@ -99,6 +99,36 @@ public class PptKeywordConfigController {
     public List<PptScanRule> scanRules(@RequestParam String title) {
         requireConfiguredTitle(title);
         return rulesForTitle(title);
+    }
+
+    @GetMapping("/material-types/{id}/feedback-reminder-settings")
+    public PptAnomalyMapper.FeedbackReminderSettings feedbackReminderSettings(@PathVariable long id) {
+        var settings = persistence.feedbackReminderSettings(id);
+        if (settings == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "材料类型不存在");
+        return settings;
+    }
+
+    @PutMapping("/material-types/{id}/feedback-reminder-settings")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void saveFeedbackReminderSettings(@PathVariable long id,
+            @RequestBody PptAnomalyMapper.FeedbackReminderSettings settings,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
+        if (!service.canManageAllConfigurations(editor)) PptAnomalyController.requireProductDepartment(editor, people);
+        if (settings.cutoff() == null || !settings.cutoff().matches("([01][0-9]|2[0-3]):[0-5][0-9]")
+                || !java.time.LocalTime.parse(settings.cutoff()).isAfter(java.time.LocalTime.of(10, 0))) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "提醒截止时间须为 10:01 至 23:59");
+        }
+        if (settings.intervalMinutes() < 1) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "提醒间隔须为正整数分钟");
+        }
+        Integer start = settings.weeklyStartMinute();
+        Integer end = settings.weeklyEndMinute();
+        if ((start != null || end != null)
+                && (start == null || end == null || start < 0 || start >= 10080
+                    || end < 0 || end >= 10080 || start.equals(end))) {
+            throw bad("请选择不同的每周提醒开始和结束时间");
+        }
+        requireRow(persistence.updateFeedbackReminderSettings(id, settings));
     }
 
     @GetMapping("/material-types/{materialType}/ignore-rules")
@@ -426,7 +456,11 @@ public class PptKeywordConfigController {
         checkKind(kind);
         if (page < 1 || size < 1 || size > 100) throw bad("分页参数无效");
         long total = persistence.configCount(kind, keyword, target);
-        return new Page(persistence.configs(kind, keyword, target, size, ((long) page - 1) * size), total);
+        var items = persistence.configs(kind, keyword, target, size, ((long) page - 1) * size);
+        var reminderSettings = "material-type".equals(kind) && !items.isEmpty()
+                ? persistence.materialReminderSettings(items.stream().map(Entry::id).toList())
+                : List.<PptAnomalyMapper.MaterialReminderSettings>of();
+        return new Page(items, total, reminderSettings);
     }
 
     /** 查询可选择的正式板块名称。 */

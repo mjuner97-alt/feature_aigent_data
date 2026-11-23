@@ -24,9 +24,10 @@ public interface PptAnomalyMapper {
 
     record ReminderScope(long versionId, String department) {}
     record FeedbackReminder(long findingId, String recipient, int page, String title) {}
-    List<ReminderScope> dueFeedbackReminderScopes(@Param("now") java.time.LocalDateTime now);
+    List<ReminderScope> dueFeedbackReminderScopes(@Param("now") java.time.LocalDateTime now,
+            @Param("weekMinute") int weekMinute);
     List<FeedbackReminder> dueFeedbackReminders(@Param("scope") ReminderScope scope,
-                                               @Param("now") java.time.LocalDateTime now);
+                                               @Param("now") java.time.LocalDateTime now, @Param("weekMinute") int weekMinute);
     int markFeedbackReminded(@Param("ids") List<Long> ids, @Param("sentAt") java.time.LocalDateTime sentAt);
     int recordFeedbackReminder(@Param("version") long version, @Param("department") String department,
             @Param("subject") String subject, @Param("body") String body, @Param("to") String to,
@@ -34,9 +35,10 @@ public interface PptAnomalyMapper {
             @Param("sentAt") java.time.LocalDateTime sentAt);
 
     record AssignmentNotice(String eventId, long versionId, long findingId, String recipient,
-                            String department, String fileName, int attempts) {}
+                            String department, String previousDepartment, String previousHandlers) {}
     int enqueueAssignmentNotice(@Param("event") String event, @Param("version") long version,
-            @Param("finding") long finding, @Param("recipient") String recipient);
+            @Param("finding") long finding, @Param("recipient") String recipient,
+            @Param("previousDepartment") String previousDepartment, @Param("previousHandlers") String previousHandlers);
     List<AssignmentNotice> pendingAssignmentNotices();
     AssignmentNotice lockAssignmentNotice(@Param("event") String event, @Param("recipient") String recipient);
     int finishAssignmentNotice(@Param("event") String event, @Param("recipient") String recipient,
@@ -67,7 +69,22 @@ public interface PptAnomalyMapper {
     /** 查询指定版本尚未记录通知的当前待反馈事项。 */
     List<FeedbackNotice> feedbackNotices(@Param("versionId") long versionId);
     /** 自动通知使用原始文件名和导入时间。 */
-    record NoticeMaterial(String fileName, java.time.LocalDateTime uploadedAt) {}
+    record FeedbackReminderSettings(boolean enabled, String cutoff, int intervalMinutes,
+            Integer weeklyStartMinute, Integer weeklyEndMinute) {}
+    FeedbackReminderSettings feedbackReminderSettings(@Param("id") long id);
+    record MaterialReminderSettings(long id, boolean enabled, String cutoff, int intervalMinutes,
+            Integer weeklyStartMinute, Integer weeklyEndMinute) {}
+    List<MaterialReminderSettings> materialReminderSettings(@Param("ids") List<Long> ids);
+    int updateFeedbackReminderSettings(@Param("id") long id, @Param("settings") FeedbackReminderSettings settings);
+
+    record NoticeMaterial(String fileName, int versionNo, String versionName) {
+        public String mailLabel() {
+            String stage = "初稿".equals(versionName) || "终稿".equals(versionName)
+                    ? versionName : versionNo == 1 ? "初稿" : "终稿";
+            return fileName.replaceFirst("(?i)\\.pptx$", "")
+                    .replaceFirst("[-－](初稿|终稿)$", "") + "-" + stage;
+        }
+    }
     NoticeMaterial noticeMaterial(@Param("versionId") long versionId);
     /** 幂等登记事项与接收人的通知记录，并校验待反馈状态及当前经办关系。 */
     int recordSimulatedNotice(@Param("notice") FeedbackNotice notice, @Param("subject") String subject,

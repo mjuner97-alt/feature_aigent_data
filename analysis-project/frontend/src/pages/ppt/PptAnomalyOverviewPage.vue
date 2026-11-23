@@ -518,10 +518,11 @@ onMounted(async () => {
         : '本次选择仅用于此次发送，通知附带当前材料的反馈页链接。'"
       :search-users="searchNotificationPeople" :submitting="notifying" :error="notifyError"
       @confirm="sendNotification">
-      <div v-if="notifyDepartment">
-        <strong>通知预览 · {{ notifyDepartment }}-例会材料反馈通知</strong>
-        <p>请查看例会材料「{{ fileName }}」的最新反馈事项。</p>
-        <p>查看最新反馈事项（打开该批次最新已识别版本的 {{ notifyDepartment }} 反馈页）</p>
+      <div v-if="notifyDepartment && directory">
+        <strong>通知预览 · 【材料分析】《{{ directory.materialMailLabel }}》-{{ notifyDepartment }}</strong>
+        <p>各位好：</p>
+        <p>《{{ directory.materialMailLabel }}》材料分析如下，本期材料涉及到部门关注事项共{事项数}项，请点击链接参阅。</p>
+        <p>附关注事项分析情况（发送时按该部门当前反馈状态统计）。</p>
       </div>
     </MailRecipientDialog>
   </div>

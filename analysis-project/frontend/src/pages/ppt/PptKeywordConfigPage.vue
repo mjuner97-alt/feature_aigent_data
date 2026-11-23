@@ -5,7 +5,8 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { isPptRecognitionMode, listPptMaterialIgnoreRules, savePptMaterialIgnoreRules, pptAnomalyPermissions, pptRecognitionModes as modes, searchPptPeople, type PptMaterialIgnoreRule, type PptPerson, type PptRecognitionScope } from '../../api/pptAnomaly';
-import { Document, Download, Search, UploadFilled } from '@element-plus/icons-vue';
+import { savePptFeedbackReminderSettings, type PptFeedbackReminderSettings } from '../../api/pptAnomaly';
+import { Clock, Document, Download, Search, UploadFilled } from '@element-plus/icons-vue';
 import PptListFilterBar from '../../components/ppt/PptListFilterBar.vue';
 import PptFeedbackSupervisorConfig from '../../components/ppt/PptFeedbackSupervisorConfig.vue';
 import PptRecognitionSettings from '../../components/ppt/PptRecognitionSettings.vue';
@@ -69,7 +70,103 @@ const canMaintainEditor = computed(() => canMaintain(editKind.value));
 async function loadPermissions() {
   permissions.value = await pptAnomalyPermissions().catch(() => undefined);
 }
+const reminderSettings = ref<Partial<Record<number, PptFeedbackReminderSettings>>>({});
+const savingReminderRows = reactive(new Set<number>());
+
 onMounted(loadPermissions);
+
+async function updateReminderSettings(id: number, changes: Partial<PptFeedbackReminderSettings>) {
+  const current = reminderSettings.value[id];
+  if (!current || savingReminderRows.has(id) || !canMaintain('material-type')) return;
+  const updated = { ...current, ...changes };
+  if (updated.enabled === current.enabled && updated.cutoff === current.cutoff
+      && updated.intervalMinutes === current.intervalMinutes
+      && updated.weeklyStartMinute === current.weeklyStartMinute
+      && updated.weeklyEndMinute === current.weeklyEndMinute) return;
+
+  savingReminderRows.add(id);
+  reminderSettings.value[id] = updated;
+  try {
+    await savePptFeedbackReminderSettings(id, updated);
+    return true;
+  } catch (error) {
+    reminderSettings.value[id] = current;
+    ElMessage.error(String(error));
+  } finally {
+    savingReminderRows.delete(id);
+  }
+}
+const weekdays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+const scheduleRow = ref<number>();
+const scheduleMaxHeight = ref(360);
+const schedulePopperOptions = {
+  modifiers: [
+    { name: 'flip', enabled: false },
+    { name: 'preventOverflow', options: { altAxis: false, padding: 12 } },
+  ],
+};
+const schedule = reactive({ weekly: false, cutoff: '18:00', startDay: 0, startTime: '10:00', endDay: 4, endTime: '18:00', intervalMinutes: 60 as number | undefined });
+
+function clockText(minute: number) {
+  const withinDay = minute % 1440;
+  return [Math.floor(withinDay / 60), withinDay % 60].map(value => String(value).padStart(2, '0')).join(':');
+}
+
+function scheduleText(settings?: PptFeedbackReminderSettings) {
+  if (!settings) return '—';
+  const { weeklyStartMinute: start, weeklyEndMinute: end, cutoff } = settings;
+  if (start == null || end == null) return `每天 10:00 – ${cutoff}`;
+  return `${weekdays[Math.floor(start / 1440)]} ${clockText(start)} – ${weekdays[Math.floor(end / 1440)]} ${clockText(end)}`;
+}
+
+function openSchedule(id: number, event: MouseEvent) {
+  const settings = reminderSettings.value[id];
+  if (!settings || savingReminderRows.has(id)) return;
+  if (scheduleRow.value === id) {
+    scheduleRow.value = undefined;
+    return;
+  }
+  const start = settings.weeklyStartMinute ?? 600;
+  const end = settings.weeklyEndMinute ?? 6840;
+  Object.assign(schedule, {
+    weekly: settings.weeklyStartMinute != null,
+    cutoff: settings.cutoff,
+    intervalMinutes: settings.intervalMinutes,
+    startDay: Math.floor(start / 1440), startTime: clockText(start),
+    endDay: Math.floor(end / 1440), endTime: clockText(end),
+  });
+  const trigger = event.currentTarget as HTMLElement;
+  scheduleMaxHeight.value = Math.max(0, window.innerHeight - trigger.getBoundingClientRect().bottom - 24);
+  scheduleRow.value = id;
+}
+
+function weekMinute(day: number, time: string) {
+  const [hour, minute] = time.split(':').map(Number);
+  return day * 1440 + hour * 60 + minute;
+}
+
+async function saveSchedule(id: number) {
+  const current = reminderSettings.value[id];
+  if (!current) return;
+  const start = schedule.weekly ? weekMinute(schedule.startDay, schedule.startTime) : null;
+  const end = schedule.weekly ? weekMinute(schedule.endDay, schedule.endTime) : null;
+  if (schedule.weekly && (start === end || !Number.isFinite(start) || !Number.isFinite(end))) {
+    ElMessage.warning('请选择不同的每周开始和结束时间');
+    return;
+  }
+  const intervalMinutes = schedule.intervalMinutes;
+  if (typeof intervalMinutes !== 'number' || !Number.isInteger(intervalMinutes) || intervalMinutes < 1) {
+    ElMessage.warning('提醒间隔须为正整数分钟');
+    return;
+  }
+  const cutoff = schedule.weekly ? current.cutoff : schedule.cutoff;
+  if ((cutoff === current.cutoff && start === current.weeklyStartMinute && end === current.weeklyEndMinute
+        && intervalMinutes === current.intervalMinutes)
+      || await updateReminderSettings(id, { cutoff, weeklyStartMinute: start, weeklyEndMinute: end, intervalMinutes })) {
+    if (scheduleRow.value === id) scheduleRow.value = undefined;
+  }
+}
+
 watch(() => route.query.tab, () => {
   active.value = requestedTab();
 });
@@ -252,7 +349,15 @@ async function load() {
     const result = await (await request(`/${active.value === 'section' ? 'titles' : active.value}?${query}`)).json();
     if (id !== requestId) return;
     if (active.value === 'section') titleRows.value = result.items;
-    else rows.value = result.items;
+    else {
+      rows.value = result.items;
+      if (active.value === 'material-type') {
+        const settings: (PptFeedbackReminderSettings & { id: number })[] = result.reminderSettings ?? [];
+        reminderSettings.value = Object.fromEntries(settings.map(({ id, ...values }) => [
+          id, savingReminderRows.has(id) ? reminderSettings.value[id] : values,
+        ]));
+      }
+    }
     total.value = result.total;
   } catch (error) {
     if (id === requestId) {
@@ -531,6 +636,84 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
         </el-table>
         <el-table v-else v-loading="loading" :data="rows" row-key="id">
           <el-table-column prop="name" :label="active === 'material-type' ? '材料类型' : '匹配关键词'" min-width="180" />
+          <el-table-column v-if="active === 'material-type'" label="提醒时段" min-width="286">
+            <template #default="{ row }">
+              <el-popover v-if="reminderSettings[row.id] && canMaintainActive"
+                :visible="scheduleRow === row.id" placement="bottom-start" :width="344" :offset="9"
+                :popper-options="schedulePopperOptions" popper-class="ppt-schedule-popper"
+                :persistent="false" :show-arrow="false">
+                <template #reference>
+                  <button type="button" class="schedule-trigger" :aria-expanded="scheduleRow === row.id"
+                    @click="openSchedule(row.id, $event)" @keydown.esc.stop="scheduleRow = undefined">
+                    <el-icon><Clock /></el-icon>
+                    <span>{{ scheduleText(reminderSettings[row.id]) }}</span>
+                    <span class="schedule-interval-summary">{{ reminderSettings[row.id]?.intervalMinutes }} 分钟/次</span>
+                  </button>
+                </template>
+                <form class="schedule-editor" :style="{ maxHeight: `${scheduleMaxHeight}px` }"
+                  @submit.prevent="saveSchedule(row.id)" @keydown.esc.stop="scheduleRow = undefined">
+                  <div class="schedule-editor-header">
+                    <strong>提醒时段</strong>
+                    <span>北京时间</span>
+                  </div>
+                  <div class="schedule-fields">
+                    <el-radio-group v-model="schedule.weekly" aria-label="提醒周期">
+                      <el-radio-button :value="false">每天</el-radio-button>
+                      <el-radio-button :value="true">每周</el-radio-button>
+                    </el-radio-group>
+                    <template v-if="schedule.weekly">
+                      <div class="schedule-endpoint">
+                        <span>开始</span>
+                        <el-select v-model="schedule.startDay" aria-label="开始星期">
+                          <el-option v-for="(day, index) in weekdays" :key="day" :label="day" :value="index" />
+                        </el-select>
+                        <el-time-picker v-model="schedule.startTime" format="HH:mm" value-format="HH:mm"
+                          :clearable="false" aria-label="开始时间" />
+                      </div>
+                      <div class="schedule-endpoint">
+                        <span>结束</span>
+                        <el-select v-model="schedule.endDay" aria-label="结束星期">
+                          <el-option v-for="(day, index) in weekdays" :key="day" :label="day" :value="index" />
+                        </el-select>
+                        <el-time-picker v-model="schedule.endTime" format="HH:mm" value-format="HH:mm"
+                          :clearable="false" aria-label="结束时间" />
+                      </div>
+                    </template>
+                    <div v-else class="schedule-endpoint">
+                      <span>10:00 至</span>
+                      <el-time-picker v-model="schedule.cutoff" format="HH:mm" value-format="HH:mm"
+                        :clearable="false" aria-label="每日截止时间" />
+                    </div>
+                    <div class="schedule-interval-field">
+                      <label :for="`reminder-interval-${row.id}`">提醒间隔</label>
+                      <el-input-number :id="`reminder-interval-${row.id}`" v-model="schedule.intervalMinutes"
+                        :min="1" :max="2147483647" :precision="0" class="reminder-interval" />
+                      <span>分钟</span>
+                    </div>
+                  </div>
+                  <div class="schedule-actions">
+                    <el-button @click="scheduleRow = undefined">取消</el-button>
+                    <el-button type="primary" native-type="submit" :loading="savingReminderRows.has(row.id)">保存时段</el-button>
+                  </div>
+                </form>
+              </el-popover>
+              <span v-else>
+                {{ scheduleText(reminderSettings[row.id]) }}
+                <span v-if="reminderSettings[row.id]" class="schedule-interval-summary">
+                  {{ reminderSettings[row.id]?.intervalMinutes }} 分钟/次
+                </span>
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column v-if="active === 'material-type'" label="自动逾期提醒" width="118" align="center">
+            <template #default="{ row }">
+              <el-switch v-if="reminderSettings[row.id]" :model-value="reminderSettings[row.id]?.enabled"
+                :loading="savingReminderRows.has(row.id)" :disabled="!canMaintainActive"
+                :aria-label="`${row.name}自动逾期提醒`"
+                @change="(value: unknown) => updateReminderSettings(row.id, { enabled: value === true })" />
+              <span v-else>—</span>
+            </template>
+          </el-table-column>
           <el-table-column v-if="active === 'department'" prop="target" label="部门" min-width="160" />
           <el-table-column label="新增时间" width="168" class-name="config-date">
             <template #default="{ row }">{{ dateText(row.createdAt) }}</template>
@@ -696,16 +879,16 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
 </template>
 
 <style scoped>
-.config-page { padding: clamp(12px, 1.5vw, 20px); }
+.config-page { padding: clamp(16px, 2.2vw, 32px); background: #f4f7fb; min-height: 100%; }
 h2 { margin: 0 0 14px; font-size: 22px; color: #142441; }
 .config-page :deep(.el-card) { border: 1px solid #dfe6f0; border-radius: 14px; box-shadow: 0 4px 16px #22375c0a; }
-.config-page :deep(.config-card-body) { padding: 12px; }
-.config-page :deep(.el-tabs__header) { margin-bottom: 10px; }
-.config-page :deep(.el-tabs__item) { height: 32px; font-size: 13px; }
-.config-page :deep(.el-table .el-table__cell) { padding-block: 6px; }
-.config-page :deep(.el-table .cell) { padding-inline: 8px; }
+.config-page :deep(.config-card-body) { padding: clamp(14px, 1.6vw, 24px); }
+.config-page :deep(.el-tabs__header) { margin-bottom: 16px; }
+.config-page :deep(.el-tabs__item) { height: 42px; font-size: 14px; }
+.config-page :deep(.el-table .el-table__cell) { padding-block: 11px; }
+.config-page :deep(.el-table .cell) { padding-inline: 12px; }
 .config-page :deep(.config-date .cell) { white-space: nowrap; font-variant-numeric: tabular-nums; }
-.config-filters { --ppt-filter-width: 186px; margin-bottom: 10px; }
+.config-filters { --ppt-filter-width: 186px; margin-bottom: 14px; }
 .row-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .row-actions .el-button { flex-shrink: 0; margin: 0; }
 .inline-rule-header { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 10px; padding-top: 14px; border-top: 1px solid #edf1f7; color: #253858; }
@@ -780,5 +963,110 @@ h2 { margin: 0 0 14px; font-size: 22px; color: #142441; }
   flex-shrink: 0;
   padding: 12px var(--ppt-dialog-gutter) 16px;
   border-top: 1px solid #e3eaf4;
+}
+.config-page :deep(.el-table) {
+  border: 1px solid #e2eaf5;
+  border-radius: 10px;
+  --el-table-header-bg-color: #f0f5fc;
+  --el-table-row-hover-bg-color: #f5f9ff;
+}
+
+.schedule-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 9px;
+  color: #1e50a4;
+  background: #eef5ff;
+  border: 1px solid #dce8fb;
+  border-radius: 7px;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.schedule-trigger:hover,
+.schedule-trigger:focus-visible {
+  border-color: #81a9e8;
+  background: #e1edff;
+}
+
+:global(.el-popper.ppt-schedule-popper) {
+  max-width: calc(100vw - 24px);
+  padding: 0;
+  border: 1px solid #dce6f3;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px #16355724, 0 2px 6px #16355710;
+}
+
+.schedule-editor {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-radius: 11px;
+}
+
+.schedule-fields {
+  display: grid;
+  gap: 10px;
+  padding: 12px 16px;
+}
+
+.schedule-endpoint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.schedule-endpoint > span { flex: 0 0 auto; }
+.schedule-endpoint :deep(.el-select) { width: 82px; flex: 0 0 82px; }
+.schedule-endpoint :deep(.el-date-editor) { width: 110px; }
+
+.schedule-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 16px;
+  border-top: 1px solid #e8eef7;
+  background: #f7faff;
+}
+
+.schedule-interval-summary {
+  margin-left: 3px;
+  padding-left: 8px;
+  border-left: 1px solid #d0dff3;
+  color: #486387;
+  white-space: nowrap;
+}
+
+.schedule-editor-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e8eef7;
+  background: #f7faff;
+  color: #162b49;
+}
+
+.schedule-editor-header > span,
+.schedule-interval-field > span {
+  color: #536884;
+  font-size: 12px;
+}
+
+.schedule-interval-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #e8eef7;
+}
+
+.schedule-interval-field > label {
+  color: #334965;
+  white-space: nowrap;
+}
+
+.reminder-interval {
+  width: 106px;
 }
 </style>
