@@ -184,11 +184,12 @@ public class StubNotificationSender implements NotificationSender {
         }
         Path directory = localDirectory.toAbsolutePath().normalize();
         Path file = directory.resolve(safeTitle + "-" + LocalDateTime.now().format(LOCAL_FILE_TIME) + ".html");
+        String heading = "<h1>" + escapeHtml(title) + "</h1>";
         String html = content.trim().toLowerCase().startsWith("<html")
-            ? content
+            ? addLocalHeading(content, heading)
             : "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><title>" +
               escapeHtml(title) +
-              "</title></head><body>" +
+              "</title></head><body>" + heading +
               content.replace("\n", "<br>\n") +
               "</body></html>";
         try {
@@ -199,6 +200,16 @@ public class StubNotificationSender implements NotificationSender {
         } catch (Exception e) {
             throw new IllegalStateException("LocalNotificationFileWriteFailed: " + e.getMessage(), e);
         }
+    }
+
+    private String addLocalHeading(String html, String heading) {
+        var body = java.util.regex.Pattern.compile("(?i)<body\\b[^>]*>").matcher(html);
+        if (body.find()) {
+            return html.substring(0, body.end()) + heading + html.substring(body.end());
+        }
+        var root = java.util.regex.Pattern.compile("(?i)<html\\b[^>]*>").matcher(html);
+        int position = root.find() ? root.end() : 0;
+        return html.substring(0, position) + heading + html.substring(position);
     }
 
     private String escapeHtml(String value) {

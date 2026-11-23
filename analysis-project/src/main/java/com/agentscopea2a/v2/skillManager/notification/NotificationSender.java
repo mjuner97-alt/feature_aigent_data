@@ -26,6 +26,11 @@ public interface NotificationSender {
 
     /** Build the final request once, before persistence; never include authentication headers. */
     default java.util.Map<String, Object> prepare(NotificationPayload payload) {
+        return prepareRendered(payload);
+    }
+
+    /** Build a request for a body that already contains its complete footer. */
+    default java.util.Map<String, Object> prepareRendered(NotificationPayload payload) {
         java.util.Map<String, Object> body = new java.util.LinkedHashMap<>();
         body.put("title", payload.jobName());
         body.put("content", payload.content());

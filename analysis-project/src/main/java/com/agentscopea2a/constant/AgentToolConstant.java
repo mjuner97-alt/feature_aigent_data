@@ -10,5 +10,6 @@ public final class AgentToolConstant {
     public static final String DEFAULT_XTOKEN = "placeholder-xtoken";
     public static final String MANAGER_BASE_URL = "http://manager.sdc.cs.icbc";
     public static final String THIRD_PARTY_LOGIN_URL = MANAGER_BASE_URL + "/#login?origin=digitalQA";
+    public static final String PPT_FEEDBACK_DETAIL_URL = "https://example.com/ppt-feedback/details";
     public static final String DEFAULT_MAIL_URL = MANAGER_BASE_URL + "/api/mail/send";
 }

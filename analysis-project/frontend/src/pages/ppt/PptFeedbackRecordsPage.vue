@@ -125,14 +125,17 @@ function notificationTime(value: string | null) {
 /** 统一打开反馈详情，实际编辑权限由详情接口决定，正文通过内部编辑按钮修改。 */
 function openDetail(row: Recipient) {
   const page = row.pages.find(item => item.status === 'PENDING_FEEDBACK') ?? row.pages[0];
-  if (page) openPage(page, row.departments[0]);
+  if (page) openPage(page, row.departments[0], true);
   else emptyVersion.value = row;
 }
 
-function openPage(page: Page, department?: string) {
+function openPage(page: Page, department?: string, fromDetail = false) {
   const context: Record<string, string> = {
-    version: String(page.versionId), finding: String(page.findingId), mode: 'edit', scope: 'all', exact: '1',
+    version: String(page.versionId), mode: 'edit', exact: '1',
   };
+  if (!fromDetail) {
+    context.finding = String(page.findingId);
+  }
   if (department) context.department = department;
   void router.push({ path: '/ppt-anomaly/overview', state: { pptFeedbackContext: context } });
 }
@@ -235,7 +238,7 @@ onMounted(load);
       <el-table-column label="操作" width="130" fixed="right">
         <template #default="{ row }">
           <div class="record-actions">
-            <el-button link type="primary" @click="openDetail(row)">查看</el-button>
+            <el-button link type="primary" @click="openDetail(row)">详情</el-button>
           </div>
         </template>
       </el-table-column>

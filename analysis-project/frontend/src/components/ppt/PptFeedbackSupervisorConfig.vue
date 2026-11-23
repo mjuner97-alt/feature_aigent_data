@@ -17,6 +17,9 @@ const department = ref('');
 const visiblePeople = computed(() => saved.value.filter(person =>
   !department.value || person.supervisorDepartments.includes(department.value)));
 
+const showActions = computed(() => visiblePeople.value.some(person =>
+  removableDepartments(person).length > 0 || canDelete(person)));
+
 const addOpen = ref(false);
 const editingPerson = ref<PptFeedbackSupervisor | null>(null);
 const selected = ref<string[]>([]);
@@ -221,14 +224,15 @@ onMounted(load);
       <el-table-column label="人员所属部门" min-width="160">
         <template #default="{ row }">{{ row.departments.join('、') || '—' }}</template>
       </el-table-column>
-      <el-table-column v-if="canManageAllConfigurations || editableDepartments.length" label="操作" width="140" fixed="right">
+      <el-table-column v-if="showActions" label="操作" width="140" fixed="right">
         <template #default="{ row }">
-          <div class="supervisor-actions">
+          <div v-if="removableDepartments(row).length || canDelete(row)" class="supervisor-actions">
             <el-button v-if="removableDepartments(row).length" link type="primary" :disabled="!!changingId || saving"
               @click="openEdit(row)">编辑</el-button>
             <el-button v-if="canDelete(row)" link type="danger"
               :loading="changingId === row.userId" :disabled="!!changingId" @click="remove(row)">删除</el-button>
           </div>
+          <span v-else class="unavailable-action">—</span>
         </template>
       </el-table-column>
     </el-table>
@@ -264,6 +268,7 @@ onMounted(load);
 <style scoped>
 .supervisor-settings { display: grid; gap: 14px; }
 .supervisor-note { margin: 0; }
+.unavailable-action { color: #64748b; }
 .supervisor-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .supervisor-actions :deep(.el-button) { margin: 0; flex-shrink: 0; }
 .supervisor-actions :deep(.el-dropdown) { display: inline-flex; align-items: center; }

@@ -60,26 +60,27 @@ public class PptAnomalyController {
         return Map.of("departments", person == null ? List.of() : person.depts(), "versions", service.versionWork(userId));
     }
 
-    /** 材料管理人员按版本查看实际保存的邮件通知记录。 */
+    /** 按登录人的部门权限查询指定版本的通知记录。 */
     @GetMapping("/versions/{versionId}/notifications")
     public List<PptAnomalyMapper.FeedbackMailRecord> notifications(@PathVariable long versionId,
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
-        requireProductDepartment(userId, people);
-        return service.notificationRecords(versionId);
+        requireUser(userId);
+        return service.notificationRecords(versionId, service.recordDepartments(userId, canViewAllFeedback(userId)));
     }
 
-    /** 按批次查询已保存的发信名单，仅产品部可查看。 */
+    /** 按批次和登录人部门权限查询已保存的发信名单。 */
     @GetMapping("/notifications")
     public PptAnomalyService.SentMailPage sentMailPage(@RequestParam(required = false) Long batchId,
             @RequestParam(required = false) Long versionId,
             @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int size,
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
-        requireProductDepartment(userId, people);
+        requireUser(userId);
         if (page < 1 || size < 1 || size > 100 || (batchId != null && batchId < 1)
                 || (versionId != null && (batchId == null || versionId < 1))) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "无效的通知记录查询参数");
         }
-        return service.sentMailPage(batchId, versionId, page, size);
+        return service.sentMailPage(batchId, versionId, page, size,
+                service.recordDepartments(userId, canViewAllFeedback(userId)));
     }
 
     /** 当前版本的板块负责人分派请求。 */
@@ -98,12 +99,13 @@ public class PptAnomalyController {
         return isProductDepartmentUser(userId, people);
     }
 
-    /** 通过人员台账判断用户是否属于产品部。 */
+    /** 仅明确列出的管理部门享有例会材料产品部权限。 */
     static boolean isProductDepartmentUser(String userId, DeveloperPlPersonInfoMapper people) {
         return people.selectByUserId(userId).stream()
                 .map(DeveloperPlPersonInfo::getDepartment)
                 .filter(Objects::nonNull)
-                .anyMatch(department -> department.strip().endsWith("产品部"));
+                .map(String::strip)
+                .anyMatch(department -> "杭州产品部".equals(department) || "产品部".equals(department));
     }
 
     /** 返回当前用户的材料管理权限、全量配置权限、板块与标题维护权限及可选部门。 */
@@ -115,6 +117,7 @@ public class PptAnomalyController {
         return Map.of("canManageMaterials", isProductDepartmentUser(userId, people),
                 "canManageAllConfigurations", access.allDepartments(),
                 "canManageBoardsAndTitles", service.canManageBoardsAndTitles(userId),
+                "departments", service.recordDepartments(userId, false),
                 "editableDepartments", access.allDepartments() ? service.configDirectoryDepartments() : access.departments());
     }
 
@@ -268,7 +271,8 @@ public class PptAnomalyController {
     /** 反馈详情页的本人事项、部门事项和板块联系人目录。 */
     public record FeedbackDirectory(String fileName, String materialMailLabel, List<String> departments,
             List<PptAnomalyModels.Finding> assigned, List<PptAnomalyModels.Finding> departmentFindings,
-            List<PptAnomalyModels.Finding> myPending,
+            List<PptAnomalyModels.Finding> myPending, List<PptAnomalyModels.Finding> myAssigned,
+            Map<Integer, String> originalTitles,
             Map<Long, PptAnomalyService.BoardContact> contacts,
             Map<Long, List<PptAnomalyService.FeedbackHandler>> handlers) {}
 
@@ -309,11 +313,13 @@ public class PptAnomalyController {
         var myAssignmentIds = userId.equals(ownerId) ? assignedIds
                 : service.recordFindings(versionId, userId, userId).stream()
                 .map(PptAnomalyModels.Finding::id).collect(Collectors.toSet());
-        var myPending = departmentFindings.stream()
-                .filter(item -> "PENDING_FEEDBACK".equals(item.status()) && myAssignmentIds.contains(item.id())).toList();
+        var myAssigned = departmentFindings.stream()
+                .filter(item -> myAssignmentIds.contains(item.id())).toList();
+        var myPending = myAssigned.stream()
+                .filter(item -> "PENDING_FEEDBACK".equals(item.status())).toList();
         return new FeedbackDirectory(fileName, service.versionMailLabel(versionId),
                 department == null ? departments : List.of(department), assigned, departmentFindings,
-                myPending,
+                myPending, myAssigned, service.originalSlideTitles(versionId, departmentFindings),
                 service.feedbackContacts(versionId, assigned, departmentFindings),
                 service.feedbackHandlers(versionId, assigned, departmentFindings));
     }
@@ -328,6 +334,7 @@ public class PptAnomalyController {
         var items = switch (scope) {
             case "mine" -> directory.assigned();
             case "pending" -> directory.myPending();
+            case "myAssigned" -> directory.myAssigned();
             case "all" -> directory.departmentFindings();
             default -> throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "无效的导出范围");
         };

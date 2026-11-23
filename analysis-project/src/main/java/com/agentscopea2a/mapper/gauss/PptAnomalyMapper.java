@@ -20,10 +20,11 @@ public interface PptAnomalyMapper {
     int saveFeedbackSupervisors(@Param("ids") String ids, @Param("disabledIds") String disabledIds,
                                 @Param("assignments") String assignments,
                                 @Param("user") String user);
-    int markFeedbackNotified(@Param("ids") List<Long> ids, @Param("sentAt") java.time.LocalDateTime sentAt);
+    int markFeedbackNotified(@Param("ids") List<Long> ids, @Param("sentAt") java.time.LocalDateTime sentAt,
+                             @Param("deadline") java.time.LocalDateTime deadline);
 
     record ReminderScope(long versionId, String department) {}
-    record FeedbackReminder(long findingId, String recipient, int page, String title) {}
+    record FeedbackReminder(long findingId, String recipient, int page, String title, java.time.LocalDateTime deadline) {}
     List<ReminderScope> dueFeedbackReminderScopes(@Param("now") java.time.LocalDateTime now,
             @Param("weekMinute") int weekMinute);
     List<FeedbackReminder> dueFeedbackReminders(@Param("scope") ReminderScope scope,
@@ -96,10 +97,23 @@ public interface PptAnomalyMapper {
                               java.time.LocalDateTime sentAt) {}
     record SentMailRow(long id, String batchName, int versionNo, String fileName, String department,
                        String subject, String toUsers, String ccUsers, java.time.LocalDateTime sentAt) {}
+    record SentMailFilter(long batchId, String batchName, long versionId, int versionNo) {}
     List<SentMailRow> sentMailPage(@Param("batchId") Long batchId, @Param("versionId") Long versionId,
+                                   @Param("departments") List<String> departments,
                                    @Param("size") int size, @Param("offset") long offset);
-    long countSentMails(@Param("batchId") Long batchId, @Param("versionId") Long versionId);
-    List<FeedbackMailRecord> feedbackMailRecords(@Param("versionId") long versionId);
+    long countSentMails(@Param("batchId") Long batchId, @Param("versionId") Long versionId,
+                        @Param("departments") List<String> departments);
+    List<SentMailFilter> sentMailFilters(@Param("departments") List<String> departments);
+    List<FeedbackMailRecord> feedbackMailRecords(@Param("versionId") long versionId,
+                                                  @Param("departments") List<String> departments);
+    record CompletionReport(long id, long versionId, String department) {}
+    int enqueueCompletionReport(@Param("versionId") long versionId, @Param("department") String department);
+    List<CompletionReport> pendingCompletionReports();
+    boolean completionReportPending(@Param("id") long id);
+    void cancelCompletionReport(@Param("id") long id);
+    void markCompletionReportSent(@Param("id") long id, @Param("subject") String subject,
+                                   @Param("body") String body, @Param("toUsers") String toUsers,
+                                   @Param("ccUsers") String ccUsers);
     List<RecipientNoticeTime> previousFeedbackNoticeTimes(@Param("versionId") long versionId, @Param("subject") String subject);
     List<SentFeedbackMail> sentFeedbackMails(@Param("versionId") long versionId, @Param("department") String department,
                                              @Param("subject") String subject);
@@ -125,6 +139,7 @@ public interface PptAnomalyMapper {
                       String departments, String owner, String status, String relation) {}
     /** 事项主键及历史单一负责人。 */
     record Owner(long id, String userId) {}
+    Long findingVersionId(@Param("id") long id);
     /** 规则识别所需的页面文本和板块归属。 */
     record AnalysisSlide(long id, String title, String texts, String section, String defaultOwner) {}
     /** 导入页面的标题、板块归属和跳过状态。 */

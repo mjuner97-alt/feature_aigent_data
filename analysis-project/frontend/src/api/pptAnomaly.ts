@@ -6,7 +6,12 @@ export interface PptSentMail {
   id: number; batchName: string; versionNo: number; fileName: string; department: string;
   subject: string; to: string[]; cc: string[]; sentAt: string;
 }
-export interface PptSentMailPage { rows: PptSentMail[]; total: number; names: Record<string, string> }
+export interface PptSentMailPage {
+  rows: PptSentMail[];
+  total: number;
+  names: Record<string, string>;
+  filters: { batchId: number; batchName: string; versionId: number; versionNo: number }[];
+}
 
 export async function getPptSentMailPage(page: number, batchId?: number, versionId?: number) {
   const query = new URLSearchParams({ page: String(page) });
@@ -27,6 +32,7 @@ export async function pptAnomalyPermissions() {
     canManageMaterials: boolean;
     canManageAllConfigurations: boolean;
     canManageBoardsAndTitles: boolean;
+    departments: string[];
     editableDepartments: string[];
   }>(
     await fetch(`${base}/permissions`, { headers: headers(), cache: 'no-store' }));
@@ -213,7 +219,7 @@ export async function feedbackDirectory(versionId: number, recordOwner?: string,
   if (recordOwner) query.set('recordOwner', recordOwner);
   if (department) query.set('department', department);
   return parse<{
-    fileName: string; materialMailLabel: string; departments: string[]; assigned: PptFinding[]; departmentFindings: PptFinding[]; myPending: PptFinding[];
+    fileName: string; materialMailLabel: string; departments: string[]; assigned: PptFinding[]; departmentFindings: PptFinding[]; myPending: PptFinding[]; myAssigned: PptFinding[]; originalTitles?: Record<number, string>;
     contacts: Partial<Record<number, { name: string | null; userId: string }>>;
     handlers: Partial<Record<number, { name: string | null; userId: string }[]>>;
   }>(
@@ -231,7 +237,7 @@ export async function sendPptFeedbackNotification(versionId: number, recordOwner
   if (!response.ok) await parse(response);
 }
 
-export async function downloadFeedbackDirectory(versionId: number, scope: 'pending' | 'all', recordOwner?: string, department?: string) {
+export async function downloadFeedbackDirectory(versionId: number, scope: 'pending' | 'myAssigned' | 'all', recordOwner?: string, department?: string) {
   const query = new URLSearchParams({ scope });
   if (department) query.set('department', department);
   if (recordOwner) query.set('recordOwner', recordOwner);

@@ -4,7 +4,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { isPptRecognitionMode, listPptMaterialIgnoreRules, savePptMaterialIgnoreRules, pptAnomalyPermissions, pptRecognitionModes as modes, searchPptPeople, type PptMaterialIgnoreRule, type PptPerson, type PptRecognitionScope } from '../../api/pptAnomaly';
+import { isPptRecognitionMode, listPptMaterialIgnoreRules, listPptReportDepartments, savePptMaterialIgnoreRules, pptAnomalyPermissions, pptRecognitionModes as modes, searchPptPeople, type PptMaterialIgnoreRule, type PptPerson, type PptRecognitionScope } from '../../api/pptAnomaly';
 import { savePptFeedbackReminderSettings, type PptFeedbackReminderSettings } from '../../api/pptAnomaly';
 import { Clock, Document, Download, Search, UploadFilled } from '@element-plus/icons-vue';
 import PptListFilterBar from '../../components/ppt/PptListFilterBar.vue';
@@ -51,6 +51,12 @@ const requestedTab = () => visibleTabs.find(item => item.key === route.query.tab
 const active = ref<string>(requestedTab());
 const permissions = ref<Awaited<ReturnType<typeof pptAnomalyPermissions>>>();
 const editKind = ref('department');
+const departmentFilter = ref('');
+const departmentFilterReady = ref(false);
+const directoryDepartments = ref<string[]>([]);
+const departmentOptions = computed(() => [...new Set([
+  ...directoryDepartments.value, ...(permissions.value?.departments ?? []),
+])].sort((first, second) => first.localeCompare(second, 'zh-CN')));
 const editableDepartments = computed(() => permissions.value?.editableDepartments ?? []);
 // 将后端的管理员配置权限用于页面操作入口。
 const canManageAllConfigurations = computed(() => permissions.value?.canManageAllConfigurations === true);
@@ -69,7 +75,13 @@ const canMaintainActive = computed(() => canMaintain(active.value));
 const canMaintainEditor = computed(() => canMaintain(editKind.value));
 /** 获取最新维护权限，督办关系变更时重新查询。 */
 async function loadPermissions() {
-  permissions.value = await pptAnomalyPermissions().catch(() => undefined);
+  const current = await pptAnomalyPermissions().catch(() => undefined);
+  permissions.value = current;
+  if (departmentFilterReady.value) return;
+  const ownDepartments = current?.departments ?? [];
+  departmentFilter.value = ownDepartments.includes('杭州产品部') ? '' : (ownDepartments[0] ?? '');
+  departmentFilterReady.value = true;
+  if (active.value === 'department') search();
 }
 const reminderSettings = ref<Partial<Record<number, PptFeedbackReminderSettings>>>({});
 const savingReminderRows = reactive(new Set<number>());
@@ -135,6 +147,9 @@ const page = ref(1);
 const size = ref(20);
 const total = ref(0);
 const rows = ref<Entry[]>([]);
+const showConfigActions = computed(() => active.value === 'department'
+  ? rows.value.some(row => canMaintain('department', row.target))
+  : canMaintainActive.value);
 /** 管理员编辑已有的关键字时，可保留该记录的历史部门。 */
 const keywordDepartmentOptions = computed(() => {
   if (!canManageAllConfigurations.value) return editableDepartments.value;
@@ -313,6 +328,7 @@ async function load() {
     return;
   }
   loading.value = true;
+  if (active.value === 'department' && !departmentFilterReady.value) return;
   try {
     if (active.value === 'board') {
       const boards: BoardRow[] = await (await request('/section-options')).json();
@@ -354,7 +370,7 @@ async function load() {
 function search() {
   clearTimeout(titleSearchTimer);
   applied.keyword = keyword.value.trim();
-  applied.target = mode.value || '';
+  applied.target = (active.value === 'department' ? departmentFilter.value : mode.value) || '';
   if (page.value === 1) void load();
   else page.value = 1;
 }
@@ -374,6 +390,11 @@ watch(active, () => {
   titleRows.value = [];
   boardRows.value = [];
   total.value = 0;
+  if (active.value === 'department' && !directoryDepartments.value.length) {
+    void listPptReportDepartments().then(options => {
+      directoryDepartments.value = options.map(item => item.name);
+    }).catch(() => undefined);
+  }
   search();
 }, { immediate: true });
 watch([page, size], () => void load());
@@ -601,7 +622,11 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
             <el-input v-model="keyword" class="ppt-filter-search" :prefix-icon="Search" clearable aria-label="搜索配置"
               @input="scheduleTitleSearch"
               :placeholder="active === 'section' ? '搜索页面标题或所属板块' : active === 'board' ? '搜索板块或负责人'
-                : active === 'material-type' ? '搜索材料类型' : '搜索匹配关键词或部门'" />
+                : active === 'material-type' ? '搜索材料类型' : '搜索匹配关键词'" />
+            <el-select v-if="active === 'department'" v-model="departmentFilter" class="ppt-filter-select"
+              filterable clearable :disabled="!departmentFilterReady" placeholder="全部部门" aria-label="筛选部门" @change="search">
+              <el-option v-for="name in departmentOptions" :key="name" :label="name" :value="name" />
+            </el-select>
             <el-select v-if="active === 'section'" v-model="mode" class="ppt-filter-select" clearable
               placeholder="全部识别范围" aria-label="识别范围" @change="search">
               <el-option v-for="(label, key) in modes" :key="key" :label="label" :value="key" />
@@ -684,12 +709,13 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
           <el-table-column label="更新时间" width="168" class-name="config-date">
             <template #default="{ row }">{{ dateText(row.updatedAt) }}</template>
           </el-table-column>
-          <el-table-column v-if="canMaintainActive" label="操作" width="96" fixed="right">
+          <el-table-column v-if="showConfigActions" label="操作" width="96" fixed="right">
             <template #default="{ row }">
               <div v-if="active !== 'department' || canMaintain('department', row.target)" class="row-actions">
                 <el-button link type="primary" @click="edit(row)">编辑</el-button>
                 <el-button link type="danger" @click="remove(row)">删除</el-button>
               </div>
+              <span v-else class="unavailable-action">—</span>
             </template>
           </el-table-column>
         </el-table>
@@ -886,6 +912,7 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
 </template>
 
 <style scoped>
+.unavailable-action { color: #64748b; }
 .config-page { padding: clamp(16px, 2.2vw, 32px); background: #f4f7fb; min-height: 100%; }
 h2 { margin: 0 0 14px; font-size: 22px; color: #142441; }
 .config-page :deep(.el-card) { border: 1px solid #dfe6f0; border-radius: 14px; box-shadow: 0 4px 16px #22375c0a; }

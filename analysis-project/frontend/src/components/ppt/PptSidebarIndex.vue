@@ -3,7 +3,12 @@
 
 import type { PptFinding } from '../../types/pptAnomaly';
 
-defineProps<{ pages: PptFinding[]; selectedId?: number }>();
+const props = defineProps<{ pages: PptFinding[]; originalTitles?: Record<number, string>; selectedId?: number }>();
+function pageTitle(page: PptFinding) {
+  const title = props.originalTitles?.[page.pageNo] || page.title || '';
+  const withoutSectionNumber = title.replace(/^\s*[0-9]+(?:[.\uFF0E\u002D\uFF0D\u2013\u2014][0-9]+)+[.\uFF0E\u3001\s]*/, '').trim();
+  return withoutSectionNumber || title || '未命名页面';
+}
 const emit = defineEmits<{ select: [PptFinding] }>();
 
 /** 根据事项处理状态判断是否已经提交反馈。 */
@@ -27,10 +32,10 @@ function hasFeedback(finding: PptFinding) {
       <button v-for="page in pages" :key="page.id" class="ppt-index-item"
         :class="[hasFeedback(page) ? 'reviewed' : 'unreviewed', { active: page.id === selectedId }]"
         :aria-current="page.id === selectedId ? 'true' : undefined"
-        :aria-label="`${hasFeedback(page) ? '已反馈' : '未反馈'}，P${page.pageNo} ${page.title || '未命名页面'}`"
+        :aria-label="`${hasFeedback(page) ? '已反馈' : '未反馈'}，P${page.pageNo} ${pageTitle(page)}`"
         @click="emit('select', page)">
         <span class="page-number">P{{ page.pageNo }}</span>
-        <span class="item-text">{{ page.title || '未命名页面' }}</span>
+        <span class="item-text">{{ pageTitle(page) }}</span>
       </button>
     </div>
   </aside>

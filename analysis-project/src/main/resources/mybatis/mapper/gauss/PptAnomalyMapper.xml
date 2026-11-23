@@ -16,7 +16,7 @@
         WHERE config_id=1
     </update>
     <update id="markFeedbackNotified">
-        UPDATE digital_qa_ppt_finding SET first_feedback_notified_at=#{sentAt}
+        UPDATE digital_qa_ppt_finding SET first_feedback_notified_at=#{sentAt}, feedback_deadline_at=#{deadline}
         WHERE first_feedback_notified_at IS NULL AND status='PENDING_FEEDBACK' AND id IN
         <foreach collection="ids" item="id" open="(" close=")" separator=",">#{id}</foreach>
     </update>
@@ -91,7 +91,16 @@
         ORDER BY version_id,department
     </select>
     <select id="dueFeedbackReminders" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackReminder">
-        SELECT f.id AS finding_id,r.user_id AS recipient,s.page_no AS page,f.title
+        SELECT f.id AS finding_id,r.user_id AS recipient,s.page_no AS page,f.title,
+               COALESCE(f.feedback_deadline_at, DATE_TRUNC('minute', f.first_feedback_notified_at) + CASE WHEN EXISTS (
+                   SELECT 1 FROM digital_qa_ppt_assignment_notice assignment
+                   WHERE assignment.finding_id=f.id AND assignment.status='SENT'
+                     AND NOT EXISTS (
+                         SELECT 1 FROM digital_qa_ppt_feedback_notice initial
+                         WHERE initial.finding_id=f.id AND initial.kind='PENDING'
+                           AND initial.notified_at &lt;= assignment.sent_at
+                     )
+               ) THEN INTERVAL '1 hour' ELSE INTERVAL '2 hours' END) AS deadline
         FROM digital_qa_ppt_finding f
         JOIN digital_qa_ppt_material_version v ON v.id=f.version_id
         JOIN digital_qa_ppt_finding_recipient r ON r.finding_id=f.id
@@ -216,27 +225,75 @@
         WHERE version_id=#{versionId} AND department=#{department} AND subject=#{subject}
           AND status='SENT' AND sent_at IS NOT NULL
     </select>
+    <!-- null 代表产品部可见全部，空部门列表代表没有可见记录。 -->
+    <sql id="mailDepartmentScope">
+        <if test="departments != null">
+            <choose>
+                <when test="departments.isEmpty()">AND 1=0</when>
+                <otherwise>
+                    AND TRIM(m.department) IN
+                    <foreach collection="departments" item="department" open="(" separator="," close=")">
+                        #{department}
+                    </foreach>
+                </otherwise>
+            </choose>
+        </if>
+    </sql>
     <sql id="sentMailHistory">
         FROM digital_qa_ppt_mail_record m
         JOIN digital_qa_ppt_material_version v ON v.id=m.version_id
         JOIN digital_qa_ppt_material_batch b ON b.id=v.batch_id
         WHERE m.status='SENT' AND m.sent_at IS NOT NULL
+        <include refid="mailDepartmentScope"/>
+    </sql>
+    <sql id="sentMailSelection">
         <if test="batchId != null">AND b.id=#{batchId}</if>
         <if test="versionId != null">AND m.version_id=#{versionId}</if>
     </sql>
     <select id="sentMailPage" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$SentMailRow">
         SELECT m.id,b.name AS batch_name,v.version_no,v.file_name,m.department,m.subject,m.to_users,m.cc_users,m.sent_at
         <include refid="sentMailHistory"/>
+        <include refid="sentMailSelection"/>
         ORDER BY m.sent_at DESC,m.id DESC LIMIT #{size} OFFSET #{offset}
     </select>
     <select id="countSentMails" resultType="long">
-        SELECT COUNT(*) <include refid="sentMailHistory"/>
+        SELECT COUNT(*) <include refid="sentMailHistory"/> <include refid="sentMailSelection"/>
+    </select>
+    <select id="sentMailFilters" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$SentMailFilter">
+        SELECT DISTINCT b.id AS batch_id,b.name AS batch_name,v.id AS version_id,v.version_no
+        <include refid="sentMailHistory"/>
+        ORDER BY b.id DESC,v.version_no DESC,v.id DESC
     </select>
     <select id="feedbackMailRecords" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackMailRecord">
         SELECT id,version_id,department,subject,body,to_users,cc_users,sent_by,status,sent_at
-        FROM digital_qa_ppt_mail_record WHERE version_id=#{versionId}
+        FROM digital_qa_ppt_mail_record m WHERE m.version_id=#{versionId}
+          AND m.status &lt;&gt; 'PENDING_REPORT'
+        <include refid="mailDepartmentScope"/>
         ORDER BY sent_at DESC,id DESC
     </select>
+    <insert id="enqueueCompletionReport">
+        INSERT INTO digital_qa_ppt_mail_record(version_id,department,subject,body,sent_by,status)
+        SELECT #{versionId},#{department},'','','SYSTEM_REPORT','PENDING_REPORT'
+        WHERE NOT EXISTS (
+            SELECT 1 FROM digital_qa_ppt_mail_record
+            WHERE version_id=#{versionId} AND department=#{department} AND sent_by='SYSTEM_REPORT'
+        )
+    </insert>
+    <select id="pendingCompletionReports" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$CompletionReport">
+        SELECT id,version_id,department FROM digital_qa_ppt_mail_record
+        WHERE status='PENDING_REPORT' ORDER BY id
+    </select>
+    <select id="completionReportPending" resultType="boolean">
+        SELECT EXISTS (SELECT 1 FROM digital_qa_ppt_mail_record WHERE id=#{id} AND status='PENDING_REPORT')
+    </select>
+    <delete id="cancelCompletionReport">
+        DELETE FROM digital_qa_ppt_mail_record WHERE id=#{id} AND status='PENDING_REPORT'
+    </delete>
+    <update id="markCompletionReportSent">
+        UPDATE digital_qa_ppt_mail_record SET subject=#{subject},body=#{body},to_users=#{toUsers},cc_users=#{ccUsers},
+            status='SENT',sent_at=CURRENT_TIMESTAMP
+        WHERE id=#{id} AND status='PENDING_REPORT'
+    </update>
     <insert id="recordFeedbackMail">
         INSERT INTO digital_qa_ppt_mail_record(version_id,department,subject,body,to_users,cc_users,sent_by,status,sent_at)
         VALUES (#{versionId},#{department},#{subject},#{body},#{toUsers},#{ccUsers},#{sender},'SENT',CURRENT_TIMESTAMP)
@@ -328,7 +385,10 @@
     <!-- 复用配置类别、名称关键词及目标值的筛选条件。 -->
     <sql id="configFilter">
         FROM digital_qa_ppt_keyword_config WHERE kind=#{kind}
-        <if test="keyword != ''">AND (POSITION(#{keyword} IN name)>0 OR POSITION(#{keyword} IN target)>0)</if>
+        <if test="keyword != ''">
+            AND (POSITION(#{keyword} IN name)>0
+            <if test="kind != 'department'">OR POSITION(#{keyword} IN target)>0</if>)
+        </if>
         <if test="target != ''">AND target=#{target}</if>
     </sql>
 
@@ -671,6 +731,10 @@
     <!-- 读取指定版本和页码的页面元数据。 -->
     <select id="slide" resultType="com.agentscopea2a.v2.pptanomaly.PptAnomalyModels$Slide">
         SELECT id,page_no,title,image_path,render_status,recognition_type FROM digital_qa_ppt_slide WHERE version_id=#{id} AND page_no=#{page}
+    </select>
+
+    <select id="findingVersionId" resultType="long">
+        SELECT version_id FROM digital_qa_ppt_finding WHERE id=#{id} AND status &lt;&gt; 'DELETED'
     </select>
 
     <!-- 查询事项及其负责人，供反馈写入权限校验。 -->

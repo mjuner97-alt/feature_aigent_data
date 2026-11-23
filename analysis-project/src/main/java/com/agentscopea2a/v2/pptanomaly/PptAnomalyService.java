@@ -84,6 +84,7 @@ public class PptAnomalyService {
     private final ObjectMapper mapper;
     private final DeveloperPlPersonInfoMapper people;
     private final AdminRoleService adminRoleService;
+    private final PptFeedbackNotifier notifier;
     // 带此版本标记的说明保存为 JSON，内容同时包含用户说明和附件文件名索引。
     private static final String ATTACHMENT_PREFIX = "ppt-feedback-files:v1\n";
     private static final int MAX_FEEDBACK_BYTES = 16 * 1024;
@@ -96,12 +97,13 @@ public class PptAnomalyService {
     private final PptPdfPreview pdfPreviews = new PptPdfPreview();
     /** 注入配置持久化、人员台账及系统角色服务，解析材料存储目录。 */
     public PptAnomalyService(PptAnomalyMapper persistence, ObjectMapper mapper, DeveloperPlPersonInfoMapper people,
-                             AdminRoleService adminRoleService,
+                             AdminRoleService adminRoleService, PptFeedbackNotifier notifier,
                              @Value("${harness.a2a.workspace.path:.agentscope/workspace/harness-a2a}/ppt-anomaly") String storageDir) {
         this.persistence = persistence;
         this.mapper = mapper;
         this.people = people;
         this.adminRoleService = adminRoleService;
+        this.notifier = notifier;
         this.storageDir = Path.of(storageDir).toAbsolutePath().normalize();
     }
 
@@ -215,16 +217,23 @@ public class PptAnomalyService {
         return persistence.versions(batchId);
     }
 
-    List<PptAnomalyMapper.FeedbackMailRecord> notificationRecords(long versionId) {
-        return persistence.feedbackMailRecords(versionId);
+    List<String> recordDepartments(String userId, boolean productDepartment) {
+        if (productDepartment) return null;
+        var person = ledgerPerson(userId);
+        return person == null ? List.of() : person.depts();
+    }
+
+    List<PptAnomalyMapper.FeedbackMailRecord> notificationRecords(long versionId, List<String> departments) {
+        return persistence.feedbackMailRecords(versionId, departments);
     }
 
     public record SentMail(long id, String batchName, int versionNo, String fileName, String department,
                            String subject, List<String> to, List<String> cc, LocalDateTime sentAt) {}
-    public record SentMailPage(List<SentMail> rows, long total, Map<String, String> names) {}
+    public record SentMailPage(List<SentMail> rows, long total, Map<String, String> names,
+                               List<PptAnomalyMapper.SentMailFilter> filters) {}
 
-    SentMailPage sentMailPage(Long batchId, Long versionId, int page, int size) {
-        var rows = persistence.sentMailPage(batchId, versionId, size, (long) (page - 1) * size).stream()
+    SentMailPage sentMailPage(Long batchId, Long versionId, int page, int size, List<String> departments) {
+        var rows = persistence.sentMailPage(batchId, versionId, departments, size, (long) (page - 1) * size).stream()
                 .map(row -> new SentMail(row.id(), row.batchName(), row.versionNo(), row.fileName(), row.department(),
                         row.subject(), readList(row.toUsers()), readList(row.ccUsers()), row.sentAt()))
                 .toList();
@@ -235,7 +244,8 @@ public class PptAnomalyService {
             people.selectByUserIds(ids).stream().filter(person -> person.getName() != null && !person.getName().isBlank())
                     .forEach(person -> names.putIfAbsent(person.getUserId(), person.getName()));
         }
-        return new SentMailPage(rows, persistence.countSentMails(batchId, versionId), names);
+        return new SentMailPage(rows, persistence.countSentMails(batchId, versionId, departments), names,
+                persistence.sentMailFilters(departments));
     }
 
     /** 按当前用户汇总各版本的本人事项及待反馈数量。 */
@@ -250,25 +260,26 @@ public class PptAnomalyService {
     /** 按当前用户权限查询反馈任务、通知时间和反馈时间。 */
     public List<FeedbackRecord> feedbackRecords(String userId, boolean admin) {
         var noticeColumns = persistence.feedbackNoticeColumns();
-        var viewer = admin ? null : ledgerPerson(userId);
-        var visibleDepartments = viewer == null ? List.<String>of() : viewer.depts();
-        // 列表和详情均按责任部门展示；先读取部门任务，再在服务端严格过滤可见范围。
-        return persistence.feedbackRecords(userId, true, !noticeColumns.isEmpty(), noticeColumns.contains("notified_at"))
-                .stream().filter(row -> row.findingId() != null)
-                .filter(row -> admin || Objects.equals(userId, row.recipient())
-                        || readList(row.findingDepartments()).stream().anyMatch(visibleDepartments::contains))
-                .map(row -> {
-                    var person = row.recipient() == null ? null : ledgerPerson(row.recipient());
-                    var departments = readList(row.findingDepartments());
-                    if (departments.isEmpty() && person != null) {
-                        departments = person.depts();
-                    }
-                    String title = row.title() == null ? "" : row.title().strip();
-                    // 分派入口属于版本事项，不依赖标题是否仍存在于全局配置中。
-                    String configurableTitle = admin && row.findingId() != null
-                            ? (title.isBlank() ? "未命名页面" : title) : null;
-                    return new FeedbackRecord(row, person == null ? null : person.name(), departments, configurableTitle);
-                }).toList();
+        var visibleDepartments = recordDepartments(userId, admin);
+        if (!admin && visibleDepartments.isEmpty()) return List.of();
+        var records = new ArrayList<FeedbackRecord>();
+        for (var row : persistence.feedbackRecords(userId, true, !noticeColumns.isEmpty(), noticeColumns.contains("notified_at"))) {
+            if (row.findingId() == null) continue;
+            var departments = readList(row.findingDepartments());
+            if (!admin) {
+                departments = departments.stream().filter(visibleDepartments::contains).toList();
+                if (departments.isEmpty()) continue;
+                row = new PptAnomalyMapper.FeedbackRecordRow(row.batchId(), row.batchName(), row.versionId(),
+                        row.versionNo(), row.fileName(), row.recipient(), row.findingId(), row.pageNo(), row.title(),
+                        row.section(), write(departments), row.status(), row.noticeKind(), row.notifiedAt(), row.feedbackAt());
+            }
+            var person = row.recipient() == null ? null : ledgerPerson(row.recipient());
+            if (departments.isEmpty() && person != null) departments = person.depts();
+            String title = row.title() == null ? "" : row.title().strip();
+            String configurableTitle = admin ? (title.isBlank() ? "未命名页面" : title) : null;
+            records.add(new FeedbackRecord(row, person == null ? null : person.name(), departments, configurableTitle));
+        }
+        return records;
     }
 
     /** 解析通知所指事项在最新已识别版本中的对应位置。 */
@@ -1472,6 +1483,26 @@ public class PptAnomalyService {
     }
 
     /** 原件路径已由 originalFile 校验存储范围。 */
+    Map<Integer, String> originalSlideTitles(long versionId, List<Finding> findings) {
+        if (findings.isEmpty()) return Map.of();
+        Map<Integer, String> titles = new LinkedHashMap<>();
+        try (var input = originalFile(versionId).resource().getInputStream();
+             var show = new XMLSlideShow(input)) {
+            var slides = show.getSlides();
+            for (var finding : findings) {
+                int page = finding.pageNo();
+                if (page > 0 && page <= slides.size()) {
+                    titles.computeIfAbsent(page, number ->
+                            inferSlideTitle(slides.get(number - 1), show.getPageSize().getHeight(), Set.of()));
+                }
+            }
+        } catch (IOException | ResponseStatusException | org.apache.poi.ooxml.POIXMLException e) {
+            org.slf4j.LoggerFactory.getLogger(PptAnomalyService.class)
+                    .debug("Could not read original slide titles for version {}", versionId, e);
+        }
+        return titles;
+    }
+
     private Path originalPptPath(long versionId) {
         try {
             return originalFile(versionId).resource().getFile().toPath();
@@ -1677,9 +1708,12 @@ public class PptAnomalyService {
     /** 校验经办权限和反馈内容，保存说明、图片关联及事项处理状态。 */
     @Transactional(GaussConfig.TX_NAME)
     public void saveFeedback(long findingId, FeedbackRequest request, List<MultipartFile> attachments, String userId) {
-        var ownerRow = persistence.owner(findingId);
-        if (ownerRow == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "异常不存在");
-        if (!canEditFeedback(readList(persistence.findingDepartments(findingId)), userId)) {
+        Long versionId = persistence.findingVersionId(findingId);
+        String versionStatus = versionId == null ? null : persistence.lockVersion(versionId);
+        var finding = versionStatus == null ? null : persistence.findingAssignment(versionId, findingId);
+        if (finding == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "异常不存在");
+        var departments = readList(finding.departments());
+        if (!canEditFeedback(departments, userId)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "仅产品部或反馈部门成员可以编辑反馈");
         }
         var state = persistence.feedbackState(findingId);
@@ -1706,6 +1740,9 @@ public class PptAnomalyService {
         // 保存反馈说明与附件索引后更新事项状态，两次数据库写入属于同一事务。
         persistence.feedback(findingId, judgement, "[]", explanation, userId);
         persistence.findingStatus(findingId, confirmed ? "CONFIRMED" : "ADJUSTED");
+        if ("ANALYZED".equals(versionStatus) && !PptFeedbackMailTable.isAnalyzed(finding.status())) {
+            notifier.enqueueCompletedDepartments(versionId, departments);
+        }
     }
 
     /** 反馈说明与上传图片文件名索引的存储载荷。 */

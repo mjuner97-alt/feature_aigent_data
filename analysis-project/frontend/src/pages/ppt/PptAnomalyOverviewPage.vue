@@ -4,6 +4,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import { Message } from '@element-plus/icons-vue';
 import { deletePptFinding, downloadFeedbackDirectory, downloadVersion, feedbackDirectory, overviewContext, resolveFeedbackLink,
   searchPptPeople, sendPptFeedbackNotification, slide, slidePreviewUrl, saveFeedback, pptAnomalyPermissions, PptApiError,
   getPptReportRecipients, type PptReportRecipients } from '../../api/pptAnomaly';
@@ -32,12 +33,11 @@ const linkedDepartment = computed(() => linkParams.value.get('department') || un
 const historical = computed(() => linkParams.value.get('history') === '1');
 const departmentView = computed(() => !!linkedDepartment.value || (!recordOwner.value && linkParams.value.get('scope') === 'mine'));
 const readOnly = computed(() => historical.value || (!!recordOwner.value && recordMode.value !== 'edit'));
-const linkedScope = computed(() => linkParams.value.get('scope') === 'all' ? 'all' : 'pending');
-const scope = ref<'pending' | 'all'>(linkedScope.value);
+const scope = ref<'myAssigned' | 'all'>('myAssigned');
 const versions = ref<PptVersionWork[]>([]);
 const directory = ref<Awaited<ReturnType<typeof feedbackDirectory>>>();
 const assigned = computed(() => directory.value?.assigned ?? []);
-const myPending = computed(() => directory.value?.myPending ?? []);
+const myAssigned = computed(() => directory.value?.myAssigned ?? []);
 const departmentFindings = computed(() => directory.value?.departmentFindings ?? []);
 const records = computed(() => [...new Map(
   [...departmentFindings.value, ...assigned.value].map(item => [item.id, item]),
@@ -114,7 +114,7 @@ async function exportFeedback() {
   if (exporting.value || !findings.value.length) return;
   exporting.value = true;
   try {
-    await downloadFeedbackDirectory(versionId.value, departmentView.value ? 'all' : scope.value, recordOwner.value, linkedDepartment.value);
+    await downloadFeedbackDirectory(versionId.value, scope.value, recordOwner.value, linkedDepartment.value);
   } catch (failure) {
     ElMessage.error(failure instanceof Error ? failure.message : '导出反馈失败');
   } finally {
@@ -149,9 +149,12 @@ const feedbackStatuses: Record<string, string> = {
   ADJUSTED: '已调整',
   UNASSIGNED: '待分派',
 };
-const findings = computed(() => departmentView.value ? departmentFindings.value.filter(item => linkedDepartment.value ||
-  item.departments.some(name => directory.value?.departments.includes(name))) :
-  scope.value === 'all' ? departmentFindings.value : myPending.value);
+const findings = computed(() => {
+  if (scope.value === 'myAssigned') return myAssigned.value;
+  if (!departmentView.value || linkedDepartment.value) return departmentFindings.value;
+  return departmentFindings.value.filter(item =>
+    item.departments.some(name => directory.value?.departments.includes(name)));
+});
 const notifyDepartments = computed(() => {
   if (linkedDepartment.value) return [linkedDepartment.value];
   const own = (directory.value?.departments ?? []).map(name => name.trim()).filter(Boolean);
@@ -367,9 +370,7 @@ async function reload() {
     }
     const result = await feedbackDirectory(targetVersion, recordOwner.value, linkedDepartment.value);
     if (id === loadId) {
-      const openingLinkedFinding = !directory.value && resolvedFindingId.value !== undefined;
-      if (!departmentView.value && (!result.myPending?.length || (openingLinkedFinding &&
-          !result.myPending.some(item => item.id === resolvedFindingId.value)))) {
+      if (!result.myAssigned.length) {
         scope.value = 'all';
       }
       directory.value = result;
@@ -381,8 +382,8 @@ async function reload() {
   }
 }
 // 切换版本或反馈记录时清空旧目录与草稿，使用请求序号屏蔽过期响应。
-watch([requestedVersionId, linkedFindingId, linkedScope, linkedDepartment, historical, exactVersion, recordOwner, recordMode], () => {
-  scope.value = linkedScope.value;
+watch([requestedVersionId, linkedFindingId, linkedDepartment, historical, exactVersion, recordOwner, recordMode], () => {
+  scope.value = 'myAssigned';
   directory.value = undefined;
   drafts.value.clear();
   conflicts.value.clear();
@@ -447,10 +448,10 @@ onMounted(async () => {
     <el-button v-if="departmentView && !historical && !loading && !error && linkedVersionId !== versionId"
       link type="primary" @click="openNotificationHistory">查看原版本历史反馈</el-button>
     <main v-if="!error && (!departmentView || findings.length)">
-      <PptSidebarIndex :pages="findings" :selected-id="selected?.id" @select="select">
-        <template v-if="!departmentView" #filters>
+      <PptSidebarIndex :pages="findings" :original-titles="directory?.originalTitles" :selected-id="selected?.id" @select="select">
+        <template #filters>
           <el-radio-group v-model="scope" size="small" aria-label="异常筛选">
-            <el-radio-button v-if="myPending.length" value="pending">待我关注（共{{ myPending.length }}项）</el-radio-button>
+            <el-radio-button v-if="myAssigned.length" value="myAssigned">待我分析（共{{ myAssigned.length }}项）</el-radio-button>
             <el-radio-button value="all">全部</el-radio-button>
           </el-radio-group>
         </template>
@@ -514,20 +515,57 @@ onMounted(async () => {
     </el-dialog>
     <MailRecipientDialog v-model:open="notifyOpen" mode="send" v-bind="notifyDefaults"
       :description="notifyDepartment
-        ? `默认显示${notifyDepartment}已保存的名单。本次调整仅用于此次发送，发送成功后，定时任务跳过本版本该部门已登记的事项。`
+        ? `默认显示${notifyDepartment}已保存的名单。本次调整仅用于此次发送，通知附带当前材料的反馈页链接。`
         : '本次选择仅用于此次发送，通知附带当前材料的反馈页链接。'"
       :search-users="searchNotificationPeople" :submitting="notifying" :error="notifyError"
       @confirm="sendNotification">
-      <div v-if="notifyDepartment && directory">
-        <strong>通知预览 · 【材料分析】《{{ directory.materialMailLabel }}》-{{ notifyDepartment }}</strong>
-        <p>各位好：</p>
-        <p>《{{ directory.materialMailLabel }}》材料分析如下，本期材料涉及到部门关注事项共{事项数}项，请点击链接参阅。</p>
-        <p>附关注事项分析情况（发送时按该部门当前反馈状态统计）。</p>
-      </div>
+      <section v-if="notifyDepartment && directory" class="report-mail-preview" aria-label="通知预览">
+        <header class="report-mail-preview__header">
+          <el-icon aria-hidden="true"><Message /></el-icon>
+          <h3>通知预览</h3>
+        </header>
+        <div class="report-mail-preview__subject">
+          <span>标题</span>
+          <strong>【材料分析】《{{ directory.materialMailLabel }}》-{{ notifyDepartment }}</strong>
+        </div>
+        <div class="report-mail-preview__body">
+          <p>各位好：</p>
+          <p>《{{ directory.materialMailLabel }}》材料分析如下，本期材料涉及到部门关注事项共{事项数}项，请点击链接参阅。</p>
+        </div>
+      </section>
     </MailRecipientDialog>
   </div>
 </template>
 <style scoped>
+.report-mail-preview {
+  margin-block: 16px 2px;
+  border: 1px solid #dfe6f0;
+  border-radius: 12px;
+  background: #fff;
+  overflow: hidden;
+  color: #24344d;
+}
+.report-mail-preview__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 16px;
+  background: #eef4fd;
+  color: #244a82;
+}
+.report-mail-preview__header h3 { margin: 0; font-size: 14px; font-weight: 650; }
+.report-mail-preview__subject {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-inline: 16px;
+  padding-block: 12px;
+  border-bottom: 1px solid #e8edf5;
+}
+.report-mail-preview__subject > span { flex: none; color: #53657d; font-size: 12px; }
+.report-mail-preview__subject strong { min-width: 0; color: #172c4a; overflow-wrap: anywhere; }
+.report-mail-preview__body { display: grid; gap: 5px; padding: 12px 16px; overflow-wrap: anywhere; }
+.report-mail-preview__body p { margin: 0; color: #263951; line-height: 1.65; }
 .ppt-page {
   box-sizing: border-box;
   max-width: 1440px;

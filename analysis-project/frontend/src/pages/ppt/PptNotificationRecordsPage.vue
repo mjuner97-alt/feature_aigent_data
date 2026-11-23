@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { getPptSentMailPage, listBatchSummaries, listVersions, type PptSentMailPage } from '../../api/pptAnomaly';
-import type { PptBatchSummary, PptVersion } from '../../types/pptAnomaly';
+import { getPptSentMailPage, type PptSentMailPage } from '../../api/pptAnomaly';
 import PptListFilterBar from '../../components/ppt/PptListFilterBar.vue';
 
 const route = useRoute();
@@ -14,16 +13,15 @@ function queryId(value: unknown) {
 }
 const batchId = computed(() => queryId(route.query.batchId));
 const versionId = computed(() => batchId.value === undefined ? undefined : queryId(route.query.versionId));
-const batches = ref<PptBatchSummary[]>([]);
-const versions = ref<PptVersion[]>([]);
-const versionsLoading = ref(false);
-const versionError = ref('');
 const page = ref(1);
 const pageSize = 20;
 const result = ref<PptSentMailPage>();
 const loading = ref(false);
 const error = ref('');
-const batchError = ref('');
+const filters = computed(() => result.value?.filters ?? []);
+const batches = computed(() => [...new Map(filters.value.map(row => [row.batchId, row.batchName]))]
+  .map(([id, name]) => ({ id, name })));
+const versions = computed(() => filters.value.filter(row => row.batchId === batchId.value));
 const recipientGroups = { to: '主送', cc: '抄送' } as const;
 const previewLimit = 2;
 const fullListOpen = ref(false);
@@ -35,33 +33,6 @@ const filteredPeople = computed(() => {
   return fullList.value.filter(({ id, name }) => id.toLowerCase().includes(term) || name.toLowerCase().includes(term));
 });
 let request = 0;
-let versionRequest = 0;
-
-async function loadBatches() {
-  batchError.value = '';
-  try {
-    batches.value = await listBatchSummaries();
-  } catch {
-    batchError.value = '批次筛选加载失败';
-  }
-}
-
-async function loadVersions() {
-  const current = ++versionRequest;
-  const selected = batchId.value;
-  versions.value = [];
-  versionError.value = '';
-  versionsLoading.value = selected !== undefined;
-  if (selected === undefined) return;
-  try {
-    const data = await listVersions(selected);
-    if (current === versionRequest) versions.value = data;
-  } catch {
-    if (current === versionRequest) versionError.value = '版本筛选加载失败';
-  } finally {
-    if (current === versionRequest) versionsLoading.value = false;
-  }
-}
 
 async function load() {
   const current = ++request;
@@ -102,9 +73,7 @@ function showRecipients(group: keyof typeof recipientGroups, ids: string[]) {
 }
 
 watch([batchId, versionId], () => { page.value = 1; }, { flush: 'sync' });
-watch(batchId, loadVersions, { immediate: true });
 watch([batchId, versionId, page], load, { immediate: true });
-onMounted(loadBatches);
 </script>
 
 <template>
@@ -117,19 +86,13 @@ onMounted(loadBatches);
       </el-select>
       <el-select :model-value="versionId" class="ppt-filter-select version-filter" filterable clearable
         aria-label="筛选版本" :placeholder="batchId === undefined ? '请先选择批次' : '全部版本'"
-        :loading="versionsLoading" :disabled="batchId === undefined || versionsLoading || !!versionError"
+        :disabled="batchId === undefined"
         @change="filterVersion">
-        <el-option v-for="version in versions" :key="version.id" :label="`v${version.versionNo}`" :value="version.id" />
+        <el-option v-for="version in versions" :key="version.versionId" :label="`v${version.versionNo}`" :value="version.versionId" />
       </el-select>
       <el-button :loading="loading" @click="load">刷新</el-button>
     </PptListFilterBar>
 
-    <el-alert v-if="batchError" :title="batchError" type="warning" :closable="false">
-      <el-button link type="primary" @click="loadBatches">重试</el-button>
-    </el-alert>
-    <el-alert v-if="versionError" :title="versionError" type="warning" :closable="false">
-      <el-button link type="primary" @click="loadVersions">重试</el-button>
-    </el-alert>
     <el-alert v-if="error" :title="error" type="error" :closable="false">
       <el-button link type="primary" @click="load">重试</el-button>
     </el-alert>

@@ -12,7 +12,7 @@ final class PptFeedbackMailTable {
     private PptFeedbackMailTable() {}
 
     static String render(List<PptAnomalyMapper.FindingRow> findings,
-                         List<PptAnomalyMapper.ResultHandler> handlers, Map<String, String> names) {
+                         List<PptAnomalyMapper.ResultHandler> handlers, Map<String, String> names, boolean showPending) {
         var items = new LinkedHashMap<Long, PptAnomalyMapper.FindingRow>();
         findings.forEach(item -> items.putIfAbsent(item.id(), item));
         var rows = new TreeMap<String, Map<Long, PptAnomalyMapper.FindingRow>>();
@@ -25,18 +25,26 @@ final class PptFeedbackMailTable {
         }
         var unassigned = items.values().stream().filter(item -> !assigned.contains(item.id())).toList();
         var html = new StringBuilder("<table cellpadding=\"10\" cellspacing=\"0\" border=\"1\" style=\"border-collapse:collapse;width:100%;max-width:800px;border:1px solid #cbd5e1;font-family:Arial,Microsoft YaHei,sans-serif;font-size:14px;text-align:center\">")
-                .append("<thead><tr style=\"background:#edf2f7\"><th scope=\"col\">人员</th><th scope=\"col\">共涉及分析数</th><th scope=\"col\">已分析反馈数</th><th scope=\"col\">待分析数</th></tr></thead><tbody>");
+                .append("<thead><tr style=\"background:#edf2f7\"><th scope=\"col\">人员</th><th scope=\"col\">共涉及分析数</th><th scope=\"col\">已分析反馈数</th>");
+        if (showPending) html.append("<th scope=\"col\">待分析数</th>");
+        html.append("</tr></thead><tbody>");
         rows.forEach((user, tasks) -> html.append(row(names.containsKey(user) ? names.get(user) + "（" + user + "）" : user,
-                List.copyOf(tasks.values()), false)));
-        if (!unassigned.isEmpty()) html.append(row("待分派", unassigned, false));
-        html.append("</tbody><tfoot>").append(row("合计", List.copyOf(items.values()), true)).append("</tfoot></table>");
+                List.copyOf(tasks.values()), false, false, showPending)));
+        if (!unassigned.isEmpty()) html.append(row("待分派", unassigned, false, true, showPending));
+        html.append("</tbody><tfoot>").append(row("合计", List.copyOf(items.values()), true, false, showPending)).append("</tfoot></table>");
         return html.append("<p style=\"font-size:12px;color:#64748b\">按当前事项反馈状态统计。共同经办的事项分别计入各经办人，合计按事项去重；待分派事项单独列示。</p>").toString();
     }
 
-    private static String row(String name, List<PptAnomalyMapper.FindingRow> items, boolean total) {
-        long done = items.stream().filter(item -> "CONFIRMED".equals(item.status()) || "ADJUSTED".equals(item.status())).count();
-        return "<tr" + (total ? " style=\"font-weight:bold;background:#f8fafc\"" : "") + "><td>"
-                + HtmlUtils.htmlEscape(name) + "</td><td>" + items.size() + "</td><td>" + done
-                + "</td><td>" + (items.size() - done) + "</td></tr>";
+    static boolean isAnalyzed(String status) {
+        return "CONFIRMED".equals(status) || "ADJUSTED".equals(status);
+    }
+
+    private static String row(String name, List<PptAnomalyMapper.FindingRow> items, boolean total, boolean unassigned, boolean showPending) {
+        long done = items.stream().filter(item -> isAnalyzed(item.status())).count();
+        String cell = unassigned ? "<td style=\"color:#b91c1c\">" : "<td>";
+        return "<tr" + (total ? " style=\"font-weight:bold;background:#f8fafc\"" : "") + ">"
+                + cell + HtmlUtils.htmlEscape(name) + "</td>" + cell + items.size() + "</td>"
+                + cell + done + "</td>"
+                + (showPending ? cell + "<strong>" + (items.size() - done) + "</strong></td>" : "") + "</tr>";
     }
 }

@@ -1,6 +1,7 @@
 package com.agentscopea2a.v2.pptanomaly;
 
 import com.agentscopea2a.config.datasource.GaussConfig;
+import com.agentscopea2a.constant.AgentToolConstant;
 import com.agentscopea2a.v2.auth.mapper.DeveloperPlPersonInfoMapper;
 import com.agentscopea2a.mapper.gauss.PptAnomalyMapper;
 import com.agentscopea2a.v2.skillManager.notification.NotificationPayload;
@@ -106,6 +107,76 @@ public class PptFeedbackNotifier {
     @Scheduled(fixedDelay = 60000, initialDelay = 60000)
     public void retryAssignmentNotices() {
         queueAssignmentNotices();
+        dispatcher.execute(this::dispatchCompletionReports);
+    }
+
+    /** 由持有版本锁的反馈事务登记已完成部门，提交后再发送。 */
+    void enqueueCompletedDepartments(long versionId, List<String> departments) {
+        if (departments.isEmpty()) return;
+        var findings = persistence.findings(versionId);
+        boolean queued = false;
+        for (String department : new java.util.LinkedHashSet<>(departments)) {
+            var items = findings.stream().filter(item -> belongsToDepartment(item.departments(), department)).toList();
+            if (!items.isEmpty() && items.stream().allMatch(item -> PptFeedbackMailTable.isAnalyzed(item.status()))) {
+                queued |= persistence.enqueueCompletionReport(versionId, department) > 0;
+            }
+        }
+        if (queued) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    dispatcher.execute(PptFeedbackNotifier.this::dispatchCompletionReports);
+                }
+            });
+        }
+    }
+
+    void dispatchCompletionReports() {
+        List<PptAnomalyMapper.CompletionReport> reports;
+        try {
+            reports = persistence.pendingCompletionReports();
+        } catch (RuntimeException e) {
+            log.warn("例会材料完成报告通知扫描失败", e);
+            return;
+        }
+        for (var report : reports) {
+            try {
+                transaction.executeWithoutResult(status -> sendCompletionReport(report));
+            } catch (RuntimeException e) {
+                log.warn("例会材料完成报告通知发送失败，版本 {}，部门 {}", report.versionId(), report.department(), e);
+            }
+        }
+    }
+
+    private void sendCompletionReport(PptAnomalyMapper.CompletionReport report) {
+        long version = report.versionId();
+        String department = report.department();
+        if (!"ANALYZED".equals(persistence.lockVersion(version)) || !persistence.completionReportPending(report.id())) return;
+        var saved = persistence.reportRecipients(department);
+        var to = saved == null ? List.<String>of() : configuredRecipients(saved.toJson());
+        var analysis = departmentAnalysis(version, department, true);
+        if (analysis.findingCount() == 0 || analysis.pendingCount() > 0 || to.isEmpty()) {
+            persistence.cancelCompletionReport(report.id());
+            return;
+        }
+        var cc = configuredRecipients(saved.ccJson()).stream().filter(id -> !to.contains(id)).toList();
+        String label = persistence.noticeMaterial(version).mailLabel();
+        String url = link(version, department, baseUrl);
+        String subject = reportSubject(label, department, analysis.pendingCount());
+        String body = reportBody(label, department, url, analysis);
+        var payload = new NotificationPayload("HTML", body, null, null, url, null, subject,
+                null, null, version, "SUCCESS", LocalDateTime.now(CHINA), to, "METRIC", cc);
+        sender.sendPrepared(payload, sender.prepareRendered(payload), LOCAL_HTML_DIRECTORY);
+        persistence.markCompletionReportSent(report.id(), subject, body, recipientJson(to), recipientJson(cc));
+    }
+
+    private List<String> configuredRecipients(String stored) {
+        try {
+            return PptAnomalyController.recipientIds(json.readValue(stored,
+                    new com.fasterxml.jackson.core.type.TypeReference<List<String>>() {}));
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("无法读取报告通知名单", e);
+        }
     }
 
     void dispatchAssignmentNotices() {
@@ -138,18 +209,19 @@ public class PptFeedbackNotifier {
             String previousLabel = previousAssignmentLabel(notice.previousDepartment(), previousHandlers);
             String body = "<p>您好：</p><p>您有新增分析的关注事项（原经办人：" + HtmlUtils.htmlEscape(previousLabel)
                     + "），共1项，请于1个小时内<a href=\"" + HtmlUtils.htmlEscape(url)
-                    + "\">点击链接</a>反馈分析结果。</p>";
+                    + "\">点击链接</a>反馈分析结果。</p>" + feedbackFooter(notice.department());
             var payload = new NotificationPayload("HTML", body, null, null, url, null, subject,
                     null, null, notice.versionId(), "SUCCESS", LocalDateTime.now(CHINA),
                     to, "METRIC", cc);
             try {
-                sender.sendPrepared(payload, sender.prepare(payload), LOCAL_HTML_DIRECTORY);
+                sender.sendPrepared(payload, sender.prepareRendered(payload), LOCAL_HTML_DIRECTORY);
             } catch (RuntimeException e) {
                 persistence.finishAssignmentNotice(notice.eventId(), notice.recipient(), "FAILED");
                 log.warn("例会事项分派通知发送失败，事项 {}", notice.findingId(), e);
                 return;
             }
-            persistence.markFeedbackNotified(List.of(notice.findingId()), LocalDateTime.now(CHINA));
+            var sentAt = LocalDateTime.now(CHINA);
+            persistence.markFeedbackNotified(List.of(notice.findingId()), sentAt, feedbackDeadline(sentAt, 1));
             persistence.recordFeedbackMail(notice.versionId(), notice.department(), subject, body,
                     recipientJson(to), recipientJson(cc), "SYSTEM");
             persistence.finishAssignmentNotice(notice.eventId(), notice.recipient(), "SENT");
@@ -239,15 +311,15 @@ public class PptFeedbackNotifier {
                 String subject = automaticSubject(material);
                 String department = departmentOf(first);
                 String url = link(first.versionId(), department, notificationBaseUrl);
-                var analysis = departmentAnalysis(first.versionId(), department);
+                var analysis = departmentAnalysis(first.versionId(), department, false);
                 var sentAt = LocalDateTime.now(CHINA);
-                String deadline = sentAt.plusHours(2).format(firstVersion
+                String deadline = feedbackDeadline(sentAt, 2).format(firstVersion
                         ? FEEDBACK_DEADLINE_FORMAT : DateTimeFormatter.ofPattern("HH:mm"));
                 String body = "<p>本期材料涉及到" + HtmlUtils.htmlEscape(department)
                         + "关注事项共" + analysis.findingCount() + "项，请于" + deadline
                         + "内<a href=\"" + HtmlUtils.htmlEscape(url) + "\">点击链接</a>反馈分析结果。"
-                        + (firstVersion ? "" : "如已完成分析，请确认本次材料变更是否需要调整反馈内容")
-                        + "</p>" + analysis.attachedTable();
+                        + (firstVersion ? "" : "如已完成分析，请确认本次材料变更是否需要调整反馈内容。")
+                        + "</p>" + analysis.attachedTable() + feedbackFooter(department);
                 List<PptAnomalyMapper.FeedbackNotice> firstTime = new ArrayList<>();
                 for (var notice : current) {
                     if (persistence.recordSimulatedNotice(notice, subject, body, null) > 0) {
@@ -287,10 +359,10 @@ public class PptFeedbackNotifier {
         List<String> cc = supervisors(departmentOf(first), recipients);
         var payload = new NotificationPayload("HTML", body, null, null, url, null, subject,
                 null, null, first.versionId(), "SUCCESS", sentAt, recipients, "METRIC", cc);
-        var request = sender.prepare(payload);
+        var request = sender.prepareRendered(payload);
         sender.sendPrepared(payload, request, LOCAL_HTML_DIRECTORY);
         persistence.markFeedbackNotified(group.stream().map(PptAnomalyMapper.FeedbackNotice::findingId).distinct().toList(),
-                LocalDateTime.now(CHINA));
+                LocalDateTime.now(CHINA), feedbackDeadline(sentAt, 2));
         persistence.recordFeedbackMail(first.versionId(), departmentOf(first), subject, body,
                 recipientJson(recipients), recipientJson(cc), "SYSTEM");
     }
@@ -306,6 +378,26 @@ public class PptFeedbackNotifier {
             log.warn("无法读取反馈督办部门，邮件仅发送给经办人", e);
             return List.of();
         }
+    }
+
+    private String feedbackFooter(String department) {
+        String address = HtmlUtils.htmlEscape(AgentToolConstant.PPT_FEEDBACK_DETAIL_URL);
+        String details = "<p>明细地址：<a href=\"" + address + "\">" + address + "</a></p>";
+        var ids = supervisors(department, List.of());
+        if (ids.isEmpty()) return details;
+        Map<String, String> names = new LinkedHashMap<>();
+        for (var person : people.selectByUserIds(ids)) {
+            if (person.getName() != null && !person.getName().isBlank()) {
+                names.putIfAbsent(person.getUserId(), person.getName().strip());
+            }
+        }
+        String contacts = ids.stream().map(names::get).filter(java.util.Objects::nonNull)
+                .collect(Collectors.joining("、"));
+        return contacts.isEmpty() ? details : details + "<p>联系人：" + HtmlUtils.htmlEscape(contacts) + "</p>";
+    }
+
+    private static LocalDateTime feedbackDeadline(LocalDateTime sentAt, int hours) {
+        return sentAt.plusHours(hours).withSecond(0).withNano(0);
     }
 
     private static int weekMinute(LocalDateTime time) {
@@ -345,7 +437,9 @@ public class PptFeedbackNotifier {
             var due = persistence.dueFeedbackReminders(scope, now, weekMinute(now));
             if (due.isEmpty()) return;
             var material = persistence.noticeMaterial(scope.versionId());
-            sendReminder(scope.versionId(), material, scope.department(), due);
+            var byDeadline = due.stream().collect(Collectors.groupingBy(
+                    PptAnomalyMapper.FeedbackReminder::deadline, LinkedHashMap::new, Collectors.toList()));
+            byDeadline.values().forEach(group -> sendReminder(scope.versionId(), material, scope.department(), group));
         });
     }
 
@@ -357,13 +451,14 @@ public class PptFeedbackNotifier {
         var to = group.stream().map(PptAnomalyMapper.FeedbackReminder::recipient).distinct().toList();
         var cc = supervisors(department, to);
         String url = link(version, department, baseUrl);
-        String subject = "【反馈逾期提醒】" + automaticSubject(material);
-        String body = reminderBody(version, material.fileName(), department, ids.size(), url);
+        String subject = "【催复，存在" + ids.size() + "项待分析反馈】" + automaticSubject(material);
+        var now = LocalDateTime.now(CHINA);
+        String body = reminderBody(version, department, ids.size(), url, group.get(0).deadline(), now);
         var payload = new NotificationPayload("HTML", body, null, null, url, null, subject,
                 null, null, version, "SUCCESS", LocalDateTime.now(CHINA), to, "METRIC", cc);
         LocalDateTime sentAt = null;
         try {
-            sender.sendPrepared(payload, sender.prepare(payload), LOCAL_HTML_DIRECTORY);
+            sender.sendPrepared(payload, sender.prepareRendered(payload), LOCAL_HTML_DIRECTORY);
             sentAt = LocalDateTime.now(CHINA);
         } catch (RuntimeException e) {
             log.warn("例会反馈逾期提醒发送失败，版本 {}，部门 {}", version, department, e);
@@ -375,12 +470,9 @@ public class PptFeedbackNotifier {
 
     void sendManual(long versionId, String materialLabel, String department, List<String> to, List<String> cc, String operator) {
         String url = link(versionId, department, requestBaseUrl());
-        String subject = "【材料分析】《" + materialLabel + "》-" + department;
-        var analysis = departmentAnalysis(versionId, department);
-        String body = "<p>各位好：</p><p>《" + HtmlUtils.htmlEscape(materialLabel)
-                + "》材料分析如下，本期材料涉及到部门关注事项共" + analysis.findingCount()
-                + "项，请<a href=\"" + HtmlUtils.htmlEscape(url) + "\">点击链接</a>参阅。</p>"
-                + analysis.attachedTable();
+        var analysis = departmentAnalysis(versionId, department, true);
+        String subject = reportSubject(materialLabel, department, analysis.pendingCount());
+        String body = reportBody(materialLabel, department, url, analysis);
         var payload = new NotificationPayload("HTML", body, null, null, url, null, subject,
                 null, null, versionId, "SUCCESS", LocalDateTime.now(), to, "MANUAL", cc);
         transaction.executeWithoutResult(status -> {
@@ -388,20 +480,36 @@ public class PptFeedbackNotifier {
                 throw new IllegalStateException("材料未完成识别");
             }
             // 结果通知独立记录，不能充当待反馈通知的送达凭据。
-            sender.sendPrepared(payload, sender.prepare(payload), LOCAL_HTML_DIRECTORY);
+            sender.sendPrepared(payload, sender.prepareRendered(payload), LOCAL_HTML_DIRECTORY);
             persistence.recordFeedbackMail(versionId, department, subject, body,
                     recipientJson(to), recipientJson(cc), operator);
         });
     }
 
-    String reminderBody(long version, String fileName, String department, int overdue, String url) {
-        return "<p>各位：</p><p>材料「" + HtmlUtils.htmlEscape(fileName) + "」中，"
-                + HtmlUtils.htmlEscape(department) + "有 " + overdue + " 项待分析事项已逾期，请尽快分析反馈。</p>"
-                + departmentAnalysis(version, department).table()
-                + "<p><a href=\"" + HtmlUtils.htmlEscape(url) + "\">点击查看并分析反馈</a></p>";
+    private String reportSubject(String materialLabel, String department, long pendingCount) {
+        String prefix = pendingCount == 0 ? "【材料分析】" : "【材料分析，存在" + pendingCount + "项待分析反馈】";
+        return prefix + "《" + materialLabel + "》-" + department;
     }
 
-    private DepartmentAnalysis departmentAnalysis(long version, String department) {
+    private String reportBody(String materialLabel, String department, String url, DepartmentAnalysis analysis) {
+        return "<p>各位好：</p><p>《" + HtmlUtils.htmlEscape(materialLabel)
+                + "》材料分析如下，本期材料涉及到部门关注事项共" + analysis.findingCount()
+                + "项，请<a href=\"" + HtmlUtils.htmlEscape(url) + "\">点击链接</a>参阅。</p>"
+                + analysis.attachedTable() + feedbackFooter(department);
+    }
+
+    String reminderBody(long version, String department, int pending, String url,
+                        LocalDateTime deadline, LocalDateTime now) {
+        var analysis = departmentAnalysis(version, department, false);
+        return "<p>本期材料涉及到" + HtmlUtils.htmlEscape(department) + "共" + analysis.findingCount()
+                + "项，要求于" + deadline.format(FEEDBACK_DEADLINE_FORMAT)
+                + "内<a href=\"" + HtmlUtils.htmlEscape(url) + "\">点击链接</a>反馈分析结果，截至目前"
+                + (now.isAfter(deadline) ? "（已逾期）" : "")
+                + "，仍存在" + pending + "项待分析反馈，请尽快处理。</p>"
+                + analysis.table() + feedbackFooter(department);
+    }
+
+    private DepartmentAnalysis departmentAnalysis(long version, String department, boolean hideCompletedPendingColumn) {
         var findings = persistence.findings(version).stream()
                 .filter(item -> belongsToDepartment(item.departments(), department)).toList();
         var ids = findings.stream().map(PptAnomalyMapper.FindingRow::id).collect(Collectors.toSet());
@@ -414,10 +522,13 @@ public class PptFeedbackNotifier {
                 if (person.getName() != null && !person.getName().isBlank()) names.putIfAbsent(person.getUserId(), person.getName());
             }
         }
-        return new DepartmentAnalysis(ids.size(), PptFeedbackMailTable.render(findings, handlers, names));
+        long pendingCount = findings.stream().filter(item -> !PptFeedbackMailTable.isAnalyzed(item.status()))
+                .map(PptAnomalyMapper.FindingRow::id).distinct().count();
+        return new DepartmentAnalysis(ids.size(), pendingCount,
+                PptFeedbackMailTable.render(findings, handlers, names, !hideCompletedPendingColumn || pendingCount > 0));
     }
 
-    private record DepartmentAnalysis(int findingCount, String table) {
+    private record DepartmentAnalysis(int findingCount, long pendingCount, String table) {
         String attachedTable() {
             return "<p>附关注事项分析情况：</p>" + table;
         }
