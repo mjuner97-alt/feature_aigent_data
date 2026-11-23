@@ -352,6 +352,15 @@ public class DimensionStateManager {
             YEAR_PREFIX + "(\\d{1,2})\\s*[-~～—至到]\\s*(\\d{1,2})\\s*(?:[一二两三四五六七八九十\\d]+个)?季度");
     private static final Pattern RANGE_VERSION = Pattern.compile(
             YEAR_PREFIX + "(\\d{1,2})\\s*[-~～—至到]\\s*(\\d{1,2})\\s*月份?(?!延后)(?:版本?)?");
+    // 两侧带月后缀的月份闭区间（"6月到12月"/"2026年6月到2026年12月"/"2026年11月到2027年2月"）
+    // → 跨年逐月版本展开。RANGE_VERSION 只吃 "6到12月" 形态（月后缀仅末段），本形态两端
+    // 会被 EXPLICIT_VERSION 各吃成单值端点、中段丢失，须在单数正则之前展开并入屏蔽集。
+    // 第二端 (?!\s*\d{1,2}[日号]) 防 "6月到12月26日" 型混合形态（带日归日期轨）；
+    // 第一端后必须紧跟分隔符，"6月26日到7月1日" 的 "6月" 后随数字天然不匹配。
+    // 第二端年份前缀可省（继承第一端年份，非当前年）；须跑在日期屏蔽之后。
+    private static final Pattern RANGE_VERSION_MONTH = Pattern.compile(
+            YEAR_PREFIX + "(\\d{1,2})月\\s*[-~～—至到]\\s*" + YEAR_PREFIX
+                    + "(\\d{1,2})月(?!\\s*\\d{1,2}[日号])");
     // "9月份"（无"版本"后缀）也算版本计划；(?!版本|延后) 防止与 EXPLICIT_VERSION/DELAYED 重复计数值，
     // "9月份版本" 会由 MONTH 退回匹配 "9月" 归一出同一值，Set 去重后指纹一致；
     // "10月延后" 是延后版标准值的前缀，不得按普通月份版本归一
@@ -1083,6 +1092,14 @@ public class DimensionStateManager {
             sharedTimeSpans.add(new int[] {rangeVersionMatcher.start(), rangeVersionMatcher.end()});
         }
 
+        // 两侧带月的月份闭区间展开（人名消歧与年月区间方案 §2.2）：跑在日期屏蔽之后、
+        // 单数正则之前；span 并入共享屏蔽集，防 EXPLICIT_VERSION 从两端重复收值
+        Matcher rangeMonthMatcher = RANGE_VERSION_MONTH.matcher(maskSpanUnion(q, dateSpans));
+        while (rangeMonthMatcher.find()) {
+            addRangeMonthValues(rangeMonthMatcher, currentYear, versions);
+            sharedTimeSpans.add(new int[] {rangeMonthMatcher.start(), rangeMonthMatcher.end()});
+        }
+
         // 共享 span + 日期 span 屏蔽后再跑单数正则: 显式年份≠当前年时, 末段会被单数正则按
         // "无年份→补当前年"重复收一遍 (2025年3和4季度 → 多出 2026年4季度)
         String qTime = maskSpanUnion(q, dateSpans, sharedTimeSpans);
@@ -1350,6 +1367,41 @@ public class DimensionStateManager {
         }
         for (int i = start; i <= end; i++) {
             out.add(year + "年" + i + unit);
+        }
+    }
+
+    /** 两侧带月闭区间跨年展开（年月区间方案 §2.2）："2026年6月到2026年12月" → 7 个版本。
+     *  第二端年份缺省继承第一端（非当前年）；月份越界/倒序/同月弃收（与 addRangeValues
+     *  start>end 弃收口径一致）；展开跨度 >24 个月整段弃收防病态输入撑爆 params。 */
+    private static void addRangeMonthValues(Matcher m, String currentYear, Set<String> out) {
+        String y1 = yearOf(m, currentYear);
+        int m1 = Integer.parseInt(m.group(2));
+        String y2Raw = m.group(3);
+        String y2 = y2Raw == null || y2Raw.isBlank() ? y1
+                : (y2Raw.length() == 2 ? "20" + y2Raw : y2Raw);
+        int m2 = Integer.parseInt(m.group(4));
+        if (m1 < 1 || m1 > 12 || m2 < 1 || m2 > 12) {
+            return;
+        }
+        int start = Integer.parseInt(y1) * 12 + m1;
+        int end = Integer.parseInt(y2) * 12 + m2;
+        if (end < start) {
+            return;
+        }
+        if (end - start + 1 > 24) {
+            log.warn("DimensionStateManager: 月份区间 {}年{}月到{}年{}月 跨度超过 24 个月, 弃收",
+                    y1, m1, y2, m2);
+            return;
+        }
+        int y = Integer.parseInt(y1);
+        int mo = m1;
+        for (int i = 0; i <= end - start; i++) {
+            out.add(y + "年" + mo + "月份版本");
+            mo++;
+            if (mo > 12) {
+                mo = 1;
+                y++;
+            }
         }
     }
 

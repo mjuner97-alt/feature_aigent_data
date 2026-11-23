@@ -2270,6 +2270,242 @@ class DirectSkillExecutorTest {
         org.mockito.Mockito.verify(ledger, org.mockito.Mockito.never()).byName(Mockito.anyString());
     }
 
+    // ==================== 人名上下文消歧 + 会话钉定 (人名消歧与年月区间方案 §1.2/§1.3/§1.6) ====================
+
+    /** 组轴身份: PersonIdentity 带部门+统计组 (台账 Q2 口径, 无应用/产品线)。 */
+    private static com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity gid(
+            String perNo, String dept, String group) {
+        return new com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity(
+                "张三", perNo,
+                dept == null ? List.of() : List.of(dept),
+                group == null ? List.of() : List.of(group));
+    }
+
+    @Test
+    void ambiguousPersonResolvedByDeptAndGroupContextWithoutAsk() {
+        // §1.2 主场景 (原 E2E 案例): 问题已带 部门+组 → 4 重名过滤剩 1 → 直填不反问
+        String question = "杭州开发三部个贷消费场景组张三的达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.nameDictionary()).thenReturn(Set.of("张三"));
+        when(ledger.byName("张三")).thenReturn(List.of(
+                gid("111", "杭州产品部", "管理组"),
+                gid("222", "杭州开发三部", "个贷消费场景组"),
+                gid("333", "杭州开发五部", "贷后组"),
+                gid("444", "杭州开发二部", "GPC组")));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"perNo\":\"perNo\",\"perName\":\"perName\"}", "达标率")));
+        allowAll("alice");
+        DimensionState st = stateWithPeer(DimensionState.PeerDimensionType.TEAM,
+                List.of("个贷消费场景组"));
+        st.setDepartments(List.of("杭州开发三部"));
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(st);
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(null));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithLedger(ledger).plan(question, "alice", null, "conv-1");
+
+        assertFalse(plan.needsAsk());
+        assertEquals("222", plan.params().get("perNo"));
+        assertEquals(List.of("张三"), plan.extraction().perName());
+    }
+
+    @Test
+    void ambiguousPersonFilteredAskShowsSubsetAndReplyIndexAligned() {
+        // §1.2/§1.3: 仅部门上下文 → 过滤剩 2 → 反问只列子集;
+        // 答复「1」按子集序号取人 (修复前按全量列表序号会错位选到 111)
+        String question = "杭州开发三部张三的达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.nameDictionary()).thenReturn(Set.of("张三"));
+        when(ledger.byName("张三")).thenReturn(List.of(
+                gid("111", "杭州开发一部", "支撑组"),
+                gid("222", "杭州开发三部", "个贷消费场景组"),
+                gid("333", "杭州开发三部", "数据智能组")));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"perNo\":\"perNo\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of("杭州开发三部")));
+        when(dimensionStateManager.previewState(Mockito.eq("1"), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"perNo\",\"required\":true}]"));
+
+        DirectSkillExecutor executor = newExecutorWithLedger(ledger);
+        DirectSkillExecutor.DirectExecutionPlan ask = executor.plan(question, "alice", null, "conv-1");
+        assertTrue(ask.needsAsk());
+        assertTrue(ask.askMessage().contains("个贷消费场景组"));
+        assertTrue(ask.askMessage().contains("数据智能组"));
+        assertFalse(ask.askMessage().contains("杭州开发一部")); // 只列过滤后子集
+        assertEquals(2, pendingMap(executor).values().iterator().next()
+                .pendingCandidates().size()); // pending 存过滤清单
+
+        DirectSkillExecutor.DirectExecutionPlan done = executor.plan("1", "alice", null, "conv-1");
+        assertFalse(done.needsAsk());
+        assertEquals("222", done.params().get("perNo")); // 子集序号, 不错位到 111
+    }
+
+    @Test
+    void ambiguousPersonContextMismatchFallsBackToFullAsk() {
+        // 拍板②: 提取部门与台账全不符 → 过滤剩 0 → 回退全量反问 (不猜)
+        String question = "杭州开发九部张三的达标率";
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.nameDictionary()).thenReturn(Set.of("张三"));
+        when(ledger.byName("张三")).thenReturn(List.of(
+                gid("111", "杭州开发一部", null),
+                gid("222", "杭州开发二部", null)));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"perNo\":\"perNo\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq(question), Mockito.isNull())).thenReturn(
+                state(null, List.of("杭州开发九部")));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"perNo\",\"required\":true}]"));
+
+        DirectSkillExecutor.DirectExecutionPlan ask =
+                newExecutorWithLedger(ledger).plan(question, "alice", null, "conv-1");
+        assertTrue(ask.needsAsk());
+        assertTrue(ask.askMessage().contains("杭州开发一部")); // 全量清单
+        assertTrue(ask.askMessage().contains("杭州开发二部"));
+    }
+
+    @Test
+    void confirmedPersonPinnedInSessionSkipsRepeatedAsk() {
+        // §1.6 主场景: 反问确认后同会话再问 → 钉定沿用, 不再反问
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.nameDictionary()).thenReturn(Set.of("张三"));
+        when(ledger.byName("张三")).thenReturn(List.of(
+                gid("111", "杭州开发一部", null),
+                gid("222", "杭州开发二部", null)));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"perNo\":\"perNo\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq("张三的达标率"), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(dimensionStateManager.previewState(Mockito.eq("2"), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(dimensionStateManager.previewState(Mockito.eq("张三12月版本的达标率"), Mockito.isNull()))
+                .thenReturn(state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"perNo\",\"required\":true}]"));
+
+        DirectSkillExecutor executor = newExecutorWithLedger(ledger);
+        DirectSkillExecutor.DirectExecutionPlan ask = executor.plan("张三的达标率", "alice", null, "conv-1");
+        assertTrue(ask.needsAsk());
+        DirectSkillExecutor.DirectExecutionPlan done = executor.plan("2", "alice", null, "conv-1");
+        assertEquals("222", done.params().get("perNo"));
+
+        // 同会话再问 (无显式上下文) → 钉定直填
+        DirectSkillExecutor.DirectExecutionPlan again =
+                executor.plan("张三12月版本的达标率", "alice", null, "conv-1");
+        assertFalse(again.needsAsk());
+        assertEquals("222", again.params().get("perNo"));
+        assertTrue(pendingMap(executor).isEmpty());
+    }
+
+    @Test
+    void pinnedPersonSwitchedByExplicitContextAndPinRefreshed() {
+        // §1.6 裁决: 显式上下文 > 钉定, 同会话可换人; 唯一命中刷新钉定
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.nameDictionary()).thenReturn(Set.of("张三"));
+        when(ledger.byName("张三")).thenReturn(List.of(
+                gid("111", "杭州开发一部", null),
+                gid("222", "杭州开发二部", null)));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"perNo\":\"perNo\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq("张三的达标率"), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(dimensionStateManager.previewState(Mockito.eq("2"), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(dimensionStateManager.previewState(Mockito.eq("杭州开发一部张三的达标率"), Mockito.isNull()))
+                .thenReturn(state(null, List.of("杭州开发一部")));
+        when(dimensionStateManager.previewState(Mockito.eq("张三的质量呢"), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"perNo\",\"required\":true}]"));
+
+        DirectSkillExecutor executor = newExecutorWithLedger(ledger);
+        assertTrue(executor.plan("张三的达标率", "alice", null, "conv-1").needsAsk());
+        assertEquals("222", executor.plan("2", "alice", null, "conv-1").params().get("perNo"));
+
+        // 显式换人: 部门指向 111 → 直填 111 (钉定不阻塞)
+        DirectSkillExecutor.DirectExecutionPlan switched =
+                executor.plan("杭州开发一部张三的达标率", "alice", null, "conv-1");
+        assertFalse(switched.needsAsk());
+        assertEquals("111", switched.params().get("perNo"));
+
+        // 再问无上下文 → 跟的是刚换的 111 (钉定已被唯一命中刷新), 不是最初的 222
+        DirectSkillExecutor.DirectExecutionPlan after =
+                executor.plan("张三的达标率", "alice", null, "conv-1");
+        assertFalse(after.needsAsk());
+        assertEquals("111", after.params().get("perNo"));
+    }
+
+    @Test
+    void pinnedPersonDoesNotCrossConversations() {
+        // 拍板⑦: 钉定不跨会话, 换 conversationId 重新反问
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.nameDictionary()).thenReturn(Set.of("张三"));
+        when(ledger.byName("张三")).thenReturn(List.of(
+                gid("111", "杭州开发一部", null),
+                gid("222", "杭州开发二部", null)));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"perNo\":\"perNo\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq("张三的达标率"), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(dimensionStateManager.previewState(Mockito.eq("2"), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"perNo\",\"required\":true}]"));
+
+        DirectSkillExecutor executor = newExecutorWithLedger(ledger);
+        assertTrue(executor.plan("张三的达标率", "alice", null, "conv-1").needsAsk());
+        assertEquals("222", executor.plan("2", "alice", null, "conv-1").params().get("perNo"));
+
+        assertTrue(executor.plan("张三的达标率", "alice", null, "conv-2").needsAsk());
+    }
+
+    @Test
+    void pinnedPersonGoneFromLedgerFallsBackToAsk() {
+        // 钉定身份不在当前台账列表 (台账变动) → 回退反问, 不直填脏 perNo
+        com.agentscopea2a.v2.dimension.PersonLedgerRepository ledger =
+                mock(com.agentscopea2a.v2.dimension.PersonLedgerRepository.class);
+        when(ledger.nameDictionary()).thenReturn(Set.of("张三"));
+        when(ledger.byName("张三")).thenReturn(List.of(
+                gid("111", "杭州开发一部", null),
+                gid("222", "杭州开发二部", null)));
+        when(metadataRepository.findActive()).thenReturn(List.of(
+                meta("dept_skill", "script_a", "{\"perNo\":\"perNo\"}", "达标率")));
+        allowAll("alice");
+        when(dimensionStateManager.previewState(Mockito.eq("张三的达标率"), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(dimensionStateManager.previewState(Mockito.eq("2"), Mockito.isNull())).thenReturn(
+                state(null, List.of()));
+        when(scriptRegistryMapper.selectByScriptId("script_a")).thenReturn(registryEntry(
+                "[{\"name\":\"perNo\",\"required\":true}]"));
+
+        DirectSkillExecutor executor = newExecutorWithLedger(ledger);
+        assertTrue(executor.plan("张三的达标率", "alice", null, "conv-1").needsAsk());
+        assertEquals("222", executor.plan("2", "alice", null, "conv-1").params().get("perNo"));
+
+        // 台账变动: 222 离职, 换成另外两名张三 (钉定身份不在列表) → 回退全量反问
+        when(ledger.byName("张三")).thenReturn(List.of(
+                gid("111", "杭州开发一部", null),
+                gid("999", "杭州开发五部", null)));
+        DirectSkillExecutor.DirectExecutionPlan again =
+                executor.plan("张三的达标率", "alice", null, "conv-1");
+        assertTrue(again.needsAsk());
+        assertTrue(again.askMessage().contains("杭州开发一部"));
+        assertTrue(again.askMessage().contains("杭州开发五部"));
+    }
+
     // ==================== perRole 岗位角色 (岗位角色内置维度方案 §3.1b/§3.1d/§4.3) ====================
 
     @Test

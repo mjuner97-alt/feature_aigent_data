@@ -504,6 +504,59 @@ class DimensionStateManagerAliasIntegrationTest {
     }
 
     @Test
+    void monthToMonthRangeExpandsAllMonths() {
+        // 两侧带月闭区间（年月区间方案 §2.2）：修复前两端被 EXPLICIT_VERSION 各吃成端点值、中段丢失
+        assertEquals(java.util.List.of("2026年6月份版本", "2026年7月份版本", "2026年8月份版本",
+                        "2026年9月份版本", "2026年10月份版本", "2026年11月份版本", "2026年12月份版本"),
+                manager.analyzeQuestionRuleBased("从2026年6月到2026年12月的缺陷密度变化")
+                        .getExplicitDimensions().getTimeDimension().getValues());
+    }
+
+    @Test
+    void monthRangeSecondEndpointInheritsFirstYear() {
+        // 第二端年份缺省 → 继承第一端年份（不是当前年）
+        assertEquals(java.util.List.of("2026年10月份版本", "2026年11月份版本", "2026年12月份版本"),
+                manager.analyzeQuestionRuleBased("2026年10月到12月的达标率")
+                        .getExplicitDimensions().getTimeDimension().getValues());
+        // 全裸区间：两端补当前年
+        assertEquals(java.util.List.of("2026年6月份版本", "2026年7月份版本", "2026年8月份版本"),
+                manager.analyzeQuestionRuleBased("6月到8月缺陷有多少")
+                        .getExplicitDimensions().getTimeDimension().getValues());
+    }
+
+    @Test
+    void monthRangeCrossYearExpands() {
+        assertEquals(java.util.List.of("2026年11月份版本", "2026年12月份版本",
+                        "2027年1月份版本", "2027年2月份版本"),
+                manager.analyzeQuestionRuleBased("2026年11月到2027年2月的研发周期")
+                        .getExplicitDimensions().getTimeDimension().getValues());
+    }
+
+    @Test
+    void monthRangeReversedOrOversizedDiscards() {
+        // 倒序弃收：span 已被区间语义占用并屏蔽，端点不再被单数正则重复收
+        org.junit.jupiter.api.Assertions.assertNull(
+                manager.analyzeQuestionRuleBased("12月到6月的达标率")
+                        .getExplicitDimensions().getTimeDimension());
+        // 跨度 >24 个月弃收
+        org.junit.jupiter.api.Assertions.assertNull(
+                manager.analyzeQuestionRuleBased("2026年1月到2028年7月的达标率")
+                        .getExplicitDimensions().getTimeDimension());
+    }
+
+    @Test
+    void monthRangeWithDayDoesNotExpand() {
+        // 任一端带「日」→ 日期轨不逐月展开（拍板③）：末段裸日期被屏蔽，无版本产出
+        assertEquals(java.util.List.of("2026年6月份版本"),
+                manager.analyzeQuestionRuleBased("6月到12月26日到期的缺陷")
+                        .getExplicitDimensions().getTimeDimension().getValues());
+        // 两端都带日：日期轨，无版本产出
+        org.junit.jupiter.api.Assertions.assertNull(
+                manager.analyzeQuestionRuleBased("6月26日到7月1日的缺陷数")
+                        .getExplicitDimensions().getTimeDimension());
+    }
+
+    @Test
     void itemNoAndAppCodeCoexistWithoutSlotCompetition() {
         // 盲区修复方案 §3：应用码占 APPLICATION 槽位后，需求项精确编码不再被
         // peerDimension==null 门禁挤掉（内网 10:06 E2E 实证 itemNo=[]）
