@@ -54,7 +54,14 @@ export async function addPptFeedbackSupervisors(userIds: string[], supervisorDep
   }));
 }
 
-/** 按部门移除督办关系，管理员可省略部门以清理未分配的旧配置。 */
+/** 原子替换单个督办人的督办部门关系。 */
+export async function updatePptFeedbackSupervisor(userIds: string[], supervisorDepartments: string[]) {
+  return parse<PptFeedbackSupervisor[]>(await fetch(`${base}/feedback-supervisors`, {
+    method: 'PUT', headers: jsonHeaders(), body: JSON.stringify({ userIds, supervisorDepartments }),
+  }));
+}
+
+/** 删除督办人的全部关系，保留可选部门参数兼容旧调用。 */
 export async function deletePptFeedbackSupervisor(userId: string, department?: string) {
   const query = new URLSearchParams({ userId });
   if (department !== undefined) query.set('department', department);

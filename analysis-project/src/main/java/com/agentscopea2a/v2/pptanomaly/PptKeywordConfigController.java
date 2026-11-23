@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Comparator;
 import java.time.LocalDateTime;
 import com.agentscopea2a.config.datasource.GaussConfig;
 import org.springframework.transaction.annotation.Transactional;
@@ -81,6 +82,15 @@ public class PptKeywordConfigController {
     public record TitleRow(String name, Entry section, Entry scope, Entry contact, String ownerName) {}
     /** 标题配置的分页查询结果。 */
     public record TitlePage(List<TitleRow> items, long total) {}
+
+    /** 返回标题关联配置的最近更新时间，用于列表倒序展示。 */
+    private static LocalDateTime titleUpdatedAt(TitleRow row) {
+        var sectionTime = row.section() == null ? null : row.section().updatedAt();
+        var scopeTime = row.scope() == null ? null : row.scope().updatedAt();
+        if (sectionTime == null) return scopeTime;
+        if (scopeTime == null) return sectionTime;
+        return sectionTime.isAfter(scopeTime) ? sectionTime : scopeTime;
+    }
     /** 标题名称、板块、解析规则及联系人维护请求。 */
     public record TitleEdit(String originalName, String name, String section, String scope, String owner,
                             Double upperLimitRatio, Integer firstRow, Integer lastRow, List<String> handlerUserIds,
@@ -438,6 +448,11 @@ public class PptKeywordConfigController {
           .filter(row -> target.isEmpty() || target.equals(row.scope() == null || !MODES.contains(row.scope().target())
                   ? "FULL" : row.scope().target()))
           .toList();
+        matches = matches.stream()
+                .sorted(Comparator.comparing(PptKeywordConfigController::titleUpdatedAt,
+                        Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(TitleRow::name))
+                .toList();
         return new TitlePage(matches.stream().skip(((long) page - 1) * size).limit(size).toList(), matches.size());
     }
 

@@ -711,12 +711,14 @@ public class FlowCompletionService {
                 StringBuilder text = new StringBuilder();
                 int index = 1;
                 for (var result : results) {
+                    String resultText = extractResultText(result.path("result").asText(""));
+                    if (resultText == null || resultText.isBlank()) continue;
                     text.append("## ")
                         .append(chineseNumber(index++))
                         .append("、")
                         .append(result.path("nodeName").asText(result.path("skillName").asText("节点结果")))
                         .append("\n\n")
-                        .append(extractResultText(result.path("result").asText("")))
+                        .append(resultText)
                         .append("\n\n");
                 }
                 if (!text.isEmpty()) {

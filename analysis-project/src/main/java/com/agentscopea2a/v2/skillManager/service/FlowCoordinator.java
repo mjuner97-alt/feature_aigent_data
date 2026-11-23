@@ -475,9 +475,7 @@ public class FlowCoordinator {
                     // Python 脚本节点:不走 AI,按脚本注册直接执行,参数已解析(含动态时间参数值)
                     stage = "RUN_SCRIPT";
                     result = runScriptDirect(node, scriptParams);
-                    if (result == null || result.isBlank()) throw new IllegalStateException(
-                        "Script returned empty result"
-                    );
+                    validateNodeResult(result, true);
                     // 只有抢占成功的执行才把结果写回缓存;输家照常返回结果但不落库、不覆盖赢家文件。
                     if (cacheClaim != null && cacheClaim.won()) nodeCache.success(cacheClaim, result);
                 } else {
@@ -508,9 +506,7 @@ public class FlowCoordinator {
                         extract(events),
                         toolResultRegistry.getRequestRefs(requestId)
                     );
-                    if (result == null || result.isBlank()) throw new IllegalStateException(
-                        "Skill returned empty result"
-                    );
+                    validateNodeResult(result, false);
                     // 只有抢占成功的执行才把结果写回缓存;输家照常返回结果但不落库、不覆盖赢家文件。
                     if (cacheClaim != null && cacheClaim.won()) nodeCache.success(cacheClaim, result);
                 }
@@ -1057,8 +1053,21 @@ public class FlowCoordinator {
         }
         // Python 节点写入汇总报告时只保留 stdout 的有效中间内容，去掉
         // ScriptExecTool 的 stdout/stderr 包络，避免把执行协议和错误尾部拼进报告。
-        String stdout = ScriptExecOutputExtractor.extractStdout(text);
-        return stdout.isBlank() ? text : stdout;
+        return extractScriptNodeOutput(text);
+    }
+
+    /**
+     * Keeps the script envelope semantics intact: an explicitly empty stdout
+     * must remain empty and must not fall back to the full text containing stderr.
+     */
+    static String extractScriptNodeOutput(String text) {
+        return ScriptExecOutputExtractor.extractStdout(text == null ? "" : text);
+    }
+
+    static void validateNodeResult(String result, boolean scriptNode) {
+        if (!scriptNode && (result == null || result.isBlank())) {
+            throw new IllegalStateException("Skill returned empty result");
+        }
     }
 
     /** 错误信息截断:脚本输出可能很长,异常消息里只保留开头部分。 */

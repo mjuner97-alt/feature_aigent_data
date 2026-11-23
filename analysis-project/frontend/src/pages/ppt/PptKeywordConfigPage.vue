@@ -11,6 +11,7 @@ import PptListFilterBar from '../../components/ppt/PptListFilterBar.vue';
 import PptFeedbackSupervisorConfig from '../../components/ppt/PptFeedbackSupervisorConfig.vue';
 import PptRecognitionSettings from '../../components/ppt/PptRecognitionSettings.vue';
 import PptReportNotificationConfig from '../../components/ppt/PptReportNotificationConfig.vue';
+import PptTitleHandlerReuseDialog from '../../components/ppt/PptTitleHandlerReuseDialog.vue';
 
 /** 关键词或解析范围配置的编辑数据。 */
 interface Entry {
@@ -72,14 +73,22 @@ async function loadPermissions() {
 }
 const reminderSettings = ref<Partial<Record<number, PptFeedbackReminderSettings>>>({});
 const savingReminderRows = reactive(new Set<number>());
+const defaultReminderSettings: PptFeedbackReminderSettings = {
+  enabled: true,
+  cutoff: '18:00',
+  intervalMinutes: 60,
+  weeklyStartMinute: null,
+  weeklyEndMinute: null,
+};
 
 onMounted(loadPermissions);
 
 async function updateReminderSettings(id: number, changes: Partial<PptFeedbackReminderSettings>) {
-  const current = reminderSettings.value[id];
-  if (!current || savingReminderRows.has(id) || !canMaintain('material-type')) return;
+  const hadSettings = !!reminderSettings.value[id];
+  const current = reminderSettings.value[id] ?? { ...defaultReminderSettings };
+  if (savingReminderRows.has(id) || !canMaintain('material-type')) return;
   const updated = { ...current, ...changes };
-  if (updated.enabled === current.enabled && updated.cutoff === current.cutoff
+  if (hadSettings && updated.enabled === current.enabled && updated.cutoff === current.cutoff
       && updated.intervalMinutes === current.intervalMinutes
       && updated.weeklyStartMinute === current.weeklyStartMinute
       && updated.weeklyEndMinute === current.weeklyEndMinute) return;
@@ -97,15 +106,6 @@ async function updateReminderSettings(id: number, changes: Partial<PptFeedbackRe
   }
 }
 const weekdays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
-const scheduleRow = ref<number>();
-const scheduleMaxHeight = ref(360);
-const schedulePopperOptions = {
-  modifiers: [
-    { name: 'flip', enabled: false },
-    { name: 'preventOverflow', options: { altAxis: false, padding: 12 } },
-  ],
-};
-const schedule = reactive({ weekly: false, cutoff: '18:00', startDay: 0, startTime: '10:00', endDay: 4, endTime: '18:00', intervalMinutes: 60 as number | undefined });
 
 function clockText(minute: number) {
   const withinDay = minute % 1440;
@@ -119,52 +119,9 @@ function scheduleText(settings?: PptFeedbackReminderSettings) {
   return `${weekdays[Math.floor(start / 1440)]} ${clockText(start)} – ${weekdays[Math.floor(end / 1440)]} ${clockText(end)}`;
 }
 
-function openSchedule(id: number, event: MouseEvent) {
-  const settings = reminderSettings.value[id];
-  if (!settings || savingReminderRows.has(id)) return;
-  if (scheduleRow.value === id) {
-    scheduleRow.value = undefined;
-    return;
-  }
-  const start = settings.weeklyStartMinute ?? 600;
-  const end = settings.weeklyEndMinute ?? 6840;
-  Object.assign(schedule, {
-    weekly: settings.weeklyStartMinute != null,
-    cutoff: settings.cutoff,
-    intervalMinutes: settings.intervalMinutes,
-    startDay: Math.floor(start / 1440), startTime: clockText(start),
-    endDay: Math.floor(end / 1440), endTime: clockText(end),
-  });
-  const trigger = event.currentTarget as HTMLElement;
-  scheduleMaxHeight.value = Math.max(0, window.innerHeight - trigger.getBoundingClientRect().bottom - 24);
-  scheduleRow.value = id;
-}
-
 function weekMinute(day: number, time: string) {
   const [hour, minute] = time.split(':').map(Number);
   return day * 1440 + hour * 60 + minute;
-}
-
-async function saveSchedule(id: number) {
-  const current = reminderSettings.value[id];
-  if (!current) return;
-  const start = schedule.weekly ? weekMinute(schedule.startDay, schedule.startTime) : null;
-  const end = schedule.weekly ? weekMinute(schedule.endDay, schedule.endTime) : null;
-  if (schedule.weekly && (start === end || !Number.isFinite(start) || !Number.isFinite(end))) {
-    ElMessage.warning('请选择不同的每周开始和结束时间');
-    return;
-  }
-  const intervalMinutes = schedule.intervalMinutes;
-  if (typeof intervalMinutes !== 'number' || !Number.isInteger(intervalMinutes) || intervalMinutes < 1) {
-    ElMessage.warning('提醒间隔须为正整数分钟');
-    return;
-  }
-  const cutoff = schedule.weekly ? current.cutoff : schedule.cutoff;
-  if ((cutoff === current.cutoff && start === current.weeklyStartMinute && end === current.weeklyEndMinute
-        && intervalMinutes === current.intervalMinutes)
-      || await updateReminderSettings(id, { cutoff, weeklyStartMinute: start, weeklyEndMinute: end, intervalMinutes })) {
-    if (scheduleRow.value === id) scheduleRow.value = undefined;
-  }
 }
 
 watch(() => route.query.tab, () => {
@@ -248,12 +205,14 @@ const ignoreRules = ref<PptMaterialIgnoreRule[]>([]);
 const newRule = ref<PptMaterialIgnoreRule>({ ruleType: 'KEYWORD', ruleValue: '', ruleScope: 'PAGE', enabled: true });
 const materialEditorRules = ref<PptMaterialIgnoreRule[]>([]);
 const materialEditorNewRule = ref<PptMaterialIgnoreRule>({ ruleType: 'KEYWORD', ruleValue: '', ruleScope: 'PAGE', enabled: true });
-async function openIgnoreRules(row: Entry) {
-  ruleMaterialType.value = row.name;
-  ignoreRules.value = await listPptMaterialIgnoreRules(row.name).catch(() => []);
-  newRule.value = { ruleType: 'KEYWORD', ruleValue: '', ruleScope: 'PAGE', enabled: true };
-  ruleOpen.value = true;
-}
+const materialEditorReminder = reactive<PptFeedbackReminderSettings>({
+  enabled: true, cutoff: '18:00', intervalMinutes: 60, weeklyStartMinute: null, weeklyEndMinute: null,
+});
+const materialEditorWeekly = ref(false);
+const materialEditorStartDay = ref(0);
+const materialEditorStartTime = ref('10:00');
+const materialEditorEndDay = ref(4);
+const materialEditorEndTime = ref('18:00');
 function addIgnoreRule() {
   if (!newRule.value.ruleValue.trim()) return;
   ignoreRules.value.push({ ...newRule.value, ruleValue: newRule.value.ruleValue.trim(), ruleScope: newRule.value.ruleType === 'CHAPTER' ? 'SECTION' : 'PAGE' });
@@ -268,6 +227,26 @@ function addMaterialEditorRule() {
   if (!materialEditorNewRule.value.ruleValue.trim()) return;
   materialEditorRules.value.push({ ...materialEditorNewRule.value, ruleValue: materialEditorNewRule.value.ruleValue.trim(), ruleScope: materialEditorNewRule.value.ruleType === 'CHAPTER' ? 'SECTION' : 'PAGE' });
   materialEditorNewRule.value = { ruleType: 'KEYWORD', ruleValue: '', ruleScope: 'PAGE', enabled: true };
+}
+
+function resetMaterialEditorReminder() {
+  Object.assign(materialEditorReminder, {
+    enabled: true, cutoff: '18:00', intervalMinutes: 60,
+    weeklyStartMinute: null, weeklyEndMinute: null,
+  });
+  materialEditorWeekly.value = false;
+  materialEditorStartDay.value = 0;
+  materialEditorStartTime.value = '10:00';
+  materialEditorEndDay.value = 4;
+  materialEditorEndTime.value = '18:00';
+}
+
+function materialEditorReminderPayload(): PptFeedbackReminderSettings {
+  return {
+    ...materialEditorReminder,
+    weeklyStartMinute: materialEditorWeekly.value ? weekMinute(materialEditorStartDay.value, materialEditorStartTime.value) : null,
+    weeklyEndMinute: materialEditorWeekly.value ? weekMinute(materialEditorEndDay.value, materialEditorEndTime.value) : null,
+  };
 }
 
 /** 为配置请求补充认证信息并统一处理响应错误。 */
@@ -405,6 +384,8 @@ const recognitionScope = ref<PptRecognitionScope>({ scope: 'FULL' });
 const recognitionEditor = ref<InstanceType<typeof PptRecognitionSettings>>();
 const selectedBoard = computed(() => sections.value.find(board => board.name === titleForm.value.section));
 const knownTitleHandlers = ref(new Map<string, string>());
+const titleHandlerReuseOpen = ref(false);
+const titleHandlerReuseError = ref('');
 const titleHandlerOptions = computed(() => {
   const options = new Map(titleForm.value.handlerUserIds.map(id => [id, knownTitleHandlers.value.get(id) ?? id]));
   for (const person of people.value) {
@@ -418,14 +399,24 @@ function rememberTitleHandlers(ids: string[]) {
   knownTitleHandlers.value = new Map(ids.map(id => [id, options.get(id) ?? id]));
 }
 
+function openTitleHandlerReuse() {
+  titleHandlerReuseError.value = '';
+  titleHandlerReuseOpen.value = true;
+}
+
+function applyTitleHandlerReuse(_sourceTitle: string, peopleToAdd: PptPerson[]) {
+  const merged = new Map(titleForm.value.handlerUserIds.map(id => [id, knownTitleHandlers.value.get(id) ?? id]));
+  for (const person of peopleToAdd) {
+    merged.set(person.userId, [contactLabel(person.userId, person.name), person.department].filter(Boolean).join(' · '));
+  }
+  titleForm.value.handlerUserIds = [...merged.keys()];
+  knownTitleHandlers.value = merged;
+  titleHandlerReuseOpen.value = false;
+}
+
 /** 格式化材料或配置的维护时间。 */
 function dateText(value?: string) {
   return value?.replace('T', ' ').slice(0, 19) ?? '';
-}
-
-/** 读取标题相关配置中可用于展示的创建时间。 */
-function titleCreated(row: TitleRow) {
-  return row.section ? row.section.createdAt : row.scope?.createdAt;
 }
 
 /** 读取标题相关配置最近一次维护时间。 */
@@ -441,6 +432,20 @@ function edit(entry?: Entry) {
   form.value = entry ? { ...entry } : { name: '', target: '' };
   materialEditorRules.value = [];
   materialEditorNewRule.value = { ruleType: 'KEYWORD', ruleValue: '', ruleScope: 'PAGE', enabled: true };
+  resetMaterialEditorReminder();
+  if (active.value === 'material-type' && entry?.id != null) {
+    const settings = reminderSettings.value[entry.id];
+    if (settings) {
+      Object.assign(materialEditorReminder, settings);
+      materialEditorWeekly.value = settings.weeklyStartMinute != null && settings.weeklyEndMinute != null;
+      const start = settings.weeklyStartMinute ?? 600;
+      const end = settings.weeklyEndMinute ?? 6840;
+      materialEditorStartDay.value = Math.floor(start / 1440);
+      materialEditorStartTime.value = clockText(start);
+      materialEditorEndDay.value = Math.floor(end / 1440);
+      materialEditorEndTime.value = clockText(end);
+    }
+  }
   if (active.value === 'material-type' && entry) {
     void listPptMaterialIgnoreRules(entry.name).then(rules => { materialEditorRules.value = rules; }).catch(() => { materialEditorRules.value = []; });
   }
@@ -454,6 +459,8 @@ async function editTitle(row?: TitleRow) {
     originalName: row?.name, name: row?.name ?? '', section: row?.section?.target ?? '',
     handlerUserIds: [],
   };
+  titleHandlerReuseOpen.value = false;
+  titleHandlerReuseError.value = '';
   recognitionScope.value = {
     scope: row?.scope?.target && isPptRecognitionMode(row.scope.target) ? row.scope.target : 'FULL',
     upperLimitRatio: row?.scope?.upperLimitRatio, firstRow: row?.scope?.firstRow, lastRow: row?.scope?.lastRow,
@@ -508,6 +515,17 @@ async function save() {
     ElMessage.warning('请选择板块联系人');
     return;
   }
+  if (isMaterialType && !entry.id) {
+    const reminder = materialEditorReminderPayload();
+    if (materialEditorWeekly.value && reminder.weeklyStartMinute === reminder.weeklyEndMinute) {
+      ElMessage.warning('请选择不同的每周提醒开始和结束时间');
+      return;
+    }
+    if (reminder.intervalMinutes < 1 || reminder.cutoff <= '10:00') {
+      ElMessage.warning('提醒截止时间须晚于 10:00，提醒间隔须为正整数');
+      return;
+    }
+  }
   // 材料类型只要求名称，部门关键字还需选中有权维护的目标部门。
   const valid = isTitle ? titleForm.value.name.trim() && titleForm.value.section.trim()
     : isBoard ? boardForm.value.name.trim() : entry.name.trim() && (isMaterialType || canMaintain('department', entry.target));
@@ -526,6 +544,13 @@ async function save() {
       method: !isTitle && !isBoard && entry.id ? 'PUT' : 'POST', body: JSON.stringify(payload),
     });
     if (isMaterialType) await savePptMaterialIgnoreRules(entry.name.trim(), materialEditorRules.value);
+    if (isMaterialType && entry.id != null) {
+      await savePptFeedbackReminderSettings(entry.id, materialEditorReminderPayload());
+    } else if (isMaterialType) {
+      await load();
+      const created = rows.value.find(row => row.name === entry.name.trim());
+      if (created?.id != null) await savePptFeedbackReminderSettings(created.id, materialEditorReminderPayload());
+    }
     editorOpen.value = false;
     ElMessage.success('已保存');
     await load();
@@ -603,11 +628,8 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
           <el-table-column label="板块联系人" min-width="112" show-overflow-tooltip>
             <template #default="{ row }">{{ row.contact ? contactLabel(row.contact.target, row.ownerName) : '—' }}</template>
           </el-table-column>
-          <el-table-column label="新增时间" width="168" class-name="config-date">
-            <template #default="{ row }">{{ dateText(titleCreated(row)) }}</template>
-          </el-table-column>
-          <el-table-column label="编辑时间" width="168" class-name="config-date">
-            <template #default="{ row }">{{ dateText(titleUpdated(row) ?? titleCreated(row)) }}</template>
+          <el-table-column label="更新时间" width="168" class-name="config-date">
+            <template #default="{ row }">{{ dateText(titleUpdated(row)) }}</template>
           </el-table-column>
           <el-table-column label="操作" width="168" fixed="right">
             <template #default="{ row }">
@@ -638,67 +660,9 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
           <el-table-column prop="name" :label="active === 'material-type' ? '材料类型' : '匹配关键词'" min-width="180" />
           <el-table-column v-if="active === 'material-type'" label="提醒时段" min-width="286">
             <template #default="{ row }">
-              <el-popover v-if="reminderSettings[row.id] && canMaintainActive"
-                :visible="scheduleRow === row.id" placement="bottom-start" :width="344" :offset="9"
-                :popper-options="schedulePopperOptions" popper-class="ppt-schedule-popper"
-                :persistent="false" :show-arrow="false">
-                <template #reference>
-                  <button type="button" class="schedule-trigger" :aria-expanded="scheduleRow === row.id"
-                    @click="openSchedule(row.id, $event)" @keydown.esc.stop="scheduleRow = undefined">
-                    <el-icon><Clock /></el-icon>
-                    <span>{{ scheduleText(reminderSettings[row.id]) }}</span>
-                    <span class="schedule-interval-summary">{{ reminderSettings[row.id]?.intervalMinutes }} 分钟/次</span>
-                  </button>
-                </template>
-                <form class="schedule-editor" :style="{ maxHeight: `${scheduleMaxHeight}px` }"
-                  @submit.prevent="saveSchedule(row.id)" @keydown.esc.stop="scheduleRow = undefined">
-                  <div class="schedule-editor-header">
-                    <strong>提醒时段</strong>
-                    <span>北京时间</span>
-                  </div>
-                  <div class="schedule-fields">
-                    <el-radio-group v-model="schedule.weekly" aria-label="提醒周期">
-                      <el-radio-button :value="false">每天</el-radio-button>
-                      <el-radio-button :value="true">每周</el-radio-button>
-                    </el-radio-group>
-                    <template v-if="schedule.weekly">
-                      <div class="schedule-endpoint">
-                        <span>开始</span>
-                        <el-select v-model="schedule.startDay" aria-label="开始星期">
-                          <el-option v-for="(day, index) in weekdays" :key="day" :label="day" :value="index" />
-                        </el-select>
-                        <el-time-picker v-model="schedule.startTime" format="HH:mm" value-format="HH:mm"
-                          :clearable="false" aria-label="开始时间" />
-                      </div>
-                      <div class="schedule-endpoint">
-                        <span>结束</span>
-                        <el-select v-model="schedule.endDay" aria-label="结束星期">
-                          <el-option v-for="(day, index) in weekdays" :key="day" :label="day" :value="index" />
-                        </el-select>
-                        <el-time-picker v-model="schedule.endTime" format="HH:mm" value-format="HH:mm"
-                          :clearable="false" aria-label="结束时间" />
-                      </div>
-                    </template>
-                    <div v-else class="schedule-endpoint">
-                      <span>10:00 至</span>
-                      <el-time-picker v-model="schedule.cutoff" format="HH:mm" value-format="HH:mm"
-                        :clearable="false" aria-label="每日截止时间" />
-                    </div>
-                    <div class="schedule-interval-field">
-                      <label :for="`reminder-interval-${row.id}`">提醒间隔</label>
-                      <el-input-number :id="`reminder-interval-${row.id}`" v-model="schedule.intervalMinutes"
-                        :min="1" :max="2147483647" :precision="0" class="reminder-interval" />
-                      <span>分钟</span>
-                    </div>
-                  </div>
-                  <div class="schedule-actions">
-                    <el-button @click="scheduleRow = undefined">取消</el-button>
-                    <el-button type="primary" native-type="submit" :loading="savingReminderRows.has(row.id)">保存时段</el-button>
-                  </div>
-                </form>
-              </el-popover>
-              <span v-else>
-                {{ scheduleText(reminderSettings[row.id]) }}
+              <span class="schedule-display">
+                <el-icon v-if="reminderSettings[row.id]"><Clock /></el-icon>
+                <span>{{ scheduleText(reminderSettings[row.id]) }}</span>
                 <span v-if="reminderSettings[row.id]" class="schedule-interval-summary">
                   {{ reminderSettings[row.id]?.intervalMinutes }} 分钟/次
                 </span>
@@ -711,24 +675,19 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
                 :loading="savingReminderRows.has(row.id)" :disabled="!canMaintainActive"
                 :aria-label="`${row.name}自动逾期提醒`"
                 @change="(value: unknown) => updateReminderSettings(row.id, { enabled: value === true })" />
+              <el-button v-else-if="canMaintainActive" link type="primary" :loading="savingReminderRows.has(row.id)"
+                :aria-label="`${row.name}设置自动逾期提醒`" @click="updateReminderSettings(row.id, { enabled: true })">—</el-button>
               <span v-else>—</span>
             </template>
           </el-table-column>
           <el-table-column v-if="active === 'department'" prop="target" label="部门" min-width="160" />
-          <el-table-column label="新增时间" width="168" class-name="config-date">
-            <template #default="{ row }">{{ dateText(row.createdAt) }}</template>
-          </el-table-column>
-          <el-table-column label="编辑时间" width="168" class-name="config-date">
+          <el-table-column label="更新时间" width="168" class-name="config-date">
             <template #default="{ row }">{{ dateText(row.updatedAt) }}</template>
           </el-table-column>
-          <el-table-column v-if="canMaintainActive" label="操作" :width="active === 'material-type' ? 180 : 96" fixed="right">
+          <el-table-column v-if="canMaintainActive" label="操作" width="96" fixed="right">
             <template #default="{ row }">
               <div v-if="active !== 'department' || canMaintain('department', row.target)" class="row-actions">
                 <el-button link type="primary" @click="edit(row)">编辑</el-button>
-                <el-button v-if="active === 'material-type'" class="ignore-rule-button" type="primary" plain @click="openIgnoreRules(row)">
-                  <el-icon><Document /></el-icon>
-                  <span>忽略规则</span>
-                </el-button>
                 <el-button link type="danger" @click="remove(row)">删除</el-button>
               </div>
             </template>
@@ -813,10 +772,14 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
             <span aria-live="polite">{{ selectedBoard?.owner ? contactLabel(selectedBoard.owner, selectedBoard.ownerName ?? undefined) : '—' }}</span>
           </el-form-item>
           <el-form-item v-if="titleForm.originalName === undefined" label="标题经办人">
-            <el-select v-model="titleForm.handlerUserIds" multiple filterable remote :reserve-keyword="false" :remote-method="searchPeople"
-              :loading="peopleLoading" placeholder="搜索姓名或用户 ID，可稍后补充" @change="rememberTitleHandlers">
-              <el-option v-for="[id, label] in titleHandlerOptions" :key="id" :value="id" :label="label" />
-            </el-select>
+            <div class="title-handler-editor">
+              <el-select v-model="titleForm.handlerUserIds" multiple filterable remote :reserve-keyword="false" :remote-method="searchPeople"
+                :loading="peopleLoading" placeholder="搜索姓名或用户 ID，可稍后补充" @change="rememberTitleHandlers">
+                <el-option v-for="[id, label] in titleHandlerOptions" :key="id" :value="id" :label="label" />
+              </el-select>
+              <el-button class="title-handler-reuse-button" plain type="primary" @click="openTitleHandlerReuse">复用其他标题经办人</el-button>
+            </div>
+            <small class="title-handler-hint">可直接搜索添加，也可从已有标题追加经办人，人员会随标题一起保存。</small>
           </el-form-item>
           <el-button v-if="canMaintainEditor && sectionsReady && !sections.length" link type="primary" @click="editorOpen = false; active = 'board'">前往板块配置</el-button>
         </template>
@@ -862,6 +825,46 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
               </div>
             </div>
             <div v-else class="inline-rule-empty">暂未设置忽略规则，上传时会完整识别。</div>
+            <div class="material-reminder-editor">
+              <div class="inline-rule-header">
+                <div>
+                  <strong>逾期提醒</strong>
+                  <span>可选，保存材料类型时一起保存</span>
+                </div>
+                <span class="reminder-editor-note">自动开关可在列表中控制</span>
+              </div>
+              <div class="reminder-editor-fields">
+                <el-radio-group v-model="materialEditorWeekly" aria-label="提醒周期">
+                  <el-radio-button :value="false">每天</el-radio-button>
+                  <el-radio-button :value="true">每周</el-radio-button>
+                </el-radio-group>
+                <template v-if="materialEditorWeekly">
+                  <div class="schedule-endpoint">
+                    <span>开始</span>
+                    <el-select v-model="materialEditorStartDay" aria-label="开始星期">
+                      <el-option v-for="(day, index) in weekdays" :key="`start-${day}`" :label="day" :value="index" />
+                    </el-select>
+                    <el-time-picker v-model="materialEditorStartTime" format="HH:mm" value-format="HH:mm" :clearable="false" aria-label="开始时间" />
+                  </div>
+                  <div class="schedule-endpoint">
+                    <span>结束</span>
+                    <el-select v-model="materialEditorEndDay" aria-label="结束星期">
+                      <el-option v-for="(day, index) in weekdays" :key="`end-${day}`" :label="day" :value="index" />
+                    </el-select>
+                    <el-time-picker v-model="materialEditorEndTime" format="HH:mm" value-format="HH:mm" :clearable="false" aria-label="结束时间" />
+                  </div>
+                </template>
+                <div v-else class="schedule-endpoint">
+                  <span>10:00 至</span>
+                  <el-time-picker v-model="materialEditorReminder.cutoff" format="HH:mm" value-format="HH:mm" :clearable="false" aria-label="每日截止时间" />
+                </div>
+                <div class="schedule-interval-field">
+                  <label for="material-editor-reminder-interval">提醒间隔</label>
+                  <el-input-number id="material-editor-reminder-interval" v-model="materialEditorReminder.intervalMinutes" :min="1" :max="2147483647" :precision="0" class="reminder-interval" />
+                  <span>分钟</span>
+                </div>
+              </div>
+            </div>
           </template>
           <el-form-item v-if="editKind === 'department'" label="部门" required>
             <el-select v-model="form.target" filterable placeholder="选择可维护的部门">
@@ -875,6 +878,10 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
         </div>
       </el-form>
     </el-dialog>
+    <PptTitleHandlerReuseDialog v-model="titleHandlerReuseOpen" title="" :existing-ids="new Set(titleForm.handlerUserIds)"
+      :saving="saving" :error="titleHandlerReuseError"
+      note="选择一个已配置经办人的标题，将其人员追加到当前新标题。已有人员会自动去重。"
+      @apply="applyTitleHandlerReuse" @select="titleHandlerReuseError = ''" />
   </section>
 </template>
 
@@ -891,6 +898,10 @@ h2 { margin: 0 0 14px; font-size: 22px; color: #142441; }
 .config-filters { --ppt-filter-width: 186px; margin-bottom: 14px; }
 .row-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .row-actions .el-button { flex-shrink: 0; margin: 0; }
+.title-handler-editor { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: start; width: 100%; }
+.title-handler-reuse-button { min-height: 40px; }
+.title-handler-hint { display: block; margin-top: 6px; color: #7b8799; font-size: 12px; line-height: 1.5; }
+@media (max-width: 640px) { .title-handler-editor { grid-template-columns: 1fr; } .title-handler-reuse-button { justify-self: start; } }
 .inline-rule-header { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 10px; padding-top: 14px; border-top: 1px solid #edf1f7; color: #253858; }
 .inline-rule-header > div { display: flex; flex-direction: column; gap: 3px; }
 .inline-rule-header span { color: #8a96a8; font-size: 12px; font-weight: 400; }
@@ -900,6 +911,9 @@ h2 { margin: 0 0 14px; font-size: 22px; color: #142441; }
 .inline-rule-value { overflow: hidden; color: #2f405e; text-overflow: ellipsis; white-space: nowrap; }
 .inline-rule-scope { color: #7b8799; font-size: 12px; }
 .inline-rule-empty { margin-top: 10px; padding: 10px 12px; border: 1px dashed #d8e0ed; border-radius: 7px; color: #8a96a8; font-size: 12px; text-align: center; background: #fbfcfe; }
+.material-reminder-editor { margin-top: 18px; padding-top: 4px; border-top: 1px solid #edf1f7; }
+.reminder-editor-fields { display: grid; gap: 10px; padding: 0 2px 2px; }
+.reminder-editor-note { color: #7b8799; font-size: 12px; }
 .rule-hint { margin: -4px 0 14px; color: #7b8799; font-size: 13px; line-height: 1.6; }
 .ignore-rule-button { display: inline-flex; align-items: center; gap: 5px; border-radius: 6px; font-weight: 600; }
 .ignore-rule-button:hover { background: #eff6ff; }
@@ -990,6 +1004,7 @@ h2 { margin: 0 0 14px; font-size: 22px; color: #142441; }
   border-color: #81a9e8;
   background: #e1edff;
 }
+.schedule-empty-trigger { min-width: 42px; justify-content: center; }
 
 :global(.el-popper.ppt-schedule-popper) {
   max-width: calc(100vw - 24px);

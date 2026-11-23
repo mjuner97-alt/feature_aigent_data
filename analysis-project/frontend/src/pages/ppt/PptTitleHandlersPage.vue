@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** 标题经办人列表，供登录用户查看，系统管理员和产品部人员可维护。 */
 
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { Plus } from '@element-plus/icons-vue';
@@ -29,6 +29,7 @@ const results = ref<SkillUserSearchItem[]>([]);
 const searched = ref(false);
 const searching = ref(false);
 const searchError = ref('');
+let searchTimer: ReturnType<typeof setTimeout> | undefined;
 const handlerIds = computed(() => new Set(handlers.value.map(person => person.userId)));
 const reuseOpen = ref(false);
 const reuseError = ref('');
@@ -107,6 +108,20 @@ async function search() {
   }
 }
 
+function scheduleSearch() {
+  clearTimeout(searchTimer);
+  const term = keyword.value.trim();
+  if (!term) {
+    results.value = [];
+    searched.value = false;
+    searchError.value = '';
+    return;
+  }
+  searchTimer = setTimeout(() => { void search(); }, 250);
+}
+
+onUnmounted(() => clearTimeout(searchTimer));
+
 /** 提交标题经办人的新增或删除操作并刷新列表。 */
 async function updateHandler(userId: string, method: 'POST' | 'DELETE') {
   const name = title.value;
@@ -163,7 +178,7 @@ async function updateHandler(userId: string, method: 'POST' | 'DELETE') {
     <el-dialog v-model="addOpen" title="新增经办人" width="min(600px, 94vw)" destroy-on-close
       :close-on-click-modal="false" :show-close="!saving" :close-on-press-escape="!saving">
       <form class="person-search" @submit.prevent="search">
-        <el-input v-model="keyword" clearable placeholder="输入姓名或 userID" aria-label="搜索经办人" :disabled="saving" />
+        <el-input v-model="keyword" clearable placeholder="输入姓名或 userID" aria-label="搜索经办人" :disabled="saving" @input="scheduleSearch" />
         <el-button type="primary" native-type="submit" :loading="searching" :disabled="saving || !keyword.trim()">搜索</el-button>
       </form>
       <el-alert v-if="searchError" :title="searchError" type="error" :closable="false" />

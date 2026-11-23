@@ -195,7 +195,20 @@ public class PptAnomalyController {
         return service.feedbackSupervisors();
     }
 
-    /** 按部门移除督办关系，系统管理员可直接移除未分配部门的旧配置。 */
+    /** 原子替换单个督办人的督办部门关系。 */
+    @PutMapping("/feedback-supervisors")
+    public List<PptAnomalyService.FeedbackSupervisor> updateFeedbackSupervisor(
+            @RequestBody FeedbackSupervisorsRequest body,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
+        requireUser(userId);
+        if (body.userIds() == null || body.userIds().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "编辑时至少选择一名督办人");
+        }
+        service.updateFeedbackSupervisors(body.userIds(), body.supervisorDepartments(), userId);
+        return service.feedbackSupervisors();
+    }
+
+    /** 删除督办人的全部关系，保留按部门删除参数兼容旧调用。 */
     @DeleteMapping("/feedback-supervisors")
     public List<PptAnomalyService.FeedbackSupervisor> deleteFeedbackSupervisor(@RequestParam("userId") String supervisorId,
             @RequestParam(required = false) String department,

@@ -41,7 +41,7 @@ public class StubNotificationSender implements NotificationSender {
      * true 继续调用内部 HTTP 邮件网关；false 将通知内容写成本地 HTML 文件。
      * 所有使用本发送器的通知统一由此代码开关控制。
      */
-    private boolean httpEnabled = true;
+    private boolean httpEnabled = false;
 
     private static final DateTimeFormatter LOCAL_FILE_TIME = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS");
 

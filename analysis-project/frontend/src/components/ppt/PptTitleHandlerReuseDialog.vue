@@ -37,7 +37,8 @@ watch([open, () => props.title], async ([active, target], _, onCleanup) => {
   sources.value = [];
   sourceTitle.value = '';
   loadError.value = '';
-  loadingSources.value = active && !!target;
+  // 新增标题尚未有目标名称，也允许先选择来源标题并把人员带回创建表单。
+  loadingSources.value = active;
   if (!loadingSources.value) return;
   try {
     const names = await listPptTitleHandlerSources();

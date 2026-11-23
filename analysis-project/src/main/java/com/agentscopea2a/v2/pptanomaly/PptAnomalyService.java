@@ -431,6 +431,13 @@ public class PptAnomalyService {
         var merged = new LinkedHashSet<>(readList(config.userIds()));
         merged.addAll(selected);
         var assignments = new LinkedHashMap<>(readSupervisorDepartments(mapper, config.departmentAssignments()));
+        var duplicates = selected.stream()
+                .filter(id -> assignments.getOrDefault(id, List.of()).stream().anyMatch(scopes::contains))
+                .toList();
+        if (!duplicates.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "以下督办人已配置该督办部门，请勿重复添加：" + String.join("、", duplicates));
+        }
         for (String id : selected) {
             var personDepartments = new LinkedHashSet<>(assignments.getOrDefault(id, List.of()));
             personDepartments.addAll(scopes);
@@ -440,6 +447,44 @@ public class PptAnomalyService {
         updateSupervisorConfig(List.copyOf(merged), disabled, assignments, editor);
     }
 
+    /** 原子替换指定部门的督办人关系。 */
+    @Transactional(GaussConfig.TX_NAME)
+    public void updateFeedbackSupervisors(List<String> ids, List<String> departments, String editor) {
+        var selectedIds = PptAnomalyController.recipientIds(ids);
+        var scopes = PptAnomalyController.recipientIds(departments);
+        if (selectedIds.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择要编辑的反馈督办人");
+        }
+        if (scopes.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择督办部门");
+        }
+        if (!configDirectoryDepartments().containsAll(scopes)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "督办部门必须是人员台账中的部门");
+        }
+        requireSupervisorAccounts(selectedIds);
+        var config = lockSupervisorConfig();
+        var assignments = new LinkedHashMap<>(readSupervisorDepartments(mapper, config.departmentAssignments()));
+        var access = configDepartmentAccess(editor, config);
+        scopes.forEach(access::requireMaintenance);
+        var selected = new ArrayList<>(readList(config.userIds()));
+        for (String id : new ArrayList<>(assignments.keySet())) {
+            var remaining = assignments.get(id).stream().filter(department -> !scopes.contains(department)).toList();
+            if (remaining.isEmpty()) {
+                assignments.remove(id);
+                selected.remove(id);
+            } else {
+                assignments.put(id, remaining);
+            }
+        }
+        for (String id : selectedIds) {
+            var personDepartments = new LinkedHashSet<>(assignments.getOrDefault(id, List.of()));
+            personDepartments.addAll(scopes);
+            assignments.put(id, List.copyOf(personDepartments));
+            if (!selected.contains(id)) selected.add(id);
+        }
+        var disabled = readList(config.disabledUserIds()).stream().filter(id -> !selectedIds.contains(id)).toList();
+        updateSupervisorConfig(selected, disabled, assignments, editor);
+    }
     /** 删除单个部门的督办关系，或由系统管理员清理未分配部门的旧督办人配置。 */
     @Transactional(GaussConfig.TX_NAME)
     public void deleteFeedbackSupervisor(String id, String department, String editor) {
@@ -449,11 +494,16 @@ public class PptAnomalyService {
         var assignments = new LinkedHashMap<>(readSupervisorDepartments(mapper, config.departmentAssignments()));
         var remaining = new ArrayList<>(assignments.getOrDefault(id, List.of()));
         if (department == null) {
-            // 未指定部门时只有管理员能移除未分配的旧记录。
-            if (!access.allDepartments() || !remaining.isEmpty()) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择要移除的督办部门");
+            // 未指定部门时直接移除该督办人的全部关系。
+            if (remaining.isEmpty()) {
+                if (!access.allDepartments()) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "当前督办人没有可删除的配置");
+                }
+                if (!selected.contains(id)) return;
+            } else {
+                remaining.forEach(access::requireMaintenance);
             }
-            if (!selected.contains(id)) return;
+            remaining.clear();
         } else {
             access.requireMaintenance(department);
             if (!remaining.remove(department)) return;

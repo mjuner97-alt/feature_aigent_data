@@ -1009,7 +1009,7 @@
 
     <!-- 按类别、名称和目标值分页查询材料类型、关键字及标题板块相关配置。 -->
     <select id="configs" resultType="com.agentscopea2a.v2.pptanomaly.PptKeywordConfigController$Entry">
-        SELECT id,name,target,upper_limit_ratio,first_row,last_row,created_at,updated_at <include refid="configFilter"/> ORDER BY id DESC LIMIT #{size} OFFSET #{offset}
+        SELECT id,name,target,upper_limit_ratio,first_row,last_row,created_at,updated_at <include refid="configFilter"/> ORDER BY updated_at DESC NULLS LAST,id DESC LIMIT #{size} OFFSET #{offset}
     </select>
 
     <!-- 查询可选择的正式板块名称。 -->

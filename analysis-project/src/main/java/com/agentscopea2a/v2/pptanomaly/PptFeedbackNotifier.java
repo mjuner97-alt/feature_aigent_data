@@ -244,7 +244,7 @@ public class PptFeedbackNotifier {
                 String deadline = sentAt.plusHours(2).format(firstVersion
                         ? FEEDBACK_DEADLINE_FORMAT : DateTimeFormatter.ofPattern("HH:mm"));
                 String body = "<p>本期材料涉及到" + HtmlUtils.htmlEscape(department)
-                        + (firstVersion ? "共" : "关注事项共") + analysis.findingCount() + "项，请于" + deadline
+                        + "关注事项共" + analysis.findingCount() + "项，请于" + deadline
                         + "内<a href=\"" + HtmlUtils.htmlEscape(url) + "\">点击链接</a>反馈分析结果。"
                         + (firstVersion ? "" : "如已完成分析，请确认本次材料变更是否需要调整反馈内容")
                         + "</p>" + analysis.attachedTable();
