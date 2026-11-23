@@ -14,27 +14,36 @@ final class PptMaterialIgnoreRule {
 
     static List<PptAnomalyMapper.PageAssignment> apply(List<PptAnomalyMapper.PageAssignment> pages,
                                                     Map<Integer, String> originalTitles,
-                                                         List<PptAnomalyMapper.MaterialIgnoreRule> rules) {
+                                                    Map<Integer, String> pageTexts,
+                                                    List<PptAnomalyMapper.MaterialIgnoreRule> rules) {
         if (rules == null || rules.isEmpty()) return pages;
         var result = new ArrayList<PptAnomalyMapper.PageAssignment>(pages.size());
         boolean skipSection = false;
         for (var page : pages) {
-            Integer chapter = chapterNumber(originalTitles.get(page.page()));
+            String originalTitle = originalTitles.getOrDefault(page.page(), "");
+            String pageText = pageTexts.getOrDefault(page.page(), "");
+            Integer chapter = chapterNumber(originalTitle);
             if (chapter != null) {
                 skipSection = rules.stream().anyMatch(rule -> rule.enabled() && "CHAPTER".equals(rule.ruleType())
                         && "SECTION".equals(rule.ruleScope()) && matchesChapter(rule.ruleValue(), chapter));
             }
-            boolean ignored = skipSection || rules.stream().anyMatch(rule -> matchesPage(rule, page.title(), chapter));
+            boolean ignored = skipSection || rules.stream()
+                    .anyMatch(rule -> matchesPage(rule, page.title(), originalTitle, pageText, chapter));
             result.add(ignored ? new PptAnomalyMapper.PageAssignment(page.page(), page.title(), page.section(), true,
                     "NO_SCAN", page.excluded()) : page);
         }
         return result;
     }
 
-    private static boolean matchesPage(PptAnomalyMapper.MaterialIgnoreRule rule, String title, Integer chapter) {
+    private static boolean matchesPage(PptAnomalyMapper.MaterialIgnoreRule rule, String title,
+                                       String originalTitle, String pageText, Integer chapter) {
         if (!rule.enabled()) return false;
-        if ("KEYWORD".equals(rule.ruleType())) return "PAGE".equals(rule.ruleScope())
-                && title != null && title.contains(rule.ruleValue());
+        if ("KEYWORD".equals(rule.ruleType())) {
+            String keyword = rule.ruleValue();
+            return "PAGE".equals(rule.ruleScope()) && keyword != null && !keyword.isBlank()
+                    && ((title != null && title.contains(keyword))
+                        || originalTitle.contains(keyword) || pageText.contains(keyword));
+        }
         if (!"CHAPTER".equals(rule.ruleType())) return false;
         return "PAGE".equals(rule.ruleScope()) && matchesChapter(rule.ruleValue(), chapter);
     }

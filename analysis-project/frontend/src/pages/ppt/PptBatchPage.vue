@@ -69,6 +69,7 @@ const reviewPeople = ref<PptPerson[]>([]);
 type RecognitionMethod = 'default' | 'rules';
 type ReviewRow = {
   page: number;
+  originalTitle: string;
   title: string;
   section: string;
   defaultRecognitionMode: PptRecognitionMode | '';
@@ -475,7 +476,7 @@ const visibleReviewRows = computed(() => {
       : reviewFilter.value === 'all' || reviewFilter.value === pageStatus(row).key;
     return included && (!term || (pageNumber ? row.page === Number(pageNumber[1])
       : row.title.toLowerCase().includes(term) || row.section.toLowerCase().includes(term)
-        || row.titleMatch?.originalTitle.toLowerCase().includes(term)));
+        || row.originalTitle.toLowerCase().includes(term)));
   });
 });
 const selectedReviewRow = computed(() => visibleReviewRows.value.find(row => row.page === selectedPage.value));
@@ -687,6 +688,7 @@ async function loadReview(load: () => ReturnType<typeof reviewPptImport>) {
       const useRules = recognition != null && recognition.ruleMode === page.mode;
       const row: ReviewRow = {
         page: page.page,
+        originalTitle: titleMatch?.originalTitle ?? page.title ?? '',
         title: page.title ?? '',
         section: page.section ?? '',
         defaultRecognitionMode: selectableRecognitionMode((useRules ? recognition?.defaultMode : page.mode) ?? 'FULL'),
@@ -1011,7 +1013,7 @@ onMounted(async () => {
                     @click="selectedPage = row.page">
                     <span class="review-page-number">P{{ row.page }}</span>
                     <span class="review-page-text">
-                      <strong :title="row.title">{{ row.title.trim() || '无标题' }}</strong>
+                      <strong :title="row.originalTitle">{{ row.originalTitle.trim() || '无标题' }}</strong>
                       <small :title="row.section">{{ row.section || '—' }}</small>
                     </span>
                     <span class="review-status" :data-status="pageStatus(row).key">{{ pageStatus(row).label }}</span>
@@ -1063,7 +1065,8 @@ onMounted(async () => {
                   <div class="review-field">
                     <div class="review-field-heading">
                       <span>识别方式</span>
-                      <el-button v-if="canMaintainDefaults" size="small" :disabled="busy || !selectedReviewRow.title.trim()"
+                      <el-button v-if="canMaintainDefaults" type="primary" plain size="small"
+                        :disabled="busy || !selectedReviewRow.title.trim()"
                         @click="openRecognitionEditor(selectedReviewRow)">
                         {{ selectedReviewRow.pendingRecognition?.has(selectedReviewRow.title.trim()) ? '重新匹配规则' : '配置识别方式' }}
                       </el-button>
