@@ -6,6 +6,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -321,6 +322,23 @@ class DimensionStateManagerRuleTest {
         var bare = manager.analyzeQuestionRuleBased("上半年数据")
                 .getExplicitDimensions().getTimeDimension();
         assertTrue(bare.getValues().contains("HALF_V:1"));
+    }
+
+    @Test
+    void annualYearExpressionProducesQualifiedYearAnchor() {
+        // "25年度/2025年度" → YEAR_V@2025（年度转版本计划锚点方案.md 拍板①：必须带年份才触发），
+        // 执行期展开该年 12 个月版本；裸"年度/本年度"不触发（落 R3 默认在建版本口径）
+        var two = extractTime("杭二 25年度的完成率");
+        assertNotNull(two);
+        assertEquals(DimensionState.TimeDimensionType.VERSION, two.getType());
+        assertTrue(two.getValues().contains("YEAR_V@2025"));
+        assertFalse(two.getValues().contains("YEAR_V"));
+
+        var four = extractTime("杭二2025年度的完成率");
+        assertTrue(four.getValues().contains("YEAR_V@2025"));
+
+        assertNull(extractTime("杭二年度的完成率"));
+        assertNull(extractTime("杭二本年度完成率"));
     }
 
     @Test

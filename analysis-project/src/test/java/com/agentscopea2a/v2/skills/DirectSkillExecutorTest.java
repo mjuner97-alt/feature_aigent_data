@@ -1840,6 +1840,25 @@ class DirectSkillExecutorTest {
         assertEquals("2026年4季度", plan.params().get("quarter"));
     }
 
+    @Test
+    void bothTimeKeysAnnualYearAnchorExpandsTwelveVersions() {
+        // 「杭二 25年度的完成率」→ YEAR_V@2025 (年度转版本计划锚点方案.md) → 2025 年 12 个月版本,
+        // 季度家族整体抑制 (R1 版本胜)
+        stubBothTimeSkill(QUESTION, versionTime(List.of("YEAR_V@2025")));
+
+        DirectSkillExecutor.DirectExecutionPlan plan =
+                newExecutorWithResolver(stubResolver()).plan(QUESTION, "alice", null);
+
+        assertEquals(List.of("2025年1月份版本", "2025年2月份版本", "2025年3月份版本",
+                        "2025年4月份版本", "2025年5月份版本", "2025年6月份版本",
+                        "2025年7月份版本", "2025年8月份版本", "2025年9月份版本",
+                        "2025年10月份版本", "2025年11月份版本", "2025年12月份版本"),
+                plan.params().get("version"));
+        assertFalse(plan.params().containsKey("quarter"));
+        assertFalse(plan.params().containsKey("qStart"));
+        assertFalse(plan.params().containsKey("qEnd"));
+    }
+
     // ==================== 需求项/需求子条目特例 (2026/10/21 拍板) ====================
 
     private static DimensionState stateWithPeer(DimensionState.PeerDimensionType type, List<String> values) {

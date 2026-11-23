@@ -118,6 +118,9 @@ class VersionPlanAnchorResolverTest {
         assertTrue(VersionPlanAnchorResolver.containsAnchorPhrase("最近6个月的质量", null));
         assertTrue(VersionPlanAnchorResolver.containsAnchorPhrase("10月延后的缺陷数", null));
         assertTrue(VersionPlanAnchorResolver.containsAnchorPhrase("2026年10月份延后的质量", null));
+        // 正则轨年度短语（年度转版本计划锚点方案.md §4.2）：不补会与无时间问句缓存指纹撞车
+        assertTrue(VersionPlanAnchorResolver.containsAnchorPhrase("杭二25年度的完成率", null));
+        assertTrue(VersionPlanAnchorResolver.containsAnchorPhrase("杭二2025年度的完成率", null));
         // 标准值命中不绕过
         assertFalse(VersionPlanAnchorResolver.containsAnchorPhrase("2026年10月份版本的达标率", null));
         // 词表 alias 原词命中 (value 是锚点)

@@ -68,7 +68,7 @@ public class VersionPlanAnchorResolver {
             Pattern.compile("\\d{4}年[1-4]季度");
     private static final Pattern QUARTER_NUM = Pattern.compile("(\\d{4})年([1-4])季度");
     private static final Pattern ANCHOR_PHRASE_REGEX =
-            Pattern.compile("(?:近|最近)\\d{1,3}个(?:版本|月)|\\d{1,2}月份?延后");
+            Pattern.compile("(?:近|最近)\\d{1,3}个(?:版本|月)|\\d{1,2}月份?延后|\\d{4}年度|\\d{2}年度");
 
     private final VersionCalendarRepository calendar;
     /** 在建版本查询（VersionPlanKnowledgeHook::currentVersions，TTL 缓存；须自行容错）。 */

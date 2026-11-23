@@ -378,6 +378,11 @@ public class DimensionStateManager {
     // 拆分后须由中缀组接住
     private static final Pattern LAST_N_VERSIONS =
             Pattern.compile("(?:近|最近)(\\d{1,3})个(?:月个?|个)?版本");
+    // "25年度/2025年度" → YEAR_V@yyyy 锚点（年度转版本计划锚点方案.md，2026/11/20 拍板①）：
+    // 年度必须带年份才触发，裸"年度/本年度"不进此轨（落 R3 默认在建版本口径）；
+    // 执行期经 VersionPlanAnchorResolver monthVersions(year,1,12) 展开该年 12 个月版本
+    private static final Pattern ANNUAL_YEAR =
+            Pattern.compile("(\\d{4}|\\d{2})年度");
     // detectLevel 判定用：裸"近X个月"已归 timeRange 轨（TimeRangeExtractor.LAST_MONTHS），
     // level 判定须同步认它，否则 timeRange 命中但 level 漏判 → 整轮维度丢失（套路C）；
     // (?!\\s*个?版) 与提取层同口径，连写"近X个月版本"由 LAST_N_VERSIONS 归版本键
@@ -1157,6 +1162,13 @@ public class DimensionStateManager {
         Matcher lastNMatcher = LAST_N_VERSIONS.matcher(q);
         while (lastNMatcher.find()) {
             versions.add("LAST:" + Integer.parseInt(lastNMatcher.group(1)) + "V");
+        }
+
+        // "25年度/2025年度" → YEAR_V@yyyy 锚点（年度必须带年份才触发，裸"年度"不进此轨；
+        // 执行期经 VersionPlanAnchorResolver monthVersions(year,1,12) 展开该年 12 个月版本）
+        Matcher annualMatcher = ANNUAL_YEAR.matcher(q);
+        while (annualMatcher.find()) {
+            versions.add("YEAR_V@" + yearOf(annualMatcher, currentYear));
         }
 
         // Quarter aliases: "一季度"~"四季度" — normalise so user shorthand maps to the same
