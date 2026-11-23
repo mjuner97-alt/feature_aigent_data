@@ -10,18 +10,16 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import java.util.Optional;
-
 /** Guards automatic long-task scheduling using an explicit process startup flag. */
 @Component
 public class FlowSchedulerGuard {
     private static final Logger log = LoggerFactory.getLogger(FlowSchedulerGuard.class);
     private final boolean enabled;
-    private final Optional<AiChatRuntimeConfigMapper> configMapper;
+    private final AiChatRuntimeConfigMapper configMapper;
     private Boolean lastDecision;
 
     public FlowSchedulerGuard(@Value("${scheduler.enabled:false}") boolean enabled,
-                              Optional<AiChatRuntimeConfigMapper> configMapper) {
+                              AiChatRuntimeConfigMapper configMapper) {
         this.enabled = enabled;
         this.configMapper = configMapper;
     }
@@ -47,12 +45,8 @@ public class FlowSchedulerGuard {
     }
 
     private boolean readDatabaseSwitch() {
-        if (configMapper.isEmpty()) {
-            return true;
-        }
         try {
-            AiChatRuntimeConfig config = configMapper.get()
-                    .selectByConfigKey(AiChatRuntimeConfigKeys.LONG_TASK_SCHEDULER_ENABLED);
+            AiChatRuntimeConfig config = configMapper.selectByConfigKey(AiChatRuntimeConfigKeys.LONG_TASK_SCHEDULER_ENABLED);
             // 兼容未执行迁移或历史空配置：只有明确配置 false 才关闭调度。
             if (config == null || config.getConfigValue() == null || config.getConfigValue().isBlank()) {
                 return true;
