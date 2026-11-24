@@ -800,7 +800,7 @@ async function confirmDeleteBatch(batch: PptBatchSummary) {
   deletingBatchId.value = batch.id;
   try {
     const confirmed = await ElMessageBox.confirm(
-      `确定删除「${batch.name}」？该批次的所有上传版本、识别结果和反馈记录都将删除，且无法恢复。`,
+      `确定删除「${batch.name}」？该批次的所有上传版本、识别结果和补充说明都将删除，且无法恢复。`,
       '删除批次',
       { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' },
     ).then(() => true, () => false);

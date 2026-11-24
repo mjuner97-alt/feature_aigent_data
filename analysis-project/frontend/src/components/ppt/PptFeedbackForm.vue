@@ -119,7 +119,7 @@ watch([editor, () => props.finding], async ([element, finding], _, onCleanup) =>
   } catch {
     if (!controller.signal.aborted) {
       loadFailed.value = true;
-      error.value = '反馈记录或图片加载失败，请重新打开此页后重试';
+      error.value = '补充说明或图片加载失败，请重新打开此页后重试';
     }
   } finally {
     if (!controller.signal.aborted) {
@@ -157,7 +157,7 @@ function capture() {
   const explanation = files.length || snapshot.textContent?.trim() || snapshot.querySelector('table') || hadCurrent.value
     ? encodeFeedback(snapshot.innerHTML) : '';
   error.value = new TextEncoder().encode(explanation).length > maxBytes
-    ? '反馈记录过长，请缩减到 16 KB 以内' : '';
+    ? '补充说明过长，请缩减到 16 KB 以内' : '';
   emit('draft', { explanation, files, baseRevision: baseRevision.value });
 }
 
@@ -391,7 +391,7 @@ function insertTable() {
 <template>
   <section class="feedback" :aria-labelledby="`ppt-feedback-label-${finding.id}`">
     <div class="feedback-heading">
-      <h4 :id="`ppt-feedback-label-${finding.id}`" class="field-label">反馈记录</h4>
+      <h4 :id="`ppt-feedback-label-${finding.id}`" class="field-label">补充说明：</h4>
       <div class="feedback-actions">
         <el-button size="small" :disabled="loadingFeedback" @click="openHistory">
           {{ conflict ? '核对最新反馈' : '修改记录' }}
@@ -432,13 +432,13 @@ function insertTable() {
           <button class="tool" type="button" :disabled="editorDisabled" @click="insertTable">插入 {{ rows }} × {{ columns }}</button>
         </div>
         <div ref="editor" class="rich editor" :contenteditable="!editorDisabled" :role="editing ? 'textbox' : undefined" :aria-multiline="editing ? true : undefined" :aria-busy="loadingFeedback" :aria-readonly="editing ? editorDisabled : undefined"
-          :aria-labelledby="`ppt-feedback-label-${finding.id}`" :aria-describedby="editing ? `ppt-feedback-help-${finding.id}` : undefined" :data-placeholder="loadingFeedback ? '正在加载反馈…' : loadFailed ? '' : editing ? '填写处理进展或补充说明' : '暂无反馈记录'"
+          :aria-labelledby="`ppt-feedback-label-${finding.id}`" :aria-describedby="editing ? `ppt-feedback-help-${finding.id}` : undefined" :data-placeholder="loadingFeedback ? '正在加载反馈…' : loadFailed ? '' : editing ? '填写处理进展或补充说明' : '暂无补充说明'"
           @input="rememberCaret(); capture()" @click="selectImage" @keyup="rememberCaret" @mouseup="rememberCaret" @focusout="rememberCaret" @paste="paste" @drop.prevent />
       </div>
       <p v-if="editing && activeImage" class="help">已选中图片。将光标放到目标位置，再点「移动图片到光标处」。</p>
     </template>
     <span v-else-if="!compact" class="readonly">仅反馈部门成员可以编辑</span>
-    <p v-else-if="!error && !loadingFeedback && !displayedFeedback?.html && !displayedFeedback?.files.length" class="help">暂无反馈记录</p>
+    <p v-else-if="!error && !loadingFeedback && !displayedFeedback?.html && !displayedFeedback?.files.length" class="help">暂无补充说明</p>
     <el-dialog v-model="historyOpen" class="ppt-feedback-history-dialog" title="反馈修改记录"
       append-to-body align-center width="min(1120px, calc(100vw - 32px))">
       <div v-loading="historyLoading" class="edit-history">
@@ -597,8 +597,9 @@ function insertTable() {
 .tool.disabled, .tool:disabled { opacity: .55; cursor: default; }
 .tool:focus-within { outline: 2px solid #2563eb; outline-offset: -2px; }
 .editor:focus { outline: none; }
-.rich { padding: 10px; white-space: pre-wrap; overflow: auto; overflow-wrap: anywhere; }
+.rich { padding: 10px; white-space: pre-wrap; overflow: auto; overflow-wrap: anywhere; color: #1d4ed8; }
 .field-label { margin: 0; font-size: 17px; font-weight: 600; color: #172b49; }
+.feedback-heading .field-label { color: #1d4ed8; }
 .help { margin: 0 0 4px; font-size: 13px; color: #52627a; }
 .editor { padding: 14px; background: #f8fafc; line-height: 1.65; }
 .composer-editing .editor { min-height: clamp(120px, 24dvh, 200px); background: #fff; }

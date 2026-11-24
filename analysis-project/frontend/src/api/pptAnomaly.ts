@@ -217,10 +217,11 @@ export async function versionFindings(versionId: number, recordOwner?: string) {
   return parse<PptFinding[]>(await fetch(`${base}/versions/${versionId}/findings${query}`, { headers: headers() }));
 }
 /** 读取本人事项、部门事项和联系人组成的反馈目录。 */
-export async function feedbackDirectory(versionId: number, recordOwner?: string, department?: string) {
+export async function feedbackDirectory(versionId: number, recordOwner?: string, department?: string, includeOriginalTitles = true) {
   const query = new URLSearchParams();
   if (recordOwner) query.set('recordOwner', recordOwner);
   if (department) query.set('department', department);
+  if (!includeOriginalTitles) query.set('includeOriginalTitles', 'false');
   return parse<{
     fileName: string; materialMailLabel: string; departments: string[]; assigned: PptFinding[]; departmentFindings: PptFinding[]; myPending: PptFinding[]; myAssigned: PptFinding[]; originalTitles?: Record<number, string>;
     contacts: Partial<Record<number, { name: string | null; userId: string }>>;

@@ -93,10 +93,9 @@ const recipients = computed(() => {
         noticeKind: previous.noticeKind ?? page.noticeKind,
       });
     }
-    const assigned = new Map([...pages.values()].filter(page => page.status).map(page => [page.findingId, page.status]));
-    const completed = [...assigned.values()].filter(status => status === 'CONFIRMED' || status === 'ADJUSTED').length;
+    const completed = [...pages.values()].filter(page => page.status === 'CONFIRMED' || page.status === 'ADJUSTED').length;
     return {
-      ...group, pages: [...pages.values()], total: assigned.size, completed,
+      ...group, pages: [...pages.values()], total: pages.size, completed,
       hasNotice: group.pages.some(page => page.noticeKind),
       unassigned: group.pages.some(page => page.recipient === null),
       unassignedTitles: [...new Set(group.pages
@@ -248,7 +247,7 @@ onMounted(load);
         <template #default="{ row }">{{ notificationTime(row.notifiedAt) }}</template>
       </el-table-column>
       <el-table-column label="反馈进度" width="125">
-        <template #default="{ row }">{{ row.unassigned ? '待分派' : row.total ? `${row.completed}/${row.total}` : row.pages.length ? '—' : '暂无反馈任务' }}</template>
+        <template #default="{ row }">{{ row.completed }}/{{ row.total }}</template>
       </el-table-column>
       <el-table-column label="反馈时间" min-width="135">
         <template #default="{ row }">{{ date(row.feedbackAt) }}</template>

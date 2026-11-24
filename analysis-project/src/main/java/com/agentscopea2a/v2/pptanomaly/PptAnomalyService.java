@@ -1494,13 +1494,16 @@ public class PptAnomalyService {
 
     /** 原件路径已由 originalFile 校验存储范围。 */
     Map<Integer, String> originalSlideTitles(long versionId, List<Finding> findings) {
-        if (findings.isEmpty()) return Map.of();
+        return originalSlideTitlesByPage(versionId, findings.stream().map(Finding::pageNo).distinct().toList());
+    }
+
+    Map<Integer, String> originalSlideTitlesByPage(long versionId, List<Integer> pageNumbers) {
+        if (pageNumbers.isEmpty()) return Map.of();
         Map<Integer, String> titles = new LinkedHashMap<>();
         try (var input = originalFile(versionId).resource().getInputStream();
              var show = new XMLSlideShow(input)) {
             var slides = show.getSlides();
-            for (var finding : findings) {
-                int page = finding.pageNo();
+            for (int page : pageNumbers) {
                 if (page > 0 && page <= slides.size()) {
                     titles.computeIfAbsent(page, number ->
                             inferSlideTitle(slides.get(number - 1), show.getPageSize().getHeight(), Set.of()));
@@ -1737,7 +1740,7 @@ public class PptAnomalyService {
         String explanation = request.explanation() == null ? "" : request.explanation();
         if (explanation.getBytes(StandardCharsets.UTF_8).length > MAX_FEEDBACK_BYTES
                 || explanation.startsWith(ATTACHMENT_PREFIX)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "反馈记录格式不正确或超过 16 KB");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "补充说明格式不正确或超过 16 KB");
         }
         if (!attachments.isEmpty()) {
             var reusable = new LinkedHashSet<>(feedbackFiles(state.explanation()));

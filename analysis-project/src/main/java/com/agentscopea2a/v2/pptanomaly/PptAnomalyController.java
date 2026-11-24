@@ -289,6 +289,7 @@ public class PptAnomalyController {
     public FeedbackDirectory feedbackDirectory(@PathVariable long versionId,
             @RequestParam(required = false) String recordOwner,
             @RequestParam(required = false) String department,
+            @RequestParam(defaultValue = "true") boolean includeOriginalTitles,
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
         requireUser(userId);
         boolean canViewAll = canViewAllFeedback(userId);
@@ -327,7 +328,7 @@ public class PptAnomalyController {
                 .filter(item -> "PENDING_FEEDBACK".equals(item.status())).toList();
         return new FeedbackDirectory(fileName, service.versionMailLabel(versionId),
                 department == null ? departments : List.of(department), assigned, departmentFindings,
-                myPending, myAssigned, service.originalSlideTitles(versionId, departmentFindings),
+                myPending, myAssigned, includeOriginalTitles ? service.originalSlideTitles(versionId, departmentFindings) : Map.of(),
                 service.feedbackContacts(versionId, assigned, departmentFindings),
                 service.feedbackHandlers(versionId, assigned, departmentFindings));
     }
@@ -338,7 +339,7 @@ public class PptAnomalyController {
             @RequestParam(required = false) String department,
             @RequestParam(defaultValue = "mine") String scope,
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
-        var directory = feedbackDirectory(versionId, recordOwner, department, userId);
+        var directory = feedbackDirectory(versionId, recordOwner, department, true, userId);
         var items = switch (scope) {
             case "mine" -> directory.assigned();
             case "pending" -> directory.myPending();
@@ -360,7 +361,7 @@ public class PptAnomalyController {
             @RequestParam String department,
             @RequestBody FeedbackNotification request,
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
-        var directory = feedbackDirectory(versionId, recordOwner, department, userId);
+        var directory = feedbackDirectory(versionId, recordOwner, department, true, userId);
         if (directory.assigned().isEmpty() && directory.departmentFindings().isEmpty()) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "没有可通知的反馈事项");
         }

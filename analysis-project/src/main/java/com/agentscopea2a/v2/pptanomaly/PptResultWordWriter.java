@@ -31,6 +31,7 @@ import java.util.Set;
 public class PptResultWordWriter {
     private static final String FILE_PREFIX = "ppt-feedback-files:v1\n";
     private static final String HTML_PREFIX = "ppt-feedback-html:v1\n";
+    private static final String FEEDBACK_BLUE = "1D4ED8";
     private final PptAnomalyService service;
     private final ObjectMapper mapper;
 
@@ -55,6 +56,8 @@ public class PptResultWordWriter {
             margins.setRight(BigInteger.valueOf(1080));
             String documentTitle = report.fileName().replaceFirst("(?i)\\.pptx$", "");
             heading(document, documentTitle, 20).setAlignment(ParagraphAlignment.CENTER);
+            var originalTitles = service.originalSlideTitlesByPage(report.versionId(),
+                    report.pages().stream().map(PptResultService.Page::pageNo).toList());
             for (var page : report.pages()) {
                 var title = document.createParagraph();
                 title.setSpacingBefore(240);
@@ -63,7 +66,10 @@ public class PptResultWordWriter {
                 font(run);
                 run.setBold(true);
                 run.setFontSize(15);
-                run.setText("P" + page.pageNo() + "　" + label(page.title(), "未命名页面"));
+                String originalTitle = label(originalTitles.get(page.pageNo()), label(page.title(), "未命名页面"));
+                String titleWithoutNumber = originalTitle.replaceFirst(
+                        "^\\s*[0-9]+(?:[.．。\\-－–—][0-9]+)+[.．。、\\s]*", "").strip();
+                run.setText("P" + page.pageNo() + " · " + label(titleWithoutNumber, originalTitle));
                 var handlerLine = document.createParagraph();
                 handlerLine.setSpacingAfter(120);
                 handlerLine.setKeepNext(true);
@@ -71,10 +77,10 @@ public class PptResultWordWriter {
                 try (var input = service.slidePreview(report.versionId(), page.pageNo(), userId, true).getInputStream()) {
                     picture(document.createParagraph(), input.readAllBytes(), "P" + page.pageNo(), 470);
                 }
-                if (!page.items().isEmpty()) heading(document, "反馈记录", 12);
+                if (!page.items().isEmpty()) {
+                    heading(document, "补充说明：", 12).getRuns().get(0).setColor(FEEDBACK_BLUE);
+                }
                 for (var item : page.items()) {
-                    heading(document, (item.departments().isEmpty()
-                            ? "未分配部门" : String.join("、", item.departments())) + "：", 11);
                     if (item.judgement() == null) {
                         text(document.createParagraph(), "待反馈");
                     } else {
@@ -106,7 +112,7 @@ public class PptResultWordWriter {
             body.select("script,style,iframe,object,svg").remove();
             blocks(document, body.childNodes(), context);
         } else {
-            text(document.createParagraph(), label(value, "已反馈，未填写说明"));
+            text(document.createParagraph(), label(value, "已反馈，未填写说明")).setColor(FEEDBACK_BLUE);
         }
         for (int index = 0; index < files.size(); index++) {
             if (!context.used().contains(index)) attachment(document.createParagraph(), context, index, 470);
@@ -125,7 +131,7 @@ public class PptResultWordWriter {
                 inline = null;
             } else if (node instanceof Element element && Set.of("p", "li").contains(element.tagName())) {
                 var paragraph = document.createParagraph();
-                if (element.tagName().equals("li")) text(paragraph, "• ");
+                if (element.tagName().equals("li")) text(paragraph, "• ").setColor(FEEDBACK_BLUE);
                 inline(paragraph, element, images, false, false, false, 470);
                 inline = null;
             } else if (!(node instanceof TextNode textNode && textNode.isBlank())) {
@@ -197,6 +203,7 @@ public class PptResultWordWriter {
                         boolean bold, boolean italic, boolean underline, int imageWidth) throws IOException {
         if (node instanceof TextNode value) {
             var run = text(paragraph, value.getWholeText());
+            run.setColor(FEEDBACK_BLUE);
             run.setBold(bold);
             run.setItalic(italic);
             if (underline) run.setUnderline(UnderlinePatterns.SINGLE);

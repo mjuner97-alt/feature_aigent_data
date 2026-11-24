@@ -231,7 +231,7 @@ async function submitFeedback(findingId?: number) {
   }
   const oversized = changes.filter(({ explanation }) => new TextEncoder().encode(explanation).length > 16 * 1024);
   if (oversized.length) {
-    saveError.value = `请先缩减这些页面的反馈记录（每页最多 16 KB）：${pageList(oversized.map(change => change.item))}`;
+    saveError.value = `请先缩减这些页面的补充说明（每页最多 16 KB）：${pageList(oversized.map(change => change.item))}`;
     return;
   }
   const pending = records.value.filter(item => item.editable && item.status === 'PENDING_FEEDBACK' && !drafts.value.has(item.id));
@@ -252,16 +252,21 @@ async function submitFeedback(findingId?: number) {
       } catch { return; }
     }
     const failed: PptFinding[] = [];
+    const refreshIds = new Set<number>();
     for (const { item, explanation, files, baseRevision } of changes) {
       try {
         await saveFeedback(item.id, { judgement: item.status === 'ADJUSTED' ? 'NON_ANOMALY' : 'CONFIRMED', explanation, baseRevision }, files);
         drafts.value.delete(item.id);
+        refreshIds.add(item.id);
       } catch (cause) {
-        if (cause instanceof PptApiError && cause.status === 409) conflicts.value.add(item.id);
+        if (cause instanceof PptApiError && cause.status === 409) {
+          conflicts.value.add(item.id);
+          refreshIds.add(item.id);
+        }
         failed.push(item);
       }
     }
-    if (changes.length > failed.length) await reload();
+    if (refreshIds.size) await reload(refreshIds);
     if (failed.length) {
       saveError.value = failed.some(item => conflicts.value.has(item.id))
         ? `部分反馈已被更新，草稿已保留：${pageList(failed)}。请核对最新反馈后再提交。`
@@ -363,13 +368,15 @@ const vPreviewVisible: Directive<HTMLElement, { version: number; page: number }>
   },
 };
 /** 加载通知指定版本的反馈目录，并按本人经办情况选择视图。 */
-async function reload() {
+async function reload(refreshIds?: ReadonlySet<number>) {
   const id = ++loadId;
+  const previous = refreshIds ? directory.value : undefined;
+  const previousVersion = versionId.value;
   if (!requestedVersionId.value) {
     loading.value = false;
     return;
   }
-  loading.value = true;
+  loading.value = !previous;
   error.value = '';
   linkNotice.value = '';
   try {
@@ -396,15 +403,29 @@ async function reload() {
       resolvedVersionId.value = targetVersion;
       resolvedVersionNo.value = link.versionNo;
     }
-    const result = await feedbackDirectory(targetVersion, recordOwner.value, linkedDepartment.value);
+    const reuse = previous && targetVersion === previousVersion ? previous : undefined;
+    const result = await feedbackDirectory(targetVersion, recordOwner.value, linkedDepartment.value, !reuse);
     if (id === loadId) {
+      if (reuse) {
+        result.originalTitles = reuse.originalTitles;
+        const previousItems = new Map(reuse.departmentFindings.map(item => [item.id, item]));
+        const retainUnchanged = (item: PptFinding) => {
+          const prior = previousItems.get(item.id);
+          return prior && !refreshIds?.has(item.id) && JSON.stringify(prior) === JSON.stringify(item) ? prior : item;
+        };
+        result.departmentFindings = result.departmentFindings.map(retainUnchanged);
+        result.myAssigned = result.myAssigned.map(retainUnchanged);
+      }
       if (!result.myAssigned.length) {
         scope.value = 'all';
       }
       directory.value = result;
     }
   } catch {
-    if (id === loadId) error.value = '异常列表加载失败，请重试';
+    if (id === loadId) {
+      if (previous) ElMessage.warning('反馈状态刷新失败，请重新打开详情查看最新状态');
+      else error.value = '异常列表加载失败，请重试';
+    }
   } finally {
     if (id === loadId) loading.value = false;
   }
@@ -511,7 +532,7 @@ onMounted(async () => {
             <PptSlideViewer :page-no="item.pageNo" :slide="previews.get(item.pageNo) ?? undefined"
               :unavailable="previews.get(item.pageNo) === null" />
           </div>
-          <PptFeedbackForm :key="loadId"
+          <PptFeedbackForm
             :finding="item" :draft="drafts.get(item.id)" :saving="saving"
             :compact="readOnly" :read-only="readOnly" :conflict="conflicts.has(item.id)"
             @draft="setDraft(item.id, $event)" @save="submitFeedback(item.id)" @retry="retryFeedback(item.id, $event)" />
