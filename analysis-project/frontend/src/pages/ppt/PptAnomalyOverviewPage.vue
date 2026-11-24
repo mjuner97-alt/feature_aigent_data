@@ -223,7 +223,10 @@ async function submitFeedback(findingId?: number) {
   const changes = findingId === undefined
     ? feedbackChanges.value
     : feedbackChanges.value.filter(({ item }) => item.id === findingId);
-  if (!changes.length) return;
+  if (!changes.length) {
+    if (findingId === undefined) ElMessage.info('当前没有可提交的反馈');
+    return;
+  }
   const oversized = changes.filter(({ explanation }) => new TextEncoder().encode(explanation).length > 16 * 1024);
   if (oversized.length) {
     saveError.value = `请先缩减这些页面的反馈记录（每页最多 16 KB）：${pageList(oversized.map(change => change.item))}`;
@@ -236,8 +239,13 @@ async function submitFeedback(findingId?: number) {
     if (findingId === undefined && pending.length) {
       try {
         await ElMessageBox.confirm(
-          `还有 ${pending.length} 项未填写反馈：${pageList(pending)}。确定提交已填写的 ${changes.length} 项吗？其余项目仍为待反馈。`,
-          '确认提交反馈', { type: 'warning', confirmButtonText: '提交已填写', cancelButtonText: '继续填写' },
+          `还有 ${pending.length} 项未填写反馈。`,
+          '确认提交反馈', {
+            type: 'warning',
+            customClass: 'ppt-feedback-confirm',
+            confirmButtonText: '提交已填写',
+            cancelButtonText: '继续填写',
+          },
         );
       } catch { return; }
     }
@@ -430,7 +438,7 @@ onMounted(async () => {
       </div>
       <div class="page-actions">
         <el-button v-if="!readOnly" type="primary" :loading="saving"
-          :disabled="loading || !feedbackChanges.length" @click="submitFeedback()">
+          :disabled="loading" @click="submitFeedback()">
           提交反馈{{ feedbackChanges.length ? `（${feedbackChanges.length} 项）` : '' }}
         </el-button>
         <el-button v-if="findings.length && notifyDepartments.length && !readOnly && !error" :disabled="loading || notifying"
@@ -537,6 +545,13 @@ onMounted(async () => {
   </div>
 </template>
 <style scoped>
+:global(.ppt-feedback-confirm.el-message-box) {
+  --el-messagebox-width: 400px;
+  --el-messagebox-padding-primary: 20px;
+  --el-border-radius-base: 12px;
+  --el-color-primary: #254ebc;
+}
+
 .report-mail-preview {
   margin-block: 16px 2px;
   border: 1px solid #dfe6f0;

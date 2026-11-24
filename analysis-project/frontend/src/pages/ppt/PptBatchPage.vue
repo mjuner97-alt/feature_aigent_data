@@ -600,6 +600,8 @@ const matchingBatches = computed(() => batches.value.filter(batch => matches(bat
 const visible = computed(() => batches.value.filter(batch => matches(batch, query.value)
   && (!materialTypeFilter.value || batch.materialType === materialTypeFilter.value)));
 const canSubmit = computed(() => !!file.value && !!materialType.value && (mode.value === 'new' ? !!batchName.value.trim() : batchId.value !== undefined));
+const batchNameTaken = computed(() => mode.value === 'new' && !!batchName.value.trim()
+  && batches.value.some(batch => batch.name.trim() === batchName.value.trim()));
 /** 将材料上传时间格式化为分钟精度，空时间显示占位符。 */
 const dateText = (value?: string | null) => value?.replace('T', ' ').slice(0, 16) || '—';
 /** 兼容历史数据中将默认稿件类型保存为 v1 的记录。 */
@@ -758,6 +760,7 @@ async function confirmReview() {
 async function submit() {
   const selectedFile = file.value;
   if (!canSubmit.value || !selectedFile || busy.value) return;
+  if (batchNameTaken.value) return;
   busy.value = true;
   uploadError.value = '';
   try {
@@ -937,7 +940,8 @@ onMounted(async () => {
             <el-option v-for="item in materialTypes" :key="item.name" :label="item.name" :value="item.name" />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="mode === 'new'" label="批次名称">
+        <el-form-item v-if="mode === 'new'" label="批次名称"
+          :error="batchNameTaken ? '批次名称已存在，请更换名称或选择已有批次' : ''">
           <el-input v-model="batchName" placeholder="例如 11 月第 2 周例会" maxlength="255" />
         </el-form-item>
         <el-form-item v-else label="材料批次">
@@ -974,7 +978,7 @@ onMounted(async () => {
         </el-form-item>
         <div class="dialog-actions">
           <el-button :disabled="busy" @click="dialog = false">取消</el-button>
-          <el-button type="primary" native-type="submit" :loading="busy" :disabled="!canSubmit">解析 PPT</el-button>
+          <el-button type="primary" native-type="submit" :loading="busy" :disabled="!canSubmit || batchNameTaken">解析 PPT</el-button>
         </div>
       </el-form>
     </el-dialog>

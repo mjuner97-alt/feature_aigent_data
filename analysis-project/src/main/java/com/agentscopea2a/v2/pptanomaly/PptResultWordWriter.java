@@ -53,7 +53,8 @@ public class PptResultWordWriter {
             margins.setBottom(BigInteger.valueOf(1080));
             margins.setLeft(BigInteger.valueOf(1080));
             margins.setRight(BigInteger.valueOf(1080));
-            heading(document, report.fileName(), 20).setAlignment(ParagraphAlignment.CENTER);
+            String documentTitle = report.fileName().replaceFirst("(?i)\\.pptx$", "");
+            heading(document, documentTitle, 20).setAlignment(ParagraphAlignment.CENTER);
             for (var page : report.pages()) {
                 var title = document.createParagraph();
                 title.setSpacingBefore(240);

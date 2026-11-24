@@ -150,6 +150,8 @@ public interface PptAnomalyMapper {
 
     /** 创建例会材料批次并记录上传用户。 */
     int createBatch(Map<String,Object> row);
+    void lockBatchCreation();
+    boolean batchNameExists(String name);
     int updateBatchMaterialType(@Param("id") long id, @Param("materialType") String materialType);
     /** 查询材料批次列表。 */
     List<Batch> batches();

@@ -392,6 +392,13 @@
         <if test="target != ''">AND target=#{target}</if>
     </sql>
 
+    <update id="lockBatchCreation">
+        LOCK TABLE digital_qa_ppt_material_batch IN SHARE ROW EXCLUSIVE MODE
+    </update>
+    <select id="batchNameExists" resultType="boolean">
+        SELECT EXISTS (SELECT 1 FROM digital_qa_ppt_material_batch WHERE TRIM(name) = #{name})
+    </select>
+
     <!-- 创建例会材料批次并记录上传用户。 -->
     <insert id="createBatch" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
         INSERT INTO digital_qa_ppt_material_batch(name,created_by,material_type) VALUES (#{name},#{user},#{materialType})

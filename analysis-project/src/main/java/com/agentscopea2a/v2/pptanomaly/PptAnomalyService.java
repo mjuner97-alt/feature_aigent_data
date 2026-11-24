@@ -114,6 +114,14 @@ public class PptAnomalyService {
     }
     @Transactional(GaussConfig.TX_NAME)
     public Batch createBatch(String name, String userId, String materialType) {
+        if (name == null || name.isBlank() || name.strip().length() > 255) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请输入批次名称");
+        }
+        name = name.strip();
+        persistence.lockBatchCreation();
+        if (persistence.batchNameExists(name)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "批次名称已存在，请更换名称或选择已有批次");
+        }
         long id = createBatchKey(name, userId, materialType);
         return new Batch(id, name, userId, LocalDateTime.now());
     }
