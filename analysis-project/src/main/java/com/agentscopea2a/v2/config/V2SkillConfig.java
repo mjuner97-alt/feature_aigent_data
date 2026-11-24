@@ -54,6 +54,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -323,8 +324,13 @@ public class V2SkillConfig {
      * <p>The cache-HIT path was deprecated (ResponseCache HIT disabled); only the MISS path
      * is migrated. Without this hook, {@code skill_candidate.hit_count} never increments on
      * chat requests and online bump-to-distill never fires (only nightly digestion can).
+     *
+     * <p>2026/11/19 自进化整链废弃: bean 仅在 harness.skills.auto-synth.enabled=true 时装配
+     * (缺失即不创建), 与 metricClassificationService / skillDistiller / skillSynthesisRunner
+     * 同一开关, 避免 bean 级联注入在部分条件化时启动炸。
      */
     @Bean
+    @ConditionalOnProperty(name = "harness.skills.auto-synth.enabled", matchIfMissing = false)
     public SkillSynthesisHook skillSynthesisHook(
             SkillSynthesisRunner skillSynthesisRunner,
             MetricClassificationService metricClassificationService,
@@ -351,6 +357,7 @@ public class V2SkillConfig {
      * can trigger evolution, and only when no user skill covers the same fingerprint).
      */
     @Bean
+    @ConditionalOnProperty(name = "harness.skills.auto-synth.enabled", matchIfMissing = false)
     public SkillEvolutionHook skillEvolutionHook(
             SkillEvolutionRunner skillEvolutionRunner,
             FingerprintCalculator fingerprintCalculator,
@@ -382,7 +389,13 @@ public class V2SkillConfig {
         return repo;
     }
 
+    /**
+     * 指标语义分类 (metric-classification) — 2026/11/19 随自进化整链废弃:
+     * 仅在 harness.skills.auto-synth.enabled=true 时装配。metric-categories.yaml 已删除,
+     * 装配时走内置 9 类默认词条 (init() 的 not-found 分支)。
+     */
     @Bean
+    @ConditionalOnProperty(name = "harness.skills.auto-synth.enabled", matchIfMissing = false)
     public MetricClassificationService metricClassificationService(
             SkillCandidateRepository candidateRepo,
             @Value("${harness.a2a.model.instances.light-classifier.api-key}") String lightApiKey,
@@ -413,8 +426,10 @@ public class V2SkillConfig {
     @Bean
     public FingerprintCalculator fingerprintCalculator(
             DimensionStateManager dimensionStateManager,
-            MetricClassificationService metricClassificationService) {
-        return new FingerprintCalculator(dimensionStateManager, metricClassificationService);
+            ObjectProvider<MetricClassificationService> metricClassifierProvider) {
+        // metric-classification bean 已随自进化整链条件化, 缺失时传 null →
+        // FingerprintCalculator.computeMetric 的 tag 恒为 "general" (仅影响废弃链路)。
+        return new FingerprintCalculator(dimensionStateManager, metricClassifierProvider.getIfAvailable());
     }
 
     // ── Stage 8: Skill distiller (foundation for synthesis/evolution/digestion) ─────────
@@ -426,8 +441,12 @@ public class V2SkillConfig {
      * (Maven-excluded v1 package) to v2. Uses the light-classifier model (same as
      * {@link #metricClassificationService}) to keep LLM cost low - distillation runs
      * off the request hot path so latency doesn't matter.
+     *
+     * <p>2026/11/19 自进化整链废弃: 随 harness.skills.auto-synth.enabled 条件化,
+     * 默认不再装配 (省去启动时无条件构建 light-classifier OpenAIChatModel 客户端)。
      */
     @Bean
+    @ConditionalOnProperty(name = "harness.skills.auto-synth.enabled", matchIfMissing = false)
     public SkillDistiller skillDistiller(
             MetricClassificationService metricClassificationService,
             ObjectProvider<EpisodicMemory> episodicMemoryProvider,
@@ -449,8 +468,11 @@ public class V2SkillConfig {
      * Shared "count -> maybe distill" pipeline for both the Cache MISS path
      * and Cache HIT path. Stage 8: migrated from {@code com.agentscopea2a.harness.skills.SkillSynthesisRunner}
      * (Maven-excluded v1 package) to v2.
+     *
+     * <p>2026/11/19 自进化整链废弃: 随 harness.skills.auto-synth.enabled 条件化。
      */
     @Bean
+    @ConditionalOnProperty(name = "harness.skills.auto-synth.enabled", matchIfMissing = false)
     public SkillSynthesisRunner skillSynthesisRunner(
             SkillCandidateRepository candidateRepo,
             SkillIndexRepository indexRepo,
@@ -475,8 +497,11 @@ public class V2SkillConfig {
     /**
      * PR4 - failure-feedback closed loop. Stage 8: migrated from
      * {@code com.agentscopea2a.harness.skills.SkillEvolutionRunner} (Maven-excluded v1 package) to v2.
+     *
+     * <p>2026/11/19 自进化整链废弃: 直接注入 SkillDistiller (已条件化), 本 bean 必须同开关条件化。
      */
     @Bean
+    @ConditionalOnProperty(name = "harness.skills.auto-synth.enabled", matchIfMissing = false)
     public SkillEvolutionRunner skillEvolutionRunner(
             SkillIndexRepository indexRepo,
             SkillDistiller skillDistiller,

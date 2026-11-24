@@ -406,7 +406,20 @@ public class DirectSkillExecutor {
                              Map<String, String> mapping, List<ParamSpec> schema,
                              Map<String, Object> filledParams,
                              List<String> missingKeys, long createdAt,
-                             List<String> pendingAnchors) {}
+                             List<String> pendingAnchors,
+                             List<com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity>
+                                     pendingCandidates) {
+
+        /** Legacy 8-arg shape (无候选清单): 时间歧义/缺参补参场景，答复轮回退 resolveName。 */
+        PendingDirectExec(String skillName, String scriptId,
+                          Map<String, String> mapping, List<ParamSpec> schema,
+                          Map<String, Object> filledParams,
+                          List<String> missingKeys, long createdAt,
+                          List<String> pendingAnchors) {
+            this(skillName, scriptId, mapping, schema, filledParams, missingKeys, createdAt,
+                    pendingAnchors, null);
+        }
+    }
 
     private PendingDirectExec pendingOf(String skillName, String scriptId,
                                         Map<String, String> mapping, List<ParamSpec> schema,
@@ -418,6 +431,13 @@ public class DirectSkillExecutor {
 
     private final java.util.concurrent.ConcurrentHashMap<String, PendingDirectExec> pending =
             new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** 会话级人名确认钉定 (人名消歧方案 §1.6): sessionKey → name → 已确认身份。
+     *  与 pending 同生命周期口径 (内存态/不跨会话/不跨重启); 条目极小无需 TTL。 */
+    private final java.util.concurrent.ConcurrentHashMap<String,
+            java.util.concurrent.ConcurrentHashMap<String,
+                    com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity>>
+            confirmedPersons = new java.util.concurrent.ConcurrentHashMap<>();
 
     static final long PENDING_TTL_MS = 5 * 60 * 1000L;
 
@@ -707,7 +727,7 @@ public class DirectSkillExecutor {
         LedgerTruthScan truthScan = applyLedgerTruthScan(base, question);
         base = truthScan.extraction();
         // 人员台账: 我X enrich → 人名扫描 (重名整轮反问, 见下)
-        PersonScanOutcome personScan = applyPersonalDimensions(base, question, userId);
+        PersonScanOutcome personScan = applyPersonalDimensions(base, question, userId, conversationId);
         base = personScan.extraction();
         // 我X按需注入方案 §3.2 L2 重锚抑制 (extraction 级一次, §6)
         base = applyReanchorSuppression(base, question, personScan, truthScan);
@@ -745,7 +765,7 @@ public class DirectSkillExecutor {
                 Map<String, Object> preParams = buildParams(topMapping, topSchema.schema(), base);
                 pending.put(key, new PendingDirectExec(topName, top.scriptId(), topMapping, topSchema.schema(),
                         preParams, List.of(PERSON_MARKER_PREFIX + personScan.ambiguousName()),
-                        System.currentTimeMillis(), null));
+                        System.currentTimeMillis(), null, personScan.candidates()));
                 log.info("DirectSkillExecutor: skill {} 人名 {} 重名 {} 选 → 反问 (pending {})",
                         topName, personScan.ambiguousName(), personScan.candidates().size(), key);
                 return List.of(new DirectExecutionPlan(base, topName, top.scriptId(), preParams,
@@ -923,7 +943,7 @@ public class DirectSkillExecutor {
         // 人员台账 (人员台账维度方案 §3.3/§4.1): 我X extraction 级 enrich → 人名扫描
         // (唯一命中直填 perName/perNo, 重名在时间歧义检查之后反问)。
         // 顺序约束: 我X enrich 必须先于人名扫描/下钻展开 ("我部人员的缺陷数"先有 deptName)
-        PersonScanOutcome personScan = applyPersonalDimensions(extraction, question, userId);
+        PersonScanOutcome personScan = applyPersonalDimensions(extraction, question, userId, conversationId);
         extraction = personScan.extraction();
 
         // 组→部门反填 (2026/10/27 拍板): 问句只命中统计组没提部门 (车贷/房贷型) →
@@ -973,7 +993,7 @@ public class DirectSkillExecutor {
                 Map<String, Object> preParams = buildParams(mapping, schema, extraction);
                 pending.put(key, new PendingDirectExec(topName, top.scriptId(), mapping, schema,
                         preParams, List.of(PERSON_MARKER_PREFIX + personScan.ambiguousName()),
-                        System.currentTimeMillis(), null));
+                        System.currentTimeMillis(), null, personScan.candidates()));
                 log.info("DirectSkillExecutor: skill {} 人名 {} 重名 {} 选 → 反问 (pending {})",
                         topName, personScan.ambiguousName(), personScan.candidates().size(), key);
                 return new DirectExecutionPlan(extraction, topName, top.scriptId(), preParams,
@@ -1150,7 +1170,7 @@ public class DirectSkillExecutor {
         }
         LedgerTruthScan truthScan = applyLedgerTruthScan(extraction, question);
         extraction = truthScan.extraction();
-        PersonScanOutcome personScan = applyPersonalDimensions(extraction, question, userId);
+        PersonScanOutcome personScan = applyPersonalDimensions(extraction, question, userId, conversationId);
         extraction = personScan.extraction();
         extraction = backfillDeptFromLedger(extraction, mapping, schema, required);
         DimensionExtraction preSuppression = extraction;
@@ -1252,7 +1272,7 @@ public class DirectSkillExecutor {
             String key = sessionKey(userId, conversationId);
             pending.put(key, new PendingDirectExec(last.skillName(), top.scriptId(), mapping,
                     schema, merged, List.of(PERSON_MARKER_PREFIX + personScan.ambiguousName()),
-                    System.currentTimeMillis(), null));
+                    System.currentTimeMillis(), null, personScan.candidates()));
             log.info("DirectSkillExecutor: 追问层 skill {} 人名 {} 重名 {} 选 → 反问 (pending {})",
                     last.skillName(), personScan.ambiguousName(),
                     personScan.candidates().size(), key);
@@ -2160,10 +2180,12 @@ public class DirectSkillExecutor {
      * 我X enrich (§3.3, extraction 级, 不经 PeerDimension) → 人名字典扫描 (§4.1)
      * → perRole 填充 (岗位角色方案 §4.3: 路径A 提取/路径B 字典扫描在扫描后人锚齐备时跑,
      * 显式值覆盖台账随人填充)。
-     * 唯一身份 → perName/perNo 直填; 重名 → 交反问 (调用方挂 pending); 台账不可用/查无 → 不注入。
+     * 唯一身份 → perName/perNo 直填; 重名 → 四轴上下文过滤 + 会话钉定消歧 (人名消歧方案
+     * §1.2/§1.6), 仍歧义 → 交反问 (调用方挂 pending); 台账不可用/查无 → 不注入。
      */
     private PersonScanOutcome applyPersonalDimensions(DimensionExtraction extraction,
-                                                      String question, String userId) {
+                                                      String question, String userId,
+                                                      String conversationId) {
         if (personalResolverProvider == null) {
             return new PersonScanOutcome(extraction, null, List.of(),
                     com.agentscopea2a.v2.dimension.PersonalDimensionResolver.none(), List.of(), List.of());
@@ -2178,6 +2200,7 @@ public class DirectSkillExecutor {
         extraction = enrichPersonal(extraction, personal, userId);
 
         String masked = com.agentscopea2a.v2.dimension.DimensionStateManager.maskForPersonScan(question);
+        String pinKey = conversationId == null ? null : sessionKey(userId, conversationId);
         List<String> perName = new ArrayList<>(extraction.perName());
         List<String> perNo = new ArrayList<>(extraction.perNo());
         List<String> scannedNames = new ArrayList<>();
@@ -2191,20 +2214,35 @@ public class DirectSkillExecutor {
                 continue; // 字典/快照口径不一致或查询失败, 跳过该名
             }
             if (identities.size() == 1) {
-                if (!perName.contains(name)) {
-                    perName.add(name);
+                fillResolvedPerson(perName, perNo, scannedNames, scanRoles, name, identities.get(0));
+                pinPerson(pinKey, name, identities.get(0));
+            } else {
+                // 重名消歧 (人名消歧方案 §1.2/§1.6): 四轴上下文过滤 + 会话钉定裁决,
+                // 显式上下文 > 钉定 > 反问; 唯一命中 (含钉定沿用) 直填并刷新钉定
+                List<com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity> filtered =
+                        filterByIdentityContext(identities, extraction);
+                com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity pinned =
+                        pinnedPerson(pinKey, name, identities);
+                com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity chosen = null;
+                if (pinned != null && (filtered.isEmpty()
+                        || filtered.stream().anyMatch(c -> samePerNo(c, pinned)))) {
+                    chosen = pinned;
+                } else if (filtered.size() == 1) {
+                    chosen = filtered.get(0);
                 }
-                String no = identities.get(0).perNo();
-                if (no != null && !perNo.contains(no)) {
-                    perNo.add(no);
+                if (chosen != null) {
+                    log.info("DirectSkillExecutor: 人名 {} 重名 {} → 消歧命中 perNo={} "
+                                    + "(filtered={}, pinned={})", name, identities.size(),
+                            chosen.perNo(), filtered.size(), pinned != null);
+                    fillResolvedPerson(perName, perNo, scannedNames, scanRoles, name, chosen);
+                    pinPerson(pinKey, name, chosen);
+                } else if (ambiguousName == null) {
+                    ambiguousName = name;
+                    candidates = filtered.isEmpty() ? identities : filtered;
+                    log.info("DirectSkillExecutor: 人名 {} 重名 {} 选, 上下文过滤剩 {} → 反问{}清单",
+                            name, identities.size(), filtered.size(),
+                            filtered.isEmpty() ? "全量" : "过滤后");
                 }
-                if (!scannedNames.contains(name)) {
-                    scannedNames.add(name);
-                }
-                scanRoles.addAll(identities.get(0).roles());
-            } else if (ambiguousName == null) {
-                ambiguousName = name;
-                candidates = identities;
             }
         }
 
@@ -2241,6 +2279,97 @@ public class DirectSkillExecutor {
                 extraction.metrics(), extraction.matchedSkill(), extraction.extraDimensions());
         return new PersonScanOutcome(out, ambiguousName, candidates, personal, scannedNames,
                 List.copyOf(explicitRoles));
+    }
+
+    /** 唯一命中公共直填 (台账唯一 / 上下文消歧 / 钉定沿用): perName/perNo/scannedNames/roles 追加去重。 */
+    private static void fillResolvedPerson(
+            List<String> perName, List<String> perNo, List<String> scannedNames,
+            List<String> scanRoles, String name,
+            com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity identity) {
+        if (!perName.contains(name)) {
+            perName.add(name);
+        }
+        if (identity.perNo() != null && !perNo.contains(identity.perNo())) {
+            perNo.add(identity.perNo());
+        }
+        if (!scannedNames.contains(name)) {
+            scannedNames.add(name);
+        }
+        scanRoles.addAll(identity.roles());
+    }
+
+    /** 上下文过滤 (人名消歧方案 §1.2): identity 与 extraction 同轴精确等于 (trim) 任一
+     *  命中即保留; perRole 不参与 (无区分度, 拍板①)。台账身份只带 部门/统计组 (Q2 口径,
+     *  无应用/产品线属性), 应用/产品线两轴无从比对不参与。剩 0 由调用方回退全量反问 (拍板②)。 */
+    private static List<com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity>
+            filterByIdentityContext(
+                    List<com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity> identities,
+                    DimensionExtraction extraction) {
+        List<com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity> out = new ArrayList<>();
+        for (var id : identities) {
+            if (axisIntersects(id.depts(), extraction.deptName())
+                    || axisIntersects(id.groups(), extraction.groupName())) {
+                out.add(id);
+            }
+        }
+        return out;
+    }
+
+    private static boolean axisIntersects(List<String> ledgerValues, List<String> extractionValues) {
+        if (ledgerValues == null || ledgerValues.isEmpty()
+                || extractionValues == null || extractionValues.isEmpty()) {
+            return false;
+        }
+        for (String lv : ledgerValues) {
+            if (lv == null || lv.isBlank()) {
+                continue;
+            }
+            for (String ev : extractionValues) {
+                if (ev != null && lv.trim().equals(ev.trim())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** 钉定读取 (§1.6): 会话内该名已确认身份, 且仍在当前台账列表内 (perNo 匹配,
+     *  防台账变动后脏身份直填); 无会话键返回 null。 */
+    private com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity pinnedPerson(
+            String pinKey, String name,
+            List<com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity> identities) {
+        if (pinKey == null) {
+            return null;
+        }
+        var byName = confirmedPersons.get(pinKey);
+        if (byName == null) {
+            return null;
+        }
+        var pinned = byName.get(name);
+        if (pinned == null) {
+            return null;
+        }
+        return identities.stream()
+                .filter(i -> samePerNo(i, pinned))
+                .findFirst()
+                .orElse(null);
+    }
+
+    /** 钉定写入 (§1.6): 反问答复确认 / 唯一命中 (上下文直填/台账唯一) 都刷新;
+     *  无会话键或无 perNo 不写。 */
+    private void pinPerson(String pinKey, String name,
+            com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity identity) {
+        if (pinKey == null || identity == null || identity.perNo() == null) {
+            return;
+        }
+        confirmedPersons.computeIfAbsent(pinKey, k -> new java.util.concurrent.ConcurrentHashMap<>())
+                .put(name, identity);
+    }
+
+    private static boolean samePerNo(
+            com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity a,
+            com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity b) {
+        return a != null && b != null && a.perNo() != null && a.perNo().equals(b.perNo());
     }
 
     /** §3.3 enrich 字段映射 (我X按需注入方案 R1 per-type + 2026/10/30 部门与上级维度带出
@@ -2677,8 +2806,13 @@ public class DirectSkillExecutor {
                                                      PendingDirectExec p, String name) {
         com.agentscopea2a.v2.dimension.PersonalDimensionResolver resolver =
                 personalResolverProvider == null ? null : personalResolverProvider.getIfAvailable();
+        // 候选清单 (人名消歧方案 §1.3): 反问挂 pending 时已存 (可能是上下文过滤子集),
+        // 优先用之, 防「过滤清单展示序号 vs 全量重查序号」错位选错人; 空回退 resolveName
+        // (兼容跨版本残留的旧 pending 与无候选场景)。
         List<com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity> candidates =
-                resolver == null ? List.of() : resolver.resolveName(name);
+                p.pendingCandidates() != null && !p.pendingCandidates().isEmpty()
+                        ? p.pendingCandidates()
+                        : (resolver == null ? List.of() : resolver.resolveName(name));
         com.agentscopea2a.v2.dimension.PersonLedgerRepository.PersonIdentity chosen =
                 matchPersonReply(question, candidates);
         if (chosen == null) {
@@ -2686,6 +2820,7 @@ public class DirectSkillExecutor {
             pending.remove(key, p);
             return null;
         }
+        pinPerson(key, name, chosen);
         DimensionState preview = dimensionStateManager.previewState(question, previousState);
         // 补参轮也跑重锚抑制 (§6-4): 先清未提及的细粒度继承值, 再落选中的 perNo
         DimensionExtraction extraction = suppressForReplyRound(
