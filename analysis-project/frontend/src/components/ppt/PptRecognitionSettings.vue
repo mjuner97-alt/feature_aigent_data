@@ -127,7 +127,8 @@ defineExpose({ loading: rulesLoading, prepareSave });
       <legend>规则 {{ index + 1 }}</legend>
       <el-form-item label="命中规则时的识别范围" required>
         <el-select v-model="rule.mode">
-          <el-option v-for="(label, key) in modes" :key="key" :label="label" :value="key" />
+          <el-option v-for="[value, label] in pptManualRecognitionOptions" :key="value" :label="label" :value="value" />
+          <template #label>{{ modes[rule.mode] }}</template>
         </el-select>
       </el-form-item>
       <el-form-item v-for="(_, keywordIndex) in rule.keywords" :key="keywordIndex" :label="`关键词 ${keywordIndex + 1}`">

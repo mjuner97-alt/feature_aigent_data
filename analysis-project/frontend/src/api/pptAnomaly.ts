@@ -438,7 +438,7 @@ export const pptRecognitionModes = {
 
 export type PptRecognitionMode = keyof typeof pptRecognitionModes;
 
-// 关键词规则和历史配置仍可应用仅上方表格，手动下拉框只提供通用范围。
+// 历史配置仍可使用仅上方表格，识别范围下拉框只提供通用范围。
 export const pptManualRecognitionOptions = Object.entries(pptRecognitionModes)
   .filter(([mode]) => mode !== 'UPPER_TABLE_ONLY');
 

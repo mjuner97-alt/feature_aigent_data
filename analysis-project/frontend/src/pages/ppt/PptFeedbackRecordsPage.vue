@@ -17,7 +17,7 @@ type Recipient = {
 };
 
 const router = useRouter();
-const versionAssignments = ref<{ versionId: number; versionNo: number }>();
+const versionAssignments = ref<{ versionId: number; versionNo: number; section: string | null; pageNo: number | null }>();
 const emptyVersion = ref<Recipient>();
 const records = ref<PptFeedbackRecord[]>([]);
 const originalTitles = ref(new Map<number, Record<number, string>>());
@@ -154,8 +154,10 @@ function openPage(page: Page, department?: string, fromDetail = false) {
   void router.push({ path: '/ppt-anomaly/overview', state: { pptFeedbackContext: context } });
 }
 
-function openVersionAssignments(row: { versionId: number; versionNo: number }) {
-  versionAssignments.value = { versionId: row.versionId, versionNo: row.versionNo };
+function openVersionAssignments(row: Page) {
+  versionAssignments.value = {
+    versionId: row.versionId, versionNo: row.versionNo, section: row.section, pageNo: row.pageNo,
+  };
 }
 
 function closeVersionAssignments() {
@@ -271,7 +273,8 @@ onMounted(load);
       </template>
     </el-dialog>
     <PptVersionAssignmentsDialog v-if="versionAssignments" :version-id="versionAssignments.versionId"
-      :version-no="versionAssignments.versionNo" @close="closeVersionAssignments" />
+      :version-no="versionAssignments.versionNo" :initial-section="versionAssignments.section"
+      :initial-page-no="versionAssignments.pageNo" @close="closeVersionAssignments" />
   </section>
 </template>
 
