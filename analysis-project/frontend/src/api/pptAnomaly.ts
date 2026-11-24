@@ -95,6 +95,9 @@ export interface PptFeedbackRecord {
 export async function listFeedbackRecords() {
   return parse<PptFeedbackRecord[]>(await fetch(`${base}/feedback-records`, { headers: headers() }));
 }
+export async function feedbackOriginalTitles(versionId: number) {
+  return parse<Record<number, string>>(await fetch(`${base}/versions/${versionId}/feedback-original-titles`, { headers: headers() }));
+}
 /** 读取指定材料版本的板块负责人及任务统计。 */
 export async function versionSections(id: number) {
   return parse<PptSectionWork[]>(await fetch(`${base}/versions/${id}/sections`, { headers: headers() }));

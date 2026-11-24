@@ -94,6 +94,14 @@ public class PptAnomalyController {
         return service.feedbackRecords(userId, canViewAllFeedback(userId));
     }
 
+    /** 按反馈事项的可见范围读取原页标题。 */
+    @GetMapping("/versions/{versionId}/feedback-original-titles")
+    public Map<Integer, String> feedbackOriginalTitles(@PathVariable long versionId,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
+        requireUser(userId);
+        return service.originalSlideTitles(versionId, service.overview(versionId, null, userId, canViewAllFeedback(userId)));
+    }
+
     /** 判断当前用户是否具有产品部反馈管理权限。 */
     private boolean canViewAllFeedback(String userId) {
         return isProductDepartmentUser(userId, people);

@@ -1401,13 +1401,15 @@ onMounted(async () => {
   .review-page-content { grid-template-columns: minmax(0, 1fr); }
   .review-preview { min-height: 175px; }
 }
-@media (width > 700px) {
+  @media not all and (max-width: 700px) {
   .batch-page.is-reviewing, .review-screen { height: 100%; }
   .review-screen { display: flex; flex-direction: column; }
   .review-screen > :not(.review-workspace) { flex: none; }
   .review-workspace {
     flex: 1 1 0; grid-template-rows: minmax(0, 1fr);
-    min-height: 160px; max-height: min(62dvh, 580px);
+    min-height: 160px;
+    max-height: min(62vh, 580px);
+    max-height: min(62dvh, 580px);
   }
 }
 @media (max-width: 700px) {

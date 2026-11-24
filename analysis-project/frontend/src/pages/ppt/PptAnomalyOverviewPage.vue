@@ -2,6 +2,7 @@
 /** 例会反馈详情页，根据本人经办关系选择默认目录并维护反馈草稿。 */
 
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import type { Directive } from 'vue';
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Message } from '@element-plus/icons-vue';
@@ -13,6 +14,7 @@ import type { PptFinding, PptSlide, PptVersionWork } from '../../types/pptAnomal
 import PptSidebarIndex from '../../components/ppt/PptSidebarIndex.vue';
 import PptBoardContactList from '../../components/ppt/PptBoardContactList.vue';
 import PptSlideViewer from '../../components/ppt/PptSlideViewer.vue';
+import { feedbackPageTitle } from '../../components/ppt/feedbackPageTitle';
 import PptFeedbackForm from '../../components/ppt/PptFeedbackForm.vue';
 import PptAssignmentDialog from '../../components/ppt/PptAssignmentDialog.vue';
 import MailRecipientDialog from '../../components/MailRecipientDialog.vue';
@@ -339,9 +341,27 @@ async function loadPreview(id: number, pageNo: number) {
   }
 }
 watch(versionId, () => { previews.value = new Map(); }, { flush: 'sync' });
-watch([displayedFindings, versionId], ([items, id]) => {
-  for (const item of items) void loadPreview(id, item.pageNo);
-});
+const previewObservers = new WeakMap<HTMLElement, IntersectionObserver>();
+const vPreviewVisible: Directive<HTMLElement, { version: number; page: number }> = {
+  mounted(element, { value }) {
+    if (!('IntersectionObserver' in window)) {
+      void loadPreview(value.version, value.page);
+      return;
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry?.isIntersecting || !previewObservers.has(element)) return;
+      observer.disconnect();
+      previewObservers.delete(element);
+      void loadPreview(value.version, value.page);
+    }, { rootMargin: '200px 0px' });
+    previewObservers.set(element, observer);
+    observer.observe(element);
+  },
+  unmounted(element) {
+    previewObservers.get(element)?.disconnect();
+    previewObservers.delete(element);
+  },
+};
 /** 加载通知指定版本的反馈目录，并按本人经办情况选择视图。 */
 async function reload() {
   const id = ++loadId;
@@ -468,7 +488,7 @@ onMounted(async () => {
         <article v-for="item in displayedFindings" :key="item.id" :data-finding-id="item.id" class="feedback-column">
           <header class="finding-header">
             <div class="finding-title">
-              <h3>{{ item.title || '未命名页面' }}</h3>
+              <h3>{{ feedbackPageTitle(directory?.originalTitles?.[item.pageNo], item.title) }}</h3>
               <div class="finding-handlers">
                 <span>经办人</span>
                 <span v-for="handler in handlersFor(item.id)" :key="handler.userId" class="handler-tag">
@@ -487,8 +507,10 @@ onMounted(async () => {
                 @click="removeFinding(item)">删除事项</el-button>
             </div>
           </header>
-          <PptSlideViewer :page-no="item.pageNo" :slide="previews.get(item.pageNo) ?? undefined"
-            :unavailable="previews.get(item.pageNo) === null" />
+          <div :key="`${versionId}:${item.pageNo}`" v-preview-visible="{ version: versionId, page: item.pageNo }">
+            <PptSlideViewer :page-no="item.pageNo" :slide="previews.get(item.pageNo) ?? undefined"
+              :unavailable="previews.get(item.pageNo) === null" />
+          </div>
           <PptFeedbackForm :key="loadId"
             :finding="item" :draft="drafts.get(item.id)" :saving="saving"
             :compact="readOnly" :read-only="readOnly" :conflict="conflicts.has(item.id)"

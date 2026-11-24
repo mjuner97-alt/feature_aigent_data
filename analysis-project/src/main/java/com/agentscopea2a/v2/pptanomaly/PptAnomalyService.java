@@ -271,6 +271,7 @@ public class PptAnomalyService {
         var visibleDepartments = recordDepartments(userId, admin);
         if (!admin && visibleDepartments.isEmpty()) return List.of();
         var records = new ArrayList<FeedbackRecord>();
+        var directory = new HashMap<String, java.util.Optional<DirectoryPerson>>();
         for (var row : persistence.feedbackRecords(userId, true, !noticeColumns.isEmpty(), noticeColumns.contains("notified_at"))) {
             if (row.findingId() == null) continue;
             var departments = readList(row.findingDepartments());
@@ -281,7 +282,8 @@ public class PptAnomalyService {
                         row.versionNo(), row.fileName(), row.recipient(), row.findingId(), row.pageNo(), row.title(),
                         row.section(), write(departments), row.status(), row.noticeKind(), row.notifiedAt(), row.feedbackAt());
             }
-            var person = row.recipient() == null ? null : ledgerPerson(row.recipient());
+            var person = row.recipient() == null ? null : directory
+                    .computeIfAbsent(row.recipient(), id -> java.util.Optional.ofNullable(ledgerPerson(id))).orElse(null);
             if (departments.isEmpty() && person != null) departments = person.depts();
             String title = row.title() == null ? "" : row.title().strip();
             String configurableTitle = admin ? (title.isBlank() ? "未命名页面" : title) : null;

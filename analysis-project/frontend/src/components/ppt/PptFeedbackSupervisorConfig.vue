@@ -14,14 +14,16 @@ const editableDepartments = ref<string[]>([]);
 const props = defineProps<{ canManageAllConfigurations: boolean }>();
 const emit = defineEmits<{ changed: [] }>();
 const department = ref('');
-const visiblePeople = computed(() => saved.value.filter(person =>
-  !department.value || person.supervisorDepartments.includes(department.value)));
-
-const showActions = computed(() => visiblePeople.value.some(person =>
-  removableDepartments(person).length > 0 || canDelete(person)));
+const visibleAssignments = computed(() => saved.value.flatMap(person => {
+  const names = person.supervisorDepartments.length ? person.supervisorDepartments : [''];
+  return [...new Set(names)]
+    .filter(name => !department.value || department.value === name)
+    .map(name => ({ name, person, key: JSON.stringify([name, person.userId]) }));
+}));
+const showActions = computed(() => visibleAssignments.value.some(row => canMaintain(row.name)));
 
 const addOpen = ref(false);
-const editingPerson = ref<PptFeedbackSupervisor | null>(null);
+const editing = ref(false);
 const selected = ref<string[]>([]);
 const selectedDepartment = ref('');
 const choices = ref(new Map<string, PptPerson>());
@@ -74,18 +76,19 @@ function openAdd() {
   searching.value = false;
   searchError.value = '';
   saveError.value = '';
-  editingPerson.value = null;
+  editing.value = false;
   addOpen.value = true;
 }
 
-/** 使用已有督办人和部门打开编辑弹窗。 */
-function openEdit(person: PptFeedbackSupervisor) {
+/** 使用该部门的全部督办人打开编辑弹窗。 */
+function openEdit(name: string) {
   searchId++;
-  editingPerson.value = person;
-  selected.value = [person.userId];
-  selectedDepartment.value = person.supervisorDepartments[0] || '';
+  editing.value = true;
+  const people = saved.value.filter(person => person.supervisorDepartments.includes(name));
+  selected.value = people.map(person => person.userId);
+  selectedDepartment.value = name;
   choices.value.clear();
-  choices.value.set(person.userId, {
+  for (const person of people) choices.value.set(person.userId, {
     userId: person.userId,
     name: person.name,
     department: person.departments[0] || '',
@@ -138,14 +141,13 @@ async function add() {
 
 /** 保存督办人部门编辑。 */
 async function saveEdit() {
-  const person = editingPerson.value;
-  if (!person || !selectedDepartment.value || !selected.value.length || saving.value) return;
+  if (!editing.value || !selectedDepartment.value || !selected.value.length || saving.value) return;
   saving.value = true;
   saveError.value = '';
   try {
     saved.value = await updatePptFeedbackSupervisor(selected.value, [selectedDepartment.value]);
     addOpen.value = false;
-    editingPerson.value = null;
+    editing.value = false;
     emit('changed');
     await load();
     ElMessage.success('编辑成功');
@@ -161,29 +163,20 @@ function personLabel(person: Pick<PptPerson, 'userId' | 'name'>) {
   return person.name && person.name !== person.userId ? `${person.name}（${person.userId}）` : person.userId;
 }
 
-/** 计算当前筛选下可移除的督办部门。 */
-function removableDepartments(person: PptFeedbackSupervisor) {
-  return person.supervisorDepartments.filter(name => (props.canManageAllConfigurations || editableDepartments.value.includes(name))
-    && (!department.value || department.value === name));
+function canMaintain(name: string) {
+  return props.canManageAllConfigurations || editableDepartments.value.includes(name);
 }
 
-/** 判断当前用户是否有权限删除该督办人的全部关系。 */
-function canDelete(person: PptFeedbackSupervisor) {
-  return props.canManageAllConfigurations
-    || person.supervisorDepartments.length > 0
-      && person.supervisorDepartments.every(name => editableDepartments.value.includes(name));
-}
-
-/** 确认后删除督办人的全部督办关系。 */
-async function remove(person: PptFeedbackSupervisor) {
+/** 确认后移除该人员在当前部门的督办关系。 */
+async function remove(person: PptFeedbackSupervisor, name: string) {
   if (changingId.value) return;
-  changingId.value = person.userId;
+  changingId.value = name || person.userId;
   try {
-    const message = `删除「${personLabel(person)}」的全部督办关系？`;
+    const message = `从「${name || '未配置'}」移除督办人「${personLabel(person)}」？`;
     await ElMessageBox.confirm(message, '移除组织督办人', {
       type: 'warning', customClass: 'ppt-confirm-box', confirmButtonText: '删除', cancelButtonText: '取消',
     });
-    saved.value = await deletePptFeedbackSupervisor(person.userId);
+    saved.value = await deletePptFeedbackSupervisor(person.userId, name || undefined);
     // 移除自身的督办关系也可能收回相应部门的维护权限。
     emit('changed');
     await load();
@@ -213,36 +206,36 @@ onMounted(load);
     <el-alert v-if="loadError" :title="loadError" type="error" :closable="false">
       <el-button link type="primary" @click="load">重新加载</el-button>
     </el-alert>
-    <el-table v-else :data="visiblePeople" row-key="userId"
+    <el-table v-else :data="visibleAssignments" row-key="key"
       :empty-text="department ? '该部门暂无组织督办人' : '暂无组织督办人'">
       <el-table-column label="督办部门" min-width="160">
-        <template #default="{ row }">{{ row.supervisorDepartments.join('、') || '未配置' }}</template>
+        <template #default="{ row }">{{ row.name || '未配置' }}</template>
       </el-table-column>
       <el-table-column label="姓名（统一认证号）" min-width="230">
-        <template #default="{ row }">{{ personLabel(row) }}</template>
+        <template #default="{ row }">{{ personLabel(row.person) }}</template>
       </el-table-column>
       <el-table-column label="人员所属部门" min-width="160">
-        <template #default="{ row }">{{ row.departments.join('、') || '—' }}</template>
+        <template #default="{ row }">{{ row.person.departments.join('、') || '—' }}</template>
       </el-table-column>
       <el-table-column v-if="showActions" label="操作" width="140" fixed="right">
         <template #default="{ row }">
-          <div v-if="removableDepartments(row).length || canDelete(row)" class="supervisor-actions">
-            <el-button v-if="removableDepartments(row).length" link type="primary" :disabled="!!changingId || saving"
-              @click="openEdit(row)">编辑</el-button>
-            <el-button v-if="canDelete(row)" link type="danger"
-              :loading="changingId === row.userId" :disabled="!!changingId" @click="remove(row)">删除</el-button>
+          <div v-if="canMaintain(row.name)" class="supervisor-actions">
+            <el-button v-if="row.name && editableDepartments.includes(row.name)" link type="primary" :disabled="!!changingId || saving"
+              @click="openEdit(row.name)">编辑</el-button>
+            <el-button link type="danger" :disabled="!!changingId || saving"
+              @click="remove(row.person, row.name)">删除</el-button>
           </div>
           <span v-else class="unavailable-action">—</span>
         </template>
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="addOpen" :title="editingPerson ? '编辑组织督办人' : '新增组织督办人'" width="min(520px, 94vw)" append-to-body
+    <el-dialog v-model="addOpen" :title="editing ? '编辑组织督办人' : '新增组织督办人'" width="min(520px, 94vw)" append-to-body
       :show-close="!saving" :close-on-click-modal="false" :close-on-press-escape="!saving">
       <el-alert v-if="saveError" :title="saveError" type="error" :closable="false" />
-      <el-form label-position="top" @submit.prevent="editingPerson ? saveEdit() : add()">
+      <el-form label-position="top" @submit.prevent="editing ? saveEdit() : add()">
         <el-form-item label="督办部门" required>
-          <el-select v-model="selectedDepartment" filterable :disabled="saving || !!editingPerson"
+          <el-select v-model="selectedDepartment" filterable :disabled="saving || editing"
             placeholder="选择被督办的部门" style="width: 100%">
             <el-option v-for="name in editableDepartments" :key="name" :label="name" :value="name" />
           </el-select>
@@ -259,7 +252,7 @@ onMounted(load);
       <template #footer>
         <el-button :disabled="saving" @click="addOpen = false">取消</el-button>
         <el-button type="primary" :loading="saving" :disabled="!selected.length || !selectedDepartment"
-          @click="editingPerson ? saveEdit() : add()">保存</el-button>
+          @click="editing ? saveEdit() : add()">保存</el-button>
       </template>
     </el-dialog>
   </section>
@@ -271,5 +264,4 @@ onMounted(load);
 .unavailable-action { color: #64748b; }
 .supervisor-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .supervisor-actions :deep(.el-button) { margin: 0; flex-shrink: 0; }
-.supervisor-actions :deep(.el-dropdown) { display: inline-flex; align-items: center; }
 </style>

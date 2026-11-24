@@ -2,12 +2,11 @@
 /** 反馈事项侧栏目录，用处理状态区分已反馈和待反馈页面。 */
 
 import type { PptFinding } from '../../types/pptAnomaly';
+import { feedbackPageTitle } from './feedbackPageTitle';
 
 const props = defineProps<{ pages: PptFinding[]; originalTitles?: Record<number, string>; selectedId?: number }>();
 function pageTitle(page: PptFinding) {
-  const title = props.originalTitles?.[page.pageNo] || page.title || '';
-  const withoutSectionNumber = title.replace(/^\s*[0-9]+(?:[.\uFF0E\u002D\uFF0D\u2013\u2014][0-9]+)+[.\uFF0E\u3001\s]*/, '').trim();
-  return withoutSectionNumber || title || '未命名页面';
+  return feedbackPageTitle(props.originalTitles?.[page.pageNo], page.title);
 }
 const emit = defineEmits<{ select: [PptFinding] }>();
 

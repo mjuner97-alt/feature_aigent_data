@@ -3,8 +3,9 @@
 
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { listFeedbackRecords, type PptFeedbackRecord } from '../../api/pptAnomaly';
+import { feedbackOriginalTitles, listFeedbackRecords, type PptFeedbackRecord } from '../../api/pptAnomaly';
 import PptListFilterBar from '../../components/ppt/PptListFilterBar.vue';
+import { feedbackPageTitle } from '../../components/ppt/feedbackPageTitle';
 import PptVersionAssignmentsDialog from '../../components/ppt/PptVersionAssignmentsDialog.vue';
 
 /** 反馈列表中的一条原始事项记录。 */
@@ -19,6 +20,21 @@ const router = useRouter();
 const versionAssignments = ref<{ versionId: number; versionNo: number }>();
 const emptyVersion = ref<Recipient>();
 const records = ref<PptFeedbackRecord[]>([]);
+const originalTitles = ref(new Map<number, Record<number, string>>());
+const loadingTitles = new Set<number>();
+
+async function loadOriginalTitles(row: Recipient, expanded: Recipient[]) {
+  const id = row.versionId;
+  if (!expanded.some(item => item.key === row.key) || originalTitles.value.has(id) || loadingTitles.has(id)) return;
+  loadingTitles.add(id);
+  try {
+    originalTitles.value.set(id, await feedbackOriginalTitles(id));
+  } catch {
+    // 原件读取失败时继续显示事项标题，下次展开可以重试。
+  } finally {
+    loadingTitles.delete(id);
+  }
+}
 const loading = ref(false);
 const error = ref('');
 const batch = ref<number>();
@@ -81,7 +97,6 @@ const recipients = computed(() => {
     const completed = [...assigned.values()].filter(status => status === 'CONFIRMED' || status === 'ADJUSTED').length;
     return {
       ...group, pages: [...pages.values()], total: assigned.size, completed,
-      recipientNames: [...new Set(group.pages.flatMap(page => page.recipientNames))],
       hasNotice: group.pages.some(page => page.noticeKind),
       unassigned: group.pages.some(page => page.recipient === null),
       unassignedTitles: [...new Set(group.pages
@@ -188,14 +203,20 @@ onMounted(load);
     <el-alert v-if="error" :title="error" type="error" :closable="false">
       <el-button link type="primary" @click="load">重试</el-button>
     </el-alert>
-    <el-table v-loading="loading" :data="visible" row-key="key" empty-text="暂无匹配的反馈记录">
+    <el-table v-loading="loading" :data="visible" row-key="key" empty-text="暂无匹配的反馈记录"
+      @expand-change="loadOriginalTitles">
       <el-table-column type="expand">
         <template #default="{ row }">
           <el-table class="page-details" :data="row.pages" size="small" empty-text="暂无反馈任务">
             <el-table-column label="页面" min-width="180">
-              <template #default="{ row: item }">P{{ item.pageNo }} · {{ item.title || '未命名页面' }}</template>
+              <template #default="{ row: item }">
+                P{{ item.pageNo }} · {{ feedbackPageTitle(originalTitles.get(row.versionId)?.[item.pageNo], item.title) }}
+              </template>
             </el-table-column>
             <el-table-column prop="section" label="板块" min-width="100" />
+            <el-table-column label="经办人" min-width="180" show-overflow-tooltip>
+              <template #default="{ row: item }">{{ item.recipientNames.join('、') || '待分派' }}</template>
+            </el-table-column>
             <el-table-column label="通知时间" min-width="175">
               <template #default="{ row: item }">{{ notificationTime(item.notifiedAt) }}</template>
             </el-table-column>
@@ -225,9 +246,6 @@ onMounted(load);
       </el-table-column>
       <el-table-column label="通知时间" min-width="175">
         <template #default="{ row }">{{ notificationTime(row.notifiedAt) }}</template>
-      </el-table-column>
-      <el-table-column label="经办人" min-width="180" show-overflow-tooltip>
-        <template #default="{ row }">{{ row.recipientNames.join('、') || '待分派' }}</template>
       </el-table-column>
       <el-table-column label="反馈进度" width="125">
         <template #default="{ row }">{{ row.unassigned ? '待分派' : row.total ? `${row.completed}/${row.total}` : row.pages.length ? '—' : '暂无反馈任务' }}</template>
