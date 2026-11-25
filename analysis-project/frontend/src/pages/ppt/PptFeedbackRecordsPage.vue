@@ -10,6 +10,13 @@ import PptVersionAssignmentsDialog from '../../components/ppt/PptVersionAssignme
 
 /** 反馈列表中的一条原始事项记录。 */
 type Page = PptFeedbackRecord['page'] & { configurableTitle: string | null; recipientNames: string[]; recipientIds: string[] };
+const feedbackStatusOrder = ['待分派', '待反馈', '已反馈', '—'] as const;
+
+function feedbackStatusRank(page: Page) {
+  if (page.recipient === null || page.status === 'UNASSIGNED') return 0;
+  if (page.status === 'PENDING_FEEDBACK') return 1;
+  return page.status ? 2 : 3;
+}
 /** 按版本和责任部门聚合，人员只作为通知对象，不拆分反馈任务。 */
 type Recipient = {
   key: string; batchId: number; batchName: string; versionId: number; versionNo: number; fileName: string;
@@ -94,8 +101,11 @@ const recipients = computed(() => {
       });
     }
     const completed = [...pages.values()].filter(page => page.status === 'CONFIRMED' || page.status === 'ADJUSTED').length;
+    const detailPages = [...pages.values()].sort((a, b) =>
+      feedbackStatusRank(a) - feedbackStatusRank(b)
+      || (a.pageNo ?? Number.MAX_SAFE_INTEGER) - (b.pageNo ?? Number.MAX_SAFE_INTEGER));
     return {
-      ...group, pages: [...pages.values()], total: pages.size, completed,
+      ...group, pages: [...pages.values()], detailPages, total: pages.size, completed,
       hasNotice: group.pages.some(page => page.noticeKind),
       unassigned: group.pages.some(page => page.recipient === null),
       unassignedTitles: [...new Set(group.pages
@@ -208,7 +218,7 @@ onMounted(load);
       @expand-change="loadOriginalTitles">
       <el-table-column type="expand">
         <template #default="{ row }">
-          <el-table class="page-details" :data="row.pages" size="small" empty-text="暂无反馈任务">
+          <el-table class="page-details" :data="row.detailPages" size="small" empty-text="暂无反馈任务">
             <el-table-column label="页面" min-width="180">
               <template #default="{ row: item }">
                 P{{ item.pageNo }} · {{ feedbackPageTitle(originalTitles.get(row.versionId)?.[item.pageNo], item.title) }}
@@ -223,7 +233,7 @@ onMounted(load);
             </el-table-column>
             <el-table-column label="反馈状态" width="100">
               <template #default="{ row: item }">
-                {{ item.recipient === null ? '待分派' : item.status === 'PENDING_FEEDBACK' ? '待反馈' : item.status ? '已反馈' : '—' }}
+                {{ feedbackStatusOrder[feedbackStatusRank(item)] }}
               </template>
             </el-table-column>
             <el-table-column label="反馈时间" min-width="135">

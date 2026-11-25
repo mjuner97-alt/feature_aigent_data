@@ -87,6 +87,7 @@ public class PptAnomalyService {
     private final PptFeedbackNotifier notifier;
     // 带此版本标记的说明保存为 JSON，内容同时包含用户说明和附件文件名索引。
     private static final String ATTACHMENT_PREFIX = "ppt-feedback-files:v1\n";
+    private static final String FEEDBACK_HTML_PREFIX = "ppt-feedback-html:v1\n";
     private static final int MAX_FEEDBACK_BYTES = 16 * 1024;
     private static final int MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024;
     // 兼容读取早期写入 data/ppt-anomaly 的原件路径。
@@ -621,6 +622,9 @@ public class PptAnomalyService {
         String target = department.strip();
         var selected = handlers == null ? List.<String>of() : handlers.stream()
                 .filter(Objects::nonNull).map(String::strip).filter(id -> !id.isEmpty()).distinct().sorted().toList();
+        if (selected.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请至少选择一位经办人");
+        }
         if (selected.stream().anyMatch(id -> !inDepartment(List.of(target), id))) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择属于目标部门的经办人");
         }
@@ -659,12 +663,9 @@ public class PptAnomalyService {
             if (!transferred && new HashSet<>(previousHandlers).equals(new HashSet<>(selected))) return;
             revision = existing.revision() + (transferred ? 1 : 0);
             String updatedStatus = transferred || "UNASSIGNED".equals(existing.status()) || "PENDING_FEEDBACK".equals(existing.status())
-                    ? (selected.isEmpty() ? "UNASSIGNED" : "PENDING_FEEDBACK") : existing.status();
+                    ? "PENDING_FEEDBACK" : existing.status();
             persistence.updateFindingAssignment(id, target, departments, revision, updatedStatus);
             persistence.deleteAssignmentHandlers(id);
-        }
-        if (existing == null && selected.isEmpty()) {
-            persistence.updateFindingAssignment(id, target, departments, revision, "UNASSIGNED");
         }
         for (String handler : selected) persistence.addAssignmentHandler(id, handler);
         persistence.recordAssignmentChange(id, revision, previousDepartment, target,
@@ -1749,13 +1750,25 @@ public class PptAnomalyService {
             explanation = storeAttachments(explanation, attachments, reusable);
         }
         String judgement = confirmed ? "CONFIRMED" : "NON_ANOMALY";
-        if (judgement.equals(state.judgement()) && explanation.equals(Objects.requireNonNullElse(state.explanation(), ""))) return;
+        boolean empty = attachments.isEmpty() && isEmptyFeedbackExplanation(explanation);
+        if (empty) explanation = "";
+        String nextStatus = empty ? "PENDING_FEEDBACK" : confirmed ? "CONFIRMED" : "ADJUSTED";
+        if (nextStatus.equals(finding.status())
+                && (empty || (judgement.equals(state.judgement()) && explanation.equals(state.explanation())))) return;
         // 保存反馈说明与附件索引后更新事项状态，两次数据库写入属于同一事务。
         persistence.feedback(findingId, judgement, "[]", explanation, userId);
-        persistence.findingStatus(findingId, confirmed ? "CONFIRMED" : "ADJUSTED");
-        if ("ANALYZED".equals(versionStatus) && !PptFeedbackMailTable.isAnalyzed(finding.status())) {
+        persistence.findingStatus(findingId, nextStatus);
+        if (!empty && "ANALYZED".equals(versionStatus) && !PptFeedbackMailTable.isAnalyzed(finding.status())) {
             notifier.enqueueCompletedDepartments(versionId, departments);
         }
+    }
+
+    private static boolean isEmptyFeedbackExplanation(String explanation) {
+        String text = explanation.startsWith(FEEDBACK_HTML_PREFIX)
+                ? org.jsoup.Jsoup.parseBodyFragment(explanation.substring(FEEDBACK_HTML_PREFIX.length())).body().text()
+                : explanation;
+        return text.codePoints().allMatch(cp -> Character.isWhitespace(cp) || Character.isSpaceChar(cp)
+                || cp == 0x200B || cp == 0xFEFF);
     }
 
     /** 反馈说明与上传图片文件名索引的存储载荷。 */

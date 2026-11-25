@@ -331,7 +331,7 @@
                    <when test="notices and hasNoticeTime">n.notified_at</when>
                    <otherwise>CAST(NULL AS TIMESTAMP)</otherwise>
                </choose> AS notified_at,
-               CASE WHEN v.id=f.version_id THEN (
+               CASE WHEN v.id=f.version_id AND f.status IN ('CONFIRMED','ADJUSTED') THEN (
                    SELECT MAX(note.created_at) FROM digital_qa_ppt_finding_feedback note
                    WHERE note.finding_id=f.id AND note.assignment_revision=f.assignment_revision AND (note.user_id=r.recipient
                        OR (assigned.user_id IS NOT NULL AND f.status IN ('CONFIRMED','ADJUSTED')))
@@ -610,6 +610,7 @@
             JOIN digital_qa_ppt_finding_feedback r ON r.finding_id=c.prior_id
                 AND r.assignment_revision=prior_finding.assignment_revision
             WHERE c.candidate_count=1 AND c.destination_count=1
+              AND prior_finding.status IN ('CONFIRMED','ADJUSTED')
               AND current_finding.status='PENDING_FEEDBACK' AND current_finding.assignment_revision=0
               AND EXISTS (SELECT 1 FROM digital_qa_ppt_finding_recipient h WHERE h.finding_id=c.finding_id)
               AND NOT EXISTS (SELECT 1 FROM digital_qa_ppt_finding_feedback own WHERE own.finding_id=c.finding_id)
