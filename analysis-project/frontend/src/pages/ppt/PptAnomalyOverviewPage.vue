@@ -510,14 +510,21 @@ onMounted(async () => {
           <header class="finding-header">
             <div class="finding-title">
               <h3>{{ feedbackPageTitle(directory?.originalTitles?.[item.pageNo], item.title) }}</h3>
-              <div class="finding-handlers">
-                <span>经办人</span>
-                <span v-for="handler in handlersFor(item.id)" :key="handler.userId" class="handler-tag">
-                  <strong v-if="handler.name">{{ handler.name }}</strong>
-                  <span>{{ handler.name ? `（${handler.userId}）` : handler.userId }}</span>
-                </span>
-                <span v-if="!handlersFor(item.id).length" class="handler-empty">未分派</span>
-              </div>
+              <dl class="finding-meta">
+                <dt>识别关键字</dt>
+                <dd>
+                  <span v-if="item.anomalyKeyword?.trim()" class="keyword-tag">{{ item.anomalyKeyword }}</span>
+                  <span v-else class="meta-empty">无关键字记录</span>
+                </dd>
+                <dt>经办人</dt>
+                <dd>
+                  <span v-for="handler in handlersFor(item.id)" :key="handler.userId" class="handler-tag">
+                    <strong>{{ handler.name || handler.userId }}</strong>
+                    <span v-if="handler.name && handler.name !== handler.userId" class="handler-id">{{ handler.userId }}</span>
+                  </span>
+                  <span v-if="!handlersFor(item.id).length" class="meta-empty">未分派</span>
+                </dd>
+              </dl>
             </div>
             <div class="finding-actions">
               <span>{{ item.departments.join('、') || '部门未归属' }}</span>
@@ -654,13 +661,17 @@ onMounted(async () => {
 .feedback-column { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
 .feedback-column + .feedback-column { margin-top: 24px; padding-top: 20px; border-top: 1px solid #dfe6f0; }
 .board-contact { display: grid; gap: 8px; padding: 0 4px; overflow-wrap: anywhere; }
-.finding-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
+.finding-header { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
 .finding-title { min-width: 0; }
 .finding-title h3 { margin: 3px 0 0; font-size: 20px; color: #142441; overflow-wrap: anywhere; }
-.finding-handlers { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 8px; color: #52627a; font-size: 13px; }
-.handler-tag { max-width: 100%; padding: 3px 8px; border: 1px solid #dce6f5; border-radius: 6px; background: #f1f5fc; overflow-wrap: anywhere; }
+.finding-meta { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px 12px; margin: 10px 0 0; font-size: 13px; }
+.finding-meta dt { padding-top: 4px; color: #52627a; }
+.finding-meta dd { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; overflow-wrap: anywhere; }
+.keyword-tag { max-width: 100%; padding: 3px 8px; border-radius: 6px; background: #e8f0ff; color: #2252a3; }
+.handler-tag { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; max-width: 100%; padding: 3px 8px; border: 1px solid #dce6f5; border-radius: 6px; background: #f6f8fc; }
 .handler-tag strong { color: #253b60; font-weight: 600; }
-.handler-empty { color: #66758b; }
+.handler-id { color: #52627a; font-size: 12px; }
+.meta-empty { padding-block: 4px; color: #66758b; }
 .finding-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
 .feedback-status { padding: 3px 9px; border-radius: 12px; background: #e8f0ff; color: #225bb7; font-size: 13px; }
 @media (max-width: 900px), (max-height: 480px) {

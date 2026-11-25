@@ -29,7 +29,6 @@ const historyLoading = ref<Record<number, boolean>>({});
 const historyErrors = ref<Record<number, boolean>>({});
 const historyBatch = ref<PptBatchSummary>();
 const assignmentVersion = ref<{ id: number; versionNo: number | null }>();
-const notificationVersion = ref<{ id: number; versionNo: number | null }>();
 const pdfVersion = ref<PptVersion>();
 const loading = ref(false);
 const busy = ref(false);
@@ -879,24 +878,32 @@ onMounted(async () => {
         </el-table-column>
       </el-table>
     </section>
-    <el-drawer :model-value="!!historyBatch" title="历史版本" size="min(680px, 100%)"
+    <el-drawer :model-value="!!historyBatch" title="历史版本" size="min(860px, 100%)"
       @update:model-value="(open: boolean) => { if (!open) historyBatch = undefined }">
       <template v-if="historyBatch">
-        <p>{{ historyBatch.name }}</p>
-        <el-button v-if="historyErrors[historyBatch.id]" @click="loadHistory(historyBatch.id)">重新加载历史版本</el-button>
-        <el-table v-else v-loading="historyLoading[historyBatch.id]"
+        <div class="history-summary">
+          <span>材料批次</span>
+          <strong>{{ historyBatch.name }}</strong>
+        </div>
+        <div v-if="historyErrors[historyBatch.id]" class="history-error">
+          <el-alert title="历史版本加载失败" type="error" :closable="false" show-icon />
+          <el-button @click="loadHistory(historyBatch.id)">重新加载</el-button>
+        </div>
+        <el-table v-else v-loading="historyLoading[historyBatch.id]" class="history-table" stripe
           :data="histories[historyBatch.id] || []" row-key="id" empty-text="暂无上传版本">
           <el-table-column label="版本" width="150">
             <template #default="{ row, $index }">
-              {{ versionTypeLabel(row.versionNo, row.versionName) }}<span v-if="versionTypeLabel(row.versionNo, row.versionName)"> </span>v{{ row.versionNo }}
-              <el-tag v-if="$index === 0" size="small" effect="plain">最新</el-tag>
+              <div class="history-version">
+                <strong>{{ [versionTypeLabel(row.versionNo, row.versionName), `v${row.versionNo}`].filter(Boolean).join(' ') }}</strong>
+                <el-tag v-if="$index === 0" size="small" effect="light">最新</el-tag>
+              </div>
             </template>
           </el-table-column>
           <el-table-column prop="fileName" label="原文件" min-width="140" show-overflow-tooltip />
-          <el-table-column label="上传时间" width="145">
+          <el-table-column label="上传时间" width="155">
             <template #default="{ row }">{{ dateText(row.uploadedAt) }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="170">
+          <el-table-column label="操作" width="188">
             <template #default="{ row }">
               <div class="history-actions">
                 <!-- 暂时隐藏历史版本中的调整经办人入口。
@@ -905,9 +912,6 @@ onMounted(async () => {
                 <el-button link type="primary" @click="download(row)">下载原件</el-button>
                 <el-button v-if="row.uploadedBy === getLoggedInUser()?.userId" link type="primary"
                   @click="pdfVersion = row">上传预览 PDF</el-button>
-                <el-button link type="primary" @click="notificationVersion = { id: row.id, versionNo: row.versionNo }">通知记录</el-button>
-                <el-button link type="primary"
-                  @click="router.push({ path: '/ppt-anomaly/notifications', query: { batchId: String(row.batchId) } })">通知记录</el-button>
               </div>
             </template>
           </el-table-column>
@@ -1278,7 +1282,21 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.history-actions { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; }
+.history-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 8px;
+  background: var(--el-fill-color-light);
+  overflow-wrap: anywhere;
+}
+.history-summary span { color: var(--el-text-color-secondary); font-size: 13px; }
+.history-error { display: flex; flex-wrap: wrap; gap: 12px; }
+.history-table { border: 1px solid var(--el-border-color-light); border-radius: 8px; }
+.history-version, .history-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .history-actions :deep(.el-button) { flex: none; margin-left: 0; white-space: nowrap; }
 .import-steps { margin-block: 12px; }
 #ppt-review-heading:focus { outline: none; }
