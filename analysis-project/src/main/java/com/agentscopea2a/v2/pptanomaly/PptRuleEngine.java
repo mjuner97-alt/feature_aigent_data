@@ -33,9 +33,8 @@ public class PptRuleEngine {
         }
         Long previous = persistence.previous(versionId);
         if (previous != null) persistence.reconcile(versionId, previous);
-        if (persistence.carryFeedback(versionId) > 0) {
-            persistence.markCarriedFeedbackComplete(versionId);
-        }
+        persistence.carryFeedback(versionId);
+        persistence.markCarriedFeedbackComplete(versionId);
         persistence.markAnalyzed(versionId);
         notifier.notifyVersionAfterCommit(versionId);
         return persistence.findingCount(versionId);

@@ -32,7 +32,8 @@ const loadingTitles = new Set<number>();
 
 async function loadOriginalTitles(row: Recipient, expanded: Recipient[]) {
   const id = row.versionId;
-  if (!expanded.some(item => item.key === row.key) || originalTitles.value.get(id) || loadingTitles.has(id)) return;
+  if (!row.pages.length || !expanded.some(item => item.key === row.key)
+      || originalTitles.value.get(id) || loadingTitles.has(id)) return;
   loadingTitles.add(id);
   originalTitles.value.delete(id);
   try {
@@ -220,13 +221,13 @@ onMounted(load);
       @expand-change="loadOriginalTitles">
       <el-table-column type="expand">
         <template #default="{ row }">
-          <el-table class="page-details" :data="row.detailPages" size="small" empty-text="暂无反馈任务">
+          <p v-if="row.detailPages.length && !originalTitles.has(row.versionId)" class="page-details-loading" role="status">
+            正在加载反馈明细…
+          </p>
+          <el-table v-else class="page-details" :data="row.detailPages" size="small" empty-text="暂无反馈任务">
             <el-table-column label="页面" min-width="180">
               <template #default="{ row: item }">
-                P{{ item.pageNo }}
-                <template v-if="originalTitles.has(row.versionId)">
-                  · {{ feedbackPageTitle(originalTitles.get(row.versionId)?.[item.pageNo], item.title) }}
-                </template>
+                P{{ item.pageNo }} · {{ feedbackPageTitle(originalTitles.get(row.versionId)?.[item.pageNo], item.title) }}
               </template>
             </el-table-column>
             <el-table-column prop="section" label="板块" min-width="100" />
@@ -298,6 +299,7 @@ onMounted(load);
 h2 { margin: 0; color: #142441; font-size: 24px; }
 .records-filters { --ppt-filter-width: 156px; margin-bottom: 12px; }
 .page-details { padding-inline: 12px; box-sizing: border-box; }
+.page-details-loading { margin: 0; padding: 12px; color: var(--el-text-color-secondary); }
 .record-actions { display: flex; align-items: center; gap: 16px; flex-wrap: nowrap; white-space: nowrap; }
 .record-actions :deep(.el-button) { margin-left: 0; flex-shrink: 0; }
 .el-pagination { margin-top: 12px; justify-content: flex-end; }

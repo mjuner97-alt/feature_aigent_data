@@ -503,13 +503,13 @@
                    FROM digital_qa_ppt_finding m
                    WHERE m.version_id=latest.id AND m.status &lt;&gt; 'DELETED'
                      AND (f.feedback_department IS NULL OR m.feedback_department=f.feedback_department)
-                     AND <include refid="normalizedTitle"><property name="title" value="f.title"/></include> &lt;&gt; ''
+                     AND length(<include refid="normalizedTitle"><property name="title" value="f.title"/></include>) &gt; 0
                      AND <include refid="normalizedTitle"><property name="title" value="m.title"/></include> =
                          <include refid="normalizedTitle"><property name="title" value="f.title"/></include>
                ) END AS finding_id,
                (latest.id=original.id OR f.id IS NULL OR EXISTS (
                    SELECT 1 FROM digital_qa_ppt_slide s WHERE s.version_id=latest.id
-                     AND <include refid="normalizedTitle"><property name="title" value="f.title"/></include> &lt;&gt; ''
+                     AND length(<include refid="normalizedTitle"><property name="title" value="f.title"/></include>) &gt; 0
                      AND <include refid="normalizedTitle"><property name="title" value="s.title"/></include> =
                          <include refid="normalizedTitle"><property name="title" value="f.title"/></include>
                )) AS title_present
@@ -558,7 +558,7 @@
         )
         JOIN digital_qa_ppt_finding previous_finding ON previous_finding.id=r.finding_id
         WHERE f.id=#{id} AND f.status &lt;&gt; 'DELETED' AND r.assignment_revision=previous_finding.assignment_revision
-          AND <include refid="normalizedTitle"><property name="title" value="f.title"/></include> &lt;&gt; ''
+          AND length(<include refid="normalizedTitle"><property name="title" value="f.title"/></include>) &gt; 0
           AND NOT EXISTS (
             SELECT 1 FROM digital_qa_ppt_material_version newer
             WHERE newer.batch_id=v.batch_id AND newer.status='ANALYZED'
@@ -589,7 +589,7 @@
                          JOIN digital_qa_ppt_finding_recipient current_recipient ON current_recipient.user_id=prior_recipient.user_id
                          WHERE prior_recipient.finding_id=p.id AND current_recipient.finding_id=f.id
                      )))
-            WHERE f.version_id=#{id} AND f.title_key &lt;&gt; ''
+            WHERE f.version_id=#{id} AND length(f.title_key) &gt; 0
               AND NOT EXISTS (
                   SELECT 1 FROM digital_qa_ppt_material_version newer
                   WHERE newer.batch_id=f.batch_id AND newer.status='ANALYZED'
@@ -627,8 +627,12 @@
               AND r.assignment_revision=f.assignment_revision ORDER BY r.id DESC LIMIT 1
         )
         WHERE f.version_id=#{id} AND f.status &lt;&gt; 'DELETED' AND f.status='PENDING_FEEDBACK'
-          AND EXISTS (SELECT 1 FROM digital_qa_ppt_finding_feedback r
-                      WHERE r.finding_id=f.id AND r.assignment_revision=f.assignment_revision)
+          AND (
+              SELECT length(r.explanation)
+              FROM digital_qa_ppt_finding_feedback r
+              WHERE r.finding_id=f.id AND r.assignment_revision=f.assignment_revision
+              ORDER BY r.id DESC LIMIT 1
+          ) &gt; 0
     </update>
 
     <!-- 读取指定事项最新提交的一次反馈。 -->
@@ -1083,7 +1087,7 @@
             WHERE prior.version_id=#{previous}
               AND trim(regexp_replace(prior.title, <include refid="titlePrefix"/>, '')) =
                   trim(regexp_replace(current.title, <include refid="titlePrefix"/>, ''))
-              AND trim(regexp_replace(current.title, <include refid="titlePrefix"/>, '')) &lt;&gt; ''
+              AND length(trim(regexp_replace(current.title, <include refid="titlePrefix"/>, ''))) &gt; 0
         )
     </update>
 
