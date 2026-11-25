@@ -21,23 +21,23 @@
         <foreach collection="ids" item="id" open="(" close=")" separator=",">#{id}</foreach>
     </update>
     <sql id="effectiveReminderSettings">
-        COALESCE(c.reminder_enabled,d.enabled) AS enabled,
-               COALESCE(c.reminder_cutoff,d.cutoff) AS cutoff,
-        COALESCE(c.reminder_interval_minutes,d.interval_minutes) AS interval_minutes,
+        COALESCE(c.reminder_enabled,d.enabled,TRUE) AS enabled,
+        COALESCE(c.reminder_cutoff,d.cutoff,'18:00') AS cutoff,
+        COALESCE(c.reminder_interval_minutes,d.interval_minutes,60) AS interval_minutes,
         c.reminder_weekly_start_minute AS weekly_start_minute,
         c.reminder_weekly_end_minute AS weekly_end_minute
     </sql>
     <select id="feedbackReminderSettings" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackReminderSettings">
         SELECT <include refid="effectiveReminderSettings"/>
         FROM digital_qa_ppt_keyword_config c
-        CROSS JOIN digital_qa_ppt_feedback_reminder_settings d
-        WHERE c.id=#{id} AND c.kind='material-type' AND d.id=1
+        LEFT JOIN digital_qa_ppt_feedback_reminder_settings d ON d.id=1
+        WHERE c.id=#{id} AND c.kind='material-type'
     </select>
     <select id="materialReminderSettings" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$MaterialReminderSettings">
         SELECT c.id, <include refid="effectiveReminderSettings"/>
         FROM digital_qa_ppt_keyword_config c
-        CROSS JOIN digital_qa_ppt_feedback_reminder_settings d
-        WHERE c.kind='material-type' AND d.id=1 AND c.id IN
+        LEFT JOIN digital_qa_ppt_feedback_reminder_settings d ON d.id=1
+        WHERE c.kind='material-type' AND c.id IN
         <foreach collection="ids" item="id" open="(" close=")" separator=",">#{id}</foreach>
     </select>
     <update id="updateFeedbackReminderSettings">
@@ -52,18 +52,18 @@
     <sql id="feedbackReminderSettingsJoin">
         JOIN digital_qa_ppt_material_batch b ON b.id=v.batch_id
         LEFT JOIN digital_qa_ppt_keyword_config c ON c.kind='material-type' AND c.name=b.material_type
-        JOIN digital_qa_ppt_feedback_reminder_settings d ON d.id=1
+        LEFT JOIN digital_qa_ppt_feedback_reminder_settings d ON d.id=1
     </sql>
     <sql id="feedbackReminderInterval">
-        COALESCE(c.reminder_interval_minutes,d.interval_minutes) * INTERVAL '1 minute'
+        COALESCE(c.reminder_interval_minutes,d.interval_minutes,60) * INTERVAL '1 minute'
     </sql>
     <sql id="dueFeedbackReminder">
         f.status='PENDING_FEEDBACK'
-        AND COALESCE(c.reminder_enabled,d.enabled)=TRUE
+        AND COALESCE(c.reminder_enabled,d.enabled,TRUE)=TRUE
         AND (
             (c.reminder_weekly_start_minute IS NULL
                 AND TO_CHAR(CAST(#{now} AS TIMESTAMP), 'HH24:MI') &gt;= '10:00'
-                AND TO_CHAR(CAST(#{now} AS TIMESTAMP), 'HH24:MI') &lt; COALESCE(c.reminder_cutoff,d.cutoff))
+                AND TO_CHAR(CAST(#{now} AS TIMESTAMP), 'HH24:MI') &lt; COALESCE(c.reminder_cutoff,d.cutoff,'18:00'))
             OR (c.reminder_weekly_start_minute &lt; c.reminder_weekly_end_minute
                 AND #{weekMinute} &gt;= c.reminder_weekly_start_minute
                 AND #{weekMinute} &lt; c.reminder_weekly_end_minute)
