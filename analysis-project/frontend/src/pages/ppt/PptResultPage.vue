@@ -193,7 +193,7 @@ async function exportWord() {
             </div>
             <PptSlideViewer v-else plain :page-no="page.pageNo" :slide="previews[page.pageNo]" :unavailable="false" />
             <section v-if="page.items.length" class="page-feedback">
-              <h4 class="feedback-heading">反馈记录</h4>
+              <h4 class="feedback-heading">补充说明：</h4>
               <section v-for="item in page.items" :key="item.findingId" class="department-feedback">
                 <h5 class="department-heading">{{ item.departments.join('、') || '未分配部门' }}：</h5>
                 <p v-if="!item.judgement" class="pending">待反馈</p>
@@ -240,7 +240,7 @@ async function exportWord() {
 .result-page, .result-directory { scroll-margin-top: 16px; }
 .result-page :deep(.preview-body) { justify-items: center; }
 .result-page :deep(.preview-body img) { max-height: 70vh; }
-.page-feedback { margin-top: 20px; }
+.page-feedback { margin-top: 20px; color: #1d4ed8; }
 .department-feedback { margin-top: 16px; }
 .department-heading { margin: 0 0 8px; font-size: 14px; }
 .feedback-heading { margin: 14px 0 8px; font-size: 14px; }

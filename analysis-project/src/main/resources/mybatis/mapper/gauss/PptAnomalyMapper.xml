@@ -273,7 +273,7 @@
     </select>
     <insert id="enqueueCompletionReport">
         INSERT INTO digital_qa_ppt_mail_record(version_id,department,subject,body,sent_by,status)
-        SELECT #{versionId},#{department},'','','SYSTEM_REPORT','PENDING_REPORT'
+        SELECT #{versionId},#{department},'例会材料完成报告','报告待生成','SYSTEM_REPORT','PENDING_REPORT'
         WHERE NOT EXISTS (
             SELECT 1 FROM digital_qa_ppt_mail_record
             WHERE version_id=#{versionId} AND department=#{department} AND sent_by='SYSTEM_REPORT'
@@ -391,6 +391,13 @@
         </if>
         <if test="target != ''">AND target=#{target}</if>
     </sql>
+
+    <update id="lockBatchCreation">
+        LOCK TABLE digital_qa_ppt_material_batch IN SHARE ROW EXCLUSIVE MODE
+    </update>
+    <select id="batchNameExists" resultType="boolean">
+        SELECT EXISTS (SELECT 1 FROM digital_qa_ppt_material_batch WHERE TRIM(name) = #{name})
+    </select>
 
     <!-- 创建例会材料批次并记录上传用户。 -->
     <insert id="createBatch" useGeneratedKeys="true" keyProperty="id" keyColumn="id">

@@ -207,7 +207,8 @@ public class PptFeedbackNotifier {
             var cc = java.util.stream.Stream.concat(supervisors(notice.department(), to).stream(), previousHandlers.stream())
                     .filter(id -> !to.contains(id)).distinct().toList();
             String previousLabel = previousAssignmentLabel(notice.previousDepartment(), previousHandlers);
-            String body = "<p>您好：</p><p>您有新增分析的关注事项（原经办人：" + HtmlUtils.htmlEscape(previousLabel)
+            String body = "<p>您好：</p><p style=\"text-indent:2em;\">您有新增分析的关注事项（原经办人："
+                    + HtmlUtils.htmlEscape(previousLabel)
                     + "），共1项，请于1个小时内<a href=\"" + HtmlUtils.htmlEscape(url)
                     + "\">点击链接</a>反馈分析结果。</p>" + feedbackFooter(notice.department());
             var payload = new NotificationPayload("HTML", body, null, null, url, null, subject,
@@ -492,7 +493,7 @@ public class PptFeedbackNotifier {
     }
 
     private String reportBody(String materialLabel, String department, String url, DepartmentAnalysis analysis) {
-        return "<p>各位好：</p><p>《" + HtmlUtils.htmlEscape(materialLabel)
+        return "<p>各位好：</p><p style=\"text-indent:2em;\">《" + HtmlUtils.htmlEscape(materialLabel)
                 + "》材料分析如下，本期材料涉及到部门关注事项共" + analysis.findingCount()
                 + "项，请<a href=\"" + HtmlUtils.htmlEscape(url) + "\">点击链接</a>参阅。</p>"
                 + analysis.attachedTable() + feedbackFooter(department);

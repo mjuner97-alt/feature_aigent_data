@@ -29,7 +29,6 @@ const historyLoading = ref<Record<number, boolean>>({});
 const historyErrors = ref<Record<number, boolean>>({});
 const historyBatch = ref<PptBatchSummary>();
 const assignmentVersion = ref<{ id: number; versionNo: number | null }>();
-const notificationVersion = ref<{ id: number; versionNo: number | null }>();
 const pdfVersion = ref<PptVersion>();
 const loading = ref(false);
 const busy = ref(false);
@@ -600,6 +599,8 @@ const matchingBatches = computed(() => batches.value.filter(batch => matches(bat
 const visible = computed(() => batches.value.filter(batch => matches(batch, query.value)
   && (!materialTypeFilter.value || batch.materialType === materialTypeFilter.value)));
 const canSubmit = computed(() => !!file.value && !!materialType.value && (mode.value === 'new' ? !!batchName.value.trim() : batchId.value !== undefined));
+const batchNameTaken = computed(() => mode.value === 'new' && !!batchName.value.trim()
+  && batches.value.some(batch => batch.name.trim() === batchName.value.trim()));
 /** 将材料上传时间格式化为分钟精度，空时间显示占位符。 */
 const dateText = (value?: string | null) => value?.replace('T', ' ').slice(0, 16) || '—';
 /** 兼容历史数据中将默认稿件类型保存为 v1 的记录。 */
@@ -758,6 +759,7 @@ async function confirmReview() {
 async function submit() {
   const selectedFile = file.value;
   if (!canSubmit.value || !selectedFile || busy.value) return;
+  if (batchNameTaken.value) return;
   busy.value = true;
   uploadError.value = '';
   try {
@@ -797,7 +799,7 @@ async function confirmDeleteBatch(batch: PptBatchSummary) {
   deletingBatchId.value = batch.id;
   try {
     const confirmed = await ElMessageBox.confirm(
-      `确定删除「${batch.name}」？该批次的所有上传版本、识别结果和反馈记录都将删除，且无法恢复。`,
+      `确定删除「${batch.name}」？该批次的所有上传版本、识别结果和补充说明都将删除，且无法恢复。`,
       '删除批次',
       { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' },
     ).then(() => true, () => false);
@@ -876,24 +878,32 @@ onMounted(async () => {
         </el-table-column>
       </el-table>
     </section>
-    <el-drawer :model-value="!!historyBatch" title="历史版本" size="min(680px, 100%)"
+    <el-drawer :model-value="!!historyBatch" title="历史版本" size="min(860px, 100%)"
       @update:model-value="(open: boolean) => { if (!open) historyBatch = undefined }">
       <template v-if="historyBatch">
-        <p>{{ historyBatch.name }}</p>
-        <el-button v-if="historyErrors[historyBatch.id]" @click="loadHistory(historyBatch.id)">重新加载历史版本</el-button>
-        <el-table v-else v-loading="historyLoading[historyBatch.id]"
+        <div class="history-summary">
+          <span>材料批次</span>
+          <strong>{{ historyBatch.name }}</strong>
+        </div>
+        <div v-if="historyErrors[historyBatch.id]" class="history-error">
+          <el-alert title="历史版本加载失败" type="error" :closable="false" show-icon />
+          <el-button @click="loadHistory(historyBatch.id)">重新加载</el-button>
+        </div>
+        <el-table v-else v-loading="historyLoading[historyBatch.id]" class="history-table" stripe
           :data="histories[historyBatch.id] || []" row-key="id" empty-text="暂无上传版本">
           <el-table-column label="版本" width="150">
             <template #default="{ row, $index }">
-              {{ versionTypeLabel(row.versionNo, row.versionName) }}<span v-if="versionTypeLabel(row.versionNo, row.versionName)"> </span>v{{ row.versionNo }}
-              <el-tag v-if="$index === 0" size="small" effect="plain">最新</el-tag>
+              <div class="history-version">
+                <strong>{{ [versionTypeLabel(row.versionNo, row.versionName), `v${row.versionNo}`].filter(Boolean).join(' ') }}</strong>
+                <el-tag v-if="$index === 0" size="small" effect="light">最新</el-tag>
+              </div>
             </template>
           </el-table-column>
           <el-table-column prop="fileName" label="原文件" min-width="140" show-overflow-tooltip />
-          <el-table-column label="上传时间" width="145">
+          <el-table-column label="上传时间" width="155">
             <template #default="{ row }">{{ dateText(row.uploadedAt) }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="170">
+          <el-table-column label="操作" width="188">
             <template #default="{ row }">
               <div class="history-actions">
                 <!-- 暂时隐藏历史版本中的调整经办人入口。
@@ -902,9 +912,6 @@ onMounted(async () => {
                 <el-button link type="primary" @click="download(row)">下载原件</el-button>
                 <el-button v-if="row.uploadedBy === getLoggedInUser()?.userId" link type="primary"
                   @click="pdfVersion = row">上传预览 PDF</el-button>
-                <el-button link type="primary" @click="notificationVersion = { id: row.id, versionNo: row.versionNo }">通知记录</el-button>
-                <el-button link type="primary"
-                  @click="router.push({ path: '/ppt-anomaly/notifications', query: { batchId: String(row.batchId) } })">通知记录</el-button>
               </div>
             </template>
           </el-table-column>
@@ -937,7 +944,8 @@ onMounted(async () => {
             <el-option v-for="item in materialTypes" :key="item.name" :label="item.name" :value="item.name" />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="mode === 'new'" label="批次名称">
+        <el-form-item v-if="mode === 'new'" label="批次名称"
+          :error="batchNameTaken ? '批次名称已存在，请更换名称或选择已有批次' : ''">
           <el-input v-model="batchName" placeholder="例如 11 月第 2 周例会" maxlength="255" />
         </el-form-item>
         <el-form-item v-else label="材料批次">
@@ -974,7 +982,7 @@ onMounted(async () => {
         </el-form-item>
         <div class="dialog-actions">
           <el-button :disabled="busy" @click="dialog = false">取消</el-button>
-          <el-button type="primary" native-type="submit" :loading="busy" :disabled="!canSubmit">解析 PPT</el-button>
+          <el-button type="primary" native-type="submit" :loading="busy" :disabled="!canSubmit || batchNameTaken">解析 PPT</el-button>
         </div>
       </el-form>
     </el-dialog>
@@ -1274,7 +1282,21 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.history-actions { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; }
+.history-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 8px;
+  background: var(--el-fill-color-light);
+  overflow-wrap: anywhere;
+}
+.history-summary span { color: var(--el-text-color-secondary); font-size: 13px; }
+.history-error { display: flex; flex-wrap: wrap; gap: 12px; }
+.history-table { border: 1px solid var(--el-border-color-light); border-radius: 8px; }
+.history-version, .history-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .history-actions :deep(.el-button) { flex: none; margin-left: 0; white-space: nowrap; }
 .import-steps { margin-block: 12px; }
 #ppt-review-heading:focus { outline: none; }
@@ -1397,13 +1419,15 @@ onMounted(async () => {
   .review-page-content { grid-template-columns: minmax(0, 1fr); }
   .review-preview { min-height: 175px; }
 }
-@media (width > 700px) {
+  @media not all and (max-width: 700px) {
   .batch-page.is-reviewing, .review-screen { height: 100%; }
   .review-screen { display: flex; flex-direction: column; }
   .review-screen > :not(.review-workspace) { flex: none; }
   .review-workspace {
     flex: 1 1 0; grid-template-rows: minmax(0, 1fr);
-    min-height: 160px; max-height: min(62dvh, 580px);
+    min-height: 160px;
+    max-height: min(62vh, 580px);
+    max-height: min(62dvh, 580px);
   }
 }
 @media (max-width: 700px) {

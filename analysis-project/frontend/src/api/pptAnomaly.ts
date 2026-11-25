@@ -95,6 +95,9 @@ export interface PptFeedbackRecord {
 export async function listFeedbackRecords() {
   return parse<PptFeedbackRecord[]>(await fetch(`${base}/feedback-records`, { headers: headers() }));
 }
+export async function feedbackOriginalTitles(versionId: number) {
+  return parse<Record<number, string>>(await fetch(`${base}/versions/${versionId}/feedback-original-titles`, { headers: headers() }));
+}
 /** 读取指定材料版本的板块负责人及任务统计。 */
 export async function versionSections(id: number) {
   return parse<PptSectionWork[]>(await fetch(`${base}/versions/${id}/sections`, { headers: headers() }));
@@ -214,10 +217,11 @@ export async function versionFindings(versionId: number, recordOwner?: string) {
   return parse<PptFinding[]>(await fetch(`${base}/versions/${versionId}/findings${query}`, { headers: headers() }));
 }
 /** 读取本人事项、部门事项和联系人组成的反馈目录。 */
-export async function feedbackDirectory(versionId: number, recordOwner?: string, department?: string) {
+export async function feedbackDirectory(versionId: number, recordOwner?: string, department?: string, includeOriginalTitles = true) {
   const query = new URLSearchParams();
   if (recordOwner) query.set('recordOwner', recordOwner);
   if (department) query.set('department', department);
+  if (!includeOriginalTitles) query.set('includeOriginalTitles', 'false');
   return parse<{
     fileName: string; materialMailLabel: string; departments: string[]; assigned: PptFinding[]; departmentFindings: PptFinding[]; myPending: PptFinding[]; myAssigned: PptFinding[]; originalTitles?: Record<number, string>;
     contacts: Partial<Record<number, { name: string | null; userId: string }>>;
@@ -434,7 +438,7 @@ export const pptRecognitionModes = {
 
 export type PptRecognitionMode = keyof typeof pptRecognitionModes;
 
-// 关键词规则和历史配置仍可应用仅上方表格，手动下拉框只提供通用范围。
+// 历史配置仍可使用仅上方表格，识别范围下拉框只提供通用范围。
 export const pptManualRecognitionOptions = Object.entries(pptRecognitionModes)
   .filter(([mode]) => mode !== 'UPPER_TABLE_ONLY');
 

@@ -4,7 +4,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { isPptRecognitionMode, listPptMaterialIgnoreRules, listPptReportDepartments, savePptMaterialIgnoreRules, pptAnomalyPermissions, pptRecognitionModes as modes, searchPptPeople, type PptMaterialIgnoreRule, type PptPerson, type PptRecognitionScope } from '../../api/pptAnomaly';
+import { isPptRecognitionMode, listPptMaterialIgnoreRules, listPptReportDepartments, savePptMaterialIgnoreRules, pptAnomalyPermissions, pptManualRecognitionOptions, pptRecognitionModes as modes, searchPptPeople, type PptMaterialIgnoreRule, type PptPerson, type PptRecognitionScope } from '../../api/pptAnomaly';
 import { savePptFeedbackReminderSettings, type PptFeedbackReminderSettings } from '../../api/pptAnomaly';
 import { Clock, Document, Download, Search, UploadFilled } from '@element-plus/icons-vue';
 import PptListFilterBar from '../../components/ppt/PptListFilterBar.vue';
@@ -629,7 +629,7 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
             </el-select>
             <el-select v-if="active === 'section'" v-model="mode" class="ppt-filter-select" clearable
               placeholder="全部识别范围" aria-label="识别范围" @change="search">
-              <el-option v-for="(label, key) in modes" :key="key" :label="label" :value="key" />
+              <el-option v-for="[key, label] in pptManualRecognitionOptions" :key="key" :label="label" :value="key" />
             </el-select>
             <el-button v-if="active !== 'section'" native-type="submit">筛选</el-button>
             <el-button v-if="active === 'department' && canMaintainActive" @click="openDepartmentImport">导入</el-button>
@@ -640,12 +640,6 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
           <el-table-column prop="name" label="页面标题" min-width="124" show-overflow-tooltip />
           <el-table-column label="识别范围" min-width="140">
             <template #default="{ row }">{{ titleScopeLabel(row.scope) }}</template>
-          </el-table-column>
-          <el-table-column label="区域限制" width="108" align="center">
-            <template #default="{ row }">
-              <span v-if="row.scope?.target === 'UPPER_TABLE_ONLY'">页高前 {{ (row.scope.upperLimitRatio ?? 0.5) * 100 }}% · 第 {{ row.scope.firstRow ?? 1 }} 行至 {{ row.scope.lastRow ?? '末行' }}</span>
-              <span v-else aria-label="无区域限制">—</span>
-            </template>
           </el-table-column>
           <el-table-column label="所属板块" min-width="76" show-overflow-tooltip>
             <template #default="{ row }">{{ row.section?.target }}</template>

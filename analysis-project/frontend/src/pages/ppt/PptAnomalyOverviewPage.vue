@@ -2,6 +2,7 @@
 /** 例会反馈详情页，根据本人经办关系选择默认目录并维护反馈草稿。 */
 
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import type { Directive } from 'vue';
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Message } from '@element-plus/icons-vue';
@@ -13,6 +14,7 @@ import type { PptFinding, PptSlide, PptVersionWork } from '../../types/pptAnomal
 import PptSidebarIndex from '../../components/ppt/PptSidebarIndex.vue';
 import PptBoardContactList from '../../components/ppt/PptBoardContactList.vue';
 import PptSlideViewer from '../../components/ppt/PptSlideViewer.vue';
+import { feedbackPageTitle } from '../../components/ppt/feedbackPageTitle';
 import PptFeedbackForm from '../../components/ppt/PptFeedbackForm.vue';
 import PptAssignmentDialog from '../../components/ppt/PptAssignmentDialog.vue';
 import MailRecipientDialog from '../../components/MailRecipientDialog.vue';
@@ -223,10 +225,13 @@ async function submitFeedback(findingId?: number) {
   const changes = findingId === undefined
     ? feedbackChanges.value
     : feedbackChanges.value.filter(({ item }) => item.id === findingId);
-  if (!changes.length) return;
+  if (!changes.length) {
+    if (findingId === undefined) ElMessage.info('当前没有可提交的反馈');
+    return;
+  }
   const oversized = changes.filter(({ explanation }) => new TextEncoder().encode(explanation).length > 16 * 1024);
   if (oversized.length) {
-    saveError.value = `请先缩减这些页面的反馈记录（每页最多 16 KB）：${pageList(oversized.map(change => change.item))}`;
+    saveError.value = `请先缩减这些页面的补充说明（每页最多 16 KB）：${pageList(oversized.map(change => change.item))}`;
     return;
   }
   const pending = records.value.filter(item => item.editable && item.status === 'PENDING_FEEDBACK' && !drafts.value.has(item.id));
@@ -236,22 +241,32 @@ async function submitFeedback(findingId?: number) {
     if (findingId === undefined && pending.length) {
       try {
         await ElMessageBox.confirm(
-          `还有 ${pending.length} 项未填写反馈：${pageList(pending)}。确定提交已填写的 ${changes.length} 项吗？其余项目仍为待反馈。`,
-          '确认提交反馈', { type: 'warning', confirmButtonText: '提交已填写', cancelButtonText: '继续填写' },
+          `还有 ${pending.length} 项未填写反馈。`,
+          '确认提交反馈', {
+            type: 'warning',
+            customClass: 'ppt-feedback-confirm',
+            confirmButtonText: '提交已填写',
+            cancelButtonText: '继续填写',
+          },
         );
       } catch { return; }
     }
     const failed: PptFinding[] = [];
+    const refreshIds = new Set<number>();
     for (const { item, explanation, files, baseRevision } of changes) {
       try {
         await saveFeedback(item.id, { judgement: item.status === 'ADJUSTED' ? 'NON_ANOMALY' : 'CONFIRMED', explanation, baseRevision }, files);
         drafts.value.delete(item.id);
+        refreshIds.add(item.id);
       } catch (cause) {
-        if (cause instanceof PptApiError && cause.status === 409) conflicts.value.add(item.id);
+        if (cause instanceof PptApiError && cause.status === 409) {
+          conflicts.value.add(item.id);
+          refreshIds.add(item.id);
+        }
         failed.push(item);
       }
     }
-    if (changes.length > failed.length) await reload();
+    if (refreshIds.size) await reload(refreshIds);
     if (failed.length) {
       saveError.value = failed.some(item => conflicts.value.has(item.id))
         ? `部分反馈已被更新，草稿已保留：${pageList(failed)}。请核对最新反馈后再提交。`
@@ -331,17 +346,37 @@ async function loadPreview(id: number, pageNo: number) {
   }
 }
 watch(versionId, () => { previews.value = new Map(); }, { flush: 'sync' });
-watch([displayedFindings, versionId], ([items, id]) => {
-  for (const item of items) void loadPreview(id, item.pageNo);
-});
+const previewObservers = new WeakMap<HTMLElement, IntersectionObserver>();
+const vPreviewVisible: Directive<HTMLElement, { version: number; page: number }> = {
+  mounted(element, { value }) {
+    if (!('IntersectionObserver' in window)) {
+      void loadPreview(value.version, value.page);
+      return;
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry?.isIntersecting || !previewObservers.has(element)) return;
+      observer.disconnect();
+      previewObservers.delete(element);
+      void loadPreview(value.version, value.page);
+    }, { rootMargin: '200px 0px' });
+    previewObservers.set(element, observer);
+    observer.observe(element);
+  },
+  unmounted(element) {
+    previewObservers.get(element)?.disconnect();
+    previewObservers.delete(element);
+  },
+};
 /** 加载通知指定版本的反馈目录，并按本人经办情况选择视图。 */
-async function reload() {
+async function reload(refreshIds?: ReadonlySet<number>) {
   const id = ++loadId;
+  const previous = refreshIds ? directory.value : undefined;
+  const previousVersion = versionId.value;
   if (!requestedVersionId.value) {
     loading.value = false;
     return;
   }
-  loading.value = true;
+  loading.value = !previous;
   error.value = '';
   linkNotice.value = '';
   try {
@@ -368,15 +403,29 @@ async function reload() {
       resolvedVersionId.value = targetVersion;
       resolvedVersionNo.value = link.versionNo;
     }
-    const result = await feedbackDirectory(targetVersion, recordOwner.value, linkedDepartment.value);
+    const reuse = previous && targetVersion === previousVersion ? previous : undefined;
+    const result = await feedbackDirectory(targetVersion, recordOwner.value, linkedDepartment.value, !reuse);
     if (id === loadId) {
+      if (reuse) {
+        result.originalTitles = reuse.originalTitles;
+        const previousItems = new Map(reuse.departmentFindings.map(item => [item.id, item]));
+        const retainUnchanged = (item: PptFinding) => {
+          const prior = previousItems.get(item.id);
+          return prior && !refreshIds?.has(item.id) && JSON.stringify(prior) === JSON.stringify(item) ? prior : item;
+        };
+        result.departmentFindings = result.departmentFindings.map(retainUnchanged);
+        result.myAssigned = result.myAssigned.map(retainUnchanged);
+      }
       if (!result.myAssigned.length) {
         scope.value = 'all';
       }
       directory.value = result;
     }
   } catch {
-    if (id === loadId) error.value = '异常列表加载失败，请重试';
+    if (id === loadId) {
+      if (previous) ElMessage.warning('反馈状态刷新失败，请重新打开详情查看最新状态');
+      else error.value = '异常列表加载失败，请重试';
+    }
   } finally {
     if (id === loadId) loading.value = false;
   }
@@ -430,7 +479,7 @@ onMounted(async () => {
       </div>
       <div class="page-actions">
         <el-button v-if="!readOnly" type="primary" :loading="saving"
-          :disabled="loading || !feedbackChanges.length" @click="submitFeedback()">
+          :disabled="loading" @click="submitFeedback()">
           提交反馈{{ feedbackChanges.length ? `（${feedbackChanges.length} 项）` : '' }}
         </el-button>
         <el-button v-if="findings.length && notifyDepartments.length && !readOnly && !error" :disabled="loading || notifying"
@@ -460,15 +509,22 @@ onMounted(async () => {
         <article v-for="item in displayedFindings" :key="item.id" :data-finding-id="item.id" class="feedback-column">
           <header class="finding-header">
             <div class="finding-title">
-              <h3>{{ item.title || '未命名页面' }}</h3>
-              <div class="finding-handlers">
-                <span>经办人</span>
-                <span v-for="handler in handlersFor(item.id)" :key="handler.userId" class="handler-tag">
-                  <strong v-if="handler.name">{{ handler.name }}</strong>
-                  <span>{{ handler.name ? `（${handler.userId}）` : handler.userId }}</span>
-                </span>
-                <span v-if="!handlersFor(item.id).length" class="handler-empty">未分派</span>
-              </div>
+              <h3>{{ feedbackPageTitle(directory?.originalTitles?.[item.pageNo], item.title) }}</h3>
+              <dl class="finding-meta">
+                <dt>识别关键字</dt>
+                <dd>
+                  <span v-if="item.anomalyKeyword?.trim()" class="keyword-tag">{{ item.anomalyKeyword }}</span>
+                  <span v-else class="meta-empty">无关键字记录</span>
+                </dd>
+                <dt>经办人</dt>
+                <dd>
+                  <span v-for="handler in handlersFor(item.id)" :key="handler.userId" class="handler-tag">
+                    <strong>{{ handler.name || handler.userId }}</strong>
+                    <span v-if="handler.name && handler.name !== handler.userId" class="handler-id">{{ handler.userId }}</span>
+                  </span>
+                  <span v-if="!handlersFor(item.id).length" class="meta-empty">未分派</span>
+                </dd>
+              </dl>
             </div>
             <div class="finding-actions">
               <span>{{ item.departments.join('、') || '部门未归属' }}</span>
@@ -479,9 +535,11 @@ onMounted(async () => {
                 @click="removeFinding(item)">删除事项</el-button>
             </div>
           </header>
-          <PptSlideViewer :page-no="item.pageNo" :slide="previews.get(item.pageNo) ?? undefined"
-            :unavailable="previews.get(item.pageNo) === null" />
-          <PptFeedbackForm :key="loadId"
+          <div :key="`${versionId}:${item.pageNo}`" v-preview-visible="{ version: versionId, page: item.pageNo }">
+            <PptSlideViewer :page-no="item.pageNo" :slide="previews.get(item.pageNo) ?? undefined"
+              :unavailable="previews.get(item.pageNo) === null" />
+          </div>
+          <PptFeedbackForm
             :finding="item" :draft="drafts.get(item.id)" :saving="saving"
             :compact="readOnly" :read-only="readOnly" :conflict="conflicts.has(item.id)"
             @draft="setDraft(item.id, $event)" @save="submitFeedback(item.id)" @retry="retryFeedback(item.id, $event)" />
@@ -537,6 +595,13 @@ onMounted(async () => {
   </div>
 </template>
 <style scoped>
+:global(.ppt-feedback-confirm.el-message-box) {
+  --el-messagebox-width: 400px;
+  --el-messagebox-padding-primary: 20px;
+  --el-border-radius-base: 12px;
+  --el-color-primary: #254ebc;
+}
+
 .report-mail-preview {
   margin-block: 16px 2px;
   border: 1px solid #dfe6f0;
@@ -596,13 +661,17 @@ onMounted(async () => {
 .feedback-column { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
 .feedback-column + .feedback-column { margin-top: 24px; padding-top: 20px; border-top: 1px solid #dfe6f0; }
 .board-contact { display: grid; gap: 8px; padding: 0 4px; overflow-wrap: anywhere; }
-.finding-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
+.finding-header { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
 .finding-title { min-width: 0; }
 .finding-title h3 { margin: 3px 0 0; font-size: 20px; color: #142441; overflow-wrap: anywhere; }
-.finding-handlers { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 8px; color: #52627a; font-size: 13px; }
-.handler-tag { max-width: 100%; padding: 3px 8px; border: 1px solid #dce6f5; border-radius: 6px; background: #f1f5fc; overflow-wrap: anywhere; }
+.finding-meta { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px 12px; margin: 10px 0 0; font-size: 13px; }
+.finding-meta dt { padding-top: 4px; color: #52627a; }
+.finding-meta dd { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; overflow-wrap: anywhere; }
+.keyword-tag { max-width: 100%; padding: 3px 8px; border-radius: 6px; background: #e8f0ff; color: #2252a3; }
+.handler-tag { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; max-width: 100%; padding: 3px 8px; border: 1px solid #dce6f5; border-radius: 6px; background: #f6f8fc; }
 .handler-tag strong { color: #253b60; font-weight: 600; }
-.handler-empty { color: #66758b; }
+.handler-id { color: #52627a; font-size: 12px; }
+.meta-empty { padding-block: 4px; color: #66758b; }
 .finding-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
 .feedback-status { padding: 3px 9px; border-radius: 12px; background: #e8f0ff; color: #225bb7; font-size: 13px; }
 @media (max-width: 900px), (max-height: 480px) {

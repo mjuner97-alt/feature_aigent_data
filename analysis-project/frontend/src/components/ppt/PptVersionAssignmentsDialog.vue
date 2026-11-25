@@ -5,7 +5,9 @@ import { assignmentOptions, feedbackDirectory } from '../../api/pptAnomaly';
 import type { PptFinding } from '../../types/pptAnomaly';
 import PptAssignmentDialog from './PptAssignmentDialog.vue';
 
-const props = defineProps<{ versionId: number; versionNo: number | null }>();
+const props = defineProps<{
+  versionId: number; versionNo: number | null; initialSection?: string | null; initialPageNo?: number | null;
+}>();
 const emit = defineEmits<{ close: [] }>();
 
 type Directory = Awaited<ReturnType<typeof feedbackDirectory>>;
@@ -54,7 +56,15 @@ async function loadAssignments() {
     const [directory, options] = await Promise.all([
       feedbackDirectory(props.versionId), assignmentOptions(props.versionId),
     ]);
+    const firstLoad = !data.value;
     data.value = { directory, options };
+    if (firstLoad) {
+      const section = props.initialSection;
+      const pageSection = [...chapters.value].find(([, pages]) =>
+        pages.some(page => page.page === props.initialPageNo))?.[0];
+      activeChapter.value = section != null && chapters.value.has(section)
+        ? section : pageSection ?? chapters.value.keys().next().value ?? '';
+    }
     if (!chapters.value.has(activeChapter.value)) {
       activeChapter.value = chapters.value.keys().next().value ?? '';
     }
@@ -90,11 +100,11 @@ onMounted(loadAssignments);
     </template>
     <div v-else v-loading="loading" class="assignments">
       <template v-if="chapters.size">
-        <el-form-item label="章节" class="chapter-filter">
+        <el-form-item label="板块" class="chapter-filter">
           <el-select v-model="activeChapter" filterable :empty-values="[null, undefined]"
-            :disabled="loading" aria-label="选择章节">
+            :disabled="loading" aria-label="选择板块">
             <el-option v-for="chapter in chapters.keys()" :key="chapter" :value="chapter"
-              :label="chapter || '未归属章节'" />
+              :label="chapter || '未归属板块'" />
           </el-select>
         </el-form-item>
         <div class="assignment-pages">

@@ -8,6 +8,7 @@ import java.security.MessageDigest;
 import java.util.List;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
@@ -45,7 +46,9 @@ final class PptImportSnapshotWriter {
             for (String text : matchTexts) {
                 for (var mapping : departmentMappings) {
                     if (text.contains(mapping.keyword())) {
-                        matchesByDepartment.putIfAbsent(mapping.department(), new Match(text, mapping.keyword()));
+                        matchesByDepartment.computeIfAbsent(mapping.department(),
+                                ignored -> new Match(text, mapping.keyword(), new LinkedHashSet<>()))
+                                .keywords().add(mapping.keyword());
                     }
                 }
             }
@@ -58,7 +61,7 @@ final class PptImportSnapshotWriter {
                 int findingSequence = ++sequence;
                 // 每页每个命中部门生成一条事项，没有匹配经办人的部门保留待分派事项。
                 persistence.createDepartmentFinding(versionId, slide.id(), findingSequence, slide.title(), section,
-                        match.text(), match.keyword(), write(List.of(department)), department,
+                        match.text(), String.join("、", match.keywords()), write(List.of(department)), department,
                         handlers.isEmpty() ? "UNASSIGNED" : "PENDING_FEEDBACK", fingerprint);
                 for (String handler : handlers) {
                     persistence.addFindingHandler(versionId, findingSequence, handler);
@@ -70,7 +73,7 @@ final class PptImportSnapshotWriter {
     }
 
     /** 正文部门关键词命中的原文及匹配关键词。 */
-    private record Match(String text, String keyword) {}
+    private record Match(String text, String keyword, LinkedHashSet<String> keywords) {}
 
     /** 将页面文本 JSON 解析为字符串列表，格式异常返回空列表。 */
     private List<String> read(String json){try{return mapper.readValue(json,new TypeReference<>(){});}catch(Exception e){return List.of();}}

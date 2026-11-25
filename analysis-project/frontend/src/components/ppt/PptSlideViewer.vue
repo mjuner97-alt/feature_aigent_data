@@ -1,12 +1,13 @@
 <script setup lang="ts">
 /** PPT 原页预览组件，处理图片加载、失败提示及重试。 */
 
-import { computed, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { FullScreen } from '@element-plus/icons-vue';
 import type { PptSlide } from '../../types/pptAnomaly';
 
 const props = defineProps<{ pageNo: number; slide?: PptSlide; unavailable: boolean; plain?: boolean }>();
 const enlarged = ref(false);
+const enlargeButton = ref<HTMLButtonElement>();
 const failed = ref(false);
 const loaded = ref(false);
 const attempt = ref(0);
@@ -27,6 +28,12 @@ function retry() {
   loaded.value = false;
   attempt.value++;
 }
+
+async function closePreview() {
+  enlarged.value = false;
+  await nextTick();
+  enlargeButton.value?.focus({ preventScroll: true });
+}
 </script>
 
 <template>
@@ -43,13 +50,17 @@ function retry() {
         <p v-if="!loaded" role="status">正在加载预览…</p>
         <img v-show="loaded" :src="previewUrl" :alt="`原始 PPT P${pageNo}`"
           @load="loaded = true" @error="failed = true" @click="enlarged = true" />
-        <button v-if="loaded" type="button" class="preview-link" @click="enlarged = true"
+        <button v-if="loaded" ref="enlargeButton" type="button" class="preview-link" @click="enlarged = true"
           aria-label="放大查看 PPT 原页">
           <el-icon aria-hidden="true"><FullScreen /></el-icon>
           放大查看
         </button>
-        <el-image-viewer v-if="enlarged && previewUrl" :url-list="[previewUrl]" teleported
-          :scale="0.8" :z-index="5000" @close="enlarged = false" />
+        <Teleport v-if="enlarged && previewUrl" to="body">
+          <div class="ppt-slide-image-viewer">
+            <el-image-viewer :url-list="[previewUrl]" hide-on-click-modal close-on-press-escape
+              :scale="0.8" :z-index="5000" @close="closePreview" />
+          </div>
+        </Teleport>
       </template>
     </div>
   </component>
@@ -80,4 +91,7 @@ summary { padding: 9px 12px; cursor: pointer; }
 .preview-link:hover { background: #dceaff; border-color: #adc8f3; }
 .preview-link:focus-visible { outline: 2px solid #1757b8; outline-offset: 2px; }
 img { display: block; max-width: 100%; max-height: 160px; object-fit: contain; cursor: zoom-in; }
+:global(.ppt-slide-image-viewer .el-image-viewer__canvas) { pointer-events: none; }
+:global(.ppt-slide-image-viewer .el-image-viewer__img) { pointer-events: auto; }
+:global(.ppt-slide-image-viewer .el-image-viewer__close) { width: 48px; height: 48px; }
 </style>

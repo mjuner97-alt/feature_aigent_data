@@ -114,6 +114,14 @@ public class PptAnomalyService {
     }
     @Transactional(GaussConfig.TX_NAME)
     public Batch createBatch(String name, String userId, String materialType) {
+        if (name == null || name.isBlank() || name.strip().length() > 255) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请输入批次名称");
+        }
+        name = name.strip();
+        persistence.lockBatchCreation();
+        if (persistence.batchNameExists(name)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "批次名称已存在，请更换名称或选择已有批次");
+        }
         long id = createBatchKey(name, userId, materialType);
         return new Batch(id, name, userId, LocalDateTime.now());
     }
@@ -263,6 +271,7 @@ public class PptAnomalyService {
         var visibleDepartments = recordDepartments(userId, admin);
         if (!admin && visibleDepartments.isEmpty()) return List.of();
         var records = new ArrayList<FeedbackRecord>();
+        var directory = new HashMap<String, java.util.Optional<DirectoryPerson>>();
         for (var row : persistence.feedbackRecords(userId, true, !noticeColumns.isEmpty(), noticeColumns.contains("notified_at"))) {
             if (row.findingId() == null) continue;
             var departments = readList(row.findingDepartments());
@@ -273,7 +282,8 @@ public class PptAnomalyService {
                         row.versionNo(), row.fileName(), row.recipient(), row.findingId(), row.pageNo(), row.title(),
                         row.section(), write(departments), row.status(), row.noticeKind(), row.notifiedAt(), row.feedbackAt());
             }
-            var person = row.recipient() == null ? null : ledgerPerson(row.recipient());
+            var person = row.recipient() == null ? null : directory
+                    .computeIfAbsent(row.recipient(), id -> java.util.Optional.ofNullable(ledgerPerson(id))).orElse(null);
             if (departments.isEmpty() && person != null) departments = person.depts();
             String title = row.title() == null ? "" : row.title().strip();
             String configurableTitle = admin ? (title.isBlank() ? "未命名页面" : title) : null;
@@ -1484,13 +1494,16 @@ public class PptAnomalyService {
 
     /** 原件路径已由 originalFile 校验存储范围。 */
     Map<Integer, String> originalSlideTitles(long versionId, List<Finding> findings) {
-        if (findings.isEmpty()) return Map.of();
+        return originalSlideTitlesByPage(versionId, findings.stream().map(Finding::pageNo).distinct().toList());
+    }
+
+    Map<Integer, String> originalSlideTitlesByPage(long versionId, List<Integer> pageNumbers) {
+        if (pageNumbers.isEmpty()) return Map.of();
         Map<Integer, String> titles = new LinkedHashMap<>();
         try (var input = originalFile(versionId).resource().getInputStream();
              var show = new XMLSlideShow(input)) {
             var slides = show.getSlides();
-            for (var finding : findings) {
-                int page = finding.pageNo();
+            for (int page : pageNumbers) {
                 if (page > 0 && page <= slides.size()) {
                     titles.computeIfAbsent(page, number ->
                             inferSlideTitle(slides.get(number - 1), show.getPageSize().getHeight(), Set.of()));
@@ -1727,7 +1740,7 @@ public class PptAnomalyService {
         String explanation = request.explanation() == null ? "" : request.explanation();
         if (explanation.getBytes(StandardCharsets.UTF_8).length > MAX_FEEDBACK_BYTES
                 || explanation.startsWith(ATTACHMENT_PREFIX)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "反馈记录格式不正确或超过 16 KB");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "补充说明格式不正确或超过 16 KB");
         }
         if (!attachments.isEmpty()) {
             var reusable = new LinkedHashSet<>(feedbackFiles(state.explanation()));
