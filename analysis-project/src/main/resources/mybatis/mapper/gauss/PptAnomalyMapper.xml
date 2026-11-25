@@ -322,7 +322,17 @@
         )
         SELECT b.id AS batch_id, b.name AS batch_name, v.id AS version_id, v.version_no, v.file_name,
                r.recipient, f.id AS finding_id, s.page_no, f.title, f.chapter AS section, f.auto_departments AS finding_departments,
-               CASE WHEN v.id=f.version_id THEN f.status END AS status,
+               CASE WHEN v.id=f.version_id THEN
+                   CASE WHEN f.status='PENDING_FEEDBACK' THEN COALESCE((
+                       SELECT CASE WHEN length(note.explanation) &gt; 0 THEN
+                           CASE WHEN note.judgement='NON_ANOMALY' THEN 'ADJUSTED' ELSE 'CONFIRMED' END
+                       END
+                       FROM digital_qa_ppt_finding_feedback note
+                       WHERE note.finding_id=f.id AND note.assignment_revision=f.assignment_revision
+                       ORDER BY note.id DESC LIMIT 1
+                   ), f.status)
+                   ELSE f.status END
+               END AS status,
                <choose>
                    <when test="notices">n.kind</when>
                    <otherwise>CAST(NULL AS VARCHAR)</otherwise>
