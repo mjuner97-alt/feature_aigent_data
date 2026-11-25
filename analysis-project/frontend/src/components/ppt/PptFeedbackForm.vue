@@ -22,7 +22,6 @@ const details = ref<PptTitleDetail[]>([]);
 const loadingFeedback = ref(true);
 const loadFailed = ref(false);
 const hadCurrent = ref(false);
-const showingPrevious = ref(false);
 const baseRevision = ref('');
 const historyOpen = ref(false);
 const historyLoading = ref(false);
@@ -67,7 +66,6 @@ watch([editor, () => props.finding], async ([element, finding], _, onCleanup) =>
   displayedFeedback.value = undefined;
   details.value = [];
   hadCurrent.value = false;
-  showingPrevious.value = false;
   baseRevision.value = '';
   caret = undefined;
   try {
@@ -83,7 +81,6 @@ watch([editor, () => props.finding], async ([element, finding], _, onCleanup) =>
     baseRevision.value = history.baseRevision;
     details.value = toPptTitleDetails(history.detailLinks ?? []);
     hadCurrent.value = !!history.current;
-    showingPrevious.value = !history.current && !!history.previous;
     const note: FeedbackNote | null = history.current ?? history.previous;
     if (!note) return;
     const feedback = unpackFeedback(note.explanation ?? '', name => feedbackAttachmentUrl(finding.id, name));
@@ -405,7 +402,6 @@ function insertTable() {
         </template>
       </div>
     </div>
-    <p v-if="showingPrevious" class="help">以下为上一版反馈，供本版填写时参考。</p>
     <div v-if="displayedFeedback" class="previous-feedback">
       <div class="rich" v-html="displayedFeedback.html" />
       <div v-for="name in displayedFeedback.files" :key="name" class="rich">

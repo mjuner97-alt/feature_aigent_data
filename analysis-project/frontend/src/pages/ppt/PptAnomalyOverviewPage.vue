@@ -527,7 +527,6 @@ onMounted(async () => {
               </dl>
             </div>
             <div class="finding-actions">
-              <span>{{ item.departments.join('、') || '部门未归属' }}</span>
               <span class="feedback-status">{{ feedbackStatuses[item.status] || '-' }}</span>
               <el-button v-if="canManage && !readOnly" link type="primary" :disabled="saving || drafts.has(item.id)"
                 @click="assignmentDialog = { finding: item }">调整归属</el-button>
