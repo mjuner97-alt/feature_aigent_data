@@ -27,17 +27,19 @@ const router = useRouter();
 const versionAssignments = ref<{ versionId: number; versionNo: number; section: string | null; pageNo: number | null }>();
 const emptyVersion = ref<Recipient>();
 const records = ref<PptFeedbackRecord[]>([]);
-const originalTitles = ref(new Map<number, Record<number, string>>());
+const originalTitles = ref(new Map<number, Record<number, string> | null>());
 const loadingTitles = new Set<number>();
 
 async function loadOriginalTitles(row: Recipient, expanded: Recipient[]) {
   const id = row.versionId;
-  if (!expanded.some(item => item.key === row.key) || originalTitles.value.has(id) || loadingTitles.has(id)) return;
+  if (!expanded.some(item => item.key === row.key) || originalTitles.value.get(id) || loadingTitles.has(id)) return;
   loadingTitles.add(id);
+  originalTitles.value.delete(id);
   try {
     originalTitles.value.set(id, await feedbackOriginalTitles(id));
   } catch {
     // 原件读取失败时继续显示事项标题，下次展开可以重试。
+    originalTitles.value.set(id, null);
   } finally {
     loadingTitles.delete(id);
   }
@@ -221,7 +223,10 @@ onMounted(load);
           <el-table class="page-details" :data="row.detailPages" size="small" empty-text="暂无反馈任务">
             <el-table-column label="页面" min-width="180">
               <template #default="{ row: item }">
-                P{{ item.pageNo }} · {{ feedbackPageTitle(originalTitles.get(row.versionId)?.[item.pageNo], item.title) }}
+                P{{ item.pageNo }}
+                <template v-if="originalTitles.has(row.versionId)">
+                  · {{ feedbackPageTitle(originalTitles.get(row.versionId)?.[item.pageNo], item.title) }}
+                </template>
               </template>
             </el-table-column>
             <el-table-column prop="section" label="板块" min-width="100" />

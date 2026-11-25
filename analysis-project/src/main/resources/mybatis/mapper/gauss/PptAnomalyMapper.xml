@@ -314,7 +314,7 @@
                 UNION ALL
                 SELECT f.version_id, f.id, NULL AS recipient
                 FROM digital_qa_ppt_finding f
-                WHERE f.status='UNASSIGNED' AND NOT EXISTS (
+                WHERE f.status IN ('UNASSIGNED','CONFIRMED','ADJUSTED') AND NOT EXISTS (
                     SELECT 1 FROM digital_qa_ppt_finding_recipient handler WHERE handler.finding_id=f.id
                 )
             </if>
@@ -333,7 +333,7 @@
                </choose> AS notified_at,
                CASE WHEN v.id=f.version_id AND f.status IN ('CONFIRMED','ADJUSTED') THEN (
                    SELECT MAX(note.created_at) FROM digital_qa_ppt_finding_feedback note
-                   WHERE note.finding_id=f.id AND note.assignment_revision=f.assignment_revision AND (note.user_id=r.recipient
+                   WHERE note.finding_id=f.id AND note.assignment_revision=f.assignment_revision AND (r.recipient IS NULL OR note.user_id=r.recipient
                        OR (assigned.user_id IS NOT NULL AND f.status IN ('CONFIRMED','ADJUSTED')))
                ) END AS feedback_at
         FROM digital_qa_ppt_material_version v

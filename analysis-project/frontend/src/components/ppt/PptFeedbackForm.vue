@@ -593,9 +593,9 @@ function insertTable() {
 .tool.disabled, .tool:disabled { opacity: .55; cursor: default; }
 .tool:focus-within { outline: 2px solid #2563eb; outline-offset: -2px; }
 .editor:focus { outline: none; }
-.rich { padding: 10px; white-space: pre-wrap; overflow: auto; overflow-wrap: anywhere; color: #1d4ed8; }
+.rich { padding: 10px; white-space: pre-wrap; overflow: auto; overflow-wrap: anywhere; color: #0000FF; }
 .field-label { margin: 0; font-size: 17px; font-weight: 600; color: #172b49; }
-.feedback-heading .field-label { color: #1d4ed8; }
+.feedback-heading .field-label { color: #0000FF; }
 .help { margin: 0 0 4px; font-size: 13px; color: #52627a; }
 .editor { padding: 14px; background: #f8fafc; line-height: 1.65; }
 .composer-editing .editor { min-height: clamp(120px, 24dvh, 200px); background: #fff; }
