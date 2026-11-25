@@ -527,7 +527,6 @@ onMounted(async () => {
               </dl>
             </div>
             <div class="finding-actions">
-              <span>{{ item.departments.join('、') || '部门未归属' }}</span>
               <span class="feedback-status">{{ feedbackStatuses[item.status] || '-' }}</span>
               <el-button v-if="canManage && !readOnly" link type="primary" :disabled="saving || drafts.has(item.id)"
                 @click="assignmentDialog = { finding: item }">调整归属</el-button>
@@ -588,7 +587,7 @@ onMounted(async () => {
         </div>
         <div class="report-mail-preview__body">
           <p>各位好：</p>
-          <p>《{{ directory.materialMailLabel }}》材料分析如下，本期材料涉及到部门关注事项共{事项数}项，请点击链接参阅。</p>
+          <p class="report-mail-preview__paragraph">《{{ directory.materialMailLabel }}》材料分析如下，本期材料涉及到部门关注事项共{事项数}项，请点击链接参阅。</p>
         </div>
       </section>
     </MailRecipientDialog>
@@ -631,6 +630,7 @@ onMounted(async () => {
 .report-mail-preview__subject strong { min-width: 0; color: #172c4a; overflow-wrap: anywhere; }
 .report-mail-preview__body { display: grid; gap: 5px; padding: 12px 16px; overflow-wrap: anywhere; }
 .report-mail-preview__body p { margin: 0; color: #263951; line-height: 1.65; }
+.report-mail-preview__paragraph { text-indent: 2em; }
 .ppt-page {
   box-sizing: border-box;
   max-width: 1440px;

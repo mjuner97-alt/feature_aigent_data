@@ -21,23 +21,23 @@
         <foreach collection="ids" item="id" open="(" close=")" separator=",">#{id}</foreach>
     </update>
     <sql id="effectiveReminderSettings">
-        COALESCE(c.reminder_enabled,d.enabled) AS enabled,
-               COALESCE(c.reminder_cutoff,d.cutoff) AS cutoff,
-        COALESCE(c.reminder_interval_minutes,d.interval_minutes) AS interval_minutes,
+        COALESCE(c.reminder_enabled,d.enabled,TRUE) AS enabled,
+        COALESCE(c.reminder_cutoff,d.cutoff,'18:00') AS cutoff,
+        COALESCE(c.reminder_interval_minutes,d.interval_minutes,60) AS interval_minutes,
         c.reminder_weekly_start_minute AS weekly_start_minute,
         c.reminder_weekly_end_minute AS weekly_end_minute
     </sql>
     <select id="feedbackReminderSettings" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackReminderSettings">
         SELECT <include refid="effectiveReminderSettings"/>
         FROM digital_qa_ppt_keyword_config c
-        CROSS JOIN digital_qa_ppt_feedback_reminder_settings d
-        WHERE c.id=#{id} AND c.kind='material-type' AND d.id=1
+        LEFT JOIN digital_qa_ppt_feedback_reminder_settings d ON d.id=1
+        WHERE c.id=#{id} AND c.kind='material-type'
     </select>
     <select id="materialReminderSettings" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$MaterialReminderSettings">
         SELECT c.id, <include refid="effectiveReminderSettings"/>
         FROM digital_qa_ppt_keyword_config c
-        CROSS JOIN digital_qa_ppt_feedback_reminder_settings d
-        WHERE c.kind='material-type' AND d.id=1 AND c.id IN
+        LEFT JOIN digital_qa_ppt_feedback_reminder_settings d ON d.id=1
+        WHERE c.kind='material-type' AND c.id IN
         <foreach collection="ids" item="id" open="(" close=")" separator=",">#{id}</foreach>
     </select>
     <update id="updateFeedbackReminderSettings">
@@ -52,18 +52,18 @@
     <sql id="feedbackReminderSettingsJoin">
         JOIN digital_qa_ppt_material_batch b ON b.id=v.batch_id
         LEFT JOIN digital_qa_ppt_keyword_config c ON c.kind='material-type' AND c.name=b.material_type
-        JOIN digital_qa_ppt_feedback_reminder_settings d ON d.id=1
+        LEFT JOIN digital_qa_ppt_feedback_reminder_settings d ON d.id=1
     </sql>
     <sql id="feedbackReminderInterval">
-        COALESCE(c.reminder_interval_minutes,d.interval_minutes) * INTERVAL '1 minute'
+        COALESCE(c.reminder_interval_minutes,d.interval_minutes,60) * INTERVAL '1 minute'
     </sql>
     <sql id="dueFeedbackReminder">
         f.status='PENDING_FEEDBACK'
-        AND COALESCE(c.reminder_enabled,d.enabled)=TRUE
+        AND COALESCE(c.reminder_enabled,d.enabled,TRUE)=TRUE
         AND (
             (c.reminder_weekly_start_minute IS NULL
                 AND TO_CHAR(CAST(#{now} AS TIMESTAMP), 'HH24:MI') &gt;= '10:00'
-                AND TO_CHAR(CAST(#{now} AS TIMESTAMP), 'HH24:MI') &lt; COALESCE(c.reminder_cutoff,d.cutoff))
+                AND TO_CHAR(CAST(#{now} AS TIMESTAMP), 'HH24:MI') &lt; COALESCE(c.reminder_cutoff,d.cutoff,'18:00'))
             OR (c.reminder_weekly_start_minute &lt; c.reminder_weekly_end_minute
                 AND #{weekMinute} &gt;= c.reminder_weekly_start_minute
                 AND #{weekMinute} &lt; c.reminder_weekly_end_minute)
@@ -331,7 +331,7 @@
                    <when test="notices and hasNoticeTime">n.notified_at</when>
                    <otherwise>CAST(NULL AS TIMESTAMP)</otherwise>
                </choose> AS notified_at,
-               CASE WHEN v.id=f.version_id THEN (
+               CASE WHEN v.id=f.version_id AND f.status IN ('CONFIRMED','ADJUSTED') THEN (
                    SELECT MAX(note.created_at) FROM digital_qa_ppt_finding_feedback note
                    WHERE note.finding_id=f.id AND note.assignment_revision=f.assignment_revision AND (note.user_id=r.recipient
                        OR (assigned.user_id IS NOT NULL AND f.status IN ('CONFIRMED','ADJUSTED')))
@@ -566,11 +566,11 @@
         )
         ORDER BY r.id DESC LIMIT 1
     </select>
-    <!-- 匹配历史版本同标题与部门的明确对应事项并继承反馈。 -->
+    <!-- 继承上一已识别版本中明确对应事项的当前有效反馈。 -->
     <insert id="carryFeedback">
         WITH inherit_findings AS (
             SELECT f.id, f.version_id, v.batch_id, v.version_no, v.status AS version_status,
-                   f.chapter, f.feedback_department,
+                   f.chapter, f.feedback_department, f.auto_departments, f.status, f.assignment_revision,
                    <include refid="normalizedTitle"><property name="title" value="f.title"/></include> AS title_key
             FROM digital_qa_ppt_finding f
             JOIN digital_qa_ppt_material_version v ON v.id=f.version_id
@@ -582,39 +582,53 @@
             FROM inherit_findings f
             JOIN inherit_findings p ON p.batch_id=f.batch_id AND p.version_no&lt;f.version_no
                 AND p.version_status='ANALYZED' AND p.title_key=f.title_key
-                AND (f.feedback_department=p.feedback_department OR (f.feedback_department IS NULL AND p.feedback_department IS NULL)
+                AND (f.feedback_department=p.feedback_department OR (f.feedback_department IS NULL
+                     AND p.feedback_department IS NULL AND f.auto_departments=p.auto_departments)
                      OR (p.feedback_department IS NULL AND EXISTS (
                          SELECT 1 FROM digital_qa_ppt_finding_recipient prior_recipient
                          JOIN digital_qa_ppt_finding_recipient current_recipient ON current_recipient.user_id=prior_recipient.user_id
                          WHERE prior_recipient.finding_id=p.id AND current_recipient.finding_id=f.id
                      )))
             WHERE f.version_id=#{id} AND f.title_key &lt;&gt; ''
+              AND NOT EXISTS (
+                  SELECT 1 FROM digital_qa_ppt_material_version newer
+                  WHERE newer.batch_id=f.batch_id AND newer.status='ANALYZED'
+                    AND newer.version_no &gt; p.version_no AND newer.version_no &lt; f.version_no
+              )
         ), inherit_candidates AS (
             SELECT inherit_matches.*,
                    COUNT(*) OVER (PARTITION BY finding_id, prior_version_id) AS candidate_count,
                    COUNT(*) OVER (PARTITION BY prior_id, version_id) AS destination_count
             FROM inherit_matches WHERE preference=1
         ), inherit_notes AS (
-            SELECT c.finding_id, c.version_id, r.judgement, r.adjusted_departments, r.explanation, r.user_id, r.created_at,
+            SELECT c.finding_id, current_finding.assignment_revision, r.judgement, r.adjusted_departments,
+                   r.explanation, r.user_id, r.created_at,
                    ROW_NUMBER() OVER (PARTITION BY c.finding_id ORDER BY c.version_no DESC, r.id DESC) AS priority
             FROM inherit_candidates c
+            JOIN inherit_findings prior_finding ON prior_finding.id=c.prior_id
+            JOIN inherit_findings current_finding ON current_finding.id=c.finding_id
             JOIN digital_qa_ppt_finding_feedback r ON r.finding_id=c.prior_id
+                AND r.assignment_revision=prior_finding.assignment_revision
             WHERE c.candidate_count=1 AND c.destination_count=1
+              AND prior_finding.status IN ('CONFIRMED','ADJUSTED')
+              AND current_finding.status='PENDING_FEEDBACK' AND current_finding.assignment_revision=0
               AND EXISTS (SELECT 1 FROM digital_qa_ppt_finding_recipient h WHERE h.finding_id=c.finding_id)
               AND NOT EXISTS (SELECT 1 FROM digital_qa_ppt_finding_feedback own WHERE own.finding_id=c.finding_id)
         )
-        INSERT INTO digital_qa_ppt_finding_feedback(finding_id,judgement,adjusted_departments,explanation,user_id,created_at)
-        SELECT finding_id,judgement,adjusted_departments,explanation,user_id,created_at
+        INSERT INTO digital_qa_ppt_finding_feedback(finding_id,judgement,adjusted_departments,explanation,user_id,created_at,assignment_revision)
+        SELECT finding_id,judgement,adjusted_departments,explanation,user_id,created_at,assignment_revision
         FROM inherit_notes WHERE priority=1
     </insert>
     <!-- 依据继承的反馈判断更新当前事项处理状态。 -->
     <update id="markCarriedFeedbackComplete">
         UPDATE digital_qa_ppt_finding f SET status=(
             SELECT CASE WHEN r.judgement='NON_ANOMALY' THEN 'ADJUSTED' ELSE 'CONFIRMED' END
-            FROM digital_qa_ppt_finding_feedback r WHERE r.finding_id=f.id ORDER BY r.id DESC LIMIT 1
+            FROM digital_qa_ppt_finding_feedback r WHERE r.finding_id=f.id
+              AND r.assignment_revision=f.assignment_revision ORDER BY r.id DESC LIMIT 1
         )
         WHERE f.version_id=#{id} AND f.status &lt;&gt; 'DELETED' AND f.status='PENDING_FEEDBACK'
-          AND f.id IN (SELECT finding_id FROM digital_qa_ppt_finding_feedback)
+          AND EXISTS (SELECT 1 FROM digital_qa_ppt_finding_feedback r
+                      WHERE r.finding_id=f.id AND r.assignment_revision=f.assignment_revision)
     </update>
 
     <!-- 读取指定事项最新提交的一次反馈。 -->

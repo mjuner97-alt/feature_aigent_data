@@ -77,7 +77,7 @@ async function searchPeople(keyword: string) {
 }
 
 async function save() {
-  if (!page.value || !department.value || busy.value) return;
+  if (!page.value || !department.value || !handlers.value.length || busy.value) return;
   busy.value = true;
   error.value = '';
   try {
@@ -115,9 +115,9 @@ async function save() {
           <el-option v-for="name in departments" :key="name" :value="name" :label="name" />
         </el-select>
       </el-form-item>
-      <el-form-item label="经办人">
+      <el-form-item label="经办人" required>
         <el-select v-model="handlers" multiple filterable remote :reserve-keyword="false" :remote-method="searchPeople" :loading="searching"
-          :disabled="!department" placeholder="输入姓名或统一认证号" style="width: 100%">
+          :disabled="!department" placeholder="请搜索并选择至少一位经办人" style="width: 100%">
           <el-option v-for="person in people" :key="person.id" :value="person.id" :label="person.label" />
         </el-select>
         <span v-if="searchError">{{ searchError }}</span>
@@ -129,7 +129,7 @@ async function save() {
     <template #footer>
       <el-button :disabled="busy" @click="emit('close')">取消</el-button>
       <el-button v-if="conflict" type="primary" @click="emit('reload')">重新加载归属</el-button>
-      <el-button v-else type="primary" :loading="busy" :disabled="!page || !department"
+      <el-button v-else type="primary" :loading="busy" :disabled="!page || !department || !handlers.length"
         @click="save">保存</el-button>
     </template>
   </el-dialog>
