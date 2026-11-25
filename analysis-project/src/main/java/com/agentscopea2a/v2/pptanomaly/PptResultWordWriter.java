@@ -31,7 +31,7 @@ import java.util.Set;
 public class PptResultWordWriter {
     private static final String FILE_PREFIX = "ppt-feedback-files:v1\n";
     private static final String HTML_PREFIX = "ppt-feedback-html:v1\n";
-    private static final String FEEDBACK_BLUE = "1D4ED8";
+    private static final String FEEDBACK_BLUE = "0000FF";
     private final PptAnomalyService service;
     private final ObjectMapper mapper;
 

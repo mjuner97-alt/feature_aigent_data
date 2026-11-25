@@ -314,7 +314,7 @@
                 UNION ALL
                 SELECT f.version_id, f.id, NULL AS recipient
                 FROM digital_qa_ppt_finding f
-                WHERE f.status='UNASSIGNED' AND NOT EXISTS (
+                WHERE f.status IN ('UNASSIGNED','CONFIRMED','ADJUSTED') AND NOT EXISTS (
                     SELECT 1 FROM digital_qa_ppt_finding_recipient handler WHERE handler.finding_id=f.id
                 )
             </if>
@@ -322,7 +322,17 @@
         )
         SELECT b.id AS batch_id, b.name AS batch_name, v.id AS version_id, v.version_no, v.file_name,
                r.recipient, f.id AS finding_id, s.page_no, f.title, f.chapter AS section, f.auto_departments AS finding_departments,
-               CASE WHEN v.id=f.version_id THEN f.status END AS status,
+               CASE WHEN v.id=f.version_id THEN
+                   CASE WHEN f.status='PENDING_FEEDBACK' THEN COALESCE((
+                       SELECT CASE WHEN length(note.explanation) &gt; 0 THEN
+                           CASE WHEN note.judgement='NON_ANOMALY' THEN 'ADJUSTED' ELSE 'CONFIRMED' END
+                       END
+                       FROM digital_qa_ppt_finding_feedback note
+                       WHERE note.finding_id=f.id AND note.assignment_revision=f.assignment_revision
+                       ORDER BY note.id DESC LIMIT 1
+                   ), f.status)
+                   ELSE f.status END
+               END AS status,
                <choose>
                    <when test="notices">n.kind</when>
                    <otherwise>CAST(NULL AS VARCHAR)</otherwise>
@@ -333,7 +343,7 @@
                </choose> AS notified_at,
                CASE WHEN v.id=f.version_id AND f.status IN ('CONFIRMED','ADJUSTED') THEN (
                    SELECT MAX(note.created_at) FROM digital_qa_ppt_finding_feedback note
-                   WHERE note.finding_id=f.id AND note.assignment_revision=f.assignment_revision AND (note.user_id=r.recipient
+                   WHERE note.finding_id=f.id AND note.assignment_revision=f.assignment_revision AND (r.recipient IS NULL OR note.user_id=r.recipient
                        OR (assigned.user_id IS NOT NULL AND f.status IN ('CONFIRMED','ADJUSTED')))
                ) END AS feedback_at
         FROM digital_qa_ppt_material_version v
@@ -503,13 +513,13 @@
                    FROM digital_qa_ppt_finding m
                    WHERE m.version_id=latest.id AND m.status &lt;&gt; 'DELETED'
                      AND (f.feedback_department IS NULL OR m.feedback_department=f.feedback_department)
-                     AND <include refid="normalizedTitle"><property name="title" value="f.title"/></include> &lt;&gt; ''
+                     AND length(<include refid="normalizedTitle"><property name="title" value="f.title"/></include>) &gt; 0
                      AND <include refid="normalizedTitle"><property name="title" value="m.title"/></include> =
                          <include refid="normalizedTitle"><property name="title" value="f.title"/></include>
                ) END AS finding_id,
                (latest.id=original.id OR f.id IS NULL OR EXISTS (
                    SELECT 1 FROM digital_qa_ppt_slide s WHERE s.version_id=latest.id
-                     AND <include refid="normalizedTitle"><property name="title" value="f.title"/></include> &lt;&gt; ''
+                     AND length(<include refid="normalizedTitle"><property name="title" value="f.title"/></include>) &gt; 0
                      AND <include refid="normalizedTitle"><property name="title" value="s.title"/></include> =
                          <include refid="normalizedTitle"><property name="title" value="f.title"/></include>
                )) AS title_present
@@ -558,7 +568,7 @@
         )
         JOIN digital_qa_ppt_finding previous_finding ON previous_finding.id=r.finding_id
         WHERE f.id=#{id} AND f.status &lt;&gt; 'DELETED' AND r.assignment_revision=previous_finding.assignment_revision
-          AND <include refid="normalizedTitle"><property name="title" value="f.title"/></include> &lt;&gt; ''
+          AND length(<include refid="normalizedTitle"><property name="title" value="f.title"/></include>) &gt; 0
           AND NOT EXISTS (
             SELECT 1 FROM digital_qa_ppt_material_version newer
             WHERE newer.batch_id=v.batch_id AND newer.status='ANALYZED'
@@ -589,7 +599,7 @@
                          JOIN digital_qa_ppt_finding_recipient current_recipient ON current_recipient.user_id=prior_recipient.user_id
                          WHERE prior_recipient.finding_id=p.id AND current_recipient.finding_id=f.id
                      )))
-            WHERE f.version_id=#{id} AND f.title_key &lt;&gt; ''
+            WHERE f.version_id=#{id} AND length(f.title_key) &gt; 0
               AND NOT EXISTS (
                   SELECT 1 FROM digital_qa_ppt_material_version newer
                   WHERE newer.batch_id=f.batch_id AND newer.status='ANALYZED'
@@ -627,8 +637,12 @@
               AND r.assignment_revision=f.assignment_revision ORDER BY r.id DESC LIMIT 1
         )
         WHERE f.version_id=#{id} AND f.status &lt;&gt; 'DELETED' AND f.status='PENDING_FEEDBACK'
-          AND EXISTS (SELECT 1 FROM digital_qa_ppt_finding_feedback r
-                      WHERE r.finding_id=f.id AND r.assignment_revision=f.assignment_revision)
+          AND (
+              SELECT length(r.explanation)
+              FROM digital_qa_ppt_finding_feedback r
+              WHERE r.finding_id=f.id AND r.assignment_revision=f.assignment_revision
+              ORDER BY r.id DESC LIMIT 1
+          ) &gt; 0
     </update>
 
     <!-- 读取指定事项最新提交的一次反馈。 -->
@@ -1083,7 +1097,7 @@
             WHERE prior.version_id=#{previous}
               AND trim(regexp_replace(prior.title, <include refid="titlePrefix"/>, '')) =
                   trim(regexp_replace(current.title, <include refid="titlePrefix"/>, ''))
-              AND trim(regexp_replace(current.title, <include refid="titlePrefix"/>, '')) &lt;&gt; ''
+              AND length(trim(regexp_replace(current.title, <include refid="titlePrefix"/>, ''))) &gt; 0
         )
     </update>
 
