@@ -4,6 +4,7 @@ import com.agentscopea2a.v2.pptanomaly.PptAnomalyModels.Batch;
 import com.agentscopea2a.v2.pptanomaly.PptAnomalyModels.Version;
 import com.agentscopea2a.v2.pptanomaly.PptAnomalyModels.Slide;
 import com.agentscopea2a.v2.pptanomaly.PptKeywordConfigController.Entry;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.Param;
@@ -221,6 +222,11 @@ public interface PptAnomalyMapper {
     record FeedbackNote(String judgement, String explanation, String userId) {}
     /** 查找同标题与部门的历史反馈记录。 */
     FeedbackNote previousFeedback(@Param("id") long id);
+
+    record FeedbackReuseRow(long findingId, long versionId, int versionNo, int pageNo, String title, String chapter,
+                            String department, String userId, String explanation, LocalDateTime createdAt) {}
+    List<FeedbackReuseRow> feedbackReuseCandidates(@Param("id") long id, @Param("keyword") String keyword,
+                                                   @Param("source") Long source);
     /** 读取指定事项最新提交的一次反馈。 */
     FeedbackNote latestFeedback(@Param("id") long id);
 

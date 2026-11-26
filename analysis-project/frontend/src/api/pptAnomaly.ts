@@ -278,6 +278,29 @@ export async function feedbackEdits(findingId: number) {
   return parse<FeedbackEdit[]>(await fetch(`${base}/findings/${findingId}/feedback-edits`, { headers: headers() }));
 }
 
+export interface PptFeedbackReuseOption {
+  authorName: string | null;
+  source: {
+    findingId: number; versionId: number; versionNo: number; pageNo: number; title: string | null;
+    chapter: string | null; department: string; userId: string; explanation: string; createdAt: string;
+  };
+}
+
+export async function feedbackReuseOptions(findingId: number, keyword: string | undefined, signal: AbortSignal) {
+  const query = keyword === undefined ? '' : `?${new URLSearchParams({ keyword })}`;
+  return parse<PptFeedbackReuseOption[]>(
+    await fetch(`${base}/findings/${findingId}/feedback-reuse${query}`, { headers: headers(), signal }),
+  );
+}
+
+export function feedbackReusePreviewUrl(findingId: number, sourceId: number) {
+  return `${base}/findings/${findingId}/feedback-reuse/${sourceId}/preview`;
+}
+
+export function feedbackReuseAttachmentUrl(findingId: number, sourceId: number, name: string) {
+  return `${base}/findings/${findingId}/feedback-reuse/${sourceId}/attachments/${encodeURIComponent(name)}`;
+}
+
 export async function assignmentOptions(versionId: number) {
   return parse<{ pages: { page: number; title: string | null; section: string | null; skipped: boolean }[];
     departments: string[] }>(

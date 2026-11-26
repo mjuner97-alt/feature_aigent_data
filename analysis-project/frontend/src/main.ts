@@ -166,7 +166,7 @@ const routes: RouteRecordRaw[] = [
           { path: 'materials/:batchId/result', component: () => import('./pages/ppt/PptResultPage.vue'), meta: { title: '生成结果', requiresPptProductDepartment: true } },
           { path: 'notifications', component: () => import('./pages/ppt/PptNotificationRecordsPage.vue'), meta: { title: '通知记录' } },
           { path: 'feedback-records', component: () => import('./pages/ppt/PptFeedbackRecordsPage.vue'), meta: { title: '反馈记录' } },
-          { path: 'keyword-config', component: () => import('./pages/ppt/PptKeywordConfigPage.vue'), meta: { title: '例会材料配置' } },
+          { path: 'keyword-config', component: () => import('./pages/ppt/PptKeywordConfigPage.vue'), meta: { title: '参数配置' } },
           // 经办人列表可由登录用户查看，修改配置时由页面和接口校验权限。
           { path: 'keyword-config/title-handlers', component: () => import('./pages/ppt/PptTitleHandlersPage.vue'), meta: { title: '标题经办人' } },
           { path: 'overview', component: PptAnomalyOverviewPage, meta: { title: 'PPT 异常总览' } },

@@ -181,6 +181,30 @@ public class PptAnomalyController {
         return service.feedbackHistory(findingId, userId, canViewAllFeedback(userId));
     }
 
+    @GetMapping("/findings/{findingId}/feedback-reuse")
+    public List<PptAnomalyService.FeedbackReuseOption> feedbackReuseOptions(@PathVariable long findingId,
+            @RequestParam(required = false) String keyword,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
+        requireUser(userId);
+        return service.feedbackReuseOptions(findingId, keyword, userId);
+    }
+
+    @GetMapping(value = "/findings/{findingId}/feedback-reuse/{sourceId}/preview", produces = MediaType.IMAGE_PNG_VALUE)
+    public ResponseEntity<Resource> feedbackReusePreview(@PathVariable long findingId, @PathVariable long sourceId,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
+        requireUser(userId);
+        return ResponseEntity.ok().contentType(MediaType.IMAGE_PNG)
+                .header(HttpHeaders.CACHE_CONTROL, "private, no-cache")
+                .body(service.feedbackReusePreview(findingId, sourceId, userId));
+    }
+
+    @GetMapping("/findings/{findingId}/feedback-reuse/{sourceId}/attachments/{name}")
+    public ResponseEntity<Resource> feedbackReuseAttachment(@PathVariable long findingId, @PathVariable long sourceId,
+            @PathVariable String name, @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
+        requireUser(userId);
+        return feedbackImage(service.feedbackReuseAttachment(findingId, sourceId, name, userId), name);
+    }
+
     @GetMapping("/findings/{findingId}/feedback-edits")
     public List<PptAnomalyService.FeedbackEdit> feedbackEdits(@PathVariable long findingId,
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
@@ -526,7 +550,10 @@ public class PptAnomalyController {
     public ResponseEntity<Resource> feedbackAttachment(@PathVariable long findingId, @PathVariable String name,
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
         requireUser(userId);
-        Resource file = service.feedbackAttachment(findingId, name, userId, canViewAllFeedback(userId));
+        return feedbackImage(service.feedbackAttachment(findingId, name, userId, canViewAllFeedback(userId)), name);
+    }
+
+    private ResponseEntity<Resource> feedbackImage(Resource file, String name) {
         return ResponseEntity.ok()
                 .header(HttpHeaders.CACHE_CONTROL, "private, no-cache")
                 .header("X-Content-Type-Options", "nosniff")

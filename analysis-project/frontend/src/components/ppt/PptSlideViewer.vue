@@ -5,7 +5,7 @@ import { computed, nextTick, ref, watch } from 'vue';
 import { FullScreen } from '@element-plus/icons-vue';
 import type { PptSlide } from '../../types/pptAnomaly';
 
-const props = defineProps<{ pageNo: number; slide?: PptSlide; unavailable: boolean; plain?: boolean }>();
+const props = defineProps<{ pageNo: number; slide?: PptSlide; unavailable: boolean; plain?: boolean; wide?: boolean }>();
 const enlarged = ref(false);
 const enlargeButton = ref<HTMLButtonElement>();
 const failed = ref(false);
@@ -37,18 +37,19 @@ async function closePreview() {
 </script>
 
 <template>
-  <component :is="plain ? 'div' : 'details'" class="preview" :class="{ plain }" :open="plain ? undefined : true">
-    <summary v-if="!plain">核对 PPT 原页 · P{{ pageNo }}</summary>
+  <component :is="plain || wide ? 'div' : 'details'" class="preview" :class="{ plain, wide }" :open="plain || wide ? undefined : true">
+    <summary v-if="!plain && !wide">核对 PPT 原页 · P{{ pageNo }}</summary>
     <div class="preview-body">
-      <p v-if="!slide" role="status">{{ unavailable ? '暂无可用预览' : '正在读取预览…' }}</p>
-      <p v-else-if="!slide.imageUrl">暂无可用预览</p>
-      <div v-else-if="failed">
+      <p v-if="wide" class="preview-label">上一版 PPT 原页</p>
+      <p v-if="!slide" class="preview-state" role="status">{{ unavailable ? '暂无可用预览' : '正在读取预览…' }}</p>
+      <p v-else-if="!slide.imageUrl" class="preview-state">暂无可用预览</p>
+      <div v-else-if="failed" class="preview-state">
         预览暂时无法加载
         <el-button link type="primary" @click="retry">重试</el-button>
       </div>
       <template v-else>
-        <p v-if="!loaded" role="status">正在加载预览…</p>
-        <img v-show="loaded" :src="previewUrl" :alt="`原始 PPT P${pageNo}`"
+        <p v-if="!loaded" class="preview-state" role="status">正在加载预览…</p>
+        <img v-show="loaded" class="preview-image" :src="previewUrl" :alt="`原始 PPT P${pageNo}`"
           @load="loaded = true" @error="failed = true" @click="enlarged = true" />
         <button v-if="loaded" ref="enlargeButton" type="button" class="preview-link" @click="enlarged = true"
           aria-label="放大查看 PPT 原页">
@@ -91,6 +92,23 @@ summary { padding: 9px 12px; cursor: pointer; }
 .preview-link:hover { background: #dceaff; border-color: #adc8f3; }
 .preview-link:focus-visible { outline: 2px solid #1757b8; outline-offset: 2px; }
 img { display: block; max-width: 100%; max-height: 160px; object-fit: contain; cursor: zoom-in; }
+.preview.wide { border: 0; background: transparent; }
+.wide .preview-body {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 0;
+}
+.wide .preview-label { grid-area: 1 / 1; color: #526681; font-weight: 600; }
+.wide .preview-link { grid-area: 1 / 2; justify-self: end; min-height: 28px; padding: 0 8px; border-color: transparent; background: transparent; }
+.wide .preview-link:hover { background: #e8f0fd; }
+.wide .preview-image, .wide .preview-state { grid-column: 1 / -1; width: 100%; }
+.wide .preview-image { max-height: min(37vh, 360px); border: 1px solid #dce5f1; border-radius: 7px; background: #f4f7fb; }
+.wide .preview-state {
+  display: grid; place-items: center; align-content: center;
+  min-height: 100px; border: 1px solid #dce5f1; border-radius: 7px;
+  padding: 10px; background: #f4f7fb; text-align: center;
+}
 :global(.ppt-slide-image-viewer .el-image-viewer__canvas) { pointer-events: none; }
 :global(.ppt-slide-image-viewer .el-image-viewer__img) { pointer-events: auto; }
 :global(.ppt-slide-image-viewer .el-image-viewer__close) { width: 48px; height: 48px; }

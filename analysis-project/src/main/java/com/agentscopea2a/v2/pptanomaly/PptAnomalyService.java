@@ -859,6 +859,41 @@ public class PptAnomalyService {
     public record FeedbackEdit(long id, String changedBy, LocalDateTime changedAt,
                                PptAnomalyMapper.FeedbackNote before, PptAnomalyMapper.FeedbackNote after) {}
 
+    public record FeedbackReuseOption(PptAnomalyMapper.FeedbackReuseRow source, String authorName) {}
+
+    public List<FeedbackReuseOption> feedbackReuseOptions(long findingId, String keyword, String userId) {
+        requireFeedbackReuseAccess(findingId, userId);
+        var rows = persistence.feedbackReuseCandidates(findingId, keyword == null ? null : keyword.strip(), null);
+        var authors = ledgerPeople(rows.stream().map(PptAnomalyMapper.FeedbackReuseRow::userId).toList());
+        return rows.stream().map(row -> {
+            var author = row.userId() == null ? null : authors.get(row.userId().strip());
+            return new FeedbackReuseOption(row, author == null ? null : author.name());
+        }).toList();
+    }
+
+    public Resource feedbackReusePreview(long findingId, long sourceId, String userId) {
+        var source = requireFeedbackReuseSource(findingId, sourceId, userId);
+        return renderSlidePreview(source.versionId(), source.pageNo());
+    }
+
+    public Resource feedbackReuseAttachment(long findingId, long sourceId, String name, String userId) {
+        var source = requireFeedbackReuseSource(findingId, sourceId, userId);
+        return referencedFeedbackFile(name, feedbackFiles(source.explanation()).contains(name));
+    }
+
+    private PptAnomalyMapper.FeedbackReuseRow requireFeedbackReuseSource(long findingId, long sourceId, String userId) {
+        requireFeedbackReuseAccess(findingId, userId);
+        return persistence.feedbackReuseCandidates(findingId, null, sourceId).stream().findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "历史反馈不存在"));
+    }
+
+    private void requireFeedbackReuseAccess(long findingId, String userId) {
+        Long versionId = persistence.findingVersionId(findingId);
+        var finding = versionId == null ? null : persistence.findingAssignment(versionId, findingId);
+        if (finding == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "异常不存在");
+        requireFeedbackEditor(findingId, readList(finding.departments()), userId);
+    }
+
     /** 在访问权限范围内读取本次、历史反馈及标题明细链接。 */
     @Transactional(GaussConfig.TX_NAME)
     public FeedbackHistory feedbackHistory(long findingId, String userId, boolean admin) {
@@ -1616,6 +1651,10 @@ public class PptAnomalyService {
     /** 校验预览权限并按需生成和缓存 PPT 页面图片。 */
     public Resource slidePreview(long versionId, int pageNo, String userId, boolean admin) {
         feedbackSlide(versionId, pageNo, userId, admin);
+        return renderSlidePreview(versionId, pageNo);
+    }
+
+    private Resource renderSlidePreview(long versionId, int pageNo) {
         Path original = originalPptPath(versionId);
         // 预览图片按版本及页码缓存，首次访问时才渲染原始 PPT。
         Path target = storageDir.resolve("previews-v2").resolve(Long.toString(versionId)).resolve(pageNo + ".png");
@@ -1865,6 +1904,12 @@ public class PptAnomalyService {
         return saveFeedback(findingId, request, List.of(), userId);
     }
 
+    private void requireFeedbackEditor(long findingId, List<String> departments, String userId) {
+        if (!isFeedbackManager(userId) && !inDepartment(departments, userId) && !isCurrentHandler(findingId, userId)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "仅产品部、责任部门成员或当前经办人可以编辑反馈");
+        }
+    }
+
     /** 校验经办权限和反馈内容，保存说明、图片关联及事项处理状态。 */
     @Transactional(GaussConfig.TX_NAME)
     public String saveFeedback(long findingId, FeedbackRequest request, List<MultipartFile> attachments, String userId) {
@@ -1873,9 +1918,7 @@ public class PptAnomalyService {
         var finding = versionStatus == null ? null : persistence.findingAssignment(versionId, findingId);
         if (finding == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "异常不存在");
         var departments = readList(finding.departments());
-        if (!isFeedbackManager(userId) && !inDepartment(departments, userId) && !isCurrentHandler(findingId, userId)) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "仅产品部、责任部门成员或当前经办人可以编辑反馈");
-        }
+        requireFeedbackEditor(findingId, departments, userId);
         var state = persistence.feedbackState(findingId);
         if (request.baseRevision() != null && !feedbackRevision(state).equals(request.baseRevision())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "反馈已被更新，请核对最新内容后重新提交");
@@ -2008,8 +2051,13 @@ public class PptAnomalyService {
             var history = feedbackHistory(findingId, userId, admin, false);
             referenced = history.previous() != null && feedbackFiles(history.previous().explanation()).contains(name);
         }
+        return referencedFeedbackFile(name, referenced);
+    }
+
+    private Resource referencedFeedbackFile(String name, boolean referenced) {
+        if (!referenced) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "附件不存在");
         Path file = storageDir.resolve("feedback").resolve(name);
-        if (!referenced || !Files.isRegularFile(file)) {
+        if (!Files.isRegularFile(file)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "附件不存在");
         }
         return new FileSystemResource(file);

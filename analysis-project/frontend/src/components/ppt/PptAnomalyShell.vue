@@ -8,7 +8,7 @@ import { pptAnomalyPermissions } from '../../api/pptAnomaly';
 import './ppt-anomaly.css';
 
 const nav = [
-  { to: '/ppt-anomaly/keyword-config', label: '例会材料配置', icon: Setting },
+  { to: '/ppt-anomaly/keyword-config', label: '参数配置', icon: Setting },
   { to: '/ppt-anomaly/materials', label: '材料上传', icon: FolderOpened, productDepartmentOnly: true },
   { to: { path: '/ppt-anomaly/feedback-records', force: true }, label: '反馈记录', icon: List },
   { to: '/ppt-anomaly/notifications', label: '通知记录', icon: Message },
@@ -22,8 +22,8 @@ onMounted(async () => {
 
 <template>
   <div class="section-shell ppt-anomaly-shell">
-    <aside class="nav" aria-label="例会材料识别导航">
-      <div class="logo"><el-icon><Document /></el-icon>例会材料识别</div>
+    <aside class="nav" aria-label="材料分解导航">
+      <div class="logo"><el-icon><Document /></el-icon>材料分解</div>
       <RouterLink v-for="item in visibleNav" :key="item.label" :to="item.to" class="nav-item">
         <el-icon><component :is="item.icon" /></el-icon>
         {{ item.label }}

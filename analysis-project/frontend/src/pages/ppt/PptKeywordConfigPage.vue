@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** 例会材料配置页，展示全部配置标签，并按权限提供维护入口。 */
+/** 材料分解的参数配置页，按权限提供维护入口。 */
 
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
@@ -637,7 +637,7 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
 
 <template>
   <section class="config-page">
-    <h2>例会材料配置</h2>
+    <h2>参数配置</h2>
     <el-card shadow="never" body-class="config-card-body">
       <el-tabs v-model="active">
         <el-tab-pane v-for="item in visibleTabs" :key="item.key" :name="item.key" :label="item.label" />

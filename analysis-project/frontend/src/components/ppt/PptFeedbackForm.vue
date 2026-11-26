@@ -3,10 +3,14 @@
 
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import type { PptFinding } from '../../types/pptAnomaly';
-import { feedbackEdits, feedbackHistory, feedbackAttachmentUrl, toPptTitleDetails, type FeedbackNote, type PptTitleDetail } from '../../api/pptAnomaly';
+import {
+  feedbackEdits, feedbackHistory, feedbackAttachmentUrl, feedbackReuseAttachmentUrl, toPptTitleDetails,
+  type FeedbackNote, type PptFeedbackReuseOption, type PptTitleDetail,
+} from '../../api/pptAnomaly';
 import { cleanFeedbackHtml, decodeFeedback, encodeFeedback, unpackFeedback, type FeedbackDraft } from './feedbackContent';
+import PptFeedbackReuseDialog from './PptFeedbackReuseDialog.vue';
 const props = defineProps<{
-  finding: Pick<PptFinding, 'id' | 'editable' | 'ownerUserId' | 'status'>;
+  finding: Pick<PptFinding, 'id' | 'title' | 'editable' | 'ownerUserId' | 'status'>;
   draft?: FeedbackDraft;
   saving: boolean;
   compact?: boolean;
@@ -32,6 +36,11 @@ const historyRows = ref<{
   id: number; changedAt: string; changedBy: string; before: HistoryContent | null; after: HistoryContent;
 }[]>([]);
 const editor = ref<HTMLElement>();
+const reuseOpen = ref(false);
+const reuseHasContent = ref(false);
+const reuseApplying = ref(false);
+const reuseError = ref('');
+let reuseRequest: AbortController | undefined;
 const maxBytes = 16 * 1024;
 const tablePicker = ref(false);
 const editing = ref(false);
@@ -51,8 +60,10 @@ function registerImage(file: File) {
 
 // 组件销毁时释放截图临时地址，避免长期占用浏览器内存。
 onBeforeUnmount(() => {
+  reuseRequest?.abort();
   for (const { url } of images.values()) URL.revokeObjectURL(url);
 });
+watch(() => props.finding.id, closeReuse);
 
 // 切换事项时恢复反馈内容，并取消上一事项尚未完成的图片读取。
 watch([editor, () => props.finding], async ([element, finding], _, onCleanup) => {
@@ -88,31 +99,8 @@ watch([editor, () => props.finding], async ([element, finding], _, onCleanup) =>
       displayedFeedback.value = feedback;
       return;
     }
-    const content = document.createElement('template');
-    content.innerHTML = feedback.html;
-    for (const name of feedback.files) {
-      const image = document.createElement('img');
-      image.src = feedbackAttachmentUrl(finding.id, name);
-      image.alt = '反馈图片';
-      content.content.append(image);
-    }
-    const ids = new Map<string, number>();
-    await Promise.all(Array.from(content.content.querySelectorAll('img')).map(async image => {
-      const response = await fetch(image.src, { signal: controller.signal });
-      if (!response.ok) throw new Error('反馈图片加载失败');
-      const blob = await response.blob();
-      if (controller.signal.aborted) return;
-      const type = blob.type === 'image/jpg' ? 'image/jpeg' : blob.type;
-      const key = image.src;
-      let id = ids.get(key);
-      if (id === undefined) {
-        id = registerImage(new File([blob], type === 'image/jpeg' ? 'feedback.jpg' : 'feedback.png', { type }));
-        ids.set(key, id);
-      }
-      image.dataset.feedbackImage = String(id);
-      image.src = images.get(id)!.url;
-    }));
-    if (!controller.signal.aborted) element.replaceChildren(content.content);
+    const content = await editableFeedback(feedback, name => feedbackAttachmentUrl(finding.id, name), controller.signal);
+    if (!controller.signal.aborted) element.replaceChildren(content);
   } catch {
     if (!controller.signal.aborted) {
       loadFailed.value = true;
@@ -124,6 +112,82 @@ watch([editor, () => props.finding], async ([element, finding], _, onCleanup) =>
     }
   }
 }, { immediate: true, flush: 'post' });
+
+/** 把旧反馈图片转换成普通草稿附件，提交时沿用现有附件校验和保存流程。 */
+async function editableFeedback(feedback: HistoryContent, attachmentUrl: (name: string) => string, signal: AbortSignal) {
+  const content = document.createElement('template');
+  content.innerHTML = feedback.html;
+  for (const name of feedback.files) {
+    const image = document.createElement('img');
+    image.src = attachmentUrl(name);
+    image.alt = '反馈图片';
+    content.content.append(image);
+  }
+  const elements = Array.from(content.content.querySelectorAll('img'));
+  const urls = [...new Set(elements.map(image => image.src))];
+  const blobs = await Promise.all(urls.map(async url => {
+    const response = await fetch(url, { signal });
+    if (!response.ok) throw new Error('反馈图片加载失败');
+    return response.blob();
+  }));
+  if (signal.aborted) return content.content;
+  const ids = new Map(urls.map((url, index) => {
+    const blob = blobs[index];
+    const type = blob.type === 'image/jpg' ? 'image/jpeg' : blob.type;
+    return [url, registerImage(new File([blob], type === 'image/jpeg' ? 'feedback.jpg' : 'feedback.png', { type }))];
+  }));
+  for (const image of elements) {
+    const id = ids.get(image.src)!;
+    image.dataset.feedbackImage = String(id);
+    image.src = images.get(id)!.url;
+  }
+  return content.content;
+}
+
+function openReuse() {
+  const element = editor.value;
+  if (!element || editorDisabled.value) return;
+  reuseHasContent.value = Boolean(element.textContent?.trim() || element.querySelector('table, img'));
+  reuseError.value = '';
+  reuseOpen.value = true;
+}
+
+function closeReuse() {
+  reuseRequest?.abort();
+  reuseOpen.value = false;
+  reuseApplying.value = false;
+}
+
+async function usePreviousFeedback(option: PptFeedbackReuseOption) {
+  const element = editor.value;
+  if (!element || editorDisabled.value || reuseApplying.value) return;
+  const findingId = props.finding.id;
+  const controller = new AbortController();
+  reuseRequest = controller;
+  reuseApplying.value = true;
+  reuseError.value = '';
+  const attachmentUrl = (name: string) => feedbackReuseAttachmentUrl(findingId, option.source.findingId, name);
+  try {
+    const note = unpackFeedback(option.source.explanation, attachmentUrl);
+    const content = await editableFeedback(note, attachmentUrl, controller.signal);
+    if (controller.signal.aborted) return;
+    if (editorDisabled.value || editor.value !== element || props.finding.id !== findingId) {
+      reuseError.value = '当前反馈状态已变化，请重新打开后带入。';
+      return;
+    }
+    element.replaceChildren(content);
+    activeImage.value = undefined;
+    caret = undefined;
+    capture();
+    closeReuse();
+    await nextTick();
+    element.focus();
+  } catch {
+    if (!controller.signal.aborted) reuseError.value = '上一版反馈或截图加载失败，请重试。';
+  } finally {
+    if (!controller.signal.aborted) reuseApplying.value = false;
+  }
+}
 
 /** 从已保存反馈切换到编辑状态并恢复内容。 */
 async function startEditing() {
@@ -395,6 +459,8 @@ function insertTable() {
         </el-button>
         <template v-if="canEdit">
           <span v-if="draft" class="draft-status" role="status">待提交</span>
+          <el-button v-if="editing" size="small" plain type="primary" :disabled="editorDisabled"
+            @click="openReuse">复用上一版反馈</el-button>
           <el-button v-if="editing" size="small" type="primary" :disabled="editorDisabled || !draft || conflict"
             @click="emit('save')">保存本页</el-button>
           <button v-else class="tool" type="button" :disabled="saving || loadingFeedback || loadFailed"
@@ -435,6 +501,8 @@ function insertTable() {
     </template>
     <span v-else-if="!compact" class="readonly">仅反馈部门成员可以编辑</span>
     <p v-else-if="!error && !loadingFeedback && !displayedFeedback?.html && !displayedFeedback?.files.length" class="help">暂无补充说明</p>
+    <PptFeedbackReuseDialog v-if="reuseOpen" :finding-id="finding.id" :finding-title="finding.title" :has-content="reuseHasContent"
+      :applying="reuseApplying" :apply-error="reuseError" @close="closeReuse" @use="usePreviousFeedback" />
     <el-dialog v-model="historyOpen" class="ppt-feedback-history-dialog" title="反馈修改记录"
       append-to-body align-center width="min(1120px, calc(100vw - 32px))">
       <div v-loading="historyLoading" class="edit-history">

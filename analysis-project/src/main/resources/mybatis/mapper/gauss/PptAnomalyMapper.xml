@@ -248,6 +248,19 @@
             replace('[~s　]+$', '~', chr(92)), ''
         )
     </sql>
+    <sql id="feedbackTitleKey">
+        regexp_replace(
+            regexp_replace(COALESCE(${title}, ''),
+                replace('^[~s　]*([一二三四五六七八九十百零]+[.．、][~s　]*|[0-9]+(([-－–—.．][~s　]*[0-9]+)+[.．、~s　]*|[.．、~s　]+))?', '~', chr(92)), ''),
+            replace('[~s　]+$', '~', chr(92)), ''
+        )
+    </sql>
+    <sql id="feedbackDepartmentKey">
+        CASE WHEN length(trim(${finding}.feedback_department)) &gt; 0 THEN trim(${finding}.feedback_department)
+             WHEN json_array_length(CAST(${finding}.auto_departments AS JSON))=1
+                 THEN trim(CAST(${finding}.auto_departments AS JSON) -&gt;&gt; 0)
+        END
+    </sql>
     <!-- 查询指定版本尚未记录通知的当前待反馈事项。 -->
     <select id="noticeMaterial" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$NoticeMaterial">
         SELECT file_name, version_no, version_name FROM digital_qa_ppt_material_version WHERE id=#{versionId}
@@ -644,27 +657,37 @@
         SELECT uploaded_by FROM digital_qa_ppt_material_version WHERE id=#{id}
     </select>
 
-    <!-- 查找同标题与部门的历史反馈记录。 -->
+    <!-- 仅当两版事项能唯一对应时，在当前反馈为空时展示上一版说明。 -->
     <select id="previousFeedback" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackNote">
         SELECT r.judgement,r.explanation,r.user_id
         FROM digital_qa_ppt_finding f
         JOIN digital_qa_ppt_material_version v ON v.id=f.version_id
         JOIN digital_qa_ppt_material_version prior ON prior.batch_id=v.batch_id
             AND prior.version_no &lt; v.version_no AND prior.status='ANALYZED'
-        JOIN digital_qa_ppt_finding_feedback r ON r.finding_id=(
-            SELECT CASE WHEN COUNT(CASE WHEN p.chapter=f.chapter THEN 1 END)=1
-                        THEN MAX(CASE WHEN p.chapter=f.chapter THEN p.id END)
-                        WHEN COUNT(*)=1 THEN MAX(p.id) END
-            FROM digital_qa_ppt_finding p
-            WHERE p.version_id=prior.id AND p.status &lt;&gt; 'DELETED'
-              AND (f.feedback_department=p.feedback_department OR (f.feedback_department IS NULL
-                   AND p.feedback_department IS NULL AND f.auto_departments=p.auto_departments))
-              AND <include refid="normalizedTitle"><property name="title" value="p.title"/></include> =
-                  <include refid="normalizedTitle"><property name="title" value="f.title"/></include>
+        JOIN digital_qa_ppt_finding p ON p.id=(
+            SELECT CASE WHEN COUNT(*)=1 THEN MAX(old.id) END
+            FROM digital_qa_ppt_finding old
+            WHERE old.version_id=prior.id AND old.status &lt;&gt; 'DELETED'
+              AND <include refid="feedbackDepartmentKey"><property name="finding" value="old"/></include> =
+                  <include refid="feedbackDepartmentKey"><property name="finding" value="f"/></include>
+              AND <include refid="feedbackTitleKey"><property name="title" value="old.title"/></include> =
+                  <include refid="feedbackTitleKey"><property name="title" value="f.title"/></include>
         )
-        JOIN digital_qa_ppt_finding previous_finding ON previous_finding.id=r.finding_id
-        WHERE f.id=#{id} AND f.status &lt;&gt; 'DELETED' AND r.assignment_revision=previous_finding.assignment_revision
-          AND length(<include refid="normalizedTitle"><property name="title" value="f.title"/></include>) &gt; 0
+        JOIN digital_qa_ppt_finding_feedback r ON r.id=(
+            SELECT MAX(note.id) FROM digital_qa_ppt_finding_feedback note
+            WHERE note.finding_id=p.id AND note.assignment_revision=p.assignment_revision
+        )
+        WHERE f.id=#{id} AND f.status &lt;&gt; 'DELETED' AND p.status IN ('CONFIRMED','ADJUSTED')
+          AND length(r.explanation) &gt; 0
+          AND length(<include refid="feedbackTitleKey"><property name="title" value="f.title"/></include>) &gt; 0
+          AND NOT EXISTS (
+            SELECT 1 FROM digital_qa_ppt_finding peer
+            WHERE peer.version_id=f.version_id AND peer.id&lt;&gt;f.id AND peer.status &lt;&gt; 'DELETED'
+              AND <include refid="feedbackDepartmentKey"><property name="finding" value="peer"/></include> =
+                  <include refid="feedbackDepartmentKey"><property name="finding" value="f"/></include>
+              AND <include refid="feedbackTitleKey"><property name="title" value="peer.title"/></include> =
+                  <include refid="feedbackTitleKey"><property name="title" value="f.title"/></include>
+          )
           AND NOT EXISTS (
             SELECT 1 FROM digital_qa_ppt_material_version newer
             WHERE newer.batch_id=v.batch_id AND newer.status='ANALYZED'
@@ -672,44 +695,72 @@
         )
         ORDER BY r.id DESC LIMIT 1
     </select>
-    <!-- 继承上一已识别版本中明确对应事项的当前有效反馈。 -->
+    <!-- 在同批次上一已识别版本中读取同责任部门的可复用反馈。 -->
+    <select id="feedbackReuseCandidates" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackReuseRow">
+        WITH target AS (
+            SELECT f.id, f.title, f.version_id,
+                   <include refid="feedbackDepartmentKey"><property name="finding" value="f"/></include> AS department_key
+            FROM digital_qa_ppt_finding f
+            WHERE f.id=#{id} AND f.status &lt;&gt; 'DELETED'
+        ), previous_version AS (
+            SELECT prior.id, prior.version_no
+            FROM target t
+            JOIN digital_qa_ppt_material_version v ON v.id=t.version_id
+            JOIN digital_qa_ppt_material_version prior ON prior.batch_id=v.batch_id AND prior.version_no&lt;v.version_no
+            WHERE prior.status='ANALYZED'
+            ORDER BY prior.version_no DESC LIMIT 1
+        )
+        SELECT p.id AS finding_id, pv.id AS version_id, pv.version_no, s.page_no, p.title, p.chapter,
+               t.department_key AS department, r.user_id, r.explanation, r.created_at
+        FROM previous_version pv
+        JOIN digital_qa_ppt_finding p ON p.version_id=pv.id AND p.status IN ('CONFIRMED','ADJUSTED')
+        JOIN digital_qa_ppt_slide s ON s.id=p.slide_id
+        CROSS JOIN target t
+        JOIN digital_qa_ppt_finding_feedback r ON r.id=(
+            SELECT MAX(note.id) FROM digital_qa_ppt_finding_feedback note
+            WHERE note.finding_id=p.id AND note.assignment_revision=p.assignment_revision
+        )
+        WHERE t.department_key =
+            <include refid="feedbackDepartmentKey"><property name="finding" value="p"/></include>
+          AND length(r.explanation) &gt; 0
+        <choose>
+            <when test="source != null">AND p.id=#{source}</when>
+            <when test="keyword == null">
+                AND length(<include refid="feedbackTitleKey"><property name="title" value="t.title"/></include>) &gt; 0
+                AND <include refid="feedbackTitleKey"><property name="title" value="p.title"/></include> =
+                    <include refid="feedbackTitleKey"><property name="title" value="t.title"/></include>
+            </when>
+            <when test="keyword.length() &gt; 0">
+                AND POSITION(lower(#{keyword}) IN lower(COALESCE(p.title, ''))) &gt; 0
+            </when>
+        </choose>
+        ORDER BY s.page_no, p.id
+    </select>
+    <!-- 按去序号标题与责任部门一对一继承上一已识别版本的当前有效反馈。 -->
     <insert id="carryFeedback">
         WITH inherit_findings AS (
-            SELECT f.id, f.version_id, v.batch_id, v.version_no, v.status AS version_status,
-                   f.chapter, f.feedback_department, f.auto_departments, f.status, f.assignment_revision,
-                   <include refid="normalizedTitle"><property name="title" value="f.title"/></include> AS title_key
+            SELECT f.id, f.version_id, f.status, f.assignment_revision,
+                   <include refid="feedbackTitleKey"><property name="title" value="f.title"/></include> AS title_key,
+                   <include refid="feedbackDepartmentKey"><property name="finding" value="f"/></include> AS department_key
             FROM digital_qa_ppt_finding f
-            JOIN digital_qa_ppt_material_version v ON v.id=f.version_id
-            WHERE f.status &lt;&gt; 'DELETED'
-        ), inherit_matches AS (
-            SELECT f.id AS finding_id, f.version_id, p.id AS prior_id, p.version_id AS prior_version_id, p.version_no,
-                   DENSE_RANK() OVER (PARTITION BY f.id, p.version_id
-                       ORDER BY CASE WHEN f.chapter=p.chapter THEN 0 ELSE 1 END) AS preference
-            FROM inherit_findings f
-            JOIN inherit_findings p ON p.batch_id=f.batch_id AND p.version_no&lt;f.version_no
-                AND p.version_status='ANALYZED' AND p.title_key=f.title_key
-                AND (f.feedback_department=p.feedback_department OR (f.feedback_department IS NULL
-                     AND p.feedback_department IS NULL AND f.auto_departments=p.auto_departments)
-                     OR (p.feedback_department IS NULL AND EXISTS (
-                         SELECT 1 FROM digital_qa_ppt_finding_recipient prior_recipient
-                         JOIN digital_qa_ppt_finding_recipient current_recipient ON current_recipient.user_id=prior_recipient.user_id
-                         WHERE prior_recipient.finding_id=p.id AND current_recipient.finding_id=f.id
-                     )))
-            WHERE f.version_id=#{id} AND length(f.title_key) &gt; 0
-              AND NOT EXISTS (
-                  SELECT 1 FROM digital_qa_ppt_material_version newer
-                  WHERE newer.batch_id=f.batch_id AND newer.status='ANALYZED'
-                    AND newer.version_no &gt; p.version_no AND newer.version_no &lt; f.version_no
-              )
+            WHERE f.status &lt;&gt; 'DELETED' AND (f.version_id=#{id} OR f.version_id=(
+                SELECT prior.id FROM digital_qa_ppt_material_version v
+                JOIN digital_qa_ppt_material_version prior ON prior.batch_id=v.batch_id AND prior.version_no&lt;v.version_no
+                WHERE v.id=#{id} AND prior.status='ANALYZED'
+                ORDER BY prior.version_no DESC LIMIT 1
+            ))
         ), inherit_candidates AS (
-            SELECT inherit_matches.*,
-                   COUNT(*) OVER (PARTITION BY finding_id, prior_version_id) AS candidate_count,
-                   COUNT(*) OVER (PARTITION BY prior_id, version_id) AS destination_count
-            FROM inherit_matches WHERE preference=1
+            SELECT f.id AS finding_id, p.id AS prior_id,
+                   COUNT(*) OVER (PARTITION BY f.id) AS candidate_count,
+                   COUNT(*) OVER (PARTITION BY p.id) AS destination_count
+            FROM inherit_findings f
+            JOIN inherit_findings p ON p.version_id&lt;&gt;#{id} AND p.title_key=f.title_key
+                AND p.department_key=f.department_key
+            WHERE f.version_id=#{id} AND length(f.title_key) &gt; 0
         ), inherit_notes AS (
             SELECT c.finding_id, current_finding.assignment_revision, r.judgement, r.adjusted_departments,
                    r.explanation, r.user_id, r.created_at,
-                   ROW_NUMBER() OVER (PARTITION BY c.finding_id ORDER BY c.version_no DESC, r.id DESC) AS priority
+                   ROW_NUMBER() OVER (PARTITION BY c.finding_id ORDER BY r.id DESC) AS priority
             FROM inherit_candidates c
             JOIN inherit_findings prior_finding ON prior_finding.id=c.prior_id
             JOIN inherit_findings current_finding ON current_finding.id=c.finding_id
@@ -723,7 +774,7 @@
         )
         INSERT INTO digital_qa_ppt_finding_feedback(finding_id,judgement,adjusted_departments,explanation,user_id,created_at,assignment_revision)
         SELECT finding_id,judgement,adjusted_departments,explanation,user_id,created_at,assignment_revision
-        FROM inherit_notes WHERE priority=1
+        FROM inherit_notes WHERE priority=1 AND length(explanation) &gt; 0
     </insert>
     <!-- 依据继承的反馈判断更新当前事项处理状态。 -->
     <update id="markCarriedFeedbackComplete">
