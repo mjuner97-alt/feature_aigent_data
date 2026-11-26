@@ -23,6 +23,7 @@ import org.springframework.dao.DuplicateKeyException;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -77,7 +78,8 @@ public class PptKeywordConfigController {
         }
     }
     /** 配置记录的分页结果。 */
-    public record Page(List<Entry> items, long total, List<PptAnomalyMapper.MaterialReminderSettings> reminderSettings) {}
+    public record Page(List<Entry> items, long total, List<PptAnomalyMapper.MaterialReminderSettings> reminderSettings,
+                       Map<Long, List<PptAnomalyMapper.ReminderWindow>> reminderWindows) {}
     /** 标题及其板块、解析模式和联系人组合信息。 */
     public record TitleRow(String name, Entry section, Entry scope, Entry contact, String ownerName) {}
     /** 标题配置的分页查询结果。 */
@@ -111,19 +113,76 @@ public class PptKeywordConfigController {
         return rulesForTitle(title);
     }
 
+    public record ReminderSettings(boolean enabled, String cutoff, int intervalMinutes, Integer weeklyStartMinute,
+                                   Integer weeklyEndMinute, Boolean notificationEnabled,
+                                   List<PptAnomalyMapper.ReminderWindow> windows) {}
+
+    public record MaterialTypeEdit(String name, ReminderSettings reminder, List<PptAnomalyMapper.MaterialIgnoreRule> ignoreRules) {}
+    public record NotificationSwitches(Boolean enabled, Boolean notificationEnabled) {}
+
     @GetMapping("/material-types/{id}/feedback-reminder-settings")
-    public PptAnomalyMapper.FeedbackReminderSettings feedbackReminderSettings(@PathVariable long id) {
+    public ReminderSettings feedbackReminderSettings(@PathVariable long id) {
         var settings = persistence.feedbackReminderSettings(id);
         if (settings == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "材料类型不存在");
-        return settings;
+        return new ReminderSettings(settings.enabled(), settings.cutoff(), settings.intervalMinutes(),
+                settings.weeklyStartMinute(), settings.weeklyEndMinute(), settings.notificationEnabled(),
+                reminderWindows(List.of(id)).getOrDefault(id, List.of()));
     }
 
     @PutMapping("/material-types/{id}/feedback-reminder-settings")
     @ResponseStatus(HttpStatus.NO_CONTENT)
+    @Transactional(GaussConfig.TX_NAME)
     public void saveFeedbackReminderSettings(@PathVariable long id,
-            @RequestBody PptAnomalyMapper.FeedbackReminderSettings settings,
+            @RequestBody ReminderSettings settings,
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
-        if (!service.canManageAllConfigurations(editor)) PptAnomalyController.requireProductDepartment(editor, people);
+        requireConfigWrite("material-type", id, null, editor);
+        saveReminderSettings(id, settings);
+    }
+
+    @PatchMapping("/material-types/{id}/feedback-reminder-settings")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void updateNotificationSwitches(@PathVariable long id, @RequestBody NotificationSwitches switches,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
+        requireConfigWrite("material-type", id, null, editor);
+        if (switches.enabled() == null && switches.notificationEnabled() == null) throw bad("请选择要修改的通知开关");
+        requireRow(persistence.updateNotificationSwitches(id, switches.enabled(), switches.notificationEnabled()));
+    }
+
+    @PostMapping("/material-types")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @Transactional(GaussConfig.TX_NAME)
+    public void createMaterialType(@RequestBody MaterialTypeEdit body,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
+        saveMaterialType(null, body, editor);
+    }
+
+    @PutMapping("/material-types/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @Transactional(GaussConfig.TX_NAME)
+    public void updateMaterialType(@PathVariable long id, @RequestBody MaterialTypeEdit body,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String editor) {
+        saveMaterialType(id, body, editor);
+    }
+
+    private void saveMaterialType(Long id, MaterialTypeEdit body, String editor) {
+        requireConfigWrite("material-type", id, null, editor);
+        String name = required(body.name(), CONFIG_NAME_LIMIT);
+        save("material-type", id, new Entry(id, name, name, null, null, null));
+        saveReminderSettings(id == null ? persistence.materialTypeConfigId(name) : id, body.reminder());
+        if (body.ignoreRules() != null) service.replaceMaterialIgnoreRules(name, body.ignoreRules());
+    }
+
+    private Map<Long, List<PptAnomalyMapper.ReminderWindow>> reminderWindows(List<Long> ids) {
+        if (ids.isEmpty()) return Map.of();
+        Map<Long, List<PptAnomalyMapper.ReminderWindow>> result = new HashMap<>();
+        for (var row : persistence.materialReminderWindows(ids)) {
+            result.computeIfAbsent(row.configId(), key -> new ArrayList<>()).add(row.window());
+        }
+        return result;
+    }
+
+    private void saveReminderSettings(long id, ReminderSettings settings) {
+        if (settings == null) throw bad("请填写提醒设置");
         if (settings.cutoff() == null || !settings.cutoff().matches("([01][0-9]|2[0-3]):[0-5][0-9]")
                 || !java.time.LocalTime.parse(settings.cutoff()).isAfter(java.time.LocalTime.of(10, 0))) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "提醒截止时间须为 10:01 至 23:59");
@@ -135,10 +194,38 @@ public class PptKeywordConfigController {
         Integer end = settings.weeklyEndMinute();
         if ((start != null || end != null)
                 && (start == null || end == null || start < 0 || start >= 10080
-                    || end < 0 || end >= 10080 || start.equals(end))) {
-            throw bad("请选择不同的每周提醒开始和结束时间");
+                    || end < 0 || end >= 10080)) {
+            throw bad("请选择有效的通知开始和结束时间");
         }
-        requireRow(persistence.updateFeedbackReminderSettings(id, settings));
+        if (start != null && start >= end) throw bad("开始时间必须早于结束时间");
+        var windows = settings.windows();
+        if (windows != null) validateReminderWindows(windows);
+        requireRow(persistence.updateFeedbackReminderSettings(id, new PptAnomalyMapper.FeedbackReminderSettings(
+                settings.enabled(), settings.cutoff(), settings.intervalMinutes(), start, end, settings.notificationEnabled())));
+        if (windows != null) {
+            persistence.deleteReminderWindows(id);
+            if (!windows.isEmpty()) persistence.insertReminderWindows(id, windows);
+        }
+    }
+
+    private static void validateReminderWindows(List<PptAnomalyMapper.ReminderWindow> windows) {
+        for (var window : windows) {
+            if (window == null || window.startMinute() == null || window.endMinute() == null) {
+                throw bad("请填写完整通知时段");
+            }
+            int start = window.startMinute();
+            int end = window.endMinute();
+            int limit = window.daily() ? 1440 : 10080;
+            if (start < 0 || start >= limit || end < 0 || end >= limit) {
+                throw bad("请选择有效的通知开始和结束时间");
+            }
+            if (start >= end) throw bad("开始时间必须早于结束时间");
+            if (window.daily() != windows.get(0).daily()) throw bad("请选择统一的通知周期");
+        }
+        var sorted = windows.stream().sorted(Comparator.comparingInt(PptAnomalyMapper.ReminderWindow::startMinute)).toList();
+        for (int i = 1; i < sorted.size(); i++) {
+            if (sorted.get(i).startMinute() < sorted.get(i - 1).endMinute()) throw bad("通知时段不能重叠，请调整后再保存");
+        }
     }
 
     @GetMapping("/material-types/{materialType}/ignore-rules")
@@ -475,7 +562,8 @@ public class PptKeywordConfigController {
         var reminderSettings = "material-type".equals(kind) && !items.isEmpty()
                 ? persistence.materialReminderSettings(items.stream().map(Entry::id).toList())
                 : List.<PptAnomalyMapper.MaterialReminderSettings>of();
-        return new Page(items, total, reminderSettings);
+        return new Page(items, total, reminderSettings,
+                reminderWindows(reminderSettings.stream().map(PptAnomalyMapper.MaterialReminderSettings::id).toList()));
     }
 
     /** 查询可选择的正式板块名称。 */
@@ -751,7 +839,11 @@ public class PptKeywordConfigController {
         try {
             Entry entry = new Entry(id, name, target, ratio, first, last);
             if (id == null) persistence.createConfig(kind, entry);
-            else requireRow(persistence.updateConfig(kind, entry));
+            else {
+                String previousType = "material-type".equals(kind) ? persistence.lockMaterialTypeName(id) : null;
+                requireRow(persistence.updateConfig(kind, entry));
+                if (previousType != null && !previousType.equals(name)) persistence.renameBatchMaterialType(previousType, name);
+            }
         } catch (DuplicateKeyException e) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "已有相同的配置键");
         }

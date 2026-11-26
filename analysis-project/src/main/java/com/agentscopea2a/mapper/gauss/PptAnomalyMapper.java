@@ -40,7 +40,8 @@ public interface PptAnomalyMapper {
     int enqueueAssignmentNotice(@Param("event") String event, @Param("version") long version,
             @Param("finding") long finding, @Param("recipient") String recipient,
             @Param("previousDepartment") String previousDepartment, @Param("previousHandlers") String previousHandlers);
-    List<AssignmentNotice> pendingAssignmentNotices();
+    List<AssignmentNotice> pendingAssignmentNotices(@Param("now") java.time.LocalDateTime now,
+                                                   @Param("weekMinute") int weekMinute);
     AssignmentNotice lockAssignmentNotice(@Param("event") String event, @Param("recipient") String recipient);
     int finishAssignmentNotice(@Param("event") String event, @Param("recipient") String recipient,
                               @Param("status") String status);
@@ -71,12 +72,28 @@ public interface PptAnomalyMapper {
     List<FeedbackNotice> feedbackNotices(@Param("versionId") long versionId);
     /** 自动通知使用原始文件名和导入时间。 */
     record FeedbackReminderSettings(boolean enabled, String cutoff, int intervalMinutes,
-            Integer weeklyStartMinute, Integer weeklyEndMinute) {}
+            Integer weeklyStartMinute, Integer weeklyEndMinute, Boolean notificationEnabled) {}
     FeedbackReminderSettings feedbackReminderSettings(@Param("id") long id);
     record MaterialReminderSettings(long id, boolean enabled, String cutoff, int intervalMinutes,
-            Integer weeklyStartMinute, Integer weeklyEndMinute) {}
+            Integer weeklyStartMinute, Integer weeklyEndMinute, Boolean notificationEnabled) {}
     List<MaterialReminderSettings> materialReminderSettings(@Param("ids") List<Long> ids);
     int updateFeedbackReminderSettings(@Param("id") long id, @Param("settings") FeedbackReminderSettings settings);
+    int updateNotificationSwitches(@Param("id") long id, @Param("enabled") Boolean enabled,
+                                   @Param("notificationEnabled") Boolean notificationEnabled);
+    record ReminderWindow(boolean daily, Integer startMinute, Integer endMinute) {}
+    record MaterialReminderWindow(long configId, boolean daily, int startMinute, int endMinute) {
+        public ReminderWindow window() { return new ReminderWindow(daily, startMinute, endMinute); }
+    }
+    List<MaterialReminderWindow> materialReminderWindows(@Param("ids") List<Long> ids);
+    int deleteReminderWindows(@Param("id") long id);
+    int insertReminderWindows(@Param("id") long id, @Param("windows") List<ReminderWindow> windows);
+    long materialTypeConfigId(@Param("name") String name);
+    String lockMaterialTypeName(@Param("id") long id);
+    int renameBatchMaterialType(@Param("previousName") String previousName, @Param("name") String name);
+    boolean materialNotificationsEnabledThisWeek(@Param("versionId") long versionId, @Param("now") java.time.LocalDateTime now);
+    boolean materialNotificationsAllowed(@Param("versionId") long versionId, @Param("now") java.time.LocalDateTime now,
+                                         @Param("weekMinute") int weekMinute);
+    List<Long> pendingInitialNoticeVersions(@Param("now") java.time.LocalDateTime now, @Param("weekMinute") int weekMinute);
 
     record NoticeMaterial(String fileName, int versionNo, String versionName) {
         public String mailLabel() {
@@ -108,7 +125,8 @@ public interface PptAnomalyMapper {
                                                   @Param("departments") List<String> departments);
     record CompletionReport(long id, long versionId, String department) {}
     int enqueueCompletionReport(@Param("versionId") long versionId, @Param("department") String department);
-    List<CompletionReport> pendingCompletionReports();
+    List<CompletionReport> pendingCompletionReports(@Param("now") java.time.LocalDateTime now,
+                                                    @Param("weekMinute") int weekMinute);
     boolean completionReportPending(@Param("id") long id);
     void cancelCompletionReport(@Param("id") long id);
     void markCompletionReportSent(@Param("id") long id, @Param("subject") String subject,

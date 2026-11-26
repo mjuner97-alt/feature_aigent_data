@@ -1,8 +1,12 @@
 package com.agentscopea2a.v2.skillManager.report;
 
+import com.agentscopea2a.v2.skillManager.report.LongTaskReportRenderer.ReportPart;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Attribute;
+import org.jsoup.nodes.Element;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.io.ClassPathResource;
@@ -11,8 +15,8 @@ import org.springframework.stereotype.Component;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -41,6 +45,14 @@ import java.util.regex.Pattern;
 @Component
 public class HtmlReportRenderer {
     private final ThreadLocal<Boolean> fullscreenDisabled = ThreadLocal.withInitial(() -> false);
+
+    private enum Layout {
+        PAGE, FRAME, LONG_TASK_SUMMARY, LONG_TASK_NODE;
+
+        boolean hasToc() {
+            return this == PAGE || this == LONG_TASK_SUMMARY;
+        }
+    }
 
     /** 长任务与普通报告共用唯一的样式配置，避免维护两套相互覆盖的 CSS。 */
     public String renderLongTask(String content, String title, boolean fullscreen) {
@@ -410,16 +422,53 @@ public class HtmlReportRenderer {
                 justify-content: flex-start; /* flex 主轴起点：默认横向布局时靠左。 */
                 align-items: flex-start; /* flex 交叉轴起点：竖向布局时靠左。 */
             }
+
+            body[data-report-summary] > #report-shell {
+                overflow: visible;
+            }
+            body[data-report-summary] > #report-shell > #report {
+                padding: var(--report-frame-padding) !important;
+            }
+            body[data-report-summary]:not(:has(.report-toc-list a)) {
+                --report-content-offset: 0px;
+            }
+            html[data-report-node],
+            html[data-report-node] > body,
+            #report-node-shell,
+            #report-node-content {
+                display: flow-root;
+                width: 100%;
+                height: auto;
+                min-height: 0;
+                max-height: none;
+                overflow: visible;
+            }
+            #report-node-content [data-report-table-scroll] {
+                height: auto !important;
+                max-height: none !important;
+                overflow-x: auto !important;
+                overflow-y: hidden !important;
+            }
             """;
 
     /** 根据页面类型填充模式参数；每个属性仍只在 REPORT_CSS 中定义一次。 */
-    private String reportCss(boolean includeToc) {
-        return REPORT_CSS
+    private String reportCss(Layout layout) {
+        boolean includeToc = layout.hasToc();
+        String css = REPORT_CSS
                 .replace("@@HEIGHT@@", includeToc ? "100vh" : "auto")
                 .replace("@@OVERFLOW@@", includeToc ? "auto" : "visible")
                 .replace("@@OFFSET@@", includeToc
                         ? "calc(var(--report-toc-width) + var(--report-toc-gap))" : "0px")
-                .replace("@@PADDING@@", includeToc ? "0px" : "var(--report-frame-padding)");
+                .replace("@@PADDING@@", includeToc || layout == Layout.LONG_TASK_NODE
+                        ? "0px" : "var(--report-frame-padding)");
+        if (layout == Layout.LONG_TASK_NODE) {
+            // 节点已有的 #report 和 .report 归节点自己的样式，渲染器使用独立的正文标记。
+            return css.replace("#report ", "#report-node-content ")
+                    .replace(".report-shell {", "#report-node-shell {")
+                    .replace(".report {", "#report-node-content {")
+                    .replace(".report:fullscreen", "#report-node-content:fullscreen");
+        }
+        return css;
     }
 
     // 嵌入节点的 vh 不能依赖正在自动撑高的 iframe，否则会形成高度反馈循环。
@@ -450,7 +499,7 @@ public class HtmlReportRenderer {
                         try {
                             var doc = frame.contentDocument;
                             if (!doc) return false;
-                            var report = doc.getElementById('report');
+                            var report = doc.getElementById('report-node-content') || doc.getElementById('report');
                             if (!report) return false;
                             // 多层嵌入时沿用最外层的基准，不能重新取已撑高的子视口。
                             var viewport = getComputedStyle(document.documentElement)
@@ -464,7 +513,7 @@ public class HtmlReportRenderer {
                             if (!observer && doc.defaultView && doc.defaultView.ResizeObserver) {
                                 observer = new doc.defaultView.ResizeObserver(schedule);
                                 observer.observe(report);
-                                var shell = doc.getElementById('report-shell');
+                                var shell = report.parentElement;
                                 if (shell) observer.observe(shell);
                                 if (doc.body) observer.observe(doc.body);
                             }
@@ -842,22 +891,43 @@ public class HtmlReportRenderer {
      * @return 完整 HTML 文档字符串
      */
     public String render(String markdown, String title) {
-        return render(markdown, title, true);
+        return render(markdown, title, Layout.PAGE);
     }
 
-    private String render(String markdown, String title, boolean decodeNodeEnvelopes) {
+    String renderLongTaskSummary(List<ReportPart> parts, String title) {
+        boolean previous = fullscreenDisabled.get();
+        fullscreenDisabled.set(true);
+        try {
+            StringBuilder body = new StringBuilder();
+            List<ChartBlock> charts = new ArrayList<>();
+            for (ReportPart part : parts) {
+                if (part.node()) {
+                    appendFramePart(LongTaskReportRenderer.normalizeCompleteHtml(part.content()), body, Layout.LONG_TASK_NODE);
+                } else {
+                    appendMarkdownPart(part.content(), body, charts);
+                }
+            }
+            return assembleHtml(escapeHtml(title == null ? "长任务报告" : title), body.toString(), charts,
+                    "", Layout.LONG_TASK_SUMMARY, false);
+        } finally {
+            fullscreenDisabled.set(previous);
+        }
+    }
+
+    private String render(String markdown, String title, Layout layout) {
         String md = markdown == null ? "" : markdown;
         String safeTitle = escapeHtml(title == null ? "报告" : title);
 
         if (containsEmbeddedCompleteHtml(md)) {
-            return renderMixedContent(md, safeTitle);
+            return renderMixedContent(md, safeTitle, layout);
         }
 
         // AI 偶尔把完整 HTML 包在 Markdown 围栏、JSON 字符串或生成器说明文字中。
         // 原样渲染，不走 markdown 转换；<head> 的 <style> 保留注入，<script> 移除防注入
         String completeHtml = extractCompleteHtml(md);
         if (completeHtml != null) {
-            return renderCompleteHtml(completeHtml, safeTitle, title != null);
+            Layout documentLayout = layout == Layout.PAGE && title == null ? Layout.FRAME : layout;
+            return renderCompleteHtml(completeHtml, safeTitle, documentLayout);
         }
 
         // 1. 按图表块切分（```echarts 围栏 + <echart>/<echarts> 标签两种形式）：
@@ -881,7 +951,8 @@ public class HtmlReportRenderer {
 //                    .append(renderedBody).append("\n");
 //        }
 
-        return assembleHtml(safeTitle, body.toString(), charts, fragmentStyles.toString());
+        String content = layout == Layout.LONG_TASK_NODE ? prepareNodeBody(body.toString()) : body.toString();
+        return assembleHtml(safeTitle, content, charts, fragmentStyles.toString(), layout, false);
     }
 
     public String renderWithoutFullscreen(String markdown, String title) {
@@ -898,10 +969,10 @@ public class HtmlReportRenderer {
      * Markdown 片段照常转换;每份完整 HTML 文档各自渲染成独立子文档后以自适应高度 iframe 嵌入——
      * 各文档的样式/脚本隔离在各自 iframe 内,避免多份 HTML 拼接到同一页面时样式互相覆盖导致图表被挤压。
      */
-    private String renderMixedContent(String input, String safeTitle) {
+    private String renderMixedContent(String input, String safeTitle, Layout layout) {
         StringBuilder body = new StringBuilder();
         List<ChartBlock> charts = new ArrayList<>();
-        int frameIndex = 0;
+        Layout frameLayout = layout == Layout.LONG_TASK_NODE ? Layout.LONG_TASK_NODE : Layout.FRAME;
         int cursor = 0;
         Matcher starts = COMPLETE_HTML_START.matcher(input);
         while (starts.find(cursor)) {
@@ -912,12 +983,22 @@ public class HtmlReportRenderer {
                 continue;
             }
 
-            appendMarkdownPart(input.substring(cursor, start), body, charts);
-            appendFramePart(part.html(), frameIndex++, body);
+            appendMixedMarkdownPart(input.substring(cursor, start), body, charts, layout);
+            appendFramePart(part.html(), body, frameLayout);
             cursor = part.end();
         }
-        appendMarkdownPart(input.substring(cursor), body, charts);
-        return assembleHtml(safeTitle, body.toString(), charts, "");
+        appendMixedMarkdownPart(input.substring(cursor), body, charts, layout);
+        return assembleHtml(safeTitle, body.toString(), charts, "", layout, false);
+    }
+
+    private void appendMixedMarkdownPart(String part, StringBuilder body, List<ChartBlock> charts, Layout layout) {
+        if (layout == Layout.LONG_TASK_NODE) {
+            StringBuilder fragment = new StringBuilder();
+            appendMarkdownPart(part, fragment, charts);
+            body.append(prepareNodeBody(fragment.toString()));
+        } else {
+            appendMarkdownPart(part, body, charts);
+        }
     }
 
     private boolean containsEmbeddedCompleteHtml(String input) {
@@ -947,11 +1028,9 @@ public class HtmlReportRenderer {
         splitCharts(part, body, true, charts);
     }
 
-    /** 把一份完整 HTML 文档渲染成独立子文档并以固定尺寸 iframe 嵌入(srcdoc 保持报告自包含)。 */
-    private void appendFramePart(String html, int index, StringBuilder body) {
-        // 单份完整文档走 renderCompleteHtml:剥离脚本防注入、保留原样式(剔除阴影)、转换 ```echarts 块为图表
-        // 节点原文不再解释汇总层的内部标记，避免普通注释触发二次解码。
-        String frameDoc = render(html, null, false);
+    /** 把节点或完整 HTML 文档渲染成独立子文档，由汇总页测量 iframe 高度。 */
+    private void appendFramePart(String html, StringBuilder body, Layout layout) {
+        String frameDoc = render(html, null, layout);
         // allowfullscreen:子文档内图表的 ⛶ 全屏按钮需要 iframe 显式授权,否则 requestFullscreen 被浏览器拦截
         body.append("<div data-report-frame-shell>")
                 .append("<iframe data-report-frame title=\"节点报告\" allowfullscreen allow=\"fullscreen\"")
@@ -968,6 +1047,41 @@ public class HtmlReportRenderer {
         sanitized = SCRIPT_OPEN.matcher(sanitized).replaceAll("");
         sanitized = SCRIPT_CLOSE.matcher(sanitized).replaceAll("");
         return STYLE_BLOCK.matcher(sanitized).replaceAll("");
+    }
+
+    private static String prepareNodeBody(String html) {
+        var document = Jsoup.parseBodyFragment(html);
+        document.outputSettings().prettyPrint(false);
+        Element body = document.body();
+        // 先补齐节点自身的 HTML，再放进报告外壳，避免残缺标签吞掉外壳或图表脚本。
+        body.select("script, base, meta, object, embed").remove();
+        for (Element element : body.getAllElements()) {
+            for (Attribute attribute : element.attributes().asList()) {
+                String name = attribute.getKey().toLowerCase(Locale.ROOT);
+                if (name.startsWith("on") || isScriptUrl(name, attribute.getValue())) {
+                    element.removeAttr(attribute.getKey());
+                }
+            }
+        }
+        // 节点原文中的外部嵌入与渲染器生成的节点 iframe 使用不同的权限。
+        body.select("iframe").attr("sandbox", "");
+        for (Element table : body.select("table")) {
+            Element scroll = table.parent().closest("[data-report-table-scroll], .table-scroll");
+            if (scroll == null) {
+                table.wrap("<div data-report-table-scroll></div>");
+            } else {
+                scroll.attr("data-report-table-scroll", "");
+            }
+        }
+        return body.html();
+    }
+
+    private static boolean isScriptUrl(String attribute, String value) {
+        return switch (attribute) {
+            case "href", "xlink:href", "src", "action", "formaction" ->
+                    value.replaceAll("[\\x00-\\x20]", "").toLowerCase(Locale.ROOT).startsWith("javascript:");
+            default -> false;
+        };
     }
 
     private record CompleteHtmlPart(String html, int end) {}
@@ -1022,7 +1136,7 @@ public class HtmlReportRenderer {
      *
      * <p>body 内若含 {@code ```echarts} 代码块仍渲染成图表；其余原样作为 HTML 嵌入。
      */
-    private String renderCompleteHtml(String html, String safeTitle, boolean includeToc) {
+    private String renderCompleteHtml(String html, String safeTitle, Layout layout) {
         // 收集 <style>...</style>（通常在 head），注入报告保留 AI 样式（剔除 box-shadow 阴影）
         StringBuilder extraStyles = new StringBuilder();
         Matcher sm = STYLE_BLOCK.matcher(html);
@@ -1035,17 +1149,17 @@ public class HtmlReportRenderer {
 
         // 移除 <script>（一般没有，兜底防注入）
         bodyContent = sanitizeCompleteBody(bodyContent);
-        bodyContent = wrapTablesForHorizontalScroll(bodyContent);
+        if (layout != Layout.LONG_TASK_NODE) bodyContent = wrapTablesForHorizontalScroll(bodyContent);
 
         // 仍扫描图表块（body 内若有 ```echarts 或 <echart> 也渲染成图），其余原样为 HTML
         StringBuilder body = new StringBuilder();
         List<ChartBlock> charts = splitCharts(bodyContent, body, false);
-        String renderedBody = body.toString();
+        String renderedBody = layout == Layout.LONG_TASK_NODE ? prepareNodeBody(body.toString()) : body.toString();
         body.setLength(0);
         if (fullscreenEnabled()) body.append("<button type=\"button\" title=\"全屏查看\" aria-label=\"全屏查看\" data-html-fullscreen=\"report\">&#x26F6;</button>");
         body.append(renderedBody).append("\n");
 
-        return assembleHtml(safeTitle, body.toString(), charts, extraStyles.toString(), includeToc, true);
+        return assembleHtml(safeTitle, body.toString(), charts, extraStyles.toString(), layout, true);
     }
 
     /** 给完整 HTML 中的表格补横向滚动容器，避免宽表被章节外层裁剪。 */
@@ -1125,27 +1239,21 @@ public class HtmlReportRenderer {
 
     // ── 组装完整 HTML 文档 ────────────────────────────────────────────────────
 
-    private String assembleHtml(String title, String body, List<ChartBlock> charts, String extraStyles) {
-        return assembleHtml(title, body, charts, extraStyles, true);
-    }
-
     private String assembleHtml(String title, String body, List<ChartBlock> charts, String extraStyles,
-                                boolean includeToc) {
-        return assembleHtml(title, body, charts, extraStyles, includeToc, false);
-    }
-
-    private String assembleHtml(String title, String body, List<ChartBlock> charts, String extraStyles,
-                                boolean includeToc, boolean completeHtml) {
+                                Layout layout, boolean completeHtml) {
+        boolean includeToc = layout.hasToc();
+        boolean node = layout == Layout.LONG_TASK_NODE;
         if (!includeToc) {
             if (extraStyles != null) extraStyles = anchorViewportHeight(extraStyles);
             body = anchorInlineViewportHeight(body);
         }
         StringBuilder sb = new StringBuilder(1024 + body.length());
-        sb.append("<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">");
+        sb.append("<!DOCTYPE html><html lang=\"zh-CN\"");
+        if (node) sb.append(" data-report-node");
+        sb.append("><head><meta charset=\"utf-8\">");
         sb.append("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
         sb.append("<title>").append(title).append("</title>");
-        // 输入节点的样式先放入同一个 style，报告统一样式随后注入。
-        // 渲染器自身只有 REPORT_CSS 一个入口，不再追加一层层覆盖规则。
+        // 节点样式先加载，汇总节点的布局样式单独使用一个 style，避免被残缺的节点 CSS 吞掉。
         sb.append("<style>");
         if (extraStyles != null && !extraStyles.isEmpty()) {
             Matcher styles = STYLE_BLOCK.matcher(extraStyles);
@@ -1154,20 +1262,28 @@ public class HtmlReportRenderer {
                 sb.append(block.substring(block.indexOf('>') + 1, block.toLowerCase().lastIndexOf("</style")));
             }
         }
-        sb.append(reportCss(includeToc)).append("</style>");
+        if (node) sb.append("</style><style>");
+        sb.append(reportCss(layout)).append("</style>");
         sb.append("</head><body");
         if (!completeHtml) sb.append(" data-report-markdown");
-        if (!includeToc) sb.append(" data-report-frame-document");
+        if (layout == Layout.FRAME) sb.append(" data-report-frame-document");
+        if (layout == Layout.LONG_TASK_SUMMARY) sb.append(" data-report-summary");
         sb.append(">");
         if (includeToc) {
             sb.append("<div id=\"report-toc\" class=\"report-toc\" aria-label=\"报告目录\"><div class=\"report-toc-list\"></div></div>");
         }
         // 同一 HTML 文档中，各 class 只绑定一个 div；子文档有自己的独立 DOM。
-        sb.append("<div id=\"report-shell\" class=\"report-shell\"><div id=\"report\" class=\"report\">");
+        if (node) {
+            sb.append("<div id=\"report-node-shell\"><div id=\"report-node-content\">");
+        } else {
+            sb.append("<div id=\"report-shell\" class=\"report-shell\"><div id=\"report\" class=\"report\">");
+        }
         sb.append(body);
         sb.append("</div></div>");
         // 只测量正文高度；不能把 iframe 视口高度算进去，否则每次测量加 2px 会不断撑高。
-        if (includeToc) sb.append("<script>").append(FRAME_RESIZE_JS).append("</script>");
+        if (includeToc || node && body.contains("<iframe data-report-frame")) {
+            sb.append("<script>").append(FRAME_RESIZE_JS).append("</script>");
+        }
         if (includeToc) sb.append("<script>(function(){var toc=document.querySelector('.report-toc'),list=toc&&toc.querySelector('.report-toc-list');if(!toc||!list)return;if(list)list.replaceChildren();var heads=document.querySelectorAll('[data-report-outline-heading]');for(var i=0;i<heads.length;i++){var h=heads[i];if(h.classList.contains('report-outline-title')||h.tagName==='H1')continue;var id='report-section-'+i;h.id=id;var a=document.createElement('a');a.href='#'+id;a.dataset.level=h.tagName.substring(1);a.style.paddingLeft=(7+Math.max(0,Number(a.dataset.level)-2)*11)+'px';a.textContent=h.textContent||('章节 '+(i+1));a.title=a.textContent;a.addEventListener('click',function(e){var target=document.getElementById(this.hash.substring(1));if(target){e.preventDefault();target.scrollIntoView({block:'start',behavior:'smooth'});}});list.appendChild(a);}if(!list.children.length)toc.style.display='none';})();</script>");
         // 表格的滚动属性全部由 REPORT_CSS 决定，不再用 JS 写行内样式覆盖。
         sb.append("<script>(function(){var buttons=document.querySelectorAll('[data-html-fullscreen]');for(var i=0;i<buttons.length;i++){buttons[i].addEventListener('click',function(){var shell=document.getElementById(this.getAttribute('data-html-fullscreen'));if(document.fullscreenElement===shell){document.exitFullscreen();}else if(shell&&shell.requestFullscreen){shell.requestFullscreen();}});}})();</script>");

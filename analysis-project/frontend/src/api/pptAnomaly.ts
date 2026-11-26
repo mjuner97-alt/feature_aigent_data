@@ -328,12 +328,20 @@ export async function listPptMaterialTypes() {
   const page = await parse<{ items: { id?: number; name: string; target: string }[] }>(await fetch(`${base}/keyword-config/material-type?size=100`, { headers: headers() }));
   return page.items;
 }
+export interface PptReminderWindow {
+  daily: boolean;
+  startMinute: number;
+  endMinute: number;
+}
+
 export interface PptFeedbackReminderSettings {
   enabled: boolean;
   cutoff: string;
   intervalMinutes: number;
   weeklyStartMinute: number | null;
   weeklyEndMinute: number | null;
+  notificationEnabled?: boolean;
+  windows?: PptReminderWindow[];
 }
 
 export async function getPptFeedbackReminderSettings(id: number) {
@@ -342,9 +350,12 @@ export async function getPptFeedbackReminderSettings(id: number) {
   );
 }
 
-export async function savePptFeedbackReminderSettings(id: number, settings: PptFeedbackReminderSettings) {
+export async function updatePptNotificationSwitches(
+  id: number,
+  switches: Partial<Pick<PptFeedbackReminderSettings, 'enabled' | 'notificationEnabled'>>,
+) {
   const response = await fetch(`${base}/keyword-config/material-types/${id}/feedback-reminder-settings`, {
-    method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(settings),
+    method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify(switches),
   });
   if (!response.ok) await parse(response);
 }

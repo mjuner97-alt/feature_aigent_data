@@ -376,6 +376,8 @@ public class PptAnomalyController {
         }
         try {
             notifier.sendManual(versionId, directory.materialMailLabel(), department, to, cc, userId);
+        } catch (ResponseStatusException failure) {
+            throw failure;
         } catch (RuntimeException failure) {
             org.slf4j.LoggerFactory.getLogger(PptAnomalyController.class)
                     .error("反馈结果通知失败，版本 {}，部门 {}", versionId, department, failure);

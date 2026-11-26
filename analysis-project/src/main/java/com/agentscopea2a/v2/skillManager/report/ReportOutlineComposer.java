@@ -2,10 +2,12 @@ package com.agentscopea2a.v2.skillManager.report;
 
 import com.agentscopea2a.v2.skillManager.entity.FlowNodeExecutionStatus;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowNodeExecution;
+import com.agentscopea2a.v2.skillManager.report.LongTaskReportRenderer.ReportPart;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -17,7 +19,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * 报告大纲 composer:消费执行记录上的大纲快照(report_outline_snapshot)与节点结果,
- * 按大纲树输出 Markdown 报告正文(大纲 1/2/3 级渲染为 ##/###/####)。
+ * 按大纲树输出章节标题、描述和独立的节点正文。
  *
  * <p>关键规则(见 docs/superpowers/specs/2026-09-20-long-task-report-outline-design.md):</p>
  * <ul>
@@ -90,16 +92,16 @@ public class ReportOutlineComposer {
     }
 
     /**
-     * 按大纲快照组装报告 Markdown。
+     * 按大纲快照组装报告内容块。
      *
      * @return 报告正文;快照为空/解析失败/无条目时返回 null(调用方走旧版兼容拼接)。
      */
-    public String compose(String outlineJson, List<SkillFlowNodeExecution> nodes) {
+    public List<ReportPart> compose(String outlineJson, List<SkillFlowNodeExecution> nodes) {
         return compose(outlineJson, nodes, null);
     }
 
     /** 对象报告使用已包含日期的快照标题，跨天重试时也保持一致。 */
-    public String compose(String outlineJson, List<SkillFlowNodeExecution> nodes, String exactTitle) {
+    public List<ReportPart> compose(String outlineJson, List<SkillFlowNodeExecution> nodes, String exactTitle) {
         if (outlineJson == null || outlineJson.isBlank()) return null;
         Outline outline;
         try {
@@ -112,21 +114,21 @@ public class ReportOutlineComposer {
         for (SkillFlowNodeExecution node : nodes) {
             if (node.getNodeKey() != null) byNodeKey.putIfAbsent(node.getNodeKey(), node);
         }
-        StringBuilder report = new StringBuilder();
+        List<ReportPart> report = new ArrayList<>();
         if (exactTitle != null || (outline.title() != null && !outline.title().isBlank())) {
             // 标题尾部拼接报告生成日期,如 "XX报告 (2026年9月23日)"
             String datedTitle =
                 exactTitle != null
                     ? exactTitle
                     : outline.title().trim() + " (" + TITLE_DATE.format(java.time.LocalDate.now(clock)) + ")";
-            report
-                .append("<h1 class=\"report-outline-title\" data-report-outline-heading=\"true\">")
-                .append(escapeHtml(datedTitle))
-                .append("</h1>\n\n");
+            report.add(ReportPart.heading(
+                "<h1 class=\"report-outline-title\" data-report-outline-heading=\"true\">"
+                    + escapeHtml(datedTitle) + "</h1>"
+            ));
         }
         Numbering numbering = outline.numbering() == null ? new Numbering(null, null, null) : outline.numbering();
-        composeItems(outline.items(), numbering, new java.util.ArrayList<>(), byNodeKey, report, 1);
-        return report.isEmpty() ? null : report.toString();
+        composeItems(outline.items(), numbering, new ArrayList<>(), byNodeKey, report, 1);
+        return report.isEmpty() ? null : report;
     }
 
     /** 深度优先遍历:counters[0..2] 为各层级当前计数,进入兄弟项自增、更深层清零。 */
@@ -135,7 +137,7 @@ public class ReportOutlineComposer {
         Numbering numbering,
         List<Integer> counters,
         Map<String, SkillFlowNodeExecution> byNodeKey,
-        StringBuilder report,
+        List<ReportPart> report,
         int depth
     ) {
         for (Item item : items) {
@@ -145,21 +147,21 @@ public class ReportOutlineComposer {
             while (counters.size() < level) counters.add(0);
             counters.set(level - 1, counters.get(level - 1) + 1);
             while (counters.size() > level) counters.remove(counters.size() - 1);
-            StringBuilder section = new StringBuilder();
+            List<ReportPart> section = new ArrayList<>();
             for (String key : item.nodeKeys()) {
                 if (!key.isEmpty()) {
                     String body = sectionBody(byNodeKey.get(key), item.title());
-                    if (!isEmptyHtml(body)) section.append(body).append("\n\n");
+                    if (!isEmptyHtml(body)) section.add(ReportPart.node(body));
                 }
             }
-            StringBuilder children = new StringBuilder();
+            List<ReportPart> children = new ArrayList<>();
             if (item.children() != null && !item.children().isEmpty()) {
                 composeItems(item.children(), numbering, counters, byNodeKey, children, depth + 1);
             }
             // 章节描述属于大纲本身，即使绑定节点没有结果或全部失败，也必须保留在最终报告中。
             boolean hasDescription = item.description() != null && !item.description().isBlank();
-            if (section.length() > 0 || children.length() > 0 || hasDescription) {
-                report
+            if (!section.isEmpty() || !children.isEmpty() || hasDescription) {
+                StringBuilder heading = new StringBuilder()
                     .append("<h")
                     .append(level + 1)
                     .append(" data-report-outline-heading=\"true\">")
@@ -171,13 +173,15 @@ public class ReportOutlineComposer {
                     .append("</h")
                     .append(level + 1)
                     .append(">\n");
-                if (item.description() != null && !item.description().isBlank()) {
-                    report
+                if (hasDescription) {
+                    heading
                         .append("<p class=\"report-outline-description\">")
                         .append(escapeHtml(item.description().trim()))
                         .append("</p>\n");
                 }
-                report.append(section).append(children);
+                report.add(ReportPart.heading(heading.toString()));
+                report.addAll(section);
+                report.addAll(children);
             }
         }
     }

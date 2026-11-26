@@ -55,7 +55,7 @@ public class PptFeedbackNotifier {
     private final DeveloperPlPersonInfoMapper people;
     private final TransactionTemplate transaction;
     private final String baseUrl;
-    private final AtomicBoolean reminderScanQueued = new AtomicBoolean();
+    private final AtomicBoolean noticeScanQueued = new AtomicBoolean();
     // 通知一律异步发送：识别接口的事务提交后只排队，不阻塞请求线程。
     private final ExecutorService dispatcher = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "ppt-feedback-notifier");
@@ -82,6 +82,15 @@ public class PptFeedbackNotifier {
         dispatcher.shutdownNow();
     }
 
+    boolean notificationsEnabledThisWeek(long versionId) {
+        return persistence.materialNotificationsEnabledThisWeek(versionId, LocalDateTime.now(CHINA));
+    }
+
+    private boolean notificationsAllowed(long versionId) {
+        var now = LocalDateTime.now(CHINA);
+        return persistence.materialNotificationsAllowed(versionId, now, weekMinute(now));
+    }
+
     /** 在业务事务提交后排队发送指定版本通知，并保留本次请求地址。 */
     void notifyVersionAfterCommit(long versionId) {
         // 在请求线程获取地址快照，异步线程及事务提交回调使用同一地址。
@@ -104,15 +113,20 @@ public class PptFeedbackNotifier {
         dispatcher.execute(this::dispatchAssignmentNotices);
     }
 
-    @Scheduled(fixedDelay = 60000, initialDelay = 60000)
-    public void retryAssignmentNotices() {
-        queueAssignmentNotices();
-        dispatcher.execute(this::dispatchCompletionReports);
+    private void dispatchInitialNotices() {
+        try {
+            var now = LocalDateTime.now(CHINA);
+            for (long versionId : persistence.pendingInitialNoticeVersions(now, weekMinute(now))) {
+                dispatch(versionId, baseUrl);
+            }
+        } catch (RuntimeException e) {
+            log.warn("例会材料待反馈通知扫描失败", e);
+        }
     }
 
     /** 由持有版本锁的反馈事务登记已完成部门，提交后再发送。 */
     void enqueueCompletedDepartments(long versionId, List<String> departments) {
-        if (departments.isEmpty()) return;
+        if (departments.isEmpty() || !notificationsEnabledThisWeek(versionId)) return;
         var findings = persistence.findings(versionId);
         boolean queued = false;
         for (String department : new java.util.LinkedHashSet<>(departments)) {
@@ -134,7 +148,8 @@ public class PptFeedbackNotifier {
     void dispatchCompletionReports() {
         List<PptAnomalyMapper.CompletionReport> reports;
         try {
-            reports = persistence.pendingCompletionReports();
+            var now = LocalDateTime.now(CHINA);
+            reports = persistence.pendingCompletionReports(now, weekMinute(now));
         } catch (RuntimeException e) {
             log.warn("例会材料完成报告通知扫描失败", e);
             return;
@@ -152,6 +167,7 @@ public class PptFeedbackNotifier {
         long version = report.versionId();
         String department = report.department();
         if (!"ANALYZED".equals(persistence.lockVersion(version)) || !persistence.completionReportPending(report.id())) return;
+        if (!notificationsAllowed(version)) return;
         var saved = persistence.reportRecipients(department);
         var to = saved == null ? List.<String>of() : configuredRecipients(saved.toJson());
         var analysis = departmentAnalysis(version, department, true);
@@ -166,6 +182,7 @@ public class PptFeedbackNotifier {
         String body = reportBody(label, department, url, analysis);
         var payload = new NotificationPayload("HTML", body, null, null, url, null, subject,
                 null, null, version, "SUCCESS", LocalDateTime.now(CHINA), to, "METRIC", cc);
+        if (!notificationsAllowed(version)) return;
         sender.sendPrepared(payload, sender.prepareRendered(payload), LOCAL_HTML_DIRECTORY);
         persistence.markCompletionReportSent(report.id(), subject, body, recipientJson(to), recipientJson(cc));
     }
@@ -181,7 +198,8 @@ public class PptFeedbackNotifier {
 
     void dispatchAssignmentNotices() {
         try {
-            for (var notice : persistence.pendingAssignmentNotices()) sendAssignmentNotice(notice);
+            var now = LocalDateTime.now(CHINA);
+            for (var notice : persistence.pendingAssignmentNotices(now, weekMinute(now))) sendAssignmentNotice(notice);
         } catch (RuntimeException e) {
             log.warn("例会事项分派通知扫描失败", e);
         }
@@ -214,6 +232,7 @@ public class PptFeedbackNotifier {
             var payload = new NotificationPayload("HTML", body, null, null, url, null, subject,
                     null, null, notice.versionId(), "SUCCESS", LocalDateTime.now(CHINA),
                     to, "METRIC", cc);
+            if (!notificationsAllowed(notice.versionId())) return;
             try {
                 sender.sendPrepared(payload, sender.prepareRendered(payload), LOCAL_HTML_DIRECTORY);
             } catch (RuntimeException e) {
@@ -275,6 +294,7 @@ public class PptFeedbackNotifier {
     private void dispatch(long versionId, String notificationBaseUrl) {
         List<PptAnomalyMapper.FeedbackNotice> notices;
         try {
+            if (!notificationsAllowed(versionId)) return;
             notices = persistence.feedbackNotices(versionId);
         } catch (RuntimeException e) {
             log.warn("例会材料通知查询失败，版本 {}", versionId, e);
@@ -302,6 +322,7 @@ public class PptFeedbackNotifier {
         try {
             transaction.executeWithoutResult(status -> {
                 if (!"ANALYZED".equals(persistence.lockVersion(first.versionId()))) return;
+                if (!notificationsAllowed(first.versionId())) return;
                 // 取得版本锁后重新查询，避免并发检查使用已发送的候选记录。
                 var current = persistence.feedbackNotices(first.versionId()).stream()
                         .filter(notice -> "PENDING".equals(notice.kind()))
@@ -328,6 +349,10 @@ public class PptFeedbackNotifier {
                     }
                 }
                 if (!firstTime.isEmpty()) {
+                    if (!notificationsAllowed(first.versionId())) {
+                        status.setRollbackOnly();
+                        return;
+                    }
                     send(firstTime, subject, body, url, sentAt);
                 }
             });
@@ -409,12 +434,15 @@ public class PptFeedbackNotifier {
         return "《" + material.mailLabel() + "》V" + material.versionNo() + "稿分析事项的通知";
     }
 
-    /** 按北京时间每分钟检查到期事项，实际间隔取决于每条事项上次发送成功的时间。 */
+    /** 按北京时间每分钟检查待发送通知和到期提醒。 */
     @Scheduled(cron = "0 * * * * *", zone = CHINA_ZONE)
-    public void scanFeedbackReminders() {
-        if (!reminderScanQueued.compareAndSet(false, true)) return;
+    public void scanScheduledNotifications() {
+        if (!noticeScanQueued.compareAndSet(false, true)) return;
         dispatcher.execute(() -> {
             try {
+                dispatchInitialNotices();
+                dispatchAssignmentNotices();
+                dispatchCompletionReports();
                 var now = LocalDateTime.now(CHINA);
                 for (var scope : persistence.dueFeedbackReminderScopes(now, weekMinute(now))) {
                     try {
@@ -426,7 +454,7 @@ public class PptFeedbackNotifier {
             } catch (RuntimeException e) {
                 log.warn("例会反馈逾期提醒扫描失败", e);
             } finally {
-                reminderScanQueued.set(false);
+                noticeScanQueued.set(false);
             }
         });
     }
@@ -458,6 +486,7 @@ public class PptFeedbackNotifier {
         var payload = new NotificationPayload("HTML", body, null, null, url, null, subject,
                 null, null, version, "SUCCESS", LocalDateTime.now(CHINA), to, "METRIC", cc);
         LocalDateTime sentAt = null;
+        if (!notificationsAllowed(version)) return;
         try {
             sender.sendPrepared(payload, sender.prepareRendered(payload), LOCAL_HTML_DIRECTORY);
             sentAt = LocalDateTime.now(CHINA);
@@ -479,6 +508,13 @@ public class PptFeedbackNotifier {
         transaction.executeWithoutResult(status -> {
             if (!"ANALYZED".equals(persistence.lockVersion(versionId))) {
                 throw new IllegalStateException("材料未完成识别");
+            }
+            if (!notificationsAllowed(versionId)) {
+                String reason = notificationsEnabledThisWeek(versionId)
+                        ? "当前不在该例会类型配置的通知时段内"
+                        : "仅可在报告上传当周且通知开启时发送";
+                throw new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.CONFLICT, reason);
             }
             // 结果通知独立记录，不能充当待反馈通知的送达凭据。
             sender.sendPrepared(payload, sender.prepareRendered(payload), LOCAL_HTML_DIRECTORY);

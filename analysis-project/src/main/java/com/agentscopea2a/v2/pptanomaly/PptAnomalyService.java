@@ -47,6 +47,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.concurrent.Semaphore;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -200,12 +201,14 @@ public class PptAnomalyService {
                 }
             });
             Files.write(pptx, bytes, java.nio.file.StandardOpenOption.CREATE_NEW);
+            var uploadedAt = LocalDateTime.now(ZoneId.of("Asia/Shanghai"));
             var row = new java.util.HashMap<String,Object>(Map.of("batch", batchId, "number", versionNo,
-                    "name", resolvedName, "file", fileName, "path", storageDir.relativize(pptx).toString().replace('\\', '/'), "hash", hash, "user", userId));
+                    "name", resolvedName, "file", fileName, "path", storageDir.relativize(pptx).toString().replace('\\', '/'),
+                    "hash", hash, "user", userId, "uploadedAt", uploadedAt));
             // 数据库记录原始名称、相对路径和内容校验值，文件位于 workspace 持久化目录。
             persistence.createVersion(row);
             long versionId = ((Number) row.get("id")).longValue();
-            return new Version(versionId, batchId, versionNo, resolvedName, fileName, "UPLOADED", LocalDateTime.now(), userId);
+            return new Version(versionId, batchId, versionNo, resolvedName, fileName, "UPLOADED", uploadedAt, userId);
         } catch (IOException e) {
             throw new IllegalStateException("保存 PPT 失败", e);
         }
@@ -670,6 +673,7 @@ public class PptAnomalyService {
         for (String handler : selected) persistence.addAssignmentHandler(id, handler);
         persistence.recordAssignmentChange(id, revision, previousDepartment, target,
                 write(previousHandlers), write(selected), editor);
+        if (!notifier.notificationsEnabledThisWeek(versionId)) return;
         String event = UUID.randomUUID().toString();
         for (String handler : selected) {
             if (!previousHandlers.contains(handler)) {

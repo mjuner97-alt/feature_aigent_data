@@ -89,7 +89,7 @@ async function renderReport(html: string, depth = 0): Promise<HTMLElement> {
     });
     const doc = frame.contentDocument;
     if (!doc?.body || !doc.defaultView) throw new Error('无法读取报告正文');
-    const root = doc.getElementById('report') || doc.body;
+    const root = doc.getElementById('report-node-content') || doc.getElementById('report') || doc.body;
     const copy = async (node: Node): Promise<Node | null> => {
       if (node.nodeType === Node.TEXT_NODE) return document.createTextNode(node.textContent || '');
       if (node.nodeType !== Node.ELEMENT_NODE) return null;

@@ -20,6 +20,7 @@ import com.agentscopea2a.v2.skillManager.notification.NotifyBodyTemplate;
 import com.agentscopea2a.v2.skillManager.report.FlowReportStorage;
 import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
 import com.agentscopea2a.v2.skillManager.report.LongTaskReportRenderer;
+import com.agentscopea2a.v2.skillManager.report.LongTaskReportRenderer.ReportPart;
 import com.agentscopea2a.v2.skillManager.report.ReportOutlineComposer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.RuntimeContext;
@@ -170,7 +171,7 @@ public class FlowCompletionService {
     /** 按节点配置顺序拼接结果并生成 HTML 报告，不调用汇总模型。 */
     public Summary summarize(SkillFlowExecution flow, List<SkillFlowNodeExecution> nodes) {
         try {
-            String text = orderedReportText(flow, nodes);
+            List<ReportPart> reportParts = orderedReportParts(flow, nodes);
             flow.setRenderedSummaryQuestion(null);
             mapper.updateExecution(flow);
             List<Map<String, String>> results = nodes
@@ -194,7 +195,7 @@ public class FlowCompletionService {
                 .toList();
             try {
                 String renderedReport = renderer.renderWithoutFullscreen(
-                    text,
+                    reportParts,
                     flow.getBatchId() == null
                         ? Objects.toString(flow.getFlowName(), "长任务报告")
                         : FlowReportNaming.datedTitle(flow.getFlowName(), flow)
@@ -228,18 +229,18 @@ public class FlowCompletionService {
         }
     }
 
-    private String orderedReportText(SkillFlowExecution execution, List<SkillFlowNodeExecution> nodes) {
+    private List<ReportPart> orderedReportParts(SkillFlowExecution execution, List<SkillFlowNodeExecution> nodes) {
         if (
             execution != null &&
             execution.getReportOutlineSnapshot() != null &&
             !execution.getReportOutlineSnapshot().isBlank()
         ) {
-            String composed = outlineComposer.compose(
+            List<ReportPart> composed = outlineComposer.compose(
                 execution.getReportOutlineSnapshot(),
                 nodes,
                 execution.getBatchId() == null ? null : FlowReportNaming.datedTitle(execution.getFlowName(), execution)
             );
-            if (composed != null && !composed.isBlank()) return composed;
+            if (composed != null) return composed;
         }
         // Definitions are read lazily so old executions (and old rows without an
         // outline) retain the exact legacy summary behavior.
@@ -251,31 +252,26 @@ public class FlowCompletionService {
                     definition.getReportOutline() != null &&
                     !definition.getReportOutline().isBlank()
                 ) {
-                    String composed = outlineComposer.compose(definition.getReportOutline(), nodes);
-                    if (composed != null && !composed.isBlank()) return composed;
+                    List<ReportPart> composed = outlineComposer.compose(definition.getReportOutline(), nodes);
+                    if (composed != null) return composed;
                 }
             } catch (RuntimeException ignored) {
                 log.warn("Invalid report outline for flow {}, falling back to legacy summary", execution.getFlowId());
             }
         }
-        StringBuilder report = new StringBuilder();
+        List<ReportPart> report = new ArrayList<>();
         for (int index = 0; index < nodes.size(); index++) {
             SkillFlowNodeExecution node = nodes.get(index);
             if (SHOW_NODE_NAMES_IN_LEGACY_REPORT) {
-                report
-                    .append("## ")
-                    .append(chineseNumber(index + 1))
-                    .append("、")
-                    .append(
-                        node.getNodeName() == null || node.getNodeName().isBlank()
-                            ? Objects.toString(node.getSkillName(), node.getNodeKey())
-                            : node.getNodeName()
-                    )
-                    .append('\n');
+                String nodeName = node.getNodeName() == null || node.getNodeName().isBlank()
+                    ? Objects.toString(node.getSkillName(), node.getNodeKey())
+                    : node.getNodeName();
+                report.add(ReportPart.heading("## " + chineseNumber(index + 1) + "、" + nodeName));
             }
-            report.append(extractResultText(node.getResultJson())).append("\n\n");
+            String content = extractResultText(node.getResultJson());
+            if (!content.isBlank()) report.add(ReportPart.node(content));
         }
-        return report.toString();
+        return report;
     }
 
     /** 序号转中文数字(一、二、…、十、十一、…、九十九),报告标题编号用;超出范围回退阿拉伯数字。 */
